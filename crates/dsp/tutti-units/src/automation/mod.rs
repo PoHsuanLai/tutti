@@ -6,11 +6,15 @@
 //! the `audio_automation` crate — re-exported here so consumers only need
 //! one import path.
 //!
-//! Two pieces, one domain:
-//! - [`lane`] — the playback-side [`AutomationLane`] `AudioUnit` (envelope
-//!   value at the transport's beat position).
-//! - [`recording`] — the recording-side [`Manager`] / [`Recorder`] /
-//!   [`RecordingTarget`] (write / touch / latch capture during a take).
+//! Two pieces, one domain — the two directions of a [`Curve`]:
+//! - [`lane`] — the playback-side [`AutomationLane`] `AudioUnit`, reading a
+//!   curve at the transport's beat position (`beat -> value`).
+//! - [`recording`] — the capture-side [`Recorder`], fed `(beat, value)` samples
+//!   during a write / touch / latch take and handing back an envelope.
+//!
+//! The map from a host's target vocabulary to its recorders stays host-side; the
+//! engine holds no registry and no target trait. See the [`recording`] module
+//! docs for why.
 //!
 //! The Bevy ECS binding (lane-node spawn + param reconcile +
 //! `TuttiAutomationPlugin`) moved app-side to
@@ -24,10 +28,7 @@ mod recording;
 // and tutti-units already depends on tutti-mod, so the trait is homed there and
 // re-exported here for the automation consumers.
 pub use lane::{AutomationLane, LiveAutomationLane};
-pub use recording::{
-    AutomationRecordingConfig, AutomationSnapshot, AutomationTarget, Manager, Recorder,
-    RecordingTarget,
-};
+pub use recording::{RecordMode, Recorder, RecordingConfig};
 pub use tutti_mod::Curve;
 
 pub use audio_automation::{

@@ -85,7 +85,7 @@ pub use convolution::{
 
 /// Transport-driven envelope automation — the playback-side `AutomationLane`
 /// `AudioUnit`, the [`Curve`](automation::Curve) trait it evaluates, and the
-/// recording-side `Manager`/`Recorder`. See the module docs.
+/// capture-side `Recorder`. See the module docs.
 pub mod automation;
 
 // NOTE: the spatial-panner graph binding (`spatial_graph`) and the automation

@@ -1,162 +1,93 @@
-//! Automation *recording* — the write/touch/latch capture side, companion to
-//! the playback-side [`AutomationLane`](crate::automation::AutomationLane).
+//! Automation *recording* — the capture side, companion to the playback-side
+//! [`AutomationLane`](crate::automation::AutomationLane).
 //!
-//! - [`RecordingTarget`] — trait downstream crates implement for their target
-//!   enum; [`AutomationTarget`] is a ready-made default schema.
-//! - [`Recorder`] — one automation lane's recording state machine (off / play /
-//!   write / touch / latch) over an `audio_automation::AutomationEnvelope`.
-//! - [`Manager`] — concurrent map of `target → Recorder`, the per-take
-//!   automation recorder a host drives during recording.
+//! [`Recorder`] is the **write** side of a [`Curve`]: where a curve is
+//! `beat -> value`, a recorder is fed `(beat, value)` samples by whoever watches
+//! the param and hands back an [`AutomationEnvelope`] — itself a `Curve` — when
+//! the take ends. Like every other curve in the engine it holds no clock and
+//! consults no loop range: the caller supplies an already-resolved, already
+//! loop-wrapped [`Beat`].
 //!
-//! Both halves of automation (playback lanes + recording) now live in this
-//! module, sharing the `audio_automation` envelope primitives.
+//! A recorder is also a `Curve` in its own right, reading the take *in progress*
+//! (see the [`Curve`] impl). That is what makes latch-hold a plain layer on the
+//! app's `LayeredCurve` rather than a second, disagreeing accumulator: the
+//! in-flight take is installed under [`LayerKey::AUTOMATION`](tutti_mod::LayerKey)
+//! and outranks the saved envelope for the take's duration, using the same
+//! `base + Σ layers` rule as everything else.
+//!
+//! ## What lives where
+//!
+//! One recorder is one lane under capture. The *map* from whatever a host calls a
+//! target to its recorder is the host's business, not the engine's — a
+//! `HashMap<YourTarget, Recorder>` in whatever the host already owns. The engine
+//! has no opinion on how targets are addressed, so it holds no registry and
+//! carries no target trait.
 
-use audio_automation::{AutomationEnvelope, AutomationPoint, AutomationState, CurveType};
-use dashmap::DashMap;
-use parking_lot::RwLock;
-use serde::{Deserialize, Serialize};
-use std::fmt;
-use std::hash::Hash;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use audio_automation::{AutomationEnvelope, AutomationPoint, CurveType};
+use tutti_mod::Curve;
+use tutti_types::{Beat, BeatDuration};
 
-// ───────────────────────────── target ──────────────────────────────
+// ───────────────────────────── mode ──────────────────────────────
 
-/// Trait for types that can serve as automation recording targets.
+/// How a [`Recorder`] captures — the three recording disciplines every DAW
+/// spells the same way.
 ///
-/// Downstream crates implement this for their own target enums so
-/// `Recorder<T>` and `Manager<T>` work with any target schema.
-pub trait RecordingTarget: Clone + Send + Sync + 'static {
-    /// `(min, max, default)` value range for this target.
-    fn default_range(&self) -> (f32, f32, f32);
+/// There is no `Off` and no `Play`: not recording is the absence of a recorder
+/// (the host's map simply has no entry), and *playback* is
+/// [`Curve::value_at`] on the saved envelope. Both were states on
+/// `audio_automation::AutomationState`, whose extra arms this type deliberately
+/// drops — a recorder that also answered reads would be a second accumulator
+/// competing with `LayeredCurve`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RecordMode {
+    /// Capture continuously from the first sample, no touch required.
+    Write,
+    /// Capture only while the control is held; the take ends on release.
+    Touch,
+    /// Capture while held, then hold the released value until the take ends.
+    Latch,
 }
 
-/// A ready-made automation-target schema (node params, master, tempo, custom).
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum AutomationTarget {
-    NodeParam {
-        node_id: u64,
-        param_index: usize,
-        param_name: Option<String>,
-    },
-    MasterVolume,
-    MasterPan,
-    Tempo,
-    Custom(String),
-}
-
-impl AutomationTarget {
-    pub fn node_param(node_id: u64, param_index: usize) -> Self {
-        Self::NodeParam {
-            node_id,
-            param_index,
-            param_name: None,
-        }
+impl RecordMode {
+    /// Whether a take begins on [`touch`](Recorder::touch) rather than on the
+    /// first [`record`](Recorder::record).
+    #[inline]
+    pub fn starts_on_touch(self) -> bool {
+        matches!(self, Self::Touch | Self::Latch)
     }
 
-    pub fn node_param_named(node_id: u64, param_index: usize, name: impl Into<String>) -> Self {
-        Self::NodeParam {
-            node_id,
-            param_index,
-            param_name: Some(name.into()),
-        }
-    }
-
-    pub fn custom(id: impl Into<String>) -> Self {
-        Self::Custom(id.into())
-    }
-
-    pub fn key(&self) -> String {
-        match self {
-            Self::NodeParam {
-                node_id,
-                param_index,
-                ..
-            } => format!("node:{node_id}:{param_index}"),
-            Self::MasterVolume => "master:volume".to_string(),
-            Self::MasterPan => "master:pan".to_string(),
-            Self::Tempo => "transport:tempo".to_string(),
-            Self::Custom(id) => format!("custom:{id}"),
-        }
-    }
-
-    pub fn display_name(&self) -> String {
-        match self {
-            Self::NodeParam {
-                node_id,
-                param_index,
-                param_name,
-            } => {
-                if let Some(name) = param_name {
-                    format!("Node {node_id}: {name}")
-                } else {
-                    format!("Node {node_id}: Param {param_index}")
-                }
-            }
-            Self::MasterVolume => "Master Volume".to_string(),
-            Self::MasterPan => "Master Pan".to_string(),
-            Self::Tempo => "Tempo".to_string(),
-            Self::Custom(id) => id.clone(),
-        }
-    }
-
-    pub fn is_node_param(&self) -> bool {
-        matches!(self, Self::NodeParam { .. })
-    }
-
-    pub fn is_master(&self) -> bool {
-        matches!(self, Self::MasterVolume | Self::MasterPan)
-    }
-
-    pub fn is_tempo(&self) -> bool {
-        matches!(self, Self::Tempo)
-    }
-
-    pub fn node_id(&self) -> Option<u64> {
-        match self {
-            Self::NodeParam { node_id, .. } => Some(*node_id),
-            _ => None,
-        }
+    /// Whether [`release`](Recorder::release) ends the take outright (`Touch`)
+    /// rather than holding the released value (`Latch`).
+    #[inline]
+    pub fn stops_on_release(self) -> bool {
+        matches!(self, Self::Touch)
     }
 }
 
-impl RecordingTarget for AutomationTarget {
-    fn default_range(&self) -> (f32, f32, f32) {
-        match self {
-            Self::MasterVolume => (0.0, 2.0, 1.0),
-            Self::MasterPan => (-1.0, 1.0, 0.0),
-            Self::Tempo => (20.0, 300.0, 120.0),
-            Self::NodeParam { .. } | Self::Custom(_) => (0.0, 1.0, 0.5),
-        }
-    }
-}
+// ──────────────────────────── config ─────────────────────────────
 
-impl fmt::Display for AutomationTarget {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.display_name())
-    }
-}
-
-impl Default for AutomationTarget {
-    fn default() -> Self {
-        Self::Custom("default".to_string())
-    }
-}
-
-// ──────────────────────────── recorder ─────────────────────────────
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-pub struct AutomationRecordingConfig {
-    pub min_point_interval: f64,
+/// Capture policy: how densely points are written, and whether the take is
+/// thinned when it ends.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RecordingConfig {
+    /// Minimum beat gap between recorded points. A `record` closer than this to
+    /// the previous point is dropped, so a control dragged at frame rate does
+    /// not write one point per frame.
+    pub min_point_interval: BeatDuration,
+    /// Douglas-Peucker tolerance applied by [`Recorder::finish`] when
+    /// [`auto_simplify`](Self::auto_simplify) is set. In value-space (`f32`, the
+    /// unit-erased space the points live in), not beats.
     pub simplify_tolerance: f32,
+    /// Whether [`Recorder::finish`] thins the take before handing it back.
     pub auto_simplify: bool,
+    /// Curve type stamped on each recorded point.
     pub default_curve: CurveType,
 }
 
-impl Default for AutomationRecordingConfig {
+impl Default for RecordingConfig {
     fn default() -> Self {
         Self {
-            min_point_interval: 0.01,
+            min_point_interval: BeatDuration(0.01),
             simplify_tolerance: 0.01,
             auto_simplify: true,
             default_curve: CurveType::Linear,
@@ -164,806 +95,462 @@ impl Default for AutomationRecordingConfig {
     }
 }
 
+// ───────────────────────────── take ──────────────────────────────
+
+/// The take in progress. Absent between takes.
+///
+/// The two variants are the *whole* difference between `Touch` and `Latch`:
+/// both capture while held, and on release `Touch` drops to `None` while `Latch`
+/// drops to `Held`. Stating that as a variant is what keeps the mode check out
+/// of the read path.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Take {
+    /// The control is held. Samples land in the envelope.
+    Capturing { last_beat: Beat, last_value: f32 },
+    /// Released under `Latch` — the value is frozen until the take ends.
+    Held { value: f32 },
+}
+
+// ──────────────────────────── recorder ───────────────────────────
+
+/// One automation lane under capture: the write side of a [`Curve`].
+///
+/// Takes `&mut self` throughout. The previous incarnation held its envelope in
+/// an `Arc<RwLock<_>>` so a concurrent map could hand out `&self` recorders;
+/// with the map host-side that lock had no reader to protect, and the borrow
+/// checker does the job for free. (Contrast [`ModTarget`](tutti_mod::ModTarget),
+/// which *is* `&self` — a driver holds it as `Arc<dyn ModTarget>` and writes it
+/// once per frame. A recorder has no such driver.)
 #[derive(Debug, Clone)]
-struct Session {
-    last_recorded_beat: f64,
-    last_value: f32,
-    is_touching: bool,
+pub struct Recorder {
+    envelope: AutomationEnvelope<f32>,
+    mode: RecordMode,
+    take: Option<Take>,
+    config: RecordingConfig,
 }
 
-/// One automation lane's recording state machine over an envelope.
-#[derive(Debug)]
-pub struct Recorder<T: RecordingTarget> {
-    envelope: Arc<RwLock<AutomationEnvelope<T>>>,
-    state: AutomationState,
-    config: AutomationRecordingConfig,
-    recording_session: Option<Session>,
-    manual_value: f32,
-}
+impl Recorder {
+    /// A recorder over an empty envelope clamped to `[min, max]`.
+    pub fn new(mode: RecordMode, min: f32, max: f32) -> Self {
+        Self::with_config(mode, min, max, RecordingConfig::default())
+    }
 
-impl<T: RecordingTarget> Recorder<T> {
-    pub fn new(target: T) -> Self {
-        let (min, max, default) = target.default_range();
-        let envelope = AutomationEnvelope::new(target).with_range(min, max);
-
+    /// [`new`](Self::new) with an explicit capture policy.
+    pub fn with_config(mode: RecordMode, min: f32, max: f32, config: RecordingConfig) -> Self {
         Self {
-            envelope: Arc::new(RwLock::new(envelope)),
-            state: AutomationState::Off,
-            config: AutomationRecordingConfig::default(),
-            recording_session: None,
-            manual_value: default,
+            // `0.0` is the envelope's *target label*, not a value — the label is
+            // unused here (the host's map key addresses the lane), and `Curve`'s
+            // blanket impl ignores it beyond its thread bounds.
+            envelope: AutomationEnvelope::new(0.0).with_range(min, max),
+            mode,
+            take: None,
+            config,
         }
     }
 
-    pub fn with_envelope(envelope: AutomationEnvelope<T>) -> Self {
-        let manual_value = envelope.get_value_at(0.0).unwrap_or(0.5);
+    /// A recorder that overdubs onto an existing envelope — a second pass over a
+    /// lane that already has points.
+    pub fn overdub(mode: RecordMode, envelope: AutomationEnvelope<f32>) -> Self {
         Self {
-            envelope: Arc::new(RwLock::new(envelope)),
-            state: AutomationState::Off,
-            config: AutomationRecordingConfig::default(),
-            recording_session: None,
-            manual_value,
+            envelope,
+            mode,
+            take: None,
+            config: RecordingConfig::default(),
         }
     }
 
-    pub fn envelope(&self) -> Arc<RwLock<AutomationEnvelope<T>>> {
-        Arc::clone(&self.envelope)
+    pub fn mode(&self) -> RecordMode {
+        self.mode
     }
 
-    pub fn state(&self) -> AutomationState {
-        self.state
-    }
-
-    pub fn set_state(&mut self, state: AutomationState) {
-        if self.state != state {
-            if self.state.can_record() && !state.can_record() {
-                self.stop_recording();
-            }
-            self.state = state;
+    /// Switch capture discipline. Changing mode mid-take ends the take (the new
+    /// discipline's release semantics never applied to it), keeping whatever was
+    /// already captured.
+    pub fn set_mode(&mut self, mode: RecordMode) {
+        if self.mode != mode {
+            self.take = None;
+            self.mode = mode;
         }
     }
 
-    pub fn config(&self) -> &AutomationRecordingConfig {
+    pub fn config(&self) -> &RecordingConfig {
         &self.config
     }
 
-    pub fn config_mut(&mut self) -> &mut AutomationRecordingConfig {
-        &mut self.config
-    }
-
-    pub fn set_config(&mut self, config: AutomationRecordingConfig) {
+    pub fn set_config(&mut self, config: RecordingConfig) {
         self.config = config;
     }
 
-    pub fn manual_value(&self) -> f32 {
-        self.manual_value
+    /// The envelope written so far, including the take in progress.
+    pub fn envelope(&self) -> &AutomationEnvelope<f32> {
+        &self.envelope
     }
 
-    pub fn set_manual_value(&mut self, value: f32) {
-        self.manual_value = value;
+    /// Whether a take is currently open (capturing, or latch-held).
+    pub fn is_taking(&self) -> bool {
+        self.take.is_some()
     }
 
-    pub fn get_value_at(&self, beat: f64) -> f32 {
-        match self.state {
-            AutomationState::Off => self.manual_value,
-            AutomationState::Write => self
-                .recording_session
-                .as_ref()
-                .map_or(self.manual_value, |s| s.last_value),
-            AutomationState::Play | AutomationState::Touch | AutomationState::Latch => {
-                if self.state == AutomationState::Latch {
-                    if let Some(ref session) = self.recording_session {
-                        if !session.is_touching {
-                            return session.last_value;
-                        }
-                    }
-                }
-
-                self.envelope
-                    .read()
-                    .get_value_at(beat)
-                    .unwrap_or(self.manual_value)
-            }
-        }
-    }
-
-    pub fn touch(&mut self, beat: f64, value: f32) {
-        if !self.state.starts_on_touch() {
+    /// The control was grabbed: open a take at `(beat, value)`.
+    ///
+    /// A no-op in [`Write`](RecordMode::Write), which captures from the first
+    /// [`record`](Self::record) without waiting to be touched.
+    pub fn touch(&mut self, beat: Beat, value: f32) {
+        if !self.mode.starts_on_touch() {
             return;
         }
-
-        self.recording_session = Some(Session {
-            last_recorded_beat: beat,
+        self.take = Some(Take::Capturing {
+            last_beat: beat,
             last_value: value,
-            is_touching: true,
         });
-
-        self.record_point(beat, value);
+        self.write_point(beat, value);
     }
 
-    pub fn record(&mut self, beat: f64, value: f32) {
-        if !self.state.can_record() {
-            return;
-        }
-
-        if self.state == AutomationState::Write {
-            if self.recording_session.is_none() {
-                self.recording_session = Some(Session {
-                    last_recorded_beat: beat,
+    /// A sample from the watched param. Written only while a take is capturing,
+    /// and only if `min_point_interval` beats have passed since the last point.
+    pub fn record(&mut self, beat: Beat, value: f32) {
+        match self.take {
+            // Write opens its own take on first sample — nothing to touch.
+            None if self.mode == RecordMode::Write => {
+                self.take = Some(Take::Capturing {
+                    last_beat: beat,
                     last_value: value,
-                    is_touching: true,
                 });
             }
-        } else if let Some(ref session) = self.recording_session {
-            if !session.is_touching {
-                return;
+            Some(Take::Capturing { last_beat, .. }) => {
+                // Thin at the configured density. Only a *forward* gap counts:
+                // a backwards jump is a seek, which should write immediately
+                // rather than be swallowed as "too soon".
+                let gap = beat - last_beat;
+                if gap > BeatDuration(0.0) && gap < self.config.min_point_interval {
+                    return;
+                }
             }
-        } else {
+            // No take (Touch/Latch untouched), or latch-held — neither captures.
+            _ => return,
+        }
+
+        self.write_point(beat, value);
+        self.take = Some(Take::Capturing {
+            last_beat: beat,
+            last_value: value,
+        });
+    }
+
+    /// The control was let go.
+    ///
+    /// `Touch` ends the take. `Latch` freezes `value` until [`finish`](Self::finish).
+    /// `Write` ignores this — it captures until the take ends.
+    pub fn release(&mut self, beat: Beat, value: f32) {
+        if self.take.is_none() {
             return;
         }
-
-        if let Some(ref session) = self.recording_session {
-            let interval = beat - session.last_recorded_beat;
-            if interval < self.config.min_point_interval && interval > 0.0 {
-                return;
-            }
-        }
-
-        self.record_point(beat, value);
-
-        if let Some(ref mut session) = self.recording_session {
-            session.last_recorded_beat = beat;
-            session.last_value = value;
+        if self.mode.stops_on_release() {
+            self.write_point(beat, value);
+            self.take = None;
+        } else if self.mode == RecordMode::Latch {
+            self.write_point(beat, value);
+            self.take = Some(Take::Held { value });
         }
     }
 
-    pub fn release(&mut self, beat: f64, value: f32) {
-        if let Some(ref mut session) = self.recording_session {
-            session.is_touching = false;
-            session.last_value = value;
-
-            if self.state.stops_on_release() {
-                self.record_point(beat, value);
-                self.stop_recording();
-            }
+    /// End the take and hand back the envelope, thinned if
+    /// [`auto_simplify`](RecordingConfig::auto_simplify) is set.
+    ///
+    /// Takes `self`: the take is over, so consuming the recorder is what the
+    /// host's map does anyway (remove the entry, keep the envelope). This is the
+    /// only way to get the envelope by value.
+    pub fn finish(mut self) -> AutomationEnvelope<f32> {
+        if self.config.auto_simplify {
+            self.envelope.simplify(self.config.simplify_tolerance);
         }
+        self.envelope
     }
 
-    fn stop_recording(&mut self) {
-        if self.recording_session.take().is_some() && self.config.auto_simplify {
-            self.envelope
-                .write()
-                .simplify(self.config.simplify_tolerance);
-        }
-    }
-
-    fn record_point(&self, beat: f64, value: f32) {
-        self.envelope.write().add_point(AutomationPoint::with_curve(
-            beat,
+    fn write_point(&mut self, beat: Beat, value: f32) {
+        self.envelope.add_point(AutomationPoint::with_curve(
+            beat.get(),
             value,
             self.config.default_curve,
         ));
     }
-
-    pub fn add_point(&self, point: AutomationPoint) {
-        self.envelope.write().add_point(point);
-    }
-
-    pub fn remove_point_at(&self, beat: f64) {
-        self.envelope.write().remove_point_at(beat);
-    }
-
-    pub fn clear(&self) {
-        self.envelope.write().clear();
-    }
-
-    pub fn len(&self) -> usize {
-        self.envelope.read().len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.envelope.read().is_empty()
-    }
-
-    pub fn simplify(&self, tolerance: f32) {
-        self.envelope.write().simplify(tolerance);
-    }
-
-    pub fn set_enabled(&self, enabled: bool) {
-        self.envelope.write().enabled = enabled;
-    }
-
-    pub fn is_enabled(&self) -> bool {
-        self.envelope.read().enabled
-    }
 }
 
-impl<T: RecordingTarget> Clone for Recorder<T> {
-    fn clone(&self) -> Self {
-        Self {
-            envelope: Arc::new(RwLock::new(self.envelope.read().clone())),
-            state: self.state,
-            config: self.config,
-            recording_session: self.recording_session.clone(),
-            manual_value: self.manual_value,
+/// The take **in progress** — not the saved lane.
+///
+/// This is what makes latch-hold composable: the host installs the live recorder
+/// as the [`LayerKey::AUTOMATION`](tutti_mod::LayerKey) layer on the param's
+/// `LayeredCurve` for the take's duration, and it outranks the saved envelope
+/// under the ordinary keyed-upsert rule — no second summation path.
+///
+/// `None` when no take is open, preserving the empty-vs-zero distinction
+/// [`Curve`] requires: between takes the recorder contributes *nothing* and the
+/// saved envelope shows through, rather than pinning the param to `0.0`.
+impl Curve for Recorder {
+    fn value_at(&self, beat: Beat) -> Option<f32> {
+        match self.take {
+            Some(Take::Held { value }) => Some(value),
+            Some(Take::Capturing { .. }) => self.envelope.value_at(beat),
+            None => None,
         }
     }
-}
-
-impl<T: RecordingTarget + Serialize> Serialize for Recorder<T> {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        #[derive(Serialize)]
-        struct LaneData<'a, U: Serialize> {
-            envelope: &'a AutomationEnvelope<U>,
-            config: &'a AutomationRecordingConfig,
-            manual_value: f32,
-        }
-
-        let envelope = self.envelope.read();
-        let data = LaneData {
-            envelope: &envelope,
-            config: &self.config,
-            manual_value: self.manual_value,
-        };
-        data.serialize(serializer)
-    }
-}
-
-impl<'de, T: RecordingTarget + Deserialize<'de>> Deserialize<'de> for Recorder<T> {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        #[derive(Deserialize)]
-        struct LaneData<U> {
-            envelope: AutomationEnvelope<U>,
-            config: AutomationRecordingConfig,
-            manual_value: f32,
-        }
-
-        let data = LaneData::<T>::deserialize(deserializer)?;
-        Ok(Self {
-            envelope: Arc::new(RwLock::new(data.envelope)),
-            state: AutomationState::Off,
-            config: data.config,
-            recording_session: None,
-            manual_value: data.manual_value,
-        })
-    }
-}
-
-// ──────────────────────────── manager ──────────────────────────────
-
-/// Concurrent map of `target → Recorder`. The per-take automation recorder a
-/// host drives while recording automation moves.
-#[derive(Debug)]
-pub struct Manager<T: RecordingTarget + Eq + Hash> {
-    lanes: DashMap<T, Recorder<T>>,
-    enabled: AtomicBool,
-    default_config: AutomationRecordingConfig,
-}
-
-impl<T: RecordingTarget + Eq + Hash> Manager<T> {
-    pub fn new() -> Self {
-        Self {
-            lanes: DashMap::new(),
-            enabled: AtomicBool::new(true),
-            default_config: AutomationRecordingConfig::default(),
-        }
-    }
-
-    pub fn with_config(config: AutomationRecordingConfig) -> Self {
-        Self {
-            lanes: DashMap::new(),
-            enabled: AtomicBool::new(true),
-            default_config: config,
-        }
-    }
-
-    pub fn set_enabled(&self, enabled: bool) {
-        self.enabled.store(enabled, Ordering::Relaxed);
-    }
-
-    pub fn is_enabled(&self) -> bool {
-        self.enabled.load(Ordering::Relaxed)
-    }
-
-    pub fn set_default_config(&mut self, config: AutomationRecordingConfig) {
-        self.default_config = config;
-    }
-
-    pub fn get_or_create_lane(
-        &self,
-        target: T,
-    ) -> dashmap::mapref::one::RefMut<'_, T, Recorder<T>> {
-        self.lanes.entry(target.clone()).or_insert_with(|| {
-            let mut lane = Recorder::new(target);
-            lane.set_config(self.default_config);
-            lane
-        })
-    }
-
-    pub fn get_lane(&self, target: &T) -> Option<dashmap::mapref::one::Ref<'_, T, Recorder<T>>> {
-        self.lanes.get(target)
-    }
-
-    pub fn get_lane_mut(
-        &self,
-        target: &T,
-    ) -> Option<dashmap::mapref::one::RefMut<'_, T, Recorder<T>>> {
-        self.lanes.get_mut(target)
-    }
-
-    pub fn create_lane(
-        &self,
-        target: T,
-        config: AutomationRecordingConfig,
-    ) -> dashmap::mapref::one::RefMut<'_, T, Recorder<T>> {
-        self.lanes.entry(target.clone()).or_insert_with(|| {
-            let mut lane = Recorder::new(target);
-            lane.set_config(config);
-            lane
-        })
-    }
-
-    pub fn create_lane_with_envelope(&self, envelope: AutomationEnvelope<T>) {
-        let target = envelope.target.clone();
-        let lane = Recorder::with_envelope(envelope);
-        self.lanes.insert(target, lane);
-    }
-
-    pub fn remove_lane(&self, target: &T) -> Option<(T, Recorder<T>)> {
-        self.lanes.remove(target)
-    }
-
-    pub fn has_lane(&self, target: &T) -> bool {
-        self.lanes.contains_key(target)
-    }
-
-    pub fn lane_count(&self) -> usize {
-        self.lanes.len()
-    }
-
-    pub fn targets(&self) -> Vec<T> {
-        self.lanes.iter().map(|r| r.key().clone()).collect()
-    }
-
-    pub fn clear(&self) {
-        self.lanes.clear();
-    }
-
-    #[inline]
-    pub fn get_value(&self, target: &T, beat: f64) -> Option<f32> {
-        if !self.is_enabled() {
-            return None;
-        }
-        self.lanes.get(target).map(|lane| lane.get_value_at(beat))
-    }
-
-    pub fn get_values(&self, targets: &[T], beat: f64) -> Vec<Option<f32>> {
-        if !self.is_enabled() {
-            return vec![None; targets.len()];
-        }
-        targets
-            .iter()
-            .map(|target| self.lanes.get(target).map(|lane| lane.get_value_at(beat)))
-            .collect()
-    }
-
-    pub fn set_state(&self, target: &T, state: AutomationState) {
-        if let Some(mut lane) = self.lanes.get_mut(target) {
-            lane.set_state(state);
-        }
-    }
-
-    pub fn get_state(&self, target: &T) -> Option<AutomationState> {
-        self.lanes.get(target).map(|lane| lane.state())
-    }
-
-    pub fn set_all_states(&self, state: AutomationState) {
-        for mut lane_ref in self.lanes.iter_mut() {
-            lane_ref.set_state(state);
-        }
-    }
-
-    pub fn touch(&self, target: &T, beat: f64, value: f32) {
-        if let Some(mut lane) = self.lanes.get_mut(target) {
-            lane.touch(beat, value);
-        }
-    }
-
-    pub fn record(&self, target: &T, beat: f64, value: f32) {
-        if let Some(mut lane) = self.lanes.get_mut(target) {
-            lane.record(beat, value);
-        }
-    }
-
-    pub fn release(&self, target: &T, beat: f64, value: f32) {
-        if let Some(mut lane) = self.lanes.get_mut(target) {
-            lane.release(beat, value);
-        }
-    }
-
-    pub fn record_batch(&self, beat: f64, values: &[(T, f32)]) {
-        for (target, value) in values {
-            self.record(target, beat, *value);
-        }
-    }
-
-    pub fn add_point(&self, target: &T, point: AutomationPoint) {
-        if let Some(lane) = self.lanes.get(target) {
-            lane.add_point(point);
-        }
-    }
-
-    pub fn remove_point_at(&self, target: &T, beat: f64) {
-        if let Some(lane) = self.lanes.get(target) {
-            lane.remove_point_at(beat);
-        }
-    }
-
-    pub fn clear_lane(&self, target: &T) {
-        if let Some(lane) = self.lanes.get(target) {
-            lane.clear();
-        }
-    }
-
-    pub fn simplify_lane(&self, target: &T, tolerance: f32) {
-        if let Some(lane) = self.lanes.get(target) {
-            lane.simplify(tolerance);
-        }
-    }
-
-    pub fn simplify_all(&self, tolerance: f32) {
-        for lane_ref in self.lanes.iter() {
-            lane_ref.simplify(tolerance);
-        }
-    }
-
-    pub fn snapshot(&self) -> AutomationSnapshot<T> {
-        let lanes: Vec<_> = self
-            .lanes
-            .iter()
-            .map(|r| (r.key().clone(), r.value().clone()))
-            .collect();
-
-        AutomationSnapshot {
-            lanes,
-            enabled: self.is_enabled(),
-        }
-    }
-
-    pub fn restore(&self, snapshot: &AutomationSnapshot<T>) {
-        self.lanes.clear();
-        for (target, lane) in &snapshot.lanes {
-            self.lanes.insert(target.clone(), lane.clone());
-        }
-        self.set_enabled(snapshot.enabled);
-    }
-}
-
-impl<T: RecordingTarget + Eq + Hash> Default for Manager<T> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl<T: RecordingTarget + Eq + Hash> Clone for Manager<T> {
-    fn clone(&self) -> Self {
-        let new_manager = Self::new();
-        for lane_ref in self.lanes.iter() {
-            new_manager
-                .lanes
-                .insert(lane_ref.key().clone(), lane_ref.value().clone());
-        }
-        new_manager.set_enabled(self.is_enabled());
-        new_manager
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct AutomationSnapshot<T: RecordingTarget + Eq + Hash> {
-    pub lanes: Vec<(T, Recorder<T>)>,
-    pub enabled: bool,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
 
-    // ── target ──
+    fn recorder(mode: RecordMode) -> Recorder {
+        let mut r = Recorder::new(mode, 0.0, 1.0);
+        // Point-count assertions below are about capture, not thinning.
+        r.config.auto_simplify = false;
+        r
+    }
+
+    // ── mode ──
 
     #[test]
-    fn test_node_param_named() {
-        let target = AutomationTarget::node_param_named(42, 0, "cutoff");
-        assert_eq!(target.display_name(), "Node 42: cutoff");
+    fn write_captures_without_touch() {
+        let mut r = recorder(RecordMode::Write);
+        r.record(Beat(0.0), 0.1);
+        r.record(Beat(1.0), 0.2);
+        r.record(Beat(2.0), 0.3);
+        assert_eq!(r.envelope().len(), 3);
     }
 
     #[test]
-    fn test_master_targets() {
-        assert!(AutomationTarget::MasterVolume.is_master());
-        assert!(AutomationTarget::MasterPan.is_master());
-        assert!(!AutomationTarget::Tempo.is_master());
-    }
-
-    #[test]
-    fn test_unique_keys() {
-        let targets = [
-            AutomationTarget::node_param(0, 0),
-            AutomationTarget::node_param(0, 1),
-            AutomationTarget::node_param(1, 0),
-            AutomationTarget::MasterVolume,
-            AutomationTarget::MasterPan,
-            AutomationTarget::Tempo,
-            AutomationTarget::custom("my_target"),
-        ];
-
-        let keys: std::collections::HashSet<_> = targets.iter().map(|t| t.key()).collect();
-        assert_eq!(keys.len(), targets.len(), "All keys should be unique");
-    }
-
-    #[test]
-    fn test_target_serialization() {
-        let target = AutomationTarget::node_param_named(42, 0, "cutoff");
-        let json = serde_json::to_string(&target).unwrap();
-        let deserialized: AutomationTarget = serde_json::from_str(&json).unwrap();
-        assert_eq!(target, deserialized);
-    }
-
-    // ── recorder ──
-
-    #[test]
-    fn test_new_lane() {
-        let lane = Recorder::new(AutomationTarget::MasterVolume);
-        assert_eq!(lane.state(), AutomationState::Off);
-        assert!(lane.is_empty());
-        assert!((lane.manual_value() - 1.0).abs() < 0.001);
-    }
-
-    #[test]
-    fn test_manual_value_when_off() {
-        let mut lane = Recorder::new(AutomationTarget::MasterVolume);
-        lane.set_manual_value(0.5);
-        assert!((lane.get_value_at(0.0) - 0.5).abs() < 0.001);
-        assert!((lane.get_value_at(100.0) - 0.5).abs() < 0.001);
-    }
-
-    #[test]
-    fn test_playback_mode() {
-        let mut lane = Recorder::new(AutomationTarget::MasterVolume);
-        lane.add_point(AutomationPoint::new(0.0, 0.0));
-        lane.add_point(AutomationPoint::new(4.0, 1.0));
-
-        lane.set_manual_value(0.5);
-        assert!((lane.get_value_at(2.0) - 0.5).abs() < 0.001);
-
-        lane.set_state(AutomationState::Play);
-        assert!((lane.get_value_at(2.0) - 0.5).abs() < 0.001);
-    }
-
-    #[test]
-    fn test_touch_recording() {
-        let mut lane = Recorder::new(AutomationTarget::MasterVolume);
-        lane.config_mut().auto_simplify = false;
-        lane.set_state(AutomationState::Touch);
-
-        lane.touch(0.0, 0.5);
-        assert_eq!(lane.len(), 1);
-
-        lane.record(1.0, 0.6);
-        lane.record(2.0, 0.7);
-        assert_eq!(lane.len(), 3);
-
-        lane.release(3.0, 0.8);
-        assert_eq!(lane.len(), 4);
-    }
-
-    #[test]
-    fn test_latch_continuation() {
-        let mut lane = Recorder::new(AutomationTarget::MasterVolume);
-        lane.add_point(AutomationPoint::new(0.0, 0.0));
-        lane.add_point(AutomationPoint::new(10.0, 1.0));
-
-        lane.set_state(AutomationState::Latch);
-        lane.touch(2.0, 0.5);
-        lane.record(3.0, 0.6);
-        lane.release(4.0, 0.7);
-
-        assert!((lane.get_value_at(5.0) - 0.7).abs() < 0.001);
-    }
-
-    #[test]
-    fn test_write_mode() {
-        let mut lane = Recorder::new(AutomationTarget::MasterVolume);
-        lane.set_state(AutomationState::Write);
-
-        lane.record(0.0, 0.1);
-        lane.record(1.0, 0.2);
-        lane.record(2.0, 0.3);
-
-        assert!(lane.len() >= 3);
-    }
-
-    #[test]
-    fn test_minimum_interval() {
-        let mut lane = Recorder::new(AutomationTarget::MasterVolume);
-
-        let config = AutomationRecordingConfig {
-            min_point_interval: 0.5,
-            auto_simplify: false,
-            ..Default::default()
-        };
-        lane.set_config(config);
-        lane.set_state(AutomationState::Write);
-
-        lane.record(0.0, 0.5);
-        lane.record(0.1, 0.6);
-        lane.record(0.4, 0.7);
-        lane.record(0.5, 0.8);
-
-        assert_eq!(lane.len(), 2);
-    }
-
-    #[test]
-    fn test_recorder_serialization() {
-        let lane = Recorder::new(AutomationTarget::MasterVolume);
-        lane.add_point(AutomationPoint::new(0.0, 0.0));
-        lane.add_point(AutomationPoint::with_curve(4.0, 1.0, CurveType::SCurve));
-
-        let json = serde_json::to_string(&lane).unwrap();
-        let restored: Recorder<AutomationTarget> = serde_json::from_str(&json).unwrap();
-
-        assert_eq!(restored.len(), 2);
-        assert_eq!(restored.state(), AutomationState::Off);
-    }
-
-    // ── manager ──
-
-    #[test]
-    fn test_create_manager() {
-        let manager = Manager::<AutomationTarget>::new();
-        assert!(manager.is_enabled());
-        assert_eq!(manager.lane_count(), 0);
-    }
-
-    #[test]
-    fn test_get_or_create_lane() {
-        let manager = Manager::new();
-        let target = AutomationTarget::MasterVolume;
-
-        {
-            let _lane = manager.get_or_create_lane(target.clone());
-        }
-
-        assert!(manager.has_lane(&target));
-        assert_eq!(manager.lane_count(), 1);
-    }
-
-    #[test]
-    fn test_get_value() {
-        let manager = Manager::new();
-        let target = AutomationTarget::MasterVolume;
-
-        {
-            let lane = manager.get_or_create_lane(target.clone());
-            lane.add_point(AutomationPoint::new(0.0, 0.0));
-            lane.add_point(AutomationPoint::new(4.0, 1.0));
-            drop(lane);
-        }
-
-        manager.set_state(&target, AutomationState::Play);
-
-        let val = manager.get_value(&target, 2.0);
-        assert!(val.is_some());
-        assert!((val.unwrap() - 0.5).abs() < 0.01);
-    }
-
-    #[test]
-    fn test_global_disable() {
-        let manager = Manager::new();
-        let target = AutomationTarget::MasterVolume;
-
-        {
-            let lane = manager.get_or_create_lane(target.clone());
-            lane.add_point(AutomationPoint::new(0.0, 0.5));
-            drop(lane);
-        }
-
-        manager.set_state(&target, AutomationState::Play);
-        assert!(manager.get_value(&target, 0.0).is_some());
-
-        manager.set_enabled(false);
-        assert!(manager.get_value(&target, 0.0).is_none());
-    }
-
-    #[test]
-    fn test_recording() {
-        let manager = Manager::new();
-        let target = AutomationTarget::MasterVolume;
-
-        {
-            let mut lane = manager.get_or_create_lane(target.clone());
-            lane.set_state(AutomationState::Write);
-        }
-
-        manager.record(&target, 0.0, 0.1);
-        manager.record(&target, 1.0, 0.2);
-        manager.record(&target, 2.0, 0.3);
-
-        let lane = manager.get_lane(&target).unwrap();
-        assert!(lane.len() >= 3);
-    }
-
-    #[test]
-    fn test_snapshot_restore() {
-        let manager = Manager::new();
-        let target = AutomationTarget::MasterVolume;
-
-        {
-            let lane = manager.get_or_create_lane(target.clone());
-            lane.add_point(AutomationPoint::new(0.0, 0.5));
-            lane.add_point(AutomationPoint::new(4.0, 1.0));
-        }
-
-        let snapshot = manager.snapshot();
-
-        manager.clear();
-        assert_eq!(manager.lane_count(), 0);
-
-        manager.restore(&snapshot);
-        assert_eq!(manager.lane_count(), 1);
-        assert!(manager.has_lane(&target));
-    }
-
-    #[test]
-    fn test_set_all_states() {
-        let manager = Manager::new();
-
-        manager.get_or_create_lane(AutomationTarget::MasterVolume);
-        manager.get_or_create_lane(AutomationTarget::MasterPan);
-        manager.get_or_create_lane(AutomationTarget::Tempo);
-
-        manager.set_all_states(AutomationState::Play);
-
-        for target in manager.targets() {
-            assert_eq!(manager.get_state(&target), Some(AutomationState::Play));
+    fn touch_and_latch_ignore_record_until_touched() {
+        for mode in [RecordMode::Touch, RecordMode::Latch] {
+            let mut r = recorder(mode);
+            r.record(Beat(0.0), 0.5);
+            r.record(Beat(1.0), 0.6);
+            assert!(
+                r.envelope().is_empty(),
+                "{mode:?} must not capture before touch"
+            );
+            assert!(!r.is_taking());
         }
     }
 
     #[test]
-    fn test_concurrent_access() {
-        use std::thread;
+    fn touch_on_write_is_a_noop() {
+        let mut r = recorder(RecordMode::Write);
+        r.touch(Beat(0.0), 0.5);
+        assert!(r.envelope().is_empty());
+        assert!(!r.is_taking());
+    }
 
-        let manager = Arc::new(Manager::new());
-        let target = AutomationTarget::MasterVolume;
+    // ── take lifecycle ──
 
-        manager.get_or_create_lane(target.clone());
-        manager.set_state(&target, AutomationState::Write);
+    #[test]
+    fn touch_records_then_release_ends_the_take() {
+        let mut r = recorder(RecordMode::Touch);
+        r.touch(Beat(0.0), 0.5);
+        assert_eq!(r.envelope().len(), 1);
 
-        let manager1 = Arc::clone(&manager);
-        let target1 = target.clone();
-        let t1 = thread::spawn(move || {
-            for i in 0..100 {
-                manager1.record(&target1, i as f64 * 0.01, i as f32 * 0.01);
-            }
-        });
+        r.record(Beat(1.0), 0.6);
+        r.record(Beat(2.0), 0.7);
+        assert_eq!(r.envelope().len(), 3);
 
-        let manager2 = Arc::clone(&manager);
-        let target2 = target.clone();
-        let t2 = thread::spawn(move || {
-            for i in 0..100 {
-                let _ = manager2.get_value(&target2, i as f64 * 0.01);
-            }
-        });
+        r.release(Beat(3.0), 0.8);
+        assert_eq!(r.envelope().len(), 4, "release writes a final point");
+        assert!(!r.is_taking(), "Touch ends the take on release");
+    }
 
-        t1.join().unwrap();
-        t2.join().unwrap();
+    #[test]
+    fn touch_stops_capturing_after_release() {
+        let mut r = recorder(RecordMode::Touch);
+        r.touch(Beat(0.0), 0.5);
+        r.release(Beat(1.0), 0.6);
+        let after_release = r.envelope().len();
 
-        let lane = manager.get_lane(&target).unwrap();
-        assert!(!lane.is_empty());
+        r.record(Beat(2.0), 0.9);
+        assert_eq!(
+            r.envelope().len(),
+            after_release,
+            "a released Touch take must not resume on further samples"
+        );
+    }
+
+    #[test]
+    fn latch_holds_after_release() {
+        let mut r = recorder(RecordMode::Latch);
+        r.touch(Beat(2.0), 0.5);
+        r.record(Beat(3.0), 0.6);
+        r.release(Beat(4.0), 0.7);
+
+        assert!(r.is_taking(), "Latch keeps the take open");
+        assert_eq!(
+            r.value_at(Beat(5.0)),
+            Some(0.7),
+            "held value reads at any later beat"
+        );
+        assert_eq!(
+            r.value_at(Beat(100.0)),
+            Some(0.7),
+            "the hold is beat-independent"
+        );
+    }
+
+    #[test]
+    fn latch_does_not_capture_while_held() {
+        let mut r = recorder(RecordMode::Latch);
+        r.touch(Beat(0.0), 0.5);
+        r.release(Beat(1.0), 0.7);
+        let held = r.envelope().len();
+
+        r.record(Beat(2.0), 0.9);
+        assert_eq!(
+            r.envelope().len(),
+            held,
+            "a held latch take freezes; samples do not land"
+        );
+        assert_eq!(r.value_at(Beat(2.0)), Some(0.7), "still reading the hold");
+    }
+
+    #[test]
+    fn release_without_a_take_is_a_noop() {
+        let mut r = recorder(RecordMode::Touch);
+        r.release(Beat(1.0), 0.5);
+        assert!(r.envelope().is_empty());
+        assert!(!r.is_taking());
+    }
+
+    // ── curve impl ──
+
+    #[test]
+    fn no_take_contributes_nothing() {
+        // The empty-vs-zero distinction: between takes the saved envelope must
+        // show through, so the recorder reads None rather than 0.0.
+        let mut r = recorder(RecordMode::Touch);
+        assert_eq!(r.value_at(Beat(0.0)), None);
+
+        r.touch(Beat(0.0), 0.5);
+        r.release(Beat(1.0), 0.6);
+        assert_eq!(r.value_at(Beat(2.0)), None, "Touch releases to nothing");
+    }
+
+    #[test]
+    fn capturing_reads_the_envelope_being_written() {
+        let mut r = recorder(RecordMode::Touch);
+        r.touch(Beat(0.0), 0.0);
+        r.record(Beat(4.0), 1.0);
+        // Mid-take the recorder reads its own in-progress curve, interpolated.
+        let mid = r.value_at(Beat(2.0)).expect("capturing take has a value");
+        assert!((mid - 0.5).abs() < 0.01, "expected ~0.5, got {mid}");
+    }
+
+    // ── thinning ──
+
+    #[test]
+    fn min_interval_drops_dense_samples() {
+        let mut r = Recorder::with_config(
+            RecordMode::Write,
+            0.0,
+            1.0,
+            RecordingConfig {
+                min_point_interval: BeatDuration(0.5),
+                auto_simplify: false,
+                ..Default::default()
+            },
+        );
+
+        r.record(Beat(0.0), 0.5); // opens the take, writes
+        r.record(Beat(0.1), 0.6); // +0.1 — too soon
+        r.record(Beat(0.4), 0.7); // +0.4 from 0.0 — still too soon
+        r.record(Beat(0.5), 0.8); // +0.5 — writes
+        assert_eq!(r.envelope().len(), 2);
+    }
+
+    #[test]
+    fn a_backwards_jump_always_writes() {
+        // A seek during a take is not "too soon" — the gap is negative, so the
+        // density check must not swallow it.
+        let mut r = Recorder::with_config(
+            RecordMode::Write,
+            0.0,
+            1.0,
+            RecordingConfig {
+                min_point_interval: BeatDuration(0.5),
+                auto_simplify: false,
+                ..Default::default()
+            },
+        );
+        r.record(Beat(4.0), 0.5);
+        r.record(Beat(0.0), 0.9);
+        assert_eq!(r.envelope().len(), 2, "the seek-back point must land");
+    }
+
+    #[test]
+    fn finish_simplifies_when_configured() {
+        let mut r = Recorder::new(RecordMode::Write, 0.0, 1.0);
+        r.config.auto_simplify = true;
+        // A dead-straight ramp: every interior point is redundant.
+        r.config.min_point_interval = BeatDuration(0.0);
+        for i in 0..=10 {
+            r.record(Beat(i as f64), i as f32 / 10.0);
+        }
+        let dense = r.envelope().len();
+        let env = r.finish();
+        assert!(
+            env.len() < dense,
+            "collinear points should thin: {dense} -> {}",
+            env.len()
+        );
+    }
+
+    #[test]
+    fn finish_preserves_points_when_not_simplifying() {
+        let mut r = recorder(RecordMode::Write);
+        r.record(Beat(0.0), 0.1);
+        r.record(Beat(1.0), 0.9);
+        r.record(Beat(2.0), 0.2);
+        let env = r.finish();
+        assert_eq!(env.len(), 3);
+    }
+
+    // ── mode switch ──
+
+    #[test]
+    fn changing_mode_ends_the_take_but_keeps_points() {
+        let mut r = recorder(RecordMode::Latch);
+        r.touch(Beat(0.0), 0.5);
+        r.record(Beat(1.0), 0.6);
+        let captured = r.envelope().len();
+
+        r.set_mode(RecordMode::Write);
+        assert!(
+            !r.is_taking(),
+            "the old discipline's take does not carry over"
+        );
+        assert_eq!(r.envelope().len(), captured, "captured points survive");
+    }
+
+    #[test]
+    fn setting_the_same_mode_leaves_the_take_alone() {
+        let mut r = recorder(RecordMode::Latch);
+        r.touch(Beat(0.0), 0.5);
+        r.set_mode(RecordMode::Latch);
+        assert!(r.is_taking());
+    }
+
+    // ── overdub ──
+
+    #[test]
+    fn overdub_starts_from_an_existing_envelope() {
+        let mut env = AutomationEnvelope::new(0.0f32).with_range(0.0, 1.0);
+        env.add_point(AutomationPoint::new(0.0, 0.2));
+        env.add_point(AutomationPoint::new(8.0, 0.4));
+
+        let mut r = Recorder::overdub(RecordMode::Touch, env);
+        assert_eq!(r.envelope().len(), 2);
+        assert!(!r.is_taking());
+
+        r.touch(Beat(4.0), 0.9);
+        assert_eq!(
+            r.envelope().len(),
+            3,
+            "the new point joins the existing ones"
+        );
     }
 }

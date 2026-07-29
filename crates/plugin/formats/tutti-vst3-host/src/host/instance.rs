@@ -303,9 +303,11 @@ impl<T: Vst3Sample> Vst3Instance<T> {
         // getLatencySamples ()").
         //
         // The value is returned to the caller through `read_latency_samples`
-        // rather than stored: PDC is the embedding host's concern, not this
-        // crate's. What matters here is that the call happens, in the right
-        // place, every activation.
+        // rather than stored here: the compensation machinery lives in
+        // `tutti-core` (`LatencyGraph` / `Compensation` / `PdcDelay`), which
+        // needs it per graph rather than per instance. What matters at this
+        // layer is that the call happens, in the right place, every activation
+        // — the figure PDC compensates by is only as good as this read.
         let _ = instance.loaded.read_latency_samples();
         Ok(instance)
     }

@@ -37,7 +37,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use tutti_vst3_host::{
-    AudioBuffer, MidiEvent, ParameterChanges, TransportInfo, Vst3InputEvents, Vst3Instance,
+    AudioBuffer, MidiEvent, NoteExpressionType, NoteExpressionValue, ParameterChanges,
+    TransportInfo, Vst3InputEvents, Vst3Instance,
 };
 
 /// Compile-time default, baked in by `build.rs`; overridable at runtime.
@@ -62,23 +63,21 @@ fn plugin_guard() -> std::sync::MutexGuard<'static, ()> {
 
 const PARAM_MODE: u32 = 100;
 const PARAM_RAMP: u32 = 101;
+/// Steps on `kParamMode`: 6 modes (0..=5) is 5 steps, and a stepped VST3
+/// parameter normalizes as `index / stepCount`.
 
-const MODE_TAG_PASSTHROUGH: f64 = 0.0;
-const MODE_PARAM_RAMP: f64 = 1.0 / 5.0;
-const MODE_BLOCK_COUNTER: f64 = 2.0 / 5.0;
-const MODE_NOTE_GATE: f64 = 4.0 / 5.0;
-/// `kModeLatency` — the probe delays by `PROBE_LATENCY_SAMPLES` and reports it.
-const MODE_LATENCY: f64 = 3.0 / 5.0;
-/// `kModeEventTranscript` — event kind + pitch encoded at each event's offset.
-const MODE_EVENT_TRANSCRIPT: f64 = 5.0 / 5.0;
+const MODE_STEPS: f64 = 5.0;
+
+/// Normalized value selecting probe mode `index` (see `ProbeMode` in
+/// `probeids.h`): 0 tag-passthrough, 1 param-ramp, 2 block-counter,
+/// 3 latency, 4 note-gate, 5 event-transcript.
+fn mode(index: u32) -> f64 {
+    f64::from(index) / MODE_STEPS
+}
 
 /// Latency the probe reports and applies in `MODE_LATENCY`
 /// (`kReportedLatencySamples` in `probeids.h`).
 const PROBE_LATENCY_SAMPLES: u32 = 137;
-
-/// Code the transcript mode writes for an event that is neither note-on nor
-/// note-off (`kEventOtherCode`).
-const EVENT_OTHER_CODE: f32 = 1000.0;
 
 /// Per-slot DC offset the probe adds in tag-passthrough mode. Must match
 /// `probeTag` in `probeids.h` exactly.
@@ -234,7 +233,7 @@ fn every_bus_and_channel_carries_its_own_audio() {
     let Some(mut inst) = load_probe(512) else {
         return;
     };
-    set_mode(&mut inst, MODE_TAG_PASSTHROUGH);
+    set_mode(&mut inst, mode(0));
 
     const FRAMES: usize = 128;
     // A value unique to each (bus, channel, sample).
@@ -306,7 +305,7 @@ fn automation_ramp_is_rendered_at_the_right_offsets() {
     let Some(mut inst) = load_probe(512) else {
         return;
     };
-    set_mode(&mut inst, MODE_PARAM_RAMP);
+    set_mode(&mut inst, mode(1));
 
     const FRAMES: usize = 512;
     // Deliberately out of order: the host must sort before delivery.
@@ -366,7 +365,7 @@ fn consecutive_blocks_are_delivered_in_order() {
     let Some(mut inst) = load_probe(512) else {
         return;
     };
-    set_mode(&mut inst, MODE_BLOCK_COUNTER);
+    set_mode(&mut inst, mode(2));
 
     const FRAMES: usize = 64;
     const BLOCKS: usize = 16;
@@ -413,7 +412,7 @@ fn note_on_takes_effect_at_its_sample_offset() {
     let Some(mut inst) = load_probe(512) else {
         return;
     };
-    set_mode(&mut inst, MODE_NOTE_GATE);
+    set_mode(&mut inst, mode(4));
 
     const FRAMES: usize = 512;
     let mut failures = Vec::new();
@@ -463,7 +462,7 @@ fn f64_path_carries_the_same_audio() {
         eprintln!("audio-probe f64 activation failed; skipping");
         return;
     };
-    inst.set_parameter(PARAM_MODE, MODE_TAG_PASSTHROUGH);
+    inst.set_parameter(PARAM_MODE, mode(0));
 
     const FRAMES: usize = 64;
     let info = inst.info().clone();
@@ -554,7 +553,7 @@ fn full_midi_event_list_survives_intact() {
     let Some(mut inst) = load_probe(512) else {
         return;
     };
-    set_mode(&mut inst, MODE_EVENT_TRANSCRIPT);
+    set_mode(&mut inst, mode(5));
 
     const FRAMES: usize = 512;
     // Deliberately out of order, with two events sharing offset 256 — the host
@@ -608,11 +607,12 @@ fn full_midi_event_list_survives_intact() {
 
 /// The host must report the plugin's latency, so an embedder can compensate.
 ///
-/// tutti reads `getLatencySamples` but does not itself delay-compensate — PDC
-/// belongs to the embedding host. So this asserts the two things this crate is
-/// actually responsible for: that the reported figure matches what the plugin
-/// declares, and that the plugin's output really is delayed by that much (i.e.
-/// the number is meaningful, not a stale zero).
+/// Delay compensation itself lives in `tutti-core` (`LatencyGraph` /
+/// `Compensation` / `PdcDelay` — explicit and opt-in over the whole graph), not
+/// in this crate. What *this* crate owns is the number PDC is fed, so that is
+/// what this asserts: the reported figure equals what the plugin declares, and
+/// the plugin's output really is delayed by that much. A stale zero would pass
+/// the first check alone and silently misalign every compensated graph.
 #[test]
 fn reported_latency_matches_the_plugins_actual_delay() {
     if !harness_ready() {
@@ -622,7 +622,7 @@ fn reported_latency_matches_the_plugins_actual_delay() {
     let Some(mut inst) = load_probe(512) else {
         return;
     };
-    set_mode(&mut inst, MODE_LATENCY);
+    set_mode(&mut inst, mode(3));
 
     // The probe only reports latency while in latency mode, so this must be
     // read after the mode switch.
@@ -653,4 +653,172 @@ fn reported_latency_matches_the_plugins_actual_delay() {
          impulse emerged at {found:?} — the reported figure does not describe \
          the actual delay, so compensating by it would misalign the audio"
     );
+}
+
+/// Note-expression events must reach the plugin with their type *and* value.
+///
+/// A host that forwards the event but loses the value — or maps the wrong
+/// `typeId` — produces per-note modulation that is silently inert or applied to
+/// the wrong dimension. The transcript encodes
+/// `kNoteExpressionBaseCode + typeId + value`, so both survive or neither does.
+#[test]
+fn note_expression_reaches_the_plugin_with_its_value() {
+    if !harness_ready() {
+        return;
+    }
+    let _guard = plugin_guard();
+    let Some(mut inst) = load_probe(512) else {
+        return;
+    };
+    set_mode(&mut inst, mode(5));
+
+    const FRAMES: usize = 512;
+    const NOTE_EXPR_BASE: f32 = 5000.0;
+
+    // A note to attach the expressions to, then two expressions of different
+    // types and values at distinct offsets.
+    let midi = [MidiEvent::note_on(0, 0, 60, 0x8000).with_frame_offset(0)];
+    let expressions = [
+        NoteExpressionValue {
+            sample_offset: 64,
+            note_id: -1,
+            expression_type: NoteExpressionType::Volume,
+            value: 0.25,
+        },
+        NoteExpressionValue {
+            sample_offset: 192,
+            note_id: -1,
+            expression_type: NoteExpressionType::Pan,
+            value: 0.75,
+        },
+    ];
+
+    let info = inst.info().clone();
+    let in_layout = if info.input_bus_channels.is_empty() {
+        vec![info.num_inputs.max(1)]
+    } else {
+        info.input_bus_channels.clone()
+    };
+    let out_layout = if info.output_bus_channels.is_empty() {
+        vec![info.num_outputs.max(1)]
+    } else {
+        info.output_bus_channels.clone()
+    };
+    let mut ins: Vec<Vec<f32>> = Vec::new();
+    for &channels in &in_layout {
+        for _ in 0..channels {
+            ins.push(vec![0.0f32; FRAMES]);
+        }
+    }
+    let total_out: usize = out_layout.iter().sum();
+    let mut outs: Vec<Vec<f32>> = (0..total_out).map(|_| vec![0.0f32; FRAMES]).collect();
+    let in_refs: Vec<&[f32]> = ins.iter().map(|v| v.as_slice()).collect();
+    let mut out_refs: Vec<&mut [f32]> = outs.iter_mut().map(|v| v.as_mut_slice()).collect();
+    let mut buffer = AudioBuffer {
+        inputs: &in_refs,
+        outputs: &mut out_refs,
+        num_samples: FRAMES,
+        sample_rate: 48_000.0,
+    };
+    let events = Vst3InputEvents {
+        midi: &midi,
+        note_expressions: &expressions,
+        ..Default::default()
+    };
+    inst.process(&mut buffer, &events, None, &TransportInfo::default());
+    let ch0 = &outs[0];
+
+    // VST3 typeIds: Volume = 0, Pan = 1.
+    let mut failures = Vec::new();
+    for (offset, type_id, value) in [(64usize, 0.0f32, 0.25f32), (192, 1.0, 0.75)] {
+        let expected = NOTE_EXPR_BASE + type_id + value;
+        if (ch0[offset] - expected).abs() > 1e-4 {
+            failures.push(format!(
+                "sample {offset}: expected {expected} (base + typeId {type_id} + \
+                 value {value}), got {}",
+                ch0[offset]
+            ));
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "note-expression events lost their type or value in transit:\n  {}",
+        failures.join("\n  ")
+    );
+}
+
+/// MIDI the plugin *emits* must reach the host.
+///
+/// The reverse direction of every other MIDI test here. `legacy-midicc-out`
+/// emits a legacy MIDI CC from its `process` when its controller parameter
+/// changes; the host has to decode that from `outputEvents` and surface it as a
+/// `MidiEvent`. A host that never drains the output list silently drops
+/// everything an arpeggiator or MIDI-effect plugin produces.
+#[test]
+fn midi_emitted_by_the_plugin_reaches_the_host() {
+    if !harness_ready() {
+        return;
+    }
+    let _guard = plugin_guard();
+
+    let dir = sample_plugin_dir();
+    let bundle = Path::new(&dir).join("legacy-midicc-out.vst3");
+    let mut path = None;
+    for sub in ["Contents/x86_64-linux", "Contents/MacOS"] {
+        for name in ["legacy-midicc-out.so", "legacy-midicc-out"] {
+            let p = bundle.join(sub).join(name);
+            if p.is_file() {
+                path = Some(p);
+            }
+        }
+    }
+    let Some(path) = path else {
+        eprintln!("legacy-midicc-out not built; skipping MIDI-output test");
+        return;
+    };
+    let Ok(mut inst) = Vst3Instance::<f32>::load(&path, 48_000.0, 512) else {
+        eprintln!("legacy-midicc-out load failed; skipping");
+        return;
+    };
+
+    // Drive blocks while sweeping the plugin's parameters: it emits CC when a
+    // parameter changes, so a static value produces nothing.
+    let info = inst.info().clone();
+    let param_ids: Vec<u32> = (0..inst.parameter_count())
+        .filter_map(|i| inst.parameter_id_at(i))
+        .collect();
+
+    let mut emitted = 0usize;
+    for step in 0..16 {
+        let mut params = ParameterChanges::new();
+        for &id in &param_ids {
+            params.add_change(id, 0, (step as f64 * 0.0625).min(1.0));
+        }
+
+        let ins: Vec<Vec<f32>> = (0..info.num_inputs.max(1)).map(|_| vec![0.0; 512]).collect();
+        let mut outs: Vec<Vec<f32>> =
+            (0..info.num_outputs.max(1)).map(|_| vec![0.0; 512]).collect();
+        let in_refs: Vec<&[f32]> = ins.iter().map(|v| v.as_slice()).collect();
+        let mut out_refs: Vec<&mut [f32]> = outs.iter_mut().map(|v| v.as_mut_slice()).collect();
+        let mut buffer = AudioBuffer {
+            inputs: &in_refs,
+            outputs: &mut out_refs,
+            num_samples: 512,
+            sample_rate: 48_000.0,
+        };
+        let out = inst.process(
+            &mut buffer,
+            &Vst3InputEvents::default(),
+            Some(&params),
+            &TransportInfo::default(),
+        );
+        emitted += out.midi_events.len();
+    }
+
+    assert!(
+        emitted > 0,
+        "legacy-midicc-out emits MIDI CC on parameter change, but the host \
+         surfaced none across 16 blocks — plugin-emitted MIDI is being dropped"
+    );
+    eprintln!("plugin-emitted MIDI events surfaced: {emitted}");
 }

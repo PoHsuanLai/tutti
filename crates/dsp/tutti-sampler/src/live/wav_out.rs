@@ -12,7 +12,7 @@
 //! `StreamingEncoder`: a live sink wants the simplest possible path (open →
 //! write → finalize), no dither / no mono downmix, no extra crate boundary.
 //!
-//! The live driver is bevy-tutti's `Recorder`, which pumps a `MicIn`
+//! The live driver is `tutti_cpal::Recorder`, which pumps a `MicIn`
 //! ([`AudioIn`](crate::AudioIn)) into this sink ([`AudioOut`](crate::AudioOut))
 //! on a background thread and calls [`finalize`](AudioOut::finalize) once at stop.
 

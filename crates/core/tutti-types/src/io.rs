@@ -48,6 +48,27 @@
 //! per-sample graph read stays behind the monomorphized clip-source enum and
 //! must remain alloc-free / lock-free; these block interfaces do not touch it.
 
+/// What a 0-frame [`poll_into`](AudioIn::poll_into) means for a given source.
+///
+/// A zero count is ambiguous on its own — "the producer has not caught up" and
+/// "there will never be more" are the same return value — and **only the source
+/// knows which it is**. A microphone is live; a decoded file is finite. That is
+/// a property of the type, so the type states it once rather than every caller
+/// restating it per call and being able to get it wrong.
+///
+/// The consequence of guessing is silent: treating a mic as finite ends a
+/// recording at the first empty ring, milliseconds in, producing a near-empty
+/// file with no error anywhere.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OnEmpty {
+    /// Live source (microphone, socket): the producer has not caught up. A
+    /// consumer that loops should back off and poll again.
+    Starved,
+    /// Finite source (decoded file, rendered net): there is no more. A consumer
+    /// that loops should stop.
+    EndOfStream,
+}
+
 /// A pull source of audio frames. The one method fills a caller-owned buffer of
 /// `[S; CH]` frames and reports how many it actually produced.
 ///
@@ -63,11 +84,24 @@
 /// file) returns a short count at end-of-stream, then `0`. The caller owns the
 /// buffer, so polling never allocates; the count tells the caller how much of
 /// `out` was written this call.
+///
+/// # Why the count alone is not enough
+///
+/// `0` is the same value in both cases, so a consumer that *loops* — a capture
+/// pump, a refill — cannot tell "not yet" from "never again" without knowing
+/// what kind of source it holds. [`ON_EMPTY`](Self::ON_EMPTY) is that knowledge,
+/// carried on the type. It is an associated const rather than a method because
+/// it is fixed per source and callable from a generic context without a value;
+/// `AudioIn` is never used as `dyn` anywhere, so this costs no object safety.
 pub trait AudioIn<S = f32, const CH: usize = 2> {
+    /// What a 0-frame poll means for *this* source. See [`OnEmpty`].
+    const ON_EMPTY: OnEmpty;
+
     /// Fill the front of `out` with the next available frames and return the
     /// number written (`0..=out.len()`). Frames past the returned count are
     /// left untouched. `0` means "nothing available right now" for a live
-    /// source, or end-of-stream for a finite one.
+    /// source, or end-of-stream for a finite one — which of the two is
+    /// [`ON_EMPTY`](Self::ON_EMPTY).
     fn poll_into(&mut self, out: &mut [[S; CH]]) -> usize;
 }
 
@@ -147,6 +181,8 @@ mod tests {
     }
 
     impl<S: Copy, const CH: usize> AudioIn<S, CH> for SliceSource<S, CH> {
+        const ON_EMPTY: OnEmpty = OnEmpty::EndOfStream;
+
         fn poll_into(&mut self, out: &mut [[S; CH]]) -> usize {
             let remaining = self.frames.len() - self.pos;
             let n = remaining.min(out.len()).min(self.chunk);
@@ -234,6 +270,96 @@ mod tests {
         assert_eq!(
             dst.written, frames,
             "wide frames must survive the pump intact"
+        );
+    }
+
+    /// A live source stands in for a mic: it withholds frames (returning `0`)
+    /// without being exhausted, then yields them later.
+    ///
+    /// This is the shape that makes [`OnEmpty`] load-bearing — a consumer that
+    /// treats its `0` as end-of-stream stops with frames still to come.
+    struct StarvingSource {
+        frames: Vec<[f32; 2]>,
+        pos: usize,
+        /// Poll counter; odd polls return nothing, mimicking a ring the
+        /// producer has not refilled yet.
+        polls: usize,
+    }
+
+    impl AudioIn for StarvingSource {
+        const ON_EMPTY: OnEmpty = OnEmpty::Starved;
+
+        fn poll_into(&mut self, out: &mut [[f32; 2]]) -> usize {
+            self.polls += 1;
+            if self.polls % 2 == 1 {
+                return 0; // "nothing ready yet" — but not finished
+            }
+            let n = (self.frames.len() - self.pos).min(out.len()).min(4);
+            out[..n].copy_from_slice(&self.frames[self.pos..self.pos + n]);
+            self.pos += n;
+            n
+        }
+    }
+
+    /// A generic drain loop that branches on `I::ON_EMPTY` — the exact shape a
+    /// consumer needs, and the reason the const exists rather than a method.
+    ///
+    /// Reading the const off a type parameter is only possible because
+    /// `AudioIn` is never a trait object; this function is the compile-time
+    /// proof of that, and it would not build if the const were on a `dyn`-safe
+    /// path.
+    fn drain<I: AudioIn>(src: &mut I, dst: &mut CountingSink<f32, 2>, max_polls: usize) {
+        let mut buf = [[0.0f32; 2]; 16];
+        for _ in 0..max_polls {
+            if pump(src, dst, &mut buf) == 0 {
+                match I::ON_EMPTY {
+                    // A live source has more coming — keep polling.
+                    OnEmpty::Starved => continue,
+                    // A finite one does not.
+                    OnEmpty::EndOfStream => break,
+                }
+            }
+        }
+    }
+
+    /// The same generic loop reaches every frame of a starving source but stops
+    /// promptly on a finite one — driven entirely by `ON_EMPTY`.
+    ///
+    /// Both halves matter. Without the `Starved` arm the live source would be
+    /// cut off at its first empty poll (4 of 40 frames, the bug this const
+    /// prevents); without `EndOfStream` the finite source would spin to the
+    /// poll ceiling instead of finishing.
+    #[test]
+    fn a_generic_consumer_branches_on_the_sources_own_verdict() {
+        let frames: Vec<[f32; 2]> = (0..40).map(|i| [i as f32, -(i as f32)]).collect();
+
+        let mut live = StarvingSource {
+            frames: frames.clone(),
+            pos: 0,
+            polls: 0,
+        };
+        let mut live_sink: CountingSink<f32, 2> = CountingSink::default();
+        drain(&mut live, &mut live_sink, 100);
+        assert_eq!(
+            live_sink.written, frames,
+            "a starving source must be drained past its empty polls, not truncated at the first"
+        );
+
+        let mut finite = SliceSource {
+            frames: frames.clone(),
+            pos: 0,
+            chunk: 7,
+        };
+        let mut finite_sink: CountingSink<f32, 2> = CountingSink::default();
+        drain(&mut finite, &mut finite_sink, 100);
+        assert_eq!(
+            finite_sink.written, frames,
+            "and a finite source must still deliver everything before stopping"
+        );
+        assert_eq!(
+            finite.pos,
+            frames.len(),
+            "the finite source is exhausted, so the loop ended by verdict not by ceiling"
         );
     }
 }

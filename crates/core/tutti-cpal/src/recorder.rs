@@ -112,7 +112,7 @@ impl Recorder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tutti_core::io::AudioIn;
+    use tutti_core::io::{AudioIn, OnEmpty};
 
     /// A finite in-memory [`AudioIn`] standing in for a live mic: hands out its
     /// frames in bounded chunks, returning a short-then-zero count at
@@ -125,6 +125,8 @@ mod tests {
     }
 
     impl AudioIn for SliceSource {
+        const ON_EMPTY: OnEmpty = OnEmpty::EndOfStream;
+
         fn poll_into(&mut self, out: &mut [[f32; 2]]) -> usize {
             let n = (self.frames.len() - self.pos).min(out.len());
             out[..n].copy_from_slice(&self.frames[self.pos..self.pos + n]);

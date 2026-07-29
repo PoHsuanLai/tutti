@@ -12,7 +12,7 @@ use crate::midi::TuttiMidiPlugin;
 #[cfg(feature = "plugin")]
 use crate::plugin_host::TuttiHostingPlugin;
 #[cfg(feature = "sampler")]
-use crate::sampler::TuttiPlaybackPlugin;
+use crate::stream::TuttiPlaybackPlugin;
 #[cfg(feature = "soundfont")]
 use crate::synth::TuttiSoundFontPlugin;
 

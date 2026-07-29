@@ -92,7 +92,7 @@ mod test_transport;
 
 // The I/O edge vocabulary is defined once in `tutti-types` and re-exported by
 // `tutti-core`; this crate's `WavOut` implements `AudioOut` against it.
-pub use tutti_core::io::{pump, AudioIn, AudioOut};
+pub use tutti_core::io::{pump, AudioIn, AudioOut, OnEmpty};
 
 // Voice playback: the two tier units, the mixer over them, and the kernels they
 // share. Bevy-free apart from the asset loader, gated inside.
@@ -137,15 +137,15 @@ pub use ports::{Command, Commands, Source, Status};
 
 // `PendingDiskStreamer` / `TuttiSamplerPlugin` are gone. `DiskStreamer` is an
 // engine service, not a Bevy noun (house rule R2), so bevy-tutti wraps it as
-// `SamplerRes` and inserts it directly; bevy-tutti also adds
+// `DiskStreamerRes` and inserts it directly; bevy-tutti also adds
 // `TuttiPlaybackPlugin` itself.
 
 /// The write side's live impl: [`WavOut`], an [`AudioOut`] that streams stereo
 /// frames to a WAV file, plus its [`CaptureFormat`](capture::CaptureFormat).
 ///
 /// The record-mic→WAV flow is an explicit [`AudioIn`] → [`AudioOut`] pump
-/// driving this sink, lived out by bevy-tutti's `Recorder` (a `MicIn`
-/// pumped into a `WavOut` on a background thread).
+/// driving this sink, lived out by `tutti_cpal::Recorder` (a `MicIn` pumped
+/// into a `WavOut` on a background thread).
 pub mod capture {
     pub use crate::live::{CaptureFormat, WavOut};
 }

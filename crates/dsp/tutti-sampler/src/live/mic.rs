@@ -4,7 +4,7 @@
 //! drains a ring the *butler* fills off disk; [`MicMonitorNode`] drains a ring
 //! a *capture device* fills. Both are `AudioUnit`s with 0 inputs / 2 outputs
 //! whose whole job is "pop the next frame the producer pushed, or emit silence
-//! on underrun." The producer end lives in the device layer (`bevy-tutti`'s
+//! on underrun." The producer end lives in the device layer (`tutti-cpal`'s
 //! `MicIn`); this node is device-free so it can sit anywhere in the graph —
 //! `pipe` it through effects and you hear the mic live, effected, while
 //! recording the same ring to a `WavOut`.
@@ -136,7 +136,7 @@ impl AudioUnit for MicMonitorNode {
 
     /// Stereo, deliberately — unlike the voice units, which take a runtime width.
     ///
-    /// The producer is the CPAL input callback in `bevy-tutti`, which downmixes
+    /// The producer is the CPAL input callback in `tutti-cpal`, which downmixes
     /// each interleaved device frame to a stereo pair before it ever reaches
     /// [`MicRing`] (a `HeapCons<[f32; 2]>`). Widening this node without widening
     /// that callback and the ring would declare an arity its own source can

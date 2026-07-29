@@ -81,7 +81,7 @@ pub use downmix::{
 };
 
 // I/O edge + latency.
-pub use io::{pump, AudioIn, AudioOut};
+pub use io::{pump, AudioIn, AudioOut, OnEmpty};
 pub use latency::{compensate, Compensation, DelayInsertion, LatencyGraph};
 
 // Musical meter.

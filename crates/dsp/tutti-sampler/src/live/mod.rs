@@ -2,7 +2,7 @@
 //! file.
 //!
 //! [`mic`] is the read side — a monitoring node over a device-filled ring; the
-//! device layer itself lives in `bevy-tutti`. [`wav_out`] is the write side, an
+//! device layer itself lives in `tutti-cpal`. [`wav_out`] is the write side, an
 //! [`AudioOut`](tutti_core::io::AudioOut) sink. Recording is a
 //! [`pump`](tutti_core::io::pump) from one to the other.
 //!

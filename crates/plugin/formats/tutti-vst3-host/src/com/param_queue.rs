@@ -214,7 +214,11 @@ mod tests {
 
         let mut got = Vec::new();
         queue.for_each_point(|p| got.push(p.value));
-        assert_eq!(got, vec![0.1, 0.9], "equal offsets must keep insertion order");
+        assert_eq!(
+            got,
+            vec![0.1, 0.9],
+            "equal offsets must keep insertion order"
+        );
     }
 
     /// The sort must not allocate: it runs on every block that carries

@@ -47,6 +47,10 @@ use crate::plugin_host::editor::PluginEmitter;
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct PluginTransportBound;
 
+/// Query filter for the steady-state transport binding: a loaded plugin that has
+/// not been bound yet.
+type TransportUnbound = (With<PluginEmitter>, Without<PluginTransportBound>);
+
 /// Install the project transport on every plugin that lacks it.
 ///
 /// The plugin then receives a live per-block `TransportInfo` — tempo, playhead,
@@ -65,10 +69,7 @@ pub fn plugin_bind_transport(
     mut graph: ResMut<AudioGraphRes>,
     transport: Res<TransportRes>,
     metronome: Res<MetronomeRes>,
-    unbound: Query<
-        (Entity, &tutti_core::AudioNode),
-        (With<PluginEmitter>, Without<PluginTransportBound>),
-    >,
+    unbound: Query<(Entity, &tutti_core::AudioNode), TransportUnbound>,
 ) {
     if unbound.is_empty() {
         return;
@@ -131,6 +132,29 @@ impl crate::midi::MidiNode for PluginClient {
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct PluginParamsBound;
 
+/// What param binding reads off each entity.
+#[cfg(feature = "modulation")]
+type ParamBindItem = (
+    Entity,
+    &'static tutti_core::AudioNode,
+    &'static crate::modulation::ModParamRange,
+);
+
+/// Query filter for param binding: a loaded plugin that has either never been
+/// bound, or whose declaration has changed since it was.
+///
+/// The `Changed` arm is what keeps the accumulators honest — a host that edits
+/// `ModParamRange` gets targets rebuilt for the new param set rather than
+/// keeping ones that describe the old.
+#[cfg(feature = "modulation")]
+type ParamsNeedRebind = (
+    With<PluginEmitter>,
+    Or<(
+        Without<PluginParamsBound>,
+        Changed<crate::modulation::ModParamRange>,
+    )>,
+);
+
 /// Give every param a plugin declares modulatable a per-block accumulator, and
 /// feed those accumulators to the plugin as its automation source.
 ///
@@ -170,20 +194,7 @@ pub fn plugin_bind_params(
     mut registry: ResMut<crate::modulation::ModTargetRegistry>,
     config: Res<crate::graph::AudioConfig>,
     transport: Res<TransportRes>,
-    changed: Query<
-        (
-            Entity,
-            &tutti_core::AudioNode,
-            &crate::modulation::ModParamRange,
-        ),
-        (
-            With<PluginEmitter>,
-            Or<(
-                Without<PluginParamsBound>,
-                Changed<crate::modulation::ModParamRange>,
-            )>,
-        ),
-    >,
+    changed: Query<ParamBindItem, ParamsNeedRebind>,
 ) {
     for (entity, node, ranges) in changed.iter() {
         let Some(client) = graph.0.node_as_mut::<PluginClient>(node.0) else {

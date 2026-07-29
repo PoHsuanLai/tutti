@@ -39,6 +39,7 @@ use tutti_plugin::BridgeError;
 
 use crate::graph::{AudioGraphRes, GraphDirty};
 use crate::plugin_host::editor::PluginEmitter;
+use crate::plugin_host::health::PluginHealth;
 use crate::plugin_host::PluginsRes;
 
 /// Compile-time proof that a loaded plugin can cross a thread boundary, which
@@ -157,6 +158,15 @@ pub struct PluginLoadDone {
     pub result: Result<(), BridgeError>,
 }
 
+/// Query filter for the steady-state load trigger: carries a [`PluginRequest`]
+/// but is neither loading ([`PendingPlugin`]), already loaded (it would have an
+/// `AudioNode`), nor spent ([`PluginLoadTerminated`]).
+type LoadNotStarted = (
+    Without<PendingPlugin>,
+    Without<PluginLoadTerminated>,
+    Without<tutti_core::AudioNode>,
+);
+
 /// Start loads for requests that have not been attempted yet.
 ///
 /// Steady-state query rather than `Added<PluginRequest>`: an entity may carry a
@@ -168,14 +178,7 @@ pub fn plugin_load_start(
     mut commands: Commands,
     plugins: Option<Res<PluginsRes>>,
     pending: Query<&PendingPlugin>,
-    requests: Query<
-        (Entity, &PluginRequest),
-        (
-            Without<PendingPlugin>,
-            Without<PluginLoadTerminated>,
-            Without<tutti_core::AudioNode>,
-        ),
-    >,
+    requests: Query<(Entity, &PluginRequest), LoadNotStarted>,
 ) {
     // Absent while a rescan owns the catalog, and until a host inserts one.
     // Requests simply wait — that is what the steady-state query buys.
@@ -199,8 +202,9 @@ pub fn plugin_load_start(
         let id = request.id.clone();
         let sample_rate = request.sample_rate;
 
-        let task = AsyncComputeTaskPool::get()
-            .spawn(async move { tutti_plugin::catalog::load_client_with(&audio, &id, sample_rate) });
+        let task = AsyncComputeTaskPool::get().spawn(async move {
+            tutti_plugin::catalog::load_client_with(&audio, &id, sample_rate)
+        });
 
         commands.entity(entity).insert(PendingPlugin { task });
     }
@@ -237,7 +241,9 @@ pub fn plugin_load_promote(
                 let id = graph.0.add(client);
                 edited = true;
 
-                commands.entity(entity).insert(PluginEmitter { handle });
+                commands
+                    .entity(entity)
+                    .insert((PluginEmitter { handle }, PluginHealth::default()));
                 // `AudioNode` last: its *presence* is what MIDI registration and
                 // engine binding key on, and its removal is what unwires them.
                 // Inserting it before the emitter would let a binding system see

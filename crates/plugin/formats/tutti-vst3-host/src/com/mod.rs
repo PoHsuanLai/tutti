@@ -13,9 +13,9 @@ mod message;
 mod param_changes;
 mod param_queue;
 mod plug_frame;
+mod progress;
 #[cfg(target_os = "linux")]
 pub(crate) mod run_loop;
-mod progress;
 mod stream;
 mod unit_handler;
 

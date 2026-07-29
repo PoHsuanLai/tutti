@@ -25,8 +25,8 @@ use bevy_ecs::prelude::*;
 use crate::graph::GraphReconcileSystems;
 
 pub mod bind;
-pub mod crash;
 pub mod editor;
+pub mod health;
 pub mod load;
 pub mod native_window;
 pub mod scan;
@@ -40,16 +40,16 @@ pub mod live_resize;
 #[cfg(target_os = "macos")]
 pub use live_resize::{reap_orphaned_live_resize_observers, LiveResizeRegistry};
 
-pub use crash::plugin_crash_detect_system;
+#[cfg(feature = "modulation")]
+pub use bind::{plugin_bind_params, PluginParamsBound};
+pub use bind::{plugin_bind_transport, PluginTransportBound};
 pub use editor::{
     close_editor_observer, plugin_editor_attach_system, plugin_editor_idle_system,
     plugin_editor_open_system, plugin_editor_resize_request_system,
     plugin_editor_window_close_system, plugin_editor_window_resize_system, CloseEditor,
     OpenPluginEditor, PendingPluginEditor, PluginEditorOpen, PluginEmitter,
 };
-pub use bind::{plugin_bind_transport, PluginTransportBound};
-#[cfg(feature = "modulation")]
-pub use bind::{plugin_bind_params, PluginParamsBound};
+pub use health::{plugin_health_poll, plugin_state_snapshot, PluginHealth, PluginStatus};
 pub use load::{
     plugin_load_promote, plugin_load_start, PendingPlugin, PluginLoadDone, PluginLoadTerminated,
     PluginRequest,
@@ -165,9 +165,14 @@ impl Plugin for TuttiHostingPlugin {
                 plugin_editor_resize_request_system.after(plugin_editor_idle_system),
                 plugin_editor_window_resize_system.after(plugin_editor_resize_request_system),
                 plugin_editor_window_close_system,
-                // Removes a crashed plugin's node + sets GraphDirty (no inline
-                // commit), so anchor it before the Commit-phase commit_graph.
-                plugin_crash_detect_system.before(GraphReconcileSystems::Commit),
+                // Unwires a dead plugin by removing `AudioNode`; the observers
+                // that hang off that removal take the node out of the graph and
+                // the sender off the MIDI bus, so this must land before the
+                // Commit-phase commit_graph rather than after it.
+                plugin_health_poll.before(GraphReconcileSystems::Commit),
+                // Ordered after the poll so a plugin declared dead this frame is
+                // not asked for state it can no longer produce.
+                plugin_state_snapshot.after(plugin_health_poll),
             )
                 // Hosting only means anything with a live graph to host into,
                 // and these systems read window messages a headless app never
@@ -232,11 +237,11 @@ impl Plugin for TuttiHostingPlugin {
 
         // Reaps AppKit observers for editors that lost `PluginEditorOpen`
         // without going through `close_editor_observer` — chiefly
-        // `plugin_crash_detect_system`, which is not main-thread pinned.
+        // `plugin_health_poll`, which is not main-thread pinned.
         #[cfg(target_os = "macos")]
         app.add_systems(
             Update,
-            live_resize::reap_orphaned_live_resize_observers.after(plugin_crash_detect_system),
+            live_resize::reap_orphaned_live_resize_observers.after(plugin_health_poll),
         );
     }
 }

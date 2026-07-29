@@ -45,7 +45,7 @@ pub struct PluginEditorOpen {
     // which forced an `unsafe impl Send + Sync` over a `Retained<NSView>`
     // solely to satisfy `Component: Send + Sync`. That placed an AppKit
     // `removeObserver` inside a `Drop` that runs wherever a `Commands` queue
-    // is applied (`plugin_crash_detect_system` is not main-thread pinned) or
+    // is applied (`plugin_health_poll` is not main-thread pinned) or
     // wherever the `World` is torn down — off-main AppKit is a hard crash on
     // macOS. The observer now lives in the `NonSend` `LiveResizeRegistry`,
     // keyed by this plugin entity, so Bevy pins every access and every drop

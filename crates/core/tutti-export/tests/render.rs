@@ -707,14 +707,9 @@ fn an_unmeasurable_rate_fails_rather_than_writing_un_normalized_audio() {
     cfg.render.sample_rate = tutti_core::SampleRate(4_000_000.0);
     cfg.render.duration_seconds = 0.0005;
 
-    let err = render_normalized_to_file(
-        net(),
-        &cfg,
-        &FrozenClock,
-        Normalize::peak(Db(-1.0)),
-        &path,
-    )
-    .expect_err("an unmeasurable rate must not report success");
+    let err =
+        render_normalized_to_file(net(), &cfg, &FrozenClock, Normalize::peak(Db(-1.0)), &path)
+            .expect_err("an unmeasurable rate must not report success");
 
     assert!(
         matches!(err, tutti_export::Error::Unmeasurable(_)),

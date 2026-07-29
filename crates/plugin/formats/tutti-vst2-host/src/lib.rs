@@ -69,6 +69,7 @@ mod process;
 mod scratch;
 mod state;
 mod time_info;
+mod transport_cell;
 
 pub use error::{LoadStage, Result, Vst2Error};
 pub use host::ParameterChange;

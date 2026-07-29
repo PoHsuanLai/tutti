@@ -22,6 +22,7 @@ use crate::handle::Vst2Handle;
 use crate::host::{HostLink, HostState};
 use crate::midi::MidiIo;
 use crate::parameters::SendParams;
+use crate::transport_cell::TransportCell;
 use crate::types::{ChannelLayout, PluginInfo, Vst2Category};
 
 /// Map the `vst` crate's `Category` to the shared [`Vst2Category`] mirror.
@@ -61,6 +62,15 @@ pub struct Vst2Instance {
     /// Per-block MIDI plumbing (host→plugin staging, plugin→host drain).
     pub(crate) midi: MidiIo,
     metadata: PluginInfo,
+    /// Whether the last `effMainsChanged` we dispatched carried `value=1`.
+    ///
+    /// Tracked because `effMainsChanged` is not documented as idempotent and
+    /// real plugins reallocate rate-dependent buffers on every `resume(1)`:
+    /// [`suspend_for_reconfigure`](Self::suspend_for_reconfigure) and
+    /// [`restore_after_reconfigure`](Self::restore_after_reconfigure) use it to
+    /// make both transitions edge-triggered, where the setters previously ran
+    /// an unconditional `suspend(); set(); resume()`.
+    resumed: bool,
 }
 
 // SAFETY: every field is either `Send` or its non-`Send`-ness has been
@@ -93,12 +103,12 @@ impl Vst2Instance {
 
         let (param_tx, param_rx) = crossbeam_channel::unbounded();
         let (midi_out_tx, midi_out_rx) = crossbeam_channel::unbounded();
-        let time_info = Arc::new(arc_swap::ArcSwap::from_pointee(None));
+        let time_info = Arc::new(TransportCell::new());
         // A bare `Arc`, not `Arc<Mutex<_>>`: the plugin calls
         // `audioMasterGetTime` from inside `processReplacing` on the audio
         // thread and `audioMasterSizeWindow` / `audioMasterUpdateDisplay` from
         // the GUI thread, so a shared lock here is a priority inversion.
-        // `HostState`'s fields are already lock-free (`ArcSwap` + crossbeam
+        // `HostState`'s fields are already lock-free (a seqlock + crossbeam
         // senders), so the lock bought nothing.
         let host = Arc::new(HostState::new(
             param_tx,
@@ -128,19 +138,37 @@ impl Vst2Instance {
         instance.resume();
 
         let info = instance.get_info();
-        // Pin-count / category is the primary MIDI signal, but MIDI-effect
-        // plugins routinely declare 0 MIDI pins and advertise capability only
-        // via `canDo`. OR in the canDo answer so those aren't misclassified as
-        // audio-only. `Supported::Yes` is the only affirmative response.
+        // MIDI classification. Pin count / category is the primary signal, but
+        // MIDI-effect plugins routinely declare 0 MIDI pins and advertise
+        // capability only via `canDo`, so those weaker signals are OR-ed in.
         use vst::api::Supported;
         use vst::plugin::CanDo;
-        let can_receive_midi = matches!(instance.can_do(CanDo::ReceiveMidiEvent), Supported::Yes);
-        let can_send_midi = matches!(instance.can_do(CanDo::SendMidiEvent), Supported::Yes);
 
-        let receives_midi = info.midi_inputs > 0
-            || info.midi_outputs > 0
-            || matches!(info.category, Category::Synth)
-            || can_receive_midi;
+        // `effCanDo` has three answers and they are not interchangeable: `1` =
+        // yes, `0` = "don't know", `-1` = explicitly no. Folding `No` in with
+        // `Maybe` and then OR-ing the inference let a plugin answering `-1` be
+        // classified as MIDI-capable anyway the moment it declared
+        // `Category::Synth`. So `Yes` asserts, `No` vetoes, and the rest defer
+        // to `inferred` — including `Custom(n)`, an undocumented integer that
+        // is neither an affirmative nor a refusal worth acting on.
+        fn resolve(answer: Supported, inferred: bool) -> bool {
+            match answer {
+                Supported::Yes => true,
+                Supported::No => false,
+                Supported::Maybe | Supported::Custom(_) => inferred,
+            }
+        }
+
+        // `midi_inputs` / `midi_outputs` are hardcoded to 0 in the fork (the
+        // host never dispatches `effGetNumMidiInputOutputChannels`), so the pin
+        // terms are dead constants today. Kept so that wiring the opcode up is a
+        // change to `Info`'s construction alone.
+        let midi_pins_declared = info.midi_inputs > 0 || info.midi_outputs > 0;
+        let receives_midi = resolve(
+            instance.can_do(CanDo::ReceiveMidiEvent),
+            midi_pins_declared || matches!(info.category, Category::Synth),
+        );
+        let emits_midi = resolve(instance.can_do(CanDo::SendMidiEvent), info.midi_outputs > 0);
         let metadata = PluginInfo {
             id: format!("vst2.{}", info.unique_id),
             name: info.name.clone(),
@@ -150,7 +178,7 @@ impl Vst2Instance {
             num_outputs: ChannelLayout::from(info.outputs.max(0) as u16),
             category: map_category(info.category),
             receives_midi,
-            emits_midi: info.midi_outputs > 0 || can_send_midi,
+            emits_midi,
             has_editor: false, // overwritten below once we ask the handle
             latency_samples: info.initial_delay.max(0) as usize,
             supports_f64: info.f64_precision,
@@ -171,6 +199,8 @@ impl Vst2Instance {
             },
             midi: MidiIo::new(midi_out_rx),
             metadata,
+            // `load` dispatched `resume()` above.
+            resumed: true,
         })
     }
 
@@ -179,31 +209,91 @@ impl Vst2Instance {
         &self.metadata
     }
 
+    /// Whether the plugin is currently resumed (processing enabled).
+    pub fn is_resumed(&self) -> bool {
+        self.resumed
+    }
+
+    /// Take the plugin out of the processing state, returning whether a suspend
+    /// was actually dispatched.
+    ///
+    /// Idempotent: a no-op when already suspended. VST 2.4 does not document
+    /// `effMainsChanged` as idempotent and real plugins free or reallocate
+    /// buffers on each transition, so the host must not issue a redundant one.
+    pub fn suspend(&mut self) -> bool {
+        self.suspend_for_reconfigure()
+    }
+
+    /// Put the plugin back into the processing state. Idempotent for the same
+    /// reason as [`suspend`](Self::suspend); returns whether a resume was
+    /// actually dispatched.
+    pub fn resume(&mut self) -> bool {
+        if self.resumed {
+            return false;
+        }
+        self.restore_after_reconfigure(true);
+        true
+    }
+
+    /// Take the plugin out of the processing state, if it is in it, in the
+    /// SDK's teardown order: `effStopProcess` → `effMainsChanged(0)`.
+    ///
+    /// Returns whether a suspend was actually issued, so the caller can restore
+    /// exactly the state it found rather than assuming it was resumed.
+    fn suspend_for_reconfigure(&mut self) -> bool {
+        if !self.resumed {
+            return false;
+        }
+        // Only legal while resumed, per `Plugin::start_process`'s contract —
+        // hence inside this branch, not above it.
+        self.handle.instance.stop_process();
+        self.handle.instance.suspend();
+        self.resumed = false;
+        true
+    }
+
+    /// Inverse of [`suspend_for_reconfigure`](Self::suspend_for_reconfigure),
+    /// in the SDK's startup order: `effMainsChanged(1)` → `effStartProcess`.
+    ///
+    /// `was_resumed` is that function's return value. Passing `false` leaves the
+    /// plugin suspended — a reconfigure must not start a stopped plugin.
+    fn restore_after_reconfigure(&mut self, was_resumed: bool) {
+        if !was_resumed || self.resumed {
+            return;
+        }
+        self.handle.instance.resume();
+        self.resumed = true;
+        self.handle.instance.start_process();
+    }
+
     /// Notify the plugin of a sample-rate change.
     ///
     /// The VST2 SDK requires the plugin be suspended around a rate change —
     /// many plugins reallocate rate-dependent buffers in `effSetSampleRate`
-    /// and assume they are not concurrently processing. We bracket the call
-    /// with `suspend()` / `resume()` so callers don't have to.
+    /// and assume they are not concurrently processing. We bracket the call so
+    /// callers don't have to. The bracket is edge-triggered (see
+    /// [`suspend_for_reconfigure`](Self::suspend_for_reconfigure)), so a plugin
+    /// suspended on entry stays suspended on exit.
     ///
-    /// Note: the SDK's `effStartProcess`/`effStopProcess` bracketing cannot
-    /// be issued here — vst-rs 0.3.0's host-side `PluginInstance` exposes no
-    /// method that dispatches those opcodes. `suspend`/`resume`
-    /// (`effMainsChanged`) is the coverage available.
+    /// `as f32` is not a unit-type regression: `effSetSampleRate` passes the
+    /// rate in the dispatcher's `opt` field, a C `float` — an FFI boundary.
     pub fn set_sample_rate(&mut self, sample_rate: f64) {
-        self.handle.instance.suspend();
+        let was_resumed = self.suspend_for_reconfigure();
         self.handle.instance.set_sample_rate(sample_rate as f32);
-        self.handle.instance.resume();
+        self.restore_after_reconfigure(was_resumed);
     }
 
-    /// Notify the plugin of a maximum-block-size change. Suspended around the
-    /// call for the same reason as [`set_sample_rate`](Self::set_sample_rate)
-    /// (block size drives per-block buffer sizing). Same vst-rs limitation
-    /// on `effStartProcess`/`effStopProcess` applies.
+    /// Notify the plugin of a maximum-block-size change. Bracketed for the same
+    /// reason as [`set_sample_rate`](Self::set_sample_rate) (block size drives
+    /// per-block buffer sizing), with the same edge-triggered semantics.
+    ///
+    /// No in-tree caller today — block size is fixed at [`load`](Self::load) and
+    /// the engine re-loads rather than re-sizing — but it stays public as part
+    /// of the VST2 host contract.
     pub fn set_block_size(&mut self, block_size: usize) {
-        self.handle.instance.suspend();
+        let was_resumed = self.suspend_for_reconfigure();
         self.handle.instance.set_block_size(block_size as i64);
-        self.handle.instance.resume();
+        self.restore_after_reconfigure(was_resumed);
     }
 }
 

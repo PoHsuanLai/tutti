@@ -16,7 +16,7 @@ use std::sync::Arc;
 use std::{fmt, ptr, slice};
 
 use crate::{
-    api::{self, consts::*, AEffect, PluginFlags, PluginMain, Supported, TimeInfo},
+    api::{self, consts::*, AEffect, ChunkError, PluginFlags, PluginMain, Supported, TimeInfo},
     buffer::AudioBuffer,
     channels::ChannelInfo,
     editor::{Editor, Rect},
@@ -354,6 +354,11 @@ pub struct PluginInstance {
     /// `effFlagsCanDoubleReplacing`, mirroring [`Self::can_replacing`] for the
     /// `f64` path. (Also surfaced to plugin authors as `Info::f64_precision`.)
     can_double_replacing: bool,
+    /// `effFlagsHasEditor` in `AEffect::flags` — whether the plugin publishes a
+    /// GUI at all. Captured here for the same reason as [`Self::can_replacing`],
+    /// and consulted by [`Plugin::get_editor`], which previously asked nothing
+    /// and handed back an `EditorInstance` for every plugin loaded.
+    has_editor: bool,
 }
 
 struct PluginParametersInstance {
@@ -422,18 +427,43 @@ impl Editor for EditorInstance {
         }
     }
 
+    /// Dispatch `effEditClose`, but only when an editor is actually open.
+    ///
+    /// The guard is load-bearing: hosts routinely have two closing paths (an
+    /// explicit `close_editor()` and `Drop`), and a second `effEditClose` has no
+    /// defined meaning in VST 2.4 — several real plugins double-free their
+    /// window resources on it. Idempotence lives here, where `is_open` lives.
     fn close(&mut self) {
+        if !self.is_open {
+            return;
+        }
         self.params
             .dispatch(plugin::OpCode::EditorClose, 0, 0, ptr::null_mut(), 0.0);
         self.is_open = false;
     }
 
+    /// Dispatch `effEditOpen`, reporting whether the plugin embedded its editor.
+    ///
+    /// Two corrections over the original:
+    ///
+    /// * **`> 0`, not `== 1`.** Shipping plugins return other positive values
+    ///   (some the window handle), and `== 1` reported those successful opens as
+    ///   refusals. `> 0` matches every other boolean opcode in this file.
+    /// * **Refuse a second open.** VST 2.4 requires an `effEditClose` between
+    ///   two `effEditOpen`s; opening twice leaks the first window in practice.
+    ///   The already-open case answers `true`, since the editor *is* open, so a
+    ///   caller does not read an idempotent open as a failure.
     fn open(&mut self, parent: *mut c_void) -> bool {
+        if self.is_open {
+            warn!("effEditOpen called on an already-open editor; ignoring the second open");
+            return true;
+        }
+
         let result = self
             .params
             .dispatch(plugin::OpCode::EditorOpen, 0, 0, parent, 0.0);
 
-        let opened = result == 1;
+        let opened = result > 0;
         if opened {
             self.is_open = true;
         }
@@ -569,6 +599,7 @@ impl PluginInstance {
             is_editor_active: false,
             can_replacing: false,
             can_double_replacing: false,
+            has_editor: false,
         };
 
         unsafe {
@@ -577,6 +608,7 @@ impl PluginInstance {
 
             plug.can_replacing = flags.intersects(PluginFlags::CAN_REPLACING);
             plug.can_double_replacing = flags.intersects(PluginFlags::CAN_DOUBLE_REPLACING);
+            plug.has_editor = flags.intersects(PluginFlags::HAS_EDITOR);
 
             plug.info = Info {
                 name: plug.read_string(op::GetProductName, MAX_PRODUCT_STR_LEN),
@@ -745,8 +777,11 @@ impl Dispatch for PluginParametersInstance {
 
 impl PluginParametersInstance {
     /// Read an `effGetChunk` blob (`index == 1` for the current preset,
-    /// `index == 0` for the whole bank), returning empty on any answer the
-    /// plugin is allowed to give but that is not a readable buffer.
+    /// `index == 0` for the whole bank).
+    ///
+    /// `Ok(vec)` — possibly empty, meaning the plugin genuinely has nothing
+    /// saved. `Err` — the plugin *attempted* the save and failed; see
+    /// [`ChunkError`] for why the two must not be conflated.
     ///
     /// Three plugin behaviours must not become UB on the project-save path:
     ///
@@ -758,7 +793,7 @@ impl PluginParametersInstance {
     ///   and then a `Vec` allocation of 16 exbibytes (or a wild read).
     /// * a positive length with a null pointer, from a plugin that computed a
     ///   size but failed to hand back the buffer.
-    fn get_chunk(&self, index: i32) -> Vec<u8> {
+    fn get_chunk(&self, index: i32) -> Result<Vec<u8>, ChunkError> {
         // Create a pointer that can be updated from the plugin.
         let mut ptr: *mut u8 = ptr::null_mut();
         let len = self.dispatch(
@@ -783,21 +818,28 @@ impl PluginParametersInstance {
 /// Split out from [`PluginParametersInstance::get_chunk`] so the validation is
 /// testable without a loaded plugin.
 ///
+/// `len == 0` is `Ok(empty)` — a normal state for an untouched chunk-capable
+/// plugin. The two failure shapes get an `Err` rather than the empty `Vec` they
+/// used to share with it, so a caller cannot read a failed save as "nothing
+/// saved".
+///
 /// # Safety
 /// If `len > 0` and `ptr` is non-null, `ptr` must be valid for reads of `len`
 /// bytes.
-unsafe fn copy_chunk(ptr: *mut u8, len: isize) -> Vec<u8> {
-    if len <= 0 {
-        if len < 0 {
-            warn!("plugin returned a negative effGetChunk length ({len}); treating as empty");
-        }
-        return Vec::new();
+unsafe fn copy_chunk(ptr: *mut u8, len: isize) -> Result<Vec<u8>, ChunkError> {
+    if len < 0 {
+        warn!("plugin returned a negative effGetChunk length ({len})");
+        return Err(ChunkError::Failed(len));
+    }
+    if len == 0 {
+        // Genuinely nothing saved — not an error.
+        return Ok(Vec::new());
     }
     if ptr.is_null() {
         warn!("plugin reported {len} bytes of chunk data but left the pointer null");
-        return Vec::new();
+        return Err(ChunkError::NullBuffer(len));
     }
-    unsafe { slice::from_raw_parts(ptr, len as usize) }.to_vec()
+    Ok(unsafe { slice::from_raw_parts(ptr, len as usize) }.to_vec())
 }
 
 impl Plugin for PluginInstance {
@@ -834,6 +876,24 @@ impl Plugin for PluginInstance {
 
     fn suspend(&mut self) {
         self.dispatch(plugin::OpCode::StateChanged, 0, 0, ptr::null_mut(), 0.0);
+    }
+
+    /// Dispatch `effStartProcess`.
+    ///
+    /// The host side inherited the `Plugin` trait's empty default body, so a
+    /// host calling it dispatched nothing while appearing to work — even though
+    /// `interfaces.rs` has always handled the opcode plugin-side. A plugin that
+    /// arms its DSP on this edge rendered without ever being started.
+    ///
+    /// Only legal while the plugin is resumed, per `Plugin::start_process`.
+    fn start_process(&mut self) {
+        self.dispatch(plugin::OpCode::StartProcess, 0, 0, ptr::null_mut(), 0.0);
+    }
+
+    /// Dispatch `effStopProcess`. See [`start_process`](Self::start_process)
+    /// for why the host-side override is needed.
+    fn stop_process(&mut self) {
+        self.dispatch(plugin::OpCode::StopProcess, 0, 0, ptr::null_mut(), 0.0);
     }
 
     fn vendor_specific(&mut self, index: i32, value: isize, ptr: *mut c_void, opt: f32) -> isize {
@@ -976,7 +1036,27 @@ impl Plugin for PluginInstance {
         Arc::clone(&self.params) as Arc<dyn PluginParameters>
     }
 
+    /// The plugin's editor, or `None` when it publishes no GUI.
+    ///
+    /// **Asks the plugin, not just the call count.** This used to consult
+    /// `is_editor_active` alone, so it handed back a live `EditorInstance` on
+    /// the first call for every plugin ever loaded — making the host's
+    /// `has_editor` (one `Option::is_some` downstream) a constant `true`, and
+    /// its "Plugin has no editor" error path unreachable.
+    ///
+    /// `effFlagsHasEditor` is the flag VST 2.4 defines for this query, and the
+    /// one `vst::main` sets plugin-side when `get_editor` returns `Some`, so it
+    /// round-trips with the plugin API. Deliberately *not* also requiring a
+    /// successful `effEditGetRect`: the SDK lets a plugin compute its rect only
+    /// once the editor is open, so requiring it would reintroduce the same bug
+    /// with the polarity flipped.
     fn get_editor(&mut self) -> Option<Box<dyn Editor>> {
+        if !self.has_editor {
+            // No `effFlagsHasEditor`: an `EditorInstance` here would only let
+            // the caller dispatch `effEditOpen` into a plugin without one.
+            return None;
+        }
+
         if self.is_editor_active {
             // An editor is already active, the caller should be using the active editor instead of
             // requesting for a new one.
@@ -1087,32 +1167,64 @@ impl PluginParameters for PluginParametersInstance {
 
     // TODO: Editor
 
+    /// Lossy view of [`try_get_preset_data`](Self::try_get_preset_data), kept
+    /// for plugin implementations that have no dispatch result to report.
+    ///
+    /// A host must not save state through this: it cannot tell "nothing saved"
+    /// from "the save failed", and reading the second as the first discards
+    /// non-parameter state. Use `try_get_preset_data`.
     fn get_preset_data(&self) -> Vec<u8> {
+        self.try_get_preset_data().unwrap_or_default()
+    }
+
+    /// Lossy view of [`try_get_bank_data`](Self::try_get_bank_data); see
+    /// [`get_preset_data`](Self::get_preset_data) for why a host should not use
+    /// it.
+    fn get_bank_data(&self) -> Vec<u8> {
+        self.try_get_bank_data().unwrap_or_default()
+    }
+
+    /// The real `effGetChunk` answer, with a failed save distinguishable from an
+    /// empty one — what the [`ChunkError`] split exists for.
+    fn try_get_preset_data(&self) -> Result<Vec<u8>, ChunkError> {
         self.get_chunk(1 /*preset*/)
     }
 
-    fn get_bank_data(&self) -> Vec<u8> {
+    /// Bank counterpart of
+    /// [`try_get_preset_data`](Self::try_get_preset_data).
+    fn try_get_bank_data(&self) -> Result<Vec<u8>, ChunkError> {
         self.get_chunk(0 /*bank*/)
     }
 
-    fn load_preset_data(&self, data: &[u8]) {
+    /// Hand a preset chunk to the plugin, reporting whether it **accepted** it.
+    ///
+    /// VST 2.4 has `effSetChunk` return `1` on success. This used to discard the
+    /// dispatch result and return `()`, leaving a rejected chunk
+    /// indistinguishable from an applied one.
+    ///
+    /// `> 0`, not `== 1`, matching every other boolean opcode in this file:
+    /// shipping plugins return other positive values for "yes", and reading
+    /// those as refusal would lose presets that did load.
+    fn load_preset_data(&self, data: &[u8]) -> bool {
         self.dispatch(
             plugin::OpCode::SetData,
             1,
             data.len() as isize,
             data.as_ptr() as *mut c_void,
             0.0,
-        );
+        ) > 0
     }
 
-    fn load_bank_data(&self, data: &[u8]) {
+    /// Bank counterpart of [`load_preset_data`](Self::load_preset_data); same
+    /// accept/reject contract.
+    fn load_bank_data(&self, data: &[u8]) -> bool {
         self.dispatch(
             plugin::OpCode::SetData,
             0,
             data.len() as isize,
             data.as_ptr() as *mut c_void,
             0.0,
-        );
+        ) > 0
     }
 }
 
@@ -1300,6 +1412,31 @@ mod tests {
     use crate::api::Supported;
     use crate::host::HostBuffer;
 
+    /// `PluginInstance::start_process` / `stop_process` must dispatch the
+    /// opcodes the plugin-side dispatcher in `interfaces.rs` actually matches
+    /// on, and must not be left at the `Plugin` trait's empty default bodies.
+    ///
+    /// Asserting the numeric values is the point: `OpCode` is `#[repr(i32)]` and
+    /// positional, so inserting a variant above these shifts every opcode below
+    /// it and silently re-points the dispatch. The SDK fixes
+    /// `effStartProcess = 71` and `effStopProcess = 72`.
+    #[test]
+    fn start_and_stop_process_opcodes_match_the_sdk() {
+        assert_eq!(plugin::OpCode::StartProcess as i32, 71);
+        assert_eq!(plugin::OpCode::StopProcess as i32, 72);
+
+        // And the plugin-side dispatcher decodes those same numbers back to
+        // the variants it handles — the other half of the round trip.
+        assert!(matches!(
+            plugin::OpCode::try_from(71),
+            Ok(plugin::OpCode::StartProcess)
+        ));
+        assert!(matches!(
+            plugin::OpCode::try_from(72),
+            Ok(plugin::OpCode::StopProcess)
+        ));
+    }
+
     /// A real plugin's `effCanDo` returns whatever its dispatcher left in the
     /// return slot — commonly the length of the queried string, or an
     /// uninitialised stack value. `Supported::from` used to return `None` for
@@ -1359,24 +1496,267 @@ mod tests {
         // `effFlagsProgramChunks` set but nothing to save yet: the plugin
         // returns 0 and never writes the out-pointer. `from_raw_parts(null, 0)`
         // is UB even at length zero — the pointer must always be non-null.
-        assert!(unsafe { copy_chunk(ptr::null_mut(), 0) }.is_empty());
+        //
+        // `Ok(empty)`, not an error: the plugin answered, and the answer is
+        // "nothing saved".
+        assert_eq!(unsafe { copy_chunk(ptr::null_mut(), 0) }, Ok(Vec::new()));
 
         // An error return. `-1 as usize` was `usize::MAX`.
-        assert!(unsafe { copy_chunk(ptr::null_mut(), -1) }.is_empty());
+        assert_eq!(
+            unsafe { copy_chunk(ptr::null_mut(), -1) },
+            Err(ChunkError::Failed(-1))
+        );
 
         // A plugin that sized the chunk but failed to hand back the buffer.
-        assert!(unsafe { copy_chunk(ptr::null_mut(), 4096) }.is_empty());
+        assert_eq!(
+            unsafe { copy_chunk(ptr::null_mut(), 4096) },
+            Err(ChunkError::NullBuffer(4096))
+        );
 
         // A non-null pointer with a negative length is still rejected — the
         // length is what would be cast, and it must never reach `as usize`.
         let mut data = [1u8, 2, 3, 4];
-        assert!(unsafe { copy_chunk(data.as_mut_ptr(), -1) }.is_empty());
+        assert_eq!(
+            unsafe { copy_chunk(data.as_mut_ptr(), -1) },
+            Err(ChunkError::Failed(-1))
+        );
 
         // The good case still copies.
         assert_eq!(
             unsafe { copy_chunk(data.as_mut_ptr(), 4) },
-            vec![1, 2, 3, 4]
+            Ok(vec![1, 2, 3, 4])
         );
+    }
+
+    /// `effEditOpen` / `effEditClose` must each be dispatched at most once per
+    /// open editor, and a truthy-but-not-1 open must count as success.
+    ///
+    /// Three defects, all observable by counting dispatches: `open` demanded
+    /// `result == 1` (rejecting truthy non-1 answers some plugins give);
+    /// neither `open` nor `close` checked `is_open`, so a repeat open leaked the
+    /// first window and a host's two teardown paths double-closed.
+    #[test]
+    fn the_editor_opens_once_closes_once_and_accepts_a_truthy_open() {
+        use crate::api::DispatcherProc;
+        use std::sync::atomic::{AtomicIsize, AtomicUsize, Ordering};
+
+        static OPEN_ANSWER: AtomicIsize = AtomicIsize::new(1);
+        static OPENS: AtomicUsize = AtomicUsize::new(0);
+        static CLOSES: AtomicUsize = AtomicUsize::new(0);
+
+        extern "C" fn dispatch(
+            _effect: *mut AEffect,
+            opcode: i32,
+            _index: i32,
+            _value: isize,
+            _ptr: *mut c_void,
+            _opt: f32,
+        ) -> isize {
+            if opcode == plugin::OpCode::EditorOpen as i32 {
+                OPENS.fetch_add(1, Ordering::SeqCst);
+                return OPEN_ANSWER.load(Ordering::SeqCst);
+            }
+            if opcode == plugin::OpCode::EditorClose as i32 {
+                CLOSES.fetch_add(1, Ordering::SeqCst);
+            }
+            0
+        }
+
+        let mut effect: AEffect = unsafe { std::mem::zeroed() };
+        effect.dispatcher = Some(dispatch as DispatcherProc);
+        let params = Arc::new(PluginParametersInstance {
+            effect: UnsafeCell::new(&mut effect as *mut AEffect),
+        });
+
+        let reset = || {
+            OPENS.store(0, Ordering::SeqCst);
+            CLOSES.store(0, Ordering::SeqCst);
+        };
+
+        // Closing an editor that was never opened must not reach the plugin.
+        reset();
+        let mut ed = EditorInstance {
+            params: Arc::clone(&params),
+            is_open: false,
+        };
+        ed.close();
+        assert_eq!(
+            CLOSES.load(Ordering::SeqCst),
+            0,
+            "effEditClose dispatched for an editor that was never open"
+        );
+
+        // A plugin answering 2 has opened successfully.
+        reset();
+        OPEN_ANSWER.store(2, Ordering::SeqCst);
+        let mut ed = EditorInstance {
+            params: Arc::clone(&params),
+            is_open: false,
+        };
+        assert!(
+            ed.open(ptr::null_mut()),
+            "a truthy non-1 effEditOpen return must read as success; `== 1` \
+             reported an embedded editor as a refusal"
+        );
+
+        // A second open must not reach the plugin.
+        ed.open(ptr::null_mut());
+        assert_eq!(
+            OPENS.load(Ordering::SeqCst),
+            1,
+            "effEditOpen dispatched twice without an intervening close — \
+             undefined per VST 2.4"
+        );
+
+        // Close twice: only the first reaches the plugin.
+        ed.close();
+        ed.close();
+        assert_eq!(
+            CLOSES.load(Ordering::SeqCst),
+            1,
+            "effEditClose dispatched twice — close_editor() plus Drop is \
+             exactly the sequence a host runs"
+        );
+
+        // A refusal is still a refusal, so none of the above is satisfied by
+        // always reporting success.
+        reset();
+        OPEN_ANSWER.store(0, Ordering::SeqCst);
+        let mut ed = EditorInstance {
+            params: Arc::clone(&params),
+            is_open: false,
+        };
+        assert!(
+            !ed.open(ptr::null_mut()),
+            "effEditOpen returned 0 (refused)"
+        );
+        ed.close();
+        assert_eq!(
+            CLOSES.load(Ordering::SeqCst),
+            0,
+            "an editor whose open was refused is not open, so closing it must \
+             not reach the plugin"
+        );
+    }
+
+    /// The answer a plugin's `effSetChunk` gives must reach the caller.
+    ///
+    /// Non-vacuous because it drives the *real* dispatch path rather than the
+    /// trait default: a synthetic `AEffect` returning a chosen value, read back
+    /// through `PluginParametersInstance::load_preset_data`, which used to
+    /// return `()` and drop that answer.
+    ///
+    /// VST 2.4 names `1` for success, but `> 0` is deliberate and asserted
+    /// below: shipping plugins return other positive values.
+    #[test]
+    fn the_plugins_set_chunk_answer_reaches_the_caller() {
+        use crate::api::DispatcherProc;
+        use std::sync::atomic::{AtomicIsize, Ordering};
+
+        /// What the next synthetic dispatch returns.
+        static ANSWER: AtomicIsize = AtomicIsize::new(0);
+
+        extern "C" fn dispatch(
+            _effect: *mut AEffect,
+            _opcode: i32,
+            _index: i32,
+            _value: isize,
+            _ptr: *mut c_void,
+            _opt: f32,
+        ) -> isize {
+            ANSWER.load(Ordering::SeqCst)
+        }
+
+        let mut effect: AEffect = unsafe { std::mem::zeroed() };
+        effect.dispatcher = Some(dispatch as DispatcherProc);
+        let params = PluginParametersInstance {
+            effect: UnsafeCell::new(&mut effect as *mut AEffect),
+        };
+        let set = |v: isize| ANSWER.store(v, Ordering::SeqCst);
+
+        // 0 — the plugin refused. This is the answer the discarded return hid.
+        set(0);
+        assert!(
+            !params.load_preset_data(b"state"),
+            "effSetChunk returned 0 (refused) but the caller was told success — \
+             this is the bug: a rejected preset restores as if it had loaded"
+        );
+
+        // 1 — the documented success value.
+        set(1);
+        assert!(params.load_preset_data(b"state"));
+
+        // Truthy-but-not-1 is success, matching every other boolean opcode
+        // here. `== 1` would report a loaded preset as refused.
+        set(2);
+        assert!(
+            params.load_preset_data(b"state"),
+            "a positive non-1 return must read as success, as it does for \
+             can_be_automated / string_to_parameter"
+        );
+
+        // Negative is a refusal, never a truthy non-zero.
+        set(-1);
+        assert!(
+            !params.load_preset_data(b"state"),
+            "a negative return must never be read as success"
+        );
+
+        // The bank variant shares the contract.
+        set(0);
+        assert!(!params.load_bank_data(b"state"));
+        set(1);
+        assert!(params.load_bank_data(b"state"));
+    }
+
+    /// A plugin's chunk **refusal** must also be representable through the
+    /// trait, so plugin implementations can express one while the default stays
+    /// "accepted" for plugins that simply store what they are given.
+    #[test]
+    fn a_chunk_refusal_is_representable() {
+        struct RefusingParams;
+        impl PluginParameters for RefusingParams {
+            fn load_preset_data(&self, _data: &[u8]) -> bool {
+                false
+            }
+            fn try_get_preset_data(&self) -> Result<Vec<u8>, ChunkError> {
+                Err(ChunkError::Failed(-1))
+            }
+        }
+
+        assert!(
+            !RefusingParams.load_preset_data(b"anything"),
+            "a plugin must be able to reject a chunk"
+        );
+        assert!(
+            RefusingParams.try_get_preset_data().is_err(),
+            "a plugin must be able to report a failed chunk save"
+        );
+
+        // The default must still succeed, so neither assertion above is
+        // satisfied by a blanket failure.
+        struct AcceptingParams;
+        impl PluginParameters for AcceptingParams {}
+        assert!(
+            AcceptingParams.load_preset_data(b"anything"),
+            "the default must accept, so existing plugins are unaffected"
+        );
+        assert_eq!(AcceptingParams.try_get_preset_data(), Ok(Vec::new()));
+    }
+
+    /// A *failed* save and an *empty* save must not produce the same value.
+    /// Both used to be `Vec::new()`, which let a host read a plugin's failure as
+    /// "no chunk state" and silently write a parameter snapshot instead.
+    #[test]
+    fn failed_chunk_save_is_distinguishable_from_an_empty_one() {
+        let empty = unsafe { copy_chunk(ptr::null_mut(), 0) };
+        let failed = unsafe { copy_chunk(ptr::null_mut(), -1) };
+        assert_ne!(
+            empty, failed,
+            "a refused effGetChunk must not look like an empty one"
+        );
+        assert!(empty.is_ok(), "nothing-saved is a normal answer");
+        assert!(failed.is_err(), "an error return must surface as an error");
     }
 
     /// The fallback path clears the outputs before the accumulating

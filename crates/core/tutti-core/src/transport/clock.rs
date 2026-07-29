@@ -184,6 +184,24 @@ impl AudioUnit for TransportClock {
         self.links = self.links.severed();
     }
 
+    /// Re-seat the clock on the render's start beat and tempo.
+    ///
+    /// `isolate()` severs the live links, but the clock keeps whatever beat the
+    /// LIVE playhead happened to be at when it was cloned. Left there, every
+    /// beat-driven node downstream (LFO, automation lane) renders from that
+    /// arbitrary position — the output would depend on *when* the render was
+    /// started, which is both wrong and non-reproducible.
+    fn rebind_offline(&mut self, ctx: &dyn core::any::Any) {
+        let Some(transport) = ctx.downcast_ref::<super::OfflineTransport>() else {
+            return;
+        };
+        // Read at rebind time — before the renderer has advanced anything — so
+        // these are the seeded start values, not a moving position.
+        *self = self
+            .at_tempo(transport.tempo())
+            .starting_at(transport.beat());
+    }
+
     fn set_sample_rate(&mut self, sample_rate: crate::params::SampleRate) {
         self.sample_rate = sample_rate;
         self.beat_per_sample =

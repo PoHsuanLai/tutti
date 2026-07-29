@@ -19,4 +19,4 @@ pub(crate) mod resample;
 pub(crate) use dither::DitherState;
 pub use resample::ChunkSize;
 #[cfg(any(feature = "wav", feature = "flac", feature = "aiff", feature = "ogg"))]
-pub(crate) use resample::Resampler;
+pub(crate) use resample::{resample_rendered, Resampler};

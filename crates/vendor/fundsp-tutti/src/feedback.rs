@@ -338,6 +338,14 @@ impl AudioUnit for FeedbackUnit {
         self.index = 0;
     }
 
+    fn isolate(&mut self) {
+        self.x.isolate();
+    }
+
+    fn rebind_offline(&mut self, ctx: &dyn core::any::Any) {
+        self.x.rebind_offline(ctx);
+    }
+
     fn set_sample_rate(&mut self, sample_rate: crate::SampleRate) {
         let sample_rate: f64 = sample_rate.get();
         if self.sample_rate != sample_rate {

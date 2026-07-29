@@ -89,6 +89,10 @@ pub mod synth;
 #[cfg(feature = "plugin")]
 pub mod plugin_host;
 
+/// Offline export: runs `tutti-export`'s synchronous renders on the task pool.
+#[cfg(feature = "export")]
+pub mod export;
+
 /// The Tutti audio engine: CPAL callback, DSP graph, device driver, bootstrap.
 pub mod engine;
 
@@ -125,6 +129,11 @@ pub mod prelude {
         LatencyCompensationPlugin, Net, TuttiDriver, TuttiPlugin,
     };
 
+    #[cfg(feature = "export")]
+    pub use crate::export::{
+        ExportDone, ExportInFlight, ExportOutput, ExportPlugin, ExportRequest, ExportSource,
+        ExportTarget,
+    };
     #[cfg(feature = "midi")]
     pub use crate::midi::{MidiBusRes, MidiRoutingRes, TuttiMidiPlugin};
     #[cfg(feature = "modulation")]

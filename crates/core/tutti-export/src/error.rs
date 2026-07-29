@@ -27,6 +27,16 @@ pub enum Error {
 
     #[error("Unsupported channel count: {0} (this export path does not support that width)")]
     UnsupportedChannels(u16),
+
+    /// A loudness measurement was asked for and could not be taken — EBU R128
+    /// accepts 1–64 channels at 16 Hz–2.8 MHz.
+    ///
+    /// An error rather than a skipped measurement, because a normalized export
+    /// that quietly writes un-normalized audio reports success and leaves no
+    /// trace: nothing in [`Written`](crate::Written) records that the gain the
+    /// caller asked for was never applied.
+    #[error("Cannot measure loudness: {0}")]
+    Unmeasurable(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

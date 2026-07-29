@@ -5,9 +5,36 @@
 //! reproducible timeline without a real CPAL callback (golden tests,
 //! automation scrubbing) can use it.
 
+use std::sync::Arc;
+
 use super::state::LoopRange;
 use crate::params::{Beat, BeatDuration, Bpm, SampleRate};
 use crate::{AtomicF64, Ordering};
+
+/// The timeline an offline render advances, one block at a time.
+///
+/// Handed to every node as `&dyn Any` by
+/// [`PendingClone::isolate_for_offline`](crate::dsp::PendingClone::isolate_for_offline),
+/// so this alias is the agreed shape on both sides of that cast — recover it
+/// with `ctx.downcast_ref::<OfflineTransport>()`. It is an alias rather than a
+/// named type because `fundsp-tutti` cannot name [`Timeline`](super::Timeline),
+/// not because the indirection buys anything.
+///
+/// Nodes holding a transport re-point at this. Nodes carrying their own internal
+/// clock re-seat it from [`Timeline::beat`](super::Timeline::beat) and
+/// [`Timeline::tempo`](super::Timeline::tempo): `isolate()` severs the live
+/// links but leaves the clock at whatever beat the *live* playhead happened to
+/// be at, so without this every beat-driven node (LFO, automation) would render
+/// from an arbitrary position. Read at rebind time — before the renderer has
+/// advanced anything — so those are the seeded start values, not a moving
+/// position.
+///
+/// This carried `start_beat` and `tempo` as separate fields once. Both are
+/// things a timeline already answers, so the copies could disagree with it, and
+/// two rebind paths read different ones — `TransportClock` took the scalars
+/// while `MemorySource` followed the transport. A mismatch rendered half the
+/// graph at one tempo and half at another, silently.
+pub type OfflineTransport = Arc<dyn super::Timeline>;
 
 /// Configuration for constructing an [`OfflineTimeline`].
 #[derive(Debug, Clone)]

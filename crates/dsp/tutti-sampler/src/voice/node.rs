@@ -259,8 +259,26 @@ impl AudioUnit for VoiceNode {
         if let Some(s) = self.slot.stretch.as_mut() {
             s.isolate();
         }
+        // The wrapped voice too: a disk-backed one shares the live ring and
+        // control cell through `Clone`, and a voice inside a slot is not a graph
+        // vertex, so the net-wide walk never reaches it.
+        self.slot.voice.isolate();
         // A fresh cursor: the clone must not inherit the live playhead's
         // last-seen beat, or its first offline block reads as a discontinuity.
         self.cursor = None;
+    }
+
+    /// Rebind the wrapped voice's placement (and its source's own read clock) to
+    /// the render's transport.
+    ///
+    /// A bare voice node keeps its cloned content — the clone is already
+    /// independent — so this is purely the re-point. Without it the voice reads
+    /// the live playhead, which the offline driver never advances, and renders
+    /// silence.
+    fn rebind_offline(&mut self, ctx: &dyn core::any::Any) {
+        // Delegated rather than unwrapped-then-`replace_transport`: a disk voice
+        // needs the whole context, not just a clock, and `Voice::rebind_offline`
+        // is what knows which arm it is.
+        self.slot.voice.rebind_offline(ctx);
     }
 }

@@ -224,6 +224,27 @@ impl PendingClone {
         }
         self.0
     }
+
+    /// Sever every node *and* re-point it at an offline render's data.
+    ///
+    /// The two halves of preparing an offline clone, in the order they must
+    /// happen: [`AudioUnit::isolate`] drops shared live inputs, then
+    /// [`AudioUnit::rebind_offline`] re-seats whatever transport the severed
+    /// node still points at. `ctx` is opaque here and downcast by each
+    /// implementor — see `rebind_offline`'s docs for why.
+    ///
+    /// Prefer this over `isolate()` for anything that will be *rendered*.
+    /// `isolate()` alone leaves transport-aware nodes aiming at the live
+    /// playhead, which nothing advances offline, so they render silence.
+    pub fn isolate_for_offline(mut self, ctx: &dyn core::any::Any) -> Net {
+        let ids: Vec<NodeId> = self.0.ids().copied().collect();
+        for id in ids {
+            let node = self.0.node_mut(id);
+            node.isolate();
+            node.rebind_offline(ctx);
+        }
+        self.0
+    }
 }
 
 impl Net {
@@ -1604,6 +1625,31 @@ impl AudioUnit for Net {
         // Take the opportunity to unload some calculations.
         if !self.is_ordered() {
             self.determine_order();
+        }
+    }
+
+    /// Forwarded to every vertex, so a nested network is severed too.
+    ///
+    /// Without this, a `Net` used as a node inherits the do-nothing default and
+    /// its children are never reached — anything sharing live state one level
+    /// down stays attached to what the audio thread is reading, which is the
+    /// hazard `isolate` exists to remove.
+    fn isolate(&mut self) {
+        for vertex in &mut self.vertex {
+            vertex.unit.isolate();
+            vertex.changed = self.revision;
+        }
+    }
+
+    /// Forwarded to every vertex, for the same reason as [`isolate`](Self::isolate).
+    ///
+    /// A transport-aware node inside a sub-network would otherwise keep the live
+    /// transport and render against a playhead nothing advances — silence, with
+    /// nothing to compare and no error to raise.
+    fn rebind_offline(&mut self, ctx: &dyn core::any::Any) {
+        for vertex in &mut self.vertex {
+            vertex.unit.rebind_offline(ctx);
+            vertex.changed = self.revision;
         }
     }
 

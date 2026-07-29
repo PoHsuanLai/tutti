@@ -372,6 +372,155 @@ fn write_buffers_resamples_from_the_frames_own_rate() {
     );
 }
 
+/// Peak sample of a written float WAV.
+fn file_peak(path: &std::path::Path) -> f32 {
+    hound::WavReader::open(path)
+        .unwrap()
+        .into_samples::<f32>()
+        .map(|s| s.unwrap().abs())
+        .fold(0.0f32, f32::max)
+}
+
+/// `render_normalized_to_file` reaches the requested loudness — the whole point
+/// of the two-pass path. The un-normalized render of the same graph is the
+/// control: equal peaks would mean the normalization did nothing.
+#[test]
+fn normalized_export_lifts_the_level_toward_the_target() {
+    use tutti_export::{render_normalized_to_file, Normalize};
+    use tutti_types::Db;
+
+    let d = tempfile::tempdir().unwrap();
+    // Longer than R128's 400 ms gating block, or nothing passes the gate.
+    let mut cfg = config(AudioFormat::Wav, BitDepth::Float32, ChannelLayout::Stereo);
+    cfg.render.duration_seconds = 2.0;
+
+    let plain = d.path().join("plain.wav");
+    render_to_file(net(), &cfg, &FrozenClock, &plain).unwrap();
+
+    let normalized = d.path().join("normalized.wav");
+    render_normalized_to_file(
+        net(),
+        &cfg,
+        &FrozenClock,
+        Normalize::lufs(Db(-14.0)),
+        &normalized,
+    )
+    .unwrap();
+
+    let (before, after) = (file_peak(&plain), file_peak(&normalized));
+    assert!(
+        after > before,
+        "normalization must lift this signal: {before} -> {after}"
+    );
+    assert!(after <= 1.0, "and must never clip past full scale: {after}");
+}
+
+/// `Normalize::Peak` targets TRUE peak (4x oversampled), which is why it routes
+/// through the R128 meter rather than a `fold(max, abs)` over the planes.
+///
+/// So the file must be re-**measured**, not merely re-read: for this signal the
+/// two readings differ by ~1 dB. A 0.5 constant has a −6.02 dB *sample* peak but
+/// a −4.99 dBTP *true* peak — the oversampling filter rings at the buffer's hard
+/// leading edge. Asserting the sample peak against a dBTP target would be
+/// comparing two different quantities, and would have to be loosened by exactly
+/// the amount the feature is supposed to catch.
+#[test]
+fn peak_normalization_lands_on_the_requested_dbtp() {
+    use tutti_analysis::{measure_loudness, LoudnessConfig};
+    use tutti_export::{render_normalized_to_file, Normalize};
+    use tutti_types::Db;
+
+    let d = tempfile::tempdir().unwrap();
+    let mut cfg = config(AudioFormat::Wav, BitDepth::Float32, ChannelLayout::Stereo);
+    cfg.render.duration_seconds = 2.0;
+
+    let path = d.path().join("peak.wav");
+    render_normalized_to_file(net(), &cfg, &FrozenClock, Normalize::peak(Db(-1.0)), &path).unwrap();
+
+    let samples: Vec<f32> = hound::WavReader::open(&path)
+        .unwrap()
+        .into_samples::<f32>()
+        .map(|s| s.unwrap())
+        .collect();
+    let meter = LoudnessConfig::new(cfg.render.sample_rate, ChannelLayout::Stereo);
+    let measured = measure_loudness(&meter, &samples).unwrap();
+
+    assert!(
+        (measured.true_peak.get() - (-1.0)).abs() < 0.2,
+        "the written file's TRUE peak must land on the -1 dBTP target, got {:?}",
+        measured.true_peak
+    );
+    // And the sample peak sits BELOW it — the gap is the oversampling headroom
+    // a sample-peak normalizer would have handed to the clipper instead.
+    assert!(
+        file_peak(&path) < 0.891,
+        "a true-peak target must leave sample-peak headroom, got {}",
+        file_peak(&path)
+    );
+}
+
+/// The trap `loudness.rs::a_reading_is_always_finite_even_below_the_gate` names,
+/// reached through the export path: a render SHORTER than R128's 400 ms gating
+/// block reports `-inf` LUFS, and a gain derived from it would be `NaN` — which
+/// multiplies the whole file into `NaN`. The meter clamps to the gate, so this
+/// must produce a finite, readable file.
+#[test]
+fn a_sub_gating_block_render_normalizes_without_poisoning_the_signal() {
+    use tutti_export::{render_normalized_to_file, Normalize};
+    use tutti_types::Db;
+
+    let d = tempfile::tempdir().unwrap();
+    // 0.2 s — half the 400 ms gating block.
+    let cfg = config(AudioFormat::Wav, BitDepth::Float32, ChannelLayout::Stereo);
+    assert!(
+        cfg.render.duration_seconds < 0.4,
+        "this test is only meaningful under the gating block"
+    );
+
+    let path = d.path().join("short.wav");
+    render_normalized_to_file(net(), &cfg, &FrozenClock, Normalize::lufs(Db(-14.0)), &path)
+        .unwrap();
+
+    let samples: Vec<f32> = hound::WavReader::open(&path)
+        .unwrap()
+        .into_samples::<f32>()
+        .map(|s| s.unwrap())
+        .collect();
+    assert!(!samples.is_empty(), "a short render still writes frames");
+    assert!(
+        samples.iter().all(|s| s.is_finite()),
+        "a sub-gate reading must not poison the signal into NaN"
+    );
+}
+
+/// R128 meters any channel count, so a surround export normalizes against its
+/// own loudness. Pins the removal of the old stereo-only restriction: it must
+/// not error, and must not silently switch to a different metric.
+#[test]
+fn surround_normalizes_rather_than_falling_back_to_peak() {
+    use tutti_export::{render_normalized_to_file, Normalize};
+    use tutti_types::Db;
+
+    let d = tempfile::tempdir().unwrap();
+    let mut n = tutti_core::dsp::Net::new(0, 6);
+    let id = n.push(Box::new(dc((0.1, 0.2, 0.3, 0.4, 0.5, 0.6))));
+    n.pipe_output(id);
+
+    let mut cfg = config(
+        AudioFormat::Wav,
+        BitDepth::Float32,
+        ChannelLayout::from_count(6),
+    );
+    cfg.render.duration_seconds = 2.0;
+
+    let path = d.path().join("surround.wav");
+    render_normalized_to_file(n, &cfg, &FrozenClock, Normalize::lufs(Db(-14.0)), &path)
+        .expect("5.1 normalization must not be rejected");
+
+    let reader = hound::WavReader::open(&path).unwrap();
+    assert_eq!(reader.spec().channels, 6, "all six channels must survive");
+}
+
 /// Frame count from a FLAC STREAMINFO block (bytes 21..27, 36 bits).
 fn flac_frame_count(path: &std::path::Path) -> u64 {
     let b = std::fs::read(path).unwrap();
@@ -426,4 +575,149 @@ fn find_from(hay: &[u8], needle: &[u8], from: usize) -> Option<usize> {
         .windows(needle.len())
         .position(|w| w == needle)
         .map(|p| p + from)
+}
+
+/// Peak of an integer WAV, as a fraction of full scale.
+fn int_file_peak(path: &std::path::Path) -> f32 {
+    let reader = hound::WavReader::open(path).unwrap();
+    let bits = reader.spec().bits_per_sample;
+    let full = (1i64 << (bits - 1)) as f32;
+    reader
+        .into_samples::<i32>()
+        .map(|s| (s.unwrap() as f32).abs() / full)
+        .fold(0.0f32, f32::max)
+}
+
+/// **Normalizing silence must write silence.**
+///
+/// `render_to_buffers` used to dither, so at an integer depth the planes handed
+/// to the meter were not silent — they carried ±1 LSB of noise. The meter read
+/// that as the signal (~-86 dBTP), the gain came back at ~+86 dB, and
+/// `apply_gain` amplified the noise: a "normalized" export of silence landed
+/// near full scale.
+///
+/// Dither belongs at the encode boundary, where the LSB is known; buffers are
+/// `f32` and quantize to nothing.
+#[test]
+fn normalizing_silence_at_an_integer_depth_does_not_amplify_dither() {
+    use tutti_export::{render_normalized_to_file, Normalize};
+    use tutti_types::Db;
+
+    let silence = || {
+        let mut n = tutti_core::dsp::Net::new(0, 2);
+        let id = n.push(Box::new(dc((0.0, 0.0))));
+        n.pipe_output(id);
+        n
+    };
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("silence.wav");
+
+    let mut cfg = config(AudioFormat::Wav, BitDepth::Int16, ChannelLayout::Stereo);
+    cfg.dither = tutti_export::Dither::Triangular;
+
+    render_normalized_to_file(
+        silence(),
+        &cfg,
+        &FrozenClock,
+        Normalize::peak(Db(-1.0)),
+        &path,
+    )
+    .unwrap();
+
+    let peak = int_file_peak(&path);
+    assert!(
+        peak <= 2.0 / 32768.0,
+        "normalized silence must stay at the dither floor, got {peak} of full scale"
+    );
+}
+
+/// **The dBTP target must hold in the written file, resample included.**
+///
+/// Sample-rate conversion moves the true peak — its interpolation overshoots
+/// between the original samples — so a gain measured at the render rate and
+/// applied to audio written at another lands off target.
+///
+/// The shift is small (~0.16 dB on this signal, measured) but systematic and
+/// always upward, which is what makes it dangerous: it eats the safety margin a
+/// ceiling exists to provide, and at a 0 dBTP target it clips outright. The
+/// tolerance below is deliberately TIGHTER than the shift — a looser one passes
+/// whether or not the conversion happens before the measurement, which is
+/// exactly how this bug survived its first test.
+#[test]
+fn a_resampled_normalized_export_still_lands_on_its_dbtp_target() {
+    use tutti_analysis::{measure_loudness, LoudnessConfig};
+    use tutti_export::{render_normalized_to_file, Normalize};
+    use tutti_types::Db;
+
+    // Hard edges near Nyquist are what SRC overshoots on; a DC constant barely
+    // moves and would hide the bug entirely.
+    let square = || {
+        let mut n = tutti_core::dsp::Net::new(0, 2);
+        let id = n.push(Box::new((square_hz(11025.0) * 0.98) >> split::<U2>()));
+        n.pipe_output(id);
+        n
+    };
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("resampled.wav");
+
+    let mut cfg = config(AudioFormat::Wav, BitDepth::Float32, ChannelLayout::Stereo);
+    cfg.resample = Some(Resample::to(tutti_core::SampleRate(48_000.0)));
+
+    render_normalized_to_file(
+        square(),
+        &cfg,
+        &FrozenClock,
+        Normalize::peak(Db(-1.0)),
+        &path,
+    )
+    .unwrap();
+
+    // Re-measure the FILE, at the rate it was actually written at.
+    let reader = hound::WavReader::open(&path).unwrap();
+    let rate = reader.spec().sample_rate;
+    assert_eq!(rate, 48_000, "the resample must have reached the file");
+    let samples: Vec<f32> = reader.into_samples::<f32>().map(|s| s.unwrap()).collect();
+
+    let meter = LoudnessConfig::new(tutti_core::SampleRate(rate as f64), ChannelLayout::Stereo);
+    let measured = measure_loudness(&meter, &samples).expect("stereo at 48k is measurable");
+
+    assert!(
+        (measured.true_peak.get() - (-1.0)).abs() < 0.05,
+        "written file must sit at the -1 dBTP target, measured {:?} — a gain \
+         chosen before the resample lands ~0.16 dB high",
+        measured.true_peak
+    );
+}
+
+/// A signal the meter cannot read is an error, not a silently un-normalized
+/// file. `Written` carries no field saying the gain was skipped, so reporting
+/// success would lose the fact entirely.
+#[test]
+fn an_unmeasurable_rate_fails_rather_than_writing_un_normalized_audio() {
+    use tutti_export::{render_normalized_to_file, Normalize};
+    use tutti_types::Db;
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("unmeasurable.wav");
+
+    // R128 accepts 16 Hz - 2.8 MHz; 4 MHz is outside it.
+    let mut cfg = config(AudioFormat::Wav, BitDepth::Float32, ChannelLayout::Stereo);
+    cfg.render.sample_rate = tutti_core::SampleRate(4_000_000.0);
+    cfg.render.duration_seconds = 0.0005;
+
+    let err = render_normalized_to_file(
+        net(),
+        &cfg,
+        &FrozenClock,
+        Normalize::peak(Db(-1.0)),
+        &path,
+    )
+    .expect_err("an unmeasurable rate must not report success");
+
+    assert!(
+        matches!(err, tutti_export::Error::Unmeasurable(_)),
+        "expected Unmeasurable, got {err:?}"
+    );
 }

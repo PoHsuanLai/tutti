@@ -128,7 +128,11 @@ pub struct MidiRouteFallback(pub Option<Entity>);
 /// something unrelated happened to touch it. `Added<AudioNode>` is the signal
 /// that a previously-skipped target may now resolve.
 pub fn rebuild(
-    mut table: ResMut<MidiRoutingRes>,
+    // `Option`: the routing table is inserted by `engine::build_into`, but the
+    // `engine_ready` gate only reads `AudioEngineState`. A host that declares the
+    // engine up without running the build has no table, and a hard `ResMut`
+    // panics the schedule rather than skipping the rebuild.
+    table: Option<ResMut<MidiRoutingRes>>,
     resolver: MidiTargetResolver,
     rules: Query<(Entity, &MidiRouteRule)>,
     fallback: Res<MidiRouteFallback>,
@@ -144,6 +148,9 @@ pub fn rebuild(
     if !dirty {
         return;
     }
+    let Some(mut table) = table else {
+        return;
+    };
 
     let mut compiled: Vec<MidiRoute> = Vec::new();
     for (rule_entity, rule) in rules.iter() {

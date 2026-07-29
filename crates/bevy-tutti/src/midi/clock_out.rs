@@ -54,12 +54,21 @@ impl ClockMasterRes {
 /// out, via the shared [`MidiOutRouter`]. Under `midi-hardware` this reaches the
 /// OS; otherwise it drains and drops (keeping the ring from backing up).
 pub fn pump_clock_out_system(
-    clock_out: Res<ClockMasterRes>,
+    // `Option`, despite the `engine_ready` gate: that condition reads
+    // `AudioEngineState`, which a host can insert on its own, while
+    // `ClockMasterRes` only appears if `engine::build_into` actually ran. A test
+    // or an example that builds a graph and declares the engine up — which the
+    // crate's own tests do — has the former without the latter, and a hard `Res`
+    // turns that into a panicked schedule rather than a quiet no-op.
+    clock_out: Option<Res<ClockMasterRes>>,
     drops: Res<super::hardware_out::MidiOutDrops>,
     #[cfg(feature = "midi-hardware")] midi_io: Option<Res<super::device::MidiIoRes>>,
     #[cfg(all(target_os = "macos", feature = "midi-hardware"))] ump_out: Option<ResMut<UmpOutRes>>,
     #[cfg(all(target_os = "macos", feature = "midi-hardware"))] jr: Option<Res<JrStamperRes>>,
 ) {
+    let Some(clock_out) = clock_out else {
+        return;
+    };
     let mut router = MidiOutRouter {
         #[cfg(feature = "midi-hardware")]
         midi_io: midi_io.as_deref(),
@@ -80,9 +89,11 @@ pub struct ClockOutPlugin;
 
 impl Plugin for ClockOutPlugin {
     fn build(&self, app: &mut App) {
-        // `run_if(engine_ready)` like every other MIDI system. `ClockMasterRes`
-        // arrives with the engine block, so it needs no `Option`; `MidiIoRes`
-        // keeps one, since a hardware port may be absent with the engine up.
+        // `run_if(engine_ready)` like every other MIDI system — but the gate is
+        // not sufficient on its own, so the system takes `ClockMasterRes` as an
+        // `Option` too. `engine_ready` reads `AudioEngineState`; the resource
+        // comes from `build_into`. Those are two different facts, and a host can
+        // have the first without the second.
         app.add_systems(
             Update,
             pump_clock_out_system.run_if(crate::graph::engine_ready),

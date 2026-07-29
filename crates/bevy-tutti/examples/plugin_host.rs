@@ -87,6 +87,15 @@ fn main() {
     app.add_plugins((bevy_app::TaskPoolPlugin::default(), GraphReconcilePlugin));
     #[cfg(feature = "modulation")]
     app.add_plugins(TuttiModulationPlugin);
+    // MIDI: a hosted plugin's inbox is an ordinary `MidiInPort`, so registration
+    // is the shared path — nothing plugin-shaped is added by enabling this.
+    #[cfg(feature = "midi")]
+    app.add_plugins(bevy_tutti::midi::TuttiMidiPlugin);
+    // PDC is opt-in: it costs a graph walk per commit, and a host with no
+    // latency-reporting nodes never needs it. A plugin *is* such a node — it
+    // reports its own latency plus the IPC pipeline's — so a host that loads
+    // plugins and skips this has every plugin's delay uncompensated.
+    app.add_plugins(bevy_tutti::LatencyCompensationPlugin);
     app.add_plugins(TuttiHostingPlugin);
 
     // Stand in for the engine bootstrap: a graph and a transport, no device.
@@ -114,6 +123,13 @@ fn main() {
     // bar and signature. Binding shares this cell rather than snapshotting it,
     // so a later tempo-map edit reaches plugins already running.
     app.insert_resource(MetronomeRes(std::sync::Arc::new(ClickState::new())));
+    // The MIDI bus, so registration has somewhere to put the plugin's sender.
+    // `test_support` because that is what this is: a harness standing in for the
+    // engine bootstrap, not a host. A real one gets its bus from `build_into`,
+    // wired to the audio thread's pre-block; this one is wired to nothing, which
+    // is enough to prove a plugin *reaches* the bus but not that MIDI plays.
+    #[cfg(feature = "midi")]
+    app.insert_resource(bevy_tutti::midi::test_support::midi_bus_for_test());
     app.insert_resource(AudioEngineState::Running);
 
     // A catalog with no scan dirs: this example never scans, it registers the
@@ -296,6 +312,46 @@ fn report(world: &mut World) {
             None => println!("plugin: load still in flight after {TICKS} ticks"),
         }
     }
+
+    // MIDI: did the plugin's sender actually reach the bus? Registration is the
+    // shared steady-state pass, keyed on `AudioNode` — nothing plugin-specific
+    // ran — so this is really asking whether `impl MidiNode for PluginClient`
+    // plus the type registration were enough. If the plugin were unregistered,
+    // the resolver would simply never see it and MIDI would go nowhere, silently.
+    #[cfg(feature = "midi")]
+    {
+        let mut registered = world.query::<&bevy_tutti::midi::MidiRegistered>();
+        let ids: Vec<_> = registered.iter(world).map(|r| r.unit_id()).collect();
+        // Distinguish "the plugin was not registered" from "there was no bus to
+        // register into". Only `engine::build_into` inserts `MidiBusRes`, and
+        // this example stands in for the bootstrap rather than running it — so
+        // the absence is the harness's, not the plugin layer's, and reporting it
+        // as a MIDI failure would be blaming the wrong thing.
+        match world.get_resource::<bevy_tutti::midi::MidiBusRes>() {
+            None => println!(
+                "midi: no MidiBusRes — only `build_into` inserts one, and this\n  \
+                 example builds a graph by hand. Registration correctly skipped."
+            ),
+            Some(bus) => {
+                let on_bus = ids.iter().filter(|id| bus.contains(**id)).count();
+                println!(
+                    "midi: {on_bus}/{} registered sender(s) on the bus",
+                    ids.len()
+                );
+            }
+        }
+    }
+
+    // PDC: what did the graph walk conclude? A plugin reports its own latency
+    // plus the IPC batcher's fixed pipeline cost, and compensation inserts delay
+    // on the *other* paths so everything lands aligned. Zero here would mean
+    // either no compensation ran or the plugin reported nothing.
+    let latency = world.resource::<bevy_tutti::GraphLatency>();
+    println!(
+        "pdc: graph latency {} samples ({:.2} ms at {SAMPLE_RATE:.0} Hz)",
+        latency.0.get(),
+        latency.0.get() as f64 / SAMPLE_RATE * 1000.0
+    );
 
     // Pull real samples through the graph. Everything above only proves the
     // plugin is *reachable*; this is the part that proves audio moves through

@@ -19,4 +19,10 @@ Thumbs.db
 
 # Test fixtures (large binaries)
 tests/fixtures/plugins/
+
+# Python venv for the audio-correctness judges (see pyproject.toml).
+# `uv.lock` is deliberately NOT ignored — it is what makes the judges'
+# dependency set reproducible, which is the reason pyproject.toml exists.
+.venv/
+__pycache__/
 IMPROVEMENT_PLAN.md

@@ -167,12 +167,23 @@ fn bits_for(bit_depth: BitDepth) -> usize {
     }
 }
 
+/// Quantize to the integer sample flacenc takes, via the engine's canonical
+/// converters.
+///
+/// This used to scale and cast here — `(clamped * 32767.0) as i32` — which
+/// **truncates** where [`tutti_core::pcm`] rounds. Same magnitudes, so the two
+/// agreed on 0.0 and ±1.0 (the only values the tests below covered) and diverged
+/// by one LSB everywhere else: 0.7 encoded as 22936 in a FLAC and 22937 in a WAV
+/// from the same render. `pcm.rs` exists precisely so that "a recorded and an
+/// exported file quantize a given sample identically", and its docs call bare
+/// truncation biased toward zero — a consistent negative DC error on the
+/// negative half. Delegating is what keeps that promise true for FLAC too.
 #[inline]
 fn f32_to_i32(sample: f32, bit_depth: BitDepth) -> i32 {
-    let clamped = sample.clamp(-1.0, 1.0);
     match bit_depth {
-        BitDepth::Int16 => (clamped * 32767.0) as i32,
-        _ => (clamped * 8388607.0) as i32,
+        BitDepth::Int16 => tutti_core::pcm::f32_to_i16(sample) as i32,
+        // Float32 is rejected in `create`, so this is the Int24 path.
+        _ => tutti_core::pcm::f32_to_i24(sample),
     }
 }
 
@@ -192,5 +203,28 @@ mod tests {
     fn clamps_out_of_range_input() {
         assert_eq!(f32_to_i32(2.0, BitDepth::Int16), 32767);
         assert_eq!(f32_to_i32(-2.0, BitDepth::Int16), -32767);
+    }
+
+    /// FLAC must quantize exactly as the rest of the engine does.
+    ///
+    /// The two tests above pass under truncation *and* under rounding, because
+    /// 0.0 and ±1.0 land on exact integers either way — which is how this
+    /// encoder carried a private truncating converter unnoticed. These levels
+    /// have a fractional part above 0.5, so the two disagree: 0.7 × 32767 =
+    /// 22936.9, which truncates to 22936 and rounds to 22937.
+    #[test]
+    fn quantization_matches_the_engines_canonical_converter() {
+        for level in [0.7f32, -0.7, 0.3, -0.3, 0.123_45, 0.999] {
+            assert_eq!(
+                f32_to_i32(level, BitDepth::Int16),
+                tutti_core::pcm::f32_to_i16(level) as i32,
+                "Int16: FLAC and tutti_core::pcm disagree on {level}"
+            );
+            assert_eq!(
+                f32_to_i32(level, BitDepth::Int24),
+                tutti_core::pcm::f32_to_i24(level),
+                "Int24: FLAC and tutti_core::pcm disagree on {level}"
+            );
+        }
     }
 }

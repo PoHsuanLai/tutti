@@ -135,6 +135,10 @@ fn sort_by_time(events: &mut [SmfTimedEvent]) {
 /// One note, paired from its NoteOn/NoteOff, in beats from track start.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SmfNote {
+    /// MIDI channel, 0..=15. Pairing is per-channel: a NoteOff only closes a
+    /// NoteOn on the *same* channel, which is what multi-channel tracks
+    /// (the norm for General MIDI Type-0 files) require.
+    pub channel: u8,
     /// MIDI key number, 0..=127.
     pub key: u8,
     /// NoteOn velocity, 1..=127 (velocity-0 NoteOn is treated as NoteOff).
@@ -185,19 +189,22 @@ pub fn tracks_from_path(path: impl AsRef<Path>) -> Result<Vec<SmfTrack>> {
 }
 
 /// Pair NoteOn / NoteOff events in one track into whole notes. Velocity-0
-/// NoteOn is treated as NoteOff; overlapping notes on the same key close in
-/// LIFO order; notes left open at end-of-track are dropped.
+/// NoteOn is treated as NoteOff; pairing is keyed on `(channel, key)`, so a
+/// NoteOff only closes a NoteOn on its own channel; overlapping notes on the
+/// same channel+key close in LIFO order; notes left open at end-of-track are
+/// dropped.
 fn pair_notes(track: &Track, ticks_per_beat: f64) -> Vec<SmfNote> {
     use std::collections::BTreeMap;
 
     let mut now_ticks: u64 = 0;
-    let mut held: BTreeMap<u8, Vec<(f64, u8)>> = BTreeMap::new();
+    let mut held: BTreeMap<(u8, u8), Vec<(f64, u8)>> = BTreeMap::new();
     let mut out: Vec<SmfNote> = Vec::new();
 
-    let mut close = |held: &mut BTreeMap<u8, Vec<(f64, u8)>>, key: u8, end: f64| {
-        if let Some(stack) = held.get_mut(&key) {
+    let mut close = |held: &mut BTreeMap<(u8, u8), Vec<(f64, u8)>>, channel: u8, key: u8, end: f64| {
+        if let Some(stack) = held.get_mut(&(channel, key)) {
             if let Some((start, velocity)) = stack.pop() {
                 out.push(SmfNote {
+                    channel,
                     key,
                     velocity,
                     start_beats: start,
@@ -210,26 +217,30 @@ fn pair_notes(track: &Track, ticks_per_beat: f64) -> Vec<SmfNote> {
     for event in track.iter() {
         now_ticks = now_ticks.saturating_add(u64::from(event.delta.as_int()));
         let beat = now_ticks as f64 / ticks_per_beat;
-        if let TrackEventKind::Midi { message, .. } = event.kind {
+        if let TrackEventKind::Midi { channel, message } = event.kind {
+            let channel = channel.as_int();
             match message {
                 SmfMessage::NoteOn { key, vel } => {
                     let (key, vel) = (key.as_int(), vel.as_int());
                     if vel == 0 {
-                        close(&mut held, key, beat);
+                        close(&mut held, channel, key, beat);
                     } else {
-                        held.entry(key).or_default().push((beat, vel));
+                        held.entry((channel, key)).or_default().push((beat, vel));
                     }
                 }
-                SmfMessage::NoteOff { key, .. } => close(&mut held, key.as_int(), beat),
+                SmfMessage::NoteOff { key, .. } => close(&mut held, channel, key.as_int(), beat),
                 _ => {}
             }
         }
     }
 
+    // Onset order, then (channel, key) so simultaneous notes have a stable
+    // order rather than one that depends on NoteOff arrival.
     out.sort_by(|a, b| {
         a.start_beats
             .partial_cmp(&b.start_beats)
             .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| (a.channel, a.key).cmp(&(b.channel, b.key)))
     });
     out
 }
@@ -453,6 +464,67 @@ mod tests {
         assert_eq!(n.velocity, 100);
         assert!((n.start_beats - 0.0).abs() < 1e-6);
         assert!((n.duration_beats - 1.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn tracks_pair_notes_per_channel() {
+        // Same key on two channels, overlapping. Channel 0's note runs 0..4;
+        // channel 1's runs 1..2. Pairing on key alone would let channel 1's
+        // NoteOff at beat 2 close channel 0's note (LIFO), yielding durations
+        // 1 (ch1: 1..2 closed by the ch0 off at 4 → no, LIFO gives 1..2→1)
+        // and 2 — i.e. the wrong note gets the wrong length.
+        let note = |time_beats: f64, channel: u8, on: bool| SmfTimedEvent {
+            time_beats,
+            channel,
+            msg: if on {
+                SmfMessage::NoteOn {
+                    key: 60.into(),
+                    vel: 100.into(),
+                }
+            } else {
+                SmfMessage::NoteOff {
+                    key: 60.into(),
+                    vel: 0.into(),
+                }
+            },
+        };
+        let events = vec![
+            note(0.0, 0, true),
+            note(1.0, 1, true),
+            note(2.0, 1, false),
+            note(4.0, 0, false),
+        ];
+        let data = encode_midi_file(
+            &[events],
+            &MidiWriteOptions {
+                ticks_per_beat: 480,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let parsed = tracks(&data).unwrap();
+        assert_eq!(parsed[0].notes.len(), 2);
+
+        let ch0 = parsed[0]
+            .notes
+            .iter()
+            .find(|n| n.channel == 0)
+            .expect("channel 0 note");
+        let ch1 = parsed[0]
+            .notes
+            .iter()
+            .find(|n| n.channel == 1)
+            .expect("channel 1 note");
+
+        assert!(
+            (ch0.start_beats - 0.0).abs() < 1e-3 && (ch0.duration_beats - 4.0).abs() < 1e-3,
+            "ch0 note should be closed by its own NoteOff at beat 4, got {ch0:?}"
+        );
+        assert!(
+            (ch1.start_beats - 1.0).abs() < 1e-3 && (ch1.duration_beats - 1.0).abs() < 1e-3,
+            "ch1 note should be closed by its own NoteOff at beat 2, got {ch1:?}"
+        );
     }
 
     #[test]

@@ -18,10 +18,10 @@ pub struct WetDry {
 
 impl WetDry {
     /// Build with the given wet/dry mix and wet-path gain.
-    pub fn new(mix: f32, gain: f32) -> Self {
+    pub fn new(mix: impl Into<Mix>, gain: impl Into<Amplitude>) -> Self {
         Self {
-            mix: Param::new(Mix::new_clamped(mix)),
-            gain: Param::new(Amplitude(gain.max(0.0))),
+            mix: Param::new(Mix::new_clamped(mix.into().get())),
+            gain: Param::new(Amplitude(gain.into().get().max(0.0))),
         }
     }
 
@@ -33,23 +33,27 @@ impl WetDry {
         self.gain.as_atomic()
     }
 
-    pub fn set_mix(&self, mix: f32) {
-        self.mix.store(Mix::new_clamped(mix));
+    pub fn set_mix(&self, mix: impl Into<Mix>) {
+        self.mix.store(Mix::new_clamped(mix.into().get()));
     }
 
-    pub fn set_gain(&self, gain: f32) {
-        self.gain.store(Amplitude(gain.max(0.0)));
+    pub fn set_gain(&self, gain: impl Into<Amplitude>) {
+        self.gain.store(Amplitude(gain.into().get().max(0.0)));
     }
 
-    /// Snapshot both atomics at the start of a block.
+    /// Snapshot both params at the start of a block.
+    ///
+    /// Typed: the two are different quantities (a blend ratio and a linear
+    /// multiplier) that happen to share a representation, so an untyped pair
+    /// invites swapping them at the call site.
     #[inline]
-    pub fn load(&self) -> (f32, f32) {
-        (self.mix.load().0, self.gain.load().0)
+    pub fn load(&self) -> (Mix, Amplitude) {
+        (self.mix.load(), self.gain.load())
     }
 }
 
 impl Default for WetDry {
     fn default() -> Self {
-        Self::new(0.5, 1.0)
+        Self::new(Mix(0.5), Amplitude::UNITY)
     }
 }

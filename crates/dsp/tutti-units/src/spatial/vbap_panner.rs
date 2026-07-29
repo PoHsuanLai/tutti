@@ -3,7 +3,7 @@ use core::sync::atomic::Ordering;
 use tutti_core::Arc;
 use tutti_core::AtomicF32;
 use tutti_core::RtScratch;
-use tutti_core::{Azimuth, Elevation, SampleRate};
+use tutti_core::{Azimuth, Elevation, SampleRate, Spread, StereoWidth};
 use vbap::VBAPanner;
 
 use super::smoothing::{ExponentialSmoother, DEFAULT_POSITION_SMOOTH_TIME};
@@ -18,7 +18,7 @@ pub(crate) struct SpatialPanner {
     elevation_target: Arc<AtomicF32>,
     azimuth_smoother: ExponentialSmoother,
     elevation_smoother: ExponentialSmoother,
-    spread: f32,
+    spread: Spread,
     /// Pre-allocated scratch used by [`VBAPanner::compute_gains_into`].
     /// Sized to the layout's speaker count on construction; reused per
     /// sample so the RT path never allocates.
@@ -38,7 +38,7 @@ impl SpatialPanner {
             elevation_target: Arc::new(AtomicF32::new(0.0)),
             azimuth_smoother: ExponentialSmoother::new(DEFAULT_POSITION_SMOOTH_TIME, sample_rate),
             elevation_smoother: ExponentialSmoother::new(DEFAULT_POSITION_SMOOTH_TIME, sample_rate),
-            spread: 0.0,
+            spread: Spread::POINT,
             gains_scratch_a: RtScratch::new(speaker_count),
             gains_scratch_b: RtScratch::new(speaker_count),
         }
@@ -74,19 +74,25 @@ impl SpatialPanner {
     /// Uses VBAP angle convention:
     /// - `azimuth`: Horizontal angle (-180 to 180, 0 = front, 90 = left, -90 = right)
     /// - `elevation`: Vertical angle (-90 to 90, 0 = ear level, positive = up)
-    pub(crate) fn set_position(&mut self, azimuth: f32, elevation: f32) {
+    pub(crate) fn set_position(&mut self, azimuth: Azimuth, elevation: Elevation) {
         // Azimuth WRAPS, elevation SATURATES. These two lines used to be the
         // same `clamp`, which is right for a height and wrong for a bearing:
         // 190 degrees became 180 (hard left) when it is 170 to the right.
+        //
+        // The atomics stay raw `f32`: they are the lock-free control→RT
+        // boundary, which a newtype cannot cross. Normalizing here means the
+        // stored float is always already wrapped/clamped.
         self.azimuth_target
-            .store(Azimuth(azimuth).wrap().get(), Ordering::Release);
-        self.elevation_target
-            .store(Elevation::new_clamped(elevation).get(), Ordering::Release);
+            .store(azimuth.wrap().get(), Ordering::Release);
+        self.elevation_target.store(
+            Elevation::new_clamped(elevation.get()).get(),
+            Ordering::Release,
+        );
     }
 
     /// Set spread factor (0.0 = point source, 1.0 = diffuse)
-    pub(crate) fn set_spread(&mut self, spread: f32) {
-        self.spread = spread.clamp(0.0, 1.0);
+    pub(crate) fn set_spread(&mut self, spread: Spread) {
+        self.spread = Spread::new_clamped(spread.get());
     }
 
     /// Retune the position smoothers so the 50ms de-zipper ramp holds at any
@@ -100,12 +106,15 @@ impl SpatialPanner {
     /// so the sum of squares stays 1.0.
     #[inline]
     fn apply_spread(&self, gains: &mut [f32], count: usize) {
-        if self.spread <= 0.0 {
+        // Unwrapped once here: the blend below is interpolation arithmetic on
+        // the scalar, which `Spread` deliberately does not define operators for.
+        let spread = self.spread.get();
+        if spread <= 0.0 {
             return;
         }
         let equal_gain = 1.0 / (count as f32).sqrt();
         for gain in &mut gains[..count] {
-            *gain = *gain * (1.0 - self.spread) + equal_gain * self.spread;
+            *gain = *gain * (1.0 - spread) + equal_gain * spread;
         }
         let sum_sq: f32 = gains[..count].iter().map(|g| g * g).sum();
         if sum_sq > 0.0 {
@@ -126,7 +135,7 @@ impl SpatialPanner {
             .azimuth_smoother
             .process_angle(Azimuth(target_azimuth))
             .get();
-        let smoothed_elevation = self.elevation_smoother.process(target_elevation);
+        let smoothed_elevation = self.elevation_smoother.process(Elevation(target_elevation));
 
         // RT invariant: must be `compute_gains_into`, not `compute_gains`.
         // The latter allocates a fresh `Vec<f64>` per call (and is
@@ -134,8 +143,11 @@ impl SpatialPanner {
         // `tutti-units/tests/rt_no_alloc.rs::spatial_panner_stereo_process_is_allocation_free`.
         let speaker_count = self.gains_scratch_a.capacity();
         let scratch = self.gains_scratch_a.active(speaker_count);
-        self.panner
-            .compute_gains_into(smoothed_azimuth as f64, smoothed_elevation as f64, scratch);
+        self.panner.compute_gains_into(
+            smoothed_azimuth as f64,
+            smoothed_elevation.get() as f64,
+            scratch,
+        );
 
         let count = speaker_count.min(MAX_SPEAKERS);
         let mut gains = [0.0f32; MAX_SPEAKERS];
@@ -158,10 +170,12 @@ impl SpatialPanner {
         &mut self,
         left: f32,
         right: f32,
-        width: f32,
+        width: StereoWidth,
         output: &mut [f32],
     ) {
-        let width = width.max(0.0);
+        // `left`/`right` stay bare — they are audio samples, not measurements.
+        // Unwrapped once: the angle offset below scales the scalar.
+        let width = width.get().max(0.0);
 
         if width < 0.001 {
             let mono = (left + right) * 0.5;
@@ -177,10 +191,12 @@ impl SpatialPanner {
             .azimuth_smoother
             .process_angle(Azimuth(target_azimuth))
             .get();
-        let smoothed_elevation = self.elevation_smoother.process(target_elevation);
+        let smoothed_elevation = self.elevation_smoother.process(Elevation(target_elevation));
 
         let angle_offset = 15.0 * width;
-        let elev = smoothed_elevation as f64;
+        // The types stop at the trigonometry: vbap takes bare f64 radians-space
+        // degrees, so unwrap once here.
+        let elev = smoothed_elevation.get() as f64;
 
         // Two pre-allocated scratch buffers — one for each virtual source.
         let count_a = self.gains_scratch_a.capacity();

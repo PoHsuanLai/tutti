@@ -311,8 +311,8 @@ pub use flex_data::{
 };
 pub use stream::{
     endpoint_name, function_block_name, product_instance_id, EndpointCapabilities,
-    EndpointDiscoveryRequest, FunctionBlockDirection, FunctionBlocks, JrTimestamps, Protocol,
-    UmpVersion,
+    EndpointDiscoveryRequest, FunctionBlockDirection, FunctionBlockDiscoveryRequest,
+    FunctionBlocks, JrTimestamps, Protocol, UmpVersion, ALL_FUNCTION_BLOCKS,
 };
 pub use sysex::{
     SYSEX7_STATUS_CONTINUE, SYSEX7_STATUS_END, SYSEX7_STATUS_SINGLE, SYSEX7_STATUS_START,

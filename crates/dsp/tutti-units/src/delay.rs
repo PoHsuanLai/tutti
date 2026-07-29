@@ -102,7 +102,9 @@ pub struct DelayLineNode {
     mix: Param<Mix>,
     interpolation: InterpolationMode,
     sample_rate: f64,
-    max_delay_secs: f32,
+    /// The longest delay this line can hold. Kept typed: it is a duration the
+    /// setters clamp against, not scratch.
+    max_delay: Seconds,
 }
 
 impl DelayLineNode {
@@ -111,17 +113,17 @@ impl DelayLineNode {
         delay_secs: impl Into<Seconds>,
         feedback: impl Into<Feedback>,
     ) -> Self {
-        let max_delay_secs = max_delay_secs.into().get();
+        let max_delay = max_delay_secs.into();
         let delay_secs = delay_secs.into();
         let feedback = Feedback::new_clamped(feedback.into().get());
         Self {
-            delay: DelayLine::from_seconds(max_delay_secs, DEFAULT_SR),
+            delay: DelayLine::from_seconds(max_delay.get(), DEFAULT_SR),
             delay_time: Param::new(delay_secs),
             feedback: Param::new(feedback),
             mix: Param::new(Mix::WET),
             interpolation: InterpolationMode::Linear,
             sample_rate: DEFAULT_SR,
-            max_delay_secs,
+            max_delay,
         }
     }
 
@@ -181,7 +183,7 @@ impl AudioUnit for DelayLineNode {
     fn set_sample_rate(&mut self, sample_rate: tutti_core::SampleRate) {
         let sample_rate: f64 = sample_rate.get();
         self.sample_rate = sample_rate;
-        self.delay = DelayLine::from_seconds(self.max_delay_secs, sample_rate);
+        self.delay = DelayLine::from_seconds(self.max_delay.get(), sample_rate);
     }
 
     #[inline]
@@ -247,7 +249,7 @@ impl Clone for DelayLineNode {
             mix: self.mix.handle(),
             interpolation: self.interpolation,
             sample_rate: self.sample_rate,
-            max_delay_secs: self.max_delay_secs,
+            max_delay: self.max_delay,
         }
     }
 }
@@ -296,7 +298,9 @@ pub struct StereoDelayLineNode {
     mix: Param<Mix>,
     interpolation: InterpolationMode,
     sample_rate: f64,
-    max_delay_secs: f32,
+    /// The longest delay this line can hold. Kept typed: it is a duration the
+    /// setters clamp against, not scratch.
+    max_delay: Seconds,
     /// When true, a feedback param-input port follows the audio inputs and
     /// overrides [`Self::feedback`] per sample.
     mod_feedback: bool,
@@ -313,14 +317,14 @@ impl StereoDelayLineNode {
         delay_r_secs: impl Into<Seconds>,
         feedback: impl Into<Feedback>,
     ) -> Self {
-        let max_delay_secs = max_delay_secs.into().get();
+        let max_delay = max_delay_secs.into();
         let delay_l_secs = delay_l_secs.into();
         let delay_r_secs = delay_r_secs.into();
         let feedback = Feedback::new_clamped(feedback.into().get());
         Self {
             delays: vec![
-                DelayLine::from_seconds(max_delay_secs, DEFAULT_SR),
-                DelayLine::from_seconds(max_delay_secs, DEFAULT_SR),
+                DelayLine::from_seconds(max_delay.get(), DEFAULT_SR),
+                DelayLine::from_seconds(max_delay.get(), DEFAULT_SR),
             ],
             delay_time: vec![Param::new(delay_l_secs), Param::new(delay_r_secs)],
             feedback: Param::new(feedback),
@@ -328,7 +332,7 @@ impl StereoDelayLineNode {
             mix: Param::new(Mix::WET),
             interpolation: InterpolationMode::Linear,
             sample_rate: DEFAULT_SR,
-            max_delay_secs,
+            max_delay,
             mod_feedback: false,
             mod_delay_time: false,
         }
@@ -346,12 +350,12 @@ impl StereoDelayLineNode {
         feedback: impl Into<Feedback>,
     ) -> Self {
         let n = channels.max(1);
-        let max_delay_secs = max_delay_secs.into().get();
+        let max_delay = max_delay_secs.into();
         let delay_secs = delay_secs.into();
         let feedback = Feedback::new_clamped(feedback.into().get());
         Self {
             delays: (0..n)
-                .map(|_| DelayLine::from_seconds(max_delay_secs, DEFAULT_SR))
+                .map(|_| DelayLine::from_seconds(max_delay.get(), DEFAULT_SR))
                 .collect(),
             delay_time: (0..n).map(|_| Param::new(delay_secs)).collect(),
             feedback: Param::new(feedback),
@@ -359,7 +363,7 @@ impl StereoDelayLineNode {
             mix: Param::new(Mix::WET),
             interpolation: InterpolationMode::Linear,
             sample_rate: DEFAULT_SR,
-            max_delay_secs,
+            max_delay,
             mod_feedback: false,
             mod_delay_time: false,
         }
@@ -437,28 +441,35 @@ impl StereoDelayLineNode {
     }
 
     /// Set all channel delay times to the same value.
-    pub fn set_delay_time(&self, secs: f32) {
-        let v = Seconds(secs.clamp(0.0, self.max_delay_secs));
+    pub fn set_delay_time(&self, secs: impl Into<Seconds>) {
+        let v = self.clamp_delay(secs.into());
         for dt in &self.delay_time {
             dt.store(v);
         }
     }
 
-    pub fn set_delay_time_l(&self, secs: f32) {
-        self.delay_time[0].store(Seconds(secs.clamp(0.0, self.max_delay_secs)));
+    pub fn set_delay_time_l(&self, secs: impl Into<Seconds>) {
+        self.delay_time[0].store(self.clamp_delay(secs.into()));
     }
 
-    pub fn set_delay_time_r(&self, secs: f32) {
+    pub fn set_delay_time_r(&self, secs: impl Into<Seconds>) {
         let idx = 1.min(self.delay_time.len() - 1);
-        self.delay_time[idx].store(Seconds(secs.clamp(0.0, self.max_delay_secs)));
+        self.delay_time[idx].store(self.clamp_delay(secs.into()));
     }
 
-    pub fn set_feedback(&self, fb: f32) {
-        self.feedback.store(Feedback::new_clamped(fb));
+    pub fn set_feedback(&self, fb: impl Into<Feedback>) {
+        self.feedback.store(Feedback::new_clamped(fb.into().get()));
     }
 
-    pub fn set_mix(&self, mix: f32) {
-        self.mix.store(Mix::new_clamped(mix));
+    pub fn set_mix(&self, mix: impl Into<Mix>) {
+        self.mix.store(Mix::new_clamped(mix.into().get()));
+    }
+
+    /// Constrain a requested delay into `0..=max_delay`. `Seconds` has no
+    /// `clamp` of its own, so the bound is applied in the scalar space.
+    #[inline]
+    fn clamp_delay(&self, secs: Seconds) -> Seconds {
+        Seconds(secs.get().clamp(0.0, self.max_delay.get()))
     }
 
     #[inline]
@@ -496,7 +507,7 @@ impl StereoDelayLineNode {
         );
         let (dl, dr) = match self.delay_time_port() {
             Some(p) => {
-                let secs = read(p).clamp(0.0, self.max_delay_secs);
+                let secs = read(p).clamp(0.0, self.max_delay.get());
                 let samples = secs * self.sample_rate as f32;
                 (samples, samples)
             }
@@ -567,7 +578,7 @@ impl StereoDelayLineNode {
             |p| Feedback::new_clamped(read(p)),
         );
         let d_samples = match self.delay_time_port() {
-            Some(p) => read(p).clamp(0.0, self.max_delay_secs) * self.sample_rate as f32,
+            Some(p) => read(p).clamp(0.0, self.max_delay.get()) * self.sample_rate as f32,
             None => self.delay_time[c].load().get() * self.sample_rate as f32,
         };
         (d_samples, fb.get(), self.mix.load().get())
@@ -602,7 +613,7 @@ impl AudioUnit for StereoDelayLineNode {
         let sample_rate: f64 = sample_rate.get();
         self.sample_rate = sample_rate;
         for d in &mut self.delays {
-            *d = DelayLine::from_seconds(self.max_delay_secs, sample_rate);
+            *d = DelayLine::from_seconds(self.max_delay.get(), sample_rate);
         }
     }
 
@@ -713,7 +724,7 @@ impl Clone for StereoDelayLineNode {
             mix: self.mix.handle(),
             interpolation: self.interpolation,
             sample_rate: self.sample_rate,
-            max_delay_secs: self.max_delay_secs,
+            max_delay: self.max_delay,
             mod_feedback: self.mod_feedback,
             mod_delay_time: self.mod_delay_time,
         }

@@ -14,16 +14,16 @@
 //! `c`; output port `c` is the sum of channel `c` across all sources.
 
 use tutti_core::dsp::{Net, Signal};
-use tutti_core::NodeId;
+use tutti_core::{Azimuth, Elevation, Hz, NodeId, Q};
 
 use crate::{Result, SpatialPannerNode, SvfFilterNode, SvfType};
 
 /// LFE bass-management low-pass cutoff. 120 Hz is the standard consumer LFE
 /// crossover (Dolby/DTS bass management typically low-pass the LFE feed at
 /// 80–120 Hz); 120 Hz is the conservative upper bound.
-const LFE_CUTOFF_HZ: f32 = 120.0;
+const LFE_CUTOFF_HZ: Hz = Hz(120.0);
 /// Butterworth Q for the LFE low-pass (maximally flat, no resonant bump).
-const LFE_Q: f32 = 0.707;
+const LFE_Q: Q = Q(0.707);
 
 /// A dynamic-arity, dynamic-width summing bus: `sources * channels` inputs →
 /// `channels` outputs, summed per channel.
@@ -130,22 +130,25 @@ impl tutti_core::AudioUnit for ChannelSumUnit {
 }
 
 /// One source to place in a surround mix: the node whose (stereo) output feeds a
-/// panner, and the position (`azimuth`, `elevation`, in degrees) to place it at.
-/// Azimuth: 0° front, 90° left, -90° right. Elevation: 0° ear level, +up.
+/// panner, and the position to place it at.
+///
+/// The two coordinates are different types because they behave differently: a
+/// bearing wraps onto the circle, a height saturates at the poles. That is also
+/// what keeps them from being passed in the wrong order.
 #[derive(Debug, Clone, Copy)]
 pub struct SurroundSource {
     pub node: NodeId,
-    pub azimuth: f32,
-    pub elevation: f32,
+    pub azimuth: Azimuth,
+    pub elevation: Elevation,
 }
 
 impl SurroundSource {
-    /// A source at ear level (`elevation = 0`) at the given azimuth.
-    pub fn at(node: NodeId, azimuth: f32) -> Self {
+    /// A source at ear level ([`Elevation::LEVEL`]) at the given bearing.
+    pub fn at(node: NodeId, azimuth: impl Into<Azimuth>) -> Self {
         Self {
             node,
-            azimuth,
-            elevation: 0.0,
+            azimuth: azimuth.into(),
+            elevation: Elevation::LEVEL,
         }
     }
 }
@@ -462,8 +465,8 @@ mod tests {
             .zip(sources)
             .map(|(&node, &(az, el))| SurroundSource {
                 node,
-                azimuth: az,
-                elevation: el,
+                azimuth: Azimuth(az),
+                elevation: Elevation(el),
             })
             .collect();
 

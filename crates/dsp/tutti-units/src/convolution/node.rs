@@ -10,7 +10,7 @@
 use tutti_core::dsp::DEFAULT_SR;
 use tutti_core::Arc;
 use tutti_core::AtomicF32;
-use tutti_core::{AudioUnit, BufferMut, BufferRef, SignalFrame};
+use tutti_core::{Amplitude, AudioUnit, BufferMut, BufferRef, Mix, Samples, SignalFrame};
 
 use super::convolver::Convolver;
 use super::params::WetDry;
@@ -78,17 +78,17 @@ impl ConvolverNode {
         self.params.gain_handle()
     }
 
-    pub fn set_mix(&self, mix: f32) {
+    pub fn set_mix(&self, mix: impl Into<Mix>) {
         self.params.set_mix(mix);
     }
 
-    pub fn set_gain(&self, gain: f32) {
+    pub fn set_gain(&self, gain: impl Into<Amplitude>) {
         self.params.set_gain(gain);
     }
 
-    /// Latency in samples (one FFT block).
-    pub fn latency_samples(&self) -> usize {
-        self.latency_samples
+    /// Latency (one FFT block).
+    pub fn latency_samples(&self) -> Samples {
+        Samples(self.latency_samples)
     }
 
     #[inline]
@@ -118,12 +118,18 @@ impl AudioUnit for ConvolverNode {
 
     #[inline]
     fn tick(&mut self, input: &[f32], output: &mut [f32]) {
+        // Unwrapped once per block: `process_sample` is the per-sample RT path,
+        // where the units are already resolved scratch.
         let (mix, gain) = self.params.load();
+        let (mix, gain) = (mix.get(), gain.get());
         output[0] = self.process_sample(input[0], mix, gain);
     }
 
     fn process(&mut self, size: usize, input: &BufferRef, output: &mut BufferMut) {
+        // Unwrapped once per block: `process_sample` is the per-sample RT path,
+        // where the units are already resolved scratch.
         let (mix, gain) = self.params.load();
+        let (mix, gain) = (mix.get(), gain.get());
         for i in 0..size {
             let s = self.process_sample(input.at_f32(0, i), mix, gain);
             output.set_f32(0, i, s);
@@ -227,16 +233,16 @@ impl StereoConvolverNode {
         self.params.gain_handle()
     }
 
-    pub fn set_mix(&self, mix: f32) {
+    pub fn set_mix(&self, mix: impl Into<Mix>) {
         self.params.set_mix(mix);
     }
 
-    pub fn set_gain(&self, gain: f32) {
+    pub fn set_gain(&self, gain: impl Into<Amplitude>) {
         self.params.set_gain(gain);
     }
 
-    pub fn latency_samples(&self) -> usize {
-        self.latency_samples
+    pub fn latency_samples(&self) -> Samples {
+        Samples(self.latency_samples)
     }
 
     #[inline]
@@ -284,14 +290,20 @@ impl AudioUnit for StereoConvolverNode {
 
     #[inline]
     fn tick(&mut self, input: &[f32], output: &mut [f32]) {
+        // Unwrapped once per block: `process_sample` is the per-sample RT path,
+        // where the units are already resolved scratch.
         let (mix, gain) = self.params.load();
+        let (mix, gain) = (mix.get(), gain.get());
         let (out_l, out_r) = self.process_sample(input[0], input[1], mix, gain);
         output[0] = out_l;
         output[1] = out_r;
     }
 
     fn process(&mut self, size: usize, input: &BufferRef, output: &mut BufferMut) {
+        // Unwrapped once per block: `process_sample` is the per-sample RT path,
+        // where the units are already resolved scratch.
         let (mix, gain) = self.params.load();
+        let (mix, gain) = (mix.get(), gain.get());
         for i in 0..size {
             let (out_l, out_r) =
                 self.process_sample(input.at_f32(0, i), input.at_f32(1, i), mix, gain);

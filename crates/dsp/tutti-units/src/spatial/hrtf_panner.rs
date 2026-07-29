@@ -189,11 +189,13 @@ impl PositionSmoother {
     }
 
     #[inline]
-    fn aim_at(&mut self, azimuth: f32, elevation: f32) {
+    fn aim_at(&mut self, azimuth: Azimuth, elevation: Elevation) {
         // Normalize on the way in, each coordinate by its own rule: the
         // bearing wraps onto the circle, the height saturates at the poles.
-        self.target_azimuth = Azimuth(azimuth).wrap().get();
-        self.target_elevation = Elevation::new_clamped(elevation).get();
+        // Stored unwrapped: the smoothers re-wrap per frame, and these are
+        // private scratch feeding `sin`/`cos`.
+        self.target_azimuth = azimuth.wrap().get();
+        self.target_elevation = Elevation::new_clamped(elevation.get()).get();
     }
 
     fn retune(&mut self, sample_rate: u32) {
@@ -209,8 +211,9 @@ impl PositionSmoother {
         // behind the listener (170 -> -170, a 20 degree move) swept 340 degrees
         // the wrong way around the head.
         let az = self.azimuth.process_angle(Azimuth(self.target_azimuth));
-        let el = self.elevation.process(self.target_elevation);
-        direction_from_degrees(az.get(), el)
+        let el = self.elevation.process(Elevation(self.target_elevation));
+        // Types stop at the sphere lookup — it takes bare degrees.
+        direction_from_degrees(az.get(), el.get())
     }
 }
 
@@ -239,7 +242,7 @@ impl HrtfBinaural {
 
     /// Lock-free-ish position update (called from the audio path via the node).
     #[inline]
-    pub(crate) fn set_position(&mut self, azimuth: f32, elevation: f32) {
+    pub(crate) fn set_position(&mut self, azimuth: Azimuth, elevation: Elevation) {
         self.aim.aim_at(azimuth, elevation);
     }
 

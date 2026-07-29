@@ -216,13 +216,21 @@ fn collect<K: ModSourceKind>(
         collected.sources.push((entity, source));
 
         // A curve is clocked by the beat, so a beat-synced rate is already in
-        // its own units (cycles per beat → beats per cycle is the reciprocal).
+        // the curve's own units: `SourceRate::frequency` IS beats-per-cycle
+        // (the driver derives phase as `beat / frequency`), which is exactly
+        // what `BeatLfo` wants — so it passes through unchanged.
+        //
+        // This used to take the reciprocal, on the reading that the field meant
+        // cycles-per-beat. The two readings coincide at 1.0, which hid it: at
+        // `Hz(2.0)` the scalar path peaked at beat 0.5 while the curve path sat
+        // flat, so a plugin param and a native param driven by the same LFO ran
+        // at reciprocal rates.
+        //
         // A free-running rate is in Hz and has no fixed beat mapping, so it has
         // no curve form — the scalar path stays correct for it.
         if rate.beat_synced {
-            let freq = rate.frequency.get();
-            if freq > 0.0 {
-                let beats_per_cycle = 1.0 / freq;
+            let beats_per_cycle = rate.frequency.get();
+            if beats_per_cycle > 0.0 {
                 // Cloned into the closure: the builder outlives this query
                 // borrow, and `rebuild` calls it once per route on the source.
                 let kind = kind.clone();

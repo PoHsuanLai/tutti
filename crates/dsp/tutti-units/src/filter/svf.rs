@@ -383,7 +383,7 @@ pub struct StereoSvfFilterNode<F: Real = f64> {
 }
 
 impl<F: Real> StereoSvfFilterNode<F> {
-    pub fn new(filter_type: SvfType, frequency: f32, q: f32) -> Self {
+    pub fn new(filter_type: SvfType, frequency: impl Into<Hz>, q: impl Into<Q>) -> Self {
         Self::with_channels(2, filter_type, frequency, q)
     }
 
@@ -392,12 +392,19 @@ impl<F: Real> StereoSvfFilterNode<F> {
     /// state is replicated. `with_channels(2, …)` is bit-identical to
     /// [`Self::new`]. Speaker placement is the upstream panner's job — this is a
     /// per-channel filter, not a spatial process.
-    pub fn with_channels(channels: usize, filter_type: SvfType, frequency: f32, q: f32) -> Self {
+    pub fn with_channels(
+        channels: usize,
+        filter_type: SvfType,
+        frequency: impl Into<Hz>,
+        q: impl Into<Q>,
+    ) -> Self {
+        let frequency = frequency.into();
+        let q = q.into();
         let n = channels.max(1);
         let mut node = Self {
             filter_type,
-            frequency: Param::new(Hz(frequency)),
-            q: Param::new(Q(q)),
+            frequency: Param::new(frequency),
+            q: Param::new(q),
             gain_db: Param::new(Db(0.0)),
             sample_rate: DEFAULT_SR,
             coeffs: SvfCoefficients::zeroed(),
@@ -405,7 +412,7 @@ impl<F: Real> StereoSvfFilterNode<F> {
             mod_cutoff: false,
             mod_q: false,
         };
-        node.update_coefficients(frequency, q, 0.0);
+        node.update_coefficients(frequency.get(), q.get(), 0.0);
         node
     }
 
@@ -416,15 +423,17 @@ impl<F: Real> StereoSvfFilterNode<F> {
     /// port), so the UI handle path is unchanged.
     pub fn with_param_inputs(
         filter_type: SvfType,
-        frequency: f32,
-        q: f32,
+        frequency: impl Into<Hz>,
+        q: impl Into<Q>,
         mod_cutoff: bool,
         mod_q: bool,
     ) -> Self {
+        let frequency = frequency.into();
+        let q = q.into();
         let mut node = Self {
             filter_type,
-            frequency: Param::new(Hz(frequency)),
-            q: Param::new(Q(q)),
+            frequency: Param::new(frequency),
+            q: Param::new(q),
             gain_db: Param::new(Db(0.0)),
             sample_rate: DEFAULT_SR,
             coeffs: SvfCoefficients::zeroed(),
@@ -432,7 +441,7 @@ impl<F: Real> StereoSvfFilterNode<F> {
             mod_cutoff,
             mod_q,
         };
-        node.update_coefficients(frequency, q, 0.0);
+        node.update_coefficients(frequency.get(), q.get(), 0.0);
         node
     }
 
@@ -457,9 +466,10 @@ impl<F: Real> StereoSvfFilterNode<F> {
             .then_some(self.width() + self.mod_cutoff as usize)
     }
 
-    pub fn with_gain_db(mut self, db: f32) -> Self {
-        self.gain_db = Param::new(Db(db));
-        self.update_coefficients(self.frequency.load().0, self.q.load().0, db);
+    pub fn with_gain_db(mut self, db: impl Into<Db>) -> Self {
+        let db = db.into();
+        self.gain_db = Param::new(db);
+        self.update_coefficients(self.frequency.load().get(), self.q.load().get(), db.get());
         self
     }
 
@@ -475,16 +485,16 @@ impl<F: Real> StereoSvfFilterNode<F> {
         self.gain_db.as_atomic()
     }
 
-    pub fn set_frequency(&self, hz: f32) {
-        self.frequency.store(Hz(hz.max(1.0)));
+    pub fn set_frequency(&self, hz: impl Into<Hz>) {
+        self.frequency.store(Hz(hz.into().get().max(1.0)));
     }
 
-    pub fn set_q(&self, q: f32) {
-        self.q.store(Q::new_clamped(q));
+    pub fn set_q(&self, q: impl Into<Q>) {
+        self.q.store(Q::new_clamped(q.into().get()));
     }
 
-    pub fn set_gain_db(&self, db: f32) {
-        self.gain_db.store(Db(db));
+    pub fn set_gain_db(&self, db: impl Into<Db>) {
+        self.gain_db.store(db.into());
     }
 
     pub fn set_filter_type(&mut self, filter_type: SvfType) {

@@ -28,30 +28,31 @@ impl SpatialTarget {
         }
     }
 
-    /// The raw pair, for the panners' trigonometry.
+    /// The typed pair, for the panners' trigonometry.
     ///
-    /// Untyped on purpose, for now: both panners work in bare `f32` all the way
-    /// down to `sin`/`cos`, so typing this boundary would just add a `.get()`
-    /// at every use. It is the panners' *smoothing* that needs the types —
-    /// that is where the long-way-around bug lives, and it is a separate change.
+    /// Typed rather than raw: both panners immediately rebuild `Azimuth(..)` /
+    /// `Elevation(..)` from what they receive here (that is where the two
+    /// long-way-around bugs lived), so handing out bare floats only created a
+    /// strip/re-wrap round trip that a caller could get wrong in between.
     #[inline]
-    pub fn load(&self) -> (f32, f32) {
-        (self.azimuth.load().0, self.elevation.load().0)
+    pub fn load(&self) -> (Azimuth, Elevation) {
+        (self.azimuth.load(), self.elevation.load())
     }
 
     /// Store a bearing/height pair, normalized on the way in.
     ///
     /// Each coordinate is constrained the way its own space requires: the
-    /// bearing wraps onto the circle, the height clamps at the poles. Callers
-    /// pass raw degrees from UI or automation and cannot get this pairing
-    /// wrong, because the two types no longer accept each other's treatment.
-    pub fn store(&self, azimuth: f32, elevation: f32) {
-        self.azimuth.store(Azimuth(azimuth).wrap());
-        self.elevation.store(Elevation::new_clamped(elevation));
+    /// bearing wraps onto the circle, the height clamps at the poles. Taking
+    /// the two newtypes is what makes the pairing unmixable — with a raw
+    /// `(f32, f32)` a caller could swap them and the compiler would agree.
+    pub fn store(&self, azimuth: impl Into<Azimuth>, elevation: impl Into<Elevation>) {
+        self.azimuth.store(azimuth.into().wrap());
+        self.elevation
+            .store(Elevation::new_clamped(elevation.into().get()));
     }
 
     pub fn reset_origin(&self) {
-        self.store(0.0, 0.0);
+        self.store(Azimuth::FRONT, Elevation::LEVEL);
     }
 }
 
@@ -135,7 +136,7 @@ impl Clone for SpatialPannerNode {
         };
 
         let (azimuth, elevation) = self.target.load();
-        let spread = self.spread.load().0;
+        let spread = self.spread.load();
         new_panner.set_position(azimuth, elevation);
         new_panner.set_spread(spread);
 
@@ -210,38 +211,39 @@ impl SpatialPannerNode {
         }
     }
 
-    /// Set position in degrees (thread-safe, lock-free)
+    /// Set position (thread-safe, lock-free).
     ///
-    /// - `azimuth`: Horizontal angle (-180 to 180, 0 = front, 90 = left, -90 = right)
-    /// - `elevation`: Vertical angle (-90 to 90, 0 = ear level, positive = up)
-    pub fn set_position(&self, azimuth: f32, elevation: f32) {
+    /// - `azimuth`: bearing, wraps onto the circle (0 = front, 90 = left, -90 = right)
+    /// - `elevation`: height, saturates at the poles (0 = ear level, positive = up)
+    pub fn set_position(&self, azimuth: impl Into<Azimuth>, elevation: impl Into<Elevation>) {
         self.target.store(azimuth, elevation);
     }
 
-    pub fn azimuth(&self) -> f32 {
-        self.target.azimuth.load().0
+    pub fn azimuth(&self) -> Azimuth {
+        self.target.azimuth.load()
     }
 
-    pub fn elevation(&self) -> f32 {
-        self.target.elevation.load().0
+    pub fn elevation(&self) -> Elevation {
+        self.target.elevation.load()
     }
 
     /// Set spread factor (0.0 = point source, 1.0 = diffuse)
-    pub fn set_spread(&self, spread: f32) {
-        self.spread.store(Spread::new_clamped(spread));
+    pub fn set_spread(&self, spread: impl Into<Spread>) {
+        self.spread.store(Spread::new_clamped(spread.into().get()));
     }
 
-    pub fn spread(&self) -> f32 {
-        self.spread.load().0
+    pub fn spread(&self) -> Spread {
+        self.spread.load()
     }
 
     /// Set stereo width for stereo input mode (0.0 = mono, 1.0 = full stereo)
-    pub fn set_width(&self, width: f32) {
-        self.width.store(StereoWidth::new_clamped(width));
+    pub fn set_width(&self, width: impl Into<StereoWidth>) {
+        self.width
+            .store(StereoWidth::new_clamped(width.into().get()));
     }
 
-    pub fn width(&self) -> f32 {
-        self.width.load().0
+    pub fn width(&self) -> StereoWidth {
+        self.width.load()
     }
 
     pub fn num_channels(&self) -> usize {
@@ -251,7 +253,7 @@ impl SpatialPannerNode {
     #[inline]
     fn sync_position(&mut self) {
         let (azimuth, elevation) = self.target.load();
-        let spread = self.spread.load().0;
+        let spread = self.spread.load();
         self.panner.set_position(azimuth, elevation);
         self.panner.set_spread(spread);
     }
@@ -270,8 +272,8 @@ impl AudioUnit for SpatialPannerNode {
         self.target.reset_origin();
         self.spread.store(Spread::POINT);
         self.width.store(StereoWidth::NATURAL);
-        self.panner.set_position(0.0, 0.0);
-        self.panner.set_spread(0.0);
+        self.panner.set_position(Azimuth::FRONT, Elevation::LEVEL);
+        self.panner.set_spread(Spread::POINT);
     }
 
     fn set_sample_rate(&mut self, sample_rate: tutti_core::SampleRate) {
@@ -282,7 +284,7 @@ impl AudioUnit for SpatialPannerNode {
     fn tick(&mut self, input: &[f32], output: &mut [f32]) {
         self.sync_position();
 
-        let width = self.width.load().0;
+        let width = self.width.load();
 
         let left = input.first().copied().unwrap_or(0.0);
         let right = input.get(1).copied().unwrap_or(left);
@@ -303,7 +305,7 @@ impl AudioUnit for SpatialPannerNode {
     fn process(&mut self, size: usize, input: &BufferRef, output: &mut BufferMut) {
         self.sync_position();
 
-        let width = self.width.load().0;
+        let width = self.width.load();
         let num_outputs = self.layout.count() as usize;
 
         // scratch_output is pre-sized to num_outputs in from_panner and Clone.
@@ -396,9 +398,11 @@ mod tests {
         let cloned = panner.clone();
 
         assert_eq!(cloned.num_channels(), panner.num_channels());
-        assert!((cloned.azimuth() - panner.azimuth()).abs() < 0.001);
-        assert!((cloned.elevation() - panner.elevation()).abs() < 0.001);
-        assert!((cloned.spread() - panner.spread()).abs() < 0.001);
+        // Compared via `.get()`: the angular units omit `Sub` on purpose (a
+        // circle has no ends), so a difference is taken in the scalar space.
+        assert!((cloned.azimuth().get() - panner.azimuth().get()).abs() < 0.001);
+        assert!((cloned.elevation().get() - panner.elevation().get()).abs() < 0.001);
+        assert!((cloned.spread().get() - panner.spread().get()).abs() < 0.001);
     }
 
     #[test]
@@ -408,12 +412,12 @@ mod tests {
 
         // Setting position on original should be visible from clone
         panner.set_position(90.0, 45.0);
-        assert!((cloned.azimuth() - 90.0).abs() < 0.001);
-        assert!((cloned.elevation() - 45.0).abs() < 0.001);
+        assert!((cloned.azimuth().get() - 90.0).abs() < 0.001);
+        assert!((cloned.elevation().get() - 45.0).abs() < 0.001);
 
         // And vice versa
         cloned.set_position(-60.0, 10.0);
-        assert!((panner.azimuth() - (-60.0)).abs() < 0.001);
-        assert!((panner.elevation() - 10.0).abs() < 0.001);
+        assert!((panner.azimuth().get() - (-60.0)).abs() < 0.001);
+        assert!((panner.elevation().get() - 10.0).abs() < 0.001);
     }
 }

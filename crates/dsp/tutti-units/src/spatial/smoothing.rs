@@ -1,28 +1,31 @@
 //! One-pole exponential smoother used to de-zipper the panners' atomic
 //! position changes. Private to `spatial` — the only consumer.
 
-use tutti_core::{Azimuth, SampleRate, Seconds};
+use tutti_core::{Azimuth, Elevation, SampleRate, Seconds};
 
 pub const DEFAULT_POSITION_SMOOTH_TIME: Seconds = Seconds(0.05);
 
 pub struct ExponentialSmoother {
     value: f32,
     coeff: f32,
-    smooth_secs: f32,
+    /// The time constant this smoother was built with, kept so
+    /// [`set_sample_rate`](Self::set_sample_rate) can re-derive `coeff` without
+    /// the caller re-supplying it.
+    smooth_time: Seconds,
 }
 
 impl ExponentialSmoother {
     pub fn new(smooth_time: impl Into<Seconds>, sample_rate: impl Into<SampleRate>) -> Self {
-        let smooth_secs = smooth_time.into().get();
+        let smooth_time = smooth_time.into();
         Self {
             value: 0.0,
-            coeff: Self::coeff(smooth_secs, sample_rate.into().get()),
-            smooth_secs,
+            coeff: Self::coeff(smooth_time, sample_rate.into()),
+            smooth_time,
         }
     }
 
-    fn coeff(smooth_secs: f32, sr: f64) -> f32 {
-        let coeff = 1.0 - (-1.0 / (smooth_secs as f64 * sr)).exp() as f32;
+    fn coeff(smooth_time: Seconds, sr: SampleRate) -> f32 {
+        let coeff = 1.0 - (-1.0 / (smooth_time.get() as f64 * sr.get())).exp() as f32;
         coeff.clamp(0.0, 1.0)
     }
 
@@ -30,17 +33,19 @@ impl ExponentialSmoother {
     /// original smoothing time constant. Without this the de-zipper ramp runs
     /// at whatever rate the smoother was built with.
     pub fn set_sample_rate(&mut self, sample_rate: impl Into<SampleRate>) {
-        self.coeff = Self::coeff(self.smooth_secs, sample_rate.into().get());
+        self.coeff = Self::coeff(self.smooth_time, sample_rate.into());
     }
 
-    /// Step toward `target` along the number line.
+    /// Step toward a target *height* along the number line.
     ///
-    /// Correct for any quantity with two ends and no seam — elevation, gain,
-    /// width. **Wrong for a bearing**: see [`process_angle`](Self::process_angle).
+    /// Correct for a quantity with two ends and no seam. **Wrong for a
+    /// bearing**: see [`process_angle`](Self::process_angle). The pair is the
+    /// point — one entry per space, each typed, so a bearing cannot reach the
+    /// linear form by accident.
     #[inline]
-    pub fn process(&mut self, target: f32) -> f32 {
-        self.value += self.coeff * (target - self.value);
-        self.value
+    pub fn process(&mut self, target: Elevation) -> Elevation {
+        self.value += self.coeff * (target.get() - self.value);
+        Elevation(self.value)
     }
 
     /// Step toward a target *bearing*, taking the short way around.
@@ -62,6 +67,12 @@ impl ExponentialSmoother {
         next
     }
 
+    /// Seed the running value directly.
+    ///
+    /// Bare `f32` on purpose: `value` is the state *both* entry points share —
+    /// degrees of bearing under [`process_angle`](Self::process_angle), degrees
+    /// of height under [`process`](Self::process) — so no single unit describes
+    /// it. Callers seed it in whichever space they then step in.
     #[allow(dead_code)]
     pub fn reset(&mut self, value: f32) {
         self.value = value;
@@ -101,7 +112,7 @@ mod tests {
         let mut linear = ExponentialSmoother::new(Seconds(0.05), SampleRate(48_000.0));
         linear.coeff = 0.5;
         linear.reset(170.0);
-        assert_eq!(linear.process(-170.0), 0.0);
+        assert_eq!(linear.process(Elevation(-170.0)), Elevation(0.0));
     }
 
     #[test]
@@ -124,7 +135,7 @@ mod tests {
         let mut s = ExponentialSmoother::new(Seconds(0.05), SampleRate(48_000.0));
         s.coeff = 0.5;
         s.reset(0.0);
-        assert_eq!(s.process(90.0), 45.0);
-        assert_eq!(s.process(90.0), 67.5);
+        assert_eq!(s.process(Elevation(90.0)), Elevation(45.0));
+        assert_eq!(s.process(Elevation(90.0)), Elevation(67.5));
     }
 }

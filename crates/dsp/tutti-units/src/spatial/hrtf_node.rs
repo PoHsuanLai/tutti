@@ -7,7 +7,7 @@
 //! [`HrtfBinauralNode::new`] takes the dataset bytes.
 
 use tutti_core::ChannelLayout;
-use tutti_core::{AudioUnit, BufferMut, BufferRef, Mix, Param, SignalFrame};
+use tutti_core::{AudioUnit, Azimuth, BufferMut, BufferRef, Elevation, Mix, Param, SignalFrame};
 
 use super::hrtf_panner::{HrtfBinaural, HrtfBinauralError};
 use super::nodes::SpatialTarget;
@@ -49,29 +49,29 @@ impl HrtfBinauralNode {
         })
     }
 
-    /// Azimuth in degrees (-180..180, 0=front, 90=left), elevation (-90..90,
+    /// Bearing (wraps: 0=front, 90=left) and height (saturates: -90..90,
     /// 0=ear level). Lock-free.
-    pub fn set_position(&self, azimuth: f32, elevation: f32) {
+    pub fn set_position(&self, azimuth: impl Into<Azimuth>, elevation: impl Into<Elevation>) {
         self.target.store(azimuth, elevation);
     }
 
-    pub fn azimuth(&self) -> f32 {
-        self.target.azimuth.load().0
+    pub fn azimuth(&self) -> Azimuth {
+        self.target.azimuth.load()
     }
 
-    pub fn elevation(&self) -> f32 {
-        self.target.elevation.load().0
+    pub fn elevation(&self) -> Elevation {
+        self.target.elevation.load()
     }
 
     /// Kept for API parity with the ITD/ILD node. HRTF rendering is inherently
     /// full-sphere, so width is a post-render dry/processed blend rather than a
     /// virtual-source spread: 1.0 = full HRTF, 0.0 = center/mono passthrough.
-    pub fn set_width(&self, width: f32) {
-        self.width.store(Mix::new_clamped(width));
+    pub fn set_width(&self, width: impl Into<Mix>) {
+        self.width.store(Mix::new_clamped(width.into().get()));
     }
 
-    pub fn width(&self) -> f32 {
-        self.width.load().0
+    pub fn width(&self) -> Mix {
+        self.width.load()
     }
 
     #[inline]
@@ -271,7 +271,7 @@ mod tests {
         node.set_position(45.0, 10.0);
         let c = node.clone();
         // Clone shares the atomic position handle (parity with the ITD node).
-        assert_eq!(c.azimuth(), 45.0);
-        assert_eq!(c.elevation(), 10.0);
+        assert_eq!(c.azimuth(), Azimuth(45.0));
+        assert_eq!(c.elevation(), Elevation(10.0));
     }
 }

@@ -2262,3 +2262,84 @@ fn physical_ui_mapping_is_read_per_plugin() {
         );
     }
 }
+
+/// `IXmlRepresentationController` — the hardware-controller page layout a
+/// plugin ships for surfaces like Steinberg's CMC/Nuage.
+///
+/// The name is load-bearing: `host-checker` only answers for the exact
+/// `GENERIC_8_CELLS` representation ("Generic 8 Cells",
+/// `ivstrepresentation.h:249`) and returns nothing for anything else
+/// (`hostcheckercontroller.cpp:1455`). So a host that dropped the caller's
+/// `name` on the floor gets `None` for the supported case, and a host that
+/// ignored it entirely would wrongly answer for the unsupported one.
+#[test]
+fn xml_representation_is_fetched_for_a_supported_layout() {
+    let Some(checker) = sample("host-checker.vst3") else {
+        eprintln!("host-checker not built; skipping");
+        return;
+    };
+
+    let xml = checker.xml_representation(
+        "Steinberg Media Technologies",
+        "Generic 8 Cells",
+        "1.0",
+        "tutti",
+    );
+    let xml = xml.expect(
+        "host-checker implements IXmlRepresentationController for \
+         \"Generic 8 Cells\", so the host must return its stream",
+    );
+    assert!(
+        xml.contains("<") && xml.len() > 100,
+        "the representation should be an XML document, got {} bytes: {:.80}",
+        xml.len(),
+        xml
+    );
+
+    // The discriminating half: an unknown layout must yield nothing rather
+    // than the same document under a different name.
+    assert!(
+        checker
+            .xml_representation(
+                "Steinberg Media Technologies",
+                "No Such Layout",
+                "1.0",
+                "tutti"
+            )
+            .is_none(),
+        "an unsupported representation name still returned a document — the \
+         `name` argument is not reaching the plugin"
+    );
+}
+
+/// `IParameterFunctionName` — "which parameter is the dry/wet mix?", so a host
+/// can bind a generic control without knowing the plugin's parameter layout.
+///
+/// Two known function names map to two *different* ids, and an unknown one maps
+/// to nothing (`hostcheckercontroller.cpp:1744`). A host that ignored the name
+/// would return the same id for both, or something for `Bogus`.
+#[test]
+fn param_id_for_function_name_resolves_known_functions() {
+    let Some(checker) = sample("host-checker.vst3") else {
+        eprintln!("host-checker not built; skipping");
+        return;
+    };
+
+    let dry_wet = checker
+        .param_id_for_function_name(0, "DryWetMix")
+        .expect("host-checker maps the DryWetMix function name");
+    let randomize = checker
+        .param_id_for_function_name(0, "Randomize")
+        .expect("host-checker maps the Randomize function name");
+
+    assert_ne!(
+        dry_wet, randomize,
+        "two different function names resolved to the same parameter id \
+         ({dry_wet}) — the name is being ignored"
+    );
+    assert_eq!(
+        checker.param_id_for_function_name(0, "NotAFunctionName"),
+        None,
+        "an unknown function name resolved to a parameter id"
+    );
+}

@@ -11,6 +11,8 @@
 //!   [`crossfade_audio_node`]), [`despawn`] ([`reconcile_node_despawn`]) and
 //!   [`commit`] ([`commit_graph`]) — composed by [`GraphReconcilePlugin`],
 //! - params ([`AudioParam`]) in [`param`],
+//! - the I/O edge ([`AudioPump`]) in [`io`] — an `AudioIn → AudioOut` pump
+//!   whose thread the ECS owns, so its sink is finalized exactly once,
 //! - and the wrappers for metering ([`MeteringRes`]) and transport
 //!   ([`TransportRes`], [`MetronomeRes`]).
 //!
@@ -19,6 +21,7 @@
 
 pub mod commit;
 pub mod despawn;
+pub mod io;
 pub mod metering;
 pub mod param;
 pub mod plugin;
@@ -31,6 +34,9 @@ pub mod wire;
 
 pub use commit::commit_graph;
 pub use despawn::reconcile_node_despawn;
+pub use io::{
+    drain_audio_pumps, finalize_removed_pumps, AudioPump, AudioPumpAppExt, PumpFinished, IDLE_PARK,
+};
 pub use metering::MeteringRes;
 pub use param::{reconcile_audio_param, AudioParam, AudioParamAppExt};
 pub use plugin::GraphReconcilePlugin;

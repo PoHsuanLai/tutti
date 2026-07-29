@@ -1,7 +1,41 @@
 //! Structures and types for interfacing with the VST 2.4 API.
 
+use std::fmt;
 use std::os::raw::c_void;
 use std::sync::Arc;
+
+/// Why an `effGetChunk` produced no usable buffer.
+///
+/// The distinction exists because "the plugin has nothing saved" and "the plugin
+/// tried to save and failed" call for opposite host behaviour, and `copy_chunk`
+/// used to fold both into an empty `Vec`. A host that cannot tell them apart
+/// silently downgrades a failed chunk save to a parameter snapshot and drops
+/// every piece of non-parameter state the plugin held — which is exactly what
+/// `tutti-vst2-host::save_state` did, with no error and nothing logged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChunkError {
+    /// The plugin returned a negative length: an explicit error return.
+    Failed(isize),
+    /// The plugin reported `len > 0` but left the out-pointer null, so there is
+    /// no buffer to copy however much it claims to have written.
+    NullBuffer(isize),
+}
+
+impl fmt::Display for ChunkError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Failed(len) => {
+                write!(f, "plugin returned a negative effGetChunk length ({len})")
+            }
+            Self::NullBuffer(len) => write!(
+                f,
+                "plugin reported {len} bytes of chunk data but left the pointer null"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ChunkError {}
 
 use self::consts::*;
 use crate::{

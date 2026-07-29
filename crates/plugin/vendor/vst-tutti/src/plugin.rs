@@ -7,7 +7,7 @@ use std::ptr;
 use std::sync::Arc;
 
 use crate::{
-    api::{self, consts::VST_MAGIC, AEffect, HostCallbackProc, Supported, TimeInfo},
+    api::{self, consts::VST_MAGIC, AEffect, ChunkError, HostCallbackProc, Supported, TimeInfo},
     buffer::AudioBuffer,
     channels::ChannelInfo,
     editor::Editor,
@@ -806,13 +806,54 @@ pub trait PluginParameters: Sync {
         Vec::new()
     }
 
+    /// Host-side chunk read that can report a *failed* save.
+    ///
+    /// [`get_preset_data`](Self::get_preset_data) answers `Vec<u8>`, which gives
+    /// an empty result two irreconcilable meanings: "this plugin has nothing
+    /// saved" and "this plugin's `effGetChunk` returned an error". A host that
+    /// cannot separate them silently downgrades the second to a parameter
+    /// snapshot and loses every piece of non-parameter state the plugin held —
+    /// the incident this method exists for.
+    ///
+    /// The default delegates to the infallible method and never errs, which is
+    /// right for a *plugin*: a plugin implementation is the source of the bytes
+    /// and has no dispatch result to relay. The host's
+    /// `PluginParametersInstance` overrides it with the real `effGetChunk`
+    /// return.
+    fn try_get_preset_data(&self) -> Result<Vec<u8>, ChunkError> {
+        Ok(self.get_preset_data())
+    }
+
+    /// Bank counterpart of
+    /// [`try_get_preset_data`](Self::try_get_preset_data).
+    fn try_get_bank_data(&self) -> Result<Vec<u8>, ChunkError> {
+        Ok(self.get_bank_data())
+    }
+
     /// If `preset_chunks` is set to true in plugin info, this should load a preset from the given
     /// chunk data.
-    fn load_preset_data(&self, data: &[u8]) {}
+    ///
+    /// Returns whether the chunk was **accepted**. VST 2.4 has `effSetChunk`
+    /// return `1` on success, and a plugin handed a truncated blob, a blob from
+    /// a different plugin, or a format version it no longer reads is expected to
+    /// reject it. Host-side this was a `()` — the SDK's return was dispatched and
+    /// then dropped on the floor, so `tutti-vst2-host::load_state` reported
+    /// `Ok(())` for a preset the plugin had refused outright and the user saw a
+    /// session restore "succeed" with every plugin at its defaults.
+    ///
+    /// Plugin authors: the default returns `true`, so a plugin that stores
+    /// whatever it is given keeps compiling unchanged. Return `false` only to
+    /// *reject*; a plugin without chunk support never receives this call.
+    fn load_preset_data(&self, data: &[u8]) -> bool {
+        true
+    }
 
     /// If `preset_chunks` is set to true in plugin info, this should load a preset bank from the
-    /// given chunk data.
-    fn load_bank_data(&self, data: &[u8]) {}
+    /// given chunk data. Returns whether the chunk was accepted — see
+    /// [`load_preset_data`](Self::load_preset_data).
+    fn load_bank_data(&self, data: &[u8]) -> bool {
+        true
+    }
 }
 
 struct DummyPluginParameters;

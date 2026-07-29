@@ -239,11 +239,16 @@ fn dispatch_inner(
         Ok(OpCode::SetData) => {
             let chunks = unsafe { slice::from_raw_parts(ptr as *mut u8, value as usize) };
 
-            if index == 0 {
-                params.load_bank_data(chunks);
+            // VST 2.4: `effSetChunk` returns 1 when the plugin accepted the
+            // blob. This used to fall through to the trailing `0`, which a
+            // spec-conforming host reads as a *rejection* — so a plugin built on
+            // this fork could not tell a host it had loaded a preset.
+            let accepted = if index == 0 {
+                params.load_bank_data(chunks)
             } else {
-                params.load_preset_data(chunks);
-            }
+                params.load_preset_data(chunks)
+            };
+            return accepted as isize;
         }
 
         Ok(OpCode::ProcessEvents) => {

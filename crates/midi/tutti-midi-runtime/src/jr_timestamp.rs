@@ -63,15 +63,17 @@ impl JrClock {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct JrStamper {
     clock: JrClock,
-    group: u8,
 }
 
 impl JrStamper {
-    /// A stamper for `sample_rate` Hz emitting timestamps on UMP `group`.
-    pub fn new(sample_rate: f64, group: u8) -> Self {
+    /// A stamper for `sample_rate` Hz.
+    ///
+    /// There is no group: JR Timestamps are utility messages, which M2-104-UM
+    /// §2.1.2 defines as groupless — a stamp applies to the stream, not to one
+    /// group within it.
+    pub fn new(sample_rate: f64) -> Self {
         Self {
             clock: JrClock::new(sample_rate),
-            group: group & 0x0F,
         }
     }
 
@@ -86,7 +88,7 @@ impl JrStamper {
         let mut out = Vec::with_capacity(events.len() * 2);
         for ev in events {
             let ticks = self.clock.ticks_at(origin_samples + ev.frame_offset as u64);
-            out.push(MidiEvent::jr_timestamp(self.group, ticks).with_frame_offset(ev.frame_offset));
+            out.push(MidiEvent::jr_timestamp(ticks).with_frame_offset(ev.frame_offset));
             out.push(*ev);
         }
         out
@@ -124,9 +126,9 @@ pub struct JrStream {
 }
 
 impl JrStream {
-    /// A stream stamping at `sample_rate` Hz on UMP `group`, starting at origin 0.
-    pub fn new(sample_rate: f64, group: u8) -> Self {
-        Self::with_stamper(JrStamper::new(sample_rate, group))
+    /// A stream stamping at `sample_rate` Hz, starting at origin 0.
+    pub fn new(sample_rate: f64) -> Self {
+        Self::with_stamper(JrStamper::new(sample_rate))
     }
 
     /// A stream over an existing stamper.
@@ -252,7 +254,7 @@ mod tests {
     /// A stream advances its own origin, so successive blocks keep climbing.
     #[test]
     fn a_stream_advances_its_origin_across_blocks() {
-        let mut stream = JrStream::new(48_000.0, 0);
+        let mut stream = JrStream::new(48_000.0);
         let events = [
             MidiEvent::note_on(0, 0, 60, 0x8000).with_frame_offset(0),
             MidiEvent::note_off(0, 0, 60, 0).with_frame_offset(24_000),
@@ -278,7 +280,7 @@ mod tests {
     /// tick and would prove nothing either way.
     #[test]
     fn two_producers_on_one_stream_keep_stamps_monotonic() {
-        let mut wire = JrStream::new(48_000.0, 0);
+        let mut wire = JrStream::new(48_000.0);
 
         // One 512-frame block each, the event at the block's end.
         let clock_block = [MidiEvent::note_on(0, 0, 60, 0x8000).with_frame_offset(511)];
@@ -298,7 +300,7 @@ mod tests {
 
     #[test]
     fn stamp_block_prefixes_each_event() {
-        let stamper = JrStamper::new(48_000.0, 0);
+        let stamper = JrStamper::new(48_000.0);
         let events = [
             MidiEvent::note_on(0, 0, 60, 0x8000).with_frame_offset(0),
             MidiEvent::note_off(0, 0, 60, 0).with_frame_offset(24_000),
@@ -315,7 +317,7 @@ mod tests {
     fn stamp_then_observe_recovers_spacing() {
         // Two events 0.25 s apart at 48 kHz → the receiver reconstructs ~0.25 s.
         let sr = 48_000.0;
-        let stamper = JrStamper::new(sr, 0);
+        let stamper = JrStamper::new(sr);
         let quarter_second = (sr * 0.25) as u32; // 12000 samples
         let events = [
             MidiEvent::note_on(0, 0, 60, 0x8000).with_frame_offset(0),
@@ -337,11 +339,7 @@ mod tests {
         assert_eq!(nonzero.len(), 1, "exactly one inter-event gap");
         let gap = *nonzero[0];
         let expected = Duration::from_secs_f64(0.25);
-        let diff = if gap > expected {
-            gap - expected
-        } else {
-            expected - gap
-        };
+        let diff = gap.abs_diff(expected);
         assert!(
             diff < Duration::from_secs_f64(JR_SECONDS_PER_TICK * 2.0),
             "recovered {gap:?} within one tick of {expected:?}"
@@ -358,9 +356,9 @@ mod tests {
     fn observe_handles_16bit_wrap() {
         // Two timestamps straddling the wrap: 0xFFF0 → 0x0010 is a delta of 0x20.
         let mut rx = JrReceiver::new();
-        assert_eq!(rx.observe(&MidiEvent::jr_timestamp(0, 0xFFF0)), None);
+        assert_eq!(rx.observe(&MidiEvent::jr_timestamp(0xFFF0)), None);
         let d = rx
-            .observe(&MidiEvent::jr_timestamp(0, 0x0010))
+            .observe(&MidiEvent::jr_timestamp(0x0010))
             .expect("has a prior stamp");
         assert_eq!(d, ticks_to_duration(0x20));
     }

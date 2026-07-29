@@ -123,11 +123,8 @@ impl YinConfig {
     }
 
     fn detector(&self) -> PitchDetector {
-        let mut detector = PitchDetector::with_range(
-            self.sample_rate,
-            self.min_freq.get(),
-            self.max_freq.get(),
-        );
+        let mut detector =
+            PitchDetector::with_range(self.sample_rate, self.min_freq.get(), self.max_freq.get());
         detector.set_threshold(self.threshold.get());
         detector
     }
@@ -477,7 +474,11 @@ mod tests {
         assert!(!track.is_empty());
 
         let voiced = track.iter().filter(|p| p.is_voiced()).count();
-        assert!(voiced > track.len() / 2, "{voiced} of {} voiced", track.len());
+        assert!(
+            voiced > track.len() / 2,
+            "{voiced} of {} voiced",
+            track.len()
+        );
 
         assert_eq!(
             yin_track(&cfg, &samples, Samples(0)),
@@ -540,7 +541,9 @@ mod tests {
         for freq in [100.0f32, 220.0, 440.0, 880.0, 1000.0] {
             let samples = sine(44100.0, freq, 0.1);
             let estimate = yin(&cfg, &samples).unwrap();
-            let pitch = estimate.pitch().unwrap_or_else(|| panic!("{freq} Hz unvoiced"));
+            let pitch = estimate
+                .pitch()
+                .unwrap_or_else(|| panic!("{freq} Hz unvoiced"));
 
             let error = ((pitch.frequency.get() - freq) / freq).abs() * 100.0;
             assert!(

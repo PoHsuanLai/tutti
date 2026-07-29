@@ -9,9 +9,11 @@
 //! UMP-Stream text helpers), and the decode side hands midi2 the reassembled
 //! word slice.
 //!
-//! "Mixed Data Set" (the other MT-0x5 sub-form for bulk data streaming) shares
-//! the same message type; `Sysex8` is the whole surface, so no separate helper is
-//! needed here.
+//! "Mixed Data Set" (statuses 0x8 Header / 0x9 Payload) is the *other* MT-0x5
+//! sub-form, for bulk data streaming. It is **not** covered here: it has its own
+//! statuses and an `mds id` field where SysEx8 has a Stream ID, so `Sysex8` is
+//! not "the whole surface" of MT 0x5. Unimplemented rather than unnecessary —
+//! see the tracking issue.
 
 use std::vec::Vec;
 
@@ -27,6 +29,14 @@ pub const SYSEX8_STATUS_START: u8 = 0x1;
 pub const SYSEX8_STATUS_CONTINUE: u8 = 0x2;
 /// SysEx8 status nibble: last packet of a multi-packet message.
 pub const SYSEX8_STATUS_END: u8 = 0x3;
+
+/// The `# of bytes` value that marks an **aborted** SysEx8 message.
+///
+/// M2-104 §7.8: "The special value 0xF is used in an End UMP to abort a System
+/// Exclusive 8 message." §7.8.1 defines what that means: "the previous data is
+/// an incomplete message, or the resulting quality of previous data is unknown."
+/// A reader that ignores this accepts corrupt data as good.
+pub const SYSEX8_BYTES_ABORT: u8 = 0xF;
 
 impl MidiEvent {
     /// Build SysEx 8-bit packets (UMP MT 0x5, 128-bit each) carrying `data`, and
@@ -57,6 +67,17 @@ impl MidiEvent {
     /// event that isn't a type-0x5 packet. Use [`sysex8_message`] to recover the
     /// reassembled payload of a whole (possibly multi-packet) message.
     pub fn sysex8_status(&self) -> Option<(u8, u8)> {
+        self.sysex8_header()
+            .map(|(status, stream_id, _)| (status, stream_id))
+    }
+
+    /// Read `(status, stream_id, byte_count)` from a SysEx8 packet's first word.
+    /// `None` for any event that isn't a type-0x5 packet.
+    ///
+    /// The byte count is what [`sysex8_status`](Self::sysex8_status) omits, and
+    /// it is load-bearing: a value of [`SYSEX8_BYTES_ABORT`] in an End packet
+    /// means the message was aborted, not completed.
+    pub fn sysex8_header(&self) -> Option<(u8, u8, u8)> {
         let w0 = self.data[0];
         if (w0 >> 28) & 0x0F != 0x5 {
             return None;
@@ -65,8 +86,18 @@ impl MidiEvent {
         // nibble2 = status, nibble3 = byte count, octet2 (bits 8..15) = stream_id,
         // octet3 (bits 0..7) = first data byte.
         let status = ((w0 >> 20) & 0x0F) as u8;
+        let byte_count = ((w0 >> 16) & 0x0F) as u8;
         let stream_id = ((w0 >> 8) & 0xFF) as u8;
-        Some((status, stream_id))
+        Some((status, stream_id, byte_count))
+    }
+
+    /// Whether this packet aborts its SysEx8 message: an End UMP whose
+    /// `# of bytes` field is [`SYSEX8_BYTES_ABORT`] (M2-104 §7.8.1).
+    pub fn is_sysex8_abort(&self) -> bool {
+        matches!(
+            self.sysex8_header(),
+            Some((SYSEX8_STATUS_END, _, SYSEX8_BYTES_ABORT))
+        )
     }
 }
 

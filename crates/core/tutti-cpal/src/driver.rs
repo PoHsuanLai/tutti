@@ -32,10 +32,7 @@ pub struct TuttiDriver {
 
 impl TuttiDriver {
     /// Construct from an opened device and the state its callback will read.
-    pub fn from_parts(
-        audio_engine: AudioEngine,
-        callback_state: Arc<AudioCallbackState>,
-    ) -> Self {
+    pub fn from_parts(audio_engine: AudioEngine, callback_state: Arc<AudioCallbackState>) -> Self {
         Self {
             audio_engine,
             callback_state,

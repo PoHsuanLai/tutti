@@ -164,6 +164,25 @@ pub fn product_instance_id(id: &str, out: &mut Vec<MidiEvent>) {
     push_ump_stream_packets(m.data(), out);
 }
 
+/// UMP Stream **Function Block Name Notification** (status 0x12) for the block
+/// at `block_number`.
+///
+/// [`MidiEvent::function_block_info`] carries a block's *topology* — group span
+/// and direction — but not its name, so without this a discovered endpoint shows
+/// "Block 0/1/2" in a device picker instead of "Keys"/"Drums". Like
+/// [`endpoint_name`], the name is UTF-8 and may span several packets.
+pub fn function_block_name(block_number: u8, name: &str, out: &mut Vec<MidiEvent>) {
+    use midi2::ump_stream::FunctionBlockName;
+    let mut m = FunctionBlockName::<Vec<u32>>::new();
+    // Order matters: the block number is repeated in octet 2 of *every* packet
+    // (midi2 validates that they agree on read), and `set_function_block` only
+    // stamps the packets that exist when it runs. Setting the name first sizes
+    // the buffer, so the number reaches them all.
+    m.set_name(name);
+    m.set_function_block(block_number);
+    push_ump_stream_packets(m.data(), out);
+}
+
 /// Direction of a Function Block, for [`MidiEvent::function_block_info`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FunctionBlockDirection {
@@ -321,6 +340,39 @@ mod tests {
                 assert!(m.receive_jr_timestamps());
             }
             other => panic!("expected StreamConfigurationNotification, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn function_block_name_round_trips() {
+        use midi2::ump_stream::UmpStream;
+        use midi2::UmpMessage;
+
+        // Short name: one packet, decodes directly.
+        let mut out = Vec::new();
+        function_block_name(2, "Keys", &mut out);
+        assert_eq!(out.len(), 1);
+        match UmpMessage::try_from(out[0].data_words()).unwrap() {
+            UmpMessage::UmpStream(UmpStream::FunctionBlockName(m)) => {
+                assert_eq!(m.function_block(), 2);
+                assert_eq!(m.name(), "Keys");
+            }
+            other => panic!("expected FunctionBlockName, got {other:?}"),
+        }
+
+        // A name too long for one packet fragments; reassembling the words
+        // recovers it, so the block's label survives however it is split.
+        let long = "Grand Piano — Upper Manual, Layered Strings";
+        let mut out = Vec::new();
+        function_block_name(7, long, &mut out);
+        assert!(out.len() > 1, "long name spans packets");
+        let words: Vec<u32> = out.iter().flat_map(|e| e.data_words().to_vec()).collect();
+        match UmpMessage::try_from(&words[..]).unwrap() {
+            UmpMessage::UmpStream(UmpStream::FunctionBlockName(m)) => {
+                assert_eq!(m.function_block(), 7);
+                assert_eq!(m.name(), long);
+            }
+            other => panic!("expected FunctionBlockName, got {other:?}"),
         }
     }
 }

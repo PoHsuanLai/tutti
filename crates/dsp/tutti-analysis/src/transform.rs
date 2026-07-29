@@ -251,8 +251,7 @@ impl Stft {
             .map(|(b, m)| b * m)
             .collect();
         let masked = Stft {
-            bins: Grid::new(masked, self.bins.frames(), self.bins.bins())
-                .expect("shape preserved"),
+            bins: Grid::new(masked, self.bins.frames(), self.bins.bins()).expect("shape preserved"),
             geometry: self.geometry,
         };
         Ok(istft(&masked, fft))
@@ -346,7 +345,10 @@ pub enum HopPolicy {
     ///
     /// Decimation is a display concern: the resulting hop generally breaks
     /// COLA, so this yields [`StftMagnitude`], which cannot be inverted.
-    TargetFrames { frames: FrameCount, min_hop: Samples },
+    TargetFrames {
+        frames: FrameCount,
+        min_hop: Samples,
+    },
 }
 
 /// Which part of the buffer to analyze.
@@ -354,7 +356,10 @@ pub enum HopPolicy {
 pub enum SampleRange {
     All,
     /// Half-open `[start, end)`, clamped to the buffer.
-    Span { start: Samples, end: Samples },
+    Span {
+        start: Samples,
+        end: Samples,
+    },
 }
 
 impl SampleRange {
@@ -551,8 +556,12 @@ mod tests {
     fn a_tone_lands_in_the_expected_bin() {
         let samples = tone(8192, 440.0, 44100.0);
         let mut fft = FftScratch::new();
-        let result = stft(&samples, StftRequest::new(44100.0, 2048usize, 512usize), &mut fft)
-            .unwrap();
+        let result = stft(
+            &samples,
+            StftRequest::new(44100.0, 2048usize, 512usize),
+            &mut fft,
+        )
+        .unwrap();
 
         let peak = (0..result.bins().bins().get())
             .max_by(|&a, &b| {
@@ -576,8 +585,12 @@ mod tests {
     fn stft_round_trips_through_istft() {
         let samples = tone(8192, 440.0, 44100.0);
         let mut fft = FftScratch::new();
-        let transform =
-            stft(&samples, StftRequest::new(44100.0, 2048usize, 512usize), &mut fft).unwrap();
+        let transform = stft(
+            &samples,
+            StftRequest::new(44100.0, 2048usize, 512usize),
+            &mut fft,
+        )
+        .unwrap();
         let resynth = transform.resynthesize(&mut fft);
 
         // Compare the steady-state interior: the edges ramp in and out because
@@ -597,8 +610,12 @@ mod tests {
     fn polar_and_rectangular_are_the_same_information() {
         let samples = tone(4096, 300.0, 44100.0);
         let mut fft = FftScratch::new();
-        let rect =
-            stft(&samples, StftRequest::new(44100.0, 1024usize, 256usize), &mut fft).unwrap();
+        let rect = stft(
+            &samples,
+            StftRequest::new(44100.0, 1024usize, 256usize),
+            &mut fft,
+        )
+        .unwrap();
         let back = rect.to_polar().to_rectangular();
 
         for (a, b) in rect.bins().as_slice().iter().zip(back.bins().as_slice()) {
@@ -613,8 +630,8 @@ mod tests {
     fn a_decimated_request_is_refused_by_the_invertible_path() {
         let samples = tone(200_000, 440.0, 44100.0);
         let mut fft = FftScratch::new();
-        let request = StftRequest::new(44100.0, 2048usize, 512usize)
-            .decimated_to(FrameCount(64), 1usize);
+        let request =
+            StftRequest::new(44100.0, 2048usize, 512usize).decimated_to(FrameCount(64), 1usize);
 
         // The hop this resolves to is far wider than the window.
         assert!(matches!(
@@ -632,9 +649,12 @@ mod tests {
     fn normalized_magnitudes_carry_their_peak() {
         let samples = tone(4096, 440.0, 44100.0);
         let mut fft = FftScratch::new();
-        let polar =
-            stft_polar(&samples, StftRequest::new(44100.0, 1024usize, 256usize), &mut fft)
-                .unwrap();
+        let polar = stft_polar(
+            &samples,
+            StftRequest::new(44100.0, 1024usize, 256usize),
+            &mut fft,
+        )
+        .unwrap();
 
         let raw = polar.magnitudes();
         let normalized = raw.normalize();
@@ -654,8 +674,12 @@ mod tests {
         let samples = tone(16384, 440.0, 44100.0);
         let mut fft = FftScratch::new();
 
-        let whole =
-            stft(&samples, StftRequest::new(44100.0, 2048usize, 512usize), &mut fft).unwrap();
+        let whole = stft(
+            &samples,
+            StftRequest::new(44100.0, 2048usize, 512usize),
+            &mut fft,
+        )
+        .unwrap();
         let part = stft(
             &samples,
             StftRequest::new(44100.0, 2048usize, 512usize).over(0usize, 8192usize),
@@ -678,8 +702,12 @@ mod tests {
     fn masking_requires_a_matching_shape() {
         let samples = tone(8192, 440.0, 44100.0);
         let mut fft = FftScratch::new();
-        let transform =
-            stft(&samples, StftRequest::new(44100.0, 2048usize, 512usize), &mut fft).unwrap();
+        let transform = stft(
+            &samples,
+            StftRequest::new(44100.0, 2048usize, 512usize),
+            &mut fft,
+        )
+        .unwrap();
 
         let wrong = Grid::filled(Complex::default(), FrameCount(2), crate::grid::BinCount(3));
         assert_eq!(
@@ -704,8 +732,12 @@ mod tests {
     fn an_empty_mask_erases_the_signal() {
         let samples = tone(8192, 440.0, 44100.0);
         let mut fft = FftScratch::new();
-        let transform =
-            stft(&samples, StftRequest::new(44100.0, 2048usize, 512usize), &mut fft).unwrap();
+        let transform = stft(
+            &samples,
+            StftRequest::new(44100.0, 2048usize, 512usize),
+            &mut fft,
+        )
+        .unwrap();
 
         let silence = Grid::filled(
             Complex::default(),
@@ -722,8 +754,12 @@ mod tests {
     fn input_shorter_than_one_window_yields_no_frames() {
         let samples = tone(100, 440.0, 44100.0);
         let mut fft = FftScratch::new();
-        let result =
-            stft(&samples, StftRequest::new(44100.0, 2048usize, 512usize), &mut fft).unwrap();
+        let result = stft(
+            &samples,
+            StftRequest::new(44100.0, 2048usize, 512usize),
+            &mut fft,
+        )
+        .unwrap();
 
         assert_eq!(result.frames(), FrameCount(0));
         assert!(result.resynthesize(&mut fft).is_empty());

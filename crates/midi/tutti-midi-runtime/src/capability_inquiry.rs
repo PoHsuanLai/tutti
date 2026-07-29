@@ -94,11 +94,20 @@ impl CiResponder {
             // A Discovery inquiry → our Discovery Reply. (We ignore inbound
             // replies — we're the responder.)
             CiMessage::Discovery {
-                is_reply: false, ..
+                is_reply: false,
+                data: inquiry,
+                ..
             } => vec![CiMessage::Discovery {
                 header: self.reply_header(src),
                 is_reply: true,
-                data: self.identity,
+                data: DiscoveryData {
+                    // §5.6.1: "The Reply to Discovery shall return the same
+                    // Output Path ID provided in the originating Discovery
+                    // Message." It identifies the initiator's MIDI Out
+                    // connection, so echoing ours would name the wrong path.
+                    output_path_id: inquiry.output_path_id,
+                    ..self.identity
+                },
             }],
 
             // Profile Inquiry → our enabled/disabled profile lists.
@@ -189,9 +198,11 @@ impl CiResponder {
             | CiMessage::InvalidateMuid { .. }
             | CiMessage::Nak { .. } => Vec::new(),
 
-            // `CiMessage` is non-exhaustive; a future family we don't model yet
-            // gets no reply (a conservative default, never a spurious NAK).
-            _ => Vec::new(),
+            // A CI family we don't model. M2-101 §5.11 lists "Reply to a MIDI-CI
+            // message the Device does not support" as the first intended use of
+            // a NAK, and Table 16 has the code for it. Staying silent instead
+            // leaves the initiator waiting out its §5.5.5 timeout, so answer.
+            _ => self.nak_with(src, 0, Nak::STATUS_MESSAGE_NOT_SUPPORTED),
         }
     }
 
@@ -209,7 +220,13 @@ impl CiResponder {
                 state,
             }]
         } else {
-            self.nak(dest, tutti_midi_types::ci::profile::SUB_ID2_SET_PROFILE_ON)
+            // Table 16 has a code for exactly this: "Profile not supported on
+            // the requested Channel, Group, or Function Block".
+            self.nak_with(
+                dest,
+                tutti_midi_types::ci::profile::SUB_ID2_SET_PROFILE_ON,
+                Nak::STATUS_PROFILE_NOT_SUPPORTED,
+            )
         }
     }
 
@@ -227,22 +244,26 @@ impl CiResponder {
                     body: prop.body.clone(),
                 },
             }],
-            None => self.nak(
+            // We don't hold this property — the resource, not the message, is
+            // what's unsupported, and retrying won't change that.
+            None => self.nak_with(
                 dest,
                 tutti_midi_types::ci::property::SUB_ID2_GET_PROPERTY_DATA,
+                Nak::STATUS_MESSAGE_NOT_SUPPORTED,
             ),
         }
     }
 
-    /// A NAK addressed to `dest` for a message of `nak_sub_id2` we couldn't serve.
-    fn nak(&self, dest: Muid, nak_sub_id2: u8) -> Vec<CiMessage> {
+    /// A NAK addressed to `dest` for a message of `nak_sub_id2`, carrying a
+    /// specific M2-101 Table 16 status code.
+    ///
+    /// Table 16 splits "Do Not Retry" (0x00-0x1F) from "Retry is recommended"
+    /// (0x40-0x5F), so a precise code is what lets the initiator decide whether
+    /// to try again — a blanket 0x00 tells it nothing.
+    fn nak_with(&self, dest: Muid, nak_sub_id2: u8, status_code: u8) -> Vec<CiMessage> {
         vec![CiMessage::Nak {
             header: self.reply_header(dest),
-            nak: Nak {
-                nak_sub_id2,
-                status_code: 0,
-                status_data: 0,
-            },
+            nak: Nak::new(nak_sub_id2, status_code),
         }]
     }
 }
@@ -369,14 +390,14 @@ mod tests {
     use super::*;
 
     fn identity(mfr: [u8; 3]) -> DiscoveryData {
-        DiscoveryData {
-            manufacturer: mfr,
-            family: 0x1234,
-            family_model: 0x0055,
-            software_revision: [1, 0, 0, 0],
-            categories: CiCategories::PROFILE_CONFIGURATION | CiCategories::PROPERTY_EXCHANGE,
-            max_sysex_size: 512,
-        }
+        DiscoveryData::new(
+            mfr,
+            0x1234,
+            0x0055,
+            [1, 0, 0, 0],
+            CiCategories::PROFILE_CONFIGURATION | CiCategories::PROPERTY_EXCHANGE,
+            512,
+        )
     }
 
     fn responder() -> CiResponder {
@@ -406,6 +427,32 @@ mod tests {
         assert_eq!(dev.muid, Muid(0x0011_2233));
         assert_eq!(dev.identity.manufacturer, [0x00, 0x21, 0x09]);
         assert!(dev.categories.contains(CiCategories::PROFILE_CONFIGURATION));
+    }
+
+    #[test]
+    fn reply_echoes_the_initiators_output_path_id() {
+        // §5.6.1: "The Reply to Discovery shall return the same Output Path ID
+        // provided in the originating Discovery Message." It names the
+        // *initiator's* MIDI Out connection, so a responder that answered with
+        // its own id would point at the wrong path.
+        let resp = responder();
+        let mut init_identity = identity([0x11, 0x22, 0x33]);
+        init_identity.output_path_id = 0x42;
+        let init = CiInitiator::new(Muid(0x0044_5566), init_identity);
+
+        let replies = resp.respond_to(&init.discovery());
+        match &replies[0] {
+            CiMessage::Discovery {
+                is_reply: true,
+                data,
+                ..
+            } => {
+                assert_eq!(data.output_path_id, 0x42, "echoed, not the responder's");
+                // …while the rest of the reply is still the responder's identity.
+                assert_eq!(data.manufacturer, [0x00, 0x21, 0x09]);
+            }
+            other => panic!("expected a Discovery reply, got {other:?}"),
+        }
     }
 
     #[test]

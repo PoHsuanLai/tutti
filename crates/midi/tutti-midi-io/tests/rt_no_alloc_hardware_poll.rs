@@ -169,9 +169,7 @@ fn hardware_poll_with_stale_timestamps_is_allocation_free() {
     let mut pre = MidiPreBlock::new(routing());
     pre.set_input(Arc::clone(&inputs) as Arc<dyn tutti_midi_types::MidiIn>);
 
-    let handle = inputs
-        .get_input_producer_handle(port)
-        .expect("port exists");
+    let handle = inputs.get_input_producer_handle(port).expect("port exists");
     // An arrival a full second ago converts to a `samples_ago` far past any
     // block, so every event takes the clamp branch.
     let stale = Instant::now() - std::time::Duration::from_secs(1);

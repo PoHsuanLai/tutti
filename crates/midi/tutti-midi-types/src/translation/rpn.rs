@@ -35,6 +35,20 @@ struct ParamState {
     registered: bool,
     /// Whether a parameter has been selected (so a Data Entry is meaningful).
     selected: bool,
+    /// Whether Data Entry has arrived for the current parameter — i.e. there is
+    /// a value worth flushing when the next parameter select ends this run.
+    pending: bool,
+}
+
+/// The 0x7F value that, in *both* the MSB and LSB, forms the RPN/NRPN Null
+/// Function — the idiom for closing an (N)RPN transaction.
+const RPN_NULL: u8 = 0x7F;
+
+/// Which half of the parameter number a select byte carries.
+#[derive(Clone, Copy)]
+enum ParamByte {
+    Bank(u8),
+    Index(u8),
 }
 
 /// Stateful MIDI 1.0 → MIDI 2.0 translator. One per endpoint/channel-group.
@@ -68,41 +82,75 @@ impl Midi1ToMidi2Translator {
         let state = &mut self.channels[channel & 0x0F];
 
         match control {
-            cc::RPN_MSB => {
-                state.bank = value;
-                state.registered = true;
-                state.selected = true;
-                None
-            }
-            cc::RPN_LSB => {
-                state.index = value;
-                state.registered = true;
-                state.selected = true;
-                None
-            }
-            cc::NRPN_MSB => {
-                state.bank = value;
-                state.registered = false;
-                state.selected = true;
-                None
-            }
+            cc::RPN_MSB => self.select(channel, event.frame_offset, true, ParamByte::Bank(value)),
+            cc::RPN_LSB => self.select(channel, event.frame_offset, true, ParamByte::Index(value)),
+            cc::NRPN_MSB => self.select(channel, event.frame_offset, false, ParamByte::Bank(value)),
             cc::NRPN_LSB => {
-                state.index = value;
-                state.registered = false;
-                state.selected = true;
-                None
+                self.select(channel, event.frame_offset, false, ParamByte::Index(value))
             }
             cc::DATA_ENTRY => {
                 state.data_msb = value;
+                state.pending = true;
                 self.emit(channel, event.frame_offset)
             }
             cc::DATA_ENTRY_LSB => {
                 state.data_lsb = value;
+                state.pending = true;
                 self.emit(channel, event.frame_offset)
             }
             // A plain CC (not part of an (N)RPN run) promotes normally.
             _ => Some(super::normalize(event)),
         }
+    }
+
+    /// Handle one parameter-select byte (CC 98/99/100/101).
+    ///
+    /// Appendix D.3.3 lists a parameter select as an *emit trigger*: "a CC 98,
+    /// 99, 100, and 101 is received, indicating the last RPN/NRPN message has
+    /// ended and a new one has started." So this flushes any parameter still
+    /// holding data before adopting the new selection — otherwise the previous
+    /// run's `data_msb`/`data_lsb` leak into the next parameter's value.
+    ///
+    /// It also implements the Null Function rule: "RPN/NRPN Null Function, where
+    /// both the MSB and LSB is set to 0x7F, is not translated." Null deselects,
+    /// so a following Data Entry must not synthesize a controller message.
+    fn select(
+        &mut self,
+        channel: usize,
+        frame_offset: u32,
+        registered: bool,
+        byte: ParamByte,
+    ) -> Option<MidiEvent> {
+        // Flush the parameter this select ends, before its state is overwritten.
+        let flushed = self.emit_pending(channel, frame_offset);
+
+        let state = &mut self.channels[channel & 0x0F];
+        state.registered = registered;
+        match byte {
+            ParamByte::Bank(v) => state.bank = v,
+            ParamByte::Index(v) => state.index = v,
+        }
+        // Data Entry belongs to the parameter being selected, not the last one.
+        state.data_msb = 0;
+        state.data_lsb = 0;
+        state.pending = false;
+        // Null Function (bank and index both 0x7F) deselects rather than naming
+        // a parameter — a following Data Entry has nothing to apply to.
+        state.selected = !(state.bank == RPN_NULL && state.index == RPN_NULL);
+
+        flushed
+    }
+
+    /// Emit the pending parameter if one has actually received Data Entry since
+    /// it was selected. Unlike [`Self::emit`], a parameter that was selected but
+    /// never given data produces nothing — selecting a parameter and moving on
+    /// is not a value change.
+    fn emit_pending(&mut self, channel: usize, frame_offset: u32) -> Option<MidiEvent> {
+        if !self.channels[channel & 0x0F].pending {
+            return None;
+        }
+        self.channels[channel & 0x0F].pending = false;
+        self.emit(channel, frame_offset)
     }
 
     /// Emit the MIDI-2 controller message for the channel's currently-selected
@@ -195,5 +243,93 @@ mod tests {
             UmpMessage::try_from(out.data_words()).unwrap(),
             UmpMessage::ChannelVoice2(ChannelVoice2::NoteOn(_))
         ));
+    }
+
+    /// Bank/index of a Registered or Assignable Controller, if that's what `ev` is.
+    fn controller_param(ev: &MidiEvent) -> Option<(u8, u8, u32)> {
+        match UmpMessage::try_from(ev.data_words()).ok()? {
+            UmpMessage::ChannelVoice2(ChannelVoice2::RegisteredController(m)) => {
+                Some((u8::from(m.bank()), u8::from(m.index()), m.controller_data()))
+            }
+            UmpMessage::ChannelVoice2(ChannelVoice2::AssignableController(m)) => {
+                Some((u8::from(m.bank()), u8::from(m.index()), m.controller_data()))
+            }
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn null_function_is_not_translated() {
+        // Appendix D.3.3: "RPN/NRPN Null Function, where both the MSB and LSB is
+        // set to 0x7F, is not translated." Null closes a transaction, so a Data
+        // Entry after it must not synthesize a controller message.
+        let mut t = Midi1ToMidi2Translator::new();
+        assert!(t.translate(&cc_ev(0, cc::RPN_MSB, 0x7F)).is_none());
+        assert!(t.translate(&cc_ev(0, cc::RPN_LSB, 0x7F)).is_none());
+        assert!(
+            t.translate(&cc_ev(0, cc::DATA_ENTRY, 64)).is_none(),
+            "data entry after Null must not emit RPN 0x7F/0x7F"
+        );
+
+        // A real parameter after the Null still works.
+        assert!(t.translate(&cc_ev(0, cc::RPN_MSB, 0)).is_none());
+        assert!(t.translate(&cc_ev(0, cc::RPN_LSB, 2)).is_none());
+        let out = t
+            .translate(&cc_ev(0, cc::DATA_ENTRY, 64))
+            .expect("real parameter emits");
+        assert_eq!(controller_param(&out).map(|(b, i, _)| (b, i)), Some((0, 2)));
+    }
+
+    #[test]
+    fn reselect_does_not_leak_data_into_the_next_parameter() {
+        // Appendix D.3.3 names CC 98/99/100/101 as an emit trigger: the previous
+        // run ends there. Without that, `data_msb` from parameter A survives into
+        // parameter B and the next CC 38 emits a value built from both.
+        let mut t = Midi1ToMidi2Translator::new();
+        t.translate(&cc_ev(0, cc::RPN_MSB, 0));
+        t.translate(&cc_ev(0, cc::RPN_LSB, 2));
+        let first = t
+            .translate(&cc_ev(0, cc::DATA_ENTRY, 64))
+            .expect("parameter A emits");
+        assert_eq!(
+            controller_param(&first).map(|(b, i, _)| (b, i)),
+            Some((0, 2))
+        );
+
+        // Selecting parameter B flushes A, then clears the accumulator.
+        let flushed = t.translate(&cc_ev(0, cc::RPN_LSB, 1));
+        assert_eq!(
+            controller_param(flushed.as_ref().expect("select flushes A")).map(|(b, i, _)| (b, i)),
+            Some((0, 2)),
+            "the flush carries parameter A's identity, not B's"
+        );
+
+        // Now B's LSB alone: the value must not contain A's MSB of 64.
+        let out = t
+            .translate(&cc_ev(0, cc::DATA_ENTRY_LSB, 1))
+            .expect("parameter B emits");
+        let (bank, index, data) = controller_param(&out).expect("controller");
+        assert_eq!((bank, index), (0, 1));
+        // B's own 14-bit value: MSB never sent (0), LSB 1 — spelled out so the
+        // contrast with A's stale MSB of 64 is visible.
+        let (b_msb, b_lsb) = (0u16, 1u16);
+        let expected = super::super::scaling::midi1_pitch_bend_to_midi2((b_msb << 7) | b_lsb);
+        assert_eq!(
+            data, expected,
+            "value must be built from B's own data only (stale MSB 64 would give a much larger value)"
+        );
+    }
+
+    #[test]
+    fn a_bare_parameter_select_emits_nothing() {
+        // Selecting a parameter and never sending Data Entry is not a value
+        // change — the flush must stay silent.
+        let mut t = Midi1ToMidi2Translator::new();
+        assert!(t.translate(&cc_ev(0, cc::RPN_MSB, 0)).is_none());
+        assert!(t.translate(&cc_ev(0, cc::RPN_LSB, 2)).is_none());
+        assert!(
+            t.translate(&cc_ev(0, cc::RPN_LSB, 1)).is_none(),
+            "reselect with no data in flight emits nothing"
+        );
     }
 }

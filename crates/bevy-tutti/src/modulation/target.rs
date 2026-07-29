@@ -100,7 +100,11 @@ impl ModTargetRegistry {
     /// Resolution falls back to the node path afterwards, so removing a
     /// supplied sink for a param a node also exposes silently reverts to the
     /// node's own accumulator rather than un-modulating the param.
-    pub fn remove_target(&mut self, entity: Entity, param: ParamAddr) -> Option<Arc<dyn ModTarget>> {
+    pub fn remove_target(
+        &mut self,
+        entity: Entity,
+        param: ParamAddr,
+    ) -> Option<Arc<dyn ModTarget>> {
         self.supplied.remove(&(entity, param))
     }
 

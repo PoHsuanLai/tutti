@@ -46,11 +46,12 @@ impl FftScratch {
 
         let fft = self.forward_plan(size);
         self.buffer.clear();
-        self.buffer
-            .extend(input.iter().zip(window).map(|(&s, &w)| Complex {
-                re: s * w,
-                im: 0.0,
-            }));
+        self.buffer.extend(
+            input
+                .iter()
+                .zip(window)
+                .map(|(&s, &w)| Complex { re: s * w, im: 0.0 }),
+        );
 
         let needed = fft.get_inplace_scratch_len();
         if self.scratch.len() < needed {

@@ -37,6 +37,84 @@ impl MidiEvent {
         m.set_controller_data(data);
         Self::from_ump(0, m.data())
     }
+
+    /// MIDI 2.0 **Relative Registered Controller** — a signed *delta* applied to
+    /// the RPN at `bank`/`index`, rather than an absolute value (M2-104 §7.4.8).
+    ///
+    /// `delta` is `i32` because the spec's data field "contains a Two's
+    /// Complement value, to provide negative and positive relative control of
+    /// the destination value" — a distinct algebra from
+    /// [`registered_controller`](Self::registered_controller)'s absolute `u32`,
+    /// which is why it is a separate constructor rather than a flag.
+    ///
+    /// These share the absolute form's address space and banks, but per §7.4.8
+    /// "cannot be translated to the MIDI 1.0 Protocol" — an endless encoder has
+    /// no MIDI 1.0 equivalent.
+    #[inline]
+    pub fn relative_registered_controller(
+        group: u8,
+        channel: u8,
+        bank: u8,
+        index: u8,
+        delta: i32,
+    ) -> Self {
+        use midi2::channel_voice2::RelativeRegisteredController;
+        let mut m = RelativeRegisteredController::<[u32; 2]>::new();
+        m.set_group(u4::new(group & 0x0F));
+        m.set_channel(u4::new(channel & 0x0F));
+        m.set_bank(u7::new(bank & 0x7F));
+        m.set_index(u7::new(index & 0x7F));
+        m.set_controller_data(delta as u32);
+        Self::from_ump(0, m.data())
+    }
+
+    /// MIDI 2.0 **Relative Assignable Controller** — a signed *delta* applied to
+    /// the NRPN at `bank`/`index`. See
+    /// [`relative_registered_controller`](Self::relative_registered_controller)
+    /// for the two's-complement data field.
+    #[inline]
+    pub fn relative_assignable_controller(
+        group: u8,
+        channel: u8,
+        bank: u8,
+        index: u8,
+        delta: i32,
+    ) -> Self {
+        use midi2::channel_voice2::RelativeAssignableController;
+        let mut m = RelativeAssignableController::<[u32; 2]>::new();
+        m.set_group(u4::new(group & 0x0F));
+        m.set_channel(u4::new(channel & 0x0F));
+        m.set_bank(u7::new(bank & 0x7F));
+        m.set_index(u7::new(index & 0x7F));
+        m.set_controller_data(delta as u32);
+        Self::from_ump(0, m.data())
+    }
+
+    /// The signed delta of a Relative Registered/Assignable Controller message,
+    /// with whether it was registered: `(registered, bank, index, delta)`.
+    /// `None` for any other message.
+    ///
+    /// The delta is reinterpreted from the wire's two's-complement field, so a
+    /// decrement arrives as a negative number rather than a huge `u32`.
+    pub fn relative_controller(&self) -> Option<(bool, u8, u8, i32)> {
+        use midi2::channel_voice2::ChannelVoice2;
+        use midi2::UmpMessage;
+        match UmpMessage::try_from(self.data_words()).ok()? {
+            UmpMessage::ChannelVoice2(ChannelVoice2::RelativeRegisteredController(m)) => Some((
+                true,
+                u8::from(m.bank()),
+                u8::from(m.index()),
+                m.controller_data() as i32,
+            )),
+            UmpMessage::ChannelVoice2(ChannelVoice2::RelativeAssignableController(m)) => Some((
+                false,
+                u8::from(m.bank()),
+                u8::from(m.index()),
+                m.controller_data() as i32,
+            )),
+            _ => None,
+        }
+    }
 }
 
 /// RPN bank for the MPE Configuration Message and Pitch-Bend Sensitivity: `0x00`.
@@ -88,5 +166,44 @@ mod tests {
             }
             other => panic!("expected AssignableController, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn relative_controllers_carry_signed_deltas() {
+        // M2-104 §7.4.8: the data field "contains a Two's Complement value, to
+        // provide negative and positive relative control" — a decrement must
+        // survive as a negative number, not a huge unsigned one.
+        for delta in [1i32, -1, 127, -128, i32::MAX, i32::MIN, 0] {
+            let rpn = MidiEvent::relative_registered_controller(0, 3, 0x12, 0x34, delta);
+            assert_eq!(
+                rpn.relative_controller(),
+                Some((true, 0x12, 0x34, delta)),
+                "registered delta {delta}"
+            );
+
+            let nrpn = MidiEvent::relative_assignable_controller(0, 9, 0x01, 0x02, delta);
+            assert_eq!(
+                nrpn.relative_controller(),
+                Some((false, 0x01, 0x02, delta)),
+                "assignable delta {delta}"
+            );
+        }
+    }
+
+    #[test]
+    fn relative_and_absolute_controllers_are_distinct_messages() {
+        // Same address space (§7.4.8: "these new messages act upon the same
+        // address space… and use the same controller Banks"), different status —
+        // so an absolute set is never mistaken for a relative nudge.
+        let absolute = MidiEvent::registered_controller(0, 3, 0x12, 0x34, 5);
+        assert_eq!(
+            absolute.relative_controller(),
+            None,
+            "an absolute RPN is not a relative one"
+        );
+
+        let relative = MidiEvent::relative_registered_controller(0, 3, 0x12, 0x34, 5);
+        assert_ne!(relative.data_words()[0], absolute.data_words()[0]);
+        assert!(relative.relative_controller().is_some());
     }
 }

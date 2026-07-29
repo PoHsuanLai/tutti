@@ -11,7 +11,7 @@
 //! zero-filled rather than duplicated.
 
 use crate::render::BlockCursor;
-use tutti_core::io::AudioIn;
+use tutti_core::io::{AudioIn, OnEmpty};
 use tutti_core::transport::RenderClock;
 use tutti_core::{AudioUnit, BufferMut, BufferRef, BufferVec, MAX_BUFFER_SIZE};
 use tutti_types::Samples;
@@ -87,6 +87,11 @@ impl<'a, const CH: usize> NetSource<'a, CH> {
 }
 
 impl<const CH: usize> AudioIn<f32, CH> for NetSource<'_, CH> {
+    /// A render never starves: the net produces a full block on demand, so the
+    /// only `0` this returns is for a zero-length request. An offline render is
+    /// driven to a known frame count, not polled until it runs dry.
+    const ON_EMPTY: OnEmpty = OnEmpty::EndOfStream;
+
     fn poll_into(&mut self, out: &mut [[f32; CH]]) -> usize {
         let block_size = out.len().min(MAX_BUFFER_SIZE);
         if block_size == 0 {

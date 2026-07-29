@@ -278,7 +278,11 @@ pub fn finish(cfg: &OnsetConfig, state: &OnsetState) -> Vec<Onset> {
 ///
 /// Folds [`step_onset`] — the same implementation the streaming path uses, so
 /// the two cannot drift.
-pub fn detect_onsets(cfg: &OnsetConfig, samples: &[f32], fft: &mut FftScratch) -> Result<Vec<Onset>> {
+pub fn detect_onsets(
+    cfg: &OnsetConfig,
+    samples: &[f32],
+    fft: &mut FftScratch,
+) -> Result<Vec<Onset>> {
     let window = cfg.geometry.window().get();
     if samples.len() < window {
         return Ok(Vec::new());
@@ -287,7 +291,13 @@ pub fn detect_onsets(cfg: &OnsetConfig, samples: &[f32], fft: &mut FftScratch) -
     let mut state = OnsetState::new();
     for frame in cfg.geometry.frames_for(Samples(samples.len())).indices() {
         let offset = frame.get() * cfg.geometry.hop().get();
-        step_onset(cfg, &mut state, frame, &samples[offset..offset + window], fft);
+        step_onset(
+            cfg,
+            &mut state,
+            frame,
+            &samples[offset..offset + window],
+            fft,
+        );
     }
     Ok(finish(cfg, &state))
 }
@@ -330,9 +340,11 @@ fn pick_peaks(cfg: &OnsetConfig, novelty: &[(Samples, f32)]) -> Vec<Onset> {
     }
 
     let len = novelty.len() as f32;
-    let (sum, sum_sq, max) = novelty.iter().fold((0.0f32, 0.0f32, 0.0f32), |(s, sq, mx), &(_, v)| {
-        (s + v, sq + v * v, mx.max(v))
-    });
+    let (sum, sum_sq, max) = novelty
+        .iter()
+        .fold((0.0f32, 0.0f32, 0.0f32), |(s, sq, mx), &(_, v)| {
+            (s + v, sq + v * v, mx.max(v))
+        });
     let mean = sum / len;
     let std_dev = (sum_sq / len - mean * mean).max(0.0).sqrt();
     let threshold = mean + std_dev * cfg.threshold.get() * 3.0;
@@ -344,7 +356,11 @@ fn pick_peaks(cfg: &OnsetConfig, novelty: &[(Samples, f32)]) -> Vec<Onset> {
             let falling = value > novelty[i + 1].1;
             (rising && falling && value > threshold).then(|| Onset {
                 position,
-                strength: Amplitude(if max > 0.0 { (value / max).min(1.0) } else { 0.0 }),
+                strength: Amplitude(if max > 0.0 {
+                    (value / max).min(1.0)
+                } else {
+                    0.0
+                }),
             })
         })
         .collect()
@@ -392,11 +408,7 @@ mod tests {
 
         let mut state = OnsetState::new();
         let window = cfg.geometry().window().get();
-        for frame in cfg
-            .geometry()
-            .frames_for(Samples(samples.len()))
-            .indices()
-        {
+        for frame in cfg.geometry().frames_for(Samples(samples.len())).indices() {
             let offset = frame.get() * cfg.geometry().hop().get();
             step_onset(
                 &cfg,
@@ -642,6 +654,8 @@ mod tests {
     fn input_shorter_than_a_window_yields_nothing() {
         let cfg = OnsetConfig::new(geometry(), DetectionFunction::SpectralFlux);
         let mut fft = FftScratch::new();
-        assert!(detect_onsets(&cfg, &[0.0; 100], &mut fft).unwrap().is_empty());
+        assert!(detect_onsets(&cfg, &[0.0; 100], &mut fft)
+            .unwrap()
+            .is_empty());
     }
 }

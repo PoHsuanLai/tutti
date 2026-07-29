@@ -76,9 +76,9 @@ pub mod midi;
 #[cfg(feature = "modulation")]
 pub mod modulation;
 
-/// The sampler's asset layer.
+/// Streaming and sample assets: the `.wav` loader and the `DiskStreamer` handle.
 #[cfg(feature = "sampler")]
-pub mod sampler;
+pub mod stream;
 
 /// SoundFont assets and their playback systems.
 #[cfg(feature = "soundfont")]
@@ -115,9 +115,10 @@ pub use engine_state::AudioEngineState;
 /// Everything a typical host needs, in one import.
 pub mod prelude {
     pub use crate::graph::{
-        commit_graph, crossfade_audio_node, engine_ready, AudioConfig, AudioGraphRes, AudioSource,
-        AudioSources, AudioTapRes, GraphDirty, GraphReconcilePlugin, GraphReconcileSystems,
-        MasterSources, MeteringRes, MetronomeRes, SpawnAudioNode, TransportRes,
+        commit_graph, crossfade_audio_node, engine_ready, AudioConfig, AudioGraphRes, AudioPump,
+        AudioPumpAppExt, AudioSource, AudioSources, AudioTapRes, GraphDirty, GraphReconcilePlugin,
+        GraphReconcileSystems, MasterSources, MeteringRes, MetronomeRes, PumpFinished,
+        SpawnAudioNode, TransportRes,
     };
     pub use crate::{
         AudioDeviceState, AudioEngineState, ChannelCompensation, DeviceInfo, GraphLatency,
@@ -133,6 +134,8 @@ pub mod prelude {
     };
     #[cfg(feature = "plugin")]
     pub use crate::plugin_host::{OpenPluginEditor, PluginsRes, TuttiHostingPlugin};
+    #[cfg(feature = "sampler")]
+    pub use crate::stream::{DiskStreamerRes, TuttiPlaybackPlugin};
 
     // The engine vocabulary a host writes graph edits in.
     pub use tutti_core::{AudioNode, NodeId};

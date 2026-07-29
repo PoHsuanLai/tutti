@@ -24,9 +24,9 @@ use bevy_ecs::prelude::*;
 
 use tutti_midi_runtime::{ClockMaster, MidiReceiver};
 
+use super::hardware_out::{drain_receiver_through, MidiOutRouter};
 #[cfg(all(target_os = "macos", feature = "midi-hardware"))]
 use super::hardware_out::{JrStamperRes, UmpOutRes};
-use super::hardware_out::{drain_receiver_through, MidiOutRouter};
 
 /// The clock master + its output-mailbox receiver, claimed from the engine
 /// handoff.
@@ -83,6 +83,9 @@ impl Plugin for ClockOutPlugin {
         // `run_if(engine_ready)` like every other MIDI system. `ClockMasterRes`
         // arrives with the engine block, so it needs no `Option`; `MidiIoRes`
         // keeps one, since a hardware port may be absent with the engine up.
-        app.add_systems(Update, pump_clock_out_system.run_if(crate::graph::engine_ready));
+        app.add_systems(
+            Update,
+            pump_clock_out_system.run_if(crate::graph::engine_ready),
+        );
     }
 }

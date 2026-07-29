@@ -85,7 +85,8 @@ fn a_declared_route_reaches_the_rt_snapshot() {
     let (mut app, rt_view) = app();
     let (synth, unit_id) = spawn_synth(&mut app);
 
-    app.world_mut().spawn(MidiRouteRule::for_channel(3).to(synth));
+    app.world_mut()
+        .spawn(MidiRouteRule::for_channel(3).to(synth));
     app.update();
 
     assert!(
@@ -232,7 +233,8 @@ fn the_rebuild_publishes_into_the_shared_cell() {
     let (mut app, rt_view) = app();
     let (synth, _) = spawn_synth(&mut app);
 
-    app.world_mut().spawn(MidiRouteRule::for_channel(2).to(synth));
+    app.world_mut()
+        .spawn(MidiRouteRule::for_channel(2).to(synth));
     app.update();
 
     assert_eq!(

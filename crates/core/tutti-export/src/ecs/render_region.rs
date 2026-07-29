@@ -44,6 +44,9 @@ use tutti_core::{
 use tutti_core::ecs::engine_ready;
 use tutti_core::ecs::{AudioConfig, AudioGraphRes};
 use tutti_sampler::VoiceNode;
+// `VoicePool` is referenced only by doc-links now — `rebind_net_transport` no
+// longer downcasts to it (see the note at the `VoiceNode` arm below).
+#[cfg(doc)]
 use tutti_sampler::VoicePool;
 
 /// Ordering anchor for the three-step region render. A voice-aware downstream
@@ -147,11 +150,17 @@ fn rebind_net_transport(
         // 2. Type-specific transport re-point. `isolate()` already severed the
         //    live inputs (the reader's command channel + voices); all that's left
         //    is to aim each transport-aware unit at the render's offline
-        //    playhead. Voice pools and bare voices both carry a transport.
+        //    playhead.
+        //
+        //    Only bare `VoiceNode`s are rebound here. A `VoicePool` is NOT: its
+        //    `isolate()` clears every voice, so `replace_transport` would loop
+        //    over nothing and then set `VoicePool::transport` — a field no
+        //    processing path ever reads. The pool's voices are rebuilt in
+        //    `Populate`, each carrying its own clock bound from
+        //    `RegionRenderNet::transport`. Rebinding the pool here was the
+        //    write-only-state pattern deleted from the sampler in 446fbe39.
         let node = net.node_mut(id);
-        if let Some(reader) = node.as_any_mut().downcast_mut::<VoicePool>() {
-            reader.replace_transport(transport.clone());
-        } else if let Some(voice) = node.as_any_mut().downcast_mut::<VoiceNode>() {
+        if let Some(voice) = node.as_any_mut().downcast_mut::<VoiceNode>() {
             voice.replace_transport(transport.clone());
         }
     }
@@ -197,11 +206,13 @@ pub struct RegionRenderInProgress {
 /// copy these into their own `RenderedRegion` keyed by target; the `Arc` keeps
 /// the buffers cheap to share with the analysis + re-inject stages.
 #[derive(Component, Debug, Clone)]
+/// No `target` field: the requester already keys the result by its own
+/// component (spectral's `RenderFor`), so echoing the `NodeId` back gave every
+/// consumer a second copy nobody read.
 pub struct RegionRenderComplete {
     pub samples_l: Arc<[f32]>,
     pub samples_r: Arc<[f32]>,
     pub sample_rate: f64,
-    pub target: NodeId,
     pub start_beat: f64,
     pub len_beats: f64,
     pub tempo: f64,
@@ -209,11 +220,14 @@ pub struct RegionRenderComplete {
 
 /// Attached instead of [`RegionRenderComplete`] when the render fails (e.g. the
 /// target has no outputs, or the worker panicked).
+///
+/// A marker, deliberately. It carried `target` + an `error: String` that no
+/// consumer ever read — the only one matches `With<RegionRenderFailed>`
+/// (`dawai-spectral/src/render/drive.rs:231`) — so the string was formatted on
+/// every failure and dropped. The failure is logged at the point it happens,
+/// which is where the context actually is.
 #[derive(Component, Debug, Clone)]
-pub struct RegionRenderFailed {
-    pub target: NodeId,
-    pub error: String,
-}
+pub struct RegionRenderFailed;
 
 /// Carrier between [`prepare_region_render_system`] and
 /// [`spawn_region_render_system`]: the isolated, transport-rebound clone of the
@@ -296,10 +310,11 @@ pub fn prepare_region_render_system(
         // clone cannot be reset or ticked while it still shares live state.
         let Some(mut net) = clone.map(|pending| pending.isolate()) else {
             // No-output target never occupied a slot — don't count it.
-            ecmd.insert(RegionRenderFailed {
-                target: start.target,
-                error: "target node has no outputs".into(),
-            });
+            bevy_log::warn!(
+                "region render: target node {:?} has no outputs",
+                start.target
+            );
+            ecmd.insert(RegionRenderFailed);
             continue;
         };
 
@@ -357,17 +372,27 @@ pub fn spawn_region_render_system(
         let net = std::mem::replace(&mut render.net, Net::new(0, 0));
         let timeline = render.transport.clone();
 
-        // Configure the export, then run it on the shared compute pool instead
-        // of `Run::spawn`'s raw OS thread. `Run::run()` is a synchronous
-        // `FnOnce(..) -> Result<_> + Send`, so it executes fine inside a task;
-        // running it on the bounded pool (the same one the STFT step and the
-        // wave cache use) keeps the render from starving the audio callback.
-        let run = crate::Export::graph(net, config.sample_rate)
-            .start_beat(render.start_beat)
-            .duration_beats(render.len_beats, render.tempo)
-            .transport(timeline)
-            .to_buffers();
-        let task = AsyncComputeTaskPool::get().spawn(async move { run.run() });
+        // The render is synchronous, so it runs on the shared compute pool —
+        // the same bounded pool the STFT step and the wave cache use. A raw OS
+        // thread per render could pin every core and starve the audio callback.
+        //
+        // `start_beat` is not passed: the timeline already carries it (it was
+        // built at that beat in `Prepare`), and the clock is what the render
+        // reads. There is no second copy to keep in sync.
+        let config = crate::ExportConfig {
+            render: crate::RenderConfig {
+                sample_rate: tutti_core::SampleRate(config.sample_rate),
+                duration_seconds: crate::beats_to_seconds(
+                    tutti_types::BeatDuration(render.len_beats),
+                    tutti_core::Bpm(render.tempo),
+                    tutti_core::SampleRate(config.sample_rate),
+                ),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let task = AsyncComputeTaskPool::get()
+            .spawn(async move { crate::render_to_buffers(net, &config, timeline.as_ref()) });
 
         commands
             .entity(entity)
@@ -395,11 +420,16 @@ pub fn region_render_poll_system(
         };
         match result {
             Ok(rendered) => {
+                // The region render is stereo (its config asks for the default
+                // layout), so plane 0/1 are L/R. A mono render duplicates plane
+                // 0 rather than handing back a silent right channel.
+                let mut planes = rendered.planes.into_iter();
+                let left = planes.next().unwrap_or_default();
+                let right = planes.next().unwrap_or_else(|| left.clone());
                 let complete = RegionRenderComplete {
-                    samples_l: Arc::from(rendered.left),
-                    samples_r: Arc::from(rendered.right),
-                    sample_rate: rendered.sample_rate,
-                    target: render.target,
+                    samples_l: Arc::from(left),
+                    samples_r: Arc::from(right),
+                    sample_rate: rendered.sample_rate.get(),
                     start_beat: render.start_beat,
                     len_beats: render.len_beats,
                     tempo: render.tempo,
@@ -410,14 +440,14 @@ pub fn region_render_poll_system(
                     .insert(complete);
             }
             Err(error) => {
-                let target = render.target;
+                bevy_log::warn!(
+                    "region render failed for target {:?}: {error}",
+                    render.target
+                );
                 commands
                     .entity(entity)
                     .remove::<RegionRenderInProgress>()
-                    .insert(RegionRenderFailed {
-                        target,
-                        error: error.to_string(),
-                    });
+                    .insert(RegionRenderFailed);
             }
         }
     }
@@ -484,11 +514,27 @@ mod tests {
         }
     }
 
-    /// `rebind_net_transport` must replace each voice reader in the cloned net
-    /// with a fresh, empty, channel-less reader — and must NOT disturb the live
-    /// reader's command channel (no command theft from the audio thread).
+    /// An isolated render clone must NOT steal commands from the live reader's
+    /// channel — the audio thread's `AddVoice` has to reach the live pool, not
+    /// the worker's copy.
+    ///
+    /// Note what this does NOT claim. An earlier version was titled
+    /// "rebind_swaps_fresh_reader_…" and asserted `voice_count() == 0` right
+    /// after `rebind_net_transport`. That assertion held whether or not the
+    /// function did anything: the live pool starts empty, and the emptying is
+    /// `VoicePool::isolate`'s job (a different function, in another crate).
+    /// `rebind_net_transport` no longer touches `VoicePool` at all.
+    ///
+    /// **The clone is ticked FIRST, and that ordering is the whole test.**
+    /// `VoicePool::clone` copies `rx` (`voice_pool.rs:1491`), so an un-isolated
+    /// clone shares the live channel — and a crossbeam message goes to exactly
+    /// one receiver, whichever drains first. Ticking the live reader first would
+    /// let it win the race and pass with or without `isolate()`, which is how the
+    /// original test passed while guarding nothing (verified: with the live
+    /// reader first, removing `isolate()` still passes). Draining the clone first
+    /// means a shared channel hands it the command and both assertions fail.
     #[test]
-    fn rebind_swaps_fresh_reader_and_does_not_steal_live_commands() {
+    fn an_isolated_clone_does_not_steal_live_commands() {
         let live_transport = MockTransport::new(true);
 
         // A live reader + its handle, placed in a net feeding the output.
@@ -497,22 +543,10 @@ mod tests {
         let id = net.push(Box::new(reader));
         net.pipe_output(id);
 
-        // Clone the net (as the render does) and rebind it to an offline
-        // transport — this should swap the cloned reader for a fresh one.
-        let offline = MockTransport::new(true) as Arc<dyn Timeline>;
+        // Clone the net as the render does, and isolate it — this is what
+        // severs the command channel.
         let mut clone = net.clone();
-        rebind_net_transport(&mut clone, &offline, 0.0, tutti_core::Bpm(120.0));
-
-        let cloned_reader = clone
-            .node_mut(id)
-            .as_any_mut()
-            .downcast_mut::<VoicePool>()
-            .expect("still a voice pool after rebind");
-        assert_eq!(
-            cloned_reader.voice_count(),
-            0,
-            "render clone's reader must be born empty"
-        );
+        clone.node_mut(id).isolate();
 
         // The live handle still feeds the *original* reader, not the clone.
         let wave = Arc::new(Wave::from_samples(
@@ -535,6 +569,25 @@ mod tests {
 
         net.set_sample_rate(SampleRate(44100.0));
         net.allocate();
+        clone.set_sample_rate(SampleRate(44100.0));
+        clone.allocate();
+
+        // Tick the CLONE first — see the ordering note above. If `isolate()` did
+        // not replace the receiver, this drain takes the live command.
+        let cloned_reader = clone
+            .node_mut(id)
+            .as_any_mut()
+            .downcast_mut::<VoicePool>()
+            .expect("still a voice pool after isolation");
+        let mut out_clone = [0.0f32; 2];
+        cloned_reader.tick(&[], &mut out_clone);
+        assert_eq!(
+            cloned_reader.voice_count(),
+            0,
+            "render clone must never receive live commands"
+        );
+
+        // The command is therefore still queued for the live reader.
         let live_reader = net
             .node_mut(id)
             .as_any_mut()
@@ -546,20 +599,6 @@ mod tests {
             live_reader.voice_count(),
             1,
             "live reader must still receive its commands"
-        );
-
-        // And the detached clone, ticked, must NOT have stolen that command.
-        let cloned_reader = clone
-            .node_mut(id)
-            .as_any_mut()
-            .downcast_mut::<VoicePool>()
-            .unwrap();
-        let mut out_clone = [0.0f32; 2];
-        cloned_reader.tick(&[], &mut out_clone);
-        assert_eq!(
-            cloned_reader.voice_count(),
-            0,
-            "render clone must never receive live commands"
         );
     }
 

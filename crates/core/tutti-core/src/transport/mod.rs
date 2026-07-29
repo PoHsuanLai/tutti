@@ -61,6 +61,44 @@ pub trait Timeline: Send + Sync {
     fn is_rolling(&self) -> bool;
 }
 
+/// A clock an offline render drives, one block at a time.
+///
+/// [`Timeline`] is read-only — `beat`/`tempo`/`is_rolling` are what a *node*
+/// consults. Something has to move that position forward, and in a live session
+/// it is the audio callback. Offline there is no callback, so the renderer does
+/// it: after each block it reports how many frames it produced, and the clock
+/// advances by exactly that much.
+///
+/// This is the whole contract between a renderer and time. A renderer needs no
+/// other method, which is why this is one method and not a supertrait of
+/// `Timeline` — a caller can advance a clock it cannot read, and the renderer
+/// never reads one.
+///
+/// **Advance AFTER processing, never before.** `TransportClock` (the in-net
+/// clock feeding beat-driven nodes) is emit-then-advance: sample 0 of a block
+/// carries the block's start beat, and only then does the beat increment. A
+/// clock advanced ahead of the net sits one `beats_per_sample` off the net's own
+/// clock for the entire render — a desync that reads as "the samplers are
+/// slightly late" and nothing else.
+pub trait RenderClock: Send + Sync {
+    /// Advance by `frames`.
+    fn advance(&self, frames: tutti_types::Samples);
+}
+
+/// A clock that does not move.
+///
+/// For rendering a net with no time-dependent nodes — a synth patch, a test
+/// tone, an impulse response. It exists so that "this graph has no transport"
+/// is something a caller *states* rather than something they omit: a renderer
+/// takes a clock, so forgetting one is a compile error instead of a silently
+/// silent render.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct FrozenClock;
+
+impl RenderClock for FrozenClock {
+    fn advance(&self, _frames: tutti_types::Samples) {}
+}
+
 /// A live transport: a [`Timeline`] that also carries the record/loop state a
 /// plugin host asks for.
 ///

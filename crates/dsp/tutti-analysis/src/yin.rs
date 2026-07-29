@@ -14,7 +14,7 @@
 //! `a_reused_detector_matches_fresh_ones` pins it.
 
 use tutti_core::SampleRate;
-use tutti_types::{Cents, Confidence, Hz, Note, Samples, Seconds};
+use tutti_types::{Cents, Confidence, Hz, Note, Samples};
 
 use crate::error::{AnalysisError, Result};
 use crate::grid::FrameCount;

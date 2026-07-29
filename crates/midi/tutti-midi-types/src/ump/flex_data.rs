@@ -313,14 +313,75 @@ pub fn push_flex_text(kind: FlexTextKind, text: &str, group: u8, out: &mut Vec<M
     }
 }
 
-/// Recover `(kind, text)` from a Flex Data text/metadata [`MidiEvent`], or `None`
-/// if `event` isn't one. Inverse of [`push_flex_text`] for a single-packet
-/// message (multi-packet reassembly is the caller's job — decode the reassembled
-/// `Vec<u32>` via `midi2::UmpMessage` directly if a text spans packets).
+/// Recover `(kind, text)` from a single-packet Flex Data text/metadata
+/// [`MidiEvent`], or `None` if `event` isn't one.
+///
+/// A text longer than one packet holds is fragmented by [`push_flex_text`], and
+/// a single packet of such a run does not decode on its own — use
+/// [`FlexTextReassembler`] to read those back.
 pub fn flex_text(event: &MidiEvent) -> Option<(FlexTextKind, String)> {
+    flex_text_from_words(event.data_words())
+}
+
+/// Reassembles multi-packet Flex Data text runs.
+///
+/// [`push_flex_text`] fragments a long text across packets, but a lone packet of
+/// that run carries no complete message — so a project name or lyric longer than
+/// one packet could be *written* by tutti and not read back by tutti. This is
+/// the missing half.
+///
+/// Feed every inbound event to [`push`](Self::push); it returns
+/// `(kind, text)` the moment a run completes, and `None` while one is in flight
+/// or the event isn't Flex Data. Single-packet texts complete immediately, so a
+/// caller can route all Flex traffic through this rather than special-casing.
+#[derive(Clone, Debug, Default)]
+pub struct FlexTextReassembler {
+    /// Accumulated words of the run in flight. Flex Data is one message type, so
+    /// unlike SysEx there is no group/stream key to track.
+    words: Vec<u32>,
+}
+
+impl FlexTextReassembler {
+    /// A reassembler with no run in flight.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Feed one inbound event, returning the completed `(kind, text)` if this
+    /// event finishes a run.
+    pub fn push(&mut self, event: &MidiEvent) -> Option<(FlexTextKind, String)> {
+        if event.message_type() != super::UmpMessageType::FlexData {
+            return None;
+        }
+        self.words.extend_from_slice(event.data_words());
+        // midi2 owns the Format-field fragmentation rules, so decoding the
+        // accumulated words is what tells us the run is complete.
+        match flex_text_from_words(&self.words) {
+            Some(done) => {
+                self.words.clear();
+                Some(done)
+            }
+            None => None,
+        }
+    }
+
+    /// Drop any partial run — e.g. after a stream reset.
+    pub fn reset(&mut self) {
+        self.words.clear();
+    }
+
+    /// Whether a multi-packet run is currently in flight.
+    pub fn is_in_flight(&self) -> bool {
+        !self.words.is_empty()
+    }
+}
+
+/// Decode a Flex Data text message from `words` — one packet's worth, or a
+/// reassembled multi-packet run.
+fn flex_text_from_words(words: &[u32]) -> Option<(FlexTextKind, String)> {
     use midi2::flex_data::FlexData;
     use midi2::UmpMessage;
-    let UmpMessage::FlexData(fd) = UmpMessage::try_from(event.data_words()).ok()? else {
+    let UmpMessage::FlexData(fd) = UmpMessage::try_from(words).ok()? else {
         return None;
     };
     // Map each FlexData text variant to (kind, its String). Non-text variants
@@ -510,5 +571,58 @@ mod tests {
             }
             other => panic!("expected SetMetronome, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn multi_packet_text_reassembles() {
+        // The write-but-can't-read asymmetry: push_flex_text fragments a long
+        // text, but a lone packet of that run carries no complete message, so
+        // flex_text alone could not read back what tutti had written.
+        let long = "A project name comfortably longer than a single Flex Data packet can hold";
+        let mut out = Vec::new();
+        push_flex_text(FlexTextKind::ProjectName, long, 0, &mut out);
+        assert!(out.len() > 1, "text spans packets");
+        assert!(
+            flex_text(&out[0]).is_none(),
+            "a single packet of a run does not decode on its own"
+        );
+
+        let mut r = FlexTextReassembler::new();
+        let mut got = None;
+        for (i, ev) in out.iter().enumerate() {
+            let done = r.push(ev);
+            if i + 1 < out.len() {
+                assert!(done.is_none(), "run still in flight at packet {i}");
+                assert!(r.is_in_flight());
+            } else {
+                got = done;
+            }
+        }
+        let (kind, text) = got.expect("run completes on the last packet");
+        assert_eq!(kind, FlexTextKind::ProjectName);
+        assert_eq!(text, long);
+        assert!(!r.is_in_flight(), "buffer cleared after completion");
+    }
+
+    #[test]
+    fn reassembler_passes_single_packet_text_straight_through() {
+        // So a caller can route all Flex traffic through the reassembler rather
+        // than special-casing short texts.
+        let mut out = Vec::new();
+        push_flex_text(FlexTextKind::MidiClipName, "Verse", 0, &mut out);
+        assert_eq!(out.len(), 1);
+
+        let mut r = FlexTextReassembler::new();
+        assert_eq!(
+            r.push(&out[0]),
+            Some((FlexTextKind::MidiClipName, "Verse".to_string()))
+        );
+        assert!(!r.is_in_flight());
+
+        // Non-text Flex Data and non-Flex events are ignored.
+        assert!(r.push(&MidiEvent::flex_set_tempo(0, 120.0)).is_none());
+        assert!(r.push(&MidiEvent::note_on(0, 0, 60, 0x8000)).is_none());
+        r.reset();
+        assert!(!r.is_in_flight());
     }
 }

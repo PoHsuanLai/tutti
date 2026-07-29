@@ -281,12 +281,13 @@ pub use controllers::{
 };
 pub use flex_data::{
     bpm_to_ten_ns_per_quarter, flex_chord_name, flex_key_signature, flex_tempo_bpm,
-    flex_time_signature, flex_text,
+    flex_text, flex_time_signature, FlexTextReassembler,
     push_flex_text, ten_ns_per_quarter_to_bpm, Alteration, BarAccents, ChordBass, ChordName,
     ChordSharpsFlats, ChordType, FlexTextKind, KeySharpsFlats, Tonic,
 };
 pub use stream::{
-    endpoint_name, product_instance_id, EndpointCapabilities, EndpointDiscoveryRequest,
+    endpoint_name, function_block_name, product_instance_id, EndpointCapabilities,
+    EndpointDiscoveryRequest,
     FunctionBlockDirection, FunctionBlocks, JrTimestamps, Protocol, UmpVersion,
 };
 pub use sysex::{

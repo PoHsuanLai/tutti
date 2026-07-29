@@ -141,6 +141,10 @@ fn the_loop_region_round_trips_through_the_prelude() {
 
     // Inverted: stored happily, reported as no region.
     span.set_range(8.0, 4.0);
-    assert_eq!(span.bounds(), (8.0, 4.0), "raw bounds are what a drag shows");
+    assert_eq!(
+        span.bounds(),
+        (8.0, 4.0),
+        "raw bounds are what a drag shows"
+    );
     assert!(span.range().is_none(), "but it is not a loop");
 }

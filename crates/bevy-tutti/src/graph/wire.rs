@@ -213,10 +213,8 @@ pub fn rebuild(
     rebound: Query<(), Changed<AudioNode>>,
     mut removed: RemovedComponents<AudioSources>,
 ) {
-    let is_dirty = !changed.is_empty()
-        || !removed.is_empty()
-        || !rebound.is_empty()
-        || master.is_changed();
+    let is_dirty =
+        !changed.is_empty() || !removed.is_empty() || !rebound.is_empty() || master.is_changed();
     // An event reader: draining is what marks this frame's removals as seen, so
     // it happens whether or not a rebuild follows.
     removed.clear();
@@ -279,9 +277,7 @@ fn resolve(
 ) -> Option<Source> {
     match source {
         AudioSource::Silence => Some(Source::Zero),
-        AudioSource::Input { port } => {
-            (port < graph.0.inputs()).then_some(Source::Global(port))
-        }
+        AudioSource::Input { port } => (port < graph.0.inputs()).then_some(Source::Global(port)),
         AudioSource::Node { entity, port } => {
             let node = nodes.get(entity).ok()?;
             if node.0 == sink {
@@ -332,9 +328,7 @@ fn resolve_master(
 ) -> Option<Source> {
     match source {
         AudioSource::Silence => Some(Source::Zero),
-        AudioSource::Input { port } => {
-            (port < graph.0.inputs()).then_some(Source::Global(port))
-        }
+        AudioSource::Input { port } => (port < graph.0.inputs()).then_some(Source::Global(port)),
         AudioSource::Node { entity, port } => {
             let node = nodes.get(entity).ok()?;
             if !graph.0.contains(node.0) {

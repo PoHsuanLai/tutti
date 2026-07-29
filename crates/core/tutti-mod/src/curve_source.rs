@@ -302,7 +302,10 @@ mod tests {
             .iter()
             .filter(|v| (*v - steps[0]).abs() > 1e-6)
             .count();
-        assert!(distinct >= 4, "cycles should differ from each other: {steps:?}");
+        assert!(
+            distinct >= 4,
+            "cycles should differ from each other: {steps:?}"
+        );
         assert!(
             steps.iter().all(|v| (-1.0..=1.0).contains(v)),
             "values stay in [-1, 1]: {steps:?}"
@@ -317,7 +320,9 @@ mod tests {
     fn random_smooth_ramps_instead_of_stepping() {
         let smooth = BeatLfo::new(LfoShape::RandomSmooth, 1.0);
 
-        let across: Vec<f32> = (0..8).map(|i| smooth.raw_at(3.0 + i as f32 / 8.0)).collect();
+        let across: Vec<f32> = (0..8)
+            .map(|i| smooth.raw_at(3.0 + i as f32 / 8.0))
+            .collect();
         let moved = across
             .iter()
             .filter(|v| (*v - across[0]).abs() > 1e-6)
@@ -484,7 +489,11 @@ mod tests {
     fn depth_and_span_scale_the_offset() {
         let peak = |edge: EdgeShape| {
             (0..32)
-                .map(|i| ShapedCurve::new(sine(1.0), edge).value_at(Beat(i as f64 / 32.0)).unwrap())
+                .map(|i| {
+                    ShapedCurve::new(sine(1.0), edge)
+                        .value_at(Beat(i as f64 / 32.0))
+                        .unwrap()
+                })
                 .fold(0.0_f32, |a, b| a.max(b.abs()))
         };
 

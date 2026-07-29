@@ -650,7 +650,10 @@ mod tests {
 
         // Source 0 is a plain LFO; its only job is to drive source 1's rate.
         let mut table = ModRoutingTable::new();
-        table.set_edges([ModEdge::linear(0, id_rate, LayerKey(1), 1.0, 2.0, 10.0)], 2);
+        table.set_edges(
+            [ModEdge::linear(0, id_rate, LayerKey(1), 1.0, 2.0, 10.0)],
+            2,
+        );
         table.commit();
 
         let mut driver = ModPreFrame::new(table.snapshot_arc());

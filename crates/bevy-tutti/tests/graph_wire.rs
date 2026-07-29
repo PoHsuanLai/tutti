@@ -181,12 +181,15 @@ fn an_out_of_range_source_port_is_skipped() {
     let mono = spawn_node(&mut app, sine_hz::<f32>(440.0));
     let filt = spawn_node(&mut app, pass());
 
-    app.world_mut().entity_mut(filt).insert(
-        AudioSources::silent().with(0, AudioSource::Node {
-            entity: mono,
-            port: 7,
-        }),
-    );
+    app.world_mut()
+        .entity_mut(filt)
+        .insert(AudioSources::silent().with(
+            0,
+            AudioSource::Node {
+                entity: mono,
+                port: 7,
+            },
+        ));
     app.update();
 
     assert_eq!(

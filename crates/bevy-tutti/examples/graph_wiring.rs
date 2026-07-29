@@ -90,8 +90,20 @@ fn build_chain(mut commands: Commands) {
         .insert((
             Label("out"),
             AudioSources::silent()
-                .with(0, AudioSource::Node { entity: filter, port: 0 })
-                .with(1, AudioSource::Node { entity: filter, port: 0 }),
+                .with(
+                    0,
+                    AudioSource::Node {
+                        entity: filter,
+                        port: 0,
+                    },
+                )
+                .with(
+                    1,
+                    AudioSource::Node {
+                        entity: filter,
+                        port: 0,
+                    },
+                ),
         ))
         .id();
 
@@ -139,7 +151,10 @@ fn report(
 
     println!("\nmaster bus:");
     for channel in 0..2 {
-        println!("  channel {channel} <- {:?}", graph.0.output_source(channel));
+        println!(
+            "  channel {channel} <- {:?}",
+            graph.0.output_source(channel)
+        );
     }
 
     // Render a handful of frames. A committed graph is a real signal path, so

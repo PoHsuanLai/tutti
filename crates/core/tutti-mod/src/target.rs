@@ -77,11 +77,7 @@ pub trait ModTarget: Send + Sync {
     /// Routing-gated, like [`Curve`](crate::Curve) itself — the pure floor has
     /// no notion of a beat to evaluate one at.
     #[cfg(feature = "routing")]
-    fn accumulate_curve(
-        &self,
-        key: LayerKey,
-        curve: std::sync::Arc<dyn crate::Curve>,
-    ) -> bool {
+    fn accumulate_curve(&self, key: LayerKey, curve: std::sync::Arc<dyn crate::Curve>) -> bool {
         let _ = (key, curve);
         false
     }

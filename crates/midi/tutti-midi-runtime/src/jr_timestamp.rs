@@ -242,7 +242,11 @@ mod tests {
             MidiEvent::note_off(0, 0, 60, 0).with_frame_offset(511),
         ];
         assert_eq!(JrStamper::block_span(&events), 512);
-        assert_eq!(JrStamper::block_span(&[]), 0, "an empty block spans nothing");
+        assert_eq!(
+            JrStamper::block_span(&[]),
+            0,
+            "an empty block spans nothing"
+        );
     }
 
     /// A stream advances its own origin, so successive blocks keep climbing.

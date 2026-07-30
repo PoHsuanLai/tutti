@@ -24,7 +24,7 @@ use tutti_core::{
 use tutti_cpal::{AudioCallbackState, AudioEngine, TuttiDriver};
 
 use crate::graph::{
-    AudioConfig, AudioGraphRes, AudioTapRes, MeteringRes, MetronomeRes, TransportRes,
+    AudioConfig, AudioGraphRes, AudioTapRes, EngineNodes, MeteringRes, MetronomeRes, TransportRes,
 };
 
 #[cfg(feature = "midi-hardware")]
@@ -216,11 +216,19 @@ pub fn build_into(plugin: &crate::TuttiPlugin, app: &mut App) -> Result<()> {
     app.insert_non_send(driver);
     app.insert_resource(TransportRes(transport));
     app.insert_resource(MetronomeRes(metronome));
-    // The two engine-built nodes get entities like everything else in the graph.
-    // Without them a host would need a second way to name a node — a bare
-    // `NodeId` resource — and the clock exists precisely to be wired to.
-    app.world_mut().spawn(tutti_core::AudioNode(clock_id));
-    app.world_mut().spawn(tutti_core::AudioNode(click_id));
+    // The two engine-built nodes get entities like everything else in the graph,
+    // and `EngineNodes` publishes them. Spawned here, before any host system
+    // runs, they are otherwise unreachable: both carry `AudioNode` and nothing
+    // else, so a query cannot tell them apart — and `AudioSources` names sources
+    // by `Entity`, so an unnameable node is an unwirable one. The clock exists
+    // precisely to be wired to, and the click is left unwired *so that* the host
+    // declares where it lands.
+    let clock_entity = app.world_mut().spawn(tutti_core::AudioNode(clock_id)).id();
+    let click_entity = app.world_mut().spawn(tutti_core::AudioNode(click_id)).id();
+    app.insert_resource(EngineNodes {
+        clock: clock_entity,
+        click: click_entity,
+    });
     // Consumers read `MeteringRes::get()` directly, so the meter has to be
     // measuring from the start. `disable()` through the `Deref` turns it back
     // off; see `graph::metering` for what that does and does not save.

@@ -83,6 +83,17 @@ pub struct ModulatorNode<M: Modulator> {
 
 /// The concrete LFO node the graph builds — a [`ModulatorNode`] driving a pure
 /// [`Lfo`]. Monomorphized, so `value()` inlines to the old codegen.
+///
+/// **The per-sample tier.** This is not a different LFO from the one the
+/// modulation matrix drives — it is the same [`Lfo`] under a different adapter.
+/// Reach for this when a frame-rate scalar is too coarse: in `BeatSynced` mode
+/// it reads the beat as a *signal* on its input ports, so it is sample-accurate
+/// and renders identically offline. The cost is a graph edge — the node must be
+/// wired to the transport clock (`bevy_tutti::EngineNodes::clock` names it).
+///
+/// The frame-rate alternative is `tutti_mod::ModPreFrame` sampling the same
+/// `Lfo` and writing a scalar, which is what `bevy_tutti`'s `ModSource` builds.
+/// See tutti-mod's crate docs for the full rate comparison.
 pub type LfoNode = ModulatorNode<Lfo>;
 
 impl ModulatorNode<Lfo> {

@@ -6,6 +6,7 @@
 //! ownership story obvious.
 
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
+use tutti_core::ChannelLayout;
 use tutti_core::{AtomicF32, PlaybackRate, ReadRate, SrcRatio};
 
 use super::crossfader::StreamingCrossfader;
@@ -294,7 +295,12 @@ impl RtState {
         self.health.buffer_fill_level.load(Ordering::Relaxed) as f32 / 1000.0
     }
 
-    pub fn start_seek_crossfade(&self, fadeout: Vec<f32>, fadein: Vec<f32>, channels: usize) {
+    pub fn start_seek_crossfade(
+        &self,
+        fadeout: Vec<f32>,
+        fadein: Vec<f32>,
+        channels: impl Into<ChannelLayout>,
+    ) {
         self.seek_crossfade.start(fadeout, fadein, channels);
     }
 
@@ -307,7 +313,12 @@ impl RtState {
         self.seek_crossfade.next_frame_into(out)
     }
 
-    pub fn start_loop_crossfade(&self, fadeout: Vec<f32>, fadein: Vec<f32>, channels: usize) {
+    pub fn start_loop_crossfade(
+        &self,
+        fadeout: Vec<f32>,
+        fadein: Vec<f32>,
+        channels: impl Into<ChannelLayout>,
+    ) {
         self.loop_crossfade.start(fadeout, fadein, channels);
     }
 
@@ -398,7 +409,7 @@ mod tests {
         let fadeout = vec![1.0; 4 * 2];
         let fadein = vec![0.0; 4 * 2];
 
-        state.start_seek_crossfade(fadeout, fadein, 2);
+        state.start_seek_crossfade(fadeout, fadein, 2usize);
 
         assert!(state.is_seek_crossfading());
 
@@ -454,7 +465,7 @@ mod tests {
         let fadeout = vec![1.0; 4 * 2];
         let fadein = vec![0.0; 4 * 2];
 
-        state.start_loop_crossfade(fadeout, fadein, 2);
+        state.start_loop_crossfade(fadeout, fadein, 2usize);
 
         assert!(state.is_loop_crossfading());
 
@@ -484,7 +495,7 @@ mod tests {
 
         let fadeout = vec![1.0; 10 * 2];
         let fadein = vec![0.0; 10 * 2];
-        state.start_loop_crossfade(fadeout, fadein, 2);
+        state.start_loop_crossfade(fadeout, fadein, 2usize);
 
         assert!(state.is_loop_crossfading());
 
@@ -500,10 +511,10 @@ mod tests {
     fn test_loop_crossfade_empty_buffers() {
         let state = RtState::new();
 
-        state.start_loop_crossfade(Vec::new(), Vec::new(), 2);
+        state.start_loop_crossfade(Vec::new(), Vec::new(), 2usize);
         assert!(!state.is_loop_crossfading());
 
-        state.start_loop_crossfade(vec![1.0, 1.0], Vec::new(), 2);
+        state.start_loop_crossfade(vec![1.0, 1.0], Vec::new(), 2usize);
         assert!(!state.is_loop_crossfading());
     }
 }

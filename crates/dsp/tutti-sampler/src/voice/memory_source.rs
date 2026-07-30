@@ -4,12 +4,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tutti_core::{
     Amplitude, AtomicSamplePosition, AudioUnit, Beat, BeatDuration, BufferMut, BufferRef,
-    PlaybackRate, ReadRate, SamplePosition, SampleRate, Samples, SignalFrame, SrcRatio, Timeline,
-    Wave,
+    ChannelLayout, PlaybackRate, ReadRate, SamplePosition, SampleRate, Samples, SignalFrame,
+    SrcRatio, Timeline, Wave,
 };
 
 use super::loop_crossfade::LoopCrossfade;
-use crate::MAX_SAMPLER_CHANNELS;
+use crate::{nonempty, MAX_SAMPLER_CHANNELS};
 
 /// Live loop state on a `MemorySource`. Internal: `Looping` carries the running
 /// [`LoopCrossfade`] DSP object, which callers can neither build nor observe —
@@ -126,7 +126,7 @@ pub struct MemorySourceConfig {
     pub window: VoiceWindow,
     /// Output width. Defaults to stereo — see [`MemorySource::channels`] for why
     /// this is declared rather than taken from the wave.
-    pub channels: usize,
+    pub channels: ChannelLayout,
 }
 
 impl std::fmt::Debug for MemorySourceConfig {
@@ -150,7 +150,7 @@ impl Default for MemorySourceConfig {
             loop_setting: LoopSetting::Off,
             timeline: None,
             window: VoiceWindow::default(),
-            channels: 2,
+            channels: ChannelLayout::Stereo,
         }
     }
 }
@@ -235,7 +235,7 @@ pub struct MemorySource {
     /// wider file was loaded, and `Net` edges are built against `outputs()`.
     /// The wave's own width is reconciled against this one by
     /// [`read_frame`](super::interp::read_frame)'s channel policy.
-    channels: usize,
+    channels: ChannelLayout,
 }
 
 // Hand-rolled: `wave` is a non-`Debug` `Arc<Wave>` and `timeline` holds an
@@ -295,8 +295,8 @@ impl MemorySource {
             loop_mode: LoopMode::OneShot,
             timeline: None,
             window: VoiceWindow::default(),
-            loop_crossfade: Some(LoopCrossfade::with_channels(0, 2)),
-            channels: 2,
+            loop_crossfade: Some(LoopCrossfade::with_channels(0, ChannelLayout::Stereo)),
+            channels: ChannelLayout::Stereo,
         }
     }
 
@@ -305,8 +305,8 @@ impl MemorySource {
     /// The wave's own channel count is independent of this; the two are
     /// reconciled per read by [`read_frame`](super::interp::read_frame)'s
     /// channel policy (mono fans, anything else folds).
-    pub fn with_channels(wave: Arc<Wave>, channels: usize) -> Self {
-        let channels = channels.max(1);
+    pub fn with_channels(wave: Arc<Wave>, channels: impl Into<ChannelLayout>) -> Self {
+        let channels = nonempty(channels.into());
         Self {
             channels,
             // Reserve at THIS width: the default from `new` is stereo-sized.
@@ -316,7 +316,7 @@ impl MemorySource {
     }
 
     /// Output width — this unit's `outputs()`.
-    pub fn channels(&self) -> usize {
+    pub fn channels(&self) -> ChannelLayout {
         self.channels
     }
 
@@ -332,8 +332,8 @@ impl MemorySource {
             speed: config.speed,
             timeline: config.timeline,
             window: config.window,
-            loop_crossfade: Some(LoopCrossfade::with_channels(0, config.channels.max(1))),
-            channels: config.channels.max(1),
+            loop_crossfade: Some(LoopCrossfade::with_channels(0, nonempty(config.channels))),
+            channels: nonempty(config.channels),
             ..Self::new(wave)
         };
         if let LoopSetting::On {
@@ -577,6 +577,15 @@ impl MemorySource {
                 .loop_crossfade
                 .take()
                 .unwrap_or_else(|| LoopCrossfade::with_channels(crossfade_samples, self.channels));
+            // `retune` re-points the length, never the width, so a reclaimed
+            // crossfade must already be this source's width. Both are set at
+            // construction from the same value; a divergence would silently
+            // rotate channels through the fade.
+            debug_assert_eq!(
+                xfade.channels(),
+                self.channels,
+                "resident loop crossfade width diverged from the source's"
+            );
             xfade.retune(crossfade_samples);
 
             let start = loop_start.get();
@@ -869,7 +878,8 @@ impl AudioUnit for MemorySource {
     }
 
     fn outputs(&self) -> usize {
-        self.channels
+        // Boundary: `AudioUnit::outputs` is a fixed fundsp trait signature.
+        self.channels.count() as usize
     }
 
     fn reset(&mut self) {
@@ -899,7 +909,8 @@ impl AudioUnit for MemorySource {
 
     fn tick(&mut self, _input: &[f32], output: &mut [f32]) {
         // The caller's slice IS the frame — no intermediate storage needed.
-        let n = self.channels.min(output.len());
+        // Stride derived once — `next_frame_into` is the loop.
+        let n = (self.channels.count() as usize).min(output.len());
         self.next_frame_into(0, &mut output[..n]);
     }
 
@@ -910,8 +921,8 @@ impl AudioUnit for MemorySource {
         // prefix — the house pattern (see `tutti-export`'s `fold_net_frame` and
         // the plugin hosts), and the only way to stay alloc-free at a runtime
         // width.
-        let n = self
-            .channels
+        // Stride derived once per block, above the loops.
+        let n = (self.channels.count() as usize)
             .min(output.channels())
             .min(MAX_SAMPLER_CHANNELS);
         let mut frame = [0.0f32; MAX_SAMPLER_CHANNELS];
@@ -927,7 +938,8 @@ impl AudioUnit for MemorySource {
 
     fn route(&mut self, _input: &SignalFrame, _frequency: f64) -> SignalFrame {
         // Width must track `outputs()` or fundsp mis-plans this node's latency.
-        SignalFrame::new(self.channels)
+        // Boundary: `SignalFrame::new` is a fundsp signature.
+        SignalFrame::new(self.channels.count() as usize)
     }
 
     fn footprint(&self) -> usize {
@@ -1896,18 +1908,18 @@ mod tests {
     #[test]
     fn new_stays_stereo_even_for_a_wide_wave() {
         let u = MemorySource::new(indexed_wave(6, 32));
-        assert_eq!(u.channels(), 2);
+        assert_eq!(u.channels(), ChannelLayout::Stereo);
         assert_eq!(u.outputs(), 2);
     }
 
     #[test]
     fn with_channels_declares_the_width() {
-        let u = MemorySource::with_channels(indexed_wave(6, 32), 6);
-        assert_eq!(u.channels(), 6);
+        let u = MemorySource::with_channels(indexed_wave(6, 32), 6usize);
+        assert_eq!(u.channels(), ChannelLayout::Multi(6));
         assert_eq!(u.outputs(), 6);
         assert_eq!(
-            MemorySource::with_channels(indexed_wave(2, 32), 0).channels(),
-            1
+            MemorySource::with_channels(indexed_wave(2, 32), 0usize).channels(),
+            ChannelLayout::Mono
         );
     }
 
@@ -1931,7 +1943,7 @@ mod tests {
     /// stack frame into a planar buffer — different code, so both are checked.
     #[test]
     fn six_channel_wave_reaches_all_six_outputs() {
-        let mut u = MemorySource::with_channels(indexed_wave(6, 64), 6);
+        let mut u = MemorySource::with_channels(indexed_wave(6, 64), 6usize);
 
         let mut out = [0.0f32; 6];
         u.tick(&[], &mut out);
@@ -1943,7 +1955,7 @@ mod tests {
             );
         }
 
-        let mut u = MemorySource::with_channels(indexed_wave(6, 64), 6);
+        let mut u = MemorySource::with_channels(indexed_wave(6, 64), 6usize);
         let input = BufferVec::new(0);
         let mut output = BufferVec::new(6);
         u.process(8, &input.buffer_ref(), &mut output.buffer_mut());
@@ -1962,7 +1974,7 @@ mod tests {
     /// strip's job, not the reader's.
     #[test]
     fn gain_applies_uniformly_across_all_channels() {
-        let mut u = MemorySource::with_channels(indexed_wave(6, 64), 6);
+        let mut u = MemorySource::with_channels(indexed_wave(6, 64), 6usize);
         u.set_gain(Amplitude::new(0.5));
         let mut out = [0.0f32; 6];
         u.tick(&[], &mut out);
@@ -1980,7 +1992,7 @@ mod tests {
     /// blend would leave channels 2..6 un-faded (or worse, untouched).
     #[test]
     fn six_channel_loop_crossfade_covers_every_channel() {
-        let mut u = MemorySource::with_channels(indexed_wave(6, 64), 6);
+        let mut u = MemorySource::with_channels(indexed_wave(6, 64), 6usize);
         u.set_loop_range(SamplePosition::new(0.0), SamplePosition::new(16.0), 4);
         let mut out = [0.0f32; 6];
         // Drive past the loop point so the crossfade engages at least once.

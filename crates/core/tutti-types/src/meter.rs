@@ -634,6 +634,47 @@ pub struct MeterMap {
     starts: Vec<BarNumber>,
 }
 
+/// Serialize as the change list alone, and rebuild through [`MeterMap::new`].
+///
+/// **Both directions are hand-written**, which is one more than
+/// [`BeatsPerBar`]/[`NoteValue`] need. Those keep a derived `Serialize` because
+/// writing out an already-valid value needs no checking; `MeterMap` cannot,
+/// because `starts` is a *derived cache* and a derived `Serialize` would put it
+/// on the wire.
+///
+/// Emitting it would make the format carry two fields that can contradict each
+/// other, and [`bar_at`](MeterMap::bar_at) / [`bar_start`](MeterMap::bar_start)
+/// read `starts`, not `changes` — so a hand-edited or version-skewed file could
+/// return bar numbers derived from a meter the file does not describe. Leaving it
+/// off makes that unrepresentable rather than merely validated. It also keeps a
+/// host's `save → load → save` byte-identical: the round trip re-derives `starts`,
+/// so a persisted cache that ever drifted would surface as a mystery
+/// fixed-point failure instead of the corruption it is.
+///
+/// `Deserialize` routes through `new()` for the reason the whole module already
+/// gives for [`TimeSignature`]: deserialization is the untrusted edge the
+/// validation exists for, so it is the last place that should bypass it. Every
+/// invariant in [`MeterMap`]'s docs is therefore inherited for free — including
+/// the NaN drop, without which a hostile beat would make the sort non-transitive
+/// and break `PartialEq` reflexivity.
+#[cfg(feature = "serde")]
+mod meter_map_serde {
+    use super::{MeterChange, MeterMap};
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    impl Serialize for MeterMap {
+        fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+            self.changes.serialize(s)
+        }
+    }
+
+    impl<'de> Deserialize<'de> for MeterMap {
+        fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+            Ok(Self::new(Vec::<MeterChange>::deserialize(d)?))
+        }
+    }
+}
+
 impl MeterMap {
     /// Build from a set of changes, establishing the invariants above.
     ///
@@ -1170,5 +1211,116 @@ mod tests {
     fn display_reads_as_music() {
         assert_eq!(seven_eight().to_string(), "7/8");
         assert_eq!(TimeSignature::default().to_string(), "4/4");
+    }
+
+    /// A multi-change map survives the round trip, cache included.
+    ///
+    /// `starts` is not on the wire, so this also asserts it is *re-derived*
+    /// correctly rather than merely restored.
+    #[cfg(feature = "serde")]
+    #[test]
+    fn map_round_trips_and_rederives_its_cache() {
+        let map = MeterMap::new([
+            MeterChange::new(Beat(0.0), TimeSignature::default()),
+            MeterChange::new(Beat(8.0), seven_eight()),
+            MeterChange::new(
+                Beat(22.0),
+                TimeSignature::new(BeatsPerBar::new(3), NoteValue::QUARTER),
+            ),
+        ]);
+
+        let back: MeterMap = serde_json::from_str(&serde_json::to_string(&map).unwrap()).unwrap();
+        assert_eq!(back, map);
+        assert_eq!(
+            back.bar_numbers(),
+            map.bar_numbers(),
+            "the derived cache must come back identical"
+        );
+        // And it answers lookups the same, which is what the cache is for.
+        assert_eq!(back.bar_at(Beat(22.0)).bar, map.bar_at(Beat(22.0)).bar);
+    }
+
+    /// The wire form is the change list *and nothing else*.
+    ///
+    /// Pinned so that emitting the derived cache — by adding
+    /// `#[derive(Serialize)]`, or by serializing the pair — fails here instead of
+    /// silently putting it in every saved document, where it could contradict
+    /// `changes`.
+    ///
+    /// Asserted by **parsing back as `Vec<MeterChange>`**, not by substring. A
+    /// substring check is too weak: serializing `(&changes, &starts)` emits
+    /// `[[{..},{..}],[1,3]]`, which still starts with `[` and contains no
+    /// `"starts"` key, so it slips past both. Round-tripping through the exact
+    /// expected type is what makes the extra element a failure. (Verified by
+    /// mutation: the tuple form fails this test.)
+    #[cfg(feature = "serde")]
+    #[test]
+    fn the_derived_cache_is_not_on_the_wire() {
+        let changes = [
+            MeterChange::new(Beat(0.0), TimeSignature::default()),
+            MeterChange::new(Beat(8.0), seven_eight()),
+        ];
+        let json = serde_json::to_string(&MeterMap::new(changes)).unwrap();
+
+        let wire: Vec<MeterChange> = serde_json::from_str(&json)
+            .unwrap_or_else(|e| panic!("wire form must be exactly the change list: {e} in {json}"));
+        assert_eq!(wire, changes, "got {json}");
+    }
+
+    /// Deserialization routes through `new()`, so a hostile file inherits every
+    /// invariant instead of bypassing them — the same argument
+    /// [`deserialization_clamps_hostile_values`] makes one level down.
+    ///
+    /// This one file is unsorted, duplicated at a beat, and missing an origin
+    /// change. A derived `Deserialize` would accept all three verbatim.
+    ///
+    /// The non-finite case is deliberately absent. JSON has no literal for it and
+    /// `serde_json` rejects `1e999` as "number out of range", so a NaN beat
+    /// cannot arrive through this format at all — and the only dev-dependency
+    /// here is `serde_json`, so there is no binary format on hand that could
+    /// carry one. What covers it is structural rather than a test: the impl's
+    /// sole path is `MeterMap::new`, whose NaN drop is pinned by
+    /// [`map_drops_non_finite_changes`]. A binary format (postcard, what a host
+    /// actually saves) *can* express one, so if that guarantee ever needs
+    /// testing at the format level, that is the dependency to add.
+    #[cfg(feature = "serde")]
+    #[test]
+    fn map_deserialization_repairs_a_hostile_file() {
+        let map: MeterMap = serde_json::from_str(
+            r#"[
+                {"beat": 16.0, "signature": {"beats_per_bar": 3, "note_value": 4}},
+                {"beat": 8.0,  "signature": {"beats_per_bar": 7, "note_value": 8}},
+                {"beat": 8.0,  "signature": {"beats_per_bar": 5, "note_value": 4}}
+            ]"#,
+        )
+        .unwrap();
+
+        // Sorted, with an origin change inserted.
+        let beats: Vec<f64> = map.changes().iter().map(|c| c.beat.get()).collect();
+        assert_eq!(beats, vec![0.0, 8.0, 16.0], "got {beats:?}");
+        // Duplicate at beat 8 resolved last-wins, per `new`'s documented rule.
+        assert_eq!(map.changes()[1].signature.beats_per_bar().get(), 5);
+        // The origin change the file omitted is in force before the first entry.
+        assert_eq!(map.at(Beat(0.0)), TimeSignature::default());
+        // And the cache matches the repaired list, not the file's ordering.
+        assert_eq!(map.bar_numbers().len(), map.changes().len());
+    }
+
+    /// A signature the file states as `0/0` is clamped, not taken literally —
+    /// nested inside a map, so this covers the path a document actually uses.
+    #[cfg(feature = "serde")]
+    #[test]
+    fn map_deserialization_clamps_nested_signatures() {
+        let map: MeterMap = serde_json::from_str(
+            r#"[{"beat": 0.0, "signature": {"beats_per_bar": 0, "note_value": 0}}]"#,
+        )
+        .unwrap();
+        let sig = map.at(Beat(0.0));
+        assert_eq!(sig.beats_per_bar().get(), 1);
+        assert_eq!(sig.note_value().get(), 1);
+        assert!(
+            sig.bar_length().get().is_finite(),
+            "a NaN bar length would reach the metronome on the audio thread"
+        );
     }
 }

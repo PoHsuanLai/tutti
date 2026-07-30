@@ -8,7 +8,8 @@
 
 use tutti_core::ChannelLayout;
 use tutti_core::{
-    AudioUnit, Azimuth, BufferMut, BufferRef, Elevation, Mix, Param, SampleRate, SignalFrame,
+    fold_frame_to_mono, AudioUnit, Azimuth, BufferMut, BufferRef, Elevation, Mix, Param,
+    SampleRate, SignalFrame,
 };
 
 use super::hrtf_panner::{HrtfBinaural, HrtfBinauralError};
@@ -89,7 +90,10 @@ impl HrtfBinauralNode {
     /// Render one interleaved input sample pair to a binaural output pair.
     #[inline]
     fn render(&mut self, left: f32, right: f32, width: f32) -> (f32, f32) {
-        let mono = (left + right) * 0.5;
+        // The engine's one fold, not a local `* 0.5`. Identical at width 2, but
+        // HRTF rendering genuinely needs a single mono sample, so the coefficient
+        // belongs to `downmix.rs` rather than to this node.
+        let mono = fold_frame_to_mono(&[left, right]);
         let (wet_l, wet_r) = self.panner.process_sample(mono);
         // width blends the HRTF-rendered signal against the dry mono center.
         (
@@ -138,10 +142,7 @@ impl AudioUnit for HrtfBinauralNode {
         let width = self.width.load().0;
 
         // Hoisted once per block: is a second input channel present?
-        let has_stereo_in = matches!(
-            ChannelLayout::from(input.channels()),
-            ChannelLayout::Stereo | ChannelLayout::Quad | ChannelLayout::Multi(_)
-        );
+        let has_stereo_in = ChannelLayout::from(input.channels()).is_multi();
 
         for i in 0..size {
             let left = input.at_f32(0, i);

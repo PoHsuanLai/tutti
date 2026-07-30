@@ -10,6 +10,9 @@
 use arc_swap::ArcSwap;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
+use tutti_core::ChannelLayout;
+
+use crate::nonempty;
 
 /// Two fade buffers + progress counters. Producer side (butler) calls `start`
 /// with allocated `Vec`s; audio thread drains one sample per call via
@@ -22,17 +25,28 @@ struct Fade {
     /// Flat interleaved at `channels` samples per frame.
     fadeout: Vec<f32>,
     fadein: Vec<f32>,
-    channels: usize,
+    /// The declared width both buffers are interleaved at.
+    channels: ChannelLayout,
+    /// `channels.count()`, cached — the interleave stride.
+    ///
+    /// [`frames`](Self::frames) is the RT blend's per-frame slice, and it scales
+    /// `i` by the stride twice. Re-deriving from the layout there would put an
+    /// enum match inside the audio callback's per-frame path. A `Fade` is
+    /// immutable once published (see [`StreamingCrossfader::start`]), so the
+    /// pair cannot drift.
+    stride: usize,
     /// Usable length in **frames**.
     len: usize,
 }
 
 impl Fade {
     /// Frame `i` of both buffers, or `None` past the end of either.
+    ///
+    /// `self.stride`, not `self.channels.count()`: per-frame, on the RT thread.
     #[inline]
     fn frames(&self, i: usize) -> Option<(&[f32], &[f32])> {
-        let base = i * self.channels;
-        let end = base + self.channels;
+        let base = i * self.stride;
+        let end = base + self.stride;
         Some((self.fadeout.get(base..end)?, self.fadein.get(base..end)?))
     }
 }
@@ -57,7 +71,8 @@ impl StreamingCrossfader {
             fade: ArcSwap::from_pointee(Fade {
                 fadeout: Vec::new(),
                 fadein: Vec::new(),
-                channels: 2,
+                channels: ChannelLayout::Stereo,
+                stride: 2,
                 len: 0,
             }),
             pos: AtomicU32::new(0),
@@ -88,8 +103,10 @@ impl StreamingCrossfader {
     /// different frame of the other.
     ///
     /// Swapping one immutable [`Fade`] makes the four inseparable.
-    pub fn start(&self, fadeout: Vec<f32>, fadein: Vec<f32>, channels: usize) {
-        let ch = channels.max(1);
+    pub fn start(&self, fadeout: Vec<f32>, fadein: Vec<f32>, channels: impl Into<ChannelLayout>) {
+        let channels = nonempty(channels.into());
+        // Stride derived once, on the butler thread.
+        let ch = channels.count() as usize;
         // `len` counts FRAMES: the RT side advances one frame per call.
         let len = (fadeout.len() / ch).min(fadein.len() / ch) as u32;
         if len == 0 {
@@ -104,11 +121,22 @@ impl StreamingCrossfader {
         self.fade.store(Arc::new(Fade {
             fadeout,
             fadein,
-            channels: ch,
+            channels,
+            stride: ch,
             len: len as usize,
         }));
         self.pos.store(0, Ordering::Release);
         self.len.store(len, Ordering::Release);
+    }
+
+    /// The width the currently installed fade is interleaved at.
+    ///
+    /// Read through the same single [`ArcSwap`] load as the buffers, so it can
+    /// never name a stride belonging to a different installation — the whole
+    /// point of storing the four fields as one immutable [`Fade`] (see
+    /// [`start`](Self::start)).
+    pub fn layout(&self) -> ChannelLayout {
+        self.fade.load().channels
     }
 
     #[inline]
@@ -164,7 +192,8 @@ impl StreamingCrossfader {
         self.fade.store(Arc::new(Fade {
             fadeout: Vec::new(),
             fadein: Vec::new(),
-            channels: 2,
+            channels: ChannelLayout::Stereo,
+            stride: 2,
             len: 0,
         }));
     }
@@ -190,7 +219,7 @@ mod tests {
     #[test]
     fn start_and_drain() {
         let c = StreamingCrossfader::new();
-        c.start(flat(1.0, 4), flat(0.0, 4), 2);
+        c.start(flat(1.0, 4), flat(0.0, 4), 2usize);
 
         assert!(c.is_active());
 
@@ -214,17 +243,17 @@ mod tests {
     #[test]
     fn start_with_empty_is_noop() {
         let c = StreamingCrossfader::new();
-        c.start(Vec::new(), Vec::new(), 2);
+        c.start(Vec::new(), Vec::new(), 2usize);
         assert!(!c.is_active());
 
-        c.start(flat(1.0, 1), Vec::new(), 2);
+        c.start(flat(1.0, 1), Vec::new(), 2usize);
         assert!(!c.is_active());
     }
 
     #[test]
     fn clear_deactivates() {
         let c = StreamingCrossfader::new();
-        c.start(flat(1.0, 10), flat(0.0, 10), 2);
+        c.start(flat(1.0, 10), flat(0.0, 10), 2usize);
         let mut f = [0.0f32; 2];
         c.next_frame_into(&mut f);
         c.next_frame_into(&mut f);
@@ -240,7 +269,12 @@ mod tests {
     #[test]
     fn len_counts_frames_not_samples_at_six_channels() {
         let c = StreamingCrossfader::new();
-        c.start(vec![1.0; 4 * 6], vec![0.0; 4 * 6], 6);
+        c.start(vec![1.0; 4 * 6], vec![0.0; 4 * 6], 6usize);
+        assert_eq!(
+            c.layout(),
+            ChannelLayout::Multi(6),
+            "the installed fade must carry the width it was started at"
+        );
 
         let mut f = [0.0f32; 6];
         let mut drained = 0;
@@ -259,7 +293,7 @@ mod tests {
         // fadeout carries the channel index, fadein is silent, so each output
         // is `channel_value * (1 - t)` and the ratio between channels is fixed.
         let fadeout: Vec<f32> = (0..4).flat_map(|_| (1..=6).map(|c| c as f32)).collect();
-        c.start(fadeout, vec![0.0; 4 * 6], 6);
+        c.start(fadeout, vec![0.0; 4 * 6], 6usize);
 
         let mut f = [0.0f32; 6];
         assert!(c.next_frame_into(&mut f)); // t = 0
@@ -319,9 +353,9 @@ mod tests {
                 let mut use_wide = true;
                 while !stop.load(O::Relaxed) {
                     if use_wide {
-                        xfade.start(wide.clone(), wide.clone(), 6);
+                        xfade.start(wide.clone(), wide.clone(), 6usize);
                     } else {
-                        xfade.start(narrow.clone(), narrow.clone(), 2);
+                        xfade.start(narrow.clone(), narrow.clone(), 2usize);
                     }
                     use_wide = !use_wide;
                 }

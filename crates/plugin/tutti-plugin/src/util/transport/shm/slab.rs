@@ -5,7 +5,8 @@
 //! index — not interleaved, because the plugin ABIs it feeds are deinterleaved
 //! and the memcpy must stay a straight per-channel copy with no transpose. That
 //! is why it does not `impl` [`tutti_types::io`]'s `AudioIn`/`AudioOut`, which
-//! move interleaved `[S; CH]` frames.
+//! move flat *interleaved* samples. The mismatch is layout, not width — those
+//! traits no longer fix a frame width as a const parameter.
 //!
 //! # Why shared memory
 //!

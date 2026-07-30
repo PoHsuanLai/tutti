@@ -5,9 +5,9 @@ use std::path::Path;
 use tutti_plugin::server::{
     AudioBufferMut, AutomationMode, BusChannels, ChannelLayout, ChordChanges, EditorSize, Features,
     LoadedPlugin, NoteExpressionChanges, NoteExpressionIntChanges, NoteExpressionTextChanges,
-    ParameterFlags, ParameterInfo, PluginAudio, PluginClass, PluginDescriptor, PluginEditorHost,
-    PluginError, PluginMeta, PluginParams, PluginResult, PluginState, ProcessContext,
-    ProcessOutput, ScaleChanges, WindowHandle,
+    ParamFlags, ParamRange, ParamSteps, ParameterInfo, PluginAudio, PluginClass, PluginDescriptor,
+    PluginEditorHost, PluginError, PluginMeta, PluginParams, PluginResult, PluginState,
+    ProcessContext, ProcessOutput, ScaleChanges, WindowHandle,
 };
 use tutti_plugin::{BridgeError, LoadStage, Result};
 
@@ -326,7 +326,9 @@ impl Vst3Instance {
         let count = vst_dispatch!(self, inner => inner.parameter_count());
         (0..count)
             .filter_map(|i| {
-                vst_dispatch!(self, inner => inner.parameter_info(i)).map(build_param_info)
+                let info = vst_dispatch!(self, inner => inner.parameter_info(i))?;
+                let plain = vst_dispatch!(self, inner => inner.parameter_plain_range(info.id));
+                Some(build_param_info(info, plain))
             })
             .collect()
     }
@@ -400,27 +402,72 @@ fn process_block<'t, 'd: 't, T: tutti_vst3_host::Vst3Sample>(
     })
 }
 
-/// Build a Tutti [`ParameterInfo`] from a VST3 parameter descriptor. Both the
+/// Build a Tutti [`ParameterInfo`] from a VST3 parameter descriptor and the
+/// plain range probed from the plugin's controller. Both the
 /// `get_parameter_list` and the cache-warming paths go through here so they
-/// agree on the flag mapping and on VST3's normalized 0..1 range convention.
-fn build_param_info(info: tutti_vst3_host::Vst3ParameterInfo) -> ParameterInfo {
-    let flags = ParameterFlags {
-        automatable: info.can_automate(),
-        read_only: info.is_read_only(),
-        wrap: info.is_wrap(),
-        is_bypass: info.is_bypass(),
-        hidden: info.is_hidden(),
+/// agree on the flag and range mapping.
+///
+/// `plain` is [`None`] when the plugin has no edit controller to ask, or when
+/// its `normalizedParamToPlain` is incoherent — see
+/// [`Vst3Loaded::parameter_plain_range`](tutti_vst3_host::Vst3Loaded::parameter_plain_range).
+/// The parameter is then `Normalized`, which is what the ABI alone reports.
+fn build_param_info(
+    info: tutti_vst3_host::Vst3ParameterInfo,
+    plain: Option<(f64, f64)>,
+) -> ParameterInfo {
+    // VST3 reports every one of these, so all five are known.
+    const KNOWN: ParamFlags = ParamFlags::AUTOMATABLE
+        .union(ParamFlags::READ_ONLY)
+        .union(ParamFlags::WRAP)
+        .union(ParamFlags::BYPASS)
+        .union(ParamFlags::HIDDEN);
+
+    let mut reported = ParamFlags::empty();
+    reported.set(ParamFlags::AUTOMATABLE, info.can_automate());
+    reported.set(ParamFlags::READ_ONLY, info.is_read_only());
+    reported.set(ParamFlags::WRAP, info.is_wrap());
+    reported.set(ParamFlags::BYPASS, info.is_bypass());
+    reported.set(ParamFlags::HIDDEN, info.is_hidden());
+
+    // `defaultNormalizedValue` is normalized even when the range is plain, so
+    // it goes through the same map as any other incoming value.
+    let range = match plain {
+        Some((min, max)) => {
+            let r = ParamRange::Plain {
+                min,
+                max,
+                default: 0.0,
+            };
+            ParamRange::Plain {
+                min,
+                max,
+                default: r.to_plain(info.default_normalized_value),
+            }
+        }
+        None => ParamRange::Normalized {
+            default: info.default_normalized_value,
+        },
     };
+
+    // The SDK spells out the encoding at `ivsteditcontroller.h:53`:
+    // 0 continuous, 1 toggle, otherwise `max - min` so the position count is
+    // one more than the step count.
+    let steps = match info.step_count {
+        0 => ParamSteps::Continuous,
+        1 => ParamSteps::Toggle,
+        n if n > 1 => ParamSteps::Enumerated(n as u32 + 1),
+        // Negative is out of contract; report it as unsaid rather than guessing.
+        _ => ParamSteps::Unknown,
+    };
+
     ParameterInfo {
         id: info.id,
         name: info.title_string(),
         unit: info.units_string(),
-        // VST3 exposes parameters in a normalized 0..1 range.
-        min_value: 0.0,
-        max_value: 1.0,
-        default_value: info.default_normalized_value,
-        step_count: info.step_count as u32,
-        flags,
+        range,
+        steps,
+        flags: reported & KNOWN,
+        known: KNOWN,
     }
 }
 

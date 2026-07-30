@@ -34,6 +34,7 @@ members = [
     "crates/plugin/formats/tutti-au-host",
     "crates/plugin/formats/tutti-vst2-host",
     "crates/plugin/vendor/vst-tutti",
+    "crates/plugin/vendor/tutti-vst2-test-plugin",
     "crates/vendor/fundsp-tutti",
     "crates/vendor/rustysynth-tutti/rustysynth",
     "crates/vendor/tutti-clap-test-plugin",
@@ -105,4 +106,4 @@ strip = "none"
 # resolves to one version instead of coexisting crates.io 0.4.0 + git builds.
 # Mirrors the app workspace's patch — both must name the same rev.
 [patch.crates-io]
-audio-automation = { git = "https://github.com/PoHsuanLai/audio-automation.git", rev = "f7b6c3a" }
+audio-automation = { git = "https://github.com/PoHsuanLai/audio-automation.git", rev = "be7ccb9" }

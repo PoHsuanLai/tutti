@@ -33,6 +33,7 @@ use ringbuf::{
     HeapCons, HeapProd, HeapRb,
 };
 
+use tutti_core::engine::MAX_ROOT_CHANNELS;
 use tutti_core::io::{AudioIn, OnEmpty};
 use tutti_core::pcm::BitDepth;
 use tutti_core::ChannelLayout;
@@ -178,8 +179,8 @@ impl MicIn {
         self.sample_rate
     }
 
-    /// Build a WAV sink that matches this mic: its native rate, its stereo
-    /// width, at `depth`.
+    /// Build a WAV sink that matches this mic: its native rate, its own
+    /// reported width, at `depth`.
     ///
     /// Recording needs a source and a sink whose rate and channel count agree,
     /// and **nothing downstream can check that**: `AudioIn` deliberately carries
@@ -195,9 +196,13 @@ impl MicIn {
     /// Returns `None` when the file cannot be created or the header written,
     /// matching [`WavOut::create`].
     pub fn matching_sink(&self, path: &std::path::PathBuf, depth: BitDepth) -> Option<WavOut> {
-        // 2 because `MicIn` downmixes every device frame to a stereo pair before
-        // it reaches the ring; see the callback.
-        WavOut::create(path, self.sample_rate, 2, depth)
+        // Read off `AudioIn::layout` rather than hard-coded, so this pairing
+        // cannot drift from what `poll_into` actually hands back. (Today that is
+        // always stereo — the callback folds every device frame to a pair before
+        // it reaches the ring — but a sink built from a *different* constant than
+        // the source reports is exactly what `Recorder::start` now refuses, and
+        // this helper exists to be the pairing that always passes.)
+        WavOut::create(path, self.sample_rate, AudioIn::layout(self), depth)
     }
 
     /// Input devices as `(index, name)` — the index is what [`open`](Self::open)
@@ -217,14 +222,30 @@ impl AudioIn for MicIn {
     /// it.
     const ON_EMPTY: OnEmpty = OnEmpty::Starved;
 
-    fn poll_into(&mut self, out: &mut [[f32; 2]]) -> usize {
-        // Pop up to out.len() frames the callback has pushed. A short/zero count
-        // is normal for a live source — the pump backs off and tries again.
+    /// Always stereo, whatever the device's own width is.
+    ///
+    /// The capture callback **folds** every device frame down to a stereo pair
+    /// before it reaches the ring (see [`build_input`]), so what a consumer
+    /// polls is stereo by construction. The ring's element is `[f32; 2]`, and
+    /// widening that means widening a lock-free ring element — a separate
+    /// change with its own cost. Reporting the *device's* layout here would be a
+    /// lie about what `poll_into` hands back, and `Recorder::start` would then
+    /// approve a 6-channel sink for a stereo stream.
+    fn layout(&self) -> ChannelLayout {
+        ChannelLayout::Stereo
+    }
+
+    fn poll_into(&mut self, out: &mut [f32]) -> usize {
+        // Pop up to `out.len() / 2` FRAMES the callback has pushed — the return
+        // is frames, the slice is samples. A short/zero count is normal for a
+        // live source — the pump backs off and tries again.
+        let frames = out.len() / 2;
         let mut n = 0;
-        while n < out.len() {
+        while n < frames {
             match self.cons.try_pop() {
-                Some(frame) => {
-                    out[n] = frame;
+                Some([l, r]) => {
+                    out[n * 2] = l;
+                    out[n * 2 + 1] = r;
                     n += 1;
                 }
                 None => break,
@@ -252,11 +273,31 @@ fn input_device(index: Option<usize>) -> Result<cpal::Device> {
     }
 }
 
-/// Build the `cpal` input stream: the callback downmixes each interleaved
-/// device frame to stereo and `try_push`es it into the recording ring — and,
-/// when monitoring, into a second (shallow) monitor ring. Alloc-free and
+/// Build the `cpal` input stream: the callback **folds** each interleaved
+/// device frame down to stereo and `try_push`es it into the recording ring —
+/// and, when monitoring, into a second (shallow) monitor ring. Alloc-free and
 /// non-blocking — a full ring drops the frame (overrun) rather than stall, so
 /// neither tap can ever block the RT input thread or the other tap.
+///
+/// # Folding, not truncating
+///
+/// This used to read `frame[0]` and `frame[1]` and discard the rest. On a 5.1
+/// capture device that silently threw away the **centre channel — the dialogue
+/// — and both surrounds**, which is precisely the defect `downmix`'s module doc
+/// calls out. It now routes every device frame through
+/// [`fold_frame`](tutti_core::fold_frame), the engine's single ITU-R BS.775 /
+/// Dolby implementation, so a wide capture arrives correctly downmixed and a
+/// mono one still duplicates into both sides (the fold's 1→2 arm).
+///
+/// # Why a scratch buffer, and why it is on the stack
+///
+/// `data: &[T]` is generic over [`cpal::SizedSample`], so the samples must be
+/// converted to `f32` before the fold can see them — a per-frame convert is
+/// unavoidable. **This is the RT input callback, so it must not allocate**: the
+/// scratch is a fixed `[f32; MAX_ROOT_CHANNELS]` used as a *prefix* (the
+/// engine's established pattern), never a `vec!`. A device wider than the
+/// ceiling contributes only its leading channels rather than growing the
+/// buffer.
 fn build_input<T>(
     device: &cpal::Device,
     config: &cpal::StreamConfig,
@@ -268,18 +309,24 @@ where
     T: cpal::SizedSample,
     f32: cpal::FromSample<T>,
 {
+    // Derived ONCE, outside the callback — never inside the per-frame loop.
+    let stride = channels.max(1);
+    let fold_width = stride.min(MAX_ROOT_CHANNELS);
+
     let stream = device.build_input_stream(
         config,
         move |data: &[T], _: &cpal::InputCallbackInfo| {
-            for frame in data.chunks(channels) {
-                let left: f32 = frame[0].to_sample();
-                // Mono → duplicate; stereo+ → take the first two channels.
-                let right = if channels > 1 {
-                    frame[1].to_sample()
-                } else {
-                    left
-                };
-                let stereo = [left, right];
+            // Stack scratch, reused every frame. Sized at the fixed ceiling and
+            // sliced to the device width — no allocation on the RT thread.
+            let mut src = [0.0f32; MAX_ROOT_CHANNELS];
+            for frame in data.chunks_exact(stride) {
+                for (slot, s) in src[..fold_width].iter_mut().zip(frame) {
+                    *slot = s.to_sample();
+                }
+                // The engine's one downmix: mono fans, stereo passes, surround
+                // folds per ITU/Dolby with the LFE dropped.
+                let mut stereo = [0.0f32; 2];
+                tutti_core::fold_frame(&src[..fold_width], &mut stereo);
                 // Drop on overrun: a full ring means the consumer fell behind.
                 // Never block the RT input thread.
                 let _ = prod.try_push(stereo);

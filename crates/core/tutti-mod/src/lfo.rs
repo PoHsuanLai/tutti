@@ -82,6 +82,13 @@ impl RandomState {
 /// depth) — no mutable state; the random shapes' [`RandomState`] is threaded by
 /// the caller (see [`Modulator`]'s `scan` design). `depth` is baked into the
 /// output.
+///
+/// **Rate-agnostic** — this is the pure `phase -> value` function, and the
+/// *adapter* around it decides how often it is sampled. Sampled by
+/// [`ModPreFrame`](crate::ModPreFrame) it runs at frame rate; wrapped in
+/// `tutti_units::ModulatorNode` (aliased `LfoNode`) it runs per sample off the
+/// transport clock's beat ports. Same LFO, two tiers — see the sampling-rate
+/// section in the [crate docs](crate) for which to reach for.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Lfo {
     pub shape: LfoShape,

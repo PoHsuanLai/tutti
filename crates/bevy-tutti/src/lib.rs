@@ -124,9 +124,9 @@ pub use engine_state::AudioEngineState;
 pub mod prelude {
     pub use crate::graph::{
         commit_graph, crossfade_audio_node, engine_ready, AudioConfig, AudioGraphRes, AudioPump,
-        AudioPumpAppExt, AudioSource, AudioSources, AudioTapRes, GraphDirty, GraphReconcilePlugin,
-        GraphReconcileSystems, MasterSources, MeteringRes, MetronomeRes, PumpFinished,
-        SpawnAudioNode, TransportRes,
+        AudioPumpAppExt, AudioSource, AudioSources, AudioTapRes, EngineNodes, GraphDirty,
+        GraphReconcilePlugin, GraphReconcileSystems, MasterSources, MeteringRes, MetronomeRes,
+        PumpFinished, SpawnAudioNode, TransportRes,
     };
     pub use crate::{
         AudioDeviceState, AudioEngineState, ChannelCompensation, DeviceInfo, GraphLatency,
@@ -138,8 +138,11 @@ pub mod prelude {
         ExportDone, ExportInFlight, ExportOutput, ExportPlugin, ExportRequest, ExportSource,
         ExportTarget,
     };
+    // `ChannelLayout` rides along because the I/O traits carry the channel width
+    // at runtime: a host cannot open a `WavOut` or read a source's width without
+    // naming it, so leaving it out would send every caller to `tutti-core`.
     #[cfg(feature = "audio-io")]
-    pub use crate::io::{BitDepth, MicIn, MicMonitorNode, Recorder, TapIn, WavOut};
+    pub use crate::io::{BitDepth, ChannelLayout, MicIn, MicMonitorNode, Recorder, TapIn, WavOut};
     #[cfg(feature = "midi")]
     pub use crate::midi::{MidiBusRes, MidiRoutingRes, TuttiMidiPlugin};
     #[cfg(feature = "modulation")]

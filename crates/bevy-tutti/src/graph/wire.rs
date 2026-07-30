@@ -119,6 +119,28 @@ impl AudioSources {
     }
 
     /// Set one port, growing with [`AudioSource::Silence`] to reach it.
+    ///
+    /// # Audio-rate param ports belong here too
+    ///
+    /// A node's audio-rate *param* port (a filter's cutoff, a distortion's
+    /// drive) is an ordinary input port that happens to sit after the audio
+    /// inputs — get its index from the unit's
+    /// [`ParamPorts::param_port`](tutti_units::ParamPorts) before boxing it into
+    /// the graph, then name it here like any other port.
+    ///
+    /// Declaring it here is not a stylistic preference. Wiring a param port
+    /// imperatively is *fragile*:
+    /// [`Net::pipe_input`](tutti_core::dsp::Net::pipe_input) walks **every**
+    /// input port of a node, so a later "wire the audio in" call silently
+    /// overwrites a param edge with a global input — no error, no warning, the
+    /// modulation just stops arriving.
+    ///
+    /// One `AudioSources` per entity (the ECS enforces that) and one index per
+    /// port makes that clobber unrepresentable: [`rebuild`] writes the whole
+    /// declared range from a single `Vec`. A sibling `ParamSources` component
+    /// would put two writers back in one port space and let archetype iteration
+    /// order pick the winner — the silent last-write-wins this module refuses
+    /// for audio fan-in.
     pub fn with(mut self, port: usize, source: AudioSource) -> Self {
         if self.0.len() <= port {
             self.0.resize(port + 1, AudioSource::Silence);

@@ -4,7 +4,9 @@ use super::config::{AudioScratch, PortLayout, ProcessScratch};
 use super::ClapActive;
 use crate::error::{ClapError, Result};
 use crate::events::EventList;
-use crate::types::{AudioBuffer, ClapNoteExpression, MidiEvent, ParameterChanges, TransportInfo};
+use crate::types::{
+    AudioBuffer, ChannelLayout, ClapNoteExpression, MidiEvent, ParameterChanges, TransportInfo,
+};
 use clap_sys::audio_buffer::clap_audio_buffer;
 use clap_sys::events::{
     clap_event_header, clap_event_transport, CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_TRANSPORT,
@@ -14,10 +16,11 @@ use clap_sys::events::{
 };
 use clap_sys::fixedpoint::{CLAP_BEATTIME_FACTOR, CLAP_SECTIME_FACTOR};
 use clap_sys::process::{
-    clap_process, CLAP_PROCESS_CONTINUE, CLAP_PROCESS_CONTINUE_IF_NOT_QUIET, CLAP_PROCESS_ERROR,
+    clap_process, clap_process_status, CLAP_PROCESS_CONTINUE, CLAP_PROCESS_ERROR,
     CLAP_PROCESS_SLEEP, CLAP_PROCESS_TAIL,
 };
 use std::ptr;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 /// Owned snapshot of the plugin's per-block output. Returned for
@@ -157,11 +160,11 @@ fn refill_port_buffers<T: ClapSample>(
     scratch: &mut ProcessScratch<T>,
     caller_input_ptrs: &[*mut T],
     caller_output_ptrs: &[*mut T],
-    input_ports: &[u32],
-    output_ports: &[u32],
+    input_ports: &[ChannelLayout],
+    output_ports: &[ChannelLayout],
 ) {
-    let wanted_in: usize = input_ports.iter().map(|&c| c as usize).sum();
-    let wanted_out: usize = output_ports.iter().map(|&c| c as usize).sum();
+    let wanted_in: usize = input_ports.iter().map(|c| c.count() as usize).sum();
+    let wanted_out: usize = output_ports.iter().map(|c| c.count() as usize).sum();
 
     scratch.input_ptrs.clear();
     scratch.output_ptrs.clear();
@@ -200,9 +203,13 @@ fn refill_port_buffers<T: ClapSample>(
     // Build per-port clap_audio_buffer descriptors as slices into the
     // ptr arrays. The slice pointers remain valid because `input_ptrs` /
     // `output_ptrs` have frozen capacity (set in `activate()`).
+    // `make_port_buffer` writes `clap_audio_buffer::channel_count`, a C ABI
+    // field, so the layout degrades back to a raw `u32` here and nowhere
+    // earlier.
     let input_ptrs_base = scratch.input_ptrs.as_mut_ptr();
     let mut offset = 0usize;
-    for &ch_count in input_ports {
+    for port in input_ports {
+        let ch_count = u32::from(port.count());
         let base = unsafe { input_ptrs_base.add(offset) };
         scratch.input_bufs.push(T::make_port_buffer(base, ch_count));
         offset += ch_count as usize;
@@ -210,7 +217,8 @@ fn refill_port_buffers<T: ClapSample>(
 
     let output_ptrs_base = scratch.output_ptrs.as_mut_ptr();
     let mut offset = 0usize;
-    for &ch_count in output_ports {
+    for port in output_ports {
+        let ch_count = u32::from(port.count());
         let base = unsafe { output_ptrs_base.add(offset) };
         scratch
             .output_bufs
@@ -243,6 +251,36 @@ impl<T: ClapSample> ClapActive<T> {
         self.process_impl(buffer, ctx.midi, params, ctx.expressions, ctx.transport)
     }
 
+    /// The raw `clap_process_status` the plugin returned on the most recent
+    /// block, or `CLAP_PROCESS_CONTINUE` if none has run yet.
+    ///
+    /// Raw rather than a host enum: CLAP leaves the status space open, so a
+    /// plugin built against a newer header can return a value this host has
+    /// never heard of, and an enum would have to bucket it away — the one thing
+    /// a caller diagnosing that plugin wants. Compare against
+    /// `clap_sys::process::CLAP_PROCESS_*`.
+    ///
+    /// Reads a `Relaxed` atomic: callable from any thread, promising only "the
+    /// value from some recent block". Polling from a control thread is the
+    /// intended use.
+    pub fn last_process_status(&self) -> clap_process_status {
+        self.scratch.last_process_status.load(Ordering::Relaxed)
+    }
+
+    /// Whether the plugin's most recent block reported `CLAP_PROCESS_TAIL` —
+    /// it produced no new signal but is still decaying, so the host should keep
+    /// calling `process` until the tail runs out.
+    pub fn is_tailing(&self) -> bool {
+        self.last_process_status() == CLAP_PROCESS_TAIL
+    }
+
+    /// Whether the plugin's most recent block reported `CLAP_PROCESS_SLEEP` —
+    /// it is idle and produced silence, so the host may stop calling `process`
+    /// until it has new input to deliver.
+    pub fn is_sleeping(&self) -> bool {
+        self.last_process_status() == CLAP_PROCESS_SLEEP
+    }
+
     fn process_impl(
         &mut self,
         buffer: &mut AudioBuffer<T>,
@@ -259,11 +297,15 @@ impl<T: ClapSample> ClapActive<T> {
         // past the scratch → out-of-bounds. Reject it here (RT-safe: no alloc,
         // just a compare). Callers that legitimately need a bigger block must
         // grow the scratch off the audio thread via `set_max_block_size`.
+        // The error carries its two numbers as fields rather than `format!`ing
+        // a `String`: a host driving a too-large block drives it again next
+        // block, so the allocation would repeat. `Display` renders the sentence
+        // off-thread.
         if num_samples > self.loaded.audio.max_frames {
-            return Err(ClapError::ProcessError(format!(
-                "block size {num_samples} exceeds activated max_frames {}",
-                self.loaded.audio.max_frames
-            )));
+            return Err(ClapError::BlockTooLarge {
+                requested: num_samples,
+                max_frames: self.loaded.audio.max_frames,
+            });
         }
 
         // Refill the pooled input event list in place. `clear()` keeps the
@@ -280,9 +322,10 @@ impl<T: ClapSample> ClapActive<T> {
             let AudioScratch {
                 input_events,
                 param_ranges,
+                plugin_claims_params,
                 ..
             } = &mut self.scratch;
-            input_events.add_param_changes(param_changes, param_ranges);
+            input_events.add_param_changes(param_changes, param_ranges, *plugin_claims_params);
         }
         if !note_expressions.is_empty() {
             self.scratch
@@ -301,13 +344,6 @@ impl<T: ClapSample> ClapActive<T> {
         // callback fills it during `process_fn`.
         self.scratch.output_events.clear();
 
-        // Caller-supplied channel pointers live on the stack (SmallVec) —
-        // no heap alloc for typical channel counts (≤ 16 per side).
-        let caller_inputs: smallvec::SmallVec<[*mut T; 16]> =
-            buffer.inputs.iter().map(|s| s.as_ptr() as *mut T).collect();
-        let caller_outputs: smallvec::SmallVec<[*mut T; 16]> =
-            buffer.outputs.iter_mut().map(|s| s.as_mut_ptr()).collect();
-
         // Populate the pre-allocated scratch in place. We need to read
         // `self.loaded.ports` while mutating `self.scratch.process`; the two
         // fields are disjoint, so we split the borrow through a raw pointer.
@@ -317,11 +353,34 @@ impl<T: ClapSample> ClapActive<T> {
         // reborrow `self` for the duration of the scratch mutation.
         let ports_ptr: *const PortLayout = &self.loaded.ports;
         let scratch = &mut self.scratch.process;
+
+        // Pooled vectors rather than per-block `SmallVec<[*mut T; 16]>` locals,
+        // which spilled to the heap every block at 17+ channels a side. `clear`
+        // keeps the capacity `activate()` reserved.
+        scratch.caller_input_ptrs.clear();
+        scratch
+            .caller_input_ptrs
+            .extend(buffer.inputs.iter().map(|s| s.as_ptr() as *mut T));
+        scratch.caller_output_ptrs.clear();
+        scratch
+            .caller_output_ptrs
+            .extend(buffer.outputs.iter_mut().map(|s| s.as_mut_ptr()));
+
+        // `refill_port_buffers` takes the caller arrays by shared slice while
+        // mutating the rest of the scratch, so hand it raw slices over the two
+        // pooled vectors.
+        //
+        // SAFETY: the pools are disjoint fields of `*scratch` from everything
+        // `refill_port_buffers` writes (`input_ptrs`, `output_ptrs`,
+        // `input_bufs`, `output_bufs`, `channels`), and nothing on that path
+        // touches them — so the slices stay valid and unaliased for the call.
+        let caller_in_ptr: *const [*mut T] = scratch.caller_input_ptrs.as_slice();
+        let caller_out_ptr: *const [*mut T] = scratch.caller_output_ptrs.as_slice();
         unsafe {
             refill_port_buffers(
                 scratch,
-                &caller_inputs,
-                &caller_outputs,
+                &*caller_in_ptr,
+                &*caller_out_ptr,
                 &(*ports_ptr).inputs,
                 &(*ports_ptr).outputs,
             );
@@ -412,31 +471,29 @@ impl<T: ClapSample> ClapActive<T> {
         // `saturating_add` keeps it monotone even across a very long session.
         self.scratch.steady_time = self.scratch.steady_time.saturating_add(num_samples as i64);
 
-        // H3: record the full status (not just ERROR) so callers can observe
-        // TAIL/SLEEP via `last_process_status`. The shared `ProcessOutput`
-        // does not carry a status field this phase, so it stays CLAP-private.
-        // Log only on a *transition* (avoids per-block spam under SLEEP/TAIL,
-        // and keeps the steady-state hot path allocation-free).
-        let prev_status = self.scratch.last_process_status;
-        self.scratch.last_process_status = status;
-        if status != prev_status {
-            match status {
-                CLAP_PROCESS_TAIL => {
-                    eprintln!("[clap-host] process → TAIL (plugin has a decaying tail)")
-                }
-                CLAP_PROCESS_SLEEP => eprintln!("[clap-host] process → SLEEP (plugin is idle)"),
-                CLAP_PROCESS_ERROR | CLAP_PROCESS_CONTINUE | CLAP_PROCESS_CONTINUE_IF_NOT_QUIET => {
-                }
-                other => eprintln!("[clap-host] process → unknown status {other}"),
-            }
-        }
+        // Record the full status (not just ERROR) for
+        // `ClapActive::last_process_status`. This used to `eprintln!` each
+        // TAIL/SLEEP/unknown transition — a stderr lock, plus a heap format in
+        // the unknown arm, on the audio thread. The `status != prev` guard did
+        // not make that rare: a plugin alternating between two statuses
+        // transitions every block, which is what a reverb tail decaying below
+        // the noise floor and being re-excited does. `Relaxed` suffices —
+        // nothing is ordered against it and the reader wants only the latest
+        // value.
+        self.scratch
+            .last_process_status
+            .store(status, Ordering::Relaxed);
+
         if status == CLAP_PROCESS_ERROR {
             // On error the plugin's output is undefined — zero the caller's
             // output channels so no garbage/uninitialised audio leaks out.
             for buf in audio_outputs.iter() {
                 zero_clap_output::<T>(buf, num_samples);
             }
-            return Err(ClapError::ProcessError("Plugin returned error".to_string()));
+            // Fieldless variant, not `ProcessError(String)`: a plugin returning
+            // ERROR usually returns it every block, so the owned message was a
+            // per-block allocation on the audio thread.
+            return Err(ClapError::PluginReturnedError);
         }
 
         // Drain the plugin's output events into the pooled return buffers.
@@ -520,12 +577,12 @@ mod tests {
     use super::*;
 
     fn new_scratch<T: Copy + Default>(
-        input_ports: &[u32],
-        output_ports: &[u32],
+        input_ports: &[ChannelLayout],
+        output_ports: &[ChannelLayout],
         max_frames: usize,
     ) -> ProcessScratch<T> {
-        let input_total: usize = input_ports.iter().map(|&c| c as usize).sum();
-        let output_total: usize = output_ports.iter().map(|&c| c as usize).sum();
+        let input_total: usize = input_ports.iter().map(|c| c.count() as usize).sum();
+        let output_total: usize = output_ports.iter().map(|c| c.count() as usize).sum();
         let mut scratch = ProcessScratch::<T>::new();
         scratch.resize_for(
             input_total,
@@ -541,8 +598,9 @@ mod tests {
     /// `refill_port_buffers` must only reuse capacity — no heap grow.
     #[test]
     fn refill_port_buffers_is_allocation_free() {
-        let input_ports = [2u32, 2]; // main + sidechain stereo
-        let output_ports = [2u32];
+        // main + sidechain stereo
+        let input_ports = [ChannelLayout::Stereo, ChannelLayout::Stereo];
+        let output_ports = [ChannelLayout::Stereo];
         let max_frames = 512usize;
         let mut scratch = new_scratch::<f32>(&input_ports, &output_ports, max_frames);
 
@@ -581,8 +639,8 @@ mod tests {
     /// taken from the pre-allocated scratch pool, so no alloc either.
     #[test]
     fn refill_with_pad_is_allocation_free() {
-        let input_ports = [4u32]; // quad input
-        let output_ports = [2u32];
+        let input_ports = [ChannelLayout::Quad];
+        let output_ports = [ChannelLayout::Stereo];
         let max_frames = 256usize;
         let mut scratch = new_scratch::<f32>(&input_ports, &output_ports, max_frames);
 

@@ -6,8 +6,8 @@ use std::sync::Arc;
 use crate::MAX_SAMPLER_CHANNELS;
 use tutti_core::SignalFrame;
 use tutti_core::{
-    Amplitude, AudioUnit, Beat, BeatDuration, BufferMut, BufferRef, PlaybackRate, ReadRate,
-    SamplePosition, SampleRate, Samples, SrcRatio, Timeline,
+    Amplitude, AudioUnit, Beat, BeatDuration, BufferMut, BufferRef, ChannelLayout, PlaybackRate,
+    ReadRate, SamplePosition, SampleRate, Samples, SrcRatio, Timeline,
 };
 
 use super::interp::cubic_hermite;
@@ -61,9 +61,21 @@ pub struct DiskSource {
     /// Fractional position for sub-sample interpolation.
     fractional_pos: f64,
 
-    /// Output width; also the interleave stride of `history` and
+    /// Output width — the declaration.
+    channels: ChannelLayout,
+
+    /// `channels.count()`, cached — the interleave stride of `history` and
     /// `fetch_scratch`.
-    channels: usize,
+    ///
+    /// **This one is load-bearing for RT, not a convenience.** [`tap`](Self::tap)
+    /// is `#[inline] fn(&self, t, c)` and `cubic_hermite` calls it **four times
+    /// per output channel per sample** — 24 reads a sample at width 6 — and
+    /// [`shift_history`](Self::shift_history) runs per source frame consumed.
+    /// Deriving the count from the layout at each of those would put an enum
+    /// match on the innermost loop in the crate. The layout above stays the
+    /// declaration; this is only its arithmetic, and the two cannot drift
+    /// because nothing mutates the width after construction.
+    stride: usize,
 
     /// 4-tap cubic-Hermite history, **frame-major**: tap `t` channel `c` lives
     /// at `history[t * channels + c]`.
@@ -107,8 +119,9 @@ impl Clone for DiskSource {
             applied_reset_epoch: self.applied_reset_epoch,
             fractional_pos: self.fractional_pos,
             channels: self.channels,
+            stride: self.stride,
             history: self.history.clone(),
-            fetch_scratch: Vec::with_capacity(MAX_FETCH_SAMPLES * self.channels),
+            fetch_scratch: Vec::with_capacity(MAX_FETCH_SAMPLES * self.stride),
         }
     }
 }
@@ -119,7 +132,14 @@ impl DiskSource {
     /// disagree.
     pub(crate) fn new(consumer: SharedReader, shared_state: Arc<RtState>) -> Self {
         let applied_reset_epoch = shared_state.reset_epoch();
-        let channels = consumer.load().channels().clamp(1, MAX_SAMPLER_CHANNELS);
+        // The UPPER bound is the real work here — `history` and `fetch_scratch`
+        // are indexed against the `MAX_SAMPLER_CHANNELS`-sized stack frames the
+        // read path uses, so a wider ring must be narrowed, not merely
+        // canonicalized. `MAX_SAMPLER_CHANNELS` stays a `usize` (it sizes those
+        // stack arrays), so the clamp happens on the count and the narrowed
+        // result is re-declared as the layout.
+        let stride = (consumer.load().channels().count() as usize).clamp(1, MAX_SAMPLER_CHANNELS);
+        let channels = ChannelLayout::from(stride);
         Self {
             consumer,
             playing: AtomicBool::new(true),
@@ -129,8 +149,9 @@ impl DiskSource {
             applied_reset_epoch,
             fractional_pos: 0.0,
             channels,
-            history: vec![0.0; 4 * channels],
-            fetch_scratch: Vec::with_capacity(MAX_FETCH_SAMPLES * channels),
+            stride,
+            history: vec![0.0; 4 * stride],
+            fetch_scratch: Vec::with_capacity(MAX_FETCH_SAMPLES * stride),
         }
     }
 
@@ -177,21 +198,27 @@ impl DiskSource {
     }
 
     /// Output width — this unit's `outputs()`.
-    pub fn channels(&self) -> usize {
+    pub fn channels(&self) -> ChannelLayout {
         self.channels
     }
 
     /// Drop the oldest tap, shifting taps 1..3 down one frame.
+    ///
+    /// `self.stride`, not `self.channels.count()`: this runs once per source
+    /// frame consumed, inside the per-sample advance loop.
     #[inline]
     fn shift_history(&mut self) {
-        let ch = self.channels;
+        let ch = self.stride;
         self.history.copy_within(ch.., 0);
     }
 
     /// Tap `t`, channel `c`.
+    ///
+    /// `self.stride`, not `self.channels.count()`: this is the innermost read in
+    /// the crate — four calls per output channel per sample. See the field.
     #[inline]
     fn tap(&self, t: usize, c: usize) -> f32 {
-        self.history[t * self.channels + c]
+        self.history[t * self.stride + c]
     }
 
     /// Call after seek to reset interpolation state.
@@ -218,7 +245,7 @@ impl DiskSource {
 
         let samples_needed = base_rate.advance(Samples(size)).get().ceil() as usize + 4;
 
-        let ch = self.channels;
+        let ch = self.stride;
         let gain = self.gain.get();
 
         // Fetch only the SHORTFALL, and keep whatever this block does not
@@ -316,7 +343,8 @@ impl AudioUnit for DiskSource {
     }
 
     fn outputs(&self) -> usize {
-        self.channels
+        // Boundary: `AudioUnit::outputs` is a fixed fundsp trait signature.
+        self.stride
     }
 
     fn reset(&mut self) {
@@ -355,7 +383,7 @@ impl AudioUnit for DiskSource {
     }
 
     fn tick(&mut self, _input: &[f32], output: &mut [f32]) {
-        let n = self.channels.min(output.len());
+        let n = self.stride.min(output.len());
         if n == 0 {
             return;
         }
@@ -394,7 +422,7 @@ impl AudioUnit for DiskSource {
 
         self.fractional_pos += rate.advance(Samples(1)).get();
 
-        let ch = self.channels;
+        let ch = self.stride;
         let cell = self.consumer.load();
         let mut frame = [0.0f32; MAX_SAMPLER_CHANNELS];
         while self.fractional_pos >= 1.0 {
@@ -426,7 +454,7 @@ impl AudioUnit for DiskSource {
     }
 
     fn process(&mut self, size: usize, _input: &BufferRef, output: &mut BufferMut) {
-        let n = self.channels.min(output.channels());
+        let n = self.stride.min(output.channels());
         if !self.playing.load(Ordering::Relaxed) {
             for c in 0..n {
                 for i in 0..size {
@@ -915,7 +943,7 @@ mod tests {
     /// boundary rather than rewriting every fixture.
     fn make_reader_with_samples(samples: &[(f32, f32)]) -> SharedReader {
         let (mut writer, reader) =
-            RegionBuffer::with_capacity(RegionId(1), PathBuf::new(), samples.len() + 64, 2);
+            RegionBuffer::with_capacity(RegionId(1), PathBuf::new(), samples.len() + 64, 2usize);
         let flat: Vec<f32> = samples.iter().flat_map(|&(l, r)| [l, r]).collect();
         writer.push_interleaved(&flat);
         crate::butler::share_reader(reader)
@@ -1515,7 +1543,7 @@ mod tests {
 
         let fadeout: Vec<f32> = (0..4).flat_map(|i| [1.0 - i as f32 * 0.25, 0.0]).collect();
         let fadein: Vec<f32> = (0..4).flat_map(|i| [i as f32 * 0.25, 0.0]).collect();
-        state.start_seek_crossfade(fadeout, fadein, 2);
+        state.start_seek_crossfade(fadeout, fadein, 2usize);
 
         assert!(state.is_seek_crossfading());
 
@@ -1564,7 +1592,11 @@ mod tests {
             let ring = make_wide_reader(&frames, width);
             let state = Arc::new(RtState::new());
             let inner = DiskSource::new(ring, state.clone());
-            assert_eq!(inner.channels(), width, "ring width must reach the unit");
+            assert_eq!(
+                inner.channels(),
+                ChannelLayout::from(width),
+                "ring width must reach the unit"
+            );
 
             // Transport parked BEFORE the voice's start beat, so the placement
             // gate reports "outside".
@@ -1614,6 +1646,81 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    /// The cached `stride` must index `history` exactly as `channels.count()`
+    /// would — at a width where getting it wrong is audible.
+    ///
+    /// `channels` is a [`ChannelLayout`] declaration; `stride` is its count,
+    /// materialised once because [`DiskSource::tap`] runs four times per output
+    /// channel per sample and [`DiskSource::shift_history`] once per source
+    /// frame. That is the only reason the pair exists, and it is only safe while
+    /// the two agree — so this pins the agreement through the read path rather
+    /// than by inspecting the fields.
+    ///
+    /// Width 6 and a constant-per-channel ring make a stride error *visible*:
+    /// `history` is frame-major, so a wrong stride reads tap `t` of channel `c`
+    /// from a different channel's slot and every output carries a neighbour's
+    /// value. At width 2 a stride bug and a correct stride coincide for several
+    /// access patterns (see the note on the `history` field), which is exactly
+    /// why this is not a stereo test.
+    #[test]
+    fn cached_stride_reads_every_channel_at_width_six() {
+        let width = 6usize;
+        // Every frame is [1, 2, 3, 4, 5, 6]: constant per channel, distinct
+        // across channels. Constant in time so cubic interpolation over any four
+        // taps of one channel returns that channel's own value exactly — the
+        // output then names which channel each slot was read from.
+        let frames: Vec<f32> = (0..128)
+            .flat_map(|_| (1..=width).map(|c| c as f32))
+            .collect();
+        let ring = make_wide_reader(&frames, width);
+        let state = Arc::new(RtState::new());
+        let mut unit = DiskSource::new(ring, state.clone());
+
+        assert_eq!(
+            unit.channels(),
+            ChannelLayout::Multi(6),
+            "the ring's declared width must reach the unit as a layout"
+        );
+        assert_eq!(
+            unit.outputs(),
+            width,
+            "the cached stride must agree with the declared layout"
+        );
+
+        // Run past the 4-tap priming so `history` is full of real frames.
+        let input = BufferVec::new(0);
+        let mut output = BufferVec::new(width);
+        unit.process(64, &input.buffer_ref(), &mut output.buffer_mut());
+
+        let buf = output.buffer_ref();
+        // The last quarter of the block is well past priming.
+        for i in 48..64 {
+            for c in 0..width {
+                let got = buf.at_f32(c, i);
+                let want = (c + 1) as f32;
+                assert!(
+                    (got - want).abs() < 1e-4,
+                    "sample {i} channel {c}: read {got}, want {want} — \
+                     a wrong stride reads a neighbouring channel's tap"
+                );
+            }
+        }
+
+        // `tick` shares `shift_history` / `tap` with `process`, so it must land
+        // on the same frame.
+        let mut frame = vec![0.0f32; width];
+        for _ in 0..8 {
+            unit.tick(&[], &mut frame);
+        }
+        for (c, &s) in frame.iter().enumerate() {
+            let want = (c + 1) as f32;
+            assert!(
+                (s - want).abs() < 1e-4,
+                "tick channel {c}: read {s}, want {want}"
+            );
         }
     }
 

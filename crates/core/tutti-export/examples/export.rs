@@ -18,7 +18,7 @@ use tutti_export::{
     render_to_buffers, render_to_file, AudioFormat, BitDepth, ChannelLayout, EncodeConfig,
     ExportConfig, RenderConfig,
 };
-use tutti_types::Db;
+use tutti_types::{Db, Interleaved};
 
 /// A 440 Hz tone at −12 dBFS, in stereo.
 fn tone() -> Net {
@@ -124,13 +124,17 @@ fn main() -> tutti_export::Result<()> {
     let mut audio = render_to_buffers(tone(), &config, &FrozenClock)?;
 
     let cfg = LoudnessConfig::new(audio.sample_rate, ChannelLayout::Stereo);
-    let before = measure_loudness(&cfg, &audio.interleaved()).expect("stereo is meterable");
+    let flat = audio.interleaved();
+    let before = measure_loudness(&cfg, Interleaved::new(&flat, ChannelLayout::Stereo))
+        .expect("stereo is meterable");
 
     // −14 LUFS with a −1 dBTP ceiling — the usual streaming target.
     let gain = before.gain_to(Db(-14.0), Db(-1.0));
     audio.apply_gain(gain);
 
-    let after = measure_loudness(&cfg, &audio.interleaved()).expect("stereo is meterable");
+    let flat = audio.interleaved();
+    let after = measure_loudness(&cfg, Interleaved::new(&flat, ChannelLayout::Stereo))
+        .expect("stereo is meterable");
     println!(
         "normalize: {:.2} LUFS + {:.2} dB -> {:.2} LUFS (peak {:.2} dBTP)",
         before.lufs.get(),

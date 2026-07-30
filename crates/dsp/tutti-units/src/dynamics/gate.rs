@@ -189,6 +189,13 @@ impl Gate {
         self.channels.count() as u8
     }
 
+    /// The width this gate was built for, as the engine's channel vocabulary.
+    /// [`channels`](Self::channels) is the same number as a bare count, kept
+    /// for callers doing port arithmetic.
+    pub fn layout(&self) -> ChannelLayout {
+        self.channels
+    }
+
     pub fn threshold(&self) -> Arc<AtomicF32> {
         self.core.threshold_db.as_atomic()
     }
@@ -294,11 +301,10 @@ impl AudioUnit for Gate {
     }
 
     fn get_id(&self) -> u64 {
-        match self.channels {
-            ChannelLayout::Mono => crate::node_id::GATE_ID,
-            ChannelLayout::Stereo | ChannelLayout::Quad | ChannelLayout::Multi(_) => {
-                crate::node_id::STEREO_GATE_ID
-            }
+        if self.channels.is_mono() {
+            crate::node_id::GATE_ID
+        } else {
+            crate::node_id::STEREO_GATE_ID
         }
     }
 

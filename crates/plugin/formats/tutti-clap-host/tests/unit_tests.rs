@@ -353,9 +353,10 @@ fn test_param_changes_through_input_list() {
     changes.add_queue(q2);
 
     let mut list = InputEventList::new();
-    // Empty range map → pass-through (this test only asserts event count, not
-    // denormalized values; the denorm math is covered in the events unit tests).
-    list.add_param_changes(&changes, &[]);
+    // No range map and no claim of params → pass-through (this test only
+    // asserts event count, not denormalized values; the denorm math is covered
+    // in the events unit tests).
+    list.add_param_changes(&changes, &[], false);
 
     assert_eq!(list.len(), 3);
 }
@@ -1409,9 +1410,49 @@ fn test_track_info_default() {
     let info = TrackInfo::default();
     assert!(info.name.is_none());
     assert!(info.color.is_none());
+    assert!(info.audio.is_none());
     assert!(!info.is_master);
     assert!(!info.is_bus);
     assert!(!info.is_return_track);
+}
+
+/// A track's advertised channel count is the layout's, so the count and the port
+/// tag cannot disagree.
+///
+/// The pair used to be `Option<i32>` + `Option<String>`, which made
+/// `Some(6)` alongside `Some("stereo")` representable with nothing to catch it.
+/// Reading the count *through* the layout is what makes that unconstructable.
+#[test]
+#[cfg(feature = "clap-extras")]
+fn track_audio_count_comes_from_the_layout() {
+    use tutti_clap_host::{ChannelLayout, TrackAudio, TrackPortType};
+
+    let surround = TrackAudio {
+        layout: ChannelLayout::Multi(6),
+        port_type: Some(TrackPortType::Surround),
+    };
+    assert_eq!(surround.layout.count(), 6);
+
+    // `from_layout` tags mono/stereo (where the count IS the topology) and
+    // leaves anything wider untagged rather than guessing surround vs ambisonic.
+    assert_eq!(
+        TrackAudio::from_layout(ChannelLayout::Mono).port_type,
+        Some(TrackPortType::Mono)
+    );
+    assert_eq!(
+        TrackAudio::from_layout(ChannelLayout::Stereo).port_type,
+        Some(TrackPortType::Stereo)
+    );
+    assert_eq!(
+        TrackAudio::from_layout(ChannelLayout::Multi(6)).port_type,
+        None,
+        "a bare count cannot distinguish 5.1 from ambisonic, so it must not claim either"
+    );
+    // Canonicalization still applies: a 2-count is Stereo, so it tags as stereo.
+    assert_eq!(
+        TrackAudio::from_layout(ChannelLayout::from_count(2)).port_type,
+        Some(TrackPortType::Stereo)
+    );
 }
 
 #[test]

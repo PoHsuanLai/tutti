@@ -51,6 +51,7 @@ pub mod value;
 
 pub mod channels;
 pub mod downmix;
+pub mod interleaved;
 pub mod io;
 pub mod latency;
 pub mod meter;
@@ -80,6 +81,10 @@ pub use channels::ChannelLayout;
 pub use downmix::{
     fold_buffer_to_mono, fold_frame, fold_frame_to_mono, fold_frame_to_stereo, fold_planar_to_mono,
 };
+
+// A flat buffer that carries its own frame width, so a frame index and a sample
+// index stop being the same type.
+pub use interleaved::{Interleaved, InterleavedMut, StereoPlanes};
 
 // I/O edge + latency.
 pub use io::{pump, AudioIn, AudioOut, OnEmpty};

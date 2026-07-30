@@ -8,8 +8,9 @@ use tutti_plugin::server::{
 };
 #[cfg(all(target_os = "macos", feature = "au"))]
 use tutti_plugin::server::{
-    EditorSize, ParameterFlags, ParameterInfo, PluginAudio, PluginEditorHost, PluginMeta,
-    PluginParams, PluginResult, PluginState, ProcessContext, ProcessOutput, WindowHandle,
+    EditorSize, ParamFlags, ParamRange, ParamSteps, ParameterInfo, PluginAudio, PluginEditorHost,
+    PluginMeta, PluginParams, PluginResult, PluginState, ProcessContext, ProcessOutput,
+    WindowHandle,
 };
 
 use crate::loaders::common::{single_bus, Meta};
@@ -279,8 +280,11 @@ impl AuInstance {
 
             // AU exposes a single main bus per direction here.
             let loaded = LoadedPlugin {
-                inputs: single_bus(inner.num_inputs() as usize),
-                outputs: single_bus(inner.num_outputs() as usize),
+                // `num_inputs`/`num_outputs` are `u32` off the AU element
+                // count; `From<u32>` canonicalizes them, so the `as usize`
+                // hop is gone.
+                inputs: single_bus(inner.num_inputs()),
+                outputs: single_bus(inner.num_outputs()),
                 latency_samples: latency,
                 features,
             };
@@ -426,30 +430,35 @@ impl PluginParams for AuInstance {
         parameters::list(self.inner.raw_unit())
             .into_iter()
             .map(|p| {
-                // Boolean-unit params are 0/1 toggles → one step; everything
-                // else is continuous → no step quantization.
-                let step_count = if p.unit == parameters::ParameterUnit::Boolean {
-                    1
-                } else {
-                    0
+                // Indexed params are a choice list whose `[min, max]` are the
+                // first and last index, so the position count comes from the
+                // span — AUTimePitch's "Overlap" is 0..10, eleven positions.
+                let steps = match p.unit {
+                    parameters::ParameterUnit::Boolean => ParamSteps::Toggle,
+                    parameters::ParameterUnit::Indexed => {
+                        ParamSteps::from_span((p.range.max - p.range.min) as f64)
+                    }
+                    _ => ParamSteps::Continuous,
                 };
-                // AU advertises IsReadable/IsWritable per parameter; a readable-
-                // but-not-writable param is read-only. AUv2 has no automation /
-                // bypass / hidden metadata, so those flags stay false.
-                let flags = ParameterFlags {
-                    automatable: p.writable,
-                    read_only: !p.writable,
-                    ..ParameterFlags::default()
-                };
+                // AUv2 advertises IsWritable and nothing else. Writability is
+                // not automatability — a host may write a parameter the plugin
+                // never meant to be automated — so only READ_ONLY is known.
                 ParameterInfo {
                     id: p.id,
                     name: p.name,
                     unit: p.unit.to_string(),
-                    min_value: p.range.min as f64,
-                    max_value: p.range.max as f64,
-                    default_value: p.range.default as f64,
-                    step_count,
-                    flags,
+                    range: ParamRange::Plain {
+                        min: p.range.min as f64,
+                        max: p.range.max as f64,
+                        default: p.range.default as f64,
+                    },
+                    steps,
+                    flags: if p.writable {
+                        ParamFlags::empty()
+                    } else {
+                        ParamFlags::READ_ONLY
+                    },
+                    known: ParamFlags::READ_ONLY,
                 }
             })
             .collect()
@@ -768,17 +777,21 @@ mod tests {
         let target = au
             .get_parameter_list()
             .into_iter()
-            .find(|p| p.max_value > 2.0 && !p.flags.read_only)
+            .find(|p| {
+                p.range.bounds().is_some_and(|(_, max)| max > 2.0)
+                    && p.flag(ParamFlags::READ_ONLY) == Some(false)
+            })
             .expect("AUDelay should expose a wide-range writable parameter");
+        let (min, max) = target
+            .range
+            .bounds()
+            .expect("AU declares a plain range for every parameter");
 
         let num_samples = 64;
         for (normalized, expected) in [
-            (1.0f64, target.max_value),
-            (0.0f64, target.min_value),
-            (
-                0.5f64,
-                target.min_value + 0.5 * (target.max_value - target.min_value),
-            ),
+            (1.0f64, max),
+            (0.0f64, min),
+            (0.5f64, min + 0.5 * (max - min)),
         ] {
             let mut changes = ParameterChanges::new();
             let mut queue = ParameterQueue::new(target.id);
@@ -804,15 +817,13 @@ mod tests {
             let read_back = au.get_parameter(target.id);
             // Tolerance scales with the range: AU stores parameters as f32, so
             // a 22 kHz range round-trips to ~1e-4 relative precision.
-            let tolerance = (target.max_value - target.min_value).abs() * 1e-4;
+            let tolerance = (max - min).abs() * 1e-4;
             assert!(
                 (read_back - expected).abs() <= tolerance,
                 "param {} ('{}'): normalized {normalized} should read back as \
-                 {expected} in native units, got {read_back} (range [{}, {}])",
+                 {expected} in native units, got {read_back} (range [{min}, {max}])",
                 target.id,
                 target.name,
-                target.min_value,
-                target.max_value,
             );
         }
     }

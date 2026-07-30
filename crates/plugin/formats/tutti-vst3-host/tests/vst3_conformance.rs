@@ -2055,6 +2055,12 @@ fn host_context_is_borrowed_not_consumed() {
 // returned a constant (or ignored its arguments) cannot satisfy both.
 
 /// Load a named sample bundle, or `None` when this machine lacks it.
+///
+/// **The caller must already hold [`plugin_guard`].** This constructs a
+/// `Vst3Loaded`, so it is bound by the rule on [`PLUGIN_LOCK`]: concurrent
+/// load/unload of one DSO races the module entry/exit counter. It cannot take
+/// the lock itself — several tests below load two bundles, and a per-call guard
+/// would deadlock on the second.
 fn sample(name: &str) -> Option<Vst3Loaded> {
     let p = resolve_bundle(&Path::new(SAMPLE_PLUGIN_DIR).join(name));
     if !p.is_file() {
@@ -2072,6 +2078,7 @@ fn sample(name: &str) -> Option<Vst3Loaded> {
 /// and fell back to `u32::MAX` — fails on one of the two.
 #[test]
 fn context_requirements_are_read_from_the_plugin() {
+    let _plugins = plugin_guard();
     let Some(checker) = sample("host-checker.vst3") else {
         eprintln!("host-checker not built; skipping");
         return;
@@ -2121,6 +2128,7 @@ fn context_requirements_are_read_from_the_plugin() {
 /// passed through rather than ignored.
 #[test]
 fn note_expression_types_enumerate_per_plugin() {
+    let _plugins = plugin_guard();
     let Some(nes) = sample("note-expression-synth.vst3") else {
         eprintln!("note-expression-synth not built; skipping");
         return;
@@ -2162,6 +2170,7 @@ fn note_expression_types_enumerate_per_plugin() {
 /// `IKeyswitchController` — the articulation map a sample library advertises.
 #[test]
 fn keyswitches_enumerate_and_bound_check() {
+    let _plugins = plugin_guard();
     let Some(checker) = sample("host-checker.vst3") else {
         eprintln!("host-checker not built; skipping");
         return;
@@ -2211,6 +2220,7 @@ fn remap_param_id_migrates_a_known_parameter() {
     /// `kMyGainParamTag` in `remapparamidcids.h`.
     const EXPECTED_NEW_ID: u32 = 123;
 
+    let _plugins = plugin_guard();
     let Some(remap) = sample("remap-paramid.vst3") else {
         eprintln!("remap-paramid not built; skipping");
         return;
@@ -2241,6 +2251,7 @@ fn remap_param_id_migrates_a_known_parameter() {
 /// map onto note-expression ids.
 #[test]
 fn physical_ui_mapping_is_read_per_plugin() {
+    let _plugins = plugin_guard();
     let Some(nes) = sample("note-expression-synth.vst3") else {
         eprintln!("note-expression-synth not built; skipping");
         return;
@@ -2274,6 +2285,7 @@ fn physical_ui_mapping_is_read_per_plugin() {
 /// ignored it entirely would wrongly answer for the unsupported one.
 #[test]
 fn xml_representation_is_fetched_for_a_supported_layout() {
+    let _plugins = plugin_guard();
     let Some(checker) = sample("host-checker.vst3") else {
         eprintln!("host-checker not built; skipping");
         return;
@@ -2320,6 +2332,7 @@ fn xml_representation_is_fetched_for_a_supported_layout() {
 /// would return the same id for both, or something for `Bogus`.
 #[test]
 fn param_id_for_function_name_resolves_known_functions() {
+    let _plugins = plugin_guard();
     let Some(checker) = sample("host-checker.vst3") else {
         eprintln!("host-checker not built; skipping");
         return;

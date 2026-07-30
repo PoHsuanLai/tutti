@@ -99,7 +99,18 @@ impl Vst2Instance {
         let info = self.handle.instance.get_info();
 
         if info.preset_chunks {
-            let chunk = self.params.get_preset_data();
+            // `try_get_preset_data`, not `get_preset_data`: the infallible one
+            // folds "nothing saved" and "the save failed" into the same empty
+            // `Vec`, so a failed `getChunk` silently downgraded to a parameter
+            // snapshot, losing the non-parameter state chunks exist to carry.
+            // A failure is now an error; an *empty* chunk still falls through
+            // to the parameter snapshot, keeping a fresh plugin saveable.
+            let chunk = self.params.try_get_preset_data().map_err(|e| {
+                Vst2Error::StateRestoreError(format!(
+                    "plugin advertises effFlagsProgramChunks but its preset \
+                     chunk save failed: {e}"
+                ))
+            })?;
             if !chunk.is_empty() {
                 let mut state = Vec::with_capacity(4 + chunk.len());
                 state.extend_from_slice(&STATE_HEADER_CHUNK);
@@ -109,7 +120,12 @@ impl Vst2Instance {
         }
 
         // Fallback: serialize all parameters.
-        let param_count = info.parameters;
+        //
+        // `.max(0)`: `numParams` is raw off the `AEffect` and a plugin can put
+        // anything there. Unclamped, `-1` sign-extends to `usize::MAX` and the
+        // `* 4` overflows — profile-dependent, so debug panics on multiply
+        // overflow while release wraps to a small capacity and carries on.
+        let param_count = info.parameters.max(0);
         let mut state = Vec::with_capacity(4 + 4 + (param_count as usize) * 4);
         state.extend_from_slice(&STATE_HEADER_PARAMS);
         state.extend_from_slice(&param_count.to_le_bytes());
@@ -134,11 +150,26 @@ impl Vst2Instance {
     pub fn load_state(&self, data: &[u8]) -> Result<()> {
         match parse_state_header(data)? {
             StateHeader::Chunk(payload) => {
-                self.params.load_preset_data(payload);
+                // `effSetChunk` reports whether the plugin took the blob. This
+                // arm used to discard that answer and always return `Ok(())`,
+                // so a plugin refusing a chunk (truncated, foreign, or a format
+                // version it no longer reads) reported a successful restore
+                // while sitting at its defaults.
+                if !self.params.load_preset_data(payload) {
+                    return Err(Vst2Error::StateRestoreError(format!(
+                        "plugin rejected the {} byte preset chunk (effSetChunk \
+                         did not report success)",
+                        payload.len()
+                    )));
+                }
                 Ok(())
             }
             StateHeader::Params { count, values } => {
-                let actual_count = self.handle.instance.get_info().parameters;
+                // `.max(0)` as in `save_state`: `numParams` is raw from the
+                // `AEffect`. Unclamped, a plugin declaring `-1` makes this
+                // comparison `0 > -1` and rejects the empty snapshot
+                // `save_state` just wrote for that same plugin.
+                let actual_count = self.handle.instance.get_info().parameters.max(0);
                 if count > actual_count {
                     return Err(Vst2Error::StateRestoreError(format!(
                         "State has {} parameters but plugin only has {}",

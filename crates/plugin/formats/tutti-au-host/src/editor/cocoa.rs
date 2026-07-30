@@ -103,8 +103,20 @@ unsafe fn make_view(factory: *mut AnyObject, unit: AudioUnit) -> Result<*mut Any
     // so it has no typed binding — dispatch dynamically. objc2's `msg_send!`
     // encodes the `AudioUnit` and `NSSize` (`CGSize`, an `Encode` struct)
     // arguments into the correct ARM64 registers. `AudioUnit` is an opaque
-    // `*mut ComponentInstanceRecord`; erase it to `*mut c_void` (the encodable
-    // pointer type the AU view protocol actually expects) before sending.
+    // `*mut ComponentInstanceRecord`; erase it to `*mut c_void`, the encodable
+    // pointer type, before sending.
+    //
+    // Debug builds additionally verify the argument encodings against the
+    // *plugin's* method signature, and that check only passes because this
+    // crate enables objc2's `relax-void-encoding`. There is no single encoding
+    // that would satisfy it otherwise: measured on this machine, TDR Nova's
+    // JUCE factory declares the parameter `^{ComponentInstanceRecord=[1q]}`
+    // while Apple's own AUBandpassViewFactory declares
+    // `^{OpaqueAudioComponentInstance=}` — the same 8-byte pointer under two
+    // incompatible declared types, because each SDK generation binds a
+    // different opaque struct name. Without the feature the verifier aborted on
+    // whichever of the two we did not hardcode, i.e. `AuEditor::open` could
+    // never open a custom Cocoa view in a debug build. See Cargo.toml.
     let unit_ptr = unit as *mut c_void;
     let view: *mut AnyObject = msg_send![factory, uiViewForAudioUnit: unit_ptr, withSize: size];
 

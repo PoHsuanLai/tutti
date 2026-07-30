@@ -1,7 +1,7 @@
 #[cfg(unix)]
 use super::state::PosixFdEntry;
 use super::state::{HostState, TimerEntry};
-use crate::types::{TransportRequest, UndoChange};
+use crate::types::{TrackPortType, TransportRequest, UndoChange};
 use clap_sys::ext::ambisonic::{clap_host_ambisonic, CLAP_PORT_AMBISONIC};
 use clap_sys::ext::audio_ports::{clap_host_audio_ports, CLAP_PORT_MONO, CLAP_PORT_STEREO};
 use clap_sys::ext::audio_ports_config::clap_host_audio_ports_config;
@@ -109,25 +109,60 @@ pub(super) static HOST_LOG: clap_host_log = clap_host_log {
     log: Some(host_log),
 };
 
+/// The stderr tag for each CLAP severity. Split out of [`host_log`] so the
+/// mapping is testable — inline, its seven arms were reachable only through the
+/// FFI, with stderr as the sole output.
+fn severity_label(severity: clap_log_severity) -> &'static str {
+    match severity {
+        CLAP_LOG_DEBUG => "DEBUG",
+        CLAP_LOG_INFO => "INFO",
+        CLAP_LOG_WARNING => "WARN",
+        CLAP_LOG_ERROR => "ERROR",
+        CLAP_LOG_FATAL => "FATAL",
+        CLAP_LOG_HOST_MISBEHAVING => "HOST-MISBEHAVING",
+        CLAP_LOG_PLUGIN_MISBEHAVING => "PLUGIN-MISBEHAVING",
+        _ => "UNKNOWN",
+    }
+}
+
+/// `clap.log` is `[thread-safe]`, audio thread included — a plugin reporting a
+/// denormal storm has nothing else to report it with. But every step here is
+/// forbidden there: `into_owned` allocates, `eprintln!` allocates and takes the
+/// stderr lock, and `LogState::push` takes a `Mutex` that
+/// [`drain_log`](crate::ClapLoaded::drain_log) holds across a copy, so a
+/// main-thread consumer could stall the callback.
+///
+/// So an audio-thread line is counted, not recorded — visible through
+/// [`log_lines_dropped`](crate::ClapLoaded::log_lines_dropped). That loses the
+/// message text, which is a real cost; the eventual answer is a lock-free queue
+/// with pre-allocated slots.
 unsafe extern "C" fn host_log(
-    _host: *const ClapHostVtable,
+    host: *const ClapHostVtable,
     severity: clap_log_severity,
     msg: *const c_char,
 ) {
     if msg.is_null() {
         return;
     }
-    let msg_str = CStr::from_ptr(msg).to_string_lossy();
-    match severity {
-        CLAP_LOG_DEBUG => eprintln!("[clap-plugin DEBUG] {}", msg_str),
-        CLAP_LOG_INFO => eprintln!("[clap-plugin INFO] {}", msg_str),
-        CLAP_LOG_WARNING => eprintln!("[clap-plugin WARN] {}", msg_str),
-        CLAP_LOG_ERROR => eprintln!("[clap-plugin ERROR] {}", msg_str),
-        CLAP_LOG_FATAL => eprintln!("[clap-plugin FATAL] {}", msg_str),
-        CLAP_LOG_HOST_MISBEHAVING => eprintln!("[clap-plugin HOST-MISBEHAVING] {}", msg_str),
-        CLAP_LOG_PLUGIN_MISBEHAVING => eprintln!("[clap-plugin PLUGIN-MISBEHAVING] {}", msg_str),
-        _ => eprintln!("[clap-plugin ?{}] {}", severity, msg_str),
+    let Some(state) = get_host_state(host) else {
+        return;
+    };
+    // Check the thread before touching `msg`: building the `String` is itself
+    // one of the allocations this guard exists to prevent.
+    if state.is_audio_thread() {
+        state.log.note_audio_thread_drop();
+        return;
     }
+    let msg_str = CStr::from_ptr(msg).to_string_lossy().into_owned();
+    let label = severity_label(severity);
+    if label == "UNKNOWN" {
+        eprintln!("[clap-plugin ?{severity}] {msg_str}");
+    } else {
+        eprintln!("[clap-plugin {label}] {msg_str}");
+    }
+    // Retain the line so a consumer can route it somewhere other than stderr.
+    // Unrecognised severities are kept verbatim — see `LogRecord`.
+    state.log.push(severity, msg_str);
 }
 
 pub(super) static HOST_PARAMS: clap_host_params = clap_host_params {
@@ -453,18 +488,27 @@ unsafe extern "C" fn host_track_info_get(
         out.color.blue = color.blue;
     }
 
-    if let Some(ch) = track.audio_channel_count {
-        out.flags |= CLAP_TRACK_INFO_HAS_AUDIO_CHANNEL;
-        out.audio_channel_count = ch;
+    // The one place a `TrackAudio` becomes CLAP's (count, tag) pair. Both come
+    // from the same value, so the count can no longer disagree with the tag, and
+    // the tag is an enum rather than a string match with a silent null fallback.
+    //
+    // `audio_port_type` is written on BOTH paths: `info` is caller-allocated and
+    // only `flags` is reset above, so leaving the pointer untouched would hand the
+    // plugin whatever was in that field before.
+    match track.audio {
+        Some(audio) => {
+            out.flags |= CLAP_TRACK_INFO_HAS_AUDIO_CHANNEL;
+            out.audio_channel_count = i32::from(audio.layout.count());
+            out.audio_port_type = match audio.port_type {
+                Some(TrackPortType::Mono) => CLAP_PORT_MONO.as_ptr(),
+                Some(TrackPortType::Stereo) => CLAP_PORT_STEREO.as_ptr(),
+                Some(TrackPortType::Surround) => CLAP_PORT_SURROUND.as_ptr(),
+                Some(TrackPortType::Ambisonic) => CLAP_PORT_AMBISONIC.as_ptr(),
+                None => ptr::null(),
+            };
+        }
+        None => out.audio_port_type = ptr::null(),
     }
-
-    out.audio_port_type = match track.audio_port_type.as_deref() {
-        Some("mono") => CLAP_PORT_MONO.as_ptr(),
-        Some("stereo") => CLAP_PORT_STEREO.as_ptr(),
-        Some("surround") => CLAP_PORT_SURROUND.as_ptr(),
-        Some("ambisonic") => CLAP_PORT_AMBISONIC.as_ptr(),
-        _ => ptr::null(),
-    };
 
     if track.is_return_track {
         out.flags |= CLAP_TRACK_INFO_IS_FOR_RETURN_TRACK;

@@ -31,6 +31,7 @@ use tutti_analysis::{
     yin, ChannelLayout, YinConfig,
 };
 use tutti_core::SampleRate;
+use tutti_types::Interleaved;
 
 const SR: f64 = 48_000.0;
 
@@ -211,7 +212,8 @@ fn main() {
     for &amp in &[1.0, 0.5, 0.25, 0.1, 0.0891, 0.01] {
         let mono = sine(1000.0, 3.0, amp);
         let st = to_stereo(&mono);
-        let l = measure_loudness(&lcfg, &st).expect("stereo layout meters");
+        let l = measure_loudness(&lcfg, Interleaved::new(&st, ChannelLayout::Stereo))
+            .expect("stereo layout meters");
         writeln!(
             loud_csv,
             "sine1k_{amp},{amp},{:.6},{:.6},{:.6}",
@@ -233,7 +235,8 @@ fn main() {
             .collect();
         let st = to_stereo(&mono);
         let c = LoudnessConfig::new(SampleRate(rate), ChannelLayout::Stereo);
-        let l = measure_loudness(&c, &st).expect("stereo layout meters");
+        let l = measure_loudness(&c, Interleaved::new(&st, ChannelLayout::Stereo))
+            .expect("stereo layout meters");
         writeln!(
             rate_csv,
             "{rate},{:.6},{:.6}",

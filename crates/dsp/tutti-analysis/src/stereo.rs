@@ -10,7 +10,7 @@
 //! it is defined from — so the smoothed pair could contradict the invariant the
 //! kernel guarantees.
 
-use tutti_types::{Amplitude, Correlation, Db, Pan, Seconds, StereoWidth};
+use tutti_types::{Amplitude, Correlation, Db, Pan, Seconds, StereoPlanes, StereoWidth};
 
 /// Mid/side and per-channel levels.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
@@ -76,11 +76,18 @@ impl StereoReading {
 }
 
 /// Correlate one block of stereo audio. Stateless.
-pub fn correlate(left: &[f32], right: &[f32]) -> StereoReading {
-    let n = left.len().min(right.len());
+///
+/// Takes a [`StereoPlanes`] rather than two loose slices: mid/side and L/R
+/// correlation are only defined at exactly two channels, and every statistic
+/// below divides by a single frame count. The pair used to be reconciled here
+/// with `left.len().min(right.len())`, which silently measured the shorter of
+/// two mismatched blocks; the pairing now cannot be formed unless they agree.
+pub fn correlate(planes: StereoPlanes<'_>) -> StereoReading {
+    let n = planes.frames();
     if n == 0 {
         return StereoReading::default();
     }
+    let (left, right) = (planes.left(), planes.right());
 
     // f64 accumulators: these sums run over whole blocks and f32 loses
     // precision quickly on the squared terms.
@@ -244,6 +251,15 @@ pub fn step_ballistics(
 mod tests {
     use super::*;
 
+    /// Pair two equal-length planes, panicking if they disagree.
+    ///
+    /// Test-only: a test that hands over mismatched planes has a bug in the
+    /// test, and saying so loudly beats threading an `Option` through every
+    /// assertion. Production callers use `StereoPlanes::new` and handle `None`.
+    fn pair<'a>(l: &'a [f32], r: &'a [f32]) -> StereoPlanes<'a> {
+        StereoPlanes::new(l, r).expect("test planes must be the same length")
+    }
+
     fn tone(n: usize, scale: f32) -> Vec<f32> {
         (0..n).map(|i| (i as f32 / 20.0).sin() * scale).collect()
     }
@@ -251,7 +267,7 @@ mod tests {
     #[test]
     fn identical_channels_are_mono() {
         let signal = tone(1000, 1.0);
-        let reading = correlate(&signal, &signal);
+        let reading = correlate(pair(&signal, &signal));
 
         assert!((reading.correlation.get() - 1.0).abs() < 1e-4);
         assert!(reading.is_mono());
@@ -264,7 +280,7 @@ mod tests {
     fn inverted_channels_cancel() {
         let signal = tone(1000, 1.0);
         let inverted: Vec<f32> = signal.iter().map(|s| -s).collect();
-        let reading = correlate(&signal, &inverted);
+        let reading = correlate(pair(&signal, &inverted));
 
         assert!((reading.correlation.get() + 1.0).abs() < 1e-4);
         assert!(reading.has_phase_issues());
@@ -276,9 +292,9 @@ mod tests {
         let signal = tone(1000, 1.0);
         let silence = vec![0.0f32; 1000];
 
-        assert!(correlate(&signal, &silence).balance < Pan(-0.9));
-        assert!(correlate(&silence, &signal).balance > Pan(0.9));
-        assert_eq!(correlate(&silence, &silence).balance, Pan::CENTER);
+        assert!(correlate(pair(&signal, &silence)).balance < Pan(-0.9));
+        assert!(correlate(pair(&silence, &signal)).balance > Pan(0.9));
+        assert_eq!(correlate(pair(&silence, &silence)).balance, Pan::CENTER);
     }
 
     /// The invariant the old meter could break: width is derived, so it cannot
@@ -292,11 +308,20 @@ mod tests {
 
         // Flip from correlated to anti-correlated: the case that desynced the
         // old stored pair.
-        let smoothed = step_ballistics(&cfg, &mut state, correlate(&mono, &mono), Seconds(0.01));
+        let smoothed = step_ballistics(
+            &cfg,
+            &mut state,
+            correlate(pair(&mono, &mono)),
+            Seconds(0.01),
+        );
         assert_eq!(smoothed.width(), smoothed.correlation.to_stereo_width());
 
-        let smoothed =
-            step_ballistics(&cfg, &mut state, correlate(&mono, &inverted), Seconds(0.01));
+        let smoothed = step_ballistics(
+            &cfg,
+            &mut state,
+            correlate(pair(&mono, &inverted)),
+            Seconds(0.01),
+        );
         assert_eq!(smoothed.width(), smoothed.correlation.to_stereo_width());
     }
 
@@ -307,7 +332,7 @@ mod tests {
         let mut state = BallisticsState::new();
         let mono = tone(512, 1.0);
 
-        let instant = correlate(&mono, &mono);
+        let instant = correlate(pair(&mono, &mono));
         let smoothed = step_ballistics(&cfg, &mut state, instant, Seconds(0.001));
 
         assert_eq!(smoothed, state.current());
@@ -328,7 +353,7 @@ mod tests {
         let fast_cfg = Ballistics::new(Seconds(0.001), Seconds(0.001));
         let slow_cfg = Ballistics::new(Seconds(1.0), Seconds(1.0));
 
-        let target = correlate(&mono, &mono);
+        let target = correlate(pair(&mono, &mono));
         let fast_out = step_ballistics(&fast_cfg, &mut fast, target, Seconds(0.01));
         let slow_out = step_ballistics(&slow_cfg, &mut slow, target, Seconds(0.01));
 
@@ -338,7 +363,7 @@ mod tests {
         );
 
         // And the release path differs from the attack path.
-        let falling = correlate(&mono, &inverted);
+        let falling = correlate(pair(&mono, &inverted));
         let asymmetric = Ballistics::new(Seconds(0.001), Seconds(1.0));
         let mut state = BallisticsState::new();
         step_ballistics(&asymmetric, &mut state, target, Seconds(0.01));
@@ -357,24 +382,40 @@ mod tests {
         let silence = vec![0.0f32; 1000];
 
         // All mid, no side.
-        let all_mid = correlate(&mono, &mono).levels.ms_ratio();
+        let all_mid = correlate(pair(&mono, &mono)).levels.ms_ratio();
         assert!(all_mid.get().is_finite() && all_mid.get() > 0.0);
 
         // All side, no mid.
         let inverted: Vec<f32> = mono.iter().map(|s| -s).collect();
-        let all_side = correlate(&mono, &inverted).levels.ms_ratio();
+        let all_side = correlate(pair(&mono, &inverted)).levels.ms_ratio();
         assert!(all_side.get().is_finite() && all_side.get() < 0.0);
 
         // Silence is neither.
-        assert_eq!(correlate(&silence, &silence).levels.ms_ratio(), Db(0.0));
+        assert_eq!(
+            correlate(pair(&silence, &silence)).levels.ms_ratio(),
+            Db(0.0)
+        );
     }
 
     #[test]
-    fn empty_and_ragged_input_do_not_panic() {
-        assert_eq!(correlate(&[], &[]), StereoReading::default());
-        // Ragged input uses the shorter length.
-        let reading = correlate(&[1.0, 1.0, 1.0], &[1.0]);
-        assert!((reading.correlation.get() - 1.0).abs() < 1e-4);
+    fn an_empty_block_reads_as_the_default() {
+        assert_eq!(correlate(pair(&[], &[])), StereoReading::default());
+    }
+
+    /// Ragged planes are now **unrepresentable** rather than silently truncated.
+    ///
+    /// This used to be `empty_and_ragged_input_do_not_panic`, and it pinned that
+    /// `correlate` reconciled a mismatch with `left.len().min(right.len())` — so
+    /// a three-frame left against a one-frame right reported a correlation of
+    /// 1.0 from a single frame, and the caller never learned that two thirds of
+    /// its left channel went unmeasured. `StereoPlanes` refuses the pairing
+    /// instead, which is the behaviour change this test now records.
+    #[test]
+    fn ragged_planes_cannot_be_paired() {
+        assert!(
+            StereoPlanes::new(&[1.0, 1.0, 1.0], &[1.0]).is_none(),
+            "a mismatched pair must be rejected, not silently truncated to the shorter"
+        );
     }
 
     #[test]
@@ -384,7 +425,7 @@ mod tests {
         let left: Vec<f32> = (0..20000).map(|_| rng.gen_range(-1.0..1.0)).collect();
         let right: Vec<f32> = (0..20000).map(|_| rng.gen_range(-1.0..1.0)).collect();
 
-        let reading = correlate(&left, &right);
+        let reading = correlate(pair(&left, &right));
         assert!(reading.correlation.get().abs() < 0.05);
         assert!((reading.width().get() - 1.0).abs() < 0.05);
     }

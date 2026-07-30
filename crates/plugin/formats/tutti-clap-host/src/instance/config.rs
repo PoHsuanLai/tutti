@@ -8,8 +8,20 @@
 use crate::events::{InputEventList, OutputEventList};
 use crate::types::{ClapNoteExpression, MidiEvent, ParameterChanges};
 use clap_sys::audio_buffer::clap_audio_buffer;
-use clap_sys::process::{clap_process_status, CLAP_PROCESS_CONTINUE};
+use clap_sys::process::CLAP_PROCESS_CONTINUE;
 use smallvec::SmallVec;
+use std::sync::atomic::AtomicI32;
+use tutti_plugin_types::BusChannels;
+use tutti_plugin_types::ChannelLayout;
+
+/// Extra caller-channel-pointer slots reserved beyond the plugin's port layout,
+/// so a caller supplying more channels than the plugin consumes does not grow
+/// the pool on the audio thread. See [`ProcessScratch::caller_input_ptrs`].
+///
+/// 8 covers the realistic over-supply (a 7.1 host feeding a stereo plugin) for
+/// 64 bytes a side; past it, one heap grow on the first such block and none
+/// after.
+const CALLER_PTR_HEADROOM: usize = 8;
 
 /// Audio format the host presents to the plugin.
 #[derive(Debug, Clone, Copy)]
@@ -33,6 +45,17 @@ pub struct ProcessScratch<T> {
     pub(crate) output_ptrs: Vec<*mut T>,
     pub(crate) input_bufs: Vec<clap_audio_buffer>,
     pub(crate) output_bufs: Vec<clap_audio_buffer>,
+    /// The *caller's* channel pointers for this block, one entry per channel
+    /// the caller supplied — distinct from `input_ptrs`/`output_ptrs`, which
+    /// are the plugin-facing arrays after zero-padding to the port layout.
+    ///
+    /// These were `SmallVec<[*mut T; 16]>` locals in `process`, which spilled to
+    /// the heap every block past 16 channels a side — reachable through
+    /// supported layouts, since two 8-channel ports or a third-order ambisonic
+    /// bus already sit at the inline bound. Pooled here instead, sized from the
+    /// port layout in `resize_for`.
+    pub(crate) caller_input_ptrs: Vec<*mut T>,
+    pub(crate) caller_output_ptrs: Vec<*mut T>,
 }
 
 // The raw pointers live inside our own `channels` vec; the whole struct is
@@ -48,6 +71,8 @@ impl<T: Copy + Default> ProcessScratch<T> {
             output_ptrs: Vec::new(),
             input_bufs: Vec::new(),
             output_bufs: Vec::new(),
+            caller_input_ptrs: Vec::new(),
+            caller_output_ptrs: Vec::new(),
         }
     }
 
@@ -81,6 +106,19 @@ impl<T: Copy + Default> ProcessScratch<T> {
         self.input_bufs.reserve_exact(num_input_ports);
         self.output_bufs.clear();
         self.output_bufs.reserve_exact(num_output_ports);
+
+        // Headroom above the port layout: `refill_port_buffers` clamps with
+        // `.min(wanted)`, but the caller's extra pointers are collected before
+        // the clamp discards them, so an over-supplying caller would otherwise
+        // be exactly the case that still grows the pool on the audio thread.
+        // Additive, not a multiplier — over-supply is a handful of channels,
+        // not a proportion of the layout.
+        self.caller_input_ptrs.clear();
+        self.caller_input_ptrs
+            .reserve_exact(input_channels_total + CALLER_PTR_HEADROOM);
+        self.caller_output_ptrs.clear();
+        self.caller_output_ptrs
+            .reserve_exact(output_channels_total + CALLER_PTR_HEADROOM);
     }
 }
 
@@ -100,8 +138,19 @@ pub(crate) struct AudioScratch<T: super::ClapSample> {
     /// CLAP parameter events carry the plugin's **plain** value (CLAP has no
     /// normalization), but host-side automation authors values normalized
     /// `0..1` — so incoming param points are denormalized `min + v·(max-min)`
-    /// against this map before the plugin sees them. Empty ⇒ pass-through.
+    /// against this map before the plugin sees them.
     pub param_ranges: Vec<(u32, f32, f32)>,
+    /// Whether the plugin reported a nonzero `params.count()` at activation.
+    ///
+    /// An empty `param_ranges` is ambiguous on its own and the two cases need
+    /// opposite handling: no `params` extension means automation must pass
+    /// through unchanged, while a failing `get_info(0)` empties the map by
+    /// truncation in [`parameters`](super::ClapLoaded::parameters), where
+    /// pass-through would hand raw `0..1` to a param expecting a real range.
+    /// Recording the claim separately lets
+    /// [`add_param_changes`](crate::events::InputEventList::add_param_changes)
+    /// tell those apart.
+    pub plugin_claims_params: bool,
     /// Filled by the plugin's `try_push` callback during `process`.
     pub output_events: OutputEventList,
     /// Return pools: `process` drains the plugin's emitted events into these so
@@ -114,9 +163,14 @@ pub(crate) struct AudioScratch<T: super::ClapSample> {
     /// on stop_processing/reactivate. Never derived from transport seconds.
     pub steady_time: i64,
     /// The `clap_process_status` the plugin returned on the most recent block.
-    /// Drives the TAIL/SLEEP transition logging in `process`; the shared output
-    /// vocabulary carries no status field.
-    pub last_process_status: clap_process_status,
+    ///
+    /// Atomic so the audio thread's `Relaxed` store is readable off-thread
+    /// through
+    /// [`ClapActive::last_process_status`](super::ClapActive::last_process_status);
+    /// as a plain field, TAIL and SLEEP reached callers only via an `eprintln!`
+    /// on the audio thread. A plain `AtomicI32` rather than `RtPublish` because
+    /// this is a scalar — nothing here can be freed on the audio thread.
+    pub last_process_status: AtomicI32,
 }
 
 impl<T: super::ClapSample> AudioScratch<T> {
@@ -125,31 +179,125 @@ impl<T: super::ClapSample> AudioScratch<T> {
             process: ProcessScratch::new(),
             input_events: InputEventList::new(),
             param_ranges: Vec::new(),
+            plugin_claims_params: false,
             output_events: OutputEventList::new(),
             out_midi: SmallVec::new(),
             out_param_changes: ParameterChanges::new(),
             out_note_expressions: SmallVec::new(),
             steady_time: 0,
-            last_process_status: CLAP_PROCESS_CONTINUE,
+            last_process_status: AtomicI32::new(CLAP_PROCESS_CONTINUE),
         }
     }
 }
 
-/// Per-port channel counts for audio IO.
-/// E.g. `inputs = [2]` for stereo, `[2, 2]` for two stereo ports.
+/// Per-port channel layouts for audio IO.
+/// E.g. `inputs = [Stereo]` for one stereo port, `[Stereo, Stereo]` for two.
+///
+/// One [`ChannelLayout`] per bus, not a raw count: the layout survives from
+/// `layout_from_clap_port` (which reads CLAP's `port_type` tag, so a mono or
+/// stereo port is *named* rather than inferred from its width) all the way to
+/// the process scratch. The raw `u32` reappears only where the CLAP C ABI
+/// demands it — `make_port_buffer`'s `channel_count` field.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct PortLayout {
-    pub inputs: Vec<u32>,
-    pub outputs: Vec<u32>,
+    pub inputs: BusChannels,
+    pub outputs: BusChannels,
 }
 
 impl PortLayout {
+    /// Channel count summed across every input port.
+    ///
+    /// Stays `usize`, not a [`ChannelLayout`]: a sum across buses is a size for
+    /// the flat channel pool, not the layout of any one bus.
     pub fn input_channel_total(&self) -> usize {
-        self.inputs.iter().map(|&c| c as usize).sum()
+        self.inputs.iter().map(|c| c.count() as usize).sum()
     }
 
+    /// Channel count summed across every output port. `usize` for the same
+    /// reason as [`input_channel_total`](Self::input_channel_total).
     pub fn output_channel_total(&self) -> usize {
-        self.outputs.iter().map(|&c| c as usize).sum()
+        self.outputs.iter().map(|c| c.count() as usize).sum()
+    }
+
+    /// Give each empty direction one stereo bus, so "unknown layout" is stated as
+    /// a bus rather than left for later code to guess at.
+    ///
+    /// A plugin with no `audio-ports` extension reports no buses at all. Stereo
+    /// because it is what the overwhelming majority of plugins present — the same
+    /// rule, and the same reason, as the subprocess host's `default_if_empty`.
+    ///
+    /// Call this **before** reading the channel totals. The totals used to carry
+    /// their own `.max(2)` floor instead, which made a genuine mono plugin report
+    /// 2-in/2-out while `self` still held the true `[Mono]` — two sources of
+    /// truth about one width, disagreeing.
+    pub fn default_empty_buses(&mut self) {
+        if self.inputs.is_empty() {
+            self.inputs.push(ChannelLayout::Stereo);
+        }
+        if self.outputs.is_empty() {
+            self.outputs.push(ChannelLayout::Stereo);
+        }
+    }
+}
+
+#[cfg(test)]
+mod port_layout_tests {
+    use super::*;
+
+    /// A plugin that reports a real mono bus keeps width 1 all the way to the
+    /// totals. The `.max(2)` floor this replaced reported 2 here, which then
+    /// sized a stereo slab for a mono plugin.
+    #[test]
+    fn a_mono_bus_is_not_widened_to_stereo() {
+        let mut ports = PortLayout {
+            inputs: BusChannels::from_slice(&[ChannelLayout::Mono]),
+            outputs: BusChannels::from_slice(&[ChannelLayout::Mono]),
+        };
+        ports.default_empty_buses();
+
+        assert_eq!(
+            ports.input_channel_total(),
+            1,
+            "mono input must stay 1-wide"
+        );
+        assert_eq!(
+            ports.output_channel_total(),
+            1,
+            "mono output must stay 1-wide"
+        );
+    }
+
+    /// The no-`audio-ports` case: the default is applied to the bus list, so the
+    /// total *derives* from it and the two agree by construction.
+    #[test]
+    fn an_absent_bus_list_defaults_to_one_stereo_bus() {
+        let mut ports = PortLayout::default();
+        ports.default_empty_buses();
+
+        assert_eq!(ports.inputs.as_slice(), &[ChannelLayout::Stereo]);
+        assert_eq!(ports.outputs.as_slice(), &[ChannelLayout::Stereo]);
+        assert_eq!(ports.input_channel_total(), 2);
+        assert_eq!(ports.output_channel_total(), 2);
+    }
+
+    /// Multi-bus layouts sum rather than being floored or truncated, and an
+    /// effect with no input bus but real outputs keeps 0 inputs — the asymmetry
+    /// a blanket `.max(2)` on both directions erased.
+    #[test]
+    fn totals_sum_across_buses_and_survive_defaulting() {
+        let mut ports = PortLayout {
+            inputs: BusChannels::from_slice(&[]),
+            outputs: BusChannels::from_slice(&[ChannelLayout::Stereo, ChannelLayout::Multi(6)]),
+        };
+        ports.default_empty_buses();
+
+        // Only the empty direction was defaulted.
+        assert_eq!(ports.output_channel_total(), 8, "2 + 6, not floored");
+        assert_eq!(
+            ports.inputs.as_slice(),
+            &[ChannelLayout::Stereo],
+            "an absent input bus is stated as stereo, not left empty"
+        );
     }
 }
 

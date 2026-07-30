@@ -11,7 +11,8 @@ use tutti_core::dsp::DEFAULT_SAMPLE_RATE;
 use tutti_core::Arc;
 use tutti_core::AtomicF32;
 use tutti_core::{
-    Amplitude, AudioUnit, BufferMut, BufferRef, Mix, SampleRate, Samples, SignalFrame,
+    fold_frame_to_mono, Amplitude, AudioUnit, BufferMut, BufferRef, Mix, SampleRate, Samples,
+    SignalFrame,
 };
 
 use super::convolver::Convolver;
@@ -254,7 +255,9 @@ impl StereoConvolverNode {
                 self.channels.r.process_sample(in_r),
             ),
             IrChannelConfig::MonoToStereo => {
-                let mono = (in_l + in_r) * 0.5;
+                // The engine's one fold rather than a local `* 0.5` — same value
+                // at width 2, one owner for the coefficient.
+                let mono = fold_frame_to_mono(&[in_l, in_r]);
                 (
                     self.channels.l.process_sample(mono),
                     self.channels.r.process_sample(mono),

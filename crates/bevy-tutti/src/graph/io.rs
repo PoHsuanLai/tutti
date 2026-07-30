@@ -56,41 +56,55 @@ pub const IDLE_PARK: Duration = Duration::from_millis(5);
 /// A running `AudioIn → AudioOut` pump: one background thread moving frames
 /// from a source into a sink until it stops or is stopped.
 ///
-/// `S`/`CH` mirror [`pump`]'s frame `[S; CH]`. The **endpoints are deliberately
-/// not type parameters** — `pump` is monomorphized over the concrete source and
-/// sink (never `dyn`, by design), so making them generic here would mint a
-/// distinct component type per pairing, each needing its own registered drain
-/// system. They are erased into the thread instead, leaving one component to
-/// query per frame type.
+/// `S` mirrors [`pump`]'s sample element. The **channel width is not a type
+/// parameter**: the I/O traits carry it as a runtime
+/// [`ChannelLayout`](tutti_core::ChannelLayout), read off the source at
+/// [`start`](Self::start), so one `AudioPump<f32>` covers stereo, 5.1, and a
+/// width that only exists at runtime. It used to be `AudioPump<S, CH>`, which
+/// meant a host recording a 5.1 device had to register a distinct drain system
+/// for that width — and could not register one at all for a width it learns
+/// from the device.
 ///
-/// Register the drain for each frame type a host uses with
+/// The **endpoints are deliberately not type parameters** — `pump` is
+/// monomorphized over the concrete source and sink (never `dyn`, by design), so
+/// making them generic here would mint a distinct component type per pairing,
+/// each needing its own registered drain system. They are erased into the thread
+/// instead, leaving one component to query per sample element.
+///
+/// Register the drain for each element type a host uses with
 /// [`add_audio_pump`](AudioPumpAppExt::add_audio_pump).
 #[derive(Component)]
-pub struct AudioPump<S = f32, const CH: usize = 2> {
+pub struct AudioPump<S = f32> {
     /// `Option` so a join can happen exactly once: whoever `take`s it owns the
     /// finalize result, and a second attempt finds `None` rather than panicking
     /// on a joined handle.
     handle: Option<JoinHandle<std::io::Result<()>>>,
     running: Arc<AtomicBool>,
-    /// `fn() -> [S; CH]` rather than `[S; CH]`, so the component is `Send +
-    /// Sync` whatever `S` is and carries no drop obligation for a type it never
-    /// holds.
-    _frame: PhantomData<fn() -> [S; CH]>,
+    /// `fn() -> S` rather than `S`, so the component is `Send + Sync` whatever
+    /// `S` is and carries no drop obligation for a type it never holds.
+    _frame: PhantomData<fn() -> S>,
 }
 
-impl<S, const CH: usize> AudioPump<S, CH> {
+impl<S> AudioPump<S> {
     /// Start pumping `src` into `dst` on a background thread.
     ///
-    /// `capacity` is the scratch buffer in frames, allocated once before the
-    /// loop so the loop body never allocates.
+    /// `capacity` is the scratch buffer in **frames**; it is allocated once,
+    /// sized `capacity * width` from the source's own layout, so the loop body
+    /// never allocates.
     ///
     /// There is no policy argument: whether an empty poll means "retry" or
     /// "done" is [`AudioIn::ON_EMPTY`], a property of the source type. A caller
     /// cannot pair it wrongly because a caller does not state it.
+    ///
+    /// Width agreement between `src` and `dst` is checked by [`pump`]'s
+    /// `debug_assert` — this constructor does not reject a mismatch, because
+    /// unlike `tutti_io::Recorder::start` it has no error channel (it returns a
+    /// `Component`, not a `Result`). A host that needs the checked form uses
+    /// `Recorder`.
     pub fn start<I, O>(src: I, dst: O, capacity: usize) -> Self
     where
-        I: AudioIn<S, CH> + Send + 'static,
-        O: AudioOut<S, CH> + Send + 'static,
+        I: AudioIn<S> + Send + 'static,
+        O: AudioOut<S> + Send + 'static,
         S: Default + Copy + Send + 'static,
     {
         Self::start_with_park(src, dst, capacity, IDLE_PARK)
@@ -104,16 +118,21 @@ impl<S, const CH: usize> AudioPump<S, CH> {
     /// nature, which is why only this half is an argument.
     pub fn start_with_park<I, O>(mut src: I, mut dst: O, capacity: usize, park: Duration) -> Self
     where
-        I: AudioIn<S, CH> + Send + 'static,
-        O: AudioOut<S, CH> + Send + 'static,
+        I: AudioIn<S> + Send + 'static,
+        O: AudioOut<S> + Send + 'static,
         S: Default + Copy + Send + 'static,
     {
+        // The source's width, read ONCE here — the scratch is sized from it and
+        // never resized, so a layout that changed mid-stream would be a bug in
+        // the source, not something this loop re-checks per pass.
+        let width = src.layout().count().max(1) as usize;
+
         let running = Arc::new(AtomicBool::new(true));
         let flag = Arc::clone(&running);
 
         let handle = std::thread::spawn(move || {
             // Allocated once; the loop body below never allocates.
-            let mut scratch = vec![[S::default(); CH]; capacity.max(1)];
+            let mut scratch = vec![S::default(); capacity.max(1) * width];
             while flag.load(Ordering::Acquire) {
                 if pump(&mut src, &mut dst, &mut scratch) == 0 {
                     match I::ON_EMPTY {
@@ -189,9 +208,9 @@ pub struct PumpFinished {
 ///
 /// Polls rather than blocks: a pump that is still moving frames is left alone,
 /// so this costs one atomic load per live pump per frame.
-pub fn drain_audio_pumps<S: Send + Sync + 'static, const CH: usize>(
+pub fn drain_audio_pumps<S: Send + Sync + 'static>(
     mut commands: Commands,
-    mut pumps: Query<(Entity, &mut AudioPump<S, CH>)>,
+    mut pumps: Query<(Entity, &mut AudioPump<S>)>,
     mut finished: MessageWriter<PumpFinished>,
 ) {
     for (entity, mut pump) in pumps.iter_mut() {
@@ -205,14 +224,14 @@ pub fn drain_audio_pumps<S: Send + Sync + 'static, const CH: usize>(
         if let Err(error) = &result {
             bevy_log::error!("audio pump sink failed to finalize: {error}");
         }
-        commands.entity(entity).remove::<AudioPump<S, CH>>();
+        commands.entity(entity).remove::<AudioPump<S>>();
         finished.write(PumpFinished { entity, result });
     }
 }
 
 /// Finalize a pump whose component is being removed.
 ///
-/// `On<Remove, AudioPump<S, CH>>` fires at command-flush with the value still
+/// `On<Remove, AudioPump<S>>` fires at command-flush with the value still
 /// readable, mirroring [`unwire_removed_sources`](super::unwire_removed_sources).
 /// Without it, despawning an entity mid-recording would drop the `JoinHandle`
 /// and detach the thread — the sink is owned *by that thread*, so its
@@ -222,9 +241,9 @@ pub fn drain_audio_pumps<S: Send + Sync + 'static, const CH: usize>(
 /// This blocks the frame until the thread notices its flag (one poll, so
 /// bounded by the park). That is the cost of the guarantee, and it is only paid
 /// on teardown.
-pub fn finalize_removed_pumps<S: Send + Sync + 'static, const CH: usize>(
-    remove: On<Remove, AudioPump<S, CH>>,
-    mut pumps: Query<&mut AudioPump<S, CH>>,
+pub fn finalize_removed_pumps<S: Send + Sync + 'static>(
+    remove: On<Remove, AudioPump<S>>,
+    mut pumps: Query<&mut AudioPump<S>>,
 ) {
     let entity = remove.event_target();
     let Ok(mut pump) = pumps.get_mut(entity) else {
@@ -235,33 +254,39 @@ pub fn finalize_removed_pumps<S: Send + Sync + 'static, const CH: usize>(
     }
 }
 
-/// Which `AudioPump<S, CH>` drains are already scheduled.
+/// Which `AudioPump<S>` drains are already scheduled.
 ///
-/// `add_systems` does not deduplicate, so without this a frame type registered
-/// by both a host and a library plugin would drain twice per frame. The second
-/// pass finds `handle` already taken and does nothing, but it doubles the
-/// per-frame query cost and makes the schedule depend on how many callers asked.
+/// `add_systems` does not deduplicate, so without this an element type
+/// registered by both a host and a library plugin would drain twice per frame.
+/// The second pass finds `handle` already taken and does nothing, but it doubles
+/// the per-frame query cost and makes the schedule depend on how many callers
+/// asked.
 #[derive(Resource, Default)]
-struct RegisteredAudioPumps(std::collections::HashSet<(core::any::TypeId, usize)>);
+struct RegisteredAudioPumps(std::collections::HashSet<core::any::TypeId>);
 
-/// Registers the drain and removal observer for one [`AudioPump`] frame type.
+/// Registers the drain and removal observer for one [`AudioPump`] element type.
 pub trait AudioPumpAppExt {
-    /// Drive `AudioPump<S, CH>` — join finished pumps, emit [`PumpFinished`],
-    /// and finalize on removal.
+    /// Drive `AudioPump<S>` — join finished pumps, emit [`PumpFinished`], and
+    /// finalize on removal.
     ///
-    /// Idempotent, so a host and a library plugin can both declare the frame
+    /// Idempotent, so a host and a library plugin can both declare the element
     /// type they share.
     ///
+    /// **One registration now covers every channel width.** This used to be
+    /// `add_audio_pump::<S, CH>()`, so a host had to name each width it might
+    /// record — and could not name one it only learns from a device at runtime.
+    /// The width moved onto the value as a `ChannelLayout`, so the schedule no
+    /// longer depends on it.
+    ///
     /// ```rust,ignore
-    /// app.add_audio_pump::<f32, 2>();   // stereo — mic, WAV
-    /// app.add_audio_pump::<f32, 6>();   // 5.1 render
+    /// app.add_audio_pump::<f32>();   // covers stereo, 5.1, whatever the mic is
     /// ```
-    fn add_audio_pump<S: Send + Sync + 'static, const CH: usize>(&mut self) -> &mut Self;
+    fn add_audio_pump<S: Send + Sync + 'static>(&mut self) -> &mut Self;
 }
 
 impl AudioPumpAppExt for App {
-    fn add_audio_pump<S: Send + Sync + 'static, const CH: usize>(&mut self) -> &mut Self {
-        let key = (core::any::TypeId::of::<S>(), CH);
+    fn add_audio_pump<S: Send + Sync + 'static>(&mut self) -> &mut Self {
+        let key = core::any::TypeId::of::<S>();
         if !self
             .world_mut()
             .get_resource_or_init::<RegisteredAudioPumps>()
@@ -271,11 +296,11 @@ impl AudioPumpAppExt for App {
             return self;
         }
         self.add_message::<PumpFinished>();
-        self.add_observer(finalize_removed_pumps::<S, CH>);
+        self.add_observer(finalize_removed_pumps::<S>);
         // Deliberately not in a `GraphReconcileSystems` phase and not gated on
         // `engine_ready`: a pump touches no graph topology and sets no
         // `GraphDirty`, and a file→WAV pump is valid with no audio device at
         // all. Gating it would tie offline work to a live callback.
-        self.add_systems(Update, drain_audio_pumps::<S, CH>)
+        self.add_systems(Update, drain_audio_pumps::<S>)
     }
 }

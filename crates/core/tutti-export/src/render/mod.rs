@@ -1,7 +1,8 @@
 //! The render stage: a `Net`, pulled one block at a time.
 //!
 //! - [`plan::RenderPlan`] — frame counts, derived once.
-//! - [`driver::NetSource`] — the graph as an [`AudioIn`](tutti_core::io::AudioIn).
+//! - [`driver::NetSource`] — the graph as a [`driver::FrameSource`].
+//! - [`driver::Frames`] — interleaved samples that know their own width.
 //! - [`driver::drive`] — the pull loop, applying the [`sink::BlockCursor`] gate.
 //!
 //! There is no sink type here. The *encoder* owns the pull (see
@@ -12,6 +13,6 @@ pub(crate) mod driver;
 pub(crate) mod plan;
 pub(crate) mod sink;
 
-pub(crate) use driver::{drive, FrameSource, NetSource, PlaneSource};
+pub(crate) use driver::{drive, FrameSource, Frames, NetSource, PlaneSource};
 pub(crate) use plan::RenderPlan;
 pub(crate) use sink::BlockCursor;

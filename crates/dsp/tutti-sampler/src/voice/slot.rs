@@ -7,12 +7,13 @@
 //! in these branches, so the reasoning is kept inline at each fork.
 
 use crate::stretch;
-use crate::MAX_SAMPLER_CHANNELS;
+use crate::{nonempty, MAX_SAMPLER_CHANNELS};
 
 use super::memory_source::MemorySource;
 use super::types::{Direction, Playback, SlotId, Voice, VoiceSource};
 use tutti_core::{
-    Amplitude, AudioUnit, BufferMut, Cents, ReadRate, SamplePosition, SampleRate, Samples,
+    Amplitude, AudioUnit, BufferMut, Cents, ChannelLayout, ReadRate, SamplePosition, SampleRate,
+    Samples,
     StretchFactor,
 };
 
@@ -54,7 +55,7 @@ pub(crate) struct VoiceSlot {
     pub(crate) stretch: Option<stretch::Unit>,
     /// Width the stretch unit must be built at, remembered so a later
     /// materialisation matches the reader rather than defaulting.
-    pub(crate) channels: usize,
+    pub(crate) channels: ChannelLayout,
     pub(crate) sample_rate: SampleRate,
 }
 
@@ -76,16 +77,21 @@ impl VoiceSlot {
     ///   allocated in the callback.
     ///
     /// A slot that arrives already needing stretch (non-unity `play.stretch` /
-    /// `play.pitch`) is given its unit by the SENDER via
-    /// [`VoiceSlot::materialize_stretch`], on the control thread, before the
-    /// command is queued — see [`VoiceCommand::AddVoice`].
+    /// `play.pitch`) is given its unit by the SENDER, on the control thread,
+    /// before the command is queued — see `VoicePoolHandle::prepare`, which
+    /// fills in `VoiceCommand::AddVoice`'s `stretch` field. Turning stretch on
+    /// *later* goes through the same door via `VoiceCommand::UpdateStretch`.
+    ///
+    /// (Both used to be described as `VoiceSlot::materialize_stretch`, a method
+    /// that has never existed. That dangling name is why the update path went
+    /// unbuilt: every reader took the doc's word that a filter would arrive.)
     pub(crate) fn with_channels(
         id: SlotId,
         voice: Voice,
         sample_rate: SampleRate,
-        channels: usize,
+        channels: impl Into<ChannelLayout>,
     ) -> Self {
-        let channels = channels.max(1);
+        let channels = nonempty(channels.into());
         Self {
             id,
             voice,
@@ -95,9 +101,13 @@ impl VoiceSlot {
         }
     }
 
-    /// Whether the slot's control intent asks for stretching. Independent of
-    /// whether a unit exists — [`materialize_stretch`](Self::materialize_stretch)
-    /// uses this to decide whether to build one.
+    /// Whether the slot's control intent asks for stretching. **Independent of
+    /// whether a unit exists**, which is why every hot path gates on
+    /// `needs_stretch() && stretch.is_some()` rather than on this alone: intent
+    /// without a filter means the voice reads dry.
+    ///
+    /// `VoicePoolHandle::prepare` asks the same question of the values it is about
+    /// to send (via `stretch_values_want_filter`) to decide whether to build one.
     pub(crate) fn needs_stretch(&self) -> bool {
         stretch_wanted(&self.voice.play)
     }
@@ -126,21 +136,52 @@ impl VoiceSlot {
     /// Update the stretch factors — the only entry point for mutating them.
     /// Lock-free: mirrors the values into `voice.play` (read by the
     /// [`needs_stretch`](Self::needs_stretch) gate) and flips the resident
-    /// processor's atomics if one exists.
+    /// processor's atomics.
     ///
-    /// **Allocation-free**, so it is safe on the audio-thread command drain.
-    /// Turning stretch ON when no unit is resident does NOT build one here — the
-    /// sender materialises it before queueing (see
-    /// [`VoiceCommand::UpdateStretch`]). Until it arrives the slot reads dry,
-    /// which is why the hot paths gate on `needs_stretch() && stretch.is_some()`
-    /// rather than on the intent alone.
-    pub(crate) fn set_stretch(&mut self, stretch_factor: StretchFactor, pitch_cents: Cents) {
+    /// `incoming` adopts a processor built by the sender, for the case where this
+    /// slot has none and the new values ask for one — a voice spawned at
+    /// unity/zero correctly got `stretch: None` from `AddVoice`, so turning
+    /// stretching on later has to bring its own filter. Passing `None` when one is
+    /// already resident is the common path (pure atomics); an `incoming` that
+    /// arrives redundantly is handed back rather than swapped in, so a live filter
+    /// never loses its phase mid-note.
+    ///
+    /// **Allocation-free and free-free**, so it is safe on the audio-thread
+    /// command drain: adopting is a move, and a redundant arrival is *returned*
+    /// rather than dropped — see the caller in [`VoicePool::drain_commands`],
+    /// which retires it for control-thread release. Dropping a `stretch::Unit`
+    /// here would free its vocoder bank in the callback.
+    ///
+    /// Both this and `incoming` are unboxed for the same reason: moving a `Unit`
+    /// out of a `Box` frees the box, which is itself a deallocation on this
+    /// thread.
+    ///
+    /// Until a filter arrives the slot reads dry, which is why the hot paths gate
+    /// on `needs_stretch() && stretch.is_some()` rather than on the intent alone.
+    pub(crate) fn set_stretch(
+        &mut self,
+        stretch_factor: StretchFactor,
+        pitch_cents: Cents,
+        incoming: Option<stretch::Unit>,
+    ) -> Option<stretch::Unit> {
         self.voice.play.stretch = stretch_factor;
         self.voice.play.pitch = pitch_cents;
+        let surplus = match (self.stretch.is_some(), incoming) {
+            // Nothing resident and the sender sent one: adopt it. This is the
+            // case that makes turning stretch on mid-flight audible at all.
+            (false, Some(unit)) => {
+                self.stretch = Some(unit);
+                None
+            }
+            // Already have one — hand the spare back unused.
+            (true, Some(unit)) => Some(unit),
+            (_, None) => None,
+        };
         if let Some(unit) = &self.stretch {
             unit.set_stretch_factor(stretch_factor);
             unit.set_pitch_cents(pitch_cents);
         }
+        surplus
     }
 
     /// Read ONE mixed stereo frame from this slot: the exact per-variant read the
@@ -204,13 +245,19 @@ impl VoiceSlot {
     /// per-variant read the `process` mixdown does for a single slot. Factored so
     /// the mixer loop and the standalone [`VoiceNode`] share one definition. RT:
     /// the `VoiceSource` enum match is unchanged, only relocated here.
+    ///
+    /// `width` is a plain `usize`, deliberately **not** a [`ChannelLayout`]: it is
+    /// an already-intersected clamp that callers compute as
+    /// `slot width ∧ output.channels() ∧ MAX_SAMPLER_CHANNELS`, not a declaration
+    /// of how many channels anything *has*. Wrapping it back into a layout would
+    /// claim a width the caller has already narrowed away.
     #[inline]
-    pub(crate) fn process_into(&mut self, size: usize, channels: usize, output: &mut BufferMut) {
+    pub(crate) fn process_into(&mut self, size: usize, width: usize, output: &mut BufferMut) {
         let direction = self.voice.play.direction;
         let gain = self.voice.play.gain;
         // `BufferMut` is planar with no frame accessor, so a per-sample frame is
         // unavoidable here. Stack array at the fixed ceiling, used as a prefix.
-        let n = channels.min(output.channels()).min(MAX_SAMPLER_CHANNELS);
+        let n = width.min(output.channels()).min(MAX_SAMPLER_CHANNELS);
         let mut frame = [0.0f32; MAX_SAMPLER_CHANNELS];
 
         /// Accumulate a frame prefix into the planar output at sample `i`.
@@ -395,5 +442,19 @@ fn read_source_frame_into(
 /// "stretching" means.
 #[inline]
 pub(crate) fn stretch_wanted(play: &Playback) -> bool {
-    (play.stretch.get() - 1.0).abs() > 0.001 || play.pitch.get().abs() > 0.5
+    stretch_values_want_filter(play.stretch, play.pitch)
+}
+
+/// The same question asked of a loose factor/pitch pair, for
+/// [`VoiceCommand::UpdateStretch`](crate::voice::VoiceCommand::UpdateStretch) —
+/// which carries the two values but no `Playback` to wrap them in.
+///
+/// [`stretch_wanted`] delegates here so the thresholds exist **once**. Writing
+/// them out a second time at the sender is how the two sides come to disagree
+/// about whether a given value stretches: the sender would decline to build a
+/// filter that `needs_stretch` then routes through, and the voice reads dry with
+/// no error — the precise failure this pair is factored to prevent.
+#[inline]
+pub(crate) fn stretch_values_want_filter(stretch: StretchFactor, pitch: Cents) -> bool {
+    (stretch.get() - 1.0).abs() > 0.001 || pitch.get().abs() > 0.5
 }

@@ -5,7 +5,6 @@
 //! (`self.host_link.time_info`), then drive the scratch buffers and the
 //! `vst` crate's `AudioBuffer`. Returns any MIDI events the plugin emitted.
 
-use std::sync::Arc;
 use vst::plugin::Plugin as _;
 
 use crate::instance::Vst2Instance;
@@ -91,11 +90,21 @@ impl Vst2Instance {
     /// transport state moved is to compare against what this plugin was last
     /// told. When `ctx.transport` is `None` the last snapshot is left in place,
     /// so the next real update still sees the correct predecessor.
+    ///
+    /// Runs on the audio thread, so it must not allocate — hence
+    /// [`TransportCell`](crate::transport_cell::TransportCell), which overwrites
+    /// in place, rather than the `ArcSwap` store that allocated and freed a
+    /// snapshot per block inside the callback.
+    ///
+    /// Must complete *before* the plugin is entered: the plugin issues
+    /// `audioMasterGetTime` re-entrantly from inside `process`, and a seqlock
+    /// reader cannot make progress against a write in flight on its own thread.
+    /// The cell debug-asserts that order.
     fn update_transport(&self, ctx: &ProcessContext) {
         if let Some(t) = ctx.transport {
-            let previous = self.host_link.time_info.load();
-            let next = build_vst2_time_info(t, ctx.sample_rate, previous.as_ref().as_ref());
-            self.host_link.time_info.store(Arc::new(Some(next)));
+            let previous = self.host_link.time_info.read();
+            let next = build_vst2_time_info(t, ctx.sample_rate, previous.as_ref());
+            self.host_link.time_info.write(next);
         }
     }
 

@@ -31,8 +31,8 @@ pub use types::{
 
 pub use com::{ParameterEditEvent, ProgressEvent, RestartFlags, UnitEvent};
 
-#[cfg(all(feature = "conformance", target_os = "linux"))]
-pub use com::run_loop::RunLoopActivity;
+#[cfg(feature = "conformance")]
+pub use com::RunLoopActivity;
 
 /// Tagged-enum wrappers over VST3's typed event structs, plus the event-type
 /// discriminant constants.

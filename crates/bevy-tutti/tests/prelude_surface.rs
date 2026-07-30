@@ -183,7 +183,12 @@ fn the_capture_paths_the_docs_demonstrate_are_writable_from_the_prelude() {
     // returns it, and a host that cannot name it cannot write this signature at
     // all, only call the method inside someone else's.
     fn record_master(tap: &AudioTapRes, path: std::path::PathBuf) -> Result<AudioPump, TapBusy> {
-        let wav = WavOut::create(&path, 48_000.0, 2, BitDepth::Float32).expect("sink opens");
+        // The sink's width must match the source's — `TapIn` is stereo, so this
+        // is `ChannelLayout::Stereo` and not a bare `2`. Naming the layout is
+        // what makes the pairing legible; `Recorder::start` rejects a mismatch
+        // outright, and `pump` debug-asserts it.
+        let wav = WavOut::create(&path, 48_000.0, ChannelLayout::Stereo, BitDepth::Float32)
+            .expect("sink opens");
         Ok(AudioPump::start(TapIn::new(tap.open()?), wav, 1024))
     }
 

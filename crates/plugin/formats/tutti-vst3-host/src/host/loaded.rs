@@ -456,6 +456,42 @@ impl Vst3Loaded {
         (result == kResultOk).then(|| Vst3ParameterInfo::from_c(&raw))
     }
 
+    /// The plugin's own `[min, max]` for a parameter, recovered by asking its
+    /// controller to invert the normalized map at the endpoints.
+    ///
+    /// VST3 reports no range on `ParameterInfo` — every value it exchanges is
+    /// normalized `0..=1`. But `IEditController::normalizedParamToPlain` is the
+    /// same map the plugin's own editor uses to render "440 Hz", so probing it
+    /// recovers what the parameter actually means.
+    ///
+    /// `None` when there is no controller to ask, or when the map is not
+    /// monotonic. `normalizedParamToPlain` returns a bare `ParamValue` with no
+    /// `tresult`, so a plugin that doesn't implement it cannot report failure —
+    /// the midpoint probe is the only available coherence check.
+    ///
+    /// An identity map is *not* a failure: the SDK's default implementation
+    /// returns its input, and for a parameter with no separate plain domain
+    /// (a Mix knob) `0..=1` is the truthful answer. That is the difference
+    /// between this and hardcoding `0.0..1.0` — the numbers can coincide, but
+    /// here they are what the plugin said when asked.
+    ///
+    /// Must run on the main thread with the controller connected, per the SDK's
+    /// `[UI-thread & Connected]` annotation on the method.
+    pub fn parameter_plain_range(&self, id: u32) -> Option<(f64, f64)> {
+        let controller = self.interfaces.controller.as_ref()?;
+        let at = |n: f64| unsafe { controller.normalizedParamToPlain(id, n) };
+
+        let (lo, mid, hi) = (at(0.0), at(0.5), at(1.0));
+        if !lo.is_finite() || !mid.is_finite() || !hi.is_finite() {
+            return None;
+        }
+        // A range the endpoints alone would accept but whose interior
+        // contradicts them is not a range we can map onto. Inclusive because a
+        // legitimately constant parameter probes flat.
+        let monotonic = (lo <= mid && mid <= hi) || (hi <= mid && mid <= lo);
+        monotonic.then_some(if lo <= hi { (lo, hi) } else { (hi, lo) })
+    }
+
     /// Number of per-note expression types the plugin supports on the given
     /// event `bus_index` / MIDI `channel`. Returns `0` if the plugin doesn't
     /// implement `INoteExpressionController`.
@@ -1152,9 +1188,19 @@ impl Vst3Loaded {
     /// What the plugin has registered with our run loop, and how much this host
     /// has dispatched. Test-only observation seam behind the `conformance`
     /// feature — see [`RunLoopActivity`](crate::RunLoopActivity).
-    #[cfg(all(feature = "conformance", target_os = "linux"))]
+    ///
+    /// All-zero off Linux, where the OS owns the run loop and plugins register
+    /// nothing with us, so callers need no `cfg` of their own.
+    #[cfg(feature = "conformance")]
     pub fn run_loop_activity(&self) -> crate::RunLoopActivity {
-        self._library.run_loop().activity()
+        #[cfg(target_os = "linux")]
+        {
+            self._library.run_loop().activity()
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            crate::RunLoopActivity::default()
+        }
     }
 
     /// Coalesces multiple `IPlugFrame::resizeView` requests received
@@ -1480,13 +1526,20 @@ impl Drop for Vst3Loaded {
         // tear the component↔controller connection down before terminating
         // either half. No-op for same-object / no controller.
         self.disconnect_separate_controller();
-        unsafe {
-            self.interfaces.component.terminate();
-        }
+        // Retract the handler before terminating. Unlike `initialize`, which
+        // borrows the host context, `setComponentHandler` *retains* — so a
+        // plugin that overrides `terminate` without chaining up to the base
+        // class (which resets it) would hold our handler past its own teardown.
+        // Order — retract, controller, component — follows Steinberg's own
+        // wrapper (`basewrapper.cpp:369`).
         if let Some(ctrl) = self.interfaces.controller.as_ref() {
             unsafe {
+                let _ = ctrl.setComponentHandler(std::ptr::null_mut());
                 ctrl.terminate();
             }
+        }
+        unsafe {
+            self.interfaces.component.terminate();
         }
     }
 }

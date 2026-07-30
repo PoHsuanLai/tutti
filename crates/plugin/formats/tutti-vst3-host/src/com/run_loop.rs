@@ -70,24 +70,6 @@ struct State {
 // Mutex serialises access to the collections themselves.
 unsafe impl Send for State {}
 
-/// What one [`RunLoop::run_iteration`] actually did, plus what is registered.
-///
-/// Only meaningful to assert on: "the plugin registered a timer and our pump
-/// fired it" is otherwise invisible from outside — the handlers are plugin-side
-/// COM objects and the effects land in the plugin's own GUI.
-#[cfg(feature = "conformance")]
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct RunLoopActivity {
-    /// Timers the plugin currently has registered.
-    pub timers_registered: usize,
-    /// File descriptors the plugin currently has registered.
-    pub event_handlers_registered: usize,
-    /// Cumulative `ITimerHandler::onTimer` calls this loop has made.
-    pub timers_fired: u64,
-    /// Cumulative `IEventHandler::onFDIsSet` calls this loop has made.
-    pub fds_dispatched: u64,
-}
-
 /// The host's run loop, shared between every object that exposes `IRunLoop`.
 #[derive(Default)]
 pub(crate) struct RunLoop {
@@ -177,9 +159,9 @@ impl RunLoop {
 
     /// Snapshot of what is registered and what this loop has dispatched.
     #[cfg(feature = "conformance")]
-    pub(crate) fn activity(&self) -> RunLoopActivity {
+    pub(crate) fn activity(&self) -> super::RunLoopActivity {
         let state = self.state.lock().unwrap_or_else(|p| p.into_inner());
-        RunLoopActivity {
+        super::RunLoopActivity {
             timers_registered: state.timers.len(),
             event_handlers_registered: state.event_handlers.len(),
             timers_fired: state.timers_fired,

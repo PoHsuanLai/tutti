@@ -91,8 +91,21 @@ impl ClapLoaded {
         scratch.param_ranges = self
             .parameter_list()
             .into_iter()
-            .map(|p| (p.id, p.min_value as f32, p.max_value as f32))
+            // A parameter with no declared bounds has nothing to denormalize
+            // against; dropping it leaves its automation to pass through
+            // untouched, which is what `add_param_changes` does for a param
+            // missing from this map. Every CLAP parameter declares a range, so
+            // this filters nothing today — but inventing bounds if one ever
+            // didn't would write a wrong plain value to the plugin.
+            .filter_map(|p| {
+                let (min, max) = p.range.bounds()?;
+                Some((p.id, min as f32, max as f32))
+            })
             .collect();
+        // Read the plugin's own count, not the length of the map above: they
+        // differ exactly when `parameters()` truncated at a hole, which is the
+        // case `add_param_changes` has to tell apart from a params-less plugin.
+        scratch.plugin_claims_params = self.parameter_count() > 0;
         let input_total = self.ports.input_channel_total();
         let output_total = self.ports.output_channel_total();
         let max_frames = self.audio.max_frames as usize;
@@ -199,9 +212,9 @@ impl<T: super::ClapSample> ClapActive<T> {
         let plugin_ref = unsafe { self.loaded.plugin.as_ref() };
         if let Some(start_fn) = plugin_ref.start_processing {
             if !unsafe { start_fn(self.loaded.plugin.as_ptr()) } {
-                return Err(ClapError::ProcessError(
-                    "Start processing failed".to_string(),
-                ));
+                // Allocation-free: this runs on the audio thread, and a plugin
+                // that refuses to start typically refuses on every block.
+                return Err(ClapError::StartProcessingFailed);
             }
         }
 
@@ -249,16 +262,95 @@ impl<T: super::ClapSample> ClapActive<T> {
     /// deactivate → re-activate the plugin at the new ceiling. **Main-thread /
     /// setup only** — never call on the audio thread (it deactivates the
     /// plugin and reallocates). The next `process` self-starts processing.
-    pub fn set_max_block_size(&mut self, max_frames: u32) -> &mut Self {
+    ///
+    /// # Errors
+    /// [`ClapError::NotSupported`] if the plugin refuses `activate` at the new
+    /// ceiling; the instance is **rolled back** to the previous `max_frames`
+    /// and left active there. [`ClapError::LoadFailed`] if the rollback also
+    /// fails. See [`Self::reconfigure`].
+    pub fn set_max_block_size(&mut self, max_frames: u32) -> Result<()> {
         if max_frames <= self.loaded.audio.max_frames {
-            return self;
+            return Ok(());
         }
+        self.reconfigure(self.loaded.audio.sample_rate, max_frames)
+    }
+
+    /// Change the sample rate in place. CLAP requires deactivation around a
+    /// sample-rate change, so this stops processing and re-activates the plugin
+    /// at the new rate; the next `process` call self-starts processing again.
+    /// Setup-time only — never call on the audio thread.
+    ///
+    /// # Errors
+    /// Same contract as [`Self::set_max_block_size`].
+    pub fn set_sample_rate(&mut self, sample_rate: f64) -> Result<()> {
+        if (self.loaded.audio.sample_rate - sample_rate).abs() < f64::EPSILON {
+            return Ok(());
+        }
+        self.reconfigure(sample_rate, self.loaded.audio.max_frames)
+    }
+
+    /// Deactivate → re-activate at `(sample_rate, max_frames)`, restoring the
+    /// previous configuration if the plugin refuses the new one.
+    ///
+    /// A failed `activate` must not be discarded (both setters used to write
+    /// `let _ =`): `activate_plugin` returns early without setting
+    /// `flags.active`, leaving a `ClapActive` whose plugin is deactivated —
+    /// exactly the state the type exists to rule out. `process` would then
+    /// `start_processing` on a deactivated plugin, and
+    /// [`flush_params`](ClapLoaded::flush_params) would pick its thread
+    /// contract off the stale flag.
+    ///
+    /// Rolling back to the previous configuration is the one recovery available
+    /// — the plugin accepted it once — and it restores `flags.active == true`.
+    /// The caller sees the refusal as `Err` and can read
+    /// [`sample_rate`](ClapLoaded::sample_rate) /
+    /// [`block_size`](ClapLoaded::block_size) for what it is still running at.
+    /// If the rollback also fails there is nothing left to fall back to: the
+    /// instance is genuinely inactive and the `Err` is
+    /// [`ClapError::LoadFailed`] with [`LoadStage::Activation`], distinct from
+    /// the plain refusal. `Drop` still tears it down safely.
+    fn reconfigure(&mut self, sample_rate: f64, max_frames: u32) -> Result<()> {
         self.loaded.assert_main_thread();
+
+        let prev_rate = self.loaded.audio.sample_rate;
+        let prev_frames = self.loaded.audio.max_frames;
+
         self.stop_processing();
         self.loaded.deactivate_plugin();
+
+        self.loaded.audio.sample_rate = sample_rate;
         self.loaded.audio.max_frames = max_frames;
-        // Re-size the channel scratch for the larger block. Port layout and
-        // channel counts are unchanged; only per-channel length grows.
+        // Port layout and channel counts are unchanged; only per-channel length
+        // tracks `max_frames`. A pure rate change passes the same value back
+        // in, so this is a no-op there.
+        self.resize_scratch(max_frames);
+
+        if self.loaded.activate_plugin().is_ok() {
+            return Ok(());
+        }
+
+        // Refused. Put back what the plugin already accepted once.
+        self.loaded.audio.sample_rate = prev_rate;
+        self.loaded.audio.max_frames = prev_frames;
+        self.resize_scratch(prev_frames);
+
+        // A refused rollback is a different (and worse) fact than the
+        // `NotSupported` below, so it propagates rather than folding into it.
+        self.loaded.activate_plugin()?;
+
+        Err(ClapError::NotSupported(format!(
+            "Plugin '{}' refused activation at sample_rate {sample_rate} / \
+             max_frames {max_frames}; still active at {prev_rate} / {prev_frames}",
+            self.loaded.info.name
+        )))
+    }
+
+    /// Re-size the RT channel scratch for `max_frames`; the port layout is
+    /// fixed at load. The rollback path calls this a second time, paying a
+    /// second allocation off the audio thread — worth it, since scratch sized
+    /// for a ceiling the plugin is *not* activated at would let `process`
+    /// accept a block the plugin never agreed to.
+    fn resize_scratch(&mut self, max_frames: u32) {
         let input_total = self.loaded.ports.input_channel_total();
         let output_total = self.loaded.ports.output_channel_total();
         let num_in = self.loaded.ports.inputs.len();
@@ -270,27 +362,6 @@ impl<T: super::ClapSample> ClapActive<T> {
             num_in,
             num_out,
         );
-        // Re-activate at the new ceiling; the next `process` self-starts.
-        let _ = self.loaded.activate_plugin();
-        self
-    }
-
-    /// Change the sample rate in place. CLAP requires deactivation around a
-    /// sample-rate change, so this stops processing and re-activates the plugin
-    /// at the new rate; the next `process` call self-starts processing again.
-    /// Setup-time only — never call on the audio thread.
-    pub fn set_sample_rate(&mut self, sample_rate: f64) -> &mut Self {
-        if (self.loaded.audio.sample_rate - sample_rate).abs() < f64::EPSILON {
-            return self;
-        }
-        self.loaded.assert_main_thread();
-        self.stop_processing();
-        self.loaded.deactivate_plugin();
-        self.loaded.audio.sample_rate = sample_rate;
-        // Re-activate at the new rate; scratch is already sized for max_frames,
-        // which is unchanged, so no reallocation is needed.
-        let _ = self.loaded.activate_plugin();
-        self
     }
 }
 

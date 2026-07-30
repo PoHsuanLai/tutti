@@ -20,7 +20,7 @@ use bevy_ecs::prelude::*;
 use bevy_tutti::graph::{AudioPump, AudioPumpAppExt, PumpFinished};
 // Through `bevy_tutti::io`, not the engine crates directly: a host should not
 // need to name `tutti-core` or `tutti-io` to write a pump, and this pins that.
-use bevy_tutti::io::{AudioIn, BitDepth, OnEmpty, WavOut};
+use bevy_tutti::io::{AudioIn, BitDepth, ChannelLayout, OnEmpty, WavOut};
 
 const SAMPLE_RATE: f64 = 48_000.0;
 
@@ -34,7 +34,15 @@ struct SliceSource {
 impl AudioIn for SliceSource {
     const ON_EMPTY: OnEmpty = OnEmpty::EndOfStream;
 
-    fn poll_into(&mut self, out: &mut [[f32; 2]]) -> usize {
+    fn layout(&self) -> ChannelLayout {
+        ChannelLayout::Stereo
+    }
+
+    fn poll_into(&mut self, out: &mut [f32]) -> usize {
+        // `out` is flat interleaved; the fixture holds `[f32; 2]` frames, and
+        // the two have identical layout, so this is a reinterpretation not a
+        // copy. The RETURN is frames.
+        let (out, _odd) = out.as_chunks_mut::<2>();
         let n = (self.frames.len() - self.pos).min(out.len());
         out[..n].copy_from_slice(&self.frames[self.pos..self.pos + n]);
         self.pos += n;
@@ -54,16 +62,21 @@ struct LiveSource {
 impl AudioIn for LiveSource {
     const ON_EMPTY: OnEmpty = OnEmpty::Starved;
 
-    fn poll_into(&mut self, out: &mut [[f32; 2]]) -> usize {
+    fn layout(&self) -> ChannelLayout {
+        ChannelLayout::Stereo
+    }
+
+    fn poll_into(&mut self, out: &mut [f32]) -> usize {
         self.polls += 1;
         // Every other poll is empty; the rest yield one frame.
         if self.polls % 2 == 1 {
             return 0;
         }
-        if out.is_empty() {
+        if out.len() < 2 {
             return 0;
         }
-        out[0] = [0.5, -0.5];
+        out[0] = 0.5;
+        out[1] = -0.5;
         1
     }
 }
@@ -75,14 +88,15 @@ fn frames(n: usize) -> Vec<[f32; 2]> {
 }
 
 fn sink(path: &PathBuf) -> WavOut {
-    WavOut::create(path, SAMPLE_RATE, 2, BitDepth::Float32).expect("sink should open")
+    WavOut::create(path, SAMPLE_RATE, ChannelLayout::Stereo, BitDepth::Float32)
+        .expect("sink should open")
 }
 
 /// An app with the stereo-`f32` pump drain registered. No engine, no device —
 /// the pump is deliberately not gated on `engine_ready`.
 fn app() -> App {
     let mut app = App::new();
-    app.add_audio_pump::<f32, 2>();
+    app.add_audio_pump::<f32>();
     app
 }
 
@@ -95,7 +109,7 @@ fn run_until_drained(app: &mut App, max_frames: usize) -> bool {
         app.update();
         if app
             .world_mut()
-            .query::<&AudioPump<f32, 2>>()
+            .query::<&AudioPump<f32>>()
             .iter(app.world())
             .next()
             .is_none()
@@ -168,7 +182,7 @@ fn a_live_source_runs_until_stopped_then_finalizes() {
 
     app.world()
         .entity(entity)
-        .get::<AudioPump<f32, 2>>()
+        .get::<AudioPump<f32>>()
         .expect("a live pump must still be running — it is never exhausted")
         .stop();
 
@@ -266,8 +280,8 @@ fn registering_a_frame_type_twice_still_drains_once() {
     let path = dir.path().join("dedup.wav");
 
     let mut app = App::new();
-    app.add_audio_pump::<f32, 2>();
-    app.add_audio_pump::<f32, 2>(); // the duplicate a second plugin would add
+    app.add_audio_pump::<f32>();
+    app.add_audio_pump::<f32>(); // the duplicate a second plugin would add
 
     app.world_mut().spawn(AudioPump::start(
         SliceSource {
@@ -300,18 +314,18 @@ fn the_documented_shape_compiles() {
     let path = dir.path().join("documented.wav");
 
     let mut app = App::new();
-    app.add_audio_pump::<f32, 2>();
+    app.add_audio_pump::<f32>();
 
     let src = SliceSource {
         frames: frames(128),
         pos: 0,
     };
-    let wav =
-        WavOut::create(&path, SAMPLE_RATE, 2, BitDepth::Float32).expect("could not create WAV");
+    let wav = WavOut::create(&path, SAMPLE_RATE, ChannelLayout::Stereo, BitDepth::Float32)
+        .expect("could not create WAV");
     let pump = app.world_mut().spawn(AudioPump::start(src, wav, 1024)).id();
 
     // The stop path a host writes, through the component.
-    if let Some(p) = app.world().entity(pump).get::<AudioPump<f32, 2>>() {
+    if let Some(p) = app.world().entity(pump).get::<AudioPump<f32>>() {
         p.stop();
     }
 

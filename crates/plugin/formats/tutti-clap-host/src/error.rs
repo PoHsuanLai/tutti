@@ -23,10 +23,42 @@ pub enum ClapError {
         reason: String,
     },
 
-    /// Audio processing failed — the plugin returned `CLAP_PROCESS_ERROR`
-    /// or a 64-bit buffer was passed to a 32-bit-only plugin.
+    /// Audio processing failed — a 64-bit buffer was passed to a 32-bit-only
+    /// plugin, or a similar setup-time fault.
+    ///
+    /// Carries an owned `String`, so it must **not** be constructed on the
+    /// audio thread. The conditions raised from inside `process` have their own
+    /// allocation-free variants below.
     #[error("Processing error: {0}")]
     ProcessError(String),
+
+    /// The plugin returned `CLAP_PROCESS_ERROR` from `process`.
+    ///
+    /// Fieldless so it can be raised on the audio thread: a plugin in an error
+    /// state usually returns ERROR every block, so a `String` here allocated
+    /// per block inside the callback.
+    #[error("Processing error: plugin returned CLAP_PROCESS_ERROR")]
+    PluginReturnedError,
+
+    /// A `process` call asked for more frames than the instance was activated
+    /// for (CLAP's `max_frames_count`).
+    ///
+    /// Audio-thread-raised, so the numbers ride as fields and `Display`
+    /// formats them off-thread. Recovering means growing the scratch via
+    /// `set_max_block_size`; the host cannot resize inside the callback.
+    #[error(
+        "Processing error: block size {requested} exceeds activated max_frames {max_frames}; \
+         grow it off the audio thread with `set_max_block_size`"
+    )]
+    BlockTooLarge { requested: u32, max_frames: u32 },
+
+    /// The plugin's `start_processing` returned false.
+    ///
+    /// Also fieldless: `process` calls `ensure_processing` on the audio thread
+    /// to self-start, and nothing marks the instance unusable, so a refusal
+    /// repeats every block.
+    #[error("Processing error: plugin refused to start processing")]
+    StartProcessingFailed,
 
     /// Saving or loading plugin state failed.
     #[error("State error: {0}")]

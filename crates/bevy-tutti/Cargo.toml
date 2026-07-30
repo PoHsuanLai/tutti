@@ -29,7 +29,11 @@ bevy_tasks.workspace = true
 # types. bevy-tutti supplies the reconcile systems + the CPAL audio callback
 # (relocated into src/engine/).
 tutti-core = { path = "../tutti/crates/core/tutti-core", default-features = false, features = ["bevy_ecs", "bevy_asset"] }
-tutti-types = { path = "../tutti/crates/core/tutti-types", default-features = false }
+# `bevy` here is the `Reflect` derives only (no ECS surface). Needed
+# unconditionally, not just under `modulation`: `AudioConfig` reflects its
+# `ChannelLayout` field, and a `#[reflect(ignore)]` there silently reset a
+# surround device config to Stereo on scene load.
+tutti-types = { path = "../tutti/crates/core/tutti-types", default-features = false, features = ["bevy"] }
 tutti-midi-types = { path = "../tutti/crates/midi/tutti-midi-types", default-features = false }
 # tutti-units is pure DSP now (its ECS binding moved to dawai_model::engine_bind).
 # The optional features below add spatial / convolution / automation DSP on top.

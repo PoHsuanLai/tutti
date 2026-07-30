@@ -34,6 +34,24 @@ const TAL_NOISEMAKER: &str = "/Library/Audio/Plug-Ins/VST3/TAL-NoiseMaker.vst3";
 const SURGE_XT: &str = "/Library/Audio/Plug-Ins/VST3/Surge XT.vst3";
 const VITAL: &str = "/Library/Audio/Plug-Ins/VST3/Vital.vst3";
 const DEXED: &str = "/Library/Audio/Plug-Ins/VST3/Dexed.vst3";
+/// Steinberg's own SDK sample plugins, installed under the user domain. They
+/// implement `normalizedParamToPlain` properly (adelay's "Delay" is seconds,
+/// mda's parameters carry real units), which the commercial plugins above
+/// mostly do not.
+const SDK_SAMPLES: &[&str] = &["adelay.vst3", "mda-vst3.vst3", "note-expression-synth.vst3"];
+
+/// Every VST3 bundle this machine has, user domain first.
+fn corpus() -> Vec<PathBuf> {
+    let user = dirs_home().join("Library/Audio/Plug-Ins/VST3");
+    let mut out: Vec<PathBuf> = SDK_SAMPLES.iter().map(|n| user.join(n)).collect();
+    out.extend([TAL_NOISEMAKER, SURGE_XT, VITAL, DEXED].map(PathBuf::from));
+    out.retain(|p| p.exists());
+    out
+}
+
+fn dirs_home() -> PathBuf {
+    PathBuf::from(std::env::var("HOME").expect("HOME is set"))
+}
 
 fn find_available_plugin() -> Option<&'static str> {
     [TAL_NOISEMAKER, SURGE_XT, VITAL, DEXED]
@@ -414,5 +432,99 @@ fn test_rapid_process_calls() {
     assert!(
         elapsed.as_millis() < 1000,
         "Should process faster than real-time"
+    );
+}
+
+/// `parameter_plain_range` recovers real ranges from the installed corpus.
+///
+/// VST3's `ParameterInfo` carries no bounds — every value it exchanges is
+/// normalized. `IEditController::normalizedParamToPlain` is the same map the
+/// plugin's own editor uses to render "440 Hz", so probing it is how a host
+/// learns what a parameter means. Without it the host reported `0.0..1.0` for
+/// every VST3 parameter, which is what an automation lane would have shown.
+///
+/// Two properties, and the split matters:
+///
+/// - **Per plugin**: every probed range is finite and ordered. A plugin that
+///   returns identity (the SDK's default for one that didn't override) probes
+///   `0..1`, which is a truthful answer, not a failure — for a Mix knob the
+///   plain range really is `0..1`.
+/// - **Across the corpus**: at least one range is *not* `0..1`. Without this the
+///   whole test would pass against a probe hardwired to return `Some((0.0,
+///   1.0))`, which is the bug it exists to catch. TAL-NoiseMaker alone returns
+///   identity for all 64 of its parameters, so a single-plugin version of this
+///   test asserted nothing.
+///
+/// Not `#[ignore]`d, unlike its neighbours: it skips only when the corpus is
+/// empty. An ignored test exercising new FFI is indistinguishable from no test.
+#[test]
+fn plain_range_probe_recovers_real_ranges() {
+    let corpus = corpus();
+    if corpus.is_empty() {
+        eprintln!("No VST3 plugins installed, skipping");
+        return;
+    }
+
+    let mut total_probed = 0usize;
+    let mut total_non_unit = 0usize;
+
+    for path in &corpus {
+        let resolved = resolve_bundle(path);
+        let Ok(loaded) = tutti_vst3_host::Vst3Loaded::load(&resolved) else {
+            eprintln!("  {}: failed to load, skipping", path.display());
+            continue;
+        };
+
+        let count = loaded.parameter_count();
+        let mut probed = 0usize;
+        let mut non_unit = 0usize;
+        for i in 0..count.min(64) {
+            let Some(info) = loaded.parameter_info(i) else {
+                continue;
+            };
+            // `None` is legitimate: no controller, or an incoherent map. That
+            // is the case the caller turns into `ParamRange::Normalized`.
+            let Some((min, max)) = loaded.parameter_plain_range(info.id) else {
+                continue;
+            };
+            probed += 1;
+
+            assert!(
+                min.is_finite() && max.is_finite(),
+                "{}: param {} ('{}') probed a non-finite range [{min}, {max}]",
+                path.display(),
+                info.id,
+                info.title_string()
+            );
+            assert!(
+                min <= max,
+                "{}: param {} ('{}') probed an inverted range [{min}, {max}]",
+                path.display(),
+                info.id,
+                info.title_string()
+            );
+            if min != 0.0 || (max - 1.0).abs() > 1e-9 {
+                non_unit += 1;
+            }
+        }
+        eprintln!(
+            "  {}: {probed} ranges probed, {non_unit} beyond 0..1",
+            path.display()
+        );
+        total_probed += probed;
+        total_non_unit += non_unit;
+    }
+
+    assert!(
+        total_probed > 0,
+        "no plugin in the corpus produced a plain range, so this test cannot \
+         tell a working probe from one that always returns None"
+    );
+    assert!(
+        total_non_unit > 0,
+        "all {total_probed} probed ranges across {} plugins were exactly 0..1, \
+         so this test cannot distinguish a real probe from the hardcoded range \
+         it replaced",
+        corpus.len()
     );
 }

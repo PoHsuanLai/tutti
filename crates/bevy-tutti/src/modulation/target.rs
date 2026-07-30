@@ -79,7 +79,7 @@ impl ModTargetRegistry {
     /// This is also the only way to reach a sink that accepts **curve** layers,
     /// since `AtomicTarget` declines them (it collapses at a fixed beat, so a
     /// curve stored there would never move). Registering one is what makes
-    /// [`ModRoute::deliver_as_curve`](crate::modulation::ModRoute) more than a
+    /// [`ModDelivery::PerBlock`](crate::modulation::ModDelivery) more than a
     /// request that always falls back.
     ///
     /// The entity need not carry an [`AudioNode`] — it need not be in the graph

@@ -125,7 +125,6 @@ mod tests {
     use crate::butler::command::RegionId;
     use crate::butler::prefetch::RegionBuffer;
     use std::path::PathBuf;
-    use tutti_core::ChannelLayout;
 
     fn region(i: usize) -> RegionId {
         RegionId(i as u64 + 1)
@@ -138,8 +137,17 @@ mod tests {
         ))
     }
 
+    /// `tracks` is a count of **timeline tracks**, not audio channels.
+    ///
+    /// `channel_index` throughout `butler/` names a track slot in the PDC
+    /// compensation table — one `ChannelPlan`, one region, one file — which is
+    /// why every ring below is built stereo regardless of `tracks`. This
+    /// deliberately does **not** take a [`ChannelLayout`](tutti_core::ChannelLayout):
+    /// it used to, and that made three-track fixtures read as a 3-channel audio
+    /// format, which is exactly the confusion the layout type exists to end.
+    /// The genuine audio-channel use in this file is `writer.channels()`.
     fn create_test_fixtures(
-        layout: ChannelLayout,
+        tracks: usize,
     ) -> (
         DashMap<usize, ChannelPlan>,
         RegionMap,
@@ -150,10 +158,10 @@ mod tests {
         let plans = DashMap::new();
         let mut regions = RegionMap::new();
 
-        for i in 0..layout.count() as usize {
+        for i in 0..tracks {
             let region_id = region(i);
             let (writer, reader) =
-                RegionBuffer::with_capacity(region_id, PathBuf::from("test.wav"), 4096, 2);
+                RegionBuffer::with_capacity(region_id, PathBuf::from("test.wav"), 4096, 2usize);
             regions.register(region_id, writer);
 
             let mut state = ChannelPlan::default();
@@ -186,8 +194,7 @@ mod tests {
 
     #[test]
     fn test_no_pdc_subscription_is_noop() {
-        let (plans, mut regions, cache, metrics, config) =
-            create_test_fixtures(ChannelLayout::from(1usize));
+        let (plans, mut regions, cache, metrics, config) = create_test_fixtures(1);
 
         regions.get_mut(region(0)).unwrap().set_file_position(1000);
 
@@ -198,8 +205,7 @@ mod tests {
 
     #[test]
     fn test_preroll_unchanged_no_seek() {
-        let (plans, mut regions, cache, metrics, config) =
-            create_test_fixtures(ChannelLayout::from(1usize));
+        let (plans, mut regions, cache, metrics, config) = create_test_fixtures(1);
         regions.get_mut(region(0)).unwrap().set_file_position(1000);
 
         let pdc = table([0, 0, 0]);
@@ -210,8 +216,7 @@ mod tests {
 
     #[test]
     fn test_preroll_increased_seeks_backward() {
-        let (plans, mut regions, cache, metrics, config) =
-            create_test_fixtures(ChannelLayout::from(2usize));
+        let (plans, mut regions, cache, metrics, config) = create_test_fixtures(2);
         regions.get_mut(region(0)).unwrap().set_file_position(1000);
         regions.get_mut(region(1)).unwrap().set_file_position(1000);
 
@@ -228,8 +233,7 @@ mod tests {
 
     #[test]
     fn test_preroll_decreased_seeks_forward() {
-        let (plans, mut regions, cache, metrics, config) =
-            create_test_fixtures(ChannelLayout::from(1usize));
+        let (plans, mut regions, cache, metrics, config) = create_test_fixtures(1);
         regions.get_mut(region(0)).unwrap().set_file_position(1000);
 
         let pdc = table([500, 0, 0]);
@@ -255,8 +259,7 @@ mod tests {
 
     #[test]
     fn test_seeking_flag_clear_after_update() {
-        let (plans, mut regions, cache, metrics, config) =
-            create_test_fixtures(ChannelLayout::from(1usize));
+        let (plans, mut regions, cache, metrics, config) = create_test_fixtures(1);
         regions.get_mut(region(0)).unwrap().set_file_position(1000);
 
         assert!(!plans.get(&0).unwrap().rt_state.is_seeking());
@@ -269,8 +272,7 @@ mod tests {
 
     #[test]
     fn test_multiple_channels_independent_compensation() {
-        let (plans, mut regions, cache, metrics, config) =
-            create_test_fixtures(ChannelLayout::from(3usize));
+        let (plans, mut regions, cache, metrics, config) = create_test_fixtures(3);
         for i in 0..3 {
             regions.get_mut(region(i)).unwrap().set_file_position(1000);
         }
@@ -290,8 +292,7 @@ mod tests {
 
     #[test]
     fn test_channel_beyond_table_is_uncompensated() {
-        let (plans, mut regions, cache, metrics, config) =
-            create_test_fixtures(ChannelLayout::from(1usize));
+        let (plans, mut regions, cache, metrics, config) = create_test_fixtures(1);
         regions.get_mut(region(0)).unwrap().set_file_position(1000);
 
         // Empty table — channel 0 has no entry.

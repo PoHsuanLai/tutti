@@ -4,7 +4,9 @@ use crate::synth_voice::SynthVoice;
 use crate::SynthConfig;
 use crate::{AllocationResult, Portamento, UnisonEngine, VoiceAllocator, VoiceAllocatorConfig};
 use smallvec::SmallVec;
-use tutti_core::{Amplitude, AudioUnit, BufferMut, BufferRef, ChannelLayout, Param, SignalFrame};
+use tutti_core::{
+    Amplitude, AudioUnit, BufferMut, BufferRef, ChannelLayout, Param, SignalFrame, MAX_BUFFER_SIZE,
+};
 use tutti_midi_runtime::{MidiInPort, MidiSender};
 use tutti_midi_types::ump::MidiEvent;
 use tutti_midi_types::{cc, MidiIn, MidiUnitId, NoteId};
@@ -752,13 +754,25 @@ impl AudioUnit for PolySynth {
         }
 
         let midi_count = self.poll_midi_events_sorted(size);
-        let stereo = matches!(
-            ChannelLayout::from(output.channels()),
-            ChannelLayout::Stereo | ChannelLayout::Quad | ChannelLayout::Multi(_)
-        );
+        let stereo = ChannelLayout::from(output.channels()).is_multi();
 
-        let mut mix_left = [0.0f32; 64];
-        let mut mix_right = [0.0f32; 64];
+        // Sized to fundsp's block ceiling, not a bare `64`. Every `Buffer`
+        // channel holds exactly `MAX_BUFFER_SIZE` samples, so a `size` past it
+        // could not have come from a real `Buffer` — but the mix buffers below are
+        // indexed by *absolute* position (`block_start..block_end`, up to `size`),
+        // so an over-long `size` from a direct `process` call would index past
+        // them. Clamped rather than trusted: the debug assert catches the contract
+        // breach in tests, and release renders the first `MAX_BUFFER_SIZE` frames
+        // instead of panicking on the audio thread.
+        debug_assert!(
+            size <= MAX_BUFFER_SIZE,
+            "process size {size} exceeds fundsp's MAX_BUFFER_SIZE ({MAX_BUFFER_SIZE}); \
+             mix buffers are sized to that ceiling"
+        );
+        let size = size.min(MAX_BUFFER_SIZE);
+
+        let mut mix_left = [0.0f32; MAX_BUFFER_SIZE];
+        let mut mix_right = [0.0f32; MAX_BUFFER_SIZE];
 
         let mut block_start = 0;
         let mut event_idx = 0;
@@ -951,6 +965,65 @@ mod tests {
     /// Build a `PolySynth` from a config, unwrapping the result.
     fn synth(config: SynthConfig) -> PolySynth {
         PolySynth::new(config).expect("synth builds")
+    }
+
+    /// A full-ceiling block renders every frame it was asked for.
+    ///
+    /// The mix buffers are `[f32; MAX_BUFFER_SIZE]` indexed by absolute position,
+    /// so `size == MAX_BUFFER_SIZE` is the exact boundary where an off-by-one in
+    /// the sizing would index past them. The over-size case (`size >` the ceiling)
+    /// is a contract breach guarded by a `debug_assert`, so it is deliberately not
+    /// exercised here — a test build would abort on the assert rather than reach
+    /// the release clamp behind it.
+    #[test]
+    fn a_full_ceiling_block_renders_every_frame() {
+        use tutti_core::BufferVec;
+
+        let mut synth = synth(SynthConfig {
+            sample_rate: tutti_core::SampleRate::SR_44K1,
+            max_voices: 4,
+            // Near-instant attack, so the note is audible within the first block
+            // rather than still ramping up from silence.
+            envelope: EnvelopeConfig {
+                attack: 0.001,
+                decay: 0.0,
+                sustain: 1.0,
+                release: 0.5,
+            },
+            ..Default::default()
+        });
+        queue_midi(&synth, &[ev_note_on(0, 69, 100)]);
+
+        let input = BufferVec::new(2);
+        let mut output = BufferVec::new(2);
+
+        // Several full-ceiling blocks, not one: the voice's own smoothing ramps
+        // mean the first blocks after a note-on are legitimately near-silent, so a
+        // single block proves nothing about the buffer sizing.
+        let mut peak = 0.0f32;
+        for _ in 0..4 {
+            synth.process(
+                MAX_BUFFER_SIZE,
+                &input.buffer_ref(),
+                &mut output.buffer_mut(),
+            );
+            let left = output.buffer_ref().channel_f32(0);
+            // Read all MAX_BUFFER_SIZE frames — indexing the full width is itself
+            // the check that `process` wrote them.
+            peak = left[..MAX_BUFFER_SIZE]
+                .iter()
+                .fold(peak, |a, s| a.max(s.abs()));
+        }
+
+        assert!(
+            peak > 0.0,
+            "a held note must produce audio across full-ceiling blocks"
+        );
+        assert_eq!(
+            synth.active_voice_count(),
+            1,
+            "the note is still held after rendering"
+        );
     }
 
     /// Push events directly through the synth's own MIDI sender.

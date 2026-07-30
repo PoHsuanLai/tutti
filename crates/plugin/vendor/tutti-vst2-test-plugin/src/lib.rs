@@ -507,6 +507,225 @@ static mut RAW_TAIL_SIZE: Option<isize> = None;
 /// contract regardless.
 const EFF_GET_TAIL_SIZE: i32 = 52;
 
+/// `effGetParameterProperties`. vst-rs names it `GetParamInfo` and leaves the
+/// struct unimplemented, so the probe answers it raw.
+const EFF_GET_PARAMETER_PROPERTIES: i32 = 56;
+
+/// The MIDI-metadata family. vst-rs has all five as `//TODO: Implement`, so
+/// there is no trait path for any of them.
+const EFF_GET_MIDI_PROGRAM_NAME: i32 = 62;
+const EFF_GET_CURRENT_MIDI_PROGRAM: i32 = 63;
+const EFF_GET_MIDI_PROGRAM_CATEGORY: i32 = 64;
+const EFF_HAS_MIDI_PROGRAMS_CHANGED: i32 = 65;
+const EFF_GET_MIDI_KEY_NAME: i32 = 66;
+
+/// The parameter index the probe reports an integer range for, so a test can
+/// distinguish "answered with a range" from "answered without one" on the same
+/// plugin. Any other index answers with only the float-step group set.
+pub const PROBE_INT_STEP_PARAM: i32 = 1;
+
+/// Integer range the probe reports for [`PROBE_INT_STEP_PARAM`]. Chosen as a
+/// MIDI-ish 0..127 with a 12-step coarse increment so a wrong field pairing
+/// (min/max swapped, step read from large_step) yields visibly wrong numbers.
+pub const PROBE_INT_RANGE: (i32, i32, i32, i32) = (0, 127, 1, 12);
+
+/// Category the probe reports for [`PROBE_INT_STEP_PARAM`]. 1-based, matching
+/// VST2 — `2` rather than `1` so a decoder that returns a hardcoded or
+/// off-by-one category is caught.
+pub const PROBE_PARAM_CATEGORY: i16 = 2;
+
+/// MIDI program-change / bank pair the probe reports for program 0. The bank is
+/// a real pair so the sentinel handling can be tested against a live value.
+pub const PROBE_MIDI_PROGRAM: (u8, u8, u8) = (32, 1, 3);
+
+/// The key the probe names, and the name. 36 is GM's kick drum.
+pub const PROBE_NAMED_KEY: i32 = 36;
+pub const PROBE_KEY_NAME: &str = "Kick";
+
+/// Write a `&str` into a plugin-side NUL-padded fixed field.
+///
+/// Truncates rather than panicking on an over-long name: the probe must not
+/// abort inside a dispatch, because a crash *in the plugin* reads as a host bug.
+fn write_field(dst: &mut [u8], text: &str) {
+    let bytes = text.as_bytes();
+    let n = bytes.len().min(dst.len());
+    dst[..n].copy_from_slice(&bytes[..n]);
+    if n < dst.len() {
+        dst[n] = 0;
+    }
+}
+
+/// Write `prefix` followed by `n` into a fixed field, without allocating.
+///
+/// `format!` would be the obvious way to build these names, but it allocates —
+/// and these run inside `extern "C" fn probe_dispatch`, which has no
+/// `catch_unwind` above it. An allocation failure there unwinds across the C
+/// ABI, which is undefined behaviour rather than a test failure. Formatting
+/// into a fixed stack buffer removes the possibility instead of guarding it.
+fn write_numbered_field(dst: &mut [u8], prefix: &str, n: i32) {
+    // Enough for any prefix used here plus a full i32 and the NUL.
+    let mut buf = [0u8; 64];
+    let mut len = 0;
+
+    for &b in prefix.as_bytes() {
+        if len == buf.len() {
+            break;
+        }
+        buf[len] = b;
+        len += 1;
+    }
+
+    // Decimal digits, most significant first. `abs()` on i32::MIN would
+    // overflow, so go through i64.
+    let value = n as i64;
+    if value < 0 && len < buf.len() {
+        buf[len] = b'-';
+        len += 1;
+    }
+    let magnitude = value.unsigned_abs();
+    let mut digits = [0u8; 20];
+    let mut ndigits = 0;
+    let mut rest = magnitude;
+    loop {
+        digits[ndigits] = b'0' + (rest % 10) as u8;
+        ndigits += 1;
+        rest /= 10;
+        if rest == 0 {
+            break;
+        }
+    }
+    while ndigits > 0 && len < buf.len() {
+        ndigits -= 1;
+        buf[len] = digits[ndigits];
+        len += 1;
+    }
+
+    // SAFETY-free: every byte written is ASCII, so the slice is valid UTF-8.
+    write_field(dst, std::str::from_utf8(&buf[..len]).unwrap_or(""));
+}
+
+/// Answer `effGetParameterProperties` for `index`.
+///
+/// # Safety
+/// `ptr` must be a valid, writable `*mut api::ParameterProperties` the host
+/// owns — which is what the opcode's contract requires.
+unsafe fn answer_parameter_properties(index: i32, ptr: *mut std::os::raw::c_void) -> isize {
+    if ptr.is_null() {
+        return 0;
+    }
+    let props = &mut *(ptr as *mut api::ParameterProperties);
+
+    write_numbered_field(&mut props.label, "Probe Param ", index);
+    write_numbered_field(&mut props.short_label, "P", index);
+
+    if index == PROBE_INT_STEP_PARAM {
+        let (min, max, step, large) = PROBE_INT_RANGE;
+        props.min_integer = min;
+        props.max_integer = max;
+        props.step_integer = step;
+        props.large_step_integer = large;
+        props.category = PROBE_PARAM_CATEGORY;
+        props.num_parameters_in_category = 2;
+        write_field(&mut props.category_label, "Filter");
+        props.display_index = 3;
+        props.flags = (api::ParameterFlags::USES_INT_STEP
+            | api::ParameterFlags::USES_CATEGORY
+            | api::ParameterFlags::USES_INDEX)
+            .bits();
+    } else {
+        // Deliberately leave the integer fields at values a host must NOT
+        // read: the flag says they are invalid, and a host that ignores the
+        // gate picks these up as a real range.
+        props.min_integer = 999;
+        props.max_integer = -999;
+        props.step_float = 0.25;
+        props.small_step_float = 0.05;
+        props.large_step_float = 0.5;
+        props.flags = api::ParameterFlags::USES_FLOAT_STEP.bits();
+    }
+
+    1
+}
+
+/// Answer `effGetMidiProgramName` / `effGetCurrentMidiProgram`.
+///
+/// # Safety
+/// `ptr` must be a valid, writable `*mut api::MidiProgramName`.
+unsafe fn answer_midi_program_name(ptr: *mut std::os::raw::c_void) -> Option<i32> {
+    if ptr.is_null() {
+        return None;
+    }
+    let name = &mut *(ptr as *mut api::MidiProgramName);
+
+    // The host wrote the query here; the probe honours it rather than always
+    // describing program 0, so a host that forgets to write it is detectable.
+    let requested = name.this_program_index;
+
+    // Name only the programs actually serviced. `serviced_midi_programs` may
+    // advertise more than this — that gap is the enumeration hole.
+    if !(0..NAMED_MIDI_PROGRAMS).contains(&requested) {
+        return None;
+    }
+
+    write_numbered_field(&mut name.name, "Probe Program ", requested);
+    let (program, msb, lsb) = PROBE_MIDI_PROGRAM;
+    name.midi_program = program.wrapping_add(requested as u8);
+    name.midi_bank_msb = msb;
+    name.midi_bank_lsb = lsb;
+    name.parent_category_index = -1;
+    // Mark program 1 a drum kit so the key-name path has a reason to be
+    // queried, and program 0 not, so the flag is proven to vary.
+    name.flags = if requested == 1 {
+        api::MidiProgramFlags::IS_OMNI.bits()
+    } else {
+        0
+    };
+
+    Some(requested)
+}
+
+/// How many MIDI programs the probe will actually *name*, regardless of the
+/// count it advertises. Two, so a test can walk more than one and still have a
+/// hole above them.
+const NAMED_MIDI_PROGRAMS: i32 = 2;
+
+/// Answer `effGetMidiProgramCategory`.
+///
+/// # Safety
+/// `ptr` must be a valid, writable `*mut api::MidiProgramCategory`.
+unsafe fn answer_midi_program_category(ptr: *mut std::os::raw::c_void) -> isize {
+    if ptr.is_null() {
+        return 0;
+    }
+    let cat = &mut *(ptr as *mut api::MidiProgramCategory);
+    let requested = cat.this_category_index;
+    if requested != 0 {
+        return 0;
+    }
+    write_field(&mut cat.name, "Probe Category");
+    cat.parent_category_index = -1;
+    1
+}
+
+/// Answer `effGetMidiKeyName`, naming exactly one key.
+///
+/// Naming one key rather than all 128 is the point: a host must omit the
+/// unnamed ones rather than filling them with blanks.
+///
+/// # Safety
+/// `ptr` must be a valid, writable `*mut api::MidiKeyName`.
+unsafe fn answer_midi_key_name(ptr: *mut std::os::raw::c_void) -> isize {
+    if ptr.is_null() {
+        return 0;
+    }
+    let key = &mut *(ptr as *mut api::MidiKeyName);
+    if key.this_key_number != PROBE_NAMED_KEY {
+        return 0;
+    }
+    write_field(&mut key.keyname, PROBE_KEY_NAME);
+    1
+}
+
 extern "C" fn probe_dispatch(
     effect: *mut AEffect,
     opcode: i32,
@@ -523,6 +742,45 @@ extern "C" fn probe_dispatch(
             return tail;
         }
     }
+
+    // Parameter properties and the MIDI-metadata family have no `Plugin` trait
+    // path in vst-rs (all six are `//TODO: Implement`), so they are answered
+    // here or not at all. Each is behind a switch that is OFF by default, so
+    // the probe's default behaviour matches the measured real-world one:
+    // decline everything.
+    //
+    // SAFETY (all arms): `ptr` is the host-owned buffer the opcode's contract
+    // requires, and each helper null-checks before writing.
+    if opcode == EFF_GET_PARAMETER_PROPERTIES && switches::answer_param_properties() {
+        return unsafe { answer_parameter_properties(index, ptr) };
+    }
+
+    if switches::answer_midi_metadata() {
+        match opcode {
+            EFF_GET_MIDI_PROGRAM_NAME => {
+                return match unsafe { answer_midi_program_name(ptr) } {
+                    // The advertised count, which may exceed what is named.
+                    Some(_) => switches::serviced_midi_programs() as isize,
+                    None => 0,
+                };
+            }
+            EFF_GET_CURRENT_MIDI_PROGRAM => {
+                // Report program 0 as current. The return value is the index,
+                // not a boolean — a host testing `!= 0` reads this as failure.
+                return match unsafe { answer_midi_program_name(ptr) } {
+                    Some(index) => index as isize,
+                    None => -1,
+                };
+            }
+            EFF_GET_MIDI_PROGRAM_CATEGORY => {
+                return unsafe { answer_midi_program_category(ptr) };
+            }
+            EFF_HAS_MIDI_PROGRAMS_CHANGED => return 1,
+            EFF_GET_MIDI_KEY_NAME => return unsafe { answer_midi_key_name(ptr) },
+            _ => {}
+        }
+    }
+
     match unsafe { INNER_DISPATCHER } {
         Some(inner) => inner(effect, opcode, index, value, ptr, opt),
         None => 0,
@@ -560,11 +818,21 @@ pub extern "C" fn VSTPluginMain(callback: HostCallbackProc) -> *mut AEffect {
         if config.omit_can_replacing {
             (*effect).flags &= !api::PluginFlags::CAN_REPLACING.bits();
         }
-        if let Some(tail) = config.raw_tail_size {
-            RAW_TAIL_SIZE = Some(tail);
-            INNER_DISPATCHER = (*effect).dispatcher;
-            (*effect).dispatcher = Some(probe_dispatch);
-        }
+
+        RAW_TAIL_SIZE = config.raw_tail_size;
+
+        // Install the raw dispatcher unconditionally.
+        //
+        // It used to go in only when `raw_tail_size` was set, which was fine
+        // while `effGetTailSize` was its only job — that answer comes from a
+        // construction-time env var. The parameter-properties and
+        // MIDI-metadata answers are behind *runtime* switches flipped after
+        // load, so a dispatcher installed conditionally at construction can
+        // never see them: the switch would flip and nothing would read it.
+        // Chaining to `INNER_DISPATCHER` keeps every other opcode on vst-rs's
+        // path, so this is transparent when no switch is set.
+        INNER_DISPATCHER = (*effect).dispatcher;
+        (*effect).dispatcher = Some(probe_dispatch);
     }
 
     effect

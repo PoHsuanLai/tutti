@@ -684,6 +684,210 @@ impl PluginInstance {
         // overwritten it in place.
         unsafe { props.assume_init() }
     }
+
+    /// Query `effGetParameterProperties` for one parameter.
+    ///
+    /// `None` when the plugin does not implement the opcode — which is the
+    /// common case, not an error. Measured against three shipping plugins
+    /// (TAL-NoiseMaker, TAL-Reverb-4, TDR Nova): all three answer `0` for every
+    /// parameter, so a host must treat absence as normal and fall back to the
+    /// name/label pair.
+    ///
+    /// Absence is detected by the *return value*, never by inspecting the
+    /// buffer. An unimplemented opcode falls through the plugin's dispatcher
+    /// without writing anything, so the buffer still holds the zeros we put
+    /// there — indistinguishable from a plugin that really means
+    /// "range 0..0, no category".
+    pub fn parameter_properties(&self, index: i32) -> Option<api::ParameterProperties> {
+        // SAFETY: `ParameterProperties` is `#[repr(C)]` POD — three `f32`s,
+        // `i32`/`i16` scalars and byte arrays. Every field's all-zero bit
+        // pattern is a valid value of its type (no enums, no references, no
+        // `NonZero`), so a zeroed struct is fully initialised before the plugin
+        // sees it and remains valid whether or not the plugin writes.
+        let mut props: MaybeUninit<api::ParameterProperties> = MaybeUninit::zeroed();
+
+        let supported = self.dispatch(
+            plugin::OpCode::GetParamInfo,
+            index,
+            0,
+            props.as_mut_ptr() as *mut c_void,
+            0.0,
+        );
+
+        // VST 2.4 specifies "1 if supported". Compare against 1 rather than
+        // testing `!= 0`: plugins do return negative values from these optional
+        // opcodes (a measured plugin answers `-1` to `effGetCurrentMidiProgram`),
+        // and `-1` means "no", not "yes".
+        if supported != 1 {
+            return None;
+        }
+
+        // SAFETY: zeroed above, so initialised regardless of what the plugin
+        // did; the plugin may only have overwritten bytes in place.
+        Some(unsafe { props.assume_init() })
+    }
+
+    /// Query `effGetMidiProgramName` for the program at `program_index` on
+    /// `channel`.
+    ///
+    /// Returns the filled struct plus the plugin's return value, which for this
+    /// opcode is the *number of programs it services* — not a boolean. `0`
+    /// means unsupported, so `None` covers both "no such opcode" and "no
+    /// programs".
+    ///
+    /// The host writes `this_program_index` before dispatch: it is the question,
+    /// not part of the answer. Leaving it zero asks about program 0 every time,
+    /// which reads as "the plugin reports the same name for every program".
+    pub fn midi_program_name(
+        &self,
+        channel: i32,
+        program_index: i32,
+    ) -> Option<(api::MidiProgramName, i32)> {
+        // SAFETY: as `parameter_properties` — `#[repr(C)]` POD whose all-zero
+        // bit pattern is valid for every field.
+        let mut name: MaybeUninit<api::MidiProgramName> = MaybeUninit::zeroed();
+
+        // Write the query into the struct before handing it over.
+        //
+        // SAFETY: `name` is zeroed and therefore initialised; the offset comes
+        // from `addr_of_mut!` on that same allocation.
+        unsafe {
+            ptr::addr_of_mut!((*name.as_mut_ptr()).this_program_index).write(program_index);
+        }
+
+        let serviced = self.dispatch(
+            plugin::OpCode::GetMidiProgramName,
+            channel,
+            0,
+            name.as_mut_ptr() as *mut c_void,
+            0.0,
+        );
+
+        // "number of used programs, 0 = unsupported". A negative count is a
+        // malformed answer, not a small one — `as usize` on it would be
+        // catastrophic upstream, so reject it here.
+        if serviced <= 0 {
+            return None;
+        }
+
+        // SAFETY: zeroed above, hence initialised either way.
+        Some((unsafe { name.assume_init() }, serviced as i32))
+    }
+
+    /// Query `effGetCurrentMidiProgram` — which program `channel` is on now.
+    ///
+    /// `None` when unsupported. The return value is documented as the current
+    /// program index, so a negative answer is a refusal: all three measured
+    /// plugins return `-1` here. Reading the struct on a `-1` return would
+    /// report program 0 with an empty name as though it were real.
+    pub fn current_midi_program(&self, channel: i32) -> Option<(api::MidiProgramName, i32)> {
+        // SAFETY: as above — `#[repr(C)]` POD, all-zero is valid.
+        let mut name: MaybeUninit<api::MidiProgramName> = MaybeUninit::zeroed();
+
+        let current = self.dispatch(
+            plugin::OpCode::GetCurrentMidiProgram,
+            channel,
+            0,
+            name.as_mut_ptr() as *mut c_void,
+            0.0,
+        );
+
+        if current < 0 {
+            return None;
+        }
+
+        // SAFETY: zeroed above.
+        Some((unsafe { name.assume_init() }, current as i32))
+    }
+
+    /// Query `effGetMidiProgramCategory` for `category_index` on `channel`.
+    ///
+    /// Returns the struct plus the plugin's count of used categories; `None`
+    /// when unsupported or when the count is not positive.
+    pub fn midi_program_category(
+        &self,
+        channel: i32,
+        category_index: i32,
+    ) -> Option<(api::MidiProgramCategory, i32)> {
+        // SAFETY: as above — `#[repr(C)]` POD, all-zero is valid.
+        let mut cat: MaybeUninit<api::MidiProgramCategory> = MaybeUninit::zeroed();
+
+        // SAFETY: zeroed and therefore initialised; offset from the same
+        // allocation.
+        unsafe {
+            ptr::addr_of_mut!((*cat.as_mut_ptr()).this_category_index).write(category_index);
+        }
+
+        let serviced = self.dispatch(
+            plugin::OpCode::GetMidiProgramCategory,
+            channel,
+            0,
+            cat.as_mut_ptr() as *mut c_void,
+            0.0,
+        );
+
+        if serviced <= 0 {
+            return None;
+        }
+
+        // SAFETY: zeroed above.
+        Some((unsafe { cat.assume_init() }, serviced as i32))
+    }
+
+    /// Query `effHasMidiProgramsChanged` — whether the program or key names on
+    /// `channel` have changed since the host last read them.
+    ///
+    /// `true` only on an exact `1`. This is a cache-invalidation signal, so a
+    /// garbage non-zero answer must not be read as "changed" forever.
+    pub fn midi_programs_changed(&self, channel: i32) -> bool {
+        self.dispatch(
+            plugin::OpCode::HasMidiProgramsChanged,
+            channel,
+            0,
+            ptr::null_mut(),
+            0.0,
+        ) == 1
+    }
+
+    /// Query `effGetMidiKeyName` — the plugin's name for one MIDI note.
+    ///
+    /// Drum kits use this to label pads ("Kick", "Snare") instead of note
+    /// numbers. `None` when unsupported.
+    ///
+    /// Both `program_index` and `key_number` are written into the struct before
+    /// dispatch: they are the question. VST 2.4 specifies "1 = supported,
+    /// 0 = not", so this compares against 1.
+    pub fn midi_key_name(
+        &self,
+        channel: i32,
+        program_index: i32,
+        key_number: i32,
+    ) -> Option<api::MidiKeyName> {
+        // SAFETY: as above — `#[repr(C)]` POD, all-zero is valid.
+        let mut key: MaybeUninit<api::MidiKeyName> = MaybeUninit::zeroed();
+
+        // SAFETY: zeroed and therefore initialised; offsets from the same
+        // allocation.
+        unsafe {
+            ptr::addr_of_mut!((*key.as_mut_ptr()).this_program_index).write(program_index);
+            ptr::addr_of_mut!((*key.as_mut_ptr()).this_key_number).write(key_number);
+        }
+
+        let supported = self.dispatch(
+            plugin::OpCode::GetMidiKeyName,
+            channel,
+            0,
+            key.as_mut_ptr() as *mut c_void,
+            0.0,
+        );
+
+        if supported != 1 {
+            return None;
+        }
+
+        // SAFETY: zeroed above.
+        Some(unsafe { key.assume_init() })
+    }
 }
 
 /// Silence every output channel of `buffer`.

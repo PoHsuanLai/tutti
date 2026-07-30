@@ -64,6 +64,7 @@ mod handle;
 mod host;
 mod instance;
 mod midi;
+mod param_properties;
 mod parameters;
 mod process;
 mod scratch;
@@ -74,6 +75,13 @@ mod transport_cell;
 pub use error::{LoadStage, Result, Vst2Error};
 pub use host::ParameterChange;
 pub use instance::Vst2Instance;
+// `effGetParameterProperties` + the MIDI-metadata family. VST2 has no
+// CC→parameter mapping query at all — see the module docs for the opcode
+// evidence — so this is the whole of its parameter/MIDI metadata surface.
+pub use param_properties::{
+    FloatSteps, IntegerRange, MidiKeyName, MidiProgram, MidiProgramCategory, ParameterCategory,
+    ParameterProperties, ParameterPropertyFlags, MAX_MIDI_KEY, NUM_MIDI_CHANNELS,
+};
 pub use scratch::RenderScratch;
 pub use types::{
     ChannelLayout, EditorSize, MidiEvent, MidiEventVec, ParameterInfo, PluginInfo, ProcessContext,

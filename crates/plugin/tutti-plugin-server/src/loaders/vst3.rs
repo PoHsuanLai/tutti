@@ -154,12 +154,14 @@ fn build_inner(p: &ReloadParams) -> Result<(VstInner, Meta)> {
     features.set(Features::TRANSPORT, wants_transport);
     features.set(Features::NOTE_EXPRESSION, has_note_expression);
     features.set(Features::SEQUENCER_CONTEXT, wants_sequencer_context);
+    let probed = tutti_plugin::server::probed::VST3;
 
     let loaded_meta = LoadedPlugin {
         inputs: bus_channels(&info.input_bus_channels, info.num_inputs),
         outputs: bus_channels(&info.output_bus_channels, info.num_outputs),
         latency_samples: latency,
         features,
+        probed,
     };
 
     Ok((

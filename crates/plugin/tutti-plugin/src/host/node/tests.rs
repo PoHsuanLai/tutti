@@ -153,6 +153,7 @@ fn handle_with_mock_server(
         outputs: smallvec![ChannelLayout::Stereo],
         latency_samples: 0,
         features: Features::EDITOR,
+        probed: Features::EDITOR,
     };
     let plugin_handle = PluginHandle::from_bridge_and_metadata(bridge, descriptor, loaded);
 
@@ -256,6 +257,7 @@ fn handle_with_multi_reply_server(
         outputs: smallvec![ChannelLayout::Stereo],
         latency_samples: 0,
         features: Features::EDITOR,
+        probed: Features::EDITOR,
     };
     let plugin_handle =
         PluginHandle::from_bridge_and_metadata(Arc::clone(&bridge), descriptor, loaded);

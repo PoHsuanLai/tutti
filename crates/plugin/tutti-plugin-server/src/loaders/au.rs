@@ -287,6 +287,7 @@ impl AuInstance {
             // set (latency presence is derived from `latency_samples`).
             let mut features = Features::empty();
             features.set(Features::EDITOR, has_editor);
+            let probed = tutti_plugin::server::probed::AU;
 
             // AU exposes a single main bus per direction here.
             let loaded = LoadedPlugin {
@@ -297,6 +298,7 @@ impl AuInstance {
                 outputs: single_bus(inner.num_outputs()),
                 latency_samples: latency,
                 features,
+                probed,
             };
 
             // Capture the declared plain ranges once, while still on the load

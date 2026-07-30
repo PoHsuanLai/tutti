@@ -66,6 +66,7 @@ impl Vst2Instance {
             // sample-accurate automation, note-expression, sequencer context, or
             // host-driven editor resize (fused AEffect editor, no sizeWindow).
             features.insert(Features::TRANSPORT);
+            let probed = tutti_plugin::server::probed::VST2;
 
             // VST2 is single-bus: one main input bus, one main output bus.
             let loaded = LoadedPlugin {
@@ -75,6 +76,7 @@ impl Vst2Instance {
                 outputs: single_bus(host_meta.num_outputs),
                 latency_samples: host_meta.latency_samples,
                 features,
+                probed,
             };
 
             let scratch =

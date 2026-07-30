@@ -173,6 +173,7 @@ impl ClapInstance {
             features.insert(Features::TRANSPORT);
             features.insert(Features::PARAM_AUTOMATION);
             features.set(Features::NOTE_EXPRESSION, has_note_in);
+            let probed = tutti_plugin::server::probed::CLAP;
 
             // CLAP reports aggregate audio port channel counts; carry them as a
             // Per-bus channel counts, main bus first (e.g. [2, 1] = stereo main
@@ -183,6 +184,7 @@ impl ClapInstance {
                 outputs: output_buses,
                 latency_samples: 0,
                 features,
+                probed,
             };
 
             // Activate into the typed inner. CLAP advertises f32 today, so the

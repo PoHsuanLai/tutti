@@ -655,7 +655,9 @@ mod tests {
                 inputs: inputs.iter().map(|&c| ChannelLayout::from(c)).collect(),
                 outputs: outputs.iter().map(|&c| ChannelLayout::from(c)).collect(),
                 latency_samples: 0,
+                // This fixture is about bus widths; no capability is claimed.
                 features: Features::empty(),
+                probed: Features::empty(),
             },
         }
     }

@@ -34,6 +34,12 @@ pub use crate::protocol::{
 pub use crate::util::config::BridgeConfig;
 pub use crate::util::transport::shm::{AudioSlab, RING_SLOTS};
 pub use crate::util::window::{EditorSize, WindowHandle};
+/// Per-format `probed` masks — which capabilities each loader actually asks
+/// about. Re-exported so every loader, in this crate and in
+/// `tutti-plugin-server`, names one constant instead of restating the list.
+pub use tutti_plugin_types::features::probed;
+/// Paired capability flags plus the mask saying which were probed.
+pub use tutti_plugin_types::FeatureReport;
 /// Per-block process inputs/outputs, re-exported from `tutti-plugin-types`.
 pub use tutti_plugin_types::{ExpressiveContext, ProcessContext, ProcessOutput};
 /// The fine-grained plugin-instance capability traits plus the

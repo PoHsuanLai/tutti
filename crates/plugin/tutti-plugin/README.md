@@ -74,6 +74,16 @@ What each format supports, as reported by its loader in `tutti-plugin-server/src
 
 Notes: the AU loader currently reports only `EDITOR` — its MIDI / transport / f64 paths are unimplemented (`○`), not spec-impossible. VST2's `F64_AUDIO` is advisory (the `vst` crate is f32 internally). `SEQUENCER_CONTEXT` (chord/scale/per-note text) is a VST3-only concept by spec. **WASM is our own format (`dawai:audio-plugin`), so it's not in this external-format table**; its loader today reports only `MIDI_IN`.
 
+### `probed` — which capabilities a loader actually asked
+
+A clear `Features` bit answers three questions the same way: the plugin declined, this loader never asked, or the format has no query. `LoadedPlugin::probed` is the mask that separates the first from the other two, and `LoadedPlugin::capability()` reads the pair — `Some(false)` for a refusal, `None` for silence. The per-block send-gate deliberately keeps reading `features` directly: it has no way to act on "unknown" and must stay one mask-and-compare.
+
+The masks are constants in `tutti_plugin_types::features::probed`, one per format, so the claim is in one place rather than restated in each load path. VST2 has two loaders (in and out of process) that read the same constant.
+
+`probed` does **not** distinguish `○` from `✕` — both are absent from it, because both mean no plugin spoke. Which one applies is the table above: it describes this codebase, not the plugin, and a runtime bit would go stale the moment a loader grows the missing path. So the AU row's nine `○`s and `NOTE_EXPRESSION`'s `✕` are all simply unset in `probed::AU`.
+
+Keep this section, the table above, and the constants in step — a loader that grows a probe changes all three.
+
 ## License
 
 MIT OR Apache-2.0

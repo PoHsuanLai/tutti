@@ -40,7 +40,7 @@ pub use editor::{
     AspectRatio, EditorCapabilities, EditorError, EditorSize, ResizeHints, WindowHandle,
 };
 pub use error::{PluginError, Result, Result as PluginResult};
-pub use features::Features;
+pub use features::{FeatureReport, Features};
 pub use format_host::{
     PluginAudio, PluginEditorHost, PluginInstance, PluginMeta, PluginParams, PluginState,
 };

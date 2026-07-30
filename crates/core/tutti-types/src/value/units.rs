@@ -1354,6 +1354,59 @@ impl Semitones {
         2.0_f32.powf(self.0 / 12.0)
     }
 }
+
+// `From` for the conversions with exactly one answer.
+//
+// The rule this file follows, stated once here because the split was
+// previously accidental — `Azimuth`/`Elevation` had `From<_> for Radians`
+// while every other conversion was a named method, for no reason anyone
+// recorded:
+//
+// A conversion is `From` when it is total, lossless, and there is only one
+// sensible result. It stays a *named method* when any of those fails:
+//
+//   - It needs another input. `Seconds::to_samples` takes a `SampleRate`,
+//     `BeatDuration::to_seconds` takes a `Bpm`. Not two-type conversions.
+//   - The answer is not unique. `Amplitude` → `Db` has three
+//     (`from_amplitude` pins silence at `Db::FLOOR`, `from_amplitude_exact`
+//     lets it be `-inf`, `from_amplitude_f64` takes the wider input). A
+//     `From` impl would have to pick one and apply it silently at every
+//     `.into()`, which is the ambiguity the three names exist to expose.
+//   - The target is a bare scalar. `Cents::to_pitch_ratio` and
+//     `Semitones::to_pitch_ratio` both land on `f32`; as `From` impls they
+//     would be two different meanings of one target type.
+//
+// The impls below delegate to the inherent methods rather than repeating the
+// arithmetic, so there is one implementation and two spellings.
+
+impl From<Cents> for Semitones {
+    #[inline]
+    fn from(c: Cents) -> Semitones {
+        c.to_semitones()
+    }
+}
+
+impl From<Semitones> for Cents {
+    #[inline]
+    fn from(s: Semitones) -> Cents {
+        s.to_cents()
+    }
+}
+
+impl From<Phase> for Radians {
+    #[inline]
+    fn from(p: Phase) -> Radians {
+        p.to_radians()
+    }
+}
+
+impl From<Correlation> for StereoWidth {
+    #[inline]
+    fn from(c: Correlation) -> StereoWidth {
+        c.to_stereo_width()
+    }
+}
+
 // ── Sample rates ────────────────────────────────────────────────────────────
 
 unit_newtype!(
@@ -2093,6 +2146,49 @@ mod tests {
 
         // And agrees with the f32 form everywhere else it can be compared.
         assert!((Db::from_amplitude_f64(0.5).get() - Db::from_amplitude(Amplitude(0.5)).get()).abs() < 1e-5);
+    }
+
+    #[test]
+    fn from_is_the_spelling_for_single_answer_conversions() {
+        // Each of these delegates to its inherent method, so the two spellings
+        // cannot drift.
+        assert_eq!(Semitones::from(Cents(150.0)), Cents(150.0).to_semitones());
+        assert_eq!(Cents::from(Semitones(1.5)), Semitones(1.5).to_cents());
+        assert_eq!(Radians::from(Phase(0.25)), Phase(0.25).to_radians());
+        assert_eq!(
+            StereoWidth::from(Correlation(0.25)),
+            Correlation(0.25).to_stereo_width()
+        );
+
+        // And they round-trip where the pair is mutually inverse.
+        assert_eq!(Cents::from(Semitones::from(Cents(1200.0))), Cents(1200.0));
+    }
+
+    /// The `From`/named-method split, as a ledger — the same discipline the
+    /// operator omissions above get, and for the same reason. The previous
+    /// split was accidental (two angular types had `From`, nothing else did),
+    /// which is how it stayed unexamined.
+    #[test]
+    fn conversions_that_stay_named_and_why() {
+        // Needs a second input, so it is not a two-type conversion at all.
+        assert_eq!(Seconds(1.0).to_samples(SampleRate::SR_48K), Samples(48_000));
+
+        // Not unique: three answers for one type pair. `From` would have to
+        // pick one and hide the choice behind `.into()`.
+        assert_eq!(Db::from_amplitude(Amplitude(0.0)), Db::FLOOR);
+        assert!(Db::from_amplitude_exact(Amplitude(0.0)).get().is_infinite());
+        assert_eq!(Db::from_amplitude_f64(0.0), Db::FLOOR);
+
+        // Target is a bare scalar, and two different units convert into it —
+        // as `From` impls these would be two meanings of one target type.
+        assert!((Cents(1200.0).to_pitch_ratio() - 2.0).abs() < 1e-6);
+        assert!((Semitones(12.0).to_pitch_ratio() - 2.0).abs() < 1e-6);
+
+        // `ArcDegrees` has no radians conversion at all. `Azimuth` and
+        // `Elevation` do (as `From`), so adding one here would look like
+        // filling a gap — but nothing needs it, and an unused conversion
+        // between a displacement and an angle invites treating one as the
+        // other. Left absent deliberately.
     }
 
     #[test]

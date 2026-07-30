@@ -755,26 +755,64 @@ fn repeated_element_name_reads_do_not_move_the_retain_count() {
 #[ignore = "requires third-party AUs (TDR Nova / TAL-NoiseMaker); not part of macOS"]
 fn third_party_element_names_read_repeatedly_without_leaking() {
     let _g = lock();
-    // Addressed by component code, never by display-name substring — the corpus
-    // rule. `tdrn` is TDR Nova, `tal4` TAL-NoiseMaker; both are `aufx`/`aumu`
-    // with a non-Apple manufacturer, so they cannot satisfy an Apple lookup.
-    let third_party: &[(&str, [u8; 4], bool, bool, u32)] = &[
-        // (label, subtype, is_instrument, is_output, element)
-        ("TDR Nova input 1 (sidechain)", *b"tdrn", false, false, 1),
-        ("TAL-NoiseMaker output 0", *b"tnmk", true, true, 0),
+    // Addressed by component **type + subtype + manufacturer**, never by
+    // display-name substring — the corpus rule, and it matters more here than for
+    // the Apple units: these codes were read off `auval -a` on this machine, and a
+    // first guess at them ("tdrn", "tal4") matched nothing, which is exactly the
+    // silent-skip this test's final assertion turns into a failure.
+    //
+    // Measured: `aufx Td5a Tdrl` is TDR Nova (input 1 is its sidechain), and
+    // `aumu ncut TOGU` is TAL-NoiseMaker (output 0 is "Output Master", the one
+    // MORTAL CFString on the system — retain count 2 rather than saturated).
+    /// One third-party subject. A named struct rather than a six-tuple: the fields
+    /// are three `[u8; 4]`-or-`bool` values in a row, and a tuple that long is one
+    /// transposition away from looking up the manufacturer as a subtype.
+    struct ThirdParty {
+        label: &'static str,
+        /// `componentSubType`, from `auval -a` on this machine.
+        sub_type: [u8; 4],
+        /// `componentManufacturer`. Matched as well as the subtype, per the corpus
+        /// rule, so a same-subtype unit from another vendor cannot satisfy this.
+        manufacturer: [u8; 4],
+        au_type: tutti_au_host::AuType,
+        is_output: bool,
+        element: u32,
+    }
+
+    let third_party = [
+        ThirdParty {
+            label: "TDR Nova input 1 (sidechain)",
+            sub_type: *b"Td5a",
+            manufacturer: *b"Tdrl",
+            au_type: tutti_au_host::AuType::Effect,
+            is_output: false,
+            element: 1,
+        },
+        ThirdParty {
+            label: "TAL-NoiseMaker output 0 (mortal CFString)",
+            sub_type: *b"ncut",
+            manufacturer: *b"TOGU",
+            au_type: tutti_au_host::AuType::Instrument,
+            is_output: true,
+            element: 0,
+        },
     ];
 
     let mut exercised = 0usize;
-    for (label, sub_type, is_instrument, is_output, element) in third_party {
-        let au_type = if *is_instrument {
-            tutti_au_host::AuType::Instrument
-        } else {
-            tutti_au_host::AuType::Effect
-        };
+    for subject in &third_party {
+        let ThirdParty {
+            label,
+            sub_type,
+            manufacturer,
+            au_type,
+            is_output,
+            element,
+        } = subject;
         let wanted = u32::from_be_bytes(*sub_type);
-        let Some(info) = tutti_au_host::component::enumerate_components_of_type(au_type)
+        let wanted_mfr = u32::from_be_bytes(*manufacturer);
+        let Some(info) = tutti_au_host::component::enumerate_components_of_type(*au_type)
             .into_iter()
-            .find(|c| c.sub_type == wanted)
+            .find(|c| c.sub_type == wanted && c.manufacturer_code == wanted_mfr)
         else {
             continue;
         };

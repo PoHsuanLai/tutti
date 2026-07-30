@@ -882,8 +882,10 @@ mod tests {
         );
         // And it must be well under what a `u16` length can claim, or the clamp is
         // not doing anything: 65535 is 255 packets' worth of memory the AU never
-        // wrote.
-        assert!(MAX_PACKET_PAYLOAD < u16::MAX);
+        // wrote. A `const` block so this is a compile-time check rather than a
+        // runtime one — both operands are constants, and clippy is right that a
+        // runtime `assert!` on them is the wrong tool.
+        const { assert!(MAX_PACKET_PAYLOAD < u16::MAX) };
     }
 
     /// A packet claiming more than Apple's 256-byte maximum is clamped, not

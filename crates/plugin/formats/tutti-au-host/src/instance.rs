@@ -16,6 +16,7 @@ use crate::component::AuType;
 use crate::error::{AuError, Result};
 use crate::ffi::{check, get_property, set_property};
 use crate::handle::AuHandle;
+use crate::identity;
 use crate::midi_map::{self, AuMidiMapping};
 use crate::midi_out::{self, AuMidiOutput, MidiOutSink, MidiOutputInfo};
 use crate::parameters::{self, AuParameter, ParamView};
@@ -696,6 +697,81 @@ impl AuInstance {
         // the handle clears the property in its own `Drop` rather than relying on
         // the instance to do it.
         unsafe { midi_out::install(self.raw_unit(), sink) }
+    }
+
+    /// Tell the AU where it sits in the host's project — `"track 3"`.
+    ///
+    /// Purely presentational: the AU shows it in its own window so a user with
+    /// several instances open can tell them apart. Set it when the plugin is
+    /// inserted and again whenever the slot is renamed or the plugin moves.
+    ///
+    /// This is the *slot*, not the instance — see
+    /// [`set_nick_name`](Self::set_nick_name) for the half that belongs in a
+    /// saved session.
+    ///
+    /// # Errors
+    /// `kAudioUnitErr_InvalidProperty` from a unit that does not implement it,
+    /// though all 52 instantiable units measured on macOS 15.6 do.
+    pub fn set_context_name(&self, name: &str) -> Result<()> {
+        // SAFETY: `raw_unit` is live for the lifetime of this instance.
+        unsafe { identity::set_context_name(self.raw_unit(), name) }
+    }
+
+    /// Give this instance its own name, distinct from another load of the same
+    /// AU.
+    ///
+    /// Unlike [`set_context_name`](Self::set_context_name), this is the
+    /// instance's identity rather than its slot, so it is what a host persists
+    /// in a session and restores on load.
+    ///
+    /// # Errors
+    /// As [`set_context_name`](Self::set_context_name).
+    pub fn set_nick_name(&self, name: &str) -> Result<()> {
+        // SAFETY: `raw_unit` is live for the lifetime of this instance.
+        unsafe { identity::set_nick_name(self.raw_unit(), name) }
+    }
+
+    /// Read back the name set by [`set_nick_name`](Self::set_nick_name).
+    ///
+    /// `Ok(None)` means the AU implements the property but has no name set —
+    /// distinct from the `Err` returned by one that does not implement it.
+    ///
+    /// # Errors
+    /// As [`set_context_name`](Self::set_context_name).
+    pub fn nick_name(&self) -> Result<Option<String>> {
+        // SAFETY: `raw_unit` is live for the lifetime of this instance.
+        unsafe { identity::nick_name(self.raw_unit()) }
+    }
+
+    /// The AU's own shortlist of its most important parameters, in its own
+    /// priority order.
+    ///
+    /// What to show in a compact view — a channel strip, a collapsed rack row —
+    /// instead of truncating [`parameters`](Self::parameters). The AU curates
+    /// *and reorders*: AUDynamicsProcessor leads its overview with parameter
+    /// ids `[4, 5, 6, 0, 1, 2]`, so taking the first N of the parameter list
+    /// yields a different and worse set.
+    ///
+    /// # Errors
+    /// `kAudioUnitErr_InvalidProperty` from the 26 of 52 units that do not
+    /// implement it — the common case, and a normal answer rather than a fault.
+    /// Fall back to [`parameters`](Self::parameters).
+    pub fn parameters_for_overview(&self) -> Result<Vec<identity::OverviewParameter>> {
+        // SAFETY: `raw_unit` is live for the lifetime of this instance.
+        unsafe { identity::parameters_for_overview(self.raw_unit()) }
+    }
+
+    /// Filesystem path of the AU's icon, for a plugin browser row.
+    ///
+    /// `Ok(None)` means the AU implements the property but supplied no URL, or
+    /// supplied one that does not name a file.
+    ///
+    /// # Errors
+    /// `kAudioUnitErr_InvalidProperty` from a unit that does not implement it;
+    /// 36 of 52 measured return a usable URL.
+    pub fn icon_location(&self) -> Result<Option<String>> {
+        // SAFETY: `raw_unit` is live for the lifetime of this instance.
+        unsafe { identity::icon_location(self.raw_unit()) }
     }
 
     /// Whether this AU implements the parameter↔MIDI mapping family at all.

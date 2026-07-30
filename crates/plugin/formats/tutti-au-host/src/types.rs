@@ -28,9 +28,9 @@ pub use sys::{
     AUPreset, AURenderCallback, AURenderCallbackStruct, AudioBuffer, AudioBufferList,
     AudioChannelDescription, AudioChannelLayout, AudioComponent, AudioComponentDescription,
     AudioComponentInstance, AudioStreamBasicDescription, AudioTimeStamp, AudioUnit,
-    AudioUnitCocoaViewInfo, AudioUnitParameterInfo, AudioUnitParameterStringFromValue,
-    AudioUnitParameterValueFromString, AudioUnitRenderActionFlags, CFArrayRef, CFStringRef,
-    OSStatus,
+    AudioUnitCocoaViewInfo, AudioUnitParameter, AudioUnitParameterInfo,
+    AudioUnitParameterStringFromValue, AudioUnitParameterValueFromString,
+    AudioUnitRenderActionFlags, CFArrayRef, CFStringRef, OSStatus,
 };
 
 /// CoreMIDI packet types, re-exported for the MIDI-output-callback path.
@@ -190,6 +190,22 @@ pub const K_AUDIO_UNIT_PROPERTY_HOST_CALLBACKS: u32 = sys::kAudioUnitProperty_Ho
 pub const K_AUDIO_UNIT_PROPERTY_IN_PLACE_PROCESSING: u32 =
     sys::kAudioUnitProperty_InPlaceProcessing;
 pub const K_AUDIO_UNIT_PROPERTY_ELEMENT_NAME: u32 = sys::kAudioUnitProperty_ElementName;
+/// Where in the *host's* project this instance sits — "track 3", "Drum Bus".
+/// Write-only in practice: the AU shows it in its own title bar. See
+/// [`crate::identity`].
+pub const K_AUDIO_UNIT_PROPERTY_CONTEXT_NAME: u32 = sys::kAudioUnitProperty_ContextName;
+/// A per-instance name distinguishing two loads of the *same* AU from each
+/// other. Unlike `ContextName` this is the instance's own identity, so it is
+/// what belongs in a saved session. See [`crate::identity`].
+pub const K_AUDIO_UNIT_PROPERTY_NICK_NAME: u32 = sys::kAudioUnitProperty_NickName;
+/// The AU's own answer to "if you had room for only N knobs, which?" — a
+/// curated, *priority-ordered* subset of the parameter list. See
+/// [`crate::identity`].
+pub const K_AUDIO_UNIT_PROPERTY_PARAMETERS_FOR_OVERVIEW: u32 =
+    sys::kAudioUnitProperty_ParametersForOverview;
+/// A `CFURLRef` to an icon file for this AU, for a plugin browser. See
+/// [`crate::identity`].
+pub const K_AUDIO_UNIT_PROPERTY_ICON_LOCATION: u32 = sys::kAudioUnitProperty_IconLocation;
 /// The channel *order* a bus is running — which speaker each channel feeds.
 /// Distinct from `StreamFormat`, which carries only a channel *count*: Apple's
 /// header says outright that the stream format "cannot specify channel layout or

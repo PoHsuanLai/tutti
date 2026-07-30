@@ -95,6 +95,16 @@ impl CfUrl {
             Some(Self(CFURL::wrap_under_create_rule(raw)))
         }
     }
+
+    /// The URL as a filesystem path, or `None` if it does not name one.
+    ///
+    /// A `file://` URL is the only kind `kAudioUnitProperty_IconLocation` is
+    /// documented to return, and a path is what a caller loading the image
+    /// needs — so a non-file URL is reported as absent rather than handed back
+    /// as a string that would fail to open.
+    pub fn to_path_string(&self) -> Option<String> {
+        self.0.to_path().map(|p| p.to_string_lossy().into_owned())
+    }
 }
 
 /// Owned CoreFoundation array (Create rule: released on drop).

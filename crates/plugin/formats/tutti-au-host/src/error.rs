@@ -18,6 +18,14 @@ pub enum AuError {
     },
     /// A null `AudioComponent` handle was passed where a valid one was required.
     NullComponent,
+    /// CoreFoundation declined to allocate a string the host needed to hand to
+    /// the AU.
+    ///
+    /// A distinct variant rather than a silent `Ok`, because the caller of
+    /// [`identity::set_nick_name`](crate::identity::set_nick_name) persists that
+    /// name: reporting success for a write that never happened would lose it
+    /// from the session with nothing to show the user.
+    CfStringAlloc,
     /// A buffer supplied to `process` was malformed or inconsistent with the
     /// configured stream (wrong frame count, mismatched channels, etc.).
     InvalidBuffer(String),
@@ -205,6 +213,7 @@ impl AuError {
                 AuError::OsStatus { code, .. } => *code,
                 AuError::RenderFailed { code, .. } => *code,
                 AuError::NullComponent => return "null component",
+                AuError::CfStringAlloc => return "CoreFoundation string allocation failed",
                 AuError::InvalidBuffer(_) => return "invalid buffer",
                 AuError::SampleRateRejected { .. } => return "sample rate rejected",
                 AuError::BlockSizeRejected { .. } => return "block size rejected",
@@ -285,6 +294,7 @@ impl fmt::Display for AuError {
                 ),
             },
             AuError::NullComponent => write!(f, "null AudioComponent handle"),
+            AuError::CfStringAlloc => write!(f, "CoreFoundation string allocation failed"),
             AuError::InvalidBuffer(msg) => write!(f, "invalid buffer: {msg}"),
             AuError::SampleRateRejected {
                 scope,

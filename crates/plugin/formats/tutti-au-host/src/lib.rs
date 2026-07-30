@@ -56,6 +56,9 @@ pub mod stream;
 pub mod channel_layout;
 
 #[cfg(target_os = "macos")]
+pub mod identity;
+
+#[cfg(target_os = "macos")]
 pub mod midi_map;
 
 #[cfg(target_os = "macos")]

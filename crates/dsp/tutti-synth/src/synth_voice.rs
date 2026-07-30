@@ -6,7 +6,7 @@ use tutti_core::dsp::{
     adsr_live, bandpass_q, dc, highpass_q, lowpass_q, moog, notch_q, pass, pink, poly_pulse, saw,
     sine, triangle, var,
 };
-use tutti_core::{AudioUnit, Hz, PhaseIncrement, Semitones, Shared};
+use tutti_core::{AudioUnit, Hz, Phase, PhaseIncrement, Semitones, Shared};
 
 extern crate alloc;
 use alloc::vec::Vec;
@@ -32,7 +32,7 @@ pub(crate) struct SynthVoice {
     cc_cutoff_value: f32,
     cc_resonance_value: f32,
     filter_mod: FilterModConfig,
-    lfo_phase: f32,
+    lfo_phase: Phase,
     envelope_level: f32,
     active: bool,
     mpe: MpeVoiceState,
@@ -128,7 +128,7 @@ impl SynthVoice {
             cc_cutoff_value: 0.5,
             cc_resonance_value: 0.0,
             filter_mod: config.filter_mod,
-            lfo_phase: 0.0,
+            lfo_phase: Phase::START,
             envelope_level: 0.0,
             active: false,
             mpe: MpeVoiceState::default(),
@@ -155,7 +155,7 @@ impl SynthVoice {
         self.velocity = velocity;
         self.gate.set(1.0);
         self.active = true;
-        self.lfo_phase = 0.0;
+        self.lfo_phase = Phase::START;
         self.base_note_freq = base_freq;
         self.mpe.reset();
 
@@ -201,7 +201,7 @@ impl SynthVoice {
         self.velocity_mod_value = 1.0;
         self.cc_cutoff_value = 0.5;
         self.cc_resonance_value = 0.0;
-        self.lfo_phase = 0.0;
+        self.lfo_phase = Phase::START;
         self.mpe.reset();
         self.base_note_freq = Hz(440.0);
         self.filter_cutoff.set(self.base_filter_cutoff);
@@ -299,10 +299,16 @@ impl SynthVoice {
             if fm.lfo_depth > 0.0 && fm.lfo_rate > 0.0 {
                 // The named converter: this used to narrow the rate to f32
                 // before dividing, computing the step at f32 precision.
-                let phase_inc = PhaseIncrement::per_sample(Hz(fm.lfo_rate), self.sample_rate).get();
-                self.lfo_phase = (self.lfo_phase + phase_inc) % 1.0;
+                //
+                // `advance` rather than `% 1.0`: the remainder operator keeps
+                // the dividend's sign, so it is not a wrap for a negative
+                // phase. The `lfo_rate > 0.0` guard above makes that
+                // unreachable today, which is exactly how it would survive
+                // until the first reverse LFO.
+                let phase_inc = PhaseIncrement::per_sample(Hz(fm.lfo_rate), self.sample_rate);
+                self.lfo_phase = self.lfo_phase.advance(phase_inc);
 
-                let lfo_val = (self.lfo_phase * core::f32::consts::TAU).sin();
+                let lfo_val = self.lfo_phase.to_radians().get().sin();
                 cutoff *= 1.0 + lfo_val * fm.lfo_depth * 0.5;
             }
 

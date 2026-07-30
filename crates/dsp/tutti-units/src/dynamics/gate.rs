@@ -84,12 +84,12 @@ impl GateCore {
     pub fn compute_gain_with_threshold(
         &mut self,
         sc_level: f32,
-        threshold_override: Option<f32>,
+        threshold_override: Option<Db>,
     ) -> f32 {
         let input_db = amplitude_to_db(sc_level);
-        let threshold = threshold_override.unwrap_or_else(|| self.threshold_db.load().get());
+        let threshold = threshold_override.unwrap_or_else(|| self.threshold_db.load());
         self.envelope = sc_level;
-        self.follower.step(input_db.get() >= threshold);
+        self.follower.step(input_db >= threshold);
         compute_gate_gain(self.follower.value(), self.range_db.load()).get()
     }
 }
@@ -265,7 +265,7 @@ impl AudioUnit for Gate {
         self.core.update_coefficients();
         let ch = self.channels.count() as usize;
         // A present threshold port (at 2*ch) overrides the atomic.
-        let threshold = self.threshold_port().map(|p| input[p]);
+        let threshold = self.threshold_port().map(|p| Db(input[p]));
         let gain = self
             .core
             .compute_gain_with_threshold(sidechain_level_slice(input, ch), threshold);
@@ -281,7 +281,7 @@ impl AudioUnit for Gate {
 
         for i in 0..size {
             let sc = sidechain_level_buffer(input, ch, i);
-            let threshold = threshold_port.map(|p| input.at_f32(p, i));
+            let threshold = threshold_port.map(|p| Db(input.at_f32(p, i)));
             let gain = self.core.compute_gain_with_threshold(sc, threshold);
             for c in 0..ch {
                 output.set_f32(c, i, input.at_f32(c, i) * gain);

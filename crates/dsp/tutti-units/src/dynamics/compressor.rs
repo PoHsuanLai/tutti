@@ -89,7 +89,7 @@ impl CompressorCore {
     pub fn compute_gain_with_threshold(
         &mut self,
         sc_level: f32,
-        threshold_override: Option<f32>,
+        threshold_override: Option<Db>,
     ) -> f32 {
         let input_db = amplitude_to_db(sc_level);
         let (atomic_threshold_db, knee_db) = self.threshold.load();
@@ -294,7 +294,7 @@ impl AudioUnit for Compressor {
         let ch = self.channels.count() as usize;
         // A present threshold port (at 2*ch) overrides the atomic; the atomic
         // carries the base for the fast path / UI handle.
-        let threshold = self.threshold_port().map(|p| input[p]);
+        let threshold = self.threshold_port().map(|p| Db(input[p]));
         let gain = self
             .core
             .compute_gain_with_threshold(sidechain_level_slice(input, ch), threshold);
@@ -310,7 +310,7 @@ impl AudioUnit for Compressor {
 
         for i in 0..size {
             let sc = sidechain_level_buffer(input, ch, i);
-            let threshold = threshold_port.map(|p| input.at_f32(p, i));
+            let threshold = threshold_port.map(|p| Db(input.at_f32(p, i)));
             let gain = self.core.compute_gain_with_threshold(sc, threshold);
             for c in 0..ch {
                 output.set_f32(c, i, input.at_f32(c, i) * gain);

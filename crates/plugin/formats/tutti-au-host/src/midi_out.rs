@@ -2,43 +2,37 @@
 //! discovery half, `kAudioUnitProperty_MIDIOutputCallbackInfo` (47).
 //!
 //! [`crate::instance::AuInstance::send_midi`] pushes MIDI *into* an instrument.
-//! This module is the other direction, and the hole it fills is not cosmetic: an
-//! arpeggiator, a step sequencer, or a chord generator hosted as an AU emits
-//! notes during its render call, and with no callback installed those notes have
-//! nowhere to go. The plugin plays — the AU can still drive its own internal
-//! voices — but the host cannot record the performance, cannot route it to a
-//! second instrument, and cannot show it on a piano roll. The notes exist only
-//! inside the plugin.
+//! This module is the other direction: an arpeggiator, step sequencer, or chord
+//! generator hosted as an AU emits notes during its render call, and with no
+//! callback installed those notes have nowhere to go. The plugin still plays,
+//! but the host cannot record the performance, route it to a second instrument,
+//! or show it on a piano roll.
 //!
 //! # Honest status on this machine
 //!
 //! **No installed AU publishes `MIDIOutputCallbackInfo`.** Measured on macOS 15.6
 //! across all 138 registered components (every Apple unit, plus TDR Nova,
-//! TAL-NoiseMaker and TAL-Reverb-4), at global/input/output scope, both before
-//! and after `AudioUnitInitialize`: zero hits. Nothing here has been exercised
-//! end-to-end against a real emitting plugin, and this module's tests do not
-//! pretend otherwise — they drive the decoder directly against hand-built packet
-//! lists and assert the *installation* is accepted and withdrawn cleanly. See
-//! `tests/au_midi_out.rs`.
+//! TAL-NoiseMaker and TAL-Reverb-4), at global/input/output scope, before and
+//! after `AudioUnitInitialize`: zero hits. Nothing here has been exercised
+//! end-to-end against a real emitting plugin; this module's tests drive the
+//! decoder directly against hand-built packet lists and assert the
+//! *installation* is accepted and withdrawn cleanly. See `tests/au_midi_out.rs`.
 //!
-//! What complicates the picture, and is worth knowing before trusting property
-//! 47 as a capability gate: **almost every AU accepts the property-48 *write***
-//! (measured: 45 of them, including AUDelay and AULowpass, which have no
-//! conceivable MIDI output). A successful install therefore proves nothing about
-//! whether the AU will ever call back. Property 47 is the only real signal, which
-//! is why [`midi_output_info`] exists and why `install` does not consult it — a
-//! host should ask 47 and decide, rather than have this layer refuse a write the
-//! AU would have taken.
+//! Worth knowing before trusting property 47 as a capability gate: **almost
+//! every AU accepts the property-48 *write*** (measured: 45 of them, including
+//! AUDelay and AULowpass, which have no conceivable MIDI output). A successful
+//! install proves nothing about whether the AU will ever call back — property
+//! 47 is the only real signal, which is why [`midi_output_info`] exists and why
+//! `install` does not consult it: a host should ask 47 and decide, rather than
+//! have this layer refuse a write the AU would have taken.
 //!
 //! # The two hard constraints, both on the render thread
 //!
 //! The AU invokes the callback from inside `AudioUnitRender`, on the audio
-//! thread. That forces two things, and both are enforced by construction rather
-//! than by review:
+//! thread, forcing two things — both enforced by construction rather than review:
 //!
-//! 1. **No panic may unwind across `extern "C"`.** Unwinding into AudioToolbox is
-//!    undefined behaviour. [`au_midi_output_callback`] is nothing but a
-//!    `catch_unwind` around [`decode_and_dispatch`], exactly as
+//! 1. **No panic may unwind across `extern "C"`.** [`au_midi_output_callback`] is
+//!    nothing but a `catch_unwind` around [`decode_and_dispatch`], exactly as
 //!    `instance.rs::au_input_render_callback` is around its body.
 //! 2. **No allocation.** See [`MidiOutSink`] for the contract that achieves it
 //!    and why the sink is handed a *borrowed* slice.
@@ -86,43 +80,38 @@ type AuMidiOutputCallbackFn = unsafe extern "C" fn(
 ///
 /// # The no-allocation contract
 ///
-/// The sink receives a **borrowed slice**, `&[MidiEvent]`, and its lifetime ends
-/// when the call returns. That signature is the contract, not a convention:
+/// The sink receives a **borrowed slice**, `&[MidiEvent]`, whose lifetime ends
+/// when the call returns — the contract, not a convention:
 ///
 /// * The decoder writes into a **fixed-size stack array** owned by the callback
-///   frame ([`DECODE_BATCH`]), so a packet list of any length is delivered in
-///   batches without a single heap touch. A `Vec<MidiEvent>` return type — the
-///   obvious shape, and where an allocation sneaks in unnoticed — would allocate
-///   once per packet list, on the audio thread, inside `AudioUnitRender`. That is
-///   the same class of hazard `CLAUDE.md`'s `RtPublish` rule exists for: a
-///   malloc in the render callback is a lock acquisition, and a lock acquisition
-///   on the audio thread is a dropout.
+///   frame ([`DECODE_BATCH`]), so any packet-list length is delivered in batches
+///   without a heap touch. A `Vec<MidiEvent>` return — the obvious shape, and
+///   where an allocation sneaks in unnoticed — would allocate once per packet
+///   list on the audio thread: the same hazard class `CLAUDE.md`'s `RtPublish`
+///   rule exists for (a malloc in the render callback is a lock acquisition,
+///   and a lock acquisition there is a dropout).
 /// * The borrow makes parking one impossible. A sink that wants to keep events
-///   must copy them into storage **it already owns** — a preallocated ring buffer
-///   is the intended shape. It cannot accidentally retain the decoder's buffer,
-///   because it never gets one.
+///   must copy them into storage **it already owns** — a preallocated ring
+///   buffer is the intended shape.
 ///
-/// The sink itself is boxed, and that `Box` is allocated **once** at
-/// [`install`] time, on the control thread. Nothing is allocated per callback.
+/// The sink itself is boxed once, at [`install`] time, on the control thread.
+/// Nothing is allocated per callback — a sink must not allocate either (nor
+/// lock, block, or `println!`), which the type system cannot enforce and is
+/// stated here as the caller's half of the bargain.
 ///
-/// A sink must therefore not allocate either — the type system cannot enforce
-/// that, so it is stated here as the caller's half of the bargain. The same goes
-/// for locking, blocking, and `println!`.
-///
-/// `Send` because the closure is constructed on the control thread and called on
-/// the render thread. Not `Sync`: the AU calls back from one render thread at a
-/// time, and requiring `Sync` would rule out the `&mut`-captured ring-buffer
-/// producer that is the natural implementation.
+/// `Send` because the closure is constructed on the control thread and called
+/// on the render thread. Not `Sync`: the AU calls back from one render thread
+/// at a time, and requiring `Sync` would rule out the `&mut`-captured
+/// ring-buffer producer that is the natural implementation.
 pub type MidiOutSink = Box<dyn FnMut(u32, &[MidiEvent]) + Send>;
 
 /// How many events the callback decodes before flushing a batch to the sink.
 ///
 /// A stack array of this size lives in the callback frame. 64 was chosen against
-/// the shape of the data rather than arbitrarily: a `MIDIPacketList` reaching an
-/// AU host in one render block carries at most a few dozen messages even from a
-/// dense arpeggiator (a 512-frame block at 48 kHz is 10.7 ms), and
-/// `size_of::<MidiEvent>()` is small enough that 64 of them is a few hundred
-/// bytes of stack — nothing an audio thread minds.
+/// the shape of the data: a `MIDIPacketList` reaching an AU host in one render
+/// block carries at most a few dozen messages even from a dense arpeggiator (a
+/// 512-frame block at 48 kHz is 10.7 ms), and `size_of::<MidiEvent>()` is small
+/// enough that 64 of them is a few hundred bytes of stack.
 ///
 /// A longer list is not truncated: the batch is flushed and refilled, so a
 /// 1000-event list arrives as 16 calls. Truncating would silently drop notes,
@@ -186,22 +175,21 @@ impl MidiOutputInfo {
 /// # `None` means "not a MIDI source", and that is the real capability gate
 ///
 /// `None` is returned when the property read fails — which on this machine is
-/// **every installed AU** (measured: 0 of 138 components answer it, at any scope,
-/// initialized or not). That is the honest answer to "can this AU emit MIDI", and
-/// it is why this is not a `Result`: `kAudioUnitProperty_MIDIOutputCallbackInfo`
-/// is optional, and "the AU declines to say" and "the AU has no MIDI outputs" put
-/// a host in exactly the same position — the same reading
-/// [`crate::bus::supported_channel_configs`] applies to its own optional
-/// property.
+/// **every installed AU** (measured: 0 of 138 components answer it, at any
+/// scope, initialized or not). Not a `Result`, because
+/// `kAudioUnitProperty_MIDIOutputCallbackInfo` is optional and "the AU declines
+/// to say" / "the AU has no MIDI outputs" put a host in exactly the same
+/// position — the same reading [`crate::bus::supported_channel_configs`]
+/// applies to its own optional property.
 ///
 /// The distinction that *does* matter is against the property-48 write, which
-/// almost every AU accepts (45 measured, AUDelay included) without any intention
-/// of calling back. So a host must gate on **this** function, not on whether
-/// [`install`] succeeded.
+/// almost every AU accepts (45 measured, AUDelay included) without any
+/// intention of calling back. So a host must gate on **this** function, not on
+/// whether [`install`] succeeded.
 ///
 /// An AU that answers with an empty array is reported as
-/// `Some(MidiOutputInfo { names: [] })`, distinct from `None`: it is a unit that
-/// implements the property and is telling you it currently has no output streams.
+/// `Some(MidiOutputInfo { names: [] })`, distinct from `None`: it implements the
+/// property and is telling you it currently has no output streams.
 ///
 /// # Safety
 /// `unit` must be a live `AudioUnit`.
@@ -515,31 +503,27 @@ unsafe fn decode_and_dispatch(
 /// `MIDIPacket` is a flexible-array struct (`data[256]` in the binding) that is
 /// *never* stored at its declared size in a real list: Apple packs consecutive
 /// packets tightly, `header + length` rounded up to the next 4-byte boundary on
-/// arm64 and not rounded at all on x86_64 (`MIDIPacketNext` in
-/// `MIDIServices.h` says so, and the header comment states the alignment
-/// requirement "may differ between CPU architectures"). Reading a whole
-/// `MIDIPacket` by value would read 268 bytes for a 3-byte message, straight past
-/// the end of the list. So each field is read at its verified offset with
-/// `read_unaligned` — verified because on x86_64 the packets genuinely are
-/// unaligned, which makes an aligned read undefined behaviour rather than merely
-/// slow.
+/// arm64 and not rounded at all on x86_64 (`MIDIPacketNext` in `MIDIServices.h`
+/// says the alignment "may differ between CPU architectures"). Reading a whole
+/// `MIDIPacket` by value would read 268 bytes for a 3-byte message, past the end
+/// of the list — so each field is read at its verified offset with
+/// `read_unaligned` (verified because on x86_64 the packets genuinely are
+/// unaligned, making an aligned read undefined behaviour, not merely slow).
 ///
 /// Measured against Apple's own `MIDIPacketListInit`/`MIDIPacketListAdd` on
-/// macOS 15.6 / arm64: four packets of 3,3,3,6 bytes land at list offsets
-/// +4, +20, +36, +52 — i.e. `10-byte header + len`, rounded up to 4. This walk
-/// reproduces those offsets exactly, which is what
-/// `tests::the_walk_matches_apples_own_packing` pins.
+/// macOS 15.6 / arm64: four packets of 3,3,3,6 bytes land at list offsets +4,
+/// +20, +36, +52 — `10-byte header + len`, rounded up to 4. This walk reproduces
+/// those offsets exactly, pinned by `tests::the_walk_matches_apples_own_packing`.
 ///
 /// # One packet can carry several messages
 ///
 /// A packet's `data` is a stream of MIDI bytes, not one message: Apple's own
 /// `MIDIPacketListAdd` will pack `90 3E 5A 90 40 50` — two note-ons — into a
-/// single 6-byte packet, which was measured, not assumed. Handing the whole
-/// `data` blob to a parser expecting one message drops the second note. So the
-/// bytes are split on status bytes first, and **running status** (a data-only
-/// continuation reusing the previous status byte) is expanded, because a
-/// sequencer AU emitting a run of note-ons on one channel is exactly where a MIDI
-/// source uses it.
+/// single 6-byte packet (measured, not assumed). Handing the whole `data` blob
+/// to a parser expecting one message drops the second note. So the bytes are
+/// split on status bytes first, and **running status** (a data-only
+/// continuation reusing the previous status byte) is expanded — exactly what a
+/// sequencer AU emitting a run of note-ons on one channel uses.
 ///
 /// # No allocation
 ///
@@ -612,22 +596,13 @@ const PACKET_HEADER_SIZE: usize = std::mem::offset_of!(MIDIPacket, data);
 
 /// The largest `length` a `MIDIPacket` may legally declare.
 ///
-/// `MIDIServices.h` declares the payload as `Byte data[256]`, so this is Apple's
-/// own bound rather than a number picked here — and it is taken from the binding's
-/// array length so it cannot drift from the SDK. A `u16` length can claim 65535,
-/// which is 255 packets' worth of memory the AU never wrote; clamping is what keeps
-/// [`for_each_message`] inside the allocation. Pinned by
-/// [`tests::the_packet_abi_is_what_the_walk_assumes`].
-/// Written as the literal Apple documents, not derived — and the derivation was
-/// tried first, which is why this comment exists.
-///
-/// `size_of::<MIDIPacket>() - PACKET_HEADER_SIZE` gives **258**, not 256: the struct
-/// is 4-byte aligned (header 10 + data 256 = 266, rounded to 268) so it carries two
-/// bytes of trailing padding after `data`. Padding is not payload, and a bound two
-/// bytes too generous lets a hostile packet address slack the AU never wrote — which
-/// is exactly what the clamp exists to stop. Rust offers no `size_of` for a single
-/// field, so there is no non-circular derivation available; the literal is checked
-/// against the struct in
+/// `MIDIServices.h` declares the payload as `Byte data[256]`, Apple's own bound
+/// rather than a number picked here. Written as the literal, not derived — the
+/// derivation was tried first: `size_of::<MIDIPacket>() - PACKET_HEADER_SIZE`
+/// gives **258**, not 256, because the 4-byte-aligned struct (header 10 + data
+/// 256 = 266, rounded to 268) carries two trailing padding bytes, and a bound
+/// two bytes too generous lets a hostile packet address slack the AU never
+/// wrote — exactly what the clamp exists to stop. Checked against the struct in
 /// [`tests::the_packet_abi_is_what_the_walk_assumes`] instead, which fails if a
 /// future SDK changes the array.
 const MAX_PACKET_PAYLOAD: u16 = 256;

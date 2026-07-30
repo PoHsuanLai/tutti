@@ -9,27 +9,25 @@
 //! Three things a DAW cannot do without it:
 //!
 //! * **Meter what a plugin actually produced.** On post-render the `ioData`
-//!   buffer list holds the AU's real output. A host that meters its own
-//!   destination buffer instead is metering after its own gain and
-//!   silence-flag handling, which is a different number.
+//!   buffer list holds the AU's real output — metering the host's own
+//!   destination buffer instead measures after its own gain/silence handling,
+//!   a different number.
 //! * **Measure round-trip latency empirically.** The pre/post pair brackets the
-//!   AU's own processing, so the timestamps and frame counts are the only
-//!   ground truth about what the AU was handed versus what it gave back.
+//!   AU's own processing, so the timestamps and frame counts are ground truth
+//!   about what the AU was handed versus what it gave back.
 //!   `kAudioUnitProperty_Latency` is the plugin's *claim*; this is the
 //!   measurement.
-//! * **Schedule sample-accurate parameter automation at all.** This is the one
-//!   Apple is explicit about, and it is the reason this module owns
-//!   [`ParamEvent`] rather than leaving it in `parameters.rs`. From
+//! * **Schedule sample-accurate parameter automation at all.** The reason this
+//!   module owns [`ParamEvent`] rather than leaving it in `parameters.rs` — from
 //!   `AUComponent.h`'s `AudioUnitScheduleParameters`:
 //!
 //!   > All of the parameter events must apply to the current (and only apply to
 //!   > the current) audio unit render call, so the events are scheduled as a
 //!   > part of the pre-render notification callback.
 //!
-//!   "The current render call" is what makes the pre-render notify the only
-//!   correct place: scheduled events are consumed by one `AudioUnitRender` and
-//!   do not persist, so a host that schedules from its control thread races the
-//!   render it meant to affect.
+//!   Scheduled events are consumed by one `AudioUnitRender` and do not persist,
+//!   so a host that schedules from its control thread races the render it
+//!   meant to affect — the pre-render notify is the only correct place.
 //!
 //! # What is measured, not assumed (macOS 15.6)
 //!
@@ -44,70 +42,65 @@
 //! * **`kAudioUnitParameterFlag_CanRamp` is a claim, not a guarantee.** Of 486
 //!   parameters across 45 units that initialize on this machine, 155 advertise
 //!   the flag — but only **one Apple unit** does at all (AUSpatialMixer, 10 of
-//!   12 parameters), and it does **not** honour a ramp: scheduling a ramp
-//!   across its `global reverb gain` versus pinning the parameter at the ramp's
-//!   start value produces envelopes that differ by `0.000000000`, reproducibly
-//!   over 5 runs. The 145 remaining rampable parameters are all third-party
-//!   (TDR Nova 37/75, TAL Reverb 4 20/20, TAL-NoiseMaker 88/88).
-//!
-//!   So [`AuParameter::can_ramp`](crate::parameters::AuParameter::can_ramp) is
+//!   12 parameters), and it does **not** honour a ramp: scheduling a ramp across
+//!   its `global reverb gain` versus pinning the parameter at the ramp's start
+//!   value produces envelopes that differ by `0.000000000`, reproducibly over 5
+//!   runs. The 145 remaining rampable parameters are all third-party (TDR Nova
+//!   37/75, TAL Reverb 4 20/20, TAL-NoiseMaker 88/88). So
+//!   [`AuParameter::can_ramp`](crate::parameters::AuParameter::can_ramp) is
 //!   worth reading to *choose* a subject and worthless as a promise about what
-//!   the audio will do. A host that wants smooth automation on an arbitrary AU
+//!   the audio will do — a host wanting smooth automation on an arbitrary AU
 //!   must be prepared to interpolate itself.
 //!
 //! * **Ramping does work, where it is implemented.** TAL Reverb 4's `Dry`
 //!   parameter ramped 0.0 → 1.0 across a 512-frame block yields a strictly
 //!   monotonic output envelope `0.014483 → 0.104773` (8 segments), against a
 //!   flat `0.0` for the step-at-start control — bit-identical across 10 repeats.
-//!   That is a real intra-block ramp and it is what
-//!   [`ParamEvent::Ramped`] exists for.
+//!   That is what [`ParamEvent::Ramped`] exists for.
 //!
 //! * **`bufferOffset` is ignored by every unit measured.** An immediate event at
 //!   offsets 0 / 128 / 256 / 384 produces a *bit-identical* output envelope on
-//!   all of AUSpatialMixer, AUDelay, AUDistortion, AUHipass, AUPeakLimiter and
-//!   TDR Nova: the change always lands at the block start. The field is carried
-//!   faithfully because it is Apple's ABI and a future or third-party AU may
-//!   honour it, but a host must not *depend* on intra-block placement. See
+//!   AUSpatialMixer, AUDelay, AUDistortion, AUHipass, AUPeakLimiter and TDR
+//!   Nova: the change always lands at the block start. Carried faithfully
+//!   because it is Apple's ABI and a future/third-party AU may honour it, but a
+//!   host must not *depend* on intra-block placement. See
 //!   [`ParamEvent::Immediate`].
 //!
 //! * **`AudioUnitScheduleParameters` does not validate the parameter id.**
 //!   Scheduling against id `999999` on AUDelay returns `noErr`, as does a
-//!   `Ramped` event on a parameter whose `CanRamp` flag is clear. The status is
-//!   therefore *not* a way to discover whether an event will do anything —
-//!   which is why [`schedule`] documents the return as "the AU accepted the
-//!   call", not "the event will take effect".
+//!   `Ramped` event on a parameter whose `CanRamp` flag is clear — so the status
+//!   is *not* a way to discover whether an event will do anything, which is why
+//!   [`schedule`] documents the return as "the AU accepted the call", not "the
+//!   event will take effect".
 //!
 //! # Real-time safety
 //!
-//! The notify runs **on the render thread, inside `AudioUnitRender`**. Three
-//! constraints, the same ones [`crate::transport`] documents for the host
-//! callbacks:
+//! The notify runs **on the render thread, inside `AudioUnitRender`**. Same
+//! three constraints [`crate::transport`] documents for the host callbacks:
 //!
-//! 1. **A panic must never unwind across `extern "C"`.** Unwinding out of a Rust
-//!    callback into AudioToolbox is undefined behaviour. The whole body runs
-//!    inside [`catch_unwind`](std::panic::catch_unwind) — the same guard
-//!    `au_input_render_callback` uses — and a caught panic is reported to
-//!    stderr and returned as an OSStatus, never propagated.
+//! 1. **A panic must never unwind across `extern "C"`** — undefined behaviour
+//!    into AudioToolbox. The whole body runs inside
+//!    [`catch_unwind`](std::panic::catch_unwind), same guard
+//!    `au_input_render_callback` uses; a caught panic goes to stderr and returns
+//!    as an OSStatus, never propagated.
 //!
-//! 2. **The callback must not allocate.** This is the audio thread: a `malloc`
-//!    here can block on a lock held by a control thread and blow the deadline.
-//!    Nothing in [`RenderNotify`]'s own path allocates — see
-//!    [`RenderNotify::new`] for why the host closure's obligation is a
-//!    documented contract rather than something the type can enforce.
+//! 2. **The callback must not allocate** — a `malloc` here can block on a lock
+//!    held by a control thread and blow the deadline. Nothing in
+//!    [`RenderNotify`]'s own path allocates; see [`RenderNotify::new`] for why
+//!    the host closure's obligation is a documented contract rather than
+//!    something the type can enforce.
 //!
 //! 3. **Plain atomics, not [`RtPublish`](tutti_types::RtPublish).** Every piece
 //!    of state this module hands to the render thread is a scalar: a parameter
 //!    id, two `f32` endpoints, a frame offset, a duration. `RtPublish` exists
-//!    for state too large to pack into an atomic — a routing table, a meter map
-//!    — and its read costs a thread-local lookup plus two `SeqCst` loads plus a
-//!    slot store, strictly more than the handful of loads here. Using it would
-//!    also be a category error: an `RtRef` borrow's whole purpose is to keep the
-//!    audio thread from owning heap state, and there is no heap state here to
-//!    protect. This mirrors the reasoning in [`crate::transport`]'s module docs
-//!    verbatim, because it is the same trade.
+//!    for state too large to pack into an atomic and costs a thread-local
+//!    lookup plus two `SeqCst` loads plus a slot store — more than the handful
+//!    of loads here, and a category error besides: there is no heap state here
+//!    for an `RtRef` borrow to protect. Same trade [`crate::transport`]'s module
+//!    docs make.
 //!
-//!    What the host closure captures is the host's own business, and *that* is
-//!    where an `RtPublish` belongs if the host needs to hand a table across.
+//!    What the host closure captures is the host's own business — that is where
+//!    an `RtPublish` belongs if the host needs to hand a table across.
 //!
 //! # Why removal ordering is load-bearing
 //!
@@ -405,21 +398,18 @@ pub unsafe fn schedule(
 ///
 /// # Why this type has to exist
 ///
-/// The whole point of a pre-render notify is to call [`schedule`] on the unit
-/// that is rendering — so the callback must capture that unit. But `AudioUnit` is
-/// a bare `*mut ComponentInstanceRecord`, which is neither [`Send`] nor [`Sync`],
-/// and [`RenderNotify::new`] requires both (AudioToolbox calls the closure on its
-/// render thread). So the natural spelling —
-/// `move |n| schedule(unit, ..)` — does not compile, and the callback cannot
-/// schedule anything.
+/// A pre-render notify calls [`schedule`] on the unit that is rendering, so the
+/// callback must capture it — but `AudioUnit` is a bare
+/// `*mut ComponentInstanceRecord`, neither [`Send`] nor [`Sync`], while
+/// [`RenderNotify::new`] requires both (AudioToolbox calls the closure on its
+/// render thread). The natural spelling — `move |n| schedule(unit, ..)` — does
+/// not compile.
 ///
-/// The alternatives were worse. Dropping the `Send + Sync` bound would be
-/// unsound: the closure genuinely does cross to the render thread. Making the
-/// callback receive the unit as an argument would hand it to *every* callback,
-/// including metering taps that must not write to the AU, and would still not
-/// help a closure that needs the unit for anything outside the call. So the unit
-/// is wrapped in a type that asserts the property once, in one audited place,
-/// with the reasoning attached.
+/// The alternatives were worse: dropping the `Send + Sync` bound would be
+/// unsound (the closure genuinely crosses to the render thread), and passing
+/// the unit as an argument to every callback would reach metering taps that
+/// must not write to the AU. So the unit is wrapped in a type that asserts the
+/// property once, in one audited place, with the reasoning attached.
 ///
 /// # Safety of the `Send`/`Sync` impls
 ///
@@ -560,18 +550,16 @@ impl RenderNotify {
     ///
     /// # The no-allocation contract
     ///
-    /// This is the audio thread, so the callback **must not allocate, lock, or
-    /// block**. Nothing in this module's own path does; the host's closure is
-    /// the part that cannot be checked, and the bound is a contract rather than
-    /// a guarantee because Rust has no `#[no_alloc]` to demand. Concretely, in
-    /// the callback body: no `Vec`/`String`/`format!`, no `Mutex`, no channel
-    /// send that may allocate, no `println!`. Push scalars through atomics; if
-    /// the host needs to hand over a table, publish it with
-    /// [`RtPublish`](tutti_types::RtPublish) from the control thread and
-    /// *read* it here.
+    /// The callback **must not allocate, lock, or block** — see the module docs.
+    /// Nothing in this module's own path does; the host's closure is the part
+    /// that cannot be checked, so the bound is a contract rather than a
+    /// guarantee. Concretely: no `Vec`/`String`/`format!`, no `Mutex`, no
+    /// channel send that may allocate, no `println!`. Push scalars through
+    /// atomics; publish a table with [`RtPublish`](tutti_types::RtPublish) from
+    /// the control thread and *read* it here.
     ///
-    /// A panic is caught rather than propagated — see the module docs — but a
-    /// panic that had to be caught has already missed the block's deadline.
+    /// A panic is caught rather than propagated, but by then it has already
+    /// missed the block's deadline.
     ///
     /// # Safety
     /// `unit` must be a live `AudioUnit` that **outlives the returned handle**.
@@ -632,13 +620,12 @@ impl RenderNotify {
     /// dispatched, counted inside [`au_render_notify`] rather than by the host
     /// closure.
     ///
-    /// The reason this is a counter and not a boolean: a "the notify stopped"
-    /// assertion must **observe the count**, not a pointer's nullness. This is
-    /// the *crate-internal* view of that — it counts dispatches even if the host
-    /// closure panics or ignores them, so it can distinguish "the AU stopped
-    /// calling us" from "our callback stopped recording". The integration suite
-    /// counts the same thing from the closure side; the two together separate
-    /// those two failures.
+    /// A counter, not a boolean, because "the notify stopped" must be
+    /// **observed**, not inferred from a pointer's nullness. This is the
+    /// crate-internal view — it counts dispatches even if the host closure
+    /// panics or ignores them, distinguishing "the AU stopped calling us" from
+    /// "our callback stopped recording". The integration suite counts the same
+    /// thing from the closure side; together they separate those two failures.
     #[cfg(test)]
     fn deliveries(&self) -> u32 {
         self.state

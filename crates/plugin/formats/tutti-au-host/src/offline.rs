@@ -1,10 +1,10 @@
 //! Bounce-time and buffer-strategy properties, plus the push-model render path.
 //!
 //! Four AUv2 facilities that a live-only host never needs and an exporting host
-//! cannot do without. They are grouped here rather than added to
-//! [`crate::stream`] because they share one duty: they describe how the host
-//! intends to *drive* the render, as opposed to what the stream looks like
-//! ([`crate::stream`]) or what the topology is ([`crate::bus`]).
+//! cannot do without. Grouped here rather than in [`crate::stream`] because they
+//! share one duty: how the host intends to *drive* the render, as opposed to
+//! what the stream looks like ([`crate::stream`]) or what the topology is
+//! ([`crate::bus`]).
 //!
 //! * **Offline render** — tells the AU this block is part of a
 //!   faster-than-real-time bounce, so it may take the slow high-quality path.
@@ -18,35 +18,25 @@
 //!
 //! ## What was measured, and what therefore is not here
 //!
-//! `AudioUnitProcessMultiple` is the call that takes several input buffer lists,
-//! and it is the only AUv2 way a sidechain reaches a compressor. **It is not
-//! usable against anything installed on this machine**, and the numbers are in
-//! [`process_push_multiple`]'s docs: every unit measured answers `unimpErr`
-//! (`-4`, the component manager's "this selector is not implemented") except
-//! AUReverb2, which implements it but accepts exactly **one** input list and
-//! rejects two with `kAudioUnitErr_InvalidElement`. Both third-party units on
-//! the system (TDR Nova, TAL-Reverb-4) answer `-4` for `AudioUnitProcess` *and*
-//! `ProcessMultiple`.
-//!
-//! So [`process_push_multiple`] exists as a thin, tested wrapper — it is the
+//! `AudioUnitProcessMultiple` is the only AUv2 way a sidechain reaches a
+//! compressor, and **it is not usable against anything installed on this
+//! machine** — see [`process_push_multiple`]'s docs for the numbers.
+//! [`process_push_multiple`] is kept as a thin, tested wrapper anyway: it is the
 //! only way to reach the sidechain contract at all, and the day an AU implements
-//! it the host needs no new code — but nothing in tutti should route a sidechain
-//! through it expecting it to work. The single-list [`process_push`] is the
-//! feature that is real: it is measured bit-identical to `AudioUnitRender` on
-//! AUDelay across 8 blocks (`0.35350975` peak from both paths, every block).
+//! it the host needs no new code. The single-list [`process_push`] is the
+//! feature that is real: measured bit-identical to `AudioUnitRender` on AUDelay
+//! across 8 blocks (`0.35350975` peak from both paths, every block).
 //!
 //! ## Why the push path is a separate module and not a `process` variant
 //!
 //! [`AuReady::process`](crate::instance::AuReady::process) is a *pull* render:
 //! it stages input into the heap-pinned `RenderScratch`, then `AudioUnitRender`
 //! calls back into that scratch to fetch it. The push path never installs a
-//! callback and never wants one — with `AudioUnitProcess` the `ioData` buffer
-//! list carries the input **in** and the output back **out** in the same call.
-//! Those are two different contracts on the same unit, and the scratch each
-//! needs is shaped differently (the push path needs one list per bus, the pull
-//! path exactly one). Keeping them apart is what stops the pull path's callback
-//! from firing during a push render and overwriting the input the host just
-//! handed in.
+//! callback — with `AudioUnitProcess` the `ioData` buffer list carries the
+//! input **in** and the output back **out** in the same call. Keeping the two
+//! apart (each needs differently-shaped scratch: one list per bus for push,
+//! exactly one for pull) is what stops the pull path's callback from firing
+//! during a push render and overwriting the input the host just handed in.
 
 #![cfg(target_os = "macos")]
 
@@ -61,26 +51,23 @@ use crate::types::*;
 
 /// `kAudioUnitProperty_OfflineRender` (37).
 ///
-/// Aliased here rather than in [`crate::types`] with its siblings because
-/// nothing on the base branch referenced it; keeping the id beside its only two
-/// call sites means the property number and the code that interprets the AU's
-/// answer cannot drift apart.
+/// Aliased here rather than in [`crate::types`] with its siblings: keeping the
+/// id beside its only two call sites means the property number and the code
+/// that interprets the AU's answer cannot drift apart.
 pub(crate) const K_AUDIO_UNIT_PROPERTY_OFFLINE_RENDER: u32 =
     coreaudio_sys::kAudioUnitProperty_OfflineRender;
 
 /// The inclusive maximum this host will write to
 /// `kAudioUnitProperty_RenderQuality`.
 ///
-/// 127 — the range Apple's `AudioUnitProperties.h` documents for the property
-/// (`kRenderQuality_Max`). Enforced host-side, and the measurement is why:
-/// of the four Apple units on macOS 15.6 that implement the property, **only
-/// AUDistortion actually rejects an out-of-range value** (`-50`, `paramErr`, for
-/// anything above 127). AUMatrixReverb, DLSMusicDevice and AUMultiChannelMixer
-/// all accept a write of `999` with `noErr` **and read `999` back**; the mixer
-/// accepts and returns `u32::MAX`. So the AU neither rejects nor normalizes the
-/// nonsense — it stores it — and a host that trusted the `noErr` would go on
-/// displaying "quality: 999" out of a 0–127 control forever, with no way to
-/// discover the number is meaningless. See [`set_render_quality`].
+/// 127 — the range Apple's `AudioUnitProperties.h` documents (`kRenderQuality_Max`).
+/// Enforced host-side because of what was measured: of the four Apple units on
+/// macOS 15.6 that implement the property, **only AUDistortion actually rejects
+/// an out-of-range value** (`-50`, `paramErr`, above 127). AUMatrixReverb,
+/// DLSMusicDevice and AUMultiChannelMixer all accept a write of `999` with
+/// `noErr` **and read it back**; the mixer round-trips `u32::MAX` too. So the AU
+/// neither rejects nor normalizes the nonsense — it stores it. See
+/// [`set_render_quality`].
 pub const RENDER_QUALITY_MAX: u32 = 127;
 
 /// Whether the AU has been told it is rendering offline.
@@ -89,13 +76,10 @@ pub const RENDER_QUALITY_MAX: u32 = 127;
 /// [`AuError::OsStatus`] when the AU does not implement
 /// `kAudioUnitProperty_OfflineRender`, which on macOS 15.6 is **every Apple
 /// effect and mixer** — only the instruments (AUSampler, DLSMusicDevice)
-/// implement it at all. Propagated rather than flattened to `false`, because the
-/// two are different facts a bouncing host must distinguish: "this AU is in
-/// real-time mode" is something the host can change, while "this AU has no
-/// offline mode" means the exported file may differ from what was auditioned and
-/// there is nothing the host can do about it. Absorbing the refusal into `false`
-/// makes the second case unreportable — and given how few units implement the
-/// property, that second case is the common one.
+/// implement it at all. Propagated rather than flattened to `false`: "this AU is
+/// in real-time mode" (changeable) and "this AU has no offline mode" (the export
+/// may differ from the audition, and nothing can be done) are different facts a
+/// bouncing host must distinguish, and the second is the common case here.
 ///
 /// # Safety
 /// `unit` must be a live `AudioUnit`.
@@ -113,64 +97,52 @@ pub(crate) unsafe fn is_offline_render(unit: AudioUnit) -> Result<bool> {
 ///
 /// ## What a DAW loses without this
 ///
-/// The property does not change *what* the host does — the render calls are
-/// identical either way. It changes what the AU is permitted to do, and Apple's
-/// header names the case outright: an AU "that normally operates within a
-/// general real-time calling model" may behave differently once it knows the
-/// result is going to a file rather than to a speaker. Three concrete
+/// The render calls are identical either way; the property changes what the AU
+/// is *permitted* to do. Apple's header names the case outright: an AU "that
+/// normally operates within a general real-time calling model" may behave
+/// differently once it knows the result is going to a file. Three concrete
 /// divergences a host that never sets it will ship:
 ///
-/// * **Dropout protection stays armed.** A real-time AU that detects it is
-///   running out of time may drop to a cheaper algorithm, or emit the previous
-///   block again, rather than miss its deadline. During a bounce there is no
-///   deadline — the host renders as fast as the CPU allows and a "late" block is
-///   not late — so that protection is pure quality loss, and it fires precisely
-///   on the heaviest parts of the mix.
-/// * **Cheap resampling.** An AU that resamples internally (pitch shift,
-///   time-stretch, any oversampled saturator) will choose a short interpolation
-///   kernel in real time and a long one offline. The bounce then carries more
-///   aliasing than the monitor path did.
-/// * **Non-deterministic dither.** An AU dithering its output may seed from the
-///   clock in real time and from a fixed seed offline. Without the flag, two
-///   bounces of the same project are not bit-identical, which breaks every
-///   downstream check a mastering workflow makes — and makes the host's own
-///   render tests unable to compare two files at all.
+/// * **Dropout protection stays armed** — a real-time AU may drop to a cheaper
+///   algorithm or repeat the previous block to avoid missing its deadline; during
+///   a bounce there is no deadline, so that protection is pure quality loss,
+///   worst on the heaviest parts of the mix.
+/// * **Cheap resampling** — an AU that resamples internally (pitch shift,
+///   time-stretch, oversampled saturators) picks a short interpolation kernel in
+///   real time and a longer one offline; without the flag the bounce carries
+///   more aliasing than the monitor path did.
+/// * **Non-deterministic dither** — an AU may seed dither from the clock in real
+///   time and from a fixed seed offline, so two bounces of the same project stop
+///   being bit-identical, breaking mastering-workflow checks and the host's own
+///   render comparisons.
 ///
-/// The symptom users report is "the export doesn't sound like the mix": quieter
-/// transients, or brighter, or simply different every time, with nothing in the
-/// project changed.
+/// The symptom users report is "the export doesn't sound like the mix", with
+/// nothing in the project changed.
 ///
-/// ## What was measured, so the expectation is calibrated
+/// ## What was measured
 ///
-/// On macOS 15.6 the only units that implement the property are the two
-/// instruments, and neither audibly changes: AUSampler and DLSMusicDevice render
-/// the same peak (`0.246602` and `0.095300` respectively, over 16 blocks of a
-/// held middle C) whether the flag is set or clear. So setting it buys nothing
-/// *on this corpus* — the units that would use it are the third-party
-/// resampling and dithering plugins the property was designed for, and TDR Nova
-/// and TAL-Reverb-4 both expose it (both read `0` by default) without this host
-/// having a way to prove they honour it. The value of the API is that a host
-/// which never sets the flag cannot benefit even from a plugin that does.
+/// On macOS 15.6 only the two instruments implement the property, and neither
+/// audibly changes: AUSampler and DLSMusicDevice render the same peak
+/// (`0.246602` / `0.095300` over 16 blocks of a held middle C) flag set or
+/// clear. So setting it buys nothing on this corpus — the plugins it's designed
+/// for are third-party resamplers/ditherers, and TDR Nova / TAL-Reverb-4 both
+/// expose it (reading `0` by default) with no way here to prove they honour it.
 ///
 /// ## Set it before `initialize`
 ///
-/// Legal in either state — every unit that implements it accepts the write
-/// initialized or not, measured — but an AU that sizes an internal oversampling
-/// buffer from the flag can only do so at `AudioUnitInitialize`. Setting it
-/// afterwards is therefore accepted and may still not take effect, which is a
-/// silent partial success. A bouncing host should set the flag, then
-/// `initialize`, the same way it orders `MaximumFramesPerSlice`.
+/// Legal in either state (measured), but an AU that sizes an internal
+/// oversampling buffer from the flag can only do so at `AudioUnitInitialize` —
+/// setting it after is accepted yet may silently not take effect. Set the flag,
+/// then `initialize`, the same order as `MaximumFramesPerSlice`.
 ///
-/// ## The width is 4 bytes, and unlike bypass a narrower write also works
+/// ## Width: 4 bytes, and a narrower write also works here
 ///
-/// `AudioUnitGetPropertyInfo` reports size 4 and the value is written as a
-/// `UInt32`, matching the header's declared type. Worth stating explicitly
-/// because [`AuInstance::set_bypass`](crate::instance::AuInstance::set_bypass)
-/// documents the opposite finding for `BypassEffect` — a 1-byte write there is
-/// refused with `-10851`. Measured here: a 1-byte write to `OfflineRender` is
-/// accepted with `noErr` by both instruments. The `u32` is used anyway, because
-/// it is what the header declares and the leniency is one unit's implementation
-/// detail rather than a contract.
+/// `AudioUnitGetPropertyInfo` reports size 4 (`UInt32`), and — unlike
+/// [`AuInstance::set_bypass`](crate::instance::AuInstance::set_bypass)'s
+/// `BypassEffect`, which refuses a 1-byte write with `-10851` — a 1-byte write to
+/// `OfflineRender` is accepted with `noErr` by both instruments. The `u32` is
+/// used anyway since that's what the header declares; the leniency is one
+/// unit's quirk, not a contract.
 ///
 /// # Errors
 /// [`AuError::OsStatus`] when the AU has no offline-render property. See
@@ -193,43 +165,35 @@ pub(crate) unsafe fn set_offline_render(unit: AudioUnit, offline: bool) -> Resul
 /// buffer.
 ///
 /// A host that gets `true` here may hand [`process_push`] one buffer list and
-/// let the AU overwrite it, saving a copy per block per plugin. On a 64-plugin
-/// session at 48 kHz / 64-frame blocks that is ~48 000 stereo copies a second
-/// the host does not make.
+/// let the AU overwrite it, saving a copy per block per plugin — on a 64-plugin
+/// session at 48 kHz / 64-frame blocks, ~48 000 stereo copies a second avoided.
 ///
 /// Measured on macOS 15.6: six Apple effects advertise it and all six report
 /// **1** (capable) — AUDelay, AUDynamicsProcessor, AUDistortion, AULowpass,
 /// AUSampleDelay, AUMultibandCompressor. AUMatrixReverb, AUReverb2 and AUNBandEQ
-/// do not implement the property, nor does any instrument or mixer, nor either
-/// third-party unit. No unit on the system reports `0`.
+/// do not implement the property, nor does any instrument, mixer, or third-party
+/// unit. No unit on the system reports `0`.
 ///
 /// ## Read-only, deliberately, even though the property is writable
 ///
-/// Apple declares this Read/**Write** and `GetPropertyInfo` confirms the
-/// writable bit; the write direction has a real meaning, namely that a host
-/// whose buffer management would be *defeated* by in-place operation can set `0`
-/// to forbid it. This crate exposes only the read, and the reason is that tutti
-/// has no such strategy to defend. Writing `0` can only make the AU do more work
-/// — it is a request to be *less* efficient — and it is correct only for a host
-/// that has already committed to holding the pre-effect signal (a dry/wet mix
-/// computed outside the plugin, a look-ahead peek at the unprocessed block).
-/// Nothing here does. A setter would offer callers a knob whose only available
-/// setting is the pessimal one, and whose correct setting depends on a host
-/// invariant this crate cannot see.
+/// Apple declares this Read/**Write** — the write direction lets a host whose
+/// buffer management would be *defeated* by in-place operation set `0` to forbid
+/// it. This crate exposes only the read: tutti has no such strategy to defend,
+/// writing `0` can only make the AU do more work, and the only host for which
+/// that write is correct is one already committed to holding the pre-effect
+/// signal (a dry/wet mix computed outside the plugin, a look-ahead peek).
+/// Nothing here does, so a setter would offer only the pessimal setting.
 ///
-/// The read, by contrast, is load-bearing: it is the difference between
-/// [`process_push`] being allowed to alias its buffers and having to copy.
+/// The read, by contrast, is load-bearing: it decides whether [`process_push`]
+/// may alias its buffers or must copy.
 ///
 /// # Errors
 /// [`AuError::OsStatus`] when the AU does not implement
-/// `kAudioUnitProperty_InPlaceProcessing`. Not flattened to `false`, and the
-/// distinction here is sharper than a diagnostic: `false` means "the AU says no,
-/// do not alias", a refusal means "the AU did not say". Both lead the host to
-/// copy, but only the first is a fact about the AU, and a host that recorded the
-/// refusal as `false` would go on reporting that AUs *forbid* in-place operation
-/// when they merely never mentioned it. Since no unit measured actually reports
-/// `0`, flattening would make the host's in-place census read "9 units forbid
-/// it" when the truth is "6 permit it and 6 never said".
+/// `kAudioUnitProperty_InPlaceProcessing`. Not flattened to `false`: `false`
+/// means "the AU says no, do not alias", a refusal means "the AU did not say".
+/// Both lead the host to copy, but only the first is a fact about the AU —
+/// flattening would make the in-place census read "9 units forbid it" when the
+/// truth is "6 permit it and 6 never said" (no unit measured reports `0`).
 ///
 /// # Safety
 /// `unit` must be a live `AudioUnit`.
@@ -266,16 +230,15 @@ pub(crate) unsafe fn render_quality(unit: AudioUnit) -> Result<u32> {
 
 /// Set the AU's render quality, `0` (cheapest) to [`RENDER_QUALITY_MAX`] (best).
 ///
-/// Distinct from [`set_offline_render`], and the two are not substitutes. The
-/// offline flag says *why* the host is rendering and leaves the AU to choose;
-/// this says what the host wants regardless of context. A bounce sets both —
-/// offline so deterministic paths engage, and quality at maximum so an AU that
-/// exposes the knob rather than inferring from the flag also cooperates.
+/// Not a substitute for [`set_offline_render`]: the offline flag says *why* the
+/// host is rendering and leaves the AU to choose; this says what the host wants
+/// regardless of context. A bounce sets both — offline so deterministic paths
+/// engage, quality at maximum so an AU that exposes the knob also cooperates.
 ///
 /// ## Why the range is enforced here rather than left to the AU
 ///
-/// Because three of the four units that implement the property do not enforce it
-/// and do not clamp. Measured on macOS 15.6:
+/// Three of the four units implementing the property do not clamp. Measured on
+/// macOS 15.6:
 ///
 /// | unit | write 128 | write 999 | write `u32::MAX` |
 /// |---|---|---|---|
@@ -284,18 +247,12 @@ pub(crate) unsafe fn render_quality(unit: AudioUnit) -> Result<u32> {
 /// | DLSMusicDevice | `noErr`, reads **128** | `noErr`, reads **999** | `noErr`, reads 127 |
 /// | AUMultiChannelMixer | `noErr`, reads 128 | `noErr`, reads 999 | `noErr`, reads **`u32::MAX`** |
 ///
-/// Only AUDistortion behaves the way a host would hope, refusing with `paramErr`
-/// and keeping its previous value. The other three *store the nonsense and hand
-/// it back*, so a host that trusted `noErr` would display "quality: 999" out of a
-/// 0–127 control indefinitely, and could not tell that apart from a legitimate
-/// setting by reading the property. Nothing about the AU's later behaviour
-/// reveals it either.
-///
-/// Rejecting host-side turns that silent acceptance into a visible
-/// [`AuError::InvalidBuffer`]: the caller is told its number was out of range
-/// instead of quietly keeping it. The `u32::MAX` row is what rules out the
-/// alternative of "write it and read it back to check" — AUMultiChannelMixer
-/// round-trips that value faithfully, so a read-back verifier would accept it.
+/// Only AUDistortion refuses with `paramErr` and keeps its previous value; the
+/// other three *store the nonsense and hand it back*, indistinguishable from a
+/// legitimate setting by reading the property back. Rejecting host-side turns
+/// that silent acceptance into a visible [`AuError::InvalidBuffer`]. The
+/// `u32::MAX` row rules out "write it and read it back to check" as a fix —
+/// AUMultiChannelMixer round-trips that value faithfully too.
 ///
 /// # Errors
 /// * [`AuError::InvalidBuffer`] for a `quality` above [`RENDER_QUALITY_MAX`].
@@ -325,9 +282,8 @@ pub(crate) unsafe fn set_render_quality(unit: AudioUnit, quality: u32) -> Result
 ///
 /// One `AudioBufferList` slab per bus, each pointing at that bus's own channel
 /// storage, all allocated once at construction so [`process_push`] and
-/// [`process_push_multiple`] can bind and render without touching the allocator.
-/// That is the whole reason this type exists rather than the buffer lists being
-/// built per call: the push calls run on the audio thread, and a `Vec` grown per
+/// [`process_push_multiple`] can bind and render without touching the
+/// allocator: the push calls run on the audio thread, and a `Vec` grown per
 /// block is an allocator acquisition every 1.3 ms at 48 kHz / 64 frames.
 ///
 /// ## Why the fields are `Vec` and the render path still does not allocate
@@ -335,9 +291,9 @@ pub(crate) unsafe fn set_render_quality(unit: AudioUnit, quality: u32) -> Result
 /// Every `Vec` here is grown exactly once, in [`PushScratch::new`]. The render
 /// methods only write through existing storage: `bind_*` rewrites the `mData` /
 /// `mDataByteSize` fields of `AudioBuffer`s that already exist, and the pointer
-/// arrays are `Vec`s whose length never changes, so `as_mut_ptr` on them is a
-/// field read. `tests/au_offline.rs` is what proves it — the property is not
-/// something the types can express.
+/// arrays' length never changes, so `as_mut_ptr` on them is a field read.
+/// `tests/au_offline.rs` proves it — the property is not something the types
+/// can express.
 pub struct PushScratch {
     /// One `AudioBufferList` slab per input bus. 8-aligned `u64` backing for the
     /// reason [`crate::buffer`]'s `AblWord` documents: `AudioBufferList` needs
@@ -375,11 +331,12 @@ impl PushScratch {
     ///
     /// `inputs` and `outputs` are one entry per bus, in bus order — so a
     /// hypothetical sidechain compressor is `&[Stereo, Stereo]` in, `&[Stereo]`
-    /// out. Size these from [`AuInstance::bus_count`](crate::instance::AuInstance::bus_count),
-    /// never from what the host wishes were there: an AU handed more input lists
-    /// than it has input elements rejects the render outright (measured:
-    /// AUReverb2 answers `kAudioUnitErr_InvalidElement` for a second list), it
-    /// does not ignore the extra.
+    /// out. Size these from
+    /// [`AuInstance::bus_count`](crate::instance::AuInstance::bus_count), never
+    /// from what the host wishes were there: an AU handed more input lists than
+    /// it has input elements rejects the render outright rather than ignoring
+    /// the extra (measured: AUReverb2 answers `kAudioUnitErr_InvalidElement` for
+    /// a second list).
     ///
     /// An empty `inputs` is legal and is what an instrument gets; it makes
     /// [`process_push_multiple`] pass a zero-length input array, which is what
@@ -419,9 +376,9 @@ impl PushScratch {
             sample_position: 0.0,
         };
         // Fill the pointer arrays once. The slabs are boxed, so their addresses
-        // are stable for the lifetime of `self` even as `PushScratch` itself is
-        // moved — the same property `AuReady::scratch` relies on. Recomputing
-        // them per block would be correct but pointless work on the RT path.
+        // stay stable across a move of `PushScratch` itself — same property
+        // `AuReady::scratch` relies on. Recomputing per block would be correct
+        // but pointless work on the RT path.
         for (i, slab) in me.input_slabs.iter_mut().enumerate() {
             me.input_ptrs[i] = slab.as_mut_ptr() as *const AudioBufferList;
         }
@@ -536,11 +493,10 @@ impl PushScratch {
 ///
 /// Written here rather than reusing `RenderBufferList::bind` because that type
 /// owns its slab and its single width, whereas the push path has one slab per
-/// bus and the widths differ per bus. The field math is identical and is the part
-/// that matters — see `crate::buffer::buffer_list_bytes` for why the slab size is
-/// driven by `offset_of!(AudioBufferList, mBuffers)` and not `size_of::<u32>()`,
-/// a 4-byte under-allocation that put the last channel's `mData` store past the
-/// end.
+/// bus with widths that differ per bus. The field math is identical —
+/// see `crate::buffer::buffer_list_bytes` for why the slab size is driven by
+/// `offset_of!(AudioBufferList, mBuffers)` and not `size_of::<u32>()`, a 4-byte
+/// under-allocation that put the last channel's `mData` store past the end.
 ///
 /// # Safety
 /// `list` must point at a slab of at least `buffer_list_bytes(width.count())`
@@ -570,21 +526,18 @@ unsafe fn bind_list(
 /// Push `frames` of audio through the AU with `AudioUnitProcess`.
 ///
 /// The single-buffer-list form: input bus 0 is handed in, and the AU writes its
-/// output back over the *same* list. That in-place contract is
-/// `AudioUnitProcess`'s own, not a choice made here — the API has one `ioData`
-/// parameter and Apple's header names it "io". So
-/// [`PushScratch::stage_input`] must have been called on bus 0 first, and this
-/// function copies the AU's result across into output bus 0 itself, so that
-/// [`PushScratch::emit_output`]`(0, ..)` means the same thing whichever push
-/// function produced the audio. A caller should not have to know that one form
-/// aliases and the other does not.
+/// output back over the *same* list — that in-place contract is
+/// `AudioUnitProcess`'s own (one `ioData` parameter, named "io" in Apple's
+/// header), not a choice made here. So [`PushScratch::stage_input`] must have
+/// been called on bus 0 first, and this function copies the AU's result across
+/// into output bus 0 itself, so [`PushScratch::emit_output`]`(0, ..)` means the
+/// same thing whichever push function produced the audio.
 ///
 /// A unit that reports [`supports_in_place`]` == false` is still driven
-/// correctly, because the host never asks the AU to alias anything: the copy out
-/// is unconditional. The in-place *read* is what a future optimisation would use
-/// to skip that copy, and it is deliberately not skipped here — the saving is one
-/// memcpy and the cost of getting it wrong is an AU reading its own output as
-/// input.
+/// correctly — the copy out is unconditional, so the host never asks the AU to
+/// alias anything. Skipping that copy for units that do support it would be a
+/// future optimisation (one memcpy saved) not attempted here, since getting it
+/// wrong means an AU reading its own output as input.
 ///
 /// ## Measured coverage
 ///
@@ -683,9 +636,9 @@ fn copy_in_bus0_to_out_bus0(scratch: &mut PushScratch, silent: bool, frames: u32
 ///
 /// Every input bus staged into `scratch` is handed to the AU at once and every
 /// output bus written separately, so input and output do **not** alias. This is
-/// the only AUv2 call that can deliver a second input bus in the same render,
-/// which is what a sidechain is: bus 0 is the signal, bus 1 the key the
-/// compressor listens to.
+/// the only AUv2 call that can deliver a second input bus in the same render —
+/// what a sidechain is: bus 0 the signal, bus 1 the key the compressor listens
+/// to.
 ///
 /// ## It does not work on anything installed, and here are the numbers
 ///
@@ -810,12 +763,11 @@ unsafe fn last_render_error(unit: AudioUnit) -> Option<OSStatus> {
 /// Every `mDataByteSize` the AU left on the output buses of the last push
 /// render.
 ///
-/// Exposed for the test suite rather than for hosts: it is how
-/// `tests/au_offline.rs` observes that the AU wrote for the frame count it was
-/// asked for, without the test reimplementing the `AudioBufferList` walk. An AU
-/// that renders fewer frames than requested reports the shortfall here and
-/// nowhere else — the sample values alone cannot distinguish "wrote 32 frames of
-/// audio" from "wrote 64 frames, 32 of which happened to be near zero".
+/// Exposed for the test suite rather than for hosts: how `tests/au_offline.rs`
+/// observes that the AU wrote for the frame count it was asked for, without
+/// reimplementing the `AudioBufferList` walk. An AU rendering fewer frames than
+/// requested reports the shortfall here and nowhere else — sample values alone
+/// can't distinguish "wrote 32 frames" from "wrote 64, half near zero".
 ///
 /// # Safety
 /// Reads the slabs `scratch` owns, which were sized in `new` and whose

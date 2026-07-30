@@ -6,9 +6,9 @@
 //! swapped by accident. The [`Unit`] marker trait carries the raw type as an
 //! associated type so [`Param`](super::Param) can be generic over the unit.
 //!
-//! `fundsp`'s `SampleRate` also implements [`Unit`] — but that `impl` lives in
-//! `fundsp-tutti` (where the type is defined), since `fundsp-tutti` depends on
-//! this crate, not the reverse.
+//! [`SampleRate`] is defined here too, and re-exported by `fundsp-tutti` for
+//! the `AudioNode` / `AudioUnit` trait surfaces that take one. It used to be
+//! defined *there* — the direction is what changed, not the type.
 
 // `Seconds::to_samples*` lands in the frame-count vocabulary, which is
 // integer-backed and lives next door in `samples.rs` rather than being one of
@@ -314,16 +314,16 @@ impl Seconds {
     /// counts past 2^24 (about 6 minutes at 48 kHz), and the export planner
     /// already works in `f64`.
     #[inline]
-    pub fn to_samples(self, sample_rate: f64) -> Samples {
-        Self::frames(self.0 as f64 * sample_rate, f64::round)
+    pub fn to_samples(self, sample_rate: impl Into<SampleRate>) -> Samples {
+        Self::frames(self.0 as f64 * sample_rate.into().get(), f64::round)
     }
 
     /// Frames fully elapsed in this span — rounds **down**.
     ///
     /// The *counting* form: how many whole frames have gone by.
     #[inline]
-    pub fn to_samples_floor(self, sample_rate: f64) -> Samples {
-        Self::frames(self.0 as f64 * sample_rate, f64::floor)
+    pub fn to_samples_floor(self, sample_rate: impl Into<SampleRate>) -> Samples {
+        Self::frames(self.0 as f64 * sample_rate.into().get(), f64::floor)
     }
 
     /// Frames needed to hold this span — rounds **up**.
@@ -332,8 +332,8 @@ impl Seconds {
     /// least that long, so rounding to nearest would under-allocate for half
     /// of all inputs.
     #[inline]
-    pub fn to_samples_ceil(self, sample_rate: f64) -> Samples {
-        Self::frames(self.0 as f64 * sample_rate, f64::ceil)
+    pub fn to_samples_ceil(self, sample_rate: impl Into<SampleRate>) -> Samples {
+        Self::frames(self.0 as f64 * sample_rate.into().get(), f64::ceil)
     }
 
     /// Shared tail: apply `round`, then clamp into `usize`.
@@ -1150,7 +1150,8 @@ impl PhaseIncrement {
     /// the step is ~1.04e-4, and accumulating an f32-rounded version of that
     /// drifts audibly over a long note.
     #[inline]
-    pub fn per_sample(frequency: Hz, sample_rate: f64) -> PhaseIncrement {
+    pub fn per_sample(frequency: Hz, sample_rate: impl Into<SampleRate>) -> PhaseIncrement {
+        let sample_rate = sample_rate.into().get();
         if sample_rate <= 0.0 {
             return PhaseIncrement(0.0);
         }
@@ -1331,6 +1332,64 @@ impl Semitones {
         2.0_f32.powf(self.0 / 12.0)
     }
 }
+// ── Sample rates ────────────────────────────────────────────────────────────
+
+unit_newtype!(
+    /// Audio sample rate in Hertz.
+    ///
+    /// `f64`-backed because sample rates routinely exceed `f32`'s
+    /// integer-precision range (192 kHz is exact, but `1.0 / 48_000.0` in `f32`
+    /// carries ~6e-8 of relative error, and a phase accumulator integrating
+    /// that over a long render drifts audibly).
+    ///
+    /// Also used at the `AudioNode` / `AudioUnit` trait surfaces in
+    /// `fundsp-tutti`, which re-exports it. It lived *there* until this crate
+    /// grew the unit vocabulary: the trait taking the parameter must see the
+    /// type, and `fundsp-tutti` depends on this crate, so a definition here was
+    /// only possible once a re-export replaced the definition. That is why the
+    /// module doc no longer carries a "one unit defined elsewhere" exception.
+    ///
+    /// Builds from `f64` and from `u32` (file headers, device configs) — both
+    /// widen exactly. Deliberately **not** from `f32`: that widening is
+    /// lossless in isolation, but an `f32` rate has nearly always already lost
+    /// precision upstream, and an implicit conversion would launder it in
+    /// silently. A site that genuinely holds one writes `SampleRate(x as f64)`,
+    /// where review can see it.
+    SampleRate,
+    f64
+);
+unit_ordered!(SampleRate);
+unit_bounded!(SampleRate, f64);
+
+// Deliberately absent, and the omissions are load-bearing:
+//
+// - `Add` / `Sub` (`unit_additive!`) — 44.1 kHz plus 48 kHz is not a rate.
+// - `Mul<f64>` / `Div<f64>` (`unit_scalable!`) — a scaled rate is a *different
+//   device rate*; re-derive it from the device rather than scaling a stale one.
+// - `Div<SampleRate> -> f64` (`unit_ratio!`) — that quotient is `SrcRatio`, and
+//   `SrcRatio::for_rates` owns the derivation along with its unity tolerance
+//   and its non-positive guard. A bare operator here would let callers bypass
+//   both.
+
+impl SampleRate {
+    /// 44.1 kHz — the historic CD-audio rate.
+    pub const SR_44K1: Self = Self(44_100.0);
+
+    /// 48 kHz — the typical pro-audio default.
+    pub const SR_48K: Self = Self(48_000.0);
+}
+
+// `unit_newtype!` generates `From<f64>` only. File headers and device configs
+// hand out `u32`, which widens exactly, so that one stays implicit — it is what
+// lets a migrated signature take `impl Into<SampleRate>` and still accept what
+// its callers already hold. No `From<f32>`; see the type's doc for why.
+impl From<u32> for SampleRate {
+    #[inline]
+    fn from(v: u32) -> Self {
+        Self(f64::from(v))
+    }
+}
+
 // ── Playback rates ──────────────────────────────────────────────────────────
 //
 // Three distinct quantities that all used to be `Ratio`, all multiplied into
@@ -1369,7 +1428,11 @@ impl SrcRatio {
     /// meaningful conversion, and propagating a NaN or infinity here would
     /// poison every sample downstream.
     #[inline]
-    pub fn for_rates(file_rate: f64, session_rate: f64) -> Self {
+    pub fn for_rates(
+        file_rate: impl Into<SampleRate>,
+        session_rate: impl Into<SampleRate>,
+    ) -> Self {
+        let (file_rate, session_rate) = (file_rate.into().get(), session_rate.into().get());
         if session_rate <= 0.0 || (file_rate - session_rate).abs() < 0.01 {
             Self::UNITY
         } else {
@@ -1610,8 +1673,10 @@ impl BeatDuration {
     /// those sites through this method would silently re-associate the
     /// arithmetic. Two conversions, two call sites, on purpose.
     ///
-    /// That function also cannot move here: it takes a `SampleRate`, which
-    /// lives in `fundsp-tutti` — a crate that *depends on* this one.
+    /// Keeping them apart is now a choice rather than a constraint: that
+    /// function takes a [`SampleRate`], which this crate defines, so it *could*
+    /// move here. It should not — the reason above is about the arithmetic
+    /// association, not about where the types live.
     #[inline]
     pub fn to_seconds(self, tempo: Bpm) -> Seconds {
         if tempo.0 <= 0.0 {
@@ -2207,6 +2272,73 @@ mod tests {
     fn clamp_stays_in_the_unit_type() {
         assert_eq!(Hz(20_000.0).clamp(Hz(20.0), Hz(18_000.0)), Hz(18_000.0));
         assert_eq!(Mix(1.5).clamp(Mix::DRY, Mix::WET), Mix::WET);
+    }
+
+    #[test]
+    fn sample_rate_carries_rates_f32_would_round() {
+        // The reason the unit is f64-backed. 192 kHz is exact in f32, so the
+        // integer value is not the hazard — the reciprocal is: a per-sample
+        // step computed in f32 carries ~6e-8 of relative error, which a phase
+        // accumulator integrates into audible drift over a long render.
+        let sr = SampleRate(192_000.0);
+        let step_f64 = 1.0_f64 / sr.get();
+        let step_f32 = (1.0_f32 / sr.get() as f32) as f64;
+        assert!(
+            (step_f64 - step_f32).abs() > 0.0,
+            "if f32 were exact here the f64 backing would be unmotivated"
+        );
+    }
+
+    #[test]
+    fn sample_rate_accepts_every_shape_a_caller_holds() {
+        // File headers and device configs hand out u32; the engine's own
+        // arithmetic is f64. Both widen exactly, which is what lets the
+        // migrated signatures take `impl Into<SampleRate>` without churning
+        // their call sites.
+        assert_eq!(SampleRate::from(48_000.0_f64), SampleRate::SR_48K);
+        assert_eq!(SampleRate::from(48_000_u32), SampleRate::SR_48K);
+        assert_eq!(SampleRate::SR_44K1, SampleRate(44_100.0));
+    }
+
+    #[test]
+    fn sample_rate_orders_and_bounds_but_does_not_compose() {
+        assert!(SampleRate::SR_44K1 < SampleRate::SR_48K);
+        assert_eq!(
+            SampleRate::SR_44K1.max(SampleRate::SR_48K),
+            SampleRate::SR_48K
+        );
+        assert_eq!(
+            SampleRate(192_000.0).clamp(SampleRate::SR_44K1, SampleRate::SR_48K),
+            SampleRate::SR_48K
+        );
+        // Deliberately absent, per the omission ledger beside the definition:
+        // `SR_44K1 + SR_48K` (not a rate), `SR_48K * 2.0` (a scaled rate is a
+        // different *device* rate), and `SR_48K / SR_44K1` (that quotient is a
+        // `SrcRatio`, and `for_rates` owns the derivation plus its guards).
+    }
+
+    #[test]
+    fn seconds_to_samples_takes_the_typed_rate() {
+        // The converter the DSP nodes call. It used to take a bare f64, which
+        // is why holding an untyped rate in a node field was frictionless.
+        assert_eq!(Seconds(1.0).to_samples(SampleRate::SR_48K), Samples(48_000));
+        // Raw floats still infer through `impl Into`, so no call site churned.
+        assert_eq!(Seconds(1.0).to_samples(48_000.0), Samples(48_000));
+        // The rounding split survives the retype.
+        assert_eq!(Seconds(0.5).to_samples_floor(SampleRate(3.0)), Samples(1));
+        assert_eq!(Seconds(0.5).to_samples_ceil(SampleRate(3.0)), Samples(2));
+    }
+
+    #[test]
+    fn src_ratio_derives_from_typed_rates() {
+        // `for_rates` is the one place the derivation lives, and it now speaks
+        // the same type its two arguments are measured in.
+        assert_eq!(
+            SrcRatio::for_rates(SampleRate::SR_44K1, SampleRate::SR_44K1),
+            SrcRatio::UNITY
+        );
+        let r = SrcRatio::for_rates(SampleRate::SR_48K, SampleRate::SR_44K1);
+        assert!((r.get() - 48_000.0 / 44_100.0).abs() < 1e-6);
     }
 
     #[test]

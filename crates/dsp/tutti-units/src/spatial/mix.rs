@@ -259,7 +259,7 @@ mod tests {
 
     #[test]
     fn arity_and_width() {
-        let u = ChannelSumUnit::new(3, 6);
+        let u = ChannelSumUnit::new(3, ChannelLayout::Multi(6));
         assert_eq!(u.inputs(), 18); // 3 sources × 6 channels
         assert_eq!(u.outputs(), 6);
         assert_eq!(u.channels(), 6);
@@ -268,7 +268,7 @@ mod tests {
 
     #[test]
     fn clamps_degenerate_args() {
-        let u = ChannelSumUnit::new(0, 0);
+        let u = ChannelSumUnit::new(0, ChannelLayout::Multi(0));
         assert_eq!(u.sources(), 1);
         assert_eq!(u.channels(), 1);
     }
@@ -276,7 +276,7 @@ mod tests {
     #[test]
     fn tick_sums_per_channel() {
         // Two quad sources: source A = [1,2,3,4], source B = [10,20,30,40].
-        let mut u = ChannelSumUnit::new(2, 4);
+        let mut u = ChannelSumUnit::new(2, ChannelLayout::Quad);
         let input = [1.0, 2.0, 3.0, 4.0, 10.0, 20.0, 30.0, 40.0];
         let mut out = [0.0f32; 4];
         u.tick(&input, &mut out);
@@ -286,7 +286,7 @@ mod tests {
     #[test]
     fn stereo_case_matches_a_plain_stereo_sum() {
         // channels == 2 degenerates to the classic stereo fan-in.
-        let mut u = ChannelSumUnit::new(3, 2);
+        let mut u = ChannelSumUnit::new(3, ChannelLayout::Stereo);
         // 3 stereo sources interleaved per source: (L,R),(L,R),(L,R).
         let input = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6];
         let mut out = [0.0f32; 2];

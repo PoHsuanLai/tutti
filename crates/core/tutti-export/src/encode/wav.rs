@@ -1,7 +1,7 @@
 //! WAV (hound). Streams; hound back-patches the RIFF sizes on `finalize`.
 
 use crate::config::ExportConfig;
-use crate::encode::{interleave, pump_blocks, Encoder};
+use crate::encode::{pump_blocks, Encoder};
 use crate::error::{Error, Result};
 use crate::options::BitDepth;
 use crate::render::{FrameSource, RenderPlan};
@@ -39,18 +39,19 @@ impl WavEncoder {
     }
 }
 
-impl<const CH: usize> Encoder<CH> for WavEncoder {
+impl Encoder for WavEncoder {
     fn encode(
         mut self,
-        src: &mut dyn FrameSource<CH>,
+        src: &mut dyn FrameSource,
         source_rate: tutti_core::SampleRate,
         plan: &RenderPlan,
         config: &ExportConfig,
     ) -> Result<()> {
-        let mut buf = Vec::new();
         pump_blocks(src, source_rate, plan, config, |frames| {
-            interleave(frames, &mut buf);
-            for &s in &buf {
+            // Already interleaved — hound wants a flat sample stream, which is
+            // exactly what the render hands over. The `interleave` helper this
+            // replaced re-copied a buffer that was never de-interleaved.
+            for &s in frames.samples() {
                 // The depth dispatch is `tutti-types`', shared with the live
                 // `WavOut` sink; only the writer call per variant is ours. An
                 // offline render and a live capture therefore quantize a given

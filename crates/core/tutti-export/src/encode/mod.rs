@@ -8,15 +8,18 @@
 //!
 //! flacenc is **pull**-based: `encode_with_fixed_block_size` calls
 //! `Source::read_samples` until the source is dry. Our render is also a pull
-//! ([`NetSource`](crate::render::NetSource) is an `AudioIn`). Making the encoder
+//! ([`NetSource`](crate::render::NetSource) is a
+//! [`FrameSource`](crate::render::FrameSource)). Making the encoder
 //! the driver lets FLAC hand our source straight to its library, and costs the
 //! push formats only a small loop they run internally. Everything streams, no
 //! format holds the signal, and there is no buffered-vs-streaming decision for a
 //! caller to get wrong.
 //!
-//! Every encoder is width-agnostic: `CH` is fixed by the caller's
-//! [`ChannelLayout`](tutti_types::ChannelLayout), the render folds the graph onto
-//! it once, and the file header is simply that width.
+//! Every encoder is width-agnostic: the width comes from the caller's
+//! [`ChannelLayout`](tutti_types::ChannelLayout) at runtime, the render folds the
+//! graph onto it once, and the file header is simply that width. Nothing here
+//! is generic over the width — [`Frames`] carries it, so *any* width encodes
+//! rather than the six the old const-generic dispatch enumerated.
 
 #[cfg(feature = "aiff")]
 pub(crate) mod aiff;
@@ -29,7 +32,7 @@ pub(crate) mod wav;
 
 use crate::config::ExportConfig;
 use crate::error::Result;
-use crate::render::{drive, FrameSource, PlaneSource, RenderPlan};
+use crate::render::{drive, FrameSource, Frames, PlaneSource, RenderPlan};
 use crate::Written;
 use std::path::Path;
 
@@ -58,7 +61,7 @@ pub(crate) fn encoder_rate(config: &ExportConfig) -> u32 {
 /// `self` by value: an encoder finalizes exactly once, and taking ownership is
 /// what makes "finalize, then write more" unrepresentable rather than a runtime
 /// error.
-pub(crate) trait Encoder<const CH: usize> {
+pub(crate) trait Encoder {
     /// `source_rate` is the rate the incoming frames are **at**, which is not
     /// always `config.render.sample_rate` — `write_buffers` feeds frames that
     /// were rendered elsewhere. Every implementation must resample from this,
@@ -67,9 +70,13 @@ pub(crate) trait Encoder<const CH: usize> {
     /// gets its header from [`encoder_rate`] and so writes un-resampled audio
     /// under a header claiming the target — that was a real bug in both FLAC
     /// and Ogg.
+    ///
+    /// The frame width is `config.encode.channels`, read at runtime; an
+    /// implementation that needs it says so once at entry rather than being
+    /// generic over it.
     fn encode(
         self,
-        src: &mut dyn FrameSource<CH>,
+        src: &mut dyn FrameSource,
         source_rate: tutti_core::SampleRate,
         plan: &RenderPlan,
         config: &ExportConfig,
@@ -82,8 +89,8 @@ pub(crate) trait Encoder<const CH: usize> {
 /// [`Error::UnsupportedFormat`](crate::Error::UnsupportedFormat); there is no arm
 /// that silently degrades, and — unlike the streaming-encoder opener this
 /// replaced — no arm that rejects a format the crate can actually write.
-pub(crate) fn encode_to_file<const CH: usize>(
-    src: &mut dyn FrameSource<CH>,
+pub(crate) fn encode_to_file(
+    src: &mut dyn FrameSource,
     source_rate: tutti_core::SampleRate,
     plan: &RenderPlan,
     config: &ExportConfig,
@@ -143,18 +150,25 @@ pub(crate) fn encode_to_file<const CH: usize>(
 /// LSB at the *output* depth, so dithering before a rate conversion would filter
 /// that noise along with the signal and land it somewhere other than one LSB.
 #[cfg(any(feature = "wav", feature = "flac", feature = "ogg", feature = "aiff"))]
-pub(crate) fn pump_blocks<const CH: usize, W>(
-    src: &mut dyn FrameSource<CH>,
+pub(crate) fn pump_blocks<W>(
+    src: &mut dyn FrameSource,
     source_rate: tutti_core::SampleRate,
     plan: &RenderPlan,
     config: &ExportConfig,
     mut write: W,
 ) -> Result<()>
 where
-    W: FnMut(&[[f32; CH]]) -> Result<()>,
+    W: FnMut(Frames<'_>) -> Result<()>,
 {
+    // Once, at entry — never inside a per-block or per-frame loop.
+    let ch = config.encode.channels.count() as usize;
+    if ch == 0 {
+        return Err(crate::Error::UnsupportedChannels(0));
+    }
+
     let mut dither = crate::process::DitherState::for_config(config);
-    let mut staging: Vec<[f32; CH]> = Vec::new();
+    // Interleaved, so it is a flat sample buffer with `ch` samples per frame.
+    let mut staging: Vec<f32> = Vec::new();
 
     // Compare as the integer rate the codecs speak: two `SampleRate`s that
     // round to the same header value are the same rate, and there is nothing to
@@ -167,29 +181,31 @@ where
     let mut resampler = match config.resample {
         Some(r) if r.target_rate.get().round() as u32 != source_rate => Some((
             crate::process::Resampler::new(
-                CH,
+                ch,
                 source_rate,
                 r.target_rate.get().round() as u32,
                 r.chunk,
             )?,
-            vec![Vec::<f32>::new(); CH],
-            vec![Vec::<f32>::new(); CH],
+            vec![Vec::<f32>::new(); ch],
+            vec![Vec::<f32>::new(); ch],
         )),
         // A resample to the rate we are already at is not a resample.
         _ => None,
     };
 
-    /// Interleave `CH` planes into frames, dither, and hand them on.
+    /// Interleave the resampler's planes, dither, and hand them on.
     macro_rules! emit_planes {
-        ($out:expr, $staging:expr, $dither:expr, $write:expr) => {{
+        ($out:expr, $staging:expr, $dither:expr, $write:expr, $ch:expr) => {{
             let frames = $out.first().map_or(0, |p: &Vec<f32>| p.len());
             $staging.clear();
-            $staging.reserve(frames);
+            $staging.reserve(frames * $ch);
             for i in 0..frames {
-                $staging.push(std::array::from_fn(|c| $out[c][i]));
+                for p in $out.iter() {
+                    $staging.push(p[i]);
+                }
             }
             $dither.apply(&mut $staging);
-            let r = $write(&$staging);
+            let r = $write(Frames::new(&$staging, $ch));
             for p in $out.iter_mut() {
                 p.clear();
             }
@@ -198,28 +214,28 @@ where
     }
 
     if let Some((rs, planes, out)) = resampler.as_mut() {
-        drive(src, plan, |block| {
+        drive(src, ch, plan, |block| {
             for p in planes.iter_mut() {
                 p.clear();
                 p.reserve(block.len());
             }
-            for f in block {
+            for f in block.iter() {
                 for (p, &s) in planes.iter_mut().zip(f.iter()) {
                     p.push(s);
                 }
             }
             rs.push(planes, out)?;
-            emit_planes!(out, staging, dither, write)
+            emit_planes!(out, staging, dither, write, ch)
         })?;
         rs.finish(out)?;
-        emit_planes!(out, staging, dither, write)?;
+        emit_planes!(out, staging, dither, write, ch)?;
         Ok(())
     } else {
-        drive(src, plan, |block| {
+        drive(src, ch, plan, |block| {
             staging.clear();
-            staging.extend_from_slice(block);
+            staging.extend_from_slice(block.samples());
             dither.apply(&mut staging);
-            write(&staging)
+            write(Frames::new(&staging, ch))
         })
     }
 }
@@ -231,7 +247,7 @@ where
 /// with a streamed one. Growing a second writer per format is exactly how the
 /// crate previously ended up with a whole-signal encoder that worked and a
 /// streaming one that did not.
-pub(crate) fn encode_planes<const CH: usize>(
+pub(crate) fn encode_planes(
     rendered: &crate::Rendered,
     config: &ExportConfig,
     path: &Path,
@@ -245,15 +261,5 @@ pub(crate) fn encode_planes<const CH: usize>(
     };
     // The frames' OWN rate. Reading `config.render.sample_rate` here made a
     // `write_buffers` call resample from a rate the samples were never at.
-    encode_to_file::<CH>(&mut src, rendered.sample_rate, &plan, config, path)
-}
-
-/// Flatten `CH`-wide frames into an interleaved buffer.
-#[cfg(any(feature = "wav", feature = "aiff"))]
-pub(crate) fn interleave<const CH: usize>(frames: &[[f32; CH]], out: &mut Vec<f32>) {
-    out.clear();
-    out.reserve(frames.len() * CH);
-    for f in frames {
-        out.extend_from_slice(f);
-    }
+    encode_to_file(&mut src, rendered.sample_rate, &plan, config, path)
 }

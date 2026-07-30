@@ -103,32 +103,31 @@ impl Source for PulledFrames {
     }
 }
 
-impl<const CH: usize> Encoder<CH> for FlacEncoder {
+impl Encoder for FlacEncoder {
     fn encode(
         self,
-        src: &mut dyn FrameSource<CH>,
+        src: &mut dyn FrameSource,
         source_rate: tutti_core::SampleRate,
         plan: &RenderPlan,
         config: &ExportConfig,
     ) -> Result<()> {
         let bits = bits_for(self.bit_depth);
         let bit_depth = self.bit_depth;
+        // Once, at entry: `PulledFrames` speaks a runtime `channels` already.
+        let ch = config.encode.channels.count() as usize;
 
         // Through `pump_blocks`, like every other format — that is what applies
         // the gate, the resample and the dither.
         let mut samples: Vec<i32> = Vec::new();
         crate::encode::pump_blocks(src, source_rate, plan, config, |frames| {
-            samples.reserve(frames.len() * CH);
-            for f in frames {
-                for &s in f.iter() {
-                    samples.push(f32_to_i32(s, bit_depth));
-                }
-            }
+            let interleaved = frames.samples();
+            samples.reserve(interleaved.len());
+            samples.extend(interleaved.iter().map(|&s| f32_to_i32(s, bit_depth)));
             Ok(())
         })?;
 
         let source = PulledFrames {
-            channels: CH,
+            channels: ch,
             bits,
             sample_rate: crate::encode::encoder_rate(config) as usize,
             samples,

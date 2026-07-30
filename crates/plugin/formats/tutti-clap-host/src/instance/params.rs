@@ -152,8 +152,8 @@ impl ClapLoaded {
     /// Every parameter projected onto the shared, format-agnostic
     /// [`ParameterInfo`](tutti_plugin_types::ParameterInfo) — the value that
     /// crosses the crate boundary. CLAP has no unit string, so `unit` is empty;
-    /// `step_count` is derived from the `STEPPED` flag (CLAP reports steppedness
-    /// as a flag, not a count, so a stepped param maps to `step_count = 1`).
+    /// `step_count` comes from the `STEPPED` flag plus the declared span, since
+    /// CLAP reports steppedness as a flag and the count only via `min`/`max`.
     pub fn parameter_list(&self) -> Vec<tutti_plugin_types::ParameterInfo> {
         self.parameters()
             .into_iter()
@@ -376,9 +376,10 @@ impl ClapLoaded {
 /// Project CLAP's native [`ClapParamInfo`] onto the shared, format-agnostic
 /// [`ParameterInfo`](tutti_plugin_types::ParameterInfo). Maps the CLAP flag
 /// subset the shared vocabulary models (automatable / read-only / periodic→wrap
-/// / bypass / hidden), derives `step_count` from the `STEPPED` bit, and leaves
-/// `unit` empty (CLAP carries no unit string). CLAP parameter values are in the
-/// plugin's native plain range, so `min_value`/`max_value` pass through verbatim.
+/// / bypass / hidden), derives `step_count` from the `STEPPED` bit and the
+/// declared span, and leaves `unit` empty (CLAP carries no unit string). CLAP
+/// parameter values are in the plugin's native plain range, so
+/// `min_value`/`max_value` pass through verbatim.
 fn project_param_info(info: ClapParamInfo) -> tutti_plugin_types::ParameterInfo {
     let flags = tutti_plugin_types::ParameterFlags {
         automatable: info.flags.contains(ClapParamFlags::AUTOMATABLE),

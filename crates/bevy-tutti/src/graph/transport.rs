@@ -1,8 +1,15 @@
-//! ECS wrappers for the transport and the metronome.
+//! ECS wrappers for the transport and the metronome, plus the entities of the
+//! nodes the engine builds for itself.
 //!
-//! Both handles are born in [`build_into`](crate::engine::build_into) — the
+//! All three are born in [`build_into`](crate::engine::build_into) — the
 //! transport manager `Arc` is shared with the RT callback as it is built — and
 //! inserted from there.
+//!
+//! [`TransportRes`] and [`EngineNodes`] are the two halves of "time", and which
+//! one a consumer wants follows from *how it reads*: [`TransportRes`] is time as
+//! a **value**, read per frame or (via [`timeline`](TransportRes::timeline)) per
+//! block; [`EngineNodes::clock`] is time as a **signal**, wired into a node's
+//! input ports and read per sample.
 
 use bevy_ecs::prelude::*;
 use std::sync::Arc;
@@ -112,9 +119,64 @@ impl std::ops::Deref for MetronomeRes {
     }
 }
 
-// `TransportClockNode` — a bare `NodeId` for the global transport clock — lived
-// here. Its whole documented purpose was letting a host hand-wire an edge with
-// `graph.connect(clock.0, 0, node, 0)`, which is the imperative path the
-// declarative wiring in `graph::wire` replaces. The clock now carries an entity
-// like every other node, so it is named the same way everything else is, and a
-// second spelling for one node is exactly the ambiguity that shape removes.
+/// The entities of the two nodes [`build_into`](crate::engine::build_into) puts
+/// in the graph before any host system runs.
+///
+/// Not a second way to name a node — the *only* way to name these two. Every
+/// other node is spawned by the host, which keeps the `Entity`
+/// [`spawn_audio_node`](crate::graph::SpawnAudioNode::spawn_audio_node) hands
+/// back. These two are built during engine construction, so without this
+/// resource their entities are unreachable: they carry
+/// [`AudioNode`](tutti_core::AudioNode) and nothing else, and a query cannot
+/// tell them apart from each other.
+///
+/// That matters because [`AudioSources`](crate::graph::AudioSources) names
+/// sources by `Entity`. An unreachable entity is an unwirable node.
+///
+/// A predecessor of this type, `TransportClockNode`, held a bare `NodeId` and
+/// was removed with the imperative `graph.connect(..)` path it served. Removing
+/// the imperative spelling was right; leaving zero spellings was not.
+#[derive(Resource, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EngineNodes {
+    /// The [`TransportClock`](tutti_core::transport::TransportClock).
+    ///
+    /// Emits the beat on [`BEAT_PORTS`](tutti_core::transport::BEAT_PORTS)
+    /// output ports — **port 0 whole beats, port 1 the fraction** — which is the
+    /// convention every beat-driven node reads and
+    /// [`beat_from_ports`](tutti_core::transport::beat_from_ports) reassembles.
+    /// The split exists because one `f32` cannot carry a musical position past
+    /// beat 16384 without audible stair-stepping.
+    ///
+    /// Wire both ports, in that order, to a node that takes the beat as a
+    /// signal — `tutti_units::Lfo` in beat-synced mode, or an `AutomationLane`:
+    ///
+    /// ```rust,ignore
+    /// commands.spawn_audio_node(lfo).insert(AudioSources(vec![
+    ///     AudioSource::Node { entity: nodes.clock, port: 0 },
+    ///     AudioSource::Node { entity: nodes.clock, port: 1 },
+    /// ]));
+    /// ```
+    ///
+    /// **Nothing in this crate wires it.** bevy-tutti's own modulation reads the
+    /// beat per *frame* from [`TransportRes`] and pushes it into the driver (see
+    /// [`modulation::driver`](crate::modulation)), trading sample accuracy for
+    /// a scalar that ECS change detection can carry; a sink that wants the
+    /// smooth form asks for a beat-evaluated curve instead. So this field exists
+    /// for host-spawned nodes, and is the seam a host reaches for when it wants
+    /// the per-sample path this crate's own modulation forgoes.
+    pub clock: Entity,
+    /// The [`ClickNode`](tutti_core::ClickNode) — the metronome.
+    ///
+    /// Deliberately **unwired**: where the click lands is the host's
+    /// declaration, like every other source. `net.pipe_output(click_id)` used to
+    /// wire it here, which reads like "mix the click into master" but overwrites
+    /// every global output edge — so the first soundfont to load silently
+    /// disconnected the metronome.
+    ///
+    /// Declare it with [`MasterSources`](crate::graph::MasterSources), or feed
+    /// it into a mixer with [`AudioSources`](crate::graph::AudioSources).
+    ///
+    /// Volume, mode and meter are separate — those are atomics on
+    /// [`MetronomeRes`], not graph edges.
+    pub click: Entity,
+}

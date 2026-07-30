@@ -753,10 +753,7 @@ impl AudioUnit for PolySynth {
         }
 
         let midi_count = self.poll_midi_events_sorted(size);
-        let stereo = matches!(
-            ChannelLayout::from(output.channels()),
-            ChannelLayout::Stereo | ChannelLayout::Quad | ChannelLayout::Multi(_)
-        );
+        let stereo = ChannelLayout::from(output.channels()).is_multi();
 
         let mut mix_left = [0.0f32; 64];
         let mut mix_right = [0.0f32; 64];

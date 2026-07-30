@@ -25,10 +25,30 @@
 //! stop flag, finalizes, and returns the `io::Result` that
 //! [`stop`](Recorder::stop) recovers by joining.
 //!
-//! The scratch buffer is allocated once before the loop; the loop body never
-//! allocates. Whether an empty poll means "back off" or "we are done" is the
-//! source's own [`ON_EMPTY`](tutti_core::io::AudioIn::ON_EMPTY) — a mic parks
-//! and retries, a file finishes.
+//! The scratch buffer is allocated once before the loop, at the source's own
+//! width; the loop body never allocates. Whether an empty poll means "back off"
+//! or "we are done" is the source's own
+//! [`ON_EMPTY`](tutti_core::io::AudioIn::ON_EMPTY) — a mic parks and retries, a
+//! file finishes.
+//!
+//! # The width check lives here
+//!
+//! [`start`](Recorder::start) refuses a source and sink whose channel counts
+//! disagree. That check is not incidental bookkeeping: it is the **replacement**
+//! for a compile-time guarantee that was deliberately given up. `AudioIn` and
+//! `AudioOut` used to carry the frame width as a `const CH`, so "a stereo mic
+//! cannot feed a 6-channel WAV" was a type error. Making the width runtime — the
+//! only way to express a width that comes from *data*, like a decoded file or a
+//! surround capture device — removed that. Per the project rule that an omitted
+//! guarantee ships with its replacement in the same change, it is restored as
+//! two runtime checks: a `debug_assert` inside
+//! [`pump`](tutti_core::io::pump), and the error below.
+//!
+//! This is the right home for the checked half because it is the one place both
+//! endpoints are in scope *before any frame moves*. A mismatch caught here costs
+//! a returned error; the same mismatch caught nowhere writes a file whose
+//! channels rotate every frame and reads back as a subtly-wrong recording rather
+//! than as a failure.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -60,9 +80,9 @@ const IDLE_PARK: Duration = Duration::from_millis(5);
 /// ```no_run
 /// # use tutti_io::{Recorder, WavOut, BitDepth};
 /// # fn go<I: tutti_core::io::AudioIn + Send + 'static>(src: I) -> std::io::Result<()> {
-/// let wav = WavOut::create(&"take.wav".into(), 48_000.0, 2, BitDepth::Float32)
+/// let wav = WavOut::create(&"take.wav".into(), 48_000.0, 2u16, BitDepth::Float32)
 ///     .expect("sink opens");
-/// let rec = Recorder::start(src, wav);
+/// let rec = Recorder::start(src, wav)?;   // errors if the widths disagree
 /// // ... later ...
 /// rec.stop()
 /// # }
@@ -79,20 +99,40 @@ impl Recorder {
     /// Spawn a background thread pumping `src` into `sink`. Returns once
     /// recording is live.
     ///
-    /// The sink's header must already match what the source produces — same
-    /// rate, same channel count. A caller opening a mic reads
-    /// `MicIn::sample_rate()` and builds the `WavOut` from it; that pairing is
-    /// the caller's because only it knows both halves.
-    pub fn start<I>(mut src: I, mut sink: WavOut) -> Self
+    /// **Errors if `src` and `sink` disagree on channel width** — see the
+    /// [module docs](self) for why this check is here and what it replaces.
+    ///
+    /// The **sample rate** is still the caller's to match: `AudioIn` carries no
+    /// rate at all (the trait deliberately has none — a caller that needs one
+    /// holds the concrete type), so nothing here can compare them. A caller
+    /// opening a mic reads `MicIn::sample_rate()` and builds the `WavOut` from
+    /// it, or uses `MicIn::matching_sink`, which pairs both halves at the one
+    /// place they are both in scope.
+    pub fn start<I>(mut src: I, mut sink: WavOut) -> std::io::Result<Self>
     where
         I: AudioIn + Send + 'static,
     {
+        let layout = src.layout();
+        if layout != AudioOut::layout(&sink) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!(
+                    "recorder source is {:?} but the sink is {:?}; \
+                     recording a mismatched pair rotates the file's channels every frame",
+                    layout,
+                    AudioOut::layout(&sink),
+                ),
+            ));
+        }
+        // Sized once, here, from the width both endpoints agreed on above.
+        let scratch_samples = SCRATCH_FRAMES * layout.count().max(1) as usize;
+
         let running = Arc::new(AtomicBool::new(true));
         let thread_running = Arc::clone(&running);
 
         let handle = std::thread::spawn(move || {
             // Allocated once; the loop body below never allocates.
-            let mut scratch = [[0.0f32; 2]; SCRATCH_FRAMES];
+            let mut scratch = vec![0.0f32; scratch_samples];
             while thread_running.load(Ordering::Acquire) {
                 if pump(&mut src, &mut sink, &mut scratch) == 0 {
                     match I::ON_EMPTY {
@@ -108,10 +148,10 @@ impl Recorder {
             sink.finalize()
         });
 
-        Self {
+        Ok(Self {
             running,
             handle: Some(handle),
-        }
+        })
     }
 
     /// Signal the pump thread to stop, join it, and finalize the WAV. Returns
@@ -136,23 +176,33 @@ mod tests {
     use super::*;
     use tutti_core::io::{AudioIn, OnEmpty};
     use tutti_core::pcm::BitDepth;
+    use tutti_core::ChannelLayout;
 
     /// A finite in-memory [`AudioIn`] standing in for a live mic: hands out its
     /// frames in bounded chunks, returning a short-then-zero count at
     /// end-of-stream. Lets the pump→`WavOut`→readback path be proven without
     /// touching real hardware. Mirrors the `SliceSource` fixture in
-    /// `tutti_types::io`'s own tests.
+    /// `tutti_types::io`'s own tests, including its runtime width.
     struct SliceSource {
-        frames: Vec<[f32; 2]>,
+        /// Flat interleaved at `layout`'s width.
+        samples: Vec<f32>,
+        /// Read cursor, in FRAMES.
         pos: usize,
+        layout: ChannelLayout,
     }
 
     impl AudioIn for SliceSource {
         const ON_EMPTY: OnEmpty = OnEmpty::EndOfStream;
 
-        fn poll_into(&mut self, out: &mut [[f32; 2]]) -> usize {
-            let n = (self.frames.len() - self.pos).min(out.len());
-            out[..n].copy_from_slice(&self.frames[self.pos..self.pos + n]);
+        fn layout(&self) -> ChannelLayout {
+            self.layout
+        }
+
+        fn poll_into(&mut self, out: &mut [f32]) -> usize {
+            let ch = self.layout.count() as usize;
+            let total = self.samples.len() / ch;
+            let n = (total - self.pos).min(out.len() / ch);
+            out[..n * ch].copy_from_slice(&self.samples[self.pos * ch..(self.pos + n) * ch]);
             self.pos += n;
             n
         }
@@ -168,19 +218,21 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("recorded.wav");
 
-        let frames: Vec<[f32; 2]> = (0..3000)
-            .map(|i| [i as f32 / 3000.0, -(i as f32) / 3000.0])
+        const FRAMES: usize = 3000;
+        let samples: Vec<f32> = (0..FRAMES)
+            .flat_map(|i| [i as f32 / 3000.0, -(i as f32) / 3000.0])
             .collect();
         let mut src = SliceSource {
-            frames: frames.clone(),
+            samples,
             pos: 0,
+            layout: ChannelLayout::Stereo,
         };
         let mut wav =
-            WavOut::create(&path, 48_000.0, 2, BitDepth::Float32).expect("sink should open");
+            WavOut::create(&path, 48_000.0, 2u16, BitDepth::Float32).expect("sink should open");
 
         // The exact loop the pump thread runs — allocate the scratch once, drain
         // to exhaustion. (No idle-park: the fake source never returns 0 early.)
-        let mut scratch = [[0.0f32; 2]; SCRATCH_FRAMES];
+        let mut scratch = vec![0.0f32; SCRATCH_FRAMES * 2];
         while pump(&mut src, &mut wav, &mut scratch) != 0 {}
         wav.finalize()
             .expect("finalize should back-patch the header");
@@ -189,7 +241,92 @@ mod tests {
         assert_eq!(reader.spec().channels, 2);
         assert_eq!(reader.spec().sample_rate, 48_000);
         // Two samples (L, R) per stereo frame.
-        assert_eq!(reader.len() as usize, frames.len() * 2);
+        assert_eq!(reader.len() as usize, FRAMES * 2);
+    }
+
+    /// **The replacement for the lost compile error, outer half.**
+    ///
+    /// A stereo source into a 6-channel sink used not to compile at all: the
+    /// traits' `const CH` had to unify. That guarantee was given up to let a
+    /// width come from data, so it is restored here as a returned error —
+    /// checked BEFORE the thread spawns, so no frame is ever written to a file
+    /// whose channels would rotate.
+    ///
+    /// The matching pair must still be accepted, which is the half that stops
+    /// this from passing vacuously.
+    #[test]
+    fn start_rejects_a_source_sink_width_mismatch() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let stereo_src = || SliceSource {
+            samples: vec![0.0f32; 64],
+            pos: 0,
+            layout: ChannelLayout::Stereo,
+        };
+
+        // Stereo source, 6-channel sink: refused.
+        let wide_path = dir.path().join("mismatch.wav");
+        let wide =
+            WavOut::create(&wide_path, 48_000.0, 6u16, BitDepth::Float32).expect("sink opens");
+        let err = Recorder::start(stereo_src(), wide)
+            .err()
+            .expect("a width mismatch must be refused, not recorded");
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+        assert!(
+            err.to_string().contains("Stereo") && err.to_string().contains("6"),
+            "the error must name both widths, got: {err}"
+        );
+
+        // Stereo source, mono sink: also refused. A narrowing mismatch is just
+        // as wrong as a widening one, and it is the direction a caller is most
+        // likely to think "it'll just downmix".
+        let mono_path = dir.path().join("mismatch_mono.wav");
+        let mono =
+            WavOut::create(&mono_path, 48_000.0, 1u16, BitDepth::Float32).expect("sink opens");
+        assert!(Recorder::start(stereo_src(), mono).is_err());
+
+        // And the matching pair is accepted.
+        let ok_path = dir.path().join("match.wav");
+        let ok = WavOut::create(&ok_path, 48_000.0, 2u16, BitDepth::Float32).expect("sink opens");
+        let rec = Recorder::start(stereo_src(), ok).expect("matching widths must be accepted");
+        rec.stop().expect("finalize");
+    }
+
+    /// A non-stereo pairing records end to end, and every count on the way
+    /// through stays denominated in FRAMES.
+    ///
+    /// At six channels a sample-denominated count is 6× off, so the frame total
+    /// read back off the finished file is a direct check on the whole chain:
+    /// `poll_into` → `pump` → `write` → header.
+    #[test]
+    fn a_six_channel_source_records_at_its_own_width() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("surround.wav");
+
+        const FRAMES: usize = 500;
+        const CH: usize = 6;
+        let src = SliceSource {
+            samples: (0..FRAMES * CH).map(|i| (i % 97) as f32 * 0.001).collect(),
+            pos: 0,
+            layout: ChannelLayout::Multi(6),
+        };
+        let wav = WavOut::create(&path, 48_000.0, ChannelLayout::Multi(6), BitDepth::Float32)
+            .expect("sink opens");
+
+        let rec = Recorder::start(src, wav).expect("matching 6ch widths");
+        // A finite source ends on its own, but `stop` clears the run flag
+        // immediately — so without this the thread can exit before its first
+        // pump pass and record nothing. Give it time to drain, then join.
+        std::thread::sleep(Duration::from_millis(50));
+        rec.stop().expect("finalize");
+
+        let reader = hound::WavReader::open(&path).expect("readable");
+        assert_eq!(reader.spec().channels, 6);
+        assert_eq!(
+            reader.len() as usize,
+            FRAMES * CH,
+            "500 FRAMES of 6 channels is 3000 samples — not 500, and not 18000"
+        );
     }
 
     /// A live (starving) source records until stopped — the composability the
@@ -208,27 +345,33 @@ mod tests {
         impl AudioIn for Starving {
             const ON_EMPTY: OnEmpty = OnEmpty::Starved;
 
-            fn poll_into(&mut self, out: &mut [[f32; 2]]) -> usize {
+            fn layout(&self) -> ChannelLayout {
+                ChannelLayout::Stereo
+            }
+
+            fn poll_into(&mut self, out: &mut [f32]) -> usize {
                 let n = self.polls.fetch_add(1, Ordering::Relaxed);
                 // Every other poll is empty — never exhausted.
-                if n % 2 == 1 || out.is_empty() {
+                if n % 2 == 1 || out.len() < 2 {
                     return 0;
                 }
-                out[0] = [0.25, -0.25];
+                out[0] = 0.25;
+                out[1] = -0.25;
                 1
             }
         }
 
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("generated.wav");
-        let wav = WavOut::create(&path, 48_000.0, 2, BitDepth::Float32).expect("sink opens");
+        let wav = WavOut::create(&path, 48_000.0, 2u16, BitDepth::Float32).expect("sink opens");
 
         let rec = Recorder::start(
             Starving {
                 polls: std::sync::atomic::AtomicUsize::new(0),
             },
             wav,
-        );
+        )
+        .expect("matching stereo widths");
         // Long enough to cross several idle parks.
         std::thread::sleep(Duration::from_millis(40));
         rec.stop().expect("finalize should succeed");

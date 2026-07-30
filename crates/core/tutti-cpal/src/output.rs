@@ -64,11 +64,13 @@ impl AudioCallbackState {
     }
 }
 
-/// Render one block into `output`, a `channels`-wide interleaved device buffer.
-/// The graph root is folded to `channels` (see [`Engine::process`]).
+/// Render one block into `output`, a `layout`-wide interleaved device buffer.
+/// The graph root is folded to `layout` (see [`Engine::process`]).
 #[inline]
-pub fn process_audio(state: &AudioCallbackState, output: &mut [f32], channels: usize) {
+pub fn process_audio(state: &AudioCallbackState, output: &mut [f32], layout: ChannelLayout) {
     let _no_denormals = ScopedNoDenormals::new();
+    // Stride derived once at entry; the engine derives its own the same way.
+    let channels = layout.count() as usize;
     let frames = output.len().checked_div(channels).unwrap_or(0);
     // Pre-block MIDI: deliver this block's events into node inboxes before the
     // graph renders.
@@ -76,7 +78,7 @@ pub fn process_audio(state: &AudioCallbackState, output: &mut [f32], channels: u
     if let Some(pre_block) = &state.pre_block {
         pre_block.run(frames);
     }
-    state.engine.process(output, frames, channels);
+    state.engine.process(output, frames, layout);
 }
 
 /// Holds a [`cpal::Stream`] to keep it alive. CPAL runs the audio callback
@@ -198,11 +200,13 @@ fn build_stream<T>(
 where
     T: cpal::SizedSample + cpal::FromSample<f32>,
 {
-    // The device's true channel count — the interleave stride for both the mix
-    // buffer and the device buffer. The engine folds the graph root to this
+    // The device's true channel layout. The engine folds the graph root to this
     // width; a device wider than MAX_ROOT_CHANNELS (rare) simply gets silent
     // extra channels (the root renders ≤ 8 and `fold_frame` zero-fills the rest).
-    let channels = usize::from(config.channels).max(1);
+    let layout = ChannelLayout::from(usize::from(config.channels).max(1));
+    // The interleave stride for both the mix buffer and the device buffer,
+    // derived ONCE here — never inside the callback's per-frame loops.
+    let channels = layout.count() as usize;
 
     // Pre-allocate the internal mix buffer to MAX_FRAMES at the device width,
     // plus a stereo scratch for metering. Sized once from the real device config;
@@ -228,13 +232,19 @@ where
             // Zero before rendering — the previous callback's contents are not
             // meaningful input for the graph.
             mix.fill(0.0);
-            process_audio(&state, mix, channels);
+            process_audio(&state, mix, layout);
 
             // Meter a STEREO fold of the device buffer — `meter_output` / the UI
             // waveform assume stereo, and a stereo monitor is meaningful at any
-            // device width. Passthrough when the device is already ≤ 2.
+            // device width.
+            //
+            // The `Stereo` arm is a deliberate optimization, not divergent
+            // logic: `fold_frame`'s 2-wide arm already passes a stereo frame
+            // through unchanged, so this only replaces a per-frame call with one
+            // bulk memcpy. Keep them in step — if the fold's stereo arm ever
+            // stops being a passthrough, this branch has to go, not be patched.
             let meter = &mut meter_buf[..frames * 2];
-            if channels == 2 {
+            if layout == ChannelLayout::Stereo {
                 meter.copy_from_slice(mix);
             } else {
                 for (i, out) in meter.chunks_exact_mut(2).enumerate() {
@@ -327,7 +337,7 @@ mod tests {
 
         let frames = 256;
         let mut output = vec![0.0f32; frames * 2];
-        process_audio(&state, &mut output, 2);
+        process_audio(&state, &mut output, ChannelLayout::Stereo);
 
         let expected_beat = Beat(256.0 * (120.0 / 60.0) / 44100.0);
         let actual_beat = transport.settings.beat();
@@ -351,7 +361,7 @@ mod tests {
 
         let frames = 1024;
         let mut output = vec![0.0f32; frames * 2];
-        process_audio(&state, &mut output, 2);
+        process_audio(&state, &mut output, ChannelLayout::Stereo);
 
         let beat = transport.settings.beat();
         assert!(
@@ -374,7 +384,7 @@ mod tests {
         let mut output = vec![0.0f32; 512 * 2];
         // The filter needs a few blocks before its output is clearly non-zero.
         for _ in 0..4 {
-            process_audio(&state, &mut output, 2);
+            process_audio(&state, &mut output, ChannelLayout::Stereo);
         }
 
         assert!(
@@ -398,11 +408,11 @@ mod tests {
         // Warm up outside the no-alloc scope — first call primes any
         // internal state on the transport / clock.
         let mut output = vec![0.0f32; 1024 * 2];
-        process_audio(&state, &mut output, 2);
+        process_audio(&state, &mut output, ChannelLayout::Stereo);
 
         assert_no_alloc::assert_no_alloc(|| {
             for _ in 0..1_000 {
-                process_audio(&state, &mut output, 2);
+                process_audio(&state, &mut output, ChannelLayout::Stereo);
             }
         });
     }
@@ -422,11 +432,11 @@ mod tests {
         transport.motion.drain();
 
         let mut output = vec![0.0f32; MAX_FRAMES * 2];
-        process_audio(&state, &mut output, 2);
+        process_audio(&state, &mut output, ChannelLayout::Stereo);
 
         assert_no_alloc::assert_no_alloc(|| {
             for _ in 0..64 {
-                process_audio(&state, &mut output, 2);
+                process_audio(&state, &mut output, ChannelLayout::Stereo);
             }
         });
     }
@@ -448,13 +458,13 @@ mod tests {
         // size is where any one-time sizing happens, and that is the engine's
         // business, not the audio thread's.
         for frames in [64usize, 128, 256, 512, 1024, 2048] {
-            process_audio(&state, &mut output[..frames * 2], 2);
+            process_audio(&state, &mut output[..frames * 2], ChannelLayout::Stereo);
         }
 
         assert_no_alloc::assert_no_alloc(|| {
             for _ in 0..16 {
                 for frames in [64usize, 128, 256, 512, 1024, 2048] {
-                    process_audio(&state, &mut output[..frames * 2], 2);
+                    process_audio(&state, &mut output[..frames * 2], ChannelLayout::Stereo);
                 }
             }
         });

@@ -78,7 +78,7 @@
 //!
 //! ```rust,ignore
 //! let src = TapIn::new(tap.open().expect("tap is free"));
-//! let wav = WavOut::create(&path, config.sample_rate, 2, BitDepth::Float32)?;
+//! let wav = WavOut::create(&path, config.sample_rate, ChannelLayout::Stereo, BitDepth::Float32)?;
 //! commands.spawn(AudioPump::start(src, wav, 1024));
 //! ```
 //!
@@ -97,6 +97,9 @@ pub use tutti_io::{MicMonitorNode, MicRing, Recorder, TapIn, WavOut};
 
 // The vocabulary those types speak. `BitDepth` selects a sink's on-disk width;
 // `OnEmpty` is what a source says a 0-frame poll means, which is why a pump
-// takes no policy argument.
+// takes no policy argument; `ChannelLayout` is the *channel* width, which the
+// I/O traits carry at runtime rather than as a const parameter — so a host
+// building a source or a sink needs it named here, not fetched from `tutti-core`.
 pub use tutti_core::io::{pump, AudioIn, AudioOut, OnEmpty};
 pub use tutti_core::pcm::BitDepth;
+pub use tutti_core::ChannelLayout;

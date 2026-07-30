@@ -313,10 +313,7 @@ impl AudioUnit for SpatialPannerNode {
         debug_assert_eq!(self.scratch_output.len(), num_outputs);
 
         // Hoisted once per block: is a second input channel present?
-        let has_stereo_in = matches!(
-            ChannelLayout::from(input.channels()),
-            ChannelLayout::Stereo | ChannelLayout::Quad | ChannelLayout::Multi(_)
-        );
+        let has_stereo_in = ChannelLayout::from(input.channels()).is_multi();
 
         for i in 0..size {
             let left = input.at_f32(0, i);

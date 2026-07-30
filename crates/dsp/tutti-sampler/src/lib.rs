@@ -79,6 +79,29 @@ pub use error::{Error, Result};
 /// use 16 because a plugin's own bus width is its business.
 pub const MAX_SAMPLER_CHANNELS: usize = tutti_core::engine::MAX_ROOT_CHANNELS;
 
+/// Reject the empty layout for anything that is a **graph node**.
+///
+/// [`ChannelLayout`](tutti_core::ChannelLayout) can represent an empty bus
+/// (`Multi(0)`) — deliberately, because a plugin port genuinely can be zero
+/// wide. A sampler node cannot: `outputs()` feeds fundsp's graph planner, and a
+/// node that reports zero outputs is a node nothing can be wired to. So the
+/// widths that reach `AudioUnit::outputs` go through here.
+///
+/// This is the one place that clamp lives now. It used to be eleven scattered
+/// `channels.max(1)` calls on raw `usize` fields, where each site had to
+/// re-remember the rule; the layout carries the declaration and this carries
+/// the node-arity invariant, once. The upper bound is *not* applied here —
+/// `MAX_SAMPLER_CHANNELS` is a per-read stack ceiling, not a limit on what a
+/// node may declare, and only [`DiskVoice`] needs it.
+#[inline]
+pub(crate) fn nonempty(layout: tutti_core::ChannelLayout) -> tutti_core::ChannelLayout {
+    if layout.count() == 0 {
+        tutti_core::ChannelLayout::Mono
+    } else {
+        layout
+    }
+}
+
 #[macro_use]
 mod macros;
 

@@ -20,7 +20,7 @@ use std::path::Path;
 
 use tutti_analysis::{measure_loudness, LoudnessConfig};
 use tutti_core::transport::RenderClock;
-use tutti_types::{ChannelLayout, Db};
+use tutti_types::Db;
 
 use crate::config::ExportConfig;
 use crate::{render_to_buffers, write_buffers, Result, Written};
@@ -103,8 +103,7 @@ impl Normalize {
     /// [`Written`] records that the gain the caller asked for was never
     /// applied.
     pub fn gain_for_rendered(&self, rendered: &crate::Rendered) -> Result<Db> {
-        let layout = ChannelLayout::from_count(rendered.channels() as u16);
-        let meter = LoudnessConfig::new(rendered.sample_rate, layout);
+        let meter = LoudnessConfig::new(rendered.sample_rate, rendered.layout());
         measure_loudness(&meter, &rendered.interleaved())
             .map(|m| self.gain_for(&m))
             .ok_or_else(|| {

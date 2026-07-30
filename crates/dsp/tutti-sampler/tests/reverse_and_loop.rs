@@ -23,7 +23,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use tutti_core::dsp::{BufferArray, U1, U2};
-use tutti_core::{Amplitude, AudioUnit, Beat, Bpm, SamplePosition, Timeline, Wave};
+use tutti_core::{Amplitude, AudioUnit, Beat, Bpm, ChannelLayout, SamplePosition, Timeline, Wave};
 use tutti_sampler::voice::{
     Direction, LoopSetting, MemorySource, MemorySourceConfig, Playback, SlotId, Voice, VoicePool,
     VoiceSource,
@@ -124,7 +124,7 @@ fn reversed_pool(wave: Arc<Wave>, direction: Direction) -> (VoicePool, Arc<Clock
     let source = MemorySource::with_config(
         wave,
         MemorySourceConfig {
-            channels: 2,
+            channels: ChannelLayout::Stereo,
             timeline: Some(clock.clone() as Arc<dyn Timeline>),
             ..Default::default()
         },
@@ -271,7 +271,7 @@ fn looping_source(wave: Arc<Wave>, start: f64, end: f64, xfade: usize) -> Memory
     let mut source = MemorySource::with_config(
         wave,
         MemorySourceConfig {
-            channels: 2,
+            channels: ChannelLayout::Stereo,
             ..Default::default()
         },
     );
@@ -439,7 +439,7 @@ fn a_reversed_voice_with_a_loop_set_stays_bounded() {
     let mut source = MemorySource::with_config(
         ramp(LEN),
         MemorySourceConfig {
-            channels: 2,
+            channels: ChannelLayout::Stereo,
             timeline: Some(clock.clone() as Arc<dyn Timeline>),
             ..Default::default()
         },
@@ -490,7 +490,7 @@ fn a_one_shot_source_stops_at_the_end() {
     let source = MemorySource::with_config(
         ramp(LEN),
         MemorySourceConfig {
-            channels: 2,
+            channels: ChannelLayout::Stereo,
             ..Default::default()
         },
     );
@@ -528,7 +528,7 @@ fn reverse_and_loop_work_at_mono_width() {
     let mut source = MemorySource::with_config(
         Arc::new(w),
         MemorySourceConfig {
-            channels: 1,
+            channels: ChannelLayout::Mono,
             ..Default::default()
         },
     );

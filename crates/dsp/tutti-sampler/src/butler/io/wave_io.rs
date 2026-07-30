@@ -15,8 +15,8 @@
 //! the vocabulary is `[f32; 2]`. The `[l, r] <-> (l, r)` conversion is confined
 //! to these adapters and [`RegionOut::push_frames`].
 
-use crate::MAX_SAMPLER_CHANNELS;
-use tutti_core::{fold_frame, Wave};
+use crate::{nonempty, MAX_SAMPLER_CHANNELS};
+use tutti_core::{fold_frame, ChannelLayout, Wave};
 
 /// The canonical planar→interleaved unpack: writes frame `idx` of `wave` into
 /// `out` at `out.len()` channels, zero past the end.
@@ -100,7 +100,7 @@ pub(crate) struct WaveIn<'w> {
     wave: &'w Wave,
     /// Output interleave width — independent of `wave.channels()`, which
     /// [`wave_frame_into`]'s policy reconciles per frame.
-    channels: usize,
+    channels: ChannelLayout,
     cursor: usize,
     /// `(start, end)` half-open loop bounds in samples, if looping.
     loop_bounds: Option<(usize, usize)>,
@@ -111,7 +111,7 @@ impl<'w> WaveIn<'w> {
         wave: &'w Wave,
         start: usize,
         loop_range: Option<(u64, u64)>,
-        channels: usize,
+        channels: impl Into<ChannelLayout>,
     ) -> Self {
         let loop_bounds = loop_range.and_then(|(start, end)| {
             let start = start as usize;
@@ -120,7 +120,7 @@ impl<'w> WaveIn<'w> {
         });
         Self {
             wave,
-            channels: channels.max(1),
+            channels: nonempty(channels.into()),
             cursor: start,
             loop_bounds,
         }
@@ -134,7 +134,8 @@ impl<'w> WaveIn<'w> {
     /// width as a const parameter (`AudioIn<f32, 2>`), which cannot carry a
     /// width chosen at runtime.
     pub(crate) fn fill_interleaved(&mut self, out: &mut [f32]) -> usize {
-        let ch = self.channels;
+        // Stride derived once, above the frame loop.
+        let ch = self.channels.count() as usize;
         let mut frames = 0;
         for frame in out.chunks_exact_mut(ch) {
             self.cursor = self.wrap(self.cursor);
@@ -258,7 +259,7 @@ mod tests {
     #[test]
     fn wave_in_polls_forward_frames() {
         let wave = test_wave(&[(0.1, 0.1), (0.2, 0.2), (0.3, 0.3)]);
-        let mut src = WaveIn::new(&wave, 0, None, 2);
+        let mut src = WaveIn::new(&wave, 0, None, 2usize);
         let mut out = [0.0f32; 6];
         assert_eq!(src.fill_interleaved(&mut out), 3);
         assert_eq!(out, [0.1, 0.1, 0.2, 0.2, 0.3, 0.3]);
@@ -267,7 +268,7 @@ mod tests {
     #[test]
     fn wave_in_zero_pads_past_end() {
         let wave = test_wave(&[(0.2, 0.2)]);
-        let mut src = WaveIn::new(&wave, 1, None, 2);
+        let mut src = WaveIn::new(&wave, 1, None, 2usize);
         let mut out = [9.0f32; 4];
         src.fill_interleaved(&mut out);
         assert_eq!(out, [0.0; 4]);
@@ -277,7 +278,7 @@ mod tests {
     fn wave_in_wraps_within_loop() {
         // samples 0..4, loop [1,3): after index 2 the next read wraps to 1.
         let wave = test_wave(&[(0.0, 0.0), (1.0, 1.0), (2.0, 2.0), (3.0, 3.0)]);
-        let mut src = WaveIn::new(&wave, 1, Some((1, 3)), 2);
+        let mut src = WaveIn::new(&wave, 1, Some((1, 3)), 2usize);
         let mut out = [0.0f32; 10];
         src.fill_interleaved(&mut out);
         // 1,2 then wrap -> 1,2 then 1
@@ -287,7 +288,7 @@ mod tests {
     #[test]
     fn wave_in_reads_six_channels() {
         let wave = indexed_wave(6, 4);
-        let mut src = WaveIn::new(&wave, 0, None, 6);
+        let mut src = WaveIn::new(&wave, 0, None, 6usize);
         let mut out = [0.0f32; 12];
         assert_eq!(src.fill_interleaved(&mut out), 2);
         for f in 0..2 {

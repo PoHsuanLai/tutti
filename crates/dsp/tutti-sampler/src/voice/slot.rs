@@ -7,12 +7,13 @@
 //! in these branches, so the reasoning is kept inline at each fork.
 
 use crate::stretch;
-use crate::MAX_SAMPLER_CHANNELS;
+use crate::{nonempty, MAX_SAMPLER_CHANNELS};
 
 use super::memory_source::MemorySource;
 use super::types::{Direction, Playback, SlotId, Voice, VoiceSource};
 use tutti_core::{
-    Amplitude, AudioUnit, BufferMut, Cents, ReadRate, SamplePosition, Samples, StretchFactor,
+    Amplitude, AudioUnit, BufferMut, Cents, ChannelLayout, ReadRate, SamplePosition, Samples,
+    StretchFactor,
 };
 
 // ---------------------------------------------------------------------------
@@ -53,7 +54,7 @@ pub(crate) struct VoiceSlot {
     pub(crate) stretch: Option<stretch::Unit>,
     /// Width the stretch unit must be built at, remembered so a later
     /// materialisation matches the reader rather than defaulting.
-    pub(crate) channels: usize,
+    pub(crate) channels: ChannelLayout,
     pub(crate) sample_rate: f64,
 }
 
@@ -82,9 +83,9 @@ impl VoiceSlot {
         id: SlotId,
         voice: Voice,
         sample_rate: f64,
-        channels: usize,
+        channels: impl Into<ChannelLayout>,
     ) -> Self {
-        let channels = channels.max(1);
+        let channels = nonempty(channels.into());
         Self {
             id,
             voice,
@@ -203,13 +204,19 @@ impl VoiceSlot {
     /// per-variant read the `process` mixdown does for a single slot. Factored so
     /// the mixer loop and the standalone [`VoiceNode`] share one definition. RT:
     /// the `VoiceSource` enum match is unchanged, only relocated here.
+    ///
+    /// `width` is a plain `usize`, deliberately **not** a [`ChannelLayout`]: it is
+    /// an already-intersected clamp that callers compute as
+    /// `slot width ∧ output.channels() ∧ MAX_SAMPLER_CHANNELS`, not a declaration
+    /// of how many channels anything *has*. Wrapping it back into a layout would
+    /// claim a width the caller has already narrowed away.
     #[inline]
-    pub(crate) fn process_into(&mut self, size: usize, channels: usize, output: &mut BufferMut) {
+    pub(crate) fn process_into(&mut self, size: usize, width: usize, output: &mut BufferMut) {
         let direction = self.voice.play.direction;
         let gain = self.voice.play.gain;
         // `BufferMut` is planar with no frame accessor, so a per-sample frame is
         // unavoidable here. Stack array at the fixed ceiling, used as a prefix.
-        let n = channels.min(output.channels()).min(MAX_SAMPLER_CHANNELS);
+        let n = width.min(output.channels()).min(MAX_SAMPLER_CHANNELS);
         let mut frame = [0.0f32; MAX_SAMPLER_CHANNELS];
 
         /// Accumulate a frame prefix into the planar output at sample `i`.

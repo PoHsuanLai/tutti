@@ -14,7 +14,7 @@
 //! `c`; output port `c` is the sum of channel `c` across all sources.
 
 use tutti_core::dsp::{Net, Signal};
-use tutti_core::{Azimuth, Elevation, Hz, NodeId, Q};
+use tutti_core::{Azimuth, ChannelLayout, Elevation, Hz, NodeId, Q};
 
 use crate::{Result, SpatialPannerNode, SvfFilterNode, SvfType};
 
@@ -35,6 +35,16 @@ const LFE_Q: Q = Q(0.707);
 #[derive(Clone, Debug)]
 pub struct ChannelSumUnit {
     sources: usize,
+    /// The width this bus sums at — its declared output layout.
+    layout: ChannelLayout,
+    /// [`layout`]'s count, cached as the port-indexing stride.
+    ///
+    /// The layout is the declaration; this is the arithmetic. They are separate
+    /// fields because the summing loops index `s * channels + c` per sample, and
+    /// deriving the count there would put a `match` in the inner loop. Set once
+    /// at construction, so the two can never disagree.
+    ///
+    /// [`layout`]: Self::layout
     channels: usize,
 }
 
@@ -42,16 +52,23 @@ impl ChannelSumUnit {
     /// A bus summing `sources` inputs, each `channels` wide. Both are clamped to
     /// at least 1 (a zero-wide or zero-source bus is meaningless — the graph
     /// would have nothing to sum).
-    pub fn new(sources: usize, channels: usize) -> Self {
+    pub fn new(sources: usize, channels: impl Into<ChannelLayout>) -> Self {
+        let n = (channels.into().count() as usize).max(1);
         Self {
             sources: sources.max(1),
-            channels: channels.max(1),
+            layout: ChannelLayout::from_count(n as u16),
+            channels: n,
         }
     }
 
     /// The channel width this bus sums at (its output count).
     pub fn channels(&self) -> usize {
         self.channels
+    }
+
+    /// The width this bus sums at, as the engine's channel vocabulary.
+    pub fn layout(&self) -> ChannelLayout {
+        self.layout
     }
 
     /// The number of N-wide sources it folds.
@@ -197,7 +214,10 @@ pub fn build_surround_mix(
     // LFE channel would be empty.
     let lfe_group = super::nodes::lfe_channel(layout).map(|lfe_ch| {
         // Mono-sum the sources' first channel, then low-pass.
-        let mono_sum = net.push(Box::new(ChannelSumUnit::new(sources.len().max(1), 1)));
+        let mono_sum = net.push(Box::new(ChannelSumUnit::new(
+            sources.len().max(1),
+            ChannelLayout::Mono,
+        )));
         for (s, src) in sources.iter().enumerate() {
             net.connect(src.node, 0, mono_sum, s);
         }
@@ -214,7 +234,10 @@ pub fn build_surround_mix(
     // one extra group carrying only the LFE send. `ChannelSumUnit::new` clamps a
     // zero source count to 1, so an empty mix is a valid silent N-wide node.
     let groups = panner_ids.len() + usize::from(lfe_group.is_some());
-    let sum = net.push(Box::new(ChannelSumUnit::new(groups, channels)));
+    // `layout`, not the degraded `channels` count: the width is already in hand
+    // here, so hand the bus the declaration rather than a number it has to
+    // re-interpret.
+    let sum = net.push(Box::new(ChannelSumUnit::new(groups, layout)));
     for (s, &pid) in panner_ids.iter().enumerate() {
         for c in 0..channels {
             net.connect(pid, c, sum, s * channels + c);
@@ -236,7 +259,7 @@ mod tests {
 
     #[test]
     fn arity_and_width() {
-        let u = ChannelSumUnit::new(3, 6);
+        let u = ChannelSumUnit::new(3, ChannelLayout::Multi(6));
         assert_eq!(u.inputs(), 18); // 3 sources × 6 channels
         assert_eq!(u.outputs(), 6);
         assert_eq!(u.channels(), 6);
@@ -245,7 +268,7 @@ mod tests {
 
     #[test]
     fn clamps_degenerate_args() {
-        let u = ChannelSumUnit::new(0, 0);
+        let u = ChannelSumUnit::new(0, ChannelLayout::Multi(0));
         assert_eq!(u.sources(), 1);
         assert_eq!(u.channels(), 1);
     }
@@ -253,7 +276,7 @@ mod tests {
     #[test]
     fn tick_sums_per_channel() {
         // Two quad sources: source A = [1,2,3,4], source B = [10,20,30,40].
-        let mut u = ChannelSumUnit::new(2, 4);
+        let mut u = ChannelSumUnit::new(2, ChannelLayout::Quad);
         let input = [1.0, 2.0, 3.0, 4.0, 10.0, 20.0, 30.0, 40.0];
         let mut out = [0.0f32; 4];
         u.tick(&input, &mut out);
@@ -263,7 +286,7 @@ mod tests {
     #[test]
     fn stereo_case_matches_a_plain_stereo_sum() {
         // channels == 2 degenerates to the classic stereo fan-in.
-        let mut u = ChannelSumUnit::new(3, 2);
+        let mut u = ChannelSumUnit::new(3, ChannelLayout::Stereo);
         // 3 stereo sources interleaved per source: (L,R),(L,R),(L,R).
         let input = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6];
         let mut out = [0.0f32; 2];

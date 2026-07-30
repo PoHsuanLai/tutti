@@ -716,3 +716,166 @@ fn an_unmeasurable_rate_fails_rather_than_writing_un_normalized_audio() {
         "expected Unmeasurable, got {err:?}"
     );
 }
+
+/// **The width bug.** A master whose channel count is not one of 1/2/4/6/8/12 —
+/// `Multi(3)`, `Multi(5)`, `Multi(7)` — must export.
+///
+/// It could not, and this test could not have been written before. The render
+/// pipeline was const-generic in its frame width, and `dispatch_channels!`
+/// resolved the runtime `ChannelLayout` to one of exactly six monomorphizations,
+/// returning `Error::UnsupportedChannels` for anything else. The app passes
+/// `ChannelLayout::from_count(master_width)` straight through, so a 3- or 5-wide
+/// master failed at the entry point with no way for a caller to work around it.
+///
+/// Asserted through the file header and the samples, not the return value: "no
+/// error" would also pass if the export quietly wrote a stereo file.
+#[test]
+fn a_width_the_old_dispatch_rejected_now_exports() {
+    let d = tempfile::tempdir().unwrap();
+
+    for width in [3u16, 5, 7, 9] {
+        let layout = ChannelLayout::from_count(width);
+        assert!(
+            matches!(layout, ChannelLayout::Multi(_)),
+            "width {width} should be an unnamed layout"
+        );
+
+        // A net as wide as the file, carrying a distinct constant per channel so
+        // a dropped or duplicated channel is visible.
+        let mut n = tutti_core::dsp::Net::new(0, width as usize);
+        for c in 0..width as usize {
+            let id = n.push(Box::new(dc(0.1 + 0.05 * c as f32)));
+            n.connect_output(id, 0, c);
+        }
+
+        let p = d.path().join(format!("w{width}.wav"));
+        render_to_file(
+            n,
+            &config(AudioFormat::Wav, BitDepth::Float32, layout),
+            &FrozenClock,
+            &p,
+        )
+        .unwrap_or_else(|e| panic!("width {width} failed to export: {e}"));
+
+        let reader = hound::WavReader::open(&p).unwrap();
+        assert_eq!(
+            reader.spec().channels,
+            width,
+            "the file must carry {width} channels"
+        );
+
+        let samples: Vec<f32> = reader.into_samples::<f32>().map(|s| s.unwrap()).collect();
+        assert!(!samples.is_empty(), "width {width} wrote no audio");
+        assert_eq!(
+            samples.len() % width as usize,
+            0,
+            "width {width}: not a whole number of frames"
+        );
+
+        // Every channel carries its OWN constant — proof the frames are
+        // interleaved at the right stride, which is the failure mode a
+        // frame-index-vs-sample-index slip at an odd width would produce.
+        let mid = samples.len() / width as usize / 2;
+        for c in 0..width as usize {
+            let got = samples[mid * width as usize + c];
+            let want = 0.1 + 0.05 * c as f32;
+            assert!(
+                (got - want).abs() < 1e-3,
+                "width {width} channel {c}: got {got}, expected {want}"
+            );
+        }
+    }
+}
+
+/// The same widths through the in-memory path and back out, so `write_buffers`
+/// and `render_to_buffers` are covered too — all three entry points went through
+/// the same rejecting dispatch.
+#[test]
+fn an_odd_width_round_trips_through_buffers() {
+    use tutti_export::write_buffers;
+
+    let d = tempfile::tempdir().unwrap();
+    for width in [3u16, 5] {
+        let layout = ChannelLayout::from_count(width);
+        let mut n = tutti_core::dsp::Net::new(0, width as usize);
+        for c in 0..width as usize {
+            let id = n.push(Box::new(dc(0.25)));
+            n.connect_output(id, 0, c);
+        }
+
+        let cfg = config(AudioFormat::Wav, BitDepth::Float32, layout);
+        let rendered = render_to_buffers(n, &cfg, &FrozenClock)
+            .unwrap_or_else(|e| panic!("width {width}: render_to_buffers failed: {e}"));
+        assert_eq!(rendered.channels(), width as usize);
+        assert_eq!(rendered.layout(), layout);
+
+        let p = d.path().join(format!("buf{width}.wav"));
+        write_buffers(&rendered, &cfg, &p)
+            .unwrap_or_else(|e| panic!("width {width}: write_buffers failed: {e}"));
+        assert_eq!(hound::WavReader::open(&p).unwrap().spec().channels, width);
+    }
+}
+
+/// An odd width must survive a resample too — that path deinterleaves into
+/// planes and re-interleaves them, so it is where a stride mistake at a width
+/// the old code never saw would surface.
+#[test]
+fn an_odd_width_survives_a_resample() {
+    let d = tempfile::tempdir().unwrap();
+    let width = 5u16;
+    let mut n = tutti_core::dsp::Net::new(0, width as usize);
+    for c in 0..width as usize {
+        let id = n.push(Box::new(dc(0.1 + 0.05 * c as f32)));
+        n.connect_output(id, 0, c);
+    }
+
+    let mut cfg = config(
+        AudioFormat::Wav,
+        BitDepth::Float32,
+        ChannelLayout::from_count(width),
+    );
+    cfg.resample = Some(Resample::to(48_000.0));
+
+    let p = d.path().join("resampled5.wav");
+    render_to_file(n, &cfg, &FrozenClock, &p).expect("a 5-wide resampled export");
+
+    let reader = hound::WavReader::open(&p).unwrap();
+    assert_eq!(reader.spec().channels, width);
+    assert_eq!(reader.spec().sample_rate, 48_000);
+
+    let samples: Vec<f32> = reader.into_samples::<f32>().map(|s| s.unwrap()).collect();
+    let frames = samples.len() / width as usize;
+    assert!(frames > 0, "resampled export wrote no audio");
+    // Mid-file, past the resampler's transient: each channel still carries its
+    // own constant, so the re-interleave used the right stride.
+    let mid = frames / 2;
+    for c in 0..width as usize {
+        let got = samples[mid * width as usize + c];
+        let want = 0.1 + 0.05 * c as f32;
+        assert!(
+            (got - want).abs() < 1e-2,
+            "resampled channel {c}: got {got}, expected {want}"
+        );
+    }
+}
+
+/// Zero channels is the one width a render still refuses — the re-purposed
+/// `UnsupportedChannels`. `Multi(0)` is a representable `ChannelLayout` (the
+/// empty bus), so it has to be rejected somewhere rather than dividing by zero
+/// in the frame stride.
+#[test]
+fn a_zero_width_export_is_rejected_not_a_divide_by_zero() {
+    let d = tempfile::tempdir().unwrap();
+    let p = d.path().join("zero.wav");
+    let err = render_to_file(
+        net(),
+        &config(AudioFormat::Wav, BitDepth::Float32, ChannelLayout::Multi(0)),
+        &FrozenClock,
+        &p,
+    )
+    .expect_err("a zero-channel render must not report success");
+    assert!(
+        matches!(err, tutti_export::Error::UnsupportedChannels(0)),
+        "expected UnsupportedChannels(0), got {err:?}"
+    );
+}

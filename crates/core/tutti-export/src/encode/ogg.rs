@@ -2,7 +2,8 @@
 //!
 //! vorbis_rs takes planar per-channel slices, so each block is deinterleaved on
 //! the way through. Vorbis's channel mappings cover mono, stereo, and 3–8
-//! surround, so this carries any width the export dispatch admits below that.
+//! surround; a width past 8 is vorbis's own limit, reported by its builder — the
+//! rest of this crate carries any width.
 //!
 //! Vorbis is lossy and always float internally, so `bit_depth` and `dither` do
 //! not apply — quantization noise has nothing to dither against here.
@@ -44,10 +45,10 @@ impl OggEncoder {
     }
 }
 
-impl<const CH: usize> Encoder<CH> for OggEncoder {
+impl Encoder for OggEncoder {
     fn encode(
         mut self,
-        src: &mut dyn FrameSource<CH>,
+        src: &mut dyn FrameSource,
         source_rate: tutti_core::SampleRate,
         plan: &RenderPlan,
         config: &ExportConfig,
@@ -60,13 +61,15 @@ impl<const CH: usize> Encoder<CH> for OggEncoder {
         // Vorbis is lossy and float internally, so `pump_blocks`'s dither stage
         // is a no-op here by construction — `DitherState::for_config` only
         // arms for an integer bit depth.
-        let mut planes: Vec<Vec<f32>> = vec![Vec::new(); CH];
+        // Once, at entry — not re-derived per block.
+        let ch = config.encode.channels.count() as usize;
+        let mut planes: Vec<Vec<f32>> = vec![Vec::new(); ch];
         pump_blocks(src, source_rate, plan, config, |frames| {
             for p in planes.iter_mut() {
                 p.clear();
                 p.reserve(frames.len());
             }
-            for f in frames {
+            for f in frames.iter() {
                 for (p, &s) in planes.iter_mut().zip(f.iter()) {
                     p.push(s);
                 }

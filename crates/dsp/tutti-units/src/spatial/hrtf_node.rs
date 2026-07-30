@@ -132,10 +132,7 @@ impl AudioUnit for HrtfBinauralNode {
         let width = self.width.load().0;
 
         // Hoisted once per block: is a second input channel present?
-        let has_stereo_in = matches!(
-            ChannelLayout::from(input.channels()),
-            ChannelLayout::Stereo | ChannelLayout::Quad | ChannelLayout::Multi(_)
-        );
+        let has_stereo_in = ChannelLayout::from(input.channels()).is_multi();
 
         for i in 0..size {
             let left = input.at_f32(0, i);

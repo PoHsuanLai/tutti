@@ -18,7 +18,9 @@ use super::types::{Playback, SlotId, Voice, VoiceSource};
 use bevy_ecs::prelude::*;
 use crossbeam_channel::{bounded, Receiver, Sender};
 use tutti_core::transport::BeatCursor;
-use tutti_core::{AudioUnit, BufferMut, BufferRef, ChannelLayout, SampleRate, SignalFrame, Timeline};
+use tutti_core::{
+    AudioUnit, BufferMut, BufferRef, ChannelLayout, SampleRate, SignalFrame, Timeline,
+};
 
 const VOICE_POOL_ID: u64 = 0x_0000_0000_0000_DA03;
 

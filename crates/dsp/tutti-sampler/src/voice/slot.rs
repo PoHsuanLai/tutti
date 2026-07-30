@@ -13,8 +13,7 @@ use super::memory_source::MemorySource;
 use super::types::{Direction, Playback, SlotId, Voice, VoiceSource};
 use tutti_core::{
     Amplitude, AudioUnit, BufferMut, Cents, ChannelLayout, ReadRate, SamplePosition, SampleRate,
-    Samples,
-    StretchFactor,
+    Samples, StretchFactor,
 };
 
 // ---------------------------------------------------------------------------

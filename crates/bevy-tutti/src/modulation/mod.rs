@@ -79,6 +79,30 @@
 //! a sink that does accept curves means supplying it with
 //! [`ModTargetRegistry::insert_target`].
 //!
+//! # The per-sample path is a different route entirely
+//!
+//! Both deliveries above are this matrix's, and neither is sample-accurate: the
+//! scalar is written once a frame, and a curve is only as fine as the sink that
+//! samples it. For a genuinely per-sample modulator, don't route at all — spawn
+//! `tutti_units::LfoNode` in beat-synced mode and wire its
+//! [`BEAT_PORTS`](tutti_core::transport::BEAT_PORTS) inputs to the transport
+//! clock, whose entity is [`EngineNodes::clock`](crate::graph::EngineNodes):
+//!
+//! ```rust,ignore
+//! commands.spawn_audio_node(LfoNode::new().with_beat_sync(Hz(1.0)))
+//!     .insert(AudioSources(vec![
+//!         AudioSource::Node { entity: nodes.clock, port: 0 },
+//!         AudioSource::Node { entity: nodes.clock, port: 1 },
+//!     ]));
+//! ```
+//!
+//! That is the same `tutti_mod::Lfo` this matrix drives, under an audio-rate
+//! adapter instead of a frame-rate driver — one modulator, a different tier.
+//! What it gives up is the matrix: depth/polarity/range shaping, layered
+//! accumulation onto one param, and runtime re-routing are all this module's,
+//! and a hand-wired node participates in none of them. Reach for it when the
+//! staircase is audible; stay here otherwise.
+//!
 //! # What the host must supply
 //!
 //! Resolving a param to an accumulator needs a downcast to a concrete node type

@@ -142,7 +142,7 @@ impl PhaserNode {
         self.feedback_sample = sample;
         self.lfo.advance(self.sample_rate);
 
-        input * (1.0 - mix) + sample * mix
+        mix.blend(input, sample)
     }
 }
 

@@ -186,7 +186,9 @@ pub fn finish(state: LoudnessState) -> Loudness {
 
     Loudness {
         lufs: Db(lufs as f32),
-        true_peak: linear_to_dbtp(peak_linear),
+        // Pins silence at `Db::FLOOR`, which is what the local
+        // `linear_to_dbtp` here used to do by hand.
+        true_peak: Db::from_amplitude_f64(peak_linear),
         range: Db(range as f32),
     }
 }
@@ -199,20 +201,6 @@ pub fn measure_loudness(cfg: &LoudnessConfig, buffer: Interleaved<'_>) -> Option
     let mut state = LoudnessState::new(cfg)?;
     step_loudness(cfg, &mut state, buffer);
     Some(finish(state))
-}
-
-/// True-peak amplitude as dBTP, pinned to [`Db::FLOOR`] at silence.
-///
-/// The floor is `Db::FLOOR` itself rather than a hand-copied `-144.0`: the
-/// constant exists precisely to stop the engine from carrying three different
-/// silence floors, which it did before.
-#[inline]
-fn linear_to_dbtp(linear: f64) -> Db {
-    if linear > 0.0 {
-        Db((20.0 * linear.log10()) as f32)
-    } else {
-        Db::FLOOR
-    }
 }
 
 #[cfg(test)]

@@ -68,12 +68,15 @@ impl LinearModMix {
         }
     }
 
+    /// Returns (depth, feedback, mix). `mix` stays typed — it is consumed by
+    /// [`Mix::blend`] rather than by raw arithmetic; the other two feed
+    /// per-sample math and unwrap here.
     #[inline]
-    pub fn load(&self) -> (f32, f32, f32) {
+    pub fn load(&self) -> (f32, f32, Mix) {
         (
             self.depth.load().get(),
             self.feedback.load().get(),
-            self.mix.load().get(),
+            self.mix.load(),
         )
     }
 }
@@ -102,14 +105,15 @@ impl TimeModMix {
         }
     }
 
-    /// Returns (depth_secs, feedback, mix) — depth carries `Seconds` semantically
-    /// but unwraps to `f32` here for the per-sample math.
+    /// Returns (depth_secs, feedback, mix) — depth carries `Seconds`
+    /// semantically but unwraps to `f32` here for the per-sample math. `mix`
+    /// stays typed: it is consumed by [`Mix::blend`], not by raw arithmetic.
     #[inline]
-    pub fn load(&self) -> (f32, f32, f32) {
+    pub fn load(&self) -> (f32, f32, Mix) {
         (
             self.depth.load().get(),
             self.feedback.load().get(),
-            self.mix.load().get(),
+            self.mix.load(),
         )
     }
 }

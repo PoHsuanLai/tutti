@@ -403,6 +403,7 @@ fn project_param_info(info: ClapParamInfo) -> tutti_plugin_types::ParameterInfo 
         default_value: info.default_value,
         step_count,
         flags,
+        domain: tutti_plugin_types::ParamDomain::Plain,
     }
 }
 

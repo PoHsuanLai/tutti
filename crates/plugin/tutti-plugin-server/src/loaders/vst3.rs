@@ -5,9 +5,9 @@ use std::path::Path;
 use tutti_plugin::server::{
     AudioBufferMut, AutomationMode, BusChannels, ChannelLayout, ChordChanges, EditorSize, Features,
     LoadedPlugin, NoteExpressionChanges, NoteExpressionIntChanges, NoteExpressionTextChanges,
-    ParameterFlags, ParameterInfo, PluginAudio, PluginClass, PluginDescriptor, PluginEditorHost,
-    PluginError, PluginMeta, PluginParams, PluginResult, PluginState, ProcessContext,
-    ProcessOutput, ScaleChanges, WindowHandle,
+    ParamDomain, ParameterFlags, ParameterInfo, PluginAudio, PluginClass, PluginDescriptor,
+    PluginEditorHost, PluginError, PluginMeta, PluginParams, PluginResult, PluginState,
+    ProcessContext, ProcessOutput, ScaleChanges, WindowHandle,
 };
 use tutti_plugin::{BridgeError, LoadStage, Result};
 
@@ -415,12 +415,14 @@ fn build_param_info(info: tutti_vst3_host::Vst3ParameterInfo) -> ParameterInfo {
         id: info.id,
         name: info.title_string(),
         unit: info.units_string(),
-        // VST3 exposes parameters in a normalized 0..1 range.
+        // VST3 exposes parameters in a normalized 0..1 range. `step_count` is
+        // reported separately, so it survives.
         min_value: 0.0,
         max_value: 1.0,
         default_value: info.default_normalized_value,
         step_count: info.step_count as u32,
         flags,
+        domain: ParamDomain::Normalized,
     }
 }
 

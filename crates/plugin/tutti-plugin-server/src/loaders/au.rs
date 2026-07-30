@@ -8,8 +8,9 @@ use tutti_plugin::server::{
 };
 #[cfg(all(target_os = "macos", feature = "au"))]
 use tutti_plugin::server::{
-    EditorSize, ParameterFlags, ParameterInfo, PluginAudio, PluginEditorHost, PluginMeta,
-    PluginParams, PluginResult, PluginState, ProcessContext, ProcessOutput, WindowHandle,
+    EditorSize, ParamDomain, ParameterFlags, ParameterInfo, PluginAudio, PluginEditorHost,
+    PluginMeta, PluginParams, PluginResult, PluginState, ProcessContext, ProcessOutput,
+    WindowHandle,
 };
 
 use crate::loaders::common::{single_bus, Meta};
@@ -450,6 +451,7 @@ impl PluginParams for AuInstance {
                     default_value: p.range.default as f64,
                     step_count,
                     flags,
+                    domain: ParamDomain::Plain,
                 }
             })
             .collect()

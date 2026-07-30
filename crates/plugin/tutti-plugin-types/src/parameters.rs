@@ -17,6 +17,30 @@ pub struct ParameterFlags {
     pub hidden: bool,
 }
 
+/// Which domain `min_value`/`max_value` on a [`ParameterInfo`] are in.
+///
+/// AU and CLAP report the plugin's own range; VST3 and VST2 always report
+/// `0.0..1.0`. The two are indistinguishable from the numbers, since `0.0..1.0`
+/// is also a legitimate plain range — so [`ParameterInfo::to_plain`] was a
+/// conversion on the first pair and a silent identity on the second, with
+/// nothing to tell them apart.
+///
+/// Per-parameter rather than per-format: VST2's `effGetParameterProperties` is
+/// optional, so one plugin can declare a range where the next declines.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub enum ParamDomain {
+    /// Bounds are the `0.0..1.0` placeholder and carry no range information.
+    ///
+    /// The default: it claims nothing, so a producer with real bounds must say
+    /// so explicitly.
+    #[default]
+    Normalized,
+    /// Bounds are the plugin's declared range, in the unit
+    /// [`ParameterInfo::unit`] names.
+    Plain,
+}
+
 /// `id` is the format-native identifier (VST3 ParamID, CLAP clap_id, or VST2 index).
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
@@ -29,6 +53,14 @@ pub struct ParameterInfo {
     pub default_value: f64,
     pub step_count: u32,
     pub flags: ParameterFlags,
+    /// Which domain `min_value`/`max_value` are in. See [`ParamDomain`].
+    ///
+    /// `serde(default)` covers self-describing formats and struct-update
+    /// construction. It does **not** make the IPC wire backward compatible:
+    /// bincode carries no field names, so an older peer's payload is simply
+    /// short and fails to decode. `PROTOCOL_VERSION` governs that.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub domain: ParamDomain,
 }
 
 impl ParameterInfo {
@@ -42,7 +74,18 @@ impl ParameterInfo {
             default_value: 0.0,
             step_count: 0,
             flags: ParameterFlags::default(),
+            domain: ParamDomain::Normalized,
         }
+    }
+
+    /// Set the plugin's declared range, marking the bounds [`ParamDomain::Plain`].
+    ///
+    /// Sets both together so bounds and domain cannot disagree.
+    pub fn with_plain_range(mut self, min: f64, max: f64) -> Self {
+        self.min_value = min;
+        self.max_value = max;
+        self.domain = ParamDomain::Plain;
+        self
     }
 
     /// Infers scaling from `step_count` and `unit` (toggle, integer, log for dB/Hz, else linear).
@@ -98,6 +141,16 @@ impl ParameterInfo {
     /// an endpoint. An infinite *bound* is rejected, because there is no endpoint
     /// to land on.
     pub fn to_plain(&self, normalized: f64) -> f64 {
+        // Nothing to map onto: the bounds are the 0..1 placeholder, so the
+        // arithmetic below would be an identity. Clamp and return, keeping the
+        // NaN and out-of-range guarantees documented above.
+        if self.domain == ParamDomain::Normalized {
+            return if normalized.is_nan() {
+                0.0
+            } else {
+                normalized.clamp(0.0, 1.0)
+            };
+        }
         let Some((min, max)) = self.finite_bounds() else {
             return 0.0;
         };
@@ -120,6 +173,14 @@ impl ParameterInfo {
     /// [`to_plain`](Self::to_plain) for why NaN is checked rather than clamped, and
     /// why ±∞ is not.
     pub fn to_normalized(&self, plain: f64) -> f64 {
+        // Symmetric with `to_plain`: nothing to un-map, so clamp and return.
+        if self.domain == ParamDomain::Normalized {
+            return if plain.is_nan() {
+                0.0
+            } else {
+                plain.clamp(0.0, 1.0)
+            };
+        }
         let Some((min, max)) = self.finite_bounds() else {
             return 0.0;
         };
@@ -159,6 +220,92 @@ pub const ALL_AUTOMATABLE: ParameterFlags = ParameterFlags {
 mod tests {
     use super::*;
     use audio_automation::ParameterScale;
+
+    /// A `Plain` parameter maps normalized input onto its declared range.
+    #[test]
+    fn a_plain_parameter_maps_onto_its_declared_range() {
+        let p = ParameterInfo::new(1, "Cutoff").with_plain_range(20.0, 20_000.0);
+        assert_eq!(p.domain, ParamDomain::Plain);
+        assert_eq!(p.to_plain(0.0), 20.0);
+        assert_eq!(p.to_plain(1.0), 20_000.0);
+        assert_eq!(p.to_normalized(20_000.0), 1.0);
+    }
+
+    /// A `Normalized` parameter passes its input through, clamped.
+    ///
+    /// The bounds are 0..1, so the endpoint map would return the same numbers —
+    /// which is why the domain, not the arithmetic, is what distinguishes the
+    /// two cases. See `the_domain_not_the_bounds_decides_the_mapping`.
+    #[test]
+    fn a_normalized_parameter_passes_its_input_through() {
+        let p = ParameterInfo::new(1, "Mix");
+        assert_eq!(p.domain, ParamDomain::Normalized);
+        assert_eq!(p.to_plain(0.25), 0.25);
+        assert_eq!(p.to_plain(1.5), 1.0, "out of range must still clamp");
+        assert_eq!(p.to_normalized(0.25), 0.25);
+    }
+
+    /// Bounds of `0.0..1.0` are ambiguous on their own; the domain resolves them.
+    ///
+    /// Both parameters here carry identical numbers. Without the domain field
+    /// there is no way to tell "the plugin declared 0..1" from "we had nothing
+    /// to report", which is the whole reason the field exists.
+    #[test]
+    fn the_domain_not_the_bounds_decides_the_mapping() {
+        let declared = ParameterInfo::new(1, "Blend").with_plain_range(0.0, 1.0);
+        let placeholder = ParameterInfo::new(1, "Blend");
+        assert_eq!(declared.min_value, placeholder.min_value);
+        assert_eq!(declared.max_value, placeholder.max_value);
+        assert_ne!(
+            declared.domain, placeholder.domain,
+            "identical bounds must still be distinguishable by domain"
+        );
+    }
+
+    /// `with_plain_range` sets the bounds and the domain together.
+    ///
+    /// Pins the reason it exists: a producer cannot write real bounds and leave
+    /// the domain saying they are a placeholder.
+    #[test]
+    fn with_plain_range_cannot_leave_the_domain_behind() {
+        let p = ParameterInfo::new(1, "Gain").with_plain_range(-60.0, 12.0);
+        assert_eq!(p.min_value, -60.0);
+        assert_eq!(p.max_value, 12.0);
+        assert_eq!(p.domain, ParamDomain::Plain);
+    }
+
+    /// A `Normalized` parameter still refuses NaN, as `to_plain` documents.
+    ///
+    /// The early return added for the domain must not bypass the NaN guard —
+    /// this output reaches `AudioUnitSetParameter` on the audio path.
+    #[test]
+    fn the_normalized_path_still_rejects_nan() {
+        let p = ParameterInfo::new(1, "Mix");
+        assert!(p.to_plain(f64::NAN).is_finite());
+        assert!(p.to_normalized(f64::NAN).is_finite());
+        assert_eq!(p.to_plain(f64::INFINITY), 1.0);
+        assert_eq!(p.to_plain(f64::NEG_INFINITY), 0.0);
+    }
+
+    /// The domain survives the bincode wire format both IPC peers speak.
+    ///
+    /// Note what this does *not* prove: bincode is a non-self-describing format
+    /// with no field names, so `serde(default)` cannot rescue a short payload —
+    /// a peer built before this field would produce a truncated record and the
+    /// decode fails outright rather than defaulting. The attribute is there for
+    /// the self-describing formats and for `..Default::default()` construction;
+    /// mixed-version IPC peers are governed by `PROTOCOL_VERSION`, not by it.
+    #[cfg(feature = "serde")]
+    #[test]
+    fn the_domain_survives_the_bincode_round_trip() {
+        for want in [ParamDomain::Normalized, ParamDomain::Plain] {
+            let mut info = ParameterInfo::new(1, "Gain");
+            info.domain = want;
+            let bytes = bincode::serialize(&info).expect("serialize");
+            let back: ParameterInfo = bincode::deserialize(&bytes).expect("deserialize");
+            assert_eq!(back.domain, want);
+        }
+    }
 
     #[test]
     fn test_to_range_toggle() {
@@ -212,9 +359,7 @@ mod tests {
     /// makes it 22050.
     #[test]
     fn to_plain_maps_normalized_onto_the_declared_range() {
-        let mut info = ParameterInfo::new(1, "Lowpass Cutoff");
-        info.min_value = 10.0;
-        info.max_value = 22_050.0;
+        let info = ParameterInfo::new(1, "Lowpass Cutoff").with_plain_range(10.0, 22_050.0);
 
         assert_eq!(info.to_plain(0.0), 10.0);
         assert_eq!(info.to_plain(1.0), 22_050.0);
@@ -223,9 +368,7 @@ mod tests {
 
     #[test]
     fn to_normalized_inverts_to_plain() {
-        let mut info = ParameterInfo::new(1, "Gain");
-        info.min_value = -96.0;
-        info.max_value = 6.0;
+        let info = ParameterInfo::new(1, "Gain").with_plain_range(-96.0, 6.0);
 
         for n in [0.0, 0.25, 0.5, 0.75, 1.0] {
             assert!((info.to_normalized(info.to_plain(n)) - n).abs() < 1e-12);
@@ -236,9 +379,7 @@ mod tests {
     /// range — a plugin never receives a value it didn't advertise.
     #[test]
     fn conversions_clamp_out_of_range_inputs() {
-        let mut info = ParameterInfo::new(1, "Mix");
-        info.min_value = 0.0;
-        info.max_value = 100.0;
+        let info = ParameterInfo::new(1, "Mix").with_plain_range(0.0, 100.0);
 
         assert_eq!(info.to_plain(-5.0), 0.0);
         assert_eq!(info.to_plain(9.0), 100.0);
@@ -250,9 +391,7 @@ mod tests {
     /// for parameters with no declared range) must not divide by zero.
     #[test]
     fn degenerate_range_does_not_produce_nan() {
-        let mut info = ParameterInfo::new(1, "Fixed");
-        info.min_value = 3.0;
-        info.max_value = 3.0;
+        let info = ParameterInfo::new(1, "Fixed").with_plain_range(3.0, 3.0);
 
         assert_eq!(info.to_plain(0.5), 3.0);
         assert_eq!(info.to_normalized(3.0), 0.0);
@@ -272,9 +411,7 @@ mod tests {
     /// through to the arithmetic.
     #[test]
     fn nan_never_escapes_a_conversion() {
-        let mut info = ParameterInfo::new(1, "Cutoff");
-        info.min_value = 10.0;
-        info.max_value = 22_050.0;
+        let info = ParameterInfo::new(1, "Cutoff").with_plain_range(10.0, 22_050.0);
 
         // A NaN automation value against a sane range.
         assert!(
@@ -296,9 +433,7 @@ mod tests {
             (f64::NEG_INFINITY, 1.0),
             (0.0, f64::INFINITY),
         ] {
-            let mut broken = ParameterInfo::new(2, "Broken");
-            broken.min_value = min;
-            broken.max_value = max;
+            let broken = ParameterInfo::new(2, "Broken").with_plain_range(min, max);
             for v in [0.0, 0.5, 1.0, f64::NAN] {
                 assert!(
                     broken.to_plain(v).is_finite(),
@@ -316,9 +451,7 @@ mod tests {
     /// still lands inside the declared range, at the declared endpoints.
     #[test]
     fn the_nan_guard_did_not_change_finite_behaviour() {
-        let mut info = ParameterInfo::new(1, "Gain");
-        info.min_value = -96.0;
-        info.max_value = 6.0;
+        let info = ParameterInfo::new(1, "Gain").with_plain_range(-96.0, 6.0);
 
         assert_eq!(info.to_plain(0.0), -96.0);
         assert_eq!(info.to_plain(1.0), 6.0);
@@ -332,9 +465,7 @@ mod tests {
 
     #[test]
     fn test_to_range_values_preserved() {
-        let mut info = ParameterInfo::new(7, "Volume".to_string());
-        info.min_value = -96.0;
-        info.max_value = 6.0;
+        let mut info = ParameterInfo::new(7, "Volume".to_string()).with_plain_range(-96.0, 6.0);
         info.default_value = -12.0;
         let range = info.to_range();
         assert_eq!(range.min, -96.0);

@@ -3,13 +3,18 @@
 //! VST2 parameters are identified by a dense `i32` index in
 //! `[0, get_info().parameters)` and the value is a normalized `f32` in
 //! `[0, 1]`. Names and labels come from the plugin's `PluginParameters`
-//! table. We don't get real min/max/step info, so [`Vst2Instance::parameters`]
-//! reports values only — every parameter is automatable in practice.
+//! table, so [`Vst2Instance::parameters`] reports values only — every
+//! parameter is automatable in practice.
+//!
+//! Real min/max/step metadata is *optional* in VST2 rather than absent:
+//! `effGetParameterProperties` (opcode 56) reports it for plugins that
+//! implement it. This module does not read it, and
+//! [`Vst2Instance::parameter_list`] documents where it would land.
 
 use std::sync::Arc;
 use vst::plugin::Plugin as _;
 
-use tutti_plugin_types::{ParameterInfo as SharedParameterInfo, ALL_AUTOMATABLE};
+use tutti_plugin_types::{ParamDomain, ParameterInfo as SharedParameterInfo, ALL_AUTOMATABLE};
 
 use crate::host::ParameterChange;
 use crate::instance::Vst2Instance;
@@ -72,25 +77,29 @@ impl Vst2Instance {
     /// This is the single VST2 `narrow → shared` mapping: the server loader's
     /// `PluginFormatHost::get_parameter_list` and the in-process
     /// `HostParams::parameter_descriptors` both call it, so the map lives in one place.
-    /// VST2 exposes no min/max/step metadata, so every parameter is reported as
-    /// normalized `0.0..1.0`, `default = current`, `step_count = 0`, and
-    /// automatable.
+    ///
+    /// Every parameter is [`ParamDomain::Normalized`] — the VST2 ABI's value is
+    /// a normalized `f32`.
+    ///
+    /// `effGetParameterProperties` (opcode 56) would report a real range, and
+    /// this is where it would land: per parameter that answers, use
+    /// [`SharedParameterInfo::with_plain_range`]. The domain is per-parameter
+    /// because the opcode is — a plugin may answer for some and decline others.
+    /// Detect absence from the dispatch return value, not the buffer: an
+    /// unimplemented opcode leaves the host's zeros untouched.
     pub fn parameter_list(&self) -> Vec<SharedParameterInfo> {
         self.parameters()
             .into_iter()
-            .map(|p| {
-                SharedParameterInfo {
-                    id: p.id,
-                    name: p.name,
-                    unit: p.unit,
-                    // VST2 exposes no min/max/step metadata: every parameter is
-                    // reported normalized 0..1, default = current, no steps.
-                    min_value: 0.0,
-                    max_value: 1.0,
-                    default_value: p.current as f64,
-                    step_count: 0,
-                    flags: ALL_AUTOMATABLE,
-                }
+            .map(|p| SharedParameterInfo {
+                id: p.id,
+                name: p.name,
+                unit: p.unit,
+                min_value: 0.0,
+                max_value: 1.0,
+                default_value: p.current as f64,
+                step_count: 0,
+                flags: ALL_AUTOMATABLE,
+                domain: ParamDomain::Normalized,
             })
             .collect()
     }

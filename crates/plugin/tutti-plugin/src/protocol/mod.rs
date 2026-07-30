@@ -28,7 +28,10 @@ pub mod shm;
 ///   `SetupSharedMemory` would read `slots` out of the bytes that used to hold
 ///   `channels`, get a plausible small integer, and map a wrong-sized region in
 ///   silence. The slab header's magic is the second line of defence.
-pub const PROTOCOL_VERSION: u32 = 4;
+/// - v5: `ParameterInfo` gains `domain`. Mandatory: bincode carries no field
+///   names, so a v4 payload is one field short and every parameter after it in
+///   the stream decodes from misaligned bytes.
+pub const PROTOCOL_VERSION: u32 = 5;
 
 /// Validate a subprocess-reported protocol version against [`PROTOCOL_VERSION`].
 /// Called at each handshake consumer so a version skew fails loudly instead of
@@ -70,8 +73,8 @@ pub use tutti_plugin_types::{
     AutomationMode, BusChannels, ChannelLayout, ChordChanges, ChordValue, Features, LoadedPlugin,
     NoteExpressionChanges, NoteExpressionIntChanges, NoteExpressionIntValue,
     NoteExpressionTextChanges, NoteExpressionTextValue, NoteExpressionType, NoteExpressionValue,
-    ParameterChanges, ParameterFlags, ParameterInfo, ParameterPoint, ParameterQueue, ScaleChanges,
-    ScaleValue, TimeSignature, TransportInfo,
+    ParamDomain, ParameterChanges, ParameterFlags, ParameterInfo, ParameterPoint, ParameterQueue,
+    ScaleChanges, ScaleValue, TimeSignature, TransportInfo,
 };
 
 #[cfg(test)]

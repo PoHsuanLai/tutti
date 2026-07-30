@@ -1,6 +1,6 @@
 use tutti_core::Arc;
 use tutti_core::AtomicF32;
-use tutti_core::{dsp::DEFAULT_SR, AudioUnit, BufferMut, BufferRef, SignalFrame};
+use tutti_core::{dsp::DEFAULT_SR, AudioUnit, BufferMut, BufferRef, ChannelLayout, SignalFrame};
 
 use super::envelope::EnvelopeFollower;
 use super::utils::{amplitude_to_db, compute_limiter_gain, db_to_amplitude, smooth_envelope};
@@ -96,6 +96,15 @@ pub struct LimiterNode {
     ring: LookaheadRing,
     /// Audio channel width. Gain reduction is linked across all channels (peak
     /// = max-abs over the frame), matching the stereo-linked design.
+    layout: ChannelLayout,
+    /// [`layout`](Self::layout)'s count, cached as the interleave/iteration
+    /// stride.
+    ///
+    /// The layout is the *declaration*; this is the arithmetic derived from it.
+    /// They are kept as separate fields because `process_frame_with` reads the
+    /// width per sample (`frame[..n]`, `for c in 0..n`), and deriving it there
+    /// would put a `match` in the inner loop. Set once at construction, so the
+    /// two can never disagree.
     channels: usize,
     /// Per-channel scratch frames, sized to `channels` at construction so the
     /// RT path builds an input frame + limited output without allocating.
@@ -118,19 +127,25 @@ pub struct LimiterNode {
 
 impl LimiterNode {
     pub fn new(threshold_db: impl Into<Db>, ceiling_db: impl Into<Db>) -> Self {
-        Self::with_channels(2, threshold_db, ceiling_db)
+        Self::with_channels(ChannelLayout::Stereo, threshold_db, ceiling_db)
     }
 
     /// An `n`-channel lookahead limiter with gain reduction **linked** across
     /// all channels (peak = max-abs over the frame, one gain applied to every
     /// channel) — the surround generalization of the stereo-linked design.
-    /// `with_channels(2, …)` is bit-identical to [`Self::new`].
+    /// `with_channels(ChannelLayout::Stereo, …)` is bit-identical to
+    /// [`Self::new`].
     pub fn with_channels(
-        channels: usize,
+        channels: impl Into<ChannelLayout>,
         threshold_db: impl Into<Db>,
         ceiling_db: impl Into<Db>,
     ) -> Self {
-        let n = channels.max(1);
+        let layout = channels.into();
+        // An empty layout would leave every scratch `Vec` zero-length and make
+        // `inputs()`/`outputs()` report 0, so clamp to at least mono — the same
+        // floor the raw `channels.max(1)` used to provide.
+        let n = (layout.count() as usize).max(1);
+        let layout = ChannelLayout::from_count(n as u16);
         let lookahead_secs = 0.005;
         let lookahead_samples = (lookahead_secs * DEFAULT_SR as f32).ceil() as usize;
 
@@ -139,6 +154,7 @@ impl LimiterNode {
             ceiling_db: Param::new(ceiling_db.into()),
             release: Param::new(Seconds(0.1)),
             ring: LookaheadRing::new(n, lookahead_samples),
+            layout,
             channels: n,
             in_frame: vec![0.0; n],
             out_frame: vec![0.0; n],
@@ -166,6 +182,11 @@ impl LimiterNode {
         node.mod_ceiling = mod_ceiling;
         node.mod_threshold = mod_threshold;
         node
+    }
+
+    /// The audio width this limiter was built for.
+    pub fn layout(&self) -> ChannelLayout {
+        self.layout
     }
 
     /// Input-port index of the ceiling param input, if present (right after the
@@ -425,6 +446,7 @@ impl Clone for LimiterNode {
             ceiling_db: self.ceiling_db.handle(),
             release: self.release.handle(),
             ring: self.ring.clone(),
+            layout: self.layout,
             channels: self.channels,
             in_frame: self.in_frame.clone(),
             out_frame: self.out_frame.clone(),
@@ -455,6 +477,9 @@ pub struct BrickwallLimiter {
     ceiling_linear: f32,
     /// Audio channel width (`inputs()` audio ports == `outputs()`). The clip is
     /// stateless and per-channel, so widening is purely the port count.
+    layout: ChannelLayout,
+    /// [`layout`](Self::layout)'s count, cached as the iteration stride — see
+    /// the note on [`LimiterNode::channels`]. Set once at construction.
     channels: usize,
     /// When true, a ceiling param-input port (dB) follows the audio inputs and
     /// overrides the ceiling atomic per sample.
@@ -463,18 +488,23 @@ pub struct BrickwallLimiter {
 
 impl BrickwallLimiter {
     pub fn new(ceiling_db: impl Into<Db>) -> Self {
-        Self::with_channels(2, ceiling_db)
+        Self::with_channels(ChannelLayout::Stereo, ceiling_db)
     }
 
     /// An `n`-channel brickwall limiter. The clip is stateless, so every
-    /// channel is clamped to the same (linked) ceiling. `with_channels(2, …)`
-    /// is bit-identical to [`Self::new`].
-    pub fn with_channels(channels: usize, ceiling_db: impl Into<Db>) -> Self {
+    /// channel is clamped to the same (linked) ceiling.
+    /// `with_channels(ChannelLayout::Stereo, …)` is bit-identical to
+    /// [`Self::new`].
+    pub fn with_channels(channels: impl Into<ChannelLayout>, ceiling_db: impl Into<Db>) -> Self {
         let ceiling_db = ceiling_db.into();
+        // At least mono: a zero-width unit would report 0 input and output
+        // ports, which is not a limiter.
+        let n = (channels.into().count() as usize).max(1);
         Self {
             ceiling_db: Param::new(ceiling_db),
             ceiling_linear: db_to_amplitude(ceiling_db).get(),
-            channels: channels.max(1),
+            layout: ChannelLayout::from_count(n as u16),
+            channels: n,
             mod_ceiling: false,
         }
     }
@@ -486,6 +516,11 @@ impl BrickwallLimiter {
         let mut node = Self::new(ceiling_db);
         node.mod_ceiling = mod_ceiling;
         node
+    }
+
+    /// The audio width this limiter was built for.
+    pub fn layout(&self) -> ChannelLayout {
+        self.layout
     }
 
     /// Input-port index of the ceiling param input, if present (right after the
@@ -618,6 +653,7 @@ impl Clone for BrickwallLimiter {
         Self {
             ceiling_db: self.ceiling_db.handle(),
             ceiling_linear: self.ceiling_linear,
+            layout: self.layout,
             channels: self.channels,
             mod_ceiling: self.mod_ceiling,
         }
@@ -895,7 +931,7 @@ mod tests {
 
     #[test]
     fn limiter_with_channels_reports_arity() {
-        let l = LimiterNode::with_channels(6, -6.0, -0.3);
+        let l = LimiterNode::with_channels(ChannelLayout::Multi(6), -6.0, -0.3);
         assert_eq!(l.inputs(), 6);
         assert_eq!(l.outputs(), 6);
     }
@@ -904,7 +940,7 @@ mod tests {
     fn limiter_with_channels_2_matches_new() {
         let mut a = LimiterNode::new(-6.0, -0.3);
         a.set_sample_rate(tutti_core::SampleRate(44100.0));
-        let mut b = LimiterNode::with_channels(2, -6.0, -0.3);
+        let mut b = LimiterNode::with_channels(ChannelLayout::Stereo, -6.0, -0.3);
         b.set_sample_rate(tutti_core::SampleRate(44100.0));
         let mut oa = [0.0f32; 2];
         let mut ob = [0.0f32; 2];
@@ -921,7 +957,7 @@ mod tests {
     fn wide_limiter_gain_is_linked_across_all_channels() {
         // A loud transient on one channel must reduce ALL channels by the same
         // linked gain (max-abs across the frame), preserving inter-channel ratios.
-        let mut lim = LimiterNode::with_channels(6, -6.0, -0.3);
+        let mut lim = LimiterNode::with_channels(ChannelLayout::Multi(6), -6.0, -0.3);
         lim.set_sample_rate(tutti_core::SampleRate(44100.0));
         let mut out = [0.0f32; 6];
         // ch0 loud, others at half — the whole frame should be limited together.
@@ -943,7 +979,7 @@ mod tests {
 
     #[test]
     fn brickwall_with_channels_reports_arity_and_clips_all() {
-        let mut bw = BrickwallLimiter::with_channels(6, 0.0);
+        let mut bw = BrickwallLimiter::with_channels(ChannelLayout::Multi(6), 0.0);
         assert_eq!(bw.inputs(), 6);
         assert_eq!(bw.outputs(), 6);
         let mut out = [0.0f32; 6];

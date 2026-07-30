@@ -103,9 +103,19 @@ impl Rendered {
         Samples(self.planes.first().map_or(0, |p| p.len()))
     }
 
-    /// Channel count.
+    /// Channel count — the interleave stride, and the number of planes.
     pub fn channels(&self) -> usize {
         self.planes.len()
+    }
+
+    /// The width these planes carry, as the engine's channel vocabulary.
+    ///
+    /// [`channels`](Self::channels) is the same number as a raw stride, for the
+    /// indexing arithmetic that wants one. This is the *declaration* — what
+    /// callers reaching for a layout (the loudness meter, a resample, an encode
+    /// config) actually want, so they stop re-wrapping the count themselves.
+    pub fn layout(&self) -> ChannelLayout {
+        ChannelLayout::from_count(self.planes.len() as u16)
     }
 
     /// Multiply every sample by `gain` — the apply half of a measure-then-apply

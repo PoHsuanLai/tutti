@@ -106,4 +106,4 @@ strip = "none"
 # resolves to one version instead of coexisting crates.io 0.4.0 + git builds.
 # Mirrors the app workspace's patch — both must name the same rev.
 [patch.crates-io]
-audio-automation = { git = "https://github.com/PoHsuanLai/audio-automation.git", rev = "f7b6c3a" }
+audio-automation = { git = "https://github.com/PoHsuanLai/audio-automation.git", rev = "be7ccb9" }

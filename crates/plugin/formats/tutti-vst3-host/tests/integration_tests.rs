@@ -103,49 +103,66 @@ fn test_load_any_available_plugin() {
     println!("Successfully loaded: {} by {}", info.name, info.vendor);
 }
 
-/// Per-bus enumeration: every installed plugin should report a per-bus
-/// channel layout whose bus-0 entry matches the flat `num_inputs`/`num_outputs`
-/// counts, and whose totals are self-consistent. A plugin with >1 input bus
-/// (e.g. a sidechain compressor) exercises the multi-bus path.
+/// The flat `num_inputs`/`num_outputs` counts must equal bus 0 of the
+/// corresponding per-bus vec — no rounding up, in either direction.
+///
+/// This is the assertion that pins `audio_bus_channel_count` to what the plugin
+/// declared. It used to carry a `min_channels` floor, so an output bus the
+/// plugin declared with 0 channels was reported as 1, and `build_plugin_info`
+/// then defaulted a *missing* output bus to 2 on top of that. Both are gone;
+/// this fails if either comes back.
+///
+/// Swept over the whole corpus rather than `find_available_plugin`, which
+/// returns the first *existing* path — on this machine that is a bundle that
+/// fails to `dlopen`, so the assertion below never executed. A plugin that
+/// cannot load is skipped with a note; a corpus with nothing loadable fails,
+/// because a silent pass here is indistinguishable from a real one.
 #[test]
-#[ignore]
-fn test_bus_enumeration() {
-    let path = match find_available_plugin() {
-        Some(p) => p,
-        None => {
-            eprintln!("No VST3 plugins found, skipping");
-            return;
-        }
-    };
+fn a_plugins_flat_channel_counts_match_its_bus_zero() {
+    let mut checked = 0;
+    for path in corpus() {
+        let library = resolve_bundle(&path);
+        let Ok(plugin) = Vst3Instance::<f32>::load(&library, 48_000.0, 64) else {
+            eprintln!("skipping {} (failed to load)", path.display());
+            continue;
+        };
+        let info = plugin.info();
+        println!(
+            "{}: in={} out={} in_buses={:?} out_buses={:?}",
+            info.name,
+            info.num_inputs,
+            info.num_outputs,
+            info.input_bus_channels,
+            info.output_bus_channels
+        );
 
-    let library = resolve_bundle(Path::new(path));
-    let plugin = Vst3Instance::<f32>::load(&library, 48_000.0, 64).expect("Failed to load plugin");
-    let info = plugin.info();
-    println!(
-        "{}: input buses = {:?}, output buses = {:?}",
-        info.name, info.input_bus_channels, info.output_bus_channels
+        // An empty vec means the plugin named no bus in that direction, and the
+        // flat count must say 0 rather than a substituted width.
+        let want_in = info.input_bus_channels.first().copied().unwrap_or(0);
+        let want_out = info.output_bus_channels.first().copied().unwrap_or(0);
+        assert_eq!(
+            info.num_inputs, want_in,
+            "{}: flat num_inputs disagrees with input bus 0",
+            info.name
+        );
+        assert_eq!(
+            info.num_outputs, want_out,
+            "{}: flat num_outputs disagrees with output bus 0 — a floor or a \
+             default width has been reintroduced",
+            info.name
+        );
+
+        let in_total: usize = info.input_bus_channels.iter().sum();
+        let out_total: usize = info.output_bus_channels.iter().sum();
+        assert_eq!(in_total, info.total_input_channels());
+        assert_eq!(out_total, info.total_output_channels());
+        checked += 1;
+    }
+    assert!(
+        checked > 0,
+        "no VST3 plugin in the corpus could be loaded, so nothing was checked"
     );
-
-    if !info.input_bus_channels.is_empty() {
-        assert_eq!(
-            info.input_bus_channels[0], info.num_inputs,
-            "input bus 0 must match flat num_inputs"
-        );
-        let total: usize = info.input_bus_channels.iter().sum();
-        assert_eq!(total, info.total_input_channels());
-    }
-    if !info.output_bus_channels.is_empty() {
-        assert_eq!(
-            info.output_bus_channels[0], info.num_outputs,
-            "output bus 0 must match flat num_outputs"
-        );
-        let total: usize = info.output_bus_channels.iter().sum();
-        assert_eq!(total, info.total_output_channels());
-    }
-
-    // Activation + a process call must succeed regardless of bus count.
-    let num_in_buses = info.input_bus_channels.len();
-    println!("activated with {num_in_buses} input bus(es)");
+    println!("checked {checked} plugin(s)");
 }
 
 #[test]

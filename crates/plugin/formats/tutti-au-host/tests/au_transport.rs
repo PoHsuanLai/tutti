@@ -63,6 +63,7 @@ use support::corpus::{
 use tutti_au_host::types::{K_AUDIO_UNIT_PROPERTY_HOST_CALLBACKS, K_AUDIO_UNIT_SCOPE_GLOBAL};
 use tutti_au_host::{AuError, TransportInfo, TransportState};
 use tutti_types::meter::{BarNumber, TimeSignature};
+use tutti_types::Samples;
 
 /// Serializes component discovery / instantiate / dispose, exactly as
 /// `au_conformance.rs`'s lock of the same name does. AudioToolbox tolerates
@@ -136,14 +137,15 @@ fn a_reverb_tail_is_large_and_distinct_from_its_latency() {
         tail.0
     );
     assert_eq!(
-        latency, 0,
+        latency,
+        Samples::ZERO,
         "AUMatrixReverb reports no latency; if this changed, the \
          tail-vs-latency contrast below needs re-measuring"
     );
     // The two properties are genuinely different numbers, which is the whole
     // point of reading tail separately.
     assert_ne!(
-        tail.to_samples_ceil(RATE).get() as u32,
+        tail.to_samples_ceil(RATE),
         latency,
         "tail and latency must not be the same read"
     );
@@ -167,19 +169,21 @@ fn a_unit_with_both_latency_and_tail_reports_them_separately() {
     let latency = au.get_latency().expect("latency read");
 
     assert_eq!(
-        latency, 256,
+        latency,
+        Samples(256),
         "AUDynamicsProcessor's 256-sample lookahead is what makes this test's \
          tail-vs-latency contrast meaningful; re-measure if it moved"
     );
-    let tail_samples = tail.to_samples_ceil(RATE).get() as u32;
+    let tail_samples = tail.to_samples_ceil(RATE);
     assert_eq!(
-        tail_samples, 9601,
+        tail_samples,
+        Samples(9601),
         "0.2s at 48kHz, rounded up: the *allocation* rounding, because a bounce \
          that rounds a tail down truncates it"
     );
     assert!(
         tail_samples > latency,
-        "tail ({tail_samples}) and latency ({latency}) are different quantities \
+        "tail ({tail_samples:?}) and latency ({latency:?}) are different quantities \
          and must not be the same read"
     );
 }

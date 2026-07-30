@@ -44,6 +44,7 @@
 
 use tutti_au_host::bus::BusDirection;
 use tutti_au_host::instance::AuInstance;
+use tutti_types::Samples;
 
 mod support;
 use support::probe_au::{
@@ -207,7 +208,8 @@ fn a_lied_about_latency_does_not_destabilise_the_host() {
 
     let reported = au.get_latency().expect("latency read must not fail");
     assert_eq!(
-        reported, LIED_LATENCY_SAMPLES,
+        reported,
+        Samples(LIED_LATENCY_SAMPLES as usize),
         "the host must report the AU's claim verbatim rather than inventing a \
          value; PDC correctness is the plugin's problem, but silently rewriting \
          the number would hide the lie from a user comparing against the plugin's UI"
@@ -221,14 +223,53 @@ fn a_lied_about_latency_does_not_destabilise_the_host() {
     }
 }
 
+/// A refused latency property is an error, not a zero.
+///
+/// `get_latency` used to swallow the refusal with `unwrap_or(0.0)` *inside*
+/// itself, so its `Result` could never be `Err` and every caller's error arm —
+/// including the AU loader's `unwrap_or(0)` — was unreachable code that read as
+/// if it had considered the case. A host cannot then tell "this plugin delays
+/// nothing" from "this plugin would not say", and the two want different
+/// answers: the first needs no PDC, the second is a plugin worth warning about.
+///
+/// Nothing in the real corpus reaches this path — measured on macOS 15.6, all
+/// 29 registered units answer and none refuses — which is precisely why the
+/// swallowing survived. Only a probe can produce the refusal.
+///
+/// Note what is asserted: an `Err`, not a specific value. The point is that the
+/// refusal is *distinguishable*, and a zero would not be.
+#[test]
+fn a_refused_latency_is_an_error_not_a_zero() {
+    let au = Misbehaviour::RefusesLatency.open_initialized(RATE, BLOCK);
+
+    let got = au.get_latency();
+    assert!(
+        got.is_err(),
+        "the AU refused kAudioUnitProperty_Latency, but the host reported \
+         {got:?} — flattening that to a value makes a refusal indistinguishable \
+         from a plugin that genuinely delays nothing"
+    );
+
+    // The control: the same call against a well-behaved probe succeeds, so the
+    // assertion above is about the refusal and not about the harness.
+    let ok = Misbehaviour::None.open_initialized(RATE, BLOCK);
+    assert_eq!(
+        ok.get_latency().expect("a conforming probe answers"),
+        Samples::ZERO,
+        "the conforming probe reports zero latency, so `Ok(0)` and `Err` are \
+         both reachable and this test can tell them apart"
+    );
+}
+
 /// A **negative** latency must not wrap into a huge unsigned buffer size.
 ///
-/// `get_latency` computes `(seconds * sample_rate) as u32` from the AU's `f64`.
-/// A negative product is the dangerous case: in C, casting it to unsigned wraps
-/// to something near `u32::MAX`, and a host that allocated or offset by that
-/// number is instantly out of bounds. Rust's float→int `as` saturates instead,
-/// so the answer must be 0 — this test pins that guarantee rather than trusting
-/// it, because the expression is one `unsafe` block away from C semantics and a
+/// `get_latency` scales the AU's `f64` seconds by the sample rate and converts
+/// through `Seconds::to_samples`. A negative product is the dangerous case: in
+/// C, casting it to unsigned wraps to something near the integer maximum, and a
+/// host that allocated or offset by that number is instantly out of bounds.
+/// `to_samples` collapses negative and non-finite inputs to zero explicitly, so
+/// the answer must be 0 — this test pins that guarantee rather than trusting it,
+/// because the expression is one `unsafe` block away from C semantics and a
 /// future refactor through `libc` or a manual cast would silently reintroduce
 /// the wrap.
 #[test]
@@ -237,9 +278,10 @@ fn a_negative_latency_saturates_instead_of_wrapping() {
 
     let reported = au.get_latency().expect("latency read must not fail");
     assert_eq!(
-        reported, 0,
-        "a negative latency must saturate to 0, not wrap to ~u32::MAX \
-         (got {reported}) — a host offsetting a buffer by that value reads far \
+        reported,
+        Samples::ZERO,
+        "a negative latency must saturate to 0, not wrap to ~usize::MAX \
+         (got {reported:?}) — a host offsetting a buffer by that value reads far \
          out of bounds"
     );
 

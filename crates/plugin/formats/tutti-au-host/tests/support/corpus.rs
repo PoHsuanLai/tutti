@@ -33,6 +33,7 @@
 use tutti_au_host::component::{enumerate_components_of_type, AuComponentInfo, AuType};
 use tutti_au_host::instance::AuInstance;
 use tutti_au_host::{AuLayoutTag, BusDirection};
+use tutti_types::Samples;
 
 /// One Apple Audio Unit, addressed by the codes AudioToolbox registers it under.
 #[derive(Debug, Clone, Copy)]
@@ -1159,8 +1160,11 @@ pub const INFINITE_TAIL_UNIT: ThirdPartyRef = TAL_REVERB_4_REF;
 /// duration. That is the opposite of what the property's `Float64`-seconds
 /// encoding suggests, so it is worth pinning: a host that recomputed PDC from a
 /// cached seconds value on a rate change would drift here.
-pub const THIRD_PARTY_LATENCY: &[(ThirdPartyRef, u32)] =
-    &[(TDR_NOVA, 184), (TAL_NOISEMAKER, 0), (TAL_REVERB_4_REF, 0)];
+pub const THIRD_PARTY_LATENCY: &[(ThirdPartyRef, Samples)] = &[
+    (TDR_NOVA, Samples(184)),
+    (TAL_NOISEMAKER, Samples::ZERO),
+    (TAL_REVERB_4_REF, Samples::ZERO),
+];
 
 /// `(unit, expected Cocoa view width, height)` triples, measured.
 ///

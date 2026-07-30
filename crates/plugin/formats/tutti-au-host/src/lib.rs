@@ -104,6 +104,13 @@ pub use error::{AuError, PresetFileError, PresetMismatch, Result};
 // pull during render.
 pub use tutti_plugin_types::{EditorSize, MidiEvent, TransportInfo, WindowHandle};
 
+// Unit types this crate's API hands back: `Samples` from `get_latency`,
+// `Seconds` from `get_tail_time`. Re-exported because a consumer that cannot
+// name a returned type cannot bind it — `tutti-plugin-server` depends on this
+// crate but not on `tutti-types`.
+pub use tutti_types::value::units::Seconds;
+pub use tutti_types::Samples;
+
 // Bus topology vocabulary. Unlike the parameter types below, these ARE flat
 // re-exports: `bus_count` / `bus_layout` / `supported_channel_configs` are
 // inherent methods on `AuInstance`, so a caller that reaches those methods needs

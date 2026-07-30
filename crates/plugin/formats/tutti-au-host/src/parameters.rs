@@ -925,7 +925,15 @@ mod tests {
         assert_eq!(ParameterUnit::MidiController.to_string(), "CC");
         // And the codes actually observed on this machine still fall through to
         // `Unknown`, so the new arm did not swallow a neighbour.
-        for code in [1u32, 5, 7, 9, 10, 16, 18, 21, 24, 25] {
+        //
+        // Code 1 was in this list when it was measured and is deliberately no
+        // longer: it is `kAudioUnitParameterUnit_Indexed` (pinned from Apple's
+        // header at `AudioUnitProperties.h:1499`), and it now decodes to its own
+        // variant — see `the_indexed_unit_is_not_unknown`. Two suites merged
+        // independently, one measuring code 1 as unhandled and the other adding
+        // the arm that handles it; the arm is right, so the measurement is what
+        // moved on.
+        for code in [5u32, 7, 9, 10, 16, 18, 21, 24, 25] {
             assert_eq!(
                 ParameterUnit::from_raw(code),
                 ParameterUnit::Unknown(code),

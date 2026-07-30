@@ -784,8 +784,8 @@ fn reported_latency_matches_and_survives_a_rate_change() {
                 .unwrap_or_else(|e| panic!("{}: get_latency failed: {e:?}", unit.label));
             assert_eq!(
                 got, expected,
-                "{}: reports {got} samples of latency at {RATE} Hz, measured \
-                 {expected} on macOS 15.6. PDC is wrong by the difference, so \
+                "{}: reports {got:?} of latency at {RATE} Hz, measured \
+                 {expected:?} on macOS 15.6. PDC is wrong by the difference, so \
                  every track through this plugin drifts.",
                 unit.label,
             );
@@ -798,10 +798,10 @@ fn reported_latency_matches_and_survives_a_rate_change() {
             let at_44 = au.get_latency().expect("latency at 44.1 kHz");
             assert_eq!(
                 at_44, expected,
-                "{}: reports {at_44} samples at 44.1 kHz but {expected} at 48 \
+                "{}: reports {at_44:?} at 44.1 kHz but {expected:?} at 48 \
                  kHz. Measured equal on macOS 15.6 — this plugin reports a fixed \
                  sample count, so a host that scaled a cached seconds value \
-                 across the rate change would produce {at_44} here and \
+                 across the rate change would produce {at_44:?} here and \
                  mis-compensate.",
                 unit.label,
             );

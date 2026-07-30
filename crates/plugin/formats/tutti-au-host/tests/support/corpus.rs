@@ -537,3 +537,190 @@ pub fn envelope(buffer: &[f32], segments: usize) -> Vec<f32> {
         })
         .collect()
 }
+
+// ------------------------------------------------- offline / push-render corpus
+//
+// Everything below was measured on macOS 15.6 by a probe example that has since
+// been deleted; the numbers are recorded here because they are the only record.
+// Each list is *named* rather than derived at runtime for the reason
+// `ACCEPTS_MONO` gives: a test that asks the AU what it supports and then asserts
+// agreement with itself passes no matter what the host does.
+
+/// Units measured to implement `kAudioUnitProperty_OfflineRender`.
+///
+/// **Only the instruments.** Every Apple effect and mixer on the system refuses
+/// the property with `kAudioUnitErr_InvalidProperty` (-10879) — for the read, the
+/// write, and `GetPropertyInfo` alike. That is a surprising enough shape that it
+/// is worth being explicit: the property whose entire purpose is "this is a
+/// bounce, take the slow path" is not implemented by any of the units that would
+/// most obviously use it.
+///
+/// The counterweight is [`WITHOUT_OFFLINE_RENDER`]. Both lists matter: without a
+/// named refusing unit, the host's decision to propagate the refusal as an error
+/// rather than flatten it to `false` could not be pinned.
+pub const WITH_OFFLINE_RENDER: &[AuRef] = &[SAMPLER, DLS_SYNTH];
+
+/// Units measured to refuse `kAudioUnitProperty_OfflineRender` outright.
+pub const WITHOUT_OFFLINE_RENDER: &[AuRef] = &[
+    DELAY,
+    DYNAMICS,
+    DISTORTION,
+    MATRIX_REVERB,
+    REVERB2,
+    N_BAND_EQ,
+    MULTI_CHANNEL_MIXER,
+];
+
+/// Units measured to advertise `kAudioUnitProperty_InPlaceProcessing`, with the
+/// value each reports.
+///
+/// The value is pinned rather than merely "the read succeeded" because the
+/// property is a capability claim and `1` versus `0` is the whole content of it.
+/// Every unit that answers reports `1`; **no unit on this system reports `0`**,
+/// which is why the host must not flatten a refusal into `false` — doing so would
+/// report that AUMatrixReverb *forbids* in-place operation when it has merely
+/// never mentioned it. [`WITHOUT_IN_PLACE`] carries the refusing side.
+pub const WITH_IN_PLACE: &[(AuRef, bool)] = &[
+    (DELAY, true),
+    (DYNAMICS, true),
+    (DISTORTION, true),
+    (LOWPASS, true),
+    (NO_VIEW_SAMPLE_DELAY, true),
+    (MULTIBAND_COMPRESSOR, true),
+];
+
+/// Units measured to refuse `kAudioUnitProperty_InPlaceProcessing` (-10879).
+///
+/// Note AUNBandEQ and both reverbs are here while every other effect is in
+/// [`WITH_IN_PLACE`]: the split does not follow unit type, so a host cannot infer
+/// the capability and must ask.
+pub const WITHOUT_IN_PLACE: &[AuRef] = &[
+    MATRIX_REVERB,
+    REVERB2,
+    N_BAND_EQ,
+    SAMPLER,
+    DLS_SYNTH,
+    MULTI_CHANNEL_MIXER,
+];
+
+/// Units measured to implement `kAudioUnitProperty_RenderQuality`, paired with
+/// the default value each reports on a fresh instance.
+///
+/// The defaults are pinned because they are not uniform — AUDistortion and
+/// AUMultiChannelMixer start at 64, AUMatrixReverb and DLSMusicDevice at 127 —
+/// so a host that returned a fabricated constant would satisfy a "non-zero"
+/// check but not this.
+pub const WITH_RENDER_QUALITY: &[(AuRef, u32)] = &[
+    (DISTORTION, 64),
+    (MATRIX_REVERB, 127),
+    (DLS_SYNTH, 127),
+    (MULTI_CHANNEL_MIXER, 64),
+];
+
+/// Units measured to refuse `kAudioUnitProperty_RenderQuality` (-10879).
+pub const WITHOUT_RENDER_QUALITY: &[AuRef] = &[
+    DELAY,
+    DYNAMICS,
+    REVERB2,
+    N_BAND_EQ,
+    LOWPASS,
+    NO_VIEW_SAMPLE_DELAY,
+    SAMPLER,
+];
+
+/// The one unit measured to **enforce** the documented 0–127 render-quality
+/// range: it answers `paramErr` (-50) for anything above 127 and keeps its
+/// previous value.
+///
+/// Named on its own because it is the exception. AUMatrixReverb, DLSMusicDevice
+/// and AUMultiChannelMixer all accept an out-of-range write with `noErr` **and
+/// read the out-of-range value straight back** (999 in, 999 out; the mixer
+/// round-trips `u32::MAX`). That is what makes the host-side range check
+/// load-bearing rather than belt-and-braces, and it is why a write-then-read-back
+/// verifier would not substitute for it.
+pub const ENFORCES_RENDER_QUALITY_RANGE: AuRef = DISTORTION;
+
+/// `paramErr`, the status [`ENFORCES_RENDER_QUALITY_RANGE`] returns for a
+/// render-quality value above 127.
+pub const PARAM_ERR: i32 = -50;
+
+/// Units measured to implement the `AudioUnitProcess` push-render selector
+/// (`noErr`, and audio comes out).
+///
+/// 6 of the 9 corpus effects. AUMatrixReverb and AUReverb2 do not, nor does any
+/// instrument or mixer — see [`WITHOUT_PUSH_RENDER`].
+pub const WITH_PUSH_RENDER: &[AuRef] = &[
+    DELAY,
+    DYNAMICS,
+    DISTORTION,
+    N_BAND_EQ,
+    LOWPASS,
+    NO_VIEW_SAMPLE_DELAY,
+    MULTIBAND_COMPRESSOR,
+];
+
+/// Units measured to answer `unimpErr` to `AudioUnitProcess`.
+///
+/// The component manager's "selector not implemented", not a render failure.
+/// Named so the host's refusal path is exercised against a real refusal rather
+/// than a fabricated one — the same discipline [`REFUSES_MONO`] applies to stream
+/// formats.
+pub const WITHOUT_PUSH_RENDER: &[AuRef] = &[
+    MATRIX_REVERB,
+    REVERB2,
+    SAMPLER,
+    DLS_SYNTH,
+    MULTI_CHANNEL_MIXER,
+];
+
+/// The **only** unit on this system that implements `AudioUnitProcessMultiple`.
+///
+/// And it accepts exactly one input buffer list: a second is refused with
+/// `kAudioUnitErr_InvalidElement` (-10877), which is correct, since AUReverb2 has
+/// one input element. Every other unit — including AUMultiChannelMixer, which has
+/// **8** real input elements — answers `unimpErr` for 1, 2 and 8 lists alike, so
+/// the absence is the selector rather than the topology.
+///
+/// The consequence, recorded here because it is the headline finding: **there is
+/// no working AU sidechain on this machine.** `AudioUnitProcessMultiple` is the
+/// only AUv2 call that can carry a second input bus, and nothing implements it in
+/// a form that accepts one.
+pub const IMPLEMENTS_PROCESS_MULTIPLE: AuRef = REVERB2;
+
+/// `unimpErr` — the status an AU returns for a dispatch selector it does not
+/// implement. Re-exported from the host crate rather than re-spelled so the two
+/// cannot drift.
+pub const UNIMP_ERR: i32 = tutti_au_host::types::UNIMP_ERR;
+
+/// `kAudioUnitErr_TooManyFramesToProcess`, the AU's own answer to a render wider
+/// than the `MaximumFramesPerSlice` it was initialized at.
+///
+/// Pinned so the host's `InvalidBuffer` guard can be shown to fire *instead of*
+/// this rather than merely *alongside* it: the host must refuse the oversized
+/// render before handing the AU a buffer list whose `mDataByteSize` overstates
+/// storage the host actually allocated.
+pub const TOO_MANY_FRAMES: i32 = -10874;
+
+/// A 440 Hz sine at `amplitude`, `channels` wide, starting at sample `offset`.
+///
+/// Deliberately not silence: an in-place render path can be wrong in ways silence
+/// cannot reveal — reading its own output as input, or emitting the previous block
+/// — and every such failure still produces zeroes when fed zeroes.
+pub fn sine(
+    channels: usize,
+    frames: usize,
+    offset: usize,
+    amplitude: f32,
+    rate: f32,
+) -> Vec<Vec<f32>> {
+    (0..channels)
+        .map(|_| {
+            (0..frames)
+                .map(|i| {
+                    let n = (offset + i) as f32;
+                    (2.0 * std::f32::consts::PI * 440.0 * n / rate).sin() * amplitude
+                })
+                .collect()
+        })
+        .collect()
+}

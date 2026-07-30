@@ -557,8 +557,8 @@ mod tests {
         assert_eq!(decoder.transport_state(), ClockTransportState::Playing);
         let tempo = decoder.tempo_bpm().expect("decoder derived a tempo");
         assert!(
-            (tempo - 120.0).abs() < 2.0,
-            "round-trip tempo ~120, got {tempo}"
+            !tempo.differs_from(Bpm(120.0), 2.0),
+            "round-trip tempo ~120, got {tempo:?}"
         );
     }
 

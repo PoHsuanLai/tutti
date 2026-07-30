@@ -26,7 +26,12 @@ impl LfoDrive {
     #[inline]
     pub fn eval(&self) -> (f32, f32) {
         let l = self.phase.to_radians().get().sin();
-        let r = self.phase.offset_by(self.lr_offset).to_radians().get().sin();
+        let r = self
+            .phase
+            .offset_by(self.lr_offset)
+            .to_radians()
+            .get()
+            .sin();
         (l, r)
     }
 

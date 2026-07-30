@@ -115,7 +115,7 @@ pub struct LimiterNode {
     /// Per-channel lookahead-delayed scratch (filled by the ring each sample).
     delayed: Vec<f32>,
     envelope: f32,
-    gain_reduction_db: f32,
+    gain_reduction_db: Db,
     sample_rate: SampleRate,
     follower: EnvelopeFollower,
     /// When true, a ceiling param-input port (dB) follows the audio inputs and
@@ -165,7 +165,7 @@ impl LimiterNode {
             out_frame: vec![0.0; n],
             delayed: vec![0.0; n],
             envelope: 0.0,
-            gain_reduction_db: 0.0,
+            gain_reduction_db: Db::UNITY,
             sample_rate: DEFAULT_SAMPLE_RATE,
             follower: EnvelopeFollower::new(0.0, 0.1, DEFAULT_SAMPLE_RATE),
             mod_ceiling: false,
@@ -260,7 +260,7 @@ impl LimiterNode {
         self.release.store(Seconds(secs.into().get().max(0.001)));
     }
 
-    pub fn gain_reduction_db(&self) -> f32 {
+    pub fn gain_reduction_db(&self) -> Db {
         self.gain_reduction_db
     }
 
@@ -326,7 +326,7 @@ impl LimiterNode {
         // removed from the detector path just above and missed here. The old
         // floor was never a ceiling either: a merely tiny gain fell through to
         // the `log10` branch and reported far past 96 dB.
-        self.gain_reduction_db = -amplitude_to_db(min_gain).get();
+        self.gain_reduction_db = -amplitude_to_db(min_gain);
     }
 }
 
@@ -342,7 +342,7 @@ impl AudioUnit for LimiterNode {
     fn reset(&mut self) {
         self.ring.clear();
         self.envelope = 0.0;
-        self.gain_reduction_db = 0.0;
+        self.gain_reduction_db = Db::UNITY;
     }
 
     fn set_sample_rate(&mut self, sample_rate: tutti_core::SampleRate) {
@@ -748,7 +748,7 @@ mod tests {
         }
 
         lim.reset();
-        assert_eq!(lim.gain_reduction_db(), 0.0);
+        assert_eq!(lim.gain_reduction_db(), Db::UNITY);
     }
 
     #[test]
@@ -1015,7 +1015,7 @@ mod tests {
         lim.tick(&[1.0, 1.0], &mut out);
         let reduction_after_transient = lim.gain_reduction_db();
         assert!(
-            reduction_after_transient > 0.0,
+            reduction_after_transient > Db::UNITY,
             "Loud input should trigger gain reduction"
         );
 
@@ -1023,7 +1023,7 @@ mod tests {
             lim.tick(&[0.0, 0.0], &mut out);
         }
         assert!(
-            lim.gain_reduction_db() < 0.5,
+            lim.gain_reduction_db() < Db(0.5),
             "After long quiet, gain reduction should release: {}",
             lim.gain_reduction_db()
         );

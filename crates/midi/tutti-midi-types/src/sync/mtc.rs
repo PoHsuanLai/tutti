@@ -1,4 +1,5 @@
 use crate::sync::SmpteFrameRate;
+use tutti_types::Bpm;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SmpteTimecode {
@@ -28,8 +29,12 @@ impl SmpteTimecode {
             + f64::from(self.frames) / self.frame_rate.fps()
     }
 
-    pub fn to_beats(&self, tempo_bpm: f64) -> f64 {
-        self.to_seconds() * tempo_bpm / 60.0
+    /// The tempo is a [`Bpm`]; the return stays `f64`, like
+    /// [`to_seconds`](Self::to_seconds), because SMPTE timecode is the
+    /// documented precision carve-out — `Beat` would carry it, but the
+    /// hour-scale seconds it is derived from would not survive `Seconds`.
+    pub fn to_beats(&self, tempo: impl Into<Bpm>) -> f64 {
+        self.to_seconds() * tempo.into().get() / 60.0
     }
 }
 

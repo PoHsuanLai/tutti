@@ -3,7 +3,7 @@
 //! — both the peak/RMS measure and the analysis-tap push.
 
 use assert_no_alloc::AllocDisabler;
-use tutti_core::metering::{meter_output, AudioTap, MasterMeter, MeteringContext};
+use tutti_core::metering::{meter_output, AudioTap, MasterMeter, MeterReading, MeteringContext};
 
 #[global_allocator]
 static A: AllocDisabler = AllocDisabler;
@@ -36,8 +36,7 @@ fn meter_output_is_allocation_free_with_meter_enabled() {
     });
 
     // The meter actually ran — a sine at ±1.0 has a nonzero peak.
-    let (peak_l, _, _, _) = meter.get();
-    assert!(peak_l > 0.0, "meter published nothing");
+    assert!(meter.get().peak_left.get() > 0.0, "meter published nothing");
 }
 
 #[test]
@@ -81,10 +80,9 @@ fn meter_output_is_allocation_free_with_nothing_enabled() {
         }
     });
 
-    let (peak_l, peak_r, rms_l, rms_r) = meter.get();
     assert_eq!(
-        (peak_l, peak_r, rms_l, rms_r),
-        (0.0, 0.0, 0.0, 0.0),
+        meter.get(),
+        MeterReading::default(),
         "disabled meter published readings"
     );
 }

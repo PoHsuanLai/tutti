@@ -21,7 +21,7 @@ pub struct UnisonConfig {
     /// Total spread (not per-voice)
     pub detune_cents: Cents,
     /// 0.0 = mono, 1.0 = full stereo
-    pub stereo_spread: f32,
+    pub stereo_spread: Spread,
     pub phase_randomize: bool,
 }
 
@@ -30,7 +30,7 @@ impl Default for UnisonConfig {
         Self {
             voice_count: 1,
             detune_cents: Cents(0.0),
-            stereo_spread: 0.0,
+            stereo_spread: Spread::POINT,
             phase_randomize: false,
         }
     }
@@ -67,7 +67,7 @@ pub struct UnisonEngine {
 impl UnisonEngine {
     pub fn new(config: UnisonConfig) -> Self {
         let detune = Param::new(config.detune_cents);
-        let spread = Param::new(Spread::new_clamped(config.stereo_spread));
+        let spread = Param::new(config.stereo_spread);
         let mut engine = Self {
             config,
             voices: [UnisonVoiceParams::default(); MAX_UNISON_VOICES],
@@ -94,9 +94,9 @@ impl UnisonEngine {
     /// when nothing moved (compares against the current config first).
     pub fn sync_from_atomics(&mut self) {
         let detune = self.detune.load();
-        let spread = self.spread.load().get().clamp(0.0, 1.0);
+        let spread = Spread::new_clamped(self.spread.load().get());
         let changed = (detune.get() - self.config.detune_cents.get()).abs() > f32::EPSILON
-            || (spread - self.config.stereo_spread).abs() > f32::EPSILON;
+            || (spread.get() - self.config.stereo_spread.get()).abs() > f32::EPSILON;
         if changed {
             self.config.detune_cents = Cents(detune.get().max(0.0));
             self.config.stereo_spread = spread;
@@ -124,7 +124,7 @@ impl UnisonEngine {
             // voice's position stays in the unit, and the exponent conversion
             // happens once at the end.
             let freq_ratio = (detune_semitones * position).to_pitch_ratio();
-            let pan = position * self.config.stereo_spread;
+            let pan = position * self.config.stereo_spread.get();
 
             self.voices[i] = UnisonVoiceParams {
                 freq_ratio,
@@ -172,7 +172,7 @@ impl UnisonEngine {
 
     pub fn set_config(&mut self, config: UnisonConfig) {
         self.detune.store(config.detune_cents);
-        self.spread.store(Spread(config.stereo_spread));
+        self.spread.store(config.stereo_spread);
         self.config = config;
         self.recompute_params();
     }
@@ -193,8 +193,11 @@ impl UnisonEngine {
     }
 
     pub fn set_stereo_spread(&mut self, spread: f32) {
-        self.config.stereo_spread = spread.clamp(0.0, 1.0);
-        self.spread.store(Spread(self.config.stereo_spread));
+        // `new_clamped` rather than an open-coded `clamp(0.0, 1.0)` followed
+        // by the unchecked `Spread(..)` — the constructor is the same bound,
+        // and it was already being used twelve lines up.
+        self.config.stereo_spread = Spread::new_clamped(spread);
+        self.spread.store(self.config.stereo_spread);
         self.recompute_params();
     }
 
@@ -228,7 +231,7 @@ mod tests {
         let config = UnisonConfig {
             voice_count: 3,
             detune_cents: Cents(12.0), // ~1/8 semitone spread
-            stereo_spread: 0.0,
+            stereo_spread: Spread::POINT,
             phase_randomize: false,
         };
         let unison = UnisonEngine::new(config);
@@ -258,7 +261,7 @@ mod tests {
         let config = UnisonConfig {
             voice_count: 3,
             detune_cents: Cents(0.0),
-            stereo_spread: 1.0,
+            stereo_spread: Spread(1.0),
             phase_randomize: false,
         };
         let unison = UnisonEngine::new(config);
@@ -337,7 +340,7 @@ mod tests {
         assert!((unison.config().detune_cents.get() - 20.0).abs() < 0.001);
 
         unison.set_stereo_spread(0.5);
-        assert!((unison.config().stereo_spread - 0.5).abs() < 0.001);
+        assert!((unison.config().stereo_spread.get() - 0.5).abs() < 0.001);
     }
 
     #[test]

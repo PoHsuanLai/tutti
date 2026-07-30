@@ -1,7 +1,21 @@
 //! Lock-free amplitude metering.
 
 use crate::{AtomicBool, AtomicF32, Ordering};
-use tutti_types::StereoPlanes;
+use tutti_types::{Amplitude, StereoPlanes};
+
+/// One meter reading: peak and RMS for a stereo pair.
+///
+/// A struct rather than a `(f32, f32, f32, f32)` for the reason `measure`
+/// takes a [`StereoPlanes`] instead of two loose slices — four same-typed
+/// positional values are one careless edit away from swapping a peak with an
+/// RMS, and no compiler catches it. Naming them does.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct MeterReading {
+    pub peak_left: Amplitude,
+    pub peak_right: Amplitude,
+    pub rms_left: Amplitude,
+    pub rms_right: Amplitude,
+}
 
 /// Lock-free amplitude storage (Peak L/R, RMS L/R).
 ///
@@ -32,23 +46,26 @@ impl AtomicAmplitude {
         }
     }
 
-    /// Returns (peak_l, peak_r, rms_l, rms_r).
     #[inline]
-    pub fn get(&self) -> (f32, f32, f32, f32) {
-        (
-            self.peak_left.load(Ordering::Acquire),
-            self.peak_right.load(Ordering::Acquire),
-            self.rms_left.load(Ordering::Acquire),
-            self.rms_right.load(Ordering::Acquire),
-        )
+    pub fn get(&self) -> MeterReading {
+        MeterReading {
+            peak_left: Amplitude(self.peak_left.load(Ordering::Acquire)),
+            peak_right: Amplitude(self.peak_right.load(Ordering::Acquire)),
+            rms_left: Amplitude(self.rms_left.load(Ordering::Acquire)),
+            rms_right: Amplitude(self.rms_right.load(Ordering::Acquire)),
+        }
     }
 
     #[inline]
-    pub fn set(&self, peak_l: f32, peak_r: f32, rms_l: f32, rms_r: f32) {
-        self.peak_left.store(peak_l, Ordering::Release);
-        self.peak_right.store(peak_r, Ordering::Release);
-        self.rms_left.store(rms_l, Ordering::Release);
-        self.rms_right.store(rms_r, Ordering::Release);
+    pub fn set(&self, reading: MeterReading) {
+        self.peak_left
+            .store(reading.peak_left.get(), Ordering::Release);
+        self.peak_right
+            .store(reading.peak_right.get(), Ordering::Release);
+        self.rms_left
+            .store(reading.rms_left.get(), Ordering::Release);
+        self.rms_right
+            .store(reading.rms_right.get(), Ordering::Release);
     }
 
     /// Measure peak + RMS over one deinterleaved stereo buffer and publish.
@@ -79,12 +96,12 @@ impl AtomicAmplitude {
         let sum_sq_l: f32 = left.iter().map(|&s| s * s).sum();
         let sum_sq_r: f32 = right.iter().map(|&s| s * s).sum();
 
-        self.set(
-            peak_l,
-            peak_r,
-            (sum_sq_l / frames as f32).sqrt(),
-            (sum_sq_r / frames as f32).sqrt(),
-        );
+        self.set(MeterReading {
+            peak_left: Amplitude(peak_l),
+            peak_right: Amplitude(peak_r),
+            rms_left: Amplitude((sum_sq_l / frames as f32).sqrt()),
+            rms_right: Amplitude((sum_sq_r / frames as f32).sqrt()),
+        });
     }
 }
 
@@ -117,8 +134,8 @@ impl MasterMeter {
         self.enabled.load(Ordering::Acquire)
     }
 
-    /// Returns (peak_l, peak_r, rms_l, rms_r) as of the last measured buffer.
-    pub fn get(&self) -> (f32, f32, f32, f32) {
+    /// The last measured buffer's reading.
+    pub fn get(&self) -> MeterReading {
         self.amplitude.get()
     }
 

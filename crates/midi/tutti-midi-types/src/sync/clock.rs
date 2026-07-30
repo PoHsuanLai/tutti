@@ -9,6 +9,7 @@
 //! [`start_msg`](MidiClockDecoder::start_msg) etc. directly.
 
 use crate::ump::MidiEvent;
+use tutti_types::Bpm;
 
 const PPQN: u32 = 24;
 const TEMPO_WINDOW: usize = 24;
@@ -105,9 +106,9 @@ impl MidiClockDecoder {
         self.transport = ClockTransportState::Playing;
     }
 
-    /// Derived tempo in BPM from inter-tick timing, or None if insufficient data.
-    pub fn tempo_bpm(&self) -> Option<f64> {
-        self.derived_tempo
+    /// Derived tempo from inter-tick timing, or None if insufficient data.
+    pub fn tempo_bpm(&self) -> Option<Bpm> {
+        self.derived_tempo.map(Bpm)
     }
 
     /// Current position in beats (based on tick count at 24 PPQN).
@@ -215,8 +216,8 @@ mod tests {
 
         let tempo = clock.tempo_bpm().unwrap();
         assert!(
-            (tempo - 120.0).abs() < 1.0,
-            "Expected ~120 BPM, got {tempo}"
+            !tempo.differs_from(Bpm(120.0), 1.0),
+            "Expected ~120 BPM, got {tempo:?}"
         );
     }
 
@@ -234,8 +235,8 @@ mod tests {
 
         let tempo = clock.tempo_bpm().unwrap();
         assert!(
-            (tempo - 140.0).abs() < 1.0,
-            "Expected ~140 BPM, got {tempo}"
+            !tempo.differs_from(Bpm(140.0), 1.0),
+            "Expected ~140 BPM, got {tempo:?}"
         );
     }
 

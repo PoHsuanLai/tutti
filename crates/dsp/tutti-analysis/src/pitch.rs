@@ -37,8 +37,8 @@ impl PitchResult {
     }
 }
 
-use tutti_types::{Confidence, Hz};
 use rustfft::{num_complex::Complex, FftPlanner};
+use tutti_types::{Confidence, Hz};
 
 /// YIN pitch detector (de Cheveigné & Kawahara, 2002).
 ///
@@ -260,4 +260,3 @@ impl PitchDetector {
         }
     }
 }
-

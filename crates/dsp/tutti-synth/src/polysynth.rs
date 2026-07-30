@@ -960,7 +960,7 @@ mod tests {
         EnvelopeConfig, FilterType, OscillatorType, PortamentoConfig, PortamentoCurve,
         PortamentoMode, SynthConfig, UnisonConfig, VoiceMode,
     };
-    use tutti_core::{Hz, Resonance};
+    use tutti_core::{Hz, Resonance, Spread};
     use tutti_midi_types::convert::{
         midi1_cc_to_midi2, midi1_pitch_bend_to_midi2, midi1_velocity_to_midi2,
     };
@@ -1231,7 +1231,7 @@ mod tests {
             unison: Some(UnisonConfig {
                 voice_count: 3,
                 detune_cents: tutti_core::Cents(15.0),
-                stereo_spread: 0.5,
+                stereo_spread: Spread(0.5),
                 phase_randomize: false,
             }),
             ..Default::default()
@@ -1280,7 +1280,7 @@ mod tests {
             unison: Some(UnisonConfig {
                 voice_count: 3,
                 detune_cents: tutti_core::Cents(10.0),
-                stereo_spread: 0.5,
+                stereo_spread: Spread(0.5),
                 phase_randomize: false,
             }),
             ..Default::default()
@@ -1310,7 +1310,7 @@ mod tests {
             unison: Some(UnisonConfig {
                 voice_count: 3,
                 detune_cents: tutti_core::Cents(0.0),
-                stereo_spread: 0.0,
+                stereo_spread: Spread(0.0),
                 phase_randomize: false,
             }),
             ..Default::default()
@@ -1356,7 +1356,7 @@ mod tests {
             unison: Some(UnisonConfig {
                 voice_count: 3,
                 detune_cents: tutti_core::Cents(15.0),
-                stereo_spread: 1.0, // Full stereo spread
+                stereo_spread: Spread(1.0), // Full stereo spread
                 phase_randomize: false,
             }),
             ..Default::default()
@@ -1466,7 +1466,7 @@ mod tests {
             unison: Some(UnisonConfig {
                 voice_count: 2,
                 detune_cents: tutti_core::Cents(10.0),
-                stereo_spread: 0.5,
+                stereo_spread: Spread(0.5),
                 phase_randomize: false,
             }),
             ..Default::default()

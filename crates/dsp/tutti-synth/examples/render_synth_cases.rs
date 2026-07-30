@@ -18,7 +18,7 @@
 use std::path::Path;
 
 use tutti_core::dsp::{BufferArray, U2};
-use tutti_core::{AudioUnit, Hz, Q};
+use tutti_core::{AudioUnit, Hz, Spread, Q};
 use tutti_midi_types::translation::scaling::midi1_velocity_to_midi2;
 use tutti_midi_types::ump::MidiEvent;
 use tutti_synth::{
@@ -181,7 +181,7 @@ fn main() {
         cfg.unison = Some(UnisonConfig {
             voice_count: voices,
             detune_cents: detune.into(),
-            stereo_spread: 0.8,
+            stereo_spread: Spread(0.8),
             ..Default::default()
         });
         let (l, r) = render(cfg, &[57]);

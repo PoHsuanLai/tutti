@@ -9,7 +9,7 @@ use super::utils::{
     amplitude_to_db, compute_compressor_gain_reduction, db_to_amplitude, sidechain_level_buffer,
     sidechain_level_slice,
 };
-use tutti_core::{CompressionRatio, Db, Param, Seconds};
+use tutti_core::{Amplitude, CompressionRatio, Db, Param, Seconds};
 
 /// Shared compressor state used by the per-sample gain computation.
 #[derive(Clone)]
@@ -54,12 +54,15 @@ impl CompressorCore {
         self
     }
 
-    pub fn gain_reduction_db(&self) -> f32 {
-        self.follower.value()
+    pub fn gain_reduction_db(&self) -> Db {
+        Db(self.follower.value())
     }
 
-    pub fn envelope_level(&self) -> f32 {
-        self.envelope
+    /// The sidechain peak the detector last saw. An `Amplitude`, not a
+    /// unitless envelope — `GateCore::gate_level` has the same shape and name
+    /// but is a 0..1 open-fraction, and the two used to be swappable.
+    pub fn envelope_level(&self) -> Amplitude {
+        Amplitude(self.envelope)
     }
 
     pub fn reset(&mut self) {
@@ -262,11 +265,11 @@ impl Compressor {
         self.core.makeup_db.store(db.into());
     }
 
-    pub fn gain_reduction_db(&self) -> f32 {
+    pub fn gain_reduction_db(&self) -> Db {
         self.core.gain_reduction_db()
     }
 
-    pub fn envelope_level(&self) -> f32 {
+    pub fn envelope_level(&self) -> Amplitude {
         self.core.envelope_level()
     }
 }
@@ -387,7 +390,7 @@ mod tests {
             comp.tick(&[0.5, 0.9], &mut output);
         }
 
-        assert!(comp.gain_reduction_db() > 0.0);
+        assert!(comp.gain_reduction_db() > Db::UNITY);
         assert!(output[0] < 0.5);
     }
 
@@ -402,7 +405,7 @@ mod tests {
             comp.tick(&[0.5, 0.1], &mut output);
         }
 
-        assert!(comp.gain_reduction_db() < 1.0);
+        assert!(comp.gain_reduction_db() < Db(1.0));
     }
 
     #[test]
@@ -457,11 +460,11 @@ mod tests {
         for _ in 0..1000 {
             comp.tick(&[0.5, 0.9], &mut output);
         }
-        assert!(comp.gain_reduction_db() > 0.0);
+        assert!(comp.gain_reduction_db() > Db::UNITY);
 
         comp.reset();
-        assert_eq!(comp.gain_reduction_db(), 0.0);
-        assert_eq!(comp.envelope_level(), 0.0);
+        assert_eq!(comp.gain_reduction_db(), Db::UNITY);
+        assert_eq!(comp.envelope_level(), Amplitude::SILENT);
     }
 
     #[test]

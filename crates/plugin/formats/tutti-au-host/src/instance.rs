@@ -11,10 +11,12 @@ use std::os::raw::c_void;
 use crate::buffer::{iter_buffers_mut, RenderScratch};
 use crate::bus::{self, AuChannelConfig, BusDirection};
 use crate::cf::{CfArray, CfPlist, CfString};
+use crate::channel_layout::{self, AuLayoutTag};
 use crate::component::AuType;
 use crate::error::{AuError, Result};
 use crate::ffi::{check, get_property, set_property};
 use crate::handle::AuHandle;
+use crate::midi_out::{self, AuMidiOutput, MidiOutSink, MidiOutputInfo};
 use crate::parameters::{self, AuParameter, ParamView};
 use crate::preset::AuPreset;
 use crate::stream::{AuBusLayout, StreamConfig};
@@ -557,6 +559,142 @@ impl AuInstance {
     pub fn supported_channel_configs(&self) -> Vec<AuChannelConfig> {
         // SAFETY: as above.
         unsafe { bus::supported_channel_configs(self.raw_unit()) }
+    }
+
+    /// Every channel *order* the AU says it can run bus `bus` of `direction` in.
+    ///
+    /// Complements [`supported_channel_configs`](Self::supported_channel_configs),
+    /// which answers "how many channels": this answers "in what speaker order".
+    /// The stream format carries only a count, so without this a 6-channel bus's
+    /// centre and LFE are indistinguishable and dialog can land in the subwoofer.
+    ///
+    /// An empty vec means the AU publishes no constraint and must be read as
+    /// "declines to say", never "supports nothing" — see
+    /// [`channel_layout::supported_layout_tags`] for the measured breakdown (only
+    /// 11 of ~38 units answer at all on macOS 15.6).
+    pub fn supported_layout_tags(&self, direction: BusDirection, bus: u32) -> Vec<AuLayoutTag> {
+        // SAFETY: `raw_unit` is live for the lifetime of this instance.
+        unsafe { channel_layout::supported_layout_tags(self.raw_unit(), direction, bus) }
+    }
+
+    /// The channel order bus `bus` of `direction` is running right now.
+    ///
+    /// # Errors
+    /// Returns [`AuError::OsStatus`] with the AU's own status; the three seen in
+    /// practice are `kAudioUnitErr_InvalidProperty` (no layout property at all),
+    /// `kAudioUnitErr_PropertyNotInUse` (the property exists but no layout is
+    /// set — measured on AUSampler's output) and
+    /// `kAudioUnitErr_InvalidElement` (no such bus). Deliberately not flattened
+    /// into a default: picking a speaker order for a bus whose order is unknown
+    /// is the bug this whole property exists to prevent. See
+    /// [`channel_layout::layout_tag`].
+    pub fn layout_tag(&self, direction: BusDirection, bus: u32) -> Result<AuLayoutTag> {
+        // SAFETY: as above.
+        unsafe { channel_layout::layout_tag(self.raw_unit(), direction, bus) }
+    }
+
+    /// Ask the AU to run bus `bus` of `direction` in the `tag` channel order.
+    ///
+    /// # A published tag is not automatically a settable tag
+    ///
+    /// The AU checks the tag's channel count against the width already configured
+    /// on that bus and refuses any mismatch — so at the default stereo width
+    /// every surround tag an AU advertises is rejected. Set the width first, via
+    /// [`new_with_config`](Self::new_with_config). The measured table is in
+    /// [`channel_layout::set_layout_tag`], which also explains why this does not
+    /// widen the format on the caller's behalf.
+    ///
+    /// # Errors
+    /// [`AuError::OsStatus`], typically `kAudioUnitErr_InvalidPropertyValue` for
+    /// a tag this bus will not take at its current width. Propagated rather than
+    /// absorbed for the reason [`set_bypass`](Self::set_bypass)'s is: a host that
+    /// believes it set 5.1 while the AU kept stereo routes six channels into a
+    /// two-channel bus and never learns why.
+    pub fn set_layout_tag(
+        &mut self,
+        direction: BusDirection,
+        bus: u32,
+        tag: AuLayoutTag,
+    ) -> Result<()> {
+        // SAFETY: as above.
+        unsafe { channel_layout::set_layout_tag(self.raw_unit(), direction, bus, tag) }
+    }
+
+    /// The AU's own name for bus `bus` of `direction` — "Sidechain", "stereo mix".
+    ///
+    /// Without this a multi-input plugin's buses render as "Bus 1..N" in the host
+    /// UI while the plugin has perfectly good names for them, and a sidechain
+    /// input looks identical to a second audio input.
+    ///
+    /// # Errors
+    /// [`AuError::OsStatus`]. The two statuses are **different facts** and
+    /// neither becomes an empty string:
+    /// `kAudioUnitErr_PropertyNotInUse` (-10850) is a real bus the AU gave no
+    /// name, `kAudioUnitErr_InvalidElement` (-10877) is a bus that does not
+    /// exist. A host sizing buffers cannot afford to confuse them.
+    ///
+    /// Measured on macOS 15.6: every Apple **mixer** answers -10850 for all of
+    /// its real buses — they publish no element names at all — while
+    /// DLSMusicDevice names its two outputs ("stereo mix", "unused") and the
+    /// third-party effects name theirs (TDR Nova: "Input", "Sidechain",
+    /// "Output"). See [`channel_layout::element_name`], which also documents the
+    /// retain-count leak this read would have had.
+    pub fn element_name(&self, direction: BusDirection, bus: u32) -> Result<String> {
+        // SAFETY: as above.
+        unsafe { channel_layout::element_name(self.raw_unit(), direction, bus) }
+    }
+
+    /// What the AU publishes about its MIDI **output** streams, or `None` if it
+    /// publishes nothing.
+    ///
+    /// This is the real capability gate for MIDI-out hosting, and the one a host
+    /// should branch on. `None` — "not a MIDI source" — is what **every** AU
+    /// installed on this machine answers (measured: 0 of 138 components), so no
+    /// arpeggiator or step-sequencer AU is available here to exercise the path
+    /// end-to-end.
+    ///
+    /// Note the asymmetry with [`install_midi_output`](Self::install_midi_output):
+    /// 45 of those same units happily **accept** the callback write while
+    /// publishing no output streams, so a successful install proves nothing. See
+    /// [`midi_out::midi_output_info`].
+    pub fn midi_output_info(&self) -> Option<MidiOutputInfo> {
+        // SAFETY: `raw_unit` is live for the lifetime of this instance.
+        unsafe { midi_out::midi_output_info(self.raw_unit()) }
+    }
+
+    /// Install `sink` as the destination for MIDI this AU generates during render.
+    ///
+    /// Needed for any AU that produces notes — an arpeggiator, a step sequencer,
+    /// a chord generator. Without it the AU's notes exist only inside the plugin:
+    /// nothing can record them, route them to a second instrument, or draw them.
+    ///
+    /// The returned [`AuMidiOutput`] is the registration. **Keep it alive for as
+    /// long as the callback should stay installed** — dropping it withdraws the
+    /// callback from the AU before freeing the state the AU points at, which is
+    /// the ordering that keeps the AU from dereferencing freed memory on its
+    /// render thread. [`AuMidiOutput::remove`] does the same and surfaces the AU's
+    /// status.
+    ///
+    /// `sink` is called **on the render thread** and must not allocate, lock or
+    /// block; it receives a borrowed slice precisely so it cannot park one. The
+    /// full contract is on [`MidiOutSink`].
+    ///
+    /// # Errors
+    /// [`AuError::OsStatus`] if the AU refuses the property. Measured on macOS
+    /// 15.6: the output units refuse; the effects, instruments and mixers accept.
+    ///
+    /// # Panics
+    /// Never — but note the callback body cannot panic across the FFI boundary
+    /// either: a panic escaping `sink` is caught and reported as a render error
+    /// rather than unwinding into AudioToolbox.
+    pub fn install_midi_output(&mut self, sink: MidiOutSink) -> Result<AuMidiOutput> {
+        // SAFETY: `raw_unit` is live for the lifetime of this instance. The
+        // returned handle borrows nothing from `self` — it holds the raw
+        // `AudioUnit` — so a caller CAN outlive the instance with it. That is
+        // documented on `midi_out::install`'s safety contract and is the reason
+        // the handle clears the property in its own `Drop` rather than relying on
+        // the instance to do it.
+        unsafe { midi_out::install(self.raw_unit(), sink) }
     }
 
     /// Borrow a [`ParamView`] for scoped parameter access.

@@ -26,11 +26,22 @@ use coreaudio_sys as sys;
 // Opaque handles + scalar aliases (verbatim from coreaudio-sys).
 pub use sys::{
     AUPreset, AURenderCallback, AURenderCallbackStruct, AudioBuffer, AudioBufferList,
-    AudioComponent, AudioComponentDescription, AudioComponentInstance, AudioStreamBasicDescription,
-    AudioTimeStamp, AudioUnit, AudioUnitCocoaViewInfo, AudioUnitParameterInfo,
-    AudioUnitParameterStringFromValue, AudioUnitParameterValueFromString,
-    AudioUnitRenderActionFlags, CFArrayRef, CFStringRef, OSStatus,
+    AudioChannelDescription, AudioChannelLayout, AudioComponent, AudioComponentDescription,
+    AudioComponentInstance, AudioStreamBasicDescription, AudioTimeStamp, AudioUnit,
+    AudioUnitCocoaViewInfo, AudioUnitParameterInfo, AudioUnitParameterStringFromValue,
+    AudioUnitParameterValueFromString, AudioUnitRenderActionFlags, CFArrayRef, CFStringRef,
+    OSStatus,
 };
+
+/// CoreMIDI packet types, re-exported for the MIDI-output-callback path.
+///
+/// These come from the same `coreaudio-sys` bindgen pass as everything else in
+/// this module — its `core_midi` feature is on by default, so `CoreMIDI.h` is in
+/// the header set and the packet layout is Apple's own rather than hand-declared.
+/// `crate::midi_out` walks a `MIDIPacketList` the AU hands it on the render
+/// thread; see that module for why the walk is by offset rather than by struct
+/// read.
+pub use sys::{MIDIPacket, MIDIPacketList};
 
 // AudioToolbox functions (verbatim from coreaudio-sys — these are the real
 // framework symbols, replacing the crate's former hand-rolled `extern "C"`).
@@ -179,6 +190,26 @@ pub const K_AUDIO_UNIT_PROPERTY_HOST_CALLBACKS: u32 = sys::kAudioUnitProperty_Ho
 pub const K_AUDIO_UNIT_PROPERTY_IN_PLACE_PROCESSING: u32 =
     sys::kAudioUnitProperty_InPlaceProcessing;
 pub const K_AUDIO_UNIT_PROPERTY_ELEMENT_NAME: u32 = sys::kAudioUnitProperty_ElementName;
+/// The channel *order* a bus is running — which speaker each channel feeds.
+/// Distinct from `StreamFormat`, which carries only a channel *count*: Apple's
+/// header says outright that the stream format "cannot specify channel layout or
+/// purpose". Without this, a 6-channel bus's centre and LFE are
+/// indistinguishable. See [`crate::channel_layout`].
+pub const K_AUDIO_UNIT_PROPERTY_AUDIO_CHANNEL_LAYOUT: u32 =
+    sys::kAudioUnitProperty_AudioChannelLayout;
+/// The channel orders a bus declares it understands. Read-only, and per-bus.
+pub const K_AUDIO_UNIT_PROPERTY_SUPPORTED_CHANNEL_LAYOUT_TAGS: u32 =
+    sys::kAudioUnitProperty_SupportedChannelLayoutTags;
+/// How many MIDI output streams the AU offers, and their names — a `CFArrayRef`
+/// of `CFStringRef` the host owns. Its presence is the gate on
+/// `MIDIOutputCallback` being useful: see [`crate::midi_out`], and note that on
+/// this machine **no** installed AU publishes it.
+pub const K_AUDIO_UNIT_PROPERTY_MIDI_OUTPUT_CALLBACK_INFO: u32 =
+    sys::kAudioUnitProperty_MIDIOutputCallbackInfo;
+/// The `AUMIDIOutputCallbackStruct` a host installs so the AU can hand it MIDI
+/// during render. Write-only.
+pub const K_AUDIO_UNIT_PROPERTY_MIDI_OUTPUT_CALLBACK: u32 =
+    sys::kAudioUnitProperty_MIDIOutputCallback;
 pub const K_AUDIO_UNIT_PROPERTY_BYPASS_EFFECT: u32 = sys::kAudioUnitProperty_BypassEffect;
 pub const K_AUDIO_UNIT_PROPERTY_LAST_RENDER_ERROR: u32 = sys::kAudioUnitProperty_LastRenderError;
 pub const K_AUDIO_UNIT_PROPERTY_PRESENT_PRESET: u32 = sys::kAudioUnitProperty_PresentPreset;
@@ -238,6 +269,53 @@ pub const K_AUDIO_UNIT_PARAMETER_FLAG_DISPLAY_EXPONENTIAL: u32 =
     sys::kAudioUnitParameterFlag_DisplayExponential;
 pub const K_AUDIO_UNIT_PARAMETER_FLAG_DISPLAY_LOGARITHMIC: u32 =
     sys::kAudioUnitParameterFlag_DisplayLogarithmic;
+
+// `AudioChannelLayoutTag` values, aliased for `crate::channel_layout`.
+//
+// Several of these constants are the **same numeric value under two names** —
+// `AudioUnit_4 == Quadraphonic`, `AudioUnit_5_1 == MPEG_5_1_A`,
+// `AudioUnit_7_1 == MPEG_7_1_C`, `AudioUnit_5_0 == MPEG_5_0_B`,
+// `AudioUnit_6 == Hexagonal`, `AudioUnit_8 == Octagonal`. Both spellings of each
+// pair are aliased here on purpose: `channel_layout::tests` asserts the equality
+// so a future SDK that splits a pair fails a test, and that assertion needs both
+// names in scope. A `match` may still list only one of each pair — see
+// `AuLayoutTag::from_raw`.
+pub const K_AUDIO_CHANNEL_LAYOUT_TAG_USE_CHANNEL_DESCRIPTIONS: u32 =
+    sys::kAudioChannelLayoutTag_UseChannelDescriptions;
+pub const K_AUDIO_CHANNEL_LAYOUT_TAG_USE_CHANNEL_BITMAP: u32 =
+    sys::kAudioChannelLayoutTag_UseChannelBitmap;
+pub const K_AUDIO_CHANNEL_LAYOUT_TAG_MONO: u32 = sys::kAudioChannelLayoutTag_Mono;
+pub const K_AUDIO_CHANNEL_LAYOUT_TAG_STEREO: u32 = sys::kAudioChannelLayoutTag_Stereo;
+pub const K_AUDIO_CHANNEL_LAYOUT_TAG_STEREO_HEADPHONES: u32 =
+    sys::kAudioChannelLayoutTag_StereoHeadphones;
+pub const K_AUDIO_CHANNEL_LAYOUT_TAG_MATRIX_STEREO: u32 = sys::kAudioChannelLayoutTag_MatrixStereo;
+pub const K_AUDIO_CHANNEL_LAYOUT_TAG_MID_SIDE: u32 = sys::kAudioChannelLayoutTag_MidSide;
+pub const K_AUDIO_CHANNEL_LAYOUT_TAG_XY: u32 = sys::kAudioChannelLayoutTag_XY;
+pub const K_AUDIO_CHANNEL_LAYOUT_TAG_BINAURAL: u32 = sys::kAudioChannelLayoutTag_Binaural;
+pub const K_AUDIO_CHANNEL_LAYOUT_TAG_AMBISONIC_B_FORMAT: u32 =
+    sys::kAudioChannelLayoutTag_Ambisonic_B_Format;
+pub const K_AUDIO_CHANNEL_LAYOUT_TAG_QUADRAPHONIC: u32 = sys::kAudioChannelLayoutTag_Quadraphonic;
+pub const K_AUDIO_CHANNEL_LAYOUT_TAG_PENTAGONAL: u32 = sys::kAudioChannelLayoutTag_Pentagonal;
+pub const K_AUDIO_CHANNEL_LAYOUT_TAG_HEXAGONAL: u32 = sys::kAudioChannelLayoutTag_Hexagonal;
+pub const K_AUDIO_CHANNEL_LAYOUT_TAG_OCTAGONAL: u32 = sys::kAudioChannelLayoutTag_Octagonal;
+pub const K_AUDIO_CHANNEL_LAYOUT_TAG_CUBE: u32 = sys::kAudioChannelLayoutTag_Cube;
+pub const K_AUDIO_CHANNEL_LAYOUT_TAG_AUDIO_UNIT_5_0: u32 =
+    sys::kAudioChannelLayoutTag_AudioUnit_5_0;
+pub const K_AUDIO_CHANNEL_LAYOUT_TAG_AUDIO_UNIT_5_1: u32 =
+    sys::kAudioChannelLayoutTag_AudioUnit_5_1;
+pub const K_AUDIO_CHANNEL_LAYOUT_TAG_AUDIO_UNIT_6_0: u32 =
+    sys::kAudioChannelLayoutTag_AudioUnit_6_0;
+pub const K_AUDIO_CHANNEL_LAYOUT_TAG_AUDIO_UNIT_7_0: u32 =
+    sys::kAudioChannelLayoutTag_AudioUnit_7_0;
+pub const K_AUDIO_CHANNEL_LAYOUT_TAG_AUDIO_UNIT_7_1: u32 =
+    sys::kAudioChannelLayoutTag_AudioUnit_7_1;
+// The alias spellings, present only so the aliasing itself is testable.
+pub const K_AUDIO_CHANNEL_LAYOUT_TAG_AUDIO_UNIT_4: u32 = sys::kAudioChannelLayoutTag_AudioUnit_4;
+pub const K_AUDIO_CHANNEL_LAYOUT_TAG_AUDIO_UNIT_6: u32 = sys::kAudioChannelLayoutTag_AudioUnit_6;
+pub const K_AUDIO_CHANNEL_LAYOUT_TAG_AUDIO_UNIT_8: u32 = sys::kAudioChannelLayoutTag_AudioUnit_8;
+pub const K_AUDIO_CHANNEL_LAYOUT_TAG_MPEG_5_0_B: u32 = sys::kAudioChannelLayoutTag_MPEG_5_0_B;
+pub const K_AUDIO_CHANNEL_LAYOUT_TAG_MPEG_5_1_A: u32 = sys::kAudioChannelLayoutTag_MPEG_5_1_A;
+pub const K_AUDIO_CHANNEL_LAYOUT_TAG_MPEG_7_1_C: u32 = sys::kAudioChannelLayoutTag_MPEG_7_1_C;
 
 /// ASBD flag set for canonical non-interleaved packed float32 linear PCM.
 const FLOAT32_FORMAT_FLAGS: u32 = K_AUDIO_FORMAT_FLAG_IS_FLOAT

@@ -53,6 +53,12 @@ pub mod bus;
 pub mod stream;
 
 #[cfg(target_os = "macos")]
+pub mod channel_layout;
+
+#[cfg(target_os = "macos")]
+pub mod midi_out;
+
+#[cfg(target_os = "macos")]
 mod buffer;
 
 #[cfg(target_os = "macos")]
@@ -98,6 +104,16 @@ pub use tutti_plugin_types::{EditorSize, MidiEvent, TransportInfo, WindowHandle}
 // their argument and return types in scope without a second import path.
 #[cfg(target_os = "macos")]
 pub use bus::{AuChannelConfig, AuChannelCount, BusDirection};
+// Channel *order* vocabulary, flat-re-exported for the same reason the bus
+// vocabulary above is: `supported_layout_tags` / `layout_tag` / `set_layout_tag`
+// are inherent methods on `AuInstance`, so a caller cannot name their argument
+// or return type without this.
+#[cfg(target_os = "macos")]
+pub use channel_layout::AuLayoutTag;
+// `AuMidiOutput` is the registration a host holds to keep a MIDI-output callback
+// installed — dropping it is what withdraws the callback, so the type has to be
+// nameable in a struct field. `MidiOutSink` is the argument to
+// `install_midi_output`, and `MidiOutputInfo` its capability-query return.
 #[cfg(target_os = "macos")]
 pub use editor::AuEditor;
 #[cfg(target_os = "macos")]
@@ -113,6 +129,8 @@ pub use instance::{AuInstance, AuLoaded, AuReady};
 // contract.
 #[cfg(target_os = "macos")]
 pub use offline::{PushScratch, RENDER_QUALITY_MAX};
+#[cfg(target_os = "macos")]
+pub use midi_out::{AuMidiOutput, MidiOutSink, MidiOutputInfo};
 // `AuParameter`/`ParamRange`/`ParamView`/`ParameterUnit` are AU-internal param
 // vocabulary — reachable via `tutti_au_host::parameters::*` for the loader, but
 // not surfaced as flat crate-root re-exports. Consumers speak the shared

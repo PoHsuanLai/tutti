@@ -68,13 +68,16 @@ pub mod parameters;
 pub mod preset;
 
 #[cfg(target_os = "macos")]
+pub mod aupreset;
+
+#[cfg(target_os = "macos")]
 pub mod listener;
 
 #[cfg(target_os = "macos")]
 pub mod editor;
 
 pub use component::{AuComponentInfo, AuType};
-pub use error::{AuError, Result};
+pub use error::{AuError, PresetFileError, PresetMismatch, Result};
 
 // Shared host vocabulary re-exported so consumers can stay format-agnostic.
 // `WindowHandle` is consumed by the GUI bridge; `MidiEvent` is the input type of
@@ -106,6 +109,12 @@ pub use instance::{AuInstance, AuLoaded, AuReady};
 // has to be able to name it without reaching into a submodule.
 #[cfg(target_os = "macos")]
 pub use preset::AuPreset;
+// Flat-re-exported for the same reason `AuPreset` is: `AuPresetIdentity` is the
+// return type of `AuInstance::load_preset_file` and of `read_preset_metadata`,
+// which is the function a preset browser is built on, so a caller cannot name
+// what it gets back without it.
+#[cfg(target_os = "macos")]
+pub use aupreset::{read_preset_metadata, AuPresetIdentity};
 // Flat-re-exported for the same reason `AuPreset` is: `AuParameterListener` is
 // the type a host names to hold a registration, `AuEvent` is what its callback
 // receives, and `EventAddress` is an argument to every `watch_*` method. All

@@ -366,3 +366,86 @@ pub const METER_PARAM_UNITS: &[(AuRef, usize)] = &[(MULTIBAND_COMPRESSOR, 12), (
 /// 12 meter pseudo-parameters across 4 bands — the widest `MeterReadOnly` surface
 /// among Apple's effects, and 6 parameter clumps.
 pub const MULTIBAND_COMPRESSOR: AuRef = AuRef::effect("AUMultibandCompressor", b"mcmp");
+
+/// AUSpatialMixer — the one corpus unit macOS ships real `.aupreset` **files**
+/// for, which is the only reason it is here.
+///
+/// Measured on macOS 15.6: 55 Apple-authored `.aupreset` files under
+/// `/System/Library/Audio/Tunings/**/AU/` carry `type`/`subtype`/`manufacturer` =
+/// `aumx`/`3dem`/`appl`, i.e. this unit. That makes it the crate's only
+/// **interoperability** subject: every other preset assertion in the suite round-
+/// trips a file this host wrote, which proves self-consistency and would pass even
+/// if this host and Logic disagreed about the format. Loading Apple's own file
+/// proves the format itself is right.
+///
+/// See [`APPLE_PRESET_DIRS`] for where the files live and why the path is not
+/// hardcoded to a single one.
+pub const SPATIAL_MIXER: AuRef = AuRef::mixer("AUSpatialMixer", b"3dem");
+
+/// Directories macOS ships Apple-authored `.aupreset` files in.
+///
+/// Searched in order and treated as a set rather than a single hardcoded path
+/// because the layout is an OS implementation detail: the `Generic/AU` folder
+/// holds the device-independent presets while the per-tuning `AID*/AU` folders
+/// hold hardware-specific ones, and which exist varies with the OS build and the
+/// audio hardware attached. A test wants *any* genuine Apple preset for a corpus
+/// unit, so it scans.
+///
+/// Note this is deliberately NOT `/Library/Audio/Presets/`, which the AU
+/// documentation names as the user/third-party preset location: that directory
+/// does **not exist** on this machine (measured — no `.aupreset` file anywhere
+/// under `/Library/Audio` or `~/Library/Audio`), because Apple's units ship their
+/// presets as in-bundle factory presets rather than as loose files. The Tunings
+/// tree is where loose Apple `.aupreset` files actually are.
+pub const APPLE_PRESET_DIRS: &[&str] = &[
+    "/System/Library/Audio/Tunings/Generic/AU",
+    "/System/Library/Audio/Tunings",
+];
+
+/// Locate a genuine Apple-authored `.aupreset` file belonging to `unit`.
+///
+/// Walks [`APPLE_PRESET_DIRS`] recursively and returns the first file whose
+/// **identity keys** name `unit` — matched by parsing the preset, never by its
+/// filename. Filenames happen to embed the codes today
+/// (`aumx-3dem-appl-headphone-general-stereo.aupreset`), but that is a convention
+/// of Apple's build scripts, not part of the format, and the same
+/// name-versus-codes rule the module docs state for AU lookup applies here.
+///
+/// Returns `None` when the OS ships no preset for that unit. Unlike a missing
+/// *AU*, that is not an environment failure: these files are an implementation
+/// detail of Apple's spatial-audio tuning system, not a documented part of macOS,
+/// so a caller reports the absence rather than asserting against it.
+pub fn find_apple_preset_for(unit: &AuRef) -> Option<std::path::PathBuf> {
+    let wanted_sub = u32::from_be_bytes(*unit.sub_type);
+    for root in APPLE_PRESET_DIRS {
+        let found = walk_aupresets(std::path::Path::new(root))
+            .into_iter()
+            .find(|p| {
+                tutti_au_host::read_preset_metadata(p)
+                    .is_ok_and(|id| id.sub_type == wanted_sub && id.manufacturer == APPLE)
+            });
+        if found.is_some() {
+            return found;
+        }
+    }
+    None
+}
+
+/// Every `.aupreset` under `dir`, recursively. Depth-limited implicitly by the
+/// shallow Tunings tree; errors (unreadable directories) are skipped rather than
+/// propagated, because a preset search is best-effort by nature.
+fn walk_aupresets(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut out = Vec::new();
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return out;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            out.extend(walk_aupresets(&path));
+        } else if path.extension().is_some_and(|e| e == "aupreset") {
+            out.push(path);
+        }
+    }
+    out
+}

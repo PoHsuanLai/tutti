@@ -113,6 +113,25 @@ pub const K_AUDIO_UNIT_SCOPE_OUTPUT: u32 = sys::kAudioUnitScope_Output;
 
 // AU property IDs.
 pub const K_AUDIO_UNIT_PROPERTY_CLASS_INFO: u32 = sys::kAudioUnitProperty_ClassInfo;
+/// The document-restore twin of `ClassInfo` (property 50).
+///
+/// Apple's header says an AU implementing this "is going to do different actions
+/// establishing its state from a document rather than from a user preset", and
+/// that a host restoring a *document* must try this property **first**, falling
+/// back to `ClassInfo` when the AU errors or does not implement it.
+///
+/// The distinction is real for units that key licensing, sample-library paths or
+/// per-document resource references off which of the two was used: a `.aupreset`
+/// is a user preset and must go through `ClassInfo`, while a project reload is a
+/// document and should offer this first.
+///
+/// Measured on macOS 15.6: **no** unit on this machine implements it — AUDelay,
+/// AUDistortion, AUMatrixReverb, AUSpatialMixer and AULowpass all answer
+/// `kAudioUnitErr_InvalidProperty` (-10879). That is exactly the case the header
+/// tells hosts to expect, which is why
+/// [`AuInstance::load_document_state`](crate::instance::AuInstance::load_document_state)
+/// treats the refusal as routine and falls back rather than surfacing it.
+pub const K_AUDIO_UNIT_PROPERTY_CLASS_INFO_FROM_DOCUMENT: u32 = 50;
 pub const K_AUDIO_UNIT_PROPERTY_MAKE_CONNECTION: u32 = sys::kAudioUnitProperty_MakeConnection;
 pub const K_AUDIO_UNIT_PROPERTY_SAMPLE_RATE: u32 = sys::kAudioUnitProperty_SampleRate;
 pub const K_AUDIO_UNIT_PROPERTY_PARAMETER_LIST: u32 = sys::kAudioUnitProperty_ParameterList;

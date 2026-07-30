@@ -842,6 +842,130 @@ impl AuInstance {
         Ok(())
     }
 
+    /// Restore state that came from a **document** (a saved project), preferring
+    /// `kAudioUnitProperty_ClassInfoFromDocument` and falling back to `ClassInfo`.
+    ///
+    /// Apple's header requires this ordering: an AU that implements
+    /// `ClassInfoFromDocument` "is going to do different actions establishing its
+    /// state from a document rather than from a user preset", and a host restoring
+    /// a document must offer that property first, falling back when the AU errors
+    /// or does not implement it. The distinction matters for units that resolve
+    /// per-document resource references — sample-library paths, external file
+    /// references — differently from a portable user preset.
+    ///
+    /// This is the counterpart to [`crate::aupreset::load_preset_file`], which is
+    /// the *preset* path and therefore deliberately uses plain `ClassInfo`: a
+    /// `.aupreset` is a user preset by definition, and routing one through the
+    /// document property would tell the AU the opposite of the truth.
+    ///
+    /// Measured on macOS 15.6: **no** unit on this machine implements property 50 —
+    /// AUDelay, AUDistortion, AUMatrixReverb, AUSpatialMixer and AULowpass all
+    /// answer `kAudioUnitErr_InvalidProperty` (-10879). So the fallback is the path
+    /// actually taken today; the try-first exists because the header mandates it
+    /// and because a third-party unit may well implement it.
+    ///
+    /// # Errors
+    /// Returns the **fallback's** error if both properties fail, since that is the
+    /// path a host without this method would have taken anyway. A refusal of
+    /// property 50 alone is not an error — it is the documented normal case.
+    pub fn load_document_state(&mut self, data: &[u8]) -> Result<()> {
+        tutti_plugin_types::assert_main_thread();
+        if data.is_empty() {
+            return Ok(());
+        }
+        let plist = CfPlist::from_binary(data)?;
+        let raw = plist.as_raw();
+        // SAFETY: `raw` borrows the live `plist`. Both properties take a
+        // `CFPropertyListRef` by reference and read it during the call.
+        let from_document = unsafe {
+            set_property(
+                self.raw_unit(),
+                K_AUDIO_UNIT_PROPERTY_CLASS_INFO_FROM_DOCUMENT,
+                K_AUDIO_UNIT_SCOPE_GLOBAL,
+                0,
+                &raw,
+            )
+        };
+        if from_document.is_err() {
+            // The documented fallback. `load_state` re-decodes the blob, which is
+            // a plist parse rather than anything the AU sees — cheap enough not to
+            // warrant duplicating the notify logic it owns.
+            return self.load_state(data);
+        }
+        // Same reasoning as `load_state`: the state IS loaded, so a failed
+        // parameter notify must not be reported as a failed restore.
+        //
+        // SAFETY: `raw_unit` is live for the lifetime of this instance.
+        let _ = unsafe { crate::listener::notify_all_parameters(self.raw_unit()) };
+        Ok(())
+    }
+
+    /// Write the AU's current state to `path` as a `.aupreset` file — the format
+    /// Logic, Live and Reaper read.
+    ///
+    /// The identity keys are taken from this AU's own component description, never
+    /// invented; see [`crate::aupreset::save_preset_file`] for why that is what
+    /// makes the file loadable elsewhere, and [`crate::aupreset`]'s module docs for
+    /// the measured consequence of getting them wrong.
+    ///
+    /// # Errors
+    /// [`AuError::PresetIo`] if the file cannot be written, [`AuError::OsStatus`]
+    /// if the AU refuses to hand over its `ClassInfo`, or
+    /// [`AuError::InvalidPreset`] if what it hands over is not a dictionary.
+    pub fn save_preset_file(&self, path: &std::path::Path, name: &str) -> Result<()> {
+        tutti_plugin_types::assert_main_thread();
+        // SAFETY: `raw_unit` and the handle's `component` are both live for the
+        // lifetime of this instance — the handle owns the unit and holds the
+        // factory handle it was created from.
+        unsafe {
+            crate::aupreset::save_preset_file(
+                self.raw_unit(),
+                self.handle().component(),
+                path,
+                name,
+            )
+        }
+    }
+
+    /// Load a `.aupreset` file, **validating that it belongs to this AU** before
+    /// applying it. Returns the identity that was accepted.
+    ///
+    /// A preset saved from a different plugin is refused with
+    /// [`AuError::PresetIdentityMismatch`] and this AU is left untouched. That
+    /// check is not redundant with the AU's own: measured on macOS 15.6, an AU
+    /// handed a dictionary bearing its own identity keys but another plugin's
+    /// `data` blob accepts it and adopts nonsense values. See the
+    /// [`crate::aupreset`] module docs.
+    ///
+    /// A successful load is followed by
+    /// [`notify_all_parameters`](crate::listener::notify_all_parameters), for the
+    /// reason [`load_state`](Self::load_state) documents: setting `ClassInfo`
+    /// rewrites every parameter inside the AU without notifying a single listener,
+    /// so an open editor would keep displaying the pre-load values.
+    ///
+    /// # Errors
+    /// [`AuError::PresetIo`], [`AuError::InvalidPreset`],
+    /// [`AuError::PresetIdentityMismatch`], or [`AuError::OsStatus`] if the AU
+    /// rejects a correctly-identified dictionary. On every error path the AU keeps
+    /// the state it had and is still renderable.
+    pub fn load_preset_file(
+        &mut self,
+        path: &std::path::Path,
+    ) -> Result<crate::aupreset::AuPresetIdentity> {
+        tutti_plugin_types::assert_main_thread();
+        // SAFETY: as in `save_preset_file` — both handles are live for the
+        // lifetime of this instance.
+        let identity = unsafe {
+            crate::aupreset::load_preset_file(self.raw_unit(), self.handle().component(), path)?
+        };
+        // As in `load_state`: the state is loaded, so a failed notify is a stale
+        // editor rather than a failed load.
+        //
+        // SAFETY: `raw_unit` is live for the lifetime of this instance.
+        let _ = unsafe { crate::listener::notify_all_parameters(self.raw_unit()) };
+        Ok(identity)
+    }
+
     /// Render `num_frames` of audio through the AU.
     ///
     /// `input` and `output` are per-channel planar slices. `num_frames` must

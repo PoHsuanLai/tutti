@@ -6,8 +6,8 @@
 //! factory defaults — captured in [`ModulatedDelayConfig`].
 
 use crate::delay::{DelayLine, InterpolationMode, StereoPair};
-use tutti_core::dsp::DEFAULT_SR;
-use tutti_core::{Feedback, Hz, Mix, Seconds};
+use tutti_core::dsp::DEFAULT_SAMPLE_RATE;
+use tutti_core::{Feedback, Hz, Mix, SampleRate, Seconds};
 
 use super::shared::{LfoDrive, TimeModMix};
 
@@ -42,7 +42,7 @@ pub struct ModulatedDelay {
     pub delays: StereoPair<DelayLine>,
     pub lfo: LfoDrive,
     pub mix: TimeModMix,
-    pub sample_rate: f64,
+    pub sample_rate: SampleRate,
     config: ModulatedDelayConfig,
 }
 
@@ -56,12 +56,12 @@ impl ModulatedDelay {
     ) -> Self {
         Self {
             delays: StereoPair::new(
-                DelayLine::from_seconds(config.max_delay_secs, DEFAULT_SR),
-                DelayLine::from_seconds(config.max_delay_secs, DEFAULT_SR),
+                DelayLine::from_seconds(config.max_delay_secs, DEFAULT_SAMPLE_RATE),
+                DelayLine::from_seconds(config.max_delay_secs, DEFAULT_SAMPLE_RATE),
             ),
             lfo: LfoDrive::new(rate_hz, config.lr_phase_offset),
             mix: TimeModMix::new(depth_secs, feedback, mix),
-            sample_rate: DEFAULT_SR,
+            sample_rate: DEFAULT_SAMPLE_RATE,
             config,
         }
     }
@@ -73,7 +73,6 @@ impl ModulatedDelay {
     }
 
     pub fn set_sample_rate(&mut self, sample_rate: tutti_core::SampleRate) {
-        let sample_rate: f64 = sample_rate.get();
         self.sample_rate = sample_rate;
         self.delays.l = DelayLine::from_seconds(self.config.max_delay_secs, sample_rate);
         self.delays.r = DelayLine::from_seconds(self.config.max_delay_secs, sample_rate);
@@ -86,7 +85,10 @@ impl ModulatedDelay {
     #[inline]
     pub fn process_sample(&mut self, in_l: f32, in_r: f32, out: &mut [f32]) {
         let (depth, fb, mix) = self.mix.load();
-        let sr = self.sample_rate as f32;
+        // Narrowed once for the three fractional delay positions below. They
+        // feed an interpolated read, so they keep their fraction rather than
+        // going through `Seconds::to_samples`.
+        let sr = self.sample_rate.get() as f32;
 
         let (lfo_l, lfo_r) = self.lfo.eval();
 
@@ -118,7 +120,7 @@ impl ModulatedDelay {
         out[0] = in_l * (1.0 - mix) + wet_l * mix;
         out[1] = in_r * (1.0 - mix) + wet_r * mix;
 
-        self.lfo.advance(tutti_core::SampleRate(self.sample_rate));
+        self.lfo.advance(self.sample_rate);
     }
 
     pub fn footprint(&self) -> usize {

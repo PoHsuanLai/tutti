@@ -1,9 +1,9 @@
 use tutti_core::Arc;
 use tutti_core::AtomicF32;
-use tutti_core::{dsp::DEFAULT_SR, AudioUnit, BufferMut, BufferRef, SignalFrame};
+use tutti_core::{dsp::DEFAULT_SAMPLE_RATE, AudioUnit, BufferMut, BufferRef, SignalFrame};
 
 use super::shared::{LfoDrive, LinearModMix};
-use tutti_core::{Depth, Feedback, Hz, Mix};
+use tutti_core::{Depth, Feedback, Hz, Mix, SampleRate};
 
 const MAX_STAGES: usize = 12;
 
@@ -56,7 +56,7 @@ pub struct PhaserNode {
     lfo: LfoDrive,
     mix: LinearModMix,
     feedback_sample: f32,
-    sample_rate: f64,
+    sample_rate: SampleRate,
     range: FrequencyRange,
 }
 
@@ -69,7 +69,7 @@ impl PhaserNode {
             lfo: LfoDrive::new(0.3, 0.0),
             mix: LinearModMix::new(0.5, 0.5, 0.5),
             feedback_sample: 0.0,
-            sample_rate: DEFAULT_SR,
+            sample_rate: DEFAULT_SAMPLE_RATE,
             range: FrequencyRange::new(200.0, 4000.0),
         }
     }
@@ -104,13 +104,24 @@ impl PhaserNode {
 
     pub fn set_frequency_range(&mut self, min_hz: impl Into<Hz>, max_hz: impl Into<Hz>) {
         self.range.min_hz = Hz(min_hz.into().get().max(20.0));
-        self.range.max_hz = Hz(max_hz.into().get().min(self.sample_rate as f32 * 0.45));
+        self.range.max_hz = max_hz.into().min(self.range_ceiling());
+    }
+
+    /// The highest all-pass centre this rate allows.
+    ///
+    /// 0.90 of Nyquist is the old `sample_rate * 0.45`. The wider margin than
+    /// the SVF's 0.998 is the all-pass chain's: several stages compound their
+    /// phase error near the limit.
+    #[inline]
+    fn range_ceiling(&self) -> Hz {
+        self.sample_rate.nyquist_scaled(0.90)
     }
 
     #[inline]
     fn process_sample(&mut self, input: f32) -> f32 {
         let (depth, fb, mix) = self.mix.load();
-        let sr = self.sample_rate as f32;
+        // Narrowed once for the all-pass coefficients below.
+        let sr = self.sample_rate.get() as f32;
 
         // Phaser uses only the L channel of the LFO (mono effect).
         let (lfo_raw, _) = self.lfo.eval();
@@ -129,7 +140,7 @@ impl PhaserNode {
         }
 
         self.feedback_sample = sample;
-        self.lfo.advance(tutti_core::SampleRate(self.sample_rate));
+        self.lfo.advance(self.sample_rate);
 
         input * (1.0 - mix) + sample * mix
     }
@@ -152,9 +163,8 @@ impl AudioUnit for PhaserNode {
     }
 
     fn set_sample_rate(&mut self, sample_rate: tutti_core::SampleRate) {
-        let sample_rate: f64 = sample_rate.get();
         self.sample_rate = sample_rate;
-        self.range.max_hz = Hz(self.range.max_hz.get().min(sample_rate as f32 * 0.45));
+        self.range.max_hz = self.range.max_hz.min(self.range_ceiling());
     }
 
     #[inline]

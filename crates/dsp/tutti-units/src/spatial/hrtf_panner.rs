@@ -53,15 +53,33 @@ pub enum HrtfBinauralError {
 #[derive(Clone)]
 struct HrirSource {
     bytes: Vec<u8>,
+    /// Stored as `u32` because that is what `HrirSphere::new` takes, and it is
+    /// also the identity this type compares on to decide whether a rate change
+    /// needs a rebuild — an integer equality, not a float one. The typed rate
+    /// is the constructor's argument; this is the ABI form it lands in.
     sample_rate: u32,
 }
 
 impl HrirSource {
-    fn new(bytes: &[u8], sample_rate: u32) -> Self {
+    fn new(bytes: &[u8], sample_rate: SampleRate) -> Self {
         Self {
             bytes: bytes.to_vec(),
-            sample_rate,
+            sample_rate: Self::rate_key(sample_rate),
         }
+    }
+
+    /// The rate in the sphere's own vocabulary — also the identity a rebuild
+    /// decision compares on.
+    ///
+    /// The sphere is resampled to an integral device rate; fractional rates are
+    /// not something any HRIR dataset ships at.
+    fn rate_key(sample_rate: SampleRate) -> u32 {
+        sample_rate.get().round() as u32
+    }
+
+    /// The rate this sphere is resampled to, back in the engine's vocabulary.
+    fn sample_rate(&self) -> SampleRate {
+        SampleRate::from(self.sample_rate)
     }
 
     fn build(&self) -> Result<HrtfProcessor, HrtfBinauralError> {
@@ -179,10 +197,10 @@ struct PositionSmoother {
 }
 
 impl PositionSmoother {
-    fn new(sample_rate: u32) -> Self {
+    fn new(sample_rate: SampleRate) -> Self {
         Self {
-            azimuth: ExponentialSmoother::new(DEFAULT_POSITION_SMOOTH_TIME, sr(sample_rate)),
-            elevation: ExponentialSmoother::new(DEFAULT_POSITION_SMOOTH_TIME, sr(sample_rate)),
+            azimuth: ExponentialSmoother::new(DEFAULT_POSITION_SMOOTH_TIME, sample_rate),
+            elevation: ExponentialSmoother::new(DEFAULT_POSITION_SMOOTH_TIME, sample_rate),
             target_azimuth: 0.0,
             target_elevation: 0.0,
         }
@@ -198,9 +216,9 @@ impl PositionSmoother {
         self.target_elevation = Elevation::new_clamped(elevation.get()).get();
     }
 
-    fn retune(&mut self, sample_rate: u32) {
-        self.azimuth.set_sample_rate(sr(sample_rate));
-        self.elevation.set_sample_rate(sr(sample_rate));
+    fn retune(&mut self, sample_rate: SampleRate) {
+        self.azimuth.set_sample_rate(sample_rate);
+        self.elevation.set_sample_rate(sample_rate);
     }
 
     /// Advance both smoothers one frame and return the smoothed direction.
@@ -228,12 +246,15 @@ pub(crate) struct HrtfBinaural {
 }
 
 impl HrtfBinaural {
-    pub(crate) fn new(hrir_bytes: &[u8], sample_rate: f32) -> Result<Self, HrtfBinauralError> {
-        let source = HrirSource::new(hrir_bytes, sample_rate as u32);
+    pub(crate) fn new(
+        hrir_bytes: &[u8],
+        sample_rate: impl Into<SampleRate>,
+    ) -> Result<Self, HrtfBinauralError> {
+        let source = HrirSource::new(hrir_bytes, sample_rate.into());
         let processor = source.build()?;
         Ok(Self {
+            aim: PositionSmoother::new(source.sample_rate()),
             processor,
-            aim: PositionSmoother::new(source.sample_rate),
             source,
             bridge: FrameBridge::new(),
             tails: OverlapTails::new(),
@@ -246,19 +267,22 @@ impl HrtfBinaural {
         self.aim.aim_at(azimuth, elevation);
     }
 
-    pub(crate) fn set_sample_rate(&mut self, sample_rate: f32) {
-        let sample_rate = sample_rate as u32;
+    pub(crate) fn set_sample_rate(&mut self, sample_rate: impl Into<SampleRate>) {
+        // Resolve to the sphere's own integral vocabulary and compare *before*
+        // building a candidate: `HrirSource::new` copies the HRIR bytes, so
+        // doing it first would clone the dataset on every no-op call.
+        let sample_rate = HrirSource::rate_key(sample_rate.into());
         if sample_rate == self.source.sample_rate {
             return;
         }
         // Rebuilding is a non-RT reconfigure (mirrors the old node rebuilding
         // its whole panner in `set_sample_rate`); resampling the sphere here
         // rather than on the audio path keeps the callback clean.
-        let candidate = HrirSource::new(&self.source.bytes, sample_rate);
+        let candidate = HrirSource::new(&self.source.bytes, SampleRate::from(sample_rate));
         if let Ok(processor) = candidate.build() {
+            self.aim.retune(candidate.sample_rate());
             self.processor = processor;
             self.source = candidate;
-            self.aim.retune(sample_rate);
             self.reset_state();
         }
     }
@@ -305,14 +329,9 @@ impl Clone for HrtfBinaural {
     fn clone(&self) -> Self {
         // Rebuild from the retained source; a fresh renderer with cleared
         // streaming state is the correct clone (state is per-voice, not shared).
-        Self::new(&self.source.bytes, self.source.sample_rate as f32)
+        Self::new(&self.source.bytes, self.source.sample_rate())
             .expect("HRIR bytes validated at first construction")
     }
-}
-
-#[inline]
-fn sr(sample_rate: u32) -> SampleRate {
-    SampleRate(sample_rate as f64)
 }
 
 /// Unit vector straight ahead (listener forward), in the sphere's right-handed

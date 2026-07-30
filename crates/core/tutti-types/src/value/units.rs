@@ -1370,6 +1370,12 @@ unit_bounded!(SampleRate, f64);
 //   `SrcRatio::for_rates` owns the derivation along with its unity tolerance
 //   and its non-positive guard. A bare operator here would let callers bypass
 //   both.
+//
+// `Mul<f64>`'s replacement is `nyquist` / `nyquist_scaled` below, per the rule
+// that an omission ships with the method that supersedes it. Without them the
+// scaling escaped to raw floats and was written four different ways —
+// `sample_rate * 0.499`, `sample_rate as f32 * 0.45`, `sample_rate.get() / 2.0`
+// — each an unlabelled anti-aliasing margin.
 
 impl SampleRate {
     /// 44.1 kHz — the historic CD-audio rate.
@@ -1377,6 +1383,35 @@ impl SampleRate {
 
     /// 48 kHz — the typical pro-audio default.
     pub const SR_48K: Self = Self(48_000.0);
+
+    /// The Nyquist frequency: the highest representable at this rate.
+    ///
+    /// Returns [`Hz`] because the result is a *signal* frequency — something to
+    /// compare a cutoff against — not a clock rate. That crossing is the whole
+    /// reason the method exists: it is the one sanctioned bridge between the
+    /// two, so a filter clamping its cutoff does not reach for a raw float.
+    ///
+    /// Narrowing to `Hz`'s `f32` is safe here: Nyquist is at most ~96 kHz for
+    /// any real device rate, well inside `f32`'s exact-integer range.
+    #[inline]
+    pub fn nyquist(self) -> Hz {
+        Hz((self.0 * 0.5) as f32)
+    }
+
+    /// Nyquist scaled by `margin`, for filters that must stay *below* it.
+    ///
+    /// A biquad or ladder evaluated exactly at Nyquist is degenerate — `tan`
+    /// diverges — so cutoffs clamp slightly under. The margin is the caller's
+    /// because the safe distance is topology-specific (an SVF tolerates 0.499,
+    /// an all-pass chain wants more headroom); naming it as an argument keeps
+    /// that a stated choice rather than a bare literal beside a multiply.
+    ///
+    /// `margin` is clamped to `0.0..=1.0`: above 1.0 it would return a
+    /// frequency *above* Nyquist, which is the bug this guards.
+    #[inline]
+    pub fn nyquist_scaled(self, margin: f32) -> Hz {
+        Hz((self.0 * f64::from(margin.clamp(0.0, 1.0)) * 0.5) as f32)
+    }
 }
 
 // `unit_newtype!` generates `From<f64>` only. File headers and device configs
@@ -2327,6 +2362,30 @@ mod tests {
         // The rounding split survives the retype.
         assert_eq!(Seconds(0.5).to_samples_floor(SampleRate(3.0)), Samples(1));
         assert_eq!(Seconds(0.5).to_samples_ceil(SampleRate(3.0)), Samples(2));
+    }
+
+    #[test]
+    fn nyquist_crosses_from_clock_rate_to_signal_frequency() {
+        assert_eq!(SampleRate::SR_48K.nyquist(), Hz(24_000.0));
+        assert_eq!(SampleRate::SR_44K1.nyquist(), Hz(22_050.0));
+
+        // The margin is a fraction of *Nyquist*, not of the sample rate. The
+        // call sites this replaced scaled the rate (`sr * 0.499`), so porting
+        // one means doubling its constant — 0.499 of the rate is 0.998 of
+        // Nyquist. Getting that backwards halves every filter's usable range,
+        // so it is pinned here.
+        assert_eq!(SampleRate::SR_48K.nyquist_scaled(1.0), Hz(24_000.0));
+        assert_eq!(SampleRate::SR_48K.nyquist_scaled(0.5), Hz(12_000.0));
+        let svf = SampleRate::SR_48K.nyquist_scaled(0.998);
+        assert!((svf.get() - 48_000.0 * 0.499).abs() < 1e-3);
+    }
+
+    #[test]
+    fn nyquist_scaled_refuses_to_exceed_nyquist() {
+        // A margin above unity would hand back a frequency above Nyquist —
+        // the exact aliasing bug the clamp exists to stop.
+        assert_eq!(SampleRate::SR_48K.nyquist_scaled(1.5), Hz(24_000.0));
+        assert_eq!(SampleRate::SR_48K.nyquist_scaled(-0.2), Hz(0.0));
     }
 
     #[test]

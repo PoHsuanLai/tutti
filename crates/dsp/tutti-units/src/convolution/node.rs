@@ -7,7 +7,7 @@
 //! Each node composes a [`Convolver`] (DSP engine) with a [`WetDry`]
 //! parameter group (user-facing knobs).
 
-use tutti_core::dsp::DEFAULT_SR;
+use tutti_core::dsp::DEFAULT_SAMPLE_RATE;
 use tutti_core::Arc;
 use tutti_core::AtomicF32;
 use tutti_core::{Amplitude, AudioUnit, BufferMut, BufferRef, Mix, Samples, SignalFrame};
@@ -37,7 +37,7 @@ pub enum IrChannelConfig {
 pub struct ConvolverNode {
     convolver: Convolver,
     params: WetDry,
-    sample_rate: f64,
+    sample_rate: SampleRate,
     latency_samples: usize,
 }
 
@@ -49,7 +49,7 @@ impl ConvolverNode {
         Self {
             convolver,
             params: WetDry::default(),
-            sample_rate: DEFAULT_SR,
+            sample_rate: DEFAULT_SAMPLE_RATE,
             latency_samples,
         }
     }
@@ -61,7 +61,7 @@ impl ConvolverNode {
         Self {
             convolver,
             params: WetDry::default(),
-            sample_rate: DEFAULT_SR,
+            sample_rate: DEFAULT_SAMPLE_RATE,
             latency_samples,
         }
     }
@@ -112,7 +112,6 @@ impl AudioUnit for ConvolverNode {
     }
 
     fn set_sample_rate(&mut self, sample_rate: tutti_core::SampleRate) {
-        let sample_rate: f64 = sample_rate.get();
         self.sample_rate = sample_rate;
     }
 
@@ -173,7 +172,7 @@ pub struct StereoConvolverNode {
     channels: StereoPair<Convolver>,
     config: IrChannelConfig,
     params: WetDry,
-    sample_rate: f64,
+    sample_rate: SampleRate,
     latency_samples: usize,
 }
 
@@ -184,7 +183,7 @@ impl StereoConvolverNode {
             channels: StereoPair::new(l, r),
             config,
             params: WetDry::default(),
-            sample_rate: DEFAULT_SR,
+            sample_rate: DEFAULT_SAMPLE_RATE,
             latency_samples,
         }
     }
@@ -284,7 +283,6 @@ impl AudioUnit for StereoConvolverNode {
     }
 
     fn set_sample_rate(&mut self, sample_rate: tutti_core::SampleRate) {
-        let sample_rate: f64 = sample_rate.get();
         self.sample_rate = sample_rate;
     }
 

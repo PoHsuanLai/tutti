@@ -47,7 +47,7 @@ pub struct DiskSource {
     playing: AtomicBool,
 
     gain: Amplitude,
-    sample_rate: f32,
+    sample_rate: SampleRate,
 
     /// Shared state for cross-thread communication (speed, direction, seeking).
     shared_state: Option<Arc<RtState>>,
@@ -124,7 +124,7 @@ impl DiskSource {
             consumer,
             playing: AtomicBool::new(true),
             gain: Amplitude::new(1.0),
-            sample_rate: 44100.0,
+            sample_rate: SampleRate::SR_44K1,
             shared_state: Some(shared_state),
             applied_reset_epoch,
             fractional_pos: 0.0,
@@ -351,8 +351,7 @@ impl AudioUnit for DiskSource {
     }
 
     fn set_sample_rate(&mut self, sample_rate: tutti_core::SampleRate) {
-        let sample_rate: f64 = sample_rate.get();
-        self.sample_rate = sample_rate as f32;
+        self.sample_rate = sample_rate;
     }
 
     fn tick(&mut self, _input: &[f32], output: &mut [f32]) {

@@ -14,7 +14,7 @@ pub(crate) struct EnvelopeFollower {
     release_coeff: f32,
     last_attack: f32,
     last_release: f32,
-    sample_rate: f64,
+    sample_rate: SampleRate,
 }
 
 impl EnvelopeFollower {
@@ -25,7 +25,7 @@ impl EnvelopeFollower {
     ) -> Self {
         let attack = attack.into().get();
         let release = release.into().get();
-        let sample_rate = sample_rate.into().get();
+        let sample_rate = sample_rate.into();
         Self {
             value: 0.0,
             attack_coeff: time_to_coeff(attack, sample_rate),
@@ -100,7 +100,7 @@ impl EnvelopeFollower {
         attack: impl Into<Seconds>,
         release: impl Into<Seconds>,
     ) {
-        let sample_rate = sample_rate.into().get();
+        let sample_rate = sample_rate.into();
         let attack = attack.into().get();
         let release = release.into().get();
         self.sample_rate = sample_rate;
@@ -131,14 +131,16 @@ impl GateEnvelopeFollower {
         sample_rate: impl Into<SampleRate>,
     ) -> Self {
         let attack = attack.into();
-        let hold = hold.into().get();
+        let hold = hold.into();
         let release = release.into();
-        let sample_rate = sample_rate.into().get();
+        let sample_rate = sample_rate.into();
         Self {
             inner: EnvelopeFollower::new(attack, release, sample_rate),
             hold_counter: 0,
-            hold_samples: (hold * sample_rate as f32) as usize,
-            last_hold: hold,
+            // `_floor`: a hold is a countdown of whole elapsed frames, and
+            // the old `as usize` truncated, which is floor.
+            hold_samples: hold.to_samples_floor(sample_rate).get(),
+            last_hold: hold.get(),
         }
     }
 
@@ -150,11 +152,11 @@ impl GateEnvelopeFollower {
         hold: impl Into<Seconds>,
         release: impl Into<Seconds>,
     ) {
-        let hold = hold.into().get();
+        let hold = hold.into();
         self.inner.update_coefficients(attack, release);
-        if (hold - self.last_hold).abs() > EPSILON {
-            self.hold_samples = (hold * self.inner.sample_rate as f32) as usize;
-            self.last_hold = hold;
+        if (hold.get() - self.last_hold).abs() > EPSILON {
+            self.hold_samples = hold.to_samples_floor(self.inner.sample_rate).get();
+            self.last_hold = hold.get();
         }
     }
 
@@ -190,13 +192,13 @@ impl GateEnvelopeFollower {
         hold: impl Into<Seconds>,
         release: impl Into<Seconds>,
     ) {
-        let sample_rate = sample_rate.into().get();
+        let sample_rate = sample_rate.into();
         let attack = attack.into();
-        let hold = hold.into().get();
+        let hold = hold.into();
         let release = release.into();
         self.inner.set_sample_rate(sample_rate, attack, release);
-        self.hold_samples = (hold * sample_rate as f32) as usize;
-        self.last_hold = hold;
+        self.hold_samples = hold.to_samples_floor(sample_rate).get();
+        self.last_hold = hold.get();
     }
 }
 

@@ -2,7 +2,7 @@ use crate::Result;
 use tutti_core::AudioUnit;
 use tutti_core::ChannelLayout;
 use tutti_core::{
-    Azimuth, BufferMut, BufferRef, Elevation, Param, SignalFrame, Spread, StereoWidth,
+    Azimuth, BufferMut, BufferRef, Elevation, Param, SampleRate, SignalFrame, Spread, StereoWidth,
 };
 
 use super::vbap_panner::SpatialPanner;
@@ -117,7 +117,7 @@ pub struct SpatialPannerNode {
     /// than the source. NOT an `Amplitude` despite the matching range: it
     /// scales the SIDE component against the mid. See [`StereoWidth`].
     width: Param<StereoWidth>,
-    sample_rate: f32,
+    sample_rate: SampleRate,
     scratch_output: Vec<f32>,
     /// Gain-index → output-channel scatter map (see [`speaker_channel_map`]).
     /// Precomputed per layout so the RT path just indexes it.
@@ -205,7 +205,7 @@ impl SpatialPannerNode {
             target: SpatialTarget::new(),
             spread: Param::new(Spread::POINT),
             width: Param::new(StereoWidth::NATURAL),
-            sample_rate: 48000.0,
+            sample_rate: SampleRate::SR_48K,
             scratch_output: vec![0.0; layout.count() as usize],
             channel_map: speaker_channel_map(layout),
         }
@@ -277,7 +277,7 @@ impl AudioUnit for SpatialPannerNode {
     }
 
     fn set_sample_rate(&mut self, sample_rate: tutti_core::SampleRate) {
-        self.sample_rate = sample_rate.get() as f32;
+        self.sample_rate = sample_rate;
         self.panner.set_sample_rate(sample_rate);
     }
 

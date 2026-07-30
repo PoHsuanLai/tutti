@@ -20,10 +20,11 @@
 use tutti_core::Arc;
 use tutti_core::AtomicF32;
 use tutti_core::{
-    beat_from_ports, dsp::DEFAULT_SR, AudioUnit, BufferMut, BufferRef, SignalFrame, BEAT_PORTS,
+    beat_from_ports, dsp::DEFAULT_SAMPLE_RATE, AudioUnit, BufferMut, BufferRef, SignalFrame,
+    BEAT_PORTS,
 };
 
-use tutti_core::{Depth, Hz, Param, Phase, PhaseIncrement};
+use tutti_core::{Depth, Hz, Param, Phase, PhaseIncrement, SampleRate};
 
 // The waveform vocabulary + the pure LFO modulator live in tutti-mod now. Re-
 // exported so existing `use tutti_units::LfoShape` / `Lfo` sites are untouched.
@@ -77,7 +78,7 @@ pub struct ModulatorNode<M: Modulator> {
     depth: Param<Depth>,
     phase_offset: Param<PhaseIncrement>,
     phase: Phase,
-    sample_rate: f64,
+    sample_rate: SampleRate,
 }
 
 /// The concrete LFO node the graph builds — a [`ModulatorNode`] driving a pure
@@ -107,7 +108,7 @@ impl<M: Modulator> ModulatorNode<M> {
             depth: Param::new(Depth::FULL),
             phase_offset: Param::new(PhaseIncrement(0.0)),
             phase: Phase::START,
-            sample_rate: DEFAULT_SR,
+            sample_rate: DEFAULT_SAMPLE_RATE,
         }
     }
 
@@ -214,7 +215,6 @@ impl<M: Modulator + Clone + Send + Sync + 'static> AudioUnit for ModulatorNode<M
     }
 
     fn set_sample_rate(&mut self, sample_rate: tutti_core::SampleRate) {
-        let sample_rate: f64 = sample_rate.get();
         self.sample_rate = sample_rate;
     }
 

@@ -43,6 +43,26 @@ pub enum AuError {
         /// The rate the AU reports it is actually running at, in Hz.
         accepted: f64,
     },
+    /// The AU declined the requested block size: after the
+    /// `MaximumFramesPerSlice` write it still reports a different maximum.
+    ///
+    /// Fatal for the same reason [`AuError::SampleRateRejected`] is, but through
+    /// a sharper edge. `MaximumFramesPerSlice` is what the AU sizes its internal
+    /// buffers from at `AudioUnitInitialize`, and
+    /// [`AuInstance::process`](crate::instance::AuInstance::process) admits any
+    /// `num_frames` up to the *recorded* block size. So a config holding a larger
+    /// figure than the AU accepted disables that bound check in the unsafe
+    /// direction: the render proceeds and the AU writes past buffers it allocated
+    /// for fewer frames.
+    ///
+    /// Frame counts are raw `u32`, matching the property's C type — this is the
+    /// value that crossed the AudioToolbox ABI, reported verbatim.
+    BlockSizeRejected {
+        /// The maximum block size this host asked for, in frames.
+        requested: u32,
+        /// The maximum the AU reports it actually allocated for, in frames.
+        accepted: u32,
+    },
     /// `AudioUnitRender` returned a non-`noErr` status. `code` is the render
     /// call's own OSStatus; `last_render_error` is the AU's
     /// `kAudioUnitProperty_LastRenderError` at failure time, when it could be
@@ -89,6 +109,7 @@ impl AuError {
                 AuError::NullComponent => return "null component",
                 AuError::InvalidBuffer(_) => return "invalid buffer",
                 AuError::SampleRateRejected { .. } => return "sample rate rejected",
+                AuError::BlockSizeRejected { .. } => return "block size rejected",
             };
             match code {
                 K_AUDIO_UNIT_ERR_INVALID_PROPERTY => "invalid property",
@@ -119,6 +140,7 @@ impl AuError {
                 AuError::NullComponent => "null component",
                 AuError::InvalidBuffer(_) => "invalid buffer",
                 AuError::SampleRateRejected { .. } => "sample rate rejected",
+                AuError::BlockSizeRejected { .. } => "block size rejected",
                 _ => "unknown error",
             }
         }
@@ -166,6 +188,14 @@ impl fmt::Display for AuError {
                 f,
                 "AU rejected the {scope} sample rate: requested {requested} Hz, \
                  AU reports {accepted} Hz"
+            ),
+            AuError::BlockSizeRejected {
+                requested,
+                accepted,
+            } => write!(
+                f,
+                "AU rejected the block size: requested {requested} frames, \
+                 AU reports {accepted} frames"
             ),
         }
     }

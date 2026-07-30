@@ -102,6 +102,26 @@ impl AuInstance {
         })
     }
 
+    /// Instantiate at an explicit [`StreamConfig`] — the way to open an AU in
+    /// mono, or at any width other than the stereo default [`Self::new`] picks.
+    ///
+    /// Purely additive: [`Self::new`] is unchanged, and the `tutti-plugin-server`
+    /// loader keeps calling it.
+    ///
+    /// # Safety
+    /// `component` must be a valid, non-null `AudioComponent` handle obtained
+    /// from `AudioComponentFindNext` or [`crate::component`].
+    ///
+    /// # Errors
+    /// As [`Self::new`]. A refused channel width is **not** an error — see
+    /// [`AuLoaded::new_with_config`]; compare [`num_outputs`](Self::num_outputs)
+    /// against what was requested to detect it.
+    pub unsafe fn new_with_config(component: AudioComponent, config: StreamConfig) -> Result<Self> {
+        Ok(AuInstance {
+            state: State::Loaded(AuLoaded::new_with_config(component, config)?),
+        })
+    }
+
     /// Transition Loaded → Ready. No-op if already Ready.
     ///
     /// A failure leaves the instance in the `Loaded` state it started from, so
@@ -890,6 +910,92 @@ impl AuInstance {
         }
         Ok(())
     }
+
+    /// Configured maximum block size in frames.
+    ///
+    /// This is the bound [`process`](Self::process) enforces: a `num_frames`
+    /// above it is [`AuError::InvalidBuffer`], because the AU allocated its
+    /// internal buffers for this width at `AudioUnitInitialize` time and
+    /// rendering wider writes past them.
+    pub fn block_size(&self) -> u32 {
+        self.config().block_size
+    }
+
+    /// Change the maximum block size, re-initializing around the change if the
+    /// AU was already initialized.
+    ///
+    /// A DAW changing its buffer size in preferences would otherwise have to
+    /// destroy and rebuild every plugin instance, losing every scrap of state
+    /// that is not in a preset.
+    ///
+    /// `MaximumFramesPerSlice` is only writable on an **uninitialized** AU — the
+    /// AU sizes its internal buffers from it during `AudioUnitInitialize` — so
+    /// this performs the same uninitialize → reconfigure → re-initialize dance
+    /// [`set_sample_rate`](Self::set_sample_rate) does, with the same
+    /// verification discipline:
+    ///
+    /// * the accepted value is **read back**
+    ///   ([`StreamConfig::verify_block_size`]) and a mismatch is a hard error,
+    ///   rather than recording a width the AU is not running at. `process`
+    ///   rejects `num_frames > block_size`, so a config holding a larger figure
+    ///   than the AU allocated turns that guard into a false negative — the
+    ///   render is admitted and the AU writes past its own buffers.
+    /// * on any failure the previous size is restored into the config **and**
+    ///   re-applied to the AU, so a caller that ignores the error does not
+    ///   inherit a lie.
+    /// * the render scratch is rebuilt at the new size, which happens via
+    ///   `initialize` → `RenderScratch::new`. Skipping it would leave `process`
+    ///   staging into buffers shorter than the frame count it now admits.
+    ///
+    /// # Errors
+    /// [`AuError::InvalidBuffer`] for a zero size, [`AuError::BlockSizeRejected`]
+    /// if the AU keeps a different one, or an `OsStatus` from the re-initialize.
+    /// A rejection leaves the instance in the state and at the size it started
+    /// in.
+    pub fn set_block_size(&mut self, frames: u32) -> Result<()> {
+        // Zero would fail every `process` call's `num_frames > block_size` check
+        // and size the scratch to empty buffers. Refuse it here rather than
+        // handing AudioToolbox a degenerate value.
+        if frames == 0 {
+            return Err(AuError::InvalidBuffer(
+                "block_size must be non-zero".to_string(),
+            ));
+        }
+
+        let was_ready = self.is_initialized();
+        if was_ready {
+            self.uninitialize()?;
+        }
+
+        if let State::Loaded(l) = &mut self.state {
+            let previous = l.config.block_size;
+            if previous != frames {
+                l.config.block_size = frames;
+                // Re-apply, then verify. `apply` also re-sends the stream format,
+                // so capture the effective layout as `set_sample_rate` does —
+                // the scratch is sized from it.
+                let outcome = l.config.apply(&l.handle).and_then(|channels| {
+                    l.config.channels = channels;
+                    l.config.verify_block_size(&l.handle)
+                });
+                if let Err(e) = outcome {
+                    // Roll back to the size the AU is still running at, and push
+                    // it back onto the unit so config and AU agree.
+                    l.config.block_size = previous;
+                    let _ = l.config.apply(&l.handle);
+                    if was_ready {
+                        self.initialize()?;
+                    }
+                    return Err(e);
+                }
+            }
+        }
+
+        if was_ready {
+            self.initialize()?;
+        }
+        Ok(())
+    }
 }
 
 impl AuLoaded {
@@ -905,12 +1011,46 @@ impl AuLoaded {
         let handle = AuHandle::new(component)?;
 
         let probed = StreamConfig::probe(&handle);
+        // The stereo floor lives HERE, in the layout-less constructor, because
+        // this is the one entry point with no caller-supplied answer to "how
+        // wide?" and it has to pick a default. Stereo is the right default for a
+        // DAW: 2 buffers fed into a unit configured mono would have channel 1
+        // silently dropped. It is a *default*, not a guard — `new_with_config`
+        // bypasses it, and `StreamConfig::apply` no longer re-imposes it.
         let channels = AuBusLayout {
             inputs: probed.inputs,
             outputs: ChannelLayout::from(probed.outputs.count().max(2)),
             has_input: probed.has_input,
         };
-        let mut config = StreamConfig::new(sample_rate, block_size, channels);
+        Self::with_layout(handle, StreamConfig::new(sample_rate, block_size, channels))
+    }
+
+    /// Instantiate at a caller-chosen [`StreamConfig`], bypassing the stereo
+    /// default [`AuLoaded::new`] applies.
+    ///
+    /// This is how a host requests mono, or any other width the AU will take.
+    /// There was previously no way to do it from outside the crate at all:
+    /// `apply` is `pub(crate)` and both the constructor and `apply` forced
+    /// `outputs >= 2`, so a mono track paid for a doubled channel through every
+    /// AU in its chain.
+    ///
+    /// # Safety
+    /// `component` must be a valid, non-null `AudioComponent`.
+    ///
+    /// # Errors
+    /// As [`AuLoaded::new`]. A channel width the AU **refuses** is deliberately
+    /// not an error: the AU keeps its own layout and
+    /// [`config`](AuLoaded::config)`().channels` reports what it actually
+    /// accepted. Compare the two if the distinction matters — that is the only
+    /// way to tell, and it is why `apply` returns the effective layout rather
+    /// than `()`.
+    pub unsafe fn new_with_config(component: AudioComponent, config: StreamConfig) -> Result<Self> {
+        Self::with_layout(AuHandle::new(component)?, config)
+    }
+
+    /// Shared tail of both constructors: apply the config, then record the layout
+    /// the AU actually accepted.
+    fn with_layout(handle: AuHandle, mut config: StreamConfig) -> Result<Self> {
         // `apply` returns the layout the AU actually accepted, which may differ
         // from what we requested. Store the effective layout so the render
         // scratch is later sized to the real topology (FIX 3).

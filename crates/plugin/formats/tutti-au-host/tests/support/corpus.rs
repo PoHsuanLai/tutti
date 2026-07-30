@@ -289,3 +289,32 @@ pub fn peak(buffers: &[Vec<f32>]) -> f32 {
 pub fn all_finite(buffers: &[Vec<f32>]) -> bool {
     buffers.iter().flat_map(|c| c.iter()).all(|s| s.is_finite())
 }
+
+/// Units measured to **accept** a 1-channel stream format on every scope they
+/// have, and to `AudioUnitInitialize` at it.
+///
+/// Measured on macOS 15.6 by setting a mono float32 ASBD on the output (and,
+/// where present, input) scope and reading it back: these report
+/// `mChannelsPerFrame == 1` and initialize with `noErr`. 12 of the 15 units
+/// probed did; the exceptions are in [`REFUSES_MONO`].
+///
+/// Named rather than derived at runtime because the point is to pin a *measured*
+/// fact: a host that silently widened mono to stereo would still pass a test that
+/// asked the AU what it supports and then asserted agreement with itself.
+///
+/// Every member also accepts a 4-channel format, which
+/// `a_quad_request_is_honoured_where_the_au_takes_it` relies on.
+pub const ACCEPTS_MONO: &[AuRef] = &[DELAY, N_BAND_EQ, LOWPASS, DYNAMICS, SAMPLER];
+
+/// Units measured to **refuse** a 1-channel output format and keep their own
+/// width.
+///
+/// Measured on macOS 15.6: setting a mono output ASBD returns `-10868`
+/// (`kAudioUnitErr_FormatNotSupported`) and the read-back still reports 2
+/// channels. These are what make `a_refused_layout_reports_the_width_the_au_kept`
+/// meaningful — without a unit that genuinely says no, that test could not
+/// distinguish an honest report from a lucky one.
+///
+/// AUMatrixReverb refuses mono but *accepts* quad on its output while keeping 2
+/// on its input, so it is also the corpus's asymmetric-layout case.
+pub const REFUSES_MONO: &[AuRef] = &[MATRIX_REVERB, DLS_SYNTH];

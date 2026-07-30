@@ -1048,3 +1048,230 @@ pub fn open_at_output_width(unit: &AuRef, rate: f64, block: u32, width: u16) -> 
     let accepted = au.num_outputs() as u16;
     (au, accepted)
 }
+
+// ------------------------------------------------- third-party corpus
+//
+// Everything below addresses a **non-Apple** AU, and so is reached through
+// [`optional_third_party`] rather than [`AuRef::require`]: these are a genuine
+// optional install, and the hard-failure rule above exists precisely because
+// Apple's units are not. See `au_third_party.rs`'s module docs for the
+// absence-handling contract every caller here owes.
+//
+// All figures measured on macOS 15.6 at 48 kHz / 512 frames by a probe example
+// that has since been deleted; these constants are the only record. Every code
+// was verified against `auval -a` output before being written down — a previous
+// attempt at this corpus guessed the subtypes and matched nothing at all, which
+// only a skip guard caught.
+
+/// One third-party AU, addressed by the codes `auval -a` prints for it.
+///
+/// Deliberately a separate type from [`AuRef`] rather than a manufacturer field
+/// on it: `AuRef::require` panics on absence and every Apple-facing test depends
+/// on that, so a third-party unit must not be reachable through the same API. The
+/// only way to open one of these is [`ThirdPartyRef::find`], which returns an
+/// `Option` the caller is forced to handle.
+#[derive(Debug, Clone, Copy)]
+pub struct ThirdPartyRef {
+    /// Display name, for assertion messages and skip notices only.
+    pub label: &'static str,
+    /// Four-char `componentSubType`, as printed by `auval -a`.
+    pub sub_type: &'static [u8; 4],
+    /// Four-char `componentManufacturer`, as printed by `auval -a`.
+    pub manufacturer: &'static [u8; 4],
+    /// High-level type, which also selects the enumeration scope.
+    pub au_type: AuType,
+}
+
+impl ThirdPartyRef {
+    /// Locate this unit, or `None` when it is not installed on this machine.
+    pub fn find(&self) -> Option<AuComponentInfo> {
+        optional_third_party(self.sub_type, self.manufacturer, self.au_type)
+    }
+}
+
+/// TDR Nova — `aufx`/`Td5a`/`Tdrl`, Tokyo Dawn Labs.
+///
+/// The corpus's **JUCE** subject, and the only reason the crate's
+/// `relax-void-encoding` feature can be shown to be load-bearing: JUCE declares
+/// the Cocoa view factory's AudioUnit argument as
+/// `^{ComponentInstanceRecord=[1q]}` where Apple declares
+/// `^{OpaqueAudioComponentInstance=}`, so objc2's debug encoding check rejects one
+/// of the two unless pointer identity is relaxed. No Apple unit exercises that
+/// path.
+///
+/// Measured: 75 parameters (ids 48..=1757, non-contiguous), **184 samples of
+/// reported latency** — the largest in the whole corpus, Apple included — a 4246
+/// byte state blob, 73 factory presets, and a 830x598 Cocoa view.
+pub const TDR_NOVA: ThirdPartyRef = ThirdPartyRef {
+    label: "TDR Nova",
+    sub_type: b"Td5a",
+    manufacturer: b"Tdrl",
+    au_type: AuType::Effect,
+};
+
+/// TAL-NoiseMaker — `aumu`/`ncut`/`TOGU`, TAL-Togu Audio Line.
+///
+/// Two facts no Apple unit shows:
+///
+/// * **an instrument that reports 2 input channels.** Every Apple instrument
+///   reports 0 and the host had to be taught not to install an input callback on
+///   one; this unit is the opposite shape, and a host that infers "instrument
+///   therefore no input" from the type code rather than asking gets it wrong here.
+/// * **a mortal `ElementName` string.** Its `out[0]` name "Output Master" has a
+///   real retain count of 2, so an unreleased read walks it 2→11 across 10 reads.
+///   Apple's units all return immortal strings (`u64::MAX` or
+///   `0x0FFF_FFFF_FFFF_FFFF`), which hides the leak completely.
+///
+/// Measured: 88 parameters (ids 0..=87, all `CanRamp`), a 3189 byte state blob,
+/// **zero** factory presets, and an 800x437 Cocoa view.
+pub const TAL_NOISEMAKER: ThirdPartyRef = ThirdPartyRef {
+    label: "TAL-NoiseMaker",
+    sub_type: b"ncut",
+    manufacturer: b"TOGU",
+    au_type: AuType::Instrument,
+};
+
+/// TAL Reverb 4 — `aufx`/`reV4`/`TOGU`, TAL-Togu Audio Line.
+///
+/// The unit that reports an **infinite tail time**: `kAudioUnitProperty_TailTime`
+/// answers `f64::INFINITY`, which no Apple unit does (their maxima are ~21 s). See
+/// [`INFINITE_TAIL_UNIT`] for why that single value is worth a named constant.
+///
+/// Also the corpus's only genuine parameter-ramp implementer — that leg lives in
+/// `au_render_notify.rs` via [`TAL_REVERB_4`], which predates this block.
+///
+/// Measured: 20 parameters (all `CanRamp`), a 1070 byte state blob, 1 factory
+/// preset ("default"), and zero reported latency.
+pub const TAL_REVERB_4_REF: ThirdPartyRef = ThirdPartyRef {
+    label: "TAL Reverb 4",
+    sub_type: b"reV4",
+    manufacturer: b"TOGU",
+    au_type: AuType::Effect,
+};
+
+/// Every third-party unit in the corpus, for tests that assert a property across
+/// all of them rather than picking one representative.
+pub const THIRD_PARTY: &[ThirdPartyRef] = &[TDR_NOVA, TAL_NOISEMAKER, TAL_REVERB_4_REF];
+
+/// `(unit, parameter count)` pairs, measured.
+///
+/// Pinned rather than merely "non-empty" for the reason [`PRESET_EFFECTS`] pins
+/// its counts: the failure guarded against is a **truncated** parameter-list walk,
+/// and "more than zero parameters" passes every off-by-one. 75 and 88 are both
+/// wider than any Apple unit in the corpus (AUNBandEQ's 41 is the widest), so
+/// these are also the only rows that exercise a parameter id list long enough to
+/// span a `CFArray` realloc.
+pub const THIRD_PARTY_PARAM_COUNTS: &[(ThirdPartyRef, usize)] =
+    &[(TDR_NOVA, 75), (TAL_NOISEMAKER, 88), (TAL_REVERB_4_REF, 20)];
+
+/// The one unit measured to report a **non-finite** tail time.
+///
+/// `kAudioUnitProperty_TailTime` answers `f64::INFINITY` — an honest claim from a
+/// reverb with infinite decay available, and a value no Apple unit produces. It is
+/// named because of what happens downstream: `Seconds::to_samples` maps every
+/// non-finite input to `Samples::ZERO`, so an infinite tail silently becomes *no
+/// tail at all* — a bounce would truncate the reverb completely rather than
+/// rendering forever. Both halves of that (the host propagates `inf` faithfully;
+/// the unit conversion collapses it) are asserted in
+/// `au_third_party.rs::an_infinite_tail_survives_the_host_and_collapses_in_conversion`,
+/// because a host that clamped at the read would look correct while erasing the
+/// distinction between "infinite" and "none".
+pub const INFINITE_TAIL_UNIT: ThirdPartyRef = TAL_REVERB_4_REF;
+
+/// `(unit, reported latency in samples at 48 kHz)` pairs, measured.
+///
+/// TDR Nova's 184 samples is the largest reported latency in the corpus —
+/// AUDynamicsProcessor's 256 is a *lookahead* the unit reports at a different
+/// property — and it is **rate-independent**: measured 184 at both 48 kHz and
+/// 44.1 kHz, because the plugin reports a fixed sample count rather than a fixed
+/// duration. That is the opposite of what the property's `Float64`-seconds
+/// encoding suggests, so it is worth pinning: a host that recomputed PDC from a
+/// cached seconds value on a rate change would drift here.
+pub const THIRD_PARTY_LATENCY: &[(ThirdPartyRef, u32)] =
+    &[(TDR_NOVA, 184), (TAL_NOISEMAKER, 0), (TAL_REVERB_4_REF, 0)];
+
+/// `(unit, expected Cocoa view width, height)` triples, measured.
+///
+/// Bit-stable across 3 runs and 8 open/close cycles. Sizes are pinned for the
+/// reason [`WITH_COCOA_VIEW`] pins Apple's: a host that started inventing
+/// geometry — returning its own requested size rather than the view's frame —
+/// is caught, not merely one that returns something non-zero.
+///
+/// TDR Nova's row is the JUCE one, and the only evidence in the suite that
+/// `relax-void-encoding` works against a plugin that declares the argument
+/// differently from Apple.
+pub const THIRD_PARTY_COCOA_VIEW: &[(ThirdPartyRef, u32, u32)] =
+    &[(TDR_NOVA, 830, 598), (TAL_NOISEMAKER, 800, 437)];
+
+/// `(unit, is_output, element, name)` quadruples measured to publish an element
+/// name.
+///
+/// The third-party half of [`NAMED_ELEMENTS_APPLE_ONLY`], and the interesting
+/// half: Apple's mixers name nothing, so without these the only named element on
+/// the machine is DLSMusicDevice's. Note TDR Nova and TAL Reverb 4 both name a
+/// **"Sidechain"** input — a second input bus that Apple's corpus does not
+/// provide at all, and which a host must be able to tell apart from a second
+/// audio input.
+pub const THIRD_PARTY_NAMED_ELEMENTS: &[(ThirdPartyRef, bool, u32, &str)] = &[
+    (TDR_NOVA, false, 0, "Input"),
+    (TDR_NOVA, false, 1, "Sidechain"),
+    (TDR_NOVA, true, 0, "Output"),
+    (TAL_REVERB_4_REF, false, 0, "Input"),
+    (TAL_REVERB_4_REF, false, 1, "Sidechain"),
+    (TAL_REVERB_4_REF, true, 0, "Output"),
+    // The mortal one — see `TAL_NOISEMAKER`'s docs.
+    (TAL_NOISEMAKER, true, 0, "Output Master"),
+];
+
+/// The element whose `CFStringRef` is **mortal**, and the retain count a fresh
+/// read reports.
+///
+/// `(unit, is_output, element, base retain count)`. Measured: reading
+/// TAL-NoiseMaker's `out[0]` name ten times *without* releasing walks the count
+/// `2,3,4,…,11`; reading it through the host holds it flat. This is the only
+/// element on the machine that can distinguish a releasing host from a leaking
+/// one — see
+/// `au_third_party.rs::the_element_name_copy_rule_is_observed_by_retain_count`.
+pub const MORTAL_ELEMENT_NAME: (ThirdPartyRef, bool, u32, usize) = (TAL_NOISEMAKER, true, 0, 2);
+
+/// `(unit, factory preset count)` pairs, measured.
+///
+/// TDR Nova's 73 is more than triple AUDistortion's 22, the widest Apple table,
+/// and its last preset is number 72 ("USER060") — so this is the only row that
+/// exercises a preset selector well outside the range Apple's units use.
+/// TAL-NoiseMaker's **zero** is the counterweight: an AU whose factory-preset
+/// read succeeds and reports an empty table, which is a different fact from the
+/// read failing (see [`PRESETLESS_EFFECTS`], where it fails).
+pub const THIRD_PARTY_PRESET_COUNTS: &[(ThirdPartyRef, usize)] =
+    &[(TDR_NOVA, 73), (TAL_REVERB_4_REF, 1), (TAL_NOISEMAKER, 0)];
+
+/// Units measured to answer `unimpErr` (-4) to **`AudioUnitProcess`**.
+///
+/// All three, which is the finding: [`WITH_PUSH_RENDER`] shows 7 Apple effects
+/// implementing the push selector, so a host might reasonably conclude it is the
+/// normal path for an effect. Every third-party unit installed refuses it. A host
+/// that used `process_push` as its only render path would be silent on all real
+/// plugins.
+pub const THIRD_PARTY_WITHOUT_PUSH_RENDER: &[ThirdPartyRef] =
+    &[TDR_NOVA, TAL_NOISEMAKER, TAL_REVERB_4_REF];
+
+/// Units measured to refuse `kAudioUnitProperty_InPlaceProcessing` **and**
+/// `kAudioUnitProperty_RenderQuality`, both with -10879.
+///
+/// All three. Contrast [`WITH_IN_PLACE`], where 6 Apple units answer the first,
+/// and [`WITH_RENDER_QUALITY`], where 4 answer the second: neither property is
+/// something a host can count on from a real plugin.
+pub const THIRD_PARTY_WITHOUT_OPTIONAL_PROPS: &[ThirdPartyRef] =
+    &[TDR_NOVA, TAL_NOISEMAKER, TAL_REVERB_4_REF];
+
+/// TAL-NoiseMaker's idle output floor, measured over 4 blocks with no notes.
+///
+/// **Not zero** — 1.12e-7, bit-reproducible. The unit emits a tiny amount of
+/// noise even at rest, so an "instrument is silent until played" assertion has to
+/// use a threshold. Recorded because the obvious `== 0.0` form would fail here for
+/// a reason that has nothing to do with the host.
+pub const NOISEMAKER_IDLE_FLOOR: f32 = 1.2e-7;
+
+/// The peak TAL-NoiseMaker reaches within 16 blocks of a note-on at velocity
+/// `0xC000`, measured 0.28133097 and bit-reproducible across runs.
+pub const NOISEMAKER_NOTE_PEAK: f32 = 0.28133097;

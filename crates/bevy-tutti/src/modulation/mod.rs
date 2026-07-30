@@ -64,7 +64,7 @@
 //! *sink* evaluates:
 //!
 //! ```rust,ignore
-//! commands.spawn(ModRoute::new(lfo, plugin_param, addr).as_curve());
+//! commands.spawn(ModRoute::new(lfo, plugin_param, addr).per_block());
 //! ```
 //!
 //! Worth asking for only when the sink reads faster than the frame rate — a
@@ -121,7 +121,8 @@ pub mod source;
 pub mod target;
 
 pub use components::{
-    CurveType, LfoShape, ModParamRange, ModRate, ModRoute, ModSource, ParamRange, Polarity,
+    CurveType, LfoShape, ModDelivery, ModParamRange, ModRate, ModRoute, ModSource, ParamRange,
+    Polarity,
 };
 pub use driver::{drive, rebuild, ModulationMatrix, ParamKey};
 pub use source::{
@@ -155,6 +156,7 @@ impl Plugin for TuttiModulationPlugin {
         app.register_type::<ModSource>()
             .register_type::<ModRate>()
             .register_type::<ModRoute>()
+            .register_type::<ModDelivery>()
             .register_type::<ModParamRange>();
 
         // `Collect` builds only when `MarkDirty` said something moved, so the

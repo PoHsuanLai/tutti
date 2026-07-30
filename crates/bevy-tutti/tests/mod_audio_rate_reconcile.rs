@@ -65,7 +65,7 @@ fn an_audio_rate_route_builds_the_whole_chain() {
     app.world_mut().spawn(
         ModRoute::new(lfo, target, ParamAddr::Unit(UnitParam::Drive))
             .with_depth(Depth(0.5))
-            .at_audio_rate(),
+            .per_sample(),
     );
     // Two updates: the first spawns source nodes and the chain, the second lets
     // the wire reconciler see the declarations they inserted.
@@ -131,7 +131,7 @@ fn two_routes_on_one_param_share_one_sum() {
         app.world_mut().spawn(
             ModRoute::new(source, target, ParamAddr::Unit(UnitParam::Drive))
                 .with_depth(Depth(0.25))
-                .at_audio_rate(),
+                .per_sample(),
         );
     }
     app.update();
@@ -167,7 +167,7 @@ fn removing_the_route_retires_the_chain() {
         .spawn(
             ModRoute::new(lfo, target, ParamAddr::Unit(UnitParam::Drive))
                 .with_depth(Depth(0.5))
-                .at_audio_rate(),
+                .per_sample(),
         )
         .id();
     app.update();
@@ -199,7 +199,7 @@ fn a_value_path_route_builds_no_chain() {
     let (mut app, target, _) = app_with_target();
     let lfo = spawn_lfo(&mut app);
 
-    // No `.at_audio_rate()`.
+    // No `.per_sample()`.
     app.world_mut().spawn(
         ModRoute::new(lfo, target, ParamAddr::Unit(UnitParam::Drive)).with_depth(Depth(0.5)),
     );
@@ -213,5 +213,71 @@ fn a_value_path_route_builds_no_chain() {
     assert!(
         app.world().get::<ModSourceNode>(lfo).is_none(),
         "and its source must not gain a node it does not need"
+    );
+}
+
+/// **The bug the enum exists to prevent.**
+///
+/// A per-sample route is delivered as a graph chain feeding the sink's param
+/// port. If `rebuild` *also* gave it a `ModEdge`, the driver would flush
+/// `base + Σ offsets` into the node's atomic every frame while the sum drove its
+/// port — two writers over one param.
+///
+/// With the old independent bools this was not merely possible but the default:
+/// `at_audio_rate` was invisible to `rebuild`, so every audio-rate route got
+/// both. `ModDelivery` makes the tiers mutually exclusive by construction, and
+/// this pins the driver actually honouring that.
+#[test]
+fn a_per_sample_route_is_not_also_claimed_by_the_driver() {
+    let (mut app, target, _) = app_with_target();
+    let lfo = spawn_lfo(&mut app);
+
+    app.world_mut().spawn(
+        ModRoute::new(lfo, target, ParamAddr::Unit(UnitParam::Drive))
+            .with_depth(Depth(0.5))
+            .per_sample(),
+    );
+    app.update();
+    app.update();
+
+    // The chain exists...
+    assert!(
+        app.world()
+            .resource::<AudioRateChains>()
+            .is_audio_rate(target, ParamAddr::Unit(UnitParam::Drive)),
+        "the per-sample chain must be built"
+    );
+    // ...and the frame-rate driver has NOT claimed the same param.
+    assert!(
+        !app.world()
+            .resource::<bevy_tutti::modulation::ModulationMatrix>()
+            .is_modulated(target, ParamAddr::Unit(UnitParam::Drive)),
+        "the driver must not also own a param delivered per sample — that is \
+         two writers on one atomic"
+    );
+}
+
+/// The complement: a per-frame route *is* the driver's, and builds no chain.
+/// Together these pin the two tiers as mutually exclusive in both directions.
+#[test]
+fn a_per_frame_route_is_the_drivers_alone() {
+    let (mut app, target, _) = app_with_target();
+    let lfo = spawn_lfo(&mut app);
+
+    app.world_mut().spawn(
+        ModRoute::new(lfo, target, ParamAddr::Unit(UnitParam::Drive)).with_depth(Depth(0.5)),
+    );
+    app.update();
+    app.update();
+
+    assert!(
+        app.world()
+            .resource::<bevy_tutti::modulation::ModulationMatrix>()
+            .is_modulated(target, ParamAddr::Unit(UnitParam::Drive)),
+        "the driver owns a per-frame param"
+    );
+    assert!(
+        app.world().resource::<AudioRateChains>().0.is_empty(),
+        "and no graph chain is built for it"
     );
 }

@@ -121,7 +121,7 @@ fn wire(app: &mut App, as_curve: bool) -> Arc<BeatSink> {
 
     let route = ModRoute::new(source, target, param);
     app.world_mut()
-        .spawn(if as_curve { route.as_curve() } else { route });
+        .spawn(if as_curve { route.per_block() } else { route });
 
     app.update();
     sink
@@ -222,7 +222,7 @@ fn a_curve_request_falls_back_when_the_sink_declines() {
         .id();
     // Asks for a curve; the atomic sink will decline.
     app.world_mut()
-        .spawn(ModRoute::new(source, target, param).as_curve());
+        .spawn(ModRoute::new(source, target, param).per_block());
 
     let drive = |app: &App| {
         app.world()

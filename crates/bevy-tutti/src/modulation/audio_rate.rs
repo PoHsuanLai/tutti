@@ -19,7 +19,7 @@
 //! nodes on a frame that only needed one atomic written.
 //!
 //! So the two are deliberately separate systems over the same declaration. A
-//! route asks for audio rate with [`ModRoute::at_audio_rate`]; anything else
+//! route asks for audio rate with [`ModDelivery::PerSample`]; anything else
 //! stays on the value path untouched.
 //!
 //! # The base chain is not optional
@@ -40,7 +40,7 @@ use tutti_types::{ParamAddr, UnitParam};
 use tutti_units::{AtomicSourceUnit, ParamShaperUnit, ParamSumUnit};
 
 use crate::graph::{AudioGraphRes, AudioSource, AudioSources, GraphDirty};
-use crate::modulation::components::{ModParamRange, ModRoute};
+use crate::modulation::components::{ModDelivery, ModParamRange, ModRoute};
 use crate::modulation::driver::ParamKey;
 
 /// The graph chain materialising one modulated param's audio-rate routes.
@@ -97,7 +97,7 @@ fn group_routes<'a>(
 ) -> HashMap<ParamKey, Vec<&'a ModRoute>> {
     let mut grouped: HashMap<ParamKey, Vec<&ModRoute>> = HashMap::new();
     for route in routes {
-        if !route.enabled || !route.at_audio_rate {
+        if !route.enabled || route.delivery != ModDelivery::PerSample {
             continue;
         }
         grouped
@@ -249,7 +249,7 @@ pub fn ensure_source_nodes(
     };
 
     for route in routes.iter() {
-        if !route.enabled || !route.at_audio_rate {
+        if !route.enabled || route.delivery != ModDelivery::PerSample {
             continue;
         }
         if existing.get(route.source).is_ok() {

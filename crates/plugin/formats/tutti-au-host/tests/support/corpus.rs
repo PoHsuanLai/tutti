@@ -32,6 +32,7 @@
 
 use tutti_au_host::component::{enumerate_components_of_type, AuComponentInfo, AuType};
 use tutti_au_host::instance::AuInstance;
+use tutti_au_host::{AuLayoutTag, BusDirection};
 
 /// One Apple Audio Unit, addressed by the codes AudioToolbox registers it under.
 #[derive(Debug, Clone, Copy)]
@@ -723,4 +724,327 @@ pub fn sine(
                 .collect()
         })
         .collect()
+}
+
+// ------------------------------------------------- channel layout / element name
+
+/// The widest `SupportedChannelLayoutTags` surface among Apple's effects — 12
+/// entries on each scope, including a duplicate. See [`LAYOUT_TAG_UNITS`].
+pub const NEW_PITCH: AuRef = AuRef::effect("AUNewPitch", b"nutp");
+/// 8 layout tags on both scopes, all literal widths with no wildcards, and the
+/// only Apple effect that publishes a full `Mono`→`Octagonal` ladder.
+pub const ROUND_TRIP_AAC: AuRef = AuRef::effect("AURoundTripAAC", b"raac");
+/// A second instrument publishing `[Mono, Stereo]`, so the layout-tag assertions
+/// on [`SAMPLER`] are not resting on one AU's table.
+pub const MIDI_SYNTH: AuRef = AuRef::instrument("AUMIDISynth", b"msyn");
+
+/// Units measured to publish `kAudioUnitProperty_SupportedChannelLayoutTags`, as
+/// `(unit, direction-is-output, expected tags)`.
+///
+/// Measured on macOS 15.6 at 48 kHz / 512 frames, in the `Loaded` state. The exact
+/// tag *sequences* are pinned rather than merely "non-empty", for the reason
+/// [`VALUE_STRING_PARAMS`] pins its counts: the failure being guarded is a
+/// truncated or misordered array walk, and every one of those passes an "at least
+/// one tag" check.
+///
+/// Note the deliberate quirk in the AUNewPitch row: `Quadraphonic` appears
+/// **twice**. That is what the AU publishes — the host returns the table verbatim
+/// rather than deduplicating it, so a silent dedupe would fail here. (The second
+/// occurrence is `kAudioChannelLayoutTag_AudioUnit_4`, which is the *same value*
+/// as `Quadraphonic`; the AU lists both spellings and they decode to one variant.)
+///
+/// Only 11 of the ~38 units probed answer this property at all. The refusers —
+/// AUDelay, AUNBandEQ, AUMatrixMixer and the rest, all `-10879` — are in
+/// [`NO_LAYOUT_TAG_UNITS`].
+pub const LAYOUT_TAG_UNITS: &[(AuRef, bool, &[AuLayoutTag])] = &[
+    // AUMatrixReverb: output only; its input scope refuses the property. This is
+    // the unit the set/refuse assertions use, because it is the only Apple effect
+    // publishing surround tags.
+    (
+        MATRIX_REVERB,
+        true,
+        &[
+            AuLayoutTag::Stereo,
+            AuLayoutTag::Quadraphonic,
+            AuLayoutTag::AudioUnit5_0,
+        ],
+    ),
+    // Both instruments, output only: the narrowest real table on the system.
+    (SAMPLER, true, &[AuLayoutTag::Mono, AuLayoutTag::Stereo]),
+    (MIDI_SYNTH, true, &[AuLayoutTag::Mono, AuLayoutTag::Stereo]),
+    // AURoundTripAAC: the same 8 tags on both scopes, ordered by width except
+    // that MPEG_3_0_A precedes Quadraphonic.
+    (
+        ROUND_TRIP_AAC,
+        false,
+        &[
+            AuLayoutTag::Mono,
+            AuLayoutTag::Stereo,
+            AuLayoutTag::Unknown(0x0071_0003),
+            AuLayoutTag::Quadraphonic,
+            AuLayoutTag::AudioUnit5_0,
+            AuLayoutTag::AudioUnit6_0,
+            AuLayoutTag::AudioUnit7_0,
+            AuLayoutTag::Octagonal,
+        ],
+    ),
+    (
+        ROUND_TRIP_AAC,
+        true,
+        &[
+            AuLayoutTag::Mono,
+            AuLayoutTag::Stereo,
+            AuLayoutTag::Unknown(0x0071_0003),
+            AuLayoutTag::Quadraphonic,
+            AuLayoutTag::AudioUnit5_0,
+            AuLayoutTag::AudioUnit6_0,
+            AuLayoutTag::AudioUnit7_0,
+            AuLayoutTag::Octagonal,
+        ],
+    ),
+    // AUMultiChannelMixer: one entry, and it is the "I want descriptions, not a
+    // tag" sentinel — which is why `AuLayoutTag::channel_count` must report `None`
+    // for it rather than a plausible-looking zero.
+    (
+        MULTI_CHANNEL_MIXER,
+        false,
+        &[AuLayoutTag::UseChannelDescriptions],
+    ),
+    (
+        MULTI_CHANNEL_MIXER,
+        true,
+        &[AuLayoutTag::UseChannelDescriptions],
+    ),
+];
+
+/// Units measured to publish the duplicate-entry table, with the duplicate.
+///
+/// Split out from [`LAYOUT_TAG_UNITS`] because AUNewPitch's 12-entry list is the
+/// one row whose point is the *duplicate*, and burying it among the others would
+/// let a reader take it for a typo.
+pub const DUPLICATE_TAG_UNIT: (AuRef, &[AuLayoutTag]) = (
+    NEW_PITCH,
+    &[
+        AuLayoutTag::Mono,
+        AuLayoutTag::Stereo,
+        AuLayoutTag::Quadraphonic,
+        // Again — `AudioUnit_4` under its other spelling, the same value.
+        AuLayoutTag::Quadraphonic,
+        AuLayoutTag::Pentagonal,
+        AuLayoutTag::Hexagonal,
+        AuLayoutTag::Octagonal,
+        AuLayoutTag::AudioUnit5_0,
+        AuLayoutTag::AudioUnit6_0,
+        AuLayoutTag::AudioUnit7_0,
+        AuLayoutTag::Unknown(0x0094_0007),
+        AuLayoutTag::UseChannelDescriptions,
+    ],
+);
+
+/// Units measured to refuse `SupportedChannelLayoutTags` outright with
+/// `kAudioUnitErr_InvalidProperty` (-10879) on **both** scopes.
+///
+/// The counterweight to [`LAYOUT_TAG_UNITS`]: the host absorbs the refusal into an
+/// empty vec, and naming the refusers is what stops that absorption from also
+/// hiding a real regression. If one of these ever grew tags, the emptiness
+/// assertion catches it.
+pub const NO_LAYOUT_TAG_UNITS: &[AuRef] = &[DELAY, N_BAND_EQ, LOWPASS, MATRIX_MIXER];
+
+/// `(unit, is_output, configured width, tag)` triples measured to be **accepted**
+/// by `AudioUnitSetProperty(AudioChannelLayout)`.
+///
+/// The width is load-bearing and is why it is in the tuple: the AU checks the
+/// tag's channel count against the width already configured on that bus. Every
+/// row here was verified to return `noErr` *and* to read back the tag that was
+/// written. See [`REFUSED_LAYOUT_SETS`] for the mismatches.
+pub const ACCEPTED_LAYOUT_SETS: &[(AuRef, bool, u16, AuLayoutTag)] = &[
+    (MATRIX_REVERB, true, 2, AuLayoutTag::Stereo),
+    (MATRIX_REVERB, true, 4, AuLayoutTag::Quadraphonic),
+    (MATRIX_REVERB, true, 5, AuLayoutTag::AudioUnit5_0),
+    (SAMPLER, true, 2, AuLayoutTag::Stereo),
+    (SAMPLER, true, 1, AuLayoutTag::Mono),
+];
+
+/// `(unit, is_output, configured width, tag)` triples measured to be **refused**
+/// with `kAudioUnitErr_InvalidPropertyValue` (-10851).
+///
+/// Two distinct reasons are represented, and both matter:
+///
+/// * a tag the AU **does** publish, at a width that does not match it —
+///   `AudioUnit_5_0` (5 channels) on a 4-channel bus, `Quadraphonic` (4) on a
+///   5-channel bus. These are what make [`ACCEPTED_LAYOUT_SETS`]'s width column
+///   meaningful: without them the acceptance could be luck.
+/// * a tag the AU does **not** publish at all — `AudioUnit_5_1` on
+///   AUMatrixReverb, `Quadraphonic` on AUSampler.
+pub const REFUSED_LAYOUT_SETS: &[(AuRef, bool, u16, AuLayoutTag)] = &[
+    // Published, wrong width.
+    (MATRIX_REVERB, true, 4, AuLayoutTag::AudioUnit5_0),
+    (MATRIX_REVERB, true, 5, AuLayoutTag::Quadraphonic),
+    (MATRIX_REVERB, true, 2, AuLayoutTag::Quadraphonic),
+    // Not published at any width.
+    (MATRIX_REVERB, true, 6, AuLayoutTag::AudioUnit5_1),
+    (SAMPLER, true, 2, AuLayoutTag::Quadraphonic),
+];
+
+/// Units measured to report a **current** `AudioChannelLayout`, with the tag each
+/// reports on a freshly-instantiated stereo instance.
+///
+/// Every one reports `Stereo`, which is not a tautology worth skipping: the point
+/// is that the tag is read out of the AU rather than inferred from the width this
+/// host configured. A host that returned `ChannelLayout::from(count)` dressed up as
+/// a tag would also pass this — which is why [`ACCEPTED_LAYOUT_SETS`] then
+/// *changes* the tag and re-reads it.
+pub const CURRENT_LAYOUT_UNITS: &[(AuRef, bool, AuLayoutTag)] = &[
+    (MATRIX_REVERB, true, AuLayoutTag::Stereo),
+    (MULTI_CHANNEL_MIXER, false, AuLayoutTag::Stereo),
+    (MULTI_CHANNEL_MIXER, true, AuLayoutTag::Stereo),
+    (SPATIAL_MIXER, true, AuLayoutTag::Stereo),
+];
+
+/// Units measured to answer `kAudioUnitProperty_AudioChannelLayout` with
+/// `kAudioUnitErr_PropertyNotInUse` (-10851) — the property exists, no value set.
+///
+/// AUSampler's output is the case Apple's header describes ("Requesting the value
+/// of this property when it is implemented but not set results in a
+/// kAudioUnitErr_PropertyNotInUse error") and it is the reason
+/// `AuInstance::layout_tag` returns `Result` rather than an `Option` or a default:
+/// this unit *does* publish `[Mono, Stereo]` as supported, so "no tags" cannot be
+/// used to predict it, and a fabricated `Stereo` would be a claim about speaker
+/// order the host cannot back up.
+pub const LAYOUT_NOT_IN_USE_UNITS: &[(AuRef, bool)] = &[(SAMPLER, true)];
+
+/// Units measured to have **no** channel-layout property on either scope
+/// (`kAudioUnitErr_InvalidProperty`, -10879).
+pub const NO_LAYOUT_UNITS: &[AuRef] = &[DELAY, N_BAND_EQ, LOWPASS, MATRIX_MIXER];
+
+/// `(unit, is_output, element, name)` quadruples measured to publish an element
+/// name.
+///
+/// **Apple's mixers are not here, and that is the finding.** AUMultiChannelMixer
+/// and AUMatrixMixer answer `kAudioUnitErr_PropertyNotInUse` (-10850) for every
+/// one of their real input elements — 0..=7 and 0..=63 respectively — so on macOS
+/// 15.6 Apple's mixers publish no element names at all. The units that do are
+/// DLSMusicDevice and the third-party effects, which is why the third-party ones
+/// are named here despite the corpus otherwise being Apple-only: without them
+/// there would be exactly one named element on the system and no sidechain to
+/// distinguish.
+///
+/// The DLS row is the one that carries its own weight without third-party units
+/// installed — see [`NAMED_ELEMENTS_APPLE_ONLY`].
+pub const NAMED_ELEMENTS_APPLE_ONLY: &[(AuRef, bool, u32, &str)] = &[
+    // The one Apple unit on the system that names its buses. Its second output is
+    // literally called "unused", which is exactly the kind of thing a host should
+    // show the user rather than rendering as "Bus 2".
+    (DLS_SYNTH, true, 0, "stereo mix"),
+    (DLS_SYNTH, true, 1, "unused"),
+];
+
+/// `(unit, is_output, element)` pairs measured to answer -10850
+/// (`PropertyNotInUse`) — a **real** bus the AU gave no name.
+///
+/// Distinct from [`OUT_OF_RANGE_ELEMENTS`], which is -10877. That split is the
+/// whole reason `element_name` returns the AU's status instead of an empty string:
+/// a nameless bus and a nonexistent bus are different facts, and a host sizing
+/// buffers cannot confuse them.
+pub const UNNAMED_ELEMENTS: &[(AuRef, bool, u32)] = &[
+    // Every real input of both Apple mixers.
+    (MULTI_CHANNEL_MIXER, false, 0),
+    (MULTI_CHANNEL_MIXER, false, 7),
+    (MATRIX_MIXER, false, 0),
+    (MATRIX_MIXER, false, 63),
+    (MATRIX_MIXER, true, 0),
+];
+
+/// `(unit, is_output, element)` pairs measured to answer -10877
+/// (`InvalidElement`) — no such bus.
+///
+/// Each index is exactly **one past** the unit's real bus count, which is what
+/// makes these a boundary test rather than a "999 fails" formality:
+/// AUMultiChannelMixer has 8 inputs so input 8 is the first invalid one, and
+/// AUMatrixMixer has 64 so input 64 is. A host that clamped an out-of-range index
+/// to the last valid bus would return "the name of input 7" for input 8 and pass
+/// any test that only tried 999.
+pub const OUT_OF_RANGE_ELEMENTS: &[(AuRef, bool, u32)] = &[
+    (MULTI_CHANNEL_MIXER, false, 8),
+    (MATRIX_MIXER, false, 64),
+    (DLS_SYNTH, true, 2),
+];
+
+/// The AU status for "the property exists here but holds no value":
+/// `kAudioUnitErr_PropertyNotInUse`.
+pub const PROPERTY_NOT_IN_USE: i32 = -10850;
+/// The AU status for "no such element": `kAudioUnitErr_InvalidElement`.
+pub const INVALID_ELEMENT: i32 = -10877;
+/// The AU status for "no such property on this unit":
+/// `kAudioUnitErr_InvalidProperty`.
+pub const INVALID_PROPERTY: i32 = -10879;
+/// The AU status for a value the property will not take:
+/// `kAudioUnitErr_InvalidPropertyValue`.
+pub const INVALID_PROPERTY_VALUE: i32 = -10851;
+
+/// Every AU installed on this machine, for the exhaustive MIDI-output sweep.
+///
+/// `au_midi_out.rs` asserts a *negative* — that no unit publishes
+/// `MIDIOutputCallbackInfo` — and a negative asserted over a hand-picked corpus
+/// proves nothing. This walks the whole registry so the claim is about the machine
+/// rather than about five chosen units.
+pub fn every_component() -> Vec<AuComponentInfo> {
+    tutti_au_host::component::enumerate_components()
+}
+
+/// The `is_output` booleans the layout tables above carry, as a [`BusDirection`].
+///
+/// A `bool` in the tables rather than the enum, because a `const` table of
+/// `(AuRef, BusDirection, …)` cannot be written in one literal without naming the
+/// enum path at every row; this keeps the tables readable and puts the conversion
+/// in one place.
+pub fn direction(is_output: bool) -> BusDirection {
+    if is_output {
+        BusDirection::Output
+    } else {
+        BusDirection::Input
+    }
+}
+
+/// Instantiate `unit` (uninitialized) with its output bus configured to `width`
+/// channels, and report the width the AU actually accepted.
+///
+/// The width is what gates every `AudioChannelLayout` *write* — an AU refuses a
+/// tag whose channel count disagrees with the configured bus width — so a layout
+/// test that could not set the width could only ever exercise stereo. Uses
+/// `new_with_config`, which is the entry point that bypasses `new`'s stereo
+/// default.
+///
+/// Returns `(instance, accepted_width)` rather than asserting the width took:
+/// several units refuse a narrowing and keep their own, and a caller asserting on
+/// a layout needs to know which it got. `has_input` is taken from the AU's own
+/// probe by way of `AuInstance`, so an instrument is not handed a phantom input.
+pub fn open_at_output_width(unit: &AuRef, rate: f64, block: u32, width: u16) -> (AuInstance, u16) {
+    use tutti_au_host::stream::{AuBusLayout, StreamConfig};
+    use tutti_types::ChannelLayout;
+
+    let info = unit.require();
+    // Probe `has_input` from a throwaway default instance: `StreamConfig` needs
+    // the flag up front, and getting it wrong sends an input stream format to a
+    // unit with no input element.
+    let has_input = {
+        // SAFETY: `component` came from `AudioComponentFindNext`.
+        let probe = unsafe { AuInstance::new(info.component, rate, block) }
+            .unwrap_or_else(|e| panic!("{}: probe instantiate failed: {e:?}", unit.label));
+        probe.num_inputs() > 0
+    };
+    let config = StreamConfig::new(
+        rate,
+        block,
+        AuBusLayout {
+            inputs: ChannelLayout::Stereo,
+            outputs: ChannelLayout::from_count(width),
+            has_input,
+        },
+    );
+    // SAFETY: as above.
+    let au = unsafe { AuInstance::new_with_config(info.component, config) }
+        .unwrap_or_else(|e| panic!("{}: instantiate at {width}ch failed: {e:?}", unit.label));
+    let accepted = au.num_outputs() as u16;
+    (au, accepted)
 }

@@ -128,9 +128,9 @@ pub use instance::{AuInstance, AuLoaded, AuReady};
 // and take a raw `AudioUnit`, so reaching them should be as explicit as their
 // contract.
 #[cfg(target_os = "macos")]
-pub use offline::{PushScratch, RENDER_QUALITY_MAX};
-#[cfg(target_os = "macos")]
 pub use midi_out::{AuMidiOutput, MidiOutSink, MidiOutputInfo};
+#[cfg(target_os = "macos")]
+pub use offline::{PushScratch, RENDER_QUALITY_MAX};
 // `AuParameter`/`ParamRange`/`ParamView`/`ParameterUnit` are AU-internal param
 // vocabulary — reachable via `tutti_au_host::parameters::*` for the loader, but
 // not surfaced as flat crate-root re-exports. Consumers speak the shared

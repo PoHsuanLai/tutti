@@ -315,40 +315,67 @@ impl AuMidiOutput {
         result
     }
 
-    /// The ordering invariant, in one place so both [`Self::remove`] and `Drop`
-    /// obey the same rule.
+    /// The withdrawal, in one place so both [`Self::remove`] and `Drop` obey the
+    /// same rule.
+    ///
+    /// # How the withdrawal is spelled, and why a null proc is NOT it
+    ///
+    /// The obvious withdrawal — a zeroed struct — **does not work**, and this was
+    /// measured rather than reasoned about. Apple declares `midiOutputCallback`
+    /// nullable, and `Drop for AuLoaded` withdraws
+    /// `kAudioUnitProperty_HostCallbacks` with exactly that all-null trick. So the
+    /// first version of this code did the same, and every teardown failed.
+    ///
+    /// Measured on macOS 15.6 against AUDelay, AULowpass, AUSampler,
+    /// DLSMusicDevice and AUMatrixReverb — identical on all five:
+    ///
+    /// | write | status |
+    /// |---|---|
+    /// | real proc + real `userData` (the install) | `noErr` |
+    /// | **all-null struct** | **-4** (`unimpErr`) |
+    /// | null proc + non-null `userData` | **-4** |
+    /// | `NULL` data pointer, size 0 | **-4** |
+    /// | **real proc + null `userData`** | `noErr` |
+    /// | `HostCallbacks` all-null, for contrast | `noErr` |
+    ///
+    /// So `MIDIOutputCallback` and `HostCallbacks` do **not** behave alike: the AU
+    /// rejects any write whose proc is null, and the last row shows the difference
+    /// is specific to this property rather than to the AU. The withdrawal is
+    /// therefore a **real proc with a null `userData`**, which is inert by
+    /// construction: [`decode_and_dispatch`] returns `-1` immediately on a null
+    /// `user_data`, so an AU that calls the retained proc after this write reaches
+    /// no host state at all.
+    ///
+    /// That is what makes the free below safe rather than merely ordered. The AU is
+    /// left holding a pointer to a function that cannot reach the freed box,
+    /// instead of a pointer to the box itself.
     ///
     /// # ORDERING INVARIANT
     ///
-    /// The property write that removes the callback **MUST** complete before the
-    /// boxed state is freed. This is the MIDI-output twin of the invariant
+    /// The property write **MUST** complete before the boxed state is freed. This
+    /// is the MIDI-output twin of the invariant
     /// [`crate::instance::AuReady::uninitialize`] documents as FIX 2 (there:
-    /// `AudioUnitUninitialize` before the boxed `RenderScratch` is dropped) and
-    /// of the one `Drop for AuLoaded` documents for `HostCallbackInfo`. All three
-    /// are the same hazard: while the property is installed the AU holds a raw
-    /// pointer into a heap box and may dereference it **on its render thread**.
-    /// Freeing the box first leaves a live use-after-free that a host would
-    /// experience as a random crash inside `AudioUnitRender`.
+    /// `AudioUnitUninitialize` before the boxed `RenderScratch` is dropped) and of
+    /// the one `Drop for AuLoaded` documents for `HostCallbackInfo`. All three are
+    /// the same hazard: while the property holds the live `userData` the AU may
+    /// dereference it **on its render thread**, and freeing the box first leaves a
+    /// use-after-free a host would experience as a random crash inside
+    /// `AudioUnitRender`.
     ///
     /// `AudioUnitSetProperty` is synchronous and the AU calls the callback only
-    /// from inside its own render, so a returning write means no call is in
-    /// flight and none can start. That is what makes the removal race-free rather
-    /// than merely ordered.
+    /// from inside its own render, so a returning write means no call is in flight
+    /// and none can start against the old `userData`. That is what makes the
+    /// removal race-free rather than merely ordered.
     ///
-    /// A zeroed struct is the documented withdrawal: Apple declares
-    /// `midiOutputCallback` nullable, so a null proc installs nothing — the same
-    /// mechanism `Drop for AuLoaded` uses to withdraw the host callbacks.
+    /// # If the AU refuses even the inert write
     ///
-    /// # If the AU refuses the clear
-    ///
-    /// The state is freed anyway. Keeping it alive to be safe would leak the box
-    /// on every teardown of a unit that refuses, and the alternative reading is
-    /// unavailable: this handle does not own the AU, so it cannot dispose the
-    /// unit to make the pointer unreachable. In practice the refusing case is the
-    /// AU being torn down regardless — and `AuInstance`'s own `Drop` disposes the
-    /// unit right after, which is what actually ends the AU's ability to call
-    /// anything. The error is surfaced through `remove` so a host is not kept in
-    /// the dark about it.
+    /// The state is freed anyway, and the error is surfaced through
+    /// [`Self::remove`]. Keeping the box alive to be safe would leak it on every
+    /// teardown of a refusing unit, and the alternative is unavailable: this handle
+    /// does not own the AU, so it cannot dispose the unit to make the pointer
+    /// unreachable. In practice a refusal means the AU is being torn down anyway,
+    /// and `AuInstance`'s `Drop` disposes the unit right after — which is what
+    /// actually ends its ability to call anything.
     ///
     /// # Safety
     /// `self.unit` must still be a live `AudioUnit`.
@@ -357,8 +384,10 @@ impl AuMidiOutput {
         if self.state.is_none() {
             return Ok(());
         }
+        // A REAL proc with a null `userData` — see this method's docs for the
+        // measured reason a null proc is refused with -4 on every unit.
         let withdrawn = AuMidiOutputCallbackStruct {
-            midi_output_callback: None,
+            midi_output_callback: Some(au_midi_output_callback),
             user_data: std::ptr::null_mut(),
         };
         let result = set_property(
@@ -535,6 +564,21 @@ unsafe fn for_each_message(pktlist: *const MIDIPacketList, mut f: impl FnMut(u32
         );
         let length =
             std::ptr::read_unaligned(p.add(std::mem::offset_of!(MIDIPacket, length)) as *const u16);
+        // Clamp the plugin-supplied length to Apple's own documented maximum.
+        // `MIDIServices.h` declares `Byte data[256]`, so a packet claiming more
+        // than that is malformed by the framework's own definition, and honouring
+        // the claim would read past the end of the list. This is the packet-level
+        // twin of `render_input`'s "never trust the buffer the AU handed us": a
+        // `u16` length can say 65535, which is 255 packets' worth of memory the AU
+        // never wrote.
+        //
+        // It cannot catch a *legal* over-claim — a packet declaring 64 bytes and
+        // meaning 3 is indistinguishable from one that really carries 64, and those
+        // bytes are inside the allocation the AU sized. What that produces is
+        // garbage messages from the AU's own slack, which is the plugin's bug; what
+        // this prevents is a read outside the allocation entirely, which would be
+        // ours.
+        let length = length.min(MAX_PACKET_PAYLOAD);
         let data = p.add(PACKET_HEADER_SIZE);
 
         // Apple's header: "The time stamp values contained within the MIDIPackets
@@ -565,6 +609,28 @@ unsafe fn for_each_message(pktlist: *const MIDIPacketList, mut f: impl FnMut(u32
 /// arithmetic on this number, so a drift here mis-decodes every packet while
 /// nothing else notices.
 const PACKET_HEADER_SIZE: usize = std::mem::offset_of!(MIDIPacket, data);
+
+/// The largest `length` a `MIDIPacket` may legally declare.
+///
+/// `MIDIServices.h` declares the payload as `Byte data[256]`, so this is Apple's
+/// own bound rather than a number picked here — and it is taken from the binding's
+/// array length so it cannot drift from the SDK. A `u16` length can claim 65535,
+/// which is 255 packets' worth of memory the AU never wrote; clamping is what keeps
+/// [`for_each_message`] inside the allocation. Pinned by
+/// [`tests::the_packet_abi_is_what_the_walk_assumes`].
+/// Written as the literal Apple documents, not derived — and the derivation was
+/// tried first, which is why this comment exists.
+///
+/// `size_of::<MIDIPacket>() - PACKET_HEADER_SIZE` gives **258**, not 256: the struct
+/// is 4-byte aligned (header 10 + data 256 = 266, rounded to 268) so it carries two
+/// bytes of trailing padding after `data`. Padding is not payload, and a bound two
+/// bytes too generous lets a hostile packet address slack the AU never wrote — which
+/// is exactly what the clamp exists to stop. Rust offers no `size_of` for a single
+/// field, so there is no non-circular derivation available; the literal is checked
+/// against the struct in
+/// [`tests::the_packet_abi_is_what_the_walk_assumes`] instead, which fails if a
+/// future SDK changes the array.
+const MAX_PACKET_PAYLOAD: u16 = 256;
 
 /// Advance a raw end-of-packet pointer to where the next packet starts,
 /// reproducing Apple's `MIDIPacketNext` macro.
@@ -792,6 +858,72 @@ mod tests {
             size_of::<MIDIPacket>() > PACKET_HEADER_SIZE + 3,
             "the binding's MIDIPacket includes a fixed data array, which is why \
              the walk reads fields at offsets instead"
+        );
+        // The clamp bound, checked against the struct rather than restated. Apple
+        // declares `Byte data[256]`; the struct rounds 10 + 256 up to 268 for its
+        // 4-byte alignment, so the payload sits in `size_of - header` MINUS the two
+        // padding bytes. If a future SDK widens the array, this inequality is what
+        // catches `MAX_PACKET_PAYLOAD` having gone stale.
+        assert_eq!(
+            size_of::<MIDIPacket>(),
+            268,
+            "MIDIServices.h declares timeStamp(8) + length(2) + data[256], aligned \
+             to 4 = 268. If this changed, MAX_PACKET_PAYLOAD needs revisiting."
+        );
+        assert_eq!(
+            MAX_PACKET_PAYLOAD, 256,
+            "the documented payload maximum, which must be the array's length and \
+             NOT `size_of - header` (that is 258 — it counts the trailing padding, \
+             and a bound two bytes too generous is slack the AU never wrote)"
+        );
+        assert!(
+            (MAX_PACKET_PAYLOAD as usize) < size_of::<MIDIPacket>() - PACKET_HEADER_SIZE + 1,
+            "the bound must not exceed the addressable payload"
+        );
+        // And it must be well under what a `u16` length can claim, or the clamp is
+        // not doing anything: 65535 is 255 packets' worth of memory the AU never
+        // wrote.
+        assert!(MAX_PACKET_PAYLOAD < u16::MAX);
+    }
+
+    /// A packet claiming more than Apple's 256-byte maximum is clamped, not
+    /// honoured.
+    ///
+    /// A `u16` length can say 65535. Reading that many bytes from a packet the AU
+    /// sized for three is a read far outside the list allocation — the one failure
+    /// in this walk that is the *host's* bug rather than the plugin's, since a
+    /// legal-but-inflated length is indistinguishable from an honest one.
+    #[test]
+    fn a_length_beyond_apples_maximum_is_clamped() {
+        // Hand-built: `numPackets = 1`, one packet declaring u16::MAX with three
+        // real bytes, then 4 KiB of slack so a failure to clamp lands inside this
+        // allocation and fails an assertion rather than segfaulting.
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&1u32.to_ne_bytes());
+        bytes.extend_from_slice(&0u64.to_ne_bytes());
+        bytes.extend_from_slice(&u16::MAX.to_ne_bytes());
+        bytes.extend_from_slice(&[0x90, 60, 100]);
+        bytes.resize(bytes.len() + 4096, 0);
+
+        // SAFETY: a well-formed header over a live 4 KiB+ allocation; the packet's
+        // declared length is the thing under test and the slack bounds any
+        // over-read.
+        let found = unsafe { split_packet_list_for_test(bytes.as_ptr() as *const MIDIPacketList) };
+
+        // The real message is found, and the clamp bounds how much slack can be
+        // misread. 256 bytes yields 1 explicit message plus running-status
+        // continuations at TWO bytes each (the status byte is reused), so ~128 —
+        // not ~85, which is the answer if one forgets running status. Without the
+        // clamp the walk would consume 65535 bytes and run 61 KiB past the
+        // allocation.
+        assert!(!found.is_empty(), "the real message must still be decoded");
+        assert_eq!(found[0], (0, vec![0x90, 60, 100]));
+        assert!(
+            found.len() <= 129,
+            "a 65535-byte claim must be clamped to Apple's 256-byte maximum, \
+             which bounds the walk at ~128 messages; {} means the claim was \
+             honoured and the walk left the allocation",
+            found.len()
         );
     }
 

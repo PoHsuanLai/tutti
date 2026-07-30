@@ -31,10 +31,20 @@
 //! Skips (no display, plugin not built) are reported as skips and do not fail
 //! the run; only a real assertion failure or a panic does.
 
-#![cfg(feature = "conformance")]
+// NOTE: no file-level `#![cfg(feature = "conformance")]` here, unlike the
+// sibling conformance tests. Those are ordinary harness targets, whose `main`
+// libtest synthesizes, so cfg'ing the whole file away is harmless. This one
+// sets `harness = false` and must therefore define `main` itself — a
+// file-level cfg compiled the entry point away with the feature off and failed
+// the build with E0601, which broke every `cargo check --all-targets` on the
+// engine workspace that did not also pass `--features conformance`.
+//
+// So the gate is applied per item below, and `main` is defined twice: one arm
+// per feature state. Do not consolidate them behind a file-level cfg.
 
 /// The main-thread build of each shared test: a plain function, so `main` can
 /// call it. `vst3_gui_lifecycle.rs` defines the same macro with `#[test]`.
+#[cfg(feature = "conformance")]
 macro_rules! gui_test {
     ($(#[$doc:meta])* fn $name:ident() $body:block) => {
         $(#[$doc])*
@@ -44,12 +54,14 @@ macro_rules! gui_test {
 
 // The tests themselves, plus their helpers — the same file the default-harness
 // target includes, so the two can never drift.
+#[cfg(feature = "conformance")]
 include!("support/gui_lifecycle.rs");
 
 /// Run one test, catching a panic so the remaining tests still run.
 ///
 /// A failure here is a genuine assertion failure: the skip paths inside the
 /// tests return early and print their reason rather than panicking.
+#[cfg(feature = "conformance")]
 fn run(name: &str, f: impl FnOnce() + std::panic::UnwindSafe) -> bool {
     eprintln!("\n── {name} ──");
     match std::panic::catch_unwind(f) {
@@ -64,6 +76,17 @@ fn run(name: &str, f: impl FnOnce() + std::panic::UnwindSafe) -> bool {
     }
 }
 
+/// Without the `conformance` feature there are no tests to run, but the target
+/// still needs an entry point — see the note at the top of this file.
+#[cfg(not(feature = "conformance"))]
+fn main() {
+    eprintln!(
+        "built without --features conformance; the GUI lifecycle tests are \
+         not compiled in. Nothing to do."
+    );
+}
+
+#[cfg(feature = "conformance")]
 fn main() {
     // The window is a process-lifetime singleton built on first use; touching
     // it here means the whole run shares one, and that it is created on this

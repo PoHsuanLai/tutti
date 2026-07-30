@@ -36,7 +36,7 @@ fn polysynth_process_idle_is_allocation_free() {
     // No active voices — process should still tick through allocator
     // bookkeeping and the MIDI inbox poll.
     let mut synth = PolySynth::new(SynthConfig {
-        sample_rate: 48_000.0,
+        sample_rate: tutti_core::SampleRate::from(48_000.0),
         max_voices: 8,
         oscillator: OscillatorType::Saw,
         ..Default::default()
@@ -65,7 +65,7 @@ fn polysynth_process_idle_is_allocation_free() {
 #[test]
 fn polysynth_process_with_active_voices_is_allocation_free() {
     let mut synth = PolySynth::new(SynthConfig {
-        sample_rate: 48_000.0,
+        sample_rate: tutti_core::SampleRate::from(48_000.0),
         max_voices: 8,
         oscillator: OscillatorType::Saw,
         filter: FilterType::Svf {
@@ -110,7 +110,7 @@ fn polysynth_tick_with_active_voices_is_allocation_free() {
     // `tick` is the per-sample path — drives `Voice::tick_stereo`
     // directly without MIDI sub-buffer splitting.
     let mut synth = PolySynth::new(SynthConfig {
-        sample_rate: 48_000.0,
+        sample_rate: tutti_core::SampleRate::from(48_000.0),
         max_voices: 8,
         oscillator: OscillatorType::Triangle,
         ..Default::default()
@@ -139,7 +139,7 @@ fn polysynth_process_with_midi_events_inside_block_is_allocation_free() {
     // Sub-buffer split path: queue events with non-zero frame offsets so
     // `process` walks the event-driven block boundaries.
     let mut synth = PolySynth::new(SynthConfig {
-        sample_rate: 48_000.0,
+        sample_rate: tutti_core::SampleRate::from(48_000.0),
         max_voices: 8,
         oscillator: OscillatorType::Saw,
         ..Default::default()

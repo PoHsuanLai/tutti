@@ -1,11 +1,11 @@
 use tutti_core::Arc;
 use tutti_core::AtomicF32;
 use tutti_core::{
-    dsp::{Real, DEFAULT_SR},
+    dsp::{Real, DEFAULT_SAMPLE_RATE},
     AudioUnit, BufferMut, BufferRef, SignalFrame,
 };
 
-use tutti_core::{Db, Hz, Param, Q};
+use tutti_core::{Db, Hz, Param, SampleRate, Q};
 
 /// Below these deltas a freq/Q/gain change doesn't warrant recomputing the
 /// coefficients — the change guard shared by the atomic and modulation paths.
@@ -44,10 +44,13 @@ pub(super) fn compute_svf_coeffs(
     freq: f32,
     q: f32,
     gain_db: f32,
-    sample_rate: f64,
+    sample_rate: impl Into<SampleRate>,
 ) -> SvfCoeffs {
-    let fc = (freq as f64).clamp(1.0, sample_rate * 0.499);
-    let g = (core::f64::consts::PI * fc / sample_rate).tan();
+    let sample_rate = sample_rate.into();
+    // 0.998 of Nyquist is the old `sample_rate * 0.499`: `tan` diverges at
+    // Nyquist itself, so the cutoff has to stop just short.
+    let fc = (freq as f64).clamp(1.0, f64::from(sample_rate.nyquist_scaled(0.998).get()));
+    let g = (core::f64::consts::PI * fc / sample_rate.get()).tan();
     let k = 1.0 / (q as f64).max(0.01);
 
     let a1 = 1.0 / (1.0 + g * (g + k));
@@ -174,7 +177,7 @@ pub struct SvfFilterNode<F: Real = f64> {
     frequency: Param<Hz>,
     q: Param<Q>,
     gain_db: Param<Db>,
-    sample_rate: f64,
+    sample_rate: SampleRate,
     coeffs: SvfCoefficients<F>,
     integrator: SvfIntegrator<F>,
 }
@@ -188,7 +191,7 @@ impl<F: Real> SvfFilterNode<F> {
             frequency: Param::new(frequency),
             q: Param::new(q),
             gain_db: Param::new(Db(0.0)),
-            sample_rate: DEFAULT_SR,
+            sample_rate: DEFAULT_SAMPLE_RATE,
             coeffs: SvfCoefficients::zeroed(),
             integrator: SvfIntegrator::zeroed(),
         };
@@ -271,7 +274,6 @@ impl<F: Real + 'static> AudioUnit for SvfFilterNode<F> {
     }
 
     fn set_sample_rate(&mut self, sample_rate: tutti_core::SampleRate) {
-        let sample_rate: f64 = sample_rate.get();
         self.sample_rate = sample_rate;
         self.coeffs.invalidate();
     }
@@ -367,7 +369,7 @@ pub struct StereoSvfFilterNode<F: Real = f64> {
     frequency: Param<Hz>,
     q: Param<Q>,
     gain_db: Param<Db>,
-    sample_rate: f64,
+    sample_rate: SampleRate,
     coeffs: SvfCoefficients<F>,
     /// Per-channel integrator state; `channels.len()` == audio width. The
     /// coefficients above are channel-shared (one linked control surface), so
@@ -406,7 +408,7 @@ impl<F: Real> StereoSvfFilterNode<F> {
             frequency: Param::new(frequency),
             q: Param::new(q),
             gain_db: Param::new(Db(0.0)),
-            sample_rate: DEFAULT_SR,
+            sample_rate: DEFAULT_SAMPLE_RATE,
             coeffs: SvfCoefficients::zeroed(),
             channels: vec![SvfIntegrator::zeroed(); n],
             mod_cutoff: false,
@@ -435,7 +437,7 @@ impl<F: Real> StereoSvfFilterNode<F> {
             frequency: Param::new(frequency),
             q: Param::new(q),
             gain_db: Param::new(Db(0.0)),
-            sample_rate: DEFAULT_SR,
+            sample_rate: DEFAULT_SAMPLE_RATE,
             coeffs: SvfCoefficients::zeroed(),
             channels: vec![SvfIntegrator::zeroed(); 2],
             mod_cutoff,
@@ -546,7 +548,6 @@ impl<F: Real + 'static> AudioUnit for StereoSvfFilterNode<F> {
     }
 
     fn set_sample_rate(&mut self, sample_rate: tutti_core::SampleRate) {
-        let sample_rate: f64 = sample_rate.get();
         self.sample_rate = sample_rate;
         self.coeffs.invalidate();
     }

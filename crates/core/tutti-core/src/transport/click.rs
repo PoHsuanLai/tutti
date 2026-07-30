@@ -176,7 +176,7 @@ pub type ClickState = ClickSettings;
 pub struct ClickNode {
     transport: Transport,
     settings: Arc<ClickSettings>,
-    sample_rate: f64,
+    sample_rate: crate::SampleRate,
     click_normal: Vec<f32>,
     click_accent: Vec<f32>,
     click_pos: usize,
@@ -197,7 +197,7 @@ impl ClickNode {
         settings: Arc<ClickSettings>,
         sample_rate: impl Into<crate::SampleRate>,
     ) -> Self {
-        let sample_rate = sample_rate.into().get();
+        let sample_rate = sample_rate.into();
         let click_normal = Self::generate_click(sample_rate, false);
         let click_accent = Self::generate_click(sample_rate, true);
 
@@ -213,16 +213,16 @@ impl ClickNode {
         }
     }
 
-    fn generate_click(sample_rate: f64, is_accent: bool) -> Vec<f32> {
+    fn generate_click(sample_rate: crate::SampleRate, is_accent: bool) -> Vec<f32> {
         let click_duration = 0.03; // 30ms
-        let num_samples = (sample_rate * click_duration) as usize;
+        let num_samples = (sample_rate.get() * click_duration) as usize;
 
         let freq = if is_accent { 1200.0 } else { 1000.0 };
         let accent_volume = if is_accent { 1.0 } else { 0.7 };
 
         (0..num_samples)
             .map(|i| {
-                let t = i as f64 / sample_rate;
+                let t = i as f64 / sample_rate.get();
                 let env = if t < 0.001 {
                     t / 0.001
                 } else if t < 0.02 {
@@ -403,8 +403,7 @@ impl AudioNode for ClickNode {
     }
 
     fn set_sample_rate(&mut self, sample_rate: crate::params::SampleRate) {
-        let sample_rate: f64 = sample_rate.get();
-        if (self.sample_rate - sample_rate).abs() > 0.1 {
+        if (self.sample_rate.get() - sample_rate.get()).abs() > 0.1 {
             self.sample_rate = sample_rate;
             self.click_normal = Self::generate_click(sample_rate, false);
             self.click_accent = Self::generate_click(sample_rate, true);

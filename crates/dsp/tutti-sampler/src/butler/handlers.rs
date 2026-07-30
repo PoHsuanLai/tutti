@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use dashmap::DashMap;
 use tutti_core::RtPublish;
-use tutti_core::{Samples, SrcRatio};
+use tutti_core::{SampleRate, Samples, SrcRatio};
 
 use super::cache::LruCache;
 use super::command::{ButlerCommand, RegionId};
@@ -62,7 +62,7 @@ pub(super) fn handle_command(
     cmd: ButlerCommand,
     shared: &Handles,
     config: &BufferConfig,
-    sample_rate: f64,
+    sample_rate: SampleRate,
     local: &mut Local,
 ) {
     match cmd {
@@ -158,7 +158,7 @@ fn handle_stream_file(
     file_path: PathBuf,
     offset_samples: usize,
     shared: &Handles,
-    sample_rate: f64,
+    sample_rate: SampleRate,
     local: &mut Local,
 ) {
     // Probe metadata (frame count / sample rate) for ring sizing + src_ratio
@@ -169,7 +169,8 @@ fn handle_stream_file(
     let (file_length, file_sr, file_channels, decoder) = match open_stream(&file_path) {
         Some((meta, decoder)) => (
             meta.total_frames.unwrap_or(0),
-            meta.sample_rate as f64,
+            // Decoder metadata carries the header's integer rate.
+            SampleRate::from(meta.sample_rate),
             decoder.channels(),
             Some(decoder),
         ),

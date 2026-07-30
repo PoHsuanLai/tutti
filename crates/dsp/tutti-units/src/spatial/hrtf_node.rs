@@ -9,7 +9,7 @@
 use tutti_core::ChannelLayout;
 use tutti_core::{
     fold_frame_to_mono, AudioUnit, Azimuth, BufferMut, BufferRef, Elevation, Mix, Param,
-    SignalFrame,
+    SampleRate, SignalFrame,
 };
 
 use super::hrtf_panner::{HrtfBinaural, HrtfBinauralError};
@@ -24,7 +24,7 @@ pub struct HrtfBinauralNode {
     panner: HrtfBinaural,
     target: SpatialTarget,
     width: Param<Mix>,
-    sample_rate: f32,
+    sample_rate: SampleRate,
 }
 
 impl Clone for HrtfBinauralNode {
@@ -43,7 +43,11 @@ impl HrtfBinauralNode {
     ///
     /// Fails if the data is unreadable or built for an incompatible rate — the
     /// crate resamples the sphere to `sample_rate` on load.
-    pub fn new(hrir_bytes: &[u8], sample_rate: f32) -> Result<Self, HrtfBinauralError> {
+    pub fn new(
+        hrir_bytes: &[u8],
+        sample_rate: impl Into<SampleRate>,
+    ) -> Result<Self, HrtfBinauralError> {
+        let sample_rate = sample_rate.into();
         Ok(Self {
             panner: HrtfBinaural::new(hrir_bytes, sample_rate)?,
             target: SpatialTarget::new(),
@@ -115,8 +119,8 @@ impl AudioUnit for HrtfBinauralNode {
     }
 
     fn set_sample_rate(&mut self, sample_rate: tutti_core::SampleRate) {
-        self.sample_rate = sample_rate.get() as f32;
-        self.panner.set_sample_rate(self.sample_rate);
+        self.sample_rate = sample_rate;
+        self.panner.set_sample_rate(sample_rate);
     }
 
     fn tick(&mut self, input: &[f32], output: &mut [f32]) {

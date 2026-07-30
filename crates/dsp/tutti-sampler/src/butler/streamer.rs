@@ -6,6 +6,7 @@ use crate::ports::{Commands, Status};
 use smol::channel::Sender;
 use std::sync::Arc;
 use tutti_core::RtPublish;
+use tutti_core::SampleRate;
 use tutti_core::Samples;
 
 /// The sampler subsystem handle.
@@ -34,7 +35,7 @@ use tutti_core::Samples;
 pub struct DiskStreamer {
     butler_tx: Sender<ButlerCommand>,
     butler: ButlerThread,
-    sample_rate: f64,
+    sample_rate: SampleRate,
 }
 
 // `butler`/`butler_tx` hold a thread handle + command channel that can't
@@ -53,7 +54,8 @@ impl DiskStreamer {
     /// Configure with [`DiskStreamerConfig`] (`Default` + struct-update); pass
     /// `Default::default()` for the tuned defaults. Returns [`Err`] if any
     /// subsystem fails to initialize.
-    pub fn new(sample_rate: f64, config: DiskStreamerConfig) -> Result<Self> {
+    pub fn new(sample_rate: impl Into<SampleRate>, config: DiskStreamerConfig) -> Result<Self> {
+        let sample_rate = sample_rate.into();
         let mut butler = ButlerThread::with_config(256, sample_rate, config.buffer_config);
 
         if let Some(ref pdc) = config.pdc {
@@ -123,7 +125,7 @@ mod tests {
         // A fresh butler has read nothing and an empty cache.
         let plans = sampler.butler.plans();
         assert!(plans.is_empty());
-        assert_eq!(sampler.status().sample_rate(), 44100.0);
+        assert_eq!(sampler.status().sample_rate(), SampleRate::SR_44K1);
     }
 
     /// A backward `Command::Seek` must actually reposition the live stream.

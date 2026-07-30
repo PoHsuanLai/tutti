@@ -1,11 +1,11 @@
 use tutti_core::Arc;
 use tutti_core::AtomicF32;
 use tutti_core::{
-    dsp::{Real, DEFAULT_SR},
+    dsp::{Real, DEFAULT_SAMPLE_RATE},
     AudioUnit, BufferMut, BufferRef, SignalFrame,
 };
 
-use tutti_core::{Drive, Hz, Param, Resonance};
+use tutti_core::{Drive, Hz, Param, Resonance, SampleRate};
 
 /// Below these deltas a freq/resonance change doesn't warrant recomputing the
 /// coefficients — the change guard shared by the atomic and modulation paths.
@@ -63,7 +63,7 @@ pub struct LadderFilterNode<F: Real = f64> {
     frequency: Param<Hz>,
     resonance: Param<Resonance>,
     drive: Param<Drive>,
-    sample_rate: f64,
+    sample_rate: SampleRate,
     state: LadderState<F>,
 }
 
@@ -80,7 +80,7 @@ impl<F: Real> LadderFilterNode<F> {
             frequency: Param::new(frequency),
             resonance: Param::new(resonance),
             drive: Param::new(Drive::UNITY),
-            sample_rate: DEFAULT_SR,
+            sample_rate: DEFAULT_SAMPLE_RATE,
             state: LadderState::zeroed(),
         };
         node.update_coefficients(frequency.get(), resonance.get());
@@ -113,8 +113,10 @@ impl<F: Real> LadderFilterNode<F> {
     }
 
     fn update_coefficients(&mut self, freq: f32, resonance: f32) {
-        let fc = (freq as f64).clamp(1.0, self.sample_rate * 0.499);
-        self.state.g = F::from_f64((core::f64::consts::PI * fc / self.sample_rate).tan());
+        // 0.998 of Nyquist is the old `sample_rate * 0.499`: `tan` diverges at
+        // Nyquist itself, so the cutoff has to stop just short.
+        let fc = (freq as f64).clamp(1.0, f64::from(self.sample_rate.nyquist_scaled(0.998).get()));
+        self.state.g = F::from_f64((core::f64::consts::PI * fc / self.sample_rate.get()).tan());
         self.state.k = F::from_f64(4.0 * resonance.clamp(0.0, 1.0) as f64);
         self.state.last_freq = freq;
         self.state.last_res = resonance;
@@ -200,7 +202,6 @@ impl<F: Real + 'static> AudioUnit for LadderFilterNode<F> {
     }
 
     fn set_sample_rate(&mut self, sample_rate: tutti_core::SampleRate) {
-        let sample_rate: f64 = sample_rate.get();
         self.sample_rate = sample_rate;
         self.state.invalidate();
     }

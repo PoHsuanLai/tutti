@@ -42,9 +42,10 @@
 //
 // The macros stay crate-private rather than `#[macro_export]`ed: eight names as
 // generic as `unit_bounded!` would sit permanently at the root of a published
-// crate, un-renameable and un-feature-gateable. The only unit defined outside
-// this crate is `SampleRate` (it must live in `fundsp-tutti`, whose traits take
-// it), and it pays for that with ~17 hand-written lines there.
+// crate, un-renameable and un-feature-gateable. Every unit is now defined here,
+// so nothing pays for that privacy in hand-written operators — `SampleRate` was
+// the last holdout (it lived in `fundsp-tutti`, whose traits take it) until it
+// moved here and `fundsp-tutti` switched to re-exporting it.
 #[macro_use]
 pub mod value;
 
@@ -68,9 +69,9 @@ pub use value::{
     Amplitude, ArcDegrees, AtomicSamplePosition, Azimuth, Beat, BeatDuration, Bpm, Cents,
     CompressionRatio, Confidence, Correlation, Db, Depth, Drive, Elevation, Feedback, Hz, Mix,
     NotOnMidiScale, Note, NoteNumberOutOfRange, Pan, Param, ParamAddr, Phase, PhaseIncrement,
-    PitchClass, PlaybackRate, Radians, ReadRate, Resonance, SamplePosition, Samples, Seconds,
-    Semitones, Spread, SrcRatio, StereoWidth, StretchFactor, Unit, UnitParam, UnitParamOutOfRange,
-    Q,
+    PitchClass, PlaybackRate, Radians, ReadRate, Resonance, SamplePosition, SampleRate, Samples,
+    Seconds, Semitones, Spread, SrcRatio, StereoWidth, StretchFactor, Unit, UnitParam,
+    UnitParamOutOfRange, Q,
 };
 
 // Channel layout.

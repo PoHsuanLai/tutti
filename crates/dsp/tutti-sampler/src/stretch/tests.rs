@@ -1344,7 +1344,10 @@ fn vocoder_reconstructs_its_input_at_unity() {
     let len = size * 8;
     let input: Vec<f32> = (0..len)
         .map(|i| {
-            let t = i as f32 / sample_rate;
+            // Accumulate the time base in f64 and narrow once: `sample_rate`
+            // used to infer as f32 here, so the reference tone this test
+            // compares against was itself built at f32 precision.
+            let t = (i as f64 / sample_rate) as f32;
             0.4 * (Radians::TAU.get() * 440.0 * t).sin()
                 + 0.2 * (Radians::TAU.get() * 3000.0 * t).sin()
                 + 0.1

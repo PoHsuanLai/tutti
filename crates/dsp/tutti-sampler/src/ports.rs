@@ -19,7 +19,7 @@ use smol::channel::Sender;
 
 use crate::butler::{ButlerCommand, ChannelPlan};
 use crate::voice::{Direction, DiskVoice, DiskVoiceConfig, LoopSetting, VoiceWindow};
-use tutti_core::{Beat, BeatDuration, PlaybackRate, SamplePosition, Timeline, Wave};
+use tutti_core::{Beat, BeatDuration, PlaybackRate, SamplePosition, SampleRate, Timeline, Wave};
 
 /// The caller's stated choice of playback tier for a voice: whole-file in memory
 /// (`Memory`) or incremental disk streaming (`Disk`). Plain data — the sampler
@@ -171,7 +171,7 @@ impl Commands {
 /// and the channel-plan map, exposing state reads plus the reader-factory.
 #[derive(Clone)]
 pub struct Status {
-    sample_rate: f64,
+    sample_rate: SampleRate,
     plans: Arc<DashMap<usize, ChannelPlan>>,
 }
 
@@ -187,12 +187,12 @@ impl std::fmt::Debug for Status {
 }
 
 impl Status {
-    pub(crate) fn new(sample_rate: f64, plans: Arc<DashMap<usize, ChannelPlan>>) -> Self {
+    pub(crate) fn new(sample_rate: SampleRate, plans: Arc<DashMap<usize, ChannelPlan>>) -> Self {
         Self { sample_rate, plans }
     }
 
     /// Sample rate the system was built with.
-    pub fn sample_rate(&self) -> f64 {
+    pub fn sample_rate(&self) -> SampleRate {
         self.sample_rate
     }
 
@@ -216,7 +216,7 @@ impl Status {
         // file_sr / session_sr is the src_ratio the butler set on the plan; the
         // reader's placement gate converts transport seconds → file samples with
         // the file's own rate, so recover it from that ratio.
-        let file_sample_rate = self.sample_rate * rt_state.src_ratio().get() as f64;
+        let file_sample_rate = self.sample_rate.get() * rt_state.src_ratio().get() as f64;
 
         Some(DiskVoice::new(
             inner,

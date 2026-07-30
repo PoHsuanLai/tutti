@@ -8,7 +8,7 @@ use super::plan::{ChannelPlan, LoopStatus};
 use super::region_map::RegionMap;
 use dashmap::DashMap;
 use std::path::PathBuf;
-use tutti_core::{ChannelLayout, Wave};
+use tutti_core::{ChannelLayout, SampleRate, Wave};
 
 use crate::nonempty;
 
@@ -174,7 +174,11 @@ pub(crate) fn fadein_samples(
     capture_frames(&wave, position_samples as usize, count, channels)
 }
 
-pub(crate) fn buffer_size_for_file(file_length_samples: u64, sample_rate: f64) -> usize {
+pub(crate) fn buffer_size_for_file(
+    file_length_samples: u64,
+    sample_rate: impl Into<SampleRate>,
+) -> usize {
+    let sample_rate = sample_rate.into().get();
     // Rough byte estimate for the buffer-size heuristic. Assumes stereo f32;
     // at a wider width it under-estimates, which only makes the chosen buffer
     // slightly generous — it never affects correctness.

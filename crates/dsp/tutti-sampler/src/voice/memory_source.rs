@@ -283,7 +283,7 @@ impl MemorySource {
     /// Stays stereo even for a wider wave — see [`channels`](Self::channels).
     /// Use [`with_channels`](Self::with_channels) to declare a different width.
     pub fn new(wave: Arc<Wave>) -> Self {
-        let sample_rate = SampleRate::new(wave.sample_rate());
+        let sample_rate = wave.sample_rate();
         Self {
             wave,
             position: AtomicSamplePosition::new(SamplePosition::new(0.0)),
@@ -521,7 +521,7 @@ impl MemorySource {
     ///
     /// Call from `graph_mut` — not safe to call from the audio thread directly.
     pub fn set_wave(&mut self, wave: Arc<Wave>) {
-        self.sample_rate = SampleRate::new(wave.sample_rate());
+        self.sample_rate = wave.sample_rate();
         self.wave = wave;
         self.position
             .store(SamplePosition::new(0.0), Ordering::Release);
@@ -710,7 +710,7 @@ impl MemorySource {
             timeline.as_ref(),
             self.window.start,
             self.window.duration,
-            SampleRate::new(self.wave.sample_rate()),
+            self.wave.sample_rate(),
             self.window_rate(),
         )
     }
@@ -744,7 +744,7 @@ impl MemorySource {
             timeline.as_ref(),
             self.window.start,
             self.window.duration,
-            SampleRate::new(self.wave.sample_rate()),
+            self.wave.sample_rate(),
             self.window_rate().then(stretch_rate),
         )
     }

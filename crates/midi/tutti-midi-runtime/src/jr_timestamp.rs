@@ -25,6 +25,7 @@
 
 use std::time::Duration;
 
+use tutti_core::SampleRate;
 use tutti_midi_types::ump::MidiEvent;
 
 /// The JR timestamp reference clock: **31 250 ticks per second** (one tick every
@@ -39,13 +40,15 @@ pub const JR_SECONDS_PER_TICK: f64 = 1.0 / JR_TICKS_PER_SECOND as f64;
 /// [`JrReceiver`] reason in.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct JrClock {
-    sample_rate: f64,
+    sample_rate: SampleRate,
 }
 
 impl JrClock {
     /// A clock for a stream running at `sample_rate` Hz.
-    pub fn new(sample_rate: f64) -> Self {
-        Self { sample_rate }
+    pub fn new(sample_rate: impl Into<SampleRate>) -> Self {
+        Self {
+            sample_rate: sample_rate.into(),
+        }
     }
 
     /// The 16-bit JR tick a sample offset maps to (wrapping at 0x1_0000). A whole
@@ -53,7 +56,7 @@ impl JrClock {
     #[inline]
     pub fn ticks_at(&self, sample_offset: u64) -> u16 {
         // ticks = samples * (JR_ticks/sec) / (samples/sec)
-        let ticks = (sample_offset as f64) * JR_TICKS_PER_SECOND as f64 / self.sample_rate;
+        let ticks = (sample_offset as f64) * JR_TICKS_PER_SECOND as f64 / self.sample_rate.get();
         (ticks as u64 & 0xFFFF) as u16
     }
 }
@@ -74,7 +77,7 @@ impl JrStamper {
     /// There is no group: JR Timestamps are utility messages, which M2-104-UM
     /// §2.1.2 defines as groupless — a stamp applies to the stream, not to one
     /// group within it.
-    pub fn new(sample_rate: f64) -> Self {
+    pub fn new(sample_rate: impl Into<SampleRate>) -> Self {
         Self {
             clock: JrClock::new(sample_rate),
         }
@@ -140,7 +143,7 @@ pub const JR_CLOCK_INTERVAL: Duration = Duration::from_millis(100);
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct JrClockEmitter {
     clock: JrClock,
-    sample_rate: f64,
+    sample_rate: SampleRate,
     interval_samples: u64,
     /// Absolute sample position of the last emitted clock. `None` until the
     /// first, which is due immediately — a receiver needs a reference before it
@@ -150,7 +153,7 @@ pub struct JrClockEmitter {
 
 impl JrClockEmitter {
     /// An emitter at `sample_rate` Hz using [`JR_CLOCK_INTERVAL`].
-    pub fn new(sample_rate: f64) -> Self {
+    pub fn new(sample_rate: impl Into<SampleRate>) -> Self {
         Self::with_interval(sample_rate, JR_CLOCK_INTERVAL)
     }
 
@@ -159,15 +162,16 @@ impl JrClockEmitter {
     /// Panics if `interval` exceeds [`JR_CLOCK_MAX_INTERVAL`]: §7.2.2.1 makes
     /// that bound a `shall`, so a longer interval is not a tuning choice, it is
     /// a non-conformant stream. Catching it here beats shipping one.
-    pub fn with_interval(sample_rate: f64, interval: Duration) -> Self {
+    pub fn with_interval(sample_rate: impl Into<SampleRate>, interval: Duration) -> Self {
         assert!(
             interval <= JR_CLOCK_MAX_INTERVAL,
             "JR Clock interval {interval:?} exceeds the §7.2.2.1 maximum of {JR_CLOCK_MAX_INTERVAL:?}"
         );
+        let sample_rate = sample_rate.into();
         Self {
             clock: JrClock::new(sample_rate),
             sample_rate,
-            interval_samples: (interval.as_secs_f64() * sample_rate).round() as u64,
+            interval_samples: (interval.as_secs_f64() * sample_rate.get()).round() as u64,
             last_emit: None,
         }
     }
@@ -194,7 +198,7 @@ impl JrClockEmitter {
     }
 
     /// The sample rate this emitter clocks at.
-    pub fn sample_rate(&self) -> f64 {
+    pub fn sample_rate(&self) -> SampleRate {
         self.sample_rate
     }
 }
@@ -222,7 +226,7 @@ impl JrStream {
     ///
     /// Stamps only. Use [`with_clock`](Self::with_clock) for a conformant
     /// sender: §7.2.2.3 makes a receiver ignore timestamps it has no clock for.
-    pub fn new(sample_rate: f64) -> Self {
+    pub fn new(sample_rate: impl Into<SampleRate>) -> Self {
         Self::with_stamper(JrStamper::new(sample_rate))
     }
 
@@ -240,14 +244,18 @@ impl JrStream {
     /// Once set, [`stamp_span`](Self::stamp_span) prefixes a clock to each block
     /// where one is due — including blocks with no events at all, which is why
     /// the cadence cannot ride on [`stamp`](Self::stamp) alone.
-    pub fn with_clock(mut self, sample_rate: f64) -> Self {
+    pub fn with_clock(mut self, sample_rate: impl Into<SampleRate>) -> Self {
         self.emitter = Some(JrClockEmitter::new(sample_rate));
         self
     }
 
     /// Add the JR Clock cadence with an explicit interval. Panics above
     /// [`JR_CLOCK_MAX_INTERVAL`]; see [`JrClockEmitter::with_interval`].
-    pub fn with_clock_interval(mut self, sample_rate: f64, interval: Duration) -> Self {
+    pub fn with_clock_interval(
+        mut self,
+        sample_rate: impl Into<SampleRate>,
+        interval: Duration,
+    ) -> Self {
         self.emitter = Some(JrClockEmitter::with_interval(sample_rate, interval));
         self
     }

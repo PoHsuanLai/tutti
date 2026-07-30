@@ -33,6 +33,7 @@ use std::sync::Arc;
 
 use atomic_float::AtomicF64;
 use tutti_core::transport::Timeline;
+use tutti_core::SampleRate;
 use tutti_midi_types::sync::SmpteFrameRate;
 use tutti_midi_types::ump::MidiEvent;
 
@@ -55,7 +56,7 @@ const SEEK_EPSILON_BEATS: f64 = 1e-3;
 /// and never blocks).
 pub struct ClockMaster {
     transport: Arc<dyn Timeline>,
-    sample_rate: f64,
+    sample_rate: SampleRate,
     /// UMP group nibble stamped on every emitted event (0-15).
     group: u8,
     /// The output mailbox's push half — lock-free `&self` queueing. The paired
@@ -94,10 +95,14 @@ impl ClockMaster {
     /// Build a clock master reading `transport`, emitting into `out`.
     /// Starts **disabled**; call [`set_enabled`](Self::set_enabled) once a
     /// hardware output is connected.
-    pub fn new(transport: Arc<dyn Timeline>, sample_rate: f64, out: MidiSender) -> Self {
+    pub fn new(
+        transport: Arc<dyn Timeline>,
+        sample_rate: impl Into<SampleRate>,
+        out: MidiSender,
+    ) -> Self {
         Self {
             transport,
-            sample_rate,
+            sample_rate: sample_rate.into(),
             group: 0,
             out,
             enabled: AtomicBool::new(false),
@@ -136,7 +141,8 @@ impl ClockMaster {
     /// Generate this block's clock/timecode. Call once per audio block with the
     /// block's frame count. Reads the transport internally.
     pub fn tick(&self, block_size: usize) {
-        if !self.enabled.load(Ordering::Acquire) || block_size == 0 || self.sample_rate <= 0.0 {
+        if !self.enabled.load(Ordering::Acquire) || block_size == 0 || self.sample_rate.get() <= 0.0
+        {
             // Keep prev_playing honest so re-enabling mid-playback emits a fresh
             // Start/Continue rather than silently assuming we were already going.
             self.prev_playing
@@ -179,7 +185,9 @@ impl ClockMaster {
         if tempo_bpm <= 0.0 {
             return;
         }
-        let beats_per_sample = tempo_bpm / 60.0 / self.sample_rate;
+        // The shared derivation, rather than a third hand-rolled copy.
+        let beats_per_sample =
+            tutti_core::transport::beats_per_sample(tempo_bpm, self.sample_rate).get();
         let expected_advance = block_size as f64 * beats_per_sample;
         let is_edge = playing && !was_playing;
         if !is_edge && (beat - prev_beat).abs() > expected_advance + SEEK_EPSILON_BEATS {
@@ -228,7 +236,7 @@ impl ClockMaster {
     fn tick_mtc(&self, block_size: usize, beats_per_sample: f64, beat: f64, max_offset: u32) {
         let fps = SmpteFrameRate::from_u8(self.mtc_fps.load(Ordering::Acquire));
         let qf_per_sec = fps.fps() * 4.0;
-        let samples_per_qf = self.sample_rate / qf_per_sec;
+        let samples_per_qf = self.sample_rate.get() / qf_per_sec;
         if samples_per_qf <= 0.0 {
             return;
         }
@@ -242,7 +250,7 @@ impl ClockMaster {
 
         // Seconds-per-beat for converting beat → wall-clock SMPTE.
         let secs_per_beat = if beats_per_sample > 0.0 {
-            1.0 / (beats_per_sample * self.sample_rate)
+            1.0 / (beats_per_sample * self.sample_rate.get())
         } else {
             0.0
         };
@@ -364,7 +372,7 @@ mod tests {
 
     fn master(
         tempo: f64,
-        sample_rate: f64,
+        sample_rate: impl Into<SampleRate>,
     ) -> (ClockMaster, Arc<TestTransport>, crate::MidiReceiver) {
         use tutti_midi_types::MidiUnitId;
         let transport = Arc::new(TestTransport::new(tempo));

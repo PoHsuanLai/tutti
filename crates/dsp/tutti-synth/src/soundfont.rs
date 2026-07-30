@@ -9,7 +9,7 @@ pub use rustysynth::{SoundFont, SoundFontError, SynthesizerSettings};
 
 use rustysynth::Synthesizer;
 use tutti_core::Arc;
-use tutti_core::{AudioUnit, BufferMut, BufferRef, Setting, SignalFrame};
+use tutti_core::{AudioUnit, BufferMut, BufferRef, SampleRate, Setting, SignalFrame};
 use tutti_midi_runtime::{MidiInPort, MidiSender};
 use tutti_midi_types::ump::MidiEvent;
 use tutti_midi_types::{MidiIn, MidiUnitId};
@@ -22,7 +22,7 @@ const MIDI_BUFFER_CAPACITY: usize = 256;
 
 pub struct SoundFontUnit {
     synthesizer: Synthesizer,
-    sample_rate: u32,
+    sample_rate: SampleRate,
     buffer_size: usize,
     left_buffer: Vec<f32>,
     right_buffer: Vec<f32>,
@@ -45,7 +45,10 @@ impl SoundFontUnit {
 
         Ok(Self {
             synthesizer,
-            sample_rate: settings.sample_rate as u32,
+            // `SynthesizerSettings::sample_rate` is rustysynth's `i32`. We are
+            // the library, so the conversion into the engine's vocabulary
+            // happens here rather than being pushed onto callers.
+            sample_rate: SampleRate::from(settings.sample_rate.max(0) as u32),
             buffer_size,
             left_buffer: vec![0.0; buffer_size],
             right_buffer: vec![0.0; buffer_size],
@@ -89,7 +92,7 @@ impl SoundFontUnit {
         self.midi.clear();
     }
 
-    pub fn sample_rate(&self) -> u32 {
+    pub fn sample_rate(&self) -> SampleRate {
         self.sample_rate
     }
 

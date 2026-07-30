@@ -117,7 +117,9 @@ impl AudioUnit for ChorusNode {
 
     fn route(&mut self, input: &SignalFrame, _frequency: f64) -> SignalFrame {
         let mut out = SignalFrame::new(2);
-        let delay_samples = (self.core.base_delay_secs() * self.core.sample_rate as f32) as f64;
+        // f64 throughout: `route` wants f64, so the old f32 round-trip was
+        // pure loss.
+        let delay_samples = self.core.base_delay_secs() as f64 * self.core.sample_rate.get();
         out.set(0, input.at(0).delay(delay_samples));
         out.set(1, input.at(1).delay(delay_samples));
         out

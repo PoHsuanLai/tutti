@@ -55,7 +55,7 @@ pub struct Portamento {
     progress: f32,
     /// Per sample
     rate: f32,
-    sample_rate: f32,
+    sample_rate: SampleRate,
 }
 
 impl Portamento {
@@ -67,7 +67,7 @@ impl Portamento {
             current_freq: 440.0,
             progress: 1.0,
             rate: 0.0,
-            sample_rate: sample_rate.into().get() as f32,
+            sample_rate: sample_rate.into(),
         }
     }
 
@@ -91,7 +91,10 @@ impl Portamento {
                 time * (interval / 1.0).max(0.1) // At least 10% of base time
             };
 
-            let glide_samples = glide_time * self.sample_rate;
+            // A fractional glide length feeding a reciprocal, not a frame
+            // count: multiply in f64 and narrow once, rather than narrowing
+            // the rate first as this did before.
+            let glide_samples = (glide_time as f64 * self.sample_rate.get()) as f32;
             self.rate = if glide_samples > 0.0 {
                 1.0 / glide_samples
             } else {
@@ -147,7 +150,7 @@ impl Portamento {
     }
 
     pub fn set_sample_rate(&mut self, sample_rate: impl Into<SampleRate>) {
-        self.sample_rate = sample_rate.into().get() as f32;
+        self.sample_rate = sample_rate.into();
     }
 }
 

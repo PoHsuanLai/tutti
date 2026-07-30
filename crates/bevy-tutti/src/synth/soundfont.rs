@@ -163,7 +163,8 @@ pub fn soundfont_playback_system(
         };
 
         let soundfont = source.0.clone();
-        let sample_rate = config.sample_rate as i32;
+        // rustysynth's settings field is `i32`; the cast is ours to make.
+        let sample_rate = config.sample_rate.get().round() as i32;
         let preset = play.preset;
         let channel = play.channel;
 

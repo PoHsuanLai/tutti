@@ -1,11 +1,13 @@
 use tutti_core::Arc;
 use tutti_core::AtomicF32;
-use tutti_core::{dsp::DEFAULT_SR, AudioUnit, BufferMut, BufferRef, ChannelLayout, SignalFrame};
+use tutti_core::{
+    dsp::DEFAULT_SAMPLE_RATE, AudioUnit, BufferMut, BufferRef, ChannelLayout, SignalFrame,
+};
 
 use super::envelope::EnvelopeFollower;
 use super::utils::{amplitude_to_db, compute_limiter_gain, db_to_amplitude, smooth_envelope};
 use crate::buffer::{CircularBuffer, MonotonicMinDeque};
-use tutti_core::{Db, Param, Seconds};
+use tutti_core::{Db, Param, SampleRate, Seconds};
 
 /// Lookahead ring buffers + sliding-window-minimum tracker for the limiter.
 /// Split out so `LimiterNode` reads as a list of parameters plus a lookahead
@@ -114,7 +116,7 @@ pub struct LimiterNode {
     delayed: Vec<f32>,
     envelope: f32,
     gain_reduction_db: f32,
-    sample_rate: f64,
+    sample_rate: SampleRate,
     follower: EnvelopeFollower,
     /// When true, a ceiling param-input port (dB) follows the audio inputs and
     /// overrides the ceiling atomic per sample.
@@ -146,8 +148,11 @@ impl LimiterNode {
         // floor the raw `channels.max(1)` used to provide.
         let n = (layout.count() as usize).max(1);
         let layout = ChannelLayout::from_count(n as u16);
-        let lookahead_secs = 0.005;
-        let lookahead_samples = (lookahead_secs * DEFAULT_SR as f32).ceil() as usize;
+        let lookahead_secs = Seconds(0.005);
+        // `_ceil`, the allocation form: the ring must hold at *least* the
+        // lookahead, and nearest-rounding under-allocates for half of all
+        // inputs. Previously this narrowed the rate to f32 before the multiply.
+        let lookahead_samples = lookahead_secs.to_samples_ceil(DEFAULT_SAMPLE_RATE).get();
 
         Self {
             threshold_db: Param::new(threshold_db.into()),
@@ -161,8 +166,8 @@ impl LimiterNode {
             delayed: vec![0.0; n],
             envelope: 0.0,
             gain_reduction_db: 0.0,
-            sample_rate: DEFAULT_SR,
-            follower: EnvelopeFollower::new(0.0, 0.1, DEFAULT_SR),
+            sample_rate: DEFAULT_SAMPLE_RATE,
+            follower: EnvelopeFollower::new(0.0, 0.1, DEFAULT_SAMPLE_RATE),
             mod_ceiling: false,
             mod_threshold: false,
         }
@@ -337,12 +342,15 @@ impl AudioUnit for LimiterNode {
     }
 
     fn set_sample_rate(&mut self, sample_rate: tutti_core::SampleRate) {
-        let sample_rate_f64: f64 = sample_rate.get();
-        let lookahead_secs = self.ring.lookahead_samples as f64 / self.sample_rate;
-        self.sample_rate = sample_rate_f64;
+        // Recover the lookahead as a duration at the *old* rate, then re-derive
+        // the frame count at the new one, so the wall-clock lookahead survives
+        // a rate change.
+        let lookahead_secs =
+            Seconds(self.ring.lookahead_samples as f32 / self.sample_rate.get() as f32);
+        self.sample_rate = sample_rate;
         self.follower
             .set_sample_rate(sample_rate, Seconds(0.0), self.release.load());
-        let new_samples = (lookahead_secs * sample_rate_f64).ceil() as usize;
+        let new_samples = lookahead_secs.to_samples_ceil(sample_rate).get();
         self.ring.resize(new_samples.max(1));
     }
 

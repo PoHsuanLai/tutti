@@ -12,7 +12,9 @@ use crate::{nonempty, MAX_SAMPLER_CHANNELS};
 use super::slot::{stretch_wanted, VoiceSlot};
 use super::types::{SlotId, Voice};
 use tutti_core::transport::BeatCursor;
-use tutti_core::{AudioUnit, BufferMut, BufferRef, ChannelLayout, SignalFrame, Timeline};
+use tutti_core::{
+    AudioUnit, BufferMut, BufferRef, ChannelLayout, SampleRate, SignalFrame, Timeline,
+};
 
 // ---------------------------------------------------------------------------
 // VoiceNode — a standalone single-`Voice` graph node (0 inputs, 2 outputs).
@@ -64,7 +66,7 @@ impl VoiceNode {
     /// doc comments pointed at a `materialize_stretch` that does not exist.
     pub fn with_channels(voice: Voice, channels: impl Into<ChannelLayout>) -> Self {
         let channels = nonempty(channels.into());
-        let sample_rate = 44100.0;
+        let sample_rate = SampleRate::SR_44K1;
         let stretch = stretch_wanted(&voice.play).then(|| {
             let unit = stretch::Unit::with_channels(sample_rate, channels);
             unit.set_stretch_factor(voice.play.stretch);
@@ -183,7 +185,7 @@ impl AudioUnit for VoiceNode {
             .source
             .as_audio_unit_mut()
             .set_sample_rate(sample_rate);
-        self.slot.sample_rate = sample_rate.get();
+        self.slot.sample_rate = sample_rate;
         if let Some(unit) = &mut self.slot.stretch {
             unit.set_sample_rate(sample_rate);
         }

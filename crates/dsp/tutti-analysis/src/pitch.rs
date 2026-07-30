@@ -46,7 +46,7 @@ use rustfft::{num_complex::Complex, FftPlanner};
 ///
 /// Uses FFT-based autocorrelation for O(n log n) performance.
 pub struct PitchDetector {
-    sample_rate: f64,
+    sample_rate: tutti_core::SampleRate,
     min_freq: f32,
     max_freq: f32,
     threshold: f32,
@@ -64,8 +64,8 @@ impl PitchDetector {
         min_freq: f32,
         max_freq: f32,
     ) -> Self {
-        let sample_rate = sample_rate.into().get();
-        let max_period = (sample_rate / min_freq as f64) as usize;
+        let sample_rate = sample_rate.into();
+        let max_period = (sample_rate.get() / min_freq as f64) as usize;
         let fft_size = (max_period * 2).next_power_of_two();
 
         Self {
@@ -89,8 +89,8 @@ impl PitchDetector {
 
     /// Needs at least `buffer_size()` samples.
     pub fn detect(&mut self, samples: &[f32]) -> PitchResult {
-        let min_period = (self.sample_rate / self.max_freq as f64) as usize;
-        let max_period = (self.sample_rate / self.min_freq as f64) as usize;
+        let min_period = (self.sample_rate.get() / self.max_freq as f64) as usize;
+        let max_period = (self.sample_rate.get() / self.min_freq as f64) as usize;
         let max_period = max_period
             .min(samples.len() / 2)
             .min(self.difference.len() - 1);
@@ -108,7 +108,7 @@ impl PitchDetector {
         }
 
         let refined_period = self.parabolic_interpolation(period, max_period);
-        let frequency = (self.sample_rate / refined_period) as f32;
+        let frequency = (self.sample_rate.get() / refined_period) as f32;
         let confidence = (1.0 - aperiodicity).max(0.0);
         let (midi_note, cents_offset) = freq_to_midi(frequency);
 

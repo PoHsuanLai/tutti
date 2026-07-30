@@ -1,6 +1,6 @@
 use tutti_core::Arc;
 use tutti_core::AtomicF32;
-use tutti_core::{dsp::DEFAULT_SR, AudioUnit, BufferMut, BufferRef, SignalFrame};
+use tutti_core::{dsp::DEFAULT_SAMPLE_RATE, AudioUnit, BufferMut, BufferRef, SignalFrame};
 
 use tutti_core::{Feedback, Mix, Param, SampleRate, Seconds};
 
@@ -93,6 +93,21 @@ impl DelayLine {
     }
 }
 
+/// A delay position in samples, keeping the fraction.
+///
+/// Deliberately **not** `Seconds::to_samples`: that returns `Samples`, an
+/// integer frame count, and the whole point of an interpolated read is the
+/// fractional part — rounding here would quantise every delay to a frame
+/// boundary and step audibly under modulation.
+///
+/// The multiply stays in `f64` and narrows once at the end. The old form was
+/// `secs * self.sample_rate as f32`, which narrowed the *rate* first and so
+/// computed the position at `f32` precision throughout.
+#[inline]
+fn fractional_samples(secs: Seconds, sample_rate: SampleRate) -> f32 {
+    (secs.get() as f64 * sample_rate.get()) as f32
+}
+
 /// Mono delay with feedback. 1 input (audio), 1 output.
 /// Delay time can be modulated via the typed parameter handles.
 pub struct DelayLineNode {
@@ -101,7 +116,7 @@ pub struct DelayLineNode {
     feedback: Param<Feedback>,
     mix: Param<Mix>,
     interpolation: InterpolationMode,
-    sample_rate: f64,
+    sample_rate: SampleRate,
     /// The longest delay this line can hold. Kept typed: it is a duration the
     /// setters clamp against, not scratch.
     max_delay: Seconds,
@@ -117,12 +132,12 @@ impl DelayLineNode {
         let delay_secs = delay_secs.into();
         let feedback = Feedback::new_clamped(feedback.into().get());
         Self {
-            delay: DelayLine::from_seconds(max_delay.get(), DEFAULT_SR),
+            delay: DelayLine::from_seconds(max_delay.get(), DEFAULT_SAMPLE_RATE),
             delay_time: Param::new(delay_secs),
             feedback: Param::new(feedback),
             mix: Param::new(Mix::WET),
             interpolation: InterpolationMode::Linear,
-            sample_rate: DEFAULT_SR,
+            sample_rate: DEFAULT_SAMPLE_RATE,
             max_delay,
         }
     }
@@ -181,21 +196,20 @@ impl AudioUnit for DelayLineNode {
     }
 
     fn set_sample_rate(&mut self, sample_rate: tutti_core::SampleRate) {
-        let sample_rate: f64 = sample_rate.get();
         self.sample_rate = sample_rate;
-        self.delay = DelayLine::from_seconds(self.max_delay.get(), sample_rate);
+        self.delay = DelayLine::from_seconds(self.max_delay, sample_rate);
     }
 
     #[inline]
     fn tick(&mut self, input: &[f32], output: &mut [f32]) {
-        let delay_samples = self.delay_time.load().get() * self.sample_rate as f32;
+        let delay_samples = fractional_samples(self.delay_time.load(), self.sample_rate);
         let fb = self.feedback.load().get();
         let mix = self.mix.load().get();
         output[0] = self.process_sample(input[0], delay_samples, fb, mix);
     }
 
     fn process(&mut self, size: usize, input: &BufferRef, output: &mut BufferMut) {
-        let delay_samples = self.delay_time.load().get() * self.sample_rate as f32;
+        let delay_samples = fractional_samples(self.delay_time.load(), self.sample_rate);
         let fb = self.feedback.load().get();
         let mix = self.mix.load().get();
 
@@ -230,7 +244,9 @@ impl AudioUnit for DelayLineNode {
 
     fn route(&mut self, input: &SignalFrame, _frequency: f64) -> SignalFrame {
         let mut out = SignalFrame::new(1);
-        let delay_samples = (self.delay_time.load().get() * self.sample_rate as f32) as f64;
+        // `route` wants f64, so this one never narrows: the old form went
+        // f32 → f64 and threw away precision on the way through.
+        let delay_samples = self.delay_time.load().get() as f64 * self.sample_rate.get();
         out.set(0, input.at(0).delay(delay_samples));
         out
     }
@@ -297,7 +313,7 @@ pub struct StereoDelayLineNode {
     cross_feedback: Param<Feedback>,
     mix: Param<Mix>,
     interpolation: InterpolationMode,
-    sample_rate: f64,
+    sample_rate: SampleRate,
     /// The longest delay this line can hold. Kept typed: it is a duration the
     /// setters clamp against, not scratch.
     max_delay: Seconds,
@@ -323,15 +339,15 @@ impl StereoDelayLineNode {
         let feedback = Feedback::new_clamped(feedback.into().get());
         Self {
             delays: vec![
-                DelayLine::from_seconds(max_delay.get(), DEFAULT_SR),
-                DelayLine::from_seconds(max_delay.get(), DEFAULT_SR),
+                DelayLine::from_seconds(max_delay.get(), DEFAULT_SAMPLE_RATE),
+                DelayLine::from_seconds(max_delay.get(), DEFAULT_SAMPLE_RATE),
             ],
             delay_time: vec![Param::new(delay_l_secs), Param::new(delay_r_secs)],
             feedback: Param::new(feedback),
             cross_feedback: Param::new(Feedback::NONE),
             mix: Param::new(Mix::WET),
             interpolation: InterpolationMode::Linear,
-            sample_rate: DEFAULT_SR,
+            sample_rate: DEFAULT_SAMPLE_RATE,
             max_delay,
             mod_feedback: false,
             mod_delay_time: false,
@@ -355,14 +371,14 @@ impl StereoDelayLineNode {
         let feedback = Feedback::new_clamped(feedback.into().get());
         Self {
             delays: (0..n)
-                .map(|_| DelayLine::from_seconds(max_delay.get(), DEFAULT_SR))
+                .map(|_| DelayLine::from_seconds(max_delay.get(), DEFAULT_SAMPLE_RATE))
                 .collect(),
             delay_time: (0..n).map(|_| Param::new(delay_secs)).collect(),
             feedback: Param::new(feedback),
             cross_feedback: Param::new(Feedback::NONE),
             mix: Param::new(Mix::WET),
             interpolation: InterpolationMode::Linear,
-            sample_rate: DEFAULT_SR,
+            sample_rate: DEFAULT_SAMPLE_RATE,
             max_delay,
             mod_feedback: false,
             mod_delay_time: false,
@@ -481,8 +497,8 @@ impl StereoDelayLineNode {
         let (fb, cf) =
             Feedback::stable_pair(self.feedback.load().get(), self.cross_feedback.load().get());
         StereoDelayParams {
-            dl: self.delay_time[0].load().get() * self.sample_rate as f32,
-            dr: self.delay_time[1].load().get() * self.sample_rate as f32,
+            dl: fractional_samples(self.delay_time[0].load(), self.sample_rate),
+            dr: fractional_samples(self.delay_time[1].load(), self.sample_rate),
             fb: fb.get(),
             cf: cf.get(),
             mix: self.mix.load().get(),
@@ -507,13 +523,13 @@ impl StereoDelayLineNode {
         );
         let (dl, dr) = match self.delay_time_port() {
             Some(p) => {
-                let secs = read(p).clamp(0.0, self.max_delay.get());
-                let samples = secs * self.sample_rate as f32;
+                let secs = Seconds(read(p).clamp(0.0, self.max_delay.get()));
+                let samples = fractional_samples(secs, self.sample_rate);
                 (samples, samples)
             }
             None => (
-                self.delay_time[0].load().get() * self.sample_rate as f32,
-                self.delay_time[1].load().get() * self.sample_rate as f32,
+                fractional_samples(self.delay_time[0].load(), self.sample_rate),
+                fractional_samples(self.delay_time[1].load(), self.sample_rate),
             ),
         };
         // Bound the pair, not each half — same reason as `snapshot_params`.
@@ -578,8 +594,11 @@ impl StereoDelayLineNode {
             |p| Feedback::new_clamped(read(p)),
         );
         let d_samples = match self.delay_time_port() {
-            Some(p) => read(p).clamp(0.0, self.max_delay.get()) * self.sample_rate as f32,
-            None => self.delay_time[c].load().get() * self.sample_rate as f32,
+            Some(p) => fractional_samples(
+                Seconds(read(p).clamp(0.0, self.max_delay.get())),
+                self.sample_rate,
+            ),
+            None => fractional_samples(self.delay_time[c].load(), self.sample_rate),
         };
         (d_samples, fb.get(), self.mix.load().get())
     }
@@ -610,10 +629,9 @@ impl AudioUnit for StereoDelayLineNode {
     }
 
     fn set_sample_rate(&mut self, sample_rate: tutti_core::SampleRate) {
-        let sample_rate: f64 = sample_rate.get();
         self.sample_rate = sample_rate;
         for d in &mut self.delays {
-            *d = DelayLine::from_seconds(self.max_delay.get(), sample_rate);
+            *d = DelayLine::from_seconds(self.max_delay, sample_rate);
         }
     }
 
@@ -698,7 +716,8 @@ impl AudioUnit for StereoDelayLineNode {
     fn route(&mut self, input: &SignalFrame, _frequency: f64) -> SignalFrame {
         let mut out = SignalFrame::new(self.width());
         for c in 0..self.width() {
-            let d = (self.delay_time[c].load().get() * self.sample_rate as f32) as f64;
+            // f64 throughout, as in `DelayLineNode::route` above.
+            let d = self.delay_time[c].load().get() as f64 * self.sample_rate.get();
             out.set(c, input.at(c).delay(d));
         }
         out

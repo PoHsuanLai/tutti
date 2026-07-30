@@ -64,7 +64,7 @@ impl Wave {
             2 * self.channels() * self.length(),
             1,
             self.channels(),
-            round(self.sample_rate()) as usize,
+            self.sample_rate().get().round() as usize,
         )?;
         for i in 0..self.length() {
             for channel in 0..self.channels() {
@@ -86,7 +86,7 @@ impl Wave {
             4 * self.channels() * self.length(),
             3,
             self.channels(),
-            round(self.sample_rate()) as usize,
+            self.sample_rate().get().round() as usize,
         )?;
         for i in 0..self.length() {
             for channel in 0..self.channels() {

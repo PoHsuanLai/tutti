@@ -102,7 +102,7 @@ fn main() {
     std::fs::create_dir_all(out).expect("create output dir");
 
     let base = |osc: OscillatorType| SynthConfig {
-        sample_rate: SR,
+        sample_rate: tutti_core::SampleRate::from(SR),
         oscillator: osc,
         envelope: flat_envelope(),
         ..Default::default()

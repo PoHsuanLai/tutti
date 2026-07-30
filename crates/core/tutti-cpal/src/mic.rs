@@ -36,6 +36,7 @@ use ringbuf::{
 use tutti_core::io::{AudioIn, OnEmpty};
 use tutti_core::pcm::BitDepth;
 use tutti_core::ChannelLayout;
+use tutti_core::SampleRate;
 use tutti_io::{share_mic_ring, MicMonitorNode, MicRing, WavOut};
 
 use crate::error::{Error, Result};
@@ -70,7 +71,7 @@ unsafe impl Send for StreamHandle {}
 /// record.
 pub struct MicIn {
     cons: HeapCons<[f32; 2]>,
-    sample_rate: f64,
+    sample_rate: SampleRate,
     // Held to keep the input stream running; dropped with the source.
     _stream: StreamHandle,
 }
@@ -105,7 +106,7 @@ impl MicIn {
     ) -> Result<(Self, Option<MicMonitorNode>)> {
         let device = input_device(device_index)?;
         let config = device.default_input_config()?;
-        let sample_rate = f64::from(config.sample_rate().0);
+        let sample_rate = SampleRate::from(config.sample_rate().0);
         let channels = ChannelLayout::from(usize::from(config.channels()));
 
         let rb = HeapRb::<[f32; 2]>::new(RING_FRAMES);
@@ -173,7 +174,7 @@ impl MicIn {
 
     /// The capture device's native sample rate. A recorder passes this to the
     /// sink so the WAV header matches the frames it's fed.
-    pub fn sample_rate(&self) -> f64 {
+    pub fn sample_rate(&self) -> SampleRate {
         self.sample_rate
     }
 

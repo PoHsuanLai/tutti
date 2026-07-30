@@ -48,7 +48,7 @@ fn flat_envelope() -> EnvelopeConfig {
 
 fn config(osc: OscillatorType) -> SynthConfig {
     SynthConfig {
-        sample_rate: SR,
+        sample_rate: tutti_core::SampleRate::from(SR),
         oscillator: osc,
         envelope: flat_envelope(),
         ..Default::default()

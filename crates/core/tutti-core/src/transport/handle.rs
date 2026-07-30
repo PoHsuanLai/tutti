@@ -31,7 +31,7 @@ use crate::params::{Beat, Bpm, SampleRate};
 pub struct Transport {
     pub motion: MotionFsm,
     pub settings: TransportSettings,
-    sample_rate: f64,
+    sample_rate: SampleRate,
 }
 
 impl Transport {
@@ -40,7 +40,7 @@ impl Transport {
         Self {
             motion: MotionFsm::new(settings.clone()),
             settings,
-            sample_rate: sample_rate.into().get(),
+            sample_rate: sample_rate.into(),
         }
     }
 
@@ -63,7 +63,7 @@ impl Transport {
     }
 
     pub fn sample_rate(&self) -> SampleRate {
-        SampleRate(self.sample_rate)
+        self.sample_rate
     }
 
     pub fn beats_per_second(&self) -> f64 {
@@ -71,7 +71,7 @@ impl Transport {
     }
 
     pub fn samples_per_beat(&self) -> f64 {
-        self.sample_rate / self.beats_per_second()
+        self.sample_rate.get() / self.beats_per_second()
     }
 }
 

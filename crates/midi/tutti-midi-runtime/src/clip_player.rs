@@ -15,6 +15,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use tutti_core::transport::{BeatCursor, BeatWindow, BeatWindowSync, Timeline};
+use tutti_core::SampleRate;
 use tutti_midi_types::ump::MidiEvent;
 use tutti_midi_types::unit_id::MidiUnitId;
 use tutti_midi_types::{MidiIn, MidiOut};
@@ -67,7 +68,7 @@ impl MidiClipSource {
         target_unit: MidiUnitId,
         events: impl IntoIterator<Item = TimedClipEvent>,
         transport: Arc<dyn Timeline>,
-        sample_rate: f64,
+        sample_rate: SampleRate,
     ) -> Self {
         let mut v: Vec<TimedClipEvent> = events.into_iter().collect();
         v.sort_by(|a, b| {
@@ -237,7 +238,7 @@ mod tests {
         let unit = MidiUnitId::new(1);
         let transport = Arc::new(TestTransport::new(120.0));
         // 120 BPM @ 44.1kHz → 22050 samples/beat → ~22.05 samples per 0.001 beat.
-        let sample_rate = 44100.0;
+        let sample_rate = SampleRate::from(44100.0);
 
         let events = vec![
             TimedClipEvent {
@@ -285,7 +286,7 @@ mod tests {
                 event: note_on(60, 100),
             }],
             Arc::clone(&transport) as Arc<dyn Timeline>,
-            44100.0,
+            SampleRate::from(44100.0),
         );
         let mut buf = [MidiEvent::noop(); 4];
         assert_eq!(source.poll_into(other, 1024, &mut buf), 0);
@@ -303,7 +304,7 @@ mod tests {
                 event: note_on(60, 100),
             }],
             Arc::clone(&transport) as Arc<dyn Timeline>,
-            44100.0,
+            SampleRate::from(44100.0),
         );
         let mut buf = [MidiEvent::noop(); 4];
         assert_eq!(source.poll_into(unit, 1024, &mut buf), 0);
@@ -326,7 +327,7 @@ mod tests {
                 },
             ],
             Arc::clone(&transport) as Arc<dyn Timeline>,
-            44100.0,
+            SampleRate::from(44100.0),
         );
 
         let mut buf = [MidiEvent::noop(); 4];
@@ -365,7 +366,7 @@ mod tests {
                 },
             ],
             Arc::clone(&transport) as Arc<dyn Timeline>,
-            44100.0,
+            SampleRate::from(44100.0),
         )
         .with_out_tap(Arc::new(sender));
 
@@ -401,7 +402,7 @@ mod tests {
                 event: note_on(60, 100),
             }],
             Arc::clone(&transport) as Arc<dyn Timeline>,
-            44100.0,
+            SampleRate::from(44100.0),
         );
         let mut buf = [MidiEvent::noop(); 4];
         assert_eq!(source.poll_into(unit, 22050, &mut buf), 1);
@@ -423,7 +424,7 @@ mod tests {
                 },
             ],
             Arc::clone(transport) as Arc<dyn Timeline>,
-            44100.0,
+            SampleRate::from(44100.0),
         )
     }
 

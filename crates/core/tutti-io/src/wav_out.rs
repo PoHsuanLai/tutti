@@ -37,6 +37,7 @@ use std::path::PathBuf;
 use tutti_core::io::AudioOut;
 use tutti_core::pcm::{BitDepth, Sample};
 use tutti_core::ChannelLayout;
+use tutti_core::SampleRate;
 
 /// Live WAV [`AudioOut`]. Owns the `hound` writer plus the channel count and
 /// depth needed to encode each frame.
@@ -48,7 +49,7 @@ pub struct WavOut {
     /// the source it is about to pump in. Nothing here can validate that pairing
     /// — `AudioIn` deliberately carries no rate — so the best this type can do
     /// is report what it promised the file.
-    sample_rate: f64,
+    sample_rate: SampleRate,
     /// The first write failure, kept until [`finalize`](AudioOut::finalize) can
     /// report it.
     ///
@@ -78,10 +79,11 @@ impl WavOut {
     /// file can't be created or the header can't be written.
     pub fn create(
         file_path: &PathBuf,
-        sample_rate: f64,
+        sample_rate: impl Into<SampleRate>,
         channels: usize,
         depth: BitDepth,
     ) -> Option<Self> {
+        let sample_rate = sample_rate.into();
         let sample_format = if depth.is_integer() {
             SampleFormat::Int
         } else {
@@ -90,7 +92,8 @@ impl WavOut {
         let layout = ChannelLayout::from(channels);
         let spec = WavSpec {
             channels: layout.count(),
-            sample_rate: sample_rate as u32,
+            // The WAV header field is an integer rate: types stop here.
+            sample_rate: sample_rate.get().round() as u32,
             bits_per_sample: depth.bits(),
             sample_format,
         };
@@ -120,7 +123,7 @@ impl WavOut {
     /// feeding 48 kHz frames into a sink that declared 8 kHz produces a
     /// perfectly valid WAV that plays back six times too slow, and nothing
     /// downstream can detect it. Only the caller holds both halves.
-    pub fn sample_rate(&self) -> f64 {
+    pub fn sample_rate(&self) -> SampleRate {
         self.sample_rate
     }
 
@@ -346,7 +349,7 @@ mod tests {
             },
             layout: ChannelLayout::from(2usize),
             depth: BitDepth::Int16,
-            sample_rate: 48_000.0,
+            sample_rate: SampleRate::SR_48K,
             first_error: None,
         };
 
@@ -412,7 +415,7 @@ mod tests {
             },
             layout: ChannelLayout::from(2usize),
             depth: BitDepth::Int16,
-            sample_rate: 48_000.0,
+            sample_rate: SampleRate::SR_48K,
             first_error: None,
         };
 

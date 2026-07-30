@@ -12,6 +12,7 @@ use dashmap::DashMap;
 use smol::channel::{bounded, Receiver, Sender};
 use thread_priority::ThreadPriority;
 use tutti_core::RtPublish;
+use tutti_core::SampleRate;
 use tutti_core::Samples;
 
 use super::cache::LruCache;
@@ -30,11 +31,15 @@ pub struct ButlerThread {
     shutdown: Arc<AtomicBool>,
     shared: Handles,
     config: BufferConfig,
-    sample_rate: f64,
+    sample_rate: SampleRate,
 }
 
 impl ButlerThread {
-    pub fn with_config(channel_capacity: usize, sample_rate: f64, config: BufferConfig) -> Self {
+    pub fn with_config(
+        channel_capacity: usize,
+        sample_rate: SampleRate,
+        config: BufferConfig,
+    ) -> Self {
         let (tx, rx) = bounded(channel_capacity);
 
         let shared = Handles {

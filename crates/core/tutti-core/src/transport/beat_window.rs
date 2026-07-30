@@ -14,6 +14,7 @@ use std::sync::Arc;
 
 use crate::transport::Timeline;
 use crate::AtomicF64;
+use crate::SampleRate;
 
 /// Beat range one audio block covers, plus the factors to place an event inside
 /// it. Produced by [`BeatWindow::from_timeline`].
@@ -82,7 +83,7 @@ impl BeatWindow {
     /// caller can reset its cursors.
     pub fn from_timeline(
         timeline: &dyn Timeline,
-        sample_rate: f64,
+        sample_rate: SampleRate,
         block_size: usize,
         last_beat: &mut f64,
     ) -> Option<(Self, BeatWindowSync)> {
@@ -96,7 +97,7 @@ impl BeatWindow {
         let start_beat = timeline.beat().get();
 
         let tempo_bpm = timeline.tempo().get();
-        if tempo_bpm <= 0.0 || sample_rate <= 0.0 || block_size == 0 {
+        if tempo_bpm <= 0.0 || sample_rate.get() <= 0.0 || block_size == 0 {
             // Still publish the beat: a caller resuming after a tempo glitch must
             // not read a stale `last_beat` as a jump.
             *last_beat = start_beat;
@@ -187,15 +188,15 @@ fn forward_slack(beats_per_sample: f64, block_size: usize) -> f64 {
 #[derive(Clone)]
 pub struct BeatCursor {
     transport: Arc<dyn Timeline>,
-    sample_rate: f64,
+    sample_rate: SampleRate,
     last_beat: Arc<AtomicF64>,
 }
 
 impl BeatCursor {
-    pub fn new(transport: Arc<dyn Timeline>, sample_rate: f64) -> Self {
+    pub fn new(transport: Arc<dyn Timeline>, sample_rate: impl Into<SampleRate>) -> Self {
         Self {
             transport,
-            sample_rate,
+            sample_rate: sample_rate.into(),
             last_beat: Arc::new(AtomicF64::new(f64::NEG_INFINITY)),
         }
     }
@@ -227,7 +228,7 @@ impl BeatCursor {
         &self.transport
     }
 
-    pub fn sample_rate(&self) -> f64 {
+    pub fn sample_rate(&self) -> SampleRate {
         self.sample_rate
     }
 
@@ -237,8 +238,8 @@ impl BeatCursor {
     /// threshold, which is derived from it. A cursor left at a stale rate would
     /// mis-scale that slack: too small and ordinary playback reads as a seek, too
     /// large and a real seek goes unnoticed.
-    pub fn set_sample_rate(&mut self, sample_rate: f64) {
-        self.sample_rate = sample_rate;
+    pub fn set_sample_rate(&mut self, sample_rate: impl Into<SampleRate>) {
+        self.sample_rate = sample_rate.into();
     }
 }
 

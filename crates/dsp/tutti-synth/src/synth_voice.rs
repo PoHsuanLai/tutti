@@ -6,7 +6,7 @@ use tutti_core::dsp::{
     adsr_live, bandpass_q, dc, highpass_q, lowpass_q, moog, notch_q, pass, pink, poly_pulse, saw,
     sine, triangle, var,
 };
-use tutti_core::{AudioUnit, Hz, Semitones, Shared};
+use tutti_core::{AudioUnit, Hz, PhaseIncrement, Semitones, Shared};
 
 extern crate alloc;
 use alloc::vec::Vec;
@@ -41,7 +41,7 @@ pub(crate) struct SynthVoice {
     base_note_freq: Hz,
     sub_voices: Vec<SubVoice>,
     config: SynthConfig,
-    sample_rate: f64,
+    sample_rate: tutti_core::SampleRate,
 }
 
 impl SynthVoice {
@@ -103,7 +103,7 @@ impl SynthVoice {
             let pitch = tutti_core::shared(440.0);
             let mut dsp =
                 build_sub_voice_dsp(config, &pitch, &gate, &filter_cutoff, &filter_resonance);
-            dsp.set_sample_rate(tutti_core::SampleRate(config.sample_rate));
+            dsp.set_sample_rate(config.sample_rate);
 
             let num_outputs = dsp.outputs();
             let mut init_buf = [0.0f32; 2];
@@ -297,7 +297,9 @@ impl SynthVoice {
             }
 
             if fm.lfo_depth > 0.0 && fm.lfo_rate > 0.0 {
-                let phase_inc = fm.lfo_rate / self.sample_rate as f32;
+                // The named converter: this used to narrow the rate to f32
+                // before dividing, computing the step at f32 precision.
+                let phase_inc = PhaseIncrement::per_sample(Hz(fm.lfo_rate), self.sample_rate).get();
                 self.lfo_phase = (self.lfo_phase + phase_inc) % 1.0;
 
                 let lfo_val = (self.lfo_phase * core::f32::consts::TAU).sin();
@@ -321,10 +323,9 @@ impl SynthVoice {
     }
 
     pub(crate) fn set_sample_rate(&mut self, sample_rate: tutti_core::SampleRate) {
-        let sample_rate: f64 = sample_rate.get();
         self.sample_rate = sample_rate;
         for sub in &mut self.sub_voices {
-            sub.dsp.set_sample_rate(tutti_core::SampleRate(sample_rate));
+            sub.dsp.set_sample_rate(sample_rate);
         }
     }
 
@@ -454,7 +455,7 @@ impl SynthVoice {
                     &self.filter_cutoff,
                     &self.filter_resonance,
                 );
-                dsp.set_sample_rate(tutti_core::SampleRate(self.sample_rate));
+                dsp.set_sample_rate(self.sample_rate);
 
                 let num_outputs = dsp.outputs();
                 let mut init_buf = [0.0f32; 2];

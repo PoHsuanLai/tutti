@@ -202,7 +202,7 @@ fn prepare_net(
                 None => Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
                     start_beat: 0.0,
                     tempo: 120.0.into(),
-                    sample_rate: SampleRate(config.sample_rate),
+                    sample_rate: config.sample_rate,
                     loop_range: None,
                 })),
             };

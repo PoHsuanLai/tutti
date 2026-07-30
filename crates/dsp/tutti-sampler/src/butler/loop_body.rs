@@ -17,13 +17,14 @@ use super::handlers::{handle_command, handle_seek_stream, Handles, Local};
 use super::io::refill::{refill_all, refill_all_parallel};
 use super::loops::handle_loops;
 use super::preroll::apply_pdc_updates;
+use tutti_core::SampleRate;
 
 /// Main butler thread entry point (async).
 pub(super) async fn butler_loop_async(
     rx: Receiver<ButlerCommand>,
     shared: Handles,
     config: BufferConfig,
-    sample_rate: f64,
+    sample_rate: SampleRate,
     shutdown: Arc<AtomicBool>,
 ) {
     let base_chunk_size = config.chunk_size;

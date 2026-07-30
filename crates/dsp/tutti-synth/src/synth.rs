@@ -136,7 +136,7 @@ pub struct FilterModConfig {
 
 #[derive(Debug, Clone)]
 pub struct SynthConfig {
-    pub sample_rate: f64,
+    pub sample_rate: tutti_core::SampleRate,
     pub max_voices: usize,
     pub voice_mode: VoiceMode,
     pub oscillator: OscillatorType,
@@ -157,7 +157,7 @@ pub struct SynthConfig {
 impl Default for SynthConfig {
     fn default() -> Self {
         Self {
-            sample_rate: 44100.0,
+            sample_rate: tutti_core::SampleRate::SR_44K1,
             max_voices: 8,
             voice_mode: VoiceMode::Poly,
             oscillator: OscillatorType::default(),

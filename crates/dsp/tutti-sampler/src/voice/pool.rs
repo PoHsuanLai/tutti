@@ -18,7 +18,7 @@ use super::types::{Playback, SlotId, Voice, VoiceSource};
 use bevy_ecs::prelude::*;
 use crossbeam_channel::{bounded, Receiver, Sender};
 use tutti_core::transport::BeatCursor;
-use tutti_core::{AudioUnit, BufferMut, BufferRef, SignalFrame, Timeline};
+use tutti_core::{AudioUnit, BufferMut, BufferRef, SampleRate, SignalFrame, Timeline};
 
 const VOICE_POOL_ID: u64 = 0x_0000_0000_0000_DA03;
 
@@ -56,7 +56,7 @@ pub struct VoicePool {
     /// if nobody ever does, the channel fills and the slot is dropped in the
     /// callback as before — degrading to today's behaviour rather than leaking.
     pub(crate) retired: Sender<VoiceSlot>,
-    pub(crate) sample_rate: f64,
+    pub(crate) sample_rate: SampleRate,
     pub(crate) transport: Option<Arc<dyn Timeline>>,
     /// Typed butler write handle. `Some` on the live path (threaded in from the
     /// [`DiskStreamer`](crate::DiskStreamer)); `None` for tests / detached / offline
@@ -137,7 +137,7 @@ impl VoicePool {
             // just costs one grow.
             voices: Vec::with_capacity(MAX_RESIDENT_VOICES),
             rx,
-            sample_rate: 44100.0,
+            sample_rate: SampleRate::from(44100.0),
             cursor: transport
                 .as_ref()
                 .map(|t| BeatCursor::new(Arc::clone(t), 44100.0)),
@@ -159,7 +159,7 @@ impl VoicePool {
             tx,
             retired,
             channels: 2,
-            sample_rate: 44100.0,
+            sample_rate: SampleRate::from(44100.0),
         };
         let mut unit = Self::from_parts(rx, None, None);
         unit.retired = retired_tx;
@@ -176,7 +176,7 @@ impl VoicePool {
             tx,
             retired,
             channels: 2,
-            sample_rate: 44100.0,
+            sample_rate: SampleRate::from(44100.0),
         };
         let mut unit = Self::from_parts(rx, Some(transport), butler);
         unit.retired = retired_tx;
@@ -643,7 +643,7 @@ impl AudioUnit for VoicePool {
     }
 
     fn set_sample_rate(&mut self, sample_rate: tutti_core::SampleRate) {
-        self.sample_rate = sample_rate.get();
+        self.sample_rate = sample_rate;
         if let Some(cursor) = &mut self.cursor {
             cursor.set_sample_rate(sample_rate.get());
         }
@@ -652,7 +652,7 @@ impl AudioUnit for VoicePool {
                 .source
                 .as_audio_unit_mut()
                 .set_sample_rate(sample_rate);
-            slot.sample_rate = sample_rate.get();
+            slot.sample_rate = sample_rate;
             if let Some(unit) = &mut slot.stretch {
                 unit.set_sample_rate(sample_rate);
             }

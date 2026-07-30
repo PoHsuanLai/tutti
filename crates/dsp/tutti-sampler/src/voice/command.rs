@@ -14,7 +14,8 @@ use super::slot::{stretch_wanted, VoiceSlot};
 use super::types::{Direction, SlotId, Voice};
 use crossbeam_channel::{Receiver, Sender, TrySendError};
 use tutti_core::{
-    Amplitude, Beat, BeatDuration, Cents, PlaybackRate, SamplePosition, StretchFactor, Wave,
+    Amplitude, Beat, BeatDuration, Cents, PlaybackRate, SamplePosition, SampleRate, StretchFactor,
+    Wave,
 };
 
 /// Voice slots a reader holds before its slot vector has to grow.
@@ -192,7 +193,7 @@ pub struct VoicePoolHandle {
     /// [`VoiceCommand::AddVoice::stretch`].
     pub(crate) channels: usize,
     /// The reader's sample rate at construction, for the same reason.
-    pub(crate) sample_rate: f64,
+    pub(crate) sample_rate: SampleRate,
 }
 
 impl VoicePoolHandle {

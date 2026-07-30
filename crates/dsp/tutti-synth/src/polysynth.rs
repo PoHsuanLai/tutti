@@ -86,7 +86,7 @@ impl PolySynth {
         let mut voices = Vec::with_capacity(config.max_voices);
         for _ in 0..config.max_voices {
             let mut voice = SynthVoice::from_config(&config, unison_count);
-            voice.set_sample_rate(tutti_core::SampleRate(config.sample_rate));
+            voice.set_sample_rate(config.sample_rate);
             voices.push(voice);
         }
 
@@ -668,16 +668,15 @@ impl AudioUnit for PolySynth {
         self.voices.clear();
         for _ in 0..self.config.max_voices {
             let mut voice = SynthVoice::from_config(&self.config, unison_count);
-            voice.set_sample_rate(tutti_core::SampleRate(self.config.sample_rate));
+            voice.set_sample_rate(self.config.sample_rate);
             self.voices.push(voice);
         }
         self.allocator.reset();
     }
 
     fn set_sample_rate(&mut self, sample_rate: tutti_core::SampleRate) {
-        let sample_rate: f64 = sample_rate.get();
         for voice in &mut self.voices {
-            voice.set_sample_rate(tutti_core::SampleRate(sample_rate));
+            voice.set_sample_rate(sample_rate);
         }
         if let Some(ref mut porta) = self.portamento {
             porta.set_sample_rate(sample_rate);
@@ -984,7 +983,7 @@ mod tests {
     #[test]
     fn test_polysynth_midi() {
         let mut synth = synth(SynthConfig {
-            sample_rate: 44100.0,
+            sample_rate: tutti_core::SampleRate::SR_44K1,
             max_voices: 4,
             voice_mode: VoiceMode::Poly,
             oscillator: OscillatorType::Sine,
@@ -1012,7 +1011,7 @@ mod tests {
     #[test]
     fn isolate_severs_shared_midi_inbox_no_theft() {
         let mut live = synth(SynthConfig {
-            sample_rate: 44100.0,
+            sample_rate: tutti_core::SampleRate::SR_44K1,
             max_voices: 4,
             voice_mode: VoiceMode::Poly,
             oscillator: OscillatorType::Sine,
@@ -1068,7 +1067,7 @@ mod tests {
     #[test]
     fn midi_source_install_propagates_across_clones() {
         let live = synth(SynthConfig {
-            sample_rate: 44100.0,
+            sample_rate: tutti_core::SampleRate::SR_44K1,
             max_voices: 4,
             voice_mode: VoiceMode::Poly,
             oscillator: OscillatorType::Sine,
@@ -1111,7 +1110,7 @@ mod tests {
     #[test]
     fn isolate_unaliases_voice_shared_params() {
         let mut live = synth(SynthConfig {
-            sample_rate: 44100.0,
+            sample_rate: tutti_core::SampleRate::SR_44K1,
             max_voices: 4,
             voice_mode: VoiceMode::Poly,
             oscillator: OscillatorType::Sine,
@@ -1149,7 +1148,7 @@ mod tests {
     fn test_unison_creates_subvoices() {
         // Create synth with 3-voice unison
         let synth = synth(SynthConfig {
-            sample_rate: 44100.0,
+            sample_rate: tutti_core::SampleRate::SR_44K1,
             max_voices: 4,
             voice_mode: VoiceMode::Poly,
             oscillator: OscillatorType::Saw,
@@ -1176,7 +1175,7 @@ mod tests {
         use tutti_mod::{LayerKey, ModParams, ModTarget};
 
         let synth = synth(SynthConfig {
-            sample_rate: 44100.0,
+            sample_rate: tutti_core::SampleRate::SR_44K1,
             max_voices: 2,
             ..Default::default()
         });
@@ -1229,7 +1228,7 @@ mod tests {
         use tutti_mod::{LayerKey, ModParams};
 
         let mut synth = synth(SynthConfig {
-            sample_rate: 44100.0,
+            sample_rate: tutti_core::SampleRate::SR_44K1,
             max_voices: 2,
             oscillator: OscillatorType::Saw,
             unison: Some(UnisonConfig {
@@ -1268,7 +1267,7 @@ mod tests {
     #[test]
     fn test_unison_stereo_output() {
         let mut synth = synth(SynthConfig {
-            sample_rate: 44100.0,
+            sample_rate: tutti_core::SampleRate::SR_44K1,
             max_voices: 2,
             voice_mode: VoiceMode::Poly,
             oscillator: OscillatorType::Saw,
@@ -1326,7 +1325,7 @@ mod tests {
     fn test_no_unison_single_subvoice() {
         // Create synth without unison
         let synth = synth(SynthConfig {
-            sample_rate: 44100.0,
+            sample_rate: tutti_core::SampleRate::SR_44K1,
             max_voices: 4,
             voice_mode: VoiceMode::Poly,
             oscillator: OscillatorType::Sine,
@@ -1384,7 +1383,7 @@ mod tests {
     fn test_dynamic_unison_resize() {
         // Create synth with 2-voice unison
         let mut synth = synth(SynthConfig {
-            sample_rate: 44100.0,
+            sample_rate: tutti_core::SampleRate::SR_44K1,
             max_voices: 2,
             voice_mode: VoiceMode::Poly,
             oscillator: OscillatorType::Saw,
@@ -1435,7 +1434,7 @@ mod tests {
     #[test]
     fn test_note_off_respects_channel() {
         let mut synth = synth(SynthConfig {
-            sample_rate: 44100.0,
+            sample_rate: tutti_core::SampleRate::SR_44K1,
             max_voices: 4,
             voice_mode: VoiceMode::Poly,
             oscillator: OscillatorType::Sine,
@@ -1487,7 +1486,7 @@ mod tests {
     #[test]
     fn test_cc64_sustain_pedal_holds_notes() {
         let mut synth = synth(SynthConfig {
-            sample_rate: 44100.0,
+            sample_rate: tutti_core::SampleRate::SR_44K1,
             max_voices: 4,
             voice_mode: VoiceMode::Poly,
             oscillator: OscillatorType::Sine,
@@ -1539,7 +1538,7 @@ mod tests {
     #[test]
     fn test_cc66_sostenuto_pedal_holds_notes() {
         let mut synth = synth(SynthConfig {
-            sample_rate: 44100.0,
+            sample_rate: tutti_core::SampleRate::SR_44K1,
             max_voices: 4,
             voice_mode: VoiceMode::Poly,
             oscillator: OscillatorType::Sine,
@@ -1603,7 +1602,7 @@ mod tests {
     #[test]
     fn test_cc120_all_sound_off() {
         let mut synth = synth(SynthConfig {
-            sample_rate: 44100.0,
+            sample_rate: tutti_core::SampleRate::SR_44K1,
             max_voices: 4,
             voice_mode: VoiceMode::Poly,
             oscillator: OscillatorType::Sine,
@@ -1639,7 +1638,7 @@ mod tests {
     #[test]
     fn test_cc123_all_notes_off() {
         let mut synth = synth(SynthConfig {
-            sample_rate: 44100.0,
+            sample_rate: tutti_core::SampleRate::SR_44K1,
             max_voices: 4,
             voice_mode: VoiceMode::Poly,
             oscillator: OscillatorType::Sine,
@@ -1680,7 +1679,7 @@ mod tests {
     #[test]
     fn test_cc123_respects_channel() {
         let mut synth = synth(SynthConfig {
-            sample_rate: 44100.0,
+            sample_rate: tutti_core::SampleRate::SR_44K1,
             max_voices: 4,
             voice_mode: VoiceMode::Poly,
             oscillator: OscillatorType::Sine,
@@ -1724,7 +1723,7 @@ mod tests {
     #[test]
     fn test_velocity_zero_note_on_is_note_off() {
         let mut synth = synth(SynthConfig {
-            sample_rate: 44100.0,
+            sample_rate: tutti_core::SampleRate::SR_44K1,
             max_voices: 4,
             voice_mode: VoiceMode::Poly,
             oscillator: OscillatorType::Sine,
@@ -1760,7 +1759,7 @@ mod tests {
     #[test]
     fn test_voice_stealing_in_polysynth() {
         let mut synth = synth(SynthConfig {
-            sample_rate: 44100.0,
+            sample_rate: tutti_core::SampleRate::SR_44K1,
             max_voices: 2,
             voice_mode: VoiceMode::Poly,
             oscillator: OscillatorType::Sine,
@@ -1794,7 +1793,7 @@ mod tests {
     #[test]
     fn test_legato_mode_no_retrigger() {
         let mut synth = synth(SynthConfig {
-            sample_rate: 44100.0,
+            sample_rate: tutti_core::SampleRate::SR_44K1,
             max_voices: 1,
             voice_mode: VoiceMode::Legato,
             oscillator: OscillatorType::Sine,
@@ -1837,7 +1836,7 @@ mod tests {
     #[test]
     fn test_mono_mode_retrigger() {
         let mut synth = synth(SynthConfig {
-            sample_rate: 44100.0,
+            sample_rate: tutti_core::SampleRate::SR_44K1,
             max_voices: 1,
             voice_mode: VoiceMode::Mono,
             oscillator: OscillatorType::Sine,
@@ -1869,7 +1868,7 @@ mod tests {
     #[test]
     fn test_portamento_with_pitch_bend() {
         let mut synth = synth(SynthConfig {
-            sample_rate: 44100.0,
+            sample_rate: tutti_core::SampleRate::SR_44K1,
             max_voices: 2,
             voice_mode: VoiceMode::Poly,
             oscillator: OscillatorType::Sine,
@@ -1922,7 +1921,7 @@ mod tests {
     #[test]
     fn test_zero_voices_returns_error() {
         let result = PolySynth::new(SynthConfig {
-            sample_rate: 44100.0,
+            sample_rate: tutti_core::SampleRate::SR_44K1,
             max_voices: 0,
             ..Default::default()
         });
@@ -1932,7 +1931,7 @@ mod tests {
     #[test]
     fn test_polysynth_reset() {
         let mut synth = synth(SynthConfig {
-            sample_rate: 44100.0,
+            sample_rate: tutti_core::SampleRate::SR_44K1,
             max_voices: 4,
             voice_mode: VoiceMode::Poly,
             oscillator: OscillatorType::Sine,
@@ -1964,7 +1963,7 @@ mod tests {
     #[test]
     fn test_mpe_per_voice_pitch_bend() {
         let mut synth = synth(SynthConfig {
-            sample_rate: 44100.0,
+            sample_rate: tutti_core::SampleRate::SR_44K1,
             max_voices: 4,
             voice_mode: VoiceMode::Poly,
             oscillator: OscillatorType::Sine,
@@ -2030,7 +2029,7 @@ mod tests {
         // sound on the same channel (where the classic per-channel MPE handler
         // would have bent both). This is the per-note-addressing proof.
         let mut synth = synth(SynthConfig {
-            sample_rate: 44100.0,
+            sample_rate: tutti_core::SampleRate::SR_44K1,
             max_voices: 4,
             voice_mode: VoiceMode::Poly,
             oscillator: OscillatorType::Sine,
@@ -2084,7 +2083,7 @@ mod tests {
         // MIDI 2.0 Per-Note Management {reset:true} must reset ONLY the addressed
         // note's per-note expression, leaving another sounding voice's bend intact.
         let mut synth = synth(SynthConfig {
-            sample_rate: 44100.0,
+            sample_rate: tutti_core::SampleRate::SR_44K1,
             max_voices: 4,
             voice_mode: VoiceMode::Poly,
             oscillator: OscillatorType::Sine,
@@ -2153,7 +2152,7 @@ mod tests {
         // absolute pitch for the addressed note. Note 60 retuned to note 69.0
         // (A440) should sound at 440 Hz; another note is untouched.
         let mut synth = synth(SynthConfig {
-            sample_rate: 44100.0,
+            sample_rate: tutti_core::SampleRate::SR_44K1,
             max_voices: 4,
             voice_mode: VoiceMode::Poly,
             oscillator: OscillatorType::Sine,
@@ -2204,7 +2203,7 @@ mod tests {
         // Detach (D=1): the addressed voice keeps its current per-note bend but
         // stops responding to further per-note controllers (M2-104 §7.4.5).
         let mut synth = synth(SynthConfig {
-            sample_rate: 44100.0,
+            sample_rate: tutti_core::SampleRate::SR_44K1,
             max_voices: 4,
             voice_mode: VoiceMode::Poly,
             oscillator: OscillatorType::Sine,
@@ -2268,7 +2267,7 @@ mod tests {
         // 12-semitone sensitivity, a full per-note bend should reach ~12 semitones
         // (not the default 48).
         let mut synth = synth(SynthConfig {
-            sample_rate: 44100.0,
+            sample_rate: tutti_core::SampleRate::SR_44K1,
             max_voices: 4,
             voice_mode: VoiceMode::Poly,
             oscillator: OscillatorType::Sine,
@@ -2321,7 +2320,7 @@ mod tests {
         // Reset All Controllers (CC121) resets channel controllers + global pitch
         // bend but must NOT touch per-note controllers (M2-104 Appendix B.2).
         let mut synth = synth(SynthConfig {
-            sample_rate: 44100.0,
+            sample_rate: tutti_core::SampleRate::SR_44K1,
             max_voices: 4,
             voice_mode: VoiceMode::Poly,
             oscillator: OscillatorType::Sine,
@@ -2369,7 +2368,7 @@ mod tests {
         // A Registered Per-Note Controller for Brightness (CC74 / SoundController
         // index 5) addressed to note X must set ONLY note X's slide.
         let mut synth = synth(SynthConfig {
-            sample_rate: 44100.0,
+            sample_rate: tutti_core::SampleRate::SR_44K1,
             max_voices: 4,
             voice_mode: VoiceMode::Poly,
             oscillator: OscillatorType::Saw,
@@ -2436,7 +2435,7 @@ mod tests {
         // and as a Registered Volume controller — must reach the addressed voice
         // as gain, and leave others at unity.
         let mut synth = synth(SynthConfig {
-            sample_rate: 44100.0,
+            sample_rate: tutti_core::SampleRate::SR_44K1,
             max_voices: 4,
             voice_mode: VoiceMode::Poly,
             oscillator: OscillatorType::Sine,
@@ -2495,7 +2494,7 @@ mod tests {
     #[test]
     fn test_mpe_per_voice_pressure() {
         let mut synth = synth(SynthConfig {
-            sample_rate: 44100.0,
+            sample_rate: tutti_core::SampleRate::SR_44K1,
             max_voices: 4,
             voice_mode: VoiceMode::Poly,
             oscillator: OscillatorType::Sine,
@@ -2546,7 +2545,7 @@ mod tests {
     #[test]
     fn test_mpe_per_voice_slide() {
         let mut synth = synth(SynthConfig {
-            sample_rate: 44100.0,
+            sample_rate: tutti_core::SampleRate::SR_44K1,
             max_voices: 4,
             voice_mode: VoiceMode::Poly,
             oscillator: OscillatorType::Saw,
@@ -2590,7 +2589,7 @@ mod tests {
     #[test]
     fn test_mpe_disabled_global_pitch_bend() {
         let mut synth = synth(SynthConfig {
-            sample_rate: 44100.0,
+            sample_rate: tutti_core::SampleRate::SR_44K1,
             max_voices: 4,
             voice_mode: VoiceMode::Poly,
             oscillator: OscillatorType::Sine,
@@ -2629,7 +2628,7 @@ mod tests {
     #[test]
     fn test_mpe_pressure_affects_amplitude() {
         let mut synth = synth(SynthConfig {
-            sample_rate: 44100.0,
+            sample_rate: tutti_core::SampleRate::SR_44K1,
             max_voices: 1,
             voice_mode: VoiceMode::Poly,
             oscillator: OscillatorType::Sine,
@@ -2676,7 +2675,7 @@ mod tests {
     #[test]
     fn test_mpe_note_on_resets_expression() {
         let mut synth = synth(SynthConfig {
-            sample_rate: 44100.0,
+            sample_rate: tutti_core::SampleRate::SR_44K1,
             max_voices: 4,
             voice_mode: VoiceMode::Poly,
             oscillator: OscillatorType::Sine,

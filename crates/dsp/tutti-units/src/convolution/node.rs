@@ -10,7 +10,9 @@
 use tutti_core::dsp::DEFAULT_SAMPLE_RATE;
 use tutti_core::Arc;
 use tutti_core::AtomicF32;
-use tutti_core::{Amplitude, AudioUnit, BufferMut, BufferRef, Mix, Samples, SignalFrame};
+use tutti_core::{
+    Amplitude, AudioUnit, BufferMut, BufferRef, Mix, SampleRate, Samples, SignalFrame,
+};
 
 use super::convolver::Convolver;
 use super::params::WetDry;

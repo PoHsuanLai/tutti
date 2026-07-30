@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use arc_swap::ArcSwap;
-use tutti_core::{AudioThreadCell, RtScratchBuf};
+use tutti_core::{AudioThreadCell, RtScratchBuf, SampleRate};
 
 use super::async_port::HardwareMidiInput;
 use tutti_midi_types::ump::MidiEvent;
@@ -61,7 +61,7 @@ const CYCLE_SCRATCH_CAP: usize = 256;
 /// `&self` lifetime (the manager's `MidiIn::poll_into` copies from it) — the
 /// "lend a borrow back to the caller" shape `AudioThreadCell` can't give.
 struct CycleScratch {
-    sample_rate: AudioThreadCell<f64>,
+    sample_rate: AudioThreadCell<SampleRate>,
     timestamped_buffer: AudioThreadCell<Vec<(Instant, usize, MidiEvent)>>,
     event_buffer: RtScratchBuf<(usize, MidiEvent), CYCLE_SCRATCH_CAP>,
 }
@@ -69,14 +69,14 @@ struct CycleScratch {
 impl CycleScratch {
     fn new() -> Self {
         Self {
-            sample_rate: AudioThreadCell::new(44100.0),
+            sample_rate: AudioThreadCell::new(SampleRate::SR_44K1),
             timestamped_buffer: AudioThreadCell::new(Vec::with_capacity(CYCLE_SCRATCH_CAP)),
             event_buffer: RtScratchBuf::new(),
         }
     }
 
-    fn set_sample_rate(&self, sample_rate: f64) {
-        *self.sample_rate.borrow_mut() = sample_rate;
+    fn set_sample_rate(&self, sample_rate: impl Into<SampleRate>) {
+        *self.sample_rate.borrow_mut() = sample_rate.into();
     }
 
     /// Drain `input_ports`' active rings, converting arrival timestamps to
@@ -120,7 +120,7 @@ impl CycleScratch {
                     timestamped_snapshot.iter().take(CYCLE_SCRATCH_CAP)
                 {
                     let delta = buffer_start.saturating_duration_since(midi_instant);
-                    let samples_ago = (delta.as_secs_f64() * sample_rate) as u32;
+                    let samples_ago = (delta.as_secs_f64() * sample_rate.get()) as u32;
                     let nframes_u32 = nframes as u32;
                     event.frame_offset = nframes_u32.saturating_sub(samples_ago);
                     if event.frame_offset >= nframes_u32 {
@@ -152,7 +152,7 @@ impl HardwareMidiInputs {
     }
 
     /// Set sample rate. Call before starting the audio stream.
-    pub fn set_sample_rate(&self, sample_rate: f64) {
+    pub fn set_sample_rate(&self, sample_rate: impl Into<SampleRate>) {
         self.scratch.set_sample_rate(sample_rate);
     }
 

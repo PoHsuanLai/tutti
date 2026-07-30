@@ -12,7 +12,8 @@ use crate::MAX_SAMPLER_CHANNELS;
 use super::memory_source::MemorySource;
 use super::types::{Direction, Playback, SlotId, Voice, VoiceSource};
 use tutti_core::{
-    Amplitude, AudioUnit, BufferMut, Cents, ReadRate, SamplePosition, Samples, StretchFactor,
+    Amplitude, AudioUnit, BufferMut, Cents, ReadRate, SamplePosition, SampleRate, Samples,
+    StretchFactor,
 };
 
 // ---------------------------------------------------------------------------
@@ -54,7 +55,7 @@ pub(crate) struct VoiceSlot {
     /// Width the stretch unit must be built at, remembered so a later
     /// materialisation matches the reader rather than defaulting.
     pub(crate) channels: usize,
-    pub(crate) sample_rate: f64,
+    pub(crate) sample_rate: SampleRate,
 }
 
 impl VoiceSlot {
@@ -81,7 +82,7 @@ impl VoiceSlot {
     pub(crate) fn with_channels(
         id: SlotId,
         voice: Voice,
-        sample_rate: f64,
+        sample_rate: SampleRate,
         channels: usize,
     ) -> Self {
         let channels = channels.max(1);

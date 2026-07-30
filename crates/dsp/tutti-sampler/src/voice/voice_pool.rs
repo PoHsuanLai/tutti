@@ -28,6 +28,7 @@ use crossbeam_channel::bounded;
 #[allow(unused_imports)]
 use std::sync::Arc;
 #[allow(unused_imports)]
+use tutti_core::SampleRate;
 use tutti_core::{
     Amplitude, AudioUnit, Beat, BeatDuration, BufferMut, BufferRef, Cents, PlaybackRate, ReadRate,
     SamplePosition, Samples, SignalFrame, StretchFactor, Timeline, Wave,
@@ -1316,7 +1317,7 @@ mod tests {
                 tx: probe_tx,
                 retired: bounded(0).1,
                 channels: 6,
-                sample_rate: 44100.0,
+                sample_rate: SampleRate::from(44100.0),
             };
             probe.send(VoiceCommand::AddVoice {
                 id: SlotId(9),

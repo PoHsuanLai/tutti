@@ -2145,7 +2145,10 @@ mod tests {
         assert_eq!(Db::from_amplitude_f64(-1.0), Db::FLOOR);
 
         // And agrees with the f32 form everywhere else it can be compared.
-        assert!((Db::from_amplitude_f64(0.5).get() - Db::from_amplitude(Amplitude(0.5)).get()).abs() < 1e-5);
+        assert!(
+            (Db::from_amplitude_f64(0.5).get() - Db::from_amplitude(Amplitude(0.5)).get()).abs()
+                < 1e-5
+        );
     }
 
     #[test]

@@ -266,10 +266,7 @@ impl StereoConvolverNode {
         };
         let wet_l = wet_l * gain;
         let wet_r = wet_r * gain;
-        (
-            mix.blend(in_l, wet_l),
-            mix.blend(in_r, wet_r),
-        )
+        (mix.blend(in_l, wet_l), mix.blend(in_r, wet_r))
     }
 }
 

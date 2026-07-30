@@ -557,10 +557,7 @@ impl StereoDelayLineNode {
         let del_l = self.delays[0].read_sample(p.dl, p.interp);
         let del_r = self.delays[1].read_sample(p.dr, p.interp);
 
-        (
-            p.mix.blend(in_l, del_l),
-            p.mix.blend(in_r, del_r),
-        )
+        (p.mix.blend(in_l, del_l), p.mix.blend(in_r, del_r))
     }
 
     /// The width > 2 sample step for one channel `c`: independent delay line

@@ -203,7 +203,6 @@ pub fn measure_loudness(cfg: &LoudnessConfig, buffer: Interleaved<'_>) -> Option
     Some(finish(state))
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;

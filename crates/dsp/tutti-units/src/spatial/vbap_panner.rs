@@ -192,9 +192,7 @@ impl SpatialPanner {
         let target_elevation = self.elevation_target.load(Ordering::Acquire);
 
         // Same split as `compute_gains`: the bearing takes the short arc.
-        let smoothed_azimuth = self
-            .azimuth_smoother
-            .process_angle(Azimuth(target_azimuth));
+        let smoothed_azimuth = self.azimuth_smoother.process_angle(Azimuth(target_azimuth));
         let smoothed_elevation = self.elevation_smoother.process(Elevation(target_elevation));
 
         // The two virtual sources sit one offset either side of the bearing.

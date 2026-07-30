@@ -41,7 +41,7 @@
 //!     correlate, detect_onsets, summarize, yin, DetectionFunction, FftScratch,
 //!     OnsetConfig, PeakConfig, StftGeometry, YinConfig,
 //! };
-//! use tutti_types::{ChannelLayout, Samples, StereoPlanes};
+//! use tutti_types::{ChannelLayout, Interleaved, Samples, StereoPlanes};
 //!
 //! let sample_rate = 44100.0;
 //! let samples: Vec<f32> = vec![0.0; 44100];
@@ -50,7 +50,7 @@
 //! // Waveform blocks for display.
 //! let blocks = summarize(
 //!     &PeakConfig::new(Samples(512), ChannelLayout::Mono),
-//!     &samples,
+//!     Interleaved::new(&samples, ChannelLayout::Mono),
 //! );
 //!
 //! // Onsets, via spectral flux.

@@ -121,6 +121,10 @@ pub use tutti_types::ChannelLayout;
 // The named-width variants (`fold_frame_to_stereo`/`_to_mono`) stay in
 // `tutti-types` — only the export path, which depends on it directly, needs them.
 pub use tutti_types::fold_frame;
+// The interleaved-buffer views, surfaced for the same reason `ChannelLayout` is:
+// `Engine::process` takes an `InterleavedMut`, so every host that drives the
+// engine — the CPAL callback above all — names this type at its own boundary.
+pub use tutti_types::{Interleaved, InterleavedMut};
 
 pub mod dsp {
     //! Re-export of fundsp::prelude for DSP building blocks.

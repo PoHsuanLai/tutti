@@ -138,6 +138,37 @@ impl<'a> Interleaved<'a> {
         self.data.chunks_exact(self.stride())
     }
 
+    /// Fold every frame to a single mono sample, per the ITU/Dolby matrices.
+    ///
+    /// The method form of [`fold_buffer_to_mono`](crate::fold_buffer_to_mono),
+    /// which it delegates to: the free function takes exactly this type's two
+    /// fields, so a caller holding an `Interleaved` should never have to take
+    /// them apart to pass them back in. The free function stays because it also
+    /// serves callers that only ever hold a loose `(&[f32], ChannelLayout)`
+    /// pair — the app-side WASM bridge among them.
+    ///
+    /// A trailing partial frame is ignored, matching [`len`](Self::len).
+    pub fn fold_to_mono(&self) -> Vec<f32> {
+        crate::fold_buffer_to_mono(self.data, self.layout)
+    }
+
+    /// Fold to mono into a caller-owned buffer, reusing its allocation.
+    ///
+    /// `out` is cleared first, so it is a destination and not an accumulator.
+    /// This exists because [`fold_to_mono`](Self::fold_to_mono) allocates once
+    /// per call, and the streaming consumers — waveform peaks above all — run it
+    /// per chunk on a path where that allocation is the only one left.
+    pub fn fold_to_mono_into(&self, out: &mut Vec<f32>) {
+        out.clear();
+        let ch = self.stride();
+        if ch == 1 {
+            out.extend_from_slice(self.data);
+            return;
+        }
+        out.reserve(self.len());
+        out.extend(self.data.chunks_exact(ch).map(crate::fold_frame_to_mono));
+    }
+
     /// Deinterleave into caller-owned planes, reusing their allocations.
     ///
     /// `_into` rather than returning `Vec`s because the conversion is per-block
@@ -418,6 +449,40 @@ mod tests {
             out[0] > 0.0 && (out[0] - out[1]).abs() < 1e-6,
             "a centre source must reach both sides equally, got {out:?}"
         );
+    }
+
+    /// The method and the free function are one policy, not two — including at
+    /// the ragged tail and at mono, the two places a re-implementation drifts.
+    #[test]
+    fn fold_to_mono_agrees_with_the_free_function() {
+        for layout in [
+            ChannelLayout::Mono,
+            ChannelLayout::Stereo,
+            ChannelLayout::Quad,
+            ChannelLayout::Multi(6),
+        ] {
+            // Deliberately not a whole number of frames at any of these widths
+            // except mono: 25 is coprime with 2, 4 and 6.
+            let buf: Vec<f32> = (0..25).map(|i| i as f32 * 0.01).collect();
+            let it = Interleaved::new(&buf, layout);
+
+            let expected = crate::fold_buffer_to_mono(&buf, layout);
+            assert_eq!(it.fold_to_mono(), expected, "{layout:?}");
+
+            // Pre-dirtied, to prove `_into` clears rather than appends.
+            let mut out = vec![99.0f32; 3];
+            it.fold_to_mono_into(&mut out);
+            assert_eq!(out, expected, "{layout:?} via fold_to_mono_into");
+        }
+    }
+
+    /// A window folds only the frames it names — the reason `window` is
+    /// denominated in frames at all.
+    #[test]
+    fn folding_a_window_folds_only_that_window() {
+        let buf = [1.0f32, 1.0, 2.0, 2.0, 3.0, 3.0];
+        let it = Interleaved::new(&buf, ChannelLayout::Stereo);
+        assert_eq!(it.window(1..3).fold_to_mono(), vec![2.0, 3.0]);
     }
 
     #[test]

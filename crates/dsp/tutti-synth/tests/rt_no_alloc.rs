@@ -15,7 +15,7 @@
 #![cfg(feature = "midi")]
 
 use assert_no_alloc::AllocDisabler;
-use tutti_core::{AudioUnit, BufferVec, SampleRate};
+use tutti_core::{AudioUnit, BufferVec, Hz, SampleRate, Q};
 use tutti_midi_types::convert::midi1_velocity_to_midi2;
 use tutti_midi_types::ump::MidiEvent;
 use tutti_synth::{FilterType, OscillatorType, PolySynth, SynthConfig};
@@ -69,8 +69,8 @@ fn polysynth_process_with_active_voices_is_allocation_free() {
         max_voices: 8,
         oscillator: OscillatorType::Saw,
         filter: FilterType::Svf {
-            cutoff: 2_000.0,
-            q: 0.707,
+            cutoff: Hz(2_000.0),
+            q: Q(0.707),
             mode: tutti_synth::SvfMode::Lowpass,
         },
         ..Default::default()

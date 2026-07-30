@@ -84,15 +84,20 @@ impl SynthVoice {
     pub(crate) fn from_config(config: &SynthConfig, unison_count: usize) -> Self {
         let gate = tutti_core::shared(0.0);
         let base_filter_cutoff = match &config.filter {
-            FilterType::Moog { cutoff, .. } => *cutoff,
-            FilterType::Svf { cutoff, .. } => *cutoff,
+            FilterType::Moog { cutoff, .. } => cutoff.get(),
+            FilterType::Svf { cutoff, .. } => cutoff.get(),
             FilterType::None => 20000.0,
         };
         let filter_cutoff = tutti_core::shared(base_filter_cutoff);
 
+        // The one place `Resonance` and `Q` deliberately merge: both feed a
+        // single `Shared` so the modulation path has one resonance handle
+        // regardless of which filter is running. They are unwrapped rather
+        // than converted because there is no meaningful conversion between
+        // them — the scalar is re-typed at the node that consumes it.
         let base_filter_resonance = match &config.filter {
-            FilterType::Moog { resonance, .. } => *resonance,
-            FilterType::Svf { q, .. } => *q,
+            FilterType::Moog { resonance, .. } => resonance.get(),
+            FilterType::Svf { q, .. } => q.get(),
             FilterType::None => 0.0,
         };
         let filter_resonance = tutti_core::shared(base_filter_resonance);
@@ -519,22 +524,22 @@ fn build_sub_voice_dsp(
                     match mode {
                         SvfMode::Lowpass => Box::new(
                             ($osc | var(filter_cutoff))
-                                >> lowpass_q::<f32>(*q)
+                                >> lowpass_q::<f32>(q.get())
                                 >> (envelope * pass()),
                         ),
                         SvfMode::Highpass => Box::new(
                             ($osc | var(filter_cutoff))
-                                >> highpass_q::<f32>(*q)
+                                >> highpass_q::<f32>(q.get())
                                 >> (envelope * pass()),
                         ),
                         SvfMode::Bandpass => Box::new(
                             ($osc | var(filter_cutoff))
-                                >> bandpass_q::<f32>(*q)
+                                >> bandpass_q::<f32>(q.get())
                                 >> (envelope * pass()),
                         ),
                         SvfMode::Notch => Box::new(
                             ($osc | var(filter_cutoff))
-                                >> notch_q::<f32>(*q)
+                                >> notch_q::<f32>(q.get())
                                 >> (envelope * pass()),
                         ),
                     }

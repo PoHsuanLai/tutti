@@ -958,6 +958,7 @@ mod tests {
         EnvelopeConfig, FilterType, OscillatorType, PortamentoConfig, PortamentoCurve,
         PortamentoMode, SynthConfig, UnisonConfig, VoiceMode,
     };
+    use tutti_core::{Hz, Resonance};
     use tutti_midi_types::convert::{
         midi1_cc_to_midi2, midi1_pitch_bend_to_midi2, midi1_velocity_to_midi2,
     };
@@ -2446,8 +2447,8 @@ mod tests {
             voice_mode: VoiceMode::Poly,
             oscillator: OscillatorType::Saw,
             filter: FilterType::Moog {
-                cutoff: 1000.0,
-                resonance: 0.5,
+                cutoff: Hz(1000.0),
+                resonance: Resonance(0.5),
             },
             envelope: EnvelopeConfig {
                 attack: 0.001,
@@ -2623,8 +2624,8 @@ mod tests {
             voice_mode: VoiceMode::Poly,
             oscillator: OscillatorType::Saw,
             filter: FilterType::Moog {
-                cutoff: 1000.0,
-                resonance: 0.5,
+                cutoff: Hz(1000.0),
+                resonance: Resonance(0.5),
             },
             envelope: EnvelopeConfig {
                 attack: 0.001,

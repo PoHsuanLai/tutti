@@ -7,6 +7,7 @@ use super::descriptor::{self, load_descriptor};
 use super::ext;
 use super::extensions::ExtensionCache;
 use super::handle::PluginHandle;
+use super::ports::layout_from_clap_port;
 use super::ClapLoaded;
 use crate::error::{ClapError, LoadStage, Result};
 use crate::host::{ClapHost, HostState};
@@ -17,6 +18,7 @@ use clap_sys::ext::audio_ports::{
 use clap_sys::plugin::clap_plugin;
 use std::path::Path;
 use std::sync::Arc;
+use tutti_plugin_types::{BusChannels, ChannelLayout};
 
 impl ClapLoaded {
     /// Lightweight probe: read the CLAP descriptor without creating or
@@ -141,10 +143,10 @@ impl ClapLoaded {
         plugin_info.audio_outputs = ports.output_channel_total().max(2);
 
         if ports.inputs.is_empty() {
-            ports.inputs.push(2);
+            ports.inputs.push(ChannelLayout::Stereo);
         }
         if ports.outputs.is_empty() {
-            ports.outputs.push(2);
+            ports.outputs.push(ChannelLayout::Stereo);
         }
 
         let audio = AudioConfig {
@@ -205,23 +207,27 @@ fn port_channels(
     plugin: *const clap_plugin,
     audio_ports: *const clap_plugin_audio_ports,
     is_input: bool,
-) -> Vec<u32> {
+) -> BusChannels {
     let Some(ext) = (unsafe { ext::opt(audio_ports) }) else {
-        return Vec::new();
+        return BusChannels::new();
     };
     let (count_fn, get_fn) = match (ext.count, ext.get) {
         (Some(c), Some(g)) => (c, g),
-        _ => return Vec::new(),
+        _ => return BusChannels::new(),
     };
     let count = unsafe { count_fn(plugin, is_input) };
-    let mut channels = Vec::with_capacity(count as usize);
+    let mut channels = BusChannels::with_capacity(count as usize);
     for i in 0..count {
         let mut info: clap_audio_port_info = unsafe { std::mem::zeroed() };
         if !unsafe { get_fn(plugin, i, is_input, &mut info) } {
             // Stop, don't skip: every later port's index would shift.
             break;
         }
-        channels.push(info.channel_count);
+        // Same FFI-inbound conversion `audio_port_info` uses, so a port's
+        // stored layout and its reported layout cannot disagree. The
+        // `port_type` tag is what makes `Mono`/`Stereo` named rather than
+        // inferred from the width.
+        channels.push(layout_from_clap_port(info.port_type, info.channel_count));
     }
     channels
 }
@@ -330,7 +336,17 @@ mod enumeration_hole_tests {
         let channels = with_layout(4, u32::MAX, |ext| {
             port_channels(std::ptr::null(), ext, false)
         });
-        assert_eq!(channels, vec![1, 2, 3, 4]);
+        // The stub leaves `port_type` null, so each layout comes from
+        // `from_count` — widths 1..=4 canonicalize to Mono/Stereo/Multi(3)/Quad.
+        assert_eq!(
+            channels.as_slice(),
+            [
+                ChannelLayout::Mono,
+                ChannelLayout::Stereo,
+                ChannelLayout::Multi(3),
+                ChannelLayout::Quad
+            ]
+        );
     }
 
     /// A hole must truncate, never renumber. The pre-fix `filter_map` returned
@@ -339,10 +355,11 @@ mod enumeration_hole_tests {
     fn hole_truncates_the_port_list() {
         let channels = with_layout(4, 2, |ext| port_channels(std::ptr::null(), ext, false));
         assert_eq!(
-            channels,
-            vec![1, 2],
-            "a hole at index 2 must yield the prefix [1, 2]; [1, 2, 4] means \
-             the host skipped the hole and moved port 3 into index 2"
+            channels.as_slice(),
+            [ChannelLayout::Mono, ChannelLayout::Stereo],
+            "a hole at index 2 must yield the prefix [Mono, Stereo]; a trailing \
+             Quad means the host skipped the hole and moved port 3 (width 4) \
+             into index 2"
         );
     }
 

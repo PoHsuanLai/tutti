@@ -175,6 +175,21 @@ pub fn fold_buffer_to_mono(samples: &[f32], layout: ChannelLayout) -> Vec<f32> {
 ///
 /// The shape decoders hand back. Channels shorter than the longest read as
 /// silence past their end, so a ragged decode is padded rather than truncated.
+///
+/// # Why this stays
+///
+/// Its keep was questioned once on the belief it had no callers. It has one,
+/// and it is the decoder path this was written for:
+/// `dawai-extension-runtime`'s `resolve_get_clip_stft` folds a `Wave::load`
+/// decode down to mono before the STFT. That call site replaced a hand-rolled
+/// average of channels 0 and 1 that discarded a 5.1 source's centre — the
+/// dialogue — and its surrounds. Deleting this reintroduces that bug the next
+/// time someone needs a planar fold.
+///
+/// It also anchors [`fold_buffer_to_mono`]: the two must agree, which
+/// `fold_planar_matches_interleaved` asserts. That test is the proof the
+/// interleaved and planar folds are one policy rather than two drifting
+/// copies, and it cannot exist without both halves.
 pub fn fold_planar_to_mono(channels: &[&[f32]]) -> Vec<f32> {
     match channels {
         [] => Vec::new(),

@@ -11,6 +11,9 @@ use clap_sys::audio_buffer::clap_audio_buffer;
 use clap_sys::process::CLAP_PROCESS_CONTINUE;
 use smallvec::SmallVec;
 use std::sync::atomic::AtomicI32;
+use tutti_plugin_types::BusChannels;
+#[cfg(doc)]
+use tutti_plugin_types::ChannelLayout;
 
 /// Extra caller-channel-pointer slots reserved beyond the plugin's port layout,
 /// so a caller supplying more channels than the plugin consumes does not grow
@@ -188,21 +191,33 @@ impl<T: super::ClapSample> AudioScratch<T> {
     }
 }
 
-/// Per-port channel counts for audio IO.
-/// E.g. `inputs = [2]` for stereo, `[2, 2]` for two stereo ports.
+/// Per-port channel layouts for audio IO.
+/// E.g. `inputs = [Stereo]` for one stereo port, `[Stereo, Stereo]` for two.
+///
+/// One [`ChannelLayout`] per bus, not a raw count: the layout survives from
+/// `layout_from_clap_port` (which reads CLAP's `port_type` tag, so a mono or
+/// stereo port is *named* rather than inferred from its width) all the way to
+/// the process scratch. The raw `u32` reappears only where the CLAP C ABI
+/// demands it — `make_port_buffer`'s `channel_count` field.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct PortLayout {
-    pub inputs: Vec<u32>,
-    pub outputs: Vec<u32>,
+    pub inputs: BusChannels,
+    pub outputs: BusChannels,
 }
 
 impl PortLayout {
+    /// Channel count summed across every input port.
+    ///
+    /// Stays `usize`, not a [`ChannelLayout`]: a sum across buses is a size for
+    /// the flat channel pool, not the layout of any one bus.
     pub fn input_channel_total(&self) -> usize {
-        self.inputs.iter().map(|&c| c as usize).sum()
+        self.inputs.iter().map(|c| c.count() as usize).sum()
     }
 
+    /// Channel count summed across every output port. `usize` for the same
+    /// reason as [`input_channel_total`](Self::input_channel_total).
     pub fn output_channel_total(&self) -> usize {
-        self.outputs.iter().map(|&c| c as usize).sum()
+        self.outputs.iter().map(|c| c.count() as usize).sum()
     }
 }
 

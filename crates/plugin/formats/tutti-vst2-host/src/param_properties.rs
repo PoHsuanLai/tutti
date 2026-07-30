@@ -448,11 +448,39 @@ impl Vst2Instance {
 
     /// Query `effGetCurrentMidiProgram` — which program `channel` is on.
     ///
-    /// `None` when unsupported. All three measured plugins answer `-1` here.
+    /// `None` when unsupported.
+    ///
+    /// # Why this needs a second query
+    ///
+    /// This opcode's return value alone cannot distinguish success from refusal,
+    /// and it is the only one in the family with that defect. It returns the
+    /// current program *index*, so `0` is a perfectly valid answer — and `0` is
+    /// also what an unimplemented opcode returns after falling through the
+    /// plugin's dispatcher. The two are byte-identical: same return value, and a
+    /// buffer still holding the zeros the host put there.
+    ///
+    /// Both readings are wrong on real plugins. Treating `0` as unsupported
+    /// discards a genuine "program 0", which is where most instruments sit at
+    /// load. Treating it as supported invents a nameless program 0 for every
+    /// plugin that ignores the opcode — the majority, and the bug this guard was
+    /// added to fix after the reference probe reproduced it.
+    ///
+    /// So the question is answered by an opcode that *can* say no:
+    /// `effGetMidiProgramName` reports a serviced count, where `0` is
+    /// unambiguously "none". A plugin servicing no MIDI programs has no current
+    /// one, so a `0` here is a refusal; a plugin that does service them means
+    /// index 0 literally. (The three plugins measured here answer `-1`, which
+    /// needs no disambiguation — but a `-1`-only guard is not enough, because
+    /// vst-rs's own fall-through answers `0`.)
     pub fn current_midi_program(&self, channel: i32) -> Option<MidiProgram> {
         if !(0..NUM_MIDI_CHANNELS).contains(&channel) {
             return None;
         }
+
+        // Gate on the query whose zero is unambiguous. Cheap: one extra
+        // dispatch on a cold, UI-thread path.
+        self.midi_program(channel, 0)?;
+
         let (raw, current) = self.handle.instance.current_midi_program(channel)?;
         Some(MidiProgram::decode(current, &raw))
     }

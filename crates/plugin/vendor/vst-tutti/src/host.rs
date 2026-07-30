@@ -776,10 +776,16 @@ impl PluginInstance {
 
     /// Query `effGetCurrentMidiProgram` — which program `channel` is on now.
     ///
-    /// `None` when unsupported. The return value is documented as the current
-    /// program index, so a negative answer is a refusal: all three measured
+    /// `None` on a negative answer, which is a refusal: all three measured
     /// plugins return `-1` here. Reading the struct on a `-1` return would
     /// report program 0 with an empty name as though it were real.
+    ///
+    /// **A `0` return is ambiguous and this method cannot resolve it.** The
+    /// value is a program *index*, so `0` is both a valid answer and what an
+    /// unimplemented opcode returns after falling through the dispatcher. A
+    /// caller must disambiguate with an opcode whose zero is unambiguous —
+    /// [`Self::midi_program_name`] reports a serviced count. The host wrapper in
+    /// `tutti-vst2-host` does exactly that; see its `current_midi_program`.
     pub fn current_midi_program(&self, channel: i32) -> Option<(api::MidiProgramName, i32)> {
         // SAFETY: as above — `#[repr(C)]` POD, all-zero is valid.
         let mut name: MaybeUninit<api::MidiProgramName> = MaybeUninit::zeroed();

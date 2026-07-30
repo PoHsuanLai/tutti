@@ -687,7 +687,7 @@ unsafe fn answer_midi_program_name(ptr: *mut std::os::raw::c_void) -> Option<i32
 /// How many MIDI programs the probe will actually *name*, regardless of the
 /// count it advertises. Two, so a test can walk more than one and still have a
 /// hole above them.
-const NAMED_MIDI_PROGRAMS: i32 = 2;
+pub const NAMED_MIDI_PROGRAMS: i32 = 2;
 
 /// Answer `effGetMidiProgramCategory`.
 ///

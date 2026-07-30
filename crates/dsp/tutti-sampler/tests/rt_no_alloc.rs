@@ -366,14 +366,22 @@ fn voice_pool_tick_steady_state_is_allocation_free() {
 
 /// The `VoiceCommand::UpdateStretch` drain is allocation-free.
 ///
-/// The resident time-stretch processor is built once at slot creation, off the
-/// hot path. Draining an `UpdateStretch` calls `VoiceSlot::set_stretch`, which
-/// only flips the processor's lock-free `stretch_factor` / `pitch_cents` atomics
-/// and mirrors them into the routing-gate fields — it allocates nothing and
-/// (re)builds nothing. So the per-buffer `tick`/`process` command drain stays
-/// alloc-free even when a stretch update lands on it. (Earlier, the drain
-/// rebuilt the stretch unit inline and allocated; batch-1's resident-stretch
-/// moved that construction to slot creation, closing the hole this test guards.)
+/// Draining an `UpdateStretch` calls `VoiceSlot::set_stretch`, which flips the
+/// processor's lock-free `stretch_factor` / `pitch_cents` atomics, mirrors them
+/// into the routing-gate fields, and — when the slot has no processor yet — moves
+/// in the one the sender built. Every one of those is a store or a move; nothing
+/// is constructed here. So the per-buffer `tick`/`process` command drain stays
+/// alloc-free even when a stretch update lands on it. (Earlier, the drain rebuilt
+/// the stretch unit inline and allocated; batch-1's resident-stretch moved that
+/// construction to slot creation, closing the hole this test guards.)
+///
+/// The drain must not *free* either: a surplus filter (one that arrived for a slot
+/// that already had one) goes to the retirement channel instead of being dropped
+/// here, because dropping a `stretch::Unit` can free its vocoder bank. That half
+/// is pinned by
+/// `a_redundant_stretch_filter_is_retired_not_freed_on_the_audio_thread`; this
+/// test would not catch it, since `assert_no_alloc` counts allocations, and a free
+/// is not one.
 ///
 /// The `AllocDisabler` global allocator *aborts* the process (SIGABRT via
 /// `handle_alloc_error`) on a violation — it cannot be caught with
@@ -440,12 +448,19 @@ fn run_stretch_drain_under_guard() {
         unit.tick(&[], &mut output);
     }
 
-    // Enqueue a stretch update; draining it inside the guarded tick rebuilds
-    // the stretch unit and allocates. Trips assert_no_alloc TODAY.
+    // Enqueue a stretch update. The voice spawned at `Playback::default()` —
+    // unity factor, zero cents — so it has NO resident filter, and this is the
+    // command that has to deliver one. `send` builds it here, on this (control)
+    // thread; the guarded drain below only moves it into the slot.
+    //
+    // That makes this the interesting case rather than a trivial one: before the
+    // filter was carried on the command, the drain had nothing to install and
+    // this test passed by doing nothing at all.
     handle.send(VoiceCommand::UpdateStretch {
         id: SlotId(1),
         stretch_factor: StretchFactor::new(2.0),
         pitch_cents: Cents::new(0.0),
+        stretch: None,
     });
 
     assert_no_alloc::assert_no_alloc(|| {

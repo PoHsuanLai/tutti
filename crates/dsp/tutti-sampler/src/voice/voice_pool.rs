@@ -904,19 +904,146 @@ mod tests {
             id: SlotId(1),
             stretch_factor: StretchFactor::new(2.0),
             pitch_cents: Cents::new(0.0),
+            stretch: None,
         });
         unit.tick(&[], &mut out);
         assert!(unit.voices[0].needs_stretch(), "stretch should be active");
+        // The gate above is only the *intent*. Assert the filter actually arrived:
+        // this voice spawned at unity, so `AddVoice` correctly gave it none, and
+        // the hot path reads `needs_stretch() && stretch.is_some()`. Checking the
+        // gate alone is what let a voice sit "stretching" and dry forever.
+        assert!(
+            unit.voices[0].stretch.is_some(),
+            "turning stretch on must deliver a processor, not just flip the gate"
+        );
 
         handle.send(VoiceCommand::UpdateStretch {
             id: SlotId(1),
             stretch_factor: StretchFactor::new(1.0),
             pitch_cents: Cents::new(0.0),
+            stretch: None,
         });
         unit.tick(&[], &mut out);
         assert!(
             !unit.voices[0].needs_stretch(),
             "identity stretch disables processor"
+        );
+    }
+
+    /// Turning stretch on for a voice that spawned at unity/zero must be audible.
+    ///
+    /// The regression this pins: `AddVoice` correctly attaches no filter to a
+    /// voice at unity, and `set_stretch` used to only flip atomics on a *resident*
+    /// filter. So `UpdateStretch` mirrored the values into `voice.play`,
+    /// `needs_stretch()` went true, `stretch.is_some()` stayed false, and
+    /// `tick_frame_into` took the dry branch — silently, forever. `set_stretch`'s
+    /// own doc claimed the sender materialised one "before queueing", pointing at
+    /// code that did not exist.
+    ///
+    /// Asserted on the *output*, not on `stretch.is_some()`: the point is that the
+    /// signal changes, and a future refactor that keeps the field but stops routing
+    /// through it should still fail here.
+    #[test]
+    fn enabling_stretch_mid_flight_changes_the_output() {
+        let (mut unit, handle) = VoicePool::new();
+        let transport = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
+        let sampler =
+            MemorySource::with_transport(make_wave(48_000), transport, Beat::new(0.0), None);
+        add_ram_clip(&handle, SlotId(1), sampler);
+
+        // Settle the add, then collect a dry reference block.
+        let mut out = [0.0f32; 2];
+        unit.tick(&[], &mut out);
+        let mut dry = Vec::new();
+        for _ in 0..512 {
+            unit.tick(&[], &mut out);
+            dry.push(out[0]);
+        }
+
+        // Pitch-shift by an octave. `stretch_wanted` is false before this
+        // (unity factor, zero cents), so no filter is resident.
+        handle.send(VoiceCommand::UpdateStretch {
+            id: SlotId(1),
+            stretch_factor: StretchFactor::new(1.0),
+            pitch_cents: Cents::new(1200.0),
+            stretch: None,
+        });
+
+        let mut shifted = Vec::new();
+        for _ in 0..512 {
+            unit.tick(&[], &mut out);
+            shifted.push(out[0]);
+        }
+
+        assert!(
+            unit.voices[0].stretch.is_some(),
+            "a filter must have been adopted from the command"
+        );
+        // A phase vocoder has latency, so the first blocks can legitimately be
+        // near-silent; compare energy over the whole span instead of frame-wise.
+        let dry_energy: f32 = dry.iter().map(|s| s * s).sum();
+        let shifted_energy: f32 = shifted.iter().map(|s| s * s).sum();
+        assert!(
+            dry_energy > 0.0,
+            "the dry reference must carry signal, else the test proves nothing"
+        );
+        assert!(
+            (shifted_energy - dry_energy).abs() > dry_energy * 0.01,
+            "an octave pitch shift must change the signal: dry energy {dry_energy}, \
+             shifted {shifted_energy} — equal means the filter was never routed through"
+        );
+    }
+
+    /// A surplus filter is handed back for control-thread release, never dropped
+    /// in the callback.
+    ///
+    /// `prepare` cannot see whether the target slot already holds a filter — that
+    /// is audio-thread state — so it builds one whenever the new values ask for
+    /// stretch. The second `UpdateStretch` here is therefore redundant, and
+    /// dropping it in the drain would free a vocoder bank (~192 KB at six
+    /// channels) inside the audio callback. It must arrive at `collect_retired`
+    /// instead.
+    #[test]
+    fn a_redundant_stretch_filter_is_retired_not_freed_on_the_audio_thread() {
+        let (mut unit, handle) = VoicePool::new();
+        let transport = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
+        let sampler =
+            MemorySource::with_transport(make_wave(4096), transport, Beat::new(0.0), None);
+        add_ram_clip(&handle, SlotId(1), sampler);
+
+        let mut out = [0.0f32; 2];
+        unit.tick(&[], &mut out);
+
+        // First update: adopted, nothing surplus.
+        handle.send(VoiceCommand::UpdateStretch {
+            id: SlotId(1),
+            stretch_factor: StretchFactor::new(2.0),
+            pitch_cents: Cents::new(0.0),
+            stretch: None,
+        });
+        unit.tick(&[], &mut out);
+        assert_eq!(
+            handle.collect_retired(),
+            0,
+            "the first filter is adopted, so nothing should be retired"
+        );
+
+        // Second update: a filter is already resident, so this one is surplus.
+        handle.send(VoiceCommand::UpdateStretch {
+            id: SlotId(1),
+            stretch_factor: StretchFactor::new(3.0),
+            pitch_cents: Cents::new(0.0),
+            stretch: None,
+        });
+        unit.tick(&[], &mut out);
+        assert_eq!(
+            handle.collect_retired(),
+            1,
+            "the redundant filter must be retired for control-thread release"
+        );
+        assert!(
+            unit.voices[0].stretch.is_some(),
+            "the resident filter must survive — a surplus arrival never swaps it"
         );
     }
 

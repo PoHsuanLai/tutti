@@ -10,7 +10,8 @@ use std::sync::Arc;
 
 use crate::stretch;
 
-use super::slot::{stretch_wanted, VoiceSlot};
+use super::pool::Retired;
+use super::slot::{stretch_values_want_filter, stretch_wanted};
 use super::types::{Direction, SlotId, Voice};
 use crossbeam_channel::{Receiver, Sender, TrySendError};
 use tutti_core::{
@@ -99,6 +100,30 @@ pub enum VoiceCommand {
         id: SlotId,
         stretch_factor: StretchFactor,
         pitch_cents: Cents,
+        /// A pre-built processor for the case where the slot has none yet, same
+        /// contract as [`AddVoice::stretch`](Self::AddVoice::stretch):
+        /// [`VoicePoolHandle::send`] fills it in on the control thread, and the
+        /// drain only moves it into the slot.
+        ///
+        /// This field is why turning stretch ON mid-flight works at all. A voice
+        /// spawned at unity/zero gets `stretch: None` from `AddVoice` (correctly
+        /// — it did not need one), so without a filter arriving here,
+        /// [`VoiceSlot::set_stretch`] would flip the gate fields on a slot that
+        /// has nothing to flip and the voice would read dry forever. It cannot
+        /// be built in the drain: that is the audio thread, and construction
+        /// allocates an FFT setup plus per-channel scratch.
+        ///
+        /// `None` when the slot already holds a processor (the update is then
+        /// pure atomics) or when the update turns stretching off.
+        ///
+        /// **Unboxed, unlike [`AddVoice::stretch`](Self::AddVoice::stretch).**
+        /// `VoiceSlot::stretch` is an `Option<stretch::Unit>`, so a `Box` here
+        /// would have to be unboxed to install it — and moving out of a `Box`
+        /// frees the box, in the drain, on the audio thread. That is a 56-byte
+        /// free the no-alloc guard catches. `AddVoice` gets away with a `Box`
+        /// only because `VoiceCommand` is sized to its largest variant and that
+        /// one is already the largest; here the box buys nothing.
+        stretch: Option<stretch::Unit>,
     },
 }
 
@@ -163,11 +188,13 @@ impl std::fmt::Debug for VoiceCommand {
                 id,
                 stretch_factor,
                 pitch_cents,
+                stretch,
             } => f
                 .debug_struct("UpdateStretch")
                 .field("id", id)
                 .field("stretch_factor", stretch_factor)
                 .field("pitch_cents", pitch_cents)
+                .field("stretch_prebuilt", &stretch.is_some())
                 .finish(),
         }
     }
@@ -185,7 +212,7 @@ pub struct VoicePoolHandle {
     /// See [`VoicePool::retired`]. Draining this is what actually moves the
     /// deallocation off the callback; [`collect_retired`](Self::collect_retired)
     /// is the call that does it.
-    pub(crate) retired: Receiver<VoiceSlot>,
+    pub(crate) retired: Receiver<Retired>,
     /// The reader's output width, copied at construction (it is fixed for the
     /// reader's lifetime). Lets [`send`](Self::send) build a stretch filter at
     /// the right width on the CONTROL thread — see
@@ -196,21 +223,14 @@ pub struct VoicePoolHandle {
 }
 
 impl VoicePoolHandle {
-    /// Queue a command, doing any allocation it implies **here**, on the calling
-    /// (control) thread.
-    ///
-    /// This is the one chokepoint every command passes through, which makes it
-    /// the right place to keep the audio thread clean: `drain_commands` runs
-    /// from `tick`/`process`, so anything expensive left for the drain is an
-    /// allocation in the callback. Today that means materialising the stretch
-    /// filter for an `AddVoice` that needs one.
-    /// Free every slot the audio thread has retired since the last call.
+    /// Free everything the audio thread has retired since the last call — removed
+    /// slots and surplus stretch filters alike (see [`Retired`]).
     ///
     /// Call this periodically from the control thread — once a frame is ample.
     /// Skipping it is safe but forfeits the point: the retirement channel fills,
-    /// and further `Remove`s fall back to freeing in the audio callback.
+    /// and further retirements fall back to freeing in the audio callback.
     ///
-    /// Returns how many slots were freed, which is what a test can assert on.
+    /// Returns how many values were freed, which is what a test can assert on.
     pub fn collect_retired(&self) -> usize {
         let mut n = 0;
         while self.retired.try_recv().is_ok() {
@@ -219,6 +239,14 @@ impl VoicePoolHandle {
         n
     }
 
+    /// Queue a command, doing any allocation it implies **here**, on the calling
+    /// (control) thread.
+    ///
+    /// This is the one chokepoint every command passes through, which makes it the
+    /// right place to keep the audio thread clean: `drain_commands` runs from
+    /// `tick`/`process`, so anything expensive left for the drain is an allocation
+    /// in the callback. Today that means materialising the stretch filter for an
+    /// `AddVoice` **or an `UpdateStretch`** that needs one.
     pub fn send(&self, cmd: VoiceCommand) {
         let cmd = self.prepare(cmd);
         match self.tx.try_send(cmd) {
@@ -245,6 +273,29 @@ impl VoicePoolHandle {
                     id,
                     voice,
                     stretch: Some(Box::new(unit)),
+                }
+            }
+            // Same materialisation for an update that turns stretching ON. We
+            // cannot check whether the slot already has a processor — that lives
+            // on the audio thread — so build unconditionally when the new values
+            // ask for stretch and let the drain drop a redundant one. Paying an
+            // occasional wasted control-thread allocation is the right trade
+            // against the alternatives: querying the slot needs a round-trip, and
+            // building in the drain allocates in the callback.
+            VoiceCommand::UpdateStretch {
+                id,
+                stretch_factor,
+                pitch_cents,
+                stretch: None,
+            } if stretch_values_want_filter(stretch_factor, pitch_cents) => {
+                let unit = stretch::Unit::with_channels(self.sample_rate, self.channels);
+                unit.set_stretch_factor(stretch_factor);
+                unit.set_pitch_cents(pitch_cents);
+                VoiceCommand::UpdateStretch {
+                    id,
+                    stretch_factor,
+                    pitch_cents,
+                    stretch: Some(unit),
                 }
             }
             other => other,

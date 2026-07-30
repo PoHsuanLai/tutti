@@ -23,6 +23,43 @@
 //!
 //! No SDK, no display, no env vars: both implementers ship with macOS, so their
 //! absence is a hard failure rather than a skip. See `support/corpus.rs`.
+//!
+//! ## Every test here was proven load-bearing by mutation
+//!
+//! Each of the 15 mutations below was applied to `src/`, the suite run, and the
+//! mutation reverted. All 15 were caught. Recorded because two of them exposed a
+//! test that could **not** fail:
+//!
+//! | mutation to `src/` | caught by |
+//! |---|---|
+//! | drop the `& 0x0F` channel mask in `to_raw` | `midi_map::tests::an_out_of_range_channel_cannot_corrupt_the_command_nibble` |
+//! | `sub_range` sets the `Toggle` bit instead of `SubRange` | `sub_range_travels_with_its_flag`, `each_flag_round_trips_independently`, `every_field_survives_a_round_trip_through_a_real_au` |
+//! | `from_raw` reads `sub_range` as always `Some` | `sub_range_travels_with_its_flag`, + 7 real-AU tests |
+//! | `reserved1: 1` instead of `0` | `midi_map::tests::reserved_fields_are_always_zero` |
+//! | `0xD0` decodes as `ControlChange` not `ChannelPressure` | `every_trigger_kind_survives_a_real_au`, `trigger_round_trips_through_the_status_byte` |
+//! | `set_all(&[])` writes an empty table through | 15 real-AU tests, incl. `an_empty_set_clears_the_table_despite_the_au_refusing_an_empty_write` |
+//! | `hot_map` ignores `mStatus`, always returns `Some` | `an_unarmed_hot_map_read_answers_noerr_not_the_documented_error`, `arming_a_hot_map_and_sending_a_cc_completes_the_mapping` |
+//! | `add` writes property 41 instead of 42 | `a_second_mapping_on_the_same_parameter_replaces_the_first` |
+//! | `remove` writes property 42 instead of 43 | `remove_matches_on_the_parameter_triple_alone`, `removing_an_absent_mapping_is_ignored`, + 2 |
+//! | `targets_same_parameter` ignores the element | `targets_same_parameter_keys_on_the_documented_triple` |
+//! | `decode_table` uses `chunks` not `chunks_exact` | `decode_table_handles_whole_and_partial_buffers` |
+//! | the capability gate always returns `true` | `a_unit_without_mapping_support_refuses_every_write`, `exactly_two_installed_components_implement_the_mapping_family`, + 2 |
+//! | empty `add` writes through instead of returning `Ok` | `empty_add_and_remove_are_no_ops` |
+//! | drop the `MidiController` unit arm | `parameters::tests::the_midi_controller_unit_is_not_unknown` |
+//! | `any_note` sets the `AnyChannel` bit | `each_flag_round_trips_independently` |
+//!
+//! The two tests the exercise fixed, both of which passed against a mutated
+//! source before being repaired:
+//!
+//! * `an_out_of_range_channel_cannot_corrupt_the_command_nibble` used
+//!   `channel: 16` — the natural off-by-one from 1-based MIDI channel numbering.
+//!   `0xB0 | 16 == 0xB0`, because bit 4 is already set in the CC status nibble,
+//!   so the value was absorbed and the mask could be deleted freely. Now uses
+//!   64, 100, 255 and 17, and asserts the table contains a value the unmasked
+//!   path corrupts.
+//! * dropping the `MidiController` arm was caught by nothing, because **no
+//!   installed AU reports unit 12** — a real-AU test is impossible. Covered by a
+//!   unit test on the decode instead, which is the honest place for it.
 
 #![cfg(target_os = "macos")]
 

@@ -65,6 +65,39 @@
 //! The rule every test here owes: **assert something unconditional, or be the
 //! census test.** No body may consist only of an optional leg.
 //!
+//! ## Each test was proven load-bearing
+//!
+//! A test that cannot fail is worse than no test, so every assertion below was
+//! verified by mutating `src/` and watching it fail. The mutation each one
+//! catches, in order:
+//!
+//! | test | mutation it catches |
+//! |---|---|
+//! | `the_element_name_copy_rule_…` | `mem::forget` the owning `CfString` in `element_name` → count went 2→12 |
+//! | `an_infinite_tail_survives_…` | clamp a non-finite tail to `0.0` at the property read |
+//! | `wide_parameter_lists_are_read_whole` | drop the last entry of `parameters::list` (74 vs 75) |
+//! | `reported_latency_matches_…` | hardcode 48 kHz in the latency conversion |
+//! | `push_render_is_refused_…` | absorb the push-render `unimpErr` into `Ok` |
+//! | `state_round_trips_…` | make `load_state` a silent no-op |
+//! | `an_instrument_that_reports_inputs_…` | make `send_midi` drop every event |
+//! | `bypass_round_trips_…` | make `set_bypass(true)` a no-op |
+//! | `plugin_named_buses_…` | clamp an out-of-range element index to the last valid bus |
+//! | `a_written_aupreset_…` | skip the `.aupreset` identity check |
+//! | `every_unit_renders_finite_…` | remove the host's oversized-block guard |
+//!
+//! The `element_name` mutation is the one worth dwelling on: with the leak
+//! present, the **entire Apple-based `au_channel_layout` suite still passed
+//! 18/18** while this file failed. That is the blind spot this suite exists to
+//! close, demonstrated rather than asserted.
+//!
+//! The oversized-block mutation is worth recording too, because it shows why the
+//! assertion names `AuError::InvalidBuffer` specifically rather than "some
+//! error": with the host guard removed the render still fails, but with the
+//! *AU's* `kAudioUnitErr_TooManyFramesToProcess` (-10874) — which arrives only
+//! after the host has already built a buffer list whose `mDataByteSize`
+//! overstates storage it allocated for `BLOCK` frames. A test that accepted any
+//! error would pass on the buggy host.
+//!
 //! ## Running
 //!
 //! ```bash

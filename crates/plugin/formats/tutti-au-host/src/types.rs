@@ -210,6 +210,51 @@ pub const K_AUDIO_UNIT_PROPERTY_MIDI_OUTPUT_CALLBACK_INFO: u32 =
 /// during render. Write-only.
 pub const K_AUDIO_UNIT_PROPERTY_MIDI_OUTPUT_CALLBACK: u32 =
     sys::kAudioUnitProperty_MIDIOutputCallback;
+// The parameter↔MIDI mapping family (41-44). Hand-declared for the same reason
+// `K_AUDIO_UNIT_PROPERTY_CLASS_INFO_FROM_DOCUMENT` is: `coreaudio-sys` exports
+// none of the four, nor the six `kAUParameterMIDIMapping_*` flag bits below, nor
+// `AUParameterMIDIMapping` itself. Every value here was read out of a C program
+// compiled against Apple's real `AudioUnitProperties.h` on macOS 15.6, and
+// `midi_map::tests::the_flag_bits_match_the_header` asserts each one — a
+// transposed pair changes what an incoming controller value means with no
+// compile error. See [`crate::midi_map`] for which units implement them
+// (measured: 2 of 59) and for the four ways both implementers deviate from the
+// header.
+/// Read/write the AU's whole parameter↔MIDI mapping table.
+pub const K_AUDIO_UNIT_PROPERTY_ALL_PARAMETER_MIDI_MAPPINGS: u32 = 41;
+/// Write-only: merge mappings into the AU's existing set.
+pub const K_AUDIO_UNIT_PROPERTY_ADD_PARAMETER_MIDI_MAPPING: u32 = 42;
+/// Write-only: drop mappings, matched on `(scope, element, parameterID)`.
+pub const K_AUDIO_UNIT_PROPERTY_REMOVE_PARAMETER_MIDI_MAPPING: u32 = 43;
+/// Read/write: "learn" mode — the AU maps the next MIDI message it sees.
+pub const K_AUDIO_UNIT_PROPERTY_HOT_MAP_PARAMETER_MIDI_MAPPING: u32 = 44;
+
+// `AUParameterMIDIMappingFlags`, `1 << 0` .. `1 << 5`.
+/// Match the message on any MIDI channel, ignoring the status byte's low nibble.
+pub const K_AU_PARAMETER_MIDI_MAPPING_ANY_CHANNEL: u32 = 1 << 0;
+/// For a note command, match any note number.
+pub const K_AU_PARAMETER_MIDI_MAPPING_ANY_NOTE: u32 = 1 << 1;
+/// Confine the controller to `mSubRangeMin..=mSubRangeMax` of the parameter.
+pub const K_AU_PARAMETER_MIDI_MAPPING_SUB_RANGE: u32 = 1 << 2;
+/// The message flips the parameter rather than setting it from the value.
+pub const K_AU_PARAMETER_MIDI_MAPPING_TOGGLE: u32 = 1 << 3;
+/// The parameter takes only two states, thresholded at controller 64/65.
+pub const K_AU_PARAMETER_MIDI_MAPPING_BIPOLAR: u32 = 1 << 4;
+/// Which end of the controller is the parameter's "on" state. Only meaningful
+/// with [`K_AU_PARAMETER_MIDI_MAPPING_BIPOLAR`] set.
+pub const K_AU_PARAMETER_MIDI_MAPPING_BIPOLAR_ON: u32 = 1 << 5;
+
+/// The **deprecated** read-only CC→parameter form (`= 17`), superseded in macOS
+/// 10.2 by the 41-44 family above.
+///
+/// Aliased but deliberately **not** implemented, for the reason
+/// [`crate::midi_map`]'s docs give at length: measured on macOS 15.6, **0 of 59**
+/// installed components answer it, at any of the three scopes, in either
+/// lifecycle phase. The constant exists so `tests/au_midi_map.rs` can sweep for
+/// an implementer and report one loudly if it ever appears — a decoder written
+/// now would be untestable against reality.
+pub const K_AUDIO_UNIT_PROPERTY_MIDI_CONTROL_MAPPING: u32 = 17;
+
 pub const K_AUDIO_UNIT_PROPERTY_BYPASS_EFFECT: u32 = sys::kAudioUnitProperty_BypassEffect;
 pub const K_AUDIO_UNIT_PROPERTY_LAST_RENDER_ERROR: u32 = sys::kAudioUnitProperty_LastRenderError;
 pub const K_AUDIO_UNIT_PROPERTY_PRESENT_PRESET: u32 = sys::kAudioUnitProperty_PresentPreset;
@@ -231,6 +276,12 @@ pub const K_AUDIO_UNIT_PARAMETER_UNIT_SECONDS: u32 = sys::kAudioUnitParameterUni
 pub const K_AUDIO_UNIT_PARAMETER_UNIT_HERTZ: u32 = sys::kAudioUnitParameterUnit_Hertz;
 pub const K_AUDIO_UNIT_PARAMETER_UNIT_DECIBELS: u32 = sys::kAudioUnitParameterUnit_Decibels;
 pub const K_AUDIO_UNIT_PARAMETER_UNIT_LINEAR_GAIN: u32 = sys::kAudioUnitParameterUnit_LinearGain;
+/// A parameter whose value **is** a MIDI controller number, `0..=127` — not a
+/// quantity in a physical unit. Decoded as `Unknown(12)` before
+/// [`crate::midi_map`] existed, which is why it is aliased here: a
+/// mapping-aware host formats it as "CC 74", never as a bare `74`.
+pub const K_AUDIO_UNIT_PARAMETER_UNIT_MIDI_CONTROLLER: u32 =
+    sys::kAudioUnitParameterUnit_MIDIController;
 
 // Parameter flag bits.
 pub const K_AUDIO_UNIT_PARAMETER_FLAG_IS_READABLE: u32 = sys::kAudioUnitParameterFlag_IsReadable;

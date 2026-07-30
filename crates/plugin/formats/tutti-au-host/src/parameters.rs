@@ -252,6 +252,21 @@ pub enum ParameterUnit {
     Decibels,
     /// Linear amplitude gain.
     LinearGain,
+    /// The value **is** a MIDI controller number, `0..=127`
+    /// (`kAudioUnitParameterUnit_MIDIController` = 12) — not a quantity in a
+    /// physical unit.
+    ///
+    /// Its own arm rather than `Unknown(12)` because the two format differently
+    /// and a host cannot tell them apart otherwise: a value of `74` under this
+    /// unit is "CC 74", the brightness controller, and rendering it as a bare
+    /// number loses the only thing that makes it readable. It is also the unit a
+    /// parameter carries when it selects *which* controller drives something —
+    /// the parameter side of [`crate::midi_map`].
+    ///
+    /// Measured on macOS 15.6: no installed AU reports it, so nothing on this
+    /// machine exercises it end-to-end. It is decoded anyway because the cost is
+    /// one arm and the failure mode without it is silent mis-formatting.
+    MidiController,
     /// An AU-specific unit code this crate doesn't recognize.
     Unknown(u32),
 }
@@ -267,6 +282,7 @@ impl ParameterUnit {
             K_AUDIO_UNIT_PARAMETER_UNIT_HERTZ => Self::Hertz,
             K_AUDIO_UNIT_PARAMETER_UNIT_DECIBELS => Self::Decibels,
             K_AUDIO_UNIT_PARAMETER_UNIT_LINEAR_GAIN => Self::LinearGain,
+            K_AUDIO_UNIT_PARAMETER_UNIT_MIDI_CONTROLLER => Self::MidiController,
             other => Self::Unknown(other),
         }
     }
@@ -282,6 +298,9 @@ impl std::fmt::Display for ParameterUnit {
             Self::Hertz => write!(f, "Hz"),
             Self::Decibels => write!(f, "dB"),
             Self::LinearGain => write!(f, "gain"),
+            // "CC" rather than a suffix: this unit prefixes its value, because
+            // "74 CC" is meaningless where "CC 74" names a controller.
+            Self::MidiController => write!(f, "CC"),
             Self::Unknown(v) => write!(f, "unit({v})"),
         }
     }
@@ -811,6 +830,40 @@ mod tests {
              decodes as linear"
         );
         assert_eq!(K_AUDIO_UNIT_PARAMETER_FLAG_DISPLAY_LOGARITHMIC, 1 << 22);
+    }
+
+    /// `kAudioUnitParameterUnit_MIDIController` (12) must decode to its own
+    /// variant, not to `Unknown(12)`.
+    ///
+    /// A unit test rather than an AU probe, and deliberately so: measured on
+    /// macOS 15.6, **no** installed AU reports unit 12 — the `Unknown` codes
+    /// that do appear are 1, 5, 7, 9, 10, 16, 18, 21, 24 and 25. So nothing on
+    /// this machine can exercise the arm end-to-end, and a real-AU test would be
+    /// vacuous. This one is not: deleting the match arm makes it fail, which was
+    /// verified by mutation.
+    ///
+    /// The `Display` output is asserted too, because that is the whole reason
+    /// the arm exists — `Unknown(12)` prints `unit(12)`, and a value of `74`
+    /// under this unit is "CC 74", a controller number, not a bare quantity.
+    #[test]
+    fn the_midi_controller_unit_is_not_unknown() {
+        assert_eq!(
+            ParameterUnit::from_raw(K_AUDIO_UNIT_PARAMETER_UNIT_MIDI_CONTROLLER),
+            ParameterUnit::MidiController
+        );
+        // Pinned to Apple's value, from a C run against the real header.
+        assert_eq!(K_AUDIO_UNIT_PARAMETER_UNIT_MIDI_CONTROLLER, 12);
+        assert_eq!(ParameterUnit::from_raw(12), ParameterUnit::MidiController);
+        assert_eq!(ParameterUnit::MidiController.to_string(), "CC");
+        // And the codes actually observed on this machine still fall through to
+        // `Unknown`, so the new arm did not swallow a neighbour.
+        for code in [1u32, 5, 7, 9, 10, 16, 18, 21, 24, 25] {
+            assert_eq!(
+                ParameterUnit::from_raw(code),
+                ParameterUnit::Unknown(code),
+                "code {code} is measured on this machine and must stay Unknown"
+            );
+        }
     }
 
     /// Every documented curve decodes to its own variant, and the flags word

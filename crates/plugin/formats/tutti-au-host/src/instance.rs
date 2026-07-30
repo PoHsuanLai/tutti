@@ -16,6 +16,7 @@ use crate::component::AuType;
 use crate::error::{AuError, Result};
 use crate::ffi::{check, get_property, set_property};
 use crate::handle::AuHandle;
+use crate::midi_map::{self, AuMidiMapping};
 use crate::midi_out::{self, AuMidiOutput, MidiOutSink, MidiOutputInfo};
 use crate::parameters::{self, AuParameter, ParamView};
 use crate::preset::AuPreset;
@@ -695,6 +696,137 @@ impl AuInstance {
         // the handle clears the property in its own `Drop` rather than relying on
         // the instance to do it.
         unsafe { midi_out::install(self.raw_unit(), sink) }
+    }
+
+    /// Whether this AU implements the parameter↔MIDI mapping family at all.
+    ///
+    /// The capability gate to branch on before offering a MIDI-learn UI, and the
+    /// counterpart of [`midi_output_info`](Self::midi_output_info). Unlike that
+    /// one, this capability **is** implemented on this machine — measured on
+    /// macOS 15.6, `true` for exactly 2 of 59 installed components (AUSampler
+    /// and AUMIDISynth), `false` for the other 57, including every effect and
+    /// every third-party unit installed here.
+    pub fn supports_parameter_midi_mapping(&self) -> bool {
+        // SAFETY: `raw_unit` is live for the lifetime of this instance.
+        unsafe { midi_map::supports_parameter_midi_mapping(self.raw_unit()) }
+    }
+
+    /// The AU's current parameter↔MIDI mapping table.
+    ///
+    /// This is the surface VST3 spells `IMidiMapping`, inverted: the AU owns the
+    /// table and does the routing itself during render, so a host reads and
+    /// writes it rather than consulting it per block. Mod wheel, breath,
+    /// expression and sustain reach many instruments only this way.
+    ///
+    /// Empty means "implements the property, has no mappings" — what a fresh
+    /// AUSampler reports. The order is **the AU's**, not insertion order
+    /// (AUSampler reorders), so compare tables as sets.
+    ///
+    /// # Errors
+    /// [`AuError::OsStatus`] with `kAudioUnitErr_InvalidProperty` (-10879) from
+    /// the 57 of 59 units that do not implement the family. That is the routine
+    /// answer for an effect, not a fault — branch on
+    /// [`supports_parameter_midi_mapping`](Self::supports_parameter_midi_mapping)
+    /// first if the distinction matters.
+    pub fn parameter_midi_mappings(&self) -> Result<Vec<AuMidiMapping>> {
+        // SAFETY: `raw_unit` is live for the lifetime of this instance.
+        unsafe { midi_map::all(self.raw_unit()) }
+    }
+
+    /// Add `mappings`, replacing any that already target the same parameter.
+    ///
+    /// Verified end-to-end on macOS 15.6, which is what separates this from the
+    /// crate's other "accepted but never called" surfaces: mapping CC 20 to
+    /// AUSampler's parameter 900 (`Gain`, `-96..=12` dB), then sending CC 20 =
+    /// 127 through [`send_midi`](Self::send_midi) and rendering one block, moved
+    /// the parameter from `0` to `12`. The AU does the routing; the host only
+    /// installs the table.
+    ///
+    /// An empty slice is a no-op — a zero-length property write is `paramErr`
+    /// (-50) on both implementers.
+    ///
+    /// # Errors
+    /// `kAudioUnitErr_InvalidProperty` from a unit that does not implement the
+    /// family. **A `noErr` proves nothing about the mapping being meaningful**:
+    /// a parameter id no parameter uses is accepted *and* appears in the
+    /// read-back table (measured: id `99999` on a ~10-parameter unit), as is an
+    /// out-of-range scope. Cross-check against
+    /// [`get_parameter_list`](Self::get_parameter_list), and verify by reading
+    /// [`parameter_midi_mappings`](Self::parameter_midi_mappings) back rather
+    /// than by this call's status.
+    pub fn add_parameter_midi_mapping(&mut self, mappings: &[AuMidiMapping]) -> Result<()> {
+        // SAFETY: `raw_unit` is live for the lifetime of this instance.
+        unsafe { midi_map::add(self.raw_unit(), mappings) }
+    }
+
+    /// Remove the mappings targeting each argument's
+    /// `(scope, element, parameter_id)`.
+    ///
+    /// Only that triple is matched — the trigger and flags are ignored — so a
+    /// caller can pass a mapping it read back, or one naming just the parameter.
+    /// A mapping that is not installed is silently ignored, as the header
+    /// specifies and both implementers honour.
+    ///
+    /// Empty slice is a no-op, for the reason
+    /// [`add_parameter_midi_mapping`](Self::add_parameter_midi_mapping) gives.
+    ///
+    /// # Errors
+    /// `kAudioUnitErr_InvalidProperty` from a unit that does not implement the
+    /// family.
+    pub fn remove_parameter_midi_mapping(&mut self, mappings: &[AuMidiMapping]) -> Result<()> {
+        // SAFETY: `raw_unit` is live for the lifetime of this instance.
+        unsafe { midi_map::remove(self.raw_unit(), mappings) }
+    }
+
+    /// Replace the AU's entire mapping table with `mappings`.
+    ///
+    /// The obvious way to *clear* the table — writing an empty one — does not
+    /// work: a NULL/0-size write is `kAudioUnitErr_InvalidPropertyValue`
+    /// (-10851), a non-NULL/0-length write is `paramErr` (-50), and the table is
+    /// unchanged either way. So an empty slice routes through read-then-remove
+    /// instead, which is the only path both implementers accept. That is not
+    /// atomic — see [`midi_map::set_all`].
+    ///
+    /// # Errors
+    /// `kAudioUnitErr_InvalidProperty` from a unit that does not implement the
+    /// family; the empty-slice path also surfaces the read's error.
+    pub fn set_parameter_midi_mappings(&mut self, mappings: &[AuMidiMapping]) -> Result<()> {
+        // SAFETY: `raw_unit` is live for the lifetime of this instance.
+        unsafe { midi_map::set_all(self.raw_unit(), mappings) }
+    }
+
+    /// Arm "learn" mode: the AU maps the **next MIDI message it sees** to the
+    /// parameter `mapping` names.
+    ///
+    /// Supply only the parameter target — the AU fills in the trigger and channel
+    /// from whatever arrives. Poll
+    /// [`hot_mapped_parameter`](Self::hot_mapped_parameter) for the result, or
+    /// watch the property through [`crate::listener`]; the header says the AU
+    /// fires a notification when the mapping completes.
+    ///
+    /// Verified: arming parameter 2 on AUSampler and sending CC 11 produced
+    /// `ControlChange { controller: 11 }` and grew the table by one entry.
+    ///
+    /// # Errors
+    /// `kAudioUnitErr_InvalidProperty` from a unit that does not implement the
+    /// family.
+    pub fn hot_map_parameter(&mut self, mapping: &AuMidiMapping) -> Result<()> {
+        // SAFETY: `raw_unit` is live for the lifetime of this instance.
+        unsafe { midi_map::arm_hot_map(self.raw_unit(), mapping) }
+    }
+
+    /// The mapping a hot map just completed, or `None` if none has.
+    ///
+    /// `None` rather than an error, because the AU's status cannot be trusted
+    /// here: the header says an unarmed AU should answer
+    /// `kAudioUnitErr_InvalidPropertyValue`, and **neither implementer does** —
+    /// both return `noErr` with an all-zero struct even on a fresh instance. A
+    /// host branching on the `Result` would read that as a real "note off, note
+    /// 0" mapping and offer to bind it. See [`midi_map::hot_map`] for the
+    /// `mStatus == 0` rule that replaces the status check.
+    pub fn hot_mapped_parameter(&self) -> Option<AuMidiMapping> {
+        // SAFETY: `raw_unit` is live for the lifetime of this instance.
+        unsafe { midi_map::hot_map(self.raw_unit()) }
     }
 
     /// Borrow a [`ParamView`] for scoped parameter access.

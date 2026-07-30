@@ -56,6 +56,9 @@ pub mod stream;
 pub mod channel_layout;
 
 #[cfg(target_os = "macos")]
+pub mod midi_map;
+
+#[cfg(target_os = "macos")]
 pub mod midi_out;
 
 #[cfg(target_os = "macos")]
@@ -127,6 +130,14 @@ pub use instance::{AuInstance, AuLoaded, AuReady};
 // into. The two `process_*` functions stay behind `offline::` — they are `unsafe`
 // and take a raw `AudioUnit`, so reaching them should be as explicit as their
 // contract.
+// Flat-re-exported for the reason `AuLayoutTag` is: `AuMidiMapping` is the
+// argument and return type of the five `*_parameter_midi_mapping*` methods on
+// `AuInstance`, and `MidiTrigger` is the field of it a caller must construct, so
+// neither is avoidable at the call site. There is no shared
+// `tutti_plugin_types` mapping vocabulary to translate into — VST3's equivalent
+// is a query, not a table, so the two formats have no common shape.
+#[cfg(target_os = "macos")]
+pub use midi_map::{AuMidiMapping, MidiTrigger};
 #[cfg(target_os = "macos")]
 pub use midi_out::{AuMidiOutput, MidiOutSink, MidiOutputInfo};
 #[cfg(target_os = "macos")]

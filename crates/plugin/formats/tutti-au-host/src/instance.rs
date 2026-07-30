@@ -886,6 +886,153 @@ impl AuInstance {
         Ok(value != 0)
     }
 
+    /// Whether the AU has been told it is rendering offline.
+    ///
+    /// See [`offline::set_offline_render`](crate::offline) for what the flag
+    /// means and what a bouncing host loses without it.
+    ///
+    /// # Errors
+    /// [`AuError::OsStatus`] when the AU does not implement
+    /// `kAudioUnitProperty_OfflineRender` — which on macOS 15.6 is every Apple
+    /// effect and mixer; only the two instruments implement it. The refusal is
+    /// propagated rather than reported as `false`, because a host that cannot
+    /// tell "in real-time mode" from "has no offline mode" cannot warn the user
+    /// that an export may not match the audition.
+    pub fn is_offline_render(&self) -> Result<bool> {
+        // SAFETY: `raw_unit` is live for the lifetime of this instance.
+        unsafe { crate::offline::is_offline_render(self.raw_unit()) }
+    }
+
+    /// Tell the AU whether this render is a faster-than-real-time bounce.
+    ///
+    /// A host doing an offline export sets this on every AU in the graph before
+    /// initializing them, and clears it when returning to live monitoring.
+    /// [`crate::offline::set_offline_render`] carries the full account of what
+    /// changes inside the AU — dropout protection, resampling kernel length,
+    /// dither determinism — and why setting it *before* `initialize` matters.
+    ///
+    /// # Errors
+    /// As [`is_offline_render`](Self::is_offline_render).
+    pub fn set_offline_render(&mut self, offline: bool) -> Result<()> {
+        // SAFETY: as above.
+        unsafe { crate::offline::set_offline_render(self.raw_unit(), offline) }
+    }
+
+    /// Whether the AU is willing to render with its input and output buffers
+    /// aliasing the same memory.
+    ///
+    /// A host that gets `true` may skip one buffer copy per block per plugin.
+    /// Measured on macOS 15.6, six Apple effects advertise the property and all
+    /// six say yes; no unit on the system says no. See
+    /// [`crate::offline::supports_in_place`] for the list, and for why this crate
+    /// exposes only the read even though the property is writable.
+    ///
+    /// # Errors
+    /// [`AuError::OsStatus`] when the AU does not implement
+    /// `kAudioUnitProperty_InPlaceProcessing`. Not flattened to `false`: since no
+    /// unit measured actually reports `0`, doing so would turn "never mentioned
+    /// it" into "forbids it" and make the host's census of the property a
+    /// fiction.
+    pub fn supports_in_place_processing(&self) -> Result<bool> {
+        // SAFETY: as above.
+        unsafe { crate::offline::supports_in_place(self.raw_unit()) }
+    }
+
+    /// The AU's current render-quality setting, `0..=`[`RENDER_QUALITY_MAX`](crate::offline::RENDER_QUALITY_MAX).
+    ///
+    /// # Errors
+    /// [`AuError::OsStatus`] when the AU has no
+    /// `kAudioUnitProperty_RenderQuality`, which is 8 of the 12 corpus units.
+    pub fn render_quality(&self) -> Result<u32> {
+        // SAFETY: as above.
+        unsafe { crate::offline::render_quality(self.raw_unit()) }
+    }
+
+    /// Set the AU's render quality, `0` (cheapest) to
+    /// [`RENDER_QUALITY_MAX`](crate::offline::RENDER_QUALITY_MAX) (best).
+    ///
+    /// # Errors
+    /// [`AuError::InvalidBuffer`] for a value above the maximum — enforced here
+    /// because three of the four units that implement the property accept
+    /// out-of-range values with `noErr` and read them straight back, so the AU's
+    /// own answer cannot be trusted to catch it. [`AuError::OsStatus`] when the
+    /// AU has no such property. [`crate::offline::set_render_quality`] carries the
+    /// measured table.
+    pub fn set_render_quality(&mut self, quality: u32) -> Result<()> {
+        // SAFETY: as above.
+        unsafe { crate::offline::set_render_quality(self.raw_unit(), quality) }
+    }
+
+    /// Render `frames` through the AU using the **push** model
+    /// (`AudioUnitProcess`) rather than the pull model
+    /// [`process`](Self::process) uses.
+    ///
+    /// The host stages input into `scratch` beforehand
+    /// ([`PushScratch::stage_input`](crate::offline::PushScratch::stage_input))
+    /// and reads the result out afterwards
+    /// ([`emit_output`](crate::offline::PushScratch::emit_output)); no render
+    /// callback is involved. The two render paths are genuinely distinct
+    /// contracts, not two spellings of one — see the
+    /// [`offline`](crate::offline) module docs — which is why this does not try
+    /// to share `AuReady`'s scratch.
+    ///
+    /// Requires the `Ready` state for the same reason
+    /// [`process`](Self::process) does: `AudioUnitProcess` renders through
+    /// buffers the AU allocated at `AudioUnitInitialize`.
+    ///
+    /// # Errors
+    /// [`AuError::OsStatus`] with `kAudioUnitErr_Uninitialized` before
+    /// `initialize`; otherwise as [`crate::offline::process_push`] — including
+    /// `unimpErr` from the majority of units, which do not implement the
+    /// selector.
+    pub fn process_push(
+        &mut self,
+        scratch: &mut crate::offline::PushScratch,
+        frames: u32,
+    ) -> Result<AudioUnitRenderActionFlags> {
+        if !self.is_initialized() {
+            return Err(AuError::OsStatus {
+                function: "AuInstance::process_push",
+                code: K_AUDIO_UNIT_ERR_UNINITIALIZED,
+            });
+        }
+        // SAFETY: the state check above establishes the "initialized" half of
+        // `process_push`'s contract, and `raw_unit` is live for the lifetime of
+        // this instance. The frame bound against the *scratch* is checked inside;
+        // the bound against the AU's own configured block size is the caller's,
+        // which is why `block_size()` is public.
+        unsafe { crate::offline::process_push(self.raw_unit(), scratch, frames) }
+    }
+
+    /// Render `frames` through the AU with `AudioUnitProcessMultiple` — the
+    /// multiple-input-bus (sidechain) push call.
+    ///
+    /// **Measured unusable against everything installed on this machine.** Of
+    /// every Apple unit in the corpus plus both third-party units, only AUReverb2
+    /// implements the selector at all, and it accepts exactly one input list;
+    /// everything else answers `unimpErr`. The numbers are in
+    /// [`crate::offline::process_push_multiple`]. This exists so the contract is
+    /// reachable and tested, not because a sidechain can be built on it today.
+    ///
+    /// # Errors
+    /// [`AuError::OsStatus`] with `kAudioUnitErr_Uninitialized` before
+    /// `initialize`; otherwise as
+    /// [`crate::offline::process_push_multiple`].
+    pub fn process_push_multiple(
+        &mut self,
+        scratch: &mut crate::offline::PushScratch,
+        frames: u32,
+    ) -> Result<AudioUnitRenderActionFlags> {
+        if !self.is_initialized() {
+            return Err(AuError::OsStatus {
+                function: "AuInstance::process_push_multiple",
+                code: K_AUDIO_UNIT_ERR_UNINITIALIZED,
+            });
+        }
+        // SAFETY: as `process_push`.
+        unsafe { crate::offline::process_push_multiple(self.raw_unit(), scratch, frames) }
+    }
+
     /// Serialize the AU's current state (all parameters + internal state) to
     /// a binary plist blob suitable for persistence.
     pub fn save_state(&self) -> Result<Vec<u8>> {

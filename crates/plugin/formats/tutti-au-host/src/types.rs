@@ -42,6 +42,29 @@ pub use sys::{
     AudioUnitUninitialize, MusicDeviceMIDIEvent,
 };
 
+// The *push* render entry points, used only by `crate::offline`.
+//
+// Separate from the block above because they are a different render contract,
+// not merely two more calls: `AudioUnitRender` pulls its input through a
+// callback the host installed, while these two are handed the input directly.
+// Grouping them with `AudioUnitRender` would suggest they are interchangeable at
+// a call site, and they are not — see `offline::process_push`.
+pub use sys::{AudioUnitProcess, AudioUnitProcessMultiple};
+
+/// `unimpErr` — "unimplemented core routine", the classic Mac OS status the
+/// component manager returns when an AU does not implement a dispatch selector.
+///
+/// Not in `coreaudio-sys` (it is a CarbonCore value, not an AudioToolbox one) and
+/// not in the SDK headers this crate can reach, so it is spelled out. It is
+/// aliased at all because it is the *dominant* answer to
+/// `AudioUnitProcess` / `AudioUnitProcessMultiple` on this system, and a test
+/// asserting "this unit does not implement the push path" has to name the status
+/// rather than assert a bare `is_err()` — an `is_err()` would pass just as well
+/// if the render failed for an unrelated reason, which is exactly the vacuous
+/// assertion that hides a regression. Measured on macOS 15.6: 6 of 9 corpus
+/// effects answer `noErr` to `AudioUnitProcess`, the rest answer this.
+pub const UNIMP_ERR: OSStatus = -4;
+
 /// Success status value for `OSStatus` returns. `coreaudio-sys` exposes this
 /// only as `noErr`; alias it under the name the crate uses.
 pub const NO_ERR: OSStatus = sys::noErr as OSStatus;

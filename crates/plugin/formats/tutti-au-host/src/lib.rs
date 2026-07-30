@@ -59,6 +59,9 @@ mod buffer;
 pub mod instance;
 
 #[cfg(target_os = "macos")]
+pub mod offline;
+
+#[cfg(target_os = "macos")]
 pub mod transport;
 
 #[cfg(target_os = "macos")]
@@ -101,6 +104,15 @@ pub use editor::AuEditor;
 pub use handle::AuHandle;
 #[cfg(target_os = "macos")]
 pub use instance::{AuInstance, AuLoaded, AuReady};
+// Flat-re-exported for the same reason `TransportState` below is: `PushScratch`
+// is the argument type of `offline::process_push`, so a host cannot drive the
+// push render path without being able to name it, and there is no shared
+// `tutti_plugin_types` vocabulary for a per-bus buffer-list arena to translate
+// into. The two `process_*` functions stay behind `offline::` — they are `unsafe`
+// and take a raw `AudioUnit`, so reaching them should be as explicit as their
+// contract.
+#[cfg(target_os = "macos")]
+pub use offline::{PushScratch, RENDER_QUALITY_MAX};
 // `AuParameter`/`ParamRange`/`ParamView`/`ParameterUnit` are AU-internal param
 // vocabulary — reachable via `tutti_au_host::parameters::*` for the loader, but
 // not surfaced as flat crate-root re-exports. Consumers speak the shared

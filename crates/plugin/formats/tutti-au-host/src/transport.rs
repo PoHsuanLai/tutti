@@ -243,14 +243,19 @@ impl TransportState {
             .store(info.timing.tempo.to_bits(), Ordering::Relaxed);
         self.beat_bits
             .store(info.position.beats.to_bits(), Ordering::Relaxed);
-        // `TransportPosition::samples` is an `Option` precisely because no
-        // producer in this engine fills it; fall back to the continuous counter,
-        // which is the free-running clock a plugin can at least trust to be
-        // monotonic. Apple's field is `Float64`, so widen rather than truncate.
-        let sample_time = info
-            .position
-            .samples
-            .unwrap_or(info.position.continuous_samples) as f64;
+        // `outCurrentSampleInTimeLine` is project time — the clock that jumps
+        // back on a loop. `continuous_samples` is the free-running one that
+        // deliberately does not, so substituting it here is not a fallback but
+        // a different quantity: an AU would be handed a timeline that never
+        // loops, with no way to tell which clock it got.
+        //
+        // `TransportPosition::samples` is an `Option` because no producer in
+        // this engine fills it, and the AU callback has no validity bit — same
+        // wall VST2's `samplePos` and VST3's `projectTimeSamples` hit. So it
+        // degrades to 0, matching them, and the fix is the shared one: give the
+        // transport a real project-time sample clock (see the field doc on
+        // `TransportPosition::samples`).
+        let sample_time = info.position.samples.unwrap_or(0) as f64;
         self.sample_time_bits
             .store(sample_time.to_bits(), Ordering::Relaxed);
         self.measure_downbeat_bits

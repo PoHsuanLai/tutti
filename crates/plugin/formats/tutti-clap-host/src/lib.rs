@@ -70,8 +70,8 @@ pub use types::{
 #[cfg(feature = "clap-extras")]
 pub use types::{
     AudioPortConfigRequest, Color, ContextMenuItem, ContextMenuTarget, ParamAutomationState,
-    RemoteControlsPage, TrackInfo, TransportRequest, TriggerInfo, TuningInfo, UndoChange,
-    UndoDeltaProperties,
+    RemoteControlsPage, TrackAudio, TrackInfo, TrackPortType, TransportRequest, TriggerInfo,
+    TuningInfo, UndoChange, UndoDeltaProperties,
 };
 
 // Test-only global allocator for RT-safety regression tests.

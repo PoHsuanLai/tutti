@@ -331,6 +331,109 @@ impl AuInstance {
         parameters::get(self.raw_unit(), id)
     }
 
+    /// Install a render notification, called twice per render (pre and post).
+    ///
+    /// This is the host's tap into the AU's own render: on
+    /// [`RenderPhase::Post`](crate::render_notify::RenderPhase::Post) the buffer
+    /// list holds the audio the plugin actually produced, which is the only
+    /// place a meter can read the plugin's real output rather than the host's
+    /// post-processed copy of it. On
+    /// [`RenderPhase::Pre`](crate::render_notify::RenderPhase::Pre) it is the
+    /// only sanctioned place to call
+    /// [`render_notify::schedule`](crate::render_notify::schedule) — scheduled
+    /// parameter events apply to the render call in flight and to no other.
+    ///
+    /// The returned [`RenderNotify`] is the registration: **hold it**. Dropping
+    /// it removes the notification, and doing so is what keeps the AU from
+    /// calling into freed memory — see [`RenderNotify`]'s `Drop`.
+    ///
+    /// # Why this returns a handle rather than storing it
+    ///
+    /// The notify's lifetime is the *host's* business, not the instance's. A
+    /// metering tap lives as long as the meter is on screen, a latency probe for
+    /// one block, an automation writer for the length of a gesture — and several
+    /// may be installed at once, since AudioToolbox keys them by
+    /// `(proc, ref_con)` and this crate gives each handle its own state. Storing
+    /// one inside `AuInstance` would impose a single slot and tie every tap to
+    /// the plugin's lifetime.
+    ///
+    /// The consequence the caller owns: the handle must not outlive this
+    /// instance. That is the same rule
+    /// [`AuParameterListener`](crate::listener::AuParameterListener) carries,
+    /// and it is why this method is safe while
+    /// [`RenderNotify::new`](crate::render_notify::RenderNotify::new) is not —
+    /// here the borrow checker has `&self` to reason from.
+    ///
+    /// # Real-time safety
+    /// `callback` runs on the render thread and must not allocate, lock, or
+    /// block. See [`RenderNotify::new`](crate::render_notify::RenderNotify::new)
+    /// for the full contract.
+    ///
+    /// # Errors
+    /// Returns [`AuError::OsStatus`] if the AU refuses
+    /// `AudioUnitAddRenderNotify`. Measured on macOS 15.6: none of the ~35 Apple
+    /// units nor the three third-party units installed do.
+    pub fn add_render_notify<F>(&self, callback: F) -> Result<crate::render_notify::RenderNotify>
+    where
+        F: Fn(crate::render_notify::RenderNotification) + Send + Sync + 'static,
+    {
+        // SAFETY: `raw_unit` is live for the lifetime of this instance, and the
+        // returned handle borrows nothing — so the caller's obligation is that
+        // it not outlive `self`, which this method's docs state.
+        unsafe { crate::render_notify::RenderNotify::new(self.raw_unit(), callback) }
+    }
+
+    /// This instance's unit, wrapped so a render-notify callback can capture it.
+    ///
+    /// A pre-render callback's whole job is usually to schedule automation on the
+    /// unit that is rendering, but [`raw_unit`](Self::raw_unit) returns a bare
+    /// pointer that is neither `Send` nor `Sync`, so capturing it in the callback
+    /// does not compile. This is the wrapper that makes it possible — see
+    /// [`RenderUnit`](crate::render_notify::RenderUnit) for why the assertion is
+    /// sound and where it stops.
+    ///
+    /// Take one *before* calling
+    /// [`add_render_notify`](Self::add_render_notify), since the callback has to
+    /// be built first.
+    pub fn render_unit(&self) -> crate::render_notify::RenderUnit {
+        // SAFETY: the unit is live for the lifetime of this instance, and the
+        // caller cannot outlive it without also dropping the notify that holds
+        // the captured copy — dropping the `RenderNotify` is what unregisters it.
+        unsafe { crate::render_notify::RenderUnit::new(self.raw_unit()) }
+    }
+
+    /// Schedule parameter events into the render call currently in flight.
+    ///
+    /// **Only correct from inside a pre-render notify.** The events apply to the
+    /// current `AudioUnitRender` and to no other, so calling this from a control
+    /// thread races the render it was meant to affect. Reach it through
+    /// [`add_render_notify`](Self::add_render_notify); this method exists so a
+    /// caller holding an `&AuInstance` in the callback does not have to reach for
+    /// the raw unit.
+    ///
+    /// For a parameter change that should simply take effect at the next block
+    /// boundary — which is what a DAW wants for most automation — use
+    /// [`set_parameter`](Self::set_parameter) instead. It notifies listeners,
+    /// which this deliberately does not: a scheduled event is a render-time
+    /// value, and pushing a listener notification per event would flood the
+    /// plugin's editor with a redraw per sample-accurate step.
+    ///
+    /// # Errors
+    /// Returns [`AuError::OsStatus`] if the AU refuses the call — but note that
+    /// `Ok(())` is not a promise the event does anything. Measured on macOS
+    /// 15.6, a nonexistent parameter id and a ramp on a non-rampable parameter
+    /// both return `noErr`. See
+    /// [`render_notify::schedule`](crate::render_notify::schedule).
+    pub fn schedule_parameters(
+        &self,
+        id: u32,
+        address: crate::render_notify::ScheduleAddress,
+        events: &[crate::render_notify::ParamEvent],
+    ) -> Result<()> {
+        // SAFETY: `raw_unit` is live for the lifetime of this instance.
+        unsafe { crate::render_notify::schedule(self.raw_unit(), id, address, events) }
+    }
+
     /// Deliver a block of UMP MIDI events to an instrument / music-effect AU as
     /// legacy `MusicDeviceMIDIEvent` calls.
     ///

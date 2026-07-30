@@ -367,19 +367,29 @@ pub const METER_PARAM_UNITS: &[(AuRef, usize)] = &[(MULTIBAND_COMPRESSOR, 12), (
 /// among Apple's effects, and 6 parameter clumps.
 pub const MULTIBAND_COMPRESSOR: AuRef = AuRef::effect("AUMultibandCompressor", b"mcmp");
 
-/// AUSpatialMixer — the one corpus unit macOS ships real `.aupreset` **files**
-/// for, which is the only reason it is here.
+/// AUSpatialMixer — in the corpus for two independent reasons, both measured.
 ///
-/// Measured on macOS 15.6: 55 Apple-authored `.aupreset` files under
-/// `/System/Library/Audio/Tunings/**/AU/` carry `type`/`subtype`/`manufacturer` =
-/// `aumx`/`3dem`/`appl`, i.e. this unit. That makes it the crate's only
-/// **interoperability** subject: every other preset assertion in the suite round-
-/// trips a file this host wrote, which proves self-consistency and would pass even
-/// if this host and Logic disagreed about the format. Loading Apple's own file
-/// proves the format itself is right.
+/// **1. It is the only corpus unit macOS ships real `.aupreset` *files* for.**
+/// 55 Apple-authored files under `/System/Library/Audio/Tunings/**/AU/` carry
+/// `type`/`subtype`/`manufacturer` = `aumx`/`3dem`/`appl`. That makes it the
+/// crate's only **interoperability** subject: every other preset assertion
+/// round-trips a file this host wrote, which proves self-consistency and would
+/// pass even if this host and Logic disagreed about the format. Loading Apple's
+/// own file proves the format itself is right. See [`APPLE_PRESET_DIRS`].
 ///
-/// See [`APPLE_PRESET_DIRS`] for where the files live and why the path is not
-/// hardcoded to a single one.
+/// **2. It is the only Apple unit advertising `kAudioUnitParameterFlag_CanRamp`,
+/// and the proof that flag is a claim rather than a guarantee.** Surveying every
+/// unit that initializes: 155 of 486 parameters across 45 units carry `CanRamp`,
+/// but 145 are third-party (TDR Nova 37/75, TAL Reverb 4 20/20, TAL-NoiseMaker
+/// 88/88); AUSpatialMixer is the entire Apple contribution at 10 of 12. And it
+/// does **not** honour a ramp: scheduling one across `global reverb gain`
+/// (id 9, range -40..40) versus pinning at the ramp's start value produces
+/// envelopes differing by exactly `0.000000000` over 5 runs, while the readback
+/// *does* land on the ramp's end value. The endpoint is applied and the
+/// interpolation discarded — a step at the block boundary, the zipper artifact
+/// ramping exists to avoid. That negative result is what stops a host from
+/// trusting `can_ramp`. See
+/// `au_render_notify.rs::the_can_ramp_flag_is_a_claim_not_a_guarantee`.
 pub const SPATIAL_MIXER: AuRef = AuRef::mixer("AUSpatialMixer", b"3dem");
 
 /// Directories macOS ships Apple-authored `.aupreset` files in.
@@ -448,4 +458,82 @@ fn walk_aupresets(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
         }
     }
     out
+}
+
+// ------------------------------------------------- render notify / scheduling
+
+/// `AUSpatialMixer`'s `global reverb gain` — the rampable-but-not-ramped subject.
+///
+/// `(parameter id, range min, range max)`, measured on macOS 15.6.
+pub const SPATIAL_MIXER_RAMP_PARAM: (u32, f32, f32) = (9, -40.0, 40.0);
+
+/// A third-party unit measured to **genuinely** honour a scheduled ramp, and the
+/// `Dry` parameter that proves it.
+///
+/// `(subtype, manufacturer, parameter id)`. Unlike everything else in this
+/// module this is looked up **optionally** — see [`optional_third_party`] for the
+/// reason absence is tolerated here and nowhere else.
+///
+/// Measured on macOS 15.6: ramping `Dry` 0.0 → 1.0 across a 512-frame block at
+/// 48 kHz, against a 0.5 DC input, yields a strictly monotonic 8-segment output
+/// envelope `0.014483 → 0.104773`, where pinning the parameter at the ramp's
+/// start value gives a flat `0.0`. Bit-identical across 10 repeats.
+pub const TAL_REVERB_4: (&[u8; 4], &[u8; 4], u32) = (b"reV4", b"TOGU", 1_564_260_131);
+
+/// Look up a non-Apple unit, tolerating its absence.
+///
+/// **This is the one exception to the hard-failure rule** in this module's docs,
+/// and the exception is principled rather than convenient: the rule exists
+/// because Apple's units *ship with macOS*, so their absence means a broken
+/// environment. A third-party plugin is a genuine optional install — asserting
+/// its presence would make the suite fail on any machine that simply does not
+/// have it, which is a false alarm rather than a caught regression.
+///
+/// The discipline that keeps this from becoming the silent skip the module docs
+/// warn about: every caller must assert something **unconditional** as well, so
+/// the test still proves a property when the optional unit is missing. See
+/// `au_render_notify.rs::a_ramp_is_honoured_where_a_plugin_implements_it`, which
+/// pins the Apple negative result whether or not the third-party unit is found,
+/// and prints a loud notice when it is not.
+pub fn optional_third_party(
+    sub_type: &[u8; 4],
+    manufacturer: &[u8; 4],
+    au_type: AuType,
+) -> Option<AuComponentInfo> {
+    let wanted = u32::from_be_bytes(*sub_type);
+    let mfr = u32::from_be_bytes(*manufacturer);
+    enumerate_components_of_type(au_type)
+        .into_iter()
+        .find(|c| c.sub_type == wanted && c.manufacturer_code == mfr)
+}
+
+/// Open an arbitrary [`AuComponentInfo`] initialized, for units reached through
+/// [`optional_third_party`] rather than an [`AuRef`].
+pub fn open_info(info: &AuComponentInfo, rate: f64, block: u32) -> AuInstance {
+    // SAFETY: `component` came from `AudioComponentFindNext` via
+    // `enumerate_components_of_type`, so it is a live factory handle for the
+    // lifetime of this process.
+    let mut au = unsafe { AuInstance::new(info.component, rate, block) }
+        .unwrap_or_else(|e| panic!("{}: instantiate failed: {e:?}", info.name));
+    au.initialize()
+        .unwrap_or_else(|e| panic!("{}: initialize failed: {e:?}", info.name));
+    au
+}
+
+/// Per-segment peak envelope: splits each channel-0 block into `segments` equal
+/// spans and reports the peak absolute sample in each.
+///
+/// This is how an intra-block ramp is distinguished from a step at the block
+/// boundary: a ramp's envelope rises across the segments, a step's is flat. A
+/// single [`peak`] over the whole block cannot tell them apart — both report the
+/// same maximum.
+pub fn envelope(buffer: &[f32], segments: usize) -> Vec<f32> {
+    let seg = buffer.len() / segments;
+    (0..segments)
+        .map(|i| {
+            buffer[i * seg..(i + 1) * seg]
+                .iter()
+                .fold(0.0f32, |a, &b| a.max(b.abs()))
+        })
+        .collect()
 }

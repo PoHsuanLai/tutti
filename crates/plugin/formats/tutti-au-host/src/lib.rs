@@ -74,6 +74,9 @@ pub mod aupreset;
 pub mod listener;
 
 #[cfg(target_os = "macos")]
+pub mod render_notify;
+
+#[cfg(target_os = "macos")]
 pub mod editor;
 
 pub use component::{AuComponentInfo, AuType};
@@ -122,6 +125,15 @@ pub use aupreset::{read_preset_metadata, AuPresetIdentity};
 // `tutti_plugin_types` notification vocabulary to translate into.
 #[cfg(target_os = "macos")]
 pub use listener::{AuEvent, AuParameterListener, EventAddress};
+// Flat-re-exported for the reason `AuParameterListener` is: `RenderNotify` is
+// the handle a host holds, `RenderNotification`/`RenderPhase` are what its
+// callback receives, and `ParamEvent`/`ScheduleAddress` are the arguments to
+// `render_notify::schedule` — which is the only sanctioned place to call it, so
+// every one of these is unavoidable at the call site.
+#[cfg(target_os = "macos")]
+pub use render_notify::{
+    ParamEvent, RenderNotification, RenderNotify, RenderPhase, RenderUnit, ScheduleAddress,
+};
 #[cfg(target_os = "macos")]
 pub use stream::{AuBusLayout, StreamConfig};
 // `TransportState` is flat-re-exported for the same reason the bus vocabulary

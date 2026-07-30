@@ -9,7 +9,7 @@
 //! run in both profiles on purpose: the failure mode was release-only.
 
 use tutti_core::dsp::{sine_hz, Net};
-use tutti_core::{Engine, MotionFsm, TransportSettings};
+use tutti_core::{ChannelLayout, Engine, MotionFsm, TransportSettings};
 
 /// Render one block of a root with `outputs` channels into a `target`-wide
 /// interleaved buffer. `wire` connects the source to root outputs (its `NodeId`
@@ -23,7 +23,9 @@ fn render_root_to(outputs: usize, target: usize, wire: &[usize]) -> Vec<f32> {
     let engine = Engine::new(MotionFsm::new(TransportSettings::new()), net.backend());
     let frames = 256;
     let mut out = vec![0.0f32; frames * target];
-    engine.process(&mut out, frames, target);
+    // `target` stays a plain count here — it is a test-local buffer stride, and
+    // converting at this one boundary leaves every case below reading in widths.
+    engine.process(&mut out, frames, ChannelLayout::from(target));
     out
 }
 

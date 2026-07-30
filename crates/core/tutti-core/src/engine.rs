@@ -5,7 +5,7 @@
 
 use crate::transport::Declick;
 use crate::transport::MotionFsm;
-use crate::{AudioThreadCell, Ordering};
+use crate::{AudioThreadCell, ChannelLayout, Ordering};
 use fundsp::audiounit::AudioUnit;
 use fundsp::buffer::BufferArray;
 use fundsp::prelude::{BufferRef, U8};
@@ -40,14 +40,14 @@ impl Engine {
         }
     }
 
-    /// Process a segment of the buffer into `channels`-wide interleaved `output`.
+    /// Process a segment of the buffer into `layout`-wide interleaved `output`.
     ///
     /// Drives the graph through fundsp's SIMD block path
     /// ([`NetBackend::process`]) in [`MAX_BUFFER_SIZE`] chunks rather than one
     /// frame at a time. The graph root has no inputs, so the input buffer is
     /// empty. The root is rendered at its **own** output width (up to
     /// [`MAX_ROOT_CHANNELS`]) into the stack scratch, then each frame is folded
-    /// to `channels` — the device / target width — via the ITU/Dolby matrices
+    /// to `layout` — the device / target width — via the ITU/Dolby matrices
     /// ([`tutti_types::downmix`]): a surround root plays folded to a stereo
     /// device, or straight through to a matching-width surround device; a mono
     /// root duplicates into every target channel of a wider output.
@@ -60,7 +60,7 @@ impl Engine {
     /// the end and panics — in release, inside the audio callback. The whole path
     /// is alloc-free (stack scratch + a stack `[f32; MAX_ROOT_CHANNELS]` frame).
     #[inline]
-    pub fn process_segment(&self, output: &mut [f32], frames: usize, channels: usize) {
+    pub fn process_segment(&self, output: &mut [f32], frames: usize, layout: ChannelLayout) {
         let Some(ref mut backend) = *self.net_backend.borrow_mut() else {
             return;
         };
@@ -79,11 +79,13 @@ impl Engine {
         // root drops its extra channels (they can't be rendered), but must never
         // index past the buffer.
         let root_channels = backend.outputs().clamp(1, MAX_ROOT_CHANNELS);
-        // The output (device) width sets the interleave stride. It is NOT clamped
-        // to MAX_ROOT_CHANNELS — `fold_frame` writes exactly `out_ch` channels
-        // (zero-filling any past the root width), so a wider-than-8 device simply
-        // gets silent extra channels. Only the render scratch is bounded.
-        let out_ch = channels.max(1);
+        // The output (device) width sets the interleave stride, derived ONCE
+        // here and never re-read inside the per-frame loop below. It is NOT
+        // clamped to MAX_ROOT_CHANNELS — `fold_frame` writes exactly `out_ch`
+        // channels (zero-filling any past the root width), so a wider-than-8
+        // device simply gets silent extra channels. Only the render scratch is
+        // bounded.
+        let out_ch = layout.count().max(1) as usize;
 
         let empty_input = BufferRef::new(&[]);
         let mut scratch = BufferArray::<MaxRootChannels>::new();
@@ -115,12 +117,12 @@ impl Engine {
         }
     }
 
-    /// Apply the declick fade-out gain ramp to the `channels`-wide interleaved
+    /// Apply the declick fade-out gain ramp to the `layout`-wide interleaved
     /// output buffer. Returns true if the fade completed during this buffer.
     /// The ramp is per-channel — the same gain applies across every channel of
     /// a frame, so it works at any width.
     #[inline]
-    fn apply_declick(&self, output: &mut [f32], frames: usize, channels: usize) -> bool {
+    fn apply_declick(&self, output: &mut [f32], frames: usize, layout: ChannelLayout) -> bool {
         let remaining = self.declick.remaining.load(Ordering::Acquire);
         if remaining == 0 {
             return false;
@@ -131,6 +133,8 @@ impl Engine {
             return false;
         }
 
+        // Stride derived ONCE, above both loops below.
+        let channels = layout.count().max(1) as usize;
         let samples_to_process = (remaining as usize).min(frames);
 
         for i in 0..samples_to_process {
@@ -156,18 +160,18 @@ impl Engine {
         new_remaining == 0
     }
 
-    /// Render `frames` samples into `channels`-wide interleaved `output`.
+    /// Render `frames` frames into `layout`-wide interleaved `output`.
     ///
-    /// The graph root is folded to `channels` (the device / target width) via
+    /// The graph root is folded to `layout` (the device / target width) via
     /// the ITU/Dolby matrices — see [`process_segment`](Self::process_segment).
     /// Called once per block from the audio callback. RT-safe: no allocation,
     /// no locks, no I/O.
     #[inline]
-    pub fn process(&self, output: &mut [f32], frames: usize, channels: usize) {
+    pub fn process(&self, output: &mut [f32], frames: usize, layout: ChannelLayout) {
         self.motion.drain();
-        self.process_segment(output, frames, channels);
+        self.process_segment(output, frames, layout);
 
-        if self.apply_declick(output, frames, channels) {
+        if self.apply_declick(output, frames, layout) {
             self.motion.complete_declick();
         }
     }

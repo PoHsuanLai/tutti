@@ -1,4 +1,4 @@
-//! The render source: a `Net` presented as an [`AudioIn`].
+//! The render source: a `Net` presented as a [`FrameSource`].
 //!
 //! [`NetSource`] block-renders a `tutti_core::dsp::Net` into `[f32; CH]` frames
 //! and advances the caller's [`RenderClock`] in lockstep. Everything downstream
@@ -11,7 +11,6 @@
 //! zero-filled rather than duplicated.
 
 use crate::render::BlockCursor;
-use tutti_core::io::{AudioIn, OnEmpty};
 use tutti_core::transport::RenderClock;
 use tutti_core::{AudioUnit, BufferMut, BufferRef, BufferVec, MAX_BUFFER_SIZE};
 use tutti_types::Samples;
@@ -45,10 +44,10 @@ fn fold_net_frame<const CH: usize>(
     tutti_types::fold_frame(&src[..w], dst);
 }
 
-/// The render source as an [`AudioIn<f32, CH>`].
+/// The render source as a [`FrameSource<CH>`].
 ///
-/// Each [`poll_into`](AudioIn::poll_into) renders one block and hands back
-/// `CH`-wide frames, then advances the clock by exactly the frames produced.
+/// Each [`fill`](FrameSource::fill) renders one block and hands back `CH`-wide
+/// frames, then advances the clock by exactly the frames produced.
 pub(crate) struct NetSource<'a, const CH: usize> {
     net: &'a mut tutti_core::dsp::Net,
     clock: &'a dyn RenderClock,
@@ -86,13 +85,24 @@ impl<'a, const CH: usize> NetSource<'a, CH> {
     }
 }
 
-impl<const CH: usize> AudioIn<f32, CH> for NetSource<'_, CH> {
-    /// A render never starves: the net produces a full block on demand, so the
-    /// only `0` this returns is for a zero-length request. An offline render is
-    /// driven to a known frame count, not polled until it runs dry.
-    const ON_EMPTY: OnEmpty = OnEmpty::EndOfStream;
-
-    fn poll_into(&mut self, out: &mut [[f32; CH]]) -> usize {
+impl<const CH: usize> NetSource<'_, CH> {
+    /// Render one block into `out` and return how many frames it produced.
+    ///
+    /// **This was an `AudioIn<f32, CH>` impl.** It was the only site in the
+    /// engine that genuinely needed the trait's const-generic width — and it
+    /// needed it only because the const existed: `poll_into` was reached
+    /// exclusively through [`FrameSource::fill`] below, and no code outside this
+    /// crate ever held a `NetSource`. When the I/O traits went runtime-width,
+    /// keeping the impl would have meant giving an offline render a
+    /// `ChannelLayout` it does not have (the export width is a `const CH` all
+    /// the way down this module) purely to satisfy a trait nothing dispatched
+    /// on. The body is unchanged; only the trait bolted to it is gone.
+    ///
+    /// The render also never starves, so it had no use for the `ON_EMPTY` half
+    /// of the trait either: the net produces a full block on demand, and the
+    /// only `0` here is a zero-length request. An offline render is driven to a
+    /// known frame count, not polled until it runs dry.
+    fn render_block(&mut self, out: &mut [[f32; CH]]) -> usize {
         let block_size = out.len().min(MAX_BUFFER_SIZE);
         if block_size == 0 {
             return 0;
@@ -135,7 +145,7 @@ pub(crate) trait FrameSource<const CH: usize> {
 
 impl<const CH: usize> FrameSource<CH> for NetSource<'_, CH> {
     fn fill(&mut self, out: &mut [[f32; CH]]) -> usize {
-        self.poll_into(out)
+        self.render_block(out)
     }
     fn produced(&self) -> Samples {
         NetSource::produced(self)

@@ -18,9 +18,9 @@
 //! # use tutti_io::{TapIn, WavOut, BitDepth, Recorder};
 //! # fn go(tap: &tutti_core::metering::AudioTap) -> std::io::Result<()> {
 //! let src = TapIn::new(tap.open().expect("tap is free"));
-//! let wav = WavOut::create(&"master.wav".into(), 48_000.0, 2, BitDepth::Float32)
+//! let wav = WavOut::create(&"master.wav".into(), 48_000.0, 2u16, BitDepth::Float32)
 //!     .expect("sink opens");
-//! let rec = Recorder::start(src, wav);
+//! let rec = Recorder::start(src, wav)?;   // both are stereo, so this pairs
 //! // ... later ...
 //! rec.stop()
 //! # }
@@ -37,6 +37,7 @@
 use ringbuf::{traits::Consumer, HeapCons};
 
 use tutti_core::io::{AudioIn, OnEmpty};
+use tutti_core::ChannelLayout;
 
 /// The analysis tap's consumer end as an [`AudioIn`].
 ///
@@ -70,14 +71,25 @@ impl AudioIn for TapIn {
     /// [`OnEmpty`] exists to make unrepresentable.
     const ON_EMPTY: OnEmpty = OnEmpty::Starved;
 
-    fn poll_into(&mut self, out: &mut [[f32; 2]]) -> usize {
-        // Pop up to `out.len()` frames. A short or zero count is normal for a
-        // live source; the pump parks and retries.
+    /// Always stereo: the tap ring's element is `(f32, f32)`, so the width is a
+    /// property of this *code*, not of any data flowing through it — exactly the
+    /// case a fixed layout still fits. Widening it means widening the lock-free
+    /// ring element in `tutti-core`'s `AudioTap`, which is a separate change.
+    fn layout(&self) -> ChannelLayout {
+        ChannelLayout::Stereo
+    }
+
+    fn poll_into(&mut self, out: &mut [f32]) -> usize {
+        // Pop up to `out.len() / 2` FRAMES — the return is frames, the slice is
+        // samples. A short or zero count is normal for a live source; the pump
+        // parks and retries.
+        let frames = out.len() / 2;
         let mut n = 0;
-        while n < out.len() {
+        while n < frames {
             match self.cons.try_pop() {
                 Some((l, r)) => {
-                    out[n] = [l, r];
+                    out[n * 2] = l;
+                    out[n * 2 + 1] = r;
                     n += 1;
                 }
                 None => break,
@@ -93,11 +105,11 @@ mod tests {
     use ringbuf::traits::{Producer, Split};
     use ringbuf::HeapRb;
 
-    /// Frames the callback pushed come back out in order, as stereo pairs.
+    /// Frames the callback pushed come back out in order, interleaved L then R.
     ///
-    /// The tap stores `(f32, f32)` and `AudioIn` speaks `[f32; 2]`; this is the
-    /// conversion, so a transposition here would silently swap every recording's
-    /// channels.
+    /// The tap stores `(f32, f32)` and `AudioIn` speaks a flat interleaved
+    /// slice; this is the conversion, so a transposition here would silently
+    /// swap every recording's channels.
     #[test]
     fn pushed_frames_come_back_in_order_and_channel_side() {
         let (mut prod, cons) = HeapRb::<(f32, f32)>::new(16).split();
@@ -106,12 +118,16 @@ mod tests {
         }
 
         let mut tap = TapIn::new(cons);
-        let mut out = [[0.0f32; 2]; 8];
-        assert_eq!(tap.poll_into(&mut out), 4);
+        let mut out = [0.0f32; 8 * 2];
+        assert_eq!(
+            tap.poll_into(&mut out),
+            4,
+            "the return is FRAMES, not samples"
+        );
 
-        for (i, frame) in out.iter().take(4).enumerate() {
-            assert_eq!(frame[0], i as f32, "left channel, frame {i}");
-            assert_eq!(frame[1], -(i as f32), "right channel, frame {i}");
+        for i in 0..4 {
+            assert_eq!(out[i * 2], i as f32, "left channel, frame {i}");
+            assert_eq!(out[i * 2 + 1], -(i as f32), "right channel, frame {i}");
         }
     }
 
@@ -127,11 +143,11 @@ mod tests {
         }
 
         let mut tap = TapIn::new(cons);
-        let mut out = [[0.0f32; 2]; 4];
+        let mut out = [0.0f32; 4 * 2];
         assert_eq!(tap.poll_into(&mut out), 4, "must fill exactly the slice");
 
         // The rest is still queued, not dropped.
-        let mut rest = [[0.0f32; 2]; 32];
+        let mut rest = [0.0f32; 32 * 2];
         assert_eq!(tap.poll_into(&mut rest), 28);
     }
 
@@ -145,7 +161,7 @@ mod tests {
         let (_prod, cons) = HeapRb::<(f32, f32)>::new(8).split();
         let mut tap = TapIn::new(cons);
 
-        let mut out = [[0.0f32; 2]; 4];
+        let mut out = [0.0f32; 4 * 2];
         assert_eq!(tap.poll_into(&mut out), 0);
         assert_eq!(
             TapIn::ON_EMPTY,

@@ -119,6 +119,11 @@ pub const K_AUDIO_UNIT_PROPERTY_PARAMETER_INFO: u32 = sys::kAudioUnitProperty_Pa
 pub const K_AUDIO_UNIT_PROPERTY_STREAM_FORMAT: u32 = sys::kAudioUnitProperty_StreamFormat;
 pub const K_AUDIO_UNIT_PROPERTY_ELEMENT_COUNT: u32 = sys::kAudioUnitProperty_ElementCount;
 pub const K_AUDIO_UNIT_PROPERTY_LATENCY: u32 = sys::kAudioUnitProperty_Latency;
+/// Seconds of audio an AU keeps producing after its input goes silent — a
+/// reverb's decay, a delay's repeats. Distinct from `Latency`: latency shifts
+/// audio in time, tail extends how long it lasts. An offline bounce that stops
+/// at the last note truncates every tail on the master bus.
+pub const K_AUDIO_UNIT_PROPERTY_TAIL_TIME: u32 = sys::kAudioUnitProperty_TailTime;
 pub const K_AUDIO_UNIT_PROPERTY_SUPPORTED_NUM_CHANNELS: u32 =
     sys::kAudioUnitProperty_SupportedNumChannels;
 pub const K_AUDIO_UNIT_PROPERTY_MAXIMUM_FRAMES_PER_SLICE: u32 =

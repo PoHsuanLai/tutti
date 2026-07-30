@@ -18,9 +18,11 @@ use crate::handle::AuHandle;
 use crate::parameters::{self, AuParameter, ParamView};
 use crate::preset::AuPreset;
 use crate::stream::{AuBusLayout, StreamConfig};
+use crate::transport::{self, TransportState};
 use crate::types::*;
 use tutti_midi_types::MidiEvent;
-use tutti_plugin_types::ChannelLayout;
+use tutti_plugin_types::{ChannelLayout, TransportInfo};
+use tutti_types::value::units::Seconds;
 
 /// An AU that has been instantiated but not yet initialized.
 ///
@@ -29,6 +31,19 @@ use tutti_plugin_types::ChannelLayout;
 pub struct AuLoaded {
     handle: AuHandle,
     config: StreamConfig,
+    /// Host transport, installed on demand by
+    /// [`AuInstance::install_host_callbacks`].
+    ///
+    /// Heap-pinned for the same reason [`AuReady::scratch`] is: the AU retains
+    /// the `hostUserData` pointer derived from `&*transport`, and this struct is
+    /// `mem::replace`d between the `Loaded` and `Ready` states on every
+    /// initialize/uninitialize. Moving the `Box` moves only its 8-byte pointer,
+    /// so the address the AU holds stays valid across those transitions.
+    ///
+    /// `None` until a host installs callbacks — an AU with no transport wired
+    /// must not pay for an allocation, and a null `hostUserData` is exactly what
+    /// the procs treat as "no state".
+    transport: Option<Box<TransportState>>,
 }
 
 /// An AU that has completed `AudioUnitInitialize` and has render buffers
@@ -373,6 +388,117 @@ impl AuInstance {
         Ok((latency * self.sample_rate()) as u32)
     }
 
+    /// Seconds of audio this AU keeps producing after its input goes silent.
+    ///
+    /// Distinct from [`get_latency`](Self::get_latency), which reports how far
+    /// the AU shifts audio in time. Tail says how much *longer* it lasts: an
+    /// offline bounce that stops at the last note truncates every reverb and
+    /// delay tail on the master bus. See [`transport::tail_time`] for why this
+    /// returns [`Seconds`] rather than samples, and why the absence of the
+    /// property is an error rather than a zero.
+    ///
+    /// # Errors
+    /// Returns [`AuError::OsStatus`] when the AU does not implement
+    /// `kAudioUnitProperty_TailTime`. Measured on macOS 15.6, every Apple
+    /// **effect** answers it, while every Apple instrument, mixer and generator
+    /// rejects it with `kAudioUnitErr_InvalidProperty` (-10879).
+    pub fn get_tail_time(&self) -> Result<Seconds> {
+        // SAFETY: `raw_unit` is live for the lifetime of this instance.
+        unsafe { transport::tail_time(self.raw_unit()) }
+    }
+
+    /// Install the four AUv2 host transport callbacks, so tempo-synced AUs can
+    /// pull project tempo, beat position and transport state during render.
+    ///
+    /// Returns a borrow of the installed [`TransportState`]; write to it with
+    /// [`TransportState::set_transport`] from the control thread each block.
+    /// Calling this twice reuses the existing state rather than reallocating, so
+    /// the `hostUserData` pointer the AU already retains stays valid.
+    ///
+    /// # Why this is opt-in rather than done at `new`
+    ///
+    /// The state is a real allocation and the property write is a real IPC round
+    /// trip for an out-of-process AU. A host that does not sequence — a mastering
+    /// chain, an analysis pass — should not pay for either, and an AU that is
+    /// handed a transport it can pull is entitled to assume the host maintains
+    /// it. Installing by default would leave every non-sequencing host silently
+    /// advertising a transport frozen at beat 0, 120 BPM, stopped, which is
+    /// worse for a tempo-synced plugin than advertising none at all: with no
+    /// callbacks installed the plugin falls back to its own free-running clock,
+    /// which at least advances.
+    ///
+    /// # Errors
+    /// Returns [`AuError::OsStatus`] if the AU refuses
+    /// `kAudioUnitProperty_HostCallbacks`. On this machine none do — all ~35
+    /// Apple units plus the three third-party units installed accept the write,
+    /// including the ones that never call back.
+    pub fn install_host_callbacks(&mut self) -> Result<&TransportState> {
+        let loaded = match &mut self.state {
+            State::Loaded(l) => l,
+            State::Ready(r) => &mut r.loaded,
+            State::Empty => unreachable!("AuInstance accessed while empty"),
+        };
+        let unit = loaded.handle.raw_unit();
+        // Allocate once and keep the same box on a re-install: the AU may
+        // already hold a `hostUserData` pointing at it, and swapping in a fresh
+        // allocation would leave that pointer dangling until the property write
+        // below landed — a window on the render thread, not merely a leak.
+        let state = loaded
+            .transport
+            .get_or_insert_with(|| Box::new(TransportState::new()));
+        let info = state.callback_info();
+        // SAFETY: `HostCallbackInfo` is `#[repr(C)]` and laid out exactly as
+        // `AudioUnitProperties.h` declares it, so the property's documented
+        // value type and `size_of::<HostCallbackInfo>()` agree. The
+        // `hostUserData` inside points at the boxed state, whose address is
+        // stable across the `State` transitions and which is cleared out of the
+        // AU by `clear_host_callbacks` before it is ever freed.
+        unsafe {
+            set_property(
+                unit,
+                K_AUDIO_UNIT_PROPERTY_HOST_CALLBACKS,
+                K_AUDIO_UNIT_SCOPE_GLOBAL,
+                0,
+                &info,
+            )?;
+        }
+        Ok(loaded.transport.as_deref().expect("just inserted above"))
+    }
+
+    /// Borrow the installed transport, or `None` if
+    /// [`install_host_callbacks`](Self::install_host_callbacks) was never called.
+    ///
+    /// The borrow is shared rather than mutable because every write goes through
+    /// an atomic — the point of the type is that the control thread can publish
+    /// while the render thread reads.
+    pub fn transport(&self) -> Option<&TransportState> {
+        match &self.state {
+            State::Loaded(l) => l.transport.as_deref(),
+            State::Ready(r) => r.loaded.transport.as_deref(),
+            State::Empty => unreachable!("AuInstance accessed while empty"),
+        }
+    }
+
+    /// Publish a transport snapshot for the AU to pull during the next render.
+    ///
+    /// Convenience over `transport().set_transport(..)`; returns `false` when no
+    /// callbacks are installed, so a caller that forgot
+    /// [`install_host_callbacks`](Self::install_host_callbacks) finds out rather
+    /// than silently publishing into nothing.
+    ///
+    /// `changed` must be `true` on start, stop and any playhead discontinuity —
+    /// it is what tells a plugin's internal sequencer to flush instead of
+    /// counting on from the old position.
+    pub fn set_transport(&mut self, info: &TransportInfo, changed: bool) -> bool {
+        match self.transport() {
+            Some(state) => {
+                state.set_transport(info, changed);
+                true
+            }
+            None => false,
+        }
+    }
+
     /// Enumerate the AU's factory presets.
     ///
     /// Returns an empty vec when the AU ships none. That is deliberately *not*
@@ -676,7 +802,11 @@ impl AuLoaded {
         // scratch is later sized to the real topology (FIX 3).
         config.channels = config.apply(&handle)?;
 
-        Ok(Self { handle, config })
+        Ok(Self {
+            handle,
+            config,
+            transport: None,
+        })
     }
 
     /// Consume self and return an [`AuReady`] after a successful
@@ -920,6 +1050,52 @@ impl Drop for AuReady {
     fn drop(&mut self) {
         unsafe {
             let _ = AudioUnitUninitialize(self.loaded.handle.raw_unit());
+        }
+    }
+}
+
+impl Drop for AuLoaded {
+    /// Unhook the host callbacks before the state they point at is freed.
+    ///
+    /// ORDERING INVARIANT, the transport twin of the one
+    /// [`AuReady::uninitialize`] documents: while the callbacks are installed
+    /// the AU holds a `hostUserData` raw pointer into `*transport`. Dropping
+    /// this struct frees that box, so the property must be cleared first or the
+    /// AU is left holding a dangling pointer it may dereference on its render
+    /// thread.
+    ///
+    /// Rust's field drop order (declaration order — `handle` disposes the unit
+    /// before `transport` is freed) happens to make this safe already, which is
+    /// exactly why it is written out: that ordering is invisible at the field
+    /// definitions and one reordering of the struct away from a use-after-free
+    /// on the audio thread. Clearing the property explicitly makes the
+    /// invariant independent of field order.
+    ///
+    /// A zeroed `HostCallbackInfo` is the documented way to withdraw them: Apple
+    /// declares every proc nullable, so an all-null struct installs no
+    /// callbacks. The status is ignored — this is teardown, and an AU that
+    /// refuses the clear is about to be disposed on the next line anyway.
+    fn drop(&mut self) {
+        if self.transport.is_none() {
+            return;
+        }
+        let withdrawn = transport::HostCallbackInfo {
+            host_user_data: std::ptr::null_mut(),
+            beat_and_tempo: None,
+            musical_time_location: None,
+            transport_state: None,
+            transport_state2: None,
+        };
+        // SAFETY: `handle` is still live (this runs before its own `Drop`), and
+        // the value written is a correctly-typed `HostCallbackInfo`.
+        unsafe {
+            let _ = set_property(
+                self.handle.raw_unit(),
+                K_AUDIO_UNIT_PROPERTY_HOST_CALLBACKS,
+                K_AUDIO_UNIT_SCOPE_GLOBAL,
+                0,
+                &withdrawn,
+            );
         }
     }
 }

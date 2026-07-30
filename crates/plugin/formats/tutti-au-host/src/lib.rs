@@ -59,6 +59,9 @@ mod buffer;
 pub mod instance;
 
 #[cfg(target_os = "macos")]
+pub mod transport;
+
+#[cfg(target_os = "macos")]
 pub mod parameters;
 
 #[cfg(target_os = "macos")]
@@ -72,9 +75,10 @@ pub use error::{AuError, Result};
 
 // Shared host vocabulary re-exported so consumers can stay format-agnostic.
 // `WindowHandle` is consumed by the GUI bridge; `MidiEvent` is the input type of
-// `AuInstance::send_midi`. `TransportInfo` is not re-exported — AUv2 host
-// callbacks are unwired, so nothing here speaks transport.
-pub use tutti_plugin_types::{EditorSize, MidiEvent, WindowHandle};
+// `AuInstance::send_midi`; `TransportInfo` is the input type of
+// `AuInstance::set_transport`, which publishes it for the AU's host callbacks to
+// pull during render.
+pub use tutti_plugin_types::{EditorSize, MidiEvent, TransportInfo, WindowHandle};
 
 // Bus topology vocabulary. Unlike the parameter types below, these ARE flat
 // re-exports: `bus_count` / `bus_layout` / `supported_channel_configs` are
@@ -101,3 +105,9 @@ pub use instance::{AuInstance, AuLoaded, AuReady};
 pub use preset::AuPreset;
 #[cfg(target_os = "macos")]
 pub use stream::{AuBusLayout, StreamConfig};
+// `TransportState` is flat-re-exported for the same reason the bus vocabulary
+// above is: it is the return type of `AuInstance::install_host_callbacks` and
+// the thing a host writes each block, so a caller cannot use that method
+// without being able to name it.
+#[cfg(target_os = "macos")]
+pub use transport::TransportState;

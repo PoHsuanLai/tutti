@@ -207,6 +207,49 @@ pub const INSTRUMENTS: &[AuRef] = &[SAMPLER, DLS_SYNTH];
 /// system uses either.
 pub const MIXERS: &[AuRef] = &[MATRIX_MIXER, MULTI_CHANNEL_MIXER, MULTI_SPLITTER];
 
+/// Effects paired with the tail time each reports, in seconds.
+///
+/// Measured on macOS 15.6 at 48 kHz. Pinned as exact values rather than merely
+/// "non-zero" because the failure this guards against is reading the *wrong
+/// property*: `kAudioUnitProperty_TailTime` (20) sits next to `Latency` (12) and
+/// several other `Float64` global-scope properties, and a host that read latency
+/// by mistake would still get a plausible non-zero float out of
+/// AUDynamicsProcessor. The pairs below disagree with the latency column
+/// everywhere it matters — AUMatrixReverb reports 10 s of tail and 0 latency,
+/// AUDynamicsProcessor 0.2 s of tail and 256 samples of latency — so only a read
+/// of the correct property satisfies all of them.
+///
+/// [`NO_TAIL_EFFECTS`] carries the zero-tail side of the same measurement.
+pub const TAIL_EFFECTS: &[(AuRef, f32)] = &[
+    (MATRIX_REVERB, 10.0),
+    (REVERB2, 3.0),
+    (DYNAMICS, 0.2),
+    (N_BAND_EQ, 0.05),
+    (DISTORTION, 0.0046),
+    (LOWPASS, 0.001),
+];
+
+/// Effects measured to report a tail of exactly zero.
+///
+/// The counterweight to [`TAIL_EFFECTS`]: a unit that genuinely has no tail
+/// answers the property with `0.0`, which is a different fact from an
+/// instrument's refusal to answer at all. Keeping a named zero-tail unit is what
+/// stops a host from "helpfully" absorbing the refusal into a zero — the two
+/// would then be indistinguishable, and a bounce would truncate the tail of
+/// every unit whose tail it could not read.
+pub const NO_TAIL_EFFECTS: &[AuRef] = &[NO_VIEW_SAMPLE_DELAY];
+
+/// Units measured to reject `kAudioUnitProperty_TailTime` outright with
+/// `kAudioUnitErr_InvalidProperty` (-10879).
+///
+/// Every Apple instrument, mixer and generator does. Named here so the host's
+/// decision to propagate that as an error rather than flatten it to `Seconds(0)`
+/// is pinned by a test — see `au_transport.rs`.
+pub const TAILLESS_UNITS: &[AuRef] = &[SAMPLER, DLS_SYNTH, MULTI_CHANNEL_MIXER];
+
+/// The AU tail-time refusal status: `kAudioUnitErr_InvalidProperty`.
+pub const TAIL_UNSUPPORTED: i32 = -10879;
+
 /// Planar silence: `channels` buffers of `frames` zeroes.
 pub fn silence(channels: usize, frames: usize) -> Vec<Vec<f32>> {
     vec![vec![0.0f32; frames]; channels]

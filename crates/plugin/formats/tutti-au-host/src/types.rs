@@ -37,8 +37,8 @@ pub use sys::{
     AudioComponentCopyName, AudioComponentCount, AudioComponentFindNext,
     AudioComponentGetDescription, AudioComponentInstanceDispose, AudioComponentInstanceNew,
     AudioUnitGetParameter, AudioUnitGetProperty, AudioUnitGetPropertyInfo, AudioUnitInitialize,
-    AudioUnitRender, AudioUnitSetParameter, AudioUnitSetProperty, AudioUnitUninitialize,
-    MusicDeviceMIDIEvent,
+    AudioUnitRender, AudioUnitReset, AudioUnitSetParameter, AudioUnitSetProperty,
+    AudioUnitUninitialize, MusicDeviceMIDIEvent,
 };
 
 /// Success status value for `OSStatus` returns. `coreaudio-sys` exposes this

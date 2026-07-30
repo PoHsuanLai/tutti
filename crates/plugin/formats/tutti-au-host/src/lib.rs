@@ -68,6 +68,9 @@ pub mod parameters;
 pub mod preset;
 
 #[cfg(target_os = "macos")]
+pub mod listener;
+
+#[cfg(target_os = "macos")]
 pub mod editor;
 
 pub use component::{AuComponentInfo, AuType};
@@ -103,6 +106,13 @@ pub use instance::{AuInstance, AuLoaded, AuReady};
 // has to be able to name it without reaching into a submodule.
 #[cfg(target_os = "macos")]
 pub use preset::AuPreset;
+// Flat-re-exported for the same reason `AuPreset` is: `AuParameterListener` is
+// the type a host names to hold a registration, `AuEvent` is what its callback
+// receives, and `EventAddress` is an argument to every `watch_*` method. All
+// three are unavoidable at the call site, and there is no shared
+// `tutti_plugin_types` notification vocabulary to translate into.
+#[cfg(target_os = "macos")]
+pub use listener::{AuEvent, AuParameterListener, EventAddress};
 #[cfg(target_os = "macos")]
 pub use stream::{AuBusLayout, StreamConfig};
 // `TransportState` is flat-re-exported for the same reason the bus vocabulary

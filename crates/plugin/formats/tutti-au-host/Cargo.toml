@@ -30,6 +30,12 @@ coreaudio-sys = "0.2"
 # identity at the top level — arity, scalar types and struct layouts are still
 # verified. See `editor/cocoa.rs::make_view`.
 objc2 = { version = "0.6", features = ["relax-void-encoding"] }
+# `AUEventListenerCreateWithDispatchQueue` takes an Objective-C *block*, not a
+# function pointer, and it is the only listener constructor that works without a
+# running CFRunLoop (see `listener.rs`). `block2` builds the block; it is already
+# in the tree via objc2-foundation, named here because this crate uses it
+# directly.
+block2 = "0.6"
 objc2-foundation = { version = "0.3", features = ["NSBundle", "NSString", "NSGeometry", "NSObject"] }
 
 [dev-dependencies]

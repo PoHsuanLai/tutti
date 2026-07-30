@@ -232,9 +232,78 @@ impl AuInstance {
         Ok(self.handle().get_name())
     }
 
-    /// Write a parameter value.
+    /// Write a parameter value **and** notify listeners — including the AU's own
+    /// open editor.
+    ///
+    /// This routes through `AUParameterSet` rather than the bare
+    /// `AudioUnitSetParameter`, and the difference is visible to the user. Only
+    /// changes issued through `AUParameterSet` generate listener notifications
+    /// (Apple's `AudioUnitUtilities.h` states the preference outright), and a
+    /// plugin's editor is itself a listener. With the raw write, host automation
+    /// playback moved the audio while every knob in the open editor sat frozen —
+    /// the sound sweeps, the UI does not, and the user reports the plugin window
+    /// as broken.
+    ///
+    /// The change takes effect at the start of the next rendered block. For
+    /// sample-accurate placement within a block, call
+    /// [`listener::set_parameter_notifying`](crate::listener::set_parameter_notifying)
+    /// with a frame offset; for a deliberately *silent* write that notifies
+    /// nobody, [`crate::parameters::set`] still wraps the raw call.
+    ///
+    /// # Errors
+    /// Returns [`AuError::OsStatus`] with the AU's own status for an id it does
+    /// not declare.
     pub fn set_parameter(&mut self, id: u32, value: f32) -> Result<()> {
-        parameters::set(self.raw_unit(), id, value)
+        // SAFETY: `raw_unit` is live for the lifetime of this instance.
+        unsafe {
+            crate::listener::set_parameter_notifying(
+                self.raw_unit(),
+                id,
+                crate::listener::EventAddress::GLOBAL,
+                value,
+                0,
+            )
+        }
+    }
+
+    /// Clear the AU's internal audio state — reverb tails, delay lines, filter
+    /// memory — without disturbing its parameters.
+    ///
+    /// A host must call this on every discontinuity in the timeline, and the
+    /// symptom of not calling it is stale audio arriving where none belongs:
+    /// jumping from bar 60 to bar 1 smears the reverb tail of bar 60 across the
+    /// downbeat, un-muting a channel replays whatever was sitting in its delay
+    /// line, and a loop wrap-around bleeds the end of the loop into its start.
+    /// Parameters are deliberately untouched — this resets the signal history,
+    /// not the patch.
+    ///
+    /// # Legality before `initialize`
+    ///
+    /// Legal, and a no-op in practice. Measured on macOS 15.6 against the whole
+    /// corpus (AUDelay, AUMatrixReverb, AUDynamicsProcessor, AUNBandEQ,
+    /// AULowpass, plus both instruments): every unit returns `noErr` for
+    /// `AudioUnitReset` in the `Loaded` state, and remains renderable after
+    /// `initialize`. That is the answer the AU gives, so this method does not
+    /// gate on the typestate the way [`process`](Self::process) does — a host
+    /// that resets a channel strip while wiring it up should not have to know
+    /// which plugins are initialized yet. There is nothing to flush pre-init
+    /// (no render resources are allocated), so the call is simply inert.
+    ///
+    /// `au_notification.rs::reset_is_accepted_before_initialize` pins this; if a
+    /// future AU refuses, that test fails rather than the behaviour changing
+    /// silently.
+    ///
+    /// # Errors
+    /// Returns [`AuError::OsStatus`] with the AU's own status. Propagated rather
+    /// than absorbed: a host that jumps the playhead and silently fails to flush
+    /// produces audible garbage on the next block, and swallowing the error
+    /// would leave no way to tell that from a plugin that simply had no tail.
+    pub fn reset(&mut self) -> Result<()> {
+        // Global scope / element 0 is the documented address for a whole-unit
+        // reset; per-bus reset is not a thing AUv2 offers.
+        check("AudioUnitReset", unsafe {
+            AudioUnitReset(self.raw_unit(), K_AUDIO_UNIT_SCOPE_GLOBAL, 0)
+        })
     }
 
     /// Read a parameter value.
@@ -690,6 +759,19 @@ impl AuInstance {
     }
 
     /// Restore state previously produced by [`Self::save_state`]. Empty input is a no-op.
+    ///
+    /// A successful restore is followed by
+    /// [`notify_all_parameters`](crate::listener::notify_all_parameters), which
+    /// Apple's `ClassInfo` documentation mandates. Setting `ClassInfo` rewrites
+    /// the AU's entire parameter set *inside* the AU, without issuing a single
+    /// `AUParameterSet` — so no listener hears about any of it. Without the
+    /// notify, opening a project leaves every open plugin editor displaying the
+    /// values from before the load: the audio is correct and the UI is a lie,
+    /// and it stays a lie until the user nudges each control by hand.
+    ///
+    /// # Errors
+    /// Returns [`AuError::OsStatus`] if the AU rejects the state blob. A failure
+    /// of the *notify* is deliberately not propagated — see the inline comment.
     pub fn load_state(&mut self, data: &[u8]) -> Result<()> {
         tutti_plugin_types::assert_main_thread();
         if data.is_empty() {
@@ -704,8 +786,17 @@ impl AuInstance {
                 K_AUDIO_UNIT_SCOPE_GLOBAL,
                 0,
                 &raw,
-            )
+            )?;
         }
+        // The state IS loaded at this point. A failed notify means open editors
+        // may show stale values — bad, but strictly less bad than reporting the
+        // whole restore as failed, which would have a caller retry or discard a
+        // load that actually succeeded. The AU's parameters are correct either
+        // way; only the UI refresh is at stake.
+        //
+        // SAFETY: `raw_unit` is live for the lifetime of this instance.
+        let _ = unsafe { crate::listener::notify_all_parameters(self.raw_unit()) };
+        Ok(())
     }
 
     /// Render `num_frames` of audio through the AU.

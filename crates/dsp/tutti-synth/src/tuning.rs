@@ -1,5 +1,13 @@
 //! Microtuning support with pre-computed 128-note frequency table.
 
+use tutti_core::{Cents, Semitones};
+
+// A second copy of A440. `Note::A4_HZ` is the engine's canonical one but is
+// private to `tutti-types`, and widening its visibility is a bigger change
+// than this file should make on its way past. The value is fixed by
+// definition, so the duplication is inert — unlike the *conversions* that used
+// to sit beside it, which are now `Semitones::to_pitch_ratio` and
+// `Cents::to_pitch_ratio`.
 const A4_FREQ: f32 = 440.0;
 const A4_NOTE: u8 = 69;
 
@@ -171,8 +179,8 @@ impl Tuning {
         let scale_size = self.degrees.len();
         if scale_size == 0 {
             for note in 0..128 {
-                let semitones = note as f32 - f32::from(self.reference_note);
-                self.freq_table[note] = self.reference_freq * 2.0_f32.powf(semitones / 12.0);
+                let semitones = Semitones(note as f32 - f32::from(self.reference_note));
+                self.freq_table[note] = self.reference_freq * semitones.to_pitch_ratio();
             }
             return;
         }
@@ -188,9 +196,9 @@ impl Tuning {
             let ref_cents = self.degrees[ref_scale_pos].cents;
 
             let octave_diff = note_octave - ref_octave;
-            let cents_diff = note_cents - ref_cents + (octave_diff as f32 * 1200.0);
+            let cents_diff = Cents(note_cents - ref_cents + (octave_diff as f32 * 1200.0));
 
-            self.freq_table[note] = self.reference_freq * 2.0_f32.powf(cents_diff / 1200.0);
+            self.freq_table[note] = self.reference_freq * cents_diff.to_pitch_ratio();
         }
     }
 

@@ -424,9 +424,9 @@ impl SynthVoice {
             return;
         }
 
-        let pitch_bend_semitones = self.mpe.pitch_bend_semitones.get();
-        if pitch_bend_semitones.abs() > 0.001 {
-            let multiplier = 2.0_f32.powf(pitch_bend_semitones / 12.0);
+        let pitch_bend_semitones = self.mpe.pitch_bend_semitones;
+        if pitch_bend_semitones.get().abs() > 0.001 {
+            let multiplier = pitch_bend_semitones.to_pitch_ratio();
             let freq = self.base_note_freq.get() * multiplier;
             if let Some(u) = unison {
                 for (i, sub) in self.sub_voices.iter_mut().enumerate() {

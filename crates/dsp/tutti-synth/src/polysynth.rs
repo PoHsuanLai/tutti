@@ -403,8 +403,7 @@ impl PolySynth {
 
         if let Some(slot_index) = slot_index {
             let base_freq = self.config.tuning.fractional_note_to_freq(f32::from(note));
-            let bend_semitones = self.pitch_bend * self.config.pitch_bend_range.get();
-            let bend_multiplier = 2.0_f32.powf(bend_semitones / 12.0);
+            let bend_multiplier = (self.config.pitch_bend_range * self.pitch_bend).to_pitch_ratio();
 
             let target_freq = if let Some(ref mut porta) = self.portamento {
                 porta.set_target(base_freq, is_legato);
@@ -696,8 +695,8 @@ impl AudioUnit for PolySynth {
         if let Some(ref mut porta) = self.portamento {
             if porta.is_gliding() {
                 let porta_freq = porta.tick().get();
-                let bend_semitones = self.pitch_bend * self.config.pitch_bend_range.get();
-                let bend_multiplier = 2.0_f32.powf(bend_semitones / 12.0);
+                let bend_multiplier =
+                    (self.config.pitch_bend_range * self.pitch_bend).to_pitch_ratio();
                 let freq = porta_freq * bend_multiplier;
                 let unison_ref = self.unison.as_ref();
                 for voice in &mut self.voices {
@@ -795,10 +794,13 @@ impl AudioUnit for PolySynth {
 
             if let Some(ref mut porta) = self.portamento {
                 if porta.is_gliding() {
+                    // Hoisted: neither operand changes inside a block (MIDI is
+                    // handled at block boundaries), so this was recomputing an
+                    // unchanging `powf` on every sample.
+                    let bend_multiplier =
+                        (self.config.pitch_bend_range * self.pitch_bend).to_pitch_ratio();
                     for _ in 0..block_len {
                         let porta_freq = porta.tick().get();
-                        let bend_semitones = self.pitch_bend * self.config.pitch_bend_range.get();
-                        let bend_multiplier = 2.0_f32.powf(bend_semitones / 12.0);
                         let freq = porta_freq * bend_multiplier;
                         let unison_ref = self.unison.as_ref();
                         for voice in &mut self.voices {

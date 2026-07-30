@@ -78,6 +78,36 @@
 //!   absence of *delivery*. `au_notification.rs::a_dropped_listener_stops_delivering`
 //!   makes the same trade for parameters.
 //!
+//! ## Each test was proven load-bearing by mutating the source
+//!
+//! A test that cannot fail is worse than none, so every assertion below was
+//! checked against a deliberate break in `src/`, reverted after:
+//!
+//! | mutation | caught by |
+//! |---|---|
+//! | `value_strings` passes the input scope instead of `GLOBAL` | `value_strings_at_is_answered_only_on_the_global_scope` |
+//! | `clump_name` passes the input scope instead of `GLOBAL` | `clump_name_at_is_answered_only_on_the_global_scope` |
+//! | `TransportState::is_recording` reads the `cycling` atomic | `is_recording_and_is_cycling_read_their_own_flags` |
+//! | `stream_count` counts only the `Some` entries | `stream_count_is_the_length_of_the_name_list_including_unnamed_slots` |
+//! | `fourcc_to_string` decodes little-endian | `fourcc_to_string_is_big_endian_and_survives_non_utf8` |
+//! | `find_component` drops its null check | `find_component_reports_absence_rather_than_a_null_handle` |
+//! | `watch_property` registers `ParameterValueChange` instead of `PropertyChange` | all five `watch_property` tests |
+//!
+//! That last row is worth its own note, because it is what makes registration
+//! failure *informative*: AudioToolbox validates **parameter** ids but not
+//! **property** ids, so the tag confusion surfaces as
+//! `kAudioUnitErr_InvalidParameter` (-10878) at registration for the very ids
+//! [`registration_never_refuses_a_property_id`] asserts are accepted.
+//!
+//! One mutation was **not** caught, and the test that should have caught it says
+//! so: see [`the_at_string_conversions_report_absence_rather_than_fabricating_zero`].
+//!
+//! Every row was re-checked after the coalescing fix described in
+//! [`EventLog::settle_then_clear`] loosened three exact-sequence assertions into
+//! set membership, because loosening an assertion is exactly how a test stops
+//! being load-bearing. All five `watch_property` tests still fail under the tag
+//! mutation.
+//!
 //! ## Judged internal rather than tested
 //!
 //! `RenderScratch::bind_output` (`src/buffer.rs`) and `CfString`/`CfUrl`/
@@ -184,6 +214,29 @@ impl EventLog {
             std::thread::sleep(Duration::from_millis(5));
         }
         self.len() >= n
+    }
+
+    /// Wait for arrivals to stop, then empty the log — a phase boundary a later
+    /// assertion can count from.
+    ///
+    /// A bare [`Self::clear`] is **not** a phase boundary, and assuming it was
+    /// cost a flake that failed ~1 run in 5 on a loaded machine. The listener
+    /// coalesces over a 200 ms interval, so [`Self::wait_for_at_least`] returning
+    /// on the first event says nothing about the rest of that interval; whatever
+    /// is still in flight lands after the `clear` and is then counted against the
+    /// *next* phase's writes. Draining to a fixed point first is what makes the
+    /// count after this call attributable.
+    fn settle_then_clear(&self) {
+        let mut settled = self.len();
+        loop {
+            std::thread::sleep(QUIESCE);
+            let now = self.len();
+            if now == settled {
+                break;
+            }
+            settled = now;
+        }
+        self.clear();
     }
 }
 
@@ -297,10 +350,14 @@ fn a_property_listener_does_not_receive_properties_it_did_not_watch() {
         "the control half failed: even a subscribed BypassEffect change did not \
          arrive, so the silence above proves nothing about filtering"
     );
-    assert_eq!(
-        property_ids(&log.snapshot()),
-        vec![K_AUDIO_UNIT_PROPERTY_BYPASS_EFFECT],
-        "only the newly-watched property, and only once"
+    // Every id, not the count: the listener coalesces over a 200 ms interval, so
+    // how many events one write produces is AudioToolbox's scheduling rather than
+    // a contract. What *is* a contract is that no other property appears.
+    let ids = property_ids(&log.snapshot());
+    assert!(
+        ids.iter()
+            .all(|id| *id == K_AUDIO_UNIT_PROPERTY_BYPASS_EFFECT),
+        "only the newly-watched property may appear; got {ids:?}"
     );
 }
 
@@ -339,23 +396,35 @@ fn two_watched_properties_arrive_under_their_own_ids() {
         log.wait_for_at_least(1),
         "no event for the preset change within {SETTLE:?}"
     );
-    assert_eq!(
-        property_ids(&log.snapshot()),
-        vec![K_AUDIO_UNIT_PROPERTY_PRESENT_PRESET],
-        "a preset load posts PresentPreset, not BypassEffect"
+    // The *set* of ids, not the count: coalescing over the 200 ms interval makes
+    // the number of events AudioToolbox's scheduling rather than a contract. Which
+    // id appears is the contract, and it is what a collapsed union decode breaks.
+    let preset_phase = property_ids(&log.snapshot());
+    assert!(
+        preset_phase
+            .iter()
+            .all(|id| *id == K_AUDIO_UNIT_PROPERTY_PRESENT_PRESET),
+        "a preset load posts PresentPreset and nothing else; got {preset_phase:?}"
     );
 
-    log.clear();
+    // A drain, not a bare clear: the preset phase's own coalesced tail would
+    // otherwise land in the bypass phase and read as the two ids collapsing —
+    // which is the very bug this test exists to catch, so the boundary has to be
+    // real. See `EventLog::settle_then_clear`.
+    log.settle_then_clear();
+
     au.set_bypass(true).expect("bypass on");
     assert!(
         log.wait_for_at_least(1),
         "no event for the bypass change within {SETTLE:?}"
     );
-    assert_eq!(
-        property_ids(&log.snapshot()),
-        vec![K_AUDIO_UNIT_PROPERTY_BYPASS_EFFECT],
+    let bypass_phase = property_ids(&log.snapshot());
+    assert!(
+        bypass_phase
+            .iter()
+            .all(|id| *id == K_AUDIO_UNIT_PROPERTY_BYPASS_EFFECT),
         "a bypass write posts BypassEffect, not PresentPreset — the two ids must \
-         not collapse"
+         not collapse; got {bypass_phase:?}"
     );
 }
 
@@ -407,6 +476,22 @@ fn registration_never_refuses_a_property_id() {
 /// 40 post-teardown property writes were measured to deliver 0 events across 5
 /// trials. A passing run is evidence of no *delivery*, not a proof of no UB; the
 /// same trade `au_notification.rs::a_dropped_listener_stops_delivering` makes.
+///
+/// ## Why the pre-teardown traffic is drained before the drop
+///
+/// The obvious shape — write, wait for one event, drop, clear, write again — is
+/// **wrong**, and it cost a flake to find: it failed roughly 1 run in 5 on a
+/// loaded machine, reporting exactly 40 late events. The cause is coalescing, not
+/// a stale registration. `AuParameterListener` runs at a 200 ms notification
+/// interval, so the *first* event for the pre-teardown write can be followed by
+/// more from the same interval; `wait_for_at_least(1)` returns as soon as one
+/// lands, and anything still in flight arrives after `clear()` and is then
+/// misattributed to the post-teardown writes.
+///
+/// So the listener is quiesced — a full `QUIESCE` with no new arrivals — *before*
+/// it is dropped. That is what makes the count afterwards attributable to the
+/// writes that follow the dispose, which is the only thing a stale registration
+/// could explain.
 #[test]
 fn a_dropped_property_listener_stops_delivering() {
     let _g = lock();
@@ -427,8 +512,12 @@ fn a_dropped_property_listener_stops_delivering() {
          otherwise the silence afterwards means nothing"
     );
 
+    // Drain the notification interval the write above opened. Without this, its
+    // own coalesced tail lands after the clear and is counted against the
+    // post-teardown writes — see this test's docs.
+    log.settle_then_clear();
+
     drop(listener);
-    log.clear();
 
     // Enough writes that a stale registration would almost certainly be hit.
     for i in 0..40 {
@@ -576,12 +665,19 @@ fn clump_name_at_is_answered_only_on_the_global_scope() {
 /// than a fabricated success — relaxing it to "either works or doesn't" would
 /// make it unfalsifiable.
 ///
-/// The real content is the **NaN sentinel**: `value_from_string_at` seeds
-/// `outValue` with `f32::NAN` and rejects a non-finite result, precisely so an AU
-/// that returns `noErr` without writing the field cannot be read as a genuine
-/// parse of `0.0` — a value the host would then write into the user's preset. A
-/// `0.0` sentinel would make every failure below return `Some(0.0)`, and this
-/// asserts `None`.
+/// ## What this test does NOT cover, verified by mutation
+///
+/// `value_from_string_at` seeds `outValue` with `f32::NAN` and rejects a
+/// non-finite result, so that an AU returning `noErr` without writing the field
+/// cannot be read as a genuine parse of `0.0` — a value the host would then
+/// commit to the user's preset. **This test cannot catch a regression in that
+/// sentinel.** Replacing `f32::NAN` with `0.0` was tried against this suite and
+/// every assertion still passed, because the guard is
+/// `status != NO_ERR || !outValue.is_finite()` and on Apple's units the *status*
+/// arm always fires first — the sentinel is never reached. Proving it needs an AU
+/// that answers the property, and none exists on this machine (see the module
+/// docs' measured-absence table). Recorded here rather than left as an implied
+/// claim: the assertions below pin the `None`, not the mechanism that produces it.
 ///
 /// Subject: AUMultiChannelMixer, whose 8 input elements each carry a 7-parameter
 /// strip (ids 0 `Gain`, 1 `Enable`, 2 `Pan`, plus 4 metering pseudo-parameters),
@@ -634,9 +730,9 @@ fn the_at_string_conversions_report_absence_rather_than_fabricating_zero() {
                     None,
                     "AUMultiChannelMixer does not implement \
                      ParameterValueFromString; {label} id {id} text {text:?} \
-                     answered something. A `Some(0.0)` here means the NaN \
-                     sentinel was replaced by a zero and a failed parse is being \
-                     written into presets."
+                     answered something. If it is `Some`, re-measure before \
+                     relaxing this — a value fabricated from a failed parse is \
+                     what gets committed to the user's preset."
                 );
             }
         }

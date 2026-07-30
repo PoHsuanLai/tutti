@@ -246,6 +246,85 @@ pub unsafe fn cfstring_to_string(cf_str: sys::CFStringRef) -> String {
     s.to_string()
 }
 
+/// Copy a `CFStringRef` into an owned `String`, but only after confirming it
+/// really is a `CFString`.
+///
+/// Returns `None` for null, for a misaligned pointer, and for a live CF object
+/// of some other type.
+///
+/// ## Why this exists
+///
+/// [`cfstring_to_string`] guards only against null, which is sufficient for the
+/// strings *this crate* creates but not for a pointer an **AU** supplies. A unit
+/// whose preset table is corrupt or stale — or simply not made of `AUPreset`
+/// structs — hands back a non-null value that is not a CFString, and passing that
+/// to CoreFoundation aborts the process with SIGBUS. That was measured, not
+/// hypothesised: a probe AU returning a `CFArray` of `CFData` made
+/// `factory_presets` read CF header internals as `presetName` and killed the test
+/// binary. See `tests/au_misbehaving.rs`.
+///
+/// `CFGetTypeID` is the documented way to ask "what is this really", but it is
+/// **not safe to call on an arbitrary word** — it dereferences, and it aborts the
+/// process on a value that is not a CF reference. So the plausibility gate below
+/// runs first, and `CFGetTypeID` decides only among values that could be one.
+///
+/// ## The plausibility gate, and why plain alignment is the wrong test
+///
+/// Both halves were measured on macOS 15.6 / arm64:
+///
+/// | value | bit 63 | 8-aligned |
+/// |---|---|---|
+/// | `CFString::new("Clean")` (tagged) | 1 | no (`0x99339a0c57ed9bbe`) |
+/// | long `CFString` (real object)     | 0 | yes (`0x10559e480`) |
+/// | `CFData` (real object)            | 0 | yes (`0x10559e4d0`) |
+/// | garbage from a `CFData` header    | 0 | no (`0x2bc139001484`) |
+///
+/// CoreFoundation returns short strings as **tagged pointers** carrying the
+/// payload in the pointer word, so they are routinely misaligned — a bare
+/// alignment reject would discard exactly the names real AUs ship ("Clean",
+/// "Bright"), which is a bug this guard already had once. But `CFGetTypeID`
+/// *faults* on the garbage row, so the gate cannot simply be dropped either.
+///
+/// Bit 63 separates the two: it is set on every tagged reference and clear on
+/// both real objects and garbage. So a value is plausible when it is tagged
+/// (bit 63 set) **or** properly aligned, and only garbage — misaligned and
+/// untagged — is turned away before the dereference.
+///
+/// This is a heuristic, not a proof: a hostile value with bit 63 set would still
+/// reach `CFGetTypeID`. Nothing can fully validate a pointer a plugin asserts is
+/// valid; this narrows a guaranteed crash to an unlikely one while keeping every
+/// legitimate name.
+///
+/// # Safety
+/// `cf_str` must be null, or a pointer to a live CoreFoundation object (a real
+/// address or a tagged-pointer reference). It need not be a `CFString`: that is
+/// what this function checks.
+#[cfg(target_os = "macos")]
+pub unsafe fn cfstring_to_string_checked(cf_str: sys::CFStringRef) -> Option<String> {
+    if cf_str.is_null() {
+        return None;
+    }
+    let bits = cf_str as usize;
+    // See the table above: tagged references carry the payload in the pointer
+    // word and are legitimately misaligned, so they are admitted on the tag bit;
+    // everything else must be a properly-aligned address to be dereferenceable.
+    let tagged = (bits >> 63) & 1 == 1;
+    let aligned = bits.is_multiple_of(std::mem::align_of::<*const std::os::raw::c_void>());
+    if !tagged && !aligned {
+        return None;
+    }
+    use core_foundation::base::TCFType;
+    use core_foundation::string::CFString;
+    let cf_str = cf_str as core_foundation_sys::string::CFStringRef;
+    if core_foundation_sys::base::CFGetTypeID(cf_str as *const std::os::raw::c_void)
+        != core_foundation_sys::string::CFStringGetTypeID()
+    {
+        return None;
+    }
+    let s: CFString = TCFType::wrap_under_get_rule(cf_str);
+    Some(s.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -255,6 +334,65 @@ mod tests {
         assert_eq!(fourcc_to_string(K_AUDIO_UNIT_TYPE_EFFECT), "aufx");
         assert_eq!(fourcc_to_string(K_AUDIO_UNIT_TYPE_MUSIC_DEVICE), "aumu");
         assert_eq!(fourcc_to_string(K_AUDIO_UNIT_TYPE_GENERATOR), "augn");
+    }
+
+    /// The checked converter must accept a real CFString and reject everything
+    /// else, because it is the guard standing between a plugin-supplied pointer
+    /// and a CoreFoundation dereference.
+    ///
+    /// A non-CFString *live CF object* is the case that matters: an AU with a
+    /// corrupt preset table hands back a valid pointer to the wrong type, and the
+    /// unchecked converter aborted the process on it (SIGBUS). Covered here as a
+    /// unit test as well as in `tests/au_misbehaving.rs` so the guard is pinned
+    /// even without an AU present.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn cfstring_to_string_checked_rejects_non_strings() {
+        use core_foundation::base::TCFType;
+        use core_foundation::data::CFData;
+        use core_foundation::string::CFString;
+
+        // Genuine CFStrings round-trip. BOTH lengths are checked on purpose: on
+        // arm64 a short string comes back as a *tagged pointer* (misaligned, the
+        // payload inside the pointer word) while a long one is a real address.
+        // An earlier version of the guard rejected anything not pointer-aligned
+        // and so silently dropped every short preset name — exactly the names
+        // real AUs use ("Clean", "Bright").
+        for name in ["a", "Clean", "preset name", &"long name ".repeat(6)] {
+            let s = CFString::new(name);
+            let got =
+                unsafe { cfstring_to_string_checked(s.as_concrete_TypeRef() as sys::CFStringRef) };
+            assert_eq!(
+                got.as_deref(),
+                Some(name),
+                "a real CFString of length {} must round-trip; if this fails for \
+                 the short cases the guard is rejecting tagged pointers",
+                name.len()
+            );
+        }
+
+        // Null is rejected rather than turned into an empty string, so a caller
+        // can tell "no name" from "the AU gave us nothing".
+        assert!(unsafe { cfstring_to_string_checked(std::ptr::null()) }.is_none());
+
+        // A live CF object of the wrong type: valid, retained memory that is not
+        // a CFString. This is the shape that crashed the host with SIGBUS.
+        let data = CFData::from_buffer(&[0u8; 64]);
+        let mispointed = data.as_concrete_TypeRef() as *const std::os::raw::c_void;
+        assert!(
+            unsafe { cfstring_to_string_checked(mispointed as sys::CFStringRef) }.is_none(),
+            "a CFData must not be accepted as a CFString"
+        );
+
+        // Misaligned AND untagged: the shape recovered from a CFData header when
+        // it is misread as an `AUPreset`. `CFGetTypeID` faults on this (measured),
+        // so the plausibility gate must reject it before the dereference. Bit 63
+        // is clear here, which is what separates it from a tagged CFString.
+        let garbage = 0x2bc1_3900_1484usize as sys::CFStringRef;
+        assert!(
+            unsafe { cfstring_to_string_checked(garbage) }.is_none(),
+            "misaligned untagged garbage must be rejected without dereferencing"
+        );
     }
 
     #[test]

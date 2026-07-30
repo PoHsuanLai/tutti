@@ -609,11 +609,23 @@ impl AuInstance {
                 if ptr.is_null() {
                     return None;
                 }
+                // An element pointer that is not `AUPreset`-aligned is not an
+                // `AUPreset`, so reading a struct through it would be UB before
+                // any field is even examined.
+                //
+                // Unlike the `presetName` check below, an alignment gate IS
+                // correct here: these elements are plain `#[repr(C)]` structs
+                // living in the AU's own array, never CoreFoundation references,
+                // so the arm64 tagged-pointer encoding that makes short
+                // CFStrings legitimately misaligned cannot apply.
+                if !(ptr as usize).is_multiple_of(std::mem::align_of::<AUPreset>()) {
+                    return None;
+                }
                 // SAFETY: the elements of a FactoryPresets array are `AUPreset`
                 // structs, per `kAudioUnitProperty_FactoryPresets`'s documented
-                // value type. The pointer borrows from `array`, which outlives
-                // this closure body, and everything is copied out before it
-                // drops.
+                // value type. `ptr` is non-null and correctly aligned (checked
+                // above) and borrows from `array`, which outlives this closure
+                // body; everything is copied out before it drops.
                 let preset = unsafe { &*ptr };
                 Some(AuPreset {
                     number: preset.presetNumber,
@@ -623,7 +635,18 @@ impl AuInstance {
                     // would release a string the host never owned — an
                     // over-release that corrupts the AU's table and crashes on
                     // the *next* enumeration, far from the cause.
-                    name: unsafe { cfstring_to_string(preset.presetName) },
+                    //
+                    // `checked` rather than the bare conversion: the AU supplies
+                    // this pointer, and a unit whose preset table is corrupt,
+                    // stale, or simply not made of `AUPreset`s hands back a
+                    // non-null value that is not a CFString at all. The old
+                    // unchecked read only guarded against null, so any other
+                    // garbage went straight into CoreFoundation and took the
+                    // process down with SIGBUS — measured against a probe AU
+                    // returning a `CFArray` of `CFData`, where the bytes at
+                    // `presetName`'s offset are CF header internals.
+                    name: unsafe { cfstring_to_string_checked(preset.presetName) }
+                        .unwrap_or_default(),
                 })
             })
             .collect()

@@ -6,9 +6,9 @@
 //! question with an audible wrong answer: an `AudioStreamBasicDescription`
 //! carrying `mChannelsPerFrame == 6` describes a 5.1 bus without saying whether
 //! channel 3 is the centre or the LFE. Apple's own header is explicit that
-//! `kAudioUnitProperty_StreamFormat` "cannot specify channel layout or purpose".
-//! Get the order wrong and centre dialog lands in the subwoofer while the LFE
-//! rumble is sent to the centre speaker — full level, wrong driver.
+//! `kAudioUnitProperty_StreamFormat` "cannot specify channel layout or
+//! purpose" — get the order wrong there and centre dialog swaps places with
+//! the subwoofer rumble, full level, wrong driver.
 //!
 //! Three properties live here:
 //!
@@ -21,16 +21,15 @@
 //! Element names are here rather than in [`crate::bus`] for two reasons: the
 //! property is addressed by the same `(scope, element)` pair the layout
 //! properties are, and unlike everything in `bus.rs` it returns a
-//! **CoreFoundation reference the host owns** (see [`element_name`]), which is an
-//! ownership discipline `bus.rs` deliberately has none of.
+//! **CoreFoundation reference the host owns** (see [`element_name`]) — an
+//! ownership discipline `bus.rs` has none of.
 //!
 //! # What was measured on macOS 15.6
 //!
-//! Every assertion this module's docs make was probed against the ~35 Apple AUs
-//! plus TDR Nova / TAL-NoiseMaker / TAL-Reverb-4 before it was written. Two of
-//! those measurements changed the shape of this API and are called out at the
-//! functions they constrain: [`set_layout_tag`] (the width gate) and
-//! [`element_name`] (the retain-count leak).
+//! Every assertion here was probed against the ~35 Apple AUs plus TDR Nova /
+//! TAL-NoiseMaker / TAL-Reverb-4. Two measurements shaped the API:
+//! [`set_layout_tag`] (the width gate) and [`element_name`] (the retain-count
+//! leak).
 
 #![cfg(target_os = "macos")]
 
@@ -47,18 +46,17 @@ use crate::types::*;
 /// # Why a typed enum with an `Unknown` arm
 ///
 /// The tag namespace is an **open catalog**: CoreAudioTypes.h ships well over a
-/// hundred tags, Apple adds more per release (spatial-audio layouts arrived that
-/// way), and third-party AUs may publish any of them. A closed enum would turn
-/// every OS update into a decode failure, and a bare `u32` would let a caller
-/// compare a tag against a channel *count* and compile. So the variants name the
-/// layouts a DAW routes by hand, and [`Self::Unknown`] carries anything else
-/// verbatim so it can still be echoed back to the AU or logged.
+/// hundred tags and Apple adds more per release, and third-party AUs may
+/// publish any of them. A closed enum would turn every OS update into a decode
+/// failure, and a bare `u32` would let a caller compare a tag against a channel
+/// *count* and compile. So the variants name the layouts a DAW routes by hand,
+/// and [`Self::Unknown`] carries anything else verbatim for echoing back to the
+/// AU or logging.
 ///
 /// # The alias trap
 ///
-/// Several of Apple's constants are **the same numeric value under two names**:
-///
-/// Values read off this SDK (macOS 15.6), not copied from documentation:
+/// Several of Apple's constants are **the same numeric value under two names**
+/// — read off this SDK (macOS 15.6), not copied from documentation:
 ///
 /// | value | names |
 /// |---|---|
@@ -78,13 +76,7 @@ use crate::types::*;
 /// aliases it also answers for. The [`tests`] module pins the aliasing so a
 /// future SDK that splits a pair fails a test rather than changing behaviour.
 ///
-/// # `channel_count`
-///
-/// Apple encodes the channel count in the tag's low 16 bits, which is what makes
-/// [`Self::channel_count`] work for `Unknown` too. That is not a coincidence to
-/// rely on blindly — `UseChannelDescriptions` and `UseChannelBitmap` encode `0`
-/// there and mean "look elsewhere" — so both are named variants and
-/// `channel_count` reports `None` for them rather than a misleading zero.
+/// See [`Self::channel_count`] for how the width is recovered from the raw tag.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum AuLayoutTag {
@@ -95,12 +87,10 @@ pub enum AuLayoutTag {
     /// `mNumberChannelDescriptions`, not in the tag.
     UseChannelDescriptions,
     /// `kAudioChannelLayoutTag_UseChannelBitmap`: the channels are named by an
-    /// `AudioChannelBitmap` instead. Apple's `SupportedChannelLayoutTags`
-    /// documentation states outright that the bitmap form "is NOT used within
-    /// the context of the AudioUnit", so a host seeing this from an AU is
-    /// looking at a misbehaving unit — the variant exists so it is *named*
-    /// rather than falling into `Unknown` where it would be indistinguishable
-    /// from a tag from a newer SDK.
+    /// `AudioChannelBitmap` instead. Apple's docs state the bitmap form "is NOT
+    /// used within the context of the AudioUnit", so an AU reporting this is
+    /// misbehaving — the variant exists so that is *named* rather than falling
+    /// into `Unknown`, indistinguishable from a tag from a newer SDK.
     UseChannelBitmap,
     /// One channel. Also `MPEG_1_0`, `ITU_1_0`, `DVD_0`, `AudioUnit_1`.
     Mono,
@@ -137,15 +127,13 @@ pub enum AuLayoutTag {
     /// Eight channels arranged as a cube.
     Cube,
     /// Five channels, L R C Ls Rs — the **AU** 5.0 order. Also
-    /// `kAudioChannelLayoutTag_MPEG_5_0_B`. Measured: AUMatrixReverb publishes
-    /// this on its output, and it is *not* the same value as
-    /// [`Self::Pentagonal`] despite both being five channels.
+    /// `kAudioChannelLayoutTag_MPEG_5_0_B`; NOT the same value as
+    /// [`Self::Pentagonal`] despite both being five channels. Measured:
+    /// AUMatrixReverb publishes this on its output.
     AudioUnit5_0,
-    /// Six channels, L R C Ls Rs LFE — the **AU** 5.1 order. Also
+    /// Six channels, L R C Ls Rs LFE — the **AU** 5.1 order, and the layout
+    /// whose order the module docs are about. Also
     /// `kAudioChannelLayoutTag_MPEG_5_1_A` and `ITU_3_2_1`.
-    ///
-    /// This is the layout whose *order* the module docs are about: get it wrong
-    /// and the centre channel and the LFE swap places.
     AudioUnit5_1,
     /// Six channels, L R Ls Rs C Cs.
     AudioUnit6_0,
@@ -163,10 +151,9 @@ pub enum AuLayoutTag {
 impl AuLayoutTag {
     /// Decode a raw `AudioChannelLayoutTag`.
     ///
-    /// Written as a `match` on `const` patterns rather than an `if` chain
-    /// precisely so the compiler enforces the no-duplicate-value rule the type
-    /// docs describe: adding an aliased constant here is a hard error, not a
-    /// silently-shadowed arm.
+    /// A `match` on `const` patterns rather than an `if` chain, so the compiler
+    /// enforces the no-duplicate-value rule from the type docs: an aliased
+    /// constant added here is a hard error, not a silently-shadowed arm.
     pub fn from_raw(raw: u32) -> Self {
         // Local consts so these are `match` patterns (which reject duplicates)
         // rather than guard expressions (which would not).
@@ -219,8 +206,8 @@ impl AuLayoutTag {
     /// The raw `AudioChannelLayoutTag` value, for writing back to the AU.
     ///
     /// Round-trips with [`Self::from_raw`] for every named variant *and* for
-    /// `Unknown`, which is the whole point of keeping the raw value: a host can
-    /// read a tag it does not understand off one AU and set it on another.
+    /// `Unknown` — a host can read a tag it does not understand off one AU and
+    /// set it on another.
     pub fn to_raw(self) -> u32 {
         match self {
             Self::UseChannelDescriptions => K_AUDIO_CHANNEL_LAYOUT_TAG_USE_CHANNEL_DESCRIPTIONS,
@@ -296,19 +283,17 @@ impl std::fmt::Display for AuLayoutTag {
 /// The `AudioChannelLayout` byte length the AU properties actually want.
 ///
 /// `AudioChannelLayout` is a C flexible-array struct: the Rust binding declares
-/// `mChannelDescriptions: [AudioChannelDescription; 1]`, so
-/// `size_of::<AudioChannelLayout>()` counts one description that a tag-only
-/// layout does not have. Subtracting it gives the 12-byte header — tag, bitmap,
-/// description count — which is the form Apple documents for a tag-only layout
-/// ("the client ... is only expected to have set an AudioChannelLayout which only
-/// sets the layout tag as the valid field").
+/// `mChannelDescriptions: [AudioChannelDescription; 1]`, so `size_of` counts one
+/// description a tag-only layout does not have. Subtracting it gives the
+/// 12-byte header — tag, bitmap, description count — the form Apple documents
+/// for a tag-only layout ("is only expected to have set ... the layout tag as
+/// the valid field").
 ///
 /// Measured on macOS 15.6: AUMatrixReverb accepts **both** 12 and 32 bytes for a
-/// tag-only write, so the smaller size is not load-bearing for that unit. It is
-/// used anyway because it is the size that is *correct* — sending 32 bytes claims
-/// a description array that was never populated, and an AU that validated
-/// `mNumberChannelDescriptions` against the byte count would be right to refuse
-/// it.
+/// tag-only write, so the smaller size is used because it is *correct*, not
+/// because it is required — 32 bytes claims a description array that was never
+/// populated, which a stricter AU validating `mNumberChannelDescriptions`
+/// against the byte count would rightly refuse.
 const TAG_ONLY_LAYOUT_SIZE: usize =
     size_of::<AudioChannelLayout>() - size_of::<AudioChannelDescription>();
 
@@ -316,27 +301,22 @@ const TAG_ONLY_LAYOUT_SIZE: usize =
 ///
 /// # Empty is "declines to say", never "supports nothing"
 ///
-/// Same reading as [`crate::bus::supported_channel_configs`], and for the same
-/// reason: `kAudioUnitProperty_SupportedChannelLayoutTags` is optional and most
-/// units simply refuse it. Measured on macOS 15.6, of ~38 units only **11**
-/// answer at all — AUMatrixReverb, AUSampler, AUMIDISynth, AUNewPitch,
-/// AURoundTripAAC, AUNetSend, AUMixer3D, AUMultiChannelMixer and the three
-/// third-party units. AUDelay, AUNBandEQ, AUMatrixMixer and the rest all report
-/// `kAudioUnitErr_InvalidProperty` (-10879). Treating that refusal as an error
-/// would make "this AU has no opinion on channel order" — the common case —
-/// indistinguishable from a failed read, so it is absorbed into an empty vec
-/// exactly as the channel-config reader absorbs its own.
+/// Same reading as [`crate::bus::supported_channel_configs`]:
+/// `kAudioUnitProperty_SupportedChannelLayoutTags` is optional and most units
+/// simply refuse it. Measured on macOS 15.6, of ~38 units only **11** answer at
+/// all — AUMatrixReverb, AUSampler, AUMIDISynth, AUNewPitch, AURoundTripAAC,
+/// AUNetSend, AUMixer3D, AUMultiChannelMixer and the three third-party units.
+/// AUDelay, AUNBandEQ, AUMatrixMixer and the rest all report
+/// `kAudioUnitErr_InvalidProperty` (-10879), absorbed into an empty vec rather
+/// than an error — the common case is an AU with no opinion, not a failed read.
 ///
-/// # A published tag is not a settable tag
-///
-/// The list is what the AU understands *in principle*. Whether it will accept a
-/// given entry right now depends on the bus's configured width — see
-/// [`set_layout_tag`], which documents the measurement.
+/// A published tag is not a settable tag: the list is what the AU understands
+/// *in principle*, and whether it accepts a given entry right now depends on
+/// the bus's configured width — see [`set_layout_tag`]'s width gate.
 ///
 /// Duplicates are returned verbatim rather than deduplicated: AUNewPitch
-/// publishes `Quadraphonic` twice (measured), which is the AU describing its own
-/// table, and silently collapsing it would hide that from a host displaying the
-/// list.
+/// publishes `Quadraphonic` twice (measured), the AU describing its own table,
+/// and collapsing it would hide that from a host displaying the list.
 pub(crate) unsafe fn supported_layout_tags(
     unit: AudioUnit,
     direction: BusDirection,
@@ -375,15 +355,15 @@ pub(crate) unsafe fn supported_layout_tags(
 ///   AUSampler's output, which *does* publish `[Mono, Stereo]` as supported.
 /// * `kAudioUnitErr_InvalidElement` (-10877) — no such bus.
 ///
-/// A host that wanted a default would have to pick a speaker order, and picking
-/// one for a bus whose order is genuinely unknown is how centre dialog ends up in
-/// the LFE. So the absence is reported, and the caller decides.
+/// A default would mean picking a speaker order for a bus whose order is
+/// genuinely unknown — how centre dialog ends up in the LFE — so the absence is
+/// reported and the caller decides.
 ///
-/// Only the tag is returned, not the whole `AudioChannelLayout`. Every unit
+/// Only the tag is returned, not the whole `AudioChannelLayout`: every unit
 /// measured answers with a tag-only layout (`mNumberChannelDescriptions == 0`),
-/// and a description array would need an owned allocation whose only consumer
-/// would be a `UseChannelDescriptions` unit — none of which sets one. If that
-/// changes, this returns the tag `UseChannelDescriptions` and a caller can tell.
+/// and a description array would need an owned allocation whose only consumer —
+/// a `UseChannelDescriptions` unit — none of them sets. If that changes, this
+/// returns the tag `UseChannelDescriptions` and a caller can tell.
 pub(crate) unsafe fn layout_tag(
     unit: AudioUnit,
     direction: BusDirection,
@@ -395,11 +375,11 @@ pub(crate) unsafe fn layout_tag(
         direction.scope(),
         bus,
     )?;
-    // The AU controls this length. Measured sizes differ per unit for the same
-    // logical value — AUMatrixReverb reports 32 bytes, AUMultiChannelMixer and
-    // AUSampler 12 — so a `get_property::<AudioChannelLayout>` with its fixed
-    // `size_of` would be reading a length neither of them agreed to. Anything
-    // shorter than the 4-byte tag has no tag to report.
+    // The AU controls this length, and measured sizes differ per unit for the
+    // same logical value (AUMatrixReverb: 32 bytes; AUMultiChannelMixer and
+    // AUSampler: 12), so a fixed-`size_of` `get_property::<AudioChannelLayout>`
+    // would read a length neither agreed to. Anything shorter than the 4-byte
+    // tag has no tag to report.
     if bytes.len() < size_of::<u32>() {
         return Err(AuError::OsStatus {
             function: "channel_layout::layout_tag",
@@ -431,18 +411,17 @@ pub(crate) unsafe fn layout_tag(
 /// | 2 | `Quadraphonic` | **-10851** |
 ///
 /// Apple's header states the rule ("The number of channels it describes must
-/// match the number of channels set for that scope/element") but the failure is
-/// worth spelling out because of how it presents: at the *default* stereo width
-/// every surround tag the AU advertises is refused, so a host that read the
-/// supported list and set an entry from it straight away would conclude the AU
-/// was lying. It is not — the width has to be applied first, via
+/// match the number of channels set for that scope/element"), but it is worth
+/// spelling out because of how it presents: at the *default* stereo width every
+/// surround tag the AU advertises is refused, so a host that read the supported
+/// list and set an entry from it straight away would conclude the AU was lying.
+/// It is not — the width has to be applied first, via
 /// [`crate::stream::StreamConfig`] / `AuInstance::new_with_config`.
 ///
 /// This function deliberately does **not** widen the stream format on the
-/// caller's behalf. Reconfiguring a bus's width is
-/// [`crate::stream`]'s duty, it requires an uninitialized AU, and silently doing
-/// it here would mean a "set the channel order" call resized buffers the caller
-/// had already allocated.
+/// caller's behalf: reconfiguring width is [`crate::stream`]'s duty, requires
+/// an uninitialized AU, and doing it here would silently resize buffers the
+/// caller had already allocated.
 ///
 /// # Errors
 ///
@@ -455,10 +434,10 @@ pub(crate) unsafe fn layout_tag(
 /// * `kAudioUnitErr_InvalidProperty` (-10879) — the AU has no channel-layout
 ///   property, so there is no order to set.
 ///
-/// The failure is propagated rather than absorbed for the reason
-/// [`crate::instance::AuInstance::set_bypass`]'s is: a host that believes it set
-/// 5.1 while the AU kept stereo will route six channels into a two-channel bus
-/// and never learn why the surround came out wrong.
+/// Propagated rather than absorbed for the same reason as
+/// [`crate::instance::AuInstance::set_bypass`]: a host that believes it set 5.1
+/// while the AU kept stereo will route six channels into a two-channel bus and
+/// never learn why the surround came out wrong.
 pub(crate) unsafe fn set_layout_tag(
     unit: AudioUnit,
     direction: BusDirection,
@@ -467,10 +446,10 @@ pub(crate) unsafe fn set_layout_tag(
 ) -> Result<()> {
     let layout = AudioChannelLayout {
         mChannelLayoutTag: tag.to_raw(),
-        // Zeroed, and deliberately so: Apple's header says the bitmap form "is
-        // NOT used within the context of the AudioUnit", and a tag-only layout
-        // declares no descriptions. A non-zero count here would promise an array
-        // that `TAG_ONLY_LAYOUT_SIZE` bytes do not carry.
+        // Zeroed deliberately: Apple's header says the bitmap form "is NOT used
+        // within the context of the AudioUnit", and a tag-only layout declares
+        // no descriptions. A non-zero count here would promise an array that
+        // `TAG_ONLY_LAYOUT_SIZE` bytes do not carry.
         mChannelBitmap: 0,
         mNumberChannelDescriptions: 0,
         mChannelDescriptions: [AudioChannelDescription::default(); 1],
@@ -512,24 +491,24 @@ pub(crate) unsafe fn set_layout_tag(
 /// | TAL-NoiseMaker `out[0]` "Output Master" | **2** — a real, mortal object |
 ///
 /// Reading the TAL-NoiseMaker name ten times **without** releasing walks the
-/// retain count `2,3,4,…,11`; releasing each read holds it flat at `2`. So the
-/// leak is real and only that unit exposes it — a host that tested against
-/// Apple's units alone would see immortal strings, conclude no release was
-/// needed, and leak one CFString per read on every third-party AU. A UI polling
-/// bus names on a redraw leaks unboundedly.
+/// retain count `2,3,4,…,11`; releasing each read holds it flat at `2`. The leak
+/// is real and only that unit exposes it — a host tested against Apple's units
+/// alone would see immortal strings, conclude no release was needed, and leak
+/// one CFString per read on every third-party AU. A UI polling bus names on a
+/// redraw leaks unboundedly.
 ///
 /// [`crate::cf::CfString::from_copied`] takes that +1 and releases on drop, on
 /// every path out including the `checked` rejection below.
 ///
 /// # `_checked`, not the bare converter
 ///
-/// The pointer comes from the plugin. `cfstring_to_string_checked` is what stands
+/// The pointer comes from the plugin. `cfstring_to_string_checked` stands
 /// between an AU that answers `noErr` with garbage and a `SIGBUS` inside
-/// CoreFoundation — the crash class that was already fixed once here, on
-/// factory-preset names. Element names are also exactly the short strings whose
-/// arm64 form is a **tagged pointer**: "Input" is legitimately misaligned, so the
-/// checked converter's tag-bit allowance (not a plain alignment test) is what
-/// keeps them from being silently dropped.
+/// CoreFoundation — the crash class already fixed once here, on factory-preset
+/// names. Element names are also exactly the short strings whose arm64 form is
+/// a **tagged pointer**: "Input" is legitimately misaligned, so it is the
+/// checked converter's tag-bit allowance, not a plain alignment test, that keeps
+/// them from being silently dropped.
 ///
 /// # Errors
 ///
@@ -539,17 +518,16 @@ pub(crate) unsafe fn set_layout_tag(
 /// * `kAudioUnitErr_PropertyNotInUse` (-10850) — the bus exists but the AU gave
 ///   it no name. Measured: **every Apple mixer**. AUMultiChannelMixer returns
 ///   -10850 for inputs 0..=7 and AUMatrixMixer for 0..=63 — i.e. for exactly
-///   their real buses. So the task's premise that mixers are the subjects here is
-///   wrong on this machine: Apple's mixers publish no element names at all, and
-///   the units that do are DLSMusicDevice (`out[0]` "stereo mix", `out[1]`
-///   "unused") plus the third-party effects (TDR Nova `in[1]` "Sidechain").
+///   their real buses. So Apple's mixers publish no element names at all on
+///   this machine; the units that do are DLSMusicDevice (`out[0]` "stereo
+///   mix", `out[1]` "unused") plus the third-party effects (TDR Nova `in[1]`
+///   "Sidechain").
 /// * `kAudioUnitErr_InvalidElement` (-10877) — no such bus. Measured:
 ///   AUMultiChannelMixer input 8, AUMatrixMixer input 64, DLSMusicDevice output
 ///   2 — one past each unit's real count in every case.
 ///
-/// That -10850/-10877 split is the useful part: it is a name-less bus versus a
-/// bus that does not exist, and a host sizing buffers cannot afford to confuse
-/// them. Returning `Ok(String::new())` for either would erase the difference.
+/// The split is the useful part — a name-less bus versus one that does not
+/// exist — and `Ok(String::new())` for either would erase it.
 pub(crate) unsafe fn element_name(
     unit: AudioUnit,
     direction: BusDirection,
@@ -569,13 +547,13 @@ pub(crate) unsafe fn element_name(
         ),
     )?;
 
-    // Take ownership of the +1 FIRST, before anything can return early. The
+    // Take ownership of the +1 FIRST, before anything can return early: the
     // `checked` conversion below can reject the pointer, and an early return
-    // that happened before this line would leak the retain the AU just handed
-    // over — the exact leak the doc comment above measured.
+    // ahead of this line would leak the retain the AU just handed over — the
+    // exact leak the doc comment above measured.
     //
-    // `from_copied` is null-tolerant and returns `None`, which is the honest
-    // answer for a unit that reports `noErr` with a null string.
+    // `from_copied` is null-tolerant and returns `None`, the honest answer for a
+    // unit that reports `noErr` with a null string.
     let owned = crate::cf::CfString::from_copied(raw);
     let Some(_owned) = owned else {
         return Err(AuError::OsStatus {

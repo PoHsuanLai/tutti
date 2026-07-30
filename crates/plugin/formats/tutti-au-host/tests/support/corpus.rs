@@ -4,10 +4,10 @@
 //!
 //! `tutti-clap-host` builds its own reference plugin as a dev-dependency, and
 //! `tutti-vst3-host` needs an external SDK checkout. AU needs neither: macOS
-//! ships ~30 Apple Audio Units in `/System/Library/Components`, they are part
-//! of the OS rather than an optional install, and they cover the shapes a host
-//! has to get right — an effect with parameters, one with real reported
-//! latency, one that renders silence, and two instruments with no input bus.
+//! ships ~30 Apple Audio Units in `/System/Library/Components` as part of the
+//! OS, and they cover the shapes a host has to get right — an effect with
+//! parameters, one with real reported latency, one that renders silence, and
+//! two instruments with no input bus.
 //!
 //! So the corpus is Apple's own units, addressed by exact four-char type /
 //! subtype / manufacturer codes rather than by display-name substring. A name
@@ -210,17 +210,13 @@ pub const MIXERS: &[AuRef] = &[MATRIX_MIXER, MULTI_CHANNEL_MIXER, MULTI_SPLITTER
 
 /// Effects paired with the tail time each reports, in seconds.
 ///
-/// Measured on macOS 15.6 at 48 kHz. Pinned as exact values rather than merely
-/// "non-zero" because the failure this guards against is reading the *wrong
-/// property*: `kAudioUnitProperty_TailTime` (20) sits next to `Latency` (12) and
-/// several other `Float64` global-scope properties, and a host that read latency
-/// by mistake would still get a plausible non-zero float out of
-/// AUDynamicsProcessor. The pairs below disagree with the latency column
-/// everywhere it matters — AUMatrixReverb reports 10 s of tail and 0 latency,
-/// AUDynamicsProcessor 0.2 s of tail and 256 samples of latency — so only a read
-/// of the correct property satisfies all of them.
-///
-/// [`NO_TAIL_EFFECTS`] carries the zero-tail side of the same measurement.
+/// Measured on macOS 15.6 at 48 kHz. Pinned as exact values, not merely
+/// "non-zero", because the failure guarded against is reading the *wrong
+/// property* — `TailTime` (20) sits next to `Latency` (12) — and these pairs
+/// disagree with the latency column everywhere it matters (AUMatrixReverb: 10s
+/// tail, 0 latency; AUDynamicsProcessor: 0.2s tail, 256-sample latency), so
+/// only the correct property satisfies both. [`NO_TAIL_EFFECTS`] is the
+/// zero-tail counterpart.
 pub const TAIL_EFFECTS: &[(AuRef, f32)] = &[
     (MATRIX_REVERB, 10.0),
     (REVERB2, 3.0),
@@ -232,12 +228,10 @@ pub const TAIL_EFFECTS: &[(AuRef, f32)] = &[
 
 /// Effects measured to report a tail of exactly zero.
 ///
-/// The counterweight to [`TAIL_EFFECTS`]: a unit that genuinely has no tail
-/// answers the property with `0.0`, which is a different fact from an
-/// instrument's refusal to answer at all. Keeping a named zero-tail unit is what
-/// stops a host from "helpfully" absorbing the refusal into a zero — the two
-/// would then be indistinguishable, and a bounce would truncate the tail of
-/// every unit whose tail it could not read.
+/// The counterweight to [`TAIL_EFFECTS`]: a genuine zero tail is a different
+/// fact from an instrument's refusal to answer at all, and naming one is what
+/// stops a host from conflating them — a bounce would otherwise truncate the
+/// tail of every unit whose tail it could not read.
 pub const NO_TAIL_EFFECTS: &[AuRef] = &[NO_VIEW_SAMPLE_DELAY];
 
 /// Units measured to reject `kAudioUnitProperty_TailTime` outright with
@@ -294,14 +288,12 @@ pub fn all_finite(buffers: &[Vec<f32>]) -> bool {
 /// Units measured to **accept** a 1-channel stream format on every scope they
 /// have, and to `AudioUnitInitialize` at it.
 ///
-/// Measured on macOS 15.6 by setting a mono float32 ASBD on the output (and,
-/// where present, input) scope and reading it back: these report
-/// `mChannelsPerFrame == 1` and initialize with `noErr`. 12 of the 15 units
-/// probed did; the exceptions are in [`REFUSES_MONO`].
-///
-/// Named rather than derived at runtime because the point is to pin a *measured*
-/// fact: a host that silently widened mono to stereo would still pass a test that
-/// asked the AU what it supports and then asserted agreement with itself.
+/// Measured on macOS 15.6 by setting a mono float32 ASBD and reading it back:
+/// these report `mChannelsPerFrame == 1` and initialize with `noErr`. 12 of 15
+/// units probed did; the exceptions are in [`REFUSES_MONO`]. Named rather than
+/// derived at runtime because a host that silently widened mono to stereo
+/// would still pass a test that asked the AU what it supports and then
+/// asserted agreement with itself.
 ///
 /// Every member also accepts a 4-channel format, which
 /// `a_quad_request_is_honoured_where_the_au_takes_it` relies on.
@@ -323,14 +315,11 @@ pub const REFUSES_MONO: &[AuRef] = &[MATRIX_REVERB, DLS_SYNTH];
 /// Parameters measured to publish `kAudioUnitProperty_ParameterValueStrings`,
 /// as `(unit, parameter id, count, first label, last label)`.
 ///
-/// The count and the end labels are pinned, not merely "non-empty", because the
-/// failure being guarded is a **truncated or misordered** `CFArray` walk — an
-/// off-by-one in the index loop, or elements silently dropped — and every one of
-/// those passes an "at least one string" check.
-///
-/// Measured on macOS 15.6. AUNBandEQ publishes the same 11 filter names on each
-/// of its 8 band `Type` parameters (ids 2000..=2007); id 2000 is the
-/// representative. Note it does this with
+/// The count and end labels are pinned, not merely "non-empty", because the
+/// failure guarded against is a **truncated or misordered** `CFArray` walk,
+/// which an "at least one string" check would still pass. Measured on macOS
+/// 15.6: AUNBandEQ publishes the same 11 filter names on each of its 8 band
+/// `Type` parameters (ids 2000..=2007; id 2000 is the representative), with
 /// `kAudioUnitParameterFlag_ValuesHaveStrings` **clear** — see
 /// `au_param_display.rs::value_strings_are_not_gated_on_the_flag_that_under_reports`.
 pub const VALUE_STRING_PARAMS: &[(AuRef, u32, usize, &str, &str)] =
@@ -343,13 +332,14 @@ pub const VALUE_STRING_PARAMS: &[(AuRef, u32, usize, &str, &str)] =
 /// `clumpID` unconditionally — collapsing every ungrouped parameter into a
 /// phantom clump 0 — is caught, rather than merely one that reports no clumps.
 ///
-/// Note the distinction this count draws, which is not obvious and which cost a
-/// wrong assertion to find: AUDistortion **names** 7 clumps (1..=7, verified in
-/// `distortion_names_its_seven_sections`) but only 6 of them are claimed by a
-/// parameter — nothing carries clump 6 ("Filter"). So "clumps the AU can name"
-/// and "clumps the AU actually uses" are different sets, and a UI built from the
-/// parameter list will render 6 sections while the AU can label 7. This constant
-/// is the *claimed* count, because that is what a section list is built from.
+/// A non-obvious distinction this count draws, found by a wrong assertion:
+/// AUDistortion **names** 7 clumps (1..=7, verified in
+/// `distortion_names_its_seven_sections`) but only 6 are claimed by a
+/// parameter — nothing carries clump 6 ("Filter"). "Clumps the AU can name"
+/// and "clumps the AU actually uses" are different sets, and a UI built from
+/// the parameter list renders 6 sections while the AU can label 7. This
+/// constant is the *claimed* count, since that is what a section list builds
+/// from.
 pub const CLUMPED_EFFECTS: &[(AuRef, usize)] = &[(DISTORTION, 6), (MATRIX_REVERB, 4)];
 
 /// Units measured to publish `kAudioUnitParameterFlag_MeterReadOnly` parameters,
@@ -370,44 +360,39 @@ pub const MULTIBAND_COMPRESSOR: AuRef = AuRef::effect("AUMultibandCompressor", b
 
 /// AUSpatialMixer — in the corpus for two independent reasons, both measured.
 ///
-/// **1. It is the only corpus unit macOS ships real `.aupreset` *files* for.**
-/// 55 Apple-authored files under `/System/Library/Audio/Tunings/**/AU/` carry
-/// `type`/`subtype`/`manufacturer` = `aumx`/`3dem`/`appl`. That makes it the
-/// crate's only **interoperability** subject: every other preset assertion
-/// round-trips a file this host wrote, which proves self-consistency and would
-/// pass even if this host and Logic disagreed about the format. Loading Apple's
-/// own file proves the format itself is right. See [`APPLE_PRESET_DIRS`].
+/// **1. The only corpus unit macOS ships real `.aupreset` *files* for** — 55
+/// Apple-authored files under `/System/Library/Audio/Tunings/**/AU/`
+/// (`aumx`/`3dem`/`appl`). That makes it the crate's only **interoperability**
+/// subject: every other preset assertion round-trips a file this host wrote,
+/// proving only self-consistency; loading Apple's own file proves the format
+/// itself is right. See [`APPLE_PRESET_DIRS`].
 ///
-/// **2. It is the only Apple unit advertising `kAudioUnitParameterFlag_CanRamp`,
-/// and the proof that flag is a claim rather than a guarantee.** Surveying every
-/// unit that initializes: 155 of 486 parameters across 45 units carry `CanRamp`,
-/// but 145 are third-party (TDR Nova 37/75, TAL Reverb 4 20/20, TAL-NoiseMaker
-/// 88/88); AUSpatialMixer is the entire Apple contribution at 10 of 12. And it
-/// does **not** honour a ramp: scheduling one across `global reverb gain`
-/// (id 9, range -40..40) versus pinning at the ramp's start value produces
-/// envelopes differing by exactly `0.000000000` over 5 runs, while the readback
-/// *does* land on the ramp's end value. The endpoint is applied and the
-/// interpolation discarded — a step at the block boundary, the zipper artifact
-/// ramping exists to avoid. That negative result is what stops a host from
-/// trusting `can_ramp`. See
+/// **2. The only Apple unit advertising `kAudioUnitParameterFlag_CanRamp`, and
+/// the proof that flag is a claim, not a guarantee.** Of 155/486 `CanRamp`
+/// parameters across 45 units surveyed, 145 are third-party (TDR Nova 37/75,
+/// TAL Reverb 4 20/20, TAL-NoiseMaker 88/88); AUSpatialMixer is the entire
+/// Apple contribution at 10/12 — and it does **not** honour a ramp: scheduling
+/// one across `global reverb gain` (id 9, range -40..40) versus pinning at the
+/// start value produces envelopes differing by exactly `0.000000000` over 5
+/// runs, while the readback lands on the ramp's end value — the endpoint is
+/// applied and the interpolation discarded. See
 /// `au_render_notify.rs::the_can_ramp_flag_is_a_claim_not_a_guarantee`.
 pub const SPATIAL_MIXER: AuRef = AuRef::mixer("AUSpatialMixer", b"3dem");
 
 /// Directories macOS ships Apple-authored `.aupreset` files in.
 ///
 /// Searched in order and treated as a set rather than a single hardcoded path
-/// because the layout is an OS implementation detail: the `Generic/AU` folder
-/// holds the device-independent presets while the per-tuning `AID*/AU` folders
-/// hold hardware-specific ones, and which exist varies with the OS build and the
-/// audio hardware attached. A test wants *any* genuine Apple preset for a corpus
-/// unit, so it scans.
+/// because the layout is an OS implementation detail: `Generic/AU` holds
+/// device-independent presets while the per-tuning `AID*/AU` folders hold
+/// hardware-specific ones, and which exist varies with the OS build and
+/// attached audio hardware. A test wants *any* genuine Apple preset, so it
+/// scans.
 ///
-/// Note this is deliberately NOT `/Library/Audio/Presets/`, which the AU
-/// documentation names as the user/third-party preset location: that directory
-/// does **not exist** on this machine (measured — no `.aupreset` file anywhere
-/// under `/Library/Audio` or `~/Library/Audio`), because Apple's units ship their
-/// presets as in-bundle factory presets rather than as loose files. The Tunings
-/// tree is where loose Apple `.aupreset` files actually are.
+/// Deliberately NOT `/Library/Audio/Presets/`, the AU-documented user/
+/// third-party location: measured to **not exist** on this machine (no
+/// `.aupreset` anywhere under `/Library/Audio` or `~/Library/Audio`), because
+/// Apple's units ship presets as in-bundle factory presets, not loose files.
+/// The Tunings tree is where the loose Apple `.aupreset` files actually are.
 pub const APPLE_PRESET_DIRS: &[&str] = &[
     "/System/Library/Audio/Tunings/Generic/AU",
     "/System/Library/Audio/Tunings",
@@ -418,14 +403,15 @@ pub const APPLE_PRESET_DIRS: &[&str] = &[
 /// Walks [`APPLE_PRESET_DIRS`] recursively and returns the first file whose
 /// **identity keys** name `unit` — matched by parsing the preset, never by its
 /// filename. Filenames happen to embed the codes today
-/// (`aumx-3dem-appl-headphone-general-stereo.aupreset`), but that is a convention
-/// of Apple's build scripts, not part of the format, and the same
-/// name-versus-codes rule the module docs state for AU lookup applies here.
+/// (`aumx-3dem-appl-headphone-general-stereo.aupreset`), but that is an Apple
+/// build-script convention, not part of the format; the same name-versus-codes
+/// rule the module docs state for AU lookup applies here.
 ///
 /// Returns `None` when the OS ships no preset for that unit. Unlike a missing
-/// *AU*, that is not an environment failure: these files are an implementation
-/// detail of Apple's spatial-audio tuning system, not a documented part of macOS,
-/// so a caller reports the absence rather than asserting against it.
+/// *AU*, that is not an environment failure — these files are an
+/// implementation detail of Apple's spatial-audio tuning system, not a
+/// documented part of macOS — so a caller reports the absence rather than
+/// asserting against it.
 pub fn find_apple_preset_for(unit: &AuRef) -> Option<std::path::PathBuf> {
     let wanted_sub = u32::from_be_bytes(*unit.sub_type);
     for root in APPLE_PRESET_DIRS {
@@ -483,19 +469,20 @@ pub const TAL_REVERB_4: (&[u8; 4], &[u8; 4], u32) = (b"reV4", b"TOGU", 1_564_260
 
 /// Look up a non-Apple unit, tolerating its absence.
 ///
-/// **This is the one exception to the hard-failure rule** in this module's docs,
-/// and the exception is principled rather than convenient: the rule exists
-/// because Apple's units *ship with macOS*, so their absence means a broken
-/// environment. A third-party plugin is a genuine optional install — asserting
-/// its presence would make the suite fail on any machine that simply does not
-/// have it, which is a false alarm rather than a caught regression.
+/// **This is the one exception to the hard-failure rule** in this module's
+/// docs, and it is principled rather than convenient: that rule exists because
+/// Apple's units *ship with macOS*, so their absence means a broken
+/// environment; a third-party plugin is a genuine optional install, and
+/// asserting its presence would fail the suite on any machine that simply
+/// lacks it — a false alarm, not a caught regression.
 ///
-/// The discipline that keeps this from becoming the silent skip the module docs
-/// warn about: every caller must assert something **unconditional** as well, so
-/// the test still proves a property when the optional unit is missing. See
-/// `au_render_notify.rs::a_ramp_is_honoured_where_a_plugin_implements_it`, which
-/// pins the Apple negative result whether or not the third-party unit is found,
-/// and prints a loud notice when it is not.
+/// The discipline that keeps this from becoming the silent skip the module
+/// docs warn about: every caller must also assert something
+/// **unconditional**, so the test still proves a property when the optional
+/// unit is missing. See
+/// `au_render_notify.rs::a_ramp_is_honoured_where_a_plugin_implements_it`,
+/// which pins the Apple negative result either way and prints a loud notice
+/// when the third-party unit is absent.
 pub fn optional_third_party(
     sub_type: &[u8; 4],
     manufacturer: &[u8; 4],
@@ -549,16 +536,13 @@ pub fn envelope(buffer: &[f32], segments: usize) -> Vec<f32> {
 
 /// Units measured to implement `kAudioUnitProperty_OfflineRender`.
 ///
-/// **Only the instruments.** Every Apple effect and mixer on the system refuses
-/// the property with `kAudioUnitErr_InvalidProperty` (-10879) — for the read, the
-/// write, and `GetPropertyInfo` alike. That is a surprising enough shape that it
-/// is worth being explicit: the property whose entire purpose is "this is a
-/// bounce, take the slow path" is not implemented by any of the units that would
-/// most obviously use it.
-///
-/// The counterweight is [`WITHOUT_OFFLINE_RENDER`]. Both lists matter: without a
-/// named refusing unit, the host's decision to propagate the refusal as an error
-/// rather than flatten it to `false` could not be pinned.
+/// **Only the instruments.** Every Apple effect and mixer refuses the property
+/// with `kAudioUnitErr_InvalidProperty` (-10879) — for the read, write, and
+/// `GetPropertyInfo` alike — a surprising enough shape to spell out: the
+/// property whose whole purpose is "this is a bounce, take the slow path" is
+/// unimplemented by the units that would most obviously use it. The
+/// counterweight, [`WITHOUT_OFFLINE_RENDER`], is what pins the host's decision
+/// to propagate that refusal as an error rather than flatten it to `false`.
 pub const WITH_OFFLINE_RENDER: &[AuRef] = &[SAMPLER, DLS_SYNTH];
 
 /// Units measured to refuse `kAudioUnitProperty_OfflineRender` outright.
@@ -676,16 +660,16 @@ pub const WITHOUT_PUSH_RENDER: &[AuRef] = &[
 
 /// The **only** unit on this system that implements `AudioUnitProcessMultiple`.
 ///
-/// And it accepts exactly one input buffer list: a second is refused with
-/// `kAudioUnitErr_InvalidElement` (-10877), which is correct, since AUReverb2 has
-/// one input element. Every other unit — including AUMultiChannelMixer, which has
-/// **8** real input elements — answers `unimpErr` for 1, 2 and 8 lists alike, so
-/// the absence is the selector rather than the topology.
+/// It accepts exactly one input buffer list: a second is refused with
+/// `kAudioUnitErr_InvalidElement` (-10877), correct since AUReverb2 has one
+/// input element. Every other unit — including AUMultiChannelMixer with **8**
+/// real input elements — answers `unimpErr` for 1, 2 and 8 lists alike, so the
+/// absence is the selector, not the topology.
 ///
-/// The consequence, recorded here because it is the headline finding: **there is
-/// no working AU sidechain on this machine.** `AudioUnitProcessMultiple` is the
-/// only AUv2 call that can carry a second input bus, and nothing implements it in
-/// a form that accepts one.
+/// The headline finding this records: **there is no working AU sidechain on
+/// this machine.** `AudioUnitProcessMultiple` is the only AUv2 call that can
+/// carry a second input bus, and nothing implements it in a form that accepts
+/// one.
 pub const IMPLEMENTS_PROCESS_MULTIPLE: AuRef = REVERB2;
 
 /// `unimpErr` — the status an AU returns for a dispatch selector it does not
@@ -697,16 +681,17 @@ pub const UNIMP_ERR: i32 = tutti_au_host::types::UNIMP_ERR;
 /// than the `MaximumFramesPerSlice` it was initialized at.
 ///
 /// Pinned so the host's `InvalidBuffer` guard can be shown to fire *instead of*
-/// this rather than merely *alongside* it: the host must refuse the oversized
-/// render before handing the AU a buffer list whose `mDataByteSize` overstates
-/// storage the host actually allocated.
+/// this, not merely *alongside* it: the host must refuse an oversized render
+/// before handing the AU a buffer list whose `mDataByteSize` overstates
+/// storage it actually allocated.
 pub const TOO_MANY_FRAMES: i32 = -10874;
 
 /// A 440 Hz sine at `amplitude`, `channels` wide, starting at sample `offset`.
 ///
-/// Deliberately not silence: an in-place render path can be wrong in ways silence
-/// cannot reveal — reading its own output as input, or emitting the previous block
-/// — and every such failure still produces zeroes when fed zeroes.
+/// Deliberately not silence: an in-place render path can be wrong in ways
+/// silence cannot reveal — reading its own output as input, or emitting the
+/// previous block — and every such failure still produces zeroes when fed
+/// zeroes.
 pub fn sine(
     channels: usize,
     frames: usize,
@@ -729,7 +714,7 @@ pub fn sine(
 // ------------------------------------------------- channel layout / element name
 
 /// The widest `SupportedChannelLayoutTags` surface among Apple's effects — 12
-/// entries on each scope, including a duplicate. See [`LAYOUT_TAG_UNITS`].
+/// entries on each scope, including a duplicate. See [`DUPLICATE_TAG_UNIT`].
 pub const NEW_PITCH: AuRef = AuRef::effect("AUNewPitch", b"nutp");
 /// 8 layout tags on both scopes, all literal widths with no wildcards, and the
 /// only Apple effect that publishes a full `Mono`→`Octagonal` ladder.
@@ -741,21 +726,15 @@ pub const MIDI_SYNTH: AuRef = AuRef::instrument("AUMIDISynth", b"msyn");
 /// Units measured to publish `kAudioUnitProperty_SupportedChannelLayoutTags`, as
 /// `(unit, direction-is-output, expected tags)`.
 ///
-/// Measured on macOS 15.6 at 48 kHz / 512 frames, in the `Loaded` state. The exact
-/// tag *sequences* are pinned rather than merely "non-empty", for the reason
-/// [`VALUE_STRING_PARAMS`] pins its counts: the failure being guarded is a
-/// truncated or misordered array walk, and every one of those passes an "at least
-/// one tag" check.
-///
-/// Note the deliberate quirk in the AUNewPitch row: `Quadraphonic` appears
-/// **twice**. That is what the AU publishes — the host returns the table verbatim
-/// rather than deduplicating it, so a silent dedupe would fail here. (The second
-/// occurrence is `kAudioChannelLayoutTag_AudioUnit_4`, which is the *same value*
-/// as `Quadraphonic`; the AU lists both spellings and they decode to one variant.)
+/// Measured on macOS 15.6 at 48 kHz / 512 frames, in the `Loaded` state. The
+/// exact tag *sequences* are pinned rather than merely "non-empty", for the
+/// reason [`VALUE_STRING_PARAMS`] pins its counts: a truncated or misordered
+/// array walk would still pass an "at least one tag" check.
 ///
 /// Only 11 of the ~38 units probed answer this property at all. The refusers —
 /// AUDelay, AUNBandEQ, AUMatrixMixer and the rest, all `-10879` — are in
-/// [`NO_LAYOUT_TAG_UNITS`].
+/// [`NO_LAYOUT_TAG_UNITS`]. See [`DUPLICATE_TAG_UNIT`] for AUNewPitch's row,
+/// split out on its own.
 pub const LAYOUT_TAG_UNITS: &[(AuRef, bool, &[AuLayoutTag])] = &[
     // AUMatrixReverb: output only; its input scope refuses the property. This is
     // the unit the set/refuse assertions use, because it is the only Apple effect
@@ -922,19 +901,14 @@ pub const NO_LAYOUT_UNITS: &[AuRef] = &[DELAY, N_BAND_EQ, LOWPASS, MATRIX_MIXER]
 ///
 /// **Apple's mixers are not here, and that is the finding.** AUMultiChannelMixer
 /// and AUMatrixMixer answer `kAudioUnitErr_PropertyNotInUse` (-10850) for every
-/// one of their real input elements — 0..=7 and 0..=63 respectively — so on macOS
-/// 15.6 Apple's mixers publish no element names at all. The units that do are
-/// DLSMusicDevice and the third-party effects, which is why the third-party ones
-/// are named here despite the corpus otherwise being Apple-only: without them
-/// there would be exactly one named element on the system and no sidechain to
-/// distinguish.
-///
-/// The DLS row is the one that carries its own weight without third-party units
-/// installed — see [`NAMED_ELEMENTS_APPLE_ONLY`].
+/// one of their real input elements — 0..=7 and 0..=63 respectively — so on
+/// macOS 15.6 Apple's mixers publish no element names at all. DLSMusicDevice is
+/// the one Apple unit that does, which is this constant's own weight; the
+/// third-party effects (named in [`THIRD_PARTY_NAMED_ELEMENTS`]) add a second
+/// named element and a sidechain to distinguish it from.
 pub const NAMED_ELEMENTS_APPLE_ONLY: &[(AuRef, bool, u32, &str)] = &[
-    // The one Apple unit on the system that names its buses. Its second output is
-    // literally called "unused", which is exactly the kind of thing a host should
-    // show the user rather than rendering as "Bus 2".
+    // Its second output is literally called "unused" — the kind of thing a host
+    // should show the user rather than rendering as "Bus 2".
     (DLS_SYNTH, true, 0, "stereo mix"),
     (DLS_SYNTH, true, 1, "unused"),
 ];
@@ -1166,16 +1140,14 @@ pub const THIRD_PARTY_PARAM_COUNTS: &[(ThirdPartyRef, usize)] =
 
 /// The one unit measured to report a **non-finite** tail time.
 ///
-/// `kAudioUnitProperty_TailTime` answers `f64::INFINITY` — an honest claim from a
-/// reverb with infinite decay available, and a value no Apple unit produces. It is
-/// named because of what happens downstream: `Seconds::to_samples` maps every
-/// non-finite input to `Samples::ZERO`, so an infinite tail silently becomes *no
-/// tail at all* — a bounce would truncate the reverb completely rather than
-/// rendering forever. Both halves of that (the host propagates `inf` faithfully;
-/// the unit conversion collapses it) are asserted in
-/// `au_third_party.rs::an_infinite_tail_survives_the_host_and_collapses_in_conversion`,
-/// because a host that clamped at the read would look correct while erasing the
-/// distinction between "infinite" and "none".
+/// `kAudioUnitProperty_TailTime` answers `f64::INFINITY` — an honest claim from
+/// a reverb with infinite decay, and a value no Apple unit produces. Named
+/// because of what happens downstream: `Seconds::to_samples` maps every
+/// non-finite input to `Samples::ZERO`, so an infinite tail silently becomes
+/// *no tail at all* — a bounce would truncate the reverb rather than render it
+/// forever. Both halves (host propagates `inf` faithfully; unit conversion
+/// collapses it) are asserted in
+/// `au_third_party.rs::an_infinite_tail_survives_the_host_and_collapses_in_conversion`.
 pub const INFINITE_TAIL_UNIT: ThirdPartyRef = TAL_REVERB_4_REF;
 
 /// `(unit, reported latency in samples at 48 kHz)` pairs, measured.

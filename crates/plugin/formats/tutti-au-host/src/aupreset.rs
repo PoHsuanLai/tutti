@@ -10,16 +10,11 @@
 //!
 //! [`AuInstance::save_state`](crate::instance::AuInstance::save_state) already
 //! returns the `ClassInfo` dictionary as a binary plist, and that is *almost* the
-//! file format. Two things separate them, and both are load-bearing:
-//!
-//! 1. **The identity keys must be populated from the AU's own component
-//!    description**, not from anything the caller supplies. An AU is free to omit
-//!    them from its `ClassInfo` (Apple's own units include them, but nothing
-//!    requires it), and a file without them cannot be validated by the host that
-//!    later loads it.
-//! 2. **Loading must validate them.** This is the whole reason the module is not
-//!    three lines, and it is not defensive programming for its own sake — see the
-//!    measurement below.
+//! file format. Two things separate them: the identity keys must be populated
+//! from the AU's own component description, not from anything the caller
+//! supplies (an AU may omit them from its `ClassInfo`, and a file without them
+//! cannot later be validated); and loading must validate them — the measurement
+//! below is why.
 //!
 //! ## The validation, and the measurement that dictates it
 //!
@@ -37,11 +32,10 @@
 //!   4.6 (of 100), Delay Time 9.73 s, Lowpass Cutoff **0.5 Hz** where it had been
 //!   15000. Audibly, a silent plugin the user cannot explain.
 //!
-//! That is the bug this module exists to prevent. The AU trusts the identity keys
-//! it is handed and does not re-derive them from the blob, so **the host is the
-//! only thing standing between a mislabelled file and corrupt plugin state**.
-//! Validation here is not redundant with the AU's own check; it is the layer the
-//! AU's check delegates to.
+//! So the AU trusts the identity keys it is handed and does not re-derive them
+//! from the blob: **the host is the only thing standing between a mislabelled
+//! file and corrupt plugin state**. Validation here is not redundant with the
+//! AU's own check; it is the layer the AU's check delegates to.
 //!
 //! ## What "matches" means
 //!

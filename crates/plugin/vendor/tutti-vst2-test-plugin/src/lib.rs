@@ -319,6 +319,10 @@ impl Plugin for ProbePlugin {
             midi_inputs: self.config.midi_inputs,
             midi_outputs: self.config.midi_outputs,
             category: self.config.category,
+            // `get_info` is the in-process path, where the host reads this
+            // struct directly rather than dispatching `effGetPlugCategory`, so
+            // the code must agree with the enum beside it.
+            category_code: self.config.category as i32,
             initial_delay: self.config.initial_delay,
             preset_chunks: self.config.preset_chunks,
             f64_precision: self.config.f64_precision,

@@ -29,9 +29,18 @@ use crate::types::{ChannelLayout, PluginInfo, Vst2Category};
 /// A free fn rather than a `From` impl: both `Category` (from `vst`) and
 /// `Vst2Category` (from `tutti-plugin-types`) are foreign here, so the orphan
 /// rule forbids the impl.
-fn map_category(c: Category) -> Vst2Category {
+///
+/// Takes `raw` alongside the decoded enum because `Category::Unknown` is where
+/// the `vst` crate puts every code it does not name, including
+/// `kPlugCategUnknown` itself. Only the number tells those apart, so it is
+/// carried into [`Vst2Category::Unrecognized`] rather than discarded.
+///
+/// This function is never reached without a plugin having answered, so it never
+/// produces [`Vst2Category::Unasked`] — that variant belongs to paths that did
+/// not query at all.
+fn map_category(c: Category, raw: i32) -> Vst2Category {
     match c {
-        Category::Unknown => Vst2Category::Unknown,
+        Category::Unknown => Vst2Category::Unrecognized(raw),
         Category::Effect => Vst2Category::Effect,
         Category::Synth => Vst2Category::Synth,
         Category::Analysis => Vst2Category::Analysis,
@@ -191,7 +200,7 @@ impl Vst2Instance {
             version: info.version.to_string(),
             num_inputs: ChannelLayout::from(info.inputs.max(0) as u16),
             num_outputs: ChannelLayout::from(info.outputs.max(0) as u16),
-            category: map_category(info.category),
+            category: map_category(info.category, info.category_code),
             receives_midi,
             emits_midi,
             has_editor: false, // overwritten below once we ask the handle

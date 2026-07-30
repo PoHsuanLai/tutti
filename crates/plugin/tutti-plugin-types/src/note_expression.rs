@@ -1,13 +1,15 @@
 //! Note-expression (MPE-style) vocabulary shared across the plugin host
 //! crates and the `tutti-plugin` IPC protocol.
 //!
-//! [`NoteExpressionType`] is the **superset** of the dimensions any hosted
-//! format speaks: the five VST3 standard dimensions plus CLAP's `Pressure`
-//! and `Expression`. Decoding a plugin's output into this enum is always
-//! lossless. *Encoding* toward a format that lacks a dimension is the
-//! partial direction — each host crate owns that conversion and is explicit
-//! about what it cannot represent (e.g. VST3 has no `typeId` for `Pressure`),
-//! rather than silently coercing to a different dimension.
+//! [`NoteExpressionType`] covers the dimensions any hosted format names: the
+//! five VST3 standard ones plus CLAP's `Pressure` and `Expression`, with
+//! [`Custom`](NoteExpressionType::Custom) carrying a vendor id the enum does
+//! not name. Decoding a plugin's output into this enum is lossless.
+//!
+//! *Encoding* toward a format that lacks a dimension is the partial direction —
+//! each host crate owns that conversion and is explicit about what it cannot
+//! represent (e.g. VST3 has no `typeId` for `Pressure`), rather than silently
+//! coercing to a different dimension.
 //!
 //! The `Serialize`/`Deserialize` derives are gated behind the `serde`
 //! feature (the IPC wire path enables it; pure in-process consumers don't
@@ -41,6 +43,20 @@ pub enum NoteExpressionType {
     /// Generic per-note expression. CLAP-native; VST3 cannot encode this as a
     /// note-expression `typeId`.
     Expression,
+    /// A dimension the plugin defined itself, carried by its native id.
+    ///
+    /// VST3's `NoteExpressionTypeID` is a `u32` and the spec reserves
+    /// everything from `kCustomStart` upward for plugin-defined dimensions,
+    /// discovered at runtime through `INoteExpressionController`. Without this
+    /// variant the decoder had nowhere to put such an event and dropped it, so
+    /// a plugin whose expressiveness is entirely custom appeared to send
+    /// nothing at all.
+    ///
+    /// The id is only meaningful against the plugin that issued it — it is not
+    /// a shared namespace, and two plugins may use the same number for
+    /// different things. That is why this carries the raw id rather than
+    /// pretending to name it.
+    Custom(u32),
 }
 
 /// A single note-expression sample bound to a specific active voice

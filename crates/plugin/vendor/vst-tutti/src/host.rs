@@ -610,6 +610,13 @@ impl PluginInstance {
             plug.can_double_replacing = flags.intersects(PluginFlags::CAN_DOUBLE_REPLACING);
             plug.has_editor = flags.intersects(PluginFlags::HAS_EDITOR);
 
+            // `dispatch` returns `isize`, but `effGetPlugCategory`'s return is
+            // an `i32` in the ABI, so the upper half of a 64-bit answer is not
+            // the plugin's. Saturating rather than truncating: a value that does
+            // not fit was never a category code, and truncation could land it on
+            // a real one.
+            let category_code = plug.opcode(op::GetCategory).try_into().unwrap_or(i32::MAX);
+
             plug.info = Info {
                 name: plug.read_string(op::GetProductName, MAX_PRODUCT_STR_LEN),
                 vendor: plug.read_string(op::GetVendorName, MAX_VENDOR_STR_LEN),
@@ -625,8 +632,8 @@ impl PluginInstance {
                 unique_id: effect.uniqueId,
                 version: effect.version,
 
-                category: Category::try_from(plug.opcode(op::GetCategory))
-                    .unwrap_or(Category::Unknown),
+                category: Category::try_from(category_code as isize).unwrap_or(Category::Unknown),
+                category_code,
 
                 initial_delay: effect.initialDelay,
 

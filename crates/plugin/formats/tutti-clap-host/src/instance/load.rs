@@ -18,7 +18,11 @@ use clap_sys::ext::audio_ports::{
 use clap_sys::plugin::clap_plugin;
 use std::path::Path;
 use std::sync::Arc;
-use tutti_plugin_types::{BusChannels, ChannelLayout};
+use tutti_plugin_types::BusChannels;
+// Layout construction moved into `PortLayout::default_empty_buses`; the tests
+// below still name the type directly to assert on canonicalized widths.
+#[cfg(test)]
+use tutti_plugin_types::ChannelLayout;
 
 impl ClapLoaded {
     /// Lightweight probe: read the CLAP descriptor without creating or
@@ -139,15 +143,13 @@ impl ClapLoaded {
             outputs: port_channels(plugin.as_ptr(), extensions.audio.ports, false),
         };
 
-        plugin_info.audio_inputs = ports.input_channel_total().max(2);
-        plugin_info.audio_outputs = ports.output_channel_total().max(2);
+        // Default the bus lists FIRST, then derive the totals from them, so the
+        // two cannot disagree. See `PortLayout::default_empty_buses` for why the
+        // old `.max(2)` on the totals was the wrong shape.
+        ports.default_empty_buses();
 
-        if ports.inputs.is_empty() {
-            ports.inputs.push(ChannelLayout::Stereo);
-        }
-        if ports.outputs.is_empty() {
-            ports.outputs.push(ChannelLayout::Stereo);
-        }
+        plugin_info.audio_inputs = ports.input_channel_total();
+        plugin_info.audio_outputs = ports.output_channel_total();
 
         let audio = AudioConfig {
             sample_rate,

@@ -3,7 +3,7 @@ use core::sync::atomic::Ordering;
 use tutti_core::Arc;
 use tutti_core::AtomicF32;
 use tutti_core::RtScratch;
-use tutti_core::{Azimuth, Elevation, SampleRate, Spread, StereoWidth};
+use tutti_core::{fold_frame_to_mono, Azimuth, Elevation, SampleRate, Spread, StereoWidth};
 use vbap::VBAPanner;
 
 use super::smoothing::{ExponentialSmoother, DEFAULT_POSITION_SMOOTH_TIME};
@@ -178,7 +178,10 @@ impl SpatialPanner {
         let width = width.get().max(0.0);
 
         if width < 0.001 {
-            let mono = (left + right) * 0.5;
+            // The engine's one fold rather than a local `* 0.5`: identical at
+            // width 2 (`fold_frame_to_mono`'s stereo arm IS the average), but it
+            // is the same constant this crate's other folds use, in one place.
+            let mono = fold_frame_to_mono(&[left, right]);
             self.process_mono_into(mono, output);
             return;
         }

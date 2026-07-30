@@ -30,6 +30,22 @@ use tutti_core::{Depth, Hz, Param, Phase, PhaseIncrement, SampleRate};
 // exported so existing `use tutti_units::LfoShape` / `Lfo` sites are untouched.
 pub use tutti_mod::{Lfo, LfoShape, Modulator};
 
+/// Where `beat` falls within a cycle `beats_per_cycle` beats long.
+///
+/// The division stays in `f64` and narrows once, at the wrap. Both sites used
+/// to write `beat_from_ports(..) as f32` and divide in `f32`, putting the beat
+/// position back into the single `f32` the two-port split exists to avoid.
+///
+/// The cost is small but real, and it grows with session length rather than
+/// appearing suddenly: at beat 200k (~28 hours at 120 bpm) with a dotted-note
+/// cycle the two forms disagree by about 1% of a cycle. Wrapping before the
+/// narrowing keeps the result inside one cycle, where `f32` has resolution to
+/// spare no matter how far along the transport is.
+#[inline]
+fn beat_phase(beat: tutti_core::Beat, beats_per_cycle: f32) -> Phase {
+    Phase::wrapped(((beat.get() / f64::from(beats_per_cycle)).rem_euclid(1.0)) as f32)
+}
+
 /// Whether the adapter derives phase from a free-running oscillator or from the
 /// transport beat. This is an *adapter* concern (transport wiring), not
 /// modulation math — hence it lives here, not in `tutti-mod`.
@@ -246,10 +262,10 @@ impl<M: Modulator + Clone + Send + Sync + 'static> AudioUnit for ModulatorNode<M
                 phase
             }
             LfoMode::BeatSynced => {
-                let beat = beat_from_ports(input[0], input[1]) as f32;
+                let beat = beat_from_ports(input[0], input[1]);
                 let beats_per_cycle = self.frequency.load().get();
                 if beats_per_cycle > 0.0 {
-                    Phase::wrapped(beat / beats_per_cycle).offset_by(phase_offset)
+                    beat_phase(beat, beats_per_cycle).offset_by(phase_offset)
                 } else {
                     Phase::START.offset_by(phase_offset)
                 }
@@ -278,9 +294,9 @@ impl<M: Modulator + Clone + Send + Sync + 'static> AudioUnit for ModulatorNode<M
                 let beats_per_cycle = self.frequency.load().get();
 
                 for i in 0..size {
-                    let beat = beat_from_ports(input.at_f32(0, i), input.at_f32(1, i)) as f32;
+                    let beat = beat_from_ports(input.at_f32(0, i), input.at_f32(1, i));
                     let phase = if beats_per_cycle > 0.0 {
-                        Phase::wrapped(beat / beats_per_cycle).offset_by(phase_offset)
+                        beat_phase(beat, beats_per_cycle).offset_by(phase_offset)
                     } else {
                         Phase::START.offset_by(phase_offset)
                     };

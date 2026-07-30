@@ -8,3 +8,4 @@
 #![allow(dead_code)]
 
 pub mod corpus;
+pub mod probe_au;

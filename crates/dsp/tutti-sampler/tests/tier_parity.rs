@@ -38,7 +38,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use tutti_core::dsp::{BufferArray, U2};
-use tutti_core::{AudioUnit, Beat, Bpm, PlaybackRate, SamplePosition, SampleRate, Timeline, Wave};
+use tutti_core::{
+    AudioUnit, Beat, Bpm, ChannelLayout, PlaybackRate, SamplePosition, SampleRate, Timeline, Wave,
+};
 use tutti_sampler::voice::{DiskVoice, MemorySource, VoiceWindow};
 use tutti_sampler::{Command, DiskStreamer, DiskStreamerConfig};
 
@@ -341,7 +343,7 @@ fn the_disk_and_memory_tiers_render_the_same_material() {
                 start: Beat::new(0.0),
                 duration: None,
             },
-            channels: 2,
+            channels: ChannelLayout::Stereo,
             ..Default::default()
         },
     );
@@ -837,7 +839,7 @@ fn the_tiers_agree_under_varispeed() {
                     start: Beat::new(0.0),
                     duration: None,
                 },
-                channels: 2,
+                channels: ChannelLayout::Stereo,
                 speed: PlaybackRate::new(factor),
                 ..Default::default()
             },

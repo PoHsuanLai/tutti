@@ -16,18 +16,19 @@ use std::path::PathBuf;
 
 use bevy_app::prelude::*;
 use bevy_tutti::graph::{AudioPump, AudioPumpAppExt, AudioTapRes};
-use bevy_tutti::io::{BitDepth, TapIn, WavOut};
+use bevy_tutti::io::{BitDepth, ChannelLayout, TapIn, WavOut};
 
 const SAMPLE_RATE: f64 = 48_000.0;
 
 fn sink(path: &PathBuf) -> WavOut {
-    WavOut::create(path, SAMPLE_RATE, 2, BitDepth::Float32).expect("sink should open")
+    WavOut::create(path, SAMPLE_RATE, ChannelLayout::Stereo, BitDepth::Float32)
+        .expect("sink should open")
 }
 
 /// An app with the stereo-`f32` pump drain registered — no engine, no device.
 fn app() -> App {
     let mut app = App::new();
-    app.add_audio_pump::<f32, 2>();
+    app.add_audio_pump::<f32>();
     app
 }
 

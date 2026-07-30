@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use crate::ports::{Command, Commands};
 use crate::stretch;
-use crate::MAX_SAMPLER_CHANNELS;
+use crate::{nonempty, MAX_SAMPLER_CHANNELS};
 
 use super::command::{VoiceCommand, VoicePoolHandle, COMMAND_CAPACITY, MAX_RESIDENT_VOICES};
 use super::memory_source::LoopSetting;
@@ -18,7 +18,7 @@ use super::types::{Playback, SlotId, Voice, VoiceSource};
 use bevy_ecs::prelude::*;
 use crossbeam_channel::{bounded, Receiver, Sender};
 use tutti_core::transport::BeatCursor;
-use tutti_core::{AudioUnit, BufferMut, BufferRef, SignalFrame, Timeline};
+use tutti_core::{AudioUnit, BufferMut, BufferRef, ChannelLayout, SignalFrame, Timeline};
 
 const VOICE_POOL_ID: u64 = 0x_0000_0000_0000_DA03;
 
@@ -33,6 +33,54 @@ pub struct VoicePoolRef(pub VoicePoolHandle);
 #[cfg(feature = "bevy")]
 #[derive(Component, Debug, Clone, Copy)]
 pub struct VoicePoolNode(pub tutti_core::NodeId);
+
+// ---------------------------------------------------------------------------
+// Retirement — values the audio thread must not drop.
+// ---------------------------------------------------------------------------
+
+/// Something the drain took ownership of and must **not** free in the callback.
+///
+/// Both variants exist for the same reason: dropping a [`stretch::Unit`] can free
+/// its vocoder bank (~192 KB at six channels) when the handle holds the last
+/// `Arc` — see that type's `Drop`. Rather than teach two call sites two different
+/// evasions, everything the drain needs to shed goes down one channel and is
+/// freed by [`VoicePoolHandle::collect_retired`] on the control thread.
+///
+/// `pub(crate)`, not `pub`: [`VoiceSlot`] is crate-private, and the retirement
+/// channel is an internal thread-handoff detail. Callers only ever see the count
+/// from [`VoicePoolHandle::collect_retired`], never the values.
+///
+/// # Why the payloads are never read
+///
+/// Neither field is ever inspected, and that is the design: the *value* is the
+/// payload, and receiving it is what frees it. `collect_retired` pulls each one
+/// and lets it fall out of scope, on the control thread. So `dead_code` is
+/// correct that nothing reads them, and wrong that they are dead — deleting
+/// either field would move the deallocation back into the audio callback.
+///
+/// The variants are also very different sizes (a `VoiceSlot` dwarfs a bare
+/// filter), which normally argues for boxing the large one. Not here: this value
+/// exists to cross a thread boundary and be dropped, so a `Box` would add an
+/// allocation on one side and a free on the other — the exact cost being avoided.
+/// The channel is `bounded(MAX_RESIDENT_VOICES)`, so the waste is one slot-sized
+/// element per queue entry, bounded and never in the callback's path.
+#[allow(dead_code, clippy::large_enum_variant)]
+pub(crate) enum Retired {
+    /// A slot removed by `VoiceCommand::Remove`, filter and all.
+    Slot(VoiceSlot),
+    /// A stretch filter the sender built for an `UpdateStretch` that turned out
+    /// not to need it, because the slot already had one.
+    ///
+    /// The sender cannot know whether a filter is resident — that is audio-thread
+    /// state — so it builds whenever the new values ask for stretching and accepts
+    /// that some arrivals are redundant. Handing the spare back here is what keeps
+    /// that trade free of an audio-thread free.
+    ///
+    /// Unboxed: boxing it would mean allocating on the control thread and
+    /// *deallocating* on the audio one, which is the hazard this type exists to
+    /// avoid.
+    Stretch(stretch::Unit),
+}
 
 // ---------------------------------------------------------------------------
 // VoicePool — the AudioUnit.
@@ -55,7 +103,7 @@ pub struct VoicePool {
     /// The control thread drains it via [`VoicePoolHandle::collect_retired`];
     /// if nobody ever does, the channel fills and the slot is dropped in the
     /// callback as before — degrading to today's behaviour rather than leaking.
-    pub(crate) retired: Sender<VoiceSlot>,
+    pub(crate) retired: Sender<Retired>,
     pub(crate) sample_rate: f64,
     pub(crate) transport: Option<Arc<dyn Timeline>>,
     /// Typed butler write handle. `Some` on the live path (threaded in from the
@@ -71,7 +119,7 @@ pub struct VoicePool {
     /// on track creation, *before* any voice exists, and `Net` edges are wired
     /// against `outputs()`. A width that followed its contents would re-arity a
     /// live graph node the moment a voice landed.
-    pub(crate) channels: usize,
+    pub(crate) channels: ChannelLayout,
 
     /// Detects transport discontinuities, so buffered audio can be flushed on a
     /// seek. `None` when there is no transport to watch (free-running / detached).
@@ -114,14 +162,14 @@ impl VoicePool {
         transport: Option<Arc<dyn Timeline>>,
         butler: Option<Commands>,
     ) -> Self {
-        Self::from_parts_with_channels(rx, transport, butler, 2)
+        Self::from_parts_with_channels(rx, transport, butler, ChannelLayout::Stereo)
     }
 
     fn from_parts_with_channels(
         rx: Receiver<VoiceCommand>,
         transport: Option<Arc<dyn Timeline>>,
         butler: Option<Commands>,
-        channels: usize,
+        channels: impl Into<ChannelLayout>,
     ) -> Self {
         // Detached pools and clones get a dead retirement channel: a full
         // `bounded(0)` never accepts, so `Remove` falls back to dropping in
@@ -143,12 +191,12 @@ impl VoicePool {
                 .map(|t| BeatCursor::new(Arc::clone(t), 44100.0)),
             transport,
             butler,
-            channels: channels.max(1),
+            channels: nonempty(channels.into()),
         }
     }
 
     /// Output width — this node's `outputs()`.
-    pub fn channels(&self) -> usize {
+    pub fn channels(&self) -> ChannelLayout {
         self.channels
     }
 
@@ -158,7 +206,7 @@ impl VoicePool {
         let handle = VoicePoolHandle {
             tx,
             retired,
-            channels: 2,
+            channels: ChannelLayout::Stereo,
             sample_rate: 44100.0,
         };
         let mut unit = Self::from_parts(rx, None, None);
@@ -175,7 +223,7 @@ impl VoicePool {
         let handle = VoicePoolHandle {
             tx,
             retired,
-            channels: 2,
+            channels: ChannelLayout::Stereo,
             sample_rate: 44100.0,
         };
         let mut unit = Self::from_parts(rx, Some(transport), butler);
@@ -190,7 +238,7 @@ impl VoicePool {
     pub fn with_channels(
         transport: Option<Arc<dyn Timeline>>,
         butler: Option<Commands>,
-        channels: usize,
+        channels: impl Into<ChannelLayout>,
     ) -> (Self, VoicePoolHandle) {
         let (tx, rx) = bounded(COMMAND_CAPACITY);
         let (retired_tx, retired) = bounded(MAX_RESIDENT_VOICES);
@@ -452,7 +500,7 @@ impl VoicePool {
                         // A full or disconnected channel drops here, which is
                         // exactly the old behaviour: correctness is unaffected,
                         // only the thread that pays for the free.
-                        let _ = self.retired.try_send(slot);
+                        let _ = self.retired.try_send(Retired::Slot(slot));
                     }
                 }
                 VoiceCommand::ReplaceWave { id, wave } => {
@@ -546,9 +594,22 @@ impl VoicePool {
                     id,
                     stretch_factor,
                     pitch_cents,
+                    stretch,
                 } => {
-                    if let Some(slot) = self.slot_mut(id) {
-                        slot.set_stretch(stretch_factor, pitch_cents);
+                    // Take the surplus out of `set_stretch` and retire it rather
+                    // than letting it drop here: this is the audio callback, and
+                    // freeing a `stretch::Unit` that holds the last `Arc` frees its
+                    // vocoder bank. Same treatment as `Remove` above.
+                    //
+                    // `slot_mut` returning `None` (the slot was removed between
+                    // send and drain) must retire the filter too — an early
+                    // `return`/`continue` here would drop it on this thread.
+                    let surplus = match self.slot_mut(id) {
+                        Some(slot) => slot.set_stretch(stretch_factor, pitch_cents, stretch),
+                        None => stretch,
+                    };
+                    if let Some(unit) = surplus {
+                        let _ = self.retired.try_send(Retired::Stretch(unit));
                     }
                 }
             }
@@ -605,7 +666,8 @@ impl AudioUnit for VoicePool {
     }
 
     fn outputs(&self) -> usize {
-        self.channels
+        // Boundary: `AudioUnit::outputs` is a fixed fundsp trait signature.
+        self.channels.count() as usize
     }
 
     fn reset(&mut self) {
@@ -665,7 +727,10 @@ impl AudioUnit for VoicePool {
         // the forward-jump slack is measured in single samples rather than 64.
         self.flush_on_seek(1);
 
-        let n = self.channels.min(output.len()).min(MAX_SAMPLER_CHANNELS);
+        // Stride derived once, above the per-slot loop.
+        let n = (self.channels.count() as usize)
+            .min(output.len())
+            .min(MAX_SAMPLER_CHANNELS);
         if n == 0 {
             return;
         }
@@ -688,8 +753,8 @@ impl AudioUnit for VoicePool {
         self.drain_commands();
         self.flush_on_seek(size.max(1));
 
-        let n = self
-            .channels
+        // Stride derived once per block, above the loops.
+        let n = (self.channels.count() as usize)
             .min(output.channels())
             .min(MAX_SAMPLER_CHANNELS);
         for c in 0..n {
@@ -710,7 +775,8 @@ impl AudioUnit for VoicePool {
 
     fn route(&mut self, _input: &SignalFrame, _frequency: f64) -> SignalFrame {
         // Width must track `outputs()` or fundsp mis-plans this node's latency.
-        SignalFrame::new(self.channels)
+        // Boundary: `SignalFrame::new` is a fundsp signature.
+        SignalFrame::new(self.channels.count() as usize)
     }
 
     fn footprint(&self) -> usize {

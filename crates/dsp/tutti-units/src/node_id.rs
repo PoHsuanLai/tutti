@@ -24,6 +24,9 @@ pub(crate) const BRICKWALL_LIMITER_ID: u64 = 0x_4252_4B57_4C4C_4D54; // "BRKWLLM
 pub(crate) const SPATIAL_PANNER_BASE_ID: u64 = 0x_0000_0000_5041_4E00; // "PAN\0"
 pub(crate) const BINAURAL_PANNER_ID: u64 = 0x_0000_0000_4249_4E00; // "BIN\0"
 pub(crate) const HRTF_BINAURAL_ID: u64 = 0x_0000_0000_4852_5446; // "HRTF"
+pub(crate) const PARAM_SHAPER_ID: u64 = 0x_5052_4D53_4841_5045; // "PRMSHAPE"
+pub(crate) const PARAM_SUM_ID: u64 = 0x_5052_4D53_554D_5F31; // "PRMSUM_1"
+pub(crate) const ATOMIC_SOURCE_ID: u64 = 0x_4154_4F4D_5352_4331; // "ATOMSRC1"
 
 // Compile-time intra-crate uniqueness guard (duplicate => cargo build error).
 const _: () = tutti_core::node_id::assert_unique(&[
@@ -49,4 +52,7 @@ const _: () = tutti_core::node_id::assert_unique(&[
     SPATIAL_PANNER_BASE_ID,
     BINAURAL_PANNER_ID,
     HRTF_BINAURAL_ID,
+    PARAM_SHAPER_ID,
+    PARAM_SUM_ID,
+    ATOMIC_SOURCE_ID,
 ]);

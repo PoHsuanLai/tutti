@@ -422,13 +422,65 @@ impl Color {
     }
 }
 
+/// The CLAP port-type tag a track's audio width is described by.
+///
+/// A closed set of the four tags CLAP defines, rather than the `String` this
+/// replaced. The stringly-typed version was matched against `"mono"` /
+/// `"stereo"` / `"surround"` / `"ambisonic"` on the way out, so any other
+/// spelling — a typo, a different case — silently became a null tag that the
+/// plugin reads as "no port type at all".
+///
+/// [`ChannelLayout`] alone cannot carry this: it is a count, deliberately
+/// without placement, and `Multi(6)` does not say whether those six channels are
+/// 5.1 or third-order-ambisonic-truncated. That distinction is exactly what the
+/// tag adds, so the two travel together in [`TrackInfo::audio`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrackPortType {
+    Mono,
+    Stereo,
+    Surround,
+    Ambisonic,
+}
+
+/// A track's audio width, and the CLAP tag describing how to read it.
+///
+/// One value rather than the `Option<i32>` count + `Option<String>` tag pair
+/// this replaced. Those were two sources of truth about one fact and could
+/// disagree — `Some(6)` alongside `Some("stereo")` was representable, with
+/// nothing to catch it. Here the count *is* the layout's, so a mismatch cannot
+/// be constructed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TrackAudio {
+    pub layout: ChannelLayout,
+    /// The tag to advertise. `None` sends no port type, which is what a host
+    /// that only knows the width should do — CLAP treats an absent tag as
+    /// "unspecified" rather than as an error.
+    pub port_type: Option<TrackPortType>,
+}
+
+impl TrackAudio {
+    /// A track whose width is known but whose topology is not: the layout's
+    /// natural tag for mono/stereo, and no tag for anything wider (where the
+    /// count alone cannot distinguish surround from ambisonic).
+    pub fn from_layout(layout: ChannelLayout) -> Self {
+        let port_type = match layout {
+            ChannelLayout::Mono => Some(TrackPortType::Mono),
+            ChannelLayout::Stereo => Some(TrackPortType::Stereo),
+            _ => None,
+        };
+        Self { layout, port_type }
+    }
+}
+
 /// Track metadata the host exposes through `CLAP_EXT_TRACK_INFO`.
 #[derive(Debug, Clone, Default)]
 pub struct TrackInfo {
     pub name: Option<String>,
     pub color: Option<Color>,
-    pub audio_channel_count: Option<i32>,
-    pub audio_port_type: Option<String>,
+    /// Audio width + port tag. `None` sets neither the channel-count flag nor a
+    /// port type, so the plugin learns nothing about the track's audio — which
+    /// is the correct signal when the host does not know it.
+    pub audio: Option<TrackAudio>,
     pub is_return_track: bool,
     pub is_bus: bool,
     pub is_master: bool,

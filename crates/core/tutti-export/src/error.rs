@@ -25,7 +25,15 @@ pub enum Error {
     #[error("Invalid audio data: {0}")]
     InvalidData(String),
 
-    #[error("Unsupported channel count: {0} (this export path does not support that width)")]
+    /// A width the render cannot use — today that means **zero** and nothing
+    /// else.
+    ///
+    /// It used to mean "not one of 1/2/4/6/8/12", because the render pipeline
+    /// was const-generic in its frame width and a macro enumerated the
+    /// monomorphizations. The width is now a runtime value, so any positive
+    /// count exports; the variant is kept (rather than removed) because it is
+    /// public, and re-purposed rather than left dead.
+    #[error("Unsupported channel count: {0} (a render needs at least one channel)")]
     UnsupportedChannels(u16),
 
     /// A loudness measurement was asked for and could not be taken — EBU R128

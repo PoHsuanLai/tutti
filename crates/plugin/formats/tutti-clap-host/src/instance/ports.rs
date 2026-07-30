@@ -626,7 +626,11 @@ fn audio_port_info_from_clap(info: &clap_audio_port_info) -> AudioPortInfo {
 /// is dropped — nothing downstream reads it), and it borrows a raw FFI pointer.
 /// `CLAP_PORT_MONO`/`CLAP_PORT_STEREO` map to the named variants; any other tag
 /// (surround, ambisonic, vendor-specific) becomes `Multi(channel_count)`.
-fn layout_from_clap_port(
+///
+/// Shared with [`super::load::port_channels`], so the layout `PortLayout`
+/// stores is the same one `audio_port_info` reports — one conversion, one
+/// answer.
+pub(super) fn layout_from_clap_port(
     port_type: *const std::os::raw::c_char,
     channel_count: u32,
 ) -> ChannelLayout {

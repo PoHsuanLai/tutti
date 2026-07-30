@@ -12,8 +12,8 @@ use tutti_analysis::StftGeometry;
 use super::vocoder::Vocoder;
 use super::{next_handle_id, Bank, FftSize};
 use tutti_core::{
-    AtomicF32, AudioUnit, BufferMut, BufferRef, Cents, Ordering, ReadRate, SampleRate, SignalFrame,
-    StretchFactor,
+    AtomicF32, AudioUnit, BufferMut, BufferRef, Cents, ChannelLayout, Ordering, ReadRate,
+    SampleRate, SignalFrame, StretchFactor,
 };
 
 /// Real-time time-stretching and pitch-shifting unit.
@@ -37,8 +37,14 @@ pub struct Unit {
     /// Shared across graph generations — see [`Bank`]. `width` mirrors the
     /// length so `inputs()`/`outputs()` need no borrow: fundsp calls them during
     /// graph planning, where taking a borrow would collide with a live one.
+    ///
+    /// **Note the names.** `channels` here is the vocoder *bank*, not a count —
+    /// the count is [`width`](Self::width). They were named this way before
+    /// [`ChannelLayout`] existed; a blind rename would swap a `Vec<Vocoder>` for
+    /// a channel count.
     pub(super) channels: Arc<Bank>,
-    pub(super) width: usize,
+    /// The unit's declared width — one vocoder per channel.
+    pub(super) width: ChannelLayout,
 
     /// This handle's identity for [`Bank::claim`], unique among live handles.
     ///
@@ -82,16 +88,19 @@ impl std::fmt::Debug for Unit {
 impl Unit {
     /// Stereo, at the default FFT size.
     pub fn new(sample_rate: impl Into<SampleRate>) -> Self {
-        Self::with_fft_size_and_channels(sample_rate, FftSize::default(), 2)
+        Self::with_fft_size_and_channels(sample_rate, FftSize::default(), ChannelLayout::Stereo)
     }
 
     /// Stereo, at a custom FFT size.
     pub fn with_fft_size(sample_rate: impl Into<SampleRate>, fft_size: FftSize) -> Self {
-        Self::with_fft_size_and_channels(sample_rate, fft_size, 2)
+        Self::with_fft_size_and_channels(sample_rate, fft_size, ChannelLayout::Stereo)
     }
 
     /// `channels` wide, at the default FFT size.
-    pub fn with_channels(sample_rate: impl Into<SampleRate>, channels: usize) -> Self {
+    pub fn with_channels(
+        sample_rate: impl Into<SampleRate>,
+        channels: impl Into<ChannelLayout>,
+    ) -> Self {
         Self::with_fft_size_and_channels(sample_rate, FftSize::default(), channels)
     }
 
@@ -104,15 +113,18 @@ impl Unit {
     pub fn with_fft_size_and_channels(
         sample_rate: impl Into<SampleRate>,
         fft_size: FftSize,
-        channels: usize,
+        channels: impl Into<ChannelLayout>,
     ) -> Self {
         let geometry = Self::geometry(sample_rate, fft_size);
         // A zero-wide filter has nothing to process and would make `inputs()` /
-        // `outputs()` lie to the graph.
-        let channels = channels.max(1);
+        // `outputs()` lie to the graph — see [`crate::nonempty`], which is where
+        // that rule lives now for every node in the crate.
+        let width = crate::nonempty(channels.into());
+        // Stride derived once, here on the construction path.
+        let n = width.count() as usize;
         Self {
-            channels: Bank::new((0..channels).map(|_| Vocoder::new(geometry)).collect()),
-            width: channels,
+            channels: Bank::new((0..n).map(|_| Vocoder::new(geometry)).collect()),
+            width,
             id: next_handle_id(),
             stretch_factor: Arc::new(AtomicF32::new(StretchFactor::UNITY.get())),
             pitch_cents: Arc::new(AtomicF32::new(0.0)),
@@ -136,8 +148,15 @@ impl Unit {
     }
 
     /// Channel width — the number of vocoders, and this unit's in/out arity.
-    pub fn channels(&self) -> usize {
+    pub fn channels(&self) -> ChannelLayout {
         self.width
+    }
+
+    /// The same width as a stride, for indexing. Derive it **once** per call,
+    /// above any loop.
+    #[inline]
+    fn stride(&self) -> usize {
+        self.width.count() as usize
     }
 
     /// Clamped into [`StretchFactor::MIN`]..=[`StretchFactor::MAX`].
@@ -426,12 +445,13 @@ impl Drop for Unit {
 impl AudioUnit for Unit {
     fn inputs(&self) -> usize {
         // A filter: it consumes the frame the caller feeds in (already tick'd
-        // from the real audio source), one channel per vocoder.
-        self.channels()
+        // from the real audio source), one channel per vocoder. Boundary:
+        // `AudioUnit::inputs` is a fixed fundsp trait signature.
+        self.stride()
     }
 
     fn outputs(&self) -> usize {
-        self.channels()
+        self.stride()
     }
 
     fn reset(&mut self) {
@@ -462,7 +482,8 @@ impl AudioUnit for Unit {
         // A short `input` fans channel 0 to the rest: a mono feed into a wider
         // stretcher stays audible on every channel rather than going silent
         // past the first.
-        let n = self.channels().min(output.len());
+        // Stride derived once, above the loops.
+        let n = self.stride().min(output.len());
         let src0 = input.first().copied().unwrap_or(0.0);
         let src = |c: usize| input.get(c).copied().unwrap_or(src0);
 
@@ -509,7 +530,8 @@ impl AudioUnit for Unit {
         // samples, so channel-major is what it wants. A frame-major buffer
         // would need a de-interleave here and a re-interleave after, for no
         // gain.
-        let channels = self.channels();
+        // Stride derived once per block, above the loops.
+        let channels = self.stride();
         let in_ch = input.channels();
 
         // A clone shares the bank but leaves its scratch for `allocate` to size.
@@ -519,13 +541,13 @@ impl AudioUnit for Unit {
         // error here before. Size it here instead: this is the control thread's
         // job, but a late allocation beats silent silence, and the debug assert
         // names the real fault. Every RT call on an allocated unit skips it.
-        if !self.channels.scratch_is_ready(self.width) {
+        if !self.channels.scratch_is_ready(channels) {
             debug_assert!(
                 false,
                 "BUG: stretch::Unit::process before allocate(); the graph must \
                  call allocate() on a cloned unit before running it"
             );
-            self.channels.allocate_scratch(self.width);
+            self.channels.allocate_scratch(channels);
         }
 
         // One claim and one borrow-set for the whole call. The scratch lives on
@@ -597,7 +619,9 @@ impl AudioUnit for Unit {
     fn route(&mut self, input: &SignalFrame, _frequency: f64) -> SignalFrame {
         // As a filter, the incoming `input` frame IS the source signal. Width
         // must track `outputs()` or fundsp mis-plans this node's latency.
-        let channels = self.channels();
+        // Stride derived once, above the loop. Boundary: `SignalFrame::new`
+        // is a fundsp signature.
+        let channels = self.stride();
         let mut out = SignalFrame::new(channels);
         let latency = self.latency_samples() as f64;
         let first = input.at(0).delay(latency);
@@ -664,6 +688,6 @@ impl AudioUnit for Unit {
     /// `Net::set_unit` for a hot swap). Re-allocating an already-sized unit
     /// would be a needless 64 KB per channel, so a ready unit returns early.
     fn allocate(&mut self) {
-        self.channels.allocate_scratch(self.width);
+        self.channels.allocate_scratch(self.stride());
     }
 }

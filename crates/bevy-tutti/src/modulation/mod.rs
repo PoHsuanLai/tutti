@@ -64,7 +64,7 @@
 //! *sink* evaluates:
 //!
 //! ```rust,ignore
-//! commands.spawn(ModRoute::new(lfo, plugin_param, addr).as_curve());
+//! commands.spawn(ModRoute::new(lfo, plugin_param, addr).per_block());
 //! ```
 //!
 //! Worth asking for only when the sink reads faster than the frame rate — a
@@ -79,6 +79,30 @@
 //! a sink that does accept curves means supplying it with
 //! [`ModTargetRegistry::insert_target`].
 //!
+//! # The per-sample path is a different route entirely
+//!
+//! Both deliveries above are this matrix's, and neither is sample-accurate: the
+//! scalar is written once a frame, and a curve is only as fine as the sink that
+//! samples it. For a genuinely per-sample modulator, don't route at all — spawn
+//! `tutti_units::LfoNode` in beat-synced mode and wire its
+//! [`BEAT_PORTS`](tutti_core::transport::BEAT_PORTS) inputs to the transport
+//! clock, whose entity is [`EngineNodes::clock`](crate::graph::EngineNodes):
+//!
+//! ```rust,ignore
+//! commands.spawn_audio_node(LfoNode::new().with_beat_sync(Hz(1.0)))
+//!     .insert(AudioSources(vec![
+//!         AudioSource::Node { entity: nodes.clock, port: 0 },
+//!         AudioSource::Node { entity: nodes.clock, port: 1 },
+//!     ]));
+//! ```
+//!
+//! That is the same `tutti_mod::Lfo` this matrix drives, under an audio-rate
+//! adapter instead of a frame-rate driver — one modulator, a different tier.
+//! What it gives up is the matrix: depth/polarity/range shaping, layered
+//! accumulation onto one param, and runtime re-routing are all this module's,
+//! and a hand-wired node participates in none of them. Reach for it when the
+//! staircase is audible; stay here otherwise.
+//!
 //! # What the host must supply
 //!
 //! Resolving a param to an accumulator needs a downcast to a concrete node type
@@ -90,13 +114,15 @@
 //!     .register::<tutti_units::Compressor>();
 //! ```
 
+pub mod audio_rate;
 pub mod components;
 pub mod driver;
 pub mod source;
 pub mod target;
 
 pub use components::{
-    CurveType, LfoShape, ModParamRange, ModRate, ModRoute, ModSource, ParamRange, Polarity,
+    CurveType, LfoShape, ModDelivery, ModParamRange, ModRate, ModRoute, ModSource, ParamRange,
+    Polarity,
 };
 pub use driver::{drive, rebuild, ModulationMatrix, ParamKey};
 pub use source::{
@@ -121,6 +147,7 @@ pub struct TuttiModulationPlugin;
 
 impl Plugin for TuttiModulationPlugin {
     fn build(&self, app: &mut App) {
+        app.init_resource::<audio_rate::AudioRateChains>();
         app.init_resource::<ModulationMatrix>()
             .init_resource::<ModTargetRegistry>()
             .init_resource::<CollectedModSources>()
@@ -129,6 +156,7 @@ impl Plugin for TuttiModulationPlugin {
         app.register_type::<ModSource>()
             .register_type::<ModRate>()
             .register_type::<ModRoute>()
+            .register_type::<ModDelivery>()
             .register_type::<ModParamRange>();
 
         // `Collect` builds only when `MarkDirty` said something moved, so the
@@ -151,6 +179,14 @@ impl Plugin for TuttiModulationPlugin {
                     .after(ModSourceSystems::Collect)
                     .before(GraphReconcileSystems::Params),
                 drive.in_set(GraphReconcileSystems::Params),
+                // Audio-rate delivery builds a *graph*, so it runs in the graph
+                // reconcile phase rather than beside `rebuild`. Source nodes
+                // first: a shaper cannot be pointed at a node that does not
+                // exist yet.
+                audio_rate::ensure_source_nodes
+                    .before(audio_rate::reconcile_audio_rate)
+                    .in_set(GraphReconcileSystems::Spawn),
+                audio_rate::reconcile_audio_rate.in_set(GraphReconcileSystems::Spawn),
             )
                 // All reach into the audio graph — `rebuild` to resolve a node,
                 // `drive` to write its atomics — so none means anything

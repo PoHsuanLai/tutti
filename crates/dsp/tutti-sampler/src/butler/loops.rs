@@ -8,7 +8,9 @@ use super::plan::{ChannelPlan, LoopStatus};
 use super::region_map::RegionMap;
 use dashmap::DashMap;
 use std::path::PathBuf;
-use tutti_core::Wave;
+use tutti_core::{ChannelLayout, Wave};
+
+use crate::nonempty;
 
 /// Check and handle stream loop conditions with crossfade support.
 ///
@@ -104,8 +106,14 @@ pub(crate) fn handle_loops(
 ///
 /// Butler thread only, so the allocation is fine — the whole lock-free
 /// crossfade design is built around handing the RT side a finished buffer.
-pub(crate) fn capture_frames(wave: &Wave, start: usize, count: usize, channels: usize) -> Vec<f32> {
-    let ch = channels.max(1);
+pub(crate) fn capture_frames(
+    wave: &Wave,
+    start: usize,
+    count: usize,
+    channels: impl Into<ChannelLayout>,
+) -> Vec<f32> {
+    // Stride derived once, above the frame loop. Butler thread, not RT.
+    let ch = nonempty(channels.into()).count() as usize;
     let mut samples = vec![0.0f32; count * ch];
     for (i, frame) in samples.chunks_exact_mut(ch).enumerate() {
         wave_frame_into(wave, start + i, frame);
@@ -129,7 +137,7 @@ pub(crate) fn fadeout_samples(
     metrics: &Metrics,
     file_path: &PathBuf,
     count: usize,
-    channels: usize,
+    channels: impl Into<ChannelLayout>,
 ) -> Vec<f32> {
     if count == 0 {
         return Vec::new();
@@ -153,7 +161,7 @@ pub(crate) fn fadein_samples(
     file_path: &PathBuf,
     position_samples: u64,
     count: usize,
-    channels: usize,
+    channels: impl Into<ChannelLayout>,
 ) -> Vec<f32> {
     if count == 0 {
         return Vec::new();
@@ -211,7 +219,7 @@ mod tests {
     fn test_capture_samples_basic() {
         let wave = make_test_wave(&[(1.0, 2.0), (3.0, 4.0), (5.0, 6.0), (7.0, 8.0)]);
 
-        let captured = capture_frames(&wave, 0, 3, 2);
+        let captured = capture_frames(&wave, 0, 3, 2usize);
 
         assert_eq!(captured.len(), 3 * 2, "3 frames x 2 channels");
         assert_eq!(captured, [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
@@ -221,7 +229,7 @@ mod tests {
     fn test_capture_samples_with_offset() {
         let wave = make_test_wave(&[(1.0, 2.0), (3.0, 4.0), (5.0, 6.0), (7.0, 8.0)]);
 
-        let captured = capture_frames(&wave, 2, 2, 2);
+        let captured = capture_frames(&wave, 2, 2, 2usize);
 
         assert_eq!(captured.len(), 2 * 2);
         assert_eq!(captured, [5.0, 6.0, 7.0, 8.0]);
@@ -231,7 +239,7 @@ mod tests {
     fn test_capture_samples_past_end_pads_zeros() {
         let wave = make_test_wave(&[(1.0, 2.0), (3.0, 4.0)]);
 
-        let captured = capture_frames(&wave, 1, 4, 2);
+        let captured = capture_frames(&wave, 1, 4, 2usize);
 
         assert_eq!(captured.len(), 4 * 2);
         assert_eq!(&captured[0..2], [3.0, 4.0]); // Valid sample
@@ -245,7 +253,7 @@ mod tests {
     fn test_capture_samples_empty_request() {
         let wave = make_test_wave(&[(1.0, 2.0)]);
 
-        let captured = capture_frames(&wave, 0, 0, 2);
+        let captured = capture_frames(&wave, 0, 0, 2usize);
 
         assert!(captured.is_empty());
     }
@@ -254,7 +262,7 @@ mod tests {
     fn test_capture_samples_mono_duplicates_to_stereo() {
         let wave = make_mono_wave(&[1.0, 2.0, 3.0]);
 
-        let captured = capture_frames(&wave, 0, 3, 2);
+        let captured = capture_frames(&wave, 0, 3, 2usize);
 
         assert_eq!(captured.len(), 3 * 2, "3 frames x 2 channels");
         // Mono fans to every channel — the shared policy, same as the RT reader.
@@ -335,7 +343,7 @@ mod tests {
         let metrics = Metrics::new();
         let path = PathBuf::from("nonexistent.wav");
         let state = ChannelPlan::default();
-        let samples = fadeout_samples(&state, &cache, &metrics, &path, 0, 2);
+        let samples = fadeout_samples(&state, &cache, &metrics, &path, 0, 2usize);
 
         assert!(samples.is_empty());
     }
@@ -349,7 +357,7 @@ mod tests {
         let path = PathBuf::from("nonexistent.wav");
         let state = ChannelPlan::default();
         // No active link → nothing to fade out.
-        let samples = fadeout_samples(&state, &cache, &metrics, &path, 100, 2);
+        let samples = fadeout_samples(&state, &cache, &metrics, &path, 100, 2usize);
 
         assert!(samples.is_empty());
     }
@@ -360,7 +368,7 @@ mod tests {
         let metrics = Metrics::new();
         let path = PathBuf::from("nonexistent.wav");
 
-        let samples = fadein_samples(&cache, &metrics, &path, 0, 0, 2);
+        let samples = fadein_samples(&cache, &metrics, &path, 0, 0, 2usize);
 
         assert!(samples.is_empty());
     }
@@ -371,7 +379,7 @@ mod tests {
         let metrics = Metrics::new();
         let path = PathBuf::from("nonexistent.wav");
 
-        let samples = fadein_samples(&cache, &metrics, &path, 0, 100, 2);
+        let samples = fadein_samples(&cache, &metrics, &path, 0, 100, 2usize);
 
         // File not in cache and doesn't exist, so returns empty
         assert!(samples.is_empty());
@@ -383,7 +391,7 @@ mod tests {
         let wave = Wave::new(2, 48000.0);
         assert_eq!(wave.len(), 0);
 
-        let captured = capture_frames(&wave, 0, 3, 2);
+        let captured = capture_frames(&wave, 0, 3, 2usize);
 
         // Should pad with zeros since wave is empty
         assert_eq!(captured.len(), 3 * 2, "3 frames x 2 channels");
@@ -397,7 +405,7 @@ mod tests {
         let wave = make_test_wave(&[(1.0, 2.0), (3.0, 4.0)]);
 
         // Start way past wave length - should not panic, just return zeros
-        let captured = capture_frames(&wave, 1_000_000, 5, 2);
+        let captured = capture_frames(&wave, 1_000_000, 5, 2usize);
 
         // All indices are way past wave.len(), so all zeros
         assert_eq!(captured.len(), 5 * 2, "5 frames x 2 channels");

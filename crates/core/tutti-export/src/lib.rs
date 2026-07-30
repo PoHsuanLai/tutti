@@ -103,9 +103,19 @@ impl Rendered {
         Samples(self.planes.first().map_or(0, |p| p.len()))
     }
 
-    /// Channel count.
+    /// Channel count — the interleave stride, and the number of planes.
     pub fn channels(&self) -> usize {
         self.planes.len()
+    }
+
+    /// The width these planes carry, as the engine's channel vocabulary.
+    ///
+    /// [`channels`](Self::channels) is the same number as a raw stride, for the
+    /// indexing arithmetic that wants one. This is the *declaration* — what
+    /// callers reaching for a layout (the loudness meter, a resample, an encode
+    /// config) actually want, so they stop re-wrapping the count themselves.
+    pub fn layout(&self) -> ChannelLayout {
+        ChannelLayout::from_count(self.planes.len() as u16)
     }
 
     /// Multiply every sample by `gain` — the apply half of a measure-then-apply
@@ -132,44 +142,19 @@ impl Rendered {
     }
 }
 
-/// Dispatch a `$body` block, generic over `const CH: usize`, on a runtime
-/// [`ChannelLayout`].
+/// The frame width an export config asks for.
 ///
-/// The render pipeline is const-generic in its frame width, so the caller
-/// resolves the requested layout to one of the enumerated widths (1/2/4/6/8/12
-/// — mono through 7.1.4) and the whole pipeline monomorphizes at it. An
-/// unenumerated width is a clean [`Error::UnsupportedChannels`], never a silent
-/// channel drop.
-macro_rules! dispatch_channels {
-    ($layout:expr, $ch:ident => $body:block) => {{
-        match $layout.count() {
-            1 => {
-                const $ch: usize = 1;
-                $body
-            }
-            2 => {
-                const $ch: usize = 2;
-                $body
-            }
-            4 => {
-                const $ch: usize = 4;
-                $body
-            }
-            6 => {
-                const $ch: usize = 6;
-                $body
-            }
-            8 => {
-                const $ch: usize = 8;
-                $body
-            }
-            12 => {
-                const $ch: usize = 12;
-                $body
-            }
-            n => Err(Error::UnsupportedChannels(n)),
-        }
-    }};
+/// The one place a [`ChannelLayout`] becomes the `usize` stride the render and
+/// the encoders use. Zero is the only rejected width — this used to be a
+/// `dispatch_channels!` macro that monomorphized the whole pipeline at one of
+/// 1/2/4/6/8/12 and returned [`Error::UnsupportedChannels`] for everything else,
+/// which meant a 3- or 5-wide master (`ChannelLayout::from_count(n)` for any
+/// unenumerated `n`) could not be exported at all.
+fn frame_width(layout: ChannelLayout) -> Result<usize> {
+    match layout.count() {
+        0 => Err(Error::UnsupportedChannels(0)),
+        n => Ok(n as usize),
+    }
 }
 
 /// The look-ahead latency `net` reports, as a frame count.
@@ -204,10 +189,8 @@ pub fn reported_latency(net: &mut tutti_core::dsp::Net) -> Samples {
 /// already exist — but `config.resample` still applies, so a caller can convert on
 /// the way out.
 pub fn write_buffers(rendered: &Rendered, config: &ExportConfig, path: &Path) -> Result<Written> {
-    let channels = config.encode.channels;
-    dispatch_channels!(channels, CH => {
-        encode::encode_planes::<CH>(rendered, config, path)
-    })
+    frame_width(config.encode.channels)?;
+    encode::encode_planes(rendered, config, path)
 }
 
 /// Render `net` and write it to `path`.
@@ -221,13 +204,11 @@ pub fn render_to_file(
     clock: &dyn RenderClock,
     path: &Path,
 ) -> Result<Written> {
-    let channels = config.encode.channels;
-    dispatch_channels!(channels, CH => {
-        let mut net = net;
-        let plan = render::RenderPlan::new(&config.render);
-        let mut src = render::NetSource::<CH>::new(&mut net, config.render.sample_rate, clock);
-        encode::encode_to_file::<CH>(&mut src, config.render.sample_rate, &plan, config, path)
-    })
+    frame_width(config.encode.channels)?;
+    let mut net = net;
+    let plan = render::RenderPlan::new(&config.render);
+    let mut src = render::NetSource::new(&mut net, config.render.sample_rate, clock);
+    encode::encode_to_file(&mut src, config.render.sample_rate, &plan, config, path)
 }
 
 /// Render `net` into memory.
@@ -255,25 +236,27 @@ pub fn render_to_buffers(
     config: &ExportConfig,
     clock: &dyn RenderClock,
 ) -> Result<Rendered> {
-    let channels = config.encode.channels;
-    dispatch_channels!(channels, CH => {
-        let mut net = net;
-        let plan = render::RenderPlan::new(&config.render);
-        let mut src = render::NetSource::<CH>::new(&mut net, config.render.sample_rate, clock);
+    let ch = frame_width(config.encode.channels)?;
+    let mut net = net;
+    let plan = render::RenderPlan::new(&config.render);
+    let mut src = render::NetSource::new(&mut net, config.render.sample_rate, clock);
 
-        // `vec![Vec::with_capacity(n); CH]` would clone ONE empty Vec CH times,
-        // and a clone does not carry capacity — every plane would reallocate.
-        let mut planes: Vec<Vec<f32>> =
-            (0..CH).map(|_| Vec::with_capacity(plan.output_length.get())).collect();
-        render::drive(&mut src, &plan, |block| {
-            for f in block {
-                for (plane, &s) in planes.iter_mut().zip(f.iter()) {
-                    plane.push(s);
-                }
+    // `vec![Vec::with_capacity(n); ch]` would clone ONE empty Vec `ch` times,
+    // and a clone does not carry capacity — every plane would reallocate.
+    let mut planes: Vec<Vec<f32>> = (0..ch)
+        .map(|_| Vec::with_capacity(plan.output_length.get()))
+        .collect();
+    render::drive(&mut src, ch, &plan, |block| {
+        for f in block.iter() {
+            for (plane, &s) in planes.iter_mut().zip(f.iter()) {
+                plane.push(s);
             }
-            Ok(())
-        })?;
+        }
+        Ok(())
+    })?;
 
-        Ok(Rendered { planes, sample_rate: config.render.sample_rate })
+    Ok(Rendered {
+        planes,
+        sample_rate: config.render.sample_rate,
     })
 }

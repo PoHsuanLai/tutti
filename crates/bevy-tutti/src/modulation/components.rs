@@ -144,19 +144,66 @@ pub struct ModRoute {
     /// layer is cleared from the target — the difference between muting a route
     /// and deleting it.
     pub enabled: bool,
-    /// Ask for the source to be installed as a beat-evaluated curve rather than
-    /// sampled once per frame.
+    /// How often this route's value reaches the param. See [`ModDelivery`].
+    pub delivery: ModDelivery,
+}
+
+/// How often a route's value reaches the param it drives.
+///
+/// One axis, three points — **not** a set of flags. Delivery is a choice among
+/// alternatives, and the earlier pair of independent bools
+/// (`deliver_as_curve` + `at_audio_rate`) could express a fourth state that
+/// means nothing: both at once produced a graph chain *and* a per-frame driver
+/// edge, two writers racing over one param. That is the hazard
+/// [`ModulationMatrix`](super::ModulationMatrix)'s claim set exists to prevent,
+/// so it should not be representable one level out either.
+///
+/// The names say what actually differs — the **rate** — rather than naming an
+/// implementation ("curve") or a tier only an audio person parses ("audio
+/// rate"). They line up with the three sampling rates `tutti-mod` documents:
+/// one `Curve`, read at whatever rate the consumer needs.
+///
+/// Every tier **falls back to [`PerFrame`](Self::PerFrame)** when its
+/// preconditions do not hold. Falling back is always correct — a coarser
+/// staircase, never silence — but the two finer tiers differ in how visible the
+/// fallback is, and that is worth knowing before choosing one.
+#[derive(Reflect, Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ModDelivery {
+    /// **Per frame.** The driver samples the source once a frame and writes a
+    /// scalar into the param's accumulator.
     ///
-    /// A **request**, not a guarantee: it is honoured only if the source kind
-    /// has a curve form *and* the sink accepts curve layers. Anything else falls
-    /// back to scalar delivery, which is always correct — a frame-rate staircase
-    /// rather than a smooth ramp, never silence.
+    /// The default, and the only tier with no preconditions: it is always
+    /// available and always correct. Resolution is your framerate, which shows
+    /// up as a staircase on a fast modulator into a sharp-responding param.
+    #[default]
+    PerFrame,
+    /// **Per block.** The source is installed as a
+    /// [`Curve`](tutti_mod::Curve) that the *sink* evaluates at whatever rate
+    /// it reads.
     ///
-    /// Worth asking for when the sink reads faster than the frame rate (a
-    /// plugin's per-block parameter producer). Pointless for a native param: its
-    /// accumulator collapses at a fixed beat, so it declines and the route falls
-    /// back.
-    pub deliver_as_curve: bool,
+    /// A **request**: honoured only if the source kind has a curve form *and*
+    /// the sink accepts curve layers. The fallback is **silent** — you asked
+    /// for a ramp and got a staircase, with nothing to observe.
+    ///
+    /// Worth asking for when the sink reads faster than the frame rate, such as
+    /// a plugin's per-block parameter producer. Pointless for a native param:
+    /// [`AtomicTarget`](tutti_mod::AtomicTarget) collapses at a fixed beat, so
+    /// a curve stored there would never move and the route falls back.
+    PerBlock,
+    /// **Per sample.** Materialises `source → shaper → sum → the sink's param
+    /// port` as real graph nodes; the driver never touches the param.
+    ///
+    /// A different *mechanism* rather than a request, and its outcome is
+    /// **observable**: the chain either appears in
+    /// [`AudioRateChains`](super::audio_rate::AudioRateChains) or it does not.
+    /// It falls back when the sink exposes no audio-rate port for the param —
+    /// a fact about the node, not an error.
+    ///
+    /// Worth asking for when the staircase is audible: a fast LFO on a filter
+    /// cutoff or a distortion drive. It costs two idle graph nodes per
+    /// modulated param (~0.1% of a block at four effects, ~2% at sixty-four),
+    /// so it is opt-in rather than the default.
+    PerSample,
 }
 
 impl ModRoute {
@@ -170,15 +217,27 @@ impl ModRoute {
             polarity: Polarity::Bipolar,
             curve: CurveType::Linear,
             enabled: true,
-            deliver_as_curve: false,
+            delivery: ModDelivery::PerFrame,
         }
     }
 
-    /// Ask for beat-evaluated delivery — see
-    /// [`deliver_as_curve`](Self::deliver_as_curve).
-    pub fn as_curve(mut self) -> Self {
-        self.deliver_as_curve = true;
+    /// Choose how often this route's value reaches the param.
+    ///
+    /// One setter for one axis, so picking a tier cannot leave a previous
+    /// choice standing beside it.
+    pub fn deliver(mut self, delivery: ModDelivery) -> Self {
+        self.delivery = delivery;
         self
+    }
+
+    /// Sugar for [`ModDelivery::PerBlock`].
+    pub fn per_block(self) -> Self {
+        self.deliver(ModDelivery::PerBlock)
+    }
+
+    /// Sugar for [`ModDelivery::PerSample`].
+    pub fn per_sample(self) -> Self {
+        self.deliver(ModDelivery::PerSample)
     }
 
     pub fn with_depth(mut self, depth: impl Into<Depth>) -> Self {

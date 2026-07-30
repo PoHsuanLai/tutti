@@ -38,6 +38,17 @@ impl MeteringContext {
                 *r = ch[1];
             });
     }
+
+    /// The deinterleaved prefixes as one pair.
+    ///
+    /// Both come from [`RtScratch::active_ref`] with the same `frames`, which
+    /// clamps identically, so the pairing always succeeds — handing it out here
+    /// is what keeps that fact in one place instead of leaving the caller to
+    /// pass two independently-derived slices and hope they match.
+    #[inline]
+    fn planes(&self, frames: usize) -> Option<tutti_types::StereoPlanes<'_>> {
+        tutti_types::StereoPlanes::new(self.left.active_ref(frames), self.right.active_ref(frames))
+    }
 }
 
 impl Default for MeteringContext {
@@ -69,9 +80,9 @@ pub fn meter_output(
 
     if meter.is_enabled() {
         ctx.deinterleave(output, frames);
-        meter
-            .cell()
-            .measure(ctx.left.active_ref(frames), ctx.right.active_ref(frames));
+        if let Some(planes) = ctx.planes(frames) {
+            meter.cell().measure(planes);
+        }
     }
 
     tap.push(output, frames);

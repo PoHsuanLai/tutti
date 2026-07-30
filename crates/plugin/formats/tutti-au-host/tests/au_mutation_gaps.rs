@@ -8,8 +8,13 @@
 //!
 //! ## What is deliberately *not* here
 //!
-//! Three survivors were measured to be unfalsifiable against the AUs installed
-//! on this machine, and a test that cannot fail is worse than no test:
+//! Six survivors were measured to be unfalsifiable on this machine, and a test
+//! that cannot fail is worse than no test. Four are unfalsifiable because the
+//! installed AUs never exhibit the distinguishing behaviour; two are
+//! unfalsifiable *in kind*, being races that no sampling schedule can exhaust —
+//! the same reasoning the repo's `RtPublish` rule applies to no-alloc tests.
+//!
+//! Absent behaviour in the corpus:
 //!
 //! * **`has_input` inferred from the stream-format read** instead of the input
 //!   element count. Probed across every instantiable component: **54 units, 0
@@ -33,6 +38,41 @@
 //!   comment asserting AUDelay sets it on a silent input; that was not
 //!   reproducible here.) Falsifying this needs a probe AU that sets the flag
 //!   while writing garbage — a `Misbehaviour` variant, not a corpus unit.
+//!
+//! * **`RenderScratch::new`'s `in_ch.max(out_ch)` narrowed to `in_ch`.** This is
+//!   recorded because the over-allocation is *documented* as the fix for an
+//!   instrument out-of-bounds, and that is no longer what it does. `render_input`
+//!   bounds every write by the AU's own `mDataByteSize` and resolves a channel
+//!   past the end of `scratch.inputs` through `.get(ch)` with
+//!   `None => dst.fill(0.0)`, so a short `inputs` vec is memory-safe — the guard
+//!   in the callback supersedes the over-allocation. What remains is a
+//!   silence-vs-signal difference on a channel an AU pulls beyond its declared
+//!   input width, and no installed unit does that: every corpus effect is 2-in,
+//!   the instruments are 0-in with `has_input == false`, and AUSpatialMixer
+//!   (1-in / 2-out, the one unit where the two counts differ) already renders
+//!   silence for channel 1 with the over-allocation in place — measured. So the
+//!   line is dead weight rather than a fix, and its comment overstates it.
+//!
+//! Races, which are unfalsifiable in kind rather than for want of a plugin:
+//!
+//! * **`TransportState`'s locate `Release`/`Acquire` pair downgraded to
+//!   `Relaxed`.** `the_locate_flag_is_consumed_exactly_once` covers the `swap`'s
+//!   atomicity, but the pairing exists so an AU that observes `state_changed`
+//!   also sees the *position stores that preceded it*. That is a cross-thread
+//!   visibility guarantee: on arm64 the reordering it forbids is permitted by
+//!   the model yet vanishingly rare in practice, and a test that samples for it
+//!   would pass under the bug almost always. The guarantee belongs in the
+//!   ordering annotation, not in a flaky assertion.
+//!
+//! * **The listener's private serial dispatch queue made concurrent.** Probed
+//!   directly: 40 begin/end gesture pairs emitted back-to-back with no spacing,
+//!   under `_dispatch_queue_attr_concurrent`, across 6 runs — **80/80 events
+//!   delivered in perfect alternation every time, 0 violations**. AudioToolbox
+//!   serializes its own delivery upstream of the queue, so the concurrent
+//!   attribute does not manifest here. (Note the existing
+//!   `gesture_begin_and_end_are_delivered_in_order` sleeps 50 ms between its two
+//!   events to defeat coalescing, which also guarantees only one is ever in
+//!   flight — so it cannot observe reordering by construction.)
 
 #![cfg(target_os = "macos")]
 

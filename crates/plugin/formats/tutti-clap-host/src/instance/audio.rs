@@ -4,7 +4,9 @@ use super::config::{AudioScratch, PortLayout, ProcessScratch};
 use super::ClapActive;
 use crate::error::{ClapError, Result};
 use crate::events::EventList;
-use crate::types::{AudioBuffer, ClapNoteExpression, MidiEvent, ParameterChanges, TransportInfo};
+use crate::types::{
+    AudioBuffer, ChannelLayout, ClapNoteExpression, MidiEvent, ParameterChanges, TransportInfo,
+};
 use clap_sys::audio_buffer::clap_audio_buffer;
 use clap_sys::events::{
     clap_event_header, clap_event_transport, CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_TRANSPORT,
@@ -158,11 +160,11 @@ fn refill_port_buffers<T: ClapSample>(
     scratch: &mut ProcessScratch<T>,
     caller_input_ptrs: &[*mut T],
     caller_output_ptrs: &[*mut T],
-    input_ports: &[u32],
-    output_ports: &[u32],
+    input_ports: &[ChannelLayout],
+    output_ports: &[ChannelLayout],
 ) {
-    let wanted_in: usize = input_ports.iter().map(|&c| c as usize).sum();
-    let wanted_out: usize = output_ports.iter().map(|&c| c as usize).sum();
+    let wanted_in: usize = input_ports.iter().map(|c| c.count() as usize).sum();
+    let wanted_out: usize = output_ports.iter().map(|c| c.count() as usize).sum();
 
     scratch.input_ptrs.clear();
     scratch.output_ptrs.clear();
@@ -201,9 +203,13 @@ fn refill_port_buffers<T: ClapSample>(
     // Build per-port clap_audio_buffer descriptors as slices into the
     // ptr arrays. The slice pointers remain valid because `input_ptrs` /
     // `output_ptrs` have frozen capacity (set in `activate()`).
+    // `make_port_buffer` writes `clap_audio_buffer::channel_count`, a C ABI
+    // field, so the layout degrades back to a raw `u32` here and nowhere
+    // earlier.
     let input_ptrs_base = scratch.input_ptrs.as_mut_ptr();
     let mut offset = 0usize;
-    for &ch_count in input_ports {
+    for port in input_ports {
+        let ch_count = u32::from(port.count());
         let base = unsafe { input_ptrs_base.add(offset) };
         scratch.input_bufs.push(T::make_port_buffer(base, ch_count));
         offset += ch_count as usize;
@@ -211,7 +217,8 @@ fn refill_port_buffers<T: ClapSample>(
 
     let output_ptrs_base = scratch.output_ptrs.as_mut_ptr();
     let mut offset = 0usize;
-    for &ch_count in output_ports {
+    for port in output_ports {
+        let ch_count = u32::from(port.count());
         let base = unsafe { output_ptrs_base.add(offset) };
         scratch
             .output_bufs
@@ -570,12 +577,12 @@ mod tests {
     use super::*;
 
     fn new_scratch<T: Copy + Default>(
-        input_ports: &[u32],
-        output_ports: &[u32],
+        input_ports: &[ChannelLayout],
+        output_ports: &[ChannelLayout],
         max_frames: usize,
     ) -> ProcessScratch<T> {
-        let input_total: usize = input_ports.iter().map(|&c| c as usize).sum();
-        let output_total: usize = output_ports.iter().map(|&c| c as usize).sum();
+        let input_total: usize = input_ports.iter().map(|c| c.count() as usize).sum();
+        let output_total: usize = output_ports.iter().map(|c| c.count() as usize).sum();
         let mut scratch = ProcessScratch::<T>::new();
         scratch.resize_for(
             input_total,
@@ -591,8 +598,9 @@ mod tests {
     /// `refill_port_buffers` must only reuse capacity — no heap grow.
     #[test]
     fn refill_port_buffers_is_allocation_free() {
-        let input_ports = [2u32, 2]; // main + sidechain stereo
-        let output_ports = [2u32];
+        // main + sidechain stereo
+        let input_ports = [ChannelLayout::Stereo, ChannelLayout::Stereo];
+        let output_ports = [ChannelLayout::Stereo];
         let max_frames = 512usize;
         let mut scratch = new_scratch::<f32>(&input_ports, &output_ports, max_frames);
 
@@ -631,8 +639,8 @@ mod tests {
     /// taken from the pre-allocated scratch pool, so no alloc either.
     #[test]
     fn refill_with_pad_is_allocation_free() {
-        let input_ports = [4u32]; // quad input
-        let output_ports = [2u32];
+        let input_ports = [ChannelLayout::Quad];
+        let output_ports = [ChannelLayout::Stereo];
         let max_frames = 256usize;
         let mut scratch = new_scratch::<f32>(&input_ports, &output_ports, max_frames);
 

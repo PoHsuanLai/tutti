@@ -171,7 +171,7 @@ fn buffers_report_their_own_shape() {
 #[test]
 fn a_caller_can_compose_normalization() {
     use tutti_analysis::{measure_loudness, LoudnessConfig};
-    use tutti_types::Db;
+    use tutti_types::{Db, Interleaved};
 
     // Longer than R128's 400 ms gating block, or the meter reports nothing
     // passed the gate and there is no loudness to normalize toward.
@@ -180,10 +180,12 @@ fn a_caller_can_compose_normalization() {
     let mut out = render_to_buffers(net(), &long, &FrozenClock).unwrap();
 
     let cfg = LoudnessConfig::new(out.sample_rate, ChannelLayout::Stereo);
-    let before = measure_loudness(&cfg, &out.interleaved()).unwrap();
+    let flat = out.interleaved();
+    let before = measure_loudness(&cfg, Interleaved::new(&flat, ChannelLayout::Stereo)).unwrap();
     let gain = before.gain_to(Db(-14.0), Db(-1.0));
     out.apply_gain(gain);
-    let after = measure_loudness(&cfg, &out.interleaved()).unwrap();
+    let flat = out.interleaved();
+    let after = measure_loudness(&cfg, Interleaved::new(&flat, ChannelLayout::Stereo)).unwrap();
 
     // Assert what `gain_to` actually promises, not merely that `apply_gain` is
     // linear. The earlier form checked `after ≈ before + gain`, which is
@@ -428,7 +430,7 @@ fn normalized_export_lifts_the_level_toward_the_target() {
 fn peak_normalization_lands_on_the_requested_dbtp() {
     use tutti_analysis::{measure_loudness, LoudnessConfig};
     use tutti_export::{render_normalized_to_file, Normalize};
-    use tutti_types::Db;
+    use tutti_types::{Db, Interleaved};
 
     let d = tempfile::tempdir().unwrap();
     let mut cfg = config(AudioFormat::Wav, BitDepth::Float32, ChannelLayout::Stereo);
@@ -443,7 +445,8 @@ fn peak_normalization_lands_on_the_requested_dbtp() {
         .map(|s| s.unwrap())
         .collect();
     let meter = LoudnessConfig::new(cfg.render.sample_rate, ChannelLayout::Stereo);
-    let measured = measure_loudness(&meter, &samples).unwrap();
+    let measured =
+        measure_loudness(&meter, Interleaved::new(&samples, ChannelLayout::Stereo)).unwrap();
 
     assert!(
         (measured.true_peak.get() - (-1.0)).abs() < 0.2,
@@ -648,7 +651,7 @@ fn normalizing_silence_at_an_integer_depth_does_not_amplify_dither() {
 fn a_resampled_normalized_export_still_lands_on_its_dbtp_target() {
     use tutti_analysis::{measure_loudness, LoudnessConfig};
     use tutti_export::{render_normalized_to_file, Normalize};
-    use tutti_types::Db;
+    use tutti_types::{Db, Interleaved};
 
     // Hard edges near Nyquist are what SRC overshoots on; a DC constant barely
     // moves and would hide the bug entirely.
@@ -681,7 +684,8 @@ fn a_resampled_normalized_export_still_lands_on_its_dbtp_target() {
     let samples: Vec<f32> = reader.into_samples::<f32>().map(|s| s.unwrap()).collect();
 
     let meter = LoudnessConfig::new(tutti_core::SampleRate(rate as f64), ChannelLayout::Stereo);
-    let measured = measure_loudness(&meter, &samples).expect("stereo at 48k is measurable");
+    let measured = measure_loudness(&meter, Interleaved::new(&samples, ChannelLayout::Stereo))
+        .expect("stereo at 48k is measurable");
 
     assert!(
         (measured.true_peak.get() - (-1.0)).abs() < 0.05,

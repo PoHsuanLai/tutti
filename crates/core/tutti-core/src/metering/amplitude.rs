@@ -1,6 +1,7 @@
 //! Lock-free amplitude metering.
 
 use crate::{AtomicBool, AtomicF32, Ordering};
+use tutti_types::StereoPlanes;
 
 /// Lock-free amplitude storage (Peak L/R, RMS L/R).
 ///
@@ -53,12 +54,25 @@ impl AtomicAmplitude {
     /// Measure peak + RMS over one deinterleaved stereo buffer and publish.
     ///
     /// RT-safe: reads two slices, does four folds, stores four atomics.
+    ///
+    /// Takes a [`StereoPlanes`] rather than two loose slices because the RMS
+    /// divisor is the pair's *shared* frame count. This was
+    /// `measure(left, right)` deriving `frames = left.len()` and never checking
+    /// `right`, so a short right channel divided its sum of squares by the wrong
+    /// count and published a quietly wrong level. The pairing cannot be formed
+    /// unless the two agree, so the bug is now unrepresentable rather than
+    /// merely unreached.
+    ///
+    /// The four folds below read the planes directly rather than through an
+    /// accessor per sample — they autovectorize, and the newtype's inner-loop
+    /// rule says destructure at the top and index raw below.
     #[inline]
-    pub fn measure(&self, left: &[f32], right: &[f32]) {
-        let frames = left.len();
+    pub fn measure(&self, planes: StereoPlanes<'_>) {
+        let frames = planes.frames();
         if frames == 0 {
             return;
         }
+        let (left, right) = (planes.left(), planes.right());
         let peak_l = left.iter().fold(0.0f32, |m, s| m.max(s.abs()));
         let peak_r = right.iter().fold(0.0f32, |m, s| m.max(s.abs()));
 

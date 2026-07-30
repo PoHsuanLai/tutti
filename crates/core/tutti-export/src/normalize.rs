@@ -21,6 +21,7 @@ use std::path::Path;
 use tutti_analysis::{measure_loudness, LoudnessConfig};
 use tutti_core::transport::RenderClock;
 use tutti_types::Db;
+use tutti_types::Interleaved;
 
 use crate::config::ExportConfig;
 use crate::{render_to_buffers, write_buffers, Result, Written};
@@ -104,7 +105,8 @@ impl Normalize {
     /// applied.
     pub fn gain_for_rendered(&self, rendered: &crate::Rendered) -> Result<Db> {
         let meter = LoudnessConfig::new(rendered.sample_rate, rendered.layout());
-        measure_loudness(&meter, &rendered.interleaved())
+        let samples = rendered.interleaved();
+        measure_loudness(&meter, Interleaved::new(&samples, rendered.layout()))
             .map(|m| self.gain_for(&m))
             .ok_or_else(|| {
                 crate::Error::Unmeasurable(format!(

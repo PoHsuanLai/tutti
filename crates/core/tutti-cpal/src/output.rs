@@ -8,7 +8,7 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use std::sync::Arc;
 use tutti_core::engine::Engine;
 use tutti_core::metering::{meter_output, AudioTap, MasterMeter, MeteringContext};
-use tutti_core::{ChannelLayout, ScopedNoDenormals};
+use tutti_core::{ChannelLayout, InterleavedMut, ScopedNoDenormals};
 
 #[cfg(feature = "midi")]
 use tutti_midi_runtime::MidiPreBlock;
@@ -64,21 +64,24 @@ impl AudioCallbackState {
     }
 }
 
-/// Render one block into `output`, a `layout`-wide interleaved device buffer.
-/// The graph root is folded to `layout` (see [`Engine::process`]).
+/// Render one block into `output`, an interleaved device buffer that carries
+/// its own width. The graph root is folded to that width (see
+/// [`Engine::process`]).
 #[inline]
-pub fn process_audio(state: &AudioCallbackState, output: &mut [f32], layout: ChannelLayout) {
+pub fn process_audio(state: &AudioCallbackState, output: &mut InterleavedMut<'_>) {
     let _no_denormals = ScopedNoDenormals::new();
-    // Stride derived once at entry; the engine derives its own the same way.
-    let channels = layout.count() as usize;
-    let frames = output.len().checked_div(channels).unwrap_or(0);
+    // The frame count is the buffer's, not a separate argument that could
+    // disagree with it. `len()` is frames; the division by the stride happens
+    // inside the type, once.
+    #[cfg(feature = "midi")]
+    let frames = output.len();
     // Pre-block MIDI: deliver this block's events into node inboxes before the
     // graph renders.
     #[cfg(feature = "midi")]
     if let Some(pre_block) = &state.pre_block {
         pre_block.run(frames);
     }
-    state.engine.process(output, frames, layout);
+    state.engine.process(output);
 }
 
 /// Holds a [`cpal::Stream`] to keep it alive. CPAL runs the audio callback
@@ -232,7 +235,12 @@ where
             // Zero before rendering — the previous callback's contents are not
             // meaningful input for the graph.
             mix.fill(0.0);
-            process_audio(&state, mix, layout);
+            let mut mix = InterleavedMut::new(mix, layout);
+            process_audio(&state, &mut mix);
+            // Back to a flat slice for the metering fold and the device write.
+            // `samples()` is the escape hatch the type documents: both loops
+            // below are per-frame and must index raw.
+            let mix = mix.as_ref().samples();
 
             // Meter a STEREO fold of the device buffer — `meter_output` / the UI
             // waveform assume stereo, and a stereo monitor is meaningful at any
@@ -263,6 +271,15 @@ where
     Ok(stream)
 }
 
+/// Convert the rendered f32 mix into the device's sample format.
+///
+/// `data` stays a bare `&mut [T]` and `channels` a bare `usize`: `T` is
+/// `cpal::SizedSample` (i16, u32, f64, …), so `InterleavedMut` — which is
+/// f32-only by construction — cannot describe the destination. Widening the
+/// newtype over `T` would buy nothing here, because the only arithmetic in this
+/// function is `i / channels`, and the width it needs is the *source's*, which
+/// the caller already reads off the `InterleavedMut` it built. The vocabulary
+/// stops at the format boundary, as it does at the C ABI and WIT boundaries.
 #[inline]
 fn write_output<T: cpal::SizedSample + cpal::FromSample<f32>>(
     data: &mut [T],
@@ -337,7 +354,10 @@ mod tests {
 
         let frames = 256;
         let mut output = vec![0.0f32; frames * 2];
-        process_audio(&state, &mut output, ChannelLayout::Stereo);
+        process_audio(
+            &state,
+            &mut InterleavedMut::new(&mut output, ChannelLayout::Stereo),
+        );
 
         let expected_beat = Beat(256.0 * (120.0 / 60.0) / 44100.0);
         let actual_beat = transport.settings.beat();
@@ -361,7 +381,10 @@ mod tests {
 
         let frames = 1024;
         let mut output = vec![0.0f32; frames * 2];
-        process_audio(&state, &mut output, ChannelLayout::Stereo);
+        process_audio(
+            &state,
+            &mut InterleavedMut::new(&mut output, ChannelLayout::Stereo),
+        );
 
         let beat = transport.settings.beat();
         assert!(
@@ -384,7 +407,10 @@ mod tests {
         let mut output = vec![0.0f32; 512 * 2];
         // The filter needs a few blocks before its output is clearly non-zero.
         for _ in 0..4 {
-            process_audio(&state, &mut output, ChannelLayout::Stereo);
+            process_audio(
+                &state,
+                &mut InterleavedMut::new(&mut output, ChannelLayout::Stereo),
+            );
         }
 
         assert!(
@@ -408,11 +434,17 @@ mod tests {
         // Warm up outside the no-alloc scope — first call primes any
         // internal state on the transport / clock.
         let mut output = vec![0.0f32; 1024 * 2];
-        process_audio(&state, &mut output, ChannelLayout::Stereo);
+        process_audio(
+            &state,
+            &mut InterleavedMut::new(&mut output, ChannelLayout::Stereo),
+        );
 
         assert_no_alloc::assert_no_alloc(|| {
             for _ in 0..1_000 {
-                process_audio(&state, &mut output, ChannelLayout::Stereo);
+                process_audio(
+                    &state,
+                    &mut InterleavedMut::new(&mut output, ChannelLayout::Stereo),
+                );
             }
         });
     }
@@ -432,11 +464,17 @@ mod tests {
         transport.motion.drain();
 
         let mut output = vec![0.0f32; MAX_FRAMES * 2];
-        process_audio(&state, &mut output, ChannelLayout::Stereo);
+        process_audio(
+            &state,
+            &mut InterleavedMut::new(&mut output, ChannelLayout::Stereo),
+        );
 
         assert_no_alloc::assert_no_alloc(|| {
             for _ in 0..64 {
-                process_audio(&state, &mut output, ChannelLayout::Stereo);
+                process_audio(
+                    &state,
+                    &mut InterleavedMut::new(&mut output, ChannelLayout::Stereo),
+                );
             }
         });
     }
@@ -458,13 +496,19 @@ mod tests {
         // size is where any one-time sizing happens, and that is the engine's
         // business, not the audio thread's.
         for frames in [64usize, 128, 256, 512, 1024, 2048] {
-            process_audio(&state, &mut output[..frames * 2], ChannelLayout::Stereo);
+            process_audio(
+                &state,
+                &mut InterleavedMut::new(&mut output[..frames * 2], ChannelLayout::Stereo),
+            );
         }
 
         assert_no_alloc::assert_no_alloc(|| {
             for _ in 0..16 {
                 for frames in [64usize, 128, 256, 512, 1024, 2048] {
-                    process_audio(&state, &mut output[..frames * 2], ChannelLayout::Stereo);
+                    process_audio(
+                        &state,
+                        &mut InterleavedMut::new(&mut output[..frames * 2], ChannelLayout::Stereo),
+                    );
                 }
             }
         });

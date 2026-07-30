@@ -1,19 +1,16 @@
-//! `AudioIn`/`AudioOut` adapters for the butler's cold-path disk refill.
+//! The read half of the butler's cold-path disk refill.
 //!
 //! The butler moves frames from a resident (whole-file) [`Wave`] into a
-//! per-region ring buffer. Both ends speak the cold-path vocabulary here:
+//! per-region ring buffer. This module owns the source end: [`WaveIn`] is the
+//! one place the planar `wave.at(0,i)/at(1,i)` unpack lives — a cursor over a
+//! `Wave` with mono up-mix, optional loop wrap, and zero-pad past end.
 //!
-//! - [`WaveIn`] is the one place the planar `wave.at(0,i)/at(1,i)` unpack lives
-//!   — an [`AudioIn`] over a `Wave` with a cursor, mono up-mix, optional loop
-//!   wrap, and zero-pad past end.
-//! - [`RegionOut`] implements [`AudioOut`]: `write` pushes frames into the
-//!   bounded ring until it fills (recording how many landed so the caller can
-//!   advance the file cursor); `finalize` is a no-op since the ring is a live
-//!   SPSC channel, never closed.
-//!
-//! The butler ring stores `(f32, f32)` frames (the shape the RT sampler reads);
-//! the vocabulary is `[f32; 2]`. The `[l, r] <-> (l, r)` conversion is confined
-//! to these adapters and [`RegionOut::push_frames`].
+//! Both ends speak flat interleaved `&[f32]` at a **runtime** width, with the
+//! stride owned by the type and every count denominated in **frames**. The sink
+//! end, [`RegionOut`](crate::butler::prefetch::RegionOut), states that shape as
+//! the engine's [`AudioOut`](tutti_core::AudioOut) trait. `WaveIn` deliberately
+//! does not implement the matching [`AudioIn`](tutti_core::AudioIn) — see its
+//! type docs, which is where that decision and its reasoning live.
 
 use crate::{nonempty, MAX_SAMPLER_CHANNELS};
 use tutti_core::{fold_frame, ChannelLayout, Wave};
@@ -91,11 +88,49 @@ pub(crate) fn wrap_position(pos: usize, loop_range: Option<(u64, u64)>) -> usize
     }
 }
 
-/// A forward [`AudioIn`] over a resident `Wave`, reading from an internal
-/// cursor with optional loop wrap. Past the end (with no loop) it yields
-/// silence, so it is an *unbounded* source — the caller bounds the transfer by
-/// the size of the scratch buffer it fills (`poll_into` always fills the whole
-/// buffer, mirroring the old zero-pad-to-`chunk_size` fill).
+/// A forward reader over a resident `Wave`, reading from an internal cursor
+/// with optional loop wrap. Past the end (with no loop) it yields silence, so it
+/// is an *unbounded* source — the caller bounds the transfer by the size of the
+/// scratch buffer it fills, mirroring the old zero-pad-to-`chunk_size` fill.
+///
+/// # Deliberately NOT an [`AudioIn`], and this time not because of the width
+///
+/// `WaveIn` and [`RegionOut`](crate::butler::prefetch::RegionOut) both used to
+/// implement the engine's I/O traits and both dropped the impls when the ring
+/// went to a runtime width, because `AudioIn`/`AudioOut` fixed the frame width
+/// as a const parameter. **That blocker is gone** — the traits now carry a
+/// runtime [`ChannelLayout`] — and `RegionOut` has re-adopted `AudioOut`
+/// accordingly. `WaveIn` has not, for an unrelated reason that the const was
+/// masking.
+///
+/// [`AudioIn::poll_into`](tutti_core::AudioIn::poll_into)'s contract is entirely
+/// about what a **short or zero count means**: `0` is either "the producer has
+/// not caught up" ([`Starved`](tutti_core::OnEmpty::Starved)) or "there will
+/// never be more" ([`EndOfStream`](tutti_core::OnEmpty::EndOfStream)), and
+/// `ON_EMPTY` is the source answering that question once, on the type, so a
+/// generic consumer can branch on it.
+///
+/// **`WaveIn` cannot answer it, because it never asks it.**
+/// [`fill_interleaved`](Self::fill_interleaved) always fills the whole buffer
+/// and always returns `out.len() / channels` — it is unbounded by construction,
+/// yielding silence forever past the end of the wave. Neither verdict is true of
+/// it:
+///
+/// - `EndOfStream` is a promise about the *first* zero. `WaveIn` runs off the
+///   end of the wave and keeps returning full counts of silence, so a consumer
+///   looping on that verdict would never stop.
+/// - `Starved` promises a producer that will catch up. There is no producer —
+///   the `Wave` is resident in memory, and a retry returns exactly the same
+///   silence.
+///
+/// A third `OnEmpty` variant ("unbounded — pads rather than ending") would make
+/// it fit, but that is the wrong trade: it would add a case every existing
+/// consumer must handle, in `tutti-types`, to describe a source whose count is
+/// already known to be constant. The honest reading is that a source which never
+/// returns a short count is not answering the question `AudioIn` exists to ask,
+/// so it is not an `AudioIn`. It stays inherent, and the *caller* owns the
+/// bound — which is what `refill_forward` already does by sizing the scratch
+/// buffer.
 pub(crate) struct WaveIn<'w> {
     wave: &'w Wave,
     /// Output interleave width — independent of `wave.channels()`, which
@@ -130,9 +165,16 @@ impl<'w> WaveIn<'w> {
     /// cursor (with loop wrap). Always fills the whole buffer — past the end
     /// with no loop that means silence, mirroring the old zero-pad behaviour.
     ///
-    /// Inherent rather than an [`AudioIn`] impl: that trait fixes its frame
-    /// width as a const parameter (`AudioIn<f32, 2>`), which cannot carry a
-    /// width chosen at runtime.
+    /// # Why the return is not an `AudioIn::poll_into` count
+    ///
+    /// It looks like one and it is not. The loop below is over
+    /// `chunks_exact_mut`, with no early exit, so this returns
+    /// `out.len() / ch` **unconditionally** — a pure function of the buffer the
+    /// caller passed in, carrying no information back about the source. It is a
+    /// convenience, not a signal, and the one production caller
+    /// (`refill::refill_forward`) discards it and takes its frame count from
+    /// `RegionOut::push_interleaved` instead. See the type-level docs for why
+    /// that disqualifies `WaveIn` from the trait.
     pub(crate) fn fill_interleaved(&mut self, out: &mut [f32]) -> usize {
         // Stride derived once, above the frame loop.
         let ch = self.channels.count() as usize;
@@ -157,13 +199,6 @@ impl<'w> WaveIn<'w> {
         }
     }
 }
-
-// `WaveIn` and `RegionOut` no longer implement `AudioIn`/`AudioOut`: both
-// traits fix the frame width as a const parameter (defaulting to
-// `<f32, 2>`), and a region's width is a runtime property of the file it
-// streams. They speak flat interleaved slices instead —
-// `WaveIn::fill_interleaved` and `RegionOut::push_interleaved` — with the
-// stride owned by the type and every count denominated in frames.
 
 #[cfg(test)]
 mod tests {

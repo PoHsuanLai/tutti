@@ -277,7 +277,7 @@ fn refill_one(
     if is_reverse {
         refill_reverse(writer, &wave, file_position, chunk_size, buffer);
     } else {
-        // Whole-file forward via the WaveIn source + AudioOut sink. WaveIn
+        // Whole-file forward via the WaveIn source into the region ring. WaveIn
         // zero-pads past end, so one block fill of `chunk_size` frames matches
         // the old `fill_buffer_forward` shape. `loop_range` is honoured here for
         // the same reason as the decoder path above: this function serves the
@@ -394,7 +394,13 @@ fn refill_reverse_stream(
 /// Refill for forward playback from a resident `Wave`, respecting loop
 /// boundaries if set. Fills one `chunk_size` block through the [`WaveIn`]
 /// source (mono up-mix + loop wrap + zero-pad past end confined there) and
-/// pushes it via the [`AudioOut`](tutti_core::io::AudioOut) sink.
+/// pushes it into the region ring.
+///
+/// Pushes through the inherent `push_interleaved` rather than
+/// [`AudioOut::write`](tutti_core::AudioOut::write), which `RegionOut` also
+/// implements: `write` returns `()`, and the landed frame count is exactly what
+/// advances `file_position` below. This is the concrete case behind that
+/// impl's note that the inherent method stays the one production callers use.
 fn refill_forward(
     writer: &mut RegionOut,
     wave: &Wave,

@@ -114,7 +114,8 @@ mod test_transport;
 
 // The I/O edge vocabulary is defined once in `tutti-types` and re-exported by
 // `tutti-core`. Re-exported again here because the butler's refill path speaks
-// `AudioIn`; the live *impls* of these traits live in `tutti-io`.
+// it: `FileIn` is the `AudioIn` it polls, and the region ring (`RegionOut`)
+// is itself an `AudioOut` now that the traits carry a runtime width.
 pub use tutti_core::io::{pump, AudioIn, AudioOut, OnEmpty};
 
 // Voice playback: the two tier units, the mixer over them, and the kernels they

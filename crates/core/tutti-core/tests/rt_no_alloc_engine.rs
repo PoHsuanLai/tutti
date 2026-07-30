@@ -26,8 +26,8 @@ use std::sync::Arc;
 use tutti_core::dsp::{bell_hz, limiter_stereo, pan, sine_hz, An, AudioUnit};
 use tutti_core::engine::Engine;
 use tutti_core::{
-    dsp::Net, ChannelLayout, ClickNode, ClickSettings, MetronomeMode, SampleRate, Transport,
-    TransportClock,
+    dsp::Net, ChannelLayout, ClickNode, ClickSettings, InterleavedMut, MetronomeMode, SampleRate,
+    Transport, TransportClock,
 };
 
 #[global_allocator]
@@ -74,12 +74,12 @@ fn engine_process_real_chain_is_allocation_free() {
     // Warm up outside the gate — prime any first-call state on the
     // limiter / svf filters and the transport clock.
     for _ in 0..16 {
-        engine.process(&mut output, 512, ChannelLayout::Stereo);
+        engine.process(&mut InterleavedMut::new(&mut output, ChannelLayout::Stereo));
     }
 
     assert_no_alloc::assert_no_alloc(|| {
         for _ in 0..1_000 {
-            engine.process(&mut output, 512, ChannelLayout::Stereo);
+            engine.process(&mut InterleavedMut::new(&mut output, ChannelLayout::Stereo));
         }
     });
 }
@@ -91,12 +91,12 @@ fn engine_process_real_chain_small_buffer_is_allocation_free() {
 
     let mut output = vec![0.0f32; 64 * 2];
     for _ in 0..16 {
-        engine.process(&mut output, 64, ChannelLayout::Stereo);
+        engine.process(&mut InterleavedMut::new(&mut output, ChannelLayout::Stereo));
     }
 
     assert_no_alloc::assert_no_alloc(|| {
         for _ in 0..5_000 {
-            engine.process(&mut output, 64, ChannelLayout::Stereo);
+            engine.process(&mut InterleavedMut::new(&mut output, ChannelLayout::Stereo));
         }
     });
 }
@@ -138,7 +138,7 @@ fn engine_process_with_metronome_is_allocation_free() {
 
     let mut output = vec![0.0f32; 512 * 2];
     for _ in 0..16 {
-        engine.process(&mut output, 512, ChannelLayout::Stereo);
+        engine.process(&mut InterleavedMut::new(&mut output, ChannelLayout::Stereo));
     }
 
     assert_no_alloc::assert_no_alloc(|| {
@@ -146,7 +146,7 @@ fn engine_process_with_metronome_is_allocation_free() {
             // Move the playhead so beat changes — and therefore the retrigger
             // path — run inside the gate rather than only the steady state.
             transport.settings.set_beat(i as f64 * 0.25);
-            engine.process(&mut output, 512, ChannelLayout::Stereo);
+            engine.process(&mut InterleavedMut::new(&mut output, ChannelLayout::Stereo));
         }
     });
 }

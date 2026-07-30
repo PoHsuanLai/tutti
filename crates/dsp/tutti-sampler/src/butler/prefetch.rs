@@ -209,6 +209,53 @@ impl RegionOut {
     }
 }
 
+/// The ring is the engine's [`AudioOut`] shape: flat interleaved in, a runtime
+/// [`ChannelLayout`] for the width, counts in frames. That is now expressible as
+/// the trait, so it is stated as the trait — a region ring can feed any generic
+/// consumer written against the engine vocabulary ([`pump`](tutti_core::pump)
+/// included) rather than only code that knows the name `push_interleaved`.
+///
+/// # Additive, not a replacement — the inherent methods stay
+///
+/// `RegionOut` is not *purely* a sink and the trait does not try to pretend
+/// otherwise. It also owns a [`FileIn`] decoder and its [`RegionMeta`]
+/// (`set_decoder`, `file_position`, `write_space`, `capacity`), and
+/// [`write_interleaved_reversed`](Self::write_interleaved_reversed) has no trait
+/// counterpart at all — reverse refill is a butler policy, not something every
+/// audio sink can do. Forcing those through `AudioOut` would produce trait
+/// methods whose meaning depends on which tier you are in, which is exactly the
+/// failure that got `ClipReader` deleted.
+///
+/// So the trait covers the one thing it genuinely describes — appending frames —
+/// and the rest stays inherent. Notably [`push_interleaved`](Self::push_interleaved)
+/// stays public too: `write` must return `()` to satisfy the trait, but the
+/// refill path *needs* the landed frame count to advance `file_position`. That
+/// count is the whole bookkeeping of the butler, so the richer inherent method
+/// remains the one production callers use, and `write` is implemented in terms
+/// of it.
+impl tutti_core::AudioOut<f32> for RegionOut {
+    fn layout(&self) -> ChannelLayout {
+        self.channels
+    }
+
+    /// Append frames, discarding the landed count.
+    ///
+    /// A short write here means the ring was full — for a bounded SPSC ring that
+    /// is back-pressure, not an error, and the trait has no way to report it.
+    /// Any caller that must not lose frames wants
+    /// [`push_interleaved`](Self::push_interleaved), which returns the count.
+    fn write(&mut self, frames: &[f32]) {
+        let _ = self.push_interleaved(frames);
+    }
+
+    /// No-op: the ring is a live SPSC channel with a consumer on the audio
+    /// thread, never a stream that gets closed. There is no header to
+    /// back-patch and no descriptor to flush.
+    fn finalize(self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
 pub struct RegionReader {
     cons: SendCons<f32>,
     /// Declared ring width — see [`RegionOut`]'s note on frames vs samples.
@@ -646,6 +693,71 @@ mod tests {
 
         prod.push_interleaved(&indexed(100, 6));
         assert_eq!(prod.write_space(), 8192 - 100);
+    }
+
+    /// The `AudioOut` impl is the inherent `push_interleaved` — same frames,
+    /// same order, same channels — reached through the generic trait method.
+    ///
+    /// Driven at six channels deliberately: the trait speaks a flat `&[f32]`,
+    /// so if `write` ever grew a stride mistake it would be a 6x error here and
+    /// only a 2x one at stereo, where it could hide in a round number.
+    #[test]
+    fn writing_through_the_audio_out_trait_matches_the_inherent_push() {
+        use tutti_core::AudioOut;
+
+        let (mut prod, mut cons) =
+            RegionBuffer::with_capacity(RegionId(1), PathBuf::new(), 64, 6usize);
+
+        assert_eq!(
+            AudioOut::layout(&prod),
+            ChannelLayout::Multi(6),
+            "the trait must report the ring's declared width"
+        );
+
+        // Trait method — the count is discarded by `write`'s signature.
+        prod.write(&indexed(10, 6));
+
+        let mut f = [0.0f32; 6];
+        for k in 0..10 {
+            assert!(cons.read_into(&mut f), "frame {k} must have landed");
+            for (c, &s) in f.iter().enumerate() {
+                assert_eq!(
+                    s,
+                    (k * 6 + c) as f32,
+                    "frame {k} channel {c} — trait write must not rotate channels"
+                );
+            }
+        }
+        assert!(
+            !cons.read_into(&mut f),
+            "exactly 10 frames, no trailing partial"
+        );
+    }
+
+    /// `write` ignores a trailing partial frame rather than pushing it short,
+    /// which is what keeps every subsequent frame aligned. `chunks_exact` in
+    /// `push_interleaved` is what provides this; the trait inherits it.
+    #[test]
+    fn a_trait_write_drops_a_trailing_partial_frame() {
+        use tutti_core::AudioOut;
+
+        let (mut prod, mut cons) =
+            RegionBuffer::with_capacity(RegionId(1), PathBuf::new(), 64, 4usize);
+
+        // Two whole frames plus three stray samples of a third.
+        let mut data = indexed(2, 4);
+        data.extend_from_slice(&[99.0, 99.0, 99.0]);
+        prod.write(&data);
+
+        let mut f = [0.0f32; 4];
+        assert!(cons.read_into(&mut f));
+        assert_eq!(f, [0., 1., 2., 3.]);
+        assert!(cons.read_into(&mut f));
+        assert_eq!(f, [4., 5., 6., 7.]);
+        assert!(
+            !cons.read_into(&mut f),
+            "the partial frame must not have been pushed"
+        );
     }
 
     /// An underrun consumes nothing and does not move `read_position`, so a

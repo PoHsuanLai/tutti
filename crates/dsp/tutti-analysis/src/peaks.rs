@@ -6,7 +6,7 @@
 //! have already been dropped, so any block spanning a chunk boundary was built
 //! from a remnant or skipped outright.
 
-use tutti_types::{Amplitude, ChannelLayout, Samples};
+use tutti_types::{Amplitude, ChannelLayout, Interleaved, Samples};
 
 /// One block of a waveform summary.
 ///
@@ -41,6 +41,17 @@ impl PeakConfig {
             layout,
         }
     }
+
+    /// Whether `chunk` is the width this config blocks at.
+    ///
+    /// The carried half-frame is `layout`-wide, so a chunk of a different width
+    /// spliced onto it would realign at the wrong stride and fold two adjacent
+    /// chunks into one wrong frame. That disagreement was inexpressible while
+    /// the chunk was a bare slice.
+    #[inline]
+    pub fn chunk_matches(&self, chunk: Interleaved<'_>) -> bool {
+        chunk.layout() == self.layout
+    }
 }
 
 /// Summarize one block. Stateless.
@@ -71,12 +82,22 @@ pub fn summarize_block(samples: &[f32]) -> PeakBlock {
 /// independently discards the ragged frame tail, so a stereo caller feeding
 /// odd-length chunks loses samples permanently — the same class of loss the
 /// partial-block carry exists to prevent, one level down.
+///
+/// That second carry is why [`step_peaks`] takes an
+/// [`Interleaved`](tutti_types::Interleaved) rather than a slice plus a width:
+/// the split between "folded now" and "carried forward" is a *frame* boundary
+/// inside a *sample* buffer, and that is precisely the confusion the type
+/// exists to make unwritable.
 #[derive(Debug, Clone, Default)]
 pub struct PeakState {
     /// Interleaved samples of an incomplete frame, awaiting the rest of it.
     partial_frame: Vec<f32>,
     /// Folded mono samples of an incomplete block.
     pending: Vec<f32>,
+    /// Scratch for one chunk's mono fold. Not a carry — it is fully consumed
+    /// within each [`step_peaks`] call and lives here only so the fold reuses
+    /// one allocation across a stream instead of making a fresh `Vec` per chunk.
+    mono: Vec<f32>,
     consumed: Samples,
 }
 
@@ -94,46 +115,64 @@ impl PeakState {
     pub fn reset(&mut self) {
         self.partial_frame.clear();
         self.pending.clear();
+        // `mono` is scratch, not carry — its capacity is kept deliberately.
+        self.mono.clear();
         self.consumed = Samples(0);
     }
 }
 
 /// Fold a chunk, appending whatever whole blocks it completes.
 ///
-/// Chunks need not align to block boundaries; the remainder is carried.
+/// Chunks need not align to block or frame boundaries; both remainders are
+/// carried.
 pub fn step_peaks(
     cfg: &PeakConfig,
     state: &mut PeakState,
-    chunk: &[f32],
+    chunk: Interleaved<'_>,
     out: &mut Vec<PeakBlock>,
 ) {
     let block = cfg.samples_per_block.get();
-    if block == 0 {
+    if block == 0 || !cfg.chunk_matches(chunk) {
         return;
     }
 
-    // Fold only whole frames, carrying any ragged tail. `fold_buffer_to_mono`
-    // uses `chunks_exact`, so handing it a chunk that ends mid-frame would
-    // silently drop those samples — and per-chunk folding makes that the
-    // common case, not the edge case.
-    let channels = cfg.layout.count() as usize;
-    let mono = if channels <= 1 {
-        crate::fold_buffer_to_mono(chunk, cfg.layout)
+    // Splice the carried half-frame in front of the chunk, fold the whole
+    // frames of the result, and carry whatever is left over — the ragged
+    // *frame* tail, one level below the ragged *block* tail handled after this.
+    //
+    // `Interleaved` is what turns this from a hand-rolled realign into an
+    // ordinary window: it tolerates a ragged tail by design (`len()` counts
+    // whole frames and `window` is denominated in frames), so the *only* place
+    // `× stride` appears is the split point of what was folded from what is
+    // carried. The common case — a caller whose chunks are already
+    // frame-aligned, which is every render loop — now folds the chunk in place
+    // and touches the carry buffer not at all.
+    let mut carry = core::mem::take(&mut state.partial_frame);
+    let mut mono = core::mem::take(&mut state.mono);
+    if carry.is_empty() {
+        chunk.fold_to_mono_into(&mut mono);
+        carry.extend_from_slice(&chunk.samples()[chunk.len() * chunk.stride()..]);
     } else {
-        let mut interleaved = core::mem::take(&mut state.partial_frame);
-        interleaved.extend_from_slice(chunk);
-
-        let aligned = interleaved.len() - interleaved.len() % channels;
-        let mono = crate::fold_buffer_to_mono(&interleaved[..aligned], cfg.layout);
-
-        interleaved.drain(..aligned);
-        state.partial_frame = interleaved;
-        mono
-    };
+        carry.extend_from_slice(chunk.samples());
+        let spliced = Interleaved::new(&carry, chunk.layout());
+        let folded_samples = spliced.len() * spliced.stride();
+        spliced
+            .window(0..spliced.len())
+            .fold_to_mono_into(&mut mono);
+        carry.drain(..folded_samples);
+    }
+    state.partial_frame = carry;
 
     state.consumed = Samples(state.consumed.get() + mono.len());
+    fold_blocks(state, block, &mono, out);
+    state.mono = mono;
+}
 
-    let mut rest = mono.as_slice();
+/// Cut `mono` into whole blocks, completing the pending one first and carrying
+/// the remainder. Split out of [`step_peaks`] only so the scratch buffer it
+/// reads can be handed straight back to the state on return.
+fn fold_blocks(state: &mut PeakState, block: usize, mono: &[f32], out: &mut Vec<PeakBlock>) {
+    let mut rest = mono;
 
     // Finish the block the previous call left half-built before taking whole
     // blocks out of this chunk.
@@ -171,10 +210,10 @@ pub fn finish(state: &mut PeakState, out: &mut Vec<PeakBlock>) {
 /// Summarize a whole buffer.
 ///
 /// Folds [`step_peaks`] — the same implementation the streaming path uses.
-pub fn summarize(cfg: &PeakConfig, samples: &[f32]) -> Vec<PeakBlock> {
+pub fn summarize(cfg: &PeakConfig, buffer: Interleaved<'_>) -> Vec<PeakBlock> {
     let mut out = Vec::new();
     let mut state = PeakState::new();
-    step_peaks(cfg, &mut state, samples, &mut out);
+    step_peaks(cfg, &mut state, buffer, &mut out);
     finish(&mut state, &mut out);
     out
 }
@@ -190,7 +229,7 @@ mod tests {
     #[test]
     fn block_values_are_exact_for_a_ramp() {
         let samples: Vec<f32> = (0..500).map(|i| i as f32).collect();
-        let blocks = summarize(&mono(100), &samples);
+        let blocks = summarize(&mono(100), Interleaved::new(&samples, ChannelLayout::Mono));
 
         assert_eq!(blocks.len(), 5);
         for (i, block) in blocks.iter().enumerate() {
@@ -224,13 +263,18 @@ mod tests {
 
             for block in [1usize, 3, 100] {
                 let cfg = PeakConfig::new(Samples(block), layout);
-                let batch = summarize(&cfg, &samples);
+                let batch = summarize(&cfg, Interleaved::new(&samples, layout));
 
                 for chunk in [1usize, 3, 7, 33, 100, 250, 333, 501, 1024] {
                     let mut state = PeakState::new();
                     let mut streamed = Vec::new();
                     for part in samples.chunks(chunk) {
-                        step_peaks(&cfg, &mut state, part, &mut streamed);
+                        step_peaks(
+                            &cfg,
+                            &mut state,
+                            Interleaved::new(part, layout),
+                            &mut streamed,
+                        );
                     }
                     finish(&mut state, &mut streamed);
 
@@ -260,7 +304,12 @@ mod tests {
         let mut streamed = Vec::new();
         // Fed one sample at a time, every chunk ends mid-frame.
         for part in samples.chunks(1) {
-            step_peaks(&cfg, &mut state, part, &mut streamed);
+            step_peaks(
+                &cfg,
+                &mut state,
+                Interleaved::new(part, ChannelLayout::Stereo),
+                &mut streamed,
+            );
         }
         finish(&mut state, &mut streamed);
 
@@ -270,10 +319,36 @@ mod tests {
         assert_eq!(state.consumed(), Samples(2));
     }
 
+    /// A chunk whose own width disagrees with the config's is skipped.
+    ///
+    /// The carried half-frame is `cfg.layout`-wide. Splicing a chunk of a
+    /// different width onto it realigns at the wrong stride, so the frame
+    /// straddling the join is built from two channels that were never adjacent.
+    /// Before the width travelled with the buffer this was not a case anyone
+    /// could write down — the config's layout was simply assumed to describe
+    /// whatever slice arrived.
+    #[test]
+    fn a_chunk_of_the_wrong_width_is_skipped() {
+        let cfg = PeakConfig::new(Samples(1), ChannelLayout::Stereo);
+        let mut state = PeakState::new();
+        let mut out = Vec::new();
+
+        step_peaks(
+            &cfg,
+            &mut state,
+            Interleaved::new(&[1.0, 2.0, 3.0, 4.0], ChannelLayout::Quad),
+            &mut out,
+        );
+        finish(&mut state, &mut out);
+
+        assert!(out.is_empty(), "a quad chunk must not be blocked as stereo");
+        assert_eq!(state.consumed(), Samples(0));
+    }
+
     #[test]
     fn a_trailing_partial_block_is_kept() {
         let samples: Vec<f32> = (0..250).map(|i| i as f32).collect();
-        let blocks = summarize(&mono(100), &samples);
+        let blocks = summarize(&mono(100), Interleaved::new(&samples, ChannelLayout::Mono));
 
         assert_eq!(blocks.len(), 3);
         assert_eq!(blocks[2].min, 200.0);
@@ -287,7 +362,7 @@ mod tests {
         let samples: Vec<f32> = (0..200).flat_map(|i| [i as f32, -(i as f32)]).collect();
         let blocks = summarize(
             &PeakConfig::new(Samples(100), ChannelLayout::Stereo),
-            &samples,
+            Interleaved::new(&samples, ChannelLayout::Stereo),
         );
 
         assert_eq!(blocks.len(), 2, "frames, not interleaved samples");
@@ -305,7 +380,7 @@ mod tests {
             .collect();
         let blocks = summarize(
             &PeakConfig::new(Samples(50), ChannelLayout::Multi(6)),
-            &samples,
+            Interleaved::new(&samples, ChannelLayout::Multi(6)),
         );
 
         assert_eq!(blocks.len(), 2);
@@ -319,15 +394,20 @@ mod tests {
         let mut out = Vec::new();
 
         let samples: Vec<f32> = (0..400).map(|i| i as f32).collect(); // 200 frames
-        step_peaks(&cfg, &mut state, &samples, &mut out);
+        step_peaks(
+            &cfg,
+            &mut state,
+            Interleaved::new(&samples, ChannelLayout::Stereo),
+            &mut out,
+        );
 
         assert_eq!(state.consumed(), Samples(200));
     }
 
     #[test]
     fn degenerate_inputs_are_safe() {
-        assert!(summarize(&mono(100), &[]).is_empty());
-        assert!(summarize(&mono(0), &[1.0, 2.0]).is_empty());
+        assert!(summarize(&mono(100), Interleaved::new(&[], ChannelLayout::Mono)).is_empty());
+        assert!(summarize(&mono(0), Interleaved::new(&[1.0, 2.0], ChannelLayout::Mono)).is_empty());
         assert_eq!(summarize_block(&[]), PeakBlock::default());
 
         let mut state = PeakState::new();
@@ -342,11 +422,21 @@ mod tests {
         let mut state = PeakState::new();
         let mut out = Vec::new();
 
-        step_peaks(&cfg, &mut state, &[1.0; 150], &mut out);
+        step_peaks(
+            &cfg,
+            &mut state,
+            Interleaved::new(&[1.0; 150], ChannelLayout::Mono),
+            &mut out,
+        );
         state.reset();
         out.clear();
 
-        step_peaks(&cfg, &mut state, &[2.0; 100], &mut out);
+        step_peaks(
+            &cfg,
+            &mut state,
+            Interleaved::new(&[2.0; 100], ChannelLayout::Mono),
+            &mut out,
+        );
         finish(&mut state, &mut out);
 
         assert_eq!(out.len(), 1, "the carried 50 samples were discarded");

@@ -124,8 +124,8 @@ impl YinConfig {
 
     fn detector(&self) -> PitchDetector {
         let mut detector =
-            PitchDetector::with_range(self.sample_rate, self.min_freq.get(), self.max_freq.get());
-        detector.set_threshold(self.threshold.get());
+            PitchDetector::with_range(self.sample_rate, self.min_freq(), self.max_freq());
+        detector.set_threshold(self.threshold);
         detector
     }
 }

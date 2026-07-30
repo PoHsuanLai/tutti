@@ -89,17 +89,14 @@ impl HrtfBinauralNode {
 
     /// Render one interleaved input sample pair to a binaural output pair.
     #[inline]
-    fn render(&mut self, left: f32, right: f32, width: f32) -> (f32, f32) {
+    fn render(&mut self, left: f32, right: f32, width: Mix) -> (f32, f32) {
         // The engine's one fold, not a local `* 0.5`. Identical at width 2, but
         // HRTF rendering genuinely needs a single mono sample, so the coefficient
         // belongs to `downmix.rs` rather than to this node.
         let mono = fold_frame_to_mono(&[left, right]);
         let (wet_l, wet_r) = self.panner.process_sample(mono);
         // width blends the HRTF-rendered signal against the dry mono center.
-        (
-            mono * (1.0 - width) + wet_l * width,
-            mono * (1.0 - width) + wet_r * width,
-        )
+        (width.blend(mono, wet_l), width.blend(mono, wet_r))
     }
 }
 
@@ -125,7 +122,7 @@ impl AudioUnit for HrtfBinauralNode {
 
     fn tick(&mut self, input: &[f32], output: &mut [f32]) {
         self.sync_position();
-        let width = self.width.load().0;
+        let width = self.width.load();
 
         let left = input.first().copied().unwrap_or(0.0);
         let right = input.get(1).copied().unwrap_or(left);
@@ -139,7 +136,7 @@ impl AudioUnit for HrtfBinauralNode {
 
     fn process(&mut self, size: usize, input: &BufferRef, output: &mut BufferMut) {
         self.sync_position();
-        let width = self.width.load().0;
+        let width = self.width.load();
 
         // Hoisted once per block: is a second input channel present?
         let has_stereo_in = ChannelLayout::from(input.channels()).is_multi();

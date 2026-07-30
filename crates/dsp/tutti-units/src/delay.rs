@@ -172,13 +172,13 @@ impl DelayLineNode {
     }
 
     #[inline]
-    fn process_sample(&mut self, input: f32, delay_samples: f32, fb: f32, mix: f32) -> f32 {
+    fn process_sample(&mut self, input: f32, delay_samples: f32, fb: f32, mix: Mix) -> f32 {
         let feedback_tap = self
             .delay
             .read_sample(delay_samples.max(1.0) - 1.0, self.interpolation);
         self.delay.push_sample(input + feedback_tap * fb);
         let delayed = self.delay.read_sample(delay_samples, self.interpolation);
-        input * (1.0 - mix) + delayed * mix
+        mix.blend(input, delayed)
     }
 }
 
@@ -204,14 +204,14 @@ impl AudioUnit for DelayLineNode {
     fn tick(&mut self, input: &[f32], output: &mut [f32]) {
         let delay_samples = fractional_samples(self.delay_time.load(), self.sample_rate);
         let fb = self.feedback.load().get();
-        let mix = self.mix.load().get();
+        let mix = self.mix.load();
         output[0] = self.process_sample(input[0], delay_samples, fb, mix);
     }
 
     fn process(&mut self, size: usize, input: &BufferRef, output: &mut BufferMut) {
         let delay_samples = fractional_samples(self.delay_time.load(), self.sample_rate);
         let fb = self.feedback.load().get();
-        let mix = self.mix.load().get();
+        let mix = self.mix.load();
 
         for i in 0..size {
             let in_s = input.at_f32(0, i);
@@ -501,7 +501,7 @@ impl StereoDelayLineNode {
             dr: fractional_samples(self.delay_time[1].load(), self.sample_rate),
             fb: fb.get(),
             cf: cf.get(),
-            mix: self.mix.load().get(),
+            mix: self.mix.load(),
             interp: self.interpolation,
         }
     }
@@ -539,7 +539,7 @@ impl StereoDelayLineNode {
             dr,
             fb: fb.get(),
             cf: cf.get(),
-            mix: self.mix.load().get(),
+            mix: self.mix.load(),
             interp: self.interpolation,
         }
     }
@@ -558,8 +558,8 @@ impl StereoDelayLineNode {
         let del_r = self.delays[1].read_sample(p.dr, p.interp);
 
         (
-            in_l * (1.0 - p.mix) + del_l * p.mix,
-            in_r * (1.0 - p.mix) + del_r * p.mix,
+            p.mix.blend(in_l, del_l),
+            p.mix.blend(in_r, del_r),
         )
     }
 
@@ -572,20 +572,20 @@ impl StereoDelayLineNode {
         input: f32,
         d_samples: f32,
         fb: f32,
-        mix: f32,
+        mix: Mix,
         interp: InterpolationMode,
     ) -> f32 {
         let fb_sample = self.delays[c].read_sample((d_samples.max(1.0) - 1.0).max(0.0), interp);
         self.delays[c].push_sample(input + fb_sample * fb);
         let delayed = self.delays[c].read_sample(d_samples, interp);
-        input * (1.0 - mix) + delayed * mix
+        mix.blend(input, delayed)
     }
 
     /// Effective (delay-samples, feedback, mix) for a wide channel `c`, honoring
     /// a present feedback / delay-time port (the delay-time port drives every
     /// channel). `read` reads input port `p`.
     #[inline]
-    fn wide_channel_params(&self, c: usize, read: impl Fn(usize) -> f32) -> (f32, f32, f32) {
+    fn wide_channel_params(&self, c: usize, read: impl Fn(usize) -> f32) -> (f32, f32, Mix) {
         let fb = self.feedback_port().map_or_else(
             || self.feedback.load(),
             // An audio-rate port bypasses every constructor, so the
@@ -600,7 +600,7 @@ impl StereoDelayLineNode {
             ),
             None => fractional_samples(self.delay_time[c].load(), self.sample_rate),
         };
-        (d_samples, fb.get(), self.mix.load().get())
+        (d_samples, fb.get(), self.mix.load())
     }
 }
 
@@ -609,7 +609,7 @@ struct StereoDelayParams {
     dr: f32,
     fb: f32,
     cf: f32,
-    mix: f32,
+    mix: Mix,
     interp: InterpolationMode,
 }
 

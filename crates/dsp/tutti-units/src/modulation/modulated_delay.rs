@@ -117,8 +117,8 @@ impl ModulatedDelay {
             .r
             .read_sample(delay_r, InterpolationMode::Linear);
 
-        out[0] = in_l * (1.0 - mix) + wet_l * mix;
-        out[1] = in_r * (1.0 - mix) + wet_r * mix;
+        out[0] = mix.blend(in_l, wet_l);
+        out[1] = mix.blend(in_r, wet_r);
 
         self.lfo.advance(self.sample_rate);
     }

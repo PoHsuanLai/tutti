@@ -95,9 +95,9 @@ impl ConvolverNode {
     }
 
     #[inline]
-    fn process_sample(&mut self, input: f32, mix: f32, gain: f32) -> f32 {
+    fn process_sample(&mut self, input: f32, mix: Mix, gain: f32) -> f32 {
         let wet = self.convolver.process_sample(input) * gain;
-        input * (1.0 - mix) + wet * mix
+        mix.blend(input, wet)
     }
 }
 
@@ -123,7 +123,7 @@ impl AudioUnit for ConvolverNode {
         // Unwrapped once per block: `process_sample` is the per-sample RT path,
         // where the units are already resolved scratch.
         let (mix, gain) = self.params.load();
-        let (mix, gain) = (mix.get(), gain.get());
+        let gain = gain.get();
         output[0] = self.process_sample(input[0], mix, gain);
     }
 
@@ -131,7 +131,7 @@ impl AudioUnit for ConvolverNode {
         // Unwrapped once per block: `process_sample` is the per-sample RT path,
         // where the units are already resolved scratch.
         let (mix, gain) = self.params.load();
-        let (mix, gain) = (mix.get(), gain.get());
+        let gain = gain.get();
         for i in 0..size {
             let s = self.process_sample(input.at_f32(0, i), mix, gain);
             output.set_f32(0, i, s);
@@ -248,7 +248,7 @@ impl StereoConvolverNode {
     }
 
     #[inline]
-    fn process_sample(&mut self, in_l: f32, in_r: f32, mix: f32, gain: f32) -> (f32, f32) {
+    fn process_sample(&mut self, in_l: f32, in_r: f32, mix: Mix, gain: f32) -> (f32, f32) {
         let (wet_l, wet_r) = match self.config {
             IrChannelConfig::Mono | IrChannelConfig::Stereo => (
                 self.channels.l.process_sample(in_l),
@@ -267,8 +267,8 @@ impl StereoConvolverNode {
         let wet_l = wet_l * gain;
         let wet_r = wet_r * gain;
         (
-            in_l * (1.0 - mix) + wet_l * mix,
-            in_r * (1.0 - mix) + wet_r * mix,
+            mix.blend(in_l, wet_l),
+            mix.blend(in_r, wet_r),
         )
     }
 }
@@ -296,7 +296,7 @@ impl AudioUnit for StereoConvolverNode {
         // Unwrapped once per block: `process_sample` is the per-sample RT path,
         // where the units are already resolved scratch.
         let (mix, gain) = self.params.load();
-        let (mix, gain) = (mix.get(), gain.get());
+        let gain = gain.get();
         let (out_l, out_r) = self.process_sample(input[0], input[1], mix, gain);
         output[0] = out_l;
         output[1] = out_r;
@@ -306,7 +306,7 @@ impl AudioUnit for StereoConvolverNode {
         // Unwrapped once per block: `process_sample` is the per-sample RT path,
         // where the units are already resolved scratch.
         let (mix, gain) = self.params.load();
-        let (mix, gain) = (mix.get(), gain.get());
+        let gain = gain.get();
         for i in 0..size {
             let (out_l, out_r) =
                 self.process_sample(input.at_f32(0, i), input.at_f32(1, i), mix, gain);

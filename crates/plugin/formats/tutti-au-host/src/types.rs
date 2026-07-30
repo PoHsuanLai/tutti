@@ -191,8 +191,8 @@ pub const K_AUDIO_UNIT_PROPERTY_IN_PLACE_PROCESSING: u32 =
     sys::kAudioUnitProperty_InPlaceProcessing;
 pub const K_AUDIO_UNIT_PROPERTY_ELEMENT_NAME: u32 = sys::kAudioUnitProperty_ElementName;
 /// Where in the *host's* project this instance sits — "track 3", "Drum Bus".
-/// Write-only in practice: the AU shows it in its own title bar. See
-/// [`crate::identity`].
+/// Read/write: all 57 instantiable units measured return the exact string
+/// written. See [`crate::identity`].
 pub const K_AUDIO_UNIT_PROPERTY_CONTEXT_NAME: u32 = sys::kAudioUnitProperty_ContextName;
 /// A per-instance name distinguishing two loads of the *same* AU from each
 /// other. Unlike `ContextName` this is the instance's own identity, so it is

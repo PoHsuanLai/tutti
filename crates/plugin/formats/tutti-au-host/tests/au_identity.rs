@@ -18,7 +18,7 @@
 //! ## Every test here was proven load-bearing by mutation
 //!
 //! Each mutation below was applied to `src/identity.rs`, the suite run, and the
-//! mutation reverted. All five were caught.
+//! mutation reverted.
 //!
 //! | mutation to `src/identity.rs` | caught by |
 //! |---|---|
@@ -27,6 +27,19 @@
 //! | `set_nick_name` writes `ContextName` | `a_nick_name_round_trips_and_can_be_replaced`, `a_nick_name_survives_non_ascii_text`, `two_instances_of_one_au_hold_independent_nick_names` |
 //! | `icon_location` returns a path that does not exist | `an_icon_url_names_a_file_that_exists` |
 //! | `parameters_for_overview` collapses `Err` into an empty list | `a_non_implementing_unit_reports_the_gap_rather_than_an_empty_list` |
+//! | **`set_context_name` replaced by `Ok(())`** | `every_unit_round_trips_a_context_name` |
+//! | **`nick_name` collapses `Err` into `Ok(None)`** | `the_string_readers_report_a_missing_property_as_an_error` |
+//! | **`icon_location` collapses `Err` into `Ok(None)`** | `the_string_readers_report_a_missing_property_as_an_error` |
+//! | **overview count `saturating_sub(1)`** (drop last entry) | `the_overview_decodes_every_entry_the_au_reported` |
+//! | **`element: p.mElement.wrapping_add(7)`** | `the_overview_decodes_every_entry_the_au_reported` |
+//!
+//! The five in bold **survived the first version of this suite** and were found
+//! by an adversarial review, not by the original audit. The first is the
+//! instructive one: `set_context_name` could be replaced by `Ok(())` outright,
+//! because the sweep asserted only that the write returned `Ok` — exactly the
+//! "a property that is merely accepted proves nothing" trap this header warns
+//! about, committed into the suite meant to prevent it. Choosing your own
+//! mutations tests what you already thought of.
 //!
 //! ## Running
 //!
@@ -63,13 +76,13 @@ fn lock() -> std::sync::MutexGuard<'static, ()> {
     AU_LOCK.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// Every instantiable unit accepts a context name and hands back the exact
-/// string.
+/// Every instantiable unit hands back the exact context name written.
 ///
-/// Asserts the round trip rather than the write status, because a write status
-/// is what `HostMIDIProtocol` returns `noErr` for while storing garbage. The
-/// count is asserted as "all of them" rather than a fixed number so the test
-/// tracks the machine rather than a snapshot of it.
+/// Asserts the **read-back**, not the write status. An earlier version of this
+/// test asserted only that the write returned `Ok`, which meant
+/// `set_context_name` could be replaced by `Ok(())` and all nine tests still
+/// passed — the precise failure this suite's header warns about, committed into
+/// the suite meant to prevent it.
 #[test]
 fn every_unit_round_trips_a_context_name() {
     let _g = lock();
@@ -80,12 +93,37 @@ fn every_unit_round_trips_a_context_name() {
         };
         au.set_context_name("track 3")
             .unwrap_or_else(|e| panic!("{}: set_context_name failed: {e:?}", info.name));
+        assert_eq!(
+            au.context_name()
+                .unwrap_or_else(|e| panic!("{}: context_name read failed: {e:?}", info.name)),
+            Some("track 3".to_string()),
+            "{}: the AU did not hand back the context name just written",
+            info.name
+        );
         checked += 1;
     }
     assert!(
         checked >= 40,
-        "only {checked} units instantiated; the corpus should offer ~52, so \
+        "only {checked} units instantiated; the corpus should offer ~55, so \
          something is wrong with the harness rather than with the property"
+    );
+}
+
+/// A second context name replaces the first.
+///
+/// Without this, a `context_name` that cached and echoed the first value it
+/// ever saw would satisfy the sweep above.
+#[test]
+fn a_context_name_can_be_replaced() {
+    let _g = lock();
+    let au = DELAY.open(48_000.0, 512);
+
+    au.set_context_name("track 3").expect("set_context_name");
+    au.set_context_name("Drum Bus").expect("set_context_name");
+    assert_eq!(
+        au.context_name().expect("context_name"),
+        Some("Drum Bus".to_string()),
+        "the second write did not replace the first"
     );
 }
 
@@ -271,6 +309,109 @@ fn a_non_implementing_unit_reports_the_gap_rather_than_an_empty_list() {
              non-implementer, not deleting",
             list.len()
         ),
+    }
+}
+
+/// `nick_name` and `icon_location` report a missing property as `Err`, not as
+/// `Ok(None)`.
+///
+/// The same distinction `parameters_for_overview` already had a test for, and
+/// for the same reason: `Ok(None)` says "implements it, nothing set", `Err`
+/// says "ask elsewhere". Collapsing them downgrades every non-implementer
+/// silently. Both readers survived being rewritten to swallow their error
+/// before this existed.
+#[test]
+fn the_string_readers_report_a_missing_property_as_an_error() {
+    let _g = lock();
+    // Counted per reader, and both are required to have seen a refusal. An
+    // earlier version returned on the first refusal it found, which meant it
+    // only ever exercised `icon_location` — `nick_name` could still swallow its
+    // error undetected. Refusals are rare (one unit declines NickName on macOS
+    // 15.6), so the sweep must run to completion.
+    let mut icon_refusals = 0;
+    let mut nick_refusals = 0;
+    for info in every_component() {
+        let Ok(au) = std::panic::catch_unwind(|| open_info(&info, 48_000.0, 512)) else {
+            continue;
+        };
+        if let Err(e) = au.icon_location() {
+            assert!(
+                matches!(e, AuError::OsStatus { code, .. } if code == INVALID_PROPERTY),
+                "{}: icon_location failed with {e:?}, expected InvalidProperty",
+                info.name
+            );
+            icon_refusals += 1;
+        }
+        if let Err(e) = au.nick_name() {
+            assert!(
+                matches!(e, AuError::OsStatus { code, .. } if code == INVALID_PROPERTY),
+                "{}: nick_name failed with {e:?}, expected InvalidProperty",
+                info.name
+            );
+            nick_refusals += 1;
+        }
+    }
+    assert!(
+        icon_refusals > 0,
+        "no unit refused IconLocation, so this cannot distinguish an \
+         Err-propagating reader from one that swallows the error into Ok(None)"
+    );
+    assert!(
+        nick_refusals > 0,
+        "no unit refused NickName, so the nick_name half of this test proves \
+         nothing"
+    );
+}
+
+/// The overview decode reports every entry the AU wrote, and each entry's
+/// address is decoded field-for-field.
+///
+/// Pins the two mutations the existential subset/order tests miss: dropping the
+/// last entry (they only check what is present), and corrupting `element`
+/// (nothing else asserts it). The counts are the AU's own, re-derived from the
+/// property size rather than hardcoded, so this tracks the machine.
+#[test]
+fn the_overview_decodes_every_entry_the_au_reported() {
+    let _g = lock();
+    for unit in [MATRIX_REVERB, DYNAMICS] {
+        let au = unit.open(48_000.0, 512);
+        let overview = au.parameters_for_overview().expect("overview");
+
+        // The AU's own byte count, decoded independently of the module under test.
+        let mut size: u32 = 0;
+        let mut writable: u8 = 0;
+        let st = unsafe {
+            coreaudio_sys::AudioUnitGetPropertyInfo(
+                au.raw_unit(),
+                tutti_au_host::types::K_AUDIO_UNIT_PROPERTY_PARAMETERS_FOR_OVERVIEW,
+                tutti_au_host::types::K_AUDIO_UNIT_SCOPE_GLOBAL,
+                0,
+                &mut size,
+                &mut writable,
+            )
+        };
+        assert_eq!(st, 0, "{}: GetPropertyInfo failed", unit.label);
+        let stride = std::mem::size_of::<tutti_au_host::types::AudioUnitParameter>() as u32;
+        assert_eq!(
+            overview.len() as u32,
+            size / stride,
+            "{}: decoded {} entries but the AU reported {} bytes ({} entries) — \
+             a dropped or phantom trailing entry",
+            unit.label,
+            overview.len(),
+            size,
+            size / stride
+        );
+
+        for p in &overview {
+            assert_eq!(
+                p.element, 0,
+                "{}: parameter {} decoded element {}; every global-scope entry \
+                 on this corpus is element 0, so a non-zero value means the \
+                 field was read from the wrong offset",
+                unit.label, p.id, p.element
+            );
+        }
     }
 }
 

@@ -50,23 +50,20 @@
 //!
 //! # Why `kAudioUnitProperty_HostMIDIProtocol` is not here
 //!
-//! It looks like it belongs — it is a host→AU declaration, and all 52 units
-//! accept a write. Measurement says otherwise, and the measurement is the whole
-//! reason it is omitted rather than implemented:
+//! It governs a delivery path this crate does not host. Apple's header
+//! specifies the order: set `HostMIDIProtocol`, then
+//! `kAudioUnitProperty_MIDIOutputEventListCallback`, then initialize. That
+//! callback is the UMP route; [`crate::midi_out`] installs the legacy
+//! `MIDIOutputCallback` instead, so there is nothing downstream of the
+//! declaration.
 //!
-//! * Only **one** unit (TAL-NoiseMaker) implements the paired readable
-//!   `kAudioUnitProperty_AudioUnitMIDIProtocol` at all; the other 51 answer
-//!   `-10879` (`InvalidProperty`).
-//! * On that one unit, writing `HostMIDIProtocol = 2` (MIDI 2.0) leaves its
-//!   reported protocol at `1` (MIDI 1.0). The write changes nothing.
-//! * Writing the **invalid** value `99` returns `noErr`, and reading the
-//!   property back returns `99` verbatim.
+//! Do **not** justify this by comparing it to
+//! `kAudioUnitProperty_AudioUnitMIDIProtocol` (64) — an earlier version of this
+//! comment did, and was wrong. The two are independent by design: 64 is the
+//! AU's protocol, 65 the host's, and the framework converts between them.
 //!
-//! So on AUv2 this is an unvalidated storage slot, not a negotiation: it stores
-//! whatever it is handed and no unit acts on it. It is honoured by the AUv3
-//! (`AUAudioUnit`) path, which this crate does not host. Implementing it would
-//! add a call that provably cannot affect any installed AU, and a test for it
-//! could only assert that a setter does nothing — so the gap is deliberate.
+//! One measured trap if this is ever implemented: the header says twice that 65
+//! cannot be changed after initialize, but 0 of 55 units enforce that.
 //!
 //! The related point that *does* matter is upstream of this property:
 //! [`AuInstance::send_midi`](crate::instance::AuInstance::send_midi) down-converts
@@ -130,6 +127,34 @@ pub unsafe fn set_context_name(unit: AudioUnit, name: &str) -> Result<()> {
             &cf.as_raw(),
         )
     }
+}
+
+/// Read back the context name set by [`set_context_name`].
+///
+/// Apple's header marks this property `Read / Write`, and all 57 instantiable
+/// units measured on macOS 15.6 return the exact string written. It exists
+/// mainly so a test can assert the *write landed* rather than merely that it
+/// returned `noErr` — a distinction this crate has been bitten by twice
+/// (`HostCallbacks`, `HostMIDIProtocol`).
+///
+/// `Ok(None)` means the AU answered with a null string.
+///
+/// # Errors
+/// `kAudioUnitErr_InvalidProperty` from a unit that does not implement it.
+///
+/// # Safety
+/// `unit` must reference a live, valid AudioUnit.
+pub unsafe fn context_name(unit: AudioUnit) -> Result<Option<String>> {
+    // Copy rule, as in `nick_name`: the returned CFString is +1 and owned here.
+    let raw: CFStringRef = unsafe {
+        get_property(
+            unit,
+            K_AUDIO_UNIT_PROPERTY_CONTEXT_NAME,
+            K_AUDIO_UNIT_SCOPE_GLOBAL,
+            0,
+        )?
+    };
+    Ok(unsafe { CfString::from_copied(raw) }.map(|s| s.to_string()))
 }
 
 /// Give this instance its own name, distinguishing it from another load of the

@@ -717,6 +717,19 @@ impl AuInstance {
         unsafe { identity::set_context_name(self.raw_unit(), name) }
     }
 
+    /// Read back the name set by [`set_context_name`](Self::set_context_name).
+    ///
+    /// All 57 instantiable units measured return the exact string written, so
+    /// a test can assert the write *landed* rather than that it returned
+    /// `noErr`.
+    ///
+    /// # Errors
+    /// As [`set_context_name`](Self::set_context_name).
+    pub fn context_name(&self) -> Result<Option<String>> {
+        // SAFETY: `raw_unit` is live for the lifetime of this instance.
+        unsafe { identity::context_name(self.raw_unit()) }
+    }
+
     /// Give this instance its own name, distinct from another load of the same
     /// AU.
     ///

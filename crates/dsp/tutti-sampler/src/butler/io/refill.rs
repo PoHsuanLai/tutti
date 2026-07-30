@@ -303,7 +303,8 @@ fn refill_forward_stream(
     interleave_buffer: &mut Vec<f32>,
     loop_range: Option<(u64, u64)>,
 ) {
-    let ch = writer.channels();
+    // Stride derived once per refill, above every loop below.
+    let ch = writer.channels().count() as usize;
     interleave_buffer.clear();
     interleave_buffer.resize(chunk_size * ch, 0.0);
 
@@ -359,7 +360,8 @@ fn refill_reverse_stream(
     let read_start = file_position.saturating_sub(chunk_size);
     let actual_chunk = file_position - read_start;
 
-    let ch = writer.channels();
+    // Stride derived once per refill, above every loop below.
+    let ch = writer.channels().count() as usize;
     if actual_chunk == 0 {
         interleave_buffer.clear();
         interleave_buffer.resize(chunk_size * ch, 0.0);
@@ -401,7 +403,8 @@ fn refill_forward(
     interleave_buffer: &mut Vec<f32>,
     loop_range: Option<(u64, u64)>,
 ) {
-    let ch = writer.channels();
+    // Stride derived once per refill, above every loop below.
+    let ch = writer.channels().count() as usize;
     interleave_buffer.clear();
     interleave_buffer.resize(chunk_size * ch, 0.0);
 
@@ -427,7 +430,8 @@ fn refill_reverse(
     let read_start = file_position.saturating_sub(chunk_size);
     let actual_chunk = file_position - read_start;
 
-    let ch = writer.channels();
+    // Stride derived once per refill, above every loop below.
+    let ch = writer.channels().count() as usize;
     if actual_chunk == 0 {
         interleave_buffer.clear();
         interleave_buffer.resize(chunk_size * ch, 0.0);
@@ -682,7 +686,7 @@ mod tests {
         // The forward whole-file fill now runs through WaveIn; verify the block
         // it produces matches the old fill_buffer_forward output shape.
         let wave = make_test_wave(&[(0.1, 0.1), (0.2, 0.2), (0.3, 0.3), (0.4, 0.4)]);
-        let mut src = WaveIn::new(&wave, 0, None, 2);
+        let mut src = WaveIn::new(&wave, 0, None, 2usize);
         let mut buffer = vec![0.0f32; 3 * 2];
         src.fill_interleaved(&mut buffer);
 
@@ -692,7 +696,7 @@ mod tests {
     #[test]
     fn test_forward_fill_past_end_pads_zeros() {
         let wave = make_test_wave(&[(0.1, 0.1), (0.2, 0.2)]);
-        let mut src = WaveIn::new(&wave, 1, None, 2);
+        let mut src = WaveIn::new(&wave, 1, None, 2usize);
         let mut buffer = vec![9.0f32; 4 * 2];
         src.fill_interleaved(&mut buffer);
 

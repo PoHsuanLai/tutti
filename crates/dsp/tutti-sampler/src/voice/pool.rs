@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use crate::ports::{Command, Commands};
 use crate::stretch;
-use crate::MAX_SAMPLER_CHANNELS;
+use crate::{nonempty, MAX_SAMPLER_CHANNELS};
 
 use super::command::{VoiceCommand, VoicePoolHandle, COMMAND_CAPACITY, MAX_RESIDENT_VOICES};
 use super::memory_source::LoopSetting;
@@ -18,7 +18,7 @@ use super::types::{Playback, SlotId, Voice, VoiceSource};
 use bevy_ecs::prelude::*;
 use crossbeam_channel::{bounded, Receiver, Sender};
 use tutti_core::transport::BeatCursor;
-use tutti_core::{AudioUnit, BufferMut, BufferRef, SignalFrame, Timeline};
+use tutti_core::{AudioUnit, BufferMut, BufferRef, ChannelLayout, SignalFrame, Timeline};
 
 const VOICE_POOL_ID: u64 = 0x_0000_0000_0000_DA03;
 
@@ -71,7 +71,7 @@ pub struct VoicePool {
     /// on track creation, *before* any voice exists, and `Net` edges are wired
     /// against `outputs()`. A width that followed its contents would re-arity a
     /// live graph node the moment a voice landed.
-    pub(crate) channels: usize,
+    pub(crate) channels: ChannelLayout,
 
     /// Detects transport discontinuities, so buffered audio can be flushed on a
     /// seek. `None` when there is no transport to watch (free-running / detached).
@@ -114,14 +114,14 @@ impl VoicePool {
         transport: Option<Arc<dyn Timeline>>,
         butler: Option<Commands>,
     ) -> Self {
-        Self::from_parts_with_channels(rx, transport, butler, 2)
+        Self::from_parts_with_channels(rx, transport, butler, ChannelLayout::Stereo)
     }
 
     fn from_parts_with_channels(
         rx: Receiver<VoiceCommand>,
         transport: Option<Arc<dyn Timeline>>,
         butler: Option<Commands>,
-        channels: usize,
+        channels: impl Into<ChannelLayout>,
     ) -> Self {
         // Detached pools and clones get a dead retirement channel: a full
         // `bounded(0)` never accepts, so `Remove` falls back to dropping in
@@ -143,12 +143,12 @@ impl VoicePool {
                 .map(|t| BeatCursor::new(Arc::clone(t), 44100.0)),
             transport,
             butler,
-            channels: channels.max(1),
+            channels: nonempty(channels.into()),
         }
     }
 
     /// Output width — this node's `outputs()`.
-    pub fn channels(&self) -> usize {
+    pub fn channels(&self) -> ChannelLayout {
         self.channels
     }
 
@@ -158,7 +158,7 @@ impl VoicePool {
         let handle = VoicePoolHandle {
             tx,
             retired,
-            channels: 2,
+            channels: ChannelLayout::Stereo,
             sample_rate: 44100.0,
         };
         let mut unit = Self::from_parts(rx, None, None);
@@ -175,7 +175,7 @@ impl VoicePool {
         let handle = VoicePoolHandle {
             tx,
             retired,
-            channels: 2,
+            channels: ChannelLayout::Stereo,
             sample_rate: 44100.0,
         };
         let mut unit = Self::from_parts(rx, Some(transport), butler);
@@ -190,7 +190,7 @@ impl VoicePool {
     pub fn with_channels(
         transport: Option<Arc<dyn Timeline>>,
         butler: Option<Commands>,
-        channels: usize,
+        channels: impl Into<ChannelLayout>,
     ) -> (Self, VoicePoolHandle) {
         let (tx, rx) = bounded(COMMAND_CAPACITY);
         let (retired_tx, retired) = bounded(MAX_RESIDENT_VOICES);
@@ -605,7 +605,8 @@ impl AudioUnit for VoicePool {
     }
 
     fn outputs(&self) -> usize {
-        self.channels
+        // Boundary: `AudioUnit::outputs` is a fixed fundsp trait signature.
+        self.channels.count() as usize
     }
 
     fn reset(&mut self) {
@@ -665,7 +666,10 @@ impl AudioUnit for VoicePool {
         // the forward-jump slack is measured in single samples rather than 64.
         self.flush_on_seek(1);
 
-        let n = self.channels.min(output.len()).min(MAX_SAMPLER_CHANNELS);
+        // Stride derived once, above the per-slot loop.
+        let n = (self.channels.count() as usize)
+            .min(output.len())
+            .min(MAX_SAMPLER_CHANNELS);
         if n == 0 {
             return;
         }
@@ -688,8 +692,8 @@ impl AudioUnit for VoicePool {
         self.drain_commands();
         self.flush_on_seek(size.max(1));
 
-        let n = self
-            .channels
+        // Stride derived once per block, above the loops.
+        let n = (self.channels.count() as usize)
             .min(output.channels())
             .min(MAX_SAMPLER_CHANNELS);
         for c in 0..n {
@@ -710,7 +714,8 @@ impl AudioUnit for VoicePool {
 
     fn route(&mut self, _input: &SignalFrame, _frequency: f64) -> SignalFrame {
         // Width must track `outputs()` or fundsp mis-plans this node's latency.
-        SignalFrame::new(self.channels)
+        // Boundary: `SignalFrame::new` is a fundsp signature.
+        SignalFrame::new(self.channels.count() as usize)
     }
 
     fn footprint(&self) -> usize {

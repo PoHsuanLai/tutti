@@ -7,12 +7,12 @@
 use std::sync::Arc;
 
 use crate::stretch;
-use crate::MAX_SAMPLER_CHANNELS;
+use crate::{nonempty, MAX_SAMPLER_CHANNELS};
 
 use super::slot::{stretch_wanted, VoiceSlot};
 use super::types::{SlotId, Voice};
 use tutti_core::transport::BeatCursor;
-use tutti_core::{AudioUnit, BufferMut, BufferRef, SignalFrame, Timeline};
+use tutti_core::{AudioUnit, BufferMut, BufferRef, ChannelLayout, SignalFrame, Timeline};
 
 // ---------------------------------------------------------------------------
 // VoiceNode — a standalone single-`Voice` graph node (0 inputs, 2 outputs).
@@ -33,7 +33,7 @@ use tutti_core::{AudioUnit, BufferMut, BufferRef, SignalFrame, Timeline};
 pub struct VoiceNode {
     pub(crate) slot: VoiceSlot,
     /// Output width — see [`VoicePool`]'s field of the same name.
-    pub(crate) channels: usize,
+    pub(crate) channels: ChannelLayout,
     /// Detects transport discontinuities so buffered audio can be flushed on a
     /// seek — the standalone twin of [`VoicePool`]'s cursor, and needed for the
     /// same reason: a stretch filter's FIFOs keep draining pre-jump material
@@ -47,7 +47,7 @@ impl VoiceNode {
     /// Wrap a single [`Voice`] as a standalone **stereo** graph node. Builds the
     /// resident stretch processor once (like a mixer slot), off any hot path.
     pub fn new(voice: Voice) -> Self {
-        Self::with_channels(voice, 2)
+        Self::with_channels(voice, ChannelLayout::Stereo)
     }
 
     /// Wrap a single [`Voice`] as a `channels`-wide graph node.
@@ -62,8 +62,8 @@ impl VoiceNode {
     /// mixer slot" while nothing ever built it. A standalone stretched voice
     /// therefore read DRY forever: no stretch, no pitch shift, and no error. Both
     /// doc comments pointed at a `materialize_stretch` that does not exist.
-    pub fn with_channels(voice: Voice, channels: usize) -> Self {
-        let channels = channels.max(1);
+    pub fn with_channels(voice: Voice, channels: impl Into<ChannelLayout>) -> Self {
+        let channels = nonempty(channels.into());
         let sample_rate = 44100.0;
         let stretch = stretch_wanted(&voice.play).then(|| {
             let unit = stretch::Unit::with_channels(sample_rate, channels);
@@ -101,7 +101,7 @@ impl VoiceNode {
     }
 
     /// Output width — this node's `outputs()`.
-    pub fn channels(&self) -> usize {
+    pub fn channels(&self) -> ChannelLayout {
         self.channels
     }
 
@@ -167,7 +167,8 @@ impl AudioUnit for VoiceNode {
     }
 
     fn outputs(&self) -> usize {
-        self.channels
+        // Boundary: `AudioUnit::outputs` is a fixed fundsp trait signature.
+        self.channels.count() as usize
     }
 
     fn reset(&mut self) {
@@ -196,7 +197,8 @@ impl AudioUnit for VoiceNode {
     fn tick(&mut self, _input: &[f32], output: &mut [f32]) {
         // Same single-voice read the mixer runs per slot, straight into the
         // caller's frame.
-        let n = self.channels.min(output.len());
+        // Stride derived once, above the read — never inside a loop.
+        let n = (self.channels.count() as usize).min(output.len());
         if n == 0 {
             return;
         }
@@ -205,8 +207,8 @@ impl AudioUnit for VoiceNode {
     }
 
     fn process(&mut self, size: usize, _input: &BufferRef, output: &mut BufferMut) {
-        let n = self
-            .channels
+        // Stride derived once per block, above the loops.
+        let n = (self.channels.count() as usize)
             .min(output.channels())
             .min(MAX_SAMPLER_CHANNELS);
         for c in 0..n {
@@ -222,7 +224,8 @@ impl AudioUnit for VoiceNode {
 
     fn route(&mut self, _input: &SignalFrame, _frequency: f64) -> SignalFrame {
         // Width must track `outputs()` or fundsp mis-plans this node's latency.
-        SignalFrame::new(self.channels)
+        // Boundary: `SignalFrame::new` is a fundsp signature.
+        SignalFrame::new(self.channels.count() as usize)
     }
 
     fn footprint(&self) -> usize {

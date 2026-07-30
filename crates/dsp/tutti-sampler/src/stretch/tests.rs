@@ -8,8 +8,8 @@ use super::vocoder::*;
 use super::*;
 #[allow(unused_imports)]
 use tutti_core::{
-    inverse_fft, real_fft, AudioUnit, BufferMut, BufferRef, Cents, Complex32, Radians, ReadRate,
-    SampleRate, Samples, SignalFrame, StretchFactor,
+    inverse_fft, real_fft, AudioUnit, BufferMut, BufferRef, Cents, ChannelLayout, Complex32,
+    Radians, ReadRate, SampleRate, Samples, SignalFrame, StretchFactor,
 };
 
 use std::f32::consts::PI;
@@ -46,7 +46,7 @@ fn every_fft_size_yields_a_cola_grid() {
 fn non_positive_sample_rate_does_not_panic() {
     for rate in [0.0, -44_100.0] {
         let u = Unit::new(rate);
-        assert_eq!(u.channels(), 2);
+        assert_eq!(u.channels(), ChannelLayout::Stereo);
     }
 }
 
@@ -234,7 +234,7 @@ fn a_one_to_one_feed_stays_bounded_and_audible_at_every_stretch() {
     // reconstruct from; the output ripples between 0.003 and 0.60 rather
     // than holding a steady level. That is geometry, not a regression.
     for factor in [0.5f32, 1.5, 2.0, 4.0] {
-        let mut u = Unit::with_fft_size_and_channels(44_100.0, FftSize::N1024, 1);
+        let mut u = Unit::with_fft_size_and_channels(44_100.0, FftSize::N1024, 1usize);
         u.set_stretch_factor(StretchFactor::new(factor));
         assert!(u.is_processing(), "factor {factor} should not bypass");
 
@@ -296,7 +296,7 @@ fn a_one_to_one_feed_stays_bounded_and_audible_at_every_stretch() {
 /// while the real bound went unchecked.
 #[test]
 fn the_intake_loop_is_bounded_by_the_pitch_clamp() {
-    let u = Unit::with_channels(44_100.0, 1);
+    let u = Unit::with_channels(44_100.0, 1usize);
 
     // Well past the clamp, in the direction that increases intake.
     u.set_pitch_cents(Cents::new(12_000.0));
@@ -318,7 +318,7 @@ fn the_intake_loop_is_bounded_by_the_pitch_clamp() {
 /// of a wave rather than spinning the callback.
 #[test]
 fn the_callers_read_rate_is_bounded_by_the_stretch_clamp() {
-    let u = Unit::with_channels(44_100.0, 1);
+    let u = Unit::with_channels(44_100.0, 1usize);
 
     u.set_stretch_factor(StretchFactor::new(0.001));
     assert_eq!(u.stretch_factor(), StretchFactor::MIN);
@@ -374,7 +374,7 @@ fn the_callers_read_rate_is_bounded_by_the_stretch_clamp() {
 /// to underrun the callback.
 #[test]
 fn cloning_shares_the_bank_and_isolate_severs_it() {
-    let u = Unit::with_channels(44_100.0, 6);
+    let u = Unit::with_channels(44_100.0, 6usize);
     let c = u.clone();
 
     // The commit path: a refcount bump, not ~96 KB per channel.
@@ -383,7 +383,8 @@ fn cloning_shares_the_bank_and_isolate_severs_it() {
         "the clone deep-copied the vocoder bank instead of sharing it"
     );
     assert_eq!(
-        c.width, 6,
+        c.width,
+        ChannelLayout::Multi(6),
         "width must mirror the bank without borrowing it"
     );
 
@@ -399,7 +400,11 @@ fn cloning_shares_the_bank_and_isolate_severs_it() {
         !Arc::ptr_eq(&u.channels, &isolated.channels),
         "isolate() left the render sharing the live graph's vocoder state"
     );
-    assert_eq!(isolated.width, 6, "isolate must preserve the unit's width");
+    assert_eq!(
+        isolated.width,
+        ChannelLayout::Multi(6),
+        "isolate must preserve the unit's width"
+    );
 
     // Isolated state is clean, matching what a clone used to produce: a
     // render starts its filter fresh rather than mid-frame on audio it will
@@ -432,7 +437,7 @@ fn cloning_shares_the_bank_and_isolate_severs_it() {
 #[should_panic(expected = "two live stretch::Unit handles")]
 #[cfg(debug_assertions)]
 fn two_live_handles_ticking_one_bank_is_caught() {
-    let mut a = Unit::with_channels(44_100.0, 2);
+    let mut a = Unit::with_channels(44_100.0, 2usize);
     a.set_stretch_factor(StretchFactor::new(2.0));
     a.allocate();
 
@@ -456,7 +461,7 @@ fn two_live_handles_ticking_one_bank_is_caught() {
 /// failing one.
 #[test]
 fn succession_and_isolation_do_not_trip_the_claim() {
-    let mut a = Unit::with_channels(44_100.0, 2);
+    let mut a = Unit::with_channels(44_100.0, 2usize);
     a.set_stretch_factor(StretchFactor::new(2.0));
     a.allocate();
     let mut frame = [0.0f32; 2];
@@ -490,7 +495,7 @@ fn succession_and_isolation_do_not_trip_the_claim() {
 /// its author got wrong. Succession means the predecessor stops.
 #[test]
 fn a_successor_generation_continues_the_stream() {
-    let mut original = Unit::with_channels(44_100.0, 2);
+    let mut original = Unit::with_channels(44_100.0, 2usize);
     original.set_stretch_factor(StretchFactor::new(2.0));
     original.allocate();
 
@@ -545,7 +550,7 @@ fn a_successor_generation_continues_the_stream() {
 /// boundary as the vocoders, and a successor generation inherits it sized.
 #[test]
 fn the_block_scratch_rides_the_shared_bank() {
-    let mut u = Unit::with_channels(44_100.0, 6);
+    let mut u = Unit::with_channels(44_100.0, 6usize);
     u.allocate();
     assert!(u.channels.scratch_is_ready(6));
 
@@ -594,7 +599,7 @@ fn the_block_scratch_rides_the_shared_bank() {
 /// block is the failure mode, and every `!= 0.0` assertion here would pass it.
 #[test]
 fn an_isolated_clone_renders_identically() {
-    let mut original = Unit::with_channels(44_100.0, 2);
+    let mut original = Unit::with_channels(44_100.0, 2usize);
     original.set_stretch_factor(StretchFactor::new(2.0));
     original.allocate();
 
@@ -752,7 +757,7 @@ fn render_440_placed(u: &Unit, sample_rate: f32, out_len: usize) -> Vec<f32> {
 fn pitch_shift_transposes_by_the_requested_interval() {
     let sr = 48_000.0f32;
     for &cents in &[0.0f32, 1200.0, -1200.0, 700.0, -500.0] {
-        let u = Unit::with_channels(sr as f64, 1);
+        let u = Unit::with_channels(sr as f64, 1usize);
         u.set_pitch_cents(Cents::new(cents));
 
         let out = render_440(&u, sr, 48_000);
@@ -789,7 +794,7 @@ fn pitch_shift_transposes_by_the_requested_interval() {
 fn a_one_per_tick_feed_makes_stretch_behave_as_varispeed() {
     let sr = 48_000.0f32;
     for &(factor, want) in &[(0.5f32, 220.0f32), (1.0, 440.0), (2.0, 880.0)] {
-        let u = Unit::with_channels(sr as f64, 1);
+        let u = Unit::with_channels(sr as f64, 1usize);
         u.set_stretch_factor(StretchFactor::new(factor));
 
         let out = render_440(&u, sr, 48_000);
@@ -814,7 +819,7 @@ fn a_one_per_tick_feed_makes_stretch_behave_as_varispeed() {
 fn stretching_a_placed_read_changes_duration_not_pitch() {
     let sr = 48_000.0f32;
     for &factor in &[0.5f32, 1.0, 1.5, 2.0] {
-        let u = Unit::with_channels(sr as f64, 1);
+        let u = Unit::with_channels(sr as f64, 1usize);
         u.set_stretch_factor(StretchFactor::new(factor));
 
         let out = render_440_placed(&u, sr, 48_000);
@@ -843,7 +848,7 @@ fn pitch_and_stretch_are_independent_on_a_placed_read() {
         (0.5, -1200.0),
         (1.5, 500.0),
     ] {
-        let u = Unit::with_channels(sr as f64, 1);
+        let u = Unit::with_channels(sr as f64, 1usize);
         u.set_stretch_factor(StretchFactor::new(factor));
         u.set_pitch_cents(Cents::new(cents));
 
@@ -870,14 +875,14 @@ fn pitch_and_stretch_are_independent_on_a_placed_read() {
 fn pitch_shift_preserves_level() {
     let sr = 48_000.0f32;
     let dry = {
-        let u = Unit::with_channels(sr as f64, 1);
+        let u = Unit::with_channels(sr as f64, 1usize);
         u.set_pitch_cents(Cents::new(0.0));
         rms(&render_440(&u, sr, 48_000)[24_000..24_000 + 8192])
     };
     assert!(dry > 0.1, "reference render was silent ({dry:.4})");
 
     for &cents in &[1200.0f32, -1200.0, 700.0] {
-        let u = Unit::with_channels(sr as f64, 1);
+        let u = Unit::with_channels(sr as f64, 1usize);
         u.set_pitch_cents(Cents::new(cents));
         let wet = rms(&render_440(&u, sr, 48_000)[24_000..24_000 + 8192]);
         let db = 20.0 * (wet / dry).log10();
@@ -909,7 +914,7 @@ fn pitch_shift_preserves_level() {
 /// bounded property that a later change cannot silently deepen.
 #[test]
 fn the_slowest_factor_ripples_because_its_frames_do_not_overlap() {
-    let mut u = Unit::with_fft_size_and_channels(44_100.0, FftSize::N1024, 1);
+    let mut u = Unit::with_fft_size_and_channels(44_100.0, FftSize::N1024, 1usize);
     u.set_stretch_factor(StretchFactor::MIN);
     let window = u.channels.channels.borrow()[0].geometry.window().get();
     let (analysis, _) = u.hops();
@@ -971,7 +976,7 @@ fn stretching_preserves_the_signals_level() {
     // Faster-than-unity factors keep >=75% analysis overlap, so the phase
     // vocoder has the continuity it needs to reconstruct exactly.
     for factor in [1.0f32, 1.5, 2.0, 4.0] {
-        let mut u = Unit::with_channels(44_100.0, 1);
+        let mut u = Unit::with_channels(44_100.0, 1usize);
         u.set_stretch_factor(StretchFactor::new(factor));
         u.allocate();
 
@@ -1027,7 +1032,7 @@ fn stretching_preserves_the_signals_level() {
 #[test]
 fn slowing_down_loses_level_only_as_far_as_the_overlap_allows() {
     for (factor, floor) in [(0.5f32, 0.85f32), (0.25, 0.75)] {
-        let mut u = Unit::with_channels(44_100.0, 1);
+        let mut u = Unit::with_channels(44_100.0, 1usize);
         u.set_stretch_factor(StretchFactor::new(factor));
         u.allocate();
 
@@ -1074,7 +1079,7 @@ fn slowing_down_loses_level_only_as_far_as_the_overlap_allows() {
 /// window there desynchronises the whole graph by 46 ms at the default 2048.
 #[test]
 fn latency_is_zero_while_bypassing_and_a_window_while_processing() {
-    let mut u = Unit::with_channels(44_100.0, 2);
+    let mut u = Unit::with_channels(44_100.0, 2usize);
     let window = u.channels.channels.borrow()[0].geometry.window().get();
 
     assert!(!u.is_processing());
@@ -1104,12 +1109,12 @@ fn latency_is_zero_while_bypassing_and_a_window_while_processing() {
 
 #[test]
 fn input_rate_is_unity_when_bypassing() {
-    let u = Unit::with_channels(44_100.0, 1);
+    let u = Unit::with_channels(44_100.0, 1usize);
     assert!(!u.is_processing());
     assert_eq!(u.input_rate(), ReadRate::UNITY);
 
     // Disabled counts as bypassing too.
-    let mut u = Unit::with_channels(44_100.0, 1);
+    let mut u = Unit::with_channels(44_100.0, 1usize);
     u.set_stretch_factor(StretchFactor::new(2.0));
     u.set_enabled(false);
     assert_eq!(u.input_rate(), ReadRate::UNITY);
@@ -1129,17 +1134,23 @@ fn overlap_add_flushes_subnormals() {
 #[test]
 fn creation_and_width() {
     let unit = Unit::new(44100.0);
-    assert_eq!(unit.channels(), 2);
+    assert_eq!(unit.channels(), ChannelLayout::Stereo);
     assert_eq!(unit.inputs(), 2);
     assert_eq!(unit.outputs(), 2);
 
-    assert_eq!(Unit::with_channels(44_100.0, 6).channels(), 6);
+    assert_eq!(
+        Unit::with_channels(44_100.0, 6usize).channels(),
+        ChannelLayout::Multi(6)
+    );
 }
 
 /// A zero-wide filter would make `inputs()`/`outputs()` lie to the graph.
 #[test]
 fn zero_width_is_clamped_to_one() {
-    assert_eq!(Unit::with_channels(44_100.0, 0).channels(), 1);
+    assert_eq!(
+        Unit::with_channels(44_100.0, 0usize).channels(),
+        ChannelLayout::Mono
+    );
 }
 
 #[test]
@@ -1189,7 +1200,7 @@ fn unity_parameters_bypass() {
 /// pair.
 #[test]
 fn six_channel_bypass_passes_all_channels_through() {
-    let mut u = Unit::with_channels(44_100.0, 6);
+    let mut u = Unit::with_channels(44_100.0, 6usize);
     assert!(!u.is_processing(), "unity stretch/pitch should bypass");
 
     let input: Vec<f32> = (0..6).map(|c| (c + 1) as f32).collect();
@@ -1205,11 +1216,11 @@ fn six_channel_bypass_passes_all_channels_through() {
 /// phase state. Clones happen per graph commit and per voice slot.
 #[test]
 fn clone_carries_parameters_and_width() {
-    let u = Unit::with_channels(44_100.0, 6);
+    let u = Unit::with_channels(44_100.0, 6usize);
     u.set_stretch_factor(StretchFactor::new(1.5));
 
     let c = u.clone();
-    assert_eq!(c.channels(), 6);
+    assert_eq!(c.channels(), ChannelLayout::Multi(6));
     assert!((c.stretch_factor().get() - 1.5).abs() < 0.001);
 
     // The atomics are independent after the clone.
@@ -1231,7 +1242,7 @@ fn route_width_tracks_outputs_at_every_width() {
 
 #[test]
 fn reset_clears_buffered_audio() {
-    let mut u = Unit::with_channels(44_100.0, 1);
+    let mut u = Unit::with_channels(44_100.0, 1usize);
     u.set_stretch_factor(StretchFactor::new(2.0));
 
     let input = sine(440.0, 44_100.0, 8192);
@@ -1278,7 +1289,7 @@ fn stale_audio_survives_a_discontinuity_until_reset() {
 
     // Prime with DC so "is the output still carrying the old material" is a
     // question about level alone — no phase or frequency argument needed.
-    let mut leaking = Unit::with_channels(44_100.0, 1);
+    let mut leaking = Unit::with_channels(44_100.0, 1usize);
     leaking.set_stretch_factor(StretchFactor::new(2.0));
     assert!(leaking.is_processing());
     fill(&mut leaking, 0.5, 8192);
@@ -1292,7 +1303,7 @@ fn stale_audio_survives_a_discontinuity_until_reset() {
     );
 
     // Same run, with the flush the fix will perform.
-    let mut flushed = Unit::with_channels(44_100.0, 1);
+    let mut flushed = Unit::with_channels(44_100.0, 1usize);
     flushed.set_stretch_factor(StretchFactor::new(2.0));
     fill(&mut flushed, 0.5, 8192);
     flushed.reset();
@@ -1382,7 +1393,7 @@ fn vocoder_reconstructs_its_input_at_unity() {
 /// silently lose four channels, and no stereo test can see that.
 #[test]
 fn six_channel_stretch_reaches_every_channel() {
-    let mut u = Unit::with_channels(44_100.0, 6);
+    let mut u = Unit::with_channels(44_100.0, 6usize);
     u.set_stretch_factor(StretchFactor::new(2.0));
     assert!(u.is_processing());
 
@@ -1435,7 +1446,7 @@ fn stretch_factor_changes_the_source_consumption_rate() {
     const TICKS: usize = 16_384;
 
     let consumed = |factor: f32| {
-        let mut u = Unit::with_fft_size_and_channels(44_100.0, FftSize::N1024, 1);
+        let mut u = Unit::with_fft_size_and_channels(44_100.0, FftSize::N1024, 1usize);
         u.set_stretch_factor(StretchFactor::new(factor));
         let input = sine(440.0, 44_100.0, TICKS);
         let mut frame = [0.0f32; 1];

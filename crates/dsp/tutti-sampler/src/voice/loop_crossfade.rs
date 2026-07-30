@@ -4,13 +4,28 @@
 //! because the butler thread is a separate producer; here the unit produces its own
 //! samples in `process()` so a `&mut self` design is simpler.
 
+use tutti_core::ChannelLayout;
+
+use crate::nonempty;
+
 /// The pre-loop tail is stored **flat and interleaved** at `channels` samples
 /// per frame, so the same buffer serves any width. Frame `f` channel `c` lives
 /// at `pre_loop_buffer[f * channels + c]`.
 #[derive(Debug, Clone)]
 pub(crate) struct LoopCrossfade {
     pre_loop_buffer: Vec<f32>,
-    channels: usize,
+    /// The declared width of a stored frame.
+    channels: ChannelLayout,
+    /// `channels.count()`, cached.
+    ///
+    /// [`process_in_place`](Self::process_in_place) is called **once per output
+    /// frame** and indexes the flat tail with it twice (`position * stride`,
+    /// `..base + stride`). Re-deriving from the layout there would put an enum
+    /// match on the per-frame path, so the count is materialised once at
+    /// construction. The layout above stays the declaration; this is only its
+    /// arithmetic. The two cannot drift: nothing mutates the width after
+    /// construction.
+    stride: usize,
     crossfade_samples: usize,
     position: usize,
     active: bool,
@@ -36,11 +51,13 @@ impl LoopCrossfade {
     ///
     /// Reserves [`MAX_CROSSFADE_FRAMES`] up front so [`retune`](Self::retune)
     /// never has to grow.
-    pub fn with_channels(crossfade_samples: usize, channels: usize) -> Self {
-        let channels = channels.max(1);
+    pub fn with_channels(crossfade_samples: usize, channels: impl Into<ChannelLayout>) -> Self {
+        let channels = nonempty(channels.into());
+        let stride = channels.count() as usize;
         Self {
-            pre_loop_buffer: Vec::with_capacity(MAX_CROSSFADE_FRAMES * channels),
+            pre_loop_buffer: Vec::with_capacity(MAX_CROSSFADE_FRAMES * stride),
             channels,
+            stride,
             crossfade_samples: crossfade_samples.min(MAX_CROSSFADE_FRAMES),
             position: 0,
             active: false,
@@ -64,6 +81,18 @@ impl LoopCrossfade {
         self.crossfade_samples
     }
 
+    /// The width this crossfade's stored tail is interleaved at.
+    ///
+    /// [`retune`](Self::retune) re-points the *length* only, so a resident
+    /// crossfade reclaimed by `MemorySource::set_loop_range` keeps whatever
+    /// width it was built at. Exposed so that reuse can assert the two still
+    /// agree: a mismatch would index the flat tail with the wrong stride and
+    /// rotate channels through the whole fade, which sounds like a mix error
+    /// rather than a bug.
+    pub fn channels(&self) -> ChannelLayout {
+        self.channels
+    }
+
     /// Load the pre-loop tail from a flat interleaved slice at this crossfade's
     /// own width. Extra frames past `crossfade_samples` are ignored; a short
     /// slice simply yields a shorter usable tail (`process` passes the input
@@ -77,9 +106,9 @@ impl LoopCrossfade {
     #[cfg(test)]
     pub fn fill_preloop(&mut self, samples: &[f32]) {
         self.pre_loop_buffer.clear();
-        let frames = (samples.len() / self.channels).min(self.crossfade_samples);
+        let frames = (samples.len() / self.stride).min(self.crossfade_samples);
         self.pre_loop_buffer
-            .extend_from_slice(&samples[..frames * self.channels]);
+            .extend_from_slice(&samples[..frames * self.stride]);
     }
 
     /// Fill the pre-loop tail in place from `read`, which writes one frame at a
@@ -91,7 +120,7 @@ impl LoopCrossfade {
     /// slice-taking [`fill_preloop`](Self::fill_preloop) needs the caller to
     /// materialise a whole buffer first; this one does not.
     pub fn fill_preloop_with(&mut self, mut read: impl FnMut(usize, &mut [f32])) {
-        let ch = self.channels;
+        let ch = self.stride;
         let frames = self.crossfade_samples;
         self.pre_loop_buffer.clear();
         // Never grows: `with_channels` reserved MAX_CROSSFADE_FRAMES * ch and
@@ -132,8 +161,10 @@ impl LoopCrossfade {
         let fade_out = 1.0 - t;
         let fade_in = t;
 
-        let base = self.position * self.channels;
-        if let Some(pre) = self.pre_loop_buffer.get(base..base + self.channels) {
+        // `self.stride`, not `self.channels.count()`: this runs per output
+        // frame, so the count is cached rather than re-derived here.
+        let base = self.position * self.stride;
+        if let Some(pre) = self.pre_loop_buffer.get(base..base + self.stride) {
             for (c, s) in frame.iter_mut().enumerate() {
                 // A frame wider than the tail keeps its extra channels dry
                 // rather than fading them toward silence.
@@ -157,14 +188,14 @@ mod tests {
 
     #[test]
     fn test_crossfade_creation() {
-        let xfade = LoopCrossfade::with_channels(256, 2);
+        let xfade = LoopCrossfade::with_channels(256, 2usize);
         assert_eq!(xfade.len(), 256);
         assert!(!xfade.is_active());
     }
 
     #[test]
     fn test_fill_preloop() {
-        let mut xfade = LoopCrossfade::with_channels(4, 2);
+        let mut xfade = LoopCrossfade::with_channels(4, 2usize);
         // 4 stereo frames, flat interleaved.
         let samples = [1.0, 1.0, 0.8, 0.8, 0.6, 0.6, 0.4, 0.4];
         xfade.fill_preloop(&samples);
@@ -173,7 +204,7 @@ mod tests {
 
     #[test]
     fn test_crossfade_process() {
-        let mut xfade = LoopCrossfade::with_channels(4, 2);
+        let mut xfade = LoopCrossfade::with_channels(4, 2usize);
         let preloop = [0.0, 0.0, 0.25, 0.25, 0.5, 0.5, 0.75, 0.75];
         xfade.fill_preloop(&preloop);
 
@@ -201,7 +232,7 @@ mod tests {
 
     #[test]
     fn test_passthrough_when_inactive() {
-        let mut xfade = LoopCrossfade::with_channels(4, 2);
+        let mut xfade = LoopCrossfade::with_channels(4, 2usize);
         let mut f = [0.5f32, 0.7];
         xfade.process_in_place(&mut f);
         assert_eq!(f, [0.5, 0.7]);
@@ -209,7 +240,7 @@ mod tests {
 
     #[test]
     fn test_reset() {
-        let mut xfade = LoopCrossfade::with_channels(4, 2);
+        let mut xfade = LoopCrossfade::with_channels(4, 2usize);
         let preloop = [0.0, 0.0, 0.25, 0.25, 0.5, 0.5, 0.75, 0.75];
         xfade.fill_preloop(&preloop);
 
@@ -228,7 +259,7 @@ mod tests {
     /// per-channel envelope would shift the image mid-fade.
     #[test]
     fn six_channel_crossfade_blends_every_channel_with_one_envelope() {
-        let mut xfade = LoopCrossfade::with_channels(4, 6);
+        let mut xfade = LoopCrossfade::with_channels(4, 6usize);
         // Pre-loop tail is all zeros, so the blend is a pure fade-out of the
         // input: every channel must scale by the SAME factor.
         xfade.fill_preloop(&[0.0f32; 24]);
@@ -253,7 +284,7 @@ mod tests {
     /// than fading them toward silence.
     #[test]
     fn frame_wider_than_the_tail_leaves_extra_channels_untouched() {
-        let mut xfade = LoopCrossfade::with_channels(4, 2);
+        let mut xfade = LoopCrossfade::with_channels(4, 2usize);
         xfade.fill_preloop(&[0.0f32; 8]);
         xfade.start();
         let mut f = [1.0f32, 1.0, 9.0, 9.0];

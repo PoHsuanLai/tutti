@@ -17,8 +17,8 @@ use std::sync::Arc;
 
 use assert_no_alloc::AllocDisabler;
 use tutti_core::{
-    AudioUnit, Beat, Bpm, BufferVec, Cents, SamplePosition, SampleRate, StretchFactor, Timeline,
-    Wave,
+    AudioUnit, Beat, Bpm, BufferVec, Cents, ChannelLayout, SamplePosition, SampleRate,
+    StretchFactor, Timeline, Wave,
 };
 use tutti_sampler::stretch::Unit as TimeStretchUnit;
 use tutti_sampler::{
@@ -480,7 +480,7 @@ fn surround_wave(duration_secs: f64, sample_rate: f64) -> Arc<Wave> {
 #[test]
 fn memory_source_process_is_allocation_free_at_six_channels() {
     let wave = surround_wave(2.0, 48_000.0);
-    let mut node = MemorySource::with_channels(wave, 6);
+    let mut node = MemorySource::with_channels(wave, 6usize);
     node.set_sample_rate(SampleRate(48_000.0));
     assert_eq!(node.outputs(), 6);
 
@@ -505,7 +505,7 @@ fn memory_source_process_is_allocation_free_at_six_channels() {
 #[test]
 fn memory_source_tick_is_allocation_free_at_six_channels() {
     let wave = surround_wave(2.0, 48_000.0);
-    let mut node = MemorySource::with_channels(wave, 6);
+    let mut node = MemorySource::with_channels(wave, 6usize);
     node.set_sample_rate(SampleRate(48_000.0));
 
     let mut output = [0.0f32; 6];
@@ -560,13 +560,13 @@ fn memory_source_process_is_allocation_free_when_folding_six_to_two() {
 fn six_channel_clip_reaches_six_reader_outputs_without_allocating() {
     let transport = MockTransport::new(120.0, 0.0, true);
     let wave = surround_wave(2.0, 48_000.0);
-    let (mut reader, _handle) = VoicePool::with_channels(Some(transport.clone()), None, 6);
+    let (mut reader, _handle) = VoicePool::with_channels(Some(transport.clone()), None, 6usize);
     // `placement: None` on the Playback record, so the sampler's OWN placement
     // is what gates playback.
     let sampler = MemorySource::with_config(
         wave,
         MemorySourceConfig {
-            channels: 6,
+            channels: ChannelLayout::Multi(6),
             timeline: Some(transport),
             window: VoiceWindow {
                 start: Beat::new(0.0),
@@ -662,7 +662,7 @@ fn six_channel_clip_reaches_six_reader_outputs_without_allocating() {
 fn add_voice_drain_is_allocation_free_at_six_channels() {
     let transport = MockTransport::new(120.0, 0.0, true);
     let wave = surround_wave(2.0, 48_000.0);
-    let (mut reader, handle) = VoicePool::with_channels(Some(transport.clone()), None, 6);
+    let (mut reader, handle) = VoicePool::with_channels(Some(transport.clone()), None, 6usize);
     reader.set_sample_rate(SampleRate(48_000.0));
 
     let input_vec = BufferVec::new(0);
@@ -679,7 +679,7 @@ fn add_voice_drain_is_allocation_free_at_six_channels() {
         let sampler = MemorySource::with_config(
             wave.clone(),
             MemorySourceConfig {
-                channels: 6,
+                channels: ChannelLayout::Multi(6),
                 timeline: Some(transport.clone()),
                 window: VoiceWindow {
                     start: Beat::new(0.0),
@@ -734,7 +734,7 @@ fn add_voice_drain_is_allocation_free_at_six_channels() {
 fn remove_voice_drain_does_not_free_on_the_audio_thread() {
     let transport = MockTransport::new(120.0, 0.0, true);
     let wave = surround_wave(2.0, 48_000.0);
-    let (mut reader, handle) = VoicePool::with_channels(Some(transport.clone()), None, 6);
+    let (mut reader, handle) = VoicePool::with_channels(Some(transport.clone()), None, 6usize);
     reader.set_sample_rate(SampleRate(48_000.0));
 
     let input_vec = BufferVec::new(0);
@@ -750,7 +750,7 @@ fn remove_voice_drain_does_not_free_on_the_audio_thread() {
         let sampler = MemorySource::with_config(
             wave.clone(),
             MemorySourceConfig {
-                channels: 6,
+                channels: ChannelLayout::Multi(6),
                 timeline: Some(transport.clone()),
                 window: VoiceWindow {
                     start: Beat::new(0.0),
@@ -796,7 +796,7 @@ fn remove_voice_drain_does_not_free_on_the_audio_thread() {
 fn collect_retired_frees_the_removed_slots_on_the_control_thread() {
     let transport = MockTransport::new(120.0, 0.0, true);
     let wave = surround_wave(2.0, 48_000.0);
-    let (mut reader, handle) = VoicePool::with_channels(Some(transport.clone()), None, 6);
+    let (mut reader, handle) = VoicePool::with_channels(Some(transport.clone()), None, 6usize);
     reader.set_sample_rate(SampleRate(48_000.0));
 
     let input_vec = BufferVec::new(0);
@@ -806,7 +806,7 @@ fn collect_retired_frees_the_removed_slots_on_the_control_thread() {
         let sampler = MemorySource::with_config(
             wave.clone(),
             MemorySourceConfig {
-                channels: 6,
+                channels: ChannelLayout::Multi(6),
                 timeline: Some(transport.clone()),
                 window: VoiceWindow {
                     start: Beat::new(0.0),
@@ -858,13 +858,13 @@ fn collect_retired_frees_the_removed_slots_on_the_control_thread() {
 fn update_loop_drain_is_allocation_free_at_six_channels() {
     let transport = MockTransport::new(120.0, 0.0, true);
     let wave = surround_wave(2.0, 48_000.0);
-    let (mut reader, handle) = VoicePool::with_channels(Some(transport.clone()), None, 6);
+    let (mut reader, handle) = VoicePool::with_channels(Some(transport.clone()), None, 6usize);
     reader.set_sample_rate(SampleRate(48_000.0));
 
     let sampler = MemorySource::with_config(
         wave,
         MemorySourceConfig {
-            channels: 6,
+            channels: ChannelLayout::Multi(6),
             timeline: Some(transport),
             window: VoiceWindow {
                 start: Beat::new(0.0),

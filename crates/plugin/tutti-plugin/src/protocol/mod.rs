@@ -28,9 +28,14 @@ pub mod shm;
 ///   `SetupSharedMemory` would read `slots` out of the bytes that used to hold
 ///   `channels`, get a plausible small integer, and map a wrong-sized region in
 ///   silence. The slab header's magic is the second line of defence.
-/// - v5: `ParameterInfo` gains `domain`. Mandatory: bincode carries no field
-///   names, so a v4 payload is one field short and every parameter after it in
-///   the stream decodes from misaligned bytes.
+/// - v5: `ParameterInfo` is restructured so an absent declaration is not spelled
+///   as a number. `min_value`/`max_value`/`default_value` become a `ParamRange`
+///   sum type whose `Normalized` arm carries no bounds; `step_count: u32`
+///   becomes `ParamSteps`, splitting "continuous" from "unreported" (a bare
+///   count fused them at zero); `ParameterFlags`'s five bools become a
+///   `ParamFlags` bitset plus a `known` mask, so a capability the format never
+///   reported reads as `None` instead of `false`. Mandatory: bincode carries no
+///   field names, so a v4 payload deserializes from misaligned bytes.
 pub const PROTOCOL_VERSION: u32 = 5;
 
 /// Validate a subprocess-reported protocol version against [`PROTOCOL_VERSION`].
@@ -73,14 +78,13 @@ pub use tutti_plugin_types::{
     AutomationMode, BusChannels, ChannelLayout, ChordChanges, ChordValue, Features, LoadedPlugin,
     NoteExpressionChanges, NoteExpressionIntChanges, NoteExpressionIntValue,
     NoteExpressionTextChanges, NoteExpressionTextValue, NoteExpressionType, NoteExpressionValue,
-    ParamDomain, ParameterChanges, ParameterFlags, ParameterInfo, ParameterPoint, ParameterQueue,
-    ScaleChanges, ScaleValue, TimeSignature, TransportInfo,
+    ParamFlags, ParamRange, ParamSteps, ParameterChanges, ParameterInfo, ParameterPoint,
+    ParameterQueue, ScaleChanges, ScaleValue, TimeSignature, TransportInfo,
 };
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use audio_automation::ParameterScale;
     use std::path::PathBuf;
 
     #[test]
@@ -256,65 +260,6 @@ mod tests {
             }
             _ => panic!("Wrong message type"),
         }
-    }
-
-    #[test]
-    fn test_to_range_toggle() {
-        let mut info = ParameterInfo::new(1, "Bypass".to_string());
-        info.step_count = 1;
-        assert_eq!(info.to_range().scale, ParameterScale::Toggle);
-    }
-
-    #[test]
-    fn test_to_range_integer() {
-        let mut info = ParameterInfo::new(2, "Algorithm".to_string());
-        info.step_count = 5;
-        assert_eq!(info.to_range().scale, ParameterScale::Integer);
-    }
-
-    #[test]
-    fn test_to_range_logarithmic_db() {
-        let mut info = ParameterInfo::new(3, "Gain".to_string());
-        info.unit = "dB".to_string();
-        info.min_value = 0.001;
-        info.max_value = 10.0;
-        assert_eq!(info.to_range().scale, ParameterScale::Logarithmic);
-    }
-
-    #[test]
-    fn test_to_range_logarithmic_hz() {
-        let mut info = ParameterInfo::new(4, "Cutoff".to_string());
-        info.unit = "Hz".to_string();
-        info.min_value = 20.0;
-        info.max_value = 20000.0;
-        assert_eq!(info.to_range().scale, ParameterScale::Logarithmic);
-    }
-
-    #[test]
-    fn test_to_range_log_fallback_non_positive_min() {
-        let mut info = ParameterInfo::new(5, "Freq".to_string());
-        info.unit = "Hz".to_string();
-        info.min_value = 0.0;
-        info.max_value = 20000.0;
-        assert_eq!(info.to_range().scale, ParameterScale::Linear);
-    }
-
-    #[test]
-    fn test_to_range_linear_default() {
-        let info = ParameterInfo::new(6, "Mix".to_string());
-        assert_eq!(info.to_range().scale, ParameterScale::Linear);
-    }
-
-    #[test]
-    fn test_to_range_values_preserved() {
-        let mut info = ParameterInfo::new(7, "Volume".to_string());
-        info.min_value = -96.0;
-        info.max_value = 6.0;
-        info.default_value = -12.0;
-        let range = info.to_range();
-        assert_eq!(range.min, -96.0);
-        assert_eq!(range.max, 6.0);
-        assert_eq!(range.default, -12.0);
     }
 
     #[test]

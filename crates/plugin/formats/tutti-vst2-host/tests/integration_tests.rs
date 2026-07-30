@@ -506,7 +506,7 @@ fn default_value_is_the_load_time_state_not_the_live_value() {
     let instance = load_probe();
 
     let before = instance.parameter_list();
-    let defaults: Vec<f64> = before.iter().map(|p| p.default_value).collect();
+    let defaults: Vec<f64> = before.iter().map(|p| p.range.default_value()).collect();
     assert!(
         defaults.iter().any(|&d| d != 0.0),
         "every default came back 0.0, so this test could not detect the bug \
@@ -521,10 +521,12 @@ fn default_value_is_the_load_time_state_not_the_live_value() {
     let after = instance.parameter_list();
     for (i, p) in after.iter().enumerate() {
         assert_eq!(
-            p.default_value, defaults[i],
+            p.range.default_value(),
+            defaults[i],
             "param {} reported default {} after the value moved to 0.9; the \
              default must not follow the live value",
-            p.id, p.default_value
+            p.id,
+            p.range.default_value()
         );
     }
     // And the live value really did move, so the assertion above is not

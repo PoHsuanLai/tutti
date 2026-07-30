@@ -354,14 +354,13 @@ fn hole_in_params_never_misattributes_a_range() {
             .find(|p| p.id == info.id)
             .unwrap_or_else(|| panic!("host reported unknown param id {}", info.id));
         assert_eq!(
-            info.min_value, declared.min,
-            "param {} reported min {} but the plugin declares {}",
-            info.id, info.min_value, declared.min
-        );
-        assert_eq!(
-            info.max_value, declared.max,
-            "param {} reported max {} but the plugin declares {}",
-            info.id, info.max_value, declared.max
+            info.range.bounds(),
+            Some((declared.min, declared.max)),
+            "param {} reported {:?} but the plugin declares {}..{}",
+            info.id,
+            info.range.bounds(),
+            declared.min,
+            declared.max
         );
     }
 }

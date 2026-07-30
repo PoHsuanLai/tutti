@@ -381,41 +381,75 @@ impl ClapLoaded {
 /// parameter values are in the plugin's native plain range, so
 /// `min_value`/`max_value` pass through verbatim.
 fn project_param_info(info: ClapParamInfo) -> tutti_plugin_types::ParameterInfo {
-    let flags = tutti_plugin_types::ParameterFlags {
-        automatable: info.flags.contains(ClapParamFlags::AUTOMATABLE),
-        read_only: info.flags.contains(ClapParamFlags::READONLY),
-        wrap: info.flags.contains(ClapParamFlags::PERIODIC),
-        is_bypass: info.flags.contains(ClapParamFlags::BYPASS),
-        hidden: info.flags.contains(ClapParamFlags::HIDDEN),
-    };
-    // CLAP's STEPPED says every value in `[min, max]` is an integer, so the
-    // step count is the span — not 1. Reporting 1 made an 8-way choice list
-    // indistinguishable from a two-state toggle, and `to_range` maps 1 to
-    // `Toggle`, so every stepped CLAP parameter rendered as a checkbox.
-    let step_count = if info.flags.contains(ClapParamFlags::STEPPED) {
-        let span = info.max_value - info.min_value;
-        if span.is_finite() && span >= 1.0 {
-            span as u32
-        } else {
-            // STEPPED with a sub-unit span has no integer values to step
-            // between; treat it as continuous rather than as a toggle.
-            0
+    use tutti_plugin_types::{ParamFlags, ParamRange, ParamSteps};
+
+    // CLAP is the one hosted format that reports every capability we model,
+    // including the per-voice modulation bits no other format has.
+    const KNOWN: ParamFlags = ParamFlags::all();
+
+    let pairs = [
+        (ClapParamFlags::AUTOMATABLE, ParamFlags::AUTOMATABLE),
+        (ClapParamFlags::READONLY, ParamFlags::READ_ONLY),
+        (ClapParamFlags::PERIODIC, ParamFlags::WRAP),
+        (ClapParamFlags::BYPASS, ParamFlags::BYPASS),
+        (ClapParamFlags::HIDDEN, ParamFlags::HIDDEN),
+        (ClapParamFlags::MODULATABLE, ParamFlags::MODULATABLE),
+        (
+            ClapParamFlags::AUTOMATABLE_PER_NOTE_ID,
+            ParamFlags::PER_NOTE_ID,
+        ),
+        (ClapParamFlags::AUTOMATABLE_PER_KEY, ParamFlags::PER_KEY),
+        (
+            ClapParamFlags::AUTOMATABLE_PER_CHANNEL,
+            ParamFlags::PER_CHANNEL,
+        ),
+        (ClapParamFlags::AUTOMATABLE_PER_PORT, ParamFlags::PER_PORT),
+    ];
+    // CLAP splits per-voice targeting across automation and modulation; either
+    // one means the host may address that scope.
+    let modulation_pairs = [
+        (
+            ClapParamFlags::MODULATABLE_PER_NOTE_ID,
+            ParamFlags::PER_NOTE_ID,
+        ),
+        (ClapParamFlags::MODULATABLE_PER_KEY, ParamFlags::PER_KEY),
+        (
+            ClapParamFlags::MODULATABLE_PER_CHANNEL,
+            ParamFlags::PER_CHANNEL,
+        ),
+        (ClapParamFlags::MODULATABLE_PER_PORT, ParamFlags::PER_PORT),
+    ];
+
+    let mut flags = ParamFlags::empty();
+    for (clap, ours) in pairs.into_iter().chain(modulation_pairs) {
+        if info.flags.contains(clap) {
+            flags |= ours;
         }
+    }
+
+    // CLAP's STEPPED says every value in `[min, max]` is an integer, so the
+    // position count comes from the span — not 1. Reporting 1 made an 8-way
+    // choice list indistinguishable from a two-state toggle.
+    let steps = if info.flags.contains(ClapParamFlags::STEPPED) {
+        ParamSteps::from_span(info.max_value - info.min_value)
     } else {
-        0
+        ParamSteps::Continuous
     };
+
     tutti_plugin_types::ParameterInfo {
         id: info.id,
         name: info.name,
         // CLAP carries no unit string.
         unit: String::new(),
         // CLAP values are in the plugin's native plain range.
-        min_value: info.min_value,
-        max_value: info.max_value,
-        default_value: info.default_value,
-        step_count,
+        range: ParamRange::Plain {
+            min: info.min_value,
+            max: info.max_value,
+            default: info.default_value,
+        },
+        steps,
         flags,
-        domain: tutti_plugin_types::ParamDomain::Plain,
+        known: KNOWN,
     }
 }
 

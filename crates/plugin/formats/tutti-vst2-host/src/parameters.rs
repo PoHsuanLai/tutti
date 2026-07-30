@@ -14,7 +14,9 @@
 use std::sync::Arc;
 use vst::plugin::Plugin as _;
 
-use tutti_plugin_types::{ParamDomain, ParameterInfo as SharedParameterInfo, ALL_AUTOMATABLE};
+use tutti_plugin_types::{
+    ParamFlags, ParamRange, ParamSteps, ParameterInfo as SharedParameterInfo,
+};
 
 use crate::host::ParameterChange;
 use crate::instance::Vst2Instance;
@@ -78,19 +80,24 @@ impl Vst2Instance {
     /// `PluginFormatHost::get_parameter_list` and the in-process
     /// `HostParams::parameter_descriptors` both call it, so the map lives in one place.
     ///
-    /// Every parameter is [`ParamDomain::Normalized`] — the VST2 ABI's value is
-    /// a normalized `f32`.
+    /// Every parameter is [`ParamRange::Normalized`] — the VST2 ABI's value is a
+    /// normalized `f32` and the base spec declares no range.
     ///
-    /// `effGetParameterProperties` (opcode 56) would report a real range, and
-    /// this is where it would land: per parameter that answers, use
-    /// [`SharedParameterInfo::with_plain_range`]. The domain is per-parameter
-    /// because the opcode is — a plugin may answer for some and decline others.
-    /// Detect absence from the dispatch return value, not the buffer: an
-    /// unimplemented opcode leaves the host's zeros untouched.
+    /// `effGetParameterProperties` (opcode 56) would report a real range and
+    /// step count, and this is where it would land: per parameter that answers,
+    /// a [`ParamRange::Plain`] and a [`ParamSteps`] other than `Unknown`. It is
+    /// per-parameter because the opcode is — a plugin may answer for some and
+    /// decline others. Detect absence from the dispatch return value, not the
+    /// buffer: an unimplemented opcode leaves the host's zeros untouched.
+    ///
+    /// No flag is reported. VST2 has `effCanBeAutomated` (opcode 26), which the
+    /// vendored crate does not surface, so `AUTOMATABLE` is genuinely unknown
+    /// rather than assumed — this used to claim `ALL_AUTOMATABLE`, which
+    /// asserted something the ABI never said.
+    ///
     /// `default_value` comes from the load-time snapshot, not the live value.
-    /// VST2 has no default-value opcode, so a plugin's initial state is the
-    /// only place its defaults are observable — see
-    /// [`Vst2Instance::initial_values`].
+    /// VST2 has no default-value opcode, so a plugin's initial state is the only
+    /// place its defaults are observable — see [`Vst2Instance::initial_values`].
     pub fn parameter_list(&self) -> Vec<SharedParameterInfo> {
         self.parameters()
             .into_iter()
@@ -98,20 +105,21 @@ impl Vst2Instance {
                 id: p.id,
                 name: p.name,
                 unit: p.unit,
-                min_value: 0.0,
-                max_value: 1.0,
-                // Falls back to the live value only if the snapshot has no
-                // entry for this id, which means the parameter count grew after
-                // load — a shell plugin swapping its effect. Better than 0.0:
-                // the live value is at least a value this parameter has held.
-                default_value: self
-                    .initial_values
-                    .get(p.id as usize)
-                    .copied()
-                    .unwrap_or(p.current) as f64,
-                step_count: 0,
-                flags: ALL_AUTOMATABLE,
-                domain: ParamDomain::Normalized,
+                range: ParamRange::Normalized {
+                    // Falls back to the live value only if the snapshot has no
+                    // entry for this id, which means the parameter count grew
+                    // after load — a shell plugin swapping its effect. Better
+                    // than 0.0: the live value is at least one this parameter
+                    // has held.
+                    default: self
+                        .initial_values
+                        .get(p.id as usize)
+                        .copied()
+                        .unwrap_or(p.current) as f64,
+                },
+                steps: ParamSteps::Unknown,
+                flags: ParamFlags::empty(),
+                known: ParamFlags::empty(),
             })
             .collect()
     }

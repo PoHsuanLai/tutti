@@ -41,7 +41,7 @@
 //!     correlate, detect_onsets, summarize, yin, DetectionFunction, FftScratch,
 //!     OnsetConfig, PeakConfig, StftGeometry, YinConfig,
 //! };
-//! use tutti_types::{ChannelLayout, Samples};
+//! use tutti_types::{ChannelLayout, Samples, StereoPlanes};
 //!
 //! let sample_rate = 44100.0;
 //! let samples: Vec<f32> = vec![0.0; 44100];
@@ -64,8 +64,10 @@
 //! // Pitch. An inverted range is refused here, not silently unvoiced later.
 //! let pitch = yin(&YinConfig::standard(sample_rate)?, &samples)?;
 //!
-//! // Stereo correlation.
-//! let reading = correlate(&samples, &samples);
+//! // Stereo correlation. The planes are paired once — a length mismatch is
+//! // refused here rather than silently truncated inside the measurement.
+//! let planes = StereoPlanes::new(&samples, &samples).expect("equal lengths");
+//! let reading = correlate(planes);
 //! # Ok::<(), tutti_analysis::AnalysisError>(())
 //! ```
 

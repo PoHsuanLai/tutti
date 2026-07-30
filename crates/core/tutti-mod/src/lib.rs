@@ -33,6 +33,50 @@
 //! ports, or audio — the same modulator could drive a filter cutoff, a UI
 //! colour, or a spring. [`shape`], [`fold`], [`curve_apply`] are the shared math.
 //!
+//! ## One value, three sampling rates
+//!
+//! The rates below are **not three designs**. They are one function read at
+//! three speeds, and knowing that is the difference between picking a rate and
+//! thinking you must pick a mechanism.
+//!
+//! [`Curve`] is that function: `beat -> Option<f32>`, holding no clock and
+//! consulting no loop range, so the *reader* supplies the position. An
+//! automation envelope, an LFO, a constant, and the summing [`LayeredCurve`]
+//! are all `Curve`s. Because `LayeredCurve` is itself one, the accumulator
+//! (`clamp(base + Σ layer(beat), [min, max])`) is shared across every rate —
+//! one summation rule, the rate chosen by whoever reads it.
+//!
+//! | Rate | Sink | How it gets the beat |
+//! |---|---|---|
+//! | per **frame** | [`AtomicTarget`] | the driver is handed the beat; it collapses to a scalar and mirrors it into an `AtomicF32` |
+//! | per **block** | a plugin's param producer | holds the [`LayeredCurve`] and samples it at each block's real beats |
+//! | per **sample** | `AutomationLane`, `ModulatorNode` (`tutti-units`) | the beat arrives as a *signal* on the node's `BEAT_PORTS` inputs |
+//!
+//! **Which do I want?** The frame rate is the default and is always correct —
+//! ask for more only when the sink reads faster than the frame rate, where a
+//! frame scalar shows up as a staircase and a finer rate traces the ramp. The
+//! per-sample tier costs a graph edge (the node must be wired to the transport
+//! clock); the per-block tier costs nothing extra but requires a sink that
+//! accepts a curve, which [`AtomicTarget`] deliberately does not — it collapses
+//! at a fixed beat, so a curve stored there would never move.
+//!
+//! The tiers agree on *values* by construction, not by coincidence: both the
+//! scalar path ([`ModPreFrame::run`]) and the curve path ([`ShapedCurve`])
+//! apply the identical `shape(raw, depth, polarity, curve) * (max - min)`
+//! expression to the same [`shape`] function, so a route that switches delivery
+//! does not change what the listener hears.
+//!
+//! **Where the tiers are reached from.** A [`Modulator`] is rate-agnostic — the
+//! *adapter* around it picks the tier. `tutti_mod::Lfo` sampled by
+//! [`ModPreFrame`] is frame-rate; the same `Lfo` inside
+//! `tutti_units::ModulatorNode` (aliased `LfoNode`) is per-sample. One
+//! modulator, two adapters — not two LFOs.
+//!
+//! One gap is known and deliberate: the routing subsystem cannot currently
+//! deliver a curve to a **per-sample** sink for a native param, because
+//! [`AtomicTarget`] is the only sink native nodes use. Its module doc tracks
+//! the audio-rate sink as later work.
+//!
 //! ## The target + routing (the `routing`/`bevy` features)
 //! - **Receive** — [`ModTarget`]: a keyed accumulator (`base + Σ keyed offsets`,
 //!   clamped). Concrete: [`AtomicTarget`] (mirrors its value into a shared

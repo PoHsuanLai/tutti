@@ -87,6 +87,10 @@ impl Vst2Instance {
     /// because the opcode is — a plugin may answer for some and decline others.
     /// Detect absence from the dispatch return value, not the buffer: an
     /// unimplemented opcode leaves the host's zeros untouched.
+    /// `default_value` comes from the load-time snapshot, not the live value.
+    /// VST2 has no default-value opcode, so a plugin's initial state is the
+    /// only place its defaults are observable — see
+    /// [`Vst2Instance::initial_values`].
     pub fn parameter_list(&self) -> Vec<SharedParameterInfo> {
         self.parameters()
             .into_iter()
@@ -96,7 +100,15 @@ impl Vst2Instance {
                 unit: p.unit,
                 min_value: 0.0,
                 max_value: 1.0,
-                default_value: p.current as f64,
+                // Falls back to the live value only if the snapshot has no
+                // entry for this id, which means the parameter count grew after
+                // load — a shell plugin swapping its effect. Better than 0.0:
+                // the live value is at least a value this parameter has held.
+                default_value: self
+                    .initial_values
+                    .get(p.id as usize)
+                    .copied()
+                    .unwrap_or(p.current) as f64,
                 step_count: 0,
                 flags: ALL_AUTOMATABLE,
                 domain: ParamDomain::Normalized,

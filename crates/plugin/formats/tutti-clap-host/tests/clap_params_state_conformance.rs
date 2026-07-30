@@ -277,9 +277,14 @@ fn host_projects_parameter_metadata_exactly() {
     }
 }
 
-/// `CLAP_PARAM_IS_STEPPED` must reach the shared vocabulary as a nonzero
-/// `step_count`, and its absence as zero. Param 9 ("Mode") is the only stepped
-/// one, so this also catches a host that sets the flag on every param or none.
+/// A stepped parameter reports the number of steps in its range, not merely
+/// "nonzero". Param 9 ("Mode") spans `0..3`, so it is a 4-way choice.
+///
+/// The exact count is asserted because `to_range` branches on it: `1` means
+/// `Toggle`, `>1` means `Integer`. The host used to report `1` for every
+/// stepped parameter regardless of range, which rendered "Mode" as a checkbox
+/// — and an earlier version of this test asserted only `got > 0`, so it passed
+/// against that.
 #[test]
 fn host_derives_step_count_from_the_stepped_flag() {
     let probe = Probe::acquire();
@@ -288,15 +293,19 @@ fn host_derives_step_count_from_the_stepped_flag() {
 
     // `CLAP_PARAM_IS_STEPPED` is bit 0.
     const STEPPED: u32 = 1 << 0;
+    let mut multi_step_seen = false;
     for (i, want) in probe_params().iter().enumerate() {
         let stepped = want.flags & STEPPED != 0;
         let got = listed[i].step_count;
         if stepped {
-            assert!(
-                got > 0,
-                "param {} is STEPPED but the host reported step_count {got}",
-                want.id
+            let span = (want.max - want.min) as u32;
+            assert_eq!(
+                got, span,
+                "param {} spans {}..{} and is STEPPED, so it has {span} steps; \
+                 the host reported {got}",
+                want.id, want.min, want.max
             );
+            multi_step_seen |= span > 1;
         } else {
             assert_eq!(
                 got, 0,
@@ -305,6 +314,11 @@ fn host_derives_step_count_from_the_stepped_flag() {
             );
         }
     }
+    assert!(
+        multi_step_seen,
+        "no stepped parameter in the probe spans more than one step, so this \
+         test cannot tell a real count from the old hardcoded 1"
+    );
 }
 
 /// `CLAP_PARAM_IS_AUTOMATABLE` must reach `ParameterFlags::automatable`.

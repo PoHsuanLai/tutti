@@ -387,8 +387,19 @@ fn project_param_info(info: ClapParamInfo) -> tutti_plugin_types::ParameterInfo 
         is_bypass: info.flags.contains(ClapParamFlags::BYPASS),
         hidden: info.flags.contains(ClapParamFlags::HIDDEN),
     };
+    // CLAP's STEPPED says every value in `[min, max]` is an integer, so the
+    // step count is the span — not 1. Reporting 1 made an 8-way choice list
+    // indistinguishable from a two-state toggle, and `to_range` maps 1 to
+    // `Toggle`, so every stepped CLAP parameter rendered as a checkbox.
     let step_count = if info.flags.contains(ClapParamFlags::STEPPED) {
-        1
+        let span = info.max_value - info.min_value;
+        if span.is_finite() && span >= 1.0 {
+            span as u32
+        } else {
+            // STEPPED with a sub-unit span has no integer values to step
+            // between; treat it as continuous rather than as a toggle.
+            0
+        }
     } else {
         0
     };

@@ -57,6 +57,21 @@ pub struct Vst2Instance {
     pub(crate) handle: Vst2Handle,
     /// The plugin's parameter object (get/set/preset access).
     pub(crate) params: SendParams,
+    /// Each parameter's value as read once at load, indexed by parameter id.
+    ///
+    /// VST 2.4 has **no** opcode that reports a default — none of the 61 in
+    /// `OpCode` returns one, and `effGetParameterProperties` (56) carries a
+    /// range and step granularity but no default either. What a plugin *does*
+    /// have is its own initial state: a freshly instantiated plugin sits at its
+    /// defaults, so reading each parameter once before anything writes to it is
+    /// the only place that value is observable.
+    ///
+    /// Hence the ordering invariant on [`Vst2Instance::load`]: this snapshot is
+    /// taken immediately after `get_parameter_object`, before any preset load
+    /// or session restore. Sampling later — which is what
+    /// [`parameter_list`](Self::parameter_list) used to do, reporting the live
+    /// value as the default — makes "default" follow the user's last knob move.
+    pub(crate) initial_values: Vec<f32>,
     /// Host-callback channel endpoints + the shared transport snapshot.
     pub(crate) host_link: HostLink,
     /// Per-block MIDI plumbing (host→plugin staging, plugin→host drain).
@@ -185,6 +200,14 @@ impl Vst2Instance {
         };
 
         let params = SendParams(instance.get_parameter_object());
+        // The default snapshot. Taken HERE, before the handle is built and
+        // before any caller can reach `set_parameter` or load a preset — see
+        // `initial_values` for why this is the only observable default in
+        // VST 2.4. A plugin exposing no `getParameter` yields 0.0, the same
+        // neutral the listing path already uses.
+        let initial_values: Vec<f32> = (0..info.parameters)
+            .map(|i| params.get_parameter(i).unwrap_or(0.0))
+            .collect();
         let handle = Vst2Handle::new(instance);
         let mut metadata = metadata;
         metadata.has_editor = handle.has_editor();
@@ -192,6 +215,7 @@ impl Vst2Instance {
         Ok(Self {
             handle,
             params,
+            initial_values,
             host_link: HostLink {
                 _state: host,
                 time_info,

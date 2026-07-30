@@ -65,6 +65,10 @@ pub struct AuParameter {
 pub enum ParameterUnit {
     /// Dimensionless / unclassified.
     Generic,
+    /// A discrete choice list: the value is an index into named options, so
+    /// `[min, max]` are the first and last index. Common in real units —
+    /// AUTimePitch's "Overlap" is `0..10`, TDR Nova has 16 such parameters.
+    Indexed,
     /// Treated as a 0/1 toggle.
     Boolean,
     /// 0..=100 percentage.
@@ -86,6 +90,7 @@ impl ParameterUnit {
     pub fn from_raw(raw: u32) -> Self {
         match raw {
             K_AUDIO_UNIT_PARAMETER_UNIT_GENERIC => Self::Generic,
+            K_AUDIO_UNIT_PARAMETER_UNIT_INDEXED => Self::Indexed,
             K_AUDIO_UNIT_PARAMETER_UNIT_BOOLEAN => Self::Boolean,
             K_AUDIO_UNIT_PARAMETER_UNIT_PERCENT => Self::Percent,
             K_AUDIO_UNIT_PARAMETER_UNIT_SECONDS => Self::Seconds,
@@ -101,6 +106,7 @@ impl std::fmt::Display for ParameterUnit {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Generic => write!(f, ""),
+            Self::Indexed => write!(f, "index"),
             Self::Boolean => write!(f, "bool"),
             Self::Percent => write!(f, "%"),
             Self::Seconds => write!(f, "s"),
@@ -246,19 +252,81 @@ mod tests {
     use crate::component::*;
 
     fn apple_delay_unit() -> AudioUnit {
+        apple_effect(*b"dely", "AUDelay")
+    }
+
+    /// AUFilter — carries two `Indexed` filter-type selectors.
+    fn apple_filter_unit() -> AudioUnit {
+        apple_effect(*b"filt", "AUFilter")
+    }
+
+    fn apple_effect(sub_type: [u8; 4], name: &str) -> AudioUnit {
         let desc = AudioComponentDescription {
             componentType: K_AUDIO_UNIT_TYPE_EFFECT,
-            componentSubType: u32::from_be_bytes(*b"dely"),
+            componentSubType: u32::from_be_bytes(sub_type),
             componentManufacturer: u32::from_be_bytes(*b"appl"),
             componentFlags: 0,
             componentFlagsMask: 0,
         };
-        let comp = find_component(&desc).expect("AUDelay should be present");
+        let comp = find_component(&desc).unwrap_or_else(|| panic!("{name} should be present"));
         let mut instance: AudioComponentInstance = std::ptr::null_mut();
         let status = unsafe { AudioComponentInstanceNew(comp, &mut instance) };
         assert_eq!(status, NO_ERR);
         unsafe { AudioUnitInitialize(instance) };
         instance
+    }
+
+    /// `kAudioUnitParameterUnit_Indexed` (1) decodes to its own variant, not
+    /// `Unknown(1)`.
+    ///
+    /// An `Indexed` parameter is a discrete choice list — the loader turns it
+    /// into a nonzero `step_count` so a host renders a picker rather than a
+    /// continuous slider. While the variant was missing it fell into `Unknown`
+    /// and every such parameter looked continuous.
+    #[test]
+    fn the_indexed_unit_is_not_unknown() {
+        assert_eq!(
+            ParameterUnit::from_raw(K_AUDIO_UNIT_PARAMETER_UNIT_INDEXED),
+            ParameterUnit::Indexed
+        );
+        assert_ne!(
+            ParameterUnit::from_raw(K_AUDIO_UNIT_PARAMETER_UNIT_INDEXED),
+            ParameterUnit::Unknown(K_AUDIO_UNIT_PARAMETER_UNIT_INDEXED)
+        );
+    }
+
+    /// A real Apple AU reports at least one `Indexed` parameter, with a span
+    /// wide enough to be a choice list rather than a toggle.
+    ///
+    /// AUFilter's two "Filter Type" parameters are `0..1`; AUTimePitch's
+    /// "Overlap" is `0..10` (measured, macOS 15.6). Without this, the decode
+    /// above could be correct against a constant no installed unit ever sends.
+    #[test]
+    fn a_real_au_reports_an_indexed_parameter() {
+        let unit = apple_filter_unit();
+        let params = list(unit);
+        let indexed: Vec<_> = params
+            .iter()
+            .filter(|p| p.unit == ParameterUnit::Indexed)
+            .collect();
+        assert!(
+            !indexed.is_empty(),
+            "AUFilter reported no Indexed parameters; it has two filter-type \
+             selectors, so either the decode broke or the corpus changed"
+        );
+        for p in indexed {
+            assert!(
+                p.range.max > p.range.min,
+                "indexed param {:?} has a degenerate range {}..{}",
+                p.name,
+                p.range.min,
+                p.range.max
+            );
+        }
+        unsafe {
+            AudioUnitUninitialize(unit);
+            AudioComponentInstanceDispose(unit);
+        }
     }
 
     #[test]

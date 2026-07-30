@@ -427,12 +427,28 @@ impl PluginParams for AuInstance {
         parameters::list(self.inner.raw_unit())
             .into_iter()
             .map(|p| {
-                // Boolean-unit params are 0/1 toggles → one step; everything
-                // else is continuous → no step quantization.
-                let step_count = if p.unit == parameters::ParameterUnit::Boolean {
-                    1
-                } else {
-                    0
+                // `step_count` is the number of steps *between* the endpoints,
+                // which is what `to_range` reads: 1 means a two-state toggle,
+                // >1 an integer choice list.
+                //
+                // Indexed params are a discrete choice list whose `[min, max]`
+                // are the first and last index, so the count comes from the
+                // range — AUTimePitch's "Overlap" is 0..10, ten steps. Reporting
+                // 0 for these rendered every one as a continuous slider.
+                let step_count = match p.unit {
+                    parameters::ParameterUnit::Boolean => 1,
+                    parameters::ParameterUnit::Indexed => {
+                        let span = p.range.max - p.range.min;
+                        if span.is_finite() && span >= 1.0 {
+                            span as u32
+                        } else {
+                            // A degenerate or sub-unit span is not a usable
+                            // choice list; fall back to continuous rather than
+                            // inventing a step count.
+                            0
+                        }
+                    }
+                    _ => 0,
                 };
                 // AU advertises IsReadable/IsWritable per parameter; a readable-
                 // but-not-writable param is read-only. AUv2 has no automation /

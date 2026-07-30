@@ -26,9 +26,10 @@ pub use crate::protocol::{
     ChordValue, Features, HostMessage, IpcMidiEvent, IpcMidiEventVec, LoadedPlugin, MidiEvent,
     MidiEventVec, NoteExpressionChanges, NoteExpressionIntChanges, NoteExpressionIntValue,
     NoteExpressionTextChanges, NoteExpressionTextValue, NoteExpressionType, NoteExpressionValue,
-    ParameterChanges, ParameterFlags, ParameterInfo, ParameterPoint, ParameterQueue, PluginClass,
-    PluginDescriptor, ProcessAudioData, SampleFormat, ScaleChanges, ScaleValue, SlabLayout,
-    TimeSignature, TransportInfo, Vst2Category, MIDI_STACK_CAPACITY, PROTOCOL_VERSION,
+    ParamFlags, ParamRange, ParamSteps, ParameterChanges, ParameterInfo, ParameterPoint,
+    ParameterQueue, PluginClass, PluginDescriptor, ProcessAudioData, SampleFormat, ScaleChanges,
+    ScaleValue, SlabLayout, TimeSignature, TransportInfo, Vst2Category, MIDI_STACK_CAPACITY,
+    PROTOCOL_VERSION,
 };
 pub use crate::util::config::BridgeConfig;
 pub use crate::util::transport::shm::{AudioSlab, RING_SLOTS};
@@ -47,4 +48,4 @@ pub use tutti_plugin_types::{
 /// The lean, format-agnostic error the trait returns, plus its `Result` alias
 /// and the shared `ParameterInfo` builders — re-exported so the loaders reach
 /// them through the same `tutti_plugin::server::*` import point.
-pub use tutti_plugin_types::{PluginError, PluginResult, ALL_AUTOMATABLE};
+pub use tutti_plugin_types::{PluginError, PluginResult};

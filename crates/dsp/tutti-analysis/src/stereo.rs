@@ -308,11 +308,20 @@ mod tests {
 
         // Flip from correlated to anti-correlated: the case that desynced the
         // old stored pair.
-        let smoothed = step_ballistics(&cfg, &mut state, correlate(pair(&mono, &mono)), Seconds(0.01));
+        let smoothed = step_ballistics(
+            &cfg,
+            &mut state,
+            correlate(pair(&mono, &mono)),
+            Seconds(0.01),
+        );
         assert_eq!(smoothed.width(), smoothed.correlation.to_stereo_width());
 
-        let smoothed =
-            step_ballistics(&cfg, &mut state, correlate(pair(&mono, &inverted)), Seconds(0.01));
+        let smoothed = step_ballistics(
+            &cfg,
+            &mut state,
+            correlate(pair(&mono, &inverted)),
+            Seconds(0.01),
+        );
         assert_eq!(smoothed.width(), smoothed.correlation.to_stereo_width());
     }
 
@@ -382,7 +391,10 @@ mod tests {
         assert!(all_side.get().is_finite() && all_side.get() < 0.0);
 
         // Silence is neither.
-        assert_eq!(correlate(pair(&silence, &silence)).levels.ms_ratio(), Db(0.0));
+        assert_eq!(
+            correlate(pair(&silence, &silence)).levels.ms_ratio(),
+            Db(0.0)
+        );
     }
 
     #[test]

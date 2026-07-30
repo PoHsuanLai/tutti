@@ -152,8 +152,8 @@ impl ClapLoaded {
     /// Every parameter projected onto the shared, format-agnostic
     /// [`ParameterInfo`](tutti_plugin_types::ParameterInfo) — the value that
     /// crosses the crate boundary. CLAP has no unit string, so `unit` is empty;
-    /// `step_count` is derived from the `STEPPED` flag (CLAP reports steppedness
-    /// as a flag, not a count, so a stepped param maps to `step_count = 1`).
+    /// `step_count` comes from the `STEPPED` flag plus the declared span, since
+    /// CLAP reports steppedness as a flag and the count only via `min`/`max`.
     pub fn parameter_list(&self) -> Vec<tutti_plugin_types::ParameterInfo> {
         self.parameters()
             .into_iter()
@@ -376,33 +376,80 @@ impl ClapLoaded {
 /// Project CLAP's native [`ClapParamInfo`] onto the shared, format-agnostic
 /// [`ParameterInfo`](tutti_plugin_types::ParameterInfo). Maps the CLAP flag
 /// subset the shared vocabulary models (automatable / read-only / periodic→wrap
-/// / bypass / hidden), derives `step_count` from the `STEPPED` bit, and leaves
-/// `unit` empty (CLAP carries no unit string). CLAP parameter values are in the
-/// plugin's native plain range, so `min_value`/`max_value` pass through verbatim.
+/// / bypass / hidden), derives `step_count` from the `STEPPED` bit and the
+/// declared span, and leaves `unit` empty (CLAP carries no unit string). CLAP
+/// parameter values are in the plugin's native plain range, so
+/// `min_value`/`max_value` pass through verbatim.
 fn project_param_info(info: ClapParamInfo) -> tutti_plugin_types::ParameterInfo {
-    let flags = tutti_plugin_types::ParameterFlags {
-        automatable: info.flags.contains(ClapParamFlags::AUTOMATABLE),
-        read_only: info.flags.contains(ClapParamFlags::READONLY),
-        wrap: info.flags.contains(ClapParamFlags::PERIODIC),
-        is_bypass: info.flags.contains(ClapParamFlags::BYPASS),
-        hidden: info.flags.contains(ClapParamFlags::HIDDEN),
-    };
-    let step_count = if info.flags.contains(ClapParamFlags::STEPPED) {
-        1
+    use tutti_plugin_types::{ParamFlags, ParamRange, ParamSteps};
+
+    // CLAP is the one hosted format that reports every capability we model,
+    // including the per-voice modulation bits no other format has.
+    const KNOWN: ParamFlags = ParamFlags::all();
+
+    let pairs = [
+        (ClapParamFlags::AUTOMATABLE, ParamFlags::AUTOMATABLE),
+        (ClapParamFlags::READONLY, ParamFlags::READ_ONLY),
+        (ClapParamFlags::PERIODIC, ParamFlags::WRAP),
+        (ClapParamFlags::BYPASS, ParamFlags::BYPASS),
+        (ClapParamFlags::HIDDEN, ParamFlags::HIDDEN),
+        (ClapParamFlags::MODULATABLE, ParamFlags::MODULATABLE),
+        (
+            ClapParamFlags::AUTOMATABLE_PER_NOTE_ID,
+            ParamFlags::PER_NOTE_ID,
+        ),
+        (ClapParamFlags::AUTOMATABLE_PER_KEY, ParamFlags::PER_KEY),
+        (
+            ClapParamFlags::AUTOMATABLE_PER_CHANNEL,
+            ParamFlags::PER_CHANNEL,
+        ),
+        (ClapParamFlags::AUTOMATABLE_PER_PORT, ParamFlags::PER_PORT),
+    ];
+    // CLAP splits per-voice targeting across automation and modulation; either
+    // one means the host may address that scope.
+    let modulation_pairs = [
+        (
+            ClapParamFlags::MODULATABLE_PER_NOTE_ID,
+            ParamFlags::PER_NOTE_ID,
+        ),
+        (ClapParamFlags::MODULATABLE_PER_KEY, ParamFlags::PER_KEY),
+        (
+            ClapParamFlags::MODULATABLE_PER_CHANNEL,
+            ParamFlags::PER_CHANNEL,
+        ),
+        (ClapParamFlags::MODULATABLE_PER_PORT, ParamFlags::PER_PORT),
+    ];
+
+    let mut flags = ParamFlags::empty();
+    for (clap, ours) in pairs.into_iter().chain(modulation_pairs) {
+        if info.flags.contains(clap) {
+            flags |= ours;
+        }
+    }
+
+    // CLAP's STEPPED says every value in `[min, max]` is an integer, so the
+    // position count comes from the span — not 1. Reporting 1 made an 8-way
+    // choice list indistinguishable from a two-state toggle.
+    let steps = if info.flags.contains(ClapParamFlags::STEPPED) {
+        ParamSteps::from_span(info.max_value - info.min_value)
     } else {
-        0
+        ParamSteps::Continuous
     };
+
     tutti_plugin_types::ParameterInfo {
         id: info.id,
         name: info.name,
         // CLAP carries no unit string.
         unit: String::new(),
         // CLAP values are in the plugin's native plain range.
-        min_value: info.min_value,
-        max_value: info.max_value,
-        default_value: info.default_value,
-        step_count,
+        range: ParamRange::Plain {
+            min: info.min_value,
+            max: info.max_value,
+            default: info.default_value,
+        },
+        steps,
         flags,
+        known: KNOWN,
     }
 }
 

@@ -286,6 +286,9 @@ pub const K_AUDIO_UNIT_PROPERTY_PARAMETER_CLUMP_NAME: u32 =
 
 // Parameter unit kinds.
 pub const K_AUDIO_UNIT_PARAMETER_UNIT_GENERIC: u32 = sys::kAudioUnitParameterUnit_Generic;
+/// A discrete choice list: the value is an index into named options, and
+/// `[min, max]` are the first and last index rather than a continuous span.
+pub const K_AUDIO_UNIT_PARAMETER_UNIT_INDEXED: u32 = sys::kAudioUnitParameterUnit_Indexed;
 pub const K_AUDIO_UNIT_PARAMETER_UNIT_BOOLEAN: u32 = sys::kAudioUnitParameterUnit_Boolean;
 pub const K_AUDIO_UNIT_PARAMETER_UNIT_PERCENT: u32 = sys::kAudioUnitParameterUnit_Percent;
 pub const K_AUDIO_UNIT_PARAMETER_UNIT_SECONDS: u32 = sys::kAudioUnitParameterUnit_Seconds;

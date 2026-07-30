@@ -31,6 +31,7 @@
 use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
 
+use tutti_plugin_types::ParamSteps;
 use tutti_vst2_host::Vst2Instance;
 
 #[path = "support/probe_path.rs"]
@@ -546,4 +547,103 @@ fn the_probe_switches_gate_the_answers_both_ways() {
     );
 
     reset_switches(&path);
+}
+
+// ---------------------------------------------------------------------------
+// The shared `ParameterInfo` boundary
+// ---------------------------------------------------------------------------
+
+/// A declared integer range reaches the SHARED `ParameterInfo`, and an
+/// undeclared one does not.
+///
+/// `parameter_properties` decoding correctly is not the same as the decoded
+/// value arriving at the type both consumers read. Before this, `parameter_list`
+/// reported every VST2 parameter as `Normalized` with `Unknown` steps no matter
+/// what the plugin declared, so the opcode was decoded and then dropped.
+///
+/// The negative half is the load-bearing one. The probe leaves `min_integer` /
+/// `max_integer` at `999` / `-999` on every parameter *except*
+/// `PROBE_INT_STEP_PARAM`, with only `USES_FLOAT_STEP` set — so a host that
+/// reads the range without checking the gate produces a `Plain` range of
+/// `999..-999`, which this catches. Reporting `Normalized` there is not a
+/// fallback; it is what the plugin said.
+#[test]
+fn a_declared_integer_range_reaches_the_shared_parameter_info() {
+    let _guard = lock_probe();
+    let (instance, path) = load_probe();
+    set_answer_param_properties(&path, true);
+
+    let listed = instance.parameter_list();
+    assert!(
+        listed.len() > PROBE_INT_STEP_PARAM as usize,
+        "the probe exposes {} parameters, too few to reach the one that \
+         declares an integer range",
+        listed.len()
+    );
+
+    let (min, max, step, _large) = PROBE_INT_RANGE;
+    let declaring = &listed[PROBE_INT_STEP_PARAM as usize];
+    assert_eq!(
+        declaring.range.bounds(),
+        Some((min as f64, max as f64)),
+        "param {} declares USES_INT_STEP over {min}..{max}, so the shared info \
+         must carry that range, not the normalized placeholder",
+        declaring.id
+    );
+    // `step_count()` is steps-between-endpoints; `ParamSteps` counts positions.
+    let want_positions = ((max - min) / step) as u32 + 1;
+    assert_eq!(
+        declaring.steps.count(),
+        Some(want_positions),
+        "param {} spans {min}..{max} in steps of {step}, so it has \
+         {want_positions} positions",
+        declaring.id
+    );
+
+    let mut declined = 0usize;
+    for (i, info) in listed.iter().enumerate() {
+        if i == PROBE_INT_STEP_PARAM as usize {
+            continue;
+        }
+        assert_eq!(
+            info.range.bounds(),
+            None,
+            "param {} sets only USES_FLOAT_STEP, so its integer fields are \
+             invalid — reading them yields the probe's poison values 999/-999",
+            info.id
+        );
+        assert_eq!(
+            info.steps,
+            ParamSteps::Unknown,
+            "param {} declared no integer range, so its step count is \
+             unreported — which is not the same as continuous",
+            info.id
+        );
+        declined += 1;
+    }
+    assert!(
+        declined > 0,
+        "every parameter declared a range, so the gate is never exercised"
+    );
+}
+
+/// A plugin that declines the opcode reports normalized bounds and unknown
+/// steps — the state every real installed VST2 is in.
+#[test]
+fn a_declining_plugin_reports_no_range_and_no_steps() {
+    let _guard = lock_probe();
+    let (instance, _path) = load_probe();
+
+    let listed = instance.parameter_list();
+    assert!(!listed.is_empty(), "the probe exposes no parameters");
+    for info in &listed {
+        assert_eq!(
+            info.range.bounds(),
+            None,
+            "param {} came back with bounds from a plugin that answers no \
+             opcode 56 at all",
+            info.id
+        );
+        assert_eq!(info.steps, ParamSteps::Unknown, "param {}", info.id);
+    }
 }

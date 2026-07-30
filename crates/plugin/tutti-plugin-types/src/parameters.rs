@@ -1,34 +1,270 @@
-//! Plugin parameter descriptors — `ParameterInfo` and `ParameterFlags`.
+//! Plugin parameter descriptors — `ParameterInfo` and its parts.
 //!
 //! Shared value vocabulary across the host crates and the `tutti-plugin` IPC
 //! protocol. Automation points/queues live in [`crate::automation`]. The
 //! `Serialize`/`Deserialize` derives are gated behind the `serde` feature.
+//!
+//! The formats disagree about parameters more than about anything else, so the
+//! shape here is chosen to keep the disagreement visible rather than averaged
+//! away:
+//!
+//! - [`ParamRange`] is a sum type because there is no safe number to substitute
+//!   when a format declares no range. Every pair a host could invent is a claim
+//!   the ABI never made — so the `Normalized` arm has no bounds to read.
+//! - [`ParamSteps`] separates "continuous" from "nobody said", which a bare
+//!   `step_count: u32` fuses at zero.
+//! - [`ParamFlags`] is paired with a `known` mask so a flag the format never
+//!   reported reads as [`None`] rather than as `false`.
+//!
+//! Contrast the two reference hosts: JUCE forces everything to normalized and
+//! discards AU's plain range entirely; Ardour forces everything to plain and
+//! fabricates the flags a format can't report. Both lose which is which.
+
+use bitflags::bitflags;
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// What the plugin declared about a parameter's value range.
+///
+/// A sum type rather than bounds plus a discriminant: with a flag, the
+/// misleading `0.0..1.0` stays present and every consumer has to remember to
+/// check a sibling field. Here the `Normalized` arm has no bounds *to read*.
+#[derive(Debug, Clone, Copy, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-pub struct ParameterFlags {
-    pub automatable: bool,
-    pub read_only: bool,
-    pub wrap: bool,
-    pub is_bypass: bool,
-    pub hidden: bool,
+pub enum ParamRange {
+    /// The ABI speaks normalized `0..=1` and the plugin declared no plain range.
+    ///
+    /// VST2 that declines `effGetParameterProperties`; VST3 with no edit
+    /// controller, or whose `normalizedParamToPlain` is not monotonic.
+    Normalized {
+        /// Default, normalized `0..=1`.
+        default: f64,
+    },
+    /// The plugin's declared range, in the unit [`ParameterInfo::unit`] names.
+    ///
+    /// AU and CLAP report this natively; VST3 via `normalizedParamToPlain`;
+    /// VST2 via `effGetParameterProperties`.
+    Plain {
+        /// Minimum legal value.
+        min: f64,
+        /// Maximum legal value.
+        max: f64,
+        /// Default, in the same units as `min`/`max`.
+        default: f64,
+    },
 }
 
-/// `id` is the format-native identifier (VST3 ParamID, CLAP clap_id, or VST2 index).
-#[derive(Debug, Clone)]
+impl Default for ParamRange {
+    fn default() -> Self {
+        Self::Normalized { default: 0.0 }
+    }
+}
+
+impl ParamRange {
+    /// The plugin's declared bounds, or [`None`] if it declared none.
+    pub fn bounds(&self) -> Option<(f64, f64)> {
+        match *self {
+            Self::Normalized { .. } => None,
+            Self::Plain { min, max, .. } => Some((min, max)),
+        }
+    }
+
+    /// The default value, in whichever domain this range speaks.
+    pub fn default_value(&self) -> f64 {
+        match *self {
+            Self::Normalized { default } | Self::Plain { default, .. } => default,
+        }
+    }
+
+    /// Map a normalized `0..=1` value onto this parameter's domain.
+    ///
+    /// For [`Normalized`](Self::Normalized) this is the identity, clamped —
+    /// there is nothing to map onto. For [`Plain`](Self::Plain) it maps the
+    /// declared endpoints, linearly and deliberately: a format that also
+    /// declares a taper (AU's `kAudioUnitParameterFlag_DisplayLogarithmic`)
+    /// must apply it on top.
+    ///
+    /// A degenerate range (`max <= min`, or either bound non-finite) yields
+    /// `min` when finite and `0.0` otherwise. So this never returns a
+    /// non-finite value, nor one outside what the plugin declared.
+    ///
+    /// # NaN
+    ///
+    /// Every input is untrusted: the bounds are `Deserialize`d straight off the
+    /// IPC wire into plain `f64`s, and `normalized` is a wire-supplied
+    /// automation value. Neither `clamp` nor `<=` rejects NaN — `f64::clamp`
+    /// *returns* NaN for a NaN input, and `max <= min` is `false` when either
+    /// bound is NaN, so the degenerate-range guard does not cover it. NaN is
+    /// therefore checked explicitly: this output reaches `AudioUnitSetParameter`
+    /// on the audio path, and a NaN in a live filter coefficient does not stay
+    /// confined to one parameter.
+    ///
+    /// Only NaN needs the check. `clamp` handles ±∞ correctly — `+∞` is "as high
+    /// as this parameter goes" — so an infinite *value* lands on an endpoint. An
+    /// infinite *bound* is rejected, because there is no endpoint to land on.
+    pub fn to_plain(&self, normalized: f64) -> f64 {
+        let n = clamp_unit(normalized);
+        match *self {
+            Self::Normalized { .. } => n,
+            Self::Plain { min, max, .. } => {
+                let Some((min, max)) = finite_bounds(min, max) else {
+                    return 0.0;
+                };
+                if max <= min {
+                    return min;
+                }
+                min + n * (max - min)
+            }
+        }
+    }
+
+    /// Inverse of [`to_plain`](Self::to_plain): map a value in this parameter's
+    /// domain onto normalized `0..=1`.
+    ///
+    /// A degenerate or non-finite range yields `0.0`, as does a NaN input — see
+    /// [`to_plain`](Self::to_plain) for why NaN is checked rather than clamped.
+    pub fn to_normalized(&self, plain: f64) -> f64 {
+        match *self {
+            Self::Normalized { .. } => clamp_unit(plain),
+            Self::Plain { min, max, .. } => {
+                let Some((min, max)) = finite_bounds(min, max) else {
+                    return 0.0;
+                };
+                if max <= min || plain.is_nan() {
+                    return 0.0;
+                }
+                (plain.clamp(min, max) - min) / (max - min)
+            }
+        }
+    }
+}
+
+/// NaN checked before the clamp, which would pass it through.
+fn clamp_unit(v: f64) -> f64 {
+    if v.is_nan() {
+        0.0
+    } else {
+        v.clamp(0.0, 1.0)
+    }
+}
+
+/// `(min, max)` if both are finite, else [`None`].
+///
+/// Infinities are rejected alongside NaN: with an infinite bound the endpoint
+/// map yields either an infinity or, at `n == 0`, a NaN — no more usable than a
+/// NaN bound.
+fn finite_bounds(min: f64, max: f64) -> Option<(f64, f64)> {
+    (min.is_finite() && max.is_finite()).then_some((min, max))
+}
+
+/// How many positions a parameter has.
+///
+/// [`Unknown`](Self::Unknown) is separate from [`Continuous`](Self::Continuous)
+/// because a bare count fuses them at zero: VST2 without
+/// `effGetParameterProperties` reports nothing, which is not the same as
+/// reporting "freely variable". JUCE spells the same distinction `0x7fffffff`
+/// and then equality-compares against it to recover discreteness.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub enum ParamSteps {
+    /// The format reported no step information.
+    #[default]
+    Unknown,
+    /// Any value in range. VST3 `stepCount == 0`.
+    Continuous,
+    /// Two positions. AU `kAudioUnitParameterUnit_Boolean`, VST3 `stepCount == 1`.
+    Toggle,
+    /// `n` positions indexing a named list, `n >= 2`.
+    ///
+    /// AU `kAudioUnitParameterUnit_Indexed`, CLAP `STEPPED`, VST3 `stepCount + 1`.
+    Enumerated(u32),
+}
+
+impl ParamSteps {
+    /// Build from a span, collapsing the degenerate cases.
+    ///
+    /// A span below 1 has no positions to step between, so it is
+    /// [`Continuous`](Self::Continuous) rather than an invented count; a span of
+    /// exactly 1 is two positions, which is a [`Toggle`](Self::Toggle).
+    pub fn from_span(span: f64) -> Self {
+        if !span.is_finite() || span < 1.0 {
+            Self::Continuous
+        } else if span == 1.0 {
+            Self::Toggle
+        } else {
+            // `span + 1` positions for an inclusive integer range, saturating
+            // at u32 rather than wrapping on an absurd declared span.
+            Self::Enumerated((span as u64).saturating_add(1).min(u32::MAX as u64) as u32)
+        }
+    }
+
+    /// Number of positions, or [`None`] if unreported or freely variable.
+    pub fn count(&self) -> Option<u32> {
+        match *self {
+            Self::Unknown | Self::Continuous => None,
+            Self::Toggle => Some(2),
+            Self::Enumerated(n) => Some(n),
+        }
+    }
+}
+
+bitflags! {
+    /// Per-parameter capabilities, in the same wgpu-style shape as
+    /// [`Features`](crate::Features).
+    ///
+    /// Meaningful only alongside a `known` mask — see
+    /// [`ParameterInfo::flag`]. A bit clear here means "the format reported
+    /// this as false" *or* "the format never reported it", and only the mask
+    /// tells those apart.
+    #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+    #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+    pub struct ParamFlags: u32 {
+        /// The host may write automation to this parameter.
+        const AUTOMATABLE = 1 << 0;
+        /// Readable but not writable.
+        const READ_ONLY = 1 << 1;
+        /// This is the plugin's bypass parameter.
+        const BYPASS = 1 << 2;
+        /// Should not be shown in a generic parameter list.
+        const HIDDEN = 1 << 3;
+        /// Wraps around at its extremes (VST3 `kIsWrapAround`, CLAP `PERIODIC`).
+        const WRAP = 1 << 4;
+
+        // --- CLAP-only below. No other hosted format reports these. ---
+
+        /// Accepts modulation, which is distinct from automation in CLAP.
+        const MODULATABLE = 1 << 5;
+        /// Automation or modulation may target a single note id.
+        const PER_NOTE_ID = 1 << 6;
+        /// …a single key.
+        const PER_KEY = 1 << 7;
+        /// …a single channel.
+        const PER_CHANNEL = 1 << 8;
+        /// …a single port.
+        const PER_PORT = 1 << 9;
+    }
+}
+
+/// One plugin parameter, as the boundary vocabulary every host crate speaks.
+///
+/// `id` is the format-native identifier: VST3 ParamID, CLAP clap_id, AU
+/// AudioUnitParameterID, or VST2 index.
+#[derive(Debug, Clone, Default)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct ParameterInfo {
     pub id: u32,
     pub name: String,
+    /// Display unit (`"dB"`, `"Hz"`, …). Empty when the format carries none —
+    /// CLAP has no unit string at all.
     pub unit: String,
-    pub min_value: f64,
-    pub max_value: f64,
-    pub default_value: f64,
-    pub step_count: u32,
-    pub flags: ParameterFlags,
+    pub range: ParamRange,
+    pub steps: ParamSteps,
+    /// Capability bits. Read through [`flag`](Self::flag), not directly, so an
+    /// unreported capability cannot be mistaken for a reported `false`.
+    pub flags: ParamFlags,
+    /// Which bits of [`flags`](Self::flags) the format actually reported.
+    pub known: ParamFlags,
 }
 
 impl ParameterInfo {
@@ -37,107 +273,83 @@ impl ParameterInfo {
             id,
             name: name.into(),
             unit: String::new(),
-            min_value: 0.0,
-            max_value: 1.0,
-            default_value: 0.0,
-            step_count: 0,
-            flags: ParameterFlags::default(),
+            range: ParamRange::default(),
+            steps: ParamSteps::Unknown,
+            flags: ParamFlags::empty(),
+            known: ParamFlags::empty(),
         }
     }
 
-    /// Infers scaling from `step_count` and `unit` (toggle, integer, log for dB/Hz, else linear).
+    /// Declare the plugin's own range (builder).
+    pub fn with_plain_range(mut self, min: f64, max: f64, default: f64) -> Self {
+        self.range = ParamRange::Plain { min, max, default };
+        self
+    }
+
+    /// Declare a normalized range with the given default (builder).
+    pub fn with_normalized_default(mut self, default: f64) -> Self {
+        self.range = ParamRange::Normalized { default };
+        self
+    }
+
+    /// Declare step information (builder).
+    pub fn with_steps(mut self, steps: ParamSteps) -> Self {
+        self.steps = steps;
+        self
+    }
+
+    /// Report `reported` as the values of the `known` capabilities (builder).
+    ///
+    /// Takes both together so a format cannot set a bit it never reported, nor
+    /// report a bit it left unset.
+    pub fn with_flags(mut self, known: ParamFlags, reported: ParamFlags) -> Self {
+        self.known = known;
+        self.flags = reported & known;
+        self
+    }
+
+    /// `Some(true)`/`Some(false)` if the format reported this capability,
+    /// [`None`] if it did not.
+    ///
+    /// Pass exactly one bit; a multi-bit query answers whether *all* of them are
+    /// known and set.
+    pub fn flag(&self, f: ParamFlags) -> Option<bool> {
+        self.known.contains(f).then(|| self.flags.contains(f))
+    }
+
+    /// Map a normalized `0..=1` value onto this parameter's domain.
+    /// See [`ParamRange::to_plain`].
+    pub fn to_plain(&self, normalized: f64) -> f64 {
+        self.range.to_plain(normalized)
+    }
+
+    /// Inverse of [`to_plain`](Self::to_plain). See [`ParamRange::to_normalized`].
+    pub fn to_normalized(&self, plain: f64) -> f64 {
+        self.range.to_normalized(plain)
+    }
+
+    /// Infers a *display* scale from the step count and unit string.
+    ///
+    /// Distinct from [`to_plain`](Self::to_plain), which maps declared
+    /// endpoints. A logarithmic answer here is a rendering hint, not a taper the
+    /// plugin declared, so it must not be reused for value conversion.
     pub fn to_range(&self) -> audio_automation::ParameterRange {
         use audio_automation::{ParameterRange, ParameterScale};
 
-        let scale = match (self.step_count, self.unit.as_str()) {
-            (1, _) => ParameterScale::Toggle,
-            (n, _) if n > 1 => ParameterScale::Integer,
-            (_, u) if is_log_unit(u) && self.min_value > 0.0 => ParameterScale::Logarithmic,
+        let (min, max) = self.range.bounds().unwrap_or((0.0, 1.0));
+        let scale = match self.steps {
+            ParamSteps::Toggle => ParameterScale::Toggle,
+            ParamSteps::Enumerated(_) => ParameterScale::Integer,
+            _ if is_log_unit(&self.unit) && min > 0.0 => ParameterScale::Logarithmic,
             _ => ParameterScale::Linear,
         };
 
         ParameterRange::new(
-            self.min_value as f32,
-            self.max_value as f32,
-            self.default_value as f32,
+            min as f32,
+            max as f32,
+            self.range.default_value() as f32,
             scale,
         )
-    }
-
-    /// Map a normalized `0..=1` value onto this parameter's plain
-    /// (`min_value..=max_value`) range.
-    ///
-    /// THE conversion to use at a format boundary whose ABI speaks plain values
-    /// while the tutti side speaks normalized ones — see
-    /// [`PluginParams`](crate::PluginParams) for which formats those are. Linear
-    /// only, deliberately: this maps the ABI's declared endpoints, and a format
-    /// that additionally declares a taper (VST3's `IParameterInfo` does not; AU's
-    /// `kAudioUnitParameterFlag_DisplayLogarithmic` does) must apply it on top.
-    /// `to_range` infers a *display* scale from the unit string, which is a
-    /// different question and must not be reused here.
-    ///
-    /// A degenerate range (`max <= min`, or either bound non-finite) yields
-    /// `min_value` when that is finite and `0.0` otherwise; the input is clamped.
-    /// So this never returns a non-finite value, nor one outside what the plugin
-    /// declared.
-    ///
-    /// # NaN
-    ///
-    /// Every input is untrusted: the bounds are `Deserialize`d straight off the IPC
-    /// wire into plain `f64`s, and `normalized` is a wire-supplied automation
-    /// value. Neither `clamp` nor `<=` rejects NaN — `f64::clamp` *returns* NaN for
-    /// a NaN input, and `max_value <= min_value` is `false` when either bound is
-    /// NaN, so the degenerate-range guard does not cover it. NaN is therefore
-    /// checked explicitly: this function's output reaches `AudioUnitSetParameter`
-    /// on the audio path (see
-    /// [`FormatParamConvention`](crate::FormatParamConvention)), and a NaN in a
-    /// live filter coefficient does not stay confined to one parameter.
-    ///
-    /// Only NaN needs the check. `clamp` handles ±∞ correctly and meaningfully —
-    /// `+∞` is "as high as this parameter goes" — so an infinite *value* lands on
-    /// an endpoint. An infinite *bound* is rejected, because there is no endpoint
-    /// to land on.
-    pub fn to_plain(&self, normalized: f64) -> f64 {
-        let Some((min, max)) = self.finite_bounds() else {
-            return 0.0;
-        };
-        if max <= min {
-            return min;
-        }
-        // NaN checked before the clamp, which would pass it through.
-        let n = if normalized.is_nan() {
-            0.0
-        } else {
-            normalized.clamp(0.0, 1.0)
-        };
-        min + n * (max - min)
-    }
-
-    /// Inverse of [`to_plain`](Self::to_plain): map a plain value in
-    /// `min_value..=max_value` onto normalized `0..=1`.
-    ///
-    /// A degenerate or non-finite range yields `0.0`, as does a NaN input — see
-    /// [`to_plain`](Self::to_plain) for why NaN is checked rather than clamped, and
-    /// why ±∞ is not.
-    pub fn to_normalized(&self, plain: f64) -> f64 {
-        let Some((min, max)) = self.finite_bounds() else {
-            return 0.0;
-        };
-        if max <= min || plain.is_nan() {
-            return 0.0;
-        }
-        let p = plain.clamp(min, max);
-        (p - min) / (max - min)
-    }
-
-    /// `(min_value, max_value)` if both are finite, else `None`.
-    ///
-    /// Infinities are rejected alongside NaN: with an infinite bound the endpoint
-    /// map yields either an infinity or, at `n == 0`, a NaN — no more usable than a
-    /// NaN bound.
-    fn finite_bounds(&self) -> Option<(f64, f64)> {
-        (self.min_value.is_finite() && self.max_value.is_finite())
-            .then_some((self.min_value, self.max_value))
     }
 }
 
@@ -145,65 +357,179 @@ fn is_log_unit(unit: &str) -> bool {
     unit.contains("dB") || unit.contains("Hz") || unit.contains("hz")
 }
 
-/// Used by formats that don't expose per-parameter automation / bypass /
-/// read-only flags (VST2, AUv2). Every parameter is reported as automatable.
-pub const ALL_AUTOMATABLE: ParameterFlags = ParameterFlags {
-    automatable: true,
-    read_only: false,
-    wrap: false,
-    is_bypass: false,
-    hidden: false,
-};
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use audio_automation::ParameterScale;
 
+    /// A `Plain` parameter maps normalized input onto its declared range.
+    #[test]
+    fn a_plain_parameter_maps_onto_its_declared_range() {
+        let p = ParameterInfo::new(1, "Cutoff").with_plain_range(20.0, 20_000.0, 20.0);
+        assert_eq!(p.to_plain(0.0), 20.0);
+        assert_eq!(p.to_plain(1.0), 20_000.0);
+        assert_eq!(p.to_normalized(20_000.0), 1.0);
+    }
+
+    /// A `Normalized` parameter passes its input through, clamped.
+    #[test]
+    fn a_normalized_parameter_passes_its_input_through() {
+        let p = ParameterInfo::new(1, "Mix").with_normalized_default(0.5);
+        assert_eq!(p.to_plain(0.25), 0.25);
+        assert_eq!(p.to_plain(1.5), 1.0, "out of range must still clamp");
+        assert_eq!(p.to_normalized(0.25), 0.25);
+    }
+
+    /// Bounds of `0.0..1.0` that the plugin *declared* stay distinguishable
+    /// from a parameter that declared none.
+    ///
+    /// This is what the old `min_value`/`max_value` pair could not express: the
+    /// numbers were identical and only a sibling discriminant told them apart.
+    /// Now the `Normalized` arm has no bounds at all.
+    #[test]
+    fn a_declared_unit_range_is_not_the_same_as_no_range() {
+        let declared = ParameterInfo::new(1, "Blend").with_plain_range(0.0, 1.0, 0.0);
+        let undeclared = ParameterInfo::new(1, "Blend").with_normalized_default(0.0);
+        assert_eq!(declared.range.bounds(), Some((0.0, 1.0)));
+        assert_eq!(undeclared.range.bounds(), None);
+    }
+
+    /// An unreported flag reads as `None`, not as `false`.
+    ///
+    /// The reason the `known` mask exists: AUv2 has no automation metadata, so
+    /// reporting `automatable: false` would be a claim the ABI never made — and
+    /// reporting `true` (which `ALL_AUTOMATABLE` used to do) is worse.
+    #[test]
+    fn an_unreported_flag_is_not_a_false_flag() {
+        let p =
+            ParameterInfo::new(1, "Gain").with_flags(ParamFlags::READ_ONLY, ParamFlags::empty());
+
+        assert_eq!(p.flag(ParamFlags::READ_ONLY), Some(false));
+        assert_eq!(
+            p.flag(ParamFlags::AUTOMATABLE),
+            None,
+            "a capability the format never reported must not read as false"
+        );
+    }
+
+    /// `with_flags` cannot set a bit outside the reported mask.
+    #[test]
+    fn with_flags_cannot_report_an_unknown_bit() {
+        let p = ParameterInfo::new(1, "Gain").with_flags(
+            ParamFlags::READ_ONLY,
+            ParamFlags::READ_ONLY | ParamFlags::BYPASS,
+        );
+        assert_eq!(p.flag(ParamFlags::READ_ONLY), Some(true));
+        assert_eq!(
+            p.flag(ParamFlags::BYPASS),
+            None,
+            "a bit outside the known mask must not become readable"
+        );
+        assert!(!p.flags.contains(ParamFlags::BYPASS));
+    }
+
+    /// `Unknown` and `Continuous` are different answers.
+    #[test]
+    fn unknown_steps_are_not_continuous_steps() {
+        assert_ne!(ParamSteps::Unknown, ParamSteps::Continuous);
+        assert_eq!(ParamSteps::Unknown.count(), None);
+        assert_eq!(ParamSteps::Continuous.count(), None);
+    }
+
+    /// A span maps onto positions, with the degenerate cases collapsed.
+    #[test]
+    fn a_span_becomes_positions() {
+        assert_eq!(ParamSteps::from_span(0.0), ParamSteps::Continuous);
+        assert_eq!(ParamSteps::from_span(0.5), ParamSteps::Continuous);
+        assert_eq!(ParamSteps::from_span(f64::NAN), ParamSteps::Continuous);
+        assert_eq!(ParamSteps::from_span(f64::INFINITY), ParamSteps::Continuous);
+        assert_eq!(ParamSteps::from_span(1.0), ParamSteps::Toggle);
+        assert_eq!(ParamSteps::from_span(10.0), ParamSteps::Enumerated(11));
+    }
+
+    /// A `Normalized` parameter still refuses NaN.
+    #[test]
+    fn the_normalized_path_still_rejects_nan() {
+        let p = ParameterInfo::new(1, "Mix").with_normalized_default(0.0);
+        assert!(p.to_plain(f64::NAN).is_finite());
+        assert!(p.to_normalized(f64::NAN).is_finite());
+        assert_eq!(p.to_plain(f64::INFINITY), 1.0);
+        assert_eq!(p.to_plain(f64::NEG_INFINITY), 0.0);
+    }
+
+    /// The range survives the bincode wire format both IPC peers speak.
+    ///
+    /// Note what this does *not* prove: bincode is non-self-describing, so a
+    /// peer built against an older layout produces a payload that fails to
+    /// decode rather than defaulting. `PROTOCOL_VERSION` governs that.
+    #[cfg(feature = "serde")]
+    #[test]
+    fn the_range_survives_the_bincode_round_trip() {
+        for want in [
+            ParamRange::Normalized { default: 0.25 },
+            ParamRange::Plain {
+                min: -96.0,
+                max: 6.0,
+                default: 0.0,
+            },
+        ] {
+            let mut info = ParameterInfo::new(1, "Gain");
+            info.range = want;
+            let bytes = bincode::serialize(&info).expect("serialize");
+            let back: ParameterInfo = bincode::deserialize(&bytes).expect("deserialize");
+            assert_eq!(back.range, want);
+        }
+    }
+
+    /// The `known` mask survives the wire too — a flag that arrives without its
+    /// mask bit would read as a reported `false`.
+    #[cfg(feature = "serde")]
+    #[test]
+    fn the_known_mask_survives_the_bincode_round_trip() {
+        let info =
+            ParameterInfo::new(1, "Gain").with_flags(ParamFlags::READ_ONLY, ParamFlags::READ_ONLY);
+        let bytes = bincode::serialize(&info).expect("serialize");
+        let back: ParameterInfo = bincode::deserialize(&bytes).expect("deserialize");
+        assert_eq!(back.flag(ParamFlags::READ_ONLY), Some(true));
+        assert_eq!(back.flag(ParamFlags::AUTOMATABLE), None);
+    }
+
     #[test]
     fn test_to_range_toggle() {
-        let mut info = ParameterInfo::new(1, "Bypass".to_string());
-        info.step_count = 1;
+        let info = ParameterInfo::new(1, "Bypass").with_steps(ParamSteps::Toggle);
         assert_eq!(info.to_range().scale, ParameterScale::Toggle);
     }
 
     #[test]
     fn test_to_range_integer() {
-        let mut info = ParameterInfo::new(2, "Algorithm".to_string());
-        info.step_count = 5;
+        let info = ParameterInfo::new(2, "Algorithm").with_steps(ParamSteps::Enumerated(5));
         assert_eq!(info.to_range().scale, ParameterScale::Integer);
     }
 
     #[test]
     fn test_to_range_logarithmic_db() {
-        let mut info = ParameterInfo::new(3, "Gain".to_string());
+        let mut info = ParameterInfo::new(3, "Gain").with_plain_range(0.001, 10.0, 1.0);
         info.unit = "dB".to_string();
-        info.min_value = 0.001;
-        info.max_value = 10.0;
         assert_eq!(info.to_range().scale, ParameterScale::Logarithmic);
     }
 
     #[test]
     fn test_to_range_logarithmic_hz() {
-        let mut info = ParameterInfo::new(4, "Cutoff".to_string());
+        let mut info = ParameterInfo::new(4, "Cutoff").with_plain_range(20.0, 20_000.0, 440.0);
         info.unit = "Hz".to_string();
-        info.min_value = 20.0;
-        info.max_value = 20000.0;
         assert_eq!(info.to_range().scale, ParameterScale::Logarithmic);
     }
 
     #[test]
     fn test_to_range_log_fallback_non_positive_min() {
-        let mut info = ParameterInfo::new(5, "Freq".to_string());
+        let mut info = ParameterInfo::new(5, "Freq").with_plain_range(0.0, 20_000.0, 440.0);
         info.unit = "Hz".to_string();
-        info.min_value = 0.0;
-        info.max_value = 20000.0;
         assert_eq!(info.to_range().scale, ParameterScale::Linear);
     }
 
     #[test]
     fn test_to_range_linear_default() {
-        let info = ParameterInfo::new(6, "Mix".to_string());
+        let info = ParameterInfo::new(6, "Mix");
         assert_eq!(info.to_range().scale, ParameterScale::Linear);
     }
 
@@ -212,9 +538,8 @@ mod tests {
     /// makes it 22050.
     #[test]
     fn to_plain_maps_normalized_onto_the_declared_range() {
-        let mut info = ParameterInfo::new(1, "Lowpass Cutoff");
-        info.min_value = 10.0;
-        info.max_value = 22_050.0;
+        let info =
+            ParameterInfo::new(1, "Lowpass Cutoff").with_plain_range(10.0, 22_050.0, 22_050.0);
 
         assert_eq!(info.to_plain(0.0), 10.0);
         assert_eq!(info.to_plain(1.0), 22_050.0);
@@ -223,9 +548,7 @@ mod tests {
 
     #[test]
     fn to_normalized_inverts_to_plain() {
-        let mut info = ParameterInfo::new(1, "Gain");
-        info.min_value = -96.0;
-        info.max_value = 6.0;
+        let info = ParameterInfo::new(1, "Gain").with_plain_range(-96.0, 6.0, 0.0);
 
         for n in [0.0, 0.25, 0.5, 0.75, 1.0] {
             assert!((info.to_normalized(info.to_plain(n)) - n).abs() < 1e-12);
@@ -236,9 +559,7 @@ mod tests {
     /// range — a plugin never receives a value it didn't advertise.
     #[test]
     fn conversions_clamp_out_of_range_inputs() {
-        let mut info = ParameterInfo::new(1, "Mix");
-        info.min_value = 0.0;
-        info.max_value = 100.0;
+        let info = ParameterInfo::new(1, "Mix").with_plain_range(0.0, 100.0, 50.0);
 
         assert_eq!(info.to_plain(-5.0), 0.0);
         assert_eq!(info.to_plain(9.0), 100.0);
@@ -246,13 +567,10 @@ mod tests {
         assert_eq!(info.to_normalized(500.0), 1.0);
     }
 
-    /// A degenerate range (a plugin reporting min == max, which VST2 hosts do
-    /// for parameters with no declared range) must not divide by zero.
+    /// A degenerate range (min == max) must not divide by zero.
     #[test]
     fn degenerate_range_does_not_produce_nan() {
-        let mut info = ParameterInfo::new(1, "Fixed");
-        info.min_value = 3.0;
-        info.max_value = 3.0;
+        let info = ParameterInfo::new(1, "Fixed").with_plain_range(3.0, 3.0, 3.0);
 
         assert_eq!(info.to_plain(0.5), 3.0);
         assert_eq!(info.to_normalized(3.0), 0.0);
@@ -260,23 +578,20 @@ mod tests {
 
     /// A NaN must never leave these conversions.
     ///
-    /// The output of `to_plain` reaches `AudioUnitSetParameter` on a live unit, so
-    /// a NaN here becomes a NaN filter coefficient — which does not stay in one
-    /// parameter. Both the value and the bounds are untrusted: `ParameterInfo` is
-    /// `Deserialize`d off the IPC wire into plain `f64` fields with no validating
-    /// constructor, so a buggy or hostile peer supplies all three.
+    /// The output of `to_plain` reaches `AudioUnitSetParameter` on a live unit,
+    /// so a NaN here becomes a NaN filter coefficient — which does not stay in
+    /// one parameter. Both the value and the bounds are untrusted:
+    /// `ParameterInfo` is `Deserialize`d off the IPC wire into plain `f64`
+    /// fields with no validating constructor, so a buggy or hostile peer
+    /// supplies all three.
     ///
-    /// This is specifically *not* covered by clamping, which is what the code did
-    /// before: `f64::clamp` returns NaN for a NaN input, and the `max <= min`
-    /// degenerate guard is `false` when either bound is NaN, so a NaN bound fell
-    /// through to the arithmetic.
+    /// Specifically *not* covered by clamping: `f64::clamp` returns NaN for a
+    /// NaN input, and the `max <= min` degenerate guard is `false` when either
+    /// bound is NaN.
     #[test]
     fn nan_never_escapes_a_conversion() {
-        let mut info = ParameterInfo::new(1, "Cutoff");
-        info.min_value = 10.0;
-        info.max_value = 22_050.0;
+        let info = ParameterInfo::new(1, "Cutoff").with_plain_range(10.0, 22_050.0, 10.0);
 
-        // A NaN automation value against a sane range.
         assert!(
             info.to_plain(f64::NAN).is_finite(),
             "a NaN normalized value must not reach the plugin"
@@ -288,7 +603,7 @@ mod tests {
         assert_eq!(info.to_plain(f64::NEG_INFINITY), 10.0);
         assert_eq!(info.to_normalized(f64::INFINITY), 1.0);
 
-        // A NaN *bound*, which the old degenerate-range check could not catch.
+        // A NaN *bound*, which the degenerate-range check alone cannot catch.
         for (min, max) in [
             (f64::NAN, 1.0),
             (0.0, f64::NAN),
@@ -296,9 +611,7 @@ mod tests {
             (f64::NEG_INFINITY, 1.0),
             (0.0, f64::INFINITY),
         ] {
-            let mut broken = ParameterInfo::new(2, "Broken");
-            broken.min_value = min;
-            broken.max_value = max;
+            let broken = ParameterInfo::new(2, "Broken").with_plain_range(min, max, 0.0);
             for v in [0.0, 0.5, 1.0, f64::NAN] {
                 assert!(
                     broken.to_plain(v).is_finite(),
@@ -312,13 +625,11 @@ mod tests {
         }
     }
 
-    /// The NaN guard must not have cost the ordinary contract: every finite input
-    /// still lands inside the declared range, at the declared endpoints.
+    /// The NaN guard must not have cost the ordinary contract: every finite
+    /// input still lands inside the declared range, at the declared endpoints.
     #[test]
     fn the_nan_guard_did_not_change_finite_behaviour() {
-        let mut info = ParameterInfo::new(1, "Gain");
-        info.min_value = -96.0;
-        info.max_value = 6.0;
+        let info = ParameterInfo::new(1, "Gain").with_plain_range(-96.0, 6.0, 0.0);
 
         assert_eq!(info.to_plain(0.0), -96.0);
         assert_eq!(info.to_plain(1.0), 6.0);
@@ -332,10 +643,7 @@ mod tests {
 
     #[test]
     fn test_to_range_values_preserved() {
-        let mut info = ParameterInfo::new(7, "Volume".to_string());
-        info.min_value = -96.0;
-        info.max_value = 6.0;
-        info.default_value = -12.0;
+        let info = ParameterInfo::new(7, "Volume").with_plain_range(-96.0, 6.0, -12.0);
         let range = info.to_range();
         assert_eq!(range.min, -96.0);
         assert_eq!(range.max, 6.0);

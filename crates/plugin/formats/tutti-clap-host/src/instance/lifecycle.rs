@@ -91,7 +91,16 @@ impl ClapLoaded {
         scratch.param_ranges = self
             .parameter_list()
             .into_iter()
-            .map(|p| (p.id, p.min_value as f32, p.max_value as f32))
+            // A parameter with no declared bounds has nothing to denormalize
+            // against; dropping it leaves its automation to pass through
+            // untouched, which is what `add_param_changes` does for a param
+            // missing from this map. Every CLAP parameter declares a range, so
+            // this filters nothing today — but inventing bounds if one ever
+            // didn't would write a wrong plain value to the plugin.
+            .filter_map(|p| {
+                let (min, max) = p.range.bounds()?;
+                Some((p.id, min as f32, max as f32))
+            })
             .collect();
         // Read the plugin's own count, not the length of the map above: they
         // differ exactly when `parameters()` truncated at a hole, which is the

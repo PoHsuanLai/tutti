@@ -34,6 +34,7 @@ use tutti_clap_test_plugin::{
     ParamStateCapture, ProcessCapture, PARAM_CMD_REQUEST_FLUSH, PARAM_CMD_RESCAN_ALL,
     PARAM_CMD_RESCAN_VALUES, STATE_MAGIC,
 };
+use tutti_plugin_types::{ParamFlags, ParamSteps};
 
 /// CLAP event type constants, pinned here rather than imported: these are the
 /// wire values the host puts on the FFI, so a failure names what the plugin
@@ -264,11 +265,17 @@ fn host_projects_parameter_metadata_exactly() {
             "param {} name must round-trip through the C buffer",
             want.id
         );
-        assert_eq!(got.min_value, want.min, "param {} min_value", want.id);
-        assert_eq!(got.max_value, want.max, "param {} max_value", want.id);
         assert_eq!(
-            got.default_value, want.default,
-            "param {} default_value",
+            got.range.bounds(),
+            Some((want.min, want.max)),
+            "param {} bounds; CLAP declares a plain range, so this must not be \
+             `None`",
+            want.id
+        );
+        assert_eq!(
+            got.range.default_value(),
+            want.default,
+            "param {} default",
             want.id
         );
         // CLAP has no unit string; the projection must leave it empty rather
@@ -277,9 +284,17 @@ fn host_projects_parameter_metadata_exactly() {
     }
 }
 
-/// `CLAP_PARAM_IS_STEPPED` must reach the shared vocabulary as a nonzero
-/// `step_count`, and its absence as zero. Param 9 ("Mode") is the only stepped
-/// one, so this also catches a host that sets the flag on every param or none.
+/// A stepped parameter reports the number of positions in its range, not merely
+/// "nonzero". Param 9 ("Mode") spans `0..3`, so it is a 4-way choice.
+///
+/// The exact count is asserted because `to_range` branches on it. The host used
+/// to report `1` for every stepped parameter regardless of range, which rendered
+/// "Mode" as a checkbox — and an earlier version of this test asserted only
+/// `got > 0`, so it passed against that.
+///
+/// Note `ParamSteps` counts *positions*, so a span of `n` is `n + 1` of them; a
+/// span of exactly 1 is a `Toggle`, which is the same two positions by another
+/// name.
 #[test]
 fn host_derives_step_count_from_the_stepped_flag() {
     let probe = Probe::acquire();
@@ -288,44 +303,83 @@ fn host_derives_step_count_from_the_stepped_flag() {
 
     // `CLAP_PARAM_IS_STEPPED` is bit 0.
     const STEPPED: u32 = 1 << 0;
+    let mut multi_step_seen = false;
     for (i, want) in probe_params().iter().enumerate() {
         let stepped = want.flags & STEPPED != 0;
-        let got = listed[i].step_count;
+        let got = listed[i].steps;
         if stepped {
-            assert!(
-                got > 0,
-                "param {} is STEPPED but the host reported step_count {got}",
-                want.id
+            let span = (want.max - want.min) as u32;
+            assert_eq!(
+                got.count(),
+                Some(span + 1),
+                "param {} spans {}..{} and is STEPPED, so it has {} positions; \
+                 the host reported {got:?}",
+                want.id,
+                want.min,
+                want.max,
+                span + 1
             );
+            multi_step_seen |= span > 1;
         } else {
             assert_eq!(
-                got, 0,
-                "param {} is continuous but the host reported step_count {got}",
+                got,
+                ParamSteps::Continuous,
+                "param {} is continuous but the host reported {got:?}",
                 want.id
             );
         }
     }
+    assert!(
+        multi_step_seen,
+        "no stepped parameter in the probe spans more than one step, so this \
+         test cannot tell a real count from the old hardcoded 1"
+    );
 }
 
-/// `CLAP_PARAM_IS_AUTOMATABLE` must reach `ParameterFlags::automatable`.
+/// `CLAP_PARAM_IS_AUTOMATABLE` must reach `ParamFlags::AUTOMATABLE`.
 /// Every probe param sets it, so a host that drops the bit fails on all three;
-/// a host that hardcodes `true` is caught by the `read_only`/`is_bypass`/`hidden`
+/// a host that hardcodes `true` is caught by the `READ_ONLY`/`BYPASS`/`HIDDEN`
 /// half, which no probe param sets.
+///
+/// Each assertion is `Some(_)`, not a bare bool: CLAP reports every capability
+/// we model, so a `None` here would mean the projection dropped it from the
+/// `known` mask and the flag became unreadable rather than merely wrong.
 #[test]
 fn host_projects_parameter_flags() {
     let probe = Probe::acquire();
     let loaded = probe.load();
 
     for p in loaded.parameter_list() {
-        assert!(
-            p.flags.automatable,
+        assert_eq!(
+            p.flag(ParamFlags::AUTOMATABLE),
+            Some(true),
             "param {} is AUTOMATABLE in the plugin's info",
             p.id
         );
-        assert!(!p.flags.read_only, "param {} is not READONLY", p.id);
-        assert!(!p.flags.is_bypass, "param {} is not BYPASS", p.id);
-        assert!(!p.flags.hidden, "param {} is not HIDDEN", p.id);
-        assert!(!p.flags.wrap, "param {} is not PERIODIC", p.id);
+        assert_eq!(
+            p.flag(ParamFlags::READ_ONLY),
+            Some(false),
+            "param {} is not READONLY",
+            p.id
+        );
+        assert_eq!(
+            p.flag(ParamFlags::BYPASS),
+            Some(false),
+            "param {} is not BYPASS",
+            p.id
+        );
+        assert_eq!(
+            p.flag(ParamFlags::HIDDEN),
+            Some(false),
+            "param {} is not HIDDEN",
+            p.id
+        );
+        assert_eq!(
+            p.flag(ParamFlags::WRAP),
+            Some(false),
+            "param {} is not PERIODIC",
+            p.id
+        );
     }
 }
 

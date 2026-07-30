@@ -488,6 +488,55 @@ fn load_and_metadata() {
     assert!(meta.num_outputs.count() > 0);
 }
 
+/// `default_value` reports the plugin's load-time state, not its live value.
+///
+/// VST2 has no default-value opcode — none of the 61 in `OpCode` returns one,
+/// and `effGetParameterProperties` carries a range but no default. So the only
+/// observable default is the plugin's initial state, snapshotted at load.
+///
+/// This is what the field used to get wrong: it was filled from the *current*
+/// value, so after a user turned a knob the "default" followed it, and a
+/// reset-to-default control would have been a no-op that looked broken.
+///
+/// The probe starts parameter `i` at `i/16`, so the defaults here are distinct
+/// and non-zero — a mapping that returned `0.0` or echoed the live value fails.
+#[test]
+fn default_value_is_the_load_time_state_not_the_live_value() {
+    let _guard = lock_probe();
+    let instance = load_probe();
+
+    let before = instance.parameter_list();
+    let defaults: Vec<f64> = before.iter().map(|p| p.range.default_value()).collect();
+    assert!(
+        defaults.iter().any(|&d| d != 0.0),
+        "every default came back 0.0, so this test could not detect the bug \
+         it exists for; the probe should start parameter i at i/16"
+    );
+
+    // Move every parameter well away from where it started.
+    for p in &before {
+        assert!(instance.set_parameter(p.id, 0.9));
+    }
+
+    let after = instance.parameter_list();
+    for (i, p) in after.iter().enumerate() {
+        assert_eq!(
+            p.range.default_value(),
+            defaults[i],
+            "param {} reported default {} after the value moved to 0.9; the \
+             default must not follow the live value",
+            p.id,
+            p.range.default_value()
+        );
+    }
+    // And the live value really did move, so the assertion above is not
+    // passing because the writes were dropped.
+    assert!(
+        (instance.parameter(0).unwrap() - 0.9).abs() < 0.02,
+        "the set_parameter writes did not land, so nothing was proven"
+    );
+}
+
 #[test]
 fn parameter_count_and_names() {
     let _guard = lock_probe();

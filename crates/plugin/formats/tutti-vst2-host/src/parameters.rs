@@ -3,13 +3,21 @@
 //! VST2 parameters are identified by a dense `i32` index in
 //! `[0, get_info().parameters)` and the value is a normalized `f32` in
 //! `[0, 1]`. Names and labels come from the plugin's `PluginParameters`
-//! table. We don't get real min/max/step info, so [`Vst2Instance::parameters`]
-//! reports values only — every parameter is automatable in practice.
+//! table, so [`Vst2Instance::parameters`] reports values only — every
+//! parameter is automatable in practice.
+//!
+//! Real min/max/step metadata is *optional* in VST2 rather than absent:
+//! `effGetParameterProperties` (opcode 56) reports it for plugins that
+//! implement it, and [`Vst2Instance::parameter_list`] reads it per parameter.
+//! A plugin that declines is reported as normalized with unknown steps, which
+//! is what the ABI alone says.
 
 use std::sync::Arc;
 use vst::plugin::Plugin as _;
 
-use tutti_plugin_types::{ParameterInfo as SharedParameterInfo, ALL_AUTOMATABLE};
+use tutti_plugin_types::{
+    ParamFlags, ParamRange, ParamSteps, ParameterInfo as SharedParameterInfo,
+};
 
 use crate::host::ParameterChange;
 use crate::instance::Vst2Instance;
@@ -72,24 +80,82 @@ impl Vst2Instance {
     /// This is the single VST2 `narrow → shared` mapping: the server loader's
     /// `PluginFormatHost::get_parameter_list` and the in-process
     /// `HostParams::parameter_descriptors` both call it, so the map lives in one place.
-    /// VST2 exposes no min/max/step metadata, so every parameter is reported as
-    /// normalized `0.0..1.0`, `default = current`, `step_count = 0`, and
-    /// automatable.
+    ///
+    /// Range and steps come from `effGetParameterProperties` (opcode 56) per
+    /// parameter that answers it. The query is per-parameter because the opcode
+    /// is: a plugin may report an integer range for some and decline others, so
+    /// one may be [`ParamRange::Plain`] while the next is `Normalized`.
+    ///
+    /// A plugin that declines — the common case, since the opcode is optional —
+    /// stays `Normalized` with [`ParamSteps::Unknown`]. `Unknown` rather than
+    /// `Continuous`: the plugin said nothing about steps, which is not the same
+    /// as saying the parameter is freely variable.
+    ///
+    /// Note the two are *independent*. `USES_INT_STEP` gates the range;
+    /// `USES_FLOAT_STEP` gates a granularity that carries no bounds. A plugin
+    /// declaring only the latter gets steps without a plain range.
+    ///
+    /// No flag is reported. VST2 has `effCanBeAutomated` (opcode 26), which the
+    /// vendored crate does not surface, so `AUTOMATABLE` is genuinely unknown
+    /// rather than assumed — this used to claim `ALL_AUTOMATABLE`, which
+    /// asserted something the ABI never said.
+    ///
+    /// `default_value` comes from the load-time snapshot, not the live value.
+    /// VST2 has no default-value opcode, so a plugin's initial state is the only
+    /// place its defaults are observable — see [`Vst2Instance::initial_values`].
     pub fn parameter_list(&self) -> Vec<SharedParameterInfo> {
         self.parameters()
             .into_iter()
             .map(|p| {
+                // Falls back to the live value only if the snapshot has no entry
+                // for this id, which means the parameter count grew after load —
+                // a shell plugin swapping its effect. Better than 0.0: the live
+                // value is at least one this parameter has held.
+                let default = self
+                    .initial_values
+                    .get(p.id as usize)
+                    .copied()
+                    .unwrap_or(p.current) as f64;
+
+                let props = self.parameter_properties(p.id);
+                let int_range = props.as_ref().and_then(|q| q.integer_range);
+
+                // The declared default is normalized, so it maps through the
+                // range rather than being written into it verbatim.
+                let range = match int_range {
+                    Some(r) => {
+                        let (min, max) = (r.min as f64, r.max as f64);
+                        let plain = ParamRange::Plain {
+                            min,
+                            max,
+                            default: 0.0,
+                        };
+                        ParamRange::Plain {
+                            min,
+                            max,
+                            default: plain.to_plain(default),
+                        }
+                    }
+                    None => ParamRange::Normalized { default },
+                };
+
+                // `step_count` is `None` for a range the plugin declared but
+                // that cannot be stepped through (non-positive step, inverted
+                // bounds); that is unreported, not continuous.
+                let steps = match int_range.and_then(|r| r.step_count()) {
+                    Some(0) | None => ParamSteps::Unknown,
+                    Some(1) => ParamSteps::Toggle,
+                    Some(n) => ParamSteps::Enumerated(n.saturating_add(1)),
+                };
+
                 SharedParameterInfo {
                     id: p.id,
                     name: p.name,
                     unit: p.unit,
-                    // VST2 exposes no min/max/step metadata: every parameter is
-                    // reported normalized 0..1, default = current, no steps.
-                    min_value: 0.0,
-                    max_value: 1.0,
-                    default_value: p.current as f64,
-                    step_count: 0,
-                    flags: ALL_AUTOMATABLE,
+                    range,
+                    steps,
+                    flags: ParamFlags::empty(),
+                    known: ParamFlags::empty(),
                 }
             })
             .collect()

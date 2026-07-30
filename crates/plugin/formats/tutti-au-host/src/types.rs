@@ -28,7 +28,8 @@ pub use sys::{
     AUPreset, AURenderCallback, AURenderCallbackStruct, AudioBuffer, AudioBufferList,
     AudioComponent, AudioComponentDescription, AudioComponentInstance, AudioStreamBasicDescription,
     AudioTimeStamp, AudioUnit, AudioUnitCocoaViewInfo, AudioUnitParameterInfo,
-    AudioUnitRenderActionFlags, CFArrayRef, OSStatus,
+    AudioUnitParameterStringFromValue, AudioUnitParameterValueFromString,
+    AudioUnitRenderActionFlags, CFArrayRef, CFStringRef, OSStatus,
 };
 
 // AudioToolbox functions (verbatim from coreaudio-sys — these are the real
@@ -140,6 +141,14 @@ pub const K_AUDIO_UNIT_PROPERTY_BYPASS_EFFECT: u32 = sys::kAudioUnitProperty_Byp
 pub const K_AUDIO_UNIT_PROPERTY_LAST_RENDER_ERROR: u32 = sys::kAudioUnitProperty_LastRenderError;
 pub const K_AUDIO_UNIT_PROPERTY_PRESENT_PRESET: u32 = sys::kAudioUnitProperty_PresentPreset;
 pub const K_AUDIO_UNIT_PROPERTY_COCOA_UI: u32 = sys::kAudioUnitProperty_CocoaUI;
+pub const K_AUDIO_UNIT_PROPERTY_PARAMETER_VALUE_STRINGS: u32 =
+    sys::kAudioUnitProperty_ParameterValueStrings;
+pub const K_AUDIO_UNIT_PROPERTY_PARAMETER_STRING_FROM_VALUE: u32 =
+    sys::kAudioUnitProperty_ParameterStringFromValue;
+pub const K_AUDIO_UNIT_PROPERTY_PARAMETER_VALUE_FROM_STRING: u32 =
+    sys::kAudioUnitProperty_ParameterValueFromString;
+pub const K_AUDIO_UNIT_PROPERTY_PARAMETER_CLUMP_NAME: u32 =
+    sys::kAudioUnitProperty_ParameterClumpName;
 
 // Parameter unit kinds.
 pub const K_AUDIO_UNIT_PARAMETER_UNIT_GENERIC: u32 = sys::kAudioUnitParameterUnit_Generic;
@@ -156,6 +165,37 @@ pub const K_AUDIO_UNIT_PARAMETER_FLAG_IS_WRITABLE: u32 = sys::kAudioUnitParamete
 pub const K_AUDIO_UNIT_PARAMETER_FLAG_HAS_NAME: u32 = sys::kAudioUnitParameterFlag_HasName;
 pub const K_AUDIO_UNIT_PARAMETER_FLAG_HAS_CF_NAME_STRING: u32 =
     sys::kAudioUnitParameterFlag_HasCFNameString;
+pub const K_AUDIO_UNIT_PARAMETER_FLAG_HAS_CLUMP: u32 = sys::kAudioUnitParameterFlag_HasClump;
+pub const K_AUDIO_UNIT_PARAMETER_FLAG_VALUES_HAVE_STRINGS: u32 =
+    sys::kAudioUnitParameterFlag_ValuesHaveStrings;
+pub const K_AUDIO_UNIT_PARAMETER_FLAG_METER_READ_ONLY: u32 =
+    sys::kAudioUnitParameterFlag_MeterReadOnly;
+pub const K_AUDIO_UNIT_PARAMETER_FLAG_IS_HIGH_RESOLUTION: u32 =
+    sys::kAudioUnitParameterFlag_IsHighResolution;
+pub const K_AUDIO_UNIT_PARAMETER_FLAG_NON_REAL_TIME: u32 = sys::kAudioUnitParameterFlag_NonRealTime;
+pub const K_AUDIO_UNIT_PARAMETER_FLAG_CAN_RAMP: u32 = sys::kAudioUnitParameterFlag_CanRamp;
+pub const K_AUDIO_UNIT_PARAMETER_FLAG_OMIT_FROM_PRESETS: u32 =
+    sys::kAudioUnitParameterFlag_OmitFromPresets;
+
+// Display-curve flags. `DISPLAY_MASK` covers a *non-contiguous* field: bits
+// 16..=18 hold the curve index and bit 22 is the separate Logarithmic flag
+// (`(7<<16) | (1<<22)`). Masking with only `7<<16` silently drops every
+// logarithmic parameter — 24 of the 39 curve-carrying parameters measured on
+// macOS 15.6 — so the mask must come from Apple's own constant, not a
+// hand-written one.
+pub const K_AUDIO_UNIT_PARAMETER_FLAG_DISPLAY_MASK: u32 = sys::kAudioUnitParameterFlag_DisplayMask;
+pub const K_AUDIO_UNIT_PARAMETER_FLAG_DISPLAY_SQUARE_ROOT: u32 =
+    sys::kAudioUnitParameterFlag_DisplaySquareRoot;
+pub const K_AUDIO_UNIT_PARAMETER_FLAG_DISPLAY_SQUARED: u32 =
+    sys::kAudioUnitParameterFlag_DisplaySquared;
+pub const K_AUDIO_UNIT_PARAMETER_FLAG_DISPLAY_CUBED: u32 =
+    sys::kAudioUnitParameterFlag_DisplayCubed;
+pub const K_AUDIO_UNIT_PARAMETER_FLAG_DISPLAY_CUBE_ROOT: u32 =
+    sys::kAudioUnitParameterFlag_DisplayCubeRoot;
+pub const K_AUDIO_UNIT_PARAMETER_FLAG_DISPLAY_EXPONENTIAL: u32 =
+    sys::kAudioUnitParameterFlag_DisplayExponential;
+pub const K_AUDIO_UNIT_PARAMETER_FLAG_DISPLAY_LOGARITHMIC: u32 =
+    sys::kAudioUnitParameterFlag_DisplayLogarithmic;
 
 /// ASBD flag set for canonical non-interleaved packed float32 linear PCM.
 const FLOAT32_FORMAT_FLAGS: u32 = K_AUDIO_FORMAT_FLAG_IS_FLOAT

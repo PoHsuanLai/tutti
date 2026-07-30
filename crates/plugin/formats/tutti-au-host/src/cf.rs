@@ -40,6 +40,29 @@ impl CfString {
             Some(Self(CfCFString::wrap_under_create_rule(raw)))
         }
     }
+
+    /// Build an owned CFString from a Rust `&str`.
+    ///
+    /// Needed for the properties that pass a string *into* the AU —
+    /// `kAudioUnitProperty_ParameterValueFromString`, where the host supplies the
+    /// text to parse. Returns `None` only if CoreFoundation declines to allocate.
+    ///
+    /// The result is released on drop, so the AU must not retain it beyond the
+    /// property call. That holds for `ParameterValueFromString`, which is
+    /// documented to read `inString` and return synchronously.
+    pub fn new(text: &str) -> Option<Self> {
+        Some(Self(CfCFString::new(text)))
+    }
+
+    /// Borrow the underlying `CFStringRef` (coreaudio-sys flavor) without
+    /// transferring ownership.
+    ///
+    /// Get rule: the returned pointer is valid only while `self` lives, and the
+    /// caller must NOT release it. Handing it to an AudioToolbox property that
+    /// merely reads the string is the intended use.
+    pub fn as_raw(&self) -> coreaudio_sys::CFStringRef {
+        self.0.as_concrete_TypeRef() as coreaudio_sys::CFStringRef
+    }
 }
 
 impl std::fmt::Display for CfString {

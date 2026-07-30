@@ -318,3 +318,51 @@ pub const ACCEPTS_MONO: &[AuRef] = &[DELAY, N_BAND_EQ, LOWPASS, DYNAMICS, SAMPLE
 /// AUMatrixReverb refuses mono but *accepts* quad on its output while keeping 2
 /// on its input, so it is also the corpus's asymmetric-layout case.
 pub const REFUSES_MONO: &[AuRef] = &[MATRIX_REVERB, DLS_SYNTH];
+
+/// Parameters measured to publish `kAudioUnitProperty_ParameterValueStrings`,
+/// as `(unit, parameter id, count, first label, last label)`.
+///
+/// The count and the end labels are pinned, not merely "non-empty", because the
+/// failure being guarded is a **truncated or misordered** `CFArray` walk — an
+/// off-by-one in the index loop, or elements silently dropped — and every one of
+/// those passes an "at least one string" check.
+///
+/// Measured on macOS 15.6. AUNBandEQ publishes the same 11 filter names on each
+/// of its 8 band `Type` parameters (ids 2000..=2007); id 2000 is the
+/// representative. Note it does this with
+/// `kAudioUnitParameterFlag_ValuesHaveStrings` **clear** — see
+/// `au_param_display.rs::value_strings_are_not_gated_on_the_flag_that_under_reports`.
+pub const VALUE_STRING_PARAMS: &[(AuRef, u32, usize, &str, &str)] =
+    &[(N_BAND_EQ, 2000, 11, "Parametric", "Resonant High Shelf")];
+
+/// Effects measured to group their parameters, paired with the number of distinct
+/// clumps **claimed by at least one parameter**.
+///
+/// Measured on macOS 15.6. Counts are pinned so a host that started reporting
+/// `clumpID` unconditionally — collapsing every ungrouped parameter into a
+/// phantom clump 0 — is caught, rather than merely one that reports no clumps.
+///
+/// Note the distinction this count draws, which is not obvious and which cost a
+/// wrong assertion to find: AUDistortion **names** 7 clumps (1..=7, verified in
+/// `distortion_names_its_seven_sections`) but only 6 of them are claimed by a
+/// parameter — nothing carries clump 6 ("Filter"). So "clumps the AU can name"
+/// and "clumps the AU actually uses" are different sets, and a UI built from the
+/// parameter list will render 6 sections while the AU can label 7. This constant
+/// is the *claimed* count, because that is what a section list is built from.
+pub const CLUMPED_EFFECTS: &[(AuRef, usize)] = &[(DISTORTION, 6), (MATRIX_REVERB, 4)];
+
+/// Units measured to publish `kAudioUnitParameterFlag_MeterReadOnly` parameters,
+/// with the count each advertises.
+///
+/// These are *readings*, not controls: AUSampler's "Output Amp 0/1" and
+/// AUMultibandCompressor's "Comp Amount 1-4" / "Input Amplitude 1-4" /
+/// "Output Amplitude 1-4". A host must keep them out of its automation menu, and
+/// the count is pinned because the failure mode is under-detection.
+///
+/// AUMultibandCompressor is not in [`EFFECTS`]; it is referenced only here and by
+/// the meter test, since it is the widest meter surface on the system.
+pub const METER_PARAM_UNITS: &[(AuRef, usize)] = &[(MULTIBAND_COMPRESSOR, 12), (SAMPLER, 2)];
+
+/// 12 meter pseudo-parameters across 4 bands — the widest `MeterReadOnly` surface
+/// among Apple's effects, and 6 parameter clumps.
+pub const MULTIBAND_COMPRESSOR: AuRef = AuRef::effect("AUMultibandCompressor", b"mcmp");

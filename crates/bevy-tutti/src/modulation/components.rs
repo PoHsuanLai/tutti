@@ -157,6 +157,21 @@ pub struct ModRoute {
     /// accumulator collapses at a fixed beat, so it declines and the route falls
     /// back.
     pub deliver_as_curve: bool,
+    /// Materialise this route as a **per-sample graph edge** rather than a
+    /// value the driver writes.
+    ///
+    /// Unlike [`deliver_as_curve`](Self::deliver_as_curve) — a request that
+    /// silently falls back — this is a different *mechanism*: the reconciler
+    /// spawns `source → shaper → sum → the sink's param port`, and the driver
+    /// never touches the param. It still falls back to the value path when the
+    /// sink exposes no audio-rate port for the param, since that is a fact
+    /// about the node rather than an error.
+    ///
+    /// Worth asking for when a frame-rate staircase is audible — a fast LFO on
+    /// a filter cutoff or a distortion drive. It costs two idle graph nodes per
+    /// modulated param (measured at ~0.1% of a block for four effects, ~2% for
+    /// sixty-four), so it is opt-in rather than the default.
+    pub at_audio_rate: bool,
 }
 
 impl ModRoute {
@@ -171,7 +186,15 @@ impl ModRoute {
             curve: CurveType::Linear,
             enabled: true,
             deliver_as_curve: false,
+            at_audio_rate: false,
         }
+    }
+
+    /// Ask for per-sample delivery — see
+    /// [`at_audio_rate`](Self::at_audio_rate).
+    pub fn at_audio_rate(mut self) -> Self {
+        self.at_audio_rate = true;
+        self
     }
 
     /// Ask for beat-evaluated delivery — see

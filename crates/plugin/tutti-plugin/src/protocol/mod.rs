@@ -36,7 +36,17 @@ pub mod shm;
 ///   `ParamFlags` bitset plus a `known` mask, so a capability the format never
 ///   reported reads as `None` instead of `false`. Mandatory: bincode carries no
 ///   field names, so a v4 payload deserializes from misaligned bytes.
-pub const PROTOCOL_VERSION: u32 = 5;
+/// - v6: `PluginDescriptor::has_editor: bool` becomes `editor: EditorPresence`,
+///   a three-valued enum. The probe paths cannot instantiate, so they used to
+///   persist `false` for a question nobody had asked. Mandatory for the same
+///   reason as v5: on this bincode wire the bool and the enum discriminant are
+///   both one byte, so a skewed peer decodes plausible garbage rather than
+///   failing.
+///
+///   The persisted catalog is NOT governed by this constant — it is JSON, and
+///   `PluginDescriptor::editor` carries `serde(default)` so an existing database
+///   loads with `Unknown` instead of being quarantined. See the field.
+pub const PROTOCOL_VERSION: u32 = 6;
 
 /// Validate a subprocess-reported protocol version against [`PROTOCOL_VERSION`].
 /// Called at each handshake consumer so a version skew fails loudly instead of
@@ -75,8 +85,8 @@ pub use crate::host::discovery::record::{
     AuComponentType, PluginClass, PluginDescriptor, Vst2Category,
 };
 pub use tutti_plugin_types::{
-    AutomationMode, BusChannels, ChannelLayout, ChordChanges, ChordValue, Features, LoadedPlugin,
-    NoteExpressionChanges, NoteExpressionIntChanges, NoteExpressionIntValue,
+    AutomationMode, BusChannels, ChannelLayout, ChordChanges, ChordValue, EditorPresence, Features,
+    LoadedPlugin, NoteExpressionChanges, NoteExpressionIntChanges, NoteExpressionIntValue,
     NoteExpressionTextChanges, NoteExpressionTextValue, NoteExpressionType, NoteExpressionValue,
     ParamFlags, ParamRange, ParamSteps, ParameterChanges, ParameterInfo, ParameterPoint,
     ParameterQueue, ScaleChanges, ScaleValue, TimeSignature, TransportInfo,

@@ -4,7 +4,7 @@
 
 use std::path::Path;
 use tutti_plugin::server::{
-    AuComponentType, Features, LoadedPlugin, PluginClass, PluginDescriptor,
+    AuComponentType, EditorPresence, Features, LoadedPlugin, PluginClass, PluginDescriptor,
 };
 #[cfg(all(target_os = "macos", feature = "au"))]
 use tutti_plugin::server::{
@@ -170,11 +170,13 @@ impl AuInstance {
                 ),
                 name: component_info.name.clone(),
                 vendor: component_info.manufacturer.clone(),
-                version: String::new(),
+                version: component_info.version.clone(),
                 class: PluginClass::Au {
                     component_type: map_au_type(component_info.component_type),
                 },
-                has_editor: false,
+                // A probe reads the registry entry without instantiating, and
+                // `AuEditor::has_editor` needs a live unit. The load path asks.
+                editor: EditorPresence::Unknown,
             })
         }
         #[cfg(not(all(target_os = "macos", feature = "au")))]
@@ -272,11 +274,11 @@ impl AuInstance {
                 ),
                 name,
                 vendor: component_info.manufacturer.clone(),
-                version: String::new(),
+                version: component_info.version.clone(),
                 class: PluginClass::Au {
                     component_type: map_au_type(component_info.component_type),
                 },
-                has_editor,
+                editor: EditorPresence::measured(has_editor),
             };
             // This AUv2 host is f32-only, single-bus, with a Cocoa editor and
             // latency read-back. MIDI I/O, transport/host-callbacks, sample-

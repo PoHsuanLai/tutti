@@ -32,3 +32,5 @@ thiserror = "1"
 [dev-dependencies]
 # Wire-format round-trip tests for the serde-gated metadata types.
 bincode = "1"
+# The plugin catalog is JSON, so its backward-compat test needs it too.
+serde_json = "1"

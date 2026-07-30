@@ -8,10 +8,10 @@
 use std::path::Path;
 
 use tutti_plugin::server::{
-    AudioBufferMut, EditorSize, Features, LoadedPlugin, MidiEventVec, NoteExpressionChanges,
-    ParameterChanges, ParameterInfo, PluginAudio, PluginClass, PluginDescriptor, PluginEditorHost,
-    PluginMeta, PluginParams, PluginResult, PluginState, ProcessContext, ProcessOutput,
-    WindowHandle,
+    AudioBufferMut, EditorPresence, EditorSize, Features, LoadedPlugin, MidiEventVec,
+    NoteExpressionChanges, ParameterChanges, ParameterInfo, PluginAudio, PluginClass,
+    PluginDescriptor, PluginEditorHost, PluginMeta, PluginParams, PluginResult, PluginState,
+    ProcessContext, ProcessOutput, WindowHandle,
 };
 // Only the `not(vst2)` fallback arms construct `PluginError` directly.
 #[cfg(not(feature = "vst2"))]
@@ -51,7 +51,7 @@ impl Vst2Instance {
                 class: PluginClass::Vst2 {
                     category: host_meta.category,
                 },
-                has_editor: host_meta.has_editor,
+                editor: EditorPresence::measured(host_meta.has_editor),
             };
             let mut features = Features::empty();
             // VST2's advertised f64 is informational only (the `vst` crate is

@@ -791,6 +791,6 @@ mod tests {
         let _lock = crate::test_utils::plugin_load_lock();
         let (mut s, _shm) = load_clap("editor_check_clap", SampleFormat::Float32);
         let plugin = s.plugin.as_mut().expect("plugin loaded");
-        let _has_editor: bool = plugin.instance().descriptor().has_editor;
+        let _editor = plugin.instance().descriptor().editor;
     }
 }

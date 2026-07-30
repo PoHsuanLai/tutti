@@ -33,13 +33,70 @@ pub struct PluginDescriptor {
     /// The DAW app interprets this (synth vs effect, browser category, MIDI
     /// routing) — tutti does not flatten it into a common "kind".
     pub class: PluginClass,
-    /// `true` if the plugin reports an editor / GUI.
+    /// Whether the plugin reports an editor / GUI.
     ///
     /// Persisted in the catalog and read at **browse time, before any load**,
     /// so the app can show a GUI badge without instantiating the plugin. The
     /// post-load authoritative copy is `LoadedPlugin.features` /
     /// [`Features::EDITOR`](crate::Features); the loader sets both.
-    pub has_editor: bool,
+    ///
+    /// Three-valued because the scan path cannot answer it: AU and VST3 probe
+    /// without instantiating, and an editor is a property of an instance. Those
+    /// paths used to persist `false`, which a badge reads as "no GUI" — for a
+    /// plugin that may well have one. See [`EditorPresence`].
+    ///
+    /// `serde(default)` is load-bearing here, unlike on the bincode-only wire
+    /// types: this record is persisted as **JSON**, and an existing catalog was
+    /// written before the field existed. Without the attribute that is a parse
+    /// error, and `PluginDatabase::load` quarantines the entire file — every
+    /// scan result and blacklist entry discarded because one field was added.
+    /// `Unknown` is the right value to default to: the old `false` it replaces
+    /// was itself a guess in every record a probe wrote.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub editor: EditorPresence,
+}
+
+/// Whether a plugin has an editor, and whether anyone has actually looked.
+///
+/// [`Unknown`](Self::Unknown) is not a hedge: a probe reads the plugin's static
+/// registry entry without instantiating it, and an editor is a property of an
+/// instance. Reporting `false` there is a guess that gets *persisted* to the
+/// catalog and then read at browse time as though it were an answer.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub enum EditorPresence {
+    /// Nobody has instantiated the plugin to find out.
+    ///
+    /// The default, so a descriptor built by struct-update or `..Default` claims
+    /// nothing rather than claiming absence.
+    #[default]
+    Unknown,
+    /// The plugin was asked and reports no editor.
+    Absent,
+    /// The plugin was asked and reports an editor.
+    Present,
+}
+
+impl EditorPresence {
+    /// Build from a live plugin's answer. Never yields
+    /// [`Unknown`](Self::Unknown) — that variant is for paths that did not ask.
+    pub fn measured(has_editor: bool) -> Self {
+        if has_editor {
+            Self::Present
+        } else {
+            Self::Absent
+        }
+    }
+
+    /// `true` only when the plugin was asked and said yes.
+    ///
+    /// The conservative read, for a caller that must produce a bool: an
+    /// unexamined plugin is not claimed to have an editor. A UI that wants to
+    /// distinguish "no GUI" from "not yet known" should match on the variant
+    /// instead — that is why this is not a `From` impl.
+    pub fn is_present(self) -> bool {
+        self == Self::Present
+    }
 }
 
 impl PluginDescriptor {
@@ -52,7 +109,7 @@ impl PluginDescriptor {
             vendor: String::new(),
             version: String::new(),
             class,
-            has_editor: false,
+            editor: EditorPresence::Unknown,
         }
     }
 }
@@ -115,4 +172,87 @@ pub enum AuComponentType {
     Output,
     MidiProcessor,
     Unknown(u32),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// "Not asked" and "asked, no editor" are different answers.
+    ///
+    /// The whole reason the type is three-valued: the AU and VST3 probe paths
+    /// cannot instantiate, so a bool forced them to persist `false` — which a
+    /// browse-time GUI badge reads as "no GUI".
+    #[test]
+    fn an_unexamined_plugin_is_not_a_plugin_without_an_editor() {
+        assert_ne!(EditorPresence::Unknown, EditorPresence::Absent);
+        assert!(!EditorPresence::Unknown.is_present());
+        assert!(!EditorPresence::Absent.is_present());
+        assert!(EditorPresence::Present.is_present());
+    }
+
+    /// `measured` never yields `Unknown` — it is only reachable by a caller that
+    /// asked the plugin, so both of its outputs are real answers.
+    #[test]
+    fn a_measured_answer_is_never_unknown() {
+        assert_eq!(EditorPresence::measured(true), EditorPresence::Present);
+        assert_eq!(EditorPresence::measured(false), EditorPresence::Absent);
+        for b in [true, false] {
+            assert_ne!(EditorPresence::measured(b), EditorPresence::Unknown);
+        }
+    }
+
+    /// A default-constructed descriptor claims nothing.
+    ///
+    /// `PluginDescriptor` derives `Default` and is built by struct-update in
+    /// several places; if the default were `Absent`, every such site would
+    /// silently assert "no editor" instead of staying silent.
+    #[test]
+    fn a_defaulted_descriptor_claims_nothing_about_its_editor() {
+        assert_eq!(PluginDescriptor::default().editor, EditorPresence::Unknown);
+        assert_eq!(
+            PluginDescriptor::new("id", "name", PluginClass::Unknown).editor,
+            EditorPresence::Unknown
+        );
+    }
+
+    /// A catalog written before this field existed still loads.
+    ///
+    /// The plugin database is JSON (`discovery/database.rs`), not bincode, so it
+    /// is self-describing and an old record simply lacks the key. Without
+    /// `serde(default)` that is a parse error, and `load` quarantines the whole
+    /// file — every scan result and blacklist entry gone because one field was
+    /// added. Measured here rather than assumed.
+    #[cfg(feature = "serde")]
+    #[test]
+    fn a_catalog_record_without_the_field_still_loads() {
+        let old = r#"{"id":"au.appl.dely","name":"AUDelay","vendor":"Apple",
+                      "version":"1.6.0","class":"Unknown"}"#;
+        let d: PluginDescriptor = serde_json::from_str(old).expect(
+            "a record written before `editor` existed must still parse — the \
+             database quarantines the whole file on a parse error",
+        );
+        assert_eq!(d.editor, EditorPresence::Unknown);
+        assert_eq!(d.name, "AUDelay");
+    }
+
+    /// The variant survives the bincode wire both IPC peers speak.
+    ///
+    /// It is also persisted to the plugin catalog, so a decode that collapsed
+    /// `Unknown` into `Absent` would bake a scan-time guess into the database.
+    #[cfg(feature = "serde")]
+    #[test]
+    fn the_editor_presence_survives_the_bincode_round_trip() {
+        for want in [
+            EditorPresence::Unknown,
+            EditorPresence::Absent,
+            EditorPresence::Present,
+        ] {
+            let mut d = PluginDescriptor::new("id", "name", PluginClass::Unknown);
+            d.editor = want;
+            let bytes = bincode::serialize(&d).expect("serialize");
+            let back: PluginDescriptor = bincode::deserialize(&bytes).expect("deserialize");
+            assert_eq!(back.editor, want);
+        }
+    }
 }

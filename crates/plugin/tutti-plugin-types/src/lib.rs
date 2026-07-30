@@ -35,7 +35,7 @@ pub use automation::{ParameterChanges, ParameterPoint, ParameterQueue};
 pub use automation_mode::AutomationMode;
 pub use channels::{AudioBuffer, AudioBuffer32, AudioBuffer64, AudioBufferMut, BufferPtrs, Sample};
 pub use classification::Vst2Category;
-pub use descriptor::{AuComponentType, PluginClass, PluginDescriptor};
+pub use descriptor::{AuComponentType, EditorPresence, PluginClass, PluginDescriptor};
 pub use editor::{
     AspectRatio, EditorCapabilities, EditorError, EditorSize, ResizeHints, WindowHandle,
 };

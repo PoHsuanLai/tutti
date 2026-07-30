@@ -114,6 +114,9 @@ pub struct AuComponentInfo {
     pub sub_type: u32,
     /// High-level type classification.
     pub component_type: AuType,
+    /// `"major.minor.dot"` from `AudioComponentGetVersion`, or empty if the
+    /// component refused. See [`component_version`].
+    pub version: String,
     /// Opaque factory handle used to instantiate the AU.
     #[cfg(target_os = "macos")]
     pub component: AudioComponent,
@@ -185,8 +188,45 @@ fn component_info(component: AudioComponent) -> Option<AuComponentInfo> {
         manufacturer_code: comp_desc.componentManufacturer,
         sub_type: comp_desc.componentSubType,
         component_type: AuType::from_raw(comp_desc.componentType),
+        version: component_version(component),
         component,
     })
+}
+
+/// Decode `AudioComponentGetVersion` into a `"major.minor.dot"` string.
+///
+/// Empty when the component refuses the call. Every AU registered on macOS 15.6
+/// answers (measured: 0 of ~130 fail), so this is the unmeasured third-party
+/// case rather than a path the corpus exercises.
+///
+/// The minor/dot split is measured: `0x00020202` / `0x00050006` / `0x00040004`
+/// for TDR Nova, TAL-NoiseMaker and TAL-Reverb-4, whose bundles declare `2.2.2`,
+/// `5.0.6` and `4.0.4` in `CFBundleShortVersionString`. Swapping those two
+/// fields disagrees with all three.
+///
+/// The major's width is NOT settled by anything installed here. Masking the top
+/// half to 8 bits and reading it as a full 16 give identical output for every AU
+/// on this machine, because no major exceeds 255 — a mutation to `& 0xffff`
+/// passes the whole suite. Apple's header documents `0xMMMMmmDD`, i.e. a 16-bit
+/// major, so a unit numbered past 255 would print as `1.x.y` here and want the
+/// wider mask. Kept at 8 bits because that is the field width the other two
+/// components use and no observation contradicts it; changing it needs a real
+/// unit, not a re-reading of this comment.
+#[cfg(target_os = "macos")]
+fn component_version(component: AudioComponent) -> String {
+    let mut raw: u32 = 0;
+    // SAFETY: `component` came from `AudioComponentFindNext` and is non-null;
+    // `raw` is a valid out-pointer for the `UInt32` the API writes.
+    let status = unsafe { coreaudio_sys::AudioComponentGetVersion(component, &mut raw) };
+    if status != NO_ERR {
+        return String::new();
+    }
+    format!(
+        "{}.{}.{}",
+        (raw >> 16) & 0xff,
+        (raw >> 8) & 0xff,
+        raw & 0xff
+    )
 }
 
 #[cfg(test)]

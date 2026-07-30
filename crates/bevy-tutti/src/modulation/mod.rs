@@ -64,7 +64,7 @@
 //! *sink* evaluates:
 //!
 //! ```rust,ignore
-//! commands.spawn(ModRoute::new(lfo, plugin_param, addr).as_curve());
+//! commands.spawn(ModRoute::new(lfo, plugin_param, addr).per_block());
 //! ```
 //!
 //! Worth asking for only when the sink reads faster than the frame rate — a
@@ -114,13 +114,15 @@
 //!     .register::<tutti_units::Compressor>();
 //! ```
 
+pub mod audio_rate;
 pub mod components;
 pub mod driver;
 pub mod source;
 pub mod target;
 
 pub use components::{
-    CurveType, LfoShape, ModParamRange, ModRate, ModRoute, ModSource, ParamRange, Polarity,
+    CurveType, LfoShape, ModDelivery, ModParamRange, ModRate, ModRoute, ModSource, ParamRange,
+    Polarity,
 };
 pub use driver::{drive, rebuild, ModulationMatrix, ParamKey};
 pub use source::{
@@ -145,6 +147,7 @@ pub struct TuttiModulationPlugin;
 
 impl Plugin for TuttiModulationPlugin {
     fn build(&self, app: &mut App) {
+        app.init_resource::<audio_rate::AudioRateChains>();
         app.init_resource::<ModulationMatrix>()
             .init_resource::<ModTargetRegistry>()
             .init_resource::<CollectedModSources>()
@@ -153,6 +156,7 @@ impl Plugin for TuttiModulationPlugin {
         app.register_type::<ModSource>()
             .register_type::<ModRate>()
             .register_type::<ModRoute>()
+            .register_type::<ModDelivery>()
             .register_type::<ModParamRange>();
 
         // `Collect` builds only when `MarkDirty` said something moved, so the
@@ -175,6 +179,14 @@ impl Plugin for TuttiModulationPlugin {
                     .after(ModSourceSystems::Collect)
                     .before(GraphReconcileSystems::Params),
                 drive.in_set(GraphReconcileSystems::Params),
+                // Audio-rate delivery builds a *graph*, so it runs in the graph
+                // reconcile phase rather than beside `rebuild`. Source nodes
+                // first: a shaper cannot be pointed at a node that does not
+                // exist yet.
+                audio_rate::ensure_source_nodes
+                    .before(audio_rate::reconcile_audio_rate)
+                    .in_set(GraphReconcileSystems::Spawn),
+                audio_rate::reconcile_audio_rate.in_set(GraphReconcileSystems::Spawn),
             )
                 // All reach into the audio graph — `rebuild` to resolve a node,
                 // `drive` to write its atomics — so none means anything

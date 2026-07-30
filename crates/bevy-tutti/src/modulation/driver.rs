@@ -13,7 +13,7 @@ use tutti_mod::{ModEdge, ModPreFrame, ModRoutingTable, ModTarget, ModTargetId};
 use tutti_types::{ParamAddr, Seconds};
 
 use crate::graph::TransportRes;
-use crate::modulation::components::{ModParamRange, ModRoute};
+use crate::modulation::components::{ModDelivery, ModParamRange, ModRoute};
 use crate::modulation::source::CollectedModSources;
 use crate::modulation::target::ModTargetResolver;
 
@@ -141,6 +141,14 @@ pub fn rebuild(
         if !route.enabled {
             continue;
         }
+        // A per-sample route is delivered as a graph chain by
+        // `modulation::audio_rate`, which feeds the sink's param port directly.
+        // Giving it an edge here as well would put the driver on the node's
+        // atomic while the sum drives its port — two writers over one param,
+        // which is the exact hazard the claim set below exists to prevent.
+        if route.delivery == ModDelivery::PerSample {
+            continue;
+        }
         let Some(&source) = source_index.get(&route.source) else {
             continue;
         };
@@ -180,7 +188,7 @@ pub fn rebuild(
         // evaluates it from then on — so it gets no `ModEdge` and the per-frame
         // driver never touches it. Both halves have to agree: an edge as well
         // would write a scalar over the curve every frame.
-        if route.deliver_as_curve {
+        if route.delivery == ModDelivery::PerBlock {
             let installed = collected
                 .curves
                 .get(&route.source)

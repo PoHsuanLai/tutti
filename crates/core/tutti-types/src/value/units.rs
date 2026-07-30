@@ -418,6 +418,28 @@ impl Db {
     pub fn from_amplitude_exact(amp: Amplitude) -> Db {
         Db(20.0 * amp.0.log10())
     }
+
+    /// An `f64` amplitude multiplier as decibels, with silence pinned to
+    /// [`FLOOR`](Self::FLOOR).
+    ///
+    /// The inverse of [`to_amplitude_f64`](Self::to_amplitude_f64), and the
+    /// metering counterpart to it. Takes a bare `f64` rather than an
+    /// `Amplitude` because that is what the `f64` loudness path holds — an
+    /// `Amplitude` is `f32`, so requiring one would narrow the input before
+    /// the `log10` and defeat the reason the `f64` path exists.
+    ///
+    /// This existed only in the `to_` direction for a while, and the gap is
+    /// what pushed the true-peak meter in `tutti-analysis` into hand-rolling
+    /// `20.0 * linear.log10()` with its own zero guard. A converter missing
+    /// its inverse gets hand-rolled, not worked around.
+    #[inline]
+    pub fn from_amplitude_f64(amp: f64) -> Db {
+        if amp <= 0.0 {
+            Db::FLOOR
+        } else {
+            Db((20.0 * amp.log10()) as f32)
+        }
+    }
 }
 // ── Dimensionless amounts ───────────────────────────────────────────────────
 //
@@ -2054,6 +2076,23 @@ mod tests {
 
         let round = Db::from_amplitude_exact(Db(-12.0).to_amplitude());
         assert!((round.get() - -12.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn the_f64_converters_are_inverses_and_share_the_metering_floor() {
+        // The pair the loudness path uses. Round-tripping through f64 holds
+        // tighter than the f32 form above — that precision is the whole
+        // reason these two exist.
+        let round = Db::from_amplitude_f64(Db(-12.0).to_amplitude_f64());
+        assert!((round.get() - -12.0).abs() < 1e-5);
+
+        // It is the metering form, so it agrees with `from_amplitude` at
+        // silence rather than going to -inf.
+        assert_eq!(Db::from_amplitude_f64(0.0), Db::FLOOR);
+        assert_eq!(Db::from_amplitude_f64(-1.0), Db::FLOOR);
+
+        // And agrees with the f32 form everywhere else it can be compared.
+        assert!((Db::from_amplitude_f64(0.5).get() - Db::from_amplitude(Amplitude(0.5)).get()).abs() < 1e-5);
     }
 
     #[test]

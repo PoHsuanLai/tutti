@@ -316,13 +316,17 @@ impl LimiterNode {
         }
         self.delayed = delayed;
 
-        // Metering only. Guard log10(0) so a fully-closed gain reports a large
-        // finite reduction instead of +inf.
-        self.gain_reduction_db = if min_gain > 0.0 {
-            -20.0 * min_gain.log10()
-        } else {
-            96.0
-        };
+        // Metering only, and reported as a positive magnitude — the sign
+        // convention `CompressorNode::gain_reduction_db` also follows.
+        //
+        // `from_amplitude` owns the `log10(0)` guard, so silence pins at
+        // `Db::FLOOR` rather than `-inf`. This site used to hand-roll the
+        // conversion with a `96.0` floor of its own, which was the divergence
+        // `amplitude_to_db`'s doc records as already removed — it had been
+        // removed from the detector path just above and missed here. The old
+        // floor was never a ceiling either: a merely tiny gain fell through to
+        // the `log10` branch and reported far past 96 dB.
+        self.gain_reduction_db = -amplitude_to_db(min_gain).get();
     }
 }
 

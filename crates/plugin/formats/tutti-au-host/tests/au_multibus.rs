@@ -190,6 +190,67 @@ fn instruments_report_no_input_buses() {
     }
 }
 
+/// The host's view of "is there an input bus" must agree with the AU's own
+/// input element count, across every unit in the corpus.
+///
+/// ## What this does and does not pin
+///
+/// `StreamConfig::probe` derives `has_input` from the input **element count**.
+/// It used to infer it from whether the input stream-format read succeeded,
+/// which is a different question: an AU may legally have an input element whose
+/// format it declines to report, and for that unit the old inference says "no
+/// input", so the host skips installing the input render callback and the unit
+/// renders from silence.
+///
+/// **This test does not catch that revert, and neither can any other test on
+/// this machine.** Measured across all 132 installed AUs, the two inference
+/// methods agree on every single one — 55 with an input element, 77 without,
+/// zero disagreements. So the element-count form is *defensive*: correct per
+/// Apple's model, but with no locally observable behavioural difference. A
+/// mutation swapping it back passes the entire suite, and that is a property of
+/// the available corpus, not a gap in the assertions.
+///
+/// What it does pin is the invariant itself — the host's derived view never
+/// drifts from the AU's element count — which is what would break first if
+/// either side were rewritten independently. A unit that genuinely disagrees is
+/// the case the change exists for, and this is where it would surface.
+#[test]
+fn has_input_is_derived_from_the_element_count() {
+    let _g = lock();
+    let mut with_input = 0;
+    let mut without_input = 0;
+
+    for unit in EFFECTS.iter().chain(INSTRUMENTS).chain(MIXERS) {
+        let au = unit.open_uninitialized(RATE, BLOCK);
+        let elements = au.bus_count(BusDirection::Input);
+        // `num_inputs` is `probe`'s `has_input` decision made visible: it
+        // reports 0 exactly when the host believes there is no input bus.
+        let host_sees_input = au.num_inputs() > 0;
+        assert_eq!(
+            host_sees_input,
+            elements > 0,
+            "{}: the host sees input={host_sees_input} but the AU reports \
+             {elements} input element(s) — `probe` must key off the element \
+             count, which is the AU's direct answer",
+            unit.label
+        );
+        if elements > 0 {
+            with_input += 1;
+        } else {
+            without_input += 1;
+        }
+    }
+
+    // Both branches must be exercised or the assertion above is half-vacuous:
+    // a corpus of only-instruments would pass it with `has_input` hard-wired
+    // false, and only-effects with it hard-wired true.
+    assert!(
+        with_input >= 2 && without_input >= 2,
+        "the corpus must cover both branches; saw {with_input} with an input \
+         element and {without_input} without"
+    );
+}
+
 /// Mixers are the wide case: many input buses, sometimes several output buses.
 ///
 /// Measured on macOS 15.6 — AUMatrixMixer 64 in / 4 out, AUMultiChannelMixer

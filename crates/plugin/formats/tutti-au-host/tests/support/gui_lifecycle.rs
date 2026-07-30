@@ -70,6 +70,60 @@ fn ready(unit: &AuRef) -> AuInstance {
     unit.open(RATE, BLOCK)
 }
 
+/// The Objective-C `retainCount` of `view`, or 0 for a null pointer.
+///
+/// Only ever compared against *itself* across cycles — see the call site for why
+/// the absolute value is not a contract. `objc_msgSend` is declared here rather
+/// than pulled from `objc2` because this is a bare `NSUInteger` return with no
+/// argument marshalling, and the encoding-verification machinery `objc2` layers
+/// on `msg_send!` is exactly what a debugging read does not want.
+///
+/// # Safety
+/// `view` must be null or a live Objective-C object pointer.
+unsafe fn retain_count(view: *mut std::os::raw::c_void) -> usize {
+    unsafe { send(view, c"retainCount") }
+}
+
+/// Take a reference on `view`, so it outlives a `close` that releases it.
+///
+/// # Safety
+/// `view` must be null or a live Objective-C object pointer.
+unsafe fn retain(view: *mut std::os::raw::c_void) {
+    unsafe { send(view, c"retain") };
+}
+
+/// Give up a reference taken by [`retain`].
+///
+/// # Safety
+/// `view` must be null or a live object for which the caller holds a reference,
+/// and must not be read afterwards.
+unsafe fn release(view: *mut std::os::raw::c_void) {
+    unsafe { send(view, c"release") };
+}
+
+/// Send a nullary Objective-C selector and return the raw word it produced.
+///
+/// `objc_msgSend` is declared here rather than reached through `objc2`'s
+/// `msg_send!` because these are bare nullary sends with no argument
+/// marshalling, and the encoding verification `msg_send!` layers on is exactly
+/// what a debugging read does not want (that machinery is why the crate needs
+/// `relax-void-encoding` elsewhere).
+///
+/// # Safety
+/// `view` must be null or a live Objective-C object pointer that responds to
+/// `sel`.
+unsafe fn send(view: *mut std::os::raw::c_void, sel: &std::ffi::CStr) -> usize {
+    if view.is_null() {
+        return 0;
+    }
+    unsafe extern "C" {
+        fn objc_msgSend(receiver: *mut std::os::raw::c_void, sel: *const std::os::raw::c_void)
+            -> usize;
+        fn sel_registerName(name: *const std::os::raw::c_char) -> *const std::os::raw::c_void;
+    }
+    unsafe { objc_msgSend(view, sel_registerName(sel.as_ptr())) }
+}
+
 gui_test! {
 /// `has_editor()` must agree with whether `open()` actually succeeds.
 ///
@@ -282,7 +336,75 @@ fn repeated_open_close_cycles_stay_balanced() {
                 size.height
             );
             assert!(!editor.view_ptr().is_null());
+
+            // Observe the retain count, not only the pointer. Without this the
+            // test's own name is a claim it never checks: adding a second
+            // `release` to `AuEditor::close` — a textbook over-release, and UB —
+            // passed 7/7, because every assertion here was about nullness.
+            //
+            // `retainCount` is a debugging read whose absolute value is not a
+            // contract: AppKit holds references of its own. What is meaningful is
+            // that it does not *drift* across identical cycles — a per-open leak
+            // walks it up, an over-release walks it down or crashes on the way.
+            //
+            // Measured over 8 cycles on macOS 15.6: AULowpass 3, AUDelay 5,
+            // DLSMusicDevice 58 — each bit-stable across every cycle. AUSampler
+            // sits near 1712 and jitters by up to 2, because its view is a
+            // heavyweight shared object with AppKit activity of its own that has
+            // nothing to do with our retain. So the exact-match check applies
+            // only where the count is small enough to be attributable, and
+            // `DRIFT_ATTRIBUTABLE_BELOW` is set an order of magnitude above the
+            // largest stable count and far below AUSampler's.
+            const DRIFT_ATTRIBUTABLE_BELOW: usize = 500;
+            // Measure what `close` itself does to the count, sampled either side
+            // of it through a pointer saved beforehand. Two details make this the
+            // form that works:
+            //
+            //  * Sampling *before* close only cannot see an over-release at all —
+            //    the extra `release` happens inside `close`, and the next cycle
+            //    asks the factory for a fresh view, so the damage never lands in a
+            //    pre-close sample. That is why the earlier nullness-only version
+            //    of this test passed with a deliberate double release.
+            //  * The absolute count is not ours to predict: AppKit and the
+            //    plugin's own object graph hold references too (measured: AUDelay
+            //    5, AULowpass 3, DLSMusicDevice 58, all bit-stable across 8
+            //    cycles). So assert the *delta* — `close` must give up exactly the
+            //    one reference `open` took.
+            //
+            // Our own `retain` keeps the object alive to be asked after close,
+            // and is subtracted out by comparing deltas rather than absolutes.
+            //
+            // AUSampler's count sits near 1712 and jitters by up to 2 from AppKit
+            // activity unrelated to our retain, so units above
+            // `DRIFT_ATTRIBUTABLE_BELOW` are exempted: there the noise exceeds
+            // the signal, and a false failure would be worse than no check.
+            let view = editor.view_ptr();
+            // SAFETY: `view` is the live view `open_headless` just returned. The
+            // retain is balanced by the `release` below.
+            unsafe { retain(view) };
+            let before = unsafe { retain_count(view) };
             editor.close();
+            let after = unsafe { retain_count(view) };
+            if before < DRIFT_ATTRIBUTABLE_BELOW {
+                assert_eq!(
+                    after + 1,
+                    before,
+                    "{}: cycle {cycle} — the view's retain count went {before} → \
+                     {after} across close, but close must give up exactly the one \
+                     reference open took. {}",
+                    unit.label,
+                    if after + 1 < before {
+                        "It released too many times (over-release: UB on a view \
+                         AppKit still holds)."
+                    } else {
+                        "It released too few (every plugin window leaks its whole \
+                         GUI object graph)."
+                    }
+                );
+            }
+            // SAFETY: gives up the retain taken above; `view` is not read after.
+            unsafe { release(view) };
+            continue;
         }
     }
 }

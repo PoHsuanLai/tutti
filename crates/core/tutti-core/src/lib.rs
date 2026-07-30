@@ -118,9 +118,11 @@ pub use tutti_types::pcm::{self, f32_to_i16, f32_to_i24};
 pub use tutti_types::ChannelLayout;
 // The general N→device-width surround fold, surfaced so the live host (the CPAL
 // callback in `bevy-tutti`) can fold the graph-root buffer to the device width.
-// The named-width variants (`fold_frame_to_stereo`/`_to_mono`) stay in
-// `tutti-types` — only the export path, which depends on it directly, needs them.
-pub use tutti_types::fold_frame;
+// The named-width variants come along: a DSP node that needs one mono sample out
+// of a stereo pair (the HRTF/VBAP panners, the convolution node) must reach the
+// engine's fold rather than re-deriving `* 0.5` locally, and those crates name
+// `tutti-core` as their engine root.
+pub use tutti_types::{fold_frame, fold_frame_to_mono, fold_frame_to_stereo};
 // The interleaved-buffer views, surfaced for the same reason `ChannelLayout` is:
 // `Engine::process` takes an `InterleavedMut`, so every host that drives the
 // engine — the CPAL callback above all — names this type at its own boundary.

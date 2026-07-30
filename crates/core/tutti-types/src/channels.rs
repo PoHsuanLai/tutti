@@ -28,6 +28,7 @@
 /// [`count`](Self::count).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "bevy", derive(bevy_reflect::Reflect))]
 pub enum ChannelLayout {
     /// One channel.
     Mono,

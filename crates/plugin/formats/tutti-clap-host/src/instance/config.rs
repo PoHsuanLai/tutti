@@ -11,6 +11,8 @@ use clap_sys::audio_buffer::clap_audio_buffer;
 use clap_sys::process::CLAP_PROCESS_CONTINUE;
 use smallvec::SmallVec;
 use std::sync::atomic::AtomicI32;
+use tutti_plugin_types::BusChannels;
+use tutti_plugin_types::ChannelLayout;
 
 /// Extra caller-channel-pointer slots reserved beyond the plugin's port layout,
 /// so a caller supplying more channels than the plugin consumes does not grow
@@ -188,21 +190,114 @@ impl<T: super::ClapSample> AudioScratch<T> {
     }
 }
 
-/// Per-port channel counts for audio IO.
-/// E.g. `inputs = [2]` for stereo, `[2, 2]` for two stereo ports.
+/// Per-port channel layouts for audio IO.
+/// E.g. `inputs = [Stereo]` for one stereo port, `[Stereo, Stereo]` for two.
+///
+/// One [`ChannelLayout`] per bus, not a raw count: the layout survives from
+/// `layout_from_clap_port` (which reads CLAP's `port_type` tag, so a mono or
+/// stereo port is *named* rather than inferred from its width) all the way to
+/// the process scratch. The raw `u32` reappears only where the CLAP C ABI
+/// demands it — `make_port_buffer`'s `channel_count` field.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct PortLayout {
-    pub inputs: Vec<u32>,
-    pub outputs: Vec<u32>,
+    pub inputs: BusChannels,
+    pub outputs: BusChannels,
 }
 
 impl PortLayout {
+    /// Channel count summed across every input port.
+    ///
+    /// Stays `usize`, not a [`ChannelLayout`]: a sum across buses is a size for
+    /// the flat channel pool, not the layout of any one bus.
     pub fn input_channel_total(&self) -> usize {
-        self.inputs.iter().map(|&c| c as usize).sum()
+        self.inputs.iter().map(|c| c.count() as usize).sum()
     }
 
+    /// Channel count summed across every output port. `usize` for the same
+    /// reason as [`input_channel_total`](Self::input_channel_total).
     pub fn output_channel_total(&self) -> usize {
-        self.outputs.iter().map(|&c| c as usize).sum()
+        self.outputs.iter().map(|c| c.count() as usize).sum()
+    }
+
+    /// Give each empty direction one stereo bus, so "unknown layout" is stated as
+    /// a bus rather than left for later code to guess at.
+    ///
+    /// A plugin with no `audio-ports` extension reports no buses at all. Stereo
+    /// because it is what the overwhelming majority of plugins present — the same
+    /// rule, and the same reason, as the subprocess host's `default_if_empty`.
+    ///
+    /// Call this **before** reading the channel totals. The totals used to carry
+    /// their own `.max(2)` floor instead, which made a genuine mono plugin report
+    /// 2-in/2-out while `self` still held the true `[Mono]` — two sources of
+    /// truth about one width, disagreeing.
+    pub fn default_empty_buses(&mut self) {
+        if self.inputs.is_empty() {
+            self.inputs.push(ChannelLayout::Stereo);
+        }
+        if self.outputs.is_empty() {
+            self.outputs.push(ChannelLayout::Stereo);
+        }
+    }
+}
+
+#[cfg(test)]
+mod port_layout_tests {
+    use super::*;
+
+    /// A plugin that reports a real mono bus keeps width 1 all the way to the
+    /// totals. The `.max(2)` floor this replaced reported 2 here, which then
+    /// sized a stereo slab for a mono plugin.
+    #[test]
+    fn a_mono_bus_is_not_widened_to_stereo() {
+        let mut ports = PortLayout {
+            inputs: BusChannels::from_slice(&[ChannelLayout::Mono]),
+            outputs: BusChannels::from_slice(&[ChannelLayout::Mono]),
+        };
+        ports.default_empty_buses();
+
+        assert_eq!(
+            ports.input_channel_total(),
+            1,
+            "mono input must stay 1-wide"
+        );
+        assert_eq!(
+            ports.output_channel_total(),
+            1,
+            "mono output must stay 1-wide"
+        );
+    }
+
+    /// The no-`audio-ports` case: the default is applied to the bus list, so the
+    /// total *derives* from it and the two agree by construction.
+    #[test]
+    fn an_absent_bus_list_defaults_to_one_stereo_bus() {
+        let mut ports = PortLayout::default();
+        ports.default_empty_buses();
+
+        assert_eq!(ports.inputs.as_slice(), &[ChannelLayout::Stereo]);
+        assert_eq!(ports.outputs.as_slice(), &[ChannelLayout::Stereo]);
+        assert_eq!(ports.input_channel_total(), 2);
+        assert_eq!(ports.output_channel_total(), 2);
+    }
+
+    /// Multi-bus layouts sum rather than being floored or truncated, and an
+    /// effect with no input bus but real outputs keeps 0 inputs — the asymmetry
+    /// a blanket `.max(2)` on both directions erased.
+    #[test]
+    fn totals_sum_across_buses_and_survive_defaulting() {
+        let mut ports = PortLayout {
+            inputs: BusChannels::from_slice(&[]),
+            outputs: BusChannels::from_slice(&[ChannelLayout::Stereo, ChannelLayout::Multi(6)]),
+        };
+        ports.default_empty_buses();
+
+        // Only the empty direction was defaulted.
+        assert_eq!(ports.output_channel_total(), 8, "2 + 6, not floored");
+        assert_eq!(
+            ports.inputs.as_slice(),
+            &[ChannelLayout::Stereo],
+            "an absent input bus is stated as stereo, not left empty"
+        );
     }
 }
 

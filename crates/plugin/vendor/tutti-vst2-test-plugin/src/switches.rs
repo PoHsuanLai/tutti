@@ -49,6 +49,50 @@ static SILENT_PROCESS: AtomicBool = AtomicBool::new(false);
 static WRITE_EXTRA_OUTPUT: AtomicBool = AtomicBool::new(false);
 static READ_EXTRA_INPUT: AtomicBool = AtomicBool::new(false);
 static RESUMED: AtomicBool = AtomicBool::new(false);
+static ANSWER_PARAM_PROPERTIES: AtomicBool = AtomicBool::new(false);
+static ANSWER_MIDI_METADATA: AtomicBool = AtomicBool::new(false);
+static SERVICED_MIDI_PROGRAMS: AtomicI32 = AtomicI32::new(0);
+
+/// Make the probe answer `effGetParameterProperties`.
+///
+/// Off by default, because *declining is the realistic behaviour*: every VST2
+/// plugin installed on the development machine (TAL-NoiseMaker, TAL-Reverb-4,
+/// TDR Nova) answers `0` for every parameter. The default probe therefore
+/// models the common case, and a test opts in to the rare plugin that answers.
+///
+/// Without this switch the host's decode path is unreachable from any test on
+/// this machine — the opcode would be implemented and never executed.
+#[no_mangle]
+pub extern "C" fn tutti_vst2_probe_set_answer_param_properties(enable: bool) {
+    ANSWER_PARAM_PROPERTIES.store(enable, Ordering::SeqCst);
+}
+
+pub(crate) fn answer_param_properties() -> bool {
+    ANSWER_PARAM_PROPERTIES.load(Ordering::SeqCst)
+}
+
+/// Make the probe answer the MIDI-metadata family (`effGetMidiProgramName`,
+/// `effGetCurrentMidiProgram`, `effGetMidiProgramCategory`,
+/// `effHasMidiProgramsChanged`, `effGetMidiKeyName`).
+///
+/// `serviced_programs` is the count `effGetMidiProgramName` reports. Setting it
+/// *above* the number of programs the probe will actually name reproduces the
+/// enumeration hole the parameter/preset switches already model on their axes:
+/// a host that trusts the advertised count and walks it reads names the plugin
+/// never had.
+#[no_mangle]
+pub extern "C" fn tutti_vst2_probe_set_answer_midi_metadata(enable: bool, serviced_programs: i32) {
+    ANSWER_MIDI_METADATA.store(enable, Ordering::SeqCst);
+    SERVICED_MIDI_PROGRAMS.store(serviced_programs, Ordering::SeqCst);
+}
+
+pub(crate) fn answer_midi_metadata() -> bool {
+    ANSWER_MIDI_METADATA.load(Ordering::SeqCst)
+}
+
+pub(crate) fn serviced_midi_programs() -> i32 {
+    SERVICED_MIDI_PROGRAMS.load(Ordering::SeqCst)
+}
 
 /// Set the `effCanDo` answer. `answer` is a [`CanDoAnswer`] discriminant;
 /// `custom` is the raw value used only when `answer` is `Custom`.
@@ -135,6 +179,9 @@ pub extern "C" fn tutti_vst2_probe_reset_switches() {
     SILENT_PROCESS.store(false, Ordering::SeqCst);
     WRITE_EXTRA_OUTPUT.store(false, Ordering::SeqCst);
     READ_EXTRA_INPUT.store(false, Ordering::SeqCst);
+    ANSWER_PARAM_PROPERTIES.store(false, Ordering::SeqCst);
+    ANSWER_MIDI_METADATA.store(false, Ordering::SeqCst);
+    SERVICED_MIDI_PROGRAMS.store(0, Ordering::SeqCst);
 }
 
 pub(crate) fn set_resumed(resumed: bool) {

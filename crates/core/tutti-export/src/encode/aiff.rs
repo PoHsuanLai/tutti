@@ -11,7 +11,7 @@
 //! there is no conversion policy here beyond the PCM scaling every format does.
 
 use crate::config::ExportConfig;
-use crate::encode::{interleave, pump_blocks, Encoder};
+use crate::encode::{pump_blocks, Encoder};
 use crate::error::{Error, Result};
 use crate::options::BitDepth;
 use crate::render::{FrameSource, RenderPlan};
@@ -54,19 +54,20 @@ impl AiffEncoder {
     }
 }
 
-impl<const CH: usize> Encoder<CH> for AiffEncoder {
+impl Encoder for AiffEncoder {
     fn encode(
         mut self,
-        src: &mut dyn FrameSource<CH>,
+        src: &mut dyn FrameSource,
         source_rate: tutti_core::SampleRate,
         plan: &RenderPlan,
         config: &ExportConfig,
     ) -> Result<()> {
-        let mut buf = Vec::new();
         let mut ints: Vec<i32> = Vec::new();
         let mut shorts: Vec<i16> = Vec::new();
         pump_blocks(src, source_rate, plan, config, |frames| {
-            interleave(frames, &mut buf);
+            // `aifc` takes an interleaved sample run, which is the shape the
+            // render already hands over.
+            let buf = frames.samples();
             match self.bit_depth {
                 BitDepth::Int16 => {
                     shorts.clear();
@@ -78,7 +79,7 @@ impl<const CH: usize> Encoder<CH> for AiffEncoder {
                     ints.extend(buf.iter().map(|&s| f32_to_i24(s)));
                     self.writer.write_samples_i24(&ints)
                 }
-                BitDepth::Float32 => self.writer.write_samples_f32(&buf),
+                BitDepth::Float32 => self.writer.write_samples_f32(buf),
             }
             .map_err(|e| Error::Encoding(format!("AIFF write failed: {e:?}")))
         })?;

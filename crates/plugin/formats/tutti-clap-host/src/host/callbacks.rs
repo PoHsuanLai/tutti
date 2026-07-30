@@ -1,7 +1,7 @@
 #[cfg(unix)]
 use super::state::PosixFdEntry;
 use super::state::{HostState, TimerEntry};
-use crate::types::{TransportRequest, UndoChange};
+use crate::types::{TrackPortType, TransportRequest, UndoChange};
 use clap_sys::ext::ambisonic::{clap_host_ambisonic, CLAP_PORT_AMBISONIC};
 use clap_sys::ext::audio_ports::{clap_host_audio_ports, CLAP_PORT_MONO, CLAP_PORT_STEREO};
 use clap_sys::ext::audio_ports_config::clap_host_audio_ports_config;
@@ -488,18 +488,27 @@ unsafe extern "C" fn host_track_info_get(
         out.color.blue = color.blue;
     }
 
-    if let Some(ch) = track.audio_channel_count {
-        out.flags |= CLAP_TRACK_INFO_HAS_AUDIO_CHANNEL;
-        out.audio_channel_count = ch;
+    // The one place a `TrackAudio` becomes CLAP's (count, tag) pair. Both come
+    // from the same value, so the count can no longer disagree with the tag, and
+    // the tag is an enum rather than a string match with a silent null fallback.
+    //
+    // `audio_port_type` is written on BOTH paths: `info` is caller-allocated and
+    // only `flags` is reset above, so leaving the pointer untouched would hand the
+    // plugin whatever was in that field before.
+    match track.audio {
+        Some(audio) => {
+            out.flags |= CLAP_TRACK_INFO_HAS_AUDIO_CHANNEL;
+            out.audio_channel_count = i32::from(audio.layout.count());
+            out.audio_port_type = match audio.port_type {
+                Some(TrackPortType::Mono) => CLAP_PORT_MONO.as_ptr(),
+                Some(TrackPortType::Stereo) => CLAP_PORT_STEREO.as_ptr(),
+                Some(TrackPortType::Surround) => CLAP_PORT_SURROUND.as_ptr(),
+                Some(TrackPortType::Ambisonic) => CLAP_PORT_AMBISONIC.as_ptr(),
+                None => ptr::null(),
+            };
+        }
+        None => out.audio_port_type = ptr::null(),
     }
-
-    out.audio_port_type = match track.audio_port_type.as_deref() {
-        Some("mono") => CLAP_PORT_MONO.as_ptr(),
-        Some("stereo") => CLAP_PORT_STEREO.as_ptr(),
-        Some("surround") => CLAP_PORT_SURROUND.as_ptr(),
-        Some("ambisonic") => CLAP_PORT_AMBISONIC.as_ptr(),
-        _ => ptr::null(),
-    };
 
     if track.is_return_track {
         out.flags |= CLAP_TRACK_INFO_IS_FOR_RETURN_TRACK;

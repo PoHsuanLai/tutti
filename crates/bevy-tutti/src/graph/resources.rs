@@ -15,10 +15,6 @@ use tutti_types::ChannelLayout;
 #[reflect(Resource, Clone)]
 pub struct AudioConfig {
     pub sample_rate: f64,
-    // `ChannelLayout` is a `tutti-types` value type without a `Reflect` impl (its
-    // API is frozen), so it's skipped for reflection; on reflect-construction it
-    // falls back to `ChannelLayout::default()` (Stereo).
-    #[reflect(ignore)]
     pub channels: ChannelLayout,
 }
 

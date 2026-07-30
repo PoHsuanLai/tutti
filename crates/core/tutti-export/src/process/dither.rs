@@ -44,18 +44,22 @@ impl DitherState {
         }
     }
 
-    /// Dither one block of frames in place. A no-op when nothing quantizes.
-    pub(crate) fn apply<const CH: usize>(&mut self, frames: &mut [[f32; CH]]) {
+    /// Dither one block of **interleaved** samples in place. A no-op when
+    /// nothing quantizes.
+    ///
+    /// Flat rather than frame-nested, but the RNG still advances exactly once
+    /// per sample in interleaved order — which is what keeps the sequence
+    /// "continuous across blocks, and across channels within a block". The
+    /// frame width is irrelevant to the noise, so it is not a parameter.
+    pub(crate) fn apply(&mut self, samples: &mut [f32]) {
         let Some(lsb) = self.lsb else { return };
-        for frame in frames.iter_mut() {
-            for s in frame.iter_mut() {
-                let noise = match self.dither {
-                    Dither::Off => 0.0,
-                    Dither::Rectangular => self.rectangular_noise(),
-                    Dither::Triangular => self.triangular_noise(),
-                };
-                *s += noise * lsb;
-            }
+        for s in samples.iter_mut() {
+            let noise = match self.dither {
+                Dither::Off => 0.0,
+                Dither::Rectangular => self.rectangular_noise(),
+                Dither::Triangular => self.triangular_noise(),
+            };
+            *s += noise * lsb;
         }
     }
 
@@ -106,21 +110,24 @@ mod tests {
     fn float32_is_never_dithered() {
         let mut d = DitherState::for_config(&config(Dither::Triangular, BitDepth::Float32));
         assert!(d.lsb.is_none());
-        let mut frames = [[0.5f32, 0.5]; 8];
-        d.apply(&mut frames);
+        let mut samples = [0.5f32; 16];
+        d.apply(&mut samples);
         assert!(
-            frames.iter().all(|f| f == &[0.5, 0.5]),
+            samples.iter().all(|&s| s == 0.5),
             "float output must pass through untouched, got {:?}",
-            frames[0]
+            samples[0]
         );
     }
 
     #[test]
     fn off_is_a_no_op() {
         let mut d = DitherState::for_config(&config(Dither::Off, BitDepth::Int16));
-        let mut frames = [[0.25f32, -0.25]; 4];
-        d.apply(&mut frames);
-        assert!(frames.iter().all(|f| f == &[0.25, -0.25]));
+        let mut samples = [0.25f32, -0.25, 0.25, -0.25, 0.25, -0.25, 0.25, -0.25];
+        d.apply(&mut samples);
+        assert_eq!(
+            samples,
+            [0.25, -0.25, 0.25, -0.25, 0.25, -0.25, 0.25, -0.25]
+        );
     }
 
     /// The noise is bounded by one LSB at the target depth — audible dither
@@ -131,14 +138,35 @@ mod tests {
             let mut d = DitherState::for_config(&config(Dither::Triangular, depth));
             let lsb = d.lsb.expect("integer depths dither");
             assert!(lsb > 0.0, "LSB must be positive, got {lsb}");
-            let mut frames = [[0.0f32; 2]; 256];
-            d.apply(&mut frames);
-            for f in &frames {
-                for &s in f {
-                    assert!(s.abs() <= lsb, "|{s}| exceeded one LSB ({lsb})");
-                }
+            let mut samples = [0.0f32; 512];
+            d.apply(&mut samples);
+            for &s in &samples {
+                assert!(s.abs() <= lsb, "|{s}| exceeded one LSB ({lsb})");
             }
         }
+    }
+
+    /// The RNG advances once per SAMPLE, and the sequence continues across
+    /// calls. Dithering one block of N samples must give exactly what two
+    /// blocks of N/2 give — the property that keeps the noise from correlating
+    /// to the block grid, and the one a width-aware rewrite could break.
+    #[test]
+    fn the_noise_sequence_is_continuous_across_blocks() {
+        let cfg = config(Dither::Triangular, BitDepth::Int16);
+
+        let mut whole = [0.0f32; 16];
+        DitherState::for_config(&cfg).apply(&mut whole);
+
+        let mut split = [0.0f32; 16];
+        let mut d = DitherState::for_config(&cfg);
+        let (a, b) = split.split_at_mut(6);
+        d.apply(a);
+        d.apply(b);
+
+        assert_eq!(
+            whole, split,
+            "a split block must draw the same noise as one whole block"
+        );
     }
 
     /// A 16-bit LSB is 2^-15; 24-bit is 2^-23. Derived from the depth, not read

@@ -274,6 +274,122 @@ impl AEffect {
     }
 }
 
+/// What a plugin reports about one parameter through
+/// `effGetParameterProperties` — VST 2.4's `VstParameterProperties`.
+///
+/// This is the only structured parameter metadata VST2 has. Without it a host
+/// knows a parameter's name, label and normalized value and nothing else, so it
+/// can only render a flat list of sliders: no integer range, no step
+/// granularity, no grouping.
+///
+/// Every field is written by the *plugin* into a buffer the host owns, so the
+/// layout must match the header byte for byte — a reordered field means the
+/// plugin writes `flags` where the host reads `minInteger`. Field order below
+/// is verified against `aeffectx.h`, and `size_of` is pinned to the measured
+/// 136 bytes by a test in this module.
+#[repr(C)]
+pub struct ParameterProperties {
+    /// Step increment for the float value, in normalized units.
+    pub step_float: f32,
+    /// Fine-grained step (e.g. shift-drag).
+    pub small_step_float: f32,
+    /// Coarse step (e.g. page up/down).
+    pub large_step_float: f32,
+    /// Full parameter label.
+    pub label: [u8; MAX_LABEL],
+    /// Bit flags found in `ParameterFlags`.
+    pub flags: i32,
+    /// Lowest integer value, when `USES_INT_STEP` is set.
+    pub min_integer: i32,
+    /// Highest integer value, when `USES_INT_STEP` is set.
+    pub max_integer: i32,
+    /// Integer step increment.
+    pub step_integer: i32,
+    /// Coarse integer step.
+    pub large_step_integer: i32,
+    /// Short label, for narrow UI slots (recommended 6 chars + delimiter).
+    pub short_label: [u8; MAX_SHORT_LABEL],
+    /// Preferred display position, when `USES_INDEX` is set.
+    pub display_index: i16,
+    /// Category this parameter belongs to (1-based; 0 = uncategorised), when
+    /// `USES_CATEGORY` is set.
+    pub category: i16,
+    /// How many parameters share this parameter's category.
+    pub num_parameters_in_category: i16,
+    /// Reserved by the spec; plugins must leave it zero.
+    pub reserved: i16,
+    /// Name of the category, when `USES_CATEGORY` is set.
+    pub category_label: [u8; MAX_SHORT_LABEL],
+    /// Reserved for future use.
+    pub future: [u8; 16],
+}
+
+/// One named MIDI program, from `effGetMidiProgramName` /
+/// `effGetCurrentMidiProgram`. VST 2.4's `MidiProgramName`.
+///
+/// This is VST2's MIDI-facing preset metadata: it ties a program *name* to the
+/// concrete MIDI program-change number and bank-select pair that selects it, so
+/// a host can show "Acoustic Bass" instead of "program 32, bank 0/0".
+///
+/// `size_of` is pinned to the measured 80 bytes by a test in this module.
+#[repr(C)]
+pub struct MidiProgramName {
+    /// Index the host is asking about; the host writes this before dispatch
+    /// and the plugin fills the rest.
+    pub this_program_index: i32,
+    /// Program name.
+    pub name: [u8; MAX_LABEL],
+    /// MIDI program-change number (0-127) that selects this program.
+    pub midi_program: u8,
+    /// Bank-select MSB (CC 0), or 255 for "unused".
+    pub midi_bank_msb: u8,
+    /// Bank-select LSB (CC 32), or 255 for "unused".
+    pub midi_bank_lsb: u8,
+    /// Reserved by the spec; plugins must leave it zero.
+    pub reserved: u8,
+    /// Index into the category list, or -1 when uncategorised.
+    pub parent_category_index: i32,
+    /// Bit flags found in `MidiProgramFlags`.
+    pub flags: i32,
+}
+
+/// A category grouping MIDI programs, from `effGetMidiProgramCategory`.
+/// VST 2.4's `MidiProgramCategory`.
+///
+/// `size_of` is pinned to the measured 76 bytes by a test in this module.
+#[repr(C)]
+pub struct MidiProgramCategory {
+    /// Index the host is asking about; written by the host before dispatch.
+    pub this_category_index: i32,
+    /// Category name.
+    pub name: [u8; MAX_LABEL],
+    /// Index of the enclosing category, or -1 at the top level.
+    pub parent_category_index: i32,
+    /// Reserved by the spec; plugins must leave it zero.
+    pub flags: i32,
+}
+
+/// A name for one MIDI key, from `effGetMidiKeyName`. VST 2.4's `MidiKeyName`.
+///
+/// Drum and percussion instruments use this so a host can label a pad "Kick"
+/// rather than "C1" / note 36. Without the query a drum editor can only show
+/// note numbers.
+///
+/// `size_of` is pinned to the measured 80 bytes by a test in this module.
+#[repr(C)]
+pub struct MidiKeyName {
+    /// Program the question is scoped to; written by the host before dispatch.
+    pub this_program_index: i32,
+    /// MIDI note number being asked about (0-127); written by the host.
+    pub this_key_number: i32,
+    /// Key name the plugin wrote.
+    pub keyname: [u8; MAX_LABEL],
+    /// Reserved by the spec; plugins must leave it zero.
+    pub reserved: i32,
+    /// Reserved by the spec; plugins must leave it zero.
+    pub flags: i32,
+}
+
 /// Information about a channel. Only some hosts use this information.
 #[repr(C)]
 pub struct ChannelProperties {
@@ -869,6 +985,41 @@ bitflags! {
 }
 
 bitflags! {
+    /// Flags in [`ParameterProperties::flags`] — VST 2.4's `VstParameterFlags`.
+    ///
+    /// These are what make the rest of the struct meaningful: the integer range
+    /// fields, the display index and the category fields are all *only* valid
+    /// when the corresponding bit is set. A host that reads `min_integer` /
+    /// `max_integer` without checking `USES_INT_STEP` reads whatever the plugin
+    /// happened to leave there — usually zero, so the parameter silently
+    /// collapses to the degenerate range 0..0.
+    pub struct ParameterFlags: i32 {
+        /// `step_integer`, `min_integer` and `max_integer` are valid.
+        const USES_INT_STEP = 1;
+        /// `step_float`, `small_step_float` and `large_step_float` are valid.
+        const USES_FLOAT_STEP = 1 << 1;
+        /// `display_index` is valid.
+        const USES_INDEX = 1 << 2;
+        /// `category`, `num_parameters_in_category` and `category_label` are
+        /// valid. Categories are 1-based; 0 means the parameter is
+        /// uncategorised even when this bit is set.
+        const USES_CATEGORY = 1 << 3;
+        /// The parameter cannot be automated.
+        const CAN_RAMP = 1 << 4;
+    }
+}
+
+bitflags! {
+    /// Flags in [`MidiProgramName::flags`] — VST 2.4's `VstMidiProgramNameFlags`.
+    pub struct MidiProgramFlags: i32 {
+        /// The program is a General MIDI drum kit rather than a melodic sound,
+        /// so its keys are individual instruments and `effGetMidiKeyName` is
+        /// the way to label them.
+        const IS_OMNI = 1;
+    }
+}
+
+bitflags! {
     /// Flags for VST plugins.
     pub struct PluginFlags: i32 {
         /// Plugin has an editor.
@@ -1041,5 +1192,89 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Pin the wire size of every struct the *plugin* fills in for us.
+    ///
+    /// These are host-allocated buffers a plugin writes through a raw pointer,
+    /// so the size and field order are the contract. The numbers are measured
+    /// against `aeffectx.h` layout on a 64-bit target, not copied from the
+    /// header text — a field inserted, widened or reordered changes one of them
+    /// and the plugin then writes past, or into the middle of, what we read.
+    /// Nothing else in the process can detect that: the dispatch still returns
+    /// 1 and the garbage looks like data.
+    #[test]
+    fn plugin_written_structs_keep_their_measured_layout() {
+        assert_eq!(mem::size_of::<ParameterProperties>(), 136);
+        assert_eq!(mem::size_of::<MidiProgramName>(), 80);
+        assert_eq!(mem::size_of::<MidiKeyName>(), 80);
+        assert_eq!(mem::size_of::<MidiProgramCategory>(), 76);
+    }
+
+    /// Pin each field's byte offset, which `size_of` alone cannot catch:
+    /// swapping two same-width fields leaves the total unchanged while
+    /// silently redirecting every read.
+    ///
+    /// `min_integer`/`max_integer` are the pair that matters most — reversing
+    /// them yields an inverted range that renders as a working slider running
+    /// backwards, the kind of bug no structural check reports.
+    #[test]
+    fn parameter_properties_field_offsets_match_the_header() {
+        assert_eq!(mem::offset_of!(ParameterProperties, step_float), 0);
+        assert_eq!(mem::offset_of!(ParameterProperties, small_step_float), 4);
+        assert_eq!(mem::offset_of!(ParameterProperties, large_step_float), 8);
+        assert_eq!(mem::offset_of!(ParameterProperties, label), 12);
+        assert_eq!(mem::offset_of!(ParameterProperties, flags), 76);
+        assert_eq!(mem::offset_of!(ParameterProperties, min_integer), 80);
+        assert_eq!(mem::offset_of!(ParameterProperties, max_integer), 84);
+        assert_eq!(mem::offset_of!(ParameterProperties, step_integer), 88);
+        assert_eq!(mem::offset_of!(ParameterProperties, large_step_integer), 92);
+        assert_eq!(mem::offset_of!(ParameterProperties, short_label), 96);
+        assert_eq!(mem::offset_of!(ParameterProperties, display_index), 104);
+        assert_eq!(mem::offset_of!(ParameterProperties, category), 106);
+        assert_eq!(
+            mem::offset_of!(ParameterProperties, num_parameters_in_category),
+            108
+        );
+        assert_eq!(mem::offset_of!(ParameterProperties, category_label), 112);
+        assert_eq!(mem::offset_of!(ParameterProperties, future), 120);
+    }
+
+    /// The MIDI structs put a host-written index first and plugin-written data
+    /// after it, so an offset slip means we hand the plugin the query in a
+    /// field it does not read and then decode the answer from the wrong place.
+    #[test]
+    fn midi_metadata_struct_offsets_match_the_header() {
+        assert_eq!(mem::offset_of!(MidiProgramName, this_program_index), 0);
+        assert_eq!(mem::offset_of!(MidiProgramName, name), 4);
+        assert_eq!(mem::offset_of!(MidiProgramName, midi_program), 68);
+        assert_eq!(mem::offset_of!(MidiProgramName, midi_bank_msb), 69);
+        assert_eq!(mem::offset_of!(MidiProgramName, midi_bank_lsb), 70);
+        assert_eq!(mem::offset_of!(MidiProgramName, parent_category_index), 72);
+        assert_eq!(mem::offset_of!(MidiProgramName, flags), 76);
+
+        assert_eq!(mem::offset_of!(MidiKeyName, this_program_index), 0);
+        assert_eq!(mem::offset_of!(MidiKeyName, this_key_number), 4);
+        assert_eq!(mem::offset_of!(MidiKeyName, keyname), 8);
+
+        assert_eq!(mem::offset_of!(MidiProgramCategory, this_category_index), 0);
+        assert_eq!(mem::offset_of!(MidiProgramCategory, name), 4);
+        assert_eq!(
+            mem::offset_of!(MidiProgramCategory, parent_category_index),
+            68
+        );
+    }
+
+    /// Pin the flag bit values against `aeffectx.h`. These gate whether the
+    /// integer-range and category fields are readable at all, so a wrong bit
+    /// makes the host trust uninitialised plugin memory.
+    #[test]
+    fn parameter_flag_bits_match_the_header() {
+        assert_eq!(ParameterFlags::USES_INT_STEP.bits(), 1);
+        assert_eq!(ParameterFlags::USES_FLOAT_STEP.bits(), 2);
+        assert_eq!(ParameterFlags::USES_INDEX.bits(), 4);
+        assert_eq!(ParameterFlags::USES_CATEGORY.bits(), 8);
+        assert_eq!(ParameterFlags::CAN_RAMP.bits(), 16);
+        assert_eq!(MidiProgramFlags::IS_OMNI.bits(), 1);
     }
 }

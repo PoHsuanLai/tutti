@@ -38,7 +38,15 @@ use tutti_core::io::AudioOut;
 use tutti_core::pcm::{BitDepth, Sample};
 use tutti_core::ChannelLayout;
 
-/// Live WAV [`AudioOut`]. Owns the `hound` writer plus the channel count and
+/// Widest frame [`WavOut::write_folding`] folds *into* without allocating.
+///
+/// Aliases `tutti_core::engine::MAX_ROOT_CHANNELS` (8, mono through 7.1) so the
+/// fold ceiling on the capture edge matches the render root's. A sink declared
+/// wider still writes whole frames — the channels past this are silence — so
+/// this bounds fidelity, never alignment.
+pub const MAX_WAV_FOLD_CHANNELS: usize = tutti_core::engine::MAX_ROOT_CHANNELS;
+
+/// Live WAV [`AudioOut`]. Owns the `hound` writer plus the channel layout and
 /// depth needed to encode each frame.
 pub struct WavOut {
     writer: WavWriter<BufWriter<File>>,
@@ -79,7 +87,7 @@ impl WavOut {
     pub fn create(
         file_path: &PathBuf,
         sample_rate: f64,
-        channels: usize,
+        channels: impl Into<ChannelLayout>,
         depth: BitDepth,
     ) -> Option<Self> {
         let sample_format = if depth.is_integer() {
@@ -87,7 +95,7 @@ impl WavOut {
         } else {
             SampleFormat::Float
         };
-        let layout = ChannelLayout::from(channels);
+        let layout: ChannelLayout = channels.into();
         let spec = WavSpec {
             channels: layout.count(),
             sample_rate: sample_rate as u32,
@@ -107,11 +115,25 @@ impl WavOut {
         })
     }
 
-    /// Declared channel count — what the WAV header says, and therefore exactly
-    /// how many samples per frame [`write_interleaved`](Self::write_interleaved)
-    /// must emit.
-    pub fn channels(&self) -> usize {
-        self.layout.count() as usize
+    /// Declared channel layout — what the WAV header says, and therefore
+    /// exactly how many samples per frame
+    /// [`write_interleaved`](Self::write_interleaved) must emit.
+    ///
+    /// This is also [`AudioOut::layout`]; the inherent copy exists so a caller
+    /// holding a concrete `WavOut` can ask without importing the trait.
+    pub fn layout(&self) -> ChannelLayout {
+        self.layout
+    }
+
+    /// The interleave stride as a plain `usize`, clamped to at least 1.
+    ///
+    /// Kept as a separate accessor rather than making every call site write
+    /// `layout().count().max(1) as usize`, because that expression is the one
+    /// piece of arithmetic that must be derived ONCE per call and hoisted above
+    /// any per-frame loop. Naming it is what makes a stray `.count()` inside a
+    /// loop stand out as the review failure it is.
+    fn stride(&self) -> usize {
+        self.layout.count().max(1) as usize
     }
 
     /// Sample rate written into the header.
@@ -126,9 +148,9 @@ impl WavOut {
 
     /// Write flat interleaved frames at this sink's own declared width.
     ///
-    /// Emits exactly `channels()` samples per frame — no more, no fewer. A short
-    /// trailing frame is ignored; a frame wider than the header is truncated to
-    /// it.
+    /// Emits exactly `layout().count()` samples per frame — no more, no fewer.
+    /// A short trailing frame is ignored; a frame wider than the header is
+    /// truncated to it.
     ///
     /// Emitting anything else corrupts the file: a width the header disagrees
     /// with makes every reader interleave-misalign, rotating channels each
@@ -142,19 +164,81 @@ impl WavOut {
         if self.first_error.is_some() {
             return; // already failed; the file is being abandoned
         }
-        let ch = self.channels().max(1);
+        // Derived ONCE, above the loop. See `stride`.
+        let ch = self.stride();
         for frame in samples.chunks_exact(ch) {
             for &s in frame {
-                // The depth dispatch is `tutti-types`'; only the writer call is
-                // ours, so this sink cannot drift from the export encoders'
-                // quantization.
-                let written = match self.depth.quantize(s) {
-                    Sample::I16(v) => self.writer.write_sample(v),
-                    Sample::I24(v) => self.writer.write_sample(v),
-                    Sample::F32(v) => self.writer.write_sample(v),
-                };
-                if let Err(e) = written {
-                    self.first_error = Some(std::io::Error::other(e));
+                if !self.emit(s) {
+                    return;
+                }
+            }
+        }
+    }
+
+    /// Quantize and write one sample, returning `false` once the sink has
+    /// failed. The single place a sample reaches `hound`, so every write path
+    /// shares one quantization and one error-latching rule.
+    ///
+    /// The depth dispatch is `tutti-types`'; only the writer call is ours, so
+    /// this sink cannot drift from the export encoders' quantization.
+    fn emit(&mut self, s: f32) -> bool {
+        if self.first_error.is_some() {
+            return false;
+        }
+        let written = match self.depth.quantize(s) {
+            Sample::I16(v) => self.writer.write_sample(v),
+            Sample::I24(v) => self.writer.write_sample(v),
+            Sample::F32(v) => self.writer.write_sample(v),
+        };
+        if let Err(e) = written {
+            self.first_error = Some(std::io::Error::other(e));
+            return false;
+        }
+        true
+    }
+
+    /// Write flat interleaved frames of some **other** width, folding each one
+    /// to this sink's declared width on the way in.
+    ///
+    /// This is the successor to the old stereo `write` shim, and the reason the
+    /// shim could be deleted rather than merely rewritten: the fold is
+    /// [`tutti_types::fold_frame`], the engine's single ITU/Dolby
+    /// implementation, so a mono sink **averages** `(l + r) * 0.5` and a 5.1
+    /// source keeps its centre and surrounds instead of being truncated to the
+    /// front pair. The old shim did neither — it dropped the right channel at
+    /// mono and copied only channels 0/1 at any wider width.
+    ///
+    /// A trailing partial `src` frame is ignored. Allocation-free: the
+    /// destination frame is a fixed stack scratch used as a prefix, per the
+    /// engine's established RT pattern, rather than the per-frame
+    /// `vec![0.0; ch]` the old shim allocated.
+    ///
+    /// The scratch caps the width this can *fold into* at
+    /// [`MAX_WAV_FOLD_CHANNELS`]. A sink declared wider than that still gets a
+    /// full, correctly-aligned frame every time — the channels past the ceiling
+    /// are written as silence. Emitting a short frame instead would misalign
+    /// the interleave for the whole rest of the file, which is a far worse
+    /// failure than a few silent channels on an implausibly wide sink.
+    pub fn write_folding(&mut self, src: &[f32], src_layout: ChannelLayout) {
+        if self.first_error.is_some() {
+            return;
+        }
+        // Both strides derived ONCE, above the loop.
+        let src_ch = src_layout.count().max(1) as usize;
+        let dst_ch = self.stride();
+        let folded = dst_ch.min(MAX_WAV_FOLD_CHANNELS);
+
+        let mut frame = [0.0f32; MAX_WAV_FOLD_CHANNELS];
+        for chunk in src.chunks_exact(src_ch) {
+            tutti_core::fold_frame(chunk, &mut frame[..folded]);
+            for &s in &frame[..folded] {
+                if !self.emit(s) {
+                    return;
+                }
+            }
+            // Pad out to the declared width so every frame stays whole.
+            for _ in folded..dst_ch {
+                if !self.emit(0.0) {
                     return;
                 }
             }
@@ -163,29 +247,28 @@ impl WavOut {
 }
 
 impl AudioOut for WavOut {
-    /// Stereo shim over [`write_interleaved`](WavOut::write_interleaved).
+    fn layout(&self) -> ChannelLayout {
+        self.layout
+    }
+
+    /// Write flat interleaved samples **already at this sink's own width**.
     ///
-    /// A mono sink drops the right channel; a sink wider than stereo zero-fills
-    /// the channels this stereo-framed input cannot supply, so the data still
-    /// matches the declared header width.
-    fn write(&mut self, frames: &[[f32; 2]]) {
-        let ch = self.channels().max(1);
-        match ch {
-            1 => {
-                for &[left, _] in frames {
-                    self.write_interleaved(&[left]);
-                }
-            }
-            2 => self.write_interleaved(frames.as_flattened()),
-            _ => {
-                let mut frame = vec![0.0f32; ch];
-                for &[left, right] in frames {
-                    frame[0] = left;
-                    frame[1] = right;
-                    self.write_interleaved(&frame);
-                }
-            }
-        }
+    /// The trait now speaks a runtime [`ChannelLayout`], and the sink's layout
+    /// is the header's, so `write` and
+    /// [`write_interleaved`](WavOut::write_interleaved) are the same operation
+    /// and there is nothing left to shim. A caller feeding some *other* width
+    /// folds first, through [`tutti_types::fold_frame`] — see
+    /// [`write_folding`](WavOut::write_folding).
+    ///
+    /// This is where a real defect lived. `write` used to take `&[[f32; 2]]`
+    /// and re-fit it to the header with a three-arm match whose mono arm was
+    /// `for &[left, _] in frames` — it **dropped the right channel** where the
+    /// engine's own downmix averages `(l + r) * 0.5`, and its wide arm
+    /// allocated a `vec![0.0; ch]` per frame. Both are gone: the fold policy
+    /// lives in exactly one place, and this sink no longer has a private copy
+    /// of it to get wrong.
+    fn write(&mut self, frames: &[f32]) {
+        self.write_interleaved(frames);
     }
 
     fn finalize(self) -> std::io::Result<()> {
@@ -221,10 +304,11 @@ mod tests {
         let path = dir.path().join("capture.wav");
 
         let mut sink =
-            WavOut::create(&path, 48_000.0, 2, BitDepth::Float32).expect("sink should open");
+            WavOut::create(&path, 48_000.0, 2u16, BitDepth::Float32).expect("sink should open");
 
-        let block: Vec<[f32; 2]> = (0..256)
-            .map(|i| [i as f32 / 256.0, -(i as f32) / 256.0])
+        // Flat interleaved stereo: 256 frames, 512 samples.
+        let block: Vec<f32> = (0..256)
+            .flat_map(|i| [i as f32 / 256.0, -(i as f32) / 256.0])
             .collect();
         let blocks = 5;
         for _ in 0..blocks {
@@ -237,24 +321,148 @@ mod tests {
         let spec = reader.spec();
         assert_eq!(spec.channels, 2);
         assert_eq!(spec.sample_rate, 48_000);
-        assert_eq!(reader.len() as usize, block.len() * blocks * 2);
+        assert_eq!(reader.len() as usize, block.len() * blocks);
     }
 
-    /// Mono capture writes one sample per frame (the right channel is dropped).
+    /// Mono capture writes one sample per frame.
     #[test]
     fn wav_out_mono_writes_one_sample_per_frame() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("mono.wav");
 
         let mut sink =
-            WavOut::create(&path, 44_100.0, 1, BitDepth::Float32).expect("sink should open");
-        let frames = vec![[0.5f32, 0.9f32]; 128];
-        sink.write(&frames);
+            WavOut::create(&path, 44_100.0, 1u16, BitDepth::Float32).expect("sink should open");
+        // 128 stereo frames folded into the mono sink.
+        let frames: Vec<f32> = std::iter::repeat_n([0.5f32, 0.9f32], 128)
+            .flatten()
+            .collect();
+        sink.write_folding(&frames, ChannelLayout::Stereo);
         sink.finalize().unwrap();
 
         let reader = hound::WavReader::open(&path).unwrap();
         assert_eq!(reader.spec().channels, 1);
-        assert_eq!(reader.len() as usize, frames.len());
+        assert_eq!(reader.len() as usize, 128);
+    }
+
+    /// **Defect 2, the regression gate.** A stereo source folded into a mono
+    /// sink must AVERAGE `(l + r) * 0.5`, not drop the right channel.
+    ///
+    /// This fails on the old code by construction: `write`'s mono arm was
+    /// `for &[left, _] in frames`, so it wrote `0.5` where the correct answer
+    /// is `0.7`. Asymmetric inputs are what make the two distinguishable — with
+    /// `[0.5, 0.5]` a dropped channel and an average agree, which is exactly
+    /// how the defect survived a test suite that already covered mono.
+    #[test]
+    fn folding_to_mono_averages_rather_than_dropping_the_right_channel() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("fold_mono.wav");
+
+        let mut sink = WavOut::create(&path, 48_000.0, ChannelLayout::Mono, BitDepth::Float32)
+            .expect("sink should open");
+        // L=0.5 R=0.9 → average 0.7. Dropping R would write 0.5.
+        sink.write_folding(&[0.5, 0.9, 1.0, 0.0], ChannelLayout::Stereo);
+        sink.finalize().unwrap();
+
+        let mut reader = hound::WavReader::open(&path).unwrap();
+        let samples: Vec<f32> = reader.samples::<f32>().map(|s| s.unwrap()).collect();
+        assert_eq!(samples.len(), 2, "two stereo frames → two mono samples");
+        assert!(
+            (samples[0] - 0.7).abs() < 1e-6,
+            "expected the AVERAGE 0.7, got {} — the right channel was dropped",
+            samples[0]
+        );
+        assert!(
+            (samples[1] - 0.5).abs() < 1e-6,
+            "expected 0.5, got {}",
+            samples[1]
+        );
+    }
+
+    /// **Defect 3's shape, at the sink.** A 5.1 frame folded to stereo or mono
+    /// must keep the centre and surrounds, not truncate to channels 0/1.
+    ///
+    /// A centre-only frame is the sharpest case: truncation writes pure
+    /// silence, so the assertion is "any signal at all reached the file". This
+    /// is the same fold the mic callback applies, exercised at the one seam
+    /// that needs no hardware.
+    #[test]
+    fn folding_a_surround_frame_keeps_the_centre_and_surrounds() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // 5.1, energy ONLY in the centre (idx 2). FL FR C LFE SL SR.
+        let centre_only = [0.0f32, 0.0, 1.0, 0.0, 0.0, 0.0];
+
+        // → stereo: centre must reach BOTH sides at −3 dB.
+        let stereo_path = dir.path().join("surround_to_stereo.wav");
+        let mut stereo = WavOut::create(
+            &stereo_path,
+            48_000.0,
+            ChannelLayout::Stereo,
+            BitDepth::Float32,
+        )
+        .expect("sink should open");
+        stereo.write_folding(&centre_only, ChannelLayout::Multi(6));
+        stereo.finalize().unwrap();
+
+        let mut reader = hound::WavReader::open(&stereo_path).unwrap();
+        let s: Vec<f32> = reader.samples::<f32>().map(|x| x.unwrap()).collect();
+        assert_eq!(s.len(), 2);
+        assert!(
+            s[0] > 0.1 && s[1] > 0.1,
+            "the centre channel (dialogue) was truncated away: {s:?}"
+        );
+        assert!(
+            (s[0] - s[1]).abs() < 1e-6,
+            "a centre source must fold symmetrically"
+        );
+
+        // → mono: still non-silent. A rear-only 7.1 frame likewise.
+        let mono_path = dir.path().join("surround_to_mono.wav");
+        let mut mono = WavOut::create(&mono_path, 48_000.0, ChannelLayout::Mono, BitDepth::Float32)
+            .expect("sink should open");
+        // 7.1 with energy only in the rears (idx 6, 7) — front-pair truncation
+        // would write silence here too.
+        let rears_only = [0.0f32, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0];
+        mono.write_folding(&rears_only, ChannelLayout::Multi(8));
+        mono.finalize().unwrap();
+
+        let mut reader = hound::WavReader::open(&mono_path).unwrap();
+        let m: Vec<f32> = reader.samples::<f32>().map(|x| x.unwrap()).collect();
+        assert_eq!(m.len(), 1);
+        assert!(
+            m[0] > 0.1,
+            "the surround channels were truncated away: got {}",
+            m[0]
+        );
+    }
+
+    /// `write_folding` never emits a short frame, whatever the widths.
+    ///
+    /// Alignment is the invariant a fold must not trade away: a frame short by
+    /// even one sample rotates every channel for the rest of the file, which
+    /// reads as "the recording is subtly wrong" rather than as an error.
+    #[test]
+    fn folding_always_emits_whole_frames() {
+        let dir = tempfile::tempdir().unwrap();
+        for (src_w, dst_w) in [(2u16, 6u16), (6, 2), (1, 4), (6, 1), (2, 12)] {
+            let path = dir.path().join(format!("align_{src_w}_{dst_w}.wav"));
+            let dst = ChannelLayout::from_count(dst_w);
+            let mut sink =
+                WavOut::create(&path, 48_000.0, dst, BitDepth::Float32).expect("sink should open");
+
+            const FRAMES: usize = 7; // odd, so a stride slip cannot alias
+            let src = vec![0.25f32; FRAMES * src_w as usize];
+            sink.write_folding(&src, ChannelLayout::from_count(src_w));
+            sink.finalize().unwrap();
+
+            let reader = hound::WavReader::open(&path).unwrap();
+            assert_eq!(reader.spec().channels, dst_w);
+            assert_eq!(
+                reader.len() as usize,
+                FRAMES * dst_w as usize,
+                "{src_w}ch → {dst_w}ch must write whole frames"
+            );
+        }
     }
 
     /// A 6-channel sink must write SIX samples per frame, matching the header it
@@ -268,8 +476,8 @@ mod tests {
         let _ = std::fs::remove_file(&path);
 
         let mut sink =
-            WavOut::create(&path, 48_000.0, 6, BitDepth::Float32).expect("create 6ch sink");
-        assert_eq!(sink.channels(), 6);
+            WavOut::create(&path, 48_000.0, 6u16, BitDepth::Float32).expect("create 6ch sink");
+        assert_eq!(sink.layout(), ChannelLayout::Multi(6));
 
         let frames: Vec<f32> = (0..128)
             .flat_map(|i| (0..6).map(move |c| (i * 6 + c) as f32 * 0.001))
@@ -287,9 +495,9 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
-    /// The stereo shim must still produce a well-formed file at a wider declared
-    /// width: it zero-fills the channels it cannot supply rather than emitting
-    /// short frames.
+    /// A stereo source folded into a wider declared width produces a well-formed
+    /// file: it zero-fills the channels it cannot supply rather than emitting
+    /// short frames, and never synthesises an upmix.
     #[test]
     fn stereo_write_into_a_wide_sink_stays_frame_aligned() {
         let dir = std::env::temp_dir();
@@ -297,9 +505,11 @@ mod tests {
         let _ = std::fs::remove_file(&path);
 
         let mut sink =
-            WavOut::create(&path, 48_000.0, 4, BitDepth::Float32).expect("create 4ch sink");
-        let frames = [[0.25f32, -0.25]; 16];
-        AudioOut::write(&mut sink, &frames);
+            WavOut::create(&path, 48_000.0, 4u16, BitDepth::Float32).expect("create 4ch sink");
+        let frames: Vec<f32> = std::iter::repeat_n([0.25f32, -0.25], 16)
+            .flatten()
+            .collect();
+        sink.write_folding(&frames, ChannelLayout::Stereo);
         AudioOut::finalize(sink).expect("finalize");
 
         let mut reader = hound::WavReader::open(&path).expect("reopen");
@@ -351,7 +561,7 @@ mod tests {
         };
 
         // Full scale at Int16 is 32767 — far too wide for the 8-bit stream.
-        sink.write(&[[1.0, -1.0], [1.0, -1.0]]);
+        sink.write(&[1.0, -1.0, 1.0, -1.0]);
 
         let err = sink
             .finalize()
@@ -374,8 +584,8 @@ mod tests {
         let path = dir.path().join("i16.wav");
 
         let mut sink =
-            WavOut::create(&path, 44_100.0, 2, BitDepth::Int16).expect("sink should open");
-        sink.write(&[[1.0, -1.0], [0.0, 0.0]]);
+            WavOut::create(&path, 44_100.0, 2u16, BitDepth::Int16).expect("sink should open");
+        sink.write(&[1.0, -1.0, 0.0, 0.0]);
         sink.finalize().expect("finalize");
 
         let mut reader = hound::WavReader::open(&path).expect("readable");
@@ -417,16 +627,16 @@ mod tests {
         };
 
         // Quiet enough to fit in 8 bits: these land.
-        sink.write(&[[0.001, -0.001], [0.001, -0.001]]);
+        sink.write(&[0.001, -0.001, 0.001, -0.001]);
         // Full scale at Int16 is 32767 — too wide, so this fails.
-        sink.write(&[[1.0, -1.0]]);
+        sink.write(&[1.0, -1.0]);
         assert!(
             sink.first_error.is_some(),
             "the loud frame must have failed"
         );
 
         // Everything after the failure is ignored rather than retried.
-        sink.write(&[[0.001, -0.001], [0.001, -0.001], [0.001, -0.001]]);
+        sink.write(&[0.001, -0.001, 0.001, -0.001, 0.001, -0.001]);
 
         let err = sink.finalize().expect_err("the failure must be reported");
         assert!(err.get_ref().is_some(), "carrying the hound error");
@@ -452,8 +662,8 @@ mod tests {
         let path = dir.path().join("i24.wav");
 
         let mut sink =
-            WavOut::create(&path, 48_000.0, 2, BitDepth::Int24).expect("sink should open");
-        sink.write(&[[1.0, -1.0], [0.0, 0.0]]);
+            WavOut::create(&path, 48_000.0, 2u16, BitDepth::Int24).expect("sink should open");
+        sink.write(&[1.0, -1.0, 0.0, 0.0]);
         sink.finalize().expect("finalize");
 
         let mut reader = hound::WavReader::open(&path).expect("readable");

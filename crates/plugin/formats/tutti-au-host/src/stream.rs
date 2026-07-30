@@ -4,6 +4,7 @@
 
 use tutti_plugin_types::ChannelLayout;
 
+use crate::bus::BusDirection;
 use crate::error::{AuError, Result};
 use crate::ffi::{get_property, set_property};
 use crate::handle::AuHandle;
@@ -53,37 +54,43 @@ impl StreamConfig {
         }
     }
 
-    /// Query the AU's current stream format to discover its channel layout.
+    /// Query the AU's current stream format on bus 0 to discover its channel
+    /// layout.
+    ///
+    /// Bus 0 only, deliberately: this layout is what the render scratch is sized
+    /// from, and [`AuInstance::process`](crate::instance::AuInstance::process)
+    /// renders bus 0 alone. Multi-bus units are *described* by
+    /// [`crate::bus`] — `bus_count` / `bus_layout` — but not yet rendered
+    /// per-bus, so widening the probe would size buffers for buses nothing
+    /// reads.
+    ///
+    /// `has_input` is taken from the AU's own input **element count**, not from
+    /// whether the stream-format query happened to succeed. Those differ: an AU
+    /// can have an input element whose format it declines to report, and the old
+    /// "format read failed ⇒ 0 channels ⇒ no input" inference would then skip
+    /// installing the render callback on a unit that genuinely needs one. The
+    /// element count is the AU's direct answer to "is there an input bus".
     ///
     /// Falls back to stereo out / no input if the AU refuses the queries.
     pub(crate) fn probe(handle: &AuHandle) -> AuBusLayout {
         let unit = handle.raw_unit();
-        let outputs = unsafe {
-            get_property::<AudioStreamBasicDescription>(
-                unit,
-                K_AUDIO_UNIT_PROPERTY_STREAM_FORMAT,
-                K_AUDIO_UNIT_SCOPE_OUTPUT,
-                0,
-            )
-        }
-        .map(|asbd| ChannelLayout::from(asbd.mChannelsPerFrame))
-        .unwrap_or(ChannelLayout::Stereo);
+        let outputs = unsafe { crate::bus::bus_layout(unit, BusDirection::Output, 0) }
+            .unwrap_or(ChannelLayout::Stereo);
 
-        let input_count = unsafe {
-            get_property::<AudioStreamBasicDescription>(
-                unit,
-                K_AUDIO_UNIT_PROPERTY_STREAM_FORMAT,
-                K_AUDIO_UNIT_SCOPE_INPUT,
-                0,
-            )
-        }
-        .map(|asbd| asbd.mChannelsPerFrame)
-        .unwrap_or(0);
+        // An AU with zero input elements has no bus 0 to ask about, so skip the
+        // format query entirely rather than reading -10877 and inferring from it.
+        let has_input = unsafe { crate::bus::bus_count(unit, BusDirection::Input) } > 0;
+        let inputs = if has_input {
+            unsafe { crate::bus::bus_layout(unit, BusDirection::Input, 0) }
+                .unwrap_or(ChannelLayout::Stereo)
+        } else {
+            ChannelLayout::Multi(0)
+        };
 
         AuBusLayout {
-            inputs: ChannelLayout::from(input_count),
+            inputs,
             outputs,
-            has_input: input_count > 0,
+            has_input,
         }
     }
 
@@ -108,6 +115,13 @@ impl StreamConfig {
     /// really running, so the caller sizes `RenderScratch` to match. Sizing the
     /// scratch to a rejected (larger) layout is a topology mismatch that reads
     /// out-of-bounds during render.
+    ///
+    /// The requested width is sent **as asked** — there is no stereo floor here.
+    /// That is what makes the return value meaningful: a floor would turn a mono
+    /// request into an accurate-looking `Stereo`, indistinguishable from a
+    /// genuine refusal. Measured on macOS 15.6, 12 of 15 Apple units accept a
+    /// 1-channel format and initialize at it; the 3 that refuse report `-10868`
+    /// and keep their own width, which is what this returns.
     ///
     /// The **sample rate**, unlike the channel layout, is NOT best-effort.
     /// A channel-count rejection is recoverable — we resize the
@@ -150,9 +164,24 @@ impl StreamConfig {
                 );
             }
 
+            // The requested width is sent verbatim — no stereo floor. This used
+            // to be `.count().max(2)`, which silently rewrote every narrower
+            // request: a host asking for mono got a stereo ASBD, the AU accepted
+            // it, and the read-back below then truthfully reported Stereo. So
+            // mono was unreachable through this type *and* the failure was
+            // invisible, because the effective layout handed back was an accurate
+            // description of a format the caller never asked for.
+            //
+            // Removing the floor is safe precisely because of that read-back: the
+            // units measured to refuse a narrowing (AUMatrixReverb and
+            // DLSMusicDevice both refuse mono with -10868,
+            // `kAudioUnitErr_FormatNotSupported`) keep their own width, which is
+            // what gets returned and what `RenderScratch` is then sized from. The
+            // floor was a default, never a guard; the default now lives in
+            // `AuLoaded::new`, which is the one caller that has to invent a width.
             let out_asbd = AudioStreamBasicDescription::float32(
                 self.sample_rate,
-                self.channels.outputs.count().max(2) as u32,
+                self.channels.outputs.count() as u32,
             );
             let _ = set_property(
                 unit,
@@ -212,6 +241,50 @@ impl StreamConfig {
         };
 
         Ok(effective)
+    }
+
+    /// Read `MaximumFramesPerSlice` back and fail if the AU kept a different
+    /// value than [`StreamConfig::block_size`].
+    ///
+    /// Separate from [`Self::apply`], which `?`s on the *set* alone. A successful
+    /// set is not proof the value stuck: the property is writable only while the
+    /// AU is uninitialized, and an AU that clamps to its own maximum returns
+    /// `noErr` while keeping a smaller figure. Recording the larger requested
+    /// number then breaks
+    /// [`AuInstance::process`](crate::instance::AuInstance::process)'s
+    /// `num_frames > block_size` guard in the dangerous direction — the render is
+    /// admitted and the AU writes past buffers it sized for fewer frames.
+    ///
+    /// An AU that does not implement the property is **not** a failure: there is
+    /// no value to disagree with, and `MaximumFramesPerSlice` is optional. Only a
+    /// value the AU reports *differently* is rejected.
+    ///
+    /// # Errors
+    /// [`AuError::BlockSizeRejected`] carrying both figures, because "the AU
+    /// allocated 512 while the host thinks 2048" is the only diagnosable form of
+    /// this failure.
+    pub(crate) fn verify_block_size(&self, handle: &AuHandle) -> Result<()> {
+        // SAFETY: the property is a `UInt32` per Apple's header, and `handle`
+        // owns a live unit for the duration of this call.
+        let accepted = unsafe {
+            get_property::<u32>(
+                handle.raw_unit(),
+                K_AUDIO_UNIT_PROPERTY_MAXIMUM_FRAMES_PER_SLICE,
+                K_AUDIO_UNIT_SCOPE_GLOBAL,
+                0,
+            )
+        };
+        // A refusal to report is not a rejection — see above.
+        let Ok(accepted) = accepted else {
+            return Ok(());
+        };
+        if accepted != self.block_size {
+            return Err(AuError::BlockSizeRejected {
+                requested: self.block_size,
+                accepted,
+            });
+        }
+        Ok(())
     }
 
     /// Fail loudly when the AU kept a different sample rate than the one

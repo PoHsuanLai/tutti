@@ -280,8 +280,11 @@ impl AuInstance {
 
             // AU exposes a single main bus per direction here.
             let loaded = LoadedPlugin {
-                inputs: single_bus(inner.num_inputs() as usize),
-                outputs: single_bus(inner.num_outputs() as usize),
+                // `num_inputs`/`num_outputs` are `u32` off the AU element
+                // count; `From<u32>` canonicalizes them, so the `as usize`
+                // hop is gone.
+                inputs: single_bus(inner.num_inputs()),
+                outputs: single_bus(inner.num_outputs()),
                 latency_samples: latency,
                 features,
             };

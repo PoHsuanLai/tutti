@@ -12,9 +12,16 @@ pub(crate) struct Meta {
     pub loaded: LoadedPlugin,
 }
 
-/// Build a [`BusChannels`] holding a single main bus of `channels`.
-pub(crate) fn single_bus(channels: usize) -> BusChannels {
+/// Build a [`BusChannels`] holding a single main bus of `layout`.
+///
+/// Takes a layout rather than a raw count so a caller that already has one
+/// (every FFI-inbound conversion produces a [`ChannelLayout`]) passes it
+/// straight through instead of degrading it to a `usize` for this function to
+/// rebuild. Callers holding only a count still pass it — the `Into` accepts
+/// `u8`/`u16`/`u32`/`usize`. Note there is deliberately no `From<i32>`, so a
+/// bare integer literal must be named (`ChannelLayout::Stereo`) or suffixed.
+pub(crate) fn single_bus(layout: impl Into<ChannelLayout>) -> BusChannels {
     let mut v = BusChannels::new();
-    v.push(ChannelLayout::from(channels));
+    v.push(layout.into());
     v
 }

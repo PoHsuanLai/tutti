@@ -12,8 +12,9 @@
 //!
 //! # Interleaved in, unit-typed out
 //!
-//! `step_loudness` takes **interleaved** frames at `cfg.layout`'s width, the
-//! shape a render loop already has. Results come back as [`Db`]: LUFS and dBTP
+//! `step_loudness` takes an [`Interleaved`] — the shape a render loop already
+//! has, now carrying its own width instead of borrowing `cfg.layout`'s by
+//! convention. Results come back as [`Db`]: LUFS and dBTP
 //! are both decibel readings, and the f32 that `Db` carries is ~3× finer than a
 //! 24-bit LSB at any level these reach, so nothing measurable is lost by not
 //! keeping them `f64`.
@@ -22,7 +23,7 @@ use ebur128::{EbuR128, Mode};
 // `SampleRate` is fundsp's, reached through the engine root like `yin.rs` does;
 // the rest of the vocabulary comes straight from `tutti-types`.
 use tutti_core::SampleRate;
-use tutti_types::{ChannelLayout, Db};
+use tutti_types::{ChannelLayout, Db, Interleaved};
 
 /// What the meter is measuring: the rate and channel layout of the frames fed
 /// to [`step_loudness`].
@@ -44,6 +45,18 @@ impl LoudnessConfig {
             rate: rate.into(),
             layout,
         }
+    }
+
+    /// Whether `chunk` is the width this config's meter was built for.
+    ///
+    /// The meter's channel count is fixed at construction, so a chunk of a
+    /// different width would be split into the wrong number of frames and read
+    /// as a different signal. Before the width travelled with the buffer, this
+    /// disagreement was not even expressible — the caller passed a bare slice
+    /// and the config's layout was simply assumed to describe it.
+    #[inline]
+    pub fn chunk_matches(&self, chunk: Interleaved<'_>) -> bool {
+        chunk.layout() == self.layout
     }
 }
 
@@ -119,23 +132,33 @@ impl LoudnessState {
     }
 }
 
-/// Feed one chunk of **interleaved** frames at `cfg.layout`'s width.
+/// Feed one chunk of frames.
+///
+/// The chunk arrives as an [`Interleaved`], so its width travels with it rather
+/// than beside it: `cfg.layout` and the buffer used to be two separate
+/// arguments that had to agree, and nothing checked that they did. The meter is
+/// built from `cfg.layout`, so a chunk at a different width would be metered as
+/// the wrong number of frames — [`chunk_matches`](LoudnessConfig::chunk_matches)
+/// makes that a value the caller can act on. Here a mismatch is simply ignored,
+/// because a metering miss must not fail a render.
 ///
 /// A ragged tail (a chunk that ends mid-frame) is ignored rather than split:
 /// `ebur128` takes whole frames, and silently metering a half frame would skew
-/// the reading. Chunks need not align to any block size.
-pub fn step_loudness(cfg: &LoudnessConfig, state: &mut LoudnessState, interleaved: &[f32]) {
-    let channels = cfg.layout.count() as usize;
-    if channels == 0 {
+/// the reading. That truncation is now [`Interleaved::len`] rather than a
+/// hand-written `len - len % channels`. Chunks need not align to any block size.
+pub fn step_loudness(cfg: &LoudnessConfig, state: &mut LoudnessState, chunk: Interleaved<'_>) {
+    if !cfg.chunk_matches(chunk) {
         return;
     }
-    let whole = interleaved.len() - interleaved.len() % channels;
-    if whole == 0 {
+    // `len()` is frames; the meter takes samples, so the whole-frame prefix is
+    // `frames × stride`. `window` does that multiply, once, inside the type.
+    let whole = chunk.window(0..chunk.len());
+    if whole.is_empty() {
         return;
     }
-    // Errors here mean a layout/meter mismatch the constructor already ruled
+    // Errors here mean a layout/meter mismatch the guard above already ruled
     // out; a metering miss must not fail a render.
-    let _ = state.meter.add_frames_f32(&interleaved[..whole]);
+    let _ = state.meter.add_frames_f32(whole.samples());
 }
 
 /// Read the meter.
@@ -168,13 +191,13 @@ pub fn finish(state: LoudnessState) -> Loudness {
     }
 }
 
-/// Measure a whole interleaved buffer.
+/// Measure a whole buffer.
 ///
 /// Folds [`step_loudness`] — the same implementation the streaming path uses,
 /// so the two can never disagree. `None` when the layout has no channels.
-pub fn measure_loudness(cfg: &LoudnessConfig, interleaved: &[f32]) -> Option<Loudness> {
+pub fn measure_loudness(cfg: &LoudnessConfig, buffer: Interleaved<'_>) -> Option<Loudness> {
     let mut state = LoudnessState::new(cfg)?;
-    step_loudness(cfg, &mut state, interleaved);
+    step_loudness(cfg, &mut state, buffer);
     Some(finish(state))
 }
 
@@ -219,13 +242,17 @@ mod tests {
         let c = cfg(48_000.0);
         let buf = sine(48_000.0, 1.0, 1_000.0, 0.5);
 
-        let one_shot = measure_loudness(&c, &buf).unwrap();
+        let one_shot = measure_loudness(&c, Interleaved::new(&buf, ChannelLayout::Stereo)).unwrap();
 
         let mut state = LoudnessState::new(&c).unwrap();
         // Deliberately ragged: 777 is not a multiple of the frame width, so
         // this also exercises the partial-frame guard.
         for chunk in buf.chunks(777) {
-            step_loudness(&c, &mut state, chunk);
+            step_loudness(
+                &c,
+                &mut state,
+                Interleaved::new(chunk, ChannelLayout::Stereo),
+            );
         }
         let streamed = finish(state);
 
@@ -245,8 +272,9 @@ mod tests {
         // Same *sample* data interpreted at two rates is a different signal
         // (different frequency, different duration), so the readings differ.
         let buf = sine(44_100.0, 2.0, 1_000.0, 0.5);
-        let at_44 = measure_loudness(&cfg(44_100.0), &buf).unwrap();
-        let at_48 = measure_loudness(&cfg(48_000.0), &buf).unwrap();
+        let stereo = Interleaved::new(&buf, ChannelLayout::Stereo);
+        let at_44 = measure_loudness(&cfg(44_100.0), stereo).unwrap();
+        let at_48 = measure_loudness(&cfg(48_000.0), stereo).unwrap();
         assert!(
             (at_44.lufs.get() - at_48.lufs.get()).abs() > 1e-4,
             "a meter that ignored its rate would report the same LUFS twice: \
@@ -271,7 +299,11 @@ mod tests {
     #[test]
     fn a_known_sine_reads_its_expected_loudness() {
         let buf = sine(48_000.0, 3.0, 1_000.0, 0.5); // −6 dBFS peak
-        let m = measure_loudness(&cfg(48_000.0), &buf).unwrap();
+        let m = measure_loudness(
+            &cfg(48_000.0),
+            Interleaved::new(&buf, ChannelLayout::Stereo),
+        )
+        .unwrap();
         assert!(
             (m.lufs.get() - (-6.71)).abs() < 1.0,
             "expected about −6.7 LUFS, got {:?}",
@@ -286,7 +318,12 @@ mod tests {
 
     #[test]
     fn silence_floors_rather_than_erroring() {
-        let m = measure_loudness(&cfg(48_000.0), &vec![0.0; 4800]).unwrap();
+        let silence = vec![0.0; 4800];
+        let m = measure_loudness(
+            &cfg(48_000.0),
+            Interleaved::new(&silence, ChannelLayout::Stereo),
+        )
+        .unwrap();
         assert_eq!(m.true_peak, Db::FLOOR);
         assert!(m.lufs.get() <= -70.0, "gated silence, got {:?}", m.lufs);
     }
@@ -302,7 +339,11 @@ mod tests {
     fn a_reading_is_always_finite_even_below_the_gate() {
         // 100 ms — a quarter of the gating block.
         let short = sine(48_000.0, 0.1, 1_000.0, 0.5);
-        let m = measure_loudness(&cfg(48_000.0), &short).unwrap();
+        let m = measure_loudness(
+            &cfg(48_000.0),
+            Interleaved::new(&short, ChannelLayout::Stereo),
+        )
+        .unwrap();
         assert!(
             m.lufs.get().is_finite(),
             "LUFS must be finite, got {:?}",
@@ -312,6 +353,30 @@ mod tests {
         assert!(
             m.gain_to(Db(-14.0), Db(-1.0)).get().is_finite(),
             "a gain derived from a sub-gate reading must not be NaN"
+        );
+    }
+
+    /// A chunk whose own width disagrees with the meter's is skipped, not fed.
+    ///
+    /// Before the buffer carried its width, this disagreement could not be
+    /// stated at all: `step_loudness` took a bare slice and *assumed* it was
+    /// `cfg.layout`-wide. A quad chunk handed to a stereo meter would have been
+    /// split into twice as many frames of the wrong signal and silently folded
+    /// into the integrated reading.
+    #[test]
+    fn a_chunk_of_the_wrong_width_is_not_metered() {
+        let c = cfg(48_000.0);
+        let buf = sine(48_000.0, 1.0, 1_000.0, 0.5);
+
+        let mut state = LoudnessState::new(&c).unwrap();
+        step_loudness(&c, &mut state, Interleaved::new(&buf, ChannelLayout::Quad));
+        let m = finish(state);
+
+        assert_eq!(
+            m.true_peak,
+            Db::FLOOR,
+            "a mismatched chunk must not reach the meter, got {:?}",
+            m.true_peak
         );
     }
 

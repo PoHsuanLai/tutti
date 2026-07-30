@@ -9,12 +9,17 @@
 //! host pulls the processed block out), and the format-native `process` is the
 //! private in→out step wedged between. [`AudioBuffer<T>`] is that back-to-back
 //! carrier for one block — `inputs` is the AudioOut side, `outputs` the AudioIn
-//! side. It does *not* implement the two traits literally: those speak
-//! *interleaved* `[S; CH]` frames on a cold/block path, whereas the plugin ABI
-//! is *deinterleaved* (one buffer per channel) on the RT audio thread, so the
-//! two shapes deliberately don't unify — forcing an interleave transpose here
-//! would add work to the hot path. The vocabulary names the *roles*; this
-//! module owns the RT-planar realisation.
+//! side. It does *not* implement the two traits literally: those speak flat
+//! *interleaved* samples on a cold/block path, whereas the plugin ABI is
+//! *deinterleaved* (one buffer per channel) on the RT audio thread, so the two
+//! shapes deliberately don't unify — forcing an interleave transpose here would
+//! add work to the hot path. The vocabulary names the *roles*; this module owns
+//! the RT-planar realisation.
+//!
+//! The reason is **layout, not width**. `AudioIn`/`AudioOut` used to fix the
+//! frame width as a `const CH: usize`, which a runtime-width plugin bus could
+//! not satisfy — that constraint is gone. Interleaved-vs-planar is what keeps
+//! them apart now, and it is the durable reason.
 //!
 //! Audio crosses the plugin boundary one buffer *per channel* (deinterleaved),
 //! and the C plugin ABIs (VST3, AU) take those channel buffers as a `void**` —

@@ -2,8 +2,11 @@
 //!
 //! [`FileIn`] decodes an audio file sequentially, frame by frame, without
 //! loading the whole file into RAM. It is an [`AudioIn`]: [`poll_into`] fills a
-//! caller buffer of `[f32; 2]` frames from the current cursor and reports how
-//! many it produced (a short count then `0` at end-of-stream). To read from an
+//! caller buffer of flat interleaved **stereo** `f32` from the current cursor
+//! and reports how many **frames** it produced (a short count then `0` at
+//! end-of-stream). A wider file is *folded* to stereo, never truncated; a caller
+//! wanting the file's native width uses
+//! [`fill_sequential_interleaved`](FileIn::fill_sequential_interleaved). To read from an
 //! arbitrary position, call [`seek`] first — it hooks
 //! `FormatReader::seek(SeekMode::Accurate, ...)` (which lands *before* the
 //! requested frame) and decodes-and-discards the preroll to hit the exact frame,
@@ -19,6 +22,7 @@
 use super::read::{WaveResult, decode_packet_into};
 use std::fs::File;
 use std::path::Path;
+use tutti_types::ChannelLayout;
 use tutti_types::io::{AudioIn, OnEmpty};
 extern crate alloc;
 use alloc::boxed::Box;
@@ -341,8 +345,30 @@ impl AudioIn for FileIn {
     /// doc above): either way `0` means there is no more to read.
     const ON_EMPTY: OnEmpty = OnEmpty::EndOfStream;
 
-    fn poll_into(&mut self, out: &mut [[f32; 2]]) -> usize {
-        self.fill_sequential(out).unwrap_or(0)
+    /// Stereo — the width this *impl* presents, not the file's.
+    ///
+    /// `AudioIn` now carries a runtime width, so a wider file could in
+    /// principle be presented at its own. This impl deliberately does not:
+    /// [`fill_sequential`](FileIn::fill_sequential) folds to stereo, and that is
+    /// the contract every existing consumer reads it under. A caller wanting the
+    /// file's native width calls
+    /// [`fill_sequential_interleaved`](FileIn::fill_sequential_interleaved) and
+    /// reads [`channels`](FileIn::channels) — both already public, both
+    /// unchanged.
+    fn layout(&self) -> ChannelLayout {
+        ChannelLayout::Stereo
+    }
+
+    /// Flat interleaved stereo. `out` holds `out.len() / 2` frames, and the
+    /// return is that many FRAMES at most — never samples.
+    ///
+    /// `[[f32; 2]]` and a 2-wide interleaved `[f32]` have identical layout, so
+    /// this is a reinterpretation of the caller's slice, not a copy: the whole
+    /// adapter is `as_chunks_mut`. A trailing odd sample is not a frame and is
+    /// left untouched.
+    fn poll_into(&mut self, out: &mut [f32]) -> usize {
+        let (frames, _odd) = out.as_chunks_mut::<2>();
+        self.fill_sequential(frames).unwrap_or(0)
     }
 }
 
@@ -390,7 +416,7 @@ mod tests {
         let mut pos = 0usize;
         while pos < frames {
             let end = (pos + chunk).min(frames);
-            let n = dec.poll_into(&mut got[pos..end]);
+            let n = dec.poll_into(got[pos..end].as_flattened_mut());
             assert_eq!(n, end - pos);
             pos = end;
         }
@@ -421,7 +447,7 @@ mod tests {
         dec.seek(start).expect("seek");
         assert_eq!(dec.cursor(), start);
         let mut got = vec![[0.0f32; 2]; len];
-        let n = dec.poll_into(&mut got);
+        let n = dec.poll_into(got.as_flattened_mut());
         assert_eq!(n, len);
 
         for i in 0..len {
@@ -452,7 +478,7 @@ mod tests {
         dec.seek(start).expect("seek");
         // Pre-fill with a sentinel so we can assert the untouched tail stays put.
         let mut got = vec![[1.0f32; 2]; len];
-        let n = dec.poll_into(&mut got);
+        let n = dec.poll_into(got.as_flattened_mut());
         assert_eq!(n, 500, "only 500 frames of real audio remain");
 
         for i in 0..500 {
@@ -469,7 +495,7 @@ mod tests {
         }
         // A further poll at EOF yields nothing.
         let mut more = [[0.0f32; 2]; 8];
-        assert_eq!(dec.poll_into(&mut more), 0);
+        assert_eq!(dec.poll_into(more.as_flattened_mut()), 0);
         let _ = std::fs::remove_file(&path);
     }
 
@@ -578,7 +604,7 @@ mod tests {
 
         let mut decoder = FileIn::open(&path, None).expect("open");
         let mut out = [[0.0f32; 2]; 16];
-        let got = decoder.poll_into(&mut out);
+        let got = decoder.poll_into(out.as_flattened_mut());
         assert!(got > 0);
 
         let mut expected = [0.0f32; 2];
@@ -614,7 +640,7 @@ mod tests {
         let mut decoder = FileIn::open(&path, None).expect("open");
         assert_eq!(decoder.channels(), 1);
         let mut out = [[0.0f32; 2]; 16];
-        let got = decoder.poll_into(&mut out);
+        let got = decoder.poll_into(out.as_flattened_mut());
         assert!(got > 0);
         assert!(
             (out[0][0] - out[0][1]).abs() < 1e-6 && out[0][0].abs() > 0.1,

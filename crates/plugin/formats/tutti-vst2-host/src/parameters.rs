@@ -8,8 +8,9 @@
 //!
 //! Real min/max/step metadata is *optional* in VST2 rather than absent:
 //! `effGetParameterProperties` (opcode 56) reports it for plugins that
-//! implement it. This module does not read it, and
-//! [`Vst2Instance::parameter_list`] documents where it would land.
+//! implement it, and [`Vst2Instance::parameter_list`] reads it per parameter.
+//! A plugin that declines is reported as normalized with unknown steps, which
+//! is what the ABI alone says.
 
 use std::sync::Arc;
 use vst::plugin::Plugin as _;
@@ -80,15 +81,19 @@ impl Vst2Instance {
     /// `PluginFormatHost::get_parameter_list` and the in-process
     /// `HostParams::parameter_descriptors` both call it, so the map lives in one place.
     ///
-    /// Every parameter is [`ParamRange::Normalized`] — the VST2 ABI's value is a
-    /// normalized `f32` and the base spec declares no range.
+    /// Range and steps come from `effGetParameterProperties` (opcode 56) per
+    /// parameter that answers it. The query is per-parameter because the opcode
+    /// is: a plugin may report an integer range for some and decline others, so
+    /// one may be [`ParamRange::Plain`] while the next is `Normalized`.
     ///
-    /// `effGetParameterProperties` (opcode 56) would report a real range and
-    /// step count, and this is where it would land: per parameter that answers,
-    /// a [`ParamRange::Plain`] and a [`ParamSteps`] other than `Unknown`. It is
-    /// per-parameter because the opcode is — a plugin may answer for some and
-    /// decline others. Detect absence from the dispatch return value, not the
-    /// buffer: an unimplemented opcode leaves the host's zeros untouched.
+    /// A plugin that declines — the common case, since the opcode is optional —
+    /// stays `Normalized` with [`ParamSteps::Unknown`]. `Unknown` rather than
+    /// `Continuous`: the plugin said nothing about steps, which is not the same
+    /// as saying the parameter is freely variable.
+    ///
+    /// Note the two are *independent*. `USES_INT_STEP` gates the range;
+    /// `USES_FLOAT_STEP` gates a granularity that carries no bounds. A plugin
+    /// declaring only the latter gets steps without a plain range.
     ///
     /// No flag is reported. VST2 has `effCanBeAutomated` (opcode 26), which the
     /// vendored crate does not surface, so `AUTOMATABLE` is genuinely unknown
@@ -101,25 +106,57 @@ impl Vst2Instance {
     pub fn parameter_list(&self) -> Vec<SharedParameterInfo> {
         self.parameters()
             .into_iter()
-            .map(|p| SharedParameterInfo {
-                id: p.id,
-                name: p.name,
-                unit: p.unit,
-                range: ParamRange::Normalized {
-                    // Falls back to the live value only if the snapshot has no
-                    // entry for this id, which means the parameter count grew
-                    // after load — a shell plugin swapping its effect. Better
-                    // than 0.0: the live value is at least one this parameter
-                    // has held.
-                    default: self
-                        .initial_values
-                        .get(p.id as usize)
-                        .copied()
-                        .unwrap_or(p.current) as f64,
-                },
-                steps: ParamSteps::Unknown,
-                flags: ParamFlags::empty(),
-                known: ParamFlags::empty(),
+            .map(|p| {
+                // Falls back to the live value only if the snapshot has no entry
+                // for this id, which means the parameter count grew after load —
+                // a shell plugin swapping its effect. Better than 0.0: the live
+                // value is at least one this parameter has held.
+                let default = self
+                    .initial_values
+                    .get(p.id as usize)
+                    .copied()
+                    .unwrap_or(p.current) as f64;
+
+                let props = self.parameter_properties(p.id);
+                let int_range = props.as_ref().and_then(|q| q.integer_range);
+
+                // The declared default is normalized, so it maps through the
+                // range rather than being written into it verbatim.
+                let range = match int_range {
+                    Some(r) => {
+                        let (min, max) = (r.min as f64, r.max as f64);
+                        let plain = ParamRange::Plain {
+                            min,
+                            max,
+                            default: 0.0,
+                        };
+                        ParamRange::Plain {
+                            min,
+                            max,
+                            default: plain.to_plain(default),
+                        }
+                    }
+                    None => ParamRange::Normalized { default },
+                };
+
+                // `step_count` is `None` for a range the plugin declared but
+                // that cannot be stepped through (non-positive step, inverted
+                // bounds); that is unreported, not continuous.
+                let steps = match int_range.and_then(|r| r.step_count()) {
+                    Some(0) | None => ParamSteps::Unknown,
+                    Some(1) => ParamSteps::Toggle,
+                    Some(n) => ParamSteps::Enumerated(n.saturating_add(1)),
+                };
+
+                SharedParameterInfo {
+                    id: p.id,
+                    name: p.name,
+                    unit: p.unit,
+                    range,
+                    steps,
+                    flags: ParamFlags::empty(),
+                    known: ParamFlags::empty(),
+                }
             })
             .collect()
     }

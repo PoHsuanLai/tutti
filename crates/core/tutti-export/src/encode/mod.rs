@@ -177,15 +177,14 @@ where
     // `write_buffers` already exist and carry their own rate, which may not be
     // the one the config was rendered at; reading it from the config made such
     // a call resample from a rate the samples were never at.
-    let source_rate = source_rate.get().round() as u32;
+    // The rounded comparison stays — two rates that round to the same header
+    // value are the same rate — but the rates themselves stay `SampleRate` now
+    // that `Resampler::new` takes them typed, so the pair cannot be transposed
+    // on the way in.
+    let source_header = source_rate.get().round() as u32;
     let mut resampler = match config.resample {
-        Some(r) if r.target_rate.get().round() as u32 != source_rate => Some((
-            crate::process::Resampler::new(
-                ch,
-                source_rate,
-                r.target_rate.get().round() as u32,
-                r.chunk,
-            )?,
+        Some(r) if r.target_rate.get().round() as u32 != source_header => Some((
+            crate::process::Resampler::new(ch, source_rate, r.target_rate, r.chunk)?,
             vec![Vec::<f32>::new(); ch],
             vec![Vec::<f32>::new(); ch],
         )),

@@ -27,6 +27,7 @@ pub(crate) const HRTF_BINAURAL_ID: u64 = 0x_0000_0000_4852_5446; // "HRTF"
 pub(crate) const PARAM_SHAPER_ID: u64 = 0x_5052_4D53_4841_5045; // "PRMSHAPE"
 pub(crate) const PARAM_SUM_ID: u64 = 0x_5052_4D53_554D_5F31; // "PRMSUM_1"
 pub(crate) const ATOMIC_SOURCE_ID: u64 = 0x_4154_4F4D_5352_4331; // "ATOMSRC1"
+pub(crate) const BUS_STRIP_ID: u64 = 0x_4255_5353_5452_5031; // "BUSSTRP1"
 
 // Compile-time intra-crate uniqueness guard (duplicate => cargo build error).
 const _: () = tutti_core::node_id::assert_unique(&[
@@ -55,4 +56,5 @@ const _: () = tutti_core::node_id::assert_unique(&[
     PARAM_SHAPER_ID,
     PARAM_SUM_ID,
     ATOMIC_SOURCE_ID,
+    BUS_STRIP_ID,
 ]);

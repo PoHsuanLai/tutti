@@ -47,6 +47,12 @@ impl ParsedMidiFile {
             Timing::Metrical(tpb) => tpb.as_int(),
             Timing::Timecode(_, _) => return Err(Error::MidiUnsupportedTiming),
         };
+        // The same rejection `tracks()` has always made, on the same field.
+        // Only that one had it, so a zero-division reached `parse_track` here
+        // and every `time_beats` in the file came back infinite.
+        if ticks_per_beat == 0 {
+            return Err(Error::MidiFileParse("zero ticks-per-beat".into()));
+        }
 
         debug!(
             "Parsing MIDI file: {} tracks, {} tpb",
@@ -382,6 +388,32 @@ mod tests {
         let file = ParsedMidiFile::parse(&data).unwrap();
         assert_eq!(file.ticks_per_beat, 480);
         assert_eq!(file.events.len(), 0);
+    }
+
+    /// Both readers of the header's division field must reject a zero.
+    ///
+    /// `tracks()` always did; `parse()` did not, on the same field of the same
+    /// file — so which entry point you called decided whether a malformed file
+    /// was an error or a set of infinite event times. The two bytes at offset
+    /// 12..14 are the division, here zeroed.
+    #[test]
+    fn either_reader_rejects_a_zero_division() {
+        let mut data = [
+            0x4D, 0x54, 0x68, 0x64, 0x00, 0x00, 0x00, 0x06, 0x00, 0x00, 0x00, 0x01, 0x01, 0xE0,
+            0x4D, 0x54, 0x72, 0x6B, 0x00, 0x00, 0x00, 0x04, 0x00, 0xFF, 0x2F, 0x00,
+        ];
+        // Sanity: this fixture parses on both paths before the division is
+        // zeroed, so the assertions below are about the zero and nothing else.
+        assert!(ParsedMidiFile::parse(&data).is_ok());
+        assert!(tracks(&data).is_ok());
+
+        data[12] = 0x00;
+        data[13] = 0x00;
+        assert!(matches!(
+            ParsedMidiFile::parse(&data),
+            Err(Error::MidiFileParse(_))
+        ));
+        assert!(matches!(tracks(&data), Err(Error::MidiFileParse(_))));
     }
 
     #[test]

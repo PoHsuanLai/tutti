@@ -140,10 +140,7 @@ impl tutti_core::AudioUnit for ChannelSumUnit {
     }
 
     fn get_id(&self) -> u64 {
-        // Distinct from the DAW-side StereoSumUnit id (0xDA02); this is the
-        // engine-level width-generic bus.
-        const CHANNEL_SUM_ID: u64 = 0x_0000_0000_0000_5501;
-        CHANNEL_SUM_ID
+        crate::node_id::CHANNEL_SUM_ID
     }
 
     fn as_any(&self) -> &dyn std::any::Any {

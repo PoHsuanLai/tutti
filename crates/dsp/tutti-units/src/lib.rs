@@ -76,6 +76,9 @@ pub use tutti_mod::{
 mod mix_bus;
 pub use mix_bus::ChannelSumUnit;
 
+mod downmix_unit;
+pub use downmix_unit::DownmixUnit;
+
 // The mixer strip: volume, stereo balance, mute. Ungated for the same reason as
 // `mix_bus` — a fader is not a spatial concept.
 mod strip;

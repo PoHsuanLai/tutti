@@ -42,6 +42,7 @@ use support::probe_path::probe_path;
 use tutti_clap_host::{AudioBuffer32, ClapActive, ClapLoaded, ParameterChanges, ProcessContext};
 use tutti_clap_test_plugin::params_state::probe_params;
 use tutti_clap_test_plugin::{ProcessCapture, HOLE_NONE};
+use tutti_plugin_types::ParamId;
 
 /// CLAP's `PARAM_VALUE` wire type, pinned rather than imported: it is the value
 /// the host puts on the FFI, so a failure names what the plugin actually saw.
@@ -351,7 +352,7 @@ fn hole_in_params_never_misattributes_a_range() {
     for info in &listed {
         let declared = probe_params()
             .iter()
-            .find(|p| p.id == info.id)
+            .find(|p| info.id == p.id.into())
             .unwrap_or_else(|| panic!("host reported unknown param id {}", info.id));
         assert_eq!(
             info.range.bounds(),
@@ -401,8 +402,8 @@ fn hole_in_params_does_not_promote_later_params() {
     probe.param_hole(1);
 
     let loaded = probe.load();
-    let ids: Vec<u32> = loaded.parameter_list().iter().map(|p| p.id).collect();
-    let expected_prefix = probe_params()[0].id;
+    let ids: Vec<ParamId> = loaded.parameter_list().iter().map(|p| p.id).collect();
+    let expected_prefix = ParamId::from(probe_params()[0].id);
 
     assert!(
         ids.as_slice() == [expected_prefix] || ids.is_empty(),
@@ -534,8 +535,8 @@ fn no_hole_enumerates_everything() {
 
     let loaded = probe.load();
 
-    let ids: Vec<u32> = loaded.parameter_list().iter().map(|p| p.id).collect();
-    let expected: Vec<u32> = probe_params().iter().map(|p| p.id).collect();
+    let ids: Vec<ParamId> = loaded.parameter_list().iter().map(|p| p.id).collect();
+    let expected: Vec<ParamId> = probe_params().iter().map(|p| p.id.into()).collect();
     assert_eq!(
         ids, expected,
         "with no hole the host must report every parameter, in index order"

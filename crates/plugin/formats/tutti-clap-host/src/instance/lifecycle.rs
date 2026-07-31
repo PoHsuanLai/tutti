@@ -99,7 +99,12 @@ impl ClapLoaded {
             // didn't would write a wrong plain value to the plugin.
             .filter_map(|p| {
                 let (min, max) = p.range.bounds()?;
-                Some((p.id, min as f32, max as f32))
+                // `param_ranges` is matched against `ParameterQueue.param_id`,
+                // which stays a bare `u32` because it crosses the IPC wire, and
+                // is handed to `ClapEvent::param_value` as the ABI's `u32`.
+                // Unwrapping here keeps the whole path between those two in the
+                // one type they both speak.
+                Some((p.id.get(), min as f32, max as f32))
             })
             .collect();
         // Read the plugin's own count, not the length of the map above: they

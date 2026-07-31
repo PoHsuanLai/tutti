@@ -173,7 +173,13 @@ impl Vst2Instance {
                 };
 
                 SharedParameterInfo {
-                    id: p.id,
+                    // VST2 is the one format whose parameter address is a dense
+                    // `i32` index, not an opaque plugin-chosen id — see
+                    // [`Vst2Instance::param_index`]. It occupies the shared
+                    // id slot because a positional index is still a unique
+                    // address within this plugin, but the two are different
+                    // things and only coincide numerically.
+                    id: p.id.into(),
                     name: p.name,
                     unit: p.unit,
                     range,

@@ -95,7 +95,7 @@ pub use tutti_plugin_types::{
     AutomationMode, BusChannels, ChannelLayout, ChordChanges, ChordValue, EditorPresence, Features,
     LoadedPlugin, NoteExpressionChanges, NoteExpressionIntChanges, NoteExpressionIntValue,
     NoteExpressionTextChanges, NoteExpressionTextValue, NoteExpressionType, NoteExpressionValue,
-    ParamFlags, ParamRange, ParamSteps, ParameterChanges, ParameterInfo, ParameterPoint,
+    ParamFlags, ParamId, ParamRange, ParamSteps, ParameterChanges, ParameterInfo, ParameterPoint,
     ParameterQueue, ScaleChanges, ScaleValue, TimeSignature, TransportInfo,
 };
 

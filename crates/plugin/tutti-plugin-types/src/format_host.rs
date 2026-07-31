@@ -14,8 +14,8 @@
 //! objects in different processes, so this is not a duplicate of `AudioUnit`.
 
 use crate::{
-    AudioBufferMut, EditorSize, LoadedPlugin, ParameterInfo, PluginDescriptor, ProcessContext,
-    ProcessOutput, Result, WindowHandle,
+    AudioBufferMut, EditorSize, LoadedPlugin, ParamId, ParameterInfo, PluginDescriptor,
+    ProcessContext, ProcessOutput, Result, WindowHandle,
 };
 
 /// Catalog identity + load-time engine-wiring snapshot.
@@ -75,11 +75,19 @@ pub trait PluginParams {
     /// which are THE conversion for this boundary — do not hand-roll the scaling,
     /// and do not reuse [`ParameterInfo::to_range`], which answers the unrelated
     /// question of display taper.
-    fn get_parameter(&self, id: u32) -> f64;
+    ///
+    /// `id` is the [`ParamId`] from [`ParameterInfo::id`], not a position in the
+    /// list [`get_parameter_list`](Self::get_parameter_list) returned. VST3,
+    /// CLAP and AU all address parameters by an opaque plugin-chosen handle
+    /// (`ParamID`, `clap_id`, `AudioUnitParameterID`) that is under no obligation
+    /// to be dense or ordered, so indexing with a loop counter reads whichever
+    /// parameter happens to own that numeric slot.
+    fn get_parameter(&self, id: ParamId) -> f64;
 
     /// See [`get_parameter`](Self::get_parameter) for the value convention
-    /// (normalized for VST2/VST3; native plain range for CLAP and AU).
-    fn set_parameter(&mut self, id: u32, value: f64);
+    /// (normalized for VST2/VST3; native plain range for CLAP and AU) and for
+    /// why `id` is not a list position.
+    fn set_parameter(&mut self, id: ParamId, value: f64);
 
     /// Push the host [`AutomationMode`](crate::AutomationMode) to the plugin.
     /// Fire-and-forget; the default no-op covers formats without an

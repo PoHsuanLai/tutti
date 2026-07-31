@@ -241,14 +241,95 @@ bitflags! {
     }
 }
 
-/// One plugin parameter, as the boundary vocabulary every host crate speaks.
+/// A plugin's own name for one of its parameters: VST3 `ParamID`, CLAP
+/// `clap_id`, AU `AudioUnitParameterID`.
 ///
-/// `id` is the format-native identifier: VST3 ParamID, CLAP clap_id, AU
-/// AudioUnitParameterID, or VST2 index.
+/// **Opaque.** The number is chosen by the plugin and is meaningful only
+/// against the instance that reported it — plenty of plugins derive it from a
+/// hash of the parameter name. It is not an index, not dense, not ordered, and
+/// two plugins may use the same number for unrelated parameters.
+///
+/// That is the whole reason this is a newtype rather than a `u32`: the type has
+/// no algebra, deliberately. There is no `Add`, no `From<usize>`, no `Step`, so
+/// `id + 1` and `for id in 0..n` do not compile. A `u32` in a struct field
+/// invites exactly those, and VST2 — whose address genuinely *is* a dense index
+/// — is the one place they would even seem to work.
+///
+/// [`Ord`] is derived and is arbitrary-but-total, for map keys and binary
+/// search only (AU's parameter-bounds table sorts by it on the load path). A
+/// comparison between two ids carries no meaning about the parameters; do not
+/// read one as "earlier" or "lower".
+///
+/// Serializes as the bare `u32` it wraps, so the IPC wire and the WIT boundary
+/// are unchanged — conversion happens where a format's number enters, via
+/// [`new`](Self::new) / [`get`](Self::get).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize), serde(transparent))]
+pub struct ParamId(u32);
+
+impl ParamId {
+    /// Wrap a format-native parameter id.
+    ///
+    /// The absent algebra is the point, so it is pinned here rather than only
+    /// asserted in the type's docs — each of these is a way a `u32` field
+    /// invites treating an opaque id as a position:
+    ///
+    /// ```compile_fail
+    /// # use tutti_plugin_types::ParamId;
+    /// let id = ParamId::new(3);
+    /// let _ = id + ParamId::new(1);
+    /// ```
+    /// ```compile_fail
+    /// # use tutti_plugin_types::ParamId;
+    /// for _id in ParamId::new(0)..ParamId::new(4) {}
+    /// ```
+    /// ```compile_fail
+    /// # use tutti_plugin_types::ParamId;
+    /// let params = ["a", "b"];
+    /// let _ = params[ParamId::new(0)];
+    /// ```
+    /// ```compile_fail
+    /// # use tutti_plugin_types::ParamId;
+    /// // A count is not an id: no `From<usize>` to make enumerate() fit.
+    /// let _: ParamId = 0usize.into();
+    /// ```
+    ///
+    /// What *does* compile is the deliberate crossing at a format boundary:
+    ///
+    /// ```
+    /// # use tutti_plugin_types::ParamId;
+    /// let id: ParamId = 0x4000_0001u32.into();
+    /// assert_eq!(id.get(), 0x4000_0001);
+    /// ```
+    pub const fn new(id: u32) -> Self {
+        Self(id)
+    }
+
+    /// The underlying number, for handing back to the format that issued it.
+    pub const fn get(self) -> u32 {
+        self.0
+    }
+}
+
+impl From<u32> for ParamId {
+    fn from(id: u32) -> Self {
+        Self(id)
+    }
+}
+
+impl std::fmt::Display for ParamId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+/// One plugin parameter, as the boundary vocabulary every host crate speaks.
 #[derive(Debug, Clone, Default)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct ParameterInfo {
-    pub id: u32,
+    /// The plugin's own name for this parameter. See [`ParamId`] — opaque, and
+    /// meaningful only against the instance that reported it.
+    pub id: ParamId,
     pub name: String,
     /// Display unit (`"dB"`, `"Hz"`, …). Empty when the format carries none —
     /// CLAP has no unit string at all.
@@ -263,9 +344,9 @@ pub struct ParameterInfo {
 }
 
 impl ParameterInfo {
-    pub fn new(id: u32, name: impl Into<String>) -> Self {
+    pub fn new(id: impl Into<ParamId>, name: impl Into<String>) -> Self {
         Self {
-            id,
+            id: id.into(),
             name: name.into(),
             unit: String::new(),
             range: ParamRange::default(),

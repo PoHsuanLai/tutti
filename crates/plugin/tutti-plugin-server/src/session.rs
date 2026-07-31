@@ -123,7 +123,12 @@ impl Session {
 
             M::SetParameter { param_id, value } => {
                 if let Some(plugin) = self.plugin.as_mut() {
-                    plugin.instance_mut().set_parameter(param_id, value as f64);
+                    // `param_id` arrives off the wire as a bare `u32` — the
+                    // protocol is where `ParamId` stops — and re-enters the
+                    // typed vocabulary here.
+                    plugin
+                        .instance_mut()
+                        .set_parameter(param_id.into(), value as f64);
                 }
                 Ok(Reaction::None)
             }
@@ -137,7 +142,7 @@ impl Session {
                 let value = self
                     .plugin
                     .as_mut()
-                    .map(|p| p.instance_mut().get_parameter(param_id) as f32);
+                    .map(|p| p.instance_mut().get_parameter(param_id.into()) as f32);
                 Ok(BridgeMessage::ParameterValue { value }.into())
             }
             M::GetParameterList => {
@@ -153,7 +158,7 @@ impl Session {
                     p.instance()
                         .get_parameter_list()
                         .into_iter()
-                        .find(|info| info.id == param_id)
+                        .find(|info| info.id.get() == param_id)
                 });
                 Ok(BridgeMessage::ParameterInfoResponse { info }.into())
             }
@@ -613,7 +618,9 @@ mod tests {
         match reply {
             BridgeMessage::ParameterList { parameters } => {
                 assert!(!parameters.is_empty(), "need at least one parameter");
-                parameters[0].id
+                // `HostMessage` fields are bare `u32`: the protocol is a wire
+                // boundary, so `ParamId` stops here.
+                parameters[0].id.get()
             }
             other => panic!("expected ParameterList, got {other:?}"),
         }
@@ -663,7 +670,7 @@ mod tests {
         match reply {
             BridgeMessage::ParameterInfoResponse { info } => {
                 let info = info.expect("info should exist");
-                assert_eq!(info.id, param_id);
+                assert_eq!(info.id.get(), param_id);
             }
             other => panic!("expected ParameterInfoResponse, got {other:?}"),
         }

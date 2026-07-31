@@ -5,7 +5,7 @@ use std::path::Path;
 use tutti_plugin::server::{
     AudioBufferMut, AutomationMode, BusChannels, ChannelLayout, ChordChanges, EditorPresence,
     EditorSize, Features, LoadedPlugin, NoteExpressionChanges, NoteExpressionIntChanges,
-    NoteExpressionTextChanges, ParamFlags, ParamRange, ParamSteps, ParameterInfo, PluginAudio,
+    NoteExpressionTextChanges, ParamFlags, ParamId, ParamRange, ParamSteps, ParameterInfo, PluginAudio,
     PluginClass, PluginDescriptor, PluginEditorHost, PluginError, PluginMeta, PluginParams,
     PluginResult, PluginState, ProcessContext, ProcessOutput, ScaleChanges, WindowHandle,
 };
@@ -465,7 +465,9 @@ fn build_param_info(
     };
 
     ParameterInfo {
-        id: info.id,
+        // VST3 `ParamID` — opaque and plugin-chosen, not a list position; see
+        // the ParamID-vs-index note in `tutti-vst3-host`'s `loaded.rs`.
+        id: info.id.into(),
         name: info.title_string(),
         unit: info.units_string(),
         range,
@@ -574,12 +576,12 @@ impl PluginAudio for Vst3Instance {
 }
 
 impl PluginParams for Vst3Instance {
-    fn get_parameter(&self, id: u32) -> f64 {
-        vst_dispatch!(self, inner => inner.parameter(id))
+    fn get_parameter(&self, id: ParamId) -> f64 {
+        vst_dispatch!(self, inner => inner.parameter(id.get()))
     }
 
-    fn set_parameter(&mut self, id: u32, value: f64) {
-        vst_dispatch_mut!(self, inner => inner.set_parameter(id, value));
+    fn set_parameter(&mut self, id: ParamId, value: f64) {
+        vst_dispatch_mut!(self, inner => inner.set_parameter(id.get(), value));
     }
 
     fn set_automation_state(&mut self, mode: AutomationMode) {

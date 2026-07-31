@@ -3,7 +3,7 @@
 use std::path::Path;
 use tutti_plugin::server::{
     BusChannels, EditorPresence, EditorSize, Features, LoadedPlugin, NoteExpressionChanges,
-    ParameterChanges, ParameterInfo, PluginAudio, PluginClass, PluginDescriptor, PluginEditorHost,
+    ParamId, ParameterChanges, ParameterInfo, PluginAudio, PluginClass, PluginDescriptor, PluginEditorHost,
     PluginError, PluginMeta, PluginParams, PluginResult, PluginState, WindowHandle,
 };
 use tutti_plugin::server::{ProcessContext, ProcessOutput};
@@ -382,13 +382,13 @@ impl PluginAudio for ClapInstance {
 }
 
 impl PluginParams for ClapInstance {
-    fn get_parameter(&self, id: u32) -> f64 {
-        clap_dispatch!(self, i => i.parameter(id)).unwrap_or(0.0)
+    fn get_parameter(&self, id: ParamId) -> f64 {
+        clap_dispatch!(self, i => i.parameter(id.get())).unwrap_or(0.0)
     }
 
-    fn set_parameter(&mut self, id: u32, value: f64) {
+    fn set_parameter(&mut self, id: ParamId, value: f64) {
         clap_dispatch_mut!(self, i => {
-            i.set_parameter(id, value);
+            i.set_parameter(id.get(), value);
         });
     }
 
@@ -1174,7 +1174,7 @@ mod tests {
         assert!(!params.is_empty());
 
         let mut changes = ParameterChanges::new();
-        let mut queue = ParameterQueue::new(params[0].id);
+        let mut queue = ParameterQueue::new(params[0].id.get());
         queue.add_point(0, 0.5);
         changes.add_queue(queue);
 

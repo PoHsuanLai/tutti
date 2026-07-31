@@ -24,7 +24,8 @@
 use super::PluginBridge;
 use crate::host::ipc_client::audio::BridgeThread;
 use crate::protocol::{
-    BridgeMessage, ChannelLayout, HostMessage, SampleFormat, SlabLayout, PROTOCOL_VERSION,
+    BridgeMessage, ChannelLayout, HostMessage, ParamAddress, ParamId, SampleFormat, SlabLayout,
+    PROTOCOL_VERSION,
 };
 use crate::util::transport::shm::{AudioSlab, RING_SLOTS};
 use smallvec::smallvec;
@@ -310,7 +311,7 @@ fn a_server_that_dies_mid_session_marks_the_bridge_crashed() {
         _ => Action::Silent,
     });
 
-    let first = mock.bridge.parameter(1);
+    let first = mock.bridge.parameter(ParamAddress::Opaque(ParamId::new(1)));
     assert_eq!(
         first,
         Some(0.5),
@@ -323,7 +324,7 @@ fn a_server_that_dies_mid_session_marks_the_bridge_crashed() {
     );
 
     // Second request: the server dies instead of replying.
-    let second = mock.bridge.parameter(1);
+    let second = mock.bridge.parameter(ParamAddress::Opaque(ParamId::new(1)));
     assert_eq!(
         second, None,
         "a request to a dead server returned a value: {second:?}"
@@ -346,7 +347,7 @@ fn calls_after_a_crash_fail_fast_instead_of_waiting_out_the_timeout() {
     let mock = MockServer::start("fail-fast", |_| Action::Die);
 
     // First call establishes the crash.
-    let _ = mock.bridge.parameter(1);
+    let _ = mock.bridge.parameter(ParamAddress::Opaque(ParamId::new(1)));
     assert!(
         mock.wait_for_crash(),
         "the bridge never noticed the server was gone"
@@ -357,7 +358,7 @@ fn calls_after_a_crash_fail_fast_instead_of_waiting_out_the_timeout() {
     let start = Instant::now();
     for _ in 0..5 {
         assert_eq!(
-            mock.bridge.parameter(1),
+            mock.bridge.parameter(ParamAddress::Opaque(ParamId::new(1))),
             None,
             "a crashed bridge returned a parameter value"
         );
@@ -418,7 +419,7 @@ fn an_absurd_length_prefix_does_not_hang_or_exhaust_memory() {
     });
 
     let bridge = Arc::clone(&mock.bridge);
-    let (value, elapsed) = call_within(move || bridge.parameter(1)).unwrap_or_else(|waited| {
+    let (value, elapsed) = call_within(move || bridge.parameter(ParamAddress::Opaque(ParamId::new(1)))).unwrap_or_else(|waited| {
         panic!(
             "a 4 GiB length prefix left the host blocked after {waited:?} — it \
              is allocating on an unvalidated wire length"
@@ -453,7 +454,7 @@ fn a_garbage_payload_is_rejected_rather_than_decoded() {
         _ => Action::Silent,
     });
 
-    let value = mock.bridge.parameter(1);
+    let value = mock.bridge.parameter(ParamAddress::Opaque(ParamId::new(1)));
     assert_eq!(
         value, None,
         "the host decoded a parameter value out of 64 bytes of 0xAB"
@@ -479,7 +480,7 @@ fn a_truncated_body_is_not_mistaken_for_a_complete_message() {
     });
 
     let bridge = Arc::clone(&mock.bridge);
-    let (value, elapsed) = call_within(move || bridge.parameter(1)).unwrap_or_else(|waited| {
+    let (value, elapsed) = call_within(move || bridge.parameter(ParamAddress::Opaque(ParamId::new(1)))).unwrap_or_else(|waited| {
         panic!(
             "a truncated frame left the host blocked after {waited:?}, waiting \
              for a body the server never finished sending"
@@ -508,7 +509,7 @@ fn a_valid_but_wrong_reply_type_does_not_satisfy_the_request() {
         _ => Action::Silent,
     });
 
-    let value = mock.bridge.parameter(1);
+    let value = mock.bridge.parameter(ParamAddress::Opaque(ParamId::new(1)));
     assert_eq!(
         value, None,
         "a StateData reply was accepted as the answer to GetParameter — the \
@@ -526,7 +527,7 @@ fn a_silent_server_is_bounded_by_the_timeout() {
     let mock = MockServer::start("silent", |_| Action::Silent);
 
     let bridge = Arc::clone(&mock.bridge);
-    let (value, elapsed) = call_within(move || bridge.parameter(1)).unwrap_or_else(|waited| {
+    let (value, elapsed) = call_within(move || bridge.parameter(ParamAddress::Opaque(ParamId::new(1)))).unwrap_or_else(|waited| {
         panic!(
             "a server that never replies left the caller blocked for {waited:?} \
              — the request timeout is not bounding this path"

@@ -9,7 +9,7 @@ use std::path::Path;
 
 use tutti_plugin::server::{
     AudioBufferMut, EditorPresence, EditorSize, Features, LoadedPlugin, MidiEventVec,
-    NoteExpressionChanges, ParamId, ParameterChanges, ParameterInfo, PluginAudio, PluginClass,
+    NoteExpressionChanges, ParamAddress, ParameterChanges, ParameterInfo, PluginAudio, PluginClass,
     PluginDescriptor, PluginEditorHost, PluginMeta, PluginParams, PluginResult, PluginState,
     ProcessContext, ProcessOutput, WindowHandle,
 };
@@ -230,7 +230,7 @@ impl PluginAudio for Vst2Instance {
 }
 
 impl PluginParams for Vst2Instance {
-    fn get_parameter(&self, id: ParamId) -> f64 {
+    fn get_parameter(&self, id: ParamAddress) -> f64 {
         #[cfg(feature = "vst2")]
         {
             // `PluginParams` is the shared cross-format vocabulary and returns a
@@ -238,9 +238,12 @@ impl PluginParams for Vst2Instance {
             // is flattened here at the boundary rather than propagated. 0.0
             // matches what the other format loaders return for an unreadable
             // parameter; the distinction stays available on `Vst2Instance`.
-            // `Vst2Instance::parameter` bounds-checks the index; see
-            // `param_index` there for why VST2's address is not an opaque id.
-            self.inner.parameter(id.get()).unwrap_or(0.0) as f64
+            // VST2 is the one format addressed by position, so an opaque
+            // handle addresses nothing here. `Vst2Instance::parameter` bounds-
+            // checks the index it is given; see `param_index` there.
+            id.index()
+                .and_then(|i| self.inner.parameter(i as u32))
+                .unwrap_or(0.0) as f64
         }
         #[cfg(not(feature = "vst2"))]
         {
@@ -249,11 +252,14 @@ impl PluginParams for Vst2Instance {
         }
     }
 
-    fn set_parameter(&mut self, id: ParamId, value: f64) {
+    fn set_parameter(&mut self, id: ParamAddress, value: f64) {
         // Same boundary flattening: the shared trait returns `()`, so a write
-        // the plugin cannot accept is dropped here rather than reported.
+        // the plugin cannot accept — including one addressed by an opaque
+        // handle — is dropped here rather than reported.
         #[cfg(feature = "vst2")]
-        let _ = self.inner.set_parameter(id.get(), value as f32);
+        let _ = id
+            .index()
+            .map(|i| self.inner.set_parameter(i as u32, value as f32));
         #[cfg(not(feature = "vst2"))]
         let _ = (id, value);
     }

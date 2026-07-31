@@ -8,6 +8,7 @@
 
 use super::PluginEditor;
 use crate::error::{BridgeError, LoadStage, Result};
+use crate::protocol::ParamAddress;
 use crate::util::window::{EditorCapabilities, EditorSize, WindowHandle};
 use std::path::Path;
 
@@ -59,8 +60,10 @@ impl PluginEditor for Vst3GuiInstance {
         // VST3 editors don't have explicit idle.
     }
 
-    fn set_parameter(&mut self, id: u32, value: f64) {
-        self.inner.set_parameter(id, value);
+    fn set_parameter(&mut self, id: ParamAddress, value: f64) {
+        // `ParamID` is opaque; a VST2 index addresses nothing here.
+        let Some(id) = id.opaque() else { return };
+        self.inner.set_parameter(id.get(), value);
     }
 
     fn set_automation_state(&mut self, mode: crate::protocol::AutomationMode) {
@@ -79,7 +82,7 @@ impl PluginEditor for Vst3GuiInstance {
         Ok(())
     }
 
-    fn poll_gui_param_changes(&mut self) -> Vec<(u32, f32)> {
+    fn poll_gui_param_changes(&mut self) -> Vec<(ParamAddress, f32)> {
         // Drain through the unified notification poll so `restartComponent`
         // requests (latency / IO / param re-reads) are applied to host state
         // instead of being silently dropped. The GUI path forwards param
@@ -95,7 +98,8 @@ impl PluginEditor for Vst3GuiInstance {
                 use tutti_vst3_host::ParameterEditEvent;
                 match e {
                     ParameterEditEvent::PerformEdit { param_id, value } => {
-                        Some((param_id, value as f32))
+                        // The plugin's editor reported one of its own `ParamID`s.
+                        Some((ParamAddress::Opaque(param_id.into()), value as f32))
                     }
                     _ => None,
                 }

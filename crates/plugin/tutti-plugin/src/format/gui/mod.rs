@@ -14,6 +14,7 @@ mod clap;
 mod vst3;
 
 use crate::error::{BridgeError, LoadStage, Result};
+use crate::protocol::ParamAddress;
 use crate::util::window::{EditorCapabilities, EditorSize, WindowHandle};
 use std::path::Path;
 
@@ -33,10 +34,14 @@ pub(crate) trait PluginEditor: Send {
     fn open_editor(&mut self, parent: WindowHandle) -> Result<EditorSize>;
     fn close_editor(&mut self);
     fn editor_idle(&mut self);
-    fn set_parameter(&mut self, id: u32, value: f64);
+    fn set_parameter(&mut self, id: ParamAddress, value: f64);
     fn set_state(&mut self, data: &[u8]) -> Result<()>;
     /// Poll GUI-originated parameter changes to forward to the audio bridge.
-    fn poll_gui_param_changes(&mut self) -> Vec<(u32, f32)>;
+    ///
+    /// Every format with an editor here is one of the three opaque-id formats
+    /// (VST2's in-process editor does not go through this trait), so an impl
+    /// tags what the plugin handed it rather than choosing a model.
+    fn poll_gui_param_changes(&mut self) -> Vec<(ParamAddress, f32)>;
 
     /// Push the host [`AutomationMode`](crate::protocol::AutomationMode) to the
     /// GUI instance so the editor can update its automation UI feedback. Each

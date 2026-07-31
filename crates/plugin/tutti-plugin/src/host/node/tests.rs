@@ -9,8 +9,8 @@ use crate::host::handles::control_handle::PluginHandle;
 use crate::host::ipc_client::audio::{BridgeEvent, BridgeThread};
 use crate::host::ipc_client::PluginBridge;
 use crate::protocol::{
-    BridgeMessage, ChannelLayout, Features, HostMessage, LoadedPlugin, ParameterInfo,
-    PluginDescriptor, PROTOCOL_VERSION,
+    BridgeMessage, ChannelLayout, Features, HostMessage, LoadedPlugin, ParamAddress, ParamId,
+    ParameterInfo, PluginDescriptor, PROTOCOL_VERSION,
 };
 use crate::protocol::{EditorPresence, PluginClass, SampleFormat, SlabLayout};
 use crate::util::transport::shm::AudioSlab;
@@ -280,7 +280,7 @@ fn trailing_unsolicited_events_dont_poison_next_reply() {
         handle_with_multi_reply_server(move |msg| match msg {
             HostMessage::GetParameterList => vec![
                 BridgeMessage::ParameterList {
-                    parameters: vec![ParameterInfo::new(0, "Vol".to_string())],
+                    parameters: vec![ParameterInfo::new(ParamId::new(0), "Vol".to_string())],
                 },
                 BridgeMessage::LatencyChanged { samples: 256 },
                 BridgeMessage::ParameterChanged {
@@ -288,7 +288,9 @@ fn trailing_unsolicited_events_dont_poison_next_reply() {
                     value: 0.42,
                 },
             ],
-            HostMessage::GetParameter { param_id: 0 } => {
+            HostMessage::GetParameter { param_id }
+                if param_id == ParamAddress::Opaque(ParamId::new(0)) =>
+            {
                 vec![BridgeMessage::ParameterValue { value: Some(0.5) }]
             }
             HostMessage::GetParameter { .. } => vec![BridgeMessage::ParameterValue { value: None }],
@@ -325,7 +327,10 @@ fn trailing_unsolicited_events_dont_poison_next_reply() {
 
     // Second request: the helper must peel the two trailing events off
     // before returning the real `ParameterValue` reply.
-    assert_eq!(handle.parameter(0), Some(0.5));
+    assert_eq!(
+        handle.parameter(ParamAddress::Opaque(ParamId::new(0))),
+        Some(0.5)
+    );
 
     // Give the bridge thread a moment to fire the listener after the
     // dispatch that drained the unsolicited queue.
@@ -354,9 +359,9 @@ fn handle_get_parameter_list() {
     let (handle, _bridge_handle, _server_thread) = handle_with_mock_server(|msg| match msg {
         HostMessage::GetParameterList => Some(BridgeMessage::ParameterList {
             parameters: vec![
-                ParameterInfo::new(0, "Volume".to_string()),
-                ParameterInfo::new(1, "Pan".to_string()),
-                ParameterInfo::new(2, "Cutoff".to_string()),
+                ParameterInfo::new(ParamId::new(0), "Volume".to_string()),
+                ParameterInfo::new(ParamId::new(1), "Pan".to_string()),
+                ParameterInfo::new(ParamId::new(2), "Cutoff".to_string()),
             ],
         }),
         _ => None,
@@ -372,14 +377,19 @@ fn handle_get_parameter_list() {
 #[test]
 fn handle_get_parameter_value() {
     let (handle, _bridge_handle, _server_thread) = handle_with_mock_server(|msg| match msg {
-        HostMessage::GetParameter { param_id: 42 } => {
+        HostMessage::GetParameter { param_id }
+            if param_id == ParamAddress::Opaque(ParamId::new(42)) =>
+        {
             Some(BridgeMessage::ParameterValue { value: Some(0.75) })
         }
         HostMessage::GetParameter { .. } => Some(BridgeMessage::ParameterValue { value: None }),
         _ => None,
     });
 
-    assert_eq!(handle.parameter(42), Some(0.75));
+    assert_eq!(
+        handle.parameter(ParamAddress::Opaque(ParamId::new(42))),
+        Some(0.75)
+    );
 }
 
 #[test]

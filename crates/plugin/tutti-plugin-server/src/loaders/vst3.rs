@@ -5,7 +5,8 @@ use std::path::Path;
 use tutti_plugin::server::{
     AudioBufferMut, AutomationMode, BusChannels, ChannelLayout, ChordChanges, EditorPresence,
     EditorSize, Features, LoadedPlugin, NoteExpressionChanges, NoteExpressionIntChanges,
-    NoteExpressionTextChanges, ParamFlags, ParamId, ParamRange, ParamSteps, ParameterInfo, PluginAudio,
+    NoteExpressionTextChanges, ParamAddress, ParamFlags, ParamRange, ParamSteps, ParameterInfo,
+    PluginAudio,
     PluginClass, PluginDescriptor, PluginEditorHost, PluginError, PluginMeta, PluginParams,
     PluginResult, PluginState, ProcessContext, ProcessOutput, ScaleChanges, WindowHandle,
 };
@@ -467,7 +468,7 @@ fn build_param_info(
     ParameterInfo {
         // VST3 `ParamID` — opaque and plugin-chosen, not a list position; see
         // the ParamID-vs-index note in `tutti-vst3-host`'s `loaded.rs`.
-        id: info.id.into(),
+        id: ParamAddress::Opaque(info.id.into()),
         name: info.title_string(),
         unit: info.units_string(),
         range,
@@ -576,11 +577,14 @@ impl PluginAudio for Vst3Instance {
 }
 
 impl PluginParams for Vst3Instance {
-    fn get_parameter(&self, id: ParamId) -> f64 {
+    fn get_parameter(&self, id: ParamAddress) -> f64 {
+        // A VST2 index addresses nothing here; `ParamID` is opaque.
+        let Some(id) = id.opaque() else { return 0.0 };
         vst_dispatch!(self, inner => inner.parameter(id.get()))
     }
 
-    fn set_parameter(&mut self, id: ParamId, value: f64) {
+    fn set_parameter(&mut self, id: ParamAddress, value: f64) {
+        let Some(id) = id.opaque() else { return };
         vst_dispatch_mut!(self, inner => inner.set_parameter(id.get(), value));
     }
 

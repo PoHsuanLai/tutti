@@ -28,7 +28,7 @@
 use std::ffi::c_void;
 
 use crate::error::EditorError;
-use crate::protocol::{AutomationMode, ParameterInfo};
+use crate::protocol::{AutomationMode, ParamAddress, ParameterInfo};
 use crate::util::window::{EditorCapabilities, EditorSize};
 
 /// Parameter catalog, live-value read, and imperative value write — plus the
@@ -45,13 +45,15 @@ pub trait HostParams: Send + Sync {
     /// backend cannot enumerate parameters.
     fn parameter_descriptors(&self) -> Option<Vec<ParameterInfo>>;
 
-    /// The plugin's current live value for one parameter. `None` if unavailable.
-    fn parameter_value(&self, id: u32) -> Option<f32>;
+    /// The plugin's current live value for one parameter. `None` if unavailable
+    /// — including when `id` uses the other addressing model, which addresses
+    /// no parameter of this backend. See [`ParamAddress`].
+    fn parameter_value(&self, id: ParamAddress) -> Option<f32>;
 
     /// Write one parameter value (a UI knob poke / initial preset value).
     /// Main-thread; fire-and-forget. In-process backends `try_lock` internally so
     /// a shared handle can never block the audio thread.
-    fn set_parameter_value(&self, id: u32, value: f32);
+    fn set_parameter_value(&self, id: ParamAddress, value: f32);
 
     /// `true` if the underlying plugin is gone (subprocess crashed). In-process
     /// backends never return `true` — a crash takes the host down with it.

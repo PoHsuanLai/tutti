@@ -8,7 +8,8 @@ use tutti_plugin::server::{
 };
 #[cfg(all(target_os = "macos", feature = "au"))]
 use tutti_plugin::server::{
-    EditorSize, ParamFlags, ParamId, ParamRange, ParamSteps, ParameterInfo, PluginAudio, PluginEditorHost,
+    EditorSize, ParamAddress, ParamFlags, ParamRange, ParamSteps, ParameterInfo, PluginAudio,
+    PluginEditorHost,
     PluginMeta, PluginParams, PluginResult, PluginState, ProcessContext, ProcessOutput,
     WindowHandle,
 };
@@ -426,7 +427,9 @@ impl PluginAudio for AuInstance {
 impl PluginParams for AuInstance {
     /// Plain native units, per the [`PluginParams`] contract for AU — pass the
     /// AU's value through unchanged.
-    fn get_parameter(&self, id: ParamId) -> f64 {
+    fn get_parameter(&self, id: ParamAddress) -> f64 {
+        // A VST2 index addresses nothing here; `AudioUnitParameterID` is opaque.
+        let Some(id) = id.opaque() else { return 0.0 };
         parameters::get(self.inner.raw_unit(), id.get()).unwrap_or(0.0) as f64
     }
 
@@ -434,7 +437,8 @@ impl PluginParams for AuInstance {
     /// so this pair round-trips. (The `param_changes` automation path in
     /// `process` is the one that must denormalize, because ITS input is
     /// Normalized; see the note there.)
-    fn set_parameter(&mut self, id: ParamId, value: f64) {
+    fn set_parameter(&mut self, id: ParamAddress, value: f64) {
+        let Some(id) = id.opaque() else { return };
         let _ = parameters::set(self.inner.raw_unit(), id.get(), value as f32);
     }
 
@@ -458,7 +462,7 @@ impl PluginParams for AuInstance {
                 ParameterInfo {
                     // `AudioUnitParameterID` — AU's opaque plugin-chosen handle,
                     // the same concept as VST3's `ParamID` and CLAP's `clap_id`.
-                    id: p.id.into(),
+                    id: ParamAddress::Opaque(p.id.into()),
                     name: p.name,
                     unit: p.unit.to_string(),
                     range: ParamRange::Plain {
@@ -808,7 +812,11 @@ mod tests {
             (0.5f64, min + 0.5 * (max - min)),
         ] {
             let mut changes = ParameterChanges::new();
-            let mut queue = ParameterQueue::new(target.id.get());
+            // `ParameterQueue.param_id` stays a bare `u32`: automation
+            // crosses the IPC wire, where the address model is the session's,
+            // not the queue's. AU is opaque.
+            let queue_id = target.id.opaque().expect("AU ids are opaque").get();
+            let mut queue = ParameterQueue::new(queue_id);
             queue.add_point(0, normalized);
             changes.add_queue(queue);
 

@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 use super::midi::IpcMidiEventVec;
+use super::ParamAddress;
 use super::process::ProcessAudioData;
 use super::sample::SampleFormat;
 use super::shm::SlabLayout;
@@ -41,7 +42,7 @@ pub enum HostMessage {
     /// slot `seq` selects; the boxed payload carries the per-block side-band.
     ProcessAudio(Box<ProcessAudioData>),
     SetParameter {
-        param_id: u32,
+        param_id: ParamAddress,
         value: f32,
     },
     SetAutomationState {
@@ -50,11 +51,11 @@ pub enum HostMessage {
         mode: crate::protocol::AutomationMode,
     },
     GetParameter {
-        param_id: u32,
+        param_id: ParamAddress,
     },
     GetParameterList,
     GetParameterInfo {
-        param_id: u32,
+        param_id: ParamAddress,
     },
     SetSampleRate {
         rate: f64,

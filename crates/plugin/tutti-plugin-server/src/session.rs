@@ -123,12 +123,7 @@ impl Session {
 
             M::SetParameter { param_id, value } => {
                 if let Some(plugin) = self.plugin.as_mut() {
-                    // `param_id` arrives off the wire as a bare `u32` — the
-                    // protocol is where `ParamId` stops — and re-enters the
-                    // typed vocabulary here.
-                    plugin
-                        .instance_mut()
-                        .set_parameter(param_id.into(), value as f64);
+                    plugin.instance_mut().set_parameter(param_id, value as f64);
                 }
                 Ok(Reaction::None)
             }
@@ -142,7 +137,7 @@ impl Session {
                 let value = self
                     .plugin
                     .as_mut()
-                    .map(|p| p.instance_mut().get_parameter(param_id.into()) as f32);
+                    .map(|p| p.instance_mut().get_parameter(param_id) as f32);
                 Ok(BridgeMessage::ParameterValue { value }.into())
             }
             M::GetParameterList => {
@@ -158,7 +153,7 @@ impl Session {
                     p.instance()
                         .get_parameter_list()
                         .into_iter()
-                        .find(|info| info.id.get() == param_id)
+                        .find(|info| info.id == param_id)
                 });
                 Ok(BridgeMessage::ParameterInfoResponse { info }.into())
             }
@@ -366,7 +361,8 @@ impl Session {
 mod tests {
     use super::*;
     use tutti_plugin::server::{
-        Features, IpcMidiEventVec, NoteExpressionChanges, ParameterChanges, TransportInfo,
+        Features, IpcMidiEventVec, NoteExpressionChanges, ParamAddress, ParamId, ParameterChanges,
+        TransportInfo,
     };
     use tutti_plugin::{BridgeError, LoadStage};
 
@@ -396,7 +392,9 @@ mod tests {
     fn get_parameter_no_plugin() {
         let mut s = Session::new();
         let reply = s
-            .handle(HostMessage::GetParameter { param_id: 0 })
+            .handle(HostMessage::GetParameter {
+                param_id: ParamAddress::Opaque(ParamId::new(0)),
+            })
             .unwrap()
             .into_reply();
         match reply {
@@ -422,7 +420,9 @@ mod tests {
     fn get_parameter_info_no_plugin() {
         let mut s = Session::new();
         let reply = s
-            .handle(HostMessage::GetParameterInfo { param_id: 0 })
+            .handle(HostMessage::GetParameterInfo {
+                param_id: ParamAddress::Opaque(ParamId::new(0)),
+            })
             .unwrap()
             .into_reply();
         match reply {
@@ -455,7 +455,7 @@ mod tests {
         let mut s = Session::new();
         let r = s
             .handle(HostMessage::SetParameter {
-                param_id: 0,
+                param_id: ParamAddress::Opaque(ParamId::new(0)),
                 value: 0.5,
             })
             .unwrap();
@@ -610,7 +610,7 @@ mod tests {
 
     /// Fetch any param_id from the loaded plugin's parameter list.
     #[cfg(feature = "clap")]
-    fn first_param_id(s: &mut Session) -> u32 {
+    fn first_param_id(s: &mut Session) -> ParamAddress {
         let reply = s
             .handle(HostMessage::GetParameterList)
             .unwrap()
@@ -618,9 +618,7 @@ mod tests {
         match reply {
             BridgeMessage::ParameterList { parameters } => {
                 assert!(!parameters.is_empty(), "need at least one parameter");
-                // `HostMessage` fields are bare `u32`: the protocol is a wire
-                // boundary, so `ParamId` stops here.
-                parameters[0].id.get()
+                parameters[0].id
             }
             other => panic!("expected ParameterList, got {other:?}"),
         }
@@ -670,7 +668,7 @@ mod tests {
         match reply {
             BridgeMessage::ParameterInfoResponse { info } => {
                 let info = info.expect("info should exist");
-                assert_eq!(info.id.get(), param_id);
+                assert_eq!(info.id, param_id);
             }
             other => panic!("expected ParameterInfoResponse, got {other:?}"),
         }

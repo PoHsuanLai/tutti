@@ -22,7 +22,8 @@ mod thread;
 use crate::error::Result;
 use crate::protocol::{
     ChordChanges, MidiEventVec, NoteExpressionChanges, NoteExpressionIntChanges,
-    NoteExpressionTextChanges, ParameterChanges, ParameterInfo, ScaleChanges, TransportInfo,
+    NoteExpressionTextChanges, ParamAddress, ParameterChanges, ParameterInfo, ScaleChanges,
+    TransportInfo,
 };
 use crate::util::transport::shm::AudioSlab;
 
@@ -115,7 +116,7 @@ impl AudioBridge {
 
     // --- RT fire-and-forget ---
 
-    pub fn set_parameter_rt(&self, param_id: u32, value: f32) -> bool {
+    pub fn set_parameter_rt(&self, param_id: ParamAddress, value: f32) -> bool {
         !self.lifecycle.is_crashed()
             && self
                 .channels
@@ -258,7 +259,7 @@ impl AudioBridge {
         ask_resp.recv_timeout(PARAM_TIMEOUT).ok().flatten()
     }
 
-    pub fn parameter(&self, param_id: u32) -> Option<f32> {
+    pub fn parameter(&self, param_id: ParamAddress) -> Option<f32> {
         if self.lifecycle.is_crashed() {
             return None;
         }

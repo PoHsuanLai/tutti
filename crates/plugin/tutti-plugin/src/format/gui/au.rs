@@ -8,6 +8,7 @@
 
 use super::PluginEditor;
 use crate::error::{BridgeError, LoadStage, Result};
+use crate::protocol::ParamAddress;
 use crate::util::window::{EditorSize, WindowHandle};
 use std::path::Path;
 
@@ -80,8 +81,10 @@ impl PluginEditor for AuGuiInstance {
         // AUv2 Cocoa views are driven by the AppKit run loop; no explicit idle needed.
     }
 
-    fn set_parameter(&mut self, id: u32, value: f64) {
-        let _ = self.inner.set_parameter(id, value as f32);
+    fn set_parameter(&mut self, id: ParamAddress, value: f64) {
+        // `AudioUnitParameterID` is opaque; a VST2 index addresses nothing here.
+        let Some(id) = id.opaque() else { return };
+        let _ = self.inner.set_parameter(id.get(), value as f32);
     }
 
     fn set_state(&mut self, data: &[u8]) -> Result<()> {
@@ -90,7 +93,7 @@ impl PluginEditor for AuGuiInstance {
             .map_err(|e| BridgeError::ProtocolError(format!("AU set_state failed: {e}")))
     }
 
-    fn poll_gui_param_changes(&mut self) -> Vec<(u32, f32)> {
+    fn poll_gui_param_changes(&mut self) -> Vec<(ParamAddress, f32)> {
         // AUv2 doesn't have a built-in parameter change notification from GUI.
         // Parameter changes from Cocoa views go through AudioUnitSetParameter directly.
         Vec::new()

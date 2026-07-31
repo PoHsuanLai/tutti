@@ -103,8 +103,9 @@ impl ClapLoaded {
                 // which stays a bare `u32` because it crosses the IPC wire, and
                 // is handed to `ClapEvent::param_value` as the ABI's `u32`.
                 // Unwrapping here keeps the whole path between those two in the
-                // one type they both speak.
-                Some((p.id.get(), min as f32, max as f32))
+                // one type they both speak. Every CLAP param is opaque, so the
+                // `None` arm is unreachable rather than a filter.
+                Some((p.id.opaque()?.get(), min as f32, max as f32))
             })
             .collect();
         // Read the plugin's own count, not the length of the map above: they

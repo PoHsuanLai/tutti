@@ -440,7 +440,7 @@ fn project_param_info(info: ClapParamInfo) -> tutti_plugin_types::ParameterInfo 
         // `clap_param_info.id` is a `clap_id` — an opaque plugin-chosen handle,
         // the same concept VST3 spells `ParamID` and AU spells
         // `AudioUnitParameterID`. The shared type names all three.
-        id: info.id.into(),
+        id: tutti_plugin_types::ParamAddress::Opaque(info.id.into()),
         name: info.name,
         // CLAP carries no unit string.
         unit: String::new(),

@@ -16,7 +16,7 @@ use std::sync::Arc;
 use vst::plugin::Plugin as _;
 
 use tutti_plugin_types::{
-    ParamFlags, ParamRange, ParamSteps, ParameterInfo as SharedParameterInfo,
+    ParamAddress, ParamFlags, ParamRange, ParamSteps, ParameterInfo as SharedParameterInfo,
 };
 
 use crate::host::ParameterChange;
@@ -44,11 +44,11 @@ impl Vst2Instance {
     ///
     /// VST2 is the one hosted format whose parameter address is a dense,
     /// ordered index rather than an opaque id — `getParameter(effect, index)`
-    /// and `numParams` are both `i32` in the ABI. The shared `ParameterInfo.id`
-    /// is a `u32`, so every entry point has to narrow, and `id as i32` alone
-    /// wraps anything from `0x8000_0000` up to a negative index that goes
-    /// straight into the plugin's own array indexing — neither this crate nor
-    /// the vendored dispatch bounds-checks it.
+    /// and `numParams` are both `i32` in the ABI. `ParamAddress::Index` carries
+    /// that distinction at the shared boundary, but says nothing about whether
+    /// an index is *in range*: neither this crate nor the vendored dispatch
+    /// bounds-checks before the number reaches the plugin's own array indexing,
+    /// which is what this guards.
     ///
     /// One helper rather than a check per entry point: `parameter_info` used to
     /// be the only site that guarded, which made the other three read like a
@@ -173,13 +173,11 @@ impl Vst2Instance {
                 };
 
                 SharedParameterInfo {
-                    // VST2 is the one format whose parameter address is a dense
-                    // `i32` index, not an opaque plugin-chosen id — see
-                    // [`Vst2Instance::param_index`]. It occupies the shared
-                    // id slot because a positional index is still a unique
-                    // address within this plugin, but the two are different
-                    // things and only coincide numerically.
-                    id: p.id.into(),
+                    // The one format that addresses by position. `p.id` is the
+                    // enumeration counter from `parameters()`, already bounded
+                    // by `get_info().parameters`, so it is an index by
+                    // construction — see [`Vst2Instance::param_index`].
+                    id: ParamAddress::Index(p.id as i32),
                     name: p.name,
                     unit: p.unit,
                     range,

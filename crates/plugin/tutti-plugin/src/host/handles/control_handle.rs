@@ -3,7 +3,7 @@ use crate::host::handles::capabilities::{HostAutomationState, HostEditor, HostPa
 use crate::host::ipc_client::audio::{PluginInvalidation, PluginRefresh};
 use crate::host::node::{InvalidateSink, ParameterChangeSink, RefreshSink};
 use crate::protocol::AutomationMode;
-use crate::protocol::{LoadedPlugin, ParameterInfo, PluginDescriptor};
+use crate::protocol::{LoadedPlugin, ParamAddress, ParameterInfo, PluginDescriptor};
 use crate::util::window::{EditorCapabilities, EditorSize};
 use raw_window_handle::HasWindowHandle;
 use std::sync::Arc;
@@ -250,12 +250,15 @@ impl PluginHandle {
         self.params.parameter_descriptors()
     }
 
-    pub fn parameter(&self, param_id: u32) -> Option<f32> {
+    /// `param_id` comes from [`ParameterInfo::id`] on this plugin's own
+    /// [`parameters`](Self::parameters) list — see [`ParamAddress`] for why a
+    /// bare number cannot stand in for it.
+    pub fn parameter(&self, param_id: ParamAddress) -> Option<f32> {
         self.params.parameter_value(param_id)
     }
 
     /// Main-thread, fire-and-forget.
-    pub fn set_parameter(&self, param_id: u32, value: f32) -> &Self {
+    pub fn set_parameter(&self, param_id: ParamAddress, value: f32) -> &Self {
         self.params.set_parameter_value(param_id, value);
         self
     }

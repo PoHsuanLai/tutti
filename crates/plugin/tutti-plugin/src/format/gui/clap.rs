@@ -9,6 +9,7 @@
 
 use super::PluginEditor;
 use crate::error::{BridgeError, LoadStage, Result};
+use crate::protocol::ParamAddress;
 use crate::util::window::{EditorCapabilities, EditorSize, WindowHandle};
 use std::path::Path;
 
@@ -59,8 +60,10 @@ impl PluginEditor for ClapGuiInstance {
         }
     }
 
-    fn set_parameter(&mut self, id: u32, value: f64) {
-        self.inner.set_parameter(id, value);
+    fn set_parameter(&mut self, id: ParamAddress, value: f64) {
+        // `clap_id` is opaque; a VST2 index addresses nothing here.
+        let Some(id) = id.opaque() else { return };
+        self.inner.set_parameter(id.get(), value);
     }
 
     fn set_state(&mut self, data: &[u8]) -> Result<()> {
@@ -69,7 +72,7 @@ impl PluginEditor for ClapGuiInstance {
             .map_err(|e| BridgeError::ProtocolError(format!("CLAP set_state failed: {e}")))
     }
 
-    fn poll_gui_param_changes(&mut self) -> Vec<(u32, f32)> {
+    fn poll_gui_param_changes(&mut self) -> Vec<(ParamAddress, f32)> {
         // CLAP parameter changes from the GUI go through flush_params output events.
         // TODO: Capture output events from flush_params to forward to audio bridge.
         Vec::new()

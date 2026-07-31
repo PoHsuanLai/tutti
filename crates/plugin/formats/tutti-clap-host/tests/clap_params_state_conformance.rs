@@ -34,7 +34,7 @@ use tutti_clap_test_plugin::{
     ParamStateCapture, ProcessCapture, PARAM_CMD_REQUEST_FLUSH, PARAM_CMD_RESCAN_ALL,
     PARAM_CMD_RESCAN_VALUES, STATE_MAGIC,
 };
-use tutti_plugin_types::{ParamFlags, ParamId, ParamSteps};
+use tutti_plugin_types::{ParamAddress, ParamFlags, ParamSteps};
 
 /// CLAP event type constants, pinned here rather than imported: these are the
 /// wire values the host puts on the FFI, so a failure names what the plugin
@@ -239,8 +239,11 @@ fn host_enumerates_parameters_with_plugin_ids_in_index_order() {
     );
 
     let listed = loaded.parameter_list();
-    let got_ids: Vec<ParamId> = listed.iter().map(|p| p.id).collect();
-    let want_ids: Vec<ParamId> = probe_params().iter().map(|p| p.id.into()).collect();
+    let got_ids: Vec<ParamAddress> = listed.iter().map(|p| p.id).collect();
+    let want_ids: Vec<ParamAddress> = probe_params()
+        .iter()
+        .map(|p| ParamAddress::Opaque(p.id.into()))
+        .collect();
     assert_eq!(
         got_ids, want_ids,
         "host must hand back the plugin's own param ids, in the plugin's index \
@@ -258,7 +261,11 @@ fn host_projects_parameter_metadata_exactly() {
 
     for (i, want) in probe_params().iter().enumerate() {
         let got = &listed[i];
-        assert_eq!(got.id, want.id.into(), "param {i} id");
+        assert_eq!(
+            got.id,
+            ParamAddress::Opaque(want.id.into()),
+            "param {i} id"
+        );
         assert_eq!(
             got.name.as_bytes(),
             want.name,

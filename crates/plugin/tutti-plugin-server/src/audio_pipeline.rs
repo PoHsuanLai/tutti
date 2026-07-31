@@ -415,7 +415,7 @@ fn with_audio_buffer_f64<R>(
 mod tests {
     use super::*;
     use tutti_plugin::server::{
-        ParamAddress, PluginAudio, PluginEditorHost, PluginMeta, PluginParams, PluginState, Samples,
+        ParamAddress, PluginAudio, PluginEditorHost, PluginMeta, PluginParams, PluginState, PluginTail, Samples,
     };
 
     #[test]
@@ -655,6 +655,7 @@ mod tests {
                 inputs: inputs.iter().map(|&c| ChannelLayout::from(c)).collect(),
                 outputs: outputs.iter().map(|&c| ChannelLayout::from(c)).collect(),
                 latency_samples: Samples::ZERO,
+                tail: PluginTail::Unknown,
                 // This fixture is about bus widths; no capability is claimed.
                 features: Features::empty(),
                 probed: Features::empty(),

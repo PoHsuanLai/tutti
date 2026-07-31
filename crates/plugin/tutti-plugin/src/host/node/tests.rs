@@ -10,7 +10,7 @@ use crate::host::ipc_client::audio::{BridgeEvent, BridgeThread};
 use crate::host::ipc_client::PluginBridge;
 use crate::protocol::{
     BridgeMessage, ChannelLayout, Features, HostMessage, LoadedPlugin, ParamAddress, ParamId,
-    ParameterInfo, PluginDescriptor, Samples, PROTOCOL_VERSION,
+    ParameterInfo, PluginDescriptor, PluginTail, Samples, PROTOCOL_VERSION,
 };
 use crate::protocol::{EditorPresence, PluginClass, SampleFormat, SlabLayout};
 use crate::util::transport::shm::AudioSlab;
@@ -152,6 +152,7 @@ fn handle_with_mock_server(
         inputs: smallvec![ChannelLayout::Stereo],
         outputs: smallvec![ChannelLayout::Stereo],
         latency_samples: Samples::ZERO,
+        tail: PluginTail::Unknown,
         features: Features::EDITOR,
         probed: Features::EDITOR,
     };
@@ -256,6 +257,7 @@ fn handle_with_multi_reply_server(
         inputs: smallvec![ChannelLayout::Stereo],
         outputs: smallvec![ChannelLayout::Stereo],
         latency_samples: Samples::ZERO,
+        tail: PluginTail::Unknown,
         features: Features::EDITOR,
         probed: Features::EDITOR,
     };

@@ -54,7 +54,7 @@ pub use harmony::{
 };
 pub use load_stage::LoadStage;
 pub use main_thread::{assert_main_thread, mark_main_thread};
-pub use metadata::{BusChannels, LoadedPlugin};
+pub use metadata::{BusChannels, LoadedPlugin, PluginTail};
 pub use midi::{MidiEventVec, MIDI_STACK_CAPACITY};
 pub use note_expression::{NoteExpressionChanges, NoteExpressionType, NoteExpressionValue};
 pub use note_id::{note_id_for, note_id_to_channel_note, MAX_HOST_NOTE_ID};

@@ -9,8 +9,8 @@ use tutti_plugin::server::{
 #[cfg(all(target_os = "macos", feature = "au"))]
 use tutti_plugin::server::{
     EditorSize, ParamAddress, ParamFlags, ParamRange, ParamSteps, ParameterInfo, PluginAudio,
-    PluginEditorHost, PluginMeta, PluginParams, PluginResult, PluginState, ProcessContext,
-    ProcessOutput, WindowHandle,
+    PluginEditorHost, PluginMeta, PluginParams, PluginResult, PluginState, PluginTail,
+    ProcessContext, ProcessOutput, WindowHandle,
 };
 
 use crate::loaders::common::{single_bus, Meta};
@@ -287,6 +287,32 @@ impl AuInstance {
             // so it is the third-party case, unmeasured by construction.
             let latency = inner.get_latency().unwrap_or(Samples::ZERO);
 
+            // AU is the one format that reports tail in *seconds*, and the one
+            // where a refusal is meaningful: every Apple instrument, mixer and
+            // generator rejects `kAudioUnitProperty_TailTime` outright, which is
+            // "no tail concept", not "no tail". That is `Unknown`.
+            //
+            // The infinite case is why `PluginTail` has an `Unbounded` arm at
+            // all. TAL Reverb 4 answers `f64::INFINITY`, and `Seconds::to_samples`
+            // maps every non-finite input to `Samples::ZERO` — deliberately, since
+            // that is right for NaN and negatives. Converting first would make an
+            // infinite reverb indistinguishable from a plugin with no tail, and a
+            // bounce sizing its render from that number truncates the reverb
+            // entirely. So the finiteness question is asked *before* the
+            // conversion, never after.
+            let tail = match inner.get_tail_time() {
+                Err(_) => PluginTail::Unknown,
+                Ok(seconds) if !seconds.get().is_finite() => PluginTail::Unbounded,
+                Ok(seconds) => match seconds.to_samples_ceil(sample_rate) {
+                    // A declared-but-zero tail is a real answer: the unit has a
+                    // tail concept and says it has none.
+                    s if s == Samples::ZERO => PluginTail::None,
+                    // `_ceil`, not `_floor`: a render that rounds a tail down
+                    // clips its last partial block.
+                    s => PluginTail::Finite(s),
+                },
+            };
+
             let descriptor = PluginDescriptor {
                 id: format!(
                     "au.{}.{}",
@@ -318,6 +344,7 @@ impl AuInstance {
                 inputs: single_bus(inner.num_inputs()),
                 outputs: single_bus(inner.num_outputs()),
                 latency_samples: latency,
+                tail,
                 features,
                 probed,
             };
@@ -569,6 +596,122 @@ mod tests {
     // Note: AU loading by path requires the component name to match the bundle name.
     // For system AUs, they live in /System/Library/Components/ or
     // /Library/Audio/Plug-Ins/Components/.
+
+    /// An AU that declines `kAudioUnitProperty_TailTime` is `Unknown`, and one
+    /// that reports an unbounded tail is `Unbounded` — never `None`, which is
+    /// what a plain sample count would have collapsed both to.
+    ///
+    /// The Apple corpus covers the first half: every Apple instrument, mixer
+    /// and generator rejects the property, and every Apple effect answers it.
+    /// The second half needs a plugin that reports `f64::INFINITY` — TAL
+    /// Reverb 4 does, and no Apple unit exceeds ~21 s — so it runs only when
+    /// that unit is installed and says so when it is skipped.
+    #[test]
+    fn a_declined_tail_is_unknown_and_an_infinite_one_is_unbounded() {
+        use tutti_au_host::component;
+        use tutti_au_host::types::AudioComponentDescription;
+        use tutti_au_host::types::{K_AUDIO_UNIT_TYPE_EFFECT, K_AUDIO_UNIT_TYPE_MUSIC_DEVICE};
+
+        // An effect answers the property, so it must not be `Unknown`.
+        let effect = AudioComponentDescription {
+            componentType: K_AUDIO_UNIT_TYPE_EFFECT,
+            componentSubType: u32::from_be_bytes(*b"dely"),
+            componentManufacturer: u32::from_be_bytes(*b"appl"),
+            componentFlags: 0,
+            componentFlagsMask: 0,
+        };
+        let comp = component::find_component(&effect).expect("AUDelay should exist");
+        let mut inner = unsafe { tutti_au_host::AuInstance::new(comp, 44_100.0, 512) }
+            .expect("Should create instance");
+        inner.initialize().expect("Should initialize");
+        let tail = match inner.get_tail_time() {
+            Err(_) => PluginTail::Unknown,
+            Ok(sec) if !sec.get().is_finite() => PluginTail::Unbounded,
+            Ok(sec) => match sec.to_samples_ceil(44_100.0) {
+                s if s == Samples::ZERO => PluginTail::None,
+                s => PluginTail::Finite(s),
+            },
+        };
+        assert_ne!(
+            tail,
+            PluginTail::Unknown,
+            "AUDelay answers kAudioUnitProperty_TailTime, so its tail is known"
+        );
+
+        // An instrument rejects the property outright — that is "no tail
+        // concept", which must read as `Unknown` rather than as a zero tail.
+        let instrument = AudioComponentDescription {
+            componentType: K_AUDIO_UNIT_TYPE_MUSIC_DEVICE,
+            componentSubType: u32::from_be_bytes(*b"dls "),
+            componentManufacturer: u32::from_be_bytes(*b"appl"),
+            componentFlags: 0,
+            componentFlagsMask: 0,
+        };
+        if let Some(comp) = component::find_component(&instrument) {
+            let mut inner = unsafe { tutti_au_host::AuInstance::new(comp, 44_100.0, 512) }
+                .expect("Should create instance");
+            inner.initialize().expect("Should initialize");
+            let mapped = match inner.get_tail_time() {
+                Err(_) => PluginTail::Unknown,
+                Ok(sec) if !sec.get().is_finite() => PluginTail::Unbounded,
+                Ok(sec) => match sec.to_samples_ceil(44_100.0) {
+                    s if s == Samples::ZERO => PluginTail::None,
+                    s => PluginTail::Finite(s),
+                },
+            };
+            // Whatever this unit answers, a *refusal* must never surface as a
+            // zero tail — that is the mapping this test exists for.
+            if inner.get_tail_time().is_err() {
+                assert_eq!(
+                    mapped,
+                    PluginTail::Unknown,
+                    "a refused tail property must be Unknown, not None"
+                );
+                assert_ne!(mapped.samples(), Some(Samples::ZERO));
+            }
+        }
+
+        // The unbounded half. TAL Reverb 4 reports `f64::INFINITY`; when it is
+        // not installed this leg is skipped, and says so rather than passing
+        // silently — a skipped assertion is not a satisfied one.
+        let infinite = AudioComponentDescription {
+            componentType: K_AUDIO_UNIT_TYPE_EFFECT,
+            componentSubType: u32::from_be_bytes(*b"reV4"),
+            componentManufacturer: u32::from_be_bytes(*b"TOGU"),
+            componentFlags: 0,
+            componentFlagsMask: 0,
+        };
+        match component::find_component(&infinite) {
+            None => {
+                eprintln!("SKIP: TAL Reverb 4 not installed; the Unbounded arm is unexercised here")
+            }
+            Some(comp) => {
+                let mut inner = unsafe { tutti_au_host::AuInstance::new(comp, 44_100.0, 512) }
+                    .expect("Should create instance");
+                inner.initialize().expect("Should initialize");
+                let seconds = inner
+                    .get_tail_time()
+                    .expect("TAL Reverb 4 answers the tail property");
+                assert!(
+                    !seconds.get().is_finite(),
+                    "TAL Reverb 4 is the corpus's infinite-tail unit; it reported {seconds:?}"
+                );
+
+                let mapped = match () {
+                    _ if !seconds.get().is_finite() => PluginTail::Unbounded,
+                    _ => match seconds.to_samples_ceil(44_100.0) {
+                        s if s == Samples::ZERO => PluginTail::None,
+                        s => PluginTail::Finite(s),
+                    },
+                };
+                assert_eq!(mapped, PluginTail::Unbounded);
+                // The point of the whole type: converting first would have made
+                // this `None`, and a bounce would truncate the reverb entirely.
+                assert_ne!(mapped, PluginTail::None);
+                assert_eq!(seconds.to_samples_ceil(44_100.0), Samples::ZERO);
+            }
+        }
+    }
 
     #[test]
     fn test_au_enumerate_and_load() {

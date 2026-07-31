@@ -69,7 +69,17 @@ pub mod shm;
 ///   an index while AU and CLAP read the same field as opaque, each recovering
 ///   the model from its own identity. Mandatory for the same reason as v8: the
 ///   discriminant byte shifts every following field.
-pub const PROTOCOL_VERSION: u32 = 9;
+/// - v10: `LoadedPlugin` gains `tail: PluginTail` — how long a plugin keeps
+///   sounding after its input stops, which a bounce needs so it does not
+///   truncate a reverb mid-decay. A sum type rather than a count because
+///   "unbounded" and "never asked" are real answers and neither is a number:
+///   TAL Reverb 4 reports an infinite tail, and through `Seconds::to_samples`
+///   that arrives as `Samples(0)` — bit-identical to a plugin with no tail.
+///   Mandatory: the new field appends to the struct, so a v9 peer stops reading
+///   before it and a v9 *payload* runs the decoder off the end. The field also
+///   carries `serde(default)`, which covers the JSON and struct-update paths
+///   but not this bincode wire.
+pub const PROTOCOL_VERSION: u32 = 10;
 
 /// Validate a subprocess-reported protocol version against [`PROTOCOL_VERSION`].
 /// Called at each handshake consumer so a version skew fails loudly instead of
@@ -112,7 +122,7 @@ pub use tutti_plugin_types::{
     LoadedPlugin, NoteExpressionChanges, NoteExpressionIntChanges, NoteExpressionIntValue,
     NoteExpressionTextChanges, NoteExpressionTextValue, NoteExpressionType, NoteExpressionValue,
     ParamAddress, ParamFlags, ParamId, ParamRange, ParamSteps, ParameterChanges, ParameterInfo,
-    ParameterPoint, ParameterQueue, Samples, ScaleChanges, ScaleValue, TimeSignature,
+    ParameterPoint, ParameterQueue, PluginTail, Samples, ScaleChanges, ScaleValue, TimeSignature,
     TransportInfo,
 };
 

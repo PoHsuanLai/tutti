@@ -362,6 +362,18 @@ impl Vst3Loaded {
         unsafe { self.interfaces.processor.getLatencySamples() }
     }
 
+    /// Read the plugin's tail length from `IAudioProcessor::getTailSamples` —
+    /// how long it keeps sounding after its input goes silent.
+    ///
+    /// The raw count, so `0` (no tail) and the saturating `u32::MAX` (an
+    /// effectively unbounded one) both reach the caller as the plugin stated
+    /// them. `PluginTail::from_samples` is what turns those into the shared
+    /// vocabulary; this stays at the ABI's own type so nothing is decided here.
+    pub fn read_tail_samples(&self) -> u32 {
+        tutti_plugin_types::assert_main_thread();
+        unsafe { self.interfaces.processor.getTailSamples() }
+    }
+
     // ── Parameters: ParamID vs index ──────────────────────────────────────────
     //
     // `IEditController` uses TWO different address spaces and conflating them

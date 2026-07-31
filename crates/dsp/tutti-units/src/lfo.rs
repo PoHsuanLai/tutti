@@ -83,9 +83,13 @@ pub struct ModulatorNode<M: Modulator> {
     /// path: in the node, not in the (stateless, `Sync`) modulator.
     mod_state: M::State,
     mode: LfoMode,
-    /// In `FreeRunning` mode: oscillator frequency in Hz.
-    /// In `BeatSynced` mode: beats per cycle (stored in the same atomic; the
-    /// unit is context-dependent on `mode`).
+    /// `FreeRunning`: oscillator frequency in Hz. `BeatSynced`: beats per
+    /// cycle, a span — the same atomic, read through `mode`.
+    ///
+    /// The pun is here because this cell is exposed as a raw `AtomicF32` for
+    /// audio-rate modulation, and `Param` is f32-only. Everything that writes
+    /// it either sets the mode (`with_*`) or refuses when the mode disagrees
+    /// (`set_*`), so no caller can put a frequency in the span reading.
     frequency: Param<Hz>,
     depth: Param<Depth>,
     phase_offset: Param<PhaseIncrement>,
@@ -135,13 +139,19 @@ impl<M: Modulator> ModulatorNode<M> {
         }
     }
 
-    /// Set the frequency in Hz (free-running) or beats-per-cycle (beat-synced).
+    /// Free-running at `hz` cycles per second, switching to
+    /// [`LfoMode::FreeRunning`].
     ///
-    /// In free-running mode this is the oscillator frequency in Hz. In
-    /// beat-synced mode this is beats-per-cycle (the same atomic is reused;
-    /// the unit is context-dependent on `mode`).
-    pub fn with_frequency(self, hz_or_beats: impl Into<Hz>) -> Self {
-        self.frequency.store(hz_or_beats.into());
+    /// **The mode switch is the point.** This took an `Hz` and left the mode
+    /// alone, so on a beat-synced node it wrote the span cell with a frequency
+    /// and the type system agreed:
+    /// `with_beat_sync(BeatDuration(4.0)).with_frequency(Hz(2.0))` gave a
+    /// 2-*beat* cycle, not 2 Hz. Setting a rate in one clock's unit now selects
+    /// that clock, which is the only reading under which both calls mean what
+    /// they say.
+    pub fn with_frequency(mut self, hz: impl Into<Hz>) -> Self {
+        self.mode = LfoMode::FreeRunning;
+        self.frequency.store(hz.into());
         self
     }
 
@@ -153,8 +163,10 @@ impl<M: Modulator> ModulatorNode<M> {
     /// Takes a [`BeatDuration`] — a span, so a larger value is *slower*. The
     /// backing cell is a `Param<Hz>` because it is exposed as a raw `AtomicF32`
     /// for audio-rate modulation ([`frequency`](Self::frequency)); the span is
-    /// stored in it and read back through [`beats_per_cycle`](Self::beats_per_cycle),
-    /// so the pun is confined to those two accessors instead of every caller.
+    /// stored in it and read back through
+    /// [`beats_per_cycle`](Self::beats_per_cycle). The mode decides which of
+    /// the two readings applies, so every entry point that writes the cell has
+    /// to set it — see [`with_frequency`](Self::with_frequency).
     pub fn with_beat_sync(mut self, beats_per_cycle: impl Into<BeatDuration>) -> Self {
         self.mode = LfoMode::BeatSynced;
         self.frequency
@@ -202,8 +214,26 @@ impl<M: Modulator> ModulatorNode<M> {
         self.phase_offset.as_atomic()
     }
 
+    /// Set the free-running rate. **Ignored in [`LfoMode::BeatSynced`]**, where
+    /// the cell holds a span in beats and an `Hz` would be a silent reciprocal
+    /// — use [`set_beats_per_cycle`](Self::set_beats_per_cycle).
+    ///
+    /// `&self`, so unlike [`with_frequency`](Self::with_frequency) this cannot
+    /// switch the mode: the node is live in the graph. Refusing is the only
+    /// remaining option that does not corrupt the other clock's value.
     pub fn set_frequency(&self, freq: impl Into<Hz>) {
-        self.frequency.store(freq.into());
+        if self.mode == LfoMode::FreeRunning {
+            self.frequency.store(freq.into());
+        }
+    }
+
+    /// Set the beat-synced span. **Ignored in [`LfoMode::FreeRunning`]** — the
+    /// mirror of [`set_frequency`](Self::set_frequency).
+    pub fn set_beats_per_cycle(&self, beats_per_cycle: impl Into<BeatDuration>) {
+        if self.mode == LfoMode::BeatSynced {
+            self.frequency
+                .store(Hz(beats_per_cycle.into().get() as f32));
+        }
     }
 
     pub fn set_depth(&self, depth: impl Into<Depth>) {
@@ -377,6 +407,54 @@ mod tests {
             "Expected ~1.0, got {}",
             output[0]
         );
+    }
+
+    /// Setting a rate in one clock's unit selects that clock.
+    ///
+    /// `with_frequency` used to leave the mode alone while writing the cell the
+    /// beat-synced reading uses, so this sequence produced a 2-beat cycle whose
+    /// author had asked for 2 Hz — the reciprocal confusion in the one place
+    /// the `SourceClock` split did not reach.
+    #[test]
+    fn setting_a_free_rate_leaves_beat_sync_behind() {
+        let lfo = LfoNode::new(LfoShape::Sine)
+            .with_beat_sync(BeatDuration(4.0))
+            .with_frequency(Hz(2.0));
+        assert_eq!(lfo.mode, LfoMode::FreeRunning);
+        assert_eq!(lfo.inputs(), 0, "a free-running LFO reads no beat ports");
+        assert_eq!(lfo.frequency.load(), Hz(2.0));
+
+        // And the other direction.
+        let lfo = LfoNode::new(LfoShape::Sine)
+            .with_frequency(Hz(2.0))
+            .with_beat_sync(BeatDuration(4.0));
+        assert_eq!(lfo.mode, LfoMode::BeatSynced);
+        assert_eq!(lfo.beats_per_cycle(), BeatDuration(4.0));
+    }
+
+    /// The live setters take `&self` and so cannot switch modes. Writing the
+    /// wrong one is refused rather than silently reinterpreted.
+    #[test]
+    fn a_live_setter_for_the_other_clock_is_ignored() {
+        let synced = LfoNode::new(LfoShape::Sine).with_beat_sync(BeatDuration(4.0));
+        synced.set_frequency(Hz(2.0));
+        assert_eq!(
+            synced.beats_per_cycle(),
+            BeatDuration(4.0),
+            "an Hz must not land in the span cell"
+        );
+        synced.set_beats_per_cycle(BeatDuration(8.0));
+        assert_eq!(synced.beats_per_cycle(), BeatDuration(8.0));
+
+        let free = LfoNode::new(LfoShape::Sine).with_frequency(Hz(2.0));
+        free.set_beats_per_cycle(BeatDuration(4.0));
+        assert_eq!(
+            free.frequency.load(),
+            Hz(2.0),
+            "a span must not land in the frequency cell"
+        );
+        free.set_frequency(Hz(5.0));
+        assert_eq!(free.frequency.load(), Hz(5.0));
     }
 
     #[test]

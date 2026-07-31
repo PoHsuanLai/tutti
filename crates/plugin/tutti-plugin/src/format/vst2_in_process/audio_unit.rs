@@ -290,7 +290,7 @@ impl AudioUnit for InProcessVst2Client {
         crate::host::node::route_with_latency(
             self.metadata.num_inputs.count() as usize,
             self.metadata.num_outputs.count() as usize,
-            self.metadata.latency_samples as f64,
+            self.metadata.latency_samples.get() as f64,
             input,
         )
     }
@@ -412,7 +412,7 @@ impl AudioUnit<F64> for InProcessVst2Client {
         crate::host::node::route_with_latency(
             self.metadata.num_inputs.count() as usize,
             self.metadata.num_outputs.count() as usize,
-            self.metadata.latency_samples as f64,
+            self.metadata.latency_samples.get() as f64,
             input,
         )
     }

@@ -103,8 +103,8 @@ pub use tutti_plugin_types::{
     LoadedPlugin, NoteExpressionChanges, NoteExpressionIntChanges, NoteExpressionIntValue,
     NoteExpressionTextChanges, NoteExpressionTextValue, NoteExpressionType, NoteExpressionValue,
     ParamAddress, ParamFlags, ParamId, ParamRange, ParamSteps, ParameterChanges, ParameterInfo,
-    ParameterPoint,
-    ParameterQueue, ScaleChanges, ScaleValue, TimeSignature, TransportInfo,
+    ParameterPoint, ParameterQueue, Samples, ScaleChanges, ScaleValue, TimeSignature,
+    TransportInfo,
 };
 
 #[cfg(test)]

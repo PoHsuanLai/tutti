@@ -23,7 +23,7 @@ use crate::host::{HostLink, HostState};
 use crate::midi::MidiIo;
 use crate::parameters::SendParams;
 use crate::transport_cell::TransportCell;
-use crate::types::{ChannelLayout, PluginInfo, Vst2Category};
+use crate::types::{ChannelLayout, PluginInfo, Samples, Vst2Category};
 
 /// Map the `vst` crate's `Category` to the shared [`Vst2Category`] mirror.
 /// A free fn rather than a `From` impl: both `Category` (from `vst`) and
@@ -204,7 +204,7 @@ impl Vst2Instance {
             receives_midi,
             emits_midi,
             has_editor: false, // overwritten below once we ask the handle
-            latency_samples: info.initial_delay.max(0) as usize,
+            latency_samples: Samples(info.initial_delay.max(0) as usize),
             supports_f64: info.f64_precision,
         };
 

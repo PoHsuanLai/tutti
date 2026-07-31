@@ -72,10 +72,17 @@ pub(crate) fn from_midi(event: &MidiEvent) -> Option<vst::api::MidiEvent> {
     // `to_midi1_bytes` returning `None` above, never reaching here).
     debug_assert!(len <= 3, "VST2 midi_data is [u8; 3]; got len {len}");
 
+    // `frame_offset` is `u32`; VST2's `delta_frames` is `i32`. A value past
+    // `i32::MAX` wraps negative, and the plugin offsets into its own buffers
+    // with it — an out-of-bounds access inside the plugin, not in our code.
+    // Saturating keeps it in range; the inbound mirror (`to_midi`) already
+    // guards with `.max(0)` and this direction was left unguarded.
+    let delta_frames = i32::try_from(event.frame_offset).unwrap_or(i32::MAX);
+
     Some(api::MidiEvent {
         event_type: api::EventType::Midi,
         byte_size: mem::size_of::<api::MidiEvent>() as i32,
-        delta_frames: event.frame_offset as i32,
+        delta_frames,
         // REALTIME_EVENT is hard-coded (always set). VST2 lets the host clear
         // it for events scheduled during a non-realtime/offline render, but the
         // engine carries no offline/realtime signal into MIDI conversion — the
@@ -245,6 +252,41 @@ mod tests {
         assert_eq!(api.midi_data[0], 0x80 | 9);
         assert_eq!(api.midi_data[1], 48);
         assert_eq!(api.midi_data[2], 64);
+    }
+
+    /// A frame offset past `i32::MAX` must saturate, not wrap negative.
+    ///
+    /// `MidiEvent::frame_offset` is `u32` and VST2's `delta_frames` is `i32`, so
+    /// a bare `as i32` turns a large offset into a negative one. The plugin
+    /// offsets into its own buffers with that value, so the out-of-bounds access
+    /// happens inside the plugin where nothing here can catch it.
+    ///
+    /// The inbound mirror (`to_midi`) already clamped with `.max(0)`, which is
+    /// what makes the unguarded direction quiet: a wrapped offset that survives
+    /// a round trip comes back as frame 0 rather than as anything a caller could
+    /// recognise as wrong.
+    #[test]
+    fn a_huge_frame_offset_saturates_rather_than_going_negative() {
+        let event =
+            MidiEvent::note_on(0, 0, 60, midi1_velocity_to_midi2(100)).with_frame_offset(u32::MAX);
+        let api = from_midi(&event).expect("NoteOn should convert");
+        assert!(
+            api.delta_frames >= 0,
+            "delta_frames went negative ({}) — the plugin will offset into \
+             its buffers out of bounds",
+            api.delta_frames
+        );
+        assert_eq!(
+            api.delta_frames,
+            i32::MAX,
+            "an unrepresentable offset must saturate"
+        );
+
+        // The wrap used to be laundered by the inbound clamp: `to_midi` maps a
+        // negative `delta_frames` to 0, so a round trip reported frame 0 for an
+        // event scheduled at the end of time. Saturating keeps it at the end.
+        let back = to_midi(&api).expect("the saturated event must parse back");
+        assert_eq!(back.frame_offset, i32::MAX as u32);
     }
 
     #[test]

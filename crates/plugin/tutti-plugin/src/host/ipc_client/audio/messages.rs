@@ -4,8 +4,8 @@
 use super::ask::Reply;
 use crate::protocol::{
     ChordChanges, MidiEventVec, NoteExpressionChanges, NoteExpressionIntChanges,
-    NoteExpressionTextChanges, ParamAddress, ParameterChanges, ParameterInfo, ScaleChanges,
-    TransportInfo,
+    NoteExpressionTextChanges, ParamAddress, ParameterChanges, ParameterInfo, Samples,
+    ScaleChanges, TransportInfo,
 };
 
 /// Audio-thread bulk payload for one `Process` command. Heap-boxed and
@@ -131,7 +131,7 @@ pub(super) enum AudioResponse {
 #[derive(Debug, Clone)]
 pub enum BridgeEvent {
     LatencyChanged {
-        samples: usize,
+        samples: Samples,
     },
     ParameterChanged {
         index: i32,
@@ -210,7 +210,7 @@ pub enum PluginInvalidation {
     /// The plugin reported new processing latency. Carries the new value; the
     /// node's own atomic is already updated live, but compensation delays across
     /// the graph only re-plan on a commit.
-    Latency { samples: usize },
+    Latency { samples: Samples },
     /// The plugin's bus layout changed — re-read it and rewire the graph.
     Io,
     /// The plugin instance was rebuilt in place; re-plan everything.

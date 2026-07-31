@@ -8,6 +8,22 @@ use smallvec::SmallVec;
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ParameterPoint {
     pub sample_offset: i32,
+    /// **Normalized `0..=1`**, always — this is the host's authoring
+    /// convention, not the plugin's.
+    ///
+    /// Stated here because the value's meaning is not recoverable from its
+    /// type, and the formats disagree about what a parameter value *is*:
+    /// VST2 and VST3 take normalized values, CLAP and AU take plain ones in
+    /// the parameter's declared range (see [`PluginParams::get_parameter`]).
+    /// A loader for either of the latter must denormalize before the value
+    /// reaches the plugin — AU against the range it cached at load, CLAP
+    /// against its `ranges` map — and both do.
+    ///
+    /// The convention was previously recorded only in those loaders' own
+    /// comments, three separate restatements of one invariant that the type
+    /// carrying it never mentioned.
+    ///
+    /// [`PluginParams::get_parameter`]: crate::PluginParams::get_parameter
     pub value: f64,
 }
 

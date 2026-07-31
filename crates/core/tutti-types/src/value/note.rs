@@ -216,7 +216,7 @@ impl Note {
     #[inline]
     pub fn frequency(self) -> Hz {
         let steps = (self.semitones_from_c0() - Self::A4.semitones_from_c0()) as f32;
-        Hz(Self::A4_HZ * Semitones(steps).to_pitch_ratio())
+        Self::A4_HZ * Semitones(steps).to_pitch_ratio()
     }
 
     /// The nearest note to `freq`, and how far off it is.
@@ -227,10 +227,15 @@ impl Note {
         if freq.get() <= 0.0 {
             return None;
         }
-        let steps = 12.0 * (freq.get() / Self::A4_HZ).log2();
-        let nearest = steps.round();
+        // The named inverse of `frequency`'s `Semitones::to_pitch_ratio`, which
+        // is what this line used to spell out as `12.0 * ratio.log2()`. Both
+        // directions now go through the converter, and the guard above is the
+        // same one `from_pitch_ratio` applies — kept because `None` is a
+        // better answer here than a unison.
+        let steps = Semitones::from_pitch_ratio(freq.get() / Self::A4_HZ.get());
+        let nearest = steps.get().round();
         let note = Self::from_semitones_from_c0(Self::A4.semitones_from_c0() + nearest as i32);
-        Some((note, Cents((steps - nearest) * 100.0)))
+        Some((note, Semitones(steps.get() - nearest).to_cents()))
     }
 
     /// Sharp spelling with octave: `A4`, `C#5`.
@@ -244,7 +249,7 @@ impl Note {
     }
 
     /// Concert A's frequency. The one tuning constant this module carries.
-    const A4_HZ: f32 = 440.0;
+    const A4_HZ: Hz = Hz(440.0);
 
     /// MIDI note 0 is C-1 in scientific pitch notation. This offset is a MIDI
     /// convention, so it lives with the conversion rather than on the note.

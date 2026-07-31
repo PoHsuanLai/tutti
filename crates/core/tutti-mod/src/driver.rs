@@ -23,7 +23,7 @@
 use std::sync::Arc;
 
 use tutti_types::RtPublish;
-use tutti_types::{Beat, Hz, Param, Phase, PhaseIncrement, Seconds};
+use tutti_types::{Beat, BeatDuration, Hz, Param, Phase, PhaseIncrement, Seconds};
 
 use crate::id::{LayerKey, ModTargetId};
 use crate::router::ModRouter;
@@ -81,6 +81,33 @@ impl From<Param<Hz>> for Rate {
     }
 }
 
+/// How a source derives its position — the two clocks a modulator can run on.
+///
+/// This was a `Rate` plus a `beat_synced: bool`, where the same [`Hz`] meant
+/// cycles-per-second under one flag and beats-per-cycle under the other. The
+/// two readings coincide at `1.0` and are reciprocal everywhere else, so the
+/// confusion was silent: it shipped once as a backwards doc comment and once as
+/// a literal reciprocal in the curve builder. Each arm now carries its own unit,
+/// so the pairing cannot be got wrong and there is nothing to keep in sync.
+#[derive(Debug, Clone)]
+pub enum SourceClock {
+    /// Integrates elapsed time: `phase += hz * dt`. Independent of the
+    /// transport, so it keeps running when the timeline is parked.
+    ///
+    /// Takes a [`Rate`], so a free-running rate can itself be modulated.
+    Free { rate: Rate },
+    /// Re-derives from transport position: `beat / beats_per_cycle`.
+    ///
+    /// A **span**, so `BeatDuration(2.0)` is a half-note sweep — one cycle every
+    /// two beats — not two cycles per beat. Re-deriving rather than accumulating
+    /// is what makes a seek land the modulator where the new beat says.
+    ///
+    /// Not a [`Rate`]: [`Param`] is f32-only and a beat position needs f64, and
+    /// continuously modulating the divisor would smear the transport lock this
+    /// arm exists to provide. Add it when something actually wants it.
+    Synced { beats_per_cycle: BeatDuration },
+}
+
 /// A source's own rate — how its phase is generated from the transport, so each
 /// LFO runs at its own frequency (unlike one shared phase for all sources).
 ///
@@ -93,13 +120,8 @@ impl From<Param<Hz>> for Rate {
 /// target already writes.
 #[derive(Debug, Clone)]
 pub struct SourceRate {
-    /// `beat_synced`: **beats per cycle** — the phase is `beat / frequency`, so
-    /// `2.0` completes one cycle every two beats (a half-note LFO), not two
-    /// cycles per beat. Free-running: cycles per second (`Hz`).
-    ///
-    /// The two readings coincide at `1.0`, which is why this was documented
-    /// backwards for a while — every example used `Hz(1.0)`.
-    pub frequency: Rate,
+    /// Which clock this source runs on, and the rate in that clock's own unit.
+    pub clock: SourceClock,
     /// Constant shift applied after phase generation.
     ///
     /// A [`PhaseIncrement`] rather than a [`Phase`] despite the name: it is a
@@ -110,42 +132,31 @@ pub struct SourceRate {
     /// phase already advances is a second, independent capability, and rate
     /// covers the motivating case. Add it when something needs it.
     pub phase_offset: PhaseIncrement,
-    /// `true`: phase is derived from `beat / frequency` (locks to transport);
-
-    /// `false`: integrate `frequency * dt` into a free-running accumulator.
-    pub beat_synced: bool,
 }
 
 impl SourceRate {
-    /// A source locked to the transport at `frequency` **beats per cycle**
-    /// (`Hz(4.0)` is a whole-note sweep in 4/4, not four cycles per beat) — see
-    /// [`frequency`](Self::frequency).
-    ///
-    /// Takes anything that becomes a [`Rate`] — an [`Hz`] for a constant, a
-    /// [`Param<Hz>`] for a modulated one.
+    /// A source locked to the transport, one cycle per `beats_per_cycle` — a
+    /// span, so a larger value is *slower*.
     pub fn beat_synced(
-        frequency: impl Into<Rate>,
+        beats_per_cycle: impl Into<BeatDuration>,
         phase_offset: impl Into<PhaseIncrement>,
     ) -> Self {
         Self {
-            frequency: frequency.into(),
+            clock: SourceClock::Synced {
+                beats_per_cycle: beats_per_cycle.into(),
+            },
             phase_offset: phase_offset.into(),
-            beat_synced: true,
         }
     }
 
-    /// A free-running source at `frequency` Hz (cycles per second).
+    /// A free-running source at `rate` Hz (cycles per second).
     ///
-    /// Takes anything that becomes a [`Rate`] — see
-    /// [`beat_synced`](Self::beat_synced).
-    pub fn free_running(
-        frequency: impl Into<Rate>,
-        phase_offset: impl Into<PhaseIncrement>,
-    ) -> Self {
+    /// Takes anything that becomes a [`Rate`] — an [`Hz`] for a constant, a
+    /// [`Param<Hz>`] for a modulated one.
+    pub fn free_running(rate: impl Into<Rate>, phase_offset: impl Into<PhaseIncrement>) -> Self {
         Self {
-            frequency: frequency.into(),
+            clock: SourceClock::Free { rate: rate.into() },
             phase_offset: phase_offset.into(),
-            beat_synced: false,
         }
     }
 }
@@ -171,7 +182,7 @@ pub struct Sourced<M: Modulator> {
     modulator: M,
     state: M::State,
     rate: SourceRate,
-    /// Free-running accumulated phase (unused when `rate.beat_synced`).
+    /// Free-running accumulated phase (unused under [`SourceClock::Synced`]).
     phase: Phase,
 }
 
@@ -189,23 +200,20 @@ impl<M: Modulator> Sourced<M> {
     /// This frame's [`Phase`], advancing the free-running accumulator.
     #[inline]
     fn tick_phase(&mut self, beat: Beat, dt: Seconds) -> Phase {
-        // Read once per frame. A modulated rate is an `Acquire` load behind
-        // this call; per-sample reads are what the once-per-frame driver exists
-        // to avoid.
-        let freq = self.rate.frequency.hz().get();
-        let base = if self.rate.beat_synced {
-            if freq.abs() < f32::EPSILON {
-                Phase::START
-            } else {
-                // A beat-synced source reads its position off the transport, so
-                // it re-derives rather than accumulating — seeking the transport
-                // lands the modulator where the new beat says, not where a
-                // running sum would have carried it.
-                Phase::wrapped((beat.get() as f32) / freq)
+        let base = match &self.rate.clock {
+            SourceClock::Free { rate } => {
+                // Read once per frame. A modulated rate is an `Acquire` load
+                // behind this call; per-sample reads are what the once-per-frame
+                // driver exists to avoid.
+                let hz = rate.hz().get();
+                self.phase = self.phase.advance(PhaseIncrement(hz * dt.get()));
+                self.phase
             }
-        } else {
-            self.phase = self.phase.advance(PhaseIncrement(freq * dt.get()));
-            self.phase
+            // Re-derived, not accumulated, so a seek lands the modulator where
+            // the new beat says. A frozen span holds at the phase offset.
+            SourceClock::Synced { beats_per_cycle } => beat
+                .cycles_of(*beats_per_cycle)
+                .map_or(Phase::START, |c| Phase::wrapped(c as f32)),
         };
         base.offset_by(self.rate.phase_offset)
     }
@@ -341,7 +349,7 @@ mod tests {
     fn source(shape: LfoShape) -> Box<dyn ErasedModulator> {
         Box::new(Sourced::new(
             Lfo::new(shape),
-            SourceRate::beat_synced(Hz(1.0), 0.0),
+            SourceRate::beat_synced(BeatDuration(1.0), 0.0),
         ))
     }
 
@@ -722,7 +730,7 @@ mod tests {
         driver.set_router(bus.clone());
         driver.set_sources(vec![Box::new(Sourced::new(
             Lfo::new(LfoShape::Sine),
-            SourceRate::beat_synced(Hz(1.0), 0.0),
+            SourceRate::beat_synced(BeatDuration(1.0), 0.0),
         ))]);
 
         driver.run(Beat(0.25), Seconds(0.0));

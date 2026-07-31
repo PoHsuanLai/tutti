@@ -25,7 +25,7 @@ use bevy_tutti::AudioEngineState;
 use tutti_core::dsp::Net;
 use tutti_core::transport::Transport;
 use tutti_mod::{Curve, LayerKey, LayeredCurve, ModTarget};
-use tutti_types::{Beat, Hz, ParamAddr, UnitParam};
+use tutti_types::{Beat, BeatDuration, Hz, ParamAddr, UnitParam};
 
 /// A sink that takes curve layers — the shape a sub-block reader has.
 ///
@@ -115,7 +115,7 @@ fn wire(app: &mut App, as_curve: bool) -> Arc<BeatSink> {
         .world_mut()
         .spawn((
             ModSource::new(LfoShape::Sine),
-            ModRate::beat_synced(Hz(1.0)),
+            ModRate::beat_synced(BeatDuration(1.0)),
         ))
         .id();
 
@@ -217,7 +217,7 @@ fn a_curve_request_falls_back_when_the_sink_declines() {
         .world_mut()
         .spawn((
             ModSource::new(LfoShape::Sine),
-            ModRate::beat_synced(Hz(1.0)),
+            ModRate::beat_synced(BeatDuration(1.0)),
         ))
         .id();
     // Asks for a curve; the atomic sink will decline.

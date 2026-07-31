@@ -7,7 +7,7 @@
 //! ```
 //! # #[cfg(feature = "routing")] {
 //! use tutti_mod::{ModMatrix, Lfo, LfoShape, SourceRate};
-//! use tutti_types::{Beat, Hz, Seconds};
+//! use tutti_types::{Beat, BeatDuration, Hz, Seconds};
 //!
 //! let mut m = ModMatrix::new();
 //! let cutoff = m.target(1000.0, 0.0, 2000.0);   // a modulatable param
@@ -16,7 +16,7 @@
 //! // Each source runs at its own rate: 2 Hz free, 1 cycle/beat synced.
 //! m.route(Lfo::new(LfoShape::Sine), SourceRate::free_running(Hz(2.0), 0.0))
 //!     .to(&cutoff).depth(1.0);
-//! m.route(Lfo::new(LfoShape::Triangle), SourceRate::beat_synced(Hz(1.0), 0.0))
+//! m.route(Lfo::new(LfoShape::Triangle), SourceRate::beat_synced(BeatDuration(1.0), 0.0))
 //!     .to(&gain).depth(0.5);
 //!
 //! let mut driver = m.build();
@@ -160,7 +160,7 @@ pub use curve::Curve;
 #[cfg(feature = "routing")]
 pub use curve_source::{BeatLfo, CurveModulator, EdgeShape, ShapedCurve};
 #[cfg(feature = "routing")]
-pub use driver::{ErasedModulator, ModPreFrame, Rate, SourceRate, Sourced};
+pub use driver::{ErasedModulator, ModPreFrame, Rate, SourceClock, SourceRate, Sourced};
 #[cfg(feature = "routing")]
 pub use layered::LayeredCurve;
 #[cfg(feature = "routing")]
@@ -185,7 +185,7 @@ pub use routing::{ModEdge, ModRoutingSnapshot, ModRoutingTable};
 ///     ModBus, ModRouter, ModTarget, AtomicTarget,
 ///     ModEdge, ModRoutingTable, ModPreFrame, Sourced, SourceRate, ErasedModulator,
 /// };
-/// use tutti_types::{Beat, Hz, Seconds};
+/// use tutti_types::{Beat, BeatDuration, Seconds};
 ///
 /// // Two targets: a filter cutoff and an amp gain, each a ranged accumulator.
 /// let cutoff = Arc::new(AtomicTarget::new(1000.0, 0.0, 2000.0));
@@ -200,9 +200,9 @@ pub use routing::{ModEdge, ModRoutingSnapshot, ModRoutingTable};
 /// // The source registry (indices line up with ModEdge::source).
 /// let sources: Vec<Box<dyn ErasedModulator>> = vec![
 ///     Box::new(Sourced::new(Lfo::new(LfoShape::Sine),
-///         SourceRate::beat_synced(Hz(1.0), 0.0))),      // source 0
+///         SourceRate::beat_synced(BeatDuration(1.0), 0.0))),      // source 0
 ///     Box::new(Sourced::new(Lfo::new(LfoShape::Triangle),
-///         SourceRate::beat_synced(Hz(1.0), 0.0))),      // source 1
+///         SourceRate::beat_synced(BeatDuration(1.0), 0.0))),      // source 1
 /// ];
 ///
 /// // The mod-matrix: source0 -> cutoff @ full depth; source1 -> gain @ half.

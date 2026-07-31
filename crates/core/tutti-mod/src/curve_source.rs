@@ -47,7 +47,7 @@
 
 use std::sync::Arc;
 
-use tutti_types::{Beat, Depth, Phase, PhaseIncrement};
+use tutti_types::{Beat, BeatDuration, Depth, Phase, PhaseIncrement};
 
 use crate::curve::Curve;
 use crate::shape::{shape, Polarity};
@@ -63,9 +63,10 @@ use crate::{CurveType, Modulator};
 /// to phase. It is on the trait rather than derived from a rate because a curve
 /// has no driver threading time for it: the beat *is* its clock.
 pub trait CurveModulator: Modulator + Send + Sync + 'static {
-    /// Beats per full cycle. `<= 0` freezes the curve at its phase offset,
-    /// matching how a zero-frequency source behaves on the scalar path.
-    fn beats_per_cycle(&self) -> f32;
+    /// Beats per full cycle — a span, so a larger value is *slower*. A
+    /// non-positive span freezes the curve at its phase offset, matching the
+    /// scalar path via [`Beat::cycles_of`].
+    fn beats_per_cycle(&self) -> BeatDuration;
 
     /// The raw `[-1, 1]` value at `cycles` — the same waveform the scalar path
     /// samples, with no depth, polarity or range applied.
@@ -195,16 +196,13 @@ impl<M: CurveModulator> ShapedCurve<M> {
 impl<M: CurveModulator> Curve for ShapedCurve<M> {
     /// The offset at `beat` — never an absolute value. See the module doc.
     fn value_at(&self, beat: Beat) -> Option<f32> {
-        let bpc = self.modulator.beats_per_cycle();
-        // Un-wrapped, so a stepped shape can recover its cycle index. The offset
-        // is added here rather than inside the modulator because it displaces
-        // the *position*, which is what shifts a per-cycle boundary too.
-        let cycles = if bpc > 0.0 {
-            beat.get() as f32 / bpc + self.edge.phase_offset.get()
-        } else {
-            // A frozen source still contributes: its phase-offset value, held.
-            self.edge.phase_offset.get()
-        };
+        // The offset is added here rather than inside the modulator because it
+        // displaces the *position*, which is what shifts a per-cycle boundary
+        // too. A frozen span still contributes: its phase-offset value, held.
+        let cycles = beat
+            .cycles_of(self.modulator.beats_per_cycle())
+            .unwrap_or(0.0) as f32
+            + self.edge.phase_offset.get();
         Some(self.edge.offset_of(self.modulator.raw_at(cycles)))
     }
 }
@@ -223,15 +221,15 @@ impl<M: CurveModulator> Curve for ShapedCurve<M> {
 /// scalar path never had.
 pub struct BeatLfo {
     lfo: crate::Lfo,
-    beats_per_cycle: f32,
+    beats_per_cycle: BeatDuration,
 }
 
 impl BeatLfo {
-    /// A beat-clocked LFO of any shape.
-    pub fn new(shape: crate::LfoShape, beats_per_cycle: f32) -> Self {
+    /// A beat-clocked LFO of any shape, one cycle per `beats_per_cycle`.
+    pub fn new(shape: crate::LfoShape, beats_per_cycle: impl Into<BeatDuration>) -> Self {
         Self {
             lfo: crate::Lfo::new(shape),
-            beats_per_cycle,
+            beats_per_cycle: beats_per_cycle.into(),
         }
     }
 }
@@ -244,7 +242,7 @@ impl Modulator for BeatLfo {
 }
 
 impl CurveModulator for BeatLfo {
-    fn beats_per_cycle(&self) -> f32 {
+    fn beats_per_cycle(&self) -> BeatDuration {
         self.beats_per_cycle
     }
 
@@ -281,40 +279,87 @@ mod tests {
     use super::*;
     use crate::{LayerKey, LfoShape};
 
-    fn sine(beats_per_cycle: f32) -> BeatLfo {
-        BeatLfo::new(LfoShape::Sine, beats_per_cycle)
+    fn sine(beats_per_cycle: f64) -> BeatLfo {
+        BeatLfo::new(LfoShape::Sine, BeatDuration(beats_per_cycle))
     }
 
-    /// The scalar path (`SourceRate`/`ModPreFrame`, `phase = beat / frequency`)
-    /// and the curve path (`BeatLfo::beats_per_cycle`) must read the SAME rate
-    /// off the same number — one param driven by both must not run at two
-    /// speeds.
+    /// The scalar path (`SourceRate`/`ModPreFrame`) and the curve path
+    /// (`BeatLfo::beats_per_cycle`) must read the SAME rate off the same
+    /// number — one param driven by both must not run at two speeds.
     ///
     /// Pinned because the units are reciprocals of each other and coincide at
     /// `1.0`: the adapter that feeds `BeatLfo` once took `1.0 / frequency` on
     /// the reading that the field meant cycles-per-beat, and every example
     /// using `1.0` agreed anyway. At 2.0 they did not.
+    ///
+    /// This drives the real `Sourced::tick_phase` rather than re-deriving the
+    /// phase inline. The previous version hand-copied the driver's arithmetic,
+    /// so it compared a copy against a copy and could not have caught the two
+    /// paths diverging — which is what it exists to do. The non-power-of-two
+    /// spans are here for the same reason: `[0.5, 1, 2, 4]` are all exact in
+    /// f32, so they agreed even while both paths narrowed.
     #[test]
     fn curve_and_scalar_paths_read_the_rate_identically() {
-        use crate::Modulator;
-        use tutti_types::Phase;
+        use crate::{ErasedModulator, SourceRate, Sourced};
+        use tutti_types::Seconds;
 
-        for beats_per_cycle in [0.5f32, 1.0, 2.0, 4.0] {
-            for beat in [0.0f64, 0.25, 0.5, 1.0, 2.0, 3.5] {
-                // Scalar path: the driver's own phase derivation, verbatim.
-                let scalar_phase = Phase::wrapped(beat as f32 / beats_per_cycle);
-                let (_, scalar) =
-                    crate::Lfo::new(LfoShape::Sine).value(Default::default(), scalar_phase);
+        for beats_per_cycle in [0.5f64, 1.0, 2.0, 4.0, 3.0, 0.75, 1.0 / 3.0] {
+            for beat in [0.0f64, 0.25, 0.5, 1.0, 2.0, 3.5, 97.25] {
+                // Scalar path: the driver's own source, sampled at this beat.
+                // `dt` is irrelevant to a synced clock — it re-derives.
+                let mut sourced = Sourced::new(
+                    crate::Lfo::new(LfoShape::Sine),
+                    SourceRate::beat_synced(BeatDuration(beats_per_cycle), 0.0),
+                );
+                let scalar = sourced.sample(Beat(beat), Seconds(0.0));
 
                 // Curve path: the real `ShapedCurve` beat → cycles mapping. The
                 // edge spans a unit range (`-0.5..0.5`) so its depth scaling is
                 // 1x and only the RATE is under test, not the depth.
                 let curve = ShapedCurve::new(sine(beats_per_cycle), EdgeShape::new(-0.5, 0.5));
-                let curved = curve.value_at(tutti_types::Beat(beat)).unwrap();
+                let curved = curve.value_at(Beat(beat)).unwrap();
 
                 assert!(
                     (scalar - curved).abs() < 1e-4,
-                    "rate {beats_per_cycle} beat {beat}: scalar {scalar} vs curve {curved}"
+                    "span {beats_per_cycle} beat {beat}: scalar {scalar} vs curve {curved}"
+                );
+            }
+        }
+    }
+
+    /// A larger span is a *slower* source. Under the `Hz` reading this field
+    /// used to carry, doubling it would double the rate instead — the reciprocal
+    /// that shipped twice.
+    #[test]
+    fn a_longer_span_completes_fewer_cycles() {
+        let one_beat = ShapedCurve::new(sine(1.0), EdgeShape::new(-0.5, 0.5));
+        let two_beat = ShapedCurve::new(sine(2.0), EdgeShape::new(-0.5, 0.5));
+
+        // The 2-beat span reaches at beat 2 whatever the 1-beat span reached at
+        // beat 1 — it is half as fast, so it takes twice as long. Sampled at the
+        // quarter-cycle peak, where a sine is unambiguous (at the half-cycle it
+        // is zero, the same value it holds at a full cycle).
+        let peak = one_beat.value_at(Beat(0.25)).unwrap();
+        assert!(peak > 0.4, "quarter of a cycle should be near the peak");
+        assert!((two_beat.value_at(Beat(0.5)).unwrap() - peak).abs() < 1e-6);
+
+        // And at the same beat the slower one is strictly behind.
+        assert!(two_beat.value_at(Beat(0.25)).unwrap() < peak);
+    }
+
+    /// A non-positive span freezes rather than dividing by zero or running
+    /// backwards. One guard now, in `Beat::cycles_of`; there used to be three
+    /// spellings across the paths and they disagreed on the negative case.
+    #[test]
+    fn a_non_positive_span_freezes_at_the_phase_offset() {
+        for span in [0.0f64, -2.0] {
+            let curve = ShapedCurve::new(sine(span), EdgeShape::new(-0.5, 0.5));
+            let held = curve.value_at(Beat(0.0)).unwrap();
+            for beat in [1.0f64, 7.5, 100.0] {
+                assert_eq!(
+                    curve.value_at(Beat(beat)).unwrap(),
+                    held,
+                    "span {span} should hold across beats"
                 );
             }
         }

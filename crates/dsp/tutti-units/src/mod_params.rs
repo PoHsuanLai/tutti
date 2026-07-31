@@ -357,7 +357,7 @@ mod tests {
 
     #[test]
     fn lfo_sweeps_a_real_filter_cutoff_through_the_matrix() {
-        use tutti_core::{Beat, Hz, Seconds};
+        use tutti_core::{Beat, BeatDuration, Seconds};
         use tutti_mod::{Lfo, LfoShape, ModMatrix, SourceRate};
 
         // A real filter node. The node reads `frequency()` per sample.
@@ -375,7 +375,7 @@ mod tests {
                                            // walks a full sine cycle, exactly as the old bare-phase test did.
         m.route(
             Lfo::new(LfoShape::Sine),
-            SourceRate::beat_synced(Hz(1.0), 0.0),
+            SourceRate::beat_synced(BeatDuration(1.0), 0.0),
         )
         .to(&cutoff)
         .depth(0.5);

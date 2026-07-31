@@ -45,16 +45,15 @@ use tutti_core::ChannelLayout;
 pub struct ChannelSumUnit {
     sources: usize,
     /// The width this bus sums at — its declared output layout.
+    ///
+    /// The count is derived at use via [`channels`](Self::channels) rather than
+    /// cached beside this. An earlier version kept both and justified it as
+    /// keeping a `match` out of the summing loop, but that is not what the count
+    /// is used for: it is the loop *bound* and the indexing *stride*, both
+    /// loop-invariant, so it is read once and hoisted. `count()` is a `const fn`
+    /// over a four-variant `Copy` enum. A second field bought nothing and gave
+    /// the two a way to disagree.
     layout: ChannelLayout,
-    /// [`layout`]'s count, cached as the port-indexing stride.
-    ///
-    /// The layout is the declaration; this is the arithmetic. They are separate
-    /// fields because the summing loops index `s * channels + c` per sample, and
-    /// deriving the count there would put a `match` in the inner loop. Set once
-    /// at construction, so the two can never disagree.
-    ///
-    /// [`layout`]: Self::layout
-    channels: usize,
 }
 
 impl ChannelSumUnit {
@@ -62,17 +61,17 @@ impl ChannelSumUnit {
     /// at least 1 (a zero-wide or zero-source bus is meaningless — the graph
     /// would have nothing to sum).
     pub fn new(sources: usize, channels: impl Into<ChannelLayout>) -> Self {
-        let n = (channels.into().count() as usize).max(1);
+        let layout = channels.into();
         Self {
             sources: sources.max(1),
-            layout: ChannelLayout::from_count(n as u16),
-            channels: n,
+            layout: ChannelLayout::from_count(layout.count().max(1)),
         }
     }
 
     /// The channel width this bus sums at (its output count).
+    #[inline]
     pub fn channels(&self) -> usize {
-        self.channels
+        self.layout.count() as usize
     }
 
     /// The width this bus sums at, as the engine's channel vocabulary.
@@ -88,19 +87,22 @@ impl ChannelSumUnit {
 
 impl tutti_core::AudioUnit for ChannelSumUnit {
     fn inputs(&self) -> usize {
-        self.sources * self.channels
+        self.sources * self.channels()
     }
 
     fn outputs(&self) -> usize {
-        self.channels
+        self.channels()
     }
 
     #[inline]
     fn tick(&mut self, input: &[f32], output: &mut [f32]) {
-        for c in 0..self.channels {
+        // Bound once: it is the loop bound and the indexing stride, both
+        // loop-invariant.
+        let channels = self.channels();
+        for c in 0..channels {
             let mut acc = 0.0f32;
             for s in 0..self.sources {
-                acc += input[s * self.channels + c];
+                acc += input[s * channels + c];
             }
             output[c] = acc;
         }
@@ -112,11 +114,12 @@ impl tutti_core::AudioUnit for ChannelSumUnit {
         input: &tutti_core::BufferRef,
         output: &mut tutti_core::BufferMut,
     ) {
+        let channels = self.channels();
         for i in 0..size {
-            for c in 0..self.channels {
+            for c in 0..channels {
                 let mut acc = 0.0f32;
                 for s in 0..self.sources {
-                    acc += input.at_f32(s * self.channels + c, i);
+                    acc += input.at_f32(s * channels + c, i);
                 }
                 output.set_f32(c, i, acc);
             }
@@ -128,8 +131,9 @@ impl tutti_core::AudioUnit for ChannelSumUnit {
         _input: &tutti_core::SignalFrame,
         _frequency: f64,
     ) -> tutti_core::SignalFrame {
-        let mut output = tutti_core::SignalFrame::new(self.channels);
-        for c in 0..self.channels {
+        let channels = self.channels();
+        let mut output = tutti_core::SignalFrame::new(channels);
+        for c in 0..channels {
             output.set(c, Signal::Latency(0.0));
         }
         output

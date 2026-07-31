@@ -38,7 +38,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use tutti_core::dsp::{AudioUnit, BufferMut, BufferRef, Setting, SignalFrame};
-use tutti_core::{Amplitude, Pan, Param, ParamAddr, UnitParam};
+use tutti_core::{Amplitude, ChannelLayout, Pan, Param, ParamAddr, UnitParam};
 use tutti_mod::{AtomicTarget, ModParams, ModTarget};
 
 use crate::ParamPorts;
@@ -59,12 +59,20 @@ pub struct BusStripUnit {
     /// Deliberately *not* given a unit newtype either — per the units rule a new
     /// type needs a distinct range or algebra, and a bool-as-float has neither.
     muted: Arc<AtomicBool>,
-    /// Audio channel width (`inputs()` audio ports == `outputs()`).
+    /// The width this strip runs at — its declared audio layout
+    /// (`inputs()` audio ports == `outputs()`).
     ///
     /// Balance is only meaningful on a stereo pair, so it applies to channels 0
     /// and 1 and leaves any others at unity — a 5.1 strip fades and mutes whole
     /// but does not "balance" its surrounds, which have no left/right axis.
-    channels: usize,
+    ///
+    /// Stored as the layout alone, with the count derived at use via
+    /// [`channels`](Self::channels). There is no cached `usize` beside it: the
+    /// count is a loop *bound*, so it is loop-invariant and hoisted — `count()`
+    /// is a `const fn` over a four-variant `Copy` enum, and the match lands in
+    /// the prologue rather than the inner loop. A second field would only be a
+    /// way for the two to disagree.
+    layout: ChannelLayout,
     /// When true, a volume param-input port follows the audio inputs.
     mod_volume: bool,
     /// When true, a pan param-input port follows the volume one.
@@ -74,20 +82,36 @@ pub struct BusStripUnit {
 impl BusStripUnit {
     /// A stereo strip at unity volume, centred, unmuted.
     pub fn new() -> Self {
-        Self::with_channels(2)
+        Self::with_channels(ChannelLayout::Stereo)
     }
 
-    /// An `n`-channel strip at unity volume, centred, unmuted.
-    /// `with_channels(2)` is identical to [`new`](Self::new).
-    pub fn with_channels(channels: usize) -> Self {
+    /// A strip at the given width, unity volume, centred, unmuted.
+    /// `with_channels(ChannelLayout::Stereo)` is identical to [`new`](Self::new).
+    ///
+    /// A zero-wide strip is meaningless — there would be nothing to fade — so an
+    /// empty layout is clamped to mono, matching
+    /// [`ChannelSumUnit::new`](crate::ChannelSumUnit::new).
+    pub fn with_channels(channels: impl Into<ChannelLayout>) -> Self {
+        let layout = channels.into();
         Self {
             volume: Param::new(Amplitude::UNITY),
             pan: Param::new(Pan::CENTER),
             muted: Arc::new(AtomicBool::new(false)),
-            channels: channels.max(1),
+            layout: ChannelLayout::from_count(layout.count().max(1)),
             mod_volume: false,
             mod_pan: false,
         }
+    }
+
+    /// The width this strip runs at, as the engine's channel vocabulary.
+    pub fn layout(&self) -> ChannelLayout {
+        self.layout
+    }
+
+    /// The audio channel count (its output count).
+    #[inline]
+    pub fn channels(&self) -> usize {
+        self.layout.count() as usize
     }
 
     /// A stereo strip with optional audio-rate param-input ports.
@@ -105,14 +129,14 @@ impl BusStripUnit {
         Self {
             mod_volume,
             mod_pan,
-            ..Self::with_channels(2)
+            ..Self::with_channels(ChannelLayout::Stereo)
         }
     }
 
     /// Input-port index of the audio-rate volume input, if present.
     #[inline]
     pub fn volume_port(&self) -> Option<usize> {
-        self.mod_volume.then_some(self.channels)
+        self.mod_volume.then_some(self.channels())
     }
 
     /// Input-port index of the audio-rate pan input, if present. Sits after the
@@ -120,7 +144,7 @@ impl BusStripUnit {
     #[inline]
     pub fn pan_port(&self) -> Option<usize> {
         self.mod_pan
-            .then_some(self.channels + self.mod_volume as usize)
+            .then_some(self.channels() + self.mod_volume as usize)
     }
 
     /// Atomic handle for the UI / automation to share the volume cell.
@@ -246,7 +270,7 @@ impl BusStripUnit {
         mut put: impl FnMut(usize, f32),
     ) {
         let unbalanced = volume * self.live_factor();
-        for c in 0..self.channels {
+        for c in 0..self.channels() {
             let g = match c {
                 0 => gains.0,
                 1 => gains.1,
@@ -274,7 +298,7 @@ impl Clone for BusStripUnit {
             volume: self.volume.handle(),
             pan: self.pan.handle(),
             muted: Arc::clone(&self.muted),
-            channels: self.channels,
+            layout: self.layout,
             mod_volume: self.mod_volume,
             mod_pan: self.mod_pan,
         }
@@ -283,11 +307,11 @@ impl Clone for BusStripUnit {
 
 impl AudioUnit for BusStripUnit {
     fn inputs(&self) -> usize {
-        self.channels + self.mod_volume as usize + self.mod_pan as usize
+        self.channels() + self.mod_volume as usize + self.mod_pan as usize
     }
 
     fn outputs(&self) -> usize {
-        self.channels
+        self.channels()
     }
 
     fn reset(&mut self) {}
@@ -347,8 +371,9 @@ impl AudioUnit for BusStripUnit {
         let volume = self.volume.load();
         let (l, r) = self.gains(volume, self.pan.load());
         let unbalanced = volume * self.live_factor();
-        let mut out = SignalFrame::new(self.channels);
-        for c in 0..self.channels {
+        let channels = self.channels();
+        let mut out = SignalFrame::new(channels);
+        for c in 0..channels {
             let g = match c {
                 0 => l,
                 1 => r,
@@ -537,7 +562,7 @@ mod tests {
     /// a surround channel has no left/right axis to sit on.
     #[test]
     fn extra_channels_are_faded_but_not_balanced() {
-        let mut s = BusStripUnit::with_channels(3);
+        let mut s = BusStripUnit::with_channels(ChannelLayout::Multi(3));
         s.set_volume(Amplitude(0.5));
         s.set_pan(Pan(-1.0));
         let mut out = [0.0f32; 3];
@@ -560,7 +585,7 @@ mod tests {
     fn route_reports_mute_on_every_channel() {
         use tutti_core::dsp::Signal;
 
-        let mut s = BusStripUnit::with_channels(3);
+        let mut s = BusStripUnit::with_channels(ChannelLayout::Multi(3));
         s.set_muted(true);
         let mut input = SignalFrame::new(3);
         for c in 0..3 {

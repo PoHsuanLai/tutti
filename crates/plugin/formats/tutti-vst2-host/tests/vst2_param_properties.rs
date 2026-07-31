@@ -144,7 +144,7 @@ fn real_world_plugins_decline_these_opcodes() {
         "probe must declare parameters for this test to mean anything"
     );
 
-    for id in 0..count as u32 {
+    for id in 0..count as i32 {
         assert_eq!(
             instance.parameter_properties(id),
             None,
@@ -184,7 +184,7 @@ fn an_answering_plugin_round_trips_every_property_field() {
     set_answer_param_properties(&path, true);
 
     let props = instance
-        .parameter_properties(PROBE_INT_STEP_PARAM as u32)
+        .parameter_properties(PROBE_INT_STEP_PARAM as i32)
         .expect("probe answers once the switch is on");
 
     let (min, max, step, large_step) = PROBE_INT_RANGE;
@@ -258,20 +258,25 @@ fn ungated_integer_fields_are_not_reported_as_a_range() {
 /// VST2 plugins are not required to bounds-check the index, so a host that
 /// forwards `numParams + 1` invites the plugin to read past its own table.
 ///
-/// Mutation that catches it: deleting the `id >= count` guard in
-/// `Vst2Instance::parameter_properties` — the probe answers `1` for any index,
-/// so the host would report properties for a parameter that does not exist.
+/// Mutation that catches it: deleting either half of the `id < 0 || id >= count`
+/// guard in `Vst2Instance::parameter_properties` — the probe answers `1` for any
+/// index, so the host would report properties for a parameter that does not
+/// exist.
 #[test]
 fn an_out_of_range_parameter_index_is_refused_before_dispatch() {
     let _guard = lock_probe();
     let (instance, path) = load_probe();
     set_answer_param_properties(&path, true);
 
-    let count = instance.parameters().len() as u32;
+    let count = instance.parameters().len() as i32;
     assert!(instance.parameter_properties(count - 1).is_some());
     assert_eq!(instance.parameter_properties(count), None);
     assert_eq!(instance.parameter_properties(count + 100), None);
-    assert_eq!(instance.parameter_properties(u32::MAX), None);
+    assert_eq!(instance.parameter_properties(i32::MAX), None);
+    // Negative indices are refused by the same guard. The ABI's index is `i32`,
+    // so a caller can spell one; the plugin would subscript its table with it.
+    assert_eq!(instance.parameter_properties(-1), None);
+    assert_eq!(instance.parameter_properties(i32::MIN), None);
 
     reset_switches(&path);
 }
@@ -648,13 +653,18 @@ fn a_declining_plugin_reports_no_range_and_no_steps() {
     }
 }
 
-/// An id outside the declared range never reaches the plugin.
+/// An index outside the declared range never reaches the plugin.
 ///
 /// VST2 addresses parameters by a dense `i32` index and neither this crate's
 /// dispatch nor the vendored one bounds-checks it — the index goes straight to
 /// the plugin's `getParameter`/`setParameter` function pointer, where it is
-/// typically an array subscript. `id as i32` alone also wraps every id from
-/// `0x8000_0000` up to a *negative* index.
+/// typically an array subscript.
+///
+/// The entry points take the ABI's own `i32`, so a caller can spell a negative
+/// index directly and the guard has to refuse it. The values below are the same
+/// hostile ones this test has always carried; they used to arrive as `u32`
+/// literals that wrapped negative on the way in, and are now written as the
+/// indices they became.
 ///
 /// `parameter_info` guarded already; `parameter` and `set_parameter` did not,
 /// which made the guard look like a convention rather than a requirement.
@@ -663,15 +673,16 @@ fn an_out_of_range_id_never_reaches_the_plugin() {
     let _guard = lock_probe();
     let (instance, _path) = load_probe();
 
-    let count = instance.parameters().len() as u32;
+    let count = instance.parameters().len() as i32;
     assert!(count > 0, "the probe exposes no parameters");
 
     for id in [
-        count,           // one past the end
-        count + 1_000,   // far past
-        u32::MAX,        // wraps to -1
-        0x8000_0000,     // wraps to i32::MIN
-        0x8000_0000 + 3, // wraps negative, near a plausible index
+        count,         // one past the end
+        count + 1_000, // far past
+        i32::MAX,      // the largest index expressible
+        -1,            // was `u32::MAX`
+        i32::MIN,      // was `0x8000_0000`
+        i32::MIN + 3,  // negative, near a plausible index
     ] {
         assert_eq!(
             instance.parameter(id),

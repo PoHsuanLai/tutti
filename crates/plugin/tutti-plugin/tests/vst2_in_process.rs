@@ -10,8 +10,12 @@ use std::path::Path;
 use std::sync::Mutex;
 
 use tutti_plugin::server::EditorPresence;
+use tutti_plugin_types::ParamAddress;
 
 const VST2_PLUGIN: &str = "/Library/Audio/Plug-Ins/VST/TAL-NoiseMaker.vst";
+
+/// VST2 addresses parameters by position, so every id here is an `Index`.
+const PARAM_0: ParamAddress = ParamAddress::Index(0);
 
 /// Serialize plugin loads — racing two concurrent VSTPluginMain calls
 /// against the same library makes some plugins crash.
@@ -40,8 +44,8 @@ fn handle_parameter_roundtrip() {
     let params = handle.parameters().expect("params should be Some");
     assert!(!params.is_empty());
 
-    handle.set_parameter(0, 0.5);
-    let v = handle.parameter(0).expect("param 0 should exist");
+    handle.set_parameter(PARAM_0, 0.5);
+    let v = handle.parameter(PARAM_0).expect("param 0 should exist");
     assert!((v - 0.5).abs() < 0.01, "expected ~0.5, got {v}");
 }
 
@@ -52,14 +56,14 @@ fn handle_state_roundtrip() {
     let (_unit, handle) =
         tutti_plugin::in_process_vst2(Path::new(VST2_PLUGIN), 48_000.0).expect("load failed");
 
-    handle.set_parameter(0, 0.25);
+    handle.set_parameter(PARAM_0, 0.25);
     let state = handle.save_state().expect("save_state should be Some");
     assert!(!state.is_empty());
 
-    handle.set_parameter(0, 0.9);
+    handle.set_parameter(PARAM_0, 0.9);
     handle.load_state(&state);
 
-    let restored = handle.parameter(0).expect("param 0 should exist");
+    let restored = handle.parameter(PARAM_0).expect("param 0 should exist");
     assert!(
         (restored - 0.25).abs() < 0.02,
         "expected ~0.25 after restore, got {restored}"

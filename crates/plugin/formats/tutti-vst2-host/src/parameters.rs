@@ -39,24 +39,25 @@ impl std::ops::Deref for SendParams {
 }
 
 impl Vst2Instance {
-    /// Resolve a caller-supplied id to the `i32` **index** the VST2 ABI takes,
-    /// or `None` if it addresses no parameter this plugin declares.
+    /// Confirm a caller-supplied **index** addresses a parameter this plugin
+    /// declares, or `None` if it does not.
     ///
     /// VST2 is the one hosted format whose parameter address is a dense,
     /// ordered index rather than an opaque id — `getParameter(effect, index)`
-    /// and `numParams` are both `i32` in the ABI. `ParamAddress::Index` carries
-    /// that distinction at the shared boundary, but says nothing about whether
-    /// an index is *in range*: neither this crate nor the vendored dispatch
-    /// bounds-checks before the number reaches the plugin's own array indexing,
-    /// which is what this guards.
+    /// and `numParams` are both `i32` in the ABI, and this crate's entry points
+    /// take the same `i32` so no conversion stands between a caller's index and
+    /// the dispatch. `ParamAddress::Index` carries that distinction at the
+    /// shared boundary, but says nothing about whether an index is *in range*:
+    /// neither this crate nor the vendored dispatch bounds-checks before the
+    /// number reaches the plugin's own array indexing, which is what this
+    /// guards. A negative index is refused here for the same reason.
     ///
     /// One helper rather than a check per entry point: `parameter_info` used to
     /// be the only site that guarded, which made the other three read like a
     /// deliberate convention rather than an omission.
-    fn param_index(&self, id: u32) -> Option<i32> {
-        let index = i32::try_from(id).ok()?;
+    fn param_index(&self, id: i32) -> Option<i32> {
         let count = self.handle.instance.get_info().parameters;
-        (index >= 0 && index < count).then_some(index)
+        (id >= 0 && id < count).then_some(id)
     }
 
     /// Read a parameter's current normalized value, in `[0.0, 1.0]`.
@@ -66,7 +67,7 @@ impl Vst2Instance {
     /// declaring no parameters. That is not the same as a parameter sitting at
     /// zero, so it is not flattened to `0.0` here; a caller that genuinely does
     /// not care can say `unwrap_or(0.0)` and be seen to have decided.
-    pub fn parameter(&self, id: u32) -> Option<f32> {
+    pub fn parameter(&self, id: i32) -> Option<f32> {
         self.params.get_parameter(self.param_index(id)?)
     }
 
@@ -76,7 +77,7 @@ impl Vst2Instance {
     /// `false` when `id` addresses no declared parameter, or the plugin exposes
     /// no `setParameter` — either way the value was discarded rather than
     /// applied.
-    pub fn set_parameter(&self, id: u32, value: f32) -> bool {
+    pub fn set_parameter(&self, id: i32, value: f32) -> bool {
         match self.param_index(id) {
             Some(index) => self.params.set_parameter(index, value),
             None => false,
@@ -88,7 +89,7 @@ impl Vst2Instance {
         let count = self.handle.instance.get_info().parameters;
         (0..count)
             .map(|i| ParameterInfo {
-                id: i as u32,
+                id: i,
                 name: self.params.get_parameter_name(i),
                 unit: self.params.get_parameter_label(i),
                 // A listing is a display surface; a plugin with no accessor
@@ -135,6 +136,8 @@ impl Vst2Instance {
                 // for this id, which means the parameter count grew after load —
                 // a shell plugin swapping its effect. Better than 0.0: the live
                 // value is at least one this parameter has held.
+                // `p.id` is an enumeration counter bounded by `numParams`, so
+                // it is never negative and the widening cannot wrap.
                 let default = self
                     .initial_values
                     .get(p.id as usize)
@@ -177,7 +180,7 @@ impl Vst2Instance {
                     // enumeration counter from `parameters()`, already bounded
                     // by `get_info().parameters`, so it is an index by
                     // construction — see [`Vst2Instance::param_index`].
-                    id: ParamAddress::Index(p.id as i32),
+                    id: ParamAddress::Index(p.id),
                     name: p.name,
                     unit: p.unit,
                     range,
@@ -191,7 +194,7 @@ impl Vst2Instance {
 
     /// Look up a single parameter by ID. `None` if it addresses no declared
     /// parameter.
-    pub fn parameter_info(&self, id: u32) -> Option<ParameterInfo> {
+    pub fn parameter_info(&self, id: i32) -> Option<ParameterInfo> {
         let index = self.param_index(id)?;
         Some(ParameterInfo {
             id,

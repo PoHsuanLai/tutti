@@ -161,7 +161,7 @@ pub struct ParameterCategory {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ParameterProperties {
     /// Index the properties were queried for.
-    pub index: u32,
+    pub index: i32,
     /// Full display label. May be empty even on a successful query.
     pub label: String,
     /// Short label for narrow UI slots. May be empty.
@@ -268,7 +268,7 @@ impl ParameterProperties {
     /// hand-built structs. That is not a convenience: no plugin available here
     /// implements the opcode, so a test that could only go through a real
     /// plugin would assert nothing.
-    fn decode(index: u32, raw: &api::ParameterProperties) -> Self {
+    fn decode(index: i32, raw: &api::ParameterProperties) -> Self {
         let flags = ParameterPropertyFlags::from_bits(raw.flags);
 
         Self {
@@ -364,16 +364,16 @@ impl Vst2Instance {
     /// `None` when the index is out of range, or when the plugin does not
     /// implement the opcode — the common case, measured on every plugin
     /// available here. Callers must keep their name/label fallback.
-    pub fn parameter_properties(&self, id: u32) -> Option<ParameterProperties> {
+    pub fn parameter_properties(&self, id: i32) -> Option<ParameterProperties> {
         // Range-check before dispatch. Plugins are not required to bounds-check
         // the index, and the probe's own out-of-range answers show why: an
         // unchecked walk reads properties for parameters that do not exist.
         let count = self.parameter_count();
-        if id >= count {
+        if id < 0 || id >= count {
             return None;
         }
 
-        let raw = self.handle.instance.parameter_properties(id as i32)?;
+        let raw = self.handle.instance.parameter_properties(id)?;
         Some(ParameterProperties::decode(id, &raw))
     }
 
@@ -388,18 +388,13 @@ impl Vst2Instance {
             .collect()
     }
 
-    /// Number of parameters the plugin advertises, as an unsigned count.
+    /// Number of parameters the plugin advertises, never negative.
     ///
     /// `AEffect::numParams` is a signed `i32` and a malformed plugin can report
-    /// a negative one; that must become "no parameters", not a huge count via
-    /// `as u32`.
-    fn parameter_count(&self) -> u32 {
-        self.handle
-            .instance
-            .get_info()
-            .parameters
-            .try_into()
-            .unwrap_or(0)
+    /// a negative one; that must become "no parameters", not an empty range that
+    /// happens to iterate zero times by accident. Clamping states it.
+    fn parameter_count(&self) -> i32 {
+        self.handle.instance.get_info().parameters.max(0)
     }
 
     /// Query `effGetMidiProgramName` for one program on one MIDI channel.

@@ -161,8 +161,18 @@ impl PluginAudio for Vst2Instance {
             if let Some(changes) = ctx.param_changes {
                 for queue in &changes.queues {
                     if let Some(point) = queue.points.last() {
+                        // `ParameterQueue::param_id` is the automation wire's
+                        // bare `u32` — the one place the IPC vocabulary meets
+                        // this crate's `i32` index. A `u32` above `i32::MAX`
+                        // names no VST2 parameter, so it is dropped here rather
+                        // than cast into a negative index; `set_parameter`
+                        // would refuse it anyway, and saying so is clearer than
+                        // relying on that.
+                        let Ok(index) = i32::try_from(queue.param_id) else {
+                            continue;
+                        };
                         self.inner
-                            .set_parameter(queue.param_id, (point.value as f32).clamp(0.0, 1.0));
+                            .set_parameter(index, (point.value as f32).clamp(0.0, 1.0));
                     }
                 }
             }
@@ -242,7 +252,7 @@ impl PluginParams for Vst2Instance {
             // handle addresses nothing here. `Vst2Instance::parameter` bounds-
             // checks the index it is given; see `param_index` there.
             id.index()
-                .and_then(|i| self.inner.parameter(i as u32))
+                .and_then(|i| self.inner.parameter(i))
                 .unwrap_or(0.0) as f64
         }
         #[cfg(not(feature = "vst2"))]
@@ -259,7 +269,7 @@ impl PluginParams for Vst2Instance {
         #[cfg(feature = "vst2")]
         let _ = id
             .index()
-            .map(|i| self.inner.set_parameter(i as u32, value as f32));
+            .map(|i| self.inner.set_parameter(i, value as f32));
         #[cfg(not(feature = "vst2"))]
         let _ = (id, value);
     }

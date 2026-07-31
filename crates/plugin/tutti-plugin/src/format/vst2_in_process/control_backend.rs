@@ -41,7 +41,7 @@ impl HostParams for InProcessVst2Backend {
         // trait's "unavailable". Wrapping it in `Some` would report a missing
         // accessor as a present value. An opaque id addresses nothing in VST2
         // and takes the same `None`.
-        self.inner.lock().parameter(id.index()? as u32)
+        self.inner.lock().parameter(id.index()?)
     }
 
     fn set_parameter_value(&self, id: ParamAddress, value: f32) {
@@ -50,7 +50,7 @@ impl HostParams for InProcessVst2Backend {
         // recoverable — the GUI thread will retry on the next idle.
         let Some(index) = id.index() else { return };
         if let Some(instance) = self.inner.try_lock() {
-            instance.set_parameter(index as u32, value);
+            instance.set_parameter(index, value);
         }
     }
 

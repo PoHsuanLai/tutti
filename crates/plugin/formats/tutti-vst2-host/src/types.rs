@@ -46,7 +46,9 @@ pub use tutti_plugin_types::Vst2Category;
 /// returns from `getParameterLabel` (typically "Hz", "dB", "%", or empty).
 #[derive(Debug, Clone)]
 pub struct ParameterInfo {
-    pub id: u32,
+    /// Dense index in `[0, numParams)` — VST2 addresses parameters by
+    /// position, and the ABI's own `i32` is carried rather than re-signed.
+    pub id: i32,
     pub name: String,
     pub unit: String,
     /// Current normalized value in `[0.0, 1.0]`.

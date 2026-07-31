@@ -356,6 +356,32 @@ Worth keeping as a note on the original reasoning: the `SmfNote` doc's
 and the audit was right to call it scheduling rather than design. What it got
 wrong was assuming the unblock would come from fixing the consumer.
 
+## 10. The blind spot this audit had
+
+Worth recording, because it invalidates part of §7's "verified clean".
+
+Every pass ran `cargo check`/`test` with **default features**. `tutti-units`
+has `default = []`, so `spatial`, `hrtf` and `convolution` were never compiled
+— 210 tests default, 257 with `--all-features`. Across the engine it is 2069
+vs 2124: **55 tests no audit pass had ever run.**
+
+Two real findings were hiding there, both of the exact kind the audit was
+looking for and both reported "clean" by earlier passes:
+
+- `direction_from_degrees(azimuth_deg: f32, elevation_deg: f32)` — adjacent
+  transposable angles, hand-rolling `f32::to_radians` where
+  `From<Azimuth> for Radians` exists.
+- `ConvolutionNode::process_sample(.., mix: Mix, gain: f32)` — a bare gain
+  beside a typed `Mix`, with the `Amplitude` stripped four times to reach it.
+
+And three **feature-gated builds were simply broken on `main`**, none
+reachable from a default check: `bevy-tutti --features plugin` (fixed in
+tier 5), `tutti-plugin --features vst2`, and `tutti-midi-io --all-features`.
+A feature that is off by default is a feature nobody rebuilds.
+
+The lesson generalizes past units: any audit of this repo should run
+`--all-features`, and CI should too.
+
 ## What is left
 
 Nothing. Every item this audit opened is landed.

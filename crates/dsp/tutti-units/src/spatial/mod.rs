@@ -11,7 +11,7 @@ mod hrtf_node;
 #[cfg(feature = "hrtf")]
 mod hrtf_panner;
 
-pub use mix::{build_surround_mix, ChannelSumUnit, SurroundSource};
+pub use mix::{build_surround_mix, SurroundSource};
 pub use nodes::SpatialPannerNode;
 
 #[cfg(feature = "hrtf")]

@@ -68,10 +68,18 @@ pub use tutti_mod::{
     AtomicTarget, BeatLfo, CurveModulator, LayerKey, LayeredCurve, ModParams, ModTarget,
 };
 
+// The fan-in every mixer needs: `K` sources × `N` channels summed into one
+// `N`-wide output. Ungated on purpose — it is arity arithmetic, not geometry, so
+// gating it under `spatial` made a VBAP dependency the price of summing two
+// stereo signals. `spatial`'s `build_surround_mix` is one consumer, not the only
+// one.
+mod mix_bus;
+pub use mix_bus::ChannelSumUnit;
+
 #[cfg(feature = "spatial")]
 mod spatial;
 #[cfg(feature = "spatial")]
-pub use spatial::{build_surround_mix, ChannelSumUnit, SpatialPannerNode, SurroundSource};
+pub use spatial::{build_surround_mix, SpatialPannerNode, SurroundSource};
 #[cfg(feature = "hrtf")]
 pub use spatial::{HrtfBinauralError, HrtfBinauralNode};
 

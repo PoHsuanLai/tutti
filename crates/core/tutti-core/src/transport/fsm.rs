@@ -2,6 +2,7 @@
 
 use super::motion::{FadeOut, MotionEvent, Then};
 use crate::params::Beat;
+use crate::Samples;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(u8)]
@@ -87,22 +88,24 @@ pub(crate) enum TransitionResult {
     MotionChanged(MotionState),
     /// Jump now, landing in `motion`.
     Located { pos: Beat, motion: MotionState },
-    /// Fade out over `samples`, then perform `on_complete`.
+    /// Fade out over `frames`, then perform `on_complete`.
     DeclickStarted {
         motion: MotionState,
-        samples: u32,
+        frames: Samples,
         on_complete: DeclickOutcome,
     },
 }
 
-pub(crate) const DEFAULT_DECLICK_SAMPLES: u32 = 480;
+/// 10 ms at 48 kHz — long enough to kill a click, short enough not to read
+/// as a fade.
+pub(crate) const DEFAULT_DECLICK_FRAMES: Samples = Samples(480);
 
 pub(crate) struct TransportFsm {
     motion: MotionState,
     prev_motion: MotionState,
     /// What the in-flight fade completes into. `None` when no fade is armed.
     pending: Option<DeclickOutcome>,
-    declick_samples: u32,
+    declick_frames: Samples,
 }
 
 impl TransportFsm {
@@ -111,7 +114,7 @@ impl TransportFsm {
             motion: MotionState::Stopped,
             prev_motion: MotionState::Stopped,
             pending: None,
-            declick_samples: DEFAULT_DECLICK_SAMPLES,
+            declick_frames: DEFAULT_DECLICK_FRAMES,
         }
     }
 
@@ -168,7 +171,7 @@ impl TransportFsm {
         self.pending = Some(on_complete);
         Some(TransitionResult::DeclickStarted {
             motion,
-            samples: self.declick_samples,
+            frames: self.declick_frames,
             on_complete,
         })
     }
@@ -392,7 +395,7 @@ mod tests {
             result,
             Some(TransitionResult::DeclickStarted {
                 motion: MotionState::DeclickToStop,
-                samples: DEFAULT_DECLICK_SAMPLES,
+                frames: DEFAULT_DECLICK_FRAMES,
                 on_complete: DeclickOutcome::Stop,
             })
         ));

@@ -141,12 +141,12 @@ impl Engine {
     /// works at any width.
     #[inline]
     fn apply_declick(&self, output: &mut InterleavedMut<'_>) -> bool {
-        let remaining = self.declick.remaining.load(Ordering::Acquire);
+        let remaining = self.declick.remaining().get();
         if remaining == 0 {
             return false;
         }
 
-        let total = self.declick.total.load(Ordering::Acquire) as f32;
+        let total = self.declick.total().get() as f32;
         if total == 0.0 {
             return false;
         }
@@ -156,10 +156,13 @@ impl Engine {
         let channels = output.stride();
         let frames = output.len();
         let output = output.samples_mut();
-        let frames_to_process = (remaining as usize).min(frames);
+        // Both operands are frame counts in one type now. They used to be a
+        // `u32` fade length and a `usize` block length, comparable only because
+        // both had been stripped to bare integers.
+        let frames_to_process = remaining.min(frames);
 
         for i in 0..frames_to_process {
-            let r = remaining - i as u32 - 1;
+            let r = remaining - i - 1;
             let gain = r as f32 / total;
             for c in 0..channels {
                 output[i * channels + c] *= gain;
@@ -173,10 +176,10 @@ impl Engine {
             }
         }
 
-        let new_remaining = remaining.saturating_sub(frames as u32);
+        let new_remaining = remaining.saturating_sub(frames);
         self.declick
             .remaining
-            .store(new_remaining, Ordering::Release);
+            .store(new_remaining as u32, Ordering::Release);
 
         new_remaining == 0
     }

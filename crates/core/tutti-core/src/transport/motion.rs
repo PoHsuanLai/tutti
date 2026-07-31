@@ -291,12 +291,10 @@ impl MotionFsm {
                     self.declick.clear();
                 }
             }
-            TransitionResult::DeclickStarted {
-                motion, samples, ..
-            } => {
+            TransitionResult::DeclickStarted { motion, frames, .. } => {
                 self.set_motion(motion);
                 // Audio keeps playing while the gain ramps to zero.
-                self.declick.start(samples);
+                self.declick.start(frames);
             }
             TransitionResult::Located { pos, motion } => {
                 self.locate_to(pos);

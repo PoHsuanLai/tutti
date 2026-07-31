@@ -7,32 +7,39 @@
 
 use crate::delay::{DelayLine, InterpolationMode, StereoPair};
 use tutti_core::dsp::DEFAULT_SAMPLE_RATE;
-use tutti_core::{Feedback, Hz, Mix, SampleRate, Seconds};
+use tutti_core::{Feedback, Hz, Mix, PhaseIncrement, SampleRate, Seconds};
 
 use super::shared::{LfoDrive, TimeModMix};
 
 /// Flavor constants that distinguish one modulated-delay effect from another.
 #[derive(Debug, Clone, Copy)]
 pub struct ModulatedDelayConfig {
-    /// Centre delay, in seconds, that the LFO modulates around.
-    pub base_delay_secs: f32,
-    /// Maximum allowed delay (delay-line capacity), in seconds.
-    pub max_delay_secs: f32,
+    /// Centre delay the LFO modulates around.
+    pub base_delay: Seconds,
+    /// Maximum allowed delay (delay-line capacity).
+    pub max_delay: Seconds,
     /// L/R phase offset in LFO cycles (0..1).
-    pub lr_phase_offset: f32,
+    ///
+    /// A [`PhaseIncrement`], not a `Seconds` — which is the point of typing
+    /// this struct. All three were bare `f32`, so the two delays could be
+    /// transposed (CHORUS's `0.01`/`0.05` swap to base > max, which the line
+    /// then silently clamps at capacity) and the offset could be written into
+    /// either of them. `LfoDrive::new` already takes
+    /// `impl Into<PhaseIncrement>`; the type was stripped only to sit here.
+    pub lr_phase_offset: PhaseIncrement,
 }
 
 impl ModulatedDelayConfig {
     pub const CHORUS: Self = Self {
-        base_delay_secs: 0.01,
-        max_delay_secs: 0.05,
-        lr_phase_offset: 0.25,
+        base_delay: Seconds(0.01),
+        max_delay: Seconds(0.05),
+        lr_phase_offset: PhaseIncrement(0.25),
     };
 
     pub const FLANGER: Self = Self {
-        base_delay_secs: 0.001,
-        max_delay_secs: 0.02,
-        lr_phase_offset: 0.5,
+        base_delay: Seconds(0.001),
+        max_delay: Seconds(0.02),
+        lr_phase_offset: PhaseIncrement(0.5),
     };
 }
 
@@ -56,8 +63,8 @@ impl ModulatedDelay {
     ) -> Self {
         Self {
             delays: StereoPair::new(
-                DelayLine::from_seconds(config.max_delay_secs, DEFAULT_SAMPLE_RATE),
-                DelayLine::from_seconds(config.max_delay_secs, DEFAULT_SAMPLE_RATE),
+                DelayLine::from_seconds(config.max_delay, DEFAULT_SAMPLE_RATE),
+                DelayLine::from_seconds(config.max_delay, DEFAULT_SAMPLE_RATE),
             ),
             lfo: LfoDrive::new(rate_hz, config.lr_phase_offset),
             mix: TimeModMix::new(depth_secs, feedback, mix),
@@ -74,12 +81,12 @@ impl ModulatedDelay {
 
     pub fn set_sample_rate(&mut self, sample_rate: tutti_core::SampleRate) {
         self.sample_rate = sample_rate;
-        self.delays.l = DelayLine::from_seconds(self.config.max_delay_secs, sample_rate);
-        self.delays.r = DelayLine::from_seconds(self.config.max_delay_secs, sample_rate);
+        self.delays.l = DelayLine::from_seconds(self.config.max_delay, sample_rate);
+        self.delays.r = DelayLine::from_seconds(self.config.max_delay, sample_rate);
     }
 
-    pub fn base_delay_secs(&self) -> f32 {
-        self.config.base_delay_secs
+    pub fn base_delay(&self) -> Seconds {
+        self.config.base_delay
     }
 
     #[inline]
@@ -92,7 +99,7 @@ impl ModulatedDelay {
 
         let (lfo_l, lfo_r) = self.lfo.eval();
 
-        let base_delay = self.config.base_delay_secs * sr;
+        let base_delay = self.config.base_delay.get() * sr;
         let delay_l = (base_delay + lfo_l * depth * sr).max(1.0);
         let delay_r = (base_delay + lfo_r * depth * sr).max(1.0);
 

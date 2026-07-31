@@ -5,7 +5,7 @@
 use core::fmt;
 
 use crate::{AllocationStrategy, PortamentoConfig, Tuning, UnisonConfig, VoiceMode};
-use tutti_core::{Amplitude, Hz, Resonance, Seconds, Semitones, Q};
+use tutti_core::{Amplitude, Depth, Hz, Resonance, Seconds, Semitones, Q};
 
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum OscillatorType {
@@ -138,15 +138,22 @@ impl EnvelopeConfig {
 pub struct FilterModConfig {
     /// Mod wheel (CC1) to filter cutoff depth (0.0-1.0, default: 0.0)
     /// At 1.0, mod wheel fully open doubles the cutoff frequency.
-    pub mod_wheel_depth: f32,
+    pub mod_wheel_depth: Depth,
     /// Velocity to filter cutoff depth (0.0-1.0, default: 0.0)
     /// At 1.0, velocity 0 halves cutoff, velocity 127 uses full cutoff.
-    pub velocity_depth: f32,
-    /// LFO rate in Hz (default: 0.0 = disabled)
-    pub lfo_rate: f32,
+    pub velocity_depth: Depth,
+    /// LFO rate (default: 0 Hz = disabled).
+    ///
+    /// The one [`Hz`] among three [`Depth`]s, and the reason all four are
+    /// typed: as four bare `f32`s any permutation compiled, and this one sits
+    /// between two depths that read nothing like a frequency. The rate was
+    /// already re-wrapped one hop downstream —
+    /// `PhaseIncrement::per_sample(Hz(fm.lfo_rate), ..)` — so the type was
+    /// known and simply not carried across the struct.
+    pub lfo_rate: Hz,
     /// LFO to filter cutoff depth (0.0-1.0, default: 0.0)
     /// At 1.0, LFO sweeps cutoff by ±50%.
-    pub lfo_depth: f32,
+    pub lfo_depth: Depth,
 }
 
 #[derive(Debug, Clone)]

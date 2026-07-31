@@ -26,7 +26,10 @@ pub use crate::host::node::{
 // The LFO shape vocabulary + the modulation-target surface (from `tutti-mod`,
 // via `tutti-units`), so the app can build an [`LfoCurve`] / route to a
 // [`PluginParamTarget`] without naming `tutti-units` directly.
-pub use crate::protocol::{ChordValue, ScaleValue};
+// `ParamAddress` alongside them because `TimedParam::param_id` is one: a
+// caller that can construct a `TimedParam` through this module must be able to
+// name its field's type without reaching into the private `protocol` module.
+pub use crate::protocol::{ChordValue, ParamAddress, ScaleValue};
 pub use crate::util::window::{EditorCapabilities, EditorSize};
 pub use control_handle::PluginHandle;
 pub use tutti_units::{LfoShape, ModParams, ModTarget};

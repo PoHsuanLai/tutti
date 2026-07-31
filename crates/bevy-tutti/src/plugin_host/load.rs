@@ -33,6 +33,7 @@ use bevy_ecs::prelude::*;
 use bevy_log::{error, info};
 use bevy_tasks::{block_on, futures_lite::future, AsyncComputeTaskPool, Task};
 
+use tutti_core::SampleRate;
 use tutti_plugin::catalog::PluginId;
 use tutti_plugin::handles::{PluginClient, PluginHandle};
 use tutti_plugin::BridgeError;
@@ -93,7 +94,11 @@ pub struct PluginRequest {
     /// Rate to instantiate at. Read this off
     /// [`AudioConfig`](crate::graph::AudioConfig) rather than assuming 44.1k —
     /// the plugin is built for this rate and a mismatch is audible.
-    pub sample_rate: f64,
+    ///
+    /// `SampleRate`, which is what `AudioConfig::sample_rate` already is: the
+    /// doc above and the example below both said to copy it from there, and
+    /// the field then untyped it on arrival.
+    pub sample_rate: SampleRate,
     /// Optional preset chunk to restore once loaded, as returned by
     /// `PluginHandle::save_state`.
     pub state: Option<Vec<u8>>,
@@ -105,7 +110,7 @@ impl Default for PluginRequest {
             id: PluginId::from_path(std::path::PathBuf::new()),
             // Not 0.0: a zero rate reaches the plugin and is a far more
             // confusing failure than a plausible default that is merely wrong.
-            sample_rate: 48_000.0,
+            sample_rate: SampleRate::SR_48K,
             state: None,
         }
     }

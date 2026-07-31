@@ -5,7 +5,7 @@ use tutti_plugin::server::{
     BusChannels, EditorPresence, EditorSize, Features, LoadedPlugin, NoteExpressionChanges,
     ParamAddress, ParamRange, ParameterChanges, ParameterInfo, PluginAudio, PluginClass,
     PluginDescriptor, PluginEditorHost, PluginError, PluginMeta, PluginParams, PluginResult,
-    PluginState, Samples, WindowHandle,
+    PluginState, PluginTail, Samples, WindowHandle,
 };
 use tutti_plugin::server::{ProcessContext, ProcessOutput};
 
@@ -184,6 +184,8 @@ impl ClapInstance {
                 inputs: input_buses,
                 outputs: output_buses,
                 latency_samples: Samples::ZERO,
+                // Both filled in after activation, below.
+                tail: PluginTail::Unknown,
                 features,
                 probed,
             };
@@ -208,11 +210,20 @@ impl ClapInstance {
                 })?)
             };
 
-            // Latency is queryable after activation.
+            // Latency and tail are queryable after activation.
             loaded_meta.latency_samples = Samples(match &inner {
                 ClapInner::F32(i) => i.get_latency(),
                 ClapInner::F64(i) => i.get_latency(),
             } as usize);
+            // `get_tail` answers 0 both for "no tail" and for a plugin without
+            // the extension, so a plugin that never implements `clap.tail` is
+            // reported as `None` rather than `Unknown`. Distinguishing them
+            // needs an extension-presence check the host crate does not expose;
+            // noted rather than guessed.
+            loaded_meta.tail = PluginTail::from_samples(match &inner {
+                ClapInner::F32(i) => i.get_tail(),
+                ClapInner::F64(i) => i.get_tail(),
+            });
 
             Ok(Self {
                 inner,

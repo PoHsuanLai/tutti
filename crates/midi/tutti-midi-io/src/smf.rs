@@ -118,9 +118,26 @@ fn parse_track(track: &Track, ticks_per_beat: u16) -> Vec<SmfTimedEvent> {
     events
 }
 
+/// Microseconds in a minute — the numerator of the SMF tempo relation, where
+/// a Set Tempo meta event carries microseconds per quarter note.
+///
+/// Named because the same relation is spelled three times in the engine, and
+/// the MIDI-2 twin (`ump::flex_data::TEN_NS_UNITS_PER_MINUTE`) already had a
+/// name for its own units while the two SMF copies used a bare literal.
+const US_PER_MINUTE: f64 = 60_000_000.0;
+
+/// The first Set Tempo in `track` as BPM, or `None` if it declares none.
+///
+/// A zero microseconds-per-quarter is `None` rather than an infinite BPM. That
+/// is what the MIDI-2 inverse (`ten_ns_per_quarter_to_bpm`) has always done for
+/// the identical wire condition; this copy returned `inf`, which then became
+/// `ParsedMidiFile::tempo_bpm` and reached every consumer of the parse.
 fn extract_tempo(track: &Track) -> Option<f64> {
     track.iter().find_map(|e| match &e.kind {
-        TrackEventKind::Meta(MetaMessage::Tempo(t)) => Some(60_000_000.0 / f64::from(t.as_int())),
+        TrackEventKind::Meta(MetaMessage::Tempo(t)) => match t.as_int() {
+            0 => None,
+            us_per_quarter => Some(US_PER_MINUTE / f64::from(us_per_quarter)),
+        },
         _ => None,
     })
 }
@@ -331,7 +348,15 @@ fn build_track<'a>(
 
     if include_meta {
         if let Some(bpm) = options.tempo_bpm {
-            let us = (60_000_000.0 / bpm) as u32;
+            // Guarded like its MIDI-2 twin `bpm_to_ten_ns_per_quarter`: a
+            // non-positive BPM divided to `inf`, and the saturating cast wrote
+            // `u32::MAX` microseconds per quarter — about 71 minutes a beat —
+            // into the file. Zero is the wire's own "no valid tempo".
+            let us = if bpm > 0.0 {
+                (US_PER_MINUTE / bpm) as u32
+            } else {
+                0
+            };
             track.push(meta_event(MetaMessage::Tempo(us.into())));
         }
         if let Some((num, denom_pow)) = options.time_signature {
@@ -388,6 +413,49 @@ mod tests {
         let file = ParsedMidiFile::parse(&data).unwrap();
         assert_eq!(file.ticks_per_beat, 480);
         assert_eq!(file.events.len(), 0);
+    }
+
+    /// Neither direction of the tempo relation may divide by zero.
+    ///
+    /// A `Tempo(0)` meta event is malformed but wire-representable, and gave an
+    /// infinite BPM that became `ParsedMidiFile::tempo_bpm`. Writing a
+    /// non-positive BPM did the mirror: `inf` microseconds, saturating to
+    /// `u32::MAX` — about 71 minutes per beat — in the file. The MIDI-2 twin
+    /// has always guarded both.
+    #[test]
+    fn a_degenerate_tempo_is_absent_rather_than_infinite() {
+        // Header (division 480) + a track holding only Set Tempo = 0.
+        let data = [
+            0x4D, 0x54, 0x68, 0x64, 0x00, 0x00, 0x00, 0x06, 0x00, 0x00, 0x00, 0x01, 0x01, 0xE0,
+            0x4D, 0x54, 0x72, 0x6B, 0x00, 0x00, 0x00, 0x0B, 0x00, 0xFF, 0x51, 0x03, 0x00, 0x00,
+            0x00, 0x00, 0xFF, 0x2F, 0x00,
+        ];
+        let file = ParsedMidiFile::parse(&data).expect("a zero tempo is not a parse failure");
+        assert!(
+            file.tempo_bpm.is_finite(),
+            "zero microseconds-per-quarter must not become an infinite BPM"
+        );
+        // Falls back to the documented default rather than inventing a rate.
+        assert_eq!(file.tempo_bpm, 120.0);
+
+        // And the write direction: a non-positive BPM writes the wire's own
+        // "no tempo" zero rather than a saturated u32.
+        let opts = MidiWriteOptions {
+            ticks_per_beat: 480,
+            tempo_bpm: Some(0.0),
+            time_signature: None,
+        };
+        let track = vec![vec![SmfTimedEvent {
+            time_beats: 0.0,
+            channel: 0,
+            msg: SmfMessage::NoteOn {
+                key: 60.into(),
+                vel: 100.into(),
+            },
+        }]];
+        let bytes = encode_midi_file(&track, &opts).expect("encodes");
+        let reparsed = ParsedMidiFile::parse(&bytes).expect("round-trips");
+        assert!(reparsed.tempo_bpm.is_finite());
     }
 
     /// Both readers of the header's division field must reject a zero.

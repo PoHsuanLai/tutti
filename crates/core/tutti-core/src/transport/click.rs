@@ -17,7 +17,7 @@ use fundsp::audionode::AudioNode;
 use fundsp::prelude::*;
 use std::sync::Arc;
 use tutti_types::meter::{Meter, MeterMap};
-use tutti_types::value::{Amplitude, Beat};
+use tutti_types::value::{Amplitude, Beat, Hz, Phase, PhaseIncrement, Samples, Seconds};
 use tutti_types::RtPublish;
 
 /// How far two beat onsets must differ to count as different beats.
@@ -214,25 +214,50 @@ impl ClickNode {
         }
     }
 
+    /// One rendered click: a windowed sine, generated once and replayed.
+    ///
+    /// The three envelope times are `Seconds` like the total, so the
+    /// relationship between them (attack, then hold, then a release that ends
+    /// exactly at `CLICK_LEN`) is stated in one unit rather than five bare
+    /// floats that happen to line up.
     fn generate_click(sample_rate: crate::SampleRate, is_accent: bool) -> Vec<f32> {
-        let click_duration = 0.03; // 30ms
-        let num_samples = (sample_rate.get() * click_duration) as usize;
+        /// Total click length.
+        const CLICK_LEN: Seconds = Seconds(0.03);
+        /// Fade-in, then full level until `HOLD_END`, then fade to zero.
+        const ATTACK: Seconds = Seconds(0.001);
+        const HOLD_END: Seconds = Seconds(0.02);
 
-        let freq = if is_accent { 1200.0 } else { 1000.0 };
-        let accent_volume = if is_accent { 1.0 } else { 0.7 };
+        // `to_samples_ceil`, not a truncating cast: this sizes a buffer, which
+        // is the allocating case the three named roundings exist to
+        // distinguish. Measured, the difference is one frame and only at rates
+        // where 30 ms is not whole — 22050 Hz gives 661 vs 662, while 44.1/48/
+        // 88.2/96 k are unchanged. Correctness of the *name*, not a fix for
+        // anything audible.
+        let num_samples = CLICK_LEN.to_samples_ceil(sample_rate).get();
 
+        let freq = if is_accent { Hz(1200.0) } else { Hz(1000.0) };
+        let accent_volume = if is_accent {
+            Amplitude(1.0)
+        } else {
+            Amplitude(0.7)
+        };
+        let release_len = CLICK_LEN - HOLD_END;
+        let phase_inc = PhaseIncrement::per_sample(freq, sample_rate);
+
+        let mut phase = Phase::START;
         (0..num_samples)
             .map(|i| {
-                let t = i as f64 / sample_rate.get();
-                let env = if t < 0.001 {
-                    t / 0.001
-                } else if t < 0.02 {
+                let t = Samples(i).to_seconds(sample_rate);
+                let env = if t < ATTACK {
+                    t.get() / ATTACK.get()
+                } else if t < HOLD_END {
                     1.0
                 } else {
-                    1.0 - (t - 0.02) / 0.01
+                    1.0 - (t - HOLD_END).get() / release_len.get()
                 };
-                let phase = 2.0 * core::f64::consts::PI * freq * t;
-                (phase.sin() * env * accent_volume) as f32
+                let sample = phase.to_radians().sin() * env * accent_volume.get();
+                phase = phase.advance(phase_inc);
+                sample
             })
             .collect()
     }

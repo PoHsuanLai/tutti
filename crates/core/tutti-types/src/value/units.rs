@@ -1821,12 +1821,6 @@ unit_bounded!(SamplePosition, f64);
 // `SamplePosition` is deliberately fractional so interpolating readers can
 // address between integer indices — a `Sub` returning `Samples` would silently
 // truncate.
-//
-// The omission ships with its replacements, per the rule: `advanced_by` is
-// `pos + Samples` (exact — the fraction survives), and `to_samples_floor` /
-// `to_samples_ceil` are the conversions back, named for their rounding the way
-// `Seconds::to_samples*` is. An operator could not carry that choice; that is
-// why this is three methods rather than an `impl Add`.
 unit_additive!(SamplePosition);
 unit_scalable!(SamplePosition, f64);
 
@@ -1841,54 +1835,6 @@ impl SamplePosition {
     #[inline]
     pub fn fract(self) -> f64 {
         self.0 - self.0.floor()
-    }
-
-    /// This position advanced by a frame count.
-    ///
-    /// The named replacement for `SamplePosition + Samples`, which the omission
-    /// note above forbids: `Samples` is `usize` and this is fractional, so an
-    /// affine pairing would have to round *somewhere*, and an operator has
-    /// nowhere to put the choice. A method does — advancing is exact (the
-    /// fractional part survives), and the caller picks the rounding only when it
-    /// converts back, with [`to_samples_floor`](Self::to_samples_floor) or
-    /// [`to_samples_ceil`](Self::to_samples_ceil).
-    ///
-    /// The motivating case is a sampler preload window: "keep `window` frames
-    /// resident starting from `entry`" is `entry.advanced_by(window)`, and
-    /// hand-rolling it as `entry.0 + window.0 as f64` is how a call site loses
-    /// the fraction and under-loads by a frame.
-    #[inline]
-    pub fn advanced_by(self, frames: Samples) -> SamplePosition {
-        SamplePosition(self.0 + frames.0 as f64)
-    }
-
-    /// Whole frames fully elapsed before this position — rounds **down**.
-    ///
-    /// The *counting* form, mirroring [`Seconds::to_samples_floor`]. "How many
-    /// complete frames are behind this cursor."
-    ///
-    /// Saturates at zero: a negative position has no frames behind it, and
-    /// `as usize` on a negative `f64` is 0 in Rust but by saturation rather than
-    /// by intent — stating it here means a caller cannot read the cast and
-    /// wonder.
-    #[inline]
-    pub fn to_samples_floor(self) -> Samples {
-        Samples(self.0.floor().max(0.0) as usize)
-    }
-
-    /// Whole frames needed to *contain* this position — rounds **up**.
-    ///
-    /// The *allocation* form, mirroring [`Seconds::to_samples_ceil`]. A buffer
-    /// sized to hold everything up to a fractional position must include the
-    /// frame that position falls inside, so rounding down under-allocates for
-    /// every non-integer input.
-    ///
-    /// This is the one a preload window wants: the window ends mid-frame, and
-    /// that frame has to be resident or the reader interpolates against data it
-    /// does not have.
-    #[inline]
-    pub fn to_samples_ceil(self) -> Samples {
-        Samples(self.0.ceil().max(0.0) as usize)
     }
 }
 unit_newtype!(
@@ -2466,60 +2412,6 @@ mod tests {
         assert_eq!(Seconds(f32::INFINITY).to_samples(48_000.0), Samples::ZERO);
         assert_eq!(Seconds(-1.0).to_samples(48_000.0), Samples::ZERO);
         assert_eq!(Seconds(1.0).to_samples(0.0), Samples::ZERO);
-    }
-
-    #[test]
-    fn sample_position_advances_by_a_frame_count_without_losing_the_fraction() {
-        // The named replacement for the forbidden `SamplePosition + Samples`.
-        // Exactness is the whole point: an interpolating reader sits between two
-        // integer indices, and advancing must not quietly seat it on one.
-        let entry = SamplePosition(1000.5);
-        assert_eq!(entry.advanced_by(Samples(8192)), SamplePosition(9192.5));
-        assert_eq!(entry.advanced_by(Samples(0)), entry);
-    }
-
-    #[test]
-    fn sample_position_to_samples_names_its_rounding() {
-        // The distinction that makes these two methods rather than one: a
-        // preload window ending mid-frame must load THAT frame, so a window
-        // sized by `floor` under-loads and the reader interpolates against data
-        // it does not have.
-        let mid_frame = SamplePosition(9192.5);
-        assert_eq!(mid_frame.to_samples_floor(), Samples(9192));
-        assert_eq!(mid_frame.to_samples_ceil(), Samples(9193));
-
-        // Exact positions agree — the rounding only bites on the fraction.
-        let exact = SamplePosition(9192.0);
-        assert_eq!(exact.to_samples_floor(), exact.to_samples_ceil());
-
-        // Ordering holds for every input, which is the invariant a caller
-        // reasons with when it picks one.
-        for raw in [0.0, 0.25, 1.0, 1.75, 48_000.5, 1e9 + 0.5] {
-            let p = SamplePosition(raw);
-            assert!(p.to_samples_ceil() >= p.to_samples_floor(), "{raw}");
-        }
-    }
-
-    #[test]
-    fn sample_position_to_samples_collapses_nonsense_to_zero() {
-        // Matches `Seconds::to_samples`'s convention rather than inventing a
-        // second one: a negative or non-finite position has no frames behind it.
-        assert_eq!(SamplePosition(-1.0).to_samples_floor(), Samples::ZERO);
-        assert_eq!(SamplePosition(-1.0).to_samples_ceil(), Samples::ZERO);
-        assert_eq!(SamplePosition(f64::NAN).to_samples_floor(), Samples::ZERO);
-        assert_eq!(SamplePosition(f64::NAN).to_samples_ceil(), Samples::ZERO);
-    }
-
-    #[test]
-    fn sample_position_survives_a_long_file() {
-        // The reason `SamplePosition` is f64: f32 holds integers exactly only to
-        // 2^24, ~5.8 minutes at 48k. A loop point in an hour-long file must not
-        // snap, and neither must a preload window computed against one.
-        let hour_in = SamplePosition(48_000.0 * 3600.0);
-        assert_eq!(
-            hour_in.advanced_by(Samples(8192)).to_samples_floor(),
-            Samples(172_800_000 + 8192)
-        );
     }
 
     #[test]

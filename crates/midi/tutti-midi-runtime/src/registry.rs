@@ -22,6 +22,7 @@ use std::sync::Arc;
 use crossbeam_queue::ArrayQueue;
 use dashmap::DashMap;
 
+use tutti_core::Beat;
 use tutti_midi_types::ump::MidiEvent;
 use tutti_midi_types::MidiUnitId;
 
@@ -175,7 +176,7 @@ impl MidiReceiver {
     }
 
     /// Drain pending events into a snapshot at the given beat position.
-    pub fn drain_into_snapshot(&self, snapshot: &mut MidiSnapshot, beat: f64) {
+    pub fn drain_into_snapshot(&self, snapshot: &mut MidiSnapshot, beat: Beat) {
         while let Some(event) = self.slot.events.pop() {
             snapshot.add_event(self.unit_id, beat, event);
         }
@@ -368,7 +369,7 @@ mod tests {
         sender.queue(&[note_on(60, 100), note_off(60)]);
 
         let mut snap = MidiSnapshot::new();
-        receiver.drain_into_snapshot(&mut snap, 0.0);
+        receiver.drain_into_snapshot(&mut snap, Beat(0.0));
         assert!(snap.has_events(id));
     }
 

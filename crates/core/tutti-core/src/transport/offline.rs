@@ -40,7 +40,7 @@ pub type OfflineTransport = Arc<dyn super::Timeline>;
 #[derive(Debug, Clone)]
 pub struct OfflineTimelineConfig {
     /// Start position in beats.
-    pub start_beat: f64,
+    pub start_beat: Beat,
     /// Tempo in BPM.
     pub tempo: Bpm,
     /// Sample rate in Hz.
@@ -53,7 +53,7 @@ pub struct OfflineTimelineConfig {
 impl Default for OfflineTimelineConfig {
     fn default() -> Self {
         Self {
-            start_beat: 0.0,
+            start_beat: Beat(0.0),
             tempo: Bpm(120.0),
             sample_rate: SampleRate(44100.0),
             loop_range: None,
@@ -70,7 +70,7 @@ impl Default for OfflineTimelineConfig {
 /// # Example
 /// ```ignore
 /// let timeline = OfflineTimeline::new(&OfflineTimelineConfig {
-///     start_beat: 0.0,
+///     start_beat: Beat(0.0),
 ///     tempo: Bpm(120.0),
 ///     sample_rate: SampleRate(44100.0),
 ///     loop_range: None,
@@ -110,7 +110,7 @@ pub struct OfflineTimeline {
 impl OfflineTimeline {
     pub fn new(config: &OfflineTimelineConfig) -> Self {
         Self {
-            current_beat: AtomicF64::new(config.start_beat),
+            current_beat: AtomicF64::new(config.start_beat.get()),
             tempo: config.tempo,
             sample_rate: config.sample_rate,
             beats_per_sample: super::state::beats_per_sample(config.tempo, config.sample_rate),
@@ -155,8 +155,9 @@ impl OfflineTimeline {
         self.sample_rate
     }
 
-    pub fn reset(&self, start_beat: f64) {
-        self.current_beat.store(start_beat, Ordering::Release);
+    pub fn reset(&self, start_beat: impl Into<Beat>) {
+        self.current_beat
+            .store(start_beat.into().get(), Ordering::Release);
     }
 
     #[inline]
@@ -213,7 +214,7 @@ mod tests {
     #[test]
     fn an_inverted_loop_region_is_rejected_not_silently_ignored() {
         let timeline = OfflineTimeline::new(&OfflineTimelineConfig {
-            start_beat: 0.0,
+            start_beat: Beat(0.0),
             tempo: Bpm(120.0),
             sample_rate: SampleRate(44100.0),
             loop_range: LoopRange::new(8.0, 4.0),
@@ -240,7 +241,7 @@ mod tests {
     #[test]
     fn an_empty_loop_region_is_rejected() {
         let timeline = OfflineTimeline::new(&OfflineTimelineConfig {
-            start_beat: 0.0,
+            start_beat: Beat(0.0),
             tempo: Bpm(120.0),
             sample_rate: SampleRate(44100.0),
             loop_range: LoopRange::new(4.0, 4.0),
@@ -257,7 +258,7 @@ mod tests {
     #[test]
     fn advance_wraps_once_per_block_not_once_per_sample() {
         let timeline = OfflineTimeline::new(&OfflineTimelineConfig {
-            start_beat: 0.0,
+            start_beat: Beat(0.0),
             tempo: Bpm(120.0),
             sample_rate: SampleRate(44100.0),
             loop_range: LoopRange::new(0.0, 1.0),
@@ -296,7 +297,7 @@ mod tests {
 
         let sample_rate = 44100.0;
         let tempo = 120.0;
-        let start_beat = 4.0;
+        let start_beat = Beat(4.0);
 
         let mut clock = TransportClock::new(
             crate::transport::ClockLinks::bare(
@@ -348,7 +349,7 @@ mod tests {
     #[test]
     fn test_timeline_advances() {
         let timeline = OfflineTimeline::new(&OfflineTimelineConfig {
-            start_beat: 0.0,
+            start_beat: Beat(0.0),
             tempo: Bpm(120.0),
             sample_rate: SampleRate(44100.0),
             loop_range: None,
@@ -366,7 +367,7 @@ mod tests {
     #[test]
     fn test_timeline_loop_wrap() {
         let timeline = OfflineTimeline::new(&OfflineTimelineConfig {
-            start_beat: 0.0,
+            start_beat: Beat(0.0),
             tempo: Bpm(120.0),
             sample_rate: SampleRate(44100.0),
             loop_range: LoopRange::new(0.0, 4.0),
@@ -387,7 +388,7 @@ mod tests {
     #[test]
     fn test_timeline_no_loop() {
         let timeline = OfflineTimeline::new(&OfflineTimelineConfig {
-            start_beat: 0.0,
+            start_beat: Beat(0.0),
             tempo: Bpm(120.0),
             sample_rate: SampleRate(44100.0),
             loop_range: None,
@@ -403,7 +404,7 @@ mod tests {
     #[test]
     fn test_timeline_start_offset() {
         let timeline = OfflineTimeline::new(&OfflineTimelineConfig {
-            start_beat: 4.0,
+            start_beat: Beat(4.0),
             tempo: Bpm(120.0),
             sample_rate: SampleRate(44100.0),
             loop_range: None,
@@ -419,7 +420,7 @@ mod tests {
     #[test]
     fn test_timeline_reset() {
         let timeline = OfflineTimeline::new(&OfflineTimelineConfig {
-            start_beat: 0.0,
+            start_beat: Beat(0.0),
             tempo: Bpm(120.0),
             sample_rate: SampleRate(44100.0),
             loop_range: None,
@@ -437,7 +438,7 @@ mod tests {
     #[test]
     fn timeline_impl_reports_the_loop_region() {
         let timeline = OfflineTimeline::new(&OfflineTimelineConfig {
-            start_beat: 0.0,
+            start_beat: Beat(0.0),
             tempo: Bpm(120.0),
             sample_rate: SampleRate(44100.0),
             loop_range: LoopRange::new(0.0, 8.0),
@@ -454,7 +455,7 @@ mod tests {
     #[test]
     fn timeline_impl_reports_no_loop_when_unset() {
         let timeline = OfflineTimeline::new(&OfflineTimelineConfig {
-            start_beat: 0.0,
+            start_beat: Beat(0.0),
             tempo: Bpm(120.0),
             sample_rate: SampleRate(44100.0),
             loop_range: None,

@@ -18,6 +18,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use tutti_core::transport::{BeatCursor, BeatWindow, BeatWindowSync, Timeline};
+use tutti_core::Beat;
 
 use crate::host::ipc_client::audio::HarmonyInputs;
 use crate::host::node::input_slot::{BlockCtx, BlockInput, BlockReset};
@@ -27,14 +28,14 @@ use crate::protocol::{ChordValue, ScaleValue};
 /// is filled per block by [`HarmonySource::fill`].
 #[derive(Clone, Debug)]
 pub struct TimedChord {
-    pub beat: f64,
+    pub beat: Beat,
     pub value: ChordValue,
 }
 
 /// A scale change scheduled at an absolute beat.
 #[derive(Clone, Debug)]
 pub struct TimedScale {
-    pub beat: f64,
+    pub beat: Beat,
     pub value: ScaleValue,
 }
 
@@ -106,7 +107,7 @@ impl HarmonySource {
         Some(window)
     }
 
-    fn rewind(&self, cursor: &AtomicU64, beats: impl Iterator<Item = f64>, beat: f64) {
+    fn rewind(&self, cursor: &AtomicU64, beats: impl Iterator<Item = Beat>, beat: Beat) {
         let mut idx = 0usize;
         for b in beats {
             if b < beat {
@@ -187,15 +188,15 @@ impl BlockReset for HarmonyInputs {
 
 /// Lets [`HarmonySource::emit`] read the beat of either change kind.
 trait HasBeat {
-    fn beat(&self) -> f64;
+    fn beat(&self) -> Beat;
 }
 impl HasBeat for TimedChord {
-    fn beat(&self) -> f64 {
+    fn beat(&self) -> Beat {
         self.beat
     }
 }
 impl HasBeat for TimedScale {
-    fn beat(&self) -> f64 {
+    fn beat(&self) -> Beat {
         self.beat
     }
 }
@@ -238,7 +239,7 @@ mod tests {
 
     fn chord(beat: f64, root: i16, name: &str) -> TimedChord {
         TimedChord {
-            beat,
+            beat: Beat(beat),
             value: ChordValue {
                 sample_offset: 0,
                 root,
@@ -250,7 +251,7 @@ mod tests {
     }
     fn scale(beat: f64, root: i16, name: &str) -> TimedScale {
         TimedScale {
-            beat,
+            beat: Beat(beat),
             value: ScaleValue {
                 sample_offset: 0,
                 root,

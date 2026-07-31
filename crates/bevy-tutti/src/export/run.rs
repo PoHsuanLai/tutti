@@ -200,7 +200,7 @@ fn prepare_net(
                 // for a graph with no musical time, and the reason `on_timeline`
                 // is worth calling for anything else.
                 None => Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
-                    start_beat: 0.0,
+                    start_beat: 0.0.into(),
                     tempo: 120.0.into(),
                     sample_rate: config.sample_rate,
                     loop_range: None,

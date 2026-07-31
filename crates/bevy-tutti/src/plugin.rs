@@ -53,6 +53,18 @@ pub struct TuttiPlugin {
     /// `None` = system default device
     pub output_device: Option<usize>,
     pub inputs: usize,
+    /// How many channels the graph root renders — a **floor, not a ceiling**.
+    ///
+    /// The device's own width is the other floor: if it is wider than this, the
+    /// root is built at the device's width instead, because a root narrower
+    /// than the device leaves the extra device channels permanently silent
+    /// (the root fold zero-fills rather than upmixing). If it is *narrower*,
+    /// this width is kept and the engine folds it down at the device edge
+    /// through the shared ITU matrices — so a 5.1 project still renders six
+    /// channels on a stereo laptop.
+    ///
+    /// `0` means "whatever the device presents". The result is clamped to
+    /// `MAX_ROOT_CHANNELS`, the bound on the render scratch.
     pub outputs: usize,
     /// Register the ECS surface but open no device.
     ///

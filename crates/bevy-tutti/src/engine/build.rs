@@ -16,7 +16,7 @@ use bevy_app::App;
 
 use crate::engine::Result;
 use tutti_core::dsp::An;
-use tutti_core::engine::Engine;
+use tutti_core::engine::{Engine, MAX_ROOT_CHANNELS};
 use tutti_core::Arc;
 use tutti_core::{
     dsp::Net, AudioTap, ClickNode, ClickSettings, MasterMeter, Transport, TransportClock,
@@ -75,11 +75,7 @@ pub fn build_into(plugin: &crate::TuttiPlugin, app: &mut App) -> Result<()> {
     }
 
     let inputs = plugin.inputs;
-    let outputs = if plugin.outputs == 0 {
-        2
-    } else {
-        plugin.outputs
-    };
+    let outputs = root_width(plugin.outputs, channels);
 
     let transport = Transport::new(sample_rate);
     let meter = MasterMeter::new();
@@ -257,4 +253,82 @@ pub fn build_into(plugin: &crate::TuttiPlugin, app: &mut App) -> Result<()> {
     app.insert_resource(DiskStreamerRes(disk_streamer));
 
     Ok(())
+}
+
+/// How wide the graph root is built, given what the project asks for and what
+/// the device presents.
+///
+/// **These are two independent numbers, and neither may narrow the other.**
+///
+/// `plugin_outputs` is the *project's* width. A 5.1 project on a stereo laptop
+/// must still render six channels — `Engine::process_segment` folds them into
+/// the device buffer through the shared ITU matrices every block. Clamping the
+/// root down to the device would make that fold a no-op that hides real channel
+/// loss, which is precisely the bug the fold exists to prevent.
+///
+/// The device is a **floor** because a root narrower than the device leaves the
+/// extra device channels permanently silent: `fold_frame` zero-fills rather
+/// than upmixing, deliberately, so nothing downstream can recover them.
+///
+/// A device *narrower* than the root needs nothing done here — that is the case
+/// the engine already handles, and the whole point of the root fold. "Should we
+/// clamp to the device?" is the obvious wrong instinct.
+///
+/// The [`MAX_ROOT_CHANNELS`] clamp is applied **here, at construction**, rather
+/// than left to `process_segment`'s runtime clamp: without it `Net::outputs()`
+/// reports a width whose upper channels are declarable — a sink can name them,
+/// the wiring resolves — but never rendered, because the render scratch is
+/// bounded. Offline export is unaffected: it clones the net and uses the
+/// offline `set_output_arity`, which has no such cap.
+fn root_width(plugin_outputs: usize, device: tutti_core::ChannelLayout) -> usize {
+    plugin_outputs
+        .max(device.count() as usize)
+        .clamp(1, MAX_ROOT_CHANNELS)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::root_width;
+    use tutti_core::engine::MAX_ROOT_CHANNELS;
+    use tutti_core::ChannelLayout;
+
+    #[test]
+    fn a_wider_device_widens_the_root() {
+        assert_eq!(
+            root_width(2, ChannelLayout::Multi(6)),
+            6,
+            "a stereo project on a 5.1 device must render all six, or the top \
+             four are permanently silent"
+        );
+    }
+
+    #[test]
+    fn a_wider_project_is_kept_and_folded_not_clamped() {
+        assert_eq!(
+            root_width(6, ChannelLayout::Stereo),
+            6,
+            "a 5.1 project on a stereo device keeps its width; the root fold \
+             narrows it at the device edge, and clamping here would hide the loss"
+        );
+    }
+
+    #[test]
+    fn an_unset_project_width_falls_through_to_the_device() {
+        assert_eq!(root_width(0, ChannelLayout::Multi(6)), 6);
+        assert_eq!(root_width(0, ChannelLayout::Stereo), 2);
+    }
+
+    #[test]
+    fn nothing_exceeds_the_render_scratch() {
+        assert_eq!(root_width(64, ChannelLayout::Multi(32)), MAX_ROOT_CHANNELS);
+    }
+
+    #[test]
+    fn the_root_is_never_zero_wide() {
+        assert_eq!(
+            root_width(0, ChannelLayout::Multi(0)),
+            1,
+            "a zero-output root would render nothing at all"
+        );
+    }
 }

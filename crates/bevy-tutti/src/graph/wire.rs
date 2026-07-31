@@ -60,6 +60,7 @@ use bevy_ecs::prelude::*;
 // as opposed to `inputs_in`/`outputs_in`, which are a contained node's.
 use tutti_core::dsp::{AudioUnit as _, Source};
 use tutti_core::node::AudioNode;
+use tutti_core::{engine::MAX_ROOT_CHANNELS, ChannelLayout};
 
 use super::{engine_ready, AudioGraphRes, GraphDirty, GraphReconcileSystems};
 
@@ -116,6 +117,28 @@ impl AudioSources {
             AudioSource::Node { entity, port: 0 },
             AudioSource::Node { entity, port: 1 },
         ])
+    }
+
+    /// Every channel of `layout` from `entity`'s matching port — the identity
+    /// mapping, at any width.
+    ///
+    /// [`stereo_from`](Self::stereo_from) generalized. Without this, a wide sink
+    /// writes a `.with()` fold at the call site, and every such fold is an
+    /// opportunity to get the mapping wrong: the correct mapping is *identity*,
+    /// and a hand-written loop invites `port % n` or an off-by-one start.
+    ///
+    /// **No wrapping and no fold**, for the same reason
+    /// [`MasterSources::from`] gives at length: `pipe_output` wraps with
+    /// `channel % node_outputs`, silently turning "route this" into "route
+    /// this, duplicated". This holds an `Entity` rather than a graph, so it
+    /// cannot see the arity it would wrap against. A declaration cannot fold;
+    /// only a node can.
+    pub fn from_node_at_width(entity: Entity, layout: impl Into<ChannelLayout>) -> Self {
+        Self(
+            (0..layout.into().count() as usize)
+                .map(|port| AudioSource::Node { entity, port })
+                .collect(),
+        )
     }
 
     /// Set one port, growing with [`AudioSource::Silence`] to reach it.
@@ -184,6 +207,25 @@ impl MasterSources {
             AudioSource::Node { entity, port: 0 },
             AudioSource::Node { entity, port: 0 },
         ])
+    }
+
+    /// Every channel of `layout` from `entity`'s matching port — the identity
+    /// mapping, at any width.
+    ///
+    /// [`from`](Self::from) generalized past stereo, with the same refusal to
+    /// wrap or fold and for the same reason. A declaration wider than the root
+    /// **widens the root** ([`rebuild`]) rather than being truncated, so this
+    /// is how a host asks for a surround master.
+    ///
+    /// [`mono_from`](Self::mono_from) is deliberately not expressible through
+    /// this: it maps two channels to one port, which is a duplication, not an
+    /// identity.
+    pub fn from_node_at_width(entity: Entity, layout: impl Into<ChannelLayout>) -> Self {
+        Self(
+            (0..layout.into().count() as usize)
+                .map(|port| AudioSource::Node { entity, port })
+                .collect(),
+        )
     }
 
     /// One channel from one of `entity`'s ports.
@@ -272,11 +314,48 @@ pub fn rebuild(
         }
     }
 
+    // A declaration wider than the root widens the root — it does not get
+    // silently truncated. Before this, a 6-entry `MasterSources` on a stereo
+    // root dropped channels 2-5 with no warning and nothing in the ECS to
+    // inspect: the loop below clamped, and the clamp looked like a bound rather
+    // than a policy.
+    //
+    // **Widen only, never narrow.** A *shorter* declaration means undeclared
+    // (see the comment below), so narrowing on it would tear down channels the
+    // host may own imperatively — the same violation `unwire_removed_sources`
+    // refuses. Narrowing needs its own explicit API, not an inference from a
+    // `Vec`'s length.
+    //
+    // Global output arity has none of the per-vertex hazard that makes node
+    // arity a respawn: global outputs are sinks, so shrinking cannot dangle a
+    // reference. `commit_graph` uses the arity-permitting commit, and
+    // `Engine::process_segment` re-reads `backend.outputs()` after `pump()`
+    // every block, so the RT side needs nothing here.
+    if master.is_changed() {
+        let declared = master.0.len().clamp(1, MAX_ROOT_CHANNELS);
+        if master.0.len() > MAX_ROOT_CHANNELS {
+            bevy_log::warn!(
+                declared = master.0.len(),
+                max = MAX_ROOT_CHANNELS,
+                "MasterSources declares more channels than the render scratch \
+                 holds; the excess will not be rendered"
+            );
+        }
+        if declared > graph.0.outputs() {
+            graph.0.set_output_arity_live(declared);
+            dirty.0 = true;
+        }
+    }
+
     // Only channels the resource actually names. An index past the end is
     // *undeclared*, not "declared silent": a host that has not written
     // `MasterSources` has said nothing about the bus, and a layer that answered
     // that silence by zeroing every channel would tear down whatever the host
     // wired itself. Declaring silence explicitly is `AudioSource::Silence`.
+    //
+    // The `.min` is now always satisfied for a widened declaration, but stays:
+    // it is what makes an out-of-range channel unrepresentable if the arity
+    // change is capped by `MAX_ROOT_CHANNELS` or does not happen at all.
     for channel in 0..master.0.len().min(graph.0.outputs()) {
         let want = master.0[channel];
         // `None` here means unresolvable, not silent — skip and retry.

@@ -14,7 +14,8 @@ use bevy_tutti::graph::{
     GraphReconcileSystems, MasterSources,
 };
 use bevy_tutti::AudioEngineState;
-use tutti_core::dsp::{pass, sine_hz, Net, Source};
+// `outputs()` on `Net` is an `AudioUnit` method — the graph's own arity.
+use tutti_core::dsp::{pass, sine_hz, AudioUnit as _, Net, Source};
 use tutti_core::AudioNode;
 
 /// An app wired the way `build_into` leaves one, minus the audio device.
@@ -391,5 +392,174 @@ fn a_rebuild_that_changes_nothing_writes_nothing() {
         "a rebuild whose declarations all match the engine must not dirty the \
          graph — re-writing a correct port discards the cached node order and \
          forces a commit the frame did not need"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// A master declaration wider than the root widens the root.
+// ---------------------------------------------------------------------------
+
+/// A 6-channel `MasterSources` on a stereo root must widen the root, not be
+/// truncated to it.
+///
+/// Before this, `rebuild` clamped the loop to `graph.0.outputs()`, so channels
+/// 2-5 were dropped with no warning and nothing in the ECS to inspect. The
+/// second half of this test is what makes it a real regression: a fix that
+/// widens the root but leaves the loop clamped passes the arity assertion and
+/// still never wires channel 5.
+#[test]
+fn a_wider_master_declaration_widens_the_root() {
+    let mut app = app();
+    let wide = spawn_node(
+        &mut app,
+        tutti_core::dsp::multipass::<tutti_core::dsp::U6>(),
+    );
+
+    app.insert_resource(MasterSources::from_node_at_width(
+        wide,
+        tutti_core::ChannelLayout::Multi(6),
+    ));
+    app.update();
+
+    let graph = app.world().resource::<AudioGraphRes>();
+    assert_eq!(graph.0.outputs(), 6, "the declaration widened the root");
+
+    let id = node_id(&app, wide);
+    for channel in 0..6 {
+        assert_eq!(
+            graph.0.output_source(channel),
+            Source::Local(id, channel),
+            "channel {channel} must actually be wired, not merely reachable"
+        );
+    }
+}
+
+/// Widening must survive the real commit path. A plain `Net::commit` panics on
+/// an arity change, so this is what proves the arity-permitting commit is
+/// genuinely the one reached.
+#[test]
+fn a_widened_root_survives_a_real_commit() {
+    let mut app = app();
+    let wide = spawn_node(
+        &mut app,
+        tutti_core::dsp::multipass::<tutti_core::dsp::U6>(),
+    );
+
+    app.insert_resource(MasterSources::from_node_at_width(
+        wide,
+        tutti_core::ChannelLayout::Multi(6),
+    ));
+    app.update();
+    // A second frame: the commit runs in `Commit`, after `rebuild`'s widening.
+    app.update();
+
+    let graph = app.world().resource::<AudioGraphRes>();
+    assert_eq!(graph.0.outputs(), 6);
+    assert!(
+        !app.world().resource::<GraphDirty>().0,
+        "the commit consumed the dirty flag rather than panicking on the arity change"
+    );
+}
+
+/// A *shorter* declaration means undeclared, not "narrow the root".
+///
+/// Narrowing on a shortened `Vec` would tear down channels the host may own
+/// imperatively — the same violation `unwire_removed_sources` refuses. It needs
+/// its own explicit API, not an inference from a length.
+#[test]
+fn a_shorter_master_declaration_does_not_narrow_the_root() {
+    let mut app = app();
+    let wide = spawn_node(
+        &mut app,
+        tutti_core::dsp::multipass::<tutti_core::dsp::U6>(),
+    );
+
+    app.insert_resource(MasterSources::from_node_at_width(
+        wide,
+        tutti_core::ChannelLayout::Multi(6),
+    ));
+    app.update();
+    assert_eq!(app.world().resource::<AudioGraphRes>().0.outputs(), 6);
+
+    // Now declare only two channels.
+    app.insert_resource(MasterSources::from(wide));
+    app.update();
+
+    assert_eq!(
+        app.world().resource::<AudioGraphRes>().0.outputs(),
+        6,
+        "a shorter declaration is undeclared, not a narrowing instruction"
+    );
+}
+
+/// Channels past `MAX_ROOT_CHANNELS` are refused at the clamp, not silently
+/// dropped one layer down — the render scratch is bounded, so a root wider than
+/// it would report channels that are declarable but never rendered.
+#[test]
+fn a_master_declaration_cannot_exceed_the_render_scratch() {
+    let mut app = app();
+    let node = spawn_node(&mut app, sine_hz::<f32>(440.0));
+
+    let mut sources = MasterSources::default();
+    for channel in 0..32 {
+        sources = sources.with(channel, AudioSource::node(node));
+    }
+    app.insert_resource(sources);
+    app.update();
+
+    assert!(
+        app.world().resource::<AudioGraphRes>().0.outputs() <= 8,
+        "the root must stay within the render scratch"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The N-wide constructors.
+// ---------------------------------------------------------------------------
+
+/// `from_node_at_width` is the identity mapping — every channel straight
+/// through, no wrap, no fold.
+#[test]
+fn from_node_at_width_maps_every_channel_straight_through() {
+    let mut app = app();
+    let sink = spawn_node(
+        &mut app,
+        tutti_core::dsp::multipass::<tutti_core::dsp::U6>(),
+    );
+    let src = spawn_node(
+        &mut app,
+        tutti_core::dsp::multipass::<tutti_core::dsp::U6>(),
+    );
+
+    app.world_mut()
+        .entity_mut(sink)
+        .insert(AudioSources::from_node_at_width(
+            src,
+            tutti_core::ChannelLayout::Multi(6),
+        ));
+    app.update();
+
+    let graph = app.world().resource::<AudioGraphRes>();
+    let (sink_id, src_id) = (node_id(&app, sink), node_id(&app, src));
+    for port in 0..6 {
+        assert_eq!(
+            graph.0.source(sink_id, port),
+            Source::Local(src_id, port),
+            "port {port} must come from the matching source port"
+        );
+    }
+}
+
+/// At stereo it is exactly `stereo_from`. That equivalence is what lets a
+/// reviewer trust every existing call site is unaffected by the new
+/// constructor's arrival.
+#[test]
+fn from_node_at_width_at_stereo_is_stereo_from() {
+    let mut app = app();
+    let e = spawn_node(&mut app, pass());
+
+    assert_eq!(
+        AudioSources::from_node_at_width(e, tutti_core::ChannelLayout::Stereo),
+        AudioSources::stereo_from(e)
     );
 }

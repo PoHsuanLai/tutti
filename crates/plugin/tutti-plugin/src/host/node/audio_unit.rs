@@ -1,7 +1,7 @@
 //! fundsp trait impls for [`PluginClient`]. Dual f32/f64 dispatch lives
 //! here so the core struct + API in `mod.rs` stays focused.
 
-use super::batcher::PIPELINE_LATENCY_SAMPLES;
+use super::batcher::PIPELINE_LATENCY_FRAMES;
 use super::PluginClient;
 use crate::util::node::route_with_latency;
 use tutti_core::{AudioUnit, BufferMut, BufferRef, SignalFrame, F64};
@@ -69,7 +69,7 @@ impl AudioUnit for PluginClient {
         route_with_latency(
             io.inputs,
             io.outputs,
-            (PluginClient::latency(self) + PIPELINE_LATENCY_SAMPLES) as f64,
+            (PluginClient::latency(self) + PIPELINE_LATENCY_FRAMES).get() as f64,
             input,
         )
     }
@@ -141,7 +141,7 @@ impl AudioUnit<F64> for PluginClient {
         route_with_latency(
             io.inputs,
             io.outputs,
-            (PluginClient::latency(self) + PIPELINE_LATENCY_SAMPLES) as f64,
+            (PluginClient::latency(self) + PIPELINE_LATENCY_FRAMES).get() as f64,
             input,
         )
     }

@@ -36,7 +36,9 @@ impl RenderPlan {
         let output_length = duration_to_frames(config.duration_seconds, config.sample_rate);
         // Render the audible span PLUS the trimmed head, so the output is still
         // `output_length` frames long after the drop.
-        let total = Samples(output_length.get() + config.latency.get());
+        // Both are frame counts, so this is `Samples`' own saturating `Add`
+        // rather than an unwrapped `usize` one.
+        let total = output_length + config.latency;
 
         Self {
             total,

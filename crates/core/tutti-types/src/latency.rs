@@ -222,7 +222,12 @@ fn departure<N: Copy + Eq + Hash>(
 ) -> Samples {
     let at = arrival.get(&node).copied().unwrap_or_default();
     let own = latency.get(&node).copied().unwrap_or_default();
-    Samples(at.get() + own.get())
+    // `at + own` uses `Samples`' own saturating `Add`; the unwrapped
+    // `Samples(at.get() + own.get())` was a plain `usize` add. Not reachable
+    // today — `MAX_NODE_LATENCY` clamps each node, so overflowing would take
+    // ~4e13 chained nodes — but the clamp is what makes it safe, not the
+    // arithmetic, and the type already carries the right answer.
+    at + own
 }
 
 /// Delays needed where two or more paths meet.

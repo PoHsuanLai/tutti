@@ -39,7 +39,7 @@ use crate::error::Result;
 use crate::host::ipc_client::PluginBridge;
 use crate::host::node::BlockPayload;
 use crate::protocol::{MidiEventVec, SampleFormat};
-use tutti_core::{BufferMut, BufferRef, Sample as FundspSample, F32, F64};
+use tutti_core::{BufferMut, BufferRef, Sample as FundspSample, Samples, F32, F64};
 
 /// Matches fundsp's `MAX_BUFFER_SIZE` (`1 << 6`). Blocks of this size are
 /// fundsp's natural unit and what the plugin server is sized for.
@@ -168,7 +168,7 @@ impl WireStorage {
 /// - **An upper bound, deliberately.** Exact for a full 64-sample block,
 ///   pessimistic by `64 - size` for a partial one. Over-declaring keeps every
 ///   path aligned with every other; under-declaring would not.
-pub(super) const PIPELINE_LATENCY_SAMPLES: usize = BATCH_SIZE;
+pub(super) const PIPELINE_LATENCY_FRAMES: Samples = Samples(BATCH_SIZE);
 
 /// One block of audio between fundsp callers and the plugin-server bridge.
 pub(crate) struct Batcher {
@@ -950,11 +950,11 @@ mod tests {
     // reads a const assertion as a mistake; here it is the change detector.
     #[allow(clippy::assertions_on_constants)]
     fn declared_pipeline_latency_still_matches_the_block_size() {
-        assert_eq!(PIPELINE_LATENCY_SAMPLES, BATCH_SIZE);
+        assert_eq!(PIPELINE_LATENCY_FRAMES, Samples(BATCH_SIZE));
         // The failure mode worth naming: a max-buffer-sized declaration. Any
         // plausible block size is far below this; 8192 is far above it.
         assert!(
-            PIPELINE_LATENCY_SAMPLES <= 1024,
+            PIPELINE_LATENCY_FRAMES <= Samples(1024),
             "a declared latency this large means `config.max_buffer_size` \
              (8192 = 171 ms at 48 kHz) reached PDC in place of the block size"
         );

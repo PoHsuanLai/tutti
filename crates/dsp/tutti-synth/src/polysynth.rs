@@ -403,8 +403,7 @@ impl PolySynth {
 
         if let Some(slot_index) = slot_index {
             let base_freq = self.config.tuning.fractional_note_to_freq(f32::from(note));
-            let bend_semitones = self.pitch_bend * self.config.pitch_bend_range.get();
-            let bend_multiplier = 2.0_f32.powf(bend_semitones / 12.0);
+            let bend_multiplier = (self.config.pitch_bend_range * self.pitch_bend).to_pitch_ratio();
 
             let target_freq = if let Some(ref mut porta) = self.portamento {
                 porta.set_target(base_freq, is_legato);
@@ -696,8 +695,8 @@ impl AudioUnit for PolySynth {
         if let Some(ref mut porta) = self.portamento {
             if porta.is_gliding() {
                 let porta_freq = porta.tick().get();
-                let bend_semitones = self.pitch_bend * self.config.pitch_bend_range.get();
-                let bend_multiplier = 2.0_f32.powf(bend_semitones / 12.0);
+                let bend_multiplier =
+                    (self.config.pitch_bend_range * self.pitch_bend).to_pitch_ratio();
                 let freq = porta_freq * bend_multiplier;
                 let unison_ref = self.unison.as_ref();
                 for voice in &mut self.voices {
@@ -795,10 +794,13 @@ impl AudioUnit for PolySynth {
 
             if let Some(ref mut porta) = self.portamento {
                 if porta.is_gliding() {
+                    // Hoisted: neither operand changes inside a block (MIDI is
+                    // handled at block boundaries), so this was recomputing an
+                    // unchanging `powf` on every sample.
+                    let bend_multiplier =
+                        (self.config.pitch_bend_range * self.pitch_bend).to_pitch_ratio();
                     for _ in 0..block_len {
                         let porta_freq = porta.tick().get();
-                        let bend_semitones = self.pitch_bend * self.config.pitch_bend_range.get();
-                        let bend_multiplier = 2.0_f32.powf(bend_semitones / 12.0);
                         let freq = porta_freq * bend_multiplier;
                         let unison_ref = self.unison.as_ref();
                         for voice in &mut self.voices {
@@ -958,6 +960,7 @@ mod tests {
         EnvelopeConfig, FilterType, OscillatorType, PortamentoConfig, PortamentoCurve,
         PortamentoMode, SynthConfig, UnisonConfig, VoiceMode,
     };
+    use tutti_core::{Hz, Resonance, Spread};
     use tutti_midi_types::convert::{
         midi1_cc_to_midi2, midi1_pitch_bend_to_midi2, midi1_velocity_to_midi2,
     };
@@ -1228,7 +1231,7 @@ mod tests {
             unison: Some(UnisonConfig {
                 voice_count: 3,
                 detune_cents: tutti_core::Cents(15.0),
-                stereo_spread: 0.5,
+                stereo_spread: Spread(0.5),
                 phase_randomize: false,
             }),
             ..Default::default()
@@ -1277,7 +1280,7 @@ mod tests {
             unison: Some(UnisonConfig {
                 voice_count: 3,
                 detune_cents: tutti_core::Cents(10.0),
-                stereo_spread: 0.5,
+                stereo_spread: Spread(0.5),
                 phase_randomize: false,
             }),
             ..Default::default()
@@ -1307,7 +1310,7 @@ mod tests {
             unison: Some(UnisonConfig {
                 voice_count: 3,
                 detune_cents: tutti_core::Cents(0.0),
-                stereo_spread: 0.0,
+                stereo_spread: Spread(0.0),
                 phase_randomize: false,
             }),
             ..Default::default()
@@ -1353,7 +1356,7 @@ mod tests {
             unison: Some(UnisonConfig {
                 voice_count: 3,
                 detune_cents: tutti_core::Cents(15.0),
-                stereo_spread: 1.0, // Full stereo spread
+                stereo_spread: Spread(1.0), // Full stereo spread
                 phase_randomize: false,
             }),
             ..Default::default()
@@ -1463,7 +1466,7 @@ mod tests {
             unison: Some(UnisonConfig {
                 voice_count: 2,
                 detune_cents: tutti_core::Cents(10.0),
-                stereo_spread: 0.5,
+                stereo_spread: Spread(0.5),
                 phase_randomize: false,
             }),
             ..Default::default()
@@ -2446,8 +2449,8 @@ mod tests {
             voice_mode: VoiceMode::Poly,
             oscillator: OscillatorType::Saw,
             filter: FilterType::Moog {
-                cutoff: 1000.0,
-                resonance: 0.5,
+                cutoff: Hz(1000.0),
+                resonance: Resonance(0.5),
             },
             envelope: EnvelopeConfig {
                 attack: 0.001,
@@ -2623,8 +2626,8 @@ mod tests {
             voice_mode: VoiceMode::Poly,
             oscillator: OscillatorType::Saw,
             filter: FilterType::Moog {
-                cutoff: 1000.0,
-                resonance: 0.5,
+                cutoff: Hz(1000.0),
+                resonance: Resonance(0.5),
             },
             envelope: EnvelopeConfig {
                 attack: 0.001,

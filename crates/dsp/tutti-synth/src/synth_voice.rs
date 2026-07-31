@@ -6,7 +6,7 @@ use tutti_core::dsp::{
     adsr_live, bandpass_q, dc, highpass_q, lowpass_q, moog, notch_q, pass, pink, poly_pulse, saw,
     sine, triangle, var,
 };
-use tutti_core::{AudioUnit, Hz, PhaseIncrement, Semitones, Shared};
+use tutti_core::{AudioUnit, Hz, Phase, PhaseIncrement, Semitones, Shared};
 
 extern crate alloc;
 use alloc::vec::Vec;
@@ -32,7 +32,7 @@ pub(crate) struct SynthVoice {
     cc_cutoff_value: f32,
     cc_resonance_value: f32,
     filter_mod: FilterModConfig,
-    lfo_phase: f32,
+    lfo_phase: Phase,
     envelope_level: f32,
     active: bool,
     mpe: MpeVoiceState,
@@ -84,15 +84,20 @@ impl SynthVoice {
     pub(crate) fn from_config(config: &SynthConfig, unison_count: usize) -> Self {
         let gate = tutti_core::shared(0.0);
         let base_filter_cutoff = match &config.filter {
-            FilterType::Moog { cutoff, .. } => *cutoff,
-            FilterType::Svf { cutoff, .. } => *cutoff,
+            FilterType::Moog { cutoff, .. } => cutoff.get(),
+            FilterType::Svf { cutoff, .. } => cutoff.get(),
             FilterType::None => 20000.0,
         };
         let filter_cutoff = tutti_core::shared(base_filter_cutoff);
 
+        // The one place `Resonance` and `Q` deliberately merge: both feed a
+        // single `Shared` so the modulation path has one resonance handle
+        // regardless of which filter is running. They are unwrapped rather
+        // than converted because there is no meaningful conversion between
+        // them — the scalar is re-typed at the node that consumes it.
         let base_filter_resonance = match &config.filter {
-            FilterType::Moog { resonance, .. } => *resonance,
-            FilterType::Svf { q, .. } => *q,
+            FilterType::Moog { resonance, .. } => resonance.get(),
+            FilterType::Svf { q, .. } => q.get(),
             FilterType::None => 0.0,
         };
         let filter_resonance = tutti_core::shared(base_filter_resonance);
@@ -128,7 +133,7 @@ impl SynthVoice {
             cc_cutoff_value: 0.5,
             cc_resonance_value: 0.0,
             filter_mod: config.filter_mod,
-            lfo_phase: 0.0,
+            lfo_phase: Phase::START,
             envelope_level: 0.0,
             active: false,
             mpe: MpeVoiceState::default(),
@@ -155,7 +160,7 @@ impl SynthVoice {
         self.velocity = velocity;
         self.gate.set(1.0);
         self.active = true;
-        self.lfo_phase = 0.0;
+        self.lfo_phase = Phase::START;
         self.base_note_freq = base_freq;
         self.mpe.reset();
 
@@ -201,7 +206,7 @@ impl SynthVoice {
         self.velocity_mod_value = 1.0;
         self.cc_cutoff_value = 0.5;
         self.cc_resonance_value = 0.0;
-        self.lfo_phase = 0.0;
+        self.lfo_phase = Phase::START;
         self.mpe.reset();
         self.base_note_freq = Hz(440.0);
         self.filter_cutoff.set(self.base_filter_cutoff);
@@ -299,10 +304,16 @@ impl SynthVoice {
             if fm.lfo_depth > 0.0 && fm.lfo_rate > 0.0 {
                 // The named converter: this used to narrow the rate to f32
                 // before dividing, computing the step at f32 precision.
-                let phase_inc = PhaseIncrement::per_sample(Hz(fm.lfo_rate), self.sample_rate).get();
-                self.lfo_phase = (self.lfo_phase + phase_inc) % 1.0;
+                //
+                // `advance` rather than `% 1.0`: the remainder operator keeps
+                // the dividend's sign, so it is not a wrap for a negative
+                // phase. The `lfo_rate > 0.0` guard above makes that
+                // unreachable today, which is exactly how it would survive
+                // until the first reverse LFO.
+                let phase_inc = PhaseIncrement::per_sample(Hz(fm.lfo_rate), self.sample_rate);
+                self.lfo_phase = self.lfo_phase.advance(phase_inc);
 
-                let lfo_val = (self.lfo_phase * core::f32::consts::TAU).sin();
+                let lfo_val = self.lfo_phase.to_radians().get().sin();
                 cutoff *= 1.0 + lfo_val * fm.lfo_depth * 0.5;
             }
 
@@ -413,9 +424,9 @@ impl SynthVoice {
             return;
         }
 
-        let pitch_bend_semitones = self.mpe.pitch_bend_semitones.get();
-        if pitch_bend_semitones.abs() > 0.001 {
-            let multiplier = 2.0_f32.powf(pitch_bend_semitones / 12.0);
+        let pitch_bend_semitones = self.mpe.pitch_bend_semitones;
+        if pitch_bend_semitones.get().abs() > 0.001 {
+            let multiplier = pitch_bend_semitones.to_pitch_ratio();
             let freq = self.base_note_freq.get() * multiplier;
             if let Some(u) = unison {
                 for (i, sub) in self.sub_voices.iter_mut().enumerate() {
@@ -513,22 +524,22 @@ fn build_sub_voice_dsp(
                     match mode {
                         SvfMode::Lowpass => Box::new(
                             ($osc | var(filter_cutoff))
-                                >> lowpass_q::<f32>(*q)
+                                >> lowpass_q::<f32>(q.get())
                                 >> (envelope * pass()),
                         ),
                         SvfMode::Highpass => Box::new(
                             ($osc | var(filter_cutoff))
-                                >> highpass_q::<f32>(*q)
+                                >> highpass_q::<f32>(q.get())
                                 >> (envelope * pass()),
                         ),
                         SvfMode::Bandpass => Box::new(
                             ($osc | var(filter_cutoff))
-                                >> bandpass_q::<f32>(*q)
+                                >> bandpass_q::<f32>(q.get())
                                 >> (envelope * pass()),
                         ),
                         SvfMode::Notch => Box::new(
                             ($osc | var(filter_cutoff))
-                                >> notch_q::<f32>(*q)
+                                >> notch_q::<f32>(q.get())
                                 >> (envelope * pass()),
                         ),
                     }

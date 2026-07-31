@@ -29,9 +29,6 @@ pub struct PitchResult {
     pub frequency: f32,
     /// 0.0..1.0
     pub confidence: f32,
-    pub midi_note: Option<u8>,
-    /// -50..+50 cents from nearest note
-    pub cents_offset: f32,
 }
 
 impl PitchResult {
@@ -41,15 +38,17 @@ impl PitchResult {
 }
 
 use rustfft::{num_complex::Complex, FftPlanner};
+use tutti_types::{Confidence, Hz};
 
 /// YIN pitch detector (de Cheveigné & Kawahara, 2002).
 ///
 /// Uses FFT-based autocorrelation for O(n log n) performance.
 pub struct PitchDetector {
     sample_rate: tutti_core::SampleRate,
-    min_freq: f32,
-    max_freq: f32,
-    threshold: f32,
+    min_freq: Hz,
+    max_freq: Hz,
+    /// The YIN aperiodicity cutoff — a confidence reading, not a blend.
+    threshold: Confidence,
     difference: Vec<f32>,
     cumulative_mean: Vec<f32>,
     fft_planner: FftPlanner<f32>,
@@ -61,18 +60,19 @@ impl PitchDetector {
     /// Default range: 50..2000 Hz.
     pub fn with_range(
         sample_rate: impl Into<tutti_core::SampleRate>,
-        min_freq: f32,
-        max_freq: f32,
+        min_freq: impl Into<Hz>,
+        max_freq: impl Into<Hz>,
     ) -> Self {
+        let (min_freq, max_freq) = (min_freq.into(), max_freq.into());
         let sample_rate = sample_rate.into();
-        let max_period = (sample_rate.get() / min_freq as f64) as usize;
+        let max_period = (sample_rate.get() / f64::from(min_freq.get())) as usize;
         let fft_size = (max_period * 2).next_power_of_two();
 
         Self {
             sample_rate,
             min_freq,
             max_freq,
-            threshold: 0.1,
+            threshold: Confidence(0.1),
             difference: vec![0.0; max_period + 1],
             cumulative_mean: vec![0.0; max_period + 1],
             fft_planner: FftPlanner::new(),
@@ -83,14 +83,14 @@ impl PitchDetector {
 
     /// YIN threshold (0.01..0.5, default 0.1 per the original paper).
     /// Lower = stricter, higher = more permissive.
-    pub fn set_threshold(&mut self, threshold: f32) {
-        self.threshold = threshold.clamp(0.01, 0.5);
+    pub fn set_threshold(&mut self, threshold: impl Into<Confidence>) {
+        self.threshold = Confidence(threshold.into().get().clamp(0.01, 0.5));
     }
 
     /// Needs at least `buffer_size()` samples.
     pub fn detect(&mut self, samples: &[f32]) -> PitchResult {
-        let min_period = (self.sample_rate.get() / self.max_freq as f64) as usize;
-        let max_period = (self.sample_rate.get() / self.min_freq as f64) as usize;
+        let min_period = (self.sample_rate.get() / f64::from(self.max_freq.get())) as usize;
+        let max_period = (self.sample_rate.get() / f64::from(self.min_freq.get())) as usize;
         let max_period = max_period
             .min(samples.len() / 2)
             .min(self.difference.len() - 1);
@@ -110,13 +110,10 @@ impl PitchDetector {
         let refined_period = self.parabolic_interpolation(period, max_period);
         let frequency = (self.sample_rate.get() / refined_period) as f32;
         let confidence = (1.0 - aperiodicity).max(0.0);
-        let (midi_note, cents_offset) = freq_to_midi(frequency);
 
         PitchResult {
             frequency,
             confidence,
-            midi_note: Some(midi_note),
-            cents_offset,
         }
     }
 
@@ -213,7 +210,7 @@ impl PitchDetector {
         let mut tau = min_period;
 
         while tau < max_period {
-            if self.cumulative_mean[tau] < self.threshold {
+            if self.cumulative_mean[tau] < self.threshold.get() {
                 // Walk to the local minimum
                 while tau + 1 < max_period
                     && self.cumulative_mean[tau + 1] < self.cumulative_mean[tau]
@@ -262,19 +259,4 @@ impl PitchDetector {
             tau as f64
         }
     }
-}
-
-pub fn freq_to_midi(freq: f32) -> (u8, f32) {
-    if freq <= 0.0 {
-        return (0, 0.0);
-    }
-
-    let note_float = 69.0 + 12.0 * (freq / 440.0).log2();
-    let note = note_float.round() as i32;
-    let note = note.clamp(0, 127) as u8;
-
-    let note_freq = 440.0 * 2.0f32.powf((f32::from(note) - 69.0) / 12.0);
-    let cents = 1200.0 * (freq / note_freq).log2();
-
-    (note, cents)
 }

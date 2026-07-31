@@ -5,7 +5,7 @@
 use core::fmt;
 
 use crate::{AllocationStrategy, PortamentoConfig, Tuning, UnisonConfig, VoiceMode};
-use tutti_core::Semitones;
+use tutti_core::{Hz, Resonance, Semitones, Q};
 
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum OscillatorType {
@@ -28,15 +28,23 @@ pub enum SvfMode {
     Notch,
 }
 
+/// Which filter a voice runs, and its settings.
+///
+/// The two variants deliberately carry *different* resonance types.
+/// `Resonance` and `Q` both answer "how resonant", but a ladder at 1.0
+/// self-oscillates while a Q of 1.0 is a mild bell — and as bare `f32`s in
+/// adjacent variants of one public enum, swapping them was silent and sounded
+/// like a mistuned filter. The nodes downstream already take `Resonance` and
+/// `Q` respectively; these fields simply stop erasing that on the way in.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum FilterType {
     Moog {
-        cutoff: f32,
-        resonance: f32,
+        cutoff: Hz,
+        resonance: Resonance,
     },
     Svf {
-        cutoff: f32,
-        q: f32,
+        cutoff: Hz,
+        q: Q,
         mode: SvfMode,
     },
     #[default]

@@ -65,12 +65,12 @@ impl AutomationLane {
         self.last_value
     }
 
-    pub fn get_value_at(&self, beat: f64) -> f32 {
-        self.curve.value_at(Beat::new(beat)).unwrap_or(0.0)
+    pub fn get_value_at(&self, beat: Beat) -> f32 {
+        self.curve.value_at(beat).unwrap_or(0.0)
     }
 
     /// Evaluate at `beat` and record it as the last value.
-    pub fn update_to(&mut self, beat: f64) -> f32 {
+    pub fn update_to(&mut self, beat: Beat) -> f32 {
         self.last_value = self.get_value_at(beat);
         self.last_value
     }
@@ -171,10 +171,10 @@ mod tests {
     fn test_update_tracks_beat_position() {
         let mut lane = AutomationLane::new(ramp_envelope());
 
-        assert!((lane.update_to(0.0) - 0.0).abs() < 0.01);
-        assert!((lane.update_to(2.0) - 0.5).abs() < 0.01);
-        assert!((lane.update_to(4.0) - 1.0).abs() < 0.01);
-        assert!((lane.update_to(6.0) - 0.75).abs() < 0.01);
+        assert!((lane.update_to(Beat(0.0)) - 0.0).abs() < 0.01);
+        assert!((lane.update_to(Beat(2.0)) - 0.5).abs() < 0.01);
+        assert!((lane.update_to(Beat(4.0)) - 1.0).abs() < 0.01);
+        assert!((lane.update_to(Beat(6.0)) - 0.75).abs() < 0.01);
     }
 
     /// The clock emits an already-wrapped beat, so a lane fed beat 6 behaves
@@ -184,7 +184,7 @@ mod tests {
     fn wrapped_beat_needs_no_loop_handling_in_the_lane() {
         let mut lane = AutomationLane::new(ramp_envelope());
         // A 4..8 loop wraps beat 10 to beat 6 in the clock.
-        let wrapped = lane.update_to(6.0);
+        let wrapped = lane.update_to(Beat(6.0));
         assert!(
             (wrapped - 0.75).abs() < 0.01,
             "expected ~0.75, got {wrapped}"
@@ -228,20 +228,20 @@ mod tests {
     #[test]
     fn test_set_curve_changes_output() {
         let mut lane = AutomationLane::new(ramp_envelope());
-        assert!((lane.update_to(2.0) - 0.5).abs() < 0.01);
+        assert!((lane.update_to(Beat(2.0)) - 0.5).abs() < 0.01);
 
         let mut flat: AutomationEnvelope<&str> = AutomationEnvelope::new("flat");
         flat.add_point(AutomationPoint::new(0.0, 0.9));
         flat.add_point(AutomationPoint::new(8.0, 0.9));
         lane.set_curve(flat);
 
-        assert!((lane.update_to(2.0) - 0.9).abs() < 0.01);
+        assert!((lane.update_to(Beat(2.0)) - 0.9).abs() < 0.01);
     }
 
     #[test]
     fn test_reset_clears_last_value() {
         let mut lane = AutomationLane::new(ramp_envelope());
-        lane.update_to(4.0);
+        lane.update_to(Beat(4.0));
         assert!((lane.last_value() - 1.0).abs() < 0.01);
 
         lane.reset();
@@ -252,7 +252,7 @@ mod tests {
     fn test_empty_envelope_returns_zero() {
         let empty: AutomationEnvelope<&str> = AutomationEnvelope::new("empty");
         let mut lane = AutomationLane::new(empty);
-        assert_eq!(lane.update_to(5.0), 0.0);
+        assert_eq!(lane.update_to(Beat(5.0)), 0.0);
 
         let mut output = [0.0f32; 1];
         lane.tick(&ports(5.0), &mut output);

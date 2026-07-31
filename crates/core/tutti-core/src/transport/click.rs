@@ -17,7 +17,7 @@ use fundsp::audionode::AudioNode;
 use fundsp::prelude::*;
 use std::sync::Arc;
 use tutti_types::meter::{Meter, MeterMap};
-use tutti_types::value::Beat;
+use tutti_types::value::{Amplitude, Beat};
 use tutti_types::RtPublish;
 
 /// How far two beat onsets must differ to count as different beats.
@@ -111,12 +111,13 @@ impl ClickSettings {
         }
     }
 
-    pub fn set_volume(&self, volume: f32) {
-        self.volume.store(volume.clamp(0.0, 1.0), Ordering::Release);
+    pub fn set_volume(&self, volume: impl Into<Amplitude>) {
+        self.volume
+            .store(volume.into().get().clamp(0.0, 1.0), Ordering::Release);
     }
 
-    pub fn volume(&self) -> f32 {
-        self.volume.load(Ordering::Acquire)
+    pub fn volume(&self) -> Amplitude {
+        Amplitude(self.volume.load(Ordering::Acquire))
     }
 
     /// Publish a new meter. Lock-free; visible to the audio thread on its next
@@ -309,7 +310,7 @@ impl ClickNode {
 
     /// One sample of the click envelope, or silence once it has run out.
     #[inline]
-    fn next_sample(&mut self, volume: f32) -> f32 {
+    fn next_sample(&mut self, volume: Amplitude) -> f32 {
         let buffer = if self.is_accent {
             &self.click_accent
         } else {
@@ -317,7 +318,7 @@ impl ClickNode {
         };
 
         if self.click_pos < buffer.len() {
-            let sample = buffer[self.click_pos] * volume;
+            let sample = buffer[self.click_pos] * volume.get();
             self.click_pos += 1;
             sample
         } else {

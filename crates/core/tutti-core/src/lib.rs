@@ -81,7 +81,9 @@ pub use tutti_types::meter::{
 pub use tutti_types::{RtPublish, RtRef};
 
 pub mod metering;
-pub use metering::{meter_output, AtomicAmplitude, AudioTap, MasterMeter, MeteringContext};
+pub use metering::{
+    meter_output, AtomicAmplitude, AudioTap, MasterMeter, MeterReading, MeteringContext,
+};
 
 // Delay compensation: the graph-agnostic planner is homed in `tutti-types`,
 // the `Net` impls + the delay node in fundsp (where `AudioUnit::latency`

@@ -32,9 +32,13 @@ pub const BEAT_PORTS: usize = 2;
 ///
 /// The inverse of the clock's split: `whole` is the integer part, `frac` the
 /// remainder in `[0, 1)`.
+/// Returns a [`Beat`], not a bare `f64`: the whole point of the two-port split
+/// is that a beat position does not survive a single `f32`, and a scalar return
+/// invites putting it back into one. The `f32` *parameters* are the audio ports
+/// themselves and stay raw.
 #[inline]
-pub fn beat_from_ports(whole: f32, frac: f32) -> f64 {
-    whole as f64 + frac as f64
+pub fn beat_from_ports(whole: f32, frac: f32) -> Beat {
+    Beat(whole as f64 + frac as f64)
 }
 
 /// Musical time covered by one audio sample at `tempo` and `sample_rate`.

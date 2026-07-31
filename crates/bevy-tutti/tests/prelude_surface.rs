@@ -32,7 +32,7 @@ fn the_motion_event_a_host_must_send_is_nameable_from_the_prelude() {
 #[test]
 fn the_clocks_beat_port_convention_is_nameable_from_the_prelude() {
     assert_eq!(BEAT_PORTS, 2);
-    assert_eq!(beat_from_ports(4.0, 0.25), 4.25);
+    assert_eq!(beat_from_ports(4.0, 0.25), Beat(4.25));
 }
 
 /// `MotionEvent`'s own payload types, and what `motion()` gives back.

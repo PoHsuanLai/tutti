@@ -18,7 +18,7 @@
 use std::path::Path;
 
 use tutti_core::dsp::{BufferArray, U2};
-use tutti_core::AudioUnit;
+use tutti_core::{AudioUnit, Hz, Spread, Q};
 use tutti_midi_types::translation::scaling::midi1_velocity_to_midi2;
 use tutti_midi_types::ump::MidiEvent;
 use tutti_synth::{
@@ -140,8 +140,8 @@ fn main() {
     for cutoff in [500.0f32, 1000.0, 2000.0, 4000.0] {
         let mut cfg = base(OscillatorType::Saw);
         cfg.filter = FilterType::Svf {
-            cutoff,
-            q: 0.707,
+            cutoff: Hz(cutoff),
+            q: Q(0.707),
             mode: SvfMode::Lowpass,
         };
         let (l, r) = render(cfg, &[45]);
@@ -157,8 +157,8 @@ fn main() {
     for cutoff in [500.0f32, 2000.0] {
         let mut cfg = base(OscillatorType::Saw);
         cfg.filter = FilterType::Svf {
-            cutoff,
-            q: 0.707,
+            cutoff: Hz(cutoff),
+            q: Q(0.707),
             mode: SvfMode::Highpass,
         };
         let (l, r) = render(cfg, &[45]);
@@ -181,7 +181,7 @@ fn main() {
         cfg.unison = Some(UnisonConfig {
             voice_count: voices,
             detune_cents: detune.into(),
-            stereo_spread: 0.8,
+            stereo_spread: Spread(0.8),
             ..Default::default()
         });
         let (l, r) = render(cfg, &[57]);

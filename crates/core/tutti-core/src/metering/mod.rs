@@ -15,7 +15,7 @@ mod amplitude;
 mod rt;
 mod tap;
 
-pub use amplitude::{AtomicAmplitude, MasterMeter};
+pub use amplitude::{AtomicAmplitude, MasterMeter, MeterReading};
 pub use rt::{meter_output, MeteringContext};
 pub use tap::{AudioTap, TapBusy};
 

@@ -135,17 +135,26 @@ impl DistortionNode {
     /// adds a drive param-input port after the audio inputs, overriding the
     /// atomic per sample when present. The atomic still holds the base (it feeds
     /// the upstream param-sum's base port), so the UI handle path is unchanged.
-    pub fn with_param_inputs(kind: ShapeKind, drive: impl Into<Drive>, mod_drive: bool) -> Self {
-        let drive = drive.into();
-        let d = drive.get().max(0.0);
-        Self {
-            kind,
-            drive: Param::new(drive),
-            shaper: Shaper::build(kind, d),
-            last_drive: d,
-            channels: 2,
-            mod_drive,
-        }
+    ///
+    /// Width and modulation are **independent axes**: `channels` says how wide
+    /// the shaper is, `mod_drive` says whether it reads drive at audio rate.
+    /// They were not independent — this constructor hardcoded width 2 — so
+    /// asking for a modulated 5.1 shaper silently returned a *stereo* one, and
+    /// the only symptom was a `set_source` on a param port that resolved and
+    /// carried the wrong signal.
+    ///
+    /// The drive port follows the audio inputs, so its index **moves with the
+    /// width**. Ask [`ParamPorts::param_port`](crate::ParamPorts::param_port);
+    /// never assume an index.
+    pub fn with_param_inputs(
+        channels: usize,
+        kind: ShapeKind,
+        drive: impl Into<Drive>,
+        mod_drive: bool,
+    ) -> Self {
+        let mut node = Self::with_channels(channels, kind, drive);
+        node.mod_drive = mod_drive;
+        node
     }
 
     /// Input-port index of the drive param input, if present (right after the
@@ -425,7 +434,7 @@ mod tests {
 
     #[test]
     fn distortion_drive_port_arity() {
-        let n = DistortionNode::with_param_inputs(ShapeKind::Tanh, 1.0, true);
+        let n = DistortionNode::with_param_inputs(2, ShapeKind::Tanh, 1.0, true);
         assert_eq!(n.inputs(), 3);
         assert_eq!(n.outputs(), 2);
         assert_eq!(n.drive_port(), Some(2));
@@ -442,7 +451,7 @@ mod tests {
         let mut plain = DistortionNode::new(ShapeKind::Tanh, 5.0);
         let plain_out = process_mono_through(&mut plain, &signal);
 
-        let mut modn = DistortionNode::with_param_inputs(ShapeKind::Tanh, 5.0, true);
+        let mut modn = DistortionNode::with_param_inputs(2, ShapeKind::Tanh, 5.0, true);
         let mut mod_out = vec![0.0f32; signal.len()];
         for (i, &x) in signal.iter().enumerate() {
             let mut o = [0.0f32; 2];
@@ -457,6 +466,46 @@ mod tests {
                 plain_out[i],
                 mod_out[i]
             );
+        }
+    }
+
+    /// Width and modulation are independent axes.
+    ///
+    /// This is the regression for the bug the constructor had: it hardcoded
+    /// `channels: 2`, so asking for a modulated 6-channel shaper returned a
+    /// *stereo* one. The arity assertion below fails against that version.
+    #[test]
+    fn a_modulated_node_is_as_wide_as_it_was_asked_for() {
+        let n = DistortionNode::with_param_inputs(6, ShapeKind::Tanh, 5.0, true);
+        assert_eq!(n.outputs(), 6, "the width is what was asked for");
+        assert_eq!(n.inputs(), 7, "six audio inputs, then the drive port");
+        assert_eq!(
+            n.drive_port(),
+            Some(6),
+            "the param port follows the audio inputs, so its index moves with the width"
+        );
+    }
+
+    /// The modulated constructor must be the unmodulated one plus a flag.
+    ///
+    /// It was a *duplicated struct literal* — a second initialisation path that
+    /// could drift from `with_channels` field by field. Ticking both and
+    /// comparing is what catches a drift that arity alone would not: a wrong
+    /// `last_drive` or a shaper built from a different drive still reports 6
+    /// outputs.
+    #[test]
+    fn a_modulated_node_ticks_identically_to_its_unmodulated_twin() {
+        let mut plain = DistortionNode::with_channels(6, ShapeKind::Tanh, 5.0);
+        // `mod_drive: false` — same node, built through the other path.
+        let mut ported = DistortionNode::with_param_inputs(6, ShapeKind::Tanh, 5.0, false);
+
+        for i in 0..256 {
+            let x = 0.6 * (i as f32 * 0.05).sin();
+            let frame = [x; 6];
+            let (mut a, mut b) = ([0.0f32; 6], [0.0f32; 6]);
+            plain.tick(&frame, &mut a);
+            ported.tick(&frame, &mut b);
+            assert_eq!(a, b, "the two construction paths diverged at sample {i}");
         }
     }
 }

@@ -429,27 +429,28 @@ impl<F: Real> StereoSvfFilterNode<F> {
     /// (cutoff first), each overriding its atomic per sample when present. The
     /// atomics still hold the base (they feed the upstream param-sum's base
     /// port), so the UI handle path is unchanged.
+    ///
+    /// Width and modulation are **independent axes**: `channels` says how wide
+    /// the filter is, the `mod_*` flags say which params it reads at audio rate.
+    /// They were not independent — this constructor hardcoded width 2 — so
+    /// asking for a modulated 5.1 filter silently returned a *stereo* one, and
+    /// the only symptom was a `set_source` on a param port that resolved and
+    /// carried the wrong signal.
+    ///
+    /// The param ports follow the audio inputs, so their indices **move with the
+    /// width**. Ask [`ParamPorts::param_port`](crate::ParamPorts::param_port);
+    /// never assume an index.
     pub fn with_param_inputs(
+        channels: usize,
         filter_type: SvfType,
         frequency: impl Into<Hz>,
         q: impl Into<Q>,
         mod_cutoff: bool,
         mod_q: bool,
     ) -> Self {
-        let frequency = frequency.into();
-        let q = q.into();
-        let mut node = Self {
-            filter_type,
-            frequency: Param::new(frequency),
-            q: Param::new(q),
-            gain_db: Param::new(Db(0.0)),
-            sample_rate: DEFAULT_SAMPLE_RATE,
-            coeffs: SvfCoefficients::zeroed(),
-            channels: vec![SvfIntegrator::zeroed(); 2],
-            mod_cutoff,
-            mod_q,
-        };
-        node.update_coefficients(frequency, q, Db(0.0));
+        let mut node = Self::with_channels(channels, filter_type, frequency, q);
+        node.mod_cutoff = mod_cutoff;
+        node.mod_q = mod_q;
         node
     }
 
@@ -1082,6 +1083,7 @@ mod tests {
     fn stereo_svf_param_port_arity_and_indices() {
         // cutoff only → port 2.
         let c = StereoSvfFilterNode::<f64>::with_param_inputs(
+            2,
             SvfType::LowPass,
             1000.0,
             0.7,
@@ -1093,6 +1095,7 @@ mod tests {
         assert_eq!(c.q_port(), None);
         // Q only → port 2 (no cutoff port before it).
         let q = StereoSvfFilterNode::<f64>::with_param_inputs(
+            2,
             SvfType::LowPass,
             1000.0,
             0.7,
@@ -1104,6 +1107,7 @@ mod tests {
         assert_eq!(q.q_port(), Some(2));
         // both → cutoff at 2, Q at 3.
         let b = StereoSvfFilterNode::<f64>::with_param_inputs(
+            2,
             SvfType::LowPass,
             1000.0,
             0.7,
@@ -1126,6 +1130,7 @@ mod tests {
 
         let run = |cutoff: f32| -> f32 {
             let mut f = StereoSvfFilterNode::<f64>::with_param_inputs(
+                2,
                 SvfType::LowPass,
                 200.0,
                 0.707,
@@ -1164,6 +1169,7 @@ mod tests {
         let (plain_l, _) = process_stereo(&mut plain, &signal, &signal);
 
         let mut modn = StereoSvfFilterNode::<f64>::with_param_inputs(
+            2,
             SvfType::LowPass,
             1000.0,
             0.707,
@@ -1185,6 +1191,60 @@ mod tests {
                 plain_l[i],
                 mod_l[i]
             );
+        }
+    }
+
+    /// Width and modulation are independent axes.
+    ///
+    /// The regression for the bug this constructor had: it hardcoded
+    /// `vec![SvfIntegrator::zeroed(); 2]`, so a modulated 6-channel filter came
+    /// back *stereo*. The arity assertion fails against that version.
+    #[test]
+    fn a_modulated_filter_is_as_wide_as_it_was_asked_for() {
+        let f = StereoSvfFilterNode::<f64>::with_param_inputs(
+            6,
+            SvfType::LowPass,
+            1000.0,
+            0.7,
+            true,
+            true,
+        );
+        assert_eq!(f.outputs(), 6, "the width is what was asked for");
+        assert_eq!(f.inputs(), 8, "six audio inputs, then cutoff and Q");
+        assert_eq!(
+            f.cutoff_port(),
+            Some(6),
+            "param ports follow the audio inputs"
+        );
+        assert_eq!(f.q_port(), Some(7), "and keep their documented order");
+    }
+
+    /// The modulated constructor must be the unmodulated one plus flags.
+    ///
+    /// It was a *duplicated struct literal* — a second initialisation path that
+    /// could drift from `with_channels` field by field. Ticking both is what
+    /// catches a drift arity alone would miss: coefficients computed from a
+    /// different gain, or an uninvalidated cache, still report 6 outputs.
+    #[test]
+    fn a_modulated_filter_ticks_identically_to_its_unmodulated_twin() {
+        let mut plain = StereoSvfFilterNode::<f64>::with_channels(6, SvfType::LowPass, 1000.0, 0.7);
+        // Both flags off — the same filter, built through the other path.
+        let mut ported = StereoSvfFilterNode::<f64>::with_param_inputs(
+            6,
+            SvfType::LowPass,
+            1000.0,
+            0.7,
+            false,
+            false,
+        );
+
+        for i in 0..256 {
+            let x = 0.6 * (i as f32 * 0.05).sin();
+            let frame = [x; 6];
+            let (mut a, mut b) = ([0.0f32; 6], [0.0f32; 6]);
+            plain.tick(&frame, &mut a);
+            ported.tick(&frame, &mut b);
+            assert_eq!(a, b, "the two construction paths diverged at sample {i}");
         }
     }
 }

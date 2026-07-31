@@ -41,7 +41,7 @@ fn a_ported_node_with_an_unfed_port_reads_the_param_as_zero() {
     let input = signal(64);
 
     let mut plain = DistortionNode::new(ShapeKind::Tanh, 5.0);
-    let mut ported = DistortionNode::with_param_inputs(ShapeKind::Tanh, 5.0, true);
+    let mut ported = DistortionNode::with_param_inputs(2, ShapeKind::Tanh, 5.0, true);
     assert_eq!(plain.inputs(), 2);
     assert_eq!(ported.inputs(), 3, "the port changes the node's arity");
 
@@ -84,7 +84,7 @@ fn ported_plus_base_chain_is_bit_identical_to_plain() {
     let mut plain = DistortionNode::new(ShapeKind::Tanh, 5.0);
 
     let mut net = Net::new(2, 2);
-    let dist = DistortionNode::with_param_inputs(ShapeKind::Tanh, 5.0, true);
+    let dist = DistortionNode::with_param_inputs(2, ShapeKind::Tanh, 5.0, true);
     let drive_port = dist.param_port(UnitParam::Drive).unwrap();
     let target = net.push(Box::new(dist));
     // The always-on base chain, carrying the authored 5.0.
@@ -121,7 +121,7 @@ fn ported_plus_base_chain_is_bit_identical_to_plain() {
 fn the_idle_cost_is_two_nodes_and_two_edges_per_param() {
     let mut net = Net::new(2, 2);
 
-    let dist = DistortionNode::with_param_inputs(ShapeKind::Tanh, 5.0, true);
+    let dist = DistortionNode::with_param_inputs(2, ShapeKind::Tanh, 5.0, true);
     let drive_port = dist.param_port(UnitParam::Drive).unwrap();
     let target = net.push(Box::new(dist));
 
@@ -141,6 +141,7 @@ fn the_idle_cost_is_two_nodes_and_two_edges_per_param() {
 
     // An SVF carries two modulatable params, so it pays twice.
     let svf = StereoSvfFilterNode::<f32>::with_param_inputs(
+        2,
         SvfType::LowPass,
         Hz(1000.0),
         Q(0.7),
@@ -166,7 +167,7 @@ fn the_idle_cost_is_two_nodes_and_two_edges_per_param() {
 fn routing_a_modulation_is_pure_wiring() {
     let mut net = Net::new(2, 2);
 
-    let dist = DistortionNode::with_param_inputs(ShapeKind::Tanh, 1.0, true);
+    let dist = DistortionNode::with_param_inputs(2, ShapeKind::Tanh, 1.0, true);
     let drive_port = dist.param_port(UnitParam::Drive).unwrap();
     let target = net.push(Box::new(dist));
 
@@ -215,4 +216,50 @@ fn routing_a_modulation_is_pure_wiring() {
         lowered[0] < driven[0],
         "the base must still move the result while a route is active"
     );
+}
+
+/// Born-with-ports has to hold at every width, not just at stereo.
+///
+/// The port index is what makes this worth a test of its own: it is *derived*
+/// from the width rather than fixed, so the "spawn it with its ports on, then
+/// wire" policy only works if the host asks the node where its port went. Every
+/// assertion here would pass trivially at width 2 and is the reason the
+/// constructors take a width at all — before they did, this node came back
+/// stereo and `param_port` answered 2, so a host wiring a 6-channel chain
+/// connected its modulation source to what was actually an *audio* input.
+#[test]
+fn a_wide_node_is_born_with_its_ports_after_its_audio_inputs() {
+    let dist = DistortionNode::with_param_inputs(6, ShapeKind::Tanh, 5.0, true);
+    assert_eq!(dist.outputs(), 6);
+    assert_eq!(dist.inputs(), 7, "six audio inputs, then the drive port");
+    let drive_port = dist.param_port(UnitParam::Drive).unwrap();
+    assert_eq!(drive_port, 6, "the port index moves with the width");
+
+    // And the base chain still reaches it — the same wiring as the stereo case,
+    // with nothing width-aware about it beyond asking for the port.
+    let mut net = Net::new(6, 6);
+    let target = net.push(Box::new(dist));
+    let base = net.push(Box::new(AtomicSourceUnit::new(5.0)));
+    let sum = net.push(Box::new(ParamSumUnit::new(0, 0.0, 10.0)));
+    net.connect(base, 0, sum, 0);
+    net.connect(sum, 0, target, drive_port);
+    for c in 0..6 {
+        net.connect_input(c, target, c);
+    }
+    net.pipe_output(target);
+    net.check();
+
+    let mut plain = DistortionNode::with_channels(6, ShapeKind::Tanh, 5.0);
+    for i in 0..128 {
+        let x = 0.6 * (i as f32 * 0.05).sin();
+        let (mut a, mut b) = ([0.0f32; 6], [0.0f32; 6]);
+        plain.tick(&[x; 6], &mut a);
+        net.tick(&[x; 6], &mut b);
+        for c in 0..6 {
+            assert!(
+                (a[c] - b[c]).abs() < 1e-6,
+                "channel {c} diverged from the plain node at sample {i}"
+            );
+        }
+    }
 }

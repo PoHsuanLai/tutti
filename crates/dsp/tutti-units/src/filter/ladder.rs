@@ -311,9 +311,21 @@ impl<F: Real> StereoLadderFilterNode<F> {
     }
 
     /// A filter with optional audio-rate cutoff / Q / drive param-input ports,
-    /// appended after the two audio inputs in that order. Each present port
+    /// appended after the audio inputs in that order. Each present port
     /// overrides its atomic per sample; the atomics still hold the base.
+    ///
+    /// Width and modulation are **independent axes**: `channels` says how wide
+    /// the filter is, the `mod_*` flags say which params it reads at audio rate.
+    /// They were not independent — this constructor delegated to [`Self::new`],
+    /// which is width 2 — so asking for a modulated 5.1 filter silently returned
+    /// a *stereo* one, and the only symptom was a `set_source` on a param port
+    /// that resolved and carried the wrong signal.
+    ///
+    /// The param ports follow the audio inputs, so their indices **move with the
+    /// width**. Ask [`ParamPorts::param_port`](crate::ParamPorts::param_port);
+    /// never assume an index.
     pub fn with_param_inputs(
+        channels: usize,
         ladder_type: LadderType,
         frequency: impl Into<Hz>,
         resonance: impl Into<Resonance>,
@@ -321,7 +333,7 @@ impl<F: Real> StereoLadderFilterNode<F> {
         mod_q: bool,
         mod_drive: bool,
     ) -> Self {
-        let mut node = Self::new(ladder_type, frequency, resonance);
+        let mut node = Self::with_channels(channels, ladder_type, frequency, resonance);
         node.mod_cutoff = mod_cutoff;
         node.mod_q = mod_q;
         node.mod_drive = mod_drive;
@@ -741,6 +753,7 @@ mod tests {
     fn stereo_ladder_param_port_arity_and_indices() {
         // cutoff + drive (no Q) → cutoff at 2, drive at 3 (Q absent).
         let u = StereoLadderFilterNode::<f64>::with_param_inputs(
+            2,
             LadderType::LP24,
             1000.0,
             0.3,
@@ -754,6 +767,7 @@ mod tests {
         assert_eq!(u.drive_port(), Some(3));
         // all three → cutoff 2, Q 3, drive 4.
         let a = StereoLadderFilterNode::<f64>::with_param_inputs(
+            2,
             LadderType::LP24,
             1000.0,
             0.3,
@@ -774,6 +788,7 @@ mod tests {
             .collect();
         let run = |cutoff: f32| -> f32 {
             let mut f = StereoLadderFilterNode::<f64>::with_param_inputs(
+                2,
                 LadderType::LP24,
                 200.0,
                 0.3,
@@ -804,6 +819,7 @@ mod tests {
         let (plain_l, _) = process_stereo_ladder(&mut plain, &signal, &signal, &[]);
 
         let mut modn = StereoLadderFilterNode::<f64>::with_param_inputs(
+            2,
             LadderType::LP24,
             1000.0,
             0.3,
@@ -822,5 +838,32 @@ mod tests {
                 mod_l[i]
             );
         }
+    }
+
+    /// Width and modulation are independent axes.
+    ///
+    /// The regression for the bug this constructor had: it delegated to
+    /// `Self::new`, which is width 2, so a modulated 6-channel filter came back
+    /// *stereo*. The arity assertion fails against that version.
+    #[test]
+    fn a_modulated_ladder_is_as_wide_as_it_was_asked_for() {
+        let f = StereoLadderFilterNode::<f64>::with_param_inputs(
+            6,
+            LadderType::LP24,
+            1000.0,
+            0.5,
+            true,
+            true,
+            true,
+        );
+        assert_eq!(f.outputs(), 6, "the width is what was asked for");
+        assert_eq!(f.inputs(), 9, "six audio inputs, then cutoff, Q, drive");
+        assert_eq!(
+            f.cutoff_port(),
+            Some(6),
+            "param ports follow the audio inputs"
+        );
+        assert_eq!(f.q_port(), Some(7), "and keep their documented order");
+        assert_eq!(f.drive_port(), Some(8));
     }
 }

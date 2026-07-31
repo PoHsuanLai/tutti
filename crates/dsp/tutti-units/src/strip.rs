@@ -114,7 +114,7 @@ impl BusStripUnit {
         self.layout.count() as usize
     }
 
-    /// A stereo strip with optional audio-rate param-input ports.
+    /// A strip with optional audio-rate param-input ports.
     ///
     /// Present ports follow the audio inputs **in the order volume, then pan**,
     /// and each overrides its atomic per sample. The atomics still hold the base
@@ -122,14 +122,27 @@ impl BusStripUnit {
     /// unchanged. The order is positional and unrecoverable from the value, which
     /// is why it is stated here and answered by
     /// [`param_port`](ParamPorts::param_port) rather than assumed at call sites.
+    /// The ports follow the audio inputs, so their indices **move with the
+    /// width** — ask `param_port`, never assume an index.
+    ///
+    /// Width and modulation are **independent axes**: `channels` says how wide
+    /// the strip is, the `mod_*` flags say which params it reads at audio rate.
+    /// They were not independent — this constructor hardcoded
+    /// [`ChannelLayout::Stereo`] — so asking for a modulated 5.1 strip silently
+    /// returned a *stereo* one, and the only symptom was a `set_source` on a
+    /// param port that resolved and carried the wrong signal.
     ///
     /// There is deliberately no audio-rate mute port: a per-sample boolean is a
     /// gate, not a mute, and gating is [`crate::Gate`]'s job.
-    pub fn with_param_inputs(mod_volume: bool, mod_pan: bool) -> Self {
+    pub fn with_param_inputs(
+        channels: impl Into<ChannelLayout>,
+        mod_volume: bool,
+        mod_pan: bool,
+    ) -> Self {
         Self {
             mod_volume,
             mod_pan,
-            ..Self::with_channels(ChannelLayout::Stereo)
+            ..Self::with_channels(channels)
         }
     }
 
@@ -521,14 +534,14 @@ mod tests {
         assert_eq!(plain.param_port(UnitParam::Pan), None);
 
         // Volume then pan, after the two audio inputs.
-        let both = BusStripUnit::with_param_inputs(true, true);
+        let both = BusStripUnit::with_param_inputs(ChannelLayout::Stereo, true, true);
         assert_eq!(both.inputs(), 4);
         assert_eq!(both.param_port(UnitParam::Volume), Some(2));
         assert_eq!(both.param_port(UnitParam::Pan), Some(3));
 
         // Pan alone still lands directly after the audio inputs — the index is
         // derived, not a fixed slot.
-        let pan_only = BusStripUnit::with_param_inputs(false, true);
+        let pan_only = BusStripUnit::with_param_inputs(ChannelLayout::Stereo, false, true);
         assert_eq!(pan_only.inputs(), 3);
         assert_eq!(pan_only.param_port(UnitParam::Volume), None);
         assert_eq!(pan_only.param_port(UnitParam::Pan), Some(2));
@@ -537,7 +550,7 @@ mod tests {
     /// A present port overrides the atomic per sample.
     #[test]
     fn param_port_overrides_the_atomic() {
-        let mut s = BusStripUnit::with_param_inputs(true, false);
+        let mut s = BusStripUnit::with_param_inputs(ChannelLayout::Stereo, true, false);
         s.set_volume(Amplitude(1.0));
         let mut out = [0.0f32; 2];
         // Ports: [L, R, volume]
@@ -646,5 +659,23 @@ mod tests {
                 assert!((outb.at_f32(1, i) - frame[1]).abs() < 1e-6, "R @ {i}");
             }
         }
+    }
+
+    /// Width and modulation are independent axes.
+    ///
+    /// The regression for the bug this constructor had: it hardcoded
+    /// `ChannelLayout::Stereo`, so a modulated 6-channel strip came back
+    /// *stereo*. The arity assertion fails against that version.
+    #[test]
+    fn a_modulated_strip_is_as_wide_as_it_was_asked_for() {
+        let s = BusStripUnit::with_param_inputs(ChannelLayout::Multi(6), true, true);
+        assert_eq!(s.outputs(), 6, "the width is what was asked for");
+        assert_eq!(s.inputs(), 8, "six audio inputs, then volume and pan");
+        assert_eq!(
+            s.volume_port(),
+            Some(6),
+            "param ports follow the audio inputs, so their indices move with the width"
+        );
+        assert_eq!(s.pan_port(), Some(7), "and keep their documented order");
     }
 }

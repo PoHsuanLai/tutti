@@ -174,16 +174,28 @@ impl LimiterNode {
     }
 
     /// A limiter with optional audio-rate ceiling / threshold param-input ports,
-    /// appended after the two audio inputs in that order (ceiling first). Each
+    /// appended after the audio inputs in that order (ceiling first). Each
     /// present port overrides its atomic per sample; the atomics still hold the
     /// base.
+    ///
+    /// Width and modulation are **independent axes**: `channels` says how wide
+    /// the limiter is, the `mod_*` flags say which params it reads at audio
+    /// rate. They were not independent — this constructor delegated to
+    /// [`Self::new`], which is width 2 — so asking for a modulated 5.1 limiter
+    /// silently returned a *stereo* one, and the only symptom was a `set_source`
+    /// on a param port that resolved and carried the wrong signal.
+    ///
+    /// The param ports follow the audio inputs, so their indices **move with the
+    /// width**. Ask [`ParamPorts::param_port`](crate::ParamPorts::param_port);
+    /// never assume an index.
     pub fn with_param_inputs(
+        channels: impl Into<ChannelLayout>,
         threshold_db: impl Into<Db>,
         ceiling_db: impl Into<Db>,
         mod_ceiling: bool,
         mod_threshold: bool,
     ) -> Self {
-        let mut node = Self::new(threshold_db, ceiling_db);
+        let mut node = Self::with_channels(channels, threshold_db, ceiling_db);
         node.mod_ceiling = mod_ceiling;
         node.mod_threshold = mod_threshold;
         node
@@ -816,17 +828,17 @@ mod tests {
     #[test]
     fn limiter_param_port_arity_and_indices() {
         // ceiling only → ceiling at 2 (right after the two audio inputs).
-        let c = LimiterNode::with_param_inputs(-6.0, -0.3, true, false);
+        let c = LimiterNode::with_param_inputs(ChannelLayout::Stereo, -6.0, -0.3, true, false);
         assert_eq!(c.inputs(), 3);
         assert_eq!(c.ceiling_port(), Some(2));
         assert_eq!(c.threshold_port(), None);
         // threshold only → threshold at 2 (no ceiling port before it).
-        let t = LimiterNode::with_param_inputs(-6.0, -0.3, false, true);
+        let t = LimiterNode::with_param_inputs(ChannelLayout::Stereo, -6.0, -0.3, false, true);
         assert_eq!(t.inputs(), 3);
         assert_eq!(t.ceiling_port(), None);
         assert_eq!(t.threshold_port(), Some(2));
         // both → ceiling at 2, threshold at 3 (ceiling first, documented order).
-        let b = LimiterNode::with_param_inputs(-6.0, -0.3, true, true);
+        let b = LimiterNode::with_param_inputs(ChannelLayout::Stereo, -6.0, -0.3, true, true);
         assert_eq!(b.inputs(), 4);
         assert_eq!(b.ceiling_port(), Some(2));
         assert_eq!(b.threshold_port(), Some(3));
@@ -839,7 +851,8 @@ mod tests {
         let mut plain = LimiterNode::new(-6.0, -0.3);
         plain.set_sample_rate(tutti_core::SampleRate(44100.0));
 
-        let mut modn = LimiterNode::with_param_inputs(-6.0, -0.3, true, true);
+        let mut modn =
+            LimiterNode::with_param_inputs(ChannelLayout::Stereo, -6.0, -0.3, true, true);
         modn.set_sample_rate(tutti_core::SampleRate(44100.0));
 
         let mut plain_out = [0.0f32; 2];
@@ -1026,6 +1039,32 @@ mod tests {
             lim.gain_reduction_db() < Db(0.5),
             "After long quiet, gain reduction should release: {}",
             lim.gain_reduction_db()
+        );
+    }
+
+    /// Width and modulation are independent axes.
+    ///
+    /// The regression for the bug this constructor had: it delegated to
+    /// `Self::new`, which is stereo, so a modulated 6-channel limiter came back
+    /// *stereo*. The arity assertion fails against that version.
+    #[test]
+    fn a_modulated_limiter_is_as_wide_as_it_was_asked_for() {
+        let l = LimiterNode::with_param_inputs(ChannelLayout::Multi(6), -6.0, -0.3, true, true);
+        assert_eq!(l.outputs(), 6, "the width is what was asked for");
+        assert_eq!(
+            l.inputs(),
+            8,
+            "six audio inputs, then ceiling and threshold"
+        );
+        assert_eq!(
+            l.ceiling_port(),
+            Some(6),
+            "param ports follow the audio inputs, so their indices move with the width"
+        );
+        assert_eq!(
+            l.threshold_port(),
+            Some(7),
+            "and keep their documented order"
         );
     }
 }

@@ -29,7 +29,7 @@ fn build(n: usize, with_chains: bool) -> Net {
 
     for _ in 0..n {
         let id = if with_chains {
-            let dist = DistortionNode::with_param_inputs(ShapeKind::Tanh, 5.0, true);
+            let dist = DistortionNode::with_param_inputs(2, ShapeKind::Tanh, 5.0, true);
             let port = dist.param_port(UnitParam::Drive).unwrap();
             let target = net.push(Box::new(dist));
             // The always-on idle chain: two extra nodes, two extra edges.

@@ -85,7 +85,7 @@ fn the_chain_a_reconciler_would_emit() {
     // --- what the user authored ---
     let lfo = app.world_mut().spawn(ModSource::new(LfoShape::Sine)).id();
 
-    let dist = DistortionNode::with_param_inputs(ShapeKind::Tanh, 5.0, true);
+    let dist = DistortionNode::with_param_inputs(2, ShapeKind::Tanh, 5.0, true);
     let drive_port = dist.param_port(UnitParam::Drive).expect("drive port");
 
     let target = {
@@ -185,7 +185,7 @@ fn the_chain_a_reconciler_would_emit() {
 fn two_routes_onto_one_param_share_one_sum() {
     let mut app = app();
 
-    let dist = DistortionNode::with_param_inputs(ShapeKind::Tanh, 5.0, true);
+    let dist = DistortionNode::with_param_inputs(2, ShapeKind::Tanh, 5.0, true);
     let drive_port = dist.param_port(UnitParam::Drive).unwrap();
     let target = {
         let mut c = app.world_mut().commands();

@@ -57,7 +57,7 @@ fn the_whole_edge_is_six_net_calls() {
     let mut net = Net::new(2, 2);
 
     // A distortion born with its drive port on: 3 inputs (L, R, drive).
-    let dist = DistortionNode::with_param_inputs(ShapeKind::Tanh, 5.0, true);
+    let dist = DistortionNode::with_param_inputs(2, ShapeKind::Tanh, 5.0, true);
     let port = dist.param_port(UnitParam::Drive).expect("drive port");
     assert_eq!(port, 2, "the param port follows the audio inputs");
     let target = net.push(Box::new(dist));
@@ -159,7 +159,7 @@ fn shaper_agrees_with_the_control_rate_shaping_function() {
 #[test]
 fn param_port_is_clobbered_by_pipe_input() {
     let mut net = Net::new(1, 1);
-    let dist = DistortionNode::with_param_inputs(ShapeKind::Tanh, 1.0, true);
+    let dist = DistortionNode::with_param_inputs(2, ShapeKind::Tanh, 1.0, true);
     let port = dist.param_port(UnitParam::Drive).unwrap();
     let target = net.push(Box::new(dist));
 
@@ -192,7 +192,7 @@ fn param_port_is_clobbered_by_pipe_input() {
 fn the_edge_changes_what_the_node_produces() {
     fn render(with_modulation: bool) -> Vec<f32> {
         let mut net = Net::new(1, 1);
-        let dist = DistortionNode::with_param_inputs(ShapeKind::Tanh, 1.0, true);
+        let dist = DistortionNode::with_param_inputs(2, ShapeKind::Tanh, 1.0, true);
         let port = dist.param_port(UnitParam::Drive).unwrap();
         let target = net.push(Box::new(dist));
 

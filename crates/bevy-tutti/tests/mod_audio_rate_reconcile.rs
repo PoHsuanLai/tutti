@@ -27,7 +27,7 @@ fn app_with_target() -> (App, Entity, usize) {
         .register::<DistortionNode>();
 
     // Born with its drive port on — the trigger policy this crate settled on.
-    let dist = DistortionNode::with_param_inputs(ShapeKind::Tanh, 5.0, true);
+    let dist = DistortionNode::with_param_inputs(2, ShapeKind::Tanh, 5.0, true);
     let drive_port = dist.param_port(UnitParam::Drive).unwrap();
     let node = app.world_mut().resource_mut::<AudioGraphRes>().0.add(dist);
 

@@ -36,7 +36,7 @@ fn render(net: &mut Net, target: tutti_core::NodeId) -> f32 {
 #[test]
 fn a_wired_param_port_makes_the_node_ignore_its_atomic() {
     let mut net = Net::new(2, 2);
-    let dist = DistortionNode::with_param_inputs(ShapeKind::Tanh, 1.0, true);
+    let dist = DistortionNode::with_param_inputs(2, ShapeKind::Tanh, 1.0, true);
     let port = dist.param_port(UnitParam::Drive).unwrap();
     // The handle a control-rate AtomicTarget would mirror into.
     let authored = dist.drive();
@@ -79,7 +79,7 @@ fn a_wired_param_port_makes_the_node_ignore_its_atomic() {
 #[test]
 fn the_authored_value_must_land_on_the_sums_base_cell() {
     let mut net = Net::new(2, 2);
-    let dist = DistortionNode::with_param_inputs(ShapeKind::Tanh, 1.0, true);
+    let dist = DistortionNode::with_param_inputs(2, ShapeKind::Tanh, 1.0, true);
     let port = dist.param_port(UnitParam::Drive).unwrap();
     let target = net.push(Box::new(dist));
 
@@ -118,7 +118,7 @@ fn sharing_one_cell_makes_control_rate_and_audio_rate_compose() {
     let shared = Arc::new(AtomicF32::new(1.0));
 
     let mut net = Net::new(2, 2);
-    let dist = DistortionNode::with_param_inputs(ShapeKind::Tanh, 1.0, true);
+    let dist = DistortionNode::with_param_inputs(2, ShapeKind::Tanh, 1.0, true);
     let port = dist.param_port(UnitParam::Drive).unwrap();
     let target = net.push(Box::new(dist));
 

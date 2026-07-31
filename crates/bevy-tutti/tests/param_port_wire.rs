@@ -48,7 +48,7 @@ fn audio_and_param_ports_are_declared_together() {
     let mut app = app();
 
     // A distortion born with its drive port on: inputs are [L, R, drive].
-    let dist = DistortionNode::with_param_inputs(ShapeKind::Tanh, 5.0, true);
+    let dist = DistortionNode::with_param_inputs(2, ShapeKind::Tanh, 5.0, true);
     let drive_port = dist.param_port(UnitParam::Drive).expect("drive port");
     assert_eq!(drive_port, 2, "the param port follows the audio inputs");
 
@@ -118,7 +118,7 @@ fn audio_and_param_ports_are_declared_together() {
 fn redeclaring_audio_does_not_disturb_the_param_port() {
     let mut app = app();
 
-    let dist = DistortionNode::with_param_inputs(ShapeKind::Tanh, 5.0, true);
+    let dist = DistortionNode::with_param_inputs(2, ShapeKind::Tanh, 5.0, true);
     let drive_port = dist.param_port(UnitParam::Drive).unwrap();
     let target = spawn_node(&mut app, dist);
     let osc = spawn_node(&mut app, sine_hz::<f32>(440.0));
@@ -182,7 +182,7 @@ fn redeclaring_audio_does_not_disturb_the_param_port() {
 fn an_undeclared_param_port_is_untouched() {
     let mut app = app();
 
-    let dist = DistortionNode::with_param_inputs(ShapeKind::Tanh, 5.0, true);
+    let dist = DistortionNode::with_param_inputs(2, ShapeKind::Tanh, 5.0, true);
     let drive_port = dist.param_port(UnitParam::Drive).unwrap();
     let target = spawn_node(&mut app, dist);
     let osc = spawn_node(&mut app, sine_hz::<f32>(440.0));
@@ -225,7 +225,7 @@ fn the_whole_declared_chain_reaches_the_graph() {
     let mut app = app();
     app.insert_resource(MasterSources::default());
 
-    let dist = DistortionNode::with_param_inputs(ShapeKind::Tanh, 1.0, true);
+    let dist = DistortionNode::with_param_inputs(2, ShapeKind::Tanh, 1.0, true);
     let drive_port = dist.param_port(UnitParam::Drive).unwrap();
     let target = spawn_node(&mut app, dist);
     let osc = spawn_node(&mut app, sine_hz::<f32>(440.0));

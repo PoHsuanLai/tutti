@@ -392,20 +392,36 @@ impl StereoDelayLineNode {
     }
 
     /// A delay with optional audio-rate `feedback` / `delay_time` param-input
-    /// ports, appended after the two audio inputs in that order (feedback
-    /// first). Each present port overrides its atomic per sample; the atomics
-    /// still hold the base. A present `delay_time` port drives both L and R
-    /// delay times (shared), through the interpolating read — the flanger /
-    /// chorus path.
+    /// ports, appended after the audio inputs in that order (feedback first).
+    /// Each present port overrides its atomic per sample; the atomics still hold
+    /// the base. A present `delay_time` port drives every channel's delay time
+    /// (shared), through the interpolating read — the flanger / chorus path.
+    ///
+    /// Width and modulation are **independent axes**: `channels` says how wide
+    /// the delay is, the `mod_*` flags say which params it reads at audio rate.
+    /// They were not independent — this constructor delegated to [`Self::new`],
+    /// which is width 2 — so asking for a modulated 5.1 delay silently returned
+    /// a *stereo* one, and the only symptom was a `set_source` on a param port
+    /// that resolved and carried the wrong signal.
+    ///
+    /// The param ports follow the audio inputs, so their indices **move with the
+    /// width**. Ask [`ParamPorts::param_port`](crate::ParamPorts::param_port);
+    /// never assume an index.
+    ///
+    /// This takes one `delay_secs` for every channel, matching
+    /// [`Self::with_channels`], rather than the separate L/R times it used to:
+    /// per-channel authored delay has no positional meaning above width 2. The
+    /// stereo case is not lost, only moved past construction — set the two
+    /// apart with [`Self::set_delay_time_l`] / [`Self::set_delay_time_r`].
     pub fn with_param_inputs(
+        channels: usize,
         max_delay_secs: impl Into<Seconds>,
-        delay_l_secs: impl Into<Seconds>,
-        delay_r_secs: impl Into<Seconds>,
+        delay_secs: impl Into<Seconds>,
         feedback: impl Into<Feedback>,
         mod_feedback: bool,
         mod_delay_time: bool,
     ) -> Self {
-        let mut node = Self::new(max_delay_secs, delay_l_secs, delay_r_secs, feedback);
+        let mut node = Self::with_channels(channels, max_delay_secs, delay_secs, feedback);
         node.mod_feedback = mod_feedback;
         node.mod_delay_time = mod_delay_time;
         node
@@ -994,17 +1010,17 @@ mod tests {
     #[test]
     fn stereo_delay_param_port_arity_and_indices() {
         // feedback only → port 2 (delay-time absent).
-        let f = StereoDelayLineNode::with_param_inputs(1.0, 0.01, 0.01, 0.5, true, false);
+        let f = StereoDelayLineNode::with_param_inputs(2, 1.0, 0.01, 0.5, true, false);
         assert_eq!(f.inputs(), 3);
         assert_eq!(f.feedback_port(), Some(2));
         assert_eq!(f.delay_time_port(), None);
         // delay-time only → port 2 (no feedback port before it).
-        let d = StereoDelayLineNode::with_param_inputs(1.0, 0.01, 0.01, 0.5, false, true);
+        let d = StereoDelayLineNode::with_param_inputs(2, 1.0, 0.01, 0.5, false, true);
         assert_eq!(d.inputs(), 3);
         assert_eq!(d.feedback_port(), None);
         assert_eq!(d.delay_time_port(), Some(2));
         // both → feedback at 2, delay-time at 3.
-        let b = StereoDelayLineNode::with_param_inputs(1.0, 0.01, 0.01, 0.5, true, true);
+        let b = StereoDelayLineNode::with_param_inputs(2, 1.0, 0.01, 0.5, true, true);
         assert_eq!(b.inputs(), 4);
         assert_eq!(b.feedback_port(), Some(2));
         assert_eq!(b.delay_time_port(), Some(3));
@@ -1020,9 +1036,8 @@ mod tests {
         let n = 200;
 
         let run = |fb: f32| -> f32 {
-            let mut node = StereoDelayLineNode::with_param_inputs(
-                1.0, delay_secs, delay_secs, 0.0, true, false,
-            );
+            let mut node =
+                StereoDelayLineNode::with_param_inputs(2, 1.0, delay_secs, 0.0, true, false);
             node.set_sample_rate(tutti_core::SampleRate(sr));
             let mut l = vec![0.0f32; n];
             let mut r = vec![0.0f32; n];
@@ -1065,8 +1080,7 @@ mod tests {
         let (plain_l, plain_r) = process_stereo_delay(&mut plain, &input_l, &input_r, &[]);
 
         // Both ports present, held at the atomic values (feedback then delay-time).
-        let mut modn =
-            StereoDelayLineNode::with_param_inputs(1.0, delay_secs, delay_secs, fb, true, true);
+        let mut modn = StereoDelayLineNode::with_param_inputs(2, 1.0, delay_secs, fb, true, true);
         modn.set_sample_rate(tutti_core::SampleRate(sr));
         let (mod_l, mod_r) = process_stereo_delay(&mut modn, &input_l, &input_r, &[fb, delay_secs]);
 
@@ -1084,5 +1098,31 @@ mod tests {
                 mod_r[i]
             );
         }
+    }
+
+    /// Width and modulation are independent axes.
+    ///
+    /// The regression for the bug this constructor had: it delegated to
+    /// `Self::new`, which is width 2, so a modulated 6-channel delay came back
+    /// *stereo*. The arity assertion fails against that version.
+    #[test]
+    fn a_modulated_delay_is_as_wide_as_it_was_asked_for() {
+        let d = StereoDelayLineNode::with_param_inputs(6, 1.0, 0.01, 0.5, true, true);
+        assert_eq!(d.outputs(), 6, "the width is what was asked for");
+        assert_eq!(
+            d.inputs(),
+            8,
+            "six audio inputs, then feedback and delay-time"
+        );
+        assert_eq!(
+            d.feedback_port(),
+            Some(6),
+            "param ports follow the audio inputs, so their indices move with the width"
+        );
+        assert_eq!(
+            d.delay_time_port(),
+            Some(7),
+            "and keep their documented order"
+        );
     }
 }

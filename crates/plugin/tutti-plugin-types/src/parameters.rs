@@ -358,6 +358,12 @@ impl std::fmt::Display for ParamId {
 /// // Not an index, and the type will not pretend otherwise.
 /// assert_eq!(vst3.index(), None);
 /// ```
+///
+/// **Name collision.** `tutti_au_host::parameters::ParamAddress` is a different
+/// type answering a different question — the AU `(scope, element)` pair naming
+/// which container a parameter sits in. It is not re-exported at that crate's
+/// root, so the two never meet at an import site; the note is here so neither
+/// is read as the other.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum ParamAddress {
@@ -567,7 +573,8 @@ mod tests {
     /// A `Plain` parameter maps normalized input onto its declared range.
     #[test]
     fn a_plain_parameter_maps_onto_its_declared_range() {
-        let p = ParameterInfo::new(ParamId::new(1), "Cutoff").with_plain_range(20.0, 20_000.0, 20.0);
+        let p =
+            ParameterInfo::new(ParamId::new(1), "Cutoff").with_plain_range(20.0, 20_000.0, 20.0);
         assert_eq!(p.to_plain(0.0), 20.0);
         assert_eq!(p.to_plain(1.0), 20_000.0);
         assert_eq!(p.to_normalized(20_000.0), 1.0);
@@ -603,8 +610,8 @@ mod tests {
     /// reporting `true` (which `ALL_AUTOMATABLE` used to do) is worse.
     #[test]
     fn an_unreported_flag_is_not_a_false_flag() {
-        let p =
-            ParameterInfo::new(ParamId::new(1), "Gain").with_flags(ParamFlags::READ_ONLY, ParamFlags::empty());
+        let p = ParameterInfo::new(ParamId::new(1), "Gain")
+            .with_flags(ParamFlags::READ_ONLY, ParamFlags::empty());
 
         assert_eq!(p.flag(ParamFlags::READ_ONLY), Some(false));
         assert_eq!(
@@ -688,8 +695,8 @@ mod tests {
     #[cfg(feature = "serde")]
     #[test]
     fn the_known_mask_survives_the_bincode_round_trip() {
-        let info =
-            ParameterInfo::new(ParamId::new(1), "Gain").with_flags(ParamFlags::READ_ONLY, ParamFlags::READ_ONLY);
+        let info = ParameterInfo::new(ParamId::new(1), "Gain")
+            .with_flags(ParamFlags::READ_ONLY, ParamFlags::READ_ONLY);
         let bytes = bincode::serialize(&info).expect("serialize");
         let back: ParameterInfo = bincode::deserialize(&bytes).expect("deserialize");
         assert_eq!(back.flag(ParamFlags::READ_ONLY), Some(true));
@@ -704,27 +711,31 @@ mod tests {
 
     #[test]
     fn test_to_range_integer() {
-        let info = ParameterInfo::new(ParamId::new(2), "Algorithm").with_steps(ParamSteps::Enumerated(5));
+        let info =
+            ParameterInfo::new(ParamId::new(2), "Algorithm").with_steps(ParamSteps::Enumerated(5));
         assert_eq!(info.to_range().scale, ParameterScale::Integer);
     }
 
     #[test]
     fn test_to_range_logarithmic_db() {
-        let mut info = ParameterInfo::new(ParamId::new(3), "Gain").with_plain_range(0.001, 10.0, 1.0);
+        let mut info =
+            ParameterInfo::new(ParamId::new(3), "Gain").with_plain_range(0.001, 10.0, 1.0);
         info.unit = "dB".to_string();
         assert_eq!(info.to_range().scale, ParameterScale::Logarithmic);
     }
 
     #[test]
     fn test_to_range_logarithmic_hz() {
-        let mut info = ParameterInfo::new(ParamId::new(4), "Cutoff").with_plain_range(20.0, 20_000.0, 440.0);
+        let mut info =
+            ParameterInfo::new(ParamId::new(4), "Cutoff").with_plain_range(20.0, 20_000.0, 440.0);
         info.unit = "Hz".to_string();
         assert_eq!(info.to_range().scale, ParameterScale::Logarithmic);
     }
 
     #[test]
     fn test_to_range_log_fallback_non_positive_min() {
-        let mut info = ParameterInfo::new(ParamId::new(5), "Freq").with_plain_range(0.0, 20_000.0, 440.0);
+        let mut info =
+            ParameterInfo::new(ParamId::new(5), "Freq").with_plain_range(0.0, 20_000.0, 440.0);
         info.unit = "Hz".to_string();
         assert_eq!(info.to_range().scale, ParameterScale::Linear);
     }
@@ -740,8 +751,8 @@ mod tests {
     /// makes it 22050.
     #[test]
     fn to_plain_maps_normalized_onto_the_declared_range() {
-        let info =
-            ParameterInfo::new(ParamId::new(1), "Lowpass Cutoff").with_plain_range(10.0, 22_050.0, 22_050.0);
+        let info = ParameterInfo::new(ParamId::new(1), "Lowpass Cutoff")
+            .with_plain_range(10.0, 22_050.0, 22_050.0);
 
         assert_eq!(info.to_plain(0.0), 10.0);
         assert_eq!(info.to_plain(1.0), 22_050.0);
@@ -792,7 +803,8 @@ mod tests {
     /// bound is NaN.
     #[test]
     fn nan_never_escapes_a_conversion() {
-        let info = ParameterInfo::new(ParamId::new(1), "Cutoff").with_plain_range(10.0, 22_050.0, 10.0);
+        let info =
+            ParameterInfo::new(ParamId::new(1), "Cutoff").with_plain_range(10.0, 22_050.0, 10.0);
 
         assert!(
             info.to_plain(f64::NAN).is_finite(),
@@ -813,7 +825,8 @@ mod tests {
             (f64::NEG_INFINITY, 1.0),
             (0.0, f64::INFINITY),
         ] {
-            let broken = ParameterInfo::new(ParamId::new(2), "Broken").with_plain_range(min, max, 0.0);
+            let broken =
+                ParameterInfo::new(ParamId::new(2), "Broken").with_plain_range(min, max, 0.0);
             for v in [0.0, 0.5, 1.0, f64::NAN] {
                 assert!(
                     broken.to_plain(v).is_finite(),
@@ -845,7 +858,8 @@ mod tests {
 
     #[test]
     fn test_to_range_values_preserved() {
-        let info = ParameterInfo::new(ParamId::new(7), "Volume").with_plain_range(-96.0, 6.0, -12.0);
+        let info =
+            ParameterInfo::new(ParamId::new(7), "Volume").with_plain_range(-96.0, 6.0, -12.0);
         let range = info.to_range();
         assert_eq!(range.min, -96.0);
         assert_eq!(range.max, 6.0);

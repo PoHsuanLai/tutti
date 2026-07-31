@@ -1955,7 +1955,6 @@ mod tests {
         assert_eq!(synth.voices[0].note(), 64);
     }
 
-    #[test]
     /// One wheel position means one pitch, whether the note was already
     /// sounding or is struck after the bend.
     ///
@@ -1964,8 +1963,9 @@ mod tests {
     /// `Tuning::fractional_note_to_freq`, which interpolates between *table*
     /// entries. Under equal temperament the table is geometric and the two
     /// agree exactly, which is why every existing test passed. Under any
-    /// unequal scale they do not: measured at **11.7 cents** on just intonation
-    /// — a held note and a new note, same wheel, audibly different pitch.
+    /// unequal scale they do not: measured at **3.9 cents** on
+    /// `Tuning::just_intonation` — a held note and a new note, same wheel,
+    /// audibly different pitch.
     ///
     /// Pinned in cents rather than Hz because the defect is a pitch error, and
     /// because a ratio comparison stays meaningful if the fixture's reference

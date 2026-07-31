@@ -90,7 +90,7 @@ pub use unit_id::MidiUnitId;
 /// assert_eq!(msg.note(), Some(60));
 ///
 /// // Round-trip a phrase through a MIDI 2.0 Clip File, in beats.
-/// let bytes = write_clip_file_from_beats(96, [(0.0, ev)]);
+/// let bytes = write_clip_file_from_beats(96, [(Beat(0.0), ev)]);
 /// let clip = read_clip_file(&bytes).unwrap();
 /// assert_eq!(clip.timed().count(), 1);
 ///
@@ -129,15 +129,16 @@ pub use unit_id::MidiUnitId;
 ///
 /// ```
 /// use tutti_midi_types::{read_clip_file, write_clip_file_from_beats, MidiEvent};
+/// use tutti_midi_types::tutti_types::{Beat, BeatDuration};
 ///
 /// let bytes = write_clip_file_from_beats(96, [
-///     (0.0, MidiEvent::note_on(0, 0, 60, 0xABCD)),
-///     (1.5, MidiEvent::note_off(0, 0, 60, 0)),
+///     (Beat(0.0), MidiEvent::note_on(0, 0, 60, 0xABCD)),
+///     (Beat(1.5), MidiEvent::note_off(0, 0, 60, 0)),
 /// ]);
 ///
 /// let notes = read_clip_file(&bytes).unwrap().notes();
 /// assert_eq!(notes.len(), 1);
-/// assert_eq!(notes[0].duration_beats, 1.5);
+/// assert_eq!(notes[0].duration_beats, BeatDuration(1.5));
 /// assert_eq!(notes[0].velocity, 0xABCD);
 /// ```
 ///
@@ -149,4 +150,8 @@ pub mod prelude {
         ClipFileError, MidiEvent, MidiIn, MidiMessage, MidiUnitId, NoteAttribute, NoteId,
         ParsedClipFile, PerNoteController, Protocol,
     };
+    // The clip API positions events in `Beat` and measures them in
+    // `BeatDuration`, so a caller of `write_clip_file_from_beats` needs both
+    // names to say anything at all.
+    pub use tutti_types::{Beat, BeatDuration};
 }

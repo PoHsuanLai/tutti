@@ -37,7 +37,11 @@ Two things that turned up while doing tier 5, neither on this list:
   saturating cast, as a frame count. Typing it beat deleting it: the next
   caller would have found that the hard way.
 
-Still open: only §9.
+Landed on `fix/unit-tier6`:
+
+- §9 — `SmfNote` / `ClipNote`, unblocked once `dawai-frontend` left the
+  workspace. Nothing is open.
+
 
 The engine-wide sweep after tiers 1–3 (PRs #104, #107). Every claim below was
 verified by reading the code at the cited line; the two bugs were reproduced by
@@ -334,30 +338,55 @@ is specifically the musical-time vocabulary in the middle of functions.
 
 ---
 
-## 9. Blocked on the app workspace
+## 9. Was blocked on the app workspace — now done
 
-`SmfNote { start_beats, duration_beats }` (`tutti-midi-io/src/smf.rs:151,153`)
-and `ClipNote`'s identical pair (`tutti-midi-types/src/clip_file.rs:314,316`)
-are the same position-and-span-as-two-`f64`s hazard as everything in §2, and
-they are **not** fixed.
+`SmfNote { start_beats, duration_beats }` and `ClipNote`'s identical pair
+carried the same position-and-span hazard as everything in §2. They were held
+back because `dawai-frontend`'s SMF importer read those fields across the
+workspace boundary and that crate did not build.
 
-`dawai-frontend/src/project/import.rs:205` reads those fields directly, across
-the workspace boundary, and that crate does not build on `main` (`dawai-model`
-alone has ~98 errors from a `tutti_core::ecs` that no longer exists). Typing
-the fields means shipping a break into a crate that can neither confirm nor
-deny it. The `SmfNote` doc comment's "engine-neutral `u8`/`f64`" rationale is
-*not* one of CLAUDE.md's carve-outs — this is a plain in-tree Rust caller — so
-this is a scheduling constraint, not a design decision.
+PR #77 resolved it in a way this document did not predict: rather than the
+importer being fixed, `dawai-frontend` was **commented out of the workspace**
+entirely while the document→ECS layer is rebuilt. The consumer that made this
+unverifiable is not being built at all, so the fields could be typed on their
+own merits.
 
-Do these with, or after, `fix/app-side-ecs-migration`.
+Worth keeping as a note on the original reasoning: the `SmfNote` doc's
+"engine-neutral `u8`/`f64`" rationale was never one of CLAUDE.md's carve-outs,
+and the audit was right to call it scheduling rather than design. What it got
+wrong was assuming the unblock would come from fixing the consumer.
 
-Everything else on this list has landed. `SmfNote` / `ClipNote` are the only
-items left, and they are waiting on the app workspace rather than on a
-decision.
+## 10. The blind spot this audit had
+
+Worth recording, because it invalidates part of §7's "verified clean".
+
+Every pass ran `cargo check`/`test` with **default features**. `tutti-units`
+has `default = []`, so `spatial`, `hrtf` and `convolution` were never compiled
+— 210 tests default, 257 with `--all-features`. Across the engine it is 2069
+vs 2124: **55 tests no audit pass had ever run.**
+
+Two real findings were hiding there, both of the exact kind the audit was
+looking for and both reported "clean" by earlier passes:
+
+- `direction_from_degrees(azimuth_deg: f32, elevation_deg: f32)` — adjacent
+  transposable angles, hand-rolling `f32::to_radians` where
+  `From<Azimuth> for Radians` exists.
+- `ConvolutionNode::process_sample(.., mix: Mix, gain: f32)` — a bare gain
+  beside a typed `Mix`, with the `Amplitude` stripped four times to reach it.
+
+And three **feature-gated builds were simply broken on `main`**, none
+reachable from a default check: `bevy-tutti --features plugin` (fixed in
+tier 5), `tutti-plugin --features vst2`, and `tutti-midi-io --all-features`.
+A feature that is off by default is a feature nobody rebuilds.
+
+The lesson generalizes past units: any audit of this repo should run
+`--all-features`, and CI should too.
 
 ## What is left
 
-Only §9. When `fix/app-side-ecs-migration` lands, type `SmfNote` and
-`ClipNote`'s `start_beats` / `duration_beats` as `Beat` / `BeatDuration` and
-fix `dawai-frontend`'s importer in the same change — the two must move
-together, which is the whole reason they are still here.
+Nothing. Every item this audit opened is landed.
+
+The MIDI-wire boundary is the one place bare primitives remain by design, and
+that is now stated where it matters rather than left implicit: a channel
+nibble, a 7-bit key and a 16-bit velocity are protocol values, not
+measurements, and no unit type should claim them.

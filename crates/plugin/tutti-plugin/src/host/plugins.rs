@@ -41,6 +41,7 @@ use crate::host::node::PluginClient;
 use crate::protocol::PluginDescriptor;
 use crate::util::config::{AudioConfig, CatalogConfig};
 use std::path::{Path, PathBuf};
+use tutti_core::SampleRate;
 
 /// Opaque identifier for a plugin in a [`Plugins`] catalog.
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
@@ -311,11 +312,13 @@ impl Plugins {
     pub fn load(
         &self,
         id: &PluginId,
-        sample_rate: f64,
+        sample_rate: impl Into<SampleRate>,
     ) -> Result<(Box<dyn tutti_core::AudioUnit>, PluginHandle)> {
+        let sample_rate = sample_rate.into();
         #[cfg(feature = "vst2")]
         if matches!(format_from_path(&id.0), Some(PluginFormat::Vst2)) {
-            return crate::format::vst2_in_process::load(&id.0, sample_rate);
+            // `.get()` at the VST2 ABI, which takes a bare rate.
+            return crate::format::vst2_in_process::load(&id.0, sample_rate.get());
         }
         let _ = format_from_path; // keep import live without the vst2 feature
         let _ = PluginFormat::Vst2;
@@ -329,7 +332,7 @@ impl Plugins {
     pub fn load_client(
         &self,
         id: &PluginId,
-        sample_rate: f64,
+        sample_rate: impl Into<SampleRate>,
     ) -> Result<(PluginClient, PluginHandle)> {
         load_client_with(&self.audio, id, sample_rate)
     }
@@ -338,7 +341,7 @@ impl Plugins {
     pub fn load_by_name(
         &self,
         name: &str,
-        sample_rate: f64,
+        sample_rate: impl Into<SampleRate>,
     ) -> Result<(Box<dyn tutti_core::AudioUnit>, PluginHandle)> {
         let id = self
             .find(name)
@@ -424,7 +427,7 @@ impl Plugins {
 pub fn load_client_with(
     audio: &AudioConfig,
     id: &PluginId,
-    sample_rate: f64,
+    sample_rate: impl Into<SampleRate>,
 ) -> Result<(PluginClient, PluginHandle)> {
     let client = PluginClient::new(audio.to_bridge_config(), id.0.clone(), sample_rate)?;
     let handle = PluginHandle::from_client(&client);

@@ -18,7 +18,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use tutti_core::transport::{BeatCursor, BeatWindow, BeatWindowSync, Timeline};
-use tutti_core::Beat;
+use tutti_core::{Beat, SampleRate};
 
 use crate::host::ipc_client::audio::HarmonyInputs;
 use crate::host::node::input_slot::{BlockCtx, BlockInput, BlockReset};
@@ -58,7 +58,7 @@ impl HarmonySource {
         chords: impl IntoIterator<Item = TimedChord>,
         scales: impl IntoIterator<Item = TimedScale>,
         transport: Arc<dyn Timeline>,
-        sample_rate: f64,
+        sample_rate: impl Into<SampleRate>,
     ) -> Self {
         let mut c: Vec<TimedChord> = chords.into_iter().collect();
         c.sort_by(|a, b| {

@@ -252,7 +252,7 @@ fn estimate(detector: &mut PitchDetector, samples: &[f32]) -> PitchEstimate {
     if !raw.is_voiced() {
         return PitchEstimate::Unvoiced;
     }
-    let frequency = Hz(raw.frequency);
+    let frequency = raw.frequency;
     // Derive the note from the frequency rather than trusting the detector's
     // own rounding: `Note::nearest_to` owns that conversion for the whole
     // engine, and returns the cent offset alongside it.
@@ -261,7 +261,7 @@ fn estimate(detector: &mut PitchDetector, samples: &[f32]) -> PitchEstimate {
     };
     PitchEstimate::Voiced(Pitch {
         frequency,
-        confidence: Confidence::new_clamped(raw.confidence),
+        confidence: raw.confidence,
         note,
         cents_offset,
     })

@@ -573,7 +573,11 @@ pub struct DiskVoiceConfig {
     /// File sample rate — converts the transport's second-offset into a sample
     /// offset for the seek target, matching `MemorySource`'s use of
     /// `wave.sample_rate()`.
-    pub file_sample_rate: f64,
+    ///
+    /// Typed: it is produced from `session_rate * src_ratio` (both typed) and
+    /// was re-wrapped with `SampleRate::new` at its one real consumer, so the
+    /// `f64` existed only to cross this struct.
+    pub file_sample_rate: SampleRate,
 }
 
 impl std::fmt::Debug for DiskVoiceConfig {
@@ -597,7 +601,7 @@ pub struct DiskVoice {
     /// File sample rate — converts the transport's second-offset into a sample
     /// offset for the seek target, matching `MemorySource`'s use of
     /// `wave.sample_rate()`.
-    file_sample_rate: f64,
+    file_sample_rate: SampleRate,
 
     /// The window-relative sample offset we last requested the butler stream from.
     /// `NO_SEEK_TARGET` until the first inside-frame. Used to detect a
@@ -700,7 +704,7 @@ impl DiskVoice {
     }
 
     /// The file sample rate this stream decodes at.
-    pub fn file_sample_rate(&self) -> f64 {
+    pub fn file_sample_rate(&self) -> SampleRate {
         self.file_sample_rate
     }
 
@@ -735,7 +739,7 @@ impl DiskVoice {
             self.timeline.as_ref(),
             self.window.start,
             self.window.duration,
-            SampleRate::new(self.file_sample_rate),
+            self.file_sample_rate,
             self.shared_state
                 .effective_speed()
                 .read_rate(SrcRatio::UNITY),
@@ -1033,7 +1037,7 @@ mod tests {
                     start: start_beat,
                     duration,
                 },
-                file_sample_rate: 44100.0,
+                file_sample_rate: SampleRate(44100.0),
             },
         )
     }
@@ -1065,7 +1069,7 @@ mod tests {
                     duration: None,
                 },
                 // What `ports.rs` reconstructs: session × src == the real file rate.
-                file_sample_rate: 44_100.0 * src,
+                file_sample_rate: SampleRate(44_100.0 * src),
             },
         );
 
@@ -1610,7 +1614,7 @@ mod tests {
                         start: Beat::new(64.0),
                         duration: None,
                     },
-                    file_sample_rate: 44100.0,
+                    file_sample_rate: SampleRate(44100.0),
                 },
             );
 

@@ -6,7 +6,7 @@ use super::motion::MotionFsm;
 use super::settings::TransportSettings;
 use super::state::ClockLinks;
 use super::state::LoopRange;
-use crate::params::{Beat, Bpm, SampleRate};
+use crate::params::{Beat, BeatDuration, Bpm, SampleRate, Samples};
 
 /// The two halves of a transport, held together.
 ///
@@ -66,12 +66,24 @@ impl Transport {
         self.sample_rate
     }
 
-    pub fn beats_per_second(&self) -> f64 {
-        self.settings.tempo().get() / 60.0
-    }
-
-    pub fn samples_per_beat(&self) -> f64 {
-        self.sample_rate.get() / self.beats_per_second()
+    /// Frames one beat spans at the current tempo.
+    ///
+    /// Derived from [`beats_per_sample`](super::beats_per_sample) rather than
+    /// from a second `/ 60.0`: that association is documented as load-bearing,
+    /// and this used to be the third hand-rolled spelling of it, via a
+    /// `beats_per_second` helper that existed only to feed this line.
+    ///
+    /// A non-positive tempo gives [`Samples::ZERO`] rather than an infinity.
+    /// `set_tempo` does not clamp, so `Bpm(0.0)` is reachable from the control
+    /// thread, and the old form returned `inf` — which as a frame count is an
+    /// unbounded allocation waiting for its first caller. There are none today;
+    /// that is what made this a latent hole rather than a live bug.
+    pub fn samples_per_beat(&self) -> Samples {
+        let bps = super::beats_per_sample(self.settings.tempo(), self.sample_rate);
+        if bps <= BeatDuration(0.0) {
+            return Samples::ZERO;
+        }
+        Samples((1.0 / bps.get()).round() as usize)
     }
 }
 
@@ -157,9 +169,16 @@ mod tests {
     #[test]
     fn samples_per_beat_follows_tempo() {
         let t = Transport::new(44100.0);
-        assert!((t.samples_per_beat() - 22050.0).abs() < 1e-6, "120 BPM");
+        assert_eq!(t.samples_per_beat(), Samples(22050), "120 BPM");
 
         t.settings.set_tempo(60.0);
-        assert!((t.samples_per_beat() - 44100.0).abs() < 1e-6, "60 BPM");
+        assert_eq!(t.samples_per_beat(), Samples(44100), "60 BPM");
+
+        // `set_tempo` does not clamp, so this is reachable. It used to be
+        // `inf`, which as a frame count is an unbounded allocation.
+        t.settings.set_tempo(0.0);
+        assert_eq!(t.samples_per_beat(), Samples::ZERO, "zero tempo");
+        t.settings.set_tempo(-120.0);
+        assert_eq!(t.samples_per_beat(), Samples::ZERO, "negative tempo");
     }
 }

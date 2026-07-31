@@ -22,10 +22,12 @@ impl AudioUnit for PluginClient {
     }
 
     fn set_sample_rate(&mut self, sample_rate: tutti_core::SampleRate) {
-        let sample_rate: f64 = sample_rate.get();
         self.io_mut().reset();
         self.set_transport_sample_rate(sample_rate);
-        let _ = self.bridge_ref().set_sample_rate_rt(sample_rate);
+        // `.get()` here and nowhere earlier: `set_sample_rate_rt` puts the rate
+        // on the IPC wire, which is where the types stop (#105/#108). This used
+        // to unwrap on entry, ten hops before the boundary that needed it.
+        let _ = self.bridge_ref().set_sample_rate_rt(sample_rate.get());
     }
 
     fn tick(&mut self, input: &[f32], output: &mut [f32]) {
@@ -94,10 +96,12 @@ impl AudioUnit<F64> for PluginClient {
     }
 
     fn set_sample_rate(&mut self, sample_rate: tutti_core::SampleRate) {
-        let sample_rate: f64 = sample_rate.get();
         self.io_mut().reset();
         self.set_transport_sample_rate(sample_rate);
-        let _ = self.bridge_ref().set_sample_rate_rt(sample_rate);
+        // `.get()` here and nowhere earlier: `set_sample_rate_rt` puts the rate
+        // on the IPC wire, which is where the types stop (#105/#108). This used
+        // to unwrap on entry, ten hops before the boundary that needed it.
+        let _ = self.bridge_ref().set_sample_rate_rt(sample_rate.get());
     }
 
     fn tick(&mut self, input: &[f64], output: &mut [f64]) {

@@ -25,15 +25,19 @@
 #[derive(Debug, Clone, Copy, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct PitchResult {
-    /// Hz, 0.0 if unvoiced
-    pub frequency: f32,
-    /// 0.0..1.0
-    pub confidence: f32,
+    /// The detected pitch; [`Hz(0.0)`](Hz) if unvoiced.
+    ///
+    /// Typed because `PitchDetector` already holds `min_freq`/`max_freq` as
+    /// `Hz` and `threshold` as `Confidence` — only the *result* was bare, so
+    /// `yin.rs` had to re-wrap this crate's own output field by field.
+    pub frequency: Hz,
+    /// Detection strength, `0.0..=1.0`.
+    pub confidence: Confidence,
 }
 
 impl PitchResult {
     pub fn is_voiced(&self) -> bool {
-        self.frequency > 0.0 && self.confidence > 0.0
+        self.frequency > Hz(0.0) && self.confidence > Confidence(0.0)
     }
 }
 
@@ -108,8 +112,10 @@ impl PitchDetector {
         }
 
         let refined_period = self.parabolic_interpolation(period, max_period);
-        let frequency = (self.sample_rate.get() / refined_period) as f32;
-        let confidence = (1.0 - aperiodicity).max(0.0);
+        let frequency = Hz((self.sample_rate.get() / refined_period) as f32);
+        // Clamped rather than wrapped raw: `Confidence` is a 0..=1 reading, and
+        // this is the one place the aperiodicity inversion could leave the range.
+        let confidence = Confidence::new_clamped(1.0 - aperiodicity as f32);
 
         PitchResult {
             frequency,

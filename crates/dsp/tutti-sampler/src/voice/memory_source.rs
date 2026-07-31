@@ -532,7 +532,7 @@ impl MemorySource {
     /// The derivation itself lives in [`SrcRatio::for_rates`] — the butler's
     /// streaming path calls the same function, so the two tiers cannot drift
     /// apart on matched-rate detection or the divide-by-zero guard.
-    pub fn set_session_sample_rate(&mut self, session_rate: f64) {
+    pub fn set_session_sample_rate(&mut self, session_rate: impl Into<SampleRate>) {
         self.src_ratio = SrcRatio::for_rates(self.wave.sample_rate(), session_rate);
     }
 

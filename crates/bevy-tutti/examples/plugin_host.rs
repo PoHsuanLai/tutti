@@ -133,7 +133,7 @@ fn main() {
     let _backend = net.backend();
     app.insert_resource(AudioGraphRes(net));
     app.insert_resource(AudioConfig {
-        sample_rate: SAMPLE_RATE,
+        sample_rate: SAMPLE_RATE.into(),
         channels: Default::default(),
     });
     app.insert_resource(TransportRes(transport));

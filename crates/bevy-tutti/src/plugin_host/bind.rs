@@ -258,7 +258,12 @@ pub fn plugin_bind_params(
             let target = client.param_target(param_id, range.base, range.min, range.max);
             registry.insert_target(entity, range.param, target.clone());
             timed.push(tutti_plugin::handles::TimedParam {
-                param_id,
+                // `TimedParam::param_id` became a `ParamAddress` in #105/#108,
+                // and this adapter was not rebuilt with the `plugin` feature so
+                // the break went unseen. `Opaque` is the right arm: `Index` is
+                // VST2-only and dense, while `ParamAddr::Id` is the app's
+                // plugin-chosen handle — exactly what `Opaque` models.
+                param_id: tutti_plugin::handles::ParamAddress::Opaque(param_id.into()),
                 curve: target,
             });
         }

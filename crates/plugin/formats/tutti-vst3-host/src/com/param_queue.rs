@@ -20,6 +20,8 @@ use vst3::Steinberg::{
 use vst3::{Class, ComWrapper};
 
 use crate::types::{ParameterPoint, ParameterQueue};
+#[cfg(test)]
+use tutti_plugin_types::ParamAddress;
 use tutti_types::AudioThreadCell;
 
 /// Typical automation carries a handful of points per buffer. Values past
@@ -45,7 +47,11 @@ impl ParamValueQueueImpl {
         let mut points = SmallVec::with_capacity(queue.points.len().max(INLINE_POINTS));
         points.extend_from_slice(&queue.points);
         ComWrapper::new(Self {
-            param_id: AudioThreadCell::new(queue.param_id),
+            // The COM cell holds the bare `ParamID` the VST3 ABI passes; the
+            // address model is resolved here, at the boundary. VST3 ids are
+            // opaque, so a positional index addresses nothing and is dropped
+            // to id 0 rather than reinterpreted as a handle.
+            param_id: AudioThreadCell::new(queue.param_id.opaque().map(|id| id.get()).unwrap_or(0)),
             points: AudioThreadCell::new(points),
         })
     }
@@ -66,7 +72,8 @@ impl ParamValueQueueImpl {
     /// the host's authoring convention — so each point's value is clamped to
     /// `[0, 1]` here, guarding against an over-range authored/modulated value.
     pub fn refill_from_queue(&self, queue: &ParameterQueue) {
-        *self.param_id.borrow_mut() = queue.param_id;
+        // Same boundary as `from_queue`: unwrap the opaque handle for the ABI.
+        *self.param_id.borrow_mut() = queue.param_id.opaque().map(|id| id.get()).unwrap_or(0);
         let mut points = self.points.borrow_mut();
         points.clear();
         points.reserve(queue.points.len());
@@ -94,7 +101,7 @@ impl ParamValueQueueImpl {
 
     #[cfg(test)]
     pub fn to_queue(&self) -> ParameterQueue {
-        let mut queue = ParameterQueue::new(self.param_id());
+        let mut queue = ParameterQueue::new(ParamAddress::Opaque(self.param_id().into()));
         self.for_each_point(|p| {
             queue.add_point(p.sample_offset, p.value);
         });
@@ -166,7 +173,7 @@ mod tests {
     use super::*;
 
     fn queue_with_points(count: usize) -> ParameterQueue {
-        let mut q = ParameterQueue::new(42);
+        let mut q = ParameterQueue::new(ParamAddress::Opaque(42u32.into()));
         for i in 0..count {
             q.add_point(i as i32, i as f64 * 0.01);
         }
@@ -183,7 +190,7 @@ mod tests {
     /// don't guarantee interleaved order, so the queue must sort.
     #[test]
     fn refill_from_queue_sorts_points_by_sample_offset() {
-        let mut source = ParameterQueue::new(7);
+        let mut source = ParameterQueue::new(ParamAddress::Opaque(7u32.into()));
         source.add_point(384, 0.75);
         source.add_point(0, 0.25);
         source.add_point(128, 0.5);
@@ -205,7 +212,7 @@ mod tests {
     /// them would inverting the jump.
     #[test]
     fn refill_from_queue_is_stable_for_equal_offsets() {
-        let mut source = ParameterQueue::new(7);
+        let mut source = ParameterQueue::new(ParamAddress::Opaque(7u32.into()));
         source.add_point(64, 0.1); // old value
         source.add_point(64, 0.9); // new value at the same instant
 
@@ -226,7 +233,7 @@ mod tests {
     /// already-sorted points, so they never exercise the sorting branch.
     #[test]
     fn refill_from_queue_unsorted_is_allocation_free() {
-        let mut source = ParameterQueue::new(7);
+        let mut source = ParameterQueue::new(ParamAddress::Opaque(7u32.into()));
         for i in (0..16i32).rev() {
             source.add_point(i * 8, f64::from(i) * 0.01);
         }

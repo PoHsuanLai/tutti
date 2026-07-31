@@ -64,6 +64,14 @@ use crate::types::*;
 /// Where a parameter lives: the `(scope, element)` pair AudioToolbox addresses
 /// it by.
 ///
+/// **Not** `tutti_plugin_types::ParamAddress`, which shares the name and answers
+/// a different question: that one says whether a parameter is named by an opaque
+/// handle or a positional index, across the four hosted formats. This one names
+/// the AU-specific *container* a parameter sits in, and both halves are always
+/// `u32`. They never appear together — this type is `parameters::ParamAddress`
+/// and is not re-exported at the crate root — but the coincidence is worth
+/// stating so neither is mistaken for the other.
+///
 /// Not a bare `(u32, u32)`, because the two are the same type and adjacent in
 /// every AudioToolbox signature — `AudioUnitGetParameter(unit, id, scope,
 /// element, …)` will happily accept them transposed and return the value of a

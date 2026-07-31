@@ -230,7 +230,7 @@ fn hole_in_params_still_denormalizes_surviving_params() {
     let expected = min + NORMALIZED * (max - min);
 
     let mut changes = ParameterChanges::new();
-    changes.add_change(survivor, 0, NORMALIZED);
+    changes.add_change(ParamAddress::Opaque(survivor.into()), 0, NORMALIZED);
 
     drive_block(
         &mut inst,
@@ -303,7 +303,7 @@ fn hole_in_params_does_not_deliver_undenormalized_automation() {
 
     const NORMALIZED: f64 = 0.25;
     let mut changes = ParameterChanges::new();
-    changes.add_change(holed, 0, NORMALIZED);
+    changes.add_change(ParamAddress::Opaque(holed.into()), 0, NORMALIZED);
 
     drive_block(
         &mut inst,

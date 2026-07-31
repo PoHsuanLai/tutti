@@ -2,6 +2,8 @@
 
 use smallvec::SmallVec;
 
+use crate::ParamAddress;
+
 /// One automation sample: the value at a specific sample offset within
 /// the current process block.
 #[derive(Debug, Clone, Copy)]
@@ -38,7 +40,23 @@ pub struct ParameterPoint {
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct ParameterQueue {
-    pub param_id: u32,
+    /// Which parameter these points drive.
+    ///
+    /// A [`ParamAddress`] rather than a bare `u32` for the same reason the
+    /// direct path takes one: the number alone does not say whether it is an
+    /// opaque plugin-chosen handle (VST3/CLAP/AU) or a VST2 positional index,
+    /// and the two do not even share a range.
+    ///
+    /// This field carried a bare `u32` while the rest of the parameter surface
+    /// moved to `ParamAddress`, on the argument that types stop at the IPC
+    /// boundary. That rule is about *foreign* boundaries — a C ABI or a WIT
+    /// interface, where the other side is not ours to type. Both ends of this
+    /// wire are this workspace, and the cost of the omission was visible in the
+    /// loaders: the VST2 one narrowed with `i32::try_from` to rebuild an index
+    /// while AU and CLAP read the same field as opaque, each re-deriving the
+    /// addressing model from *which loader it is*. That is correct only because
+    /// a session hosts one format, which nothing states and nothing checks.
+    pub param_id: ParamAddress,
     /// Points in ascending, non-negative `sample_offset` order.
     ///
     /// In-process the caller maintains the order (all producers append
@@ -50,7 +68,7 @@ pub struct ParameterQueue {
 }
 
 impl ParameterQueue {
-    pub fn new(param_id: u32) -> Self {
+    pub fn new(param_id: ParamAddress) -> Self {
         Self {
             param_id,
             points: SmallVec::new(),
@@ -118,7 +136,7 @@ impl<'de> serde::Deserialize<'de> for ParameterQueue {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         #[derive(serde::Deserialize)]
         struct Raw {
-            param_id: u32,
+            param_id: ParamAddress,
             points: SmallVec<[ParameterPoint; 10]>,
         }
         let raw = Raw::deserialize(d)?;
@@ -147,7 +165,7 @@ impl ParameterChanges {
 
     /// Append a point to the queue for `param_id`, creating the queue if
     /// it doesn't exist yet.
-    pub fn add_change(&mut self, param_id: u32, sample_offset: i32, value: f64) {
+    pub fn add_change(&mut self, param_id: ParamAddress, sample_offset: i32, value: f64) {
         if let Some(queue) = self.queues.iter_mut().find(|q| q.param_id == param_id) {
             queue.add_point(sample_offset, value);
         } else {
@@ -174,11 +192,11 @@ impl ParameterChanges {
         self.queues.clear();
     }
 
-    pub fn get_queue(&self, param_id: u32) -> Option<&ParameterQueue> {
+    pub fn get_queue(&self, param_id: ParamAddress) -> Option<&ParameterQueue> {
         self.queues.iter().find(|q| q.param_id == param_id)
     }
 
-    pub fn get_queue_mut(&mut self, param_id: u32) -> Option<&mut ParameterQueue> {
+    pub fn get_queue_mut(&mut self, param_id: ParamAddress) -> Option<&mut ParameterQueue> {
         self.queues.iter_mut().find(|q| q.param_id == param_id)
     }
 }
@@ -186,6 +204,7 @@ impl ParameterChanges {
 #[cfg(all(test, feature = "serde"))]
 mod serde_tests {
     use super::*;
+    use crate::ParamId;
 
     fn round_trip(q: &ParameterQueue) -> ParameterQueue {
         let bytes = bincode::serialize(q).expect("serialize");
@@ -196,14 +215,14 @@ mod serde_tests {
     /// maintain the `points` doc's ascending invariant, so deserialize must.
     #[test]
     fn deserialize_sorts_out_of_order_points() {
-        let mut q = ParameterQueue::new(7);
+        let mut q = ParameterQueue::new(ParamAddress::Opaque(ParamId::new(7)));
         q.add_point(32, 0.5);
         q.add_point(0, 0.0);
         q.add_point(16, 0.25);
 
         let got = round_trip(&q);
 
-        assert_eq!(got.param_id, 7);
+        assert_eq!(got.param_id, ParamAddress::Opaque(ParamId::new(7)));
         let offsets: Vec<i32> = got.points.iter().map(|p| p.sample_offset).collect();
         assert_eq!(offsets, vec![0, 16, 32]);
         // Values travel with their offsets, not independently.
@@ -216,7 +235,7 @@ mod serde_tests {
     /// VST3's `getPoint` hands it to the plugin verbatim.
     #[test]
     fn deserialize_clamps_negative_offsets() {
-        let mut q = ParameterQueue::new(1);
+        let mut q = ParameterQueue::new(ParamAddress::Opaque(ParamId::new(1)));
         q.add_point(-100, 0.75);
         q.add_point(8, 0.25);
 
@@ -230,7 +249,7 @@ mod serde_tests {
     /// An already-ordered queue is untouched — the common case pays no reorder.
     #[test]
     fn deserialize_leaves_ordered_points_alone() {
-        let mut q = ParameterQueue::new(3);
+        let mut q = ParameterQueue::new(ParamAddress::Opaque(ParamId::new(3)));
         for i in 0..9 {
             q.add_point(i * 8, i as f64 / 8.0);
         }
@@ -241,20 +260,60 @@ mod serde_tests {
         assert_eq!(offsets, (0..9).map(|i| i * 8).collect::<Vec<_>>());
     }
 
+    /// The two addressing models stay distinct across the wire, and a queue
+    /// keyed by one is not found by the other.
+    ///
+    /// This is what the field's type buys. While it was a bare `u32`, an
+    /// opaque id and a positional index were the same value on the wire, and
+    /// the receiving loader recovered the model from *which loader it was* —
+    /// correct only because a session hosts one format. `ParamId::new(3)` and
+    /// `Index(3)` are the same number and must not be the same address.
+    #[test]
+    fn the_addressing_model_survives_the_wire() {
+        let opaque = ParamAddress::Opaque(ParamId::new(3));
+        let index = ParamAddress::Index(3);
+        assert_ne!(opaque, index, "same number, different address");
+
+        let mut changes = ParameterChanges::new();
+        changes.add_change(opaque, 0, 0.25);
+        changes.add_change(index, 0, 0.75);
+        // Two queues, not one merged by a coinciding number.
+        assert_eq!(changes.len(), 2);
+
+        let bytes = bincode::serialize(&changes).expect("serialize");
+        let got: ParameterChanges = bincode::deserialize(&bytes).expect("deserialize");
+
+        assert_eq!(got.get_queue(opaque).expect("opaque").points[0].value, 0.25);
+        assert_eq!(got.get_queue(index).expect("index").points[0].value, 0.75);
+
+        // An opaque id above `i32::MAX` is routine (these are often name
+        // hashes) and is exactly what a bare number could not carry: read as
+        // an index it is negative.
+        let high = ParamAddress::Opaque(ParamId::new(0xF000_000A));
+        let mut one = ParameterChanges::new();
+        one.add_change(high, 0, 1.0);
+        let back: ParameterChanges =
+            bincode::deserialize(&bincode::serialize(&one).expect("serialize")).expect("de");
+        assert_eq!(back.get_queue(high).expect("high id survives").len(), 1);
+        assert_eq!(back.queues[0].param_id.index(), None);
+    }
+
     /// `ParameterChanges` derives its `Deserialize`, so the per-queue impl has
     /// to fire through the collection too — that is the shape the IPC protocol
     /// actually sends.
     #[test]
     fn nested_in_parameter_changes() {
         let mut changes = ParameterChanges::new();
-        changes.add_change(1, 32, 1.0);
-        changes.add_change(1, -4, 0.0);
-        changes.add_change(2, 0, 0.5);
+        changes.add_change(ParamAddress::Opaque(ParamId::new(1)), 32, 1.0);
+        changes.add_change(ParamAddress::Opaque(ParamId::new(1)), -4, 0.0);
+        changes.add_change(ParamAddress::Opaque(ParamId::new(2)), 0, 0.5);
 
         let bytes = bincode::serialize(&changes).expect("serialize");
         let got: ParameterChanges = bincode::deserialize(&bytes).expect("deserialize");
 
-        let q = got.get_queue(1).expect("queue 1");
+        let q = got
+            .get_queue(ParamAddress::Opaque(ParamId::new(1)))
+            .expect("queue 1");
         assert_eq!(q.points[0].sample_offset, 0);
         assert_eq!(q.points[1].sample_offset, 32);
     }

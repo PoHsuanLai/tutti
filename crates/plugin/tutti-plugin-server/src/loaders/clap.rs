@@ -1247,8 +1247,7 @@ mod tests {
         assert!(!params.is_empty());
 
         let mut changes = ParameterChanges::new();
-        let queue_id = params[0].id.opaque().expect("CLAP ids are opaque").get();
-        let mut queue = ParameterQueue::new(queue_id);
+        let mut queue = ParameterQueue::new(params[0].id);
         queue.add_point(0, 0.5);
         changes.add_queue(queue);
 

@@ -161,14 +161,12 @@ impl PluginAudio for Vst2Instance {
             if let Some(changes) = ctx.param_changes {
                 for queue in &changes.queues {
                     if let Some(point) = queue.points.last() {
-                        // `ParameterQueue::param_id` is the automation wire's
-                        // bare `u32` — the one place the IPC vocabulary meets
-                        // this crate's `i32` index. A `u32` above `i32::MAX`
-                        // names no VST2 parameter, so it is dropped here rather
-                        // than cast into a negative index; `set_parameter`
-                        // would refuse it anyway, and saying so is clearer than
-                        // relying on that.
-                        let Ok(index) = i32::try_from(queue.param_id) else {
+                        // VST2 is the one format addressed by position, so an
+                        // opaque handle addresses nothing here. This used to
+                        // narrow the wire's bare `u32` with `i32::try_from`,
+                        // rebuilding an index the producer already knew it was
+                        // sending — the queue now says so.
+                        let Some(index) = queue.param_id.index() else {
                             continue;
                         };
                         self.inner

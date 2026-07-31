@@ -543,8 +543,8 @@ fn host_denormalizes_automation_against_the_parameter_range() {
 
     let mut params = ParameterChanges::new();
     // Deliberately out of offset order, so the sort is exercised too.
-    params.add_change(p.id, 192, 0.75);
-    params.add_change(p.id, 64, 0.25);
+    params.add_change(ParamAddress::Opaque(p.id.into()), 192, 0.75);
+    params.add_change(ParamAddress::Opaque(p.id.into()), 64, 0.25);
     let ctx = ProcessContext {
         params: Some(&params),
         ..Default::default()
@@ -579,8 +579,8 @@ fn host_denormalizes_each_parameter_against_its_own_range() {
     let b = param(1); // -12 .. 12
 
     let mut params = ParameterChanges::new();
-    params.add_change(a.id, 0, 0.5);
-    params.add_change(b.id, 0, 0.5);
+    params.add_change(ParamAddress::Opaque(a.id.into()), 0, 0.5);
+    params.add_change(ParamAddress::Opaque(b.id.into()), 0, 0.5);
     let ctx = ProcessContext {
         params: Some(&params),
         ..Default::default()

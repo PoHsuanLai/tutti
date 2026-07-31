@@ -53,14 +53,23 @@ pub mod shm;
 ///   exactly one of the ten. Mandatory: the new field appends to the struct, so a v6 peer stops
 ///   reading before it and a v6 *payload* runs the decoder off the end of the
 ///   buffer or into the next field's bytes.
-/// - v8: every `param_id: u32` becomes a `ParamAddress`, which distinguishes an
-///   opaque plugin-chosen handle (VST3/CLAP/AU) from a VST2 positional index.
+/// - v8: the `HostMessage` `param_id: u32` fields become a `ParamAddress`, which
+///   distinguishes an opaque plugin-chosen handle (VST3/CLAP/AU) from a VST2
+///   positional index.
 ///   The two were indistinguishable on the wire, so the receiving loader had to
 ///   assume its own format's model — correct only because each session hosts one
 ///   format, and silently wrong the moment an address is forwarded. Mandatory:
 ///   the enum adds a discriminant byte ahead of the number, so a v7 peer reads
 ///   the tag as the low byte of the id.
-pub const PROTOCOL_VERSION: u32 = 8;
+/// - v9: `ParameterQueue::param_id` becomes a `ParamAddress` too. v8 moved the
+///   direct parameter path and left the *automation* path on a bare `u32`,
+///   reasoning that types stop at the IPC boundary — a rule about foreign
+///   boundaries, which this is not: both ends are this workspace. The cost was
+///   visible in the loaders, where VST2 narrowed with `i32::try_from` to rebuild
+///   an index while AU and CLAP read the same field as opaque, each recovering
+///   the model from its own identity. Mandatory for the same reason as v8: the
+///   discriminant byte shifts every following field.
+pub const PROTOCOL_VERSION: u32 = 9;
 
 /// Validate a subprocess-reported protocol version against [`PROTOCOL_VERSION`].
 /// Called at each handshake consumer so a version skew fails loudly instead of
@@ -292,14 +301,17 @@ mod tests {
         let mut changes = ParameterChanges::new();
         assert!(changes.is_empty());
 
-        let mut queue = ParameterQueue::new(42);
+        let mut queue = ParameterQueue::new(ParamAddress::Opaque(ParamId::new(42)));
         queue.add_point(0, 0.5);
         queue.add_point(128, 0.8);
         changes.add_queue(queue);
 
         assert!(!changes.is_empty());
         assert_eq!(changes.queues.len(), 1);
-        assert_eq!(changes.queues[0].param_id, 42);
+        assert_eq!(
+            changes.queues[0].param_id,
+            ParamAddress::Opaque(ParamId::new(42))
+        );
         assert_eq!(changes.queues[0].points.len(), 2);
     }
 

@@ -380,10 +380,13 @@ impl PluginAudio for AuInstance {
         if let Some(changes) = ctx.param_changes {
             for queue in &changes.queues {
                 if let Some(point) = queue.points.last() {
-                    if let Some(bounds) = lookup_bounds(&self.param_ranges, queue.param_id) {
-                        let _ = self
-                            .inner
-                            .set_parameter(queue.param_id, bounds.to_plain(point.value));
+                    // `AudioUnitParameterID` is opaque; a VST2 positional index
+                    // addresses nothing here.
+                    let Some(id) = queue.param_id.opaque().map(|i| i.get()) else {
+                        continue;
+                    };
+                    if let Some(bounds) = lookup_bounds(&self.param_ranges, id) {
+                        let _ = self.inner.set_parameter(id, bounds.to_plain(point.value));
                     }
                 }
             }
@@ -914,11 +917,9 @@ mod tests {
             (0.5f64, min + 0.5 * (max - min)),
         ] {
             let mut changes = ParameterChanges::new();
-            // `ParameterQueue.param_id` stays a bare `u32`: automation
-            // crosses the IPC wire, where the address model is the session's,
-            // not the queue's. AU is opaque.
-            let queue_id = target.id.opaque().expect("AU ids are opaque").get();
-            let mut queue = ParameterQueue::new(queue_id);
+            // The queue is keyed by the same `ParamAddress` the descriptor
+            // carries, so nothing here has to restate that AU is opaque.
+            let mut queue = ParameterQueue::new(target.id);
             queue.add_point(0, normalized);
             changes.add_queue(queue);
 

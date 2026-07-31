@@ -31,9 +31,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use tutti_mod::{Curve, EdgeShape, ErasedModulator, Modulator, SourceRate};
-use tutti_types::{Hz, Param, ParamAddr, UnitParam};
+use tutti_types::{BeatDuration, Hz, Param, ParamAddr, UnitParam};
 
-use crate::modulation::components::{ModRate, ModRoute};
+use crate::modulation::components::{ModClock, ModRate, ModRoute};
 
 /// A component that describes how to build one kind of modulator.
 ///
@@ -74,7 +74,11 @@ pub trait ModSourceKind: Component + Clone + Send + Sync + Sized + 'static {
     ///
     /// Returning `Some` is not a promise of curve delivery: the *sink* decides,
     /// and one that takes only scalars makes the route fall back.
-    fn build_curve(&self, beats_per_cycle: f32, edge: EdgeShape) -> Option<Arc<dyn Curve>> {
+    fn build_curve(
+        &self,
+        beats_per_cycle: BeatDuration,
+        edge: EdgeShape,
+    ) -> Option<Arc<dyn Curve>> {
         let _ = (beats_per_cycle, edge);
         None
     }
@@ -163,12 +167,18 @@ pub(crate) fn ensure_rate_cells(
         if existing.is_some() {
             continue;
         }
+        // Only a free-running rate is modulatable: the cell is a `Param<Hz>`,
+        // which is f32, and a synced span needs f64 beat precision. Modulating
+        // the divisor would also smear the transport lock that arm exists to
+        // provide, so a route onto a synced source's rate is ignored rather
+        // than silently reinterpreted.
+        let ModClock::Free { hz } = rate.clock else {
+            continue;
+        };
         // Seed with the authored frequency so the first frame after wiring is
         // continuous — the source keeps running at the rate it already had
         // until an accumulator actually moves the cell.
-        commands
-            .entity(route.target)
-            .insert(ModRateCell::new(rate.frequency));
+        commands.entity(route.target).insert(ModRateCell::new(hz));
     }
 }
 
@@ -215,22 +225,16 @@ fn collect<K: ModSourceKind>(
         ));
         collected.sources.push((entity, source));
 
-        // A curve is clocked by the beat, so a beat-synced rate is already in
-        // the curve's own units: `SourceRate::frequency` IS beats-per-cycle
-        // (the driver derives phase as `beat / frequency`), which is exactly
-        // what `BeatLfo` wants — so it passes through unchanged.
-        //
-        // This used to take the reciprocal, on the reading that the field meant
-        // cycles-per-beat. The two readings coincide at 1.0, which hid it: at
-        // `Hz(2.0)` the scalar path peaked at beat 0.5 while the curve path sat
-        // flat, so a plugin param and a native param driven by the same LFO ran
-        // at reciprocal rates.
+        // A curve is clocked by the beat, so a synced span is already in the
+        // curve's own units and passes through unchanged. This used to take the
+        // reciprocal, on the reading that the field meant cycles-per-beat; the
+        // arm now carries a `BeatDuration`, so there is no second reading to
+        // pick wrong.
         //
         // A free-running rate is in Hz and has no fixed beat mapping, so it has
         // no curve form — the scalar path stays correct for it.
-        if rate.beat_synced {
-            let beats_per_cycle = rate.frequency.get();
-            if beats_per_cycle > 0.0 {
+        if let ModClock::Synced { beats_per_cycle } = rate.clock {
+            if beats_per_cycle.get() > 0.0 {
                 // Cloned into the closure: the builder outlives this query
                 // borrow, and `rebuild` calls it once per route on the source.
                 let kind = kind.clone();
@@ -337,16 +341,20 @@ impl ModRateCell {
 /// Turn a [`ModRate`] component into the engine's [`SourceRate`].
 ///
 /// `cell` is `Some` only when this source's own rate is modulated, in which
-/// case the frequency is read from it each frame and [`ModRate::frequency`]
-/// serves only as the value it was seeded with.
+/// case the frequency is read from it each frame and the authored `Hz` serves
+/// only as the value it was seeded with. Only the free-running arm has one —
+/// see [`ensure_rate_cells`].
 pub(crate) fn source_rate(rate: &ModRate, cell: Option<&ModRateCell>) -> SourceRate {
-    let frequency: tutti_mod::Rate = match cell {
-        Some(cell) => cell.0.clone().into(),
-        None => rate.frequency.into(),
-    };
-    if rate.beat_synced {
-        SourceRate::beat_synced(frequency, rate.phase_offset)
-    } else {
-        SourceRate::free_running(frequency, rate.phase_offset)
+    match rate.clock {
+        ModClock::Free { hz } => {
+            let frequency: tutti_mod::Rate = match cell {
+                Some(cell) => cell.0.clone().into(),
+                None => hz.into(),
+            };
+            SourceRate::free_running(frequency, rate.phase_offset)
+        }
+        ModClock::Synced { beats_per_cycle } => {
+            SourceRate::beat_synced(beats_per_cycle, rate.phase_offset)
+        }
     }
 }

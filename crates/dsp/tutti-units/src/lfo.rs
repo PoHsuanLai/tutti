@@ -24,7 +24,7 @@ use tutti_core::{
     BEAT_PORTS,
 };
 
-use tutti_core::{Depth, Hz, Param, Phase, PhaseIncrement, SampleRate};
+use tutti_core::{BeatDuration, Depth, Hz, Param, Phase, PhaseIncrement, SampleRate};
 
 // The waveform vocabulary + the pure LFO modulator live in tutti-mod now. Re-
 // exported so existing `use tutti_units::LfoShape` / `Lfo` sites are untouched.
@@ -32,18 +32,14 @@ pub use tutti_mod::{Lfo, LfoShape, Modulator};
 
 /// Where `beat` falls within a cycle `beats_per_cycle` beats long.
 ///
-/// The division stays in `f64` and narrows once, at the wrap. Both sites used
-/// to write `beat_from_ports(..) as f32` and divide in `f32`, putting the beat
-/// position back into the single `f32` the two-port split exists to avoid.
-///
-/// The cost is small but real, and it grows with session length rather than
-/// appearing suddenly: at beat 200k (~28 hours at 120 bpm) with a dotted-note
-/// cycle the two forms disagree by about 1% of a cycle. Wrapping before the
-/// narrowing keeps the result inside one cycle, where `f32` has resolution to
-/// spare no matter how far along the transport is.
+/// Wraps [`Beat::cycles_of`], which owns the division; this adds only the wrap
+/// to a single cycle, which is what a phase is. Narrowing after that wrap keeps
+/// the result inside `[0, 1)`, where `f32` has resolution to spare no matter
+/// how far along the transport is.
 #[inline]
-fn beat_phase(beat: tutti_core::Beat, beats_per_cycle: f32) -> Phase {
-    Phase::wrapped(((beat.get() / f64::from(beats_per_cycle)).rem_euclid(1.0)) as f32)
+fn beat_phase(beat: tutti_core::Beat, beats_per_cycle: BeatDuration) -> Phase {
+    beat.cycles_of(beats_per_cycle)
+        .map_or(Phase::START, |c| Phase::wrapped(c.rem_euclid(1.0) as f32))
 }
 
 /// Whether the adapter derives phase from a free-running oscillator or from the
@@ -153,10 +149,23 @@ impl<M: Modulator> ModulatorNode<M> {
     ///
     /// The node gains [`BEAT_PORTS`] inputs, wired from `TransportClock`:
     /// port 0 whole beats, port 1 the fraction. This is per-sample accurate.
-    pub fn with_beat_sync(mut self, beats_per_cycle: impl Into<Hz>) -> Self {
+    ///
+    /// Takes a [`BeatDuration`] — a span, so a larger value is *slower*. The
+    /// backing cell is a `Param<Hz>` because it is exposed as a raw `AtomicF32`
+    /// for audio-rate modulation ([`frequency`](Self::frequency)); the span is
+    /// stored in it and read back through [`beats_per_cycle`](Self::beats_per_cycle),
+    /// so the pun is confined to those two accessors instead of every caller.
+    pub fn with_beat_sync(mut self, beats_per_cycle: impl Into<BeatDuration>) -> Self {
         self.mode = LfoMode::BeatSynced;
-        self.frequency.store(beats_per_cycle.into());
+        self.frequency
+            .store(Hz(beats_per_cycle.into().get() as f32));
         self
+    }
+
+    /// The stored beat-synced span. Only meaningful in [`LfoMode::BeatSynced`].
+    #[inline]
+    fn beats_per_cycle(&self) -> BeatDuration {
+        BeatDuration(f64::from(self.frequency.load().get()))
     }
 
     /// Set the modulation depth, `-1.0` to `1.0`.
@@ -263,12 +272,9 @@ impl<M: Modulator + Clone + Send + Sync + 'static> AudioUnit for ModulatorNode<M
             }
             LfoMode::BeatSynced => {
                 let beat = beat_from_ports(input[0], input[1]);
-                let beats_per_cycle = self.frequency.load().get();
-                if beats_per_cycle > 0.0 {
-                    beat_phase(beat, beats_per_cycle).offset_by(phase_offset)
-                } else {
-                    Phase::START.offset_by(phase_offset)
-                }
+                // A non-positive span freezes at the offset — the guard lives in
+                // `Beat::cycles_of`, which `beat_phase` goes through.
+                beat_phase(beat, self.beats_per_cycle()).offset_by(phase_offset)
             }
         };
 
@@ -291,15 +297,12 @@ impl<M: Modulator + Clone + Send + Sync + 'static> AudioUnit for ModulatorNode<M
                 }
             }
             LfoMode::BeatSynced => {
-                let beats_per_cycle = self.frequency.load().get();
+                // Read once per block, not per sample.
+                let beats_per_cycle = self.beats_per_cycle();
 
                 for i in 0..size {
                     let beat = beat_from_ports(input.at_f32(0, i), input.at_f32(1, i));
-                    let phase = if beats_per_cycle > 0.0 {
-                        beat_phase(beat, beats_per_cycle).offset_by(phase_offset)
-                    } else {
-                        Phase::START.offset_by(phase_offset)
-                    };
+                    let phase = beat_phase(beat, beats_per_cycle).offset_by(phase_offset);
                     output.set_f32(0, i, self.evaluate(phase));
                 }
             }

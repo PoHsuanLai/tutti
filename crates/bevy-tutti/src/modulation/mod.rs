@@ -8,7 +8,7 @@
 //! ```rust,ignore
 //! let lfo = commands.spawn((
 //!     ModSource::new(LfoShape::Sine),
-//!     ModRate::beat_synced(Hz(1.0)),
+//!     ModRate::beat_synced(BeatDuration(1.0)),
 //! )).id();
 //!
 //! // The target declares what is modulatable and over what range; the engine
@@ -54,8 +54,9 @@
 //! automatically when a route asks for one, and is a *component* precisely so it
 //! outlives the rebuilds that reconstruct every source.
 //!
-//! Read the live rate with [`ModRateCell::frequency`];
-//! [`ModRate::frequency`](ModRate) stays what the user authored.
+//! Read the live rate with [`ModRateCell::frequency`]; [`ModRate`]'s own clock
+//! stays what the user authored. Only [`ModClock::Free`] gets a cell — the cell
+//! is a `Param<Hz>`, and a synced span is neither an `Hz` nor an f32.
 //!
 //! # Delivery: per-frame scalar, or beat-evaluated curve
 //!
@@ -89,7 +90,7 @@
 //! clock, whose entity is [`EngineNodes::clock`](crate::graph::EngineNodes):
 //!
 //! ```rust,ignore
-//! commands.spawn_audio_node(LfoNode::new().with_beat_sync(Hz(1.0)))
+//! commands.spawn_audio_node(LfoNode::new().with_beat_sync(BeatDuration(1.0)))
 //!     .insert(AudioSources(vec![
 //!         AudioSource::Node { entity: nodes.clock, port: 0 },
 //!         AudioSource::Node { entity: nodes.clock, port: 1 },
@@ -121,8 +122,8 @@ pub mod source;
 pub mod target;
 
 pub use components::{
-    CurveType, LfoShape, ModDelivery, ModParamRange, ModRate, ModRoute, ModSource, ParamRange,
-    Polarity,
+    CurveType, LfoShape, ModClock, ModDelivery, ModParamRange, ModRate, ModRoute, ModSource,
+    ParamRange, Polarity,
 };
 pub use driver::{drive, rebuild, ModulationMatrix, ParamKey};
 pub use source::{
@@ -155,6 +156,7 @@ impl Plugin for TuttiModulationPlugin {
 
         app.register_type::<ModSource>()
             .register_type::<ModRate>()
+            .register_type::<ModClock>()
             .register_type::<ModRoute>()
             .register_type::<ModDelivery>()
             .register_type::<ModParamRange>();

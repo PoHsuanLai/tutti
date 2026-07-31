@@ -9,7 +9,7 @@
 use bevy_ecs::prelude::*;
 use bevy_reflect::prelude::*;
 
-use tutti_types::{Depth, Hz, ParamAddr, PhaseIncrement};
+use tutti_types::{BeatDuration, Depth, Hz, ParamAddr, PhaseIncrement};
 
 /// A modulation source: one LFO shape, running at one [`ModRate`].
 ///
@@ -51,7 +51,7 @@ impl super::ModSourceKind for ModSource {
     /// cycle index rather than a threaded stepper.
     fn build_curve(
         &self,
-        beats_per_cycle: f32,
+        beats_per_cycle: BeatDuration,
         edge: tutti_mod::EdgeShape,
     ) -> Option<std::sync::Arc<dyn tutti_mod::Curve>> {
         Some(tutti_mod::ShapedCurve::erased(
@@ -61,52 +61,62 @@ impl super::ModSourceKind for ModSource {
     }
 }
 
+/// Which clock a [`ModSource`] runs on, and its rate in that clock's own unit.
+///
+/// Mirrors [`SourceClock`](tutti_mod::SourceClock). The two arms carry different
+/// units because the quantities are reciprocal — see that type for the two bugs
+/// the shared `Hz` produced.
+///
+/// Toggling a UI between the arms is a *mode change*, not a flag flip: there is
+/// no "the value" to carry across, because a rate in one arm is not a rate in
+/// the other. Pick that arm's own musical default rather than reinterpreting the
+/// number in place.
+#[derive(Reflect, Debug, Clone, Copy, PartialEq)]
+pub enum ModClock {
+    /// Free-running at this many cycles per second.
+    Free { hz: Hz },
+    /// Locked to the transport, one cycle per this many beats — a span, so a
+    /// larger value is *slower*.
+    Synced { beats_per_cycle: BeatDuration },
+}
+
+impl Default for ModClock {
+    fn default() -> Self {
+        ModClock::Free { hz: Hz(1.0) }
+    }
+}
+
 /// How a [`ModSource`] derives its phase from the transport.
 ///
 /// Mirrors [`SourceRate`](tutti_mod::SourceRate) as a component. It is a
 /// separate component rather than a field on `ModSource` so a rate change and a
 /// shape change are independently change-detectable — and because rate is the
 /// half a UI moves continuously.
-#[derive(Component, Reflect, Debug, Clone, Copy, PartialEq)]
+#[derive(Component, Reflect, Debug, Clone, Copy, PartialEq, Default)]
 #[reflect(Component, Debug, Default)]
 pub struct ModRate {
-    /// Beat-synced: **beats per cycle** — `2.0` is one cycle every two beats,
-    /// not two cycles per beat (phase is `beat / frequency`). Free-running:
-    /// cycles per second. Mirrors [`SourceRate::frequency`](tutti_mod::SourceRate::frequency).
-    pub frequency: Hz,
+    /// The clock this source runs on, carrying its rate.
+    pub clock: ModClock,
     /// A displacement applied after phase generation — negative is meaningful,
     /// which is why it is not a `Phase`.
     pub phase_offset: PhaseIncrement,
-    /// Locked to the transport beat, or free-running against elapsed time.
-    pub beat_synced: bool,
-}
-
-impl Default for ModRate {
-    fn default() -> Self {
-        Self {
-            frequency: Hz(1.0),
-            phase_offset: PhaseIncrement(0.0),
-            beat_synced: false,
-        }
-    }
 }
 
 impl ModRate {
-    /// Locked to the transport at `frequency` **beats per cycle** — see
-    /// [`frequency`](Self::frequency).
-    pub fn beat_synced(frequency: impl Into<Hz>) -> Self {
+    /// Locked to the transport, one cycle per `beats_per_cycle`.
+    pub fn beat_synced(beats_per_cycle: impl Into<BeatDuration>) -> Self {
         Self {
-            frequency: frequency.into(),
-            beat_synced: true,
+            clock: ModClock::Synced {
+                beats_per_cycle: beats_per_cycle.into(),
+            },
             ..Default::default()
         }
     }
 
-    /// Free-running at `frequency` Hz.
-    pub fn free_running(frequency: impl Into<Hz>) -> Self {
+    /// Free-running at `hz` cycles per second.
+    pub fn free_running(hz: impl Into<Hz>) -> Self {
         Self {
-            frequency: frequency.into(),
-            beat_synced: false,
+            clock: ModClock::Free { hz: hz.into() },
             ..Default::default()
         }
     }

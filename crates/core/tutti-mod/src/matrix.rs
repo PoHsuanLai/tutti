@@ -10,7 +10,7 @@
 //!
 //! ```
 //! use tutti_mod::{ModMatrix, Lfo, LfoShape, SourceRate};
-//! use tutti_types::{Beat, Hz, Seconds};
+//! use tutti_types::{Beat, BeatDuration, Hz, Seconds};
 //!
 //! let mut m = ModMatrix::new();
 //! let cutoff = m.target(1000.0, 0.0, 2000.0);   // handle; id minted + registered
@@ -18,7 +18,7 @@
 //!
 //! m.route(Lfo::new(LfoShape::Sine), SourceRate::free_running(Hz(2.0), 0.0))
 //!     .to(&cutoff).depth(1.0);
-//! m.route(Lfo::new(LfoShape::Triangle), SourceRate::beat_synced(Hz(1.0), 0.0))
+//! m.route(Lfo::new(LfoShape::Triangle), SourceRate::beat_synced(BeatDuration(1.0), 0.0))
 //!     .to(&gain).depth(0.5);
 //!
 //! let mut driver = m.build();
@@ -256,12 +256,12 @@ impl Drop for RouteTo<'_> {
 mod tests {
     use super::*;
     use crate::{Lfo, LfoShape};
-    use tutti_types::{Beat, Hz, Seconds};
+    use tutti_types::{Beat, BeatDuration, Seconds};
 
     /// A beat-synced rate at 1 cycle/beat: with `frame(p)` the phase is exactly
     /// `p`, so these tests drive a precise phase per frame.
     fn rate() -> SourceRate {
-        SourceRate::beat_synced(Hz(1.0), 0.0)
+        SourceRate::beat_synced(BeatDuration(1.0), 0.0)
     }
 
     /// Drive one frame at phase `p` (beat == p at 1 cycle/beat).

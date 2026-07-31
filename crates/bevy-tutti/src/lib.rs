@@ -147,7 +147,7 @@ pub mod prelude {
     pub use crate::midi::{MidiBusRes, MidiRoutingRes, TuttiMidiPlugin};
     #[cfg(feature = "modulation")]
     pub use crate::modulation::{
-        ModParamRange, ModRate, ModRoute, ModSource, ModTargetRegistry, ModulationMatrix,
+        ModClock, ModParamRange, ModRate, ModRoute, ModSource, ModTargetRegistry, ModulationMatrix,
         TuttiModulationPlugin,
     };
     #[cfg(feature = "plugin")]

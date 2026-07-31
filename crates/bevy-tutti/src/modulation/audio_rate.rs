@@ -40,7 +40,7 @@ use tutti_types::{ParamAddr, UnitParam};
 use tutti_units::{AtomicSourceUnit, ParamShaperUnit, ParamSumUnit};
 
 use crate::graph::{AudioGraphRes, AudioSource, AudioSources, GraphDirty};
-use crate::modulation::components::{ModDelivery, ModParamRange, ModRoute};
+use crate::modulation::components::{ModClock, ModDelivery, ModParamRange, ModRoute};
 use crate::modulation::driver::ParamKey;
 
 /// The graph chain materialising one modulated param's audio-rate routes.
@@ -262,10 +262,9 @@ pub fn ensure_source_nodes(
         // The same shape and rate the value path would build, under the audio
         // adapter instead of the driver.
         let mut node = tutti_units::LfoNode::new(source.shape);
-        node = if rate.beat_synced {
-            node.with_beat_sync(rate.frequency)
-        } else {
-            node.with_frequency(rate.frequency)
+        node = match rate.clock {
+            ModClock::Synced { beats_per_cycle } => node.with_beat_sync(beats_per_cycle),
+            ModClock::Free { hz } => node.with_frequency(hz),
         };
 
         let id = graph.0.add(node);

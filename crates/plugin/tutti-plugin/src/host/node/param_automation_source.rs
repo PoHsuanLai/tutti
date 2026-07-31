@@ -21,7 +21,7 @@
 use std::sync::Arc;
 
 use tutti_core::transport::TransportState;
-use tutti_core::{Beat, Depth, PhaseIncrement};
+use tutti_core::{Beat, BeatDuration, Depth, PhaseIncrement};
 use tutti_units::automation::Curve;
 
 use crate::host::node::input_slot::{BlockCtx, BlockInput, BlockReset};
@@ -55,8 +55,9 @@ pub struct TimedParam {
 pub struct LfoCurve {
     /// The pure modulator (config only) — its shape selects the `BeatLfo` form.
     lfo: tutti_units::Lfo,
-    /// Beats per LFO cycle (beat-synced). `<= 0` freezes at the phase offset.
-    beats_per_cycle: f32,
+    /// Beats per LFO cycle — a span, so a larger value is *slower*. A
+    /// non-positive span freezes at the phase offset.
+    beats_per_cycle: BeatDuration,
     depth: Depth,
     /// A displacement added to the generated position, not a position itself —
     /// and meaningfully negative, which a `Phase` cannot be.
@@ -74,7 +75,7 @@ impl LfoCurve {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         shape: tutti_units::LfoShape,
-        beats_per_cycle: f32,
+        beats_per_cycle: impl Into<BeatDuration>,
         depth: impl Into<Depth>,
         phase_offset: impl Into<PhaseIncrement>,
         base: f32,
@@ -85,7 +86,7 @@ impl LfoCurve {
             // Unit depth — `depth` is applied by `value_at`, so the modulator's
             // raw `[-1, 1]` output is what we sample here.
             lfo: tutti_units::Lfo::new(shape),
-            beats_per_cycle,
+            beats_per_cycle: beats_per_cycle.into(),
             depth: depth.into(),
             phase_offset: phase_offset.into(),
             base,
@@ -102,21 +103,18 @@ impl LfoCurve {
     /// `RandomSmooth` one value per cycle too — a stair under a name that
     /// promises a ramp, which defeats the point of sub-block delivery.
     #[inline]
-    fn raw_value(&self, beat: f64) -> f32 {
+    fn raw_value(&self, beat: Beat) -> f32 {
         use tutti_units::CurveModulator;
 
-        let cycles = if self.beats_per_cycle > 0.0 {
-            beat as f32 / self.beats_per_cycle + self.phase_offset.get()
-        } else {
-            self.phase_offset.get()
-        };
+        let cycles =
+            beat.cycles_of(self.beats_per_cycle).unwrap_or(0.0) as f32 + self.phase_offset.get();
         tutti_units::BeatLfo::new(self.lfo.shape, self.beats_per_cycle).raw_at(cycles)
     }
 }
 
 impl Curve for LfoCurve {
     fn value_at(&self, beat: tutti_core::Beat) -> Option<f32> {
-        let shaped = self.raw_value(beat.get()) * self.depth.get() * (self.max - self.min);
+        let shaped = self.raw_value(beat) * self.depth.get() * (self.max - self.min);
         Some((self.base + shaped).clamp(self.min, self.max))
     }
 }
@@ -146,7 +144,7 @@ impl LfoOffset {
     /// `[0, 1]` plugin param).
     pub fn new(
         shape: tutti_units::LfoShape,
-        beats_per_cycle: f32,
+        beats_per_cycle: impl Into<BeatDuration>,
         depth: impl Into<Depth>,
         phase_offset: impl Into<PhaseIncrement>,
         span: f32,
@@ -162,7 +160,7 @@ impl LfoOffset {
 
 impl Curve for LfoOffset {
     fn value_at(&self, beat: tutti_core::Beat) -> Option<f32> {
-        let raw = self.lfo.raw_value(beat.get()); // [-1, 1]
+        let raw = self.lfo.raw_value(beat); // [-1, 1]
         let offset = raw * self.lfo.depth.get() * self.span;
         Some(offset.clamp(-self.span, self.span))
     }

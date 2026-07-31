@@ -1294,6 +1294,21 @@ impl Beat {
     pub fn fract(self) -> BeatDuration {
         BeatDuration(self.0 - self.0.floor())
     }
+
+    /// Un-wrapped cycle position of a beat-synced periodic source — the one
+    /// place beats-per-cycle is interpreted.
+    ///
+    /// The divisor is a span, not a frequency: doubling it makes the source
+    /// *slower*. Substituting an `Hz` is a silent reciprocal, which shipped
+    /// twice before this was centralized.
+    ///
+    /// Un-wrapped so a stepped shape can read its cycle index off the integer
+    /// part. `None` for a non-positive span — a frozen source holds its phase
+    /// offset instead.
+    #[inline]
+    pub fn cycles_of(self, beats_per_cycle: BeatDuration) -> Option<f64> {
+        (beats_per_cycle.0 > 0.0).then(|| self.0 / beats_per_cycle.0)
+    }
 }
 unit_newtype!(
     /// Pitch offset in semitones. 12 semitones = 1 octave.
@@ -1928,11 +1943,16 @@ mod tests {
     ///   `SrcRatio` it is already the product of, which is the double-apply bug
     ///   the disk tier's gate comment records.
     ///
-    /// And three *type* omissions, which the compiler enforces rather than a
+    /// And four *type* omissions, which the compiler enforces rather than a
     /// missing `impl`: `Correlation` and `Pan` are not `Depth`, and
     /// `Confidence` is not `Mix`, even though the ranges coincide. A control
     /// you set and a measurement reported back are different quantities —
     /// the same split `Q` and `Resonance` make.
+    ///
+    /// The fourth is the sharpest, because the two are *inverse*: a beat-synced
+    /// rate is a [`BeatDuration`] (beats per cycle), never an [`Hz`]. Doubling
+    /// the span halves the rate, so the substitution is a silent reciprocal —
+    /// it shipped twice. [`Beat::cycles_of`] is the only interpreter.
     #[test]
     fn omitted_operators_are_documented() {}
 
@@ -2404,6 +2424,42 @@ mod tests {
         assert_eq!(b.fract(), BeatDuration(0.75));
         // The two halves recombine, and are visibly different kinds of thing.
         assert_eq!(b.floor() + b.fract(), b);
+    }
+
+    #[test]
+    fn cycles_of_reads_the_divisor_as_a_span_not_a_frequency() {
+        // The reciprocal that shipped twice: a *longer* span is a *slower*
+        // source. Under the Hz reading, 2.0 would be twice as fast and land on
+        // cycle 8 here.
+        assert_eq!(Beat(4.0).cycles_of(BeatDuration(2.0)), Some(2.0));
+        assert_eq!(Beat(4.0).cycles_of(BeatDuration(0.5)), Some(8.0));
+
+        // Un-wrapped: the integer part is the cycle index a stepped shape
+        // addresses itself by, the fraction is the phase.
+        let c = Beat(5.0).cycles_of(BeatDuration(2.0)).unwrap();
+        assert_eq!(c.floor(), 2.0);
+        assert_eq!(c.fract(), 0.5);
+
+        // One guard, replacing three that disagreed — a non-positive span
+        // froze on one path and ran backwards on another.
+        assert_eq!(Beat(4.0).cycles_of(BeatDuration(0.0)), None);
+        assert_eq!(Beat(4.0).cycles_of(BeatDuration(-2.0)), None);
+    }
+
+    #[test]
+    fn cycles_of_stays_in_f64_where_the_callers_used_to_narrow() {
+        // Every call site divided `beat as f32` by an f32 span. That is exact
+        // for power-of-two spans, which is why it went unnoticed, and drifts on
+        // everything else.
+        let beat = Beat(1_000_000.0);
+        let span = BeatDuration(3.0);
+        let wide = beat.cycles_of(span).unwrap();
+        let narrowed = ((beat.get() as f32) / (span.get() as f32)) as f64;
+        assert!(
+            (wide.fract() - narrowed.fract()).abs() > 0.01,
+            "the narrowing this method exists to avoid should be measurable here"
+        );
+        assert_eq!(wide, 1_000_000.0 / 3.0);
     }
 
     #[test]

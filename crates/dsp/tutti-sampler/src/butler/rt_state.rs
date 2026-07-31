@@ -7,7 +7,7 @@
 
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
 use tutti_core::ChannelLayout;
-use tutti_core::{AtomicF32, PlaybackRate, ReadRate, SrcRatio};
+use tutti_core::{AtomicF32, AtomicReadRate, PlaybackRate, ReadRate, SrcRatio};
 
 use super::crossfader::StreamingCrossfader;
 use crate::voice::types::Direction;
@@ -27,7 +27,12 @@ pub struct PlaybackParams {
     /// ring reader never meet: the filter lives in the `VoiceSlot`, the reader
     /// behind the butler's `SharedReader`. `RtState` is the cell both already
     /// share, and it is where the other two rate factors compose.
-    stretch_rate: AtomicF32,
+    ///
+    /// `AtomicReadRate`, not `AtomicF32`, unlike the two neighbours: those hold
+    /// `f32`-backed units, while `ReadRate` is `f64` precisely because a disk
+    /// voice accumulates it into a read position once per sample. Storing it
+    /// narrowed reinstated that drift on every load.
+    stretch_rate: AtomicReadRate,
 }
 
 impl Default for PlaybackParams {
@@ -36,7 +41,7 @@ impl Default for PlaybackParams {
             speed: AtomicF32::new(1.0),
             direction: AtomicU8::new(0),
             src_ratio: AtomicF32::new(1.0),
-            stretch_rate: AtomicF32::new(1.0),
+            stretch_rate: AtomicReadRate::new(ReadRate::UNITY),
         }
     }
 }
@@ -160,16 +165,14 @@ impl RtState {
     /// voice does not stretch.
     #[inline]
     pub fn stretch_rate(&self) -> ReadRate {
-        ReadRate::new(self.playback.stretch_rate.load(Ordering::Acquire) as f64)
+        self.playback.stretch_rate.load(Ordering::Acquire)
     }
 
     /// Publish the wrapping stretcher's read rate. Control thread, or the audio
     /// thread's own parameter application — a single relaxed store either way.
     #[inline]
     pub fn set_stretch_rate(&self, rate: ReadRate) {
-        self.playback
-            .stretch_rate
-            .store(rate.get() as f32, Ordering::Release);
+        self.playback.stretch_rate.store(rate, Ordering::Release);
     }
 
     /// Current playback direction. Backed by the `AtomicU8` (0 = forward,
@@ -346,6 +349,39 @@ mod tests {
         assert_eq!(state.speed(), PlaybackRate::UNITY);
         assert!(!state.is_reverse());
         assert!(!state.is_seeking());
+    }
+
+    /// The stretch rate survives the cell bit-for-bit.
+    ///
+    /// It used to round-trip through an `AtomicF32`, so every load returned a
+    /// value the control thread never wrote. That matters here and not for the
+    /// neighbouring `speed`/`src_ratio` cells because this is the term a disk
+    /// voice accumulates into its read position once per sample: the error does
+    /// not average out, it integrates.
+    ///
+    /// The magnitude is modest — the f32 round-trip costs ~3e-8 relative, so a
+    /// triplet stretch drifts about 0.03 frames per minute and 1.7 frames per
+    /// hour at 48 kHz. Inaudible in a pop song, a real seek offset in a long
+    /// installation piece, and free to avoid.
+    #[test]
+    fn the_stretch_rate_cell_does_not_narrow_what_it_is_given() {
+        let state = RtState::new();
+        // Not representable in f32 — 1/3 at f64 width, the ratio a triplet
+        // stretch actually produces.
+        let rate = ReadRate::new(1.0 / 3.0);
+        state.set_stretch_rate(rate);
+        assert_eq!(state.stretch_rate(), rate);
+
+        // An hour at 48 kHz: the stored rate still advances the read position
+        // exactly, where the narrowed one is over a frame out.
+        let frames = tutti_core::Samples(48_000 * 3600);
+        let exact = rate.advance(frames);
+        assert_eq!(state.stretch_rate().advance(frames), exact);
+        let narrowed = ReadRate::new(f64::from(rate.get() as f32)).advance(frames);
+        assert!(
+            (narrowed.get() - exact.get()).abs() > 1.0,
+            "expected the f32 round-trip to cost more than a frame over an hour"
+        );
     }
 
     #[test]

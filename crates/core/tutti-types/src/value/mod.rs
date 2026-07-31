@@ -26,8 +26,8 @@ pub use param::Param;
 pub use samples::Samples;
 pub use unit_param::{ParamAddr, UnitParam, UnitParamOutOfRange};
 pub use units::{
-    Amplitude, ArcDegrees, AtomicSamplePosition, Azimuth, Beat, BeatDuration, Bpm, Cents,
-    CompressionRatio, Confidence, Correlation, Db, Depth, Drive, Elevation, Feedback, Hz, Mix, Pan,
-    Phase, PhaseIncrement, PlaybackRate, Radians, ReadRate, Resonance, SamplePosition, SampleRate,
-    Seconds, Semitones, Spread, SrcRatio, StereoWidth, StretchFactor, Unit, Q,
+    Amplitude, ArcDegrees, AtomicReadRate, AtomicSamplePosition, Azimuth, Beat, BeatDuration, Bpm,
+    Cents, CompressionRatio, Confidence, Correlation, Db, Depth, Drive, Elevation, Feedback, Hz,
+    Mix, Pan, Phase, PhaseIncrement, PlaybackRate, Radians, ReadRate, Resonance, SamplePosition,
+    SampleRate, Seconds, Semitones, Spread, SrcRatio, StereoWidth, StretchFactor, Unit, Q,
 };

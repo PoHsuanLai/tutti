@@ -1895,6 +1895,43 @@ impl Default for AtomicSamplePosition {
     }
 }
 
+/// Lock-free [`ReadRate`] cell, shareable with the audio thread.
+///
+/// The [`AtomicSamplePosition`] shape, for the type that advances one. It
+/// exists for the same reason `ReadRate` is `f64`-backed: the rate is the term
+/// a disk voice accumulates into its read position once per sample, forever, so
+/// a cell that narrowed to `f32` and widened back on every read would reinstate
+/// exactly the drift the width was chosen to avoid.
+///
+/// `Param<ReadRate>` cannot serve here — [`Param`](super::Param) is
+/// `Unit<Raw = f32>` only, which is the constraint that produced the narrowing.
+#[derive(Debug)]
+pub struct AtomicReadRate(core::sync::atomic::AtomicU64);
+
+impl AtomicReadRate {
+    #[inline]
+    pub fn new(v: ReadRate) -> Self {
+        Self(core::sync::atomic::AtomicU64::new(v.get().to_bits()))
+    }
+
+    #[inline]
+    pub fn load(&self, order: core::sync::atomic::Ordering) -> ReadRate {
+        ReadRate::new(f64::from_bits(self.0.load(order)))
+    }
+
+    #[inline]
+    pub fn store(&self, v: ReadRate, order: core::sync::atomic::Ordering) {
+        self.0.store(v.get().to_bits(), order)
+    }
+}
+
+impl Default for AtomicReadRate {
+    #[inline]
+    fn default() -> Self {
+        Self::new(ReadRate::UNITY)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

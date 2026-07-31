@@ -5,7 +5,7 @@ use crate::audiounit::AudioUnit;
 use crate::buffer::{BufferMut, BufferRef};
 use crate::signal::SignalFrame;
 use core::any;
-use tutti_types::Samples;
+use tutti_types::{Samples, Tail};
 
 /// A fixed delay line, inserted automatically to align signal paths.
 ///
@@ -112,6 +112,20 @@ impl<const CH: usize> AudioUnit for PdcDelay<CH> {
 
     fn route(&mut self, _input: &SignalFrame, _frequency: f64) -> SignalFrame {
         SignalFrame::new(CH)
+    }
+
+    /// The ring still holds `delay` frames when the input stops, and emits them
+    /// before it falls silent.
+    ///
+    /// Reported, unlike this node's latency: the reason `route` hides the delay
+    /// is that compensating a compensation would inflate without bound, and a
+    /// tail carries no such feedback — a render that keeps pulling for these
+    /// frames simply collects audio that is already in the line.
+    fn tail(&mut self) -> Tail {
+        match self.delay() {
+            Samples(0) => Tail::None,
+            delay => Tail::Finite(delay),
+        }
     }
 
     fn footprint(&self) -> usize {

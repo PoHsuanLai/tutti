@@ -92,6 +92,12 @@ pub use fundsp::latency::PdcDelay;
 pub use tutti_types::latency::{self, Compensation, DelayInsertion, LatencyGraph};
 pub use tutti_types::value::Samples;
 
+// How long a graph rings after its input stops. Same split as latency above:
+// the walk is graph-agnostic and lives in `tutti-types`, the `Net` impl in
+// fundsp beside `AudioUnit::tail`.
+pub use tutti_types::tail::{self, graph_tail, GraphTail, TailGraph};
+pub use tutti_types::value::Tail;
+
 pub use atomic_float::{AtomicF32, AtomicF64};
 // Convenience re-exports of the std primitives the RT/DSP vocabulary leans on,
 // so sibling crates can write `tutti_core::Arc` etc. (`parking_lot` locks and

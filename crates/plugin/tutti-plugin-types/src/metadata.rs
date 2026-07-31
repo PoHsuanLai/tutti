@@ -29,85 +29,13 @@ pub type BusChannels = SmallVec<[ChannelLayout; 4]>;
 
 /// How long a plugin keeps producing audio after its input goes silent.
 ///
-/// A reverb with a 4-second decay rings for 4 seconds past its last input; a
-/// gain stage stops immediately. A bounce that stops rendering when the last
-/// clip ends truncates the first mid-decay, so the render has to keep pulling
-/// for the tail.
-///
-/// **A sum type rather than a number, because three answers are not one.**
-/// The formats disagree, and each disagreement is real:
-///
-/// - **AU** reports `kAudioUnitProperty_TailTime` in *seconds*, and rejects the
-///   property outright on units that have no tail concept — every Apple
-///   instrument, mixer and generator does (measured, macOS 15.6).
-/// - **CLAP** reports `clap_plugin_tail.get` in *samples*.
-/// - **VST3** exposes `getTailSamples`, also in samples, where `0` means no
-///   tail.
-///
-/// Both sample-based formats saturate at `u32::MAX`, which their specs read as
-/// an effectively unbounded tail; `clap-sys` does not bind a named constant for
-/// it, so [`from_samples`](Self::from_samples) names the sentinel once here
-/// rather than each loader spelling the literal.
-/// - **VST2** has no tail concept the vendored bindings surface.
-///
-/// [`Unbounded`](Self::Unbounded) exists because a real plugin uses it and a
-/// number cannot carry it. TAL Reverb 4 answers `f64::INFINITY` for its tail
-/// (measured; no Apple unit exceeds ~21 s), and
-/// [`Seconds::to_samples`](tutti_types::Seconds::to_samples) maps every
-/// non-finite input to `Samples::ZERO` — deliberately, since that is the right
-/// answer for NaN and negatives. The consequence is that an *infinite* tail
-/// arrives bit-identical to a *no* tail, and a bounce sizing its render from
-/// that number truncates the reverb completely. The two want opposite handling:
-/// unbounded wants a user-chosen fade, none wants nothing.
-///
-/// [`Unknown`](Self::Unknown) is not [`None`](Self::None). A plugin that was
-/// never asked, or whose format has no tail query, has said nothing about its
-/// tail — reporting that as "no tail" is the same class of invention the
-/// `probed` mask exists to prevent for capabilities.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-pub enum PluginTail {
-    /// The format has no tail query, or this loader did not ask.
-    #[default]
-    Unknown,
-    /// The plugin declared it produces nothing after its input stops.
-    None,
-    /// A bounded tail, in samples at the rate the plugin was loaded with.
-    Finite(Samples),
-    /// The plugin declared an unbounded tail — it never decays to silence on
-    /// its own. A bounce must choose where to stop; it cannot ask the plugin.
-    Unbounded,
-}
-
-impl PluginTail {
-    /// The tail as a sample count a render can add, or `None` when there is no
-    /// finite answer.
-    ///
-    /// [`Unknown`](Self::Unknown) and [`Unbounded`](Self::Unbounded) both yield
-    /// `None`, for opposite reasons — one has no information, the other has
-    /// information that is not a number. A caller that wants to treat either as
-    /// zero says so with `unwrap_or(Samples::ZERO)` and is seen to have decided.
-    pub const fn samples(self) -> Option<Samples> {
-        match self {
-            Self::None => Some(Samples::ZERO),
-            Self::Finite(s) => Some(s),
-            Self::Unknown | Self::Unbounded => None,
-        }
-    }
-
-    /// Build from a format's raw sample count, mapping the `u32::MAX` sentinel
-    /// CLAP and VST3 both use for "unbounded".
-    ///
-    /// The sentinel is the formats' own, so decoding it belongs here rather
-    /// than being repeated at each loader.
-    pub fn from_samples(raw: u32) -> Self {
-        match raw {
-            0 => Self::None,
-            u32::MAX => Self::Unbounded,
-            n => Self::Finite(Samples(n as usize)),
-        }
-    }
-}
+/// The engine-wide [`Tail`](tutti_types::Tail) under the name the loaders speak.
+/// It is one type, not a plugin-shaped copy: a convolution reverb's tail and a
+/// hosted reverb's tail have the same four answers and the same algebra, and two
+/// names for the same behaviour is not a type. The format-specific decoding
+/// (AU's seconds, the `u32::MAX` sentinel CLAP and VST3 share) is documented
+/// there, on the constructor that performs it.
+pub use tutti_types::Tail as PluginTail;
 
 /// Engine-wiring data for a freshly instantiated plugin.
 ///
@@ -292,31 +220,15 @@ mod tests {
         assert!(!back.latency());
     }
 
-    /// An unbounded tail must stay distinguishable from no tail at all.
+    /// Every tail arm survives the wire distinctly.
     ///
-    /// This is the whole reason [`PluginTail`] is a sum type. TAL Reverb 4
-    /// answers `f64::INFINITY` for `kAudioUnitProperty_TailTime`, and
-    /// `Seconds::to_samples` maps every non-finite input to `Samples::ZERO` —
-    /// correct for NaN and negatives, exactly backwards for `+∞`. Carried as a
-    /// number, "infinite reverb" and "no tail" arrive bit-identical, and a
-    /// bounce that sizes its render from that number truncates the reverb
-    /// completely.
+    /// The value semantics are pinned where the type lives; what belongs here is
+    /// the *encoding*, because this is the crate whose bincode IPC carries it.
+    /// `PluginTail` is an alias rather than a local copy, and an alias changes
+    /// no discriminant, no arm order and no payload — this test is the evidence
+    /// for that, so it must keep passing unedited.
     #[test]
-    fn unbounded_is_not_none() {
-        assert_ne!(PluginTail::Unbounded, PluginTail::None);
-
-        // `samples()` refuses to answer for both `Unbounded` and `Unknown`, so
-        // a caller cannot accidentally read either as zero.
-        assert_eq!(PluginTail::None.samples(), Some(Samples::ZERO));
-        assert_eq!(PluginTail::Unbounded.samples(), None);
-        assert_eq!(PluginTail::Unknown.samples(), None);
-        assert_eq!(
-            PluginTail::Finite(Samples(512)).samples(),
-            Some(Samples(512))
-        );
-
-        // And the distinction survives the wire, which is where it would be
-        // lost if the field were a count.
+    fn every_tail_arm_survives_the_wire() {
         for tail in [
             PluginTail::Unknown,
             PluginTail::None,
@@ -326,17 +238,5 @@ mod tests {
             let bytes = bincode::serialize(&tail).unwrap();
             assert_eq!(bincode::deserialize::<PluginTail>(&bytes).unwrap(), tail);
         }
-    }
-
-    /// The `u32::MAX` sentinel CLAP and VST3 share decodes to `Unbounded`, and
-    /// zero to `None` — the two ends a raw count cannot tell apart.
-    #[test]
-    fn from_samples_decodes_the_format_sentinel() {
-        assert_eq!(PluginTail::from_samples(0), PluginTail::None);
-        assert_eq!(PluginTail::from_samples(u32::MAX), PluginTail::Unbounded);
-        assert_eq!(
-            PluginTail::from_samples(44_100),
-            PluginTail::Finite(Samples(44_100))
-        );
     }
 }

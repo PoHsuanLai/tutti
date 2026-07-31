@@ -57,6 +57,7 @@ pub mod latency;
 pub mod meter;
 pub mod pcm;
 pub mod rt;
+pub mod tail;
 
 // RT-callback primitives.
 pub use rt::{
@@ -70,7 +71,7 @@ pub use value::{
     Cents, CompressionRatio, Confidence, Correlation, Db, Depth, Drive, Elevation, Feedback, Hz,
     Mix, NotOnMidiScale, Note, NoteNumberOutOfRange, Pan, Param, ParamAddr, Phase, PhaseIncrement,
     PitchClass, PlaybackRate, Radians, ReadRate, Resonance, SamplePosition, SampleRate, Samples,
-    Seconds, Semitones, Spread, SrcRatio, StereoWidth, StretchFactor, Unit, UnitParam,
+    Seconds, Semitones, Spread, SrcRatio, StereoWidth, StretchFactor, Tail, Unit, UnitParam,
     UnitParamOutOfRange, Q,
 };
 
@@ -89,6 +90,9 @@ pub use interleaved::{Interleaved, InterleavedMut, StereoPlanes};
 // I/O edge + latency.
 pub use io::{pump, AudioIn, AudioOut, OnEmpty};
 pub use latency::{compensate, Compensation, DelayInsertion, LatencyGraph};
+
+// How long a graph rings after its input stops.
+pub use tail::{graph_tail, GraphTail, TailGraph};
 
 // Musical meter.
 pub use meter::{

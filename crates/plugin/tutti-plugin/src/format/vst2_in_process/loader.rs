@@ -14,6 +14,7 @@ use crate::host::handles::PluginHandle;
 use crate::host::node::ParameterChangeSink;
 use crate::protocol::{EditorPresence, Features, LoadedPlugin, PluginClass, PluginDescriptor};
 use smallvec::SmallVec;
+use tutti_plugin_types::PluginTail;
 
 /// Maximum block size we pre-size the plugin's render scratch for.
 /// Plugins are told this is the upper bound; per-call sizes may be
@@ -70,6 +71,9 @@ pub fn load(
         inputs: SmallVec::from_slice(&[host_meta.num_inputs]),
         outputs: SmallVec::from_slice(&[host_meta.num_outputs]),
         latency_samples: host_meta.latency_samples,
+        // VST2 has no tail query the vendored bindings surface as a host call,
+        // so this loader has nothing to ask and reports that it did not.
+        tail: PluginTail::Unknown,
         features,
         probed,
     };

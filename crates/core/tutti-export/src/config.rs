@@ -53,6 +53,20 @@ pub struct RenderConfig {
     /// same shape as the clock, for the same reason: the caller knows, so the
     /// caller says.
     pub latency: Samples,
+    /// Trailing frames to render past the audible span — reverb decay, delay
+    /// repeats.
+    ///
+    /// Unlike [`latency`](Self::latency) these are *kept*: they are audio the
+    /// graph produces after the requested span, so the written file is longer
+    /// than `duration_seconds` by exactly this much.
+    ///
+    /// A plain count, for the same reason `latency` is one. The graph's own
+    /// figure comes from [`reported_tail`](crate::reported_tail), which returns
+    /// something a caller must resolve into a number rather than a number
+    /// itself — a graph that never decays has no frame count, and neither does
+    /// one whose nodes declined to answer. Where to stop is the caller's
+    /// decision, and this field is where the caller states it.
+    pub tail: Samples,
 }
 
 impl Default for RenderConfig {
@@ -61,6 +75,7 @@ impl Default for RenderConfig {
             sample_rate: SampleRate(44_100.0),
             duration_seconds: 0.0,
             latency: Samples(0),
+            tail: Samples(0),
         }
     }
 }

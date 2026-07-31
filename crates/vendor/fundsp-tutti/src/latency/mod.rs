@@ -25,8 +25,9 @@ pub use delay::PdcDelay;
 
 use crate::audiounit::AudioUnit;
 use crate::net::{Net, NodeId, Source};
-use tutti_types::Samples;
 use tutti_types::latency::{DelayInsertion, LatencyGraph};
+use tutti_types::tail::TailGraph;
+use tutti_types::{Samples, Tail};
 
 /// Marks every [`PdcDelay<CH>`], whatever its channel count.
 ///
@@ -56,6 +57,16 @@ impl LatencyGraph for Net {
 
     fn outputs(&self) -> impl Iterator<Item = Option<NodeId>> {
         (0..AudioUnit::outputs(self)).map(move |channel| local(self.output_source(channel)))
+    }
+}
+
+impl TailGraph for Net {
+    /// Clones the node to query it, for the same reason
+    /// [`LatencyGraph::latency`] does: `AudioUnit::tail` takes `&mut self`, and
+    /// this runs once per node off the audio thread.
+    fn tail(&self, node: NodeId) -> Tail {
+        let mut probe = dyn_clone::clone_box(self.node(node));
+        probe.tail()
     }
 }
 
@@ -262,5 +273,41 @@ mod tests {
         assert_eq!(Width::of_edge(2, 1), Width::Mono);
         assert_eq!(Width::of_edge(2, 2), Width::Stereo);
         assert_eq!(Width::of_edge(0, 2), Width::Mono);
+    }
+}
+
+#[cfg(test)]
+mod tail_tests {
+    use super::*;
+    use crate::prelude::*;
+    use tutti_types::tail::graph_tail;
+
+    /// A net reports the tail of the graph it contains, so a ringing node one
+    /// level down is not hidden behind the opaque-node default.
+    #[test]
+    fn a_nested_net_reports_its_inner_tail() {
+        let mut inner = Net::new(1, 1);
+        let d = inner.push(Box::new(PdcDelay::<1>::new(Samples(500))));
+        inner.pipe_input(d);
+        inner.pipe_output(d);
+
+        let mut outer = Net::new(0, 1);
+        let src = outer.push(Box::new(dc(0.5)));
+        let nested = outer.push(Box::new(inner));
+        outer.connect(src, 0, nested, 0);
+        outer.pipe_output(nested);
+
+        assert_eq!(graph_tail(&outer).known(), Samples(500));
+    }
+
+    /// A compensation delay holds `delay` frames when its input stops, so it
+    /// reports them — unlike its latency, which `route` deliberately hides.
+    #[test]
+    fn a_pdc_delay_reports_its_ring_as_tail() {
+        let mut probe = PdcDelay::<2>::new(Samples(128));
+        assert_eq!(probe.tail(), Tail::Finite(Samples(128)));
+
+        let mut empty = PdcDelay::<2>::new(Samples(0));
+        assert_eq!(empty.tail(), Tail::None);
     }
 }

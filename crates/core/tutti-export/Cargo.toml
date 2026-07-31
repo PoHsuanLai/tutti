@@ -40,4 +40,4 @@ fundsp = { package = "fundsp-tutti", path = "../../vendor/fundsp-tutti", default
 # Surround producer nodes (SpatialPannerNode + ChannelSumUnit) for the
 # end-to-end multichannel-export integration test. Acyclic: tutti-units does
 # NOT depend on tutti-export.
-tutti-units = { path = "../../dsp/tutti-units", default-features = false, features = ["spatial"] }
+tutti-units = { path = "../../dsp/tutti-units", default-features = false, features = ["spatial", "convolution"] }

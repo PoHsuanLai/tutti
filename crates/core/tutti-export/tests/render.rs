@@ -151,6 +151,115 @@ fn a_latency_trim_preserves_the_output_length() {
     );
 }
 
+/// A tail lengthens the output by exactly the tail.
+///
+/// The mirror of `a_latency_trim_preserves_the_output_length`, and the opposite
+/// direction: a trim must not shorten the file, a tail must lengthen it. The
+/// decay is audio the graph produced, so keeping it is the point — rendering it
+/// and then discarding it at the sink's cap would leave this assertion at the
+/// untailed length.
+#[test]
+fn a_tail_lengthens_the_output_by_exactly_the_tail() {
+    let mut s = config(AudioFormat::Wav, BitDepth::Float32, ChannelLayout::Stereo);
+    let untailed = render_to_buffers(net(), &s, &FrozenClock).unwrap();
+
+    let tail = tutti_types::Samples(4096);
+    s.render.tail = tail;
+    let tailed = render_to_buffers(net(), &s, &FrozenClock).unwrap();
+
+    assert_eq!(
+        tailed.frames().get(),
+        untailed.frames().get() + tail.get(),
+        "the rendered tail must reach the output, not be capped away"
+    );
+}
+
+/// A convolver's tail is its impulse response's ring-out, exactly.
+///
+/// The expected value here comes from the DSP, not from the implementation: an
+/// FIR of length `L` answers an impulse at frame 0 through frame `L - 1`, so
+/// `L - 1` frames land after the input stops. This is the one node whose tail is
+/// known a priori, which is what makes it worth reaching for a dev-dependency.
+///
+/// Read through `known()`, because `dc` is a stock fundsp node that never
+/// learned to report a tail — see `an_unreporting_graph_…` below for why that
+/// makes `samples()` refuse.
+#[test]
+fn a_convolver_reports_its_ir_ring_out() {
+    let ir = vec![0.5f32; 4096];
+    let mut n = tutti_core::dsp::Net::new(0, 1);
+    let src = n.push(Box::new(dc(0.5)));
+    let conv = n.push(Box::new(tutti_units::ConvolverNode::with_ir(&ir)));
+    n.connect(src, 0, conv, 0);
+    n.pipe_output(conv);
+
+    assert_eq!(
+        tutti_export::reported_tail(&n).known(),
+        tutti_types::Samples(4095),
+    );
+}
+
+/// Cascaded convolvers sum their ring-outs, because cascading convolves the two
+/// responses and a ring-out is defined so that supports add without a
+/// correction term.
+#[test]
+fn cascaded_convolvers_sum_their_tails() {
+    let a = vec![0.5f32; 1024];
+    let b = vec![0.5f32; 2048];
+    let mut n = tutti_core::dsp::Net::new(0, 1);
+    let src = n.push(Box::new(dc(0.5)));
+    let first = n.push(Box::new(tutti_units::ConvolverNode::with_ir(&a)));
+    let second = n.push(Box::new(tutti_units::ConvolverNode::with_ir(&b)));
+    n.connect(src, 0, first, 0);
+    n.connect(first, 0, second, 0);
+    n.pipe_output(second);
+
+    // 1023 + 2047, which is the ring-out of the 3071-sample cascaded response.
+    assert_eq!(
+        tutti_export::reported_tail(&n).known(),
+        tutti_types::Samples(3070),
+    );
+}
+
+/// One un-reporting node is enough to make the graph's figure a partial one.
+///
+/// `dc` is a stock fundsp source that never learned to answer, so a graph built
+/// on it always carries an unknown even when every node that *rings* has
+/// answered. `known()` still gives the sum over what spoke — this pins that the
+/// two accessors disagree, which is the whole reason there are two.
+#[test]
+fn one_silent_node_makes_the_figure_partial_without_losing_it() {
+    let ir = vec![0.5f32; 4096];
+    let mut n = tutti_core::dsp::Net::new(0, 1);
+    let src = n.push(Box::new(dc(0.5)));
+    let conv = n.push(Box::new(tutti_units::ConvolverNode::with_ir(&ir)));
+    n.connect(src, 0, conv, 0);
+    n.pipe_output(conv);
+
+    let reported = tutti_export::reported_tail(&n);
+    assert_eq!(reported.unknown_nodes(), 1, "the `dc` source said nothing");
+    assert_eq!(
+        reported.samples(),
+        None,
+        "so the graph's tail cannot be spent as a number"
+    );
+    assert_eq!(
+        reported.known(),
+        tutti_types::Samples(4095),
+        "but what the convolver reported is still available"
+    );
+}
+
+/// A graph of nodes that never learned to report a tail says so, rather than
+/// claiming it has none — otherwise a bounce would silently treat "nobody
+/// asked" as "nothing to render".
+#[test]
+fn an_unreporting_graph_has_an_unknown_tail_not_a_zero_one() {
+    let reported = tutti_export::reported_tail(&net());
+    assert!(reported.unknown_nodes() > 0);
+    assert_eq!(reported.samples(), None);
+}
+
 /// `render_to_buffers` reports the rate its samples are actually at, and gives
 /// back one plane per channel rather than a stereo pair.
 #[test]

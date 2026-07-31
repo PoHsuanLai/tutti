@@ -221,6 +221,14 @@ impl SynthVoice {
         self.sub_voices.len()
     }
 
+    /// The frequency the first sub-voice is actually sounding — *post*-bend,
+    /// unlike [`base_note_freq`](Self::base_note_freq), which `set_pitch` does
+    /// not touch. The only way to observe what a bend did to a sounding note.
+    #[cfg(test)]
+    pub(crate) fn sounding_freq(&self) -> Hz {
+        Hz(self.sub_voices[0].pitch.value())
+    }
+
     pub(crate) fn process_block_stereo(
         &mut self,
         unison: Option<&UnisonEngine>,

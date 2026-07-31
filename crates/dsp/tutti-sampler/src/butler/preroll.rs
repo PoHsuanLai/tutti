@@ -85,7 +85,7 @@ pub(in crate::butler) fn reposition_click_free(
     metrics: &Metrics,
     config: &BufferConfig,
 ) {
-    let crossfade_len = config.seek_crossfade_samples;
+    let crossfade_len = config.seek_crossfade_frames;
     let ch = writer.channels();
     let fadeout = fadeout_samples(plan, cache, metrics, writer.file_path(), crossfade_len, ch);
 

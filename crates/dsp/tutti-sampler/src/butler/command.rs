@@ -29,7 +29,7 @@ pub(crate) enum ButlerCommand {
         channel_index: usize,
         /// `(loop_start, loop_end)` in file samples.
         range: (u64, u64),
-        crossfade_samples: usize,
+        crossfade_frames: usize,
     },
     /// Clear looping on a streaming channel — drop its `link.loop_config` so the
     /// stream plays through to the end without wrapping.

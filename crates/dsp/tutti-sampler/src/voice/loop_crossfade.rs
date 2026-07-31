@@ -26,7 +26,7 @@ pub(crate) struct LoopCrossfade {
     /// arithmetic. The two cannot drift: nothing mutates the width after
     /// construction.
     stride: usize,
-    crossfade_samples: usize,
+    crossfade_frames: usize,
     position: usize,
     active: bool,
 }
@@ -51,14 +51,14 @@ impl LoopCrossfade {
     ///
     /// Reserves [`MAX_CROSSFADE_FRAMES`] up front so [`retune`](Self::retune)
     /// never has to grow.
-    pub fn with_channels(crossfade_samples: usize, channels: impl Into<ChannelLayout>) -> Self {
+    pub fn with_channels(crossfade_frames: usize, channels: impl Into<ChannelLayout>) -> Self {
         let channels = nonempty(channels.into());
         let stride = channels.count() as usize;
         Self {
             pre_loop_buffer: Vec::with_capacity(MAX_CROSSFADE_FRAMES * stride),
             channels,
             stride,
-            crossfade_samples: crossfade_samples.min(MAX_CROSSFADE_FRAMES),
+            crossfade_frames: crossfade_frames.min(MAX_CROSSFADE_FRAMES),
             position: 0,
             active: false,
         }
@@ -70,15 +70,15 @@ impl LoopCrossfade {
     /// which is the whole reason the buffer is reserved at
     /// [`MAX_CROSSFADE_FRAMES`] rather than at the requested length. A length
     /// past the reservation is clamped.
-    pub fn retune(&mut self, crossfade_samples: usize) {
-        self.crossfade_samples = crossfade_samples.min(MAX_CROSSFADE_FRAMES);
+    pub fn retune(&mut self, crossfade_frames: usize) {
+        self.crossfade_frames = crossfade_frames.min(MAX_CROSSFADE_FRAMES);
         self.pre_loop_buffer.clear();
         self.position = 0;
         self.active = false;
     }
 
     pub fn len(&self) -> usize {
-        self.crossfade_samples
+        self.crossfade_frames
     }
 
     /// The width this crossfade's stored tail is interleaved at.
@@ -94,7 +94,7 @@ impl LoopCrossfade {
     }
 
     /// Load the pre-loop tail from a flat interleaved slice at this crossfade's
-    /// own width. Extra frames past `crossfade_samples` are ignored; a short
+    /// own width. Extra frames past `crossfade_frames` are ignored; a short
     /// slice simply yields a shorter usable tail (`process` passes the input
     /// through once it runs past the end).
     ///
@@ -106,7 +106,7 @@ impl LoopCrossfade {
     #[cfg(test)]
     pub fn fill_preloop(&mut self, samples: &[f32]) {
         self.pre_loop_buffer.clear();
-        let frames = (samples.len() / self.stride).min(self.crossfade_samples);
+        let frames = (samples.len() / self.stride).min(self.crossfade_frames);
         self.pre_loop_buffer
             .extend_from_slice(&samples[..frames * self.stride]);
     }
@@ -115,16 +115,16 @@ impl LoopCrossfade {
     /// time given its index.
     ///
     /// **Allocation-free** as long as the reservation from
-    /// [`with_channels`](Self::with_channels) covers `crossfade_samples`, which
+    /// [`with_channels`](Self::with_channels) covers `crossfade_frames`, which
     /// is what makes a loop change safe on the audio-thread command drain. The
     /// slice-taking [`fill_preloop`](Self::fill_preloop) needs the caller to
     /// materialise a whole buffer first; this one does not.
     pub fn fill_preloop_with(&mut self, mut read: impl FnMut(usize, &mut [f32])) {
         let ch = self.stride;
-        let frames = self.crossfade_samples;
+        let frames = self.crossfade_frames;
         self.pre_loop_buffer.clear();
         // Never grows: `with_channels` reserved MAX_CROSSFADE_FRAMES * ch and
-        // `crossfade_samples` is clamped to that ceiling.
+        // `crossfade_frames` is clamped to that ceiling.
         self.pre_loop_buffer.resize(frames * ch, 0.0);
         for (i, frame) in self.pre_loop_buffer.chunks_exact_mut(ch).enumerate() {
             read(i, frame);
@@ -151,13 +151,13 @@ impl LoopCrossfade {
     /// envelope across all channels — a per-channel envelope would shift the
     /// image during the fade.
     pub fn process_in_place(&mut self, frame: &mut [f32]) {
-        if !self.active || self.position >= self.crossfade_samples {
+        if !self.active || self.position >= self.crossfade_frames {
             self.active = false;
             return;
         }
 
         // Linear crossfade: fade out current, fade in pre-loop
-        let t = self.position as f32 / self.crossfade_samples as f32;
+        let t = self.position as f32 / self.crossfade_frames as f32;
         let fade_out = 1.0 - t;
         let fade_in = t;
 
@@ -176,7 +176,7 @@ impl LoopCrossfade {
 
         self.position += 1;
 
-        if self.position >= self.crossfade_samples {
+        if self.position >= self.crossfade_frames {
             self.active = false;
         }
     }
@@ -200,6 +200,35 @@ mod tests {
         let samples = [1.0, 1.0, 0.8, 0.8, 0.6, 0.6, 0.4, 0.4];
         xfade.fill_preloop(&samples);
         assert_eq!(xfade.pre_loop_buffer.len(), 8, "4 frames x 2 channels");
+    }
+
+    /// The fade length counts FRAMES, not samples — a 4-frame 6-channel fade
+    /// runs for exactly 4 calls. Counting samples would run it 6x too long and
+    /// read past the pre-loop buffer.
+    ///
+    /// The sibling `StreamingCrossfader` already pins this. This half of the
+    /// pair spelled the field `crossfade_samples` while every line of its body
+    /// multiplied by the stride — the naming that makes the width bug easy to
+    /// write and hard to see in review.
+    #[test]
+    fn the_fade_length_counts_frames_not_samples_at_six_channels() {
+        let mut xfade = LoopCrossfade::with_channels(4, 6usize);
+        xfade.fill_preloop(&[0.5; 4 * 6]);
+        assert_eq!(
+            xfade.pre_loop_buffer.len(),
+            4 * 6,
+            "4 frames at 6 channels, not 4 samples' worth"
+        );
+
+        xfade.start();
+        let mut drained = 0;
+        let mut f = [1.0f32; 6];
+        while xfade.is_active() {
+            xfade.process_in_place(&mut f);
+            drained += 1;
+            assert!(drained <= 8, "fade did not end — it is counting samples");
+        }
+        assert_eq!(drained, 4, "one call per frame");
     }
 
     #[test]

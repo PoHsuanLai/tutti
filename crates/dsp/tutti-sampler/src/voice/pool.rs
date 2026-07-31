@@ -562,13 +562,13 @@ impl VoicePool {
                     looping,
                     loop_start,
                     loop_end,
-                    crossfade_samples,
+                    crossfade_frames,
                 } => {
                     let setting = if looping {
                         LoopSetting::On {
                             start: loop_start,
                             end: loop_end,
-                            crossfade_samples,
+                            crossfade_frames,
                         }
                     } else {
                         LoopSetting::Off

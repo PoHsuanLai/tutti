@@ -278,7 +278,7 @@ fn looping_source(wave: Arc<Wave>, start: f64, end: f64, xfade: usize) -> Memory
     source.set_loop_setting(LoopSetting::On {
         start: SamplePosition(start),
         end: SamplePosition(end),
-        crossfade_samples: xfade,
+        crossfade_frames: xfade,
     });
     source.trigger_at(SamplePosition(start));
     source.play();
@@ -387,7 +387,7 @@ fn a_crossfaded_loop_holds_its_level_across_the_seam() {
 
 /// A hard loop (zero crossfade) is legal and must not be silently faded.
 ///
-/// `crossfade_samples: 0` is documented as "hard loop, no crossfade". A stage
+/// `crossfade_frames: 0` is documented as "hard loop, no crossfade". A stage
 /// that treated 0 as "use the default" would round-trip fine and quietly change
 /// the sound of every hard loop.
 #[test]
@@ -447,7 +447,7 @@ fn a_reversed_voice_with_a_loop_set_stays_bounded() {
     source.set_loop_setting(LoopSetting::On {
         start: SamplePosition(500.0),
         end: SamplePosition(2500.0),
-        crossfade_samples: 0,
+        crossfade_frames: 0,
     });
 
     let (mut pool, _handle) = VoicePool::new();
@@ -535,7 +535,7 @@ fn reverse_and_loop_work_at_mono_width() {
     source.set_loop_setting(LoopSetting::On {
         start: SamplePosition(200.0),
         end: SamplePosition(1200.0),
-        crossfade_samples: 64,
+        crossfade_frames: 64,
     });
     source.trigger_at(SamplePosition(200.0));
     source.play();

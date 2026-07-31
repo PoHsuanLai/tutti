@@ -90,7 +90,7 @@ pub enum VoiceCommand {
         looping: bool,
         loop_start: SamplePosition,
         loop_end: SamplePosition,
-        crossfade_samples: usize,
+        crossfade_frames: usize,
     },
     ClearLoop(SlotId),
     UpdateReverse {
@@ -170,14 +170,14 @@ impl std::fmt::Debug for VoiceCommand {
                 looping,
                 loop_start,
                 loop_end,
-                crossfade_samples,
+                crossfade_frames,
             } => f
                 .debug_struct("UpdateLoop")
                 .field("id", id)
                 .field("looping", looping)
                 .field("loop_start", loop_start)
                 .field("loop_end", loop_end)
-                .field("crossfade_samples", crossfade_samples)
+                .field("crossfade_frames", crossfade_frames)
                 .finish(),
             Self::ClearLoop(id) => f.debug_tuple("ClearLoop").field(id).finish(),
             Self::UpdateReverse { id, direction } => f

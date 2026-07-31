@@ -1,6 +1,25 @@
 # Unit-type adoption — remaining backlog
 
-Status: **audited, unimplemented**. Auditor: Claude, 2026-07-31, against `cb3d8185`.
+Status: **§1, §2 (partly), §4 (partly) and §5 landed on `fix/unit-tier4`**;
+the rest still open. Auditor: Claude, 2026-07-31, against `cb3d8185`.
+
+Landed so far — see the commits for the measurements behind each:
+
+- §1a/§1b — the two zero-tick-unit guards (`ZeroDctpq`, SMF `parse()`).
+- §1c — pitch bend unified on the multiplicative derivation. The direction was
+  the opposite of what this document first assumed: three of the four sites
+  bend an interpolated frequency mid-glide and have no note number to look up,
+  so the table path could not generalize.
+- §2 — `tick_mtc`, `FilterModConfig`, `ModulatedDelayConfig`, `DelayLineNode`'s
+  `fb`, `Portamento`'s three endpoints, `Resampler::new`.
+- §4 — `shape.rs`'s Sine arm, `note.rs`'s pitch-ratio log and `A4_HZ`,
+  portamento's glide-interval log.
+- §5 — both missing inverses.
+
+Still open: the rest of §3 (the plugin `SampleRate` chain, `PluginRequest`,
+`DiskVoiceConfig`, `PitchResult`), the remaining §4 items (`click.rs`,
+`handle.rs`, the SMF BPM↔µs pair), and the `SmfNote`/`ClipNote` beat fields —
+those last are blocked, see §9.
 
 The engine-wide sweep after tiers 1–3 (PRs #104, #107). Every claim below was
 verified by reading the code at the cited line; the two bugs were reproduced by
@@ -71,15 +90,19 @@ additive path goes through `Tuning::fractional_note_to_freq`
 space **between adjacent table entries**. Under an unevenly-spaced table these
 are not the same number.
 
-**Measured** on a just-intonation 12-tone scale, note 60, one semitone of bend:
+**Measured in the synth** on `Tuning::just_intonation`, note 60, full up-bend:
 
 ```
-just:  note_on=279.69 Hz, held_bend=281.59 Hz, delta=-11.70 cents
-equal: note_on=277.18 Hz, held_bend=277.18 Hz, delta= -0.00 cents
+held Hz(297.00003) vs struck Hz(296.33002)   — 3.9 cents apart
 ```
 
-11.7 cents is plainly audible. It is invisible under equal temperament, which
-is why it survived — every default-tuning test agrees.
+(An earlier estimate in this document said 11.7 cents. That came from a
+standalone model using a different just-intonation table than the one
+`Tuning::just_intonation` actually ships; 3.9 cents is the real figure, taken
+from the synth. The defect was real either way, the magnitude was not.)
+
+Audible, and invisible under equal temperament — which is why it survived:
+every default-tuning test agrees with both derivations.
 
 Note the typing tell: `:584` hand-rolls the multiply as bare floats
 (`self.pitch_bend * range.get()`) while the other three use the typed
@@ -110,9 +133,13 @@ Ordered by blast radius. Each is two-or-more same-typed neighbours of
 | `tutti-units/src/spatial/hrtf_panner.rs:353` | `direction_from_degrees(azimuth_deg: f32, elevation_deg: f32)` | `Azimuth`, `Elevation` |
 | `tutti-units/src/delay.rs:175` | `process_sample(input: f32, delay_samples: f32, fb: f32, mix: Mix)` | `Feedback` — note `mix` is *already* typed in the same signature |
 
-`Resampler::new` is the sharpest: **both call sites already hold `SampleRate`**
-(`encode/mod.rs:183`, `resample.rs:392`) and narrow at the call, so swapping the
-two `u32`s silently inverts the conversion.
+`Resampler::new` looked sharpest — **both call sites already hold `SampleRate`**
+(`encode/mod.rs:183`, `resample.rs:392`) and narrowed at the call — but typing
+it does **not** close the transposition, and the fix's own comment now says so.
+Both parameters become `SampleRate`, i.e. the *same* type, so a swap still
+compiles (verified). Only a `SourceRate`/`TargetRate` split would catch it, and
+two names for one behaviour is not a type. What it buys is one derivation of
+the ratio from values that never lost precision.
 
 `tick_mtc` is the direct analogue of the `BeatWindow` fix in #107 — and both
 types are in scope one line earlier (`:190` calls the canonical
@@ -288,6 +315,33 @@ typed, and the `Timeline` trait it reads returns `Beat`/`Bpm`. What is missing
 is specifically the musical-time vocabulary in the middle of functions.
 
 ---
+
+## 9. Blocked on the app workspace
+
+`SmfNote { start_beats, duration_beats }` (`tutti-midi-io/src/smf.rs:151,153`)
+and `ClipNote`'s identical pair (`tutti-midi-types/src/clip_file.rs:314,316`)
+are the same position-and-span-as-two-`f64`s hazard as everything in §2, and
+they are **not** fixed.
+
+`dawai-frontend/src/project/import.rs:205` reads those fields directly, across
+the workspace boundary, and that crate does not build on `main` (`dawai-model`
+alone has ~98 errors from a `tutti_core::ecs` that no longer exists). Typing
+the fields means shipping a break into a crate that can neither confirm nor
+deny it. The `SmfNote` doc comment's "engine-neutral `u8`/`f64`" rationale is
+*not* one of CLAUDE.md's carve-outs — this is a plain in-tree Rust caller — so
+this is a scheduling constraint, not a design decision.
+
+Do these with, or after, `fix/app-side-ecs-migration`.
+
+Also still open and unblocked, but not attempted here:
+
+- The §3 plugin `SampleRate` chain (~10 hops) — one coherent commit, largest
+  mechanical diff in the backlog.
+- `PluginRequest.sample_rate`, `DiskVoiceConfig.file_sample_rate`,
+  `PitchResult`, `set_session_sample_rate`, `read_stereo_frame`.
+- `click.rs`'s five untyped quantities; `handle.rs`'s dead `samples_per_beat`
+  (a deletion candidate as much as a typing one); the SMF BPM↔µs pair, whose
+  MIDI-2 twin is already guarded.
 
 ## Suggested order
 

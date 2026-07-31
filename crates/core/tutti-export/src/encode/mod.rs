@@ -170,20 +170,21 @@ where
     // Interleaved, so it is a flat sample buffer with `ch` samples per frame.
     let mut staging: Vec<f32> = Vec::new();
 
-    // Compare as the integer rate the codecs speak: two `SampleRate`s that
-    // round to the same header value are the same rate, and there is nothing to
-    // convert between them.
-    // The PARAMETER, not `config.render.sample_rate`. Frames handed to
-    // `write_buffers` already exist and carry their own rate, which may not be
-    // the one the config was rendered at; reading it from the config made such
-    // a call resample from a rate the samples were never at.
-    // The rounded comparison stays — two rates that round to the same header
-    // value are the same rate — but the rates themselves stay `SampleRate` now
-    // that `Resampler::new` takes them typed, so the pair cannot be transposed
-    // on the way in.
-    let source_header = source_rate.get().round() as u32;
+    // Compare as the integer rate the codecs speak, via [`encoder_rate`] — the
+    // crate's single narrowing point, which documents why this comparison must
+    // not be a float one: the rates decide *whether to resample at all*, and an
+    // ULP apart would flip that coin. Two rates that write the same header are
+    // the same rate.
+    //
+    // `source_rate` is the PARAMETER, not `config.render.sample_rate`. Frames
+    // handed to `write_buffers` already exist and carry their own rate, which
+    // may not be the one the config was rendered at; reading it from the config
+    // made such a call resample from a rate the samples were never at.
     let mut resampler = match config.resample {
-        Some(r) if r.target_rate.get().round() as u32 != source_header => Some((
+        Some(r) if encoder_rate(config) != source_rate.get().round() as u32 => Some((
+            // The rates themselves stay `SampleRate`: only the *comparison*
+            // needs to be integral, and `Resampler::new` derives its ratio from
+            // values that never narrowed.
             crate::process::Resampler::new(ch, source_rate, r.target_rate, r.chunk)?,
             vec![Vec::<f32>::new(); ch],
             vec![Vec::<f32>::new(); ch],

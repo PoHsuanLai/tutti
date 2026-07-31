@@ -15,6 +15,7 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use crate::params::{Beat, BeatDuration};
+use crate::Samples;
 use crate::{AtomicBool, AtomicF64, AtomicI64, AtomicU32};
 
 /// Number of ports a beat signal occupies: whole beats, then fraction.
@@ -223,11 +224,16 @@ impl Default for LoopSpan {
 /// The FSM arms a fade; the processor reads `remaining` every buffer to
 /// shape the output gain and reports completion. Both halves are load-bearing
 /// — this is a real two-thread handshake, not vestigial state.
+/// Frames are `u32` in the atomics and [`Samples`] at the API. The narrowing is
+/// real — `Samples` is `usize`-backed — so it happens once, here, saturating
+/// rather than truncating: a fade longer than `u32::MAX` frames (over a day)
+/// is nonsense, but wrapping it to a short fade would click, which is the one
+/// thing this type exists to prevent.
 #[derive(Clone, Debug)]
 pub struct Declick {
-    /// Samples left in the fade. 0 = no fade active.
+    /// Frames left in the fade. 0 = no fade active.
     pub remaining: Arc<AtomicU32>,
-    /// Fade length in samples, stamped when the fade starts.
+    /// Fade length in frames, stamped when the fade starts.
     pub total: Arc<AtomicU32>,
 }
 
@@ -239,9 +245,28 @@ impl Declick {
         }
     }
 
-    pub fn start(&self, samples: u32) {
-        self.total.store(samples, Ordering::Release);
-        self.remaining.store(samples, Ordering::Release);
+    /// Arm a fade of `frames`.
+    ///
+    /// Takes [`Samples`] because that is what the callers hold and what the
+    /// processor compares against — `Seconds::to_samples_*` returns one, and
+    /// the RT loop bounds itself by the block's frame count. A bare `u32` here
+    /// meant every one of those had to narrow at its own call site.
+    pub fn start(&self, frames: impl Into<Samples>) {
+        let n = u32::try_from(frames.into().get()).unwrap_or(u32::MAX);
+        self.total.store(n, Ordering::Release);
+        self.remaining.store(n, Ordering::Release);
+    }
+
+    /// Frames left in the fade, 0 when inactive.
+    #[inline]
+    pub fn remaining(&self) -> Samples {
+        Samples(self.remaining.load(Ordering::Acquire) as usize)
+    }
+
+    /// Fade length as armed, 0 when never started.
+    #[inline]
+    pub fn total(&self) -> Samples {
+        Samples(self.total.load(Ordering::Acquire) as usize)
     }
 
     pub fn is_active(&self) -> bool {

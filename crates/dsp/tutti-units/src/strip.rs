@@ -213,10 +213,7 @@ impl BusStripUnit {
     #[inline]
     fn balance_gains(pan: Pan) -> (Amplitude, Amplitude) {
         let p = pan.get().clamp(-1.0, 1.0);
-        (
-            Amplitude((1.0 - p).min(1.0)),
-            Amplitude((1.0 + p).min(1.0)),
-        )
+        (Amplitude((1.0 - p).min(1.0)), Amplitude((1.0 + p).min(1.0)))
     }
 
     /// The gains actually applied this sample: balance × volume, or zero when

@@ -21,7 +21,7 @@ pub enum LoopStatus {
 /// Loop playback configuration.
 pub(crate) struct LoopConfig {
     pub(crate) range: (u64, u64),
-    pub(crate) crossfade_samples: usize,
+    pub(crate) crossfade_frames: usize,
     /// Cached fadein samples from loop start; avoids re-reading on each loop.
     /// Flat interleaved at the region ring's width.
     pub(crate) preloop_buffer: Option<Vec<f32>>,
@@ -148,8 +148,8 @@ impl ChannelPlan {
             return LoopStatus::AtEnd(loop_start);
         }
 
-        if loop_cfg.crossfade_samples > 0 {
-            let crossfade_start = loop_end.saturating_sub(loop_cfg.crossfade_samples as u64);
+        if loop_cfg.crossfade_frames > 0 {
+            let crossfade_start = loop_end.saturating_sub(loop_cfg.crossfade_frames as u64);
             if read_pos >= crossfade_start {
                 return LoopStatus::ApproachingEnd;
             }

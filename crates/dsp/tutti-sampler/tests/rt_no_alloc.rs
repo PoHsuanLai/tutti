@@ -911,7 +911,7 @@ fn update_loop_drain_is_allocation_free_at_six_channels() {
             looping: true,
             loop_start: SamplePosition::new(i as f64 * 8.0),
             loop_end: SamplePosition::new(i as f64 * 8.0 + 4096.0),
-            crossfade_samples: 256,
+            crossfade_frames: 256,
         });
         handle.send(VoiceCommand::ClearLoop(SlotId(1)));
     }

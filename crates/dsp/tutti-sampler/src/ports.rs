@@ -139,12 +139,12 @@ impl Commands {
                 LoopSetting::On {
                     start,
                     end,
-                    crossfade_samples,
+                    crossfade_frames,
                 } => {
                     let _ = self.tx.send_blocking(ButlerCommand::SetStreamLoop {
                         channel_index,
                         range: (start.get().max(0.0) as u64, end.get().max(0.0) as u64),
-                        crossfade_samples,
+                        crossfade_frames,
                     });
                 }
                 LoopSetting::Off => {

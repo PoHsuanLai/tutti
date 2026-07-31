@@ -1221,7 +1221,7 @@ mod tests {
             looping: true,
             loop_start: SamplePosition::new(0.0),
             loop_end: SamplePosition::new(64.0),
-            crossfade_samples: 0,
+            crossfade_frames: 0,
         });
 
         let mut out = [0.0f32; 2];

@@ -21,7 +21,7 @@
 use std::sync::Arc;
 
 use tutti_core::transport::TransportState;
-use tutti_core::{Beat, BeatDuration, Depth, PhaseIncrement};
+use tutti_core::{Beat, BeatDuration, Depth, PhaseIncrement, SampleRate};
 use tutti_units::automation::Curve;
 
 use crate::host::node::input_slot::{BlockCtx, BlockInput, BlockReset};
@@ -333,7 +333,7 @@ const SAMPLE_STRIDE: usize = 8;
 pub struct ParamAutomationSource {
     params: Arc<[TimedParam]>,
     transport: Arc<dyn TransportState>,
-    sample_rate: f64,
+    sample_rate: SampleRate,
 }
 
 impl ParamAutomationSource {
@@ -346,12 +346,12 @@ impl ParamAutomationSource {
     pub fn new(
         params: impl IntoIterator<Item = TimedParam>,
         transport: Arc<dyn TransportState>,
-        sample_rate: f64,
+        sample_rate: impl Into<SampleRate>,
     ) -> Self {
         Self {
             params: params.into_iter().collect::<Vec<_>>().into(),
             transport,
-            sample_rate,
+            sample_rate: sample_rate.into(),
         }
     }
 
@@ -381,13 +381,17 @@ impl ParamAutomationSource {
             out.queues.clear();
             return;
         }
-        let start_beat = self.transport.beat().get();
-        let tempo_bpm = self.transport.tempo().get();
-        if tempo_bpm <= 0.0 || self.sample_rate <= 0.0 {
+        let start_beat = self.transport.beat();
+        let tempo = self.transport.tempo();
+        if tempo.get() <= 0.0 || self.sample_rate.get() <= 0.0 {
             out.queues.clear();
             return;
         }
-        let beats_per_sample = tempo_bpm / 60.0 / self.sample_rate;
+        // Through the shared conversion, not `tempo / 60 / rate` by hand: its
+        // doc records the association as load-bearing, because the offline
+        // timeline is pinned to agree with the clock sample-for-sample and the
+        // two groupings round differently.
+        let beats_per_sample = tutti_core::transport::beats_per_sample(tempo, self.sample_rate);
         let loop_range = self.transport.loop_range();
         let last = block_size - 1;
 
@@ -406,7 +410,7 @@ impl ParamAutomationSource {
             // the block's end value is exact (the next block starts from here).
             let mut offset = 0usize;
             loop {
-                let beat = Beat::new(start_beat + offset as f64 * beats_per_sample);
+                let beat = start_beat + beats_per_sample * offset as f64;
                 // `LoopRange::wrap` clamps a beat into the loop region; it is a
                 // no-op when there is no region or the beat is already inside.
                 let eff_beat = match loop_range {

@@ -97,9 +97,9 @@ pub(super) fn handle_command(
         ButlerCommand::SetStreamLoop {
             channel_index,
             range,
-            crossfade_samples,
+            crossfade_frames,
         } => {
-            handle_set_stream_loop(channel_index, range, crossfade_samples, shared, local);
+            handle_set_stream_loop(channel_index, range, crossfade_frames, shared, local);
         }
         ButlerCommand::ClearStreamLoop { channel_index } => {
             if let Some(mut plan) = shared.plans.get_mut(&channel_index) {
@@ -250,7 +250,7 @@ fn handle_stream_file(
 fn handle_set_stream_loop(
     channel_index: usize,
     range: (u64, u64),
-    crossfade_samples: usize,
+    crossfade_frames: usize,
     shared: &Handles,
     local: &mut Local,
 ) {
@@ -263,7 +263,7 @@ fn handle_set_stream_loop(
 
     // Capture the loop-start fadein head once, off the audio thread, so the
     // per-wrap crossfade in `handle_loops` never re-reads the file.
-    let preloop_buffer = if crossfade_samples > 0 {
+    let preloop_buffer = if crossfade_frames > 0 {
         local
             .regions
             .get(link.region_id)
@@ -273,14 +273,14 @@ fn handle_set_stream_loop(
                 load_wave(&shared.cache, &shared.metrics, writer.file_path())
                     .map(|wave| (wave, writer.channels()))
             })
-            .map(|(wave, ch)| capture_frames(&wave, range.0 as usize, crossfade_samples, ch))
+            .map(|(wave, ch)| capture_frames(&wave, range.0 as usize, crossfade_frames, ch))
     } else {
         None
     };
 
     link.loop_config = Some(LoopConfig {
         range,
-        crossfade_samples,
+        crossfade_frames,
         preloop_buffer,
     });
 }

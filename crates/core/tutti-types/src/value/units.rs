@@ -1190,11 +1190,19 @@ unit_newtype!(
     /// rate. It sounds like detuning, not like a bug.
     Radians
 );
-unit_ordered!(Radians);
-unit_bounded!(Radians, f32);
 unit_additive!(Radians);
 unit_signed!(Radians);
 unit_scalable!(Radians, f32);
+// NOT `unit_ordered!` / `unit_bounded!`, for the reason `Azimuth` gives: a
+// circle has no ends, so `Radians(6.2) < Radians(0.1)` is false while the two
+// are a tenth of a turn apart, and `clamp` saturates a coordinate that should
+// have wrapped. `wrapped_signed` is the replacement — wrap first, then the
+// comparison is against a magnitude and `.get()` is honest.
+//
+// `Radians` was the one angular type the file exempted from its own rule, and
+// the predicted escape happened: the phase vocoder hand-rolled the missing wrap
+// in raw `f32`. That is the `Degrees` failure verbatim, which is why the
+// omission ships with the method rather than after it.
 
 impl Radians {
     /// Full circle, `2·pi`.
@@ -1216,6 +1224,29 @@ impl Radians {
     #[inline]
     pub fn to_phase(self) -> Phase {
         Phase::wrapped(self.0 / core::f32::consts::TAU)
+    }
+
+    /// Wrapped into `[-pi, pi)` — the signed-deviation form.
+    ///
+    /// Half-open at `+pi`, which lands on `-pi`: the same convention
+    /// [`Phase::wrapped`] uses at the top of its cycle, and the same reason —
+    /// the two are one point on the circle, and a closed interval at both ends
+    /// would have to pick one arbitrarily per call.
+    ///
+    /// The counterpart to [`Azimuth::wrap`] for the radian coordinate, and the
+    /// answer to "how far apart are these two angles" once the difference has
+    /// been taken: a phase-vocoder deviation of `+3pi/2` is really `-pi/2`, and
+    /// keeping the larger number makes a partial jump the wrong way.
+    ///
+    /// Arithmetic rather than a `while` loop, which is what the phase vocoder
+    /// needed: the loop costs one iteration per turn of input, so a phase
+    /// accumulated over minutes of audio stalls the audio thread for an
+    /// unbounded time. Wrapping *before* comparing is also why [`Ord`] on this
+    /// type is a trap — see the omission note below.
+    #[inline]
+    pub fn wrapped_signed(self) -> Radians {
+        let tau = core::f32::consts::TAU;
+        Radians(self.0 - tau * ((self.0 + core::f32::consts::PI) / tau).floor())
     }
 }
 
@@ -1864,6 +1895,43 @@ impl Default for AtomicSamplePosition {
     }
 }
 
+/// Lock-free [`ReadRate`] cell, shareable with the audio thread.
+///
+/// The [`AtomicSamplePosition`] shape, for the type that advances one. It
+/// exists for the same reason `ReadRate` is `f64`-backed: the rate is the term
+/// a disk voice accumulates into its read position once per sample, forever, so
+/// a cell that narrowed to `f32` and widened back on every read would reinstate
+/// exactly the drift the width was chosen to avoid.
+///
+/// `Param<ReadRate>` cannot serve here — [`Param`](super::Param) is
+/// `Unit<Raw = f32>` only, which is the constraint that produced the narrowing.
+#[derive(Debug)]
+pub struct AtomicReadRate(core::sync::atomic::AtomicU64);
+
+impl AtomicReadRate {
+    #[inline]
+    pub fn new(v: ReadRate) -> Self {
+        Self(core::sync::atomic::AtomicU64::new(v.get().to_bits()))
+    }
+
+    #[inline]
+    pub fn load(&self, order: core::sync::atomic::Ordering) -> ReadRate {
+        ReadRate::new(f64::from_bits(self.0.load(order)))
+    }
+
+    #[inline]
+    pub fn store(&self, v: ReadRate, order: core::sync::atomic::Ordering) {
+        self.0.store(v.get().to_bits(), order)
+    }
+}
+
+impl Default for AtomicReadRate {
+    #[inline]
+    fn default() -> Self {
+        Self::new(ReadRate::UNITY)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1915,6 +1983,10 @@ mod tests {
     ///   drive" is not twice anything.
     /// - `Azimuth < Azimuth`, `Azimuth.clamp(..)` — a wrapping coordinate has
     ///   no ordering and no saturating clamp. `wrap` is the constraint.
+    /// - `Radians < Radians`, `Radians.clamp(..)` — the same, for the radian
+    ///   coordinate; `wrapped_signed` is the constraint. This type carried both
+    ///   until the phase vocoder hand-rolled the missing wrap in raw `f32`,
+    ///   which is the `Degrees` escape reproduced exactly.
     /// - `Azimuth + ArcDegrees` — `rotate_by`, which wraps; the operator would
     ///   not. Same for `Elevation + ArcDegrees` vs `tilt_by`, which clamps.
     /// - `Azimuth - Azimuth` — `shortest_arc_to`; a plain subtraction takes the
@@ -2119,6 +2191,31 @@ mod tests {
             PhaseIncrement::per_sample(Hz(440.0), 0.0),
             PhaseIncrement(0.0)
         );
+    }
+
+    /// The wrap `Radians` was missing, which the phase vocoder hand-rolled in
+    /// raw `f32` — the `Degrees` escape, repeated.
+    #[test]
+    fn radians_wrap_signed_rather_than_saturating() {
+        let pi = core::f32::consts::PI;
+
+        // A deviation of +3pi/2 is really -pi/2. Keeping the larger number
+        // moves a partial the wrong way round the circle.
+        assert!((Radians(1.5 * pi).wrapped_signed().get() - (-0.5 * pi)).abs() < 1e-5);
+        assert!((Radians(-1.5 * pi).wrapped_signed().get() - (0.5 * pi)).abs() < 1e-5);
+
+        // Already inside: unchanged.
+        assert_eq!(Radians(0.0).wrapped_signed(), Radians(0.0));
+
+        // Half-open at +pi, which folds to -pi — the same point on the circle,
+        // and the same convention `Phase::wrapped` uses at the top of a cycle.
+        assert!((Radians(pi).wrapped_signed().get() - (-pi)).abs() < 1e-5);
+
+        // Arithmetic, not iteration: a phase accumulated over minutes of audio
+        // wraps in constant time. The `while` loop this replaced ran once per
+        // turn, on the audio thread.
+        let far = Radians(1.0e6).wrapped_signed().get();
+        assert!((-pi..pi).contains(&far), "{far}");
     }
 
     #[test]

@@ -9,7 +9,7 @@ pub struct BufferConfig {
     /// Default: 1GB
     pub cache_max_bytes: u64,
     /// Default: 512 (~12ms @ 44.1kHz)
-    pub seek_crossfade_samples: usize,
+    pub seek_crossfade_frames: usize,
     /// When true, multiple streams are refilled concurrently via rayon.
     pub parallel_io: bool,
 }
@@ -20,7 +20,7 @@ impl Default for BufferConfig {
             chunk_size: 16384,
             cache_max_entries: 64,
             cache_max_bytes: 1024 * 1024 * 1024, // 1GB
-            seek_crossfade_samples: 512,
+            seek_crossfade_frames: 512,
             parallel_io: true,
         }
     }

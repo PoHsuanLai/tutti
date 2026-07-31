@@ -36,18 +36,18 @@ pub(crate) enum LoopMode {
 /// into the internal [`LoopMode`], priming the crossfade privately.
 ///
 /// This mirrors how the streaming/timeline loop already speaks in
-/// `(start, end, crossfade_samples)` via `VoiceCommand::UpdateLoop`.
+/// `(start, end, crossfade_frames)` via `VoiceCommand::UpdateLoop`.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub enum LoopSetting {
     /// Play through once, then stop.
     #[default]
     Off,
-    /// Loop over `[start, end)` in samples, with `crossfade_samples` of loop
+    /// Loop over `[start, end)` in samples, with `crossfade_frames` of loop
     /// crossfade (0 = hard loop, no crossfade).
     On {
         start: SamplePosition,
         end: SamplePosition,
-        crossfade_samples: usize,
+        crossfade_frames: usize,
     },
 }
 
@@ -323,9 +323,9 @@ impl MemorySource {
     /// Build from an explicit [`MemorySourceConfig`] — the canonical
     /// configurable constructor, matching tutti's `X::new(XConfig)` convention.
     ///
-    /// A `LoopSetting::On { crossfade_samples, .. }` primes the loop crossfade
+    /// A `LoopSetting::On { crossfade_frames, .. }` primes the loop crossfade
     /// from the wave (via the same path as [`set_loop_range`](Self::set_loop_range));
-    /// `crossfade_samples == 0` loops with no crossfade.
+    /// `crossfade_frames == 0` loops with no crossfade.
     pub fn with_config(wave: Arc<Wave>, config: MemorySourceConfig) -> Self {
         let mut unit = Self {
             gain: config.gain,
@@ -339,10 +339,10 @@ impl MemorySource {
         if let LoopSetting::On {
             start,
             end,
-            crossfade_samples,
+            crossfade_frames,
         } = config.loop_setting
         {
-            unit.set_loop_range(start, end, crossfade_samples);
+            unit.set_loop_range(start, end, crossfade_frames);
         }
         unit
     }
@@ -548,8 +548,8 @@ impl MemorySource {
             LoopSetting::On {
                 start,
                 end,
-                crossfade_samples,
-            } => self.set_loop_range(start, end, crossfade_samples),
+                crossfade_frames,
+            } => self.set_loop_range(start, end, crossfade_frames),
             LoopSetting::Off => {
                 self.clear_loop_range();
                 self.set_looping(false);
@@ -561,22 +561,22 @@ impl MemorySource {
         &mut self,
         loop_start: SamplePosition,
         loop_end: SamplePosition,
-        crossfade_samples: usize,
+        crossfade_frames: usize,
     ) {
         // Reuse the resident crossfade rather than building one.
         //
         // This runs on the audio thread: `VoiceCommand::UpdateLoop` is drained by
         // `VoicePool::drain_commands`, which `tick`/`process` call. So
-        // changing a loop mid-playback used to allocate `crossfade_samples *
+        // changing a loop mid-playback used to allocate `crossfade_frames *
         // channels` floats in the callback, plus a temporary buffer to read the
         // wave into. Both are gone: the crossfade's buffer is reserved once at
         // `MAX_CROSSFADE_FRAMES`, `retune` re-points it without growing, and
         // `fill_preloop_with` writes the tail in place.
-        let crossfade = if crossfade_samples > 0 {
+        let crossfade = if crossfade_frames > 0 {
             let mut xfade = self
                 .loop_crossfade
                 .take()
-                .unwrap_or_else(|| LoopCrossfade::with_channels(crossfade_samples, self.channels));
+                .unwrap_or_else(|| LoopCrossfade::with_channels(crossfade_frames, self.channels));
             // `retune` re-points the length, never the width, so a reclaimed
             // crossfade must already be this source's width. Both are set at
             // construction from the same value; a divergence would silently
@@ -586,7 +586,7 @@ impl MemorySource {
                 self.channels,
                 "resident loop crossfade width diverged from the source's"
             );
-            xfade.retune(crossfade_samples);
+            xfade.retune(crossfade_frames);
 
             let start = loop_start.get();
             // Split the borrow: `fill_preloop_with` holds `&mut xfade` while the
@@ -643,7 +643,7 @@ impl MemorySource {
             LoopMode::Looping { range, crossfade } => LoopSetting::On {
                 start: range.0,
                 end: range.1,
-                crossfade_samples: crossfade.as_ref().map_or(0, |x| x.len()),
+                crossfade_frames: crossfade.as_ref().map_or(0, |x| x.len()),
             },
             LoopMode::OneShot => LoopSetting::Off,
         }
@@ -1096,7 +1096,7 @@ mod tests {
                     loop_setting: LoopSetting::On {
                         start: SamplePosition::new(0.0),
                         end: SamplePosition::new(8.0),
-                        crossfade_samples: 0,
+                        crossfade_frames: 0,
                     },
                     ..Default::default()
                 },
@@ -1330,7 +1330,7 @@ mod tests {
                 loop_setting: LoopSetting::On {
                     start: SamplePosition::new(0.0),
                     end: SamplePosition::new(100.0),
-                    crossfade_samples: 0,
+                    crossfade_frames: 0,
                 },
                 ..Default::default()
             },
@@ -1805,7 +1805,7 @@ mod tests {
                 loop_setting: LoopSetting::On {
                     start: SamplePosition::new(0.0),
                     end: SamplePosition::new(100.0),
-                    crossfade_samples: 0,
+                    crossfade_frames: 0,
                 },
                 ..Default::default()
             },

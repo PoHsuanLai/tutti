@@ -288,16 +288,18 @@ impl Vocoder {
     }
 }
 
-/// Wrap a phase into (-π, π].
+/// Wrap a phase into [-π, π).
 ///
-/// Arithmetic, not a `while` loop: the loop it replaces ran once per 2π of
-/// input, so a large accumulated phase cost unbounded iterations on the audio
-/// thread.
+/// Delegates to [`Radians::wrapped_signed`], which now owns the arithmetic. It
+/// was hand-rolled here in raw `f32` only because the unit offered no wrap —
+/// the escape the omission ledger exists to catch.
+///
+/// The interval was documented as `(-π, π]` while the arithmetic produced the
+/// half-open opposite; both ends are the same point on the circle, so nothing
+/// downstream depended on the wrong half.
 #[inline]
 pub(super) fn wrap_phase(phase: Radians) -> Radians {
-    let tau = Radians::TAU.get();
-    let p = phase.get();
-    Radians(p - tau * ((p + std::f32::consts::PI) / tau).floor())
+    phase.wrapped_signed()
 }
 
 /// Overlap-add normalization for a Hann analysis/synthesis pair at 75% overlap.

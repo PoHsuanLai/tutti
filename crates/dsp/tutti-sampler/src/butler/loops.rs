@@ -39,7 +39,7 @@ pub(crate) fn handle_loops(
                 let Some(loop_cfg) = link.loop_config.as_ref() else {
                     continue;
                 };
-                let fade_len = loop_cfg.crossfade_samples;
+                let fade_len = loop_cfg.crossfade_frames;
                 if fade_len == 0 {
                     continue;
                 }

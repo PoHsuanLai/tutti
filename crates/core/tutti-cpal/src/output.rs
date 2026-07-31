@@ -122,6 +122,18 @@ impl AudioEngine {
         let device = get_device(self.device_index)?;
         let config = device.default_output_config()?;
 
+        // The reported layout is the layout of the stream about to be built,
+        // not the one the *constructor* happened to see. `set_device` +
+        // `start` (what `TuttiDriver::restart` does) reaches here with a
+        // different device than `new` read, and `build_stream` derives its
+        // real layout from this same `config` — so leaving these fields at
+        // their construction values makes `channels()` / `sample_rate()`
+        // describe a device that is no longer playing, while the audio itself
+        // is correct. A reader sizing a buffer from `channels()` gets the old
+        // width with nothing to warn it.
+        self.sample_rate = SampleRate::from(config.sample_rate().0);
+        self.channels = ChannelLayout::from(usize::from(config.channels()));
+
         let stream = match config.sample_format() {
             cpal::SampleFormat::I8 => build_stream::<i8>(&device, &config.into(), state)?,
             cpal::SampleFormat::I16 => build_stream::<i16>(&device, &config.into(), state)?,

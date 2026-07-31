@@ -1,9 +1,9 @@
 # Unit-type adoption — remaining backlog
 
-Status: **§1, §2 (partly), §4 (partly) and §5 landed on `fix/unit-tier4`**;
-the rest still open. Auditor: Claude, 2026-07-31, against `cb3d8185`.
+Status: **complete except the app-blocked items in §9.**
+Auditor: Claude, 2026-07-31, against `cb3d8185`.
 
-Landed so far — see the commits for the measurements behind each:
+Landed on `fix/unit-tier4` (#114) — see the commits for the measurements:
 
 - §1a/§1b — the two zero-tick-unit guards (`ZeroDctpq`, SMF `parse()`).
 - §1c — pitch bend unified on the multiplicative derivation. The direction was
@@ -16,10 +16,28 @@ Landed so far — see the commits for the measurements behind each:
   portamento's glide-interval log.
 - §5 — both missing inverses.
 
-Still open: the rest of §3 (the plugin `SampleRate` chain, `PluginRequest`,
-`DiskVoiceConfig`, `PitchResult`), the remaining §4 items (`click.rs`,
-`handle.rs`, the SMF BPM↔µs pair), and the `SmfNote`/`ClipNote` beat fields —
-those last are blocked, see §9.
+Landed on `fix/unit-tier5`:
+
+- §3 — the whole host-side plugin `SampleRate` chain, `PluginRequest`,
+  `DiskVoiceConfig.file_sample_rate`, `PitchResult`,
+  `set_session_sample_rate`.
+- §4 (rest) — `click.rs`'s five quantities, `handle.rs`'s `samples_per_beat`,
+  the SMF BPM↔µs pair.
+
+Two things that turned up while doing tier 5, neither on this list:
+
+- **`bevy-tutti` did not compile with `--features plugin`** on `main`.
+  `TimedParam::param_id` became a `ParamAddress` in #105/#108 and the adapter
+  was never rebuilt with the feature on. Fixed there, since it blocked
+  verifying anything in that crate.
+- **`samples_per_beat`'s missing guard was worse than "unreachable".** The
+  audit called it a deletion candidate because it has no production callers.
+  Mutation-testing the fix shows the old form returned
+  `Samples(18446744073709551615)` — `usize::MAX`, from `inf` through a
+  saturating cast, as a frame count. Typing it beat deleting it: the next
+  caller would have found that the hard way.
+
+Still open: only §9.
 
 The engine-wide sweep after tiers 1–3 (PRs #104, #107). Every claim below was
 verified by reading the code at the cited line; the two bugs were reproduced by
@@ -333,25 +351,13 @@ this is a scheduling constraint, not a design decision.
 
 Do these with, or after, `fix/app-side-ecs-migration`.
 
-Also still open and unblocked, but not attempted here:
+Everything else on this list has landed. `SmfNote` / `ClipNote` are the only
+items left, and they are waiting on the app workspace rather than on a
+decision.
 
-- The §3 plugin `SampleRate` chain (~10 hops) — one coherent commit, largest
-  mechanical diff in the backlog.
-- `PluginRequest.sample_rate`, `DiskVoiceConfig.file_sample_rate`,
-  `PitchResult`, `set_session_sample_rate`, `read_stereo_frame`.
-- `click.rs`'s five untyped quantities; `handle.rs`'s dead `samples_per_beat`
-  (a deletion candidate as much as a typing one); the SMF BPM↔µs pair, whose
-  MIDI-2 twin is already guarded.
+## What is left
 
-## Suggested order
-
-1. **§1 bugs** — DCTPQ guard, SMF `parse()` guard, pitch-bend unification.
-   Independent of typing; each wants a test that fails against current `main`.
-2. **§5 missing inverses** — they unblock §4 sites and are ours to fix.
-3. **§2 transposable pairs** — highest typing value; `tick_mtc` and
-   `Resampler::new` first.
-4. **§3 boundary flattening** — largest diff, most mechanical. The plugin
-   `SampleRate` chain is one coherent commit.
-5. **§4 remaining hand-rolled conversions.**
-
-Tiers 1–3 shipped as one PR each with per-commit verification; same shape here.
+Only §9. When `fix/app-side-ecs-migration` lands, type `SmfNote` and
+`ClipNote`'s `start_beats` / `duration_beats` as `Beat` / `BeatDuration` and
+fix `dawai-frontend`'s importer in the same change — the two must move
+together, which is the whole reason they are still here.

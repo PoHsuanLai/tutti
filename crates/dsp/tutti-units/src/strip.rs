@@ -124,13 +124,30 @@ impl BusStripUnit {
     }
 
     /// Atomic handle for the UI / automation to share the volume cell.
+    ///
+    /// Untyped by the shape of the contract, not by omission: this is what
+    /// [`ModParams::mod_target`] hands to an [`AtomicTarget`], and that boundary
+    /// speaks `Arc<AtomicF32>`. To *read* the value, use
+    /// [`volume_value`](Self::volume_value), which keeps the unit.
     pub fn volume(&self) -> Arc<tutti_core::AtomicF32> {
         self.volume.as_atomic()
     }
 
-    /// Atomic handle for the UI / automation to share the pan cell.
+    /// Atomic handle for the UI / automation to share the pan cell. See
+    /// [`volume`](Self::volume) on why this one is untyped; the typed read is
+    /// [`pan_value`](Self::pan_value).
     pub fn pan(&self) -> Arc<tutti_core::AtomicF32> {
         self.pan.as_atomic()
+    }
+
+    /// The current fader position.
+    pub fn volume_value(&self) -> Amplitude {
+        self.volume.load()
+    }
+
+    /// The current balance position.
+    pub fn pan_value(&self) -> Pan {
+        self.pan.load()
     }
 
     pub fn set_volume(&self, volume: impl Into<Amplitude>) {
@@ -165,10 +182,17 @@ impl BusStripUnit {
     /// reads `-3 dB` on each side at centre. Applying that here would attenuate
     /// an already-stereo signal by 3 dB just for existing. A balance instead
     /// *rebalances* an existing pair, so centre must be exactly unity.
+    /// Typed in and out: the argument is a *position* and the results are
+    /// *gains*, which is the confusion worth preventing here — both are `-1..1`-
+    /// ish floats, and multiplying a sample by a pan position instead of by its
+    /// derived gain is silent.
     #[inline]
-    fn balance_gains(pan: f32) -> (f32, f32) {
-        let p = pan.clamp(-1.0, 1.0);
-        ((1.0 - p).min(1.0), (1.0 + p).min(1.0))
+    fn balance_gains(pan: Pan) -> (Amplitude, Amplitude) {
+        let p = pan.get().clamp(-1.0, 1.0);
+        (
+            Amplitude((1.0 - p).min(1.0)),
+            Amplitude((1.0 + p).min(1.0)),
+        )
     }
 
     /// The gains actually applied this sample: balance × volume, or zero when
@@ -178,22 +202,35 @@ impl BusStripUnit {
     /// cost does not depend on the mute state and a muted strip cannot take a
     /// cheaper path that diverges from the live one.
     #[inline]
-    fn gains(&self, volume: f32, pan: f32) -> (f32, f32) {
-        let live = !self.muted.load(Ordering::Relaxed) as u8 as f32;
+    fn gains(&self, volume: Amplitude, pan: Pan) -> (Amplitude, Amplitude) {
+        // `Amplitude * f32` is the scaling the unit grants; cascading two gain
+        // stages multiplies them, which is exactly what balance × fader is.
+        let live = self.live_factor();
         let (l, r) = Self::balance_gains(pan);
-        (l * volume * live, r * volume * live)
+        (l * volume.get() * live, r * volume.get() * live)
+    }
+
+    /// `1.0` when the strip is passing audio, `0.0` when muted — the mute as a
+    /// multiplicand rather than a branch.
+    #[inline]
+    fn live_factor(&self) -> f32 {
+        !self.muted.load(Ordering::Relaxed) as u8 as f32
     }
 
     /// Volume/pan for this sample: a present param port overrides the atomic.
+    ///
+    /// The port carries a raw sample, so this is the boundary where an untyped
+    /// float becomes a typed quantity again — named rather than inlined so there
+    /// is one place that decision happens.
     #[inline]
-    fn effective(&self, at: impl Fn(usize) -> f32) -> (f32, f32) {
+    fn effective(&self, at: impl Fn(usize) -> f32) -> (Amplitude, Pan) {
         let volume = match self.volume_port() {
-            Some(p) => at(p),
-            None => self.volume.load().get(),
+            Some(p) => Amplitude(at(p)),
+            None => self.volume.load(),
         };
         let pan = match self.pan_port() {
-            Some(p) => at(p),
-            None => self.pan.load().get(),
+            Some(p) => Pan(at(p)),
+            None => self.pan.load(),
         };
         (volume, pan)
     }
@@ -201,15 +238,24 @@ impl BusStripUnit {
     /// Apply `(left, right)` to a frame, leaving channels past the stereo pair
     /// scaled by volume/mute alone — they have no left/right axis to balance on.
     #[inline]
-    fn apply(&self, gains: (f32, f32), volume: f32, get: impl Fn(usize) -> f32, mut put: impl FnMut(usize, f32)) {
-        let live = !self.muted.load(Ordering::Relaxed) as u8 as f32;
+    fn apply(
+        &self,
+        gains: (Amplitude, Amplitude),
+        volume: Amplitude,
+        get: impl Fn(usize) -> f32,
+        mut put: impl FnMut(usize, f32),
+    ) {
+        let unbalanced = volume * self.live_factor();
         for c in 0..self.channels {
             let g = match c {
                 0 => gains.0,
                 1 => gains.1,
-                _ => volume * live,
+                _ => unbalanced,
             };
-            put(c, get(c) * g);
+            // The one place a gain meets a sample. `get(c)` is a raw sample, not
+            // an `Amplitude` — a sample is a signal value, not a gain — so the
+            // unit comes off here rather than the sample being wrapped.
+            put(c, get(c) * g.get());
         }
     }
 }
@@ -298,15 +344,19 @@ impl AudioUnit for BusStripUnit {
         // A gain stage: each output is its input scaled, so propagate with the
         // gains that are actually in force. Read once here — `route` is a
         // control-thread query, not the audio path.
-        let (l, r) = self.gains(self.volume.load().get(), self.pan.load().get());
+        let volume = self.volume.load();
+        let (l, r) = self.gains(volume, self.pan.load());
+        let unbalanced = volume * self.live_factor();
         let mut out = SignalFrame::new(self.channels);
         for c in 0..self.channels {
             let g = match c {
                 0 => l,
                 1 => r,
-                _ => self.volume.load().get(),
+                // `unbalanced`, not the bare fader: a muted strip propagates
+                // silence on every channel, not just the balanced pair.
+                _ => unbalanced,
             };
-            out.set(c, input.at(c).scale(g as f64));
+            out.set(c, input.at(c).scale(g.get() as f64));
         }
         out
     }
@@ -420,10 +470,10 @@ mod tests {
         let mut s = BusStripUnit::new();
 
         set_param(&mut s, UnitParam::Volume, 0.25);
-        assert_eq!(s.volume.load().get(), 0.25);
+        assert_eq!(s.volume_value(), Amplitude(0.25));
 
         set_param(&mut s, UnitParam::Pan, -1.0);
-        assert_eq!(s.pan.load().get(), -1.0);
+        assert_eq!(s.pan_value(), Pan(-1.0));
 
         set_param(&mut s, UnitParam::Mute, 1.0);
         assert!(s.is_muted());
@@ -479,7 +529,7 @@ mod tests {
         let clone = original.clone();
         clone.set_volume(Amplitude(0.1));
         clone.set_muted(true);
-        assert_eq!(original.volume.load().get(), 0.1);
+        assert_eq!(original.volume_value(), Amplitude(0.1));
         assert!(original.is_muted());
     }
 
@@ -495,6 +545,36 @@ mod tests {
         assert_eq!(out[0], 0.5); // near channel: unity balance × volume
         assert_eq!(out[1], 0.0); // far channel: balanced away
         assert_eq!(out[2], 0.5); // no balance applied, volume only
+    }
+
+    /// `route` reports what the strip does to a signal, so a muted strip must
+    /// report silence on **every** channel — including the ones past the stereo
+    /// pair, which take the unbalanced path.
+    ///
+    /// Worth a test because `route` is a second, hand-written copy of the gain
+    /// arithmetic (it answers a control-thread query rather than processing
+    /// samples), so it can drift from `tick`/`process` without any audio changing.
+    /// An earlier draft applied the bare fader there and let a muted surround
+    /// channel report itself as passing signal.
+    #[test]
+    fn route_reports_mute_on_every_channel() {
+        use tutti_core::dsp::Signal;
+
+        let mut s = BusStripUnit::with_channels(3);
+        s.set_muted(true);
+        let mut input = SignalFrame::new(3);
+        for c in 0..3 {
+            input.set(c, Signal::Value(1.0));
+        }
+        // `Signal` implements neither `PartialEq` nor `Debug`, so match the
+        // variant rather than comparing.
+        let out = s.route(&input, 48_000.0);
+        for c in 0..3 {
+            assert!(
+                matches!(out.at(c), Signal::Value(v) if v == 0.0),
+                "channel {c} must report silence while muted"
+            );
+        }
     }
 
     /// The block path must agree with the per-sample one. They are separate

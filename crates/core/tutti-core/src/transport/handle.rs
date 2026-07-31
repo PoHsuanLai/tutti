@@ -149,7 +149,7 @@ mod tests {
             "the clock must see later tempo changes"
         );
 
-        let _ = t.motion.try_send(MotionEvent::locate(4.0));
+        let _ = t.motion.try_send(MotionEvent::locate(Beat(4.0)));
         t.motion.drain();
         assert_eq!(inputs.seek.take(), Some(Beat(4.0)));
     }

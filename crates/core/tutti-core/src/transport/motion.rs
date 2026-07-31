@@ -79,7 +79,7 @@ pub enum MotionEvent {
     },
     /// Jump to `beat`.
     Locate {
-        beat: f64,
+        beat: Beat,
         fade: FadeOut,
         then: Then,
     },
@@ -107,7 +107,7 @@ impl MotionEvent {
 
     /// Jump to `beat` without disturbing the current motion — the scrub-bar
     /// seek.
-    pub const fn locate(beat: f64) -> Self {
+    pub const fn locate(beat: Beat) -> Self {
         Self::Locate {
             beat,
             fade: FadeOut::Declick,
@@ -116,7 +116,7 @@ impl MotionEvent {
     }
 
     /// Jump to `beat` and roll from there.
-    pub const fn locate_and_play(beat: f64) -> Self {
+    pub const fn locate_and_play(beat: Beat) -> Self {
         Self::Locate {
             beat,
             fade: FadeOut::Declick,
@@ -129,7 +129,7 @@ impl MotionEvent {
     /// The Stop button. Sending a stop and a locate as two events drains both
     /// in one callback, so the seek lands immediately and the fade ramps down
     /// audio rendered from the *new* position — protecting nothing.
-    pub const fn stop_and_return(beat: f64) -> Self {
+    pub const fn stop_and_return(beat: Beat) -> Self {
         Self::Locate {
             beat,
             fade: FadeOut::Declick,
@@ -401,7 +401,7 @@ mod tests {
     #[test]
     fn locate_requests_a_seek_and_moves_the_beat() {
         let m = fsm();
-        let _ = m.try_send(MotionEvent::locate(8.0));
+        let _ = m.try_send(MotionEvent::locate(Beat(8.0)));
         m.drain();
 
         assert_eq!(m.seek.take(), Some(Beat(8.0)), "the clock must see a seek");
@@ -411,7 +411,7 @@ mod tests {
     #[test]
     fn locate_and_play_rolls_after_the_jump() {
         let m = fsm();
-        let _ = m.try_send(MotionEvent::locate_and_play(4.0));
+        let _ = m.try_send(MotionEvent::locate_and_play(Beat(4.0)));
         m.drain();
 
         assert_eq!(m.seek.take(), Some(Beat(4.0)));
@@ -444,7 +444,7 @@ mod tests {
         m.drain();
         m.settings.set_beat(12.0);
 
-        let _ = m.try_send(MotionEvent::stop_and_return(0.0));
+        let _ = m.try_send(MotionEvent::stop_and_return(Beat(0.0)));
         m.drain();
 
         assert_eq!(m.motion(), MotionState::DeclickToLocate);
@@ -470,7 +470,7 @@ mod tests {
         let m = fsm();
         m.settings.set_beat(9.0);
 
-        let _ = m.try_send(MotionEvent::stop_and_return(0.0));
+        let _ = m.try_send(MotionEvent::stop_and_return(Beat(0.0)));
         m.drain();
 
         assert!(m.is_stopped());
@@ -495,7 +495,7 @@ mod tests {
     fn send_all_preserves_order() {
         let m = fsm();
         assert!(m
-            .try_send_all([MotionEvent::locate(16.0), MotionEvent::Play])
+            .try_send_all([MotionEvent::locate(Beat(16.0)), MotionEvent::Play])
             .is_ok());
         m.drain();
 

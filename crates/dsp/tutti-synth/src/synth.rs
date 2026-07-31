@@ -5,7 +5,7 @@
 use core::fmt;
 
 use crate::{AllocationStrategy, PortamentoConfig, Tuning, UnisonConfig, VoiceMode};
-use tutti_core::{Hz, Resonance, Semitones, Q};
+use tutti_core::{Amplitude, Hz, Resonance, Seconds, Semitones, Q};
 
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum OscillatorType {
@@ -86,44 +86,51 @@ impl fmt::Display for FilterType {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct EnvelopeConfig {
-    pub attack: f32,
-    pub decay: f32,
-    /// 0.0 - 1.0
-    pub sustain: f32,
-    pub release: f32,
+    pub attack: Seconds,
+    pub decay: Seconds,
+    /// The held level, not a time — which is why it is the one `Amplitude`
+    /// among three `Seconds`. As four bare `f32`s it sat third in a positional
+    /// constructor and could be swapped with any of them.
+    pub sustain: Amplitude,
+    pub release: Seconds,
 }
 
 impl Default for EnvelopeConfig {
     fn default() -> Self {
         Self {
-            attack: 0.01,
-            decay: 0.1,
-            sustain: 0.7,
-            release: 0.2,
+            attack: Seconds(0.01),
+            decay: Seconds(0.1),
+            sustain: Amplitude(0.7),
+            release: Seconds(0.2),
         }
     }
 }
 
 impl EnvelopeConfig {
-    pub fn new(attack: f32, decay: f32, sustain: f32, release: f32) -> Self {
+    pub fn new(
+        attack: impl Into<Seconds>,
+        decay: impl Into<Seconds>,
+        sustain: impl Into<Amplitude>,
+        release: impl Into<Seconds>,
+    ) -> Self {
         Self {
-            attack,
-            decay,
-            sustain,
-            release,
+            attack: attack.into(),
+            decay: decay.into(),
+            sustain: sustain.into(),
+            release: release.into(),
         }
     }
 
     pub fn organ() -> Self {
-        Self::new(0.001, 0.0, 1.0, 0.01)
+        Self::new(Seconds(0.001), Seconds(0.0), Amplitude(1.0), Seconds(0.01))
     }
 
     pub fn pluck() -> Self {
-        Self::new(0.001, 0.3, 0.0, 0.1)
+        Self::new(Seconds(0.001), Seconds(0.3), Amplitude(0.0), Seconds(0.1))
     }
 
     pub fn pad() -> Self {
-        Self::new(0.5, 0.2, 0.8, 1.0)
+        Self::new(Seconds(0.5), Seconds(0.2), Amplitude(0.8), Seconds(1.0))
     }
 }
 
@@ -190,15 +197,15 @@ mod tests {
     #[test]
     fn test_envelope_presets() {
         let organ = EnvelopeConfig::organ();
-        assert!(organ.attack < 0.01);
-        assert_eq!(organ.sustain, 1.0);
+        assert!(organ.attack.get() < 0.01);
+        assert_eq!(organ.sustain.get(), 1.0);
 
         let pluck = EnvelopeConfig::pluck();
-        assert!(pluck.attack < 0.01);
-        assert_eq!(pluck.sustain, 0.0);
+        assert!(pluck.attack.get() < 0.01);
+        assert_eq!(pluck.sustain.get(), 0.0);
 
         let pad = EnvelopeConfig::pad();
-        assert!(pad.attack > 0.1);
-        assert!(pad.release > 0.5);
+        assert!(pad.attack.get() > 0.1);
+        assert!(pad.release.get() > 0.5);
     }
 }

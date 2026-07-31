@@ -39,13 +39,19 @@ pub(super) struct SvfCoeffs {
 }
 
 /// Compute SVF filter coefficients from parameters (pure function, no state).
+///
+/// The three tuning parameters are three different units. As bare `f32`s they
+/// were adjacent and interchangeable, and the call reads as a run of positional
+/// numbers — `(LowPass, 1000.0, 0.707, 0.0, 44100.0)` — where transposing any
+/// two compiles and detunes the filter.
 pub(super) fn compute_svf_coeffs(
     filter_type: SvfType,
-    freq: f32,
-    q: f32,
-    gain_db: f32,
+    freq: impl Into<Hz>,
+    q: impl Into<Q>,
+    gain_db: impl Into<Db>,
     sample_rate: impl Into<SampleRate>,
 ) -> SvfCoeffs {
+    let (freq, q, gain_db) = (freq.into().get(), q.into().get(), gain_db.into().get());
     let sample_rate = sample_rate.into();
     // 0.998 of Nyquist is the old `sample_rate * 0.499`: `tan` diverges at
     // Nyquist itself, so the cutoff has to stop just short.
@@ -98,9 +104,9 @@ struct SvfCoefficients<F: Real> {
     m0: F,
     m1: F,
     m2: F,
-    last_freq: f32,
-    last_q: f32,
-    last_gain_db: f32,
+    last_freq: Hz,
+    last_q: Q,
+    last_gain_db: Db,
 }
 
 impl<F: Real> SvfCoefficients<F> {
@@ -113,17 +119,17 @@ impl<F: Real> SvfCoefficients<F> {
             m0: zero,
             m1: zero,
             m2: zero,
-            last_freq: -1.0,
-            last_q: -1.0,
-            last_gain_db: f32::NAN,
+            last_freq: Hz(-1.0),
+            last_q: Q(-1.0),
+            last_gain_db: Db(f32::NAN),
         }
     }
 
     fn invalidate(&mut self) {
-        self.last_freq = -1.0;
+        self.last_freq = Hz(-1.0);
     }
 
-    fn store(&mut self, c: SvfCoeffs, freq: f32, q: f32, gain_db: f32) {
+    fn store(&mut self, c: SvfCoeffs, freq: Hz, q: Q, gain_db: Db) {
         self.a1 = F::from_f64(c.a1);
         self.a2 = F::from_f64(c.a2);
         self.a3 = F::from_f64(c.a3);
@@ -195,14 +201,14 @@ impl<F: Real> SvfFilterNode<F> {
             coeffs: SvfCoefficients::zeroed(),
             integrator: SvfIntegrator::zeroed(),
         };
-        node.update_coefficients(frequency.get(), q.get(), 0.0);
+        node.update_coefficients(frequency, q, Db(0.0));
         node
     }
 
     pub fn with_gain_db(mut self, db: impl Into<Db>) -> Self {
         let db = db.into();
         self.gain_db = Param::new(db);
-        self.update_coefficients(self.frequency.load().get(), self.q.load().get(), db.get());
+        self.update_coefficients(self.frequency.load(), self.q.load(), db);
         self
     }
 
@@ -236,19 +242,19 @@ impl<F: Real> SvfFilterNode<F> {
         self.coeffs.invalidate();
     }
 
-    fn update_coefficients(&mut self, freq: f32, q: f32, gain_db: f32) {
+    fn update_coefficients(&mut self, freq: Hz, q: Q, gain_db: Db) {
         let c = compute_svf_coeffs(self.filter_type, freq, q, gain_db, self.sample_rate);
         self.coeffs.store(c, freq, q, gain_db);
     }
 
     #[inline]
     fn maybe_update(&mut self) {
-        let freq = self.frequency.load().get();
-        let q = self.q.load().get();
-        let gain_db = self.gain_db.load().get();
-        if (freq - self.coeffs.last_freq).abs() > FREQ_EPS
-            || (q - self.coeffs.last_q).abs() > Q_EPS
-            || (gain_db - self.coeffs.last_gain_db).abs() > GAIN_EPS
+        let freq = self.frequency.load();
+        let q = self.q.load();
+        let gain_db = self.gain_db.load();
+        if (freq.get() - self.coeffs.last_freq.get()).abs() > FREQ_EPS
+            || (q.get() - self.coeffs.last_q.get()).abs() > Q_EPS
+            || (gain_db.get() - self.coeffs.last_gain_db.get()).abs() > GAIN_EPS
         {
             self.update_coefficients(freq, q, gain_db);
         }
@@ -414,7 +420,7 @@ impl<F: Real> StereoSvfFilterNode<F> {
             mod_cutoff: false,
             mod_q: false,
         };
-        node.update_coefficients(frequency.get(), q.get(), 0.0);
+        node.update_coefficients(frequency, q, Db(0.0));
         node
     }
 
@@ -443,7 +449,7 @@ impl<F: Real> StereoSvfFilterNode<F> {
             mod_cutoff,
             mod_q,
         };
-        node.update_coefficients(frequency.get(), q.get(), 0.0);
+        node.update_coefficients(frequency, q, Db(0.0));
         node
     }
 
@@ -471,7 +477,7 @@ impl<F: Real> StereoSvfFilterNode<F> {
     pub fn with_gain_db(mut self, db: impl Into<Db>) -> Self {
         let db = db.into();
         self.gain_db = Param::new(db);
-        self.update_coefficients(self.frequency.load().get(), self.q.load().get(), db.get());
+        self.update_coefficients(self.frequency.load(), self.q.load(), db);
         self
     }
 
@@ -504,15 +510,15 @@ impl<F: Real> StereoSvfFilterNode<F> {
         self.coeffs.invalidate();
     }
 
-    fn update_coefficients(&mut self, freq: f32, q: f32, gain_db: f32) {
+    fn update_coefficients(&mut self, freq: Hz, q: Q, gain_db: Db) {
         let c = compute_svf_coeffs(self.filter_type, freq, q, gain_db, self.sample_rate);
         self.coeffs.store(c, freq, q, gain_db);
     }
 
     #[inline]
     fn maybe_update(&mut self) {
-        let freq = self.frequency.load().0;
-        let q = self.q.load().0;
+        let freq = self.frequency.load();
+        let q = self.q.load();
         self.maybe_update_modulated(freq, q);
     }
 
@@ -521,11 +527,11 @@ impl<F: Real> StereoSvfFilterNode<F> {
     /// ([`Self::maybe_update`]) and audio-rate modulation paths; gain always
     /// comes from its atomic.
     #[inline]
-    fn maybe_update_modulated(&mut self, freq: f32, q: f32) {
-        let gain_db = self.gain_db.load().0;
-        if (freq - self.coeffs.last_freq).abs() > FREQ_EPS
-            || (q - self.coeffs.last_q).abs() > Q_EPS
-            || (gain_db - self.coeffs.last_gain_db).abs() > GAIN_EPS
+    fn maybe_update_modulated(&mut self, freq: Hz, q: Q) {
+        let gain_db = self.gain_db.load();
+        if (freq.get() - self.coeffs.last_freq.get()).abs() > FREQ_EPS
+            || (q.get() - self.coeffs.last_q.get()).abs() > Q_EPS
+            || (gain_db.get() - self.coeffs.last_gain_db.get()).abs() > GAIN_EPS
         {
             self.update_coefficients(freq, q, gain_db);
         }
@@ -559,8 +565,8 @@ impl<F: Real + 'static> AudioUnit for StereoSvfFilterNode<F> {
         match (self.cutoff_port(), self.q_port()) {
             (None, None) => self.maybe_update(),
             (cp, qp) => {
-                let freq = cp.map_or_else(|| self.frequency.load().0, |p| input[p].max(1.0));
-                let q = qp.map_or_else(|| self.q.load().0, |p| input[p].max(0.01));
+                let freq = cp.map_or_else(|| self.frequency.load(), |p| Hz(input[p].max(1.0)));
+                let q = qp.map_or_else(|| self.q.load(), |p| Q(input[p].max(0.01)));
                 self.maybe_update_modulated(freq, q);
             }
         }
@@ -588,11 +594,11 @@ impl<F: Real + 'static> AudioUnit for StereoSvfFilterNode<F> {
         }
         // Modulated path: read the active port(s) per sample and recompute the
         // (channel-shared) coeffs before ticking every channel.
-        let base_freq = self.frequency.load().0;
-        let base_q = self.q.load().0;
+        let base_freq = self.frequency.load();
+        let base_q = self.q.load();
         for i in 0..size {
-            let freq = cutoff_port.map_or(base_freq, |p| input.at_f32(p, i).max(1.0));
-            let q = q_port.map_or(base_q, |p| input.at_f32(p, i).max(0.01));
+            let freq = cutoff_port.map_or(base_freq, |p| Hz(input.at_f32(p, i).max(1.0)));
+            let q = q_port.map_or(base_q, |p| Q(input.at_f32(p, i).max(0.01)));
             self.maybe_update_modulated(freq, q);
             for (c, ch) in self.channels.iter_mut().enumerate() {
                 let x = F::from_f32(input.at_f32(c, i));
@@ -883,6 +889,23 @@ mod tests {
             (c.m1).abs() < 1e-10,
             "Bell with 0dB gain should have m1≈0, got {}",
             c.m1
+        );
+    }
+
+    /// Cutoff and Q are not interchangeable, and the types are what say so.
+    ///
+    /// They were adjacent `f32`s, so `(freq, q)` and `(q, freq)` both compiled
+    /// and the second silently detuned the filter. Passing them as `Hz` and `Q`
+    /// makes the transposition a type error — this pins the difference the swap
+    /// would have made, so the two are never quietly given one type again.
+    #[test]
+    fn cutoff_and_q_are_not_interchangeable() {
+        let right = compute_svf_coeffs(SvfType::LowPass, Hz(1000.0), Q(0.707), Db(0.0), 44100.0);
+        // What the transposed call used to compute: a 0.707 Hz cutoff at Q 1000.
+        let swapped = compute_svf_coeffs(SvfType::LowPass, Hz(0.707), Q(1000.0), Db(0.0), 44100.0);
+        assert!(
+            (right.a2 - swapped.a2).abs() > 1e-6,
+            "the swap has to be observable, or this test proves nothing"
         );
     }
 

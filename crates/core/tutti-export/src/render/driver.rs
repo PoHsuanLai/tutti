@@ -312,7 +312,7 @@ mod tests {
     use super::*;
     use std::sync::Arc;
     use tutti_core::transport::{OfflineTimeline, OfflineTimelineConfig, TransportClock};
-    use tutti_core::{AtomicBool, AtomicF64, Bpm, SampleRate};
+    use tutti_core::{AtomicBool, AtomicF64, Beat, Bpm, SampleRate};
 
     /// A mono net whose one channel carries a constant.
     fn mono_dc(v: f32) -> tutti_core::dsp::Net {
@@ -398,7 +398,7 @@ mod tests {
         net.pipe_output(id);
 
         let timeline = Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
-            start_beat,
+            start_beat: Beat(start_beat),
             tempo: Bpm(120.0),
             sample_rate: SampleRate(sample_rate),
             loop_range: None,

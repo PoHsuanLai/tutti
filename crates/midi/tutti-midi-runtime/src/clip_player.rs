@@ -15,7 +15,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use tutti_core::transport::{BeatCursor, BeatWindow, BeatWindowSync, Timeline};
-use tutti_core::SampleRate;
+use tutti_core::{Beat, SampleRate};
 use tutti_midi_types::ump::MidiEvent;
 use tutti_midi_types::unit_id::MidiUnitId;
 use tutti_midi_types::{MidiIn, MidiOut};
@@ -103,7 +103,7 @@ impl MidiClipSource {
     }
 
     /// Reset the cursor to the start. Used after a transport seek.
-    fn rewind_to(&self, beat: f64) {
+    fn rewind_to(&self, beat: Beat) {
         let mut idx = 0usize;
         while idx < self.events.len() && self.events[idx].beat < beat {
             idx += 1;
@@ -191,6 +191,7 @@ mod tests {
     use atomic_float::AtomicF64;
     use std::sync::atomic::AtomicBool;
     use tutti_core::params::Bpm;
+    use tutti_core::BeatDuration;
 
     /// Minimal `Timeline` for tests: tempo + beat under a switch.
     struct TestTransport {
@@ -242,11 +243,11 @@ mod tests {
 
         let events = vec![
             TimedClipEvent {
-                beat: 0.0,
+                beat: Beat(0.0),
                 event: note_on(60, 100),
             },
             TimedClipEvent {
-                beat: 0.5,
+                beat: Beat(0.5),
                 event: note_on(64, 100),
             },
         ];
@@ -282,7 +283,7 @@ mod tests {
         let source = MidiClipSource::new(
             unit,
             vec![TimedClipEvent {
-                beat: 0.0,
+                beat: Beat(0.0),
                 event: note_on(60, 100),
             }],
             Arc::clone(&transport) as Arc<dyn Timeline>,
@@ -300,7 +301,7 @@ mod tests {
         let source = MidiClipSource::new(
             unit,
             vec![TimedClipEvent {
-                beat: 0.0,
+                beat: Beat(0.0),
                 event: note_on(60, 100),
             }],
             Arc::clone(&transport) as Arc<dyn Timeline>,
@@ -318,11 +319,11 @@ mod tests {
             unit,
             vec![
                 TimedClipEvent {
-                    beat: 0.0,
+                    beat: Beat(0.0),
                     event: note_on(60, 100),
                 },
                 TimedClipEvent {
-                    beat: 0.25,
+                    beat: Beat(0.25),
                     event: note_on(64, 100),
                 },
             ],
@@ -357,11 +358,11 @@ mod tests {
             unit,
             vec![
                 TimedClipEvent {
-                    beat: 0.0,
+                    beat: Beat(0.0),
                     event: note_on(60, 100),
                 },
                 TimedClipEvent {
-                    beat: 0.25,
+                    beat: Beat(0.25),
                     event: note_on(64, 100),
                 },
             ],
@@ -398,7 +399,7 @@ mod tests {
         let source = MidiClipSource::new(
             unit,
             vec![TimedClipEvent {
-                beat: 0.0,
+                beat: Beat(0.0),
                 event: note_on(60, 100),
             }],
             Arc::clone(&transport) as Arc<dyn Timeline>,
@@ -415,11 +416,11 @@ mod tests {
             MidiUnitId::new(1),
             vec![
                 TimedClipEvent {
-                    beat: 0.0,
+                    beat: Beat(0.0),
                     event: note_on(60, 100),
                 },
                 TimedClipEvent {
-                    beat: 0.5,
+                    beat: Beat(0.5),
                     event: note_on(64, 100),
                 },
             ],
@@ -446,8 +447,8 @@ mod tests {
         transport.playing.store(true, Ordering::Release);
         transport.set_beat(0.5);
         let w = source.sync_to_transport(22050).expect("playing → window");
-        assert_eq!(w.start_beat, 0.5);
-        assert!(w.end_beat > 0.5);
+        assert_eq!(w.start_beat, Beat(0.5));
+        assert!(w.end_beat > Beat(0.5));
 
         // Advance through both events (playhead moves forward to 2.0), so the
         // cursor is exhausted and last_beat is high. Then seek backward to 0:
@@ -481,10 +482,10 @@ mod tests {
         let source = one_note_source(&transport);
 
         // 120 BPM @ 44.1kHz → 22050 samples/beat. Window [0.0, 1.0) covers both.
-        let beats_per_sample = 120.0 / 60.0 / 44100.0;
+        let beats_per_sample = BeatDuration(120.0 / 60.0 / 44100.0);
         let window = BeatWindow {
-            start_beat: 0.0,
-            end_beat: 1.0,
+            start_beat: Beat(0.0),
+            end_beat: Beat(1.0),
             beats_per_sample,
             max_offset: 22049,
         };
@@ -503,10 +504,10 @@ mod tests {
     fn emit_window_respects_out_buffer_capacity() {
         let transport = Arc::new(TestTransport::new(120.0));
         let source = one_note_source(&transport);
-        let beats_per_sample = 120.0 / 60.0 / 44100.0;
+        let beats_per_sample = BeatDuration(120.0 / 60.0 / 44100.0);
         let window = BeatWindow {
-            start_beat: 0.0,
-            end_beat: 1.0,
+            start_beat: Beat(0.0),
+            end_beat: Beat(1.0),
             beats_per_sample,
             max_offset: 22049,
         };

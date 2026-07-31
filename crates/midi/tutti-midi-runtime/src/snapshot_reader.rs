@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use atomic_float::AtomicF64;
 use tutti_core::transport::OfflineTimeline;
+use tutti_core::Beat;
 use tutti_midi_types::ump::MidiEvent;
 use tutti_midi_types::{MidiIn, MidiUnitId};
 
@@ -52,14 +53,14 @@ impl MidiSnapshotReader {
 
 impl MidiIn for MidiSnapshotReader {
     fn poll_into(&self, unit_id: MidiUnitId, block_size: usize, buffer: &mut [MidiEvent]) -> usize {
-        let current_beat = self.timeline.beat().get();
-        let last_beat = self.last_poll_beat.load(Ordering::Acquire);
+        let current_beat = self.timeline.beat();
+        let last_beat = Beat(self.last_poll_beat.load(Ordering::Acquire));
 
         if current_beat <= last_beat {
             return 0;
         }
 
-        let beats_per_sample = self.timeline.beats_per_sample().get();
+        let beats_per_sample = self.timeline.beats_per_sample();
         let count = self.snapshot.poll_range_timed(
             unit_id,
             last_beat,
@@ -88,7 +89,8 @@ impl MidiIn for MidiSnapshotReader {
         // cursor moved forward only for the events we wrote — the rest will
         // come out on the next call at the same `current_beat`.
         if count < buffer.len() {
-            self.last_poll_beat.store(current_beat, Ordering::Release);
+            self.last_poll_beat
+                .store(current_beat.get(), Ordering::Release);
         }
         count
     }
@@ -122,12 +124,12 @@ mod tests {
     fn test_snapshot_reader_polls_on_advance() {
         let mut snapshot = MidiSnapshot::new();
         let unit_id = MidiUnitId::new(42);
-        snapshot.add_event(unit_id, 0.0, note_on(60, 100));
-        snapshot.add_event(unit_id, 1.0, note_on(64, 100));
-        snapshot.add_event(unit_id, 2.0, note_on(67, 100));
+        snapshot.add_event(unit_id, Beat(0.0), note_on(60, 100));
+        snapshot.add_event(unit_id, Beat(1.0), note_on(64, 100));
+        snapshot.add_event(unit_id, Beat(2.0), note_on(67, 100));
 
         let timeline = Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
-            start_beat: 0.0,
+            start_beat: Beat(0.0),
             tempo: tutti_core::Bpm(120.0),
             sample_rate: tutti_core::SampleRate(44100.0),
             loop_range: None,
@@ -172,12 +174,12 @@ mod tests {
         // no duplicates and nothing dropped.
         let mut snapshot = MidiSnapshot::new();
         let unit_id = MidiUnitId::new(5);
-        snapshot.add_event(unit_id, 0.0, note_on(60, 100));
-        snapshot.add_event(unit_id, 0.1, note_on(62, 100));
-        snapshot.add_event(unit_id, 0.2, note_on(64, 100));
+        snapshot.add_event(unit_id, Beat(0.0), note_on(60, 100));
+        snapshot.add_event(unit_id, Beat(0.1), note_on(62, 100));
+        snapshot.add_event(unit_id, Beat(0.2), note_on(64, 100));
 
         let timeline = Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
-            start_beat: 0.0,
+            start_beat: Beat(0.0),
             tempo: tutti_core::Bpm(120.0),
             sample_rate: tutti_core::SampleRate(44100.0),
             loop_range: None,
@@ -220,12 +222,12 @@ mod tests {
         let mut snapshot = MidiSnapshot::new();
         let unit_id = MidiUnitId::new(7);
         // Three events spaced quarter-beats apart starting at 0.
-        snapshot.add_event(unit_id, 0.0, note_on(60, 100));
-        snapshot.add_event(unit_id, 0.25, note_on(62, 100));
-        snapshot.add_event(unit_id, 0.5, note_on(64, 100));
+        snapshot.add_event(unit_id, Beat(0.0), note_on(60, 100));
+        snapshot.add_event(unit_id, Beat(0.25), note_on(62, 100));
+        snapshot.add_event(unit_id, Beat(0.5), note_on(64, 100));
 
         let timeline = Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
-            start_beat: 0.0,
+            start_beat: Beat(0.0),
             tempo: tutti_core::Bpm(120.0),
             sample_rate: tutti_core::SampleRate(44100.0),
             loop_range: None,

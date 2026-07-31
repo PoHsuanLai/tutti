@@ -18,7 +18,7 @@
 use std::path::Path;
 
 use tutti_core::dsp::{BufferArray, U2};
-use tutti_core::{AudioUnit, Hz, Spread, Q};
+use tutti_core::{Amplitude, AudioUnit, Hz, Seconds, Spread, Q};
 use tutti_midi_types::translation::scaling::midi1_velocity_to_midi2;
 use tutti_midi_types::ump::MidiEvent;
 use tutti_synth::{
@@ -34,10 +34,10 @@ const BLOCKS: usize = 400;
 /// would smear every harmonic measurement across the analysis window.
 fn flat_envelope() -> EnvelopeConfig {
     EnvelopeConfig {
-        attack: 0.001,
-        decay: 0.0,
-        sustain: 1.0,
-        release: 0.3,
+        attack: Seconds(0.001),
+        decay: Seconds(0.0),
+        sustain: Amplitude(1.0),
+        release: Seconds(0.3),
     }
 }
 

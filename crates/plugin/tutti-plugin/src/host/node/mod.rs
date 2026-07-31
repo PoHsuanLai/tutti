@@ -55,10 +55,11 @@ use crate::protocol::{
     TransportInfo,
 };
 use crate::util::config::BridgeConfig;
-use batcher::{Batcher, PIPELINE_LATENCY_SAMPLES};
+use batcher::{Batcher, PIPELINE_LATENCY_FRAMES};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use tutti_core::Samples;
 
 /// Cheap to clone: clones share `bridge`, `latency`, and `process_guard`
 /// (all Arc) but get independent `io` and `midi` state (fundsp clones
@@ -217,7 +218,7 @@ impl PluginClient {
     /// since MIDI re-entering routing has no delay line to sit in.
     #[inline]
     fn shift_midi_out_into_this_block(&mut self) {
-        let shift = PIPELINE_LATENCY_SAMPLES as u32;
+        let shift = PIPELINE_LATENCY_FRAMES.get() as u32;
         for ev in self.midi_out.iter_mut() {
             ev.frame_offset = ev.frame_offset.saturating_sub(shift);
         }
@@ -364,8 +365,8 @@ impl PluginClient {
         &self.process_guard
     }
 
-    pub fn latency(&self) -> usize {
-        self.latency.load(Ordering::Acquire)
+    pub fn latency(&self) -> Samples {
+        Samples(self.latency.load(Ordering::Acquire))
     }
 
     /// Runtime latency update. RT-safe.
@@ -377,8 +378,8 @@ impl PluginClient {
     /// own — a graph edit (`Net::commit()`) is required. Register a
     /// callback via `PluginHandle::on_invalidate` (latency arrives as
     /// `PluginInvalidation::Latency`) to get notified.
-    pub fn set_latency(&self, samples: usize) {
-        self.latency.store(samples, Ordering::Release);
+    pub fn set_latency(&self, samples: impl Into<Samples>) {
+        self.latency.store(samples.into().get(), Ordering::Release);
     }
 
     /// Catalog identity (id, name, vendor, version, native class, editor).

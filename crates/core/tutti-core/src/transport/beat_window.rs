@@ -15,17 +15,21 @@ use std::sync::Arc;
 use crate::transport::Timeline;
 use crate::AtomicF64;
 use crate::SampleRate;
+use tutti_types::value::units::{Beat, BeatDuration};
 
 /// Beat range one audio block covers, plus the factors to place an event inside
 /// it. Produced by [`BeatWindow::from_timeline`].
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BeatWindow {
     /// First beat of the block (inclusive).
-    pub start_beat: f64,
+    pub start_beat: Beat,
     /// One past the last beat of the block (exclusive).
-    pub end_beat: f64,
+    pub end_beat: Beat,
     /// Beats advanced per output sample — the beat↔sample conversion factor.
-    pub beats_per_sample: f64,
+    ///
+    /// A span, not a position: two `Beat`s and one `BeatDuration`, so plugging
+    /// the rate into a position slot no longer compiles.
+    pub beats_per_sample: BeatDuration,
     /// Largest in-block sample offset, i.e. `block_size - 1`. Offsets are
     /// clamped to this so a caller never splits past the end of its buffer.
     pub max_offset: u32,
@@ -85,16 +89,16 @@ impl BeatWindow {
         timeline: &dyn Timeline,
         sample_rate: SampleRate,
         block_size: usize,
-        last_beat: &mut f64,
+        last_beat: &mut Beat,
     ) -> Option<(Self, BeatWindowSync)> {
         if !timeline.is_rolling() {
             // Track the beat anyway so a seek-while-paused doesn't surprise us
             // when playback resumes.
-            *last_beat = timeline.beat().get();
+            *last_beat = timeline.beat();
             return None;
         }
 
-        let start_beat = timeline.beat().get();
+        let start_beat = timeline.beat();
 
         let tempo_bpm = timeline.tempo().get();
         if tempo_bpm <= 0.0 || sample_rate.get() <= 0.0 || block_size == 0 {
@@ -103,13 +107,13 @@ impl BeatWindow {
             *last_beat = start_beat;
             return None;
         }
-        let beats_per_sample = super::state::beats_per_sample(tempo_bpm, sample_rate).get();
+        let beats_per_sample = super::state::beats_per_sample(tempo_bpm, sample_rate);
 
         // Tolerate a tiny epsilon so float jitter at exactly-equal beats doesn't
         // trigger a spurious reseek.
         let sync = if start_beat + SEEK_EPSILON < *last_beat {
             BeatWindowSync::Rewound
-        } else if *last_beat > f64::NEG_INFINITY
+        } else if *last_beat > Beat(f64::NEG_INFINITY)
             && start_beat > *last_beat + forward_slack(beats_per_sample, block_size)
         {
             BeatWindowSync::Jumped
@@ -120,7 +124,7 @@ impl BeatWindow {
         Some((
             Self {
                 start_beat,
-                end_beat: start_beat + (block_size as f64) * beats_per_sample,
+                end_beat: start_beat + beats_per_sample * block_size as f64,
                 beats_per_sample,
                 max_offset: (block_size - 1) as u32,
             },
@@ -131,22 +135,31 @@ impl BeatWindow {
     /// Where `beat` lands inside this block, as a sample offset clamped to
     /// [`max_offset`](Self::max_offset). Beats at or before the window start
     /// map to 0.
+    ///
+    /// The one home for beat→in-block-offset. Three callers hand-rolled
+    /// `(beat - origin) / beats_per_sample` with three different zero-guards:
+    /// this one had none, so a zero rate divided to infinity and slammed every
+    /// event to the *end* of the block, while the snapshot path left the event's
+    /// offset alone. A non-positive rate now means offset 0 everywhere.
     #[inline]
-    pub fn offset_of(&self, beat: f64) -> u32 {
-        let beat_delta = (beat - self.start_beat).max(0.0);
+    pub fn offset_of(&self, beat: Beat) -> u32 {
+        if self.beats_per_sample <= BeatDuration(0.0) {
+            return 0;
+        }
+        let beat_delta = (beat - self.start_beat).max(BeatDuration(0.0));
         ((beat_delta / self.beats_per_sample) as u32).min(self.max_offset)
     }
 
     /// Whether `beat` falls inside this block's `[start, end)` range.
     #[inline]
-    pub fn contains(&self, beat: f64) -> bool {
+    pub fn contains(&self, beat: Beat) -> bool {
         beat >= self.start_beat && beat < self.end_beat
     }
 }
 
 /// Backward-jump tolerance, in beats. Below this a beat decrease is treated as
 /// float jitter rather than a seek.
-const SEEK_EPSILON: f64 = 1e-9;
+const SEEK_EPSILON: BeatDuration = BeatDuration(1e-9);
 
 /// How far past the previous block's start the playhead may legitimately land
 /// before it counts as a forward jump.
@@ -163,7 +176,7 @@ const SEEK_EPSILON: f64 = 1e-9;
 /// and like it, generous on purpose: a real seek moves the playhead far, so
 /// there is no need to resolve small ones.
 #[inline]
-fn forward_slack(beats_per_sample: f64, block_size: usize) -> f64 {
+fn forward_slack(beats_per_sample: BeatDuration, block_size: usize) -> BeatDuration {
     const SLACK_BLOCKS: f64 = 4.0;
     beats_per_sample * block_size as f64 * SLACK_BLOCKS
 }
@@ -210,7 +223,7 @@ impl BeatCursor {
     ///
     /// RT-safe: `&self`, no allocation, no locks.
     pub fn advance(&self, block_size: usize) -> Option<(BeatWindow, BeatWindowSync)> {
-        let mut last = self.last_beat.load(crate::Ordering::Acquire);
+        let mut last = Beat(self.last_beat.load(crate::Ordering::Acquire));
         let out = BeatWindow::from_timeline(
             self.transport.as_ref(),
             self.sample_rate,
@@ -219,7 +232,7 @@ impl BeatCursor {
         );
         // Written even on the paused path, so it is stored unconditionally —
         // this is the ordering the old call sites had to remember by hand.
-        self.last_beat.store(last, crate::Ordering::Release);
+        self.last_beat.store(last.get(), crate::Ordering::Release);
         out
     }
 
@@ -391,7 +404,11 @@ mod tests {
             BeatWindowSync::Rolling,
             "the paused path reconciled the beat, so resume is continuous"
         );
-        assert_eq!(w.start_beat, 8.0, "and it resumes at the sought position");
+        assert_eq!(
+            w.start_beat,
+            Beat(8.0),
+            "and it resumes at the sought position"
+        );
     }
 
     /// A plain stop/start with no seek must also be continuous — the same
@@ -435,17 +452,64 @@ mod tests {
         let cursor = BeatCursor::new(t, SR);
         let (w, _) = cursor.advance(BLOCK).unwrap();
 
-        assert_eq!(w.start_beat, 4.0);
-        assert!((w.end_beat - (4.0 + block_beats())).abs() < 1e-12);
+        assert_eq!(w.start_beat, Beat(4.0));
+        assert!((w.end_beat - Beat(4.0 + block_beats())).abs() < BeatDuration(1e-12));
         assert_eq!(w.max_offset, BLOCK as u32 - 1);
-        assert_eq!(w.offset_of(4.0), 0);
-        assert_eq!(w.offset_of(0.0), 0, "beats before the window clamp to 0");
+        assert_eq!(w.offset_of(Beat(4.0)), 0);
         assert_eq!(
-            w.offset_of(1_000.0),
+            w.offset_of(Beat(0.0)),
+            0,
+            "beats before the window clamp to 0"
+        );
+        assert_eq!(
+            w.offset_of(Beat(1_000.0)),
             w.max_offset,
             "beats past the window clamp to the last offset"
         );
-        assert!(w.contains(4.0));
+        assert!(w.contains(Beat(4.0)));
         assert!(!w.contains(w.end_beat));
+    }
+
+    /// A zero rate places events at the *start* of the block, not the end.
+    ///
+    /// `offset_of` had no zero-guard: the division went to infinity and the
+    /// `min(max_offset)` clamp turned that into "last sample of the block", so
+    /// every event in a stalled block bunched at its tail. The snapshot path
+    /// guarded and left offsets alone. Two conversions, two answers, opposite
+    /// ends of the buffer.
+    ///
+    /// A window this degenerate only arises if one is built by hand —
+    /// `from_timeline` rejects a non-positive tempo before constructing one —
+    /// but the fields are `pub`, so the constructor is not the only way in.
+    #[test]
+    fn a_stalled_rate_puts_events_at_the_block_start() {
+        let w = BeatWindow {
+            start_beat: Beat(1.0),
+            end_beat: Beat(2.0),
+            beats_per_sample: BeatDuration(0.0),
+            max_offset: 511,
+        };
+        assert_eq!(
+            w.offset_of(Beat(1.5)),
+            0,
+            "a zero rate cannot place an event; it must not slam it to the tail"
+        );
+    }
+
+    /// The three window fields are two positions and a span, so transposing a
+    /// position and the rate is a type error rather than a silent misplacement.
+    ///
+    /// `beats_per_sample` sat between `start_beat` and `end_beat` as a third
+    /// `f64`, and the struct is constructed by hand outside this crate.
+    #[test]
+    fn the_rate_and_the_bounds_are_not_the_same_type() {
+        let w = BeatWindow {
+            start_beat: Beat(0.0),
+            end_beat: Beat(1.0),
+            beats_per_sample: BeatDuration(0.5),
+            max_offset: 1,
+        };
+        // Positions subtract to a span; the span is what the rate divides.
+        assert_eq!((w.end_beat - w.start_beat) / w.beats_per_sample, 2.0);
     }
 }

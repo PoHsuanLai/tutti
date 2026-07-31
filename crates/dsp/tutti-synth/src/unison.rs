@@ -7,7 +7,7 @@ use tutti_core::Cents;
 #[cfg(any(feature = "midi", test))]
 use alloc::sync::Arc;
 #[cfg(any(feature = "midi", test))]
-use tutti_core::{AtomicF32, Param, Spread};
+use tutti_core::{Amplitude, AtomicF32, Pan, Param, Phase, Spread};
 
 #[cfg(any(feature = "midi", test))]
 extern crate alloc;
@@ -38,13 +38,12 @@ impl Default for UnisonConfig {
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct UnisonVoiceParams {
-    /// 1.0 = center pitch
+    /// 1.0 = center pitch. Stays a bare ratio: it is the output of
+    /// `Semitones::to_pitch_ratio`, and a multiplier is not one of the units.
     pub freq_ratio: f32,
-    /// -1.0 = left, 1.0 = right
-    pub pan: f32,
-    /// 0.0 to 1.0
-    pub phase_offset: f32,
-    pub amplitude: f32,
+    pub pan: Pan,
+    pub phase_offset: Phase,
+    pub amplitude: Amplitude,
 }
 
 #[cfg(any(feature = "midi", test))]
@@ -107,7 +106,7 @@ impl UnisonEngine {
     pub fn recompute_params(&mut self) {
         let count = usize::from(self.config.voice_count).clamp(1, MAX_UNISON_VOICES);
 
-        let amplitude = 1.0 / (count as f32).sqrt();
+        let amplitude = Amplitude(1.0 / (count as f32).sqrt());
         // A converter, not a divide: `Cents` is `unit_scalable!`, so
         // `detune_cents / 100.0` would compile and hand back `Cents` — wrong by
         // 100x, with a type that says it is fine.
@@ -124,12 +123,12 @@ impl UnisonEngine {
             // voice's position stays in the unit, and the exponent conversion
             // happens once at the end.
             let freq_ratio = (detune_semitones * position).to_pitch_ratio();
-            let pan = position * self.config.stereo_spread.get();
+            let pan = Pan(position * self.config.stereo_spread.get());
 
             self.voices[i] = UnisonVoiceParams {
                 freq_ratio,
                 pan,
-                phase_offset: 0.0,
+                phase_offset: Phase::START,
                 amplitude,
             };
         }
@@ -151,7 +150,7 @@ impl UnisonEngine {
             self.rng_state ^= self.rng_state >> 17;
             self.rng_state ^= self.rng_state << 5;
 
-            self.voices[i].phase_offset = (self.rng_state as f32) / (u32::MAX as f32);
+            self.voices[i].phase_offset = Phase((self.rng_state as f32) / (u32::MAX as f32));
         }
     }
 
@@ -222,8 +221,8 @@ mod tests {
 
         let params = unison.voice_params(0);
         assert!((params.freq_ratio - 1.0).abs() < 0.001);
-        assert!((params.pan - 0.0).abs() < 0.001);
-        assert!((params.amplitude - 1.0).abs() < 0.001);
+        assert!((params.pan.get() - 0.0).abs() < 0.001);
+        assert!((params.amplitude.get() - 1.0).abs() < 0.001);
     }
 
     #[test]
@@ -270,9 +269,9 @@ mod tests {
         let center = unison.voice_params(1);
         let right = unison.voice_params(2);
 
-        assert!((left.pan - (-1.0)).abs() < 0.001);
-        assert!((center.pan - 0.0).abs() < 0.001);
-        assert!((right.pan - 1.0).abs() < 0.001);
+        assert!((left.pan.get() - (-1.0)).abs() < 0.001);
+        assert!((center.pan.get() - 0.0).abs() < 0.001);
+        assert!((right.pan.get() - 1.0).abs() < 0.001);
     }
 
     #[test]
@@ -288,7 +287,7 @@ mod tests {
             let sum_sq: f32 = unison
                 .all_params()
                 .iter()
-                .map(|p| p.amplitude * p.amplitude)
+                .map(|p| p.amplitude.get() * p.amplitude.get())
                 .sum();
 
             assert!(
@@ -314,7 +313,11 @@ mod tests {
         unison.randomize_phases();
 
         // Phases should be different
-        let phases: Vec<f32> = unison.all_params().iter().map(|p| p.phase_offset).collect();
+        let phases: Vec<f32> = unison
+            .all_params()
+            .iter()
+            .map(|p| p.phase_offset.get())
+            .collect();
 
         // Check phases are in valid range
         for phase in &phases {

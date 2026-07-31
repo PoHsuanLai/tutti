@@ -171,11 +171,11 @@ pub struct LoopSpan {
 }
 
 impl LoopSpan {
-    pub fn new(start: f64, end: f64) -> Self {
+    pub fn new(start: impl Into<Beat>, end: impl Into<Beat>) -> Self {
         Self {
             enabled: Arc::new(AtomicBool::new(false)),
-            start: Arc::new(AtomicF64::new(start)),
-            end: Arc::new(AtomicF64::new(end)),
+            start: Arc::new(AtomicF64::new(start.into().get())),
+            end: Arc::new(AtomicF64::new(end.into().get())),
         }
     }
 
@@ -200,16 +200,21 @@ impl LoopSpan {
 
     /// The raw stored bounds, regardless of arming or validity. For UI that
     /// must render a brace the user is mid-drag on.
-    pub fn bounds(&self) -> (f64, f64) {
+    ///
+    /// Deliberately still two positions rather than a start-plus-length: an
+    /// inverted pair is a legitimate mid-drag state, and a `BeatDuration` cannot
+    /// express one. Typing both as `Beat` is a vocabulary fix, not a fix for
+    /// transposing them — [`range`](Self::range) is still where validity lives.
+    pub fn bounds(&self) -> (Beat, Beat) {
         (
-            self.start.load(Ordering::Acquire),
-            self.end.load(Ordering::Acquire),
+            Beat(self.start.load(Ordering::Acquire)),
+            Beat(self.end.load(Ordering::Acquire)),
         )
     }
 
-    pub fn set_range(&self, start: f64, end: f64) {
-        self.start.store(start, Ordering::Release);
-        self.end.store(end, Ordering::Release);
+    pub fn set_range(&self, start: impl Into<Beat>, end: impl Into<Beat>) {
+        self.start.store(start.into().get(), Ordering::Release);
+        self.end.store(end.into().get(), Ordering::Release);
     }
 }
 
@@ -386,7 +391,11 @@ mod tests {
         let span = LoopSpan::new(0.0, 16.0);
         span.set_range(2.0, 6.0);
         assert_eq!(span.range(), None, "disabled span yields no range");
-        assert_eq!(span.bounds(), (2.0, 6.0), "bounds survive disarming");
+        assert_eq!(
+            span.bounds(),
+            (Beat(2.0), Beat(6.0)),
+            "bounds survive disarming"
+        );
 
         span.set_enabled(true);
         assert_eq!(span.range(), LoopRange::new(2.0, 6.0));

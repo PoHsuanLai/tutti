@@ -27,8 +27,8 @@ pub enum LadderType {
 #[derive(Clone)]
 struct LadderState<F: Real> {
     stages: [F; 4],
-    last_freq: f32,
-    last_res: f32,
+    last_freq: Hz,
+    last_res: Resonance,
     g: F,
     k: F,
 }
@@ -38,8 +38,8 @@ impl<F: Real> LadderState<F> {
         let zero = F::from_f64(0.0);
         Self {
             stages: [zero; 4],
-            last_freq: -1.0,
-            last_res: -1.0,
+            last_freq: Hz(-1.0),
+            last_res: Resonance(-1.0),
             g: zero,
             k: zero,
         }
@@ -50,7 +50,7 @@ impl<F: Real> LadderState<F> {
     }
 
     fn invalidate(&mut self) {
-        self.last_freq = -1.0;
+        self.last_freq = Hz(-1.0);
     }
 }
 
@@ -83,7 +83,7 @@ impl<F: Real> LadderFilterNode<F> {
             sample_rate: DEFAULT_SAMPLE_RATE,
             state: LadderState::zeroed(),
         };
-        node.update_coefficients(frequency.get(), resonance.get());
+        node.update_coefficients(frequency, resonance);
         node
     }
 
@@ -112,20 +112,21 @@ impl<F: Real> LadderFilterNode<F> {
         self.drive.store(Drive(drive.into().get().max(0.1)));
     }
 
-    fn update_coefficients(&mut self, freq: f32, resonance: f32) {
+    fn update_coefficients(&mut self, freq: Hz, resonance: Resonance) {
         // 0.998 of Nyquist is the old `sample_rate * 0.499`: `tan` diverges at
         // Nyquist itself, so the cutoff has to stop just short.
-        let fc = (freq as f64).clamp(1.0, f64::from(self.sample_rate.nyquist_scaled(0.998).get()));
+        let fc = f64::from(freq.get())
+            .clamp(1.0, f64::from(self.sample_rate.nyquist_scaled(0.998).get()));
         self.state.g = F::from_f64((core::f64::consts::PI * fc / self.sample_rate.get()).tan());
-        self.state.k = F::from_f64(4.0 * resonance.clamp(0.0, 1.0) as f64);
+        self.state.k = F::from_f64(4.0 * f64::from(resonance.get().clamp(0.0, 1.0)));
         self.state.last_freq = freq;
         self.state.last_res = resonance;
     }
 
     #[inline]
     fn maybe_update(&mut self) {
-        let freq = self.frequency.load().get();
-        let res = self.resonance.load().get();
+        let freq = self.frequency.load();
+        let res = self.resonance.load();
         self.maybe_update_modulated(freq, res);
     }
 
@@ -133,9 +134,9 @@ impl<F: Real> LadderFilterNode<F> {
     /// epsilon, so a held value doesn't recompute every sample. Shared by the
     /// atomic ([`Self::maybe_update`]) and audio-rate modulation paths.
     #[inline]
-    fn maybe_update_modulated(&mut self, freq: f32, res: f32) {
-        if (freq - self.state.last_freq).abs() > FREQ_EPS
-            || (res - self.state.last_res).abs() > RES_EPS
+    fn maybe_update_modulated(&mut self, freq: Hz, res: Resonance) {
+        if (freq.get() - self.state.last_freq.get()).abs() > FREQ_EPS
+            || (res.get() - self.state.last_res.get()).abs() > RES_EPS
         {
             self.update_coefficients(freq, res);
         }
@@ -143,16 +144,16 @@ impl<F: Real> LadderFilterNode<F> {
 
     #[inline]
     fn process_one(&mut self, input: F) -> F {
-        let drive = self.drive.load().get();
+        let drive = self.drive.load();
         self.process_one_with_drive(input, drive)
     }
 
     /// One sample using an explicit drive (the audio-rate modulation path);
     /// coefficients must already be set for the desired freq/resonance.
     #[inline]
-    fn process_one_with_drive(&mut self, input: F, drive: f32) -> F {
+    fn process_one_with_drive(&mut self, input: F, drive: Drive) -> F {
         let one = F::from_f64(1.0);
-        let drive = F::from_f32(drive);
+        let drive = F::from_f32(drive.get());
         let x = input * drive;
 
         let st = &mut self.state;
@@ -382,17 +383,18 @@ impl<F: Real> StereoLadderFilterNode<F> {
     /// overrides the corresponding atomic. `read` reads input port `p`. Params
     /// are channel-shared, so the canonical `channels[0]` atomics are the base.
     #[inline]
-    fn effective_params(&self, read: impl Fn(usize) -> f32) -> (f32, f32, f32) {
+    fn effective_params(&self, read: impl Fn(usize) -> f32) -> (Hz, Resonance, Drive) {
         let head = &self.channels[0];
         let freq = self
             .cutoff_port()
-            .map_or_else(|| head.frequency.load().get(), |p| read(p).max(1.0));
-        let res = self
-            .q_port()
-            .map_or_else(|| head.resonance.load().get(), |p| read(p).clamp(0.0, 1.0));
+            .map_or_else(|| head.frequency.load(), |p| Hz(read(p).max(1.0)));
+        let res = self.q_port().map_or_else(
+            || head.resonance.load(),
+            |p| Resonance(read(p).clamp(0.0, 1.0)),
+        );
         let drive = self
             .drive_port()
-            .map_or_else(|| head.drive.load().get(), |p| read(p).max(0.1));
+            .map_or_else(|| head.drive.load(), |p| Drive(read(p).max(0.1)));
         (freq, res, drive)
     }
 }

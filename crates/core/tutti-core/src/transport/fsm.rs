@@ -240,9 +240,11 @@ impl TransportFsm {
                 S::Stopped => None,
             },
 
-            MotionEvent::Locate { beat, fade, then } => {
-                let pos = Beat(beat);
-
+            MotionEvent::Locate {
+                beat: pos,
+                fade,
+                then,
+            } => {
                 // Resolve `Keep` against the *settled* motion, so a locate
                 // during a fade means "whatever the fade was heading for",
                 // not "mid-fade".
@@ -331,7 +333,7 @@ mod tests {
         let mut fsm = TransportFsm::new();
 
         // From a stop there is nothing to fade, so a locate lands immediately.
-        let result = fsm.transition(MotionEvent::locate(8.0));
+        let result = fsm.transition(MotionEvent::locate(Beat(8.0)));
         assert!(matches!(
             result,
             Some(TransitionResult::Located {
@@ -340,7 +342,7 @@ mod tests {
             })
         ));
 
-        let result = fsm.transition(MotionEvent::locate_and_play(4.0));
+        let result = fsm.transition(MotionEvent::locate_and_play(Beat(4.0)));
         assert!(matches!(
             result,
             Some(TransitionResult::Located {
@@ -403,7 +405,7 @@ mod tests {
         // Locate with declick, from rolling
         let mut fsm = TransportFsm::new();
         fsm.transition(MotionEvent::Play);
-        let result = fsm.transition(MotionEvent::locate(4.0));
+        let result = fsm.transition(MotionEvent::locate(Beat(4.0)));
         assert!(matches!(
             result,
             Some(TransitionResult::DeclickStarted {
@@ -428,11 +430,11 @@ mod tests {
             MotionEvent::Play,
             MotionEvent::stop(),
             MotionEvent::stop_now(),
-            MotionEvent::locate(16.0),
-            MotionEvent::locate_and_play(16.0),
-            MotionEvent::stop_and_return(0.0),
+            MotionEvent::locate(Beat(16.0)),
+            MotionEvent::locate_and_play(Beat(16.0)),
+            MotionEvent::stop_and_return(Beat(0.0)),
             MotionEvent::Locate {
-                beat: 2.0,
+                beat: Beat(2.0),
                 fade: FadeOut::Immediate,
                 then: Then::Keep,
             },
@@ -530,7 +532,7 @@ mod tests {
     fn stopping_discards_a_pending_locate() {
         let mut fsm = TransportFsm::new();
         fsm.transition(MotionEvent::Play);
-        fsm.transition(MotionEvent::stop_and_return(8.0));
+        fsm.transition(MotionEvent::stop_and_return(Beat(8.0)));
         assert!(fsm.pending.is_some(), "the fade armed a pending locate");
 
         fsm.transition(MotionEvent::stop_now());
@@ -550,7 +552,7 @@ mod tests {
         // Locate-fade, then asked to stop instead.
         let mut fsm = TransportFsm::new();
         fsm.transition(MotionEvent::Play);
-        fsm.transition(MotionEvent::stop_and_return(0.0));
+        fsm.transition(MotionEvent::stop_and_return(Beat(0.0)));
         assert_eq!(fsm.motion, MotionState::DeclickToLocate);
 
         let result = fsm.transition(MotionEvent::stop());
@@ -568,7 +570,7 @@ mod tests {
         fsm.transition(MotionEvent::stop());
         assert_eq!(fsm.motion, MotionState::DeclickToStop);
 
-        let result = fsm.transition(MotionEvent::locate(12.0));
+        let result = fsm.transition(MotionEvent::locate(Beat(12.0)));
         assert!(
             matches!(
                 result,

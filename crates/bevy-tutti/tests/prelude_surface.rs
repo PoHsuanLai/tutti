@@ -20,7 +20,7 @@ fn the_metronome_mode_a_host_must_pass_is_nameable_from_the_prelude() {
 fn the_motion_event_a_host_must_send_is_nameable_from_the_prelude() {
     // `Locate` carries the richest payload of the variants, so it is the one
     // that proves the whole enum came across rather than a stub.
-    let event = MotionEvent::locate(4.0);
+    let event = MotionEvent::locate(Beat(4.0));
     assert_ne!(event, MotionEvent::Play);
 }
 
@@ -48,11 +48,11 @@ fn a_motion_events_payload_types_are_nameable_from_the_prelude() {
     assert_ne!(immediate, MotionEvent::stop());
 
     let locate = MotionEvent::Locate {
-        beat: 8.0,
+        beat: Beat(8.0),
         fade: FadeOut::Declick,
         then: Then::Roll,
     };
-    assert_ne!(locate, MotionEvent::locate(8.0));
+    assert_ne!(locate, MotionEvent::locate(Beat(8.0)));
 
     let state: MotionState = MotionState::Stopped;
     assert_ne!(state, MotionState::Rolling);
@@ -143,7 +143,7 @@ fn the_loop_region_round_trips_through_the_prelude() {
     span.set_range(8.0, 4.0);
     assert_eq!(
         span.bounds(),
-        (8.0, 4.0),
+        (Beat(8.0), Beat(4.0)),
         "raw bounds are what a drag shows"
     );
     assert!(span.range().is_none(), "but it is not a loop");

@@ -1,6 +1,6 @@
 //! Microtuning support with pre-computed 128-note frequency table.
 
-use tutti_core::{Cents, Semitones};
+use tutti_core::{Cents, Hz, Semitones};
 
 // A second copy of A440. `Note::A4_HZ` is the engine's canonical one but is
 // private to `tutti-types`, and widening its visibility is a bigger change
@@ -8,23 +8,25 @@ use tutti_core::{Cents, Semitones};
 // definition, so the duplication is inert — unlike the *conversions* that used
 // to sit beside it, which are now `Semitones::to_pitch_ratio` and
 // `Cents::to_pitch_ratio`.
-const A4_FREQ: f32 = 440.0;
+const A4_FREQ: Hz = Hz(440.0);
 const A4_NOTE: u8 = 69;
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct ScaleDegree {
     /// 0 = unison, 1200 = octave
-    pub cents: f32,
+    pub cents: Cents,
 }
 
 impl ScaleDegree {
-    pub fn from_cents(cents: f32) -> Self {
-        Self { cents }
+    pub fn from_cents(cents: impl Into<Cents>) -> Self {
+        Self {
+            cents: cents.into(),
+        }
     }
 
     pub fn from_ratio(ratio: f32) -> Self {
         Self {
-            cents: 1200.0 * ratio.log2(),
+            cents: Cents::from_pitch_ratio(ratio),
         }
     }
 }
@@ -32,8 +34,8 @@ impl ScaleDegree {
 #[derive(Debug, Clone)]
 pub struct Tuning {
     degrees: Vec<ScaleDegree>,
-    freq_table: [f32; 128],
-    reference_freq: f32,
+    freq_table: [Hz; 128],
+    reference_freq: Hz,
     reference_note: u8,
 }
 
@@ -42,15 +44,18 @@ impl Tuning {
         Self::equal_temperament_with_reference(A4_FREQ, A4_NOTE)
     }
 
-    pub fn equal_temperament_with_reference(reference_freq: f32, reference_note: u8) -> Self {
+    pub fn equal_temperament_with_reference(
+        reference_freq: impl Into<Hz>,
+        reference_note: u8,
+    ) -> Self {
         let degrees: Vec<ScaleDegree> = (0..12)
             .map(|i| ScaleDegree::from_cents(i as f32 * 100.0))
             .collect();
 
         let mut tuning = Self {
             degrees,
-            freq_table: [0.0; 128],
-            reference_freq,
+            freq_table: [Hz(0.0); 128],
+            reference_freq: reference_freq.into(),
             reference_note,
         };
         tuning.recompute_table();
@@ -78,7 +83,7 @@ impl Tuning {
 
         let mut tuning = Self {
             degrees,
-            freq_table: [0.0; 128],
+            freq_table: [Hz(0.0); 128],
             reference_freq: A4_FREQ,
             reference_note: A4_NOTE,
         };
@@ -107,7 +112,7 @@ impl Tuning {
 
         let mut tuning = Self {
             degrees,
-            freq_table: [0.0; 128],
+            freq_table: [Hz(0.0); 128],
             reference_freq: A4_FREQ,
             reference_note: A4_NOTE,
         };
@@ -139,7 +144,7 @@ impl Tuning {
 
         let mut tuning = Self {
             degrees: cents,
-            freq_table: [0.0; 128],
+            freq_table: [Hz(0.0); 128],
             reference_freq: A4_FREQ,
             reference_note: A4_NOTE,
         };
@@ -153,7 +158,7 @@ impl Tuning {
 
         let mut tuning = Self {
             degrees,
-            freq_table: [0.0; 128],
+            freq_table: [Hz(0.0); 128],
             reference_freq: A4_FREQ,
             reference_note: A4_NOTE,
         };
@@ -167,7 +172,7 @@ impl Tuning {
 
         let mut tuning = Self {
             degrees,
-            freq_table: [0.0; 128],
+            freq_table: [Hz(0.0); 128],
             reference_freq: A4_FREQ,
             reference_note: A4_NOTE,
         };
@@ -196,7 +201,8 @@ impl Tuning {
             let ref_cents = self.degrees[ref_scale_pos].cents;
 
             let octave_diff = note_octave - ref_octave;
-            let cents_diff = Cents(note_cents - ref_cents + (octave_diff as f32 * 1200.0));
+            let cents_diff =
+                note_cents - ref_cents + Semitones::OCTAVE.to_cents() * octave_diff as f32;
 
             self.freq_table[note] = self.reference_freq * cents_diff.to_pitch_ratio();
         }
@@ -204,13 +210,13 @@ impl Tuning {
 
     #[cfg(test)]
     #[inline]
-    pub fn note_to_freq(&self, note: u8) -> f32 {
+    pub fn note_to_freq(&self, note: u8) -> Hz {
         self.freq_table[usize::from(note)]
     }
 
     /// Interpolates between adjacent notes in log space for pitch bend/portamento.
     #[inline]
-    pub fn fractional_note_to_freq(&self, note: f32) -> f32 {
+    pub fn fractional_note_to_freq(&self, note: f32) -> Hz {
         if note <= 0.0 {
             return self.freq_table[0];
         }
@@ -222,10 +228,10 @@ impl Tuning {
         let high = (low + 1).min(127);
         let frac = note - low as f32;
 
-        let low_freq = self.freq_table[low];
-        let high_freq = self.freq_table[high];
+        let low_freq = self.freq_table[low].get();
+        let high_freq = self.freq_table[high].get();
 
-        (low_freq.ln() + (high_freq.ln() - low_freq.ln()) * frac).exp()
+        Hz((low_freq.ln() + (high_freq.ln() - low_freq.ln()) * frac).exp())
     }
 
     #[cfg(test)]
@@ -234,14 +240,14 @@ impl Tuning {
     }
 
     #[cfg(test)]
-    pub fn set_reference(&mut self, freq: f32, note: u8) {
-        self.reference_freq = freq;
+    pub fn set_reference(&mut self, freq: impl Into<Hz>, note: u8) {
+        self.reference_freq = freq.into();
         self.reference_note = note;
         self.recompute_table();
     }
 
     #[cfg(test)]
-    pub fn reference_freq(&self) -> f32 {
+    pub fn reference_freq(&self) -> Hz {
         self.reference_freq
     }
 
@@ -266,16 +272,16 @@ mod tests {
         let tuning = Tuning::equal_temperament();
 
         // A4 should be 440 Hz
-        assert!((tuning.note_to_freq(69) - 440.0).abs() < 0.01);
+        assert!((tuning.note_to_freq(69).get() - 440.0).abs() < 0.01);
 
         // A5 should be 880 Hz (octave above)
-        assert!((tuning.note_to_freq(81) - 880.0).abs() < 0.01);
+        assert!((tuning.note_to_freq(81).get() - 880.0).abs() < 0.01);
 
         // A3 should be 220 Hz (octave below)
-        assert!((tuning.note_to_freq(57) - 220.0).abs() < 0.01);
+        assert!((tuning.note_to_freq(57).get() - 220.0).abs() < 0.01);
 
         // Middle C (C4) should be ~261.6 Hz
-        assert!((tuning.note_to_freq(60) - 261.63).abs() < 0.1);
+        assert!((tuning.note_to_freq(60).get() - 261.63).abs() < 0.1);
     }
 
     #[test]
@@ -283,7 +289,7 @@ mod tests {
         let tuning = Tuning::equal_temperament_with_reference(432.0, 69);
 
         // A4 should be 432 Hz
-        assert!((tuning.note_to_freq(69) - 432.0).abs() < 0.01);
+        assert!((tuning.note_to_freq(69).get() - 432.0).abs() < 0.01);
     }
 
     #[test]
@@ -291,14 +297,14 @@ mod tests {
         let tuning = Tuning::just_intonation();
 
         // Reference should still be A4 = 440 Hz
-        let a4 = tuning.note_to_freq(69);
+        let a4 = tuning.note_to_freq(69).get();
         assert!((a4 - 440.0).abs() < 0.01);
 
         // Perfect fifth above A4 (E5) should be 3/2 ratio
         // In just intonation from C, perfect fifth is 3/2
         // E5 is note 76, A4 is note 69
         // This is 7 semitones, so it's a perfect fifth from A to E
-        let e5 = tuning.note_to_freq(76);
+        let e5 = tuning.note_to_freq(76).get();
         let ratio = e5 / a4;
         // Should be close to 3/2 = 1.5
         assert!((ratio - 1.5).abs() < 0.02);
@@ -308,9 +314,9 @@ mod tests {
     fn test_fractional_note() {
         let tuning = Tuning::equal_temperament();
 
-        let a4 = tuning.note_to_freq(69);
-        let a4_50 = tuning.fractional_note_to_freq(69.5);
-        let bb4 = tuning.note_to_freq(70);
+        let a4 = tuning.note_to_freq(69).get();
+        let a4_50 = tuning.fractional_note_to_freq(69.5).get();
+        let bb4 = tuning.note_to_freq(70).get();
 
         // Fractional note should be between
         assert!(a4_50 > a4);
@@ -330,8 +336,8 @@ mod tests {
         assert_eq!(tuning.scale_size(), 24);
 
         // Note 0 and note 24 should be an octave apart
-        let freq_0 = tuning.note_to_freq(0);
-        let freq_24 = tuning.note_to_freq(24);
+        let freq_0 = tuning.note_to_freq(0).get();
+        let freq_24 = tuning.note_to_freq(24).get();
         let ratio = freq_24 / freq_0;
         assert!((ratio - 2.0).abs() < 0.01);
     }
@@ -350,12 +356,12 @@ mod tests {
         let tuning = Tuning::equal_temperament();
 
         // Should not panic at boundaries
-        let _low = tuning.note_to_freq(0);
-        let _high = tuning.note_to_freq(127);
+        let _low = tuning.note_to_freq(0).get();
+        let _high = tuning.note_to_freq(127).get();
 
         // Fractional boundaries
-        let _low_frac = tuning.fractional_note_to_freq(-1.0);
-        let _high_frac = tuning.fractional_note_to_freq(128.0);
+        let _low_frac = tuning.fractional_note_to_freq(-1.0).get();
+        let _high_frac = tuning.fractional_note_to_freq(128.0).get();
     }
 
     #[test]
@@ -363,11 +369,11 @@ mod tests {
         let tuning = Tuning::pythagorean();
 
         // Reference should still be A4 = 440 Hz
-        let a4 = tuning.note_to_freq(69);
+        let a4 = tuning.note_to_freq(69).get();
         assert!((a4 - 440.0).abs() < 0.01);
 
         // Perfect fifth (A4 to E5) should be pure 3/2 ratio
-        let e5 = tuning.note_to_freq(76);
+        let e5 = tuning.note_to_freq(76).get();
         let ratio = e5 / a4;
         assert!(
             (ratio - 1.5).abs() < 0.01,
@@ -381,17 +387,17 @@ mod tests {
         let mut tuning = Tuning::equal_temperament();
 
         // Default A4 = 440
-        assert!((tuning.note_to_freq(69) - 440.0).abs() < 0.01);
+        assert!((tuning.note_to_freq(69).get() - 440.0).abs() < 0.01);
 
         // Change to A4 = 432 (alternative tuning)
         tuning.set_reference(432.0, 69);
 
-        assert!((tuning.note_to_freq(69) - 432.0).abs() < 0.01);
-        assert!((tuning.reference_freq() - 432.0).abs() < 0.01);
+        assert!((tuning.note_to_freq(69).get() - 432.0).abs() < 0.01);
+        assert!((tuning.reference_freq().get() - 432.0).abs() < 0.01);
         assert_eq!(tuning.reference_note(), 69);
 
         // A5 should be 864 Hz (octave above 432)
-        assert!((tuning.note_to_freq(81) - 864.0).abs() < 0.1);
+        assert!((tuning.note_to_freq(81).get() - 864.0).abs() < 0.1);
     }
 
     #[test]
@@ -399,10 +405,10 @@ mod tests {
         // Use C4 (note 60) as reference at 256 Hz
         let tuning = Tuning::equal_temperament_with_reference(256.0, 60);
 
-        assert!((tuning.note_to_freq(60) - 256.0).abs() < 0.01);
+        assert!((tuning.note_to_freq(60).get() - 256.0).abs() < 0.01);
 
         // C5 should be 512 Hz
-        assert!((tuning.note_to_freq(72) - 512.0).abs() < 0.1);
+        assert!((tuning.note_to_freq(72).get() - 512.0).abs() < 0.1);
     }
 
     #[test]
@@ -428,8 +434,8 @@ mod tests {
 
         // Any note should be exactly 2x frequency of note 12 semitones below
         for base_note in 0..116 {
-            let freq_low = tuning.note_to_freq(base_note);
-            let freq_high = tuning.note_to_freq(base_note + 12);
+            let freq_low = tuning.note_to_freq(base_note).get();
+            let freq_high = tuning.note_to_freq(base_note + 12).get();
             let ratio = freq_high / freq_low;
             assert!(
                 (ratio - 2.0).abs() < 0.001,
@@ -448,12 +454,12 @@ mod tests {
 
         // Just intonation intervals are relative to C, not A
         // C4 = note 60, E4 = note 64 (major third)
-        let c4_just = just.note_to_freq(60);
-        let e4_just = just.note_to_freq(64);
+        let c4_just = just.note_to_freq(60).get();
+        let e4_just = just.note_to_freq(64).get();
         let ratio_just = e4_just / c4_just;
 
-        let c4_equal = equal.note_to_freq(60);
-        let e4_equal = equal.note_to_freq(64);
+        let c4_equal = equal.note_to_freq(60).get();
+        let e4_equal = equal.note_to_freq(64).get();
         let ratio_equal = e4_equal / c4_equal;
 
         // Just intonation major third from C is 5/4 = 1.25
@@ -482,7 +488,7 @@ mod tests {
         let tuning = Tuning::equal_temperament();
 
         // MIDI note 0 (C-1) should be about 8.18 Hz
-        let lowest = tuning.note_to_freq(0);
+        let lowest = tuning.note_to_freq(0).get();
         assert!(
             (lowest - 8.18).abs() < 0.1,
             "Note 0 should be ~8.18 Hz, got {}",
@@ -490,7 +496,7 @@ mod tests {
         );
 
         // MIDI note 127 (G9) should be about 12543.85 Hz
-        let highest = tuning.note_to_freq(127);
+        let highest = tuning.note_to_freq(127).get();
         assert!(
             (highest - 12543.85).abs() < 1.0,
             "Note 127 should be ~12543.85 Hz, got {}",

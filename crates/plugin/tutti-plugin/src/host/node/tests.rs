@@ -12,7 +12,7 @@ use crate::protocol::{
     BridgeMessage, ChannelLayout, Features, HostMessage, LoadedPlugin, ParameterInfo,
     PluginDescriptor, PROTOCOL_VERSION,
 };
-use crate::protocol::{PluginClass, SampleFormat, SlabLayout};
+use crate::protocol::{EditorPresence, PluginClass, SampleFormat, SlabLayout};
 use crate::util::transport::shm::AudioSlab;
 use smallvec::smallvec;
 use std::sync::Arc;
@@ -146,7 +146,7 @@ fn handle_with_mock_server(
         vendor: String::new(),
         version: String::new(),
         class: PluginClass::Unknown,
-        has_editor: true,
+        editor: EditorPresence::Present,
     };
     let loaded = LoadedPlugin {
         inputs: smallvec![ChannelLayout::Stereo],
@@ -249,7 +249,7 @@ fn handle_with_multi_reply_server(
         vendor: String::new(),
         version: String::new(),
         class: PluginClass::Unknown,
-        has_editor: true,
+        editor: EditorPresence::Present,
     };
     let loaded = LoadedPlugin {
         inputs: smallvec![ChannelLayout::Stereo],

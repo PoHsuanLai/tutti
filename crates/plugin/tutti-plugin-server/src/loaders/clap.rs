@@ -2,9 +2,9 @@
 
 use std::path::Path;
 use tutti_plugin::server::{
-    BusChannels, EditorSize, Features, LoadedPlugin, NoteExpressionChanges, ParameterChanges,
-    ParameterInfo, PluginAudio, PluginClass, PluginDescriptor, PluginEditorHost, PluginError,
-    PluginMeta, PluginParams, PluginResult, PluginState, WindowHandle,
+    BusChannels, EditorPresence, EditorSize, Features, LoadedPlugin, NoteExpressionChanges,
+    ParameterChanges, ParameterInfo, PluginAudio, PluginClass, PluginDescriptor, PluginEditorHost,
+    PluginError, PluginMeta, PluginParams, PluginResult, PluginState, WindowHandle,
 };
 use tutti_plugin::server::{ProcessContext, ProcessOutput};
 
@@ -39,7 +39,7 @@ fn per_bus_channels(loaded: &tutti_clap_host::ClapLoaded, is_input: bool) -> Bus
     }
 }
 
-fn clap_descriptor(info: &tutti_clap_host::PluginInfo, has_editor: bool) -> PluginDescriptor {
+fn clap_descriptor(info: &tutti_clap_host::PluginInfo, editor: EditorPresence) -> PluginDescriptor {
     PluginDescriptor {
         id: info.id.clone(),
         name: info.name.clone(),
@@ -48,7 +48,7 @@ fn clap_descriptor(info: &tutti_clap_host::PluginInfo, has_editor: bool) -> Plug
         class: PluginClass::Clap {
             features: info.features.clone(),
         },
-        has_editor,
+        editor,
     }
 }
 
@@ -114,7 +114,8 @@ impl ClapInstance {
                     reason: e.to_string(),
                 })?;
 
-            Ok(clap_descriptor(&info, false))
+            // A probe does not instantiate; the load path below asks.
+            Ok(clap_descriptor(&info, EditorPresence::Unknown))
         }
         #[cfg(not(feature = "clap"))]
         Err(BridgeError::LoadFailed {
@@ -157,7 +158,7 @@ impl ClapInstance {
             // `audio-ports` extension before `activate` consumes `loaded`.
             let input_buses = per_bus_channels(&loaded, true);
             let output_buses = per_bus_channels(&loaded, false);
-            let descriptor = clap_descriptor(info, has_editor);
+            let descriptor = clap_descriptor(info, EditorPresence::measured(has_editor));
 
             let mut features = Features::empty();
             features.set(Features::F64_AUDIO, supports_f64);
@@ -1331,7 +1332,7 @@ mod tests {
         let instance =
             ClapInstance::load(Path::new(CLAP_PLUGIN), 44100.0, 512).expect("Failed to load");
         assert!(
-            instance.descriptor().has_editor,
+            instance.descriptor().editor.is_present(),
             "TAL-NoiseMaker should have a GUI"
         );
     }
@@ -1376,7 +1377,7 @@ mod tests {
             ClapInstance::load(Path::new(SURGE_XT), 44100.0, 512).expect("Failed to load Surge XT");
 
         assert!(
-            instance.descriptor().has_editor,
+            instance.descriptor().editor.is_present(),
             "Surge XT should have a GUI"
         );
 

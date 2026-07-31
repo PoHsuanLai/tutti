@@ -4,7 +4,7 @@
 
 use std::path::Path;
 use tutti_plugin::server::{
-    AuComponentType, Features, LoadedPlugin, PluginClass, PluginDescriptor,
+    AuComponentType, EditorPresence, Features, LoadedPlugin, PluginClass, PluginDescriptor,
 };
 #[cfg(all(target_os = "macos", feature = "au"))]
 use tutti_plugin::server::{
@@ -18,7 +18,7 @@ use tutti_plugin::{BridgeError, LoadStage, Result};
 
 #[cfg(all(target_os = "macos", feature = "au"))]
 use tutti_au_host::{
-    component, editor::AuEditor, instance::AuInstance as AuHostInstance, parameters,
+    component, editor::AuEditor, instance::AuInstance as AuHostInstance, parameters, Samples,
 };
 
 /// Map the AU host's native component type to the wire `AuComponentType` mirror.
@@ -170,11 +170,13 @@ impl AuInstance {
                 ),
                 name: component_info.name.clone(),
                 vendor: component_info.manufacturer.clone(),
-                version: String::new(),
+                version: component_info.version.clone(),
                 class: PluginClass::Au {
                     component_type: map_au_type(component_info.component_type),
                 },
-                has_editor: false,
+                // A probe reads the registry entry without instantiating, and
+                // `AuEditor::has_editor` needs a live unit. The load path asks.
+                editor: EditorPresence::Unknown,
             })
         }
         #[cfg(not(all(target_os = "macos", feature = "au")))]
@@ -254,7 +256,15 @@ impl AuInstance {
 
             let name = inner.get_name().unwrap_or_else(|_| bundle_name.clone());
             let has_editor = AuEditor::has_editor(inner.raw_unit());
-            let latency = inner.get_latency().unwrap_or(0) as usize;
+            // A refusal is compensated as zero rather than failing the load: an
+            // AU that will not say how far it delays audio is still a usable
+            // plugin, and under-compensating it costs alignment, not audio.
+            // This is now a decision on a reachable `Err` — `get_latency` used
+            // to swallow the refusal internally, so this arm never ran.
+            //
+            // No AU registered on macOS 15.6 takes this path (29 of 29 answer),
+            // so it is the third-party case, unmeasured by construction.
+            let latency = inner.get_latency().unwrap_or(Samples::ZERO).get();
 
             let descriptor = PluginDescriptor {
                 id: format!(
@@ -264,11 +274,11 @@ impl AuInstance {
                 ),
                 name,
                 vendor: component_info.manufacturer.clone(),
-                version: String::new(),
+                version: component_info.version.clone(),
                 class: PluginClass::Au {
                     component_type: map_au_type(component_info.component_type),
                 },
-                has_editor,
+                editor: EditorPresence::measured(has_editor),
             };
             // This AUv2 host is f32-only, single-bus, with a Cocoa editor and
             // latency read-back. MIDI I/O, transport/host-callbacks, sample-

@@ -118,8 +118,8 @@ use support::corpus::{
     all_finite, peak, render, silence, sine, ThirdPartyRef, INFINITE_TAIL_UNIT,
     MORTAL_ELEMENT_NAME, NOISEMAKER_IDLE_FLOOR, NOISEMAKER_NOTE_PEAK, TAL_NOISEMAKER, TDR_NOVA,
     THIRD_PARTY, THIRD_PARTY_LATENCY, THIRD_PARTY_NAMED_ELEMENTS, THIRD_PARTY_PARAM_COUNTS,
-    THIRD_PARTY_PRESET_COUNTS, THIRD_PARTY_WITHOUT_OPTIONAL_PROPS, THIRD_PARTY_WITHOUT_PUSH_RENDER,
-    UNIMP_ERR,
+    THIRD_PARTY_PRESET_COUNTS, THIRD_PARTY_VERSION, THIRD_PARTY_WITHOUT_OPTIONAL_PROPS,
+    THIRD_PARTY_WITHOUT_PUSH_RENDER, UNIMP_ERR,
 };
 
 use tutti_au_host::component::AuComponentInfo;
@@ -769,6 +769,42 @@ fn a_foreign_state_blob_is_refused_and_leaves_the_unit_usable() {
 /// that happens to convert to 184 samples at 48 kHz, and measured **184 again at
 /// 44.1 kHz**, meaning it adjusts its reported seconds when the rate changes. A
 /// host that cached the seconds value across a rate change would be wrong here;
+/// The reported version matches what the bundle declares.
+///
+/// `AudioComponentGetVersion` packs `major.minor.dot` one byte each, which the
+/// header's `0xMMMMmmDD` does not make obvious — it reads as a 16-bit major.
+/// The two decodings agree on every unit installed here, because all their
+/// majors are single-digit, so the encoding cannot be settled from the raw value
+/// alone. `CFBundleShortVersionString` is the independent source, and
+/// [`THIRD_PARTY_VERSION`] carries what it says.
+///
+/// Apple's units cannot pin this: they all report `1.6.0`, so a decode that
+/// swapped minor and dot would agree with itself across the whole Apple corpus.
+/// These three have distinct values in all three fields.
+///
+/// Read off the component, not an instance — the version is a property of the
+/// registered component, so this needs no instantiation.
+#[test]
+fn reported_version_matches_the_bundle() {
+    let _g = lock();
+
+    let found = each(
+        THIRD_PARTY_VERSION,
+        "its reported version",
+        |unit, info, expected| {
+            assert_eq!(
+                info.version, expected,
+                "{}: AudioComponentGetVersion decoded to {:?} but the bundle \
+                 declares {expected:?} in CFBundleShortVersionString. Either the \
+                 byte layout is wrong or the plugin was updated — check the \
+                 bundle before changing the table.",
+                unit.label, info.version,
+            );
+        },
+    );
+    eprintln!("checked {found} third-party versions");
+}
+
 /// re-reading the property is what makes it right.
 #[test]
 fn reported_latency_matches_and_survives_a_rate_change() {
@@ -784,8 +820,8 @@ fn reported_latency_matches_and_survives_a_rate_change() {
                 .unwrap_or_else(|e| panic!("{}: get_latency failed: {e:?}", unit.label));
             assert_eq!(
                 got, expected,
-                "{}: reports {got} samples of latency at {RATE} Hz, measured \
-                 {expected} on macOS 15.6. PDC is wrong by the difference, so \
+                "{}: reports {got:?} of latency at {RATE} Hz, measured \
+                 {expected:?} on macOS 15.6. PDC is wrong by the difference, so \
                  every track through this plugin drifts.",
                 unit.label,
             );
@@ -798,10 +834,10 @@ fn reported_latency_matches_and_survives_a_rate_change() {
             let at_44 = au.get_latency().expect("latency at 44.1 kHz");
             assert_eq!(
                 at_44, expected,
-                "{}: reports {at_44} samples at 44.1 kHz but {expected} at 48 \
+                "{}: reports {at_44:?} at 44.1 kHz but {expected:?} at 48 \
                  kHz. Measured equal on macOS 15.6 — this plugin reports a fixed \
                  sample count, so a host that scaled a cached seconds value \
-                 across the rate change would produce {at_44} here and \
+                 across the rate change would produce {at_44:?} here and \
                  mis-compensate.",
                 unit.label,
             );

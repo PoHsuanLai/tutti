@@ -42,6 +42,7 @@ use support::corpus::{
 use tutti_au_host::component::AuType;
 use tutti_au_host::types::K_AUDIO_UNIT_ERR_UNINITIALIZED;
 use tutti_au_host::AuError;
+use tutti_types::Samples;
 
 /// AudioToolbox tolerates concurrent use of *distinct* units, but component
 /// discovery walks a process-global registry and several tests here open the
@@ -546,15 +547,18 @@ fn reported_latency_is_the_plugins_own_in_samples() {
         let au = DYNAMICS.open(rate, BLOCK);
         let latency = au.get_latency().expect("latency");
         assert_eq!(
-            latency, 256,
+            latency,
+            Samples(256),
             "AUDynamicsProcessor advertises a 256-sample lookahead; at {rate} \
-             Hz the host reported {latency}"
+             Hz the host reported {latency:?}"
         );
     }
     // A unit that advertises no latency must report 0, not a stale or
     // fabricated value.
     let au = DELAY.open(RATE, BLOCK);
-    assert_eq!(au.get_latency().expect("latency"), 0);
+    // Zero here is the AU's own answer, not a swallowed refusal: measured
+    // across all 29 registered units, every one answers and none refuses.
+    assert_eq!(au.get_latency().expect("latency"), Samples::ZERO);
 }
 
 /// Changing the sample rate must be reflected in what the host reports, and

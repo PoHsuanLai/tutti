@@ -27,6 +27,7 @@ use crate::types::*;
 use tutti_midi_types::MidiEvent;
 use tutti_plugin_types::{ChannelLayout, TransportInfo};
 use tutti_types::value::units::Seconds;
+use tutti_types::Samples;
 
 /// An AU that has been instantiated but not yet initialized.
 ///
@@ -925,18 +926,37 @@ impl AuInstance {
 
     /// Plugin-reported processing latency in samples at the current sample rate.
     ///
-    /// Returns 0 if the AU does not advertise `kAudioUnitProperty_Latency`.
-    pub fn get_latency(&self) -> Result<u32> {
-        let latency = unsafe {
-            get_property::<f64>(
+    /// A refusal is propagated rather than flattened to zero. It used to be
+    /// swallowed with `unwrap_or(0.0)` *inside* this function, which made the
+    /// `Result` unable to ever be `Err` — so every caller's error handling,
+    /// including the loader's `unwrap_or(0)`, was unreachable code that read as
+    /// if it had considered the case.
+    ///
+    /// Zero is a real answer here, not a fallback. Measured across every AU
+    /// registered on macOS 15.6 (29 effects, instruments and music effects):
+    /// **all 29 answer, none refuses**, and the ones with no latency answer
+    /// `0.0` — AUDelay, AUSampler, DLSMusicDevice and AUMatrixReverb all do.
+    /// So a zero from this function means the AU said zero. Contrast
+    /// [`transport::tail_time`](crate::transport), where refusal is the norm:
+    /// every Apple instrument and mixer rejects `TailTime` with -10879.
+    ///
+    /// Returns [`Samples`] rather than a bare `u32` so the unit travels with the
+    /// value; the AU reports seconds, and the rate scaling is what turns one
+    /// into the other.
+    pub fn get_latency(&self) -> Result<Samples> {
+        let seconds: f64 = unsafe {
+            get_property(
                 self.raw_unit(),
                 K_AUDIO_UNIT_PROPERTY_LATENCY,
                 K_AUDIO_UNIT_SCOPE_GLOBAL,
                 0,
             )
-        }
-        .unwrap_or(0.0);
-        Ok((latency * self.sample_rate()) as u32)
+        }?;
+        // Round rather than truncate: a latency the AU reports as an exact
+        // sample count can land a hair below it in f64, and truncating there
+        // reports one sample less than the plugin actually delays — PDC then
+        // under-compensates by a sample on every such plugin.
+        Ok(Seconds(seconds as f32).to_samples(self.sample_rate()))
     }
 
     /// Seconds of audio this AU keeps producing after its input goes silent.

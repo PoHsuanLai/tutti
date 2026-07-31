@@ -9,6 +9,8 @@
 use std::path::Path;
 use std::sync::Mutex;
 
+use tutti_plugin::server::EditorPresence;
+
 const VST2_PLUGIN: &str = "/Library/Audio/Plug-Ins/VST/TAL-NoiseMaker.vst";
 
 /// Serialize plugin loads — racing two concurrent VSTPluginMain calls
@@ -25,7 +27,7 @@ fn load_in_process_returns_audio_unit_and_handle() {
     let descriptor = handle.descriptor();
     assert!(!descriptor.name.is_empty());
     assert_eq!(handle.loaded().total_outputs(), 2);
-    assert!(descriptor.has_editor);
+    assert_eq!(descriptor.editor, EditorPresence::Present);
 }
 
 #[test]

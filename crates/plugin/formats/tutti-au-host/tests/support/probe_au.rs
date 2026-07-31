@@ -109,6 +109,15 @@ pub enum Misbehaviour {
     /// Reports a *negative* latency, which the property's `Float64` seconds
     /// representation permits to be written but which cannot be honoured.
     ReportsNegativeLatency,
+    /// Refuses `kAudioUnitProperty_Latency` outright with
+    /// `kAudioUnitErr_InvalidProperty`, the way every Apple unit refuses
+    /// `TailTime`.
+    ///
+    /// No AU registered on macOS 15.6 does this — all 29 answer — so the
+    /// refusal path is unreachable from the real corpus and only a probe can
+    /// reach it. That is exactly why it is here: `get_latency` used to swallow
+    /// the refusal internally, and nothing on this machine could tell.
+    RefusesLatency,
     /// Claims [`LYING_ELEMENT_COUNT`] elements on every scope while owning one.
     OverReportsElementCount,
     /// Returns `noErr` from render having written nothing at all, leaving the
@@ -138,6 +147,7 @@ impl Misbehaviour {
             Self::None => b"pgd0",
             Self::FailsInitialize => b"pini",
             Self::LiesAboutLatency => b"plat",
+            Self::RefusesLatency => b"rlat",
             Self::ReportsNegativeLatency => b"pneg",
             Self::OverReportsElementCount => b"pelc",
             Self::RendersNothing => b"pnil",
@@ -154,6 +164,7 @@ impl Misbehaviour {
             Self::None => "well-behaved probe",
             Self::FailsInitialize => "probe that fails initialize",
             Self::LiesAboutLatency => "probe that lies about latency",
+            Self::RefusesLatency => "probe that refuses to report latency",
             Self::ReportsNegativeLatency => "probe reporting negative latency",
             Self::OverReportsElementCount => "probe over-reporting ElementCount",
             Self::RendersNothing => "probe that renders nothing",
@@ -170,6 +181,7 @@ impl Misbehaviour {
         Misbehaviour::None,
         Misbehaviour::FailsInitialize,
         Misbehaviour::LiesAboutLatency,
+        Misbehaviour::RefusesLatency,
         Misbehaviour::ReportsNegativeLatency,
         Misbehaviour::OverReportsElementCount,
         Misbehaviour::RendersNothing,
@@ -471,6 +483,12 @@ unsafe extern "C" fn probe_get_property(
                 write_property(data, io_size, 0i32)
             }
             x if x == sys::kAudioUnitProperty_Latency => {
+                // Refuse before writing anything: an unimplemented property
+                // leaves the host's buffer untouched, so a host that ignored
+                // the status would read whatever it had zeroed.
+                if p.behaviour == Misbehaviour::RefusesLatency {
+                    return sys::kAudioUnitErr_InvalidProperty as sys::OSStatus;
+                }
                 // The property is Float64 **seconds**, not samples.
                 let seconds: f64 = match p.behaviour {
                     Misbehaviour::LiesAboutLatency => {
@@ -844,6 +862,7 @@ probe_factories! {
     factory_none => Misbehaviour::None,
     factory_fails_initialize => Misbehaviour::FailsInitialize,
     factory_lies_latency => Misbehaviour::LiesAboutLatency,
+    factory_refuses_latency => Misbehaviour::RefusesLatency,
     factory_negative_latency => Misbehaviour::ReportsNegativeLatency,
     factory_over_elements => Misbehaviour::OverReportsElementCount,
     factory_renders_nothing => Misbehaviour::RendersNothing,

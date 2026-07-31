@@ -33,6 +33,7 @@
 use tutti_au_host::component::{enumerate_components_of_type, AuComponentInfo, AuType};
 use tutti_au_host::instance::AuInstance;
 use tutti_au_host::{AuLayoutTag, BusDirection};
+use tutti_types::Samples;
 
 /// One Apple Audio Unit, addressed by the codes AudioToolbox registers it under.
 #[derive(Debug, Clone, Copy)]
@@ -1159,8 +1160,31 @@ pub const INFINITE_TAIL_UNIT: ThirdPartyRef = TAL_REVERB_4_REF;
 /// duration. That is the opposite of what the property's `Float64`-seconds
 /// encoding suggests, so it is worth pinning: a host that recomputed PDC from a
 /// cached seconds value on a rate change would drift here.
-pub const THIRD_PARTY_LATENCY: &[(ThirdPartyRef, u32)] =
-    &[(TDR_NOVA, 184), (TAL_NOISEMAKER, 0), (TAL_REVERB_4_REF, 0)];
+/// `(unit, version string)` pairs, cross-checked against each bundle's
+/// `CFBundleShortVersionString`.
+///
+/// The point of pinning third-party units rather than Apple's: Apple ships every
+/// AU at the same OS version (`1.6.0` across the whole corpus), so an encoding
+/// bug that swapped or dropped a field would still agree with itself on all of
+/// them. These three have distinct majors, minors and dots — `2.2.2`, `5.0.6`,
+/// `4.0.4` — so a mis-shifted decode disagrees visibly.
+///
+/// They are also what establishes the byte layout. `AudioComponentGetVersion`
+/// returns `0x00020202` / `0x00050006` / `0x00040004`, and reading the top half
+/// as a 16-bit major (as the header's `0xMMMMmmDD` suggests) agrees on these
+/// only because their majors are single-digit. `Info.plist` is the independent
+/// source that settles it.
+pub const THIRD_PARTY_VERSION: &[(ThirdPartyRef, &str)] = &[
+    (TDR_NOVA, "2.2.2"),
+    (TAL_NOISEMAKER, "5.0.6"),
+    (TAL_REVERB_4_REF, "4.0.4"),
+];
+
+pub const THIRD_PARTY_LATENCY: &[(ThirdPartyRef, Samples)] = &[
+    (TDR_NOVA, Samples(184)),
+    (TAL_NOISEMAKER, Samples::ZERO),
+    (TAL_REVERB_4_REF, Samples::ZERO),
+];
 
 /// `(unit, expected Cocoa view width, height)` triples, measured.
 ///

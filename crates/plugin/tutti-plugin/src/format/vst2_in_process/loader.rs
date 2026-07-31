@@ -12,7 +12,7 @@ use super::control_backend::InProcessVst2Backend;
 use crate::error::{BridgeError, LoadStage, Result};
 use crate::host::handles::PluginHandle;
 use crate::host::node::ParameterChangeSink;
-use crate::protocol::{Features, LoadedPlugin, PluginClass, PluginDescriptor};
+use crate::protocol::{EditorPresence, Features, LoadedPlugin, PluginClass, PluginDescriptor};
 use smallvec::SmallVec;
 
 /// Maximum block size we pre-size the plugin's render scratch for.
@@ -48,7 +48,7 @@ pub fn load(
         class: PluginClass::Vst2 {
             category: host_meta.category,
         },
-        has_editor: host_meta.has_editor,
+        editor: EditorPresence::measured(host_meta.has_editor),
     };
     // VST2 feature set — mirrors the out-of-process VST2 loader: f64 (advertised,
     // informational), MIDI both directions from the combined flag, editor, and a

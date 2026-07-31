@@ -3,11 +3,11 @@
 use std::path::Path;
 
 use tutti_plugin::server::{
-    AudioBufferMut, AutomationMode, BusChannels, ChannelLayout, ChordChanges, EditorSize, Features,
-    LoadedPlugin, NoteExpressionChanges, NoteExpressionIntChanges, NoteExpressionTextChanges,
-    ParamFlags, ParamRange, ParamSteps, ParameterInfo, PluginAudio, PluginClass, PluginDescriptor,
-    PluginEditorHost, PluginError, PluginMeta, PluginParams, PluginResult, PluginState,
-    ProcessContext, ProcessOutput, ScaleChanges, WindowHandle,
+    AudioBufferMut, AutomationMode, BusChannels, ChannelLayout, ChordChanges, EditorPresence,
+    EditorSize, Features, LoadedPlugin, NoteExpressionChanges, NoteExpressionIntChanges,
+    NoteExpressionTextChanges, ParamFlags, ParamRange, ParamSteps, ParameterInfo, PluginAudio,
+    PluginClass, PluginDescriptor, PluginEditorHost, PluginError, PluginMeta, PluginParams,
+    PluginResult, PluginState, ProcessContext, ProcessOutput, ScaleChanges, WindowHandle,
 };
 use tutti_plugin::{BridgeError, LoadStage, Result};
 
@@ -141,7 +141,7 @@ fn build_inner(p: &ReloadParams) -> Result<(VstInner, Meta)> {
         VstInner::F32(i) => i.read_latency_samples(),
         VstInner::F64(i) => i.read_latency_samples(),
     } as usize;
-    let descriptor = vst3_descriptor(&info, has_editor);
+    let descriptor = vst3_descriptor(&info, EditorPresence::measured(has_editor));
 
     let mut features = Features::empty();
     features.set(Features::F64_AUDIO, actually_f64);
@@ -179,7 +179,7 @@ fn build_inner(p: &ReloadParams) -> Result<(VstInner, Meta)> {
 /// through the host's instance `PluginInfo` yet.
 // TODO: surface `PClassInfo2::subCategories` from the factory so the class is
 // fully populated; until then the DAW falls back on `has_midi_input` etc.
-fn vst3_descriptor(info: &tutti_vst3_host::PluginInfo, has_editor: bool) -> PluginDescriptor {
+fn vst3_descriptor(info: &tutti_vst3_host::PluginInfo, editor: EditorPresence) -> PluginDescriptor {
     PluginDescriptor {
         id: info.id.clone(),
         name: info.name.clone(),
@@ -188,7 +188,7 @@ fn vst3_descriptor(info: &tutti_vst3_host::PluginInfo, has_editor: bool) -> Plug
         class: PluginClass::Vst3 {
             category: String::new(),
         },
-        has_editor,
+        editor,
     }
 }
 
@@ -215,7 +215,9 @@ impl Vst3Instance {
                 reason: e.to_string(),
             }
         })?;
-        Ok(vst3_descriptor(&info, false))
+        // A probe does not instantiate, and an editor is a property of an
+        // instance — so this genuinely does not know. The load path above asks.
+        Ok(vst3_descriptor(&info, EditorPresence::Unknown))
     }
 
     /// Load and activate a VST3 plugin.

@@ -15,10 +15,6 @@
 //!   `step_count: u32` fuses at zero.
 //! - [`ParamFlags`] is paired with a `known` mask so a flag the format never
 //!   reported reads as [`None`] rather than as `false`.
-//!
-//! Contrast the two reference hosts: JUCE forces everything to normalized and
-//! discards AU's plain range entirely; Ardour forces everything to plain and
-//! fabricates the flags a format can't report. Both lose which is which.
 
 use bitflags::bitflags;
 
@@ -163,8 +159,7 @@ fn finite_bounds(min: f64, max: f64) -> Option<(f64, f64)> {
 /// [`Unknown`](Self::Unknown) is separate from [`Continuous`](Self::Continuous)
 /// because a bare count fuses them at zero: VST2 without
 /// `effGetParameterProperties` reports nothing, which is not the same as
-/// reporting "freely variable". JUCE spells the same distinction `0x7fffffff`
-/// and then equality-compares against it to recover discreteness.
+/// reporting "freely variable".
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum ParamSteps {
@@ -210,7 +205,7 @@ impl ParamSteps {
 }
 
 bitflags! {
-    /// Per-parameter capabilities, in the same wgpu-style shape as
+    /// Per-parameter capabilities, in the same shape as
     /// [`Features`](crate::Features).
     ///
     /// Meaningful only alongside a `known` mask — see

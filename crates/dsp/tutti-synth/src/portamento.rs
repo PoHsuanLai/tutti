@@ -1,6 +1,6 @@
 //! Portamento (pitch glide) for synthesizers.
 
-use tutti_core::{Hz, SampleRate, Seconds};
+use tutti_core::{Hz, SampleRate, Seconds, Semitones};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PortamentoMode {
@@ -48,9 +48,14 @@ impl Default for PortamentoConfig {
 #[derive(Debug, Clone)]
 pub struct Portamento {
     config: PortamentoConfig,
-    start_freq: f32,
-    target_freq: f32,
-    current_freq: f32,
+    /// The three glide endpoints. Typed because the public surface already is
+    /// — `set_target(impl Into<Hz>)`, `tick() -> Hz`, `current() -> Hz` — so
+    /// the `Hz` was unwrapped on the way in and re-wrapped on the way out
+    /// purely to cross the struct, leaving three same-typed fields written in
+    /// three separate branches.
+    start_freq: Hz,
+    target_freq: Hz,
+    current_freq: Hz,
     /// 0.0 to 1.0
     progress: f32,
     /// Per sample
@@ -62,9 +67,9 @@ impl Portamento {
     pub fn new(config: PortamentoConfig, sample_rate: impl Into<SampleRate>) -> Self {
         Self {
             config,
-            start_freq: 440.0,
-            target_freq: 440.0,
-            current_freq: 440.0,
+            start_freq: Hz(440.0),
+            target_freq: Hz(440.0),
+            current_freq: Hz(440.0),
             progress: 1.0,
             rate: 0.0,
             sample_rate: sample_rate.into(),
@@ -72,7 +77,7 @@ impl Portamento {
     }
 
     pub fn set_target(&mut self, freq: impl Into<Hz>, is_legato: bool) {
-        let freq = freq.into().get();
+        let freq = freq.into();
         let should_glide = match self.config.mode {
             PortamentoMode::Off => false,
             PortamentoMode::Always => true,
@@ -87,8 +92,14 @@ impl Portamento {
             let glide_time = if self.config.constant_time {
                 time
             } else {
-                let interval = (freq / self.start_freq).abs().log2().abs();
-                time * (interval / 1.0).max(0.1) // At least 10% of base time
+                // The named converter, in octaves: this was
+                // `(freq / start).abs().log2().abs()` spelled out, and
+                // `Semitones::from_pitch_ratio` guards the non-positive ratio
+                // the bare `log2` would have turned into a NaN glide time.
+                let interval =
+                    (Semitones::from_pitch_ratio(freq.get() / self.start_freq.get()).get() / 12.0)
+                        .abs();
+                time * interval.max(0.1) // At least 10% of base time
             };
 
             // A fractional glide length feeding a reciprocal, not a frame
@@ -112,7 +123,7 @@ impl Portamento {
     #[inline]
     pub fn tick(&mut self) -> Hz {
         if self.progress >= 1.0 {
-            return Hz(self.target_freq);
+            return self.target_freq;
         }
 
         self.progress += self.rate;
@@ -124,16 +135,16 @@ impl Portamento {
             PortamentoCurve::Logarithmic => self.progress.sqrt(),
         };
 
-        let log_start = self.start_freq.ln();
-        let log_target = self.target_freq.ln();
-        self.current_freq = (log_start + (log_target - log_start) * t).exp();
+        let log_start = self.start_freq.get().ln();
+        let log_target = self.target_freq.get().ln();
+        self.current_freq = Hz((log_start + (log_target - log_start) * t).exp());
 
-        Hz(self.current_freq)
+        self.current_freq
     }
 
     #[inline]
     pub fn current(&self) -> Hz {
-        Hz(self.current_freq)
+        self.current_freq
     }
 
     #[inline]
@@ -142,7 +153,7 @@ impl Portamento {
     }
 
     pub fn reset(&mut self, freq: impl Into<Hz>) {
-        let freq = freq.into().get();
+        let freq = freq.into();
         self.start_freq = freq;
         self.target_freq = freq;
         self.current_freq = freq;

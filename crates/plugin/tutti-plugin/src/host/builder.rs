@@ -140,6 +140,13 @@ fn load_plugin(
         // values a hand-written config uses, so this stays correct in practice;
         // it is the one place the address model is inferred rather than known.
         // TODO: thread the format through so a VST2 key becomes `Index`.
+        //
+        // The *value* needs no such inference: `PluginParams::set_parameter` is
+        // normalized `0..=1` for every format, so a config value means the same
+        // thing whichever plugin this turns out to be. That used to be untrue —
+        // the value carried the format's own convention, so this site wrote a
+        // plain-unit AU parameter as if it were normalized, and 1.0 set 1 Hz on
+        // a 10..22050 Hz cutoff.
         if let Ok(param_id) = name.parse::<u32>() {
             client.set_parameter(ParamAddress::Opaque(param_id.into()), *value);
         }

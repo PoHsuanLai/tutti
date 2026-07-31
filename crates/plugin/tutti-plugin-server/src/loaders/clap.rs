@@ -3,9 +3,9 @@
 use std::path::Path;
 use tutti_plugin::server::{
     BusChannels, EditorPresence, EditorSize, Features, LoadedPlugin, NoteExpressionChanges,
-    ParamAddress, ParameterChanges, ParameterInfo, PluginAudio, PluginClass, PluginDescriptor,
-    PluginEditorHost, PluginError, PluginMeta, PluginParams, PluginResult, PluginState, Samples,
-    WindowHandle,
+    ParamAddress, ParamRange, ParameterChanges, ParameterInfo, PluginAudio, PluginClass,
+    PluginDescriptor, PluginEditorHost, PluginError, PluginMeta, PluginParams, PluginResult,
+    PluginState, Samples, WindowHandle,
 };
 use tutti_plugin::server::{ProcessContext, ProcessOutput};
 
@@ -383,16 +383,46 @@ impl PluginAudio for ClapInstance {
 }
 
 impl PluginParams for ClapInstance {
+    /// Normalized `0..=1`, per the [`PluginParams`] contract — CLAP has no
+    /// normalization concept, so the plugin answers in its plain range and the
+    /// declared bounds map it back.
+    ///
+    /// A parameter the plugin declares no range for is passed through rather
+    /// than scaled against invented bounds — the same choice
+    /// `add_param_changes` makes for an id missing from its range map.
     fn get_parameter(&self, id: ParamAddress) -> f64 {
         // A VST2 index addresses nothing here; `clap_id` is opaque.
         let Some(id) = id.opaque() else { return 0.0 };
-        clap_dispatch!(self, i => i.parameter(id.get())).unwrap_or(0.0)
+        let Some(plain) = clap_dispatch!(self, i => i.parameter(id.get())) else {
+            return 0.0;
+        };
+        match clap_dispatch!(self, i => i.parameter_range(id.get())) {
+            Some((min, max)) => ParamRange::Plain {
+                min,
+                max,
+                default: min,
+            }
+            .to_normalized(plain),
+            None => plain,
+        }
     }
 
+    /// Normalized `0..=1` in, matching [`get_parameter`](Self::get_parameter).
+    /// CLAP events carry the plain value, so the declared range denormalizes it
+    /// — the same conversion `add_param_changes` applies on the automation path.
     fn set_parameter(&mut self, id: ParamAddress, value: f64) {
         let Some(id) = id.opaque() else { return };
+        let plain = match clap_dispatch!(self, i => i.parameter_range(id.get())) {
+            Some((min, max)) => ParamRange::Plain {
+                min,
+                max,
+                default: min,
+            }
+            .to_plain(value),
+            None => value,
+        };
         clap_dispatch_mut!(self, i => {
-            i.set_parameter(id.get(), value);
+            i.set_parameter(id.get(), plain);
         });
     }
 

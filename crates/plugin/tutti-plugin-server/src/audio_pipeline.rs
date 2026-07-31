@@ -13,7 +13,7 @@
 use tutti_plugin::server::{
     AudioBufferMut, AudioSlab, ChordChanges, ExpressiveContext, Features, MidiEvent, MidiEventVec,
     NoteExpressionChanges, NoteExpressionIntChanges, NoteExpressionTextChanges, ParameterChanges,
-    PluginInstance, ProcessContext, SampleFormat, Samples, ScaleChanges, TransportInfo,
+    PluginInstance, ProcessContext, SampleFormat, ScaleChanges, TransportInfo,
 };
 use tutti_plugin::Result;
 
@@ -415,7 +415,7 @@ fn with_audio_buffer_f64<R>(
 mod tests {
     use super::*;
     use tutti_plugin::server::{
-        ParamAddress, PluginAudio, PluginEditorHost, PluginMeta, PluginParams, PluginState,
+        ParamAddress, PluginAudio, PluginEditorHost, PluginMeta, PluginParams, PluginState, Samples,
     };
 
     #[test]

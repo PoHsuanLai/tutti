@@ -104,6 +104,27 @@ impl ParamBounds {
         };
         self.min + n * (self.max - self.min)
     }
+
+    /// Inverse of [`to_plain`](Self::to_plain): map the AU's plain value back
+    /// onto normalized `0..=1`.
+    ///
+    /// The read direction of the same boundary. `PluginParams::get_parameter`
+    /// is normalized for every format, and `AudioUnitGetParameter` answers in
+    /// plain units, so a read without this reports a cutoff of `22050` where
+    /// the caller expects `1.0`.
+    ///
+    /// Same non-finite argument as `to_plain`, in the same order: bounds that
+    /// are not finite have no span to divide by, and a degenerate range has no
+    /// position to report — both answer `0.0` rather than a NaN or an infinity.
+    fn to_normalized(self, plain: f32) -> f64 {
+        if !(self.min.is_finite() && self.max.is_finite()) {
+            return 0.0;
+        }
+        if self.max <= self.min || plain.is_nan() {
+            return 0.0;
+        }
+        f64::from((plain.clamp(self.min, self.max) - self.min) / (self.max - self.min))
+    }
 }
 
 /// Look up the declared bounds for `id` in a range table sorted by id.
@@ -424,21 +445,39 @@ impl PluginAudio for AuInstance {
 
 #[cfg(all(target_os = "macos", feature = "au"))]
 impl PluginParams for AuInstance {
-    /// Plain native units, per the [`PluginParams`] contract for AU — pass the
-    /// AU's value through unchanged.
+    /// Normalized `0..=1`, per the [`PluginParams`] contract — `AudioUnitGet`
+    /// answers in plain units, so the declared range maps it back.
+    ///
+    /// Uses the same `param_ranges` table the automation path denormalizes
+    /// against, so the direct path and `process` cannot disagree about what a
+    /// parameter's bounds are.
+    ///
+    /// A parameter absent from the table has no declared range to normalize
+    /// against; its plain value is reported unchanged rather than scaled by a
+    /// guess. `read_param_ranges` lists every parameter the AU declares, so an
+    /// absence means the AU did not declare it.
     fn get_parameter(&self, id: ParamAddress) -> f64 {
         // A VST2 index addresses nothing here; `AudioUnitParameterID` is opaque.
         let Some(id) = id.opaque() else { return 0.0 };
-        parameters::get(self.inner.raw_unit(), id.get()).unwrap_or(0.0) as f64
+        let Ok(plain) = parameters::get(self.inner.raw_unit(), id.get()) else {
+            return 0.0;
+        };
+        match lookup_bounds(&self.param_ranges, id.get()) {
+            Some(bounds) => bounds.to_normalized(plain),
+            None => f64::from(plain),
+        }
     }
 
-    /// Plain native units in, matching [`get_parameter`](Self::get_parameter) —
-    /// so this pair round-trips. (The `param_changes` automation path in
-    /// `process` is the one that must denormalize, because ITS input is
-    /// Normalized; see the note there.)
+    /// Normalized `0..=1` in, matching [`get_parameter`](Self::get_parameter) —
+    /// so this pair round-trips. `AudioUnitSetParameter` takes plain units, so
+    /// the value is denormalized against the same table.
     fn set_parameter(&mut self, id: ParamAddress, value: f64) {
         let Some(id) = id.opaque() else { return };
-        let _ = parameters::set(self.inner.raw_unit(), id.get(), value as f32);
+        let plain = match lookup_bounds(&self.param_ranges, id.get()) {
+            Some(bounds) => bounds.to_plain(value),
+            None => value as f32,
+        };
+        let _ = parameters::set(self.inner.raw_unit(), id.get(), plain);
     }
 
     fn get_parameter_list(&self) -> Vec<ParameterInfo> {
@@ -628,6 +667,65 @@ mod tests {
         // No crash is the assertion
     }
 
+    /// The live half of the direct path: `PluginParams` is normalized for every
+    /// format, so a write of `1.0` must reach AUDelay's cutoff as 22050 Hz and
+    /// read back as `1.0` — not as the 1 Hz that writing the normalized value
+    /// straight through would set.
+    ///
+    /// Goes through the trait rather than `ParamBounds` so it covers the
+    /// range-table lookup too: a `get`/`set` pair that agreed with each other
+    /// but used the wrong bounds would pass a pure-unit test and fail here.
+    #[test]
+    fn direct_parameter_path_is_normalized_end_to_end() {
+        use tutti_au_host::component;
+        use tutti_au_host::types::AudioComponentDescription;
+        use tutti_au_host::types::K_AUDIO_UNIT_TYPE_EFFECT;
+
+        let desc = AudioComponentDescription {
+            componentType: K_AUDIO_UNIT_TYPE_EFFECT,
+            componentSubType: u32::from_be_bytes(*b"dely"),
+            componentManufacturer: u32::from_be_bytes(*b"appl"),
+            componentFlags: 0,
+            componentFlagsMask: 0,
+        };
+        let comp = component::find_component(&desc).expect("AUDelay should exist");
+        let mut inner = unsafe { tutti_au_host::AuInstance::new(comp, 44100.0, 512) }
+            .expect("Should create instance");
+        inner.initialize().expect("Should initialize");
+        let param_ranges = read_param_ranges(inner.raw_unit());
+
+        // The cutoff parameter is the one whose range makes the bug audible.
+        let &(cutoff_id, bounds) = param_ranges
+            .iter()
+            .find(|(_, b)| b.min >= 10.0 && b.max >= 20_000.0)
+            .expect("AUDelay declares a wide-range cutoff");
+
+        let mut au = AuInstance {
+            inner,
+            editor: None,
+            param_ranges,
+            meta: Meta::default(),
+        };
+        let addr = ParamAddress::Opaque(cutoff_id.into());
+
+        au.set_parameter(addr, 1.0);
+        let plain = parameters::get(au.inner.raw_unit(), cutoff_id).expect("cutoff is readable");
+        assert!(
+            (plain - bounds.max).abs() < 1.0,
+            "normalized 1.0 must set the top of {:?}, got {plain}",
+            (bounds.min, bounds.max)
+        );
+        assert!(
+            plain > 2.0,
+            "a plain {plain} means the normalized value went through unscaled — \
+             the inaudible-filter bug"
+        );
+        assert!((au.get_parameter(addr) - 1.0).abs() < 1e-3);
+
+        au.set_parameter(addr, 0.0);
+        assert!((au.get_parameter(addr)).abs() < 1e-3);
+    }
+
     #[test]
     fn test_au_state_roundtrip_via_trait() {
         use tutti_au_host::component;
@@ -756,11 +854,16 @@ mod tests {
         assert!(lookup_bounds(&table, 3).is_none());
     }
 
-    /// Live half: drive a real AU's automation path and read the value
-    /// back in native units. Full-scale automation must land on the parameter's
-    /// declared MAXIMUM, not on `1.0`.
+    /// Live half: drive a real AU's automation path, assert the unit holds the
+    /// native value, then assert the read path inverts it.
+    ///
+    /// Full-scale automation must land on the parameter's declared MAXIMUM, not
+    /// on `1.0` — that is the denormalization. And `get_parameter` must answer
+    /// `1.0` rather than the maximum — that is the `PluginParams` contract,
+    /// which is normalized for every format. Both directions in one test
+    /// because either alone can pass while the pair is inconsistent.
     #[test]
-    fn param_automation_round_trips_in_native_units() {
+    fn param_automation_denormalizes_and_reads_back_normalized() {
         use tutti_au_host::component;
         use tutti_au_host::types::AudioComponentDescription;
         use tutti_au_host::types::K_AUDIO_UNIT_TYPE_EFFECT;
@@ -835,14 +938,33 @@ mod tests {
             au.process(AudioBufferMut::F32(buffer), &ctx)
                 .expect("process should succeed");
 
-            let read_back = au.get_parameter(target.id);
             // Tolerance scales with the range: AU stores parameters as f32, so
             // a 22 kHz range round-trips to ~1e-4 relative precision.
             let tolerance = (max - min).abs() * 1e-4;
+
+            // The subject of this test: the automation point was normalized,
+            // and the AU must hold the *native* value. Read straight off the
+            // unit rather than through `get_parameter`, which now normalizes —
+            // going through it would assert the identity of two conversions and
+            // pass even if both were wrong.
+            let opaque = target.id.opaque().expect("AU ids are opaque").get();
+            let native =
+                f64::from(parameters::get(au.inner.raw_unit(), opaque).expect("param is readable"));
             assert!(
-                (read_back - expected).abs() <= tolerance,
-                "param {} ('{}'): normalized {normalized} should read back as \
-                 {expected} in native units, got {read_back} (range [{min}, {max}])",
+                (native - expected).abs() <= tolerance,
+                "param {} ('{}'): normalized {normalized} should reach the AU as \
+                 {expected} in native units, got {native} (range [{min}, {max}])",
+                target.id,
+                target.name,
+            );
+
+            // And the read path inverts it: `PluginParams` is normalized for
+            // every format, so what went in comes back out.
+            let read_back = au.get_parameter(target.id);
+            assert!(
+                (read_back - normalized).abs() <= 1e-4,
+                "param {} ('{}'): should read back as the normalized {normalized}, \
+                 got {read_back}",
                 target.id,
                 target.name,
             );

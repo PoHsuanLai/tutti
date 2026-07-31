@@ -55,26 +55,40 @@ pub trait PluginAudio: Send {
 /// returns id/name/range/default/unit/flags with no node analogue), so this
 /// stays plugin-specific.
 pub trait PluginParams {
-    /// Parameter value in the format's native convention. There are two, and
-    /// which one applies is a property of the format's ABI, not a choice:
+    /// Parameter value, **normalized `0..=1`**, for every format.
     ///
-    /// - **normalized `0..=1`** — VST2 (`AEffect::getParameter`) and VST3
-    ///   (`IEditController::normalizedParamToPlain` exists precisely because the
-    ///   wire value is normalized).
-    /// - **native plain range** (`ParameterInfo::min_value..=max_value`) — CLAP
-    ///   (no normalization concept at all) **and AU**.
+    /// This is the host's authoring convention, and it is the same one
+    /// [`ParameterPoint::value`](crate::ParameterPoint) already carries — the
+    /// direct path and the automation path now speak one vocabulary rather than
+    /// two.
     ///
-    /// AU is called out because this doc asserted for a long time that AU was
-    /// normalized, and it is not: `AudioUnitSetParameter` takes plain units.
-    /// Apple's own AUDelay declares Lowpass Cutoff as `[10, 22050]` Hz, so
-    /// writing `1.0` sets 1 Hz, not full scale — an inaudible filter that reads
-    /// as "the plugin ignored me". Any code that treats this value as normalized
-    /// without checking the format is wrong for two of the four formats.
+    /// The formats do not agree, and this trait is where the disagreement stops:
     ///
-    /// Convert with [`ParameterInfo::to_plain`] / [`ParameterInfo::to_normalized`],
-    /// which are THE conversion for this boundary — do not hand-roll the scaling,
-    /// and do not reuse [`ParameterInfo::to_range`], which answers the unrelated
-    /// question of display taper.
+    /// - **VST2, VST3** are natively normalized (`AEffect::getParameter`;
+    ///   VST3's `normalizedParamToPlain` exists precisely because the wire
+    ///   value is normalized). Their impls pass the value through.
+    /// - **CLAP, AU** take a plain value in the parameter's declared range, so
+    ///   their impls convert against the range table each already keeps for
+    ///   automation.
+    ///
+    /// It used to be the *caller's* job to know which, from a bare `f64` that
+    /// said nothing. That is unimplementable for a caller that does not know the
+    /// format: writing `1.0` to Apple's AUDelay "Lowpass Cutoff" (`[10, 22050]`
+    /// Hz) sets **1 Hz**, not full scale — an inaudible filter that reads as
+    /// "the plugin ignored me". Two of the four formats punished the naive
+    /// reading, and the naive reading was the documented one.
+    ///
+    /// A conversion is therefore a *loader's* obligation, discharged where the
+    /// range is known, exactly as the automation path has always done it.
+    /// Callers that hold a [`ParameterInfo`] and want the plain value should ask
+    /// for it explicitly with [`ParameterInfo::to_plain`]; do not reuse
+    /// [`ParameterInfo::to_range`], which answers the unrelated question of
+    /// display taper.
+    ///
+    /// A parameter whose range the plugin never declared
+    /// ([`ParamRange::Normalized`](crate::ParamRange::Normalized)) is already
+    /// normalized, so the conversion is the identity and no information is
+    /// invented.
     ///
     /// `id` is the [`ParamAddress`] from [`ParameterInfo::id`]. For VST3, CLAP
     /// and AU that is an opaque plugin-chosen handle under no obligation to be
@@ -87,9 +101,9 @@ pub trait PluginParams {
     /// write in [`set_parameter`](Self::set_parameter). Neither invents a cast.
     fn get_parameter(&self, id: ParamAddress) -> f64;
 
-    /// See [`get_parameter`](Self::get_parameter) for the value convention
-    /// (normalized for VST2/VST3; native plain range for CLAP and AU) and for
-    /// how an address of the wrong model is treated.
+    /// Write a parameter, **normalized `0..=1`** — see
+    /// [`get_parameter`](Self::get_parameter) for why every format speaks that
+    /// convention here, and for how an address of the wrong model is treated.
     fn set_parameter(&mut self, id: ParamAddress, value: f64);
 
     /// Push the host [`AutomationMode`](crate::AutomationMode) to the plugin.

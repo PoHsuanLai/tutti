@@ -261,11 +261,7 @@ fn host_projects_parameter_metadata_exactly() {
 
     for (i, want) in probe_params().iter().enumerate() {
         let got = &listed[i];
-        assert_eq!(
-            got.id,
-            ParamAddress::Opaque(want.id.into()),
-            "param {i} id"
-        );
+        assert_eq!(got.id, ParamAddress::Opaque(want.id.into()), "param {i} id");
         assert_eq!(
             got.name.as_bytes(),
             want.name,
@@ -421,6 +417,39 @@ fn host_reads_parameter_values_by_id_not_index() {
             None,
             "index {index} is not a param id in this plugin; a host that reads \
              it as one is confusing index with id"
+        );
+    }
+}
+
+/// `parameter_range` answers with the plugin's own declared bounds, keyed by
+/// **id**, and refuses an id the plugin never declared.
+///
+/// The loader's `PluginParams` impl converts normalized `0..=1` against this,
+/// so a lookup that silently answered for the wrong parameter would rescale a
+/// value against another parameter's bounds — a wrong value rather than a
+/// missing one. `None` is what makes the caller pass the value through instead
+/// of scaling it against a guess.
+#[test]
+fn parameter_range_is_keyed_by_id_and_refuses_unknown_ids() {
+    let probe = Probe::acquire();
+    let loaded = probe.load();
+
+    for want in probe_params() {
+        assert_eq!(
+            loaded.parameter_range(want.id),
+            Some((want.min, want.max)),
+            "range for param id {} must be the plugin's declared bounds",
+            want.id
+        );
+    }
+
+    // Same trap as the read path: the indices are 0, 1, 2 and none is a valid
+    // id, so answering for one would mean a host had confused the two.
+    for index in 0..probe_params().len() as u32 {
+        assert_eq!(
+            loaded.parameter_range(index),
+            None,
+            "index {index} is not a param id in this plugin"
         );
     }
 }

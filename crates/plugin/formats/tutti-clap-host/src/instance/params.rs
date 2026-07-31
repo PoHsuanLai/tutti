@@ -149,6 +149,30 @@ impl ClapLoaded {
         params
     }
 
+    /// The declared `[min, max]` for one parameter, or `None` if the plugin
+    /// does not declare it.
+    ///
+    /// The direct `PluginParams` path needs a single parameter's range, where
+    /// `process` needs the whole table — so this walks rather than building a
+    /// map. That is the right trade here: it is called once per host-driven
+    /// read or write (a knob turn, a preset apply), never per block.
+    ///
+    /// `None` means "no range to convert against", which the caller must treat
+    /// as pass-through rather than substituting bounds. Inventing a `0..=1`
+    /// default here would silently rescale a parameter the plugin never
+    /// described — the same class of quiet wrongness [`parameters`](Self::parameters)
+    /// truncates to avoid.
+    pub fn parameter_range(&self, id: u32) -> Option<(f64, f64)> {
+        let count = self.parameter_count() as u32;
+        for i in 0..count {
+            let info = self.parameter_info(i)?;
+            if info.id == id {
+                return Some((info.min_value, info.max_value));
+            }
+        }
+        None
+    }
+
     /// Every parameter projected onto the shared, format-agnostic
     /// [`ParameterInfo`](tutti_plugin_types::ParameterInfo) — the value that
     /// crosses the crate boundary. CLAP has no unit string, so `unit` is empty;

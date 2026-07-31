@@ -33,20 +33,26 @@ use crate::cstr_to_string;
 
 impl ClapLoaded {
     /// Number of input or output audio ports exposed by the plugin.
-    pub fn audio_port_count(&self, is_input: bool) -> usize {
+    ///
+    /// `u32` because that is what CLAP's own `count`/`get` pair speaks, and it
+    /// is the type every port index in this file is denominated in. Four of
+    /// these accessors used to widen the count to `usize` and narrow the index
+    /// back to `u32` at the FFI call — a matched pair of conversions that
+    /// bought nothing and left one concept with two spellings in one file.
+    pub fn audio_port_count(&self, is_input: bool) -> u32 {
         if self.extensions.audio.ports.is_null() {
             return 0;
         }
         let ext = unsafe { &*self.extensions.audio.ports };
         match ext.count {
-            Some(f) => (unsafe { f(self.plugin.as_ptr(), is_input) }) as usize,
+            Some(f) => unsafe { f(self.plugin.as_ptr(), is_input) },
             None => 0,
         }
     }
 
     /// Metadata for the audio port at `index`, or `None` if the index is
     /// invalid or the plugin does not implement the extension.
-    pub fn audio_port_info(&self, index: usize, is_input: bool) -> Option<AudioPortInfo> {
+    pub fn audio_port_info(&self, index: u32, is_input: bool) -> Option<AudioPortInfo> {
         if self.extensions.audio.ports.is_null() {
             return None;
         }
@@ -54,7 +60,7 @@ impl ClapLoaded {
         let get_fn = ext.get?;
 
         let mut info: clap_audio_port_info = unsafe { std::mem::zeroed() };
-        if !unsafe { get_fn(self.plugin.as_ptr(), index as u32, is_input, &mut info) } {
+        if !unsafe { get_fn(self.plugin.as_ptr(), index, is_input, &mut info) } {
             return None;
         }
 
@@ -91,19 +97,19 @@ impl ClapLoaded {
     }
 
     /// Number of input or output note (MIDI) ports.
-    pub fn note_port_count(&self, is_input: bool) -> usize {
+    pub fn note_port_count(&self, is_input: bool) -> u32 {
         if self.extensions.notes.ports.is_null() {
             return 0;
         }
         let ext = unsafe { &*self.extensions.notes.ports };
         match ext.count {
-            Some(f) => (unsafe { f(self.plugin.as_ptr(), is_input) }) as usize,
+            Some(f) => unsafe { f(self.plugin.as_ptr(), is_input) },
             None => 0,
         }
     }
 
     /// Metadata for the note port at `index`, including supported dialects.
-    pub fn note_port_info(&self, index: usize, is_input: bool) -> Option<NotePortInfo> {
+    pub fn note_port_info(&self, index: u32, is_input: bool) -> Option<NotePortInfo> {
         if self.extensions.notes.ports.is_null() {
             return None;
         }
@@ -111,7 +117,7 @@ impl ClapLoaded {
         let get_fn = ext.get?;
 
         let mut info: clap_note_port_info = unsafe { std::mem::zeroed() };
-        if !unsafe { get_fn(self.plugin.as_ptr(), index as u32, is_input, &mut info) } {
+        if !unsafe { get_fn(self.plugin.as_ptr(), index, is_input, &mut info) } {
             return None;
         }
 
@@ -135,19 +141,19 @@ impl ClapLoaded {
 
     /// Number of predefined port configurations
     /// (`CLAP_EXT_AUDIO_PORTS_CONFIG`) the plugin offers.
-    pub fn audio_port_config_count(&self) -> usize {
+    pub fn audio_port_config_count(&self) -> u32 {
         if self.extensions.audio.ports_config.is_null() {
             return 0;
         }
         let ext = unsafe { &*self.extensions.audio.ports_config };
         match ext.count {
-            Some(f) => (unsafe { f(self.plugin.as_ptr()) }) as usize,
+            Some(f) => unsafe { f(self.plugin.as_ptr()) },
             None => 0,
         }
     }
 
     /// Describe the audio port configuration at `index`.
-    pub fn get_audio_port_config(&self, index: usize) -> Option<AudioPortConfig> {
+    pub fn get_audio_port_config(&self, index: u32) -> Option<AudioPortConfig> {
         if self.extensions.audio.ports_config.is_null() {
             return None;
         }
@@ -155,7 +161,7 @@ impl ClapLoaded {
         let get_fn = ext.get?;
 
         let mut config: clap_audio_ports_config = unsafe { std::mem::zeroed() };
-        if !unsafe { get_fn(self.plugin.as_ptr(), index as u32, &mut config) } {
+        if !unsafe { get_fn(self.plugin.as_ptr(), index, &mut config) } {
             return None;
         }
 
@@ -317,26 +323,26 @@ impl ClapLoaded {
 
     /// Number of custom note names (e.g. drum-kit labels) the plugin
     /// exposes via `CLAP_EXT_NOTE_NAME`.
-    pub fn note_name_count(&self) -> usize {
+    pub fn note_name_count(&self) -> u32 {
         if self.extensions.notes.name.is_null() {
             return 0;
         }
         let ext = unsafe { &*self.extensions.notes.name };
         match ext.count {
-            Some(f) => (unsafe { f(self.plugin.as_ptr()) }) as usize,
+            Some(f) => unsafe { f(self.plugin.as_ptr()) },
             None => 0,
         }
     }
 
     /// Retrieve a single custom note name.
-    pub fn get_note_name(&self, index: usize) -> Option<NoteName> {
+    pub fn get_note_name(&self, index: u32) -> Option<NoteName> {
         if self.extensions.notes.name.is_null() {
             return None;
         }
         let ext = unsafe { &*self.extensions.notes.name };
         let get_fn = ext.get?;
         let mut info: clap_note_name = unsafe { std::mem::zeroed() };
-        if !unsafe { get_fn(self.plugin.as_ptr(), index as u32, &mut info) } {
+        if !unsafe { get_fn(self.plugin.as_ptr(), index, &mut info) } {
             return None;
         }
         Some(NoteName {

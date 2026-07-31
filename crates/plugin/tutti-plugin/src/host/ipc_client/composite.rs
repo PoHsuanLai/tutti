@@ -4,7 +4,8 @@ use super::audio::{AudioBridge, BridgeListener, BridgeThread, HarmonyInputs};
 use crate::error::{EditorError, Result};
 use crate::format::gui::PluginEditor;
 use crate::protocol::{
-    MidiEventVec, NoteExpressionChanges, ParameterChanges, ParameterInfo, TransportInfo,
+    MidiEventVec, NoteExpressionChanges, ParamAddress, ParameterChanges, ParameterInfo,
+    TransportInfo,
 };
 use crate::util::transport::shm::AudioSlab;
 use crate::util::window::{EditorCapabilities, EditorSize, WindowHandle};
@@ -84,7 +85,7 @@ impl PluginBridge {
         self.audio.set_listener(listener);
     }
 
-    pub fn set_parameter_rt(&self, param_id: u32, value: f32) -> bool {
+    pub fn set_parameter_rt(&self, param_id: ParamAddress, value: f32) -> bool {
         // Cosmetic GUI mirror (keeps the display in sync): `try_lock`, never
         // block. The `_rt` contract must stay non-blocking — a blocking
         // `lock()` here could stall the caller behind a multi-millisecond
@@ -252,7 +253,7 @@ impl PluginBridge {
         self.audio.parameters()
     }
 
-    pub fn parameter(&self, param_id: u32) -> Option<f32> {
+    pub fn parameter(&self, param_id: ParamAddress) -> Option<f32> {
         self.audio.parameter(param_id)
     }
 
@@ -317,11 +318,11 @@ impl crate::host::handles::capabilities::HostParams for SubprocessBackend {
         self.bridge.parameters()
     }
 
-    fn parameter_value(&self, id: u32) -> Option<f32> {
+    fn parameter_value(&self, id: ParamAddress) -> Option<f32> {
         self.bridge.parameter(id)
     }
 
-    fn set_parameter_value(&self, id: u32, value: f32) {
+    fn set_parameter_value(&self, id: ParamAddress, value: f32) {
         self.bridge.set_parameter_rt(id, value);
     }
 

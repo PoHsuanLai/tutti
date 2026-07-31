@@ -46,7 +46,21 @@ pub mod shm;
 ///   The persisted catalog is NOT governed by this constant — it is JSON, and
 ///   `PluginDescriptor::editor` carries `serde(default)` so an existing database
 ///   loads with `Unknown` instead of being quarantined. See the field.
-pub const PROTOCOL_VERSION: u32 = 6;
+/// - v7: `LoadedPlugin` gains `probed: Features`, the mask saying which
+///   capabilities the loader actually asked about. Without it a clear
+///   `Features` bit answers "the plugin declined", "this loader never asked",
+///   and "the format has no query" identically — and the AU loader probes
+///   exactly one of the ten. Mandatory: the new field appends to the struct, so a v6 peer stops
+///   reading before it and a v6 *payload* runs the decoder off the end of the
+///   buffer or into the next field's bytes.
+/// - v8: every `param_id: u32` becomes a `ParamAddress`, which distinguishes an
+///   opaque plugin-chosen handle (VST3/CLAP/AU) from a VST2 positional index.
+///   The two were indistinguishable on the wire, so the receiving loader had to
+///   assume its own format's model — correct only because each session hosts one
+///   format, and silently wrong the moment an address is forwarded. Mandatory:
+///   the enum adds a discriminant byte ahead of the number, so a v7 peer reads
+///   the tag as the low byte of the id.
+pub const PROTOCOL_VERSION: u32 = 8;
 
 /// Validate a subprocess-reported protocol version against [`PROTOCOL_VERSION`].
 /// Called at each handshake consumer so a version skew fails loudly instead of
@@ -88,7 +102,8 @@ pub use tutti_plugin_types::{
     AutomationMode, BusChannels, ChannelLayout, ChordChanges, ChordValue, EditorPresence, Features,
     LoadedPlugin, NoteExpressionChanges, NoteExpressionIntChanges, NoteExpressionIntValue,
     NoteExpressionTextChanges, NoteExpressionTextValue, NoteExpressionType, NoteExpressionValue,
-    ParamFlags, ParamRange, ParamSteps, ParameterChanges, ParameterInfo, ParameterPoint,
+    ParamAddress, ParamFlags, ParamId, ParamRange, ParamSteps, ParameterChanges, ParameterInfo,
+    ParameterPoint,
     ParameterQueue, ScaleChanges, ScaleValue, TimeSignature, TransportInfo,
 };
 

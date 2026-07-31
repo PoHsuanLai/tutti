@@ -22,6 +22,7 @@ use clap_sys::process::{
 use std::ptr;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use tutti_plugin_types::transport::is_usable;
 
 /// Owned snapshot of the plugin's per-block output. Returned for
 /// non-RT consumers (tests, offline render) via
@@ -530,10 +531,23 @@ pub(super) fn build_clap_transport(transport: &TransportInfo) -> clap_event_tran
     // active, pre-roll). `bar_start` is a `clap_beattime`, the same type as
     // `song_pos_beats`, so it rides the beats timeline that is already
     // advertised. Both were previously sent as zeros regardless.
-    let mut flags: u32 = CLAP_TRANSPORT_HAS_TEMPO
-        | CLAP_TRANSPORT_HAS_BEATS_TIMELINE
-        | CLAP_TRANSPORT_HAS_SECONDS_TIMELINE
-        | CLAP_TRANSPORT_HAS_TIME_SIGNATURE;
+    // `HAS_TIME_SIGNATURE` is unconditional, and it is the only one of the four
+    // that is: `TimeSignature` is a validated newtype with no representable
+    // invalid value, so the claim is always true. The rest assert that a
+    // specific field is usable, and asserting it for a field we did not fill is
+    // how VST2 shipped `tempo = 0, kVstTempoValid` — the same bug, one format
+    // over. Tempo additionally has to be positive, because plugins divide by it.
+    let mut flags: u32 = CLAP_TRANSPORT_HAS_TIME_SIGNATURE;
+
+    if is_usable(transport.timing.tempo) && transport.timing.tempo > 0.0 {
+        flags |= CLAP_TRANSPORT_HAS_TEMPO;
+    }
+    if is_usable(transport.position.beats) {
+        flags |= CLAP_TRANSPORT_HAS_BEATS_TIMELINE;
+    }
+    if is_usable(transport.position.seconds) {
+        flags |= CLAP_TRANSPORT_HAS_SECONDS_TIMELINE;
+    }
 
     if transport.state.playing {
         flags |= CLAP_TRANSPORT_IS_PLAYING;
@@ -575,6 +589,65 @@ pub(super) fn build_clap_transport(transport: &TransportInfo) -> clap_event_tran
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A `HAS_*` flag is a claim that the matching field is usable, so it must
+    /// not be set for a field we did not fill.
+    ///
+    /// VST2 shipped `tempo = 0, kVstTempoValid` for exactly this reason and the
+    /// fix there gates on finiteness plus positivity; CLAP set all four flags
+    /// unconditionally and had the same hole. A plugin that trusts `HAS_TEMPO`
+    /// and divides by the tempo gets an infinity.
+    #[test]
+    fn a_transport_flag_is_not_set_for_an_unusable_field() {
+        let mut t = TransportInfo::new();
+
+        t.timing.tempo = 0.0;
+        let ctx = build_clap_transport(&t);
+        assert_eq!(
+            ctx.flags & CLAP_TRANSPORT_HAS_TEMPO,
+            0,
+            "a zero tempo must not be advertised as valid — plugins divide by it"
+        );
+
+        t.timing.tempo = f64::NAN;
+        assert_eq!(build_clap_transport(&t).flags & CLAP_TRANSPORT_HAS_TEMPO, 0);
+        t.timing.tempo = f64::INFINITY;
+        assert_eq!(build_clap_transport(&t).flags & CLAP_TRANSPORT_HAS_TEMPO, 0);
+
+        t.timing.tempo = 120.0;
+        assert_ne!(
+            build_clap_transport(&t).flags & CLAP_TRANSPORT_HAS_TEMPO,
+            0,
+            "a usable tempo must still be advertised"
+        );
+
+        t.position.beats = f64::NAN;
+        assert_eq!(
+            build_clap_transport(&t).flags & CLAP_TRANSPORT_HAS_BEATS_TIMELINE,
+            0
+        );
+        t.position.beats = 0.0;
+        t.position.seconds = f64::NAN;
+        assert_eq!(
+            build_clap_transport(&t).flags & CLAP_TRANSPORT_HAS_SECONDS_TIMELINE,
+            0
+        );
+    }
+
+    /// The time signature is the one unconditional claim, and legitimately so:
+    /// `TimeSignature` is a validated newtype with no representable invalid
+    /// value, so there is no state in which the flag would be a lie.
+    #[test]
+    fn the_time_signature_flag_is_always_honest() {
+        let mut t = TransportInfo::new();
+        t.timing.tempo = f64::NAN;
+        t.position.beats = f64::NAN;
+        t.position.seconds = f64::NAN;
+        assert_ne!(
+            build_clap_transport(&t).flags & CLAP_TRANSPORT_HAS_TIME_SIGNATURE,
+            0
+        );
+    }
 
     fn new_scratch<T: Copy + Default>(
         input_ports: &[ChannelLayout],

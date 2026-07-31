@@ -8,7 +8,8 @@ use tutti_plugin::server::{
 };
 #[cfg(all(target_os = "macos", feature = "au"))]
 use tutti_plugin::server::{
-    EditorSize, ParamFlags, ParamRange, ParamSteps, ParameterInfo, PluginAudio, PluginEditorHost,
+    EditorSize, ParamAddress, ParamFlags, ParamRange, ParamSteps, ParameterInfo, PluginAudio,
+    PluginEditorHost,
     PluginMeta, PluginParams, PluginResult, PluginState, ProcessContext, ProcessOutput,
     WindowHandle,
 };
@@ -287,6 +288,7 @@ impl AuInstance {
             // set (latency presence is derived from `latency_samples`).
             let mut features = Features::empty();
             features.set(Features::EDITOR, has_editor);
+            let probed = tutti_plugin::server::probed::AU;
 
             // AU exposes a single main bus per direction here.
             let loaded = LoadedPlugin {
@@ -297,6 +299,7 @@ impl AuInstance {
                 outputs: single_bus(inner.num_outputs()),
                 latency_samples: latency,
                 features,
+                probed,
             };
 
             // Capture the declared plain ranges once, while still on the load
@@ -424,16 +427,19 @@ impl PluginAudio for AuInstance {
 impl PluginParams for AuInstance {
     /// Plain native units, per the [`PluginParams`] contract for AU — pass the
     /// AU's value through unchanged.
-    fn get_parameter(&self, id: u32) -> f64 {
-        parameters::get(self.inner.raw_unit(), id).unwrap_or(0.0) as f64
+    fn get_parameter(&self, id: ParamAddress) -> f64 {
+        // A VST2 index addresses nothing here; `AudioUnitParameterID` is opaque.
+        let Some(id) = id.opaque() else { return 0.0 };
+        parameters::get(self.inner.raw_unit(), id.get()).unwrap_or(0.0) as f64
     }
 
     /// Plain native units in, matching [`get_parameter`](Self::get_parameter) —
     /// so this pair round-trips. (The `param_changes` automation path in
     /// `process` is the one that must denormalize, because ITS input is
     /// Normalized; see the note there.)
-    fn set_parameter(&mut self, id: u32, value: f64) {
-        let _ = parameters::set(self.inner.raw_unit(), id, value as f32);
+    fn set_parameter(&mut self, id: ParamAddress, value: f64) {
+        let Some(id) = id.opaque() else { return };
+        let _ = parameters::set(self.inner.raw_unit(), id.get(), value as f32);
     }
 
     fn get_parameter_list(&self) -> Vec<ParameterInfo> {
@@ -454,7 +460,9 @@ impl PluginParams for AuInstance {
                 // not automatability — a host may write a parameter the plugin
                 // never meant to be automated — so only READ_ONLY is known.
                 ParameterInfo {
-                    id: p.id,
+                    // `AudioUnitParameterID` — AU's opaque plugin-chosen handle,
+                    // the same concept as VST3's `ParamID` and CLAP's `clap_id`.
+                    id: ParamAddress::Opaque(p.id.into()),
                     name: p.name,
                     unit: p.unit.to_string(),
                     range: ParamRange::Plain {
@@ -804,7 +812,11 @@ mod tests {
             (0.5f64, min + 0.5 * (max - min)),
         ] {
             let mut changes = ParameterChanges::new();
-            let mut queue = ParameterQueue::new(target.id);
+            // `ParameterQueue.param_id` stays a bare `u32`: automation
+            // crosses the IPC wire, where the address model is the session's,
+            // not the queue's. AU is opaque.
+            let queue_id = target.id.opaque().expect("AU ids are opaque").get();
+            let mut queue = ParameterQueue::new(queue_id);
             queue.add_point(0, normalized);
             changes.add_queue(queue);
 

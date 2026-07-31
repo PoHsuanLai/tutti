@@ -16,7 +16,7 @@ use tutti_vst2_host::Vst2Instance;
 use crate::error::EditorError;
 use crate::host::handles::capabilities::{HostEditor, HostParams, HostState};
 use crate::host::node::ParameterChangeSink;
-use crate::protocol::ParameterInfo;
+use crate::protocol::{ParamAddress, ParameterInfo};
 use crate::util::window::EditorSize;
 
 /// Bundles the shared Mutex with the parameter-change sink so editor
@@ -35,20 +35,22 @@ impl HostParams for InProcessVst2Backend {
         Some(self.inner.lock().parameter_list())
     }
 
-    fn parameter_value(&self, id: u32) -> Option<f32> {
+    fn parameter_value(&self, id: ParamAddress) -> Option<f32> {
         // Forwarded, not re-wrapped: `Vst2Instance::parameter` already returns
         // `None` for a plugin exposing no `getParameter`, which is exactly this
         // trait's "unavailable". Wrapping it in `Some` would report a missing
-        // accessor as a present value.
-        self.inner.lock().parameter(id)
+        // accessor as a present value. An opaque id addresses nothing in VST2
+        // and takes the same `None`.
+        self.inner.lock().parameter(id.index()? as u32)
     }
 
-    fn set_parameter_value(&self, id: u32, value: f32) {
+    fn set_parameter_value(&self, id: ParamAddress, value: f32) {
         // The audio thread can take this path (PluginHandle is shared);
         // use `try_lock` so we never block audio. Lost writes are
         // recoverable — the GUI thread will retry on the next idle.
+        let Some(index) = id.index() else { return };
         if let Some(instance) = self.inner.try_lock() {
-            instance.set_parameter(id, value);
+            instance.set_parameter(index as u32, value);
         }
     }
 

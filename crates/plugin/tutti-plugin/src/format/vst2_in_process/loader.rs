@@ -60,6 +60,10 @@ pub fn load(
     features.set(Features::MIDI_OUT, host_meta.emits_midi);
     features.set(Features::EDITOR, host_meta.has_editor);
     features.insert(Features::TRANSPORT);
+    // The same five the out-of-process VST2 loader answers — this path differs
+    // in where the plugin runs, not in what it is asked, so both read one
+    // constant.
+    let probed = crate::server::probed::VST2;
 
     // VST2 is single-bus: one main input bus and one main output bus.
     let loaded = LoadedPlugin {
@@ -67,6 +71,7 @@ pub fn load(
         outputs: SmallVec::from_slice(&[host_meta.num_outputs]),
         latency_samples: host_meta.latency_samples,
         features,
+        probed,
     };
 
     let inner = Arc::new(Mutex::new(inner));

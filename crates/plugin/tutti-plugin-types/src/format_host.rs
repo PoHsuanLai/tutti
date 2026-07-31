@@ -14,8 +14,8 @@
 //! objects in different processes, so this is not a duplicate of `AudioUnit`.
 
 use crate::{
-    AudioBufferMut, EditorSize, LoadedPlugin, ParameterInfo, PluginDescriptor, ProcessContext,
-    ProcessOutput, Result, WindowHandle,
+    AudioBufferMut, EditorSize, LoadedPlugin, ParamAddress, ParameterInfo, PluginDescriptor,
+    ProcessContext, ProcessOutput, Result, WindowHandle,
 };
 
 /// Catalog identity + load-time engine-wiring snapshot.
@@ -75,11 +75,22 @@ pub trait PluginParams {
     /// which are THE conversion for this boundary — do not hand-roll the scaling,
     /// and do not reuse [`ParameterInfo::to_range`], which answers the unrelated
     /// question of display taper.
-    fn get_parameter(&self, id: u32) -> f64;
+    ///
+    /// `id` is the [`ParamAddress`] from [`ParameterInfo::id`]. For VST3, CLAP
+    /// and AU that is an opaque plugin-chosen handle under no obligation to be
+    /// dense or ordered, so a loop counter reads whichever parameter happens to
+    /// own that numeric slot; only VST2 addresses by position.
+    ///
+    /// An address whose model does not match the implementing format addresses
+    /// no parameter — a VST2 index means nothing to a CLAP plugin. Each impl
+    /// reports that as it reports any unknown parameter: `0.0` here, a dropped
+    /// write in [`set_parameter`](Self::set_parameter). Neither invents a cast.
+    fn get_parameter(&self, id: ParamAddress) -> f64;
 
     /// See [`get_parameter`](Self::get_parameter) for the value convention
-    /// (normalized for VST2/VST3; native plain range for CLAP and AU).
-    fn set_parameter(&mut self, id: u32, value: f64);
+    /// (normalized for VST2/VST3; native plain range for CLAP and AU) and for
+    /// how an address of the wrong model is treated.
+    fn set_parameter(&mut self, id: ParamAddress, value: f64);
 
     /// Push the host [`AutomationMode`](crate::AutomationMode) to the plugin.
     /// Fire-and-forget; the default no-op covers formats without an

@@ -647,3 +647,53 @@ fn a_declining_plugin_reports_no_range_and_no_steps() {
         assert_eq!(info.steps, ParamSteps::Unknown, "param {}", info.id);
     }
 }
+
+/// An id outside the declared range never reaches the plugin.
+///
+/// VST2 addresses parameters by a dense `i32` index and neither this crate's
+/// dispatch nor the vendored one bounds-checks it — the index goes straight to
+/// the plugin's `getParameter`/`setParameter` function pointer, where it is
+/// typically an array subscript. `id as i32` alone also wraps every id from
+/// `0x8000_0000` up to a *negative* index.
+///
+/// `parameter_info` guarded already; `parameter` and `set_parameter` did not,
+/// which made the guard look like a convention rather than a requirement.
+#[test]
+fn an_out_of_range_id_never_reaches_the_plugin() {
+    let _guard = lock_probe();
+    let (instance, _path) = load_probe();
+
+    let count = instance.parameters().len() as u32;
+    assert!(count > 0, "the probe exposes no parameters");
+
+    for id in [
+        count,           // one past the end
+        count + 1_000,   // far past
+        u32::MAX,        // wraps to -1
+        0x8000_0000,     // wraps to i32::MIN
+        0x8000_0000 + 3, // wraps negative, near a plausible index
+    ] {
+        assert_eq!(
+            instance.parameter(id),
+            None,
+            "reading out-of-range id {id} must not dispatch"
+        );
+        assert!(
+            !instance.set_parameter(id, 0.5),
+            "writing out-of-range id {id} must not dispatch"
+        );
+        assert!(
+            instance.parameter_info(id).is_none(),
+            "describing out-of-range id {id} must not dispatch"
+        );
+    }
+
+    // The guard did not cost the legal range.
+    for id in 0..count {
+        assert!(
+            instance.parameter(id).is_some(),
+            "in-range id {id} must still read"
+        );
+        assert!(instance.parameter_info(id).is_some());
+    }
+}

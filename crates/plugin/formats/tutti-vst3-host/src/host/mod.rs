@@ -47,10 +47,19 @@ pub(super) const K_INPUT: i32 = kInput as i32;
 pub(super) const K_OUTPUT: i32 = kOutput as i32;
 
 pub(super) trait IComponentExt {
-    /// Channel layout of the first audio bus in `direction`.
-    /// Returns `None` when the plugin reports no buses or the query fails.
-    /// `min_channels` clamps the result upward (e.g. 1 for outputs).
-    fn audio_bus_channel_count(&self, direction: i32, min_channels: i32) -> Option<ChannelLayout>;
+    /// Channel layout of **bus 0** in `direction`, exactly as the plugin
+    /// reports it.
+    ///
+    /// `None` when the plugin reports no buses or `getBusInfo` fails — the two
+    /// cases where there is no answer to carry. A plugin that answers with zero
+    /// channels is reported as zero: that is a bus the plugin declared and then
+    /// said is empty, which is a different fact from "no bus" and is not this
+    /// function's to reconcile.
+    ///
+    /// A negative `channelCount` is floored to 0. The ABI types it `int32` with
+    /// no negative meaning, so this is the sole out-of-contract clamp here, not
+    /// a policy about empty buses.
+    fn audio_bus_channel_count(&self, direction: i32) -> Option<ChannelLayout>;
 
     /// Channel count of every audio bus in `direction`, in bus-index order.
     /// A bus whose query fails contributes 0 so the vec length always equals
@@ -59,16 +68,14 @@ pub(super) trait IComponentExt {
 }
 
 impl IComponentExt for ComPtr<IComponent> {
-    fn audio_bus_channel_count(&self, direction: i32, min_channels: i32) -> Option<ChannelLayout> {
+    fn audio_bus_channel_count(&self, direction: i32) -> Option<ChannelLayout> {
         unsafe {
             if self.getBusCount(K_AUDIO, direction) <= 0 {
                 return None;
             }
             let mut bus = BusInfoWrap::default();
             if self.getBusInfo(K_AUDIO, direction, 0, bus.as_mut_inner()) == kResultOk {
-                Some(ChannelLayout::from(
-                    bus.channel_count().max(min_channels) as u16
-                ))
+                Some(ChannelLayout::from(bus.channel_count().max(0) as u16))
             } else {
                 None
             }

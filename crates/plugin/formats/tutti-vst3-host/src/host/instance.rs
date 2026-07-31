@@ -688,8 +688,12 @@ impl<T: Vst3Sample> Vst3Instance<T> {
     /// but from counts rather than a fresh component enumeration.
     fn resolve_scratch_from_counts(&mut self, in_counts: &[usize], out_counts: &[usize]) {
         let block_size = self.audio.config.block_size;
+        // Bus 0's count, or 0 when the plugin named no bus in that direction.
+        // The scratch below is sized from the full per-bus slices, not from
+        // these, so an empty direction stays empty rather than being rounded up
+        // to a channel the plugin never declared.
         let num_in = ChannelLayout::from(in_counts.first().copied().unwrap_or(0));
-        let num_out = ChannelLayout::from(out_counts.first().copied().unwrap_or(0).max(1));
+        let num_out = ChannelLayout::from(out_counts.first().copied().unwrap_or(0));
         let in_scratch = DirectionScratch::<T>::resolve(in_counts, num_in, block_size);
         let out_scratch = DirectionScratch::<T>::resolve(out_counts, num_out, block_size);
 
@@ -744,23 +748,19 @@ impl<T: Vst3Sample> Vst3Instance<T> {
         // only finalise their bus arrangement once activated, so the layout can
         // differ from the PluginInfo snapshot used in `from_loaded`. Setup-time
         // only; never on the audio thread.
-        let num_in = component
-            .audio_bus_channel_count(K_INPUT, 0)
-            .unwrap_or(self.audio.config.num_input_channels);
-        let num_out = component
-            .audio_bus_channel_count(K_OUTPUT, 1)
-            .unwrap_or(self.audio.config.num_output_channels);
+        //
+        // Both the flat count and the scratch come from this one enumeration.
+        // They used to be queried separately, and the flat one fell back to the
+        // pre-activation value when its query failed — which is the stale layout
+        // this re-resolve exists to replace, reinstated at the moment the live
+        // read said it could not be trusted.
+        let in_counts = component.audio_bus_channels(K_INPUT);
+        let out_counts = component.audio_bus_channels(K_OUTPUT);
+        let num_in = ChannelLayout::from(in_counts.first().copied().unwrap_or(0));
+        let num_out = ChannelLayout::from(out_counts.first().copied().unwrap_or(0));
         let block_size = self.audio.config.block_size;
-        let in_scratch = DirectionScratch::<T>::resolve(
-            &component.audio_bus_channels(K_INPUT),
-            num_in,
-            block_size,
-        );
-        let out_scratch = DirectionScratch::<T>::resolve(
-            &component.audio_bus_channels(K_OUTPUT),
-            num_out,
-            block_size,
-        );
+        let in_scratch = DirectionScratch::<T>::resolve(&in_counts, num_in, block_size);
+        let out_scratch = DirectionScratch::<T>::resolve(&out_counts, num_out, block_size);
 
         self.audio.config.num_input_channels = num_in;
         self.audio.config.num_output_channels = num_out;

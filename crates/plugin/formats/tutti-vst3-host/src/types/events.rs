@@ -1093,15 +1093,41 @@ pub fn note_expression_type_to_id(ty: NoteExpressionType) -> Option<u32> {
         NoteExpressionType::Expression => Some(Ids::kExpressionTypeID as u32),
         NoteExpressionType::Brightness => Some(Ids::kBrightnessTypeID as u32),
         NoteExpressionType::Pressure => None,
+        // A custom id came from a VST3 plugin in the first place, so it goes
+        // back out unchanged. Text and phoneme ids are screened here rather
+        // than trusted: those slots carry a string, and emitting one as a
+        // value event would hand the plugin a malformed event.
+        NoteExpressionType::Custom(id) => (!is_text_type_id(id)).then_some(id),
     }
 }
 
-/// Decode a VST3 `typeId` back into a [`NoteExpressionType`]; `None` for
-/// unknown ids (including the `kTextTypeID` / `kPhonemeTypeID` slots, which
-/// carry text rather than a value, and any vendor-custom id above
-/// `kCustomStart`). The exact inverse of [`note_expression_type_to_id`] over
-/// the six standard value dimensions; `Pressure` is never produced because
-/// VST3 has no id for it.
+/// Whether `id` is one of the two VST3 note-expression slots that carry text
+/// rather than a `f64` value.
+///
+/// `kTextTypeID` / `kPhonemeTypeID` ride `NoteExpressionTextEvent`, a different
+/// event struct. They must not round-trip through the value path in either
+/// direction.
+fn is_text_type_id(id: u32) -> bool {
+    use vst3::Steinberg::Vst::NoteExpressionTypeIDs_ as Ids;
+    #[allow(clippy::unnecessary_cast)]
+    {
+        id == Ids::kTextTypeID as u32 || id == Ids::kPhonemeTypeID as u32
+    }
+}
+
+/// Decode a VST3 `typeId` into a [`NoteExpressionType`].
+///
+/// The six standard value dimensions map to their named variants; anything else
+/// becomes [`Custom`](NoteExpressionType::Custom) carrying the id, because VST3
+/// reserves `kCustomStart` upward for plugin-defined dimensions declared through
+/// `INoteExpressionController`. Those used to return `None` and be dropped by
+/// the caller, which made a plugin's own expression dimensions invisible.
+///
+/// Still `None` for `kTextTypeID` / `kPhonemeTypeID`: those slots carry a string
+/// on `NoteExpressionTextEvent`, so there is no `f64` value to decode and
+/// admitting them here would invent one.
+///
+/// `Pressure` is never produced — VST3 has no id for it.
 pub fn note_expression_type_from_id(id: u32) -> Option<NoteExpressionType> {
     use vst3::Steinberg::Vst::NoteExpressionTypeIDs_ as Ids;
     #[allow(clippy::unnecessary_cast)]
@@ -1112,7 +1138,8 @@ pub fn note_expression_type_from_id(id: u32) -> Option<NoteExpressionType> {
         i if i == Ids::kVibratoTypeID as u32 => Some(NoteExpressionType::Vibrato),
         i if i == Ids::kExpressionTypeID as u32 => Some(NoteExpressionType::Expression),
         i if i == Ids::kBrightnessTypeID as u32 => Some(NoteExpressionType::Brightness),
-        _ => None,
+        i if is_text_type_id(i) => None,
+        other => Some(NoteExpressionType::Custom(other)),
     }
 }
 
@@ -1623,6 +1650,75 @@ mod tests {
                 "{ty:?} @ id {id}"
             );
         }
+    }
+
+    /// A plugin-defined `typeId` survives instead of being dropped.
+    ///
+    /// VST3 reserves `kCustomStart` (100000) upward for dimensions a plugin
+    /// declares through `INoteExpressionController`. The decoder used to return
+    /// `None` for those and the caller discarded the event, so a plugin whose
+    /// expressiveness is entirely custom looked silent.
+    #[test]
+    fn a_plugin_defined_type_id_is_carried_not_dropped() {
+        for id in [100_000, 100_001, 8, 12345, u32::MAX] {
+            assert_eq!(
+                note_expression_type_from_id(id),
+                Some(NoteExpressionType::Custom(id)),
+                "custom id {id} must survive decoding"
+            );
+        }
+    }
+
+    /// A custom id round-trips unchanged — it came from a VST3 plugin, so it
+    /// goes back out as the same number.
+    #[test]
+    fn a_custom_type_id_round_trips_unchanged() {
+        for id in [100_000, 8, 999] {
+            let ty = note_expression_type_from_id(id).expect("carried");
+            assert_eq!(note_expression_type_to_id(ty), Some(id));
+        }
+    }
+
+    /// The text slots stay out of the value path in BOTH directions.
+    ///
+    /// `kTextTypeID` / `kPhonemeTypeID` ride `NoteExpressionTextEvent` and carry
+    /// a string. Admitting them as `Custom` would let the encoder emit a value
+    /// event on a text id — a malformed event the plugin would misread.
+    #[test]
+    fn the_text_type_ids_never_enter_the_value_path() {
+        for id in [6, 7] {
+            assert_eq!(
+                note_expression_type_from_id(id),
+                None,
+                "id {id} carries text, not a value"
+            );
+            assert_eq!(
+                note_expression_type_to_id(NoteExpressionType::Custom(id)),
+                None,
+                "a Custom({id}) must not be encodable as a value event"
+            );
+        }
+    }
+
+    /// A custom dimension survives staging into an event and reading back —
+    /// the full path the decoder feeds, not just the id map.
+    #[test]
+    fn a_custom_dimension_stages_and_reads_back() {
+        let expr = NoteExpressionValue {
+            sample_offset: 12,
+            note_id: 3,
+            expression_type: NoteExpressionType::Custom(100_042),
+            value: 0.75,
+        };
+        let staged = note_expression_to_vst3(&expr).expect("custom id is encodable");
+        match &staged {
+            Vst3Event::NoteExpression(e) => assert_eq!(e.type_id, 100_042),
+            other => panic!("expected NoteExpression, got {other:?}"),
+        }
+        let back = vst3_to_note_expression(&staged).expect("decodes back");
+        assert_eq!(back.expression_type, NoteExpressionType::Custom(100_042));
+        assert_eq!(back.value, 0.75);
+        assert_eq!(back.note_id, 3);
     }
 
     /// `Expression` is a real VST3 dimension (id 4) and must survive staging

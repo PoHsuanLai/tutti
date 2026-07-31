@@ -1443,11 +1443,7 @@ impl Vst3Loaded {
     /// Re-query bus counts from the component — `initialize` may have changed
     /// them (some plugins don't declare bus counts until after init).
     fn reconcile_bus_counts(&mut self) {
-        if let Some(layout) = self
-            .interfaces
-            .component
-            .audio_bus_channel_count(K_INPUT, 0)
-        {
+        if let Some(layout) = self.interfaces.component.audio_bus_channel_count(K_INPUT) {
             // `PluginInfo` carries raw usize channel counts; take the count at
             // this boundary.
             let ch = layout.count() as usize;
@@ -1455,11 +1451,7 @@ impl Vst3Loaded {
                 self.info = self.info.clone().audio_io(ch, self.info.num_outputs);
             }
         }
-        if let Some(layout) = self
-            .interfaces
-            .component
-            .audio_bus_channel_count(K_OUTPUT, 1)
-        {
+        if let Some(layout) = self.interfaces.component.audio_bus_channel_count(K_OUTPUT) {
             let ch = layout.count() as usize;
             if ch != self.info.num_outputs {
                 self.info = self.info.clone().audio_io(self.info.num_inputs, ch);
@@ -1712,13 +1704,15 @@ fn build_plugin_info_raw(
         .map(|info| info.vendor)
         .unwrap_or_default();
     // `PluginInfo` carries raw usize channel counts; take the count at this
-    // boundary (default 0 inputs / 2 outputs when the plugin reports no bus).
+    // boundary. A plugin that reports no bus, or whose query fails, contributes
+    // 0 — the per-bus vecs below carry the same absence, and `bus_channels` in
+    // the server loader is the one place that decides what to do about it.
     let num_inputs = component
-        .audio_bus_channel_count(K_INPUT, 0)
+        .audio_bus_channel_count(K_INPUT)
         .map_or(0, |l| l.count() as usize);
     let num_outputs = component
-        .audio_bus_channel_count(K_OUTPUT, 1)
-        .map_or(2, |l| l.count() as usize);
+        .audio_bus_channel_count(K_OUTPUT)
+        .map_or(0, |l| l.count() as usize);
     let input_bus_channels = component.audio_bus_channels(K_INPUT);
     let output_bus_channels = component.audio_bus_channels(K_OUTPUT);
     let supports_f64 = processor

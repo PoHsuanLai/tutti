@@ -19,6 +19,7 @@
 use crate::error::Result;
 use crate::host::handles::control_handle::PluginHandle;
 use crate::host::node::PluginClient;
+use crate::protocol::ParamAddress;
 use crate::util::config::BridgeConfig;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -110,8 +111,9 @@ fn load_plugin_vst2_in_process(
 ) -> Result<(Box<dyn tutti_core::AudioUnit>, PluginHandle)> {
     let (unit, handle) = crate::format::vst2_in_process::load(&path, sample_rate)?;
     for (name, value) in params {
-        if let Ok(param_id) = name.parse::<u32>() {
-            handle.set_parameter(param_id, *value);
+        // VST2 addresses parameters by position, so a config key names an index.
+        if let Ok(index) = name.parse::<i32>() {
+            handle.set_parameter(ParamAddress::Index(index), *value);
         }
     }
     Ok((unit, handle))
@@ -132,8 +134,14 @@ fn load_plugin(
     let client = PluginClient::new(config, path, sample_rate)?;
 
     for (name, value) in params {
+        // The format is not known here — this path loads any of the four — so a
+        // config key is read as an opaque id, which is right for three of them.
+        // A VST2 index and an opaque id coincide numerically for the small
+        // values a hand-written config uses, so this stays correct in practice;
+        // it is the one place the address model is inferred rather than known.
+        // TODO: thread the format through so a VST2 key becomes `Index`.
         if let Ok(param_id) = name.parse::<u32>() {
-            client.set_parameter(param_id, *value);
+            client.set_parameter(ParamAddress::Opaque(param_id.into()), *value);
         }
     }
 

@@ -361,7 +361,8 @@ impl Session {
 mod tests {
     use super::*;
     use tutti_plugin::server::{
-        Features, IpcMidiEventVec, NoteExpressionChanges, ParameterChanges, TransportInfo,
+        Features, IpcMidiEventVec, NoteExpressionChanges, ParamAddress, ParamId, ParameterChanges,
+        TransportInfo,
     };
     use tutti_plugin::{BridgeError, LoadStage};
 
@@ -391,7 +392,9 @@ mod tests {
     fn get_parameter_no_plugin() {
         let mut s = Session::new();
         let reply = s
-            .handle(HostMessage::GetParameter { param_id: 0 })
+            .handle(HostMessage::GetParameter {
+                param_id: ParamAddress::Opaque(ParamId::new(0)),
+            })
             .unwrap()
             .into_reply();
         match reply {
@@ -417,7 +420,9 @@ mod tests {
     fn get_parameter_info_no_plugin() {
         let mut s = Session::new();
         let reply = s
-            .handle(HostMessage::GetParameterInfo { param_id: 0 })
+            .handle(HostMessage::GetParameterInfo {
+                param_id: ParamAddress::Opaque(ParamId::new(0)),
+            })
             .unwrap()
             .into_reply();
         match reply {
@@ -450,7 +455,7 @@ mod tests {
         let mut s = Session::new();
         let r = s
             .handle(HostMessage::SetParameter {
-                param_id: 0,
+                param_id: ParamAddress::Opaque(ParamId::new(0)),
                 value: 0.5,
             })
             .unwrap();
@@ -605,7 +610,7 @@ mod tests {
 
     /// Fetch any param_id from the loaded plugin's parameter list.
     #[cfg(feature = "clap")]
-    fn first_param_id(s: &mut Session) -> u32 {
+    fn first_param_id(s: &mut Session) -> ParamAddress {
         let reply = s
             .handle(HostMessage::GetParameterList)
             .unwrap()

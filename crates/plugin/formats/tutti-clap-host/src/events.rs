@@ -354,12 +354,19 @@ impl ClapEvent {
     }
 
     /// Build a note-expression event targeting a note by its CLAP `note_id`.
+    ///
+    /// **Partial:** `None` for [`Custom`](NoteExpressionType::Custom). CLAP's
+    /// `clap_note_expression` is a closed set of seven ids with no vendor range,
+    /// so a dimension defined by some *other* plugin (a VST3 id above
+    /// `kCustomStart`) has nothing to map onto. Dropping it is the honest
+    /// answer; picking the numerically-nearest CLAP id would deliver a
+    /// plugin-specific value as, say, brightness.
     pub fn note_expression(
         time: u32,
         expression_type: NoteExpressionType,
         note_id: i32,
         value: f64,
-    ) -> Self {
+    ) -> Option<Self> {
         let expression_id = match expression_type {
             NoteExpressionType::Volume => CLAP_NOTE_EXPRESSION_VOLUME,
             NoteExpressionType::Pan => CLAP_NOTE_EXPRESSION_PAN,
@@ -368,9 +375,10 @@ impl ClapEvent {
             NoteExpressionType::Brightness => CLAP_NOTE_EXPRESSION_BRIGHTNESS,
             NoteExpressionType::Pressure => CLAP_NOTE_EXPRESSION_PRESSURE,
             NoteExpressionType::Expression => CLAP_NOTE_EXPRESSION_EXPRESSION,
+            NoteExpressionType::Custom(_) => return None,
         };
 
-        ClapEvent::NoteExpression(clap_event_note_expression {
+        Some(ClapEvent::NoteExpression(clap_event_note_expression {
             header: clap_event_header {
                 size: header_size::<clap_event_note_expression>(),
                 time,
@@ -384,7 +392,7 @@ impl ClapEvent {
             channel: -1,
             key: -1,
             value,
-        })
+        }))
     }
 
     /// Build a `ClapEvent` from a Tutti UMP [`MidiEvent`].
@@ -433,27 +441,27 @@ impl ClapEvent {
             )),
             // MIDI-2 per-note pitch bend → CLAP tuning expression. Signed
             // [-1, 1] scales to semitones by the per-note bend range.
-            Cv2::PerNotePitchBend(m) => Some(Self::per_note_expression(
+            Cv2::PerNotePitchBend(m) => Self::per_note_expression(
                 time,
                 NoteExpressionType::Tuning,
                 channel,
                 u8::from(m.note_number()),
                 f64::from(bend_u32_to_signed_f32(m.pitch_bend_data()))
                     * PER_NOTE_PITCH_BEND_RANGE_SEMITONES,
-            )),
+            ),
             // Poly (per-key) pressure → CLAP pressure expression, unit [0, 1].
-            Cv2::KeyPressure(m) => Some(Self::per_note_expression(
+            Cv2::KeyPressure(m) => Self::per_note_expression(
                 time,
                 NoteExpressionType::Pressure,
                 channel,
                 u8::from(m.note_number()),
                 f64::from(u32_to_unit_f32(m.key_pressure_data())),
-            )),
+            ),
             // Assignable per-note controllers map to CLAP note-expression for the
             // indices with a standard counterpart (7/10/74); others fall through.
             Cv2::AssignablePerNoteController(m) => {
                 match per_note_controller_expression(m.index()) {
-                    Some(ty) => Some(Self::per_note_expression(
+                    Some(ty) => Self::per_note_expression(
                         time,
                         ty,
                         channel,
@@ -462,7 +470,7 @@ impl ClapEvent {
                         // fraction — it needs its own scale. Pan/Brightness
                         // really are `0..1`.
                         expression_value_from_unit(ty, u32_to_unit_f32(m.controller_data())),
-                    )),
+                    ),
                     None => as_generic_midi(),
                 }
             }
@@ -478,14 +486,14 @@ impl ClapEvent {
                     _ => None,
                 };
                 match mapped {
-                    Some((ty, data)) => Some(Self::per_note_expression(
+                    Some((ty, data)) => Self::per_note_expression(
                         time,
                         ty,
                         channel,
                         u8::from(m.note_number()),
                         // L6: VOLUME uses CLAP's gain range, not `0..1`.
                         expression_value_from_unit(ty, u32_to_unit_f32(data)),
-                    )),
+                    ),
                     None => as_generic_midi(),
                 }
             }
@@ -596,14 +604,14 @@ impl ClapEvent {
         channel: u8,
         note: u8,
         value: f64,
-    ) -> Self {
+    ) -> Option<Self> {
         let mut event =
-            Self::note_expression(time, expression_type, note_id_for(channel, note), value);
+            Self::note_expression(time, expression_type, note_id_for(channel, note), value)?;
         if let ClapEvent::NoteExpression(ne) = &mut event {
             ne.channel = channel as i16;
             ne.key = note as i16;
         }
-        event
+        Some(event)
     }
 }
 
@@ -746,15 +754,19 @@ impl InputEventList {
     }
 
     /// Append each [`ClapNoteExpression`] as a CLAP `NOTE_EXPRESSION` event.
+    /// A `Custom` dimension is skipped — CLAP has no id for one, and
+    /// [`ClapEvent::note_expression`] says why substituting would be worse.
     pub fn add_note_expressions(&mut self, expressions: &[ClapNoteExpression]) -> &mut Self {
         for expr in expressions {
-            self.events.push(ClapEvent::note_expression(
+            if let Some(event) = ClapEvent::note_expression(
                 // H3: same signed→unsigned trap as `add_param_changes`.
                 expr.sample_offset.max(0) as u32,
                 expr.expression_type,
                 expr.note_id,
                 expr.value,
-            ));
+            ) {
+                self.events.push(event);
+            }
         }
         self
     }
@@ -1405,6 +1417,50 @@ mod tests {
     /// The attenuating half round-trips exactly, and a plugin-emitted
     /// boost (`1 < x <= 4`, legal in CLAP) saturates at MIDI full scale instead
     /// of being reported as some arbitrary rescaled value.
+    /// CLAP declines a dimension it has no id for, rather than substituting.
+    ///
+    /// `clap_note_expression` is a closed set of seven ids with no vendor
+    /// range, so a VST3 plugin's custom dimension has nothing to map onto.
+    /// Encoding it as the nearest CLAP id would deliver a plugin-specific value
+    /// as brightness or tuning — audible, and wrong.
+    #[test]
+    fn a_custom_dimension_is_declined_not_substituted() {
+        assert!(
+            ClapEvent::note_expression(0, NoteExpressionType::Custom(100_000), 1, 0.5).is_none()
+        );
+        // The named dimensions still encode, so the guard did not cost them.
+        for ty in [
+            NoteExpressionType::Volume,
+            NoteExpressionType::Pan,
+            NoteExpressionType::Tuning,
+            NoteExpressionType::Vibrato,
+            NoteExpressionType::Brightness,
+            NoteExpressionType::Pressure,
+            NoteExpressionType::Expression,
+        ] {
+            assert!(
+                ClapEvent::note_expression(0, ty, 1, 0.5).is_some(),
+                "{ty:?} is a named CLAP dimension"
+            );
+        }
+    }
+
+    /// A batch containing a custom dimension drops only that entry.
+    #[test]
+    fn add_note_expressions_skips_only_the_custom_entry() {
+        let exprs = [
+            ClapNoteExpression::new(NoteExpressionType::Volume, 1, 0.5),
+            ClapNoteExpression::new(NoteExpressionType::Custom(100_000), 1, 0.5),
+        ];
+        let mut list = InputEventList::new();
+        list.add_note_expressions(&exprs);
+        assert_eq!(
+            list.events.len(),
+            1,
+            "the named dimension must survive alongside the dropped custom one"
+        );
+    }
+
     #[test]
     fn clap_volume_round_trips_and_saturates_boost_l6() {
         use tutti_midi_types::convert::u32_to_unit_f32;
@@ -1412,7 +1468,8 @@ mod tests {
         use tutti_midi_types::midi2::UmpMessage;
 
         let unit_of = |gain: f64| -> f32 {
-            let clap = ClapEvent::per_note_expression(0, NoteExpressionType::Volume, 1, 64, gain);
+            let clap = ClapEvent::per_note_expression(0, NoteExpressionType::Volume, 1, 64, gain)
+                .expect("Volume is a named CLAP dimension");
             let midi = clap.to_midi().expect("volume -> midi");
             match UmpMessage::try_from(midi.data_words()).expect("UMP") {
                 UmpMessage::ChannelVoice2(Cv2::AssignablePerNoteController(m)) => {
@@ -1463,7 +1520,8 @@ mod tests {
 
         let value_semitones = 0.5 * PER_NOTE_PITCH_BEND_RANGE_SEMITONES;
         let clap =
-            ClapEvent::per_note_expression(7, NoteExpressionType::Tuning, 5, 67, value_semitones);
+            ClapEvent::per_note_expression(7, NoteExpressionType::Tuning, 5, 67, value_semitones)
+                .expect("Tuning is a named CLAP dimension");
         let midi = clap.to_midi().expect("tuning -> midi");
         assert_eq!(midi.frame_offset, 7);
         match UmpMessage::try_from(midi.data_words()).expect("UMP") {

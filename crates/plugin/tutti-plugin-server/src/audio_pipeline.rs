@@ -415,7 +415,7 @@ fn with_audio_buffer_f64<R>(
 mod tests {
     use super::*;
     use tutti_plugin::server::{
-        PluginAudio, PluginEditorHost, PluginMeta, PluginParams, PluginState,
+        ParamAddress, PluginAudio, PluginEditorHost, PluginMeta, PluginParams, PluginState,
     };
 
     #[test]
@@ -517,10 +517,10 @@ mod tests {
         fn set_sample_rate(&mut self, _rate: f64) {}
     }
     impl PluginParams for NanPlugin {
-        fn get_parameter(&self, _id: u32) -> f64 {
+        fn get_parameter(&self, _id: ParamAddress) -> f64 {
             0.0
         }
-        fn set_parameter(&mut self, _id: u32, _value: f64) {}
+        fn set_parameter(&mut self, _id: ParamAddress, _value: f64) {}
         fn get_parameter_list(&self) -> Vec<tutti_plugin::server::ParameterInfo> {
             Vec::new()
         }
@@ -591,10 +591,10 @@ mod tests {
         fn set_sample_rate(&mut self, _rate: f64) {}
     }
     impl PluginParams for EchoProbe {
-        fn get_parameter(&self, _id: u32) -> f64 {
+        fn get_parameter(&self, _id: ParamAddress) -> f64 {
             0.0
         }
-        fn set_parameter(&mut self, _id: u32, _value: f64) {}
+        fn set_parameter(&mut self, _id: ParamAddress, _value: f64) {}
         fn get_parameter_list(&self) -> Vec<tutti_plugin::server::ParameterInfo> {
             Vec::new()
         }
@@ -655,7 +655,9 @@ mod tests {
                 inputs: inputs.iter().map(|&c| ChannelLayout::from(c)).collect(),
                 outputs: outputs.iter().map(|&c| ChannelLayout::from(c)).collect(),
                 latency_samples: 0,
+                // This fixture is about bus widths; no capability is claimed.
                 features: Features::empty(),
+                probed: Features::empty(),
             },
         }
     }

@@ -12,7 +12,7 @@
 
 use smallvec::SmallVec;
 
-use crate::{ChannelLayout, Features};
+use crate::{ChannelLayout, FeatureReport, Features};
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
@@ -46,7 +46,26 @@ pub struct LoadedPlugin {
     /// numeric wiring stays in `inputs`/`outputs`/`latency_samples` above.
     /// (`f64` support was formerly the standalone `supports_f64` bool — it is
     /// now `Features::F64_AUDIO`.)
+    ///
+    /// Read through [`capability`](Self::capability) when the answer feeds a
+    /// person — a clear bit here is also what an unprobed capability looks like,
+    /// and [`probed`](Self::probed) is the half that tells them apart.
+    /// The per-block send-gate reads this field directly and should: it has no
+    /// way to act on "unknown" and must stay one mask-and-compare.
     pub features: Features,
+    /// Which capabilities the loader actually probed.
+    ///
+    /// The AU loader probes one (`EDITOR`); VST3 probes nine. Without this,
+    /// both report the same `Features` for a plugin that takes no MIDI — one
+    /// because it was asked, one because nobody asked.
+    ///
+    /// `serde(default)` keeps a peer built before this field from failing to
+    /// decode into an empty mask rather than a wrong one. bincode is not
+    /// self-describing, so this does NOT rescue a short payload — that is
+    /// `PROTOCOL_VERSION`'s job. It covers the JSON path and struct-update
+    /// construction, where the honest default is "nothing was asked".
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub probed: Features,
 }
 
 impl LoadedPlugin {
@@ -74,6 +93,20 @@ impl LoadedPlugin {
     pub fn latency(&self) -> bool {
         self.latency_samples > 0
     }
+
+    /// `Some(true)`/`Some(false)` when the loader probed `f`, [`None`] when
+    /// it did not. Pass exactly one bit.
+    ///
+    /// The read for anything user-facing. The send-gate uses `features`
+    /// directly — see the field docs for why the two differ.
+    pub fn capability(&self, f: Features) -> Option<bool> {
+        self.report().get(f)
+    }
+
+    /// The capability halves as one value.
+    pub fn report(&self) -> FeatureReport {
+        FeatureReport::new(self.probed, self.features)
+    }
 }
 
 #[cfg(all(test, feature = "serde"))]
@@ -90,6 +123,7 @@ mod tests {
             outputs: SmallVec::from_slice(&[ChannelLayout::Stereo]),
             latency_samples: 128,
             features: Features::F64_AUDIO | Features::MIDI_IN,
+            probed: Features::F64_AUDIO | Features::MIDI_IN | Features::EDITOR,
         };
         let bytes = bincode::serialize(&loaded).unwrap();
         let back: LoadedPlugin = bincode::deserialize(&bytes).unwrap();
@@ -99,6 +133,36 @@ mod tests {
         assert!(back.features.contains(Features::F64_AUDIO));
         assert!(back.multi_bus()); // two input buses
         assert!(back.latency()); // 128 samples
+    }
+
+    /// The probed mask crosses the wire, so an unprobed capability stays
+    /// distinguishable from a declined one on the receiving side.
+    #[test]
+    fn the_probed_mask_crosses_the_wire() {
+        // An AU-shaped report: one capability probed out of ten.
+        let loaded = LoadedPlugin {
+            features: Features::EDITOR,
+            probed: Features::EDITOR,
+            ..Default::default()
+        };
+        let bytes = bincode::serialize(&loaded).unwrap();
+        let back: LoadedPlugin = bincode::deserialize(&bytes).unwrap();
+
+        assert_eq!(back.capability(Features::EDITOR), Some(true));
+        assert_eq!(
+            back.capability(Features::MIDI_IN),
+            None,
+            "a capability the loader never probed must not arrive as a false"
+        );
+    }
+
+    /// A default `LoadedPlugin` claims nothing, rather than claiming that every
+    /// capability was probed and declined.
+    #[test]
+    fn a_defaulted_plugin_claims_no_capability() {
+        let loaded = LoadedPlugin::default();
+        assert_eq!(loaded.capability(Features::EDITOR), None);
+        assert_eq!(loaded.capability(Features::TRANSPORT), None);
     }
 
     /// An empty bus list (single-bus legacy) round-trips and sums to zero.

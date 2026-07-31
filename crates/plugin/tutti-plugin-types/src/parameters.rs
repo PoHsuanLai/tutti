@@ -241,14 +241,221 @@ bitflags! {
     }
 }
 
-/// One plugin parameter, as the boundary vocabulary every host crate speaks.
+/// A plugin's own name for one of its parameters: VST3 `ParamID`, CLAP
+/// `clap_id`, AU `AudioUnitParameterID`.
 ///
-/// `id` is the format-native identifier: VST3 ParamID, CLAP clap_id, AU
-/// AudioUnitParameterID, or VST2 index.
+/// **Opaque.** The number is chosen by the plugin and is meaningful only
+/// against the instance that reported it — plenty of plugins derive it from a
+/// hash of the parameter name. It is not an index, not dense, not ordered, and
+/// two plugins may use the same number for unrelated parameters.
+///
+/// That is the whole reason this is a newtype rather than a `u32`: the type has
+/// no algebra, deliberately. There is no `Add`, no `From<usize>`, no `Step`, so
+/// `id + 1` and `for id in 0..n` do not compile. A `u32` in a struct field
+/// invites exactly those.
+///
+/// VST2 does not have one of these — see [`ParamAddress`], which is what a
+/// caller holding a parameter's address actually names.
+///
+/// [`Ord`] is derived and is arbitrary-but-total, for map keys and binary
+/// search only (AU's parameter-bounds table sorts by it on the load path). A
+/// comparison between two ids carries no meaning about the parameters; do not
+/// read one as "earlier" or "lower".
+///
+/// Serializes as the bare `u32` it wraps — conversion happens where a format's
+/// number enters, via [`new`](Self::new) / [`get`](Self::get).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize), serde(transparent))]
+pub struct ParamId(u32);
+
+impl ParamId {
+    /// Wrap a format-native parameter id.
+    ///
+    /// The absent algebra is the point, so it is pinned here rather than only
+    /// asserted in the type's docs — each of these is a way a `u32` field
+    /// invites treating an opaque id as a position:
+    ///
+    /// ```compile_fail
+    /// # use tutti_plugin_types::ParamId;
+    /// let id = ParamId::new(3);
+    /// let _ = id + ParamId::new(1);
+    /// ```
+    /// ```compile_fail
+    /// # use tutti_plugin_types::ParamId;
+    /// for _id in ParamId::new(0)..ParamId::new(4) {}
+    /// ```
+    /// ```compile_fail
+    /// # use tutti_plugin_types::ParamId;
+    /// let params = ["a", "b"];
+    /// let _ = params[ParamId::new(0)];
+    /// ```
+    /// ```compile_fail
+    /// # use tutti_plugin_types::ParamId;
+    /// // A count is not an id: no `From<usize>` to make enumerate() fit.
+    /// let _: ParamId = 0usize.into();
+    /// ```
+    ///
+    /// What *does* compile is the deliberate crossing at a format boundary:
+    ///
+    /// ```
+    /// # use tutti_plugin_types::ParamId;
+    /// let id: ParamId = 0x4000_0001u32.into();
+    /// assert_eq!(id.get(), 0x4000_0001);
+    /// ```
+    pub const fn new(id: u32) -> Self {
+        Self(id)
+    }
+
+    /// The underlying number, for handing back to the format that issued it.
+    pub const fn get(self) -> u32 {
+        self.0
+    }
+}
+
+impl From<u32> for ParamId {
+    fn from(id: u32) -> Self {
+        Self(id)
+    }
+}
+
+impl std::fmt::Display for ParamId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+/// How a format addresses one of its parameters.
+///
+/// The four hosted formats use two different addressing models, and a single
+/// number cannot represent both without the consumer guessing which it holds:
+///
+/// - [`Opaque`](Self::Opaque) — VST3, CLAP and AU. A plugin-chosen [`ParamId`]
+///   with no positional meaning. See that type.
+/// - [`Index`](Self::Index) — VST2 alone. A dense `i32` position in
+///   `[0, numParams)`; `getParameter(effect, index)` and `numParams` are both
+///   `i32` in the ABI, and consecutive parameters really are consecutive.
+///
+/// Splitting on the addressing model rather than on the format is deliberate:
+/// `Vst3(u32) | Clap(u32) | Au(u32)` would be three names for one behaviour,
+/// and nothing downstream could act on the distinction. What a consumer must
+/// actually decide is whether arithmetic on the number means anything — and
+/// that is exactly the line this enum draws.
+///
+/// The underlying types differ too, which is why one number was never enough:
+/// `u32` cannot hold VST2's negative-capable `i32`, and `i32` cannot hold the
+/// upper half of an opaque `u32` — plenty of plugins hash a name into an id
+/// well above `0x7FFF_FFFF`.
+///
+/// **Not `Copy`-into-a-number.** There is deliberately no `From<ParamAddress>
+/// for u32`. A caller that wants the raw value states which model it expected,
+/// via [`opaque`](Self::opaque) or [`index`](Self::index), each of which
+/// returns `None` for the other variant rather than inventing a cast.
+///
+/// ```
+/// # use tutti_plugin_types::{ParamAddress, ParamId};
+/// let vst3 = ParamAddress::Opaque(ParamId::new(0x8000_0001));
+/// assert_eq!(vst3.opaque(), Some(ParamId::new(0x8000_0001)));
+/// // Not an index, and the type will not pretend otherwise.
+/// assert_eq!(vst3.index(), None);
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub enum ParamAddress {
+    /// A plugin-chosen handle: VST3 `ParamID`, CLAP `clap_id`, AU
+    /// `AudioUnitParameterID`.
+    Opaque(ParamId),
+    /// A dense position in `[0, numParams)`. VST2 only.
+    Index(i32),
+}
+
+impl Default for ParamAddress {
+    /// Opaque zero. Chosen because three of the four formats are opaque, and
+    /// because a defaulted address is a placeholder either way — `ParameterInfo`
+    /// derives `Default` for test construction, not for a value any plugin
+    /// reported.
+    fn default() -> Self {
+        Self::Opaque(ParamId::new(0))
+    }
+}
+
+impl ParamAddress {
+    /// The opaque handle, or `None` if this is a VST2 index.
+    ///
+    /// The refusals below are the enum's reason for existing, so they are
+    /// pinned rather than only described. A bare number cannot become an
+    /// address, because it does not say which model it belongs to:
+    ///
+    /// ```compile_fail
+    /// # use tutti_plugin_types::ParamAddress;
+    /// let _: ParamAddress = 3u32.into();
+    /// ```
+    ///
+    /// …and an address cannot collapse back to one:
+    ///
+    /// ```compile_fail
+    /// # use tutti_plugin_types::{ParamAddress, ParamId};
+    /// let a = ParamAddress::Opaque(ParamId::new(3));
+    /// let _: u32 = a.into();
+    /// ```
+    ///
+    /// The two models do not interconvert, which is what a shared `u32` let
+    /// happen silently — an index is not an id even when the numbers match:
+    ///
+    /// ```compile_fail
+    /// # use tutti_plugin_types::{ParamAddress, ParamId};
+    /// let index = ParamAddress::Index(3);
+    /// let _: ParamId = index;
+    /// ```
+    ///
+    /// What compiles is asking, and handling the answer:
+    ///
+    /// ```
+    /// # use tutti_plugin_types::{ParamAddress, ParamId};
+    /// let index = ParamAddress::Index(3);
+    /// assert_eq!(index.opaque(), None);
+    /// assert_eq!(index.index(), Some(3));
+    /// ```
+    pub const fn opaque(self) -> Option<ParamId> {
+        match self {
+            Self::Opaque(id) => Some(id),
+            Self::Index(_) => None,
+        }
+    }
+
+    /// The dense index, or `None` if this is an opaque handle.
+    pub const fn index(self) -> Option<i32> {
+        match self {
+            Self::Index(i) => Some(i),
+            Self::Opaque(_) => None,
+        }
+    }
+}
+
+impl From<ParamId> for ParamAddress {
+    fn from(id: ParamId) -> Self {
+        Self::Opaque(id)
+    }
+}
+
+impl std::fmt::Display for ParamAddress {
+    /// Renders the number, tagged, so a log line cannot silently read as the
+    /// other model.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Opaque(id) => write!(f, "id {id}"),
+            Self::Index(i) => write!(f, "index {i}"),
+        }
+    }
+}
+
+/// One plugin parameter, as the boundary vocabulary every host crate speaks.
 #[derive(Debug, Clone, Default)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct ParameterInfo {
-    pub id: u32,
+    /// How this parameter is addressed. See [`ParamAddress`]: an opaque
+    /// plugin-chosen handle for VST3/CLAP/AU, a dense index for VST2. Match on
+    /// it rather than reaching for a number — the two are not interchangeable.
+    pub id: ParamAddress,
     pub name: String,
     /// Display unit (`"dB"`, `"Hz"`, …). Empty when the format carries none —
     /// CLAP has no unit string at all.
@@ -263,9 +470,9 @@ pub struct ParameterInfo {
 }
 
 impl ParameterInfo {
-    pub fn new(id: u32, name: impl Into<String>) -> Self {
+    pub fn new(id: impl Into<ParamAddress>, name: impl Into<String>) -> Self {
         Self {
-            id,
+            id: id.into(),
             name: name.into(),
             unit: String::new(),
             range: ParamRange::default(),
@@ -360,7 +567,7 @@ mod tests {
     /// A `Plain` parameter maps normalized input onto its declared range.
     #[test]
     fn a_plain_parameter_maps_onto_its_declared_range() {
-        let p = ParameterInfo::new(1, "Cutoff").with_plain_range(20.0, 20_000.0, 20.0);
+        let p = ParameterInfo::new(ParamId::new(1), "Cutoff").with_plain_range(20.0, 20_000.0, 20.0);
         assert_eq!(p.to_plain(0.0), 20.0);
         assert_eq!(p.to_plain(1.0), 20_000.0);
         assert_eq!(p.to_normalized(20_000.0), 1.0);
@@ -369,7 +576,7 @@ mod tests {
     /// A `Normalized` parameter passes its input through, clamped.
     #[test]
     fn a_normalized_parameter_passes_its_input_through() {
-        let p = ParameterInfo::new(1, "Mix").with_normalized_default(0.5);
+        let p = ParameterInfo::new(ParamId::new(1), "Mix").with_normalized_default(0.5);
         assert_eq!(p.to_plain(0.25), 0.25);
         assert_eq!(p.to_plain(1.5), 1.0, "out of range must still clamp");
         assert_eq!(p.to_normalized(0.25), 0.25);
@@ -383,8 +590,8 @@ mod tests {
     /// Now the `Normalized` arm has no bounds at all.
     #[test]
     fn a_declared_unit_range_is_not_the_same_as_no_range() {
-        let declared = ParameterInfo::new(1, "Blend").with_plain_range(0.0, 1.0, 0.0);
-        let undeclared = ParameterInfo::new(1, "Blend").with_normalized_default(0.0);
+        let declared = ParameterInfo::new(ParamId::new(1), "Blend").with_plain_range(0.0, 1.0, 0.0);
+        let undeclared = ParameterInfo::new(ParamId::new(1), "Blend").with_normalized_default(0.0);
         assert_eq!(declared.range.bounds(), Some((0.0, 1.0)));
         assert_eq!(undeclared.range.bounds(), None);
     }
@@ -397,7 +604,7 @@ mod tests {
     #[test]
     fn an_unreported_flag_is_not_a_false_flag() {
         let p =
-            ParameterInfo::new(1, "Gain").with_flags(ParamFlags::READ_ONLY, ParamFlags::empty());
+            ParameterInfo::new(ParamId::new(1), "Gain").with_flags(ParamFlags::READ_ONLY, ParamFlags::empty());
 
         assert_eq!(p.flag(ParamFlags::READ_ONLY), Some(false));
         assert_eq!(
@@ -410,7 +617,7 @@ mod tests {
     /// `with_flags` cannot set a bit outside the reported mask.
     #[test]
     fn with_flags_cannot_report_an_unknown_bit() {
-        let p = ParameterInfo::new(1, "Gain").with_flags(
+        let p = ParameterInfo::new(ParamId::new(1), "Gain").with_flags(
             ParamFlags::READ_ONLY,
             ParamFlags::READ_ONLY | ParamFlags::BYPASS,
         );
@@ -445,7 +652,7 @@ mod tests {
     /// A `Normalized` parameter still refuses NaN.
     #[test]
     fn the_normalized_path_still_rejects_nan() {
-        let p = ParameterInfo::new(1, "Mix").with_normalized_default(0.0);
+        let p = ParameterInfo::new(ParamId::new(1), "Mix").with_normalized_default(0.0);
         assert!(p.to_plain(f64::NAN).is_finite());
         assert!(p.to_normalized(f64::NAN).is_finite());
         assert_eq!(p.to_plain(f64::INFINITY), 1.0);
@@ -468,7 +675,7 @@ mod tests {
                 default: 0.0,
             },
         ] {
-            let mut info = ParameterInfo::new(1, "Gain");
+            let mut info = ParameterInfo::new(ParamId::new(1), "Gain");
             info.range = want;
             let bytes = bincode::serialize(&info).expect("serialize");
             let back: ParameterInfo = bincode::deserialize(&bytes).expect("deserialize");
@@ -482,7 +689,7 @@ mod tests {
     #[test]
     fn the_known_mask_survives_the_bincode_round_trip() {
         let info =
-            ParameterInfo::new(1, "Gain").with_flags(ParamFlags::READ_ONLY, ParamFlags::READ_ONLY);
+            ParameterInfo::new(ParamId::new(1), "Gain").with_flags(ParamFlags::READ_ONLY, ParamFlags::READ_ONLY);
         let bytes = bincode::serialize(&info).expect("serialize");
         let back: ParameterInfo = bincode::deserialize(&bytes).expect("deserialize");
         assert_eq!(back.flag(ParamFlags::READ_ONLY), Some(true));
@@ -491,40 +698,40 @@ mod tests {
 
     #[test]
     fn test_to_range_toggle() {
-        let info = ParameterInfo::new(1, "Bypass").with_steps(ParamSteps::Toggle);
+        let info = ParameterInfo::new(ParamId::new(1), "Bypass").with_steps(ParamSteps::Toggle);
         assert_eq!(info.to_range().scale, ParameterScale::Toggle);
     }
 
     #[test]
     fn test_to_range_integer() {
-        let info = ParameterInfo::new(2, "Algorithm").with_steps(ParamSteps::Enumerated(5));
+        let info = ParameterInfo::new(ParamId::new(2), "Algorithm").with_steps(ParamSteps::Enumerated(5));
         assert_eq!(info.to_range().scale, ParameterScale::Integer);
     }
 
     #[test]
     fn test_to_range_logarithmic_db() {
-        let mut info = ParameterInfo::new(3, "Gain").with_plain_range(0.001, 10.0, 1.0);
+        let mut info = ParameterInfo::new(ParamId::new(3), "Gain").with_plain_range(0.001, 10.0, 1.0);
         info.unit = "dB".to_string();
         assert_eq!(info.to_range().scale, ParameterScale::Logarithmic);
     }
 
     #[test]
     fn test_to_range_logarithmic_hz() {
-        let mut info = ParameterInfo::new(4, "Cutoff").with_plain_range(20.0, 20_000.0, 440.0);
+        let mut info = ParameterInfo::new(ParamId::new(4), "Cutoff").with_plain_range(20.0, 20_000.0, 440.0);
         info.unit = "Hz".to_string();
         assert_eq!(info.to_range().scale, ParameterScale::Logarithmic);
     }
 
     #[test]
     fn test_to_range_log_fallback_non_positive_min() {
-        let mut info = ParameterInfo::new(5, "Freq").with_plain_range(0.0, 20_000.0, 440.0);
+        let mut info = ParameterInfo::new(ParamId::new(5), "Freq").with_plain_range(0.0, 20_000.0, 440.0);
         info.unit = "Hz".to_string();
         assert_eq!(info.to_range().scale, ParameterScale::Linear);
     }
 
     #[test]
     fn test_to_range_linear_default() {
-        let info = ParameterInfo::new(6, "Mix");
+        let info = ParameterInfo::new(ParamId::new(6), "Mix");
         assert_eq!(info.to_range().scale, ParameterScale::Linear);
     }
 
@@ -534,7 +741,7 @@ mod tests {
     #[test]
     fn to_plain_maps_normalized_onto_the_declared_range() {
         let info =
-            ParameterInfo::new(1, "Lowpass Cutoff").with_plain_range(10.0, 22_050.0, 22_050.0);
+            ParameterInfo::new(ParamId::new(1), "Lowpass Cutoff").with_plain_range(10.0, 22_050.0, 22_050.0);
 
         assert_eq!(info.to_plain(0.0), 10.0);
         assert_eq!(info.to_plain(1.0), 22_050.0);
@@ -543,7 +750,7 @@ mod tests {
 
     #[test]
     fn to_normalized_inverts_to_plain() {
-        let info = ParameterInfo::new(1, "Gain").with_plain_range(-96.0, 6.0, 0.0);
+        let info = ParameterInfo::new(ParamId::new(1), "Gain").with_plain_range(-96.0, 6.0, 0.0);
 
         for n in [0.0, 0.25, 0.5, 0.75, 1.0] {
             assert!((info.to_normalized(info.to_plain(n)) - n).abs() < 1e-12);
@@ -554,7 +761,7 @@ mod tests {
     /// range — a plugin never receives a value it didn't advertise.
     #[test]
     fn conversions_clamp_out_of_range_inputs() {
-        let info = ParameterInfo::new(1, "Mix").with_plain_range(0.0, 100.0, 50.0);
+        let info = ParameterInfo::new(ParamId::new(1), "Mix").with_plain_range(0.0, 100.0, 50.0);
 
         assert_eq!(info.to_plain(-5.0), 0.0);
         assert_eq!(info.to_plain(9.0), 100.0);
@@ -565,7 +772,7 @@ mod tests {
     /// A degenerate range (min == max) must not divide by zero.
     #[test]
     fn degenerate_range_does_not_produce_nan() {
-        let info = ParameterInfo::new(1, "Fixed").with_plain_range(3.0, 3.0, 3.0);
+        let info = ParameterInfo::new(ParamId::new(1), "Fixed").with_plain_range(3.0, 3.0, 3.0);
 
         assert_eq!(info.to_plain(0.5), 3.0);
         assert_eq!(info.to_normalized(3.0), 0.0);
@@ -585,7 +792,7 @@ mod tests {
     /// bound is NaN.
     #[test]
     fn nan_never_escapes_a_conversion() {
-        let info = ParameterInfo::new(1, "Cutoff").with_plain_range(10.0, 22_050.0, 10.0);
+        let info = ParameterInfo::new(ParamId::new(1), "Cutoff").with_plain_range(10.0, 22_050.0, 10.0);
 
         assert!(
             info.to_plain(f64::NAN).is_finite(),
@@ -606,7 +813,7 @@ mod tests {
             (f64::NEG_INFINITY, 1.0),
             (0.0, f64::INFINITY),
         ] {
-            let broken = ParameterInfo::new(2, "Broken").with_plain_range(min, max, 0.0);
+            let broken = ParameterInfo::new(ParamId::new(2), "Broken").with_plain_range(min, max, 0.0);
             for v in [0.0, 0.5, 1.0, f64::NAN] {
                 assert!(
                     broken.to_plain(v).is_finite(),
@@ -624,7 +831,7 @@ mod tests {
     /// input still lands inside the declared range, at the declared endpoints.
     #[test]
     fn the_nan_guard_did_not_change_finite_behaviour() {
-        let info = ParameterInfo::new(1, "Gain").with_plain_range(-96.0, 6.0, 0.0);
+        let info = ParameterInfo::new(ParamId::new(1), "Gain").with_plain_range(-96.0, 6.0, 0.0);
 
         assert_eq!(info.to_plain(0.0), -96.0);
         assert_eq!(info.to_plain(1.0), 6.0);
@@ -638,7 +845,7 @@ mod tests {
 
     #[test]
     fn test_to_range_values_preserved() {
-        let info = ParameterInfo::new(7, "Volume").with_plain_range(-96.0, 6.0, -12.0);
+        let info = ParameterInfo::new(ParamId::new(7), "Volume").with_plain_range(-96.0, 6.0, -12.0);
         let range = info.to_range();
         assert_eq!(range.min, -96.0);
         assert_eq!(range.max, 6.0);

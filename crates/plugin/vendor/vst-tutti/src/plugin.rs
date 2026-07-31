@@ -330,7 +330,22 @@ pub struct Info {
     pub version: i32,
 
     /// Plugin category. Possible values are found in `enums::PluginCategory`.
+    ///
+    /// Falls back to [`Category::Unknown`] for a code this enum does not name.
+    /// [`category_code`](Self::category_code) keeps the number in that case, so
+    /// a host can tell a plugin that answered `kPlugCategUnknown` from one that
+    /// answered something we do not recognise.
     pub category: Category,
+
+    /// The raw `effGetPlugCategory` return, before it was matched against
+    /// [`Category`].
+    ///
+    /// VST 2.4 assigns meanings to 0..=11 and plugins do return values outside
+    /// that; discarding the number turned every such answer into `Unknown`,
+    /// which is also what a plugin that genuinely does not classify itself
+    /// returns. Keeping it costs one `i32` and is the only way back to what the
+    /// plugin actually said.
+    pub category_code: i32,
 
     /// Latency of the plugin in samples.
     ///
@@ -373,6 +388,10 @@ impl Default for Info {
             version: 1,   // v0.0.0.1
 
             category: Category::Effect,
+            // Kept in step with `category` above: the two describe one answer,
+            // and a default that disagreed with itself would be a worse lie
+            // than either alone.
+            category_code: Category::Effect as i32,
 
             initial_delay: 0,
 

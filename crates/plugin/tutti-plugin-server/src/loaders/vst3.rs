@@ -5,7 +5,8 @@ use std::path::Path;
 use tutti_plugin::server::{
     AudioBufferMut, AutomationMode, BusChannels, ChannelLayout, ChordChanges, EditorPresence,
     EditorSize, Features, LoadedPlugin, NoteExpressionChanges, NoteExpressionIntChanges,
-    NoteExpressionTextChanges, ParamFlags, ParamRange, ParamSteps, ParameterInfo, PluginAudio,
+    NoteExpressionTextChanges, ParamAddress, ParamFlags, ParamRange, ParamSteps, ParameterInfo,
+    PluginAudio,
     PluginClass, PluginDescriptor, PluginEditorHost, PluginError, PluginMeta, PluginParams,
     PluginResult, PluginState, ProcessContext, ProcessOutput, ScaleChanges, WindowHandle,
 };
@@ -154,12 +155,14 @@ fn build_inner(p: &ReloadParams) -> Result<(VstInner, Meta)> {
     features.set(Features::TRANSPORT, wants_transport);
     features.set(Features::NOTE_EXPRESSION, has_note_expression);
     features.set(Features::SEQUENCER_CONTEXT, wants_sequencer_context);
+    let probed = tutti_plugin::server::probed::VST3;
 
     let loaded_meta = LoadedPlugin {
         inputs: bus_channels(&info.input_bus_channels, info.num_inputs),
         outputs: bus_channels(&info.output_bus_channels, info.num_outputs),
         latency_samples: latency,
         features,
+        probed,
     };
 
     Ok((
@@ -463,7 +466,9 @@ fn build_param_info(
     };
 
     ParameterInfo {
-        id: info.id,
+        // VST3 `ParamID` — opaque and plugin-chosen, not a list position; see
+        // the ParamID-vs-index note in `tutti-vst3-host`'s `loaded.rs`.
+        id: ParamAddress::Opaque(info.id.into()),
         name: info.title_string(),
         unit: info.units_string(),
         range,
@@ -572,12 +577,15 @@ impl PluginAudio for Vst3Instance {
 }
 
 impl PluginParams for Vst3Instance {
-    fn get_parameter(&self, id: u32) -> f64 {
-        vst_dispatch!(self, inner => inner.parameter(id))
+    fn get_parameter(&self, id: ParamAddress) -> f64 {
+        // A VST2 index addresses nothing here; `ParamID` is opaque.
+        let Some(id) = id.opaque() else { return 0.0 };
+        vst_dispatch!(self, inner => inner.parameter(id.get()))
     }
 
-    fn set_parameter(&mut self, id: u32, value: f64) {
-        vst_dispatch_mut!(self, inner => inner.set_parameter(id, value));
+    fn set_parameter(&mut self, id: ParamAddress, value: f64) {
+        let Some(id) = id.opaque() else { return };
+        vst_dispatch_mut!(self, inner => inner.set_parameter(id.get(), value));
     }
 
     fn set_automation_state(&mut self, mode: AutomationMode) {

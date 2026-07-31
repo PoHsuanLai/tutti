@@ -515,7 +515,8 @@ fn default_value_is_the_load_time_state_not_the_live_value() {
 
     // Move every parameter well away from where it started.
     for p in &before {
-        assert!(instance.set_parameter(p.id, 0.9));
+        let index = p.id.index().expect("VST2 addresses parameters by index");
+        assert!(instance.set_parameter(index as u32, 0.9));
     }
 
     let after = instance.parameter_list();

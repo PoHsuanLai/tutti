@@ -50,7 +50,7 @@ use std::sync::Arc;
 use tutti_core::{ChannelLayout, Timeline};
 use tutti_sampler::{MemorySource, Playback, Voice, VoiceNode, VoiceSource};
 
-use crate::graph::SpawnAudioNode;
+use crate::graph::InsertAudioNode;
 
 /// Marks an entity whose audio node is a sampler voice.
 ///
@@ -67,7 +67,7 @@ pub struct SamplerVoice;
 /// its id inside a deferred command, so nothing outside the command queue can
 /// observe the binding.
 pub trait SpawnVoice {
-    /// Add `voice` to the graph as a `width`-wide node on this entity.
+    /// Add `voice` to the graph as a `width`-wide node on a **new** entity.
     ///
     /// The transport handle is bound **here, once**, per
     /// [`TransportRes::timeline`](crate::graph::TransportRes::timeline)'s
@@ -82,17 +82,40 @@ pub trait SpawnVoice {
     ) -> EntityCommands<'_>;
 }
 
+/// Add a voice node to an entity that already exists.
+///
+/// The common case for a host whose entities come from somewhere else — a
+/// projection compiles the source entity first, and the voice arrives frames
+/// later once its audio is ready. [`SpawnVoice`] is for the standalone case.
+pub trait InsertVoice {
+    /// Make this entity a `width`-wide voice node. See [`SpawnVoice::spawn_voice`]
+    /// for why the timeline is bound here.
+    fn insert_voice(&mut self, voice: Voice, width: ChannelLayout, timeline: Arc<dyn Timeline>);
+}
+
 impl SpawnVoice for Commands<'_, '_> {
     fn spawn_voice(
+        &mut self,
+        voice: Voice,
+        width: ChannelLayout,
+        timeline: Arc<dyn Timeline>,
+    ) -> EntityCommands<'_> {
+        let mut e = self.spawn_empty();
+        e.insert_voice(voice, width, timeline);
+        e
+    }
+}
+
+impl InsertVoice for EntityCommands<'_> {
+    fn insert_voice(
         &mut self,
         mut voice: Voice,
         width: ChannelLayout,
         timeline: Arc<dyn Timeline>,
-    ) -> EntityCommands<'_> {
+    ) {
         voice.replace_transport(timeline);
-        let mut e = self.spawn_audio_node(VoiceNode::with_channels(voice, width));
-        e.insert(SamplerVoice);
-        e
+        self.insert_audio_node(VoiceNode::with_channels(voice, width));
+        self.insert(SamplerVoice);
     }
 }
 

@@ -19,6 +19,7 @@ use vst3::{Class, ComWrapper};
 
 use super::param_queue::ParamValueQueueImpl;
 use crate::types::ParameterChanges;
+use tutti_plugin_types::ParamAddress;
 use tutti_types::AudioThreadCell;
 
 pub struct ParameterChangesImpl {
@@ -108,7 +109,10 @@ impl ParameterChangesImpl {
         out.queues.clear();
 
         for queue in self.queues.borrow().iter() {
-            let param_id = queue.param_id();
+            // Outbound across the COM edge: the plugin answered with a bare
+            // `ParamID`, and VST3 ids are opaque — tag it rather than letting
+            // the number travel with its model unstated.
+            let param_id = ParamAddress::Opaque(queue.param_id().into());
             queue.for_each_point(|point| {
                 out.add_change(param_id, point.sample_offset, point.value);
             });
@@ -180,7 +184,11 @@ mod tests {
         let mut changes = ParameterChanges::new();
         for q in 0..num_queues {
             for p in 0..points_per {
-                changes.add_change(q as u32, p as i32, p as f64 * 0.01);
+                changes.add_change(
+                    ParamAddress::Opaque((q as u32).into()),
+                    p as i32,
+                    p as f64 * 0.01,
+                );
             }
         }
         changes

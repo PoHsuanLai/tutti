@@ -1,5 +1,7 @@
 use std::ffi::c_void;
 
+use tutti_plugin_types::ParamAddress;
+
 use clap_sys::events::{
     clap_event_header, clap_event_note, clap_event_note_expression, clap_event_param_gesture,
     clap_event_param_mod, clap_event_param_value, CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_MIDI,
@@ -332,7 +334,10 @@ fn test_output_event_list_push_param_value() {
 
     let changes = list.to_param_changes();
     assert_eq!(changes.queues.len(), 1);
-    assert_eq!(changes.queues[0].param_id, 7);
+    assert_eq!(
+        changes.queues[0].param_id,
+        ParamAddress::Opaque(7u32.into())
+    );
     assert!((changes.queues[0].points[0].value - 0.42).abs() < 0.001);
 }
 
@@ -343,12 +348,12 @@ fn test_output_event_list_push_param_value() {
 #[test]
 fn test_param_changes_through_input_list() {
     let mut changes = ParameterChanges::new();
-    let mut q1 = ParameterQueue::new(1);
+    let mut q1 = ParameterQueue::new(ParamAddress::Opaque(1u32.into()));
     q1.add_point(0, 0.0);
     q1.add_point(128, 1.0);
     changes.add_queue(q1);
 
-    let mut q2 = ParameterQueue::new(2);
+    let mut q2 = ParameterQueue::new(ParamAddress::Opaque(2u32.into()));
     q2.add_point(64, 0.5);
     changes.add_queue(q2);
 
@@ -1151,13 +1156,13 @@ fn test_input_event_list_from_events() {
 
 #[test]
 fn test_smallvec_parameter_queue() {
-    let mut queue = ParameterQueue::new(42);
+    let mut queue = ParameterQueue::new(ParamAddress::Opaque(42u32.into()));
     // SmallVec<[ParameterPoint; 8]> should handle 8 points without heap allocation
     for i in 0..8 {
         queue.add_point(i, i as f64 * 0.1);
     }
     assert_eq!(queue.points.len(), 8);
-    assert_eq!(queue.param_id, 42);
+    assert_eq!(queue.param_id, ParamAddress::Opaque(42u32.into()));
     assert!((queue.points[3].value - 0.3).abs() < f64::EPSILON);
     assert_eq!(queue.points[3].sample_offset, 3);
 }

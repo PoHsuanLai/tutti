@@ -20,6 +20,7 @@ use super::{
     UnitEvent, UnitHandler,
 };
 use crate::types::{ParameterChanges, ParameterQueue};
+use tutti_plugin_types::ParamAddress;
 
 #[test]
 fn test_bstream_new() {
@@ -265,7 +266,7 @@ fn test_event_list_clear_after_update_from_midi() {
 
 #[test]
 fn test_param_value_queue_from_queue() {
-    let mut queue = ParameterQueue::new(42);
+    let mut queue = ParameterQueue::new(ParamAddress::Opaque(42u32.into()));
     queue.add_point(0, 0.0);
     queue.add_point(128, 0.5);
 
@@ -284,14 +285,14 @@ fn test_param_value_queue_new_empty() {
 
 #[test]
 fn test_param_value_queue_to_queue() {
-    let mut queue = ParameterQueue::new(5);
+    let mut queue = ParameterQueue::new(ParamAddress::Opaque(5u32.into()));
     queue.add_point(0, 0.25);
     queue.add_point(64, 0.75);
 
     let impl_queue = ParamValueQueueImpl::from_queue(&queue);
     let round_trip = impl_queue.to_queue();
 
-    assert_eq!(round_trip.param_id, 5);
+    assert_eq!(round_trip.param_id, ParamAddress::Opaque(5u32.into()));
     assert_eq!(round_trip.points.len(), 2);
 }
 
@@ -305,8 +306,8 @@ fn test_parameter_changes_new_empty() {
 #[test]
 fn test_parameter_changes_from_changes() {
     let mut changes = ParameterChanges::new();
-    changes.add_change(1, 0, 0.5);
-    changes.add_change(2, 0, 0.75);
+    changes.add_change(ParamAddress::Opaque(1u32.into()), 0, 0.5);
+    changes.add_change(ParamAddress::Opaque(2u32.into()), 0, 0.75);
 
     let impl_changes = ParameterChangesImpl::from_changes(&changes);
     assert_eq!(impl_changes.len(), 2);

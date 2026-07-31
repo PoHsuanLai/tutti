@@ -28,6 +28,7 @@ use vst3::Steinberg::Vst::{
 };
 
 use crate::types::{MidiEvent, ParameterChanges};
+use tutti_plugin_types::ParamAddress;
 
 /// Number of MIDI channels VST3 enumerates mappings for.
 pub(crate) const NUM_CHANNELS: usize = 16;
@@ -198,7 +199,13 @@ pub(crate) fn route_cc_events(
         match mapped {
             Some((channel, controller, value)) => match mapping.lookup(channel, controller) {
                 Some(param_id) => {
-                    out_params.add_change(param_id, event.frame_offset as i32, value);
+                    // `IMidiMapping` answers with a `ParamID` — opaque, like
+                    // every VST3 parameter address.
+                    out_params.add_change(
+                        ParamAddress::Opaque(param_id.into()),
+                        event.frame_offset as i32,
+                        value,
+                    );
                 }
                 // Mappable message but no mapping for this slot — keep it as a
                 // MIDI event so the plugin can still react.
@@ -414,7 +421,7 @@ mod tests {
 
         // Mod wheel went to params.
         let queue = params
-            .get_queue(500)
+            .get_queue(ParamAddress::Opaque(500u32.into()))
             .expect("mod wheel mapped to param 500");
         assert_eq!(queue.points.len(), 1);
         assert_eq!(queue.points[0].sample_offset, 8);
@@ -436,11 +443,21 @@ mod tests {
         let mut filtered = SmallVec::new();
         let mut params = ParameterChanges::new();
         // Pre-seed with a host automation point (as the audio path does).
-        params.add_change(42, 0, 0.25);
+        params.add_change(ParamAddress::Opaque(42u32.into()), 0, 0.25);
         route_cc_events(&mapping, &events, &mut filtered, &mut params);
 
-        assert!(params.get_queue(42).is_some(), "host param survived");
-        assert!(params.get_queue(500).is_some(), "mapped CC added");
+        assert!(
+            params
+                .get_queue(ParamAddress::Opaque(42u32.into()))
+                .is_some(),
+            "host param survived"
+        );
+        assert!(
+            params
+                .get_queue(ParamAddress::Opaque(500u32.into()))
+                .is_some(),
+            "mapped CC added"
+        );
         assert!(filtered.is_empty(), "the only event was a mapped CC");
     }
 
@@ -462,23 +479,32 @@ mod tests {
         let mut params = ParameterChanges::new();
         // Seed the SAME param (500) with host automation at a middle offset,
         // plus a separate param to prove per-queue sorting.
-        params.add_change(500, 50, 0.5);
-        params.add_change(42, 30, 0.1);
-        params.add_change(42, 5, 0.2);
+        params.add_change(ParamAddress::Opaque(500u32.into()), 50, 0.5);
+        params.add_change(ParamAddress::Opaque(42u32.into()), 30, 0.1);
+        params.add_change(ParamAddress::Opaque(42u32.into()), 5, 0.2);
         route_cc_events(&mapping, &events, &mut filtered, &mut params);
 
         // Before sorting, param 500 is [50 (host), 100 (cc), 10 (cc)] — unsorted.
         sort_param_points(&mut params);
 
         for param_id in [500, 42] {
-            let q = params.get_queue(param_id).expect("queue present");
+            let q = params
+                .get_queue(ParamAddress::Opaque(param_id.into()))
+                .expect("queue present");
             let offsets: Vec<i32> = q.points.iter().map(|p| p.sample_offset).collect();
             let mut sorted = offsets.clone();
             sorted.sort_unstable();
             assert_eq!(offsets, sorted, "param {param_id} points not ascending");
         }
         // Param 500 carries all three merged points (1 host + 2 CC).
-        assert_eq!(params.get_queue(500).unwrap().points.len(), 3);
+        assert_eq!(
+            params
+                .get_queue(ParamAddress::Opaque(500u32.into()))
+                .unwrap()
+                .points
+                .len(),
+            3
+        );
     }
 
     /// RT regression: once the scratch buffers are warmed, repeated routing

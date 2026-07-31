@@ -47,7 +47,15 @@ const CLAP_EVENT_PARAM_VALUE: u16 = 5;
 /// the plugin un-denormalized (see `add_param_changes` in `events.rs`). These
 /// tests previously used an invented id `7`, which made them fail for a reason
 /// unrelated to what they assert.
-const REAL_PARAM_ID: u32 = 101;
+use tutti_plugin_types::{ParamAddress, ParamId};
+
+/// The probe's real `clap_id`. A `ParamAddress` because that is what a queue
+/// is keyed by now — CLAP ids are opaque handles, never positional indices.
+const REAL_PARAM_ID: ParamAddress = ParamAddress::Opaque(ParamId::new(101));
+
+/// The same id as the bare `clap_id` the FFI carries, for assertions against
+/// captured raw events.
+const REAL_CLAP_ID: u32 = 101;
 
 /// `cargo test` runs these in parallel threads, but the reference plugin
 /// records into a single process-global capture (one loaded image). Serialize
@@ -204,7 +212,10 @@ fn host_delivers_param_points_with_offsets() {
     // host-side authoring convention only.
     assert_eq!(
         pts,
-        vec![(64, REAL_PARAM_ID, 350.0), (192, REAL_PARAM_ID, 850.0)],
+        // The captured events are the raw CLAP structs, whose `param_id` is the
+        // bare `clap_id` the FFI carries — so the address is unwrapped for the
+        // comparison rather than the capture being re-typed.
+        vec![(64, REAL_CLAP_ID, 350.0), (192, REAL_CLAP_ID, 850.0)],
         "param points arrive sorted by offset with id intact and value denormalized"
     );
 }

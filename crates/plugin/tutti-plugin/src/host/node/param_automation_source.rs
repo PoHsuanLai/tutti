@@ -25,14 +25,22 @@ use tutti_core::{Beat, BeatDuration, Depth, PhaseIncrement, SampleRate};
 use tutti_units::automation::Curve;
 
 use crate::host::node::input_slot::{BlockCtx, BlockInput, BlockReset};
-use crate::protocol::ParameterChanges;
+use crate::protocol::{ParamAddress, ParameterChanges};
 
-/// One plugin parameter's automation curve, keyed by the plugin's numeric
-/// parameter id. The [`Curve`] is evaluated against the transport beat — any
-/// beat-keyed curve (breakpoint envelope, constant, LFO), not just an envelope.
+/// One plugin parameter's automation curve, keyed by the parameter's address.
+/// The [`Curve`] is evaluated against the transport beat — any beat-keyed curve
+/// (breakpoint envelope, constant, LFO), not just an envelope.
 #[derive(Clone)]
 pub struct TimedParam {
-    pub param_id: u32,
+    /// Which parameter this curve drives.
+    ///
+    /// A [`ParamAddress`](crate::protocol::ParamAddress) because this is where
+    /// the automation is *authored*: the caller knows which plugin it is
+    /// targeting, so it can say whether the number is an opaque handle or a
+    /// VST2 index. It used to be a bare `u32`, which pushed that question down
+    /// to the loaders — each of which answered it from its own identity rather
+    /// than from anything the value carried.
+    pub param_id: ParamAddress,
     pub curve: Arc<dyn Curve>,
 }
 
@@ -454,6 +462,7 @@ impl BlockReset for ParameterChanges {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::protocol::ParamId;
     use atomic_float::AtomicF64;
     use audio_automation::{AutomationEnvelope, AutomationPoint};
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -559,7 +568,7 @@ mod tests {
         use tutti_units::{LayerKey, ModTarget};
         let target = std::sync::Arc::new(PluginParamTarget::new(0.5, 0.0, 1.0));
         let timed = TimedParam {
-            param_id: 7,
+            param_id: ParamAddress::Opaque(ParamId::new(7)),
             curve: target.clone() as std::sync::Arc<dyn Curve>,
         };
         // Route accumulates through the ModTarget handle …
@@ -612,7 +621,8 @@ mod tests {
     }
 
     /// A 0→1 ramp over 4 beats, labelled with parameter id `7`.
-    fn ramp(param_id: u32) -> TimedParam {
+    fn ramp(id: u32) -> TimedParam {
+        let param_id = ParamAddress::Opaque(ParamId::new(id));
         let mut env: AutomationEnvelope<f32> = AutomationEnvelope::new(0.0f32);
         env.add_point(AutomationPoint::new(0.0, 0.0));
         env.add_point(AutomationPoint::new(4.0, 1.0));
@@ -634,7 +644,7 @@ mod tests {
         src.fill(64, &mut out);
         assert_eq!(out.queues.len(), 1);
         let q = &out.queues[0];
-        assert_eq!(q.param_id, 7);
+        assert_eq!(q.param_id, ParamAddress::Opaque(ParamId::new(7)));
         // First point at offset 0, beat 0 → value 0.
         assert_eq!(q.points[0].sample_offset, 0);
         assert!(q.points[0].value.abs() < 1e-6);
@@ -853,7 +863,7 @@ mod tests {
         let empty_env: AutomationEnvelope<f32> = AutomationEnvelope::new(0.0f32);
         let src = ParamAutomationSource::new(
             vec![TimedParam {
-                param_id: 3,
+                param_id: ParamAddress::Opaque(ParamId::new(3)),
                 curve: Arc::new(empty_env),
             }],
             transport,

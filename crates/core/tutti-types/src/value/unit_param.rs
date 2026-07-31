@@ -62,6 +62,22 @@ pub enum UnitParam {
     Detune = 18,
     /// Unison stereo spread (0..1).
     StereoSpread = 19,
+    /// Stereo balance, `-1..1` (left to right). The mixer-strip control.
+    ///
+    /// Distinct from [`StereoSpread`](Self::StereoSpread), which widens a source
+    /// about its centre; this moves the centre. Also distinct from fundsp's
+    /// `Parameter::Pan`, which addresses its mono-to-stereo `Panner` through a
+    /// different channel entirely — this id rides the ordinary
+    /// `Setting::value(..).index(..)` path like every other `UnitParam`, which is
+    /// what makes it reachable from a generic param reconciler.
+    Pan = 20,
+    /// Mute toggle: **`>= 0.5` is muted**, below is unmuted.
+    ///
+    /// The threshold encoding is forced, not chosen: `Setting` carries an `f32`,
+    /// so a boolean has to ride one. Stated here because the decode lives in each
+    /// unit's `set` and a unit that picked `!= 0.0` instead would mute on a
+    /// denormal.
+    Mute = 21,
 }
 
 /// The `u16` id was not a known [`UnitParam`] discriminant. The scheme is
@@ -105,6 +121,8 @@ impl TryFrom<u16> for UnitParam {
             17 => Volume,
             18 => Detune,
             19 => StereoSpread,
+            20 => Pan,
+            21 => Mute,
             other => return Err(UnitParamOutOfRange(other)),
         })
     }
@@ -151,10 +169,26 @@ mod tests {
 
     #[test]
     fn u16_round_trips() {
-        for id in 0..=19u16 {
+        for id in 0..=21u16 {
             let p = UnitParam::try_from(id).expect("known id");
             assert_eq!(u16::from(p), id);
         }
+    }
+
+    /// The discriminants are **stable**: they ride `Setting` as an address index,
+    /// so renumbering one silently re-points every setting built against the old
+    /// value. Pinning the two newest by name is what
+    /// [`u16_round_trips`](self::u16_round_trips) cannot do — that loop passes as
+    /// long as each id maps to *some* variant, including a swapped pair.
+    #[test]
+    fn appended_params_keep_their_ids() {
+        assert_eq!(u16::from(UnitParam::Pan), 20);
+        assert_eq!(u16::from(UnitParam::Mute), 21);
+        assert_eq!(UnitParam::try_from(20), Ok(UnitParam::Pan));
+        assert_eq!(UnitParam::try_from(21), Ok(UnitParam::Mute));
+        // The append must not have disturbed the tail of the existing set.
+        assert_eq!(u16::from(UnitParam::Volume), 17);
+        assert_eq!(u16::from(UnitParam::StereoSpread), 19);
     }
 
     #[test]

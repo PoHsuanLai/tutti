@@ -44,7 +44,7 @@ pub use fundsp::params::SampleRate;
 pub use fundsp::unit_param;
 pub use tutti_types::value::{
     Amplitude, ArcDegrees, AtomicSamplePosition, Azimuth, Beat, BeatDuration, Bpm, Cents,
-    CompressionRatio, Db, Depth, Drive, Elevation, Feedback, Hz, Mix, Param, ParamAddr, Phase,
+    CompressionRatio, Db, Depth, Drive, Elevation, Feedback, Hz, Mix, Pan, Param, ParamAddr, Phase,
     PhaseIncrement, PlaybackRate, Radians, ReadRate, Resonance, SamplePosition, Seconds, Semitones,
     Spread, SrcRatio, StereoWidth, StretchFactor, Unit, UnitParam, Q,
 };

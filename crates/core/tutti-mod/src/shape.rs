@@ -55,10 +55,15 @@ impl LfoShape {
     /// Callers must first check [`LfoShape::is_random`]; random shapes require
     /// per-instance state and are not handled here (they debug-assert).
     #[inline]
-    pub fn evaluate_periodic(&self, phase: Phase) -> f32 {
-        let phase = phase.get();
+    pub fn evaluate_periodic(&self, phase_t: Phase) -> f32 {
+        let phase = phase_t.get();
         match self {
-            Self::Sine => (phase * core::f32::consts::TAU).sin(),
+            // The one arm with a named conversion: `to_radians` is documented
+            // as being for exactly this call, and `phase * TAU` was it spelled
+            // out. The arms below stay on the raw cycle position — quarters and
+            // halves of a cycle are not angles, so unwrapping once at the top
+            // is right for them.
+            Self::Sine => phase_t.to_radians().sin(),
             Self::Triangle => {
                 let p = phase * 4.0;
                 if p < 1.0 {

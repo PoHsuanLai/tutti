@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use tutti_mod::{ModEdge, ModPreFrame, ModRoutingTable, ModTarget, ModTargetId};
-use tutti_types::{ParamAddr, Seconds};
+use tutti_types::{ParamAddr, Samples, Seconds};
 
 use crate::graph::TransportRes;
 use crate::modulation::components::{ModDelivery, ModParamRange, ModRoute};
@@ -266,16 +266,19 @@ pub fn drive(
     };
 
     let steady = transport.settings.steady_time();
-    let sample_rate = transport.sample_rate().get();
     let elapsed = match *last_steady {
         // A backwards jump means the stream restarted; charge no time for it
-        // rather than winding every free-running source backwards.
-        Some(prev) if steady >= prev => (steady - prev) as f64 / sample_rate,
-        _ => 0.0,
+        // rather than winding every free-running source backwards. The guard
+        // is also what makes the cast below safe: the delta cannot be negative
+        // on the branch that takes it.
+        Some(prev) if steady >= prev => {
+            Samples((steady - prev) as usize).to_seconds(transport.sample_rate())
+        }
+        _ => Seconds(0.0),
     };
     *last_steady = Some(steady);
 
-    driver.run(transport.settings.beat(), Seconds(elapsed as f32));
+    driver.run(transport.settings.beat(), elapsed);
 }
 
 #[cfg(test)]

@@ -171,12 +171,17 @@ impl DelayLineNode {
         self.mix.store(Mix::new_clamped(mix.into().get()));
     }
 
+    /// `fb` is a [`Feedback`] beside an already-typed [`Mix`] — it was the one
+    /// bare control in a signature that had four `f32`s and one unit. `input`
+    /// and `delay_samples` stay raw: a sample value and a fractional read
+    /// position are per-sample scratch feeding an interpolating read, not
+    /// roster quantities.
     #[inline]
-    fn process_sample(&mut self, input: f32, delay_samples: f32, fb: f32, mix: Mix) -> f32 {
+    fn process_sample(&mut self, input: f32, delay_samples: f32, fb: Feedback, mix: Mix) -> f32 {
         let feedback_tap = self
             .delay
             .read_sample(delay_samples.max(1.0) - 1.0, self.interpolation);
-        self.delay.push_sample(input + feedback_tap * fb);
+        self.delay.push_sample(input + feedback_tap * fb.get());
         let delayed = self.delay.read_sample(delay_samples, self.interpolation);
         mix.blend(input, delayed)
     }
@@ -203,14 +208,14 @@ impl AudioUnit for DelayLineNode {
     #[inline]
     fn tick(&mut self, input: &[f32], output: &mut [f32]) {
         let delay_samples = fractional_samples(self.delay_time.load(), self.sample_rate);
-        let fb = self.feedback.load().get();
+        let fb = self.feedback.load();
         let mix = self.mix.load();
         output[0] = self.process_sample(input[0], delay_samples, fb, mix);
     }
 
     fn process(&mut self, size: usize, input: &BufferRef, output: &mut BufferMut) {
         let delay_samples = fractional_samples(self.delay_time.load(), self.sample_rate);
-        let fb = self.feedback.load().get();
+        let fb = self.feedback.load();
         let mix = self.mix.load();
 
         for i in 0..size {

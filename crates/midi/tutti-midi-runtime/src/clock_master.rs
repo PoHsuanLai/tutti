@@ -33,7 +33,7 @@ use std::sync::Arc;
 
 use atomic_float::AtomicF64;
 use tutti_core::transport::Timeline;
-use tutti_core::SampleRate;
+use tutti_core::{Beat, BeatDuration, SampleRate};
 use tutti_midi_types::sync::SmpteFrameRate;
 use tutti_midi_types::ump::MidiEvent;
 
@@ -152,12 +152,12 @@ impl ClockMaster {
 
         let playing = self.transport.is_rolling();
         let was_playing = self.prev_playing.swap(playing, Ordering::AcqRel);
-        let beat = self.transport.beat().get();
-        let prev_beat = self.prev_beat.swap(beat, Ordering::AcqRel);
+        let beat = self.transport.beat();
+        let prev_beat = Beat(self.prev_beat.swap(beat.get(), Ordering::AcqRel));
 
         // --- transport edges -------------------------------------------------
         if playing && !was_playing {
-            if beat.abs() <= START_EPSILON_BEATS {
+            if beat.get().abs() <= START_EPSILON_BEATS {
                 self.emit(MidiEvent::start(self.group));
             } else {
                 self.emit(MidiEvent::song_position(
@@ -181,16 +181,19 @@ impl ClockMaster {
         // --- seek while playing ---------------------------------------------
         // A block normally advances the beat by ~block_size * beats_per_sample;
         // anything beyond that (either direction) is a locate.
-        let tempo_bpm = self.transport.tempo().get();
-        if tempo_bpm <= 0.0 {
+        let tempo = self.transport.tempo();
+        if tempo.get() <= 0.0 {
             return;
         }
-        // The shared derivation, rather than a third hand-rolled copy.
-        let beats_per_sample =
-            tutti_core::transport::beats_per_sample(tempo_bpm, self.sample_rate).get();
-        let expected_advance = block_size as f64 * beats_per_sample;
+        // The shared derivation, rather than a third hand-rolled copy. Kept as
+        // the `BeatDuration` it returns: this is a rate, and `beat` below is a
+        // position, and they used to reach `tick_mtc` as two bare `f64`s.
+        let beats_per_sample = tutti_core::transport::beats_per_sample(tempo, self.sample_rate);
+        let expected_advance = beats_per_sample * block_size as f64;
         let is_edge = playing && !was_playing;
-        if !is_edge && (beat - prev_beat).abs() > expected_advance + SEEK_EPSILON_BEATS {
+        if !is_edge
+            && (beat - prev_beat).abs() > expected_advance + BeatDuration(SEEK_EPSILON_BEATS)
+        {
             self.emit(MidiEvent::song_position(
                 self.group,
                 beats_to_midi_beats(beat),
@@ -204,15 +207,15 @@ impl ClockMaster {
         // [beat, beat + expected_advance), sample-accurate. `tick_beats` is the
         // clock-tick spacing in beats (1/24). We find the first tick boundary at
         // or after `beat` and walk forward.
-        let tick_beats = 1.0 / PPQN;
+        let tick_beats = BeatDuration(1.0 / PPQN);
         let end_beat = beat + expected_advance;
         let max_offset = (block_size - 1) as u32;
         // First tick index strictly *after* `beat`. `floor + 1` guarantees we
         // skip a boundary sitting exactly on `beat` (already emitted at the tail
         // of the previous block) — using `ceil` would re-send that boundary.
-        let mut tick_idx = (beat / tick_beats).floor() as i64 + 1;
+        let mut tick_idx = (beat.get() / tick_beats.get()).floor() as i64 + 1;
         loop {
-            let tick_beat = tick_idx as f64 * tick_beats;
+            let tick_beat = Beat(tick_idx as f64 * tick_beats.get());
             if tick_beat >= end_beat {
                 break;
             }
@@ -233,7 +236,16 @@ impl ClockMaster {
     /// Emit MTC quarter-frames that fall within this block. Quarter-frames go
     /// out at `fps * 4` Hz; each carries one of 8 nibbles of the current SMPTE
     /// time (M2-104 §7.6, MTC quarter-frame 0xF1).
-    fn tick_mtc(&self, block_size: usize, beats_per_sample: f64, beat: f64, max_offset: u32) {
+    /// `beats_per_sample` is a rate and `beat` a position. They were adjacent
+    /// bare `f64`s, so transposing them compiled and produced garbage timecode;
+    /// the two types make that a compile error.
+    fn tick_mtc(
+        &self,
+        block_size: usize,
+        beats_per_sample: BeatDuration,
+        beat: Beat,
+        max_offset: u32,
+    ) {
         let fps = SmpteFrameRate::from_u8(self.mtc_fps.load(Ordering::Acquire));
         let qf_per_sec = fps.fps() * 4.0;
         let samples_per_qf = self.sample_rate.get() / qf_per_sec;
@@ -249,8 +261,14 @@ impl ClockMaster {
         let mut piece = self.mtc_piece.load(Ordering::Acquire);
 
         // Seconds-per-beat for converting beat → wall-clock SMPTE.
-        let secs_per_beat = if beats_per_sample > 0.0 {
-            1.0 / (beats_per_sample * self.sample_rate.get())
+        //
+        // Deliberately the reciprocal of `beats_per_sample` rather than
+        // `BeatDuration::to_seconds`: that method's own doc records the
+        // `(tempo/60)/sample_rate` association as load-bearing, and routing
+        // this through it would re-associate the arithmetic. It also returns
+        // f32 `Seconds`, and SMPTE is one of the named f64 carve-outs.
+        let secs_per_beat = if beats_per_sample > BeatDuration(0.0) {
+            1.0 / (beats_per_sample.get() * self.sample_rate.get())
         } else {
             0.0
         };
@@ -260,8 +278,8 @@ impl ClockMaster {
             let qf_sample = next_qf.max(0.0);
             let sample_offset = (qf_sample as u32).min(max_offset);
             // Wall-clock time at this quarter-frame → SMPTE, then nibble.
-            let block_beat = beat + qf_sample * beats_per_sample;
-            let seconds = block_beat * secs_per_beat;
+            let block_beat = beat + beats_per_sample * qf_sample;
+            let seconds = block_beat.get() * secs_per_beat;
             let tc = seconds_to_smpte(seconds, fps);
             let nibble = mtc_nibble(&tc, piece, fps);
             self.emit(
@@ -282,8 +300,8 @@ impl ClockMaster {
 /// counts sixteenth-notes from the start (M2-104 §7.6, 0xF2). Clamped to the
 /// 14-bit field; the constructor masks, but clamping keeps semantics sane.
 #[inline]
-fn beats_to_midi_beats(beat: f64) -> u16 {
-    let sixteenths = (beat.max(0.0) * 4.0).round();
+fn beats_to_midi_beats(beat: Beat) -> u16 {
+    let sixteenths = (beat.get().max(0.0) * 4.0).round();
     sixteenths.min(0x3FFF as f64) as u16
 }
 

@@ -15,7 +15,7 @@
 //! and flushes with silence at the end to push the real tail out.
 
 use crate::error::Result;
-use tutti_types::Samples;
+use tutti_types::{SampleRate, Samples};
 
 /// Input frames per FFT chunk, and how finely each chunk is subdivided.
 ///
@@ -137,15 +137,26 @@ mod streaming {
     }
 
     impl Resampler {
+        /// Both rates are [`SampleRate`], which every caller already holds —
+        /// they used to narrow to `u32` at the call and this widened straight
+        /// back to divide. The narrowing now happens once, here, at rubato's
+        /// boundary, which is the only place it is owed.
+        ///
+        /// This does **not** make a transposition a compile error: the two
+        /// arguments are the same type, so swapping them still builds
+        /// (verified). Only a `SourceRate`/`TargetRate` split would catch it,
+        /// and two names for one behaviour is not a type. What is gained is one
+        /// derivation of the ratio, from values that never lost precision.
         pub(crate) fn new(
             channels: usize,
-            source_rate: u32,
-            target_rate: u32,
+            source_rate: SampleRate,
+            target_rate: SampleRate,
             chunk: ChunkSize,
         ) -> Result<Self> {
+            let (source_hz, target_hz) = (source_rate.get(), target_rate.get());
             let inner = FftFixedIn::<f32>::new(
-                source_rate as usize,
-                target_rate as usize,
+                source_hz.round() as usize,
+                target_hz.round() as usize,
                 chunk.chunk().get(),
                 chunk.sub_chunks(),
                 channels,
@@ -154,7 +165,7 @@ mod streaming {
             Ok(Self {
                 inner,
                 channels,
-                ratio: f64::from(target_rate) / f64::from(source_rate),
+                ratio: target_hz / source_hz,
                 carry: vec![Vec::new(); channels],
                 skip,
                 fed: 0,
@@ -256,7 +267,9 @@ mod tests {
     use super::*;
 
     fn resample(planes: &[Vec<f32>], from: u32, to: u32, chunk: ChunkSize) -> Vec<Vec<f32>> {
-        let mut r = Resampler::new(planes.len(), from, to, chunk).unwrap();
+        // The `u32`s keep the call sites below reading as plain rates; the
+        // conversion is here, once.
+        let mut r = Resampler::new(planes.len(), from.into(), to.into(), chunk).unwrap();
         let mut out = vec![Vec::new(); planes.len()];
         r.push(planes, &mut out).unwrap();
         r.finish(&mut out).unwrap();
@@ -386,10 +399,7 @@ pub(crate) fn resample_rendered(
     opts: crate::config::Resample,
 ) -> crate::Result<crate::Rendered> {
     let channels = rendered.channels();
-    let source_rate = rendered.sample_rate.get().round() as u32;
-    let target_rate = opts.target_rate.get().round() as u32;
-
-    let mut rs = Resampler::new(channels, source_rate, target_rate, opts.chunk)?;
+    let mut rs = Resampler::new(channels, rendered.sample_rate, opts.target_rate, opts.chunk)?;
     let mut out: Vec<Vec<f32>> = vec![Vec::new(); channels];
     rs.push(&rendered.planes, &mut out)?;
     rs.finish(&mut out)?;

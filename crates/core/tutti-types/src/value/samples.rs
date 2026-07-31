@@ -101,6 +101,39 @@ impl Samples {
     pub const fn is_zero(self) -> bool {
         self.0 == 0
     }
+
+    /// The span these frames occupy at `rate`. Inverse of
+    /// [`Seconds::to_samples`](super::units::Seconds::to_samples).
+    ///
+    /// No rounding variants, unlike the forward direction: that one lands on a
+    /// discrete count, so it has to say whether it is allocating, measuring or
+    /// counting. This lands on a continuous quantity, where there is one answer.
+    ///
+    /// A non-positive rate gives `Seconds(0.0)` rather than an infinity — the
+    /// same choice [`BeatDuration::to_seconds`](super::units::BeatDuration::to_seconds)
+    /// makes for a non-positive tempo, and for the same reason: the degenerate
+    /// value reaches a readout or a scheduler, where zero is recoverable and
+    /// `inf` is not.
+    ///
+    /// Divided in `f64` before narrowing, because a frame count leaves `f32`'s
+    /// exact-integer range (2^24) after about six minutes at 48 kHz.
+    ///
+    /// That buys less than the forward direction's `f64`, and the difference is
+    /// worth stating: the *result* here is `f32` `Seconds`, so past a few
+    /// minutes the return type is coarser than the error the division avoids —
+    /// at an hour, an `f32` second cannot resolve 20 frames and both orderings
+    /// give the same answer. Dividing first is still right, and free, but a
+    /// caller who needs a long span to the frame wants `f64` end to end, per
+    /// the carve-out on [`Seconds`](super::units::Seconds) itself.
+    #[inline]
+    pub fn to_seconds(self, rate: impl Into<super::units::SampleRate>) -> super::units::Seconds {
+        let rate = rate.into().get();
+        if rate > 0.0 {
+            super::units::Seconds((self.0 as f64 / rate) as f32)
+        } else {
+            super::units::Seconds(0.0)
+        }
+    }
 }
 
 // ── Operators ───────────────────────────────────────────────────────────────
@@ -184,6 +217,57 @@ mod tests {
     fn align_to_saturates_when_already_late() {
         // A signal arriving later than the target needs no delay.
         assert_eq!(Samples(900).align_to(Samples(512)), Samples(0));
+    }
+
+    #[test]
+    fn frames_convert_to_a_span_and_back() {
+        use super::super::units::{SampleRate, Seconds};
+        let rate = SampleRate(48_000.0);
+        assert_eq!(Samples(48_000).to_seconds(rate), Seconds(1.0));
+        assert_eq!(Samples(0).to_seconds(rate), Seconds(0.0));
+        // Round-trips through the forward direction it is the inverse of.
+        assert_eq!(Seconds(2.5).to_samples(rate), Samples(120_000));
+        assert_eq!(Samples(120_000).to_seconds(rate), Seconds(2.5));
+    }
+
+    /// A degenerate rate yields no span rather than an infinity — the value
+    /// reaches a readout or a scheduler, and zero is the recoverable one.
+    #[test]
+    fn a_non_positive_rate_is_no_span() {
+        use super::super::units::{SampleRate, Seconds};
+        assert_eq!(Samples(48_000).to_seconds(SampleRate(0.0)), Seconds(0.0));
+        assert_eq!(Samples(48_000).to_seconds(SampleRate(-1.0)), Seconds(0.0));
+    }
+
+    /// Dividing in `f64` changes the answer, but only in a narrow band.
+    ///
+    /// The count must exceed `f32`'s exact-integer range (2^24) for narrowing
+    /// *first* to lose anything — and not by so much that the `f32` result is
+    /// coarser than the error. `2^24 + 1` frames is inside that band; one hour
+    /// is not, because at 3600 s an `f32` second only resolves ~20 frames and
+    /// both paths round to the same value. So this pins a real property with a
+    /// genuinely small reach, rather than the "long renders need it" claim the
+    /// forward direction can make and this one cannot.
+    #[test]
+    fn dividing_before_narrowing_keeps_a_frame_f32_would_lose() {
+        use super::super::units::SampleRate;
+        let rate = SampleRate(48_000.0);
+        let frames = Samples((1 << 24) + 1);
+        let exact = frames.to_seconds(rate).get();
+        let narrowed = (frames.get() as f32) / 48_000.0;
+        assert_ne!(
+            exact.to_bits(),
+            narrowed.to_bits(),
+            "dividing in f32 must lose the odd frame this keeps"
+        );
+
+        // And the honest limit of that: an hour is past where `f32` `Seconds`
+        // can tell the two apart at all.
+        let hour = Samples(48_000 * 3600 + 1);
+        assert_eq!(
+            hour.to_seconds(rate).get().to_bits(),
+            ((hour.get() as f32) / 48_000.0).to_bits()
+        );
     }
 
     /// What is deliberately *absent* is as load-bearing as what is present.

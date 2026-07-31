@@ -1415,6 +1415,29 @@ impl Semitones {
     pub fn to_pitch_ratio(self) -> f32 {
         2.0_f32.powf(self.0 / 12.0)
     }
+
+    /// The interval a frequency multiplier spans. Inverse of
+    /// [`to_pitch_ratio`](Self::to_pitch_ratio), and the semitone twin of
+    /// [`Cents::from_pitch_ratio`].
+    ///
+    /// Named rather than a `From` for that method's reason: it is not total,
+    /// because a non-positive ratio has no logarithm. Those give
+    /// [`Semitones(0.0)`](Semitones) — a unison — rather than a NaN that
+    /// reaches a note table before anyone notices.
+    ///
+    /// This existed only in the `Cents` form, so the one caller that wanted
+    /// semitones (`Note::nearest_to`) hand-rolled `12.0 * ratio.log2()` in raw
+    /// `f32` — with its own positivity check several lines away from the
+    /// logarithm. That is the omission rule's own failure mode: the inverse
+    /// was added for one unit and not its twin.
+    #[inline]
+    pub fn from_pitch_ratio(ratio: f32) -> Semitones {
+        if ratio > 0.0 {
+            Semitones(12.0 * ratio.log2())
+        } else {
+            Semitones(0.0)
+        }
+    }
 }
 
 // `From` for the conversions with exactly one answer.

@@ -329,6 +329,14 @@ pub enum ClipFileError {
     Truncated,
     /// No DCTPQ (tick-unit declaration) was seen before the events.
     MissingDctpq,
+    /// The DCTPQ declared zero ticks per quarter note.
+    ///
+    /// Distinct from [`MissingDctpq`](Self::MissingDctpq) because the file did
+    /// declare one — it is unusable rather than absent, and a caller reporting
+    /// corruption wants to say which. Every beat in the file is that tick count
+    /// divided by this, so a zero yields infinities rather than a parse error
+    /// unless it is caught here.
+    ZeroDctpq,
     /// No Start of Clip message. M2-116 §7: "A Clip Sequence Data shall include
     /// one Start of Clip message … as the first UMP message."
     MissingStartOfClip,
@@ -348,6 +356,7 @@ impl core::fmt::Display for ClipFileError {
             Self::Unaligned => "clip body is not 32-bit-word aligned",
             Self::Truncated => "clip file is truncated mid-message",
             Self::MissingDctpq => "clip file has no DCTPQ tick-unit declaration",
+            Self::ZeroDctpq => "clip file declares zero ticks per quarter note",
             Self::MissingStartOfClip => "clip file has no Start of Clip message",
             Self::MissingEndOfClip => "clip file has no End of Clip message",
             Self::TrailingData => "clip file has data following the End of Clip message",
@@ -444,6 +453,12 @@ pub fn read_clip_file(bytes: &[u8]) -> Result<ParsedClipFile, ClipFileError> {
     // Order matters: report the *earliest* structural thing that is missing, so
     // a caller sees the first reason the file is unusable rather than the last.
     let ticks_per_quarter = ticks_per_quarter.ok_or(ClipFileError::MissingDctpq)?;
+    // Declared, but unusable: every beat this file yields is a tick count
+    // divided by this. Checking presence and not value let a zero through to
+    // `timed()`, which returned infinities instead of failing here.
+    if ticks_per_quarter == 0 {
+        return Err(ClipFileError::ZeroDctpq);
+    }
     if !saw_start_of_clip {
         return Err(ClipFileError::MissingStartOfClip);
     }
@@ -842,6 +857,26 @@ mod tests {
             read_clip_file(b"SMF2CLIP"),
             Err(ClipFileError::MissingDctpq)
         );
+    }
+
+    /// A declared tick unit of zero is not a tick unit.
+    ///
+    /// It parsed, and then every beat in the file was infinity: `timed()`
+    /// divides the running tick count by it, and so does `duration_beats`. The
+    /// SMF reader has always rejected the same condition — `tracks()` returns
+    /// "zero ticks-per-beat" — so this is that guard's MIDI-2 twin, which was
+    /// never written. Presence was checked; the value was not.
+    #[test]
+    fn a_zero_tick_unit_is_rejected_rather_than_dividing_by_it() {
+        let ev = MidiEvent::note_on(0, 0, 60, 0x8000);
+        let bytes = write_clip_file(0, &[ClipEvent::new(240, ev)]);
+        assert_eq!(read_clip_file(&bytes), Err(ClipFileError::ZeroDctpq));
+
+        // The neighbouring value still parses, so the guard rejects zero rather
+        // than anything that merely looks small.
+        let bytes = write_clip_file(1, &[ClipEvent::new(240, ev)]);
+        let parsed = read_clip_file(&bytes).expect("tpq=1 is a valid tick unit");
+        assert!(parsed.timed().all(|(beat, _)| beat.is_finite()));
     }
 
     #[test]

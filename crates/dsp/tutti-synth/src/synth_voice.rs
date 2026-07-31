@@ -6,7 +6,7 @@ use tutti_core::dsp::{
     adsr_live, bandpass_q, dc, highpass_q, lowpass_q, moog, notch_q, pass, pink, poly_pulse, saw,
     sine, triangle, var,
 };
-use tutti_core::{Amplitude, AudioUnit, Hz, Pan, Phase, PhaseIncrement, Semitones, Shared};
+use tutti_core::{Amplitude, AudioUnit, Depth, Hz, Pan, Phase, PhaseIncrement, Semitones, Shared};
 
 extern crate alloc;
 use alloc::vec::Vec;
@@ -221,6 +221,14 @@ impl SynthVoice {
         self.sub_voices.len()
     }
 
+    /// The frequency the first sub-voice is actually sounding — *post*-bend,
+    /// unlike [`base_note_freq`](Self::base_note_freq), which `set_pitch` does
+    /// not touch. The only way to observe what a bend did to a sounding note.
+    #[cfg(test)]
+    pub(crate) fn sounding_freq(&self) -> Hz {
+        Hz(self.sub_voices[0].pitch.value())
+    }
+
     pub(crate) fn process_block_stereo(
         &mut self,
         unison: Option<&UnisonEngine>,
@@ -281,8 +289,9 @@ impl SynthVoice {
 
     fn update_modulated_filter(&mut self) {
         let fm = &self.filter_mod;
-        let has_filter_mod =
-            fm.mod_wheel_depth > 0.0 || fm.velocity_depth > 0.0 || fm.lfo_depth > 0.0;
+        let has_filter_mod = fm.mod_wheel_depth > Depth(0.0)
+            || fm.velocity_depth > Depth(0.0)
+            || fm.lfo_depth > Depth(0.0);
         let has_cc_cutoff = self.cc_cutoff_value != 0.5;
         let has_cc_resonance = self.cc_resonance_value != 0.0;
 
@@ -293,17 +302,20 @@ impl SynthVoice {
         if has_filter_mod || has_cc_cutoff {
             let mut cutoff = self.base_filter_cutoff;
 
-            if fm.mod_wheel_depth > 0.0 {
-                cutoff *= 1.0 + self.mod_wheel_value * fm.mod_wheel_depth;
+            // `cutoff` is a bare `f32` multiplier chain feeding a fundsp shared
+            // cell, so each depth comes off its type at the multiply rather
+            // than the struct carrying bare floats for the arithmetic's sake.
+            if fm.mod_wheel_depth > Depth(0.0) {
+                cutoff *= 1.0 + self.mod_wheel_value * fm.mod_wheel_depth.get();
             }
 
-            if fm.velocity_depth > 0.0 {
-                let vel_mult = 1.0 - fm.velocity_depth * 0.5
-                    + self.velocity_mod_value * fm.velocity_depth * 0.5;
+            if fm.velocity_depth > Depth(0.0) {
+                let vel_mult = 1.0 - fm.velocity_depth.get() * 0.5
+                    + self.velocity_mod_value * fm.velocity_depth.get() * 0.5;
                 cutoff *= vel_mult;
             }
 
-            if fm.lfo_depth > 0.0 && fm.lfo_rate > 0.0 {
+            if fm.lfo_depth > Depth(0.0) && fm.lfo_rate > Hz(0.0) {
                 // The named converter: this used to narrow the rate to f32
                 // before dividing, computing the step at f32 precision.
                 //
@@ -312,11 +324,11 @@ impl SynthVoice {
                 // phase. The `lfo_rate > 0.0` guard above makes that
                 // unreachable today, which is exactly how it would survive
                 // until the first reverse LFO.
-                let phase_inc = PhaseIncrement::per_sample(Hz(fm.lfo_rate), self.sample_rate);
+                let phase_inc = PhaseIncrement::per_sample(fm.lfo_rate, self.sample_rate);
                 self.lfo_phase = self.lfo_phase.advance(phase_inc);
 
-                let lfo_val = self.lfo_phase.to_radians().get().sin();
-                cutoff *= 1.0 + lfo_val * fm.lfo_depth * 0.5;
+                let lfo_val = self.lfo_phase.to_radians().sin();
+                cutoff *= 1.0 + lfo_val * fm.lfo_depth.get() * 0.5;
             }
 
             if has_cc_cutoff {

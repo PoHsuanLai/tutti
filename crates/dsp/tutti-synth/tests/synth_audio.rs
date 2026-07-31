@@ -16,7 +16,7 @@
 //! everything here is self-contained.
 
 use tutti_core::dsp::{BufferArray, U2};
-use tutti_core::AudioUnit;
+use tutti_core::{Amplitude, AudioUnit, Seconds};
 use tutti_midi_types::translation::scaling::midi1_velocity_to_midi2;
 use tutti_midi_types::ump::MidiEvent;
 use tutti_synth::{
@@ -39,10 +39,10 @@ fn note_off(note: u8) -> MidiEvent {
 /// summing rather than an envelope's position on its curve.
 fn flat_envelope() -> EnvelopeConfig {
     EnvelopeConfig {
-        attack: 0.001,
-        decay: 0.0,
-        sustain: 1.0,
-        release: 0.5,
+        attack: Seconds(0.001),
+        decay: Seconds(0.0),
+        sustain: Amplitude(1.0),
+        release: Seconds(0.5),
     }
 }
 
@@ -244,10 +244,10 @@ fn velocity_scales_the_output_level() {
 fn a_note_off_silences_the_voice_after_release() {
     let mut cfg = config(OscillatorType::Sine);
     cfg.envelope = EnvelopeConfig {
-        attack: 0.001,
-        decay: 0.0,
-        sustain: 1.0,
-        release: 0.05,
+        attack: Seconds(0.001),
+        decay: Seconds(0.0),
+        sustain: Amplitude(1.0),
+        release: Seconds(0.05),
     };
     let mut synth = PolySynth::new(cfg).expect("synth builds");
 

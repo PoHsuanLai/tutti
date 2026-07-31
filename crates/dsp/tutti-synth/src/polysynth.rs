@@ -407,7 +407,7 @@ impl PolySynth {
 
             let target_freq = if let Some(ref mut porta) = self.portamento {
                 porta.set_target(base_freq, is_legato);
-                porta.current().get() * bend_multiplier
+                porta.current() * bend_multiplier
             } else {
                 base_freq * bend_multiplier
             };
@@ -483,7 +483,7 @@ impl PolySynth {
         // across the `&mut self` in `with_voice_for_id`).
         if let Some(i) = self.voice_index_for_id(id) {
             let unison = self.unison.as_ref();
-            self.voices[i].set_tuning_freq(tutti_core::Hz(freq), unison);
+            self.voices[i].set_tuning_freq(freq, unison);
         }
     }
 
@@ -960,7 +960,7 @@ mod tests {
         EnvelopeConfig, FilterType, OscillatorType, PortamentoConfig, PortamentoCurve,
         PortamentoMode, SynthConfig, UnisonConfig, VoiceMode,
     };
-    use tutti_core::{Hz, Resonance, Spread};
+    use tutti_core::{Amplitude, Hz, Resonance, Seconds, Spread};
     use tutti_midi_types::convert::{
         midi1_cc_to_midi2, midi1_pitch_bend_to_midi2, midi1_velocity_to_midi2,
     };
@@ -988,10 +988,10 @@ mod tests {
             // Near-instant attack, so the note is audible within the first block
             // rather than still ramping up from silence.
             envelope: EnvelopeConfig {
-                attack: 0.001,
-                decay: 0.0,
-                sustain: 1.0,
-                release: 0.5,
+                attack: Seconds(0.001),
+                decay: Seconds(0.0),
+                sustain: Amplitude(1.0),
+                release: Seconds(0.5),
             },
             ..Default::default()
         });
@@ -1348,10 +1348,10 @@ mod tests {
             voice_mode: VoiceMode::Poly,
             oscillator: OscillatorType::Saw,
             envelope: EnvelopeConfig {
-                attack: 0.001,
-                decay: 0.1,
-                sustain: 0.8,
-                release: 0.1,
+                attack: Seconds(0.001),
+                decay: Seconds(0.1),
+                sustain: Amplitude(0.8),
+                release: Seconds(0.1),
             }, // Fast attack to get output quickly
             unison: Some(UnisonConfig {
                 voice_count: 3,
@@ -1515,10 +1515,10 @@ mod tests {
             voice_mode: VoiceMode::Poly,
             oscillator: OscillatorType::Sine,
             envelope: EnvelopeConfig {
-                attack: 0.001,
-                decay: 0.1,
-                sustain: 1.0,
-                release: 0.1,
+                attack: Seconds(0.001),
+                decay: Seconds(0.1),
+                sustain: Amplitude(1.0),
+                release: Seconds(0.1),
             },
             ..Default::default()
         });
@@ -1567,10 +1567,10 @@ mod tests {
             voice_mode: VoiceMode::Poly,
             oscillator: OscillatorType::Sine,
             envelope: EnvelopeConfig {
-                attack: 0.001,
-                decay: 0.0,
-                sustain: 1.0,
-                release: 0.05,
+                attack: Seconds(0.001),
+                decay: Seconds(0.0),
+                sustain: Amplitude(1.0),
+                release: Seconds(0.05),
             },
             ..Default::default()
         });
@@ -1619,10 +1619,10 @@ mod tests {
             voice_mode: VoiceMode::Poly,
             oscillator: OscillatorType::Sine,
             envelope: EnvelopeConfig {
-                attack: 0.001,
-                decay: 0.0,
-                sustain: 1.0,
-                release: 0.05,
+                attack: Seconds(0.001),
+                decay: Seconds(0.0),
+                sustain: Amplitude(1.0),
+                release: Seconds(0.05),
             },
             ..Default::default()
         });
@@ -1683,10 +1683,10 @@ mod tests {
             voice_mode: VoiceMode::Poly,
             oscillator: OscillatorType::Sine,
             envelope: EnvelopeConfig {
-                attack: 0.001,
-                decay: 0.0,
-                sustain: 1.0,
-                release: 5.0,
+                attack: Seconds(0.001),
+                decay: Seconds(0.0),
+                sustain: Amplitude(1.0),
+                release: Seconds(5.0),
             }, // Very long release
             ..Default::default()
         });
@@ -1719,10 +1719,10 @@ mod tests {
             voice_mode: VoiceMode::Poly,
             oscillator: OscillatorType::Sine,
             envelope: EnvelopeConfig {
-                attack: 0.001,
-                decay: 0.0,
-                sustain: 1.0,
-                release: 5.0,
+                attack: Seconds(0.001),
+                decay: Seconds(0.0),
+                sustain: Amplitude(1.0),
+                release: Seconds(5.0),
             }, // Long release
             ..Default::default()
         });
@@ -1760,10 +1760,10 @@ mod tests {
             voice_mode: VoiceMode::Poly,
             oscillator: OscillatorType::Sine,
             envelope: EnvelopeConfig {
-                attack: 0.001,
-                decay: 0.0,
-                sustain: 1.0,
-                release: 5.0,
+                attack: Seconds(0.001),
+                decay: Seconds(0.0),
+                sustain: Amplitude(1.0),
+                release: Seconds(5.0),
             },
             ..Default::default()
         });
@@ -1804,10 +1804,10 @@ mod tests {
             voice_mode: VoiceMode::Poly,
             oscillator: OscillatorType::Sine,
             envelope: EnvelopeConfig {
-                attack: 0.001,
-                decay: 0.0,
-                sustain: 1.0,
-                release: 0.05,
+                attack: Seconds(0.001),
+                decay: Seconds(0.0),
+                sustain: Amplitude(1.0),
+                release: Seconds(0.05),
             },
             ..Default::default()
         });
@@ -1840,10 +1840,10 @@ mod tests {
             voice_mode: VoiceMode::Poly,
             oscillator: OscillatorType::Sine,
             envelope: EnvelopeConfig {
-                attack: 0.001,
-                decay: 0.0,
-                sustain: 1.0,
-                release: 5.0,
+                attack: Seconds(0.001),
+                decay: Seconds(0.0),
+                sustain: Amplitude(1.0),
+                release: Seconds(5.0),
             }, // Long release so voices stay active
             ..Default::default()
         });
@@ -1874,10 +1874,10 @@ mod tests {
             voice_mode: VoiceMode::Legato,
             oscillator: OscillatorType::Sine,
             envelope: EnvelopeConfig {
-                attack: 0.001,
-                decay: 0.0,
-                sustain: 1.0,
-                release: 0.1,
+                attack: Seconds(0.001),
+                decay: Seconds(0.0),
+                sustain: Amplitude(1.0),
+                release: Seconds(0.1),
             },
             ..Default::default()
         });
@@ -1917,10 +1917,10 @@ mod tests {
             voice_mode: VoiceMode::Mono,
             oscillator: OscillatorType::Sine,
             envelope: EnvelopeConfig {
-                attack: 0.001,
-                decay: 0.0,
-                sustain: 1.0,
-                release: 0.1,
+                attack: Seconds(0.001),
+                decay: Seconds(0.0),
+                sustain: Amplitude(1.0),
+                release: Seconds(0.1),
             },
             ..Default::default()
         });
@@ -1949,10 +1949,10 @@ mod tests {
             voice_mode: VoiceMode::Poly,
             oscillator: OscillatorType::Sine,
             envelope: EnvelopeConfig {
-                attack: 0.001,
-                decay: 0.0,
-                sustain: 1.0,
-                release: 0.1,
+                attack: Seconds(0.001),
+                decay: Seconds(0.0),
+                sustain: Amplitude(1.0),
+                release: Seconds(0.1),
             },
             portamento: Some(PortamentoConfig {
                 mode: PortamentoMode::Always,
@@ -2012,10 +2012,10 @@ mod tests {
             voice_mode: VoiceMode::Poly,
             oscillator: OscillatorType::Sine,
             envelope: EnvelopeConfig {
-                attack: 0.001,
-                decay: 0.0,
-                sustain: 1.0,
-                release: 5.0,
+                attack: Seconds(0.001),
+                decay: Seconds(0.0),
+                sustain: Amplitude(1.0),
+                release: Seconds(5.0),
             },
             ..Default::default()
         });
@@ -2044,10 +2044,10 @@ mod tests {
             voice_mode: VoiceMode::Poly,
             oscillator: OscillatorType::Sine,
             envelope: EnvelopeConfig {
-                attack: 0.001,
-                decay: 0.0,
-                sustain: 1.0,
-                release: 0.1,
+                attack: Seconds(0.001),
+                decay: Seconds(0.0),
+                sustain: Amplitude(1.0),
+                release: Seconds(0.1),
             },
             mpe_enabled: true,
             mpe_pitch_bend_range: tutti_core::Semitones(48.0),
@@ -2110,10 +2110,10 @@ mod tests {
             voice_mode: VoiceMode::Poly,
             oscillator: OscillatorType::Sine,
             envelope: EnvelopeConfig {
-                attack: 0.001,
-                decay: 0.0,
-                sustain: 1.0,
-                release: 0.1,
+                attack: Seconds(0.001),
+                decay: Seconds(0.0),
+                sustain: Amplitude(1.0),
+                release: Seconds(0.1),
             },
             mpe_enabled: true,
             mpe_pitch_bend_range: tutti_core::Semitones(48.0),
@@ -2164,10 +2164,10 @@ mod tests {
             voice_mode: VoiceMode::Poly,
             oscillator: OscillatorType::Sine,
             envelope: EnvelopeConfig {
-                attack: 0.001,
-                decay: 0.0,
-                sustain: 1.0,
-                release: 0.1,
+                attack: Seconds(0.001),
+                decay: Seconds(0.0),
+                sustain: Amplitude(1.0),
+                release: Seconds(0.1),
             },
             mpe_enabled: true,
             mpe_pitch_bend_range: tutti_core::Semitones(48.0),
@@ -2233,10 +2233,10 @@ mod tests {
             voice_mode: VoiceMode::Poly,
             oscillator: OscillatorType::Sine,
             envelope: EnvelopeConfig {
-                attack: 0.001,
-                decay: 0.0,
-                sustain: 1.0,
-                release: 0.1,
+                attack: Seconds(0.001),
+                decay: Seconds(0.0),
+                sustain: Amplitude(1.0),
+                release: Seconds(0.1),
             },
             mpe_enabled: true,
             ..Default::default()
@@ -2284,10 +2284,10 @@ mod tests {
             voice_mode: VoiceMode::Poly,
             oscillator: OscillatorType::Sine,
             envelope: EnvelopeConfig {
-                attack: 0.001,
-                decay: 0.0,
-                sustain: 1.0,
-                release: 0.1,
+                attack: Seconds(0.001),
+                decay: Seconds(0.0),
+                sustain: Amplitude(1.0),
+                release: Seconds(0.1),
             },
             mpe_enabled: true,
             mpe_pitch_bend_range: tutti_core::Semitones(48.0),
@@ -2348,10 +2348,10 @@ mod tests {
             voice_mode: VoiceMode::Poly,
             oscillator: OscillatorType::Sine,
             envelope: EnvelopeConfig {
-                attack: 0.001,
-                decay: 0.0,
-                sustain: 1.0,
-                release: 0.1,
+                attack: Seconds(0.001),
+                decay: Seconds(0.0),
+                sustain: Amplitude(1.0),
+                release: Seconds(0.1),
             },
             mpe_enabled: true,
             mpe_pitch_bend_range: tutti_core::Semitones(48.0),
@@ -2401,10 +2401,10 @@ mod tests {
             voice_mode: VoiceMode::Poly,
             oscillator: OscillatorType::Sine,
             envelope: EnvelopeConfig {
-                attack: 0.001,
-                decay: 0.0,
-                sustain: 1.0,
-                release: 0.1,
+                attack: Seconds(0.001),
+                decay: Seconds(0.0),
+                sustain: Amplitude(1.0),
+                release: Seconds(0.1),
             },
             mpe_enabled: true,
             mpe_pitch_bend_range: tutti_core::Semitones(48.0),
@@ -2453,10 +2453,10 @@ mod tests {
                 resonance: Resonance(0.5),
             },
             envelope: EnvelopeConfig {
-                attack: 0.001,
-                decay: 0.0,
-                sustain: 1.0,
-                release: 0.1,
+                attack: Seconds(0.001),
+                decay: Seconds(0.0),
+                sustain: Amplitude(1.0),
+                release: Seconds(0.1),
             },
             mpe_enabled: true,
             ..Default::default()
@@ -2516,10 +2516,10 @@ mod tests {
             voice_mode: VoiceMode::Poly,
             oscillator: OscillatorType::Sine,
             envelope: EnvelopeConfig {
-                attack: 0.001,
-                decay: 0.0,
-                sustain: 1.0,
-                release: 0.1,
+                attack: Seconds(0.001),
+                decay: Seconds(0.0),
+                sustain: Amplitude(1.0),
+                release: Seconds(0.1),
             },
             mpe_enabled: true,
             ..Default::default()
@@ -2575,10 +2575,10 @@ mod tests {
             voice_mode: VoiceMode::Poly,
             oscillator: OscillatorType::Sine,
             envelope: EnvelopeConfig {
-                attack: 0.001,
-                decay: 0.0,
-                sustain: 1.0,
-                release: 0.1,
+                attack: Seconds(0.001),
+                decay: Seconds(0.0),
+                sustain: Amplitude(1.0),
+                release: Seconds(0.1),
             },
             mpe_enabled: true,
             ..Default::default()
@@ -2630,10 +2630,10 @@ mod tests {
                 resonance: Resonance(0.5),
             },
             envelope: EnvelopeConfig {
-                attack: 0.001,
-                decay: 0.0,
-                sustain: 1.0,
-                release: 0.1,
+                attack: Seconds(0.001),
+                decay: Seconds(0.0),
+                sustain: Amplitude(1.0),
+                release: Seconds(0.1),
             },
             mpe_enabled: true,
             ..Default::default()
@@ -2670,10 +2670,10 @@ mod tests {
             voice_mode: VoiceMode::Poly,
             oscillator: OscillatorType::Sine,
             envelope: EnvelopeConfig {
-                attack: 0.001,
-                decay: 0.0,
-                sustain: 1.0,
-                release: 0.1,
+                attack: Seconds(0.001),
+                decay: Seconds(0.0),
+                sustain: Amplitude(1.0),
+                release: Seconds(0.1),
             },
             ..Default::default()
         });
@@ -2709,10 +2709,10 @@ mod tests {
             voice_mode: VoiceMode::Poly,
             oscillator: OscillatorType::Sine,
             envelope: EnvelopeConfig {
-                attack: 0.001,
-                decay: 0.0,
-                sustain: 1.0,
-                release: 0.1,
+                attack: Seconds(0.001),
+                decay: Seconds(0.0),
+                sustain: Amplitude(1.0),
+                release: Seconds(0.1),
             },
             mpe_enabled: true,
             ..Default::default()
@@ -2756,10 +2756,10 @@ mod tests {
             voice_mode: VoiceMode::Poly,
             oscillator: OscillatorType::Sine,
             envelope: EnvelopeConfig {
-                attack: 0.001,
-                decay: 0.0,
-                sustain: 1.0,
-                release: 0.05,
+                attack: Seconds(0.001),
+                decay: Seconds(0.0),
+                sustain: Amplitude(1.0),
+                release: Seconds(0.05),
             },
             mpe_enabled: true,
             ..Default::default()

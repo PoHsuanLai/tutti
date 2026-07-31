@@ -6,7 +6,7 @@ use tutti_core::dsp::{
     adsr_live, bandpass_q, dc, highpass_q, lowpass_q, moog, notch_q, pass, pink, poly_pulse, saw,
     sine, triangle, var,
 };
-use tutti_core::{AudioUnit, Hz, Phase, PhaseIncrement, Semitones, Shared};
+use tutti_core::{Amplitude, AudioUnit, Hz, Pan, Phase, PhaseIncrement, Semitones, Shared};
 
 extern crate alloc;
 use alloc::vec::Vec;
@@ -257,9 +257,11 @@ impl SynthVoice {
                 let p = u.voice_params(i);
                 (p.pan, p.amplitude)
             } else {
-                (0.0, 1.0)
+                (Pan::CENTER, Amplitude::UNITY)
             };
 
+            // Constant-power pan law, then the unison voice's own gain.
+            let (pan_pos, amplitude) = (pan_pos.get(), amplitude.get());
             let left_gain = ((1.0 - pan_pos) * 0.5).sqrt() * amplitude;
             let right_gain = ((1.0 + pan_pos) * 0.5).sqrt() * amplitude;
             let mono_sample = out_buf[0];
@@ -500,18 +502,24 @@ fn build_sub_voice_dsp(
     filter_resonance: &Shared,
 ) -> Box<dyn AudioUnit> {
     let env = &config.envelope;
+    // Where the types stop: fundsp's `adsr_live` takes four bare `f32`s, so the
+    // units come off once here rather than at each of the three calls below.
+    let (attack, decay, sustain, release) = (
+        env.attack.get(),
+        env.decay.get(),
+        env.sustain.get(),
+        env.release.get(),
+    );
 
     macro_rules! with_filter {
         ($osc:expr) => {
             match &config.filter {
                 FilterType::None => {
-                    let envelope =
-                        var(gate) >> adsr_live(env.attack, env.decay, env.sustain, env.release);
+                    let envelope = var(gate) >> adsr_live(attack, decay, sustain, release);
                     Box::new($osc * envelope) as Box<dyn AudioUnit>
                 }
                 FilterType::Moog { .. } => {
-                    let envelope =
-                        var(gate) >> adsr_live(env.attack, env.decay, env.sustain, env.release);
+                    let envelope = var(gate) >> adsr_live(attack, decay, sustain, release);
                     Box::new(
                         ($osc | var(filter_cutoff) | var(filter_resonance))
                             >> moog::<f32>()
@@ -519,8 +527,7 @@ fn build_sub_voice_dsp(
                     )
                 }
                 FilterType::Svf { q, mode, .. } => {
-                    let envelope =
-                        var(gate) >> adsr_live(env.attack, env.decay, env.sustain, env.release);
+                    let envelope = var(gate) >> adsr_live(attack, decay, sustain, release);
                     match mode {
                         SvfMode::Lowpass => Box::new(
                             ($osc | var(filter_cutoff))

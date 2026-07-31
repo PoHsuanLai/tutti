@@ -1381,6 +1381,22 @@ impl Cents {
     pub fn to_pitch_ratio(self) -> f32 {
         2.0_f32.powf(self.0 / 1200.0)
     }
+
+    /// The interval a frequency multiplier spans. Inverse of
+    /// [`to_pitch_ratio`](Self::to_pitch_ratio).
+    ///
+    /// A named method rather than a `From`, because it is not total: a
+    /// non-positive ratio has no logarithm. Those give [`Cents(0.0)`](Cents) —
+    /// the unison a caller building a scale degree wants — rather than a NaN
+    /// that reaches a frequency table before anyone notices.
+    #[inline]
+    pub fn from_pitch_ratio(ratio: f32) -> Cents {
+        if ratio > 0.0 {
+            Cents(1200.0 * ratio.log2())
+        } else {
+            Cents(0.0)
+        }
+    }
 }
 
 impl Semitones {
@@ -2397,6 +2413,29 @@ mod tests {
         assert!((Semitones::OCTAVE.to_pitch_ratio() - 2.0).abs() < 1e-6);
         assert!((Cents(1200.0).to_pitch_ratio() - 2.0).abs() < 1e-6);
         assert!((Semitones(0.0).to_pitch_ratio() - 1.0).abs() < 1e-6);
+    }
+
+    /// `Cents::from_pitch_ratio` is the named inverse of `to_pitch_ratio`.
+    ///
+    /// It exists because `tuning.rs` was hand-rolling `1200.0 * ratio.log2()`
+    /// while the forward direction was already a converter — the asymmetry the
+    /// omission rule is meant to catch.
+    #[test]
+    fn a_pitch_ratio_round_trips_through_cents() {
+        for ratio in [0.5_f32, 1.0, 1.5, 2.0, 3.0] {
+            let back = Cents::from_pitch_ratio(ratio).to_pitch_ratio();
+            assert!(
+                (back - ratio).abs() < 1e-4,
+                "{ratio} round-tripped to {back}"
+            );
+        }
+        assert_eq!(Cents::from_pitch_ratio(2.0), Cents(1200.0));
+        assert_eq!(Cents::from_pitch_ratio(1.0), Cents(0.0));
+
+        // A ratio has no logarithm at or below zero. Unison, not NaN — a NaN
+        // here reaches a frequency table and silences a note with no error.
+        assert_eq!(Cents::from_pitch_ratio(0.0), Cents(0.0));
+        assert_eq!(Cents::from_pitch_ratio(-1.0), Cents(0.0));
     }
 
     #[test]

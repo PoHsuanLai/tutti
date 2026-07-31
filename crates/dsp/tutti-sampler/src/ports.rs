@@ -216,7 +216,8 @@ impl Status {
         // file_sr / session_sr is the src_ratio the butler set on the plan; the
         // reader's placement gate converts transport seconds → file samples with
         // the file's own rate, so recover it from that ratio.
-        let file_sample_rate = self.sample_rate.get() * rt_state.src_ratio().get() as f64;
+        let file_sample_rate =
+            SampleRate(self.sample_rate.get() * rt_state.src_ratio().get() as f64);
 
         Some(DiskVoice::new(
             inner,

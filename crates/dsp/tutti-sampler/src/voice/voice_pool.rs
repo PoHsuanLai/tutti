@@ -567,7 +567,7 @@ mod tests {
                         start: Beat::new(0.0),
                         duration: None,
                     },
-                    file_sample_rate: 44_100.0,
+                    file_sample_rate: SampleRate(44_100.0),
                 },
             );
 
@@ -1201,7 +1201,7 @@ mod tests {
                     start: Beat::new(0.0),
                     duration: None,
                 },
-                file_sample_rate: 44100.0,
+                file_sample_rate: SampleRate(44100.0),
             },
         );
 

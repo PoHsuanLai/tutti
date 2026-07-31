@@ -4,10 +4,11 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 use super::midi::IpcMidiEventVec;
-use super::ParamAddress;
 use super::process::ProcessAudioData;
 use super::sample::SampleFormat;
 use super::shm::SlabLayout;
+use super::ParamAddress;
+use super::Samples;
 use super::{LoadedPlugin, ParameterInfo, PluginDescriptor};
 
 /// Wire-deserialization fallback for [`HostMessage::LoadPlugin::block_size`]
@@ -144,7 +145,7 @@ pub enum BridgeMessage {
     /// reports the new value. Note: does NOT trigger PDC re-analysis;
     /// the graph must be committed again for compensation to update.
     LatencyChanged {
-        samples: usize,
+        samples: Samples,
     },
     /// Plugin changed its own parameter values at runtime (e.g. an in-plugin
     /// preset load). The host should re-read parameter values from the plugin.

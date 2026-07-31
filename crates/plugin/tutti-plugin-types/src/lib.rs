@@ -26,6 +26,10 @@ pub mod process;
 pub mod transport;
 
 pub use tutti_types::ChannelLayout;
+/// Re-exported so every format crate spells a sample count the same way
+/// without each taking its own `tutti-types` dependency — `ChannelLayout`
+/// above is here for the same reason.
+pub use tutti_types::Samples;
 // Musical vocabulary carried on `TransportInfo`. Re-exported for the same reason
 // as `ChannelLayout`: format hosts speak these at their ABI boundary and should
 // not need a `tutti-types` dependency of their own to name them.

@@ -10,7 +10,7 @@ use crate::host::ipc_client::audio::{BridgeEvent, BridgeThread};
 use crate::host::ipc_client::PluginBridge;
 use crate::protocol::{
     BridgeMessage, ChannelLayout, Features, HostMessage, LoadedPlugin, ParamAddress, ParamId,
-    ParameterInfo, PluginDescriptor, PROTOCOL_VERSION,
+    ParameterInfo, PluginDescriptor, Samples, PROTOCOL_VERSION,
 };
 use crate::protocol::{EditorPresence, PluginClass, SampleFormat, SlabLayout};
 use crate::util::transport::shm::AudioSlab;
@@ -151,7 +151,7 @@ fn handle_with_mock_server(
     let loaded = LoadedPlugin {
         inputs: smallvec![ChannelLayout::Stereo],
         outputs: smallvec![ChannelLayout::Stereo],
-        latency_samples: 0,
+        latency_samples: Samples::ZERO,
         features: Features::EDITOR,
         probed: Features::EDITOR,
     };
@@ -255,7 +255,7 @@ fn handle_with_multi_reply_server(
     let loaded = LoadedPlugin {
         inputs: smallvec![ChannelLayout::Stereo],
         outputs: smallvec![ChannelLayout::Stereo],
-        latency_samples: 0,
+        latency_samples: Samples::ZERO,
         features: Features::EDITOR,
         probed: Features::EDITOR,
     };
@@ -282,7 +282,9 @@ fn trailing_unsolicited_events_dont_poison_next_reply() {
                 BridgeMessage::ParameterList {
                     parameters: vec![ParameterInfo::new(ParamId::new(0), "Vol".to_string())],
                 },
-                BridgeMessage::LatencyChanged { samples: 256 },
+                BridgeMessage::LatencyChanged {
+                    samples: Samples(256),
+                },
                 BridgeMessage::ParameterChanged {
                     index: 7,
                     value: 0.42,
@@ -309,7 +311,7 @@ fn trailing_unsolicited_events_dont_poison_next_reply() {
         let param_seen = Arc::clone(&param_seen);
         bridge.set_listener(Some(Arc::new(move |ev| match ev {
             BridgeEvent::LatencyChanged { samples } => {
-                latency_seen.store(samples, Ordering::Release);
+                latency_seen.store(samples.get(), Ordering::Release);
             }
             BridgeEvent::ParameterChanged { index, value } => {
                 *param_seen.lock() = Some((index as u32, value));

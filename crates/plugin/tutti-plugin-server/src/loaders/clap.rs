@@ -4,8 +4,8 @@ use std::path::Path;
 use tutti_plugin::server::{
     BusChannels, EditorPresence, EditorSize, Features, LoadedPlugin, NoteExpressionChanges,
     ParamAddress, ParameterChanges, ParameterInfo, PluginAudio, PluginClass, PluginDescriptor,
-    PluginEditorHost,
-    PluginError, PluginMeta, PluginParams, PluginResult, PluginState, WindowHandle,
+    PluginEditorHost, PluginError, PluginMeta, PluginParams, PluginResult, PluginState, Samples,
+    WindowHandle,
 };
 use tutti_plugin::server::{ProcessContext, ProcessOutput};
 
@@ -183,7 +183,7 @@ impl ClapInstance {
             let mut loaded_meta = LoadedPlugin {
                 inputs: input_buses,
                 outputs: output_buses,
-                latency_samples: 0,
+                latency_samples: Samples::ZERO,
                 features,
                 probed,
             };
@@ -209,10 +209,10 @@ impl ClapInstance {
             };
 
             // Latency is queryable after activation.
-            loaded_meta.latency_samples = match &inner {
+            loaded_meta.latency_samples = Samples(match &inner {
                 ClapInner::F32(i) => i.get_latency(),
                 ClapInner::F64(i) => i.get_latency(),
-            } as usize;
+            } as usize);
 
             Ok(Self {
                 inner,
@@ -614,7 +614,8 @@ mod tests {
     fn clap_refuses_a_vst2_index() {
         let _lock = crate::test_utils::plugin_load_lock();
         let path = Path::new(CLAP_PLUGIN);
-        let mut instance = ClapInstance::load(path, 44100.0, 512).expect("Failed to load CLAP plugin");
+        let mut instance =
+            ClapInstance::load(path, 44100.0, 512).expect("Failed to load CLAP plugin");
 
         let params = instance.get_parameter_list();
         assert!(!params.is_empty(), "Need at least one parameter");

@@ -85,7 +85,7 @@ pub use param_properties::{
 pub use scratch::RenderScratch;
 pub use types::{
     ChannelLayout, EditorSize, MidiEvent, MidiEventVec, ParameterInfo, PluginInfo, ProcessContext,
-    TimeSignature, TransportInfo, Vst2Category, WindowHandle,
+    Samples, TimeSignature, TransportInfo, Vst2Category, WindowHandle,
 };
 
 // Test-only global allocator for RT-safety regression tests. Panics on

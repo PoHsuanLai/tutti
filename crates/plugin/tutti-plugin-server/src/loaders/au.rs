@@ -9,9 +9,8 @@ use tutti_plugin::server::{
 #[cfg(all(target_os = "macos", feature = "au"))]
 use tutti_plugin::server::{
     EditorSize, ParamAddress, ParamFlags, ParamRange, ParamSteps, ParameterInfo, PluginAudio,
-    PluginEditorHost,
-    PluginMeta, PluginParams, PluginResult, PluginState, ProcessContext, ProcessOutput,
-    WindowHandle,
+    PluginEditorHost, PluginMeta, PluginParams, PluginResult, PluginState, ProcessContext,
+    ProcessOutput, WindowHandle,
 };
 
 use crate::loaders::common::{single_bus, Meta};
@@ -265,7 +264,7 @@ impl AuInstance {
             //
             // No AU registered on macOS 15.6 takes this path (29 of 29 answer),
             // so it is the third-party case, unmeasured by construction.
-            let latency = inner.get_latency().unwrap_or(Samples::ZERO).get();
+            let latency = inner.get_latency().unwrap_or(Samples::ZERO);
 
             let descriptor = PluginDescriptor {
                 id: format!(

@@ -283,7 +283,9 @@ impl PluginClient {
             sample_rate,
         )?;
 
-        let latency = Arc::new(AtomicUsize::new(server.loaded.latency_samples));
+        // `.get()` because the cell is an `AtomicUsize` — an atomic needs a
+        // primitive, so the unit type stops here rather than at a call site.
+        let latency = Arc::new(AtomicUsize::new(server.loaded.latency_samples.get()));
         // Sized to what can actually cross the boundary, matching the slab —
         // `slab_layout_for` clamps to `BATCH_SIZE` for the same reason (fundsp
         // never hands a node more than one block). Passing the raw
@@ -308,7 +310,9 @@ impl PluginClient {
         let listener_invalidate_sink = invalidate_sink.clone();
         bridge.set_listener(Some(Arc::new(move |ev| match ev {
             BridgeEvent::LatencyChanged { samples } => {
-                listener_latency.store(samples, Ordering::Release);
+                // The atomic is the terminus: `AtomicUsize` needs a
+                // primitive, so the unit type stops here.
+                listener_latency.store(samples.get(), Ordering::Release);
                 listener_invalidate_sink.fire(PluginInvalidation::Latency { samples });
             }
             BridgeEvent::ParameterChanged { index, value } => {

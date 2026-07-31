@@ -27,10 +27,9 @@ pub use crate::protocol::{
     MidiEvent, MidiEventVec, NoteExpressionChanges, NoteExpressionIntChanges,
     NoteExpressionIntValue, NoteExpressionTextChanges, NoteExpressionTextValue, NoteExpressionType,
     NoteExpressionValue, ParamAddress, ParamFlags, ParamId, ParamRange, ParamSteps,
-    ParameterChanges, ParameterInfo,
-    ParameterPoint, ParameterQueue, PluginClass, PluginDescriptor, ProcessAudioData, SampleFormat,
-    ScaleChanges, ScaleValue, SlabLayout, TimeSignature, TransportInfo, Vst2Category,
-    MIDI_STACK_CAPACITY, PROTOCOL_VERSION,
+    ParameterChanges, ParameterInfo, ParameterPoint, ParameterQueue, PluginClass, PluginDescriptor,
+    ProcessAudioData, SampleFormat, Samples, ScaleChanges, ScaleValue, SlabLayout, TimeSignature,
+    TransportInfo, Vst2Category, MIDI_STACK_CAPACITY, PROTOCOL_VERSION,
 };
 pub use crate::util::config::BridgeConfig;
 pub use crate::util::transport::shm::{AudioSlab, RING_SLOTS};

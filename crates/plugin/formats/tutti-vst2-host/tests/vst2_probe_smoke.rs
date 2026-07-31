@@ -7,7 +7,7 @@
 use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard};
 
-use tutti_vst2_host::{MidiEvent, ProcessContext, RenderScratch, Vst2Instance};
+use tutti_vst2_host::{MidiEvent, ProcessContext, RenderScratch, Samples, Vst2Instance};
 // From the probe's rlib, not a hand-written mirror that can drift out of
 // layout agreement with the cdylib the host loads.
 use tutti_vst2_test_plugin::{channel_tag, ProcessCapture, ProcessEntry, PROBE_UNIQUE_ID};
@@ -100,7 +100,7 @@ fn host_loads_probe_and_reports_declared_metadata() {
     assert_eq!(meta.num_inputs.count(), 2);
     assert_eq!(meta.num_outputs.count(), 2);
     assert_eq!(instance.parameters().len(), 4);
-    assert_eq!(meta.latency_samples, 0);
+    assert_eq!(meta.latency_samples, Samples::ZERO);
 }
 
 #[test]

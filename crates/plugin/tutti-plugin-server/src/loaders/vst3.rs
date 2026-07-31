@@ -6,9 +6,9 @@ use tutti_plugin::server::{
     AudioBufferMut, AutomationMode, BusChannels, ChannelLayout, ChordChanges, EditorPresence,
     EditorSize, Features, LoadedPlugin, NoteExpressionChanges, NoteExpressionIntChanges,
     NoteExpressionTextChanges, ParamAddress, ParamFlags, ParamRange, ParamSteps, ParameterInfo,
-    PluginAudio,
-    PluginClass, PluginDescriptor, PluginEditorHost, PluginError, PluginMeta, PluginParams,
-    PluginResult, PluginState, ProcessContext, ProcessOutput, ScaleChanges, WindowHandle,
+    PluginAudio, PluginClass, PluginDescriptor, PluginEditorHost, PluginError, PluginMeta,
+    PluginParams, PluginResult, PluginState, ProcessContext, ProcessOutput, Samples, ScaleChanges,
+    WindowHandle,
 };
 use tutti_plugin::{BridgeError, LoadStage, Result};
 
@@ -69,7 +69,7 @@ struct ReloadParams {
 pub struct RestartChanges {
     /// New latency in samples (re-read because `kLatencyChanged` fired). Push
     /// to PDC.
-    pub latency: Option<usize>,
+    pub latency: Option<Samples>,
     /// `kParamValuesChanged` — the client should re-read parameter values.
     pub param_values_changed: bool,
     /// `kParamTitlesChanged` — the client should re-pull the parameter list.
@@ -138,10 +138,10 @@ fn build_inner(p: &ReloadParams) -> Result<(VstInner, Meta)> {
     };
 
     let actually_f64 = matches!(inner, VstInner::F64(_));
-    let latency = match &inner {
+    let latency = Samples(match &inner {
         VstInner::F32(i) => i.read_latency_samples(),
         VstInner::F64(i) => i.read_latency_samples(),
-    } as usize;
+    } as usize);
     let descriptor = vst3_descriptor(&info, EditorPresence::measured(has_editor));
 
     let mut features = Features::empty();
@@ -293,7 +293,8 @@ impl Vst3Instance {
         let mut changes = RestartChanges::default();
 
         if restart.latency_changed {
-            let samples = vst_dispatch_mut!(self, inner => inner.read_latency_samples()) as usize;
+            let samples =
+                Samples(vst_dispatch_mut!(self, inner => inner.read_latency_samples()) as usize);
             self.meta.loaded.latency_samples = samples;
             changes.latency = Some(samples);
         }

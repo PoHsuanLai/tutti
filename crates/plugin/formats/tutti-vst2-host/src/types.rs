@@ -4,6 +4,8 @@
 //! VST2-specific shapes (`PluginInfo` with `unique_id`-derived id,
 //! `ParameterInfo` with normalized-only values, `ProcessContext`).
 
+pub use tutti_plugin_types::Samples;
+
 pub use tutti_plugin_types::{
     ChannelLayout, EditorSize, MidiEvent, TimeSignature, TransportInfo, WindowHandle,
 };
@@ -28,7 +30,10 @@ pub struct PluginInfo {
     pub emits_midi: bool,
     pub has_editor: bool,
     /// Reported initial latency, in samples.
-    pub latency_samples: usize,
+    ///
+    /// `AEffect::initial_delay` is an `i32`; a negative one is not a latency,
+    /// so it is clamped to zero at the load site rather than carried.
+    pub latency_samples: Samples,
     /// `true` if the plugin advertised f64 precision support — the `vst`
     /// crate processes f32 only regardless, so this is informational.
     pub supports_f64: bool,

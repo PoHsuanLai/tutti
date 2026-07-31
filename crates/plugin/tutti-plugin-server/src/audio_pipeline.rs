@@ -13,7 +13,7 @@
 use tutti_plugin::server::{
     AudioBufferMut, AudioSlab, ChordChanges, ExpressiveContext, Features, MidiEvent, MidiEventVec,
     NoteExpressionChanges, NoteExpressionIntChanges, NoteExpressionTextChanges, ParameterChanges,
-    PluginInstance, ProcessContext, SampleFormat, ScaleChanges, TransportInfo,
+    PluginInstance, ProcessContext, SampleFormat, Samples, ScaleChanges, TransportInfo,
 };
 use tutti_plugin::Result;
 
@@ -654,7 +654,7 @@ mod tests {
             loaded: LoadedPlugin {
                 inputs: inputs.iter().map(|&c| ChannelLayout::from(c)).collect(),
                 outputs: outputs.iter().map(|&c| ChannelLayout::from(c)).collect(),
-                latency_samples: 0,
+                latency_samples: Samples::ZERO,
                 // This fixture is about bus widths; no capability is claimed.
                 features: Features::empty(),
                 probed: Features::empty(),

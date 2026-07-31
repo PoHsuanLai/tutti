@@ -12,6 +12,8 @@
 
 use smallvec::SmallVec;
 
+use tutti_types::Samples;
+
 use crate::{ChannelLayout, FeatureReport, Features};
 
 #[cfg(feature = "serde")]
@@ -41,7 +43,13 @@ pub struct LoadedPlugin {
     /// Reported initial processing latency, in samples (for PDC). The numeric
     /// half — the `Features::latency` presence bit is derived from this
     /// (`latency()`), not stored separately.
-    pub latency_samples: usize,
+    ///
+    /// [`Samples`] rather than a bare `usize`: AU already reports latency as
+    /// one (its ABI gives seconds, so `tutti-au-host` converts and returns the
+    /// unit type), and this field used to flatten it back with `.get()` at the
+    /// loader. `Samples` is `#[serde(transparent)]`, so this is `512` on the
+    /// wire either way and host and subprocess upgrade independently.
+    pub latency_samples: Samples,
     /// Capability flag set the plugin reported at load. The on/off half;
     /// numeric wiring stays in `inputs`/`outputs`/`latency_samples` above.
     /// (`f64` support was formerly the standalone `supports_f64` bool — it is
@@ -91,7 +99,7 @@ impl LoadedPlugin {
     /// `true` if the plugin reports non-zero processing latency (participates in
     /// PDC). Derived from `latency_samples`.
     pub fn latency(&self) -> bool {
-        self.latency_samples > 0
+        self.latency_samples > Samples::ZERO
     }
 
     /// `Some(true)`/`Some(false)` when the loader probed `f`, [`None`] when
@@ -121,13 +129,21 @@ mod tests {
             // stereo main + mono sidechain
             inputs: SmallVec::from_slice(&[ChannelLayout::Stereo, ChannelLayout::Mono]),
             outputs: SmallVec::from_slice(&[ChannelLayout::Stereo]),
-            latency_samples: 128,
+            latency_samples: Samples(128),
             features: Features::F64_AUDIO | Features::MIDI_IN,
             probed: Features::F64_AUDIO | Features::MIDI_IN | Features::EDITOR,
         };
         let bytes = bincode::serialize(&loaded).unwrap();
         let back: LoadedPlugin = bincode::deserialize(&bytes).unwrap();
         assert_eq!(back, loaded);
+
+        // `Samples` is `#[serde(transparent)]`, so typing this field cost no
+        // wire bytes — a peer built against the bare `usize` decodes the same
+        // payload. Pinned here because that is the whole reason the migration
+        // needed no protocol bump.
+        let as_usize = bincode::serialize(&128usize).unwrap();
+        let as_samples = bincode::serialize(&Samples(128)).unwrap();
+        assert_eq!(as_samples, as_usize);
         assert_eq!(back.total_inputs(), 3);
         assert_eq!(back.total_outputs(), 2);
         assert!(back.features.contains(Features::F64_AUDIO));

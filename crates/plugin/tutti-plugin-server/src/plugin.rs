@@ -11,7 +11,7 @@
 
 use std::path::Path;
 use tutti_plugin::server::{
-    Features, LoadedPlugin, PluginDescriptor, PluginInstance, SampleFormat,
+    Features, LoadedPlugin, PluginDescriptor, PluginInstance, SampleFormat, Samples,
 };
 use tutti_plugin::{BridgeError, LoadStage, Result};
 
@@ -49,7 +49,7 @@ pub(crate) enum AsyncEvent {
         value: f32,
     },
     LatencyChanged {
-        samples: usize,
+        samples: Samples,
     },
     /// Plugin changed its own parameter values at runtime (e.g. preset load).
     /// The client should re-read parameter values.
@@ -253,7 +253,7 @@ impl Plugin {
             Plugin::Clap(clap) => {
                 if clap.poll_latency_changed() {
                     out.push(AsyncEvent::LatencyChanged {
-                        samples: clap.get_latency() as usize,
+                        samples: Samples(clap.get_latency() as usize),
                     });
                 }
             }

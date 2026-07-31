@@ -28,7 +28,7 @@
 //! de-zippered direction vector).
 
 use hrtf::{HrirSphere, HrtfContext, HrtfProcessor, Vec3};
-use tutti_core::{Azimuth, Elevation, SampleRate};
+use tutti_core::{Azimuth, Elevation, Radians, SampleRate};
 
 use super::smoothing::{ExponentialSmoother, DEFAULT_POSITION_SMOOTH_TIME};
 
@@ -230,8 +230,7 @@ impl PositionSmoother {
         // the wrong way around the head.
         let az = self.azimuth.process_angle(Azimuth(self.target_azimuth));
         let el = self.elevation.process(Elevation(self.target_elevation));
-        // Types stop at the sphere lookup — it takes bare degrees.
-        direction_from_degrees(az.get(), el.get())
+        direction_from_degrees(az, el)
     }
 }
 
@@ -349,10 +348,15 @@ fn forward() -> Vec3 {
 ///
 /// Convention (matching the rest of `spatial`): azimuth 0 = front, +90 = left;
 /// elevation 0 = ear level, +90 = up. Right-handed output frame.
+///
+/// Takes the typed angles rather than two bare `f32`s: they were adjacent and
+/// same-typed, so transposing them compiled and put the source somewhere else
+/// on the sphere. `From<Azimuth>`/`From<Elevation> for Radians` are the
+/// sanctioned converters, which is what `f32::to_radians` was duplicating here.
 #[inline]
-fn direction_from_degrees(azimuth_deg: f32, elevation_deg: f32) -> Vec3 {
-    let az = azimuth_deg.to_radians();
-    let el = elevation_deg.to_radians();
+fn direction_from_degrees(azimuth: Azimuth, elevation: Elevation) -> Vec3 {
+    let az = Radians::from(azimuth);
+    let el = Radians::from(elevation);
     let cos_el = el.cos();
     Vec3 {
         // +90° azimuth (left) → -x; front (0°) → -z.

@@ -23,6 +23,7 @@ use crate::protocol::ParamAddress;
 use crate::util::config::BridgeConfig;
 use std::collections::HashMap;
 use std::path::PathBuf;
+use tutti_core::SampleRate;
 
 /// Starts a [`PluginBuilder`] for a VST3 plugin bundle.
 ///
@@ -31,20 +32,20 @@ use std::path::PathBuf;
 /// let id = engine.graph.add(unit);
 /// ```
 #[cfg(feature = "vst3")]
-pub fn vst3(sample_rate: f64, path: impl Into<PathBuf>) -> PluginBuilder {
-    PluginBuilder::new(sample_rate, path.into())
+pub fn vst3(sample_rate: impl Into<SampleRate>, path: impl Into<PathBuf>) -> PluginBuilder {
+    PluginBuilder::new(sample_rate.into(), path.into())
 }
 
 /// Starts a [`PluginBuilder`] for a CLAP plugin binary.
 #[cfg(feature = "clap")]
-pub fn clap(sample_rate: f64, path: impl Into<PathBuf>) -> PluginBuilder {
-    PluginBuilder::new(sample_rate, path.into())
+pub fn clap(sample_rate: impl Into<SampleRate>, path: impl Into<PathBuf>) -> PluginBuilder {
+    PluginBuilder::new(sample_rate.into(), path.into())
 }
 
 /// Starts a [`PluginBuilder`] for an Audio Unit `.component` bundle.
 #[cfg(feature = "au")]
-pub fn au(sample_rate: f64, path: impl Into<PathBuf>) -> PluginBuilder {
-    PluginBuilder::new(sample_rate, path.into())
+pub fn au(sample_rate: impl Into<SampleRate>, path: impl Into<PathBuf>) -> PluginBuilder {
+    PluginBuilder::new(sample_rate.into(), path.into())
 }
 
 /// Starts a [`PluginBuilder`] for a VST2 plugin bundle (`.vst` / `.dll` / `.so`).
@@ -52,8 +53,8 @@ pub fn au(sample_rate: f64, path: impl Into<PathBuf>) -> PluginBuilder {
 /// VST2 always runs entirely in the host process (its `AEffect` fuses the
 /// editor and audio processor), so the editor is fully supported.
 #[cfg(feature = "vst2")]
-pub fn vst2(sample_rate: f64, path: impl Into<PathBuf>) -> PluginBuilder {
-    PluginBuilder::new(sample_rate, path.into())
+pub fn vst2(sample_rate: impl Into<SampleRate>, path: impl Into<PathBuf>) -> PluginBuilder {
+    PluginBuilder::new(sample_rate.into(), path.into())
 }
 
 /// Fluent builder for out-of-process audio plugin hosts.
@@ -65,14 +66,14 @@ pub fn vst2(sample_rate: f64, path: impl Into<PathBuf>) -> PluginBuilder {
 /// [`PluginClient::new`] await so callers don't have to be in an async
 /// context.
 pub struct PluginBuilder {
-    sample_rate: f64,
+    sample_rate: SampleRate,
     path: PathBuf,
     params: HashMap<String, f32>,
 }
 
 impl PluginBuilder {
     #[cfg(any(feature = "vst3", feature = "clap", feature = "au", feature = "vst2"))]
-    fn new(sample_rate: f64, path: PathBuf) -> Self {
+    fn new(sample_rate: SampleRate, path: PathBuf) -> Self {
         Self {
             sample_rate,
             path,
@@ -105,11 +106,11 @@ impl PluginBuilder {
 
 #[cfg(feature = "vst2")]
 fn load_plugin_vst2_in_process(
-    sample_rate: f64,
+    sample_rate: SampleRate,
     path: PathBuf,
     params: &HashMap<String, f32>,
 ) -> Result<(Box<dyn tutti_core::AudioUnit>, PluginHandle)> {
-    let (unit, handle) = crate::format::vst2_in_process::load(&path, sample_rate)?;
+    let (unit, handle) = crate::format::vst2_in_process::load(&path, sample_rate.get())?;
     for (name, value) in params {
         // VST2 addresses parameters by position, so a config key names an index.
         if let Ok(index) = name.parse::<i32>() {
@@ -122,7 +123,7 @@ fn load_plugin_vst2_in_process(
 /// Load a plugin out-of-process via `tutti-plugin-server`.
 /// The plugin runs in a child process; crashes are isolated.
 fn load_plugin(
-    sample_rate: f64,
+    sample_rate: SampleRate,
     path: PathBuf,
     params: &HashMap<String, f32>,
 ) -> Result<(Box<dyn tutti_core::AudioUnit>, PluginHandle)> {

@@ -419,12 +419,14 @@ fn an_absurd_length_prefix_does_not_hang_or_exhaust_memory() {
     });
 
     let bridge = Arc::clone(&mock.bridge);
-    let (value, elapsed) = call_within(move || bridge.parameter(ParamAddress::Opaque(ParamId::new(1)))).unwrap_or_else(|waited| {
-        panic!(
-            "a 4 GiB length prefix left the host blocked after {waited:?} — it \
+    let (value, elapsed) =
+        call_within(move || bridge.parameter(ParamAddress::Opaque(ParamId::new(1))))
+            .unwrap_or_else(|waited| {
+                panic!(
+                    "a 4 GiB length prefix left the host blocked after {waited:?} — it \
              is allocating on an unvalidated wire length"
-        )
-    });
+                )
+            });
     assert_eq!(
         value, None,
         "the host returned a parameter value from a frame it could not have \
@@ -480,12 +482,14 @@ fn a_truncated_body_is_not_mistaken_for_a_complete_message() {
     });
 
     let bridge = Arc::clone(&mock.bridge);
-    let (value, elapsed) = call_within(move || bridge.parameter(ParamAddress::Opaque(ParamId::new(1)))).unwrap_or_else(|waited| {
-        panic!(
-            "a truncated frame left the host blocked after {waited:?}, waiting \
+    let (value, elapsed) =
+        call_within(move || bridge.parameter(ParamAddress::Opaque(ParamId::new(1))))
+            .unwrap_or_else(|waited| {
+                panic!(
+                    "a truncated frame left the host blocked after {waited:?}, waiting \
              for a body the server never finished sending"
-        )
-    });
+                )
+            });
     assert_eq!(
         value, None,
         "a truncated frame produced a value (after {elapsed:?})"
@@ -527,12 +531,14 @@ fn a_silent_server_is_bounded_by_the_timeout() {
     let mock = MockServer::start("silent", |_| Action::Silent);
 
     let bridge = Arc::clone(&mock.bridge);
-    let (value, elapsed) = call_within(move || bridge.parameter(ParamAddress::Opaque(ParamId::new(1)))).unwrap_or_else(|waited| {
-        panic!(
-            "a server that never replies left the caller blocked for {waited:?} \
+    let (value, elapsed) =
+        call_within(move || bridge.parameter(ParamAddress::Opaque(ParamId::new(1))))
+            .unwrap_or_else(|waited| {
+                panic!(
+                    "a server that never replies left the caller blocked for {waited:?} \
              — the request timeout is not bounding this path"
-        )
-    });
+                )
+            });
     assert_eq!(
         value, None,
         "a silent server produced a value (after {elapsed:?})"

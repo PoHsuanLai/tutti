@@ -19,6 +19,7 @@ use atomic_float::AtomicF64;
 use std::sync::atomic::Ordering;
 use tutti_core::meter::{Meter, MeterMap};
 use tutti_core::transport::TransportState;
+use tutti_core::SampleRate;
 
 use crate::host::node::input_slot::{BlockCtx, BlockInput};
 use crate::protocol::TransportInfo;
@@ -50,19 +51,22 @@ impl TransportSource {
     pub fn new(
         reader: Arc<dyn TransportState>,
         meter: Arc<tutti_core::RtPublish<MeterMap>>,
-        sample_rate: f64,
+        sample_rate: impl Into<SampleRate>,
     ) -> Self {
         Self {
             reader,
             meter,
-            sample_rate: Arc::new(AtomicF64::new(sample_rate)),
+            // `.get()` at the atomic: an `AtomicF64` needs a primitive, the
+            // same terminus the latency cell has.
+            sample_rate: Arc::new(AtomicF64::new(sample_rate.into().get())),
         }
     }
 
     /// Update the stamped sample rate live (device / rate switch). Reaches the
     /// running box because the atomic is shared across clones.
-    pub fn set_sample_rate(&self, sample_rate: f64) {
-        self.sample_rate.store(sample_rate, Ordering::Release);
+    pub fn set_sample_rate(&self, sample_rate: impl Into<SampleRate>) {
+        self.sample_rate
+            .store(sample_rate.into().get(), Ordering::Release);
     }
 
     /// Read the live transport into `out`, overwriting it. Mirrors the former

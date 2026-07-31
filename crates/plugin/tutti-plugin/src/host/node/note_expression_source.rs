@@ -19,6 +19,7 @@
 use std::sync::Arc;
 
 use tutti_core::transport::Timeline;
+use tutti_core::SampleRate;
 
 use crate::host::node::input_slot::{BlockCtx, BlockInput, BlockReset};
 use crate::protocol::NoteExpressionChanges;
@@ -32,15 +33,19 @@ pub struct NoteExpressionSource {
     // change. Read once lane storage exists.
     #[allow(dead_code)]
     transport: Arc<dyn Timeline>,
+    /// Typed because the reader this is held for will hand it to
+    /// `BeatCursor::new`, which takes `impl Into<SampleRate>` — the same reason
+    /// `ParamAutomationSource` stores one. This field crosses no boundary at
+    /// all: no ABI, no wire, no fundsp call.
     #[allow(dead_code)]
-    sample_rate: f64,
+    sample_rate: SampleRate,
 }
 
 impl NoteExpressionSource {
-    pub fn new(transport: Arc<dyn Timeline>, sample_rate: f64) -> Self {
+    pub fn new(transport: Arc<dyn Timeline>, sample_rate: impl Into<SampleRate>) -> Self {
         Self {
             transport,
-            sample_rate,
+            sample_rate: sample_rate.into(),
         }
     }
 

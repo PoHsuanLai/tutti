@@ -59,7 +59,7 @@ use batcher::{Batcher, PIPELINE_LATENCY_FRAMES};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use tutti_core::Samples;
+use tutti_core::{SampleRate, Samples};
 
 /// Cheap to clone: clones share `bridge`, `latency`, and `process_guard`
 /// (all Arc) but get independent `io` and `midi` state (fundsp clones
@@ -90,7 +90,7 @@ pub struct PluginClient {
     inputs: PluginInputs,
     /// Last-known sample rate, used to stamp a freshly-installed
     /// [`TransportSource`]. Updated by `AudioUnit::set_sample_rate`.
-    sample_rate: f64,
+    sample_rate: SampleRate,
 }
 
 /// The per-block inputs this plugin consumes, each an [`InputSlot`] sharing its
@@ -251,7 +251,7 @@ impl PluginClient {
     /// the `AudioUnit::set_sample_rate` impls. Reaches the running box because
     /// the source's rate is a shared atomic; a no-op when no source is installed
     /// (it's installed later with the correct rate by the host).
-    pub(super) fn set_transport_sample_rate(&mut self, sample_rate: f64) {
+    pub(super) fn set_transport_sample_rate(&mut self, sample_rate: SampleRate) {
         self.sample_rate = sample_rate;
         if let Some(src) = self.inputs.transport.source_ref().load().as_ref() {
             src.set_sample_rate(sample_rate);
@@ -265,8 +265,14 @@ impl PluginClient {
     /// `Arc<ProcessGuard>` shared with any `PluginHandle` built from
     /// this client; the subprocess dies when both the fundsp graph has
     /// released the AudioUnit and all handles have dropped.
-    pub fn new(config: BridgeConfig, plugin_path: PathBuf, sample_rate: f64) -> Result<Self> {
-        let server = subprocess::launch(&config, &plugin_path, sample_rate)?;
+    pub fn new(
+        config: BridgeConfig,
+        plugin_path: PathBuf,
+        sample_rate: impl Into<SampleRate>,
+    ) -> Result<Self> {
+        let sample_rate = sample_rate.into();
+        // `.get()` at the wire: `launch` hands the rate to the subprocess.
+        let server = subprocess::launch(&config, &plugin_path, sample_rate.get())?;
 
         // Report the FULL input width (main + sidechain/aux input buses) so a
         // fundsp `connect(src, 0, target, 1)` lands on a real sidechain port;
@@ -281,7 +287,7 @@ impl PluginClient {
             config.socket_path.clone(),
             server.audio_buffer,
             plugin_path,
-            sample_rate,
+            sample_rate.get(),
         )?;
 
         // `.get()` because the cell is an `AtomicUsize` — an atomic needs a

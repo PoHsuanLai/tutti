@@ -192,7 +192,7 @@ mod tests {
         let unknown = SampleFacts {
             frames: None,
             sample_rate: SampleRate::from(48_000u32),
-            layout: ChannelLayout::Stereo,
+            layout: ChannelLayout::STEREO,
             streamable: false,
         };
         assert_eq!(unknown.frames_or_zero(), Samples(0));

@@ -156,7 +156,7 @@ mod tests {
     #[test]
     fn voice_width_clamps_to_what_the_graph_can_carry() {
         // A stereo file stays stereo.
-        assert_eq!(voice_width(ChannelLayout::Stereo).count(), 2);
+        assert_eq!(voice_width(ChannelLayout::STEREO).count(), 2);
         // Wider than the sampler's ceiling comes back at the ceiling, not
         // truncated silently downstream at the root's fold.
         let absurd = ChannelLayout::from(64usize);
@@ -174,7 +174,7 @@ mod tests {
     #[test]
     fn a_memory_voice_carries_no_butler_channel() {
         let wave = Arc::new(Wave::with_capacity(2, 48_000.0, 128));
-        let v = memory_voice(wave, ChannelLayout::Stereo, Playback::default());
+        let v = memory_voice(wave, ChannelLayout::STEREO, Playback::default());
         assert!(
             v.channel_index.is_none(),
             "the butler channel is a disk-tier concept; `Voice`'s doc calls it \

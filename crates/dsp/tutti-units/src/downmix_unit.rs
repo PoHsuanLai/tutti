@@ -34,7 +34,7 @@
 //! `tutti_types::downmix`, so this node and the root fold share it and the
 //! coefficients stay singular.
 
-use tutti_core::{AudioUnit, BufferMut, BufferRef, ChannelLayout, Signal, SignalFrame};
+use tutti_core::{AudioUnit, BufferMut, BufferRef, ChannelLayout, Signal, SignalFrame, Tail};
 use tutti_types::downmix::fold_frame;
 
 /// Folds an `src`-wide signal into a `dst`-wide one through the shared ITU /
@@ -153,6 +153,11 @@ impl AudioUnit for DownmixUnit {
 
     fn as_any_mut(&mut self) -> &mut dyn core::any::Any {
         self
+    }
+
+    /// A downmix is a per-frame matrix, so it stops with its input.
+    fn tail(&mut self) -> Tail {
+        Tail::None
     }
 
     fn footprint(&self) -> usize {

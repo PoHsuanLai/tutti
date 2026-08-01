@@ -260,6 +260,47 @@ fn an_unreporting_graph_has_an_unknown_tail_not_a_zero_one() {
     assert_eq!(reported.samples(), None);
 }
 
+/// Resolving spends a graph's tail against a caller-chosen bound.
+///
+/// The two `None` cases of `samples()` resolve differently on purpose. An
+/// unbounded graph takes the cap, because it genuinely never falls silent and
+/// the cap is where the caller said to stop. A partly-unknown graph takes what
+/// the nodes that answered reported: a convolver reporting 4095 frames beside
+/// one silent `dc` source is a 0.09-second tail, and spending the cap there
+/// would append eight seconds of silence to the file.
+#[test]
+fn resolving_a_partly_unknown_graph_does_not_spend_the_cap() {
+    let ir = vec![0.5f32; 4096];
+    let mut n = tutti_core::dsp::Net::new(0, 1);
+    let src = n.push(Box::new(dc(0.5)));
+    let conv = n.push(Box::new(tutti_units::ConvolverNode::with_ir(&ir)));
+    n.connect(src, 0, conv, 0);
+    n.pipe_output(conv);
+
+    let reported = tutti_export::reported_tail(&n);
+    let cap = tutti_types::Samples(384_000);
+    assert_eq!(reported.samples(), None, "`dc` never learned to report");
+    assert_eq!(
+        reported.resolve(cap),
+        tutti_types::Samples(4095),
+        "the convolver's figure, not the cap"
+    );
+}
+
+/// A stateless node declares it has no tail, rather than staying silent about
+/// it.
+///
+/// This is what makes the mechanism usable: one unreporting node on the output
+/// path makes the whole graph's tail unspendable, so declaring `None` on the
+/// nodes that genuinely have none is load-bearing, not cosmetic.
+#[test]
+fn a_stateless_node_reports_no_tail_rather_than_an_unknown_one() {
+    use tutti_core::AudioUnit;
+
+    let mut dist = tutti_units::DistortionNode::new(tutti_units::ShapeKind::Tanh, 1.0);
+    assert_eq!(dist.tail(), tutti_types::Tail::None);
+}
+
 /// `render_to_buffers` reports the rate its samples are actually at, and gives
 /// back one plane per channel rather than a stereo pair.
 #[test]

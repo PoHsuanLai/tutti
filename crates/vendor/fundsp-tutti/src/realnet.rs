@@ -9,6 +9,7 @@ use super::signal::*;
 use super::*;
 use alloc::boxed::Box;
 use alloc::collections::VecDeque;
+use tutti_types::Tail;
 
 /// Message from frontend to backend.
 #[derive(Default, Clone)]
@@ -198,6 +199,14 @@ impl AudioUnit for NetBackend {
     fn route(&mut self, input: &SignalFrame, frequency: f64) -> SignalFrame {
         self.handle_messages();
         self.net.route(input, frequency)
+    }
+
+    /// The backend renders the same graph as its frontend, so it rings for the
+    /// same length. Forwarded rather than defaulted: this is the unit the audio
+    /// thread actually drives, so a `Unknown` here would make every committed
+    /// graph unreportable.
+    fn tail(&mut self) -> Tail {
+        self.net.tail()
     }
 
     fn footprint(&self) -> usize {

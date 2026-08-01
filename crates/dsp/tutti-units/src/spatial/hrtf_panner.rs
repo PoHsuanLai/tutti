@@ -261,6 +261,17 @@ impl HrtfBinaural {
         })
     }
 
+    /// Frames that outlive a silent input.
+    ///
+    /// Two stages hold audio, and both are fixed sizes rather than estimates:
+    /// the [`FrameBridge`] accumulates a whole `FRAME_LEN` frame before it can
+    /// process, and [`OverlapTails`] carries `BLOCK_LEN` samples of convolution
+    /// tail into the next frame. HRTF rendering is FIR convolution against a
+    /// measured HRIR, so as with any FIR the ring-out is exact.
+    pub(crate) fn ring_out(&self) -> usize {
+        FRAME_LEN + BLOCK_LEN
+    }
+
     /// Lock-free-ish position update (called from the audio path via the node).
     #[inline]
     pub(crate) fn set_position(&mut self, azimuth: Azimuth, elevation: Elevation) {

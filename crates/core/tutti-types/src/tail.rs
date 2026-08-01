@@ -138,6 +138,38 @@ impl GraphTail {
     pub const fn unknown_nodes(self) -> usize {
         self.unknown_nodes
     }
+
+    /// A frame count to render, given where the caller has chosen to stop.
+    ///
+    /// [`samples`](Self::samples) refuses to answer for a graph that never
+    /// decays or one that did not fully report, because neither has a frame
+    /// count. This spends that refusal against a caller-supplied bound, so a
+    /// render always gets a number and the number the caller chose is visible in
+    /// the call.
+    ///
+    /// `cap` is an argument rather than a default because there is no figure the
+    /// engine could pick: how long to let an infinite reverb ring before cutting
+    /// it is a decision about the *output*, not a property of the graph.
+    ///
+    /// **The two `None` cases resolve differently, because they mean opposite
+    /// things.** Unbounded is spent at the cap: the graph genuinely never falls
+    /// silent, so the cap is where the caller said to stop. A partly-unknown
+    /// graph is spent at [`known`](Self::known), clamped by the cap: the nodes
+    /// that *did* answer are evidence, and a node that said nothing is far more
+    /// often one with no tail than one with a longer tail than everything
+    /// measured. Capping an unknown graph would append silence — a convolver
+    /// reporting 4 095 frames beside one node that stayed quiet is a 0.09-second
+    /// tail, not an eight-second one.
+    ///
+    /// ```ignore
+    /// let tail = reported_tail(&net).resolve(Seconds(8.0).to_samples(rate));
+    /// ```
+    pub fn resolve(self, cap: Samples) -> Samples {
+        if self.unbounded {
+            return cap;
+        }
+        self.known.min(cap)
+    }
 }
 
 /// The tail `g` reports: the longest additive path from any node to an output.
@@ -505,6 +537,64 @@ mod tests {
         };
         // Leg A: 1000 + 2000 = 3000. Leg B: 2500. The max is 3000.
         assert_eq!(graph_tail(&g).samples(), Some(Samples(3000)));
+    }
+
+    /// A graph that never decays is spent at exactly the cap: that is what the
+    /// caller chose it for.
+    #[test]
+    fn resolving_an_unbounded_graph_uses_the_cap() {
+        let g = Toy {
+            nodes: vec![(Tail::None, vec![]), (Tail::Unbounded, vec![Some(0)])],
+            outputs: vec![Some(1)],
+        };
+        let cap = Samples(384_000);
+        assert_eq!(graph_tail(&g).resolve(cap), cap);
+    }
+
+    /// A partly-unknown graph resolves to what the nodes that answered reported,
+    /// **not** to the cap.
+    ///
+    /// The two `None` cases of `samples()` mean opposite things, so collapsing
+    /// them onto the cap would append silence: a convolver reporting 3000 frames
+    /// beside one silent node is a 3000-frame tail, and rendering the full cap
+    /// would write eight seconds of nothing after it.
+    #[test]
+    fn resolving_an_unknown_graph_uses_what_was_reported() {
+        let g = Toy {
+            nodes: vec![(Tail::Unknown, vec![]), (finite(3000), vec![Some(0)])],
+            outputs: vec![Some(1)],
+        };
+        let t = graph_tail(&g);
+        assert_eq!(t.samples(), None, "it cannot be spent without a decision");
+        assert_eq!(
+            t.resolve(Samples(384_000)),
+            Samples(3000),
+            "but the decision is not to believe the cap over the evidence"
+        );
+    }
+
+    /// The cap bounds a reported tail as well as an unbounded one — a node that
+    /// answers with more than the caller will render is still cut at the cap.
+    #[test]
+    fn the_cap_bounds_a_reported_tail_too() {
+        let g = Toy {
+            nodes: vec![(Tail::None, vec![]), (finite(100_000), vec![Some(0)])],
+            outputs: vec![Some(1)],
+        };
+        assert_eq!(graph_tail(&g).resolve(Samples(48_000)), Samples(48_000));
+    }
+
+    /// A fully-reported graph resolves to its own figure, untouched by a cap it
+    /// does not reach.
+    #[test]
+    fn resolving_a_known_graph_ignores_a_larger_cap() {
+        let g = Toy {
+            nodes: vec![(Tail::None, vec![]), (finite(3000), vec![Some(0)])],
+            outputs: vec![Some(1)],
+        };
+        let t = graph_tail(&g);
+        assert_eq!(t.samples(), Some(Samples(3000)));
+        assert_eq!(t.resolve(Samples(384_000)), Samples(3000));
     }
 
     /// An empty graph has no tail rather than an unknown one.

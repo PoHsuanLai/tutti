@@ -7,7 +7,7 @@ use tutti_core::{
 use super::envelope::EnvelopeFollower;
 use super::utils::{amplitude_to_db, compute_limiter_gain, db_to_amplitude, smooth_envelope};
 use crate::buffer::{CircularBuffer, MonotonicMinDeque};
-use tutti_core::{Db, Param, SampleRate, Seconds};
+use tutti_core::{Db, Param, SampleRate, Samples, Seconds, Tail};
 
 /// Lookahead ring buffers + sliding-window-minimum tracker for the limiter.
 /// Split out so `LimiterNode` reads as a list of parameters plus a lookahead
@@ -37,6 +37,15 @@ impl LookaheadRing {
 
     fn resize(&mut self, lookahead_samples: usize) {
         *self = Self::new(self.buffers.len(), lookahead_samples);
+    }
+
+    /// Frames still held when the input stops.
+    ///
+    /// The ring delays by `lookahead_samples - 1` (see `read_back` below), so
+    /// that many frames outlive a silent input. The release envelope is not part
+    /// of this: it shapes gain, and gain applied to silence is silence.
+    fn ring_out(&self) -> Samples {
+        Samples(self.lookahead_samples.saturating_sub(1))
     }
 
     fn clear(&mut self) {
@@ -458,6 +467,18 @@ impl AudioUnit for LimiterNode {
         out
     }
 
+    /// The lookahead ring's contents, which outlive a silent input.
+    ///
+    /// Exactly known: the ring is a fixed delay, so when the input stops it
+    /// still holds that many frames. The release envelope is deliberately not
+    /// included — it shapes gain, and gain applied to silence is silence.
+    fn tail(&mut self) -> Tail {
+        match self.ring.ring_out() {
+            s if s.is_zero() => Tail::None,
+            s => Tail::Finite(s),
+        }
+    }
+
     fn footprint(&self) -> usize {
         core::mem::size_of::<Self>() + self.ring.footprint()
     }
@@ -665,6 +686,11 @@ impl AudioUnit for BrickwallLimiter {
             out.set(c, input.at(c).distort(0.0));
         }
         out
+    }
+
+    /// The clip is stateless, so it stops with its input.
+    fn tail(&mut self) -> Tail {
+        Tail::None
     }
 
     fn footprint(&self) -> usize {

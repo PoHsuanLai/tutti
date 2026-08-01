@@ -659,6 +659,11 @@ impl AudioUnit for BigBlockAdapter {
     fn route(&mut self, input: &SignalFrame, frequency: f64) -> SignalFrame {
         self.source.route(input, frequency)
     }
+    /// A pure wrapper rings exactly as long as what it wraps.
+    fn tail(&mut self) -> Tail {
+        self.source.tail()
+    }
+
     fn footprint(&self) -> usize {
         self.source.footprint()
     }
@@ -762,6 +767,11 @@ impl AudioUnit for BlockRateAdapter {
     fn route(&mut self, input: &SignalFrame, frequency: f64) -> SignalFrame {
         self.unit.route(input, frequency)
     }
+    /// A pure wrapper rings exactly as long as what it wraps.
+    fn tail(&mut self) -> Tail {
+        self.unit.tail()
+    }
+
     fn footprint(&self) -> usize {
         self.unit.footprint()
     }
@@ -821,6 +831,11 @@ impl AudioUnit for DummyUnit {
     }
     fn as_any_mut(&mut self) -> &mut dyn core::any::Any {
         self
+    }
+
+    /// A dummy emits silence, so there is nothing to ring.
+    fn tail(&mut self) -> Tail {
+        Tail::None
     }
 
     fn footprint(&self) -> usize {

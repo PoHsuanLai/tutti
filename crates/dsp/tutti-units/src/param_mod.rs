@@ -21,7 +21,7 @@
 use std::sync::Arc;
 
 use tutti_core::dsp::Signal;
-use tutti_core::{AtomicF32, AudioUnit, BufferMut, BufferRef, Ordering, SignalFrame};
+use tutti_core::{AtomicF32, AudioUnit, BufferMut, BufferRef, Ordering, SignalFrame, Tail};
 use tutti_mod::{shape, CurveType, Polarity};
 
 /// LUT resolution for [`ParamShaperUnit`]. 256 points + linear interpolation is
@@ -105,6 +105,11 @@ impl AudioUnit for ParamShaperUnit {
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
         self
     }
+    /// Control-rate and stateless: it stops with its input.
+    fn tail(&mut self) -> Tail {
+        Tail::None
+    }
+
     fn footprint(&self) -> usize {
         std::mem::size_of::<Self>()
     }
@@ -175,6 +180,11 @@ impl AudioUnit for ParamSumUnit {
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
         self
     }
+    /// Control-rate and stateless: it stops with its input.
+    fn tail(&mut self) -> Tail {
+        Tail::None
+    }
+
     fn footprint(&self) -> usize {
         std::mem::size_of::<Self>()
     }
@@ -250,6 +260,11 @@ impl AudioUnit for AtomicSourceUnit {
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
         self
     }
+    /// Control-rate and stateless: it stops with its input.
+    fn tail(&mut self) -> Tail {
+        Tail::None
+    }
+
     fn footprint(&self) -> usize {
         std::mem::size_of::<Self>()
     }

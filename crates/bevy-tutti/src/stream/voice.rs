@@ -13,29 +13,19 @@
 //! nodes with edges: there, a source **is** a node, with its own placement, its
 //! own gain, and its own outgoing connection.
 //!
-//! The pool's most intricate machinery does not transfer either, and the reason
-//! is worth stating because it looks like a hazard we are ignoring. `VoicePool`
-//! carries a bounded *retirement channel* so a removed slot is freed on the
-//! control thread — necessary there because `VoiceCommand::Remove` is handled
-//! inside `drain_commands`, which runs from `tick`/`process`, i.e. the audio
-//! callback, and dropping a slot frees its vocoder bank (~192 KB at six
-//! channels).
-//!
-//! **That cannot happen on this path.** `Net::remove` *returns* the
+//! The pool's *retirement channel* looks like a hazard we are ignoring, so:
+//! it exists because `VoiceCommand::Remove` is handled inside `drain_commands`,
+//! which runs from the audio callback, and dropping a slot frees its vocoder
+//! bank. **That cannot happen here.** `Net::remove` *returns* the
 //! `Box<dyn AudioUnit>` rather than dropping it, and
 //! [`reconcile_node_despawn`](crate::graph::reconcile_node_despawn) discards it
-//! inside an observer — main thread. The free lands exactly where the pool's
-//! channel was trying to put it, without a channel.
+//! inside an observer — main thread. No channel needed.
 //!
-//! What we do inherit from the per-node path: one
-//! [`BeatCursor`](tutti_core::transport::BeatCursor) per voice rather than one
-//! shared. The pool's doc argues against N cursors ("N chances to disagree about
-//! whether the playhead moved"), and that is a real risk when N slots share one
-//! timeline position. It is much weaker here: each source carries its own
-//! placement, so they were never reading one position to begin with.
-//!
-//! Merging adjacent voices back into a shared node is an optimization available
-//! later. It is not a correctness debt.
+//! We do inherit one [`BeatCursor`](tutti_core::transport::BeatCursor) per voice
+//! rather than one shared. The pool's doc argues against N cursors, but that risk
+//! is about N slots sharing one timeline position; here each source carries its
+//! own placement. Merging adjacent voices into a shared node is an optimization
+//! available later, not a correctness debt.
 //!
 //! # The two tiers arrive differently and converge here
 //!
@@ -148,11 +138,9 @@ pub fn memory_voice(wave: Arc<tutti_core::Wave>, width: ChannelLayout, play: Pla
 /// represent an empty bus (a plugin port genuinely can be zero wide), but a graph
 /// node that reports zero outputs is one nothing can be wired to.
 ///
-/// **Deliberately not a function of [`AudioConfig`].** The first draft took one
-/// and never read it: the device's width is not this node's business — the graph
-/// root folds whatever reaches it, and a voice narrowed to the device here would
-/// be narrowed *twice* on a wider project. The only ceiling that applies is the
-/// sampler's own.
+/// **Deliberately not a function of the device width.** The graph root folds
+/// whatever reaches it, so a voice narrowed to the device here would be narrowed
+/// *twice* on a wider project. The only ceiling that applies is the sampler's.
 pub fn voice_width(file: ChannelLayout) -> ChannelLayout {
     let n = file
         .count()

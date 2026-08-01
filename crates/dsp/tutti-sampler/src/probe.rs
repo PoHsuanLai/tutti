@@ -13,17 +13,12 @@
 //! butler already applies internally when a stream is registered
 //! (`butler::handlers::open_stream`). A host deriving the same verdict from
 //! `Wave::probe_metadata` would be re-implementing a rule it cannot see, and the
-//! two would drift the moment the butler's capabilities changed.
+//! two would drift the moment the butler's capabilities changed. So the butler
+//! and the host now read the **same function** — the point of it being public.
 //!
-//! So the butler and the host now read the **same function**. That is the whole
-//! point of it being public.
-//!
-//! # What this is not
-//!
-//! It is not a decode, and it does not open a decoder. `Wave::probe_metadata`
-//! reads the container head and stops — the same probe `Wave::load_with_peaks`
-//! does, minus the decode loop. Deciding *how much* of a file to keep resident is
-//! the caller's policy; this only reports what the file allows.
+//! This is not a decode: `Wave::probe_metadata` reads the container head and
+//! stops. Deciding *how much* of a file to keep resident is the caller's policy;
+//! this only reports what the file allows.
 
 use std::path::Path;
 

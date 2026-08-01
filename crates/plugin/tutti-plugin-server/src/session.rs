@@ -208,6 +208,7 @@ impl Session {
                     BridgeMessage::ParameterChanged { index, value }
                 }
                 AsyncEvent::LatencyChanged { samples } => BridgeMessage::LatencyChanged { samples },
+                AsyncEvent::TailChanged { tail } => BridgeMessage::TailChanged { tail },
                 AsyncEvent::ParamValuesChanged => BridgeMessage::PluginParamValuesChanged,
                 AsyncEvent::ParamTitlesChanged => BridgeMessage::PluginParamTitlesChanged,
                 AsyncEvent::IoChanged => BridgeMessage::PluginIoChanged,

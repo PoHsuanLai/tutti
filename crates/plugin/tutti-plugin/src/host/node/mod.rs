@@ -57,9 +57,11 @@ use crate::protocol::{
 use crate::util::config::BridgeConfig;
 use batcher::{Batcher, PIPELINE_LATENCY_FRAMES};
 use std::path::PathBuf;
+use arc_swap::ArcSwap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use tutti_core::{SampleRate, Samples};
+use tutti_plugin_types::PluginTail;
 
 /// Cheap to clone: clones share `bridge`, `latency`, and `process_guard`
 /// (all Arc) but get independent `io` and `midi` state (fundsp clones
@@ -73,6 +75,14 @@ pub struct PluginClient {
     /// Shared across clones so runtime latency updates are seen by
     /// whichever clone fundsp is currently processing.
     latency: Arc<AtomicUsize>,
+    /// Runtime tail, shared across clones for the same reason as `latency`.
+    ///
+    /// An `ArcSwap` rather than an atomic because [`PluginTail`] is a four-arm
+    /// sum whose payload is a `usize` — "unbounded" and "never asked" are not
+    /// numbers, so there is no integer encoding to compare-and-swap that does
+    /// not reintroduce the sentinel the type exists to avoid. Read once per
+    /// block by `AudioUnit::tail`, never per sample.
+    tail: Arc<ArcSwap<PluginTail>>,
     /// Observers for plugin-originated unsolicited events. Shared with
     /// `PluginHandle` so callers can register callbacks via the handle
     /// and still see events driven by the bridge thread.
@@ -293,6 +303,7 @@ impl PluginClient {
         // `.get()` because the cell is an `AtomicUsize` — an atomic needs a
         // primitive, so the unit type stops here rather than at a call site.
         let latency = Arc::new(AtomicUsize::new(server.loaded.latency_samples.get()));
+        let tail = Arc::new(ArcSwap::from_pointee(server.loaded.tail));
         // Sized to what can actually cross the boundary, matching the slab —
         // `slab_layout_for` clamps to `BATCH_SIZE` for the same reason (fundsp
         // never hands a node more than one block). Passing the raw
@@ -312,6 +323,7 @@ impl PluginClient {
         // consequence into the refresh (cosmetic) vs invalidate (structural)
         // sinks via `ResyncKind::classify`.
         let listener_latency = Arc::clone(&latency);
+        let listener_tail = Arc::clone(&tail);
         let listener_param_sink = param_sink.clone();
         let listener_refresh_sink = refresh_sink.clone();
         let listener_invalidate_sink = invalidate_sink.clone();
@@ -321,6 +333,10 @@ impl PluginClient {
                 // primitive, so the unit type stops here.
                 listener_latency.store(samples.get(), Ordering::Release);
                 listener_invalidate_sink.fire(PluginInvalidation::Latency { samples });
+            }
+            BridgeEvent::TailChanged { tail } => {
+                listener_tail.store(Arc::new(tail));
+                listener_invalidate_sink.fire(PluginInvalidation::Tail { tail });
             }
             BridgeEvent::ParameterChanged { index, value } => {
                 if let Ok(id) = u32::try_from(index) {
@@ -339,6 +355,7 @@ impl PluginClient {
             loaded: server.loaded,
             format: server.format,
             latency,
+            tail,
             param_sink,
             refresh_sink,
             invalidate_sink,
@@ -386,6 +403,25 @@ impl PluginClient {
     /// `PluginInvalidation::Latency`) to get notified.
     pub fn set_latency(&self, samples: impl Into<Samples>) {
         self.latency.store(samples.into().get(), Ordering::Release);
+    }
+
+    /// What the plugin currently reports for its tail.
+    ///
+    /// Starts as the value read at load and tracks runtime changes for formats
+    /// that signal them (CLAP).
+    pub fn tail(&self) -> PluginTail {
+        **self.tail.load()
+    }
+
+    /// Runtime tail update. RT-safe.
+    ///
+    /// Normally driven by the bridge thread when the plugin-server emits
+    /// `BridgeMessage::TailChanged`; exposed publicly so callers can also force
+    /// a value. Like `set_latency`, this changes what the node reports without
+    /// re-running anything — an offline render reads the tail when it sizes
+    /// itself, so a bounce already in flight keeps the length it started with.
+    pub fn set_tail(&self, tail: PluginTail) {
+        self.tail.store(Arc::new(tail));
     }
 
     /// Catalog identity (id, name, vendor, version, native class, editor).

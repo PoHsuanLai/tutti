@@ -6,12 +6,12 @@
 //! `&mut dyn PluginInstance`.
 //!
 //! [`poll_async_events`] folds the format-specific host-callback fan-out
-//! (VST2 parameter changes, CLAP runtime-latency notifications) into one
-//! list the server can drain after each audio block.
+//! (VST2 parameter changes, CLAP runtime latency *and* tail notifications) into
+//! one list the server can drain after each audio block.
 
 use std::path::Path;
 use tutti_plugin::server::{
-    Features, LoadedPlugin, PluginDescriptor, PluginInstance, SampleFormat, Samples,
+    Features, LoadedPlugin, PluginDescriptor, PluginInstance, PluginTail, SampleFormat, Samples,
 };
 use tutti_plugin::{BridgeError, LoadStage, Result};
 
@@ -50,6 +50,16 @@ pub(crate) enum AsyncEvent {
     },
     LatencyChanged {
         samples: Samples,
+    },
+    /// Plugin reported a new tail length at runtime.
+    ///
+    /// CLAP is the only format where this is dynamic: `clap.tail` pairs the
+    /// plugin's `get` with a host `changed` callback, because turning up a
+    /// reverb's decay changes the tail after load. VST3's restart flags carry no
+    /// tail member and AU has no tail property listener, so for those the
+    /// load-time read is the whole answer.
+    TailChanged {
+        tail: PluginTail,
     },
     /// Plugin changed its own parameter values at runtime (e.g. preset load).
     /// The client should re-read parameter values.
@@ -256,6 +266,15 @@ impl Plugin {
                         samples: Samples(clap.get_latency() as usize),
                     });
                 }
+                // The tail twin of the latency poll above. Without it a plugin
+                // whose decay is raised after load keeps reporting the tail it
+                // had at load, and a bounce sized from that truncates the
+                // decay the user just dialled in.
+                if clap.poll_tail_changed() {
+                    out.push(AsyncEvent::TailChanged {
+                        tail: PluginTail::from_samples(clap.get_tail()),
+                    });
+                }
             }
             #[allow(unreachable_patterns)]
             _ => {}
@@ -296,6 +315,71 @@ mod tests {
             Err(e) => panic!("expected LoadFailed/Scanning, got {e:?}"),
             Ok(_) => panic!("expected LoadFailed/Scanning, got Ok(_)"),
         }
+    }
+
+    /// A CLAP tail change must reach the drained event list.
+    ///
+    /// The flag-clearing half of this was already covered
+    /// (`test_clap_poll_latency_tail`), and it passed for a year while the
+    /// signal went nowhere: `poll_async_events` polled latency and never
+    /// polled tail, so a plugin that raised its decay had the notification
+    /// consumed and dropped. Asserting the *event* rather than the flag is
+    /// what makes that unrepresentable — a test on `poll_tail_changed` alone
+    /// cannot tell a wired path from an unwired one.
+    ///
+    /// Latency is asserted alongside it so a regression that swaps the two
+    /// polls, or drops one while keeping the other, fails here.
+    #[cfg(feature = "clap")]
+    #[test]
+    fn a_clap_tail_change_reaches_the_event_list() {
+        use crate::loaders::clap::ClapInstance;
+
+        let _lock = crate::test_utils::plugin_load_lock();
+        const CLAP_PLUGIN: &str = "/Library/Audio/Plug-Ins/CLAP/TAL-NoiseMaker.clap";
+        let instance = ClapInstance::load(Path::new(CLAP_PLUGIN), 44100.0, 512)
+            .expect("failed to load the CLAP test plugin");
+        let mut plugin = Plugin::Clap(instance);
+
+        // Nothing pending: the drain must be empty, or the assertions below
+        // would pass on a stuck flag rather than on the one we set.
+        assert!(
+            plugin.poll_async_events().is_empty(),
+            "a freshly loaded plugin reported an async event nobody raised"
+        );
+
+        let Plugin::Clap(clap) = &mut plugin else {
+            unreachable!("constructed as Clap immediately above")
+        };
+        let state = clap.clap_loaded().host_state();
+        state
+            .processing
+            .tail_changed
+            .store(true, std::sync::atomic::Ordering::Release);
+        state
+            .processing
+            .latency_changed
+            .store(true, std::sync::atomic::Ordering::Release);
+
+        let events = plugin.poll_async_events();
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, AsyncEvent::TailChanged { .. })),
+            "the tail notification was polled and dropped; got {events:?}"
+        );
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, AsyncEvent::LatencyChanged { .. })),
+            "the latency notification went missing; got {events:?}"
+        );
+
+        // Both flags are consumed, so a second drain is quiet — an event that
+        // re-fires every block would spam the host with resyncs.
+        assert!(
+            plugin.poll_async_events().is_empty(),
+            "the change flags were not cleared by the drain"
+        );
     }
 
     #[test]

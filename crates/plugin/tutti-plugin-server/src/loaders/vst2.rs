@@ -75,15 +75,19 @@ impl Vst2Instance {
                 inputs: single_bus(host_meta.num_inputs),
                 outputs: single_bus(host_meta.num_outputs),
                 latency_samples: host_meta.latency_samples,
-                // `Unknown`, not `None`: nothing here has asked. VST2 does have
-                // `effGetTailSize` — `OpCode::GetTailSize` is in the vendored
-                // enum — but only as the *plugin* side of the ABI; this host
-                // exposes no accessor to dispatch it. Claiming `None` would tell
-                // a bounce to add nothing, which is wrong for every VST2 reverb.
+                // `Unknown`, not `None`: nothing here has asked. Claiming
+                // `None` would tell a bounce to add nothing, which is wrong for
+                // every VST2 reverb.
                 //
-                // Wiring it is not a one-liner: VST2 encodes tail inversely to
-                // every other format here — `0` means "default" and `1` means
-                // "no tail" — so the decode cannot reuse `from_samples`.
+                // The dispatch does exist — `Host::get_tail_size` in
+                // `vst-tutti` sends `OpCode::GetTailSize` — but `Vst2Instance`
+                // does not re-export it, so it is not reachable from here yet.
+                //
+                // Wiring it is not a one-liner, because VST2 encodes tail
+                // inversely to every other format: `0` means "no tail
+                // information, host decides" and `1` means "no tail at all", so
+                // the two ends `from_samples` maps are swapped and its `0 =>
+                // None` arm would read "unknown" as "silent".
                 tail: PluginTail::Unknown,
                 features,
                 probed,

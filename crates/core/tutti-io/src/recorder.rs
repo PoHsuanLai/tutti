@@ -308,12 +308,12 @@ mod tests {
         let src = SliceSource {
             samples: (0..FRAMES * CH).map(|i| (i % 97) as f32 * 0.001).collect(),
             pos: 0,
-            layout: ChannelLayout::from_count(6),
+            layout: ChannelLayout::from(6u16),
         };
         let wav = WavOut::create(
             &path,
             48_000.0,
-            ChannelLayout::from_count(6),
+            ChannelLayout::from(6u16),
             BitDepth::Float32,
         )
         .expect("sink opens");

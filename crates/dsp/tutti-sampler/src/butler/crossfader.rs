@@ -272,7 +272,7 @@ mod tests {
         c.start(vec![1.0; 4 * 6], vec![0.0; 4 * 6], 6usize);
         assert_eq!(
             c.layout(),
-            ChannelLayout::from_count(6),
+            ChannelLayout::from(6u16),
             "the installed fade must carry the width it was started at"
         );
 

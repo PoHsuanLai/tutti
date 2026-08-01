@@ -338,14 +338,14 @@ mod enumeration_hole_tests {
         let channels = with_layout(4, u32::MAX, |ext| {
             port_channels(std::ptr::null(), ext, false)
         });
-        // The stub leaves `port_type` null, so each layout comes from
-        // `from_count` — widths 1..=4 canonicalize to Mono/Stereo/Multi(3)/Quad.
+        // The stub leaves `port_type` null, so each layout is built from the
+        // reported width alone — 1..=4 in port order.
         assert_eq!(
             channels.as_slice(),
             [
                 ChannelLayout::MONO,
                 ChannelLayout::STEREO,
-                ChannelLayout::from_count(3),
+                ChannelLayout::from(3u16),
                 ChannelLayout::QUAD
             ]
         );

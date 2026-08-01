@@ -287,10 +287,7 @@ mod port_layout_tests {
     fn totals_sum_across_buses_and_survive_defaulting() {
         let mut ports = PortLayout {
             inputs: BusChannels::from_slice(&[]),
-            outputs: BusChannels::from_slice(&[
-                ChannelLayout::STEREO,
-                ChannelLayout::from_count(6),
-            ]),
+            outputs: BusChannels::from_slice(&[ChannelLayout::STEREO, ChannelLayout::from(6u16)]),
         };
         ports.default_empty_buses();
 

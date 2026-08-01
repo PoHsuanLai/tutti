@@ -249,7 +249,7 @@ fn main() -> tutti_export::Result<()> {
         &base(
             AudioFormat::Wav,
             BitDepth::Float32,
-            ChannelLayout::from_count(6),
+            ChannelLayout::from(6u16),
         ),
     )?;
 

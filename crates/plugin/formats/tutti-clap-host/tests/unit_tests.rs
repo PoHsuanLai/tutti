@@ -1433,7 +1433,7 @@ fn track_audio_count_comes_from_the_layout() {
     use tutti_clap_host::{ChannelLayout, TrackAudio, TrackPortType};
 
     let surround = TrackAudio {
-        layout: ChannelLayout::from_count(6),
+        layout: ChannelLayout::from(6u16),
         port_type: Some(TrackPortType::Surround),
     };
     assert_eq!(surround.layout.count(), 6);
@@ -1449,13 +1449,13 @@ fn track_audio_count_comes_from_the_layout() {
         Some(TrackPortType::Stereo)
     );
     assert_eq!(
-        TrackAudio::from_layout(ChannelLayout::from_count(6)).port_type,
+        TrackAudio::from_layout(ChannelLayout::from(6u16)).port_type,
         None,
         "a bare count cannot distinguish 5.1 from ambisonic, so it must not claim either"
     );
     // Canonicalization still applies: a 2-count is Stereo, so it tags as stereo.
     assert_eq!(
-        TrackAudio::from_layout(ChannelLayout::from_count(2)).port_type,
+        TrackAudio::from_layout(ChannelLayout::from(2u16)).port_type,
         Some(TrackPortType::Stereo)
     );
 }

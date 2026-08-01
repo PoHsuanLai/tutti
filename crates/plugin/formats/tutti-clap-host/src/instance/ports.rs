@@ -649,7 +649,7 @@ pub(super) fn layout_from_clap_port(
             return ChannelLayout::STEREO;
         }
     }
-    ChannelLayout::from_count(channel_count as u16)
+    ChannelLayout::from(channel_count)
 }
 
 #[cfg(feature = "clap-extras")]

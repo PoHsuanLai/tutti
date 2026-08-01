@@ -67,8 +67,8 @@ impl DownmixUnit {
     /// A fold from `src` channels to `dst`. Both are clamped to at least mono —
     /// a zero-wide unit would report 0 ports, which is not a node.
     pub fn new(src: impl Into<ChannelLayout>, dst: impl Into<ChannelLayout>) -> Self {
-        let src = ChannelLayout::from_count(src.into().count().max(1));
-        let dst = ChannelLayout::from_count(dst.into().count().max(1));
+        let src = ChannelLayout::from(src.into().count().max(1));
+        let dst = ChannelLayout::from(dst.into().count().max(1));
         Self {
             src,
             dst,
@@ -167,10 +167,10 @@ mod tests {
 
     #[test]
     fn arity_comes_from_the_two_layouts() {
-        let u = DownmixUnit::new(ChannelLayout::from_count(6), ChannelLayout::STEREO);
+        let u = DownmixUnit::new(ChannelLayout::from(6u16), ChannelLayout::STEREO);
         assert_eq!(u.inputs(), 6);
         assert_eq!(u.outputs(), 2);
-        assert_eq!(u.source_layout(), ChannelLayout::from_count(6));
+        assert_eq!(u.source_layout(), ChannelLayout::from(6u16));
         assert_eq!(u.target_layout(), ChannelLayout::STEREO);
     }
 
@@ -183,7 +183,7 @@ mod tests {
 
     #[test]
     fn tick_matches_the_shared_matrix() {
-        let mut u = DownmixUnit::new(ChannelLayout::from_count(6), ChannelLayout::STEREO);
+        let mut u = DownmixUnit::new(ChannelLayout::from(6u16), ChannelLayout::STEREO);
         let frame = [0.9, -0.4, 0.5, 0.7, 0.2, -0.3];
         let mut out = [0.0f32; 2];
         u.tick(&frame, &mut out);
@@ -198,7 +198,7 @@ mod tests {
 
     #[test]
     fn tick_to_mono_matches_the_shared_matrix() {
-        let mut u = DownmixUnit::new(ChannelLayout::from_count(6), ChannelLayout::MONO);
+        let mut u = DownmixUnit::new(ChannelLayout::from(6u16), ChannelLayout::MONO);
         let frame = [0.9, -0.4, 0.5, 0.7, 0.2, -0.3];
         let mut out = [0.0f32; 1];
         u.tick(&frame, &mut out);
@@ -211,8 +211,8 @@ mod tests {
     #[test]
     fn process_agrees_with_tick() {
         const N: usize = 64;
-        let mut ticked = DownmixUnit::new(ChannelLayout::from_count(6), ChannelLayout::STEREO);
-        let mut processed = DownmixUnit::new(ChannelLayout::from_count(6), ChannelLayout::STEREO);
+        let mut ticked = DownmixUnit::new(ChannelLayout::from(6u16), ChannelLayout::STEREO);
+        let mut processed = DownmixUnit::new(ChannelLayout::from(6u16), ChannelLayout::STEREO);
 
         // A distinct waveform per channel, so a transposed index is visible.
         let input: Vec<Vec<f32>> = (0..6)
@@ -250,7 +250,7 @@ mod tests {
     /// is dialogue, and taking channels 0/1 would make it silent.
     #[test]
     fn a_centre_only_frame_survives_the_fold() {
-        let mut u = DownmixUnit::new(ChannelLayout::from_count(6), ChannelLayout::STEREO);
+        let mut u = DownmixUnit::new(ChannelLayout::from(6u16), ChannelLayout::STEREO);
         // FL FR C LFE SL SR — energy only in C.
         let frame = [0.0, 0.0, 1.0, 0.0, 0.0, 0.0];
         let mut out = [0.0f32; 2];
@@ -264,7 +264,7 @@ mod tests {
 
     #[test]
     fn upmix_zero_fills_rather_than_inventing_channels() {
-        let mut u = DownmixUnit::new(ChannelLayout::STEREO, ChannelLayout::from_count(6));
+        let mut u = DownmixUnit::new(ChannelLayout::STEREO, ChannelLayout::from(6u16));
         let mut out = [0.0f32; 6];
         u.tick(&[0.8, -0.6], &mut out);
 
@@ -277,9 +277,9 @@ mod tests {
 
     #[test]
     fn narrows_is_false_for_equal_and_wider() {
-        let narrower = DownmixUnit::new(ChannelLayout::from_count(6), ChannelLayout::STEREO);
+        let narrower = DownmixUnit::new(ChannelLayout::from(6u16), ChannelLayout::STEREO);
         let equal = DownmixUnit::new(ChannelLayout::STEREO, ChannelLayout::STEREO);
-        let wider = DownmixUnit::new(ChannelLayout::STEREO, ChannelLayout::from_count(6));
+        let wider = DownmixUnit::new(ChannelLayout::STEREO, ChannelLayout::from(6u16));
 
         assert!(narrower.narrows());
         assert!(!equal.narrows(), "an equal-width fold earns nothing");

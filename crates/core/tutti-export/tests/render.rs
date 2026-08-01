@@ -512,7 +512,7 @@ fn surround_normalizes_rather_than_falling_back_to_peak() {
     let mut cfg = config(
         AudioFormat::Wav,
         BitDepth::Float32,
-        ChannelLayout::from_count(6),
+        ChannelLayout::from(6u16),
     );
     cfg.render.duration_seconds = 2.0;
 
@@ -728,7 +728,7 @@ fn an_unmeasurable_rate_fails_rather_than_writing_un_normalized_audio() {
 /// pipeline was const-generic in its frame width, and `dispatch_channels!`
 /// resolved the runtime `ChannelLayout` to one of exactly six monomorphizations,
 /// returning `Error::UnsupportedChannels` for anything else. The app passes
-/// `ChannelLayout::from_count(master_width)` straight through, so a 3- or 5-wide
+/// `ChannelLayout::from(master_width)` straight through, so a 3- or 5-wide
 /// master failed at the entry point with no way for a caller to work around it.
 ///
 /// Asserted through the file header and the samples, not the return value: "no
@@ -738,7 +738,7 @@ fn a_width_the_old_dispatch_rejected_now_exports() {
     let d = tempfile::tempdir().unwrap();
 
     for width in [3u16, 5, 7, 9] {
-        let layout = ChannelLayout::from_count(width);
+        let layout = ChannelLayout::from(width);
         assert!(
             !matches!(
                 layout,
@@ -803,7 +803,7 @@ fn an_odd_width_round_trips_through_buffers() {
 
     let d = tempfile::tempdir().unwrap();
     for width in [3u16, 5] {
-        let layout = ChannelLayout::from_count(width);
+        let layout = ChannelLayout::from(width);
         let mut n = tutti_core::dsp::Net::new(0, width as usize);
         for c in 0..width as usize {
             let id = n.push(Box::new(dc(0.25)));
@@ -839,7 +839,7 @@ fn an_odd_width_survives_a_resample() {
     let mut cfg = config(
         AudioFormat::Wav,
         BitDepth::Float32,
-        ChannelLayout::from_count(width),
+        ChannelLayout::from(width),
     );
     cfg.resample = Some(Resample::to(48_000.0));
 

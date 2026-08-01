@@ -64,7 +64,7 @@ impl ChannelSumUnit {
         let layout = channels.into();
         Self {
             sources: sources.max(1),
-            layout: ChannelLayout::from_count(layout.count().max(1)),
+            layout: ChannelLayout::from(layout.count().max(1)),
         }
     }
 
@@ -163,7 +163,7 @@ mod tests {
 
     #[test]
     fn arity_and_width() {
-        let u = ChannelSumUnit::new(3, ChannelLayout::from_count(6));
+        let u = ChannelSumUnit::new(3, ChannelLayout::from(6u16));
         assert_eq!(u.inputs(), 18); // 3 sources × 6 channels
         assert_eq!(u.outputs(), 6);
         assert_eq!(u.channels(), 6);

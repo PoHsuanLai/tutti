@@ -384,7 +384,7 @@ fn cloning_shares_the_bank_and_isolate_severs_it() {
     );
     assert_eq!(
         c.width,
-        ChannelLayout::from_count(6),
+        ChannelLayout::from(6u16),
         "width must mirror the bank without borrowing it"
     );
 
@@ -402,7 +402,7 @@ fn cloning_shares_the_bank_and_isolate_severs_it() {
     );
     assert_eq!(
         isolated.width,
-        ChannelLayout::from_count(6),
+        ChannelLayout::from(6u16),
         "isolate must preserve the unit's width"
     );
 
@@ -1140,7 +1140,7 @@ fn creation_and_width() {
 
     assert_eq!(
         Unit::with_channels(44_100.0, 6usize).channels(),
-        ChannelLayout::from_count(6)
+        ChannelLayout::from(6u16)
     );
 }
 
@@ -1220,7 +1220,7 @@ fn clone_carries_parameters_and_width() {
     u.set_stretch_factor(StretchFactor::new(1.5));
 
     let c = u.clone();
-    assert_eq!(c.channels(), ChannelLayout::from_count(6));
+    assert_eq!(c.channels(), ChannelLayout::from(6u16));
     assert!((c.stretch_factor().get() - 1.5).abs() < 0.001);
 
     // The atomics are independent after the clone.

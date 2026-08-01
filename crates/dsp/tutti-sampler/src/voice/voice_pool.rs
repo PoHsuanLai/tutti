@@ -1304,7 +1304,7 @@ mod tests {
         let sampler = MemorySource::with_config(
             indexed_wave(6, 512),
             MemorySourceConfig {
-                channels: ChannelLayout::from_count(6),
+                channels: ChannelLayout::from(6u16),
                 timeline: Some(transport),
                 window: VoiceWindow {
                     start: Beat::new(0.0),
@@ -1348,7 +1348,7 @@ mod tests {
         let sampler = MemorySource::with_config(
             indexed_wave(6, 4096),
             MemorySourceConfig {
-                channels: ChannelLayout::from_count(6),
+                channels: ChannelLayout::from(6u16),
                 timeline: Some(transport.clone()),
                 window: VoiceWindow {
                     start: Beat::new(0.0),
@@ -1414,7 +1414,7 @@ mod tests {
             let sampler = MemorySource::with_config(
                 indexed_wave(6, 128),
                 MemorySourceConfig {
-                    channels: ChannelLayout::from_count(6),
+                    channels: ChannelLayout::from(6u16),
                     timeline: Some(transport.clone()),
                     window: VoiceWindow {
                         start: Beat::new(0.0),
@@ -1443,7 +1443,7 @@ mod tests {
             let probe = VoicePoolHandle {
                 tx: probe_tx,
                 retired: bounded(0).1,
-                channels: ChannelLayout::from_count(6),
+                channels: ChannelLayout::from(6u16),
                 sample_rate: SampleRate::SR_44K1,
             };
             probe.send(VoiceCommand::AddVoice {
@@ -1462,7 +1462,7 @@ mod tests {
         );
         assert_eq!(
             peeked.channels(),
-            ChannelLayout::from_count(6),
+            ChannelLayout::from(6u16),
             "the sender must build at the reader's width"
         );
 
@@ -1490,7 +1490,7 @@ mod tests {
             .expect("send must have built a filter for the stretching voice");
         assert_eq!(
             filter.channels(),
-            ChannelLayout::from_count(6),
+            ChannelLayout::from(6u16),
             "the filter must match the reader's width, not a default"
         );
         assert!(
@@ -1514,7 +1514,7 @@ mod tests {
         let sampler = MemorySource::with_config(
             indexed_wave(6, 512),
             MemorySourceConfig {
-                channels: ChannelLayout::from_count(6),
+                channels: ChannelLayout::from(6u16),
                 timeline: Some(transport),
                 window: VoiceWindow {
                     start: Beat::new(0.0),

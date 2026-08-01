@@ -404,7 +404,7 @@ mod tests {
             BitDepth::Float32,
         )
         .expect("sink should open");
-        stereo.write_folding(&centre_only, ChannelLayout::from_count(6));
+        stereo.write_folding(&centre_only, ChannelLayout::from(6u16));
         stereo.finalize().unwrap();
 
         let mut reader = hound::WavReader::open(&stereo_path).unwrap();
@@ -426,7 +426,7 @@ mod tests {
         // 7.1 with energy only in the rears (idx 6, 7) — front-pair truncation
         // would write silence here too.
         let rears_only = [0.0f32, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0];
-        mono.write_folding(&rears_only, ChannelLayout::from_count(8));
+        mono.write_folding(&rears_only, ChannelLayout::from(8u16));
         mono.finalize().unwrap();
 
         let mut reader = hound::WavReader::open(&mono_path).unwrap();
@@ -449,13 +449,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         for (src_w, dst_w) in [(2u16, 6u16), (6, 2), (1, 4), (6, 1), (2, 12)] {
             let path = dir.path().join(format!("align_{src_w}_{dst_w}.wav"));
-            let dst = ChannelLayout::from_count(dst_w);
+            let dst = ChannelLayout::from(dst_w);
             let mut sink =
                 WavOut::create(&path, 48_000.0, dst, BitDepth::Float32).expect("sink should open");
 
             const FRAMES: usize = 7; // odd, so a stride slip cannot alias
             let src = vec![0.25f32; FRAMES * src_w as usize];
-            sink.write_folding(&src, ChannelLayout::from_count(src_w));
+            sink.write_folding(&src, ChannelLayout::from(src_w));
             sink.finalize().unwrap();
 
             let reader = hound::WavReader::open(&path).unwrap();
@@ -480,7 +480,7 @@ mod tests {
 
         let mut sink =
             WavOut::create(&path, 48_000.0, 6u16, BitDepth::Float32).expect("create 6ch sink");
-        assert_eq!(sink.layout(), ChannelLayout::from_count(6));
+        assert_eq!(sink.layout(), ChannelLayout::from(6u16));
 
         let frames: Vec<f32> = (0..128)
             .flat_map(|i| (0..6).map(move |c| (i * 6 + c) as f32 * 0.001))

@@ -217,7 +217,7 @@ mod tests {
             ChannelLayout::MONO,
             ChannelLayout::STEREO,
             ChannelLayout::QUAD,
-            ChannelLayout::from_count(8),
+            ChannelLayout::from(8u16),
         ] {
             let list = RenderBufferList::new(layout);
             let n = layout.count() as usize;
@@ -243,7 +243,7 @@ mod tests {
         for layout in [
             ChannelLayout::MONO,
             ChannelLayout::STEREO,
-            ChannelLayout::from_count(6),
+            ChannelLayout::from(6u16),
         ] {
             let n = layout.count() as usize;
             let mut list = RenderBufferList::new(layout);

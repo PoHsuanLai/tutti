@@ -1915,7 +1915,7 @@ mod tests {
     #[test]
     fn with_channels_declares_the_width() {
         let u = MemorySource::with_channels(indexed_wave(6, 32), 6usize);
-        assert_eq!(u.channels(), ChannelLayout::from_count(6));
+        assert_eq!(u.channels(), ChannelLayout::from(6u16));
         assert_eq!(u.outputs(), 6);
         assert_eq!(
             MemorySource::with_channels(indexed_wave(2, 32), 0usize).channels(),

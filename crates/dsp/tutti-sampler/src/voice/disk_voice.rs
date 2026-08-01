@@ -1685,7 +1685,7 @@ mod tests {
 
         assert_eq!(
             unit.channels(),
-            ChannelLayout::from_count(6),
+            ChannelLayout::from(6u16),
             "the ring's declared width must reach the unit as a layout"
         );
         assert_eq!(

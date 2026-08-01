@@ -97,7 +97,7 @@ impl BusStripUnit {
             volume: Param::new(Amplitude::UNITY),
             pan: Param::new(Pan::CENTER),
             muted: Arc::new(AtomicBool::new(false)),
-            layout: ChannelLayout::from_count(layout.count().max(1)),
+            layout: ChannelLayout::from(layout.count().max(1)),
             mod_volume: false,
             mod_pan: false,
         }
@@ -572,7 +572,7 @@ mod tests {
     /// a surround channel has no left/right axis to sit on.
     #[test]
     fn extra_channels_are_faded_but_not_balanced() {
-        let mut s = BusStripUnit::with_channels(ChannelLayout::from_count(3));
+        let mut s = BusStripUnit::with_channels(ChannelLayout::from(3u16));
         s.set_volume(Amplitude(0.5));
         s.set_pan(Pan(-1.0));
         let mut out = [0.0f32; 3];
@@ -595,7 +595,7 @@ mod tests {
     fn route_reports_mute_on_every_channel() {
         use tutti_core::dsp::Signal;
 
-        let mut s = BusStripUnit::with_channels(ChannelLayout::from_count(3));
+        let mut s = BusStripUnit::with_channels(ChannelLayout::from(3u16));
         s.set_muted(true);
         let mut input = SignalFrame::new(3);
         for c in 0..3 {
@@ -668,7 +668,7 @@ mod tests {
     /// *stereo*. The arity assertion fails against that version.
     #[test]
     fn a_modulated_strip_is_as_wide_as_it_was_asked_for() {
-        let s = BusStripUnit::with_param_inputs(ChannelLayout::from_count(6), true, true);
+        let s = BusStripUnit::with_param_inputs(ChannelLayout::from(6u16), true, true);
         assert_eq!(s.outputs(), 6, "the width is what was asked for");
         assert_eq!(s.inputs(), 8, "six audio inputs, then volume and pan");
         assert_eq!(

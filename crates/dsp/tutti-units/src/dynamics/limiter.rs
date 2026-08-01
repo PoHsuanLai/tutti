@@ -147,7 +147,7 @@ impl LimiterNode {
         // `inputs()`/`outputs()` report 0, so clamp to at least mono — the same
         // floor the raw `channels.max(1)` used to provide.
         let n = (layout.count() as usize).max(1);
-        let layout = ChannelLayout::from_count(n as u16);
+        let layout = ChannelLayout::from(n);
         let lookahead_secs = Seconds(0.005);
         // `_ceil`, the allocation form: the ring must hold at *least* the
         // lookahead, and nearest-rounding under-allocates for half of all
@@ -527,7 +527,7 @@ impl BrickwallLimiter {
         Self {
             ceiling_db: Param::new(ceiling_db),
             ceiling_linear: db_to_amplitude(ceiling_db).get(),
-            layout: ChannelLayout::from_count(n as u16),
+            layout: ChannelLayout::from(n),
             channels: n,
             mod_ceiling: false,
         }
@@ -956,7 +956,7 @@ mod tests {
 
     #[test]
     fn limiter_with_channels_reports_arity() {
-        let l = LimiterNode::with_channels(ChannelLayout::from_count(6), -6.0, -0.3);
+        let l = LimiterNode::with_channels(ChannelLayout::from(6u16), -6.0, -0.3);
         assert_eq!(l.inputs(), 6);
         assert_eq!(l.outputs(), 6);
     }
@@ -982,7 +982,7 @@ mod tests {
     fn wide_limiter_gain_is_linked_across_all_channels() {
         // A loud transient on one channel must reduce ALL channels by the same
         // linked gain (max-abs across the frame), preserving inter-channel ratios.
-        let mut lim = LimiterNode::with_channels(ChannelLayout::from_count(6), -6.0, -0.3);
+        let mut lim = LimiterNode::with_channels(ChannelLayout::from(6u16), -6.0, -0.3);
         lim.set_sample_rate(tutti_core::SampleRate(44100.0));
         let mut out = [0.0f32; 6];
         // ch0 loud, others at half — the whole frame should be limited together.
@@ -1004,7 +1004,7 @@ mod tests {
 
     #[test]
     fn brickwall_with_channels_reports_arity_and_clips_all() {
-        let mut bw = BrickwallLimiter::with_channels(ChannelLayout::from_count(6), 0.0);
+        let mut bw = BrickwallLimiter::with_channels(ChannelLayout::from(6u16), 0.0);
         assert_eq!(bw.inputs(), 6);
         assert_eq!(bw.outputs(), 6);
         let mut out = [0.0f32; 6];
@@ -1049,8 +1049,7 @@ mod tests {
     /// *stereo*. The arity assertion fails against that version.
     #[test]
     fn a_modulated_limiter_is_as_wide_as_it_was_asked_for() {
-        let l =
-            LimiterNode::with_param_inputs(ChannelLayout::from_count(6), -6.0, -0.3, true, true);
+        let l = LimiterNode::with_param_inputs(ChannelLayout::from(6u16), -6.0, -0.3, true, true);
         assert_eq!(l.outputs(), 6, "the width is what was asked for");
         assert_eq!(
             l.inputs(),

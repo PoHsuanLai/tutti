@@ -295,7 +295,7 @@ mod tests {
     #[test]
     fn a_wider_device_widens_the_root() {
         assert_eq!(
-            root_width(2, ChannelLayout::from_count(6)),
+            root_width(2, ChannelLayout::from(6u16)),
             6,
             "a stereo project on a 5.1 device must render all six, or the top \
              four are permanently silent"
@@ -314,14 +314,14 @@ mod tests {
 
     #[test]
     fn an_unset_project_width_falls_through_to_the_device() {
-        assert_eq!(root_width(0, ChannelLayout::from_count(6)), 6);
+        assert_eq!(root_width(0, ChannelLayout::from(6u16)), 6);
         assert_eq!(root_width(0, ChannelLayout::STEREO), 2);
     }
 
     #[test]
     fn nothing_exceeds_the_render_scratch() {
         assert_eq!(
-            root_width(64, ChannelLayout::from_count(32)),
+            root_width(64, ChannelLayout::from(32u16)),
             MAX_ROOT_CHANNELS
         );
     }

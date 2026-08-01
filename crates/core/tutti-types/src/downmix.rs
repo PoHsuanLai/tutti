@@ -348,7 +348,7 @@ mod tests {
         // 5.1 with only the centre non-zero — an L/R-only downmix returns
         // silence and loses the dialogue.
         let frame = [0.0, 0.0, 1.0, 0.0, 0.0, 0.0];
-        let folded = fold_buffer_to_mono(&frame, ChannelLayout::from_count(6));
+        let folded = fold_buffer_to_mono(&frame, ChannelLayout::from(6u16));
 
         assert_eq!(folded.len(), 1);
         assert!(folded[0] > 0.0, "centre must survive, got {}", folded[0]);

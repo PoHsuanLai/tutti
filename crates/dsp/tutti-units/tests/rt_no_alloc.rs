@@ -176,7 +176,7 @@ fn downmix_process_is_allocation_free() {
     use tutti_core::{AudioUnit, BufferVec, ChannelLayout};
     use tutti_units::DownmixUnit;
 
-    let mut node = DownmixUnit::new(ChannelLayout::from_count(6), ChannelLayout::STEREO);
+    let mut node = DownmixUnit::new(ChannelLayout::from(6u16), ChannelLayout::STEREO);
 
     let input_vec = BufferVec::new(6);
     let mut output_vec = BufferVec::new(2);

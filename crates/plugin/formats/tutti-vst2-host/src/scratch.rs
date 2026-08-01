@@ -151,7 +151,7 @@ mod tests {
     /// Fill the scratch outputs with a recognizable ramp so a copy-out can be
     /// checked sample by sample.
     fn scratch_with_ramp(channels: u16, block: usize) -> RenderScratch {
-        let layout = ChannelLayout::from_count(channels);
+        let layout = ChannelLayout::from(channels);
         let mut s = RenderScratch::new(layout, layout, block);
         for (c, ch) in s.outputs.iter_mut().enumerate() {
             for (i, v) in ch.iter_mut().enumerate() {

@@ -255,7 +255,7 @@ mod tests {
             ChannelLayout::MONO,
             ChannelLayout::STEREO,
             ChannelLayout::QUAD,
-            ChannelLayout::from_count(6),
+            ChannelLayout::from(6u16),
         ] {
             let channels = layout.count() as usize;
             // 500 whole frames, so batch and streaming see the same input.
@@ -379,8 +379,8 @@ mod tests {
             .flat_map(|_| [0.0, 0.0, 1.0, 0.0, 0.0, 0.0])
             .collect();
         let blocks = summarize(
-            &PeakConfig::new(Samples(50), ChannelLayout::from_count(6)),
-            Interleaved::new(&samples, ChannelLayout::from_count(6)),
+            &PeakConfig::new(Samples(50), ChannelLayout::from(6u16)),
+            Interleaved::new(&samples, ChannelLayout::from(6u16)),
         );
 
         assert_eq!(blocks.len(), 2);

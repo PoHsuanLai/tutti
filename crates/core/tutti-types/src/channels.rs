@@ -34,17 +34,33 @@
 //!
 //! The named widths survive as associated constants ([`MONO`](ChannelLayout::MONO),
 //! [`STEREO`](ChannelLayout::STEREO), [`QUAD`](ChannelLayout::QUAD),
-//! [`EMPTY`](ChannelLayout::EMPTY)); anything else comes from
-//! [`from_count`](ChannelLayout::from_count) or the [`From`] impls. Only the
-//! four widths that are genuinely unambiguous get names — `5.1`/`7.1` do not,
-//! because naming them would imply a speaker *order* this count-only type does
-//! not carry.
+//! [`EMPTY`](ChannelLayout::EMPTY)). Only the four widths that are genuinely
+//! unambiguous get names — `5.1`/`7.1` do not, because naming them would imply a
+//! speaker *order* this count-only type does not carry.
+//!
+//! # Constructing one
+//!
+//! **A named constant if the width has a name, [`From`]/[`Into`] otherwise.**
+//! `ChannelLayout::STEREO`, `ChannelLayout::from(6u16)`, `width.into()`.
+//!
+//! The rule is worth stating because the codebase drifted without it. Two
+//! spellings — `from_count(n)` and `From` — coexisted with no division of
+//! labour: literals were built both ways (101 sites vs 27), runtime widths were
+//! built both ways (21 vs 35), sometimes in the same file, once in the same
+//! expression. Worse, `from_count`'s `u16` signature made callers cast *to* it —
+//! `from_count(planes.len() as u16)`, `from_count(mChannelsPerFrame as u16)` —
+//! so the explicit constructor was manufacturing the very truncating casts the
+//! multi-type `From` exists to absorb.
+//!
+//! [`from_count`](ChannelLayout::from_count) remains, but as the `const`
+//! primitive the `From` impls delegate to: `From::from` cannot be `const`, so a
+//! `const` item still needs it. It is not call-site vocabulary.
 
 /// How many audio channels a signal, node port, bus, wave, or device carries.
 ///
 /// The shared "mono vs stereo vs N" vocabulary across the whole engine. Use the
-/// named constants for the common widths, [`from_count`](Self::from_count) or the
-/// [`From`] impls for anything else, and read the count back with
+/// named constants for the widths that have names and [`From`]/[`Into`] for
+/// anything else (see [module docs](self)); read the count back with
 /// [`count`](Self::count).
 ///
 /// The inner count is private: every value is canonical, so two layouts of the
@@ -123,10 +139,12 @@ impl ChannelLayout {
         self.0 > 1
     }
 
-    /// Build a layout from a channel count.
+    /// Build a layout from a channel count, in `const` context.
     ///
-    /// Every count has exactly one representation, so this cannot produce a
-    /// non-canonical value — `from_count(2) == STEREO` holds by construction.
+    /// **Prefer [`From`]/[`Into`] at call sites** — `ChannelLayout::from(n)` or
+    /// `n.into()`. This exists because `From::from` cannot be `const`, so a
+    /// `const` item or an associated constant has no other way to spell a width
+    /// that isn't one of the named ones. The `From` impls delegate here.
     pub const fn from_count(n: u16) -> Self {
         Self(n)
     }
@@ -139,16 +157,24 @@ impl Default for ChannelLayout {
     }
 }
 
+/// Build a layout from any integer width.
+///
+/// Multi-type on purpose: every upstream audio API reports a channel count in a
+/// different integer type — CoreAudio's `mChannelsPerFrame` is `u32`, CPAL's is
+/// `u16`, `Vec::len` and VST3's bus counts are `usize`. Accepting each one lets
+/// the ~28 `impl Into<ChannelLayout>` parameters take them straight through,
+/// instead of scattering `as u16` across the FFI boundaries where a silent
+/// truncating cast would do the most damage.
+///
+/// There is deliberately **no reverse impl**. `ChannelLayout → u8` would
+/// truncate above 255 channels, silently, inside a trait that promises not to
+/// lose data; and the wider ones were never used. Read the width with
+/// [`count`](ChannelLayout::count) and cast explicitly if you need another type.
 macro_rules! count_conversions {
     ($($t:ty),*) => {$(
         impl From<$t> for ChannelLayout {
             fn from(n: $t) -> Self {
                 Self::from_count(n as u16)
-            }
-        }
-        impl From<ChannelLayout> for $t {
-            fn from(l: ChannelLayout) -> Self {
-                l.count() as $t
             }
         }
     )*};
@@ -161,15 +187,36 @@ mod tests {
     use super::*;
 
     /// Every count has exactly one representation, so equal counts are always
-    /// equal values — including for the widths that have names.
+    /// equal values — including for the widths that have names, and whichever
+    /// of the two constructors built them.
     #[test]
     fn construction_is_canonical() {
-        assert_eq!(ChannelLayout::from_count(1), ChannelLayout::MONO);
-        assert_eq!(ChannelLayout::from_count(2), ChannelLayout::STEREO);
-        assert_eq!(ChannelLayout::from_count(4), ChannelLayout::QUAD);
-        assert_eq!(ChannelLayout::from_count(0), ChannelLayout::EMPTY);
-        assert_eq!(ChannelLayout::from_count(6).count(), 6);
+        assert_eq!(ChannelLayout::from(1u16), ChannelLayout::MONO);
+        assert_eq!(ChannelLayout::from(2u16), ChannelLayout::STEREO);
+        assert_eq!(ChannelLayout::from(4u16), ChannelLayout::QUAD);
+        assert_eq!(ChannelLayout::from(0u16), ChannelLayout::EMPTY);
+        assert_eq!(ChannelLayout::from(6u16).count(), 6);
+
+        // The `const` primitive and the `From` impls must not diverge — the
+        // latter delegate to the former, and call sites mix both.
+        for n in 0..=12u16 {
+            assert_eq!(ChannelLayout::from_count(n), ChannelLayout::from(n));
+        }
+    }
+
+    /// Every integer width converts, whatever type the upstream API reports it
+    /// in — the reason the `From` impls are multi-type rather than `u16`-only.
+    #[test]
+    fn every_integer_width_converts() {
+        assert_eq!(ChannelLayout::from(2u8), ChannelLayout::STEREO);
+        assert_eq!(ChannelLayout::from(2u16), ChannelLayout::STEREO);
+        assert_eq!(ChannelLayout::from(2u32), ChannelLayout::STEREO);
         assert_eq!(ChannelLayout::from(2usize), ChannelLayout::STEREO);
+
+        // `.into()` resolves the same way, which is the spelling call sites use
+        // when the target type is already known.
+        let inferred: ChannelLayout = 6usize.into();
+        assert_eq!(inferred.count(), 6);
     }
 
     /// The named constants report the widths their names claim.

@@ -340,7 +340,7 @@ mod tests {
     #[test]
     fn len_counts_frames_and_samples_counts_samples() {
         let buf: Vec<f32> = (0..24).map(|i| i as f32).collect();
-        let it = Interleaved::new(&buf, ChannelLayout::from_count(6));
+        let it = Interleaved::new(&buf, ChannelLayout::from(6u16));
         assert_eq!(it.len(), 4, "24 samples at width 6 is 4 frames");
         assert_eq!(it.samples().len(), 24);
         assert_eq!(it.stride(), 6);
@@ -351,7 +351,7 @@ mod tests {
     #[test]
     fn window_takes_frames_not_samples() {
         let buf: Vec<f32> = (0..24).map(|i| i as f32).collect();
-        let it = Interleaved::new(&buf, ChannelLayout::from_count(6));
+        let it = Interleaved::new(&buf, ChannelLayout::from(6u16));
 
         let w = it.window(1..3);
         assert_eq!(w.len(), 2, "two frames");
@@ -439,7 +439,7 @@ mod tests {
     fn frames_feeds_fold_frame_directly() {
         // 5.1 with energy only in the centre channel.
         let buf = [0.0f32, 0.0, 1.0, 0.0, 0.0, 0.0];
-        let it = Interleaved::new(&buf, ChannelLayout::from_count(6));
+        let it = Interleaved::new(&buf, ChannelLayout::from(6u16));
 
         let mut out = [0.0f32; 2];
         for f in it.frames() {
@@ -459,7 +459,7 @@ mod tests {
             ChannelLayout::MONO,
             ChannelLayout::STEREO,
             ChannelLayout::QUAD,
-            ChannelLayout::from_count(6),
+            ChannelLayout::from(6u16),
         ] {
             // Deliberately not a whole number of frames at any of these widths
             // except mono: 25 is coprime with 2, 4 and 6.

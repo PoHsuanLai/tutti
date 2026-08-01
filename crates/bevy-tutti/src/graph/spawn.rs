@@ -46,6 +46,54 @@ pub trait SpawnAudioNode {
         U: AudioUnit + 'static;
 }
 
+/// The same binding, onto an entity that already exists.
+///
+/// Separate from [`SpawnAudioNode`] because the lifecycle differs: that one owns
+/// the entity it creates, this one adopts one somebody else made. A host whose
+/// entities come from a projection needs this — the entity is compiled from the
+/// document first, and its DSP unit may only be constructible frames later (an
+/// audio file has to be read before there is a unit to add).
+///
+/// Adding a second unit to an entity that already carries [`AudioNode`] replaces
+/// the component, orphaning the first node in the graph. Callers that re-arity
+/// should despawn and respawn, which is what the bus reconciler does.
+pub trait InsertAudioNode {
+    /// Add `unit` to the graph and bind **this** entity to it via [`AudioNode`].
+    fn insert_audio_node<U>(&mut self, unit: U) -> &mut Self
+    where
+        U: AudioUnit + 'static;
+}
+
+impl InsertAudioNode for EntityCommands<'_> {
+    fn insert_audio_node<U>(&mut self, unit: U) -> &mut Self
+    where
+        U: AudioUnit + 'static,
+    {
+        let entity = self.id();
+        // Same deferred shape as `spawn_audio_node`: `Net::add` returns the id
+        // inside the command, so the binding cannot be observed from outside.
+        self.commands().queue(move |world: &mut World| {
+            let id = match world.get_resource_mut::<AudioGraphRes>() {
+                Some(mut graph) => graph.0.add(unit),
+                None => {
+                    bevy_log::warn!(
+                        "insert_audio_node: AudioGraphRes missing; entity {:?} left without AudioNode",
+                        entity
+                    );
+                    return;
+                }
+            };
+            if let Some(mut dirty) = world.get_resource_mut::<GraphDirty>() {
+                dirty.0 = true;
+            }
+            if let Ok(mut e) = world.get_entity_mut(entity) {
+                e.insert(AudioNode(id));
+            }
+        });
+        self
+    }
+}
+
 impl<'w, 's> SpawnAudioNode for Commands<'w, 's> {
     fn spawn_audio_node<U>(&mut self, unit: U) -> EntityCommands<'_>
     where

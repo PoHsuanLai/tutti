@@ -208,11 +208,11 @@ fn main() {
     //
     // EBU R128 is a published spec with absolute answers, so unlike pitch these
     // are checkable against a number rather than against another implementation.
-    let lcfg = LoudnessConfig::new(SampleRate(SR), ChannelLayout::Stereo);
+    let lcfg = LoudnessConfig::new(SampleRate(SR), ChannelLayout::STEREO);
     for &amp in &[1.0, 0.5, 0.25, 0.1, 0.0891, 0.01] {
         let mono = sine(1000.0, 3.0, amp);
         let st = to_stereo(&mono);
-        let l = measure_loudness(&lcfg, Interleaved::new(&st, ChannelLayout::Stereo))
+        let l = measure_loudness(&lcfg, Interleaved::new(&st, ChannelLayout::STEREO))
             .expect("stereo layout meters");
         writeln!(
             loud_csv,
@@ -234,8 +234,8 @@ fn main() {
             .map(|i| (0.5 * (TAU * 1000.0 * i as f64 / rate).sin()) as f32)
             .collect();
         let st = to_stereo(&mono);
-        let c = LoudnessConfig::new(SampleRate(rate), ChannelLayout::Stereo);
-        let l = measure_loudness(&c, Interleaved::new(&st, ChannelLayout::Stereo))
+        let c = LoudnessConfig::new(SampleRate(rate), ChannelLayout::STEREO);
+        let l = measure_loudness(&c, Interleaved::new(&st, ChannelLayout::STEREO))
             .expect("stereo layout meters");
         writeln!(
             rate_csv,

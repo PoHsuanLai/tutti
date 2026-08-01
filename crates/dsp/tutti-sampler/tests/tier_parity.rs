@@ -343,7 +343,7 @@ fn the_disk_and_memory_tiers_render_the_same_material() {
                 start: Beat::new(0.0),
                 duration: None,
             },
-            channels: ChannelLayout::Stereo,
+            channels: ChannelLayout::STEREO,
             ..Default::default()
         },
     );
@@ -839,7 +839,7 @@ fn the_tiers_agree_under_varispeed() {
                     start: Beat::new(0.0),
                     duration: None,
                 },
-                channels: ChannelLayout::Stereo,
+                channels: ChannelLayout::STEREO,
                 speed: PlaybackRate::new(factor),
                 ..Default::default()
             },

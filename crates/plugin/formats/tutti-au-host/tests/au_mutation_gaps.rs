@@ -143,8 +143,8 @@ fn push_refuses_a_scratch_with_no_input_bus() {
         );
 
         // Sized from the AU's own bus counts, the way `PushScratch::new` says to.
-        let ins: Vec<ChannelLayout> = (0..in_buses).map(|_| ChannelLayout::Stereo).collect();
-        let outs: Vec<ChannelLayout> = (0..out_buses).map(|_| ChannelLayout::Stereo).collect();
+        let ins: Vec<ChannelLayout> = (0..in_buses).map(|_| ChannelLayout::STEREO).collect();
+        let outs: Vec<ChannelLayout> = (0..out_buses).map(|_| ChannelLayout::STEREO).collect();
         let mut scratch = PushScratch::new(&ins, &outs, BLOCK);
 
         match au.process_push(&mut scratch, BLOCK) {
@@ -167,8 +167,8 @@ fn push_refuses_a_scratch_with_no_input_bus() {
     // through the guard, so the assertions above are not passing because
     // `process_push` refuses everything.
     let mut au = corpus::DELAY.open(RATE, BLOCK);
-    let ins = vec![ChannelLayout::Stereo; au.bus_count(BusDirection::Input) as usize];
-    let outs = vec![ChannelLayout::Stereo; au.bus_count(BusDirection::Output) as usize];
+    let ins = vec![ChannelLayout::STEREO; au.bus_count(BusDirection::Input) as usize];
+    let outs = vec![ChannelLayout::STEREO; au.bus_count(BusDirection::Output) as usize];
     assert!(
         !ins.is_empty(),
         "AUDelay must have an input bus for this control to mean anything"

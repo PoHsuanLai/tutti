@@ -672,8 +672,8 @@ mod tests {
     #[test]
     fn refill_port_buffers_is_allocation_free() {
         // main + sidechain stereo
-        let input_ports = [ChannelLayout::Stereo, ChannelLayout::Stereo];
-        let output_ports = [ChannelLayout::Stereo];
+        let input_ports = [ChannelLayout::STEREO, ChannelLayout::STEREO];
+        let output_ports = [ChannelLayout::STEREO];
         let max_frames = 512usize;
         let mut scratch = new_scratch::<f32>(&input_ports, &output_ports, max_frames);
 
@@ -712,8 +712,8 @@ mod tests {
     /// taken from the pre-allocated scratch pool, so no alloc either.
     #[test]
     fn refill_with_pad_is_allocation_free() {
-        let input_ports = [ChannelLayout::Quad];
-        let output_ports = [ChannelLayout::Stereo];
+        let input_ports = [ChannelLayout::QUAD];
+        let output_ports = [ChannelLayout::STEREO];
         let max_frames = 256usize;
         let mut scratch = new_scratch::<f32>(&input_ports, &output_ports, max_frames);
 

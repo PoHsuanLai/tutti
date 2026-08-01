@@ -22,7 +22,7 @@ impl Default for AudioDeviceState {
             output_devices: Vec::new(),
             current_device: String::new(),
             is_running: false,
-            channels: ChannelLayout::Stereo,
+            channels: ChannelLayout::STEREO,
         }
     }
 }

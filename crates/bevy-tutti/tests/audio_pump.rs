@@ -35,7 +35,7 @@ impl AudioIn for SliceSource {
     const ON_EMPTY: OnEmpty = OnEmpty::EndOfStream;
 
     fn layout(&self) -> ChannelLayout {
-        ChannelLayout::Stereo
+        ChannelLayout::STEREO
     }
 
     fn poll_into(&mut self, out: &mut [f32]) -> usize {
@@ -63,7 +63,7 @@ impl AudioIn for LiveSource {
     const ON_EMPTY: OnEmpty = OnEmpty::Starved;
 
     fn layout(&self) -> ChannelLayout {
-        ChannelLayout::Stereo
+        ChannelLayout::STEREO
     }
 
     fn poll_into(&mut self, out: &mut [f32]) -> usize {
@@ -88,7 +88,7 @@ fn frames(n: usize) -> Vec<[f32; 2]> {
 }
 
 fn sink(path: &PathBuf) -> WavOut {
-    WavOut::create(path, SAMPLE_RATE, ChannelLayout::Stereo, BitDepth::Float32)
+    WavOut::create(path, SAMPLE_RATE, ChannelLayout::STEREO, BitDepth::Float32)
         .expect("sink should open")
 }
 
@@ -320,7 +320,7 @@ fn the_documented_shape_compiles() {
         frames: frames(128),
         pos: 0,
     };
-    let wav = WavOut::create(&path, SAMPLE_RATE, ChannelLayout::Stereo, BitDepth::Float32)
+    let wav = WavOut::create(&path, SAMPLE_RATE, ChannelLayout::STEREO, BitDepth::Float32)
         .expect("could not create WAV");
     let pump = app.world_mut().spawn(AudioPump::start(src, wav, 1024)).id();
 

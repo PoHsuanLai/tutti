@@ -84,8 +84,8 @@ fn handle_with_mock_server(
                 slots: crate::util::transport::shm::RING_SLOTS as u32,
                 samples_per_channel: 512,
                 format: SampleFormat::Float32,
-                inputs: smallvec![ChannelLayout::Stereo],
-                outputs: smallvec![ChannelLayout::Stereo],
+                inputs: smallvec![ChannelLayout::STEREO],
+                outputs: smallvec![ChannelLayout::STEREO],
             },
         )
         .unwrap(),
@@ -149,8 +149,8 @@ fn handle_with_mock_server(
         editor: EditorPresence::Present,
     };
     let loaded = LoadedPlugin {
-        inputs: smallvec![ChannelLayout::Stereo],
-        outputs: smallvec![ChannelLayout::Stereo],
+        inputs: smallvec![ChannelLayout::STEREO],
+        outputs: smallvec![ChannelLayout::STEREO],
         latency_samples: Samples::ZERO,
         tail: PluginTail::Unknown,
         features: Features::EDITOR,
@@ -189,8 +189,8 @@ fn handle_with_multi_reply_server(
                 slots: crate::util::transport::shm::RING_SLOTS as u32,
                 samples_per_channel: 512,
                 format: SampleFormat::Float32,
-                inputs: smallvec![ChannelLayout::Stereo],
-                outputs: smallvec![ChannelLayout::Stereo],
+                inputs: smallvec![ChannelLayout::STEREO],
+                outputs: smallvec![ChannelLayout::STEREO],
             },
         )
         .unwrap(),
@@ -254,8 +254,8 @@ fn handle_with_multi_reply_server(
         editor: EditorPresence::Present,
     };
     let loaded = LoadedPlugin {
-        inputs: smallvec![ChannelLayout::Stereo],
-        outputs: smallvec![ChannelLayout::Stereo],
+        inputs: smallvec![ChannelLayout::STEREO],
+        outputs: smallvec![ChannelLayout::STEREO],
         latency_samples: Samples::ZERO,
         tail: PluginTail::Unknown,
         features: Features::EDITOR,

@@ -191,7 +191,7 @@ fn slab_layout_for(
 /// what an empty list meant.
 fn default_if_empty(buses: &BusChannels) -> BusChannels {
     if buses.is_empty() {
-        BusChannels::from_slice(&[ChannelLayout::Stereo])
+        BusChannels::from_slice(&[ChannelLayout::STEREO])
     } else {
         buses.clone()
     }
@@ -391,7 +391,7 @@ mod tests {
     #[test]
     fn stereo_one_bus_each_direction_gets_disjoint_regions() {
         let layout = slab_layout_for(
-            &loaded(&[ChannelLayout::Stereo], &[ChannelLayout::Stereo]),
+            &loaded(&[ChannelLayout::STEREO], &[ChannelLayout::STEREO]),
             SampleFormat::Float32,
             DEFAULT_MAX_BUFFER,
         );
@@ -413,8 +413,8 @@ mod tests {
     fn sidechain_input_widens_only_its_own_ring() {
         let layout = slab_layout_for(
             &loaded(
-                &[ChannelLayout::Stereo, ChannelLayout::Mono],
-                &[ChannelLayout::Stereo],
+                &[ChannelLayout::STEREO, ChannelLayout::MONO],
+                &[ChannelLayout::STEREO],
             ),
             SampleFormat::Float32,
             DEFAULT_MAX_BUFFER,
@@ -448,11 +448,11 @@ mod tests {
     fn every_produced_layout_is_addressable() {
         let cases = [
             loaded(&[], &[]),
-            loaded(&[ChannelLayout::Stereo], &[ChannelLayout::Stereo]),
-            loaded(&[ChannelLayout::Mono], &[ChannelLayout::Stereo]),
+            loaded(&[ChannelLayout::STEREO], &[ChannelLayout::STEREO]),
+            loaded(&[ChannelLayout::MONO], &[ChannelLayout::STEREO]),
             loaded(
-                &[ChannelLayout::Stereo, ChannelLayout::Mono],
-                &[ChannelLayout::Stereo],
+                &[ChannelLayout::STEREO, ChannelLayout::MONO],
+                &[ChannelLayout::STEREO],
             ),
         ];
         for (i, l) in cases.iter().enumerate() {
@@ -468,7 +468,7 @@ mod tests {
     /// enough that it more than pays for the ring this change introduces.
     #[test]
     fn slab_is_sized_to_the_real_block_not_the_configured_maximum() {
-        let l = loaded(&[ChannelLayout::Stereo], &[ChannelLayout::Stereo]);
+        let l = loaded(&[ChannelLayout::STEREO], &[ChannelLayout::STEREO]);
         let layout = slab_layout_for(&l, SampleFormat::Float32, DEFAULT_MAX_BUFFER);
 
         assert_eq!(layout.samples_per_channel, BATCH_SIZE);
@@ -493,7 +493,7 @@ mod tests {
     /// the reason this is a `min` and not a bare `BATCH_SIZE`.
     #[test]
     fn a_smaller_configured_buffer_wins() {
-        let l = loaded(&[ChannelLayout::Stereo], &[ChannelLayout::Stereo]);
+        let l = loaded(&[ChannelLayout::STEREO], &[ChannelLayout::STEREO]);
         let layout = slab_layout_for(&l, SampleFormat::Float32, 32);
         assert_eq!(layout.samples_per_channel, 32);
     }
@@ -502,7 +502,7 @@ mod tests {
     /// unaffected by sample format.
     #[test]
     fn f64_doubles_the_byte_size_only() {
-        let l = loaded(&[ChannelLayout::Stereo], &[ChannelLayout::Stereo]);
+        let l = loaded(&[ChannelLayout::STEREO], &[ChannelLayout::STEREO]);
         let f32_layout = slab_layout_for(&l, SampleFormat::Float32, DEFAULT_MAX_BUFFER);
         let f64_layout = slab_layout_for(&l, SampleFormat::Float64, DEFAULT_MAX_BUFFER);
 

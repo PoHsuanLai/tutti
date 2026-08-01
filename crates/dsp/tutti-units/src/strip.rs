@@ -82,11 +82,11 @@ pub struct BusStripUnit {
 impl BusStripUnit {
     /// A stereo strip at unity volume, centred, unmuted.
     pub fn new() -> Self {
-        Self::with_channels(ChannelLayout::Stereo)
+        Self::with_channels(ChannelLayout::STEREO)
     }
 
     /// A strip at the given width, unity volume, centred, unmuted.
-    /// `with_channels(ChannelLayout::Stereo)` is identical to [`new`](Self::new).
+    /// `with_channels(ChannelLayout::STEREO)` is identical to [`new`](Self::new).
     ///
     /// A zero-wide strip is meaningless — there would be nothing to fade — so an
     /// empty layout is clamped to mono, matching
@@ -128,7 +128,7 @@ impl BusStripUnit {
     /// Width and modulation are **independent axes**: `channels` says how wide
     /// the strip is, the `mod_*` flags say which params it reads at audio rate.
     /// They were not independent — this constructor hardcoded
-    /// [`ChannelLayout::Stereo`] — so asking for a modulated 5.1 strip silently
+    /// [`ChannelLayout::STEREO`] — so asking for a modulated 5.1 strip silently
     /// returned a *stereo* one, and the only symptom was a `set_source` on a
     /// param port that resolved and carried the wrong signal.
     ///
@@ -534,14 +534,14 @@ mod tests {
         assert_eq!(plain.param_port(UnitParam::Pan), None);
 
         // Volume then pan, after the two audio inputs.
-        let both = BusStripUnit::with_param_inputs(ChannelLayout::Stereo, true, true);
+        let both = BusStripUnit::with_param_inputs(ChannelLayout::STEREO, true, true);
         assert_eq!(both.inputs(), 4);
         assert_eq!(both.param_port(UnitParam::Volume), Some(2));
         assert_eq!(both.param_port(UnitParam::Pan), Some(3));
 
         // Pan alone still lands directly after the audio inputs — the index is
         // derived, not a fixed slot.
-        let pan_only = BusStripUnit::with_param_inputs(ChannelLayout::Stereo, false, true);
+        let pan_only = BusStripUnit::with_param_inputs(ChannelLayout::STEREO, false, true);
         assert_eq!(pan_only.inputs(), 3);
         assert_eq!(pan_only.param_port(UnitParam::Volume), None);
         assert_eq!(pan_only.param_port(UnitParam::Pan), Some(2));
@@ -550,7 +550,7 @@ mod tests {
     /// A present port overrides the atomic per sample.
     #[test]
     fn param_port_overrides_the_atomic() {
-        let mut s = BusStripUnit::with_param_inputs(ChannelLayout::Stereo, true, false);
+        let mut s = BusStripUnit::with_param_inputs(ChannelLayout::STEREO, true, false);
         s.set_volume(Amplitude(1.0));
         let mut out = [0.0f32; 2];
         // Ports: [L, R, volume]
@@ -572,7 +572,7 @@ mod tests {
     /// a surround channel has no left/right axis to sit on.
     #[test]
     fn extra_channels_are_faded_but_not_balanced() {
-        let mut s = BusStripUnit::with_channels(ChannelLayout::Multi(3));
+        let mut s = BusStripUnit::with_channels(ChannelLayout::from_count(3));
         s.set_volume(Amplitude(0.5));
         s.set_pan(Pan(-1.0));
         let mut out = [0.0f32; 3];
@@ -595,7 +595,7 @@ mod tests {
     fn route_reports_mute_on_every_channel() {
         use tutti_core::dsp::Signal;
 
-        let mut s = BusStripUnit::with_channels(ChannelLayout::Multi(3));
+        let mut s = BusStripUnit::with_channels(ChannelLayout::from_count(3));
         s.set_muted(true);
         let mut input = SignalFrame::new(3);
         for c in 0..3 {
@@ -664,11 +664,11 @@ mod tests {
     /// Width and modulation are independent axes.
     ///
     /// The regression for the bug this constructor had: it hardcoded
-    /// `ChannelLayout::Stereo`, so a modulated 6-channel strip came back
+    /// `ChannelLayout::STEREO`, so a modulated 6-channel strip came back
     /// *stereo*. The arity assertion fails against that version.
     #[test]
     fn a_modulated_strip_is_as_wide_as_it_was_asked_for() {
-        let s = BusStripUnit::with_param_inputs(ChannelLayout::Multi(6), true, true);
+        let s = BusStripUnit::with_param_inputs(ChannelLayout::from_count(6), true, true);
         assert_eq!(s.outputs(), 6, "the width is what was asked for");
         assert_eq!(s.inputs(), 8, "six audio inputs, then volume and pan");
         assert_eq!(

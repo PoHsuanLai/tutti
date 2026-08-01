@@ -113,7 +113,7 @@ fn main() -> tutti_export::Result<()> {
     write(
         "dry.wav".into(),
         tone_net(),
-        &base(AudioFormat::Wav, BitDepth::Float32, ChannelLayout::Stereo),
+        &base(AudioFormat::Wav, BitDepth::Float32, ChannelLayout::STEREO),
     )?;
 
     // ---- format x depth --------------------------------------------------
@@ -141,7 +141,7 @@ fn main() -> tutti_export::Result<()> {
             write(
                 format!("fmt_{ext}_{tag}.{ext}"),
                 tone_net(),
-                &base(fmt, depth, ChannelLayout::Stereo),
+                &base(fmt, depth, ChannelLayout::STEREO),
             )?;
         }
     }
@@ -154,7 +154,7 @@ fn main() -> tutti_export::Result<()> {
         &base(
             AudioFormat::OggVorbis(Default::default()),
             BitDepth::Int24,
-            ChannelLayout::Stereo,
+            ChannelLayout::STEREO,
         ),
     )?;
 
@@ -173,7 +173,7 @@ fn main() -> tutti_export::Result<()> {
             write(
                 format!("dc_{tag}_{ext}_i16.{ext}"),
                 dc_net(level),
-                &base(fmt, BitDepth::Int16, ChannelLayout::Stereo),
+                &base(fmt, BitDepth::Int16, ChannelLayout::STEREO),
             )?;
         }
     }
@@ -188,7 +188,7 @@ fn main() -> tutti_export::Result<()> {
         (Dither::Rectangular, "rect"),
         (Dither::Triangular, "tri"),
     ] {
-        let mut cfg = base(AudioFormat::Wav, BitDepth::Int16, ChannelLayout::Stereo);
+        let mut cfg = base(AudioFormat::Wav, BitDepth::Int16, ChannelLayout::STEREO);
         cfg.dither = mode;
         write(format!("dither_{tag}.wav"), dc_net(0.25), &cfg)?;
     }
@@ -204,7 +204,7 @@ fn main() -> tutti_export::Result<()> {
         (96_000.0, "96k"),
         (22_050.0, "22k05"),
     ] {
-        let mut cfg = base(AudioFormat::Wav, BitDepth::Float32, ChannelLayout::Stereo);
+        let mut cfg = base(AudioFormat::Wav, BitDepth::Float32, ChannelLayout::STEREO);
         cfg.resample = Some(Resample::to(tutti_core::SampleRate(target)));
         write(format!("resample_{tag}.wav"), tone_net(), &cfg)?;
     }
@@ -212,7 +212,7 @@ fn main() -> tutti_export::Result<()> {
     // The anti-alias case. 18 kHz downsampled to 22.05 k is above the new
     // Nyquist and must be attenuated, not folded down to ~4 kHz.
     {
-        let mut cfg = base(AudioFormat::Wav, BitDepth::Float32, ChannelLayout::Stereo);
+        let mut cfg = base(AudioFormat::Wav, BitDepth::Float32, ChannelLayout::STEREO);
         cfg.resample = Some(Resample::to(tutti_core::SampleRate(22_050.0)));
         write("resample_alias_22k05.wav".into(), near_nyquist_net(), &cfg)?;
     }
@@ -220,7 +220,7 @@ fn main() -> tutti_export::Result<()> {
     // Every chunk-size preset at one ratio, so a preset that degrades the
     // conversion is visible rather than assumed equivalent.
     for (i, chunk) in tutti_export::ChunkSize::PRESETS.iter().enumerate() {
-        let mut cfg = base(AudioFormat::Wav, BitDepth::Float32, ChannelLayout::Stereo);
+        let mut cfg = base(AudioFormat::Wav, BitDepth::Float32, ChannelLayout::STEREO);
         cfg.resample = Some(Resample {
             target_rate: tutti_core::SampleRate(44_100.0),
             chunk: *chunk,
@@ -236,17 +236,21 @@ fn main() -> tutti_export::Result<()> {
     write(
         "chan_mono.wav".into(),
         mono_net(),
-        &base(AudioFormat::Wav, BitDepth::Float32, ChannelLayout::Mono),
+        &base(AudioFormat::Wav, BitDepth::Float32, ChannelLayout::MONO),
     )?;
     write(
         "chan_mono_to_quad.wav".into(),
         mono_net(),
-        &base(AudioFormat::Wav, BitDepth::Float32, ChannelLayout::Quad),
+        &base(AudioFormat::Wav, BitDepth::Float32, ChannelLayout::QUAD),
     )?;
     write(
         "chan_stereo_to_51.wav".into(),
         tone_net(),
-        &base(AudioFormat::Wav, BitDepth::Float32, ChannelLayout::Multi(6)),
+        &base(
+            AudioFormat::Wav,
+            BitDepth::Float32,
+            ChannelLayout::from_count(6),
+        ),
     )?;
 
     println!("\n{count} cases written to {}", dir.display());

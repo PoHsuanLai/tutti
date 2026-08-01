@@ -70,8 +70,8 @@ fn stereo_layout() -> SlabLayout {
         slots: RING_SLOTS as u32,
         samples_per_channel: 512,
         format: SampleFormat::Float32,
-        inputs: smallvec![ChannelLayout::Stereo],
-        outputs: smallvec![ChannelLayout::Stereo],
+        inputs: smallvec![ChannelLayout::STEREO],
+        outputs: smallvec![ChannelLayout::STEREO],
     }
 }
 

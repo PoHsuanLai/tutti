@@ -78,7 +78,7 @@
 //!
 //! ```rust,ignore
 //! let src = TapIn::new(tap.open().expect("tap is free"));
-//! let wav = WavOut::create(&path, config.sample_rate, ChannelLayout::Stereo, BitDepth::Float32)?;
+//! let wav = WavOut::create(&path, config.sample_rate, ChannelLayout::STEREO, BitDepth::Float32)?;
 //! commands.spawn(AudioPump::start(src, wav, 1024));
 //! ```
 //!

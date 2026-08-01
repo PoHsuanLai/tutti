@@ -439,8 +439,8 @@ mod tests {
             samples_per_channel: samples,
             format,
             slots: RING_SLOTS as u32,
-            inputs: SmallVec::from_slice(&[ChannelLayout::Stereo, ChannelLayout::Mono]),
-            outputs: SmallVec::from_slice(&[ChannelLayout::Stereo]),
+            inputs: SmallVec::from_slice(&[ChannelLayout::STEREO, ChannelLayout::MONO]),
+            outputs: SmallVec::from_slice(&[ChannelLayout::STEREO]),
         }
     }
 
@@ -449,8 +449,8 @@ mod tests {
             samples_per_channel: samples,
             format,
             slots: RING_SLOTS as u32,
-            inputs: SmallVec::from_slice(&[ChannelLayout::Stereo]),
-            outputs: SmallVec::from_slice(&[ChannelLayout::Stereo]),
+            inputs: SmallVec::from_slice(&[ChannelLayout::STEREO]),
+            outputs: SmallVec::from_slice(&[ChannelLayout::STEREO]),
         }
     }
 

@@ -40,7 +40,7 @@ fn main() {
     app.insert_resource(TransportRes(Transport::new(SAMPLE_RATE)));
     app.insert_resource(AudioConfig {
         sample_rate: SAMPLE_RATE,
-        channels: ChannelLayout::Stereo,
+        channels: ChannelLayout::STEREO,
     });
     app.add_plugins((bevy_app::TaskPoolPlugin::default(), GraphReconcilePlugin));
     app.add_plugins(ExportPlugin);
@@ -195,7 +195,7 @@ fn config() -> ExportConfig {
         encode: EncodeConfig {
             format: AudioFormat::Wav,
             bit_depth: BitDepth::Int24,
-            channels: ChannelLayout::Stereo,
+            channels: ChannelLayout::STEREO,
         },
         ..Default::default()
     }

@@ -1184,13 +1184,13 @@ fn test_audio_port_info_types() {
     let port = AudioPortInfo {
         id: 0,
         name: "Main".to_string(),
-        layout: ChannelLayout::Stereo,
+        layout: ChannelLayout::STEREO,
         flags: AudioPortFlags::MAIN | AudioPortFlags::SUPPORTS_64BIT,
         in_place_pair_id: u32::MAX,
     };
 
     assert!(port.flags.contains(AudioPortFlags::MAIN));
-    assert_eq!(port.layout, ChannelLayout::Stereo);
+    assert_eq!(port.layout, ChannelLayout::STEREO);
     assert_eq!(port.layout.count(), 2);
 }
 
@@ -1433,7 +1433,7 @@ fn track_audio_count_comes_from_the_layout() {
     use tutti_clap_host::{ChannelLayout, TrackAudio, TrackPortType};
 
     let surround = TrackAudio {
-        layout: ChannelLayout::Multi(6),
+        layout: ChannelLayout::from_count(6),
         port_type: Some(TrackPortType::Surround),
     };
     assert_eq!(surround.layout.count(), 6);
@@ -1441,15 +1441,15 @@ fn track_audio_count_comes_from_the_layout() {
     // `from_layout` tags mono/stereo (where the count IS the topology) and
     // leaves anything wider untagged rather than guessing surround vs ambisonic.
     assert_eq!(
-        TrackAudio::from_layout(ChannelLayout::Mono).port_type,
+        TrackAudio::from_layout(ChannelLayout::MONO).port_type,
         Some(TrackPortType::Mono)
     );
     assert_eq!(
-        TrackAudio::from_layout(ChannelLayout::Stereo).port_type,
+        TrackAudio::from_layout(ChannelLayout::STEREO).port_type,
         Some(TrackPortType::Stereo)
     );
     assert_eq!(
-        TrackAudio::from_layout(ChannelLayout::Multi(6)).port_type,
+        TrackAudio::from_layout(ChannelLayout::from_count(6)).port_type,
         None,
         "a bare count cannot distinguish 5.1 from ambisonic, so it must not claim either"
     );

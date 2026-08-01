@@ -415,7 +415,8 @@ fn with_audio_buffer_f64<R>(
 mod tests {
     use super::*;
     use tutti_plugin::server::{
-        ParamAddress, PluginAudio, PluginEditorHost, PluginMeta, PluginParams, PluginState, PluginTail, Samples,
+        ParamAddress, PluginAudio, PluginEditorHost, PluginMeta, PluginParams, PluginState,
+        PluginTail, Samples,
     };
 
     #[test]
@@ -676,8 +677,8 @@ mod tests {
         let layout = test_layout(
             N,
             SF::Float32,
-            &[ChannelLayout::Stereo, ChannelLayout::Mono],
-            &[ChannelLayout::Stereo],
+            &[ChannelLayout::STEREO, ChannelLayout::MONO],
+            &[ChannelLayout::STEREO],
         );
         let name = format!("tutti_multibus_test_{}", std::process::id());
         let _guard = AudioSlab::create(name.clone(), layout.clone()).unwrap();
@@ -773,8 +774,8 @@ mod tests {
         let layout = test_layout(
             N,
             SF::Float32,
-            &[ChannelLayout::Stereo],
-            &[ChannelLayout::Stereo],
+            &[ChannelLayout::STEREO],
+            &[ChannelLayout::STEREO],
         );
         let name = format!("tutti_recycled_slot_{}", std::process::id());
         let _guard = AudioSlab::create(name.clone(), layout.clone()).unwrap();
@@ -827,8 +828,8 @@ mod tests {
         let layout = test_layout(
             N,
             SampleFormat::Float32,
-            &[ChannelLayout::Stereo],
-            &[ChannelLayout::Stereo],
+            &[ChannelLayout::STEREO],
+            &[ChannelLayout::STEREO],
         );
         let name = format!("tutti_nan_test_{}_{}", fill.to_bits(), std::process::id());
         let _guard = AudioSlab::create(name.clone(), layout.clone()).unwrap();
@@ -886,8 +887,8 @@ mod tests {
         let layout = test_layout(
             N,
             SampleFormat::Float32,
-            &[ChannelLayout::Stereo],
-            &[ChannelLayout::Stereo],
+            &[ChannelLayout::STEREO],
+            &[ChannelLayout::STEREO],
         );
         let name = format!("tutti_noalloc_test_{}", std::process::id());
         let _guard = AudioSlab::create(name.clone(), layout.clone()).unwrap();
@@ -948,8 +949,8 @@ mod tests {
         let layout = test_layout(
             N,
             SampleFormat::Float32,
-            &[ChannelLayout::Stereo, ChannelLayout::Mono],
-            &[ChannelLayout::Stereo],
+            &[ChannelLayout::STEREO, ChannelLayout::MONO],
+            &[ChannelLayout::STEREO],
         );
         let name = format!("tutti_noalloc_mb_test_{}", std::process::id());
         let _guard = AudioSlab::create(name.clone(), layout.clone()).unwrap();

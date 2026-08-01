@@ -356,7 +356,7 @@ impl AudioIn for FileIn {
     /// reads [`channels`](FileIn::channels) — both already public, both
     /// unchanged.
     fn layout(&self) -> ChannelLayout {
-        ChannelLayout::Stereo
+        ChannelLayout::STEREO
     }
 
     /// Flat interleaved stereo. `out` holds `out.len() / 2` frames, and the

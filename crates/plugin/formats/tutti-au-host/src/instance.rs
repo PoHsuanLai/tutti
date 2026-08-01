@@ -2596,8 +2596,8 @@ mod tests {
     fn render_callback_respects_a_short_buffer() {
         let scratch = RenderScratch::new(
             AuBusLayout {
-                inputs: ChannelLayout::Stereo,
-                outputs: ChannelLayout::Stereo,
+                inputs: ChannelLayout::STEREO,
+                outputs: ChannelLayout::STEREO,
                 has_input: true,
             },
             512,
@@ -2643,8 +2643,8 @@ mod tests {
     fn render_callback_survives_a_null_buffer() {
         let scratch = RenderScratch::new(
             AuBusLayout {
-                inputs: ChannelLayout::Stereo,
-                outputs: ChannelLayout::Stereo,
+                inputs: ChannelLayout::STEREO,
+                outputs: ChannelLayout::STEREO,
                 has_input: true,
             },
             512,
@@ -2671,8 +2671,8 @@ mod tests {
     fn render_callback_handles_zero_capacity() {
         let scratch = RenderScratch::new(
             AuBusLayout {
-                inputs: ChannelLayout::Stereo,
-                outputs: ChannelLayout::Stereo,
+                inputs: ChannelLayout::STEREO,
+                outputs: ChannelLayout::STEREO,
                 has_input: true,
             },
             512,
@@ -2692,8 +2692,8 @@ mod tests {
     fn render_callback_rejects_null_arguments() {
         let scratch = RenderScratch::new(
             AuBusLayout {
-                inputs: ChannelLayout::Stereo,
-                outputs: ChannelLayout::Stereo,
+                inputs: ChannelLayout::STEREO,
+                outputs: ChannelLayout::STEREO,
                 has_input: true,
             },
             512,
@@ -2726,8 +2726,8 @@ mod tests {
     fn the_guarded_callback_returns_a_status_for_every_malformed_input() {
         let scratch = RenderScratch::new(
             AuBusLayout {
-                inputs: ChannelLayout::Stereo,
-                outputs: ChannelLayout::Stereo,
+                inputs: ChannelLayout::STEREO,
+                outputs: ChannelLayout::STEREO,
                 has_input: true,
             },
             512,

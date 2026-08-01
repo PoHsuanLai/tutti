@@ -88,12 +88,12 @@ impl std::fmt::Debug for Unit {
 impl Unit {
     /// Stereo, at the default FFT size.
     pub fn new(sample_rate: impl Into<SampleRate>) -> Self {
-        Self::with_fft_size_and_channels(sample_rate, FftSize::default(), ChannelLayout::Stereo)
+        Self::with_fft_size_and_channels(sample_rate, FftSize::default(), ChannelLayout::STEREO)
     }
 
     /// Stereo, at a custom FFT size.
     pub fn with_fft_size(sample_rate: impl Into<SampleRate>, fft_size: FftSize) -> Self {
-        Self::with_fft_size_and_channels(sample_rate, fft_size, ChannelLayout::Stereo)
+        Self::with_fft_size_and_channels(sample_rate, fft_size, ChannelLayout::STEREO)
     }
 
     /// `channels` wide, at the default FFT size.

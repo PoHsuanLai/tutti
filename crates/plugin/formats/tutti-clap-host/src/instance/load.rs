@@ -343,10 +343,10 @@ mod enumeration_hole_tests {
         assert_eq!(
             channels.as_slice(),
             [
-                ChannelLayout::Mono,
-                ChannelLayout::Stereo,
-                ChannelLayout::Multi(3),
-                ChannelLayout::Quad
+                ChannelLayout::MONO,
+                ChannelLayout::STEREO,
+                ChannelLayout::from_count(3),
+                ChannelLayout::QUAD
             ]
         );
     }
@@ -358,7 +358,7 @@ mod enumeration_hole_tests {
         let channels = with_layout(4, 2, |ext| port_channels(std::ptr::null(), ext, false));
         assert_eq!(
             channels.as_slice(),
-            [ChannelLayout::Mono, ChannelLayout::Stereo],
+            [ChannelLayout::MONO, ChannelLayout::STEREO],
             "a hole at index 2 must yield the prefix [Mono, Stereo]; a trailing \
              Quad means the host skipped the hole and moved port 3 (width 4) \
              into index 2"

@@ -417,7 +417,7 @@ fn a_wider_master_declaration_widens_the_root() {
 
     app.insert_resource(MasterSources::from_node_at_width(
         wide,
-        tutti_core::ChannelLayout::Multi(6),
+        tutti_core::ChannelLayout::from_count(6),
     ));
     app.update();
 
@@ -447,7 +447,7 @@ fn a_widened_root_survives_a_real_commit() {
 
     app.insert_resource(MasterSources::from_node_at_width(
         wide,
-        tutti_core::ChannelLayout::Multi(6),
+        tutti_core::ChannelLayout::from_count(6),
     ));
     app.update();
     // A second frame: the commit runs in `Commit`, after `rebuild`'s widening.
@@ -476,7 +476,7 @@ fn a_shorter_master_declaration_does_not_narrow_the_root() {
 
     app.insert_resource(MasterSources::from_node_at_width(
         wide,
-        tutti_core::ChannelLayout::Multi(6),
+        tutti_core::ChannelLayout::from_count(6),
     ));
     app.update();
     assert_eq!(app.world().resource::<AudioGraphRes>().0.outputs(), 6);
@@ -535,7 +535,7 @@ fn from_node_at_width_maps_every_channel_straight_through() {
         .entity_mut(sink)
         .insert(AudioSources::from_node_at_width(
             src,
-            tutti_core::ChannelLayout::Multi(6),
+            tutti_core::ChannelLayout::from_count(6),
         ));
     app.update();
 
@@ -559,7 +559,7 @@ fn from_node_at_width_at_stereo_is_stereo_from() {
     let e = spawn_node(&mut app, pass());
 
     assert_eq!(
-        AudioSources::from_node_at_width(e, tutti_core::ChannelLayout::Stereo),
+        AudioSources::from_node_at_width(e, tutti_core::ChannelLayout::STEREO),
         AudioSources::stereo_from(e)
     );
 }

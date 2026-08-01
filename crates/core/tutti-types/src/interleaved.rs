@@ -340,7 +340,7 @@ mod tests {
     #[test]
     fn len_counts_frames_and_samples_counts_samples() {
         let buf: Vec<f32> = (0..24).map(|i| i as f32).collect();
-        let it = Interleaved::new(&buf, ChannelLayout::Multi(6));
+        let it = Interleaved::new(&buf, ChannelLayout::from_count(6));
         assert_eq!(it.len(), 4, "24 samples at width 6 is 4 frames");
         assert_eq!(it.samples().len(), 24);
         assert_eq!(it.stride(), 6);
@@ -351,7 +351,7 @@ mod tests {
     #[test]
     fn window_takes_frames_not_samples() {
         let buf: Vec<f32> = (0..24).map(|i| i as f32).collect();
-        let it = Interleaved::new(&buf, ChannelLayout::Multi(6));
+        let it = Interleaved::new(&buf, ChannelLayout::from_count(6));
 
         let w = it.window(1..3);
         assert_eq!(w.len(), 2, "two frames");
@@ -368,7 +368,7 @@ mod tests {
     #[test]
     fn frames_yields_whole_frames_in_order() {
         let buf: Vec<f32> = (0..12).map(|i| i as f32).collect();
-        let it = Interleaved::new(&buf, ChannelLayout::Quad);
+        let it = Interleaved::new(&buf, ChannelLayout::QUAD);
 
         let collected: Vec<&[f32]> = it.frames().collect();
         assert_eq!(collected.len(), 3);
@@ -387,7 +387,7 @@ mod tests {
     #[test]
     fn a_partial_trailing_frame_is_not_counted() {
         let buf = [1.0f32, 2.0, 3.0, 4.0, 5.0];
-        let it = Interleaved::new(&buf, ChannelLayout::Stereo);
+        let it = Interleaved::new(&buf, ChannelLayout::STEREO);
         assert_eq!(it.len(), 2, "two whole frames; the fifth sample is a tail");
         assert_eq!(it.frames().count(), 2, "chunks_exact drops the tail");
         assert_eq!(it.samples().len(), 5, "but the data is still all there");
@@ -399,13 +399,13 @@ mod tests {
     #[should_panic(expected = "non-zero width")]
     fn a_zero_width_is_rejected() {
         let buf = [1.0f32, 2.0];
-        let _ = Interleaved::new(&buf, ChannelLayout::Multi(0));
+        let _ = Interleaved::new(&buf, ChannelLayout::EMPTY);
     }
 
     #[test]
     fn deinterleave_into_reuses_and_splits_channels() {
         let buf = [1.0f32, -1.0, 2.0, -2.0, 3.0, -3.0];
-        let it = Interleaved::new(&buf, ChannelLayout::Stereo);
+        let it = Interleaved::new(&buf, ChannelLayout::STEREO);
 
         // Pre-dirtied, to prove the planes are cleared rather than appended to.
         let mut planes = vec![vec![99.0f32; 7], vec![99.0f32; 7]];
@@ -420,7 +420,7 @@ mod tests {
     #[test]
     fn deinterleave_into_clears_planes_beyond_the_width() {
         let buf = [1.0f32, 2.0];
-        let it = Interleaved::new(&buf, ChannelLayout::Stereo);
+        let it = Interleaved::new(&buf, ChannelLayout::STEREO);
 
         let mut planes = vec![vec![99.0f32], vec![99.0f32], vec![99.0f32; 4]];
         it.deinterleave_into(&mut planes);
@@ -439,7 +439,7 @@ mod tests {
     fn frames_feeds_fold_frame_directly() {
         // 5.1 with energy only in the centre channel.
         let buf = [0.0f32, 0.0, 1.0, 0.0, 0.0, 0.0];
-        let it = Interleaved::new(&buf, ChannelLayout::Multi(6));
+        let it = Interleaved::new(&buf, ChannelLayout::from_count(6));
 
         let mut out = [0.0f32; 2];
         for f in it.frames() {
@@ -456,10 +456,10 @@ mod tests {
     #[test]
     fn fold_to_mono_agrees_with_the_free_function() {
         for layout in [
-            ChannelLayout::Mono,
-            ChannelLayout::Stereo,
-            ChannelLayout::Quad,
-            ChannelLayout::Multi(6),
+            ChannelLayout::MONO,
+            ChannelLayout::STEREO,
+            ChannelLayout::QUAD,
+            ChannelLayout::from_count(6),
         ] {
             // Deliberately not a whole number of frames at any of these widths
             // except mono: 25 is coprime with 2, 4 and 6.
@@ -481,7 +481,7 @@ mod tests {
     #[test]
     fn folding_a_window_folds_only_that_window() {
         let buf = [1.0f32, 1.0, 2.0, 2.0, 3.0, 3.0];
-        let it = Interleaved::new(&buf, ChannelLayout::Stereo);
+        let it = Interleaved::new(&buf, ChannelLayout::STEREO);
         assert_eq!(it.window(1..3).fold_to_mono(), vec![2.0, 3.0]);
     }
 
@@ -489,7 +489,7 @@ mod tests {
     fn the_mutable_view_writes_whole_frames() {
         let mut buf = [0.0f32; 8];
         {
-            let mut it = InterleavedMut::new(&mut buf, ChannelLayout::Stereo);
+            let mut it = InterleavedMut::new(&mut buf, ChannelLayout::STEREO);
             assert_eq!(it.len(), 4);
             for (i, f) in it.frames_mut().enumerate() {
                 f[0] = i as f32;
@@ -535,11 +535,11 @@ mod tests {
     #[test]
     fn the_mutable_view_reborrows_as_read_only() {
         let mut buf = [1.0f32, 2.0, 3.0, 4.0];
-        let mut it = InterleavedMut::new(&mut buf, ChannelLayout::Stereo);
+        let mut it = InterleavedMut::new(&mut buf, ChannelLayout::STEREO);
         it.frame_mut(0)[1] = 9.0;
 
         let r = it.as_ref();
-        assert_eq!(r.layout(), ChannelLayout::Stereo);
+        assert_eq!(r.layout(), ChannelLayout::STEREO);
         assert_eq!(r.frame(0), &[1.0, 9.0]);
     }
 }

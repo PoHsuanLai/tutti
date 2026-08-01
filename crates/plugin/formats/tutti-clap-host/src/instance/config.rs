@@ -232,10 +232,10 @@ impl PortLayout {
     /// truth about one width, disagreeing.
     pub fn default_empty_buses(&mut self) {
         if self.inputs.is_empty() {
-            self.inputs.push(ChannelLayout::Stereo);
+            self.inputs.push(ChannelLayout::STEREO);
         }
         if self.outputs.is_empty() {
-            self.outputs.push(ChannelLayout::Stereo);
+            self.outputs.push(ChannelLayout::STEREO);
         }
     }
 }
@@ -250,8 +250,8 @@ mod port_layout_tests {
     #[test]
     fn a_mono_bus_is_not_widened_to_stereo() {
         let mut ports = PortLayout {
-            inputs: BusChannels::from_slice(&[ChannelLayout::Mono]),
-            outputs: BusChannels::from_slice(&[ChannelLayout::Mono]),
+            inputs: BusChannels::from_slice(&[ChannelLayout::MONO]),
+            outputs: BusChannels::from_slice(&[ChannelLayout::MONO]),
         };
         ports.default_empty_buses();
 
@@ -274,8 +274,8 @@ mod port_layout_tests {
         let mut ports = PortLayout::default();
         ports.default_empty_buses();
 
-        assert_eq!(ports.inputs.as_slice(), &[ChannelLayout::Stereo]);
-        assert_eq!(ports.outputs.as_slice(), &[ChannelLayout::Stereo]);
+        assert_eq!(ports.inputs.as_slice(), &[ChannelLayout::STEREO]);
+        assert_eq!(ports.outputs.as_slice(), &[ChannelLayout::STEREO]);
         assert_eq!(ports.input_channel_total(), 2);
         assert_eq!(ports.output_channel_total(), 2);
     }
@@ -287,7 +287,10 @@ mod port_layout_tests {
     fn totals_sum_across_buses_and_survive_defaulting() {
         let mut ports = PortLayout {
             inputs: BusChannels::from_slice(&[]),
-            outputs: BusChannels::from_slice(&[ChannelLayout::Stereo, ChannelLayout::Multi(6)]),
+            outputs: BusChannels::from_slice(&[
+                ChannelLayout::STEREO,
+                ChannelLayout::from_count(6),
+            ]),
         };
         ports.default_empty_buses();
 
@@ -295,7 +298,7 @@ mod port_layout_tests {
         assert_eq!(ports.output_channel_total(), 8, "2 + 6, not floored");
         assert_eq!(
             ports.inputs.as_slice(),
-            &[ChannelLayout::Stereo],
+            &[ChannelLayout::STEREO],
             "an absent input bus is stated as stereo, not left empty"
         );
     }

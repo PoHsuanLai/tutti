@@ -214,10 +214,10 @@ mod tests {
     #[test]
     fn slab_is_large_enough_and_aligned() {
         for layout in [
-            ChannelLayout::Mono,
-            ChannelLayout::Stereo,
-            ChannelLayout::Quad,
-            ChannelLayout::Multi(8),
+            ChannelLayout::MONO,
+            ChannelLayout::STEREO,
+            ChannelLayout::QUAD,
+            ChannelLayout::from_count(8),
         ] {
             let list = RenderBufferList::new(layout);
             let n = layout.count() as usize;
@@ -241,9 +241,9 @@ mod tests {
     #[test]
     fn bind_writes_stay_inside_the_slab() {
         for layout in [
-            ChannelLayout::Mono,
-            ChannelLayout::Stereo,
-            ChannelLayout::Multi(6),
+            ChannelLayout::MONO,
+            ChannelLayout::STEREO,
+            ChannelLayout::from_count(6),
         ] {
             let n = layout.count() as usize;
             let mut list = RenderBufferList::new(layout);

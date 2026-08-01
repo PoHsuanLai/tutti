@@ -37,7 +37,7 @@ use tutti_core::metering::AudioTap;
 ///
 /// ```rust,ignore
 /// fn record_master(tap: Res<AudioTapRes>, mut commands: Commands) {
-///     let wav = WavOut::create(&path, sample_rate, ChannelLayout::Stereo, BitDepth::Float32)?;
+///     let wav = WavOut::create(&path, sample_rate, ChannelLayout::STEREO, BitDepth::Float32)?;
 ///     let src = TapIn::new(tap.open().expect("tap is free"));
 ///     commands.spawn(AudioPump::start(src, wav, 1024));
 /// }

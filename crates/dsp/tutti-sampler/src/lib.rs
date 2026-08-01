@@ -96,7 +96,7 @@ pub const MAX_SAMPLER_CHANNELS: usize = tutti_core::engine::MAX_ROOT_CHANNELS;
 #[inline]
 pub(crate) fn nonempty(layout: tutti_core::ChannelLayout) -> tutti_core::ChannelLayout {
     if layout.count() == 0 {
-        tutti_core::ChannelLayout::Mono
+        tutti_core::ChannelLayout::MONO
     } else {
         layout
     }

@@ -46,7 +46,7 @@ fn every_fft_size_yields_a_cola_grid() {
 fn non_positive_sample_rate_does_not_panic() {
     for rate in [0.0, -44_100.0] {
         let u = Unit::new(rate);
-        assert_eq!(u.channels(), ChannelLayout::Stereo);
+        assert_eq!(u.channels(), ChannelLayout::STEREO);
     }
 }
 
@@ -384,7 +384,7 @@ fn cloning_shares_the_bank_and_isolate_severs_it() {
     );
     assert_eq!(
         c.width,
-        ChannelLayout::Multi(6),
+        ChannelLayout::from_count(6),
         "width must mirror the bank without borrowing it"
     );
 
@@ -402,7 +402,7 @@ fn cloning_shares_the_bank_and_isolate_severs_it() {
     );
     assert_eq!(
         isolated.width,
-        ChannelLayout::Multi(6),
+        ChannelLayout::from_count(6),
         "isolate must preserve the unit's width"
     );
 
@@ -1134,13 +1134,13 @@ fn overlap_add_flushes_subnormals() {
 #[test]
 fn creation_and_width() {
     let unit = Unit::new(44100.0);
-    assert_eq!(unit.channels(), ChannelLayout::Stereo);
+    assert_eq!(unit.channels(), ChannelLayout::STEREO);
     assert_eq!(unit.inputs(), 2);
     assert_eq!(unit.outputs(), 2);
 
     assert_eq!(
         Unit::with_channels(44_100.0, 6usize).channels(),
-        ChannelLayout::Multi(6)
+        ChannelLayout::from_count(6)
     );
 }
 
@@ -1149,7 +1149,7 @@ fn creation_and_width() {
 fn zero_width_is_clamped_to_one() {
     assert_eq!(
         Unit::with_channels(44_100.0, 0usize).channels(),
-        ChannelLayout::Mono
+        ChannelLayout::MONO
     );
 }
 
@@ -1220,7 +1220,7 @@ fn clone_carries_parameters_and_width() {
     u.set_stretch_factor(StretchFactor::new(1.5));
 
     let c = u.clone();
-    assert_eq!(c.channels(), ChannelLayout::Multi(6));
+    assert_eq!(c.channels(), ChannelLayout::from_count(6));
     assert!((c.stretch_factor().get() - 1.5).abs() < 0.001);
 
     // The atomics are independent after the clone.

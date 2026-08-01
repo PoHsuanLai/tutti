@@ -345,10 +345,10 @@ mod tests {
         let mut src = SliceSource {
             samples: samples.clone(),
             pos: 0,
-            layout: ChannelLayout::Stereo,
+            layout: ChannelLayout::STEREO,
             chunk: 37, // deliberately coprime with the buffer so chunks straddle
         };
-        let mut dst = CountingSink::new(ChannelLayout::Stereo);
+        let mut dst = CountingSink::new(ChannelLayout::STEREO);
         let mut buf = vec![0.0f32; 64 * 2];
 
         let mut total = 0;
@@ -381,10 +381,10 @@ mod tests {
         let mut src = SliceSource {
             samples: samples.clone(),
             pos: 0,
-            layout: ChannelLayout::Multi(6),
+            layout: ChannelLayout::from_count(6),
             chunk: 41,
         };
-        let mut dst: CountingSink<f64> = CountingSink::new(ChannelLayout::Multi(6));
+        let mut dst: CountingSink<f64> = CountingSink::new(ChannelLayout::from_count(6));
         let mut buf = vec![0.0f64; 64 * 6];
 
         while pump(&mut src, &mut dst, &mut buf) != 0 {}
@@ -410,7 +410,7 @@ mod tests {
         let mut src = SliceSource {
             samples: vec![1.0f32; FRAMES * CH],
             pos: 0,
-            layout: ChannelLayout::Multi(6),
+            layout: ChannelLayout::from_count(6),
             chunk: FRAMES, // no artificial short poll — measure the real ceiling
         };
 
@@ -427,10 +427,10 @@ mod tests {
         let mut src2 = SliceSource {
             samples: vec![1.0f32; FRAMES * CH],
             pos: 0,
-            layout: ChannelLayout::Multi(6),
+            layout: ChannelLayout::from_count(6),
             chunk: FRAMES,
         };
-        let mut dst = CountingSink::new(ChannelLayout::Multi(6));
+        let mut dst = CountingSink::new(ChannelLayout::from_count(6));
         assert_eq!(
             pump(&mut src2, &mut dst, &mut buf),
             10,
@@ -460,7 +460,7 @@ mod tests {
         const ON_EMPTY: OnEmpty = OnEmpty::Starved;
 
         fn layout(&self) -> ChannelLayout {
-            ChannelLayout::Stereo
+            ChannelLayout::STEREO
         }
 
         fn poll_into(&mut self, out: &mut [f32]) -> usize {
@@ -513,7 +513,7 @@ mod tests {
             pos: 0,
             polls: 0,
         };
-        let mut live_sink: CountingSink<f32> = CountingSink::new(ChannelLayout::Stereo);
+        let mut live_sink: CountingSink<f32> = CountingSink::new(ChannelLayout::STEREO);
         drain(&mut live, &mut live_sink, 100);
         assert_eq!(
             live_sink.written, samples,
@@ -523,10 +523,10 @@ mod tests {
         let mut finite = SliceSource {
             samples: samples.clone(),
             pos: 0,
-            layout: ChannelLayout::Stereo,
+            layout: ChannelLayout::STEREO,
             chunk: 7,
         };
-        let mut finite_sink: CountingSink<f32> = CountingSink::new(ChannelLayout::Stereo);
+        let mut finite_sink: CountingSink<f32> = CountingSink::new(ChannelLayout::STEREO);
         drain(&mut finite, &mut finite_sink, 100);
         assert_eq!(
             finite_sink.written, samples,
@@ -551,10 +551,10 @@ mod tests {
         let mut src = SliceSource {
             samples: vec![0.0f32; 32],
             pos: 0,
-            layout: ChannelLayout::Stereo,
+            layout: ChannelLayout::STEREO,
             chunk: 8,
         };
-        let mut dst = CountingSink::new(ChannelLayout::Multi(6));
+        let mut dst = CountingSink::new(ChannelLayout::from_count(6));
         let mut buf = vec![0.0f32; 16];
         pump(&mut src, &mut dst, &mut buf);
     }

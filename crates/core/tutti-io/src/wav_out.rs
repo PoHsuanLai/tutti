@@ -339,7 +339,7 @@ mod tests {
         let frames: Vec<f32> = std::iter::repeat_n([0.5f32, 0.9f32], 128)
             .flatten()
             .collect();
-        sink.write_folding(&frames, ChannelLayout::Stereo);
+        sink.write_folding(&frames, ChannelLayout::STEREO);
         sink.finalize().unwrap();
 
         let reader = hound::WavReader::open(&path).unwrap();
@@ -360,10 +360,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("fold_mono.wav");
 
-        let mut sink = WavOut::create(&path, 48_000.0, ChannelLayout::Mono, BitDepth::Float32)
+        let mut sink = WavOut::create(&path, 48_000.0, ChannelLayout::MONO, BitDepth::Float32)
             .expect("sink should open");
         // L=0.5 R=0.9 → average 0.7. Dropping R would write 0.5.
-        sink.write_folding(&[0.5, 0.9, 1.0, 0.0], ChannelLayout::Stereo);
+        sink.write_folding(&[0.5, 0.9, 1.0, 0.0], ChannelLayout::STEREO);
         sink.finalize().unwrap();
 
         let mut reader = hound::WavReader::open(&path).unwrap();
@@ -400,11 +400,11 @@ mod tests {
         let mut stereo = WavOut::create(
             &stereo_path,
             48_000.0,
-            ChannelLayout::Stereo,
+            ChannelLayout::STEREO,
             BitDepth::Float32,
         )
         .expect("sink should open");
-        stereo.write_folding(&centre_only, ChannelLayout::Multi(6));
+        stereo.write_folding(&centre_only, ChannelLayout::from_count(6));
         stereo.finalize().unwrap();
 
         let mut reader = hound::WavReader::open(&stereo_path).unwrap();
@@ -421,12 +421,12 @@ mod tests {
 
         // → mono: still non-silent. A rear-only 7.1 frame likewise.
         let mono_path = dir.path().join("surround_to_mono.wav");
-        let mut mono = WavOut::create(&mono_path, 48_000.0, ChannelLayout::Mono, BitDepth::Float32)
+        let mut mono = WavOut::create(&mono_path, 48_000.0, ChannelLayout::MONO, BitDepth::Float32)
             .expect("sink should open");
         // 7.1 with energy only in the rears (idx 6, 7) — front-pair truncation
         // would write silence here too.
         let rears_only = [0.0f32, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0];
-        mono.write_folding(&rears_only, ChannelLayout::Multi(8));
+        mono.write_folding(&rears_only, ChannelLayout::from_count(8));
         mono.finalize().unwrap();
 
         let mut reader = hound::WavReader::open(&mono_path).unwrap();
@@ -480,7 +480,7 @@ mod tests {
 
         let mut sink =
             WavOut::create(&path, 48_000.0, 6u16, BitDepth::Float32).expect("create 6ch sink");
-        assert_eq!(sink.layout(), ChannelLayout::Multi(6));
+        assert_eq!(sink.layout(), ChannelLayout::from_count(6));
 
         let frames: Vec<f32> = (0..128)
             .flat_map(|i| (0..6).map(move |c| (i * 6 + c) as f32 * 0.001))
@@ -512,7 +512,7 @@ mod tests {
         let frames: Vec<f32> = std::iter::repeat_n([0.25f32, -0.25], 16)
             .flatten()
             .collect();
-        sink.write_folding(&frames, ChannelLayout::Stereo);
+        sink.write_folding(&frames, ChannelLayout::STEREO);
         AudioOut::finalize(sink).expect("finalize");
 
         let mut reader = hound::WavReader::open(&path).expect("reopen");

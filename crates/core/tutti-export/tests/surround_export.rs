@@ -50,7 +50,7 @@ fn quad_surround_net() -> Net {
 
     let mix = build_surround_mix(
         &mut net,
-        ChannelLayout::Quad,
+        ChannelLayout::QUAD,
         &[
             SurroundSource::at(src_front, 45.0), // FL (ch0)
             SurroundSource::at(src_rear, 135.0), // RL (ch2)
@@ -68,7 +68,7 @@ fn quad_surround_graph_exports_a_four_channel_wav_with_rear_energy() {
 
     // Render long enough for the panner's ~0.05s position smoother to settle
     // (0.3s @ 48k ≈ 14k samples, well past the ~2400-sample time constant).
-    export(quad_surround_net(), ChannelLayout::Quad, 0.3, &path);
+    export(quad_surround_net(), ChannelLayout::QUAD, 0.3, &path);
 
     let reader = hound::WavReader::open(&path).unwrap();
     assert_eq!(reader.spec().channels, 4, "file must carry four channels");
@@ -118,7 +118,7 @@ fn stereo_net_widened_then_exports_four_channels() {
     let src_rear = net.push(Box::new(dc((1.0, 1.0))));
     let mix = build_surround_mix(
         &mut net,
-        ChannelLayout::Quad,
+        ChannelLayout::QUAD,
         &[
             SurroundSource::at(src_front, 45.0),
             SurroundSource::at(src_rear, 135.0),
@@ -134,7 +134,7 @@ fn stereo_net_widened_then_exports_four_channels() {
 
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("widened.wav");
-    export(net, ChannelLayout::Quad, 0.3, &path);
+    export(net, ChannelLayout::QUAD, 0.3, &path);
 
     let reader = hound::WavReader::open(&path).unwrap();
     assert_eq!(
@@ -255,7 +255,7 @@ fn surround_5_1_downmixes_center_to_both_stereo_channels() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("downmix.wav");
     // Render the 5.1 graph but request a STEREO file → triggers the downmix.
-    export(net, ChannelLayout::Stereo, 0.3, &path);
+    export(net, ChannelLayout::STEREO, 0.3, &path);
 
     let reader = hound::WavReader::open(&path).unwrap();
     assert_eq!(reader.spec().channels, 2, "downmixed file is stereo");
@@ -306,7 +306,7 @@ fn stereo_graph_exports_folded_mono_not_left_only() {
 
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("mono.wav");
-    export(net, ChannelLayout::Mono, 0.1, &path);
+    export(net, ChannelLayout::MONO, 0.1, &path);
 
     let reader = hound::WavReader::open(&path).unwrap();
     assert_eq!(reader.spec().channels, 1, "file is mono");
@@ -337,7 +337,7 @@ fn surround_5_1_exports_folded_mono_keeps_center() {
 
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("surround_mono.wav");
-    export(net, ChannelLayout::Mono, 0.3, &path);
+    export(net, ChannelLayout::MONO, 0.3, &path);
 
     let reader = hound::WavReader::open(&path).unwrap();
     assert_eq!(reader.spec().channels, 1, "file is mono");
@@ -420,7 +420,7 @@ fn atmos_7_1_4_downmixes_surround_into_front() {
 
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("atmos_stereo.wav");
-    export(net, ChannelLayout::Stereo, 0.3, &path);
+    export(net, ChannelLayout::STEREO, 0.3, &path);
 
     let reader = hound::WavReader::open(&path).unwrap();
     assert_eq!(reader.spec().channels, 2, "downmixed file is stereo");

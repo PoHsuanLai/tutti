@@ -75,16 +75,16 @@ impl StreamConfig {
     pub(crate) fn probe(handle: &AuHandle) -> AuBusLayout {
         let unit = handle.raw_unit();
         let outputs = unsafe { crate::bus::bus_layout(unit, BusDirection::Output, 0) }
-            .unwrap_or(ChannelLayout::Stereo);
+            .unwrap_or(ChannelLayout::STEREO);
 
         // An AU with zero input elements has no bus 0 to ask about, so skip the
         // format query entirely rather than reading -10877 and inferring from it.
         let has_input = unsafe { crate::bus::bus_count(unit, BusDirection::Input) } > 0;
         let inputs = if has_input {
             unsafe { crate::bus::bus_layout(unit, BusDirection::Input, 0) }
-                .unwrap_or(ChannelLayout::Stereo)
+                .unwrap_or(ChannelLayout::STEREO)
         } else {
-            ChannelLayout::Multi(0)
+            ChannelLayout::EMPTY
         };
 
         AuBusLayout {
@@ -323,8 +323,8 @@ mod tests {
             sample_rate,
             512,
             AuBusLayout {
-                inputs: ChannelLayout::Stereo,
-                outputs: ChannelLayout::Stereo,
+                inputs: ChannelLayout::STEREO,
+                outputs: ChannelLayout::STEREO,
                 has_input: true,
             },
         )

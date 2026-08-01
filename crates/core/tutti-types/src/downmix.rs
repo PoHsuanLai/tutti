@@ -331,15 +331,15 @@ mod tests {
     #[test]
     fn fold_buffer_to_mono_handles_each_layout() {
         let mono = [1.0, 2.0, 3.0];
-        assert_eq!(fold_buffer_to_mono(&mono, ChannelLayout::Mono), mono);
+        assert_eq!(fold_buffer_to_mono(&mono, ChannelLayout::MONO), mono);
 
         let stereo = [1.0, 3.0, -2.0, 2.0];
         assert_eq!(
-            fold_buffer_to_mono(&stereo, ChannelLayout::Stereo),
+            fold_buffer_to_mono(&stereo, ChannelLayout::STEREO),
             vec![2.0, 0.0]
         );
 
-        assert!(fold_buffer_to_mono(&[], ChannelLayout::Stereo).is_empty());
+        assert!(fold_buffer_to_mono(&[], ChannelLayout::STEREO).is_empty());
     }
 
     /// The defect in the hand-rolled consumer copies: channels 2..N vanish.
@@ -348,7 +348,7 @@ mod tests {
         // 5.1 with only the centre non-zero — an L/R-only downmix returns
         // silence and loses the dialogue.
         let frame = [0.0, 0.0, 1.0, 0.0, 0.0, 0.0];
-        let folded = fold_buffer_to_mono(&frame, ChannelLayout::Multi(6));
+        let folded = fold_buffer_to_mono(&frame, ChannelLayout::from_count(6));
 
         assert_eq!(folded.len(), 1);
         assert!(folded[0] > 0.0, "centre must survive, got {}", folded[0]);
@@ -358,7 +358,7 @@ mod tests {
     fn fold_buffer_to_mono_ignores_a_trailing_partial_frame() {
         let samples = [1.0, 1.0, 2.0, 2.0, 3.0];
         assert_eq!(
-            fold_buffer_to_mono(&samples, ChannelLayout::Stereo),
+            fold_buffer_to_mono(&samples, ChannelLayout::STEREO),
             vec![1.0, 2.0]
         );
     }
@@ -371,7 +371,7 @@ mod tests {
 
         assert_eq!(
             fold_planar_to_mono(&[&left, &right]),
-            fold_buffer_to_mono(&interleaved, ChannelLayout::Stereo)
+            fold_buffer_to_mono(&interleaved, ChannelLayout::STEREO)
         );
     }
 

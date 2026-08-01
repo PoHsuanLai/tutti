@@ -49,7 +49,7 @@ impl VoiceNode {
     /// Wrap a single [`Voice`] as a standalone **stereo** graph node. Builds the
     /// resident stretch processor once (like a mixer slot), off any hot path.
     pub fn new(voice: Voice) -> Self {
-        Self::with_channels(voice, ChannelLayout::Stereo)
+        Self::with_channels(voice, ChannelLayout::STEREO)
     }
 
     /// Wrap a single [`Voice`] as a `channels`-wide graph node.

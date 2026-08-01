@@ -1447,8 +1447,8 @@ fn push_render_is_refused_by_every_third_party_unit() {
         |unit, info| {
             let mut au = open(info, unit.label);
             let mut scratch = tutti_au_host::PushScratch::new(
-                &[ChannelLayout::Stereo],
-                &[ChannelLayout::Stereo],
+                &[ChannelLayout::STEREO],
+                &[ChannelLayout::STEREO],
                 BLOCK,
             );
             let err = au

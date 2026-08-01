@@ -109,7 +109,7 @@ fn limiter_node_wide_6ch_process_is_allocation_free() {
     // The per-channel lookahead rings + frame scratch must be built at
     // construction; the linked-gain wide path must not allocate per buffer.
     let mut node =
-        LimiterNode::with_channels(ChannelLayout::Multi(6), -3.0, -0.3).with_lookahead(0.005);
+        LimiterNode::with_channels(ChannelLayout::from_count(6), -3.0, -0.3).with_lookahead(0.005);
     node.set_sample_rate(SampleRate(48_000.0));
 
     let mut input_vec = BufferVec::new(6);
@@ -133,7 +133,7 @@ fn limiter_node_wide_6ch_process_is_allocation_free() {
 
 #[test]
 fn brickwall_limiter_wide_6ch_process_is_allocation_free() {
-    let mut node = BrickwallLimiter::with_channels(ChannelLayout::Multi(6), -0.3);
+    let mut node = BrickwallLimiter::with_channels(ChannelLayout::from_count(6), -0.3);
     node.set_sample_rate(SampleRate(48_000.0));
 
     let mut input_vec = BufferVec::new(6);

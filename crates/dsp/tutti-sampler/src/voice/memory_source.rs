@@ -150,7 +150,7 @@ impl Default for MemorySourceConfig {
             loop_setting: LoopSetting::Off,
             timeline: None,
             window: VoiceWindow::default(),
-            channels: ChannelLayout::Stereo,
+            channels: ChannelLayout::STEREO,
         }
     }
 }
@@ -295,8 +295,8 @@ impl MemorySource {
             loop_mode: LoopMode::OneShot,
             timeline: None,
             window: VoiceWindow::default(),
-            loop_crossfade: Some(LoopCrossfade::with_channels(0, ChannelLayout::Stereo)),
-            channels: ChannelLayout::Stereo,
+            loop_crossfade: Some(LoopCrossfade::with_channels(0, ChannelLayout::STEREO)),
+            channels: ChannelLayout::STEREO,
         }
     }
 
@@ -1908,18 +1908,18 @@ mod tests {
     #[test]
     fn new_stays_stereo_even_for_a_wide_wave() {
         let u = MemorySource::new(indexed_wave(6, 32));
-        assert_eq!(u.channels(), ChannelLayout::Stereo);
+        assert_eq!(u.channels(), ChannelLayout::STEREO);
         assert_eq!(u.outputs(), 2);
     }
 
     #[test]
     fn with_channels_declares_the_width() {
         let u = MemorySource::with_channels(indexed_wave(6, 32), 6usize);
-        assert_eq!(u.channels(), ChannelLayout::Multi(6));
+        assert_eq!(u.channels(), ChannelLayout::from_count(6));
         assert_eq!(u.outputs(), 6);
         assert_eq!(
             MemorySource::with_channels(indexed_wave(2, 32), 0usize).channels(),
-            ChannelLayout::Mono
+            ChannelLayout::MONO
         );
     }
 

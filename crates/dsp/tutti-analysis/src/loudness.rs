@@ -220,7 +220,7 @@ mod tests {
     }
 
     fn cfg(rate: f64) -> LoudnessConfig {
-        LoudnessConfig::new(SampleRate(rate), ChannelLayout::Stereo)
+        LoudnessConfig::new(SampleRate(rate), ChannelLayout::STEREO)
     }
 
     /// The one-shot form must fold the streaming form exactly — the property
@@ -230,7 +230,7 @@ mod tests {
         let c = cfg(48_000.0);
         let buf = sine(48_000.0, 1.0, 1_000.0, 0.5);
 
-        let one_shot = measure_loudness(&c, Interleaved::new(&buf, ChannelLayout::Stereo)).unwrap();
+        let one_shot = measure_loudness(&c, Interleaved::new(&buf, ChannelLayout::STEREO)).unwrap();
 
         let mut state = LoudnessState::new(&c).unwrap();
         // Deliberately ragged: 777 is not a multiple of the frame width, so
@@ -239,7 +239,7 @@ mod tests {
             step_loudness(
                 &c,
                 &mut state,
-                Interleaved::new(chunk, ChannelLayout::Stereo),
+                Interleaved::new(chunk, ChannelLayout::STEREO),
             );
         }
         let streamed = finish(state);
@@ -260,7 +260,7 @@ mod tests {
         // Same *sample* data interpreted at two rates is a different signal
         // (different frequency, different duration), so the readings differ.
         let buf = sine(44_100.0, 2.0, 1_000.0, 0.5);
-        let stereo = Interleaved::new(&buf, ChannelLayout::Stereo);
+        let stereo = Interleaved::new(&buf, ChannelLayout::STEREO);
         let at_44 = measure_loudness(&cfg(44_100.0), stereo).unwrap();
         let at_48 = measure_loudness(&cfg(48_000.0), stereo).unwrap();
         assert!(
@@ -289,7 +289,7 @@ mod tests {
         let buf = sine(48_000.0, 3.0, 1_000.0, 0.5); // −6 dBFS peak
         let m = measure_loudness(
             &cfg(48_000.0),
-            Interleaved::new(&buf, ChannelLayout::Stereo),
+            Interleaved::new(&buf, ChannelLayout::STEREO),
         )
         .unwrap();
         assert!(
@@ -309,7 +309,7 @@ mod tests {
         let silence = vec![0.0; 4800];
         let m = measure_loudness(
             &cfg(48_000.0),
-            Interleaved::new(&silence, ChannelLayout::Stereo),
+            Interleaved::new(&silence, ChannelLayout::STEREO),
         )
         .unwrap();
         assert_eq!(m.true_peak, Db::FLOOR);
@@ -329,7 +329,7 @@ mod tests {
         let short = sine(48_000.0, 0.1, 1_000.0, 0.5);
         let m = measure_loudness(
             &cfg(48_000.0),
-            Interleaved::new(&short, ChannelLayout::Stereo),
+            Interleaved::new(&short, ChannelLayout::STEREO),
         )
         .unwrap();
         assert!(
@@ -357,7 +357,7 @@ mod tests {
         let buf = sine(48_000.0, 1.0, 1_000.0, 0.5);
 
         let mut state = LoudnessState::new(&c).unwrap();
-        step_loudness(&c, &mut state, Interleaved::new(&buf, ChannelLayout::Quad));
+        step_loudness(&c, &mut state, Interleaved::new(&buf, ChannelLayout::QUAD));
         let m = finish(state);
 
         assert_eq!(

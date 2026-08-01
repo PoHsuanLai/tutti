@@ -10,6 +10,7 @@ use super::*;
 use core::marker::PhantomData;
 use num_complex::Complex64;
 use numeric_array::typenum::*;
+use tutti_types::Tail;
 
 /*
 Order of type arguments in nodes:
@@ -169,6 +170,35 @@ pub trait AudioNode: Clone + Sync + Send {
     fn route(&mut self, input: &SignalFrame, frequency: f64) -> SignalFrame {
         // The default implementation marks all outputs unknown.
         SignalFrame::new(self.outputs())
+    }
+
+    /// How long this node keeps producing after its input stops.
+    ///
+    /// # Why this is not carried by [`Signal`] the way latency is
+    ///
+    /// [`latency`](Self::latency) needs no per-node implementation: it is
+    /// derived from [`route`](Self::route), because `Signal::Latency`
+    /// accumulates through the composed graph on its own. Tail cannot reuse that
+    /// carrier, for two reasons that are both deliberate:
+    ///
+    /// - **A delay reports zero latency.** `Delay::route` passes `filter(0.0,
+    ///   ..)`, expressing its delay purely as a phase rotation, because a delay
+    ///   is *intended* delay and compensating it away would delete the echo. But
+    ///   a delay line's tail *is* its length, so the quantity tail needs most is
+    ///   exactly the one the latency channel is built to hide.
+    /// - **A merge takes the opposite rule.** Latency takes the minimum across
+    ///   merged paths — when does a signal first arrive — where tail takes the
+    ///   maximum, since it asks when the last signal leaves.
+    ///
+    /// So tail is its own channel, composed by the combinators through
+    /// [`Tail::then`] and [`Tail::beside`].
+    ///
+    /// The default is [`Tail::Unknown`]: a node that has not been taught to
+    /// answer has said nothing, which is not the same as saying it has no tail.
+    /// Overriding with [`Tail::None`] is how a node states it stops with its
+    /// input.
+    fn tail(&mut self) -> Tail {
+        Tail::Unknown
     }
 
     /// Get edge target to input `index`.
@@ -493,6 +523,11 @@ impl<N: Size<f32>> AudioNode for MultiPass<N> {
             }
         }
     }
+    /// A pass-through holds no state, so it stops with its input.
+    fn tail(&mut self) -> Tail {
+        Tail::None
+    }
+
     fn route(&mut self, input: &SignalFrame, _frequency: f64) -> SignalFrame {
         input.clone()
     }
@@ -524,6 +559,11 @@ impl AudioNode for Pass {
             output.set(0, i, input.at(0, i));
         }
     }
+    /// A pass-through holds no state, so it stops with its input.
+    fn tail(&mut self) -> Tail {
+        Tail::None
+    }
+
     fn route(&mut self, input: &SignalFrame, _frequency: f64) -> SignalFrame {
         input.clone()
     }
@@ -551,6 +591,11 @@ impl<N: Size<f32>> AudioNode for Sink<N> {
         Frame::default()
     }
     fn process(&mut self, _size: usize, _input: &BufferRef, _output: &mut BufferMut) {}
+
+    /// A sink produces nothing at all.
+    fn tail(&mut self) -> Tail {
+        Tail::None
+    }
 
     fn route(&mut self, _input: &SignalFrame, _frequency: f64) -> SignalFrame {
         SignalFrame::new(self.outputs())
@@ -608,6 +653,11 @@ impl<N: Size<f32>> AudioNode for Constant<N> {
         if let Parameter::Value(value) = setting.parameter() {
             self.set_scalar(*value);
         }
+    }
+
+    /// A constant is not driven by its input, so it holds nothing to drain.
+    fn tail(&mut self) -> Tail {
+        Tail::None
     }
 
     fn route(&mut self, _input: &SignalFrame, _frequency: f64) -> SignalFrame {
@@ -1070,6 +1120,12 @@ where
         self.y.allocate();
     }
 
+    /// The two nodes run on separate inputs and are combined per sample, so
+    /// the result rings for as long as the longer of them.
+    fn tail(&mut self) -> Tail {
+        self.x.tail().beside(self.y.tail())
+    }
+
     fn route(&mut self, input: &SignalFrame, frequency: f64) -> SignalFrame {
         let mut signal_x = self
             .x
@@ -1380,6 +1436,12 @@ where
         self.x.allocate();
     }
 
+    /// A unary operator reshapes its input sample by sample, so the tail is
+    /// whatever it wraps.
+    fn tail(&mut self) -> Tail {
+        self.x.tail()
+    }
+
     fn route(&mut self, input: &SignalFrame, frequency: f64) -> SignalFrame {
         let mut signal_x = self.x.route(input, frequency);
         for i in 0..Self::Outputs::USIZE {
@@ -1550,6 +1612,14 @@ where
         self.y.allocate();
     }
 
+    /// `x` feeds `y`, so this is a cascade and the two tails add.
+    ///
+    /// This is the case that makes composition worth having: a reverb built as
+    /// `delay >> fir` reports the sum without anyone walking the graph.
+    fn tail(&mut self) -> Tail {
+        self.x.tail().then(self.y.tail())
+    }
+
     fn route(&mut self, input: &SignalFrame, frequency: f64) -> SignalFrame {
         self.y.route(&self.x.route(input, frequency), frequency)
     }
@@ -1696,6 +1766,12 @@ where
 
     fn ping(&mut self, probe: bool, hash: AttoHash) -> AttoHash {
         self.y.ping(probe, self.x.ping(probe, hash.hash(Self::ID)))
+    }
+
+    /// The two nodes process independent channels, so the stack rings for as
+    /// long as the longer of them.
+    fn tail(&mut self) -> Tail {
+        self.x.tail().beside(self.y.tail())
     }
 
     fn route(&mut self, input: &SignalFrame, frequency: f64) -> SignalFrame {
@@ -1856,6 +1932,12 @@ where
         self.y.ping(probe, self.x.ping(probe, hash.hash(Self::ID)))
     }
 
+    /// Both nodes see the same input and their outputs sit side by side, so
+    /// the branch rings for as long as the longer of the two.
+    fn tail(&mut self) -> Tail {
+        self.x.tail().beside(self.y.tail())
+    }
+
     fn route(&mut self, input: &SignalFrame, frequency: f64) -> SignalFrame {
         let mut signal_x = self.x.route(input, frequency);
         let signal_y = self.y.route(input, frequency);
@@ -1997,6 +2079,12 @@ where
         self.y.ping(probe, self.x.ping(probe, hash.hash(Self::ID)))
     }
 
+    /// Both nodes run on the same input and are summed, so the bus rings
+    /// for as long as the longer of the two.
+    fn tail(&mut self) -> Tail {
+        self.x.tail().beside(self.y.tail())
+    }
+
     fn route(&mut self, input: &SignalFrame, frequency: f64) -> SignalFrame {
         let mut signal_x = self.x.route(input, frequency);
         let signal_y = self.y.route(input, frequency);
@@ -2111,6 +2199,11 @@ impl<X: AudioNode> AudioNode for Thru<X> {
 
     fn ping(&mut self, probe: bool, hash: AttoHash) -> AttoHash {
         self.x.ping(probe, hash.hash(Self::ID))
+    }
+
+    /// Passed through from the wrapped node; the thru channels add nothing.
+    fn tail(&mut self) -> Tail {
+        self.x.tail()
     }
 
     fn route(&mut self, input: &SignalFrame, frequency: f64) -> SignalFrame {
@@ -2866,6 +2959,13 @@ where
         for x in &mut self.x {
             x.allocate();
         }
+    }
+
+    /// Every node in the chain feeds the next, so their tails add.
+    fn tail(&mut self) -> Tail {
+        self.x
+            .iter_mut()
+            .fold(Tail::None, |acc, n| acc.then(n.tail()))
     }
 
     fn route(&mut self, input: &SignalFrame, frequency: f64) -> SignalFrame {

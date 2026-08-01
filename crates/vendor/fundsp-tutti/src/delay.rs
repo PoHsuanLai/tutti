@@ -9,6 +9,7 @@ use super::*;
 use core::marker::PhantomData;
 use num_complex::Complex64;
 use numeric_array::typenum::*;
+use tutti_types::{Samples, Tail};
 extern crate alloc;
 use alloc::vec::Vec;
 
@@ -123,6 +124,20 @@ impl AudioNode for Delay {
         }
         let output = self.buffer[self.i];
         [output].into()
+    }
+
+    /// The buffer still holds `time_in_samples` frames when the input stops.
+    ///
+    /// This is the node that makes tail a separate channel from latency:
+    /// `route` above reports **zero** latency, expressing the delay purely as a
+    /// phase rotation, because a delay is intended delay and compensating it
+    /// away would delete the echo. The same number is the whole of this node's
+    /// tail, so the latency channel is structurally unable to carry it.
+    fn tail(&mut self) -> Tail {
+        match self.time_in_samples {
+            0 => Tail::None,
+            n => Tail::Finite(Samples(n)),
+        }
     }
 
     fn route(&mut self, input: &SignalFrame, frequency: f64) -> SignalFrame {
@@ -279,6 +294,14 @@ where
             output.set(0, i, out);
         }
         self.process_remainder(size, input, output);
+    }
+
+    /// The longest delay this tap can be asked for.
+    ///
+    /// The delay is an input rather than a constant, so only the maximum bounds
+    /// what the buffer can still hold when the input stops.
+    fn tail(&mut self) -> Tail {
+        Tail::Finite(Samples((self.max_delay * self.sample_rate) as usize))
     }
 
     fn route(&mut self, input: &SignalFrame, _frequency: f64) -> SignalFrame {
@@ -500,6 +523,15 @@ where
             output.set(0, i, out);
         }
         self.process_remainder(size, input, output);
+    }
+
+    /// The longest delay this tap can be asked for.
+    ///
+    /// The delay is an input rather than a constant, so it can move anywhere
+    /// in range up to the moment the input stops; only the maximum bounds what
+    /// the buffer can still hold.
+    fn tail(&mut self) -> Tail {
+        Tail::Finite(Samples((self.max_delay * self.sample_rate) as usize))
     }
 
     fn route(&mut self, input: &SignalFrame, _frequency: f64) -> SignalFrame {

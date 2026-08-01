@@ -103,6 +103,54 @@ impl Tail {
             n => Self::Finite(Samples(n as usize)),
         }
     }
+
+    /// The tail of `self` feeding into `next`: a cascade, so the two add.
+    ///
+    /// Cascading convolves the two responses, and ring-out is defined so that
+    /// supports add with no correction term. `Unbounded` wins over everything —
+    /// a chain containing something that never decays never decays — and
+    /// `Unknown` wins over the rest, since a node that did not report is not
+    /// evidence of a short tail.
+    pub fn then(self, next: Self) -> Self {
+        match (self, next) {
+            (Self::Unbounded, _) | (_, Self::Unbounded) => Self::Unbounded,
+            (Self::Unknown, _) | (_, Self::Unknown) => Self::Unknown,
+            (a, b) => {
+                // Both are `None` or `Finite`, so both have a count.
+                let total =
+                    a.samples().unwrap_or(Samples::ZERO) + b.samples().unwrap_or(Samples::ZERO);
+                if total.is_zero() {
+                    Self::None
+                } else {
+                    Self::Finite(total)
+                }
+            }
+        }
+    }
+
+    /// The tail of two nodes running side by side: the longer of the two.
+    ///
+    /// Summing two paths leaves the longer one's support untouched, so a merge
+    /// takes the max rather than the sum. This is where tail and latency
+    /// genuinely differ — latency takes the *minimum* across a merge, because it
+    /// asks when a signal first arrives where this asks when it last leaves.
+    pub fn beside(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::Unbounded, _) | (_, Self::Unbounded) => Self::Unbounded,
+            (Self::Unknown, _) | (_, Self::Unknown) => Self::Unknown,
+            (a, b) => {
+                let longest = a
+                    .samples()
+                    .unwrap_or(Samples::ZERO)
+                    .max(b.samples().unwrap_or(Samples::ZERO));
+                if longest.is_zero() {
+                    Self::None
+                } else {
+                    Self::Finite(longest)
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -144,5 +192,58 @@ mod tests {
     fn unknown_is_not_none() {
         assert_ne!(Tail::Unknown, Tail::None);
         assert_eq!(Tail::default(), Tail::Unknown);
+    }
+
+    /// A cascade adds and a merge takes the max — the two rules that let a
+    /// statically-composed graph report without anyone walking it.
+    #[test]
+    fn cascade_adds_and_merge_takes_the_longer() {
+        let a = Tail::Finite(Samples(2000));
+        let b = Tail::Finite(Samples(3000));
+        assert_eq!(a.then(b), Tail::Finite(Samples(5000)));
+        assert_eq!(a.beside(b), Tail::Finite(Samples(3000)));
+    }
+
+    /// The merge rule is where tail and latency part company.
+    ///
+    /// fundsp's latency takes the *minimum* across a merge, because it asks when
+    /// a signal first arrives. Tail asks when it last leaves, so it must take
+    /// the maximum — which is why tail cannot ride the `Signal` carrier latency
+    /// already uses.
+    #[test]
+    fn a_merge_is_not_the_shorter_leg() {
+        let slow = Tail::Finite(Samples(3000));
+        let fast = Tail::Finite(Samples(100));
+        assert_eq!(slow.beside(fast), Tail::Finite(Samples(3000)));
+        assert_ne!(slow.beside(fast), fast);
+    }
+
+    /// Nothing that never decays can be composed away.
+    #[test]
+    fn unbounded_survives_composition() {
+        let n = Tail::Finite(Samples(100));
+        assert_eq!(Tail::Unbounded.then(n), Tail::Unbounded);
+        assert_eq!(n.then(Tail::Unbounded), Tail::Unbounded);
+        assert_eq!(Tail::Unbounded.beside(n), Tail::Unbounded);
+        assert_eq!(n.beside(Tail::Unbounded), Tail::Unbounded);
+    }
+
+    /// An unreported node poisons a composition rather than counting as zero:
+    /// it is not evidence of a short tail.
+    #[test]
+    fn unknown_survives_composition() {
+        let n = Tail::Finite(Samples(100));
+        assert_eq!(Tail::Unknown.then(n), Tail::Unknown);
+        assert_eq!(n.beside(Tail::Unknown), Tail::Unknown);
+        // But `Unbounded` still outranks it — that much IS known.
+        assert_eq!(Tail::Unknown.then(Tail::Unbounded), Tail::Unbounded);
+    }
+
+    /// Composing silence with silence stays silence, rather than becoming a
+    /// zero-length `Finite`.
+    #[test]
+    fn composing_no_tails_stays_none() {
+        assert_eq!(Tail::None.then(Tail::None), Tail::None);
+        assert_eq!(Tail::None.beside(Tail::None), Tail::None);
     }
 }

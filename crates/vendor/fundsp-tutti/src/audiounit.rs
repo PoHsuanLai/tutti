@@ -509,6 +509,12 @@ where
     fn footprint(&self) -> usize {
         core::mem::size_of::<X>()
     }
+    /// Forwards the wrapped node's own answer. Without this every fundsp
+    /// built-in would fall through to the `AudioUnit` default and report
+    /// `Unknown`, since `An<X>` is how they all reach the dynamic interface.
+    fn tail(&mut self) -> Tail {
+        self.0.tail()
+    }
     fn allocate(&mut self) {
         self.0.allocate();
     }

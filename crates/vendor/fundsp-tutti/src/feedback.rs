@@ -8,6 +8,7 @@ use super::math::*;
 use super::signal::*;
 use super::*;
 use core::marker::PhantomData;
+use tutti_types::Tail;
 extern crate alloc;
 use alloc::boxed::Box;
 use alloc::vec;
@@ -140,6 +141,18 @@ where
         }
     }
 
+    /// A feedback loop re-enters its own output, so it does not decay on its
+    /// own schedule: whether it ever falls silent depends on the loop gain,
+    /// which lives inside the contained node and is not visible here.
+    ///
+    /// `Unbounded` rather than a guess. A render that stops where the caller
+    /// chose is a decision; one that stops where a wrong estimate landed is a
+    /// truncated reverb nobody asked for. An FDN reverb's own `time` parameter
+    /// is the RT60 and belongs to whoever assembled the loop, not to this node.
+    fn tail(&mut self) -> Tail {
+        Tail::Unbounded
+    }
+
     fn route(&mut self, input: &SignalFrame, _frequency: f64) -> SignalFrame {
         Routing::Arbitrary(0.0).route(input, self.outputs())
     }
@@ -266,6 +279,18 @@ where
                 output.set_f32(channel, i, output_frame[channel]);
             }
         }
+    }
+
+    /// A feedback loop re-enters its own output, so it does not decay on its
+    /// own schedule: whether it ever falls silent depends on the loop gain,
+    /// which lives inside the contained node and is not visible here.
+    ///
+    /// `Unbounded` rather than a guess. A render that stops where the caller
+    /// chose is a decision; one that stops where a wrong estimate landed is a
+    /// truncated reverb nobody asked for. An FDN reverb's own `time` parameter
+    /// is the RT60 and belongs to whoever assembled the loop, not to this node.
+    fn tail(&mut self) -> Tail {
+        Tail::Unbounded
     }
 
     fn route(&mut self, input: &SignalFrame, _frequency: f64) -> SignalFrame {
@@ -442,6 +467,12 @@ impl AudioUnit for FeedbackUnit {
 
     fn ping(&mut self, probe: bool, hash: AttoHash) -> AttoHash {
         self.x.ping(probe, hash.hash(self.get_id()))
+    }
+
+    /// A feedback loop's decay depends on the contained unit's gain, which
+    /// is not visible here — see the `AudioNode` impl above.
+    fn tail(&mut self) -> Tail {
+        Tail::Unbounded
     }
 
     fn footprint(&self) -> usize {

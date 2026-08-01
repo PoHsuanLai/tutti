@@ -181,9 +181,8 @@ fn a_tail_lengthens_the_output_by_exactly_the_tail() {
 /// `L - 1` frames land after the input stops. This is the one node whose tail is
 /// known a priori, which is what makes it worth reaching for a dev-dependency.
 ///
-/// Read through `known()`, because `dc` is a stock fundsp node that never
-/// learned to report a tail — see `an_unreporting_graph_…` below for why that
-/// makes `samples()` refuse.
+/// Read through `samples()`: every node here reports, so the graph's tail is a
+/// number the caller can spend without a decision.
 #[test]
 fn a_convolver_reports_its_ir_ring_out() {
     let ir = vec![0.5f32; 4096];
@@ -194,8 +193,8 @@ fn a_convolver_reports_its_ir_ring_out() {
     n.pipe_output(conv);
 
     assert_eq!(
-        tutti_export::reported_tail(&n).known(),
-        tutti_types::Samples(4095),
+        tutti_export::reported_tail(&n).samples(),
+        Some(tutti_types::Samples(4095)),
     );
 }
 
@@ -216,28 +215,73 @@ fn cascaded_convolvers_sum_their_tails() {
 
     // 1023 + 2047, which is the ring-out of the 3071-sample cascaded response.
     assert_eq!(
-        tutti_export::reported_tail(&n).known(),
-        tutti_types::Samples(3070),
+        tutti_export::reported_tail(&n).samples(),
+        Some(tutti_types::Samples(3070)),
     );
 }
 
 /// One un-reporting node is enough to make the graph's figure a partial one.
 ///
-/// `dc` is a stock fundsp source that never learned to answer, so a graph built
-/// on it always carries an unknown even when every node that *rings* has
-/// answered. `known()` still gives the sum over what spoke — this pins that the
-/// two accessors disagree, which is the whole reason there are two.
+/// `known()` still gives the sum over what spoke, so the two accessors disagree
+/// — which is the whole reason there are two. The unreporting node has to be
+/// constructed deliberately now that the stock fundsp nodes all answer.
 #[test]
 fn one_silent_node_makes_the_figure_partial_without_losing_it() {
+    /// A node that has never been taught to report a tail: the `AudioUnit`
+    /// default, which is what any newly-written node starts as.
+    #[derive(Clone, Default)]
+    struct Unreporting;
+
+    impl AudioUnit for Unreporting {
+        fn reset(&mut self) {}
+        fn set_sample_rate(&mut self, _: tutti_core::SampleRate) {}
+        fn tick(&mut self, input: &[f32], output: &mut [f32]) {
+            output[0] = input[0];
+        }
+        fn process(
+            &mut self,
+            size: usize,
+            input: &tutti_core::BufferRef,
+            output: &mut tutti_core::BufferMut,
+        ) {
+            for i in 0..size {
+                output.set_f32(0, i, input.at_f32(0, i));
+            }
+        }
+        fn inputs(&self) -> usize {
+            1
+        }
+        fn outputs(&self) -> usize {
+            1
+        }
+        fn route(&mut self, input: &tutti_core::SignalFrame, _: f64) -> tutti_core::SignalFrame {
+            input.clone()
+        }
+        fn get_id(&self) -> u64 {
+            0xDEAD_BEEF
+        }
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+        fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+            self
+        }
+        fn footprint(&self) -> usize {
+            std::mem::size_of::<Self>()
+        }
+    }
+
     let ir = vec![0.5f32; 4096];
     let mut n = tutti_core::dsp::Net::new(0, 1);
     let src = n.push(Box::new(dc(0.5)));
+    let quiet = n.push(Box::new(Unreporting));
     let conv = n.push(Box::new(tutti_units::ConvolverNode::with_ir(&ir)));
-    n.connect(src, 0, conv, 0);
+    n.connect(src, 0, quiet, 0);
+    n.connect(quiet, 0, conv, 0);
     n.pipe_output(conv);
 
     let reported = tutti_export::reported_tail(&n);
-    assert_eq!(reported.unknown_nodes(), 1, "the `dc` source said nothing");
+    assert_eq!(reported.unknown_nodes(), 1, "one node never answered");
     assert_eq!(
         reported.samples(),
         None,
@@ -250,26 +294,46 @@ fn one_silent_node_makes_the_figure_partial_without_losing_it() {
     );
 }
 
-/// A graph of nodes that never learned to report a tail says so, rather than
-/// claiming it has none — otherwise a bounce would silently treat "nobody
-/// asked" as "nothing to render".
+/// The stock nodes now answer, so an ordinary graph reports a spendable tail.
+///
+/// This is what teaching `AudioNode` to report bought: before it, a single
+/// `dc` source left `samples()` refusing for every real project, because one
+/// unreporting node on the output path makes the whole figure unspendable.
 #[test]
-fn an_unreporting_graph_has_an_unknown_tail_not_a_zero_one() {
+fn a_graph_of_stock_nodes_reports_a_spendable_tail() {
     let reported = tutti_export::reported_tail(&net());
-    assert!(reported.unknown_nodes() > 0);
-    assert_eq!(reported.samples(), None);
+    assert_eq!(reported.unknown_nodes(), 0);
+    assert_eq!(reported.samples(), Some(tutti_types::Samples(0)));
 }
 
-/// Resolving spends a graph's tail against a caller-chosen bound.
+/// A graph that never decays resolves to exactly the caller's bound.
 ///
-/// The two `None` cases of `samples()` resolve differently on purpose. An
-/// unbounded graph takes the cap, because it genuinely never falls silent and
-/// the cap is where the caller said to stop. A partly-unknown graph takes what
-/// the nodes that answered reported: a convolver reporting 4095 frames beside
-/// one silent `dc` source is a 0.09-second tail, and spending the cap there
-/// would append eight seconds of silence to the file.
+/// A feedback reverb re-enters its own output, so it has no frame count of its
+/// own — the cap is the whole answer, and it is the caller's choice rather than
+/// a figure the engine invented.
 #[test]
-fn resolving_a_partly_unknown_graph_does_not_spend_the_cap() {
+fn resolving_an_unbounded_graph_spends_the_cap() {
+    let mut n = tutti_core::dsp::Net::new(0, 2);
+    let src = n.push(Box::new(dc((0.5, 0.5))));
+    let rev = n.push(Box::new(reverb_stereo(10.0, 2.0, 0.5)));
+    n.connect(src, 0, rev, 0);
+    n.connect(src, 1, rev, 1);
+    n.pipe_output(rev);
+
+    let reported = tutti_export::reported_tail(&n);
+    let cap = tutti_types::Samples(384_000);
+    assert!(reported.is_unbounded(), "an FDN never decays on its own");
+    assert_eq!(reported.samples(), None, "so there is no count to spend");
+    assert_eq!(reported.resolve(cap), cap);
+}
+
+/// A fully-reported graph resolves to its own figure, not the cap.
+///
+/// The cap bounds; it does not replace. Spending it on a graph that answered
+/// would append silence — 4095 frames is 0.09 s, and the cap here is eight
+/// seconds.
+#[test]
+fn resolving_a_reported_graph_keeps_its_own_figure() {
     let ir = vec![0.5f32; 4096];
     let mut n = tutti_core::dsp::Net::new(0, 1);
     let src = n.push(Box::new(dc(0.5)));
@@ -278,10 +342,8 @@ fn resolving_a_partly_unknown_graph_does_not_spend_the_cap() {
     n.pipe_output(conv);
 
     let reported = tutti_export::reported_tail(&n);
-    let cap = tutti_types::Samples(384_000);
-    assert_eq!(reported.samples(), None, "`dc` never learned to report");
     assert_eq!(
-        reported.resolve(cap),
+        reported.resolve(tutti_types::Samples(384_000)),
         tutti_types::Samples(4095),
         "the convolver's figure, not the cap"
     );

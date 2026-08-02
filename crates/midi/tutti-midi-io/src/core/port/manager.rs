@@ -55,12 +55,11 @@ const CYCLE_SCRATCH_CAP: usize = 256;
 /// [`RtEventBuf`]), this type *derives* `Sync` with no hand-written
 /// `unsafe impl`.
 ///
-/// All three are safe wrappers: this module contains no `unsafe`. `event_buffer`
-/// used to be an [`RtScratchBuf`](tutti_core::RtScratchBuf), whose `&self`-lifetime
-/// lend is the one shape needing an `UnsafeCell` and a hand-upheld single-thread
-/// contract. Handing the drained events to a visitor instead of lending a slice
-/// removes that need — the caller never holds a borrow into the scratch — while
-/// keeping the `(port_index, event)` pairing the API exposes.
+/// All three are safe wrappers: this module contains no `unsafe`. The drained
+/// events reach the caller through a visitor rather than a borrowed slice, so
+/// nothing holds a reference into the scratch past the call — which is what
+/// keeps `event_buffer` a plain [`RtEventBuf`] and the `(port_index, event)`
+/// pairing intact.
 struct CycleScratch {
     sample_rate: AudioThreadCell<SampleRate>,
     timestamped_buffer: AudioThreadCell<Vec<(Instant, usize, MidiEvent)>>,

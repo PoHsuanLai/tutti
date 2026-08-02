@@ -12,9 +12,6 @@
 //!   [`AudioThreadCell`](crate::AudioThreadCell), so it is reachable through
 //!   `&self` (behind an `Arc`, or from a COM object), and hides the storage
 //!   behind visitors rather than lending it.
-//! - [`RtScratchBuf`](crate::RtScratchBuf) — owns one inside an `UnsafeCell`
-//!   so the filled run can be lent out with `&self` lifetime, and hands
-//!   [`CappedWriter`](crate::CappedWriter) to its fill closure.
 //!
 //! Keeping the policy here is what makes those three agree by construction.
 //! Before this existed the same refuse-at-`N` logic was written out three

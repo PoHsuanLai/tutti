@@ -9,9 +9,10 @@
 //! [`Param`] atomic cell that holds one, and the integer [`Samples`] count.
 //!
 //! **[`rt`]** — the RT-callback primitives the audio thread touches:
-//! [`AudioThreadCell`] (one-borrow-at-a-time interior mutability), [`RtEventBuf`]
-//! (fixed-inline event collector), [`RtScratchBuf`] (fill-then-lend) and its
-//! sibling [`RtScratch`] (own-and-slice), and the [`ScopedNoDenormals`] guard.
+//! [`AudioThreadCell`] (one-borrow-at-a-time interior mutability), the capped
+//! collections [`RtEventBuf`] (reached through `&self`) and [`RtVec`] (through
+//! `&mut self`), the fixed-capacity [`RtScratch`] (own-and-slice, no push), and
+//! the [`ScopedNoDenormals`] guard.
 //!
 //! **[`channels`]** — [`ChannelLayout`] (`Mono`/`Stereo`/`Multi(n)`): the one
 //! answer to "mono, stereo, or how many?" that every subsystem shares instead of
@@ -60,8 +61,8 @@ pub mod rt;
 
 // RT-callback primitives.
 pub use rt::{
-    AudioThreadCell, BorrowGuard, BorrowRef, CappedWriter, RtEventBuf, RtPublish, RtRef, RtScratch,
-    RtScratchBuf, RtScratchOverflow, RtVec, ScopedNoDenormals,
+    AudioThreadCell, BorrowGuard, BorrowRef, RtEventBuf, RtPublish, RtRef, RtScratch,
+    RtScratchOverflow, RtVec, ScopedNoDenormals,
 };
 
 // Value vocabulary.

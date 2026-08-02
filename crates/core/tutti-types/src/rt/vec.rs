@@ -11,10 +11,6 @@ use super::capped::Capped;
 ///
 /// - [`RtEventBuf`](crate::RtEventBuf) deliberately hides its storage behind
 ///   `for_each`/`drain_each`, so it cannot return `&[T]`.
-/// - [`RtScratchBuf`](crate::RtScratchBuf) lends a slice, but through `&self`
-///   plus an `UnsafeCell`, for callers handed the buffer behind an `Arc`. When
-///   the owner already has `&mut self` — which every pool site does — that
-///   machinery buys nothing and costs an `unsafe` contract.
 /// - [`RtScratch`](crate::RtScratch) has no `push`: its length is chosen by
 ///   slicing a preallocated run, not by appending.
 ///

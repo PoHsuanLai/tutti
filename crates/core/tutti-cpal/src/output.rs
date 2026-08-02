@@ -264,7 +264,7 @@ where
             // bulk memcpy. Keep them in step — if the fold's stereo arm ever
             // stops being a passthrough, this branch has to go, not be patched.
             let meter = &mut meter_buf[..frames * 2];
-            if layout == ChannelLayout::Stereo {
+            if layout == ChannelLayout::STEREO {
                 meter.copy_from_slice(mix);
             } else {
                 for (i, out) in meter.chunks_exact_mut(2).enumerate() {
@@ -368,7 +368,7 @@ mod tests {
         let mut output = vec![0.0f32; frames * 2];
         process_audio(
             &state,
-            &mut InterleavedMut::new(&mut output, ChannelLayout::Stereo),
+            &mut InterleavedMut::new(&mut output, ChannelLayout::STEREO),
         );
 
         let expected_beat = Beat(256.0 * (120.0 / 60.0) / 44100.0);
@@ -395,7 +395,7 @@ mod tests {
         let mut output = vec![0.0f32; frames * 2];
         process_audio(
             &state,
-            &mut InterleavedMut::new(&mut output, ChannelLayout::Stereo),
+            &mut InterleavedMut::new(&mut output, ChannelLayout::STEREO),
         );
 
         let beat = transport.settings.beat();
@@ -421,7 +421,7 @@ mod tests {
         for _ in 0..4 {
             process_audio(
                 &state,
-                &mut InterleavedMut::new(&mut output, ChannelLayout::Stereo),
+                &mut InterleavedMut::new(&mut output, ChannelLayout::STEREO),
             );
         }
 
@@ -448,14 +448,14 @@ mod tests {
         let mut output = vec![0.0f32; 1024 * 2];
         process_audio(
             &state,
-            &mut InterleavedMut::new(&mut output, ChannelLayout::Stereo),
+            &mut InterleavedMut::new(&mut output, ChannelLayout::STEREO),
         );
 
         assert_no_alloc::assert_no_alloc(|| {
             for _ in 0..1_000 {
                 process_audio(
                     &state,
-                    &mut InterleavedMut::new(&mut output, ChannelLayout::Stereo),
+                    &mut InterleavedMut::new(&mut output, ChannelLayout::STEREO),
                 );
             }
         });
@@ -478,14 +478,14 @@ mod tests {
         let mut output = vec![0.0f32; MAX_FRAMES * 2];
         process_audio(
             &state,
-            &mut InterleavedMut::new(&mut output, ChannelLayout::Stereo),
+            &mut InterleavedMut::new(&mut output, ChannelLayout::STEREO),
         );
 
         assert_no_alloc::assert_no_alloc(|| {
             for _ in 0..64 {
                 process_audio(
                     &state,
-                    &mut InterleavedMut::new(&mut output, ChannelLayout::Stereo),
+                    &mut InterleavedMut::new(&mut output, ChannelLayout::STEREO),
                 );
             }
         });
@@ -510,7 +510,7 @@ mod tests {
         for frames in [64usize, 128, 256, 512, 1024, 2048] {
             process_audio(
                 &state,
-                &mut InterleavedMut::new(&mut output[..frames * 2], ChannelLayout::Stereo),
+                &mut InterleavedMut::new(&mut output[..frames * 2], ChannelLayout::STEREO),
             );
         }
 
@@ -519,7 +519,7 @@ mod tests {
                 for frames in [64usize, 128, 256, 512, 1024, 2048] {
                     process_audio(
                         &state,
-                        &mut InterleavedMut::new(&mut output[..frames * 2], ChannelLayout::Stereo),
+                        &mut InterleavedMut::new(&mut output[..frames * 2], ChannelLayout::STEREO),
                     );
                 }
             }

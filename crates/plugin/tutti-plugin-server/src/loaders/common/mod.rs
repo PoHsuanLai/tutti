@@ -19,7 +19,7 @@ pub(crate) struct Meta {
 /// straight through instead of degrading it to a `usize` for this function to
 /// rebuild. Callers holding only a count still pass it — the `Into` accepts
 /// `u8`/`u16`/`u32`/`usize`. Note there is deliberately no `From<i32>`, so a
-/// bare integer literal must be named (`ChannelLayout::Stereo`) or suffixed.
+/// bare integer literal must be named (`ChannelLayout::STEREO`) or suffixed.
 pub(crate) fn single_bus(layout: impl Into<ChannelLayout>) -> BusChannels {
     let mut v = BusChannels::new();
     v.push(layout.into());

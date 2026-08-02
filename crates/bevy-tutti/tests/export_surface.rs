@@ -40,7 +40,7 @@ fn stereo_config() -> ExportConfig {
         encode: EncodeConfig {
             format: AudioFormat::Wav,
             bit_depth: BitDepth::Float32,
-            channels: ChannelLayout::Stereo,
+            channels: ChannelLayout::STEREO,
         },
         ..Default::default()
     }
@@ -55,7 +55,7 @@ fn app_with_engine() -> (App, Entity) {
     app.insert_resource(graph);
     app.insert_resource(AudioConfig {
         sample_rate: 44_100.0,
-        channels: ChannelLayout::Stereo,
+        channels: ChannelLayout::STEREO,
     });
     // `engine_ready` gates `start_exports` on this state, not on the graph
     // resource, so a test graph alone is not enough.

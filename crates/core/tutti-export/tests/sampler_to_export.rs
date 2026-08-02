@@ -123,7 +123,7 @@ fn config(format: AudioFormat) -> ExportConfig {
         encode: EncodeConfig {
             format,
             bit_depth: BitDepth::Float32,
-            channels: ChannelLayout::Stereo,
+            channels: ChannelLayout::STEREO,
         },
         // Float32 never dithers anyway; stated so the intent is on the page.
         dither: Dither::Off,

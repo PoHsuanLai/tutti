@@ -12,7 +12,9 @@ use super::control_backend::InProcessVst2Backend;
 use crate::error::{BridgeError, LoadStage, Result};
 use crate::host::handles::PluginHandle;
 use crate::host::node::ParameterChangeSink;
-use crate::protocol::{EditorPresence, Features, LoadedPlugin, PluginClass, PluginDescriptor};
+use crate::protocol::{
+    EditorPresence, Features, LoadedPlugin, PluginClass, PluginDescriptor, PluginTail,
+};
 use smallvec::SmallVec;
 use tutti_plugin_types::PluginTail;
 
@@ -71,8 +73,12 @@ pub fn load(
         inputs: SmallVec::from_slice(&[host_meta.num_inputs]),
         outputs: SmallVec::from_slice(&[host_meta.num_outputs]),
         latency_samples: host_meta.latency_samples,
-        // VST2 has no tail query the vendored bindings surface as a host call,
-        // so this loader has nothing to ask and reports that it did not.
+        // `Unknown`, matching the out-of-process VST2 loader exactly — see the
+        // comment there. VST2 encodes tail inversely to every other format
+        // (`0` means "no tail information, host decides", `1` means "no tail at
+        // all"), so it cannot reuse `from_samples`, whose `0 => None` arm would
+        // read "unknown" as "silent" and tell a bounce to add nothing after
+        // every VST2 reverb.
         tail: PluginTail::Unknown,
         features,
         probed,

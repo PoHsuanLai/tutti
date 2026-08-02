@@ -74,7 +74,7 @@ impl From<ChannelLayout> for Vst3SpeakerArrangement {
 impl From<Vst3SpeakerArrangement> for ChannelLayout {
     /// Recover the channel count as the mask's popcount.
     fn from(arr: Vst3SpeakerArrangement) -> Self {
-        ChannelLayout::from_count(arr.0.count_ones() as u16)
+        ChannelLayout::from(arr.0.count_ones() as u16)
     }
 }
 

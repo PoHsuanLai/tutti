@@ -49,7 +49,7 @@ fn config(dither: Dither, bit_depth: BitDepth) -> ExportConfig {
         encode: EncodeConfig {
             format: AudioFormat::Wav,
             bit_depth,
-            channels: ChannelLayout::Stereo,
+            channels: ChannelLayout::STEREO,
         },
         dither,
         ..Default::default()

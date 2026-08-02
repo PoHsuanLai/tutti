@@ -455,7 +455,7 @@ unsafe fn raw_set_render_quality(unit: coreaudio_sys::AudioUnit, quality: u32) -
 
 /// Build a stereo-in / stereo-out single-bus scratch at `BLOCK`.
 fn stereo_scratch() -> PushScratch {
-    PushScratch::new(&[ChannelLayout::Stereo], &[ChannelLayout::Stereo], BLOCK)
+    PushScratch::new(&[ChannelLayout::STEREO], &[ChannelLayout::STEREO], BLOCK)
 }
 
 /// The push path must produce real audio on every unit that implements the
@@ -666,7 +666,7 @@ fn units_without_a_push_path_report_unimplemented() {
         // Instruments and mixers report their own widths; the scratch only needs
         // to be well-formed enough for the call to reach the AU.
         let mut scratch =
-            PushScratch::new(&[ChannelLayout::Stereo], &[ChannelLayout::Stereo], BLOCK);
+            PushScratch::new(&[ChannelLayout::STEREO], &[ChannelLayout::STEREO], BLOCK);
         let err = au
             .process_push(&mut scratch, BLOCK)
             .expect_err("a unit that does not implement the selector must error");
@@ -717,7 +717,7 @@ fn process_multiple_is_unimplemented_across_the_corpus() {
         // One input list — the least the selector could possibly accept. If it
         // refuses even this, it does not implement it at all.
         let mut scratch =
-            PushScratch::new(&[ChannelLayout::Stereo], &[ChannelLayout::Stereo], BLOCK);
+            PushScratch::new(&[ChannelLayout::STEREO], &[ChannelLayout::STEREO], BLOCK);
         match au.process_push_multiple(&mut scratch, BLOCK) {
             Err(AuError::RenderFailed {
                 function: "AudioUnitProcessMultiple",
@@ -761,8 +761,8 @@ fn a_real_multi_element_unit_still_refuses_process_multiple() {
     );
 
     for lists in [1usize, 2, 8] {
-        let inputs = vec![ChannelLayout::Stereo; lists];
-        let mut scratch = PushScratch::new(&inputs, &[ChannelLayout::Stereo], BLOCK);
+        let inputs = vec![ChannelLayout::STEREO; lists];
+        let mut scratch = PushScratch::new(&inputs, &[ChannelLayout::STEREO], BLOCK);
         assert_eq!(scratch.input_bus_count(), lists);
         match au.process_push_multiple(&mut scratch, BLOCK) {
             Err(AuError::RenderFailed {
@@ -800,7 +800,7 @@ fn the_one_unit_that_implements_process_multiple_renders_through_it() {
     let unit = IMPLEMENTS_PROCESS_MULTIPLE;
     let mut au = unit.open(RATE, BLOCK);
 
-    let mut scratch = PushScratch::new(&[ChannelLayout::Stereo], &[ChannelLayout::Stereo], BLOCK);
+    let mut scratch = PushScratch::new(&[ChannelLayout::STEREO], &[ChannelLayout::STEREO], BLOCK);
     let mut out = silence(2, BLOCK as usize);
     let mut max = 0.0f32;
 
@@ -849,8 +849,8 @@ fn the_one_unit_that_implements_process_multiple_renders_through_it() {
 
     // Two input lists on a one-input-element unit: the AU's own InvalidElement.
     let mut wide = PushScratch::new(
-        &[ChannelLayout::Stereo, ChannelLayout::Stereo],
-        &[ChannelLayout::Stereo],
+        &[ChannelLayout::STEREO, ChannelLayout::STEREO],
+        &[ChannelLayout::STEREO],
         BLOCK,
     );
     let input = sine(2, BLOCK as usize, 0, 0.5, RATE as f32);
@@ -888,7 +888,7 @@ fn the_one_unit_that_implements_process_multiple_renders_through_it() {
 fn a_scratch_with_no_output_bus_is_refused() {
     let _g = lock();
     let mut au = DELAY.open(RATE, BLOCK);
-    let mut no_out = PushScratch::new(&[ChannelLayout::Stereo], &[], BLOCK);
+    let mut no_out = PushScratch::new(&[ChannelLayout::STEREO], &[], BLOCK);
     assert_eq!(no_out.output_bus_count(), 0);
 
     assert!(
@@ -1099,7 +1099,7 @@ fn the_push_path_does_not_allocate() {
     let _g = lock();
     let mut au = DELAY.open(RATE, RT_BLOCK);
     let mut scratch =
-        PushScratch::new(&[ChannelLayout::Stereo], &[ChannelLayout::Stereo], RT_BLOCK);
+        PushScratch::new(&[ChannelLayout::STEREO], &[ChannelLayout::STEREO], RT_BLOCK);
     let mut b = RtBufs::new();
 
     for _ in 0..WARMUP {
@@ -1127,7 +1127,7 @@ fn process_multiple_does_not_allocate() {
     let _g = lock();
     let mut au = IMPLEMENTS_PROCESS_MULTIPLE.open(RATE, RT_BLOCK);
     let mut scratch =
-        PushScratch::new(&[ChannelLayout::Stereo], &[ChannelLayout::Stereo], RT_BLOCK);
+        PushScratch::new(&[ChannelLayout::STEREO], &[ChannelLayout::STEREO], RT_BLOCK);
     let mut b = RtBufs::new();
 
     for _ in 0..WARMUP {

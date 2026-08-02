@@ -115,7 +115,7 @@ impl Rendered {
     /// callers reaching for a layout (the loudness meter, a resample, an encode
     /// config) actually want, so they stop re-wrapping the count themselves.
     pub fn layout(&self) -> ChannelLayout {
-        ChannelLayout::from_count(self.planes.len() as u16)
+        ChannelLayout::from(self.planes.len() as u16)
     }
 
     /// Multiply every sample by `gain` — the apply half of a measure-then-apply
@@ -148,7 +148,7 @@ impl Rendered {
 /// the encoders use. Zero is the only rejected width — this used to be a
 /// `dispatch_channels!` macro that monomorphized the whole pipeline at one of
 /// 1/2/4/6/8/12 and returned [`Error::UnsupportedChannels`] for everything else,
-/// which meant a 3- or 5-wide master (`ChannelLayout::from_count(n)` for any
+/// which meant a 3- or 5-wide master (`ChannelLayout::from(n)` for any
 /// unenumerated `n`) could not be exported at all.
 fn frame_width(layout: ChannelLayout) -> Result<usize> {
     match layout.count() {

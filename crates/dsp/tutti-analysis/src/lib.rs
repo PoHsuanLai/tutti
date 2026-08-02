@@ -49,8 +49,8 @@
 //!
 //! // Waveform blocks for display.
 //! let blocks = summarize(
-//!     &PeakConfig::new(Samples(512), ChannelLayout::Mono),
-//!     Interleaved::new(&samples, ChannelLayout::Mono),
+//!     &PeakConfig::new(Samples(512), ChannelLayout::MONO),
+//!     Interleaved::new(&samples, ChannelLayout::MONO),
 //! );
 //!
 //! // Onsets, via spectral flux.

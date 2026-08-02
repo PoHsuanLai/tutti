@@ -21,7 +21,7 @@ use bevy_tutti::io::{BitDepth, ChannelLayout, TapIn, WavOut};
 const SAMPLE_RATE: f64 = 48_000.0;
 
 fn sink(path: &PathBuf) -> WavOut {
-    WavOut::create(path, SAMPLE_RATE, ChannelLayout::Stereo, BitDepth::Float32)
+    WavOut::create(path, SAMPLE_RATE, ChannelLayout::STEREO, BitDepth::Float32)
         .expect("sink should open")
 }
 

@@ -164,7 +164,7 @@ impl VoicePool {
         transport: Option<Arc<dyn Timeline>>,
         butler: Option<Commands>,
     ) -> Self {
-        Self::from_parts_with_channels(rx, transport, butler, ChannelLayout::Stereo)
+        Self::from_parts_with_channels(rx, transport, butler, ChannelLayout::STEREO)
     }
 
     fn from_parts_with_channels(
@@ -208,7 +208,7 @@ impl VoicePool {
         let handle = VoicePoolHandle {
             tx,
             retired,
-            channels: ChannelLayout::Stereo,
+            channels: ChannelLayout::STEREO,
             sample_rate: SampleRate::SR_44K1,
         };
         let mut unit = Self::from_parts(rx, None, None);
@@ -225,7 +225,7 @@ impl VoicePool {
         let handle = VoicePoolHandle {
             tx,
             retired,
-            channels: ChannelLayout::Stereo,
+            channels: ChannelLayout::STEREO,
             sample_rate: SampleRate::SR_44K1,
         };
         let mut unit = Self::from_parts(rx, Some(transport), butler);

@@ -151,8 +151,8 @@ mod tests {
     fn multi_bus_round_trips() {
         let loaded = LoadedPlugin {
             // stereo main + mono sidechain
-            inputs: SmallVec::from_slice(&[ChannelLayout::Stereo, ChannelLayout::Mono]),
-            outputs: SmallVec::from_slice(&[ChannelLayout::Stereo]),
+            inputs: SmallVec::from_slice(&[ChannelLayout::STEREO, ChannelLayout::MONO]),
+            outputs: SmallVec::from_slice(&[ChannelLayout::STEREO]),
             latency_samples: Samples(128),
             tail: PluginTail::Finite(Samples(48_000)),
             features: Features::F64_AUDIO | Features::MIDI_IN,

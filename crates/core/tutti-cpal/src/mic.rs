@@ -232,7 +232,7 @@ impl AudioIn for MicIn {
     /// lie about what `poll_into` hands back, and `Recorder::start` would then
     /// approve a 6-channel sink for a stereo stream.
     fn layout(&self) -> ChannelLayout {
-        ChannelLayout::Stereo
+        ChannelLayout::STEREO
     }
 
     fn poll_into(&mut self, out: &mut [f32]) -> usize {

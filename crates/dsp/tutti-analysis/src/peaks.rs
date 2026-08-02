@@ -223,13 +223,13 @@ mod tests {
     use super::*;
 
     fn mono(block: usize) -> PeakConfig {
-        PeakConfig::new(Samples(block), ChannelLayout::Mono)
+        PeakConfig::new(Samples(block), ChannelLayout::MONO)
     }
 
     #[test]
     fn block_values_are_exact_for_a_ramp() {
         let samples: Vec<f32> = (0..500).map(|i| i as f32).collect();
-        let blocks = summarize(&mono(100), Interleaved::new(&samples, ChannelLayout::Mono));
+        let blocks = summarize(&mono(100), Interleaved::new(&samples, ChannelLayout::MONO));
 
         assert_eq!(blocks.len(), 5);
         for (i, block) in blocks.iter().enumerate() {
@@ -243,7 +243,7 @@ mod tests {
     /// The law: streaming in arbitrary chunks equals one batch call.
     ///
     /// Swept across **every layout**, not just mono. The first version of this
-    /// test only ran at `ChannelLayout::Mono`, where folding short-circuits to
+    /// test only ran at `ChannelLayout::MONO`, where folding short-circuits to
     /// a copy — so it proved nothing about the fold, and missed a bug that
     /// silently discarded audio on every non-frame-aligned stereo chunk.
     ///
@@ -252,10 +252,10 @@ mod tests {
     #[test]
     fn streaming_matches_batch_at_every_chunk_size_and_layout() {
         for layout in [
-            ChannelLayout::Mono,
-            ChannelLayout::Stereo,
-            ChannelLayout::Quad,
-            ChannelLayout::Multi(6),
+            ChannelLayout::MONO,
+            ChannelLayout::STEREO,
+            ChannelLayout::QUAD,
+            ChannelLayout::from(6u16),
         ] {
             let channels = layout.count() as usize;
             // 500 whole frames, so batch and streaming see the same input.
@@ -296,7 +296,7 @@ mod tests {
     /// ends between L and R must carry that half-frame, not drop it.
     #[test]
     fn a_chunk_ending_mid_frame_carries_the_partial_frame() {
-        let cfg = PeakConfig::new(Samples(1), ChannelLayout::Stereo);
+        let cfg = PeakConfig::new(Samples(1), ChannelLayout::STEREO);
         // Two frames: (1,2) folds to 1.5, (3,4) folds to 3.5.
         let samples = [1.0f32, 2.0, 3.0, 4.0];
 
@@ -307,7 +307,7 @@ mod tests {
             step_peaks(
                 &cfg,
                 &mut state,
-                Interleaved::new(part, ChannelLayout::Stereo),
+                Interleaved::new(part, ChannelLayout::STEREO),
                 &mut streamed,
             );
         }
@@ -329,14 +329,14 @@ mod tests {
     /// whatever slice arrived.
     #[test]
     fn a_chunk_of_the_wrong_width_is_skipped() {
-        let cfg = PeakConfig::new(Samples(1), ChannelLayout::Stereo);
+        let cfg = PeakConfig::new(Samples(1), ChannelLayout::STEREO);
         let mut state = PeakState::new();
         let mut out = Vec::new();
 
         step_peaks(
             &cfg,
             &mut state,
-            Interleaved::new(&[1.0, 2.0, 3.0, 4.0], ChannelLayout::Quad),
+            Interleaved::new(&[1.0, 2.0, 3.0, 4.0], ChannelLayout::QUAD),
             &mut out,
         );
         finish(&mut state, &mut out);
@@ -348,7 +348,7 @@ mod tests {
     #[test]
     fn a_trailing_partial_block_is_kept() {
         let samples: Vec<f32> = (0..250).map(|i| i as f32).collect();
-        let blocks = summarize(&mono(100), Interleaved::new(&samples, ChannelLayout::Mono));
+        let blocks = summarize(&mono(100), Interleaved::new(&samples, ChannelLayout::MONO));
 
         assert_eq!(blocks.len(), 3);
         assert_eq!(blocks[2].min, 200.0);
@@ -361,8 +361,8 @@ mod tests {
         // reading channel 0 alone would give the ramp.
         let samples: Vec<f32> = (0..200).flat_map(|i| [i as f32, -(i as f32)]).collect();
         let blocks = summarize(
-            &PeakConfig::new(Samples(100), ChannelLayout::Stereo),
-            Interleaved::new(&samples, ChannelLayout::Stereo),
+            &PeakConfig::new(Samples(100), ChannelLayout::STEREO),
+            Interleaved::new(&samples, ChannelLayout::STEREO),
         );
 
         assert_eq!(blocks.len(), 2, "frames, not interleaved samples");
@@ -379,8 +379,8 @@ mod tests {
             .flat_map(|_| [0.0, 0.0, 1.0, 0.0, 0.0, 0.0])
             .collect();
         let blocks = summarize(
-            &PeakConfig::new(Samples(50), ChannelLayout::Multi(6)),
-            Interleaved::new(&samples, ChannelLayout::Multi(6)),
+            &PeakConfig::new(Samples(50), ChannelLayout::from(6u16)),
+            Interleaved::new(&samples, ChannelLayout::from(6u16)),
         );
 
         assert_eq!(blocks.len(), 2);
@@ -389,7 +389,7 @@ mod tests {
 
     #[test]
     fn consumed_counts_frames_not_samples() {
-        let cfg = PeakConfig::new(Samples(100), ChannelLayout::Stereo);
+        let cfg = PeakConfig::new(Samples(100), ChannelLayout::STEREO);
         let mut state = PeakState::new();
         let mut out = Vec::new();
 
@@ -397,7 +397,7 @@ mod tests {
         step_peaks(
             &cfg,
             &mut state,
-            Interleaved::new(&samples, ChannelLayout::Stereo),
+            Interleaved::new(&samples, ChannelLayout::STEREO),
             &mut out,
         );
 
@@ -406,8 +406,8 @@ mod tests {
 
     #[test]
     fn degenerate_inputs_are_safe() {
-        assert!(summarize(&mono(100), Interleaved::new(&[], ChannelLayout::Mono)).is_empty());
-        assert!(summarize(&mono(0), Interleaved::new(&[1.0, 2.0], ChannelLayout::Mono)).is_empty());
+        assert!(summarize(&mono(100), Interleaved::new(&[], ChannelLayout::MONO)).is_empty());
+        assert!(summarize(&mono(0), Interleaved::new(&[1.0, 2.0], ChannelLayout::MONO)).is_empty());
         assert_eq!(summarize_block(&[]), PeakBlock::default());
 
         let mut state = PeakState::new();
@@ -425,7 +425,7 @@ mod tests {
         step_peaks(
             &cfg,
             &mut state,
-            Interleaved::new(&[1.0; 150], ChannelLayout::Mono),
+            Interleaved::new(&[1.0; 150], ChannelLayout::MONO),
             &mut out,
         );
         state.reset();
@@ -434,7 +434,7 @@ mod tests {
         step_peaks(
             &cfg,
             &mut state,
-            Interleaved::new(&[2.0; 100], ChannelLayout::Mono),
+            Interleaved::new(&[2.0; 100], ChannelLayout::MONO),
             &mut out,
         );
         finish(&mut state, &mut out);

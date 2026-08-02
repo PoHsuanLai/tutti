@@ -71,7 +71,7 @@ impl StreamingCrossfader {
             fade: ArcSwap::from_pointee(Fade {
                 fadeout: Vec::new(),
                 fadein: Vec::new(),
-                channels: ChannelLayout::Stereo,
+                channels: ChannelLayout::STEREO,
                 stride: 2,
                 len: 0,
             }),
@@ -192,7 +192,7 @@ impl StreamingCrossfader {
         self.fade.store(Arc::new(Fade {
             fadeout: Vec::new(),
             fadein: Vec::new(),
-            channels: ChannelLayout::Stereo,
+            channels: ChannelLayout::STEREO,
             stride: 2,
             len: 0,
         }));
@@ -272,7 +272,7 @@ mod tests {
         c.start(vec![1.0; 4 * 6], vec![0.0; 4 * 6], 6usize);
         assert_eq!(
             c.layout(),
-            ChannelLayout::Multi(6),
+            ChannelLayout::from(6u16),
             "the installed fade must carry the width it was started at"
         );
 

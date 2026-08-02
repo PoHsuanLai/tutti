@@ -12,8 +12,10 @@ use bevy_ecs::prelude::*;
 use tutti_core::WaveAsset;
 use tutti_sampler::DiskStreamer;
 
+pub mod voice;
 pub mod wave_loader;
 
+pub use voice::{memory_voice, voice_width, InsertVoice, SamplerVoice, SpawnVoice};
 pub use wave_loader::{WaveAssetLoader, WaveAssetLoaderError};
 
 /// The disk-streaming engine. Owns the butler thread that drives all disk I/O;

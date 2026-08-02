@@ -53,7 +53,7 @@ fn all_four_formats_export() {
         let p = d.path().join(format!("a.{ext}"));
         let r = render_to_file(
             net(),
-            &config(f, bd, ChannelLayout::Stereo),
+            &config(f, bd, ChannelLayout::STEREO),
             &FrozenClock,
             &p,
         );
@@ -78,7 +78,7 @@ fn upmix_does_not_panic_and_leaves_extras_silent() {
     n.pipe_output(id);
     render_to_file(
         n,
-        &config(AudioFormat::Wav, BitDepth::Float32, ChannelLayout::Quad),
+        &config(AudioFormat::Wav, BitDepth::Float32, ChannelLayout::QUAD),
         &FrozenClock,
         &p,
     )
@@ -120,7 +120,7 @@ fn the_clock_advances_by_exactly_the_frames_rendered() {
     let clock = Arc::new(CountingClock(AtomicUsize::new(0)));
     let out = render_to_buffers(
         net(),
-        &config(AudioFormat::Wav, BitDepth::Float32, ChannelLayout::Stereo),
+        &config(AudioFormat::Wav, BitDepth::Float32, ChannelLayout::STEREO),
         clock.as_ref(),
     )
     .unwrap();
@@ -138,7 +138,7 @@ fn the_clock_advances_by_exactly_the_frames_rendered() {
 /// output is still the requested length — not short by the trim.
 #[test]
 fn a_latency_trim_preserves_the_output_length() {
-    let mut s = config(AudioFormat::Wav, BitDepth::Float32, ChannelLayout::Stereo);
+    let mut s = config(AudioFormat::Wav, BitDepth::Float32, ChannelLayout::STEREO);
     let untrimmed = render_to_buffers(net(), &s, &FrozenClock).unwrap();
 
     s.render.latency = tutti_types::Samples(512);
@@ -160,7 +160,7 @@ fn a_latency_trim_preserves_the_output_length() {
 /// untailed length.
 #[test]
 fn a_tail_lengthens_the_output_by_exactly_the_tail() {
-    let mut s = config(AudioFormat::Wav, BitDepth::Float32, ChannelLayout::Stereo);
+    let mut s = config(AudioFormat::Wav, BitDepth::Float32, ChannelLayout::STEREO);
     let untailed = render_to_buffers(net(), &s, &FrozenClock).unwrap();
 
     let tail = tutti_types::Samples(4096);
@@ -369,7 +369,7 @@ fn a_stateless_node_reports_no_tail_rather_than_an_unknown_one() {
 fn buffers_report_their_own_shape() {
     let out = render_to_buffers(
         net(),
-        &config(AudioFormat::Wav, BitDepth::Float32, ChannelLayout::Quad),
+        &config(AudioFormat::Wav, BitDepth::Float32, ChannelLayout::QUAD),
         &FrozenClock,
     )
     .unwrap();
@@ -387,17 +387,17 @@ fn a_caller_can_compose_normalization() {
 
     // Longer than R128's 400 ms gating block, or the meter reports nothing
     // passed the gate and there is no loudness to normalize toward.
-    let mut long = config(AudioFormat::Wav, BitDepth::Float32, ChannelLayout::Stereo);
+    let mut long = config(AudioFormat::Wav, BitDepth::Float32, ChannelLayout::STEREO);
     long.render.duration_seconds = 2.0;
     let mut out = render_to_buffers(net(), &long, &FrozenClock).unwrap();
 
-    let cfg = LoudnessConfig::new(out.sample_rate, ChannelLayout::Stereo);
+    let cfg = LoudnessConfig::new(out.sample_rate, ChannelLayout::STEREO);
     let flat = out.interleaved();
-    let before = measure_loudness(&cfg, Interleaved::new(&flat, ChannelLayout::Stereo)).unwrap();
+    let before = measure_loudness(&cfg, Interleaved::new(&flat, ChannelLayout::STEREO)).unwrap();
     let gain = before.gain_to(Db(-14.0), Db(-1.0));
     out.apply_gain(gain);
     let flat = out.interleaved();
-    let after = measure_loudness(&cfg, Interleaved::new(&flat, ChannelLayout::Stereo)).unwrap();
+    let after = measure_loudness(&cfg, Interleaved::new(&flat, ChannelLayout::STEREO)).unwrap();
 
     // Assert what `gain_to` actually promises, not merely that `apply_gain` is
     // linear. The earlier form checked `after ≈ before + gain`, which is
@@ -436,7 +436,7 @@ fn a_caller_can_compose_normalization() {
 fn a_resample_request_reaches_the_file() {
     let d = tempfile::tempdir().unwrap();
     let p = d.path().join("r.wav");
-    let mut s = config(AudioFormat::Wav, BitDepth::Float32, ChannelLayout::Stereo);
+    let mut s = config(AudioFormat::Wav, BitDepth::Float32, ChannelLayout::STEREO);
     s.render.duration_seconds = 1.0;
     s.resample = Some(Resample::to(SampleRate(48_000.0)));
 
@@ -463,7 +463,7 @@ fn a_resample_request_reaches_the_file() {
 #[test]
 fn normalized_audio_can_be_written_to_every_format() {
     let d = tempfile::tempdir().unwrap();
-    let mut s = config(AudioFormat::Wav, BitDepth::Int24, ChannelLayout::Stereo);
+    let mut s = config(AudioFormat::Wav, BitDepth::Int24, ChannelLayout::STEREO);
     s.render.duration_seconds = 1.0;
 
     let mut audio = render_to_buffers(net(), &s, &FrozenClock).unwrap();
@@ -505,7 +505,7 @@ fn normalized_audio_can_be_written_to_every_format() {
 #[test]
 fn a_resample_reaches_every_format_not_just_wav() {
     let d = tempfile::tempdir().unwrap();
-    let mut s = config(AudioFormat::Wav, BitDepth::Int24, ChannelLayout::Stereo);
+    let mut s = config(AudioFormat::Wav, BitDepth::Int24, ChannelLayout::STEREO);
     s.render.duration_seconds = 1.0; // 44100 frames in, 48000 expected out
     s.resample = Some(Resample::to(tutti_core::SampleRate(48_000.0)));
 
@@ -555,7 +555,7 @@ fn write_buffers_resamples_from_the_frames_own_rate() {
     let d = tempfile::tempdir().unwrap();
 
     // Render at 96k...
-    let mut render_cfg = config(AudioFormat::Wav, BitDepth::Float32, ChannelLayout::Stereo);
+    let mut render_cfg = config(AudioFormat::Wav, BitDepth::Float32, ChannelLayout::STEREO);
     render_cfg.render.sample_rate = tutti_core::SampleRate(96_000.0);
     render_cfg.render.duration_seconds = 1.0;
     let audio = render_to_buffers(net(), &render_cfg, &FrozenClock).unwrap();
@@ -563,7 +563,7 @@ fn write_buffers_resamples_from_the_frames_own_rate() {
 
     // ...then write with a config whose `render` half is left at its DEFAULT
     // 44100 — the case the doc tells a caller is fine to ignore.
-    let mut write_cfg = config(AudioFormat::Wav, BitDepth::Float32, ChannelLayout::Stereo);
+    let mut write_cfg = config(AudioFormat::Wav, BitDepth::Float32, ChannelLayout::STEREO);
     write_cfg.resample = Some(Resample::to(tutti_core::SampleRate(48_000.0)));
     assert_eq!(
         write_cfg.render.sample_rate.get(),
@@ -605,7 +605,7 @@ fn normalized_export_lifts_the_level_toward_the_target() {
 
     let d = tempfile::tempdir().unwrap();
     // Longer than R128's 400 ms gating block, or nothing passes the gate.
-    let mut cfg = config(AudioFormat::Wav, BitDepth::Float32, ChannelLayout::Stereo);
+    let mut cfg = config(AudioFormat::Wav, BitDepth::Float32, ChannelLayout::STEREO);
     cfg.render.duration_seconds = 2.0;
 
     let plain = d.path().join("plain.wav");
@@ -645,7 +645,7 @@ fn peak_normalization_lands_on_the_requested_dbtp() {
     use tutti_types::{Db, Interleaved};
 
     let d = tempfile::tempdir().unwrap();
-    let mut cfg = config(AudioFormat::Wav, BitDepth::Float32, ChannelLayout::Stereo);
+    let mut cfg = config(AudioFormat::Wav, BitDepth::Float32, ChannelLayout::STEREO);
     cfg.render.duration_seconds = 2.0;
 
     let path = d.path().join("peak.wav");
@@ -656,9 +656,9 @@ fn peak_normalization_lands_on_the_requested_dbtp() {
         .into_samples::<f32>()
         .map(|s| s.unwrap())
         .collect();
-    let meter = LoudnessConfig::new(cfg.render.sample_rate, ChannelLayout::Stereo);
+    let meter = LoudnessConfig::new(cfg.render.sample_rate, ChannelLayout::STEREO);
     let measured =
-        measure_loudness(&meter, Interleaved::new(&samples, ChannelLayout::Stereo)).unwrap();
+        measure_loudness(&meter, Interleaved::new(&samples, ChannelLayout::STEREO)).unwrap();
 
     assert!(
         (measured.true_peak.get() - (-1.0)).abs() < 0.2,
@@ -686,7 +686,7 @@ fn a_sub_gating_block_render_normalizes_without_poisoning_the_signal() {
 
     let d = tempfile::tempdir().unwrap();
     // 0.2 s — half the 400 ms gating block.
-    let cfg = config(AudioFormat::Wav, BitDepth::Float32, ChannelLayout::Stereo);
+    let cfg = config(AudioFormat::Wav, BitDepth::Float32, ChannelLayout::STEREO);
     assert!(
         cfg.render.duration_seconds < 0.4,
         "this test is only meaningful under the gating block"
@@ -724,7 +724,7 @@ fn surround_normalizes_rather_than_falling_back_to_peak() {
     let mut cfg = config(
         AudioFormat::Wav,
         BitDepth::Float32,
-        ChannelLayout::from_count(6),
+        ChannelLayout::from(6u16),
     );
     cfg.render.duration_seconds = 2.0;
 
@@ -828,7 +828,7 @@ fn normalizing_silence_at_an_integer_depth_does_not_amplify_dither() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("silence.wav");
 
-    let mut cfg = config(AudioFormat::Wav, BitDepth::Int16, ChannelLayout::Stereo);
+    let mut cfg = config(AudioFormat::Wav, BitDepth::Int16, ChannelLayout::STEREO);
     cfg.dither = tutti_export::Dither::Triangular;
 
     render_normalized_to_file(
@@ -877,7 +877,7 @@ fn a_resampled_normalized_export_still_lands_on_its_dbtp_target() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("resampled.wav");
 
-    let mut cfg = config(AudioFormat::Wav, BitDepth::Float32, ChannelLayout::Stereo);
+    let mut cfg = config(AudioFormat::Wav, BitDepth::Float32, ChannelLayout::STEREO);
     cfg.resample = Some(Resample::to(tutti_core::SampleRate(48_000.0)));
 
     render_normalized_to_file(
@@ -895,8 +895,8 @@ fn a_resampled_normalized_export_still_lands_on_its_dbtp_target() {
     assert_eq!(rate, 48_000, "the resample must have reached the file");
     let samples: Vec<f32> = reader.into_samples::<f32>().map(|s| s.unwrap()).collect();
 
-    let meter = LoudnessConfig::new(tutti_core::SampleRate(rate as f64), ChannelLayout::Stereo);
-    let measured = measure_loudness(&meter, Interleaved::new(&samples, ChannelLayout::Stereo))
+    let meter = LoudnessConfig::new(tutti_core::SampleRate(rate as f64), ChannelLayout::STEREO);
+    let measured = measure_loudness(&meter, Interleaved::new(&samples, ChannelLayout::STEREO))
         .expect("stereo at 48k is measurable");
 
     assert!(
@@ -919,7 +919,7 @@ fn an_unmeasurable_rate_fails_rather_than_writing_un_normalized_audio() {
     let path = dir.path().join("unmeasurable.wav");
 
     // R128 accepts 16 Hz - 2.8 MHz; 4 MHz is outside it.
-    let mut cfg = config(AudioFormat::Wav, BitDepth::Float32, ChannelLayout::Stereo);
+    let mut cfg = config(AudioFormat::Wav, BitDepth::Float32, ChannelLayout::STEREO);
     cfg.render.sample_rate = tutti_core::SampleRate(4_000_000.0);
     cfg.render.duration_seconds = 0.0005;
 
@@ -940,7 +940,7 @@ fn an_unmeasurable_rate_fails_rather_than_writing_un_normalized_audio() {
 /// pipeline was const-generic in its frame width, and `dispatch_channels!`
 /// resolved the runtime `ChannelLayout` to one of exactly six monomorphizations,
 /// returning `Error::UnsupportedChannels` for anything else. The app passes
-/// `ChannelLayout::from_count(master_width)` straight through, so a 3- or 5-wide
+/// `ChannelLayout::from(master_width)` straight through, so a 3- or 5-wide
 /// master failed at the entry point with no way for a caller to work around it.
 ///
 /// Asserted through the file header and the samples, not the return value: "no
@@ -950,9 +950,12 @@ fn a_width_the_old_dispatch_rejected_now_exports() {
     let d = tempfile::tempdir().unwrap();
 
     for width in [3u16, 5, 7, 9] {
-        let layout = ChannelLayout::from_count(width);
+        let layout = ChannelLayout::from(width);
         assert!(
-            matches!(layout, ChannelLayout::Multi(_)),
+            !matches!(
+                layout,
+                ChannelLayout::MONO | ChannelLayout::STEREO | ChannelLayout::QUAD
+            ),
             "width {width} should be an unnamed layout"
         );
 
@@ -1012,7 +1015,7 @@ fn an_odd_width_round_trips_through_buffers() {
 
     let d = tempfile::tempdir().unwrap();
     for width in [3u16, 5] {
-        let layout = ChannelLayout::from_count(width);
+        let layout = ChannelLayout::from(width);
         let mut n = tutti_core::dsp::Net::new(0, width as usize);
         for c in 0..width as usize {
             let id = n.push(Box::new(dc(0.25)));
@@ -1048,7 +1051,7 @@ fn an_odd_width_survives_a_resample() {
     let mut cfg = config(
         AudioFormat::Wav,
         BitDepth::Float32,
-        ChannelLayout::from_count(width),
+        ChannelLayout::from(width),
     );
     cfg.resample = Some(Resample::to(48_000.0));
 
@@ -1085,7 +1088,7 @@ fn a_zero_width_export_is_rejected_not_a_divide_by_zero() {
     let p = d.path().join("zero.wav");
     let err = render_to_file(
         net(),
-        &config(AudioFormat::Wav, BitDepth::Float32, ChannelLayout::Multi(0)),
+        &config(AudioFormat::Wav, BitDepth::Float32, ChannelLayout::EMPTY),
         &FrozenClock,
         &p,
     )

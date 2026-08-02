@@ -54,7 +54,7 @@ fn config(format: AudioFormat, bit_depth: BitDepth) -> ExportConfig {
         encode: EncodeConfig {
             format,
             bit_depth,
-            channels: ChannelLayout::Stereo,
+            channels: ChannelLayout::STEREO,
         },
         // Exactness: see the module note.
         dither: Dither::Off,
@@ -287,7 +287,7 @@ fn a_mono_graph_upmixed_to_quad_puts_signal_only_in_channel_zero() {
     n.pipe_output(id);
 
     let mut cfg = config(AudioFormat::Wav, BitDepth::Int24);
-    cfg.encode.channels = ChannelLayout::Quad;
+    cfg.encode.channels = ChannelLayout::QUAD;
     render_to_file(n, &cfg, &FrozenClock, &path).unwrap();
 
     let (spec, samples) = read_wav(&path);

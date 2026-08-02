@@ -96,7 +96,7 @@ fn main() -> tutti_export::Result<()> {
         mono_tone(),
         &ExportConfig {
             encode: EncodeConfig {
-                channels: ChannelLayout::Quad,
+                channels: ChannelLayout::QUAD,
                 ..Default::default()
             },
             ..config
@@ -123,9 +123,9 @@ fn main() -> tutti_export::Result<()> {
     // holding the audio.
     let mut audio = render_to_buffers(tone(), &config, &FrozenClock)?;
 
-    let cfg = LoudnessConfig::new(audio.sample_rate, ChannelLayout::Stereo);
+    let cfg = LoudnessConfig::new(audio.sample_rate, ChannelLayout::STEREO);
     let flat = audio.interleaved();
-    let before = measure_loudness(&cfg, Interleaved::new(&flat, ChannelLayout::Stereo))
+    let before = measure_loudness(&cfg, Interleaved::new(&flat, ChannelLayout::STEREO))
         .expect("stereo is meterable");
 
     // −14 LUFS with a −1 dBTP ceiling — the usual streaming target.
@@ -133,7 +133,7 @@ fn main() -> tutti_export::Result<()> {
     audio.apply_gain(gain);
 
     let flat = audio.interleaved();
-    let after = measure_loudness(&cfg, Interleaved::new(&flat, ChannelLayout::Stereo))
+    let after = measure_loudness(&cfg, Interleaved::new(&flat, ChannelLayout::STEREO))
         .expect("stereo is meterable");
     println!(
         "normalize: {:.2} LUFS + {:.2} dB -> {:.2} LUFS (peak {:.2} dBTP)",

@@ -643,13 +643,13 @@ pub(super) fn layout_from_clap_port(
     if !port_type.is_null() {
         let tag = unsafe { CStr::from_ptr(port_type) };
         if tag == CLAP_PORT_MONO {
-            return ChannelLayout::Mono;
+            return ChannelLayout::MONO;
         }
         if tag == CLAP_PORT_STEREO {
-            return ChannelLayout::Stereo;
+            return ChannelLayout::STEREO;
         }
     }
-    ChannelLayout::from_count(channel_count as u16)
+    ChannelLayout::from(channel_count)
 }
 
 #[cfg(feature = "clap-extras")]

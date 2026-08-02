@@ -225,7 +225,7 @@ mod tests {
         let mut src = SliceSource {
             samples,
             pos: 0,
-            layout: ChannelLayout::Stereo,
+            layout: ChannelLayout::STEREO,
         };
         let mut wav =
             WavOut::create(&path, 48_000.0, 2u16, BitDepth::Float32).expect("sink should open");
@@ -261,7 +261,7 @@ mod tests {
         let stereo_src = || SliceSource {
             samples: vec![0.0f32; 64],
             pos: 0,
-            layout: ChannelLayout::Stereo,
+            layout: ChannelLayout::STEREO,
         };
 
         // Stereo source, 6-channel sink: refused.
@@ -308,10 +308,15 @@ mod tests {
         let src = SliceSource {
             samples: (0..FRAMES * CH).map(|i| (i % 97) as f32 * 0.001).collect(),
             pos: 0,
-            layout: ChannelLayout::Multi(6),
+            layout: ChannelLayout::from(6u16),
         };
-        let wav = WavOut::create(&path, 48_000.0, ChannelLayout::Multi(6), BitDepth::Float32)
-            .expect("sink opens");
+        let wav = WavOut::create(
+            &path,
+            48_000.0,
+            ChannelLayout::from(6u16),
+            BitDepth::Float32,
+        )
+        .expect("sink opens");
 
         let rec = Recorder::start(src, wav).expect("matching 6ch widths");
         // A finite source ends on its own, but `stop` clears the run flag
@@ -346,7 +351,7 @@ mod tests {
             const ON_EMPTY: OnEmpty = OnEmpty::Starved;
 
             fn layout(&self) -> ChannelLayout {
-                ChannelLayout::Stereo
+                ChannelLayout::STEREO
             }
 
             fn poll_into(&mut self, out: &mut [f32]) -> usize {

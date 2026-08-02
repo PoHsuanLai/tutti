@@ -463,9 +463,9 @@ impl TrackAudio {
     /// natural tag for mono/stereo, and no tag for anything wider (where the
     /// count alone cannot distinguish surround from ambisonic).
     pub fn from_layout(layout: ChannelLayout) -> Self {
-        let port_type = match layout {
-            ChannelLayout::Mono => Some(TrackPortType::Mono),
-            ChannelLayout::Stereo => Some(TrackPortType::Stereo),
+        let port_type = match layout.count() {
+            1 => Some(TrackPortType::Mono),
+            2 => Some(TrackPortType::Stereo),
             _ => None,
         };
         Self { layout, port_type }

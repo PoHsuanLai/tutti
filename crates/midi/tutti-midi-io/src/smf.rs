@@ -4,6 +4,7 @@ use crate::error::{Error, Result};
 // imported under the alias `SmfMessage` so this SMF-1.0 codec never shadows the
 // engine's `MidiMessage` in a `use tutti_midi_io::*` context.
 use midly::{Format, Header, MetaMessage, Smf, Timing, Track, TrackEvent, TrackEventKind};
+use tutti_core::{Beat, BeatDuration};
 
 /// The MIDI 1.0 7-bit channel-voice message carried by [`SmfTimedEvent`] — a
 /// re-export of `midly::MidiMessage`, aliased so an SMF caller never confuses it
@@ -15,8 +16,8 @@ use tracing::debug;
 /// A MIDI voice event positioned in musical time (beats from file start).
 #[derive(Debug, Clone, Copy)]
 pub struct SmfTimedEvent {
-    /// Absolute time in beats from start of file.
-    pub time_beats: f64,
+    /// Absolute position from the start of the file.
+    pub time_beats: Beat,
     /// MIDI channel (0-15).
     pub channel: u8,
     /// The channel-voice message. This is a **MIDI 1.0** `midly` message
@@ -31,7 +32,12 @@ pub struct ParsedMidiFile {
     pub ticks_per_beat: u16,
     /// Default tempo in BPM (from first tempo event, or 120 if none).
     pub tempo_bpm: f64,
-    pub duration_beats: f64,
+    /// Where the last event lands, measured from the start of the file.
+    ///
+    /// A span rather than a position, because that is how every caller reads
+    /// it — "how long is this file" — even though it is derived from the final
+    /// event's [`Beat`]. The subtraction from the origin says so.
+    pub duration_beats: BeatDuration,
 }
 
 impl ParsedMidiFile {
@@ -76,11 +82,14 @@ impl ParsedMidiFile {
         }
 
         sort_by_time(&mut all_events);
-        let duration_beats = all_events.last().map(|e| e.time_beats).unwrap_or(0.0);
+        let duration_beats = all_events
+            .last()
+            .map(|e| e.time_beats - Beat(0.0))
+            .unwrap_or(BeatDuration(0.0));
         debug!(
             "Parsed {} events, {:.2} beats",
             all_events.len(),
-            duration_beats
+            duration_beats.get()
         );
 
         Ok(Self {
@@ -91,7 +100,11 @@ impl ParsedMidiFile {
         })
     }
 
-    pub fn get_events_in_range(&self, start_beats: f64, end_beats: f64) -> &[SmfTimedEvent] {
+    /// Events whose onset lands in `[start_beats, end_beats)`.
+    ///
+    /// Both bounds are [`Beat`]: they were two bare `f64`s, and transposing
+    /// them at a call site returned an empty slice rather than an error.
+    pub fn get_events_in_range(&self, start_beats: Beat, end_beats: Beat) -> &[SmfTimedEvent] {
         let start = self.events.partition_point(|e| e.time_beats < start_beats);
         let end = self.events[start..].partition_point(|e| e.time_beats < end_beats) + start;
         &self.events[start..end]
@@ -108,7 +121,7 @@ fn parse_track(track: &Track, ticks_per_beat: u16) -> Vec<SmfTimedEvent> {
         tick += u64::from(event.delta.as_int());
         if let TrackEventKind::Midi { channel, message } = &event.kind {
             events.push(SmfTimedEvent {
-                time_beats: tick as f64 / f64::from(ticks_per_beat),
+                time_beats: Beat(tick as f64 / f64::from(ticks_per_beat)),
                 channel: channel.as_int(),
                 msg: *message,
             });
@@ -151,9 +164,12 @@ fn sort_by_time(events: &mut [SmfTimedEvent]) {
 // A higher-level read view than [`ParsedMidiFile`]'s flat event stream:
 // note-on/off are paired into whole notes, kept separated per SMF track, with
 // each track's name. This is the shape an importer wants (one clip per track,
-// notes with durations). The records are engine-neutral `u8`/`f64` — callers
-// above this crate (e.g. dawai's SMF import) widen them into their own note
-// type; tutti-midi-io has no knowledge of those.
+// notes with durations).
+//
+// The MIDI-wire fields stay `u8` — a channel nibble and a 7-bit key are
+// protocol integers, not measurements. The musical-time fields do not: they are
+// a position and a span, and as two bare `f64`s they were transposable at every
+// reader. `tutti-sampler` already spells the same pair `Beat`/`BeatDuration`.
 
 /// One note, paired from its NoteOn/NoteOff, in beats from track start.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -166,10 +182,15 @@ pub struct SmfNote {
     pub key: u8,
     /// NoteOn velocity, 1..=127 (velocity-0 NoteOn is treated as NoteOff).
     pub velocity: u8,
-    /// Onset in beats, relative to the start of the file.
-    pub start_beats: f64,
-    /// Duration in beats (NoteOff time − NoteOn time, clamped to ≥ 0).
-    pub duration_beats: f64,
+    /// Onset, relative to the start of the file.
+    pub start_beats: Beat,
+    /// Length (NoteOff beat − NoteOn beat, clamped to ≥ 0).
+    ///
+    /// A [`BeatDuration`] beside a [`Beat`]: a span and a position, which is
+    /// what makes the pair un-transposable now. Subtracting the two onsets
+    /// yields exactly this type, so the clamp below reads as the `max` of a
+    /// span rather than of a float that happens to be one.
+    pub duration_beats: BeatDuration,
 }
 
 /// One SMF track's paired notes plus its track-name meta event (if any).
@@ -220,11 +241,13 @@ fn pair_notes(track: &Track, ticks_per_beat: f64) -> Vec<SmfNote> {
     use std::collections::BTreeMap;
 
     let mut now_ticks: u64 = 0;
-    let mut held: BTreeMap<(u8, u8), Vec<(f64, u8)>> = BTreeMap::new();
+    // The held onset is a `Beat`, so `end - start` below *is* a `BeatDuration`
+    // rather than a float that has to be trusted to be one.
+    let mut held: BTreeMap<(u8, u8), Vec<(Beat, u8)>> = BTreeMap::new();
     let mut out: Vec<SmfNote> = Vec::new();
 
     let mut close =
-        |held: &mut BTreeMap<(u8, u8), Vec<(f64, u8)>>, channel: u8, key: u8, end: f64| {
+        |held: &mut BTreeMap<(u8, u8), Vec<(Beat, u8)>>, channel: u8, key: u8, end: Beat| {
             if let Some(stack) = held.get_mut(&(channel, key)) {
                 if let Some((start, velocity)) = stack.pop() {
                     out.push(SmfNote {
@@ -232,7 +255,7 @@ fn pair_notes(track: &Track, ticks_per_beat: f64) -> Vec<SmfNote> {
                         key,
                         velocity,
                         start_beats: start,
-                        duration_beats: (end - start).max(0.0),
+                        duration_beats: (end - start).max(BeatDuration(0.0)),
                     });
                 }
             }
@@ -240,7 +263,7 @@ fn pair_notes(track: &Track, ticks_per_beat: f64) -> Vec<SmfNote> {
 
     for event in track.iter() {
         now_ticks = now_ticks.saturating_add(u64::from(event.delta.as_int()));
-        let beat = now_ticks as f64 / ticks_per_beat;
+        let beat = Beat(now_ticks as f64 / ticks_per_beat);
         if let TrackEventKind::Midi { channel, message } = event.kind {
             let channel = channel.as_int();
             match message {
@@ -371,7 +394,7 @@ fn build_track<'a>(
 
     let mut last_tick: u32 = 0;
     for event in &sorted {
-        let abs_tick = (event.time_beats * tpb) as u32;
+        let abs_tick = (event.time_beats.get() * tpb) as u32;
         let delta = abs_tick.saturating_sub(last_tick);
         last_tick = abs_tick;
 
@@ -446,7 +469,7 @@ mod tests {
             time_signature: None,
         };
         let track = vec![vec![SmfTimedEvent {
-            time_beats: 0.0,
+            time_beats: Beat(0.0),
             channel: 0,
             msg: SmfMessage::NoteOn {
                 key: 60.into(),
@@ -488,7 +511,7 @@ mod tests {
     fn test_write_and_read_roundtrip() {
         let events = vec![
             SmfTimedEvent {
-                time_beats: 0.0,
+                time_beats: Beat(0.0),
                 channel: 0,
                 msg: SmfMessage::NoteOn {
                     key: 60.into(),
@@ -496,7 +519,7 @@ mod tests {
                 },
             },
             SmfTimedEvent {
-                time_beats: 1.0,
+                time_beats: Beat(1.0),
                 channel: 0,
                 msg: SmfMessage::NoteOff {
                     key: 60.into(),
@@ -517,8 +540,8 @@ mod tests {
         assert_eq!(parsed.ticks_per_beat, 480);
         assert!((parsed.tempo_bpm - 120.0).abs() < 0.1);
         assert_eq!(parsed.events.len(), 2);
-        assert!((parsed.events[0].time_beats - 0.0).abs() < 0.001);
-        assert!((parsed.events[1].time_beats - 1.0).abs() < 0.001);
+        assert!((parsed.events[0].time_beats - Beat(0.0)).abs() < BeatDuration(0.001));
+        assert!((parsed.events[1].time_beats - Beat(1.0)).abs() < BeatDuration(0.001));
     }
 
     #[test]
@@ -532,7 +555,7 @@ mod tests {
         // One note: on at beat 0, off at beat 1, on a named track.
         let events = vec![
             SmfTimedEvent {
-                time_beats: 0.0,
+                time_beats: Beat(0.0),
                 channel: 0,
                 msg: SmfMessage::NoteOn {
                     key: 60.into(),
@@ -540,7 +563,7 @@ mod tests {
                 },
             },
             SmfTimedEvent {
-                time_beats: 1.0,
+                time_beats: Beat(1.0),
                 channel: 0,
                 msg: SmfMessage::NoteOff {
                     key: 60.into(),
@@ -563,8 +586,8 @@ mod tests {
         let n = parsed[0].notes[0];
         assert_eq!(n.key, 60);
         assert_eq!(n.velocity, 100);
-        assert!((n.start_beats - 0.0).abs() < 1e-6);
-        assert!((n.duration_beats - 1.0).abs() < 1e-3);
+        assert!((n.start_beats - Beat(0.0)).abs() < BeatDuration(1e-6));
+        assert!((n.duration_beats - BeatDuration(1.0)).abs() < BeatDuration(1e-3));
     }
 
     #[test]
@@ -575,7 +598,7 @@ mod tests {
         // 1 (ch1: 1..2 closed by the ch0 off at 4 → no, LIFO gives 1..2→1)
         // and 2 — i.e. the wrong note gets the wrong length.
         let note = |time_beats: f64, channel: u8, on: bool| SmfTimedEvent {
-            time_beats,
+            time_beats: Beat(time_beats),
             channel,
             msg: if on {
                 SmfMessage::NoteOn {
@@ -619,11 +642,13 @@ mod tests {
             .expect("channel 1 note");
 
         assert!(
-            (ch0.start_beats - 0.0).abs() < 1e-3 && (ch0.duration_beats - 4.0).abs() < 1e-3,
+            (ch0.start_beats - Beat(0.0)).abs() < BeatDuration(1e-3)
+                && (ch0.duration_beats - BeatDuration(4.0)).abs() < BeatDuration(1e-3),
             "ch0 note should be closed by its own NoteOff at beat 4, got {ch0:?}"
         );
         assert!(
-            (ch1.start_beats - 1.0).abs() < 1e-3 && (ch1.duration_beats - 1.0).abs() < 1e-3,
+            (ch1.start_beats - Beat(1.0)).abs() < BeatDuration(1e-3)
+                && (ch1.duration_beats - BeatDuration(1.0)).abs() < BeatDuration(1e-3),
             "ch1 note should be closed by its own NoteOff at beat 2, got {ch1:?}"
         );
     }
@@ -632,7 +657,7 @@ mod tests {
     fn tracks_treats_velocity_zero_note_on_as_off() {
         let events = vec![
             SmfTimedEvent {
-                time_beats: 0.0,
+                time_beats: Beat(0.0),
                 channel: 0,
                 msg: SmfMessage::NoteOn {
                     key: 64.into(),
@@ -640,7 +665,7 @@ mod tests {
                 },
             },
             SmfTimedEvent {
-                time_beats: 2.0,
+                time_beats: Beat(2.0),
                 channel: 0,
                 // Running-status note-off: NoteOn with velocity 0.
                 msg: SmfMessage::NoteOn {
@@ -664,6 +689,6 @@ mod tests {
             1,
             "vel-0 NoteOn should close the note"
         );
-        assert!((parsed[0].notes[0].duration_beats - 2.0).abs() < 1e-3);
+        assert!((parsed[0].notes[0].duration_beats - BeatDuration(2.0)).abs() < BeatDuration(1e-3));
     }
 }

@@ -42,7 +42,7 @@ pub use param::{reconcile_audio_param, AudioParam, AudioParamAppExt};
 pub use plugin::GraphReconcilePlugin;
 pub use resources::{AudioConfig, AudioGraphRes};
 pub use schedule::{engine_ready, GraphDirty, GraphReconcileSystems};
-pub use spawn::{crossfade_audio_node, SpawnAudioNode};
+pub use spawn::{crossfade_audio_node, InsertAudioNode, SpawnAudioNode};
 pub use tap::AudioTapRes;
 pub use transport::{EngineNodes, MetronomeRes, TransportRes};
 pub use wire::{AudioSource, AudioSources, GraphWirePlugin, MasterSources};

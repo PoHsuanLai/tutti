@@ -581,7 +581,7 @@ fn six_channel_clip_reaches_six_reader_outputs_without_allocating() {
     let sampler = MemorySource::with_config(
         wave,
         MemorySourceConfig {
-            channels: ChannelLayout::Multi(6),
+            channels: ChannelLayout::from(6u16),
             timeline: Some(transport),
             window: VoiceWindow {
                 start: Beat::new(0.0),
@@ -694,7 +694,7 @@ fn add_voice_drain_is_allocation_free_at_six_channels() {
         let sampler = MemorySource::with_config(
             wave.clone(),
             MemorySourceConfig {
-                channels: ChannelLayout::Multi(6),
+                channels: ChannelLayout::from(6u16),
                 timeline: Some(transport.clone()),
                 window: VoiceWindow {
                     start: Beat::new(0.0),
@@ -765,7 +765,7 @@ fn remove_voice_drain_does_not_free_on_the_audio_thread() {
         let sampler = MemorySource::with_config(
             wave.clone(),
             MemorySourceConfig {
-                channels: ChannelLayout::Multi(6),
+                channels: ChannelLayout::from(6u16),
                 timeline: Some(transport.clone()),
                 window: VoiceWindow {
                     start: Beat::new(0.0),
@@ -821,7 +821,7 @@ fn collect_retired_frees_the_removed_slots_on_the_control_thread() {
         let sampler = MemorySource::with_config(
             wave.clone(),
             MemorySourceConfig {
-                channels: ChannelLayout::Multi(6),
+                channels: ChannelLayout::from(6u16),
                 timeline: Some(transport.clone()),
                 window: VoiceWindow {
                     start: Beat::new(0.0),
@@ -879,7 +879,7 @@ fn update_loop_drain_is_allocation_free_at_six_channels() {
     let sampler = MemorySource::with_config(
         wave,
         MemorySourceConfig {
-            channels: ChannelLayout::Multi(6),
+            channels: ChannelLayout::from(6u16),
             timeline: Some(transport),
             window: VoiceWindow {
                 start: Beat::new(0.0),

@@ -338,15 +338,15 @@ mod enumeration_hole_tests {
         let channels = with_layout(4, u32::MAX, |ext| {
             port_channels(std::ptr::null(), ext, false)
         });
-        // The stub leaves `port_type` null, so each layout comes from
-        // `from_count` — widths 1..=4 canonicalize to Mono/Stereo/Multi(3)/Quad.
+        // The stub leaves `port_type` null, so each layout is built from the
+        // reported width alone — 1..=4 in port order.
         assert_eq!(
             channels.as_slice(),
             [
-                ChannelLayout::Mono,
-                ChannelLayout::Stereo,
-                ChannelLayout::Multi(3),
-                ChannelLayout::Quad
+                ChannelLayout::MONO,
+                ChannelLayout::STEREO,
+                ChannelLayout::from(3u16),
+                ChannelLayout::QUAD
             ]
         );
     }
@@ -358,7 +358,7 @@ mod enumeration_hole_tests {
         let channels = with_layout(4, 2, |ext| port_channels(std::ptr::null(), ext, false));
         assert_eq!(
             channels.as_slice(),
-            [ChannelLayout::Mono, ChannelLayout::Stereo],
+            [ChannelLayout::MONO, ChannelLayout::STEREO],
             "a hole at index 2 must yield the prefix [Mono, Stereo]; a trailing \
              Quad means the host skipped the hole and moved port 3 (width 4) \
              into index 2"

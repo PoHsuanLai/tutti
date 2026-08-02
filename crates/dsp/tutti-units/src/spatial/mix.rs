@@ -89,7 +89,7 @@ pub fn build_surround_mix(
         // Mono-sum the sources' first channel, then low-pass.
         let mono_sum = net.push(Box::new(ChannelSumUnit::new(
             sources.len().max(1),
-            ChannelLayout::Mono,
+            ChannelLayout::MONO,
         )));
         for (s, src) in sources.iter().enumerate() {
             net.connect(src.node, 0, mono_sum, s);
@@ -160,7 +160,7 @@ mod tests {
         // quad panner and sums them into one 4-wide node.
         let mix = build_surround_mix(
             &mut net,
-            ChannelLayout::Quad,
+            ChannelLayout::QUAD,
             &[
                 SurroundSource::at(src_front, 45.0),
                 SurroundSource::at(src_rear, 135.0),
@@ -215,13 +215,13 @@ mod tests {
 
         // Each supported width builds a panner of the right output count.
         assert_eq!(
-            SpatialPannerNode::for_layout(ChannelLayout::Stereo)
+            SpatialPannerNode::for_layout(ChannelLayout::STEREO)
                 .unwrap()
                 .num_channels(),
             2
         );
         assert_eq!(
-            SpatialPannerNode::for_layout(ChannelLayout::Quad)
+            SpatialPannerNode::for_layout(ChannelLayout::QUAD)
                 .unwrap()
                 .num_channels(),
             4
@@ -272,7 +272,7 @@ mod tests {
 
         let mut net = Net::new(0, 4);
         let mix =
-            build_surround_mix(&mut net, ChannelLayout::Quad, &[]).expect("empty mix still builds");
+            build_surround_mix(&mut net, ChannelLayout::QUAD, &[]).expect("empty mix still builds");
         // ChannelSumUnit clamps 0 sources to 1 input group, so it's a valid
         // 4-out node reading zeros.
         assert_eq!(net.outputs_in(mix), 4);

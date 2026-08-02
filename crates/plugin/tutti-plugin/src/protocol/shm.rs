@@ -113,7 +113,7 @@ mod tests {
     /// justify sharing one region in place.
     #[test]
     fn stereo_in_stereo_out_sizes_both_directions() {
-        let l = layout(&[ChannelLayout::Stereo], &[ChannelLayout::Stereo]);
+        let l = layout(&[ChannelLayout::STEREO], &[ChannelLayout::STEREO]);
         assert_eq!(l.input_channels(), 2);
         assert_eq!(l.output_channels(), 2);
         // 2 slots x 2 ch x 64 samples x 4 bytes, per direction.
@@ -127,8 +127,8 @@ mod tests {
     #[test]
     fn a_sidechain_widens_only_the_input_ring() {
         let l = layout(
-            &[ChannelLayout::Stereo, ChannelLayout::Mono],
-            &[ChannelLayout::Stereo],
+            &[ChannelLayout::STEREO, ChannelLayout::MONO],
+            &[ChannelLayout::STEREO],
         );
         assert_eq!(l.input_channels(), 3);
         assert_eq!(l.output_channels(), 2);
@@ -141,7 +141,7 @@ mod tests {
     /// `samples_per_channel` to the real block size more than pays for this.
     #[test]
     fn slots_multiply_the_ring() {
-        let mut l = layout(&[ChannelLayout::Stereo], &[ChannelLayout::Stereo]);
+        let mut l = layout(&[ChannelLayout::STEREO], &[ChannelLayout::STEREO]);
         let one_slot = {
             l.slots = 1;
             l.input_ring_bytes()
@@ -153,7 +153,7 @@ mod tests {
     /// f64 negotiation doubles the bytes without changing any channel count.
     #[test]
     fn f64_doubles_the_region() {
-        let mut l = layout(&[ChannelLayout::Stereo], &[ChannelLayout::Stereo]);
+        let mut l = layout(&[ChannelLayout::STEREO], &[ChannelLayout::STEREO]);
         let f32_bytes = l.input_ring_bytes();
         l.format = SampleFormat::Float64;
         assert_eq!(l.sample_size(), 8);
@@ -165,8 +165,8 @@ mod tests {
     #[test]
     fn round_trips_through_bincode() {
         let l = layout(
-            &[ChannelLayout::Stereo, ChannelLayout::Mono],
-            &[ChannelLayout::Stereo],
+            &[ChannelLayout::STEREO, ChannelLayout::MONO],
+            &[ChannelLayout::STEREO],
         );
         let bytes = bincode::serialize(&l).unwrap();
         let back: SlabLayout = bincode::deserialize(&bytes).unwrap();

@@ -94,7 +94,7 @@ fn pool_at_gain(play_gain: f32) -> (VoicePool, Arc<Clock>) {
     let source = MemorySource::with_config(
         dc_wave(SR as usize),
         MemorySourceConfig {
-            channels: ChannelLayout::Stereo,
+            channels: ChannelLayout::STEREO,
             timeline: Some(clock.clone() as Arc<dyn Timeline>),
             ..Default::default()
         },
@@ -182,7 +182,7 @@ fn a_pooled_voice_applies_playback_gain_and_not_the_sources_own() {
     let source = MemorySource::with_config(
         dc_wave(SR as usize),
         MemorySourceConfig {
-            channels: ChannelLayout::Stereo,
+            channels: ChannelLayout::STEREO,
             timeline: Some(clock.clone() as Arc<dyn Timeline>),
             // Deliberately NOT 1.0 and NOT equal to the playback gain below.
             gain: Amplitude::new(0.25),
@@ -276,7 +276,7 @@ fn gain_scales_every_channel_equally() {
     let source = MemorySource::with_config(
         dc_wave(SR as usize),
         MemorySourceConfig {
-            channels: ChannelLayout::Stereo,
+            channels: ChannelLayout::STEREO,
             timeline: Some(clock.clone() as Arc<dyn Timeline>),
             ..Default::default()
         },
@@ -327,7 +327,7 @@ fn a_bare_memory_source_applies_its_own_gain() {
         let mut source = MemorySource::with_config(
             dc_wave(SR as usize),
             MemorySourceConfig {
-                channels: ChannelLayout::Stereo,
+                channels: ChannelLayout::STEREO,
                 gain: Amplitude::new(g),
                 ..Default::default()
             },
@@ -365,7 +365,7 @@ fn two_half_gain_voices_sum_to_one_full_gain_voice() {
         let source = MemorySource::with_config(
             dc_wave(SR as usize),
             MemorySourceConfig {
-                channels: ChannelLayout::Stereo,
+                channels: ChannelLayout::STEREO,
                 timeline: Some(clock.clone() as Arc<dyn Timeline>),
                 ..Default::default()
             },

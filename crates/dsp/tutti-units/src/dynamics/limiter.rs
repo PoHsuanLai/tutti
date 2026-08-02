@@ -138,13 +138,13 @@ pub struct LimiterNode {
 
 impl LimiterNode {
     pub fn new(threshold_db: impl Into<Db>, ceiling_db: impl Into<Db>) -> Self {
-        Self::with_channels(ChannelLayout::Stereo, threshold_db, ceiling_db)
+        Self::with_channels(ChannelLayout::STEREO, threshold_db, ceiling_db)
     }
 
     /// An `n`-channel lookahead limiter with gain reduction **linked** across
     /// all channels (peak = max-abs over the frame, one gain applied to every
     /// channel) — the surround generalization of the stereo-linked design.
-    /// `with_channels(ChannelLayout::Stereo, …)` is bit-identical to
+    /// `with_channels(ChannelLayout::STEREO, …)` is bit-identical to
     /// [`Self::new`].
     pub fn with_channels(
         channels: impl Into<ChannelLayout>,
@@ -156,7 +156,7 @@ impl LimiterNode {
         // `inputs()`/`outputs()` report 0, so clamp to at least mono — the same
         // floor the raw `channels.max(1)` used to provide.
         let n = (layout.count() as usize).max(1);
-        let layout = ChannelLayout::from_count(n as u16);
+        let layout = ChannelLayout::from(n);
         let lookahead_secs = Seconds(0.005);
         // `_ceil`, the allocation form: the ring must hold at *least* the
         // lookahead, and nearest-rounding under-allocates for half of all
@@ -533,12 +533,12 @@ pub struct BrickwallLimiter {
 
 impl BrickwallLimiter {
     pub fn new(ceiling_db: impl Into<Db>) -> Self {
-        Self::with_channels(ChannelLayout::Stereo, ceiling_db)
+        Self::with_channels(ChannelLayout::STEREO, ceiling_db)
     }
 
     /// An `n`-channel brickwall limiter. The clip is stateless, so every
     /// channel is clamped to the same (linked) ceiling.
-    /// `with_channels(ChannelLayout::Stereo, …)` is bit-identical to
+    /// `with_channels(ChannelLayout::STEREO, …)` is bit-identical to
     /// [`Self::new`].
     pub fn with_channels(channels: impl Into<ChannelLayout>, ceiling_db: impl Into<Db>) -> Self {
         let ceiling_db = ceiling_db.into();
@@ -548,7 +548,7 @@ impl BrickwallLimiter {
         Self {
             ceiling_db: Param::new(ceiling_db),
             ceiling_linear: db_to_amplitude(ceiling_db).get(),
-            layout: ChannelLayout::from_count(n as u16),
+            layout: ChannelLayout::from(n),
             channels: n,
             mod_ceiling: false,
         }
@@ -854,17 +854,17 @@ mod tests {
     #[test]
     fn limiter_param_port_arity_and_indices() {
         // ceiling only → ceiling at 2 (right after the two audio inputs).
-        let c = LimiterNode::with_param_inputs(ChannelLayout::Stereo, -6.0, -0.3, true, false);
+        let c = LimiterNode::with_param_inputs(ChannelLayout::STEREO, -6.0, -0.3, true, false);
         assert_eq!(c.inputs(), 3);
         assert_eq!(c.ceiling_port(), Some(2));
         assert_eq!(c.threshold_port(), None);
         // threshold only → threshold at 2 (no ceiling port before it).
-        let t = LimiterNode::with_param_inputs(ChannelLayout::Stereo, -6.0, -0.3, false, true);
+        let t = LimiterNode::with_param_inputs(ChannelLayout::STEREO, -6.0, -0.3, false, true);
         assert_eq!(t.inputs(), 3);
         assert_eq!(t.ceiling_port(), None);
         assert_eq!(t.threshold_port(), Some(2));
         // both → ceiling at 2, threshold at 3 (ceiling first, documented order).
-        let b = LimiterNode::with_param_inputs(ChannelLayout::Stereo, -6.0, -0.3, true, true);
+        let b = LimiterNode::with_param_inputs(ChannelLayout::STEREO, -6.0, -0.3, true, true);
         assert_eq!(b.inputs(), 4);
         assert_eq!(b.ceiling_port(), Some(2));
         assert_eq!(b.threshold_port(), Some(3));
@@ -878,7 +878,7 @@ mod tests {
         plain.set_sample_rate(tutti_core::SampleRate(44100.0));
 
         let mut modn =
-            LimiterNode::with_param_inputs(ChannelLayout::Stereo, -6.0, -0.3, true, true);
+            LimiterNode::with_param_inputs(ChannelLayout::STEREO, -6.0, -0.3, true, true);
         modn.set_sample_rate(tutti_core::SampleRate(44100.0));
 
         let mut plain_out = [0.0f32; 2];
@@ -982,7 +982,7 @@ mod tests {
 
     #[test]
     fn limiter_with_channels_reports_arity() {
-        let l = LimiterNode::with_channels(ChannelLayout::Multi(6), -6.0, -0.3);
+        let l = LimiterNode::with_channels(ChannelLayout::from(6u16), -6.0, -0.3);
         assert_eq!(l.inputs(), 6);
         assert_eq!(l.outputs(), 6);
     }
@@ -991,7 +991,7 @@ mod tests {
     fn limiter_with_channels_2_matches_new() {
         let mut a = LimiterNode::new(-6.0, -0.3);
         a.set_sample_rate(tutti_core::SampleRate(44100.0));
-        let mut b = LimiterNode::with_channels(ChannelLayout::Stereo, -6.0, -0.3);
+        let mut b = LimiterNode::with_channels(ChannelLayout::STEREO, -6.0, -0.3);
         b.set_sample_rate(tutti_core::SampleRate(44100.0));
         let mut oa = [0.0f32; 2];
         let mut ob = [0.0f32; 2];
@@ -1008,7 +1008,7 @@ mod tests {
     fn wide_limiter_gain_is_linked_across_all_channels() {
         // A loud transient on one channel must reduce ALL channels by the same
         // linked gain (max-abs across the frame), preserving inter-channel ratios.
-        let mut lim = LimiterNode::with_channels(ChannelLayout::Multi(6), -6.0, -0.3);
+        let mut lim = LimiterNode::with_channels(ChannelLayout::from(6u16), -6.0, -0.3);
         lim.set_sample_rate(tutti_core::SampleRate(44100.0));
         let mut out = [0.0f32; 6];
         // ch0 loud, others at half — the whole frame should be limited together.
@@ -1030,7 +1030,7 @@ mod tests {
 
     #[test]
     fn brickwall_with_channels_reports_arity_and_clips_all() {
-        let mut bw = BrickwallLimiter::with_channels(ChannelLayout::Multi(6), 0.0);
+        let mut bw = BrickwallLimiter::with_channels(ChannelLayout::from(6u16), 0.0);
         assert_eq!(bw.inputs(), 6);
         assert_eq!(bw.outputs(), 6);
         let mut out = [0.0f32; 6];
@@ -1075,7 +1075,7 @@ mod tests {
     /// *stereo*. The arity assertion fails against that version.
     #[test]
     fn a_modulated_limiter_is_as_wide_as_it_was_asked_for() {
-        let l = LimiterNode::with_param_inputs(ChannelLayout::Multi(6), -6.0, -0.3, true, true);
+        let l = LimiterNode::with_param_inputs(ChannelLayout::from(6u16), -6.0, -0.3, true, true);
         assert_eq!(l.outputs(), 6, "the width is what was asked for");
         assert_eq!(
             l.inputs(),

@@ -137,19 +137,24 @@ pub(super) fn handle_command(
 /// Returns `None` — signalling the whole-file `load_wave` fallback — when a
 /// codec feature isn't compiled in, the probe fails, or the format is
 /// non-seekable.
+///
+/// **The verdict comes from [`crate::probe`], not from a local copy of the
+/// rule.** A host picks a playback tier before any of this runs, and it must
+/// reach the same conclusion this function does — so "can the butler stream it"
+/// is asked in exactly one place. Re-deriving it here is how the two would drift
+/// the next time the conditions changed.
 #[cfg(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg"))]
 fn open_stream(
     file_path: &std::path::Path,
 ) -> Option<(tutti_core::WaveMetadata, tutti_core::FileIn)> {
-    let meta = tutti_core::Wave::probe_metadata(file_path).ok()?;
-    // Non-seekable formats (no reported frame count) fall back to whole-file.
-    meta.total_frames?;
-    let decoder = tutti_core::FileIn::open(file_path, None).ok()?;
-    // Guard against a decoder that reports itself non-seekable despite a
-    // frame count (defensive; open() only sets seekable when n_frames exists).
-    if !decoder.seekable() {
+    if !crate::probe(file_path).ok()?.streamable {
         return None;
     }
+    // Streamable, so both of these succeed — but they are still fallible calls
+    // and are handled rather than unwrapped: the probe read the header a moment
+    // ago, and a file can be replaced between the two reads.
+    let meta = tutti_core::Wave::probe_metadata(file_path).ok()?;
+    let decoder = tutti_core::FileIn::open(file_path, None).ok()?;
     Some((meta, decoder))
 }
 

@@ -151,7 +151,7 @@ impl Gate {
     ) -> Self {
         Self {
             core: GateCore::new(threshold_db, attack, hold, release),
-            channels: ChannelLayout::from_count(channels.max(1) as u16),
+            channels: ChannelLayout::from(channels.max(1) as u16),
             mod_threshold: false,
         }
     }

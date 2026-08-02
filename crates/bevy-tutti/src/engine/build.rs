@@ -295,7 +295,7 @@ mod tests {
     #[test]
     fn a_wider_device_widens_the_root() {
         assert_eq!(
-            root_width(2, ChannelLayout::Multi(6)),
+            root_width(2, ChannelLayout::from(6u16)),
             6,
             "a stereo project on a 5.1 device must render all six, or the top \
              four are permanently silent"
@@ -305,7 +305,7 @@ mod tests {
     #[test]
     fn a_wider_project_is_kept_and_folded_not_clamped() {
         assert_eq!(
-            root_width(6, ChannelLayout::Stereo),
+            root_width(6, ChannelLayout::STEREO),
             6,
             "a 5.1 project on a stereo device keeps its width; the root fold \
              narrows it at the device edge, and clamping here would hide the loss"
@@ -314,19 +314,22 @@ mod tests {
 
     #[test]
     fn an_unset_project_width_falls_through_to_the_device() {
-        assert_eq!(root_width(0, ChannelLayout::Multi(6)), 6);
-        assert_eq!(root_width(0, ChannelLayout::Stereo), 2);
+        assert_eq!(root_width(0, ChannelLayout::from(6u16)), 6);
+        assert_eq!(root_width(0, ChannelLayout::STEREO), 2);
     }
 
     #[test]
     fn nothing_exceeds_the_render_scratch() {
-        assert_eq!(root_width(64, ChannelLayout::Multi(32)), MAX_ROOT_CHANNELS);
+        assert_eq!(
+            root_width(64, ChannelLayout::from(32u16)),
+            MAX_ROOT_CHANNELS
+        );
     }
 
     #[test]
     fn the_root_is_never_zero_wide() {
         assert_eq!(
-            root_width(0, ChannelLayout::Multi(0)),
+            root_width(0, ChannelLayout::EMPTY),
             1,
             "a zero-output root would render nothing at all"
         );

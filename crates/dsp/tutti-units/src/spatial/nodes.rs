@@ -126,12 +126,12 @@ pub struct SpatialPannerNode {
 
 impl Clone for SpatialPannerNode {
     fn clone(&self) -> Self {
-        let mut new_panner = match self.layout {
-            ChannelLayout::Stereo => SpatialPanner::stereo().expect("stereo preset"),
-            ChannelLayout::Quad => SpatialPanner::quad().expect("quad preset"),
-            ChannelLayout::Multi(6) => SpatialPanner::surround_5_1().expect("5.1 preset"),
-            ChannelLayout::Multi(8) => SpatialPanner::surround_7_1().expect("7.1 preset"),
-            ChannelLayout::Multi(12) => SpatialPanner::atmos_7_1_4().expect("Atmos preset"),
+        let mut new_panner = match self.layout.count() {
+            2 => SpatialPanner::stereo().expect("stereo preset"),
+            4 => SpatialPanner::quad().expect("quad preset"),
+            6 => SpatialPanner::surround_5_1().expect("5.1 preset"),
+            8 => SpatialPanner::surround_7_1().expect("7.1 preset"),
+            12 => SpatialPanner::atmos_7_1_4().expect("Atmos preset"),
             _ => SpatialPanner::stereo().expect("stereo fallback"),
         };
 
@@ -156,7 +156,7 @@ impl Clone for SpatialPannerNode {
 impl SpatialPannerNode {
     pub fn stereo() -> Result<Self> {
         let panner = SpatialPanner::stereo()?;
-        Ok(Self::from_panner(panner, ChannelLayout::Stereo))
+        Ok(Self::from_panner(panner, ChannelLayout::STEREO))
     }
 
     pub fn quad() -> Result<Self> {

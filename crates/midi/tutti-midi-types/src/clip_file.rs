@@ -24,6 +24,7 @@ use midi2::ux::u20;
 use midi2::Data;
 
 use crate::ump::MidiEvent;
+use tutti_types::{Beat, BeatDuration};
 
 /// The 8-byte file header: ASCII "SMF2CLIP" (M2-116 §5).
 pub const CLIP_FILE_MAGIC: [u8; 8] = *b"SMF2CLIP";
@@ -161,26 +162,27 @@ fn write_clip(ticks_per_quarter: u16, header: Option<ClipHeader>, events: &[Clip
 ///
 /// ```
 /// # use tutti_midi_types::{write_clip_file_from_beats, read_clip_file, MidiEvent};
+/// # use tutti_midi_types::tutti_types::Beat;
 /// let bytes = write_clip_file_from_beats(96, [
-///     (0.0, MidiEvent::note_on(0, 0, 60, 0x8000)),
-///     (2.0, MidiEvent::note_off(0, 0, 60, 0)),
+///     (Beat(0.0), MidiEvent::note_on(0, 0, 60, 0x8000)),
+///     (Beat(2.0), MidiEvent::note_off(0, 0, 60, 0)),
 /// ]);
 /// let clip = read_clip_file(&bytes).unwrap();
 /// assert_eq!(clip.timed().count(), 2);
 /// ```
 pub fn write_clip_file_from_beats(
     ticks_per_quarter: u16,
-    events: impl IntoIterator<Item = (f64, MidiEvent)>,
+    events: impl IntoIterator<Item = (Beat, MidiEvent)>,
 ) -> Vec<u8> {
     let tpq = f64::from(ticks_per_quarter);
-    let mut timed: Vec<(f64, MidiEvent)> = events.into_iter().collect();
+    let mut timed: Vec<(Beat, MidiEvent)> = events.into_iter().collect();
     timed.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(core::cmp::Ordering::Equal));
 
     let mut prev_tick: i64 = 0;
     let clip_events: Vec<ClipEvent> = timed
         .into_iter()
         .map(|(beat, event)| {
-            let tick = (beat * tpq).round() as i64;
+            let tick = (beat.get() * tpq).round() as i64;
             let delta = (tick - prev_tick).max(0) as u32;
             prev_tick = tick;
             ClipEvent::new(delta, event)
@@ -203,12 +205,12 @@ impl ParsedClipFile {
     /// consume a clip when you schedule in beats.
     ///
     /// Beats are `delta_ticks` summed and divided by [`Self::ticks_per_quarter`].
-    pub fn timed(&self) -> impl Iterator<Item = (f64, MidiEvent)> + '_ {
+    pub fn timed(&self) -> impl Iterator<Item = (Beat, MidiEvent)> + '_ {
         let tpq = f64::from(self.ticks_per_quarter);
         let mut abs_tick: u64 = 0;
         self.events.iter().map(move |ce| {
             abs_tick += u64::from(ce.delta_ticks);
-            (abs_tick as f64 / tpq, ce.event)
+            (Beat(abs_tick as f64 / tpq), ce.event)
         })
     }
 
@@ -236,9 +238,9 @@ impl ParsedClipFile {
     /// The clip's musical length in beats: the absolute beat of the last event
     /// (0.0 for an empty clip). Note-offs are events too, so this reflects where
     /// the last message lands, not necessarily where sound stops.
-    pub fn duration_beats(&self) -> f64 {
+    pub fn duration_beats(&self) -> BeatDuration {
         let total_ticks: u64 = self.events.iter().map(|ce| u64::from(ce.delta_ticks)).sum();
-        total_ticks as f64 / f64::from(self.ticks_per_quarter)
+        BeatDuration(total_ticks as f64 / f64::from(self.ticks_per_quarter))
     }
 
     /// Pair the event stream into whole notes with durations — the shape an
@@ -256,7 +258,8 @@ impl ParsedClipFile {
     pub fn notes(&self) -> Vec<ClipNote> {
         use std::collections::BTreeMap;
 
-        let mut held: BTreeMap<(u8, u8, u8), Vec<(f64, u16)>> = BTreeMap::new();
+        // `Beat`, so `beat - start` below is a `BeatDuration` by construction.
+        let mut held: BTreeMap<(u8, u8, u8), Vec<(Beat, u16)>> = BTreeMap::new();
         let mut out: Vec<ClipNote> = Vec::new();
 
         for (beat, event) in self.timed() {
@@ -274,7 +277,7 @@ impl ParsedClipFile {
                         note,
                         velocity,
                         start_beats: start,
-                        duration_beats: (beat - start).max(0.0),
+                        duration_beats: (beat - start).max(BeatDuration(0.0)),
                     });
                 }
             } else if event.is_note_on() {
@@ -310,10 +313,15 @@ pub struct ClipNote {
     /// Note On velocity at full MIDI 2.0 width. A MIDI 1.0 note in the clip is
     /// upscaled by Min-Center-Max, so this is lossless in both directions.
     pub velocity: u16,
-    /// Onset in beats (quarter notes) from the clip start.
-    pub start_beats: f64,
-    /// Duration in beats (Note Off beat − Note On beat, clamped to ≥ 0).
-    pub duration_beats: f64,
+    /// Onset (quarter notes) from the clip start.
+    pub start_beats: Beat,
+    /// Length (Note Off beat − Note On beat, clamped to ≥ 0).
+    ///
+    /// A [`BeatDuration`] beside a [`Beat`] — a span and a position, so the
+    /// pair can no longer be transposed. The MIDI-wire fields above stay
+    /// integers: a channel nibble and a 16-bit velocity are protocol values,
+    /// not measurements.
+    pub duration_beats: BeatDuration,
 }
 
 /// Why a byte stream failed to parse as a MIDI Clip File (M2-116). Distinguishes
@@ -753,19 +761,19 @@ mod tests {
         let bytes = write_clip_file_from_beats(
             96,
             [
-                (0.0, MidiEvent::note_on(0, 0, 60, 0x8000)),
-                (2.0, MidiEvent::note_off(0, 0, 60, 0)),
-                (2.5, MidiEvent::note_on(0, 1, 64, 0xFFFF)),
+                (Beat(0.0), MidiEvent::note_on(0, 0, 60, 0x8000)),
+                (Beat(2.0), MidiEvent::note_off(0, 0, 60, 0)),
+                (Beat(2.5), MidiEvent::note_on(0, 1, 64, 0xFFFF)),
             ],
         );
         let clip = read_clip_file(&bytes).expect("parses");
-        let timed: Vec<(f64, MidiEvent)> = clip.timed().collect();
+        let timed: Vec<(Beat, MidiEvent)> = clip.timed().collect();
         assert_eq!(timed.len(), 3);
-        assert!((timed[0].0 - 0.0).abs() < 1e-9);
-        assert!((timed[1].0 - 2.0).abs() < 1e-9);
-        assert!((timed[2].0 - 2.5).abs() < 1e-9);
+        assert!((timed[0].0 - Beat(0.0)).abs() < BeatDuration(1e-9));
+        assert!((timed[1].0 - Beat(2.0)).abs() < BeatDuration(1e-9));
+        assert!((timed[2].0 - Beat(2.5)).abs() < BeatDuration(1e-9));
         assert_eq!(timed[2].1, MidiEvent::note_on(0, 1, 64, 0xFFFF));
-        assert!((clip.duration_beats() - 2.5).abs() < 1e-9);
+        assert!((clip.duration_beats() - BeatDuration(2.5)).abs() < BeatDuration(1e-9));
     }
 
     #[test]
@@ -774,16 +782,16 @@ mod tests {
         let bytes = write_clip_file_from_beats(
             480,
             [
-                (4.0, MidiEvent::note_off(0, 0, 60, 0)),
-                (0.0, MidiEvent::note_on(0, 0, 60, 0x8000)),
+                (Beat(4.0), MidiEvent::note_off(0, 0, 60, 0)),
+                (Beat(0.0), MidiEvent::note_on(0, 0, 60, 0x8000)),
             ],
         );
         let clip = read_clip_file(&bytes).expect("parses");
-        let beats: Vec<f64> = clip.timed().map(|(b, _)| b).collect();
+        let beats: Vec<Beat> = clip.timed().map(|(b, _)| b).collect();
         assert_eq!(beats.len(), 2);
         assert!(beats[0] < beats[1]);
-        assert!((beats[0] - 0.0).abs() < 1e-9);
-        assert!((beats[1] - 4.0).abs() < 1e-9);
+        assert!((beats[0] - Beat(0.0)).abs() < BeatDuration(1e-9));
+        assert!((beats[1] - Beat(4.0)).abs() < BeatDuration(1e-9));
     }
 
     #[test]
@@ -824,8 +832,8 @@ mod tests {
 
         // The note still lands at beat 0 — the header messages share its
         // zero clockstamp rather than pushing it later.
-        let timed: Vec<(f64, MidiEvent)> = clip.timed().collect();
-        assert!(timed.iter().all(|(b, _)| *b == 0.0));
+        let timed: Vec<(Beat, MidiEvent)> = clip.timed().collect();
+        assert!(timed.iter().all(|(b, _)| *b == Beat(0.0)));
 
         // A clip written without a header simply declares none.
         let bare = read_clip_file(&write_clip_file(480, &[])).expect("parses");
@@ -876,7 +884,7 @@ mod tests {
         // than anything that merely looks small.
         let bytes = write_clip_file(1, &[ClipEvent::new(240, ev)]);
         let parsed = read_clip_file(&bytes).expect("tpq=1 is a valid tick unit");
-        assert!(parsed.timed().all(|(beat, _)| beat.is_finite()));
+        assert!(parsed.timed().all(|(beat, _)| beat.get().is_finite()));
     }
 
     #[test]
@@ -941,7 +949,7 @@ mod tests {
     // --- Note pairing ---
 
     /// Round-trip a beat-positioned event list and pair it back into notes.
-    fn notes_from(events: impl IntoIterator<Item = (f64, MidiEvent)>) -> Vec<ClipNote> {
+    fn notes_from(events: impl IntoIterator<Item = (Beat, MidiEvent)>) -> Vec<ClipNote> {
         let bytes = write_clip_file_from_beats(96, events);
         read_clip_file(&bytes).unwrap().notes()
     }
@@ -949,14 +957,14 @@ mod tests {
     #[test]
     fn pairs_notes_and_keeps_full_velocity() {
         let notes = notes_from([
-            (0.0, MidiEvent::note_on(0, 0, 60, 0xABCD)),
-            (2.5, MidiEvent::note_off(0, 0, 60, 0)),
+            (Beat(0.0), MidiEvent::note_on(0, 0, 60, 0xABCD)),
+            (Beat(2.5), MidiEvent::note_off(0, 0, 60, 0)),
         ]);
 
         assert_eq!(notes.len(), 1);
         assert_eq!(notes[0].note, 60);
-        assert_eq!(notes[0].start_beats, 0.0);
-        assert_eq!(notes[0].duration_beats, 2.5);
+        assert_eq!(notes[0].start_beats, Beat(0.0));
+        assert_eq!(notes[0].duration_beats, BeatDuration(2.5));
         // The reason pairing lives here: a caller pairing on `velocity_u7`
         // would have silently narrowed this to 7 bits.
         assert_eq!(notes[0].velocity, 0xABCD);
@@ -967,12 +975,12 @@ mod tests {
         // Same note number in three different (group, channel) spaces, closed
         // in a deliberately scrambled order.
         let notes = notes_from([
-            (0.0, MidiEvent::note_on(0, 0, 60, 0x1000)),
-            (0.0, MidiEvent::note_on(0, 1, 60, 0x2000)),
-            (0.0, MidiEvent::note_on(1, 0, 60, 0x3000)),
-            (1.0, MidiEvent::note_off(1, 0, 60, 0)),
-            (2.0, MidiEvent::note_off(0, 1, 60, 0)),
-            (3.0, MidiEvent::note_off(0, 0, 60, 0)),
+            (Beat(0.0), MidiEvent::note_on(0, 0, 60, 0x1000)),
+            (Beat(0.0), MidiEvent::note_on(0, 1, 60, 0x2000)),
+            (Beat(0.0), MidiEvent::note_on(1, 0, 60, 0x3000)),
+            (Beat(1.0), MidiEvent::note_off(1, 0, 60, 0)),
+            (Beat(2.0), MidiEvent::note_off(0, 1, 60, 0)),
+            (Beat(3.0), MidiEvent::note_off(0, 0, 60, 0)),
         ]);
 
         assert_eq!(notes.len(), 3);
@@ -985,9 +993,9 @@ mod tests {
             [(0, 0), (0, 1), (1, 0)]
         );
         // Each closed against its own Note Off, not the nearest one.
-        assert_eq!(notes[0].duration_beats, 3.0);
-        assert_eq!(notes[1].duration_beats, 2.0);
-        assert_eq!(notes[2].duration_beats, 1.0);
+        assert_eq!(notes[0].duration_beats, BeatDuration(3.0));
+        assert_eq!(notes[1].duration_beats, BeatDuration(2.0));
+        assert_eq!(notes[2].duration_beats, BeatDuration(1.0));
         assert_eq!(
             notes.iter().map(|n| n.velocity).collect::<Vec<_>>(),
             [0x1000, 0x2000, 0x3000]
@@ -997,16 +1005,22 @@ mod tests {
     #[test]
     fn overlapping_identical_notes_close_in_lifo_order() {
         let notes = notes_from([
-            (0.0, MidiEvent::note_on(0, 0, 60, 0x1000)),
-            (1.0, MidiEvent::note_on(0, 0, 60, 0x2000)),
-            (2.0, MidiEvent::note_off(0, 0, 60, 0)),
-            (4.0, MidiEvent::note_off(0, 0, 60, 0)),
+            (Beat(0.0), MidiEvent::note_on(0, 0, 60, 0x1000)),
+            (Beat(1.0), MidiEvent::note_on(0, 0, 60, 0x2000)),
+            (Beat(2.0), MidiEvent::note_off(0, 0, 60, 0)),
+            (Beat(4.0), MidiEvent::note_off(0, 0, 60, 0)),
         ]);
 
         assert_eq!(notes.len(), 2);
         // The first Note Off closes the *most recent* Note On.
-        assert_eq!((notes[0].start_beats, notes[0].duration_beats), (0.0, 4.0));
-        assert_eq!((notes[1].start_beats, notes[1].duration_beats), (1.0, 1.0));
+        assert_eq!(
+            (notes[0].start_beats, notes[0].duration_beats),
+            (Beat(0.0), BeatDuration(4.0))
+        );
+        assert_eq!(
+            (notes[1].start_beats, notes[1].duration_beats),
+            (Beat(1.0), BeatDuration(1.0))
+        );
     }
 
     #[test]
@@ -1018,10 +1032,10 @@ mod tests {
         // reach this path.
         let on = MidiEvent::from_midi1_bytes(0, &[0x90, 60, 100]).expect("midi1 note-on");
         let off = MidiEvent::from_midi1_bytes(0, &[0x90, 60, 0]).expect("midi1 note-on vel 0");
-        let notes = notes_from([(0.0, on), (1.5, off)]);
+        let notes = notes_from([(Beat(0.0), on), (Beat(1.5), off)]);
 
         assert_eq!(notes.len(), 1);
-        assert_eq!(notes[0].duration_beats, 1.5);
+        assert_eq!(notes[0].duration_beats, BeatDuration(1.5));
         // A MIDI 1.0 velocity upscales by Min-Center-Max rather than shifting.
         assert_eq!(
             notes[0].velocity,
@@ -1032,10 +1046,10 @@ mod tests {
     #[test]
     fn notes_left_open_at_end_of_clip_are_dropped() {
         let notes = notes_from([
-            (0.0, MidiEvent::note_on(0, 0, 60, 0x8000)),
-            (1.0, MidiEvent::note_off(0, 0, 60, 0)),
+            (Beat(0.0), MidiEvent::note_on(0, 0, 60, 0x8000)),
+            (Beat(1.0), MidiEvent::note_off(0, 0, 60, 0)),
             // Never closed — its duration is unknowable, so it is not a note.
-            (2.0, MidiEvent::note_on(0, 0, 64, 0x8000)),
+            (Beat(2.0), MidiEvent::note_on(0, 0, 64, 0x8000)),
         ]);
 
         assert_eq!(notes.len(), 1);
@@ -1045,12 +1059,12 @@ mod tests {
     #[test]
     fn non_note_events_do_not_disturb_pairing() {
         let notes = notes_from([
-            (0.0, MidiEvent::note_on(0, 0, 60, 0x8000)),
-            (0.5, MidiEvent::cc(0, 0, 74, 0x4000)),
-            (1.0, MidiEvent::note_off(0, 0, 60, 0)),
+            (Beat(0.0), MidiEvent::note_on(0, 0, 60, 0x8000)),
+            (Beat(0.5), MidiEvent::cc(0, 0, 74, 0x4000)),
+            (Beat(1.0), MidiEvent::note_off(0, 0, 60, 0)),
         ]);
 
         assert_eq!(notes.len(), 1);
-        assert_eq!(notes[0].duration_beats, 1.0);
+        assert_eq!(notes[0].duration_beats, BeatDuration(1.0));
     }
 }

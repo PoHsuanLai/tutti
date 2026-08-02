@@ -221,6 +221,12 @@ mod tests {
                 software_revision: [1, 2, 3, 4],
                 categories: Default::default(),
                 max_sysex_size: 512,
+                // A Discovery, not a reply: §5.5.4 makes the path id the
+                // initiator's own, and `function_block` is reply-only, so
+                // `NO_FUNCTION_BLOCK` is the value §5.6.2 names for a device
+                // that represents none.
+                output_path_id: 0,
+                function_block: tutti_midi_types::ci::NO_FUNCTION_BLOCK,
             },
         );
         let probe = peer.discovery();

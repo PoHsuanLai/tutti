@@ -580,8 +580,8 @@ mod tests {
             samples_per_channel: 8192,
             format: preferred_format,
             slots: tutti_plugin::server::RING_SLOTS as u32,
-            inputs: smallvec::smallvec![tutti_plugin::server::ChannelLayout::Stereo],
-            outputs: smallvec::smallvec![tutti_plugin::server::ChannelLayout::Stereo],
+            inputs: smallvec::smallvec![tutti_plugin::server::ChannelLayout::STEREO],
+            outputs: smallvec::smallvec![tutti_plugin::server::ChannelLayout::STEREO],
         };
         let shm_guard = AudioSlab::create(buffer_name.clone(), layout.clone()).unwrap();
         s.shm = Some(AudioSlab::open(buffer_name, layout).unwrap());

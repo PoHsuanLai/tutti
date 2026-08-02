@@ -96,7 +96,7 @@ pub const MAX_SAMPLER_CHANNELS: usize = tutti_core::engine::MAX_ROOT_CHANNELS;
 #[inline]
 pub(crate) fn nonempty(layout: tutti_core::ChannelLayout) -> tutti_core::ChannelLayout {
     if layout.count() == 0 {
-        tutti_core::ChannelLayout::Mono
+        tutti_core::ChannelLayout::MONO
     } else {
         layout
     }
@@ -153,6 +153,22 @@ pub use butler::{DiskStreamer, DiskStreamerConfig};
 
 mod ports;
 pub use ports::{Command, Commands, Source, Status};
+
+// Header-only probe: what a file is, and whether *this build's* butler can
+// stream it. Public because the tier decision is the caller's
+// (`Source`'s doc: "the sampler never decides the tier on its own") but the
+// streamability half of it is this crate's own capability — so the host and the
+// butler read one function rather than two copies of a rule.
+//
+// Codec-gated because it *is* the codec layer: `Wave::probe_metadata` and
+// `WaveMetadata` are themselves gated in `tutti-core`, so with no format feature
+// there is no header to read. Absent rather than always-`false` — a host that
+// compiled out every codec cannot open files at all, and a probe that silently
+// answered "not streamable" would look like a property of the file.
+#[cfg(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg"))]
+mod probe;
+#[cfg(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg"))]
+pub use probe::{probe, ProbeError, SampleFacts};
 
 // `PendingDiskStreamer` / `TuttiSamplerPlugin` are gone. `DiskStreamer` is an
 // engine service, not a Bevy noun (house rule R2), so bevy-tutti wraps it as

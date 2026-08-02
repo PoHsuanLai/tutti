@@ -710,7 +710,7 @@ mod tests {
 
         assert_eq!(
             AudioOut::layout(&prod),
-            ChannelLayout::Multi(6),
+            ChannelLayout::from(6u16),
             "the trait must report the ring's declared width"
         );
 

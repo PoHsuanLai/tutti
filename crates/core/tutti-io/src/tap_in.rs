@@ -76,7 +76,7 @@ impl AudioIn for TapIn {
     /// case a fixed layout still fits. Widening it means widening the lock-free
     /// ring element in `tutti-core`'s `AudioTap`, which is a separate change.
     fn layout(&self) -> ChannelLayout {
-        ChannelLayout::Stereo
+        ChannelLayout::STEREO
     }
 
     fn poll_into(&mut self, out: &mut [f32]) -> usize {

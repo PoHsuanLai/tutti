@@ -96,7 +96,7 @@ fn an_au_opened_in_mono_reports_one_output_channel() {
         // SAFETY: `component` came from `AudioComponentFindNext` via the corpus,
         // so it is a live factory handle for the lifetime of this process.
         let mut au = unsafe {
-            AuInstance::new_with_config(info.component, config_at(ChannelLayout::Mono, has_input))
+            AuInstance::new_with_config(info.component, config_at(ChannelLayout::MONO, has_input))
         }
         .unwrap_or_else(|e| panic!("{}: instantiate in mono failed: {e:?}", unit.label));
 
@@ -151,7 +151,7 @@ fn a_refused_layout_reports_the_width_the_au_kept() {
         let info = unit.require();
         let has_input = unit.au_type == tutti_au_host::AuType::Effect;
         let mut au = unsafe {
-            AuInstance::new_with_config(info.component, config_at(ChannelLayout::Mono, has_input))
+            AuInstance::new_with_config(info.component, config_at(ChannelLayout::MONO, has_input))
         }
         .unwrap_or_else(|e| panic!("{}: instantiate failed: {e:?}", unit.label));
 
@@ -199,7 +199,7 @@ fn a_quad_request_is_honoured_where_the_au_takes_it() {
         let info = unit.require();
         let has_input = unit.au_type == tutti_au_host::AuType::Effect;
         let mut au = unsafe {
-            AuInstance::new_with_config(info.component, config_at(ChannelLayout::Quad, has_input))
+            AuInstance::new_with_config(info.component, config_at(ChannelLayout::QUAD, has_input))
         }
         .unwrap_or_else(|e| panic!("{}: instantiate in quad failed: {e:?}", unit.label));
         assert_eq!(

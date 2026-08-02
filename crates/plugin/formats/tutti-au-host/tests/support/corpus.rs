@@ -1012,8 +1012,8 @@ pub fn open_at_output_width(unit: &AuRef, rate: f64, block: u32, width: u16) -> 
         rate,
         block,
         AuBusLayout {
-            inputs: ChannelLayout::Stereo,
-            outputs: ChannelLayout::from_count(width),
+            inputs: ChannelLayout::STEREO,
+            outputs: ChannelLayout::from(width),
             has_input,
         },
     );

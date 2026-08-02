@@ -922,6 +922,63 @@ impl Pan {
     }
 }
 
+unit_newtype!(
+    /// How hard a note was struck or released, `0..1`.
+    ///
+    /// Normalized rather than a 7-bit code because MIDI 2.0's field is 16-bit:
+    /// storing `u8` would quantize to 128 steps permanently, and the widening
+    /// back out is not a multiply (see [`Velocity::to_midi2_u16`]). Note-on and
+    /// note-off velocity are the same quantity, which is why one type serves
+    /// both.
+    ///
+    /// **Not an [`Amplitude`]**, despite `0..1` and the temptation. A velocity
+    /// is never multiplied onto a signal: it selects a sample layer, sets an
+    /// envelope's peak, and opens a filter — a synth may be *louder* at low
+    /// velocity if that is how it is programmed. Giving it a gain's algebra
+    /// would license `sample * velocity`, silently turning a soft note into a
+    /// volume dip. Same argument [`Confidence`] makes.
+    ///
+    /// **Not a [`Mix`]**: nothing is being blended, and `Mix::blend` — the
+    /// reason that type exists — is meaningless here. **Not a [`Depth`]**: that
+    /// is bipolar, and there is no such thing as negative velocity.
+    Velocity
+);
+unit_ordered!(Velocity);
+unit_bounded!(Velocity, f32);
+// NOT `unit_scalable!`: `velocity * 0.5` reads as "half as loud", which is
+// exactly the amplitude confusion this type exists to prevent — the mapping
+// from velocity to loudness is the instrument's, not arithmetic's. Scaling a
+// performance is `Velocity::scaled`, which says what it does.
+// NOT `unit_additive!`: two velocities do not sum into a third.
+
+impl Velocity {
+    /// Silence — a note-on at zero velocity is a note-off by MIDI convention,
+    /// which `tutti_midi_types::normalize` folds at the wire edge.
+    pub const SILENT: Velocity = Velocity(0.0);
+    /// The hardest strike.
+    pub const MAX: Velocity = Velocity(1.0);
+    /// MIDI 2.0's center code (`0x8000`) — mezzo-forte, and the value a
+    /// controller sending no velocity data should be treated as.
+    pub const CENTER: Velocity = Velocity(0.5);
+
+    /// Constrain into `0..=1`.
+    #[inline]
+    pub fn new_clamped(v: f32) -> Velocity {
+        Velocity(v).clamp(Self::SILENT, Self::MAX)
+    }
+
+    /// Scale a whole performance's dynamics, staying in range.
+    ///
+    /// The named replacement for the omitted `Mul<f32>`: this is the one
+    /// operation that is genuinely a rescale (a "soften the take" edit), and
+    /// naming it keeps the *loudness* reading — which is the instrument's job,
+    /// not arithmetic's — from being spelled the same way.
+    #[inline]
+    pub fn scaled(self, factor: f32) -> Velocity {
+        Velocity::new_clamped(self.0 * factor)
+    }
+}
+
 // ── Angles ──────────────────────────────────────────────────────────────────
 //
 // Three types where there was one (`Degrees`), because a circle and a segment
@@ -2108,11 +2165,19 @@ mod tests {
     ///   `SrcRatio` it is already the product of, which is the double-apply bug
     ///   the disk tier's gate comment records.
     ///
-    /// And four *type* omissions, which the compiler enforces rather than a
-    /// missing `impl`: `Correlation` and `Pan` are not `Depth`, and
-    /// `Confidence` is not `Mix`, even though the ranges coincide. A control
-    /// you set and a measurement reported back are different quantities —
-    /// the same split `Q` and `Resonance` make.
+    /// - `Velocity * f32` — `scaled`, which clamps. The bare operator reads as
+    ///   "half as loud", and velocity→loudness is the instrument's mapping, not
+    ///   arithmetic's: a patch may be louder at low velocity.
+    /// - `Velocity + Velocity` — two strikes do not sum into a harder one.
+    ///
+    /// And five *type* omissions, which the compiler enforces rather than a
+    /// missing `impl`: `Correlation` and `Pan` are not `Depth`,
+    /// `Confidence` is not `Mix`, and `Velocity` is not `Amplitude`, even
+    /// though the ranges coincide. A control you set and a measurement
+    /// reported back are different quantities — the same split `Q` and
+    /// `Resonance` make. `Velocity` is the sharpest of these, because
+    /// `sample * velocity` is not just meaningless but *plausible*: it
+    /// compiles as a volume dip and sounds like a quiet note.
     ///
     /// The fourth is the sharpest, because the two are *inverse*: a beat-synced
     /// rate is a [`BeatDuration`] (beats per cycle), never an [`Hz`]. Doubling
@@ -2120,6 +2185,32 @@ mod tests {
     /// it shipped twice. [`Beat::cycles_of`] is the only interpreter.
     #[test]
     fn omitted_operators_are_documented() {}
+
+    /// Velocity scales by a *named* method, and the scale clamps.
+    ///
+    /// `scaled` exists because a "soften the take" edit is real, and without a
+    /// replacement for the omitted `Mul<f32>` every call site would escape to
+    /// `Velocity(v.get() * 0.8)` — which does not clamp, and which is how a
+    /// velocity leaves `0..1` and reaches the 16-bit widening out of range.
+    #[test]
+    fn velocity_scales_by_name_and_stays_in_range() {
+        assert_eq!(Velocity(0.8).scaled(0.5), Velocity(0.4));
+        assert_eq!(Velocity(0.8).scaled(4.0), Velocity::MAX);
+        assert_eq!(Velocity(0.8).scaled(-1.0), Velocity::SILENT);
+        assert_eq!(Velocity::new_clamped(1.7), Velocity::MAX);
+    }
+
+    /// The MIDI 2.0 center code is mezzo-forte, not "half as loud".
+    ///
+    /// Pinned because `CENTER` looks like an arbitrary 0.5 until you know it is
+    /// the value `0x8000` widens from — the one point the spec's Min-Center-Max
+    /// scaler is required to preserve exactly.
+    #[test]
+    fn the_center_velocity_is_the_midi_center_code() {
+        assert_eq!(Velocity::CENTER, Velocity(0.5));
+        assert!(Velocity::SILENT < Velocity::CENTER);
+        assert!(Velocity::CENTER < Velocity::MAX);
+    }
 
     #[test]
     fn confidence_combines_rather_than_sums() {

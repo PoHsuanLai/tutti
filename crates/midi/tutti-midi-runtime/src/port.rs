@@ -191,9 +191,10 @@ impl Clone for MidiInPort {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
 
     fn note_on(note: u8) -> MidiEvent {
-        MidiEvent::note_on(0, 0, note, 0x8000)
+        MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, note, 0x8000)
     }
 
     /// A source that emits one note-on on its first poll — proves it was polled.

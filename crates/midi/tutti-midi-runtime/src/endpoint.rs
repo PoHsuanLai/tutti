@@ -13,6 +13,7 @@
 
 use tutti_midi_types::midi2::ump_stream::{Direction, UmpStream};
 use tutti_midi_types::midi2::UmpMessage;
+use tutti_midi_types::tutti_types::MidiGroup;
 use tutti_midi_types::ump::{endpoint_name, function_block_name, product_instance_id};
 use tutti_midi_types::{
     EndpointCapabilities, EndpointDiscoveryRequest, FunctionBlockDirection,
@@ -33,7 +34,7 @@ use tutti_midi_types::{
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FunctionBlock {
     pub block_number: u8,
-    pub first_group: u8,
+    pub first_group: MidiGroup,
     pub num_groups: u8,
     pub direction: FunctionBlockDirection,
     pub name: String,
@@ -344,7 +345,7 @@ impl EndpointInquiry {
                 let block_number = u8::from(m.function_block_number());
                 let info = FunctionBlock {
                     block_number,
-                    first_group: u8::from(m.first_group()),
+                    first_group: MidiGroup::new(u8::from(m.first_group())),
                     num_groups: m.number_of_groups_spanned(),
                     direction: match m.direction() {
                         Direction::Input => FunctionBlockDirection::Input,
@@ -395,7 +396,7 @@ impl EndpointInquiry {
                         // Info arm preserves an existing name.
                         None => self.discovered.function_blocks.push(FunctionBlock {
                             block_number,
-                            first_group: 0,
+                            first_group: MidiGroup::FIRST,
                             num_groups: 0,
                             direction: FunctionBlockDirection::Bidirectional,
                             name,
@@ -465,6 +466,7 @@ fn decode_product_instance_id(words: &[u32]) -> Option<String> {
 mod tests {
     use super::*;
     use tutti_midi_types::midi2::flex_data::FlexData;
+    use tutti_midi_types::tutti_types::MidiChannel;
 
     fn negotiator() -> EndpointNegotiator {
         EndpointNegotiator::new(
@@ -476,7 +478,7 @@ mod tests {
             },
             vec![FunctionBlock {
                 block_number: 0,
-                first_group: 0,
+                first_group: MidiGroup::FIRST,
                 num_groups: 1,
                 direction: FunctionBlockDirection::Bidirectional,
                 name: "Keys".into(),
@@ -571,7 +573,7 @@ mod tests {
     fn multi_block_negotiator() -> EndpointNegotiator {
         let block = |n: u8, name: &str| FunctionBlock {
             block_number: n,
-            first_group: n,
+            first_group: MidiGroup::new(n),
             num_groups: 1,
             direction: FunctionBlockDirection::Bidirectional,
             name: name.into(),
@@ -713,14 +715,18 @@ mod tests {
         inq.ingest(&MidiEvent::function_block_info(
             true,
             1,
-            3,
+            MidiGroup::new(3),
             2,
             FunctionBlockDirection::Input,
         ));
         let blocks = &inq.discovered.function_blocks;
         assert_eq!(blocks.len(), 1, "Info matched the block the Name created");
         assert_eq!(blocks[0].name, "Drums", "the name survived the Info");
-        assert_eq!(blocks[0].first_group, 3, "and topology filled in");
+        assert_eq!(
+            blocks[0].first_group,
+            MidiGroup::new(3),
+            "and topology filled in"
+        );
         assert_eq!(blocks[0].direction, FunctionBlockDirection::Input);
     }
 
@@ -732,20 +738,20 @@ mod tests {
         inq.ingest(&MidiEvent::function_block_info(
             true,
             0,
-            0,
+            MidiGroup::FIRST,
             1,
             FunctionBlockDirection::Input,
         ));
         inq.ingest(&MidiEvent::function_block_info(
             true,
             0,
-            5,
+            MidiGroup::new(5),
             2,
             FunctionBlockDirection::Output,
         ));
         let blocks = &inq.discovered.function_blocks;
         assert_eq!(blocks.len(), 1, "one block, updated in place");
-        assert_eq!(blocks[0].first_group, 5);
+        assert_eq!(blocks[0].first_group, MidiGroup::new(5));
         assert_eq!(blocks[0].direction, FunctionBlockDirection::Output);
     }
 
@@ -798,17 +804,27 @@ mod tests {
         inquiry.ingest(&MidiEvent::device_identity([1, 2, 3], 4, 5, [6, 7, 8, 9]));
         assert!(inquiry.result().is_none());
         // A non-UMP-Stream event is ignored.
-        assert!(!inquiry.ingest(&MidiEvent::note_on(0, 0, 60, 0x8000)));
+        assert!(!inquiry.ingest(&MidiEvent::note_on(
+            MidiGroup::FIRST,
+            MidiChannel::FIRST,
+            60,
+            0x8000
+        )));
     }
 
     #[test]
     fn non_discovery_event_yields_no_reply() {
         let n = negotiator();
         assert!(n
-            .respond_to(&MidiEvent::note_on(0, 0, 60, 0x8000))
+            .respond_to(&MidiEvent::note_on(
+                MidiGroup::FIRST,
+                MidiChannel::FIRST,
+                60,
+                0x8000
+            ))
             .is_empty());
         // A Flex message isn't UMP Stream either.
-        let ev = MidiEvent::flex_set_tempo(0, 120.0);
+        let ev = MidiEvent::flex_set_tempo(MidiGroup::FIRST, 120.0);
         assert!(matches!(
             UmpMessage::try_from(ev.data_words()).unwrap(),
             UmpMessage::FlexData(FlexData::SetTempo(_))

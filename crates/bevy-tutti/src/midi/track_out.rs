@@ -169,6 +169,7 @@ impl Plugin for MidiOutPlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tutti_midi_runtime::tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
     use tutti_midi_types::MidiOut;
 
     /// Drain the resource's receiver fully into a `Vec`.
@@ -191,7 +192,7 @@ mod tests {
         world.init_resource::<MidiOutRes>();
         world.init_resource::<Messages<SendMidiOut>>();
 
-        let note = MidiEvent::note_on(0, 0, 60, 0x8000);
+        let note = MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000);
         world
             .resource_mut::<Messages<SendMidiOut>>()
             .write(SendMidiOut(vec![note]));
@@ -210,7 +211,15 @@ mod tests {
     fn sender_pushes_directly() {
         let out = MidiOutRes::default();
         let sender = out.sender();
-        assert_eq!(sender.queue(&[MidiEvent::note_on(0, 0, 64, 0x8000)]), 1);
+        assert_eq!(
+            sender.queue(&[MidiEvent::note_on(
+                MidiGroup::FIRST,
+                MidiChannel::FIRST,
+                64,
+                0x8000
+            )]),
+            1
+        );
 
         let events = drain(&out);
         assert_eq!(events.len(), 1);
@@ -223,7 +232,12 @@ mod tests {
         // (its own address baked in) — prove the trait path lands the event.
         let out = MidiOutRes::default();
         let tap: std::sync::Arc<dyn MidiOut> = std::sync::Arc::new(out.sender());
-        tap.queue(&[MidiEvent::note_on(0, 0, 67, 0x8000)]);
+        tap.queue(&[MidiEvent::note_on(
+            MidiGroup::FIRST,
+            MidiChannel::FIRST,
+            67,
+            0x8000,
+        )]);
 
         let events = drain(&out);
         assert_eq!(events.len(), 1);

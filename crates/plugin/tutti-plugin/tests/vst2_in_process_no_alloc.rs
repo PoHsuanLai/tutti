@@ -16,6 +16,7 @@ use std::sync::Mutex;
 
 use tutti_core::BufferVec;
 use tutti_midi_types::convert::midi1_velocity_to_midi2;
+use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
 use tutti_midi_types::ump::MidiEvent;
 
 #[global_allocator]
@@ -81,10 +82,15 @@ fn process_with_midi_does_not_allocate() {
 
     // Pre-warm MIDI codec — first event triggers any one-shot
     // allocations inside vst2-host's MidiSendBuffer.
-    let warm_event = MidiEvent::note_on(0, 1, 60, midi1_velocity_to_midi2(100));
+    let warm_event = MidiEvent::note_on(
+        MidiGroup::FIRST,
+        MidiChannel::new(1),
+        60,
+        midi1_velocity_to_midi2(100),
+    );
     sender.queue(&[warm_event]);
     unit.process(64, &input.buffer_ref(), &mut output.buffer_mut());
-    let warm_off = MidiEvent::note_off(0, 1, 60, 0);
+    let warm_off = MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::new(1), 60, 0);
     sender.queue(&[warm_off]);
     unit.process(64, &input.buffer_ref(), &mut output.buffer_mut());
 
@@ -92,12 +98,21 @@ fn process_with_midi_does_not_allocate() {
     assert_no_alloc::assert_no_alloc(|| {
         for i in 0..128 {
             if i % 16 == 0 {
-                let ev =
-                    MidiEvent::note_on(0, 1, 60 + (i as u8 % 12), midi1_velocity_to_midi2(100));
+                let ev = MidiEvent::note_on(
+                    MidiGroup::FIRST,
+                    MidiChannel::new(1),
+                    60 + (i as u8 % 12),
+                    midi1_velocity_to_midi2(100),
+                );
                 sender.queue(&[ev]);
             }
             if i % 16 == 8 {
-                let ev = MidiEvent::note_off(0, 1, 60 + (i as u8 % 12), 0);
+                let ev = MidiEvent::note_off(
+                    MidiGroup::FIRST,
+                    MidiChannel::new(1),
+                    60 + (i as u8 % 12),
+                    0,
+                );
                 sender.queue(&[ev]);
             }
             unit.process(64, &input.buffer_ref(), &mut output.buffer_mut());

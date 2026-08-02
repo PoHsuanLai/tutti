@@ -61,7 +61,7 @@ impl<'a> ProcessOutputRef<'a> {
 ///
 /// ```ignore
 /// plugin.process(&mut buffer, &ProcessContext {
-///     midi: &[MidiEvent::note_on(0, 0, 60, 16384)],
+///     midi: &[MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 16384)],
 ///     transport: Some(&transport),
 ///     ..Default::default()
 /// })?;
@@ -237,7 +237,7 @@ impl<T: ClapSample> ClapActive<T> {
     ///
     /// ```ignore
     /// active.process(&mut buffer, &ProcessContext {
-    ///     midi: &[Midi1Event::note_on(0, 0, 60, 100)],
+    ///     midi: &[Midi1Event::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 100)],
     ///     transport: Some(&transport),
     ///     ..Default::default()
     /// })?;

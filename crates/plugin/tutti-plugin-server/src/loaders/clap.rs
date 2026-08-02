@@ -579,6 +579,7 @@ mod tests {
     use super::*;
     use std::path::Path;
     use std::sync::atomic::Ordering;
+    use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
     use tutti_plugin::server::{
         NoteExpressionChanges, NoteExpressionType, NoteExpressionValue, ParameterChanges,
         ParameterQueue, TransportInfo,
@@ -755,8 +756,8 @@ mod tests {
 
         // First block: send a NoteOn event
         let note_on = [tutti_plugin::server::MidiEvent::note_on(
-            0,
-            1,
+            MidiGroup::FIRST,
+            MidiChannel::new(1),
             60,
             tutti_midi_types::convert::midi1_velocity_to_midi2(100),
         )];
@@ -898,8 +899,8 @@ mod tests {
 
         let num_samples = 512;
         let note_on = [tutti_plugin::server::MidiEvent::note_on(
-            0,
-            1,
+            MidiGroup::FIRST,
+            MidiChannel::new(1),
             60,
             tutti_midi_types::convert::midi1_velocity_to_midi2(100),
         )];
@@ -1300,8 +1301,8 @@ mod tests {
             ClapInstance::load(Path::new(CLAP_PLUGIN), 44100.0, 512).expect("Failed to load");
 
         let note_on = [tutti_plugin::server::MidiEvent::note_on(
-            0,
-            1,
+            MidiGroup::FIRST,
+            MidiChannel::new(1),
             60,
             tutti_midi_types::convert::midi1_velocity_to_midi2(100),
         )];

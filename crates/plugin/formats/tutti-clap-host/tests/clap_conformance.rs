@@ -38,6 +38,7 @@ use tutti_clap_test_plugin::ProcessCapture;
 const CLAP_EVENT_NOTE_ON: u16 = 0;
 const CLAP_EVENT_PARAM_VALUE: u16 = 5;
 
+use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
 /// A parameter id the reference plugin actually declares (`params_state.rs`).
 ///
 /// The tests below are about event *offsets*, not parameter identity, so the id
@@ -163,9 +164,9 @@ fn host_sorts_events_by_sample_offset() {
     // present them to the plugin in non-decreasing time order
     // (instance/audio.rs `sort_by_time`).
     let midi = [
-        MidiEvent::note_on(0, 0, 60, 0x8000).with_frame_offset(200),
-        MidiEvent::note_on(0, 0, 64, 0x5000).with_frame_offset(50),
-        MidiEvent::note_on(0, 0, 67, 0x7000).with_frame_offset(100),
+        MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000).with_frame_offset(200),
+        MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 64, 0x5000).with_frame_offset(50),
+        MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 67, 0x7000).with_frame_offset(100),
     ];
     let ctx = ProcessContext {
         midi: &midi,
@@ -238,7 +239,10 @@ fn host_never_delivers_an_event_time_outside_the_block() {
     params.add_change(REAL_PARAM_ID, -1, 0.5); // negative → must not wrap
     params.add_change(REAL_PARAM_ID, 100_000, 0.9); // past the block → must clamp
     params.add_change(REAL_PARAM_ID, 64, 0.25); // in range → untouched
-    let midi = [MidiEvent::note_on(0, 0, 60, 0x8000).with_frame_offset(9_999)];
+    let midi = [
+        MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000)
+            .with_frame_offset(9_999),
+    ];
     let ctx = ProcessContext {
         midi: &midi,
         params: Some(&params),

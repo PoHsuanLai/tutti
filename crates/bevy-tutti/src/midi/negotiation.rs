@@ -48,12 +48,13 @@ use bevy_ecs::message::{Message, MessageReader, MessageWriter};
 use bevy_ecs::prelude::*;
 
 use tutti_midi_runtime::tutti_midi_types::ci::{CiMessage, DiscoveryData, Muid};
+use tutti_midi_runtime::tutti_midi_types::tutti_types::MidiGroup;
 use tutti_midi_runtime::tutti_midi_types::EndpointDiscoveryRequest;
 use tutti_midi_runtime::{CiInitiator, CiResponder, DiscoveredCiDevice};
 use tutti_midi_runtime::{DiscoveredEndpoint, EndpointInquiry};
 
 /// The default group MIDI-CI negotiation runs on (function-block-wide).
-const CI_GROUP: u8 = 0;
+const CI_GROUP: MidiGroup = MidiGroup::FIRST;
 
 // ---------------------------------------------------------------------------
 // MIDI-CI

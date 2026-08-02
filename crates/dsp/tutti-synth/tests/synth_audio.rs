@@ -18,6 +18,7 @@
 use tutti_core::dsp::{BufferArray, U2};
 use tutti_core::{Amplitude, AudioUnit, Seconds};
 use tutti_midi_types::translation::scaling::midi1_velocity_to_midi2;
+use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
 use tutti_midi_types::ump::MidiEvent;
 use tutti_synth::{
     AllocationStrategy, EnvelopeConfig, OscillatorType, PolySynth, SynthConfig, VoiceMode,
@@ -27,11 +28,16 @@ const SR: f64 = 48_000.0;
 const BLOCK: usize = 64;
 
 fn note_on(note: u8, vel: u8) -> MidiEvent {
-    MidiEvent::note_on(0, 0, note, midi1_velocity_to_midi2(vel))
+    MidiEvent::note_on(
+        MidiGroup::FIRST,
+        MidiChannel::FIRST,
+        note,
+        midi1_velocity_to_midi2(vel),
+    )
 }
 
 fn note_off(note: u8) -> MidiEvent {
-    MidiEvent::note_off(0, 0, note, 0)
+    MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::FIRST, note, 0)
 }
 
 /// An organ-like envelope: instant attack, full sustain, no decay. Keeps the

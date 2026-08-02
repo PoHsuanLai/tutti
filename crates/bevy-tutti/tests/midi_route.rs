@@ -21,6 +21,7 @@ use bevy_tutti::midi::{
 use bevy_tutti::AudioEngineState;
 use tutti_core::dsp::Net;
 use tutti_core::{AudioNode, RtPublish};
+use tutti_midi_runtime::tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
 use tutti_midi_types::ump::MidiEvent;
 use tutti_midi_types::{MidiRoutingSnapshot, MidiUnitId};
 use tutti_synth::{PolySynth, SynthConfig};
@@ -75,7 +76,12 @@ fn spawn_synth(app: &mut App) -> (Entity, MidiUnitId) {
 fn targets_on(rt_view: &RtView, channel: u8) -> Vec<MidiUnitId> {
     let snapshot = rt_view.read();
     snapshot
-        .route(&MidiEvent::note_on(0, channel, 60, 0x8000))
+        .route(&MidiEvent::note_on(
+            MidiGroup::FIRST,
+            MidiChannel::new(channel),
+            60,
+            0x8000,
+        ))
         .collect()
 }
 

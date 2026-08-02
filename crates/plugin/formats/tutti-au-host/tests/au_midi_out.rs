@@ -56,6 +56,7 @@ use support::corpus::{every_component, DELAY, DLS_SYNTH, LOWPASS, SAMPLER};
 use tutti_au_host::midi_out::{decode_packet_list_for_test, split_packet_list_for_test};
 use tutti_au_host::types::MIDIPacketList;
 use tutti_au_host::AuType;
+use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
 use tutti_midi_types::MidiMessage;
 
 /// Same rationale as `au_conformance.rs`'s `AU_LOCK`.
@@ -389,8 +390,8 @@ fn no_delivery_arrives_after_the_callback_is_withdrawn() {
     // Drive some MIDI *in* so the unit is actually generating, then render. If the
     // unit did emit MIDI this is where it would arrive.
     let notes = [
-        tutti_midi_types::MidiEvent::note_on(0, 0, 60, 0x8000),
-        tutti_midi_types::MidiEvent::note_on(0, 0, 64, 0x8000),
+        tutti_midi_types::MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
+        tutti_midi_types::MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 64, 0x8000),
     ];
     au.send_midi(&notes);
     for _ in 0..8 {

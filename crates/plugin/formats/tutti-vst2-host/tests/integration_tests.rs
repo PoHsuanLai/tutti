@@ -14,6 +14,7 @@
 use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
 
+use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
 use tutti_vst2_host::{
     ChannelLayout, MidiEvent, ProcessContext, RenderScratch, TimeSignature, TransportInfo,
     Vst2Instance,
@@ -618,10 +619,20 @@ fn process_forwards_midi_without_panicking() {
     let meta = instance.metadata().clone();
     let mut scratch = RenderScratch::new(meta.num_inputs, meta.num_outputs, BLOCK);
 
-    let note_on = [MidiEvent::note_on(0, 1, 60, 100)];
+    let note_on = [MidiEvent::note_on(
+        MidiGroup::FIRST,
+        MidiChannel::new(1),
+        60,
+        100,
+    )];
     render_block(&mut instance, &mut scratch, &note_on);
 
-    let note_off = [MidiEvent::note_off(0, 1, 60, 0)];
+    let note_off = [MidiEvent::note_off(
+        MidiGroup::FIRST,
+        MidiChannel::new(1),
+        60,
+        0,
+    )];
     render_block(&mut instance, &mut scratch, &note_off);
 }
 
@@ -671,12 +682,15 @@ fn many_midi_events_in_one_block() {
     let mut scratch = RenderScratch::new(meta.num_inputs, meta.num_outputs, BLOCK);
 
     let events: Vec<MidiEvent> = (0..10u32)
-        .map(|i| MidiEvent::note_on(0, 1, 60 + i as u8, 100).with_frame_offset(i))
+        .map(|i| {
+            MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::new(1), 60 + i as u8, 100)
+                .with_frame_offset(i)
+        })
         .collect();
     render_block(&mut instance, &mut scratch, &events);
 
     let note_offs: Vec<MidiEvent> = (0..10)
-        .map(|i| MidiEvent::note_off(0, 1, 60 + i as u8, 0))
+        .map(|i| MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::new(1), 60 + i as u8, 0))
         .collect();
     render_block(&mut instance, &mut scratch, &note_offs);
 }

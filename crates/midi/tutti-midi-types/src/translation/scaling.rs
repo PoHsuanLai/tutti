@@ -51,6 +51,54 @@ pub fn midi1_velocity_to_midi2(v: u8) -> u16 {
     mcm_up(v as u32, 7, 16) as u16
 }
 
+/// [`Velocity`] → the 16-bit field [`MidiEvent::note_on`] takes.
+///
+/// Lives here rather than on `Velocity` itself because the widening is the
+/// spec's Min-Center-Max scaler, not a multiply: `0.5` must land on `0x8000`
+/// exactly, and a plain `* 65535.0` misses it. `tutti-types` cannot host this —
+/// it does not depend on this crate, and copying [`mcm_up`] there would be a
+/// second home for a spec algorithm, the thing the ITU downmix coefficients are
+/// kept single-homed to avoid.
+///
+/// Round-trips through [`velocity_from_midi2`] for every 7-bit input.
+///
+/// [`Velocity`]: tutti_types::Velocity
+/// [`MidiEvent::note_on`]: crate::ump::MidiEvent::note_on
+#[inline]
+pub fn velocity_to_midi2(v: tutti_types::Velocity) -> u16 {
+    // Via the 7-bit rung on purpose: it is the only path whose center is
+    // exactly representable, so `Velocity::CENTER` and a hardware `64` produce
+    // the identical 16-bit code rather than two values one ULP apart.
+    midi1_velocity_to_midi2(velocity_to_midi1(v))
+}
+
+/// [`Velocity`] → a 7-bit MIDI 1.0 velocity, for the wire and for
+/// [`MidiEvent::note_on_7bit`].
+///
+/// [`Velocity`]: tutti_types::Velocity
+/// [`MidiEvent::note_on_7bit`]: crate::ump::MidiEvent::note_on_7bit
+#[inline]
+pub fn velocity_to_midi1(v: tutti_types::Velocity) -> u8 {
+    // `round`, not `as`: truncation maps 1.0 to 126 and loses the top code.
+    (v.get().clamp(0.0, 1.0) * 127.0).round() as u8
+}
+
+/// A 7-bit wire velocity → [`Velocity`]. The one sanctioned `/ 127.0`.
+///
+/// [`Velocity`]: tutti_types::Velocity
+#[inline]
+pub fn velocity_from_midi1(v: u8) -> tutti_types::Velocity {
+    tutti_types::Velocity((v & 0x7F) as f32 / 127.0)
+}
+
+/// A 16-bit MIDI 2.0 velocity → [`Velocity`].
+///
+/// [`Velocity`]: tutti_types::Velocity
+#[inline]
+pub fn velocity_from_midi2(v: u16) -> tutti_types::Velocity {
+    tutti_types::Velocity(v as f32 / u16::MAX as f32)
+}
+
 /// 16-bit velocity → 7-bit (lossy).
 #[inline]
 pub fn midi2_velocity_to_midi1(v: u16) -> u8 {
@@ -142,6 +190,47 @@ pub fn signed_f32_to_bend_u32(v: f32) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A 7-bit wire velocity survives the trip through [`Velocity`] unchanged.
+    ///
+    /// The property that matters at an input edge: a controller sending 100 and
+    /// a document storing that note must produce the same 100 on the way out,
+    /// or every save/load cycle drifts the dynamics.
+    #[test]
+    fn a_7bit_velocity_round_trips_through_the_unit() {
+        for v in 0u8..=127 {
+            assert_eq!(velocity_to_midi1(velocity_from_midi1(v)), v, "velocity {v}");
+        }
+    }
+
+    /// The endpoints and the center land exactly.
+    ///
+    /// `0.5 * 65535.0` is `32767.5` — it does *not* give `0x8000`, which is why
+    /// the conversion routes through the spec scaler rather than multiplying.
+    #[test]
+    fn velocity_endpoints_and_center_are_exact() {
+        use tutti_types::Velocity;
+        assert_eq!(velocity_to_midi2(Velocity::SILENT), 0);
+        assert_eq!(velocity_to_midi2(Velocity::MAX), 0xffff);
+        assert_eq!(velocity_to_midi2(Velocity::CENTER), 0x8000);
+        // And `note_on_7bit`'s path agrees with the widened one, so the two
+        // constructors cannot disagree about the same note.
+        assert_eq!(
+            velocity_to_midi2(Velocity::CENTER),
+            midi1_velocity_to_midi2(velocity_to_midi1(Velocity::CENTER))
+        );
+    }
+
+    /// Out-of-range input is clamped, not wrapped.
+    ///
+    /// `as u8` on a value above 255 wraps, which would turn the loudest
+    /// possible note into a near-silent one.
+    #[test]
+    fn an_out_of_range_velocity_clamps() {
+        use tutti_types::Velocity;
+        assert_eq!(velocity_to_midi1(Velocity(1.5)), 127);
+        assert_eq!(velocity_to_midi1(Velocity(-0.5)), 0);
+    }
 
     #[test]
     fn spec_min_center_max_vectors() {

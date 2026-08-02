@@ -57,6 +57,9 @@ pub use tutti_midi_types::{
 
 pub use tutti_midi_types::mpe::{MpeMode, MpeZone, MpeZoneConfig};
 
+// `MidiChannel` re-exports through `cc::mapping` as it always has, but the
+// name now resolves to the real `tutti_types` newtype rather than the
+// `pub type MidiChannel = u8` alias that used to live there.
 pub use tutti_midi_types::cc::mapping::{CCMapping, CCNumber, CCTarget, MappingId, MidiChannel};
 
 pub use tutti_midi_types::sync::{
@@ -113,7 +116,7 @@ pub use smf::{
 /// use tutti_midi_io::prelude::*;
 ///
 /// // The types prelude comes along: build + decode an event.
-/// let ev = MidiEvent::note_on(0, 0, 60, 0x8000);
+/// let ev = MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000);
 /// assert!(ev.message().is_note_on());
 ///
 /// // And the delivery types are here too — fan an event to a unit's inbox.

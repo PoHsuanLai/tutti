@@ -6,6 +6,7 @@ use crossbeam_channel::Sender;
 use midir::{MidiInput, MidiInputConnection};
 use std::time::Instant;
 use tracing::debug;
+use tutti_midi_types::tutti_types::MidiGroup;
 use tutti_midi_types::ump::MidiEvent;
 
 /// One MIDI event tagged with the source device. The observer channel
@@ -177,7 +178,7 @@ fn accumulate_sysex(buf: &mut Vec<u8>, message: &[u8]) -> Option<Vec<MidiEvent>>
     buf.clear();
 
     let mut fragments = Vec::new();
-    MidiEvent::sysex7_fragments(0, &payload, &mut fragments);
+    MidiEvent::sysex7_fragments(MidiGroup::FIRST, &payload, &mut fragments);
     Some(fragments)
 }
 

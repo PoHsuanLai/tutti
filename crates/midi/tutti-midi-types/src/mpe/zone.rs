@@ -1,4 +1,5 @@
 use super::PitchBendSensitivity;
+use tutti_types::{MidiChannel, MidiGroup};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MpeZone {
@@ -149,8 +150,8 @@ impl MpeZoneConfig {
     /// (MSB-aligned, the spec's 7→32 convention) so it round-trips exactly.
     pub fn to_mcm(&self) -> crate::ump::MidiEvent {
         crate::ump::MidiEvent::registered_controller(
-            0,
-            self.master_channel,
+            MidiGroup::FIRST,
+            MidiChannel::new(self.master_channel),
             crate::ump::RPN_BANK_MPE,
             crate::ump::RPN_INDEX_MCM,
             (self.member_count as u32) << 25,
@@ -238,11 +239,21 @@ mod tests {
     #[test]
     fn from_mcm_rejects_non_mcm() {
         // A plain note-on is not an MCM.
-        assert!(
-            MpeZoneConfig::from_mcm(&crate::ump::MidiEvent::note_on(0, 0, 60, 0x8000)).is_none()
-        );
+        assert!(MpeZoneConfig::from_mcm(&crate::ump::MidiEvent::note_on(
+            MidiGroup::FIRST,
+            MidiChannel::FIRST,
+            60,
+            0x8000
+        ))
+        .is_none());
         // An RPN with a different index is not an MCM.
-        let other_rpn = crate::ump::MidiEvent::registered_controller(0, 0, 0x00, 0x00, 0);
+        let other_rpn = crate::ump::MidiEvent::registered_controller(
+            MidiGroup::FIRST,
+            MidiChannel::FIRST,
+            0x00,
+            0x00,
+            0,
+        );
         assert!(MpeZoneConfig::from_mcm(&other_rpn).is_none());
     }
 
@@ -372,8 +383,8 @@ mod tests {
         // RP-053 puts the MCM on Ch1 or Ch16 only; RPN 0x00/0x06 elsewhere is
         // ordinary parameter traffic and must not be read as configuration.
         let on_ch5 = MidiEvent::registered_controller(
-            0,
-            5,
+            MidiGroup::FIRST,
+            MidiChannel::new(5),
             crate::ump::RPN_BANK_MPE,
             crate::ump::RPN_INDEX_MCM,
             3u32 << 25,
@@ -383,8 +394,8 @@ mod tests {
         // A zone has at most 15 member channels — reject rather than clamp, so a
         // bogus count leaves the existing zone alone.
         let too_many = MidiEvent::registered_controller(
-            0,
-            0,
+            MidiGroup::FIRST,
+            MidiChannel::FIRST,
             crate::ump::RPN_BANK_MPE,
             crate::ump::RPN_INDEX_MCM,
             100u32 << 25,

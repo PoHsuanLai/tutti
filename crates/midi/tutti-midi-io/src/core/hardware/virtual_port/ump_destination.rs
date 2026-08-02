@@ -117,6 +117,7 @@ impl UmpVirtualDestination {
 mod tests {
     use super::*;
     use std::sync::mpsc;
+    use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
 
     #[test]
     fn create_ump_destination() {
@@ -142,7 +143,7 @@ mod tests {
         use tutti_midi_types::EndpointDiscoveryRequest;
 
         let discovery = MidiEvent::endpoint_discovery(1, 1, EndpointDiscoveryRequest::all());
-        let note = MidiEvent::note_on(0, 3, 60, 0x8000);
+        let note = MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::new(3), 60, 0x8000);
 
         // One packet carrying both, concatenated exactly as CoreMIDI delivers.
         let mut packet_words = Vec::new();
@@ -164,8 +165,8 @@ mod tests {
             let _ = tx.send(event);
         };
 
-        let note = MidiEvent::note_on(0, 0, 60, 0x8000);
-        let clock = MidiEvent::timing_clock(0);
+        let note = MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000);
+        let clock = MidiEvent::timing_clock(MidiGroup::FIRST);
         let mut words = Vec::new();
         words.extend_from_slice(note.data_words());
         words.extend_from_slice(clock.data_words());

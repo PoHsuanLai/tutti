@@ -33,6 +33,7 @@ use std::os::raw::{c_char, c_double, c_int, c_longlong, c_uint, c_void};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
+use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
 use tutti_types::meter::{BarNumber, TimeSignature};
 use tutti_vst3_host::{
     host::conformance, AudioBuffer, MidiEvent, ParameterChanges, ProcessMode, TransportInfo,
@@ -1120,8 +1121,8 @@ fn midi_learn_forwards_from_the_main_thread() {
     let info = inst.info().clone();
     // MIDI 2.0 CC values are 32-bit; 0x8000_0000 is mid-scale.
     let cc = [
-        MidiEvent::cc(0, 0, 7, 0x8000_0000).with_frame_offset(0),
-        MidiEvent::cc(0, 0, 10, 0x4000_0000).with_frame_offset(64),
+        MidiEvent::cc(MidiGroup::FIRST, MidiChannel::FIRST, 7, 0x8000_0000).with_frame_offset(0),
+        MidiEvent::cc(MidiGroup::FIRST, MidiChannel::FIRST, 10, 0x4000_0000).with_frame_offset(64),
     ];
     let ins: Vec<Vec<f32>> = (0..info.num_inputs.max(1))
         .map(|_| vec![0.0; 512])
@@ -1468,14 +1469,20 @@ fn note_lifecycle_across_blocks_is_spec_clean() {
         // Block 0 starts three notes; block 1 ends them. Nothing is left
         // sounding, and no note-off lacks its note-on.
         let on = [
-            MidiEvent::note_on(0, 0, 60, 0x8000).with_frame_offset(0),
-            MidiEvent::note_on(0, 0, 64, 0x6000).with_frame_offset(64),
-            MidiEvent::note_on(0, 0, 67, 0x7000).with_frame_offset(128),
+            MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000)
+                .with_frame_offset(0),
+            MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 64, 0x6000)
+                .with_frame_offset(64),
+            MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 67, 0x7000)
+                .with_frame_offset(128),
         ];
         let off = [
-            MidiEvent::note_off(0, 0, 60, 0x4000).with_frame_offset(0),
-            MidiEvent::note_off(0, 0, 64, 0x4000).with_frame_offset(64),
-            MidiEvent::note_off(0, 0, 67, 0x4000).with_frame_offset(128),
+            MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x4000)
+                .with_frame_offset(0),
+            MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 64, 0x4000)
+                .with_frame_offset(64),
+            MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 67, 0x4000)
+                .with_frame_offset(128),
         ];
         let blocks = [
             Block::of(512).midi(&on),
@@ -1582,10 +1589,11 @@ fn midi_event_list_is_spec_clean() {
     }
     let _plugins = plugin_guard();
     let midi = [
-        MidiEvent::note_on(0, 0, 60, 0x8000).with_frame_offset(200),
-        MidiEvent::note_on(0, 0, 64, 0x5000).with_frame_offset(50),
-        MidiEvent::note_off(0, 0, 60, 0x4000).with_frame_offset(400),
-        MidiEvent::note_on(0, 0, 67, 0x7000).with_frame_offset(100),
+        MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000).with_frame_offset(200),
+        MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 64, 0x5000).with_frame_offset(50),
+        MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x4000)
+            .with_frame_offset(400),
+        MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 67, 0x7000).with_frame_offset(100),
     ];
     let mut failures = Vec::new();
     let mut exercised = 0usize;

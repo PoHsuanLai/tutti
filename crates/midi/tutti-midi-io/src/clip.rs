@@ -100,6 +100,7 @@ pub fn write_clip_file_to_path(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
     use tutti_midi_types::MidiEvent;
 
     fn temp_path(name: &str) -> std::path::PathBuf {
@@ -112,8 +113,14 @@ mod tests {
     fn round_trips_a_clip_through_a_file() {
         let path = temp_path("round_trip.midi2");
         let events = [
-            ClipEvent::new(0, MidiEvent::note_on(0, 0, 60, 0xABCD)),
-            ClipEvent::new(96, MidiEvent::note_off(0, 0, 60, 0)),
+            ClipEvent::new(
+                0,
+                MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xABCD),
+            ),
+            ClipEvent::new(
+                96,
+                MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0),
+            ),
         ];
         write_clip_file_to_path(
             &path,
@@ -167,7 +174,12 @@ mod tests {
         let path = temp_path("sniff.midi2");
         // A clip long enough that reading it whole would be wasteful.
         let events: Vec<ClipEvent> = (0..500)
-            .map(|i| ClipEvent::new(i, MidiEvent::note_on(0, 0, 60, 0x8000)))
+            .map(|i| {
+                ClipEvent::new(
+                    i,
+                    MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
+                )
+            })
             .collect();
         write_clip_file_to_path(&path, 96, None, &events).unwrap();
 

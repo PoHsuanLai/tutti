@@ -19,6 +19,7 @@ use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard};
 
 use assert_no_alloc::AllocDisabler;
+use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
 use tutti_vst2_host::{
     MidiEvent, ProcessContext, RenderScratch, TimeSignature, TransportInfo, Vst2Instance,
 };
@@ -180,8 +181,8 @@ fn process_f32_with_midi_does_not_allocate() {
         let ins: &[&[f32]] = &[];
         let outs: &mut [&mut [f32]] = &mut [&mut out_l[..], &mut out_r[..]];
         let warm = [
-            MidiEvent::note_on(0, 0, 60, 0x4000),
-            MidiEvent::note_off(0, 0, 60, 0),
+            MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x4000),
+            MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0),
         ];
         let ctx = ProcessContext::new(SAMPLE_RATE)
             .midi(&warm)
@@ -190,8 +191,18 @@ fn process_f32_with_midi_does_not_allocate() {
     }
     drive_silent(&mut inst, &mut scratch, 32, &transport);
 
-    let on_event = [MidiEvent::note_on(0, 0, 60, 0x4000)];
-    let off_event = [MidiEvent::note_off(0, 0, 60, 0)];
+    let on_event = [MidiEvent::note_on(
+        MidiGroup::FIRST,
+        MidiChannel::FIRST,
+        60,
+        0x4000,
+    )];
+    let off_event = [MidiEvent::note_off(
+        MidiGroup::FIRST,
+        MidiChannel::FIRST,
+        60,
+        0,
+    )];
 
     assert_no_alloc::assert_no_alloc(|| {
         for i in 0..128usize {

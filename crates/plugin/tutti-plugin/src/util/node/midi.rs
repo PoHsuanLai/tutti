@@ -193,6 +193,7 @@ impl Midi {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
 
     /// A source that reports it wrote `n` no-op events — enough to prove it was
     /// the thing polled (vs. the empty live receiver, which writes 0).
@@ -278,7 +279,12 @@ mod tests {
         // Install on clone_a; the running box could be any clone.
         clone_a.set_out(queue.clone(), routing);
 
-        let ev = [MidiEvent::note_on(0, 0, 60, 0x8000)];
+        let ev = [MidiEvent::note_on(
+            MidiGroup::FIRST,
+            MidiChannel::FIRST,
+            60,
+            0x8000,
+        )];
         clone_b.emit(&ev);
         original.emit(&ev);
         clone_a.emit(&ev);

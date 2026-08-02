@@ -84,7 +84,7 @@ pub use unit_id::MidiUnitId;
 /// use tutti_midi_types::prelude::*;
 ///
 /// // Build a note, decode it back — no midi2 imports, no width juggling.
-/// let ev = MidiEvent::note_on(0, 0, 60, 0x8000);
+/// let ev = MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000);
 /// let msg = ev.message();
 /// assert!(msg.is_note_on());
 /// assert_eq!(msg.note(), Some(60));
@@ -108,11 +108,12 @@ pub use unit_id::MidiUnitId;
 ///     read_clip_file, write_clip_file_with_header, ClipEvent, ClipHeader, MidiEvent,
 ///     CLIP_FILE_MAGIC,
 /// };
+/// use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
 ///
 /// let bytes = write_clip_file_with_header(
 ///     480,
 ///     ClipHeader { tempo_bpm: 174.0, time_signature: (7, 8) },
-///     &[ClipEvent::new(0, MidiEvent::note_on(0, 0, 60, 0x8000))],
+///     &[ClipEvent::new(0, MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000))],
 /// );
 ///
 /// // Self-identifying: a file can be recognised before it is parsed.
@@ -129,11 +130,11 @@ pub use unit_id::MidiUnitId;
 ///
 /// ```
 /// use tutti_midi_types::{read_clip_file, write_clip_file_from_beats, MidiEvent};
-/// use tutti_midi_types::tutti_types::{Beat, BeatDuration};
+/// use tutti_midi_types::tutti_types::{Beat, BeatDuration, MidiChannel, MidiGroup};
 ///
 /// let bytes = write_clip_file_from_beats(96, [
-///     (Beat(0.0), MidiEvent::note_on(0, 0, 60, 0xABCD)),
-///     (Beat(1.5), MidiEvent::note_off(0, 0, 60, 0)),
+///     (Beat(0.0), MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xABCD)),
+///     (Beat(1.5), MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0)),
 /// ]);
 ///
 /// let notes = read_clip_file(&bytes).unwrap().notes();
@@ -153,5 +154,10 @@ pub mod prelude {
     // The clip API positions events in `Beat` and measures them in
     // `BeatDuration`, so a caller of `write_clip_file_from_beats` needs both
     // names to say anything at all.
-    pub use tutti_types::{Beat, BeatDuration};
+    //
+    // `MidiGroup` and `MidiChannel` are here for the same reason, and more
+    // strongly: every UMP constructor takes them, so without these two names a
+    // caller cannot build a single event. They are the crate's addressing
+    // vocabulary even though they are defined one crate down.
+    pub use tutti_types::{Beat, BeatDuration, MidiChannel, MidiGroup};
 }

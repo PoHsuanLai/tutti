@@ -20,6 +20,7 @@
 //! [`discovery`] (the mandatory core), [`profile`], [`property`].
 
 use std::vec::Vec;
+use tutti_types::MidiGroup;
 
 use crate::MidiEvent;
 
@@ -317,7 +318,7 @@ impl CiMessage {
 
 /// Encode `message` and fragment it onto `out` as SysEx7 packets on `group`
 /// (the CI transport). Thin wrapper over [`MidiEvent::sysex7_fragments`].
-pub fn ci_to_sysex7(group: u8, message: &CiMessage, out: &mut Vec<MidiEvent>) {
+pub fn ci_to_sysex7(group: MidiGroup, message: &CiMessage, out: &mut Vec<MidiEvent>) {
     let body = message.encode();
     MidiEvent::sysex7_fragments(group, &body, out);
 }
@@ -381,7 +382,7 @@ mod tests {
             target: Muid(0x0ABC_DEF0 & 0x0FFF_FFFF),
         };
         let mut events = Vec::new();
-        ci_to_sysex7(0, &msg, &mut events);
+        ci_to_sysex7(MidiGroup::FIRST, &msg, &mut events);
         let back = sysex7_to_ci(&events).expect("reassembles");
         assert_eq!(back, msg);
     }
@@ -390,7 +391,7 @@ mod tests {
     fn non_ci_sysex_is_rejected() {
         // A random SysEx7 (not starting 0x7E … 0x0D) is not a CI message.
         let mut events = Vec::new();
-        MidiEvent::sysex7_fragments(0, &[0x01, 0x02, 0x03], &mut events);
+        MidiEvent::sysex7_fragments(MidiGroup::FIRST, &[0x01, 0x02, 0x03], &mut events);
         assert!(sysex7_to_ci(&events).is_none());
     }
 }

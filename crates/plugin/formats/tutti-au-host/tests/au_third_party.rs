@@ -125,6 +125,7 @@ use support::corpus::{
 use tutti_au_host::component::AuComponentInfo;
 use tutti_au_host::instance::AuInstance;
 use tutti_au_host::{AuError, BusDirection, MidiEvent};
+use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
 
 /// AudioToolbox tolerates concurrent use of *distinct* units, but component
 /// discovery walks a process-global registry and these plugins load shared
@@ -1065,7 +1066,12 @@ fn an_instrument_that_reports_inputs_still_plays_midi() {
     );
 
     // Velocity is MIDI 2.0-native u16 here; 0xC000 is ~96/127.
-    au.send_midi(&[MidiEvent::note_on(0, 0, 60, 0xC000)]);
+    au.send_midi(&[MidiEvent::note_on(
+        MidiGroup::FIRST,
+        MidiChannel::FIRST,
+        60,
+        0xC000,
+    )]);
     let mut sounded = 0.0f32;
     for _ in 0..16 {
         render(&mut au, &quiet, &mut output, BLOCK).expect("render after note_on");

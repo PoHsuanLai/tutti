@@ -41,6 +41,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
+use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
 use tutti_vst3_host::{
     AudioBuffer, MidiEvent, NoteExpressionType, NoteExpressionValue, ParameterChanges,
     TransportInfo, Vst3InputEvents, Vst3Instance,
@@ -460,7 +461,10 @@ fn note_on_takes_effect_at_its_sample_offset() {
     let mut failures = Vec::new();
 
     for &offset in &[0usize, 1, 63, 128, 511] {
-        let midi = [MidiEvent::note_on(0, 0, 60, 0x8000).with_frame_offset(offset as u32)];
+        let midi = [
+            MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000)
+                .with_frame_offset(offset as u32),
+        ];
         let rendered = render(&mut inst, FRAMES, &midi, None, |_, _, _| 0.0);
         let ch0 = &rendered.out[0][0];
 
@@ -601,11 +605,13 @@ fn full_midi_event_list_survives_intact() {
     // Deliberately out of order, with two events sharing offset 256 — the host
     // must sort without merging, and must not drop the note-offs.
     let midi = [
-        MidiEvent::note_off(0, 0, 64, 0x4000).with_frame_offset(300),
-        MidiEvent::note_on(0, 0, 60, 0x8000).with_frame_offset(0),
-        MidiEvent::note_on(0, 0, 64, 0x6000).with_frame_offset(100),
-        MidiEvent::note_off(0, 0, 60, 0x4000).with_frame_offset(256),
-        MidiEvent::note_on(0, 0, 72, 0x7000).with_frame_offset(256),
+        MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 64, 0x4000)
+            .with_frame_offset(300),
+        MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000).with_frame_offset(0),
+        MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 64, 0x6000).with_frame_offset(100),
+        MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x4000)
+            .with_frame_offset(256),
+        MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 72, 0x7000).with_frame_offset(256),
     ];
 
     let rendered = render(&mut inst, FRAMES, &midi, None, |_, _, _| 0.0);
@@ -725,7 +731,9 @@ fn note_expression_reaches_the_plugin_with_its_value() {
 
     // A note to attach the expressions to, then two expressions of different
     // types and values at distinct offsets.
-    let midi = [MidiEvent::note_on(0, 0, 60, 0x8000).with_frame_offset(0)];
+    let midi = [
+        MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000).with_frame_offset(0),
+    ];
     let expressions = [
         NoteExpressionValue {
             sample_offset: 64,

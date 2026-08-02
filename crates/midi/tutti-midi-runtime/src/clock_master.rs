@@ -30,6 +30,7 @@
 
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::Arc;
+use tutti_midi_types::tutti_types::MidiGroup;
 
 use atomic_float::AtomicF64;
 use tutti_core::transport::Timeline;
@@ -57,8 +58,8 @@ const SEEK_EPSILON_BEATS: f64 = 1e-3;
 pub struct ClockMaster {
     transport: Arc<dyn Timeline>,
     sample_rate: SampleRate,
-    /// UMP group nibble stamped on every emitted event (0-15).
-    group: u8,
+    /// UMP group stamped on every emitted event.
+    group: MidiGroup,
     /// The output mailbox's push half — lock-free `&self` queueing. The paired
     /// [`MidiReceiver`](crate::MidiReceiver) is drained off-RT by the hardware
     /// pump.
@@ -103,7 +104,7 @@ impl ClockMaster {
         Self {
             transport,
             sample_rate: sample_rate.into(),
-            group: 0,
+            group: MidiGroup::FIRST,
             out,
             enabled: AtomicBool::new(false),
             send_mtc: AtomicBool::new(false),

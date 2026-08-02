@@ -252,18 +252,19 @@ fn sort_by_beat(events: &mut [TimedMidiEvent]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
 
     fn note_on(note: u8, vel: u8) -> MidiEvent {
         MidiEvent::note_on(
-            0,
-            0,
+            MidiGroup::FIRST,
+            MidiChannel::FIRST,
             note,
             tutti_midi_types::convert::midi1_velocity_to_midi2(vel),
         )
     }
 
     fn note_off(note: u8) -> MidiEvent {
-        MidiEvent::note_off(0, 0, note, 0)
+        MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::FIRST, note, 0)
     }
 
     fn buf16() -> [MidiEvent; 16] {

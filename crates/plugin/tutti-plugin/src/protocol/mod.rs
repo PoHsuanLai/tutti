@@ -140,6 +140,7 @@ pub use tutti_plugin_types::{
 mod tests {
     use super::*;
     use std::path::PathBuf;
+    use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
 
     #[test]
     fn test_message_serialization() {
@@ -190,8 +191,20 @@ mod tests {
     fn audio_processed_round_trips_midi_out() {
         // The plugin's MIDI-out must survive the AudioProcessed reply wire trip.
         let midi_out: IpcMidiEventVec = [
-            MidiEvent::note_on(0, 0, 60, midi1_velocity_to_midi2(100)).with_frame_offset(0),
-            MidiEvent::cc(0, 0, 7, midi1_cc_to_midi2(64)).with_frame_offset(64),
+            MidiEvent::note_on(
+                MidiGroup::FIRST,
+                MidiChannel::FIRST,
+                60,
+                midi1_velocity_to_midi2(100),
+            )
+            .with_frame_offset(0),
+            MidiEvent::cc(
+                MidiGroup::FIRST,
+                MidiChannel::FIRST,
+                7,
+                midi1_cc_to_midi2(64),
+            )
+            .with_frame_offset(64),
         ]
         .iter()
         .map(IpcMidiEvent::from)
@@ -258,8 +271,13 @@ mod tests {
 
     #[test]
     fn test_ipc_midi_event_roundtrip() {
-        let event =
-            MidiEvent::note_on(0, 0, 60, midi1_velocity_to_midi2(100)).with_frame_offset(128);
+        let event = MidiEvent::note_on(
+            MidiGroup::FIRST,
+            MidiChannel::FIRST,
+            60,
+            midi1_velocity_to_midi2(100),
+        )
+        .with_frame_offset(128);
         let ipc_event = IpcMidiEvent::from(&event);
         assert_eq!(ipc_event.frame_offset, 128);
 
@@ -272,9 +290,27 @@ mod tests {
     #[test]
     fn test_midi_message_serialization() {
         let midi_events: IpcMidiEventVec = [
-            MidiEvent::note_on(0, 0, 60, midi1_velocity_to_midi2(100)).with_frame_offset(0),
-            MidiEvent::note_on(0, 0, 64, midi1_velocity_to_midi2(100)).with_frame_offset(128),
-            MidiEvent::cc(0, 0, 7, midi1_cc_to_midi2(64)).with_frame_offset(256),
+            MidiEvent::note_on(
+                MidiGroup::FIRST,
+                MidiChannel::FIRST,
+                60,
+                midi1_velocity_to_midi2(100),
+            )
+            .with_frame_offset(0),
+            MidiEvent::note_on(
+                MidiGroup::FIRST,
+                MidiChannel::FIRST,
+                64,
+                midi1_velocity_to_midi2(100),
+            )
+            .with_frame_offset(128),
+            MidiEvent::cc(
+                MidiGroup::FIRST,
+                MidiChannel::FIRST,
+                7,
+                midi1_cc_to_midi2(64),
+            )
+            .with_frame_offset(256),
         ]
         .iter()
         .map(IpcMidiEvent::from)

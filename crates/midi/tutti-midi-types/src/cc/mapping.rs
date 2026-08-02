@@ -1,10 +1,15 @@
 /// 0-127.
 pub type CCNumber = u8;
 
-/// 0-15, where 0 = channel 1.
-pub type MidiChannel = u8;
-
 pub type MappingId = u64;
+
+// `MidiChannel` used to be `pub type MidiChannel = u8` right here — an alias,
+// which is the same type as what it aliases and therefore prevented nothing:
+// a `u8` CC number and a `u8` channel remained freely interchangeable at every
+// call. The real newtype lives in `tutti-types` (a document has to persist a
+// channel, and this crate carries no serde), and is re-exported below so the
+// name resolves where it always did.
+pub use tutti_types::MidiChannel;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum CCTarget {
@@ -73,7 +78,13 @@ mod tests {
 
     #[test]
     fn test_map_value() {
-        let mapping = CCMapping::new(Some(0), 1, CCTarget::MasterVolume, 0.0, 1.0);
+        let mapping = CCMapping::new(
+            Some(MidiChannel::FIRST),
+            1,
+            CCTarget::MasterVolume,
+            0.0,
+            1.0,
+        );
         assert_eq!(mapping.map_value(0), 0.0);
         assert_eq!(mapping.map_value(127), 1.0);
         assert!((mapping.map_value(64) - 0.504).abs() < 0.01);
@@ -81,37 +92,55 @@ mod tests {
 
     #[test]
     fn test_map_value_custom_range() {
-        let mapping = CCMapping::new(Some(0), 1, CCTarget::Tempo, 60.0, 200.0);
+        let mapping = CCMapping::new(Some(MidiChannel::FIRST), 1, CCTarget::Tempo, 60.0, 200.0);
         assert_eq!(mapping.map_value(0), 60.0);
         assert_eq!(mapping.map_value(127), 200.0);
     }
 
     #[test]
     fn test_matches() {
-        let mapping = CCMapping::new(Some(0), 1, CCTarget::MasterVolume, 0.0, 1.0);
-        assert!(mapping.matches(0, 1));
-        assert!(!mapping.matches(1, 1)); // Wrong channel
-        assert!(!mapping.matches(0, 2)); // Wrong CC
+        let mapping = CCMapping::new(
+            Some(MidiChannel::FIRST),
+            1,
+            CCTarget::MasterVolume,
+            0.0,
+            1.0,
+        );
+        assert!(mapping.matches(MidiChannel::FIRST, 1));
+        assert!(!mapping.matches(MidiChannel::new(1), 1)); // Wrong channel
+        assert!(!mapping.matches(MidiChannel::FIRST, 2)); // Wrong CC
 
         // Test any channel
         let any_channel = CCMapping::new(None, 1, CCTarget::MasterVolume, 0.0, 1.0);
-        assert!(any_channel.matches(0, 1));
-        assert!(any_channel.matches(15, 1));
+        assert!(any_channel.matches(MidiChannel::FIRST, 1));
+        assert!(any_channel.matches(MidiChannel::LAST, 1));
     }
 
     #[test]
     fn test_matches_disabled() {
-        let mut mapping = CCMapping::new(Some(0), 1, CCTarget::MasterVolume, 0.0, 1.0);
-        assert!(mapping.matches(0, 1));
+        let mut mapping = CCMapping::new(
+            Some(MidiChannel::FIRST),
+            1,
+            CCTarget::MasterVolume,
+            0.0,
+            1.0,
+        );
+        assert!(mapping.matches(MidiChannel::FIRST, 1));
 
         mapping.enabled = false;
-        assert!(!mapping.matches(0, 1));
+        assert!(!mapping.matches(MidiChannel::FIRST, 1));
     }
 
     #[test]
     fn test_map_value_inverted_range() {
         // Inverted mapping: CC 0 → 1.0, CC 127 → 0.0
-        let mapping = CCMapping::new(Some(0), 1, CCTarget::MasterVolume, 1.0, 0.0);
+        let mapping = CCMapping::new(
+            Some(MidiChannel::FIRST),
+            1,
+            CCTarget::MasterVolume,
+            1.0,
+            0.0,
+        );
         assert_eq!(mapping.map_value(0), 1.0);
         assert_eq!(mapping.map_value(127), 0.0);
         assert!((mapping.map_value(64) - 0.496).abs() < 0.01);
@@ -120,7 +149,13 @@ mod tests {
     #[test]
     fn test_map_value_same_range() {
         // Constant output: min == max
-        let mapping = CCMapping::new(Some(0), 1, CCTarget::MasterVolume, 0.5, 0.5);
+        let mapping = CCMapping::new(
+            Some(MidiChannel::FIRST),
+            1,
+            CCTarget::MasterVolume,
+            0.5,
+            0.5,
+        );
         assert_eq!(mapping.map_value(0), 0.5);
         assert_eq!(mapping.map_value(64), 0.5);
         assert_eq!(mapping.map_value(127), 0.5);

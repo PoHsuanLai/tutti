@@ -77,6 +77,7 @@ use tutti_au_host::types::{
     K_AUDIO_UNIT_SCOPE_INPUT, K_AUDIO_UNIT_SCOPE_OUTPUT,
 };
 use tutti_au_host::{AuError, AuMidiMapping, MidiEvent, MidiTrigger};
+use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
 
 /// Serializes instantiate/dispose against component enumeration, for the reason
 /// `au_conformance.rs`'s `AU_LOCK` does. Recovered from poisoning so one real
@@ -783,8 +784,8 @@ fn a_mapped_cc_actually_moves_the_parameter() {
         au.add_parameter_midi_mapping(&[AuMidiMapping::control_change(*param, 0, 20)])
             .unwrap_or_else(|e| panic!("{}: add failed: {e:?}", unit.label));
         au.send_midi(&[MidiEvent::cc(
-            0,
-            0,
+            MidiGroup::FIRST,
+            MidiChannel::FIRST,
             20,
             tutti_midi_types::convert::midi1_cc_to_midi2(127),
         )]);
@@ -840,8 +841,8 @@ fn an_unmapped_cc_does_not_move_the_parameter() {
         let before = au.get_parameter(*param).expect("read before");
         // Same CC, same value, same render — but no mapping installed.
         au.send_midi(&[MidiEvent::cc(
-            0,
-            0,
+            MidiGroup::FIRST,
+            MidiChannel::FIRST,
             20,
             tutti_midi_types::convert::midi1_cc_to_midi2(127),
         )]);
@@ -898,8 +899,8 @@ fn arming_a_hot_map_and_sending_a_cc_completes_the_mapping() {
         );
 
         au.send_midi(&[MidiEvent::cc(
-            0,
-            0,
+            MidiGroup::FIRST,
+            MidiChannel::FIRST,
             11,
             tutti_midi_types::convert::midi1_cc_to_midi2(64),
         )]);

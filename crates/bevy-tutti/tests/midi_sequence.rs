@@ -16,6 +16,8 @@ use bevy_tutti::AudioEngineState;
 use tutti_core::dsp::Net;
 use tutti_core::transport::Transport;
 use tutti_core::AudioNode;
+use tutti_core::{Beat, BeatDuration, SampleRate};
+use tutti_midi_runtime::tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
 use tutti_midi_runtime::TimedMidiEvent;
 use tutti_midi_types::ump::MidiEvent;
 use tutti_synth::{PolySynth, SynthConfig};
@@ -31,10 +33,19 @@ const SAMPLE_RATE: f64 = 48_000.0;
 ///
 /// `note_on` takes the native 16-bit MIDI-2 velocity, so callers name the field
 /// the spec defines rather than a normalized float.
-fn note(number: u8, start: f64, duration: f64, velocity: u16) -> [TimedMidiEvent; 2] {
+fn note(number: u8, start: Beat, duration: BeatDuration, velocity: u16) -> [TimedMidiEvent; 2] {
     [
-        TimedMidiEvent::new(start, MidiEvent::note_on(0, 0, number, velocity)),
-        TimedMidiEvent::new(start + duration, MidiEvent::note_off(0, 0, number, 0)),
+        TimedMidiEvent::new(
+            start,
+            MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, number, velocity),
+        ),
+        // `Beat + BeatDuration` is the affine operator (`unit_affine!`): a
+        // position plus a span is a position. `Beat + Beat` deliberately does
+        // not compile, which is what keeps the two straight here.
+        TimedMidiEvent::new(
+            start + duration,
+            MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::FIRST, number, 0),
+        ),
     ]
 }
 
@@ -49,7 +60,7 @@ fn app() -> App {
     app.insert_resource(AudioGraphRes(net));
     app.insert_resource(TransportRes(Transport::new(SAMPLE_RATE)));
     app.insert_resource(AudioConfig {
-        sample_rate: SAMPLE_RATE,
+        sample_rate: SampleRate(SAMPLE_RATE),
         channels: Default::default(),
     });
     app.insert_resource(AudioEngineState::Running);
@@ -122,7 +133,7 @@ fn a_scheduled_note_lands_at_a_frame_offset() {
     // than on its boundary.
     app.world_mut().spawn(MidiSourceInstall::new(
         synth,
-        note(60, 1.0 / 3.0, 1.0, MF).to_vec(),
+        note(60, Beat(1.0 / 3.0), BeatDuration(1.0), MF).to_vec(),
     ));
     app.update();
 
@@ -153,11 +164,11 @@ fn two_installs_on_one_synth_both_sound() {
 
     app.world_mut().spawn(MidiSourceInstall::new(
         synth,
-        note(60, 0.0, 1.0, MF).to_vec(),
+        note(60, Beat(0.0), BeatDuration(1.0), MF).to_vec(),
     ));
     app.world_mut().spawn(MidiSourceInstall::new(
         synth,
-        note(67, 0.0, 1.0, MF).to_vec(),
+        note(67, Beat(0.0), BeatDuration(1.0), MF).to_vec(),
     ));
     app.update();
 
@@ -188,7 +199,7 @@ fn a_rebuild_does_not_hang_the_previous_note() {
         .spawn(MidiSourceInstall::new(
             synth,
             // A long note, so a mid-playback edit lands between its on and off.
-            note(60, 0.0, 32.0, MF).to_vec(),
+            note(60, Beat(0.0), BeatDuration(32.0), MF).to_vec(),
         ))
         .id();
     app.update();
@@ -199,7 +210,7 @@ fn a_rebuild_does_not_hang_the_previous_note() {
         .entity_mut(install)
         .insert(MidiSourceInstall::new(
             synth,
-            note(64, 0.0, 32.0, MF).to_vec(),
+            note(64, Beat(0.0), BeatDuration(32.0), MF).to_vec(),
         ));
     app.update();
 
@@ -228,7 +239,7 @@ fn removing_the_last_install_clears_the_source() {
         .world_mut()
         .spawn(MidiSourceInstall::new(
             synth,
-            note(60, 4.0, 1.0, MF).to_vec(),
+            note(60, Beat(4.0), BeatDuration(1.0), MF).to_vec(),
         ))
         .id();
     app.update();
@@ -259,8 +270,8 @@ fn velocity_keeps_its_full_width() {
     let synth = spawn_synth(&mut app);
     roll(&app);
 
-    let mut events = note(60, 0.0, 1.0, MF).to_vec();
-    events.extend(note(64, 0.0, 1.0, MF + 1));
+    let mut events = note(60, Beat(0.0), BeatDuration(1.0), MF).to_vec();
+    events.extend(note(64, Beat(0.0), BeatDuration(1.0), MF + 1));
     app.world_mut().spawn(MidiSourceInstall::new(synth, events));
     app.update();
 

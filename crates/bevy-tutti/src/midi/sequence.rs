@@ -50,6 +50,7 @@ use tutti_midi_types::ump::MidiEvent;
 
 use super::target::MidiTargetResolver;
 use crate::graph::{engine_ready, AudioConfig, GraphReconcileSystems, TransportRes};
+use tutti_midi_runtime::tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
 
 /// "Play these events at that entity's synth."
 ///
@@ -172,7 +173,12 @@ pub fn rebuild(
 fn all_notes_off(port: &tutti_midi_runtime::MidiInPort) {
     let sender = port.sender();
     for channel in 0..16u8 {
-        sender.queue(&[MidiEvent::cc(0, channel, 123, 0)]);
+        sender.queue(&[MidiEvent::cc(
+            MidiGroup::FIRST,
+            MidiChannel::new(channel),
+            123,
+            0,
+        )]);
     }
 }
 

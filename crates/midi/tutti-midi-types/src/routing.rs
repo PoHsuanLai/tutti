@@ -427,13 +427,14 @@ impl Default for MidiRoutingTable {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tutti_types::{MidiChannel, MidiGroup};
 
     const fn id(n: u64) -> MidiUnitId {
         MidiUnitId::new(n)
     }
 
     fn note_on(channel: u8, note: u8) -> MidiEvent {
-        MidiEvent::note_on(0, channel, note, 0x8000)
+        MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::new(channel), note, 0x8000)
     }
 
     #[test]
@@ -557,7 +558,7 @@ mod tests {
         ];
         let snapshot = MidiRoutingSnapshot::from_routes(routes, None);
 
-        let tempo = MidiEvent::flex_set_tempo(0, 128.0);
+        let tempo = MidiEvent::flex_set_tempo(MidiGroup::FIRST, 128.0);
         assert_eq!(tempo.channel(), None, "Set Tempo carries no channel");
 
         let targets: Vec<_> = snapshot.route(&tempo).collect();
@@ -567,7 +568,7 @@ mod tests {
         assert!(snapshot.route_single(&tempo).is_some());
 
         // A channel-voice message is still filtered by channel.
-        let note = MidiEvent::note_on(0, 1, 60, 0x8000);
+        let note = MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::new(1), 60, 0x8000);
         let targets: Vec<_> = snapshot.route(&note).collect();
         assert_eq!(
             targets,
@@ -674,7 +675,12 @@ mod tests {
 
         let snapshot = rt_view.read();
         let targets: Vec<MidiUnitId> = snapshot
-            .route(&crate::ump::MidiEvent::note_on(0, 3, 60, 0x8000))
+            .route(&crate::ump::MidiEvent::note_on(
+                MidiGroup::FIRST,
+                MidiChannel::new(3),
+                60,
+                0x8000,
+            ))
             .collect();
         assert!(
             !targets.contains(&unit),

@@ -36,6 +36,7 @@ use std::ptr;
 use tutti_plugin_types::{note_id_for, note_id_to_channel_note, ParamAddress, RtMidiEvents};
 
 use crate::types::RtNoteExpressions;
+use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
 
 /// A single CLAP event, wrapping the underlying `#[repr(C)]` `clap_sys`
 /// struct so a pointer to its `header` field can be cast back by the plugin.
@@ -521,8 +522,13 @@ impl ClapEvent {
             ClapEvent::NoteOn(e) => {
                 let (channel, note) = note_address(e.channel, e.key, e.note_id)?;
                 Some(
-                    MidiEvent::note_on(0, channel, note, unit_f32_to_u16(e.velocity as f32))
-                        .with_frame_offset(e.header.time),
+                    MidiEvent::note_on(
+                        MidiGroup::FIRST,
+                        MidiChannel::new(channel),
+                        note,
+                        unit_f32_to_u16(e.velocity as f32),
+                    )
+                    .with_frame_offset(e.header.time),
                 )
             }
             ClapEvent::NoteOff(e) => {
@@ -530,8 +536,13 @@ impl ClapEvent {
                 Some(
                     // Preserve the plugin's release velocity on the way back to
                     // MIDI-2, mirroring the NoteOn path (was hardcoded 0).
-                    MidiEvent::note_off(0, channel, note, unit_f32_to_u16(e.velocity as f32))
-                        .with_frame_offset(e.header.time),
+                    MidiEvent::note_off(
+                        MidiGroup::FIRST,
+                        MidiChannel::new(channel),
+                        note,
+                        unit_f32_to_u16(e.velocity as f32),
+                    )
+                    .with_frame_offset(e.header.time),
                 )
             }
             ClapEvent::NoteExpression(e) => Self::note_expression_to_midi(e),
@@ -572,16 +583,24 @@ impl ClapEvent {
         let event = match expression_type {
             NoteExpressionType::Tuning => {
                 let signed = (e.value / PER_NOTE_PITCH_BEND_RANGE_SEMITONES) as f32;
-                MidiEvent::per_note_pitch_bend(0, channel, note, signed_f32_to_bend_u32(signed))
+                MidiEvent::per_note_pitch_bend(
+                    MidiGroup::FIRST,
+                    MidiChannel::new(channel),
+                    note,
+                    signed_f32_to_bend_u32(signed),
+                )
             }
-            NoteExpressionType::Pressure => {
-                MidiEvent::poly_pressure(0, channel, note, unit_f32_to_u32(e.value as f32))
-            }
+            NoteExpressionType::Pressure => MidiEvent::poly_pressure(
+                MidiGroup::FIRST,
+                MidiChannel::new(channel),
+                note,
+                unit_f32_to_u32(e.value as f32),
+            ),
             other => {
                 let index = expression_to_per_note_controller_index(other)?;
                 MidiEvent::per_note_controller(
-                    0,
-                    channel,
+                    MidiGroup::FIRST,
+                    MidiChannel::new(channel),
                     note,
                     index,
                     // L6: VOLUME arrives as a CLAP gain (`0 < x <= 4`), not a
@@ -1403,7 +1422,10 @@ mod tests {
     #[test]
     fn event_time_past_the_block_is_clamped_to_the_last_sample_h3() {
         let mut list = InputEventList::new();
-        list.add_midi(&MidiEvent::note_off(0, 0, 60, 0x4000).with_frame_offset(9_999));
+        list.add_midi(
+            &MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x4000)
+                .with_frame_offset(9_999),
+        );
         assert_eq!(list.len(), 1);
 
         list.clamp_times(64);
@@ -1425,7 +1447,10 @@ mod tests {
     #[test]
     fn clamp_times_leaves_in_range_events_alone_h3() {
         let mut list = InputEventList::new();
-        list.add_midi(&MidiEvent::note_on(0, 0, 60, 0x8000).with_frame_offset(17));
+        list.add_midi(
+            &MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000)
+                .with_frame_offset(17),
+        );
         list.clamp_times(64);
         assert_eq!(first_time(&list), 17);
 
@@ -1443,7 +1468,14 @@ mod tests {
     #[test]
     fn per_note_volume_maps_into_claps_gain_range_l6() {
         // Full-scale MIDI volume is unity gain, not "the top of 0..1".
-        let full = MidiEvent::per_note_controller(0, 2, 64, 7, u32::MAX, false);
+        let full = MidiEvent::per_note_controller(
+            MidiGroup::FIRST,
+            MidiChannel::new(2),
+            64,
+            7,
+            u32::MAX,
+            false,
+        );
         let ClapEvent::NoteExpression(e) = ClapEvent::from_midi(&full).expect("converts") else {
             panic!("expected NoteExpression");
         };
@@ -1455,7 +1487,8 @@ mod tests {
         );
 
         // Zero MIDI volume must stay inside the OPEN interval: `0 < x`.
-        let zero = MidiEvent::per_note_controller(0, 2, 64, 7, 0, false);
+        let zero =
+            MidiEvent::per_note_controller(MidiGroup::FIRST, MidiChannel::new(2), 64, 7, 0, false);
         let ClapEvent::NoteExpression(e) = ClapEvent::from_midi(&zero).expect("converts") else {
             panic!("expected NoteExpression");
         };
@@ -1546,7 +1579,8 @@ mod tests {
     #[test]
     fn per_note_pitch_bend_becomes_tuning_note_expression() {
         let bend = signed_f32_to_bend_u32(0.5);
-        let midi = MidiEvent::per_note_pitch_bend(0, 3, 60, bend).with_frame_offset(11);
+        let midi = MidiEvent::per_note_pitch_bend(MidiGroup::FIRST, MidiChannel::new(3), 60, bend)
+            .with_frame_offset(11);
         match ClapEvent::from_midi(&midi).expect("per-note bend converts") {
             ClapEvent::NoteExpression(e) => {
                 assert_eq!(e.header.time, 11);
@@ -1590,7 +1624,12 @@ mod tests {
 
     #[test]
     fn key_pressure_becomes_pressure_note_expression() {
-        let midi = MidiEvent::poly_pressure(0, 2, 48, unit_f32_to_u32(0.75));
+        let midi = MidiEvent::poly_pressure(
+            MidiGroup::FIRST,
+            MidiChannel::new(2),
+            48,
+            unit_f32_to_u32(0.75),
+        );
         match ClapEvent::from_midi(&midi).expect("poly pressure converts") {
             ClapEvent::NoteExpression(e) => {
                 assert_eq!(e.expression_id, CLAP_NOTE_EXPRESSION_PRESSURE);
@@ -1604,7 +1643,14 @@ mod tests {
     #[test]
     fn assignable_per_note_controller_maps_to_brightness() {
         // Assignable per-note controller index 74 (CC74) → CLAP _BRIGHTNESS.
-        let midi = MidiEvent::per_note_controller(0, 1, 64, 74, unit_f32_to_u32(0.6), false);
+        let midi = MidiEvent::per_note_controller(
+            MidiGroup::FIRST,
+            MidiChannel::new(1),
+            64,
+            74,
+            unit_f32_to_u32(0.6),
+            false,
+        );
         match ClapEvent::from_midi(&midi).expect("per-note cc converts") {
             ClapEvent::NoteExpression(e) => {
                 assert_eq!(e.expression_id, CLAP_NOTE_EXPRESSION_BRIGHTNESS);
@@ -1618,7 +1664,14 @@ mod tests {
     #[test]
     fn per_note_controller_without_counterpart_falls_through_to_midi() {
         // Per-note CC index 20 has no CLAP expression dimension → generic Midi.
-        let midi = MidiEvent::per_note_controller(0, 0, 60, 20, unit_f32_to_u32(0.5), false);
+        let midi = MidiEvent::per_note_controller(
+            MidiGroup::FIRST,
+            MidiChannel::FIRST,
+            60,
+            20,
+            unit_f32_to_u32(0.5),
+            false,
+        );
         assert!(matches!(
             ClapEvent::from_midi(&midi),
             Some(ClapEvent::Midi(_)) | None
@@ -1643,7 +1696,8 @@ mod tests {
 
     #[test]
     fn from_midi_event_note_on_decodes_to_typed_note_on() {
-        let midi = MidiEvent::note_on(0, 1, 60, 0x8000).with_frame_offset(7);
+        let midi = MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::new(1), 60, 0x8000)
+            .with_frame_offset(7);
         match ClapEvent::from_midi(&midi).expect("note on converts") {
             ClapEvent::NoteOn(e) => {
                 assert_eq!(e.header.time, 7);
@@ -1671,15 +1725,26 @@ mod tests {
         const CH: u8 = 3;
         const KEY: u8 = 60;
 
-        let on = ClapEvent::from_midi(&MidiEvent::note_on(0, CH, KEY, 0x8000).with_frame_offset(0))
-            .expect("note on converts");
+        let on = ClapEvent::from_midi(
+            &MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::new(CH), KEY, 0x8000)
+                .with_frame_offset(0),
+        )
+        .expect("note on converts");
         let expr = ClapEvent::from_midi(
-            &MidiEvent::poly_pressure(0, CH, KEY, unit_f32_to_u32(0.5)).with_frame_offset(1),
+            &MidiEvent::poly_pressure(
+                MidiGroup::FIRST,
+                MidiChannel::new(CH),
+                KEY,
+                unit_f32_to_u32(0.5),
+            )
+            .with_frame_offset(1),
         )
         .expect("poly pressure converts");
-        let off =
-            ClapEvent::from_midi(&MidiEvent::note_off(0, CH, KEY, 0x4000).with_frame_offset(2))
-                .expect("note off converts");
+        let off = ClapEvent::from_midi(
+            &MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::new(CH), KEY, 0x4000)
+                .with_frame_offset(2),
+        )
+        .expect("note off converts");
 
         let (ClapEvent::NoteOn(on), ClapEvent::NoteExpression(expr), ClapEvent::NoteOff(off)) =
             (&on, &expr, &off)
@@ -1726,7 +1791,8 @@ mod tests {
         // CLAP NoteOff's `velocity` (was hardcoded 0), and round-trip back.
         use tutti_midi_types::convert::u16_to_unit_f32;
         let rel = 0x6000u16; // ~0.375 of full scale
-        let midi = MidiEvent::note_off(0, 4, 55, rel).with_frame_offset(9);
+        let midi = MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::new(4), 55, rel)
+            .with_frame_offset(9);
         match ClapEvent::from_midi(&midi).expect("note off converts") {
             ClapEvent::NoteOff(e) => {
                 assert_eq!(e.key, 55);
@@ -1775,7 +1841,7 @@ mod tests {
 
     #[test]
     fn from_midi_event_cc_forwards_as_generic_midi() {
-        let midi = MidiEvent::cc(0, 0, 7, 0x8000_0000); // volume, ~half
+        let midi = MidiEvent::cc(MidiGroup::FIRST, MidiChannel::FIRST, 7, 0x8000_0000); // volume, ~half
         match ClapEvent::from_midi(&midi).expect("cc converts") {
             ClapEvent::Midi(e) => {
                 assert_eq!(e.data[0] & 0xF0, 0xB0, "status should be CC");

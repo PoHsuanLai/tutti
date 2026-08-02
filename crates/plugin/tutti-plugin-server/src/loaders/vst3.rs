@@ -639,6 +639,7 @@ impl PluginState for Vst3Instance {
 mod tests {
     use super::*;
     use std::path::Path;
+    use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
     use tutti_plugin::server::{AudioBuffer, AudioBuffer64, AudioBufferMut, MidiEvent};
 
     const VST3_PLUGIN: &str = "/Library/Audio/Plug-Ins/VST3/TAL-NoiseMaker.vst3";
@@ -763,8 +764,8 @@ mod tests {
 
         let num_samples = 512;
         let note_on = [MidiEvent::note_on(
-            0,
-            1,
+            MidiGroup::FIRST,
+            MidiChannel::new(1),
             60,
             tutti_midi_types::convert::midi1_velocity_to_midi2(100),
         )];

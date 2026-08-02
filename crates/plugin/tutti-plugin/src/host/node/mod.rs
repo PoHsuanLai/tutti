@@ -55,9 +55,9 @@ use crate::protocol::{
     TransportInfo,
 };
 use crate::util::config::BridgeConfig;
+use arc_swap::ArcSwap;
 use batcher::{Batcher, PIPELINE_LATENCY_FRAMES};
 use std::path::PathBuf;
-use arc_swap::ArcSwap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use tutti_core::{SampleRate, Samples};

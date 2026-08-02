@@ -15,7 +15,7 @@ use std::sync::Arc;
 
 use assert_no_alloc::AllocDisabler;
 use tutti_midi_runtime::MidiPreBlock;
-use tutti_midi_types::tutti_types::RtPublish;
+use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup, RtPublish};
 use tutti_midi_types::ump::MidiEvent;
 use tutti_midi_types::{MidiIn, MidiRoute, MidiRouter, MidiRoutingSnapshot, MidiUnitId};
 
@@ -96,8 +96,8 @@ fn pre_block_run_with_routed_events_is_allocation_free() {
     // Input: two note events at different frame offsets. `MidiPreBlock` delivers
     // both (each keeps its `frame_offset`), which must be alloc-free.
     let events = vec![
-        MidiEvent::note_on(0, 0, 60, 0x8000).with_frame_offset(0),
-        MidiEvent::note_off(0, 0, 60, 0).with_frame_offset(128),
+        MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000).with_frame_offset(0),
+        MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0).with_frame_offset(128),
     ];
 
     let mut pre = MidiPreBlock::new(routing);

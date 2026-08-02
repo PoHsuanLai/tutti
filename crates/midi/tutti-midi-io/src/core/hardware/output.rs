@@ -148,6 +148,7 @@ fn connect_device(device_index: usize) -> Result<(Midi1Port, String), crate::cor
     Ok((Midi1Port { conn }, name))
 }
 
+use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
 #[cfg(test)]
 mod tests {
     use tutti_midi_types::MidiEvent;
@@ -160,14 +161,15 @@ mod tests {
     #[test]
     fn midi1_representable_events_translate_others_are_dropped() {
         // A plain note-on has a MIDI 1.0 status → translatable.
-        let note_on = MidiEvent::note_on(0, 0, 60, 100);
+        let note_on = MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 100);
         assert!(
             note_on.to_midi1_bytes().is_some(),
             "note-on must have a 1.0 wire form"
         );
 
         // A per-note pitch bend is MIDI-2-only → no 1.0 form → dropped by `send`.
-        let per_note_bend = MidiEvent::per_note_pitch_bend(0, 0, 60, 0x8000_0000);
+        let per_note_bend =
+            MidiEvent::per_note_pitch_bend(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000_0000);
         assert!(
             per_note_bend.to_midi1_bytes().is_none(),
             "per-note pitch bend has no 1.0 wire form and is dropped on send"

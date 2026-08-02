@@ -294,6 +294,7 @@ fn take_len_prefixed(cur: &mut &[u8]) -> Option<Vec<u8>> {
 mod tests {
     use super::super::*;
     use super::*;
+    use tutti_types::MidiGroup;
 
     fn header() -> CiHeader {
         CiHeader {
@@ -325,7 +326,7 @@ mod tests {
                 data: data.clone(),
             };
             let mut events = Vec::new();
-            ci_to_sysex7(0, &m, &mut events);
+            ci_to_sysex7(MidiGroup::FIRST, &m, &mut events);
             let back = sysex7_to_ci(&events).expect("reassembles");
             assert_eq!(back, m);
         }
@@ -347,7 +348,7 @@ mod tests {
                 data: data.clone(),
             };
             let mut events = Vec::new();
-            ci_to_sysex7(0, &m, &mut events);
+            ci_to_sysex7(MidiGroup::FIRST, &m, &mut events);
             assert_eq!(sysex7_to_ci(&events).expect("reassembles"), m);
         }
     }

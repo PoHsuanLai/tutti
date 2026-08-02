@@ -31,6 +31,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use assert_no_alloc::AllocDisabler;
+use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
 use tutti_plugin_types::ParamAddress;
 use tutti_vst3_host::{
     AudioBuffer, MidiEvent, ParameterChanges, TransportInfo, Vst3InputEvents, Vst3Instance,
@@ -232,8 +233,8 @@ fn process_with_midi_does_not_allocate() {
         let ins: &[&[f32]] = &[];
         let mut buffer = AudioBuffer::new(ins, outs, 48_000.0);
         let warm = [
-            MidiEvent::note_on(0, 0, 60, 0x8000),
-            MidiEvent::note_off(0, 0, 60, 0),
+            MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
+            MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0),
         ];
         let events = Vst3InputEvents {
             midi: &warm,
@@ -243,8 +244,18 @@ fn process_with_midi_does_not_allocate() {
     }
     drive_silent(&mut inst, 32, &transport);
 
-    let on_event = [MidiEvent::note_on(0, 0, 60, 0x8000)];
-    let off_event = [MidiEvent::note_off(0, 0, 60, 0)];
+    let on_event = [MidiEvent::note_on(
+        MidiGroup::FIRST,
+        MidiChannel::FIRST,
+        60,
+        0x8000,
+    )];
+    let off_event = [MidiEvent::note_off(
+        MidiGroup::FIRST,
+        MidiChannel::FIRST,
+        60,
+        0,
+    )];
 
     assert_no_alloc::assert_no_alloc(|| {
         for i in 0..128usize {

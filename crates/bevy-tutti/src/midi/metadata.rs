@@ -21,13 +21,14 @@ use bevy_app::{App, Plugin, Update};
 use bevy_ecs::message::{Message, MessageReader};
 use bevy_ecs::prelude::*;
 
+use tutti_midi_runtime::tutti_midi_types::tutti_types::MidiGroup;
 use tutti_midi_runtime::tutti_midi_types::ump::MidiEvent;
 use tutti_midi_runtime::tutti_midi_types::ump::{
     BarAccents, ChordName, FlexTextKind, KeySharpsFlats, Tonic,
 };
 
 /// The group Flex Data metadata is broadcast on (function-block-wide).
-const FLEX_GROUP: u8 = 0;
+const FLEX_GROUP: MidiGroup = MidiGroup::FIRST;
 
 /// A Flex Data musical-metadata value to broadcast in band on the MIDI bus.
 ///

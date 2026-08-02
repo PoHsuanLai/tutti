@@ -8,6 +8,7 @@
 use bitflags::bitflags;
 use midi2::prelude::*;
 use midi2::Data;
+use tutti_types::MidiGroup;
 
 use super::MidiEvent;
 
@@ -58,7 +59,7 @@ impl MidiEvent {
     pub fn function_block_info(
         active: bool,
         block_number: u8,
-        first_group: u8,
+        first_group: MidiGroup,
         num_groups: u8,
         direction: FunctionBlockDirection,
     ) -> Self {
@@ -66,7 +67,7 @@ impl MidiEvent {
         let mut m = FunctionBlockInfo::<[u32; 4]>::new();
         m.set_active(active);
         m.set_function_block_number(u7::new(block_number & 0x7F));
-        m.set_first_group(u4::new(first_group & 0x0F));
+        m.set_first_group(u4::new(first_group.get()));
         m.set_number_of_groups_spanned(num_groups);
         m.set_direction(match direction {
             FunctionBlockDirection::Input => Direction::Input,
@@ -344,7 +345,13 @@ mod tests {
     fn function_block_info_decodes_via_midi2() {
         use midi2::ump_stream::{Direction, UmpStream};
         use midi2::UmpMessage;
-        let ev = MidiEvent::function_block_info(true, 2, 4, 1, FunctionBlockDirection::Output);
+        let ev = MidiEvent::function_block_info(
+            true,
+            2,
+            MidiGroup::new(4),
+            1,
+            FunctionBlockDirection::Output,
+        );
         match UmpMessage::try_from(ev.data_words()).unwrap() {
             UmpMessage::UmpStream(UmpStream::FunctionBlockInfo(m)) => {
                 assert!(m.active());

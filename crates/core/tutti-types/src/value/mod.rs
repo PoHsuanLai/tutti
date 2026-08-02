@@ -15,6 +15,8 @@
 #[macro_use]
 pub mod units;
 
+pub mod midi_channel;
+pub mod midi_group;
 pub mod note;
 
 pub mod param;
@@ -22,6 +24,8 @@ pub mod samples;
 pub mod tail;
 pub mod unit_param;
 
+pub use midi_channel::MidiChannel;
+pub use midi_group::MidiGroup;
 pub use note::{NotOnMidiScale, Note, NoteNumberOutOfRange, PitchClass};
 pub use param::Param;
 pub use samples::Samples;
@@ -31,5 +35,6 @@ pub use units::{
     Amplitude, ArcDegrees, AtomicReadRate, AtomicSamplePosition, Azimuth, Beat, BeatDuration, Bpm,
     Cents, CompressionRatio, Confidence, Correlation, Db, Depth, Drive, Elevation, Feedback, Hz,
     Mix, Pan, Phase, PhaseIncrement, PlaybackRate, Radians, ReadRate, Resonance, SamplePosition,
-    SampleRate, Seconds, Semitones, Spread, SrcRatio, StereoWidth, StretchFactor, Unit, Q,
+    SampleRate, Seconds, Semitones, Spread, SrcRatio, StereoWidth, StretchFactor, Unit, Velocity,
+    Q,
 };

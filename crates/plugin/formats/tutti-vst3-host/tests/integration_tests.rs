@@ -9,6 +9,7 @@
 
 use std::path::{Path, PathBuf};
 
+use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
 use tutti_vst3_host::{AudioBuffer, MidiEvent, TransportInfo, Vst3InputEvents, Vst3Instance};
 
 /// Resolve a macOS `.vst3` bundle directory to its inner binary so
@@ -234,7 +235,12 @@ fn test_process_with_midi() {
     let mut buffer = AudioBuffer::new(&inputs, &mut outputs, 44100.0);
     let transport = TransportInfo::new().with_tempo(120.0).with_playing(true);
 
-    let midi = [MidiEvent::note_on(0, 0, 60, 0x9999)];
+    let midi = [MidiEvent::note_on(
+        MidiGroup::FIRST,
+        MidiChannel::FIRST,
+        60,
+        0x9999,
+    )];
 
     let _output_events = plugin.process(
         &mut buffer,
@@ -280,9 +286,19 @@ fn test_process_multiple_buffers() {
         let transport = TransportInfo::new().with_tempo(120.0).with_playing(true);
 
         let midi: Vec<MidiEvent> = if i == 0 {
-            vec![MidiEvent::note_on(0, 0, 60, 0x9999)]
+            vec![MidiEvent::note_on(
+                MidiGroup::FIRST,
+                MidiChannel::FIRST,
+                60,
+                0x9999,
+            )]
         } else if i == 9 {
-            vec![MidiEvent::note_off(0, 0, 60, 0)]
+            vec![MidiEvent::note_off(
+                MidiGroup::FIRST,
+                MidiChannel::FIRST,
+                60,
+                0,
+            )]
         } else {
             vec![]
         };

@@ -13,6 +13,7 @@ use std::thread;
 use std::time::Duration;
 
 use tutti_midi_io::{HardwareMidiInputs, MidiEvent, MidiIo, MidiMessage, NoteId};
+use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
 
 fn main() {
     let pm = Arc::new(HardwareMidiInputs::new(256));
@@ -120,7 +121,12 @@ fn main() {
 
     println!("\n=== Test 5: Rapid burst (10 notes) ===");
     for n in 60..70u8 {
-        io.send(MidiEvent::note_on(0, 0, n, 0xA000));
+        io.send(MidiEvent::note_on(
+            MidiGroup::FIRST,
+            MidiChannel::FIRST,
+            n,
+            0xA000,
+        ));
     }
     thread::sleep(Duration::from_millis(200));
     let mut count = 0usize;

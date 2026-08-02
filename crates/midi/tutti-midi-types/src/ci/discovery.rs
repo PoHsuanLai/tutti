@@ -289,6 +289,7 @@ impl Nak {
 mod tests {
     use super::super::*;
     use super::*;
+    use tutti_types::MidiGroup;
 
     fn header() -> CiHeader {
         CiHeader {
@@ -325,7 +326,7 @@ mod tests {
             },
         };
         let mut events = Vec::new();
-        ci_to_sysex7(0, &msg, &mut events);
+        ci_to_sysex7(MidiGroup::FIRST, &msg, &mut events);
         let back = sysex7_to_ci(&events).expect("reassembles");
         assert_eq!(back, msg);
     }

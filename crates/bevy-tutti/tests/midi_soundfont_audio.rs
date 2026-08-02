@@ -23,8 +23,9 @@ use bevy_tutti::midi::{MidiSourceInstall, MidiTargetRegistry, TuttiMidiPlugin};
 use bevy_tutti::AudioEngineState;
 use tutti_core::dsp::{AudioUnit, Net};
 use tutti_core::transport::Transport;
-use tutti_core::{Beat, BeatDuration, SampleRate};
 use tutti_core::AudioNode;
+use tutti_core::{Beat, BeatDuration, SampleRate};
+use tutti_midi_runtime::tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
 use tutti_midi_runtime::TimedMidiEvent;
 use tutti_midi_types::ump::MidiEvent;
 use tutti_synth::{SoundFont, SoundFontUnit, SynthesizerSettings};
@@ -37,10 +38,16 @@ const SAMPLE_RATE: f64 = 48_000.0;
 /// maximum rather than left to a default.
 fn note(number: u8, start: Beat, duration: BeatDuration) -> Vec<TimedMidiEvent> {
     vec![
-        TimedMidiEvent::new(start, MidiEvent::note_on(0, 0, number, u16::MAX)),
+        TimedMidiEvent::new(
+            start,
+            MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, number, u16::MAX),
+        ),
         // `Beat + BeatDuration` is the affine operator: a position plus a span
         // is a position. `Beat + Beat` deliberately does not compile.
-        TimedMidiEvent::new(start + duration, MidiEvent::note_off(0, 0, number, 0)),
+        TimedMidiEvent::new(
+            start + duration,
+            MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::FIRST, number, 0),
+        ),
     ]
 }
 
@@ -140,8 +147,10 @@ fn a_declared_note_produces_audio() {
     };
     roll(&app);
 
-    app.world_mut()
-        .spawn(MidiSourceInstall::new(synth, note(60, Beat(0.0), BeatDuration(2.0))));
+    app.world_mut().spawn(MidiSourceInstall::new(
+        synth,
+        note(60, Beat(0.0), BeatDuration(2.0)),
+    ));
     app.update();
 
     // Half a second at 120 BPM covers the note-on comfortably.
@@ -170,8 +179,10 @@ fn the_note_waits_for_its_beat() {
     };
     roll(&app);
 
-    app.world_mut()
-        .spawn(MidiSourceInstall::new(synth, note(60, Beat(4.0), BeatDuration(4.0))));
+    app.world_mut().spawn(MidiSourceInstall::new(
+        synth,
+        note(60, Beat(4.0), BeatDuration(4.0)),
+    ));
     app.update();
 
     // Still well before beat 4.
@@ -208,8 +219,10 @@ fn preview_still_sounds_under_an_installed_clip() {
 
     // A clip whose first note is far in the future, so anything audible in the
     // next quarter-second can only be the preview.
-    app.world_mut()
-        .spawn(MidiSourceInstall::new(synth, note(60, Beat(100.0), BeatDuration(1.0))));
+    app.world_mut().spawn(MidiSourceInstall::new(
+        synth,
+        note(60, Beat(100.0), BeatDuration(1.0)),
+    ));
     app.update();
 
     let quiet = rms(&render(&mut app, 6_000));
@@ -225,7 +238,12 @@ fn preview_still_sounds_under_an_installed_clip() {
         let unit = graph.0.node_as::<SoundFontUnit>(node).unwrap();
         unit.midi_port()
             .sender()
-            .queue(&[tutti_midi_types::ump::MidiEvent::note_on(0, 0, 67, 0xFFFF)]);
+            .queue(&[tutti_midi_types::ump::MidiEvent::note_on(
+                MidiGroup::FIRST,
+                MidiChannel::FIRST,
+                67,
+                0xFFFF,
+            )]);
     }
 
     let previewed = rms(&render(&mut app, 12_000));

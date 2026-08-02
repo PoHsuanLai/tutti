@@ -106,9 +106,15 @@ impl core::fmt::Debug for HardwareMidiInput {
 mod tests {
     use super::*;
     use tutti_midi_types::convert::midi1_velocity_to_midi2;
+    use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
 
     fn note_on(note: u8, vel: u8) -> MidiEvent {
-        MidiEvent::note_on(0, 0, note, midi1_velocity_to_midi2(vel))
+        MidiEvent::note_on(
+            MidiGroup::FIRST,
+            MidiChannel::FIRST,
+            note,
+            midi1_velocity_to_midi2(vel),
+        )
     }
 
     /// Test helper: drain input into a fresh Vec.

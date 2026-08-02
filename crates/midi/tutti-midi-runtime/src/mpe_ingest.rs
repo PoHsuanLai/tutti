@@ -28,6 +28,7 @@ use tutti_midi_types::midi2::{Channeled, UmpMessage};
 use tutti_midi_types::mpe::{
     MpeChannelVoiceMap, MpeMode, MpeZoneConfig, NoteRotationAllocator, ZoneInfo,
 };
+use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
 use tutti_midi_types::ump::MidiEvent;
 
 /// Rewrites classic-MPE channel-spread into native MIDI-2 per-note messages.
@@ -195,8 +196,13 @@ impl MpeIngest {
                 } else if zone.is_member {
                     let note = self.held_note(ch, zone.is_lower_zone)?;
                     Some(
-                        MidiEvent::per_note_pitch_bend(0, ch, note, m.pitch_bend_data())
-                            .with_frame_offset(event.frame_offset),
+                        MidiEvent::per_note_pitch_bend(
+                            MidiGroup::FIRST,
+                            MidiChannel::new(ch),
+                            note,
+                            m.pitch_bend_data(),
+                        )
+                        .with_frame_offset(event.frame_offset),
                     )
                 } else {
                     Some(*event)
@@ -210,8 +216,13 @@ impl MpeIngest {
                 } else if zone.is_member {
                     let note = self.held_note(ch, zone.is_lower_zone)?;
                     Some(
-                        MidiEvent::poly_pressure(0, ch, note, m.channel_pressure_data())
-                            .with_frame_offset(event.frame_offset),
+                        MidiEvent::poly_pressure(
+                            MidiGroup::FIRST,
+                            MidiChannel::new(ch),
+                            note,
+                            m.channel_pressure_data(),
+                        )
+                        .with_frame_offset(event.frame_offset),
                     )
                 } else {
                     Some(*event)
@@ -227,8 +238,8 @@ impl MpeIngest {
                     // CC74 → Assignable Per-Note Controller index 74 (the MPE slide).
                     Some(
                         MidiEvent::per_note_controller(
-                            0,
-                            ch,
+                            MidiGroup::FIRST,
+                            MidiChannel::new(ch),
                             note,
                             74,
                             m.control_change_data(),
@@ -356,13 +367,27 @@ mod tests {
     use tutti_midi_types::mpe::MpeZoneConfig;
 
     fn note_on(channel: u8, note: u8, vel_u7: u8) -> MidiEvent {
-        MidiEvent::note_on(0, channel, note, midi1_velocity_to_midi2(vel_u7))
+        MidiEvent::note_on(
+            MidiGroup::FIRST,
+            MidiChannel::new(channel),
+            note,
+            midi1_velocity_to_midi2(vel_u7),
+        )
     }
     fn pitch_bend14(channel: u8, bend14: u16) -> MidiEvent {
-        MidiEvent::pitch_bend(0, channel, midi1_pitch_bend_to_midi2(bend14))
+        MidiEvent::pitch_bend(
+            MidiGroup::FIRST,
+            MidiChannel::new(channel),
+            midi1_pitch_bend_to_midi2(bend14),
+        )
     }
     fn cc(channel: u8, cc_num: u8, value_u7: u8) -> MidiEvent {
-        MidiEvent::cc(0, channel, cc_num, midi1_cc_to_midi2(value_u7))
+        MidiEvent::cc(
+            MidiGroup::FIRST,
+            MidiChannel::new(channel),
+            cc_num,
+            midi1_cc_to_midi2(value_u7),
+        )
     }
 
     /// True if the event is the given native CV2 kind — matched inline so the
@@ -417,7 +442,11 @@ mod tests {
         let mut ingest = MpeIngest::new(MpeMode::LowerZone(MpeZoneConfig::lower(15)));
         ingest.translate(&note_on(2, 60, 100));
         let out = ingest
-            .translate(&MidiEvent::channel_pressure(0, 2, 0xFFFF_FFFF))
+            .translate(&MidiEvent::channel_pressure(
+                MidiGroup::FIRST,
+                MidiChannel::new(2),
+                0xFFFF_FFFF,
+            ))
             .expect("emits");
         assert_cv2!(out, ChannelVoice2::KeyPressure(m) if u8::from(m.note_number()) == 60);
     }
@@ -432,7 +461,8 @@ mod tests {
     #[test]
     fn native_per_note_passes_through() {
         let mut ingest = MpeIngest::new(MpeMode::LowerZone(MpeZoneConfig::lower(15)));
-        let native = MidiEvent::per_note_pitch_bend(0, 0, 60, 0xFFFF_FFFF);
+        let native =
+            MidiEvent::per_note_pitch_bend(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xFFFF_FFFF);
         let out = ingest.translate(&native).expect("passes");
         assert_cv2!(out, ChannelVoice2::PerNotePitchBend(_));
     }
@@ -477,8 +507,8 @@ mod tests {
         // zone. (`MpeZoneConfig::lower` clamps to >= 1, so the disabling value can
         // only come off the wire — build it directly.)
         let disable = MidiEvent::registered_controller(
-            0,
-            0, // lower-zone master channel
+            MidiGroup::FIRST,
+            MidiChannel::FIRST, // lower-zone master channel
             tutti_midi_types::ump::RPN_BANK_MPE,
             tutti_midi_types::ump::RPN_INDEX_MCM,
             0, // 0 members → disable

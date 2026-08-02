@@ -245,6 +245,7 @@ mod tests {
     use tutti_midi_types::midi2::channel_voice2::ChannelVoice2;
     use tutti_midi_types::midi2::UmpMessage;
     use tutti_midi_types::mpe::{MpeMode, MpeZoneConfig};
+    use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
     use tutti_midi_types::MidiRoutingTable;
 
     /// A one-shot [`MidiIn`] that returns a fixed event list on its first poll.
@@ -283,8 +284,17 @@ mod tests {
 
         // Classic-MPE input: note-on on member channel 2, then a channel pitch
         // bend on ch2 (which classic MPE means "bend note 60 only").
-        let note = MidiEvent::note_on(0, 2, 60, midi1_velocity_to_midi2(100));
-        let bend = MidiEvent::pitch_bend(0, 2, midi1_pitch_bend_to_midi2(16383));
+        let note = MidiEvent::note_on(
+            MidiGroup::FIRST,
+            MidiChannel::new(2),
+            60,
+            midi1_velocity_to_midi2(100),
+        );
+        let bend = MidiEvent::pitch_bend(
+            MidiGroup::FIRST,
+            MidiChannel::new(2),
+            midi1_pitch_bend_to_midi2(16383),
+        );
         let input = Arc::new(FixedInput {
             events: Mutex::new(vec![note, bend]),
         });
@@ -350,7 +360,12 @@ mod tests {
         table.commit();
         let snapshot = table.snapshot_arc();
 
-        let note = MidiEvent::note_on(0, 0, 60, midi1_velocity_to_midi2(100));
+        let note = MidiEvent::note_on(
+            MidiGroup::FIRST,
+            MidiChannel::FIRST,
+            60,
+            midi1_velocity_to_midi2(100),
+        );
         let input = Arc::new(RepublishOnPoll {
             events: Mutex::new(vec![note]),
             table: Mutex::new(table),
@@ -380,7 +395,11 @@ mod tests {
         table.set_routes(Vec::new(), Some(unit));
         table.commit();
 
-        let bend = MidiEvent::pitch_bend(0, 2, midi1_pitch_bend_to_midi2(16383));
+        let bend = MidiEvent::pitch_bend(
+            MidiGroup::FIRST,
+            MidiChannel::new(2),
+            midi1_pitch_bend_to_midi2(16383),
+        );
         let input = Arc::new(FixedInput {
             events: Mutex::new(vec![bend]),
         });

@@ -15,8 +15,9 @@ use bevy_tutti::midi::{MidiSourceInstall, MidiTargetRegistry, TuttiMidiPlugin};
 use bevy_tutti::AudioEngineState;
 use tutti_core::dsp::Net;
 use tutti_core::transport::Transport;
-use tutti_core::{Beat, BeatDuration, SampleRate};
 use tutti_core::AudioNode;
+use tutti_core::{Beat, BeatDuration, SampleRate};
+use tutti_midi_runtime::tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
 use tutti_midi_runtime::TimedMidiEvent;
 use tutti_midi_types::ump::MidiEvent;
 use tutti_synth::{PolySynth, SynthConfig};
@@ -34,11 +35,17 @@ const SAMPLE_RATE: f64 = 48_000.0;
 /// the spec defines rather than a normalized float.
 fn note(number: u8, start: Beat, duration: BeatDuration, velocity: u16) -> [TimedMidiEvent; 2] {
     [
-        TimedMidiEvent::new(start, MidiEvent::note_on(0, 0, number, velocity)),
+        TimedMidiEvent::new(
+            start,
+            MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, number, velocity),
+        ),
         // `Beat + BeatDuration` is the affine operator (`unit_affine!`): a
         // position plus a span is a position. `Beat + Beat` deliberately does
         // not compile, which is what keeps the two straight here.
-        TimedMidiEvent::new(start + duration, MidiEvent::note_off(0, 0, number, 0)),
+        TimedMidiEvent::new(
+            start + duration,
+            MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::FIRST, number, 0),
+        ),
     ]
 }
 

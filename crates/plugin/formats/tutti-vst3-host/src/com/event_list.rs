@@ -205,6 +205,7 @@ mod tests {
         ChordValue, EventHeader, NoteExpressionIntValue, NoteExpressionText, NoteExpressionValue,
         NoteOnEvent, ScaleValue, K_NOTE_ON_EVENT,
     };
+    use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
 
     fn make_note_on() -> NoteOnEvent {
         NoteOnEvent {
@@ -227,7 +228,10 @@ mod tests {
     #[test]
     fn test_update_from_midi_counts_correctly() {
         let list = EventList::new();
-        let midi_events = [MidiEvent::note_on(0, 0, 60, 0x8000).with_frame_offset(0)];
+        let midi_events = [
+            MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000)
+                .with_frame_offset(0),
+        ];
         list.update_from_midi(&midi_events);
         assert_eq!(list.len(), 1);
     }
@@ -236,8 +240,9 @@ mod tests {
     fn test_clear_after_update_from_midi() {
         let list = EventList::new();
         let midi_events = [
-            MidiEvent::note_on(0, 0, 60, 0x8000).with_frame_offset(0),
-            MidiEvent::note_off(0, 0, 60, 0).with_frame_offset(10),
+            MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000)
+                .with_frame_offset(0),
+            MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0).with_frame_offset(10),
         ];
         list.update_from_midi(&midi_events);
         list.clear();
@@ -283,7 +288,13 @@ mod tests {
         const N: usize = 32;
         let midi: Vec<MidiEvent> = (0..N)
             .map(|i| {
-                MidiEvent::cc(0, 0, 74, midi1_cc_to_midi2(i as u8)).with_frame_offset(i as u32)
+                MidiEvent::cc(
+                    MidiGroup::FIRST,
+                    MidiChannel::FIRST,
+                    74,
+                    midi1_cc_to_midi2(i as u8),
+                )
+                .with_frame_offset(i as u32)
             })
             .collect();
 
@@ -369,7 +380,12 @@ mod tests {
     #[test]
     fn get_event_rejects_bad_indices() {
         let list = EventList::new();
-        list.update_from_midi(&[MidiEvent::note_on(0, 0, 60, 0x8000)]);
+        list.update_from_midi(&[MidiEvent::note_on(
+            MidiGroup::FIRST,
+            MidiChannel::FIRST,
+            60,
+            0x8000,
+        )]);
         let ptr = list.to_com_ptr::<IEventList>().unwrap();
         let mut out: Event = unsafe { std::mem::zeroed() };
         assert_eq!(unsafe { ptr.getEvent(-1, &mut out) }, kInvalidArgument);
@@ -383,10 +399,12 @@ mod tests {
     fn update_from_midi_is_allocation_free_after_warmup() {
         let list = EventList::new();
         let events = [
-            MidiEvent::note_on(0, 0, 60, 0x8000).with_frame_offset(0),
-            MidiEvent::note_off(0, 0, 60, 0).with_frame_offset(32),
-            MidiEvent::note_on(0, 1, 64, 0x6000).with_frame_offset(64),
-            MidiEvent::note_off(0, 1, 64, 0).with_frame_offset(96),
+            MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000)
+                .with_frame_offset(0),
+            MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0).with_frame_offset(32),
+            MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::new(1), 64, 0x6000)
+                .with_frame_offset(64),
+            MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::new(1), 64, 0).with_frame_offset(96),
         ];
 
         // Warm up — the first call may grow (the default Vec cap is 256,
@@ -409,8 +427,9 @@ mod tests {
     fn update_from_sources_is_allocation_free_after_warmup() {
         let list = EventList::new();
         let midi = [
-            MidiEvent::note_on(0, 0, 60, 0x8000).with_frame_offset(0),
-            MidiEvent::note_off(0, 0, 60, 0).with_frame_offset(64),
+            MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000)
+                .with_frame_offset(0),
+            MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0).with_frame_offset(64),
         ];
         let note_expr = [NoteExpressionValue {
             sample_offset: 0,

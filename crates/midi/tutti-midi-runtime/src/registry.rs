@@ -18,6 +18,7 @@
 //! the wire.
 
 use std::sync::Arc;
+use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
 
 use crossbeam_queue::ArrayQueue;
 use dashmap::DashMap;
@@ -107,19 +108,24 @@ impl MidiSender {
 
     /// Convenience: send a MIDI 1.0 note-on (velocity is 7-bit). Returns `false`
     /// if the ring was full and the note was dropped.
-    pub fn note_on(&self, channel: u8, note: u8, velocity: u8) -> bool {
+    pub fn note_on(&self, channel: MidiChannel, note: u8, velocity: u8) -> bool {
         self.slot
             .events
-            .push(MidiEvent::note_on_7bit(0, channel, note, velocity))
+            .push(MidiEvent::note_on_7bit(
+                MidiGroup::FIRST,
+                channel,
+                note,
+                velocity,
+            ))
             .is_ok()
     }
 
     /// Convenience: send a MIDI 1.0 note-off. Returns `false` if the ring was
     /// full and the note-off was dropped (which would leave a stuck note).
-    pub fn note_off(&self, channel: u8, note: u8) -> bool {
+    pub fn note_off(&self, channel: MidiChannel, note: u8) -> bool {
         self.slot
             .events
-            .push(MidiEvent::note_off(0, channel, note, 0))
+            .push(MidiEvent::note_off(MidiGroup::FIRST, channel, note, 0))
             .is_ok()
     }
 }
@@ -275,15 +281,15 @@ mod tests {
 
     fn note_on(note: u8, vel_u7: u8) -> MidiEvent {
         MidiEvent::note_on(
-            0,
-            0,
+            MidiGroup::FIRST,
+            MidiChannel::FIRST,
             note,
             tutti_midi_types::convert::midi1_velocity_to_midi2(vel_u7),
         )
     }
 
     fn note_off(note: u8) -> MidiEvent {
-        MidiEvent::note_off(0, 0, note, 0)
+        MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::FIRST, note, 0)
     }
 
     #[test]
@@ -315,8 +321,8 @@ mod tests {
     #[test]
     fn sender_note_helpers_match_explicit_events() {
         let (sender, receiver) = MidiMailbox::pair(MidiUnitId::next());
-        sender.note_on(0, 60, 100);
-        sender.note_off(0, 60);
+        sender.note_on(MidiChannel::FIRST, 60, 100);
+        sender.note_off(MidiChannel::FIRST, 60);
 
         let mut buf = [note_on(0, 0); 4];
         assert_eq!(receiver.poll_into(&mut buf), 2);
@@ -329,8 +335,24 @@ mod tests {
         let (s, r) = MidiMailbox::pair(unit);
         bus.insert(s);
 
-        bus.queue(unit, &[MidiEvent::note_on_7bit(0, 0, 60, 100)]);
-        bus.queue(unit, &[MidiEvent::note_off(0, 0, 60, 0)]);
+        bus.queue(
+            unit,
+            &[MidiEvent::note_on_7bit(
+                MidiGroup::FIRST,
+                MidiChannel::FIRST,
+                60,
+                100,
+            )],
+        );
+        bus.queue(
+            unit,
+            &[MidiEvent::note_off(
+                MidiGroup::FIRST,
+                MidiChannel::FIRST,
+                60,
+                0,
+            )],
+        );
 
         let mut buf = [MidiEvent::noop(); 4];
         assert_eq!(r.poll_into(&mut buf), 2);
@@ -422,8 +444,8 @@ mod tests {
         bus.insert(sender);
 
         let note_on = MidiEvent::note_on(
-            0,
-            0,
+            MidiGroup::FIRST,
+            MidiChannel::FIRST,
             60,
             tutti_midi_types::convert::midi1_velocity_to_midi2(100),
         );

@@ -15,7 +15,7 @@
 //! let mut active = loaded.activate::<f32>().map_err(|(_, e)| e)?;
 //! let transport = TransportInfo::default().with_tempo(120.0).with_playing(true);
 //! active.process(&mut buffer, &ProcessContext {
-//!     midi: &[MidiEvent::note_on(0, 0, 60, 16384)],
+//!     midi: &[MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 16384)],
 //!     transport: Some(&transport),
 //!     ..Default::default()
 //! })?;

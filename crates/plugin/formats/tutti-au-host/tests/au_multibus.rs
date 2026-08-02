@@ -56,6 +56,7 @@ use support::corpus::{
 use tutti_au_host::parameters::{self, ParamAddress};
 use tutti_au_host::types::K_AUDIO_UNIT_ERR_INVALID_ELEMENT;
 use tutti_au_host::{AuChannelConfig, AuChannelCount, AuError, BusDirection};
+use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
 
 /// Same rationale as `au_conformance.rs`'s `AU_LOCK`: AudioToolbox tolerates
 /// concurrent use of distinct units, but component discovery walks a
@@ -725,7 +726,12 @@ fn a_multi_bus_instrument_still_renders_its_primary_bus() {
         "the premise: this unit really does have two output buses"
     );
 
-    au.send_midi(&[MidiEvent::note_on(0, 0, 60, 0xC000)]);
+    au.send_midi(&[MidiEvent::note_on(
+        MidiGroup::FIRST,
+        MidiChannel::FIRST,
+        60,
+        0xC000,
+    )]);
 
     // No input bus, so render from an empty input.
     let input: Vec<Vec<f32>> = Vec::new();
@@ -771,7 +777,12 @@ fn querying_the_topology_does_not_reconfigure_the_unit() {
         au.bus_count(BusDirection::Output),
     );
 
-    au.send_midi(&[MidiEvent::note_on(0, 0, 60, 0xC000)]);
+    au.send_midi(&[MidiEvent::note_on(
+        MidiGroup::FIRST,
+        MidiChannel::FIRST,
+        60,
+        0xC000,
+    )]);
     let mut baseline = 0.0f32;
     for _ in 0..10 {
         let mut output = silence(channels, BLOCK as usize);
@@ -807,7 +818,12 @@ fn querying_the_topology_does_not_reconfigure_the_unit() {
         "the AU must still be initialized after a topology walk"
     );
 
-    au.send_midi(&[MidiEvent::note_on(0, 0, 64, 0xC000)]);
+    au.send_midi(&[MidiEvent::note_on(
+        MidiGroup::FIRST,
+        MidiChannel::FIRST,
+        64,
+        0xC000,
+    )]);
     let mut after = 0.0f32;
     for _ in 0..10 {
         let mut output = silence(channels, BLOCK as usize);

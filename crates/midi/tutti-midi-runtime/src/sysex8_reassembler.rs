@@ -189,6 +189,7 @@ impl Sysex8Reassembler {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
     use tutti_midi_types::ump::{SYSEX8_BYTES_ABORT, SYSEX8_STATUS_END};
 
     fn payload_of(ev: Option<Sysex8Event>) -> Vec<u8> {
@@ -201,7 +202,7 @@ mod tests {
     #[test]
     fn single_packet_completes_immediately() {
         let mut out = Vec::new();
-        MidiEvent::sysex8_fragments(0, 0x11, &[1, 2, 3], &mut out);
+        MidiEvent::sysex8_fragments(MidiGroup::FIRST, 0x11, &[1, 2, 3], &mut out);
         assert_eq!(out.len(), 1);
 
         let mut r = Sysex8Reassembler::new();
@@ -212,7 +213,7 @@ mod tests {
     fn multi_packet_run_reassembles() {
         let data: Vec<u8> = (0u8..30).collect();
         let mut out = Vec::new();
-        MidiEvent::sysex8_fragments(0, 0x55, &data, &mut out);
+        MidiEvent::sysex8_fragments(MidiGroup::FIRST, 0x55, &data, &mut out);
         assert_eq!(out.len(), 3);
 
         let mut r = Sysex8Reassembler::new();
@@ -228,8 +229,8 @@ mod tests {
         let a: Vec<u8> = (0u8..30).collect();
         let b: Vec<u8> = (100u8..130).collect();
         let (mut pa, mut pb) = (Vec::new(), Vec::new());
-        MidiEvent::sysex8_fragments(0, 0x01, &a, &mut pa);
-        MidiEvent::sysex8_fragments(0, 0x02, &b, &mut pb);
+        MidiEvent::sysex8_fragments(MidiGroup::FIRST, 0x01, &a, &mut pa);
+        MidiEvent::sysex8_fragments(MidiGroup::FIRST, 0x02, &b, &mut pb);
 
         // Start(1) Start(2) Continue(1) Continue(2) End(2) End(1)
         let mut r = Sysex8Reassembler::new();
@@ -247,11 +248,18 @@ mod tests {
         // §7.8.1 permits interspersing — unlike SysEx7, this must NOT terminate.
         let data: Vec<u8> = (0u8..30).collect();
         let mut out = Vec::new();
-        MidiEvent::sysex8_fragments(0, 0x7F, &data, &mut out);
+        MidiEvent::sysex8_fragments(MidiGroup::FIRST, 0x7F, &data, &mut out);
 
         let mut r = Sysex8Reassembler::new();
         r.push(&out[0]);
-        assert!(r.push(&MidiEvent::note_on(0, 0, 60, 0x8000)).is_none());
+        assert!(r
+            .push(&MidiEvent::note_on(
+                MidiGroup::FIRST,
+                MidiChannel::FIRST,
+                60,
+                0x8000
+            ))
+            .is_none());
         assert_eq!(r.in_flight_count(), 1, "note-on must not terminate SysEx8");
         r.push(&out[1]);
         assert_eq!(payload_of(r.push(&out[2])), data);
@@ -263,7 +271,7 @@ mod tests {
         // buffered data is explicitly untrustworthy.
         let data: Vec<u8> = (0u8..30).collect();
         let mut out = Vec::new();
-        MidiEvent::sysex8_fragments(0, 0x09, &data, &mut out);
+        MidiEvent::sysex8_fragments(MidiGroup::FIRST, 0x09, &data, &mut out);
 
         let mut r = Sysex8Reassembler::new();
         r.push(&out[0]);
@@ -290,7 +298,7 @@ mod tests {
     fn an_unterminated_run_cannot_grow_without_bound() {
         let data: Vec<u8> = (0u8..30).collect();
         let mut out = Vec::new();
-        MidiEvent::sysex8_fragments(0, 0x03, &data, &mut out);
+        MidiEvent::sysex8_fragments(MidiGroup::FIRST, 0x03, &data, &mut out);
 
         let mut r = Sysex8Reassembler::with_max_bytes(64);
         r.push(&out[0]);
@@ -313,7 +321,14 @@ mod tests {
     #[test]
     fn non_sysex8_event_is_ignored() {
         let mut r = Sysex8Reassembler::new();
-        assert!(r.push(&MidiEvent::note_on(0, 0, 60, 0x8000)).is_none());
-        assert!(r.push(&MidiEvent::timing_clock(0)).is_none());
+        assert!(r
+            .push(&MidiEvent::note_on(
+                MidiGroup::FIRST,
+                MidiChannel::FIRST,
+                60,
+                0x8000
+            ))
+            .is_none());
+        assert!(r.push(&MidiEvent::timing_clock(MidiGroup::FIRST)).is_none());
     }
 }

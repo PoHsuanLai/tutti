@@ -12,6 +12,7 @@
 #![cfg(feature = "midi-hardware")]
 
 use bevy_tutti::midi::{MidiOutDrops, MidiOutRouter};
+use tutti_midi_runtime::tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
 use tutti_midi_types::ump::MidiEvent;
 
 /// A router with no transport at all — the state an app is in before it selects
@@ -34,8 +35,8 @@ fn midi_out_drops_are_counted_when_no_device_is_connected() {
     {
         let mut router = router_with_no_output(&drops);
         router.route(&[
-            MidiEvent::note_on(0, 0, 60, 0x8000),
-            MidiEvent::note_on(0, 0, 64, 0x8000),
+            MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
+            MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 64, 0x8000),
         ]);
     }
 
@@ -53,7 +54,12 @@ fn drops_accumulate_across_batches() {
     let drops = MidiOutDrops::default();
     for _ in 0..3 {
         let mut router = router_with_no_output(&drops);
-        router.route(&[MidiEvent::note_on(0, 0, 60, 0x8000)]);
+        router.route(&[MidiEvent::note_on(
+            MidiGroup::FIRST,
+            MidiChannel::FIRST,
+            60,
+            0x8000,
+        )]);
     }
     assert_eq!(drops.count(), 3);
 }
@@ -78,7 +84,12 @@ fn dropping_without_a_counter_is_allowed() {
         jr_out: None,
         drops: None,
     };
-    router.route(&[MidiEvent::note_on(0, 0, 60, 0x8000)]);
+    router.route(&[MidiEvent::note_on(
+        MidiGroup::FIRST,
+        MidiChannel::FIRST,
+        60,
+        0x8000,
+    )]);
 }
 
 /// The request messages exist and are registered, so a host can select an output.

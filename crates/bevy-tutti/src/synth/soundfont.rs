@@ -284,6 +284,7 @@ mod tests {
     // `SoundFontUnit`'s `tick` / `process` / `reset` come from `AudioUnit`,
     // which must be in scope to call them.
     use tutti_core::dsp::AudioUnit;
+    use tutti_midi_runtime::tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
     use tutti_midi_types::ump::MidiEvent;
 
     /// Get path to test SoundFont (if available)
@@ -376,15 +377,26 @@ mod tests {
         // Note at offset 0 — audible from the block start.
         let mut early =
             SoundFontUnit::new(Arc::clone(&sf), &settings).expect("create SoundFontUnit");
-        let s_early =
-            render_process_block(&mut early, BLOCK, &[MidiEvent::note_on_7bit(0, 0, 60, 100)]);
+        let s_early = render_process_block(
+            &mut early,
+            BLOCK,
+            &[MidiEvent::note_on_7bit(
+                MidiGroup::FIRST,
+                MidiChannel::FIRST,
+                60,
+                100,
+            )],
+        );
 
         // Same note delayed to OFFSET — the [0, OFFSET) head must be near-silent.
         let mut late = SoundFontUnit::new(sf, &settings).expect("create SoundFontUnit");
         let s_late = render_process_block(
             &mut late,
             BLOCK,
-            &[MidiEvent::note_on_7bit(0, 0, 60, 100).with_frame_offset(OFFSET)],
+            &[
+                MidiEvent::note_on_7bit(MidiGroup::FIRST, MidiChannel::FIRST, 60, 100)
+                    .with_frame_offset(OFFSET),
+            ],
         );
 
         let early_head = rms(&s_early[..OFFSET as usize]);

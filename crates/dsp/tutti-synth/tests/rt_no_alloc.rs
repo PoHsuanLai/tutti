@@ -23,6 +23,7 @@
 use assert_no_alloc::AllocDisabler;
 use tutti_core::{AudioUnit, BufferVec, Hz, SampleRate, Q};
 use tutti_midi_types::convert::midi1_velocity_to_midi2;
+use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
 use tutti_midi_types::ump::MidiEvent;
 use tutti_synth::{FilterType, OscillatorType, PolySynth, SynthConfig};
 
@@ -30,11 +31,16 @@ use tutti_synth::{FilterType, OscillatorType, PolySynth, SynthConfig};
 static A: AllocDisabler = AllocDisabler;
 
 fn note_on(channel: u8, note: u8, vel: u8) -> MidiEvent {
-    MidiEvent::note_on(0, channel, note, midi1_velocity_to_midi2(vel))
+    MidiEvent::note_on(
+        MidiGroup::FIRST,
+        MidiChannel::new(channel),
+        note,
+        midi1_velocity_to_midi2(vel),
+    )
 }
 
 fn note_off(channel: u8, note: u8) -> MidiEvent {
-    MidiEvent::note_off(0, channel, note, 0)
+    MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::new(channel), note, 0)
 }
 
 #[test]

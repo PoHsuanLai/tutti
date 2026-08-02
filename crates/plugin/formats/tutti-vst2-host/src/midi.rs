@@ -236,18 +236,29 @@ mod tests {
     use tutti_midi_types::convert::{
         midi1_cc_to_midi2, midi1_pitch_bend_to_midi2, midi1_velocity_to_midi2,
     };
+    use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
 
     #[test]
     fn note_on_off_roundtrip() {
-        let event =
-            MidiEvent::note_on(0, 1, 60, midi1_velocity_to_midi2(127)).with_frame_offset(10);
+        let event = MidiEvent::note_on(
+            MidiGroup::FIRST,
+            MidiChannel::new(1),
+            60,
+            midi1_velocity_to_midi2(127),
+        )
+        .with_frame_offset(10);
         let api = from_midi(&event).expect("NoteOn should convert");
         assert_eq!(api.midi_data[0], 0x91);
         assert_eq!(api.midi_data[1], 60);
         assert_eq!(api.midi_data[2], 127);
         assert_eq!(api.delta_frames, 10);
 
-        let event = MidiEvent::note_off(0, 9, 48, midi1_velocity_to_midi2(64));
+        let event = MidiEvent::note_off(
+            MidiGroup::FIRST,
+            MidiChannel::new(9),
+            48,
+            midi1_velocity_to_midi2(64),
+        );
         let api = from_midi(&event).expect("NoteOff should convert");
         assert_eq!(api.midi_data[0], 0x80 | 9);
         assert_eq!(api.midi_data[1], 48);
@@ -267,8 +278,13 @@ mod tests {
     /// recognise as wrong.
     #[test]
     fn a_huge_frame_offset_saturates_rather_than_going_negative() {
-        let event =
-            MidiEvent::note_on(0, 0, 60, midi1_velocity_to_midi2(100)).with_frame_offset(u32::MAX);
+        let event = MidiEvent::note_on(
+            MidiGroup::FIRST,
+            MidiChannel::FIRST,
+            60,
+            midi1_velocity_to_midi2(100),
+        )
+        .with_frame_offset(u32::MAX);
         let api = from_midi(&event).expect("NoteOn should convert");
         assert!(
             api.delta_frames >= 0,
@@ -291,7 +307,12 @@ mod tests {
 
     #[test]
     fn cc_roundtrip() {
-        let event = MidiEvent::cc(0, 1, 74, midi1_cc_to_midi2(100));
+        let event = MidiEvent::cc(
+            MidiGroup::FIRST,
+            MidiChannel::new(1),
+            74,
+            midi1_cc_to_midi2(100),
+        );
         let api = from_midi(&event).expect("CC should convert");
         assert_eq!(api.midi_data[0], 0xB1);
         assert_eq!(api.midi_data[1], 74);
@@ -300,7 +321,11 @@ mod tests {
 
     #[test]
     fn pitch_bend_roundtrip() {
-        let event = MidiEvent::pitch_bend(0, 1, midi1_pitch_bend_to_midi2(8192));
+        let event = MidiEvent::pitch_bend(
+            MidiGroup::FIRST,
+            MidiChannel::new(1),
+            midi1_pitch_bend_to_midi2(8192),
+        );
         let api = from_midi(&event).expect("PitchBend should convert");
         assert_eq!(api.midi_data[0], 0xE1);
         let bend14 = (api.midi_data[1] as u16) | ((api.midi_data[2] as u16) << 7);
@@ -310,12 +335,20 @@ mod tests {
             bend14
         );
 
-        let event = MidiEvent::pitch_bend(0, 1, midi1_pitch_bend_to_midi2(0));
+        let event = MidiEvent::pitch_bend(
+            MidiGroup::FIRST,
+            MidiChannel::new(1),
+            midi1_pitch_bend_to_midi2(0),
+        );
         let api = from_midi(&event).expect("PitchBend min should convert");
         assert_eq!(api.midi_data[1], 0x00);
         assert_eq!(api.midi_data[2], 0x00);
 
-        let event = MidiEvent::pitch_bend(0, 1, midi1_pitch_bend_to_midi2(16383));
+        let event = MidiEvent::pitch_bend(
+            MidiGroup::FIRST,
+            MidiChannel::new(1),
+            midi1_pitch_bend_to_midi2(16383),
+        );
         let api = from_midi(&event).expect("PitchBend max should convert");
         assert_eq!(api.midi_data[1], 0x7F);
         assert_eq!(api.midi_data[2], 0x7F);
@@ -323,7 +356,7 @@ mod tests {
 
     #[test]
     fn program_change_roundtrip() {
-        let event = MidiEvent::program_change(0, 1, 42, None);
+        let event = MidiEvent::program_change(MidiGroup::FIRST, MidiChannel::new(1), 42, None);
         let api = from_midi(&event).expect("ProgramChange should convert");
         assert_eq!(api.midi_data[0], 0xC1);
         assert_eq!(api.midi_data[1], 42);
@@ -332,7 +365,11 @@ mod tests {
 
     #[test]
     fn channel_pressure_roundtrip() {
-        let event = MidiEvent::channel_pressure(0, 1, midi1_cc_to_midi2(100));
+        let event = MidiEvent::channel_pressure(
+            MidiGroup::FIRST,
+            MidiChannel::new(1),
+            midi1_cc_to_midi2(100),
+        );
         let api = from_midi(&event).expect("ChannelPressure should convert");
         assert_eq!(api.midi_data[0], 0xD1);
         assert_eq!(api.midi_data[1], 100);
@@ -341,7 +378,12 @@ mod tests {
 
     #[test]
     fn poly_pressure_roundtrip() {
-        let event = MidiEvent::poly_pressure(0, 1, 60, midi1_cc_to_midi2(80));
+        let event = MidiEvent::poly_pressure(
+            MidiGroup::FIRST,
+            MidiChannel::new(1),
+            60,
+            midi1_cc_to_midi2(80),
+        );
         let api = from_midi(&event).expect("PolyPressure should convert");
         assert_eq!(api.midi_data[0], 0xA1);
         assert_eq!(api.midi_data[1], 60);
@@ -412,8 +454,13 @@ mod tests {
         let mut buf = MidiSendBuffer::with_capacity(8);
         let evs: Vec<MidiEvent> = (0..4u32)
             .map(|i| {
-                MidiEvent::note_on(0, 1, 60 + i as u8, midi1_velocity_to_midi2(100))
-                    .with_frame_offset(i)
+                MidiEvent::note_on(
+                    MidiGroup::FIRST,
+                    MidiChannel::new(1),
+                    60 + i as u8,
+                    midi1_velocity_to_midi2(100),
+                )
+                .with_frame_offset(i)
             })
             .collect();
 

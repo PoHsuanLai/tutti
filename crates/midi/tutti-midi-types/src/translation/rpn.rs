@@ -18,6 +18,7 @@
 
 use midi2::channel_voice1::ChannelVoice1;
 use midi2::{Channeled, UmpMessage};
+use tutti_types::{MidiChannel, MidiGroup};
 
 use crate::cc;
 use crate::ump::MidiEvent;
@@ -165,11 +166,11 @@ impl Midi1ToMidi2Translator {
         // MIDI-2 equivalent would.
         let data14 = ((state.data_msb as u16) << 7) | (state.data_lsb as u16);
         let data32 = super::scaling::midi1_pitch_bend_to_midi2(data14);
-        let ch = channel as u8;
+        let ch = MidiChannel::new(channel as u8);
         let ev = if state.registered {
-            MidiEvent::registered_controller(0, ch, state.bank, state.index, data32)
+            MidiEvent::registered_controller(MidiGroup::FIRST, ch, state.bank, state.index, data32)
         } else {
-            MidiEvent::assignable_controller(0, ch, state.bank, state.index, data32)
+            MidiEvent::assignable_controller(MidiGroup::FIRST, ch, state.bank, state.index, data32)
         };
         Some(ev.with_frame_offset(frame_offset))
     }

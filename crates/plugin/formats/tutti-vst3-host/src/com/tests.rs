@@ -20,6 +20,7 @@ use super::{
     UnitEvent, UnitHandler,
 };
 use crate::types::{ParameterChanges, ParameterQueue};
+use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
 use tutti_plugin_types::ParamAddress;
 
 #[test]
@@ -246,7 +247,9 @@ fn test_event_list_new() {
 fn test_event_list_update_from_midi_counts_correctly() {
     use crate::types::MidiEvent;
     let list = EventList::new();
-    let midi_events = [MidiEvent::note_on(0, 0, 60, 0x8000).with_frame_offset(0)];
+    let midi_events = [
+        MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000).with_frame_offset(0),
+    ];
     list.update_from_midi(&midi_events);
     assert_eq!(list.len(), 1);
 }
@@ -256,8 +259,8 @@ fn test_event_list_clear_after_update_from_midi() {
     use crate::types::MidiEvent;
     let list = EventList::new();
     let midi_events = [
-        MidiEvent::note_on(0, 0, 60, 0x8000).with_frame_offset(0),
-        MidiEvent::note_off(0, 0, 60, 0).with_frame_offset(10),
+        MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000).with_frame_offset(0),
+        MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0).with_frame_offset(10),
     ];
     list.update_from_midi(&midi_events);
     list.clear();

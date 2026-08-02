@@ -267,6 +267,7 @@ fn read_profile_list(b: &[u8]) -> Option<(Vec<ProfileId>, &[u8])> {
 mod tests {
     use super::super::*;
     use super::*;
+    use tutti_types::MidiGroup;
 
     fn header() -> CiHeader {
         CiHeader {
@@ -404,7 +405,7 @@ mod tests {
         ] {
             let m = msg(state);
             let mut events = Vec::new();
-            ci_to_sysex7(0, &m, &mut events);
+            ci_to_sysex7(MidiGroup::FIRST, &m, &mut events);
             assert_eq!(sysex7_to_ci(&events).expect("reassembles"), m);
         }
     }

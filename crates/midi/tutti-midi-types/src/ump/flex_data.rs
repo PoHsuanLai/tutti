@@ -20,6 +20,7 @@
 //! [`NoteAttribute`](crate::NoteAttribute) extends for note attributes.
 
 use midi2::prelude::*;
+use tutti_types::MidiGroup;
 
 use super::MidiEvent;
 
@@ -106,10 +107,10 @@ impl MidiEvent {
     /// Flex Data **Set Tempo** from beats-per-minute. See
     /// [`bpm_to_ten_ns_per_quarter`] for the BPM ↔ wire-field conversion.
     #[inline]
-    pub fn flex_set_tempo(group: u8, bpm: f64) -> Self {
+    pub fn flex_set_tempo(group: MidiGroup, bpm: f64) -> Self {
         use midi2::flex_data::SetTempo;
         let mut m = SetTempo::<[u32; 4]>::new();
-        m.set_group(u4::new(group & 0x0F));
+        m.set_group(u4::new(group.get()));
         m.set_number_of_10_nanosecond_units_per_quarter_note(bpm_to_ten_ns_per_quarter(bpm));
         Self::from_ump(0, m.data())
     }
@@ -119,14 +120,14 @@ impl MidiEvent {
     /// per quarter note (usually 8).
     #[inline]
     pub fn flex_set_time_signature(
-        group: u8,
+        group: MidiGroup,
         numerator: u8,
         denominator: u8,
         num_32nd_notes: u8,
     ) -> Self {
         use midi2::flex_data::SetTimeSignature;
         let mut m = SetTimeSignature::<[u32; 4]>::new();
-        m.set_group(u4::new(group & 0x0F));
+        m.set_group(u4::new(group.get()));
         m.set_numerator(numerator);
         m.set_denominator(denominator);
         m.set_number_of_32nd_notes(num_32nd_notes);
@@ -136,10 +137,10 @@ impl MidiEvent {
     /// Flex Data **Set Metronome**. `clocks_per_click` = MIDI clocks per primary
     /// click; `accents` marks which bar subdivisions are accented.
     #[inline]
-    pub fn flex_set_metronome(group: u8, clocks_per_click: u8, accents: BarAccents) -> Self {
+    pub fn flex_set_metronome(group: MidiGroup, clocks_per_click: u8, accents: BarAccents) -> Self {
         use midi2::flex_data::SetMetronome;
         let mut m = SetMetronome::<[u32; 4]>::new();
-        m.set_group(u4::new(group & 0x0F));
+        m.set_group(u4::new(group.get()));
         m.set_number_of_clocks_per_primary_click(clocks_per_click);
         m.set_bar_accent1(accents.primary);
         m.set_bar_accent2(accents.secondary);
@@ -150,10 +151,14 @@ impl MidiEvent {
     /// Flex Data **Set Key Signature** (M2-104 §7.5.9). `tonic` is the key's
     /// root pitch class; `sharps_flats` its accidental count. Group-scoped.
     #[inline]
-    pub fn flex_set_key_signature(group: u8, tonic: Tonic, sharps_flats: KeySharpsFlats) -> Self {
+    pub fn flex_set_key_signature(
+        group: MidiGroup,
+        tonic: Tonic,
+        sharps_flats: KeySharpsFlats,
+    ) -> Self {
         use midi2::flex_data::SetKeySignature;
         let mut m = SetKeySignature::<[u32; 4]>::new();
-        m.set_group(u4::new(group & 0x0F));
+        m.set_group(u4::new(group.get()));
         m.set_tonic(tonic);
         m.set_sharps_flats(sharps_flats);
         Self::from_ump(0, m.data())
@@ -163,10 +168,10 @@ impl MidiEvent {
     /// the tonic (pitch class + accidental + quality + up to four alterations) and
     /// — when `chord.bass` is `Some` — the bass note likewise. Group-scoped.
     #[inline]
-    pub fn flex_set_chord_name(group: u8, chord: &ChordName) -> Self {
+    pub fn flex_set_chord_name(group: MidiGroup, chord: &ChordName) -> Self {
         use midi2::flex_data::SetChordName;
         let mut m = SetChordName::<[u32; 4]>::new();
-        m.set_group(u4::new(group & 0x0F));
+        m.set_group(u4::new(group.get()));
         m.set_tonic_sharps_flats(chord.tonic_sharps_flats);
         m.set_tonic(chord.tonic);
         m.set_chord_type(chord.chord_type);
@@ -270,7 +275,7 @@ pub enum FlexTextKind {
 /// one or more [`MidiEvent`]s (one per 128-bit packet) to `out`. UTF-8 text
 /// longer than one packet is fragmented by midi2's Format field, mirroring
 /// [`super::endpoint_name`]. Inverse: [`flex_text`] on each reassembled message.
-pub fn push_flex_text(kind: FlexTextKind, text: &str, group: u8, out: &mut Vec<MidiEvent>) {
+pub fn push_flex_text(kind: FlexTextKind, text: &str, group: MidiGroup, out: &mut Vec<MidiEvent>) {
     use midi2::Data;
 
     /// One arm per text message type: build the midi2 message into a growable
@@ -283,7 +288,7 @@ pub fn push_flex_text(kind: FlexTextKind, text: &str, group: u8, out: &mut Vec<M
         };
         ($ty:ty, $setter:ident) => {{
             let mut m = <$ty>::new();
-            m.set_group(u4::new(group & 0x0F));
+            m.set_group(u4::new(group.get()));
             m.$setter(text);
             for packet in m.data().chunks(4) {
                 out.push(MidiEvent::from_ump(0, packet));
@@ -441,6 +446,8 @@ pub fn flex_time_signature(event: &MidiEvent) -> Option<(u8, u8)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tutti_types::MidiChannel;
+    use tutti_types::MidiGroup;
 
     #[test]
     fn tempo_conversion_kernels_round_trip() {
@@ -457,7 +464,7 @@ mod tests {
     #[test]
     fn flex_set_tempo_round_trips_bpm() {
         for bpm in [60.0, 120.0, 140.0, 174.0] {
-            let ev = MidiEvent::flex_set_tempo(0, bpm);
+            let ev = MidiEvent::flex_set_tempo(MidiGroup::FIRST, bpm);
             let decoded = flex_tempo_bpm(&ev).expect("is a Set Tempo");
             // 10ns-per-qn is integer-quantized, so allow a tiny epsilon.
             assert!((decoded - bpm).abs() < 0.05, "bpm {bpm} → {decoded}");
@@ -467,7 +474,7 @@ mod tests {
     #[test]
     fn flex_set_time_signature_decodes_via_midi2() {
         use midi2::flex_data::FlexData;
-        let ev = MidiEvent::flex_set_time_signature(0, 7, 8, 8);
+        let ev = MidiEvent::flex_set_time_signature(MidiGroup::FIRST, 7, 8, 8);
         match midi2::UmpMessage::try_from(ev.data_words()).unwrap() {
             midi2::UmpMessage::FlexData(FlexData::SetTimeSignature(m)) => {
                 assert_eq!(m.numerator(), 7);
@@ -480,17 +487,27 @@ mod tests {
 
     #[test]
     fn flex_tempo_bpm_rejects_non_tempo() {
-        assert!(flex_tempo_bpm(&MidiEvent::note_on(0, 0, 60, 0x8000)).is_none());
+        assert!(flex_tempo_bpm(&MidiEvent::note_on(
+            MidiGroup::FIRST,
+            MidiChannel::FIRST,
+            60,
+            0x8000
+        ))
+        .is_none());
     }
 
     #[test]
     fn flex_set_key_signature_round_trips() {
-        let ev = MidiEvent::flex_set_key_signature(0, Tonic::D, KeySharpsFlats::Sharps(u3::new(2)));
+        let ev = MidiEvent::flex_set_key_signature(
+            MidiGroup::FIRST,
+            Tonic::D,
+            KeySharpsFlats::Sharps(u3::new(2)),
+        );
         let (tonic, sf) = flex_key_signature(&ev).expect("is a key signature");
         assert_eq!(tonic, Tonic::D);
         assert_eq!(sf, KeySharpsFlats::Sharps(u3::new(2)));
         // A non-key-signature event decodes to None.
-        assert!(flex_key_signature(&MidiEvent::flex_set_tempo(0, 120.0)).is_none());
+        assert!(flex_key_signature(&MidiEvent::flex_set_tempo(MidiGroup::FIRST, 120.0)).is_none());
     }
 
     #[test]
@@ -508,7 +525,7 @@ mod tests {
                 alterations: [None, None],
             }),
         };
-        let ev = MidiEvent::flex_set_chord_name(0, &chord);
+        let ev = MidiEvent::flex_set_chord_name(MidiGroup::FIRST, &chord);
         let back = flex_chord_name(&ev).expect("is a chord name");
         assert_eq!(back, chord);
     }
@@ -522,7 +539,7 @@ mod tests {
             alterations: [None; 4],
             bass: None,
         };
-        let ev = MidiEvent::flex_set_chord_name(0, &chord);
+        let ev = MidiEvent::flex_set_chord_name(MidiGroup::FIRST, &chord);
         let back = flex_chord_name(&ev).expect("is a chord name");
         assert_eq!(back.bass, None, "no-bass encoding round-trips to None");
         assert_eq!(back.tonic, Tonic::A);
@@ -539,7 +556,7 @@ mod tests {
             (FlexTextKind::ComposerName, "Ada"),
         ] {
             let mut out = Vec::new();
-            push_flex_text(kind, text, 0, &mut out);
+            push_flex_text(kind, text, MidiGroup::FIRST, &mut out);
             assert_eq!(out.len(), 1, "{text:?} should be one packet");
             let (k, s) = flex_text(&out[0]).expect("decodes as text");
             assert_eq!(k, kind);
@@ -549,8 +566,14 @@ mod tests {
 
     #[test]
     fn flex_text_rejects_non_text() {
-        assert!(flex_text(&MidiEvent::flex_set_tempo(0, 120.0)).is_none());
-        assert!(flex_text(&MidiEvent::note_on(0, 0, 60, 0x8000)).is_none());
+        assert!(flex_text(&MidiEvent::flex_set_tempo(MidiGroup::FIRST, 120.0)).is_none());
+        assert!(flex_text(&MidiEvent::note_on(
+            MidiGroup::FIRST,
+            MidiChannel::FIRST,
+            60,
+            0x8000
+        ))
+        .is_none());
     }
 
     #[test]
@@ -561,7 +584,7 @@ mod tests {
             secondary: 12,
             tertiary: 6,
         };
-        let ev = MidiEvent::flex_set_metronome(0, 24, accents);
+        let ev = MidiEvent::flex_set_metronome(MidiGroup::FIRST, 24, accents);
         match midi2::UmpMessage::try_from(ev.data_words()).unwrap() {
             midi2::UmpMessage::FlexData(FlexData::SetMetronome(m)) => {
                 assert_eq!(m.number_of_clocks_per_primary_click(), 24);
@@ -580,7 +603,7 @@ mod tests {
         // flex_text alone could not read back what tutti had written.
         let long = "A project name comfortably longer than a single Flex Data packet can hold";
         let mut out = Vec::new();
-        push_flex_text(FlexTextKind::ProjectName, long, 0, &mut out);
+        push_flex_text(FlexTextKind::ProjectName, long, MidiGroup::FIRST, &mut out);
         assert!(out.len() > 1, "text spans packets");
         assert!(
             flex_text(&out[0]).is_none(),
@@ -609,7 +632,12 @@ mod tests {
         // So a caller can route all Flex traffic through the reassembler rather
         // than special-casing short texts.
         let mut out = Vec::new();
-        push_flex_text(FlexTextKind::MidiClipName, "Verse", 0, &mut out);
+        push_flex_text(
+            FlexTextKind::MidiClipName,
+            "Verse",
+            MidiGroup::FIRST,
+            &mut out,
+        );
         assert_eq!(out.len(), 1);
 
         let mut r = FlexTextReassembler::new();
@@ -620,8 +648,17 @@ mod tests {
         assert!(!r.is_in_flight());
 
         // Non-text Flex Data and non-Flex events are ignored.
-        assert!(r.push(&MidiEvent::flex_set_tempo(0, 120.0)).is_none());
-        assert!(r.push(&MidiEvent::note_on(0, 0, 60, 0x8000)).is_none());
+        assert!(r
+            .push(&MidiEvent::flex_set_tempo(MidiGroup::FIRST, 120.0))
+            .is_none());
+        assert!(r
+            .push(&MidiEvent::note_on(
+                MidiGroup::FIRST,
+                MidiChannel::FIRST,
+                60,
+                0x8000
+            ))
+            .is_none());
         r.reset();
         assert!(!r.is_in_flight());
     }

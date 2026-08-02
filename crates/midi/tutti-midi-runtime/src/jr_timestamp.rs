@@ -356,6 +356,7 @@ fn ticks_to_duration(ticks: u16) -> Duration {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
 
     #[test]
     fn clock_maps_samples_to_ticks_monotonically() {
@@ -433,7 +434,10 @@ mod tests {
     fn a_stamped_block_carries_its_clock_before_the_stamps() {
         let sample_rate = 48_000.0;
         let mut stream = JrStream::new(sample_rate).with_clock(sample_rate);
-        let events = [MidiEvent::note_on(0, 0, 60, 0x8000).with_frame_offset(0)];
+        let events = [
+            MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000)
+                .with_frame_offset(0),
+        ];
         let out = stream.stamp_span(&events, 512);
         // clock, then stamp, then the note.
         assert_eq!(out.len(), 3);
@@ -483,8 +487,9 @@ mod tests {
     #[test]
     fn a_blocks_span_is_one_past_its_furthest_offset() {
         let events = [
-            MidiEvent::note_on(0, 0, 60, 0x8000).with_frame_offset(0),
-            MidiEvent::note_off(0, 0, 60, 0).with_frame_offset(511),
+            MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000)
+                .with_frame_offset(0),
+            MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0).with_frame_offset(511),
         ];
         assert_eq!(JrStamper::block_span(&events), 512);
         assert_eq!(
@@ -499,8 +504,10 @@ mod tests {
     fn a_stream_advances_its_origin_across_blocks() {
         let mut stream = JrStream::new(48_000.0);
         let events = [
-            MidiEvent::note_on(0, 0, 60, 0x8000).with_frame_offset(0),
-            MidiEvent::note_off(0, 0, 60, 0).with_frame_offset(24_000),
+            MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000)
+                .with_frame_offset(0),
+            MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0)
+                .with_frame_offset(24_000),
         ];
 
         let first = stream.stamp(&events);
@@ -526,8 +533,14 @@ mod tests {
         let mut wire = JrStream::new(48_000.0);
 
         // One 512-frame block each, the event at the block's end.
-        let clock_block = [MidiEvent::note_on(0, 0, 60, 0x8000).with_frame_offset(511)];
-        let track_block = [MidiEvent::note_on(0, 0, 64, 0x8000).with_frame_offset(511)];
+        let clock_block = [
+            MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000)
+                .with_frame_offset(511),
+        ];
+        let track_block = [
+            MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 64, 0x8000)
+                .with_frame_offset(511),
+        ];
 
         let from_clock = wire.stamp(&clock_block);
         let from_track = wire.stamp(&track_block);
@@ -545,8 +558,10 @@ mod tests {
     fn stamp_block_prefixes_each_event() {
         let stamper = JrStamper::new(48_000.0);
         let events = [
-            MidiEvent::note_on(0, 0, 60, 0x8000).with_frame_offset(0),
-            MidiEvent::note_off(0, 0, 60, 0).with_frame_offset(24_000),
+            MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000)
+                .with_frame_offset(0),
+            MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0)
+                .with_frame_offset(24_000),
         ];
         let out = stamper.stamp_block(&events, 0);
         assert_eq!(out.len(), 4, "one timestamp + one event, twice");
@@ -563,8 +578,10 @@ mod tests {
         let stamper = JrStamper::new(sr);
         let quarter_second = (sr * 0.25) as u32; // 12000 samples
         let events = [
-            MidiEvent::note_on(0, 0, 60, 0x8000).with_frame_offset(0),
-            MidiEvent::note_on(0, 0, 64, 0x8000).with_frame_offset(quarter_second),
+            MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000)
+                .with_frame_offset(0),
+            MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 64, 0x8000)
+                .with_frame_offset(quarter_second),
         ];
         let stream = stamper.stamp_block(&events, 0);
 
@@ -592,7 +609,15 @@ mod tests {
     #[test]
     fn observe_before_any_timestamp_is_none() {
         let mut rx = JrReceiver::new();
-        assert_eq!(rx.observe(&MidiEvent::note_on(0, 0, 60, 0x8000)), None);
+        assert_eq!(
+            rx.observe(&MidiEvent::note_on(
+                MidiGroup::FIRST,
+                MidiChannel::FIRST,
+                60,
+                0x8000
+            )),
+            None
+        );
     }
 
     #[test]

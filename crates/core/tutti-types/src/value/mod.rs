@@ -16,6 +16,7 @@
 pub mod units;
 
 pub mod midi_channel;
+pub mod midi_group;
 pub mod note;
 
 pub mod param;
@@ -24,6 +25,7 @@ pub mod tail;
 pub mod unit_param;
 
 pub use midi_channel::MidiChannel;
+pub use midi_group::MidiGroup;
 pub use note::{NotOnMidiScale, Note, NoteNumberOutOfRange, PitchClass};
 pub use param::Param;
 pub use samples::Samples;

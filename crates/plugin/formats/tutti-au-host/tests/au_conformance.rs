@@ -42,6 +42,7 @@ use support::corpus::{
 use tutti_au_host::component::AuType;
 use tutti_au_host::types::K_AUDIO_UNIT_ERR_UNINITIALIZED;
 use tutti_au_host::AuError;
+use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
 use tutti_types::Samples;
 
 /// AudioToolbox tolerates concurrent use of *distinct* units, but component
@@ -630,7 +631,12 @@ fn note_on_produces_audio_from_an_instrument() {
 
     for unit in INSTRUMENTS {
         let mut au = unit.open(RATE, BLOCK);
-        au.send_midi(&[MidiEvent::note_on(0, 0, 60, 0xC000)]);
+        au.send_midi(&[MidiEvent::note_on(
+            MidiGroup::FIRST,
+            MidiChannel::FIRST,
+            60,
+            0xC000,
+        )]);
 
         // Instruments have no input bus, so render from an empty input.
         let input: Vec<Vec<f32>> = Vec::new();
@@ -666,7 +672,12 @@ fn note_off_silences_the_voice() {
     let input: Vec<Vec<f32>> = Vec::new();
     let channels = au.num_outputs() as usize;
 
-    au.send_midi(&[MidiEvent::note_on(0, 0, 60, 0xC000)]);
+    au.send_midi(&[MidiEvent::note_on(
+        MidiGroup::FIRST,
+        MidiChannel::FIRST,
+        60,
+        0xC000,
+    )]);
     let mut sounding = 0.0f32;
     for _ in 0..10 {
         let mut output = silence(channels, BLOCK as usize);
@@ -678,7 +689,12 @@ fn note_off_silences_the_voice() {
         "the note never sounded, so the note-off assertion would be vacuous"
     );
 
-    au.send_midi(&[MidiEvent::note_off(0, 0, 60, 0)]);
+    au.send_midi(&[MidiEvent::note_off(
+        MidiGroup::FIRST,
+        MidiChannel::FIRST,
+        60,
+        0,
+    )]);
     // The DLS release is a long exponential, not a gate: measured on a quiet
     // machine it is still at ~5.9% of the held peak 60 blocks after the
     // note-off, 1.3% at 120, 0.15% at 240, and 0.002% at 480. So wait 240
@@ -730,8 +746,8 @@ fn midi_to_an_effect_is_harmless() {
 
     let mut au = DELAY.open(RATE, BLOCK);
     au.send_midi(&[
-        MidiEvent::note_on(0, 0, 60, 0xC000),
-        MidiEvent::cc(0, 0, 7, 0x4000_0000),
+        MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xC000),
+        MidiEvent::cc(MidiGroup::FIRST, MidiChannel::FIRST, 7, 0x4000_0000),
     ]);
 
     let input = impulse(2, BLOCK as usize);
@@ -755,8 +771,8 @@ fn unrepresentable_midi_is_dropped_not_mangled() {
 
     // A per-note pitch bend has no legacy form; the note-on beside it does.
     au.send_midi(&[
-        MidiEvent::per_note_pitch_bend(0, 0, 60, 0x4000_0000),
-        MidiEvent::note_on(0, 0, 60, 0xC000),
+        MidiEvent::per_note_pitch_bend(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x4000_0000),
+        MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xC000),
     ]);
 
     let mut loudest = 0.0f32;

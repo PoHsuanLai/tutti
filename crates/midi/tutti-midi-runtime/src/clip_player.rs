@@ -192,6 +192,7 @@ mod tests {
     use std::sync::atomic::AtomicBool;
     use tutti_core::params::Bpm;
     use tutti_core::BeatDuration;
+    use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
 
     /// Minimal `Timeline` for tests: tempo + beat under a switch.
     struct TestTransport {
@@ -227,8 +228,8 @@ mod tests {
 
     fn note_on(note: u8, vel: u8) -> MidiEvent {
         MidiEvent::note_on(
-            0,
-            0,
+            MidiGroup::FIRST,
+            MidiChannel::FIRST,
             note,
             tutti_midi_types::convert::midi1_velocity_to_midi2(vel),
         )

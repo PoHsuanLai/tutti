@@ -14,6 +14,7 @@ use tutti_clap_host::{
     NoteExpressionType, NoteName, OutputEventList, OutputStream, ParameterChanges, ParameterQueue,
     VoiceInfo,
 };
+use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
 
 // ── MIDI conversion via tutti_midi_types::MidiEvent ──
 //
@@ -25,7 +26,8 @@ use tutti_clap_host::{
 #[test]
 fn test_note_on_roundtrip() {
     // Build with MIDI-2 velocity (half of u16 max ≈ 0x8000).
-    let event = MidiEvent::note_on(0, 3, 60, 0x8000).with_frame_offset(10);
+    let event =
+        MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::new(3), 60, 0x8000).with_frame_offset(10);
     let clap = ClapEvent::from_midi(&event).expect("NoteOn should convert");
     assert!(matches!(clap, ClapEvent::NoteOn(_)));
     let back = clap.to_midi().expect("round-trip should succeed");
@@ -37,7 +39,8 @@ fn test_note_on_roundtrip() {
 /// NoteOff maps to CLAP's typed `note` event (NoteOff variant).
 #[test]
 fn test_note_off_roundtrip() {
-    let event = MidiEvent::note_off(0, 5, 72, 0x4000).with_frame_offset(20);
+    let event = MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::new(5), 72, 0x4000)
+        .with_frame_offset(20);
     let clap = ClapEvent::from_midi(&event).expect("NoteOff should convert");
     assert!(matches!(clap, ClapEvent::NoteOff(_)));
     let back = clap.to_midi().expect("round-trip should succeed");
@@ -50,7 +53,13 @@ fn test_note_off_roundtrip() {
 #[test]
 fn test_control_change_roundtrip() {
     use tutti_midi_types::convert::midi1_cc_to_midi2;
-    let event = MidiEvent::cc(0, 2, 74, midi1_cc_to_midi2(100)).with_frame_offset(5);
+    let event = MidiEvent::cc(
+        MidiGroup::FIRST,
+        MidiChannel::new(2),
+        74,
+        midi1_cc_to_midi2(100),
+    )
+    .with_frame_offset(5);
     let clap = ClapEvent::from_midi(&event).expect("CC should convert");
     // CC goes through the generic Midi event
     match clap {
@@ -69,7 +78,11 @@ fn test_control_change_roundtrip() {
 fn test_pitch_bend_roundtrip() {
     use tutti_midi_types::convert::midi1_pitch_bend_to_midi2;
     // MIDI-1 center = 8192 (0x2000).
-    let event = MidiEvent::pitch_bend(0, 0, midi1_pitch_bend_to_midi2(8192));
+    let event = MidiEvent::pitch_bend(
+        MidiGroup::FIRST,
+        MidiChannel::FIRST,
+        midi1_pitch_bend_to_midi2(8192),
+    );
     let clap = ClapEvent::from_midi(&event).expect("PitchBend should convert");
     match clap {
         ClapEvent::Midi(e) => {
@@ -85,7 +98,8 @@ fn test_pitch_bend_roundtrip() {
 /// ProgramChange is a 2-byte MIDI-1 event, passed through as generic `Midi`.
 #[test]
 fn test_program_change_roundtrip() {
-    let event = MidiEvent::program_change(0, 9, 42, None).with_frame_offset(100);
+    let event = MidiEvent::program_change(MidiGroup::FIRST, MidiChannel::new(9), 42, None)
+        .with_frame_offset(100);
     let clap = ClapEvent::from_midi(&event).expect("ProgramChange should convert");
     match clap {
         ClapEvent::Midi(e) => {
@@ -101,8 +115,12 @@ fn test_program_change_roundtrip() {
 #[test]
 fn test_input_event_list_add_midi_counts_correctly() {
     let mut list = InputEventList::new();
-    list.add_midi(&MidiEvent::note_on(0, 0, 60, 0x8000).with_frame_offset(0));
-    list.add_midi(&MidiEvent::note_off(0, 0, 60, 0).with_frame_offset(100));
+    list.add_midi(
+        &MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000).with_frame_offset(0),
+    );
+    list.add_midi(
+        &MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0).with_frame_offset(100),
+    );
 
     let raw = list.as_raw();
     unsafe {
@@ -294,9 +312,17 @@ fn test_output_event_list_push_midi_cc() {
 #[test]
 fn test_input_event_list_sort_by_time() {
     let mut list = InputEventList::new();
-    list.add_midi(&MidiEvent::note_on(0, 0, 60, 0x8000).with_frame_offset(200));
-    list.add_midi(&MidiEvent::note_on(0, 0, 64, 0x5000).with_frame_offset(50));
-    list.add_midi(&MidiEvent::note_on(0, 0, 67, 0x7000).with_frame_offset(100));
+    list.add_midi(
+        &MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000)
+            .with_frame_offset(200),
+    );
+    list.add_midi(
+        &MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 64, 0x5000).with_frame_offset(50),
+    );
+    list.add_midi(
+        &MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 67, 0x7000)
+            .with_frame_offset(100),
+    );
     list.sort_by_time();
 
     let events = list.events();

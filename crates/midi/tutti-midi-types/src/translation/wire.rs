@@ -2,6 +2,7 @@
 //! [`MidiEvent`] and emit the MIDI-1 wire form back out.
 
 use midi2::prelude::*;
+use tutti_types::{MidiChannel, MidiGroup};
 
 use crate::ump::MidiEvent;
 
@@ -35,32 +36,41 @@ impl MidiEvent {
     /// real-time message) into a UMP [`MidiEvent`] of type 0x2 (Channel Voice 1)
     /// or 0x1 (System). Returns `None` on malformed input or SysEx (use
     /// [`Self::sysex7_fragments`] for that).
+    ///
+    /// Everything lands on [`MidiGroup::FIRST`], and that is not a placeholder:
+    /// MIDI 1.0 has no group field at all. A DIN stream *is* one cable, so the
+    /// group a parsed 1.0 message belongs to is a property of which port it
+    /// arrived on — information this function does not have and must not
+    /// invent. A caller multiplexing several 1.0 ports onto one UMP endpoint
+    /// re-stamps the group at the port boundary, where the answer is known.
     pub fn from_midi1_bytes(frame_offset: u32, bytes: &[u8]) -> Option<Self> {
         use midly::live::{LiveEvent, SystemRealtime};
         let ev = LiveEvent::parse(bytes).ok()?;
         let out = match ev {
             LiveEvent::Midi { channel, message } => {
-                midi1_channel_voice_to_ump(channel.as_int(), message)
+                midi1_channel_voice_to_ump(MidiChannel::new(channel.as_int()), message)
             }
             LiveEvent::Realtime(rt) => match rt {
-                SystemRealtime::TimingClock => Self::timing_clock(0),
-                SystemRealtime::Start => Self::start(0),
-                SystemRealtime::Continue => Self::continue_msg(0),
-                SystemRealtime::Stop => Self::stop(0),
-                SystemRealtime::ActiveSensing => Self::active_sensing(0),
-                SystemRealtime::Reset => Self::system_reset(0),
+                SystemRealtime::TimingClock => Self::timing_clock(MidiGroup::FIRST),
+                SystemRealtime::Start => Self::start(MidiGroup::FIRST),
+                SystemRealtime::Continue => Self::continue_msg(MidiGroup::FIRST),
+                SystemRealtime::Stop => Self::stop(MidiGroup::FIRST),
+                SystemRealtime::ActiveSensing => Self::active_sensing(MidiGroup::FIRST),
+                SystemRealtime::Reset => Self::system_reset(MidiGroup::FIRST),
                 _ => return None,
             },
             LiveEvent::Common(common) => match common {
                 midly::live::SystemCommon::MidiTimeCodeQuarterFrame(kind, val) => {
                     let data = (mtc_qf_nibble(kind) << 4) | val.as_int();
-                    Self::mtc_quarter_frame(0, data)
+                    Self::mtc_quarter_frame(MidiGroup::FIRST, data)
                 }
                 midly::live::SystemCommon::SongPosition(pos) => {
-                    Self::song_position(0, pos.as_int())
+                    Self::song_position(MidiGroup::FIRST, pos.as_int())
                 }
-                midly::live::SystemCommon::SongSelect(song) => Self::song_select(0, song.as_int()),
-                midly::live::SystemCommon::TuneRequest => Self::tune_request(0),
+                midly::live::SystemCommon::SongSelect(song) => {
+                    Self::song_select(MidiGroup::FIRST, song.as_int())
+                }
+                midly::live::SystemCommon::TuneRequest => Self::tune_request(MidiGroup::FIRST),
                 midly::live::SystemCommon::SysEx(_)
                 | midly::live::SystemCommon::Undefined(_, _) => {
                     return None;
@@ -89,7 +99,7 @@ fn mtc_qf_nibble(kind: midly::live::MtcQuarterFrameMessage) -> u8 {
 
 /// Build a UMP type 0x2 (MIDI 1.0 Channel Voice) event from a midly
 /// `MidiMessage`. Keeps the 7-bit data values (no upconversion to MIDI 2.0).
-fn midi1_channel_voice_to_ump(channel: u8, msg: midly::MidiMessage) -> MidiEvent {
+fn midi1_channel_voice_to_ump(channel: MidiChannel, msg: midly::MidiMessage) -> MidiEvent {
     use midly::MidiMessage::*;
     let (opcode, d1, d2) = match msg {
         NoteOff { key, vel } => (0x8u32, key.as_int(), vel.as_int()),
@@ -107,7 +117,7 @@ fn midi1_channel_voice_to_ump(channel: u8, msg: midly::MidiMessage) -> MidiEvent
     };
     let w0 = (0x2u32 << 28)
         | (opcode << 20)
-        | (((channel & 0x0F) as u32) << 16)
+        | ((channel.get() as u32) << 16)
         | (((d1 & 0x7F) as u32) << 8)
         | ((d2 & 0x7F) as u32);
     MidiEvent::from_ump(0, &[w0])
@@ -238,7 +248,7 @@ mod tests {
         // sent as 1, because MIDI 1.0 reads velocity 0 as a Note Off. The
         // downscale is `>> 9`, so the whole 0x0001..=0x01FF range is at risk.
         for vel in [0x0001u16, 0x0080, 0x00FF, 0x01FF] {
-            let ev = MidiEvent::note_on(0, 0, 60, vel);
+            let ev = MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, vel);
             let (bytes, len) = ev.to_midi1_bytes().expect("note-on downconverts");
             assert_eq!(len, 3);
             assert_eq!(bytes[0], 0x90, "status stays Note On");
@@ -250,15 +260,15 @@ mod tests {
 
         // A velocity of exactly 0 is not a valid CV2 Note On gesture, but if one
         // arrives it must still not turn into a Note Off.
-        let ev = MidiEvent::note_on(0, 0, 60, 0);
+        let ev = MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0);
         assert_eq!(ev.to_midi1_bytes().unwrap().0[2], 1);
 
         // Audible velocities are untouched.
-        let ev = MidiEvent::note_on(0, 0, 60, 0x8000);
+        let ev = MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000);
         assert_eq!(ev.to_midi1_bytes().unwrap().0[2], 64);
 
         // Note Off velocity 0 is legitimate and must NOT be clamped.
-        let off = MidiEvent::note_off(0, 0, 60, 0);
+        let off = MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0);
         let (bytes, _) = off.to_midi1_bytes().expect("note-off downconverts");
         assert_eq!(bytes[0], 0x80);
         assert_eq!(bytes[2], 0, "note-off velocity 0 is valid");

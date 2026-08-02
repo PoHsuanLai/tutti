@@ -19,6 +19,7 @@
 use midi2::channel_voice1::ChannelVoice1;
 use midi2::channel_voice2::ChannelVoice2;
 use midi2::{Channeled, Grouped, UmpMessage};
+use tutti_types::{MidiChannel, MidiGroup};
 
 use super::scaling::{midi1_cc_to_midi2, midi1_pitch_bend_to_midi2, midi1_velocity_to_midi2};
 use crate::ump::MidiEvent;
@@ -48,10 +49,10 @@ pub fn normalize(event: &MidiEvent) -> MidiEvent {
 fn fold_note_off_cv2(cv2: ChannelVoice2<&[u32]>) -> Option<MidiEvent> {
     match cv2 {
         ChannelVoice2::NoteOn(m) if m.velocity() == 0 => {
-            let g = u8::from(m.group());
+            let g = MidiGroup::new(u8::from(m.group()));
             Some(MidiEvent::note_off(
                 g,
-                u8::from(m.channel()),
+                MidiChannel::new(u8::from(m.channel())),
                 u8::from(m.note_number()),
                 0,
             ))
@@ -63,8 +64,10 @@ fn fold_note_off_cv2(cv2: ChannelVoice2<&[u32]>) -> Option<MidiEvent> {
 /// Promote a MIDI 1.0 Channel Voice message to the MIDI 2.0 equivalent, widening
 /// resolution via spec Min-Center-Max. Velocity-0 NoteOn folds to NoteOff.
 fn promote_cv1(cv1: ChannelVoice1<&[u32]>) -> MidiEvent {
-    let g = u8::from(cv1.group());
-    let ch = u8::from(cv1.channel());
+    // Both come off the wire already 4-bit-masked by `midi2`'s `u4`, so the
+    // re-mask in `new` is a no-op here — it is the type boundary, not a fix.
+    let g = MidiGroup::new(u8::from(cv1.group()));
+    let ch = MidiChannel::new(u8::from(cv1.channel()));
     match cv1 {
         ChannelVoice1::NoteOn(m) => {
             let note = u8::from(m.note_number());
@@ -132,13 +135,21 @@ mod tests {
 
     #[test]
     fn cv2_note_on_velocity_zero_folds_to_note_off() {
-        let norm = normalize(&MidiEvent::note_on(0, 3, 60, 0));
+        let norm = normalize(&MidiEvent::note_on(
+            MidiGroup::FIRST,
+            MidiChannel::new(3),
+            60,
+            0,
+        ));
         expect_cv2!(norm, ChannelVoice2::NoteOff(m) => { assert_eq!(u8::from(m.channel()), 3); });
     }
 
     #[test]
     fn cv2_passthrough_preserves_frame_offset() {
-        let norm = normalize(&MidiEvent::note_on(0, 1, 64, 0x8000).with_frame_offset(128));
+        let norm = normalize(
+            &MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::new(1), 64, 0x8000)
+                .with_frame_offset(128),
+        );
         assert_eq!(norm.frame_offset, 128);
         expect_cv2!(norm, ChannelVoice2::NoteOn(m) => { assert_eq!(m.velocity(), 0x8000); });
     }

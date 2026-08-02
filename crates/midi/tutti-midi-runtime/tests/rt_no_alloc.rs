@@ -5,6 +5,7 @@
 
 use assert_no_alloc::AllocDisabler;
 use tutti_midi_runtime::{MidiBus, MidiMailbox};
+use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
 use tutti_midi_types::ump::MidiEvent;
 use tutti_midi_types::MidiUnitId;
 
@@ -12,7 +13,7 @@ use tutti_midi_types::MidiUnitId;
 static A: AllocDisabler = AllocDisabler;
 
 fn note_on(ch: u8, note: u8) -> MidiEvent {
-    MidiEvent::note_on(0, ch, note, 0x8000)
+    MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::new(ch), note, 0x8000)
 }
 
 #[test]
@@ -52,7 +53,7 @@ fn midi_bus_queue_is_allocation_free() {
 #[test]
 fn outbound_mailbox_push_is_allocation_free() {
     let (sender, receiver) = MidiMailbox::pair(MidiUnitId::new(1));
-    let clock = MidiEvent::timing_clock(0);
+    let clock = MidiEvent::timing_clock(MidiGroup::FIRST);
 
     // Warm up outside the no-alloc scope.
     sender.queue(&[clock]);

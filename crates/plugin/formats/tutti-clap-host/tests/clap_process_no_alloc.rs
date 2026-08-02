@@ -58,6 +58,7 @@ const MAX_FRAMES: u32 = 512;
 // convention.
 use tutti_clap_test_plugin::rt_probe::status;
 use tutti_clap_test_plugin::{StatusMode, WideLayout};
+use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
 
 /// The plugin image, opened once and **never closed**.
 ///
@@ -236,8 +237,18 @@ fn process_with_midi_does_not_allocate() {
     let mut bufs = StereoBufs::new();
     let transport = TransportInfo::default();
 
-    let on_event = [MidiEvent::note_on(0, 0, 60, 0x8000)];
-    let off_event = [MidiEvent::note_off(0, 0, 60, 0)];
+    let on_event = [MidiEvent::note_on(
+        MidiGroup::FIRST,
+        MidiChannel::FIRST,
+        60,
+        0x8000,
+    )];
+    let off_event = [MidiEvent::note_off(
+        MidiGroup::FIRST,
+        MidiChannel::FIRST,
+        60,
+        0,
+    )];
 
     // Prime with a note pair, then silent blocks, so any first-call lazy
     // allocation on the event path is flushed before the gate.

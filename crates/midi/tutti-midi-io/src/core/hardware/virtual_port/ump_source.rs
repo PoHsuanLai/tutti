@@ -174,6 +174,7 @@ impl Drop for UmpVirtualSource {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
 
     #[test]
     fn create_ump_source() {
@@ -200,7 +201,12 @@ mod tests {
     fn send_multiword_note_on() {
         // A MIDI 2.0 channel-voice note-on is two words.
         let src = UmpVirtualSource::new("Test UMP Note").expect("creates");
-        let note = tutti_midi_types::ump::MidiEvent::note_on(0, 0, 60, 0x8000);
+        let note = tutti_midi_types::ump::MidiEvent::note_on(
+            MidiGroup::FIRST,
+            MidiChannel::FIRST,
+            60,
+            0x8000,
+        );
         assert!(src.send_ump(note.data_words()).is_ok());
     }
 }

@@ -9,6 +9,7 @@
 //! `(status, [u8; 6], n)` per-packet view, not a whole-message payload iterator.
 
 use std::vec::Vec;
+use tutti_types::MidiGroup;
 
 use midi2::prelude::*;
 use midi2::sysex7::Sysex7;
@@ -28,9 +29,9 @@ impl MidiEvent {
     /// push them onto `out`. `data` is the payload *between* 0xF0 and 0xF7
     /// (no delimiters). Payloads ≤ 6 bytes produce a single packet; longer
     /// payloads produce `Start` + `Continue*` + `End` — midi2 owns the split.
-    pub fn sysex7_fragments(group: u8, data: &[u8], out: &mut Vec<MidiEvent>) {
+    pub fn sysex7_fragments(group: MidiGroup, data: &[u8], out: &mut Vec<MidiEvent>) {
         let mut m = Sysex7::<Vec<u32>>::new();
-        m.set_group(u4::new(group & 0x0F));
+        m.set_group(u4::new(group.get()));
         m.set_payload(data.iter().map(|&b| u7::new(b & 0x7F)));
         // Each SysEx7 packet is 2 words; split the message stream into events.
         for packet in m.data().chunks(2) {
@@ -42,12 +43,12 @@ impl MidiEvent {
     /// payload of up to 6 bytes (the data *between* 0xF0 and 0xF7, no
     /// delimiters). Returns `None` if the payload exceeds one packet — use
     /// [`Self::sysex7_fragments`] for longer messages.
-    pub fn sysex7_single(group: u8, payload: &[u8]) -> Option<Self> {
+    pub fn sysex7_single(group: MidiGroup, payload: &[u8]) -> Option<Self> {
         if payload.len() > 6 {
             return None;
         }
         let mut m = Sysex7::<Vec<u32>>::new();
-        m.set_group(u4::new(group & 0x0F));
+        m.set_group(u4::new(group.get()));
         m.set_payload(payload.iter().map(|&b| u7::new(b & 0x7F)));
         // A ≤6-byte payload is a single 2-word packet.
         Some(MidiEvent::from_ump(0, &m.data()[..2]))
@@ -95,7 +96,7 @@ mod tests {
     #[test]
     fn sysex7_single_packet() {
         let mut out = Vec::new();
-        MidiEvent::sysex7_fragments(0, &[0x7E, 0x7F, 0x06, 0x01], &mut out);
+        MidiEvent::sysex7_fragments(MidiGroup::FIRST, &[0x7E, 0x7F, 0x06, 0x01], &mut out);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].data_words().len(), 2);
     }
@@ -104,7 +105,7 @@ mod tests {
     fn sysex7_multi_packet() {
         let mut out = Vec::new();
         let data: [u8; 15] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
-        MidiEvent::sysex7_fragments(0, &data, &mut out);
+        MidiEvent::sysex7_fragments(MidiGroup::FIRST, &data, &mut out);
         // 15 bytes / 6 per packet = 3 packets
         assert_eq!(out.len(), 3);
         for ev in &out {
@@ -120,13 +121,13 @@ mod tests {
             &[0x7E, 0x7F, 0x06, 0x01][..],
             &[1, 2, 3, 4, 5, 6][..],
         ] {
-            let ev = MidiEvent::sysex7_single(0, payload).expect("fits one packet");
+            let ev = MidiEvent::sysex7_single(MidiGroup::FIRST, payload).expect("fits one packet");
             let (status, bytes, n) = ev.sysex7_payload().expect("decodes");
             assert_eq!(status, SYSEX7_STATUS_SINGLE);
             assert_eq!(n, payload.len());
             assert_eq!(&bytes[..n], payload);
         }
         // 7 bytes is more than one packet.
-        assert!(MidiEvent::sysex7_single(0, &[0; 7]).is_none());
+        assert!(MidiEvent::sysex7_single(MidiGroup::FIRST, &[0; 7]).is_none());
     }
 }

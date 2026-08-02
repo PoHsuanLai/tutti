@@ -46,7 +46,7 @@ impl MidiEvent {
     }
 
     /// Builder-style setter used in chain form, e.g.
-    /// `MidiEvent::note_on(...).with_frame_offset(128)`.
+    /// `MidiEvent::note_on(MidiGroup::new(...)).with_frame_offset(128)`.
     #[inline]
     #[must_use]
     pub fn with_frame_offset(mut self, frame_offset: u32) -> Self {
@@ -325,6 +325,7 @@ pub use sysex8::{
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tutti_types::{MidiChannel, MidiGroup};
 
     /// Layout contract: `#[repr(C)] { u32, [u32;4] }` is exactly 20 bytes.
     #[test]
@@ -334,7 +335,7 @@ mod tests {
 
     #[test]
     fn with_frame_offset_preserves_payload() {
-        let ev = MidiEvent::note_on(0, 0, 60, 0x8000);
+        let ev = MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000);
         let shifted = ev.with_frame_offset(128);
         assert_eq!(shifted.frame_offset, 128);
         assert_eq!(shifted.data, ev.data);
@@ -347,13 +348,13 @@ mod tests {
         // Reading a MIDI-2 source through the u7 accessor would throw away
         // exactly the resolution MIDI 2.0 was for.
         for vel in [0x0000u16, 0x0001, 0x1234, 0x8000, 0xABCD, 0xFFFF] {
-            let ev = MidiEvent::note_on(0, 0, 60, vel);
+            let ev = MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, vel);
             assert_eq!(ev.velocity_u16(), Some(vel), "exact for {vel:#06x}");
         }
 
         // A value that is *not* on a 7-bit boundary survives here and does not
         // survive there.
-        let ev = MidiEvent::note_on(0, 0, 60, 0xABCD);
+        let ev = MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xABCD);
         assert_eq!(ev.velocity_u16(), Some(0xABCD));
         let narrowed = ev.velocity_u7().expect("u7 view exists");
         assert_ne!(
@@ -364,7 +365,7 @@ mod tests {
 
         // Note Off carries velocity too.
         assert_eq!(
-            MidiEvent::note_off(0, 0, 60, 0x4000).velocity_u16(),
+            MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x4000).velocity_u16(),
             Some(0x4000)
         );
     }
@@ -382,18 +383,24 @@ mod tests {
         assert_eq!(ev.velocity_u16(), Some(0x8000));
 
         // Non-note messages have no velocity.
-        assert_eq!(MidiEvent::timing_clock(0).velocity_u16(), None);
+        assert_eq!(
+            MidiEvent::timing_clock(MidiGroup::FIRST).velocity_u16(),
+            None
+        );
     }
 
     #[test]
     fn channel_reads_both_voice_versions() {
         // MIDI 2.0 channel voice (UMP type 0x4).
-        assert_eq!(MidiEvent::note_on(0, 5, 60, 0x8000).channel(), Some(5));
+        assert_eq!(
+            MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::new(5), 60, 0x8000).channel(),
+            Some(5)
+        );
         // MIDI 1.0 channel voice (UMP type 0x2), built via the wire bridge.
         let cv1 = MidiEvent::from_midi1_bytes(0, &[0x93, 0x3C, 0x64]).unwrap();
         assert_eq!(cv1.channel(), Some(3));
         // System messages carry no channel.
-        assert_eq!(MidiEvent::timing_clock(0).channel(), None);
+        assert_eq!(MidiEvent::timing_clock(MidiGroup::FIRST).channel(), None);
         assert_eq!(MidiEvent::noop().channel(), None);
     }
 
@@ -402,8 +409,8 @@ mod tests {
         // A native-UMP packet concatenates messages of different lengths with no
         // separators: 1-word JR Timestamp, 2-word CV2 note-on, 1-word clock.
         let jr = MidiEvent::jr_timestamp(0x1234);
-        let note = MidiEvent::note_on(0, 3, 60, 0x8000);
-        let clock = MidiEvent::timing_clock(0);
+        let note = MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::new(3), 60, 0x8000);
+        let clock = MidiEvent::timing_clock(MidiGroup::FIRST);
 
         let mut words = Vec::new();
         words.extend_from_slice(jr.data_words());
@@ -418,12 +425,12 @@ mod tests {
     #[test]
     fn split_ump_stream_drops_a_truncated_tail() {
         // A 2-word CV2 note-on with only its first word present is not decodable.
-        let note = MidiEvent::note_on(0, 0, 60, 0x8000);
+        let note = MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000);
         let words = [note.data_words()[0]];
         assert_eq!(split_ump_stream(&words).count(), 0);
 
         // …but a complete message before the truncated tail still comes out.
-        let clock = MidiEvent::timing_clock(0);
+        let clock = MidiEvent::timing_clock(MidiGroup::FIRST);
         let words = [clock.data_words()[0], note.data_words()[0]];
         assert_eq!(split_ump_stream(&words).collect::<Vec<_>>(), vec![clock]);
     }
@@ -465,7 +472,7 @@ mod tests {
         // An MT-0xB packet (3 words) followed by a real message: if the walker
         // takes 4 words for the 0xB, it eats the note-on's first word and every
         // message after it decodes as garbage.
-        let note = MidiEvent::note_on(0, 0, 60, 0x8000);
+        let note = MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000);
         let mut words = vec![0xB000_0000u32, 0, 0];
         words.extend_from_slice(note.data_words());
 

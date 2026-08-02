@@ -257,6 +257,7 @@ pub fn jr_out_active<'a>(
 #[cfg(all(test, target_os = "macos", feature = "midi-hardware"))]
 mod tests {
     use super::*;
+    use tutti_midi_runtime::tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
 
     /// Both pumps stamp through one stream, so the origin keeps climbing across
     /// them.
@@ -271,11 +272,17 @@ mod tests {
             tutti_midi_io::UmpVirtualSource::new("Test JR-Out").expect("creates ump source");
         let mut out = UmpOutRes::new(source, 48_000.0, 0);
 
-        let clock_block = [MidiEvent::note_on(0, 0, 60, 0x8000).with_frame_offset(511)];
+        let clock_block = [
+            MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000)
+                .with_frame_offset(511),
+        ];
         out.send_stamped(&clock_block);
         assert_eq!(out.origin_samples(), 512, "one 512-frame block");
 
-        let track_block = [MidiEvent::note_on(0, 0, 64, 0x8000).with_frame_offset(511)];
+        let track_block = [
+            MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 64, 0x8000)
+                .with_frame_offset(511),
+        ];
         out.send_stamped(&track_block);
         assert_eq!(
             out.origin_samples(),

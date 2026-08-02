@@ -19,6 +19,7 @@
 #![cfg(feature = "midi")]
 
 use bevy_tutti::midi::test_support::routing_table_for_test;
+use tutti_midi_runtime::tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
 use tutti_midi_types::{MidiRoute, MidiUnitId};
 
 /// A publish through the resource reaches the snapshot the RT reads.
@@ -33,7 +34,12 @@ fn the_routing_table_publishes_where_the_rt_reads() {
 
     let snapshot = rt_view.read();
     let targets: Vec<MidiUnitId> = snapshot
-        .route(&tutti_midi_types::ump::MidiEvent::note_on(0, 3, 60, 0x8000))
+        .route(&tutti_midi_types::ump::MidiEvent::note_on(
+            MidiGroup::FIRST,
+            MidiChannel::new(3),
+            60,
+            0x8000,
+        ))
         .collect();
     assert!(
         targets.contains(&unit),

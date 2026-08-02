@@ -21,6 +21,7 @@
 
 use midi2::channel_voice2::ChannelVoice2 as Cv2;
 use midi2::{Channeled, UmpMessage};
+use tutti_types::{MidiChannel, MidiGroup};
 
 use crate::note_id::NoteId;
 use crate::ump::MidiEvent;
@@ -416,44 +417,59 @@ impl TryFrom<MidiMessage> for MidiEvent {
                 velocity,
                 attribute,
                 ..
-            } => note_with_attribute(true, channel, note, velocity, attribute),
+            } => note_with_attribute(true, MidiChannel::new(channel), note, velocity, attribute),
             MidiMessage::NoteOff {
                 channel,
                 note,
                 velocity,
                 attribute,
                 ..
-            } => note_with_attribute(false, channel, note, velocity, attribute),
+            } => note_with_attribute(false, MidiChannel::new(channel), note, velocity, attribute),
             MidiMessage::PolyPressure {
                 channel,
                 note,
                 pressure,
                 ..
-            } => MidiEvent::poly_pressure(0, channel, note, pressure),
+            } => MidiEvent::poly_pressure(
+                MidiGroup::FIRST,
+                MidiChannel::new(channel),
+                note,
+                pressure,
+            ),
             MidiMessage::ControlChange {
                 channel,
                 index,
                 value,
                 ..
-            } => MidiEvent::cc(0, channel, index, value),
+            } => MidiEvent::cc(MidiGroup::FIRST, MidiChannel::new(channel), index, value),
             MidiMessage::ProgramChange {
                 channel,
                 program,
                 bank,
                 ..
-            } => MidiEvent::program_change(0, channel, program, bank),
+            } => MidiEvent::program_change(
+                MidiGroup::FIRST,
+                MidiChannel::new(channel),
+                program,
+                bank,
+            ),
             MidiMessage::ChannelPressure {
                 channel, pressure, ..
-            } => MidiEvent::channel_pressure(0, channel, pressure),
+            } => MidiEvent::channel_pressure(MidiGroup::FIRST, MidiChannel::new(channel), pressure),
             MidiMessage::PitchBend { channel, value, .. } => {
-                MidiEvent::pitch_bend(0, channel, value)
+                MidiEvent::pitch_bend(MidiGroup::FIRST, MidiChannel::new(channel), value)
             }
             MidiMessage::PerNotePitchBend {
                 channel,
                 note,
                 value,
                 ..
-            } => MidiEvent::per_note_pitch_bend(0, channel, note, value),
+            } => MidiEvent::per_note_pitch_bend(
+                MidiGroup::FIRST,
+                MidiChannel::new(channel),
+                note,
+                value,
+            ),
             MidiMessage::PerNoteController {
                 channel,
                 note,
@@ -465,7 +481,14 @@ impl TryFrom<MidiMessage> for MidiEvent {
                     PerNoteController::Registered { index } => (index, true),
                     PerNoteController::Assignable { index } => (index, false),
                 };
-                MidiEvent::per_note_controller(0, channel, note, index, value, registered)
+                MidiEvent::per_note_controller(
+                    MidiGroup::FIRST,
+                    MidiChannel::new(channel),
+                    note,
+                    index,
+                    value,
+                    registered,
+                )
             }
             MidiMessage::PerNoteManagement {
                 channel,
@@ -473,16 +496,26 @@ impl TryFrom<MidiMessage> for MidiEvent {
                 detach,
                 reset,
                 ..
-            } => MidiEvent::per_note_management(0, channel, note, detach, reset),
-            MidiMessage::TimingClock { .. } => MidiEvent::timing_clock(0),
-            MidiMessage::Start { .. } => MidiEvent::start(0),
-            MidiMessage::Continue { .. } => MidiEvent::continue_msg(0),
-            MidiMessage::Stop { .. } => MidiEvent::stop(0),
-            MidiMessage::TimeCode { code, .. } => MidiEvent::mtc_quarter_frame(0, code),
-            MidiMessage::SongPosition { position, .. } => MidiEvent::song_position(0, position),
-            MidiMessage::SongSelect { song, .. } => MidiEvent::song_select(0, song),
-            MidiMessage::ActiveSensing { .. } => MidiEvent::active_sensing(0),
-            MidiMessage::Reset { .. } => MidiEvent::system_reset(0),
+            } => MidiEvent::per_note_management(
+                MidiGroup::FIRST,
+                MidiChannel::new(channel),
+                note,
+                detach,
+                reset,
+            ),
+            MidiMessage::TimingClock { .. } => MidiEvent::timing_clock(MidiGroup::FIRST),
+            MidiMessage::Start { .. } => MidiEvent::start(MidiGroup::FIRST),
+            MidiMessage::Continue { .. } => MidiEvent::continue_msg(MidiGroup::FIRST),
+            MidiMessage::Stop { .. } => MidiEvent::stop(MidiGroup::FIRST),
+            MidiMessage::TimeCode { code, .. } => {
+                MidiEvent::mtc_quarter_frame(MidiGroup::FIRST, code)
+            }
+            MidiMessage::SongPosition { position, .. } => {
+                MidiEvent::song_position(MidiGroup::FIRST, position)
+            }
+            MidiMessage::SongSelect { song, .. } => MidiEvent::song_select(MidiGroup::FIRST, song),
+            MidiMessage::ActiveSensing { .. } => MidiEvent::active_sensing(MidiGroup::FIRST),
+            MidiMessage::Reset { .. } => MidiEvent::system_reset(MidiGroup::FIRST),
             // The source event was preserved verbatim.
             MidiMessage::Other(ev) => return Ok(ev),
         };
@@ -493,7 +526,7 @@ impl TryFrom<MidiMessage> for MidiEvent {
 /// Build a note-on/off [`MidiEvent`], re-applying a note `attribute` if present.
 fn note_with_attribute(
     on: bool,
-    channel: u8,
+    channel: MidiChannel,
     note: u8,
     velocity: u16,
     attribute: Option<NoteAttribute>,
@@ -503,7 +536,7 @@ fn note_with_attribute(
     let mut words = [0u32; 4];
     if on {
         let mut m = NoteOn::<[u32; 2]>::new();
-        m.set_channel(u4::new(channel & 0x0F));
+        m.set_channel(u4::new(channel.get()));
         m.set_note_number(u7::new(note & 0x7F));
         m.set_velocity(velocity);
         if let Some(attr) = attribute {
@@ -512,7 +545,7 @@ fn note_with_attribute(
         words[..2].copy_from_slice(m.data());
     } else {
         let mut m = NoteOff::<[u32; 2]>::new();
-        m.set_channel(u4::new(channel & 0x0F));
+        m.set_channel(u4::new(channel.get()));
         m.set_note_number(u7::new(note & 0x7F));
         m.set_velocity(velocity);
         if let Some(attr) = attribute {
@@ -593,7 +626,7 @@ mod tests {
 
     #[test]
     fn note_on_decodes_full_width() {
-        let msg = MidiEvent::note_on(0, 3, 60, 0xC000).message();
+        let msg = MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::new(3), 60, 0xC000).message();
         assert!(msg.is_note_on());
         assert_eq!(msg.note(), Some(60));
         assert_eq!(msg.channel(), Some(3));
@@ -620,7 +653,7 @@ mod tests {
 
     #[test]
     fn control_change_carries_32bit_value() {
-        let msg = MidiEvent::cc(0, 5, 74, 0xDEAD_BEEF).message();
+        let msg = MidiEvent::cc(MidiGroup::FIRST, MidiChannel::new(5), 74, 0xDEAD_BEEF).message();
         match msg {
             MidiMessage::ControlChange {
                 channel,
@@ -638,14 +671,22 @@ mod tests {
 
     #[test]
     fn same_pitch_different_channel_have_distinct_ids() {
-        let a = MidiEvent::note_on(0, 1, 60, 0x8000).message().id().unwrap();
-        let b = MidiEvent::note_on(0, 2, 60, 0x8000).message().id().unwrap();
+        let a = MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::new(1), 60, 0x8000)
+            .message()
+            .id()
+            .unwrap();
+        let b = MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::new(2), 60, 0x8000)
+            .message()
+            .id()
+            .unwrap();
         assert_ne!(a, b);
     }
 
     #[test]
     fn per_note_pitch_bend_addresses_one_note() {
-        let msg = MidiEvent::per_note_pitch_bend(0, 0, 64, 0x9000_0000).message();
+        let msg =
+            MidiEvent::per_note_pitch_bend(MidiGroup::FIRST, MidiChannel::FIRST, 64, 0x9000_0000)
+                .message();
         match msg {
             MidiMessage::PerNotePitchBend { note, value, .. } => {
                 assert_eq!(note, 64);
@@ -660,35 +701,40 @@ mod tests {
         // Timing clock / start / stop / continue are modeled variants now, not
         // `Other`. They carry no channel.
         assert!(matches!(
-            MidiEvent::timing_clock(0).message(),
+            MidiEvent::timing_clock(MidiGroup::FIRST).message(),
             MidiMessage::TimingClock { .. }
         ));
         assert!(matches!(
-            MidiEvent::start(0).message(),
+            MidiEvent::start(MidiGroup::FIRST).message(),
             MidiMessage::Start { .. }
         ));
         assert!(matches!(
-            MidiEvent::stop(0).message(),
+            MidiEvent::stop(MidiGroup::FIRST).message(),
             MidiMessage::Stop { .. }
         ));
         assert!(matches!(
-            MidiEvent::continue_msg(0).message(),
+            MidiEvent::continue_msg(MidiGroup::FIRST).message(),
             MidiMessage::Continue { .. }
         ));
-        assert_eq!(MidiEvent::timing_clock(0).message().channel(), None);
+        assert_eq!(
+            MidiEvent::timing_clock(MidiGroup::FIRST)
+                .message()
+                .channel(),
+            None
+        );
     }
 
     #[test]
     fn system_common_data_messages_decode_their_payload() {
-        match MidiEvent::mtc_quarter_frame(0, 0x5F).message() {
+        match MidiEvent::mtc_quarter_frame(MidiGroup::FIRST, 0x5F).message() {
             MidiMessage::TimeCode { code, .. } => assert_eq!(code, 0x5F),
             other => panic!("expected TimeCode, got {other:?}"),
         }
-        match MidiEvent::song_position(0, 12345).message() {
+        match MidiEvent::song_position(MidiGroup::FIRST, 12345).message() {
             MidiMessage::SongPosition { position, .. } => assert_eq!(position, 12345),
             other => panic!("expected SongPosition, got {other:?}"),
         }
-        match MidiEvent::song_select(0, 0x4F).message() {
+        match MidiEvent::song_select(MidiGroup::FIRST, 0x4F).message() {
             MidiMessage::SongSelect { song, .. } => assert_eq!(song, 0x4F),
             other => panic!("expected SongSelect, got {other:?}"),
         }
@@ -698,14 +744,15 @@ mod tests {
     fn tune_request_stays_other() {
         // Tune Request is System Common but has no modeled variant — it must
         // still round-trip through `Other`.
-        let tune = MidiEvent::tune_request(0);
+        let tune = MidiEvent::tune_request(MidiGroup::FIRST);
         assert_eq!(tune.message(), MidiMessage::Other(tune));
     }
 
     #[test]
     fn round_trip_preserves_frame_offset() {
         // The view must not drop sample-accurate timing (project round-trip invariant).
-        let ev = MidiEvent::cc(0, 5, 74, 0xABCD_1234).with_frame_offset(137);
+        let ev = MidiEvent::cc(MidiGroup::FIRST, MidiChannel::new(5), 74, 0xABCD_1234)
+            .with_frame_offset(137);
         let msg = ev.message();
         assert_eq!(msg.frame_offset(), 137);
         let back = MidiEvent::try_from(msg).expect("re-encodable");
@@ -747,7 +794,7 @@ mod tests {
     fn round_trip_other_is_exact() {
         // An unmodeled message (tune request — System Common with no variant)
         // re-encodes byte-for-byte via the preserved event.
-        let ev = MidiEvent::tune_request(0).with_frame_offset(42);
+        let ev = MidiEvent::tune_request(MidiGroup::FIRST).with_frame_offset(42);
         assert!(matches!(ev.message(), MidiMessage::Other(_)));
         let back = MidiEvent::try_from(ev.message()).expect("Other round-trips");
         assert_eq!(back, ev);
@@ -758,15 +805,15 @@ mod tests {
         // Each modeled system message must survive decode → re-encode with its
         // frame offset intact (project round-trip invariant).
         for ev in [
-            MidiEvent::timing_clock(0),
-            MidiEvent::start(0),
-            MidiEvent::continue_msg(0),
-            MidiEvent::stop(0),
-            MidiEvent::mtc_quarter_frame(0, 0x5F),
-            MidiEvent::song_position(0, 12345),
-            MidiEvent::song_select(0, 0x4F),
-            MidiEvent::active_sensing(0),
-            MidiEvent::system_reset(0),
+            MidiEvent::timing_clock(MidiGroup::FIRST),
+            MidiEvent::start(MidiGroup::FIRST),
+            MidiEvent::continue_msg(MidiGroup::FIRST),
+            MidiEvent::stop(MidiGroup::FIRST),
+            MidiEvent::mtc_quarter_frame(MidiGroup::FIRST, 0x5F),
+            MidiEvent::song_position(MidiGroup::FIRST, 12345),
+            MidiEvent::song_select(MidiGroup::FIRST, 0x4F),
+            MidiEvent::active_sensing(MidiGroup::FIRST),
+            MidiEvent::system_reset(MidiGroup::FIRST),
         ] {
             let ev = ev.with_frame_offset(77);
             let msg = ev.message();

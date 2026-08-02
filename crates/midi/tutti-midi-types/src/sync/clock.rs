@@ -157,6 +157,8 @@ impl Default for MidiClockDecoder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tutti_types::MidiChannel;
+    use tutti_types::MidiGroup;
 
     fn us_per_tick(bpm: f64) -> u64 {
         // 1 beat = PPQN ticks; 1 beat at bpm = 60/bpm seconds = 60_000_000/bpm us
@@ -183,22 +185,25 @@ mod tests {
     fn feed_dispatches_transport_events_like_the_direct_methods() {
         let mut clock = MidiClockDecoder::new();
         // Start via a real MidiEvent, then advance a beat of clock ticks.
-        assert!(clock.feed(&MidiEvent::start(0), 0));
+        assert!(clock.feed(&MidiEvent::start(MidiGroup::FIRST), 0));
         assert_eq!(clock.transport_state(), ClockTransportState::Playing);
 
         let interval = us_per_tick(120.0);
         let mut ts = 0u64;
         for _ in 0..24 {
-            assert!(clock.feed(&MidiEvent::timing_clock(0), ts));
+            assert!(clock.feed(&MidiEvent::timing_clock(MidiGroup::FIRST), ts));
             ts += interval;
         }
         assert!((clock.beat_position() - 1.0).abs() < 0.001);
 
-        assert!(clock.feed(&MidiEvent::stop(0), ts));
+        assert!(clock.feed(&MidiEvent::stop(MidiGroup::FIRST), ts));
         assert_eq!(clock.transport_state(), ClockTransportState::Stopped);
 
         // A non-transport event is ignored and reported as unrecognised.
-        assert!(!clock.feed(&MidiEvent::note_on(0, 0, 60, 0x8000), ts));
+        assert!(!clock.feed(
+            &MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
+            ts
+        ));
     }
 
     #[test]

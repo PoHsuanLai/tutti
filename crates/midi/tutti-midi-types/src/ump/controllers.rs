@@ -6,6 +6,7 @@
 //! NRPN (M2-104 §7.4.7–7.4.8). The MPE Configuration Message is RPN 0x0000/0x06.
 
 use midi2::prelude::*;
+use tutti_types::{MidiChannel, MidiGroup};
 
 use super::MidiEvent;
 
@@ -13,11 +14,17 @@ impl MidiEvent {
     /// MIDI 2.0 **Registered Controller (RPN)** — `bank`/`index` select the
     /// registered parameter, `data` is its full 32-bit value.
     #[inline]
-    pub fn registered_controller(group: u8, channel: u8, bank: u8, index: u8, data: u32) -> Self {
+    pub fn registered_controller(
+        group: MidiGroup,
+        channel: MidiChannel,
+        bank: u8,
+        index: u8,
+        data: u32,
+    ) -> Self {
         use midi2::channel_voice2::RegisteredController;
         let mut m = RegisteredController::<[u32; 2]>::new();
-        m.set_group(u4::new(group & 0x0F));
-        m.set_channel(u4::new(channel & 0x0F));
+        m.set_group(u4::new(group.get()));
+        m.set_channel(u4::new(channel.get()));
         m.set_bank(u7::new(bank & 0x7F));
         m.set_index(u7::new(index & 0x7F));
         m.set_controller_data(data);
@@ -27,11 +34,17 @@ impl MidiEvent {
     /// MIDI 2.0 **Assignable Controller (NRPN)** — `bank`/`index` select the
     /// non-registered parameter, `data` is its full 32-bit value.
     #[inline]
-    pub fn assignable_controller(group: u8, channel: u8, bank: u8, index: u8, data: u32) -> Self {
+    pub fn assignable_controller(
+        group: MidiGroup,
+        channel: MidiChannel,
+        bank: u8,
+        index: u8,
+        data: u32,
+    ) -> Self {
         use midi2::channel_voice2::AssignableController;
         let mut m = AssignableController::<[u32; 2]>::new();
-        m.set_group(u4::new(group & 0x0F));
-        m.set_channel(u4::new(channel & 0x0F));
+        m.set_group(u4::new(group.get()));
+        m.set_channel(u4::new(channel.get()));
         m.set_bank(u7::new(bank & 0x7F));
         m.set_index(u7::new(index & 0x7F));
         m.set_controller_data(data);
@@ -52,16 +65,16 @@ impl MidiEvent {
     /// no MIDI 1.0 equivalent.
     #[inline]
     pub fn relative_registered_controller(
-        group: u8,
-        channel: u8,
+        group: MidiGroup,
+        channel: MidiChannel,
         bank: u8,
         index: u8,
         delta: i32,
     ) -> Self {
         use midi2::channel_voice2::RelativeRegisteredController;
         let mut m = RelativeRegisteredController::<[u32; 2]>::new();
-        m.set_group(u4::new(group & 0x0F));
-        m.set_channel(u4::new(channel & 0x0F));
+        m.set_group(u4::new(group.get()));
+        m.set_channel(u4::new(channel.get()));
         m.set_bank(u7::new(bank & 0x7F));
         m.set_index(u7::new(index & 0x7F));
         m.set_controller_data(delta as u32);
@@ -74,16 +87,16 @@ impl MidiEvent {
     /// for the two's-complement data field.
     #[inline]
     pub fn relative_assignable_controller(
-        group: u8,
-        channel: u8,
+        group: MidiGroup,
+        channel: MidiChannel,
         bank: u8,
         index: u8,
         delta: i32,
     ) -> Self {
         use midi2::channel_voice2::RelativeAssignableController;
         let mut m = RelativeAssignableController::<[u32; 2]>::new();
-        m.set_group(u4::new(group & 0x0F));
-        m.set_channel(u4::new(channel & 0x0F));
+        m.set_group(u4::new(group.get()));
+        m.set_channel(u4::new(channel.get()));
         m.set_bank(u7::new(bank & 0x7F));
         m.set_index(u7::new(index & 0x7F));
         m.set_controller_data(delta as u32);
@@ -140,7 +153,13 @@ mod tests {
     fn registered_controller_decodes_via_midi2() {
         use midi2::channel_voice2::ChannelVoice2;
         use midi2::{Channeled, UmpMessage};
-        let ev = MidiEvent::registered_controller(0, 3, 0x00, 0x06, 0xDEAD_BEEF);
+        let ev = MidiEvent::registered_controller(
+            MidiGroup::FIRST,
+            MidiChannel::new(3),
+            0x00,
+            0x06,
+            0xDEAD_BEEF,
+        );
         match UmpMessage::try_from(ev.data_words()).unwrap() {
             UmpMessage::ChannelVoice2(ChannelVoice2::RegisteredController(m)) => {
                 assert_eq!(u8::from(m.channel()), 3);
@@ -156,7 +175,13 @@ mod tests {
     fn assignable_controller_decodes_via_midi2() {
         use midi2::channel_voice2::ChannelVoice2;
         use midi2::{Channeled, UmpMessage};
-        let ev = MidiEvent::assignable_controller(0, 9, 0x12, 0x34, 0x0000_1000);
+        let ev = MidiEvent::assignable_controller(
+            MidiGroup::FIRST,
+            MidiChannel::new(9),
+            0x12,
+            0x34,
+            0x0000_1000,
+        );
         match UmpMessage::try_from(ev.data_words()).unwrap() {
             UmpMessage::ChannelVoice2(ChannelVoice2::AssignableController(m)) => {
                 assert_eq!(u8::from(m.channel()), 9);
@@ -174,14 +199,26 @@ mod tests {
         // provide negative and positive relative control" — a decrement must
         // survive as a negative number, not a huge unsigned one.
         for delta in [1i32, -1, 127, -128, i32::MAX, i32::MIN, 0] {
-            let rpn = MidiEvent::relative_registered_controller(0, 3, 0x12, 0x34, delta);
+            let rpn = MidiEvent::relative_registered_controller(
+                MidiGroup::FIRST,
+                MidiChannel::new(3),
+                0x12,
+                0x34,
+                delta,
+            );
             assert_eq!(
                 rpn.relative_controller(),
                 Some((true, 0x12, 0x34, delta)),
                 "registered delta {delta}"
             );
 
-            let nrpn = MidiEvent::relative_assignable_controller(0, 9, 0x01, 0x02, delta);
+            let nrpn = MidiEvent::relative_assignable_controller(
+                MidiGroup::FIRST,
+                MidiChannel::new(9),
+                0x01,
+                0x02,
+                delta,
+            );
             assert_eq!(
                 nrpn.relative_controller(),
                 Some((false, 0x01, 0x02, delta)),
@@ -195,14 +232,21 @@ mod tests {
         // Same address space (§7.4.8: "these new messages act upon the same
         // address space… and use the same controller Banks"), different status —
         // so an absolute set is never mistaken for a relative nudge.
-        let absolute = MidiEvent::registered_controller(0, 3, 0x12, 0x34, 5);
+        let absolute =
+            MidiEvent::registered_controller(MidiGroup::FIRST, MidiChannel::new(3), 0x12, 0x34, 5);
         assert_eq!(
             absolute.relative_controller(),
             None,
             "an absolute RPN is not a relative one"
         );
 
-        let relative = MidiEvent::relative_registered_controller(0, 3, 0x12, 0x34, 5);
+        let relative = MidiEvent::relative_registered_controller(
+            MidiGroup::FIRST,
+            MidiChannel::new(3),
+            0x12,
+            0x34,
+            5,
+        );
         assert_ne!(relative.data_words()[0], absolute.data_words()[0]);
         assert!(relative.relative_controller().is_some());
     }

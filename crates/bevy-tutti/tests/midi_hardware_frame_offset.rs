@@ -20,6 +20,7 @@
 use std::time::{Duration, Instant};
 
 use tutti_midi_io::HardwareMidiInputs;
+use tutti_midi_runtime::tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
 use tutti_midi_types::ump::MidiEvent;
 
 /// A block long enough that a 1 ms offset is a large, unambiguous fraction of
@@ -45,7 +46,10 @@ fn offset_at(sample_rate: Option<f64>) -> u32 {
         .expect("the port we just created has a producer");
 
     assert!(
-        handle.push(MidiEvent::note_on(0, 0, 60, 0x8000), Instant::now() - AGE),
+        handle.push(
+            MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
+            Instant::now() - AGE
+        ),
         "the fifo has room for one event"
     );
 

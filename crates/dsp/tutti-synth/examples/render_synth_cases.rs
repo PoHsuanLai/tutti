@@ -20,6 +20,7 @@ use std::path::Path;
 use tutti_core::dsp::{BufferArray, U2};
 use tutti_core::{Amplitude, AudioUnit, Hz, Seconds, Spread, Q};
 use tutti_midi_types::translation::scaling::midi1_velocity_to_midi2;
+use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
 use tutti_midi_types::ump::MidiEvent;
 use tutti_synth::{
     EnvelopeConfig, FilterType, OscillatorType, PolySynth, SvfMode, SynthConfig, UnisonConfig,
@@ -45,7 +46,14 @@ fn render(cfg: SynthConfig, notes: &[u8]) -> (Vec<f32>, Vec<f32>) {
     let mut synth = PolySynth::new(cfg).expect("synth builds");
     let events: Vec<MidiEvent> = notes
         .iter()
-        .map(|&n| MidiEvent::note_on(0, 0, n, midi1_velocity_to_midi2(100)))
+        .map(|&n| {
+            MidiEvent::note_on(
+                MidiGroup::FIRST,
+                MidiChannel::FIRST,
+                n,
+                midi1_velocity_to_midi2(100),
+            )
+        })
         .collect();
     synth.midi_sender().queue(&events);
 

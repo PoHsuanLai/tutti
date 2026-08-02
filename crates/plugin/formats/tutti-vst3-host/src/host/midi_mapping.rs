@@ -327,6 +327,7 @@ impl CcRoute {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
 
     #[test]
     fn empty_mapping_returns_none() {
@@ -366,7 +367,13 @@ mod tests {
     fn cc_decodes_to_controller_and_normalized_value() {
         use tutti_midi_types::convert::midi1_cc_to_midi2;
         // CC 74 (brightness) = 64 on channel 2.
-        let (ch, ctrl, value) = mapped(&MidiEvent::cc(0, 2, 74, midi1_cc_to_midi2(64))).unwrap();
+        let (ch, ctrl, value) = mapped(&MidiEvent::cc(
+            MidiGroup::FIRST,
+            MidiChannel::new(2),
+            74,
+            midi1_cc_to_midi2(64),
+        ))
+        .unwrap();
         assert_eq!(ch, 2);
         assert_eq!(ctrl, 74);
         assert!((value - 64.0 / 127.0).abs() < 0.01);
@@ -375,8 +382,12 @@ mod tests {
     #[test]
     fn channel_pressure_decodes_to_aftertouch() {
         use tutti_midi_types::convert::midi1_cc_to_midi2;
-        let (ch, ctrl, value) =
-            mapped(&MidiEvent::channel_pressure(0, 0, midi1_cc_to_midi2(127))).unwrap();
+        let (ch, ctrl, value) = mapped(&MidiEvent::channel_pressure(
+            MidiGroup::FIRST,
+            MidiChannel::FIRST,
+            midi1_cc_to_midi2(127),
+        ))
+        .unwrap();
         assert_eq!(ch, 0);
         assert_eq!(ctrl, CTRL_AFTERTOUCH);
         assert!((value - 1.0).abs() < 0.01);
@@ -386,8 +397,8 @@ mod tests {
     fn pitch_bend_center_is_half() {
         use tutti_midi_types::convert::midi1_pitch_bend_to_midi2;
         let (ch, ctrl, value) = mapped(&MidiEvent::pitch_bend(
-            0,
-            4,
+            MidiGroup::FIRST,
+            MidiChannel::new(4),
             midi1_pitch_bend_to_midi2(8192),
         ))
         .unwrap();
@@ -399,7 +410,15 @@ mod tests {
 
     #[test]
     fn note_on_is_not_a_mapped_controller() {
-        assert_eq!(mapped(&MidiEvent::note_on(0, 0, 60, 0x8000)), None);
+        assert_eq!(
+            mapped(&MidiEvent::note_on(
+                MidiGroup::FIRST,
+                MidiChannel::FIRST,
+                60,
+                0x8000
+            )),
+            None
+        );
     }
 
     /// Build a table with a single channel-0 mod-wheel (CC 1) → param mapping.
@@ -418,9 +437,22 @@ mod tests {
         let mapping = mod_wheel_mapping(500);
         // Mod wheel (mapped) + a note-on (passes through) + an unmapped CC.
         let events = [
-            MidiEvent::cc(0, 0, 1, midi1_cc_to_midi2(64)).with_frame_offset(8),
-            MidiEvent::note_on(0, 0, 60, 0x8000).with_frame_offset(0),
-            MidiEvent::cc(0, 0, 74, midi1_cc_to_midi2(100)).with_frame_offset(0),
+            MidiEvent::cc(
+                MidiGroup::FIRST,
+                MidiChannel::FIRST,
+                1,
+                midi1_cc_to_midi2(64),
+            )
+            .with_frame_offset(8),
+            MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000)
+                .with_frame_offset(0),
+            MidiEvent::cc(
+                MidiGroup::FIRST,
+                MidiChannel::FIRST,
+                74,
+                midi1_cc_to_midi2(100),
+            )
+            .with_frame_offset(0),
         ];
 
         let mut filtered = RtMidiEvents::new();
@@ -446,7 +478,13 @@ mod tests {
     fn route_cc_events_preserves_host_params() {
         use tutti_midi_types::convert::midi1_cc_to_midi2;
         let mapping = mod_wheel_mapping(500);
-        let events = [MidiEvent::cc(0, 0, 1, midi1_cc_to_midi2(127)).with_frame_offset(0)];
+        let events = [MidiEvent::cc(
+            MidiGroup::FIRST,
+            MidiChannel::FIRST,
+            1,
+            midi1_cc_to_midi2(127),
+        )
+        .with_frame_offset(0)];
 
         let mut filtered = RtMidiEvents::new();
         let mut params = ParameterChanges::new();
@@ -479,8 +517,20 @@ mod tests {
         let mapping = mod_wheel_mapping(500);
         // Two mapped mod-wheel CCs arriving OUT of frame order (100 before 10).
         let events = [
-            MidiEvent::cc(0, 0, 1, midi1_cc_to_midi2(100)).with_frame_offset(100),
-            MidiEvent::cc(0, 0, 1, midi1_cc_to_midi2(10)).with_frame_offset(10),
+            MidiEvent::cc(
+                MidiGroup::FIRST,
+                MidiChannel::FIRST,
+                1,
+                midi1_cc_to_midi2(100),
+            )
+            .with_frame_offset(100),
+            MidiEvent::cc(
+                MidiGroup::FIRST,
+                MidiChannel::FIRST,
+                1,
+                midi1_cc_to_midi2(10),
+            )
+            .with_frame_offset(10),
         ];
 
         let mut filtered = RtMidiEvents::new();
@@ -522,10 +572,23 @@ mod tests {
         use tutti_midi_types::convert::midi1_cc_to_midi2;
         let mapping = mod_wheel_mapping(500);
         let events = [
-            MidiEvent::cc(0, 0, 1, midi1_cc_to_midi2(64)).with_frame_offset(0),
-            MidiEvent::note_on(0, 0, 60, 0x8000).with_frame_offset(0),
-            MidiEvent::note_off(0, 0, 60, 0).with_frame_offset(64),
-            MidiEvent::cc(0, 0, 74, midi1_cc_to_midi2(10)).with_frame_offset(32),
+            MidiEvent::cc(
+                MidiGroup::FIRST,
+                MidiChannel::FIRST,
+                1,
+                midi1_cc_to_midi2(64),
+            )
+            .with_frame_offset(0),
+            MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000)
+                .with_frame_offset(0),
+            MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0).with_frame_offset(64),
+            MidiEvent::cc(
+                MidiGroup::FIRST,
+                MidiChannel::FIRST,
+                74,
+                midi1_cc_to_midi2(10),
+            )
+            .with_frame_offset(32),
         ];
 
         let mut filtered = RtMidiEvents::new();

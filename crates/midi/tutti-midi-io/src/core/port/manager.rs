@@ -306,6 +306,7 @@ impl core::fmt::Debug for HardwareMidiInputs {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
 
     /// Test helper: drain a cycle into a `Vec`, reproducing the shape the
     /// public API used to return so these assertions stay unchanged.
@@ -404,8 +405,8 @@ mod tests {
         let producer_handle = manager.get_input_producer_handle(input_id).unwrap();
         // Upconvert 7-bit 127 so the downconverted velocity_u7 round-trips.
         let event = MidiEvent::note_on(
-            0,
-            0,
+            MidiGroup::FIRST,
+            MidiChannel::FIRST,
             0x3C,
             tutti_midi_types::convert::midi1_velocity_to_midi2(0x7F),
         );
@@ -426,7 +427,7 @@ mod tests {
         let input_id = manager.create_input_port("Input");
         let producer_handle = manager.get_input_producer_handle(input_id).unwrap();
 
-        let event = MidiEvent::note_on(0, 0, 0x3C, 0x7F);
+        let event = MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 0x3C, 0x7F);
         assert!(producer_handle.push(event, now()));
 
         manager.set_port_active(PortType::Input, input_id, false);
@@ -445,8 +446,14 @@ mod tests {
         let handle1 = manager.get_input_producer_handle(id1).unwrap();
         let handle2 = manager.get_input_producer_handle(id2).unwrap();
 
-        handle1.push(MidiEvent::note_on(0, 0, 60, 100), now());
-        handle2.push(MidiEvent::note_on(0, 0, 64, 100), now());
+        handle1.push(
+            MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 100),
+            now(),
+        );
+        handle2.push(
+            MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 64, 100),
+            now(),
+        );
 
         let events = drain_cycle(&manager, 512);
         assert_eq!(events.len(), 2);
@@ -464,7 +471,10 @@ mod tests {
 
         let nframes = 256;
 
-        handle.push(MidiEvent::note_on(0, 0, 60, 100), Instant::now());
+        handle.push(
+            MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 100),
+            Instant::now(),
+        );
         let events = drain_cycle(&manager, nframes);
         assert_eq!(events.len(), 1);
         assert!(

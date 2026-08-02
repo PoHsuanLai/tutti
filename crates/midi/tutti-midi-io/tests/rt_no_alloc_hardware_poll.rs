@@ -18,7 +18,7 @@ use std::time::Instant;
 use assert_no_alloc::AllocDisabler;
 use tutti_midi_io::HardwareMidiInputs;
 use tutti_midi_runtime::MidiPreBlock;
-use tutti_midi_types::tutti_types::RtPublish;
+use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup, RtPublish};
 use tutti_midi_types::ump::MidiEvent;
 use tutti_midi_types::{MidiRoute, MidiRouter, MidiRoutingSnapshot, MidiUnitId};
 
@@ -47,7 +47,7 @@ fn routing() -> Arc<RtPublish<MidiRoutingSnapshot>> {
 }
 
 fn note() -> MidiEvent {
-    MidiEvent::note_on(0, 0, 60, 0x8000)
+    MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000)
 }
 
 /// Feed `count` events into `port` on `inputs`, as the midir callback thread would.

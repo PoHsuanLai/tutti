@@ -102,7 +102,14 @@ impl<'a> Event<'a> {
                 } else {
                     None
                 };
-                let flags = api::MidiEventFlags::from_bits(event.flags).unwrap();
+                // `from_bits_truncate`, not `from_bits().unwrap()`: `flags` is
+                // an `i32` a plugin filled in over FFI, and `MidiEventFlags`
+                // names exactly one of its 32 bits. Every other bit is
+                // undefined, so a plugin setting a private or reserved one is
+                // legal — and unwrapping turned that into a host panic on the
+                // MIDI path, raised from inside an `extern "C"` call chain.
+                // Same reasoning as `ChannelFlags` in `channels.rs`.
+                let flags = api::MidiEventFlags::from_bits_truncate(event.flags);
 
                 Event::Midi(MidiEvent {
                     data: event.midi_data,
@@ -129,6 +136,56 @@ impl<'a> Event<'a> {
             }),
 
             _ => Event::Deprecated(*event),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// An undefined flag bit on an incoming MIDI event must not crash the host.
+    ///
+    /// `MidiEventFlags` names exactly one of its 32 bits (`REALTIME_EVENT`).
+    /// VST2.4 says nothing about the other 31, so a plugin setting a private or
+    /// reserved bit is behaving legally. Decoding with `from_bits().unwrap()`
+    /// turned that into a panic raised through an `extern "C"` frame, on the
+    /// path every single MIDI event from every VST2 plugin travels.
+    ///
+    /// The sibling case in `channels.rs` was already fixed; this one was missed.
+    #[test]
+    fn an_undefined_flag_bit_does_not_panic_the_midi_path() {
+        let raw = api::MidiEvent {
+            event_type: api::EventType::Midi,
+            byte_size: mem::size_of::<api::MidiEvent>() as i32,
+            delta_frames: 64,
+            // Bit 0 is REALTIME_EVENT (defined); bit 3 is undefined. A plugin
+            // is free to set it, and the host must simply ignore what it does
+            // not recognise.
+            flags: 0b1001,
+            note_length: 0,
+            note_offset: 0,
+            midi_data: [0x90, 60, 100],
+            _midi_reserved: 0,
+            detune: 0,
+            note_off_velocity: 0,
+            _reserved1: 0,
+            _reserved2: 0,
+        };
+
+        let event = unsafe {
+            Event::from_raw_event(&raw as *const api::MidiEvent as *const api::Event)
+        };
+
+        match event {
+            Event::Midi(midi) => {
+                // The defined bit is still read correctly — truncating the
+                // unknown bits must not cost us the one we do understand.
+                assert!(midi.live, "REALTIME_EVENT was set and must survive");
+                assert_eq!(midi.delta_frames, 64);
+                assert_eq!(midi.data, [0x90, 60, 100]);
+            }
+            _ => panic!("expected a MIDI event"),
         }
     }
 }

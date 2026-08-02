@@ -1004,7 +1004,11 @@ bitflags! {
         /// valid. Categories are 1-based; 0 means the parameter is
         /// uncategorised even when this bit is set.
         const USES_CATEGORY = 1 << 3;
-        /// The parameter cannot be automated.
+        /// The parameter can be ramped — a host moving it may interpolate
+        /// between values rather than stepping. The doc here used to read "the
+        /// parameter cannot be automated", which is the opposite of what the
+        /// bit means and describes no VST2 flag at all; the name and the value
+        /// (`kVstParameterCanRamp`) were always right.
         const CAN_RAMP = 1 << 4;
     }
 }

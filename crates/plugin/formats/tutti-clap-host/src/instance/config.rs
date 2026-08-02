@@ -6,13 +6,13 @@
 //! `process`).
 
 use crate::events::{InputEventList, OutputEventList};
-use crate::types::{ClapNoteExpression, MidiEvent, ParameterChanges};
+use crate::types::{ParameterChanges, RtNoteExpressions};
 use clap_sys::audio_buffer::clap_audio_buffer;
 use clap_sys::process::CLAP_PROCESS_CONTINUE;
-use smallvec::SmallVec;
 use std::sync::atomic::AtomicI32;
 use tutti_plugin_types::BusChannels;
 use tutti_plugin_types::ChannelLayout;
+use tutti_plugin_types::RtMidiEvents;
 
 /// Extra caller-channel-pointer slots reserved beyond the plugin's port layout,
 /// so a caller supplying more channels than the plugin consumes does not grow
@@ -155,9 +155,14 @@ pub(crate) struct AudioScratch<T: super::ClapSample> {
     pub output_events: OutputEventList,
     /// Return pools: `process` drains the plugin's emitted events into these so
     /// the call can hand back borrowed slices.
-    pub out_midi: SmallVec<[MidiEvent; 64]>,
+    ///
+    /// Capped rather than growable. The plugin drives how many events land
+    /// here — `output_events_try_push` is its callback — so an unbounded pool
+    /// would let a plugin provoke a `malloc` inside the audio callback. Events
+    /// past the cap are dropped; `overflowed()` reports it.
+    pub out_midi: RtMidiEvents,
     pub out_param_changes: ParameterChanges,
-    pub out_note_expressions: SmallVec<[ClapNoteExpression; 16]>,
+    pub out_note_expressions: RtNoteExpressions,
     /// Monotonic sample counter fed to CLAP's `steady_time`. Init 0 at
     /// activate; advances by `frames_count` each processed block; reset to 0
     /// on stop_processing/reactivate. Never derived from transport seconds.
@@ -181,9 +186,9 @@ impl<T: super::ClapSample> AudioScratch<T> {
             param_ranges: Vec::new(),
             plugin_claims_params: false,
             output_events: OutputEventList::new(),
-            out_midi: SmallVec::new(),
+            out_midi: RtMidiEvents::new(),
             out_param_changes: ParameterChanges::new(),
-            out_note_expressions: SmallVec::new(),
+            out_note_expressions: RtNoteExpressions::new(),
             steady_time: 0,
             last_process_status: AtomicI32::new(CLAP_PROCESS_CONTINUE),
         }

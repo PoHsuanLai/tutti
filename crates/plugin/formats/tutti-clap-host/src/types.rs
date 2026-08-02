@@ -112,6 +112,18 @@ pub struct ClapNoteExpression {
     pub value: f64,
 }
 
+/// Cap for a note-expression pool filled on the audio thread.
+///
+/// Note expressions are per-note-per-block; a plugin emitting more than this
+/// in a single block is well outside normal use.
+pub const RT_NOTE_EXPR_CAPACITY: usize = 16;
+
+/// A per-block note-expression pool filled inside `process` and lent back out
+/// as `&[ClapNoteExpression]`. Capped for the same reason as
+/// [`RtMidiEvents`](tutti_plugin_types::RtMidiEvents): the plugin, not the
+/// host, decides how many events arrive.
+pub type RtNoteExpressions = tutti_types::RtVec<ClapNoteExpression, RT_NOTE_EXPR_CAPACITY>;
+
 impl ClapNoteExpression {
     /// Create a new note expression. Defaults to port 0, any channel, any key;
     /// refine with the `port`/`on_channel`/`on_key`/`at` builders.

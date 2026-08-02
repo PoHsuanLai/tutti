@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use arc_swap::ArcSwap;
-use tutti_core::{AudioThreadCell, RtScratchBuf, SampleRate};
+use tutti_core::{AudioThreadCell, RtEventBuf, SampleRate};
 
 use super::async_port::HardwareMidiInput;
 use tutti_midi_types::ump::MidiEvent;
@@ -52,18 +52,18 @@ const CYCLE_SCRATCH_CAP: usize = 256;
 /// time. Isolating them here keeps that single-thread reasoning contained to
 /// one small type rather than spread across the whole [`HardwareMidiInputs`] — and
 /// because every field is a `Sync` primitive ([`AudioThreadCell`] /
-/// [`RtScratchBuf`]), this type *derives* `Sync` with no hand-written
+/// [`RtEventBuf`]), this type *derives* `Sync` with no hand-written
 /// `unsafe impl`.
 ///
-/// `sample_rate` and `timestamped_buffer` use [`AudioThreadCell`] (scoped
-/// guards, never lent out). `event_buffer` uses [`RtScratchBuf`] precisely
-/// because its filled slice is returned out of the `cycle_*` methods with
-/// `&self` lifetime (the manager's `MidiIn::poll_into` copies from it) — the
-/// "lend a borrow back to the caller" shape `AudioThreadCell` can't give.
+/// All three are safe wrappers: this module contains no `unsafe`. The drained
+/// events reach the caller through a visitor rather than a borrowed slice, so
+/// nothing holds a reference into the scratch past the call — which is what
+/// keeps `event_buffer` a plain [`RtEventBuf`] and the `(port_index, event)`
+/// pairing intact.
 struct CycleScratch {
     sample_rate: AudioThreadCell<SampleRate>,
     timestamped_buffer: AudioThreadCell<Vec<(Instant, usize, MidiEvent)>>,
-    event_buffer: RtScratchBuf<(usize, MidiEvent), CYCLE_SCRATCH_CAP>,
+    event_buffer: RtEventBuf<(usize, MidiEvent), CYCLE_SCRATCH_CAP>,
 }
 
 impl CycleScratch {
@@ -71,7 +71,7 @@ impl CycleScratch {
         Self {
             sample_rate: AudioThreadCell::new(SampleRate::SR_44K1),
             timestamped_buffer: AudioThreadCell::new(Vec::with_capacity(CYCLE_SCRATCH_CAP)),
-            event_buffer: RtScratchBuf::new(),
+            event_buffer: RtEventBuf::new(),
         }
     }
 
@@ -79,20 +79,15 @@ impl CycleScratch {
         *self.sample_rate.borrow_mut() = sample_rate.into();
     }
 
-    /// Drain `input_ports`' active rings, converting arrival timestamps to
-    /// sample-accurate `frame_offset`s, and return a flat slice borrowing the
-    /// internal scratch buffer. RT-safe (lock-free, no heap allocation).
-    fn read_inputs(
-        &self,
-        input_ports: &[Arc<HardwareMidiInput>],
-        nframes: usize,
-    ) -> &[(usize, MidiEvent)] {
+    /// Drain `input_ports`' active rings into `event_buffer`, converting arrival
+    /// timestamps to sample-accurate `frame_offset`s. RT-safe (lock-free, no
+    /// heap allocation). Read the result with `event_buffer.drain_each`.
+    fn read_inputs(&self, input_ports: &[Arc<HardwareMidiInput>], nframes: usize) {
         let buffer_start = Instant::now();
         let sample_rate = *self.sample_rate.borrow();
 
-        // Drain all active input ports into the timestamp scratch, dropping that
-        // guard before the fill closure borrows `event_buffer`. Each port gets
-        // the headroom left by the ports before it, so the total can never
+        // Drain all active input ports into the timestamp scratch. Each port
+        // gets the headroom left by the ports before it, so the total can never
         // exceed the buffer's reserved capacity.
         let mut timestamped = self.timestamped_buffer.borrow_mut();
         timestamped.clear();
@@ -108,27 +103,18 @@ impl CycleScratch {
         }
         let timestamped_snapshot = timestamped;
 
-        // SAFETY: single-audio-thread access — `read_inputs` is only reached
-        // from the audio callback (`MidiIn::poll_into`).
-        unsafe {
-            self.event_buffer.fill_and_read(|out| {
-                // `take` is belt-and-braces: the drain above already bounded
-                // `timestamped_snapshot` by the same constant. It is here so the
-                // push stays capped even if that bound is ever loosened —
-                // `out` is a SmallVec, and one push past `N` heap-allocates.
-                for &(midi_instant, port_index, mut event) in
-                    timestamped_snapshot.iter().take(CYCLE_SCRATCH_CAP)
-                {
-                    let delta = buffer_start.saturating_duration_since(midi_instant);
-                    let samples_ago = (delta.as_secs_f64() * sample_rate.get()) as u32;
-                    let nframes_u32 = nframes as u32;
-                    event.frame_offset = nframes_u32.saturating_sub(samples_ago);
-                    if event.frame_offset >= nframes_u32 {
-                        event.frame_offset = nframes_u32.saturating_sub(1);
-                    }
-                    out.push((port_index, event));
-                }
-            })
+        self.event_buffer.clear();
+        for &(midi_instant, port_index, mut event) in timestamped_snapshot.iter() {
+            let delta = buffer_start.saturating_duration_since(midi_instant);
+            let samples_ago = (delta.as_secs_f64() * sample_rate.get()) as u32;
+            let nframes_u32 = nframes as u32;
+            event.frame_offset = nframes_u32.saturating_sub(samples_ago);
+            if event.frame_offset >= nframes_u32 {
+                event.frame_offset = nframes_u32.saturating_sub(1);
+            }
+            if !self.event_buffer.push((port_index, event)) {
+                break;
+            }
         }
     }
 }
@@ -136,9 +122,8 @@ impl CycleScratch {
 pub struct HardwareMidiInputs {
     input_ports: ArcSwap<Vec<Arc<HardwareMidiInput>>>,
     fifo_size: usize,
-    /// Audio-thread-only scratch buffers. All the manager's `unsafe` lives in
-    /// `CycleScratch`; everything else here is `Sync` on its own, so the
-    /// manager derives `Sync` rather than asserting it by hand.
+    /// Audio-thread-only scratch buffers. Every field here is `Sync` on its
+    /// own, so the manager derives `Sync` rather than asserting it by hand.
     scratch: CycleScratch,
 }
 
@@ -228,15 +213,31 @@ impl HardwareMidiInputs {
             .unwrap_or(false)
     }
 
-    /// RT-safe (lock-free, no heap allocation).
+    /// Drain all active input port rings for this block, converting arrival
+    /// timestamps to sample-accurate `frame_offset`s, and hand each event to
+    /// `visit` as `(port_index, event)`. Returns how many were visited.
     ///
-    /// Drains all active input port ring buffers, converts timestamps to
-    /// sample-accurate frame_offsets, and returns a flat event slice.
-    pub fn cycle_start_read_all_inputs(&self, nframes: usize) -> &[(usize, MidiEvent)] {
-        // Hold the ArcSwap guard across the drain so the snapshot can't be
-        // swapped out mid-read; the scratch borrows from it.
+    /// RT-safe (lock-free, no heap allocation). A visitor rather than a
+    /// returned slice: the events live in audio-thread-only scratch, and
+    /// lending a borrow into it out of a `&self` method is the one shape that
+    /// would need an `UnsafeCell`. `visit` is free to touch this manager —
+    /// `drain_each` releases its borrow around each call.
+    pub fn cycle_start_read_all_inputs(
+        &self,
+        nframes: usize,
+        mut visit: impl FnMut(usize, MidiEvent),
+    ) -> usize {
+        // Hold the ArcSwap guard across the drain so the port set can't be
+        // swapped out mid-read. Events are copied into the scratch by value
+        // (`MidiEvent: Copy`), so nothing borrows from the snapshot.
         let input_ports = self.input_ports.load();
-        self.scratch.read_inputs(&input_ports, nframes)
+        self.scratch.read_inputs(&input_ports, nframes);
+        let mut n = 0;
+        self.scratch.event_buffer.drain_each(|(port_index, event)| {
+            visit(port_index, event);
+            n += 1;
+        });
+        n
     }
 
     pub fn get_input_producer_handle(
@@ -280,12 +281,14 @@ impl tutti_midi_types::MidiIn for HardwareMidiInputs {
         block_size: usize,
         buffer: &mut [MidiEvent],
     ) -> usize {
-        let events = self.cycle_start_read_all_inputs(block_size);
-        let n = events.len().min(buffer.len());
-        for (slot, &(_port, event)) in buffer.iter_mut().zip(events.iter()).take(n) {
-            *slot = event;
-        }
-        n
+        let mut written = 0usize;
+        self.cycle_start_read_all_inputs(block_size, |_port, event| {
+            if written < buffer.len() {
+                buffer[written] = event;
+                written += 1;
+            }
+        });
+        written
     }
 }
 
@@ -303,6 +306,14 @@ impl core::fmt::Debug for HardwareMidiInputs {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Test helper: drain a cycle into a `Vec`, reproducing the shape the
+    /// public API used to return so these assertions stay unchanged.
+    fn drain_cycle(manager: &HardwareMidiInputs, nframes: usize) -> Vec<(usize, MidiEvent)> {
+        let mut out = Vec::new();
+        manager.cycle_start_read_all_inputs(nframes, |port, event| out.push((port, event)));
+        out
+    }
 
     fn now() -> Instant {
         Instant::now()
@@ -341,7 +352,7 @@ mod tests {
             }
         }
 
-        let events = manager.cycle_start_read_all_inputs(512);
+        let events = drain_cycle(&manager, 512);
         assert_eq!(
             events.len(),
             CYCLE_SCRATCH_CAP,
@@ -349,9 +360,7 @@ mod tests {
         );
 
         // The remainder is deferred, not dropped: successive blocks drain it.
-        let total: usize = (0..3)
-            .map(|_| manager.cycle_start_read_all_inputs(512).len())
-            .sum();
+        let total: usize = (0..3).map(|_| drain_cycle(&manager, 512).len()).sum();
         assert_eq!(
             total + CYCLE_SCRATCH_CAP,
             1024,
@@ -402,7 +411,7 @@ mod tests {
         );
         assert!(producer_handle.push(event, now()));
 
-        let events = manager.cycle_start_read_all_inputs(512);
+        let events = drain_cycle(&manager, 512);
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].0, input_id);
         assert!(events[0].1.is_note_on());
@@ -422,7 +431,7 @@ mod tests {
 
         manager.set_port_active(PortType::Input, input_id, false);
 
-        let events = manager.cycle_start_read_all_inputs(512);
+        let events = drain_cycle(&manager, 512);
         assert_eq!(events.len(), 0);
     }
 
@@ -439,7 +448,7 @@ mod tests {
         handle1.push(MidiEvent::note_on(0, 0, 60, 100), now());
         handle2.push(MidiEvent::note_on(0, 0, 64, 100), now());
 
-        let events = manager.cycle_start_read_all_inputs(512);
+        let events = drain_cycle(&manager, 512);
         assert_eq!(events.len(), 2);
 
         let port_ids: Vec<_> = events.iter().map(|(id, _)| *id).collect();
@@ -456,7 +465,7 @@ mod tests {
         let nframes = 256;
 
         handle.push(MidiEvent::note_on(0, 0, 60, 100), Instant::now());
-        let events = manager.cycle_start_read_all_inputs(nframes);
+        let events = drain_cycle(&manager, nframes);
         assert_eq!(events.len(), 1);
         assert!(
             (events[0].1.frame_offset as usize) <= nframes,

@@ -13,7 +13,6 @@ use std::mem::ManuallyDrop;
 use std::ops::{Deref, DerefMut};
 use std::path::Path;
 
-use smallvec::SmallVec;
 use vst3::Steinberg::{
     kResultFalse, kResultOk,
     Vst::{
@@ -22,6 +21,7 @@ use vst3::Steinberg::{
     },
 };
 
+use tutti_plugin_types::RtMidiEvents;
 use tutti_types::ChannelLayout;
 
 use crate::com::{event_list_ptr, param_changes_ptr, EventList, ParameterChangesImpl};
@@ -119,7 +119,10 @@ struct OutputStaging<T: Vst3Sample> {
     param_changes: vst3::ComWrapper<ParameterChangesImpl>,
     /// Pooled return-value buffers. `process` drains the plugin's emitted
     /// events into these so the call can return a borrowed view.
-    emitted_midi: SmallVec<[MidiEvent; 64]>,
+    ///
+    /// Capped: the plugin decides how many events it emits, so an unbounded
+    /// pool would let it provoke a `malloc` in the audio callback.
+    emitted_midi: RtMidiEvents,
     emitted_param_changes: ParameterChanges,
 }
 
@@ -326,7 +329,7 @@ impl<T: Vst3Sample> Vst3Instance<T> {
                 buses: out_scratch.buses,
                 events: EventList::new(),
                 param_changes: ParameterChangesImpl::new_empty(),
-                emitted_midi: SmallVec::new(),
+                emitted_midi: RtMidiEvents::new(),
                 emitted_param_changes,
             },
             cc: CcRoute::new(MidiCcMapping::query(loaded.interfaces.controller.as_ref())),

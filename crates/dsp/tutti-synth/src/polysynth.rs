@@ -16,6 +16,13 @@ extern crate alloc;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
+/// Inline capacity of [`PolySynth::finished_indices`], and therefore the hard
+/// ceiling on `max_voices` (enforced in [`PolySynth::new`]).
+///
+/// One entry is collected per voice that finishes in a block, so the worst
+/// case is every voice releasing at once. Keeping `max_voices` at or under
+/// this bound is what keeps the collection inline: a spill would put a
+/// `malloc` in the audio callback.
 const FINISHED_NOTES_CAPACITY: usize = 16;
 
 /// Convert a Q7.25 fixed-point pitch (Registered Per-Note Controller #3, M2-104
@@ -65,11 +72,18 @@ impl PolySynth {
     /// Bevy way — `Default` plus struct-update — e.g.
     /// `SynthConfig { oscillator: OscillatorType::Saw, max_voices: 8, ..default() }`.
     ///
-    /// Returns [`Err`] if `max_voices` is 0.
+    /// Returns [`Err`] if `max_voices` is 0, or exceeds
+    /// [`FINISHED_NOTES_CAPACITY`] — see that constant for why the ceiling is
+    /// enforced here rather than absorbed by a heap spill on the audio thread.
     pub fn new(config: SynthConfig) -> crate::Result<Self> {
         if config.max_voices == 0 {
             return Err(crate::Error::InvalidConfig(
                 "max_voices must be at least 1".into(),
+            ));
+        }
+        if config.max_voices > FINISHED_NOTES_CAPACITY {
+            return Err(crate::Error::InvalidConfig(
+                "max_voices must not exceed FINISHED_NOTES_CAPACITY".into(),
             ));
         }
 
@@ -743,7 +757,16 @@ impl AudioUnit for PolySynth {
             }
         }
 
-        for slot_index in core::mem::take(&mut self.finished_indices) {
+        // Index rather than `mem::take`. `take` swaps in a fresh `SmallVec` and
+        // drops the outgoing one, so if the collection had spilled it would be
+        // freed *here*, on the audio thread, and re-allocated next block — a
+        // recurring cost, not a warm-up. The `max_voices` ceiling makes that
+        // spill unreachable today; this keeps the drain itself allocation-free
+        // so raising the constant cannot silently re-arm it.
+        // (`drain` would not borrow-check: `mark_voice_finished` takes `&mut
+        // self`.) `clear()` above resets the length each block.
+        for i in 0..self.finished_indices.len() {
+            let slot_index = self.finished_indices[i];
             self.mark_voice_finished(slot_index);
         }
 
@@ -852,7 +875,9 @@ impl AudioUnit for PolySynth {
                 }
             }
 
-            for slot_index in core::mem::take(&mut self.finished_indices) {
+            // Index rather than `mem::take` — see the matching drain in `tick`.
+            for i in 0..self.finished_indices.len() {
+                let slot_index = self.finished_indices[i];
                 self.mark_voice_finished(slot_index);
             }
 

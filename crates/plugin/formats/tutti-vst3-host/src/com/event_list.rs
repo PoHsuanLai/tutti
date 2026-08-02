@@ -19,9 +19,12 @@ use vst3::Steinberg::{
 };
 use vst3::{Class, ComWrapper};
 
-use crate::types::{
-    from_c_event, note_expression_to_vst3, to_c_event, MidiEvent, Vst3Event, Vst3InputEvents,
-};
+use crate::types::{from_c_event, note_expression_to_vst3, to_c_event, Vst3Event, Vst3InputEvents};
+// Only the `#[cfg(test)]` staging helper names this directly; the RT fill path
+// goes through `RtMidiEvents`.
+#[cfg(test)]
+use crate::types::MidiEvent;
+use tutti_plugin_types::RtMidiEvents;
 use tutti_types::AudioThreadCell;
 
 /// Per-block event storage. Both members are written **only** while staging
@@ -127,14 +130,17 @@ impl EventList {
         self.inner.borrow().events.len()
     }
 
-    /// Drain the plugin's emitted MIDI events into a caller-supplied pooled
-    /// `SmallVec`. Clears `out` first; reuses existing heap capacity, so it is
-    /// allocation-free after warmup.
-    pub fn fill_midi_events(&self, out: &mut SmallVec<[MidiEvent; 64]>) {
+    /// Drain the plugin's emitted MIDI events into a caller-supplied pool.
+    /// Clears `out` first and never grows it: the plugin decides how many
+    /// events it emits, so events past the pool's cap are dropped rather than
+    /// heap-allocated on the audio thread. `out.overflowed()` reports it.
+    pub fn fill_midi_events(&self, out: &mut RtMidiEvents) {
         out.clear();
         for event in self.inner.borrow().events.iter() {
             if let Some(midi) = event.to_midi() {
-                out.push(midi);
+                if !out.push(midi) {
+                    break;
+                }
             }
         }
     }

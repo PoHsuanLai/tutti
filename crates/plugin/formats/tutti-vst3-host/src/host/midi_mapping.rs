@@ -19,7 +19,6 @@
 //! Spec reference: `Steinberg::Vst::IMidiMapping`,
 //! `Steinberg::Vst::ControllerNumbers`.
 
-use smallvec::SmallVec;
 use vst3::ComPtr;
 use vst3::Steinberg::kResultTrue;
 use vst3::Steinberg::Vst::{
@@ -28,7 +27,7 @@ use vst3::Steinberg::Vst::{
 };
 
 use crate::types::{MidiEvent, ParameterChanges};
-use tutti_plugin_types::ParamAddress;
+use tutti_plugin_types::{ParamAddress, RtMidiEvents};
 
 /// Number of MIDI channels VST3 enumerates mappings for.
 pub(crate) const NUM_CHANNELS: usize = 16;
@@ -191,7 +190,7 @@ pub(crate) fn midi_to_mapped_controller(event: &MidiEvent) -> Option<(u8, usize,
 pub(crate) fn route_cc_events(
     mapping: &MidiCcMapping,
     midi_events: &[MidiEvent],
-    out_filtered: &mut SmallVec<[MidiEvent; 64]>,
+    out_filtered: &mut RtMidiEvents,
     out_params: &mut ParameterChanges,
 ) {
     for event in midi_events {
@@ -209,10 +208,18 @@ pub(crate) fn route_cc_events(
                 }
                 // Mappable message but no mapping for this slot — keep it as a
                 // MIDI event so the plugin can still react.
-                None => out_filtered.push(*event),
+                //
+                // A refused push (pool at capacity) drops the event rather
+                // than allocating on the audio thread; `out_filtered
+                // .overflowed()` reports it to the caller.
+                None => {
+                    let _ = out_filtered.push(*event);
+                }
             },
             // Not a mappable controller (note on/off, program change, …).
-            None => out_filtered.push(*event),
+            None => {
+                let _ = out_filtered.push(*event);
+            }
         }
     }
 }
@@ -243,17 +250,18 @@ pub(crate) fn sort_param_points(params: &mut ParameterChanges) {
 /// [`Vst3Instance::rebuild_midi_cc_mapping`](crate::Vst3Instance)).
 pub(crate) struct CcRoute {
     pub(crate) mapping: MidiCcMapping,
-    filtered_midi: SmallVec<[MidiEvent; 64]>,
+    filtered_midi: RtMidiEvents,
     param_changes: ParameterChanges,
 }
 
 impl CcRoute {
     /// Build with an empty mapping queried from `controller`, plus empty
-    /// scratch. The scratch grows once on first use and is reused thereafter.
+    /// scratch. The MIDI scratch is capped and never grows; `param_changes`
+    /// grows once on first use and is reused thereafter.
     pub(crate) fn new(mapping: MidiCcMapping) -> Self {
         Self {
             mapping,
-            filtered_midi: SmallVec::new(),
+            filtered_midi: RtMidiEvents::new(),
             param_changes: ParameterChanges::new(),
         }
     }
@@ -415,7 +423,7 @@ mod tests {
             MidiEvent::cc(0, 0, 74, midi1_cc_to_midi2(100)).with_frame_offset(0),
         ];
 
-        let mut filtered = SmallVec::new();
+        let mut filtered = RtMidiEvents::new();
         let mut params = ParameterChanges::new();
         route_cc_events(&mapping, &events, &mut filtered, &mut params);
 
@@ -440,7 +448,7 @@ mod tests {
         let mapping = mod_wheel_mapping(500);
         let events = [MidiEvent::cc(0, 0, 1, midi1_cc_to_midi2(127)).with_frame_offset(0)];
 
-        let mut filtered = SmallVec::new();
+        let mut filtered = RtMidiEvents::new();
         let mut params = ParameterChanges::new();
         // Pre-seed with a host automation point (as the audio path does).
         params.add_change(ParamAddress::Opaque(42u32.into()), 0, 0.25);
@@ -475,7 +483,7 @@ mod tests {
             MidiEvent::cc(0, 0, 1, midi1_cc_to_midi2(10)).with_frame_offset(10),
         ];
 
-        let mut filtered = SmallVec::new();
+        let mut filtered = RtMidiEvents::new();
         let mut params = ParameterChanges::new();
         // Seed the SAME param (500) with host automation at a middle offset,
         // plus a separate param to prove per-queue sorting.
@@ -520,11 +528,11 @@ mod tests {
             MidiEvent::cc(0, 0, 74, midi1_cc_to_midi2(10)).with_frame_offset(32),
         ];
 
-        let mut filtered: SmallVec<[MidiEvent; 64]> = SmallVec::new();
+        let mut filtered = RtMidiEvents::new();
         let mut params = ParameterChanges::new();
 
         // Warm up: grow both buffers' capacity once.
-        let clear = |filtered: &mut SmallVec<[MidiEvent; 64]>, params: &mut ParameterChanges| {
+        let clear = |filtered: &mut RtMidiEvents, params: &mut ParameterChanges| {
             filtered.clear();
             for q in params.queues.iter_mut() {
                 q.points.clear();

@@ -32,9 +32,10 @@ use clap_sys::events::{
     CLAP_NOTE_EXPRESSION_PAN, CLAP_NOTE_EXPRESSION_PRESSURE, CLAP_NOTE_EXPRESSION_TUNING,
     CLAP_NOTE_EXPRESSION_VIBRATO, CLAP_NOTE_EXPRESSION_VOLUME,
 };
-use smallvec::SmallVec;
 use std::ptr;
-use tutti_plugin_types::{note_id_for, note_id_to_channel_note, ParamAddress};
+use tutti_plugin_types::{note_id_for, note_id_to_channel_note, ParamAddress, RtMidiEvents};
+
+use crate::types::RtNoteExpressions;
 
 /// A single CLAP event, wrapping the underlying `#[repr(C)]` `clap_sys`
 /// struct so a pointer to its `header` field can be cast back by the plugin.
@@ -958,11 +959,13 @@ impl OutputEventList {
     /// RT-safe variant of [`Self::to_midi_events`] that drains into a
     /// caller-supplied pooled `SmallVec`. Clears `out` first; reuses
     /// existing heap capacity.
-    pub fn fill_midi_events(&self, out: &mut SmallVec<[MidiEvent; 64]>) {
+    pub fn fill_midi_events(&self, out: &mut RtMidiEvents) {
         out.clear();
         for e in &self.events {
             if let Some(midi) = e.to_midi() {
-                out.push(midi);
+                if !out.push(midi) {
+                    break;
+                }
             }
         }
     }
@@ -1028,11 +1031,13 @@ impl OutputEventList {
 
     /// RT-safe variant of [`Self::to_note_expressions`] that drains into a
     /// caller-supplied pooled `SmallVec`.
-    pub fn fill_note_expressions(&self, out: &mut SmallVec<[ClapNoteExpression; 16]>) {
+    pub fn fill_note_expressions(&self, out: &mut RtNoteExpressions) {
         out.clear();
         for event in &self.events {
             if let Some(ne) = clap_event_to_note_expression(event) {
-                out.push(ne);
+                if !out.push(ne) {
+                    break;
+                }
             }
         }
     }
@@ -1218,6 +1223,7 @@ unsafe extern "C" fn output_events_try_push(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tutti_plugin_types::RT_MIDI_CAPACITY;
 
     /// A huge event time must saturate, not wrap negative.
     ///
@@ -1925,6 +1931,61 @@ mod tests {
         assert_eq!(gestures.len(), 3);
         gestures.clear();
         assert!(gestures.is_empty());
+    }
+
+    /// A plugin emitting more events than the return pool holds must not grow
+    /// it — `try_push` is the *plugin's* callback, so an unbounded pool would
+    /// let a plugin provoke a `malloc` inside the audio callback. Events past
+    /// the cap are dropped and reported through `overflowed()`.
+    ///
+    /// Before the pool was an `RtVec`, the bound existed only as a `reserve`
+    /// performed off-RT in `activate()` and then trusted; nothing stopped this.
+    #[test]
+    fn midi_pool_caps_a_flood_of_plugin_emitted_events() {
+        let mut output = OutputEventList::new();
+        let over = RT_MIDI_CAPACITY * 3;
+        for i in 0..over {
+            output
+                .events
+                .push(ClapEvent::midi(i as u32, 0, [0x90, 60, 100]));
+        }
+
+        let mut pool = RtMidiEvents::new();
+        output.fill_midi_events(&mut pool);
+
+        assert_eq!(
+            pool.len(),
+            RT_MIDI_CAPACITY,
+            "the pool fills to its cap and no further"
+        );
+        assert!(
+            pool.overflowed(),
+            "dropping events must be reported, not silent"
+        );
+        assert_eq!(
+            pool.capacity(),
+            RT_MIDI_CAPACITY,
+            "capacity is fixed at the type level, so it cannot have grown"
+        );
+    }
+
+    /// Refilling from an over-long source every block must stay at the cap —
+    /// the steady-state version of the check above.
+    #[test]
+    fn refilling_the_midi_pool_repeatedly_never_grows_it() {
+        let mut output = OutputEventList::new();
+        for i in 0..(RT_MIDI_CAPACITY * 2) {
+            output
+                .events
+                .push(ClapEvent::midi(i as u32, 0, [0x90, 60, 100]));
+        }
+
+        let mut pool = RtMidiEvents::new();
+        for _ in 0..256 {
+            output.fill_midi_events(&mut pool);
+            assert_eq!(pool.len(), RT_MIDI_CAPACITY);
+            assert_eq!(pool.remaining(), 0);
+        }
     }
 
     #[test]

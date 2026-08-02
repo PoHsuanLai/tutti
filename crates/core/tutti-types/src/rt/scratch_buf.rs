@@ -1,7 +1,8 @@
 //! Fill-then-lend scratch buffer for the audio thread.
 
 use core::cell::UnsafeCell;
-use smallvec::SmallVec;
+
+use super::capped::Capped;
 
 /// An RT-safe scratch buffer that is refilled each block and then **lends its
 /// filled contents out as a `&self`-lifetime slice**.
@@ -19,8 +20,8 @@ use smallvec::SmallVec;
 /// once warmed and the type stays `no_std`. Like [`RtEventBuf`], it is **capped
 /// at `N`**: items past the inline capacity are dropped rather than spilled to
 /// the heap. The cap is structural — [`fill_and_read`](Self::fill_and_read)
-/// hands the closure a [`CappedWriter`], not the backing `SmallVec`, so there
-/// is no `push` that can grow past `N`.
+/// hands the closure a [`CappedWriter`], not the backing storage, so there is
+/// no `push` that can grow past `N`.
 ///
 /// # Safety contract
 ///
@@ -32,7 +33,7 @@ use smallvec::SmallVec;
 ///
 /// [`RtEventBuf`]: crate::RtEventBuf
 pub struct RtScratchBuf<T, const N: usize> {
-    inner: UnsafeCell<SmallVec<[T; N]>>,
+    inner: UnsafeCell<Capped<T, N>>,
 }
 
 /// Write handle handed to [`RtScratchBuf::fill_and_read`]'s closure: the only
@@ -40,14 +41,14 @@ pub struct RtScratchBuf<T, const N: usize> {
 /// capacity.
 ///
 /// This exists so the "capped at `N`" guarantee is enforced by the type rather
-/// than by caller discipline. Exposing the backing `SmallVec` would hand the
+/// than by caller discipline. Exposing the backing storage would hand the
 /// closure a `push` that silently heap-allocates on the audio thread the
 /// moment it runs one past `N` — the same reason [`RtEventBuf`]'s `push`
 /// returns `bool` instead of growing.
 ///
 /// [`RtEventBuf`]: crate::RtEventBuf
 pub struct CappedWriter<'a, T, const N: usize> {
-    buf: &'a mut SmallVec<[T; N]>,
+    buf: &'a mut Capped<T, N>,
 }
 
 impl<T, const N: usize> CappedWriter<'_, T, N> {
@@ -55,25 +56,14 @@ impl<T, const N: usize> CappedWriter<'_, T, N> {
     /// the buffer already holds `N` items.
     #[inline]
     pub fn push(&mut self, v: T) -> bool {
-        if self.buf.len() >= N {
-            return false;
-        }
-        self.buf.push(v);
-        true
+        self.buf.push(v)
     }
 
     /// Append from an iterator, stopping at capacity. Returns the number of
     /// items actually written, so a caller can tell whether input was dropped.
     #[inline]
     pub fn extend(&mut self, it: impl IntoIterator<Item = T>) -> usize {
-        let mut written = 0;
-        for v in it {
-            if !self.push(v) {
-                break;
-            }
-            written += 1;
-        }
-        written
+        self.buf.extend(it)
     }
 
     /// Number of items written so far this fill.
@@ -91,13 +81,19 @@ impl<T, const N: usize> CappedWriter<'_, T, N> {
     /// Whether the buffer has reached its cap — further pushes will be dropped.
     #[inline]
     pub fn is_full(&self) -> bool {
-        self.buf.len() >= N
+        self.buf.is_full()
     }
 
     /// Remaining room before the cap.
     #[inline]
     pub fn remaining(&self) -> usize {
-        N - self.buf.len()
+        self.buf.remaining()
+    }
+
+    /// Whether anything has been dropped during this fill.
+    #[inline]
+    pub fn overflowed(&self) -> bool {
+        self.buf.overflowed()
     }
 }
 
@@ -105,7 +101,7 @@ impl<T, const N: usize> RtScratchBuf<T, N> {
     /// An empty buffer with `N` inline slots.
     pub fn new() -> Self {
         Self {
-            inner: UnsafeCell::new(SmallVec::new()),
+            inner: UnsafeCell::new(Capped::new()),
         }
     }
 

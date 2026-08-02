@@ -1,7 +1,7 @@
 //! Fixed-inline-capacity event collector for the audio thread.
 
+use super::capped::Capped;
 use super::cell::AudioThreadCell;
-use smallvec::SmallVec;
 
 /// An RT-safe event collector: a `SmallVec` with `N` inline slots behind an
 /// [`AudioThreadCell`], so it can be filled and read through `&self` on the
@@ -15,14 +15,14 @@ use smallvec::SmallVec;
 /// heap — overflow on the audio thread is dropped, never allocated. Size the
 /// `N` to the worst case at construction.
 pub struct RtEventBuf<T, const N: usize> {
-    cell: AudioThreadCell<SmallVec<[T; N]>>,
+    cell: AudioThreadCell<Capped<T, N>>,
 }
 
 impl<T, const N: usize> RtEventBuf<T, N> {
     /// An empty collector with `N` inline slots.
     pub fn new() -> Self {
         Self {
-            cell: AudioThreadCell::new(SmallVec::new()),
+            cell: AudioThreadCell::new(Capped::new()),
         }
     }
 
@@ -36,14 +36,7 @@ impl<T, const N: usize> RtEventBuf<T, N> {
     /// capacity are dropped (never spilled to the heap).
     #[inline]
     pub fn refill(&self, it: impl IntoIterator<Item = T>) {
-        let mut buf = self.cell.borrow_mut();
-        buf.clear();
-        for v in it {
-            if buf.len() >= N {
-                break;
-            }
-            buf.push(v);
-        }
+        self.cell.borrow_mut().refill(it);
     }
 
     /// Append one event if there is room. Returns `false` (dropping `v`) when
@@ -51,12 +44,14 @@ impl<T, const N: usize> RtEventBuf<T, N> {
     /// allocation-free on the audio thread.
     #[inline]
     pub fn push(&self, v: T) -> bool {
-        let mut buf = self.cell.borrow_mut();
-        if buf.len() >= N {
-            return false;
-        }
-        buf.push(v);
-        true
+        self.cell.borrow_mut().push(v)
+    }
+
+    /// Whether anything has been dropped since the last
+    /// [`clear`](Self::clear) or [`refill`](Self::refill).
+    #[inline]
+    pub fn overflowed(&self) -> bool {
+        self.cell.borrow().overflowed()
     }
 
     /// Visit each event in order. RT-safe; no early-stop — callers that want

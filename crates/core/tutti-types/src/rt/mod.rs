@@ -3,6 +3,28 @@
 //! Interior mutability, fixed-capacity buffers, and the denormals guard: each
 //! is `#[no_alloc]`-safe on the audio path and carries no engine dependency.
 //!
+//! # How the buffers relate
+//!
+//! The three capped collections are **one policy plus three access
+//! disciplines**, not three separate designs. A private `Capped<T, N>` answers
+//! "what happens at the cap?" once — refuse the write, latch an overflow flag,
+//! never grow — and each public type composes it with exactly one answer to
+//! "who may reach this, and how do they read it back?":
+//!
+//! | type | reached through | reads back via |
+//! |---|---|---|
+//! | [`RtVec`] | `&mut self` | `as_slice()` — a borrowed `&[T]` |
+//! | [`RtEventBuf`] | `&self` (an [`AudioThreadCell`]) | `for_each` / `drain_each` |
+//! | [`RtScratchBuf`] | `&self` (an `UnsafeCell`) | a `&self`-lifetime slice |
+//!
+//! Pick by how the owner holds the buffer: `&mut self` in hand means
+//! [`RtVec`]; behind an `Arc` or a COM object means one of the other two, and
+//! then by whether the filled run must outlive the call that produced it.
+//!
+//! [`RtScratch`] is deliberately outside that family: it has no `push` at all,
+//! so there is no cap to enforce — its length is chosen per block by slicing a
+//! preallocated run.
+//!
 //! - [`AudioThreadCell`] — interior mutability with a "one borrow at a time"
 //!   contract, reached through `&self` (e.g. behind an `Arc` or a COM object).
 //! - [`RtEventBuf`] — a fixed-inline-capacity event collector refilled each
@@ -27,6 +49,7 @@
 //! - [`ScopedNoDenormals`] — RAII guard that flushes subnormals to zero for the
 //!   duration of an audio block, then restores the FPU control register.
 
+mod capped;
 pub mod cell;
 pub mod denormals;
 pub mod event_buf;

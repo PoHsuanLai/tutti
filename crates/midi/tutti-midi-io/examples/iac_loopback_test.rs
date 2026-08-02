@@ -37,7 +37,7 @@ fn main() {
     thread::sleep(Duration::from_millis(200));
 
     // Drain anything buffered from before the test started.
-    let _ = pm.cycle_start_read_all_inputs(512);
+    pm.cycle_start_read_all_inputs(512, |_, _| {});
 
     // --- Send a message, read back exactly one, hand it to `check`. ---
     //
@@ -48,10 +48,15 @@ fn main() {
     let roundtrip = |label: &str, msg: MidiMessage, check: &dyn Fn(MidiMessage) -> bool| {
         io.send(MidiEvent::try_from(msg).expect("message is encodable"));
         thread::sleep(Duration::from_millis(100));
-        let events = pm.cycle_start_read_all_inputs(512);
-        match events.first() {
+        let mut first: Option<MidiEvent> = None;
+        pm.cycle_start_read_all_inputs(512, |_, ev| {
+            if first.is_none() {
+                first = Some(ev);
+            }
+        });
+        match first {
             None => println!("  FAIL [{label}]: no events received"),
-            Some((_, ev)) => {
+            Some(ev) => {
                 let got = ev.message();
                 println!(
                     "  {} [{label}]: {got:?}",
@@ -118,9 +123,12 @@ fn main() {
         io.send(MidiEvent::note_on(0, 0, n, 0xA000));
     }
     thread::sleep(Duration::from_millis(200));
-    let events = pm.cycle_start_read_all_inputs(512);
-    let count = events.len();
-    let all_note_on = events.iter().all(|(_, ev)| ev.message().is_note_on());
+    let mut count = 0usize;
+    let mut all_note_on = true;
+    pm.cycle_start_read_all_inputs(512, |_, ev| {
+        count += 1;
+        all_note_on &= ev.message().is_note_on();
+    });
     println!(
         "  {}: received {count}/10 events, all note_on={all_note_on}",
         if count == 10 && all_note_on {

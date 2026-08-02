@@ -112,13 +112,12 @@ impl CycleScratch {
         // from the audio callback (`MidiIn::poll_into`).
         unsafe {
             self.event_buffer.fill_and_read(|out| {
-                // `take` is belt-and-braces: the drain above already bounded
-                // `timestamped_snapshot` by the same constant. It is here so the
-                // push stays capped even if that bound is ever loosened —
-                // `out` is a SmallVec, and one push past `N` heap-allocates.
-                for &(midi_instant, port_index, mut event) in
-                    timestamped_snapshot.iter().take(CYCLE_SCRATCH_CAP)
-                {
+                // No `take` needed: `out` is a `CappedWriter`, so a push past
+                // `CYCLE_SCRATCH_CAP` is refused rather than heap-allocated.
+                // The drain above already bounds `timestamped_snapshot` by the
+                // same constant, so nothing is expected to be dropped here —
+                // the cap is the backstop if that bound is ever loosened.
+                for &(midi_instant, port_index, mut event) in timestamped_snapshot.iter() {
                     let delta = buffer_start.saturating_duration_since(midi_instant);
                     let samples_ago = (delta.as_secs_f64() * sample_rate.get()) as u32;
                     let nframes_u32 = nframes as u32;

@@ -68,6 +68,52 @@ impl<T, const N: usize> RtEventBuf<T, N> {
         }
     }
 
+    /// Take each event in order, leaving the collector empty, **without
+    /// freeing the backing buffer**.
+    ///
+    /// This is the shape [`for_each`](Self::for_each) cannot serve: `for_each`
+    /// holds a borrow on the cell for its whole traversal, so the callback
+    /// cannot touch the structure the events refer back to. `drain_each`
+    /// releases the borrow around every call, so `f` may take `&mut` to
+    /// whatever owns this collector — the "collect indices this block, then
+    /// consume them while mutating the collection they index" pattern.
+    ///
+    /// Prefer this over `core::mem::take` on a bare `SmallVec`: `take` swaps
+    /// in a fresh buffer and drops the outgoing one, which frees on the audio
+    /// thread if the collection ever spilled, and re-allocates the next block.
+    /// Here the buffer is retained and only its length is reset.
+    ///
+    /// `f` is called at most `N` times, in push order, and the collector is
+    /// empty when it returns.
+    ///
+    /// Requires `T: Copy`: each item is copied out before the cell borrow is
+    /// released, which is what lets `f` reach back into the owner. Every RT
+    /// event type in the engine is `Copy` (indices, `MidiEvent`, parameter
+    /// points); a non-`Copy` payload does not belong on this path.
+    #[inline]
+    pub fn drain_each(&self, mut f: impl FnMut(T))
+    where
+        T: Copy,
+    {
+        let mut i = 0;
+        loop {
+            // Re-borrow per item rather than holding across the callback, so
+            // `f` is free to reach back into the owner of this collector.
+            // Indexing forwards (rather than `pop`) keeps the order the events
+            // were pushed in, which is what callers of an event buffer expect.
+            let v = {
+                let buf = self.cell.borrow();
+                match buf.get(i) {
+                    Some(v) => *v,
+                    None => break,
+                }
+            };
+            f(v);
+            i += 1;
+        }
+        self.cell.borrow_mut().clear();
+    }
+
     /// Sort the active events in place by a derived key. Stable across calls;
     /// does not expose the backing storage.
     #[inline]
@@ -147,6 +193,58 @@ mod tests {
         let mut seen = Vec::new();
         buf.for_each(|&(_, c)| seen.push(c));
         assert_eq!(seen, std::vec!['a', 'b', 'c']);
+    }
+
+    #[test]
+    fn drain_each_visits_in_push_order_and_empties() {
+        let buf: RtEventBuf<u32, 8> = RtEventBuf::new();
+        buf.refill([10, 20, 30]);
+
+        let mut seen = Vec::new();
+        buf.drain_each(|v| seen.push(v));
+
+        assert_eq!(seen, std::vec![10, 20, 30], "push order, not reversed");
+        assert!(buf.is_empty(), "collector is empty after draining");
+    }
+
+    #[test]
+    fn drain_each_on_empty_calls_nothing() {
+        let buf: RtEventBuf<u32, 4> = RtEventBuf::new();
+        let mut calls = 0;
+        buf.drain_each(|_| calls += 1);
+        assert_eq!(calls, 0);
+    }
+
+    #[test]
+    fn drain_each_callback_may_reborrow_the_buffer() {
+        // The reason `drain_each` exists: `for_each` holds the cell borrow
+        // across the whole traversal, so a callback that touches the same
+        // collector would panic on the debug in-use flag. `drain_each`
+        // releases the borrow around each call.
+        let buf: RtEventBuf<u32, 8> = RtEventBuf::new();
+        buf.refill([1, 2, 3]);
+
+        let mut seen = Vec::new();
+        buf.drain_each(|v| {
+            // Re-entrant read of the same collector from inside the callback.
+            let _still_readable = buf.len();
+            seen.push(v);
+        });
+
+        assert_eq!(seen, std::vec![1, 2, 3]);
+        assert!(buf.is_empty());
+    }
+
+    #[test]
+    fn drain_each_then_refill_reuses_the_buffer() {
+        let buf: RtEventBuf<u32, 4> = RtEventBuf::new();
+        for _ in 0..100 {
+            buf.refill([1, 2, 3, 4]);
+            let mut n = 0;
+            buf.drain_each(|_| n += 1);
+            assert_eq!(n, 4);
+            assert!(buf.is_empty());
+        }
     }
 
     #[test]

@@ -18,7 +18,9 @@ use smallvec::SmallVec;
 /// Backed by a `SmallVec` with `N` inline slots, so refilling never reallocates
 /// once warmed and the type stays `no_std`. Like [`RtEventBuf`], it is **capped
 /// at `N`**: items past the inline capacity are dropped rather than spilled to
-/// the heap.
+/// the heap. The cap is structural — [`fill_and_read`](Self::fill_and_read)
+/// hands the closure a [`CappedWriter`], not the backing `SmallVec`, so there
+/// is no `push` that can grow past `N`.
 ///
 /// # Safety contract
 ///
@@ -33,6 +35,72 @@ pub struct RtScratchBuf<T, const N: usize> {
     inner: UnsafeCell<SmallVec<[T; N]>>,
 }
 
+/// Write handle handed to [`RtScratchBuf::fill_and_read`]'s closure: the only
+/// way to put items into the buffer, and it refuses to exceed the inline
+/// capacity.
+///
+/// This exists so the "capped at `N`" guarantee is enforced by the type rather
+/// than by caller discipline. Exposing the backing `SmallVec` would hand the
+/// closure a `push` that silently heap-allocates on the audio thread the
+/// moment it runs one past `N` — the same reason [`RtEventBuf`]'s `push`
+/// returns `bool` instead of growing.
+///
+/// [`RtEventBuf`]: crate::RtEventBuf
+pub struct CappedWriter<'a, T, const N: usize> {
+    buf: &'a mut SmallVec<[T; N]>,
+}
+
+impl<T, const N: usize> CappedWriter<'_, T, N> {
+    /// Append one item if there is room. Returns `false` (dropping `v`) when
+    /// the buffer already holds `N` items.
+    #[inline]
+    pub fn push(&mut self, v: T) -> bool {
+        if self.buf.len() >= N {
+            return false;
+        }
+        self.buf.push(v);
+        true
+    }
+
+    /// Append from an iterator, stopping at capacity. Returns the number of
+    /// items actually written, so a caller can tell whether input was dropped.
+    #[inline]
+    pub fn extend(&mut self, it: impl IntoIterator<Item = T>) -> usize {
+        let mut written = 0;
+        for v in it {
+            if !self.push(v) {
+                break;
+            }
+            written += 1;
+        }
+        written
+    }
+
+    /// Number of items written so far this fill.
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.buf.len()
+    }
+
+    /// Whether nothing has been written yet this fill.
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.buf.is_empty()
+    }
+
+    /// Whether the buffer has reached its cap — further pushes will be dropped.
+    #[inline]
+    pub fn is_full(&self) -> bool {
+        self.buf.len() >= N
+    }
+
+    /// Remaining room before the cap.
+    #[inline]
+    pub fn remaining(&self) -> usize {
+        N - self.buf.len()
+    }
+}
+
 impl<T, const N: usize> RtScratchBuf<T, N> {
     /// An empty buffer with `N` inline slots.
     pub fn new() -> Self {
@@ -45,22 +113,22 @@ impl<T, const N: usize> RtScratchBuf<T, N> {
     /// contents as a slice borrowing `&self` (valid until the next call that
     /// touches the buffer).
     ///
-    /// `fill` receives the cleared `SmallVec` and pushes the block's items into
-    /// it. The buffer is capped at `N` only by the caller's discipline in
-    /// `fill` (push no more than `N`); a `SmallVec` will spill to the heap if
-    /// pushed past `N`, so size `N` to the worst case.
+    /// `fill` receives a [`CappedWriter`] over the cleared buffer and pushes
+    /// the block's items into it. Writes past `N` are **dropped**, not spilled
+    /// to the heap — `CappedWriter::push` returns `false` at capacity — so
+    /// size `N` to the worst case if dropping is not acceptable.
     ///
     /// # Safety
     /// The caller must guarantee single-audio-thread access: no other thread
     /// may call this (or otherwise touch the buffer) while either this call is
     /// running or the returned slice is still alive.
     #[inline]
-    pub unsafe fn fill_and_read(&self, fill: impl FnOnce(&mut SmallVec<[T; N]>)) -> &[T] {
+    pub unsafe fn fill_and_read(&self, fill: impl FnOnce(&mut CappedWriter<'_, T, N>)) -> &[T] {
         // SAFETY: single-audio-thread access per the method contract; the
         // mutable borrow ends before the shared reborrow below.
         let buf = unsafe { &mut *self.inner.get() };
         buf.clear();
-        fill(buf);
+        fill(&mut CappedWriter { buf });
         // SAFETY: as above; the returned slice borrows `self`, which is the
         // whole reason this type wraps `UnsafeCell` rather than building on
         // `AudioThreadCell`'s scoped guards.
@@ -89,15 +157,27 @@ mod tests {
     #[test]
     fn fill_and_read_returns_filled_slice() {
         let buf: RtScratchBuf<u32, 8> = RtScratchBuf::new();
-        let slice = unsafe { buf.fill_and_read(|v| v.extend([1, 2, 3])) };
+        let slice = unsafe {
+            buf.fill_and_read(|v| {
+                v.extend([1, 2, 3]);
+            })
+        };
         assert_eq!(slice, &[1, 2, 3]);
     }
 
     #[test]
     fn refill_clears_previous_contents() {
         let buf: RtScratchBuf<u32, 8> = RtScratchBuf::new();
-        let _ = unsafe { buf.fill_and_read(|v| v.extend([1, 2, 3])) };
-        let slice = unsafe { buf.fill_and_read(|v| v.push(9)) };
+        let _ = unsafe {
+            buf.fill_and_read(|v| {
+                v.extend([1, 2, 3]);
+            })
+        };
+        let slice = unsafe {
+            buf.fill_and_read(|v| {
+                v.push(9);
+            })
+        };
         assert_eq!(slice, &[9], "each fill starts from empty");
     }
 
@@ -106,5 +186,65 @@ mod tests {
         let buf: RtScratchBuf<u32, 8> = RtScratchBuf::new();
         let slice = unsafe { buf.fill_and_read(|_| {}) };
         assert!(slice.is_empty());
+    }
+
+    #[test]
+    fn push_past_capacity_is_dropped_not_spilled() {
+        let buf: RtScratchBuf<u32, 4> = RtScratchBuf::new();
+        let slice = unsafe {
+            buf.fill_and_read(|v| {
+                for i in 0..100 {
+                    v.push(i);
+                }
+            })
+        };
+        assert_eq!(
+            slice,
+            &[0, 1, 2, 3],
+            "items past N are dropped, never spilled to the heap"
+        );
+    }
+
+    #[test]
+    fn push_reports_refusal_at_capacity() {
+        let buf: RtScratchBuf<u32, 2> = RtScratchBuf::new();
+        unsafe {
+            buf.fill_and_read(|v| {
+                assert!(v.push(1));
+                assert!(v.push(2));
+                assert!(!v.push(3), "push past N must report refusal");
+                assert!(v.is_full());
+                assert_eq!(v.remaining(), 0);
+            })
+        };
+    }
+
+    #[test]
+    fn extend_reports_how_many_were_written() {
+        let buf: RtScratchBuf<u32, 3> = RtScratchBuf::new();
+        let slice = unsafe {
+            buf.fill_and_read(|v| {
+                let written = v.extend(0..10);
+                assert_eq!(written, 3, "extend stops at the cap and reports it");
+            })
+        };
+        assert_eq!(slice, &[0, 1, 2]);
+    }
+
+    #[test]
+    fn capacity_is_not_a_spill_across_refills() {
+        // A buffer driven past its cap every block must still be inline
+        // afterwards — the whole point of the cap. Verified via `remaining`
+        // rather than a heap probe, which `no_std` cannot run here.
+        let buf: RtScratchBuf<u32, 4> = RtScratchBuf::new();
+        for _ in 0..100 {
+            unsafe {
+                buf.fill_and_read(|v| {
+                    v.extend(0..50);
+                    assert_eq!(v.len(), 4);
+                    assert_eq!(v.remaining(), 0);
+                })
+            };
+        }
     }
 }

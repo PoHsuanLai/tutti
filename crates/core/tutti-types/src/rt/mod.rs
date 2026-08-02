@@ -6,10 +6,13 @@
 //! - [`AudioThreadCell`] — interior mutability with a "one borrow at a time"
 //!   contract, reached through `&self` (e.g. behind an `Arc` or a COM object).
 //! - [`RtEventBuf`] — a fixed-inline-capacity event collector refilled each
-//!   block, built on [`AudioThreadCell`].
+//!   block, built on [`AudioThreadCell`]. Read it with `for_each`, or consume
+//!   it with `drain_each` when the callback needs `&mut` access to whatever
+//!   owns the collector.
 //! - [`RtScratchBuf`] — fill-then-lend: refills each block and lends its filled
 //!   slice out with `&self` lifetime — the one "return a borrow back to the
-//!   caller" shape [`AudioThreadCell`] cannot give.
+//!   caller" shape [`AudioThreadCell`] cannot give. Its fill closure receives a
+//!   [`CappedWriter`], so overflow is refused rather than heap-allocated.
 //! - [`RtScratch`] — a fixed-*capacity* scratch buffer with no grow/push API;
 //!   the active length per block is chosen by slicing, not by resizing. Sibling
 //!   to [`RtScratchBuf`] with a different contract (own-and-slice vs lend).
@@ -31,4 +34,4 @@ pub use denormals::ScopedNoDenormals;
 pub use event_buf::RtEventBuf;
 pub use publish::{RtPublish, RtRef};
 pub use scratch::{RtScratch, RtScratchOverflow};
-pub use scratch_buf::RtScratchBuf;
+pub use scratch_buf::{CappedWriter, RtScratchBuf};

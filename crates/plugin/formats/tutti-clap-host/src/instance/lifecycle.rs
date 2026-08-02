@@ -121,16 +121,20 @@ impl ClapLoaded {
             .process
             .resize_for(input_total, output_total, max_frames, num_in, num_out);
 
-        // Pre-allocate event scratch so steady-state `process` calls never
-        // touch the allocator.
+        // Pre-allocate the growable event scratch so steady-state `process`
+        // calls never touch the allocator.
+        //
+        // `out_midi` / `out_note_expressions` are absent here on purpose: they
+        // are `RtVec`, whose capacity is inline and fixed at the type level, so
+        // there is nothing to reserve. Reserving was how those two *used* to
+        // avoid allocating — an off-RT bound that the on-RT push path then had
+        // to be trusted to respect. It isn't trusted any more; it's enforced.
         scratch.input_events.reserve(EVENT_SCRATCH_CAPACITY);
         scratch.output_events.reserve(EVENT_SCRATCH_CAPACITY);
-        scratch.out_midi.reserve(EVENT_SCRATCH_CAPACITY);
         scratch
             .out_param_changes
             .queues
             .reserve(PARAM_QUEUE_CAPACITY);
-        scratch.out_note_expressions.reserve(EVENT_SCRATCH_CAPACITY);
 
         Ok(ClapActive {
             scratch,

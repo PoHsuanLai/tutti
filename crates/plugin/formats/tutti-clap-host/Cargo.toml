@@ -30,6 +30,7 @@ smallvec = "1"
 thiserror = "2"
 tutti-midi-types = { path = "../../../midi/tutti-midi-types" }
 tutti-plugin-types = { path = "../../tutti-plugin-types" }
+tutti-types = { path = "../../../core/tutti-types" }
 
 [dev-dependencies]
 assert_no_alloc = { version = "1", default-features = false }

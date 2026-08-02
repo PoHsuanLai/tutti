@@ -16,6 +16,11 @@
 //! - [`RtScratch`] — a fixed-*capacity* scratch buffer with no grow/push API;
 //!   the active length per block is chosen by slicing, not by resizing. Sibling
 //!   to [`RtScratchBuf`] with a different contract (own-and-slice vs lend).
+//! - [`RtVec`] — collect-then-lend through `&mut self`: a capped collection
+//!   that owns its storage and exposes it as `&[T]`. What a per-block pool
+//!   wants when its owner already has `&mut self`, and the shape the others
+//!   cannot serve — [`RtEventBuf`] hides its storage, [`RtScratchBuf`] lends
+//!   through `&self` + `unsafe`, [`RtScratch`] has no `push`.
 //! - [`RtPublish`] — a value published from a control thread and read by the
 //!   audio thread, where the read is a *borrow*: the callback never holds an
 //!   owning handle, so retired values are freed by the publisher.
@@ -28,6 +33,7 @@ pub mod event_buf;
 pub mod publish;
 pub mod scratch;
 pub mod scratch_buf;
+pub mod vec;
 
 pub use cell::{AudioThreadCell, BorrowGuard, BorrowRef};
 pub use denormals::ScopedNoDenormals;
@@ -35,3 +41,4 @@ pub use event_buf::RtEventBuf;
 pub use publish::{RtPublish, RtRef};
 pub use scratch::{RtScratch, RtScratchOverflow};
 pub use scratch_buf::{CappedWriter, RtScratchBuf};
+pub use vec::RtVec;

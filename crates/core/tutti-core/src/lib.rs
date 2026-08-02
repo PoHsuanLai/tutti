@@ -107,7 +107,7 @@ pub use std::sync::Arc;
 // engine root: the one-borrow cell, the event/scratch buffers, the fixed
 // scratch, and the denormals guard.
 pub use tutti_types::{
-    AudioThreadCell, CappedWriter, RtEventBuf, RtScratch, RtScratchBuf, RtScratchOverflow,
+    AudioThreadCell, CappedWriter, RtEventBuf, RtScratch, RtScratchBuf, RtScratchOverflow, RtVec,
     ScopedNoDenormals,
 };
 // The engine's I/O edge vocabulary (mic/file/plugin sources + sinks), homed in

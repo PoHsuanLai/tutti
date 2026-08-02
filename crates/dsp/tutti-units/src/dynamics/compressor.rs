@@ -9,7 +9,7 @@ use super::utils::{
     amplitude_to_db, compute_compressor_gain_reduction, db_to_amplitude, sidechain_level_buffer,
     sidechain_level_slice,
 };
-use tutti_core::{Amplitude, CompressionRatio, Db, Param, Seconds};
+use tutti_core::{Amplitude, CompressionRatio, Db, Param, Seconds, Tail};
 
 /// Shared compressor state used by the per-sample gain computation.
 #[derive(Clone)]
@@ -357,6 +357,17 @@ impl AudioUnit for Compressor {
             output.set(c, input.at(c));
         }
         output
+    }
+
+    /// A gain processor stops with its input.
+    ///
+    /// The release envelope decays after the input goes silent, but it only
+    /// scales: `output = input * gain`, so a silent input is a silent output
+    /// whatever the envelope is doing. Declared rather than left `Unknown` —
+    /// one unreporting node on the output path makes the whole graph's tail
+    /// unspendable.
+    fn tail(&mut self) -> Tail {
+        Tail::None
     }
 
     fn footprint(&self) -> usize {

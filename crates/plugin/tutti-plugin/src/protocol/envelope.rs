@@ -9,7 +9,7 @@ use super::sample::SampleFormat;
 use super::shm::SlabLayout;
 use super::ParamAddress;
 use super::Samples;
-use super::{LoadedPlugin, ParameterInfo, PluginDescriptor};
+use super::{LoadedPlugin, ParameterInfo, PluginDescriptor, PluginTail};
 
 /// Wire-deserialization fallback for [`HostMessage::LoadPlugin::block_size`]
 /// when an older/partial message arrives without the field. The operative
@@ -146,6 +146,16 @@ pub enum BridgeMessage {
     /// the graph must be committed again for compensation to update.
     LatencyChanged {
         samples: Samples,
+    },
+    /// Plugin reported a new tail length at runtime. The host updates the value
+    /// `AudioUnit::tail()` reports, so a bounce started after the change sizes
+    /// its render from the current decay rather than the one loaded with.
+    ///
+    /// CLAP-only in practice: it is the one format that pairs its tail query
+    /// with a host `changed` callback. VST3's restart flags have no tail member
+    /// and AU has no tail property listener, so both are settled at load.
+    TailChanged {
+        tail: PluginTail,
     },
     /// Plugin changed its own parameter values at runtime (e.g. an in-plugin
     /// preset load). The host should re-read parameter values from the plugin.

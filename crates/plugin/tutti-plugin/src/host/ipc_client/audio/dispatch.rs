@@ -223,6 +223,9 @@ fn recv_reply(
             BridgeMessage::LatencyChanged { samples } => {
                 channels.push_unsolicited(BridgeEvent::LatencyChanged { samples });
             }
+            BridgeMessage::TailChanged { tail } => {
+                channels.push_unsolicited(BridgeEvent::TailChanged { tail });
+            }
             BridgeMessage::ParameterChanged { index, value } => {
                 channels.push_unsolicited(BridgeEvent::ParameterChanged { index, value });
             }

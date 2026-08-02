@@ -17,7 +17,7 @@ use tutti_types::{BeatDuration, Bpm, Samples};
 pub(crate) struct RenderPlan {
     /// Frames the net must produce, including latency slack when trimming.
     pub total: Samples,
-    /// Frames the sink keeps — the audible duration.
+    /// Frames the sink keeps: the requested span plus the tail.
     pub output_length: Samples,
     /// Leading frames the sink drops.
     pub latency: Samples,
@@ -33,8 +33,13 @@ impl RenderPlan {
     /// building a graph first. The caller resolves the latency now (see
     /// [`reported_latency`](crate::reported_latency)) and passes a number.
     pub fn new(config: &RenderConfig) -> Self {
-        let output_length = duration_to_frames(config.duration_seconds, config.sample_rate);
-        // Render the audible span PLUS the trimmed head, so the output is still
+        let duration = duration_to_frames(config.duration_seconds, config.sample_rate);
+        // The tail extends what the sink KEEPS, not just what the net produces.
+        // Two gates truncate independently — `total` bounds the pull loop and
+        // `output_length` caps the kept frames — so extending only the first
+        // would render the decay and then discard it.
+        let output_length = duration + config.tail;
+        // Render the kept span PLUS the trimmed head, so the output is still
         // `output_length` frames long after the drop.
         // Both are frame counts, so this is `Samples`' own saturating `Add`
         // rather than an unwrapped `usize` one.
@@ -132,6 +137,7 @@ mod tests {
             sample_rate: SampleRate(48_000.0),
             duration_seconds: 1.0,
             latency,
+            tail: Samples(0),
         }
     }
 
@@ -153,5 +159,38 @@ mod tests {
         assert_eq!(plan.output_length, Samples(48_000));
         assert_eq!(plan.total, Samples(48_512));
         assert_eq!(plan.latency, Samples(512));
+    }
+
+    /// A tail extends both the frames rendered and the frames kept.
+    ///
+    /// Two gates truncate a render independently, and they need opposite
+    /// treatment from the head trim: latency is rendered then dropped, a tail is
+    /// rendered then kept. Extending only `total` would pull the decay out of
+    /// the graph and let the sink's `output_length` cap discard it — a bug no
+    /// arithmetic test that checked one field could see.
+    #[test]
+    fn a_tail_extends_both_what_is_rendered_and_what_is_kept() {
+        let plan = RenderPlan::new(&RenderConfig {
+            tail: Samples(48_000),
+            ..config(Samples(512))
+        });
+        assert_eq!(
+            plan.output_length,
+            Samples(96_000),
+            "the tail must survive the sink's cap"
+        );
+        assert_eq!(
+            plan.total,
+            Samples(96_512),
+            "and the net must be pulled for it, plus the trimmed head"
+        );
+    }
+
+    /// A zero tail is exactly the arithmetic from before tails existed.
+    #[test]
+    fn no_tail_leaves_the_plan_unchanged() {
+        let plan = RenderPlan::new(&config(Samples(512)));
+        assert_eq!(plan.output_length, Samples(48_000));
+        assert_eq!(plan.total, Samples(48_512));
     }
 }

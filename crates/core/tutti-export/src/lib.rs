@@ -179,6 +179,34 @@ pub fn reported_latency(net: &mut tutti_core::dsp::Net) -> Samples {
     Samples(net.latency().unwrap_or(0.0).floor().max(0.0) as usize)
 }
 
+/// The tail `net` reports — how long it keeps ringing after its input stops.
+///
+/// For a caller that wants [`RenderConfig::tail`] to be whatever the graph says:
+/// a reverb, a convolver, a hosted plugin that declared a decay. The mirror of
+/// [`reported_latency`], and a function for the same reason — asking a graph is
+/// an *action*, and folding it into a config value would drag a graph into
+/// arithmetic that is otherwise pure.
+///
+/// Returns the figure **and its caveats** rather than a frame count, because for
+/// two graphs there is no count: one that never decays, and one whose nodes were
+/// never taught to answer. Resolving either into a number is a decision, so it
+/// happens at the call site:
+///
+/// ```ignore
+/// let reported = reported_tail(&net);
+/// let tail = reported.samples().unwrap_or_else(|| {
+///     // This bounce stops four seconds into an unbounded tail.
+///     Seconds(4.0).to_samples(rate)
+/// });
+/// let config = ExportConfig {
+///     render: RenderConfig { tail, ..Default::default() },
+///     ..Default::default()
+/// };
+/// ```
+pub fn reported_tail(net: &tutti_core::dsp::Net) -> tutti_types::GraphTail {
+    tutti_types::tail::graph_tail(net)
+}
+
 /// Write already-rendered audio to `path`.
 ///
 /// The third of the API, and the one that makes measure-then-apply usable:

@@ -151,6 +151,218 @@ fn a_latency_trim_preserves_the_output_length() {
     );
 }
 
+/// A tail lengthens the output by exactly the tail.
+///
+/// The mirror of `a_latency_trim_preserves_the_output_length`, and the opposite
+/// direction: a trim must not shorten the file, a tail must lengthen it. The
+/// decay is audio the graph produced, so keeping it is the point — rendering it
+/// and then discarding it at the sink's cap would leave this assertion at the
+/// untailed length.
+#[test]
+fn a_tail_lengthens_the_output_by_exactly_the_tail() {
+    let mut s = config(AudioFormat::Wav, BitDepth::Float32, ChannelLayout::STEREO);
+    let untailed = render_to_buffers(net(), &s, &FrozenClock).unwrap();
+
+    let tail = tutti_types::Samples(4096);
+    s.render.tail = tail;
+    let tailed = render_to_buffers(net(), &s, &FrozenClock).unwrap();
+
+    assert_eq!(
+        tailed.frames().get(),
+        untailed.frames().get() + tail.get(),
+        "the rendered tail must reach the output, not be capped away"
+    );
+}
+
+/// A convolver's tail is its impulse response's ring-out, exactly.
+///
+/// The expected value here comes from the DSP, not from the implementation: an
+/// FIR of length `L` answers an impulse at frame 0 through frame `L - 1`, so
+/// `L - 1` frames land after the input stops. This is the one node whose tail is
+/// known a priori, which is what makes it worth reaching for a dev-dependency.
+///
+/// Read through `samples()`: every node here reports, so the graph's tail is a
+/// number the caller can spend without a decision.
+#[test]
+fn a_convolver_reports_its_ir_ring_out() {
+    let ir = vec![0.5f32; 4096];
+    let mut n = tutti_core::dsp::Net::new(0, 1);
+    let src = n.push(Box::new(dc(0.5)));
+    let conv = n.push(Box::new(tutti_units::ConvolverNode::with_ir(&ir)));
+    n.connect(src, 0, conv, 0);
+    n.pipe_output(conv);
+
+    assert_eq!(
+        tutti_export::reported_tail(&n).samples(),
+        Some(tutti_types::Samples(4095)),
+    );
+}
+
+/// Cascaded convolvers sum their ring-outs, because cascading convolves the two
+/// responses and a ring-out is defined so that supports add without a
+/// correction term.
+#[test]
+fn cascaded_convolvers_sum_their_tails() {
+    let a = vec![0.5f32; 1024];
+    let b = vec![0.5f32; 2048];
+    let mut n = tutti_core::dsp::Net::new(0, 1);
+    let src = n.push(Box::new(dc(0.5)));
+    let first = n.push(Box::new(tutti_units::ConvolverNode::with_ir(&a)));
+    let second = n.push(Box::new(tutti_units::ConvolverNode::with_ir(&b)));
+    n.connect(src, 0, first, 0);
+    n.connect(first, 0, second, 0);
+    n.pipe_output(second);
+
+    // 1023 + 2047, which is the ring-out of the 3071-sample cascaded response.
+    assert_eq!(
+        tutti_export::reported_tail(&n).samples(),
+        Some(tutti_types::Samples(3070)),
+    );
+}
+
+/// One un-reporting node is enough to make the graph's figure a partial one.
+///
+/// `known()` still gives the sum over what spoke, so the two accessors disagree
+/// — which is the whole reason there are two. The unreporting node has to be
+/// constructed deliberately now that the stock fundsp nodes all answer.
+#[test]
+fn one_silent_node_makes_the_figure_partial_without_losing_it() {
+    /// A node that has never been taught to report a tail: the `AudioUnit`
+    /// default, which is what any newly-written node starts as.
+    #[derive(Clone, Default)]
+    struct Unreporting;
+
+    impl AudioUnit for Unreporting {
+        fn reset(&mut self) {}
+        fn set_sample_rate(&mut self, _: tutti_core::SampleRate) {}
+        fn tick(&mut self, input: &[f32], output: &mut [f32]) {
+            output[0] = input[0];
+        }
+        fn process(
+            &mut self,
+            size: usize,
+            input: &tutti_core::BufferRef,
+            output: &mut tutti_core::BufferMut,
+        ) {
+            for i in 0..size {
+                output.set_f32(0, i, input.at_f32(0, i));
+            }
+        }
+        fn inputs(&self) -> usize {
+            1
+        }
+        fn outputs(&self) -> usize {
+            1
+        }
+        fn route(&mut self, input: &tutti_core::SignalFrame, _: f64) -> tutti_core::SignalFrame {
+            input.clone()
+        }
+        fn get_id(&self) -> u64 {
+            0xDEAD_BEEF
+        }
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+        fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+            self
+        }
+        fn footprint(&self) -> usize {
+            std::mem::size_of::<Self>()
+        }
+    }
+
+    let ir = vec![0.5f32; 4096];
+    let mut n = tutti_core::dsp::Net::new(0, 1);
+    let src = n.push(Box::new(dc(0.5)));
+    let quiet = n.push(Box::new(Unreporting));
+    let conv = n.push(Box::new(tutti_units::ConvolverNode::with_ir(&ir)));
+    n.connect(src, 0, quiet, 0);
+    n.connect(quiet, 0, conv, 0);
+    n.pipe_output(conv);
+
+    let reported = tutti_export::reported_tail(&n);
+    assert_eq!(reported.unknown_nodes(), 1, "one node never answered");
+    assert_eq!(
+        reported.samples(),
+        None,
+        "so the graph's tail cannot be spent as a number"
+    );
+    assert_eq!(
+        reported.known(),
+        tutti_types::Samples(4095),
+        "but what the convolver reported is still available"
+    );
+}
+
+/// The stock nodes now answer, so an ordinary graph reports a spendable tail.
+///
+/// This is what teaching `AudioNode` to report bought: before it, a single
+/// `dc` source left `samples()` refusing for every real project, because one
+/// unreporting node on the output path makes the whole figure unspendable.
+#[test]
+fn a_graph_of_stock_nodes_reports_a_spendable_tail() {
+    let reported = tutti_export::reported_tail(&net());
+    assert_eq!(reported.unknown_nodes(), 0);
+    assert_eq!(reported.samples(), Some(tutti_types::Samples(0)));
+}
+
+/// A graph that never decays resolves to exactly the caller's bound.
+///
+/// A feedback reverb re-enters its own output, so it has no frame count of its
+/// own — the cap is the whole answer, and it is the caller's choice rather than
+/// a figure the engine invented.
+#[test]
+fn resolving_an_unbounded_graph_spends_the_cap() {
+    let mut n = tutti_core::dsp::Net::new(0, 2);
+    let src = n.push(Box::new(dc((0.5, 0.5))));
+    let rev = n.push(Box::new(reverb_stereo(10.0, 2.0, 0.5)));
+    n.connect(src, 0, rev, 0);
+    n.connect(src, 1, rev, 1);
+    n.pipe_output(rev);
+
+    let reported = tutti_export::reported_tail(&n);
+    let cap = tutti_types::Samples(384_000);
+    assert!(reported.is_unbounded(), "an FDN never decays on its own");
+    assert_eq!(reported.samples(), None, "so there is no count to spend");
+    assert_eq!(reported.resolve(cap), cap);
+}
+
+/// A fully-reported graph resolves to its own figure, not the cap.
+///
+/// The cap bounds; it does not replace. Spending it on a graph that answered
+/// would append silence — 4095 frames is 0.09 s, and the cap here is eight
+/// seconds.
+#[test]
+fn resolving_a_reported_graph_keeps_its_own_figure() {
+    let ir = vec![0.5f32; 4096];
+    let mut n = tutti_core::dsp::Net::new(0, 1);
+    let src = n.push(Box::new(dc(0.5)));
+    let conv = n.push(Box::new(tutti_units::ConvolverNode::with_ir(&ir)));
+    n.connect(src, 0, conv, 0);
+    n.pipe_output(conv);
+
+    let reported = tutti_export::reported_tail(&n);
+    assert_eq!(
+        reported.resolve(tutti_types::Samples(384_000)),
+        tutti_types::Samples(4095),
+        "the convolver's figure, not the cap"
+    );
+}
+
+/// A stateless node declares it has no tail, rather than staying silent about
+/// it.
+///
+/// This is what makes the mechanism usable: one unreporting node on the output
+/// path makes the whole graph's tail unspendable, so declaring `None` on the
+/// nodes that genuinely have none is load-bearing, not cosmetic.
+#[test]
+fn a_stateless_node_reports_no_tail_rather_than_an_unknown_one() {
+    use tutti_core::AudioUnit;
+
+    let mut dist = tutti_units::DistortionNode::new(tutti_units::ShapeKind::Tanh, 1.0);
+    assert_eq!(dist.tail(), tutti_types::Tail::None);
+}
+
 /// `render_to_buffers` reports the rate its samples are actually at, and gives
 /// back one plane per channel rather than a stereo pair.
 #[test]

@@ -15,6 +15,7 @@ use super::*;
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use hashbrown::HashMap;
+use tutti_types::Tail;
 
 // Iterator type returned from `Net::ids`.
 pub use hashbrown::hash_map::Keys;
@@ -1723,6 +1724,28 @@ impl AudioUnit for Net {
             }
         }
         output_signal
+    }
+
+    /// A net's tail is the tail of the graph it contains.
+    ///
+    /// Without this a `Net` pushed as a node inside another would report the
+    /// [`Tail::Unknown`] default, so a plugin one level down would be invisible
+    /// to the outer walk. Recursing here is what makes nesting transparent —
+    /// [`tutti_types::tail::graph_tail`] reaches every node at this level, and
+    /// each node that is itself a net answers for its own.
+    ///
+    /// An unbounded or partly-unknown inner graph collapses to that arm: the
+    /// outer walk composes frame counts, and neither of those is one.
+    fn tail(&mut self) -> Tail {
+        let inner = tutti_types::tail::graph_tail(&*self);
+        if inner.is_unbounded() {
+            return Tail::Unbounded;
+        }
+        match inner.samples() {
+            Some(s) if s.is_zero() => Tail::None,
+            Some(s) => Tail::Finite(s),
+            None => Tail::Unknown,
+        }
     }
 
     fn footprint(&self) -> usize {

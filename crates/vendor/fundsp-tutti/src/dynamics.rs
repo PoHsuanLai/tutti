@@ -9,6 +9,7 @@ use super::signal::*;
 use super::*;
 use core::sync::atomic::AtomicU32;
 use numeric_array::typenum::*;
+use tutti_types::{Samples, Tail};
 extern crate alloc;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -219,6 +220,17 @@ where
             self.advance();
             let limit = self.follower.value();
             output * Frame::splat(1.0 / limit)
+        }
+    }
+
+    /// The lookahead buffer's contents, which outlive a silent input.
+    ///
+    /// The release envelope is not part of this: it shapes gain, and gain
+    /// applied to silence is silence.
+    fn tail(&mut self) -> Tail {
+        match (self.lookahead * self.sample_rate) as usize {
+            0 => Tail::None,
+            n => Tail::Finite(Samples(n)),
         }
     }
 

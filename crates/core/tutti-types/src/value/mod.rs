@@ -19,11 +19,13 @@ pub mod note;
 
 pub mod param;
 pub mod samples;
+pub mod tail;
 pub mod unit_param;
 
 pub use note::{NotOnMidiScale, Note, NoteNumberOutOfRange, PitchClass};
 pub use param::Param;
 pub use samples::Samples;
+pub use tail::Tail;
 pub use unit_param::{ParamAddr, UnitParam, UnitParamOutOfRange};
 pub use units::{
     Amplitude, ArcDegrees, AtomicReadRate, AtomicSamplePosition, Azimuth, Beat, BeatDuration, Bpm,

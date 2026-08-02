@@ -33,7 +33,7 @@ use tutti_core::{
     dsp::{Atan, Clip, Crush, Shape, SoftCrush, Softsign, Tanh},
     AudioUnit, BufferMut, BufferRef, SignalFrame,
 };
-use tutti_core::{Drive, Param};
+use tutti_core::{Drive, Param, Tail};
 
 /// Selects which fundsp waveshaper a [`DistortionNode`] applies.
 ///
@@ -283,6 +283,11 @@ impl AudioUnit for DistortionNode {
             out.set(c, input.at(c).distort(0.0));
         }
         out
+    }
+
+    /// The shapers carry no z-state, so the output stops with the input.
+    fn tail(&mut self) -> Tail {
+        Tail::None
     }
 
     fn footprint(&self) -> usize {

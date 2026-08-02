@@ -15,9 +15,29 @@ use tutti_core::{
     SignalFrame,
 };
 
+use tutti_core::Tail;
+
 use super::convolver::Convolver;
 use super::params::WetDry;
 use crate::StereoPair;
+
+/// The tail of an FIR whose impulse response is `ir_length` samples long.
+///
+/// One less than the response, because a tail counts the frames produced *after*
+/// the input stops: an IR of length `L` answers an impulse at frame 0 through
+/// frame `L - 1`, so `L - 1` of them land past the input. Defined this way the
+/// figure adds along a chain with no correction term, which is what
+/// [`tutti_core::tail`] relies on.
+///
+/// A convolution is linear and finite, so this is exact rather than an estimate
+/// — the only node here that can say that.
+fn ring_out(ir_length: usize) -> Tail {
+    match ir_length {
+        // An empty or single-sample IR produces nothing after its input stops.
+        0 | 1 => Tail::None,
+        n => Tail::Finite(Samples(n - 1)),
+    }
+}
 
 /// Channel configuration for [`StereoConvolverNode`].
 ///
@@ -162,6 +182,12 @@ impl AudioUnit for ConvolverNode {
         let mut out = SignalFrame::new(1);
         out.set(0, input.at(0).delay(self.latency_samples as f64));
         out
+    }
+
+    /// Exactly the impulse response's ring-out — the one node here whose tail is
+    /// known rather than estimated.
+    fn tail(&mut self) -> Tail {
+        ring_out(self.convolver.ir_length())
     }
 
     fn footprint(&self) -> usize {
@@ -338,6 +364,12 @@ impl AudioUnit for StereoConvolverNode {
         out.set(0, input.at(0).delay(latency));
         out.set(1, input.at(1).delay(latency));
         out
+    }
+
+    /// The longer of the two IRs' ring-outs: the pair falls silent when its
+    /// slower channel does.
+    fn tail(&mut self) -> Tail {
+        ring_out(self.channels.l.ir_length().max(self.channels.r.ir_length()))
     }
 
     fn footprint(&self) -> usize {

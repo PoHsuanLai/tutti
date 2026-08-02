@@ -5,7 +5,8 @@ use crate::SynthConfig;
 use crate::{AllocationResult, Portamento, UnisonEngine, VoiceAllocator, VoiceAllocatorConfig};
 use smallvec::SmallVec;
 use tutti_core::{
-    Amplitude, AudioUnit, BufferMut, BufferRef, ChannelLayout, Param, SignalFrame, MAX_BUFFER_SIZE,
+    Amplitude, AudioUnit, BufferMut, BufferRef, ChannelLayout, Param, SignalFrame, Tail,
+    MAX_BUFFER_SIZE,
 };
 use tutti_midi_runtime::{MidiInPort, MidiSender};
 use tutti_midi_types::ump::MidiEvent;
@@ -884,6 +885,27 @@ impl AudioUnit for PolySynth {
 
     fn route(&mut self, _input: &SignalFrame, _frequency: f64) -> SignalFrame {
         SignalFrame::new(self.outputs())
+    }
+
+    /// The amplitude envelope's release stage.
+    ///
+    /// This node takes no audio input — it is driven by MIDI — so "after the
+    /// input stops" means after the last note-off, at which point every
+    /// still-sounding voice rings for its release time. That time is an authored
+    /// parameter rather than an estimate, which is what makes this exact.
+    ///
+    /// A bounce that ends at the last note-off without it chops the release off
+    /// every note in the project.
+    fn tail(&mut self) -> Tail {
+        match self
+            .config
+            .envelope
+            .release
+            .to_samples_ceil(self.config.sample_rate)
+        {
+            s if s.is_zero() => Tail::None,
+            s => Tail::Finite(s),
+        }
     }
 
     fn set(&mut self, _setting: tutti_core::Setting) {}

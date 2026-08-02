@@ -76,6 +76,22 @@ impl AudioUnit for PluginClient {
         )
     }
 
+    /// What the plugin currently reports for its tail.
+    ///
+    /// The format loaders decode each format's own answer into
+    /// [`Tail`](tutti_plugin_types::PluginTail) — AU's seconds, the `u32::MAX`
+    /// sentinel CLAP and VST3 share, VST2's absence of a query. Nothing is
+    /// re-interpreted here: a plugin that said nothing stays `Unknown` rather
+    /// than becoming a zero.
+    ///
+    /// Reads the live cell, not the value captured at load, so a CLAP plugin
+    /// whose decay is raised at runtime reports the new tail. The other three
+    /// formats have no runtime signal, so for them the cell never moves off its
+    /// load-time value.
+    fn tail(&mut self) -> tutti_plugin_types::PluginTail {
+        PluginClient::tail(self)
+    }
+
     fn footprint(&self) -> usize {
         std::mem::size_of::<Self>()
     }
@@ -148,6 +164,11 @@ impl AudioUnit<F64> for PluginClient {
             (PluginClient::latency(self) + PIPELINE_LATENCY_FRAMES).get() as f64,
             input,
         )
+    }
+
+    /// What the plugin currently reports — see the `f32` impl.
+    fn tail(&mut self) -> tutti_plugin_types::PluginTail {
+        PluginClient::tail(self)
     }
 
     fn footprint(&self) -> usize {

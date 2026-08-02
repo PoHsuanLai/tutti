@@ -6,6 +6,7 @@ use super::math::*;
 use super::sequencer::*;
 use super::signal::*;
 use super::*;
+use tutti_types::Tail;
 extern crate alloc;
 use alloc::boxed::Box;
 use alloc::vec;
@@ -311,6 +312,40 @@ impl AudioUnit for SlotBackend {
 
     fn route(&mut self, input: &SignalFrame, frequency: f64) -> SignalFrame {
         self.current.route(input, frequency)
+    }
+
+    /// The longest tail among the units this slot may still be sounding.
+    ///
+    /// A crossfade has two live units, and either can be ringing; the slot falls
+    /// silent only when both have. `Unknown` from any one of them makes the
+    /// answer unknown rather than the max of the rest, since an unreported unit
+    /// is not evidence of a short tail.
+    fn tail(&mut self) -> Tail {
+        let mut tails = vec![self.current.tail()];
+        if let Some(next) = self.next.as_deref_mut() {
+            tails.push(next.tail());
+        }
+        if let Some(latest) = self.latest.as_deref_mut() {
+            tails.push(latest.tail());
+        }
+
+        if tails.iter().any(|t| matches!(t, Tail::Unbounded)) {
+            return Tail::Unbounded;
+        }
+        if tails.iter().any(|t| matches!(t, Tail::Unknown)) {
+            return Tail::Unknown;
+        }
+        tails
+            .iter()
+            .filter_map(|t| t.samples())
+            .max()
+            .map_or(Tail::None, |s| {
+                if s.is_zero() {
+                    Tail::None
+                } else {
+                    Tail::Finite(s)
+                }
+            })
     }
 
     fn footprint(&self) -> usize {

@@ -38,7 +38,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use tutti_core::dsp::{AudioUnit, BufferMut, BufferRef, Setting, SignalFrame};
-use tutti_core::{Amplitude, ChannelLayout, Pan, Param, ParamAddr, UnitParam};
+use tutti_core::{Amplitude, ChannelLayout, Pan, Param, ParamAddr, Tail, UnitParam};
 use tutti_mod::{AtomicTarget, ModParams, ModTarget};
 
 use crate::ParamPorts;
@@ -394,6 +394,11 @@ impl AudioUnit for BusStripUnit {
             out.set(c, input.at(c).scale(g.get() as f64));
         }
         out
+    }
+
+    /// Volume, pan and mute are per-frame gains, so this stops with its input.
+    fn tail(&mut self) -> Tail {
+        Tail::None
     }
 
     fn footprint(&self) -> usize {

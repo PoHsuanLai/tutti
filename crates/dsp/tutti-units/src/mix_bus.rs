@@ -26,7 +26,7 @@
 //! stereo signals.
 
 use tutti_core::dsp::Signal;
-use tutti_core::ChannelLayout;
+use tutti_core::{ChannelLayout, Tail};
 
 /// A dynamic-arity, dynamic-width summing bus: `sources * channels` inputs →
 /// `channels` outputs, summed per channel.
@@ -149,6 +149,11 @@ impl tutti_core::AudioUnit for ChannelSumUnit {
 
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
         self
+    }
+
+    /// Summing is per-frame, so this stops with its inputs.
+    fn tail(&mut self) -> Tail {
+        Tail::None
     }
 
     fn footprint(&self) -> usize {

@@ -13,7 +13,7 @@ use super::vocoder::Vocoder;
 use super::{next_handle_id, Bank, FftSize};
 use tutti_core::{
     AtomicF32, AudioUnit, BufferMut, BufferRef, Cents, ChannelLayout, Ordering, ReadRate,
-    SampleRate, SignalFrame, StretchFactor,
+    SampleRate, Samples, SignalFrame, StretchFactor, Tail,
 };
 
 /// Real-time time-stretching and pitch-shifting unit.
@@ -634,6 +634,23 @@ impl AudioUnit for Unit {
             out.set(c, sig);
         }
         out
+    }
+
+    /// The overlap-add accumulator's contents — one FFT window.
+    ///
+    /// The same number [`latency_samples`](Self::latency_samples) reports, and
+    /// for the same reason: a window's worth of audio has been written into the
+    /// accumulator but not yet advanced past. It must be drained after the input
+    /// stops or the stretched material ends a window early.
+    ///
+    /// The bypass branch is mirrored deliberately. A unit sitting at unity does
+    /// no overlap-add and holds nothing, so reporting a window there would
+    /// append ~46 ms of silence to every unstretched voice.
+    fn tail(&mut self) -> Tail {
+        match self.latency_samples() {
+            0 => Tail::None,
+            n => Tail::Finite(Samples(n)),
+        }
     }
 
     fn footprint(&self) -> usize {

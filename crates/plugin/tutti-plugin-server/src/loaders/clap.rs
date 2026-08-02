@@ -258,12 +258,25 @@ impl ClapInstance {
         clap_dispatch!(self, i => i.get_latency())
     }
 
+    /// Returns true if the plugin requested a tail change since the last poll.
+    /// Clears the flag.
+    #[cfg(feature = "clap")]
+    pub fn poll_tail_changed(&mut self) -> bool {
+        clap_dispatch_mut!(self, i => i.poll_tail_changed())
+    }
+
+    /// Current tail length in samples, as reported by the plugin.
+    #[cfg(feature = "clap")]
+    pub fn get_tail(&self) -> u32 {
+        clap_dispatch!(self, i => i.get_tail())
+    }
+
     /// Test-only access to the underlying loaded instance (via `Deref` through
     /// whichever active arm). Lets the integration tests exercise the read-only
     /// `ClapLoaded` surface (poll_*, port/note queries, state context, …)
     /// without threading the f32/f64 enum through every assertion.
     #[cfg(all(feature = "clap", test))]
-    fn clap_loaded(&self) -> &tutti_clap_host::ClapLoaded {
+    pub(crate) fn clap_loaded(&self) -> &tutti_clap_host::ClapLoaded {
         clap_dispatch!(self, i => &**i)
     }
 

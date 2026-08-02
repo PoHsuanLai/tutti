@@ -8,7 +8,7 @@ use super::params::AttackRelease;
 use super::utils::{
     amplitude_to_db, compute_gate_gain, sidechain_level_buffer, sidechain_level_slice,
 };
-use tutti_core::{Db, Param, Seconds};
+use tutti_core::{Db, Param, Seconds, Tail};
 
 /// Shared gate state used by the per-sample gain computation.
 #[derive(Clone)]
@@ -323,6 +323,17 @@ impl AudioUnit for Gate {
             output.set(c, input.at(c));
         }
         output
+    }
+
+    /// A gain processor stops with its input.
+    ///
+    /// The release envelope decays after the input goes silent, but it only
+    /// scales: `output = input * gain`, so a silent input is a silent output
+    /// whatever the envelope is doing. Declared rather than left `Unknown` —
+    /// one unreporting node on the output path makes the whole graph's tail
+    /// unspendable.
+    fn tail(&mut self) -> Tail {
+        Tail::None
     }
 
     fn footprint(&self) -> usize {

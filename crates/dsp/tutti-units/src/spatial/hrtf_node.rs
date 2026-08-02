@@ -9,7 +9,7 @@
 use tutti_core::ChannelLayout;
 use tutti_core::{
     fold_frame_to_mono, AudioUnit, Azimuth, BufferMut, BufferRef, Elevation, Mix, Param,
-    SampleRate, SignalFrame,
+    SampleRate, Samples, SignalFrame, Tail,
 };
 
 use super::hrtf_panner::{HrtfBinaural, HrtfBinauralError};
@@ -171,6 +171,14 @@ impl AudioUnit for HrtfBinauralNode {
         output.set(0, input.at(0));
         output.set(1, input.at(0));
         output
+    }
+
+    /// The frame bridge plus the convolution overlap, both fixed sizes.
+    ///
+    /// HRTF rendering convolves against a measured HRIR, so this is exact in the
+    /// same way the convolver's is — not an estimate.
+    fn tail(&mut self) -> Tail {
+        Tail::Finite(Samples(self.panner.ring_out()))
     }
 
     fn footprint(&self) -> usize {

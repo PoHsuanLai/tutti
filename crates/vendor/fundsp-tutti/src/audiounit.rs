@@ -10,6 +10,7 @@ use super::*;
 use core::marker::PhantomData;
 use dyn_clone::DynClone;
 use num_complex::Complex64;
+use tutti_types::Tail;
 extern crate alloc;
 use alloc::boxed::Box;
 use alloc::string::String;
@@ -326,6 +327,22 @@ pub trait AudioUnit<S: Sample = F32>: Send + Sync + DynClone {
         result
     }
 
+    /// How long this unit keeps producing after its input stops.
+    ///
+    /// Unlike [`latency`](Self::latency), this cannot be derived from
+    /// [`route`](Self::route): a [`Signal`] carries a latency through a chain,
+    /// and there is no equivalent carrier for a decay. A unit that has one
+    /// therefore reports it here, and [`tutti_types::tail`] composes the graph's
+    /// figure from what each node says.
+    ///
+    /// The default is [`Tail::Unknown`] — a unit that has not been taught to
+    /// answer has said nothing, which is not the same as saying it has no tail.
+    /// Overriding with [`Tail::None`] is how a unit states that it stops with
+    /// its input.
+    fn tail(&mut self) -> Tail {
+        Tail::Unknown
+    }
+
     /// Print information about this unit into a string.
     fn display(&mut self) -> String {
         let mut string = String::new();
@@ -492,6 +509,12 @@ where
     fn footprint(&self) -> usize {
         core::mem::size_of::<X>()
     }
+    /// Forwards the wrapped node's own answer. Without this every fundsp
+    /// built-in would fall through to the `AudioUnit` default and report
+    /// `Unknown`, since `An<X>` is how they all reach the dynamic interface.
+    fn tail(&mut self) -> Tail {
+        self.0.tail()
+    }
     fn allocate(&mut self) {
         self.0.allocate();
     }
@@ -642,6 +665,11 @@ impl AudioUnit for BigBlockAdapter {
     fn route(&mut self, input: &SignalFrame, frequency: f64) -> SignalFrame {
         self.source.route(input, frequency)
     }
+    /// A pure wrapper rings exactly as long as what it wraps.
+    fn tail(&mut self) -> Tail {
+        self.source.tail()
+    }
+
     fn footprint(&self) -> usize {
         self.source.footprint()
     }
@@ -745,6 +773,11 @@ impl AudioUnit for BlockRateAdapter {
     fn route(&mut self, input: &SignalFrame, frequency: f64) -> SignalFrame {
         self.unit.route(input, frequency)
     }
+    /// A pure wrapper rings exactly as long as what it wraps.
+    fn tail(&mut self) -> Tail {
+        self.unit.tail()
+    }
+
     fn footprint(&self) -> usize {
         self.unit.footprint()
     }
@@ -804,6 +837,11 @@ impl AudioUnit for DummyUnit {
     }
     fn as_any_mut(&mut self) -> &mut dyn core::any::Any {
         self
+    }
+
+    /// A dummy emits silence, so there is nothing to ring.
+    fn tail(&mut self) -> Tail {
+        Tail::None
     }
 
     fn footprint(&self) -> usize {

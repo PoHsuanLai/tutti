@@ -79,7 +79,17 @@ pub mod shm;
 ///   before it and a v9 *payload* runs the decoder off the end. The field also
 ///   carries `serde(default)`, which covers the JSON and struct-update paths
 ///   but not this bincode wire.
-pub const PROTOCOL_VERSION: u32 = 10;
+/// - v11: `BridgeMessage` gains `TailChanged { tail }`, so a runtime tail change
+///   reaches the host instead of being polled and dropped. v10 made the tail
+///   *travel*; it still only ever carried the value read at load, which is wrong
+///   for CLAP — `clap.tail` pairs the plugin's `get` with a host `changed`
+///   callback precisely because raising a reverb's decay changes the tail after
+///   load. Mandatory even though the variant is appended: bincode encodes the
+///   discriminant as a varint over the enum's *declaration* order, so this sits
+///   after the variants a v10 peer knows, and a v10 host receiving it reads a
+///   tag it has no arm for and fails the decode mid-stream rather than at a
+///   message boundary.
+pub const PROTOCOL_VERSION: u32 = 11;
 
 /// Validate a subprocess-reported protocol version against [`PROTOCOL_VERSION`].
 /// Called at each handshake consumer so a version skew fails loudly instead of
@@ -211,6 +221,30 @@ mod tests {
                 assert_eq!(events[1].frame_offset, 64);
             }
             _ => panic!("wrong message type"),
+        }
+    }
+
+    /// Every `TailChanged` arm survives the wire distinctly.
+    ///
+    /// The runtime signal is worth no more than the arm it carries: a
+    /// plugin that raises its decay to "unbounded" and a plugin that drops
+    /// to no tail at all must not arrive as the same message. This is the
+    /// `LoadedPlugin.tail` wire test one level up, on the *update* path —
+    /// the load-time field being round-trip-safe says nothing about a
+    /// separately-encoded enum variant.
+    #[test]
+    fn every_tail_change_arm_survives_the_wire() {
+        for tail in [
+            PluginTail::Unknown,
+            PluginTail::None,
+            PluginTail::Finite(Samples(96_000)),
+            PluginTail::Unbounded,
+        ] {
+            let bytes = bincode::serialize(&BridgeMessage::TailChanged { tail }).unwrap();
+            match bincode::deserialize::<BridgeMessage>(&bytes).unwrap() {
+                BridgeMessage::TailChanged { tail: back } => assert_eq!(back, tail),
+                other => panic!("expected TailChanged, got {other:?}"),
+            }
         }
     }
 

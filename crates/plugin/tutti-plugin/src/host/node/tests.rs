@@ -318,7 +318,7 @@ fn trailing_unsolicited_events_dont_poison_next_reply() {
             BridgeEvent::ParameterChanged { index, value } => {
                 *param_seen.lock() = Some((index as u32, value));
             }
-            BridgeEvent::Resync(_) => {}
+            BridgeEvent::TailChanged { .. } | BridgeEvent::Resync(_) => {}
         })));
     }
 
@@ -341,6 +341,63 @@ fn trailing_unsolicited_events_dont_poison_next_reply() {
     std::thread::sleep(std::time::Duration::from_millis(50));
     assert_eq!(latency_seen.load(Ordering::Acquire), 256);
     assert_eq!(*param_seen.lock(), Some((7, 0.42)));
+}
+
+/// A `TailChanged` message arriving on the control stream must reach a
+/// listener as a `BridgeEvent::TailChanged` carrying the same arm.
+///
+/// This is the client half of the runtime-tail path. The server half
+/// (`a_clap_tail_change_reaches_the_event_list`, in `tutti-plugin-server`)
+/// proves the notification becomes a message; this proves the message becomes
+/// an event. `PluginClient` itself needs a live subprocess to build, so the
+/// final hop — the listener storing into the cell that `AudioUnit::tail` reads
+/// — is exercised by the plugin-server integration suite rather than here.
+///
+/// `Unbounded` is the arm under test deliberately: it is the one a count
+/// cannot carry, so a regression that flattened the enum to a number on the
+/// wire would still pass with `Finite`.
+#[test]
+fn a_tail_change_reaches_the_listener() {
+    let (handle, bridge, _bridge_thread, _server_thread) =
+        handle_with_multi_reply_server(move |msg| match msg {
+            HostMessage::GetParameterList => vec![
+                BridgeMessage::ParameterList {
+                    parameters: vec![ParameterInfo::new(ParamId::new(0), "Vol".to_string())],
+                },
+                BridgeMessage::TailChanged {
+                    tail: PluginTail::Unbounded,
+                },
+            ],
+            HostMessage::GetParameter { .. } => {
+                vec![BridgeMessage::ParameterValue { value: Some(0.5) }]
+            }
+            _ => vec![],
+        });
+
+    let tail_seen = Arc::new(parking_lot::Mutex::new(None::<PluginTail>));
+    {
+        let tail_seen = Arc::clone(&tail_seen);
+        bridge.set_listener(Some(Arc::new(move |ev| {
+            if let BridgeEvent::TailChanged { tail } = ev {
+                *tail_seen.lock() = Some(tail);
+            }
+        })));
+    }
+
+    // First request takes the reply; the trailing event waits in the socket
+    // buffer until the next `recv_reply` drains it.
+    assert_eq!(handle.parameters().unwrap().len(), 1);
+    assert_eq!(
+        handle.parameter(ParamAddress::Opaque(ParamId::new(0))),
+        Some(0.5)
+    );
+
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    assert_eq!(
+        *tail_seen.lock(),
+        Some(PluginTail::Unbounded),
+        "the tail change did not reach the listener as an unbounded tail"
+    );
 }
 
 #[test]

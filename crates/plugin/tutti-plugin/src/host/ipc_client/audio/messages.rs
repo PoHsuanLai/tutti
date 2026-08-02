@@ -4,7 +4,7 @@
 use super::ask::Reply;
 use crate::protocol::{
     ChordChanges, MidiEventVec, NoteExpressionChanges, NoteExpressionIntChanges,
-    NoteExpressionTextChanges, ParamAddress, ParameterChanges, ParameterInfo, Samples,
+    NoteExpressionTextChanges, ParamAddress, ParameterChanges, ParameterInfo, PluginTail, Samples,
     ScaleChanges, TransportInfo,
 };
 
@@ -133,6 +133,11 @@ pub enum BridgeEvent {
     LatencyChanged {
         samples: Samples,
     },
+    /// The plugin reported a new tail length at runtime (CLAP only — see
+    /// [`BridgeMessage::TailChanged`](crate::protocol::BridgeMessage)).
+    TailChanged {
+        tail: PluginTail,
+    },
     ParameterChanged {
         index: i32,
         value: f32,
@@ -211,6 +216,10 @@ pub enum PluginInvalidation {
     /// node's own atomic is already updated live, but compensation delays across
     /// the graph only re-plan on a commit.
     Latency { samples: Samples },
+    /// The plugin reported a new tail length. Carries the new value; the node's
+    /// own cell is already updated live, but an offline render sizes its length
+    /// once at the start, so a bounce already in flight keeps the old figure.
+    Tail { tail: PluginTail },
     /// The plugin's bus layout changed — re-read it and rewire the graph.
     Io,
     /// The plugin instance was rebuilt in place; re-plan everything.

@@ -60,16 +60,67 @@ pub fn midi1_velocity_to_midi2(v: u8) -> u16 {
 /// second home for a spec algorithm, the thing the ITU downmix coefficients are
 /// kept single-homed to avoid.
 ///
-/// Round-trips through [`velocity_from_midi2`] for every 7-bit input.
+/// Round-trips through [`velocity_from_midi2`] to within one 16-bit code.
+///
+/// # What this trades
+///
+/// It no longer reproduces [`midi1_velocity_to_midi2`] at every 7-bit input.
+/// Away from the three fixed points the two differ by up to 258 codes — 0.4% of
+/// full scale, well under a JND for velocity, and no caller compares them. What
+/// is preserved exactly is what a listener or a device can actually notice:
+/// `0.0`, `0.5` and `1.0` land on `0x0000`, `0x8000` and `0xffff`, so
+/// [`Velocity::CENTER`] and a hardware `64` still agree.
+///
+/// **Promoting an actual MIDI 1.0 message is a different path and is
+/// unaffected** — `translation::promote` calls [`midi1_velocity_to_midi2`]
+/// directly on the `u8`, never through here, so a 7-bit wire value still widens
+/// by exact MCM. This function is only for values that start as a `Velocity`,
+/// where there is no 7-bit original to be faithful to.
+///
+/// # This used to quantize to 7 bits
+///
+/// It was `midi1_velocity_to_midi2(velocity_to_midi1(v))` — via the 7-bit rung,
+/// because that rung's center is exactly representable and a plain `* 65535.0`
+/// misses `0x8000`. The center property was real; the cost was not noticed.
+/// Routing through `u8` meant a `Velocity` could only ever produce **128
+/// distinct 16-bit codes**, so the float-backed type — which exists precisely
+/// because the wire field is 16-bit — was narrowed to the resolution it was
+/// introduced to escape. Every note-on in the engine went through this.
+///
+/// The two directions were also asymmetric (`to` via MCM, `from` a plain
+/// divide), which is what let the loss hide: a round trip of any *7-bit* value
+/// is exact, and those are the only values the old path could emit, so it was
+/// self-consistently lossy.
+///
+/// # The mapping is piecewise, because MCM is
+///
+/// MCM widening is not a uniform scale. Its two halves meet at the center with a
+/// one-code step — 7-bit `63` widens to `0x7fff` and `64` to `0x8000` — so the
+/// float `0.5` sits in a *gap* on the widened lattice, not on a lattice point.
+/// Interpolating uniformly across that gap lands at `0x7f00` and loses the exact
+/// center, which is the property the old 7-bit path was protecting.
+///
+/// So each half is scaled independently against the anchor it belongs to:
+/// `0.0 → 0x0000`, `0.5 → 0x8000`, `1.0 → 0xffff`. That is the spec's own
+/// convention (§ MIDI 2.0 velocity is unsigned with center at `0x8000`) and it
+/// makes the three fixed points exact by construction rather than by arithmetic
+/// luck.
 ///
 /// [`Velocity`]: tutti_types::Velocity
+/// [`Velocity::CENTER`]: tutti_types::Velocity::CENTER
 /// [`MidiEvent::note_on`]: crate::ump::MidiEvent::note_on
 #[inline]
 pub fn velocity_to_midi2(v: tutti_types::Velocity) -> u16 {
-    // Via the 7-bit rung on purpose: it is the only path whose center is
-    // exactly representable, so `Velocity::CENTER` and a hardware `64` produce
-    // the identical 16-bit code rather than two values one ULP apart.
-    midi1_velocity_to_midi2(velocity_to_midi1(v))
+    const CENTER: f32 = 0x8000 as f32;
+    let v = v.get().clamp(0.0, 1.0);
+    if v <= 0.5 {
+        // Lower half: 0.0 → 0x0000, 0.5 → 0x8000.
+        (v * 2.0 * CENTER).round() as u16
+    } else {
+        // Upper half: 0.5 → 0x8000, 1.0 → 0xffff. The span is one code shorter
+        // than the lower half, which is exactly the asymmetry MCM encodes.
+        (CENTER + (v - 0.5) * 2.0 * (f32::from(u16::MAX) - CENTER)).round() as u16
+    }
 }
 
 /// [`Velocity`] → a 7-bit MIDI 1.0 velocity, for the wire and for
@@ -91,12 +142,26 @@ pub fn velocity_from_midi1(v: u8) -> tutti_types::Velocity {
     tutti_types::Velocity((v & 0x7F) as f32 / 127.0)
 }
 
-/// A 16-bit MIDI 2.0 velocity → [`Velocity`].
+/// A 16-bit MIDI 2.0 velocity → [`Velocity`]. The exact inverse of
+/// [`velocity_to_midi2`].
+///
+/// Piecewise for the same reason that one is: a plain `v / 0xffff` maps the
+/// center code `0x8000` to `0.5000076`, so `CENTER → 0x8000 → 0.5000076` and the
+/// round trip does not close on the one value most likely to be compared. The
+/// old pair got away with it because the forward direction could only emit 7-bit
+/// codes, where the error is below the grid; restoring full resolution makes the
+/// mismatch reachable.
 ///
 /// [`Velocity`]: tutti_types::Velocity
 #[inline]
 pub fn velocity_from_midi2(v: u16) -> tutti_types::Velocity {
-    tutti_types::Velocity(v as f32 / u16::MAX as f32)
+    const CENTER: f32 = 0x8000 as f32;
+    let v = f32::from(v);
+    tutti_types::Velocity(if v <= CENTER {
+        v / (2.0 * CENTER)
+    } else {
+        0.5 + (v - CENTER) / (2.0 * (f32::from(u16::MAX) - CENTER))
+    })
 }
 
 /// 16-bit velocity → 7-bit (lossy).
@@ -286,5 +351,82 @@ mod tests {
         // Clamps out-of-range input.
         assert_eq!(signed_f32_to_bend_u32(-2.0), 0);
         assert_eq!(signed_f32_to_bend_u32(2.0), u32::MAX);
+    }
+    /// **A `Velocity` reaches the wire at 16-bit resolution, not 7.**
+    ///
+    /// This regressed once and was invisible: `velocity_to_midi2` routed through
+    /// the 7-bit rung (`midi1_velocity_to_midi2(velocity_to_midi1(v))`) to keep
+    /// the center exact, which capped the whole float type at **128 distinct
+    /// codes**. `Velocity` is float-backed *precisely because* the wire field is
+    /// 16-bit, so that silently undid the reason the type exists.
+    ///
+    /// It hid because the two directions were asymmetric — `to` went via MCM,
+    /// `from` was a plain divide — so a round trip of any 7-bit value was exact,
+    /// and those were the only values the path could emit. It was
+    /// self-consistently lossy.
+    #[test]
+    fn a_velocity_is_not_quantized_to_seven_bits() {
+        use std::collections::BTreeSet;
+        let codes: BTreeSet<u16> = (0..=1000)
+            .map(|i| velocity_to_midi2(tutti_types::Velocity(i as f32 / 1000.0)))
+            .collect();
+        assert!(
+            codes.len() > 900,
+            "1001 distinct inputs collapsed to {} codes; 128 means the 7-bit rung is back",
+            codes.len()
+        );
+    }
+
+    /// The three fixed points stay exact — the property the 7-bit rung existed
+    /// to protect, and the reason a plain `* 65535.0` is wrong.
+    #[test]
+    fn velocity_endpoints_and_centre_are_exact() {
+        use tutti_types::Velocity;
+        assert_eq!(velocity_to_midi2(Velocity::SILENT), 0x0000);
+        assert_eq!(velocity_to_midi2(Velocity::CENTER), 0x8000, "centre must be mezzo-forte");
+        assert_eq!(velocity_to_midi2(Velocity::MAX), u16::MAX);
+    }
+
+    /// A `Velocity` survives a round trip far better than the 7-bit grid allows.
+    #[test]
+    fn a_velocity_round_trips_within_one_code() {
+        for i in 0..=1000 {
+            let v = i as f32 / 1000.0;
+            let back = velocity_from_midi2(velocity_to_midi2(tutti_types::Velocity(v))).get();
+            assert!(
+                (back - v).abs() < 1e-4,
+                "round trip of {v} returned {back}; the 7-bit grid would be 0.0078 off"
+            );
+        }
+    }
+
+    /// Promoting a real MIDI 1.0 velocity is untouched: it widens by exact MCM,
+    /// because there the 7-bit value *is* the original and must be reproduced.
+    #[test]
+    fn a_seven_bit_wire_velocity_still_widens_by_exact_mcm() {
+        assert_eq!(midi1_velocity_to_midi2(0), 0x0000);
+        assert_eq!(midi1_velocity_to_midi2(64), 0x8000);
+        assert_eq!(midi1_velocity_to_midi2(127), 0xffff);
+        // And the inverse is exact for every code.
+        for c in 0u8..=127 {
+            assert_eq!(midi2_velocity_to_midi1(midi1_velocity_to_midi2(c)), c);
+        }
+    }
+    /// The two directions are inverses at the center, not merely near it.
+    ///
+    /// `velocity_from_midi2` was a plain `v / 0xffff`, which maps `0x8000` to
+    /// `0.5000076` — so `CENTER` did not survive a round trip. The old forward
+    /// path hid it by only ever emitting 7-bit codes, where the error is below
+    /// the grid. Restoring resolution made it reachable, so both halves are now
+    /// piecewise about the same anchor.
+    #[test]
+    fn the_two_velocity_directions_are_inverses() {
+        use tutti_types::Velocity;
+        for v in [Velocity::SILENT, Velocity::CENTER, Velocity::MAX] {
+            assert_eq!(velocity_from_midi2(velocity_to_midi2(v)), v);
+        }
+        for code in [0u16, 0x4000, 0x8000, 0xC000, 0xffff] {
+            assert_eq!(velocity_to_midi2(velocity_from_midi2(code)), code);
+        }
     }
 }

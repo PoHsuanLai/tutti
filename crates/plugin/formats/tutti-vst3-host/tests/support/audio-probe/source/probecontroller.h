@@ -18,6 +18,13 @@ public:
 	tresult PLUGIN_API initialize (FUnknown* context) SMTG_OVERRIDE;
 	tresult PLUGIN_API setComponentState (IBStream* state) SMTG_OVERRIDE;
 
+	/// The controller's **own** state stream, distinct from the component's.
+	/// Carries `kParamUiState` and nothing else — the processor neither writes
+	/// nor reads it, so a host that persists only the component stream restores
+	/// this parameter to its default however it was saved.
+	tresult PLUGIN_API setState (IBStream* state) SMTG_OVERRIDE;
+	tresult PLUGIN_API getState (IBStream* state) SMTG_OVERRIDE;
+
 	/// Refuses under `kMisbehaveControllerConnectFails`, otherwise defers to
 	/// the base. The host wires the two halves with two `connect` calls, and
 	/// this is the second one — refusing here leaves the component half

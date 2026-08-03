@@ -135,6 +135,17 @@ enum ProbeParams : ParamID
     /// `restartComponent(kIoChanged)`. Lets a test trigger the restart path on
     /// demand instead of waiting for a plugin that happens to reconfigure.
     kParamRequestIoChanged = 103,
+
+    /// Controller-only UI state, standing in for a scroll position or a
+    /// selected tab. The **processor never sees it**: it is written and read
+    /// solely by `IEditController::setState`/`getState`, and is absent from the
+    /// component's stream and from `setComponentState`.
+    ///
+    /// That is what makes it an observable. A host that persists only the
+    /// component stream restores this to its default no matter what was saved,
+    /// so the round trip below is the one test that can tell the two streams
+    /// apart.
+    kParamUiState = 104,
 };
 
 /// Latency the plugin reports and applies in `kModeLatency`. A prime number so

@@ -52,6 +52,14 @@ private:
 	/// Sample offset of the last note-on seen this block, or -1.
 	int32 firstNoteOnOffset (ProcessData& data) const;
 
+	/// Whether the host activated our event input bus.
+	///
+	/// Read from the base class's own bus list — the one `activateBus` writes —
+	/// so it reports what the host actually did rather than inferring it from
+	/// whether events arrived. VST3 offers a host no way to read this back
+	/// (`BusInfo` has no active field), which is why the plugin must report it.
+	bool eventInputActive () const;
+
 	int32 mMode {kModeTagPassthrough};
 	double mRamp {0.0};
 	double mGain {1.0};

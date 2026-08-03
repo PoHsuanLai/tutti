@@ -745,6 +745,20 @@ impl<T: Vst3Sample> Vst3Instance<T> {
             for i in 0..component.getBusCount(K_AUDIO, K_OUTPUT) {
                 component.activateBus(K_AUDIO, K_OUTPUT, i, 1);
             }
+            // Event buses need activating on the same terms as audio ones: the
+            // spec starts every bus inactive regardless of media type, and
+            // `activateBus` takes the type as a parameter precisely because it
+            // is not audio-only. Only the counts were being read here, to
+            // decide whether the plugin speaks MIDI at all — so a plugin that
+            // honours the inactive default received no events, and one that
+            // ignores it worked, which is why this reads as a plugin quirk
+            // rather than a host bug.
+            for i in 0..component.getBusCount(K_EVENT, K_INPUT) {
+                component.activateBus(K_EVENT, K_INPUT, i, 1);
+            }
+            for i in 0..component.getBusCount(K_EVENT, K_OUTPUT) {
+                component.activateBus(K_EVENT, K_OUTPUT, i, 1);
+            }
         }
 
         // Re-resolve the per-bus scratch from the live component — some plugins

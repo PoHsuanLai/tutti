@@ -191,7 +191,8 @@ void AudioProbeProcessor::consumeParameterChanges (ProcessData& data)
 			if (queue->getPoint (numPoints - 1, offset, value) != kResultOk)
 				continue;
 			if (id == kParamMode)
-				mMode = static_cast<int32> (value * 5.0 + 0.5);
+				mMode =
+				    static_cast<int32> (value * static_cast<double> (kModeStepCount) + 0.5);
 			else if (id == kParamGain)
 				mGain = value;
 		}
@@ -213,6 +214,23 @@ int32 AudioProbeProcessor::firstNoteOnOffset (ProcessData& data) const
 			return e.sampleOffset;
 	}
 	return -1;
+}
+
+//-----------------------------------------------------------------------------
+bool AudioProbeProcessor::eventInputActive () const
+{
+	// `eventInputs` is the base class's own list, and `activateBus` is what
+	// writes `Bus::active` in it. A plugin declaring no event bus reports
+	// false, which keeps the "was it activated" question well-formed rather
+	// than vacuously true.
+	if (eventInputs.empty ())
+		return false;
+	for (const auto& bus : eventInputs)
+	{
+		if (!bus || !bus->isActive ())
+			return false;
+	}
+	return true;
 }
 
 //-----------------------------------------------------------------------------
@@ -340,6 +358,19 @@ void AudioProbeProcessor::renderBlock (ProcessData& data)
 					for (int32 i = 0; i < frames; ++i)
 						dst[i] = static_cast<T> ((noteOn >= 0 && i >= noteOn) ? 1.0 : 0.0);
 					break;
+
+				case kModeEventBusActive:
+				{
+					// Report our own event-input bus state. `AudioEffect` keeps
+					// it in the bus list that `activateBus` writes, so this is
+					// the plugin's own view of what the host did to it — not a
+					// guess derived from whether events happened to arrive.
+					const double code = eventInputActive () ?
+					                        static_cast<double> (kEventBusActiveCode) :
+					                        static_cast<double> (kEventBusInactiveCode);
+					std::fill (dst, dst + frames, static_cast<T> (code));
+					break;
+				}
 
 				case kModeTagPassthrough:
 				default:

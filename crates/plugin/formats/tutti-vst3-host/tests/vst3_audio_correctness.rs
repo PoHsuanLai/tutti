@@ -42,10 +42,21 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
+use tutti_plugin_types::{ParamAddress, ParamId};
 use tutti_vst3_host::{
     AudioBuffer, MidiEvent, NoteExpressionType, NoteExpressionValue, ParameterChanges,
     TransportInfo, Vst3InputEvents, Vst3Instance,
 };
+
+/// A VST3 `ParamID` as the automation vocabulary's address.
+///
+/// The probe-contract constants below stay bare `u32` because they mirror
+/// `probeids.h` literally and are also passed to `set_parameter`; only the
+/// queue calls need the address form. VST3 ids are `Opaque` — the format hands
+/// out numbers whose meaning only the plugin knows.
+fn param_address(tag: u32) -> ParamAddress {
+    ParamAddress::Opaque(ParamId::new(tag))
+}
 
 /// Compile-time default, baked in by `build.rs`; overridable at runtime.
 const SAMPLE_PLUGIN_DIR_BUILT: &str = env!("VST3_SAMPLE_PLUGIN_DIR");
@@ -69,13 +80,15 @@ fn plugin_guard() -> std::sync::MutexGuard<'static, ()> {
 
 const PARAM_MODE: u32 = 100;
 const PARAM_RAMP: u32 = 101;
-/// Steps on `kParamMode`: 6 modes (0..=5) is 5 steps, and a stepped VST3
-/// parameter normalizes as `index / stepCount`.
-const MODE_STEPS: f64 = 5.0;
+/// Steps on `kParamMode`: 7 modes (0..=6) is 6 steps, and a stepped VST3
+/// parameter normalizes as `index / stepCount`. Adding a mode shifts every
+/// other mode's normalized value, so this must track `ProbeMode` exactly —
+/// a stale count silently selects the wrong mode rather than failing.
+const MODE_STEPS: f64 = 6.0;
 
 /// Normalized value selecting probe mode `index` (see `ProbeMode` in
 /// `probeids.h`): 0 tag-passthrough, 1 param-ramp, 2 block-counter,
-/// 3 latency, 4 note-gate, 5 event-transcript.
+/// 3 latency, 4 note-gate, 5 event-transcript, 6 event-bus-active.
 fn mode(index: u32) -> f64 {
     f64::from(index) / MODE_STEPS
 }
@@ -83,6 +96,10 @@ fn mode(index: u32) -> f64 {
 /// Latency the probe reports and applies in `MODE_LATENCY`
 /// (`kReportedLatencySamples` in `probeids.h`).
 const PROBE_LATENCY_SAMPLES: u32 = 137;
+
+/// What mode 6 writes when the host activated the probe's event input bus
+/// (`kEventBusActiveCode` in `probeids.h`).
+const EVENT_BUS_ACTIVE_CODE: f32 = 7000.0;
 
 /// Per-slot DC offset the probe adds in tag-passthrough mode. Must match
 /// `probeTag` in `probeids.h` exactly.
@@ -173,7 +190,7 @@ fn set_mode(inst: &mut Vst3Instance, mode: f64) {
     inst.set_parameter(PARAM_MODE, mode);
 
     let mut params = ParameterChanges::new();
-    params.add_change(PARAM_MODE, 0, mode);
+    params.add_change(param_address(PARAM_MODE), 0, mode);
     // One throwaway block so the processor consumes the change. Its output is
     // rendered in the *old* mode and deliberately discarded.
     render(inst, 64, &[], Some(&params), |_, _, _| 0.0);
@@ -357,9 +374,10 @@ fn automation_ramp_is_rendered_at_the_right_offsets() {
     const FRAMES: usize = 512;
     // Deliberately out of order: the host must sort before delivery.
     let mut params = ParameterChanges::new();
-    params.add_change(PARAM_RAMP, 384, 1.0);
-    params.add_change(PARAM_RAMP, 0, 0.0);
-    params.add_change(PARAM_RAMP, 128, 0.5);
+    let ramp = param_address(PARAM_RAMP);
+    params.add_change(ramp, 384, 1.0);
+    params.add_change(ramp, 0, 0.0);
+    params.add_change(ramp, 128, 0.5);
 
     let rendered = render(&mut inst, FRAMES, &[], Some(&params), |_, _, _| 0.0);
     let ch0 = &rendered.out[0][0];
@@ -438,6 +456,52 @@ fn consecutive_blocks_are_delivered_in_order() {
         "the plugin's block clock is not strictly increasing — blocks were \
          duplicated, dropped, or reordered:\n  {}",
         faults.join("\n  ")
+    );
+}
+
+/// The host must activate a plugin's event bus, not merely count it.
+///
+/// `ivstcomponent.h:52` says "All busses are initially inactive" without
+/// qualification, and `kEvent` is a `MediaTypes` value beside `kAudio`, so an
+/// event bus needs the same `activateBus` call an audio bus does. The host
+/// used to enumerate event buses only to decide whether the plugin spoke MIDI,
+/// and activate none of them.
+///
+/// Every other MIDI test here passes with or without that call, which is why
+/// this one exists. Steinberg's samples and this probe's other modes all read
+/// `data.inputEvents` regardless of bus state — the lenient behaviour most
+/// real plugins have — so the omission is invisible from the audio. It is also
+/// invisible from the host: `BusInfo` has no active field, so a host cannot
+/// read its own activation back, and `HostChecker` validates the `ProcessData`
+/// handed over rather than the lifecycle before it. Only the plugin knows,
+/// which is why `kModeEventBusActive` asks it directly.
+#[test]
+fn event_buses_are_activated_not_merely_counted() {
+    if !harness_ready() {
+        return;
+    }
+    let _guard = plugin_guard();
+    let Some(mut inst) = load_probe(512) else {
+        return;
+    };
+    set_mode(&mut inst, mode(6));
+
+    const FRAMES: usize = 512;
+    let rendered = render(&mut inst, FRAMES, &[], None, |_, _, _| 0.0);
+    let ch0 = &rendered.out[0][0];
+
+    // The probe fills the whole block with one code, so any sample answers —
+    // but check them all, since a partial fill would mean something else is
+    // wrong with the render path.
+    assert!(
+        ch0.iter().all(|&v| v == ch0[0]),
+        "the probe should fill the block with one code; got a varying buffer"
+    );
+
+    assert_eq!(
+        ch0[0], EVENT_BUS_ACTIVE_CODE,
+        "the probe reports its event input bus was left inactive — a plugin \
+         that honours the spec's inactive default receives no MIDI"
     );
 }
 
@@ -848,7 +912,7 @@ fn midi_emitted_by_the_plugin_reaches_the_host() {
     for step in 0..16 {
         let mut params = ParameterChanges::new();
         for &id in &param_ids {
-            params.add_change(id, 0, (step as f64 * 0.0625).min(1.0));
+            params.add_change(param_address(id), 0, (step as f64 * 0.0625).min(1.0));
         }
 
         let ins: Vec<Vec<f32>> = (0..info.num_inputs.max(1))

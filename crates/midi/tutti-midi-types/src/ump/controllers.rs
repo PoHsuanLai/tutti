@@ -109,21 +109,38 @@ impl MidiEvent {
     ///
     /// The delta is reinterpreted from the wire's two's-complement field, so a
     /// decrement arrives as a negative number rather than a huge `u32`.
+    ///
+    /// # Deprecated in favour of the structured decode
+    ///
+    /// This existed only because [`MidiMessage`](crate::MidiMessage) could not
+    /// express these messages and left them in `MidiMessage::Other`. Now that
+    /// [`MidiMessage::RelativeController`](crate::MidiMessage::RelativeController)
+    /// does, the tuple is strictly worse: it drops the channel and the frame
+    /// offset, it cannot re-encode, and `bool`/`u8`/`u8` positional fields invite
+    /// exactly the bank/index transposition a named field prevents.
+    ///
+    /// It **delegates** rather than keeping its own `UmpMessage` match, so there
+    /// is one decode of this wire format and not two that can drift apart — the
+    /// same single-homing rule `translation::scaling` keeps for the spec's
+    /// scalers.
+    #[deprecated(
+        note = "match `MidiMessage::RelativeController` from `MidiEvent::message()` instead — it also \
+                carries channel and frame offset, and re-encodes"
+    )]
     pub fn relative_controller(&self) -> Option<(bool, u8, u8, i32)> {
-        use midi2::channel_voice2::ChannelVoice2;
-        use midi2::UmpMessage;
-        match UmpMessage::try_from(self.data_words()).ok()? {
-            UmpMessage::ChannelVoice2(ChannelVoice2::RelativeRegisteredController(m)) => Some((
-                true,
-                u8::from(m.bank()),
-                u8::from(m.index()),
-                m.controller_data() as i32,
-            )),
-            UmpMessage::ChannelVoice2(ChannelVoice2::RelativeAssignableController(m)) => Some((
-                false,
-                u8::from(m.bank()),
-                u8::from(m.index()),
-                m.controller_data() as i32,
+        use crate::message::{ControllerNamespace, MidiMessage};
+        match self.message() {
+            MidiMessage::RelativeController {
+                namespace,
+                bank,
+                index,
+                delta,
+                ..
+            } => Some((
+                matches!(namespace, ControllerNamespace::Registered),
+                bank,
+                index,
+                delta,
             )),
             _ => None,
         }
@@ -193,7 +210,11 @@ mod tests {
         }
     }
 
+    // The deprecated tuple decoder keeps its coverage: it now delegates to
+    // `MidiEvent::message`, and these tests are what prove the delegation did not
+    // change its answers for existing callers.
     #[test]
+    #[allow(deprecated)]
     fn relative_controllers_carry_signed_deltas() {
         // M2-104 §7.4.8: the data field "contains a Two's Complement value, to
         // provide negative and positive relative control" — a decrement must
@@ -228,6 +249,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn relative_and_absolute_controllers_are_distinct_messages() {
         // Same address space (§7.4.8: "these new messages act upon the same
         // address space… and use the same controller Banks"), different status —

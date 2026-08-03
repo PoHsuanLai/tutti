@@ -21,7 +21,7 @@
 
 use midi2::channel_voice2::ChannelVoice2 as Cv2;
 use midi2::{Channeled, UmpMessage};
-use tutti_types::{MidiChannel, MidiGroup};
+use tutti_types::{CCNumber, MidiChannel, MidiGroup};
 
 use crate::note_id::NoteId;
 use crate::ump::MidiEvent;
@@ -35,6 +35,25 @@ pub enum PerNoteController {
     Registered { index: u8 },
     /// An Assignable Per-Note Controller identified by its raw index.
     Assignable { index: u8 },
+}
+
+/// Which channel-wide controller namespace a [`MidiMessage::RegisteredController`]
+/// or [`MidiMessage::RelativeController`] addresses (M2-104 §7.4.7–7.4.8).
+///
+/// Registered (RPN) and Assignable (NRPN) get *one* discriminant rather than two
+/// variants because they differ only in **which namespace** the `(bank, index)`
+/// pair is looked up in — the wire shape, the data width, and everything a
+/// consumer does with the value are identical. That is not two types by the
+/// crate's own rule (a type needs a distinct range *or* a distinct algebra), and
+/// it mirrors [`PerNoteController`], which made the same call for the per-note
+/// pair. Contrast the absolute/relative split, which *is* two variants because
+/// `u32` value and `i32` delta genuinely compose differently.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ControllerNamespace {
+    /// Registered Parameter Number — a spec-defined address (M2-104 §7.4.7).
+    Registered,
+    /// Assignable (non-registered) Parameter Number — a device-defined address.
+    Assignable,
 }
 
 /// A MIDI 2.0 note-on attribute (M2-104 §7.4.2): extra per-note data carried
@@ -123,6 +142,43 @@ pub enum MidiMessage {
         controller: PerNoteController,
         value: u32,
     },
+    /// Channel-wide Registered (RPN) or Assignable (NRPN) Controller, absolute
+    /// form (M2-104 §7.4.7–7.4.8). `bank`/`index` are the 7-bit halves of the
+    /// 14-bit parameter address; `data` is the full 32-bit value the parameter is
+    /// **set to**.
+    ///
+    /// MIDI 2.0 gives these a dedicated Channel Voice 2 message, so no multi-CC
+    /// running-status reassembly is needed — the address and the whole value
+    /// arrive in one packet.
+    RegisteredController {
+        frame_offset: u32,
+        channel: u8,
+        namespace: ControllerNamespace,
+        bank: u8,
+        index: u8,
+        data: u32,
+    },
+    /// Channel-wide Relative Registered/Assignable Controller (M2-104 §7.4.8):
+    /// a signed *delta* applied to the parameter at `bank`/`index`, as an endless
+    /// encoder produces.
+    ///
+    /// This is a **separate variant** from
+    /// [`RegisteredController`](Self::RegisteredController) rather than a `bool`
+    /// on it because the payloads have different algebra, not just a different
+    /// name: the spec's data field here "contains a Two's Complement value", so
+    /// it is an `i32` that *accumulates* onto the current value, where the
+    /// absolute form's `u32` *replaces* it. Collapsing them would let a consumer
+    /// read a decrement (`-1`) as `0xFFFF_FFFF` and slam the parameter to full
+    /// scale. Per §7.4.8 these share the absolute form's address space and banks
+    /// but "cannot be translated to the MIDI 1.0 Protocol".
+    RelativeController {
+        frame_offset: u32,
+        channel: u8,
+        namespace: ControllerNamespace,
+        bank: u8,
+        index: u8,
+        delta: i32,
+    },
     /// Per-Note Management (MIDI 2.0): detach / reset the addressed note's
     /// controllers.
     PerNoteManagement {
@@ -208,6 +264,8 @@ impl MidiMessage {
             | Self::PitchBend { channel, .. }
             | Self::PerNotePitchBend { channel, .. }
             | Self::PerNoteController { channel, .. }
+            | Self::RegisteredController { channel, .. }
+            | Self::RelativeController { channel, .. }
             | Self::PerNoteManagement { channel, .. } => Some(*channel),
             // System messages and `Other` carry no channel.
             _ => None,
@@ -236,6 +294,8 @@ impl MidiMessage {
             | Self::PitchBend { frame_offset, .. }
             | Self::PerNotePitchBend { frame_offset, .. }
             | Self::PerNoteController { frame_offset, .. }
+            | Self::RegisteredController { frame_offset, .. }
+            | Self::RelativeController { frame_offset, .. }
             | Self::PerNoteManagement { frame_offset, .. }
             | Self::TimingClock { frame_offset }
             | Self::Start { frame_offset }
@@ -371,6 +431,44 @@ impl MidiEvent {
                     value: m.controller_data(),
                 }
             }
+            // The four channel-wide controller messages (M2-104 §7.4.7–7.4.8).
+            // All four carry the same `(bank, index)` address; only the
+            // namespace and the absolute/relative reading of the data differ.
+            Cv2::RegisteredController(m) => MidiMessage::RegisteredController {
+                frame_offset,
+                channel,
+                namespace: ControllerNamespace::Registered,
+                bank: u8::from(m.bank()),
+                index: u8::from(m.index()),
+                data: m.controller_data(),
+            },
+            Cv2::AssignableController(m) => MidiMessage::RegisteredController {
+                frame_offset,
+                channel,
+                namespace: ControllerNamespace::Assignable,
+                bank: u8::from(m.bank()),
+                index: u8::from(m.index()),
+                data: m.controller_data(),
+            },
+            // `as i32` is the two's-complement reinterpretation the spec asks
+            // for, not a lossy cast: the wire field *is* a signed value, so a
+            // decrement must read as `-1` rather than `0xFFFF_FFFF`.
+            Cv2::RelativeRegisteredController(m) => MidiMessage::RelativeController {
+                frame_offset,
+                channel,
+                namespace: ControllerNamespace::Registered,
+                bank: u8::from(m.bank()),
+                index: u8::from(m.index()),
+                delta: m.controller_data() as i32,
+            },
+            Cv2::RelativeAssignableController(m) => MidiMessage::RelativeController {
+                frame_offset,
+                channel,
+                namespace: ControllerNamespace::Assignable,
+                bank: u8::from(m.bank()),
+                index: u8::from(m.index()),
+                delta: m.controller_data() as i32,
+            },
             Cv2::PerNoteManagement(m) => {
                 let note = u8::from(m.note_number());
                 MidiMessage::PerNoteManagement {
@@ -382,6 +480,12 @@ impl MidiEvent {
                     reset: m.reset(),
                 }
             }
+            // Every Channel Voice 2 message `midi2` currently defines now has a
+            // modeled variant, so this arm is unreachable *today* — but `Cv2` is
+            // `#[non_exhaustive]`, so it must stay: it is what keeps a future
+            // upstream variant compiling (as `Other`) instead of breaking the
+            // build. Hence the allow rather than deleting the arm.
+            #[allow(unreachable_patterns)]
             _ => MidiMessage::Other(*self),
         }
     }
@@ -441,7 +545,12 @@ impl TryFrom<MidiMessage> for MidiEvent {
                 index,
                 value,
                 ..
-            } => MidiEvent::cc(MidiGroup::FIRST, MidiChannel::new(channel), index, value),
+            } => MidiEvent::cc(
+                MidiGroup::FIRST,
+                MidiChannel::new(channel),
+                CCNumber::new(index),
+                value,
+            ),
             MidiMessage::ProgramChange {
                 channel,
                 program,
@@ -488,6 +597,48 @@ impl TryFrom<MidiMessage> for MidiEvent {
                     index,
                     value,
                     registered,
+                )
+            }
+            // The namespace picks the constructor; the absolute/relative split
+            // is already carried by which variant we are in.
+            MidiMessage::RegisteredController {
+                channel,
+                namespace,
+                bank,
+                index,
+                data,
+                ..
+            } => {
+                let build = match namespace {
+                    ControllerNamespace::Registered => MidiEvent::registered_controller,
+                    ControllerNamespace::Assignable => MidiEvent::assignable_controller,
+                };
+                build(
+                    MidiGroup::FIRST,
+                    MidiChannel::new(channel),
+                    bank,
+                    index,
+                    data,
+                )
+            }
+            MidiMessage::RelativeController {
+                channel,
+                namespace,
+                bank,
+                index,
+                delta,
+                ..
+            } => {
+                let build = match namespace {
+                    ControllerNamespace::Registered => MidiEvent::relative_registered_controller,
+                    ControllerNamespace::Assignable => MidiEvent::relative_assignable_controller,
+                };
+                build(
+                    MidiGroup::FIRST,
+                    MidiChannel::new(channel),
+                    bank,
+                    index,
+                    delta,
                 )
             }
             MidiMessage::PerNoteManagement {
@@ -653,7 +804,13 @@ mod tests {
 
     #[test]
     fn control_change_carries_32bit_value() {
-        let msg = MidiEvent::cc(MidiGroup::FIRST, MidiChannel::new(5), 74, 0xDEAD_BEEF).message();
+        let msg = MidiEvent::cc(
+            MidiGroup::FIRST,
+            MidiChannel::new(5),
+            CCNumber::BRIGHTNESS,
+            0xDEAD_BEEF,
+        )
+        .message();
         match msg {
             MidiMessage::ControlChange {
                 channel,
@@ -749,10 +906,277 @@ mod tests {
     }
 
     #[test]
+    fn absolute_channel_controllers_decode_structured() {
+        // RPN and NRPN differ only in namespace; both carry bank/index/data.
+        let rpn = MidiEvent::registered_controller(
+            MidiGroup::FIRST,
+            MidiChannel::new(3),
+            0x12,
+            0x34,
+            0xDEAD_BEEF,
+        );
+        assert_eq!(
+            rpn.message(),
+            MidiMessage::RegisteredController {
+                frame_offset: 0,
+                channel: 3,
+                namespace: ControllerNamespace::Registered,
+                bank: 0x12,
+                index: 0x34,
+                data: 0xDEAD_BEEF,
+            }
+        );
+
+        let nrpn = MidiEvent::assignable_controller(
+            MidiGroup::FIRST,
+            MidiChannel::new(9),
+            0x01,
+            0x02,
+            0x0000_1000,
+        );
+        assert_eq!(
+            nrpn.message(),
+            MidiMessage::RegisteredController {
+                frame_offset: 0,
+                channel: 9,
+                namespace: ControllerNamespace::Assignable,
+                bank: 0x01,
+                index: 0x02,
+                data: 0x0000_1000,
+            }
+        );
+    }
+
+    #[test]
+    fn relative_channel_controllers_decode_structured() {
+        let rpn = MidiEvent::relative_registered_controller(
+            MidiGroup::FIRST,
+            MidiChannel::new(5),
+            0x40,
+            0x07,
+            42,
+        );
+        assert_eq!(
+            rpn.message(),
+            MidiMessage::RelativeController {
+                frame_offset: 0,
+                channel: 5,
+                namespace: ControllerNamespace::Registered,
+                bank: 0x40,
+                index: 0x07,
+                delta: 42,
+            }
+        );
+
+        let nrpn = MidiEvent::relative_assignable_controller(
+            MidiGroup::FIRST,
+            MidiChannel::new(0),
+            0x7F,
+            0x7E,
+            7,
+        );
+        assert_eq!(
+            nrpn.message(),
+            MidiMessage::RelativeController {
+                frame_offset: 0,
+                channel: 0,
+                namespace: ControllerNamespace::Assignable,
+                bank: 0x7F,
+                index: 0x7E,
+                delta: 7,
+            }
+        );
+    }
+
+    #[test]
+    fn relative_controller_delta_stays_signed() {
+        // M2-104 §7.4.8: the data field "contains a Two's Complement value". A
+        // decrement must arrive as a negative `i32`, not as a near-`u32::MAX`
+        // reinterpretation that would slam the parameter to full scale.
+        for delta in [-1i32, -128, -0x0100_0000, i32::MIN, 0, 1, i32::MAX] {
+            for (build, namespace) in [
+                (
+                    MidiEvent::relative_registered_controller
+                        as fn(MidiGroup, MidiChannel, u8, u8, i32) -> MidiEvent,
+                    ControllerNamespace::Registered,
+                ),
+                (
+                    MidiEvent::relative_assignable_controller,
+                    ControllerNamespace::Assignable,
+                ),
+            ] {
+                let ev = build(MidiGroup::FIRST, MidiChannel::new(3), 0x12, 0x34, delta);
+                match ev.message() {
+                    MidiMessage::RelativeController {
+                        delta: decoded,
+                        namespace: ns,
+                        ..
+                    } => {
+                        assert_eq!(decoded, delta, "delta {delta} for {namespace:?}");
+                        assert_eq!(ns, namespace);
+                    }
+                    other => panic!("expected RelativeController, got {other:?}"),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn bank_and_index_are_not_transposed() {
+        // Distinct bank/index values, so a swap in either the decode or the
+        // re-encode shows up rather than cancelling out.
+        let ev =
+            MidiEvent::registered_controller(MidiGroup::FIRST, MidiChannel::new(3), 0x11, 0x22, 1);
+        match ev.message() {
+            MidiMessage::RegisteredController { bank, index, .. } => {
+                assert_eq!(bank, 0x11);
+                assert_eq!(index, 0x22);
+            }
+            other => panic!("expected RegisteredController, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn channel_controllers_round_trip_to_identical_wire_bytes() {
+        // Decode → re-encode must reproduce the source packet exactly, frame
+        // offset included, for all four channel-wide controller messages.
+        for ev in [
+            MidiEvent::registered_controller(
+                MidiGroup::FIRST,
+                MidiChannel::new(3),
+                0x12,
+                0x34,
+                0xDEAD_BEEF,
+            ),
+            MidiEvent::assignable_controller(
+                MidiGroup::FIRST,
+                MidiChannel::new(9),
+                0x01,
+                0x02,
+                0x0000_1000,
+            ),
+            MidiEvent::relative_registered_controller(
+                MidiGroup::FIRST,
+                MidiChannel::new(5),
+                0x40,
+                0x07,
+                -1234,
+            ),
+            MidiEvent::relative_assignable_controller(
+                MidiGroup::FIRST,
+                MidiChannel::new(15),
+                0x7F,
+                0x00,
+                i32::MIN,
+            ),
+        ] {
+            let ev = ev.with_frame_offset(91);
+            let msg = ev.message();
+            assert!(
+                !matches!(msg, MidiMessage::Other(_)),
+                "must not fall through to Other: {msg:?}"
+            );
+            assert_eq!(msg.frame_offset(), 91);
+            let back = MidiEvent::try_from(msg).expect("channel controller re-encodable");
+            assert_eq!(back.data_words(), ev.data_words(), "wire mismatch for {msg:?}");
+            assert_eq!(back, ev, "round-trip mismatch for {msg:?}");
+        }
+    }
+
+    #[test]
+    fn channel_controllers_report_their_channel() {
+        // The `channel()` accessor's `|`-chain must cover the new variants —
+        // otherwise they read as channel-less system messages.
+        assert_eq!(
+            MidiEvent::registered_controller(MidiGroup::FIRST, MidiChannel::new(11), 0, 6, 0)
+                .message()
+                .channel(),
+            Some(11)
+        );
+        assert_eq!(
+            MidiEvent::relative_assignable_controller(MidiGroup::FIRST, MidiChannel::new(4), 0, 6, 0)
+                .message()
+                .channel(),
+            Some(4)
+        );
+    }
+
+    #[test]
+    fn absolute_and_relative_are_different_variants() {
+        // Same address, same bit pattern in the data field, different meaning:
+        // `-1` as an absolute set is `0xFFFF_FFFF`, as a delta it is one step
+        // down. The variant split is what keeps a consumer from confusing them.
+        let absolute = MidiEvent::registered_controller(
+            MidiGroup::FIRST,
+            MidiChannel::new(3),
+            0x12,
+            0x34,
+            0xFFFF_FFFF,
+        )
+        .message();
+        let relative = MidiEvent::relative_registered_controller(
+            MidiGroup::FIRST,
+            MidiChannel::new(3),
+            0x12,
+            0x34,
+            -1,
+        )
+        .message();
+        assert!(matches!(
+            absolute,
+            MidiMessage::RegisteredController {
+                data: 0xFFFF_FFFF,
+                ..
+            }
+        ));
+        assert!(matches!(
+            relative,
+            MidiMessage::RelativeController { delta: -1, .. }
+        ));
+        assert_ne!(absolute, relative);
+    }
+
+    #[test]
+    fn deprecated_tuple_decoder_agrees_with_structured_decode() {
+        // `relative_controller()` now delegates to `message()`. This pins that
+        // the two cannot answer differently — the reason the second decoder was
+        // removed rather than left beside it.
+        let ev = MidiEvent::relative_assignable_controller(
+            MidiGroup::FIRST,
+            MidiChannel::new(7),
+            0x12,
+            0x34,
+            -9,
+        );
+        #[allow(deprecated)]
+        let tuple = ev.relative_controller();
+        assert_eq!(tuple, Some((false, 0x12, 0x34, -9)));
+        match ev.message() {
+            MidiMessage::RelativeController {
+                namespace,
+                bank,
+                index,
+                delta,
+                ..
+            } => {
+                let (registered, t_bank, t_index, t_delta) = tuple.unwrap();
+                assert_eq!(registered, namespace == ControllerNamespace::Registered);
+                assert_eq!((t_bank, t_index, t_delta), (bank, index, delta));
+            }
+            other => panic!("expected RelativeController, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn round_trip_preserves_frame_offset() {
         // The view must not drop sample-accurate timing (project round-trip invariant).
-        let ev = MidiEvent::cc(MidiGroup::FIRST, MidiChannel::new(5), 74, 0xABCD_1234)
-            .with_frame_offset(137);
+        let ev = MidiEvent::cc(
+            MidiGroup::FIRST,
+            MidiChannel::new(5),
+            CCNumber::BRIGHTNESS,
+            0xABCD_1234,
+        )
+        .with_frame_offset(137);
         let msg = ev.message();
         assert_eq!(msg.frame_offset(), 137);
         let back = MidiEvent::try_from(msg).expect("re-encodable");

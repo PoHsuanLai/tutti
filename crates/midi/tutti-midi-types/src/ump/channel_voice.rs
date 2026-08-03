@@ -13,14 +13,18 @@
 //!   catch: both fields are 4 bits, so a swap of two in-range values passes
 //!   every width check and emits a well-formed packet on the wrong cable
 //!   addressing the wrong voice. It is now a compile error.
-//! - **Note, CC, and program** are still 7-bit `u8`s and are still masked
+//! - **CC number** arrives as [`CCNumber`], which masks on construction for the
+//!   same reason and buys the same thing: a CC number and a channel are both
+//!   small integers that travel together, and `cc(group, channel, cc, value)`
+//!   made them transposable. It is now a compile error.
+//! - **Note and program** are still 7-bit `u8`s and are still masked
 //!   (`& 0x7F`) with a `debug_assert!` in front. Masking turns an overflow into
 //!   a *plausible wrong* value (note 200 → 72) rather than an error, so the
 //!   assert makes an accidental octave-overflow fail loudly in tests and debug
 //!   builds while release builds keep the safe masking.
 
 use midi2::prelude::*;
-use tutti_types::{MidiChannel, MidiGroup};
+use tutti_types::{CCNumber, MidiChannel, MidiGroup};
 
 use super::MidiEvent;
 
@@ -96,13 +100,15 @@ impl MidiEvent {
     }
 
     #[inline]
-    pub fn cc(group: MidiGroup, channel: MidiChannel, cc: u8, value: u32) -> Self {
+    pub fn cc(group: MidiGroup, channel: MidiChannel, cc: CCNumber, value: u32) -> Self {
         use midi2::channel_voice2::ControlChange;
-        debug_assert!(cc < 128, "MIDI CC {cc} out of range (0..128)");
         let mut m = ControlChange::<[u32; 2]>::new();
         m.set_group(u4::new(group.get()));
         m.set_channel(u4::new(channel.get()));
-        m.set_control(u7::new(cc & 0x7F));
+        // `.get()` is a wire boundary: `u7::new` wants the raw 7-bit byte.
+        // Already in range by type, so the old `debug_assert!`/`& 0x7F` here
+        // are both gone — `CCNumber::new` did the masking.
+        m.set_control(u7::new(cc.get()));
         m.set_control_change_data(value);
         Self::from_ump(0, m.data())
     }
@@ -248,7 +254,12 @@ mod tests {
 
     #[test]
     fn cc_decodes_via_midi2() {
-        let ev = MidiEvent::cc(MidiGroup::FIRST, MidiChannel::new(2), 74, 0xDEAD_BEEF);
+        let ev = MidiEvent::cc(
+            MidiGroup::FIRST,
+            MidiChannel::new(2),
+            CCNumber::BRIGHTNESS,
+            0xDEAD_BEEF,
+        );
         let msg = UmpMessage::try_from(ev.data_words()).unwrap();
         let UmpMessage::ChannelVoice2(channel_voice2::ChannelVoice2::ControlChange(m)) = msg else {
             panic!("expected CV2 ControlChange");
@@ -256,6 +267,49 @@ mod tests {
         assert_eq!(u8::from(m.channel()), 2);
         assert_eq!(u8::from(m.control()), 74);
         assert_eq!(m.control_change_data(), 0xDEAD_BEEF);
+    }
+
+    /// Every CC number survives the trip out to the wire and back. This is what
+    /// the type buys over the old `debug_assert!(cc < 128)` + `& 0x7F`: the
+    /// assert only fired in debug, so a release build silently emitted a
+    /// *different* controller. Now the mask happens once, at `CCNumber::new`,
+    /// and nothing downstream can change the number.
+    #[test]
+    fn every_cc_number_round_trips_through_the_wire() {
+        for raw in 0u8..128 {
+            let n = CCNumber::new(raw);
+            let ev = MidiEvent::cc(MidiGroup::FIRST, MidiChannel::new(2), n, 0);
+            let msg = UmpMessage::try_from(ev.data_words()).unwrap();
+            let UmpMessage::ChannelVoice2(channel_voice2::ChannelVoice2::ControlChange(m)) = msg
+            else {
+                panic!("expected CV2 ControlChange");
+            };
+            assert_eq!(CCNumber::new(u8::from(m.control())), n, "CC {raw}");
+        }
+    }
+
+    /// The channel and the CC number do not collide. Both used to be `u8`, and
+    /// `cc(group, channel, cc, value)` put them adjacent — a swap emitted a
+    /// well-formed packet addressing the wrong controller on the wrong channel.
+    /// The swap is now a compile error; this pins that the two fields still
+    /// land in *different* places on the wire, which is the property the
+    /// compile error is protecting.
+    #[test]
+    fn the_channel_and_the_cc_number_land_in_different_fields() {
+        // Deliberately equal raw values, so a field mix-up cannot hide behind
+        // one of them: only ordering distinguishes correct from swapped.
+        let ev = MidiEvent::cc(
+            MidiGroup::FIRST,
+            MidiChannel::new(7),
+            CCNumber::new(3),
+            0x1234_5678,
+        );
+        let msg = UmpMessage::try_from(ev.data_words()).unwrap();
+        let UmpMessage::ChannelVoice2(channel_voice2::ChannelVoice2::ControlChange(m)) = msg else {
+            panic!("expected CV2 ControlChange");
+        };
+        assert_eq!(u8::from(m.channel()), 7, "channel");
+        assert_eq!(u8::from(m.control()), 3, "cc number");
     }
 
     #[test]

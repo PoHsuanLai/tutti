@@ -32,8 +32,8 @@ pub use core::{
 pub use tutti_midi_types::Protocol;
 
 pub use tutti_midi_types::{
-    midi2, midly, normalize, MidiEvent, MidiIn, MidiMessage, MidiOut, MidiUnitId, NoteAttribute,
-    NoteId, PerNoteController, UmpMessageType, UnencodableMessage,
+    midi2, midly, normalize, ControllerNamespace, MidiEvent, MidiIn, MidiMessage, MidiOut,
+    MidiUnitId, NoteAttribute, NoteId, PerNoteController, UmpMessageType, UnencodableMessage,
 };
 
 /// MIDI-CI (M2-101) message codec + SysEx7 wire bridge. Re-exported so the app's

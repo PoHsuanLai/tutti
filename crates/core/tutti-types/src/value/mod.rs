@@ -15,6 +15,7 @@
 #[macro_use]
 pub mod units;
 
+pub mod cc_number;
 pub mod midi_channel;
 pub mod midi_group;
 pub mod note;
@@ -24,6 +25,7 @@ pub mod samples;
 pub mod tail;
 pub mod unit_param;
 
+pub use cc_number::CCNumber;
 pub use midi_channel::MidiChannel;
 pub use midi_group::MidiGroup;
 pub use note::{NotOnMidiScale, Note, NoteNumberOutOfRange, PitchClass};

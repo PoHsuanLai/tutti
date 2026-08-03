@@ -19,7 +19,7 @@
 use midi2::channel_voice1::ChannelVoice1;
 use midi2::channel_voice2::ChannelVoice2;
 use midi2::{Channeled, Grouped, UmpMessage};
-use tutti_types::{MidiChannel, MidiGroup};
+use tutti_types::{CCNumber, MidiChannel, MidiGroup};
 
 use super::scaling::{midi1_cc_to_midi2, midi1_pitch_bend_to_midi2, midi1_velocity_to_midi2};
 use crate::ump::MidiEvent;
@@ -82,7 +82,9 @@ fn promote_cv1(cv1: ChannelVoice1<&[u32]>) -> MidiEvent {
         ChannelVoice1::ControlChange(m) => MidiEvent::cc(
             g,
             ch,
-            u8::from(m.control()),
+            // `u8::from` is a wire boundary: midi2's `u7` is already in range,
+            // so `CCNumber::new`'s mask is a no-op here.
+            CCNumber::new(u8::from(m.control())),
             midi1_cc_to_midi2(u8::from(m.control_data())),
         ),
         ChannelVoice1::ChannelPressure(m) => {

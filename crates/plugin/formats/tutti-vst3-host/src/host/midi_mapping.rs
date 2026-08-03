@@ -327,7 +327,7 @@ impl CcRoute {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
+    use tutti_midi_types::tutti_types::{CCNumber, MidiChannel, MidiGroup};
 
     #[test]
     fn empty_mapping_returns_none() {
@@ -370,7 +370,7 @@ mod tests {
         let (ch, ctrl, value) = mapped(&MidiEvent::cc(
             MidiGroup::FIRST,
             MidiChannel::new(2),
-            74,
+            CCNumber::BRIGHTNESS,
             midi1_cc_to_midi2(64),
         ))
         .unwrap();
@@ -440,7 +440,7 @@ mod tests {
             MidiEvent::cc(
                 MidiGroup::FIRST,
                 MidiChannel::FIRST,
-                1,
+                CCNumber::MOD_WHEEL,
                 midi1_cc_to_midi2(64),
             )
             .with_frame_offset(8),
@@ -449,7 +449,7 @@ mod tests {
             MidiEvent::cc(
                 MidiGroup::FIRST,
                 MidiChannel::FIRST,
-                74,
+                CCNumber::BRIGHTNESS,
                 midi1_cc_to_midi2(100),
             )
             .with_frame_offset(0),
@@ -481,7 +481,7 @@ mod tests {
         let events = [MidiEvent::cc(
             MidiGroup::FIRST,
             MidiChannel::FIRST,
-            1,
+            CCNumber::MOD_WHEEL,
             midi1_cc_to_midi2(127),
         )
         .with_frame_offset(0)];
@@ -520,14 +520,14 @@ mod tests {
             MidiEvent::cc(
                 MidiGroup::FIRST,
                 MidiChannel::FIRST,
-                1,
+                CCNumber::MOD_WHEEL,
                 midi1_cc_to_midi2(100),
             )
             .with_frame_offset(100),
             MidiEvent::cc(
                 MidiGroup::FIRST,
                 MidiChannel::FIRST,
-                1,
+                CCNumber::MOD_WHEEL,
                 midi1_cc_to_midi2(10),
             )
             .with_frame_offset(10),
@@ -575,7 +575,7 @@ mod tests {
             MidiEvent::cc(
                 MidiGroup::FIRST,
                 MidiChannel::FIRST,
-                1,
+                CCNumber::MOD_WHEEL,
                 midi1_cc_to_midi2(64),
             )
             .with_frame_offset(0),
@@ -585,7 +585,7 @@ mod tests {
             MidiEvent::cc(
                 MidiGroup::FIRST,
                 MidiChannel::FIRST,
-                74,
+                CCNumber::BRIGHTNESS,
                 midi1_cc_to_midi2(10),
             )
             .with_frame_offset(32),

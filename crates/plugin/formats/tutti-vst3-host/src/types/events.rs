@@ -31,7 +31,7 @@ pub use tutti_midi_types::MidiEvent;
 
 use tutti_plugin_types::{note_id_for, NoteExpressionType, NoteExpressionValue};
 
-use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
+use tutti_midi_types::tutti_types::{CCNumber, MidiChannel, MidiGroup};
 use vst3::Steinberg::Vst::Event_::EventTypes_;
 
 /// Borrowed bundle of every input event stream staged into a VST3 plugin's
@@ -1079,7 +1079,9 @@ fn legacy_cc_to_midi(e: &LegacyMidiCcOutEvent, frame: u32) -> Option<MidiEvent> 
         MidiEvent::cc(
             MidiGroup::FIRST,
             MidiChannel::new(channel),
-            cn as u8,
+            // Wire boundary: `cn` is a VST3 `control_number`, already narrowed
+            // to `0..=127` by the arm's guard, so the mask is a no-op.
+            CCNumber::new(cn as u8),
             midi1_cc_to_midi2(v1),
         )
     } else {
@@ -1421,7 +1423,7 @@ mod tests {
         let event = MidiEvent::cc(
             MidiGroup::FIRST,
             MidiChannel::new(1),
-            74,
+            CCNumber::BRIGHTNESS,
             midi1_cc_to_midi2(100),
         );
         let vst3 = vst3_event_from_midi(&event).expect("CC -> Data");
@@ -1550,7 +1552,7 @@ mod tests {
         let event = MidiEvent::cc(
             MidiGroup::FIRST,
             MidiChannel::new(2),
-            74,
+            CCNumber::BRIGHTNESS,
             midi1_cc_to_midi2(100),
         );
         let vst3 = vst3_event_from_midi(&event).expect("CC should convert");

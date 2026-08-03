@@ -1,15 +1,12 @@
-/// 0-127.
-pub type CCNumber = u8;
-
 pub type MappingId = u64;
 
-// `MidiChannel` used to be `pub type MidiChannel = u8` right here — an alias,
-// which is the same type as what it aliases and therefore prevented nothing:
-// a `u8` CC number and a `u8` channel remained freely interchangeable at every
-// call. The real newtype lives in `tutti-types` (a document has to persist a
-// channel, and this crate carries no serde), and is re-exported below so the
-// name resolves where it always did.
-pub use tutti_types::MidiChannel;
+// Both of these used to be `pub type X = u8` aliases right here — the same type
+// as what they alias, and therefore preventing nothing: a `u8` CC number and a
+// `u8` channel remained freely interchangeable at every call. The real newtypes
+// live in `tutti-types` (a document has to persist a channel, and a CC
+// automation lane is keyed by a CC number, and this crate carries no serde),
+// and are re-exported below so the names resolve where they always did.
+pub use tutti_types::{CCNumber, MidiChannel};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum CCTarget {
@@ -80,7 +77,7 @@ mod tests {
     fn test_map_value() {
         let mapping = CCMapping::new(
             Some(MidiChannel::FIRST),
-            1,
+            CCNumber::MOD_WHEEL,
             CCTarget::MasterVolume,
             0.0,
             1.0,
@@ -92,7 +89,13 @@ mod tests {
 
     #[test]
     fn test_map_value_custom_range() {
-        let mapping = CCMapping::new(Some(MidiChannel::FIRST), 1, CCTarget::Tempo, 60.0, 200.0);
+        let mapping = CCMapping::new(
+            Some(MidiChannel::FIRST),
+            CCNumber::MOD_WHEEL,
+            CCTarget::Tempo,
+            60.0,
+            200.0,
+        );
         assert_eq!(mapping.map_value(0), 60.0);
         assert_eq!(mapping.map_value(127), 200.0);
     }
@@ -101,34 +104,40 @@ mod tests {
     fn test_matches() {
         let mapping = CCMapping::new(
             Some(MidiChannel::FIRST),
-            1,
+            CCNumber::MOD_WHEEL,
             CCTarget::MasterVolume,
             0.0,
             1.0,
         );
-        assert!(mapping.matches(MidiChannel::FIRST, 1));
-        assert!(!mapping.matches(MidiChannel::new(1), 1)); // Wrong channel
-        assert!(!mapping.matches(MidiChannel::FIRST, 2)); // Wrong CC
+        assert!(mapping.matches(MidiChannel::FIRST, CCNumber::MOD_WHEEL));
+        assert!(!mapping.matches(MidiChannel::new(1), CCNumber::MOD_WHEEL)); // Wrong channel
+        assert!(!mapping.matches(MidiChannel::FIRST, CCNumber::BREATH)); // Wrong CC
 
         // Test any channel
-        let any_channel = CCMapping::new(None, 1, CCTarget::MasterVolume, 0.0, 1.0);
-        assert!(any_channel.matches(MidiChannel::FIRST, 1));
-        assert!(any_channel.matches(MidiChannel::LAST, 1));
+        let any_channel = CCMapping::new(
+            None,
+            CCNumber::MOD_WHEEL,
+            CCTarget::MasterVolume,
+            0.0,
+            1.0,
+        );
+        assert!(any_channel.matches(MidiChannel::FIRST, CCNumber::MOD_WHEEL));
+        assert!(any_channel.matches(MidiChannel::LAST, CCNumber::MOD_WHEEL));
     }
 
     #[test]
     fn test_matches_disabled() {
         let mut mapping = CCMapping::new(
             Some(MidiChannel::FIRST),
-            1,
+            CCNumber::MOD_WHEEL,
             CCTarget::MasterVolume,
             0.0,
             1.0,
         );
-        assert!(mapping.matches(MidiChannel::FIRST, 1));
+        assert!(mapping.matches(MidiChannel::FIRST, CCNumber::MOD_WHEEL));
 
         mapping.enabled = false;
-        assert!(!mapping.matches(MidiChannel::FIRST, 1));
+        assert!(!mapping.matches(MidiChannel::FIRST, CCNumber::MOD_WHEEL));
     }
 
     #[test]
@@ -136,7 +145,7 @@ mod tests {
         // Inverted mapping: CC 0 → 1.0, CC 127 → 0.0
         let mapping = CCMapping::new(
             Some(MidiChannel::FIRST),
-            1,
+            CCNumber::MOD_WHEEL,
             CCTarget::MasterVolume,
             1.0,
             0.0,
@@ -151,7 +160,7 @@ mod tests {
         // Constant output: min == max
         let mapping = CCMapping::new(
             Some(MidiChannel::FIRST),
-            1,
+            CCNumber::MOD_WHEEL,
             CCTarget::MasterVolume,
             0.5,
             0.5,

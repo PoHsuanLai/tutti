@@ -205,7 +205,7 @@ mod tests {
         ChordValue, EventHeader, NoteExpressionIntValue, NoteExpressionText, NoteExpressionValue,
         NoteOnEvent, ScaleValue, K_NOTE_ON_EVENT,
     };
-    use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
+    use tutti_midi_types::tutti_types::{CCNumber, MidiChannel, MidiGroup};
 
     fn make_note_on() -> NoteOnEvent {
         NoteOnEvent {
@@ -291,7 +291,7 @@ mod tests {
                 MidiEvent::cc(
                     MidiGroup::FIRST,
                     MidiChannel::FIRST,
-                    74,
+                    CCNumber::BRIGHTNESS,
                     midi1_cc_to_midi2(i as u8),
                 )
                 .with_frame_offset(i as u32)

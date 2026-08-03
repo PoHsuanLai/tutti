@@ -46,7 +46,9 @@ pub use clip_file::{
     read_clip_file, write_clip_file, write_clip_file_from_beats, write_clip_file_with_header,
     ClipEvent, ClipFileError, ClipHeader, ClipNote, ParsedClipFile, CLIP_FILE_MAGIC,
 };
-pub use message::{MidiMessage, NoteAttribute, PerNoteController, UnencodableMessage};
+pub use message::{
+    ControllerNamespace, MidiMessage, NoteAttribute, PerNoteController, UnencodableMessage,
+};
 pub use mpe::{
     MpeChannelVoiceMap, MpeMode, MpeZone, MpeZoneConfig, NoteRotationAllocator,
     PitchBendSensitivity,
@@ -148,8 +150,8 @@ pub use unit_id::MidiUnitId;
 pub mod prelude {
     pub use crate::{
         normalize, read_clip_file, write_clip_file, write_clip_file_from_beats, ClipEvent,
-        ClipFileError, MidiEvent, MidiIn, MidiMessage, MidiUnitId, NoteAttribute, NoteId,
-        ParsedClipFile, PerNoteController, Protocol,
+        ClipFileError, ControllerNamespace, MidiEvent, MidiIn, MidiMessage, MidiUnitId,
+        NoteAttribute, NoteId, ParsedClipFile, PerNoteController, Protocol,
     };
     // The clip API positions events in `Beat` and measures them in
     // `BeatDuration`, so a caller of `write_clip_file_from_beats` needs both

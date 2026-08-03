@@ -236,7 +236,7 @@ mod tests {
     use tutti_midi_types::convert::{
         midi1_cc_to_midi2, midi1_pitch_bend_to_midi2, midi1_velocity_to_midi2,
     };
-    use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
+    use tutti_midi_types::tutti_types::{CCNumber, MidiChannel, MidiGroup};
 
     #[test]
     fn note_on_off_roundtrip() {
@@ -310,7 +310,7 @@ mod tests {
         let event = MidiEvent::cc(
             MidiGroup::FIRST,
             MidiChannel::new(1),
-            74,
+            CCNumber::BRIGHTNESS,
             midi1_cc_to_midi2(100),
         );
         let api = from_midi(&event).expect("CC should convert");

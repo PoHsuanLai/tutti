@@ -18,7 +18,7 @@
 
 use midi2::channel_voice1::ChannelVoice1;
 use midi2::{Channeled, UmpMessage};
-use tutti_types::{MidiChannel, MidiGroup};
+use tutti_types::{CCNumber, MidiChannel, MidiGroup};
 
 use crate::cc;
 use crate::ump::MidiEvent;
@@ -78,7 +78,8 @@ impl Midi1ToMidi2Translator {
             return Some(super::normalize(event));
         };
         let channel = u8::from(m.channel()) as usize;
-        let control = u8::from(m.control());
+        // Wire boundary: midi2's `u7` is already in range, so the mask is a no-op.
+        let control = CCNumber::new(u8::from(m.control()));
         let value = u8::from(m.control_data());
         let state = &mut self.channels[channel & 0x0F];
 
@@ -182,8 +183,9 @@ mod tests {
     use midi2::channel_voice2::ChannelVoice2;
 
     /// A MIDI *1.0* wire CC (status 0xB0 | channel) — the translator's input.
-    fn cc_ev(channel: u8, control: u8, value: u8) -> MidiEvent {
-        MidiEvent::from_midi1_bytes(0, &[0xB0 | (channel & 0x0F), control, value])
+    fn cc_ev(channel: u8, control: CCNumber, value: u8) -> MidiEvent {
+        // `.get()` is a wire boundary — a MIDI-1 status/data byte triple.
+        MidiEvent::from_midi1_bytes(0, &[0xB0 | (channel & 0x0F), control.get(), value])
             .expect("valid MIDI-1 CC")
     }
 
@@ -229,7 +231,7 @@ mod tests {
             .expect("plain CC promotes");
         match UmpMessage::try_from(out.data_words()).unwrap() {
             UmpMessage::ChannelVoice2(ChannelVoice2::ControlChange(m)) => {
-                assert_eq!(u8::from(m.control()), cc::MOD_WHEEL);
+                assert_eq!(CCNumber::new(u8::from(m.control())), cc::MOD_WHEEL);
             }
             other => panic!("expected CV2 ControlChange, got {other:?}"),
         }

@@ -140,7 +140,7 @@ pub use tutti_plugin_types::{
 mod tests {
     use super::*;
     use std::path::PathBuf;
-    use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
+    use tutti_midi_types::tutti_types::{CCNumber, MidiChannel, MidiGroup};
 
     #[test]
     fn test_message_serialization() {
@@ -201,7 +201,7 @@ mod tests {
             MidiEvent::cc(
                 MidiGroup::FIRST,
                 MidiChannel::FIRST,
-                7,
+                CCNumber::VOLUME,
                 midi1_cc_to_midi2(64),
             )
             .with_frame_offset(64),
@@ -307,7 +307,7 @@ mod tests {
             MidiEvent::cc(
                 MidiGroup::FIRST,
                 MidiChannel::FIRST,
-                7,
+                CCNumber::VOLUME,
                 midi1_cc_to_midi2(64),
             )
             .with_frame_offset(256),

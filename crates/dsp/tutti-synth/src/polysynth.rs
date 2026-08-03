@@ -10,6 +10,7 @@ use tutti_core::{
 };
 use tutti_midi_runtime::{MidiInPort, MidiSender};
 use tutti_midi_types::ump::MidiEvent;
+use tutti_midi_types::tutti_types::CCNumber;
 use tutti_midi_types::{cc, MidiIn, MidiUnitId, NoteId};
 
 extern crate alloc;
@@ -302,7 +303,8 @@ impl PolySynth {
             }
             Cv2::ControlChange(m) => {
                 self.handle_cc(
-                    u8::from(m.control()),
+                    // Wire boundary: midi2's `u7` is already in range.
+                    CCNumber::new(u8::from(m.control())),
                     u32_to_unit_f32(m.control_change_data()),
                     channel,
                 );
@@ -330,7 +332,9 @@ impl PolySynth {
             Cv2::AssignablePerNoteController(m) => {
                 let id = NoteId::from_channel_note(channel, u8::from(m.note_number()));
                 let data = u32_to_unit_f32(m.controller_data());
-                match m.index() {
+                // `m.index()` is the raw per-note controller index off the
+                // wire (a `u8`, not a `u7`), so it is masked into range here.
+                match CCNumber::new(m.index()) {
                     cc::BRIGHTNESS => self.set_voice_mpe_slide(id, data),
                     cc::VOLUME => self.set_voice_mpe_gain(id, data),
                     _ => {}
@@ -527,7 +531,7 @@ impl PolySynth {
         }
     }
 
-    fn handle_cc(&mut self, cc_num: u8, value: f32, channel: u8) {
+    fn handle_cc(&mut self, cc_num: CCNumber, value: f32, channel: u8) {
         let on = value >= 0.5;
         match cc_num {
             cc::MOD_WHEEL => {
@@ -1025,7 +1029,7 @@ mod tests {
     use tutti_midi_types::convert::{
         midi1_cc_to_midi2, midi1_pitch_bend_to_midi2, midi1_velocity_to_midi2,
     };
-    use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
+    use tutti_midi_types::tutti_types::{CCNumber, MidiChannel, MidiGroup};
 
     /// Build a `PolySynth` from a config, unwrapping the result.
     fn synth(config: SynthConfig) -> PolySynth {
@@ -1111,7 +1115,7 @@ mod tests {
         MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::new(channel), note, 0)
     }
 
-    fn ev_cc(channel: u8, cc_num: u8, value: u8) -> MidiEvent {
+    fn ev_cc(channel: u8, cc_num: CCNumber, value: u8) -> MidiEvent {
         MidiEvent::cc(
             MidiGroup::FIRST,
             MidiChannel::new(channel),
@@ -1663,7 +1667,7 @@ mod tests {
         assert_eq!(synth.active_voice_count(), 1);
 
         // Press sustain pedal (CC64 >= 64 = on)
-        let sustain_on = ev_cc(0, 64, 127);
+        let sustain_on = ev_cc(0, cc::SUSTAIN, 127);
         queue_midi(&synth, &[sustain_on]);
         synth.tick(&[], &mut output);
 
@@ -1679,7 +1683,7 @@ mod tests {
         );
 
         // Release sustain pedal (CC64 < 64 = off)
-        let sustain_off = ev_cc(0, 64, 0);
+        let sustain_off = ev_cc(0, cc::SUSTAIN, 0);
         queue_midi(&synth, &[sustain_off]);
         synth.tick(&[], &mut output);
 
@@ -1713,7 +1717,7 @@ mod tests {
         let mut output = [0.0f32; 2];
         synth.tick(&[], &mut output);
 
-        let sostenuto_on = ev_cc(0, 66, 127);
+        let sostenuto_on = ev_cc(0, cc::SOSTENUTO, 127);
         queue_midi(&synth, &[sostenuto_on]);
         synth.tick(&[], &mut output);
 
@@ -1744,7 +1748,7 @@ mod tests {
         );
 
         // Release sostenuto — original note should now release
-        let sostenuto_off = ev_cc(0, 66, 0);
+        let sostenuto_off = ev_cc(0, cc::SOSTENUTO, 0);
         queue_midi(&synth, &[sostenuto_off]);
         synth.tick(&[], &mut output);
 
@@ -1779,7 +1783,7 @@ mod tests {
         assert_eq!(synth.active_voice_count(), 4);
 
         // CC120 = All Sound Off (immediate silence)
-        let all_sound_off = ev_cc(0, 120, 0);
+        let all_sound_off = ev_cc(0, cc::ALL_SOUND_OFF, 0);
         queue_midi(&synth, &[all_sound_off]);
         synth.tick(&[], &mut output);
 
@@ -1815,7 +1819,7 @@ mod tests {
         assert_eq!(synth.active_voice_count(), 4);
 
         // CC123 = All Notes Off (release with envelope tail)
-        let all_notes_off = ev_cc(0, 123, 0);
+        let all_notes_off = ev_cc(0, cc::ALL_NOTES_OFF, 0);
         queue_midi(&synth, &[all_notes_off]);
         synth.tick(&[], &mut output);
 
@@ -1857,7 +1861,7 @@ mod tests {
         assert_eq!(synth.active_voice_count(), 2);
 
         // All Notes Off on channel 0 only
-        let all_notes_off = ev_cc(0, 123, 0);
+        let all_notes_off = ev_cc(0, cc::ALL_NOTES_OFF, 0);
         queue_midi(&synth, &[all_notes_off]);
         synth.tick(&[], &mut output);
 

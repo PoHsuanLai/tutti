@@ -36,7 +36,7 @@ use std::ptr;
 use tutti_plugin_types::{note_id_for, note_id_to_channel_note, ParamAddress, RtMidiEvents};
 
 use crate::types::RtNoteExpressions;
-use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
+use tutti_midi_types::tutti_types::{CCNumber, MidiChannel, MidiGroup};
 
 /// A single CLAP event, wrapping the underlying `#[repr(C)]` `clap_sys`
 /// struct so a pointer to its `header` field can be cast back by the plugin.
@@ -1841,7 +1841,12 @@ mod tests {
 
     #[test]
     fn from_midi_event_cc_forwards_as_generic_midi() {
-        let midi = MidiEvent::cc(MidiGroup::FIRST, MidiChannel::FIRST, 7, 0x8000_0000); // volume, ~half
+        let midi = MidiEvent::cc(
+            MidiGroup::FIRST,
+            MidiChannel::FIRST,
+            CCNumber::VOLUME,
+            0x8000_0000,
+        ); // volume, ~half
         match ClapEvent::from_midi(&midi).expect("cc converts") {
             ClapEvent::Midi(e) => {
                 assert_eq!(e.data[0] & 0xF0, 0xB0, "status should be CC");

@@ -1,44 +1,54 @@
 //! Standard MIDI CC (Control Change) numbers and mapping types.
+//!
+//! The named controller numbers below are [`CCNumber`], not `u8`. They are
+//! aliases for the associated constants on that type — the roster lives on
+//! `CCNumber` itself (in `tutti-types`, alongside the newtype it belongs to),
+//! and is surfaced here under the bare names call sites have always used, so
+//! `cc::MOD_WHEEL` keeps resolving.
+//!
+//! Typing them is the payoff of the newtype: `MOD_WHEEL` can no longer be
+//! passed where a [`MidiChannel`] is expected, which is the swap these two
+//! adjacent `u8`s invited.
 
 pub mod mapping;
 
 pub use mapping::{CCMapping, CCNumber, CCTarget, MappingId, MidiChannel};
 
 // Continuous controllers (MSB)
-pub const BANK_SELECT: u8 = 0;
-pub const MOD_WHEEL: u8 = 1;
-pub const BREATH: u8 = 2;
-pub const FOOT: u8 = 4;
-pub const PORTAMENTO_TIME: u8 = 5;
-pub const DATA_ENTRY: u8 = 6;
-pub const VOLUME: u8 = 7;
-pub const BALANCE: u8 = 8;
-pub const PAN: u8 = 10;
-pub const EXPRESSION: u8 = 11;
+pub const BANK_SELECT: CCNumber = CCNumber::BANK_SELECT;
+pub const MOD_WHEEL: CCNumber = CCNumber::MOD_WHEEL;
+pub const BREATH: CCNumber = CCNumber::BREATH;
+pub const FOOT: CCNumber = CCNumber::FOOT;
+pub const PORTAMENTO_TIME: CCNumber = CCNumber::PORTAMENTO_TIME;
+pub const DATA_ENTRY: CCNumber = CCNumber::DATA_ENTRY;
+pub const VOLUME: CCNumber = CCNumber::VOLUME;
+pub const BALANCE: CCNumber = CCNumber::BALANCE;
+pub const PAN: CCNumber = CCNumber::PAN;
+pub const EXPRESSION: CCNumber = CCNumber::EXPRESSION;
 
 /// Data Entry LSB — the low 7 bits of an (N)RPN value (MSB is [`DATA_ENTRY`]).
-pub const DATA_ENTRY_LSB: u8 = 38;
+pub const DATA_ENTRY_LSB: CCNumber = CCNumber::DATA_ENTRY_LSB;
 
 // Sound controllers
-pub const RESONANCE: u8 = 71;
-pub const RELEASE_TIME: u8 = 72;
-pub const ATTACK_TIME: u8 = 73;
-pub const BRIGHTNESS: u8 = 74;
+pub const RESONANCE: CCNumber = CCNumber::RESONANCE;
+pub const RELEASE_TIME: CCNumber = CCNumber::RELEASE_TIME;
+pub const ATTACK_TIME: CCNumber = CCNumber::ATTACK_TIME;
+pub const BRIGHTNESS: CCNumber = CCNumber::BRIGHTNESS;
 
 // Switches
-pub const SUSTAIN: u8 = 64;
-pub const PORTAMENTO_SWITCH: u8 = 65;
-pub const SOSTENUTO: u8 = 66;
-pub const SOFT_PEDAL: u8 = 67;
-pub const LEGATO: u8 = 68;
+pub const SUSTAIN: CCNumber = CCNumber::SUSTAIN;
+pub const PORTAMENTO_SWITCH: CCNumber = CCNumber::PORTAMENTO_SWITCH;
+pub const SOSTENUTO: CCNumber = CCNumber::SOSTENUTO;
+pub const SOFT_PEDAL: CCNumber = CCNumber::SOFT_PEDAL;
+pub const LEGATO: CCNumber = CCNumber::LEGATO;
 
 // Channel mode
-pub const ALL_SOUND_OFF: u8 = 120;
-pub const RESET_ALL: u8 = 121;
-pub const ALL_NOTES_OFF: u8 = 123;
+pub const ALL_SOUND_OFF: CCNumber = CCNumber::ALL_SOUND_OFF;
+pub const RESET_ALL: CCNumber = CCNumber::RESET_ALL;
+pub const ALL_NOTES_OFF: CCNumber = CCNumber::ALL_NOTES_OFF;
 
 // RPN/NRPN
-pub const NRPN_LSB: u8 = 98;
-pub const NRPN_MSB: u8 = 99;
-pub const RPN_LSB: u8 = 100;
-pub const RPN_MSB: u8 = 101;
+pub const NRPN_LSB: CCNumber = CCNumber::NRPN_LSB;
+pub const NRPN_MSB: CCNumber = CCNumber::NRPN_MSB;
+pub const RPN_LSB: CCNumber = CCNumber::RPN_LSB;
+pub const RPN_MSB: CCNumber = CCNumber::RPN_MSB;

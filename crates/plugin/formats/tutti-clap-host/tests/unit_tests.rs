@@ -14,7 +14,7 @@ use tutti_clap_host::{
     NoteExpressionType, NoteName, OutputEventList, OutputStream, ParameterChanges, ParameterQueue,
     VoiceInfo,
 };
-use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
+use tutti_midi_types::tutti_types::{CCNumber, MidiChannel, MidiGroup};
 
 // ── MIDI conversion via tutti_midi_types::MidiEvent ──
 //
@@ -56,7 +56,7 @@ fn test_control_change_roundtrip() {
     let event = MidiEvent::cc(
         MidiGroup::FIRST,
         MidiChannel::new(2),
-        74,
+        CCNumber::BRIGHTNESS,
         midi1_cc_to_midi2(100),
     )
     .with_frame_offset(5);

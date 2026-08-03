@@ -574,7 +574,7 @@ impl<'a> WordReader<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tutti_types::MidiChannel;
+    use tutti_types::{CCNumber, MidiChannel};
 
     #[test]
     fn header_magic_is_smf2clip() {
@@ -1133,7 +1133,12 @@ mod tests {
             ),
             (
                 Beat(0.5),
-                MidiEvent::cc(MidiGroup::FIRST, MidiChannel::FIRST, 74, 0x4000),
+                MidiEvent::cc(
+                    MidiGroup::FIRST,
+                    MidiChannel::FIRST,
+                    CCNumber::BRIGHTNESS,
+                    0x4000,
+                ),
             ),
             (
                 Beat(1.0),

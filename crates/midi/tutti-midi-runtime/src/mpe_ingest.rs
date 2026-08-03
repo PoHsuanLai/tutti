@@ -28,7 +28,7 @@ use tutti_midi_types::midi2::{Channeled, UmpMessage};
 use tutti_midi_types::mpe::{
     MpeChannelVoiceMap, MpeMode, MpeZoneConfig, NoteRotationAllocator, ZoneInfo,
 };
-use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
+use tutti_midi_types::tutti_types::{CCNumber, MidiChannel, MidiGroup};
 use tutti_midi_types::ump::MidiEvent;
 
 /// Rewrites classic-MPE channel-spread into native MIDI-2 per-note messages.
@@ -229,7 +229,7 @@ impl MpeIngest {
                 }
             }
             ChannelVoice2::ControlChange(m)
-                if u8::from(m.control()) == tutti_midi_types::cc::BRIGHTNESS =>
+                if CCNumber::new(u8::from(m.control())) == tutti_midi_types::cc::BRIGHTNESS =>
             {
                 let ch = u8::from(m.channel());
                 let zone = self.get_zone_info(ch)?;
@@ -381,7 +381,7 @@ mod tests {
             midi1_pitch_bend_to_midi2(bend14),
         )
     }
-    fn cc(channel: u8, cc_num: u8, value_u7: u8) -> MidiEvent {
+    fn cc(channel: u8, cc_num: CCNumber, value_u7: u8) -> MidiEvent {
         MidiEvent::cc(
             MidiGroup::FIRST,
             MidiChannel::new(channel),
@@ -429,7 +429,7 @@ mod tests {
     fn member_channel_cc74_becomes_per_note_controller() {
         let mut ingest = MpeIngest::new(MpeMode::LowerZone(MpeZoneConfig::lower(15)));
         ingest.translate(&note_on(3, 64, 100));
-        let out = ingest.translate(&cc(3, 74, 127)).expect("emits");
+        let out = ingest.translate(&cc(3, CCNumber::BRIGHTNESS, 127)).expect("emits");
         assert_cv2!(
             out,
             ChannelVoice2::AssignablePerNoteController(m)

@@ -38,7 +38,7 @@ pub use tutti_types::meter::{BarNumber, BeatsPerBar, NoteValue, TimeSignature};
 pub use automation::{ParameterChanges, ParameterPoint, ParameterQueue};
 pub use automation_mode::AutomationMode;
 pub use channels::{AudioBuffer, AudioBuffer32, AudioBuffer64, AudioBufferMut, BufferPtrs, Sample};
-pub use classification::Vst2Category;
+pub use classification::{ClapFeature, Vst2Category, Vst3PlugType, Vst3SubCategories};
 pub use descriptor::{AuComponentType, EditorPresence, PluginClass, PluginDescriptor};
 pub use editor::{
     AspectRatio, EditorCapabilities, EditorError, EditorSize, ResizeHints, WindowHandle,

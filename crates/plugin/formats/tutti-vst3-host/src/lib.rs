@@ -17,7 +17,10 @@ pub mod host;
 pub mod types;
 
 pub use error::{LoadStage, Result, Vst3Error};
-pub use host::{PluginNotifications, RestartOutcome, Vst3Instance, Vst3Library, Vst3Loaded};
+pub use host::{
+    factory_flags, FactoryInfo, PluginNotifications, RestartOutcome, Vst3Instance, Vst3Library,
+    Vst3Loaded,
+};
 pub use types::{
     automation_state, keyswitch_type, note_expression_flags, parameter_flags, physical_ui_type,
     prefetchable_support, process_context_flags, to_process_context, vst3_to_chord,

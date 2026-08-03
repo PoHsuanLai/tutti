@@ -2390,3 +2390,55 @@ fn param_id_for_function_name_resolves_known_functions() {
         "an unknown function name resolved to a parameter id"
     );
 }
+
+/// The factory's flag word survives the read.
+///
+/// `PFactoryInfo::flags` used to be dropped on the floor — `get_factory_info`
+/// copied vendor, url and email and simply did not mention the fourth field.
+/// Nothing in tutti acts on the flags yet, which is exactly why the omission
+/// went unnoticed: no caller could miss what no caller could ask for.
+///
+/// Every plugin in the corpus reports `kUnicode` and nothing else, so this is
+/// checkable without any plugin setting the flag we actually care about.
+/// `kClassesDiscardable` is set by none of them — which is also why the drop
+/// was invisible from the outside, and why the decode itself is pinned by unit
+/// tests rather than here.
+#[test]
+fn the_factory_flag_word_is_read_not_discarded() {
+    if !harness_ready() {
+        return;
+    }
+    let _guard = plugin_guard();
+
+    let mut read = 0usize;
+    let mut unicode = 0usize;
+    for (name, path) in sample_plugins() {
+        let Ok(library) = Vst3Library::load(&path) else {
+            continue;
+        };
+        let Some(info) = library.get_factory_info() else {
+            continue;
+        };
+        read += 1;
+        if info.unicode_strings() {
+            unicode += 1;
+        }
+        assert_eq!(
+            info.classes_discardable(),
+            info.flags & tutti_vst3_host::factory_flags::CLASSES_DISCARDABLE != 0,
+            "{name}: accessor disagrees with the raw bitmask it decodes"
+        );
+    }
+
+    // Without this, a `get_factory_info` that returned `None` for everything
+    // would pass the loop vacuously.
+    assert!(
+        read > 0,
+        "no corpus plugin answered getFactoryInfo; the assertions above never ran"
+    );
+    assert_eq!(
+        unicode, read,
+        "every VST3 plugin sets kUnicode ({unicode} of {read} did); a zero here \
+         means the flag word is being dropped again rather than read"
+    );
+}

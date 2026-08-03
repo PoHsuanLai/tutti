@@ -1,6 +1,6 @@
 # Tutti Plugin
 
-VST2, VST3, CLAP, AU, and WASM plugin hosting.
+VST2, VST3, CLAP, and AU plugin hosting.
 
 ## What this is
 
@@ -72,7 +72,7 @@ What each format supports, as reported by its loader in `tutti-plugin-server/src
 | `NOTE_EXPRESSION` | Best-effort | ◐ | ◐ | ✕ | ✕ |
 | `SEQUENCER_CONTEXT` | Best-effort | ◐ | ✕ | ✕ | ✕ |
 
-Notes: the AU loader currently reports only `EDITOR` — its MIDI / transport / f64 paths are unimplemented (`○`), not spec-impossible. VST2's `F64_AUDIO` is advisory (the `vst` crate is f32 internally). `SEQUENCER_CONTEXT` (chord/scale/per-note text) is a VST3-only concept by spec. **WASM is our own format (`dawai:audio-plugin`), so it's not in this external-format table**; its loader today reports only `MIDI_IN`.
+Notes: the AU loader currently reports only `EDITOR` — its MIDI / transport / f64 paths are unimplemented (`○`), not spec-impossible. VST2's `F64_AUDIO` is advisory (the `vst` crate is f32 internally). `SEQUENCER_CONTEXT` (chord/scale/per-note text) is a VST3-only concept by spec.
 
 ### `probed` — which capabilities a loader actually asked
 

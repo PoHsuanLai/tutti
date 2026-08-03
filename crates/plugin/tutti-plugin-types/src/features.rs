@@ -197,16 +197,6 @@ pub mod probed {
     /// declined by the units — an AU that takes MIDI still reports no `MIDI_IN`
     /// here.
     pub const AU: Features = Features::EDITOR;
-
-    /// The WASM world (`dawai:audio-plugin` v0.1) is headless, f32-only, and
-    /// single-bus by contract, so `EDITOR` and `F64_AUDIO` are genuine
-    /// answers rather than gaps — unlike AU, where the same clear bits mean
-    /// nobody asked. Guest MIDI output is discarded, so `MIDI_OUT` is a real
-    /// `false` too.
-    pub const WASM: Features = Features::MIDI_IN
-        .union(Features::MIDI_OUT)
-        .union(Features::EDITOR)
-        .union(Features::F64_AUDIO);
 }
 
 #[cfg(test)]
@@ -333,27 +323,11 @@ mod tests {
             ("clap", probed::CLAP),
             ("vst2", probed::VST2),
             ("au", probed::AU),
-            ("wasm", probed::WASM),
         ] {
             assert!(
                 !mask.contains(Features::AUTOMATION_STATE),
                 "{name} claims AUTOMATION_STATE, which no loader populates"
             );
         }
-    }
-
-    /// WASM's cleared bits are answers, not gaps — the world is headless and
-    /// f32-only by contract, so nothing needs to be probed to know it.
-    #[test]
-    fn the_wasm_world_answers_what_its_contract_fixes() {
-        assert!(
-            probed::WASM.contains(Features::EDITOR),
-            "headless by contract is an answered absence, not an unasked question"
-        );
-        assert!(probed::WASM.contains(Features::F64_AUDIO));
-        assert!(
-            !probed::WASM.contains(Features::TRANSPORT),
-            "transport is genuinely not wired in v0.1, so it stays unanswered"
-        );
     }
 }

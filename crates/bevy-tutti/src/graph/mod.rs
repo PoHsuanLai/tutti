@@ -38,7 +38,7 @@ pub use io::{
     drain_audio_pumps, finalize_removed_pumps, AudioPump, AudioPumpAppExt, PumpFinished, IDLE_PARK,
 };
 pub use metering::MeteringRes;
-pub use param::{reconcile_audio_param, AudioParam, AudioParamAppExt};
+pub use param::{reconcile_audio_param, write_param, AudioParam, AudioParamAppExt};
 pub use plugin::GraphReconcilePlugin;
 pub use resources::{AudioConfig, AudioGraphRes};
 pub use schedule::{engine_ready, GraphDirty, GraphReconcileSystems};

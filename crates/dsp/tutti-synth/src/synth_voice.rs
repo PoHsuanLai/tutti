@@ -8,9 +8,6 @@ use tutti_core::dsp::{
 };
 use tutti_core::{Amplitude, AudioUnit, Depth, Hz, Pan, Phase, PhaseIncrement, Semitones, Shared};
 
-extern crate alloc;
-use alloc::vec::Vec;
-
 #[derive(Clone)]
 struct SubVoice {
     pitch: Shared,

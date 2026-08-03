@@ -23,18 +23,15 @@ default = []
 # size the document never sees, and MIDI has no durational note record), so it
 # must never get this treatment even now that the feature exists.
 #
-# Forwards to `tutti-types`, which is pulled with `default-features = false`:
-# `MpeZoneConfig` is built from that crate's newtypes, so without the forward the
-# derives here would fail to resolve.
+# Forwards to `tutti-types`: `MpeZoneConfig` is built from that crate's
+# newtypes, so without the forward the derives here would fail to resolve.
 serde = ["dep:serde", "tutti-types/serde"]
 
 [dependencies]
 bitflags = "2"
 # `RtPublish` — atomic snapshot publishing for MidiRoutingTable.
 tutti-types = { path = "../../core/tutti-types", default-features = false }
-serde = { version = "1", optional = true, default-features = false, features = [
-    "derive",
-] }
+serde = { version = "1", optional = true, features = ["derive"] }
 
 # midi2's feature set is fully specified at the workspace level (this is its
 # only consumer). midly's alloc feature gives it owned event buffers.

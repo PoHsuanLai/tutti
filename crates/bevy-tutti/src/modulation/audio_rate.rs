@@ -289,11 +289,40 @@ pub fn ensure_source_nodes(
     }
 }
 
-/// "Did a route or a range move this frame?" — the reconciler's dirty gate.
+/// "Did a route, a range, or a sink's node move this frame?" — the
+/// reconciler's dirty gate.
 ///
 /// A named alias because the tuple is unreadable inline and clippy is right to
 /// say so; the `()` fetch is deliberate, since only the emptiness matters.
-type RouteChanged<'w, 's> = Query<'w, 's, (), Or<(Changed<ModRoute>, Changed<ModParamRange>)>>;
+///
+/// # Why `AudioNode` is in here
+///
+/// [`spawn_chain`] needs the sink's graph node in order to resolve its param
+/// port, and returns `None` when the sink has none yet. That is the right answer
+/// at the time — but it is not a *permanent* one, and without this arm nothing
+/// ever asked again.
+///
+/// The order it breaks on is the ordinary one. A host that compiles a document
+/// declares routes and spawns nodes in the same frame, and a node inserted
+/// through `insert_audio_node` lands as a *deferred* command — so the route is
+/// visible one frame before the `AudioNode` is. The route was therefore
+/// evaluated exactly once, against a sink that had no node, and fell back to
+/// per-frame permanently. Nothing reported it, because falling back is a legal
+/// outcome meaning "this sink exposes no port".
+///
+/// `Changed` rather than `Added`: replacing a node's unit (a crossfade, a
+/// re-arity) rewrites the component, and the new node's port index need not
+/// match the old one's.
+type RouteChanged<'w, 's> = Query<
+    'w,
+    's,
+    (),
+    Or<(
+        Changed<ModRoute>,
+        Changed<ModParamRange>,
+        Changed<tutti_core::AudioNode>,
+    )>,
+>;
 
 /// Reconcile audio-rate routes into graph chains.
 #[allow(

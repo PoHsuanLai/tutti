@@ -281,3 +281,76 @@ fn a_per_frame_route_is_the_drivers_alone() {
         "and no graph chain is built for it"
     );
 }
+
+/// **A route declared before its sink's node still reaches audio rate.**
+///
+/// The ordering a real host produces, and the one the reconciler used to fail
+/// on. `spawn_chain` resolves the sink's param port through its `AudioNode`, so
+/// a route whose sink has no node yet correctly builds nothing — but the gate
+/// watched only `Changed<ModRoute>`/`Changed<ModParamRange>`, so when the node
+/// arrived nothing asked again and the route stayed on the per-frame fallback
+/// **permanently**.
+///
+/// This is the ordinary order, not a contrived one. A host compiling a document
+/// declares routes and spawns nodes in the same frame, and `insert_audio_node`
+/// lands as a *deferred* command — so the route is visible one frame before the
+/// `AudioNode` is.
+///
+/// It failed silently, which is why it needed a test rather than a review: the
+/// per-frame fallback is a legal outcome meaning "this sink exposes no port",
+/// and nothing distinguishes it from "the node had not arrived yet".
+#[test]
+fn a_route_declared_before_its_sinks_node_still_binds() {
+    let mut app = App::new();
+    app.insert_resource(AudioGraphRes(Net::with_backend(2)));
+    app.insert_resource(AudioEngineState::Running);
+    app.add_plugins((GraphReconcilePlugin, TuttiModulationPlugin));
+    app.world_mut()
+        .resource_mut::<ModTargetRegistry>()
+        .register::<DistortionNode>();
+
+    // The sink exists as an entity with its declared range, but carries **no**
+    // `AudioNode` yet — exactly what a projection produces before the spawner
+    // has run.
+    let target = app
+        .world_mut()
+        .spawn(ModParamRange::default().with(ParamAddr::Unit(UnitParam::Drive), 5.0, 0.0, 10.0))
+        .id();
+    let lfo = spawn_lfo(&mut app);
+    app.world_mut().spawn(
+        ModRoute::new(lfo, target, ParamAddr::Unit(UnitParam::Drive))
+            .with_depth(Depth(0.5))
+            .per_sample(),
+    );
+
+    app.update();
+    app.update();
+    assert!(
+        app.world()
+            .resource::<AudioRateChains>()
+            .get(target, ParamAddr::Unit(UnitParam::Drive))
+            .is_none(),
+        "with no node on the sink there is no port to resolve, so no chain — \
+         this half must hold or the assertion below proves nothing"
+    );
+
+    // The node arrives a frame later, as a deferred insert would.
+    let dist = DistortionNode::with_param_inputs(2, ShapeKind::Tanh, 5.0, true);
+    let drive_port = dist.param_port(UnitParam::Drive).unwrap();
+    let node = app.world_mut().resource_mut::<AudioGraphRes>().0.add(dist);
+    app.world_mut().entity_mut(target).insert(AudioNode(node));
+
+    app.update();
+    app.update();
+
+    let chain = app
+        .world()
+        .resource::<AudioRateChains>()
+        .get(target, ParamAddr::Unit(UnitParam::Drive))
+        .expect(
+            "the sink's node arrived, so the route must now bind — a node \
+             appearing after its route is the ordinary order, not an edge case",
+        )
+        .clone();
+    assert_eq!(chain.port, drive_port);
+}

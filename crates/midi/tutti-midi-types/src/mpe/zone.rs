@@ -2,6 +2,7 @@ use super::PitchBendSensitivity;
 use tutti_types::{MidiChannel, MidiGroup};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum MpeZone {
     Lower,
     Upper,
@@ -17,6 +18,7 @@ const MASTER_PITCH_BEND_SEMITONES: u8 = 48;
 const MEMBER_PITCH_BEND_SEMITONES: u8 = 2;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct MpeZoneConfig {
     pub zone: MpeZone,
     pub master_channel: u8,
@@ -197,6 +199,7 @@ impl MpeZoneConfig {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum MpeMode {
     #[default]
     Disabled,
@@ -470,5 +473,83 @@ mod tests {
         assert!(config.is_member_channel(0));
         assert!(config.is_member_channel(14));
         assert!(!config.is_member_channel(15)); // Master, not member
+    }
+}
+
+#[cfg(all(test, feature = "serde"))]
+mod serde_tests {
+    use super::*;
+
+    /// **An MPE setup survives being written and read back.**
+    ///
+    /// The claim the `serde` feature exists for: before it, zone configuration
+    /// lived only in a Bevy resource whose own doc said it "is a Bevy resource,
+    /// not document state" — so plugging in a controller, configuring the zones
+    /// and saving lost the setup.
+    #[test]
+    fn an_mpe_mode_round_trips_through_a_real_format() {
+        for mode in [
+            MpeMode::Disabled,
+            MpeMode::LowerZone(MpeZoneConfig::lower(10)),
+            MpeMode::UpperZone(MpeZoneConfig::upper(7)),
+            MpeMode::DualZone {
+                lower: MpeZoneConfig::lower(5),
+                upper: MpeZoneConfig::upper(5),
+            },
+            MpeMode::SingleChannelRotation { channel: 3 },
+        ] {
+            let json = serde_json::to_string(&mode).expect("serializes");
+            let back: MpeMode = serde_json::from_str(&json).expect("deserializes");
+            assert_eq!(back, mode, "round trip changed the mode: {json}");
+        }
+    }
+
+    /// **Pitch-bend sensitivity round-trips its exact fixed-point bits.**
+    ///
+    /// `PitchBendSensitivity` is 7.25 fixed point — the RPN wire form. Persisting
+    /// it as `f32` semitones would be lossy for any fractional range, so the
+    /// newtype is serialized whole rather than converted. A non-whole-semitone
+    /// value is the case that would expose a conversion.
+    #[test]
+    fn pitch_bend_sensitivity_keeps_its_exact_bits() {
+        // 2.5 semitones: representable in 7.25 fixed point, not in whole
+        // semitones — so a `to_semitones`/`from_semitones` round trip loses it.
+        let fractional = PitchBendSensitivity::from_rpn_bits(
+            PitchBendSensitivity::from_semitones(2).to_rpn_bits() + (1 << 24),
+        );
+        let cfg = MpeZoneConfig {
+            member_pitch_bend_range: fractional,
+            ..MpeZoneConfig::lower(4)
+        };
+
+        let back: MpeZoneConfig =
+            serde_json::from_str(&serde_json::to_string(&cfg).expect("serializes"))
+                .expect("deserializes");
+        assert_eq!(
+            back.member_pitch_bend_range.to_rpn_bits(),
+            fractional.to_rpn_bits(),
+            "the raw 7.25 bits must survive, not a semitone approximation"
+        );
+        assert_eq!(back, cfg);
+    }
+
+    /// The master and member ranges stay distinct.
+    ///
+    /// RP-053 gives them different defaults (±48 and ±2) and a controller can set
+    /// them independently, so a round trip that collapsed them into one value
+    /// would bend a per-note gesture 24× too far — audible, but only on hardware.
+    #[test]
+    fn the_two_bend_ranges_do_not_collapse_into_one() {
+        let cfg = MpeZoneConfig::lower(10);
+        assert_ne!(
+            cfg.master_pitch_bend_range, cfg.member_pitch_bend_range,
+            "the fixture must actually differ, or this proves nothing"
+        );
+        let back: MpeZoneConfig =
+            serde_json::from_str(&serde_json::to_string(&cfg).expect("serializes"))
+                .expect("deserializes");
+        assert_eq!(back.master_pitch_bend_range, cfg.master_pitch_bend_range);
+        assert_eq!(back.member_pitch_bend_range, cfg.member_pitch_bend_range);
+        assert_ne!(back.master_pitch_bend_range, back.member_pitch_bend_range);
     }
 }

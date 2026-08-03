@@ -13,7 +13,13 @@ categories = ["multimedia::audio"]
 # (which rides the plugin-load IPC reply via `BusChannels`), the meter vocabulary
 # (which round-trips through the host's document), and the unit newtypes the
 # latter is built from.
-serde = ["dep:serde"]
+# `serde/alloc` is not optional bookkeeping: `MeterMap`'s hand-written
+# `Deserialize` calls `Vec::<MeterChange>::deserialize`, and serde only provides
+# `Vec`'s impls under `alloc`. Without it this feature does not compile *on its
+# own* — it only appeared to, because every consumer also depends on serde with
+# `std` on and Cargo unifies the features across the graph. The first crate to
+# request `tutti-types/serde` in isolation hit it.
+serde = ["dep:serde", "serde/alloc"]
 # Enables `Reflect` on the unit newtypes and the param vocabulary, so a Bevy
 # component built from them can be inspected and scene-serialized. Reflection
 # only — no `Component`/`Resource` derives: an app stores a `Volume`, never a

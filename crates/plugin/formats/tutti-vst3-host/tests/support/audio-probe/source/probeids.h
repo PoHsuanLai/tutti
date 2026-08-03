@@ -89,6 +89,26 @@ enum ProbeMode : int32
     /// the `ProcessData` handed over rather than the lifecycle that preceded
     /// it. Only the plugin knows, so only the plugin can report it.
     kModeEventBusActive = 6,
+
+    /// `out[..][i] = kConnectBalanceBase + (connects - disconnects)` on the
+    /// processor half.
+    ///
+    /// Answers the one question a half-refused `connect` raises: was this half
+    /// left holding a peer the other half never accepted? The base class keeps
+    /// only the current pointer, which cannot tell "never connected" from
+    /// "connected then correctly unwound" — so the count, not the pointer, is
+    /// the observable.
+    kModeConnectBalance = 7,
+
+    /// `out[..][i] = kActivationCountBase + (number of setActive(true) calls)`.
+    ///
+    /// `kIoChanged` and `kLatencyChanged` both oblige the host to deactivate,
+    /// re-ask, and reactivate (`ivsteditcontroller.h:125-127`, `:137-138`).
+    /// Whether that happened is invisible from the host side — the bus counts
+    /// read back the same either way, because this plugin's layout does not
+    /// actually change. Counting activations is what separates "re-read the
+    /// buses in place" from "ran the cycle".
+    kModeActivationCount = 8,
 };
 
 /// Step count for `kParamMode`. A stepped VST3 parameter normalizes as
@@ -99,7 +119,7 @@ enum ProbeMode : int32
 /// decode — and the host's `MODE_STEPS` mirrors it. Disagreement does not fail
 /// to compile: it selects a *different mode* than the caller asked for, and
 /// every assertion then reads the wrong renderer's output.
-static const int32 kModeStepCount = kModeEventBusActive;
+static const int32 kModeStepCount = kModeActivationCount;
 
 /// Parameter ids. Deliberately nonzero and non-contiguous: a host that
 /// confuses parameter *index* with parameter *id* passes with 0,1,2 and fails
@@ -111,6 +131,10 @@ enum ProbeParams : ParamID
     kParamRamp = 101,
     /// Read back by the host to confirm parameter writes land.
     kParamGain = 102,
+    /// Writing any non-zero value makes the *controller* ask the host for
+    /// `restartComponent(kIoChanged)`. Lets a test trigger the restart path on
+    /// demand instead of waiting for a plugin that happens to reconfigure.
+    kParamRequestIoChanged = 103,
 };
 
 /// Latency the plugin reports and applies in `kModeLatency`. A prime number so
@@ -133,6 +157,16 @@ static const int32 kNoteExpressionBaseCode = 5000;
 /// buffer cannot land on either by accident.
 static const int32 kEventBusActiveCode = 7000;
 static const int32 kEventBusInactiveCode = -7000;
+
+/// `kModeConnectBalance` writes `kConnectBalanceBase + balance`. Offset rather
+/// than reported raw so a balance of 0 is distinguishable from a mode that
+/// never ran and left the buffer zeroed.
+static const int32 kConnectBalanceBase = 8000;
+
+/// `kModeActivationCount` writes `kActivationCountBase + activations`. Offset
+/// for the same reason as the balance above, and far enough from it that the
+/// two modes' outputs are never confusable.
+static const int32 kActivationCountBase = 9000;
 
 /// Per-slot DC offset in `kModeTagPassthrough`.
 ///
@@ -235,6 +269,21 @@ enum ProbeMisbehaviour : int32
     /// the host must not go on to use a component that never came up. The SDK's
     /// own host requires `== kResultOk` here (`plugprovider.cpp:140`).
     kMisbehaveInitializeFails = 9,
+
+    /// The *controller* half refuses `IConnectionPoint::connect`, after the
+    /// component half has already accepted.
+    ///
+    /// Wiring the two halves takes two calls, and a plugin may take the first
+    /// and refuse the second. Both returns were discarded, so the pair was
+    /// left asymmetric — the component holding a peer that never reciprocated
+    /// — and initialisation carried on. The host must unwind the half that
+    /// took rather than leave the plugin in a state it cannot reach from any
+    /// legal call sequence.
+    ///
+    /// The controller is chosen as the refusing end deliberately: refusing at
+    /// the *component* end fails the first call, which needs no unwind and so
+    /// exercises nothing.
+    kMisbehaveControllerConnectFails = 10,
 };
 
 /// Read the selected misbehaviour from the environment. Returns
@@ -248,7 +297,7 @@ inline int32 probeMisbehaviour ()
     if (!raw || !*raw)
         return kMisbehaveNone;
     const int32 v = static_cast<int32> (std::strtol (raw, nullptr, 10));
-    return (v >= kMisbehaveNone && v <= kMisbehaveInitializeFails) ? v : kMisbehaveNone;
+    return (v >= kMisbehaveNone && v <= kMisbehaveControllerConnectFails) ? v : kMisbehaveNone;
 }
 
 /// Bus count reported under [`kMisbehaveExtraBuses`]. Larger than any real

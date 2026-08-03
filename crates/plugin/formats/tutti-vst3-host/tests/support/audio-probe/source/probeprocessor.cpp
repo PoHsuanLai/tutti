@@ -116,6 +116,10 @@ tresult PLUGIN_API AudioProbeProcessor::setActive (TBool state)
 
 	if (state)
 	{
+		// Counted before the resets below, and deliberately not reset by them:
+		// this is the one piece of state whose job is to survive a
+		// deactivate/reactivate cycle, so a host can be asked whether it ran one.
+		++mActivationCount;
 		// Deterministic origin for the block counter, and a cleared delay line
 		// so a latency test never sees residue from a previous activation.
 		mBlockIndex = 0;
@@ -214,6 +218,24 @@ int32 AudioProbeProcessor::firstNoteOnOffset (ProcessData& data) const
 			return e.sampleOffset;
 	}
 	return -1;
+}
+
+//-----------------------------------------------------------------------------
+tresult PLUGIN_API AudioProbeProcessor::connect (IConnectionPoint* other)
+{
+	const tresult r = AudioEffect::connect (other);
+	if (r == kResultOk)
+		++mConnectBalance;
+	return r;
+}
+
+//-----------------------------------------------------------------------------
+tresult PLUGIN_API AudioProbeProcessor::disconnect (IConnectionPoint* other)
+{
+	const tresult r = AudioEffect::disconnect (other);
+	if (r == kResultOk)
+		--mConnectBalance;
+	return r;
 }
 
 //-----------------------------------------------------------------------------
@@ -358,6 +380,22 @@ void AudioProbeProcessor::renderBlock (ProcessData& data)
 					for (int32 i = 0; i < frames; ++i)
 						dst[i] = static_cast<T> ((noteOn >= 0 && i >= noteOn) ? 1.0 : 0.0);
 					break;
+
+				case kModeActivationCount:
+				{
+					const double code = static_cast<double> (kActivationCountBase) +
+					                    static_cast<double> (mActivationCount);
+					std::fill (dst, dst + frames, static_cast<T> (code));
+					break;
+				}
+
+				case kModeConnectBalance:
+				{
+					const double code = static_cast<double> (kConnectBalanceBase) +
+					                    static_cast<double> (mConnectBalance);
+					std::fill (dst, dst + frames, static_cast<T> (code));
+					break;
+				}
 
 				case kModeEventBusActive:
 				{

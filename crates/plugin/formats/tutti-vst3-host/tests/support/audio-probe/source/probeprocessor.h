@@ -33,6 +33,14 @@ public:
 	/// up to it reads past the plugin's own bus array.
 	int32 PLUGIN_API getBusCount (MediaType type, BusDirection dir) SMTG_OVERRIDE;
 
+	/// Counted so `kModeConnectBalance` can report whether this half was left
+	/// holding a peer the other half never accepted. The base class keeps only
+	/// the current pointer, which cannot distinguish "never connected" from
+	/// "connected then correctly unwound" — and that distinction is the whole
+	/// question a half-refused connect raises.
+	tresult PLUGIN_API connect (IConnectionPoint* other) SMTG_OVERRIDE;
+	tresult PLUGIN_API disconnect (IConnectionPoint* other) SMTG_OVERRIDE;
+
 	tresult PLUGIN_API setState (IBStream* state) SMTG_OVERRIDE;
 	tresult PLUGIN_API getState (IBStream* state) SMTG_OVERRIDE;
 
@@ -59,6 +67,16 @@ private:
 	/// whether events arrived. VST3 offers a host no way to read this back
 	/// (`BusInfo` has no active field), which is why the plugin must report it.
 	bool eventInputActive () const;
+
+	/// `connect` calls minus `disconnect` calls on this half. 1 means the host
+	/// left us joined to a peer; 0 means never joined, or joined and unwound.
+	int32 mConnectBalance {0};
+
+	/// `setActive(true)` calls seen. Deliberately **not** reset in `setActive`,
+	/// unlike the block counter and delay line beside it — the whole point is
+	/// to survive a deactivate/reactivate cycle so a host can be asked whether
+	/// it ran one.
+	int32 mActivationCount {0};
 
 	int32 mMode {kModeTagPassthrough};
 	double mRamp {0.0};

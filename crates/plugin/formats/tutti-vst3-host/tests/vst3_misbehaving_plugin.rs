@@ -62,6 +62,7 @@ mod misbehave {
     pub const SETUP_FAILS: &str = "7";
     pub const STATE_NOT_IMPLEMENTED: &str = "8";
     pub const INITIALIZE_FAILS: &str = "9";
+    pub const CONTROLLER_CONNECT_FAILS: &str = "10";
 }
 
 /// Latency the probe claims but never applies under `LATENCY_LIES`
@@ -691,5 +692,40 @@ fn a_refused_initialize_is_an_error_not_a_silent_success() {
         "IComponent::initialize returned kResultFalse — a refusal — but the \
          host reported the plugin as loaded. Every later call runs against a \
          component that never initialised."
+    );
+}
+
+/// A refused connection must not fail the load.
+///
+/// A plugin whose halves cannot talk to each other still processes audio and
+/// still shows an editor; it just loses its private message channel — the same
+/// outcome as one that never exposed `IConnectionPoint`, which this host has
+/// always tolerated. Checking the return value must not turn that into a hard
+/// failure.
+///
+/// That the component half is also *unwound* rather than left dangling is a
+/// separate property, asserted in `vst3_audio_correctness.rs` where the probe
+/// can report its own connect balance. From here the asymmetry is invisible.
+#[test]
+fn a_refused_connection_does_not_fail_the_load() {
+    let _m = Misbehaviour::set(misbehave::CONTROLLER_CONNECT_FAILS);
+    let path = probe_path();
+
+    let loaded = Vst3Loaded::load(&path);
+    assert!(
+        loaded.is_ok(),
+        "the controller refused its half of the connection, which is legal — \
+         the plugin should still load and run unconnected, as one with no \
+         IConnectionPoint at all does"
+    );
+
+    let mut inst = match Vst3Instance::load(&path, 48_000.0, 512) {
+        Ok(inst) => inst,
+        Err(e) => panic!("instance load failed after a refused connect: {e:?}"),
+    };
+    let out = drive_block(&mut inst);
+    assert!(
+        !out.is_empty(),
+        "the plugin produced no output buses after a refused connect"
     );
 }

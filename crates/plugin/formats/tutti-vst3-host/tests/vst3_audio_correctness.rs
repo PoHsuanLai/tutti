@@ -80,15 +80,16 @@ fn plugin_guard() -> std::sync::MutexGuard<'static, ()> {
 
 const PARAM_MODE: u32 = 100;
 const PARAM_RAMP: u32 = 101;
-/// Steps on `kParamMode`: 7 modes (0..=6) is 6 steps, and a stepped VST3
+/// Steps on `kParamMode`: 9 modes (0..=8) is 8 steps, and a stepped VST3
 /// parameter normalizes as `index / stepCount`. Adding a mode shifts every
-/// other mode's normalized value, so this must track `ProbeMode` exactly —
+/// other mode's normalized value, so this must track `kModeStepCount` exactly —
 /// a stale count silently selects the wrong mode rather than failing.
-const MODE_STEPS: f64 = 6.0;
+const MODE_STEPS: f64 = 8.0;
 
 /// Normalized value selecting probe mode `index` (see `ProbeMode` in
 /// `probeids.h`): 0 tag-passthrough, 1 param-ramp, 2 block-counter,
-/// 3 latency, 4 note-gate, 5 event-transcript, 6 event-bus-active.
+/// 3 latency, 4 note-gate, 5 event-transcript, 6 event-bus-active,
+/// 7 connect-balance, 8 activation-count.
 fn mode(index: u32) -> f64 {
     f64::from(index) / MODE_STEPS
 }
@@ -100,6 +101,17 @@ const PROBE_LATENCY_SAMPLES: u32 = 137;
 /// What mode 6 writes when the host activated the probe's event input bus
 /// (`kEventBusActiveCode` in `probeids.h`).
 const EVENT_BUS_ACTIVE_CODE: f32 = 7000.0;
+
+/// Offset mode 7 adds to its connect balance (`kConnectBalanceBase`). Offset
+/// rather than raw so a balance of 0 cannot be confused with a zeroed buffer.
+const CONNECT_BALANCE_BASE: f32 = 8000.0;
+
+/// Offset mode 8 adds to its activation count (`kActivationCountBase`).
+const ACTIVATION_COUNT_BASE: f32 = 9000.0;
+
+/// Writing non-zero here makes the probe's controller request
+/// `restartComponent(kIoChanged)` (`kParamRequestIoChanged`).
+const PARAM_REQUEST_IO_CHANGED: u32 = 103;
 
 /// Per-slot DC offset the probe adds in tag-passthrough mode. Must match
 /// `probeTag` in `probeids.h` exactly.
@@ -456,6 +468,123 @@ fn consecutive_blocks_are_delivered_in_order() {
         "the plugin's block clock is not strictly increasing — blocks were \
          duplicated, dropped, or reordered:\n  {}",
         faults.join("\n  ")
+    );
+}
+
+/// `kIoChanged` runs a real deactivate/reactivate cycle, not an in-place re-read.
+///
+/// `ivsteditcontroller.h:125-127`: *"The host has to deactivate the plug-in,
+/// asks the plug-in for its wanted new bus configurations, adapts its
+/// processing graph and reactivate the plug-in."* Only the middle third was
+/// done — `reconcile_bus_counts()` re-read the layout with the plugin still
+/// active, which is the one ordering the spec rules out.
+///
+/// Bus counts cannot show this: this probe's layout does not actually change,
+/// and a plugin whose layout *would* change is exactly the one that answers
+/// wrongly while active. What separates the two is whether the plugin was
+/// reactivated at all, so `kModeActivationCount` reports its own
+/// `setActive(true)` count.
+///
+/// Driven through `Vst3Instance` rather than the server: this is the layer that
+/// owns activation, and the restart method lives here.
+#[test]
+fn an_io_change_reactivates_the_plugin_rather_than_re_reading_it_live() {
+    if !harness_ready() {
+        return;
+    }
+    let _guard = plugin_guard();
+    let Some(mut inst) = load_probe(512) else {
+        return;
+    };
+    set_mode(&mut inst, mode(8));
+
+    let activations_before = render(&mut inst, 512, &[], None, |_, _, _| 0.0).out[0][0][0];
+    assert_eq!(
+        activations_before,
+        ACTIVATION_COUNT_BASE + 1.0,
+        "a freshly loaded instance should have been activated exactly once"
+    );
+
+    // Ask the plugin to request the restart, then drain the notification the
+    // way a host's poll loop does.
+    inst.set_parameter(PARAM_REQUEST_IO_CHANGED, 1.0);
+    let notifications = inst.poll_plugin_notifications();
+    assert!(
+        notifications.restart.io_changed,
+        "the probe requested restartComponent(kIoChanged) but it did not reach \
+         the host — the rest of this test would be vacuous"
+    );
+
+    inst.restart_bus_configuration()
+        .expect("the probe accepts reactivation");
+
+    // The mode parameter survives the cycle on the controller side, but the
+    // processor's copy was re-read from a fresh activation; re-assert it so the
+    // render below is definitely in mode 8.
+    set_mode(&mut inst, mode(8));
+    let activations_after = render(&mut inst, 512, &[], None, |_, _, _| 0.0).out[0][0][0];
+
+    assert_eq!(
+        activations_after,
+        ACTIVATION_COUNT_BASE + 2.0,
+        "the plugin was never reactivated — the host re-read its bus layout in \
+         place while it was still active, which is the ordering kIoChanged \
+         exists to prevent"
+    );
+}
+
+/// A half-refused connection is unwound, not left dangling.
+///
+/// Wiring a separate controller takes two `connect` calls, and a plugin may
+/// take the first and refuse the second. Both returns were discarded, so the
+/// component was left holding a peer that never reciprocated while
+/// `initialize()` carried on — a state no legal call sequence produces.
+///
+/// The asymmetry is invisible from the host: the SDK base class keeps only the
+/// current peer pointer, so "never connected" and "connected then unwound" look
+/// identical, and a dangling connect causes no immediate error. Hence
+/// `kModeConnectBalance`, which reports the processor half's own
+/// connect-minus-disconnect count. Only that count separates the two.
+#[test]
+fn a_half_refused_connection_is_unwound_on_the_component_half() {
+    if !harness_ready() {
+        return;
+    }
+    let _guard = plugin_guard();
+
+    // `TUTTI_PROBE_MISBEHAVIOUR` is process-global and the probe reads it at
+    // `connect` time. `plugin_guard` serialises this file, and the probe is
+    // loaded and dropped entirely inside this scope, so the window is closed
+    // before any other test can load it. Restored unconditionally below.
+    let previous = std::env::var("TUTTI_PROBE_MISBEHAVIOUR").ok();
+    std::env::set_var("TUTTI_PROBE_MISBEHAVIOUR", "10");
+
+    let balance = {
+        let Some(mut inst) = load_probe(512) else {
+            match previous {
+                Some(v) => std::env::set_var("TUTTI_PROBE_MISBEHAVIOUR", v),
+                None => std::env::remove_var("TUTTI_PROBE_MISBEHAVIOUR"),
+            }
+            return;
+        };
+        set_mode(&mut inst, mode(7));
+        let rendered = render(&mut inst, 512, &[], None, |_, _, _| 0.0);
+        rendered.out[0][0][0]
+    };
+
+    match previous {
+        Some(v) => std::env::set_var("TUTTI_PROBE_MISBEHAVIOUR", v),
+        None => std::env::remove_var("TUTTI_PROBE_MISBEHAVIOUR"),
+    }
+
+    // `kConnectBalanceBase + balance`. 0 means the component was never left
+    // joined — either the connect never happened or it was unwound. 1 means it
+    // is still holding the peer the controller refused.
+    assert_eq!(
+        balance, CONNECT_BALANCE_BASE,
+        "the controller refused its half of the connection, so the component's \
+         half must be unwound; a balance of +1 means it is still wired to a \
+         peer that never reciprocated"
     );
 }
 

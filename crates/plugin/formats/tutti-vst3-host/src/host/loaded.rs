@@ -98,8 +98,9 @@ pub struct RestartOutcome {
     /// `kParamTitlesChanged` fired — parameter titles/units/flags changed; the
     /// caller should re-pull the parameter list / info.
     pub param_titles_changed: bool,
-    /// `kIoChanged` fired — bus counts were re-enumerated; the caller may need
-    /// to renegotiate arrangements / rewire (full multi-bus is V1).
+    /// `kIoChanged` fired — the plugin wants a different bus configuration.
+    /// The caller must run `Vst3Instance::restart_bus_configuration` (a
+    /// deactivate/reactivate cycle) and then rewire.
     pub io_changed: bool,
     /// `kMidiCCAssignmentChanged` fired — the `IMidiMapping` CC→param table is
     /// stale and should be re-queried (V3).
@@ -138,9 +139,9 @@ pub struct PluginNotifications {
     /// `SetDirty`/…) in arrival order. `RestartComponent` requests are folded
     /// into `restart` instead of appearing here.
     pub param_edits: Vec<ParameterEditEvent>,
-    /// Coalesced restart side-effects. `kIoChanged` was already acted on in
-    /// place; the remaining flags are for the caller (e.g. PDC on
-    /// `latency_changed`).
+    /// Coalesced restart side-effects, all for the caller to act on — nothing
+    /// here has been handled in place. `io_changed` and `latency_changed` both
+    /// require a deactivate/reactivate cycle this type cannot perform.
     pub restart: RestartOutcome,
     /// `IProgress` reports for long plugin operations (sample loading, offline
     /// rendering) — drive a host progress indicator.
@@ -821,9 +822,17 @@ impl Vst3Loaded {
             match event {
                 ParameterEditEvent::RestartComponent(flags) => {
                     let flags = RestartFlags::from_bits(flags);
-                    if flags.io_changed {
-                        self.reconcile_bus_counts();
-                    }
+                    // `kIoChanged` is deliberately NOT acted on here. The spec
+                    // requires deactivate → re-ask → reactivate
+                    // (`ivsteditcontroller.h:125-127`), and this method holds a
+                    // `&mut Vst3Loaded`, which cannot deactivate anything — the
+                    // same constraint `reload_requested` is surfaced for.
+                    //
+                    // It used to call `reconcile_bus_counts()` from here, which
+                    // reads fine until you notice `Vst3Instance` `DerefMut`s to
+                    // this type: the production caller polls on a live active
+                    // instance, so the re-enumeration ran mid-activation. The
+                    // owner calls `Vst3Instance::restart_bus_configuration`.
                     notifications.restart.merge_flags(flags);
                 }
                 other => notifications.param_edits.push(other),
@@ -1302,17 +1311,40 @@ impl Vst3Loaded {
     /// plugin's component and controller to each other, so their private
     /// messages pass straight through without the host inspecting or
     /// reformatting them.
-    fn connect_separate_controller(&self, ctrl: &ComPtr<IEditController>) {
+    /// Returns whether both halves accepted the connection. A refusal is not an
+    /// error — the plugin simply runs unconnected, as it does when either half
+    /// declines to expose `IConnectionPoint` at all.
+    ///
+    /// The two `connect` calls have to succeed or fail together. `connect`
+    /// returns a `tresult` and both returns were discarded, so a plugin that
+    /// accepted the first and refused the second was left asymmetrically wired
+    /// — the component believing it has a peer, the controller not — and
+    /// `initialize()` continued regardless. The plugin's private
+    /// component↔controller messages then flow one way only, which surfaces
+    /// much later as an editor that does not track the processor.
+    #[must_use]
+    fn connect_separate_controller(&self, ctrl: &ComPtr<IEditController>) -> bool {
         let Some(comp_conn) = self.interfaces.component.cast::<IConnectionPoint>() else {
-            return;
+            return false;
         };
         let Some(ctrl_conn) = ctrl.cast::<IConnectionPoint>() else {
-            return;
+            return false;
         };
         unsafe {
-            comp_conn.connect(ctrl_conn.as_ptr());
-            ctrl_conn.connect(comp_conn.as_ptr());
+            if comp_conn.connect(ctrl_conn.as_ptr()) != kResultOk {
+                return false;
+            }
+            if ctrl_conn.connect(comp_conn.as_ptr()) != kResultOk {
+                // Unwind the half that took, so the component is not left
+                // holding a peer that never reciprocated. Its return is
+                // genuinely uninteresting: there is no third state to recover
+                // to, and the disconnect path discards its results for the
+                // same reason.
+                comp_conn.disconnect(ctrl_conn.as_ptr());
+                return false;
+            }
         }
+        true
     }
 
     /// Reverse [`connect_separate_controller`](Self::connect_separate_controller):
@@ -1365,7 +1397,13 @@ impl Vst3Loaded {
                 let _ = ctrl.initialize(host_ptr);
             }
             let ctrl = ctrl.clone();
-            self.connect_separate_controller(&ctrl);
+            // A refused connection is not fatal — a plugin whose halves cannot
+            // talk to each other still processes audio and still shows an
+            // editor; it just loses its private message channel. That is the
+            // same outcome as a plugin not exposing `IConnectionPoint`, which
+            // this host has always tolerated. What matters is that the failure
+            // does not leave one half wired to a peer that is not wired back.
+            let _connected = self.connect_separate_controller(&ctrl);
         }
 
         self.attach_component_handler();
@@ -1454,7 +1492,12 @@ impl Vst3Loaded {
 
     /// Re-query bus counts from the component — `initialize` may have changed
     /// them (some plugins don't declare bus counts until after init).
-    fn reconcile_bus_counts(&mut self) {
+    ///
+    /// `pub(crate)` only so `Vst3Instance::restart_bus_configuration` can call
+    /// it from inside the deactivate/reactivate cycle. Deliberately not public:
+    /// on a live instance this must not be reached on its own, which is exactly
+    /// the mistake the `kIoChanged` path used to make.
+    pub(crate) fn reconcile_bus_counts(&mut self) {
         if let Some(layout) = self.interfaces.component.audio_bus_channel_count(K_INPUT) {
             // `PluginInfo` carries raw usize channel counts; take the count at
             // this boundary.

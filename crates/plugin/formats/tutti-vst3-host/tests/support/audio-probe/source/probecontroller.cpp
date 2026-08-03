@@ -11,6 +11,26 @@ namespace Steinberg {
 namespace Vst {
 
 //-----------------------------------------------------------------------------
+tresult PLUGIN_API AudioProbeController::setParamNormalized (ParamID id, ParamValue value)
+{
+	const tresult r = EditController::setParamNormalized (id, value);
+	if (id == kParamRequestIoChanged && value != 0.0 && componentHandler)
+		componentHandler->restartComponent (kIoChanged);
+	return r;
+}
+
+//-----------------------------------------------------------------------------
+tresult PLUGIN_API AudioProbeController::connect (IConnectionPoint* other)
+{
+	// Latched per-call rather than at construction: the controller is built
+	// before the host reads the environment in some load orders, and this
+	// misbehaviour only has to be true at the moment `connect` is called.
+	if (probeMisbehaviour () == kMisbehaveControllerConnectFails)
+		return kResultFalse;
+	return EditController::connect (other);
+}
+
+//-----------------------------------------------------------------------------
 tresult PLUGIN_API AudioProbeController::initialize (FUnknown* context)
 {
 	tresult result = EditController::initialize (context);
@@ -26,6 +46,8 @@ tresult PLUGIN_API AudioProbeController::initialize (FUnknown* context)
 	                         kParamRamp);
 	parameters.addParameter (STR16 ("Gain"), nullptr, 0, 1.0, ParameterInfo::kCanAutomate,
 	                         kParamGain);
+	parameters.addParameter (STR16 ("RequestIoChanged"), nullptr, 1, 0.0,
+	                         ParameterInfo::kCanAutomate, kParamRequestIoChanged);
 
 	return kResultOk;
 }

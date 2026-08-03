@@ -94,9 +94,28 @@ pub fn to_process_context(
                 state |= StatesAndFlags_::kRecording as u32;
             }
             if t.state.cycle_active {
-                state |=
-                    (StatesAndFlags_::kCycleActive as u32) | (StatesAndFlags_::kCycleValid as u32);
+                state |= StatesAndFlags_::kCycleActive as u32;
             }
+        }
+        // `kCycleValid` is deliberately NOT set above beside `kCycleActive`.
+        // The two answer different questions and the SDK routes them through
+        // different requirement bits: `kNeedTransportState` covers
+        // "kPlaying, kCycleActive, kRecording", while `kCycleValid` is listed
+        // against `kNeedCycleMusic` (`ivstaudioprocessor.h:446,452`). And the
+        // flag's own doc is about the *fields* — "cycleStartMusic and
+        // barPositionMusic contain valid information" — not about whether a
+        // cycle is running.
+        //
+        // Setting it from `cycle_active` under the transport gate broke both
+        // directions at once: a plugin asking only for transport state was
+        // told the cycle bounds were valid while they were still the
+        // `mem::zeroed` 0.0, and a plugin asking only for cycle music got the
+        // bounds written below with no bit to say so, and ignored them.
+        if wants(need::NEED_CYCLE_MUSIC)
+            && is_usable(t.loop_region.start_quarters)
+            && is_usable(t.loop_region.end_quarters)
+        {
+            state |= StatesAndFlags_::kCycleValid as u32;
         }
         // Each `*Valid` bit advertises that the matching field below is filled,
         // so it must track the same requirement gate — AND the value must be one
@@ -180,7 +199,13 @@ pub fn to_process_context(
     if wants(need::NEED_BAR_POSITION_MUSIC) {
         ctx.barPositionMusic = t.bar.position_quarters;
     }
-    if wants(need::NEED_CYCLE_MUSIC) {
+    // Same condition as `kCycleValid` above, including the finiteness check —
+    // the bit and the fields it advertises have to move together, or a NaN
+    // bound ships under a flag saying it is computable.
+    if wants(need::NEED_CYCLE_MUSIC)
+        && is_usable(t.loop_region.start_quarters)
+        && is_usable(t.loop_region.end_quarters)
+    {
         ctx.cycleStartMusic = t.loop_region.start_quarters;
         ctx.cycleEndMusic = t.loop_region.end_quarters;
     }
@@ -383,6 +408,16 @@ mod tests {
                 StatesAndFlags_::kContTimeValid,
                 |c| c.continousTimeSamples != 0,
             ),
+            // `cycleStartMusic` was the one filled field missing from this
+            // table, and its absence is why `kCycleValid` could be set from
+            // `cycle_active` under the transport gate for so long: no case
+            // here paired the bit with the field, so nothing contradicted it.
+            (
+                "cycleStartMusic",
+                need::NEED_CYCLE_MUSIC,
+                StatesAndFlags_::kCycleValid,
+                |c| c.cycleStartMusic != 0.0,
+            ),
         ];
 
         for (name, requirement, valid_bit, field_filled) in cases {
@@ -407,6 +442,76 @@ mod tests {
                 "{name}: valid bit set with no data"
             );
         }
+    }
+
+    /// `kCycleActive` and `kCycleValid` answer different questions and ride
+    /// different requirement bits.
+    ///
+    /// The SDK maps them separately: `kNeedTransportState` covers
+    /// "kPlaying, kCycleActive, kRecording" while `kCycleValid` is listed
+    /// against `kNeedCycleMusic` (`ivstaudioprocessor.h:446,452`), and the
+    /// flag itself is documented as "cycleStartMusic and barPositionMusic
+    /// contain valid information" — a claim about fields, not about whether a
+    /// cycle is running.
+    ///
+    /// Setting `kCycleValid` from `cycle_active` broke both directions at
+    /// once, and each half needs its own assertion because either alone still
+    /// passes with the bug half-fixed.
+    #[test]
+    fn cycle_active_and_cycle_valid_are_gated_separately() {
+        let t = populated_transport();
+
+        // A plugin that asked only for transport state gets the running flag
+        // but no claim about the bounds — which it never asked for, and which
+        // are still `mem::zeroed` here.
+        let transport_only = to_process_context(&t, need::NEED_TRANSPORT_STATE);
+        assert_ne!(
+            transport_only.state & StatesAndFlags_::kCycleActive,
+            0,
+            "a cycling transport must still report kCycleActive"
+        );
+        assert_eq!(
+            transport_only.state & StatesAndFlags_::kCycleValid,
+            0,
+            "kCycleValid claims cycleStartMusic/cycleEndMusic are meaningful, \
+             but nothing asked for them and they are still zero"
+        );
+        assert_eq!(transport_only.cycleStartMusic, 0.0);
+        assert_eq!(transport_only.cycleEndMusic, 0.0);
+
+        // The converse: a plugin that asked only for cycle music gets the
+        // bounds AND the bit that makes them readable. Without the bit a
+        // spec-correct plugin ignores the fields, so the loop points are
+        // computed and thrown away.
+        let cycle_only = to_process_context(&t, need::NEED_CYCLE_MUSIC);
+        assert_ne!(
+            cycle_only.state & StatesAndFlags_::kCycleValid,
+            0,
+            "cycle bounds were filled but not flagged — the plugin ignores them"
+        );
+        assert_eq!(cycle_only.cycleStartMusic, 2.0);
+        assert_eq!(cycle_only.cycleEndMusic, 6.0);
+    }
+
+    /// A non-finite cycle bound is not flagged valid, matching every other
+    /// field's gate. A plugin trusting the bit would propagate the NaN into
+    /// its own timing math.
+    #[test]
+    fn a_non_finite_cycle_bound_is_not_flagged_valid() {
+        let mut t = populated_transport();
+        t.loop_region.end_quarters = f64::NAN;
+
+        let ctx = to_process_context(&t, need::NEED_CYCLE_MUSIC);
+        assert_eq!(
+            ctx.state & StatesAndFlags_::kCycleValid,
+            0,
+            "a NaN bound must not be advertised as valid"
+        );
+        assert_eq!(
+            ctx.cycleStartMusic, 0.0,
+            "neither bound is written when the pair is unusable — a good start \
+             beside a NaN end is still an uncomputable region"
+        );
     }
 
     /// Requesting only tempo fills `tempo` + `kTempoValid` and nothing else

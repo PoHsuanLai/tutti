@@ -98,8 +98,9 @@ pub struct RestartOutcome {
     /// `kParamTitlesChanged` fired — parameter titles/units/flags changed; the
     /// caller should re-pull the parameter list / info.
     pub param_titles_changed: bool,
-    /// `kIoChanged` fired — bus counts were re-enumerated; the caller may need
-    /// to renegotiate arrangements / rewire (full multi-bus is V1).
+    /// `kIoChanged` fired — the plugin wants a different bus configuration.
+    /// The caller must run `Vst3Instance::restart_bus_configuration` (a
+    /// deactivate/reactivate cycle) and then rewire.
     pub io_changed: bool,
     /// `kMidiCCAssignmentChanged` fired — the `IMidiMapping` CC→param table is
     /// stale and should be re-queried (V3).
@@ -108,6 +109,37 @@ pub struct RestartOutcome {
     /// The host path cannot do that from a `&mut Vst3Loaded` (it requires
     /// reconstructing the instance), so this is surfaced for the owner to act.
     pub reload_requested: bool,
+    /// `kNoteExpressionChanged` fired — the note-expression type list is stale;
+    /// re-query `INoteExpressionController`.
+    pub note_expression_changed: bool,
+    /// `kIoTitlesChanged` fired — bus *names* changed. Cosmetic: the geometry
+    /// is unaffected, so unlike `io_changed` this needs no restart cycle.
+    pub io_titles_changed: bool,
+    /// `kPrefetchableSupportChanged` fired — the plugin's answer to
+    /// `IPrefetchableSupport` changed; re-query before the next offline render.
+    pub prefetchable_support_changed: bool,
+    /// `kRoutingInfoChanged` fired — `IComponent::getRoutingInfo` is stale.
+    pub routing_info_changed: bool,
+    /// `kKeyswitchChanged` fired — the keyswitch list is stale; re-query
+    /// `IKeyswitchController`.
+    pub keyswitch_changed: bool,
+    /// `kParamIDMappingChanged` fired (3.7.11) — the `IRemapParamID` mapping
+    /// changed. Emitted during *project load*, when a newer plugin version
+    /// remaps the ids an older session saved: dropping it silently detaches
+    /// every automation lane that referenced a remapped parameter.
+    pub param_id_mapping_changed: bool,
+    // The six fields above stop here, at the format layer, on purpose. Carrying
+    // them further means new `AsyncEvent` variants, and bincode encodes a
+    // discriminant, so appending one is a `PROTOCOL_VERSION` bump — paid for a
+    // signal nothing yet acts on. `AsyncEvent::IoChanged` already shows where
+    // that leads: it crosses the wire to a `BridgeMessage` and no consumer
+    // reads it. Decoding a flag and dropping it inside one crate is a gap;
+    // shipping six across a versioned boundary to no receiver is the
+    // `PluginTail` mistake, which stayed write-only for a release cycle.
+    //
+    // What this fix buys is that the signal now *exists* where a consumer can
+    // reach it, and `every_decoded_restart_flag_reaches_the_outcome` keeps it
+    // that way. Plumbing follows a consumer, not the other way round.
 }
 
 impl RestartOutcome {
@@ -117,6 +149,13 @@ impl RestartOutcome {
         *self == Self::default()
     }
 
+    /// Fold one `restartComponent` bitmask into the coalesced outcome.
+    ///
+    /// Every flag `RestartFlags` decodes is forwarded. Six of the twelve used
+    /// to stop here — decoded into the struct above and then dropped, so a
+    /// plugin could signal them into a consumer that had no field to receive
+    /// them. `param_id_mapping_changed` is the one that bites: it fires during
+    /// project load and losing it detaches automation from remapped parameters.
     fn merge_flags(&mut self, flags: RestartFlags) {
         self.latency_changed |= flags.latency_changed;
         self.param_values_changed |= flags.param_values_changed;
@@ -124,6 +163,12 @@ impl RestartOutcome {
         self.io_changed |= flags.io_changed;
         self.midi_cc_assignment_changed |= flags.midi_cc_assignment_changed;
         self.reload_requested |= flags.reload_component;
+        self.note_expression_changed |= flags.note_expression_changed;
+        self.io_titles_changed |= flags.io_titles_changed;
+        self.prefetchable_support_changed |= flags.prefetchable_support_changed;
+        self.routing_info_changed |= flags.routing_info_changed;
+        self.keyswitch_changed |= flags.keyswitch_changed;
+        self.param_id_mapping_changed |= flags.param_id_mapping_changed;
     }
 }
 
@@ -138,9 +183,9 @@ pub struct PluginNotifications {
     /// `SetDirty`/…) in arrival order. `RestartComponent` requests are folded
     /// into `restart` instead of appearing here.
     pub param_edits: Vec<ParameterEditEvent>,
-    /// Coalesced restart side-effects. `kIoChanged` was already acted on in
-    /// place; the remaining flags are for the caller (e.g. PDC on
-    /// `latency_changed`).
+    /// Coalesced restart side-effects, all for the caller to act on — nothing
+    /// here has been handled in place. `io_changed` and `latency_changed` both
+    /// require a deactivate/reactivate cycle this type cannot perform.
     pub restart: RestartOutcome,
     /// `IProgress` reports for long plugin operations (sample loading, offline
     /// rendering) — drive a host progress indicator.
@@ -821,9 +866,17 @@ impl Vst3Loaded {
             match event {
                 ParameterEditEvent::RestartComponent(flags) => {
                     let flags = RestartFlags::from_bits(flags);
-                    if flags.io_changed {
-                        self.reconcile_bus_counts();
-                    }
+                    // `kIoChanged` is deliberately NOT acted on here. The spec
+                    // requires deactivate → re-ask → reactivate
+                    // (`ivsteditcontroller.h:125-127`), and this method holds a
+                    // `&mut Vst3Loaded`, which cannot deactivate anything — the
+                    // same constraint `reload_requested` is surfaced for.
+                    //
+                    // It used to call `reconcile_bus_counts()` from here, which
+                    // reads fine until you notice `Vst3Instance` `DerefMut`s to
+                    // this type: the production caller polls on a live active
+                    // instance, so the re-enumeration ran mid-activation. The
+                    // owner calls `Vst3Instance::restart_bus_configuration`.
                     notifications.restart.merge_flags(flags);
                 }
                 other => notifications.param_edits.push(other),
@@ -1302,17 +1355,40 @@ impl Vst3Loaded {
     /// plugin's component and controller to each other, so their private
     /// messages pass straight through without the host inspecting or
     /// reformatting them.
-    fn connect_separate_controller(&self, ctrl: &ComPtr<IEditController>) {
+    /// Returns whether both halves accepted the connection. A refusal is not an
+    /// error — the plugin simply runs unconnected, as it does when either half
+    /// declines to expose `IConnectionPoint` at all.
+    ///
+    /// The two `connect` calls have to succeed or fail together. `connect`
+    /// returns a `tresult` and both returns were discarded, so a plugin that
+    /// accepted the first and refused the second was left asymmetrically wired
+    /// — the component believing it has a peer, the controller not — and
+    /// `initialize()` continued regardless. The plugin's private
+    /// component↔controller messages then flow one way only, which surfaces
+    /// much later as an editor that does not track the processor.
+    #[must_use]
+    fn connect_separate_controller(&self, ctrl: &ComPtr<IEditController>) -> bool {
         let Some(comp_conn) = self.interfaces.component.cast::<IConnectionPoint>() else {
-            return;
+            return false;
         };
         let Some(ctrl_conn) = ctrl.cast::<IConnectionPoint>() else {
-            return;
+            return false;
         };
         unsafe {
-            comp_conn.connect(ctrl_conn.as_ptr());
-            ctrl_conn.connect(comp_conn.as_ptr());
+            if comp_conn.connect(ctrl_conn.as_ptr()) != kResultOk {
+                return false;
+            }
+            if ctrl_conn.connect(comp_conn.as_ptr()) != kResultOk {
+                // Unwind the half that took, so the component is not left
+                // holding a peer that never reciprocated. Its return is
+                // genuinely uninteresting: there is no third state to recover
+                // to, and the disconnect path discards its results for the
+                // same reason.
+                comp_conn.disconnect(ctrl_conn.as_ptr());
+                return false;
+            }
         }
+        true
     }
 
     /// Reverse [`connect_separate_controller`](Self::connect_separate_controller):
@@ -1365,7 +1441,13 @@ impl Vst3Loaded {
                 let _ = ctrl.initialize(host_ptr);
             }
             let ctrl = ctrl.clone();
-            self.connect_separate_controller(&ctrl);
+            // A refused connection is not fatal — a plugin whose halves cannot
+            // talk to each other still processes audio and still shows an
+            // editor; it just loses its private message channel. That is the
+            // same outcome as a plugin not exposing `IConnectionPoint`, which
+            // this host has always tolerated. What matters is that the failure
+            // does not leave one half wired to a peer that is not wired back.
+            let _connected = self.connect_separate_controller(&ctrl);
         }
 
         self.attach_component_handler();
@@ -1454,7 +1536,12 @@ impl Vst3Loaded {
 
     /// Re-query bus counts from the component — `initialize` may have changed
     /// them (some plugins don't declare bus counts until after init).
-    fn reconcile_bus_counts(&mut self) {
+    ///
+    /// `pub(crate)` only so `Vst3Instance::restart_bus_configuration` can call
+    /// it from inside the deactivate/reactivate cycle. Deliberately not public:
+    /// on a live instance this must not be reached on its own, which is exactly
+    /// the mistake the `kIoChanged` path used to make.
+    pub(crate) fn reconcile_bus_counts(&mut self) {
         if let Some(layout) = self.interfaces.component.audio_bus_channel_count(K_INPUT) {
             // `PluginInfo` carries raw usize channel counts; take the count at
             // this boundary.
@@ -1568,6 +1655,10 @@ pub(super) struct AudioClass {
     pub cid_bytes: [u8; 16],
     /// Display name from `PClassInfo::name`.
     pub name: String,
+    /// Per-class vendor, when declared. `None` falls back to the factory's.
+    pub vendor: Option<String>,
+    /// Per-class version string, when declared.
+    pub version: Option<String>,
 }
 
 fn ensure_has_classes(library: &Vst3Library, path: &Path) -> Result<()> {
@@ -1711,10 +1802,22 @@ fn build_plugin_info_raw(
     processor: Option<&ComPtr<IAudioProcessor>>,
     class: &AudioClass,
 ) -> PluginInfo {
-    let vendor = library
-        .get_factory_info()
-        .map(|info| info.vendor)
-        .unwrap_or_default();
+    // The class's own vendor wins over the factory's: `ipluginbase.h:357`
+    // documents the field as "overwrite vendor information from factory info".
+    // They differ on distributor-published bundles, where the factory names the
+    // distributor and the class names the maker — reading only the factory
+    // credits the wrong one.
+    let vendor = class.vendor.clone().unwrap_or_else(|| {
+        library
+            .get_factory_info()
+            .map(|info| info.vendor)
+            .unwrap_or_default()
+    });
+    // Every VST3 plugin used to report "1.0.0" — a literal, unconditional, for
+    // all of them. The real string is on the class (e.g. "1.0.0.512",
+    // Major.Minor.Subversion.Build). A plugin that declares none keeps the old
+    // placeholder rather than showing an empty version field.
+    let version = class.version.clone().unwrap_or_else(|| "1.0.0".to_string());
     // `PluginInfo` carries raw usize channel counts; take the count at this
     // boundary. A plugin that reports no bus, or whose query fails, contributes
     // 0 — the per-bus vecs below carry the same absence, and `bus_channels` in
@@ -1739,7 +1842,7 @@ fn build_plugin_info_raw(
         class.name.clone(),
     )
     .vendor(vendor)
-    .version("1.0.0".to_string())
+    .version(version)
     .audio_io(num_inputs, num_outputs)
     .bus_channels(input_bus_channels, output_bus_channels)
     .midi(receives_midi)
@@ -1771,6 +1874,8 @@ fn find_audio_class_named(library: &Vst3Library, path: &Path, wanted: &str) -> R
             cid: info.cid,
             cid_bytes: info.cid_bytes,
             name: info.name.clone(),
+            vendor: info.vendor.clone(),
+            version: info.version.clone(),
         })
         .ok_or_else(|| Vst3Error::LoadFailed {
             path: path.to_path_buf(),
@@ -1794,6 +1899,8 @@ fn find_audio_class(library: &Vst3Library, path: &Path) -> Result<AudioClass> {
                 cid: info.cid,
                 cid_bytes: info.cid_bytes,
                 name: info.name,
+                vendor: info.vendor,
+                version: info.version,
             })
         })
         .ok_or_else(|| Vst3Error::LoadFailed {
@@ -1922,5 +2029,70 @@ mod restart_outcome_tests {
         outcome.merge_flags(RestartFlags::default());
         assert!(outcome.reload_requested);
         assert!(outcome.midi_cc_assignment_changed);
+    }
+
+    /// Every flag the decode understands reaches the outcome.
+    ///
+    /// Six of the twelve used to stop at `RestartFlags`: decoded into a named
+    /// field, then dropped by `merge_flags`, so a plugin could signal them and
+    /// no consumer could ever see it. A per-flag test would not have caught
+    /// that — each one passes by simply not being written — so this asserts the
+    /// *whole* mapping at once.
+    ///
+    /// Deliberately spelled without `..Default::default()` on the input: adding
+    /// a thirteenth flag must fail to compile here rather than silently join
+    /// the set of things that go nowhere.
+    #[test]
+    fn every_decoded_restart_flag_reaches_the_outcome() {
+        let all = RestartFlags {
+            reload_component: true,
+            io_changed: true,
+            param_values_changed: true,
+            latency_changed: true,
+            param_titles_changed: true,
+            midi_cc_assignment_changed: true,
+            note_expression_changed: true,
+            io_titles_changed: true,
+            prefetchable_support_changed: true,
+            routing_info_changed: true,
+            keyswitch_changed: true,
+            param_id_mapping_changed: true,
+        };
+
+        let mut outcome = RestartOutcome::default();
+        outcome.merge_flags(all);
+
+        // Named individually rather than compared against a fully-populated
+        // literal: a missing forward then names the flag that was dropped,
+        // instead of printing two twelve-field structs to diff by eye.
+        let dropped: Vec<&str> = [
+            ("reload_component", outcome.reload_requested),
+            ("io_changed", outcome.io_changed),
+            ("param_values_changed", outcome.param_values_changed),
+            ("latency_changed", outcome.latency_changed),
+            ("param_titles_changed", outcome.param_titles_changed),
+            (
+                "midi_cc_assignment_changed",
+                outcome.midi_cc_assignment_changed,
+            ),
+            ("note_expression_changed", outcome.note_expression_changed),
+            ("io_titles_changed", outcome.io_titles_changed),
+            (
+                "prefetchable_support_changed",
+                outcome.prefetchable_support_changed,
+            ),
+            ("routing_info_changed", outcome.routing_info_changed),
+            ("keyswitch_changed", outcome.keyswitch_changed),
+            ("param_id_mapping_changed", outcome.param_id_mapping_changed),
+        ]
+        .into_iter()
+        .filter_map(|(name, forwarded)| (!forwarded).then_some(name))
+        .collect();
+
+        assert!(
+            dropped.is_empty(),
+            "these restart flags are decoded but never forwarded, so no \
+             consumer can act on them: {dropped:?}"
+        );
     }
 }

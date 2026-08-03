@@ -8,9 +8,31 @@
 //! ```
 
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
 use tutti_vst3_host::{AudioBuffer, MidiEvent, TransportInfo, Vst3InputEvents, Vst3Instance};
+
+/// VST3 module lifecycle is not thread-safe here: loading and unloading the
+/// same DSO concurrently races module init/exit and crashes. Every test that
+/// constructs a `Vst3Instance` must hold this.
+///
+/// This file went without one. Two of its tests run by default (the rest are
+/// `#[ignore]`d), both load real bundles, and under the default parallel runner
+/// the suite intermittently died with SIGTRAP — while passing single-threaded,
+/// which is what made it read as flaky rather than as a missing lock.
+///
+/// Per-file, like the statics in `vst3_conformance.rs` and
+/// `vst3_audio_correctness.rs`: each test binary is its own process, so a
+/// shared one would have to live in the library and exist in production purely
+/// for tests.
+static PLUGIN_LOCK: Mutex<()> = Mutex::new(());
+
+/// Acquire [`PLUGIN_LOCK`], ignoring poisoning so one failing test does not
+/// cascade into spurious failures in every test after it.
+fn plugin_guard() -> std::sync::MutexGuard<'static, ()> {
+    PLUGIN_LOCK.lock().unwrap_or_else(|p| p.into_inner())
+}
 
 /// Resolve a macOS `.vst3` bundle directory to its inner binary so
 /// `Vst3Instance::load` can `dlopen` it. Mirrors the helper in
@@ -63,6 +85,7 @@ fn find_available_plugin() -> Option<&'static str> {
 #[test]
 #[ignore]
 fn test_load_tal_noisemaker() {
+    let _plugins = plugin_guard();
     if !Path::new(TAL_NOISEMAKER).exists() {
         eprintln!("TAL-NoiseMaker not installed, skipping");
         return;
@@ -87,6 +110,7 @@ fn test_load_tal_noisemaker() {
 #[test]
 #[ignore]
 fn test_load_any_available_plugin() {
+    let _plugins = plugin_guard();
     let path = match find_available_plugin() {
         Some(p) => p,
         None => {
@@ -120,6 +144,7 @@ fn test_load_any_available_plugin() {
 /// because a silent pass here is indistinguishable from a real one.
 #[test]
 fn a_plugins_flat_channel_counts_match_its_bus_zero() {
+    let _plugins = plugin_guard();
     let mut checked = 0;
     for path in corpus() {
         let library = resolve_bundle(&path);
@@ -166,9 +191,59 @@ fn a_plugins_flat_channel_counts_match_its_bus_zero() {
     println!("checked {checked} plugin(s)");
 }
 
+/// A plugin's reported version comes from the plugin, not from a literal.
+///
+/// `PluginInfo::version` was hardcoded `"1.0.0"` for every VST3 ever loaded.
+/// The real string is on `PClassInfoW::version` (e.g. `"1.0.0.512"`,
+/// Major.Minor.Subversion.Build), which `class_info_unicode` read past.
+/// `vendor` sat beside it, and the header calls that field an *overwrite* of
+/// the factory's (`ipluginbase.h:357`) — so a distributor-published bundle
+/// credited the distributor rather than the maker.
+///
+/// Asserted as "at least one plugin disagrees with the old literal" rather than
+/// per-plugin: a plugin that genuinely is version 1.0.0, or that declares none
+/// and falls back, is not a bug. What would be a bug is *every* plugin agreeing
+/// with the literal again, which is what the old code guaranteed.
+#[test]
+fn a_plugins_version_is_read_from_it_rather_than_assumed() {
+    let _plugins = plugin_guard();
+    let mut loaded = 0;
+    let mut non_placeholder = 0;
+
+    for path in corpus() {
+        let library = resolve_bundle(&path);
+        let Ok(plugin) = Vst3Instance::<f32>::load(&library, 48_000.0, 64) else {
+            continue;
+        };
+        let info = plugin.info();
+        println!(
+            "{}: version={:?} vendor={:?}",
+            info.name, info.version, info.vendor
+        );
+        loaded += 1;
+        if info.version != "1.0.0" {
+            non_placeholder += 1;
+        }
+        assert!(
+            !info.version.is_empty(),
+            "{}: version is empty — a plugin declaring none should keep the \
+             placeholder, not report nothing",
+            info.name
+        );
+    }
+
+    assert!(loaded > 0, "no VST3 plugin in the corpus could be loaded");
+    assert!(
+        non_placeholder > 0,
+        "every one of {loaded} plugins reported exactly \"1.0.0\" — the version \
+         is being assumed rather than read from PClassInfoW"
+    );
+}
+
 #[test]
 #[ignore]
 fn test_process_silence() {
+    let _plugins = plugin_guard();
     let path = match find_available_plugin() {
         Some(p) => p,
         None => {
@@ -210,6 +285,7 @@ fn test_process_silence() {
 #[test]
 #[ignore]
 fn test_process_with_midi() {
+    let _plugins = plugin_guard();
     let path = match find_available_plugin() {
         Some(p) => p,
         None => {
@@ -260,6 +336,7 @@ fn test_process_with_midi() {
 #[test]
 #[ignore]
 fn test_process_multiple_buffers() {
+    let _plugins = plugin_guard();
     let path = match find_available_plugin() {
         Some(p) => p,
         None => {
@@ -319,6 +396,7 @@ fn test_process_multiple_buffers() {
 #[test]
 #[ignore]
 fn test_state_save_load() {
+    let _plugins = plugin_guard();
     let path = match find_available_plugin() {
         Some(p) => p,
         None => {
@@ -348,6 +426,7 @@ fn test_state_save_load() {
 #[test]
 #[ignore]
 fn test_get_parameters() {
+    let _plugins = plugin_guard();
     let path = match find_available_plugin() {
         Some(p) => p,
         None => {
@@ -385,6 +464,7 @@ fn test_get_parameters() {
 #[test]
 #[ignore]
 fn test_set_parameter() {
+    let _plugins = plugin_guard();
     let path = match find_available_plugin() {
         Some(p) => p,
         None => {
@@ -422,6 +502,7 @@ fn test_set_parameter() {
 #[test]
 #[ignore]
 fn test_rapid_process_calls() {
+    let _plugins = plugin_guard();
     let path = match find_available_plugin() {
         Some(p) => p,
         None => {
@@ -492,6 +573,7 @@ fn test_rapid_process_calls() {
 /// empty. An ignored test exercising new FFI is indistinguishable from no test.
 #[test]
 fn plain_range_probe_recovers_real_ranges() {
+    let _plugins = plugin_guard();
     let corpus = corpus();
     if corpus.is_empty() {
         eprintln!("No VST3 plugins installed, skipping");

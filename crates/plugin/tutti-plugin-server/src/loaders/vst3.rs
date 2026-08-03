@@ -299,11 +299,42 @@ impl Vst3Instance {
         let restart = vst_dispatch_mut!(self, inner => inner.poll_plugin_notifications()).restart;
         let mut changes = RestartChanges::default();
 
-        if restart.latency_changed {
-            let samples =
-                Samples(vst_dispatch_mut!(self, inner => inner.read_latency_samples()) as usize);
-            self.meta.loaded.latency_samples = samples;
-            changes.latency = Some(samples);
+        // `kIoChanged` and `kLatencyChanged` both require the same
+        // deactivate → re-ask → reactivate cycle (`ivsteditcontroller.h:125-127`
+        // and `:137-138`), so one cycle serves both when they arrive together —
+        // which they routinely do, since a layout change usually moves latency.
+        //
+        // Reading latency without the cycle is what the code did before: the
+        // figure comes from a plugin that has not been reactivated, and a
+        // plugin that recomputes group delay in `setActive(true)` reports the
+        // stale one. The re-read below happens inside the cycle, after
+        // reactivation, which is the order the header specifies.
+        if restart.io_changed || restart.latency_changed {
+            match vst_dispatch_mut!(self, inner => inner.restart_bus_configuration()) {
+                Ok(()) => {
+                    let samples = Samples(
+                        vst_dispatch_mut!(self, inner => inner.read_latency_samples()) as usize,
+                    );
+                    self.meta.loaded.latency_samples = samples;
+                    changes.latency = Some(samples);
+
+                    if restart.io_changed {
+                        // Refresh the cached per-bus layout so `loaded()`
+                        // reflects the post-cycle geometry for the client rewire.
+                        let info = vst_dispatch!(self, inner => inner.info().clone());
+                        self.meta.loaded.inputs =
+                            bus_channels(&info.input_bus_channels, info.num_inputs);
+                        self.meta.loaded.outputs =
+                            bus_channels(&info.output_bus_channels, info.num_outputs);
+                        changes.io_changed = true;
+                    }
+                }
+                // A refused reactivation leaves the plugin inactive, and saying
+                // nothing would let the client keep processing it. Surfacing no
+                // change is the honest answer: the cached layout and latency
+                // still describe the last configuration that worked.
+                Err(_) => {}
+            }
         }
 
         if restart.midi_cc_assignment_changed {
@@ -312,15 +343,6 @@ impl Vst3Instance {
 
         changes.param_values_changed = restart.param_values_changed;
         changes.param_titles_changed = restart.param_titles_changed;
-
-        if restart.io_changed {
-            // The host already re-enumerated buses on its side; refresh the
-            // cached per-bus layout so loaded() reflects it for the client rewire.
-            let info = vst_dispatch!(self, inner => inner.info().clone());
-            self.meta.loaded.inputs = bus_channels(&info.input_bus_channels, info.num_inputs);
-            self.meta.loaded.outputs = bus_channels(&info.output_bus_channels, info.num_outputs);
-            changes.io_changed = true;
-        }
 
         if restart.reload_requested {
             // A failed reload leaves the old instance in place; surface nothing

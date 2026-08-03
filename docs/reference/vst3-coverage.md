@@ -82,7 +82,39 @@ are never *fetched*, `getClassInfo2` is unreferenced repo-wide, and the quoted "
 vendor information from factory info" could not be corroborated in the spec. What does
 hold is `loaded.rs:1742` hardcoding `.version("1.0.0")` for every plugin.
 
-## Fixed in this pass
+## Correction to the confirmation pass
+
+The confirmation agent could not corroborate the *"overwrite vendor information from
+factory info"* quote and marked it unverified. **It is real** — `ipluginbase.h:357`,
+directly above the `vendor` field. The search had been run against the extracted spec
+table rather than the SDK header, which does not carry per-field comments. The original
+finding was right about intent; only its account of the mechanism was wrong (the fields
+are never *read*, rather than read and discarded).
+
+Worth recording as a limit of the method: the extracted tables are complete on
+*signatures* and lossy on *field-level prose*. For a claim resting on a header comment,
+go to the header.
+
+## Fixed so far
+
+Eight of the sixteen upheld findings are fixed, each mutation-verified:
+
+| Finding | Observable it needed |
+|---|---|
+| Event buses never activated | new probe mode — invisible to host *and* to every lenient plugin |
+| Unstable `IParameterChanges` sort | ≥32 points, descending — smaller fixtures pass against the bug |
+| `IAttributeList::getString` underflow | canaries either side of a one-byte buffer (PR #132) |
+| `kIoChanged` skipped the restart cycle | activation counter — bus counts read the same either way |
+| `kLatencyChanged` re-read out of order | same cycle |
+| `kCycleValid` on the wrong gate | the flag/field pairing table it was missing from |
+| Half-refused `connect` left dangling | connect-balance counter — the SDK keeps only the current pointer |
+| `version` hardcoded `"1.0.0"` | real corpus versions (`5.0.6`, `3.8.0.0`) |
+| 6 of 12 `RestartFlags` dropped | whole-mapping test, so a 13th flag cannot join them |
+
+The pattern is worth stating plainly: **in seven of nine cases the bug was unobservable
+with the tests that existed**, and the work was building something that could see it —
+not writing the fix. Twice the first attempt at a test passed against the unfixed code
+and had to be thrown away.
 
 **Event buses were never activated** — `host/instance.rs:738`. **[verified]**
 
@@ -116,11 +148,17 @@ by `ParamAddress` without updating them. `vst3_conformance.rs` (32 tests, wrappi
 Steinberg checks) and `vst3_audio_correctness.rs` (9 tests, the audio oracle) are both
 behind the `conformance` feature, so a default `cargo test` never saw them. Restored here.
 
-**`tests/integration_tests.rs` takes no `PLUGIN_LOCK`**, though the rule is documented on
+**`tests/integration_tests.rs` took no `PLUGIN_LOCK`**, though the rule is documented on
 the lock itself: *"Every test that constructs a `Vst3Instance`/`Vst3Loaded` must hold
-this."* Two tests load real bundles concurrently; the suite intermittently dies with
-SIGTRAP under the default parallel runner and passes single-threaded. Pre-existing on
-`main`, not fixed here.
+this."* Two tests load real bundles concurrently; the suite intermittently died with
+SIGTRAP under the default parallel runner while passing single-threaded, which is what
+made it read as flaky rather than as a missing lock. Fixed — but note the evidence is
+weak by nature: five consecutive clean parallel runs do not prove a race is gone. What is
+solid is that the file now follows the rule its siblings document.
+
+**`test_load_tal_noisemaker` fails when un-ignored** — it passes the bundle directory to
+`Vst3Instance::load` instead of resolving to the inner binary, so `dlopen` fails. Every
+sibling test calls `resolve_bundle` first. Pre-existing, `#[ignore]`d, not fixed here.
 
 **`BusFlags::kDefaultActive` is never read.** `types/info.rs:44` stores the flags bitfield
 and nothing consults it. Our fix activates every bus unconditionally, which is defensible
@@ -149,24 +187,24 @@ spec interpretation being right.
 | ~~`IParameterChanges` merge uses an unstable sort.~~ **FIXED** — see above. | `host/midi_mapping.rs:241` | **[verified]** |
 | **Keyboard, wheel and focus are never delivered to plugin editors.** `onKeyDown` / `onKeyUp` / `onWheel` / `onFocus` have zero non-doc call sites. | — | **[verified]** |
 | **`IUnitInfo` is never called.** We store `unitId` on parameters, note expressions and keyswitches — three separate structs — and never call the interface that gives those IDs meaning. A raw symbol grep scores this "covered"; it is doc-comment mentions only. | `types/info.rs:81,264,395` | **[verified]** |
-| **`kIoChanged` mutates bus counts on a live active instance** without the spec-required deactivate/reactivate cycle (spec `:975` — "Deactivate, re-ask bus configs, adapt the graph, reactivate"). Only the re-ask third is done. Reachable while active because `Vst3Instance` `DerefMut`s to `Vst3Loaded`. | `host/loaded.rs:822-828` | **[verified]** |
-| **`kCycleValid` is set under the wrong requirement gate**, and separately from the fields it advertises. Upgraded from low after re-checking. | `types/transport.rs:98` vs `:183-185` | **[verified]** |
+| ~~`kIoChanged` mutates bus counts on a live active instance.~~ **FIXED** — `Vst3Instance::restart_bus_configuration` owns the cycle; `Vst3Loaded` surfaces the flag instead of acting on it. | `host/instance.rs` | **[verified]** |
+| ~~`kCycleValid` is set under the wrong requirement gate.~~ **FIXED** — gated on `NEED_CYCLE_MUSIC` + finiteness, paired with the fields it advertises. | `types/transport.rs` | **[verified]** |
 
 ### Medium
 
 | Finding | Where | Tag |
 |---|---|---|
-| **6 of 12 `RestartFlags` are decoded and then dropped.** *Correcting the finding's own wording:* all 12 **are** decoded into struct fields; only 6 are forwarded to `RestartOutcome`. The other six — `note_expression_changed`, `io_titles_changed`, `prefetchable_support_changed`, `routing_info_changed`, `keyswitch_changed`, `param_id_mapping_changed` — are consumed at **zero** sites. `param_id_mapping_changed` (3.7.11) fires during project load; losing it loses automation on plugin replacement. | `host/loaded.rs:121-126` | **[verified]** |
+| ~~6 of 12 `RestartFlags` are decoded and then dropped.~~ **FIXED** — all 12 now reach `RestartOutcome`, pinned by `every_decoded_restart_flag_reaches_the_outcome`. Deliberately stops at the format layer: carrying them further needs new `AsyncEvent` variants and a `PROTOCOL_VERSION` bump for a signal nothing yet consumes — `AsyncEvent::IoChanged` already crosses the wire to no reader. | `host/loaded.rs` | **[verified]** |
 | **`disconnect()` is called from `Drop`**, which the code itself documents as possibly running on the audio thread. The spec marks `disconnect` `[UI-thread & Connected]`. Self-documented thread-contract violation. | `host/loaded.rs:1532` | **[verified]** |
 | **`resizeView` does not call `onSize` in the same callstack.** Deliberate and documented — reentrant `onSize` causes feedback loops with plugins that re-issue `resizeView`. But the spec is explicit (*"Afterwards, in the same callstack, the host has to call IPlugView::onSize()"*) and the SDK's own `editorhost.cpp:361` does it inline. A known trade-off, not an oversight. | `com/plug_frame.rs:70` | **[verified]** |
 | **`process()` never clamps `numSamples`** to the negotiated `maxSamplesPerBlock`. Only a zero-check exists. Severity held at medium: reachability depends on caller guarantees outside this crate. | `host/instance.rs:536` | **[verified]** |
 | ~~`isPlugInterfaceSupported` denies interfaces we consume.~~ **REFUTED** — every interface named is *plug-in*-side; the host queries them off the plugin rather than providing them. The code documents this deliberately and pins it with `does_not_claim_uninstalled_interfaces`. | `com/host_application.rs:186-215` | — |
-| **`version` is hardcoded `"1.0.0"` for every plugin.** *Corrected:* per-class `vendor`/`version` are not "fetched then discarded" — they are never fetched. `class_info_unicode` reads only `cid`/`category`/`name`, `ClassInfo` has no fields for them, and `getClassInfo2` is unreferenced repo-wide. The "overwrite vendor information from factory info" quote could not be corroborated. | `host/loaded.rs:1742`, `host/library.rs:220-238` | **[verified]** |
+| ~~`version` is hardcoded `"1.0.0"` for every plugin.~~ **FIXED** — `PClassInfoW`'s `vendor`/`version` are now read and carried through `ClassInfo` *and* `AudioClass`, which both dropped them; the class vendor takes precedence per `ipluginbase.h:357`. Measured after: TAL-NoiseMaker `5.0.6`, Note Expression Synth `3.8.0.0`; ADelay and mda genuinely are `1.0.0`, so the fallback is indistinguishable and correctly so. | `host/library.rs`, `host/loaded.rs` | **[verified]** |
 | ~~Gesture bracketing is not tracked or validated.~~ **REFUTED** — spec `:565-567` places the ordering duty on the plug-in ("*before* a performEdit", "*between* beginEdit and endEdit"). The host is the callee. Contrast `IEditControllerHostEditing` `:289-290`, where the host *is* the caller and does bracket. | `com/component_handler.rs:168-192` | — |
-| **`kLatencyChanged` re-reads latency without the required deactivate/reactivate.** *Corrected:* it is not "surfaced and ignored" — `loaders/vst3.rs:302-307` consumes it and re-reads. What is missing is the cycle around the read, so a plugin that recomputes group delay in `setActive(true)` returns a stale figure. | `loaders/vst3.rs:302-307` | **[verified]** |
+| ~~`kLatencyChanged` re-reads latency without the required deactivate/reactivate.~~ **FIXED** — folded into the same cycle as `kIoChanged`, which the header specifies identically (`:137-138`); latency is re-read after reactivation. *Corrected:* it was never "surfaced and ignored" — it was consumed, just in the wrong order. | `loaders/vst3.rs` | **[verified]** |
 | ~~`kReloadComponent` is surfaced but no reload path exists.~~ **REFUTED** — `loaders/vst3.rs:325-333` calls `reload()`, which saves state, rebuilds, and restores. The original finding read only `host/loaded.rs`, whose doc comment says the reload is the owner's job, and never checked the owner. | `loaders/vst3.rs:264-277` | — |
 | **`IEditController::setState`/`getState` are never called** — controller-only UI state is not persisted, separately from component state. | — | [claimed] |
-| **Both `connect()` return values are discarded**, so a half-succeeded connect leaves the pair asymmetrically wired with no unwind and `initialize()` proceeds regardless. *Citation corrected:* `1334-1335` is `disconnect`, where discarding is harmless — the real site is `1313-1314`. | `host/loaded.rs:1313-1314` | **[verified]** |
+| ~~Both `connect()` return values are discarded.~~ **FIXED** — the first return is checked and a failed second call unwinds the first. A refusal stays non-fatal. *Citation corrected:* `1334-1335` is `disconnect`, where discarding is harmless; the real site was `1313-1314`. | `host/loaded.rs` | **[verified]** |
 
 ### Low
 

@@ -202,6 +202,12 @@ impl Vst3Library {
                 cid_bytes,
                 category: c_str_to_string(&info.category),
                 name: c_str_to_string(&info.name),
+                // `PClassInfo` (the v1 struct) carries no vendor or version —
+                // their absence is what `PClassInfo2`/`PClassInfoW` were added
+                // for. `None` here is the honest answer, not a stub, and the
+                // caller falls back to the factory's vendor.
+                vendor: None,
+                version: None,
             })
         } else {
             Err(Vst3Error::PluginError {
@@ -229,6 +235,17 @@ impl Vst3Library {
             cid_bytes,
             category: c_str_to_string(&info.category),
             name: utf16_to_string(&info.name),
+            // `ipluginbase.h:357` documents the vendor field as "overwrite
+            // vendor information from factory info", so a non-empty class
+            // vendor outranks the factory's. Both are read here and the choice
+            // is made at the call site, which is the only place that has both.
+            //
+            // Empty is the common case — most plugins fill only the factory —
+            // and is why this is `Option` rather than a bare `String`: "the
+            // class said nothing" and "the class said the empty string" would
+            // otherwise be the same value, and only the first should fall back.
+            vendor: non_empty(utf16_to_string(&info.vendor)),
+            version: non_empty(utf16_to_string(&info.version)),
         })
     }
 
@@ -280,4 +297,21 @@ pub struct ClassInfo {
     pub category: String,
     /// Display name of the class.
     pub name: String,
+    /// Per-class vendor, when the class declares one.
+    ///
+    /// `None` when the field is empty, which is the usual case — most plugins
+    /// fill only the factory's vendor. The distinction matters: the header
+    /// calls this an *overwrite* of the factory information, so an empty value
+    /// must fall through to the factory rather than blank the vendor out.
+    /// Distributor-published bundles are where the two differ.
+    pub vendor: Option<String>,
+    /// Per-class version string, e.g. `"1.0.0.512"`
+    /// (Major.Minor.Subversion.Build). `None` when the class declares none.
+    pub version: Option<String>,
+}
+
+/// `None` for an empty string, so "the plugin said nothing" is distinct from
+/// "the plugin said the empty string" at every call site that must fall back.
+fn non_empty(s: String) -> Option<String> {
+    (!s.is_empty()).then_some(s)
 }

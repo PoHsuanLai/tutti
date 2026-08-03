@@ -788,6 +788,46 @@ impl<T: Vst3Sample> Vst3Instance<T> {
         Ok(())
     }
 
+    /// Run the deactivate → re-enumerate → reactivate cycle two `RestartFlags`
+    /// require, and report whether the plugin came back up.
+    ///
+    /// `ivsteditcontroller.h:125-127` for `kIoChanged`: *"The host has to
+    /// deactivate the plug-in, asks the plug-in for its wanted new bus
+    /// configurations, adapts its processing graph and reactivate the
+    /// plug-in."* `kLatencyChanged` (`:137-138`) states the same cycle and adds
+    /// that `getLatencySamples` should be read *after* `setActive(true)`.
+    ///
+    /// This lives on `Vst3Instance` rather than `Vst3Loaded` because only this
+    /// type knows whether the plugin is active. The re-enumeration used to run
+    /// through `DerefMut` on a live instance with no cycle at all — the bus
+    /// layout was re-read while the plugin was still active, which is the one
+    /// ordering the spec rules out. A plugin that only recomputes its layout or
+    /// its group delay inside `setActive(true)` answered with the old figures.
+    ///
+    /// A refused reactivation is reported, not swallowed: `set_active` treats
+    /// `kResultFalse` as the refusal it is, and a caller that ignored this
+    /// would go on to `process` a plugin that is no longer active.
+    pub fn restart_bus_configuration(&mut self) -> Result<()> {
+        self.stop_processing();
+        self.set_active(false)?;
+
+        // Re-ask the plugin for its layout while it is down. Arrangements are
+        // renegotiated before the counts are re-read, matching the activation
+        // order in `from_loaded` — a plugin decides its channel layout in
+        // `setBusArrangements`, so reading counts first would cache the layout
+        // it is about to replace.
+        self.negotiate_bus_arrangements()?;
+        self.apply_process_setup()?;
+        self.loaded.reconcile_bus_counts();
+        self.activate_buses()?;
+
+        self.set_active(true)?;
+        // Latency is only valid once active, and both flags that reach here can
+        // change it. Same read as `from_loaded`, for the same reason.
+        let _ = self.loaded.read_latency_samples();
+        Ok(())
+    }
+
     fn set_active(&mut self, active: bool) -> Result<()> {
         let flag: vst3::Steinberg::TBool = if active { 1 } else { 0 };
         let result = unsafe { self.loaded.interfaces.component.setActive(flag) };

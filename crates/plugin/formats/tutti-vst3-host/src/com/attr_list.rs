@@ -123,6 +123,15 @@ impl IAttributeListTrait for AttributeList {
         match self.attributes.lock().get(&k) {
             Some(AttributeValue::String(v)) => {
                 let max_chars = (size_in_bytes as usize) / std::mem::size_of::<TChar>();
+                // A buffer too small to hold even one `TChar` cannot be given a
+                // terminator, so there is nothing valid to return. `size_in_bytes`
+                // is a BYTE count on this boundary — the caller is free to pass an
+                // odd one — and `1` survives the `== 0` guard above only to divide
+                // to zero here. Rejecting it is what stops `max_chars - 1` below
+                // from wrapping to `usize::MAX` and writing through a wild pointer.
+                if max_chars == 0 {
+                    return kInvalidArgument;
+                }
                 let copy_len = v.len().min(max_chars);
                 std::ptr::copy_nonoverlapping(v.as_ptr() as *const TChar, string, copy_len);
                 // The stored value already carries its own NUL terminator, so a
@@ -279,6 +288,53 @@ mod tests {
             let result = ptr.getString(key.as_ptr(), out.as_mut_ptr() as *mut TChar, 0);
             assert_ne!(result, kResultOk);
         }
+    }
+
+    /// A buffer too small for one `TChar` must be refused, not written through.
+    ///
+    /// `size_in_bytes` is a BYTE count on this boundary, so a caller may legally
+    /// pass an odd one. `1` clears the `size_in_bytes == 0` guard and then
+    /// divides to `max_chars == 0`, at which point the truncation terminator
+    /// wrote `*string.add(max_chars - 1)` — `0usize - 1` wraps to `usize::MAX`,
+    /// so the write lands through a wild pointer. Release builds wrap silently.
+    ///
+    /// The stored value must be longer than the buffer, or the truncation branch
+    /// is never reached and the test passes without exercising anything.
+    #[test]
+    fn an_undersized_buffer_is_refused_rather_than_written_through() {
+        let attrs = AttributeList::new();
+        let ptr = attrs.to_com_ptr::<IAttributeList>().unwrap();
+        let key = make_key("name");
+        let utf16: Vec<u16> = "hello".encode_utf16().chain(std::iter::once(0)).collect();
+        unsafe {
+            assert_eq!(
+                ptr.setString(key.as_ptr(), utf16.as_ptr() as *const TChar),
+                kResultOk
+            );
+        }
+
+        // A canary each side of the one-element buffer: an out-of-bounds write
+        // would be caught by the guard page or by ASan, but on a normal build
+        // the observable damage is a neighbouring slot, so check them.
+        let mut buf = [0xFFFFu16; 3];
+        let result = unsafe {
+            // Point at the middle element and claim ONE byte — half a TChar.
+            ptr.getString(
+                key.as_ptr(),
+                buf.as_mut_ptr().add(1) as *mut TChar,
+                1, // odd, sub-TChar: legal to pass, impossible to satisfy
+            )
+        };
+
+        assert_ne!(
+            result, kResultOk,
+            "a buffer that cannot hold one TChar must be rejected"
+        );
+        assert_eq!(
+            buf,
+            [0xFFFF, 0xFFFF, 0xFFFF],
+            "getString wrote into a buffer it had declared too small"
+        );
     }
 
     #[test]

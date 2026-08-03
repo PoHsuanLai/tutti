@@ -5,12 +5,9 @@ use tutti_core::Cents;
 // The modulatable-param plumbing (`Param`/atomics) is only used by
 // `UnisonEngine`, which is itself gated on `midi`/`test`.
 #[cfg(any(feature = "midi", test))]
-use alloc::sync::Arc;
+use std::sync::Arc;
 #[cfg(any(feature = "midi", test))]
 use tutti_core::{Amplitude, AtomicF32, Pan, Param, Phase, Spread};
-
-#[cfg(any(feature = "midi", test))]
-extern crate alloc;
 
 const MAX_UNISON_VOICES: usize = 16;
 

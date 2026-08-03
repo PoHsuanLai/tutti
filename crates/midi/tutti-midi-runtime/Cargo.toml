@@ -18,7 +18,7 @@ tutti-core = { version = "0.0.1", path = "../../core/tutti-core", default-featur
 # Lock-free / concurrent
 arc-swap = "1.7"
 atomic_float = "1.1"
-crossbeam-queue = { version = "0.3", default-features = false, features = ["alloc"] }
+crossbeam-queue = "0.3"
 dashmap = "6.1"
 parking_lot = "0.12"
 

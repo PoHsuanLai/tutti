@@ -29,7 +29,7 @@
 
 pub use tutti_midi_types::MidiEvent;
 
-use tutti_plugin_types::{note_id_for, NoteExpressionType, NoteExpressionValue};
+use tutti_plugin_types::{is_usable, note_id_for, NoteExpressionType, NoteExpressionValue};
 
 use tutti_midi_types::tutti_types::{CCNumber, MidiChannel, MidiGroup};
 use vst3::Steinberg::Vst::Event_::EventTypes_;
@@ -1169,8 +1169,32 @@ pub fn note_expression_type_from_id(id: u32) -> Option<NoteExpressionType> {
 /// accepted by the event-list code. Returns `None` for a dimension VST3
 /// cannot encode (`Pressure`) — see [`note_expression_type_to_id`];
 /// the caller drops the event rather than substituting a different dimension.
+///
+/// # Range
+///
+/// `ivstnoteexpression.h:89` states expression events are *"always absolute
+/// normalized values [0.0, 1.0]"*, and addresses the **host** — so bringing a
+/// value into range is this function's job, not the plugin's.
+///
+/// The two ways to be out of range are not the same fact and are not handled
+/// the same way:
+///
+/// - **Non-finite** — dropped, via [`is_usable`]. A NaN has no nearest legal
+///   value, so clamping it would have to invent one; `f64::clamp` also panics
+///   on a NaN bound and returns NaN for a NaN input, so it is not a guard here.
+/// - **Finite but outside `[0, 1]`** — clamped. `1.2` has one unambiguous
+///   legal answer, and dropping it would silently freeze the dimension at
+///   whatever the plugin last saw.
+///
+/// This is a no-op for every producer inside this crate: the MIDI paths reach
+/// here through `u32_to_unit_f32` and the `(v + 1.0) / 2.0` tuning map, both
+/// in-range by construction. The exposure is
+/// [`Vst3InputEvents::note_expressions`], an arbitrary caller-supplied slice.
 pub fn note_expression_to_vst3(value: &NoteExpressionValue) -> Option<Vst3Event> {
     let type_id = note_expression_type_to_id(value.expression_type)?;
+    if !is_usable(value.value) {
+        return None;
+    }
 
     let header = EventHeader {
         bus_index: 0,
@@ -1184,7 +1208,7 @@ pub fn note_expression_to_vst3(value: &NoteExpressionValue) -> Option<Vst3Event>
         header,
         note_id: value.note_id,
         type_id,
-        value: value.value,
+        value: value.value.clamp(0.0, 1.0),
     }))
 }
 
@@ -1786,6 +1810,68 @@ mod tests {
         assert_eq!(back.expression_type, NoteExpressionType::Expression);
         assert_eq!(back.note_id, expr.note_id);
         assert_eq!(back.sample_offset, 3);
+    }
+
+    /// A non-finite expression value is dropped, not passed through and not
+    /// clamped to an invented number.
+    ///
+    /// `f64::clamp` is not a guard for this: it returns NaN for a NaN input,
+    /// so a clamp-only fix would still hand the plugin a NaN.
+    #[test]
+    fn a_non_finite_expression_value_is_dropped() {
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let expr = NoteExpressionValue {
+                sample_offset: 0,
+                note_id: 7,
+                expression_type: NoteExpressionType::Tuning,
+                value: bad,
+            };
+            assert!(
+                note_expression_to_vst3(&expr).is_none(),
+                "{bad} is not a normalized value and must not reach the plugin"
+            );
+        }
+    }
+
+    /// A finite value outside `[0, 1]` is clamped rather than dropped.
+    ///
+    /// Dropping would be the worse failure: the dimension would silently hold
+    /// whatever the plugin last saw, so a runaway modulator reads as a stuck
+    /// expression rather than as a clipped one.
+    #[test]
+    fn an_out_of_range_expression_value_is_clamped_not_dropped() {
+        for (input, want) in [(1.25_f64, 1.0_f64), (-0.5, 0.0), (f64::MAX, 1.0)] {
+            let expr = NoteExpressionValue {
+                sample_offset: 0,
+                note_id: 7,
+                expression_type: NoteExpressionType::Tuning,
+                value: input,
+            };
+            let staged =
+                note_expression_to_vst3(&expr).expect("a finite value is always encodable");
+            let back = vst3_to_note_expression(&staged).expect("decodes");
+            assert_eq!(back.value, want, "{input} must clamp to {want}");
+        }
+    }
+
+    /// An in-range value passes through bit-exact.
+    ///
+    /// Pins that the guard is a no-op for every producer inside this crate —
+    /// the MIDI paths all arrive pre-normalized, so a clamp that perturbed
+    /// them would be a regression invisible to the two tests above.
+    #[test]
+    fn an_in_range_expression_value_is_untouched() {
+        for value in [0.0_f64, f64::MIN_POSITIVE, 0.5, 0.7327, 1.0] {
+            let expr = NoteExpressionValue {
+                sample_offset: 0,
+                note_id: 7,
+                expression_type: NoteExpressionType::Tuning,
+                value,
+            };
+            let staged = note_expression_to_vst3(&expr).expect("in-range is encodable");
+            let back = vst3_to_note_expression(&staged).expect("decodes");
+            assert_eq!(back.value, value, "{value} is already normalized");
+        }
     }
 
     #[test]

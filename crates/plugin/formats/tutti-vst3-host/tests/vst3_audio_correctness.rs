@@ -45,7 +45,7 @@ use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
 use tutti_plugin_types::{ParamAddress, ParamId};
 use tutti_vst3_host::{
     AudioBuffer, MidiEvent, NoteExpressionType, NoteExpressionValue, ParameterChanges,
-    TransportInfo, Vst3InputEvents, Vst3Instance,
+    TransportInfo, Vst3InputEvents, Vst3Instance, Vst3Loaded,
 };
 
 /// A VST3 `ParamID` as the automation vocabulary's address.
@@ -1140,4 +1140,39 @@ fn midi_emitted_by_the_plugin_reaches_the_host() {
          surfaced none across 16 blocks — plugin-emitted MIDI is being dropped"
     );
     eprintln!("plugin-emitted MIDI events surfaced: {emitted}");
+}
+
+/// The host asks for the plugin's `ProcessContext` requirements only after
+/// `IComponent::initialize` has run.
+///
+/// `ivstaudioprocessor.h:456` marks `getProcessContextRequirements`
+/// `[UI-thread & Setup Done]`, so a plugin is entitled to compute its answer
+/// during initialization. A host that asks while assembling its interfaces gets
+/// whatever the plugin happened to be constructed with — and the failure is
+/// silent in the worst direction: the answer is a *subset*, so the host quietly
+/// stops sending fields the plugin needs. A tempo-driven delay then free-runs
+/// with no error anywhere.
+///
+/// Neither SDK sample can witness this. `hostchecker` fills its flags inside
+/// the getter and `dataexchange` in its constructor, so both answer identically
+/// however early they are asked. The probe answers `0` before `initialize` and
+/// `kNeedTempo` after, which is the only way to tell the two orderings apart.
+#[test]
+fn context_requirements_are_read_after_the_component_initializes() {
+    let _guard = plugin_guard();
+    let loaded = Vst3Loaded::load(&probe_path()).expect("audio-probe loads");
+
+    let want = tutti_vst3_host::process_context_flags::NEED_TEMPO;
+    assert_eq!(
+        loaded.context_requirements(),
+        want,
+        "the probe reports kNeedTempo only once initialize has run; reading 0 \
+         means the host asked while assembling its interfaces, and would then \
+         withhold every ProcessContext field the plugin asked for"
+    );
+    assert!(
+        loaded.wants_transport(),
+        "kNeedTempo is a transport field, so the host must send a transport \
+         snapshot each block"
+    );
 }

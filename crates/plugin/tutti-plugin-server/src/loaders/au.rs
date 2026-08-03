@@ -334,6 +334,13 @@ impl AuInstance {
             // set (latency presence is derived from `latency_samples`).
             let mut features = Features::empty();
             features.set(Features::EDITOR, has_editor);
+            // One property backs both bits: a unit that lists factory presets
+            // can be asked to load any of them. An empty list is a genuine
+            // "none", not a failed read — `factory_presets` absorbs the
+            // OSStatus error several working Apple units return.
+            let has_presets = !inner.factory_presets().is_empty();
+            features.set(Features::PRESET_LIST, has_presets);
+            features.set(Features::PRESET_LOAD, has_presets);
             let probed = tutti_plugin::server::probed::AU;
 
             // AU exposes a single main bus per direction here.

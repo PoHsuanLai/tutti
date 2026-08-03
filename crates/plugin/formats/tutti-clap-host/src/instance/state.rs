@@ -131,6 +131,17 @@ impl ClapLoaded {
         !self.extensions.state.context.is_null()
     }
 
+    /// Whether the plugin implements `CLAP_EXT_PRESET_LOAD`, i.e. whether
+    /// [`load_preset`](Self::load_preset) can succeed.
+    ///
+    /// Says nothing about *enumerating* presets: CLAP puts discovery in a
+    /// separate factory-level extension this host does not bind, so a plugin
+    /// answering `true` here can still only be pointed at a path the host
+    /// already knows.
+    pub fn supports_preset_load(&self) -> bool {
+        !self.extensions.state.preset_load.is_null()
+    }
+
     /// Ask the plugin to load a preset from the file at `path` via
     /// `CLAP_EXT_PRESET_LOAD`.
     ///

@@ -174,6 +174,10 @@ impl ClapInstance {
             features.insert(Features::TRANSPORT);
             features.insert(Features::PARAM_AUTOMATION);
             features.set(Features::NOTE_EXPRESSION, has_note_in);
+            // `PRESET_LIST` stays out of `probed::CLAP` — enumeration lives in
+            // the preset-discovery extension, which is factory-level and
+            // unbound here — so only the load half is answered.
+            features.set(Features::PRESET_LOAD, loaded.supports_preset_load());
             let probed = tutti_plugin::server::probed::CLAP;
 
             // CLAP reports aggregate audio port channel counts; carry them as a

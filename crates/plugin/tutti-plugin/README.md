@@ -50,6 +50,7 @@ Every host-side capability is one of three kinds:
 - **Required** — the plugin must satisfy it or we refuse to load. Plain trait methods, no flag: **audio (f32)**, **parameter get/set + enumerate**, **state save/restore**. All four external formats provide these, so requiring them excludes nothing today while protecting the save/load guarantee.
 - **Negotiated** — the plugin answers once at load; the host adapts. A `Features` flag: **f64 audio**, **MIDI in/out**, **editor**, **editor resize**. (Bus widths + latency are the numeric `Limits` half — plain fields on `LoadedPlugin`, not flags.)
 - **Best-effort** — sent per block only to plugins that advertise the flag, gated on `Features::CONSUMES`, never on format: **transport**, **parameter automation**, **note expression**, **sequencer context**.
+- **Reaction** — an edge-triggered host→plugin call the flag gates, *not* a per-block feed, so these stay out of `Features::CONSUMES`: **automation state**, **preset list**, **preset load**.
 
 ### Per-format capability table
 
@@ -71,8 +72,14 @@ What each format supports, as reported by its loader in `tutti-plugin-server/src
 | `PARAM_AUTOMATION` | Best-effort | ● | ● | ○ | ○ |
 | `NOTE_EXPRESSION` | Best-effort | ◐ | ◐ | ✕ | ✕ |
 | `SEQUENCER_CONTEXT` | Best-effort | ◐ | ✕ | ✕ | ✕ |
+| `PRESET_LIST` | Reaction | ✕ | ○ | ◐ | ○ |
+| `PRESET_LOAD` | Reaction | ✕ | ◐ | ◐ | ○ |
 
-Notes: the AU loader currently reports only `EDITOR` — its MIDI / transport / f64 paths are unimplemented (`○`), not spec-impossible. VST2's `F64_AUDIO` is advisory (the `vst` crate is f32 internally). `SEQUENCER_CONTEXT` (chord/scale/per-note text) is a VST3-only concept by spec.
+Notes: the AU loader reports `EDITOR` plus the two preset bits — its MIDI / transport / f64 paths are unimplemented (`○`), not spec-impossible. VST2's `F64_AUDIO` is advisory (the `vst` crate is f32 internally). `SEQUENCER_CONTEXT` (chord/scale/per-note text) is a VST3-only concept by spec.
+
+The preset bits are the one place a `✕` means "the format solves this elsewhere" rather than "the format cannot". A VST3 program is an ordinary parameter carrying `kIsProgramChange`, selected through the parameter path, so there is no separate preset mechanism for a flag to describe — reporting one would assert an API VST3 does not have. CLAP splits the two: `CLAP_EXT_PRESET_LOAD` loads from a path, while enumeration lives in the factory-level preset-discovery extension this host does not bind, which is why the bits are independent. AU backs both from `kAudioUnitProperty_FactoryPresets`. Both bits are edge-triggered host→plugin actions, so like `AUTOMATION_STATE` neither joins `Features::CONSUMES`.
+
+**Reported, not yet wired.** These flags describe what a loaded plugin can do; the AU and CLAP preset calls do not cross the IPC boundary yet, so a consumer can read the capability but not act on it. Each needs its own format-specific wire message — they share no address space (an AU selector, a CLAP path), so there is no one preset call to add.
 
 ### `probed` — which capabilities a loader actually asked
 

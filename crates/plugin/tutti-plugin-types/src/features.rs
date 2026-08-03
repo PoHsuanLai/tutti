@@ -72,6 +72,28 @@ bitflags! {
         /// A *reaction* gate, deliberately NOT part of [`Features::CONSUMES`] —
         /// it gates an edge-triggered host→plugin call, not a per-block send.
         const AUTOMATION_STATE = 1 << 9;
+
+        // --- Presets (host → plugin advisories — NOT per-block feeds) ---
+        /// Plugin can enumerate its own presets by name.
+        ///
+        /// Two bits rather than one because the formats split exactly here:
+        /// AU answers both, CLAP answers only [`Features::PRESET_LOAD`] (its
+        /// preset *discovery* is a separate extension, unbound here), so one
+        /// combined bit could not describe CLAP without either over- or
+        /// under-claiming.
+        ///
+        /// VST3 sets neither, and that absence is an answer rather than a gap:
+        /// a VST3 program is an ordinary parameter carrying
+        /// `kIsProgramChange`, selected through the parameter path like any
+        /// other value. There is no second mechanism for a bit to describe.
+        const PRESET_LIST = 1 << 10;
+        /// Host can ask the plugin to load one of its presets.
+        ///
+        /// Independent of [`Features::PRESET_LIST`]: CLAP loads a preset from a
+        /// filesystem path without being able to list what is available. Like
+        /// [`Features::AUTOMATION_STATE`], both preset bits are edge-triggered
+        /// host→plugin actions and so stay out of [`Features::CONSUMES`].
+        const PRESET_LOAD = 1 << 11;
     }
 }
 
@@ -176,13 +198,23 @@ pub mod probed {
     use super::Features;
 
     /// VST3 probes everything except `AUTOMATION_STATE`, which no loader sets.
+    ///
+    /// The preset bits are *answered*, not skipped: VST3 routes program
+    /// selection through a parameter flagged `kIsProgramChange`, so there is no
+    /// separate preset mechanism to report. Both bits are probed and clear.
     pub const VST3: Features = Features::all().difference(Features::AUTOMATION_STATE);
 
     /// CLAP probes everything except sequencer context (no chord/scale events in
-    /// the spec) and `AUTOMATION_STATE`.
+    /// the spec), `AUTOMATION_STATE`, and `PRESET_LIST`.
+    ///
+    /// `PRESET_LIST` is unprobed rather than declined: CLAP enumerates presets
+    /// through the preset-*discovery* extension, which is a factory-level query
+    /// this host does not bind. `CLAP_EXT_PRESET_LOAD` answers only whether a
+    /// preset can be loaded from a path, so it cannot stand in for the list.
     pub const CLAP: Features = Features::all()
         .difference(Features::SEQUENCER_CONTEXT)
-        .difference(Features::AUTOMATION_STATE);
+        .difference(Features::AUTOMATION_STATE)
+        .difference(Features::PRESET_LIST);
 
     /// VST2 answers five, in or out of process. It has no query for editor
     /// resize, note expression, or sequencer context, and neither loader probes
@@ -193,10 +225,16 @@ pub mod probed {
         .union(Features::EDITOR)
         .union(Features::TRANSPORT);
 
-    /// AU answers one. The other nine are unimplemented in this host, not
-    /// declined by the units — an AU that takes MIDI still reports no `MIDI_IN`
-    /// here.
-    pub const AU: Features = Features::EDITOR;
+    /// AU answers three: the editor, and both preset bits. The rest are
+    /// unimplemented in this host, not declined by the units — an AU that takes
+    /// MIDI still reports no `MIDI_IN` here.
+    ///
+    /// The preset bits are live-probed together because one AU property backs
+    /// both: a unit answering `kAudioUnitProperty_FactoryPresets` can be asked
+    /// to load any preset it listed.
+    pub const AU: Features = Features::EDITOR
+        .union(Features::PRESET_LIST)
+        .union(Features::PRESET_LOAD);
 }
 
 #[cfg(test)]
@@ -289,17 +327,21 @@ mod tests {
     /// the README capability table needs the same edit.
     #[test]
     fn each_loader_claims_only_what_it_probes() {
-        assert_eq!(probed::AU, Features::EDITOR);
+        assert_eq!(
+            probed::AU,
+            Features::EDITOR | Features::PRESET_LIST | Features::PRESET_LOAD
+        );
         assert_eq!(probed::VST2.bits().count_ones(), 5);
         assert!(!probed::VST3.contains(Features::AUTOMATION_STATE));
         assert!(!probed::CLAP.contains(Features::SEQUENCER_CONTEXT));
     }
 
-    /// The AU loader probes exactly one capability, so nine read as "nobody
-    /// asked" rather than as refusals. This is the gap the mask exists to
-    /// expose; if AU ever probes MIDI, this test is the reminder to say so.
+    /// The AU loader probes the editor and the two preset bits; the remaining
+    /// seven read as "nobody asked" rather than as refusals. This is the gap the
+    /// mask exists to expose; if AU ever probes MIDI, this test is the reminder
+    /// to say so.
     #[test]
-    fn the_au_loader_claims_only_the_editor() {
+    fn the_au_loader_leaves_the_unimplemented_capabilities_unasked() {
         for f in [
             Features::MIDI_IN,
             Features::MIDI_OUT,
@@ -329,5 +371,56 @@ mod tests {
                 "{name} claims AUTOMATION_STATE, which no loader populates"
             );
         }
+    }
+
+    /// The two preset bits are independent, because one format answers exactly
+    /// one of them. Collapsing them would force CLAP to either claim an
+    /// enumeration it cannot perform or disclaim a load it can.
+    #[test]
+    fn a_format_can_load_a_preset_without_being_able_to_list_one() {
+        assert!(probed::CLAP.contains(Features::PRESET_LOAD));
+        assert!(
+            !probed::CLAP.contains(Features::PRESET_LIST),
+            "CLAP enumerates through preset-discovery, which this host does not bind"
+        );
+
+        // AU backs both from one property, so it answers both.
+        assert!(probed::AU.contains(Features::PRESET_LIST));
+        assert!(probed::AU.contains(Features::PRESET_LOAD));
+    }
+
+    /// VST3's clear preset bits are an answer, not a gap. Its programs are
+    /// ordinary parameters carrying `kIsProgramChange`, reached through the
+    /// parameter path, so there is no second mechanism to report. If a bit ever
+    /// gets set here, something has invented a preset API VST3 does not have.
+    #[test]
+    fn vst3_answers_that_it_has_no_separate_preset_mechanism() {
+        let probed_both =
+            probed::VST3.contains(Features::PRESET_LIST | Features::PRESET_LOAD);
+        assert!(probed_both, "both bits are asked");
+
+        let report = FeatureReport::new(probed::VST3, Features::EDITOR);
+        assert_eq!(report.get(Features::PRESET_LIST), Some(false));
+        assert_eq!(report.get(Features::PRESET_LOAD), Some(false));
+    }
+
+    /// Neither preset bit joins the per-block send-gate. Both are edge-triggered
+    /// host→plugin actions, like `AUTOMATION_STATE`; adding either to `CONSUMES`
+    /// would put a UI action on the audio path.
+    #[test]
+    fn preset_capabilities_are_not_per_block_sends() {
+        assert!(!Features::CONSUMES.contains(Features::PRESET_LIST));
+        assert!(!Features::CONSUMES.contains(Features::PRESET_LOAD));
+    }
+
+    /// VST2 asks neither. It has `effGetProgramName`/`effSetProgram`, which this
+    /// host does not bind, so both bits are unasked rather than declined.
+    #[test]
+    fn the_vst2_loader_does_not_claim_presets() {
+        assert_eq!(probed::VST2.contains(Features::PRESET_LIST), false);
+        assert_eq!(probed::VST2.contains(Features::PRESET_LOAD), false);
+
+        let report = FeatureReport::new(probed::VST2, Features::EDITOR);
+        assert_eq!(report.get(Features::PRESET_LOAD), None);
     }
 }

@@ -6,6 +6,7 @@
 /// form the MPE Configuration Message (RPN 0x0006) carries — modelling it as the
 /// fixed-point value, not a bare `u8`, is what lets it round-trip through UMP.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct PitchBendSensitivity(u32);
 
 impl Default for PitchBendSensitivity {

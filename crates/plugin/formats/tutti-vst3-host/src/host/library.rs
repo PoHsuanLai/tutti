@@ -203,12 +203,14 @@ impl Vst3Library {
                 cid_bytes,
                 category: c_str_to_string(&info.category),
                 name: c_str_to_string(&info.name),
-                // `PClassInfo` (the v1 struct) carries no vendor or version —
-                // their absence is what `PClassInfo2`/`PClassInfoW` were added
-                // for. `None` here is the honest answer, not a stub, and the
-                // caller falls back to the factory's vendor.
+                // `PClassInfo` (the v1 struct) carries no vendor, version or
+                // subcategories — their absence is what `PClassInfo2`/
+                // `PClassInfoW` were added for. `None` here is the honest
+                // answer, not a stub, and the caller falls back to the
+                // factory's vendor.
                 vendor: None,
                 version: None,
+                sub_categories: None,
             })
         } else {
             Err(Vst3Error::PluginError {
@@ -247,6 +249,11 @@ impl Vst3Library {
             // otherwise be the same value, and only the first should fall back.
             vendor: non_empty(utf16_to_string(&info.vendor)),
             version: non_empty(utf16_to_string(&info.version)),
+            // `char8` even in the unicode struct, like `category` above: the
+            // subcategory vocabulary is a set of ASCII spec constants
+            // (`ivstprocesscontext.h`'s `PlugType`), so `c_str_to_string` is
+            // correct rather than a UTF-16 decode.
+            sub_categories: non_empty(c_str_to_string(&info.subCategories)),
         })
     }
 
@@ -357,9 +364,23 @@ pub struct ClassInfo {
     /// Human-readable byte-order independent representation for formatting.
     pub cid_bytes: [u8; 16],
     /// Category string, e.g. `"Audio Module Class"`, `"Controller Class"`.
+    ///
+    /// This names what *kind of COM class* this is, not what the plugin does —
+    /// every audio plugin reports `"Audio Module Class"`. The musical taxonomy
+    /// ("Fx|Reverb", "Instrument|Synth") is [`sub_categories`](Self::sub_categories).
     pub category: String,
     /// Display name of the class.
     pub name: String,
+    /// The plugin's declared subcategories, `|`-delimited, e.g. `"Fx|Reverb"`
+    /// or `"Instrument|Synth"` (`ipluginbase.h:355`).
+    ///
+    /// `None` when the factory implements only `IPluginFactory` (the v1 struct
+    /// carries no such field) or when the class declares none. That is the same
+    /// distinction [`vendor`](Self::vendor) draws, and for the same reason: a
+    /// consumer classifying a plugin must be able to tell "the factory is too
+    /// old to say" from "the plugin says it has no subcategory", and an empty
+    /// string spells both.
+    pub sub_categories: Option<String>,
     /// Per-class vendor, when the class declares one.
     ///
     /// `None` when the field is empty, which is the usual case — most plugins

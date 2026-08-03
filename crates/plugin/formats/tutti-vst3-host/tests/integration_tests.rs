@@ -240,6 +240,49 @@ fn a_plugins_version_is_read_from_it_rather_than_assumed() {
     );
 }
 
+/// A plugin's subcategories are read from it rather than left blank.
+///
+/// `PClassInfoW::subCategories` (`ipluginbase.h:355`) carries the musical
+/// taxonomy — `"Fx|Reverb"`, `"Instrument|Synth"` — and `class_info_unicode`
+/// read past it, so `PluginInfo` had no way to report one. The server loader
+/// then built `PluginClass::Vst3 { category: String::new() }` unconditionally,
+/// which made the browser's `is_instrument` test — `category.contains
+/// ("Instrument")` — unable to return true for any VST3 plugin ever scanned.
+///
+/// Note this is a different field from `ClassInfo::category`, which names the
+/// COM class kind (`"Audio Module Class"`) and is the same for every audio
+/// plugin. Reading that one instead looks plausible and answers nothing.
+///
+/// Asserted across the corpus rather than per-plugin: a plugin declaring no
+/// subcategory is legal. What would be a bug is every plugin reporting nothing,
+/// which is what the old code guaranteed.
+#[test]
+fn a_plugins_subcategories_are_read_from_it_rather_than_left_blank() {
+    let _plugins = plugin_guard();
+    let mut loaded = 0;
+    let mut declared = 0;
+
+    for path in corpus() {
+        let library = resolve_bundle(&path);
+        let Ok(plugin) = Vst3Instance::<f32>::load(&library, 48_000.0, 64) else {
+            continue;
+        };
+        let info = plugin.info();
+        println!("{}: sub_categories={:?}", info.name, info.sub_categories);
+        loaded += 1;
+        if info.sub_categories.as_deref().is_some_and(|s| !s.is_empty()) {
+            declared += 1;
+        }
+    }
+
+    assert!(loaded > 0, "no VST3 plugin in the corpus could be loaded");
+    assert!(
+        declared > 0,
+        "none of {loaded} plugins reported a subcategory — the field is being \
+         skipped rather than read from PClassInfoW::subCategories"
+    );
+}
+
 #[test]
 #[ignore]
 fn test_process_silence() {

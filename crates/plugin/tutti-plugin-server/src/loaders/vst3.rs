@@ -187,8 +187,6 @@ fn build_inner(p: &ReloadParams) -> Result<(VstInner, Meta)> {
 /// MIDI/editor data come straight from the live component, but the VST3
 /// `PClassInfo2::subCategories` string (e.g. `"Fx|Reverb"`) isn't threaded
 /// through the host's instance `PluginInfo` yet.
-// TODO: surface `PClassInfo2::subCategories` from the factory so the class is
-// fully populated; until then the DAW falls back on `has_midi_input` etc.
 fn vst3_descriptor(info: &tutti_vst3_host::PluginInfo, editor: EditorPresence) -> PluginDescriptor {
     PluginDescriptor {
         id: info.id.clone(),
@@ -196,7 +194,12 @@ fn vst3_descriptor(info: &tutti_vst3_host::PluginInfo, editor: EditorPresence) -
         vendor: info.vendor.clone(),
         version: info.version.clone(),
         class: PluginClass::Vst3 {
-            category: String::new(),
+            // A v1-only factory cannot report subcategories, which flattens to
+            // the same empty string as a plugin that declared none. The
+            // distinction is preserved up to here and lost at this boundary
+            // because `PluginClass::Vst3` carries a bare `String`; nothing
+            // downstream reads the difference today.
+            category: info.sub_categories.clone().unwrap_or_default(),
         },
         editor,
     }

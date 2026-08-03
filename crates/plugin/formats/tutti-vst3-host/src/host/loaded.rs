@@ -296,7 +296,6 @@ impl Vst3Loaded {
         let (component_handler, param_event_rx, progress_event_rx, unit_event_rx) =
             ComponentHandler::new();
 
-        let process_context_requirements = query_process_context_requirements(&processor);
         let note_expression = controller
             .as_ref()
             .and_then(|c| c.cast::<INoteExpressionController>());
@@ -328,7 +327,8 @@ impl Vst3Loaded {
                 component,
                 processor,
                 controller,
-                process_context_requirements,
+                // The real answer is read in `initialize`; see the field doc.
+                process_context_requirements: u32::MAX,
                 note_expression,
                 automation_state,
                 keyswitch,
@@ -1702,6 +1702,14 @@ impl Vst3Loaded {
         }
 
         self.reconcile_bus_counts();
+
+        // Only now, with the component initialized, is the answer the plugin's
+        // own — `ivstaudioprocessor.h:456` marks the call `[UI-thread & Setup
+        // Done]`. A plugin whose requirements depend on initialization state
+        // (a host-configured mode, a loaded instrument) would otherwise be
+        // asked before it could know.
+        self.interfaces.process_context_requirements =
+            query_process_context_requirements(&self.interfaces.processor);
 
         let separate_controller = matches!(self.interfaces.controller, Controller::Separate(_));
 

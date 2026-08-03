@@ -28,6 +28,12 @@ pub(super) struct PluginInterfaces {
     /// that don't implement the interface get the all-bits sentinel
     /// [`u32::MAX`], reproducing the pre-spec "send everything" default so the
     /// gating in [`crate::types::to_process_context`] is a no-op for them.
+    ///
+    /// Filled by `initialize`, not by `assemble`: `ivstaudioprocessor.h:456`
+    /// marks the call `[UI-thread & Setup Done]`, so a plugin that computes its
+    /// answer from initialization state has not computed it yet when the
+    /// interfaces are first queried. Left at the sentinel until then, so a
+    /// missed fill degrades to "send everything" rather than "send nothing".
     pub process_context_requirements: u32,
     /// The plugin's note-expression metadata interface, if it implements one.
     /// Queried off the controller; `None` for plugins with no per-note

@@ -28,6 +28,17 @@ public:
 	tresult PLUGIN_API setupProcessing (ProcessSetup& setup) SMTG_OVERRIDE;
 	tresult PLUGIN_API process (ProcessData& data) SMTG_OVERRIDE;
 
+	/// Answers `kNeedTempo` only once `initialize` has run, and nothing before.
+	///
+	/// `ivstaudioprocessor.h:456` marks the call `[UI-thread & Setup Done]`, so
+	/// a host that asks earlier gets an answer the plugin was never given a
+	/// chance to compute. Neither SDK sample distinguishes the two orderings —
+	/// `hostchecker` fills its flags inside this getter and `dataexchange` in
+	/// its constructor, so both answer identically however early they are
+	/// asked. This probe is therefore the only plugin available that can tell
+	/// a conformant host from one that asks too soon.
+	uint32 PLUGIN_API getProcessContextRequirements () SMTG_OVERRIDE;
+
 	/// Overridden only to support `kMisbehaveExtraBuses`; otherwise defers to
 	/// the base. A host that trusts an inflated count and indexes `getBusInfo`
 	/// up to it reads past the plugin's own bus array.
@@ -83,6 +94,11 @@ private:
 	/// to survive a deactivate/reactivate cycle so a host can be asked whether
 	/// it ran one.
 	int32 mActivationCount {0};
+
+	/// Set at the end of `initialize`. `getProcessContextRequirements` reports
+	/// its requirements only once this is true, so the answer a host receives
+	/// records *when* it asked.
+	bool mInitialized {false};
 
 	int32 mMode {kModeTagPassthrough};
 	double mRamp {0.0};

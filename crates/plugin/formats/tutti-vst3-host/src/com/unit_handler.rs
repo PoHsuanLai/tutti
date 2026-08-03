@@ -20,7 +20,15 @@ use vst3::{Class, ComWrapper};
 pub enum UnitEvent {
     /// Plugin has selected a different unit (preset category / voice).
     UnitSelected(i32),
-    /// A program list has changed its selected program.
+    /// Program *information* in a list went stale — a rename, a preset load, or
+    /// a PitchName change (`ivstunits.h:88-92`). Not a selection change: the
+    /// plugin is saying what it holds is no longer what the host cached, so the
+    /// response is to re-read the list, not to move a cursor.
+    ///
+    /// `program_index` is `-1` (`kAllProgramInvalid`) when *every* program in
+    /// the list is invalid, and only otherwise names a single one. That is a
+    /// sentinel, not an index — spending it as one reads before the start of
+    /// whatever array holds the list.
     ProgramListChanged { list_id: i32, program_index: i32 },
     /// The unit ↔ bus mapping has changed (IUnitHandler2).
     UnitByBusChanged,

@@ -61,7 +61,21 @@ tresult PLUGIN_API AudioProbeProcessor::initialize (FUnknown* context)
 
 	addEventInput (STR16 ("Event In"), 1);
 
+	mInitialized = true;
 	return kResultOk;
+}
+
+//-----------------------------------------------------------------------------
+uint32 PLUGIN_API AudioProbeProcessor::getProcessContextRequirements ()
+{
+	// Deliberately *not* the SDK samples' shape. Both of those settle their
+	// flags somewhere that runs before any host can ask — one in the getter,
+	// one in the constructor — so both answer the same however early the call
+	// comes, and neither can witness a host that asks too soon.
+	if (!mInitialized)
+		return 0;
+
+	return kNeedTempo;
 }
 
 //-----------------------------------------------------------------------------

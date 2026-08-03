@@ -439,6 +439,114 @@ impl Vst3KeyswitchInfo {
     }
 }
 
+/// One entry in a plugin's unit tree, read from `IUnitInfo::getUnitInfo`.
+///
+/// A *unit* groups parameters, programs and note-expression entries — a
+/// multitimbral instrument exposes one per part, an effect rack one per slot.
+/// Units nest, so [`parent`](Self::parent) is what gives the tree its shape.
+///
+/// **This struct decodes rather than mirrors**, unlike its siblings above. The
+/// VST3 struct spells "no parent" and "no program list" as `-1` and its name as
+/// a fixed UTF-16 buffer; all three are decoded once here, at `from_c`, so a
+/// caller cannot read a sentinel as an id or forget to stop at the NUL. The
+/// sentinels are not part of the vocabulary a host should have to know.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Vst3UnitInfo {
+    /// This unit's id. `0` is the root unit, which every plugin has implicitly.
+    pub id: i32,
+    /// The unit this one hangs off, or `None` for the root (`kNoParentUnitId`).
+    pub parent: Option<i32>,
+    /// Display name, already decoded from UTF-16.
+    pub name: String,
+    /// The program list this unit selects programs from, or `None` when it has
+    /// none (`kNoProgramListId`) **or** when the id names no list the plugin
+    /// actually publishes.
+    ///
+    /// Those two are deliberately collapsed. A dangling id is a plugin bug —
+    /// several in the mda set carry one — and reporting it as `Some` would
+    /// invite a caller to ask for programs that cannot be enumerated. The
+    /// question this field answers is "can I show programs for this unit", and
+    /// for a dangling id the answer is no. Use
+    /// [`program_list_id_raw`](Self::program_list_id_raw) to see the plugin's
+    /// unfiltered claim.
+    pub program_list: Option<i32>,
+    /// The `programListId` exactly as the plugin reported it, before the
+    /// resolution that produces [`program_list`](Self::program_list). Kept so a
+    /// diagnostic can tell "no list" from "a list that does not exist".
+    pub program_list_id_raw: i32,
+}
+
+impl Vst3UnitInfo {
+    /// True when this unit named a program list the plugin does not publish.
+    /// Always `false` for a unit that simply has no list.
+    pub fn has_dangling_program_list(&self) -> bool {
+        self.program_list.is_none() && self.program_list_id_raw != unit_ids::NO_PROGRAM_LIST
+    }
+
+    /// Decode the C struct. `program_list` is left unresolved (`None` unless
+    /// the raw id is a real one); [`resolve_program_list`](Self::resolve_program_list)
+    /// finishes the job once the list ids are known.
+    pub(crate) fn from_c(c: &vst3::Steinberg::Vst::UnitInfo) -> Self {
+        Self {
+            id: c.id,
+            parent: (c.parentUnitId != unit_ids::NO_PARENT).then_some(c.parentUnitId),
+            name: utf16_to_string(&c.name),
+            program_list: None,
+            program_list_id_raw: c.programListId,
+        }
+    }
+
+    /// Second half of the decode: keep `program_list` only if `known` contains
+    /// it. Split from `from_c` because resolving needs every list id, which is
+    /// a second call the accessor makes once for the whole enumeration rather
+    /// than once per unit.
+    pub(crate) fn resolve_program_list(&mut self, known: &[i32]) {
+        self.program_list = (self.program_list_id_raw != unit_ids::NO_PROGRAM_LIST
+            && known.contains(&self.program_list_id_raw))
+        .then_some(self.program_list_id_raw);
+    }
+}
+
+/// A named set of programs (presets) a unit can select from, read from
+/// `IUnitInfo::getProgramListInfo`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Vst3ProgramListInfo {
+    /// This list's id, as referenced by [`Vst3UnitInfo::program_list`].
+    pub id: i32,
+    /// Display name, already decoded from UTF-16.
+    pub name: String,
+    /// How many programs the list holds — the exclusive upper bound of the
+    /// program-index space. Clamped at zero: a negative count is meaningless
+    /// and would otherwise become an enormous `u32`.
+    pub program_count: u32,
+}
+
+impl Vst3ProgramListInfo {
+    pub(crate) fn from_c(c: &vst3::Steinberg::Vst::ProgramListInfo) -> Self {
+        Self {
+            id: c.id,
+            name: utf16_to_string(&c.name),
+            program_count: c.programCount.max(0) as u32,
+        }
+    }
+}
+
+/// VST3 unit-id sentinels, mirroring the SDK's `kRootUnitId` /
+/// `kNoParentUnitId` / `kNoProgramListId`.
+///
+/// [`Vst3UnitInfo`] decodes the two negative ones into `Option`, so a caller
+/// normally never sees them. They are public for the case that still needs the
+/// raw vocabulary: passing a unit id *back* to the plugin, where
+/// [`ROOT`](self::unit_ids::ROOT) is a legitimate argument.
+pub mod unit_ids {
+    /// The implicit top-level unit every plugin has.
+    pub const ROOT: i32 = vst3::Steinberg::Vst::kRootUnitId;
+    /// `parentUnitId` of the root unit — decoded as `None`.
+    pub const NO_PARENT: i32 = vst3::Steinberg::Vst::kNoParentUnitId;
+    /// `programListId` of a unit with no programs — decoded as `None`.
+    pub const NO_PROGRAM_LIST: i32 = vst3::Steinberg::Vst::kNoProgramListId;
+}
+
 /// VST3 `KeyswitchTypeIDs` constants — the *kind* of a key switch, mirroring
 /// `KeyswitchTypeIDs_` from the Steinberg SDK.
 pub mod keyswitch_type {
@@ -577,5 +685,107 @@ mod keyswitch_info_tests {
         assert_eq!(info.keyswitch_min, 24);
         assert_eq!(info.keyswitch_max, 24);
         assert_eq!(info.key_remapped, -1);
+    }
+}
+
+#[cfg(test)]
+mod unit_info_tests {
+    use super::{unit_ids, Vst3ProgramListInfo, Vst3UnitInfo};
+
+    fn string128(s: &str) -> [u16; 128] {
+        let mut buf = [0u16; 128];
+        for (slot, ch) in buf.iter_mut().zip(s.encode_utf16()) {
+            *slot = ch;
+        }
+        buf
+    }
+
+    fn raw_unit(
+        id: i32,
+        parent: i32,
+        name: &str,
+        program_list: i32,
+    ) -> vst3::Steinberg::Vst::UnitInfo {
+        let mut raw: vst3::Steinberg::Vst::UnitInfo = unsafe { std::mem::zeroed() };
+        raw.id = id;
+        raw.parentUnitId = parent;
+        raw.name = string128(name);
+        raw.programListId = program_list;
+        raw
+    }
+
+    /// The root's `kNoParentUnitId` becomes `None` rather than travelling as a
+    /// `-1` a caller could mistake for a unit id.
+    #[test]
+    fn the_root_units_absent_parent_decodes_to_none() {
+        let info = Vst3UnitInfo::from_c(&raw_unit(
+            unit_ids::ROOT,
+            unit_ids::NO_PARENT,
+            "Root",
+            unit_ids::NO_PROGRAM_LIST,
+        ));
+
+        assert_eq!(info.id, 0);
+        assert_eq!(info.parent, None);
+        assert_eq!(info.name, "Root");
+    }
+
+    /// A nested unit keeps its parent, and the name stops at the NUL rather
+    /// than carrying 128 code units of padding.
+    #[test]
+    fn a_nested_unit_keeps_its_parent_and_trims_its_name() {
+        let mut info = Vst3UnitInfo::from_c(&raw_unit(7, 0, "Part 2", 100));
+        info.resolve_program_list(&[100]);
+
+        assert_eq!(info.parent, Some(0));
+        assert_eq!(info.name, "Part 2");
+        assert_eq!(
+            info.name.len(),
+            6,
+            "the UTF-16 padding leaked into the name"
+        );
+        assert_eq!(info.program_list, Some(100));
+    }
+
+    /// A unit naming a program list the plugin never publishes reports `None`,
+    /// so a caller cannot ask for programs that cannot be enumerated. Several
+    /// plugins in the mda set do exactly this.
+    #[test]
+    fn a_dangling_program_list_id_does_not_survive_resolution() {
+        let mut info = Vst3UnitInfo::from_c(&raw_unit(1, 0, "Orphan", 999));
+        info.resolve_program_list(&[100, 200]);
+
+        assert_eq!(info.program_list, None);
+        assert!(
+            info.has_dangling_program_list(),
+            "a dangling id must stay distinguishable from having no list at all"
+        );
+        assert_eq!(info.program_list_id_raw, 999);
+    }
+
+    /// Having no program list is not the same as naming one that is missing,
+    /// even though both read as `None`.
+    #[test]
+    fn no_program_list_is_not_reported_as_dangling() {
+        let mut info = Vst3UnitInfo::from_c(&raw_unit(1, 0, "Plain", unit_ids::NO_PROGRAM_LIST));
+        info.resolve_program_list(&[100]);
+
+        assert_eq!(info.program_list, None);
+        assert!(!info.has_dangling_program_list());
+    }
+
+    /// A negative `programCount` cannot become an enormous `u32` and drive a
+    /// caller's enumeration loop.
+    #[test]
+    fn a_negative_program_count_clamps_to_zero() {
+        let mut raw: vst3::Steinberg::Vst::ProgramListInfo = unsafe { std::mem::zeroed() };
+        raw.id = 100;
+        raw.name = string128("Presets");
+        raw.programCount = -1;
+
+        let info = Vst3ProgramListInfo::from_c(&raw);
+
+        assert_eq!(info.program_count, 0);
+        assert_eq!(info.name, "Presets");
     }
 }

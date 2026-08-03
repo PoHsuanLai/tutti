@@ -6,7 +6,8 @@ use vst3::Steinberg::{
     Vst::{
         IAudioPresentationLatency, IAudioProcessor, IAutomationState, IComponent, IEditController,
         IKeyswitchController, INoteExpressionController, INoteExpressionPhysicalUIMapping,
-        IParameterFunctionName, IPrefetchableSupport, IRemapParamID, IXmlRepresentationController,
+        IParameterFunctionName, IPrefetchableSupport, IRemapParamID, IUnitInfo,
+        IXmlRepresentationController,
     },
 };
 use vst3::{ComPtr, ComWrapper};
@@ -46,6 +47,11 @@ pub(super) struct PluginInterfaces {
     /// The plugin's keyswitch (articulation) metadata interface, if any. Read
     /// side only — enumerates the plugin's key-switch map per bus/channel.
     pub keyswitch: Option<ComPtr<IKeyswitchController>>,
+    /// The plugin's unit (parameter-group) tree and program lists, if it
+    /// publishes one. Controller extension. Mostly read — the one write is
+    /// `selectUnit`, which tells the plugin which unit the host's UI is
+    /// showing.
+    pub unit_info: Option<ComPtr<IUnitInfo>>,
     /// The plugin's parameter-ID remap interface, used when migrating saved
     /// automation across plugin versions. Queried + exposed as an accessor; the
     /// host never auto-applies it (matches JUCE — the caller drives any migration

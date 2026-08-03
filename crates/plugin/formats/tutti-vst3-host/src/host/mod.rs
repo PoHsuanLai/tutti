@@ -24,7 +24,9 @@ pub use loaded::{PluginNotifications, RestartOutcome, Vst3Loaded};
 /// *order*, and which `isPlatformTypeSupported` results count as a refusal —
 /// are worth pinning without either.
 #[cfg(feature = "conformance")]
-pub use loaded::{detach_view, platform_type_refused};
+pub use loaded::{
+    detach_view, platform_type_refused, send_key_down, send_key_up, send_wheel, set_view_focus,
+};
 
 // ── IComponent extension trait ────────────────────────────────────────────────
 

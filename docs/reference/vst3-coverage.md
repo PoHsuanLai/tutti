@@ -111,17 +111,17 @@ go to the header.
 | `version` hardcoded `"1.0.0"` | real corpus versions (`5.0.6`, `3.8.0.0`) |
 | 6 of 12 `RestartFlags` dropped | whole-mapping test, so a 13th flag cannot join them |
 | Controller state never persisted | probe parameter reachable *only* via the controller's own stream |
-| `IUnitInfo` unbound (PR #138) | corpus-wide invariant — the obvious negative fixture was wrong, `again.vst3` *does* implement it via `EditControllerEx1` |
-| Editors received no key/wheel/focus (PR #138) | a recording `IPlugView` with a configurable `tresult` |
-| `kDefaultActive` overridden on every bus (PR #139) | a probe main output with `flags = 0` — no corpus plugin has one |
+| `IUnitInfo` never called | the real corpus — `mda-vst3`'s dangling list id, host-checker's 3-level tree |
+| Editor input never delivered | a stub view that answers a *chosen* `tresult`, so the consumed mapping is visible |
+| `kDefaultActive` overridden on every bus | a probe main output with `flags = 0` — no corpus plugin has one |
 | `getProcessContextRequirements` asked too early | a probe that answers `0` before `initialize` and `kNeedTempo` after |
 | Note-expression values unguarded | NaN and out-of-range inputs, each with a distinct verdict |
 | `PFactoryInfo::flags` discarded | the corpus's universal `kUnicode` — no plugin sets the flag actually at issue |
 
 The pattern is worth stating plainly: **in twelve of sixteen cases the bug was
 unobservable with the tests that existed**, and the work was building something that
-could see it — not writing the fix. Four times the first attempt at a test passed against
-the unfixed code and had to be thrown away.
+could see it — not writing the fix. Four times a test passed against the code it was meant
+to catch and had to be rewritten.
 
 Two of those four are the same lesson from opposite directions. The `kDefaultActive` and
 `getProcessContextRequirements` fixes both had to **change the fixture**, because no
@@ -131,7 +131,7 @@ getter and `dataexchange` in its constructor, so *neither can distinguish a conf
 host from one that asks too soon*, however carefully the test is written. When the corpus
 cannot witness a rule, the probe has to become the plugin that can.
 
-The third of those is the sharpest. The controller-state fix needed a *legacy* blob —
+Two more are worth recording. The controller-state fix needed a *legacy* blob —
 one saved before the container existed — to still restore. The obvious fixture,
 `b"saved-by-an-older-build"`, passed against a build with the compatibility check
 deleted: its first byte is `'s'`, which fails the version check by luck rather than by
@@ -139,6 +139,14 @@ the guard under test. Replacing it with a binary blob whose leading bytes parse 
 *valid* header killed the mutation immediately — the component then received 3 bytes of
 a 20-byte stream. A backward-compatibility fixture has to be one the broken code would
 actually mis-handle.
+
+The `IUnitInfo` case is the mirror image: **every assertion was conditional, so all of
+them passed vacuously.** The corpus test checked "if a unit resolved a program list,
+that list is published" — true, and worthless, when a build that never runs resolution
+reports `None` for every unit. Deleting the `resolve_program_list` call left it green.
+The fix was a positive count (`19 units resolved a list`) alongside the conditional
+checks. Any test built from `if let Some(..)` needs a companion asserting the `Some`
+arm is reached at all.
 
 **Event buses were never activated** — `host/instance.rs:738`. **[verified]**
 
@@ -209,8 +217,8 @@ spec interpretation being right.
 |---|---|---|
 | ~~Event (MIDI) buses are never activated.~~ **FIXED** — see above. | `host/instance.rs:738` | **[verified]** |
 | ~~`IParameterChanges` merge uses an unstable sort.~~ **FIXED** — see above. | `host/midi_mapping.rs:241` | **[verified]** |
-| **Keyboard, wheel and focus are never delivered to plugin editors.** `onKeyDown` / `onKeyUp` / `onWheel` / `onFocus` have zero non-doc call sites. | — | **[verified]** |
-| **`IUnitInfo` is never called.** We store `unitId` on parameters, note expressions and keyswitches — three separate structs — and never call the interface that gives those IDs meaning. A raw symbol grep scores this "covered"; it is doc-comment mentions only. | `types/info.rs:81,264,395` | **[verified]** |
+| ~~Keyboard, wheel and focus are never delivered to plugin editors.~~ **FIXED (host layer)** — `send_key_down`/`send_key_up`/`send_wheel`/`set_editor_focus` on `Vst3Loaded`, returning *consumed* so the plugin arbitrates. The Bevy-side `KeyCode` → `VirtualKeyCodes` table is not written; nothing calls these yet. | `host/loaded.rs` | **[verified]** |
+| ~~`IUnitInfo` is never called.~~ **FIXED** — `units()` / `program_lists()` / `program_name()` / `selected_unit()` / `select_unit()` / `unit_by_bus()` bind the interface. Returned flat, in the plugin's order, each unit naming its parent; assembling a tree is the caller's job. Measured: host-checker 54 units, 48 nested. | `types/info.rs`, `host/loaded.rs` | **[verified]** |
 | ~~`kIoChanged` mutates bus counts on a live active instance.~~ **FIXED** — `Vst3Instance::restart_bus_configuration` owns the cycle; `Vst3Loaded` surfaces the flag instead of acting on it. | `host/instance.rs` | **[verified]** |
 | ~~`kCycleValid` is set under the wrong requirement gate.~~ **FIXED** — gated on `NEED_CYCLE_MUSIC` + finiteness, paired with the fields it advertises. | `types/transport.rs` | **[verified]** |
 
@@ -232,8 +240,8 @@ spec interpretation being right.
 
 ### Low
 
-Four remained after confirmation. **Three are now fixed**; the fourth is deliberately
-not, for a reason worth recording.
+Four remained after confirmation. **All four are now fixed**, though the last was first
+declined for a reason worth recording.
 
 `getProcessContextRequirements` was queried before `IComponent::initialize` **[fixed]**.
 `ivstaudioprocessor.h:456` marks it `[UI-thread & Setup Done]`. The failure is silent in
@@ -286,7 +294,18 @@ construction, and the spec types `sampleOffset` as `int32` anyway.
 | **Real gap** | **13** | below |
 | Actually present | 1 | `IPluginBase` — a false negative from the scripted inventory, caught by the "show your negative search" rule |
 
-**High:** `IUnitInfo` (above).
+**High:** none outstanding — `IUnitInfo` is bound (above).
+
+Two things the corpus taught that the spec did not. **The root unit is implicit**:
+`ivstunits.h:144-145` says `getUnitCount` "must return 1 at least" and that the root's id
+is 0, but the SDK's own `EditControllerEx1` never adds a unit *for* the root, and
+host-checker only ever attaches its units *to* `kRootUnitId`. A host demanding an
+explicit root entry would reject the SDK's reference plugin. That asymmetry is the
+reason `units()` stays flat — there is no root node to hang a tree off without inventing
+one. **And a `programListId` can name nothing**: `mda-vst3` unit 0 points at list
+`1886548852`, which it never publishes. `Vst3UnitInfo::program_list` is therefore `Some`
+only when the id resolves, with `has_dangling_program_list()` to tell that apart from
+having no list at all.
 
 **Medium:** `IMidiMapping2` and `IMidiLearn2` — both tagged `[replaces …]` in 3.8.0, both absent while their v1 forms are used. MIDI 2.0 controller assignments are unreachable. Also `IProgramListData`, `IComponentHandlerSystemTime`, `IInfoListener`, `IStreamAttributes`, `IPluginFactory2`.
 

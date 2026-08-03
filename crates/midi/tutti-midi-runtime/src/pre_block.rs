@@ -30,6 +30,7 @@ use tutti_midi_types::Midi1ToMidi2Translator;
 use tutti_midi_types::{MidiIn, MidiRouter, MidiRoutingSnapshot, MidiUnitId};
 
 use crate::mpe_ingest::MpeIngest;
+use tutti_midi_types::mpe::MpeMode;
 
 /// Per-block outbound clock/timecode generator (e.g. a `ClockMaster`).
 ///
@@ -84,6 +85,28 @@ pub struct MidiPreBlock {
     /// stage is not configured (translation then passes events through).
     translator: AudioThreadCell<Option<Midi1ToMidi2Translator>>,
     mpe: AudioThreadCell<Option<MpeIngest>>,
+    /// The MPE mode a control thread wants, published for the audio thread to
+    /// adopt at the top of the next block.
+    ///
+    /// **The mode travels, not the `MpeIngest`.** The ingest holds live
+    /// voice-allocation state and `set_mode` resets it wholesale, so it must stay
+    /// audio-thread-owned in its `AudioThreadCell` — handing one across threads
+    /// would tear that state. An `MpeMode` is a small `Copy` value, which is what
+    /// makes it publishable.
+    ///
+    /// `RtPublish` rather than a bare cell, per the engine's rule for
+    /// control→audio state: the audio thread reads a borrow it cannot outlive,
+    /// and the retired value is freed on the publisher. `routing` above is the
+    /// same pattern for the same reason.
+    ///
+    /// `None` is the initial state, meaning "the build-time mode stands". Once a
+    /// request is published it *stays* published — the audio thread never writes
+    /// here, because clearing it would mean publishing from the callback, which
+    /// stalls it and frees on it. Re-adoption is harmless instead: the audio side
+    /// compares against the mode already in force and does nothing when they
+    /// match, which is what keeps a latched request from resetting voice
+    /// allocation on every block.
+    mpe_request: Arc<RtPublish<Option<MpeMode>>>,
 }
 
 impl MidiPreBlock {
@@ -93,6 +116,7 @@ impl MidiPreBlock {
         Self {
             input: None,
             queue: None,
+            mpe_request: Arc::new(RtPublish::new(None)),
             routing,
             events: RtEventBuf::new(),
             poll_scratch: AudioThreadCell::new([MidiEvent::noop(); MIDI_EVENT_BUFFER_CAPACITY]),
@@ -131,6 +155,42 @@ impl MidiPreBlock {
     /// Off-RT; call at wiring time (and on MPE-mode change).
     pub fn set_mpe_ingest(&mut self, ingest: MpeIngest) {
         *self.mpe.borrow_mut() = Some(ingest);
+    }
+
+    /// A handle a control thread can use to change the MPE mode while the engine
+    /// runs.
+    ///
+    /// Cloneable and `Send`, so a host can park it in a resource and write to it
+    /// from a normal system — which is what makes MPE configuration *document*
+    /// state rather than a build-time constant. The audio thread adopts the
+    /// request at the top of the next block; see [`MpeModeRequest::set`].
+    pub fn mpe_mode_handle(&self) -> MpeModeRequest {
+        MpeModeRequest {
+            cell: Arc::clone(&self.mpe_request),
+        }
+    }
+
+    /// Adopt a published mode request, if one differs from the mode in force.
+    /// Audio thread, once per block, before any event is translated.
+    ///
+    /// **The equality check is load-bearing, not an optimisation.** The request
+    /// latches (see [`mpe_request`](Self::mpe_request)), so this runs against the
+    /// same value every block; without the check it would call `set_mode` — which
+    /// rebuilds the ingest from scratch — on every block, dropping every sounding
+    /// note's voice mapping continuously. A mode change is rare; a spurious one
+    /// is audible.
+    #[inline]
+    fn adopt_mpe_request(&self) {
+        // One read per block, never per event: the guard is a thread-local
+        // lookup plus two `SeqCst` loads, far heavier than the atomics beside it.
+        let pending = *self.mpe_request.read();
+        let Some(mode) = pending else { return };
+        let mut mpe = self.mpe.borrow_mut();
+        match mpe.as_mut() {
+            Some(ingest) if *ingest.mode() == mode => {}
+            Some(ingest) => ingest.set_mode(mode),
+            None => *mpe = Some(MpeIngest::new(mode)),
+        }
     }
 
     /// Run the pre-block MIDI step for a block of `frames` samples.
@@ -200,6 +260,10 @@ impl MidiPreBlock {
         // channel-spread into native per-note messages, so downstream nodes see
         // only native MIDI-2. Each stage may absorb an event (returns `None`) or
         // transform it; a `None` stage passes events through unchanged.
+        // Before any borrow below: adopting takes `self.mpe` mutably, and the
+        // cell's contract is one borrow at a time.
+        self.adopt_mpe_request();
+
         let mut translator = self.translator.borrow_mut();
         let mut mpe = self.mpe.borrow_mut();
 
@@ -239,6 +303,63 @@ impl MidiPreBlock {
 
 #[cfg(test)]
 mod tests {
+    /// A latched mode request is adopted once, and re-adoption does not reset
+    /// the ingest.
+    ///
+    /// The request never clears — the audio thread cannot publish, so clearing it
+    /// would mean publishing from the callback. Re-adoption is made harmless by
+    /// comparing against the mode already in force, and **that comparison is
+    /// load-bearing**: `MpeIngest::set_mode` rebuilds the ingest from scratch.
+    ///
+    /// # Two wrong assertions preceded this one
+    ///
+    /// Comparing the *mode* proves nothing — a reset leaves it identical.
+    /// Comparing a note-off's translation proves nothing either: the `NoteOff`
+    /// arm returns `Some(*event)` unconditionally, because a note-off must reach
+    /// the synth whether or not the ingest still knows the voice.
+    ///
+    /// **Per-note pitch bend is what actually observes the voice map.** A member
+    /// channel's bend is rewritten into a per-note bend by resolving the held
+    /// note, and returns `None` when nothing resolves — so a bend after a reset
+    /// vanishes instead of being translated. That is the audible failure: the
+    /// note keeps sounding and stops responding to the controller.
+    #[test]
+    fn re_adopting_a_latched_request_does_not_reset_voice_state() {
+        let pre = MidiPreBlock::new(Arc::new(RtPublish::new(MidiRoutingSnapshot::default())));
+        let handle = pre.mpe_mode_handle();
+        let mode = MpeMode::LowerZone(MpeZoneConfig::lower(6));
+        handle.set(mode);
+
+        pre.adopt_mpe_request();
+        assert_eq!(
+            pre.mpe.borrow().as_ref().map(|i| *i.mode()),
+            Some(mode),
+            "the request must be adopted"
+        );
+
+        // Sound a note on a member channel: this binds the channel to the note.
+        let member = MidiChannel::new(1);
+        let on = MidiEvent::note_on(MidiGroup::FIRST, member, 60, 0x8000);
+        pre.mpe.borrow_mut().as_mut().unwrap().translate(&on);
+
+        // A bend on that member channel resolves the held note while the binding
+        // stands — the precondition this test rests on.
+        let bend = MidiEvent::pitch_bend(MidiGroup::FIRST, member, 0xC000_0000);
+        assert!(
+            pre.mpe.borrow_mut().as_mut().unwrap().translate(&bend).is_some(),
+            "precondition: a bend resolves while the voice is bound"
+        );
+
+        // The latched request is still pending; adopting again must be a no-op.
+        pre.adopt_mpe_request();
+
+        assert!(
+            pre.mpe.borrow_mut().as_mut().unwrap().translate(&bend).is_some(),
+            "re-adoption reset the voice map — the note is left sounding and \
+             deaf to the controller"
+        );
+    }
+
     use super::*;
     use std::sync::Mutex;
     use tutti_midi_types::convert::{midi1_pitch_bend_to_midi2, midi1_velocity_to_midi2};
@@ -417,5 +538,47 @@ mod tests {
             UmpMessage::try_from(routed[0].data_words()).unwrap(),
             UmpMessage::ChannelVoice2(ChannelVoice2::ChannelPitchBend(_))
         ));
+    }
+}
+
+/// A control-thread handle for changing the MPE mode while the engine runs.
+///
+/// Obtained from [`MidiPreBlock::mpe_mode_handle`]. Cloneable and `Send`, so a
+/// host parks one in a resource and writes to it from an ordinary system — which
+/// is what lets MPE zone configuration live in a *document* rather than being
+/// fixed when the engine is built.
+///
+/// The audio thread adopts a request at the top of the next block. Nothing here
+/// blocks, and nothing reaches into audio-thread state.
+#[derive(Clone)]
+pub struct MpeModeRequest {
+    cell: Arc<RtPublish<Option<MpeMode>>>,
+}
+
+impl MpeModeRequest {
+    /// Ask the engine to switch to `mode` on the next block.
+    ///
+    /// **Control thread only** — `publish` blocks until in-flight readers are
+    /// done and frees the retired value on the calling thread, both of which are
+    /// forbidden inside an audio callback.
+    ///
+    /// Changing the mode **resets MPE voice allocation**: `MpeIngest::set_mode`
+    /// rebuilds the ingest, so any note sounding through a member channel loses
+    /// its mapping. That is inherent to changing zone layout mid-performance, not
+    /// an artefact of this path — but it is why the audio side skips a request
+    /// that matches the mode already in force, and why a caller should not write
+    /// this every frame.
+    pub fn set(&self, mode: MpeMode) {
+        self.cell.publish(Arc::new(Some(mode)));
+    }
+
+    /// The last mode requested through this handle, if any.
+    ///
+    /// Diagnostic rather than a source of truth. It **latches** — the audio
+    /// thread never clears it — so it answers "what was last asked for", not
+    /// "what mode is the engine in". Those differ for one block after a `set`,
+    /// and forever if the engine was never started.
+    pub fn pending(&self) -> Option<MpeMode> {
+        *self.cell.read()
     }
 }

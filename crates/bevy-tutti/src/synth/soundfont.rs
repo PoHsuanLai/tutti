@@ -253,11 +253,37 @@ pub fn promote_pending_soundfonts(
 }
 
 /// Bevy plugin: SoundFont asset loader + deferred playback trigger systems.
+///
+/// # It also teaches the MIDI registry to reach a `SoundFontUnit`
+///
+/// Building the unit and putting it in the graph is not enough to make it
+/// *playable*: [`MidiTargetRegistry`] resolves a node to its `MidiInPort` by
+/// downcasting to a concrete type, so a unit type nothing registered has no
+/// reachable port and every `MidiSourceInstall` naming it resolves to nothing.
+///
+/// That registration belongs here rather than in each consumer. It was previously
+/// left to the caller, and the only caller that knew to do it was a test —
+/// `midi_soundfont_audio.rs` calls `register::<SoundFontUnit>()` by hand, which is
+/// precisely why that test could prove the engine half while a real host driving
+/// the same pipeline got silence. The failure is invisible: the asset loads, the
+/// unit builds, the node appears in the `Net`, the install is emitted, and the
+/// audio graph is correctly wired end to end — every observable step succeeds and
+/// no note ever sounds.
+///
+/// Registering the type this plugin exists to serve is what makes "add the plugin"
+/// sufficient. A host that wants a different unit type still registers its own.
 pub struct TuttiSoundFontPlugin;
 
 impl Plugin for TuttiSoundFontPlugin {
     fn build(&self, app: &mut App) {
         app.register_type::<PlaySoundFont>();
+        // `init_resource` first: `TuttiMidiPlugin` owns this resource, and plugin
+        // order between the two is the host's choice, so this must not depend on
+        // it already existing.
+        app.init_resource::<crate::midi::MidiTargetRegistry>()
+            .world_mut()
+            .resource_mut::<crate::midi::MidiTargetRegistry>()
+            .register::<SoundFontUnit>();
         // `promote_pending_soundfonts` stages graph edits + sets GraphDirty,
         // so anchor the chain before the Commit phase where `commit_graph`
         // flushes it (it no longer commits inline).

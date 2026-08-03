@@ -229,11 +229,16 @@ pub(crate) fn route_cc_events(
 /// points are appended (in MIDI-arrival order), so a queue carrying both can be
 /// unsorted even when each source was individually ordered. In place — the
 /// `points` SmallVec reuses its capacity, so this is allocation-free.
+///
+/// The sort must be **stable**. VST3 encodes a discontinuity as two points —
+/// the old value, then the new one — and permits them to share a
+/// `sample_offset`. Their relative order is the entire encoding: transposed,
+/// a jump up reads as a jump down. An unstable sort is free to swap equal
+/// keys, so it silently corrupts exactly the case the two-point form exists
+/// to express, and only when both sources land on the same frame.
 pub(crate) fn sort_param_points(params: &mut ParameterChanges) {
     for queue in params.queues.iter_mut() {
-        queue
-            .points
-            .sort_unstable_by_key(|point| point.sample_offset);
+        queue.points.sort_by_key(|point| point.sample_offset);
     }
 }
 
@@ -562,6 +567,67 @@ mod tests {
                 .points
                 .len(),
             3
+        );
+    }
+
+    /// Points sharing a `sample_offset` keep the order they were added in.
+    ///
+    /// VST3 spells a discontinuity as two points — the old value, then the new
+    /// one — and lets them share an offset. Which comes first *is* the jump's
+    /// direction, so a sort that reorders equal keys turns a rise into a fall.
+    ///
+    /// The sibling test above cannot catch this: its offsets are all distinct
+    /// (50, 100, 10), and with no equal keys the two sorts are
+    /// indistinguishable. It asserts only that the result ascends, which stays
+    /// true either way.
+    ///
+    /// Size and shape here are deliberate, not padding. Rust's unstable sort is
+    /// a pattern-defeating quicksort that runs insertion sort on short slices
+    /// and detects already-ordered runs, so it happens to preserve order on
+    /// small or tidy inputs — measured: a handful of tied points, or ties in
+    /// ascending order, come out identical under both sorts at every size
+    /// tried. The two diverge from roughly 32 points when the offsets arrive
+    /// *descending*, which is what this builds. That is a reachable shape:
+    /// `add_point` has no cap, and a dense automation curve merged with CC
+    /// traffic on one param exceeds it. A smaller fixture would pass against
+    /// either sort and pin nothing.
+    #[test]
+    fn points_sharing_a_sample_offset_keep_their_insertion_order() {
+        let mut params = ParameterChanges::new();
+        let param = ParamAddress::Opaque(500u32.into());
+
+        // 40 offsets arriving high-to-low, each carrying a two-point jump.
+        // `value` encodes arrival order so any transposition is visible.
+        const OFFSETS: i32 = 40;
+        let mut expected = Vec::new();
+        for i in 0..OFFSETS {
+            let offset = (OFFSETS - i) * 4;
+            let old = f64::from(i * 2);
+            let new = f64::from(i * 2 + 1);
+            params.add_change(param, offset, old);
+            params.add_change(param, offset, new);
+            expected.push((offset, old, new));
+        }
+        expected.sort_by_key(|(offset, _, _)| *offset);
+
+        sort_param_points(&mut params);
+
+        let q = params.get_queue(param).expect("queue present");
+        let got: Vec<(i32, f64)> = q
+            .points
+            .iter()
+            .map(|p| (p.sample_offset, p.value))
+            .collect();
+
+        let want: Vec<(i32, f64)> = expected
+            .iter()
+            .flat_map(|(offset, old, new)| [(*offset, *old), (*offset, *new)])
+            .collect();
+
+        assert_eq!(
+            got, want,
+            "each offset carries a jump old -> new; transposing a tied pair \
+             inverts that jump's direction"
         );
     }
 

@@ -20,7 +20,7 @@ tresult PLUGIN_API AudioProbeController::initialize (FUnknown* context)
 	// Ids are deliberately nonzero and non-contiguous — see `ProbeParams`.
 	// `kParamMode` is stepped so a host that rounds normalized values
 	// differently still lands on an exact mode.
-	parameters.addParameter (STR16 ("Mode"), nullptr, 5 /*stepCount: modes 0..5*/, 0.0,
+	parameters.addParameter (STR16 ("Mode"), nullptr, kModeStepCount, 0.0,
 	                         ParameterInfo::kCanAutomate, kParamMode);
 	parameters.addParameter (STR16 ("Ramp"), nullptr, 0, 0.0, ParameterInfo::kCanAutomate,
 	                         kParamRamp);
@@ -42,7 +42,8 @@ tresult PLUGIN_API AudioProbeController::setComponentState (IBStream* state)
 	if (!s.readInt32 (mode) || !s.readDouble (ramp) || !s.readDouble (gain))
 		return kResultFalse;
 
-	setParamNormalized (kParamMode, static_cast<double> (mode) / 5.0);
+	setParamNormalized (kParamMode,
+	                    static_cast<double> (mode) / static_cast<double> (kModeStepCount));
 	setParamNormalized (kParamRamp, ramp);
 	setParamNormalized (kParamGain, gain);
 	return kResultOk;

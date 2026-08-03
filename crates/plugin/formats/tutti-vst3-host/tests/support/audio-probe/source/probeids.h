@@ -72,7 +72,34 @@ enum ProbeMode : int32
     /// events, mangles a pitch, or collapses two events onto one offset is
     /// caught — none of which the note-gate mode can see.
     kModeEventTranscript = 5,
+
+    /// `out[..][i] = kEventBusActiveCode` when this plugin's event input bus
+    /// was activated by the host, `kEventBusInactiveCode` when it was not.
+    ///
+    /// The spec starts every bus inactive (`ivstcomponent.h:52`, unqualified —
+    /// `kEvent` is a `MediaTypes` value beside `kAudio`), so a host must call
+    /// `activateBus` for event buses just as it does for audio ones. Every
+    /// other mode here is deliberately *lenient*: it reads `data.inputEvents`
+    /// whatever the bus state, which is what most real plugins do and is
+    /// exactly why a host can omit the call and still appear to work.
+    ///
+    /// This mode is the strict counterpart, and it exists because the omission
+    /// is otherwise unobservable: `BusInfo` carries no "is active" field, so a
+    /// host cannot read its own activation back, and `HostChecker` validates
+    /// the `ProcessData` handed over rather than the lifecycle that preceded
+    /// it. Only the plugin knows, so only the plugin can report it.
+    kModeEventBusActive = 6,
 };
+
+/// Step count for `kParamMode`. A stepped VST3 parameter normalizes as
+/// `index / stepCount`, so this is `highest mode index`, not the mode count.
+///
+/// It lives here because three places must agree — the controller's
+/// `addParameter`, the controller's `setComponentState`, and the processor's
+/// decode — and the host's `MODE_STEPS` mirrors it. Disagreement does not fail
+/// to compile: it selects a *different mode* than the caller asked for, and
+/// every assertion then reads the wrong renderer's output.
+static const int32 kModeStepCount = kModeEventBusActive;
 
 /// Parameter ids. Deliberately nonzero and non-contiguous: a host that
 /// confuses parameter *index* with parameter *id* passes with 0,1,2 and fails
@@ -100,6 +127,12 @@ static const int32 kEventOtherCode = 1000;
 /// `±1..=128` note codes and from `kEventOtherCode`, so the three are never
 /// confusable.
 static const int32 kNoteExpressionBaseCode = 5000;
+
+/// `kModeEventBusActive` writes one of these. Distinct from every other code
+/// above and from any plausible audio sample, so a host reading the wrong
+/// buffer cannot land on either by accident.
+static const int32 kEventBusActiveCode = 7000;
+static const int32 kEventBusInactiveCode = -7000;
 
 /// Per-slot DC offset in `kModeTagPassthrough`.
 ///

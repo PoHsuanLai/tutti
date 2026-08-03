@@ -34,6 +34,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
+use tutti_plugin_types::{ParamAddress, ParamId};
 use tutti_types::meter::{BarNumber, TimeSignature};
 use tutti_vst3_host::{
     host::conformance, AudioBuffer, MidiEvent, ParameterChanges, ProcessMode, TransportInfo,
@@ -802,12 +803,21 @@ const K_PARAM_WARN_COUNT: u32 = 8;
 /// Bits packed into each warning parameter.
 const K_PARAM_WARN_BIT_COUNT: u32 = 24;
 
+/// A VST3 `ParamID` as the automation vocabulary's address.
+///
+/// The tags above stay bare `u32` because they are arithmetic (`TAG + i`) and
+/// bounds checks; only the queue lookups need the address form. VST3 ids are
+/// `Opaque` — the format hands out numbers whose meaning only the plugin knows.
+fn param_address(tag: u32) -> ParamAddress {
+    ParamAddress::Opaque(ParamId::new(tag))
+}
+
 /// Decode the log ids HostChecker packed into one `outputParameterChanges`
 /// set. Returns the ids, which index the same table as [`hc_log_description`].
 fn decode_hostchecker_warnings(out: &ParameterChanges) -> Vec<i32> {
     let mut ids = Vec::new();
     for i in 0..K_PARAM_WARN_COUNT {
-        let Some(queue) = out.get_queue(K_PROCESS_WARN_TAG + i) else {
+        let Some(queue) = out.get_queue(param_address(K_PROCESS_WARN_TAG + i)) else {
             continue;
         };
         let Some(point) = queue.points.last() else {
@@ -1547,6 +1557,7 @@ fn parameter_changes_are_spec_clean() {
             continue;
         };
         let mut params = ParameterChanges::new();
+        let param_id = param_address(param_id);
         params.add_change(param_id, 384, 0.75);
         params.add_change(param_id, 0, 0.25);
         params.add_change(param_id, 128, 0.5);
@@ -1971,7 +1982,10 @@ fn plugin_observes_the_offline_mode_we_requested() {
             sample_rate: 48_000.0,
         };
         let out = inst.process(&mut buffer, &Vst3InputEvents::default(), None, &transport);
-        if let Some(queue) = out.parameter_changes.get_queue(K_PARAM_PROCESS_MODE_TAG) {
+        if let Some(queue) = out
+            .parameter_changes
+            .get_queue(param_address(K_PARAM_PROCESS_MODE_TAG))
+        {
             if let Some(point) = queue.points.last() {
                 reported = Some(point.value);
             }

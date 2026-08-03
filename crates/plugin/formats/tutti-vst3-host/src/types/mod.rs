@@ -27,7 +27,8 @@ pub use events::{
 };
 pub use info::{
     automation_state, keyswitch_type, note_expression_flags, parameter_flags, physical_ui_type,
-    prefetchable_support, BusInfo, Vst3KeyswitchInfo, Vst3NoteExpressionInfo, Vst3ParameterInfo,
+    prefetchable_support, unit_ids, BusInfo, Vst3KeyswitchInfo, Vst3NoteExpressionInfo,
+    Vst3ParameterInfo, Vst3ProgramListInfo, Vst3UnitInfo,
 };
 pub use transport::{process_context_flags, to_process_context};
 

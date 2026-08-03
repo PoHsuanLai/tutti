@@ -122,6 +122,7 @@ fn main() {
         open_editor_run_loop_is_pumped,
         has_editor_agrees_with_opening_one,
         a_closed_editor_reports_no_resize_request,
+        editor_accepts_keyboard_wheel_and_focus,
     );
 
     eprintln!("\n{}/{} passed", total - failed.len(), total);

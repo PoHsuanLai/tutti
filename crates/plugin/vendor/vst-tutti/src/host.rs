@@ -668,7 +668,7 @@ impl PluginInstance {
         self.dispatch(opcode, index, 0, ptr, 0.0);
 
         // `arrangement_type` is a `#[repr(i32)]` enum the *plugin* wrote. Its
-        // valid discriminants are -2..=27; anything else is not a value of the
+        // valid discriminants are -2..=28; anything else is not a value of the
         // type, and simply `match`ing on it (which `ChannelInfo::from` does)
         // would be UB. Read the raw i32 out of the still-`MaybeUninit` struct
         // and overwrite an out-of-range one with `Custom` before the value is

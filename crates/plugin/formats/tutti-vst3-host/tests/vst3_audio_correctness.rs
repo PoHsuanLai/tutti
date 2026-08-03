@@ -84,12 +84,12 @@ const PARAM_RAMP: u32 = 101;
 /// parameter normalizes as `index / stepCount`. Adding a mode shifts every
 /// other mode's normalized value, so this must track `kModeStepCount` exactly —
 /// a stale count silently selects the wrong mode rather than failing.
-const MODE_STEPS: f64 = 8.0;
+const MODE_STEPS: f64 = 9.0;
 
 /// Normalized value selecting probe mode `index` (see `ProbeMode` in
 /// `probeids.h`): 0 tag-passthrough, 1 param-ramp, 2 block-counter,
 /// 3 latency, 4 note-gate, 5 event-transcript, 6 event-bus-active,
-/// 7 connect-balance, 8 activation-count.
+/// 7 connect-balance, 8 activation-count, 9 audio-bus-active.
 fn mode(index: u32) -> f64 {
     f64::from(index) / MODE_STEPS
 }
@@ -108,6 +108,10 @@ const CONNECT_BALANCE_BASE: f32 = 8000.0;
 
 /// Offset mode 8 adds to its activation count (`kActivationCountBase`).
 const ACTIVATION_COUNT_BASE: f32 = 9000.0;
+
+/// Offset mode 9 adds to its audio-bus activation mask
+/// (`kAudioBusActiveBase`). Bit 0/1 = input bus 0/1, bit 2/3 = output bus 0/1.
+const AUDIO_BUS_ACTIVE_BASE: f32 = 10000.0;
 
 /// Writing non-zero here makes the probe's controller request
 /// `restartComponent(kIoChanged)` (`kParamRequestIoChanged`).
@@ -849,6 +853,62 @@ fn full_midi_event_list_survives_intact() {
         failures.is_empty(),
         "the MIDI event list did not survive the trip intact:\n  {}",
         failures.join("\n  ")
+    );
+}
+
+/// A main bus is activated whatever its flags say; an aux bus only when it
+/// asks.
+///
+/// The probe declares main + aux in both directions. Both aux buses carry an
+/// explicit `flags = 0`, so they are not `kDefaultActive` and stay inactive.
+///
+/// Its main *output* also carries `flags = 0`, which no SDK sample does — that
+/// is the plugin bug the main-bus rule exists for. It makes this test
+/// distinguish the two policies that matter: honouring the flag strictly would
+/// leave that bus inactive and render silence, and every corpus plugin flags
+/// its main buses, so nothing else can tell the two apart.
+///
+/// Expected mask is main-in | main-out — the second one activated *despite*
+/// its flags, not because of them.
+///
+/// **Nothing else in this suite can see the difference.** `BusInfo` carries no
+/// active field, so the host cannot read its own decision back, and the probe
+/// writes its aux output whether or not the bus was activated — exactly as a
+/// lenient real plugin does, which is why `every_bus_and_channel_carries_its_own_audio`
+/// passes identically under either policy. Only the plugin knows, so mode 9
+/// asks it.
+#[test]
+fn only_main_and_default_active_buses_are_activated() {
+    if !harness_ready() {
+        return;
+    }
+    let _guard = plugin_guard();
+    let Some(mut inst) = load_probe(512) else {
+        return;
+    };
+    set_mode(&mut inst, mode(9));
+
+    const FRAMES: usize = 512;
+    let rendered = render(&mut inst, FRAMES, &[], None, |_, _, _| 0.0);
+    let ch0 = &rendered.out[0][0];
+
+    assert!(
+        ch0.iter().all(|&v| v == ch0[0]),
+        "the probe should fill the block with one code; got a varying buffer"
+    );
+
+    // bit 0 = input 0 (main), bit 2 = output 0 (main). Buses 1 in each
+    // direction are aux with no kDefaultActive, so they stay off.
+    const EXPECTED_MASK: f32 = 0b0101 as f32;
+    let mask = ch0[0] - AUDIO_BUS_ACTIVE_BASE;
+
+    assert_eq!(
+        mask, EXPECTED_MASK,
+        "expected only the two main buses active (mask {EXPECTED_MASK}), got \
+         mask {mask}. Bits from 0 are: main-in, aux-in, main-out, aux-out. \
+         Mask 15 means the host still activates every bus regardless of \
+         kDefaultActive; mask 1 means it honours the flag strictly and has \
+         left the probe's unflagged main output inactive, which is silence."
     );
 }
 

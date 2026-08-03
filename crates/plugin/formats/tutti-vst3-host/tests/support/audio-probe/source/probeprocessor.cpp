@@ -47,9 +47,16 @@ tresult PLUGIN_API AudioProbeProcessor::initialize (FUnknown* context)
 	// deliberate: a host that assumes "one stereo bus in, one stereo bus out"
 	// — the shape of every other sample plugin — is exercised here instead of
 	// being accidentally correct.
+	//
+	// The main *output* deliberately omits `kDefaultActive` (explicit `0`),
+	// which no SDK sample does — every one of them takes the flag from
+	// `addAudioOutput`'s default. It is the plugin bug the host's main-bus
+	// rule exists for: a host that honoured the flag strictly would leave this
+	// bus inactive and render silence. Without it, no corpus plugin can tell
+	// the strict policy from ours, because their main buses are all flagged.
 	addAudioInput (STR16 ("Main In"), SpeakerArr::kStereo);
 	addAudioInput (STR16 ("Aux In"), SpeakerArr::kMono, kAux, 0);
-	addAudioOutput (STR16 ("Main Out"), SpeakerArr::kStereo);
+	addAudioOutput (STR16 ("Main Out"), SpeakerArr::kStereo, kMain, 0);
 	addAudioOutput (STR16 ("Aux Out"), SpeakerArr::kMono, kAux, 0);
 
 	addEventInput (STR16 ("Event In"), 1);
@@ -270,6 +277,23 @@ bool AudioProbeProcessor::eventInputActive () const
 }
 
 //-----------------------------------------------------------------------------
+int32 AudioProbeProcessor::audioBusActiveMask () const
+{
+	int32 mask = 0;
+	for (size_t i = 0; i < audioInputs.size () && i < 2; ++i)
+	{
+		if (audioInputs[i] && audioInputs[i]->isActive ())
+			mask |= (1 << i);
+	}
+	for (size_t i = 0; i < audioOutputs.size () && i < 2; ++i)
+	{
+		if (audioOutputs[i] && audioOutputs[i]->isActive ())
+			mask |= (1 << (i + 2));
+	}
+	return mask;
+}
+
+//-----------------------------------------------------------------------------
 template <typename T>
 void AudioProbeProcessor::renderBlock (ProcessData& data)
 {
@@ -407,6 +431,14 @@ void AudioProbeProcessor::renderBlock (ProcessData& data)
 				{
 					const double code = static_cast<double> (kConnectBalanceBase) +
 					                    static_cast<double> (mConnectBalance);
+					std::fill (dst, dst + frames, static_cast<T> (code));
+					break;
+				}
+
+				case kModeAudioBusActive:
+				{
+					const double code = static_cast<double> (kAudioBusActiveBase) +
+					                    static_cast<double> (audioBusActiveMask ());
 					std::fill (dst, dst + frames, static_cast<T> (code));
 					break;
 				}

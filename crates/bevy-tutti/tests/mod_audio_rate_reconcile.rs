@@ -354,3 +354,50 @@ fn a_route_declared_before_its_sinks_node_still_binds() {
         .clone();
     assert_eq!(chain.port, drive_port);
 }
+
+/// **Editing a modulated param's authored range must not delete its modulation.**
+///
+/// `rebuild` runs when a route *or a range* changes, and builds its source
+/// registry from `CollectedModSources::sources` — which it **drains**. But the
+/// per-kind `collect` systems refill that list only when `collected.dirty`, and
+/// `dirty` tracks *source* changes. So a rebuild triggered by a range change
+/// alone found an empty registry, failed `source_index.get(..)` for every route,
+/// and dropped every accumulator.
+///
+/// The user-visible effect: turning the knob on a modulated parameter silently
+/// removes its LFO. Nothing errors — the matrix simply empties.
+///
+/// A range change is not exotic. `ModParamRange` carries the authored
+/// `base`/`min`/`max`, so any host that mirrors an authored value into it
+/// re-inserts the component on every edit.
+#[test]
+fn editing_a_range_does_not_drop_the_routes() {
+    let (mut app, target, _port) = app_with_target();
+    let lfo = spawn_lfo(&mut app);
+    app.world_mut().spawn(
+        ModRoute::new(lfo, target, ParamAddr::Unit(UnitParam::Drive)).with_depth(Depth(0.5)),
+    );
+    app.update();
+    app.update();
+    assert!(
+        app.world()
+            .resource::<bevy_tutti::modulation::ModulationMatrix>()
+            .is_modulated(target, ParamAddr::Unit(UnitParam::Drive)),
+        "the route must bind first, or the assertion below is vacuous"
+    );
+
+    // Re-declare the range with a new base — what a host does when the user
+    // moves the authored value of a modulated param.
+    app.world_mut().entity_mut(target).insert(
+        ModParamRange::default().with(ParamAddr::Unit(UnitParam::Drive), 7.0, 0.0, 10.0),
+    );
+    app.update();
+
+    assert!(
+        app.world()
+            .resource::<bevy_tutti::modulation::ModulationMatrix>()
+            .is_modulated(target, ParamAddr::Unit(UnitParam::Drive)),
+        "the route must survive a range edit — a rebuild that drains its source \
+         registry without refilling it drops every route it cannot resolve"
+    );
+}

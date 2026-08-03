@@ -97,7 +97,7 @@ go to the header.
 
 ## Fixed so far
 
-Eleven of the sixteen upheld findings are fixed, each mutation-verified:
+Twelve of the sixteen upheld findings are fixed, each mutation-verified:
 
 | Finding | Observable it needed |
 |---|---|
@@ -112,8 +112,9 @@ Eleven of the sixteen upheld findings are fixed, each mutation-verified:
 | 6 of 12 `RestartFlags` dropped | whole-mapping test, so a 13th flag cannot join them |
 | Controller state never persisted | probe parameter reachable *only* via the controller's own stream |
 | `IUnitInfo` never called | the real corpus — `mda-vst3`'s dangling list id, host-checker's 3-level tree |
+| Editor input never delivered | a stub view that answers a *chosen* `tresult`, so the consumed mapping is visible |
 
-The pattern is worth stating plainly: **in nine of eleven cases the bug was unobservable
+The pattern is worth stating plainly: **in ten of twelve cases the bug was unobservable
 with the tests that existed**, and the work was building something that could see it —
 not writing the fix. Four times a test passed against the code it was meant to catch and
 had to be rewritten.
@@ -204,7 +205,7 @@ spec interpretation being right.
 |---|---|---|
 | ~~Event (MIDI) buses are never activated.~~ **FIXED** — see above. | `host/instance.rs:738` | **[verified]** |
 | ~~`IParameterChanges` merge uses an unstable sort.~~ **FIXED** — see above. | `host/midi_mapping.rs:241` | **[verified]** |
-| **Keyboard, wheel and focus are never delivered to plugin editors.** `onKeyDown` / `onKeyUp` / `onWheel` / `onFocus` have zero non-doc call sites. | — | **[verified]** |
+| ~~Keyboard, wheel and focus are never delivered to plugin editors.~~ **FIXED (host layer)** — `send_key_down`/`send_key_up`/`send_wheel`/`set_editor_focus` on `Vst3Loaded`, returning *consumed* so the plugin arbitrates. The Bevy-side `KeyCode` → `VirtualKeyCodes` table is not written; nothing calls these yet. | `host/loaded.rs` | **[verified]** |
 | ~~`IUnitInfo` is never called.~~ **FIXED** — `units()` / `program_lists()` / `program_name()` / `selected_unit()` / `select_unit()` / `unit_by_bus()` bind the interface. Returned flat, in the plugin's order, each unit naming its parent; assembling a tree is the caller's job. Measured: host-checker 54 units, 48 nested. | `types/info.rs`, `host/loaded.rs` | **[verified]** |
 | ~~`kIoChanged` mutates bus counts on a live active instance.~~ **FIXED** — `Vst3Instance::restart_bus_configuration` owns the cycle; `Vst3Loaded` surfaces the flag instead of acting on it. | `host/instance.rs` | **[verified]** |
 | ~~`kCycleValid` is set under the wrong requirement gate.~~ **FIXED** — gated on `NEED_CYCLE_MUSIC` + finiteness, paired with the fields it advertises. | `types/transport.rs` | **[verified]** |

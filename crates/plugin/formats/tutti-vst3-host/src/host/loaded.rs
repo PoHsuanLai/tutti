@@ -1504,6 +1504,81 @@ impl Vst3Loaded {
         })
     }
 
+    /// Offer a key press to the open editor. Returns `true` if the plugin
+    /// **consumed** it, in which case the host must not act on it too.
+    ///
+    /// # The two key codes
+    ///
+    /// VST3 carries a character *and* a virtual key, and a caller supplies one
+    /// while zeroing the other. `key` is the UTF-16 character the keystroke
+    /// produced; `virtual_key` is a `VirtualKeyCodes` value for keystrokes that
+    /// produce no character (arrows, function keys). Sending both, or neither,
+    /// is what plugins disagree about handling — pick one.
+    ///
+    /// `modifiers` is an OR of `KeyModifier` bits. Note the SDK's own
+    /// convention is platform-dependent: `kCommandKey` is Cmd on macOS and
+    /// Ctrl on Windows and Linux, so a caller mapping from a neutral modifier
+    /// set has to know which platform it is on.
+    ///
+    /// # Arbitration
+    ///
+    /// Honour the return value rather than filtering keys before the call. A
+    /// host that reserves keys for itself — space for transport, say — takes
+    /// them from every plugin that legitimately uses them, and cannot know
+    /// which those are. The spec's answer is this bool, and it applies only
+    /// while the editor holds focus.
+    ///
+    /// Returns `false` if no editor is open. Main/UI thread.
+    #[must_use]
+    pub fn send_key_down(&self, key: u16, virtual_key: i16, modifiers: i16) -> bool {
+        tutti_plugin_types::assert_main_thread();
+        let EditorState::Open { view, .. } = &self.editor else {
+            return false;
+        };
+        send_key_down(view, key, virtual_key, modifiers)
+    }
+
+    /// Offer a key release to the open editor. See
+    /// [`send_key_down`](Self::send_key_down) — identical contract, and a host
+    /// that forwards one without the other leaves plugins holding keys down.
+    #[must_use]
+    pub fn send_key_up(&self, key: u16, virtual_key: i16, modifiers: i16) -> bool {
+        tutti_plugin_types::assert_main_thread();
+        let EditorState::Open { view, .. } = &self.editor else {
+            return false;
+        };
+        send_key_up(view, key, virtual_key, modifiers)
+    }
+
+    /// Offer a mouse-wheel movement to the open editor, `distance` in wheel
+    /// notches. Returns `true` if the plugin consumed it.
+    ///
+    /// `IPlugView::onWheel` takes a single scalar, so horizontal scroll and
+    /// modifier-qualified scroll have nowhere to go — a caller with either must
+    /// handle it host-side. Main/UI thread.
+    #[must_use]
+    pub fn send_wheel(&self, distance: f32) -> bool {
+        tutti_plugin_types::assert_main_thread();
+        let EditorState::Open { view, .. } = &self.editor else {
+            return false;
+        };
+        send_wheel(view, distance)
+    }
+
+    /// Tell the open editor whether it now has keyboard focus.
+    ///
+    /// Plugins use this to draw a focus ring and to arm their own key
+    /// handling; one that never hears it may ignore keys the host forwards.
+    /// A notification, not a request — there is no consumed/refused answer.
+    /// No-op if no editor is open. Main/UI thread.
+    pub fn set_editor_focus(&self, focused: bool) {
+        tutti_plugin_types::assert_main_thread();
+        let EditorState::Open { view, .. } = &self.editor else {
+            return;
+        };
+        set_view_focus(view, focused);
+    }
+
     /// Returns the snapped size the plugin applied.
     pub fn resize_editor(&mut self, requested: EditorSize) -> Result<EditorSize> {
         let EditorState::Open { view, .. } = &self.editor else {
@@ -2016,6 +2091,48 @@ pub fn detach_view(view: &ComPtr<IPlugView>) {
     unsafe {
         view.setFrame(std::ptr::null_mut());
         view.removed();
+    }
+}
+
+/// Offer a key press to a view, returning whether the plugin **consumed** it.
+///
+/// `kResultTrue` means consumed; anything else — `kResultFalse`,
+/// `kNotImplemented`, an error — means the host should handle the key itself.
+/// That return value is the whole arbitration mechanism, and it is why these
+/// forwarders return `bool` rather than `Result`: a plugin declining a key is
+/// the normal case, not a failure.
+///
+/// See [`Vst3Loaded::send_key_down`] for the encoding of the three arguments.
+///
+// `pub` in a private module, re-exported only under `conformance` — same
+// arrangement as `detach_view`, and for the same reason: the sequence is worth
+// pinning without a real plugin, and `EditorState` can only be built by
+// `open_editor`.
+pub fn send_key_down(view: &ComPtr<IPlugView>, key: u16, virtual_key: i16, modifiers: i16) -> bool {
+    unsafe { view.onKeyDown(key, virtual_key, modifiers) == kResultTrue }
+}
+
+/// Offer a key release to a view. See [`send_key_down`] — identical contract.
+pub fn send_key_up(view: &ComPtr<IPlugView>, key: u16, virtual_key: i16, modifiers: i16) -> bool {
+    unsafe { view.onKeyUp(key, virtual_key, modifiers) == kResultTrue }
+}
+
+/// Offer a mouse-wheel movement to a view, `distance` in wheel notches.
+///
+/// `IPlugView::onWheel` takes one scalar, so a horizontal or
+/// modifier-qualified scroll cannot be expressed through this interface at
+/// all. Nothing is dropped silently here — there is simply nowhere to put it.
+pub fn send_wheel(view: &ComPtr<IPlugView>, distance: f32) -> bool {
+    unsafe { view.onWheel(distance) == kResultTrue }
+}
+
+/// Tell a view whether it now has keyboard focus.
+///
+/// Unlike the key forwarders this has no consumed/not-consumed answer — it is
+/// a notification, and the spec defines no meaning for a refusal.
+pub fn set_view_focus(view: &ComPtr<IPlugView>, focused: bool) {
+    unsafe {
+        view.onFocus(u8::from(focused));
     }
 }
 

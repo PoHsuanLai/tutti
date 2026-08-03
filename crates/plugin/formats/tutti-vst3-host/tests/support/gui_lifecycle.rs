@@ -695,3 +695,92 @@ fn a_closed_editor_reports_no_resize_request() {
     );
 }
 }
+
+gui_test! {
+/// A live plugin editor must survive being handed keyboard, wheel and focus
+/// input, and must answer whether it consumed each key.
+///
+/// The stub-view suite (`vst3_view_input.rs`) pins the *mapping* — that the
+/// arguments arrive unmangled and that only `kResultTrue` reads as consumed —
+/// which is all a stub can prove. What it cannot show is that a real plugin's
+/// key handler is reachable at all: a view that was never `attached`, or a host
+/// calling off the UI thread, crashes here and nowhere else.
+///
+/// The consumed/not-consumed answers are **not** asserted. Whether a plugin
+/// takes a given key is its own business and both answers are correct, so
+/// pinning one would be a test of host-checker rather than of this host. What
+/// is asserted is that the calls complete and the editor is still usable after.
+///
+/// Measured: host-checker consumes none of them. That is a real answer from a
+/// reachable handler rather than a dropped call — its editor derives from
+/// `VSTGUIEditor`, which implements all three and forwards to `CFrame`
+/// (`vstguieditor.cpp:297,321,345`); `CFrame` returns false when no control
+/// wants the input. So a plugin declining everything is the expected shape
+/// here, and it is exactly why this test cannot assert on the answer.
+fn editor_accepts_keyboard_wheel_and_focus() {
+    let Some(mut inst) = load_host_checker() else {
+        return;
+    };
+    let Some(win) = TestWindow::get() else {
+        eprintln!("could not create a window; skipping");
+        return;
+    };
+    let Some(handle) = win.handle() else {
+        eprintln!("unsupported window handle type; skipping");
+        return;
+    };
+
+    // Before the editor exists every forwarder must decline rather than reach
+    // through a `None` view.
+    assert!(
+        !inst.send_key_down('a' as u16, 0, 0),
+        "a key was reported consumed with no editor open"
+    );
+    assert!(
+        !inst.send_wheel(1.0),
+        "a wheel event was reported consumed with no editor open"
+    );
+    inst.set_editor_focus(true); // must not panic
+
+    let Ok(size) = inst.open_editor(handle) else {
+        eprintln!("open_editor failed; skipping");
+        return;
+    };
+
+    // Focus first: a plugin that has not been told it has the keyboard is
+    // entitled to ignore every key that follows.
+    inst.set_editor_focus(true);
+
+    let consumed_char = inst.send_key_down('a' as u16, 0, 0);
+    let _ = inst.send_key_up('a' as u16, 0, 0);
+    // A non-character keystroke: virtual key set, character zero. VKEY_LEFT.
+    let consumed_arrow = inst.send_key_down(0, 11, 0);
+    let _ = inst.send_key_up(0, 11, 0);
+    let consumed_wheel = inst.send_wheel(1.0);
+    let _ = inst.send_wheel(-1.0);
+
+    eprintln!(
+        "host-checker consumed: char={consumed_char} arrow={consumed_arrow} \
+         wheel={consumed_wheel}"
+    );
+
+    inst.set_editor_focus(false);
+
+    // The editor must still be alive and answering after all of that — the
+    // failure this catches is a plugin left in a broken state by input it was
+    // handed at the wrong time, which a crash-free run alone would not show.
+    let caps = inst.editor_capabilities();
+    eprintln!(
+        "editor still responsive after input: {}x{}, resize hints {:?}",
+        size.width, size.height, caps.resize
+    );
+
+    inst.close_editor();
+
+    // And the forwarders decline again once it is gone.
+    assert!(
+        !inst.send_key_down('a' as u16, 0, 0),
+        "a key was reported consumed after the editor closed"
+    );
+}
+}

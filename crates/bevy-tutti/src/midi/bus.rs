@@ -60,3 +60,19 @@ impl Default for MpeModeConfig {
         Self(tutti_midi_io::MpeMode::Disabled)
     }
 }
+
+/// The live handle for changing the MPE mode **after** the engine is built.
+///
+/// [`MpeModeConfig`] is the build-time seed; this is how the mode changes
+/// afterwards, which is what lets zone configuration live in a document rather
+/// than being fixed when `TuttiPlugin` is added. Inserted by
+/// [`build_into`](crate::engine::build_into), so it is absent when the engine
+/// failed or is disabled — hold it as `Option<Res<_>>`.
+///
+/// Writing it is control-thread work and cheap, but **not free**: a mode change
+/// resets MPE voice allocation, so drive it from a change detector rather than
+/// unconditionally each frame. `MpeModeRequest::set` skips the reset when the
+/// mode already matches, which covers a caller that writes the same value twice
+/// — but not one that alternates.
+#[derive(Resource, Clone)]
+pub struct MpeModeHandle(pub tutti_midi_runtime::MpeModeRequest);

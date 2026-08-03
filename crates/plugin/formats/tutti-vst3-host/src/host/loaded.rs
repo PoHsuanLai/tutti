@@ -21,9 +21,9 @@ use vst3::Steinberg::{
         INoteExpressionControllerTrait, INoteExpressionPhysicalUIMapping,
         INoteExpressionPhysicalUIMappingTrait, IParameterFunctionName, IParameterFunctionNameTrait,
         IPrefetchableSupport, IPrefetchableSupportTrait, IProcessContextRequirements,
-        IProcessContextRequirementsTrait, IRemapParamID, IRemapParamIDTrait,
-        IXmlRepresentationController, IXmlRepresentationControllerTrait, PhysicalUIMap,
-        PhysicalUIMapList, RepresentationInfo,
+        IProcessContextRequirementsTrait, IRemapParamID, IRemapParamIDTrait, IUnitInfo,
+        IUnitInfoTrait, IXmlRepresentationController, IXmlRepresentationControllerTrait,
+        PhysicalUIMap, PhysicalUIMapList, RepresentationInfo,
     },
 };
 
@@ -40,9 +40,11 @@ use crate::com::{
 };
 use crate::error::{LoadStage, Result, Vst3Error};
 use crate::helpers::cid_to_string;
+use crate::helpers::utf16_to_string;
 use crate::types::{
     EditorCapabilities, EditorSize, PluginInfo, ProcessMode, Vst3KeyswitchInfo,
-    Vst3NoteExpressionInfo, Vst3ParameterInfo, Vst3Sample, WindowHandle,
+    Vst3NoteExpressionInfo, Vst3ParameterInfo, Vst3ProgramListInfo, Vst3Sample, Vst3UnitInfo,
+    WindowHandle,
 };
 
 use super::instance::Vst3Instance;
@@ -304,6 +306,7 @@ impl Vst3Loaded {
         let keyswitch = controller
             .as_ref()
             .and_then(|c| c.cast::<IKeyswitchController>());
+        let unit_info = controller.as_ref().and_then(|c| c.cast::<IUnitInfo>());
         let remap_param_id = controller.as_ref().and_then(|c| c.cast::<IRemapParamID>());
         let parameter_function_name = controller
             .as_ref()
@@ -329,6 +332,7 @@ impl Vst3Loaded {
                 note_expression,
                 automation_state,
                 keyswitch,
+                unit_info,
                 remap_param_id,
                 parameter_function_name,
                 physical_ui_mapping,
@@ -694,6 +698,126 @@ impl Vst3Loaded {
         let result =
             unsafe { ctrl.getParameterIDFromFunctionName(unit_id, c_name.as_ptr(), &mut param_id) };
         (result == kResultOk).then_some(param_id)
+    }
+
+    /// The plugin's program lists — the named preset sets its units select
+    /// from. Empty if the plugin doesn't implement `IUnitInfo`.
+    ///
+    /// Read before [`units`](Self::units), which needs the list ids to tell a
+    /// unit's real program list from one it names but the plugin never
+    /// publishes. Main/UI thread.
+    pub fn program_lists(&self) -> Vec<Vst3ProgramListInfo> {
+        tutti_plugin_types::assert_main_thread();
+        let Some(ctrl) = self.interfaces.unit_info.as_ref() else {
+            return Vec::new();
+        };
+
+        let count = unsafe { ctrl.getProgramListCount() }.max(0);
+        let mut lists = Vec::with_capacity(count as usize);
+        for i in 0..count {
+            let mut raw: vst3::Steinberg::Vst::ProgramListInfo = unsafe { std::mem::zeroed() };
+            if unsafe { ctrl.getProgramListInfo(i, &mut raw) } == kResultOk {
+                lists.push(Vst3ProgramListInfo::from_c(&raw));
+            }
+        }
+        lists
+    }
+
+    /// The plugin's unit tree — the groups it sorts parameters, programs and
+    /// note expressions into. Empty if the plugin doesn't implement
+    /// `IUnitInfo`.
+    ///
+    /// Returned flat, in the plugin's own order, with each unit naming its
+    /// parent. Assembling a tree is the caller's job: a host that only wants to
+    /// label parameter groups never needs one, and the shapes a plugin can
+    /// report (orphans, cycles) have no single right resolution to bake in
+    /// here.
+    ///
+    /// A unit whose `programListId` names no published list gets
+    /// `program_list: None` — see [`Vst3UnitInfo::program_list`] for why, and
+    /// [`Vst3UnitInfo::has_dangling_program_list`] to detect it. Main/UI
+    /// thread.
+    pub fn units(&self) -> Vec<Vst3UnitInfo> {
+        tutti_plugin_types::assert_main_thread();
+        let Some(ctrl) = self.interfaces.unit_info.as_ref() else {
+            return Vec::new();
+        };
+
+        let known: Vec<i32> = self.program_lists().into_iter().map(|l| l.id).collect();
+
+        let count = unsafe { ctrl.getUnitCount() }.max(0);
+        let mut units = Vec::with_capacity(count as usize);
+        for i in 0..count {
+            let mut raw: vst3::Steinberg::Vst::UnitInfo = unsafe { std::mem::zeroed() };
+            if unsafe { ctrl.getUnitInfo(i, &mut raw) } == kResultOk {
+                let mut unit = Vst3UnitInfo::from_c(&raw);
+                unit.resolve_program_list(&known);
+                units.push(unit);
+            }
+        }
+        units
+    }
+
+    /// Name of one program in a list, or `None` if the plugin doesn't
+    /// implement `IUnitInfo` or refuses the index.
+    ///
+    /// `list_id` is a [`Vst3ProgramListInfo::id`], **not** an index into
+    /// [`program_lists`](Self::program_lists) — the two spaces differ, and a
+    /// plugin is free to number its lists however it likes. Main/UI thread.
+    pub fn program_name(&self, list_id: i32, program_index: u32) -> Option<String> {
+        tutti_plugin_types::assert_main_thread();
+        let ctrl = self.interfaces.unit_info.as_ref()?;
+        let mut name: vst3::Steinberg::Vst::String128 = [0; 128];
+        let result = unsafe { ctrl.getProgramName(list_id, program_index as i32, &mut name) };
+        (result == kResultOk).then(|| utf16_to_string(&name))
+    }
+
+    /// The unit the plugin currently considers selected — which part of a
+    /// multitimbral instrument its editor is showing. `None` if the plugin
+    /// doesn't implement `IUnitInfo`.
+    ///
+    /// Unlike the other accessors here this cannot fail: `getSelectedUnit`
+    /// returns the id directly with no result code, so a plugin that
+    /// implements the interface always answers. Main/UI thread.
+    pub fn selected_unit(&self) -> Option<i32> {
+        tutti_plugin_types::assert_main_thread();
+        let ctrl = self.interfaces.unit_info.as_ref()?;
+        Some(unsafe { ctrl.getSelectedUnit() })
+    }
+
+    /// Tell the plugin which unit the host's UI is now showing, so a plugin
+    /// with its own editor can follow. Returns `false` if the plugin doesn't
+    /// implement `IUnitInfo` or refuses the id.
+    ///
+    /// The one write on this interface. Pass [`unit_ids::ROOT`] to select the
+    /// implicit top-level unit. Main/UI thread.
+    #[must_use]
+    pub fn select_unit(&mut self, unit_id: i32) -> bool {
+        tutti_plugin_types::assert_main_thread();
+        let Some(ctrl) = self.interfaces.unit_info.as_ref() else {
+            return false;
+        };
+        unsafe { ctrl.selectUnit(unit_id) == kResultOk }
+    }
+
+    /// Which unit a given bus channel belongs to, or `None` if the plugin
+    /// doesn't implement `IUnitInfo` or maps nothing to that channel.
+    ///
+    /// `media_type` and `direction` take the same `K_AUDIO`/`K_EVENT` and
+    /// `K_INPUT`/`K_OUTPUT` constants as the bus accessors. Main/UI thread.
+    pub fn unit_by_bus(
+        &self,
+        media_type: i32,
+        direction: i32,
+        bus_index: i32,
+        channel: i32,
+    ) -> Option<i32> {
+        tutti_plugin_types::assert_main_thread();
+        let ctrl = self.interfaces.unit_info.as_ref()?;
+        let mut unit_id: i32 = 0;
+        let result =
+            unsafe { ctrl.getUnitByBus(media_type, direction, bus_index, channel, &mut unit_id) };
+        (result == kResultOk).then_some(unit_id)
     }
 
     /// Map the plugin's physical UI controls to the note-expression dimensions
@@ -1380,6 +1504,81 @@ impl Vst3Loaded {
         })
     }
 
+    /// Offer a key press to the open editor. Returns `true` if the plugin
+    /// **consumed** it, in which case the host must not act on it too.
+    ///
+    /// # The two key codes
+    ///
+    /// VST3 carries a character *and* a virtual key, and a caller supplies one
+    /// while zeroing the other. `key` is the UTF-16 character the keystroke
+    /// produced; `virtual_key` is a `VirtualKeyCodes` value for keystrokes that
+    /// produce no character (arrows, function keys). Sending both, or neither,
+    /// is what plugins disagree about handling — pick one.
+    ///
+    /// `modifiers` is an OR of `KeyModifier` bits. Note the SDK's own
+    /// convention is platform-dependent: `kCommandKey` is Cmd on macOS and
+    /// Ctrl on Windows and Linux, so a caller mapping from a neutral modifier
+    /// set has to know which platform it is on.
+    ///
+    /// # Arbitration
+    ///
+    /// Honour the return value rather than filtering keys before the call. A
+    /// host that reserves keys for itself — space for transport, say — takes
+    /// them from every plugin that legitimately uses them, and cannot know
+    /// which those are. The spec's answer is this bool, and it applies only
+    /// while the editor holds focus.
+    ///
+    /// Returns `false` if no editor is open. Main/UI thread.
+    #[must_use]
+    pub fn send_key_down(&self, key: u16, virtual_key: i16, modifiers: i16) -> bool {
+        tutti_plugin_types::assert_main_thread();
+        let EditorState::Open { view, .. } = &self.editor else {
+            return false;
+        };
+        send_key_down(view, key, virtual_key, modifiers)
+    }
+
+    /// Offer a key release to the open editor. See
+    /// [`send_key_down`](Self::send_key_down) — identical contract, and a host
+    /// that forwards one without the other leaves plugins holding keys down.
+    #[must_use]
+    pub fn send_key_up(&self, key: u16, virtual_key: i16, modifiers: i16) -> bool {
+        tutti_plugin_types::assert_main_thread();
+        let EditorState::Open { view, .. } = &self.editor else {
+            return false;
+        };
+        send_key_up(view, key, virtual_key, modifiers)
+    }
+
+    /// Offer a mouse-wheel movement to the open editor, `distance` in wheel
+    /// notches. Returns `true` if the plugin consumed it.
+    ///
+    /// `IPlugView::onWheel` takes a single scalar, so horizontal scroll and
+    /// modifier-qualified scroll have nowhere to go — a caller with either must
+    /// handle it host-side. Main/UI thread.
+    #[must_use]
+    pub fn send_wheel(&self, distance: f32) -> bool {
+        tutti_plugin_types::assert_main_thread();
+        let EditorState::Open { view, .. } = &self.editor else {
+            return false;
+        };
+        send_wheel(view, distance)
+    }
+
+    /// Tell the open editor whether it now has keyboard focus.
+    ///
+    /// Plugins use this to draw a focus ring and to arm their own key
+    /// handling; one that never hears it may ignore keys the host forwards.
+    /// A notification, not a request — there is no consumed/refused answer.
+    /// No-op if no editor is open. Main/UI thread.
+    pub fn set_editor_focus(&self, focused: bool) {
+        tutti_plugin_types::assert_main_thread();
+        let EditorState::Open { view, .. } = &self.editor else {
+            return;
+        };
+        set_view_focus(view, focused);
+    }
+
     /// Returns the snapped size the plugin applied.
     pub fn resize_editor(&mut self, requested: EditorSize) -> Result<EditorSize> {
         let EditorState::Open { view, .. } = &self.editor else {
@@ -1892,6 +2091,48 @@ pub fn detach_view(view: &ComPtr<IPlugView>) {
     unsafe {
         view.setFrame(std::ptr::null_mut());
         view.removed();
+    }
+}
+
+/// Offer a key press to a view, returning whether the plugin **consumed** it.
+///
+/// `kResultTrue` means consumed; anything else — `kResultFalse`,
+/// `kNotImplemented`, an error — means the host should handle the key itself.
+/// That return value is the whole arbitration mechanism, and it is why these
+/// forwarders return `bool` rather than `Result`: a plugin declining a key is
+/// the normal case, not a failure.
+///
+/// See [`Vst3Loaded::send_key_down`] for the encoding of the three arguments.
+///
+// `pub` in a private module, re-exported only under `conformance` — same
+// arrangement as `detach_view`, and for the same reason: the sequence is worth
+// pinning without a real plugin, and `EditorState` can only be built by
+// `open_editor`.
+pub fn send_key_down(view: &ComPtr<IPlugView>, key: u16, virtual_key: i16, modifiers: i16) -> bool {
+    unsafe { view.onKeyDown(key, virtual_key, modifiers) == kResultTrue }
+}
+
+/// Offer a key release to a view. See [`send_key_down`] — identical contract.
+pub fn send_key_up(view: &ComPtr<IPlugView>, key: u16, virtual_key: i16, modifiers: i16) -> bool {
+    unsafe { view.onKeyUp(key, virtual_key, modifiers) == kResultTrue }
+}
+
+/// Offer a mouse-wheel movement to a view, `distance` in wheel notches.
+///
+/// `IPlugView::onWheel` takes one scalar, so a horizontal or
+/// modifier-qualified scroll cannot be expressed through this interface at
+/// all. Nothing is dropped silently here — there is simply nowhere to put it.
+pub fn send_wheel(view: &ComPtr<IPlugView>, distance: f32) -> bool {
+    unsafe { view.onWheel(distance) == kResultTrue }
+}
+
+/// Tell a view whether it now has keyboard focus.
+///
+/// Unlike the key forwarders this has no consumed/not-consumed answer — it is
+/// a notification, and the spec defines no meaning for a refusal.
+pub fn set_view_focus(view: &ComPtr<IPlugView>, focused: bool) {
+    unsafe {
+        view.onFocus(u8::from(focused));
     }
 }
 

@@ -109,6 +109,18 @@ enum ProbeMode : int32
     /// actually change. Counting activations is what separates "re-read the
     /// buses in place" from "ran the cycle".
     kModeActivationCount = 8,
+
+    /// `out[..][i] = kAudioBusActiveBase + bitmask of active audio buses`.
+    ///
+    /// Bit 0 = input bus 0 (main), bit 1 = input bus 1 (aux), bit 2 = output
+    /// bus 0 (main), bit 3 = output bus 1 (aux).
+    ///
+    /// A host's activation *policy* is otherwise invisible. `BusInfo` carries
+    /// no active field, so the host cannot read its own decision back, and the
+    /// audio a bus carries does not depend on it — this plugin writes its aux
+    /// output whether or not the bus was activated, exactly as a lenient real
+    /// plugin does. Only the plugin knows, so only the plugin can report it.
+    kModeAudioBusActive = 9,
 };
 
 /// Step count for `kParamMode`. A stepped VST3 parameter normalizes as
@@ -119,7 +131,7 @@ enum ProbeMode : int32
 /// decode — and the host's `MODE_STEPS` mirrors it. Disagreement does not fail
 /// to compile: it selects a *different mode* than the caller asked for, and
 /// every assertion then reads the wrong renderer's output.
-static const int32 kModeStepCount = kModeActivationCount;
+static const int32 kModeStepCount = kModeAudioBusActive;
 
 /// Parameter ids. Deliberately nonzero and non-contiguous: a host that
 /// confuses parameter *index* with parameter *id* passes with 0,1,2 and fails
@@ -178,6 +190,12 @@ static const int32 kConnectBalanceBase = 8000;
 /// for the same reason as the balance above, and far enough from it that the
 /// two modes' outputs are never confusable.
 static const int32 kActivationCountBase = 9000;
+
+/// `kModeAudioBusActive` writes `kAudioBusActiveBase + mask`, where the mask
+/// spans `0..=15`. Offset so an all-inactive mask of 0 is distinguishable from
+/// a mode that never ran and left the buffer zeroed, and spaced clear of the
+/// bases above.
+static const int32 kAudioBusActiveBase = 10000;
 
 /// Per-slot DC offset in `kModeTagPassthrough`.
 ///

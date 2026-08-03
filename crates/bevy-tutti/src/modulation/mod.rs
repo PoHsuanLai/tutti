@@ -177,6 +177,11 @@ impl Plugin for TuttiModulationPlugin {
                 // a change this frame, and before `Collect` so the source is
                 // built already reading it.
                 source::ensure_rate_cells.before(ModSourceSystems::MarkDirty),
+                // A route or range change also triggers `rebuild`, which drains
+                // the collected sources — so it must raise the same flag, or
+                // the rebuild resolves against an empty registry and drops
+                // every route. Registered once, not per kind.
+                source::mark_dirty_on_route_change.in_set(ModSourceSystems::MarkDirty),
                 rebuild
                     .after(ModSourceSystems::Collect)
                     .before(GraphReconcileSystems::Params),

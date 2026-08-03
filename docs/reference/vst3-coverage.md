@@ -97,7 +97,7 @@ go to the header.
 
 ## Fixed so far
 
-Fifteen of the sixteen upheld findings are fixed, each mutation-verified:
+**All sixteen** upheld findings are fixed, each mutation-verified:
 
 | Finding | Observable it needed |
 |---|---|
@@ -116,11 +116,9 @@ Fifteen of the sixteen upheld findings are fixed, each mutation-verified:
 | `kDefaultActive` overridden on every bus (PR #139) | a probe main output with `flags = 0` — no corpus plugin has one |
 | `getProcessContextRequirements` asked too early | a probe that answers `0` before `initialize` and `kNeedTempo` after |
 | Note-expression values unguarded | NaN and out-of-range inputs, each with a distinct verdict |
+| `PFactoryInfo::flags` discarded | the corpus's universal `kUnicode` — no plugin sets the flag actually at issue |
 
-The one still open is `PFactoryInfo::flags` / `kClassesDiscardable`, blocked on a prior
-gap rather than on effort — see **Low** below.
-
-The pattern is worth stating plainly: **in eleven of fifteen cases the bug was
+The pattern is worth stating plainly: **in twelve of sixteen cases the bug was
 unobservable with the tests that existed**, and the work was building something that
 could see it — not writing the fix. Four times the first attempt at a test passed against
 the unfixed code and had to be thrown away.
@@ -255,17 +253,25 @@ state **[fixed]** — it means "this program info is stale", not "the selection 
 and did not mention that `-1` is the `kAllProgramInvalid` sentinel a consumer would
 otherwise spend as an array index.
 
-`PFactoryInfo::flags` is dropped, so `kClassesDiscardable` cannot suppress an mtime-gated
-rescan **[not fixed — blocked on a prior gap]**. The scan cache is real and keyed on mtime
-alone (`catalog.rs:105-110`), so the finding was actionable in principle. But the catalog
-stores **one** `PluginDescriptor` per bundle path, and `find_audio_class`
-(`loaded.rs:2047`) is a `find_map` that takes the first audio class — `mda-vst3`'s 34
-classes already collapse to a single record. Honouring the flag would force a rescan that
-re-derives the same one descriptor. The flag only means anything once the catalog can
-represent a bundle's class *list*, and carrying it before then costs a field on
-`PluginDescriptor` — a bincode wire type crossing the plugin-server IPC — plus the three
-other format loaders answering it, for no observable change. Revisit with multi-class
-catalog support, not before.
+`PFactoryInfo::flags` was dropped, so `kClassesDiscardable` never reached the host
+**[fixed]**. `get_factory_info` copied vendor, url and email and did not mention the fourth
+field. It is now carried raw, with `classes_discardable()` / `component_non_discardable()`
+/ `unicode_strings()` decoding by mask.
+
+**Nothing consumes it yet, and that is a separate gap.** The scan cache
+(`tutti_plugin::host::discovery`) is keyed on mtime alone (`catalog.rs:105-110`) and
+stores **one** `PluginDescriptor` per bundle path, while `find_audio_class`
+(`loaded.rs:2047`) is a `find_map` taking the first audio class — `mda-vst3`'s 34 classes
+already collapse to a single record. So a bundle's class *list* is not something the
+catalog can currently represent, let alone re-derive on demand. Acting on the flag becomes
+meaningful when that changes; it needs a field on `PluginDescriptor` (a bincode wire type
+crossing the plugin-server IPC) and the other three format loaders answering it.
+
+Worth separating carefully, because the first attempt at this finding got it wrong:
+**a downstream consumer's limitation is not a reason for the boundary layer to discard
+data.** The audit is of `tutti-vst3-host`, and "what did the plugin tell us" is entirely
+inside it — four lines. The `PluginDescriptor` / catalog work is `tutti-plugin`'s gap, and
+scoping it into this finding inflated the cost of a small fix into a reason to skip it.
 
 The fifth, `kCycleValid`, was upgraded to the High table. The sixth — a `u32→i32` wrap on
 CC frame offsets — was **refuted**: the cast needs an offset ≥ 2³¹ to wrap, which is 13.5
@@ -332,10 +338,17 @@ is not thereby untestable — it means the fixture is the deliverable.** Three f
 with a change to `audio-probe` rather than to a test file, and in one case the SDK's own
 samples are provably incapable of witnessing the rule at all.
 
-The same reasoning cuts the other way, and did once. `kClassesDiscardable` is a real
-dropped flag with a real cache behind it, and is still not worth carrying — because the
-cache cannot yet represent the thing the flag describes. A citation establishes that a
-finding is true, not that acting on it changes anything.
+The last finding to close taught a different lesson, by first being closed wrongly.
+`kClassesDiscardable` was initially declined on the grounds that nothing downstream could
+act on it — the scan cache cannot represent a bundle's class list, so honouring the flag
+would change no behaviour. All of that is true, and none of it was a reason to keep
+*discarding* the flag. **A downstream consumer's limitation does not license the boundary
+layer to drop data.** Reading what the plugin said is four lines and entirely inside the
+crate under audit; the catalog work is a different crate's gap. Scoping the consumer into
+the finding inflated a small fix into a reason to skip it.
+
+The general form: when declining a finding, check that the cost being weighed is the cost
+of *the finding*, and not the cost of everything one would want to build on top of it.
 
 Nothing here is a regression: these are gaps and deviations that have been present, not
 recent breakage. The two dead conformance suites are the exception — those *were* a

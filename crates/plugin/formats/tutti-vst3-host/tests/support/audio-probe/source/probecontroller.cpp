@@ -48,6 +48,8 @@ tresult PLUGIN_API AudioProbeController::initialize (FUnknown* context)
 	                         kParamGain);
 	parameters.addParameter (STR16 ("RequestIoChanged"), nullptr, 1, 0.0,
 	                         ParameterInfo::kCanAutomate, kParamRequestIoChanged);
+	parameters.addParameter (STR16 ("UiState"), nullptr, 0, 0.0, ParameterInfo::kCanAutomate,
+	                         kParamUiState);
 
 	return kResultOk;
 }
@@ -68,6 +70,49 @@ tresult PLUGIN_API AudioProbeController::setComponentState (IBStream* state)
 	                    static_cast<double> (mode) / static_cast<double> (kModeStepCount));
 	setParamNormalized (kParamRamp, ramp);
 	setParamNormalized (kParamGain, gain);
+	// Deliberately does NOT touch kParamUiState: the component stream does not
+	// carry it, which is the whole point of the separate controller stream.
+	return kResultOk;
+}
+
+//-----------------------------------------------------------------------------
+tresult PLUGIN_API AudioProbeController::setState (IBStream* state)
+{
+	// The state misbehaviours describe the *plugin*, not one of its halves: a
+	// plugin with no state has none on either side. Answering here while the
+	// processor declines would make the probe a plugin no host ever meets.
+	const int32 misbehaviour = probeMisbehaviour ();
+	if (misbehaviour == kMisbehaveStateFails)
+		return kResultFalse;
+	if (misbehaviour == kMisbehaveStateNotImplemented)
+		return kNotImplemented;
+
+	if (!state)
+		return kResultFalse;
+
+	IBStreamer s (state, kLittleEndian);
+	double ui = 0.0;
+	if (!s.readDouble (ui))
+		return kResultFalse;
+
+	setParamNormalized (kParamUiState, ui);
+	return kResultOk;
+}
+
+//-----------------------------------------------------------------------------
+tresult PLUGIN_API AudioProbeController::getState (IBStream* state)
+{
+	const int32 misbehaviour = probeMisbehaviour ();
+	if (misbehaviour == kMisbehaveStateFails)
+		return kResultFalse;
+	if (misbehaviour == kMisbehaveStateNotImplemented)
+		return kNotImplemented;
+
+	if (!state)
+		return kResultFalse;
+
+	IBStreamer s (state, kLittleEndian);
+	s.writeDouble (getParamNormalized (kParamUiState));
 	return kResultOk;
 }
 

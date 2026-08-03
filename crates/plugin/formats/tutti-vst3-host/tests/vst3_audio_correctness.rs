@@ -113,6 +113,12 @@ const ACTIVATION_COUNT_BASE: f32 = 9000.0;
 /// `restartComponent(kIoChanged)` (`kParamRequestIoChanged`).
 const PARAM_REQUEST_IO_CHANGED: u32 = 103;
 
+/// Controller-only UI state (`kParamUiState`). The probe's *component* stream
+/// does not carry it and `setComponentState` does not touch it — only
+/// `IEditController::getState`/`setState` do. That makes it the one value that
+/// can tell the two state streams apart.
+const PARAM_UI_STATE: u32 = 104;
+
 /// Per-slot DC offset the probe adds in tag-passthrough mode. Must match
 /// `probeTag` in `probeids.h` exactly.
 fn probe_tag(bus: usize, channel: usize) -> f32 {
@@ -843,6 +849,67 @@ fn full_midi_event_list_survives_intact() {
         failures.is_empty(),
         "the MIDI event list did not survive the trip intact:\n  {}",
         failures.join("\n  ")
+    );
+}
+
+/// Controller-only UI state must survive a save/restore.
+///
+/// The spec gives `IEditController` its own `getState`/`setState` pair, distinct
+/// from the component's, holding what only the UI knows — scroll position, the
+/// selected tab, a meter's display mode. A host that saves only the component
+/// stream silently discards all of it, and the loss is invisible from the
+/// component stream alone: it round-trips perfectly while the editor reopens at
+/// its defaults.
+///
+/// `kParamUiState` is reachable *only* through the controller's own stream —
+/// the probe's `setComponentState` deliberately leaves it alone — so the value
+/// arriving in a second, freshly loaded instance can only have travelled
+/// through `IEditController::getState`. Restoring into a fresh instance rather
+/// than the same one is what makes this a test of the blob rather than of
+/// memory that was never cleared.
+#[test]
+fn controller_only_ui_state_survives_a_save_and_restore() {
+    if !harness_ready() {
+        return;
+    }
+    let _guard = plugin_guard();
+
+    // A value no default could be confused with, and exactly representable in
+    // f64 so the comparison needs no epsilon.
+    const UI_VALUE: f64 = 0.625;
+
+    let saved = {
+        let Some(mut inst) = load_probe(512) else {
+            return;
+        };
+        inst.set_parameter(PARAM_UI_STATE, UI_VALUE);
+        assert_eq!(
+            inst.parameter(PARAM_UI_STATE),
+            UI_VALUE,
+            "the probe did not accept the UI-state write, so the rest of this \
+             test would be vacuous"
+        );
+        inst.state().expect("probe should expose state")
+    };
+
+    let Some(mut restored) = load_probe(512) else {
+        return;
+    };
+    assert_eq!(
+        restored.parameter(PARAM_UI_STATE),
+        0.0,
+        "a freshly loaded probe should start at the UI-state default; if it \
+         does not, the restore below proves nothing"
+    );
+
+    restored.set_state(&saved).expect("restore should succeed");
+
+    assert_eq!(
+        restored.parameter(PARAM_UI_STATE),
+        UI_VALUE,
+        "controller-only UI state was lost across save/restore — the host is \
+         persisting IComponent's stream but not IEditController's, so a \
+         reopened editor shows defaults"
     );
 }
 

@@ -933,13 +933,22 @@ impl Vst3Loaded {
         }
     }
 
-    /// Capture the plugin's component state as the opaque byte blob the plugin
-    /// itself writes via `IComponent::getState`, suitable for persisting and
-    /// later feeding back to [`set_state`](Self::set_state).
+    /// Capture the plugin's state as an opaque byte blob suitable for
+    /// persisting and later feeding back to [`set_state`](Self::set_state).
     ///
-    /// The bytes are the plugin's private format — the host never interprets
-    /// them. A `kResultFalse` return (plugin has no state to persist) yields an
-    /// empty blob, which `set_state` accepts back as a no-op.
+    /// This carries **both** of the plugin's streams. The spec gives the
+    /// controller its own `getState`/`setState` pair, distinct from the
+    /// component's, holding what only the UI knows: scroll position, the
+    /// selected tab, a meter's display mode. Saving just the component stream
+    /// discards all of it on every save/restore.
+    ///
+    /// The two are packed by [`pack_state`] rather than concatenated, because
+    /// each half is a private format of unknown length — only an explicit
+    /// length prefix can split them again.
+    ///
+    /// The bytes within each half are the plugin's private format; the host
+    /// never interprets them. A plugin with no state at all yields an empty
+    /// blob, which `set_state` accepts back as a no-op.
     ///
     /// # Errors
     ///
@@ -947,12 +956,39 @@ impl Vst3Loaded {
     /// host-side `IBStream` wrapper cannot be created, or
     /// [`Vst3Error::PluginError`](crate::Vst3Error::PluginError) if the plugin
     /// fails `getState`. We do **not** substitute a parameter dump: a plugin's
-    /// real state covers more than parameters (active preset, internal DSP
-    /// state, sample references), so a lossy synthetic blob would restore
-    /// incorrectly while masquerading as faithful state.
+    /// state covers more than parameters (active preset, internal DSP state,
+    /// sample references), so a lossy synthetic blob would restore incorrectly
+    /// while masquerading as faithful state.
+    ///
+    /// A controller that fails its own `getState` is **not** an error: the
+    /// component half is the one a project cannot be restored without, and
+    /// plenty of controllers have no UI state to give. That half degrades to
+    /// empty and the component half is still returned.
     pub fn state(&self) -> Result<Vec<u8>> {
         tutti_plugin_types::assert_main_thread();
-        self.read_component_state()
+        let component = self.read_component_state()?;
+        let controller = self.read_controller_state();
+        Ok(pack_state(&component, &controller))
+    }
+
+    /// Read the controller's own `getState` stream, or `None` when there is no
+    /// controller, it does not implement the call, or it fails.
+    ///
+    /// Failure is folded into `None` rather than surfaced: see
+    /// [`state`](Self::state) for why a controller's UI state is best-effort
+    /// while the component's is not.
+    fn read_controller_state(&self) -> Option<Vec<u8>> {
+        let ctrl = self.interfaces.controller.as_ref()?;
+        let stream = BStream::new();
+        let stream_ptr = stream.as_com_ref::<IBStream>()?;
+
+        let result = unsafe { ctrl.getState(stream_ptr.as_ptr()) };
+        if !state_result_ok(result) {
+            return None;
+        }
+
+        let data = stream.data();
+        (!data.is_empty()).then_some(data)
     }
 
     /// Write the component's `getState` blob into a fresh `IBStream` and return
@@ -1002,8 +1038,13 @@ impl Vst3Loaded {
     }
 
     /// Restore plugin state from a blob produced by [`state`](Self::state).
-    /// Also pushes the blob through the controller's `setComponentState` so
-    /// both halves of a separate component/controller stay in sync.
+    ///
+    /// Three things happen, in the order the spec requires. The component gets
+    /// its own stream via `IComponent::setState`. The controller is then shown
+    /// that same component stream through `setComponentState`, so a separate
+    /// controller mirrors the processor's values. Finally the controller gets
+    /// its *own* stream via `IEditController::setState` — the UI state that
+    /// `setComponentState` cannot carry.
     ///
     /// An empty blob (from a plugin that had no state to save) is a no-op.
     ///
@@ -1012,14 +1053,20 @@ impl Vst3Loaded {
     /// Returns [`Vst3Error::StateError`](crate::Vst3Error::StateError) if the
     /// `IBStream` wrapper cannot be created, or
     /// [`Vst3Error::PluginError`](crate::Vst3Error::PluginError) if the plugin
-    /// rejects the blob via `setState`.
+    /// rejects the component blob via `setState`. A controller that rejects its
+    /// own stream is tolerated, matching [`state`](Self::state).
     pub fn set_state(&mut self, data: &[u8]) -> Result<()> {
         tutti_plugin_types::assert_main_thread();
         if data.is_empty() {
             return Ok(());
         }
 
-        let stream = BStream::from_data(data.to_vec());
+        let (component, controller) = unpack_state(data);
+        if component.is_empty() {
+            return Ok(());
+        }
+
+        let stream = BStream::from_data(component.to_vec());
         let stream_ptr = stream
             .as_com_ref::<IBStream>()
             .ok_or_else(|| Vst3Error::StateError("Failed to wrap BStream".into()))?;
@@ -1035,9 +1082,32 @@ impl Vst3Loaded {
 
         // Mirror into the controller (no-op for a same-object controller that
         // already saw the state, harmless for a separate one).
-        self.push_controller_state(data);
+        self.push_controller_state(component);
+
+        if let Some(controller) = controller {
+            self.push_controller_own_state(controller);
+        }
 
         Ok(())
+    }
+
+    /// Hand the controller its own `setState` stream — the half
+    /// `setComponentState` does not cover.
+    ///
+    /// Best-effort for the same reason as
+    /// [`read_controller_state`](Self::read_controller_state): losing the UI's
+    /// scroll position must not fail a project load whose audio state restored
+    /// perfectly.
+    fn push_controller_own_state(&self, data: &[u8]) {
+        let Some(ctrl) = self.interfaces.controller.as_ref() else {
+            return;
+        };
+        let stream = BStream::from_data(data.to_vec());
+        if let Some(stream_ref) = stream.as_com_ref::<IBStream>() {
+            unsafe {
+                let _ = ctrl.setState(stream_ref.as_ptr());
+            }
+        }
     }
 
     /// True if the plugin actually publishes an editor view.
@@ -1726,6 +1796,85 @@ fn state_result_ok(result: i32) -> bool {
     result == kResultOk || result == kNotImplemented
 }
 
+/// Magic prefixing a two-stream state blob. Chosen to be something no VST3
+/// plugin would plausibly open its own private state with, so
+/// [`unpack_state`] can tell a packed blob from a bare component stream saved
+/// before this host carried the controller's half.
+const STATE_MAGIC: &[u8; 8] = b"TUTTIVS3";
+
+/// Container version. Bump only if the layout after the magic changes; a
+/// reader that meets a version it does not know falls back to treating the
+/// whole blob as a bare component stream, which is wrong but recoverable —
+/// where mis-splitting it would hand the plugin garbage.
+const STATE_VERSION: u8 = 1;
+
+/// Pack the component and controller streams into one opaque blob.
+///
+/// Layout: magic, version, then the component length as a little-endian `u32`,
+/// then the two payloads. The controller half is whatever remains, so it needs
+/// no length of its own.
+///
+/// A plugin with no controller state at all packs to `component` alone, with
+/// no header. That keeps the common case byte-identical to what this host
+/// saved before the controller stream existed, so nothing re-saves a project
+/// merely for having been opened.
+fn pack_state(component: &[u8], controller: &Option<Vec<u8>>) -> Vec<u8> {
+    let Some(controller) = controller.as_ref().filter(|c| !c.is_empty()) else {
+        return component.to_vec();
+    };
+
+    // A component stream too long to describe in a u32 cannot be split back
+    // apart, so keep the half a project cannot be restored without and drop
+    // the UI half. 4 GiB of component state is not a case worth a wider field.
+    let Ok(len) = u32::try_from(component.len()) else {
+        return component.to_vec();
+    };
+
+    let mut out = Vec::with_capacity(STATE_MAGIC.len() + 5 + component.len() + controller.len());
+    out.extend_from_slice(STATE_MAGIC);
+    out.push(STATE_VERSION);
+    out.extend_from_slice(&len.to_le_bytes());
+    out.extend_from_slice(component);
+    out.extend_from_slice(controller);
+    out
+}
+
+/// Split a blob back into its component and controller halves.
+///
+/// Anything not carrying [`STATE_MAGIC`] is a bare component stream — either
+/// saved by an older build of this host, or packed by [`pack_state`] for a
+/// plugin with no controller state. Both restore correctly by handing the
+/// whole blob to the component, which is what this host has always done.
+///
+/// A blob that starts with the magic but is then malformed (unknown version,
+/// truncated, a length past the end) is treated the same way. That cannot
+/// restore the controller half, but the alternative — splitting at a length we
+/// have reason to distrust — hands the *component* a corrupt stream, and the
+/// component half is the one a project cannot be restored without.
+fn unpack_state(data: &[u8]) -> (&[u8], Option<&[u8]>) {
+    let Some(rest) = data.strip_prefix(STATE_MAGIC.as_slice()) else {
+        return (data, None);
+    };
+    let Some((&version, rest)) = rest.split_first() else {
+        return (data, None);
+    };
+    if version != STATE_VERSION {
+        return (data, None);
+    }
+    if rest.len() < 4 {
+        return (data, None);
+    }
+    let (len_bytes, payload) = rest.split_at(4);
+    let len =
+        u32::from_le_bytes(len_bytes.try_into().expect("split_at(4) yields 4 bytes")) as usize;
+    if len > payload.len() {
+        return (data, None);
+    }
+
+    let (component, controller) = payload.split_at(len);
+    (component, (!controller.is_empty()).then_some(controller))
+}
+
 /// Tear a view down: retract the host frame, then tell the view it is removed.
 ///
 /// The order is the point, and it matches `editorhost`'s `closePlugView`. The
@@ -1984,6 +2133,112 @@ mod char8_fill_tests {
         let mut buf = [9i8; 64];
         fill_char8_64(&mut buf, "");
         assert_eq!(buf[0], 0);
+    }
+}
+
+#[cfg(test)]
+mod state_container_tests {
+    use super::{pack_state, unpack_state, STATE_MAGIC, STATE_VERSION};
+
+    /// Both halves survive the round trip, split back at the right byte.
+    #[test]
+    fn both_halves_survive_a_round_trip() {
+        let component = b"component-private-bytes".as_slice();
+        let controller = b"scroll=42;tab=2".to_vec();
+
+        let packed = pack_state(component, &Some(controller.clone()));
+        let (got_component, got_controller) = unpack_state(&packed);
+
+        assert_eq!(got_component, component);
+        assert_eq!(got_controller, Some(controller.as_slice()));
+    }
+
+    /// A blob saved before this host carried the controller's stream is a bare
+    /// component blob with no header. It must still restore, or every existing
+    /// project loses its plugin state.
+    ///
+    /// The fixture is binary rather than text, and its leading bytes are chosen
+    /// to parse as a *valid* header if the magic check were skipped: a version
+    /// byte, then a little-endian length well inside the blob. A plugin's
+    /// private state is binary, so opening on such bytes is ordinary rather
+    /// than contrived — and a reader that trusted them would hand the component
+    /// the first three bytes of a twenty-byte stream and call the rest UI state.
+    #[test]
+    fn a_bare_component_blob_still_restores() {
+        let mut legacy = vec![STATE_VERSION];
+        legacy.extend_from_slice(&3u32.to_le_bytes());
+        legacy.extend_from_slice(b"abcdefghijklmno");
+
+        let (component, controller) = unpack_state(&legacy);
+        assert_eq!(component, legacy.as_slice());
+        assert_eq!(controller, None);
+    }
+
+    /// A plugin with no controller state packs to exactly the component bytes,
+    /// so a project does not churn on disk merely for being opened by a build
+    /// that knows about the second stream.
+    #[test]
+    fn no_controller_state_packs_to_the_bare_component_bytes() {
+        let component = b"component-only".as_slice();
+        assert_eq!(pack_state(component, &None), component);
+        assert_eq!(pack_state(component, &Some(Vec::new())), component);
+    }
+
+    /// A component half whose own bytes begin with the magic must not be
+    /// mistaken for a container when it is handed back unpacked.
+    #[test]
+    fn a_component_blob_starting_with_the_magic_round_trips() {
+        let mut component = STATE_MAGIC.to_vec();
+        component.extend_from_slice(b"...plugin's own bytes");
+        let controller = b"ui".to_vec();
+
+        let packed = pack_state(&component, &Some(controller.clone()));
+        let (got_component, got_controller) = unpack_state(&packed);
+
+        assert_eq!(got_component, component);
+        assert_eq!(got_controller, Some(controller.as_slice()));
+    }
+
+    /// A truncated or otherwise malformed container degrades to "all of it is
+    /// component state" rather than splitting at a length it cannot trust.
+    /// Restoring the component half wrongly is worse than losing the UI half.
+    #[test]
+    fn a_malformed_container_falls_back_to_the_whole_blob() {
+        let mut truncated = STATE_MAGIC.to_vec();
+        truncated.push(STATE_VERSION);
+        truncated.extend_from_slice(&[0u8, 1]); // a 2-byte length field, not 4
+        assert_eq!(unpack_state(&truncated), (truncated.as_slice(), None));
+
+        let mut past_the_end = STATE_MAGIC.to_vec();
+        past_the_end.push(STATE_VERSION);
+        past_the_end.extend_from_slice(&99u32.to_le_bytes());
+        past_the_end.extend_from_slice(b"short");
+        assert_eq!(unpack_state(&past_the_end), (past_the_end.as_slice(), None));
+
+        let mut unknown_version = STATE_MAGIC.to_vec();
+        unknown_version.push(STATE_VERSION.wrapping_add(1));
+        unknown_version.extend_from_slice(&0u32.to_le_bytes());
+        assert_eq!(
+            unpack_state(&unknown_version),
+            (unknown_version.as_slice(), None)
+        );
+    }
+
+    /// An empty controller half is spelled `None`, never `Some(&[])`, so a
+    /// caller cannot hand a plugin a zero-length `setState` stream that means
+    /// nothing.
+    #[test]
+    fn an_empty_controller_half_reads_back_as_absent() {
+        let packed = pack_state(b"component", &Some(b"x".to_vec()));
+        let (_, controller) = unpack_state(&packed);
+        assert_eq!(controller, Some(b"x".as_slice()));
+
+        // Built by hand: a container claiming the whole payload is component.
+        let mut zero_tail = STATE_MAGIC.to_vec();
+        zero_tail.push(STATE_VERSION);
+        zero_tail.extend_from_slice(&9u32.to_le_bytes());
+        zero_tail.extend_from_slice(b"component");
+        assert_eq!(unpack_state(&zero_tail), (b"component".as_slice(), None));
     }
 }
 

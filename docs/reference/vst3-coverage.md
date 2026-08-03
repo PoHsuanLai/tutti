@@ -97,7 +97,7 @@ go to the header.
 
 ## Fixed so far
 
-Eight of the sixteen upheld findings are fixed, each mutation-verified:
+Ten of the sixteen upheld findings are fixed, each mutation-verified:
 
 | Finding | Observable it needed |
 |---|---|
@@ -110,11 +110,21 @@ Eight of the sixteen upheld findings are fixed, each mutation-verified:
 | Half-refused `connect` left dangling | connect-balance counter — the SDK keeps only the current pointer |
 | `version` hardcoded `"1.0.0"` | real corpus versions (`5.0.6`, `3.8.0.0`) |
 | 6 of 12 `RestartFlags` dropped | whole-mapping test, so a 13th flag cannot join them |
+| Controller state never persisted | probe parameter reachable *only* via the controller's own stream |
 
-The pattern is worth stating plainly: **in seven of nine cases the bug was unobservable
+The pattern is worth stating plainly: **in eight of ten cases the bug was unobservable
 with the tests that existed**, and the work was building something that could see it —
-not writing the fix. Twice the first attempt at a test passed against the unfixed code
-and had to be thrown away.
+not writing the fix. Three times the first attempt at a test passed against the unfixed
+code and had to be thrown away.
+
+The third of those is the sharpest. The controller-state fix needed a *legacy* blob —
+one saved before the container existed — to still restore. The obvious fixture,
+`b"saved-by-an-older-build"`, passed against a build with the compatibility check
+deleted: its first byte is `'s'`, which fails the version check by luck rather than by
+the guard under test. Replacing it with a binary blob whose leading bytes parse as a
+*valid* header killed the mutation immediately — the component then received 3 bytes of
+a 20-byte stream. A backward-compatibility fixture has to be one the broken code would
+actually mis-handle.
 
 **Event buses were never activated** — `host/instance.rs:738`. **[verified]**
 
@@ -203,7 +213,7 @@ spec interpretation being right.
 | ~~Gesture bracketing is not tracked or validated.~~ **REFUTED** — spec `:565-567` places the ordering duty on the plug-in ("*before* a performEdit", "*between* beginEdit and endEdit"). The host is the callee. Contrast `IEditControllerHostEditing` `:289-290`, where the host *is* the caller and does bracket. | `com/component_handler.rs:168-192` | — |
 | ~~`kLatencyChanged` re-reads latency without the required deactivate/reactivate.~~ **FIXED** — folded into the same cycle as `kIoChanged`, which the header specifies identically (`:137-138`); latency is re-read after reactivation. *Corrected:* it was never "surfaced and ignored" — it was consumed, just in the wrong order. | `loaders/vst3.rs` | **[verified]** |
 | ~~`kReloadComponent` is surfaced but no reload path exists.~~ **REFUTED** — `loaders/vst3.rs:325-333` calls `reload()`, which saves state, rebuilds, and restores. The original finding read only `host/loaded.rs`, whose doc comment says the reload is the owner's job, and never checked the owner. | `loaders/vst3.rs:264-277` | — |
-| **`IEditController::setState`/`getState` are never called** — controller-only UI state is not persisted, separately from component state. | — | [claimed] |
+| ~~`IEditController::setState`/`getState` are never called.~~ **FIXED** — `state()` now carries both streams in a magic-prefixed container, and `set_state` drives component → `setComponentState` → controller in spec order. A blob saved by an older build has no header and still restores. | `host/loaded.rs` | **[verified]** |
 | ~~Both `connect()` return values are discarded.~~ **FIXED** — the first return is checked and a failed second call unwinds the first. A refusal stays non-fatal. *Citation corrected:* `1334-1335` is `disconnect`, where discarding is harmless; the real site was `1313-1314`. | `host/loaded.rs` | **[verified]** |
 
 ### Low

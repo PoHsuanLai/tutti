@@ -13,9 +13,7 @@ use tutti_midi_types::ump::MidiEvent;
 use tutti_midi_types::tutti_types::CCNumber;
 use tutti_midi_types::{cc, MidiIn, MidiUnitId, NoteId};
 
-extern crate alloc;
-use alloc::sync::Arc;
-use alloc::vec::Vec;
+use std::sync::Arc;
 
 /// Inline capacity of [`PolySynth::finished_indices`], and therefore the hard
 /// ceiling on `max_voices` (enforced in [`PolySynth::new`]).

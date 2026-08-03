@@ -140,9 +140,7 @@ impl Clone for AutomationLane {
 
 #[cfg(test)]
 mod tests {
-    extern crate alloc;
     use super::*;
-    use alloc::vec;
     use audio_automation::{AutomationEnvelope, AutomationPoint};
     use tutti_core::BufferVec;
 

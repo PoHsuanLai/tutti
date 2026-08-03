@@ -13,13 +13,7 @@ categories = ["multimedia::audio"]
 # (which rides the plugin-load IPC reply via `BusChannels`), the meter vocabulary
 # (which round-trips through the host's document), and the unit newtypes the
 # latter is built from.
-# `serde/alloc` is not optional bookkeeping: `MeterMap`'s hand-written
-# `Deserialize` calls `Vec::<MeterChange>::deserialize`, and serde only provides
-# `Vec`'s impls under `alloc`. Without it this feature does not compile *on its
-# own* — it only appeared to, because every consumer also depends on serde with
-# `std` on and Cargo unifies the features across the graph. The first crate to
-# request `tutti-types/serde` in isolation hit it.
-serde = ["dep:serde", "serde/alloc"]
+serde = ["dep:serde"]
 # Enables `Reflect` on the unit newtypes and the param vocabulary, so a Bevy
 # component built from them can be inspected and scene-serialized. Reflection
 # only — no `Component`/`Resource` derives: an app stores a `Volume`, never a
@@ -35,7 +29,7 @@ atomic_float = { version = "1.1", default-features = false, features = ["atomic_
 # `RtPublish` — publish-to-audio-thread cell. The debt-slot strategy is what
 # keeps the read wait-free and the retired value's free on the publisher.
 arc-swap = "1.7"
-serde = { version = "1", optional = true, default-features = false, features = ["derive"] }
+serde = { version = "1", optional = true, features = ["derive"] }
 # Reflection derives only, gated on `bevy`. No `bevy_ecs` here — this crate
 # defines vocabulary, not ECS surface.
 bevy_reflect = { workspace = true, optional = true }

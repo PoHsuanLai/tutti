@@ -68,6 +68,12 @@ private:
 	/// (`BusInfo` has no active field), which is why the plugin must report it.
 	bool eventInputActive () const;
 
+	/// Bitmask of active audio buses: bit 0/1 = input bus 0/1, bit 2/3 =
+	/// output bus 0/1. Same mechanism as `eventInputActive` — `activateBus`
+	/// writes `Bus::active` in the base class's own lists, and the host has no
+	/// way to read its own decision back from `BusInfo`.
+	int32 audioBusActiveMask () const;
+
 	/// `connect` calls minus `disconnect` calls on this half. 1 means the host
 	/// left us joined to a peer; 0 means never joined, or joined and unwound.
 	int32 mConnectBalance {0};

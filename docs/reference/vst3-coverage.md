@@ -97,7 +97,7 @@ go to the header.
 
 ## Fixed so far
 
-Ten of the sixteen upheld findings are fixed, each mutation-verified:
+Eleven of the sixteen upheld findings are fixed, each mutation-verified:
 
 | Finding | Observable it needed |
 |---|---|
@@ -111,13 +111,22 @@ Ten of the sixteen upheld findings are fixed, each mutation-verified:
 | `version` hardcoded `"1.0.0"` | real corpus versions (`5.0.6`, `3.8.0.0`) |
 | 6 of 12 `RestartFlags` dropped | whole-mapping test, so a 13th flag cannot join them |
 | Controller state never persisted | probe parameter reachable *only* via the controller's own stream |
+| `kDefaultActive` never read | a probe bus-activation mask — no corpus plugin distinguishes the policies |
 
-The pattern is worth stating plainly: **in eight of ten cases the bug was unobservable
+The pattern is worth stating plainly: **in nine of eleven cases the bug was unobservable
 with the tests that existed**, and the work was building something that could see it —
-not writing the fix. Three times the first attempt at a test passed against the unfixed
-code and had to be thrown away.
+not writing the fix. Four times a test passed against the code it was meant to catch and
+had to be rewritten.
 
-The third of those is the sharpest. The controller-state fix needed a *legacy* blob —
+The `kDefaultActive` case needed the **fixture** changed, not the test. The corpus caught
+"activate everything" immediately, but the opposite error — honouring the flag strictly,
+so an unflagged main bus goes silent — passed every test, because *no plugin in the corpus
+has an unflagged main bus*. They all take `addAudioOutput`'s default. Giving the probe a
+main output with an explicit `flags = 0` created the case the real world had not supplied;
+the strict mutation then failed with mask 1 instead of 5. When no available input can
+distinguish two behaviours, the test fixture has to manufacture one.
+
+The controller-state fix hit the same wall from the other side. It needed a *legacy* blob —
 one saved before the container existed — to still restore. The obvious fixture,
 `b"saved-by-an-older-build"`, passed against a build with the compatibility check
 deleted: its first byte is `'s'`, which fails the version check by luck rather than by
@@ -170,9 +179,32 @@ solid is that the file now follows the rule its siblings document.
 `Vst3Instance::load` instead of resolving to the inner binary, so `dlopen` fails. Every
 sibling test calls `resolve_bundle` first. Pre-existing, `#[ignore]`d, not fixed here.
 
-**`BusFlags::kDefaultActive` is never read.** `types/info.rs:44` stores the flags bitfield
-and nothing consults it. Our fix activates every bus unconditionally, which is defensible
-for a host that intends to use them, but the flag exists to carry plugin preference.
+**~~`BusFlags::kDefaultActive` is never read.~~ FIXED** — `host/mod.rs::wants_activation`.
+**[verified]**
+
+**Not a conformance defect, and the original framing overstated it.** `ivstcomponent.h:54-55`
+says the flag is *"only a wish, the host is allow to not follow it, and only activate the
+first bus for example"* — activating everything was explicitly permitted. The SDK's own
+validator requires the converse to work too: `busactivation.cpp:66-71` fails any plugin
+that refuses activation of an unflagged bus. So this stops overriding a plugin's stated
+preference; it does not fix a bug.
+
+The policy is **`kMain` unconditionally, `kAux` only when flagged**. Steinberg's VST2/AU
+wrapper reaches the same split from the other direction — `basewrapper.cpp:1061-1085`
+activates every main bus without consulting the flag at all.
+
+Honouring the flag on main buses too is what `auwrapper.mm:553` does behind
+`SMTG_AUWRAPPER_ACTIVATE_ONLY_DEFAULT_ACTIVE_BUSES`, and its CMake note says why it is
+off by default: *"This may not work on some hosts because they never activate a bus
+later."* That is this host — there is no public per-bus activation API, so a bus skipped
+at load is unreachable for the instance's lifetime rather than merely inactive.
+
+Two constraints worth keeping. Bus **geometry stays on declared buses**: `SlabLayout`, the
+batcher and fundsp port arity all index positionally off declared widths, so filtering the
+scratch resolve as well would silently take a multi-out instrument from N stem ports to 2
+and shift every `connect()` in a user's graph. And a bus whose `getBusInfo` fails is
+activated anyway — that restores the old behaviour for exactly the plugins that cannot
+answer the question the policy asks.
 
 ## Memory safety — fixed
 

@@ -27,8 +27,9 @@ use tutti_types::ChannelLayout;
 use crate::com::{event_list_ptr, param_changes_ptr, EventList, ParameterChangesImpl};
 use crate::error::{LoadStage, Result, Vst3Error};
 use crate::types::{
-    to_process_context, AudioBuffer, BufferPtrs, MidiEvent, ParameterChanges, PluginInfo,
-    ProcessMode, ProcessOutputRef, TransportInfo, Vst3InputEvents, Vst3Sample,
+    to_process_context, AudioBuffer, BufferPtrs, BusInfo as BusInfoWrap, MidiEvent,
+    ParameterChanges, PluginInfo, ProcessMode, ProcessOutputRef, TransportInfo, Vst3InputEvents,
+    Vst3Sample,
 };
 
 use super::bus_buffers::{BusBuffers, DirectionScratch};
@@ -735,29 +736,37 @@ impl<T: Vst3Sample> Vst3Instance<T> {
         Ok(())
     }
 
+    /// Activate the buses this host wants live, per
+    /// [`wants_activation`](super::wants_activation).
+    ///
+    /// Event buses are activated on the same terms as audio ones: the spec
+    /// starts every bus inactive regardless of media type, and `activateBus`
+    /// takes the type as a parameter precisely because it is not audio-only.
+    /// Only the counts used to be read here, to decide whether the plugin
+    /// speaks MIDI at all — so a plugin that honoured the inactive default
+    /// received no events, and one that ignored it worked, which is why that
+    /// read as a plugin quirk rather than a host bug.
     fn activate_buses(&mut self) -> Result<()> {
         const K_AUDIO: i32 = super::K_AUDIO;
         let component = &self.loaded.interfaces.component;
-        unsafe {
-            for i in 0..component.getBusCount(K_AUDIO, K_INPUT) {
-                component.activateBus(K_AUDIO, K_INPUT, i, 1);
-            }
-            for i in 0..component.getBusCount(K_AUDIO, K_OUTPUT) {
-                component.activateBus(K_AUDIO, K_OUTPUT, i, 1);
-            }
-            // Event buses need activating on the same terms as audio ones: the
-            // spec starts every bus inactive regardless of media type, and
-            // `activateBus` takes the type as a parameter precisely because it
-            // is not audio-only. Only the counts were being read here, to
-            // decide whether the plugin speaks MIDI at all — so a plugin that
-            // honours the inactive default received no events, and one that
-            // ignores it worked, which is why this reads as a plugin quirk
-            // rather than a host bug.
-            for i in 0..component.getBusCount(K_EVENT, K_INPUT) {
-                component.activateBus(K_EVENT, K_INPUT, i, 1);
-            }
-            for i in 0..component.getBusCount(K_EVENT, K_OUTPUT) {
-                component.activateBus(K_EVENT, K_OUTPUT, i, 1);
+        for (media, direction) in [
+            (K_AUDIO, K_INPUT),
+            (K_AUDIO, K_OUTPUT),
+            (K_EVENT, K_INPUT),
+            (K_EVENT, K_OUTPUT),
+        ] {
+            for i in 0..unsafe { component.getBusCount(media, direction) } {
+                let mut bus = BusInfoWrap::default();
+                let read = unsafe { component.getBusInfo(media, direction, i, bus.as_mut_inner()) };
+                // A bus whose info cannot be read is activated anyway. That
+                // restores the pre-policy behaviour for exactly the plugins
+                // that cannot answer the question the policy asks, rather than
+                // silently dropping a bus over a failed query.
+                let wants =
+                    read != kResultOk || super::wants_activation(bus.bus_type(), bus.flags());
+                if wants {
+                    unsafe { component.activateBus(media, direction, i, 1) };
+                }
             }
         }
 

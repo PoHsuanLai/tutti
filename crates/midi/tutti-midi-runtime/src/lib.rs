@@ -49,7 +49,7 @@ pub use jr_timestamp::{
     JR_CLOCK_MAX_INTERVAL,
 };
 pub use port::MidiInPort;
-pub use pre_block::{BlockClock, MidiPreBlock};
+pub use pre_block::{BlockClock, MidiPreBlock, MpeModeRequest};
 pub use registry::{MidiBus, MidiMailbox, MidiReceiver, MidiSender};
 pub use routing_table::MidiRoutingTable;
 pub use snapshot::{MidiSnapshot, TimedMidiEvent};

@@ -160,6 +160,10 @@ pub fn build_into(plugin: &crate::TuttiPlugin, app: &mut App) -> Result<()> {
             .map(|c| c.0)
             .unwrap_or(tutti_midi_io::MpeMode::Disabled);
         pre_block.set_mpe_ingest(tutti_midi_runtime::MpeIngest::new(mpe_mode));
+        // The live handle, so MPE stays configurable after build rather than
+        // being fixed here. `MpeModeConfig` above is the *seed*; a host that
+        // stores zone setup in a document overwrites it through this.
+        app.insert_resource(crate::midi::MpeModeHandle(pre_block.mpe_mode_handle()));
 
         // Hardware MIDI input only exists under `midi-hardware`.
         #[cfg(feature = "midi-hardware")]

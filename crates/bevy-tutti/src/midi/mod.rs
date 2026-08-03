@@ -105,7 +105,7 @@ pub mod test_support {
     }
 }
 
-pub use bus::{MidiBusRes, MpeModeConfig};
+pub use bus::{MidiBusRes, MpeModeConfig, MpeModeHandle};
 pub use clock_out::{pump_clock_out_system, ClockMasterRes, ClockOutPlugin};
 #[cfg(all(target_os = "macos", feature = "midi-hardware"))]
 pub use hardware_out::UmpOutRes;

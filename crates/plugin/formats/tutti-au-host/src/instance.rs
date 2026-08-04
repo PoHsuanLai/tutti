@@ -468,18 +468,58 @@ impl AuInstance {
     /// Deliver a block of UMP MIDI events to an instrument / music-effect AU as
     /// legacy `MusicDeviceMIDIEvent` calls.
     ///
-    /// Each event is decoded to a 3-byte MIDI 1.0 channel-voice message (status
+    /// Each channel-voice event is decoded to a 3-byte MIDI 1.0 message (status
     /// byte + up to two data bytes, MIDI 2.0 resolutions scaled down per spec)
-    /// and delivered at its `frame_offset`. Message families with no legacy
-    /// 3-byte form (SysEx, per-note MIDI 2.0 messages, system real-time) are
-    /// skipped — AUv2's `MusicDeviceMIDIEvent` only speaks legacy channel voice.
+    /// and delivered at its `frame_offset` through `MusicDeviceMIDIEvent`.
+    ///
+    /// **SysEx goes out through `MusicDeviceSysEx`** (`MusicDevice.h:237-241`),
+    /// a separate entry point that takes a byte buffer rather than a packed
+    /// 3-byte word — there is no way to express a patch dump through
+    /// `MusicDeviceMIDIEvent`, which is why AU provides two calls. UMP carries
+    /// SysEx7 in 6-byte packets, so a message spanning several is reassembled
+    /// here before being sent as one buffer.
+    ///
+    /// Families with genuinely no AUv2 form (per-note MIDI 2.0 messages, UMP
+    /// stream and utility messages) are still skipped.
     ///
     /// Only meaningful for AUs whose type [`AuType::receives_midi`] is true;
     /// the caller gates on that. Errors from individual events are ignored so a
     /// single rejected message can't abort the whole block.
     pub fn send_midi(&self, events: &[MidiEvent]) {
+        // Reassembly state for a SysEx7 run spanning several UMP packets.
+        // Local to the call: a message is not carried across blocks, because a
+        // run left open at a block boundary has no defined resumption point in
+        // this host's delivery model and a stale prefix would corrupt the next
+        // message.
+        let mut sysex_buf: Vec<u8> = Vec::new();
+        let mut sysex_active = false;
         use tutti_midi_types::convert::{midi2_cc_to_midi1, midi2_pitch_bend_to_midi1};
+        use tutti_midi_types::ump::{
+            SYSEX7_STATUS_CONTINUE, SYSEX7_STATUS_END, SYSEX7_STATUS_SINGLE, SYSEX7_STATUS_START,
+        };
         use tutti_midi_types::MidiMessage;
+
+        /// Hand a complete SysEx message to the AU.
+        ///
+        /// `MusicDeviceSysEx` (`MusicDevice.h:237-241`) takes the bytes
+        /// *without* a frame offset — AUv2 has no way to schedule a SysEx
+        /// within a block, so it lands at the start of the current render
+        /// regardless of when it was stamped. That is the format's limit, not
+        /// a shortcut here.
+        ///
+        /// The status is ignored for the same reason every other call on this
+        /// path ignores one: a single rejected message must not abort the rest
+        /// of the block.
+        fn send_sysex(unit: AudioUnit, bytes: &[u8]) {
+            if bytes.is_empty() {
+                return;
+            }
+            // SAFETY: `unit` is live for the caller's lifetime; `bytes` is a
+            // valid slice read only for the duration of the call.
+            unsafe {
+                MusicDeviceSysEx(unit as _, bytes.as_ptr(), bytes.len() as u32);
+            }
+        }
 
         let unit = self.raw_unit();
         for ev in events {
@@ -533,6 +573,42 @@ impl AuInstance {
                         (bend14 & 0x7F) as u8,
                         (bend14 >> 7) as u8 & 0x7F,
                     )
+                }
+                // SysEx has no 3-byte form; it goes out through a different
+                // AU entry point entirely. Reassembled across packets first —
+                // a UMP SysEx7 packet carries at most 6 bytes, so anything
+                // longer than that arrives as START/CONTINUE.../END.
+                MidiMessage::Other(_) => {
+                    if let Some((sysex_status, bytes, n)) = ev.sysex7_payload() {
+                        match sysex_status {
+                            SYSEX7_STATUS_SINGLE => {
+                                send_sysex(unit, &bytes[..n]);
+                            }
+                            SYSEX7_STATUS_START => {
+                                sysex_buf.clear();
+                                sysex_buf.extend_from_slice(&bytes[..n]);
+                                sysex_active = true;
+                            }
+                            SYSEX7_STATUS_CONTINUE => {
+                                // A CONTINUE with no START is a stream this
+                                // host joined mid-message. Dropping it beats
+                                // sending the AU a fragment with no 0xF0.
+                                if sysex_active {
+                                    sysex_buf.extend_from_slice(&bytes[..n]);
+                                }
+                            }
+                            SYSEX7_STATUS_END => {
+                                if sysex_active {
+                                    sysex_buf.extend_from_slice(&bytes[..n]);
+                                    send_sysex(unit, &sysex_buf);
+                                    sysex_buf.clear();
+                                    sysex_active = false;
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    continue;
                 }
                 _ => continue,
             };

@@ -61,7 +61,19 @@ impl PluginEditor for AuGuiInstance {
     fn open_editor(&mut self, parent: WindowHandle) -> Result<EditorSize> {
         let parent_handle = unsafe { tutti_au_host::WindowHandle::from_raw(parent.as_ptr()) };
         let editor =
-            unsafe { tutti_au_host::AuEditor::open(self.inner.raw_unit(), Some(parent_handle)) }
+            // No size to offer here either: this entry point receives a
+            // parent handle and nothing else. See the sibling in
+            // `tutti-plugin-server`.
+            unsafe {
+                tutti_au_host::AuEditor::open(
+                    self.inner.raw_unit(),
+                    Some(parent_handle),
+                    tutti_plugin_types::EditorSize {
+                        width: 800,
+                        height: 600,
+                    },
+                )
+            }
                 .map_err(|e| BridgeError::ProtocolError(format!("AU open_editor failed: {e}")))?;
         let size = editor.editor_size();
         self.editor = Some(editor);

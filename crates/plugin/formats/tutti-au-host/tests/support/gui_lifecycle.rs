@@ -59,7 +59,14 @@ const BLOCK: u32 = 512;
 /// macOS main thread — which is the whole point of the `harness = false`
 /// runner.
 unsafe fn open_headless(au: &AuInstance) -> tutti_au_host::Result<AuEditor> {
-    AuEditor::open(au.raw_unit(), None)
+    // The size the host would like; a plugin is free to ignore it. 800×600 is
+    // what this crate hardcoded before the parameter existed, kept here so
+    // these tests exercise the same request they always did.
+    let preferred = tutti_plugin_types::EditorSize {
+        width: 800,
+        height: 600,
+    };
+    AuEditor::open(au.raw_unit(), None, preferred)
 }
 
 /// Instantiate and initialize `unit`, panicking with its label on failure.

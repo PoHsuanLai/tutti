@@ -880,7 +880,7 @@ as MIDI-silent, dropping its output. `effSetSpeakerArrangement`(42) never sent.
 
 ## E. AU
 
-### E-1 · AUv3-only units are unreachable, and the flag that says so is discarded · TODO
+### E-1 · AUv3-only units are unreachable, and the flag that says so is discarded · DONE (reported, not routed)
 
 `src/component.rs:180` reads `componentFlags` into `comp_desc`;
 `AuComponentInfo` (`:106-123`) drops the field. `src/handle.rs:44-45` then always
@@ -899,6 +899,22 @@ the case, so the user gets a bare "cannot do in current context"
 (`src/error.rs:240`). Related: `kAudioUnitProperty_RequestViewController` (56,
 the v3 editor path) is absent from `src/`, so even a successfully instantiated
 v3 unit has no editor route.
+
+**Fixed as far as this host can go.** `AuComponentInfo` now carries
+`componentFlags` with `requires_async_instantiation()` / `is_v3()` accessors,
+and `AuHandle::new` refuses a flagged component *before* calling
+`AudioComponentInstanceNew`, with a named `AuError::RequiresAsyncInstantiation`.
+
+**Not routed** — implementing `AudioComponentInstantiate` is a different piece
+of work: it is asynchronous with a completion handler on an arbitrary thread,
+and the header warns that blocking the main thread waiting for it deadlocks. So
+this closes the *reporting* half of the finding (a caller can now tell "this
+host cannot load that" from "that failed"), and leaves loading v3-with-view
+units open.
+
+The corpus reproduces the audit's measurement exactly: **138 components, 5 v3,
+5 async-only** — so the refusal test exercises all five rather than taking an
+empty-set early return.
 
 ### E-2 · Offline bounce renders in realtime · DONE — superseded by A-2
 
@@ -1049,7 +1065,7 @@ property does not, a dropped listener stops receiving);
 `tutti-plugin-server`'s `plugin.rs` owns *"the host passed it on"* (the flag
 becomes an `AsyncEvent`, and `loaded()` and the event agree).
 
-### E-6 · Cocoa editor: hardcoded preferred size, and a leak on the error path · TODO
+### E-6 · Cocoa editor: hardcoded preferred size, and a leak on the error path · DONE (size); leak REFUTED
 
 `editor/cocoa.rs:97-101` hardcodes `NSSize { 800.0, 600.0 }` as
 `inPreferredSize` (`AUCocoaUIView.h:47-48`), so every AU editor opens at 800×600
@@ -1061,7 +1077,27 @@ check at `:89` **without** the `release` the success path does at `:123`.
 
 Teardown ordering itself is correct (`editor/mod.rs:87-96`) — no gap there.
 
-### E-7 · SysEx is dropped; `MusicDeviceSysEx` is absent · TODO
+**Size fixed; the leak claim does not survive re-reading the code.**
+
+`AuEditor::open` now takes a `preferred: EditorSize` threaded to
+`uiViewForAudioUnit:withSize:`. It is a *hint* — `AUCocoaUIView.h:47-48` calls
+it `inPreferredSize` — so the caller still reads the real frame back rather than
+assuming the request was honoured.
+
+The leak is **refuted**. Two paths were named and neither leaks:
+`instantiate_factory`'s null check follows a failed `init`, and ObjC convention
+is that a failing `init` releases the receiver, so there is nothing left to
+release. `make_view` sends `release` *before* its null check, so the error path
+releases too. The line numbers in the finding predate a layout that has since
+changed.
+
+Both real callers pass 800×600 because `PluginEditorHost::open_editor` carries
+only a parent handle — there is no size at that layer to forward. Making one
+available is a change to that trait's signature, i.e. a separate piece of work;
+the constant is now a stated default at a call site rather than buried in the
+Cocoa code.
+
+### E-7 · SysEx is dropped; `MusicDeviceSysEx` is absent · DONE
 
 Explicitly **not** a deprecation finding: `MusicDeviceMIDIEvent`
 (`MusicDevice.h:212-218`) carries no `API_DEPRECATED`, so our use of it is
@@ -1076,6 +1112,35 @@ The MIDI-2.0 downscale on the same path is a *recorded* deferral
 (`identity.rs:51-61` explains why `kAudioUnitProperty_HostMIDIProtocol` is not
 negotiated), not an oversight — noted only because it costs per-note controllers
 and 32-bit velocity on v3 instruments.
+
+**Fixed.** `send_midi` reassembles SysEx7 across UMP packets (a packet carries
+at most 6 bytes, so anything longer arrives START/CONTINUE.../END) and sends
+complete messages through `MusicDeviceSysEx`. An orphaned `CONTINUE` — this host
+joining a stream mid-message — is dropped rather than handed over as a fragment
+with no header.
+
+Reassembly state is per-call, not carried across blocks: a run left open at a
+block boundary has no defined resumption point in this delivery model, and a
+stale prefix would corrupt the next message.
+
+Two things the tests found that are worth keeping:
+
+- **`DLSMusicDevice` traps (SIGTRAP) inside `MusicDeviceSysEx`** and never
+  returns, taking the process down. `AUSampler` accepts the identical call and
+  returns `noErr`. Reproduced with DLS alone, with the corpus lock held, on the
+  first call, with and without `0xF0`/`0xF7` framing. It is excluded from the
+  suite rather than worked around in `send_midi`: nothing in an AU's properties
+  says "my SysEx entry point aborts", and suppressing SysEx for every instrument
+  to dodge one broken unit would deny it to the ones that work. Surviving
+  arbitrary AUs is what the plugin-server's process isolation is for.
+- **The delivery tests cannot fail.** Deleting the `send_sysex` call leaves all
+  four green, because an AU has no channel to report receipt on. Stated in the
+  module rather than left implied; what *is* pinned is the packet arithmetic.
+
+The inbound test `sysex_is_dropped_without_derailing_the_rest` was justified as
+*symmetry* with the outbound drop. That justification is now void and was never
+the real reason — inbound drops SysEx because `from_midi1_bytes` would have to
+allocate on the CoreMIDI read thread. Its doc comment is corrected.
 
 ### E-8 · Three properties worth having · HELD
 

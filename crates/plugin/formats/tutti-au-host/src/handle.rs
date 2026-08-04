@@ -39,20 +39,37 @@ impl AuHandle {
             return Err(AuError::NullComponent);
         }
 
-        let mut instance: AudioComponentInstance = std::ptr::null_mut();
-        check(
-            "AudioComponentInstanceNew",
-            AudioComponentInstanceNew(component, &mut instance),
-        )?;
-
         // The component came from `AudioComponentFindNext`, so describing it
         // must not fail. Swallowing a failure here would silently misclassify
         // the AU as `Unknown(0)`, breaking MIDI routing / type-gated behavior
         // downstream — surface it as an error instead.
+        //
+        // Read *before* instantiating, because the flags say whether this entry
+        // point can instantiate at all.
         let mut desc = AudioComponentDescription::default();
         check(
             "AudioComponentGetDescription",
             AudioComponentGetDescription(component, &mut desc),
+        )?;
+
+        // `AudioComponent.h:498-502`: `AudioComponentInstantiate` "must be used
+        // to instantiate any component with
+        // kAudioComponentFlag_RequiresAsyncInstantiation set". The system sets
+        // that flag for v3 audio units with views.
+        //
+        // Refusing here rather than letting the call fail turns
+        // `kAudioUnitErr_CannotDoInCurrentContext` (-10863) — which reads like
+        // a transient condition worth retrying — into a statement about the
+        // component. Measured on macOS 15.6: of 138 installed components, 5 set
+        // the flag and all 5 return -10863 from the synchronous call.
+        if desc.componentFlags & K_AUDIO_COMPONENT_FLAG_REQUIRES_ASYNC_INSTANTIATION != 0 {
+            return Err(AuError::RequiresAsyncInstantiation);
+        }
+
+        let mut instance: AudioComponentInstance = std::ptr::null_mut();
+        check(
+            "AudioComponentInstanceNew",
+            AudioComponentInstanceNew(component, &mut instance),
         )?;
         let au_type = AuType::from_raw(desc.componentType);
 

@@ -179,10 +179,9 @@ fn a_latency_change_reaches_a_watching_host() {
     // The value the host would read on notification must be the new one, not the
     // one that caused it — a notification posted before the write lands would
     // make every re-read report the stale figure and look like nothing changed.
-    let latency = w
-        .au
-        .get_latency()
-        .expect("the probe answers kAudioUnitProperty_Latency");
+    let latency =
+        w.au.get_latency()
+            .expect("the probe answers kAudioUnitProperty_Latency");
     assert_eq!(
         latency,
         Samples(512),
@@ -213,10 +212,9 @@ fn a_tail_change_reaches_a_watching_host_under_its_own_id() {
         "a tail change must not be reported as a latency change; got {delivered:?}"
     );
 
-    let seconds = w
-        .au
-        .get_tail_time()
-        .expect("the probe answers kAudioUnitProperty_TailTime");
+    let seconds =
+        w.au.get_tail_time()
+            .expect("the probe answers kAudioUnitProperty_TailTime");
     // `Seconds` is `f32` while the AU property is `Float64`, so the comparison
     // is in `f32` with a tolerance rather than exact: the narrowing is the
     // host's documented stopping point for the unit types, not an error here.

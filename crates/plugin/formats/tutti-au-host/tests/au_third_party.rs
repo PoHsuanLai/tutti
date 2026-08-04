@@ -1558,9 +1558,19 @@ fn a_juce_cocoa_view_opens_at_its_own_geometry() {
     );
 
     // SAFETY: on the main thread (checked above), and `au` is live and
-    // initialized. `open(unit, None)` instantiates the view without parenting it.
-    let mut editor =
-        unsafe { tutti_au_host::AuEditor::open(au.raw_unit(), None) }.unwrap_or_else(|e| {
+    // initialized. `open(unit, None, ..)` instantiates the view without
+    // parenting it.
+    //
+    // The preferred size is deliberately *not* the geometry asserted below:
+    // this unit reports its own measured size regardless of what the host
+    // asked for, which is exactly what makes the assertion about the plugin
+    // rather than about the request.
+    let preferred = tutti_plugin_types::EditorSize {
+        width: 800,
+        height: 600,
+    };
+    let mut editor = unsafe { tutti_au_host::AuEditor::open(au.raw_unit(), None, preferred) }
+        .unwrap_or_else(|e| {
             panic!(
                 "{}: opening a JUCE Cocoa view failed: {e:?}. This is what an \
                  objc2 encoding-check rejection looks like — verify the \

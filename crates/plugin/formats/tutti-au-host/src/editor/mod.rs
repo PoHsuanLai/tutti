@@ -41,6 +41,13 @@ impl AuEditor {
     /// the caller's parent `NSView`. Pass `None` to instantiate the view
     /// without attaching it to a parent hierarchy.
     ///
+    /// `preferred` is the size the host would like, passed to the factory as
+    /// `inPreferredSize` (`AUCocoaUIView.h:47-48`). It is a *hint*: the plugin
+    /// may return a view of any size, so read the actual frame back afterwards
+    /// rather than assuming the request was honoured. This used to be
+    /// hardcoded to 800×600, so every AU editor was told the host wanted that
+    /// whatever window it was about to live in.
+    ///
     /// # Safety
     /// `unit` must be a valid, initialized `AudioUnit`. If `parent` is
     /// `Some`, its underlying pointer must be a valid `NSView*` owned by
@@ -49,9 +56,13 @@ impl AuEditor {
     /// # Errors
     /// Returns [`crate::error::AuError::InvalidBuffer`] if the AU does not
     /// advertise a Cocoa view bundle or the view factory fails to load.
-    pub unsafe fn open(unit: AudioUnit, parent: Option<WindowHandle>) -> Result<Self> {
+    pub unsafe fn open(
+        unit: AudioUnit,
+        parent: Option<WindowHandle>,
+        preferred: EditorSize,
+    ) -> Result<Self> {
         tutti_plugin_types::assert_main_thread();
-        let view = cocoa::create_view(unit)?;
+        let view = cocoa::create_view(unit, preferred)?;
 
         if let Some(handle) = parent {
             let parent_obj = handle.as_ptr() as *mut AnyObject;

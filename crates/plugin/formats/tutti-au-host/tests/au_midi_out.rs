@@ -924,13 +924,18 @@ fn system_common_clears_running_status() {
     assert_eq!(split[1], (0, vec![0xF6]));
 }
 
-/// SysEx is dropped, and the messages around it survive.
+/// SysEx is dropped on the **inbound** path, and the messages around it survive.
 ///
-/// Deliberate and symmetric: `MidiEvent::from_midi1_bytes` has no single-message
-/// SysEx form (UMP requires fragmenting, which allocates — forbidden on this
-/// thread), and `send_midi` skips SysEx in the other direction too. The two
-/// directions agree, which is what keeps a round trip from silently changing the
-/// stream.
+/// `MidiEvent::from_midi1_bytes` has no single-message SysEx form: UMP requires
+/// fragmenting into 6-byte packets, which allocates, and this runs on the
+/// CoreMIDI read thread where that is forbidden.
+///
+/// This used to be justified as *symmetry* — "`send_midi` skips SysEx in the
+/// other direction too". That is no longer true and was never the reason: the
+/// outbound path now reassembles SysEx7 and sends it through
+/// `MusicDeviceSysEx`, because nothing there is allocation-constrained. The two
+/// directions differ because their constraints differ, not because dropping was
+/// the intended behaviour.
 #[test]
 fn sysex_is_dropped_without_derailing_the_rest() {
     let list =

@@ -848,8 +848,17 @@ impl PluginParams for AuInstance {
 impl PluginEditorHost for AuInstance {
     fn open_editor(&mut self, parent: WindowHandle) -> PluginResult<EditorSize> {
         let parent_handle = unsafe { tutti_au_host::WindowHandle::from_raw(parent.as_ptr()) };
-        let editor = unsafe { AuEditor::open(self.inner.raw_unit(), Some(parent_handle)) }
-            .map_err(|e| BridgeError::EditorError(e.to_string()))?;
+        // No size to offer: `PluginEditorHost::open_editor` carries only a
+        // parent handle, so the host has not told this layer how big the
+        // window is. 800×600 is the request; the plugin is free to ignore it,
+        // and `editor_size()` below reads back what it actually made.
+        let preferred = EditorSize {
+            width: 800,
+            height: 600,
+        };
+        let editor =
+            unsafe { AuEditor::open(self.inner.raw_unit(), Some(parent_handle), preferred) }
+                .map_err(|e| BridgeError::EditorError(e.to_string()))?;
         let size = editor.editor_size();
         self.editor = Some(editor);
         Ok(EditorSize {

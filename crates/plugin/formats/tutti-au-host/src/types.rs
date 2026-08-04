@@ -50,7 +50,7 @@ pub use sys::{
     AudioComponentGetDescription, AudioComponentInstanceDispose, AudioComponentInstanceNew,
     AudioUnitGetParameter, AudioUnitGetProperty, AudioUnitGetPropertyInfo, AudioUnitInitialize,
     AudioUnitRender, AudioUnitReset, AudioUnitSetParameter, AudioUnitSetProperty,
-    AudioUnitUninitialize, MusicDeviceMIDIEvent,
+    AudioUnitUninitialize, MusicDeviceMIDIEvent, MusicDeviceSysEx,
 };
 
 // The *push* render entry points, used only by `crate::offline`.
@@ -82,6 +82,24 @@ pub const NO_ERR: OSStatus = sys::noErr as OSStatus;
 
 // AU error codes — aliases onto the bindgen `kAudioUnitErr_*` values so
 // `error.rs`'s match arms keep reading in the crate's SCREAMING_CASE style.
+/// `kAudioComponentFlag_RequiresAsyncInstantiation` — the component can only be
+/// created through `AudioComponentInstantiate`.
+///
+/// `AudioComponent.h:200-201`: the system sets this automatically "when
+/// registering components which require asynchronous instantiation ... (v3
+/// audio units with views)", and `:498-502` says `AudioComponentInstantiate`
+/// "must be used" for them.
+pub const K_AUDIO_COMPONENT_FLAG_REQUIRES_ASYNC_INSTANTIATION: u32 =
+    sys::kAudioComponentFlag_RequiresAsyncInstantiation;
+
+/// `kAudioComponentFlag_IsV3AudioUnit` — set by the system when registering a
+/// version 3 Audio Unit.
+///
+/// Distinct from the async flag: a v3 unit *without* a view is v3 and may still
+/// be created synchronously, so this reports what the component is while the
+/// async flag reports how it must be built.
+pub const K_AUDIO_COMPONENT_FLAG_IS_V3_AUDIO_UNIT: u32 = sys::kAudioComponentFlag_IsV3AudioUnit;
+
 pub const K_AUDIO_UNIT_ERR_INVALID_PROPERTY: OSStatus = sys::kAudioUnitErr_InvalidProperty;
 pub const K_AUDIO_UNIT_ERR_INVALID_PARAMETER: OSStatus = sys::kAudioUnitErr_InvalidParameter;
 pub const K_AUDIO_UNIT_ERR_INVALID_ELEMENT: OSStatus = sys::kAudioUnitErr_InvalidElement;

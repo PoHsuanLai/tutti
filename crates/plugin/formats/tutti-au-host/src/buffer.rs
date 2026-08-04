@@ -289,7 +289,11 @@ mod tests {
         );
 
         assert_eq!(scratch.position(), 0.0, "a fresh cursor starts at zero");
-        assert_eq!(scratch.advance(64), 0.0, "the first block starts at frame 0");
+        assert_eq!(
+            scratch.advance(64),
+            0.0,
+            "the first block starts at frame 0"
+        );
         assert_eq!(scratch.advance(64), 64.0, "the second starts one block on");
         assert_eq!(scratch.position(), 128.0);
 

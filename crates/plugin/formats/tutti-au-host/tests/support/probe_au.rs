@@ -1056,8 +1056,9 @@ unsafe extern "C" fn probe_remove_listener_ud(
 ) -> sys::OSStatus {
     guard(|| {
         let p = probe_of(self_);
-        p.property_listeners
-            .retain(|&(lid, lproc, lud)| !(lid == id && lproc as *mut c_void == proc_ && lud == ud));
+        p.property_listeners.retain(|&(lid, lproc, lud)| {
+            !(lid == id && lproc as *mut c_void == proc_ && lud == ud)
+        });
         0
     })
 }

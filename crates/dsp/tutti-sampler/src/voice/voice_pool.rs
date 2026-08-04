@@ -53,15 +53,17 @@ mod tests {
     /// Send an in-memory voice through the one `AddVoice` path — the test-setup
     /// mirror of the timeline's `promote_pending_clip_waves` emit.
     fn add_ram_clip(handle: &VoicePoolHandle, id: SlotId, sampler: MemorySource) {
-        handle.send(VoiceCommand::AddVoice {
-            id,
-            voice: Box::new(Voice {
-                source: VoiceSource::Memory(sampler),
-                play: Playback::default(),
-                channel_index: None,
-            }),
-            stretch: None,
-        });
+        handle
+            .send(VoiceCommand::AddVoice {
+                id,
+                voice: Box::new(Voice {
+                    source: VoiceSource::Memory(sampler),
+                    play: Playback::default(),
+                    channel_index: None,
+                }),
+                stretch: None,
+            })
+            .expect("the command queue has room in a test");
     }
 
     /// A transport seek must flush the stretch filter's buffered audio.
@@ -236,21 +238,23 @@ mod tests {
         let (mut unit, handle) = VoicePool::with_channels(Some(transport.clone()), None, 1usize);
 
         let sampler = MemorySource::with_transport(wave, transport.clone(), Beat::new(0.0), None);
-        handle.send(VoiceCommand::AddVoice {
-            id: SlotId(1),
-            voice: Box::new(Voice {
-                source: VoiceSource::Memory(sampler),
-                play: Playback {
-                    stretch: StretchFactor::new(2.0),
-                    ..Playback::default()
-                },
-                channel_index: None,
-            }),
-            // The sender materialises the filter on the control thread, as
-            // `VoicePoolHandle::send` does for a voice that arrives
-            // already needing one.
-            stretch: None,
-        });
+        handle
+            .send(VoiceCommand::AddVoice {
+                id: SlotId(1),
+                voice: Box::new(Voice {
+                    source: VoiceSource::Memory(sampler),
+                    play: Playback {
+                        stretch: StretchFactor::new(2.0),
+                        ..Playback::default()
+                    },
+                    channel_index: None,
+                }),
+                // The sender materialises the filter on the control thread, as
+                // `VoicePoolHandle::send` does for a voice that arrives
+                // already needing one.
+                stretch: None,
+            })
+            .expect("the command queue has room in a test");
 
         let mut out = [0.0f32; 1];
         unit.tick(&[], &mut out);
@@ -471,15 +475,17 @@ mod tests {
                 MemorySource::with_transport(wave, transport.clone(), Beat::new(0.0), None);
             let mut play = Playback::default();
             play.stretch = StretchFactor::new(factor);
-            handle.send(VoiceCommand::AddVoice {
-                id: SlotId(1),
-                voice: Box::new(Voice {
-                    source: VoiceSource::Memory(source),
-                    play,
-                    channel_index: None,
-                }),
-                stretch: None,
-            });
+            handle
+                .send(VoiceCommand::AddVoice {
+                    id: SlotId(1),
+                    voice: Box::new(Voice {
+                        source: VoiceSource::Memory(source),
+                        play,
+                        channel_index: None,
+                    }),
+                    stretch: None,
+                })
+                .expect("the command queue has room in a test");
 
             let ib = BufferArray::<U2>::new();
             let mut ob = BufferArray::<U2>::new();
@@ -573,15 +579,17 @@ mod tests {
 
             let mut play = Playback::default();
             play.stretch = StretchFactor::new(factor);
-            handle.send(VoiceCommand::AddVoice {
-                id: SlotId(1),
-                voice: Box::new(Voice {
-                    source: VoiceSource::Disk(voice),
-                    play,
-                    channel_index: None,
-                }),
-                stretch: None,
-            });
+            handle
+                .send(VoiceCommand::AddVoice {
+                    id: SlotId(1),
+                    voice: Box::new(Voice {
+                        source: VoiceSource::Disk(voice),
+                        play,
+                        channel_index: None,
+                    }),
+                    stretch: None,
+                })
+                .expect("the command queue has room in a test");
 
             let ib = BufferArray::<U2>::new();
             let mut ob = BufferArray::<U2>::new();
@@ -666,18 +674,20 @@ mod tests {
         let (mut unit, handle) = VoicePool::with_channels(Some(transport.clone()), None, 1usize);
 
         let sampler = MemorySource::with_transport(wave, transport.clone(), Beat::new(0.0), None);
-        handle.send(VoiceCommand::AddVoice {
-            id: SlotId(1),
-            voice: Box::new(Voice {
-                source: VoiceSource::Memory(sampler),
-                play: Playback {
-                    stretch: StretchFactor::new(2.0),
-                    ..Playback::default()
-                },
-                channel_index: None,
-            }),
-            stretch: None,
-        });
+        handle
+            .send(VoiceCommand::AddVoice {
+                id: SlotId(1),
+                voice: Box::new(Voice {
+                    source: VoiceSource::Memory(sampler),
+                    play: Playback {
+                        stretch: StretchFactor::new(2.0),
+                        ..Playback::default()
+                    },
+                    channel_index: None,
+                }),
+                stretch: None,
+            })
+            .expect("the command queue has room in a test");
 
         let mut out = [0.0f32; 1];
         // Fill the vocoder pipeline first: the opening blocks are legitimately
@@ -723,7 +733,9 @@ mod tests {
         unit.tick(&[], &mut out);
         assert!(out[0] != 0.0 || out[1] != 0.0, "voice should produce audio");
 
-        handle.send(VoiceCommand::Remove(SlotId(1)));
+        handle
+            .send(VoiceCommand::Remove(SlotId(1)))
+            .expect("the command queue has room in a test");
         unit.tick(&[], &mut out);
         assert_eq!(out[0], 0.0);
         assert_eq!(out[1], 0.0);
@@ -877,10 +889,12 @@ mod tests {
         let mut out_before = [0.0f32; 2];
         unit.tick(&[], &mut out_before);
 
-        handle.send(VoiceCommand::UpdateGain {
-            id: SlotId(1),
-            gain: Amplitude::new(0.5),
-        });
+        handle
+            .send(VoiceCommand::UpdateGain {
+                id: SlotId(1),
+                gain: Amplitude::new(0.5),
+            })
+            .expect("the command queue has room in a test");
 
         let mut out_after = [0.0f32; 2];
         unit.tick(&[], &mut out_after);
@@ -901,12 +915,14 @@ mod tests {
         unit.tick(&[], &mut out);
         assert!(!unit.voices[0].needs_stretch(), "no stretch by default");
 
-        handle.send(VoiceCommand::UpdateStretch {
-            id: SlotId(1),
-            stretch_factor: StretchFactor::new(2.0),
-            pitch_cents: Cents::new(0.0),
-            stretch: None,
-        });
+        handle
+            .send(VoiceCommand::UpdateStretch {
+                id: SlotId(1),
+                stretch_factor: StretchFactor::new(2.0),
+                pitch_cents: Cents::new(0.0),
+                stretch: None,
+            })
+            .expect("the command queue has room in a test");
         unit.tick(&[], &mut out);
         assert!(unit.voices[0].needs_stretch(), "stretch should be active");
         // The gate above is only the *intent*. Assert the filter actually arrived:
@@ -918,12 +934,14 @@ mod tests {
             "turning stretch on must deliver a processor, not just flip the gate"
         );
 
-        handle.send(VoiceCommand::UpdateStretch {
-            id: SlotId(1),
-            stretch_factor: StretchFactor::new(1.0),
-            pitch_cents: Cents::new(0.0),
-            stretch: None,
-        });
+        handle
+            .send(VoiceCommand::UpdateStretch {
+                id: SlotId(1),
+                stretch_factor: StretchFactor::new(1.0),
+                pitch_cents: Cents::new(0.0),
+                stretch: None,
+            })
+            .expect("the command queue has room in a test");
         unit.tick(&[], &mut out);
         assert!(
             !unit.voices[0].needs_stretch(),
@@ -963,12 +981,14 @@ mod tests {
 
         // Pitch-shift by an octave. `stretch_wanted` is false before this
         // (unity factor, zero cents), so no filter is resident.
-        handle.send(VoiceCommand::UpdateStretch {
-            id: SlotId(1),
-            stretch_factor: StretchFactor::new(1.0),
-            pitch_cents: Cents::new(1200.0),
-            stretch: None,
-        });
+        handle
+            .send(VoiceCommand::UpdateStretch {
+                id: SlotId(1),
+                stretch_factor: StretchFactor::new(1.0),
+                pitch_cents: Cents::new(1200.0),
+                stretch: None,
+            })
+            .expect("the command queue has room in a test");
 
         let mut shifted = Vec::new();
         for _ in 0..512 {
@@ -1016,12 +1036,14 @@ mod tests {
         unit.tick(&[], &mut out);
 
         // First update: adopted, nothing surplus.
-        handle.send(VoiceCommand::UpdateStretch {
-            id: SlotId(1),
-            stretch_factor: StretchFactor::new(2.0),
-            pitch_cents: Cents::new(0.0),
-            stretch: None,
-        });
+        handle
+            .send(VoiceCommand::UpdateStretch {
+                id: SlotId(1),
+                stretch_factor: StretchFactor::new(2.0),
+                pitch_cents: Cents::new(0.0),
+                stretch: None,
+            })
+            .expect("the command queue has room in a test");
         unit.tick(&[], &mut out);
         assert_eq!(
             handle.collect_retired(),
@@ -1030,12 +1052,14 @@ mod tests {
         );
 
         // Second update: a filter is already resident, so this one is surplus.
-        handle.send(VoiceCommand::UpdateStretch {
-            id: SlotId(1),
-            stretch_factor: StretchFactor::new(3.0),
-            pitch_cents: Cents::new(0.0),
-            stretch: None,
-        });
+        handle
+            .send(VoiceCommand::UpdateStretch {
+                id: SlotId(1),
+                stretch_factor: StretchFactor::new(3.0),
+                pitch_cents: Cents::new(0.0),
+                stretch: None,
+            })
+            .expect("the command queue has room in a test");
         unit.tick(&[], &mut out);
         assert_eq!(
             handle.collect_retired(),
@@ -1206,23 +1230,27 @@ mod tests {
         );
 
         let id = SlotId(7);
-        handle.send(VoiceCommand::AddVoice {
-            id,
-            voice: Box::new(Voice {
-                source: VoiceSource::Disk(clip_reader),
-                play: Playback::default(),
-                channel_index: None,
-            }),
-            stretch: None,
-        });
+        handle
+            .send(VoiceCommand::AddVoice {
+                id,
+                voice: Box::new(Voice {
+                    source: VoiceSource::Disk(clip_reader),
+                    play: Playback::default(),
+                    channel_index: None,
+                }),
+                stretch: None,
+            })
+            .expect("the command queue has room in a test");
 
-        handle.send(VoiceCommand::UpdateLoop {
-            id,
-            looping: true,
-            loop_start: SamplePosition::new(0.0),
-            loop_end: SamplePosition::new(64.0),
-            crossfade_frames: 0,
-        });
+        handle
+            .send(VoiceCommand::UpdateLoop {
+                id,
+                looping: true,
+                loop_start: SamplePosition::new(0.0),
+                loop_end: SamplePosition::new(64.0),
+                crossfade_frames: 0,
+            })
+            .expect("the command queue has room in a test");
 
         let mut out = [0.0f32; 2];
         unit.tick(&[], &mut out);
@@ -1446,11 +1474,13 @@ mod tests {
                 channels: ChannelLayout::from(6u16),
                 sample_rate: SampleRate::SR_44K1,
             };
-            probe.send(VoiceCommand::AddVoice {
-                id: SlotId(9),
-                voice: Box::new(mk(StretchFactor::new(2.0))),
-                stretch: None,
-            });
+            probe
+                .send(VoiceCommand::AddVoice {
+                    id: SlotId(9),
+                    voice: Box::new(mk(StretchFactor::new(2.0))),
+                    stretch: None,
+                })
+                .expect("the command queue has room in a test");
             match probe_rx.try_recv() {
                 Ok(VoiceCommand::AddVoice { stretch, .. }) => stretch,
                 other => panic!("expected a queued AddVoice, got {other:?}"),
@@ -1466,17 +1496,21 @@ mod tests {
             "the sender must build at the reader's width"
         );
 
-        handle.send(VoiceCommand::AddVoice {
-            id: SlotId(1),
-            voice: Box::new(mk(StretchFactor::new(2.0))),
-            stretch: None,
-        });
+        handle
+            .send(VoiceCommand::AddVoice {
+                id: SlotId(1),
+                voice: Box::new(mk(StretchFactor::new(2.0))),
+                stretch: None,
+            })
+            .expect("the command queue has room in a test");
         // A non-stretching voice: no filter, because none is needed.
-        handle.send(VoiceCommand::AddVoice {
-            id: SlotId(2),
-            voice: Box::new(mk(StretchFactor::new(1.0))),
-            stretch: None,
-        });
+        handle
+            .send(VoiceCommand::AddVoice {
+                id: SlotId(2),
+                voice: Box::new(mk(StretchFactor::new(1.0))),
+                stretch: None,
+            })
+            .expect("the command queue has room in a test");
 
         let mut out = [0.0f32; 6];
         unit.tick(&[], &mut out); // drains

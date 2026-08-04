@@ -185,11 +185,14 @@ mod tests {
         }
 
         let sampler = DiskStreamer::new(SR, Default::default()).unwrap();
-        sampler.commands().send(Command::Stream {
-            channel_index: 0,
-            file_path: path.clone(),
-            offset: SamplePosition(20.0 * SR),
-        });
+        sampler
+            .commands()
+            .send(Command::Stream {
+                channel_index: 0,
+                file_path: path.clone(),
+                offset: SamplePosition(20.0 * SR),
+            })
+            .expect("the butler is alive in this test");
 
         // Wait for the butler to install the link.
         let plans = sampler.butler.plans();
@@ -216,10 +219,13 @@ mod tests {
 
         // Seek backward, which is the direction a "refill forward from here"
         // implementation is most likely to drop.
-        sampler.commands().send(Command::Seek {
-            channel_index: 0,
-            file_position: SamplePosition(5.0 * SR),
-        });
+        sampler
+            .commands()
+            .send(Command::Seek {
+                channel_index: 0,
+                file_position: SamplePosition(5.0 * SR),
+            })
+            .expect("the butler is alive in this test");
 
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         loop {

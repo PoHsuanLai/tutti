@@ -25,7 +25,9 @@ pub(crate) use prefetch::SharedReader;
 pub(crate) use rt_state::RtState;
 pub(crate) use thread::ButlerThread;
 
-// The butler's public face: the handle a host holds to drive disk streaming.
+// The butler's public face: the handle a host holds to drive disk streaming,
+// and the one failure every stream-control command can report.
+pub use control::ButlerGone;
 pub use streamer::{DiskStreamer, DiskStreamerConfig};
 
 // Test-only re-exports for unit tests outside the butler module tree (e.g.

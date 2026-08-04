@@ -432,15 +432,17 @@ fn run_stretch_drain_under_guard() {
 
     let sampler =
         MemorySource::with_transport(wave.clone(), transport.clone(), Beat::new(0.0), None);
-    handle.send(VoiceCommand::AddVoice {
-        id: SlotId(1),
-        voice: Box::new(Voice {
-            source: VoiceSource::Memory(sampler),
-            play: Playback::default(),
-            channel_index: None,
-        }),
-        stretch: None,
-    });
+    handle
+        .send(VoiceCommand::AddVoice {
+            id: SlotId(1),
+            voice: Box::new(Voice {
+                source: VoiceSource::Memory(sampler),
+                play: Playback::default(),
+                channel_index: None,
+            }),
+            stretch: None,
+        })
+        .expect("the command queue has room in a test");
 
     let mut output = [0.0f32; 2];
     // Drain the Add first, outside the guard.
@@ -456,12 +458,14 @@ fn run_stretch_drain_under_guard() {
     // That makes this the interesting case rather than a trivial one: before the
     // filter was carried on the command, the drain had nothing to install and
     // this test passed by doing nothing at all.
-    handle.send(VoiceCommand::UpdateStretch {
-        id: SlotId(1),
-        stretch_factor: StretchFactor::new(2.0),
-        pitch_cents: Cents::new(0.0),
-        stretch: None,
-    });
+    handle
+        .send(VoiceCommand::UpdateStretch {
+            id: SlotId(1),
+            stretch_factor: StretchFactor::new(2.0),
+            pitch_cents: Cents::new(0.0),
+            stretch: None,
+        })
+        .expect("the command queue has room in a test");
 
     assert_no_alloc::assert_no_alloc(|| {
         unit.tick(&[], &mut output);
@@ -703,19 +707,21 @@ fn add_voice_drain_is_allocation_free_at_six_channels() {
                 ..Default::default()
             },
         );
-        handle.send(VoiceCommand::AddVoice {
-            id: SlotId(i),
-            voice: Box::new(Voice {
-                source: VoiceSource::Memory(sampler),
-                play: Playback {
-                    // Non-unity: this is the branch that needs a filter.
-                    stretch: StretchFactor::new(2.0),
-                    ..Default::default()
-                },
-                channel_index: None,
-            }),
-            stretch: None,
-        });
+        handle
+            .send(VoiceCommand::AddVoice {
+                id: SlotId(i),
+                voice: Box::new(Voice {
+                    source: VoiceSource::Memory(sampler),
+                    play: Playback {
+                        // Non-unity: this is the branch that needs a filter.
+                        stretch: StretchFactor::new(2.0),
+                        ..Default::default()
+                    },
+                    channel_index: None,
+                }),
+                stretch: None,
+            })
+            .expect("the command queue has room in a test");
     }
 
     reader.process(64, &input_vec.buffer_ref(), &mut output_vec.buffer_mut());
@@ -774,27 +780,31 @@ fn remove_voice_drain_does_not_free_on_the_audio_thread() {
                 ..Default::default()
             },
         );
-        handle.send(VoiceCommand::AddVoice {
-            id: SlotId(i),
-            voice: Box::new(Voice {
-                source: VoiceSource::Memory(sampler),
-                play: Playback {
-                    // Non-unity: this is what makes a filter resident, and the
-                    // filter is what owns the bank this test is about.
-                    stretch: StretchFactor::new(2.0),
-                    ..Default::default()
-                },
-                channel_index: None,
-            }),
-            stretch: None,
-        });
+        handle
+            .send(VoiceCommand::AddVoice {
+                id: SlotId(i),
+                voice: Box::new(Voice {
+                    source: VoiceSource::Memory(sampler),
+                    play: Playback {
+                        // Non-unity: this is what makes a filter resident, and the
+                        // filter is what owns the bank this test is about.
+                        stretch: StretchFactor::new(2.0),
+                        ..Default::default()
+                    },
+                    channel_index: None,
+                }),
+                stretch: None,
+            })
+            .expect("the command queue has room in a test");
     }
     reader.process(64, &input_vec.buffer_ref(), &mut output_vec.buffer_mut());
     assert_eq!(reader.voice_count(), 4, "adds must have drained");
 
     // Queue the removes outside, drain them inside.
     for i in 0..4u128 {
-        handle.send(VoiceCommand::Remove(SlotId(i)));
+        handle
+            .send(VoiceCommand::Remove(SlotId(i)))
+            .expect("the command queue has room in a test");
     }
     assert_no_alloc::assert_no_alloc(|| {
         reader.process(64, &input_vec.buffer_ref(), &mut output_vec.buffer_mut());
@@ -830,18 +840,20 @@ fn collect_retired_frees_the_removed_slots_on_the_control_thread() {
                 ..Default::default()
             },
         );
-        handle.send(VoiceCommand::AddVoice {
-            id: SlotId(i),
-            voice: Box::new(Voice {
-                source: VoiceSource::Memory(sampler),
-                play: Playback {
-                    stretch: StretchFactor::new(2.0),
-                    ..Default::default()
-                },
-                channel_index: None,
-            }),
-            stretch: None,
-        });
+        handle
+            .send(VoiceCommand::AddVoice {
+                id: SlotId(i),
+                voice: Box::new(Voice {
+                    source: VoiceSource::Memory(sampler),
+                    play: Playback {
+                        stretch: StretchFactor::new(2.0),
+                        ..Default::default()
+                    },
+                    channel_index: None,
+                }),
+                stretch: None,
+            })
+            .expect("the command queue has room in a test");
     }
     reader.process(64, &input_vec.buffer_ref(), &mut output_vec.buffer_mut());
     assert_eq!(reader.voice_count(), 3);
@@ -850,7 +862,9 @@ fn collect_retired_frees_the_removed_slots_on_the_control_thread() {
     assert_eq!(handle.collect_retired(), 0, "no removes have been drained");
 
     for i in 0..3u128 {
-        handle.send(VoiceCommand::Remove(SlotId(i)));
+        handle
+            .send(VoiceCommand::Remove(SlotId(i)))
+            .expect("the command queue has room in a test");
     }
     reader.process(64, &input_vec.buffer_ref(), &mut output_vec.buffer_mut());
     assert_eq!(reader.voice_count(), 0, "removes must have drained");
@@ -906,14 +920,18 @@ fn update_loop_drain_is_allocation_free_at_six_channels() {
     // Several loop changes, including the on -> off -> on cycle that must
     // reclaim and reuse the same buffer.
     for i in 0..8u64 {
-        handle.send(VoiceCommand::UpdateLoop {
-            id: SlotId(1),
-            looping: true,
-            loop_start: SamplePosition::new(i as f64 * 8.0),
-            loop_end: SamplePosition::new(i as f64 * 8.0 + 4096.0),
-            crossfade_frames: 256,
-        });
-        handle.send(VoiceCommand::ClearLoop(SlotId(1)));
+        handle
+            .send(VoiceCommand::UpdateLoop {
+                id: SlotId(1),
+                looping: true,
+                loop_start: SamplePosition::new(i as f64 * 8.0),
+                loop_end: SamplePosition::new(i as f64 * 8.0 + 4096.0),
+                crossfade_frames: 256,
+            })
+            .expect("the command queue has room in a test");
+        handle
+            .send(VoiceCommand::ClearLoop(SlotId(1)))
+            .expect("the command queue has room in a test");
     }
 
     assert_no_alloc::assert_no_alloc(|| {

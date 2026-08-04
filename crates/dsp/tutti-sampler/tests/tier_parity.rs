@@ -271,11 +271,14 @@ fn peak(frames: &[(f32, f32)]) -> f32 {
 /// which the caller turns into a failure.
 fn warm_disk_voice(streamer: &DiskStreamer, path: &Path, clock: &Arc<Clock>) -> Option<DiskVoice> {
     let status = streamer.status();
-    streamer.commands().send(Command::Stream {
-        channel_index: 0,
-        file_path: path.to_path_buf(),
-        offset: SamplePosition(0.0),
-    });
+    streamer
+        .commands()
+        .send(Command::Stream {
+            channel_index: 0,
+            file_path: path.to_path_buf(),
+            offset: SamplePosition(0.0),
+        })
+        .expect("the butler is alive in this test");
 
     // The butler registers the channel plan asynchronously; `take_disk_voice`
     // returns None until it has. Poll rather than sleep-and-hope.
@@ -485,11 +488,14 @@ fn stream_at(
     let clock = Clock::new(120.0);
     clock.seek_seconds(at_sec);
 
-    streamer.commands().send(Command::Stream {
-        channel_index: channel,
-        file_path: path.to_path_buf(),
-        offset: SamplePosition(at_sec * SR),
-    });
+    streamer
+        .commands()
+        .send(Command::Stream {
+            channel_index: channel,
+            file_path: path.to_path_buf(),
+            offset: SamplePosition(at_sec * SR),
+        })
+        .expect("the butler is alive in this test");
 
     let status = streamer.status();
     let deadline = Instant::now() + READY_TIMEOUT;
@@ -619,10 +625,13 @@ fn seeking_a_live_stream_repositions_it_in_both_directions() {
 
         let clock = Clock::new(120.0);
         clock.seek_seconds(target);
-        streamer.commands().send(Command::Seek {
-            channel_index: i,
-            file_position: SamplePosition(target * SR),
-        });
+        streamer
+            .commands()
+            .send(Command::Seek {
+                channel_index: i,
+                file_position: SamplePosition(target * SR),
+            })
+            .expect("the butler is alive in this test");
 
         let want = chirp_hz_at(target);
         let dir = if target > 20.0 { "forward" } else { "backward" };
@@ -668,10 +677,13 @@ fn a_seek_transition_does_not_clip() {
 
     let clock = Clock::new(120.0);
     clock.seek_seconds(40.0);
-    streamer.commands().send(Command::Seek {
-        channel_index: 0,
-        file_position: SamplePosition(40.0 * SR),
-    });
+    streamer
+        .commands()
+        .send(Command::Seek {
+            channel_index: 0,
+            file_position: SamplePosition(40.0 * SR),
+        })
+        .expect("the butler is alive in this test");
 
     // Capture the whole transition, including the crossfade.
     let mut transition = Vec::new();

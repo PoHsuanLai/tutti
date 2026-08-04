@@ -252,7 +252,10 @@ impl MidiPostBlock {
         let routing = self.routing.read();
         self.sink.drain_each(|event| {
             for target in routing.route(&event) {
-                queue.queue(target, std::slice::from_ref(&event));
+                // Deliberately dropped, same reason as the inbound fan-out: the
+                // audio thread has no caller to report a full destination ring
+                // to, and only the consumer draining faster can fix it.
+                let _ = queue.queue(target, std::slice::from_ref(&event));
             }
         });
     }
@@ -277,11 +280,12 @@ mod tests {
         routed: Mutex<Vec<(MidiUnitId, MidiEvent)>>,
     }
     impl MidiRouter for CapturingRouter {
-        fn queue(&self, unit_id: MidiUnitId, events: &[MidiEvent]) {
+        fn queue(&self, unit_id: MidiUnitId, events: &[MidiEvent]) -> usize {
             let mut routed = self.routed.lock().unwrap();
             for &e in events {
                 routed.push((unit_id, e));
             }
+            events.len()
         }
     }
 

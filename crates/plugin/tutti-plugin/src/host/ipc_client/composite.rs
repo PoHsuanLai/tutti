@@ -402,6 +402,12 @@ impl crate::host::handles::capabilities::HostAutomationState for SubprocessBacke
     }
 }
 
+impl crate::host::handles::capabilities::HostRenderMode for SubprocessBackend {
+    fn set_render_mode(&self, mode: crate::protocol::RenderMode) -> bool {
+        !self.bridge.is_crashed() && self.bridge.set_render_mode_rt(mode)
+    }
+}
+
 impl Drop for PluginBridge {
     fn drop(&mut self) {
         // Close the editor, then intentionally leak the GUI instance.

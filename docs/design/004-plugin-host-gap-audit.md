@@ -92,7 +92,7 @@ meaning, not friction:
   "did the plugin honour it" half is `Features::RENDER_MODE`, deliberately kept
   out of the enum.
 
-### A-1 · `ProcessContext` cannot express realtime vs offline · TODO
+### A-1 · `ProcessContext` cannot express realtime vs offline · DONE
 
 `tutti-plugin-types/src/process.rs` — `ProcessContext` carries `midi_events`,
 `param_changes`, `note_expression`, `transport`, `expressive`. There is **no
@@ -114,7 +114,12 @@ plugin silently produces its realtime result in a render the user asked to be
 exact. No error is reported.
 
 **This is the one item that must be designed before the per-format items** —
-A-2, C-3 and V2-3 are all downstream of it.
+C-3, D-3 and E-2 are all downstream of it.
+
+**Landed** (`RenderMode { Realtime, Offline }` on `PluginAudio`, wire message
+`SetRenderMode`, protocol v13, all four format edges). What that does *not*
+include is a caller, and investigating why turned the three downstream items
+into a different piece of work — see A-2.
 
 Also note two things about issue #54:
 
@@ -124,6 +129,41 @@ Also note two things about issue #54:
   `ProcessMode` exists with a spec-correct Realtime↔Prefetch live toggle
   honouring the exception at `ivstaudioprocessor.h:139-143`. Re-verify the rest
   of #54 before acting on any of it.
+
+### A-2 · No bounce driver can reach a hosted plugin · TODO
+
+Found while looking for A-1's caller. C-3 / D-3 / E-2 were written as "wire the
+export path to set the mode", which assumes a seam that does not exist.
+
+- `tutti-export` has **zero** plugin references — "plugin" appears nowhere in
+  `crates/core/tutti-export/src/` outside one unrelated doc sentence. It renders
+  a `Net`; it has never heard of a plugin.
+- `bevy-tutti`'s `export/run.rs` queries entities by `AudioNode`, the generic
+  graph node, so a hosted plugin is indistinguishable from any other node there.
+- `bevy_tutti::plugin_host` and `bevy_tutti::export` never meet.
+
+So there is no loop over hosted plugins that a bounce could hook. The pieces
+that now exist:
+
+- `PluginEmitter { handle: PluginHandle }` is a real component — the queryable
+  seam a driver would use.
+- `PluginHandle::set_render_mode` and the `HostRenderMode` capability were added
+  alongside A-1 so that handle can carry the mode from the control thread. It
+  mirrors `HostAutomationState`: `Some(backend)` for subprocess, `None` for
+  in-process VST2 (whose node answers
+  `audioMasterGetCurrentProcessLevel` from its own `HostState`, reachable
+  through `Plugin::set_render_mode`).
+
+What remains is a driver in `bevy-tutti` that, at the start of an offline
+render, walks `Query<&PluginEmitter>` and sets `RenderMode::Offline`, then
+restores `Realtime` afterwards. That is an export-architecture change, not a
+plugin-host one, which is why it is its own item rather than three per-format
+ones. **C-3, D-3 and E-2 are therefore closed as duplicates of this** — each
+format's half is built and reachable; only the caller is missing.
+
+Open question for whoever takes it: a bounce that fails partway must still
+restore `Realtime`, or the session keeps running every plugin in offline mode.
+That argues for a guard type rather than two bare calls.
 
 ---
 
@@ -236,7 +276,7 @@ Aggravating: the host **does** reset `steady_time` to 0 at
 Consequence: on locate, loop wrap or any discontinuity, stale reverb tails,
 ringing filters and hung voices bleed across the jump.
 
-### C-3 · Offline render unreachable · TODO — blocked on A-1
+### C-3 · Offline render unreachable · DONE — superseded by A-2
 
 `set_render_mode` (`instance/ports.rs:272`) is correct and has only test
 callers. `has_hard_realtime_requirement` (`:292`) likewise — so the host also
@@ -402,7 +442,7 @@ client (`host/node/audio_unit.rs:19-22`), which posts a bounded `reset_rt()`.
 `assert_main_thread()` is asserted on the load and editor paths only, so nothing
 catches this even in debug.
 
-### D-3 · No offline render mode · TODO — blocked on A-1
+### D-3 · No offline render mode · DONE — superseded by A-2
 
 `host.rs:159-161` hardcodes `get_process_level` to `2`
 (`kVstProcessLevelRealtime`), test-pinned at `:224-229`. `ProcessLevel::Offline
@@ -525,7 +565,7 @@ the case, so the user gets a bare "cannot do in current context"
 the v3 editor path) is absent from `src/`, so even a successfully instantiated
 v3 unit has no editor route.
 
-### E-2 · Offline bounce renders in realtime · TODO — blocked on A-1
+### E-2 · Offline bounce renders in realtime · DONE — superseded by A-2
 
 `src/offline.rs` implements `set_offline_render` / `set_render_quality`
 correctly; nothing calls them. Structurally blocked by A-1.

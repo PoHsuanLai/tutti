@@ -1,5 +1,7 @@
 use crate::error::EditorError;
-use crate::host::handles::capabilities::{HostAutomationState, HostEditor, HostParams, HostState};
+use crate::host::handles::capabilities::{
+    HostAutomationState, HostEditor, HostParams, HostRenderMode, HostState,
+};
 use crate::host::ipc_client::audio::{PluginInvalidation, PluginRefresh};
 use crate::host::node::{InvalidateSink, ParameterChangeSink, RefreshSink};
 use crate::protocol::AutomationMode;
@@ -27,6 +29,7 @@ pub struct PluginHandle {
     state: Arc<dyn HostState>,
     editor: Option<Arc<dyn HostEditor>>,
     automation_state: Option<Arc<dyn HostAutomationState>>,
+    render_mode: Option<Arc<dyn HostRenderMode>>,
     descriptor: PluginDescriptor,
     loaded: LoadedPlugin,
     param_sink: ParameterChangeSink,
@@ -50,7 +53,10 @@ impl PluginHandle {
             editor: Some(backend.clone()),
             // The subprocess backend supports the automation-state advisory
             // (VST3 IAutomationState; a no-op for CLAP/AU behind the wire).
-            automation_state: Some(backend),
+            automation_state: Some(backend.clone()),
+            // Every subprocess format can carry a render mode; whether the
+            // loaded plugin honours it is `Features::RENDER_MODE`, not this.
+            render_mode: Some(backend),
             descriptor: client.descriptor().clone(),
             loaded: client.loaded().clone(),
             param_sink: client.param_sink().clone(),
@@ -82,6 +88,11 @@ impl PluginHandle {
             // In-process backends don't implement the VST3-style
             // automation-state advisory, so `automation_state()` is `None`.
             automation_state: None,
+            // The in-process VST2 node owns the render mode itself — it answers
+            // `audioMasterGetCurrentProcessLevel` from its own `HostState`, and
+            // this handle has no route to that. `Plugin::set_render_mode`
+            // reaches it directly.
+            render_mode: None,
             descriptor,
             loaded,
             param_sink,
@@ -112,7 +123,8 @@ impl PluginHandle {
             params: backend.clone(),
             state: backend.clone(),
             editor: Some(backend.clone()),
-            automation_state: Some(backend),
+            automation_state: Some(backend.clone()),
+            render_mode: Some(backend),
             descriptor,
             loaded,
             param_sink: ParameterChangeSink::default(),
@@ -147,6 +159,31 @@ impl PluginHandle {
     /// or use the [`set_automation_mode`](Self::set_automation_mode) convenience.
     pub fn automation_state(&self) -> Option<&dyn HostAutomationState> {
         self.automation_state.as_deref()
+    }
+
+    /// The render-mode capability (Direction C-in), or `None` when this handle
+    /// has no route to it — the in-process VST2 node owns its own, reachable
+    /// through `Plugin::set_render_mode`.
+    pub fn render_mode(&self) -> Option<&dyn HostRenderMode> {
+        self.render_mode.as_deref()
+    }
+
+    /// Tell the plugin whether it is rendering under realtime pressure.
+    ///
+    /// Set this **before** a bounce pulls blocks: a plugin may spend more per
+    /// block once it knows there is no deadline, and three of the four formats
+    /// can only take the change while deactivated.
+    ///
+    /// `false` when this handle carries no render-mode route *or* the plugin
+    /// declined. Those collapse deliberately — both mean the render is
+    /// unchanged — and a caller that needs to tell them apart reads
+    /// [`Features::RENDER_MODE`](crate::protocol::Features) on
+    /// [`loaded`](Self::loaded).
+    #[must_use = "a false return means the render mode was not applied"]
+    pub fn set_render_mode(&self, mode: crate::protocol::RenderMode) -> bool {
+        self.render_mode
+            .as_deref()
+            .is_some_and(|r| r.set_render_mode(mode))
     }
 
     // ---- Meta -------------------------------------------------------------

@@ -9,6 +9,8 @@
 //! than an intention: **every field the chain needs is already on `ModRoute`**,
 //! and the chain it produces agrees with the frame-rate path it replaces.
 
+#![cfg(feature = "modulation")]
+
 use bevy_app::prelude::*;
 use bevy_ecs::prelude::*;
 

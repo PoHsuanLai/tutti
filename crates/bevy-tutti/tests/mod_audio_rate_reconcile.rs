@@ -1,6 +1,8 @@
 //! The audio-rate reconciler: a `ModRoute` marked `at_audio_rate` becomes a
 //! real graph chain, and stops being one when the route goes away.
 
+#![cfg(feature = "modulation")]
+
 use bevy_app::prelude::*;
 use bevy_ecs::prelude::*;
 

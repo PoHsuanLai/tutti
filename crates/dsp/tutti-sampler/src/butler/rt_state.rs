@@ -7,7 +7,7 @@
 
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
 use tutti_core::ChannelLayout;
-use tutti_core::{AtomicF32, AtomicReadRate, PlaybackRate, ReadRate, SrcRatio};
+use tutti_core::{Amplitude, AtomicF32, AtomicReadRate, PlaybackRate, ReadRate, SrcRatio};
 
 use super::crossfader::StreamingCrossfader;
 use crate::voice::types::Direction;
@@ -20,6 +20,14 @@ pub struct PlaybackParams {
     direction: AtomicU8,
     /// file_sample_rate / session_sample_rate. 1.0 = no conversion.
     src_ratio: AtomicF32,
+    /// Linear output gain.
+    ///
+    /// Here rather than on `DiskSource` for the reason `tutti_units`' crate
+    /// docs give: a control stored **by value** in a unit cannot be changed on
+    /// a live node, because `Net`'s frontend holds clones and `Net::migrate`
+    /// discards edits to them. Gain was a plain `Amplitude` field, so a clip's
+    /// fader did nothing once its voice existed — silently.
+    gain: AtomicF32,
     /// Source samples consumed per output sample by a wrapping time-stretcher:
     /// `1 / stretch`. 1.0 when the voice does not stretch.
     ///
@@ -41,6 +49,7 @@ impl Default for PlaybackParams {
             speed: AtomicF32::new(1.0),
             direction: AtomicU8::new(0),
             src_ratio: AtomicF32::new(1.0),
+            gain: AtomicF32::new(1.0),
             stretch_rate: AtomicReadRate::new(ReadRate::UNITY),
         }
     }
@@ -125,6 +134,21 @@ impl RtState {
     /// bound now, so both tiers get it.
     pub fn set_speed(&self, speed: PlaybackRate) {
         self.playback.speed.store(speed.get(), Ordering::Release);
+    }
+
+    /// The voice's linear output gain.
+    #[inline]
+    pub fn gain(&self) -> Amplitude {
+        Amplitude::new(self.playback.gain.load(Ordering::Acquire))
+    }
+
+    /// Publish a new output gain.
+    ///
+    /// `&self`, like every other publisher here: the whole point of this cell
+    /// is that the control thread and the audio thread hold the *same* one, so
+    /// no `&mut` is available or needed.
+    pub fn set_gain(&self, gain: Amplitude) {
+        self.playback.gain.store(gain.get(), Ordering::Release);
     }
 
     /// Current playback speed. Same as [`speed`] — kept distinct from the

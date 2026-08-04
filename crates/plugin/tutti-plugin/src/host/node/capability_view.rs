@@ -96,8 +96,13 @@ impl MidiInView<'_> {
 pub struct HarmonyView<'a>(&'a mut PluginClient);
 
 impl HarmonyView<'_> {
-    pub fn set_source(&mut self, source: Arc<super::HarmonySource>) {
-        self.0.set_harmony_source(source);
+    pub fn set_source(
+        &mut self,
+        chords: impl IntoIterator<Item = super::TimedChord>,
+        scales: impl IntoIterator<Item = super::TimedScale>,
+        transport: impl tutti_core::transport::Timeline + 'static,
+    ) {
+        self.0.set_harmony_source(chords, scales, transport);
     }
 
     /// Drop the source; subsequent blocks feed empty chord/scale context.

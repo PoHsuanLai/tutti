@@ -294,13 +294,18 @@ impl Plugin {
     /// Install per-block chord/scale context. `false` if the plugin declared no
     /// sequencer context.
     #[must_use = "a false return means the plugin declined this input and nothing was installed"]
-    pub fn set_harmony_source(&mut self, source: Arc<crate::host::node::HarmonySource>) -> bool {
+    pub fn set_harmony_source(
+        &mut self,
+        chords: impl IntoIterator<Item = crate::host::node::TimedChord>,
+        scales: impl IntoIterator<Item = crate::host::node::TimedScale>,
+        transport: impl tutti_core::transport::Timeline + 'static,
+    ) -> bool {
         if !self.accepts(Features::SEQUENCER_CONTEXT) {
             return false;
         }
         match &mut self.backend {
             Backend::Subprocess(c) => {
-                c.set_harmony_source(source);
+                c.set_harmony_source(chords, scales, transport);
                 true
             }
             #[cfg(feature = "vst2")]
@@ -325,6 +330,25 @@ impl Plugin {
             }
             #[cfg(feature = "vst2")]
             Backend::InProcessVst2(_) => false,
+        }
+    }
+
+    /// Install sample-accurate parameter automation — one curve per parameter id.
+    ///
+    /// Returns `()`, not `bool`, and takes no capability gate: every format
+    /// carries parameter automation, so `PluginInputs` leaves this slot
+    /// ungated. There is no "declined" answer to report.
+    pub fn set_param_automation_source(
+        &mut self,
+        params: impl IntoIterator<Item = crate::host::node::TimedParam>,
+        transport: impl tutti_core::transport::TransportState + 'static,
+    ) {
+        match &mut self.backend {
+            Backend::Subprocess(c) => c.set_param_automation_source(params, transport),
+            // The in-process VST2 node has no automation slot; its parameters
+            // are driven through the handle instead.
+            #[cfg(feature = "vst2")]
+            Backend::InProcessVst2(_) => {}
         }
     }
 

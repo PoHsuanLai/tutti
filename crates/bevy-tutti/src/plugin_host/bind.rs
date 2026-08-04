@@ -220,15 +220,13 @@ pub fn plugin_bind_params(
     mut commands: Commands,
     graph: Option<ResMut<AudioGraphRes>>,
     registry: Option<ResMut<crate::modulation::ModTargetRegistry>>,
-    config: Option<Res<crate::graph::AudioConfig>>,
     transport: Option<Res<TransportRes>>,
     changed: Query<ParamBindItem, ParamsNeedRebind>,
 ) {
     if changed.is_empty() {
         return;
     }
-    let (Some(mut graph), Some(mut registry), Some(config), Some(transport)) =
-        (graph, registry, config, transport)
+    let (Some(mut graph), Some(mut registry), Some(transport)) = (graph, registry, transport)
     else {
         return;
     };
@@ -271,13 +269,10 @@ pub fn plugin_bind_params(
         if timed.is_empty() {
             client.clear_param_automation_source();
         } else {
-            client.set_param_automation_source(std::sync::Arc::new(
-                tutti_plugin::handles::ParamAutomationSource::new(
-                    timed,
-                    transport.transport_state(),
-                    config.sample_rate,
-                ),
-            ));
+            // The rate is the node's own — `set_param_automation_source`
+            // supplies it and re-stamps the source on a device change, so
+            // passing `config.sample_rate` here could only agree or be wrong.
+            client.set_param_automation_source(timed, (**transport).clone());
         }
 
         commands.entity(entity).insert(PluginParamsBound);

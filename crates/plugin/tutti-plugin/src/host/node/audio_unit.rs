@@ -23,7 +23,7 @@ impl AudioUnit for PluginClient {
 
     fn set_sample_rate(&mut self, sample_rate: tutti_core::SampleRate) {
         self.io_mut().reset();
-        self.set_transport_sample_rate(sample_rate);
+        self.restamp_source_rates(sample_rate);
         // `.get()` here and nowhere earlier: `set_sample_rate_rt` puts the rate
         // on the IPC wire, which is where the types stop (#105/#108). This used
         // to unwrap on entry, ten hops before the boundary that needed it.
@@ -113,7 +113,7 @@ impl AudioUnit<F64> for PluginClient {
 
     fn set_sample_rate(&mut self, sample_rate: tutti_core::SampleRate) {
         self.io_mut().reset();
-        self.set_transport_sample_rate(sample_rate);
+        self.restamp_source_rates(sample_rate);
         // `.get()` here and nowhere earlier: `set_sample_rate_rt` puts the rate
         // on the IPC wire, which is where the types stop (#105/#108). This used
         // to unwrap on entry, ten hops before the boundary that needed it.

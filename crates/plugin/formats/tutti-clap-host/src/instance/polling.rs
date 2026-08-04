@@ -7,12 +7,12 @@ use super::ClapLoaded;
 use crate::cstr_to_string;
 use crate::error::{ClapError, Result};
 use crate::host::{HostState, LogRecord};
+use crate::types::{AudioPortsRescan, EditorCapabilities, EditorSize, ParamRescan, WindowHandle};
 #[cfg(feature = "clap-extras")]
 use crate::types::{
     ContextMenuItem, ContextMenuTarget, RemoteControlsPage, TrackInfo, TransportRequest,
     TriggerInfo,
 };
-use crate::types::{EditorCapabilities, EditorSize, ParamRescan, WindowHandle};
 #[cfg(feature = "clap-extras")]
 use clap_sys::ext::context_menu::{
     clap_context_menu_builder, clap_context_menu_check_entry, clap_context_menu_entry,
@@ -521,9 +521,26 @@ impl ClapLoaded {
             .poll(&self.host_state.processing.state_dirty)
     }
 
-    /// Consume and return the `audio_ports.changed` flag.
-    pub fn poll_audio_ports_changed(&self) -> bool {
-        self.host_state.poll(&self.host_state.audio_ports.changed)
+    /// Consume and return the scope of any pending `audio-ports.rescan`.
+    ///
+    /// Replaces a bare `poll_audio_ports_changed() -> bool`. A bool cannot be
+    /// acted on correctly: five of the six rescan flags require the plugin to
+    /// be deactivated before re-enumerating, and the sixth does not, so a
+    /// consumer either deactivates on every port rename or re-reads a channel
+    /// count while active. [`AudioPortsRescan::needs_deactivate`] is the
+    /// distinction.
+    ///
+    /// One reader, because this drains: the flags are swapped out, so a second
+    /// polling accessor over the same signal would clear it for whoever asked
+    /// second.
+    pub fn poll_audio_ports_rescan(&self) -> AudioPortsRescan {
+        let requested = self.host_state.poll(&self.host_state.audio_ports.changed);
+        let flags = self
+            .host_state
+            .audio_ports
+            .rescan_flags
+            .swap(0, std::sync::atomic::Ordering::AcqRel);
+        AudioPortsRescan::from_flags(requested, flags)
     }
 
     /// Consume and return the `notes.ports_changed` flag.

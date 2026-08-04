@@ -1051,7 +1051,7 @@ mod tests {
         assert!(!instance.clap_loaded().poll_params_rescan().requested);
         assert!(!instance.clap_loaded().poll_params_flush_requested());
         assert!(!instance.clap_loaded().poll_state_dirty());
-        assert!(!instance.clap_loaded().poll_audio_ports_changed());
+        assert!(!instance.clap_loaded().poll_audio_ports_rescan().requested);
         assert!(!instance.clap_loaded().poll_note_ports_changed());
     }
 
@@ -1147,11 +1147,11 @@ mod tests {
         state.notes.ports_changed.store(true, Ordering::Release);
         state.processing.state_dirty.store(true, Ordering::Release);
 
-        assert!(instance.clap_loaded().poll_audio_ports_changed());
+        assert!(instance.clap_loaded().poll_audio_ports_rescan().requested);
         assert!(instance.clap_loaded().poll_note_ports_changed());
         assert!(instance.clap_loaded().poll_state_dirty());
 
-        assert!(!instance.clap_loaded().poll_audio_ports_changed());
+        assert!(!instance.clap_loaded().poll_audio_ports_rescan().requested);
         assert!(!instance.clap_loaded().poll_note_ports_changed());
         assert!(!instance.clap_loaded().poll_state_dirty());
     }

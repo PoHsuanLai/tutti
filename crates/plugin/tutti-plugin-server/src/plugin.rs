@@ -474,7 +474,9 @@ mod tests {
             "the tail change went missing; got {events:?}"
         );
         assert!(
-            events.iter().any(|e| matches!(e, AsyncEvent::ParamTitlesChanged)),
+            events
+                .iter()
+                .any(|e| matches!(e, AsyncEvent::ParamTitlesChanged)),
             "a parameter-list change must ask the client to re-pull the list; \
              got {events:?}"
         );

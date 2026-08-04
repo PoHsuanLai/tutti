@@ -419,7 +419,7 @@ Tested with a fake `get_extension` that answers exactly one id, which is what
 lets the draft-only case actually fail — the three tests cover draft-only,
 stable-only (asserting the draft is never asked), and neither.
 
-### C-6 · `audio-ports.rescan` flags discarded; `is_rescan_flag_supported` lies · TODO
+### C-6 · `audio-ports.rescan` flags discarded; `is_rescan_flag_supported` lies · DONE
 
 `src/host/callbacks.rs:301-305` throws the flags away and sets one bool;
 `:294-299` returns `true` for every flag without inspecting it.
@@ -436,6 +436,31 @@ takes the aggressive path instead of a conservative fallback.
 Contrast `params.rescan` next door (`callbacks.rs:174-184`), which correctly
 accumulates and decodes its flags into `ParamRescan`. The audio-ports side never
 got the same treatment.
+
+**Fixed**, by giving it that treatment. `AudioPortsRescan` mirrors `ParamRescan`
+— six decoded flags plus `needs_deactivate()`, which is phrased as "anything but
+`NAMES`" so a flag added by a later CLAP revision counts as unsafe-while-active
+until someone reads its annotation.
+
+`is_rescan_flag_supported` now answers from the mask of flags the host actually
+decodes. An unknown bit gets `false`, and a known bit paired with an unknown one
+also gets `false` — the host cannot honour the half it does not decode.
+
+`poll_audio_ports_changed() -> bool` was **replaced** rather than kept beside
+the new accessor: the poll drains, so two readers over one signal would clear it
+for whichever asked second.
+
+Four mutations, and two of them survived the first round of tests — worth
+recording, because both were in the half of the finding that is easy to consider
+covered by the decoder tests:
+
+- reverting `is_rescan_flag_supported` to unconditional `true` passed everything
+  until a test drove the callback directly;
+- and so did dropping the flags in `host_audio_ports_rescan`, because every test
+  entered at `from_flags` and none went through the callback a plugin calls.
+
+Both are now pinned by tests that build a `HostState`, point a `clap_host` at
+it, and call the callback the way a plugin does.
 
 ### C-7 · `preferred_dialect` fabricates `Midi2` · DONE
 

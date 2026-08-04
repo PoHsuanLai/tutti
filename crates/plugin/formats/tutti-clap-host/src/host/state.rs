@@ -102,6 +102,14 @@ impl ParamState {
 
 pub struct AudioPortState {
     pub changed: AtomicBool,
+    /// Accumulated `clap_audio_ports_rescan_flags` from every
+    /// `audio-ports.rescan` call since the last poll (OR-combined).
+    ///
+    /// Five of the six flags are `[!active]` in the spec, so a consumer has to
+    /// tell a live-applicable name change from one that requires
+    /// deactivate→re-enumerate→re-activate. OR so multiple rescans between
+    /// polls don't lose bits.
+    pub rescan_flags: AtomicU32,
     pub config_changed: AtomicBool,
     pub ambisonic_changed: AtomicBool,
     pub surround_changed: AtomicBool,
@@ -111,6 +119,7 @@ impl AudioPortState {
     fn new() -> Self {
         Self {
             changed: AtomicBool::new(false),
+            rescan_flags: AtomicU32::new(0),
             config_changed: AtomicBool::new(false),
             ambisonic_changed: AtomicBool::new(false),
             surround_changed: AtomicBool::new(false),

@@ -112,15 +112,24 @@ impl ModulationMatrix {
 /// of 8.0, and a `+1.0` modulator, the param reads 9.0 — then 6.0 after a
 /// rebuild triggered by a *route* change that never touched the base.
 ///
-/// **`ModParamRange` is therefore the authority on a modulated param's base,
-/// and `write_param` is only authoritative between rebuilds.** In this
-/// workspace that is invisible, because the one producer of `ModParamRange`
-/// (`dawai_model`'s `declare_param_ranges`) reads the same authored document
-/// the `write_param` call sites do, so the two always agree. It stops being
-/// invisible the moment a base can move without the document moving — a
-/// MIDI-learn ride, a plugin writing its own param back, an automation lane
-/// evaluated outside the document. Any such writer must reach
+/// **For a control-rate param, `ModParamRange` is therefore the authority on
+/// the base, and `write_param` is only authoritative between rebuilds.** In
+/// this workspace that is invisible, because the one producer of
+/// `ModParamRange` (`dawai_model`'s `declare_param_ranges`) reads the same
+/// authored document the `write_param` call sites do, so the two always agree.
+/// It stops being invisible the moment a base can move without the document
+/// moving — a MIDI-learn ride, a plugin writing its own param back, an
+/// automation lane evaluated outside the document. Any such writer must reach
 /// `ModParamRange`, not just the accumulator.
+///
+/// **This does not hold for an audio-rate (`PerSample`) param**, and the
+/// difference is worth knowing before generalising the rule. Such a param is
+/// not in `matrix.targets` at all (see the skip below), so nothing here
+/// reconstructs it: its base lives in the chain's own `Arc<AtomicF32>`, which
+/// survives every rebuild because `reconcile_audio_rate` preserves a chain of
+/// the right shape. There the ownership is the other way round — the cell is
+/// authoritative, and `ModParamRange` edits are folded *into* it by
+/// `ParamChain::refresh_base`.
 #[allow(clippy::type_complexity)]
 pub fn rebuild(
     mut matrix: ResMut<ModulationMatrix>,
@@ -463,7 +472,16 @@ mod tests {
         app.world_mut()
             .resource_scope(|w, mut graph: Mut<AudioGraphRes>| {
                 let matrix = w.resource::<ModulationMatrix>();
-                crate::graph::write_param(&mut graph, matrix, target, &node, UnitParam::Drive, 8.0);
+                let chains = w.resource::<crate::modulation::audio_rate::AudioRateChains>();
+                crate::graph::write_param(
+                    &mut graph,
+                    matrix,
+                    chains,
+                    target,
+                    &node,
+                    UnitParam::Drive,
+                    8.0,
+                );
             });
 
         advance_transport(&mut app, 480);
@@ -508,7 +526,16 @@ mod tests {
         app.world_mut()
             .resource_scope(|w, mut graph: Mut<AudioGraphRes>| {
                 let matrix = w.resource::<ModulationMatrix>();
-                crate::graph::write_param(&mut graph, matrix, target, &node, UnitParam::Drive, 8.0);
+                let chains = w.resource::<crate::modulation::audio_rate::AudioRateChains>();
+                crate::graph::write_param(
+                    &mut graph,
+                    matrix,
+                    chains,
+                    target,
+                    &node,
+                    UnitParam::Drive,
+                    8.0,
+                );
             });
         advance_transport(&mut app, 480);
         app.update();

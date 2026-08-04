@@ -28,9 +28,7 @@
 use std::sync::Arc;
 
 use tutti_core::dsp::{Net, Signal};
-use tutti_core::{
-    AtomicF32, AudioUnit, BufferMut, BufferRef, NodeId, Ordering, SignalFrame, Tail,
-};
+use tutti_core::{AtomicF32, AudioUnit, BufferMut, BufferRef, NodeId, Ordering, SignalFrame, Tail};
 use tutti_mod::{shape, CurveType, Polarity};
 
 /// LUT resolution for [`ParamShaperUnit`]. 256 points + linear interpolation is
@@ -334,14 +332,18 @@ impl ParamModChain {
     }
 }
 
-/// One edge's shaping: which node drives it, and how its `[-1, 1]` becomes an
-/// offset.
+/// How one edge turns a raw `[-1, 1]` signal into an offset.
 ///
-/// A tuple would do, but four positional values of which three are
-/// nearly-interchangeable enums is exactly the shape that gets mis-ordered.
-pub struct ParamModEdge {
-    /// The node producing the raw `[-1, 1]` modulation signal.
-    pub source: NodeId,
+/// A tuple would do, but three positional near-interchangeable values (a float
+/// newtype and two enums) is exactly the shape that gets mis-ordered.
+///
+/// **Deliberately carries no source node.** Shaping is a property of the edge;
+/// *what drives it* is a wiring question, and the two have different owners —
+/// [`wire_param_mod`] takes the sources alongside, while a declarative host
+/// ([`build_param_mod`]) never tells this crate its sources at all. Putting a
+/// `NodeId` here would force that host to invent one.
+#[derive(Debug, Clone, Copy)]
+pub struct ParamModShaping {
     pub depth: tutti_types::Depth,
     pub polarity: Polarity,
     pub curve: CurveType,
@@ -367,7 +369,7 @@ pub fn build_param_mod(
     base: f32,
     min: f32,
     max: f32,
-    edges: &[ParamModEdge],
+    edges: &[ParamModShaping],
 ) -> ParamModChain {
     let base_unit = AtomicSourceUnit::new(base);
     // Taken *before* the unit is moved into the net — this handle is the whole
@@ -410,13 +412,14 @@ pub fn wire_param_mod(
     base: f32,
     min: f32,
     max: f32,
-    edges: &[ParamModEdge],
+    edges: &[(NodeId, ParamModShaping)],
 ) -> ParamModChain {
-    let chain = build_param_mod(net, base, min, max, edges);
+    let shaping: Vec<ParamModShaping> = edges.iter().map(|&(_, s)| s).collect();
+    let chain = build_param_mod(net, base, min, max, &shaping);
 
     net.connect(chain.base, 0, chain.sum, 0); // port 0 = base
-    for (i, (edge, &shaper)) in edges.iter().zip(chain.shapers.iter()).enumerate() {
-        net.connect(edge.source, 0, shaper, 0);
+    for (i, (&(source, _), &shaper)) in edges.iter().zip(chain.shapers.iter()).enumerate() {
+        net.connect(source, 0, shaper, 0);
         // Offsets occupy ports 1..=N; port 0 is the base and must not be
         // overwritten by an off-by-one here.
         net.connect(shaper, 0, chain.sum, i + 1);

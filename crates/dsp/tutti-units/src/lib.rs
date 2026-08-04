@@ -56,7 +56,7 @@ pub use param_ports::ParamPorts;
 
 pub mod param_mod;
 pub use param_mod::{
-    build_param_mod, wire_param_mod, AtomicSourceUnit, ParamModChain, ParamModEdge,
+    build_param_mod, wire_param_mod, AtomicSourceUnit, ParamModChain, ParamModShaping,
     ParamShaperUnit, ParamSumUnit,
 };
 

@@ -401,3 +401,140 @@ fn editing_a_range_does_not_drop_the_routes() {
          registry without refilling it drops every route it cannot resolve"
     );
 }
+
+/// **`write_param` routes an authored write to the chain's base cell.**
+///
+/// The branch-level guard. `dawai-model`'s end-to-end test cannot supply this:
+/// a *document* edit re-declares `ModParamRange`, which `reconcile_audio_rate`
+/// also folds into the cell, so the two paths are redundant there and neither
+/// sabotage alone fails it (measured).
+///
+/// Here there is no `declare_param_ranges` in the loop. The write is made
+/// directly, against a range the "document" never moved, so only
+/// `write_param`'s audio-rate branch can deliver it.
+///
+/// # Why the assertion is on the cell and not the node's atomic
+///
+/// Because the node's atomic is a decoy once a param port is wired: it holds
+/// whatever was last written there while the DSP reads the port.
+/// `tutti-units`' `a_wired_param_port_makes_the_node_ignore_its_atomic` pins
+/// that. Asserting on the atomic would pass with the branch removed — the write
+/// lands there, it just does not sound.
+#[test]
+fn write_param_reaches_an_audio_rate_params_base_cell() {
+    let (mut app, target, _) = app_with_target();
+    let lfo = spawn_lfo(&mut app);
+    app.world_mut().spawn(
+        ModRoute::new(lfo, target, ParamAddr::Unit(UnitParam::Drive))
+            .with_depth(Depth(0.5))
+            .per_sample(),
+    );
+    app.update();
+    app.update();
+
+    let cell = app
+        .world()
+        .resource::<AudioRateChains>()
+        .base_cell(target, ParamAddr::Unit(UnitParam::Drive))
+        .expect("the per-sample chain must exist");
+    assert_eq!(
+        cell.load(tutti_core::Ordering::Acquire),
+        5.0,
+        "the chain starts at the declared base"
+    );
+
+    // An authored write through the real front door — no ModParamRange edit, so
+    // the reconciler's refresh cannot be what delivers it.
+    let node = *app.world().get::<AudioNode>(target).unwrap();
+    app.world_mut()
+        .resource_scope(|w, mut graph: Mut<AudioGraphRes>| {
+            let matrix = w.resource::<bevy_tutti::modulation::ModulationMatrix>();
+            let chains = w.resource::<AudioRateChains>();
+            bevy_tutti::graph::write_param(
+                &mut graph,
+                matrix,
+                chains,
+                target,
+                &node,
+                UnitParam::Drive,
+                9.0,
+            );
+        });
+
+    assert_eq!(
+        cell.load(tutti_core::Ordering::Acquire),
+        9.0,
+        "write_param must land on the chain's base cell; an unchanged cell \
+         means the write went to the node's own atomic, which a wired param \
+         port ignores"
+    );
+}
+
+/// **A range edit reaches a live chain without respawning it.**
+///
+/// The other half of the base path: `declare_param_ranges`-style edits arrive
+/// as a new `ModParamRange`, and `reconcile_audio_rate` must fold the new base
+/// into the existing chain's cell.
+///
+/// Both halves of the assertion matter. Without the first, the base is frozen
+/// at its spawn value for the chain's whole life — which is what shipped.
+/// Without the second, the "fix" of respawning the chain would pass while
+/// restarting every LFO's phase, which is the thing the arity check exists to
+/// prevent.
+#[test]
+fn a_range_edit_reaches_a_live_chain_without_respawning_it() {
+    let (mut app, target, _) = app_with_target();
+    let lfo = spawn_lfo(&mut app);
+    app.world_mut().spawn(
+        ModRoute::new(lfo, target, ParamAddr::Unit(UnitParam::Drive))
+            .with_depth(Depth(0.5))
+            .per_sample(),
+    );
+    app.update();
+    app.update();
+
+    let before: Vec<Entity> = {
+        let chains = app.world().resource::<AudioRateChains>();
+        let chain = chains
+            .get(target, ParamAddr::Unit(UnitParam::Drive))
+            .expect("the chain must exist");
+        std::iter::once(chain.base)
+            .chain(std::iter::once(chain.sum))
+            .chain(chain.shapers.iter().copied())
+            .collect()
+    };
+    let cell = app
+        .world()
+        .resource::<AudioRateChains>()
+        .base_cell(target, ParamAddr::Unit(UnitParam::Drive))
+        .unwrap();
+
+    // Re-declare the range with a new base — the same shape a document edit
+    // takes, and the same route count, so the arity check will skip it.
+    app.world_mut()
+        .entity_mut(target)
+        .insert(ModParamRange::default().with(ParamAddr::Unit(UnitParam::Drive), 9.0, 0.0, 10.0));
+    app.update();
+
+    assert_eq!(
+        cell.load(tutti_core::Ordering::Acquire),
+        9.0,
+        "the new authored base must reach the live chain's cell"
+    );
+
+    let after: Vec<Entity> = {
+        let chains = app.world().resource::<AudioRateChains>();
+        let chain = chains
+            .get(target, ParamAddr::Unit(UnitParam::Drive))
+            .expect("the chain must still exist");
+        std::iter::once(chain.base)
+            .chain(std::iter::once(chain.sum))
+            .chain(chain.shapers.iter().copied())
+            .collect()
+    };
+    assert_eq!(
+        before, after,
+        "a base edit must not respawn the chain — respawning restarts every \
+         LFO's phase, which is exactly what the arity check protects"
+    );
+}

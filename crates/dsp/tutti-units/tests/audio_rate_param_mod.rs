@@ -10,7 +10,7 @@ use tutti_core::{AtomicF32, Ordering};
 use tutti_mod::{CurveType, Polarity};
 use tutti_types::{Depth, UnitParam};
 use tutti_units::{
-    AtomicSourceUnit, DistortionNode, ParamModEdge, ParamPorts, ParamShaperUnit, ParamSumUnit,
+    AtomicSourceUnit, DistortionNode, ParamModShaping, ParamPorts, ParamShaperUnit, ParamSumUnit,
     ShapeKind,
 };
 
@@ -36,12 +36,14 @@ fn wire_param_mod(
         authored,
         range.0,
         range.1,
-        &[ParamModEdge {
+        &[(
             source,
-            depth,
-            polarity: Polarity::Bipolar,
-            curve: CurveType::Linear,
-        }],
+            ParamModShaping {
+                depth,
+                polarity: Polarity::Bipolar,
+                curve: CurveType::Linear,
+            },
+        )],
     )
     .base_cell()
 }
@@ -327,21 +329,18 @@ fn n_edges_land_on_ports_one_through_n() {
 
     let a = constant(&mut net, 1.0);
     let b = constant(&mut net, 1.0);
-    let edge = |source| ParamModEdge {
-        source,
-        depth: Depth(0.25),
-        polarity: Polarity::Bipolar,
-        curve: CurveType::Linear,
+    let edge = |source| {
+        (
+            source,
+            ParamModShaping {
+                depth: Depth(0.25),
+                polarity: Polarity::Bipolar,
+                curve: CurveType::Linear,
+            },
+        )
     };
-    let chain = tutti_units::wire_param_mod(
-        &mut net,
-        target,
-        port,
-        1.0,
-        0.0,
-        10.0,
-        &[edge(a), edge(b)],
-    );
+    let chain =
+        tutti_units::wire_param_mod(&mut net, target, port, 1.0, 0.0, 10.0, &[edge(a), edge(b)]);
 
     assert_eq!(chain.shapers.len(), 2, "one shaper per edge");
     assert_eq!(

@@ -205,6 +205,59 @@ impl std::fmt::Debug for VoiceCommand {
 // Handle — held by ECS systems, sends commands to the audio-thread unit.
 // ---------------------------------------------------------------------------
 
+/// A [`VoiceCommand`] never reached the pool, and the work it carried is gone.
+///
+/// Modelled on [`QueueFull`](tutti_core::transport::QueueFull) one crate down:
+/// the two failures are told apart because a caller acts on them differently,
+/// and the lost command rides along so it can be retried or logged with its
+/// contents rather than as an anonymous count.
+///
+/// A dropped `AddVoice` is a note that never sounds; a dropped `Remove` is a
+/// voice that never stops.
+#[derive(Debug)]
+pub enum SendError {
+    /// The 64-slot command queue was full. Transient: the audio thread drains
+    /// it every block, so a caller can back off and retry.
+    Full(VoiceCommand),
+    /// The [`VoicePool`](super::pool::VoicePool) has been dropped, so nothing
+    /// will ever drain the queue again.
+    ///
+    /// **Permanent** — every subsequent send fails the same way. This is the
+    /// case that used to be entirely silent, which made a dead pool
+    /// indistinguishable from a working one.
+    Disconnected(VoiceCommand),
+}
+
+impl SendError {
+    /// The command that was lost, for a caller that wants to retry or log it.
+    pub fn into_command(self) -> VoiceCommand {
+        match self {
+            Self::Full(cmd) | Self::Disconnected(cmd) => cmd,
+        }
+    }
+
+    /// Whether this failure is permanent — no later send can succeed either.
+    ///
+    /// The distinction worth acting on: `Full` means "try again", `Disconnected`
+    /// means "stop trying".
+    pub fn is_disconnected(&self) -> bool {
+        matches!(self, Self::Disconnected(_))
+    }
+}
+
+impl core::fmt::Display for SendError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Full(_) => write!(f, "voice command queue full; the command was dropped"),
+            Self::Disconnected(_) => {
+                write!(f, "voice pool is gone; the command was dropped")
+            }
+        }
+    }
+}
+
+impl std::error::Error for SendError {}
+
 #[derive(Clone, Debug)]
 pub struct VoicePoolHandle {
     pub(crate) tx: Sender<VoiceCommand>,
@@ -248,15 +301,23 @@ impl VoicePoolHandle {
     /// `tick`/`process`, so anything expensive left for the drain is an allocation
     /// in the callback. Today that means materialising the stretch filter for an
     /// `AddVoice` **or an `UpdateStretch`** that needs one.
-    pub fn send(&self, cmd: VoiceCommand) {
+    ///
+    /// `Ok` means only that the command was *queued* — the pool applies it on the
+    /// audio thread, and that outcome is not available synchronously.
+    ///
+    /// `Err` means the command is **gone**: a dropped `AddVoice` is a note that
+    /// never sounds, a dropped `Remove` a voice that never stops. That is a
+    /// failure a caller can act on, so it is `#[must_use]`. It previously
+    /// returned `()` — queue-full went to `tracing::warn!` (which reaches an
+    /// operator reading logs, not code that could back off) and disconnected was
+    /// silent, so a dead pool looked exactly like a working one.
+    #[must_use = "a dropped command is a note that never sounds or a voice that never stops"]
+    pub fn send(&self, cmd: VoiceCommand) -> Result<(), SendError> {
         let cmd = self.prepare(cmd);
-        match self.tx.try_send(cmd) {
-            Ok(()) => {}
-            Err(TrySendError::Full(_)) => {
-                tracing::warn!("VoicePool command queue full, dropping command");
-            }
-            Err(TrySendError::Disconnected(_)) => {}
-        }
+        self.tx.try_send(cmd).map_err(|e| match e {
+            TrySendError::Full(cmd) => SendError::Full(cmd),
+            TrySendError::Disconnected(cmd) => SendError::Disconnected(cmd),
+        })
     }
 
     /// Move control-thread work out of the drain. Runs on the caller's thread.
@@ -300,6 +361,70 @@ impl VoicePoolHandle {
                 }
             }
             other => other,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::voice::pool::VoicePool;
+
+    /// A full queue is reported, not logged and forgotten.
+    ///
+    /// `send` used to return `()`, routing this case to `tracing::warn!` — which
+    /// reaches an operator reading logs, never the code that could back off or
+    /// retry. A dropped `AddVoice` is a note that never sounds.
+    #[test]
+    fn a_full_queue_is_reported_to_the_caller() {
+        // Build the pool but never drain it, so the queue fills.
+        let (_pool, handle) = VoicePool::new();
+
+        for _ in 0..COMMAND_CAPACITY {
+            handle
+                .send(VoiceCommand::Remove(SlotId(1)))
+                .expect("within capacity");
+        }
+
+        let err = handle
+            .send(VoiceCommand::Remove(SlotId(2)))
+            .expect_err("past capacity the command is dropped");
+        assert!(
+            !err.is_disconnected(),
+            "a full queue is transient, not a dead pool"
+        );
+        assert!(matches!(err, SendError::Full(_)));
+    }
+
+    /// A dropped pool is reported — the case that used to be **completely
+    /// silent**, so every later send was a permanent no-op with nothing to
+    /// notice it by.
+    #[test]
+    fn a_dropped_pool_is_reported_as_disconnected() {
+        let (pool, handle) = VoicePool::new();
+        drop(pool);
+
+        let err = handle
+            .send(VoiceCommand::Remove(SlotId(1)))
+            .expect_err("nothing will ever drain this queue again");
+        assert!(
+            err.is_disconnected(),
+            "a dead pool must be distinguishable from a merely full one — the \
+             caller should stop, not retry"
+        );
+    }
+
+    /// The lost command comes back, so a caller can retry or log its contents
+    /// rather than an anonymous failure.
+    #[test]
+    fn the_dropped_command_is_returned() {
+        let (pool, handle) = VoicePool::new();
+        drop(pool);
+
+        let err = handle.send(VoiceCommand::Remove(SlotId(7))).unwrap_err();
+        match err.into_command() {
+            VoiceCommand::Remove(id) => assert_eq!(id, SlotId(7)),
+            _ => panic!("the returned command must be the one that was lost"),
         }
     }
 }

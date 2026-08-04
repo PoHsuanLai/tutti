@@ -330,7 +330,12 @@ impl MidiPreBlock {
         };
         self.events.for_each(|&(_offset, event)| {
             for target in routing.route(&event) {
-                queue.queue(target, &[event]);
+                // The accepted count is deliberately dropped: this is the audio
+                // thread, one event at a time, and there is no caller to back
+                // off. A short count means the destination's 256-slot ring is
+                // full — recoverable only by the *consumer* draining faster,
+                // which nothing here can influence.
+                let _ = queue.queue(target, &[event]);
             }
         });
     }
@@ -435,8 +440,9 @@ mod tests {
         routed: Mutex<Vec<MidiEvent>>,
     }
     impl MidiRouter for CapturingRouter {
-        fn queue(&self, _unit_id: MidiUnitId, events: &[MidiEvent]) {
+        fn queue(&self, _unit_id: MidiUnitId, events: &[MidiEvent]) -> usize {
             self.routed.lock().unwrap().extend_from_slice(events);
+            events.len()
         }
     }
 

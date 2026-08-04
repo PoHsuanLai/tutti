@@ -32,9 +32,10 @@ struct CountingQueue {
 }
 
 impl MidiRouter for CountingQueue {
-    fn queue(&self, _unit_id: MidiUnitId, events: &[MidiEvent]) {
+    fn queue(&self, _unit_id: MidiUnitId, events: &[MidiEvent]) -> usize {
         self.count
             .fetch_add(events.len(), std::sync::atomic::Ordering::Relaxed);
+        events.len()
     }
 }
 

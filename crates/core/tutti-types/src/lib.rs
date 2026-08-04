@@ -71,10 +71,9 @@ pub use value::{
     Amplitude, ArcDegrees, AtomicReadRate, AtomicSamplePosition, Azimuth, Beat, BeatDuration, Bpm,
     CCNumber, Cents, CompressionRatio, Confidence, Correlation, Db, Depth, Drive, Elevation,
     Feedback, Hz, MidiChannel, MidiGroup, Mix, NotOnMidiScale, Note, NoteNumberOutOfRange, Pan,
-    Param, ParamAddr,
-    Phase, PhaseIncrement, PitchClass, PlaybackRate, Radians, ReadRate, Resonance, SamplePosition,
-    SampleRate, Samples, Seconds, Semitones, Spread, SrcRatio, StereoWidth, StretchFactor, Tail,
-    Unit, UnitParam, UnitParamOutOfRange, Velocity, Q,
+    Param, ParamAddr, Phase, PhaseIncrement, PitchClass, PlaybackRate, Radians, ReadRate,
+    Resonance, SamplePosition, SampleRate, Samples, Seconds, Semitones, Spread, SrcRatio,
+    StereoWidth, StretchFactor, Tail, Unit, UnitParam, UnitParamOutOfRange, Velocity, Q,
 };
 
 // Channel layout.

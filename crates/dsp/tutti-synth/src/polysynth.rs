@@ -9,8 +9,8 @@ use tutti_core::{
     MAX_BUFFER_SIZE,
 };
 use tutti_midi_runtime::{MidiInPort, MidiSender};
-use tutti_midi_types::ump::MidiEvent;
 use tutti_midi_types::tutti_types::CCNumber;
+use tutti_midi_types::ump::MidiEvent;
 use tutti_midi_types::{cc, MidiIn, MidiUnitId, NoteId};
 
 use std::sync::Arc;

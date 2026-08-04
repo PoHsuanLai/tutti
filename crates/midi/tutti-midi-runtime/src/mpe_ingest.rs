@@ -429,7 +429,9 @@ mod tests {
     fn member_channel_cc74_becomes_per_note_controller() {
         let mut ingest = MpeIngest::new(MpeMode::LowerZone(MpeZoneConfig::lower(15)));
         ingest.translate(&note_on(3, 64, 100));
-        let out = ingest.translate(&cc(3, CCNumber::BRIGHTNESS, 127)).expect("emits");
+        let out = ingest
+            .translate(&cc(3, CCNumber::BRIGHTNESS, 127))
+            .expect("emits");
         assert_cv2!(
             out,
             ChannelVoice2::AssignablePerNoteController(m)

@@ -346,7 +346,12 @@ mod tests {
         // stands — the precondition this test rests on.
         let bend = MidiEvent::pitch_bend(MidiGroup::FIRST, member, 0xC000_0000);
         assert!(
-            pre.mpe.borrow_mut().as_mut().unwrap().translate(&bend).is_some(),
+            pre.mpe
+                .borrow_mut()
+                .as_mut()
+                .unwrap()
+                .translate(&bend)
+                .is_some(),
             "precondition: a bend resolves while the voice is bound"
         );
 
@@ -354,7 +359,12 @@ mod tests {
         pre.adopt_mpe_request();
 
         assert!(
-            pre.mpe.borrow_mut().as_mut().unwrap().translate(&bend).is_some(),
+            pre.mpe
+                .borrow_mut()
+                .as_mut()
+                .unwrap()
+                .translate(&bend)
+                .is_some(),
             "re-adoption reset the voice map — the note is left sounding and \
              deaf to the controller"
         );

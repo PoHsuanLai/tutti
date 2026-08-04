@@ -38,16 +38,61 @@ impl ClapLoaded {
             })?
         };
 
-        let loaded = load_descriptor(&library, bundle_path)?;
+        let loaded = load_descriptor(&library, bundle_path, None)?;
         let info = loaded.info;
         drop(loaded.entry_guard); // drop order: guard before library
         drop(library);
         Ok(info)
     }
 
+    /// Every plugin a `.clap` bundle advertises, not just the first.
+    ///
+    /// A bundle is a factory: `get_plugin_count` exists because one file may
+    /// ship a synth plus companion effects. [`probe`](Self::probe) answers for
+    /// the default (first) plugin, which is the whole answer for most bundles;
+    /// this is how a caller finds the rest, and the ids it returns are what
+    /// [`load_plugin`](Self::load_plugin) accepts.
+    pub fn probe_all(bundle_path: &Path, library_path: Option<&Path>) -> Result<Vec<PluginInfo>> {
+        let load_path = library_path.unwrap_or(bundle_path);
+
+        let library = unsafe {
+            libloading::Library::new(load_path).map_err(|e| ClapError::LoadFailed {
+                path: bundle_path.to_path_buf(),
+                stage: LoadStage::Opening,
+                reason: format!("Failed to load library: {e}"),
+            })?
+        };
+
+        let loaded = load_descriptor(&library, bundle_path, None)?;
+        let siblings = loaded.siblings;
+        drop(loaded.entry_guard); // drop order: guard before library
+        drop(library);
+        Ok(siblings)
+    }
+
     /// Load a CLAP plugin from a path that is either a file or a bundle directory.
     pub fn load(path: impl AsRef<Path>, sample_rate: f64, max_frames: u32) -> Result<Self> {
         Self::load_with_library(path.as_ref(), None, sample_rate, max_frames)
+    }
+
+    /// Load a named plugin from a bundle that ships more than one.
+    ///
+    /// `plugin_id` is an id from [`probe_all`](Self::probe_all). A bundle with
+    /// a single plugin needs [`load`](Self::load), which takes the only one
+    /// there is.
+    pub fn load_plugin(
+        path: impl AsRef<Path>,
+        plugin_id: &str,
+        sample_rate: f64,
+        max_frames: u32,
+    ) -> Result<Self> {
+        Self::load_selected(
+            path.as_ref(),
+            None,
+            Some(plugin_id),
+            sample_rate,
+            max_frames,
+        )
     }
 
     /// Load a CLAP plugin with a pre-resolved library path.
@@ -58,6 +103,19 @@ impl ClapLoaded {
     pub fn load_with_library(
         bundle_path: &Path,
         library_path: Option<&Path>,
+        sample_rate: f64,
+        max_frames: u32,
+    ) -> Result<Self> {
+        Self::load_selected(bundle_path, library_path, None, sample_rate, max_frames)
+    }
+
+    /// The one load path. `plugin_id` `None` means "the bundle's first plugin",
+    /// which is what every single-plugin bundle wants and what this crate did
+    /// unconditionally before multi-plugin bundles were reachable.
+    pub fn load_selected(
+        bundle_path: &Path,
+        library_path: Option<&Path>,
+        plugin_id: Option<&str>,
         sample_rate: f64,
         max_frames: u32,
     ) -> Result<Self> {
@@ -76,7 +134,10 @@ impl ClapLoaded {
             factory_ptr,
             factory,
             info: mut plugin_info,
-        } = load_descriptor(&library, bundle_path)?;
+            // The load path needs the selected plugin, not the bundle's roster;
+            // `probe_all` is where a caller reads that.
+            siblings: _,
+        } = load_descriptor(&library, bundle_path, plugin_id)?;
 
         let host_state = Arc::new(HostState::new());
         let host = Box::new(ClapHost::new(host_state.clone()));

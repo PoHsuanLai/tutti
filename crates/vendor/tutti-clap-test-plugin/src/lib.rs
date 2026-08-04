@@ -119,7 +119,19 @@ pub use holes::HOLE_NONE;
 /// Plugin id the host instantiates by. The conformance test does not need
 /// to know this — the host reads it from the descriptor — but keep it
 /// stable and recognizable.
-const PLUGIN_ID: &CStr = c"tutti.conformance-probe";
+pub const PLUGIN_ID: &CStr = c"tutti.conformance-probe";
+
+/// A second plugin in the same factory, so multi-plugin bundles are testable.
+///
+/// A `.clap` file is a factory: `get_plugin_count` exists because one bundle may
+/// ship a synth plus companion effects. With a single descriptor no fixture can
+/// tell a host that enumerates the factory from one that hard-codes index 0 —
+/// both load the same plugin. This second entry is what makes that difference
+/// observable.
+///
+/// It is descriptor-only: `create_plugin` accepts it and returns the same probe
+/// state, since selection is what is under test, not a second DSP behaviour.
+pub const SECOND_PLUGIN_ID: &CStr = c"tutti.conformance-probe.second";
 
 // ---------------------------------------------------------------------------
 // Capture — what the host handed the plugin on the last `process` call.
@@ -650,6 +662,25 @@ fn descriptor_ptr() -> *const clap_plugin_descriptor {
     SYNC_DESCRIPTOR.0.get()
 }
 
+/// Descriptor for [`SECOND_PLUGIN_ID`], returned at factory index 1.
+static SECOND_DESCRIPTOR: SyncCell<clap_plugin_descriptor> =
+    SyncCell(std::cell::UnsafeCell::new(clap_plugin_descriptor {
+        clap_version: CLAP_VERSION,
+        id: SECOND_PLUGIN_ID.as_ptr(),
+        name: c"Tutti Conformance Probe (second)".as_ptr(),
+        vendor: c"Tutti".as_ptr(),
+        url: c"".as_ptr(),
+        manual_url: c"".as_ptr(),
+        support_url: c"".as_ptr(),
+        version: c"0.1.0".as_ptr(),
+        description: c"Second plugin in the probe factory (test fixture)".as_ptr(),
+        features: FEATURES.0.as_ptr(),
+    }));
+
+fn second_descriptor_ptr() -> *const clap_plugin_descriptor {
+    SECOND_DESCRIPTOR.0.get()
+}
+
 /// Which of the two `clap_version` fields
 /// [`tutti_test_plugin_set_clap_version`] rewrites.
 ///
@@ -704,17 +735,17 @@ pub unsafe extern "C" fn tutti_test_plugin_reset_clap_version() {
 // ---------------------------------------------------------------------------
 
 unsafe extern "C" fn factory_get_plugin_count(_factory: *const clap_plugin_factory) -> u32 {
-    1
+    2
 }
 
 unsafe extern "C" fn factory_get_plugin_descriptor(
     _factory: *const clap_plugin_factory,
     index: u32,
 ) -> *const clap_plugin_descriptor {
-    if index == 0 {
-        descriptor_ptr()
-    } else {
-        ptr::null()
+    match index {
+        0 => descriptor_ptr(),
+        1 => second_descriptor_ptr(),
+        _ => ptr::null(),
     }
 }
 
@@ -726,16 +757,23 @@ unsafe extern "C" fn factory_create_plugin(
     if plugin_id.is_null() {
         return ptr::null();
     }
-    if CStr::from_ptr(plugin_id) != PLUGIN_ID {
+    let requested = CStr::from_ptr(plugin_id);
+    // Both ids build the same probe state: which descriptor a host selected is
+    // what these tests observe, not a second set of DSP behaviour.
+    let desc = if requested == PLUGIN_ID {
+        descriptor_ptr()
+    } else if requested == SECOND_PLUGIN_ID {
+        second_descriptor_ptr()
+    } else {
         return ptr::null();
-    }
+    };
 
     // Allocate the state; the `clap_plugin` lives inside it and points back
     // at the state via `plugin_data`.
     let mut state = Box::new(PluginState {
         host,
         plugin: clap_plugin {
-            desc: descriptor_ptr(),
+            desc,
             plugin_data: ptr::null_mut(),
             init: Some(plugin_init),
             destroy: Some(plugin_destroy),

@@ -499,12 +499,33 @@ rules" and that a host under hard-real-time pressure may decline to offer the
 interface at all, so declining is a position the extension anticipates rather
 than a stub. The dead `thread_pool_pending` atomic went with it.
 
-### C-9 · Only descriptor index 0 is loadable · TODO
+### C-9 · Only descriptor index 0 is loadable · DONE
 
 `src/instance/descriptor.rs:128` calls `get_desc(factory_ptr, 0)`;
 `get_plugin_count` is called at `:112` only to check non-zero, and its value is
 discarded. A bundle shipping a synth plus companion FX exposes only the first,
 and there is no API to select by index or id.
+
+**Fixed.** `all_descriptors` enumerates the factory; `select_descriptor` picks
+by **id**, not index — `create_plugin` already takes an id string, and ids are
+already the catalog/dedup key, so nothing new had to be invented. New surface:
+`probe_all`, `load_plugin`, `load_selected`; `probe` and `load` keep their
+existing meaning of "the bundle's first plugin".
+
+An unknown id is an error listing what the bundle holds, not a fallback to the
+first: falling back would load a *different plugin* than the one asked for, so
+a session restoring "the compressor" would silently come back with the synth.
+
+**The fixture was the deliverable here.** The mutation "enumerate only index 0"
+survived a full green suite, because the probe shipped a single descriptor —
+with one plugin, a host that enumerates and one that hard-codes index 0 are
+indistinguishable, and both pass. `tutti-clap-test-plugin` now ships **two**
+descriptors, and `clap_multi_plugin_bundle.rs` covers the path end to end
+through the real FFI. The mutation now fails two tests.
+
+Not attempted: a cross-format sub-plugin API. VST3 has the same shape (a factory
+of classes) and no selection either, but inventing shared vocabulary for it is a
+design change, not a gap fix.
 
 ### C-10 · `clap_version` compatibility is never checked · DONE
 

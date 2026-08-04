@@ -1,8 +1,6 @@
 //! The audio-rate reconciler: a `ModRoute` marked `at_audio_rate` becomes a
 //! real graph chain, and stops being one when the route goes away.
 
-#![cfg(feature = "modulation")]
-
 use bevy_app::prelude::*;
 use bevy_ecs::prelude::*;
 
@@ -390,9 +388,9 @@ fn editing_a_range_does_not_drop_the_routes() {
 
     // Re-declare the range with a new base — what a host does when the user
     // moves the authored value of a modulated param.
-    app.world_mut().entity_mut(target).insert(
-        ModParamRange::default().with(ParamAddr::Unit(UnitParam::Drive), 7.0, 0.0, 10.0),
-    );
+    app.world_mut()
+        .entity_mut(target)
+        .insert(ModParamRange::default().with(ParamAddr::Unit(UnitParam::Drive), 7.0, 0.0, 10.0));
     app.update();
 
     assert!(
@@ -401,5 +399,318 @@ fn editing_a_range_does_not_drop_the_routes() {
             .is_modulated(target, ParamAddr::Unit(UnitParam::Drive)),
         "the route must survive a range edit — a rebuild that drains its source \
          registry without refilling it drops every route it cannot resolve"
+    );
+}
+
+/// **`write_param` routes an authored write to the chain's base cell.**
+///
+/// The branch-level guard. `dawai-model`'s end-to-end test cannot supply this:
+/// a *document* edit re-declares `ModParamRange`, which `reconcile_audio_rate`
+/// also folds into the cell, so the two paths are redundant there and neither
+/// sabotage alone fails it (measured).
+///
+/// Here there is no `declare_param_ranges` in the loop. The write is made
+/// directly, against a range the "document" never moved, so only
+/// `write_param`'s audio-rate branch can deliver it.
+///
+/// # Why the assertion is on the cell and not the node's atomic
+///
+/// Because the node's atomic is a decoy once a param port is wired: it holds
+/// whatever was last written there while the DSP reads the port.
+/// `tutti-units`' `a_wired_param_port_makes_the_node_ignore_its_atomic` pins
+/// that. Asserting on the atomic would pass with the branch removed — the write
+/// lands there, it just does not sound.
+#[test]
+fn write_param_reaches_an_audio_rate_params_base_cell() {
+    let (mut app, target, _) = app_with_target();
+    let lfo = spawn_lfo(&mut app);
+    app.world_mut().spawn(
+        ModRoute::new(lfo, target, ParamAddr::Unit(UnitParam::Drive))
+            .with_depth(Depth(0.5))
+            .per_sample(),
+    );
+    app.update();
+    app.update();
+
+    let cell = app
+        .world()
+        .resource::<AudioRateChains>()
+        .base_cell(target, ParamAddr::Unit(UnitParam::Drive))
+        .expect("the per-sample chain must exist");
+    assert_eq!(
+        cell.load(tutti_core::Ordering::Acquire),
+        5.0,
+        "the chain starts at the declared base"
+    );
+
+    // An authored write through the real front door — no ModParamRange edit, so
+    // the reconciler's refresh cannot be what delivers it.
+    let node = *app.world().get::<AudioNode>(target).unwrap();
+    app.world_mut()
+        .resource_scope(|w, mut graph: Mut<AudioGraphRes>| {
+            let matrix = w.resource::<bevy_tutti::modulation::ModulationMatrix>();
+            let chains = w.resource::<AudioRateChains>();
+            bevy_tutti::graph::write_param(
+                &mut graph,
+                matrix,
+                chains,
+                target,
+                &node,
+                UnitParam::Drive,
+                9.0,
+            );
+        });
+
+    assert_eq!(
+        cell.load(tutti_core::Ordering::Acquire),
+        9.0,
+        "write_param must land on the chain's base cell; an unchanged cell \
+         means the write went to the node's own atomic, which a wired param \
+         port ignores"
+    );
+}
+
+/// **A range edit reaches a live chain without respawning it.**
+///
+/// The other half of the base path: `declare_param_ranges`-style edits arrive
+/// as a new `ModParamRange`, and `reconcile_audio_rate` must fold the new base
+/// into the existing chain's cell.
+///
+/// Both halves of the assertion matter. Without the first, the base is frozen
+/// at its spawn value for the chain's whole life — which is what shipped.
+/// Without the second, the "fix" of respawning the chain would pass while
+/// restarting every LFO's phase, which is the thing the arity check exists to
+/// prevent.
+#[test]
+fn a_range_edit_reaches_a_live_chain_without_respawning_it() {
+    let (mut app, target, _) = app_with_target();
+    let lfo = spawn_lfo(&mut app);
+    app.world_mut().spawn(
+        ModRoute::new(lfo, target, ParamAddr::Unit(UnitParam::Drive))
+            .with_depth(Depth(0.5))
+            .per_sample(),
+    );
+    app.update();
+    app.update();
+
+    let before: Vec<Entity> = {
+        let chains = app.world().resource::<AudioRateChains>();
+        let chain = chains
+            .get(target, ParamAddr::Unit(UnitParam::Drive))
+            .expect("the chain must exist");
+        std::iter::once(chain.base)
+            .chain(std::iter::once(chain.sum))
+            .chain(chain.shapers.iter().copied())
+            .collect()
+    };
+    let cell = app
+        .world()
+        .resource::<AudioRateChains>()
+        .base_cell(target, ParamAddr::Unit(UnitParam::Drive))
+        .unwrap();
+
+    // Re-declare the range with a new base — the same shape a document edit
+    // takes, and the same route count, so the arity check will skip it.
+    app.world_mut()
+        .entity_mut(target)
+        .insert(ModParamRange::default().with(ParamAddr::Unit(UnitParam::Drive), 9.0, 0.0, 10.0));
+    app.update();
+
+    assert_eq!(
+        cell.load(tutti_core::Ordering::Acquire),
+        9.0,
+        "the new authored base must reach the live chain's cell"
+    );
+
+    let after: Vec<Entity> = {
+        let chains = app.world().resource::<AudioRateChains>();
+        let chain = chains
+            .get(target, ParamAddr::Unit(UnitParam::Drive))
+            .expect("the chain must still exist");
+        std::iter::once(chain.base)
+            .chain(std::iter::once(chain.sum))
+            .chain(chain.shapers.iter().copied())
+            .collect()
+    };
+    assert_eq!(
+        before, after,
+        "a base edit must not respawn the chain — respawning restarts every \
+         LFO's phase, which is exactly what the arity check protects"
+    );
+}
+
+/// **A depth edit on a live route reaches its shaper.**
+///
+/// `ParamShaperUnit` bakes depth, polarity and curve into a LUT at construction
+/// and has no setter, and the reconciler's shape test is the group's *arity* —
+/// so before this was fixed, a depth slider changed the declaration and nothing
+/// else. The chain kept rendering with the depth it was born with, for its
+/// whole life. A dead control, exactly like the frozen base beside it.
+///
+/// # The assertions, and why each is needed
+///
+/// - The **shaper's output moved**: read by ticking the live node, not by
+///   trusting the declaration. This is the bug.
+/// - The **sum and base survived**: a whole-chain respawn would also make the
+///   first assertion pass while silently reverting the authored base to
+///   `ModParamRange`'s, which is the regression this shape of fix invites.
+/// - The **LFO's node survived**: the module's anti-respawn note protects the
+///   modulator's phase, and this pins that a shaper swap does not touch it.
+#[test]
+fn a_depth_edit_reaches_a_live_shaper() {
+    let (mut app, target, _) = app_with_target();
+    let lfo = spawn_lfo(&mut app);
+    let route = app
+        .world_mut()
+        .spawn(
+            ModRoute::new(lfo, target, ParamAddr::Unit(UnitParam::Drive))
+                .with_depth(Depth(0.1))
+                .per_sample(),
+        )
+        .id();
+    app.update();
+    app.update();
+
+    /// The shaper's offset at full-scale input — its effective depth.
+    fn shaped(app: &App, target: Entity) -> f32 {
+        let chains = app.world().resource::<AudioRateChains>();
+        let chain = chains
+            .get(target, ParamAddr::Unit(UnitParam::Drive))
+            .expect("the chain must exist");
+        let node = app.world().get::<AudioNode>(chain.shapers[0]).unwrap().0;
+        let graph = app.world().resource::<AudioGraphRes>();
+        let unit = graph
+            .0
+            .node_as::<tutti_units::ParamShaperUnit>(node)
+            .expect("the shaper is a ParamShaperUnit");
+        let mut out = [0.0f32; 1];
+        tutti_core::dsp::AudioUnit::tick(&mut unit.clone(), &[1.0], &mut out);
+        out[0]
+    }
+
+    let before = shaped(&app, target);
+    assert!(
+        (before - 0.1).abs() < 1e-3,
+        "the chain starts at its authored depth; got {before}"
+    );
+
+    let (sum_before, base_before, lfo_node_before) = {
+        let chains = app.world().resource::<AudioRateChains>();
+        let chain = chains
+            .get(target, ParamAddr::Unit(UnitParam::Drive))
+            .unwrap();
+        let lfo_node = app
+            .world()
+            .get::<ModSourceNode>(lfo)
+            .expect("the LFO must have a node")
+            .0;
+        (chain.sum, chain.base, lfo_node)
+    };
+
+    app.world_mut().get_mut::<ModRoute>(route).unwrap().depth = Depth(0.8);
+    app.update();
+
+    let after = shaped(&app, target);
+    assert!(
+        (after - 0.8).abs() < 1e-3,
+        "the edited depth must reach the live shaper; got {after} (was \
+         {before}). An unchanged value means the declaration moved and the \
+         rendered node did not."
+    );
+
+    let chains = app.world().resource::<AudioRateChains>();
+    let chain = chains
+        .get(target, ParamAddr::Unit(UnitParam::Drive))
+        .unwrap();
+    assert_eq!(
+        (chain.sum, chain.base),
+        (sum_before, base_before),
+        "only the shaper may be rebuilt — respawning the whole chain would \
+         revert the authored base to whatever ModParamRange last declared"
+    );
+    assert_eq!(
+        app.world().get::<ModSourceNode>(lfo).unwrap().0,
+        lfo_node_before,
+        "the LFO's node must survive: respawning it restarts its phase, which \
+         is what the anti-respawn policy actually protects"
+    );
+}
+
+/// **A range edit reaches a live chain's clamp.**
+///
+/// The third and last of the frozen-at-construction bugs on this path, after
+/// the base and the shaper. `ParamSumUnit` held `min`/`max` as plain fields, so
+/// narrowing a param's range moved the declaration and nothing else — the sum
+/// went on clamping to the range it was born with.
+///
+/// Asserts the entities are unchanged for the same reason
+/// `a_range_edit_reaches_a_live_chain_without_respawning_it` does: rebuilding
+/// the sum would apply the new clamp *and* silently revert the authored base,
+/// so a test that only checked the clamp would bless that trade.
+#[test]
+fn a_range_edit_reaches_a_live_clamp() {
+    let (mut app, target, _) = app_with_target();
+    let lfo = spawn_lfo(&mut app);
+    app.world_mut().spawn(
+        ModRoute::new(lfo, target, ParamAddr::Unit(UnitParam::Drive))
+            .with_depth(Depth(0.5))
+            .per_sample(),
+    );
+    app.update();
+    app.update();
+
+    /// What the live sum clamps `base` to, with every offset port at zero.
+    fn clamped(app: &App, target: Entity, base: f32) -> f32 {
+        let chains = app.world().resource::<AudioRateChains>();
+        let chain = chains
+            .get(target, ParamAddr::Unit(UnitParam::Drive))
+            .expect("the chain must exist");
+        let node = app.world().get::<AudioNode>(chain.sum).unwrap().0;
+        let graph = app.world().resource::<AudioGraphRes>();
+        let unit = graph
+            .0
+            .node_as::<tutti_units::ParamSumUnit>(node)
+            .expect("the sum is a ParamSumUnit");
+        let mut out = [0.0f32; 1];
+        tutti_core::dsp::AudioUnit::tick(&mut unit.clone(), &[base, 0.0], &mut out);
+        out[0]
+    }
+
+    assert_eq!(
+        clamped(&app, target, 100.0),
+        10.0,
+        "the chain starts clamped to its declared max"
+    );
+
+    let (sum_before, base_before) = {
+        let chains = app.world().resource::<AudioRateChains>();
+        let chain = chains
+            .get(target, ParamAddr::Unit(UnitParam::Drive))
+            .unwrap();
+        (chain.sum, chain.base)
+    };
+
+    // Narrow the declared range: 0..=10 becomes 0..=2.
+    app.world_mut()
+        .entity_mut(target)
+        .insert(ModParamRange::default().with(ParamAddr::Unit(UnitParam::Drive), 1.0, 0.0, 2.0));
+    app.update();
+
+    assert_eq!(
+        clamped(&app, target, 100.0),
+        2.0,
+        "the narrowed range must reach the live sum; still clamping at 10 \
+         means the declaration moved and the rendered node did not"
+    );
+
+    let chains = app.world().resource::<AudioRateChains>();
+    let chain = chains
+        .get(target, ParamAddr::Unit(UnitParam::Drive))
+        .unwrap();
+    assert_eq!(
+        (chain.sum, chain.base),
+        (sum_before, base_before),
+        "the clamp must move in place — rebuilding the sum would also revert \
+         the authored base, trading one frozen value for another"
     );
 }

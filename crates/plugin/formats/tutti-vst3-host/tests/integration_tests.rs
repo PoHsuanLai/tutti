@@ -270,7 +270,11 @@ fn a_plugins_subcategories_are_read_from_it_rather_than_left_blank() {
         let info = plugin.info();
         println!("{}: sub_categories={:?}", info.name, info.sub_categories);
         loaded += 1;
-        if info.sub_categories.as_deref().is_some_and(|s| !s.is_empty()) {
+        if info
+            .sub_categories
+            .as_deref()
+            .is_some_and(|s| !s.is_empty())
+        {
             declared += 1;
         }
     }

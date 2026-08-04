@@ -383,7 +383,11 @@ mod tests {
     fn velocity_endpoints_and_centre_are_exact() {
         use tutti_types::Velocity;
         assert_eq!(velocity_to_midi2(Velocity::SILENT), 0x0000);
-        assert_eq!(velocity_to_midi2(Velocity::CENTER), 0x8000, "centre must be mezzo-forte");
+        assert_eq!(
+            velocity_to_midi2(Velocity::CENTER),
+            0x8000,
+            "centre must be mezzo-forte"
+        );
         assert_eq!(velocity_to_midi2(Velocity::MAX), u16::MAX);
     }
 

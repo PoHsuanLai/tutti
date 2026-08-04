@@ -173,9 +173,8 @@ mod tests {
             _reserved2: 0,
         };
 
-        let event = unsafe {
-            Event::from_raw_event(&raw as *const api::MidiEvent as *const api::Event)
-        };
+        let event =
+            unsafe { Event::from_raw_event(&raw as *const api::MidiEvent as *const api::Event) };
 
         match event {
             Event::Midi(midi) => {

@@ -15,8 +15,16 @@
 //! [`rebuild`](super::rebuild) compiles the *value* matrix — a routing table the
 //! driver reads. This compiles a *graph*, and a graph is reconciled against what
 //! already exists rather than rebuilt from scratch: respawning the chain every
-//! time a depth slider moved would restart every LFO's phase and re-allocate
-//! nodes on a frame that only needed one atomic written.
+//! time a depth slider moved would re-allocate nodes on a frame that only
+//! needed one atomic written, and would revert the authored base — the chain's
+//! base cell does not survive a respawn.
+//!
+//! **What "do not respawn" protects, precisely.** The instinct is "it restarts
+//! the LFO", and that is true of a *source* node but not of this chain: the
+//! `LfoNode` lives on the `ModSource` entity ([`ModSourceNode`]), spawned once
+//! by [`ensure_source_nodes`] and skipped forever after. So a shaper can be
+//! swapped without touching a modulator's phase, which is what
+//! [`reshape_chain`] does for an edit no setter can carry.
 //!
 //! So the two are deliberately separate systems over the same declaration. A
 //! route asks for audio rate with [`ModDelivery::PerSample`]; anything else
@@ -37,7 +45,8 @@ use bevy_ecs::prelude::*;
 use std::collections::HashMap;
 
 use tutti_types::{ParamAddr, UnitParam};
-use tutti_units::{AtomicSourceUnit, ParamShaperUnit, ParamSumUnit};
+// The three units are no longer named here: `build_param_mod` owns their
+// construction, which is what keeps the base cell reachable.
 
 use crate::graph::{AudioGraphRes, AudioSource, AudioSources, GraphDirty};
 use crate::modulation::components::{ModClock, ModDelivery, ModParamRange, ModRoute};
@@ -51,16 +60,73 @@ use crate::modulation::driver::ParamKey;
 #[derive(Debug, Clone)]
 pub struct ParamChain {
     /// Feeds the sum's base port — the authored value, riding under the
-    /// modulation. Shares its cell with the control-rate accumulator when one
-    /// exists, so both tiers add onto one base.
+    /// modulation. Its cell is [`base_cell`](ParamChain::base_cell), which is
+    /// where every authored write for this param lands.
     pub base: Entity,
     /// `base + Σ offsets`, clamped once. Its arity is a function of the whole
     /// route group, which is why chains are built per param and not per route.
     pub sum: Entity,
     /// One shaper per route, in the order their offsets occupy the sum's ports.
     pub shapers: Vec<Entity>,
+    /// The shaping each live shaper was **built with**.
+    ///
+    /// `ParamShaperUnit` bakes depth, polarity and curve into a LUT at
+    /// construction and exposes no setter, so the only way to know a route's
+    /// shaping has moved is to remember what the node was made from. Without
+    /// this the reconciler's sole identity test is the group's *arity*, and a
+    /// depth slider — which changes no count — is invisible to it.
+    shaping: Vec<tutti_units::ParamModShaping>,
     /// The sink's param-port index, resolved from `ParamPorts` at spawn.
     pub port: usize,
+    /// The atomic the base unit reads — **the chain's single base owner**.
+    ///
+    /// An authored write lands here, not on the node: a node whose param port
+    /// is wired never reads its own atomic. Held so the chain outlives its
+    /// construction value — without it the base is frozen at whatever
+    /// `ModParamRange` said when the chain was built, which is what
+    /// [`write_param`](crate::graph::write_param)'s audio-rate branch and
+    /// [`refresh_base`](Self::refresh_base) both exist to prevent.
+    base_cell: std::sync::Arc<tutti_core::AtomicF32>,
+    /// The sum's live clamp range.
+    ///
+    /// Held for the same reason as [`base_cell`](Self::base_cell), and against
+    /// the same failure: a range is authored state that moves without the graph
+    /// moving, and it is baked into `ParamSumUnit` at construction. Without a
+    /// handle the only way to apply a new range is to rebuild the sum — which
+    /// rebuilds the chain, which loses the base.
+    bounds: std::sync::Arc<tutti_units::ClampBounds>,
+}
+
+impl ParamChain {
+    /// The chain's base cell — see the field's doc for why it is the only
+    /// address an authored write has.
+    pub fn base_cell(&self) -> std::sync::Arc<tutti_core::AtomicF32> {
+        std::sync::Arc::clone(&self.base_cell)
+    }
+
+    /// Store `base` if it differs from what the cell already holds.
+    ///
+    /// Guarded rather than unconditional: the audio thread loads this cell once
+    /// per block, and a same-value store is a pointless write to a line another
+    /// thread is reading.
+    fn refresh_base(&self, base: f32) {
+        use tutti_core::Ordering;
+        if self.base_cell.load(Ordering::Acquire) != base {
+            self.base_cell.store(base, Ordering::Release);
+        }
+    }
+
+    /// Store `(min, max)` if either differs from what the sum already clamps to.
+    ///
+    /// Guarded like [`refresh_base`](Self::refresh_base), and for the same
+    /// reason — but here the guard also narrows the window in which a reader can
+    /// observe the two stores half-applied. It cannot close it; `ParamSumUnit`
+    /// orders the pair at the read for that.
+    fn refresh_bounds(&self, min: f32, max: f32) {
+        if self.bounds.get() != (min, max) {
+            self.bounds.set(min, max);
+        }
+    }
 }
 
 /// Every audio-rate chain currently materialised, by the param it drives.
@@ -85,6 +151,19 @@ impl AudioRateChains {
     /// the sum's base cell instead of the node.
     pub fn is_audio_rate(&self, target: Entity, param: ParamAddr) -> bool {
         self.0.contains_key(&(target, param))
+    }
+
+    /// The base cell for an audio-rate param, if one is materialised.
+    ///
+    /// The write half of [`is_audio_rate`](Self::is_audio_rate): that predicate
+    /// says an authored write must go elsewhere, and this says where.
+    /// [`write_param`](crate::graph::write_param) is the caller.
+    pub fn base_cell(
+        &self,
+        target: Entity,
+        param: ParamAddr,
+    ) -> Option<std::sync::Arc<tutti_core::AtomicF32>> {
+        self.0.get(&(target, param)).map(ParamChain::base_cell)
     }
 }
 
@@ -137,30 +216,44 @@ fn spawn_chain(
     };
     let port = param_port(graph, target_node, unit)?;
 
-    let base_unit = AtomicSourceUnit::new(range.base);
-    let base_id = graph.0.add(base_unit);
-    // Sized to the group: one base port plus one offset port per route.
-    let sum_id = graph
-        .0
-        .add(ParamSumUnit::new(routes.len(), range.min, range.max));
+    // A `ModSource` entity carries a *modulator*, not a graph node — the value
+    // path never needed one. `ensure_source_nodes` spawns the `LfoNode` that
+    // makes the same modulator renderable, and this is where the shapers pick
+    // them up. Resolved before building so a missing source aborts the whole
+    // chain rather than leaving half of it in the graph.
+    let feeds: Vec<Entity> = routes
+        .iter()
+        .map(|r| source_nodes.get(&r.source).copied())
+        .collect::<Option<_>>()?;
 
-    let base = commands.spawn(tutti_core::AudioNode(base_id)).id();
-    let sum = commands.spawn(tutti_core::AudioNode(sum_id)).id();
+    // Through the engine's own assembler, which is what keeps the base cell.
+    // `build_param_mod`, not `wire_param_mod`: this crate declares its edges as
+    // `AudioSources` and diffs them against `Net` each frame, so an edge
+    // connected here would be reverted on the next wire pass. The builder makes
+    // the nodes; the declarations below make the edges.
+    let shaping: Vec<tutti_units::ParamModShaping> = routes
+        .iter()
+        .map(|r| tutti_units::ParamModShaping {
+            depth: r.depth,
+            polarity: r.polarity,
+            curve: r.curve,
+        })
+        .collect();
+    let built =
+        tutti_units::build_param_mod(&mut graph.0, range.base, range.min, range.max, &shaping);
+    // **The handle, not a copy.** A node whose param port is wired never reads
+    // its own atomic, so this cell is the only address an authored write has —
+    // see `ParamModChain::base_cell` and `write_param`'s audio-rate branch.
+    let base_cell = built.base_cell();
+    let bounds = built.bounds();
+
+    let base = commands.spawn(tutti_core::AudioNode(built.base)).id();
+    let sum = commands.spawn(tutti_core::AudioNode(built.sum)).id();
 
     let mut shapers = Vec::with_capacity(routes.len());
     let mut sum_sources = AudioSources::silent().with(0, AudioSource::node(base));
-    for (i, route) in routes.iter().enumerate() {
-        let shaper_id = graph.0.add(ParamShaperUnit::new(
-            route.depth,
-            route.polarity,
-            route.curve,
-        ));
+    for (i, (&shaper_id, &feed)) in built.shapers.iter().zip(feeds.iter()).enumerate() {
         let shaper = commands.spawn(tutti_core::AudioNode(shaper_id)).id();
-        // A `ModSource` entity carries a *modulator*, not a graph node — the
-        // value path never needed one. `ensure_source_nodes` spawns the
-        // `LfoNode` that makes the same modulator renderable, and this is where
-        // the shaper picks it up.
-        let feed = source_nodes.get(&route.source).copied()?;
         commands.entity(shaper).insert(AudioSources::from(feed));
         // Offsets occupy ports 1..=N, in group order.
         sum_sources = sum_sources.with(i + 1, AudioSource::node(shaper));
@@ -188,7 +281,10 @@ fn spawn_chain(
         base,
         sum,
         shapers,
+        shaping,
         port,
+        base_cell,
+        bounds,
     })
 }
 
@@ -365,22 +461,52 @@ pub fn reconcile_audio_rate(
         .collect();
     for key in stale {
         if let Some(chain) = chains.0.remove(&key) {
-            despawn_chain(&mut commands, &mut graph, &mut dirty, &chain);
+            despawn_chain(&mut commands, &mut graph, &mut dirty, key.0, &chain);
         }
     }
 
     for (key, group) in grouped {
         // An existing chain of the right shape is left alone: respawning would
         // restart every LFO in it.
+        //
+        // But "left alone" must not mean "left stale". The base is authored
+        // state that changes without the chain's *shape* changing — a fader
+        // move, a document edit — and `ModParamRange` is in this system's dirty
+        // gate precisely so those arrive here. Before this refresh the base was
+        // read once at spawn and never again, so an authored edit to an
+        // audio-rate param was silently discarded for the chain's whole life.
+        //
+        // Cheap and in-place: guarded atomic stores, no respawn. The bounds
+        // ride along for the same reason the base does — a range is authored
+        // state that moves without the graph moving, and `ParamSumUnit` now
+        // holds them in a shared cell rather than baking them at construction.
+        //
+        // Shaping is handled just below, and needs more than a store because
+        // `ParamShaperUnit` has no setter either.
         if chains
             .0
             .get(&key)
             .is_some_and(|c| c.shapers.len() == group.len())
         {
+            if let Some(range) = ranges.get(key.0).ok().and_then(|r| r.get(key.1)) {
+                if let Some(chain) = chains.0.get(&key) {
+                    chain.refresh_base(range.base);
+                    chain.refresh_bounds(range.min, range.max);
+                }
+            }
+            reshape_chain(
+                &mut commands,
+                &mut graph,
+                &mut dirty,
+                &mut chains,
+                key,
+                &group,
+                &source_nodes,
+            );
             continue;
         }
         if let Some(old) = chains.0.remove(&key) {
-            despawn_chain(&mut commands, &mut graph, &mut dirty, &old);
+            despawn_chain(&mut commands, &mut graph, &mut dirty, key.0, &old);
         }
         let (target, param) = key;
         let Ok(node) = nodes.get(target) else {
@@ -408,12 +534,109 @@ pub fn reconcile_audio_rate(
     }
 }
 
+/// Rebuild only those shapers whose declared shaping has moved.
+///
+/// # Why a targeted respawn rather than a setter or a whole-chain rebuild
+///
+/// [`ParamShaperUnit`](tutti_units::ParamShaperUnit) bakes depth, polarity and
+/// curve into a LUT at construction and exposes no setter, so a moved slider
+/// cannot be written into the live node — something has to be rebuilt.
+///
+/// Rebuilding the *chain* is what the module's anti-respawn note warns against,
+/// but read that note precisely: it protects the **LFO's phase**, and the LFO is
+/// not in the chain. `ensure_source_nodes` spawns it on the `ModSource` entity
+/// (`ModSourceNode`) and skips any source that already has one, so it survives
+/// anything done here. What a whole-chain respawn would actually cost is the
+/// base cell — the authored value would silently revert to `ModParamRange`'s —
+/// and two extra nodes churned for a param that only needed one.
+///
+/// So: one shaper out, one shaper in, the sum and the base untouched. A depth
+/// drag churns exactly one node per moved route per frame.
+fn reshape_chain(
+    commands: &mut Commands<'_, '_>,
+    graph: &mut AudioGraphRes,
+    dirty: &mut GraphDirty,
+    chains: &mut AudioRateChains,
+    key: ParamKey,
+    routes: &[&ModRoute],
+    source_nodes: &HashMap<Entity, Entity>,
+) {
+    let Some(chain) = chains.0.get_mut(&key) else {
+        return;
+    };
+
+    let mut sum_sources: Option<AudioSources> = None;
+    for (i, route) in routes.iter().enumerate() {
+        let want = tutti_units::ParamModShaping {
+            depth: route.depth,
+            polarity: route.polarity,
+            curve: route.curve,
+        };
+        if chain.shaping.get(i) == Some(&want) {
+            continue;
+        }
+
+        let unit = tutti_units::ParamShaperUnit::new(want.depth, want.polarity, want.curve);
+        let id = graph.0.add(unit);
+        let replacement = commands.spawn(tutti_core::AudioNode(id)).id();
+
+        // The new shaper needs the same feed the old one had. Re-declared from
+        // the route rather than copied off the old entity, because the route is
+        // the source of truth and the old entity is about to be despawned.
+        //
+        // A source with no node is not an error here — it means the LFO has not
+        // spawned yet. Leaving the old shaper in place is the right failure: a
+        // stale depth beats an offset port fed by nothing.
+        let Some(&feed) = source_nodes.get(&route.source) else {
+            commands.entity(replacement).despawn();
+            continue;
+        };
+        commands
+            .entity(replacement)
+            .insert(AudioSources::from(feed));
+
+        let old = std::mem::replace(&mut chain.shapers[i], replacement);
+        commands.entity(old).despawn();
+        chain.shaping[i] = want;
+
+        // The sum's declaration names the shaper *entity*, so it has to be
+        // re-declared with the replacement. Built once and inserted after the
+        // loop so N moved routes cost one component write, not N.
+        let sources = sum_sources.get_or_insert_with(|| {
+            let mut s = AudioSources::silent().with(0, AudioSource::node(chain.base));
+            for (j, &sh) in chain.shapers.iter().enumerate() {
+                s = s.with(j + 1, AudioSource::node(sh));
+            }
+            s
+        });
+        *sources = sources.clone().with(i + 1, AudioSource::node(replacement));
+        dirty.0 = true;
+    }
+
+    if let Some(sources) = sum_sources {
+        commands.entity(chain.sum).insert(sources);
+    }
+}
+
 /// Tear a chain down: despawn its entities and let the `AudioNode` remove
 /// observer take the graph nodes with them.
+///
+/// # The sink's declaration goes too
+///
+/// `spawn_chain` extended the sink's `AudioSources` with
+/// `port -> AudioSource::node(sum)`. Leaving that behind points the declaration
+/// at a despawned entity, and the wire rebuild then resolves it to nothing — so
+/// the param port ends up **unfed**, which this module's own docs note reads as
+/// a literal `0.0` rather than as the authored value. A distortion at drive 0
+/// is silence, not a passthrough.
+///
+/// Retiring the declaration returns the port to `Silent`, which is the state
+/// `spawn_chain` found it in.
 fn despawn_chain(
     commands: &mut Commands<'_, '_>,
     _graph: &mut AudioGraphRes,
     dirty: &mut GraphDirty,
+    sink: Entity,
     chain: &ParamChain,
 ) {
     for e in std::iter::once(chain.base)
@@ -422,6 +645,20 @@ fn despawn_chain(
     {
         commands.entity(e).despawn();
     }
+
+    // Deferred for the same reason the insert was: one `AudioSources` owns the
+    // sink's whole port space, so this reads the current declaration and edits
+    // one port of it rather than replacing the component.
+    let port = chain.port;
+    commands.queue(move |world: &mut World| {
+        let Some(existing) = world.get::<AudioSources>(sink).cloned() else {
+            return; // sink already gone — nothing to retire
+        };
+        if let Ok(mut e) = world.get_entity_mut(sink) {
+            e.insert(existing.with(port, AudioSource::Silence));
+        }
+    });
+
     dirty.0 = true;
 }
 

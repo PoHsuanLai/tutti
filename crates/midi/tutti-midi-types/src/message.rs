@@ -1078,7 +1078,11 @@ mod tests {
             );
             assert_eq!(msg.frame_offset(), 91);
             let back = MidiEvent::try_from(msg).expect("channel controller re-encodable");
-            assert_eq!(back.data_words(), ev.data_words(), "wire mismatch for {msg:?}");
+            assert_eq!(
+                back.data_words(),
+                ev.data_words(),
+                "wire mismatch for {msg:?}"
+            );
             assert_eq!(back, ev, "round-trip mismatch for {msg:?}");
         }
     }
@@ -1094,9 +1098,15 @@ mod tests {
             Some(11)
         );
         assert_eq!(
-            MidiEvent::relative_assignable_controller(MidiGroup::FIRST, MidiChannel::new(4), 0, 6, 0)
-                .message()
-                .channel(),
+            MidiEvent::relative_assignable_controller(
+                MidiGroup::FIRST,
+                MidiChannel::new(4),
+                0,
+                6,
+                0
+            )
+            .message()
+            .channel(),
             Some(4)
         );
     }

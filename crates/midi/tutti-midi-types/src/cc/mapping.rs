@@ -114,13 +114,8 @@ mod tests {
         assert!(!mapping.matches(MidiChannel::FIRST, CCNumber::BREATH)); // Wrong CC
 
         // Test any channel
-        let any_channel = CCMapping::new(
-            None,
-            CCNumber::MOD_WHEEL,
-            CCTarget::MasterVolume,
-            0.0,
-            1.0,
-        );
+        let any_channel =
+            CCMapping::new(None, CCNumber::MOD_WHEEL, CCTarget::MasterVolume, 0.0, 1.0);
         assert!(any_channel.matches(MidiChannel::FIRST, CCNumber::MOD_WHEEL));
         assert!(any_channel.matches(MidiChannel::LAST, CCNumber::MOD_WHEEL));
     }

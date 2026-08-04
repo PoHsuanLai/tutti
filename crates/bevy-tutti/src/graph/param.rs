@@ -26,8 +26,8 @@
 //! # Modulated params
 //!
 //! A param the modulation driver owns must not be written here — modulation
-//! flushes `base + Σ offsets` into the same atomic every frame, so a plain
-//! write would be reverted within a frame and the fader would look stuck. The
+//! flushes `base + Σ layers` into the same atomic every frame, so a plain write
+//! is overwritten by the next flush and the fader snaps back. The
 //! reconciler asks
 //! [`ModulationMatrix::is_modulated`](crate::modulation::ModulationMatrix::is_modulated)
 //! and routes the authored value to the accumulator's *base* instead, which is
@@ -87,24 +87,54 @@ impl<U: Unit<Raw = f32> + Default, const P: u16> Default for AudioParam<U, P> {
 /// Write one authored scalar to `param` on `node`, respecting modulation.
 ///
 /// **The single home for "an authored value reaches the graph".** A param write
-/// is two branches, not one, and both must be taken together:
+/// is three branches, not one, and the order is fixed:
 ///
-/// - a **modulated** param has a second writer, so the authored value goes to
-///   the accumulator's *base* and rides under the modulation;
-/// - an **unmodulated** one goes straight to the node's own atomic.
+/// 1. an **audio-rate** param's port is fed by a `ParamSumUnit`, and a node with
+///    a wired param port never reads its own atomic — so the value goes to the
+///    sum's *base cell*;
+/// 2. a **control-rate modulated** param has a second writer, so the value goes
+///    to the accumulator's *base* and rides under the modulation;
+/// 3. an **unmodulated** one goes straight to the node's own atomic.
+///
+/// The three are mutually exclusive by construction — `ModDelivery` is one axis,
+/// and `a_per_sample_route_is_not_also_claimed_by_the_driver` pins that the
+/// driver does not claim an audio-rate param. Ordering them anyway makes that
+/// independent of the invariant rather than dependent on it.
+///
+/// Taking only the last two loses every write to an audio-rate param, and it is
+/// the quietest of the three failures: the write lands on the node's atomic,
+/// which is a real cell that a debugger and a `node_as` read both show holding
+/// the new value — while the DSP reads the port and hears the old one.
+/// `tutti-units`' `a_wired_param_port_makes_the_node_ignore_its_atomic` is the
+/// engine-level statement of it.
 ///
 /// Taking only the first silently drops every write to an unmodulated param —
 /// which is why [`ModulationMatrix::set_base`] is crate-private.
 ///
-/// Taking only the second is worse than it looks, and worth stating precisely
-/// because a test will not show it. [`drive`](crate::modulation::drive) and the
-/// param reconcilers are **both in `GraphReconcileSystems::Params` with no
-/// ordering between them**, and `drive` writes `base + Σ offsets` to the same
-/// atomic every frame. So a direct write to a modulated param does not merely
-/// get overwritten on the *next* frame — it races the flush within the current
-/// one, and which value survives depends on a system order Bevy does not
-/// promise. At steady state the two branches are observationally identical,
-/// which is exactly why the hazard is invisible until it is intermittent.
+/// Taking only the second loses every write to a *modulated* param, and the
+/// loss is **deterministic rather than racy** — worth stating precisely, because
+/// the shape of the failure decides how you would find it.
+/// [`drive`](crate::modulation::drive) mirrors `clamp(base + Σ layers)` into the
+/// node's atomic every frame, so a direct write to that cell is overwritten by
+/// the next flush unconditionally. The symptom is a control that snaps back,
+/// reproducible on demand.
+///
+/// **System ordering is not what saves this, so do not try to fix it with a
+/// `.before()`.** `drive` and the param reconcilers do share
+/// `GraphReconcileSystems::Params` with no ordering between them, but the two
+/// writers never contend: `tutti_mod::AtomicTarget` holds a mutex-guarded
+/// `LayeredCurve`, and they touch *different fields* of it — `set_base` the
+/// base, `accumulate` a keyed layer — each recomputing the composite under the
+/// same lock. The writes commute and both survive in either order
+/// (`AtomicTarget`'s own `set_base_re_mirrors` pins exactly that). Adding an
+/// ordering constraint here would buy nothing and imply a hazard that is not
+/// there.
+///
+/// The engine tests the property that matters — that an authored write to a
+/// modulated param lands on the base and therefore *survives* — in
+/// `set_base_moves_a_modulated_param_without_fighting_the_driver`. This
+/// function's job is to route the write to the right field; the accumulator
+/// handles the rest.
 ///
 /// # Why this is a free function and not a method on a component
 ///
@@ -129,6 +159,7 @@ impl<U: Unit<Raw = f32> + Default, const P: u16> Default for AudioParam<U, P> {
 pub fn write_param(
     graph: &mut AudioGraphRes,
     #[cfg(feature = "modulation")] matrix: &crate::modulation::ModulationMatrix,
+    #[cfg(feature = "modulation")] chains: &crate::modulation::audio_rate::AudioRateChains,
     entity: Entity,
     node: &AudioNode,
     param: UnitParam,
@@ -138,6 +169,14 @@ pub fn write_param(
     // it, and nothing else here needs it.
     use tutti_core::dsp::AudioUnit as _;
 
+    // 1. Audio rate: the node reads its port, not its atomic.
+    #[cfg(feature = "modulation")]
+    if let Some(cell) = chains.base_cell(entity, ParamAddr::Unit(param)) {
+        cell.store(value, tutti_core::Ordering::Release);
+        return;
+    }
+
+    // 2. Control rate: the driver owns the atomic, so the value rides the base.
     #[cfg(feature = "modulation")]
     if matrix.set_base(entity, ParamAddr::Unit(param), value) {
         return;
@@ -145,6 +184,7 @@ pub fn write_param(
     #[cfg(not(feature = "modulation"))]
     let _ = entity;
 
+    // 3. Unmodulated: the node's own atomic is the value.
     graph
         .0
         .set(tutti_core::unit_param::node_setting(node.0, param, value));
@@ -165,6 +205,7 @@ pub fn write_param(
 pub fn reconcile_audio_param<U: Unit<Raw = f32> + Send + Sync + 'static, const P: u16>(
     mut graph: ResMut<AudioGraphRes>,
     #[cfg(feature = "modulation")] matrix: Res<crate::modulation::ModulationMatrix>,
+    #[cfg(feature = "modulation")] chains: Res<crate::modulation::audio_rate::AudioRateChains>,
     changed: Query<(Entity, &AudioNode, &AudioParam<U, P>), Changed<AudioParam<U, P>>>,
 ) {
     let Ok(param) = UnitParam::try_from(P) else {
@@ -175,6 +216,8 @@ pub fn reconcile_audio_param<U: Unit<Raw = f32> + Send + Sync + 'static, const P
             &mut graph,
             #[cfg(feature = "modulation")]
             &matrix,
+            #[cfg(feature = "modulation")]
+            &chains,
             entity,
             node,
             param,

@@ -97,6 +97,39 @@ impl ModulationMatrix {
 /// rebuilding mints new source objects, and a fresh `Sourced` starts at phase
 /// zero, so rebuilding on a slider drag would restart every LFO in the graph
 /// sixty times a second.
+///
+/// # A rebuild re-seeds every base from `ModParamRange`
+///
+/// Worth stating because it decides who owns a param's base. Resolving a target
+/// calls `ModParams::mod_target(param, range.base, ..)`, and every impl —
+/// native and plugin alike — *constructs* an accumulator seeded with that
+/// `base`. Since `rebuild` replaces `matrix.targets` wholesale, a base
+/// previously set through
+/// [`write_param`](crate::graph::write_param) is discarded and reset to
+/// whatever `ModParamRange` last declared.
+///
+/// Measured, not inferred: with a document base of 5.0, a `write_param` write
+/// of 8.0, and a `+1.0` modulator, the param reads 9.0 — then 6.0 after a
+/// rebuild triggered by a *route* change that never touched the base.
+///
+/// **For a control-rate param, `ModParamRange` is therefore the authority on
+/// the base, and `write_param` is only authoritative between rebuilds.** In
+/// this workspace that is invisible, because the one producer of
+/// `ModParamRange` (`dawai_model`'s `declare_param_ranges`) reads the same
+/// authored document the `write_param` call sites do, so the two always agree.
+/// It stops being invisible the moment a base can move without the document
+/// moving — a MIDI-learn ride, a plugin writing its own param back, an
+/// automation lane evaluated outside the document. Any such writer must reach
+/// `ModParamRange`, not just the accumulator.
+///
+/// **This does not hold for an audio-rate (`PerSample`) param**, and the
+/// difference is worth knowing before generalising the rule. Such a param is
+/// not in `matrix.targets` at all (see the skip below), so nothing here
+/// reconstructs it: its base lives in the chain's own `Arc<AtomicF32>`, which
+/// survives every rebuild because `reconcile_audio_rate` preserves a chain of
+/// the right shape. There the ownership is the other way round — the cell is
+/// authoritative, and `ModParamRange` edits are folded *into* it by
+/// `ParamChain::refresh_base`.
 #[allow(clippy::type_complexity)]
 pub fn rebuild(
     mut matrix: ResMut<ModulationMatrix>,
@@ -401,6 +434,138 @@ mod tests {
         assert!(
             !matrix.set_base(target, ParamAddr::Unit(UnitParam::Drive), 8.0),
             "nothing routes here, so the caller owns the write"
+        );
+    }
+
+    /// An authored write through [`write_param`](crate::graph::write_param)
+    /// survives on a **modulated** param — the branch that routes it to the
+    /// accumulator's base rather than the node's atomic.
+    ///
+    /// This is the guard that was missing. `set_base_moves_a_modulated_param…`
+    /// above calls `set_base` directly, so it passes even when `write_param`
+    /// stops calling it; this one goes through the real front door.
+    ///
+    /// **The loss it catches is deterministic, not a race.** Measured by
+    /// neutering the branch: 200/200 trials lost the write, 0/200 with it
+    /// restored. `drive` re-mirrors `clamp(base + Σ layers)` into the node
+    /// atomic every frame, so a direct write there is overwritten by the next
+    /// flush regardless of system order — the two writers touch different
+    /// fields of a mutex-guarded `LayeredCurve` and never contend.
+    #[test]
+    fn an_authored_write_through_write_param_survives_modulation() {
+        let (mut app, target) = app_with_graph();
+        let lfo = app
+            .world_mut()
+            // Zero-rate square: a constant offset, so the base shift stays
+            // legible against it rather than sweeping.
+            .spawn((
+                ModSource::new(LfoShape::Square),
+                ModRate::free_running(Hz(0.0)),
+            ))
+            .id();
+        app.world_mut().spawn(
+            ModRoute::new(lfo, target, ParamAddr::Unit(UnitParam::Drive)).with_depth(Depth(0.1)),
+        );
+        app.update();
+
+        let node = *app.world().get::<AudioNode>(target).unwrap();
+        app.world_mut()
+            .resource_scope(|w, mut graph: Mut<AudioGraphRes>| {
+                let matrix = w.resource::<ModulationMatrix>();
+                let chains = w.resource::<crate::modulation::audio_rate::AudioRateChains>();
+                crate::graph::write_param(
+                    &mut graph,
+                    matrix,
+                    chains,
+                    target,
+                    &node,
+                    UnitParam::Drive,
+                    8.0,
+                );
+            });
+
+        advance_transport(&mut app, 480);
+        app.update();
+
+        let after = node_drive(&app, target);
+        assert!(
+            after > 7.0,
+            "base moved {BASE_DRIVE} -> 8 through write_param, so the flushed \
+             value should carry it; got {after}. A value near {BASE_DRIVE} means \
+             the write went to the node atomic and the driver overwrote it."
+        );
+    }
+
+    /// **A rebuild re-seeds the base from `ModParamRange`, discarding a
+    /// `write_param` base.**
+    ///
+    /// Pins the ownership rule `rebuild`'s doc states. Not a bug report: it is
+    /// benign in this workspace, because the only producer of `ModParamRange`
+    /// reads the same authored document the `write_param` call sites do. It is
+    /// pinned so that stops being an accident — a future writer that can move a
+    /// base *without* the document moving (MIDI learn, a plugin writing back)
+    /// changes this test, which is the signal to route that writer through
+    /// `ModParamRange` too.
+    #[test]
+    fn a_rebuild_reseeds_the_base_from_the_declared_range() {
+        let (mut app, target) = app_with_graph();
+        let lfo = app
+            .world_mut()
+            .spawn((
+                ModSource::new(LfoShape::Square),
+                ModRate::free_running(Hz(0.0)),
+            ))
+            .id();
+        app.world_mut().spawn(
+            ModRoute::new(lfo, target, ParamAddr::Unit(UnitParam::Drive)).with_depth(Depth(0.1)),
+        );
+        app.update();
+
+        // An authored write the declared range does not know about.
+        let node = *app.world().get::<AudioNode>(target).unwrap();
+        app.world_mut()
+            .resource_scope(|w, mut graph: Mut<AudioGraphRes>| {
+                let matrix = w.resource::<ModulationMatrix>();
+                let chains = w.resource::<crate::modulation::audio_rate::AudioRateChains>();
+                crate::graph::write_param(
+                    &mut graph,
+                    matrix,
+                    chains,
+                    target,
+                    &node,
+                    UnitParam::Drive,
+                    8.0,
+                );
+            });
+        advance_transport(&mut app, 480);
+        app.update();
+
+        let carried = node_drive(&app, target);
+        assert!(
+            carried > 7.0,
+            "between rebuilds the write_param base is authoritative; got {carried}"
+        );
+
+        // Force a rebuild without touching the base: mark the route `Changed`
+        // by rewriting it with the value it already has.
+        {
+            let mut routes = app.world_mut().query::<&mut ModRoute>();
+            let mut route = routes.single_mut(app.world_mut()).unwrap();
+            route.depth = Depth(0.1);
+        }
+        advance_transport(&mut app, 480);
+        app.update();
+        // A second frame, so the driver re-applies its offset over the
+        // freshly-seeded base rather than being read mid-flush.
+        advance_transport(&mut app, 480);
+        app.update();
+
+        let reseeded = node_drive(&app, target);
+        assert!(
+            (reseeded - (BASE_DRIVE + 1.0)).abs() < 0.2,
+            "the rebuild must re-seed from ModParamRange's base ({BASE_DRIVE}) \
+             plus the modulator's +1.0 offset, discarding the 8.0 written \
+             through write_param; got {reseeded} (was {carried} before)"
         );
     }
 }

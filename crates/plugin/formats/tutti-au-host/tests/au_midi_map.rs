@@ -785,12 +785,8 @@ fn a_mapped_cc_actually_moves_the_parameter() {
         // once rather than repeating the number on both sides. 20 is one of the
         // undefined controllers, chosen so no AU reacts to it by default.
         let mapped_cc = CCNumber::new(20);
-        au.add_parameter_midi_mapping(&[AuMidiMapping::control_change(
-            *param,
-            0,
-            mapped_cc.get(),
-        )])
-        .unwrap_or_else(|e| panic!("{}: add failed: {e:?}", unit.label));
+        au.add_parameter_midi_mapping(&[AuMidiMapping::control_change(*param, 0, mapped_cc.get())])
+            .unwrap_or_else(|e| panic!("{}: add failed: {e:?}", unit.label));
         au.send_midi(&[MidiEvent::cc(
             MidiGroup::FIRST,
             MidiChannel::FIRST,

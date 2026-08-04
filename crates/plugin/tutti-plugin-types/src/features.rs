@@ -225,14 +225,23 @@ pub mod probed {
         .union(Features::EDITOR)
         .union(Features::TRANSPORT);
 
-    /// AU answers three: the editor, and both preset bits. The rest are
-    /// unimplemented in this host, not declined by the units — an AU that takes
-    /// MIDI still reports no `MIDI_IN` here.
+    /// AU answers four: MIDI input, the editor, and both preset bits. The rest
+    /// are unimplemented in this host, not declined by the units.
+    ///
+    /// `MIDI_IN` is answered from the component type — an AU is an instrument,
+    /// music effect or MIDI processor, or it is not — which is the same
+    /// predicate the process path gates its per-block `send_midi` on. A plain
+    /// `aufx` effect therefore reports `Some(false)` rather than silence.
+    ///
+    /// `MIDI_OUT` stays unprobed even though the two look symmetric: reading
+    /// MIDI back out of an AU needs a host callback installed on the unit, and
+    /// this loader installs none, so no unit has been asked.
     ///
     /// The preset bits are live-probed together because one AU property backs
     /// both: a unit answering `kAudioUnitProperty_FactoryPresets` can be asked
     /// to load any preset it listed.
-    pub const AU: Features = Features::EDITOR
+    pub const AU: Features = Features::MIDI_IN
+        .union(Features::EDITOR)
         .union(Features::PRESET_LIST)
         .union(Features::PRESET_LOAD);
 }
@@ -329,21 +338,19 @@ mod tests {
     fn each_loader_claims_only_what_it_probes() {
         assert_eq!(
             probed::AU,
-            Features::EDITOR | Features::PRESET_LIST | Features::PRESET_LOAD
+            Features::MIDI_IN | Features::EDITOR | Features::PRESET_LIST | Features::PRESET_LOAD
         );
         assert_eq!(probed::VST2.bits().count_ones(), 5);
         assert!(!probed::VST3.contains(Features::AUTOMATION_STATE));
         assert!(!probed::CLAP.contains(Features::SEQUENCER_CONTEXT));
     }
 
-    /// The AU loader probes the editor and the two preset bits; the remaining
-    /// seven read as "nobody asked" rather than as refusals. This is the gap the
-    /// mask exists to expose; if AU ever probes MIDI, this test is the reminder
-    /// to say so.
+    /// The AU loader probes MIDI input, the editor and the two preset bits; the
+    /// remaining six read as "nobody asked" rather than as refusals. This is the
+    /// gap the mask exists to expose.
     #[test]
     fn the_au_loader_leaves_the_unimplemented_capabilities_unasked() {
         for f in [
-            Features::MIDI_IN,
             Features::MIDI_OUT,
             Features::F64_AUDIO,
             Features::TRANSPORT,
@@ -354,6 +361,43 @@ mod tests {
                 "{f:?} is not probed by the AU loader, so it must not be claimed"
             );
         }
+    }
+
+    /// The AU loader gates its per-block `send_midi` on the component type, so an
+    /// instrument (`aumu`) is sent MIDI and must declare `MIDI_IN`; a plain
+    /// effect (`aufx`) is not sent MIDI and must decline it. Two sources of truth
+    /// for one fact only stay honest if both are pinned.
+    ///
+    /// The predicate is `AuType::receives_midi`, which is macOS-only code behind
+    /// the `au` feature; this test restates the same instrument/effect split
+    /// against the mask, so it runs on every platform.
+    #[test]
+    fn an_au_instrument_reports_the_midi_input_it_is_actually_sent() {
+        assert!(
+            probed::AU.contains(Features::MIDI_IN),
+            "MIDI_IN must be probed, or an instrument's answer cannot be read back"
+        );
+
+        let instrument = FeatureReport::new(probed::AU, Features::MIDI_IN | Features::EDITOR);
+        assert_eq!(instrument.get(Features::MIDI_IN), Some(true));
+        assert!(instrument.enabled(Features::MIDI_IN));
+
+        let effect = FeatureReport::new(probed::AU, Features::EDITOR);
+        assert_eq!(
+            effect.get(Features::MIDI_IN),
+            Some(false),
+            "an aufx effect is never sent MIDI, and now says so rather than staying silent"
+        );
+    }
+
+    /// MIDI output is not the mirror of MIDI input here. Reading events back out
+    /// of an AU needs a host callback this loader never installs, so no unit has
+    /// been asked and the bit must stay silent rather than reporting a refusal.
+    #[test]
+    fn au_midi_output_is_unasked_rather_than_declined() {
+        let report = FeatureReport::new(probed::AU, Features::MIDI_IN);
+        assert_eq!(report.get(Features::MIDI_IN), Some(true));
+        assert_eq!(report.get(Features::MIDI_OUT), None);
     }
 
     /// No loader claims `AUTOMATION_STATE` — nothing sets that bit anywhere, so

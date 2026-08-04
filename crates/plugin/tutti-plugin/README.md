@@ -64,7 +64,7 @@ What each format supports, as reported by its loader in `tutti-plugin-server/src
 | Params get/set + enumerate | Required | ● | ● | ● | ● |
 | State save/restore | Required | ● | ● | ● | ● |
 | `F64_AUDIO` | Negotiated | ◐ | ◐ | ○ | ◐ |
-| `MIDI_IN` | Negotiated | ◐ | ◐ | ○ | ◐ |
+| `MIDI_IN` | Negotiated | ◐ | ◐ | ◐ | ◐ |
 | `MIDI_OUT` | Negotiated | ◐ | ◐ | ○ | ◐ |
 | `EDITOR` | Negotiated | ● | ● | ● | ● |
 | `EDITOR_RESIZE` | Negotiated | ◐ | ◐ | ○ | ○ |
@@ -75,7 +75,7 @@ What each format supports, as reported by its loader in `tutti-plugin-server/src
 | `PRESET_LIST` | Reaction | ✕ | ○ | ◐ | ○ |
 | `PRESET_LOAD` | Reaction | ✕ | ◐ | ◐ | ○ |
 
-Notes: the AU loader reports `EDITOR` plus the two preset bits — its MIDI / transport / f64 paths are unimplemented (`○`), not spec-impossible. VST2's `F64_AUDIO` is advisory (the `vst` crate is f32 internally). `SEQUENCER_CONTEXT` (chord/scale/per-note text) is a VST3-only concept by spec.
+Notes: the AU loader reports `MIDI_IN`, `EDITOR` and the two preset bits — its MIDI-output / transport / f64 paths are unimplemented (`○`), not spec-impossible. AU's `MIDI_IN` is `◐` off the component type (`aumu` / `aumf` / `aumi` receive MIDI, `aufx` does not), which is the same predicate the process path gates its per-block `send_midi` on. `MIDI_OUT` is not its mirror: reading events back needs a host callback this loader does not install, so it stays `○`. VST2's `F64_AUDIO` is advisory (the `vst` crate is f32 internally). `SEQUENCER_CONTEXT` (chord/scale/per-note text) is a VST3-only concept by spec.
 
 The preset bits are the one place a `✕` means "the format solves this elsewhere" rather than "the format cannot". A VST3 program is an ordinary parameter carrying `kIsProgramChange`, selected through the parameter path, so there is no separate preset mechanism for a flag to describe — reporting one would assert an API VST3 does not have. CLAP splits the two: `CLAP_EXT_PRESET_LOAD` loads from a path, while enumeration lives in the factory-level preset-discovery extension this host does not bind, which is why the bits are independent. AU backs both from `kAudioUnitProperty_FactoryPresets`. Both bits are edge-triggered host→plugin actions, so like `AUTOMATION_STATE` neither joins `Features::CONSUMES`.
 
@@ -87,7 +87,7 @@ A clear `Features` bit answers three questions the same way: the plugin declined
 
 The masks are constants in `tutti_plugin_types::features::probed`, one per format, so the claim is in one place rather than restated in each load path. VST2 has two loaders (in and out of process) that read the same constant.
 
-`probed` does **not** distinguish `○` from `✕` — both are absent from it, because both mean no plugin spoke. Which one applies is the table above: it describes this codebase, not the plugin, and a runtime bit would go stale the moment a loader grows the missing path. So the AU row's nine `○`s and `NOTE_EXPRESSION`'s `✕` are all simply unset in `probed::AU`.
+`probed` does **not** distinguish `○` from `✕` — both are absent from it, because both mean no plugin spoke. Which one applies is the table above: it describes this codebase, not the plugin, and a runtime bit would go stale the moment a loader grows the missing path. So the AU row's eight `○`s and `NOTE_EXPRESSION`'s `✕` are all simply unset in `probed::AU`.
 
 Keep this section, the table above, and the constants in step — a loader that grows a probe changes all three.
 

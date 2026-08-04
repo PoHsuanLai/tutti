@@ -357,3 +357,46 @@ fn n_edges_land_on_ports_one_through_n() {
         );
     }
 }
+
+/// **The sum's clamp is live.**
+///
+/// A param's range is authored state that moves without the graph moving — a
+/// host narrowing a range must not have to rebuild the chain to apply it, and
+/// rebuilding would take the base cell with it.
+#[test]
+fn the_sums_clamp_can_be_moved_after_construction() {
+    let mut sum = ParamSumUnit::new(0, 0.0, 10.0);
+    let bounds = sum.bounds();
+
+    let mut out = [0.0f32; 1];
+    sum.tick(&[100.0], &mut out);
+    assert_eq!(out[0], 10.0, "clamped at the constructed max");
+
+    bounds.set(0.0, 2.0);
+    sum.tick(&[100.0], &mut out);
+    assert_eq!(out[0], 2.0, "the new max must take effect with no rebuild");
+}
+
+/// **A crossed range does not panic the audio thread.**
+///
+/// `ClampBounds::set` is two independent stores, so a reader can land between
+/// them and see `min > max` for one block. `f32::clamp` panics on that. The
+/// fold orders the pair rather than trusting the writer, because a panic on the
+/// audio thread is not a diagnostic — it is a dead stream.
+#[test]
+fn a_crossed_range_is_survivable() {
+    let mut sum = ParamSumUnit::new(0, 0.0, 10.0);
+    let bounds = sum.bounds();
+
+    // The transient state a mid-`set` reader can observe: min above max.
+    bounds.set(8.0, 2.0);
+
+    let mut out = [0.0f32; 1];
+    sum.tick(&[5.0], &mut out);
+    assert!(
+        (2.0..=8.0).contains(&out[0]),
+        "a crossed pair must still yield a value inside the implied range; \
+         got {}",
+        out[0]
+    );
+}

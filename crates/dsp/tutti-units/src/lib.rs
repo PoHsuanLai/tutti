@@ -55,7 +55,10 @@ mod param_ports;
 pub use param_ports::ParamPorts;
 
 pub mod param_mod;
-pub use param_mod::{AtomicSourceUnit, ParamShaperUnit, ParamSumUnit};
+pub use param_mod::{
+    build_param_mod, wire_param_mod, AtomicSourceUnit, ParamModChain, ParamModEdge,
+    ParamShaperUnit, ParamSumUnit,
+};
 
 // The native `ModParams` impls (the trait itself lives in tutti-mod).
 mod mod_params;

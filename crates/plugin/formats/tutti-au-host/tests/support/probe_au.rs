@@ -99,6 +99,155 @@ pub const STALE_POISON: f32 = -0.75;
 /// clamped one without a second component.
 pub const CLAMPED_MAX_FRAMES: u32 = 128;
 
+/// Vendor-private property id: the `mSampleTime` of the most recent render, as
+/// the probe received it.
+///
+/// Every probe records this, on every render, regardless of [`Misbehaviour`] —
+/// it is an observation of what the *host* sent, not a behaviour of the probe,
+/// and a test that had to pick a special component to see the timestamp could
+/// not then assert the same thing about the well-behaved one.
+///
+/// The id is above `kAudioUnitProperty_LastRenderSampleTime` (65000) and far
+/// above every id `types.rs` names, which is the range Apple leaves to
+/// third-party units. Read it with [`last_render_sample_time`].
+pub const PROBE_PROPERTY_LAST_RENDER_TIME: u32 = 0x5474_7469;
+
+/// Count of renders the probe has seen, as a vendor-private property.
+///
+/// Paired with [`PROBE_PROPERTY_LAST_RENDER_TIME`] so a test can tell "the
+/// timestamp is 0 because the cursor restarted" from "the timestamp is 0
+/// because no render happened" — the two are the same `f64` and only the count
+/// separates them. Read it with [`render_count`].
+pub const PROBE_PROPERTY_RENDER_COUNT: u32 = 0x5474_746A;
+
+/// The `mSampleTime` the probe was handed on its most recent render.
+///
+/// `f64::NAN` before the first render, which is distinguishable from every
+/// legitimate stamp including `0.0`.
+///
+/// # Panics
+/// If the probe refuses the property, which would mean the component answering
+/// is not this file's probe.
+pub fn last_render_sample_time(au: &AuInstance) -> f64 {
+    // SAFETY: `raw_unit` is live for `&au`, and the probe answers this id with
+    // exactly one `f64` (see `probe_get_property`).
+    unsafe { read_probe_property::<f64>(au, PROBE_PROPERTY_LAST_RENDER_TIME) }
+}
+
+/// How many renders the probe has completed.
+///
+/// # Panics
+/// As [`last_render_sample_time`].
+pub fn render_count(au: &AuInstance) -> u32 {
+    // SAFETY: as above; the probe answers this id with exactly one `u32`.
+    unsafe { read_probe_property::<u32>(au, PROBE_PROPERTY_RENDER_COUNT) }
+}
+
+/// Vendor-private, **writable**: set the probe's reported latency, in seconds,
+/// and post a `kAudioUnitProperty_Latency` change notification.
+///
+/// This is what makes a runtime latency change reachable at all. Every Apple
+/// unit's latency is fixed for the life of the instance, and the plugins that
+/// genuinely move it — a linear-phase EQ switching modes, an oversampling
+/// toggle — do so from their own editor in response to a user action no test can
+/// drive. Without a unit whose latency the *test* can move, "the host notices a
+/// latency change" has no fixture and would be pinned only by a mock.
+///
+/// Writing it does two things, in the order a real AU does them: it updates the
+/// value first, then posts, so a listener that re-reads on notification sees the
+/// new figure rather than racing the write. See [`set_latency_seconds`].
+pub const PROBE_PROPERTY_SET_LATENCY: u32 = 0x5474_746B;
+
+/// As [`PROBE_PROPERTY_SET_LATENCY`], for `kAudioUnitProperty_TailTime`.
+pub const PROBE_PROPERTY_SET_TAIL: u32 = 0x5474_746C;
+
+/// Vendor-private, **writable**: post a `kAudioUnitProperty_ParameterList`
+/// change notification.
+///
+/// Takes a `u32` count of parameters the probe should then report, so the change
+/// a host observes is the list actually moving rather than a bare notification
+/// about nothing.
+pub const PROBE_PROPERTY_SET_PARAM_COUNT: u32 = 0x5474_746D;
+
+/// The tail, in seconds, a probe reports before any test moves it.
+///
+/// Non-zero and finite so the load-time read lands on `PluginTail::Finite` — the
+/// arm a later change has to be distinguishable *from*. A zero would classify as
+/// `PluginTail::None` and make "the tail changed" and "the tail was always none"
+/// the same observation.
+pub const PROBE_INITIAL_TAIL_SECONDS: f64 = 0.25;
+
+/// How many parameters a probe declares before any test moves the count.
+pub const PROBE_INITIAL_PARAM_COUNT: u32 = 2;
+
+/// Move the probe's reported latency to `seconds` and post the notification.
+///
+/// # Panics
+/// If the probe refuses the write, which would mean the component answering is
+/// not this file's probe.
+pub fn set_latency_seconds(au: &AuInstance, seconds: f64) {
+    // SAFETY: `raw_unit` is live for `&au`; the probe accepts exactly one `f64`
+    // at this id (see `probe_set_property`).
+    unsafe { write_probe_property(au, PROBE_PROPERTY_SET_LATENCY, seconds) }
+}
+
+/// Move the probe's reported tail to `seconds` and post the notification.
+///
+/// # Panics
+/// As [`set_latency_seconds`].
+pub fn set_tail_seconds(au: &AuInstance, seconds: f64) {
+    // SAFETY: as above.
+    unsafe { write_probe_property(au, PROBE_PROPERTY_SET_TAIL, seconds) }
+}
+
+/// Move the probe's declared parameter count and post the notification.
+///
+/// # Panics
+/// As [`set_latency_seconds`].
+pub fn set_param_count(au: &AuInstance, count: u32) {
+    // SAFETY: as above, with a `u32`.
+    unsafe { write_probe_property(au, PROBE_PROPERTY_SET_PARAM_COUNT, count) }
+}
+
+/// # Safety
+/// `id` must be a writable probe property whose value is exactly one `T`.
+unsafe fn write_probe_property<T>(au: &AuInstance, id: u32, value: T) {
+    let status = sys::AudioUnitSetProperty(
+        au.raw_unit(),
+        id,
+        sys::kAudioUnitScope_Global,
+        0,
+        &value as *const T as *const c_void,
+        std::mem::size_of::<T>() as u32,
+    );
+    assert_eq!(
+        status, 0,
+        "the probe refused its own property {id:#x} (OSStatus {status}) — the \
+         component answering is not tests/support/probe_au.rs"
+    );
+}
+
+/// # Safety
+/// `id` must be a probe property whose value is exactly one `T`.
+unsafe fn read_probe_property<T>(au: &AuInstance, id: u32) -> T {
+    let mut out = std::mem::MaybeUninit::<T>::uninit();
+    let mut size = std::mem::size_of::<T>() as u32;
+    let status = sys::AudioUnitGetProperty(
+        au.raw_unit(),
+        id,
+        sys::kAudioUnitScope_Global,
+        0,
+        out.as_mut_ptr() as *mut c_void,
+        &mut size,
+    );
+    assert_eq!(
+        status, 0,
+        "the probe refused its own property {id:#x} (OSStatus {status}) — the \
+         component answering is not tests/support/probe_au.rs"
+    );
+    out.assume_init()
+}
+
 /// One spec violation a probe AU can commit.
 ///
 /// Each variant is registered as its own AudioComponent under the subtype code
@@ -311,6 +460,42 @@ struct Probe {
     /// what was written, which made *every* probe a clamping AU by accident and
     /// would have masked the one that clamps on purpose.
     max_frames_per_slice: u32,
+    /// The `mSampleTime` of the most recent render, readable through
+    /// [`PROBE_PROPERTY_LAST_RENDER_TIME`].
+    ///
+    /// `NAN` until the first render so "never rendered" is not spelled the same
+    /// way as "rendered at frame 0" — the two are the distinction a test of the
+    /// render cursor's restart turns on.
+    last_render_sample_time: f64,
+    /// Renders completed, readable through [`PROBE_PROPERTY_RENDER_COUNT`].
+    render_count: u32,
+    /// Seconds this instance reports from `kAudioUnitProperty_Latency`, unless
+    /// its [`Misbehaviour`] overrides the answer. Moved by
+    /// [`PROBE_PROPERTY_SET_LATENCY`].
+    latency_seconds: f64,
+    /// Seconds this instance reports from `kAudioUnitProperty_TailTime`. Moved
+    /// by [`PROBE_PROPERTY_SET_TAIL`].
+    tail_seconds: f64,
+    /// How many parameters `kAudioUnitProperty_ParameterList` reports. Moved by
+    /// [`PROBE_PROPERTY_SET_PARAM_COUNT`].
+    param_count: u32,
+    /// Property listeners the host installed through
+    /// `kAudioUnitAddPropertyListenerSelect`.
+    ///
+    /// Stored rather than discarded because a discarding stub makes every
+    /// notification test vacuous: registration succeeds, nothing ever fires, and
+    /// a host that watches the wrong property is indistinguishable from one that
+    /// watches the right one. The entries are `(property id, proc, user data)`,
+    /// which is what `AudioUnitPropertyListenerProc` needs to be called back.
+    property_listeners: Vec<(u32, PropertyListenerProc, *mut c_void)>,
+    /// The `AudioComponentInstance` AudioToolbox handed this probe at `Open`.
+    ///
+    /// Needed because `AudioUnitPropertyListenerProc` takes the unit as its
+    /// second argument, and the host's dispatch matches on it. A listener called
+    /// with a null unit is delivered to nobody, which is a notification that
+    /// looks like it fired and is not observable — the failure this field exists
+    /// to avoid.
+    instance: sys::AudioComponentInstance,
     /// Backing store for the garbage `FactoryPresets` array, kept alive for as
     /// long as the instance so the host's walk reads registered memory rather
     /// than freed memory. The point of the test is the host's *handling*, not a
@@ -321,6 +506,12 @@ struct Probe {
 // AU selector numbers, from `AUComponent.h`. There is no compiler check tying
 // these to the header, so a mismatch is silent — each is spelled with the
 // constant's name beside it.
+//
+// `SEL_RESET` was 0x000F here for one revision, which is
+// `kAudioUnitAddRenderNotifySelect`. The handler was registered, just under
+// another selector, so AudioToolbox found nothing at 0x0009 and returned -4 —
+// and the reset tests read that as the host refusing to flush. A wrong number
+// does not go unclaimed; it lands on whichever call shares it.
 const SEL_INITIALIZE: i16 = 0x0001; // kAudioUnitInitializeSelect
 const SEL_UNINITIALIZE: i16 = 0x0002; // kAudioUnitUninitializeSelect
 const SEL_GET_PROPERTY_INFO: i16 = 0x0003; // kAudioUnitGetPropertyInfoSelect
@@ -331,7 +522,8 @@ const SEL_SET_PARAMETER: i16 = 0x0007; // kAudioUnitSetParameterSelect
 const SEL_ADD_PROP_LISTENER: i16 = 0x000A; // kAudioUnitAddPropertyListenerSelect
 const SEL_REMOVE_PROP_LISTENER: i16 = 0x000B; // kAudioUnitRemovePropertyListenerSelect
 const SEL_RENDER: i16 = 0x000E; // kAudioUnitRenderSelect
-const SEL_RESET: i16 = 0x000F; // kAudioUnitResetSelect
+const SEL_RESET: i16 = 0x0009; // kAudioUnitResetSelect
+const SEL_PROCESS: i16 = 0x0014; // kAudioUnitProcessSelect
 const SEL_REMOVE_PROP_LISTENER_UD: i16 = 0x0012; // ...WithUserDataSelect
 
 // OSStatus values the probes return, from `AUComponent.h`.
@@ -349,13 +541,15 @@ unsafe fn probe_of<'a>(self_: *mut c_void) -> &'a mut Probe {
 }
 
 /// # Safety
-/// `self_` must be a live `*mut Probe`; `inst` is unused.
+/// `self_` must be a live `*mut Probe`.
 unsafe extern "C" fn probe_open(
     self_: *mut c_void,
-    _inst: sys::AudioComponentInstance,
+    inst: sys::AudioComponentInstance,
 ) -> sys::OSStatus {
     guard(|| {
-        let _ = probe_of(self_);
+        // Stash the instance handle: it is the only place AudioToolbox hands it
+        // over, and a property listener cannot be called back without it.
+        probe_of(self_).instance = inst;
         0
     })
 }
@@ -450,6 +644,23 @@ unsafe extern "C" fn probe_get_property_info(
                 }
                 std::mem::size_of::<sys::CFPropertyListRef>() as u32
             }
+            x if x == sys::kAudioUnitProperty_TailTime => 8,
+            x if x == sys::kAudioUnitProperty_ParameterInfo => {
+                if elem >= p.param_count {
+                    return ERR_INVALID_PARAMETER;
+                }
+                std::mem::size_of::<sys::AudioUnitParameterInfo>() as u32
+            }
+            x if x == sys::kAudioUnitProperty_ParameterList => {
+                // The list is `param_count` ids of 4 bytes each. A host asks
+                // this before allocating, so it has to track the count the
+                // parameter-list notification announces.
+                p.param_count * 4
+            }
+            PROBE_PROPERTY_LAST_RENDER_TIME => 8,
+            PROBE_PROPERTY_RENDER_COUNT => 4,
+            PROBE_PROPERTY_SET_LATENCY | PROBE_PROPERTY_SET_TAIL => 8,
+            PROBE_PROPERTY_SET_PARAM_COUNT => 4,
             _ => return ERR_INVALID_PROPERTY,
         };
         if !out_size.is_null() {
@@ -534,14 +745,49 @@ unsafe extern "C" fn probe_get_property(
                     return sys::kAudioUnitErr_InvalidProperty as sys::OSStatus;
                 }
                 // The property is Float64 **seconds**, not samples.
+                //
+                // The two lying variants override the stored value rather than
+                // seeding it: their whole behaviour is that the number they
+                // report bears no relation to anything, so letting a test move
+                // it would make them describable and stop them being lies.
                 let seconds: f64 = match p.behaviour {
                     Misbehaviour::LiesAboutLatency => {
                         f64::from(LIED_LATENCY_SAMPLES) / p.sample_rate
                     }
                     Misbehaviour::ReportsNegativeLatency => -1.0,
-                    _ => 0.0,
+                    _ => p.latency_seconds,
                 };
                 write_property(data, io_size, seconds)
+            }
+            x if x == sys::kAudioUnitProperty_TailTime => {
+                write_property(data, io_size, p.tail_seconds)
+            }
+            x if x == sys::kAudioUnitProperty_ParameterInfo => {
+                // `elem` carries the parameter *id* here, not a bus — that is
+                // `kAudioUnitProperty_ParameterInfo`'s addressing, and the host's
+                // `parameters::info_at` passes it that way.
+                if elem >= p.param_count {
+                    return ERR_INVALID_PARAMETER;
+                }
+                write_property(data, io_size, probe_param_info(elem))
+            }
+            x if x == sys::kAudioUnitProperty_ParameterList => {
+                // Ids are `0..param_count`, which is enough for a host to see
+                // the list *change*; what the ids mean is
+                // `kAudioUnitProperty_ParameterInfo`'s business, answered
+                // separately below.
+                let need = p.param_count * 4;
+                if io_size.is_null() {
+                    return ERR_PARAM;
+                }
+                if *io_size < need || (data.is_null() && need > 0) {
+                    return ERR_INVALID_PROPERTY_VALUE;
+                }
+                for i in 0..p.param_count {
+                    std::ptr::write_unaligned((data as *mut u32).add(i as usize), i);
+                }
+                *io_size = need;
+                0
             }
             x if x == sys::kAudioUnitProperty_BypassEffect => write_property(data, io_size, 0u32),
             x if x == sys::kAudioUnitProperty_FactoryPresets => match p.behaviour {
@@ -575,9 +821,56 @@ unsafe extern "C" fn probe_get_property(
                 core_foundation::base::CFRetain(raw as *const c_void);
                 write_property(data, io_size, raw as sys::CFPropertyListRef)
             }
+            // The two observation properties. Answered by every probe on every
+            // behaviour — see `PROBE_PROPERTY_LAST_RENDER_TIME`.
+            PROBE_PROPERTY_LAST_RENDER_TIME => {
+                write_property(data, io_size, p.last_render_sample_time)
+            }
+            PROBE_PROPERTY_RENDER_COUNT => write_property(data, io_size, p.render_count),
+            // The setters read back what they last wrote, so a test can assert
+            // the probe took the value before asking whether the host noticed.
+            PROBE_PROPERTY_SET_LATENCY => write_property(data, io_size, p.latency_seconds),
+            PROBE_PROPERTY_SET_TAIL => write_property(data, io_size, p.tail_seconds),
+            PROBE_PROPERTY_SET_PARAM_COUNT => write_property(data, io_size, p.param_count),
             _ => ERR_INVALID_PROPERTY,
         }
     })
+}
+
+/// The plain-unit bounds a probe declares for parameter `id`.
+///
+/// Deliberately **not** `[0, 1]`: the loader's range table denormalizes
+/// automation against these, so a `[0, 1]` range would make a normalized value
+/// and its plain value identical and hide any table that had gone stale. The
+/// span widens with the id so two parameters cannot be confused either.
+pub fn probe_param_bounds(id: u32) -> (f32, f32) {
+    (0.0, 100.0 * (id + 1) as f32)
+}
+
+/// Build the `AudioUnitParameterInfo` a probe reports for parameter `id`.
+///
+/// The name goes in the `name[52]` array with no
+/// `kAudioUnitParameterFlag_HasCFNameString`, so the host's decode takes the
+/// documented fallback path rather than the CFString one. That keeps the probe
+/// free of a CF allocation whose ownership the host would then have to release,
+/// and the parameter *name* is not what any test here asserts.
+fn probe_param_info(id: u32) -> sys::AudioUnitParameterInfo {
+    let (min, max) = probe_param_bounds(id);
+    let mut info: sys::AudioUnitParameterInfo = unsafe { std::mem::zeroed() };
+    let label = format!("probe param {id}");
+    // One byte short of the array, so the zeroed tail always leaves a null
+    // terminator: the host's fallback decode scans for one and reads the whole
+    // 52 bytes when there is none.
+    let keep = label.len().min(info.name.len() - 1);
+    for (dst, &src) in info.name.iter_mut().zip(&label.as_bytes()[..keep]) {
+        *dst = src as std::os::raw::c_char;
+    }
+    info.unit = sys::kAudioUnitParameterUnit_Generic;
+    info.minValue = min;
+    info.maxValue = max;
+    info.defaultValue = min;
+    info.flags = sys::kAudioUnitParameterFlag_IsReadable | sys::kAudioUnitParameterFlag_IsWritable;
+    info
 }
 
 /// A `CFArray` whose elements are valid, live, heap-allocated CF objects that are
@@ -657,42 +950,143 @@ unsafe extern "C" fn probe_set_property(
             };
             return 0;
         }
+        // The three vendor-private setters. Each updates the value FIRST and
+        // posts the notification second, which is the order a real AU uses and
+        // the order the host depends on: a listener that re-reads the property
+        // on notification must not race the write that caused it.
+        //
+        // The posted id is the *public* property that changed, not the private
+        // one written — the host watches `kAudioUnitProperty_Latency`, and a
+        // notification carrying the setter's id would be filtered out as an
+        // unrelated property.
+        if id == PROBE_PROPERTY_SET_LATENCY || id == PROBE_PROPERTY_SET_TAIL {
+            if data.is_null() || (size as usize) < std::mem::size_of::<f64>() {
+                return ERR_INVALID_PROPERTY_VALUE;
+            }
+            let seconds = std::ptr::read_unaligned(data as *const f64);
+            let public = if id == PROBE_PROPERTY_SET_LATENCY {
+                p.latency_seconds = seconds;
+                sys::kAudioUnitProperty_Latency
+            } else {
+                p.tail_seconds = seconds;
+                sys::kAudioUnitProperty_TailTime
+            };
+            // The `&mut Probe` ends here, before any listener can re-enter.
+            notify_property_listeners(self_ as *mut Probe, public);
+            return 0;
+        }
+        if id == PROBE_PROPERTY_SET_PARAM_COUNT {
+            if data.is_null() || (size as usize) < std::mem::size_of::<u32>() {
+                return ERR_INVALID_PROPERTY_VALUE;
+            }
+            p.param_count = std::ptr::read_unaligned(data as *const u32);
+            notify_property_listeners(self_ as *mut Probe, sys::kAudioUnitProperty_ParameterList);
+            return 0;
+        }
         // Render-callback installs and bypass are accepted silently: neither is
         // what any probe is testing.
         0
     })
 }
 
+/// `AudioUnitPropertyListenerProc` from `AUComponent.h:1086-1091`.
+type PropertyListenerProc =
+    unsafe extern "C" fn(*mut c_void, sys::AudioUnit, u32, sys::AudioUnitScope, u32);
+
+/// Record a property listener so the probe can fire it later.
+///
+/// This used to discard the proc and return `noErr`, which registered nothing
+/// and delivered nothing. That made every property-notification assertion
+/// against a probe vacuous by construction: registration always succeeded, no
+/// callback ever arrived, and a host watching the *wrong* property was
+/// indistinguishable from one watching the right one.
+///
 /// # Safety
-/// `_proc` / `_ud` are opaque to the probe and never dereferenced.
+/// `proc_` must be a valid `AudioUnitPropertyListenerProc`; `ud` is opaque and
+/// is only handed back.
 unsafe extern "C" fn probe_add_listener(
-    _self: *mut c_void,
-    _id: u32,
-    _proc: *mut c_void,
-    _ud: *mut c_void,
+    self_: *mut c_void,
+    id: u32,
+    proc_: *mut c_void,
+    ud: *mut c_void,
 ) -> sys::OSStatus {
-    0
+    guard(|| {
+        if proc_.is_null() {
+            return ERR_PARAM;
+        }
+        let p = probe_of(self_);
+        let listener: PropertyListenerProc = std::mem::transmute(proc_);
+        p.property_listeners.push((id, listener, ud));
+        0
+    })
 }
 
+/// Remove every listener registered for `proc_`, whatever user data it carried.
+///
+/// The no-user-data form: `AudioUnitRemovePropertyListener` matches on the proc
+/// alone, which is why it is deprecated in favour of the `WithUserData` variant
+/// below — two registrations of one proc under different refcons cannot be told
+/// apart. Modelled honestly rather than made precise, since a host that used
+/// this form gets exactly this behaviour from a real AU.
+///
 /// # Safety
 /// As [`probe_add_listener`].
 unsafe extern "C" fn probe_remove_listener(
-    _self: *mut c_void,
-    _id: u32,
-    _proc: *mut c_void,
+    self_: *mut c_void,
+    id: u32,
+    proc_: *mut c_void,
 ) -> sys::OSStatus {
-    0
+    guard(|| {
+        let p = probe_of(self_);
+        p.property_listeners
+            .retain(|&(lid, lproc, _)| !(lid == id && lproc as *mut c_void == proc_));
+        0
+    })
 }
 
+/// Remove the one listener matching `(id, proc_, ud)`.
+///
 /// # Safety
 /// As [`probe_add_listener`].
 unsafe extern "C" fn probe_remove_listener_ud(
-    _self: *mut c_void,
-    _id: u32,
-    _proc: *mut c_void,
-    _ud: *mut c_void,
+    self_: *mut c_void,
+    id: u32,
+    proc_: *mut c_void,
+    ud: *mut c_void,
 ) -> sys::OSStatus {
-    0
+    guard(|| {
+        let p = probe_of(self_);
+        p.property_listeners
+            .retain(|&(lid, lproc, lud)| !(lid == id && lproc as *mut c_void == proc_ && lud == ud));
+        0
+    })
+}
+
+/// Call every listener registered for `id`, as a real AU does when it changes a
+/// property.
+///
+/// Takes a **raw pointer**, and copies the list and the instance handle out
+/// before calling anything. A listener re-enters the probe — AudioToolbox's own
+/// `AUEventListener` shim reads the property it was notified about — so any live
+/// `&mut Probe` held across the call would be aliased by the `&mut` that
+/// re-entry creates. Copying first means no reference into the probe is live
+/// while a callback runs.
+///
+/// The copy also survives a callback that adds or removes a listener, which
+/// iterating the `Vec` in place would not: the reallocation would leave the walk
+/// on a freed buffer. Allocating here is fine — this is a control-path call a
+/// test makes, never something the render touches.
+///
+/// # Safety
+/// `p` must be a live `*mut Probe` whose `instance` was filled by `probe_open`.
+unsafe fn notify_property_listeners(p: *mut Probe, id: u32) {
+    let listeners = (*p).property_listeners.clone();
+    let instance = (*p).instance;
+    for (lid, proc_, ud) in listeners {
+        if lid == id {
+            proc_(ud, instance, id, sys::kAudioUnitScope_Global, 0);
+        }
+    }
 }
 
 /// # Safety
@@ -731,13 +1125,27 @@ unsafe extern "C" fn probe_set_parameter(
 unsafe extern "C" fn probe_render(
     self_: *mut c_void,
     _flags: *mut u32,
-    _ts: *const sys::AudioTimeStamp,
+    ts: *const sys::AudioTimeStamp,
     _bus: u32,
     frames: u32,
     io_data: *mut sys::AudioBufferList,
 ) -> sys::OSStatus {
     guard(|| {
         let p = probe_of(self_);
+        // Record what the host stamped this block with, before any behaviour
+        // branch: the timestamp is an observation of the *host*, so a probe
+        // that returns early must still have seen it. Recorded before the
+        // null-`io_data` check for the same reason — that check is about the
+        // buffer, not the clock.
+        //
+        // `mFlags` is honoured rather than assumed: an `AudioTimeStamp` without
+        // `kAudioTimeStampSampleTimeValid` has no sample time, and reading
+        // `mSampleTime` out of one anyway would report whatever the host left
+        // in the field as if the host had chosen it.
+        if !ts.is_null() && (*ts).mFlags & sys::kAudioTimeStampSampleTimeValid != 0 {
+            p.last_render_sample_time = (*ts).mSampleTime;
+        }
+        p.render_count = p.render_count.saturating_add(1);
         if io_data.is_null() {
             return ERR_PARAM;
         }
@@ -773,6 +1181,62 @@ unsafe extern "C" fn probe_render(
                 // this lie: a host that trusts `mDataByteSize` as "how much is
                 // valid" and one that trusts its own frame count disagree here.
                 b.mDataByteSize = (written * 4) as u32;
+            }
+        }
+        0
+    })
+}
+
+/// `kAudioUnitProcessSelect` — the **push** render, where `io_data` carries the
+/// input in and the output back out in the same call.
+///
+/// Implemented because nothing installed on this machine does: of the corpus,
+/// six effects answer the selector and every instrument, mixer and third-party
+/// unit answers `unimpErr`, and none of the six reports the timestamp it was
+/// handed. So the push path's own render clock has no fixture that can observe
+/// it — this is that fixture.
+///
+/// Deliberately *not* a misbehaviour: the body writes the same
+/// [`PROBE_RENDER_LEVEL`] the pull render does and records the timestamp the
+/// same way, so every probe answers it and the two paths differ only in which
+/// clock they read. A variant that refused would be a different test.
+///
+/// # Safety
+/// `io_data` must be null or a well-formed `AudioBufferList`.
+unsafe extern "C" fn probe_process(
+    self_: *mut c_void,
+    _flags: *mut u32,
+    ts: *const sys::AudioTimeStamp,
+    frames: u32,
+    io_data: *mut sys::AudioBufferList,
+) -> sys::OSStatus {
+    guard(|| {
+        let p = probe_of(self_);
+        // Same rule as `probe_render`: record the host's stamp before anything
+        // can return early, and only when the host marked it valid.
+        if !ts.is_null() && (*ts).mFlags & sys::kAudioTimeStampSampleTimeValid != 0 {
+            p.last_render_sample_time = (*ts).mSampleTime;
+        }
+        p.render_count = p.render_count.saturating_add(1);
+        if io_data.is_null() {
+            return ERR_PARAM;
+        }
+
+        let abl = &mut *io_data;
+        let n = abl.mNumberBuffers as usize;
+        let buffers = std::slice::from_raw_parts_mut(abl.mBuffers.as_mut_ptr(), n);
+        for b in buffers {
+            if b.mData.is_null() {
+                continue;
+            }
+            // Bounded by what the host allocated, for the reason `probe_render`
+            // gives: a probe that overflowed the host's buffer would be testing
+            // its own bug.
+            let capacity = (b.mDataByteSize / 4) as usize;
+            let written = capacity.min(frames as usize);
+            let out = std::slice::from_raw_parts_mut(b.mData as *mut f32, written);
+            for s in out.iter_mut() {
+                *s = PROBE_RENDER_LEVEL;
             }
         }
         0
@@ -860,6 +1324,16 @@ unsafe extern "C" fn probe_lookup(selector: i16) -> AudioComponentMethod {
             ) -> sys::OSStatus,
             unsafe extern "C" fn() -> sys::OSStatus,
         >(probe_render)),
+        SEL_PROCESS => Some(std::mem::transmute::<
+            unsafe extern "C" fn(
+                *mut c_void,
+                *mut u32,
+                *const sys::AudioTimeStamp,
+                u32,
+                *mut sys::AudioBufferList,
+            ) -> sys::OSStatus,
+            unsafe extern "C" fn() -> sys::OSStatus,
+        >(probe_process)),
         SEL_GET_PARAMETER => Some(std::mem::transmute::<
             unsafe extern "C" fn(*mut c_void, u32, u32, u32, *mut f32) -> sys::OSStatus,
             unsafe extern "C" fn() -> sys::OSStatus,
@@ -890,6 +1364,16 @@ fn make_probe(behaviour: Misbehaviour) -> *mut PlugInInterface {
         // a probe applies a `StreamConfig` first, so this is only ever read if
         // that write is skipped.
         max_frames_per_slice: 1156,
+        last_render_sample_time: f64::NAN,
+        render_count: 0,
+        // Zero, matching what every non-lying Apple unit reports and what this
+        // probe reported before the field existed.
+        latency_seconds: 0.0,
+        tail_seconds: PROBE_INITIAL_TAIL_SECONDS,
+        param_count: PROBE_INITIAL_PARAM_COUNT,
+        property_listeners: Vec::new(),
+        // Filled by `probe_open`, which AudioToolbox calls before anything else.
+        instance: std::ptr::null_mut(),
         garbage_presets: None,
     });
     Box::into_raw(p) as *mut PlugInInterface

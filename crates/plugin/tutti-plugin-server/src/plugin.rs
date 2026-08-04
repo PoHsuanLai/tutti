@@ -6,8 +6,9 @@
 //! `&mut dyn PluginInstance`.
 //!
 //! [`poll_async_events`] folds the format-specific host-callback fan-out
-//! (VST2 parameter changes, CLAP runtime latency *and* tail notifications) into
-//! one list the server can drain after each audio block.
+//! (VST2 parameter changes, VST3 restart flags, CLAP runtime latency *and* tail
+//! notifications, AU property changes) into one list the server can drain after
+//! each audio block.
 
 use std::path::Path;
 use tutti_plugin::server::{
@@ -53,11 +54,13 @@ pub(crate) enum AsyncEvent {
     },
     /// Plugin reported a new tail length at runtime.
     ///
-    /// CLAP is the only format where this is dynamic: `clap.tail` pairs the
-    /// plugin's `get` with a host `changed` callback, because turning up a
-    /// reverb's decay changes the tail after load. VST3's restart flags carry no
-    /// tail member and AU has no tail property listener, so for those the
-    /// load-time read is the whole answer.
+    /// Dynamic in CLAP and AU, by different routes. `clap.tail` pairs the
+    /// plugin's `get` with a host `changed` callback; AU has no dedicated
+    /// callback but `kAudioUnitProperty_TailTime` is an ordinary property, so
+    /// the generic property listener carries the same signal. Either way the
+    /// case is a reverb whose decay is turned up after load. VST3's restart
+    /// flags carry no tail member, so there the load-time read is the whole
+    /// answer.
     TailChanged {
         tail: PluginTail,
     },
@@ -221,11 +224,12 @@ impl Plugin {
 
     /// Drain host-callback events queued since the previous poll.
     ///
-    /// Only formats with a real notification mechanism contribute events.
-    /// VST3 surfaces runtime latency via `restartComponent(kLatencyChanged)`,
-    /// drained here through the host consumer. AU still requires host-side
-    /// callback infrastructure that isn't wired yet — see the TODO in
-    /// `au-host/src/instance.rs`.
+    /// Only formats with a notification mechanism contribute events. VST3
+    /// surfaces runtime latency via `restartComponent(kLatencyChanged)`, CLAP
+    /// via `clap_host_latency.changed`, and AU via an `AUEventListener` watching
+    /// the three properties whose load-time values would otherwise be frozen.
+    /// VST2 has no such mechanism for latency at all — `effIdle`/`initialDelay`
+    /// carry no change signal — so its load-time figure is the whole answer.
     pub(crate) fn poll_async_events(&mut self) -> Vec<AsyncEvent> {
         #[allow(unused_mut)] // only mutated under vst2/clap/vst3 features
         let mut out = Vec::new();
@@ -274,6 +278,25 @@ impl Plugin {
                     out.push(AsyncEvent::TailChanged {
                         tail: PluginTail::from_samples(clap.get_tail()),
                     });
+                }
+            }
+            #[cfg(all(feature = "au", target_os = "macos"))]
+            Plugin::Au(au) => {
+                let changes = au.poll_changes();
+                if let Some(samples) = changes.latency {
+                    out.push(AsyncEvent::LatencyChanged { samples });
+                }
+                if let Some(tail) = changes.tail {
+                    out.push(AsyncEvent::TailChanged { tail });
+                }
+                // `ParamTitlesChanged`, not `ParamValuesChanged`:
+                // `kAudioUnitProperty_ParameterList` reports which parameters
+                // *exist*, so the client has to re-pull the list rather than
+                // re-read values against ids that may no longer be there. A
+                // value change on an unchanged list arrives on the parameter
+                // listener path instead.
+                if changes.param_list_changed {
+                    out.push(AsyncEvent::ParamTitlesChanged);
                 }
             }
             #[allow(unreachable_patterns)]
@@ -379,6 +402,136 @@ mod tests {
         assert!(
             plugin.poll_async_events().is_empty(),
             "the change flags were not cleared by the drain"
+        );
+    }
+
+    /// An AU latency, tail or parameter-list change must reach the drained
+    /// event list.
+    ///
+    /// This is E-5. Before it, `poll_async_events` had no `Plugin::Au` arm at
+    /// all — it fell through `_ => {}` — so an AU that changed its latency on a
+    /// mode switch left PDC compensating the load-time figure permanently. The
+    /// `AUEventListener` machinery that carries the signal existed and worked,
+    /// and no production code constructed one.
+    ///
+    /// The flags are raised directly rather than by making a plugin move its
+    /// latency, which is the same fixture `a_clap_tail_change_reaches_the_event_list`
+    /// uses and for the same reason: what is under test here is the *wiring*
+    /// from flag to `AsyncEvent`, and nothing installed on this machine changes
+    /// its latency on request. The listener half — that a real
+    /// `kAudioUnitProperty_Latency` notification raises the flag — is pinned
+    /// separately in `tutti-au-host`'s `au_property_watch.rs`, against a probe
+    /// that can post one.
+    ///
+    /// A missing listener fails the test rather than skipping it: `poll_changes`
+    /// returns an empty result when `watch` is `None`, so a silent skip would
+    /// make every assertion below vacuous.
+    #[cfg(all(feature = "au", target_os = "macos"))]
+    #[test]
+    fn an_au_property_change_reaches_the_event_list() {
+        use crate::loaders::au::AuInstance;
+        use std::sync::atomic::Ordering;
+
+        let _lock = crate::test_utils::plugin_load_lock();
+        const AU_PLUGIN: &str = "/Library/Audio/Plug-Ins/Components/TAL-Reverb-4.component";
+        let instance = AuInstance::load(Path::new(AU_PLUGIN), 44100.0, 512)
+            .expect("failed to load the AU test plugin");
+        let mut plugin = Plugin::Au(instance);
+
+        // Nothing pending: the drain must be empty, or the assertions below
+        // would pass on a stuck flag rather than on the ones raised here.
+        assert!(
+            plugin.poll_async_events().is_empty(),
+            "a freshly loaded plugin reported an async event nobody raised"
+        );
+
+        // The `Arc` is cloned rather than borrowed so the flag writes and the
+        // drain below do not overlap a borrow of `plugin`.
+        let flags = {
+            let Plugin::Au(au) = &mut plugin else {
+                unreachable!("constructed as Au immediately above")
+            };
+            std::sync::Arc::clone(au.property_flags().expect(
+                "the AU property listener was not installed, so every assertion \
+                 below would pass against a host that noticed nothing",
+            ))
+        };
+        flags.latency.store(true, Ordering::Release);
+        flags.tail.store(true, Ordering::Release);
+        flags.param_list.store(true, Ordering::Release);
+
+        let events = plugin.poll_async_events();
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, AsyncEvent::LatencyChanged { .. })),
+            "the latency change was polled and dropped; got {events:?}"
+        );
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, AsyncEvent::TailChanged { .. })),
+            "the tail change went missing; got {events:?}"
+        );
+        assert!(
+            events.iter().any(|e| matches!(e, AsyncEvent::ParamTitlesChanged)),
+            "a parameter-list change must ask the client to re-pull the list; \
+             got {events:?}"
+        );
+
+        // All three flags are consumed, so a second drain is quiet — an event
+        // that re-fired every block would spam the host with resyncs, and a
+        // latency event does a PDC re-plan each time.
+        assert!(
+            plugin.poll_async_events().is_empty(),
+            "the change flags were not cleared by the drain"
+        );
+    }
+
+    /// A latency change must refresh the metadata the client reads, not only the
+    /// event it emits.
+    ///
+    /// The two answering differently is the load-time-only read's failure in
+    /// permanent form: `loaded().latency_samples` would keep reporting the
+    /// figure captured at load while the event carried a newer one, and a client
+    /// that trusted the metadata over the event would compensate the stale value
+    /// forever.
+    #[cfg(all(feature = "au", target_os = "macos"))]
+    #[test]
+    fn an_au_latency_poll_refreshes_the_cached_metadata() {
+        use crate::loaders::au::AuInstance;
+        use std::sync::atomic::Ordering;
+        use tutti_plugin::server::PluginMeta;
+
+        let _lock = crate::test_utils::plugin_load_lock();
+        const AU_PLUGIN: &str = "/Library/Audio/Plug-Ins/Components/TAL-Reverb-4.component";
+        let mut au = AuInstance::load(Path::new(AU_PLUGIN), 44100.0, 512)
+            .expect("failed to load the AU test plugin");
+
+        let flags = std::sync::Arc::clone(
+            au.property_flags()
+                .expect("the AU property listener was not installed"),
+        );
+        flags.latency.store(true, Ordering::Release);
+        flags.tail.store(true, Ordering::Release);
+
+        let changes = au.poll_changes();
+        let reported_latency = changes
+            .latency
+            .expect("a raised latency flag must produce a re-read");
+        let reported_tail = changes
+            .tail
+            .expect("a raised tail flag must produce a re-read");
+
+        assert_eq!(
+            au.loaded().latency_samples,
+            reported_latency,
+            "loaded() and the emitted event must not disagree about latency"
+        );
+        assert_eq!(
+            au.loaded().tail,
+            reported_tail,
+            "loaded() and the emitted event must not disagree about tail"
         );
     }
 

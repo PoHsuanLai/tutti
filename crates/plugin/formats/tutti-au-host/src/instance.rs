@@ -320,6 +320,24 @@ impl AuInstance {
     /// future AU refuses, that test fails rather than the behaviour changing
     /// silently.
     ///
+    /// # The render clock restarts too
+    ///
+    /// `AudioUnitReset` flushes the AU's signal history; the render cursor this
+    /// host stamps each block's `mSampleTime` from is *this crate's* state, and
+    /// AudioToolbox has no idea it exists. Leaving it running after a flush
+    /// hands the AU a timestamp saying the block after a locate follows
+    /// contiguously from the block before it, which is the opposite of what the
+    /// flush announced — see `crate::buffer::RenderScratch::reset_position` for
+    /// why it restarts at zero rather than seeking to the playhead.
+    ///
+    /// Only on success. A refused flush leaves the AU holding the history it
+    /// had, so restarting the clock beside it would produce the one state
+    /// neither branch describes: an AU whose tail belongs to bar 60 being told
+    /// it is at frame 0.
+    ///
+    /// The push path's cursor is a separate object the host owns — reset it
+    /// with [`PushScratch::reset_position`](crate::offline::PushScratch::reset_position).
+    ///
     /// # Errors
     /// Returns [`AuError::OsStatus`] with the AU's own status. Propagated rather
     /// than absorbed: a host that jumps the playhead and silently fails to flush
@@ -330,7 +348,13 @@ impl AuInstance {
         // reset; per-bus reset is not a thing AUv2 offers.
         check("AudioUnitReset", unsafe {
             AudioUnitReset(self.raw_unit(), K_AUDIO_UNIT_SCOPE_GLOBAL, 0)
-        })
+        })?;
+        // Pre-`initialize` there is no scratch: the cursor is created at zero by
+        // `initialize` and has nothing to carry over, so there is nothing to do.
+        if let State::Ready(r) = &mut self.state {
+            r.scratch.reset_position();
+        }
+        Ok(())
     }
 
     /// Read a parameter value.

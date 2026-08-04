@@ -100,12 +100,15 @@ pub(crate) unsafe fn iter_buffers_mut<'a>(
     (0..count).map(move |i| &mut *base.add(i))
 }
 
-/// Render scratch area: output buffers, input buffers, and a monotonically
-/// advancing sample position used for timestamps.
+/// Render scratch area: output buffers, input buffers, and the sample position
+/// used for timestamps.
 pub(crate) struct RenderScratch {
     list: RenderBufferList,
     pub outputs: Vec<Vec<f32>>,
     pub inputs: Vec<Vec<f32>>,
+    /// Advances by one block per render and returns to zero on
+    /// [`reset_position`](Self::reset_position); see that method for why a
+    /// discontinuity restarts it rather than seeking it.
     sample_position: f64,
 }
 
@@ -161,6 +164,36 @@ impl RenderScratch {
         let prev = self.sample_position;
         self.sample_position += frames as f64;
         prev
+    }
+
+    /// Send the render cursor back to zero, so the next block's `mSampleTime`
+    /// starts a fresh run rather than continuing the previous one.
+    ///
+    /// Paired with [`AuInstance::reset`](crate::instance::AuInstance::reset):
+    /// that call flushes the AU's signal history, and this discards the clock
+    /// the flushed history was measured against. Leaving the cursor running
+    /// hands an AU that phases anything off `mSampleTime` — an LFO, a
+    /// look-ahead window, a block-to-block delta — a timestamp saying the block
+    /// after a locate is contiguous with the block before it, which is exactly
+    /// what the flush just said it is not.
+    ///
+    /// Zero rather than a host-supplied playhead. `mSampleTime` is documented
+    /// as the stamp that lets an AU "determine without doubt that this is the
+    /// same render operation" (`AUComponent.h`, `AudioUnitRender`) — a
+    /// per-instance render clock, not a position on the project timeline. The
+    /// timeline has its own channel, `outCurrentSampleInTimeLine` on the
+    /// transport callbacks, which an AU asks for separately and which
+    /// [`TransportState::set_transport`](crate::transport::TransportState::set_transport)
+    /// publishes. Writing a playhead here would answer that question twice, in
+    /// two places, with no way for an AU to tell which clock it received.
+    pub fn reset_position(&mut self) {
+        self.sample_position = 0.0;
+    }
+
+    /// The position the next block will be stamped with.
+    #[cfg(test)]
+    pub fn position(&self) -> f64 {
+        self.sample_position
     }
 }
 
@@ -234,6 +267,38 @@ mod tests {
                 "slab must be aligned for AudioBufferList"
             );
         }
+    }
+
+    /// The render cursor advances by one block per call, returns the block's
+    /// *start* frame, and goes back to zero on `reset_position`.
+    ///
+    /// The narrow, allocation-free half of what `tests/au_render_clock.rs`
+    /// asserts against a real AU: that suite proves the timestamp the plugin
+    /// receives, this one proves the arithmetic underneath it. Kept separate
+    /// because the failure modes differ — a wrong `advance` and a `reset` wired
+    /// to the wrong place look identical from outside.
+    #[test]
+    fn the_render_cursor_advances_and_restarts() {
+        let mut scratch = RenderScratch::new(
+            AuBusLayout {
+                inputs: ChannelLayout::STEREO,
+                outputs: ChannelLayout::STEREO,
+                has_input: true,
+            },
+            64,
+        );
+
+        assert_eq!(scratch.position(), 0.0, "a fresh cursor starts at zero");
+        assert_eq!(scratch.advance(64), 0.0, "the first block starts at frame 0");
+        assert_eq!(scratch.advance(64), 64.0, "the second starts one block on");
+        assert_eq!(scratch.position(), 128.0);
+
+        scratch.reset_position();
+        assert_eq!(scratch.position(), 0.0);
+        // And it advances again from there rather than sticking — the wrong fix
+        // (zeroing on every block) would pass the line above and fail here.
+        assert_eq!(scratch.advance(64), 0.0);
+        assert_eq!(scratch.advance(64), 64.0);
     }
 
     /// Every `mData` the bind loop writes must land inside the slab — the exact

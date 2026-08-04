@@ -39,6 +39,16 @@ fn map_au_type(t: tutti_au_host::component::AuType) -> AuComponentType {
 }
 
 pub struct AuInstance {
+    /// Declared **first** so it drops first. The registration holds the raw
+    /// `AudioUnit` that `inner` owns, and AudioToolbox dereferences it on every
+    /// delivery — disposing the unit while a listener is still registered is a
+    /// use-after-free. Rust drops fields in declaration order, so this ordering
+    /// is the guarantee; see `PropertyWatch`.
+    ///
+    /// `None` when the listener could not be created, in which case the
+    /// load-time latency, tail and parameter list stand as the whole answer.
+    #[cfg(all(target_os = "macos", feature = "au"))]
+    watch: Option<PropertyWatch>,
     #[cfg(all(target_os = "macos", feature = "au"))]
     inner: AuHostInstance,
     #[cfg(all(target_os = "macos", feature = "au"))]
@@ -154,6 +164,175 @@ fn read_param_ranges(unit: tutti_au_host::types::AudioUnit) -> Vec<(u32, ParamBo
         .collect();
     table.sort_unstable_by_key(|&(id, _)| id);
     table
+}
+
+/// Read `kAudioUnitProperty_TailTime` and classify it.
+///
+/// AU is the one format that reports tail in *seconds*, and the one where a
+/// refusal is meaningful: every Apple instrument, mixer and generator rejects
+/// the property outright, which is "no tail concept", not "no tail". That is
+/// `Unknown`.
+///
+/// The infinite case is why `PluginTail` has an `Unbounded` arm at all. TAL
+/// Reverb 4 answers `f64::INFINITY`, and `Seconds::to_samples` maps every
+/// non-finite input to `Samples::ZERO` — deliberately, since that is right for
+/// NaN and negatives. Converting first would make an infinite reverb
+/// indistinguishable from a plugin with no tail, and a bounce sizing its render
+/// from that number truncates the reverb entirely. So the finiteness question is
+/// asked *before* the conversion, never after.
+///
+/// A function rather than an inline block because the load path and the
+/// property-change poll both need it, and the two answering differently would
+/// mean a tail that changed at runtime was classified by rules the load never
+/// used.
+#[cfg(all(target_os = "macos", feature = "au"))]
+fn read_tail(inner: &AuHostInstance, sample_rate: f64) -> PluginTail {
+    match inner.get_tail_time() {
+        Err(_) => PluginTail::Unknown,
+        Ok(seconds) if !seconds.get().is_finite() => PluginTail::Unbounded,
+        Ok(seconds) => match seconds.to_samples_ceil(sample_rate) {
+            // A declared-but-zero tail is a real answer: the unit has a tail
+            // concept and says it has none.
+            s if s == Samples::ZERO => PluginTail::None,
+            // `_ceil`, not `_floor`: a render that rounds a tail down clips its
+            // last partial block.
+            s => PluginTail::Finite(s),
+        },
+    }
+}
+
+/// The three properties that go stale after load, and the flags a change to one
+/// of them raises.
+///
+/// Latency and tail are `Float64` **seconds** properties an AU may rewrite at
+/// any time — a linear-phase EQ switching modes, an oversampling toggle, a
+/// reverb whose decay was turned up. Read once at load, they are a figure PDC
+/// keeps compensating and a bounce keeps sizing from long after the plugin
+/// stopped agreeing with them. The parameter list is the third: an AU that grows
+/// or renames parameters leaves the range table denormalizing automation against
+/// bounds that no longer exist.
+///
+/// # Why flags rather than values
+///
+/// The listener callback arrives on a **GCD queue thread**, not the server
+/// thread (see `tutti_au_host::listener`'s module docs). Reading
+/// `kAudioUnitProperty_Latency` from there would be a property call on a unit
+/// the server thread may be rendering through, so the callback records only
+/// *that* something changed and the server thread does the read when it drains,
+/// between blocks. Three `AtomicBool`s rather than one: a latency change and a
+/// parameter-list change have different consequences downstream, and collapsing
+/// them would make every mode switch re-pull the whole parameter list.
+///
+/// This mirrors `tutti-clap-host`'s `HostState`, where `clap_host_latency
+/// .changed` sets a flag that `poll_latency_changed` consumes. The shapes match
+/// because the constraint does: a callback on a foreign thread, drained by the
+/// thread that owns the plugin.
+#[cfg(all(target_os = "macos", feature = "au"))]
+#[derive(Default)]
+pub(crate) struct PropertyFlags {
+    pub(crate) latency: std::sync::atomic::AtomicBool,
+    pub(crate) tail: std::sync::atomic::AtomicBool,
+    pub(crate) param_list: std::sync::atomic::AtomicBool,
+}
+
+#[cfg(all(target_os = "macos", feature = "au"))]
+impl PropertyFlags {
+    /// Read and clear one flag.
+    ///
+    /// `swap`, not a load-then-store: the GCD thread can raise the flag between
+    /// the two halves of a non-atomic read/clear, and the change would be
+    /// dropped — the plugin's new latency would then reach nobody until the
+    /// *next* change, which for a one-shot mode switch is never.
+    fn take(flag: &std::sync::atomic::AtomicBool) -> bool {
+        flag.swap(false, std::sync::atomic::Ordering::AcqRel)
+    }
+}
+
+/// A live property-change registration on the AU, plus the flags it raises.
+///
+/// Held by [`AuInstance`] so the registration lives exactly as long as the unit
+/// it watches. Field order is the invariant: `_listener` is declared **before**
+/// `flags` so it is disposed first, and `AuInstance` declares this whole struct
+/// before `inner` for the same reason — `AuParameterListener`'s safety contract
+/// is that the `AudioUnit` outlives it, and AudioToolbox dereferences the raw
+/// unit pointer on every delivery.
+#[cfg(all(target_os = "macos", feature = "au"))]
+struct PropertyWatch {
+    /// Never read after construction. Dropping it runs `AUListenerDispose`,
+    /// which is the only thing that stops further deliveries.
+    _listener: tutti_au_host::listener::AuParameterListener,
+    flags: std::sync::Arc<PropertyFlags>,
+}
+
+#[cfg(all(target_os = "macos", feature = "au"))]
+impl PropertyWatch {
+    /// Register on `unit`, watching latency, tail and the parameter list.
+    ///
+    /// Returns `None` if AudioToolbox refuses the listener, which leaves the
+    /// load-time figures as the whole answer — the behaviour before any of this
+    /// existed. A refusal is not fatal: an AU whose latency cannot be watched is
+    /// still a usable plugin, exactly as one that refuses to report latency at
+    /// all is.
+    ///
+    /// The three `watch_property` calls are individually tolerant for a
+    /// different reason: `AUEventListenerAddEventType` accepts every property id
+    /// without validating it (pinned by
+    /// `au_api_surface.rs::registration_never_refuses_a_property_id`), so a
+    /// refusal here would be AudioToolbox failing rather than the AU declining a
+    /// property — but a failure on one must not cost the other two.
+    ///
+    /// # Safety
+    /// `unit` must be the live `AudioUnit` of the instance that stores the
+    /// returned watch, so the field-order invariant above makes it outlive the
+    /// registration.
+    unsafe fn install(unit: tutti_au_host::types::AudioUnit) -> Option<Self> {
+        use std::sync::atomic::Ordering;
+
+        use tutti_au_host::listener::{AuEvent, AuParameterListener, EventAddress};
+        use tutti_au_host::types::{
+            K_AUDIO_UNIT_PROPERTY_LATENCY, K_AUDIO_UNIT_PROPERTY_PARAMETER_LIST,
+            K_AUDIO_UNIT_PROPERTY_TAIL_TIME,
+        };
+
+        let flags = std::sync::Arc::new(PropertyFlags::default());
+        let sink = std::sync::Arc::clone(&flags);
+        // SAFETY: the caller guarantees `unit` outlives the returned watch.
+        let listener = unsafe {
+            AuParameterListener::new(unit, move |ev| {
+                // Only property changes are subscribed, so a parameter or
+                // gesture event here would mean the registration went to the
+                // wrong event type; ignore rather than mapping it onto a flag it
+                // does not mean.
+                if let AuEvent::PropertyChanged { id, .. } = ev {
+                    let flag = match id {
+                        K_AUDIO_UNIT_PROPERTY_LATENCY => &sink.latency,
+                        K_AUDIO_UNIT_PROPERTY_TAIL_TIME => &sink.tail,
+                        K_AUDIO_UNIT_PROPERTY_PARAMETER_LIST => &sink.param_list,
+                        _ => return,
+                    };
+                    // `Release` pairs with the `AcqRel` swap in
+                    // `PropertyFlags::take`, so the server thread that observes
+                    // the flag is ordered after everything the AU did before
+                    // posting it.
+                    flag.store(true, Ordering::Release);
+                }
+            })
+        }
+        .ok()?;
+
+        for id in [
+            K_AUDIO_UNIT_PROPERTY_LATENCY,
+            K_AUDIO_UNIT_PROPERTY_TAIL_TIME,
+            K_AUDIO_UNIT_PROPERTY_PARAMETER_LIST,
+        ] {
+            let _ = listener.watch_property(id, EventAddress::GLOBAL);
+        }
+
+        Some(Self {
+            _listener: listener,
+            flags,
+        })
+    }
 }
 
 unsafe impl Send for AuInstance {}
@@ -287,31 +466,7 @@ impl AuInstance {
             // so it is the third-party case, unmeasured by construction.
             let latency = inner.get_latency().unwrap_or(Samples::ZERO);
 
-            // AU is the one format that reports tail in *seconds*, and the one
-            // where a refusal is meaningful: every Apple instrument, mixer and
-            // generator rejects `kAudioUnitProperty_TailTime` outright, which is
-            // "no tail concept", not "no tail". That is `Unknown`.
-            //
-            // The infinite case is why `PluginTail` has an `Unbounded` arm at
-            // all. TAL Reverb 4 answers `f64::INFINITY`, and `Seconds::to_samples`
-            // maps every non-finite input to `Samples::ZERO` — deliberately, since
-            // that is right for NaN and negatives. Converting first would make an
-            // infinite reverb indistinguishable from a plugin with no tail, and a
-            // bounce sizing its render from that number truncates the reverb
-            // entirely. So the finiteness question is asked *before* the
-            // conversion, never after.
-            let tail = match inner.get_tail_time() {
-                Err(_) => PluginTail::Unknown,
-                Ok(seconds) if !seconds.get().is_finite() => PluginTail::Unbounded,
-                Ok(seconds) => match seconds.to_samples_ceil(sample_rate) {
-                    // A declared-but-zero tail is a real answer: the unit has a
-                    // tail concept and says it has none.
-                    s if s == Samples::ZERO => PluginTail::None,
-                    // `_ceil`, not `_floor`: a render that rounds a tail down
-                    // clips its last partial block.
-                    s => PluginTail::Finite(s),
-                },
-            };
+            let tail = read_tail(&inner, sample_rate);
 
             let descriptor = PluginDescriptor {
                 id: format!(
@@ -370,10 +525,21 @@ impl AuInstance {
             };
 
             // Capture the declared plain ranges once, while still on the load
-            // thread — the RT path denormalizes against these.
+            // thread — the RT path denormalizes against these. `poll_changes`
+            // re-reads them when the AU says its parameter list moved.
             let param_ranges = read_param_ranges(inner.raw_unit());
 
+            // Start watching the three properties the figures above are frozen
+            // copies of, so a change reaches `poll_changes` instead of being
+            // invisible until the next load.
+            //
+            // SAFETY: the watch is stored in the same struct as `inner` and
+            // declared before it, so `inner`'s `AudioUnit` outlives the
+            // registration.
+            let watch = unsafe { PropertyWatch::install(inner.raw_unit()) };
+
             Ok(Self {
+                watch,
                 inner,
                 editor: None,
                 param_ranges,
@@ -391,6 +557,95 @@ impl AuInstance {
                     .to_string(),
             })
         }
+    }
+}
+
+/// What a property-change poll found, in the shape
+/// `crate::plugin::Plugin::poll_async_events` needs to emit from.
+///
+/// `Option`/`bool` rather than always-present values so "nothing changed" — the
+/// answer on every block but the rare one — costs no property reads at all. The
+/// AU is only asked when it said it had something new to say.
+#[cfg(all(target_os = "macos", feature = "au"))]
+#[derive(Default)]
+pub(crate) struct AuPropertyChanges {
+    /// Re-read latency. Push to PDC.
+    pub latency: Option<Samples>,
+    /// Re-read tail.
+    pub tail: Option<PluginTail>,
+    /// The AU's parameter list moved; the client should re-pull it.
+    pub param_list_changed: bool,
+}
+
+#[cfg(all(target_os = "macos", feature = "au"))]
+impl AuInstance {
+    /// Drain the property-change flags the listener raised since the last poll,
+    /// re-reading each changed property and refreshing the cached copy.
+    ///
+    /// Polled between audio blocks by `crate::plugin::Plugin::poll_async_events`;
+    /// it must not be called concurrently with `PluginAudio::process`, which is
+    /// what makes the property reads here safe to do on a live unit.
+    ///
+    /// Both cached figures are refreshed alongside the returned change, so
+    /// `loaded()` and the event carried across IPC cannot disagree about what
+    /// the AU reports — the failure the load-time-only read had in permanent
+    /// form.
+    ///
+    /// No deactivate/reactivate cycle, which VST3's equivalent needs: AU's
+    /// latency and tail are plain global-scope property reads with no
+    /// documented requirement that the unit be uninitialized, and the property
+    /// listener fires *after* the AU has already changed the value. VST3's
+    /// cycle exists because `IComponentHandler::restartComponent` is a
+    /// *request* the plugin makes before the new figure is readable.
+    pub(crate) fn poll_changes(&mut self) -> AuPropertyChanges {
+        let mut changes = AuPropertyChanges::default();
+        let Some(watch) = &self.watch else {
+            return changes;
+        };
+
+        if PropertyFlags::take(&watch.flags.latency) {
+            // Same refusal handling as the load path: an AU that stops
+            // answering keeps whatever it last reported rather than being
+            // silently recompensated to zero, which would move audio.
+            if let Ok(samples) = self.inner.get_latency() {
+                self.meta.loaded.latency_samples = samples;
+                changes.latency = Some(samples);
+            }
+        }
+
+        if PropertyFlags::take(&watch.flags.tail) {
+            // Unconditional, unlike latency: `read_tail` maps a refusal to
+            // `PluginTail::Unknown`, which is a real answer here — an AU that
+            // dropped its tail concept is telling the host to stop sizing a
+            // bounce from a figure it no longer stands behind.
+            let tail = read_tail(&self.inner, self.inner.sample_rate());
+            self.meta.loaded.tail = tail;
+            changes.tail = Some(tail);
+        }
+
+        if PropertyFlags::take(&watch.flags.param_list) {
+            // The range table is what `process` denormalizes automation
+            // against, so a list that grew leaves new parameters unwritable
+            // (`lookup_bounds` misses them and the write is skipped) and one
+            // that changed bounds leaves every write scaled by the old span.
+            // Re-read it before telling the client, so a client that
+            // immediately re-pulls the list gets a table that already agrees.
+            self.param_ranges = read_param_ranges(self.inner.raw_unit());
+            changes.param_list_changed = true;
+        }
+
+        changes
+    }
+
+    /// The property-change flags the listener raises, for a test that needs to
+    /// drive a change no installed AU will make on request.
+    ///
+    /// `None` when the listener could not be created, which a caller must treat
+    /// as a failed fixture rather than a passing test — see
+    /// `plugin.rs::an_au_property_change_reaches_the_event_list`.
+    #[cfg(test)]
+    pub(crate) fn property_flags(&self) -> Option<&std::sync::Arc<PropertyFlags>> {
+        self.watch.as_ref().map(|w| &w.flags)
     }
 }
 
@@ -790,6 +1045,7 @@ mod tests {
         let param_ranges = read_param_ranges(inner.raw_unit());
 
         let au = AuInstance {
+            watch: None,
             inner,
             editor: None,
             param_ranges,
@@ -825,6 +1081,7 @@ mod tests {
         let param_ranges = read_param_ranges(inner.raw_unit());
 
         let mut au = AuInstance {
+            watch: None,
             inner,
             editor: None,
             param_ranges,
@@ -885,6 +1142,7 @@ mod tests {
             .expect("AUDelay declares a wide-range cutoff");
 
         let mut au = AuInstance {
+            watch: None,
             inner,
             editor: None,
             param_ranges,
@@ -931,6 +1189,7 @@ mod tests {
         let param_ranges = read_param_ranges(inner.raw_unit());
 
         let mut au = AuInstance {
+            watch: None,
             inner,
             editor: None,
             param_ranges,
@@ -1070,6 +1329,7 @@ mod tests {
         let param_ranges = read_param_ranges(inner.raw_unit());
 
         let mut au = AuInstance {
+            watch: None,
             inner,
             editor: None,
             param_ranges,

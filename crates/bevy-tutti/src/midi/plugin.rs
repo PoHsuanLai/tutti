@@ -42,6 +42,7 @@ impl Plugin for TuttiMidiPlugin {
         app.add_plugins(super::track_out::MidiOutPlugin);
         app.add_plugins(super::negotiation::MidiNegotiationPlugin);
         app.add_plugins(super::metadata::MidiMetadataPlugin);
+        app.add_plugins(super::file::MidiFilePlugin);
 
         #[cfg(feature = "midi-hardware")]
         app.add_plugins(super::device::MidiDevicePlugin);

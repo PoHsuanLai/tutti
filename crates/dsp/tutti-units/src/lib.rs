@@ -1,4 +1,52 @@
 //! DSP nodes for the Tutti audio engine.
+//!
+//! # Live control values must live in shared storage (MANDATORY)
+//!
+//! > A value a user can change **while the node is rendering** lives behind an
+//! > `Arc` — a [`Param<U>`], an `Arc<AtomicBool>`, an `Arc<AtomicU8>` — and its
+//! > setter takes **`&self`**. A `&mut self` setter on an `AudioUnit` means
+//! > exactly one thing: *restructure me, and expect a respawn.*
+//!
+//! This is not style. `Net`'s frontend holds **clones** of its vertices, and
+//! `Net::migrate` swaps the backend's unit back over any vertex it considers
+//! unchanged. A control stored **by value** therefore cannot be changed on a
+//! live node: the write lands on a clone the next commit discards. There is no
+//! error and no diagnostic — the fader moves on screen and not in the sound.
+//! `tests/live_value_survives_commit.rs` is that mechanism as three assertions.
+//!
+//! **`&self` is necessary, not sufficient.** A plain `AtomicBool` field also
+//! permits `&self` and is *still* lost, because `Clone` copies the atomic
+//! rather than sharing it (`tutti_sampler`'s `MemorySource` is the cautionary
+//! example: `trigger`/`play`/`stop` all take `&self` and all evaporate). The
+//! property that matters is **shared across clones**; `&self` is how you get
+//! there, not proof that you did.
+//!
+//! ## Which mechanism, by what the value is
+//!
+//! | the value | mechanism |
+//! |---|---|
+//! | one `f32` with a unit newtype | [`Param<U>`] + `&self` setter + a [`UnitParam`](tutti_core::UnitParam) arm in `AudioUnit::set` |
+//! | one `bool`, or a small `Copy` enum | `Arc<AtomicBool>` / `Arc<AtomicU8>` + `&self` setter. A bool rides `UnitParam`'s documented `>= 0.5` encoding — `Setting` carries an `f32`, so it has to. |
+//! | a multi-field struct, or anything heap-backed | a command queue: flatten the struct into scalar fields, allocate sender-side, drain in the callback |
+//!
+//! `Param<U>` stops where [`Setting`](tutti_core::dsp::Setting) stops: its
+//! payload is one `f32`, so anything wider leaves the `set()` path entirely.
+//! That is a property of the transport, not a limitation of `Param`.
+//!
+//! `RtPublish` is **not** on this ladder. It exists to move a *deallocation*
+//! off the audio thread — routing tables, PDC vectors, meter maps. Reaching for
+//! it to share a 16-byte `Copy` struct pays two `SeqCst` loads, a thread-local
+//! lookup and a scarce guard slot for none of its benefit.
+//!
+//! ## The failure is silent at four layers
+//!
+//! Worth knowing before assuming a setting arrived. [`AudioUnit::set`] has an
+//! **empty default body**, so a unit that does not implement it swallows every
+//! setting; a unit that does implement it ignores params it does not own (which
+//! is deliberate — it is what lets a host push without dispatching on node
+//! type); `from_setting` answers `None` for an unknown id; and `Net::set` drops
+//! a misaddressed setting with no `else`. The only counter that exists,
+//! `Net::take_dropped_settings`, measures **queue-full alone**.
 
 // The crate's only fallible operation is VBAP speaker-layout construction, so
 // `Error` / `Result` exist only under `spatial` (without it `Error` would be an

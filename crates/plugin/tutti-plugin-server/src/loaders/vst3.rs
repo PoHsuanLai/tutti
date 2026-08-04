@@ -8,7 +8,7 @@ use tutti_plugin::server::{
     NoteExpressionTextChanges, ParamAddress, ParamFlags, ParamRange, ParamSteps, ParameterInfo,
     PluginAudio, PluginClass, PluginDescriptor, PluginEditorHost, PluginError, PluginMeta,
     PluginParams, PluginResult, PluginState, PluginTail, ProcessContext, ProcessOutput, Samples,
-    ScaleChanges, WindowHandle,
+    ScaleChanges, Vst3SubCategories, WindowHandle,
 };
 use tutti_plugin::{BridgeError, LoadStage, Result};
 
@@ -183,10 +183,6 @@ fn build_inner(p: &ReloadParams) -> Result<(VstInner, Meta)> {
 
 /// Build the catalog descriptor from VST3 factory info.
 ///
-/// `class` carries an empty subcategory string for now: the per-bus layout and
-/// MIDI/editor data come straight from the live component, but the VST3
-/// `PClassInfo2::subCategories` string (e.g. `"Fx|Reverb"`) isn't threaded
-/// through the host's instance `PluginInfo` yet.
 fn vst3_descriptor(info: &tutti_vst3_host::PluginInfo, editor: EditorPresence) -> PluginDescriptor {
     PluginDescriptor {
         id: info.id.clone(),
@@ -194,12 +190,11 @@ fn vst3_descriptor(info: &tutti_vst3_host::PluginInfo, editor: EditorPresence) -
         vendor: info.vendor.clone(),
         version: info.version.clone(),
         class: PluginClass::Vst3 {
-            // A v1-only factory cannot report subcategories, which flattens to
-            // the same empty string as a plugin that declared none. The
-            // distinction is preserved up to here and lost at this boundary
-            // because `PluginClass::Vst3` carries a bare `String`; nothing
-            // downstream reads the difference today.
-            category: info.sub_categories.clone().unwrap_or_default(),
+            // A v1-only factory cannot report subcategories at all, which
+            // flattens here to the same empty facet set as a plugin that
+            // declared none. Both spell `PluginRole::Unknown`, which is the
+            // honest answer for either.
+            category: Vst3SubCategories::parse(info.sub_categories.as_deref().unwrap_or_default()),
         },
         editor,
     }

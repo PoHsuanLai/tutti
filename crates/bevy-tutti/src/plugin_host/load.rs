@@ -34,6 +34,7 @@ use bevy_log::{error, info};
 use bevy_tasks::{block_on, futures_lite::future, AsyncComputeTaskPool, Task};
 
 use tutti_core::SampleRate;
+use tutti_plugin::catalog::Plugin;
 use tutti_plugin::catalog::PluginId;
 use tutti_plugin::handles::{PluginClient, PluginHandle};
 use tutti_plugin::BridgeError;
@@ -53,6 +54,9 @@ use crate::plugin_host::PluginsRes;
 const _: () = {
     fn assert_send<T: Send>() {}
     fn proof() {
+        // `Plugin` is what actually crosses to the task pool; the two it
+        // wraps are proved alongside it so a regression names the culprit.
+        assert_send::<Plugin>();
         assert_send::<PluginClient>();
         assert_send::<PluginHandle>();
         assert_send::<BridgeError>();
@@ -123,7 +127,7 @@ impl Default for PluginRequest {
 /// promoter a task belonging to no request.
 #[derive(Component)]
 pub struct PendingPlugin {
-    task: Task<Result<(PluginClient, PluginHandle), BridgeError>>,
+    task: Task<Result<Plugin, BridgeError>>,
 }
 
 /// This entity's load attempt is finished — successfully or not — and must not
@@ -201,14 +205,15 @@ pub fn plugin_load_start(
         }
         budget -= 1;
 
-        // Everything the worker needs, owned. `load_client_with` exists so the
-        // catalog's `&self` borrow does not have to outlive the frame.
+        // Everything the worker needs, owned: `Plugin::open_with` is an
+        // associated function, so no borrow of the catalog outlives the frame
+        // while a subprocess takes half a second to fifteen to launch.
         let audio = plugins.0.audio_config().clone();
-        let id = request.id.clone();
+        let path = request.id.path().to_path_buf();
         let sample_rate = request.sample_rate;
 
         let task = AsyncComputeTaskPool::get().spawn(async move {
-            tutti_plugin::catalog::load_client_with(&audio, &id, sample_rate)
+            tutti_plugin::catalog::Plugin::open_with(&audio, &path, sample_rate)
         });
 
         commands.entity(entity).insert(PendingPlugin { task });
@@ -238,12 +243,17 @@ pub fn plugin_load_promote(
         };
 
         let outcome = match result {
-            Ok((client, handle)) => {
+            Ok(plugin) => {
+                // Split before the node moves into the graph: `into_parts`
+                // consumes the `Plugin`, and the handle has to outlive it.
+                let (unit, handle) = plugin.into_parts();
                 if let Some(blob) = &request.state {
                     handle.load_state(blob);
                 }
                 let name = handle.name().to_string();
-                let id = graph.0.add(client);
+                // `push`, not `add`: the unit is already boxed, and `add` boxes
+                // what it is given.
+                let id = graph.0.push(unit);
                 edited = true;
 
                 commands

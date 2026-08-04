@@ -59,6 +59,7 @@ use std::sync::Mutex;
 use support::corpus::{
     every_component, open_info, DELAY, DLS_SYNTH, DYNAMICS, INVALID_PROPERTY, MATRIX_REVERB,
 };
+use support::probe_au::Misbehaviour;
 use tutti_au_host::AuError;
 
 /// AudioToolbox tolerates concurrent use of *distinct* units, but component
@@ -323,13 +324,10 @@ fn a_non_implementing_unit_reports_the_gap_rather_than_an_empty_list() {
 #[test]
 fn the_string_readers_report_a_missing_property_as_an_error() {
     let _g = lock();
-    // Counted per reader, and both are required to have seen a refusal. An
-    // earlier version returned on the first refusal it found, which meant it
-    // only ever exercised `icon_location` — `nick_name` could still swallow its
-    // error undetected. Refusals are rare (one unit declines NickName on macOS
-    // 15.6), so the sweep must run to completion.
+    // `icon_location` is witnessed by the real corpus: 16 units refuse it, so
+    // the sweep runs to completion rather than returning on the first refusal —
+    // an earlier version did, and could only ever reach one of the two readers.
     let mut icon_refusals = 0;
-    let mut nick_refusals = 0;
     for info in every_component() {
         let Ok(au) = std::panic::catch_unwind(|| open_info(&info, 48_000.0, 512)) else {
             continue;
@@ -342,25 +340,32 @@ fn the_string_readers_report_a_missing_property_as_an_error() {
             );
             icon_refusals += 1;
         }
-        if let Err(e) = au.nick_name() {
-            assert!(
-                matches!(e, AuError::OsStatus { code, .. } if code == INVALID_PROPERTY),
-                "{}: nick_name failed with {e:?}, expected InvalidProperty",
-                info.name
-            );
-            nick_refusals += 1;
-        }
     }
     assert!(
         icon_refusals > 0,
         "no unit refused IconLocation, so this cannot distinguish an \
          Err-propagating reader from one that swallows the error into Ok(None)"
     );
-    assert!(
-        nick_refusals > 0,
-        "no unit refused NickName, so the nick_name half of this test proves \
-         nothing"
-    );
+
+    // `nick_name` needs the probe. **Every** AU on this machine answers
+    // NickName, so sweeping the corpus for a refusal asserts a fact about the
+    // installed units rather than about the reader, and fails the day the last
+    // refuser stops refusing — which is how this test broke. The probe declines
+    // every property it does not implement, so it witnesses the path directly.
+    // Same reasoning as `Misbehaviour::RefusesLatency`, which exists because no
+    // real AU refuses latency either.
+    let probe = Misbehaviour::None.open(48_000.0, 512);
+    match probe.nick_name() {
+        Err(AuError::OsStatus { code, .. }) if code == INVALID_PROPERTY => {}
+        Err(other) => panic!(
+            "expected OSStatus {INVALID_PROPERTY} (InvalidProperty) from a \
+             probe that does not implement NickName, got {other:?}"
+        ),
+        Ok(name) => panic!(
+            "the probe answered NickName with {name:?}; if it grew the property \
+             this test needs a different non-implementer, not deleting"
+        ),
+    }
 }
 
 /// The overview decode reports every entry the AU wrote, and each entry's

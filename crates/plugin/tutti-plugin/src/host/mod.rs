@@ -20,5 +20,6 @@ pub mod discovery;
 pub mod handles;
 pub mod ipc_client;
 pub mod node;
+pub mod plugin;
 pub mod plugins;
 pub mod subprocess;

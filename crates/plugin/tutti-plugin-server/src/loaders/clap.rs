@@ -2,10 +2,10 @@
 
 use std::path::Path;
 use tutti_plugin::server::{
-    BusChannels, EditorPresence, EditorSize, Features, LoadedPlugin, NoteExpressionChanges,
-    ParamAddress, ParamRange, ParameterChanges, ParameterInfo, PluginAudio, PluginClass,
-    PluginDescriptor, PluginEditorHost, PluginError, PluginMeta, PluginParams, PluginResult,
-    PluginState, PluginTail, Samples, WindowHandle,
+    BusChannels, ClapFeature, EditorPresence, EditorSize, Features, LoadedPlugin,
+    NoteExpressionChanges, ParamAddress, ParamRange, ParameterChanges, ParameterInfo, PluginAudio,
+    PluginClass, PluginDescriptor, PluginEditorHost, PluginError, PluginMeta, PluginParams,
+    PluginResult, PluginState, PluginTail, Samples, WindowHandle,
 };
 use tutti_plugin::server::{ProcessContext, ProcessOutput};
 
@@ -47,7 +47,11 @@ fn clap_descriptor(info: &tutti_clap_host::PluginInfo, editor: EditorPresence) -
         vendor: info.vendor.clone(),
         version: info.version.clone(),
         class: PluginClass::Clap {
-            features: info.features.clone(),
+            features: info
+                .features
+                .iter()
+                .map(|f| ClapFeature::parse(f))
+                .collect(),
         },
         editor,
     }
@@ -174,6 +178,10 @@ impl ClapInstance {
             features.insert(Features::TRANSPORT);
             features.insert(Features::PARAM_AUTOMATION);
             features.set(Features::NOTE_EXPRESSION, has_note_in);
+            // `PRESET_LIST` stays out of `probed::CLAP` — enumeration lives in
+            // the preset-discovery extension, which is factory-level and
+            // unbound here — so only the load half is answered.
+            features.set(Features::PRESET_LOAD, loaded.supports_preset_load());
             let probed = tutti_plugin::server::probed::CLAP;
 
             // CLAP reports aggregate audio port channel counts; carry them as a

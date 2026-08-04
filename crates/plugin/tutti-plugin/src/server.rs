@@ -23,13 +23,14 @@ pub use crate::protocol::audio::{
 
 pub use crate::protocol::{
     AuComponentType, AutomationMode, BridgeMessage, BusChannels, ChannelLayout, ChordChanges,
-    ChordValue, EditorPresence, Features, HostMessage, IpcMidiEvent, IpcMidiEventVec, LoadedPlugin,
-    MidiEvent, MidiEventVec, NoteExpressionChanges, NoteExpressionIntChanges,
+    ChordValue, ClapFeature, EditorPresence, Features, HostMessage, IpcMidiEvent, IpcMidiEventVec,
+    LoadedPlugin, MidiEvent, MidiEventVec, NoteExpressionChanges, NoteExpressionIntChanges,
     NoteExpressionIntValue, NoteExpressionTextChanges, NoteExpressionTextValue, NoteExpressionType,
     NoteExpressionValue, ParamAddress, ParamFlags, ParamId, ParamRange, ParamSteps,
     ParameterChanges, ParameterInfo, ParameterPoint, ParameterQueue, PluginClass, PluginDescriptor,
     PluginTail, ProcessAudioData, SampleFormat, Samples, ScaleChanges, ScaleValue, SlabLayout,
-    TimeSignature, TransportInfo, Vst2Category, MIDI_STACK_CAPACITY, PROTOCOL_VERSION,
+    TimeSignature, TransportInfo, Vst2Category, Vst3PlugType, Vst3SubCategories,
+    MIDI_STACK_CAPACITY, PROTOCOL_VERSION,
 };
 pub use crate::util::config::BridgeConfig;
 pub use crate::util::transport::shm::{AudioSlab, RING_SLOTS};

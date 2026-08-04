@@ -51,6 +51,24 @@ pub enum BridgeError {
     #[error("No plugin named {name:?} in catalog")]
     PluginNotFound { name: String },
 
+    /// The catalog records this plugin as having brought a scan down.
+    ///
+    /// Only [`Plugins::open`](crate::catalog::Plugins::open) returns this —
+    /// [`Plugin::open`](crate::catalog::Plugin::open) has no catalog and so no
+    /// crash history. Carrying `reason` rather than answering a bool is what
+    /// lets a host say *which* plugin misbehaved and offer to load it anyway,
+    /// which is the unguarded door.
+    ///
+    /// False positives are expected: the scanner's dead-man's pedal fires on a
+    /// force-quit, a power loss, or an OOM kill as readily as on a real crash.
+    /// The record stores the file's mtime, so a reinstall or vendor update
+    /// re-admits the plugin without the host doing anything.
+    #[error("Plugin at {path} is blacklisted: {reason}")]
+    Blacklisted {
+        path: std::path::PathBuf,
+        reason: String,
+    },
+
     #[error("Unexpected bridge message: expected {expected}, got {got}")]
     UnexpectedMessage { expected: &'static str, got: String },
 

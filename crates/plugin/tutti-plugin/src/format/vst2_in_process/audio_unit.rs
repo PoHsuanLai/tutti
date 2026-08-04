@@ -20,7 +20,10 @@ use tutti_midi_runtime::MidiSender;
 use tutti_midi_types::MidiUnitId;
 use tutti_vst2_host::{PluginInfo, ProcessContext, RenderScratch, Vst2Instance};
 
+use crate::host::node::input_slot::{BlockCtx, InputSlot};
+use crate::host::node::transport_source::TransportSource;
 use crate::host::node::Midi;
+use crate::protocol::{Features, TransportInfo};
 
 /// Maximum block size we pre-size scratch for. Matches fundsp's
 /// `MAX_BUFFER_SIZE` so a single block lands in one `process()` call.
@@ -55,6 +58,15 @@ pub struct InProcessVst2Client {
     inner: Arc<Mutex<Vst2Instance>>,
     metadata: PluginInfo,
     midi: Midi,
+    /// Per-block transport snapshot, gated on [`Features::TRANSPORT`]. The
+    /// producer cell is shared across fundsp graph-commit clones (see
+    /// [`InputSlot`]), so a `set_transport_source` on any clone reaches the one
+    /// the audio thread runs.
+    transport: InputSlot<TransportSource>,
+    /// What the loader reported for this plugin, as the gate `transport` is
+    /// drained against. Stored rather than passed in per block so the node's
+    /// declared capability and its delivered behaviour read from one value.
+    features: Features,
     /// Per-clone audio scratch handed to `vst::AudioBuffer::from_raw`.
     scratch: RenderScratch,
     /// Per-clone f32/f64 staging arrays (pre-allocated, reused).
@@ -69,6 +81,7 @@ impl InProcessVst2Client {
     pub(crate) fn new(
         inner: Arc<Mutex<Vst2Instance>>,
         metadata: PluginInfo,
+        features: Features,
         sample_rate: f64,
         contention_count: Arc<AtomicU64>,
     ) -> Self {
@@ -81,6 +94,8 @@ impl InProcessVst2Client {
             inner,
             metadata,
             midi: Midi::new(),
+            transport: InputSlot::new(Features::TRANSPORT),
+            features,
             scratch,
             process_scratch,
             sample_rate,
@@ -91,6 +106,58 @@ impl InProcessVst2Client {
     /// Producer handle for this plugin's MIDI inbox. Cheap to clone.
     pub fn midi_sender(&self) -> MidiSender {
         self.midi.sender()
+    }
+
+    /// Layer a transport-aware MIDI source over the live inbox, polled once per
+    /// block. The clip-playback path, where [`midi_sender`](Self::midi_sender)
+    /// is the live one; the port drains both.
+    ///
+    /// Held in an `Arc` so the same source survives the unit-clone fundsp
+    /// performs on each `commit()`.
+    pub fn set_midi_source(&mut self, source: Arc<dyn tutti_midi_types::MidiIn>) {
+        self.midi.set_source(source);
+    }
+
+    /// Install a transport reader so the plugin receives a live per-block
+    /// [`TransportInfo`] (tempo, playhead, meter, bar, loop), which the VST2
+    /// host turns into the `audioMasterGetTime` snapshot the plugin polls.
+    ///
+    /// Wrapped in a [`TransportSource`] stamped with the current sample rate
+    /// (updated live on a device change). The snapshot only reaches plugins
+    /// advertising [`Features::TRANSPORT`]; others always drain a default.
+    ///
+    /// `meter` is a separate handle rather than something read off the
+    /// transport: meter is a layer over the timeline, not transport state.
+    /// Passing the same handle the host publishes elsewhere means a meter edit
+    /// reaches running plugins without re-installing anything.
+    pub fn set_transport_source(
+        &mut self,
+        reader: tutti_core::transport::Transport,
+        meter: Arc<tutti_core::RtPublish<tutti_core::meter::MeterMap>>,
+    ) {
+        self.transport.install(Arc::new(TransportSource::new(
+            Arc::new(reader),
+            meter,
+            self.sample_rate,
+        )));
+    }
+
+    /// Drop a previously-installed transport reader; subsequent blocks feed the
+    /// plugin a default (stopped) snapshot.
+    pub fn clear_transport_source(&mut self) {
+        self.transport.clear();
+    }
+
+    /// Restamp the installed transport source with a new sample rate.
+    ///
+    /// Called from both `AudioUnit::set_sample_rate` impls. The source holds its
+    /// rate in a shared atomic, so this reaches the clone the audio thread runs;
+    /// a no-op when no source is installed, since one installed later is stamped
+    /// with `self.sample_rate` at that point.
+    fn restamp_transport_rate(&self) {
+        if let Some(src) = self.transport.source_ref().load().as_ref() {
+            src.set_sample_rate(self.sample_rate);
+        }
     }
 
     /// Install the outbound routing target so this plugin's MIDI-out re-enters
@@ -136,6 +203,10 @@ impl Clone for InProcessVst2Client {
             inner: Arc::clone(&self.inner),
             metadata: self.metadata.clone(),
             midi: self.midi.clone(),
+            // `InputSlot::clone` shares the producer cell rather than the
+            // Option, so an install on any clone reaches the one fundsp runs.
+            transport: self.transport.clone(),
+            features: self.features,
             scratch,
             process_scratch,
             sample_rate: self.sample_rate,
@@ -194,6 +265,7 @@ impl AudioUnit for InProcessVst2Client {
     fn set_sample_rate(&mut self, sample_rate: tutti_core::SampleRate) {
         let sample_rate: f64 = sample_rate.get();
         self.sample_rate = sample_rate;
+        self.restamp_transport_rate();
         if let Some(mut instance) = self.inner.try_lock() {
             instance.set_sample_rate(sample_rate);
         }
@@ -208,10 +280,14 @@ impl AudioUnit for InProcessVst2Client {
         {
             self.process_scratch.f32_in[ch][0] = sample;
         }
+        let transport = *self
+            .transport
+            .drain(BlockCtx { block_size: 1 }, self.features);
         let processed = drive_f32(
             &self.inner,
             &self.contention_count,
             &mut self.midi,
+            &transport,
             &mut self.scratch,
             &mut self.process_scratch,
             self.metadata.num_inputs.count() as usize,
@@ -245,10 +321,14 @@ impl AudioUnit for InProcessVst2Client {
             }
         }
 
+        let transport = *self
+            .transport
+            .drain(BlockCtx { block_size: size }, self.features);
         let processed = drive_f32(
             &self.inner,
             &self.contention_count,
             &mut self.midi,
+            &transport,
             &mut self.scratch,
             &mut self.process_scratch,
             self.metadata.num_inputs.count() as usize,
@@ -329,6 +409,7 @@ impl AudioUnit<F64> for InProcessVst2Client {
     fn set_sample_rate(&mut self, sample_rate: tutti_core::SampleRate) {
         let sample_rate: f64 = sample_rate.get();
         self.sample_rate = sample_rate;
+        self.restamp_transport_rate();
         if let Some(mut instance) = self.inner.try_lock() {
             instance.set_sample_rate(sample_rate);
         }
@@ -342,10 +423,14 @@ impl AudioUnit<F64> for InProcessVst2Client {
         {
             self.process_scratch.f64_in[ch][0] = sample;
         }
+        let transport = *self
+            .transport
+            .drain(BlockCtx { block_size: 1 }, self.features);
         let processed = drive_f64(
             &self.inner,
             &self.contention_count,
             &mut self.midi,
+            &transport,
             &mut self.scratch,
             &mut self.process_scratch,
             self.metadata.num_inputs.count() as usize,
@@ -378,10 +463,14 @@ impl AudioUnit<F64> for InProcessVst2Client {
             }
         }
 
+        let transport = *self
+            .transport
+            .drain(BlockCtx { block_size: size }, self.features);
         let processed = drive_f64(
             &self.inner,
             &self.contention_count,
             &mut self.midi,
+            &transport,
             &mut self.scratch,
             &mut self.process_scratch,
             self.metadata.num_inputs.count() as usize,
@@ -451,6 +540,28 @@ impl InProcessVst2Client {
     }
 }
 
+/// The per-block context handed to `vst2-host`, carrying this block's MIDI and
+/// transport snapshot.
+///
+/// `transport` is always attached. The decision of *what* to attach happens one
+/// level up, in [`InputSlot::drain`], which yields a default snapshot for a
+/// plugin that did not declare [`Features::TRANSPORT`] or has no source
+/// installed — so there is no second format check here.
+///
+/// Named rather than inlined at the two call sites so the shape of the context
+/// the node builds is observable without a plugin binary on disk: whether
+/// `ctx.transport` is populated at all is precisely what decides if
+/// `audioMasterGetTime` has anything to serve.
+fn block_context<'a>(
+    sample_rate: f64,
+    midi_events: &'a [tutti_vst2_host::MidiEvent],
+    transport: &'a TransportInfo,
+) -> ProcessContext<'a> {
+    ProcessContext::new(sample_rate)
+        .midi(midi_events)
+        .transport(transport)
+}
+
 /// Reborrow the staging arrays as slice-of-slices and call into
 /// `vst2-host`. Free function so we can take disjoint borrows of the
 /// fields on the caller side without a self-borrow conflict.
@@ -459,6 +570,7 @@ fn drive_f32(
     inner: &Arc<Mutex<Vst2Instance>>,
     contention: &AtomicU64,
     midi: &mut Midi,
+    transport: &TransportInfo,
     scratch: &mut RenderScratch,
     process_scratch: &mut ProcessScratch,
     num_inputs: usize,
@@ -491,7 +603,7 @@ fn drive_f32(
                 &mut process_scratch.f32_out[..num_outputs.min(MAX_CHANNELS)],
                 size,
                 |out_slice| {
-                    let ctx = ProcessContext::new(sample_rate).midi(&midi_events);
+                    let ctx = block_context(sample_rate, &midi_events, transport);
                     let midi_out = instance.process_f32(in_slice, out_slice, size, &ctx, scratch);
                     // Re-inject the plugin's MIDI-out into routing (no-op if no
                     // out-target installed). Emitting here, inside the block,
@@ -513,6 +625,7 @@ fn drive_f64(
     inner: &Arc<Mutex<Vst2Instance>>,
     contention: &AtomicU64,
     midi: &mut Midi,
+    transport: &TransportInfo,
     scratch: &mut RenderScratch,
     process_scratch: &mut ProcessScratch,
     num_inputs: usize,
@@ -538,7 +651,7 @@ fn drive_f64(
                 &mut process_scratch.f64_out[..num_outputs.min(MAX_CHANNELS)],
                 size,
                 |out_slice| {
-                    let ctx = ProcessContext::new(sample_rate).midi(&midi_events);
+                    let ctx = block_context(sample_rate, &midi_events, transport);
                     let midi_out = instance.process_f64(in_slice, out_slice, size, &ctx, scratch);
                     // Re-inject the plugin's MIDI-out into routing (see `drive_f32`).
                     midi.emit(midi_out);
@@ -600,6 +713,206 @@ fn run_with_mut_channels_f32<F: FnOnce(&mut [&mut [f32]])>(
     ];
     let n = channels.len().min(16);
     recurse(channels, size, &mut acc[..n], 0, f);
+}
+
+#[cfg(test)]
+mod transport_tests {
+    use super::*;
+    use tutti_core::meter::MeterMap;
+    use tutti_core::transport::Transport;
+    use tutti_core::RtPublish;
+
+    /// The slot exactly as [`InProcessVst2Client::new`] builds it. Constructing
+    /// the whole node needs a live `Vst2Instance` (a real plugin binary on
+    /// disk), so the transport rail is exercised on its own — it is the piece
+    /// that was missing, and it is a pure function of the declared features.
+    fn slot() -> InputSlot<TransportSource> {
+        InputSlot::new(Features::TRANSPORT)
+    }
+
+    /// A rolling transport at `tempo`, plus the source the node installs for it.
+    fn rolling(tempo: f64, rate: f64) -> (Transport, Arc<TransportSource>) {
+        let t = Transport::new(rate);
+        t.settings.set_tempo(tempo);
+        let _ = t.motion.try_send(tutti_core::MotionEvent::Play);
+        t.motion.drain();
+        let source = Arc::new(TransportSource::new(
+            Arc::new(t.clone()),
+            Arc::new(RtPublish::new(MeterMap::default())),
+            rate,
+        ));
+        (t, source)
+    }
+
+    /// The feature set the in-process loader builds, for a plugin reporting no
+    /// optional capability of its own. `TRANSPORT` is unconditional there, so
+    /// this is the minimum any in-process VST2 declares.
+    fn loader_features() -> Features {
+        let mut f = Features::empty();
+        f.insert(Features::TRANSPORT);
+        f
+    }
+
+    /// Whether a drained snapshot carries transport data rather than the
+    /// "nothing installed" default.
+    ///
+    /// Compared field-wise against [`TransportInfo::default`] because the wire
+    /// type has no `PartialEq`, and against the *default* rather than against
+    /// zero because that default is a stopped transport at **120 BPM, 4/4** —
+    /// not a zeroed struct. A predicate reading `tempo != 0.0` is therefore true
+    /// for the default too, and would pass whether or not the snapshot was ever
+    /// filled. Every fixture here runs at a tempo other than 120 so a live read
+    /// is distinguishable from that default.
+    fn is_live(info: &TransportInfo) -> bool {
+        let default = TransportInfo::default();
+        info.state.playing != default.state.playing
+            || info.timing.tempo != default.timing.tempo
+            || info.position.quarters != default.position.quarters
+            || info.sample_rate != default.sample_rate
+    }
+
+    /// The context the node hands `vst2-host` each block carries a transport
+    /// snapshot, which is the only thing that gives `audioMasterGetTime`
+    /// something to serve.
+    ///
+    /// This is the claim [`Features::TRANSPORT`] makes. Before the node had a
+    /// transport rail, `ctx.transport` was left `None` on every block, so
+    /// `update_transport` never ran and the plugin's `get_time_info` callback
+    /// kept reading an unpublished cell while the capability bit read true.
+    #[test]
+    fn the_block_context_carries_a_transport_snapshot() {
+        let mut slot = slot();
+        let (transport, source) = rolling(132.0, 48_000.0);
+        transport.settings.set_beat(4.0);
+        slot.install(source);
+        let snapshot = *slot.drain(BlockCtx { block_size: 64 }, loader_features());
+
+        let ctx = block_context(48_000.0, &[], &snapshot);
+
+        let delivered = ctx
+            .transport
+            .expect("the block context must carry a transport snapshot");
+        // 132, not the 120 the default carries — an assertion against 120 would
+        // hold for an unfilled snapshot.
+        assert!(
+            (delivered.timing.tempo - 132.0).abs() < 1e-9,
+            "the running tempo must reach the plugin, got {}",
+            delivered.timing.tempo
+        );
+        assert!(
+            delivered.state.playing,
+            "a rolling transport must read as playing"
+        );
+        assert!(
+            (delivered.position.quarters - 4.0).abs() < 1e-9,
+            "the playhead must reach the plugin, got {}",
+            delivered.position.quarters
+        );
+    }
+
+    /// A node declaring `TRANSPORT` drains the live snapshot, not a default.
+    #[test]
+    fn a_node_declaring_transport_is_handed_the_live_snapshot() {
+        let mut slot = slot();
+        let (transport, source) = rolling(132.0, 48_000.0);
+        transport.settings.set_beat(4.0);
+        slot.install(source);
+
+        let snapshot = slot.drain(BlockCtx { block_size: 64 }, loader_features());
+
+        assert!(
+            (snapshot.timing.tempo - 132.0).abs() < 1e-9,
+            "declared TRANSPORT must deliver the running tempo, got {}",
+            snapshot.timing.tempo
+        );
+        assert!(
+            is_live(snapshot),
+            "the snapshot must differ from the no-transport default"
+        );
+    }
+
+    /// The declared bit is what gates delivery, so a node that does not declare
+    /// `TRANSPORT` drains the default even with a source installed.
+    ///
+    /// Pins the gate as the reason delivery happens, rather than the mere
+    /// presence of an installed source.
+    #[test]
+    fn a_node_not_declaring_transport_drains_the_default() {
+        let mut slot = slot();
+        let (transport, source) = rolling(132.0, 48_000.0);
+        transport.settings.set_beat(4.0);
+        slot.install(source);
+
+        let snapshot = slot.drain(BlockCtx { block_size: 64 }, Features::empty());
+
+        assert!(
+            !is_live(snapshot),
+            "an undeclared capability must not be fed"
+        );
+    }
+
+    /// With no source installed the node still drains a usable default, so the
+    /// `ProcessContext` is filled on every block rather than only once a host
+    /// has wired a transport.
+    #[test]
+    fn an_uninstalled_slot_drains_the_default_snapshot() {
+        let mut slot = slot();
+        let snapshot = slot.drain(BlockCtx { block_size: 64 }, loader_features());
+        assert!(!is_live(snapshot));
+    }
+
+    /// Installing on one clone reaches the clone the audio thread runs.
+    ///
+    /// fundsp clones the unit on every graph commit, and a host installs the
+    /// transport through whichever clone it holds. Sharing the producer cell
+    /// rather than the `Option` is what makes the install visible; the opposite
+    /// is the shared-cell bug this rail already carries a regression guard for.
+    #[test]
+    fn a_transport_installed_on_one_clone_reaches_another() {
+        let original = slot();
+        let mut running = original.clone();
+        let (transport, source) = rolling(90.0, 44_100.0);
+        transport.settings.set_beat(1.0);
+
+        original.install(source);
+
+        let snapshot = running.drain(BlockCtx { block_size: 64 }, loader_features());
+        assert!(
+            (snapshot.timing.tempo - 90.0).abs() < 1e-9,
+            "an install on a sibling clone must reach the running node"
+        );
+    }
+
+    /// The declared capability and the delivered behaviour are the same value.
+    ///
+    /// The node gates its per-block send on `loaded.features`, the field the
+    /// handle reports, so a reader cannot see `TRANSPORT` on the handle while
+    /// the audio path silently withholds it.
+    #[test]
+    fn the_declared_transport_bit_is_the_one_the_send_is_gated_on() {
+        let declared = loader_features();
+        assert!(
+            declared.contains(Features::TRANSPORT),
+            "the in-process loader declares TRANSPORT unconditionally"
+        );
+
+        let mut slot = slot();
+        let (transport, source) = rolling(96.0, 48_000.0);
+        transport.settings.set_beat(2.0);
+        slot.install(source);
+        let snapshot = *slot.drain(BlockCtx { block_size: 64 }, declared);
+
+        // Through `block_context`, so this reads the value the plugin is
+        // actually handed rather than only the slot's output.
+        let delivered = block_context(48_000.0, &[], &snapshot)
+            .transport
+            .is_some_and(is_live);
+        assert_eq!(
+            declared.contains(Features::TRANSPORT),
+            delivered,
+            "a declared transport capability must be a delivered one"
+        );
+    }
 }
 
 fn run_with_mut_channels_f64<F: FnOnce(&mut [&mut [f64]])>(

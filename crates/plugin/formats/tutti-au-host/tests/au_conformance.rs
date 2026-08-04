@@ -42,7 +42,7 @@ use support::corpus::{
 use tutti_au_host::component::AuType;
 use tutti_au_host::types::K_AUDIO_UNIT_ERR_UNINITIALIZED;
 use tutti_au_host::AuError;
-use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
+use tutti_midi_types::tutti_types::{CCNumber, MidiChannel, MidiGroup};
 use tutti_types::Samples;
 
 /// AudioToolbox tolerates concurrent use of *distinct* units, but component
@@ -747,7 +747,12 @@ fn midi_to_an_effect_is_harmless() {
     let mut au = DELAY.open(RATE, BLOCK);
     au.send_midi(&[
         MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xC000),
-        MidiEvent::cc(MidiGroup::FIRST, MidiChannel::FIRST, 7, 0x4000_0000),
+        MidiEvent::cc(
+            MidiGroup::FIRST,
+            MidiChannel::FIRST,
+            CCNumber::VOLUME,
+            0x4000_0000,
+        ),
     ]);
 
     let input = impulse(2, BLOCK as usize);

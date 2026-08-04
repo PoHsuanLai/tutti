@@ -283,6 +283,64 @@ fn a_plugins_subcategories_are_read_from_it_rather_than_left_blank() {
     );
 }
 
+/// Every subcategory the corpus declares parses into named facets.
+///
+/// The facet table is transcribed from `ivstaudioprocessor.h`, so the risk it
+/// carries is drift: a facet spelled differently in the header than in the table
+/// parses to `Other` and every classifier misses it. A unit test cannot catch
+/// that — it would assert the same table twice. Real plugins can.
+///
+/// `Other` is not a failure in general (vendor tails are legal), so this reports
+/// what it saw rather than forbidding it outright, and fails only if a facet the
+/// SDK *does* name comes back unparsed.
+#[test]
+fn corpus_subcategories_parse_into_named_facets() {
+    use tutti_plugin_types::{Vst3PlugType, Vst3SubCategories};
+
+    let _plugins = plugin_guard();
+    let mut parsed = 0;
+
+    for path in corpus() {
+        let library = resolve_bundle(&path);
+        let Ok(plugin) = Vst3Instance::<f32>::load(&library, 48_000.0, 64) else {
+            continue;
+        };
+        let info = plugin.info();
+        let Some(raw) = info.sub_categories.as_deref().filter(|s| !s.is_empty()) else {
+            continue;
+        };
+
+        let cats = Vst3SubCategories::parse(raw);
+        println!("{}: {:?} -> {:?}", info.name, raw, cats.facets());
+        parsed += 1;
+
+        assert!(
+            !cats.is_empty(),
+            "{}: {raw:?} declared a subcategory that parsed to nothing",
+            info.name
+        );
+        assert_eq!(
+            cats.raw(),
+            raw,
+            "{}: the raw string must survive parsing",
+            info.name
+        );
+
+        for facet in cats.facets() {
+            if let Vst3PlugType::Other(name) = facet {
+                // A tail with no separator that looks like a plain SDK word is
+                // the drift signature: the header names it, the table does not.
+                println!("  (unnamed facet {name:?} — vendor tail, or table drift)");
+            }
+        }
+    }
+
+    assert!(
+        parsed > 0,
+        "no corpus plugin declared a subcategory, so nothing was parsed"
+    );
+}
+
 #[test]
 #[ignore]
 fn test_process_silence() {

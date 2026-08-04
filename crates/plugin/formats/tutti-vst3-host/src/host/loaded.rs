@@ -1936,6 +1936,9 @@ pub(super) struct AudioClass {
     pub vendor: Option<String>,
     /// Per-class version string, when declared.
     pub version: Option<String>,
+    /// `|`-delimited subcategories (`"Fx|Reverb"`), when declared. `None` when
+    /// the factory is v1-only, which cannot report them at all.
+    pub sub_categories: Option<String>,
 }
 
 fn ensure_has_classes(library: &Vst3Library, path: &Path) -> Result<()> {
@@ -2246,6 +2249,7 @@ fn build_plugin_info_raw(
     .midi(receives_midi)
     .midi_output(emits_midi)
     .f64_support(supports_f64)
+    .sub_categories(class.sub_categories.clone())
 }
 
 /// Convenience wrapper for the load path where we always have a processor.
@@ -2274,6 +2278,7 @@ fn find_audio_class_named(library: &Vst3Library, path: &Path, wanted: &str) -> R
             name: info.name.clone(),
             vendor: info.vendor.clone(),
             version: info.version.clone(),
+            sub_categories: info.sub_categories.clone(),
         })
         .ok_or_else(|| Vst3Error::LoadFailed {
             path: path.to_path_buf(),
@@ -2299,6 +2304,7 @@ fn find_audio_class(library: &Vst3Library, path: &Path) -> Result<AudioClass> {
                 name: info.name,
                 vendor: info.vendor,
                 version: info.version,
+                sub_categories: info.sub_categories,
             })
         })
         .ok_or_else(|| Vst3Error::LoadFailed {

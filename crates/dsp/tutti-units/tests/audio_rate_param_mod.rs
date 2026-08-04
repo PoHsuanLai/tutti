@@ -10,13 +10,16 @@ use tutti_core::{AtomicF32, Ordering};
 use tutti_mod::{CurveType, Polarity};
 use tutti_types::{Depth, UnitParam};
 use tutti_units::{
-    AtomicSourceUnit, DistortionNode, ParamPorts, ParamShaperUnit, ParamSumUnit, ShapeKind,
+    AtomicSourceUnit, DistortionNode, ParamModShaping, ParamPorts, ParamShaperUnit, ParamSumUnit,
+    ShapeKind,
 };
 
 /// Wire `base + shaped(source) → node.param_port(param)`.
 ///
-/// The whole audio-rate edge, tutti-only. Returns the shared base atomic so a
-/// control thread can move the authored value.
+/// A single-edge shim over the crate's own [`tutti_units::wire_param_mod`],
+/// kept so these tests read as they did when this was a local helper. That the
+/// six tests below pass **unmodified** against the promoted version is the
+/// proof the extraction preserved behaviour.
 fn wire_param_mod(
     net: &mut Net,
     target: tutti_core::NodeId,
@@ -26,23 +29,23 @@ fn wire_param_mod(
     range: (f32, f32),
     depth: Depth,
 ) -> Arc<AtomicF32> {
-    let base_unit = AtomicSourceUnit::new(authored);
-    let base_cell = base_unit.shared();
-
-    let base = net.push(Box::new(base_unit));
-    let shaper = net.push(Box::new(ParamShaperUnit::new(
-        depth,
-        Polarity::Bipolar,
-        CurveType::Linear,
-    )));
-    let sum = net.push(Box::new(ParamSumUnit::new(1, range.0, range.1)));
-
-    net.connect(base, 0, sum, 0); // port 0 = base
-    net.connect(source, 0, shaper, 0);
-    net.connect(shaper, 0, sum, 1); // ports 1..=N = offsets
-    net.connect(sum, 0, target, port);
-
-    base_cell
+    tutti_units::wire_param_mod(
+        net,
+        target,
+        port,
+        authored,
+        range.0,
+        range.1,
+        &[(
+            source,
+            ParamModShaping {
+                depth,
+                polarity: Polarity::Bipolar,
+                curve: CurveType::Linear,
+            },
+        )],
+    )
+    .base_cell()
 }
 
 /// A constant source standing in for an LFO, so the test asserts on arithmetic
@@ -226,5 +229,174 @@ fn the_edge_changes_what_the_node_produces() {
     assert!(
         diff > 1.0,
         "driving through the param port must change the output; total diff {diff}"
+    );
+}
+
+/// **The cell the builder hands back is the one the sum actually reads.**
+///
+/// The whole value of returning a handle is that a control thread can move the
+/// authored value *after* the chain is built. If the returned `Arc` were not
+/// the sum's own cell — a fresh atomic, a clone of a snapshot — this would
+/// still compile, still render, and the param would sit frozen at its
+/// construction value forever.
+///
+/// That is not a hypothetical failure mode. It is what `bevy-tutti`'s
+/// `spawn_chain` did, and it presented as "the cutoff knob does nothing".
+#[test]
+fn the_builder_returns_the_cell_the_sum_actually_reads() {
+    let mut net = Net::new(2, 2);
+    let dist = DistortionNode::with_param_inputs(2, ShapeKind::Tanh, 1.0, true);
+    let port = dist.param_port(UnitParam::Drive).expect("drive port");
+    let target = net.push(Box::new(dist));
+
+    // No modulation at all: the base is the entire signal, so any movement in
+    // the output is unambiguously the base moving.
+    let chain = tutti_units::wire_param_mod(&mut net, target, port, 1.0, 0.0, 10.0, &[]);
+    net.connect_input(0, target, 0);
+    net.connect_input(1, target, 1);
+    net.pipe_output(target);
+    net.check();
+
+    let mut out = [0.0f32; 2];
+    net.tick(&[0.5, 0.5], &mut out);
+    let quiet = out[0];
+
+    chain
+        .base_cell()
+        .store(9.0, std::sync::atomic::Ordering::Release);
+    net.tick(&[0.5, 0.5], &mut out);
+
+    assert!(
+        out[0] > quiet + 0.3,
+        "a write to the returned cell must reach the node: {quiet} -> {}. \
+         An unchanged output means the handle is not the cell the sum reads.",
+        out[0]
+    );
+}
+
+/// **The builder's cell composes with a control-rate accumulator.**
+///
+/// `sharing_one_cell_makes_control_rate_and_audio_rate_compose` in
+/// `param_writer_ownership` proves this with a hand-built `Arc`. This proves
+/// the same thing through the *public* API, which is what a host actually
+/// reaches for — the composition is only useful if the assembler exposes the
+/// cell that makes it possible.
+#[test]
+fn the_builders_cell_is_the_cell_a_control_rate_target_mirrors_into() {
+    use tutti_mod::{AtomicTarget, ModTarget};
+
+    let mut net = Net::new(2, 2);
+    let dist = DistortionNode::with_param_inputs(2, ShapeKind::Tanh, 1.0, true);
+    let port = dist.param_port(UnitParam::Drive).expect("drive port");
+    let target = net.push(Box::new(dist));
+
+    let chain = tutti_units::wire_param_mod(&mut net, target, port, 1.0, 0.0, 10.0, &[]);
+    net.connect_input(0, target, 0);
+    net.connect_input(1, target, 1);
+    net.pipe_output(target);
+    net.check();
+
+    // The control-rate tier, mirroring into the audio-rate chain's base.
+    let acc = AtomicTarget::with_mirror(1.0, 0.0, 10.0, chain.base_cell());
+
+    let mut out = [0.0f32; 2];
+    net.tick(&[0.5, 0.5], &mut out);
+    let quiet = out[0];
+
+    // An authored move through the control-rate sink's own vocabulary.
+    acc.set_base(9.0);
+    net.tick(&[0.5, 0.5], &mut out);
+
+    assert!(
+        out[0] > quiet + 0.3,
+        "`set_base` on an accumulator mirroring the chain's base cell must \
+         reach the node: {quiet} -> {}",
+        out[0]
+    );
+}
+
+/// **Offsets land on ports `1..=N`; the base keeps port 0.**
+///
+/// An off-by-one here would put the first shaper on the base port, so the
+/// authored value would be replaced by a modulation offset rather than added
+/// to — audible as a param that ignores its knob and swings around zero.
+#[test]
+fn n_edges_land_on_ports_one_through_n() {
+    let mut net = Net::new(2, 2);
+    let dist = DistortionNode::with_param_inputs(2, ShapeKind::Tanh, 1.0, true);
+    let port = dist.param_port(UnitParam::Drive).expect("drive port");
+    let target = net.push(Box::new(dist));
+
+    let a = constant(&mut net, 1.0);
+    let b = constant(&mut net, 1.0);
+    let edge = |source| {
+        (
+            source,
+            ParamModShaping {
+                depth: Depth(0.25),
+                polarity: Polarity::Bipolar,
+                curve: CurveType::Linear,
+            },
+        )
+    };
+    let chain =
+        tutti_units::wire_param_mod(&mut net, target, port, 1.0, 0.0, 10.0, &[edge(a), edge(b)]);
+
+    assert_eq!(chain.shapers.len(), 2, "one shaper per edge");
+    assert_eq!(
+        net.source(chain.sum, 0),
+        tutti_core::dsp::Source::Local(chain.base, 0),
+        "port 0 must stay the base"
+    );
+    for (i, &shaper) in chain.shapers.iter().enumerate() {
+        assert_eq!(
+            net.source(chain.sum, i + 1),
+            tutti_core::dsp::Source::Local(shaper, 0),
+            "shaper {i} must occupy port {}",
+            i + 1
+        );
+    }
+}
+
+/// **The sum's clamp is live.**
+///
+/// A param's range is authored state that moves without the graph moving — a
+/// host narrowing a range must not have to rebuild the chain to apply it, and
+/// rebuilding would take the base cell with it.
+#[test]
+fn the_sums_clamp_can_be_moved_after_construction() {
+    let mut sum = ParamSumUnit::new(0, 0.0, 10.0);
+    let bounds = sum.bounds();
+
+    let mut out = [0.0f32; 1];
+    sum.tick(&[100.0], &mut out);
+    assert_eq!(out[0], 10.0, "clamped at the constructed max");
+
+    bounds.set(0.0, 2.0);
+    sum.tick(&[100.0], &mut out);
+    assert_eq!(out[0], 2.0, "the new max must take effect with no rebuild");
+}
+
+/// **A crossed range does not panic the audio thread.**
+///
+/// `ClampBounds::set` is two independent stores, so a reader can land between
+/// them and see `min > max` for one block. `f32::clamp` panics on that. The
+/// fold orders the pair rather than trusting the writer, because a panic on the
+/// audio thread is not a diagnostic — it is a dead stream.
+#[test]
+fn a_crossed_range_is_survivable() {
+    let mut sum = ParamSumUnit::new(0, 0.0, 10.0);
+    let bounds = sum.bounds();
+
+    // The transient state a mid-`set` reader can observe: min above max.
+    bounds.set(8.0, 2.0);
+
+    let mut out = [0.0f32; 1];
+    sum.tick(&[5.0], &mut out);
+    assert!(
+        (2.0..=8.0).contains(&out[0]),
+        "a crossed pair must still yield a value inside the implied range; \
+         got {}",
+        out[0]
     );
 }

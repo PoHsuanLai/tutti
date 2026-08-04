@@ -277,6 +277,45 @@ impl ModSourceAppExt for App {
     }
 }
 
+/// Raise the collect flag when a **route or range** moves, not only a source.
+///
+/// `rebuild` runs on `Or<(Changed<ModRoute>, Changed<ModParamRange>)>` *or* a
+/// dirty source, and it builds its source registry by **draining**
+/// `CollectedModSources::sources`. But [`collect`] refills that list only when
+/// `dirty` is set, and `dirty` tracked source changes alone.
+///
+/// So a rebuild triggered by a route or range change found an empty registry,
+/// failed to resolve `source_index` for every route, and **dropped every
+/// accumulator**. The user-visible effect was that editing a modulated
+/// parameter's authored value silently deleted its modulation — nothing errored,
+/// the matrix just emptied.
+///
+/// Non-generic and registered once, unlike [`mark_dirty`]: a route is not
+/// per-kind, and duplicating this into every kind's registration would raise the
+/// same flag N times.
+///
+/// The phase-restart cost [`mark_dirty`] guards against still applies — a fresh
+/// `Sourced` starts at phase zero — but a rebuild was *already* going to happen
+/// on these frames. The choice is between rebuilding with sources and
+/// rebuilding without them, and only one of those keeps the routes.
+pub(crate) fn mark_dirty_on_route_change(
+    mut collected: ResMut<CollectedModSources>,
+    changed: Query<
+        Entity,
+        Or<(
+            Changed<ModRoute>,
+            Changed<crate::modulation::components::ModParamRange>,
+        )>,
+    >,
+    mut removed: RemovedComponents<ModRoute>,
+) {
+    let any_removed = removed.read().next().is_some();
+    for _ in removed.read() {}
+    if !changed.is_empty() || any_removed {
+        collected.dirty = true;
+    }
+}
+
 /// The two per-kind phases, ordered ahead of the rebuild that consumes them.
 ///
 /// Separate sets because the second is conditional on the first: `MarkDirty`

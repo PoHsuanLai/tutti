@@ -84,11 +84,80 @@ impl<U: Unit<Raw = f32> + Default, const P: u16> Default for AudioParam<U, P> {
     }
 }
 
+/// Write one authored scalar to `param` on `node`, respecting modulation.
+///
+/// **The single home for "an authored value reaches the graph".** A param write
+/// is two branches, not one, and both must be taken together:
+///
+/// - a **modulated** param has a second writer, so the authored value goes to
+///   the accumulator's *base* and rides under the modulation;
+/// - an **unmodulated** one goes straight to the node's own atomic.
+///
+/// Taking only the first silently drops every write to an unmodulated param —
+/// which is why [`ModulationMatrix::set_base`] is crate-private.
+///
+/// Taking only the second is worse than it looks, and worth stating precisely
+/// because a test will not show it. [`drive`](crate::modulation::drive) and the
+/// param reconcilers are **both in `GraphReconcileSystems::Params` with no
+/// ordering between them**, and `drive` writes `base + Σ offsets` to the same
+/// atomic every frame. So a direct write to a modulated param does not merely
+/// get overwritten on the *next* frame — it races the flush within the current
+/// one, and which value survives depends on a system order Bevy does not
+/// promise. At steady state the two branches are observationally identical,
+/// which is exactly why the hazard is invisible until it is intermittent.
+///
+/// # Why this is a free function and not a method on a component
+///
+/// [`AudioParam<U, P>`] is the statically-addressed carrier, and it is a good
+/// one: `U` stops a cutoff being assigned seconds and `P` stops a filter cutoff
+/// and an LFO rate — both `Hz` — being confused. But a const generic can only
+/// carry an address that is a property of the **code**, and most params here are
+/// a property of the **data**: a processor kind decides its key set at load
+/// time, a hosted plugin at instantiation. (The same limit that removed
+/// `AudioIn<S, const CH: usize>`; see `CLAUDE.md`.)
+///
+/// So three call sites had to route around the component, and each re-derived
+/// this write — one of them without the modulation branch at all. Extracting the
+/// write rather than generalising the component keeps `AudioParam`'s type safety
+/// for the params that genuinely have static addresses, and gives the runtime
+/// ones a door that is not a reimplementation.
+///
+/// **Hosted plugin parameters do not belong here.** They are runtime-discovered
+/// `u32` ids reached over a different transport (`set_parameter_rt` across the
+/// IPC bridge), not `Net::set` — a different write, not a different address for
+/// the same one.
+pub fn write_param(
+    graph: &mut AudioGraphRes,
+    #[cfg(feature = "modulation")] matrix: &crate::modulation::ModulationMatrix,
+    entity: Entity,
+    node: &AudioNode,
+    param: UnitParam,
+    value: f32,
+) {
+    // `Net::set` is an `AudioUnit` method; the trait must be in scope to call
+    // it, and nothing else here needs it.
+    use tutti_core::dsp::AudioUnit as _;
+
+    #[cfg(feature = "modulation")]
+    if matrix.set_base(entity, ParamAddr::Unit(param), value) {
+        return;
+    }
+    #[cfg(not(feature = "modulation"))]
+    let _ = entity;
+
+    graph
+        .0
+        .set(tutti_core::unit_param::node_setting(node.0, param, value));
+}
+
 /// Push every changed [`AudioParam<U, P>`] into its node.
 ///
 /// Change-detection-gated, so a steady frame does no work at all. Values reach
 /// the audio thread through `Net::set`, which enqueues rather than mutating —
 /// the RT-correct path, and the reason no downcast is needed.
+///
+/// The write itself is [`write_param`]'s; this system's job is the query and the
+/// `P` → [`UnitParam`] conversion.
 #[allow(
     clippy::type_complexity,
     reason = "Bevy queries are tuple-shaped by design"
@@ -98,29 +167,19 @@ pub fn reconcile_audio_param<U: Unit<Raw = f32> + Send + Sync + 'static, const P
     #[cfg(feature = "modulation")] matrix: Res<crate::modulation::ModulationMatrix>,
     changed: Query<(Entity, &AudioNode, &AudioParam<U, P>), Changed<AudioParam<U, P>>>,
 ) {
-    // `Net::set` is an `AudioUnit` method; the trait must be in scope to call
-    // it, and nothing else here needs it.
-    use tutti_core::dsp::AudioUnit as _;
-
     let Ok(param) = UnitParam::try_from(P) else {
         return;
     };
     for (entity, node, value) in &changed {
-        let raw = value.value.to_raw();
-
-        // A modulated param has a second writer. Handing the authored value to
-        // the accumulator's base lets it ride *under* the modulation instead of
-        // being overwritten by the next flush.
-        #[cfg(feature = "modulation")]
-        if matrix.set_base(entity, ParamAddr::Unit(param), raw) {
-            continue;
-        }
-        #[cfg(not(feature = "modulation"))]
-        let _ = entity;
-
-        graph
-            .0
-            .set(tutti_core::unit_param::node_setting(node.0, param, raw));
+        write_param(
+            &mut graph,
+            #[cfg(feature = "modulation")]
+            &matrix,
+            entity,
+            node,
+            param,
+            value.value.to_raw(),
+        );
     }
 }
 

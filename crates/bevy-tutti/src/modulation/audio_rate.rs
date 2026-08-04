@@ -209,7 +209,22 @@ fn param_port(graph: &AudioGraphRes, node: tutti_core::NodeId, param: UnitParam)
             )+
         };
     }
+    // **Every `ParamPorts` impl must be listed here.** A type that implements the
+    // trait but is missing from this list answers `None`, so `PerSample` falls
+    // back to per-frame — silently, because falling back is a legal outcome that
+    // means "this sink has no port". There is nothing to distinguish "no port"
+    // from "not dispatched", which is why the list is checked by a test rather
+    // than left to review.
+    //
+    // The two filters were the omission that made this comment necessary: they
+    // are the only units exposing `Cutoff` and `Q`, and a filter cutoff is the
+    // case `ModDelivery::PerSample`'s own docs name for it ("a fast LFO on a
+    // filter cutoff"). So the tier's headline use was the one it could not serve.
     try_kinds!(
+        tutti_units::StereoSvfFilterNode<f32>,
+        tutti_units::StereoSvfFilterNode<f64>,
+        tutti_units::StereoLadderFilterNode<f32>,
+        tutti_units::StereoLadderFilterNode<f64>,
         tutti_units::DistortionNode,
         tutti_units::Compressor,
         tutti_units::Gate,
@@ -274,11 +289,40 @@ pub fn ensure_source_nodes(
     }
 }
 
-/// "Did a route or a range move this frame?" — the reconciler's dirty gate.
+/// "Did a route, a range, or a sink's node move this frame?" — the
+/// reconciler's dirty gate.
 ///
 /// A named alias because the tuple is unreadable inline and clippy is right to
 /// say so; the `()` fetch is deliberate, since only the emptiness matters.
-type RouteChanged<'w, 's> = Query<'w, 's, (), Or<(Changed<ModRoute>, Changed<ModParamRange>)>>;
+///
+/// # Why `AudioNode` is in here
+///
+/// [`spawn_chain`] needs the sink's graph node in order to resolve its param
+/// port, and returns `None` when the sink has none yet. That is the right answer
+/// at the time — but it is not a *permanent* one, and without this arm nothing
+/// ever asked again.
+///
+/// The order it breaks on is the ordinary one. A host that compiles a document
+/// declares routes and spawns nodes in the same frame, and a node inserted
+/// through `insert_audio_node` lands as a *deferred* command — so the route is
+/// visible one frame before the `AudioNode` is. The route was therefore
+/// evaluated exactly once, against a sink that had no node, and fell back to
+/// per-frame permanently. Nothing reported it, because falling back is a legal
+/// outcome meaning "this sink exposes no port".
+///
+/// `Changed` rather than `Added`: replacing a node's unit (a crossfade, a
+/// re-arity) rewrites the component, and the new node's port index need not
+/// match the old one's.
+type RouteChanged<'w, 's> = Query<
+    'w,
+    's,
+    (),
+    Or<(
+        Changed<ModRoute>,
+        Changed<ModParamRange>,
+        Changed<tutti_core::AudioNode>,
+    )>,
+>;
 
 /// Reconcile audio-rate routes into graph chains.
 #[allow(
@@ -379,4 +423,75 @@ fn despawn_chain(
         commands.entity(e).despawn();
     }
     dirty.0 = true;
+}
+
+#[cfg(test)]
+mod param_port_tests {
+    use super::*;
+    use tutti_core::dsp::Net;
+
+    /// Every unit that declares a port for `param` must be *dispatched* by
+    /// [`param_port`].
+    ///
+    /// The list inside that function is a hand-maintained downcast chain, and a
+    /// `ParamPorts` impl missing from it fails **silently**: the lookup answers
+    /// `None`, which is indistinguishable from the legitimate "this sink exposes
+    /// no port", so `ModDelivery::PerSample` quietly falls back to per-frame.
+    ///
+    /// This is not hypothetical. Both filters were absent while every other impl
+    /// was present, so `Cutoff` and `Q` — the only params either of them offers,
+    /// and the case `PerSample`'s own docs name ("a fast LFO on a filter
+    /// cutoff") — could never reach audio rate.
+    ///
+    /// Asserted through the real `Net` + downcast path rather than by calling
+    /// `ParamPorts` directly, because the downcast *is* what was broken: a
+    /// direct call would have passed throughout the bug.
+    ///
+    /// Note every unit is built with its `with_param_inputs` constructor. A port
+    /// exists only when the node was built to have one — `cutoff_port()` is
+    /// `mod_cutoff.then_some(..)` — so a plain `new()` would make this test
+    /// vacuous by reporting `None` for a correctly-dispatched type.
+    #[test]
+    fn every_ported_unit_is_dispatched() {
+        let mut net = Net::new(0, 0);
+        let cases: Vec<(tutti_core::NodeId, UnitParam, &str)> = vec![
+            (
+                net.add(tutti_units::StereoSvfFilterNode::<f32>::with_param_inputs(
+                    2,
+                    tutti_units::SvfType::LowPass,
+                    tutti_types::Hz(1000.0),
+                    tutti_types::Q(0.707),
+                    true,
+                    true,
+                )),
+                UnitParam::Cutoff,
+                "StereoSvfFilterNode<f32>",
+            ),
+            (
+                net.add(
+                    tutti_units::StereoLadderFilterNode::<f32>::with_param_inputs(
+                        2,
+                        tutti_units::LadderType::LP24,
+                        tutti_types::Hz(1000.0),
+                        tutti_types::Resonance(0.5),
+                        true,
+                        false,
+                        false,
+                    ),
+                ),
+                UnitParam::Cutoff,
+                "StereoLadderFilterNode<f32>",
+            ),
+        ];
+
+        let graph = AudioGraphRes(net);
+        for (node, param, name) in cases {
+            assert!(
+                param_port(&graph, node, param).is_some(),
+                "`{name}` declares a port for {param:?} but `param_port` does not \
+                 dispatch it — audio-rate modulation onto that param falls back \
+                 to per-frame, silently"
+            );
+        }
+    }
 }

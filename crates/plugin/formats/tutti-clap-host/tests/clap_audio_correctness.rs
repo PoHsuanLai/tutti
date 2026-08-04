@@ -31,7 +31,9 @@ mod support;
 use support::probe_path::probe_path;
 
 use tutti_clap_host::{AudioBuffer32, AudioPortFlags, ClapActive, ClapLoaded, ProcessContext};
-use tutti_clap_test_plugin::{probe_tag, REPORTED_LATENCY_SAMPLES, REPORTED_TAIL_SAMPLES};
+use tutti_clap_test_plugin::{
+    probe_tag, PREFERRED_DIALECT_DEFAULT, REPORTED_LATENCY_SAMPLES, REPORTED_TAIL_SAMPLES,
+};
 
 const SAMPLE_RATE: f64 = 48_000.0;
 const MAX_FRAMES: u32 = 512;
@@ -63,6 +65,7 @@ struct ProbeControls {
     set_render_mode: unsafe extern "C" fn(u32),
     reset_delay: unsafe extern "C" fn(),
     last_render_mode: unsafe extern "C" fn() -> u32,
+    set_preferred_dialect: unsafe extern "C" fn(u32),
 }
 
 impl ProbeControls {
@@ -81,12 +84,16 @@ impl ProbeControls {
             let last_render_mode = *lib
                 .get::<unsafe extern "C" fn() -> u32>(b"tutti_test_plugin_last_render_mode\0")
                 .expect("last_render_mode symbol present");
+            let set_preferred_dialect = *lib
+                .get::<unsafe extern "C" fn(u32)>(b"tutti_test_plugin_set_preferred_dialect\0")
+                .expect("set_preferred_dialect symbol present");
             Self {
                 _lib: lib,
                 set_port_layout,
                 set_render_mode,
                 reset_delay,
                 last_render_mode,
+                set_preferred_dialect,
             }
         }
     }
@@ -102,6 +109,9 @@ impl ProbeControls {
     }
     fn last_render_mode(&self) -> u32 {
         unsafe { (self.last_render_mode)() }
+    }
+    fn set_preferred_dialect(&self, raw: u32) {
+        unsafe { (self.set_preferred_dialect)(raw) }
     }
 }
 
@@ -152,6 +162,8 @@ impl Drop for ProbeSession<'_> {
         self.controls.set_layout(LAYOUT_SYMMETRIC_STEREO);
         self.controls.set_render(RENDER_INERT);
         self.controls.reset_delay();
+        self.controls
+            .set_preferred_dialect(PREFERRED_DIALECT_DEFAULT);
     }
 }
 
@@ -716,7 +728,7 @@ fn host_reports_per_note_port_dialects_and_ids() {
 
     assert_eq!(
         in0.preferred_dialect,
-        NoteDialect::Clap,
+        Some(NoteDialect::Clap),
         "input port 0 prefers the CLAP dialect"
     );
     assert!(in0.supported_dialects.contains(NoteDialects::CLAP));
@@ -724,7 +736,7 @@ fn host_reports_per_note_port_dialects_and_ids() {
 
     assert_eq!(
         in1.preferred_dialect,
-        NoteDialect::Midi,
+        Some(NoteDialect::Midi),
         "input port 1 is MIDI-only — a host that reports port 0's dialects \
          for every port would say Clap here"
     );
@@ -732,6 +744,90 @@ fn host_reports_per_note_port_dialects_and_ids() {
 
     assert!(loaded.note_port_info(2, true).is_none());
     assert!(loaded.note_port_info(1, false).is_none());
+}
+
+/// A plugin that names no preferred dialect, and one that names a dialect this
+/// host does not send, must both read as "no preference this host can use" —
+/// not as MIDI 2.0, which `host_note_ports_supported_dialects` tells the
+/// plugin we do not accept.
+#[test]
+fn host_does_not_invent_a_preferred_note_dialect() {
+    use clap_sys::ext::note_ports::CLAP_NOTE_DIALECT_MIDI2;
+    use tutti_clap_host::NoteDialect;
+
+    let session = ProbeSession::begin(LAYOUT_SYMMETRIC_STEREO, RENDER_INERT);
+
+    // `preferred_dialect == 0`: the plugin expressed no preference at all.
+    session.controls.set_preferred_dialect(0);
+    let in0 = session
+        .load()
+        .note_port_info(0, true)
+        .expect("note input 0");
+    assert_eq!(
+        in0.preferred_dialect, None,
+        "a plugin that named no dialect must not be reported as preferring one"
+    );
+    assert_eq!(
+        in0.dialect_to_send(),
+        Some(NoteDialect::Clap),
+        "port 0 supports CLAP, so that is what an absent preference falls back to"
+    );
+
+    // A dialect bit outside the four CLAP defines today — what a plugin built
+    // against a later spec would send. Reported absent rather than mapped onto
+    // whichever arm happens to be last.
+    session.controls.set_preferred_dialect(1 << 4);
+    let in0 = session
+        .load()
+        .note_port_info(0, true)
+        .expect("note input 0");
+    assert_eq!(in0.preferred_dialect, None);
+
+    // MIDI 2.0 is decoded — it is a dialect the plugin can legitimately
+    // prefer — but it is not one this host sends, so routing falls back.
+    session
+        .controls
+        .set_preferred_dialect(CLAP_NOTE_DIALECT_MIDI2);
+    let in0 = session
+        .load()
+        .note_port_info(0, true)
+        .expect("note input 0");
+    assert_eq!(
+        in0.preferred_dialect,
+        Some(NoteDialect::Midi2),
+        "a stated MIDI 2.0 preference is reported as stated"
+    );
+    assert_eq!(
+        in0.dialect_to_send(),
+        Some(NoteDialect::Clap),
+        "but the dialect actually sent is one the host advertised"
+    );
+
+    // Port 1's own preference is MIDI, so forcing 0 there proves the absent
+    // case is decoded per port and not read off port 0. Its supported set is
+    // MIDI-only, which is also the fallback that must not become CLAP.
+    session.controls.set_preferred_dialect(0);
+    let in1 = session
+        .load()
+        .note_port_info(1, true)
+        .expect("note input 1");
+    assert_eq!(in1.preferred_dialect, None);
+    assert_eq!(
+        in1.dialect_to_send(),
+        Some(NoteDialect::Midi),
+        "port 1 supports MIDI only, so the fallback cannot be CLAP"
+    );
+
+    // Clearing restores each port's own answer, so the override cannot leak
+    // into a later test through the shared image.
+    session
+        .controls
+        .set_preferred_dialect(PREFERRED_DIALECT_DEFAULT);
+    let in0 = session
+        .load()
+        .note_port_info(0, true)
+        .expect("note input 0");
+    assert_eq!(in0.preferred_dialect, Some(NoteDialect::Clap));
 }
 
 /// `clap.render` must actually reach the plugin. The probe records the mode

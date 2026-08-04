@@ -38,7 +38,6 @@ pub struct ProcessingState {
     pub tail_changed: AtomicBool,
     pub state_dirty: AtomicBool,
     pub preset_loaded: AtomicBool,
-    pub thread_pool_pending: AtomicU32,
 }
 
 impl ProcessingState {
@@ -48,7 +47,6 @@ impl ProcessingState {
             tail_changed: AtomicBool::new(false),
             state_dirty: AtomicBool::new(false),
             preset_loaded: AtomicBool::new(false),
-            thread_pool_pending: AtomicU32::new(0),
         }
     }
 }

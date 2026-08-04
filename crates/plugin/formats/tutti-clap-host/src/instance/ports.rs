@@ -21,7 +21,8 @@ use clap_sys::ext::audio_ports_config::clap_audio_ports_config;
 use clap_sys::ext::configurable_audio_ports::clap_audio_port_configuration_request;
 use clap_sys::ext::note_name::clap_note_name;
 use clap_sys::ext::note_ports::{
-    clap_note_port_info, CLAP_NOTE_DIALECT_CLAP, CLAP_NOTE_DIALECT_MIDI, CLAP_NOTE_DIALECT_MIDI_MPE,
+    clap_note_port_info, CLAP_NOTE_DIALECT_CLAP, CLAP_NOTE_DIALECT_MIDI, CLAP_NOTE_DIALECT_MIDI2,
+    CLAP_NOTE_DIALECT_MIDI_MPE,
 };
 use clap_sys::ext::render::{CLAP_RENDER_OFFLINE, CLAP_RENDER_REALTIME};
 use clap_sys::ext::voice_info::{clap_voice_info, CLAP_VOICE_INFO_SUPPORTS_OVERLAPPING_NOTES};
@@ -121,14 +122,17 @@ impl ClapLoaded {
             return None;
         }
 
-        let preferred_dialect = if (info.preferred_dialect & CLAP_NOTE_DIALECT_CLAP) != 0 {
-            NoteDialect::Clap
-        } else if (info.preferred_dialect & CLAP_NOTE_DIALECT_MIDI) != 0 {
-            NoteDialect::Midi
-        } else if (info.preferred_dialect & CLAP_NOTE_DIALECT_MIDI_MPE) != 0 {
-            NoteDialect::MidiMpe
-        } else {
-            NoteDialect::Midi2
+        // `ext/note-ports.h:35` types this field as "one value of
+        // clap_note_dialect", so it is matched whole rather than by priority
+        // over a bitfield. Anything else — 0 for a plugin that stated no
+        // preference, or a dialect added after this match — is `None`, not a
+        // dialect this host picked on the plugin's behalf.
+        let preferred_dialect = match info.preferred_dialect {
+            CLAP_NOTE_DIALECT_CLAP => Some(NoteDialect::Clap),
+            CLAP_NOTE_DIALECT_MIDI => Some(NoteDialect::Midi),
+            CLAP_NOTE_DIALECT_MIDI_MPE => Some(NoteDialect::MidiMpe),
+            CLAP_NOTE_DIALECT_MIDI2 => Some(NoteDialect::Midi2),
+            _ => None,
         };
 
         Some(NotePortInfo {

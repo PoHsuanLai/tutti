@@ -354,7 +354,7 @@ Contrast `params.rescan` next door (`callbacks.rs:174-184`), which correctly
 accumulates and decodes its flags into `ParamRescan`. The audio-ports side never
 got the same treatment.
 
-### C-7 · `preferred_dialect` fabricates `Midi2` · TODO
+### C-7 · `preferred_dialect` fabricates `Midi2` · DONE
 
 `src/instance/ports.rs:124-132` — the `else` arm returns `NoteDialect::Midi2`,
 but `CLAP_NOTE_DIALECT_MIDI2` (`ext/note-ports.h:29`) is never tested for. So
@@ -368,7 +368,7 @@ on it sends UMP to a plugin that will not parse it; notes are dropped silently.
 This is the "manufacture a host value" antipattern already recorded in
 [[param-info-absent-vs-reported]].
 
-### C-8 · `thread_pool` returns `true` and does nothing · TODO
+### C-8 · `thread_pool` returns `true` and does nothing · DONE
 
 `src/host/callbacks.rs:713-726` — `host_thread_pool_request_exec` returns
 `true`, then stores the task count in an atomic nothing reads.
@@ -380,6 +380,16 @@ been told the work completed. Returning `false` would make it work inline.
 
 Most dangerous of the fabricated-success set. `request_show`/`request_hide`
 (`callbacks.rs:268-274`) have the same shape but a far milder consequence.
+
+Fixed by rejecting, not by building a pool. `thread_pool_exec`
+(`polling.rs:801-812`) is not an abandoned scheduler — it carries the same
+"Speculative — gated behind `clap-extras`" comment as every other method in
+that block, which are mechanical wrappers over one plugin vtable entry each.
+Nothing ever called it, and no worker threads, queue or barrier were ever
+written. The header (`:35-39`) also notes a pool "may break hard real-time
+rules" and that a host under hard-real-time pressure may decline to offer the
+interface at all, so declining is a position the extension anticipates rather
+than a stub. The dead `thread_pool_pending` atomic went with it.
 
 ### C-9 · Only descriptor index 0 is loadable · TODO
 

@@ -1045,6 +1045,31 @@ static NOTE_PORTS: clap_plugin_note_ports = clap_plugin_note_ports {
     get: Some(note_ports_get),
 };
 
+/// Sentinel meaning "no override": each note port reports its own preference.
+///
+/// `0` cannot be the sentinel — it is precisely the value under test, the one
+/// a plugin writes to say it prefers no dialect in particular. `u32::MAX` is
+/// not a `clap_note_dialect` bit, nor any combination of them.
+pub const PREFERRED_DIALECT_DEFAULT: u32 = u32::MAX;
+
+/// Raw `preferred_dialect` every note port reports, or
+/// [`PREFERRED_DIALECT_DEFAULT`].
+static PREFERRED_DIALECT_OVERRIDE: AtomicU32 = AtomicU32::new(PREFERRED_DIALECT_DEFAULT);
+
+/// Force every note port's `preferred_dialect` to `raw`.
+///
+/// Set to `0` to model a plugin that states no preference, or to a dialect bit
+/// this host does not send. Unlike the port layout this is read live in
+/// `note_ports_get`, so it may be set after load. Pass
+/// [`PREFERRED_DIALECT_DEFAULT`] to clear.
+///
+/// # Safety
+/// Safe to call; `extern "C"` only so the test can reach it across `dlopen`.
+#[no_mangle]
+pub unsafe extern "C" fn tutti_test_plugin_set_preferred_dialect(raw: u32) {
+    PREFERRED_DIALECT_OVERRIDE.store(raw, Ordering::SeqCst);
+}
+
 unsafe extern "C" fn note_ports_count(_plugin: *const clap_plugin, is_input: bool) -> u32 {
     if is_input {
         2
@@ -1079,6 +1104,10 @@ unsafe extern "C" fn note_ports_get(
     } else {
         info.supported_dialects = CLAP_NOTE_DIALECT_MIDI;
         info.preferred_dialect = CLAP_NOTE_DIALECT_MIDI;
+    }
+    let override_raw = PREFERRED_DIALECT_OVERRIDE.load(Ordering::SeqCst);
+    if override_raw != PREFERRED_DIALECT_DEFAULT {
+        info.preferred_dialect = override_raw;
     }
     info.name = [0; CLAP_NAME_SIZE];
     let label: &[u8] = if is_input { b"note-in" } else { b"note-out" };

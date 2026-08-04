@@ -1229,12 +1229,67 @@ fn test_note_port_info_types() {
         id: 0,
         name: "MIDI In".to_string(),
         supported_dialects: NoteDialects::CLAP | NoteDialects::MIDI,
-        preferred_dialect: NoteDialect::Midi,
+        preferred_dialect: Some(NoteDialect::Midi),
     };
 
     assert!(port.supported_dialects.contains(NoteDialects::MIDI));
     assert!(!port.supported_dialects.contains(NoteDialects::MIDI_MPE));
-    assert_eq!(port.preferred_dialect, NoteDialect::Midi);
+    assert_eq!(port.preferred_dialect, Some(NoteDialect::Midi));
+}
+
+/// `dialect_to_send` must never answer with a dialect this host does not
+/// send. `host_note_ports_supported_dialects` advertises CLAP and MIDI 1.0
+/// only, so MIDI 2.0 and MPE are never valid answers however the port is
+/// described.
+#[test]
+fn test_note_port_dialect_to_send() {
+    use tutti_clap_host::{NoteDialect, NoteDialects, NotePortInfo};
+
+    let port = |supported: NoteDialects, preferred: Option<NoteDialect>| NotePortInfo {
+        id: 0,
+        name: String::new(),
+        supported_dialects: supported,
+        preferred_dialect: preferred,
+    };
+
+    // A preference this host can speak is honoured.
+    assert_eq!(
+        port(
+            NoteDialects::CLAP | NoteDialects::MIDI,
+            Some(NoteDialect::Midi)
+        )
+        .dialect_to_send(),
+        Some(NoteDialect::Midi),
+    );
+
+    // No preference stated: fall back to a supported dialect rather than
+    // inventing one. This is the case that used to report Midi2.
+    assert_eq!(
+        port(NoteDialects::CLAP | NoteDialects::MIDI, None).dialect_to_send(),
+        Some(NoteDialect::Clap),
+    );
+    assert_eq!(
+        port(NoteDialects::MIDI, None).dialect_to_send(),
+        Some(NoteDialect::Midi),
+    );
+
+    // A preference this host cannot send falls back to what the port also
+    // supports, rather than being echoed back at the caller.
+    assert_eq!(
+        port(
+            NoteDialects::MIDI | NoteDialects::MIDI2,
+            Some(NoteDialect::Midi2)
+        )
+        .dialect_to_send(),
+        Some(NoteDialect::Midi),
+    );
+
+    // Nothing in common: the caller must see that, not a fabricated dialect.
+    assert_eq!(
+        port(NoteDialects::MIDI2, Some(NoteDialect::Midi2)).dialect_to_send(),
+        None,
+    );
+    assert_eq!(port(NoteDialects::MIDI_MPE, None).dialect_to_send(), None,);
 }
 
 #[test]
@@ -1787,28 +1842,27 @@ fn test_host_thread_pool_extension_available() {
     assert!(!ptr.is_null());
 }
 
+/// `ext/thread-pool.h:57`: `true` means the host *did execute* all the tasks.
+/// This host runs no pool, so every request must be rejected — a `true` here
+/// tells the plugin its tasks completed when nothing ran them.
 #[test]
-fn test_host_thread_pool_request_exec() {
+fn test_host_thread_pool_request_exec_rejects() {
     use clap_sys::ext::thread_pool::{clap_host_thread_pool, CLAP_EXT_THREAD_POOL};
     use std::sync::Arc;
 
-    let state = Arc::new(HostState::new());
-    let host = ClapHost::new(state.clone());
+    let host = ClapHost::new(Arc::new(HostState::new()));
     let raw = host.as_raw();
     let get_ext = unsafe { (*raw).get_extension.unwrap() };
     let tp_ptr = unsafe { get_ext(raw, CLAP_EXT_THREAD_POOL.as_ptr()) };
     let tp = unsafe { &*(tp_ptr as *const clap_host_thread_pool) };
 
-    let ok = unsafe { tp.request_exec.unwrap()(raw, 16) };
-    assert!(ok);
-    // Verify it stored the task count
-    assert_eq!(
-        state
-            .processing
-            .thread_pool_pending
-            .load(std::sync::atomic::Ordering::Acquire),
-        16
-    );
+    for num_tasks in [0, 1, 16, u32::MAX] {
+        assert!(
+            !unsafe { tp.request_exec.unwrap()(raw, num_tasks) },
+            "request_exec({num_tasks}) must reject: accepting claims {num_tasks} \
+             tasks ran, and this host has no pool to run them"
+        );
+    }
 }
 
 // ── Phase 2: ambisonic, surround ──

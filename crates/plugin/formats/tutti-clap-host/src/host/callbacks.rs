@@ -711,19 +711,18 @@ pub(super) static HOST_THREAD_POOL: clap_host_thread_pool = clap_host_thread_poo
     request_exec: Some(host_thread_pool_request_exec),
 };
 
+/// Always rejects. `ext/thread-pool.h:57` defines the return as "true if the
+/// host **did execute** all the tasks" and the call as blocking until they are
+/// done, so `true` from a host with no pool tells the plugin work completed
+/// that never ran — for a plugin splitting voices across the pool, silence for
+/// every task past whatever it computed inline. `false` is the answer the
+/// header documents for this case (`:10-11`): the plugin then runs the tasks
+/// itself, in the worst case a single-threaded loop.
 unsafe extern "C" fn host_thread_pool_request_exec(
-    host: *const ClapHostVtable,
-    num_tasks: u32,
+    _host: *const ClapHostVtable,
+    _num_tasks: u32,
 ) -> bool {
-    if let Some(state) = get_host_state(host) {
-        state
-            .processing
-            .thread_pool_pending
-            .store(num_tasks, Ordering::Release);
-        true
-    } else {
-        false
-    }
+    false
 }
 
 pub(super) static HOST_TRIGGERS: clap_host_triggers = clap_host_triggers {

@@ -243,7 +243,8 @@ fn reset_runs_under_the_audio_thread_claim() {
 
     let cap = probe.capture();
     assert_eq!(
-        cap.sites[Site::Reset as usize].visits, 1,
+        cap.sites[Site::Reset as usize].visits,
+        1,
         "the host must have called `clap_plugin->reset()` exactly once"
     );
     assert_roles(&cap, Site::Reset, false, true, "reset");

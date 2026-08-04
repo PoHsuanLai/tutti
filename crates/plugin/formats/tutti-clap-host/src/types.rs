@@ -326,7 +326,37 @@ pub struct NotePortInfo {
     pub id: u32,
     pub name: String,
     pub supported_dialects: NoteDialects,
-    pub preferred_dialect: NoteDialect,
+    /// The port's preferred encoding, or `None` when the plugin named no
+    /// dialect this host recognises.
+    ///
+    /// `Option` rather than a default variant because there is no dialect a
+    /// host can substitute here without making a claim the plugin never made:
+    /// `preferred_dialect == 0` means the plugin stated no preference, and a
+    /// dialect added to CLAP after this host was built is equally unreadable.
+    /// Route through [`dialect_to_send`](Self::dialect_to_send) rather than
+    /// reading this field, so the absent case cannot be mistaken for a choice.
+    pub preferred_dialect: Option<NoteDialect>,
+}
+
+impl NotePortInfo {
+    /// The dialect to encode note events in for this port.
+    ///
+    /// Prefers the plugin's stated choice when this host can speak it, and
+    /// otherwise falls back to a dialect the port supports — CLAP first, then
+    /// MIDI 1.0. Returns `None` when the port supports neither, which is the
+    /// case a caller must not paper over: it can accept only MPE or MIDI 2.0,
+    /// and `host_note_ports_supported_dialects` tells the plugin this host
+    /// sends neither, so there is no encoding both sides agree on.
+    pub fn dialect_to_send(&self) -> Option<NoteDialect> {
+        match self.preferred_dialect {
+            Some(d @ (NoteDialect::Clap | NoteDialect::Midi)) => Some(d),
+            // A preference this host cannot send is no more usable than an
+            // absent one, so both take the supported-dialect fallback.
+            _ if self.supported_dialects.contains(NoteDialects::CLAP) => Some(NoteDialect::Clap),
+            _ if self.supported_dialects.contains(NoteDialects::MIDI) => Some(NoteDialect::Midi),
+            _ => None,
+        }
+    }
 }
 
 bitflags! {

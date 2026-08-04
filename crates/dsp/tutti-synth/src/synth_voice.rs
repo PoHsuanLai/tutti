@@ -418,6 +418,35 @@ impl SynthVoice {
         self.mpe_pitch_bend_range = range;
     }
 
+    /// Whether this voice applies its per-note (MPE) state at render time.
+    ///
+    /// Test-only: production code asks [`PolySynth::mpe_enabled`], which reads
+    /// the config the voices are built from. This observes that a runtime toggle
+    /// actually reached an already-sounding voice.
+    #[cfg(test)]
+    pub(crate) fn mpe_enabled(&self) -> bool {
+        self.mpe_enabled
+    }
+
+    /// Turn per-note (MPE) response on or off for this voice.
+    ///
+    /// Switching **off** also resets the per-note state rather than merely
+    /// ignoring it. The setters store unconditionally, so state accumulated
+    /// while disabled would otherwise sit latent and snap into effect the
+    /// instant MPE is re-enabled — a sounding note jumping in pitch or gain from
+    /// bends it received minutes earlier. Resetting makes "off" mean the note
+    /// renders at its note-on defaults, which is what both the caller and the
+    /// listener expect.
+    pub(crate) fn set_mpe_enabled(&mut self, enabled: bool) {
+        if self.mpe_enabled == enabled {
+            return;
+        }
+        self.mpe_enabled = enabled;
+        if !enabled {
+            self.reset_mpe();
+        }
+    }
+
     /// Override this voice's pitch to an absolute frequency (M2-104 §7.4.15.2/3:
     /// Registered Per-Note Controller #3 Pitch 7.25 and Note-On Attribute #3
     /// Pitch 7.9). The note number loses its pitch meaning and becomes an index;

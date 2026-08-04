@@ -131,21 +131,92 @@ impl AudioUnit for ParamShaperUnit {
 ///
 /// This is the node that makes fan-in representable at all: `Net` holds one
 /// source per input port and has no summing bus, so summing is a node's job.
+///
+/// # The bounds are live; the arity is not
+///
+/// `min`/`max` are shared atomics a control thread can move, because a param's
+/// range is authored state that changes without the *graph* changing — a host
+/// re-declaring a narrower range must not have to rebuild the chain to apply
+/// it. [`bounds`](Self::bounds) hands out the handle.
+///
+/// `mods` stays a plain field: it is the node's **input arity**, so changing it
+/// changes the node's shape and a rebuild is the only honest answer. That is
+/// the real line between these two — not "scalar vs not", but whether the value
+/// is something `Net` has already wired against.
+///
+/// Bare `f32`, not `Param<U>`: a bound is in the modulated param's own units,
+/// which this node is deliberately erased over (the same erasure `LayeredCurve`
+/// makes on the control-rate side). There is no single `U` to name.
 #[derive(Clone)]
 pub struct ParamSumUnit {
     mods: usize,
-    min: f32,
-    max: f32,
+    bounds: Arc<ClampBounds>,
+}
+
+/// A [`ParamSumUnit`]'s live clamp range.
+///
+/// One allocation holding both halves, so a host that moves a range moves it
+/// atomically-enough: the two stores are still independent, but they share a
+/// cache line and a handle, and no reader can see a bound from a *different*
+/// chain. Crossed bounds are handled at the read (see [`ParamSumUnit::fold`]).
+#[derive(Debug)]
+pub struct ClampBounds {
+    min: AtomicF32,
+    max: AtomicF32,
+}
+
+impl ClampBounds {
+    /// Set both halves. Control thread only.
+    pub fn set(&self, min: f32, max: f32) {
+        self.min.store(min, Ordering::Release);
+        self.max.store(max, Ordering::Release);
+    }
+
+    /// The current `(min, max)`.
+    pub fn get(&self) -> (f32, f32) {
+        (
+            self.min.load(Ordering::Acquire),
+            self.max.load(Ordering::Acquire),
+        )
+    }
 }
 
 impl ParamSumUnit {
     pub fn new(mods: usize, min: f32, max: f32) -> Self {
-        Self { mods, min, max }
+        Self {
+            mods,
+            bounds: Arc::new(ClampBounds {
+                min: AtomicF32::new(min),
+                max: AtomicF32::new(max),
+            }),
+        }
+    }
+
+    /// The shared clamp bounds — clone for control-thread writes.
+    ///
+    /// The audio-rate counterpart of moving a control-rate accumulator's
+    /// `(min, max)`: a host whose authored range changed writes here rather
+    /// than rebuilding the node.
+    pub fn bounds(&self) -> Arc<ClampBounds> {
+        Arc::clone(&self.bounds)
+    }
+
+    /// The bounds, ordered so `clamp` cannot panic.
+    ///
+    /// `f32::clamp` panics if `min > max`, and the two stores in
+    /// [`ClampBounds::set`] are independent — a reader can land between them
+    /// and see a crossed pair for one block. Ordering the pair costs one
+    /// comparison and makes that unrepresentable, which is worth more on the
+    /// audio thread than a panic would be informative.
+    #[inline]
+    fn ordered_bounds(&self) -> (f32, f32) {
+        let (min, max) = self.bounds.get();
+        (min.min(max), max.max(min))
     }
 
     #[inline]
-    fn fold(&self, base: f32, offsets: impl Iterator<Item = f32>) -> f32 {
-        (base + offsets.sum::<f32>()).clamp(self.min, self.max)
+    fn fold(bounds: (f32, f32), base: f32, offsets: impl Iterator<Item = f32>) -> f32 {
+        (base + offsets.sum::<f32>()).clamp(bounds.0, bounds.1)
     }
 }
 
@@ -161,14 +232,19 @@ impl AudioUnit for ParamSumUnit {
 
     #[inline]
     fn tick(&mut self, input: &[f32], output: &mut [f32]) {
-        output[0] = self.fold(input[0], input[1..=self.mods].iter().copied());
+        let bounds = self.ordered_bounds();
+        output[0] = Self::fold(bounds, input[0], input[1..=self.mods].iter().copied());
     }
 
     fn process(&mut self, size: usize, input: &BufferRef, output: &mut BufferMut) {
+        // Read the bounds **once per block**, like `AtomicSourceUnit` reads its
+        // value: a range cannot meaningfully change mid-block, and two atomic
+        // loads per sample is pure cost on the hottest loop in the chain.
+        let bounds = self.ordered_bounds();
         for i in 0..size {
             let base = input.at_f32(0, i);
             let offsets = (1..=self.mods).map(|p| input.at_f32(p, i));
-            output.set_f32(0, i, self.fold(base, offsets));
+            output.set_f32(0, i, Self::fold(bounds, base, offsets));
         }
     }
 
@@ -304,6 +380,7 @@ pub struct ParamModChain {
     /// sum's ports (`1..=N`).
     pub shapers: Vec<NodeId>,
     base_cell: Arc<AtomicF32>,
+    bounds: Arc<ClampBounds>,
 }
 
 impl ParamModChain {
@@ -329,6 +406,16 @@ impl ParamModChain {
     /// and it presented as "the cutoff knob does nothing", not as an error.
     pub fn base_cell(&self) -> Arc<AtomicF32> {
         Arc::clone(&self.base_cell)
+    }
+
+    /// The sum's live clamp range.
+    ///
+    /// Held for the same reason as [`base_cell`](Self::base_cell): a param's
+    /// range is authored state that can move without the graph moving, and a
+    /// host that has to rebuild the chain to apply a new range would lose the
+    /// base along with it.
+    pub fn bounds(&self) -> Arc<ClampBounds> {
+        Arc::clone(&self.bounds)
     }
 }
 
@@ -384,7 +471,10 @@ pub fn build_param_mod(
     let base_cell = base_unit.shared();
 
     let base_id = net.push(Box::new(base_unit));
-    let sum_id = net.push(Box::new(ParamSumUnit::new(edges.len(), min, max)));
+    let sum_unit = ParamSumUnit::new(edges.len(), min, max);
+    // Taken before the unit moves into the net, same as the base cell.
+    let bounds = sum_unit.bounds();
+    let sum_id = net.push(Box::new(sum_unit));
     let shapers = edges
         .iter()
         .map(|e| net.push(Box::new(ParamShaperUnit::new(e.depth, e.polarity, e.curve))))
@@ -395,6 +485,7 @@ pub fn build_param_mod(
         sum: sum_id,
         shapers,
         base_cell,
+        bounds,
     }
 }
 

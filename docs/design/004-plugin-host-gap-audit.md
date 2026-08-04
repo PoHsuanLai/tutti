@@ -663,7 +663,7 @@ Compounding: `effSetTotalSampleToProcess`(73) never sent, and
 `MidiEventFlags::REALTIME_EVENT` is hardcoded on every outbound event
 (`midi.rs:93`), so during a bounce every event claims to be live-played.
 
-### D-4 · Latency is read before `effOpen` and never refreshed · TODO
+### D-4 · Latency is read before `effOpen` and never refreshed · DONE
 
 `vendor/vst-tutti/src/host.rs:638` reads `initial_delay` inside
 `PluginInstance::new` — which runs **before** `init()` / `set_sample_rate` /
@@ -678,6 +678,29 @@ comment that is right about I/O and wrong about latency.
 Consequence: PDC is wrong for exactly the plugins that have latency
 (linear-phase EQ, look-ahead limiters, convolution reverb), and a plugin that
 changes latency on a rate change is never recompensated.
+
+**Fixed.** `PluginInstance::read_initial_delay` reads the field off the live
+`AEffect` instead of the `Info` snapshot, and the host builds
+`latency_samples` from it after the init sequence. `Vst2Instance::latency()`
+exposes the same live read, because VST2 has no latency-changed callback at all
+— `audioMasterIOChanged` is about I/O configuration and a plugin may change
+`initialDelay` on a rate change without sending anything, so the host has to
+re-ask after `set_sample_rate` / `set_block_size`.
+
+**The fixture defect is the lesson here, and it is the [[vacuous-conditional-tests]]
+shape in a new disguise.** The probe gained a `set_late_latency` switch so it
+declares only from `effSetSampleRate` onwards — without it no fixture can tell a
+host reading the stale snapshot from one that re-reads, since both see the same
+number. But the switch set a process-global latch the probe never cleared, so
+after the *first* load in a binary every later `PluginInstance::new` snapshot
+already contained the late figure, and the buggy and fixed hosts became
+identical again.
+
+The mutation therefore passed — **in one test order and failed in another**,
+which would have shipped as an intermittent false green rather than an obvious
+one. Clearing the latch inside the switch fixed it; the mutation now fails in
+both orderings. Worth remembering that a shared-image probe needs its state
+reset *per load*, not per test.
 
 ### D-5 · `audioMasterUpdateDisplay`(42) and `audioMasterCurrentId`(2) are unroutable · TODO
 

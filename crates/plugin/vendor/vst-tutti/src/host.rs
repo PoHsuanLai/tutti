@@ -586,6 +586,25 @@ impl<T: Host> PluginLoader<T> {
 }
 
 impl PluginInstance {
+    /// Read `AEffect::initialDelay` as it stands *now*.
+    ///
+    /// [`get_info`](Plugin::get_info) returns a clone of the snapshot taken in
+    /// [`new`](Self::new), which runs before `effOpen`, `effSetSampleRate` and
+    /// `effMainsChanged`. Plugins routinely set their latency during those —
+    /// a linear-phase EQ does not know its filter length until it knows the
+    /// sample rate — so the snapshot's `initial_delay` is a pre-init value and
+    /// is usually 0 for exactly the plugins that have latency.
+    ///
+    /// This reads the field back off the live `AEffect` instead, so a host can
+    /// re-ask after the init sequence and after any state change that lets a
+    /// plugin re-declare.
+    pub fn read_initial_delay(&self) -> i32 {
+        // SAFETY: `self.params` owns the `*mut AEffect` for this instance's
+        // lifetime; `initialDelay` is a plain `i32` field, not a call into the
+        // plugin, so there is no re-entrancy or thread-affinity concern.
+        unsafe { (*self.params.get_effect()).initialDelay }
+    }
+
     fn new(effect: *mut AEffect, lib: Arc<Library>) -> PluginInstance {
         use plugin::OpCode as op;
 

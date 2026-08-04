@@ -323,7 +323,16 @@ impl Plugin for ProbePlugin {
             // struct directly rather than dispatching `effGetPlugCategory`, so
             // the code must agree with the enum beside it.
             category_code: self.config.category as i32,
-            initial_delay: self.config.initial_delay,
+            // The construction-time figure, plus any latency the probe only
+            // declares once it knows its rate. A host that copies this before
+            // `effSetSampleRate` sees the former and misses the latter, which
+            // is the case D-4 is about.
+            initial_delay: self.config.initial_delay
+                + if switches::rate_known() {
+                    switches::late_latency()
+                } else {
+                    0
+                },
             preset_chunks: self.config.preset_chunks,
             f64_precision: self.config.f64_precision,
             silent_when_stopped: false,
@@ -336,6 +345,10 @@ impl Plugin for ProbePlugin {
 
     fn set_sample_rate(&mut self, rate: f32) {
         capture::with_capture(|cap| cap.sample_rate = rate);
+        // From here on `get_info().initial_delay` reports the late figure — see
+        // `switches::late_latency`. The dispatch writes it back into the
+        // `AEffect` after this returns.
+        switches::set_rate_known(true);
     }
 
     fn set_block_size(&mut self, size: i64) {

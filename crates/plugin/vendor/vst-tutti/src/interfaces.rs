@@ -169,7 +169,21 @@ fn dispatch_inner(
             return copy_string(ptr, &params.get_parameter_name(index), MAX_PARAM_STR_LEN)
         }
 
-        Ok(OpCode::SetSampleRate) => get_plugin().set_sample_rate(opt),
+        Ok(OpCode::SetSampleRate) => {
+            get_plugin().set_sample_rate(opt);
+            // Let the plugin publish a latency it could not know at
+            // construction. Real plugins do this constantly — a linear-phase EQ
+            // or an oversampling limiter sizes its filter from the sample rate,
+            // so `initialDelay` is 0 until `effSetSampleRate` lands. The trait
+            // has no way to reach the `AEffect`, so the dispatch writes back
+            // whatever `get_info()` now reports.
+            //
+            // SAFETY: `effect` is the live `AEffect` this dispatch was invoked
+            // through; `initialDelay` is a plain `i32` field.
+            unsafe {
+                (*effect).initialDelay = get_plugin().get_info().initial_delay;
+            }
+        }
         Ok(OpCode::SetBlockSize) => get_plugin().set_block_size(value as i64),
         Ok(OpCode::StateChanged) => {
             if value == 1 {

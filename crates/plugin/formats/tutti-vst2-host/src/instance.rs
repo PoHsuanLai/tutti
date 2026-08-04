@@ -222,7 +222,14 @@ impl Vst2Instance {
             receives_midi,
             emits_midi,
             has_editor: false, // overwritten below once we ask the handle
-            latency_samples: Samples(info.initial_delay.max(0) as usize),
+            // Read live, not from `info`. `get_info()` returns a snapshot taken
+            // in `PluginInstance::new` — before `effOpen`, `effSetSampleRate`
+            // and `effMainsChanged` — and a plugin sets its latency during
+            // those: a linear-phase EQ does not know its filter length until it
+            // knows the sample rate. So `info.initial_delay` reads 0 for
+            // exactly the plugins that have latency, and PDC silently
+            // compensated nothing for them.
+            latency_samples: Samples(instance.read_initial_delay().max(0) as usize),
             supports_f64: info.f64_precision,
         };
 
@@ -400,6 +407,22 @@ impl Vst2Instance {
         let was_resumed = self.suspend_for_reconfigure();
         self.handle.instance.set_block_size(block_size as i64);
         self.restore_after_reconfigure(was_resumed);
+    }
+
+    /// The plugin's latency **as it currently stands**.
+    ///
+    /// Re-read from the live `AEffect` rather than returned from the load-time
+    /// metadata, because VST2 gives a plugin no way to announce a change: there
+    /// is no latency-changed callback in the ABI. `audioMasterIOChanged` is the
+    /// nearest thing and is about I/O configuration; a plugin that alters
+    /// `initialDelay` on a sample-rate change may not send anything at all.
+    ///
+    /// So the host has to ask. [`set_sample_rate`](Self::set_sample_rate) and
+    /// [`set_block_size`](Self::set_block_size) both suspend and resume, which
+    /// is exactly when a plugin recomputes a filter length — call this after
+    /// either and re-plan compensation if the answer moved.
+    pub fn latency(&self) -> Samples {
+        Samples(self.handle.instance.read_initial_delay().max(0) as usize)
     }
 }
 

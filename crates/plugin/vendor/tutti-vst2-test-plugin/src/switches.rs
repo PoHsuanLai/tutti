@@ -53,6 +53,52 @@ static ANSWER_PARAM_PROPERTIES: AtomicBool = AtomicBool::new(false);
 static ANSWER_MIDI_METADATA: AtomicBool = AtomicBool::new(false);
 static SERVICED_MIDI_PROGRAMS: AtomicI32 = AtomicI32::new(0);
 
+/// Latency the probe declares once it knows its sample rate, or 0 for none.
+///
+/// Models the plugin class that motivates D-4: a linear-phase EQ or an
+/// oversampling limiter cannot size its filter until `effSetSampleRate` lands,
+/// so `AEffect::initialDelay` is 0 at construction — which is precisely when a
+/// host reading `get_info()`'s snapshot takes its copy. A probe that declared
+/// its latency up front could not tell a host that re-reads from one that does
+/// not; both would see the same number.
+static LATE_LATENCY: AtomicI32 = AtomicI32::new(0);
+
+/// Declare `samples` of latency, but only from `effSetSampleRate` onwards.
+///
+/// Set before `Vst2Instance::load` and restore afterwards — like every switch
+/// here, this mutates the loaded image the whole process shares.
+#[no_mangle]
+pub extern "C" fn tutti_vst2_probe_set_late_latency(samples: i32) {
+    LATE_LATENCY.store(samples, Ordering::SeqCst);
+    // Clear the "rate is known" latch with it. Both are process-global and the
+    // probe image is shared by every test in a binary, so without this the
+    // first load leaves the latch set and every later `PluginInstance::new`
+    // snapshot already contains the late figure — which makes a host reading
+    // the stale snapshot indistinguishable from one that re-reads. That is
+    // exactly the difference these tests exist to detect, and whether it was
+    // detectable depended on the order the tests happened to run in.
+    RATE_KNOWN.store(false, Ordering::SeqCst);
+}
+
+pub(crate) fn late_latency() -> i32 {
+    LATE_LATENCY.load(Ordering::SeqCst)
+}
+
+/// Whether the probe has been told its sample rate yet.
+///
+/// The gate on [`late_latency`]: before `effSetSampleRate` the probe reports 0,
+/// after it reports the configured figure. That transition is the whole point —
+/// it is what a host reading the construction-time snapshot misses.
+static RATE_KNOWN: AtomicBool = AtomicBool::new(false);
+
+pub(crate) fn set_rate_known(known: bool) {
+    RATE_KNOWN.store(known, Ordering::SeqCst);
+}
+
+pub(crate) fn rate_known() -> bool {
+    RATE_KNOWN.load(Ordering::SeqCst)
+}
+
 /// Make the probe answer `effGetParameterProperties`.
 ///
 /// Off by default, because *declining is the realistic behaviour*: every VST2

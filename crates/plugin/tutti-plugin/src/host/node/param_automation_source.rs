@@ -18,7 +18,10 @@
 //! (no `AutomationTarget` fed it), so there is no legacy behaviour to preserve;
 //! automation reaches plugins sample-accurate or not at all.
 
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
+
+use atomic_float::AtomicF64;
 
 use tutti_core::transport::TransportState;
 use tutti_core::{Beat, BeatDuration, Depth, PhaseIncrement, SampleRate};
@@ -341,7 +344,15 @@ const SAMPLE_STRIDE: usize = 8;
 pub struct ParamAutomationSource {
     params: Arc<[TimedParam]>,
     transport: Arc<dyn TransportState>,
-    sample_rate: SampleRate,
+    /// Shared, like [`TransportSource`](super::transport_source::TransportSource)'s,
+    /// so a device rate change reaches the box fundsp is running. A plain field
+    /// here is unreachable rather than merely stale: the source lives behind an
+    /// `Arc` and fundsp commits a *different clone* than a setter would touch,
+    /// so there is no `&mut` to update and no path to the running copy.
+    ///
+    /// `fill` divides by this every block, so a stale value mistimes every
+    /// automation point after a rate switch.
+    sample_rate: Arc<AtomicF64>,
 }
 
 impl ParamAutomationSource {
@@ -359,8 +370,21 @@ impl ParamAutomationSource {
         Self {
             params: params.into_iter().collect::<Vec<_>>().into(),
             transport,
-            sample_rate: sample_rate.into(),
+            // `.get()` at the atomic: an `AtomicF64` needs a primitive.
+            sample_rate: Arc::new(AtomicF64::new(sample_rate.into().get())),
         }
+    }
+
+    /// Update the stamped sample rate live (device / rate switch). Reaches the
+    /// running box because the atomic is shared across clones.
+    pub fn set_sample_rate(&self, sample_rate: impl Into<SampleRate>) {
+        self.sample_rate
+            .store(sample_rate.into().get(), Ordering::Release);
+    }
+
+    /// The rate `fill` is currently dividing by.
+    fn rate(&self) -> SampleRate {
+        SampleRate::from(self.sample_rate.load(Ordering::Acquire))
     }
 
     pub fn is_empty(&self) -> bool {
@@ -391,7 +415,8 @@ impl ParamAutomationSource {
         }
         let start_beat = self.transport.beat();
         let tempo = self.transport.tempo();
-        if tempo.get() <= 0.0 || self.sample_rate.get() <= 0.0 {
+        let sample_rate = self.rate();
+        if tempo.get() <= 0.0 || sample_rate.get() <= 0.0 {
             out.queues.clear();
             return;
         }
@@ -399,7 +424,7 @@ impl ParamAutomationSource {
         // doc records the association as load-bearing, because the offline
         // timeline is pinned to agree with the clock sample-for-sample and the
         // two groupings round differently.
-        let beats_per_sample = tutti_core::transport::beats_per_sample(tempo, self.sample_rate);
+        let beats_per_sample = tutti_core::transport::beats_per_sample(tempo, sample_rate);
         let loop_range = self.transport.loop_range();
         let last = block_size - 1;
 
@@ -979,6 +1004,29 @@ mod tests {
         assert!(
             (t.value_at(Beat::new(0.25)).unwrap() - 0.8).abs() < 1e-3,
             "peak = automation 0.6 + LFO 0.2 = 0.8 (both layers SUM)"
+        );
+    }
+
+    /// A device rate change reaches an already-installed source.
+    ///
+    /// The rate is a shared atomic rather than a plain field because the source
+    /// lives behind an `Arc` and fundsp commits a *different clone* than a
+    /// setter would touch — a plain field is unreachable, not merely stale.
+    /// `fill` divides by this every block, so a stale value mistimes every
+    /// automation point after a device switch.
+    #[test]
+    fn a_rate_change_reaches_the_clone_fundsp_runs() {
+        let transport = Arc::new(TestTransport::new(120.0));
+        let src = ParamAutomationSource::new([ramp(1)], transport, SampleRate::SR_48K);
+        assert_eq!(src.rate(), SampleRate::SR_48K);
+
+        // Clone first: this is what the running box actually is.
+        let running = src.clone();
+        src.set_sample_rate(SampleRate::SR_44K1);
+        assert_eq!(
+            running.rate(),
+            SampleRate::SR_44K1,
+            "the clone fundsp runs must see the new rate"
         );
     }
 }

@@ -266,13 +266,20 @@ impl PluginClient {
         self.emit_midi_out_if_declared();
     }
 
-    /// Update the sample rate stamped onto the transport snapshot. Called from
+    /// Update the sample rate stamped onto every installed per-block source.
+    /// Called from
     /// the `AudioUnit::set_sample_rate` impls. Reaches the running box because
     /// the source's rate is a shared atomic; a no-op when no source is installed
     /// (it's installed later with the correct rate by the host).
-    pub(super) fn set_transport_sample_rate(&mut self, sample_rate: SampleRate) {
+    pub(super) fn restamp_source_rates(&mut self, sample_rate: SampleRate) {
         self.sample_rate = sample_rate;
         if let Some(src) = self.inputs.transport.source_ref().load().as_ref() {
+            src.set_sample_rate(sample_rate);
+        }
+        if let Some(src) = self.inputs.harmony.source_ref().load().as_ref() {
+            src.set_sample_rate(sample_rate);
+        }
+        if let Some(src) = self.inputs.params.source_ref().load().as_ref() {
             src.set_sample_rate(sample_rate);
         }
     }

@@ -258,6 +258,76 @@ impl core::fmt::Display for SendError {
 
 impl std::error::Error for SendError {}
 
+/// The control-thread end of a standalone [`VoiceNode`](super::node::VoiceNode)'s
+/// command channel.
+///
+/// # Why a separate handle rather than reusing [`VoicePoolHandle`]
+///
+/// A pool addresses its voices by [`SlotId`] and hands retired slots back for
+/// the control thread to free. A `VoiceNode` holds exactly one voice for its
+/// whole life: there is no id to address and nothing is ever retired, so both of
+/// those fields would be dead weight that every call site has to supply a
+/// meaningless value for. The commands it accepts are also a strict subset —
+/// `AddVoice` / `Remove` have no meaning for a node that *is* its voice.
+///
+/// So this carries the sender and nothing else, and its methods name the voice
+/// implicitly. The wire format is shared: [`VoiceCommand`] is the same enum, and
+/// the node's drain is the same `try_recv` loop, so a command gains a consumer
+/// here without gaining a second definition.
+#[derive(Clone, Debug)]
+pub struct VoiceNodeHandle {
+    pub(crate) tx: Sender<VoiceCommand>,
+}
+
+impl VoiceNodeHandle {
+    /// Move the voice's timeline window.
+    ///
+    /// **The one control that cannot ride `AudioUnit::set`**, which is the whole
+    /// reason this channel exists. `Setting` carries a single `f32`, and a
+    /// placement is a [`Beat`] (`f64`) plus an optional [`BeatDuration`] — two
+    /// values, and a precision the transport cannot afford to lose. Truncating a
+    /// beat position to `f32` re-introduces the ~2²⁴ cliff that
+    /// `Sample.loop_start` was moved to `SamplePosition` (f64) to escape.
+    ///
+    /// Flattened into scalar fields rather than sent as a `VoiceWindow`, which is
+    /// the crate's existing answer for a multi-field control — see
+    /// [`VoiceCommand::UpdatePlacement`], which a pool has drained since before
+    /// this handle existed.
+    ///
+    /// The `SlotId` is `SlotId(0)`: a node's single voice is built with that id
+    /// (`VoiceNode::with_channels`), and the drain ignores it. It is in the wire
+    /// format because the format is shared with the pool, not because a node has
+    /// slots.
+    pub fn set_placement(
+        &self,
+        start_beat: Beat,
+        duration_beats: Option<BeatDuration>,
+    ) -> Result<(), SendError> {
+        self.send(VoiceCommand::UpdatePlacement {
+            id: SlotId(0),
+            start_beat,
+            duration_beats,
+        })
+    }
+
+    /// Queue a command for the node's next block.
+    ///
+    /// Public so a host can send anything the node's drain understands, and
+    /// fallible for the reason [`VoicePoolHandle::send`] gives: a full queue is
+    /// reported rather than logged and forgotten, so a caller can back off
+    /// instead of silently dropping a user's edit.
+    pub fn send(&self, command: VoiceCommand) -> Result<(), SendError> {
+        // The variants carry the lost command, deliberately — see `SendError`.
+        // Dropping it here would leave a caller able to see *that* an edit
+        // failed but not *which*, which is the difference between backing off
+        // and giving up.
+        self.tx.try_send(command).map_err(|e| match e {
+            TrySendError::Full(cmd) => SendError::Full(cmd),
+            TrySendError::Disconnected(cmd) => SendError::Disconnected(cmd),
+        })
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct VoicePoolHandle {
     pub(crate) tx: Sender<VoiceCommand>,

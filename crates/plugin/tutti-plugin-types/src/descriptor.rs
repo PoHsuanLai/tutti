@@ -102,6 +102,17 @@ impl EditorPresence {
 }
 
 impl PluginDescriptor {
+    /// Whether this plugin was asked and reported an editor.
+    ///
+    /// The normalized read, so a caller deciding whether to draw an "open
+    /// editor" button does not have to know that a filename-fallback probe
+    /// never asked. A caller that must distinguish "no GUI" from "not yet
+    /// examined" — a scanner report, say — matches on
+    /// [`editor`](Self::editor) instead.
+    pub fn has_editor(&self) -> bool {
+        self.editor.is_present()
+    }
+
     /// A minimal descriptor with just id + name; everything else defaulted.
     /// Used by tests and filename-fallback probing.
     pub fn new(id: impl Into<String>, name: impl Into<String>, class: PluginClass) -> Self {

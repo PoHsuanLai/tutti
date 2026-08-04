@@ -32,7 +32,7 @@ claims we have.
 
 ## A. Cross-format
 
-### A-0 · Provenance sum types leak format disagreement to the consumer · TODO
+### A-0 · Provenance sum types leak format disagreement to the consumer · DONE
 
 The rule this crate should hold: **a format host may model its format's
 disagreement; the plugin host must normalize it.** A caller asking "what is this
@@ -55,17 +55,26 @@ currently **zero consumer-side matches**. The accessors that make the enum
 unnecessary already exist: `ParamRange::{bounds, default_value, to_plain,
 to_normalized}`, `ParamSteps::count`, `EditorPresence::{measured, is_present}`.
 
-So the work is not a redesign; it is:
+**Landed.** The work was smaller than a redesign, because the accessors already
+existed and nothing consumed the variants:
 
-1. Make the accessor path the *only* public one — `pub(crate)` the variants, or
-   keep the enum private to the crate and expose `ParameterInfo` accessors.
-2. Delete the variant-matching the format hosts do across the crate boundary,
-   replacing construction with the existing builders
-   (`with_plain_range` / `with_normalized_default` / `with_steps`).
-3. Keep the *distinction* where it belongs — `probed`-style, on the side, not in
-   the shape. "The format never said" is real information
-   ([[param-info-absent-vs-reported]]), but it belongs beside the value like
-   `ParamFlags::known` does, not as a variant a caller must destructure.
+- `ParameterInfo` gained `bounds()`, `default_value()`, `step_count()` beside
+  the `to_plain`/`to_normalized`/`flag` it already forwarded, so the whole
+  parameter can be read without touching `ParamRange` or `ParamSteps`.
+- `PluginDescriptor::has_editor()` forwards `EditorPresence::is_present()`.
+- `step_count()` collapses `Continuous` and `Unknown` to `None` — both mean "do
+  not draw a stepped control", the only decision a consumer makes from it. The
+  distinction stays on `steps` for a coverage report.
+- The module doc now states the rule: the variants are for the host that must
+  *produce* them, not the reading path.
+
+The variants were deliberately **not** made `pub(crate)`. The format hosts are
+separate crates and legitimately construct these, and `probed`-style coverage
+reporting is a real second consumer. What changed is that reading through them
+is no longer necessary — verified: the only remaining reference outside
+`tutti-plugin-types`, the format hosts, and the loaders is
+`EditorPresence::measured(..)` in `vst2_in_process/loader.rs:69`, which is a
+constructor.
 
 **Not in scope, and why.** These enums look similar but are *not* provenance —
 each variant is a genuinely different thing, so normalizing would delete

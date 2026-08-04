@@ -5,8 +5,7 @@
 //! `Serialize`/`Deserialize` derives are gated behind the `serde` feature.
 //!
 //! The formats disagree about parameters more than about anything else, so the
-//! shape here is chosen to keep the disagreement visible rather than averaged
-//! away:
+//! shape here keeps the disagreement *representable* rather than averaged away:
 //!
 //! - [`ParamRange`] is a sum type because there is no safe number to substitute
 //!   when a format declares no range. Every pair a host could invent is a claim
@@ -15,6 +14,16 @@
 //!   `step_count: u32` fuses at zero.
 //! - [`ParamFlags`] is paired with a `known` mask so a flag the format never
 //!   reported reads as [`None`] rather than as `false`.
+//!
+//! **Representable is not the same as unavoidable.** A format host builds these
+//! and may match on them; a *consumer* should not have to. Read a parameter
+//! through [`ParameterInfo`]'s own accessors — [`bounds`](ParameterInfo::bounds),
+//! [`default_value`](ParameterInfo::default_value),
+//! [`step_count`](ParameterInfo::step_count), [`flag`](ParameterInfo::flag),
+//! [`to_plain`](ParameterInfo::to_plain) — which answer the question a caller
+//! actually has without making them learn which format declined what. The
+//! variants stay for the host that must produce them and for the caller
+//! building a coverage report; they are not the reading path.
 
 use bitflags::bitflags;
 
@@ -536,6 +545,35 @@ impl ParameterInfo {
         self.range.to_normalized(plain)
     }
 
+    /// The plugin's declared bounds, or [`None`] when it declared none.
+    ///
+    /// The normalized read: a caller asking what this parameter's range *is*
+    /// should not have to know that VST2 sometimes declines
+    /// `effGetParameterProperties` while AU always answers. [`None`] is the one
+    /// fact that survives normalization — it means "no declared bounds", and a
+    /// caller that needs a span anyway uses `0..=1`, which is what
+    /// [`to_plain`](Self::to_plain) already maps onto.
+    pub fn bounds(&self) -> Option<(f64, f64)> {
+        self.range.bounds()
+    }
+
+    /// The default value, in whichever domain [`bounds`](Self::bounds) speaks —
+    /// plain units when it returns `Some`, normalized `0..=1` when `None`.
+    pub fn default_value(&self) -> f64 {
+        self.range.default_value()
+    }
+
+    /// Number of discrete positions, or [`None`] when the parameter is
+    /// continuous *or* the format never said.
+    ///
+    /// Those two collapse deliberately: both mean "do not draw this as a
+    /// stepped control", which is the only decision a consumer makes from it.
+    /// The distinction is still on [`steps`](Self::steps) for a caller building
+    /// a capability report rather than a UI.
+    pub fn step_count(&self) -> Option<u32> {
+        self.steps.count()
+    }
+
     /// Infers a *display* scale from the step count and unit string.
     ///
     /// Distinct from [`to_plain`](Self::to_plain), which maps declared
@@ -864,5 +902,48 @@ mod tests {
         assert_eq!(range.min, -96.0);
         assert_eq!(range.max, 6.0);
         assert_eq!(range.default, -12.0);
+    }
+
+    /// A consumer asks `ParameterInfo` and never destructures `ParamRange`.
+    /// Which format declined to declare a range is the host's problem, not the
+    /// caller's — the whole point of normalizing here.
+    #[test]
+    fn a_consumer_reads_bounds_without_matching_on_provenance() {
+        let declared =
+            ParameterInfo::new(ParamId::new(1), "Cutoff").with_plain_range(20.0, 20_000.0, 440.0);
+        assert_eq!(declared.bounds(), Some((20.0, 20_000.0)));
+        assert_eq!(declared.default_value(), 440.0);
+
+        // A plugin that declared nothing answers `None` rather than inventing a
+        // span — but still converts, against the implicit `0..=1`.
+        let undeclared = ParameterInfo::new(ParamId::new(2), "Mix").with_normalized_default(0.25);
+        assert_eq!(undeclared.bounds(), None);
+        assert_eq!(undeclared.default_value(), 0.25);
+        assert_eq!(undeclared.to_plain(1.0), 1.0);
+    }
+
+    /// `Continuous` and `Unknown` both mean "not a stepped control", which is
+    /// the only decision a consumer makes from the step count. They collapse on
+    /// the normalized read and stay distinct on `steps` itself.
+    #[test]
+    fn step_count_collapses_continuous_and_unreported() {
+        let base = ParameterInfo::new(ParamId::new(3), "Shape");
+
+        for steps in [ParamSteps::Continuous, ParamSteps::Unknown] {
+            assert_eq!(
+                base.clone().with_steps(steps).step_count(),
+                None,
+                "{steps:?}"
+            );
+        }
+
+        assert_eq!(
+            base.clone().with_steps(ParamSteps::Toggle).step_count(),
+            Some(2)
+        );
+        assert_eq!(
+            base.with_steps(ParamSteps::Enumerated(5)).step_count(),
+            Some(5)
+        );
     }
 }

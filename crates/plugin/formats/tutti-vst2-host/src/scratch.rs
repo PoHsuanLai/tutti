@@ -64,10 +64,8 @@ impl RenderScratch {
             .map(|_| vec![0.0f64; block_size])
             .collect();
         let input_ptrs_f64: Vec<*const f64> = inputs_f64.iter().map(|v| v.as_ptr()).collect();
-        let output_ptrs_f64: Vec<*mut f64> = outputs_f64
-            .iter()
-            .map(|v| v.as_ptr() as *mut f64)
-            .collect();
+        let output_ptrs_f64: Vec<*mut f64> =
+            outputs_f64.iter().map(|v| v.as_ptr() as *mut f64).collect();
 
         Self {
             inputs,
@@ -361,8 +359,7 @@ mod tests {
             "the f64 staging buffer must hold the input bit-for-bit"
         );
         assert_ne!(
-            EXACT as f32 as f64,
-            EXACT,
+            EXACT as f32 as f64, EXACT,
             "the fixture is vacuous unless this value actually rounds in f32"
         );
     }

@@ -286,6 +286,34 @@ impl Vst2Instance {
         true
     }
 
+    /// Cycle the plugin through suspend and resume — `effStopProcess` →
+    /// `effMainsChanged(0)` → `effMainsChanged(1)` → `effStartProcess` — to
+    /// clear whatever processing state it chooses to clear on those edges.
+    ///
+    /// This is as close as VST 2.4 comes to a state clear, and it is not close.
+    /// The `OpCode` enum has no discrete reset. The only two opcodes that touch
+    /// DSP state are `effMainsChanged`, where plugins allocate and free their
+    /// rate-dependent buffers, and the `effStartProcess`/`effStopProcess` pair,
+    /// which announces a processing interruption and is only legal while
+    /// resumed. A plugin is obliged to clear nothing on either edge, so a
+    /// caller gets the cycle, not a guarantee.
+    ///
+    /// Returns whether the cycle was dispatched. `false` for a plugin that was
+    /// already suspended: it has no processing state to interrupt, and
+    /// `effMainsChanged` is not documented as idempotent, so a redundant
+    /// suspend would be a second buffer teardown rather than a no-op.
+    ///
+    /// # Threading
+    /// Main thread only, asserted. `effMainsChanged` allocates, so no
+    /// audio-thread caller may reach this — a host handling a locate or a loop
+    /// wrap calls it from the thread that owns the editor, between blocks.
+    pub fn reset_processing_state(&mut self) -> bool {
+        tutti_plugin_types::assert_main_thread();
+        let was_resumed = self.suspend_for_reconfigure();
+        self.restore_after_reconfigure(was_resumed);
+        was_resumed
+    }
+
     /// Take the plugin out of the processing state, if it is in it, in the
     /// SDK's teardown order: `effStopProcess` → `effMainsChanged(0)`.
     ///
@@ -328,19 +356,21 @@ impl Vst2Instance {
     ///
     /// `as f32` is not a unit-type regression: `effSetSampleRate` passes the
     /// rate in the dispatcher's `opt` field, a C `float` — an FFI boundary.
+    ///
+    /// # Threading
+    /// Main thread only, asserted. The bracket's `effMainsChanged` is where
+    /// plugins allocate and free, so this is not reachable from an audio-thread
+    /// caller — one wanting to change rate parks it for a main-thread drain.
+    /// The guard is here rather than only at the call sites because this is the
+    /// function that dispatches: a future caller inherits it without knowing to
+    /// ask.
     pub fn set_sample_rate(&mut self, sample_rate: f64) {
+        tutti_plugin_types::assert_main_thread();
         let was_resumed = self.suspend_for_reconfigure();
         self.handle.instance.set_sample_rate(sample_rate as f32);
         self.restore_after_reconfigure(was_resumed);
     }
 
-    /// Notify the plugin of a maximum-block-size change. Bracketed for the same
-    /// reason as [`set_sample_rate`](Self::set_sample_rate) (block size drives
-    /// per-block buffer sizing), with the same edge-triggered semantics.
-    ///
-    /// No in-tree caller today — block size is fixed at [`load`](Self::load) and
-    /// the engine re-loads rather than re-sizing — but it stays public as part
-    /// of the VST2 host contract.
     /// Set whether the host reports itself as rendering offline.
     ///
     /// Unlike the other three formats there is nothing to push: VST2 carries
@@ -359,6 +389,13 @@ impl Vst2Instance {
         self.host_link.state.is_offline()
     }
 
+    /// Notify the plugin of a maximum-block-size change. Bracketed for the same
+    /// reason as [`set_sample_rate`](Self::set_sample_rate) (block size drives
+    /// per-block buffer sizing), with the same edge-triggered semantics.
+    ///
+    /// No in-tree caller today — block size is fixed at [`load`](Self::load) and
+    /// the engine re-loads rather than re-sizing — but it stays public as part
+    /// of the VST2 host contract.
     pub fn set_block_size(&mut self, block_size: usize) {
         let was_resumed = self.suspend_for_reconfigure();
         self.handle.instance.set_block_size(block_size as i64);

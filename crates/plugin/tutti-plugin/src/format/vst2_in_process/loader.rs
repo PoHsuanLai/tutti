@@ -109,9 +109,15 @@ pub fn load_client(
     let contention = Arc::new(AtomicU64::new(0));
     let param_sink = ParameterChangeSink::new();
 
+    // Built here rather than inside the node so the node's producer end and the
+    // backend's drain end are the same cell: the audio thread parks a rate in
+    // it, `editor_idle` dispatches from it.
+    let pending_sample_rate = Arc::new(AtomicU64::new(super::audio_unit::NO_PENDING_RATE));
+
     let backend = Arc::new(InProcessVst2Backend {
         inner: Arc::clone(&inner),
         param_sink: param_sink.clone(),
+        pending_sample_rate: Arc::clone(&pending_sample_rate),
     });
 
     // `loaded.features`, not the local `features`, so the node gates its
@@ -122,6 +128,7 @@ pub fn load_client(
         host_meta,
         loaded.features,
         sample_rate,
+        pending_sample_rate,
         Arc::clone(&contention),
     );
     let midi_sender = client.midi_sender();

@@ -72,9 +72,68 @@ pub struct InProcessVst2Client {
     /// Per-clone f32/f64 staging arrays (pre-allocated, reused).
     process_scratch: ProcessScratch,
     sample_rate: f64,
+    /// A rate the graph handed this node that the plugin has not been told
+    /// about yet, or [`NO_PENDING_RATE`] when there is none.
+    ///
+    /// `AudioUnit::set_sample_rate` arrives on the audio thread, and telling a
+    /// VST2 plugin its rate means bracketing `effSetSampleRate` in
+    /// `effMainsChanged` — the pair plugins allocate and free their
+    /// rate-dependent buffers in. So the rate is parked here by
+    /// [`queue_sample_rate`] and dispatched from the main thread by
+    /// [`drain_sample_rate`], the same deferral the out-of-process client gets
+    /// from its command queue.
+    ///
+    /// Shared across the fundsp graph-commit clones, so a rate reaching any
+    /// clone is visible to whichever one the backend drains.
+    pending_sample_rate: Arc<AtomicU64>,
     /// Bumped on every audio-thread `try_lock` failure. Shared across
     /// clones so the handle can read the global count.
     contention_count: Arc<AtomicU64>,
+}
+
+/// [`InProcessVst2Client::pending_sample_rate`] sentinel: nothing is waiting.
+///
+/// A rate is stored as `f64::to_bits`, so the sentinel must be a bit pattern no
+/// rate produces. Zero is not one — `0.0f64.to_bits() == 0`, and a parked `0.0`
+/// would then read as "nothing waiting". `u64::MAX` is a NaN payload, and a
+/// rate that round-trips to NaN is not a rate.
+pub(super) const NO_PENDING_RATE: u64 = u64::MAX;
+
+/// Park `rate` for the main thread to dispatch. Audio-thread safe: one
+/// `Relaxed` store, no lock and no allocation.
+///
+/// Last write wins. A rate superseded before anyone drained it never reached
+/// the plugin, so dropping it loses nothing — the plugin only needs to hear the
+/// rate it is about to run at.
+pub(super) fn queue_sample_rate(cell: &AtomicU64, rate: f64) {
+    cell.store(rate.to_bits(), Ordering::Relaxed);
+}
+
+/// Dispatch a parked rate, if any, and report whether one reached the plugin.
+///
+/// Main thread only: `Vst2Instance::set_sample_rate` runs the `effMainsChanged`
+/// bracket, which allocates. This is the drain half of the deferral
+/// [`queue_sample_rate`] opens.
+///
+/// The rate is claimed out of the cell before the lock is tried and put back if
+/// the lock is unavailable — but only if nothing newer arrived meanwhile, so a
+/// stale rate cannot overwrite a fresh one.
+pub(super) fn drain_sample_rate(cell: &AtomicU64, inner: &Mutex<Vst2Instance>) -> bool {
+    let bits = cell.swap(NO_PENDING_RATE, Ordering::Relaxed);
+    if bits == NO_PENDING_RATE {
+        return false;
+    }
+    match inner.try_lock() {
+        Some(mut instance) => {
+            instance.set_sample_rate(f64::from_bits(bits));
+            true
+        }
+        None => {
+            let _ =
+                cell.compare_exchange(NO_PENDING_RATE, bits, Ordering::Relaxed, Ordering::Relaxed);
+            false
+        }
+    }
 }
 
 impl InProcessVst2Client {
@@ -83,6 +142,7 @@ impl InProcessVst2Client {
         metadata: PluginInfo,
         features: Features,
         sample_rate: f64,
+        pending_sample_rate: Arc<AtomicU64>,
         contention_count: Arc<AtomicU64>,
     ) -> Self {
         let scratch = RenderScratch::new(metadata.num_inputs, metadata.num_outputs, BLOCK_SIZE);
@@ -99,6 +159,7 @@ impl InProcessVst2Client {
             scratch,
             process_scratch,
             sample_rate,
+            pending_sample_rate,
             contention_count,
         }
     }
@@ -215,6 +276,9 @@ impl Clone for InProcessVst2Client {
             scratch,
             process_scratch,
             sample_rate: self.sample_rate,
+            // Shared, not copied: fundsp clones the unit on every graph commit,
+            // so a rate parked on one clone must be drainable through another.
+            pending_sample_rate: Arc::clone(&self.pending_sample_rate),
             contention_count: Arc::clone(&self.contention_count),
         }
     }
@@ -259,21 +323,23 @@ impl AudioUnit for InProcessVst2Client {
     }
 
     fn reset(&mut self) {
-        if let Some(mut instance) = self.inner.try_lock() {
-            // VST2 reset is suspend → resume; the vst crate doesn't
-            // expose a discrete reset opcode. Re-set sample rate as a
-            // best-effort no-op trigger.
-            instance.set_sample_rate(self.sample_rate);
-        }
+        // Nothing reaches the plugin from here, and nothing can. VST 2.4 has no
+        // opcode that clears DSP state on its own: the only two that touch it
+        // are `effMainsChanged`, where plugins allocate and free their
+        // rate-dependent buffers, and the `effStartProcess`/`effStopProcess`
+        // pair, which announces an interruption rather than a clear and is only
+        // legal while resumed. This call is on the audio thread, so neither is
+        // available. `Vst2Instance::reset_processing_state` is that cycle, on
+        // the main thread, for a host that wants it on a locate or a loop wrap.
     }
 
     fn set_sample_rate(&mut self, sample_rate: tutti_core::SampleRate) {
         let sample_rate: f64 = sample_rate.get();
         self.sample_rate = sample_rate;
         self.restamp_transport_rate();
-        if let Some(mut instance) = self.inner.try_lock() {
-            instance.set_sample_rate(sample_rate);
-        }
+        // Parked, not dispatched: `Vst2Instance::set_sample_rate` runs the same
+        // allocating `effMainsChanged` bracket, and this is the audio thread.
+        queue_sample_rate(&self.pending_sample_rate, sample_rate);
     }
 
     fn tick(&mut self, input: &[f32], output: &mut [f32]) {
@@ -406,18 +472,15 @@ impl AudioUnit<F64> for InProcessVst2Client {
     }
 
     fn reset(&mut self) {
-        if let Some(mut instance) = self.inner.try_lock() {
-            instance.set_sample_rate(self.sample_rate);
-        }
+        // See the f32 impl: VST2 offers nothing here the audio thread may
+        // dispatch.
     }
 
     fn set_sample_rate(&mut self, sample_rate: tutti_core::SampleRate) {
         let sample_rate: f64 = sample_rate.get();
         self.sample_rate = sample_rate;
         self.restamp_transport_rate();
-        if let Some(mut instance) = self.inner.try_lock() {
-            instance.set_sample_rate(sample_rate);
-        }
+        queue_sample_rate(&self.pending_sample_rate, sample_rate);
     }
 
     fn tick(&mut self, input: &[f64], output: &mut [f64]) {

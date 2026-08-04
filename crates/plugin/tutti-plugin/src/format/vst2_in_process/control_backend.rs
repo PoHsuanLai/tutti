@@ -8,6 +8,7 @@
 //! silence on contention so a slow `editor_idle` can't underrun audio.
 
 use std::ffi::c_void;
+use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 
 use parking_lot::Mutex;
@@ -25,6 +26,10 @@ use crate::util::window::EditorSize;
 pub(crate) struct InProcessVst2Backend {
     pub(crate) inner: Arc<Mutex<Vst2Instance>>,
     pub(crate) param_sink: ParameterChangeSink,
+    /// The cell the audio unit parks a rate change in, shared with every clone
+    /// of the node. Drained here because telling a VST2 plugin its rate runs
+    /// the `effMainsChanged` bracket, which allocates.
+    pub(crate) pending_sample_rate: Arc<AtomicU64>,
 }
 
 impl HostParams for InProcessVst2Backend {
@@ -92,6 +97,12 @@ impl HostEditor for InProcessVst2Backend {
     }
 
     fn editor_idle(&self) {
+        // Before the lock below, not inside it: the drain takes the same lock
+        // and would deadlock under that guard. This runs on the main thread,
+        // every editor frame, which is what makes it the delivery point for the
+        // rate the audio thread had to park.
+        super::audio_unit::drain_sample_rate(&self.pending_sample_rate, &self.inner);
+
         let mut instance = self.inner.lock();
         instance.editor_idle();
         // Drain any plugin-internal parameter changes (knob movement on

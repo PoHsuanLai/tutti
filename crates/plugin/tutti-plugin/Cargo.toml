@@ -112,3 +112,11 @@ optional = true
 tempfile = "3"
 assert_no_alloc = { version = "1", default-features = false }
 tutti-midi-types = { path = "../../midi/tutti-midi-types" }
+# The reference VST2 plugin the in-process lifecycle tests load, plus
+# `libloading` to re-open the image the host loaded and read its capture — the
+# linked rlib is a separate image with separate statics, so only the cdylib's
+# globals see the host's calls. The same pair, for the same reasons, as
+# `tutti-vst2-host`'s dev-dependencies; here it lets a test assert what the
+# *node* dispatched rather than what the instance API does.
+libloading = "0.8"
+tutti-vst2-test-plugin = { path = "../vendor/tutti-vst2-test-plugin" }

@@ -471,6 +471,40 @@ client (`host/node/audio_unit.rs:19-22`), which posts a bounded `reset_rt()`.
 `assert_main_thread()` is asserted on the load and editor paths only, so nothing
 catches this even in debug.
 
+**Landed, and the two halves get different answers** — the title names both
+`reset()` and `set_sample_rate()`, and they are not the same problem.
+
+`reset()` now does nothing. **VST 2.4 has no DSP-reset opcode** (verified across
+the whole `OpCode` enum: the nearest, `StartProcess`/`StopProcess`, signal a
+processing interruption rather than a state clear, and are legal only while
+resumed). So there is no RT-safe call to make, and fundsp's own trait default is
+an empty body. The suspend/resume cycle moves to a named
+`Vst2Instance::reset_processing_state()`, whose doc is honest that a plugin is
+obliged to clear nothing on those edges.
+
+`set_sample_rate()` defers instead of dropping. The rate genuinely must reach the
+plugin, so deleting the call would trade an RT violation for a permanent silent
+rate mismatch. The audio thread parks it in a shared `AtomicU64` — one `Relaxed`
+store, no lock, no allocation — and `editor_idle` drains it on the main thread
+through the existing bracket. That is the deferral shape the out-of-process
+client already had.
+
+This does **not** contradict C-2's CLAP `reset()`, which does call the plugin: CLAP
+annotates `reset` `[audio-thread & active]`, VST2 annotates the equivalent
+opcodes main-thread-only *and* they allocate. Each puts the operation where its
+own spec permits.
+
+`assert_main_thread()` added to `Vst2Instance::set_sample_rate` — on the
+dispatching function rather than the call sites, so a future caller inherits it.
+
+Witnessed by wiring the VST2 reference probe into `tutti-plugin` for the first
+time (the machinery existed only in `tutti-vst2-host`). The probe counts
+`effMainsChanged` per direction, so what crossed the AEffect seam is read
+directly rather than inferred from a host-side flag. Every negative assertion is
+paired with a positive that moves the same counter — including one proving the
+deferred rate *does* arrive, so "nothing dispatched" cannot be satisfied by
+silently discarding it.
+
 ### D-3 · No offline render mode · DONE — superseded by A-2
 
 `host.rs:159-161` hardcodes `get_process_level` to `2`

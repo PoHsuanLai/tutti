@@ -166,14 +166,8 @@ impl PluginClient {
 
     /// Install the outbound routing target so this subprocess plugin's MIDI-out
     /// re-enters the graph. See [`Midi::set_out`]. Off-RT; call at wiring time.
-    pub fn set_midi_out(
-        &self,
-        queue: Arc<dyn tutti_midi_types::MidiRouter>,
-        routing: Arc<
-            tutti_midi_types::tutti_types::RtPublish<tutti_midi_types::MidiRoutingSnapshot>,
-        >,
-    ) {
-        self.midi.set_out(queue, routing);
+    pub fn set_midi_out(&self, sink: Arc<tutti_midi_runtime::MidiOutSink>) {
+        self.midi.set_out(sink);
     }
 
     /// Drop the outbound routing target; subsequent blocks discard MIDI-out.
@@ -203,12 +197,16 @@ impl PluginClient {
         &self.bridge
     }
 
-    /// Re-inject the plugin's MIDI-out into routing — but only if the plugin
-    /// declared [`Features::MIDI_OUT`]. Gating the *emit* on the self-reported
-    /// capability mirrors how the per-block input feeds gate their sends on
-    /// their `Features` bit: a plugin that never advertised MIDI output has its
-    /// emission dropped rather than silently re-injected. (Without the gate,
-    /// `emit` fired whenever an out-target was installed, regardless of the bit.)
+    /// Hand the plugin's MIDI-out to the post-block phase — but only if the
+    /// plugin declared [`Features::MIDI_OUT`]. Gating the *emit* on the
+    /// self-reported capability mirrors how the per-block input feeds gate their
+    /// sends on their `Features` bit: a plugin that never advertised MIDI output
+    /// has its emission dropped rather than silently re-injected. (Without the
+    /// gate, `emit` fired whenever an out-target was installed, regardless of
+    /// the bit.)
+    ///
+    /// `emit` only *collects* now; the fan-out happens once the graph has
+    /// rendered. See [`Midi::emit`](crate::util::node::Midi::emit).
     #[inline]
     fn emit_midi_out_if_declared(&mut self) {
         if self
@@ -217,11 +215,15 @@ impl PluginClient {
             .contains(crate::protocol::Features::MIDI_OUT)
         {
             self.shift_midi_out_into_this_block();
-            self.midi.emit(&self.midi_out);
+            // The count is deliberately dropped here rather than propagated:
+            // this is a `process` path with no caller that could act on it. The
+            // sink records the overflow (`MidiOutSink::overflowed`) so the loss
+            // is observable off-RT instead of silent.
+            let _ = self.midi.emit(&self.midi_out);
         }
     }
 
-    /// Re-base the plugin's MIDI-out onto the block it is actually emitted in.
+    /// Re-base the plugin's MIDI-out onto the block it is actually collected in.
     ///
     /// The reply drained here belongs to the block submitted *last* time, so each
     /// `frame_offset` counts from that earlier block's start. Relative to now that
@@ -232,9 +234,25 @@ impl PluginClient {
     ///
     /// Saturating rather than dropping: the event is late regardless, frame 0 is
     /// the closest representable position, and dropping would silently lose an
-    /// arpeggiator's notes. The residual error is one block — the same 1.33 ms the
-    /// audio path declares to PDC — and unlike the audio it cannot be compensated,
-    /// since MIDI re-entering routing has no delay line to sit in.
+    /// arpeggiator's notes.
+    ///
+    /// # This shift and the post-block phase do not double-count
+    ///
+    /// Worth stating, because "shift by a block, then deliver a block later"
+    /// reads like it should. The two act on different things:
+    ///
+    /// - The shift fixes an event's **position within a block**
+    ///   (`frame_offset`), correcting for the reply belonging to an earlier
+    ///   submission. Clamping to 0 means "due at the start of whatever block
+    ///   delivers this", not "due one block from now".
+    /// - The phase fixes **which block delivers it**, uniformly, for every
+    ///   emitter.
+    ///
+    /// So the offsets stay meaningful and the delivery block is now declared
+    /// rather than emergent
+    /// ([`MIDI_OUT_LATENCY_BLOCKS`](tutti_midi_runtime::MIDI_OUT_LATENCY_BLOCKS)).
+    /// Removing this shift would *not* cancel the phase's delay — it would
+    /// restore the early-triggering-sequencer bug on top of it.
     #[inline]
     fn shift_midi_out_into_this_block(&mut self) {
         let shift = PIPELINE_LATENCY_FRAMES.get() as u32;

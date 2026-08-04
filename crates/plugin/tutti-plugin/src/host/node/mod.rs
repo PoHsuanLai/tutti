@@ -14,6 +14,7 @@
 
 mod audio_unit;
 mod batcher;
+mod capability_view;
 mod harmony_source;
 mod input_slot;
 mod note_expression_source;
@@ -32,6 +33,9 @@ mod tests;
 // resolving.
 pub use crate::util::node::{route_with_latency, Midi, ParameterChangeSink};
 pub(crate) use crate::util::node::{InvalidateSink, RefreshSink};
+pub use capability_view::{
+    HarmonyView, MidiInView, MidiOutView, NoteExpressionView, TransportView,
+};
 pub use harmony_source::{HarmonySource, TimedChord, TimedScale};
 pub use note_expression_source::NoteExpressionSource;
 pub use param_automation_source::{

@@ -73,6 +73,14 @@ pub(crate) struct HostState {
     /// thread while the control thread sets it, and this struct is shared
     /// behind an `Arc` with no lock by design (see [`HostLink`]).
     offline: std::sync::atomic::AtomicBool,
+    /// Latched by `audioMasterUpdateDisplay`: the plugin changed something the
+    /// host is displaying — typically a preset or program switched from its own
+    /// editor — so the parameter list the host holds is stale.
+    ///
+    /// A latch rather than a channel because the signal carries no payload and
+    /// is idempotent: ten preset changes between polls need one re-read, not
+    /// ten. Drained by [`Vst2Instance::take_display_stale`].
+    display_stale: std::sync::atomic::AtomicBool,
 }
 
 impl HostState {
@@ -90,6 +98,7 @@ impl HostState {
             block_size: block_size as isize,
             default_sample_rate,
             offline: std::sync::atomic::AtomicBool::new(false),
+            display_stale: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -105,6 +114,16 @@ impl HostState {
 
     pub(crate) fn is_offline(&self) -> bool {
         self.offline.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// Consume the `audioMasterUpdateDisplay` latch.
+    ///
+    /// `swap` rather than a load: the caller is acting on the signal, so
+    /// leaving it set would make every later poll re-read for a change already
+    /// handled.
+    pub(crate) fn take_display_stale(&self) -> bool {
+        self.display_stale
+            .swap(false, std::sync::atomic::Ordering::AcqRel)
     }
 }
 
@@ -134,6 +153,20 @@ impl Host for HostState {
     }
 
     fn idle(&self) {}
+
+    /// `audioMasterUpdateDisplay` — the plugin changed what the host is
+    /// showing, usually by switching preset or program from its own editor.
+    ///
+    /// VST 2.4 gives the plugin no way to say *what* changed, so the only
+    /// correct response is to re-read: the parameter list, names and displayed
+    /// values the host cached are all potentially stale. Latching rather than
+    /// re-reading here matters — this arrives on whatever thread the plugin's
+    /// editor runs on, and a synchronous re-read would dispatch opcodes from
+    /// it.
+    fn update_display(&self) {
+        self.display_stale
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
 
     /// Called re-entrantly from inside the plugin's `process`, on the audio
     /// thread, so the read must be wait-free. Returning by value is enough:

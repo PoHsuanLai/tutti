@@ -702,7 +702,7 @@ one. Clearing the latch inside the switch fixed it; the mutation now fails in
 both orderings. Worth remembering that a shared-image probe needs its state
 reset *per load*, not per test.
 
-### D-5 · `audioMasterUpdateDisplay`(42) and `audioMasterCurrentId`(2) are unroutable · TODO
+### D-5 · `audioMasterUpdateDisplay`(42) and `audioMasterCurrentId`(2) are unroutable · DONE
 
 `vendor/vst-tutti/src/interfaces.rs:385-447` — `host_dispatch` handles 19 of 40
 live opcodes; everything else falls to `_ => trace!()` returning 0. Verified: no
@@ -724,6 +724,25 @@ Also worth one line: `audioMasterGetLanguage`(38) returning 0 is out of range �
 `HostLanguage` is 1-based — so a plugin indexing a string table by it reads
 slot 0. The other unhandled opcodes (`VendorSpecific`, `GetDirectory`,
 file-selector, offline family) return an honest "declined".
+
+**Fixed** — all three arms added to `host_dispatch`.
+
+`UpdateDisplay` latches an `AtomicBool` the host drains through
+`Vst2Instance::take_display_stale`, rather than re-reading inline: the opcode
+arrives on whatever thread the plugin's editor runs on, and a synchronous
+re-read would dispatch opcodes from it. A latch also matches the signal —
+payload-free and idempotent, so ten preset changes between polls need one
+re-read.
+
+`CurrentId` returns the `get_plugin_id` override that was already there;
+`GetLanguage` returns `English` (1) rather than the fall-through's out-of-range
+0.
+
+Only `UpdateDisplay` is test-covered, and the module says so. `CurrentId` is
+asked from inside `VSTPluginMain` — before the host has an instance to observe
+through — so witnessing it needs a probe that *is* a shell plugin, a different
+fixture rather than a switch on this one. `GetLanguage` is never asked by the
+probe, and what a plugin does with the answer is not observable host-side.
 
 ### D-6 · Subprocess VST2 editors are never idled · DONE (as a deletion)
 

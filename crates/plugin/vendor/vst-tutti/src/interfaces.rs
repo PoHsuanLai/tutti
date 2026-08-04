@@ -449,6 +449,32 @@ pub fn host_dispatch(
         Ok(OpCode::GetCurrentProcessLevel) => return host.get_process_level(),
         Ok(OpCode::GetAutomationState) => return host.get_automation_state(),
 
+        // `audioMasterUpdateDisplay`. A plugin fires this after changing preset
+        // or program from its own editor: the parameter set the host is showing
+        // is now stale and must be re-read. `Host::update_display` was declared
+        // with nothing routing to it, so the plugin got the fall-through's `0`
+        // and the host's parameter list silently drifted from the plugin's.
+        Ok(OpCode::UpdateDisplay) => {
+            host.update_display();
+            // 1 = handled. A plugin that reads this as "host will not refresh"
+            // may fall back to forcing its own repaint.
+            return 1;
+        }
+
+        // `audioMasterCurrentId`. A shell plugin (a bundle exposing several
+        // effects behind one binary) calls this during `VSTPluginMain` to learn
+        // which sub-plugin the host wants. The fall-through's `0` means "no
+        // particular id", so every shell loaded its default effect — and
+        // `Host::get_plugin_id` was overridden to a real value that nothing
+        // ever asked for.
+        Ok(OpCode::CurrentId) => return host.get_plugin_id() as isize,
+
+        // `audioMasterGetLanguage`. `HostLanguage` is 1-based (`English = 1`),
+        // so the fall-through's `0` is not a language — a plugin indexing a
+        // string table by it reads slot 0. English is the honest answer for a
+        // host with no localization rather than a placeholder.
+        Ok(OpCode::GetLanguage) => return api::HostLanguage::English as isize,
+
         _ => {
             trace!("VST: Got unimplemented host opcode ({:?})", opcode);
             trace!(

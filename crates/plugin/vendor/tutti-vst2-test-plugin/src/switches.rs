@@ -99,6 +99,23 @@ pub(crate) fn rate_known() -> bool {
     RATE_KNOWN.load(Ordering::SeqCst)
 }
 
+/// Whether the probe calls `audioMasterUpdateDisplay` on the next resume.
+///
+/// A plugin fires that opcode after changing preset or program from its own
+/// editor. The probe has no editor, so `effMainsChanged` stands in as a
+/// host-driven moment the test controls exactly.
+static FIRE_UPDATE_DISPLAY: AtomicBool = AtomicBool::new(false);
+
+/// Make the probe call `audioMasterUpdateDisplay` from its next `resume`.
+#[no_mangle]
+pub extern "C" fn tutti_vst2_probe_set_fire_update_display(enable: bool) {
+    FIRE_UPDATE_DISPLAY.store(enable, Ordering::SeqCst);
+}
+
+pub(crate) fn fire_update_display() -> bool {
+    FIRE_UPDATE_DISPLAY.load(Ordering::SeqCst)
+}
+
 /// Make the probe answer `effGetParameterProperties`.
 ///
 /// Off by default, because *declining is the realistic behaviour*: every VST2

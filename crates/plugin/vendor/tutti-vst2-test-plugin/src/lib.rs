@@ -36,6 +36,8 @@ use vst::buffer::AudioBuffer;
 use vst::editor::Editor;
 use vst::host::Host as _;
 use vst::plugin::{CanDo, HostCallback, Info, Plugin, PluginParameters};
+// `update_display` is a `Host` method on the callback, not a `Plugin` one.
+use vst::host::Host as _;
 
 pub use capture::{
     tutti_vst2_probe_capture, tutti_vst2_probe_reset_capture, CapturedEvent, ProcessCapture,
@@ -368,6 +370,11 @@ impl Plugin for ProbePlugin {
         // in behaviour: stay suspended, render silence. The count above still
         // increments, separating "host never resumed" from "plugin declined".
         switches::set_resumed(!switches::refuse_resume());
+        if switches::fire_update_display() {
+            // What a plugin does after switching preset from its own editor:
+            // tell the host the parameter view it holds is stale.
+            self.host.update_display();
+        }
     }
 
     fn suspend(&mut self) {

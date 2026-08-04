@@ -273,6 +273,71 @@ impl AudioUnit for VoiceNode {
         self.cursor = None;
     }
 
+    /// The host's door to a live voice's scalar controls.
+    ///
+    /// # Why this exists, when `voice_mut` already did
+    ///
+    /// It did not reach: [`Voice`]'s per-tier fan-out (`apply_gain` and its
+    /// siblings) is `pub(crate)`, so a host outside this crate could hold a
+    /// `&mut Voice` and still have no way to set its gain. The alternatives were
+    /// to make the sampler's internal fan-out public — exporting a
+    /// `VoiceSource`-shaped API nobody outside asked for — or to use the door
+    /// every other unit in the engine already has. This is the latter, and it is
+    /// what makes a voice addressable by `Net::set` / `write_param` like a
+    /// filter or a strip, rather than needing its own vocabulary.
+    ///
+    /// # Why a `&mut self` write is safe here, when the live-value rule says otherwise
+    ///
+    /// It looks like it should not be. `Net`'s frontend holds clones, and a
+    /// control stored **by value** cannot normally be changed on a live node —
+    /// the write lands on a copy the next commit discards. `play.gain` is a
+    /// plain `Copy` field, so by that rule this should be lost.
+    ///
+    /// It is not, because **`set` is not written through the frontend at all.**
+    /// With a backend attached, `Net::set` *enqueues* the setting and the audio
+    /// thread applies it to the copy it is rendering (`net.rs`: `if let
+    /// Some((sender, _)) = &mut self.front`). The rule governs `node_as_mut`,
+    /// which mutates the frontend; the setting path sidesteps it.
+    ///
+    /// That distinction is measurable and was measured: reverting
+    /// `MemorySource::gain` to an unshared clone leaves every test in
+    /// `tests/voice_gain_survives_commit.rs` **passing**, because a `VoiceNode`
+    /// renders through `slot.voice.play.gain` (see `VoiceSlot::tick_frame_into`)
+    /// and never consults the source's own cell on this path.
+    ///
+    /// # Which is why both are written
+    ///
+    /// `play.gain` is what this node renders. `apply_gain` is what a
+    /// [`VoicePool`] slot and the offline render read, and what survives a
+    /// rebind. Writing one and not the other leaves two copies disagreeing —
+    /// the hazard `Playback.placement` was deleted for. Sabotaging the
+    /// `play.gain` half fails two tests; that is the half this node's audio
+    /// depends on.
+    ///
+    /// **Do not read this as "any control can have an arm here."** `speed`,
+    /// `direction` and the placement window are deliberately absent: they are
+    /// reached through paths that *do* go via the frontend, where by-value
+    /// storage is exactly the silent-loss hazard. Moving one of those here means
+    /// checking its storage first, not copying this arm.
+    ///
+    /// Params this node does not own are ignored, which is the convention that
+    /// lets a host push a setting without dispatching on node type.
+    fn set(&mut self, setting: tutti_core::dsp::Setting) {
+        let Some((param, value)) = tutti_core::unit_param::from_setting(&setting) else {
+            return;
+        };
+        if param == tutti_core::UnitParam::Volume {
+            let gain = tutti_core::Amplitude(value);
+            // Both: the `Playback` record is the control-*intent* the offline
+            // render and the pool read back, and the source is what the DSP
+            // reads. Writing only the source would leave a rebind restoring the
+            // old value — the same two-copies hazard `Playback.placement` was
+            // deleted for.
+            self.slot.voice.play.gain = gain;
+            self.slot.voice.source.apply_gain(gain);
+        }
+    }
+
     /// Rebind the wrapped voice's placement (and its source's own read clock) to
     /// the render's transport.
     ///

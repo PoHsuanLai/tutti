@@ -30,6 +30,7 @@ pub mod endpoint;
 pub mod jr_timestamp;
 pub mod mpe_ingest;
 pub mod port;
+pub mod post_block;
 pub mod pre_block;
 pub mod registry;
 pub mod routing_table;
@@ -49,6 +50,7 @@ pub use jr_timestamp::{
     JR_CLOCK_MAX_INTERVAL,
 };
 pub use port::MidiInPort;
+pub use post_block::{MidiOutSink, MidiPostBlock, MIDI_OUT_LATENCY_BLOCKS};
 pub use pre_block::{BlockClock, MidiPreBlock, MpeModeRequest};
 pub use registry::{MidiBus, MidiMailbox, MidiReceiver, MidiSender};
 pub use routing_table::MidiRoutingTable;

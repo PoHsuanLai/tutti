@@ -63,18 +63,15 @@ pub(crate) fn is_declined(loaded: &crate::protocol::LoadedPlugin, f: Features) -
 pub struct MidiOutView<'a>(&'a PluginClient);
 
 impl MidiOutView<'_> {
-    /// Route this plugin's MIDI-out back into the graph.
-    pub fn set_target(
-        &self,
-        queue: Arc<dyn tutti_midi_types::MidiRouter>,
-        routing: Arc<
-            tutti_midi_types::tutti_types::RtPublish<tutti_midi_types::MidiRoutingSnapshot>,
-        >,
-    ) {
-        self.0.set_midi_out(queue, routing);
+    /// Route this plugin's MIDI-out back into the graph, via the post-block
+    /// phase's sink (see
+    /// [`MidiPostBlock`](tutti_midi_runtime::MidiPostBlock)). Delivery happens
+    /// once, after the graph renders, rather than mid-`process`.
+    pub fn set_target(&self, sink: Arc<tutti_midi_runtime::MidiOutSink>) {
+        self.0.set_midi_out(sink);
     }
 
-    /// Drop the routing target; subsequent blocks discard MIDI-out.
+    /// Drop the sink; subsequent blocks discard MIDI-out.
     pub fn clear(&self) {
         self.0.clear_midi_out();
     }

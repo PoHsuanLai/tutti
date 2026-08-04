@@ -162,14 +162,8 @@ impl InProcessVst2Client {
 
     /// Install the outbound routing target so this plugin's MIDI-out re-enters
     /// the graph. See [`Midi::set_out`]. Off-RT; call once at wiring time.
-    pub fn set_midi_out(
-        &self,
-        queue: Arc<dyn tutti_midi_types::MidiRouter>,
-        routing: Arc<
-            tutti_midi_types::tutti_types::RtPublish<tutti_midi_types::MidiRoutingSnapshot>,
-        >,
-    ) {
-        self.midi.set_out(queue, routing);
+    pub fn set_midi_out(&self, sink: Arc<tutti_midi_runtime::MidiOutSink>) {
+        self.midi.set_out(sink);
     }
 
     /// Drop the outbound routing target; subsequent blocks discard MIDI-out.

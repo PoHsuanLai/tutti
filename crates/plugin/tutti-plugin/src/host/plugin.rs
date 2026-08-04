@@ -251,20 +251,14 @@ impl Plugin {
     /// Route this plugin's MIDI-out back into the graph. `false` if it declared
     /// no MIDI output.
     #[must_use = "a false return means the plugin declined this input and nothing was installed"]
-    pub fn set_midi_out(
-        &self,
-        queue: Arc<dyn tutti_midi_types::MidiRouter>,
-        routing: Arc<
-            tutti_midi_types::tutti_types::RtPublish<tutti_midi_types::MidiRoutingSnapshot>,
-        >,
-    ) -> bool {
+    pub fn set_midi_out(&self, sink: Arc<tutti_midi_runtime::MidiOutSink>) -> bool {
         if !self.accepts(Features::MIDI_OUT) {
             return false;
         }
         match &self.backend {
-            Backend::Subprocess(c) => c.set_midi_out(queue, routing),
+            Backend::Subprocess(c) => c.set_midi_out(sink),
             #[cfg(feature = "vst2")]
-            Backend::InProcessVst2(c) => c.set_midi_out(queue, routing),
+            Backend::InProcessVst2(c) => c.set_midi_out(sink),
         }
         true
     }

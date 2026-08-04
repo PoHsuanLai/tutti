@@ -10,34 +10,27 @@
 //! - [`Midi::set_source`] for clip-driven playback that polls the
 //!   transport-aware source per block.
 //!
-//! **Out:** an optional routing target ([`Midi::set_out`]) through which the
-//! plugin's own MIDI-out re-enters the graph like any other source.
+//! **Out:** an optional sink ([`Midi::set_out`]) the plugin's own MIDI-out is
+//! collected into. Delivery is **not** immediate: the post-block phase
+//! ([`tutti_midi_runtime::MidiPostBlock`]) fans the whole block's emission out
+//! once the graph has rendered, which is what makes it independent of the order
+//! the nodes happened to be scheduled in. See [`Midi::emit`].
 
 use std::sync::Arc;
 
 use arc_swap::ArcSwapOption;
-use tutti_midi_types::tutti_types::RtPublish;
 
 use crate::protocol::MidiEventVec;
-use tutti_midi_runtime::{MidiInPort, MidiSender};
+use tutti_midi_runtime::{MidiInPort, MidiOutSink, MidiSender};
 use tutti_midi_types::ump::MidiEvent;
 use tutti_midi_types::MidiIn;
-use tutti_midi_types::{MidiRouter, MidiRoutingSnapshot, MidiUnitId};
+use tutti_midi_types::MidiUnitId;
 
 const POLL_BUFFER_SIZE: usize = 256;
 
-/// The outbound routing target for a plugin that emits MIDI. Installed once at
-/// wiring time; read per block by [`Midi::emit`].
-///
-/// The plugin's MIDI-out re-enters routing exactly like a hardware input: each
-/// emitted event is fanned out through the shared [`MidiRoutingSnapshot`] (keyed
-/// on the event's channel) to whatever destination units the route resolves, and
-/// delivered via the same lock-free [`MidiRouter`] (the fan-out bus). A plugin's
-/// output is just another source.
-struct OutHandle {
-    queue: Arc<dyn MidiRouter>,
-    routing: Arc<RtPublish<MidiRoutingSnapshot>>,
-}
+// An `OutHandle { queue, routing }` used to live here, because `emit` delivered
+// directly. Both now belong to `MidiPostBlock`, which owns the delivery phase —
+// a node needs neither, only somewhere to put its events.
 
 fn empty_poll_scratch() -> Vec<MidiEvent> {
     vec![MidiEvent::noop(); POLL_BUFFER_SIZE]
@@ -51,11 +44,12 @@ pub struct Midi {
     port: MidiInPort,
     drain: MidiEventVec,
     poll_scratch: Vec<MidiEvent>,
-    /// Optional outbound routing target for a plugin that emits MIDI. `None`
-    /// (the default) means the plugin's MIDI-out is dropped. Set via
-    /// [`Self::set_out`]; read per block by [`Self::emit`] — which the node only
-    /// calls for a plugin that declared `Features::MIDI_OUT`, so an emission is
-    /// gated on the self-reported capability (the mirror of the input feeds).
+    /// Optional post-block sink for a plugin that emits MIDI. `None` (the
+    /// default) means the plugin's MIDI-out is dropped. Set via
+    /// [`Self::set_out`]; written per block by [`Self::emit`] — which the node
+    /// only calls for a plugin that declared `Features::MIDI_OUT`, so an
+    /// emission is gated on the self-reported capability (the mirror of the
+    /// input feeds).
     ///
     /// Wrapped in a **shared** `Arc<ArcSwapOption<…>>` for the same reason the
     /// port shares its input cell: fundsp's frontend/backend split runs a
@@ -63,7 +57,11 @@ pub struct Midi {
     /// a per-clone `Option` would silently never fire. Sharing the slot makes
     /// an install on any clone visible to the running box, lock-free.
     /// See [[plugin-source-install-shared-cell]].
-    out: Arc<ArcSwapOption<OutHandle>>,
+    ///
+    /// Note the sink *inside* is shared too, by `Arc` — which is what lets a
+    /// cloned node write into the one buffer `MidiPostBlock` drains, rather
+    /// than into a per-clone buffer nothing reads.
+    out: Arc<ArcSwapOption<MidiOutSink>>,
 }
 
 impl Clone for Midi {
@@ -129,16 +127,16 @@ impl Midi {
         self.port.clear();
     }
 
-    /// Install the outbound routing target so this plugin's MIDI-out re-enters
-    /// routing. `routing` is the shared snapshot the engine already uses for
-    /// hardware input, and `queue` the fan-out bus. Off-RT (call once at wiring
-    /// time).
-    pub fn set_out(
-        &self,
-        queue: Arc<dyn MidiRouter>,
-        routing: Arc<RtPublish<MidiRoutingSnapshot>>,
-    ) {
-        self.out.store(Some(Arc::new(OutHandle { queue, routing })));
+    /// Install the post-block sink this plugin's MIDI-out is collected into, so
+    /// it re-enters routing after the graph renders. Off-RT (call once at
+    /// wiring time).
+    ///
+    /// Take the sink from
+    /// [`MidiPostBlock::sink`](tutti_midi_runtime::MidiPostBlock::sink). The
+    /// phase owns the routing snapshot and the fan-out bus; a node needs
+    /// neither, only somewhere to put its events.
+    pub fn set_out(&self, sink: Arc<MidiOutSink>) {
+        self.out.store(Some(sink));
     }
 
     /// Drop the outbound routing target; subsequent blocks discard MIDI-out.
@@ -146,27 +144,38 @@ impl Midi {
         self.out.store(None);
     }
 
-    /// Route this block's plugin MIDI-out back into the graph. No-op when no
-    /// outbound target is installed. For each event, fan out through the shared
-    /// routing snapshot (keyed on the event's channel, like any source) to every
-    /// destination unit and deliver via the lock-free queue — byte-for-byte the
-    /// path `MidiPreBlock::run` runs for hardware input, so it's RT-safe. Each
-    /// event keeps its own `frame_offset`; the destination unit self-splits on
-    /// it next block. Non-recursive: delivery lands in
-    /// the destination's inbox, drained on *its* next poll — `emit` never
-    /// re-enters any `process()`.
+    /// Hand this block's plugin MIDI-out to the post-block phase. No-op when no
+    /// sink is installed (the plugin's MIDI-out is then dropped).
+    ///
+    /// **This only collects — it does not deliver.** The fan-out happens in
+    /// [`MidiPostBlock::run`](tutti_midi_runtime::MidiPostBlock::run), after the
+    /// whole graph has rendered.
+    ///
+    /// That split is the point. Fanning out from here — inside `process` —
+    /// made delivery interleave with consumption, so whether a downstream unit
+    /// saw an event this block or next depended on **graph traversal order**,
+    /// which nothing in the MIDI layer controls (fundsp orders by *audio*
+    /// edges, and two units in a MIDI relationship may share no audio edge).
+    /// Collecting here and delivering once, later, makes that order
+    /// unobservable: every consumer has already polled by the time anything is
+    /// delivered.
+    ///
+    /// The cost is a uniform one-block delay
+    /// ([`MIDI_OUT_LATENCY_BLOCKS`](tutti_midi_runtime::MIDI_OUT_LATENCY_BLOCKS)),
+    /// which for the batched path was already the case and for the in-process
+    /// path is new. Each event keeps its own `frame_offset` for the destination
+    /// to time it.
+    ///
+    /// Returns how many events were accepted — `< events.len()` means the sink
+    /// was full and the rest were **dropped**. A dropped note-off whose note-on
+    /// landed is a stuck note, so this reports rather than hides it.
     #[inline]
-    pub fn emit(&self, events: &[MidiEvent]) {
-        let handle = self.out.load();
-        let Some(handle) = handle.as_ref() else {
-            return;
+    pub fn emit(&self, events: &[MidiEvent]) -> usize {
+        let sink = self.out.load();
+        let Some(sink) = sink.as_ref() else {
+            return 0;
         };
-        let routing = handle.routing.read();
-        for event in events {
-            for target in routing.route(event) {
-                handle.queue.queue(target, std::slice::from_ref(event));
-            }
-        }
+        sink.extend(events)
     }
 
     /// Drain the override-or-receiver events for this block into one buffer and
@@ -246,38 +255,25 @@ mod tests {
         assert_eq!(original.drain_for_process(64).len(), 0, "clear propagates");
     }
 
-    use std::sync::Mutex;
-    use tutti_midi_types::{MidiRoute, MidiRoutingSnapshot};
-
-    /// Records every `(unit, event-count)` queued, to prove `emit` routed.
-    #[derive(Default)]
-    struct RecordingQueue {
-        queued: Mutex<Vec<(MidiUnitId, usize)>>,
-    }
-    impl MidiRouter for RecordingQueue {
-        fn queue(&self, unit_id: MidiUnitId, events: &[MidiEvent]) {
-            self.queued.lock().unwrap().push((unit_id, events.len()));
-        }
-    }
-
     /// The outbound analogue of [`source_install_propagates_across_clones`]:
-    /// installing an out-target on ONE clone must be visible to ANOTHER, since
+    /// installing an out-sink on ONE clone must be visible to ANOTHER, since
     /// fundsp runs a different clone than the one `set_midi_out` mutates.
+    ///
+    /// Two layers of sharing have to hold for a plugin's MIDI-out to survive a
+    /// `commit()`, and this covers both: the `ArcSwapOption` **slot** is shared
+    /// (so the install is seen), and the `MidiOutSink` **inside** it is shared
+    /// (so every clone writes to the one buffer the post-block phase drains,
+    /// not to a per-clone buffer nothing reads).
     #[test]
     fn out_install_propagates_across_clones() {
-        let dest = MidiUnitId::new(77);
-        let queue = Arc::new(RecordingQueue::default());
-        let routing = Arc::new(RtPublish::new(MidiRoutingSnapshot::from_routes(
-            vec![MidiRoute::new().with_target(dest)],
-            None,
-        )));
+        let sink = Arc::new(MidiOutSink::new());
 
         let original = Midi::new();
         let clone_a = original.clone();
         let clone_b = original.clone();
 
         // Install on clone_a; the running box could be any clone.
-        clone_a.set_out(queue.clone(), routing);
+        clone_a.set_out(Arc::clone(&sink));
 
         let ev = [MidiEvent::note_on(
             MidiGroup::FIRST,
@@ -285,25 +281,58 @@ mod tests {
             60,
             0x8000,
         )];
-        clone_b.emit(&ev);
-        original.emit(&ev);
-        clone_a.emit(&ev);
-
-        let queued = queue.queued.lock().unwrap();
         assert_eq!(
-            queued.as_slice(),
-            &[(dest, 1), (dest, 1), (dest, 1)],
-            "emit on any clone routes to the destination unit"
+            clone_b.emit(&ev),
+            1,
+            "emit on a sibling clone reaches the sink"
         );
-        drop(queued);
+        assert_eq!(
+            original.emit(&ev),
+            1,
+            "emit on the original reaches the sink"
+        );
+        assert_eq!(
+            clone_a.emit(&ev),
+            1,
+            "emit on the installing clone reaches it"
+        );
+
+        assert_eq!(
+            sink.len(),
+            3,
+            "all three clones must write into the ONE buffer the phase drains"
+        );
 
         // Clearing on one clone clears for all.
         clone_b.clear_out();
-        clone_a.emit(&ev);
+        assert_eq!(clone_a.emit(&ev), 0, "no sink installed after clear_out");
+        assert_eq!(sink.len(), 3, "no new events after clear_out");
+    }
+
+    /// `emit` reports what it accepted, so a full sink cannot swallow a
+    /// plugin's notes silently.
+    #[test]
+    fn emit_reports_a_partial_accept() {
+        let sink = Arc::new(MidiOutSink::new());
+        let midi = Midi::new();
+        midi.set_out(Arc::clone(&sink));
+
+        let ev = MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000);
+        // Fill the sink, then offer more than it can take.
+        while sink.push(ev) {}
         assert_eq!(
-            queue.queued.lock().unwrap().len(),
-            3,
-            "no new events after clear_out"
+            midi.emit(&[ev, ev]),
+            0,
+            "a full sink must report zero accepted, not silently discard"
         );
+    }
+
+    /// With no sink installed the plugin's MIDI-out is dropped — reported as
+    /// zero accepted rather than looking like a successful emit.
+    #[test]
+    fn emit_without_a_sink_reports_nothing_accepted() {
+        let midi = Midi::new();
+        let ev = MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000);
+        assert_eq!(midi.emit(&[ev]), 0);
     }
 }

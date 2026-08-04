@@ -16,7 +16,6 @@ use crate::protocol::{
     EditorPresence, Features, LoadedPlugin, PluginClass, PluginDescriptor, PluginTail,
 };
 use smallvec::SmallVec;
-use tutti_plugin_types::PluginTail;
 
 /// Maximum block size we pre-size the plugin's render scratch for.
 /// Plugins are told this is the upper bound; per-call sizes may be
@@ -34,6 +33,22 @@ pub fn load(
     path: &Path,
     sample_rate: f64,
 ) -> Result<(Box<dyn tutti_core::AudioUnit>, PluginHandle)> {
+    let (client, handle) = load_client(path, sample_rate)?;
+    Ok((Box::new(client), handle))
+}
+
+/// [`load`], keeping the concrete [`InProcessVst2Client`].
+///
+/// The same load, one boxing step earlier, so a caller that needs the client's
+/// own surface (its MIDI port) is not left with only the `AudioUnit` supertrait.
+/// `load` is this plus a `Box::new`, so the two cannot drift.
+pub fn load_client(
+    path: &Path,
+    sample_rate: impl Into<tutti_core::SampleRate>,
+) -> Result<(InProcessVst2Client, PluginHandle)> {
+    // `.get()` here and not at the caller: this is the last hop before
+    // `Vst2Instance::load`, which crosses the VST2 ABI and takes a bare rate.
+    let sample_rate = sample_rate.into().get();
     let inner = Vst2Instance::load(path, sample_rate, MAX_BLOCK_SIZE).map_err(|e| {
         BridgeError::LoadFailed {
             path: path.to_path_buf(),
@@ -62,6 +77,11 @@ pub fn load(
     features.set(Features::MIDI_IN, host_meta.receives_midi);
     features.set(Features::MIDI_OUT, host_meta.emits_midi);
     features.set(Features::EDITOR, host_meta.has_editor);
+    // Unconditional because the snapshot is the host's to give, not the
+    // plugin's to request: VST2 exposes no query for it, and every plugin can
+    // poll `audioMasterGetTime` whenever it likes. The node honours the claim by
+    // draining its transport slot into each `ProcessContext`, which is what
+    // fills the `TimeInfo` that callback serves.
     features.insert(Features::TRANSPORT);
     // The same five the out-of-process VST2 loader answers — this path differs
     // in where the plugin runs, not in what it is asked, so both read one
@@ -93,9 +113,13 @@ pub fn load(
         param_sink: param_sink.clone(),
     });
 
+    // `loaded.features`, not the local `features`, so the node gates its
+    // per-block transport send on the exact value the handle reports. One value,
+    // read twice, cannot drift into a declared-but-undelivered capability.
     let client = InProcessVst2Client::new(
         Arc::clone(&inner),
         host_meta,
+        loaded.features,
         sample_rate,
         Arc::clone(&contention),
     );
@@ -112,5 +136,5 @@ pub fn load(
         midi_sender,
     );
 
-    Ok((Box::new(client), handle))
+    Ok((client, handle))
 }

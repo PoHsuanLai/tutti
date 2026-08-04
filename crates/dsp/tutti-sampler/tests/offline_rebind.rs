@@ -90,15 +90,17 @@ fn an_isolated_pool_steals_no_commands_from_the_live_one() {
     // The live handle still feeds the ORIGINAL pool.
     let sampler =
         MemorySource::with_transport(ramp_wave(), live_transport.clone(), Beat::new(0.0), None);
-    handle.send(VoiceCommand::AddVoice {
-        id: SlotId(1),
-        voice: Box::new(Voice {
-            source: VoiceSource::Memory(sampler),
-            play: Playback::default(),
-            channel_index: None,
-        }),
-        stretch: None,
-    });
+    handle
+        .send(VoiceCommand::AddVoice {
+            id: SlotId(1),
+            voice: Box::new(Voice {
+                source: VoiceSource::Memory(sampler),
+                play: Playback::default(),
+                channel_index: None,
+            }),
+            stretch: None,
+        })
+        .expect("the command queue has room in a test");
 
     net.set_sample_rate(SampleRate(44100.0));
     net.allocate();

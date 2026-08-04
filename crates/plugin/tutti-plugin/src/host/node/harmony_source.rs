@@ -81,6 +81,12 @@ impl HarmonySource {
         }
     }
 
+    /// Update the stamped sample rate live (device / rate switch). Reaches the
+    /// running box because the cursor's rate is a shared atomic.
+    pub fn set_sample_rate(&self, sample_rate: impl Into<tutti_core::SampleRate>) {
+        self.beats.set_sample_rate(sample_rate);
+    }
+
     pub fn is_empty(&self) -> bool {
         self.chords.is_empty() && self.scales.is_empty()
     }

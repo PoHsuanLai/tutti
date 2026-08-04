@@ -17,23 +17,49 @@ use super::{ButlerCommand, ChannelPlan, RtState};
 use crate::voice::disk_voice::DiskSource;
 use crate::voice::types::Direction;
 
+/// The butler thread is gone, so a stream-control command was discarded.
+///
+/// There is one failure mode and it is **permanent**: `send_blocking` on an
+/// unbounded channel only fails once the receiver is dropped, which happens when
+/// the butler thread exits. Every later command fails the same way, so a caller
+/// that sees this should stop rather than retry.
+///
+/// This exists because the whole control surface used to swallow it: every send
+/// ended in `let _ =`, so a dead butler accepted `Stream`/`Seek`/`Loop`/`Stop`
+/// indefinitely and did nothing, indistinguishable from working playback.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ButlerGone;
+
+impl core::fmt::Display for ButlerGone {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "butler thread is gone; the command was discarded")
+    }
+}
+
+impl std::error::Error for ButlerGone {}
+
 /// Start a disk stream on `channel_index` from `file_path` at `offset_samples`.
 pub(crate) fn stream(
     tx: &Sender<ButlerCommand>,
     channel_index: usize,
     file_path: PathBuf,
     offset_samples: usize,
-) {
-    let _ = tx.send_blocking(ButlerCommand::StreamAudioFile {
+) -> Result<(), ButlerGone> {
+    tx.send_blocking(ButlerCommand::StreamAudioFile {
         channel_index,
         file_path,
         offset_samples,
-    });
+    })
+    .map_err(|_| ButlerGone)
 }
 
 /// Stop the stream on `channel_index` — drops its ring + link.
-pub(crate) fn stop_stream(tx: &Sender<ButlerCommand>, channel_index: usize) {
-    let _ = tx.send_blocking(ButlerCommand::StopStreaming { channel_index });
+pub(crate) fn stop_stream(
+    tx: &Sender<ButlerCommand>,
+    channel_index: usize,
+) -> Result<(), ButlerGone> {
+    tx.send_blocking(ButlerCommand::StopStreaming { channel_index })
+        .map_err(|_| ButlerGone)
 }
 
 /// Set varispeed (speed + direction) on `channel_index`.
@@ -42,12 +68,13 @@ pub(crate) fn set_varispeed(
     channel_index: usize,
     speed: PlaybackRate,
     direction: Direction,
-) {
-    let _ = tx.send_blocking(ButlerCommand::SetVarispeed {
+) -> Result<(), ButlerGone> {
+    tx.send_blocking(ButlerCommand::SetVarispeed {
         channel_index,
         direction,
         speed,
-    });
+    })
+    .map_err(|_| ButlerGone)
 }
 
 /// Build a bare `DiskSource` over a channel whose butler link is

@@ -12,6 +12,8 @@
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
+use crate::{ClapFeature, PluginRole, Vst3SubCategories};
+
 /// Catalog identity for a discovered plugin — the static, scan-time data that
 /// the plugin database persists and the DAW app reads (browser listing, dedup).
 ///
@@ -133,10 +135,12 @@ pub enum PluginClass {
     Unknown,
     /// VST2 plugin category (`effFlagsIsSynth` / `getPlugCategory`).
     Vst2 { category: crate::Vst2Category },
-    /// VST3 `PClassInfo2::subCategories`, e.g. `"Fx|Reverb"`, `"Instrument|Synth"`.
-    Vst3 { category: String },
-    /// CLAP feature tags, e.g. `["instrument", "synthesizer"]`, `["audio-effect"]`.
-    Clap { features: Vec<String> },
+    /// VST3 `PClassInfo2::subCategories`, e.g. `"Fx|Reverb"`,
+    /// `"Instrument|Synth"`, parsed into its `|`-delimited facets.
+    Vst3 { category: Vst3SubCategories },
+    /// CLAP feature tags, e.g. `["instrument", "synthesizer"]`,
+    /// `["audio-effect"]`.
+    Clap { features: Vec<ClapFeature> },
     /// Apple AudioUnit component type (`aufx`, `aumu`, `aumf`, `aumi`, …).
     Au { component_type: AuComponentType },
 }
@@ -153,6 +157,50 @@ impl PluginClass {
             PluginClass::Vst3 { .. } => "vst3",
             PluginClass::Clap { .. } => "clap",
             PluginClass::Au { .. } => "au",
+        }
+    }
+
+    /// What this plugin *is*, normalized across the formats.
+    ///
+    /// The one place the four native taxonomies are collapsed into a shared
+    /// vocabulary, so a host bucketing a browser matches once here instead of
+    /// per format. The unflattened original stays on the variant.
+    ///
+    /// Answers from the descriptor alone — all that exists before a load. A
+    /// plugin whose format declined to classify it is
+    /// [`Unknown`](PluginRole::Unknown), not silently an effect; bus topology
+    /// can refine that once the plugin is loaded.
+    pub fn role(&self) -> PluginRole {
+        match self {
+            PluginClass::Unknown => PluginRole::Unknown,
+            PluginClass::Vst2 { category } => category.role(),
+            PluginClass::Vst3 { category } => category.role(),
+            PluginClass::Clap { features } => crate::clap_features_role(features),
+            PluginClass::Au { component_type } => component_type.role(),
+        }
+    }
+}
+
+impl AuComponentType {
+    /// The role this component type describes.
+    ///
+    /// `MusicEffect` (`aumf`) is an **effect**: it takes MIDI *and* audio, so
+    /// it is an insert that happens to want notes. The MIDI half is reported
+    /// separately by [`Features::MIDI_IN`](crate::Features::MIDI_IN); folding
+    /// it in here would file every vocoder and MIDI-triggered gate as a synth.
+    ///
+    /// `Generator` (`augn`) produces audio without notes and stays distinct
+    /// from `Instrument` (`aumu`), which is note-driven.
+    ///
+    /// `Mixer`, `Converter` and `Output` are infrastructure rather than
+    /// insertable processors, so they decline to answer.
+    pub fn role(&self) -> PluginRole {
+        match self {
+            Self::Instrument => PluginRole::Instrument,
+            Self::Generator => PluginRole::Generator,
+            Self::Effect | Self::MusicEffect => PluginRole::Effect,
+            Self::MidiProcessor => PluginRole::NoteEffect,
+            Self::Mixer | Self::Converter | Self::Output | Self::Unknown(_) => PluginRole::Unknown,
         }
     }
 }
@@ -254,5 +302,83 @@ mod tests {
             let back: PluginDescriptor = bincode::deserialize(&bytes).expect("deserialize");
             assert_eq!(back.editor, want);
         }
+    }
+
+    /// An AU music effect (`aumf`) is an effect, despite taking MIDI.
+    ///
+    /// It is an insert that happens to want notes — a vocoder, a MIDI-triggered
+    /// gate. Classification and capability are separate axes here: the MIDI
+    /// half is reported by `Features::MIDI_IN`, and folding it into the role
+    /// would file every one of these as a synth.
+    #[test]
+    fn an_au_music_effect_is_an_effect_not_an_instrument() {
+        assert_eq!(AuComponentType::MusicEffect.role(), PluginRole::Effect);
+        assert_eq!(AuComponentType::Effect.role(), PluginRole::Effect);
+        assert_eq!(AuComponentType::Instrument.role(), PluginRole::Instrument);
+    }
+
+    /// An AU generator makes sound without being played, so it is not an
+    /// instrument. A MIDI processor (`aumi`) has no audio role at all.
+    #[test]
+    fn an_au_generator_and_midi_processor_get_their_own_roles() {
+        assert_eq!(AuComponentType::Generator.role(), PluginRole::Generator);
+        assert_eq!(
+            AuComponentType::MidiProcessor.role(),
+            PluginRole::NoteEffect
+        );
+    }
+
+    /// Infrastructure component types are not insertable processors, so they
+    /// decline rather than claiming to be effects.
+    #[test]
+    fn au_infrastructure_types_decline_to_classify() {
+        for t in [
+            AuComponentType::Mixer,
+            AuComponentType::Converter,
+            AuComponentType::Output,
+            AuComponentType::Unknown(0),
+        ] {
+            assert_eq!(t.role(), PluginRole::Unknown, "{t:?} should not classify");
+        }
+    }
+
+    /// A class nobody could probe reports `Unknown`, not a default role.
+    #[test]
+    fn an_unprobed_plugin_has_an_unknown_role() {
+        assert_eq!(PluginClass::Unknown.role(), PluginRole::Unknown);
+        assert_eq!(PluginRole::default(), PluginRole::Unknown);
+    }
+
+    /// `PluginClass::role` dispatches to each format's own mapping.
+    #[test]
+    fn every_format_routes_to_its_own_role_mapping() {
+        assert_eq!(
+            PluginClass::Vst2 {
+                category: crate::Vst2Category::Synth
+            }
+            .role(),
+            PluginRole::Instrument
+        );
+        assert_eq!(
+            PluginClass::Vst3 {
+                category: Vst3SubCategories::parse("Instrument|Synth")
+            }
+            .role(),
+            PluginRole::Instrument
+        );
+        assert_eq!(
+            PluginClass::Clap {
+                features: vec![ClapFeature::Instrument]
+            }
+            .role(),
+            PluginRole::Instrument
+        );
+        assert_eq!(
+            PluginClass::Au {
+                component_type: AuComponentType::Instrument
+            }
+            .role(),
+            PluginRole::Instrument
+        );
     }
 }

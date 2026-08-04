@@ -77,7 +77,7 @@ use tutti_au_host::types::{
     K_AUDIO_UNIT_SCOPE_INPUT, K_AUDIO_UNIT_SCOPE_OUTPUT,
 };
 use tutti_au_host::{AuError, AuMidiMapping, MidiEvent, MidiTrigger};
-use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
+use tutti_midi_types::tutti_types::{CCNumber, MidiChannel, MidiGroup};
 
 /// Serializes instantiate/dispose against component enumeration, for the reason
 /// `au_conformance.rs`'s `AU_LOCK` does. Recovered from poisoning so one real
@@ -781,12 +781,20 @@ fn a_mapped_cc_actually_moves_the_parameter() {
             .get_parameter(*param)
             .unwrap_or_else(|e| panic!("{}: read before: {e:?}", unit.label));
 
-        au.add_parameter_midi_mapping(&[AuMidiMapping::control_change(*param, 0, 20)])
-            .unwrap_or_else(|e| panic!("{}: add failed: {e:?}", unit.label));
+        // The mapping and the event must name the same controller, so bind it
+        // once rather than repeating the number on both sides. 20 is one of the
+        // undefined controllers, chosen so no AU reacts to it by default.
+        let mapped_cc = CCNumber::new(20);
+        au.add_parameter_midi_mapping(&[AuMidiMapping::control_change(
+            *param,
+            0,
+            mapped_cc.get(),
+        )])
+        .unwrap_or_else(|e| panic!("{}: add failed: {e:?}", unit.label));
         au.send_midi(&[MidiEvent::cc(
             MidiGroup::FIRST,
             MidiChannel::FIRST,
-            20,
+            mapped_cc,
             tutti_midi_types::convert::midi1_cc_to_midi2(127),
         )]);
 
@@ -843,7 +851,7 @@ fn an_unmapped_cc_does_not_move_the_parameter() {
         au.send_midi(&[MidiEvent::cc(
             MidiGroup::FIRST,
             MidiChannel::FIRST,
-            20,
+            CCNumber::new(20),
             tutti_midi_types::convert::midi1_cc_to_midi2(127),
         )]);
         let mut output = vec![vec![0.0f32; BLOCK as usize]; au.num_outputs() as usize];
@@ -901,7 +909,7 @@ fn arming_a_hot_map_and_sending_a_cc_completes_the_mapping() {
         au.send_midi(&[MidiEvent::cc(
             MidiGroup::FIRST,
             MidiChannel::FIRST,
-            11,
+            CCNumber::EXPRESSION,
             tutti_midi_types::convert::midi1_cc_to_midi2(64),
         )]);
 

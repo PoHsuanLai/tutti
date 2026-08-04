@@ -1301,6 +1301,21 @@ impl Net {
     }
 
     /// Migrate existing units to the new network. This is an internal function.
+    /// Carry the backend's live units across into an incoming network.
+    ///
+    /// **This is where a by-value control edit is discarded**, and the loss is
+    /// silent — worth stating here because the symptom (a fader that moves on
+    /// screen and not in the sound) appears nowhere near this function.
+    ///
+    /// The swap below keeps the *backend's* unit whenever the incoming vertex
+    /// reports no change since the last update. A caller that mutated a
+    /// frontend clone through [`node_as_mut`](Self::node_as_mut) — storing into
+    /// a plain field rather than through an `Arc` — has produced exactly such a
+    /// vertex, so its edit is thrown away rather than merely deferred.
+    ///
+    /// The rule that avoids it lives in `tutti_units`' crate docs: a live
+    /// control value belongs behind an `Arc` (`Param<U>`, `Arc<AtomicBool>`),
+    /// where both copies see one cell and this swap is harmless.
     pub(crate) fn migrate(&mut self, new: &mut Net) {
         for (id, &index) in self.node_index.iter() {
             if let Some(&new_index) = new.node_index.get(id) {

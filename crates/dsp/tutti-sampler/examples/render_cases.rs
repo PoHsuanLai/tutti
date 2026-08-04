@@ -97,15 +97,17 @@ fn render(stretch: f32, cents: f32, seek_at: Option<usize>) -> Vec<f32> {
     play.stretch = StretchFactor::new(stretch);
     play.pitch = Cents::new(cents);
 
-    handle.send(VoiceCommand::AddVoice {
-        id: SlotId(1),
-        voice: Box::new(Voice {
-            source: VoiceSource::Memory(source),
-            play,
-            channel_index: None,
-        }),
-        stretch: None,
-    });
+    handle
+        .send(VoiceCommand::AddVoice {
+            id: SlotId(1),
+            voice: Box::new(Voice {
+                source: VoiceSource::Memory(source),
+                play,
+                channel_index: None,
+            }),
+            stretch: None,
+        })
+        .expect("the command queue has room in a test");
 
     // Block-driven via `process`, NOT per-frame `tick`.
     //

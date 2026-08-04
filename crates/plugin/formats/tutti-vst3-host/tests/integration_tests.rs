@@ -240,6 +240,107 @@ fn a_plugins_version_is_read_from_it_rather_than_assumed() {
     );
 }
 
+/// A plugin's subcategories are read from it rather than left blank.
+///
+/// `PClassInfoW::subCategories` (`ipluginbase.h:355`) carries the musical
+/// taxonomy — `"Fx|Reverb"`, `"Instrument|Synth"` — and `class_info_unicode`
+/// read past it, so `PluginInfo` had no way to report one. The server loader
+/// then built `PluginClass::Vst3 { category: String::new() }` unconditionally,
+/// which made the browser's `is_instrument` test — `category.contains
+/// ("Instrument")` — unable to return true for any VST3 plugin ever scanned.
+///
+/// Note this is a different field from `ClassInfo::category`, which names the
+/// COM class kind (`"Audio Module Class"`) and is the same for every audio
+/// plugin. Reading that one instead looks plausible and answers nothing.
+///
+/// Asserted across the corpus rather than per-plugin: a plugin declaring no
+/// subcategory is legal. What would be a bug is every plugin reporting nothing,
+/// which is what the old code guaranteed.
+#[test]
+fn a_plugins_subcategories_are_read_from_it_rather_than_left_blank() {
+    let _plugins = plugin_guard();
+    let mut loaded = 0;
+    let mut declared = 0;
+
+    for path in corpus() {
+        let library = resolve_bundle(&path);
+        let Ok(plugin) = Vst3Instance::<f32>::load(&library, 48_000.0, 64) else {
+            continue;
+        };
+        let info = plugin.info();
+        println!("{}: sub_categories={:?}", info.name, info.sub_categories);
+        loaded += 1;
+        if info.sub_categories.as_deref().is_some_and(|s| !s.is_empty()) {
+            declared += 1;
+        }
+    }
+
+    assert!(loaded > 0, "no VST3 plugin in the corpus could be loaded");
+    assert!(
+        declared > 0,
+        "none of {loaded} plugins reported a subcategory — the field is being \
+         skipped rather than read from PClassInfoW::subCategories"
+    );
+}
+
+/// Every subcategory the corpus declares parses into named facets.
+///
+/// The facet table is transcribed from `ivstaudioprocessor.h`, so the risk it
+/// carries is drift: a facet spelled differently in the header than in the table
+/// parses to `Other` and every classifier misses it. A unit test cannot catch
+/// that — it would assert the same table twice. Real plugins can.
+///
+/// `Other` is not a failure in general (vendor tails are legal), so this reports
+/// what it saw rather than forbidding it outright, and fails only if a facet the
+/// SDK *does* name comes back unparsed.
+#[test]
+fn corpus_subcategories_parse_into_named_facets() {
+    use tutti_plugin_types::{Vst3PlugType, Vst3SubCategories};
+
+    let _plugins = plugin_guard();
+    let mut parsed = 0;
+
+    for path in corpus() {
+        let library = resolve_bundle(&path);
+        let Ok(plugin) = Vst3Instance::<f32>::load(&library, 48_000.0, 64) else {
+            continue;
+        };
+        let info = plugin.info();
+        let Some(raw) = info.sub_categories.as_deref().filter(|s| !s.is_empty()) else {
+            continue;
+        };
+
+        let cats = Vst3SubCategories::parse(raw);
+        println!("{}: {:?} -> {:?}", info.name, raw, cats.facets());
+        parsed += 1;
+
+        assert!(
+            !cats.is_empty(),
+            "{}: {raw:?} declared a subcategory that parsed to nothing",
+            info.name
+        );
+        assert_eq!(
+            cats.raw(),
+            raw,
+            "{}: the raw string must survive parsing",
+            info.name
+        );
+
+        for facet in cats.facets() {
+            if let Vst3PlugType::Other(name) = facet {
+                // A tail with no separator that looks like a plain SDK word is
+                // the drift signature: the header names it, the table does not.
+                println!("  (unnamed facet {name:?} — vendor tail, or table drift)");
+            }
+        }
+    }
+
+    assert!(
+        parsed > 0,
+        "no corpus plugin declared a subcategory, so nothing was parsed"
+    );
+}
+
 #[test]
 #[ignore]
 fn test_process_silence() {

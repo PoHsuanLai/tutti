@@ -31,7 +31,7 @@ pub use catalog::{CatalogExt, PluginCatalog};
 pub use database::JsonCatalog;
 pub use fs::{discover, file_modification_time, format_from_path};
 pub use record::{
-    AuComponentType, Blacklist, PluginClass, PluginDescriptor, PluginFormat, PluginRecord,
-    Vst2Category,
+    AuComponentType, Blacklist, ClapFeature, PluginClass, PluginDescriptor, PluginFormat,
+    PluginRecord, PluginRole, Vst2Category, Vst3PlugType, Vst3SubCategories,
 };
 pub use scanner::{PluginScanner, ScanHandle, ScanPhase, ScanProgress, ScanResult};

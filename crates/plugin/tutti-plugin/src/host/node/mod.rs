@@ -14,12 +14,17 @@
 
 mod audio_unit;
 mod batcher;
+mod capability_view;
 mod harmony_source;
-mod input_slot;
+// `input_slot` / `transport_source` are `pub(crate)` rather than private: the
+// in-process VST2 node (`crate::format::vst2_in_process`) is a peer host, not a
+// subprocess client, and reuses the same gated per-block transport plumbing
+// rather than hand-rolling a second copy of the shared-cell contract.
+pub(crate) mod input_slot;
 mod note_expression_source;
 mod param_automation_source;
 mod process;
-mod transport_source;
+pub(crate) mod transport_source;
 
 #[cfg(test)]
 mod process_pipeline_tests;
@@ -32,6 +37,10 @@ mod tests;
 // resolving.
 pub use crate::util::node::{route_with_latency, Midi, ParameterChangeSink};
 pub(crate) use crate::util::node::{InvalidateSink, RefreshSink};
+pub(crate) use capability_view::is_declined;
+pub use capability_view::{
+    HarmonyView, MidiInView, MidiOutView, NoteExpressionView, TransportView,
+};
 pub use harmony_source::{HarmonySource, TimedChord, TimedScale};
 pub use note_expression_source::NoteExpressionSource;
 pub use param_automation_source::{
@@ -157,14 +166,8 @@ impl PluginClient {
 
     /// Install the outbound routing target so this subprocess plugin's MIDI-out
     /// re-enters the graph. See [`Midi::set_out`]. Off-RT; call at wiring time.
-    pub fn set_midi_out(
-        &self,
-        queue: Arc<dyn tutti_midi_types::MidiRouter>,
-        routing: Arc<
-            tutti_midi_types::tutti_types::RtPublish<tutti_midi_types::MidiRoutingSnapshot>,
-        >,
-    ) {
-        self.midi.set_out(queue, routing);
+    pub fn set_midi_out(&self, sink: Arc<tutti_midi_runtime::MidiOutSink>) {
+        self.midi.set_out(sink);
     }
 
     /// Drop the outbound routing target; subsequent blocks discard MIDI-out.
@@ -194,12 +197,16 @@ impl PluginClient {
         &self.bridge
     }
 
-    /// Re-inject the plugin's MIDI-out into routing — but only if the plugin
-    /// declared [`Features::MIDI_OUT`]. Gating the *emit* on the self-reported
-    /// capability mirrors how the per-block input feeds gate their sends on
-    /// their `Features` bit: a plugin that never advertised MIDI output has its
-    /// emission dropped rather than silently re-injected. (Without the gate,
-    /// `emit` fired whenever an out-target was installed, regardless of the bit.)
+    /// Hand the plugin's MIDI-out to the post-block phase — but only if the
+    /// plugin declared [`Features::MIDI_OUT`]. Gating the *emit* on the
+    /// self-reported capability mirrors how the per-block input feeds gate their
+    /// sends on their `Features` bit: a plugin that never advertised MIDI output
+    /// has its emission dropped rather than silently re-injected. (Without the
+    /// gate, `emit` fired whenever an out-target was installed, regardless of
+    /// the bit.)
+    ///
+    /// `emit` only *collects* now; the fan-out happens once the graph has
+    /// rendered. See [`Midi::emit`](crate::util::node::Midi::emit).
     #[inline]
     fn emit_midi_out_if_declared(&mut self) {
         if self
@@ -208,11 +215,15 @@ impl PluginClient {
             .contains(crate::protocol::Features::MIDI_OUT)
         {
             self.shift_midi_out_into_this_block();
-            self.midi.emit(&self.midi_out);
+            // The count is deliberately dropped here rather than propagated:
+            // this is a `process` path with no caller that could act on it. The
+            // sink records the overflow (`MidiOutSink::overflowed`) so the loss
+            // is observable off-RT instead of silent.
+            let _ = self.midi.emit(&self.midi_out);
         }
     }
 
-    /// Re-base the plugin's MIDI-out onto the block it is actually emitted in.
+    /// Re-base the plugin's MIDI-out onto the block it is actually collected in.
     ///
     /// The reply drained here belongs to the block submitted *last* time, so each
     /// `frame_offset` counts from that earlier block's start. Relative to now that
@@ -223,9 +234,25 @@ impl PluginClient {
     ///
     /// Saturating rather than dropping: the event is late regardless, frame 0 is
     /// the closest representable position, and dropping would silently lose an
-    /// arpeggiator's notes. The residual error is one block — the same 1.33 ms the
-    /// audio path declares to PDC — and unlike the audio it cannot be compensated,
-    /// since MIDI re-entering routing has no delay line to sit in.
+    /// arpeggiator's notes.
+    ///
+    /// # This shift and the post-block phase do not double-count
+    ///
+    /// Worth stating, because "shift by a block, then deliver a block later"
+    /// reads like it should. The two act on different things:
+    ///
+    /// - The shift fixes an event's **position within a block**
+    ///   (`frame_offset`), correcting for the reply belonging to an earlier
+    ///   submission. Clamping to 0 means "due at the start of whatever block
+    ///   delivers this", not "due one block from now".
+    /// - The phase fixes **which block delivers it**, uniformly, for every
+    ///   emitter.
+    ///
+    /// So the offsets stay meaningful and the delivery block is now declared
+    /// rather than emergent
+    /// ([`MIDI_OUT_LATENCY_BLOCKS`](tutti_midi_runtime::MIDI_OUT_LATENCY_BLOCKS)).
+    /// Removing this shift would *not* cancel the phase's delay — it would
+    /// restore the early-triggering-sequencer bug on top of it.
     #[inline]
     fn shift_midi_out_into_this_block(&mut self) {
         let shift = PIPELINE_LATENCY_FRAMES.get() as u32;
@@ -257,13 +284,20 @@ impl PluginClient {
         self.emit_midi_out_if_declared();
     }
 
-    /// Update the sample rate stamped onto the transport snapshot. Called from
+    /// Update the sample rate stamped onto every installed per-block source.
+    /// Called from
     /// the `AudioUnit::set_sample_rate` impls. Reaches the running box because
     /// the source's rate is a shared atomic; a no-op when no source is installed
     /// (it's installed later with the correct rate by the host).
-    pub(super) fn set_transport_sample_rate(&mut self, sample_rate: SampleRate) {
+    pub(super) fn restamp_source_rates(&mut self, sample_rate: SampleRate) {
         self.sample_rate = sample_rate;
         if let Some(src) = self.inputs.transport.source_ref().load().as_ref() {
+            src.set_sample_rate(sample_rate);
+        }
+        if let Some(src) = self.inputs.harmony.source_ref().load().as_ref() {
+            src.set_sample_rate(sample_rate);
+        }
+        if let Some(src) = self.inputs.params.source_ref().load().as_ref() {
             src.set_sample_rate(sample_rate);
         }
     }
@@ -498,12 +532,32 @@ impl PluginClient {
         self.midi.set_source(source);
     }
 
-    /// Install a [`HarmonySource`] override that supplies per-block chord/scale
-    /// context (VST3 `kChordEvent` / `kScaleEvent`) from a track's chord/scale
-    /// lanes. Mirrors [`set_midi_source`](Self::set_midi_source); the source is
-    /// held in an `Arc` so it survives fundsp's graph-commit clones.
-    pub fn set_harmony_source(&mut self, source: std::sync::Arc<HarmonySource>) {
-        self.inputs.harmony.install(source);
+    /// Install per-block chord/scale context (VST3 `kChordEvent` /
+    /// `kScaleEvent`) from a track's chord/scale lanes.
+    ///
+    /// Takes the lanes and the timeline, and builds the source here — the same
+    /// shape as [`set_transport_source`](Self::set_transport_source), and for
+    /// the same reason: the sample rate the source needs is the node's own, so
+    /// a caller passing one could only ever agree with it or be wrong. The
+    /// source is held in an `Arc` so it survives fundsp's graph-commit clones,
+    /// and its rate is re-stamped by [`restamp_source_rates`](Self::restamp_source_rates)
+    /// on a device change.
+    pub fn set_harmony_source(
+        &mut self,
+        chords: impl IntoIterator<Item = TimedChord>,
+        scales: impl IntoIterator<Item = TimedScale>,
+        transport: impl tutti_core::transport::Timeline + 'static,
+    ) {
+        self.inputs.harmony.install(Arc::new(HarmonySource::new(
+            chords,
+            scales,
+            // Erased here, not by the caller: `Transport` implements `Timeline`
+            // and is `Clone`, so an `Arc<dyn …>` at the boundary only asks a
+            // host to spell out a wrapping this can do itself — and asks it
+            // differently from `set_transport_source`, two lines away.
+            Arc::new(transport),
+            self.sample_rate,
+        )));
     }
 
     /// Drop a previously-installed harmony source. Subsequent blocks feed the
@@ -556,13 +610,36 @@ impl PluginClient {
         self.inputs.transport.clear();
     }
 
-    /// Install a [`ParamAutomationSource`] so the plugin receives sample-accurate
-    /// per-block [`ParameterChanges`] for the automated parameters. Held in an
-    /// `Arc` so it survives fundsp's graph-commit clones. This is the *only*
-    /// automation path for hosted-plugin parameters — the frame-rate
+    /// Install sample-accurate per-block [`ParameterChanges`] for the automated
+    /// parameters — one curve per parameter id.
+    ///
+    /// The *only* automation path for hosted-plugin parameters; the frame-rate
     /// `set_parameter` route is never wired for them.
-    pub fn set_param_automation_source(&mut self, source: std::sync::Arc<ParamAutomationSource>) {
-        self.inputs.params.install(source);
+    ///
+    /// Takes the curves and the transport and builds the source here, matching
+    /// [`set_transport_source`](Self::set_transport_source) and
+    /// [`set_harmony_source`](Self::set_harmony_source). The rate the source
+    /// divides by is the node's own, so a caller passing one could only agree
+    /// with it or be wrong. Held in an `Arc` so it survives fundsp's
+    /// graph-commit clones, and re-stamped by
+    /// [`restamp_source_rates`](Self::restamp_source_rates) on a device change.
+    ///
+    /// `transport` is a [`TransportState`](tutti_core::transport::TransportState),
+    /// not a bare `Timeline` like harmony's: `fill` reads `loop_range()` to wrap
+    /// the beat inside the active cycle, and looping lives on the live
+    /// supertrait. An offline render never drives this source.
+    pub fn set_param_automation_source(
+        &mut self,
+        params: impl IntoIterator<Item = TimedParam>,
+        transport: impl tutti_core::transport::TransportState + 'static,
+    ) {
+        self.inputs
+            .params
+            .install(Arc::new(ParamAutomationSource::new(
+                params,
+                Arc::new(transport),
+                self.sample_rate,
+            )));
     }
 
     /// Drop a previously-installed parameter-automation source; subsequent

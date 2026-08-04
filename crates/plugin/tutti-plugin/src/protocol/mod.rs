@@ -89,7 +89,19 @@ pub mod shm;
 ///   after the variants a v10 peer knows, and a v10 host receiving it reads a
 ///   tag it has no arm for and fails the decode mid-stream rather than at a
 ///   message boundary.
-pub const PROTOCOL_VERSION: u32 = 11;
+/// - v12: `PluginClass` carries parsed classification vocabularies instead of
+///   raw strings — `Vst3 { category }` is a `Vst3SubCategories` and
+///   `Clap { features }` a `Vec<ClapFeature>`. Mandatory: both are *inside* an
+///   existing field rather than appended, so a v11 peer decodes a `Vec<String>`
+///   where a `Vec<ClapFeature>` was written and desynchronizes mid-message.
+///   `Vst3SubCategories` round-trips through its raw string, so that half is
+///   byte-identical on the wire; the CLAP half is not, which is what forces the
+///   bump.
+///
+///   The persisted JSON catalog changes shape too, and unlike this wire it has
+///   no version negotiation: `PluginDatabase::load` quarantines a file it
+///   cannot parse, so an existing catalog is discarded and rescanned.
+pub const PROTOCOL_VERSION: u32 = 12;
 
 /// Validate a subprocess-reported protocol version against [`PROTOCOL_VERSION`].
 /// Called at each handshake consumer so a version skew fails loudly instead of
@@ -125,7 +137,8 @@ pub use tutti_midi_types::ump::MidiEvent;
 //   cross-format vocabulary shared with the host crates
 //   (`tutti-{vst2,vst3,clap,au}-host`) via `tutti-plugin-types`.
 pub use crate::host::discovery::record::{
-    AuComponentType, PluginClass, PluginDescriptor, Vst2Category,
+    AuComponentType, ClapFeature, PluginClass, PluginDescriptor, Vst2Category, Vst3PlugType,
+    Vst3SubCategories,
 };
 pub use tutti_plugin_types::{
     AutomationMode, BusChannels, ChannelLayout, ChordChanges, ChordValue, EditorPresence, Features,

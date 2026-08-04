@@ -248,10 +248,17 @@ impl MidiBus {
         self.senders.remove(&unit_id);
     }
 
-    /// Queue events for a subscribed unit. Unknown ids are silently dropped.
-    pub fn queue(&self, unit_id: MidiUnitId, events: &[MidiEvent]) {
-        if let Some(sender) = self.senders.get(&unit_id) {
-            sender.queue(events);
+    /// Queue events for a subscribed unit.
+    ///
+    /// Returns how many were accepted — `0` for an unknown id (nothing is
+    /// registered, which is legitimate), and `< events.len()` when the unit's
+    /// 256-slot ring filled and the rest were dropped. That second case is the
+    /// stuck note [`MidiSender::queue`] warns about, and this used to discard the
+    /// count that reports it.
+    pub fn queue(&self, unit_id: MidiUnitId, events: &[MidiEvent]) -> usize {
+        match self.senders.get(&unit_id) {
+            Some(sender) => sender.queue(events),
+            None => 0,
         }
     }
 
@@ -270,8 +277,8 @@ impl MidiBus {
 }
 
 impl tutti_midi_types::MidiRouter for MidiBus {
-    fn queue(&self, unit_id: MidiUnitId, events: &[MidiEvent]) {
-        self.queue(unit_id, events);
+    fn queue(&self, unit_id: MidiUnitId, events: &[MidiEvent]) -> usize {
+        self.queue(unit_id, events)
     }
 }
 
@@ -449,11 +456,80 @@ mod tests {
             60,
             tutti_midi_types::convert::midi1_velocity_to_midi2(100),
         );
-        bus.queue(id, &[note_on]);
+        assert_eq!(
+            bus.queue(id, &[note_on]),
+            1,
+            "the subscribed unit accepts it"
+        );
 
         assert!(receiver.has_events());
 
-        // An event for an unsubscribed unit is silently dropped.
-        bus.queue(MidiUnitId::new(999), &[note_on]);
+        // An event for an unsubscribed unit is dropped — and now says so.
+        assert_eq!(
+            bus.queue(MidiUnitId::new(999), &[note_on]),
+            0,
+            "an unknown id accepts nothing"
+        );
+    }
+
+    /// A full destination ring is reported, not swallowed.
+    ///
+    /// This is the case the bus used to make invisible: it called
+    /// `MidiSender::queue`, which returns an accepted count precisely so a
+    /// stuck note can be noticed, and dropped it. Unknown-id and ring-full then
+    /// looked identical from the bus — both `()`.
+    #[test]
+    fn bus_reports_a_full_destination_ring() {
+        let bus = MidiBus::new();
+        let id = MidiUnitId::new(4);
+        let (sender, _receiver) = MidiMailbox::pair(id);
+        bus.insert(sender);
+
+        // Fill the 256-slot ring exactly.
+        let filler: Vec<_> = (0..EVENTS_PER_UNIT)
+            .map(|i| note_on((i % 128) as u8, 100))
+            .collect();
+        assert_eq!(
+            bus.queue(id, &filler),
+            EVENTS_PER_UNIT,
+            "the whole ring should accept"
+        );
+
+        // The next one has nowhere to go. Dropping a note-off here is exactly
+        // what leaves a note sounding forever.
+        assert_eq!(
+            bus.queue(id, &[note_off(60)]),
+            0,
+            "a full ring must report the drop rather than look like success"
+        );
+    }
+
+    /// Unknown-id and ring-full are both losses, but a caller distinguishes them
+    /// by *whether a sink exists*, not by the count — so `contains` remains the
+    /// way to tell them apart, and the count reports the magnitude.
+    #[test]
+    fn a_partial_accept_reports_how_many_landed() {
+        let bus = MidiBus::new();
+        let id = MidiUnitId::new(5);
+        let (sender, _receiver) = MidiMailbox::pair(id);
+        bus.insert(sender);
+
+        // Leave exactly 3 slots.
+        let filler: Vec<_> = (0..EVENTS_PER_UNIT - 3)
+            .map(|i| note_on((i % 128) as u8, 100))
+            .collect();
+        assert_eq!(bus.queue(id, &filler), EVENTS_PER_UNIT - 3);
+
+        let batch = [
+            note_on(60, 100),
+            note_on(61, 100),
+            note_on(62, 100),
+            note_on(63, 100),
+        ];
+        assert_eq!(
+            bus.queue(id, &batch),
+            3,
+            "a partial accept must report the count that landed, not the count offered"
+        );
     }
 }

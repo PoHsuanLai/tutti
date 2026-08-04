@@ -201,7 +201,12 @@ fn forward_slack(beats_per_sample: BeatDuration, block_size: usize) -> BeatDurat
 #[derive(Clone)]
 pub struct BeatCursor {
     transport: Arc<dyn Timeline>,
-    sample_rate: SampleRate,
+    /// Shared for the same reason `last_beat` is: a cursor is cloned along with
+    /// whatever owns it, and fundsp commits a *different clone* than a setter
+    /// would touch. A plain field is not merely stale after a device rate
+    /// change — it is unreachable, since the owner sits behind an `Arc` and
+    /// there is no `&mut` to the running copy.
+    sample_rate: Arc<AtomicF64>,
     last_beat: Arc<AtomicF64>,
 }
 
@@ -209,7 +214,7 @@ impl BeatCursor {
     pub fn new(transport: Arc<dyn Timeline>, sample_rate: impl Into<SampleRate>) -> Self {
         Self {
             transport,
-            sample_rate: sample_rate.into(),
+            sample_rate: Arc::new(AtomicF64::new(sample_rate.into().get())),
             last_beat: Arc::new(AtomicF64::new(f64::NEG_INFINITY)),
         }
     }
@@ -226,7 +231,7 @@ impl BeatCursor {
         let mut last = Beat(self.last_beat.load(crate::Ordering::Acquire));
         let out = BeatWindow::from_timeline(
             self.transport.as_ref(),
-            self.sample_rate,
+            self.sample_rate(),
             block_size,
             &mut last,
         );
@@ -242,7 +247,7 @@ impl BeatCursor {
     }
 
     pub fn sample_rate(&self) -> SampleRate {
-        self.sample_rate
+        SampleRate::from(self.sample_rate.load(crate::Ordering::Acquire))
     }
 
     /// Re-point at a new sample rate, as `AudioUnit::set_sample_rate` requires.
@@ -251,8 +256,11 @@ impl BeatCursor {
     /// threshold, which is derived from it. A cursor left at a stale rate would
     /// mis-scale that slack: too small and ordinary playback reads as a seek, too
     /// large and a real seek goes unnoticed.
-    pub fn set_sample_rate(&mut self, sample_rate: impl Into<SampleRate>) {
-        self.sample_rate = sample_rate.into();
+    /// `&self`, not `&mut`: the rate is a shared atomic, so this reaches every
+    /// clone including the one fundsp is running.
+    pub fn set_sample_rate(&self, sample_rate: impl Into<SampleRate>) {
+        self.sample_rate
+            .store(sample_rate.into().get(), crate::Ordering::Release);
     }
 }
 

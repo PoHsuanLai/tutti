@@ -34,14 +34,29 @@ pub trait MidiOut: Send + Sync {
 }
 
 /// Route MIDI events to a registered sink selected by [`MidiUnitId`] — a fan-out
-/// over many [`MidiOut`] sinks. The id names *which* sink; events for an unknown
-/// id are silently dropped.
+/// over many [`MidiOut`] sinks. The id names *which* sink.
 ///
 /// Distinct from [`MidiOut`] (a single terminal sink, no id): a `MidiRouter`
 /// owns the address→sink map and does the lookup. Implementations must be
 /// **lock-free** and **alloc-free** — `queue` runs on the audio thread.
 pub trait MidiRouter: Send + Sync {
-    fn queue(&self, unit_id: MidiUnitId, events: &[MidiEvent]);
+    /// Deliver `events` to the sink registered under `unit_id`.
+    ///
+    /// Returns how many were accepted. `< events.len()` means the rest were
+    /// **dropped**, for either of two reasons the count deliberately does not
+    /// distinguish, because a caller acts on both the same way:
+    ///
+    /// - **unknown id** — nothing is registered under it (0 accepted). Routing
+    ///   to an absent unit is legitimate, not an error.
+    /// - **sink full** — the destination ring had no room. Dropping a note-off
+    ///   whose note-on landed is what produces a stuck note.
+    ///
+    /// The return exists because this is the *ergonomic* path — the one most
+    /// callers reach for — while [`MidiOut`] implementations one layer down
+    /// already report their accepted count. A `()` here threw that away at
+    /// exactly the boundary a consumer touches, leaving the capable path and the
+    /// obvious path different with nothing to signal which was which.
+    fn queue(&self, unit_id: MidiUnitId, events: &[MidiEvent]) -> usize;
 }
 
 /// Pull MIDI events in the audio thread — the read-side complement to

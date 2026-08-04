@@ -327,13 +327,33 @@ impl AuInstance {
                 },
                 editor: EditorPresence::measured(has_editor),
             };
-            // This AUv2 host is f32-only, single-bus, with a Cocoa editor and
-            // latency read-back. MIDI I/O, transport/host-callbacks, sample-
-            // accurate automation, note-expression, sequencer context, f64, and
-            // host-driven editor resize are not implemented — so only EDITOR is
-            // set (latency presence is derived from `latency_samples`).
+            // This AUv2 host is f32-only, single-bus, with a Cocoa editor,
+            // latency read-back and MIDI *input*. MIDI output, transport/host-
+            // callbacks, sample-accurate automation, note-expression, sequencer
+            // context, f64, and host-driven editor resize are not implemented
+            // (latency presence is derived from `latency_samples`).
+            //
+            // MIDI output is the one gap that is a wiring job rather than an
+            // absent API: `AuInstance::install_midi_output` exists, but nothing
+            // here plumbs a callback to it, so the bit stays unprobed.
             let mut features = Features::empty();
             features.set(Features::EDITOR, has_editor);
+            // The process path already routes MIDI to any AU whose component
+            // type `receives_midi()` — instruments, music effects, MIDI
+            // processors. Reporting the same predicate here keeps one fact from
+            // being answered twice: before this, every AU instrument declared no
+            // MIDI_IN while being sent MIDI on every block.
+            features.set(
+                Features::MIDI_IN,
+                component_info.component_type.receives_midi(),
+            );
+            // One property backs both bits: a unit that lists factory presets
+            // can be asked to load any of them. An empty list is a genuine
+            // "none", not a failed read — `factory_presets` absorbs the
+            // OSStatus error several working Apple units return.
+            let has_presets = !inner.factory_presets().is_empty();
+            features.set(Features::PRESET_LIST, has_presets);
+            features.set(Features::PRESET_LOAD, has_presets);
             let probed = tutti_plugin::server::probed::AU;
 
             // AU exposes a single main bus per direction here.

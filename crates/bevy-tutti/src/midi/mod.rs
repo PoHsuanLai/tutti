@@ -35,6 +35,9 @@ pub mod track_out;
 #[cfg(feature = "midi-hardware")]
 pub mod device;
 
+/// MIDI file IO on the task pool.
+pub mod file;
+
 pub mod plugin;
 
 /// Constructors an integration test needs and production code must not have.
@@ -106,6 +109,10 @@ pub mod test_support {
 }
 
 pub use bus::{MidiBusRes, MpeModeConfig, MpeModeHandle};
+pub use file::{
+    MidiFileAsset, MidiFileAssetLoader, MidiFileContents, MidiFileLoaderError, MidiFilePlugin,
+    MidiFileWrite, MidiFileWriteInFlight, MidiFileWritten,
+};
 pub use clock_out::{pump_clock_out_system, ClockMasterRes, ClockOutPlugin};
 #[cfg(all(target_os = "macos", feature = "midi-hardware"))]
 pub use hardware_out::UmpOutRes;

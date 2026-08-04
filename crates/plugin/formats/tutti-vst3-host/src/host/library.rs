@@ -153,7 +153,7 @@ impl Vst3Library {
         }))
     }
 
-    /// Vendor/URL/email from the factory. `None` if the plugin rejects the
+    /// Vendor/URL/email and the factory flags. `None` if the plugin rejects the
     /// `getFactoryInfo` call.
     pub fn get_factory_info(&self) -> Option<FactoryInfo> {
         let mut info: PFactoryInfo = unsafe { std::mem::zeroed() };
@@ -163,6 +163,7 @@ impl Vst3Library {
                 vendor: c_str_to_string(&info.vendor),
                 url: c_str_to_string(&info.url),
                 email: c_str_to_string(&info.email),
+                flags: info.flags,
             })
         } else {
             None
@@ -202,12 +203,14 @@ impl Vst3Library {
                 cid_bytes,
                 category: c_str_to_string(&info.category),
                 name: c_str_to_string(&info.name),
-                // `PClassInfo` (the v1 struct) carries no vendor or version —
-                // their absence is what `PClassInfo2`/`PClassInfoW` were added
-                // for. `None` here is the honest answer, not a stub, and the
-                // caller falls back to the factory's vendor.
+                // `PClassInfo` (the v1 struct) carries no vendor, version or
+                // subcategories — their absence is what `PClassInfo2`/
+                // `PClassInfoW` were added for. `None` here is the honest
+                // answer, not a stub, and the caller falls back to the
+                // factory's vendor.
                 vendor: None,
                 version: None,
+                sub_categories: None,
             })
         } else {
             Err(Vst3Error::PluginError {
@@ -246,6 +249,11 @@ impl Vst3Library {
             // otherwise be the same value, and only the first should fall back.
             vendor: non_empty(utf16_to_string(&info.vendor)),
             version: non_empty(utf16_to_string(&info.version)),
+            // `char8` even in the unicode struct, like `category` above: the
+            // subcategory vocabulary is a set of ASCII spec constants
+            // (`ivstprocesscontext.h`'s `PlugType`), so `c_str_to_string` is
+            // correct rather than a UTF-16 decode.
+            sub_categories: non_empty(c_str_to_string(&info.subCategories)),
         })
     }
 
@@ -274,7 +282,8 @@ impl Vst3Library {
     }
 }
 
-/// Vendor identification read from `IPluginFactory::getFactoryInfo`.
+/// Vendor identification and factory flags, read from
+/// `IPluginFactory::getFactoryInfo`.
 #[derive(Debug, Clone)]
 pub struct FactoryInfo {
     /// Vendor / company name.
@@ -283,6 +292,67 @@ pub struct FactoryInfo {
     pub url: String,
     /// Vendor contact email.
     pub email: String,
+    /// Raw `PFactoryInfo::flags` bitmask — see [`factory_flags`] and
+    /// [`classes_discardable`](Self::classes_discardable).
+    ///
+    /// Carried raw rather than decoded into bools. The four flags this host
+    /// knows are not the four a future SDK defines, and `1 << 2` is already
+    /// absent from the enum — a decode would silently drop whatever lands
+    /// there, whereas a bitmask hands the caller exactly what the plugin said.
+    pub flags: i32,
+}
+
+impl FactoryInfo {
+    /// The plugin declares that its exported class list can change between
+    /// loads (`kClassesDiscardable`), so a host must not answer "what does this
+    /// bundle contain?" from a cache.
+    ///
+    /// **Nothing in tutti acts on this yet.** The scan cache
+    /// (`tutti_plugin::host::discovery`) is keyed on file mtime alone, and it
+    /// stores one descriptor per bundle path while `find_audio_class` takes
+    /// only the first audio class — so a bundle's class *list* is not something
+    /// the catalog can currently represent, let alone re-derive. Acting on the
+    /// flag becomes meaningful when that changes; reading it is this crate's
+    /// job either way, and dropping it here would leave the consumer with
+    /// nothing to act on when it arrives.
+    pub fn classes_discardable(&self) -> bool {
+        self.flags & factory_flags::CLASSES_DISCARDABLE != 0
+    }
+
+    /// The plugin asks not to be unloaded before process exit
+    /// (`kComponentNonDiscardable`).
+    pub fn component_non_discardable(&self) -> bool {
+        self.flags & factory_flags::COMPONENT_NON_DISCARDABLE != 0
+    }
+
+    /// The plugin's strings are Unicode (`kUnicode`) — true of every VST3
+    /// plugin so far, per the SDK's own note on the flag.
+    pub fn unicode_strings(&self) -> bool {
+        self.flags & factory_flags::UNICODE != 0
+    }
+}
+
+/// VST3 `PFactoryInfo::FactoryFlags` constants, mirroring `ipluginbase.h:65-83`.
+///
+/// `kLicenseCheck` (`1 << 1`) is deliberately absent: the SDK marks it
+/// deprecated and says Cubase/Nuendo 12 and later ignore it, so a host that
+/// reads it would be acting on a signal the format has withdrawn. `1 << 2` is
+/// unassigned in the header.
+/// `FactoryFlags` is `DefaultEnumType` — `u32` on unix, `c_int` on Windows —
+/// while `PFactoryInfo::flags` is `int32` on both, so each cast below is a
+/// no-op on one platform and load-bearing on the other. Same reason
+/// [`crate::physical_ui_type`] carries this allow.
+#[allow(clippy::unnecessary_cast)]
+pub mod factory_flags {
+    use vst3::Steinberg::PFactoryInfo_::FactoryFlags_;
+
+    /// The exported class list can change each time the module is loaded, so
+    /// class information must not be cached.
+    pub const CLASSES_DISCARDABLE: i32 = FactoryFlags_::kClassesDiscardable as i32;
+    /// The component will not be unloaded until process exit.
+    pub const COMPONENT_NON_DISCARDABLE: i32 = FactoryFlags_::kComponentNonDiscardable as i32;
+    /// The plugin's strings are entirely Unicode-encoded.
+    pub const UNICODE: i32 = FactoryFlags_::kUnicode as i32;
 }
 
 /// Descriptor for a single class (plugin variant) within a factory.
@@ -294,9 +364,23 @@ pub struct ClassInfo {
     /// Human-readable byte-order independent representation for formatting.
     pub cid_bytes: [u8; 16],
     /// Category string, e.g. `"Audio Module Class"`, `"Controller Class"`.
+    ///
+    /// This names what *kind of COM class* this is, not what the plugin does —
+    /// every audio plugin reports `"Audio Module Class"`. The musical taxonomy
+    /// ("Fx|Reverb", "Instrument|Synth") is [`sub_categories`](Self::sub_categories).
     pub category: String,
     /// Display name of the class.
     pub name: String,
+    /// The plugin's declared subcategories, `|`-delimited, e.g. `"Fx|Reverb"`
+    /// or `"Instrument|Synth"` (`ipluginbase.h:355`).
+    ///
+    /// `None` when the factory implements only `IPluginFactory` (the v1 struct
+    /// carries no such field) or when the class declares none. That is the same
+    /// distinction [`vendor`](Self::vendor) draws, and for the same reason: a
+    /// consumer classifying a plugin must be able to tell "the factory is too
+    /// old to say" from "the plugin says it has no subcategory", and an empty
+    /// string spells both.
+    pub sub_categories: Option<String>,
     /// Per-class vendor, when the class declares one.
     ///
     /// `None` when the field is empty, which is the usual case — most plugins
@@ -314,4 +398,82 @@ pub struct ClassInfo {
 /// "the plugin said the empty string" at every call site that must fall back.
 fn non_empty(s: String) -> Option<String> {
     (!s.is_empty()).then_some(s)
+}
+
+#[cfg(test)]
+mod factory_flag_tests {
+    use super::{factory_flags, FactoryInfo};
+
+    fn with_flags(flags: i32) -> FactoryInfo {
+        FactoryInfo {
+            vendor: String::new(),
+            url: String::new(),
+            email: String::new(),
+            flags,
+        }
+    }
+
+    /// Each accessor reads its own bit and no other.
+    ///
+    /// Every corpus plugin reports exactly `kUnicode`, so a decode that
+    /// answered from the wrong bit — or from the whole field — would look
+    /// correct against all 19 of them while misreporting the two flags none of
+    /// them sets.
+    #[test]
+    fn each_factory_flag_accessor_reads_its_own_bit() {
+        for (flags, want) in [
+            (factory_flags::CLASSES_DISCARDABLE, (true, false, false)),
+            (
+                factory_flags::COMPONENT_NON_DISCARDABLE,
+                (false, true, false),
+            ),
+            (factory_flags::UNICODE, (false, false, true)),
+        ] {
+            let info = with_flags(flags);
+            let got = (
+                info.classes_discardable(),
+                info.component_non_discardable(),
+                info.unicode_strings(),
+            );
+            assert_eq!(got, want, "flags=0x{flags:02x} decoded as {got:?}");
+        }
+    }
+
+    /// A flag is read as one bit among several, not as the whole field.
+    ///
+    /// `kUnicode` is set by every plugin in the corpus, so an equality test
+    /// against `kClassesDiscardable` would report `false` for a bundle that
+    /// asked for both — which is the only combination that matters, since a
+    /// discardable bundle is also a Unicode one.
+    #[test]
+    fn other_factory_flags_do_not_mask_classes_discardable() {
+        let both = with_flags(factory_flags::CLASSES_DISCARDABLE | factory_flags::UNICODE);
+        assert!(both.classes_discardable());
+        assert!(both.unicode_strings());
+
+        assert!(!with_flags(factory_flags::UNICODE).classes_discardable());
+    }
+
+    /// No flags set means no flag reads as set — pins that the accessors do not
+    /// answer from a default.
+    #[test]
+    fn an_empty_flag_field_reports_nothing_set() {
+        let none = with_flags(0);
+        assert!(!none.classes_discardable());
+        assert!(!none.component_non_discardable());
+        assert!(!none.unicode_strings());
+    }
+
+    /// The bit values are the ones the SDK defines (`ipluginbase.h:65-83`).
+    ///
+    /// Pinned because everything above reads by mask: were a constant ever
+    /// wrong, every assertion would still pass while silently matching a
+    /// different flag. `1 << 1` (`kLicenseCheck`, deprecated) and `1 << 2`
+    /// (unassigned) are deliberately absent from the module.
+    #[test]
+    fn the_factory_flag_bits_are_the_ones_the_sdk_defines() {
+        assert_eq!(factory_flags::CLASSES_DISCARDABLE, 1 << 0);
+        assert_eq!(factory_flags::COMPONENT_NON_DISCARDABLE, 1 << 3);
+        assert_eq!(factory_flags::UNICODE, 1 << 4);
+    }
 }

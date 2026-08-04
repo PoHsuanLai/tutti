@@ -23,13 +23,21 @@ pub use crate::host::node::{
     HarmonySource, LfoCurve, LfoOffset, NoteExpressionSource, OffsetCurve, ParamAutomationSource,
     PluginParamTarget, TimedChord, TimedParam, TimedScale,
 };
+// The per-block installers, each reachable only when the plugin can receive
+// that input. Named here because a caller matching on the `Option` a
+// `PluginClient` accessor returns has to be able to name what is inside it.
+pub use crate::host::node::{
+    HarmonyView, MidiInView, MidiOutView, NoteExpressionView, TransportView,
+};
 // The LFO shape vocabulary + the modulation-target surface (from `tutti-mod`,
 // via `tutti-units`), so the app can build an [`LfoCurve`] / route to a
 // [`PluginParamTarget`] without naming `tutti-units` directly.
 // `ParamAddress` alongside them because `TimedParam::param_id` is one: a
 // caller that can construct a `TimedParam` through this module must be able to
 // name its field's type without reaching into the private `protocol` module.
-pub use crate::protocol::{ChordValue, ParamAddress, ScaleValue};
+// `ParamId` for the same reason one step further in — every `ParamAddress`
+// variant wraps one, so naming the address without it builds nothing.
+pub use crate::protocol::{ChordValue, ParamAddress, ParamId, ScaleValue};
 pub use crate::util::window::{EditorCapabilities, EditorSize};
 pub use control_handle::PluginHandle;
 pub use tutti_units::{LfoShape, ModParams, ModTarget};

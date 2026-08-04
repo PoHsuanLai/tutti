@@ -208,15 +208,22 @@ impl MidiPreBlock {
             clock.tick(frames);
         }
 
-        // ONE routing read for the whole block, shared by the gate below and the
-        // fan-out in `route_events`. Reading twice would let a `commit` between
-        // them decide "there are routes" against one snapshot and then route
-        // against another — the collect phase would admit events for rules the
-        // deliver phase no longer has, or drop events the new rules would have
-        // routed. Both phases now see the same rules or neither does.
+        // ONE routing read, taken BEFORE the block is collected and used only by
+        // the fan-out below. Both halves of that matter:
+        //
+        // - *Before*, because `collect_events` polls the input, and a `commit`
+        //   racing that poll must not decide this block's delivery. The block
+        //   routes by the rules in force when it started
+        //   (`a_publish_mid_block_does_not_split_the_block_across_rule_sets`
+        //   drives exactly that interleaving, republishing from inside
+        //   `poll_into`).
+        // - *Only by the fan-out*, because collection must not consult routing at
+        //   all — translation is stateful and skipping it corrupts later events.
+        //   `collect_events` takes no snapshot parameter, which is what keeps
+        //   this from regressing.
         let routing = self.routing.read();
 
-        let event_count = self.collect_events(frames, &routing);
+        let event_count = self.collect_events(frames);
         if event_count == 0 {
             return;
         }
@@ -233,11 +240,16 @@ impl MidiPreBlock {
         self.mpe.reset_owner();
     }
 
-    /// Takes the block's routing snapshot rather than reading its own, so the
-    /// gate here and the fan-out in [`route_events`](Self::route_events) cannot
-    /// disagree. See [`run`](Self::run).
+    /// Poll the input and translate the block's events into `self.events`.
+    ///
+    /// **Deliberately takes no routing snapshot.** Collection is an input-edge
+    /// concern and consults nothing about delivery; the fan-out in
+    /// [`route_events`](Self::route_events) is the sole place routing is
+    /// consulted. The absent parameter is what keeps that true — an early return
+    /// on an empty table here is precisely the bug this signature forecloses (see
+    /// the comment on the poll below).
     #[inline]
-    fn collect_events(&self, frames: usize, routing: &MidiRoutingSnapshot) -> usize {
+    fn collect_events(&self, frames: usize) -> usize {
         self.events.clear();
 
         let Some(input) = &self.input else {
@@ -252,7 +264,25 @@ impl MidiPreBlock {
         let mut scratch = self.poll_scratch.borrow_mut();
         let n = input.poll_into(HARDWARE_POLL_UNIT, frames, &mut scratch[..]);
 
-        if !routing.has_routes() || n == 0 {
+        // Only "nothing arrived" short-circuits. Emptiness of the routing table
+        // must NOT, even though nothing can be delivered: both stages below are
+        // stateful multi-message assemblers, not per-event filters, so skipping
+        // them corrupts state for events that arrive *later*, once routes exist.
+        //
+        // - `Midi1ToMidi2Translator` assembles an (N)RPN run across several CCs;
+        //   a run straddling the boundary resumes from a partial parameter number
+        //   and names the wrong parameter.
+        // - `MpeIngest` holds the member-channel → held-note map. A note-on
+        //   skipped here never binds its channel, so the next per-note bend
+        //   resolves to no note and `translate` returns `None` — the note sounds
+        //   on, deaf to the controller (the same failure the
+        //   `re_adopting_a_latched_request_does_not_reset_voice_state` test
+        //   guards from a different cause).
+        //
+        // Translation is an input-edge concern; routing is a delivery concern.
+        // Cost of running it unrouted is bounded: allocation-free, capped by
+        // `events`' fixed capacity.
+        if n == 0 {
             return 0;
         }
 
@@ -262,6 +292,11 @@ impl MidiPreBlock {
         // transform it; a `None` stage passes events through unchanged.
         // Before any borrow below: adopting takes `self.mpe` mutably, and the
         // cell's contract is one borrow at a time.
+        //
+        // Adoption is likewise unconditional: `MpeModeRequest::set` documents
+        // that "the audio thread adopts the request at the top of the next
+        // block", and `pending()` latches — so gating this on routing left the
+        // only observable a consumer has reporting a request that never applied.
         self.adopt_mpe_request();
 
         let mut translator = self.translator.borrow_mut();
@@ -295,7 +330,12 @@ impl MidiPreBlock {
         };
         self.events.for_each(|&(_offset, event)| {
             for target in routing.route(&event) {
-                queue.queue(target, &[event]);
+                // The accepted count is deliberately dropped: this is the audio
+                // thread, one event at a time, and there is no caller to back
+                // off. A short count means the destination's 256-slot ring is
+                // full — recoverable only by the *consumer* draining faster,
+                // which nothing here can influence.
+                let _ = queue.queue(target, &[event]);
             }
         });
     }
@@ -400,8 +440,9 @@ mod tests {
         routed: Mutex<Vec<MidiEvent>>,
     }
     impl MidiRouter for CapturingRouter {
-        fn queue(&self, _unit_id: MidiUnitId, events: &[MidiEvent]) {
+        fn queue(&self, _unit_id: MidiUnitId, events: &[MidiEvent]) -> usize {
             self.routed.lock().unwrap().extend_from_slice(events);
+            events.len()
         }
     }
 
@@ -548,6 +589,136 @@ mod tests {
             UmpMessage::try_from(routed[0].data_words()).unwrap(),
             UmpMessage::ChannelVoice2(ChannelVoice2::ChannelPitchBend(_))
         ));
+    }
+
+    /// An empty routing table must not skip MPE ingestion.
+    ///
+    /// `MpeIngest` is a stateful assembler, not a per-event filter: a note-on
+    /// binds its member channel, and later per-note bends resolve against that
+    /// binding. Skipping ingestion while nothing is routed therefore does not
+    /// merely drop the note-on — it leaves the channel *unbound*, so the first
+    /// bend after routing appears resolves to no note, `translate` returns
+    /// `None`, and the event never reaches the router. Audibly: the note sounds
+    /// on and stops responding to the controller.
+    ///
+    /// The note-on is deliberately delivered while the table is empty and the
+    /// bend only after a route exists — the boundary is the whole point.
+    #[test]
+    fn a_note_on_received_while_unrouted_still_binds_its_mpe_channel() {
+        /// Serves one event per poll, so the two blocks below can straddle a
+        /// routing change.
+        struct PerBlockInput {
+            blocks: Mutex<Vec<Vec<MidiEvent>>>,
+        }
+        impl MidiIn for PerBlockInput {
+            fn poll_into(&self, _unit: MidiUnitId, _frames: usize, out: &mut [MidiEvent]) -> usize {
+                let mut blocks = self.blocks.lock().unwrap();
+                if blocks.is_empty() {
+                    return 0;
+                }
+                let block = blocks.remove(0);
+                let n = block.len().min(out.len());
+                out[..n].copy_from_slice(&block[..n]);
+                n
+            }
+        }
+
+        let member = MidiChannel::new(2);
+        let note = MidiEvent::note_on(MidiGroup::FIRST, member, 60, midi1_velocity_to_midi2(100));
+        let bend =
+            MidiEvent::pitch_bend(MidiGroup::FIRST, member, midi1_pitch_bend_to_midi2(16383));
+
+        // Block 1 carries the note-on, block 2 the bend.
+        let input = Arc::new(PerBlockInput {
+            blocks: Mutex::new(vec![vec![note], vec![bend]]),
+        });
+        let router = Arc::new(CapturingRouter::default());
+
+        // Start with NO routes at all.
+        let mut table = MidiRoutingTable::new();
+        table.commit();
+        assert!(
+            !table.snapshot_arc().read().has_routes(),
+            "precondition: the first block runs with an empty routing table"
+        );
+
+        let mut pre = MidiPreBlock::new(table.snapshot_arc());
+        pre.set_input(input);
+        pre.set_queue(router.clone());
+        pre.set_mpe_ingest(MpeIngest::new(MpeMode::LowerZone(MpeZoneConfig::lower(15))));
+
+        // Block 1: unrouted. Nothing can be delivered — but the note-on must
+        // still be ingested so the member channel is bound.
+        pre.run(256);
+        assert_eq!(
+            router.routed.lock().unwrap().len(),
+            0,
+            "nothing is routed while the table is empty"
+        );
+
+        // A route now appears.
+        table.set_routes(Vec::new(), Some(MidiUnitId::new(9)));
+        table.commit();
+
+        // Block 2: the bend must resolve against the binding made in block 1.
+        pre.run(256);
+
+        let routed = router.routed.lock().unwrap();
+        assert_eq!(
+            routed.len(),
+            1,
+            "the bend vanished: the note-on received while unrouted never bound \
+             its channel, so it resolved to no note — the note is left sounding \
+             and deaf to the controller"
+        );
+        match UmpMessage::try_from(routed[0].data_words()).unwrap() {
+            UmpMessage::ChannelVoice2(ChannelVoice2::PerNotePitchBend(m)) => {
+                assert_eq!(
+                    u8::from(m.note_number()),
+                    60,
+                    "the bend resolved to the wrong note"
+                );
+            }
+            other => panic!("expected a native PerNotePitchBend for note 60, got {other:?}"),
+        }
+    }
+
+    /// A latched mode request must be adopted even while nothing is routed.
+    ///
+    /// `MpeModeRequest::set` documents that the audio thread adopts at the top of
+    /// the next block, and `pending()` latches by design — so if adoption sits
+    /// behind a routing check, the only observable a consumer has keeps reporting
+    /// a request that has never applied.
+    #[test]
+    fn an_mpe_mode_request_is_adopted_while_unrouted() {
+        let mut table = MidiRoutingTable::new();
+        table.commit();
+
+        // One event, so the block has something to translate; it goes nowhere.
+        let note = MidiEvent::note_on(
+            MidiGroup::FIRST,
+            MidiChannel::new(2),
+            60,
+            midi1_velocity_to_midi2(100),
+        );
+        let input = Arc::new(FixedInput {
+            events: Mutex::new(vec![note]),
+        });
+
+        let mut pre = MidiPreBlock::new(table.snapshot_arc());
+        pre.set_input(input);
+
+        let mode = MpeMode::LowerZone(MpeZoneConfig::lower(6));
+        pre.mpe_mode_handle().set(mode);
+
+        pre.run(256);
+
+        assert_eq!(
+            pre.mpe.borrow().as_ref().map(|i| *i.mode()),
+            Some(mode),
+            "the request was never adopted, yet `pending()` still reports it as \
+             standing — the consumer has no way to learn it did not apply"
+        );
     }
 }
 

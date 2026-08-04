@@ -41,11 +41,19 @@ assets/plugins/
 
 ## Usage
 
-The `plugin_loading.rs` example will:
-1. Scan for plugins in this directory
-2. Fall back to system plugin directories
-3. Look up a plugin with `Plugins::find` / `Plugins::load_by_name`
-4. Insert the loaded `PluginClient` into the graph
+`tutti-plugin`'s `wire_all_inputs` example takes a path directly:
+
+```sh
+cargo run -p tutti-plugin --example wire_all_inputs -- <path-to-plugin>
+```
+
+It opens the plugin with `Plugin::open`, offers it every per-block input
+(MIDI, transport, chord/scale), reports which the plugin accepted, and hands
+the audio node over with `into_unit`.
+
+To go through a catalog instead — scanning directories, and honouring the
+blacklist a crashed scan recorded — use `Plugins::find` to get a path and
+`Plugins::open` to load it.
 
 ## Note
 

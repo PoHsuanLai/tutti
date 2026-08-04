@@ -29,15 +29,12 @@
 //! [`Plugins::with_audio_config`] when the defaults don't fit.
 
 use crate::error::{BridgeError, Result};
-use crate::host::discovery::format_from_path;
-use crate::host::discovery::record::PluginFormat;
 #[cfg(feature = "json")]
 use crate::host::discovery::JsonCatalog;
 use crate::host::discovery::{
     CatalogExt, PluginCatalog, PluginRecord, PluginScanner, ScanHandle, ScanResult,
 };
-use crate::host::handles::control_handle::PluginHandle;
-use crate::host::node::PluginClient;
+use crate::host::plugin::Plugin;
 use crate::protocol::PluginDescriptor;
 use crate::util::config::{AudioConfig, CatalogConfig};
 use std::path::{Path, PathBuf};
@@ -49,7 +46,7 @@ pub struct PluginId(PathBuf);
 
 impl PluginId {
     /// Construct from a plugin file path. The path must match a record
-    /// in the catalog at load time; otherwise `Plugins::load` returns
+    /// in the catalog at load time; otherwise `Plugins::open` returns
     /// `BridgeError::PluginNotFound`.
     pub fn from_path(path: impl Into<PathBuf>) -> Self {
         Self(path.into())
@@ -116,19 +113,20 @@ impl Plugins {
         self
     }
 
-    /// The audio settings every load from this catalog uses.
+    /// The audio settings this catalog hands to a load.
     ///
-    /// The counterpart to [`with_audio_config`](Self::with_audio_config), and
-    /// what makes an **off-thread** load possible. [`load`](Self::load) and
-    /// [`load_client`](Self::load_client) take `&self`, so a caller that must
-    /// not block its thread — a frame-driven host, where a load costs a
-    /// subprocess launch of half a second to fifteen — cannot call them
-    /// directly: the borrow would have to outlive the frame. Reading the config
-    /// here, cloning it with the [`PluginId`], and calling
-    /// [`load_with`](Self::load_with) on the worker is the way across, and the
-    /// [`load_client_with`] on the worker is the way across, and the settings a
-    /// host chose ride along instead of being silently replaced by
+    /// The counterpart to [`with_audio_config`](Self::with_audio_config).
+    /// Opening does not go through the catalog — [`Plugin::open_with`] takes
+    /// these settings and a path — so this is how a host that configured them
+    /// here passes them along rather than falling back to
     /// [`AudioConfig::default`].
+    ///
+    /// Being a plain value read off `&self` is also what makes an **off-thread**
+    /// load work: clone it, hand it to a worker with the path, and no borrow of
+    /// the catalog has to outlive the frame while a subprocess takes half a
+    /// second to fifteen to launch.
+    ///
+    /// [`Plugin::open_with`]: crate::catalog::Plugin::open_with
     pub fn audio_config(&self) -> &AudioConfig {
         &self.audio
     }
@@ -238,6 +236,42 @@ impl Plugins {
         self.catalog.is_blacklisted(path)
     }
 
+    /// Open a plugin, refusing one this catalog recorded as having brought a
+    /// scan down.
+    ///
+    /// The guarded door. [`Plugin::open`] is the plain one — it takes a path
+    /// and nothing else, so it has no crash history to consult. Which of the
+    /// two a host wants is a decision, so both exist and the difference is the
+    /// catalog.
+    ///
+    /// Takes a `&Path`, not a [`PluginId`]: requiring an id would mean "scan
+    /// before you can open", which is exactly the coupling
+    /// [`Plugin::open`] exists to remove. Both doors take the same argument and
+    /// differ only in the guard.
+    ///
+    /// The check is mtime-aware ([`CatalogExt::is_blacklisted_and_unchanged`]),
+    /// so a reinstall or vendor update re-admits the plugin without the host
+    /// clearing anything. On refusal the error carries the recorded reason, so
+    /// a host can name the plugin and offer to load it anyway — that offer
+    /// routes to [`Plugin::open`].
+    ///
+    /// [`Plugin::open`]: crate::catalog::Plugin::open
+    pub fn open(&self, path: &Path, sample_rate: impl Into<SampleRate>) -> Result<Plugin> {
+        if self.catalog.is_blacklisted_and_unchanged(path) {
+            let reason = self
+                .catalog
+                .get(path)
+                .and_then(|r| r.blacklist.reason())
+                .unwrap_or("no reason recorded")
+                .to_string();
+            return Err(BridgeError::Blacklisted {
+                path: path.to_path_buf(),
+                reason,
+            });
+        }
+        Plugin::open_with(&self.audio, path, sample_rate)
+    }
+
     /// Blacklist a plugin by path, hiding it from `iter`/`records`/`find`.
     pub fn blacklist(&mut self, path: &Path, reason: impl Into<String>) {
         self.catalog.blacklist(path, reason.into());
@@ -300,55 +334,6 @@ impl Plugins {
         id
     }
 
-    /// Load a plugin by id. Returns a graph-ready `Box<dyn AudioUnit>`
-    /// and a main-thread [`PluginHandle`]; both must be kept alive while
-    /// the plugin runs.
-    ///
-    /// Format dispatch:
-    /// - VST2 (with the `vst2` feature): runs entirely in the host process
-    ///   (single AEffect for audio + editor).
-    /// - Everything else: subprocess + IPC bridge (audio out-of-process,
-    ///   editor lazily loaded in-host).
-    pub fn load(
-        &self,
-        id: &PluginId,
-        sample_rate: impl Into<SampleRate>,
-    ) -> Result<(Box<dyn tutti_core::AudioUnit>, PluginHandle)> {
-        let sample_rate = sample_rate.into();
-        #[cfg(feature = "vst2")]
-        if matches!(format_from_path(&id.0), Some(PluginFormat::Vst2)) {
-            // `.get()` at the VST2 ABI, which takes a bare rate.
-            return crate::format::vst2_in_process::load(&id.0, sample_rate.get());
-        }
-        let _ = format_from_path; // keep import live without the vst2 feature
-        let _ = PluginFormat::Vst2;
-
-        let (client, handle) = load_client_with(&self.audio, id, sample_rate)?;
-        Ok((Box::new(client), handle))
-    }
-
-    /// Subprocess-formats variant of [`Plugins::load`] that returns the
-    /// raw [`PluginClient`] instead of `Box<dyn AudioUnit>`.
-    pub fn load_client(
-        &self,
-        id: &PluginId,
-        sample_rate: impl Into<SampleRate>,
-    ) -> Result<(PluginClient, PluginHandle)> {
-        load_client_with(&self.audio, id, sample_rate)
-    }
-
-    /// Shortcut for [`Plugins::find`] + [`Plugins::load`].
-    pub fn load_by_name(
-        &self,
-        name: &str,
-        sample_rate: impl Into<SampleRate>,
-    ) -> Result<(Box<dyn tutti_core::AudioUnit>, PluginHandle)> {
-        let id = self
-            .find(name)
-            .ok_or_else(|| BridgeError::PluginNotFound { name: name.into() })?;
-        self.load(&id, sample_rate)
-    }
-
     /// Commit the in-memory catalog to its backing store.
     pub fn flush(&mut self) -> std::io::Result<()> {
         self.catalog.flush()
@@ -407,31 +392,6 @@ impl Plugins {
         }
         missing
     }
-}
-
-/// Load a plugin from an [`AudioConfig`] alone, with no catalog.
-///
-/// The catalog's only contribution to a load is its [`AudioConfig`] — the
-/// record is looked up beforehand to get the [`PluginId`], and nothing else is
-/// read. Splitting that out is what lets a load run **off the caller's thread**:
-/// [`Plugins::load`] and [`Plugins::load_client`] take `&self`, so a frame-driven
-/// host cannot hold the borrow across the half-second-to-fifteen-second
-/// subprocess launch. It reads [`Plugins::audio_config`], clones it with the id,
-/// and calls this from a worker.
-///
-/// `Plugins::load_client` is this function with the config supplied, so there is
-/// one implementation rather than two that can drift.
-///
-/// Subprocess formats only — the in-process VST2 path is chosen by
-/// [`Plugins::load`], which dispatches on format before reaching here.
-pub fn load_client_with(
-    audio: &AudioConfig,
-    id: &PluginId,
-    sample_rate: impl Into<SampleRate>,
-) -> Result<(PluginClient, PluginHandle)> {
-    let client = PluginClient::new(audio.to_bridge_config(), id.0.clone(), sample_rate)?;
-    let handle = PluginHandle::from_client(&client);
-    Ok((client, handle))
 }
 
 /// Claim on the catalog an async [`Plugins::rescan`] took ownership of.
@@ -494,5 +454,136 @@ impl PluginCatalog for PlaceholderCatalog {
     fn remove(&mut self, _path: &Path) {}
     fn iter(&self) -> Box<dyn Iterator<Item = &PluginRecord> + '_> {
         Box::new(std::iter::empty())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::host::discovery::record::Blacklist;
+
+    /// Minimal in-memory catalog, so these tests do not need the `json`
+    /// feature or a file on disk.
+    #[derive(Default)]
+    struct MemCatalog(Vec<PluginRecord>);
+
+    impl PluginCatalog for MemCatalog {
+        fn get(&self, path: &Path) -> Option<&PluginRecord> {
+            self.0.iter().find(|r| r.path == path)
+        }
+        fn upsert(&mut self, record: PluginRecord) {
+            self.0.retain(|r| r.path != record.path);
+            self.0.push(record);
+        }
+        fn remove(&mut self, path: &Path) {
+            self.0.retain(|r| r.path != path);
+        }
+        fn iter(&self) -> Box<dyn Iterator<Item = &PluginRecord> + '_> {
+            Box::new(self.0.iter())
+        }
+    }
+
+    /// A blacklisted record whose `modification_time` matches what the file
+    /// system reports, i.e. the file has not changed since it was recorded.
+    fn blacklisted_record(path: &Path, reason: &str) -> PluginRecord {
+        PluginRecord {
+            path: path.to_path_buf(),
+            format: crate::host::discovery::record::PluginFormat::Vst3,
+            descriptor: PluginDescriptor::default(),
+            modification_time: crate::host::discovery::file_modification_time(path).unwrap_or(0),
+            blacklist: Blacklist::Blacklisted {
+                reason: reason.to_string(),
+            },
+        }
+    }
+
+    fn catalog_with(record: PluginRecord) -> Plugins {
+        let mut mem = MemCatalog::default();
+        mem.upsert(record);
+        Plugins::with_catalog(
+            Box::new(mem),
+            CatalogConfig::new(PathBuf::from("/nonexistent/db.json"), vec![]),
+        )
+    }
+
+    /// The guarded door refuses a plugin the scanner recorded as a crasher,
+    /// and says which one and why.
+    ///
+    /// The reason is the whole point of carrying it: a host has to be able to
+    /// name the plugin and offer to load it anyway.
+    #[test]
+    fn a_blacklisted_plugin_is_refused_with_its_recorded_reason() {
+        let dir = std::env::temp_dir().join("tutti-bl-refused");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("Crasher.vst3");
+        std::fs::write(&path, b"not a real plugin").unwrap();
+
+        let plugins = catalog_with(blacklisted_record(&path, "SIGSEGV during probe"));
+
+        match plugins.open(&path, 48_000.0) {
+            Err(BridgeError::Blacklisted { path: p, reason }) => {
+                assert_eq!(p, path);
+                assert_eq!(reason, "SIGSEGV during probe");
+            }
+            other => panic!("expected a Blacklisted refusal, got {other:?}"),
+        }
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    /// A blacklisted plugin whose file has since changed is admitted again.
+    ///
+    /// Blacklisting records the file's mtime precisely so a reinstall or a
+    /// vendor update lifts it without the host clearing anything. Checking the
+    /// raw flag instead would hide the plugin permanently, and false positives
+    /// are expected — the scanner's pedal fires on a force-quit or an OOM kill
+    /// as readily as on a real crash.
+    ///
+    /// The load itself still fails (the fixture is not a plugin), but it must
+    /// fail as a *load*, never as a `Blacklisted` refusal.
+    #[test]
+    fn a_blacklisted_plugin_is_readmitted_once_its_file_changes() {
+        let dir = std::env::temp_dir().join("tutti-bl-readmit");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("Updated.vst3");
+        std::fs::write(&path, b"not a real plugin").unwrap();
+
+        // Record the blacklist against a *different* mtime than the file has,
+        // which is what a reinstall produces.
+        let mut record = blacklisted_record(&path, "crashed once");
+        record.modification_time = record.modification_time.saturating_sub(1_000);
+        let plugins = catalog_with(record);
+
+        let err = plugins
+            .open(&path, 48_000.0)
+            .expect_err("the fixture is not a loadable plugin");
+        assert!(
+            !matches!(err, BridgeError::Blacklisted { .. }),
+            "a changed file must not be refused as blacklisted, got {err:?}"
+        );
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    /// The plain door has no catalog, so it has no blacklist to consult.
+    ///
+    /// This is the opt-in boundary: `Plugin::open` is a file API and stays one.
+    #[test]
+    fn the_unguarded_door_does_not_consult_a_blacklist() {
+        let dir = std::env::temp_dir().join("tutti-bl-unguarded");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("Crasher.vst3");
+        std::fs::write(&path, b"not a real plugin").unwrap();
+
+        let plugins = catalog_with(blacklisted_record(&path, "SIGSEGV during probe"));
+        assert!(plugins.is_blacklisted(&path), "fixture should be recorded");
+
+        let err = Plugin::open(&path, 48_000.0).expect_err("the fixture is not a loadable plugin");
+        assert!(
+            !matches!(err, BridgeError::Blacklisted { .. }),
+            "Plugin::open has no catalog and cannot refuse on one, got {err:?}"
+        );
+
+        std::fs::remove_file(&path).ok();
     }
 }

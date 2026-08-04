@@ -2238,6 +2238,182 @@ fn keyswitches_enumerate_and_bound_check() {
     }
 }
 
+/// `IUnitInfo` — the tree a plugin sorts its parameters and programs into.
+///
+/// host-checker publishes a deliberately deep tree (three nested levels), so
+/// this asserts more than "some units came back": every unit's parent must
+/// resolve, and at least one unit must be nested. A host that decoded
+/// `parentUnitId` wrongly — treating the `-1` sentinel as an id, say — produces
+/// a parent nothing answers to, and that is what fails here.
+///
+/// **The root is implicit.** The spec says `getUnitCount` "must return 1 at
+/// least" and that the root's id is 0 (`ivstunits.h:144-145`), but the SDK's
+/// own `EditControllerEx1` never adds a unit *for* the root, and host-checker
+/// only ever calls `addUnit` for its own — attaching them to `kRootUnitId`
+/// (`hostcheckercontroller.cpp:481,634`). So id 0 is a valid parent whether or
+/// not any unit enumerates under it, and a host that demanded an explicit root
+/// entry would reject the SDK's own reference plugin. That asymmetry is why
+/// this crate does not materialise a tree: there is no root node to hang one
+/// off without inventing it.
+#[test]
+fn units_enumerate_with_resolvable_parents() {
+    let _plugins = plugin_guard();
+    let Some(checker) = sample("host-checker.vst3") else {
+        eprintln!("host-checker not built; skipping");
+        return;
+    };
+
+    let units = checker.units();
+    assert!(
+        !units.is_empty(),
+        "host-checker implements IUnitInfo but the host read no units"
+    );
+
+    let ids: Vec<i32> = units.iter().map(|u| u.id).collect();
+    let mut orphans = Vec::new();
+    for unit in &units {
+        if let Some(parent) = unit.parent {
+            if parent != tutti_vst3_host::unit_ids::ROOT && !ids.contains(&parent) {
+                orphans.push(format!("unit {} names absent parent {parent}", unit.id));
+            }
+        }
+    }
+    assert!(
+        orphans.is_empty(),
+        "every non-root unit must name the root or a unit that exists:\n  {}",
+        orphans.join("\n  ")
+    );
+
+    // host-checker nests three levels (`hostcheckercontroller.cpp:634-651`), so
+    // some unit must hang off another *enumerated* unit rather than off the
+    // root. Asserting merely "a parent exists" would pass on a flat tree, and
+    // decoding every parent as `None` would pass the orphan check vacuously.
+    let nested = units
+        .iter()
+        .filter(|u| u.parent.is_some_and(|p| ids.contains(&p)))
+        .count();
+    assert!(
+        nested > 0,
+        "host-checker publishes a three-level tree, but no unit names another \
+         enumerated unit as its parent — every parent decoded as the root or \
+         as None"
+    );
+    eprintln!(
+        "host-checker: {} units, {nested} of them nested",
+        units.len()
+    );
+
+    // The negative case is a corpus-wide invariant rather than a named
+    // plugin: `IUnitInfo` comes free with the SDK's `EditControllerEx1`, so
+    // which samples implement it is an accident of what each one derives from
+    // — `again` does, despite exposing no unit tree of its own. What must hold
+    // is the weaker, real contract: a plugin the host reads no units from must
+    // also report no program lists, so the two accessors cannot disagree about
+    // whether the interface is there at all.
+    let mut silent = 0usize;
+    for (name, path) in sample_plugins() {
+        let Ok(loaded) = Vst3Loaded::load(&path) else {
+            continue;
+        };
+        if loaded.units().is_empty() {
+            silent += 1;
+            assert!(
+                loaded.program_lists().is_empty(),
+                "{name}: the host read no units but did read program lists — \
+                 one accessor found IUnitInfo and the other did not"
+            );
+        }
+    }
+    eprintln!("{silent} sample plugins expose no unit tree");
+}
+
+/// A unit's program list must be one the plugin actually publishes.
+///
+/// This is the corpus check behind [`Vst3UnitInfo::program_list`]'s decision to
+/// collapse "no list" and "a list that does not exist" into `None`. Whatever
+/// the corpus contains, the invariant holds: a resolved `program_list` names a
+/// published list, and every program index inside it has a name.
+#[test]
+fn a_resolved_program_list_is_one_the_plugin_publishes() {
+    let _plugins = plugin_guard();
+    let mut checked = 0usize;
+    let mut resolved = 0usize;
+    let mut dangling = Vec::new();
+
+    for (name, path) in sample_plugins() {
+        let Ok(loaded) = Vst3Loaded::load(&path) else {
+            continue;
+        };
+        let lists = loaded.program_lists();
+        let units = loaded.units();
+        if units.is_empty() {
+            continue;
+        }
+        checked += 1;
+
+        let list_ids: Vec<i32> = lists.iter().map(|l| l.id).collect();
+        for unit in &units {
+            if let Some(list_id) = unit.program_list {
+                resolved += 1;
+                assert!(
+                    list_ids.contains(&list_id),
+                    "{name}: unit {} resolved to program list {list_id}, which \
+                     the plugin does not publish — resolution let a dangling \
+                     id through",
+                    unit.id
+                );
+            }
+            if unit.has_dangling_program_list() {
+                dangling.push(format!(
+                    "{name}: unit {} names absent list {}",
+                    unit.id, unit.program_list_id_raw
+                ));
+            }
+        }
+
+        // Every program in a published list must have a name.
+        for list in &lists {
+            for i in 0..list.program_count {
+                assert!(
+                    loaded.program_name(list.id, i).is_some(),
+                    "{name}: list {} claims {} programs but program {i} has no \
+                     name",
+                    list.id,
+                    list.program_count
+                );
+            }
+        }
+    }
+
+    if checked == 0 {
+        eprintln!("no sample plugin publishes units; resolution not exercised");
+    } else {
+        eprintln!(
+            "unit/program-list resolution: {checked} plugins exercised, \
+             {resolved} units resolved a list"
+        );
+        // The assertions above are all of the form "if a list resolved, it is
+        // a real one" — every one of them passes vacuously if resolution never
+        // runs and each unit reports `None`. This is the positive half: the
+        // corpus does contain units with valid program lists, so some must
+        // survive resolution.
+        assert!(
+            resolved > 0,
+            "no unit in the corpus resolved a program list — either resolution \
+             is dropping valid ids, or it is not being run at all"
+        );
+    }
+    // Not a failure — a dangling id is the plugin's bug, and reporting it is
+    // the point of `has_dangling_program_list`. Printed so the corpus's actual
+    // shape stays visible rather than assumed.
+    if !dangling.is_empty() {
+        eprintln!(
+            "plugins naming absent program lists:\n  {}",
+            dangling.join("\n  ")
+        );
+    }
+}
+
 /// `IRemapParamID` — parameter migration when one plugin replaces another.
 ///
 /// The strongest assertion available here: the `remap_paramid` sample maps
@@ -2388,5 +2564,57 @@ fn param_id_for_function_name_resolves_known_functions() {
         checker.param_id_for_function_name(0, "NotAFunctionName"),
         None,
         "an unknown function name resolved to a parameter id"
+    );
+}
+
+/// The factory's flag word survives the read.
+///
+/// `PFactoryInfo::flags` used to be dropped on the floor — `get_factory_info`
+/// copied vendor, url and email and simply did not mention the fourth field.
+/// Nothing in tutti acts on the flags yet, which is exactly why the omission
+/// went unnoticed: no caller could miss what no caller could ask for.
+///
+/// Every plugin in the corpus reports `kUnicode` and nothing else, so this is
+/// checkable without any plugin setting the flag we actually care about.
+/// `kClassesDiscardable` is set by none of them — which is also why the drop
+/// was invisible from the outside, and why the decode itself is pinned by unit
+/// tests rather than here.
+#[test]
+fn the_factory_flag_word_is_read_not_discarded() {
+    if !harness_ready() {
+        return;
+    }
+    let _guard = plugin_guard();
+
+    let mut read = 0usize;
+    let mut unicode = 0usize;
+    for (name, path) in sample_plugins() {
+        let Ok(library) = Vst3Library::load(&path) else {
+            continue;
+        };
+        let Some(info) = library.get_factory_info() else {
+            continue;
+        };
+        read += 1;
+        if info.unicode_strings() {
+            unicode += 1;
+        }
+        assert_eq!(
+            info.classes_discardable(),
+            info.flags & tutti_vst3_host::factory_flags::CLASSES_DISCARDABLE != 0,
+            "{name}: accessor disagrees with the raw bitmask it decodes"
+        );
+    }
+
+    // Without this, a `get_factory_info` that returned `None` for everything
+    // would pass the loop vacuously.
+    assert!(
+        read > 0,
+        "no corpus plugin answered getFactoryInfo; the assertions above never ran"
+    );
+    assert_eq!(
+        unicode, read,
+        "every VST3 plugin sets kUnicode ({unicode} of {read} did); a zero here \
+         means the flag word is being dropped again rather than read"
     );
 }

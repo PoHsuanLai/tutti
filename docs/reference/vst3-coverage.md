@@ -97,7 +97,7 @@ go to the header.
 
 ## Fixed so far
 
-Ten of the sixteen upheld findings are fixed, each mutation-verified:
+**All sixteen** upheld findings are fixed, each mutation-verified:
 
 | Finding | Observable it needed |
 |---|---|
@@ -111,13 +111,35 @@ Ten of the sixteen upheld findings are fixed, each mutation-verified:
 | `version` hardcoded `"1.0.0"` | real corpus versions (`5.0.6`, `3.8.0.0`) |
 | 6 of 12 `RestartFlags` dropped | whole-mapping test, so a 13th flag cannot join them |
 | Controller state never persisted | probe parameter reachable *only* via the controller's own stream |
+| `IUnitInfo` never called | the real corpus — `mda-vst3`'s dangling list id, host-checker's 3-level tree |
+| Editor input never delivered | a stub view that answers a *chosen* `tresult`, so the consumed mapping is visible |
+| `kDefaultActive` never read | a probe bus-activation mask — no corpus plugin distinguishes the policies |
+| `getProcessContextRequirements` asked too early | a probe that answers `0` before `initialize` and `kNeedTempo` after |
+| Note-expression values unguarded | NaN and out-of-range inputs, each with a distinct verdict |
+| `PFactoryInfo::flags` discarded | the corpus's universal `kUnicode` — no plugin sets the flag actually at issue |
 
-The pattern is worth stating plainly: **in eight of ten cases the bug was unobservable
+The pattern is worth stating plainly: **in twelve of sixteen cases the bug was unobservable
 with the tests that existed**, and the work was building something that could see it —
-not writing the fix. Three times the first attempt at a test passed against the unfixed
-code and had to be thrown away.
+not writing the fix. Four times a test passed against the code it was meant to catch and
+had to be rewritten.
 
-The third of those is the sharpest. The controller-state fix needed a *legacy* blob —
+All four are worth recording.
+
+The `kDefaultActive` case needed the **fixture** changed, not the test. The corpus caught
+"activate everything" immediately, but the opposite error — honouring the flag strictly,
+so an unflagged main bus goes silent — passed every test, because *no plugin in the corpus
+has an unflagged main bus*. They all take `addAudioOutput`'s default. Giving the probe a
+main output with an explicit `flags = 0` created the case the real world had not supplied;
+the strict mutation then failed with mask 1 instead of 5. When no available input can
+distinguish two behaviours, the test fixture has to manufacture one.
+
+`getProcessContextRequirements` hit the same wall, and there it is nearly a proof rather
+than an observation: `hostchecker` fills its flags inside the getter and `dataexchange` in
+its constructor, so *neither SDK sample can distinguish a conformant host from one that
+asks before `initialize`*, however carefully the test is written. The probe had to become
+the plugin that can — answering `0` pre-init and `kNeedTempo` after.
+
+The controller-state fix hit it from the other side. It needed a *legacy* blob —
 one saved before the container existed — to still restore. The obvious fixture,
 `b"saved-by-an-older-build"`, passed against a build with the compatibility check
 deleted: its first byte is `'s'`, which fails the version check by luck rather than by
@@ -125,6 +147,14 @@ the guard under test. Replacing it with a binary blob whose leading bytes parse 
 *valid* header killed the mutation immediately — the component then received 3 bytes of
 a 20-byte stream. A backward-compatibility fixture has to be one the broken code would
 actually mis-handle.
+
+The `IUnitInfo` case is the mirror image: **every assertion was conditional, so all of
+them passed vacuously.** The corpus test checked "if a unit resolved a program list,
+that list is published" — true, and worthless, when a build that never runs resolution
+reports `None` for every unit. Deleting the `resolve_program_list` call left it green.
+The fix was a positive count (`19 units resolved a list`) alongside the conditional
+checks. Any test built from `if let Some(..)` needs a companion asserting the `Some`
+arm is reached at all.
 
 **Event buses were never activated** — `host/instance.rs:738`. **[verified]**
 
@@ -170,9 +200,32 @@ solid is that the file now follows the rule its siblings document.
 `Vst3Instance::load` instead of resolving to the inner binary, so `dlopen` fails. Every
 sibling test calls `resolve_bundle` first. Pre-existing, `#[ignore]`d, not fixed here.
 
-**`BusFlags::kDefaultActive` is never read.** `types/info.rs:44` stores the flags bitfield
-and nothing consults it. Our fix activates every bus unconditionally, which is defensible
-for a host that intends to use them, but the flag exists to carry plugin preference.
+**~~`BusFlags::kDefaultActive` is never read.~~ FIXED** — `host/mod.rs::wants_activation`.
+**[verified]**
+
+**Not a conformance defect, and the original framing overstated it.** `ivstcomponent.h:54-55`
+says the flag is *"only a wish, the host is allow to not follow it, and only activate the
+first bus for example"* — activating everything was explicitly permitted. The SDK's own
+validator requires the converse to work too: `busactivation.cpp:66-71` fails any plugin
+that refuses activation of an unflagged bus. So this stops overriding a plugin's stated
+preference; it does not fix a bug.
+
+The policy is **`kMain` unconditionally, `kAux` only when flagged**. Steinberg's VST2/AU
+wrapper reaches the same split from the other direction — `basewrapper.cpp:1061-1085`
+activates every main bus without consulting the flag at all.
+
+Honouring the flag on main buses too is what `auwrapper.mm:553` does behind
+`SMTG_AUWRAPPER_ACTIVATE_ONLY_DEFAULT_ACTIVE_BUSES`, and its CMake note says why it is
+off by default: *"This may not work on some hosts because they never activate a bus
+later."* That is this host — there is no public per-bus activation API, so a bus skipped
+at load is unreachable for the instance's lifetime rather than merely inactive.
+
+Two constraints worth keeping. Bus **geometry stays on declared buses**: `SlabLayout`, the
+batcher and fundsp port arity all index positionally off declared widths, so filtering the
+scratch resolve as well would silently take a multi-out instrument from N stem ports to 2
+and shift every `connect()` in a user's graph. And a bus whose `getBusInfo` fails is
+activated anyway — that restores the old behaviour for exactly the plugins that cannot
+answer the question the policy asks.
 
 ## Memory safety — fixed
 
@@ -195,8 +248,8 @@ spec interpretation being right.
 |---|---|---|
 | ~~Event (MIDI) buses are never activated.~~ **FIXED** — see above. | `host/instance.rs:738` | **[verified]** |
 | ~~`IParameterChanges` merge uses an unstable sort.~~ **FIXED** — see above. | `host/midi_mapping.rs:241` | **[verified]** |
-| **Keyboard, wheel and focus are never delivered to plugin editors.** `onKeyDown` / `onKeyUp` / `onWheel` / `onFocus` have zero non-doc call sites. | — | **[verified]** |
-| **`IUnitInfo` is never called.** We store `unitId` on parameters, note expressions and keyswitches — three separate structs — and never call the interface that gives those IDs meaning. A raw symbol grep scores this "covered"; it is doc-comment mentions only. | `types/info.rs:81,264,395` | **[verified]** |
+| ~~Keyboard, wheel and focus are never delivered to plugin editors.~~ **FIXED (host layer)** — `send_key_down`/`send_key_up`/`send_wheel`/`set_editor_focus` on `Vst3Loaded`, returning *consumed* so the plugin arbitrates. The Bevy-side `KeyCode` → `VirtualKeyCodes` table is not written; nothing calls these yet. | `host/loaded.rs` | **[verified]** |
+| ~~`IUnitInfo` is never called.~~ **FIXED** — `units()` / `program_lists()` / `program_name()` / `selected_unit()` / `select_unit()` / `unit_by_bus()` bind the interface. Returned flat, in the plugin's order, each unit naming its parent; assembling a tree is the caller's job. Measured: host-checker 54 units, 48 nested. | `types/info.rs`, `host/loaded.rs` | **[verified]** |
 | ~~`kIoChanged` mutates bus counts on a live active instance.~~ **FIXED** — `Vst3Instance::restart_bus_configuration` owns the cycle; `Vst3Loaded` surfaces the flag instead of acting on it. | `host/instance.rs` | **[verified]** |
 | ~~`kCycleValid` is set under the wrong requirement gate.~~ **FIXED** — gated on `NEED_CYCLE_MUSIC` + finiteness, paired with the fields it advertises. | `types/transport.rs` | **[verified]** |
 
@@ -218,15 +271,46 @@ spec interpretation being right.
 
 ### Low
 
-After confirmation, four remain: `getProcessContextRequirements` queried before
-`IComponent::initialize`; `PFactoryInfo::flags` dropped so `kClassesDiscardable` cannot
-suppress mtime-gated rescans (a host-policy cost, not a spec violation);
-note-expression values staged without a normalized-range or NaN guard, where the
-contract *is* stated (`:1337`, "normalized [0.0, 1.0]") and `transport.rs` already gates
-every field on `is_usable` for the same reason; and a `UnitEvent::ProgramListChanged` doc
-comment asserting a contract the header does not state — it means "this program info is
-stale", not "the selection changed", and does not mention that `-1` is the
-`kAllProgramInvalid` sentinel a consumer would otherwise use as an array index.
+Four remained after confirmation. **All four are now fixed**, though the last was first
+declined for a reason worth recording.
+
+`getProcessContextRequirements` was queried before `IComponent::initialize` **[fixed]**.
+`ivstaudioprocessor.h:456` marks it `[UI-thread & Setup Done]`. The failure is silent in
+the worst direction — the early answer is a *subset*, so the host quietly withholds
+fields the plugin asked for and a tempo-driven plugin free-runs with no error anywhere.
+
+Note-expression values were staged with no normalized-range or NaN guard **[fixed]**.
+`ivstnoteexpression.h:89` states expression events are *"always absolute normalized values
+[0.0, 1.0]"* and addresses the **host**, so normalizing is our duty. The two out-of-range
+cases are not the same fact: a NaN is dropped (no nearest legal value exists, and
+`f64::clamp` returns NaN for a NaN input, so a clamp alone is not a guard), a finite
+out-of-range value is clamped (dropping it would freeze the dimension at whatever the
+plugin last saw).
+
+A `UnitEvent::ProgramListChanged` doc comment asserted a contract the header does not
+state **[fixed]** — it means "this program info is stale", not "the selection changed",
+and did not mention that `-1` is the `kAllProgramInvalid` sentinel a consumer would
+otherwise spend as an array index.
+
+`PFactoryInfo::flags` was dropped, so `kClassesDiscardable` never reached the host
+**[fixed]**. `get_factory_info` copied vendor, url and email and did not mention the fourth
+field. It is now carried raw, with `classes_discardable()` / `component_non_discardable()`
+/ `unicode_strings()` decoding by mask.
+
+**Nothing consumes it yet, and that is a separate gap.** The scan cache
+(`tutti_plugin::host::discovery`) is keyed on mtime alone (`catalog.rs:105-110`) and
+stores **one** `PluginDescriptor` per bundle path, while `find_audio_class`
+(`loaded.rs:2047`) is a `find_map` taking the first audio class — `mda-vst3`'s 34 classes
+already collapse to a single record. So a bundle's class *list* is not something the
+catalog can currently represent, let alone re-derive on demand. Acting on the flag becomes
+meaningful when that changes; it needs a field on `PluginDescriptor` (a bincode wire type
+crossing the plugin-server IPC) and the other three format loaders answering it.
+
+Worth separating carefully, because the first attempt at this finding got it wrong:
+**a downstream consumer's limitation is not a reason for the boundary layer to discard
+data.** The audit is of `tutti-vst3-host`, and "what did the plugin tell us" is entirely
+inside it — four lines. The `PluginDescriptor` / catalog work is `tutti-plugin`'s gap, and
+scoping it into this finding inflated the cost of a small fix into a reason to skip it.
 
 The fifth, `kCycleValid`, was upgraded to the High table. The sixth — a `u32→i32` wrap on
 CC frame offsets — was **refuted**: the cast needs an offset ≥ 2³¹ to wrap, which is 13.5
@@ -241,9 +325,33 @@ construction, and the spec types `sampleOffset` as `int32` anyway.
 | **Real gap** | **13** | below |
 | Actually present | 1 | `IPluginBase` — a false negative from the scripted inventory, caught by the "show your negative search" rule |
 
-**High:** `IUnitInfo` (above).
+**High:** none outstanding — `IUnitInfo` is bound (above).
 
-**Medium:** `IMidiMapping2` and `IMidiLearn2` — both tagged `[replaces …]` in 3.8.0, both absent while their v1 forms are used. MIDI 2.0 controller assignments are unreachable. The binding already ships them (`vst3-0.3.0`), so this is unwritten code, not a dependency limit. Also `IProgramListData`, `IComponentHandlerSystemTime`, `IInfoListener`, `IStreamAttributes`, `IPluginFactory2`.
+Two things the corpus taught that the spec did not. **The root unit is implicit**:
+`ivstunits.h:144-145` says `getUnitCount` "must return 1 at least" and that the root's id
+is 0, but the SDK's own `EditControllerEx1` never adds a unit *for* the root, and
+host-checker only ever attaches its units *to* `kRootUnitId`. A host demanding an
+explicit root entry would reject the SDK's reference plugin. That asymmetry is the
+reason `units()` stays flat — there is no root node to hang a tree off without inventing
+one. **And a `programListId` can name nothing**: `mda-vst3` unit 0 points at list
+`1886548852`, which it never publishes. `Vst3UnitInfo::program_list` is therefore `Some`
+only when the id resolves, with `has_dangling_program_list()` to tell that apart from
+having no list at all.
+
+**Medium:** `IMidiMapping2` and `IMidiLearn2` — both tagged `[replaces …]` in 3.8.0, both absent while their v1 forms are used. MIDI 2.0 controller assignments are unreachable. Also `IProgramListData`, `IComponentHandlerSystemTime`, `IInfoListener`, `IStreamAttributes`, `IPluginFactory2`.
+
+`IMidiMapping2` is **blocked on a binding defect**, not merely unwritten — tracked as
+issue #140. (An earlier revision of this document said the opposite: *"the binding already
+ships them, so this is unwritten code, not a dependency limit."* The binding does ship
+them, but its `Midi2Controller` is the wrong size. Measured by compiling both: C gives 12
+bytes with `offsetof(controller) == 9`, Rust gives 16. The cause is that `Midi2Controller`
+uses C bitfields and `com-scrape` has no bitfield handling at all — it is the only
+bitfield struct in the entire `pluginterfaces/` tree, which is why nothing else is
+affected. Verified upstream: `vst3-0.3.0` is the latest release (2025-12-07), the bug is
+still on `main` (`b2a45f2`), and no issue among 8 open issues / 20 PRs reports it.)
+
+`IMidiLearn2` is **not** blocked — it passes `Midi2Controller` by value, with no array and
+no stride, so the size defect does not reach it.
 
 **Low:** `IEditControllerHostEditing`, `IUnitData`, `IEditController2`, `IParameterFinder`, `ISizeableStream`.
 
@@ -270,10 +378,27 @@ corrected three, and upgraded one.
 The recurring lesson across all three passes is the same: **a finding is only as good as
 the boundary it was checked across.** The two refutations in the last pass both came from
 reading past `host/loaded.rs` into the server that consumes its output. The two
-host-duty inversions came from not asking who the spec addresses. And two of the three
-`[verified]` fixes needed a *new observable* before they could be tested at all — the
-event-bus omission is invisible to both the host and every lenient plugin, and the
-unstable sort is invisible below ~32 points.
+host-duty inversions came from not asking who the spec addresses. And most `[verified]`
+fixes needed a *new observable* before they could be tested at all — the event-bus
+omission is invisible to both the host and every lenient plugin, and the unstable sort is
+invisible below ~32 points.
+
+The corollary took the whole audit to state: **a spec rule no available plugin exercises
+is not thereby untestable — it means the fixture is the deliverable.** Three fixes ended
+with a change to `audio-probe` rather than to a test file, and in one case the SDK's own
+samples are provably incapable of witnessing the rule at all.
+
+The last finding to close taught a different lesson, by first being closed wrongly.
+`kClassesDiscardable` was initially declined on the grounds that nothing downstream could
+act on it — the scan cache cannot represent a bundle's class list, so honouring the flag
+would change no behaviour. All of that is true, and none of it was a reason to keep
+*discarding* the flag. **A downstream consumer's limitation does not license the boundary
+layer to drop data.** Reading what the plugin said is four lines and entirely inside the
+crate under audit; the catalog work is a different crate's gap. Scoping the consumer into
+the finding inflated a small fix into a reason to skip it.
+
+The general form: when declining a finding, check that the cost being weighed is the cost
+of *the finding*, and not the cost of everything one would want to build on top of it.
 
 Nothing here is a regression: these are gaps and deviations that have been present, not
 recent breakage. The two dead conformance suites are the exception — those *were* a

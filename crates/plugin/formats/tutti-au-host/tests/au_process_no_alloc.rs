@@ -61,7 +61,7 @@ use tutti_au_host::MidiEvent;
 
 mod support;
 use support::corpus;
-use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
+use tutti_midi_types::tutti_types::{CCNumber, MidiChannel, MidiGroup};
 
 // The `assert_no_alloc` checks below are inert unless `AllocDisabler` is the
 // active global allocator for THIS test binary. The `#[cfg(test)]` decl in
@@ -221,7 +221,12 @@ fn send_midi_decode_does_not_allocate() {
             let note = 60 + (i % 12) as u8;
             au.send_midi(&[
                 MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, note, 0xC000),
-                MidiEvent::cc(MidiGroup::FIRST, MidiChannel::FIRST, 7, 0x4000_0000),
+                MidiEvent::cc(
+                    MidiGroup::FIRST,
+                    MidiChannel::FIRST,
+                    CCNumber::VOLUME,
+                    0x4000_0000,
+                ),
                 MidiEvent::pitch_bend(MidiGroup::FIRST, MidiChannel::FIRST, 0x4000_0000),
                 // No legacy channel-voice form: exercises the skip arm.
                 MidiEvent::per_note_pitch_bend(

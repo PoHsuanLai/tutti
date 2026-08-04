@@ -187,6 +187,34 @@ impl PolySynth {
         count
     }
 
+    /// Whether per-note (MPE) expression is applied at render time.
+    ///
+    /// Ask before concluding MPE is active: the per-note setters accept
+    /// unconditionally, and the per-note pitch-bend *sensitivity* RPN applies
+    /// whether or not this is on. So an MPE host could send an MCM, observe
+    /// sensitivity take effect, and reasonably infer MPE was enabled when it was
+    /// not — with every per-note bend, pressure, slide and gain being dropped in
+    /// [`SynthVoice::apply_mpe_modulation`]. This is the accessor that
+    /// distinguishes the two.
+    pub fn mpe_enabled(&self) -> bool {
+        self.config.mpe_enabled
+    }
+
+    /// Turn per-note (MPE) expression on or off, affecting sounding notes as
+    /// well as future ones.
+    ///
+    /// Previously construction-only, which is what made the state above
+    /// unobservable *and* unfixable at runtime. Disabling resets each voice's
+    /// per-note state rather than merely ignoring it, so expression received
+    /// while disabled cannot snap into effect on re-enable — see
+    /// [`SynthVoice::set_mpe_enabled`].
+    pub fn set_mpe_enabled(&mut self, enabled: bool) {
+        self.config.mpe_enabled = enabled;
+        for voice in &mut self.voices {
+            voice.set_mpe_enabled(enabled);
+        }
+    }
+
     pub fn set_volume(&mut self, volume: f32) {
         // Only the lower bound is enforced. The old `.clamp(0.0, 1.0)` capped this
         // setter at unity while `volume_atomic()` (the live modulation path) wrote
@@ -2998,6 +3026,123 @@ mod tests {
         assert!(
             voice.mpe_state().pressure.abs() < 0.01,
             "New note should have reset MPE pressure"
+        );
+    }
+
+    /// Whether MPE is on must be *askable*.
+    ///
+    /// It was construction-only with no getter, while the per-note setters accept
+    /// unconditionally and `apply_mpe_modulation` drops everything at render
+    /// time. Since the pitch-bend-sensitivity RPN *is* live either way, a host
+    /// could send an MCM, watch sensitivity apply, and reasonably conclude MPE
+    /// was on — with no way to find out otherwise.
+    #[test]
+    fn mpe_enabled_is_observable() {
+        let off = PolySynth::new(SynthConfig {
+            mpe_enabled: false,
+            ..Default::default()
+        })
+        .unwrap();
+        assert!(!off.mpe_enabled());
+
+        let on = PolySynth::new(SynthConfig {
+            mpe_enabled: true,
+            ..Default::default()
+        })
+        .unwrap();
+        assert!(on.mpe_enabled());
+    }
+
+    /// Enabling MPE at runtime reaches voices that are already sounding.
+    ///
+    /// Per-note expression sent while disabled is dropped at render, so the
+    /// setter has to affect live voices for a mid-performance enable to mean
+    /// anything.
+    #[test]
+    fn enabling_mpe_applies_to_a_sounding_voice() {
+        let mut synth = PolySynth::new(SynthConfig {
+            max_voices: 4,
+            oscillator: OscillatorType::Sine,
+            mpe_enabled: false,
+            mpe_pitch_bend_range: tutti_core::Semitones(48.0),
+            ..Default::default()
+        })
+        .unwrap();
+
+        let mut output = [0.0f32; 2];
+        queue_midi(&synth, &[ev_note_on(1, 60, 100)]);
+        synth.tick(&[], &mut output);
+        assert_eq!(synth.active_voice_count(), 1);
+
+        synth.set_mpe_enabled(true);
+        assert!(synth.mpe_enabled());
+        assert!(
+            synth
+                .voices
+                .iter()
+                .find(|v| v.is_active())
+                .unwrap()
+                .mpe_enabled(),
+            "the sounding voice must adopt the new mode, or a mid-performance \
+             enable silently does nothing until the next note"
+        );
+    }
+
+    /// Disabling MPE clears per-note state rather than merely ignoring it.
+    ///
+    /// The setters store unconditionally, so expression received while disabled
+    /// would otherwise sit latent and snap into effect the instant MPE is turned
+    /// back on — a sounding note jumping in pitch from a bend it received much
+    /// earlier.
+    #[test]
+    fn disabling_mpe_clears_latent_per_note_state() {
+        let mut synth = PolySynth::new(SynthConfig {
+            max_voices: 4,
+            oscillator: OscillatorType::Sine,
+            mpe_enabled: true,
+            mpe_pitch_bend_range: tutti_core::Semitones(48.0),
+            ..Default::default()
+        })
+        .unwrap();
+
+        let mut output = [0.0f32; 2];
+        queue_midi(&synth, &[ev_note_on(1, 60, 100)]);
+        synth.tick(&[], &mut output);
+
+        // Bend the sounding note well off centre.
+        let bend =
+            MidiEvent::per_note_pitch_bend(MidiGroup::FIRST, MidiChannel::new(1), 60, 0xFFFF_FFFF);
+        queue_midi(&synth, &[bend]);
+        synth.tick(&[], &mut output);
+        assert!(
+            synth
+                .voices
+                .iter()
+                .find(|v| v.is_active())
+                .unwrap()
+                .mpe_state()
+                .pitch_bend_semitones
+                .get()
+                .abs()
+                > 0.01,
+            "precondition: the bend applied while MPE was on"
+        );
+
+        synth.set_mpe_enabled(false);
+
+        assert!(
+            synth
+                .voices
+                .iter()
+                .find(|v| v.is_active())
+                .unwrap()
+                .mpe_state()
+                .pitch_bend_semitones
+                .get()
+                .abs()
+                < 0.01,
+            "per-note state survived being disabled — it would snap back into \
+             effect on the next enable"
         );
     }
 }

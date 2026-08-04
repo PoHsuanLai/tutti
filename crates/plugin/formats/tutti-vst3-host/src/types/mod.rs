@@ -27,7 +27,8 @@ pub use events::{
 };
 pub use info::{
     automation_state, keyswitch_type, note_expression_flags, parameter_flags, physical_ui_type,
-    prefetchable_support, BusInfo, Vst3KeyswitchInfo, Vst3NoteExpressionInfo, Vst3ParameterInfo,
+    prefetchable_support, unit_ids, BusInfo, Vst3KeyswitchInfo, Vst3NoteExpressionInfo,
+    Vst3ParameterInfo, Vst3ProgramListInfo, Vst3UnitInfo,
 };
 pub use transport::{process_context_flags, to_process_context};
 
@@ -106,6 +107,13 @@ pub struct PluginInfo {
     pub has_midi_output: bool,
     /// `true` if the plugin advertises `kSample64` processing.
     pub supports_f64: bool,
+    /// The plugin's declared subcategories, `|`-delimited (`"Fx|Reverb"`,
+    /// `"Instrument|Synth"`), from `PClassInfoW::subCategories`.
+    ///
+    /// `None` when the factory implements only `IPluginFactory`, whose class
+    /// struct has no such field — distinct from `Some("")`, which would mean a
+    /// factory that can report them and declared none.
+    pub sub_categories: Option<String>,
 }
 
 impl PluginInfo {
@@ -122,6 +130,7 @@ impl PluginInfo {
             has_midi_input: false,
             has_midi_output: false,
             supports_f64: false,
+            sub_categories: None,
         }
     }
 
@@ -132,6 +141,14 @@ impl PluginInfo {
 
     pub fn version(mut self, version: impl Into<String>) -> Self {
         self.version = version.into();
+        self
+    }
+
+    /// Set the `|`-delimited subcategories. Takes an `Option` rather than a
+    /// string so a v1-only factory's "cannot report" survives the builder — see
+    /// [`sub_categories`](Self::sub_categories).
+    pub fn sub_categories(mut self, sub_categories: Option<String>) -> Self {
+        self.sub_categories = sub_categories;
         self
     }
 

@@ -11,7 +11,7 @@ use tutti_core::metering::{meter_output, AudioTap, MasterMeter, MeteringContext}
 use tutti_core::{ChannelLayout, InterleavedMut, SampleRate, ScopedNoDenormals};
 
 #[cfg(feature = "midi")]
-use tutti_midi_runtime::MidiPreBlock;
+use tutti_midi_runtime::{MidiPostBlock, MidiPreBlock};
 
 use crate::error::{Error, Result};
 
@@ -24,15 +24,23 @@ pub const MAX_FRAMES: usize = 8192;
 
 /// State shared between the engine and the RT audio callback.
 ///
-/// Holds the [`Engine`] and, under `midi`, the pre-block MIDI producer that runs
-/// before each render. Both are RT-safe; the callback owns the ordering
-/// (`pre_block.run` then `engine.process`).
+/// Holds the [`Engine`] and, under `midi`, the two MIDI phases that bracket the
+/// render. All are RT-safe; the callback owns the ordering
+/// (`pre_block.run` → `engine.process` → `post_block.run`).
 pub struct AudioCallbackState {
     pub(crate) engine: Engine,
     /// The once-per-block MIDI producer, run before the graph render to deliver
     /// events into node inboxes. `None` when no MIDI subsystem is wired.
     #[cfg(feature = "midi")]
     pub(crate) pre_block: Option<MidiPreBlock>,
+    /// The once-per-block MIDI consumer, run after the graph render to fan out
+    /// whatever the graph emitted. `None` when no MIDI subsystem is wired.
+    ///
+    /// Separate from `pre_block` rather than folded into it because the two run
+    /// on opposite sides of `engine.process` — that ordering *is* the design
+    /// (see [`MidiPostBlock`]), and a single object would hide it.
+    #[cfg(feature = "midi")]
+    pub(crate) post_block: Option<MidiPostBlock>,
     pub(crate) meter: MasterMeter,
     pub(crate) tap: AudioTap,
 }
@@ -43,6 +51,8 @@ impl AudioCallbackState {
             engine,
             #[cfg(feature = "midi")]
             pre_block: None,
+            #[cfg(feature = "midi")]
+            post_block: None,
             meter,
             tap,
         }
@@ -55,11 +65,22 @@ impl AudioCallbackState {
         self
     }
 
+    /// Install the post-block MIDI consumer (called once at engine build).
+    #[cfg(feature = "midi")]
+    pub fn with_post_block(mut self, post_block: MidiPostBlock) -> Self {
+        self.post_block = Some(post_block);
+        self
+    }
+
     pub fn reset_owners(&self) {
         self.engine.reset_owners();
         #[cfg(feature = "midi")]
         if let Some(pre_block) = &self.pre_block {
             pre_block.reset_owners();
+        }
+        #[cfg(feature = "midi")]
+        if let Some(post_block) = &self.post_block {
+            post_block.reset_owners();
         }
     }
 }
@@ -82,6 +103,14 @@ pub fn process_audio(state: &AudioCallbackState, output: &mut InterleavedMut<'_>
         pre_block.run(frames);
     }
     state.engine.process(output);
+    // Post-block MIDI: fan out whatever the graph emitted. Must run *after*
+    // `process`, because that is what makes delivery independent of the order
+    // the emitting nodes happened to be scheduled in — every consumer's poll
+    // for this block has already happened, so an event always lands after it.
+    #[cfg(feature = "midi")]
+    if let Some(post_block) = &state.post_block {
+        post_block.run();
+    }
 }
 
 /// Holds a [`cpal::Stream`] to keep it alive. CPAL runs the audio callback

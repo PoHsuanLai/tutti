@@ -6,7 +6,8 @@ use vst3::Steinberg::{
     Vst::{
         IAudioPresentationLatency, IAudioProcessor, IAutomationState, IComponent, IEditController,
         IKeyswitchController, INoteExpressionController, INoteExpressionPhysicalUIMapping,
-        IParameterFunctionName, IPrefetchableSupport, IRemapParamID, IXmlRepresentationController,
+        IParameterFunctionName, IPrefetchableSupport, IRemapParamID, IUnitInfo,
+        IXmlRepresentationController,
     },
 };
 use vst3::{ComPtr, ComWrapper};
@@ -27,6 +28,12 @@ pub(super) struct PluginInterfaces {
     /// that don't implement the interface get the all-bits sentinel
     /// [`u32::MAX`], reproducing the pre-spec "send everything" default so the
     /// gating in [`crate::types::to_process_context`] is a no-op for them.
+    ///
+    /// Filled by `initialize`, not by `assemble`: `ivstaudioprocessor.h:456`
+    /// marks the call `[UI-thread & Setup Done]`, so a plugin that computes its
+    /// answer from initialization state has not computed it yet when the
+    /// interfaces are first queried. Left at the sentinel until then, so a
+    /// missed fill degrades to "send everything" rather than "send nothing".
     pub process_context_requirements: u32,
     /// The plugin's note-expression metadata interface, if it implements one.
     /// Queried off the controller; `None` for plugins with no per-note
@@ -40,6 +47,11 @@ pub(super) struct PluginInterfaces {
     /// The plugin's keyswitch (articulation) metadata interface, if any. Read
     /// side only — enumerates the plugin's key-switch map per bus/channel.
     pub keyswitch: Option<ComPtr<IKeyswitchController>>,
+    /// The plugin's unit (parameter-group) tree and program lists, if it
+    /// publishes one. Controller extension. Mostly read — the one write is
+    /// `selectUnit`, which tells the plugin which unit the host's UI is
+    /// showing.
+    pub unit_info: Option<ComPtr<IUnitInfo>>,
     /// The plugin's parameter-ID remap interface, used when migrating saved
     /// automation across plugin versions. Queried + exposed as an accessor; the
     /// host never auto-applies it (matches JUCE — the caller drives any migration

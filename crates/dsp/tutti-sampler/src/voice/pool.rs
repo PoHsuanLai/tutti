@@ -395,10 +395,18 @@ impl VoicePool {
                     );
                     return;
                 };
-                butler.send(Command::Loop {
+                // Same rule as the guard above, now that the send can report:
+                // only record the intent if the butler actually received it. A
+                // `play.loop_` that says "looping" while the stream is not would
+                // make `Playback` lie about the applied state, and
+                // `insert_voice` replays that as if it were real.
+                if let Err(e) = butler.send(Command::Loop {
                     channel_index,
                     setting: setting.clone(),
-                });
+                }) {
+                    tracing::warn!("loop command dropped for slot {id:?}: {e}");
+                    return;
+                }
                 slot.voice.play.loop_ = setting;
             }
         }

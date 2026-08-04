@@ -610,6 +610,70 @@ fn reported_latency_matches_observed_delay() {
     );
 }
 
+/// `reset()` must clear the plugin's in-flight processing state, so material
+/// still travelling through it at a discontinuity never emerges afterwards.
+///
+/// `plugin.h:84-90`: *"Clears all buffers, performs a full reset of the
+/// processing state (filters, oscillators, envelopes, lfo, …) and kills all
+/// voices."* The host had no call site for it at all, so every locate, loop wrap
+/// and punch left reverb tails, ringing filters and hung voices bleeding across
+/// the jump.
+///
+/// The probe's delay line is the in-flight state here: an impulse fed at block 0
+/// is still inside it when the reset lands, and the sibling test above pins that
+/// without a reset it emerges at a known sample. A host that never calls `reset`
+/// therefore fails on the impulse arriving, not on a proxy for it.
+#[test]
+fn reset_clears_state_still_in_flight() {
+    let session = ProbeSession::begin(LAYOUT_SYMMETRIC_STEREO, RENDER_LATENCY);
+    let mut inst = session.activate();
+    const FRAMES: usize = 128;
+    const IMPULSE_AT: usize = 5;
+    const AMPLITUDE: f32 = 4.0;
+
+    let latency = REPORTED_LATENCY_SAMPLES as usize;
+    // 142 — past the end of block 0, so the impulse is still inside the delay
+    // line when the reset below runs. A latency shorter than a block would let
+    // it emerge before the reset and prove nothing.
+    let expected_at = IMPULSE_AT + latency;
+    assert!(
+        expected_at >= FRAMES,
+        "the impulse must still be in flight after block 0 for this test to \
+         distinguish a reset from its absence"
+    );
+
+    let mut ch0 = vec![0.0f32; FRAMES];
+    ch0[IMPULSE_AT] = AMPLITUDE;
+    let outs = drive_block(&mut inst, &[ch0, vec![0.0f32; FRAMES]], 2, FRAMES);
+    assert!(
+        outs[0].iter().all(|&s| s == 0.0),
+        "the impulse must not have emerged yet — it is what the reset has to \
+         clear"
+    );
+
+    inst.reset();
+
+    // Drive well past where the impulse would have surfaced.
+    let blocks = expected_at / FRAMES + 2;
+    for block in 1..blocks {
+        let outs = drive_block(
+            &mut inst,
+            &[vec![0.0f32; FRAMES], vec![0.0f32; FRAMES]],
+            2,
+            FRAMES,
+        );
+        for (i, &s) in outs[0].iter().enumerate() {
+            assert_eq!(
+                s,
+                0.0,
+                "block {block} sample {i}: `reset` must have cleared the delay \
+                 line, but {s} came through at absolute sample {}",
+                block * FRAMES + i
+            );
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // clap.note-ports / clap.render.
 // ---------------------------------------------------------------------------

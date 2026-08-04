@@ -163,10 +163,17 @@ pub struct GuiCapture {
     pub created: bool,
     /// Whether `destroy` has run since the last reset.
     pub destroyed: bool,
-    /// Net `create` minus `destroy` count. Non-zero at teardown means the host
-    /// leaked an editor; negative means it double-destroyed, which is what
-    /// `close_editor`'s `already_destroyed` latch guards.
+    /// Net `create` minus `destroy` count. Positive at teardown means the host
+    /// leaked the gui resources `create` allocated; negative means it destroyed
+    /// more times than it created.
+    ///
+    /// A window closing (`GUI_CMD_CLOSED_AND_DESTROYED`) does **not** move it —
+    /// see [`window_destroyed`](GuiCapture::window_destroyed) — so the host's
+    /// obligation to acknowledge with `destroy()` stays visible here.
     pub create_balance: i32,
+    /// Whether the probe reported `gui.closed(was_destroyed = true)` since the
+    /// last reset, i.e. its window went away on its own.
+    pub window_destroyed: bool,
     /// The `scale` the host passed to `set_scale`, or 0.0 if never called.
     pub last_scale: f64,
     /// The width/height the host last passed to `set_size`.
@@ -196,6 +203,7 @@ impl Default for GuiCapture {
             created: false,
             destroyed: false,
             create_balance: 0,
+            window_destroyed: false,
             last_scale: 0.0,
             last_set_size_w: 0,
             last_set_size_h: 0,
@@ -224,6 +232,8 @@ struct GuiGlobals {
     /// `i32` so a host that destroys more than it created reads back negative
     /// rather than wrapping to a huge positive.
     create_balance: AtomicU32,
+    /// Whether the probe told the host its window was destroyed.
+    window_destroyed: AtomicBool,
     /// The scale as an `f32` bit pattern — there is no `AtomicF64`, and the
     /// values in play (1.0, 2.0) are exact in f32.
     last_scale_bits: AtomicU32,
@@ -248,6 +258,7 @@ static GUI: GuiGlobals = GuiGlobals {
     created: AtomicBool::new(false),
     destroyed: AtomicBool::new(false),
     create_balance: AtomicU32::new(0),
+    window_destroyed: AtomicBool::new(false),
     last_scale_bits: AtomicU32::new(0),
     last_set_size_w: AtomicU32::new(0),
     last_set_size_h: AtomicU32::new(0),
@@ -283,6 +294,7 @@ pub unsafe extern "C" fn tutti_test_plugin_gui_capture(out: *mut GuiCapture) -> 
         created: GUI.created.load(Ordering::Acquire),
         destroyed: GUI.destroyed.load(Ordering::Acquire),
         create_balance: GUI.create_balance.load(Ordering::Acquire) as i32,
+        window_destroyed: GUI.window_destroyed.load(Ordering::Acquire),
         // Widened from the f32 bit pattern the store side keeps: the scale
         // slot is an `AtomicU32` because the host passes small exact values
         // (1.0, 2.0), for which f32 is lossless, and the test only needs to
@@ -322,6 +334,7 @@ pub extern "C" fn tutti_test_plugin_gui_reset() {
     GUI.created.store(false, Ordering::Release);
     GUI.destroyed.store(false, Ordering::Release);
     GUI.create_balance.store(0, Ordering::Release);
+    GUI.window_destroyed.store(false, Ordering::Release);
     GUI.last_scale_bits.store(0, Ordering::Release);
     GUI.last_set_size_w.store(0, Ordering::Release);
     GUI.last_set_size_h.store(0, Ordering::Release);
@@ -350,9 +363,9 @@ pub const GUI_CMD_REQUEST_RESIZE: u32 = 1;
 /// plugin's window went away but its resources are intact, so the host should
 /// still run `hide`/`destroy`.
 pub const GUI_CMD_CLOSED_NOT_DESTROYED: u32 = 2;
-/// Call `host.gui.closed(was_destroyed = true)` and self-destroy. A host that
-/// then calls `gui.destroy` again is double-destroying, which shows up as a
-/// negative `create_balance`.
+/// Call `host.gui.closed(was_destroyed = true)`: the probe's window went away.
+/// Its gui object stays allocated, so a host that never calls `gui.destroy`
+/// leaks it and shows up as a `create_balance` still at 1.
 ///
 /// **Not** run from `show`: the test drives it via
 /// [`tutti_test_plugin_gui_run_command`] after `open_editor` returns, modelling
@@ -363,8 +376,8 @@ pub const GUI_CMD_CLOSED_AND_DESTROYED: u32 = 3;
 /// `open_editor`. A plugin does this when it discovers during the embed that it
 /// cannot present (no display, a failed GL context).
 ///
-/// Distinguishes clearing the host's `already_destroyed` latch *before* the
-/// embed sequence from clearing it after; clearing after wipes the callback the
+/// Distinguishes clearing the host's window-destroyed latch *before* the embed
+/// sequence from clearing it after; clearing after wipes the callback the
 /// sequence just carried.
 pub const GUI_CMD_CLOSED_AND_DESTROYED_FROM_SHOW: u32 = 4;
 
@@ -477,14 +490,16 @@ unsafe fn run_command_against(host: *const clap_host) {
                 f(host, false);
             }
         }
-        // Both self-destroy variants behave identically here; they differ only
-        // in *when* they are dispatched — see `run_pending_command`.
+        // Both window-destroyed variants behave identically here; they differ
+        // only in *when* they are dispatched — see `run_pending_command`.
         GUI_CMD_CLOSED_AND_DESTROYED | GUI_CMD_CLOSED_AND_DESTROYED_FROM_SHOW => {
-            // Order matters: tear our own resources down *then* tell the host,
-            // which is what a plugin whose window received a close event does.
-            // The host must not call `destroy` after this.
-            GUI.destroyed.store(true, Ordering::Release);
-            GUI.create_balance.fetch_sub(1, Ordering::AcqRel);
+            // The *window* is gone; the gui object `create` allocated is not.
+            // `ext/gui.h` obliges the host to call `destroy()` to acknowledge
+            // this, which is what releases that object — so `create_balance` is
+            // untouched here and stays positive until the host does its part.
+            // Marking it torn down here would make a host that leaks the
+            // resources look correct.
+            GUI.window_destroyed.store(true, Ordering::Release);
             if let Some(f) = gui_host.closed {
                 f(host, true);
             }

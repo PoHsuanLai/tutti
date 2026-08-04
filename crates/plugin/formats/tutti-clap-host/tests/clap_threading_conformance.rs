@@ -215,6 +215,47 @@ fn host_answers_thread_check_correctly_at_every_call_site() {
     assert_roles(&cap, Site::Process, false, true, "process");
 }
 
+/// `reset` is `[audio-thread & active]`, so the host must take the audio-thread
+/// claim around it — not merely call it and hope.
+///
+/// Driven here from the OS main thread, which is what a DAW does on a locate.
+/// Without the claim the host would tell the plugin `is_main_thread() == true`
+/// inside a call CLAP marks `[audio-thread]`, and — worse than the wrong answer
+/// — the call would not be serialized against a `process` block running on the
+/// real audio thread, which is precisely what clearing the buffers under it
+/// would corrupt.
+///
+/// `visits` is asserted so a host that never called `reset` at all fails here
+/// rather than passing on an unvisited site.
+#[test]
+fn reset_runs_under_the_audio_thread_claim() {
+    let probe = Probe::acquire();
+    let mut inst = probe.activate();
+
+    // A block first, so `reset` lands on an instance that has actually
+    // processed — the state it exists to clear.
+    drive_block(&mut inst, 64);
+    inst.reset();
+    // Runs strictly after `reset` returned: if the claim leaked, the host would
+    // still consider this thread the audio thread here.
+    assert!(inst.poll_callback_requested());
+    inst.on_main_thread();
+
+    let cap = probe.capture();
+    assert_eq!(
+        cap.sites[Site::Reset as usize].visits, 1,
+        "the host must have called `clap_plugin->reset()` exactly once"
+    );
+    assert_roles(&cap, Site::Reset, false, true, "reset");
+    assert_roles(
+        &cap,
+        Site::OnMainThread,
+        true,
+        false,
+        "on_main_thread after a completed reset",
+    );
+}
+
 /// Leaving an `[audio-thread]` call must hand the audio-thread role back.
 ///
 /// A leaked claim makes every subsequent `[main-thread]` call answer

@@ -185,6 +185,43 @@ impl<T: super::ClapSample> ClapActive<T> {
         self.loaded.flags.processing
     }
 
+    /// Clear the plugin's processing state — buffers, filters, oscillators,
+    /// envelopes, LFOs — and kill its voices. Parameter values are unchanged.
+    ///
+    /// Call this on any playback discontinuity the host creates: a locate, a
+    /// loop wrap, a punch. Without it a reverb tail, a ringing filter or a hung
+    /// voice bleeds across the jump into material it never belonged to.
+    ///
+    /// Also resets the `steady_time` counter this instance passes to
+    /// `clap_process`. CLAP permits `steady_time` to jump backward **because**
+    /// `reset` was called, so the two belong in one call; `stop_processing`
+    /// zeroes it for the same reason, at the other discontinuity a host makes.
+    ///
+    /// # Threading
+    /// CLAP marks `reset` `[audio-thread & active]`. It lives on `ClapActive`
+    /// because that is the type whose existence *is* the `active` half — a
+    /// `ClapLoaded` has not activated, and the spec gives `reset` no
+    /// inactive-instance contract the way `params.flush` has. The
+    /// `[audio-thread]` half is taken here rather than asserted: the call runs
+    /// under an [`AudioThreadClaim`], so the calling OS thread becomes the
+    /// audio thread for its duration (which the spec permits for any thread)
+    /// and blocks until any in-flight `process` has returned. A host driving
+    /// this from its UI thread on a locate is therefore serialized against the
+    /// audio thread rather than racing it.
+    pub fn reset(&mut self) {
+        // Clone the Arc into a local so the claim borrows the local rather than
+        // `self` — the plugin call below needs `&mut self`. An Arc clone is an
+        // atomic increment, no allocation.
+        let host_state = Arc::clone(&self.loaded.host_state);
+        let _claim = host_state.claim_audio_thread();
+
+        let plugin_ref = unsafe { self.loaded.plugin.as_ref() };
+        if let Some(reset_fn) = plugin_ref.reset {
+            unsafe { reset_fn(self.loaded.plugin.as_ptr()) };
+        }
+        self.scratch.steady_time = 0;
+    }
+
     /// Stop processing (if started) and deactivate, transitioning back to a
     /// non-processing [`ClapLoaded`]. Consumes `self`.
     pub fn deactivate(mut self) -> ClapLoaded {

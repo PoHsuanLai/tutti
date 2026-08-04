@@ -269,14 +269,14 @@ impl ClapLoaded {
         // carries no DPI today, so we pass 1.0 and wire the `set_scale` call.
         let scale = 1.0_f64;
 
-        // Clear the previous editor's "already destroyed" latch *before* the
-        // embed sequence: the plugin may call `clap.gui.closed` from inside
+        // Clear the previous editor's window-destroyed latch *before* the embed
+        // sequence: the plugin may call `clap.gui.closed` from inside
         // `create`/`set_parent`/`show`, and clearing afterwards wiped that
-        // signal, leaving the host to `destroy` an already-torn-down editor.
+        // signal, leaving `close_editor` to `hide` a window that is gone.
         // Clearing first is safe — the latch describes a *previous* editor.
         self.host_state
             .gui
-            .already_destroyed
+            .window_destroyed
             .store(false, std::sync::atomic::Ordering::Release);
 
         let outcome = embed_editor_sequence(gui, self.plugin.as_ptr(), api, window_handle, scale)?;
@@ -372,29 +372,30 @@ impl ClapLoaded {
     }
 
     /// Hide and destroy the plugin editor, if one was opened. Idempotent.
+    ///
+    /// `gui.hide` is skipped when the plugin reported
+    /// `gui.closed(was_destroyed = true)`: that says its window is gone, and
+    /// `hide` acts on a window. `gui.destroy` runs either way —
+    /// `ext/gui.h` states the host "must call clap_plugin_gui->destroy() to
+    /// acknowledge the gui destruction", and the spec's own lifecycle pairs
+    /// `destroy` (step 14) with `create` (step 2), so it releases the gui
+    /// resources `create` allocated rather than the window that just closed.
+    /// Skipping it leaked those resources for the instance's lifetime.
     pub fn close_editor(&mut self) {
         self.assert_main_thread();
         if !self.flags.gui_created {
             return;
         }
-        // H5: if the plugin already destroyed its own editor (it reported
-        // `gui.closed(was_destroyed = true)`), skip hide/destroy entirely —
-        // calling `gui.destroy` again would be a double-destroy. Just clear our
-        // bookkeeping and consume the latch.
-        if self
+        let window_destroyed = self
             .host_state
             .gui
-            .already_destroyed
-            .swap(false, std::sync::atomic::Ordering::AcqRel)
-        {
-            self.flags.gui_created = false;
-            return;
-        }
+            .window_destroyed
+            .swap(false, std::sync::atomic::Ordering::AcqRel);
         // SAFETY: `gui_created` implies non-null — only `open_editor` sets it,
         // past its own null guard, and `ExtensionCache::gui` is never
         // reassigned after `load.rs` builds it.
         let gui = unsafe { &*self.extensions.gui.gui };
-        if let Some(hide_fn) = gui.hide {
+        if let (false, Some(hide_fn)) = (window_destroyed, gui.hide) {
             unsafe { hide_fn(self.plugin.as_ptr()) };
         }
         if let Some(destroy_fn) = gui.destroy {

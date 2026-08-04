@@ -450,15 +450,21 @@ fn close_editor_destroys_exactly_once() {
     );
 }
 
-/// When the plugin destroyed its own editor and told the host so via
-/// `gui.closed(was_destroyed = true)`, the host must **not** call `destroy`
-/// again.
+/// When the plugin's window went away and it told the host so via
+/// `gui.closed(was_destroyed = true)`, the host **must** still call `destroy`.
 ///
-/// A double-destroy is a use-after-free in the plugin, which is why the host
-/// keeps an `already_destroyed` latch rather than trusting `gui_created` alone.
-/// The probe's balance makes a second destroy visible: it would read -1.
+/// `ext/gui.h:241-242`: *"If was_destroyed is true, then the host must call
+/// clap_plugin_gui->destroy() to acknowledge the gui destruction."* The spec's
+/// own lifecycle (`gui.h:20-34`) pairs `destroy()` (step 14) with `create()`
+/// (step 2), so it releases the gui resources `create` allocated — not the
+/// window that just closed. The host read `was_destroyed` as "the plugin
+/// already ran destroy for you" and skipped it, leaking those resources for the
+/// instance's lifetime.
+///
+/// `hide` is the one call that *is* skipped: it acts on a window, and there is
+/// no longer one.
 #[test]
-fn close_editor_skips_destroy_after_plugin_self_destroyed() {
+fn close_editor_destroys_after_plugin_window_was_destroyed() {
     let probe = Probe::acquire(GuiMode::Embeddable);
     let mut loaded = probe.load();
 
@@ -474,35 +480,45 @@ fn close_editor_skips_destroy_after_plugin_self_destroyed() {
         "the host must record the plugin's `gui.closed` callback"
     );
     let after_open = probe.capture();
+    assert!(
+        after_open.window_destroyed,
+        "the probe must have reported was_destroyed = true — without it the \
+         assertions below would be testing the ordinary close path"
+    );
     assert_eq!(
-        after_open.create_balance, 0,
-        "the plugin destroyed its own editor, so nothing is live"
+        after_open.create_balance, 1,
+        "the window is gone but the gui object `create` allocated is not; the \
+         host still owes it a destroy"
     );
 
     loaded.close_editor();
 
     let cap = probe.capture();
+    assert!(
+        calls(&cap).contains(&GUI_CALL_DESTROY),
+        "the spec requires the host acknowledge the destruction with \
+         `gui.destroy`; skipping it leaks the plugin's gui resources"
+    );
     assert_eq!(
         cap.create_balance, 0,
-        "close_editor must skip hide/destroy entirely — calling destroy on an \
-         already-destroyed editor is a double-destroy, and would read -1 here"
+        "…and exactly once — a leak reads 1 here, a double-destroy -1"
     );
     assert!(
-        !calls(&cap).contains(&GUI_CALL_DESTROY),
-        "the host must not have called destroy at all"
+        !calls(&cap).contains(&GUI_CALL_HIDE),
+        "`hide` acts on a window, and the plugin just reported it has none"
     );
 }
 
-/// The same hazard, but the plugin self-destroys from **inside `show`** — while
-/// the host is still within `open_editor`.
+/// The same, but the plugin reports the destruction from **inside `show`** —
+/// while the host is still within `open_editor`.
 ///
-/// The host used to clear its `already_destroyed` latch *after*
+/// The host used to clear its window-destroyed latch *after*
 /// `embed_editor_sequence` returned, so this callback was wiped by the very
 /// call that carried it. Only a callback raised inside the sequence
 /// distinguishes clearing before it from clearing after; the out-of-band test
 /// above lands after the clear either way.
 #[test]
-fn close_editor_skips_destroy_after_plugin_self_destroyed_during_show() {
+fn close_editor_destroys_after_window_was_destroyed_during_show() {
     let probe = Probe::acquire(GuiMode::Embeddable);
     let mut loaded = probe.load();
 
@@ -518,42 +534,13 @@ fn close_editor_skips_destroy_after_plugin_self_destroyed_during_show() {
     );
 
     let after_open = probe.capture();
-    assert_eq!(
-        after_open.create_balance, 0,
-        "the plugin destroyed its own editor from inside show, so nothing is live"
-    );
-
-    loaded.close_editor();
-
-    let cap = probe.capture();
-    assert_eq!(
-        cap.create_balance, 0,
-        "close_editor must skip destroy — a second destroy on the editor the \
-         plugin already tore down would read -1 here"
-    );
     assert!(
-        !calls(&cap).contains(&GUI_CALL_DESTROY),
-        "the host must not have called destroy at all"
+        after_open.window_destroyed,
+        "the probe must have reported was_destroyed = true from inside `show`"
     );
-}
-
-/// `gui.closed(was_destroyed = false)` is the *other* half: the plugin's window
-/// went away but its resources are intact, so the host still owes it a
-/// `hide`/`destroy`. A host that treated every `closed` as self-destroyed would
-/// leak the plugin's GUI resources for the life of the instance.
-#[test]
-fn close_editor_still_destroys_when_plugin_was_not_destroyed() {
-    let probe = Probe::acquire(GuiMode::Embeddable);
-    let mut loaded = probe.load();
-
-    probe.command(GUI_CMD_CLOSED_NOT_DESTROYED);
-    loaded.open_editor(fake_parent()).expect("opens");
-
-    assert!(loaded.poll_gui_closed(), "the host records the callback");
     assert_eq!(
-        probe.capture().create_balance,
-        1,
-        "the editor is still allocated — the plugin only reported its window closed"
+        after_open.create_balance, 1,
+        "the gui object is still allocated — only the window went away"
     );
 
     loaded.close_editor();
@@ -561,8 +548,52 @@ fn close_editor_still_destroys_when_plugin_was_not_destroyed() {
     let cap = probe.capture();
     assert!(
         calls(&cap).contains(&GUI_CALL_DESTROY),
-        "was_destroyed = false means the plugin still holds gui resources, so \
-         the host must destroy them"
+        "a destruction reported mid-embed carries the same obligation as one \
+         reported between calls"
+    );
+    assert_eq!(cap.create_balance, 0, "…and exactly once");
+    assert!(
+        !calls(&cap).contains(&GUI_CALL_HIDE),
+        "`hide` is still skipped — the latch survived the embed sequence"
+    );
+}
+
+/// `gui.closed(was_destroyed = false)` is the *other* half: the plugin's window
+/// is still there and it merely lost the connection to its gui, so the host owes
+/// it the full `hide` **and** `destroy`.
+///
+/// The `hide` assertion is what keeps the two halves apart: `destroy` alone is
+/// now common to both, so a host that skipped the `was_destroyed` branch
+/// entirely would satisfy every other assertion here.
+#[test]
+fn close_editor_hides_and_destroys_when_window_was_not_destroyed() {
+    let probe = Probe::acquire(GuiMode::Embeddable);
+    let mut loaded = probe.load();
+
+    probe.command(GUI_CMD_CLOSED_NOT_DESTROYED);
+    loaded.open_editor(fake_parent()).expect("opens");
+
+    assert!(loaded.poll_gui_closed(), "the host records the callback");
+    let after_open = probe.capture();
+    assert!(
+        !after_open.window_destroyed,
+        "this path must report was_destroyed = false"
+    );
+    assert_eq!(
+        after_open.create_balance, 1,
+        "the editor is still allocated — the plugin only reported its window closed"
+    );
+
+    loaded.close_editor();
+
+    let cap = probe.capture();
+    assert!(
+        calls(&cap).contains(&GUI_CALL_HIDE),
+        "the window is still up, so CLAP wants it hidden before destroy"
+    );
+    assert!(
+        calls(&cap).contains(&GUI_CALL_DESTROY),
+        "and the host must destroy the gui resources it asked `create` for"
     );
     assert_eq!(cap.create_balance, 0, "…exactly once");
 }

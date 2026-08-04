@@ -814,9 +814,10 @@ fn test_clap_host_stores_host_data() {
 }
 
 #[test]
-fn host_gui_closed_was_destroyed_latches_already_destroyed() {
-    // H5: gui.closed(was_destroyed = true) must record that the plugin already
-    // tore its own editor down, so a later close_editor skips gui.destroy.
+fn host_gui_closed_was_destroyed_latches_window_destroyed() {
+    // gui.closed(was_destroyed = true) records that the plugin's *window* is
+    // gone, which is what makes close_editor skip gui.hide. It does not record
+    // that the gui object was released — the host still owes it a gui.destroy.
     // With was_destroyed = false the latch stays clear.
     use clap_sys::ext::gui::{clap_host_gui, CLAP_EXT_GUI};
     use std::sync::atomic::Ordering;
@@ -828,29 +829,29 @@ fn host_gui_closed_was_destroyed_latches_already_destroyed() {
     assert!(!gui_ext.is_null());
     let closed = unsafe { (*gui_ext).closed.unwrap() };
 
-    // was_destroyed = false: closed flag set, but no already_destroyed latch.
+    // was_destroyed = false: closed flag set, but no window_destroyed latch.
     unsafe { closed(raw, false) };
     assert!(host.state().gui.closed.load(Ordering::Acquire));
     assert!(
-        !host.state().gui.already_destroyed.load(Ordering::Acquire),
-        "was_destroyed=false must not latch already_destroyed"
+        !host.state().gui.window_destroyed.load(Ordering::Acquire),
+        "was_destroyed=false must not latch window_destroyed"
     );
 
-    // was_destroyed = true: latch set — close_editor will skip hide/destroy.
+    // was_destroyed = true: latch set — close_editor will skip hide.
     unsafe { closed(raw, true) };
     assert!(
-        host.state().gui.already_destroyed.load(Ordering::Acquire),
-        "was_destroyed=true must latch already_destroyed"
+        host.state().gui.window_destroyed.load(Ordering::Acquire),
+        "was_destroyed=true must latch window_destroyed"
     );
 
     // Emulate close_editor consuming the latch (swap → false).
     let was = host
         .state()
         .gui
-        .already_destroyed
+        .window_destroyed
         .swap(false, Ordering::AcqRel);
     assert!(was, "latch was set");
-    assert!(!host.state().gui.already_destroyed.load(Ordering::Acquire));
+    assert!(!host.state().gui.window_destroyed.load(Ordering::Acquire));
 }
 
 #[test]

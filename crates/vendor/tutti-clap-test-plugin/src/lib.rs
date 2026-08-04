@@ -345,7 +345,16 @@ unsafe extern "C" fn plugin_start_processing(plugin: *const clap_plugin) -> bool
 
 unsafe extern "C" fn plugin_stop_processing(_plugin: *const clap_plugin) {}
 
-unsafe extern "C" fn plugin_reset(_plugin: *const clap_plugin) {}
+unsafe extern "C" fn plugin_reset(plugin: *const clap_plugin) {
+    // THREADING: `[audio-thread & active]` — so `is_main` must read false here
+    // even though the host's test harness drives it from the OS main thread.
+    threading::record_thread_roles(threading::Site::Reset, plugin_host(plugin));
+    // Clear the cross-block processing state, which for this probe is the
+    // latency-mode delay line. A test feeds an impulse, resets, and asserts the
+    // tail no longer emerges — the observable that distinguishes a host which
+    // calls `reset` from one which does not.
+    clear_delay_lines();
+}
 
 unsafe extern "C" fn plugin_process(
     plugin: *const clap_plugin,
@@ -905,6 +914,15 @@ static DELAY: Mutex<DelayState> = Mutex::new(DelayState {
     cursor: 0,
 });
 
+/// Clear the latency-mode delay lines — the probe's whole cross-block
+/// processing state. Shared by the test-facing export below and by
+/// `plugin_reset`, which is the plugin honouring CLAP's `reset()` contract.
+fn clear_delay_lines() {
+    let mut d = DELAY.lock().unwrap_or_else(|p| p.into_inner());
+    d.lines = [[0.0; REPORTED_LATENCY_SAMPLES as usize]; MAX_DELAY_SLOTS];
+    d.cursor = 0;
+}
+
 /// Reset the latency-mode delay lines. A test drives several blocks through
 /// one instance, so state from a previous test would otherwise leak in.
 ///
@@ -912,9 +930,7 @@ static DELAY: Mutex<DelayState> = Mutex::new(DelayState {
 /// Safe to call; `extern "C"` only so the test can reach it across `dlopen`.
 #[no_mangle]
 pub unsafe extern "C" fn tutti_test_plugin_reset_delay() {
-    let mut d = DELAY.lock().unwrap_or_else(|p| p.into_inner());
-    d.lines = [[0.0; REPORTED_LATENCY_SAMPLES as usize]; MAX_DELAY_SLOTS];
-    d.cursor = 0;
+    clear_delay_lines();
 }
 
 /// Write the selected closed-form output into the host's output buffers.

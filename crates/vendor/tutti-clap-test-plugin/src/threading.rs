@@ -17,11 +17,13 @@
 //! | `process`         | `[audio-thread]`| (false, true)                |
 //! | `on_main_thread`  | `[main-thread]` | (true, false)                |
 //! | `on_timer`        | `[main-thread]` | (true, false)                |
+//! | `reset`           | `[audio-thread]`| (false, true)                |
 //!
-//! `start_processing` and `process` expect `is_main == false` *even when the
-//! host drives them from the OS main thread*, which the test harness does: the
-//! two roles are alternatives, so a plugin's own `assert(!is_main_thread())`
-//! inside an `[audio-thread]` call has to be able to fail.
+//! `start_processing`, `process` and `reset` expect `is_main == false` *even
+//! when the host drives them from the OS main thread*, which the test harness
+//! does: the two roles are alternatives, so a plugin's own
+//! `assert(!is_main_thread())` inside an `[audio-thread]` call has to be able
+//! to fail.
 //!
 //! Every field is a plain atomic rather than a `Mutex`, because the `process`
 //! and `start_processing` sites run on the audio thread of the very host being
@@ -62,10 +64,11 @@ pub enum Site {
     Process = 3,
     OnMainThread = 4,
     OnTimer = 5,
+    Reset = 6,
 }
 
 /// Number of [`Site`] variants — the length of [`ThreadCapture::sites`].
-pub const SITE_COUNT: usize = 6;
+pub const SITE_COUNT: usize = 7;
 
 /// What the host's `clap.thread-check` answered at one call site.
 ///
@@ -174,6 +177,7 @@ struct ThreadGlobals {
 
 static THREADING: ThreadGlobals = ThreadGlobals {
     sites: [
+        AtomicAnswer::new(),
         AtomicAnswer::new(),
         AtomicAnswer::new(),
         AtomicAnswer::new(),

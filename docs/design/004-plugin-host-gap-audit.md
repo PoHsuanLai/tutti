@@ -388,7 +388,7 @@ physical-pixel api, where the scale is an input to the geometry the plugin then
 reports. On cocoa/uikit the call does not happen at all, so its position in the
 sequence is vacuous rather than load-bearing.
 
-### C-5 · No `_COMPAT` extension id is ever queried · TODO
+### C-5 · No `_COMPAT` extension id is ever queried · DONE
 
 `src/instance/extensions.rs:152-222` queries exactly one id per extension; no
 `_COMPAT` constant appears anywhere in `src/`. All ten exist in clap-sys 0.5.0
@@ -404,6 +404,20 @@ track-info, no preset loading, no context menu. Fails **as silent absence** —
 indistinguishable from a plugin that genuinely lacks the feature. Widest blast
 radius of anything in this doc, since much of the shipping CLAP corpus predates
 1.2.
+
+**Fixed.** `ExtensionCache::get_either` asks the stable id, then the `_COMPAT`
+one, at all ten sites that have a compat spelling. The two names are the same
+interface at the same version — `clap.surround/4` and `clap.surround.draft/4`
+are both `/4` — so this is one interface with two names, not a shim with a
+conversion in it.
+
+Stable first, and pinned by a test: a plugin implementing *both* must bind to
+its current interface, and a draft-first host would silently prefer the older
+spelling for the whole session.
+
+Tested with a fake `get_extension` that answers exactly one id, which is what
+lets the draft-only case actually fail — the three tests cover draft-only,
+stable-only (asserting the draft is never asked), and neither.
 
 ### C-6 · `audio-ports.rescan` flags discarded; `is_rescan_flag_supported` lies · TODO
 

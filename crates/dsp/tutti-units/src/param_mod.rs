@@ -15,13 +15,22 @@
 //! base. That is what makes the two tiers compose rather than compete — one
 //! base, both tiers, no second accumulator.
 //!
+//! **Build an edge with [`wire_param_mod`]** (or [`build_param_mod`] if you own
+//! your wiring), not by assembling the three units by hand. The invariant above
+//! is a property of *how they are connected and whose cell the base is*, so it
+//! is one an assembler can hold and loose units cannot. The returned
+//! [`ParamModChain::base_cell`] is that cell; a caller that mints a private one
+//! instead gets a param frozen at its construction value, silently.
+//!
 //! All three are RT-safe: no allocation and no locks in `tick`/`process` — only
 //! atomic loads, arithmetic, and read-only LUT lookups.
 
 use std::sync::Arc;
 
-use tutti_core::dsp::Signal;
-use tutti_core::{AtomicF32, AudioUnit, BufferMut, BufferRef, Ordering, SignalFrame, Tail};
+use tutti_core::dsp::{Net, Signal};
+use tutti_core::{
+    AtomicF32, AudioUnit, BufferMut, BufferRef, NodeId, Ordering, SignalFrame, Tail,
+};
 use tutti_mod::{shape, CurveType, Polarity};
 
 /// LUT resolution for [`ParamShaperUnit`]. 256 points + linear interpolation is
@@ -203,6 +212,18 @@ pub struct AtomicSourceUnit {
 }
 
 impl AtomicSourceUnit {
+    /// A source over a **private** cell, reachable only through
+    /// [`shared`](Self::shared) on this value.
+    ///
+    /// Right for a base nothing else writes — a constant, a test fixture. For a
+    /// param that is a **modulation target**, prefer [`over`](Self::over) with
+    /// the cell a control-rate `AtomicTarget` mirrors into, or let
+    /// [`build_param_mod`] hand you the whole chain: a private cell means the
+    /// control-rate tier and the audio-rate base are two different atomics, and
+    /// the authored value silently stops moving.
+    ///
+    /// If you keep `new`, keep the handle. Calling this and dropping the value
+    /// is what freezes a param at its construction value.
     pub fn new(initial: f32) -> Self {
         Self {
             value: Arc::new(AtomicF32::new(initial)),
@@ -268,4 +289,139 @@ impl AudioUnit for AtomicSourceUnit {
     fn footprint(&self) -> usize {
         std::mem::size_of::<Self>()
     }
+}
+
+/// One materialised audio-rate param edge: its nodes, and the cell that owns
+/// its base.
+///
+/// Returned by [`build_param_mod`] and [`wire_param_mod`]. The node ids are for
+/// a host that needs to wire or retire them; [`base_cell`](Self::base_cell) is
+/// the part that is easy to lose and expensive to lose.
+pub struct ParamModChain {
+    /// The [`AtomicSourceUnit`] feeding the sum's base port.
+    pub base: NodeId,
+    /// The [`ParamSumUnit`]: `base + Σ offsets`, clamped once.
+    pub sum: NodeId,
+    /// One [`ParamShaperUnit`] per edge, in the order their offsets occupy the
+    /// sum's ports (`1..=N`).
+    pub shapers: Vec<NodeId>,
+    base_cell: Arc<AtomicF32>,
+}
+
+impl ParamModChain {
+    /// The cell the sum's base port reads — **this chain's single base owner**.
+    ///
+    /// Hand it to
+    /// [`AtomicTarget::with_mirror`](tutti_mod::AtomicTarget::with_mirror) and
+    /// the control-rate tier writes the same cell the audio-rate sum adds its
+    /// offsets onto: one base, both tiers, no second accumulator. An authored
+    /// write (a fader, a document edit) stores here directly.
+    ///
+    /// # Why this is worth a named accessor rather than a public field
+    ///
+    /// Because dropping it is silent. A node whose param port is wired **never
+    /// reads its own atomic** — `param_writer_ownership`'s
+    /// `a_wired_param_port_makes_the_node_ignore_its_atomic` pins that — so a
+    /// caller that mints a private cell instead ([`AtomicSourceUnit::new`])
+    /// gets code that compiles, runs, renders, and freezes the authored value
+    /// at whatever it was when the chain was built. Every later write lands
+    /// somewhere nothing reads.
+    ///
+    /// That is not hypothetical: it is what `bevy-tutti`'s `spawn_chain` did,
+    /// and it presented as "the cutoff knob does nothing", not as an error.
+    pub fn base_cell(&self) -> Arc<AtomicF32> {
+        Arc::clone(&self.base_cell)
+    }
+}
+
+/// One edge's shaping: which node drives it, and how its `[-1, 1]` becomes an
+/// offset.
+///
+/// A tuple would do, but four positional values of which three are
+/// nearly-interchangeable enums is exactly the shape that gets mis-ordered.
+pub struct ParamModEdge {
+    /// The node producing the raw `[-1, 1]` modulation signal.
+    pub source: NodeId,
+    pub depth: tutti_types::Depth,
+    pub polarity: Polarity,
+    pub curve: CurveType,
+}
+
+/// Create an audio-rate param edge's nodes, **unwired**.
+///
+/// For a host that owns its own wiring. `bevy-tutti` is one: it declares edges
+/// as `AudioSources` components and diffs them against `Net` each frame, so an
+/// edge `connect`ed behind the reconciler's back is reverted on the next pass.
+/// Such a host wants the nodes and the base cell, and makes the connections
+/// itself.
+///
+/// A host driving `Net` directly wants [`wire_param_mod`], which is this plus
+/// the connections.
+///
+/// `base`, `min` and `max` are the param's authored value and bounds in its own
+/// units. They stay bare `f32`: the sum is unit-erased by construction (see
+/// [`ParamSumUnit`]), matching `LayeredCurve`'s own erasure on the control-rate
+/// side.
+pub fn build_param_mod(
+    net: &mut Net,
+    base: f32,
+    min: f32,
+    max: f32,
+    edges: &[ParamModEdge],
+) -> ParamModChain {
+    let base_unit = AtomicSourceUnit::new(base);
+    // Taken *before* the unit is moved into the net — this handle is the whole
+    // point of the return value.
+    let base_cell = base_unit.shared();
+
+    let base_id = net.push(Box::new(base_unit));
+    let sum_id = net.push(Box::new(ParamSumUnit::new(edges.len(), min, max)));
+    let shapers = edges
+        .iter()
+        .map(|e| net.push(Box::new(ParamShaperUnit::new(e.depth, e.polarity, e.curve))))
+        .collect();
+
+    ParamModChain {
+        base: base_id,
+        sum: sum_id,
+        shapers,
+        base_cell,
+    }
+}
+
+/// Create an audio-rate param edge and connect it: `base + Σ shaped(source) →
+/// sink.port`.
+///
+/// The whole edge, for a host driving `Net` directly. `port` is the sink's
+/// param-input port, from
+/// [`ParamPorts::param_port`](crate::ParamPorts::param_port).
+///
+/// # `connect`, never `pipe_input`
+///
+/// `pipe_input` walks *every* input port of the sink, so it overwrites the
+/// param edge this just made — silently, since the graph stays valid and the
+/// param simply reverts to whatever the audio bus carries.
+/// `param_port_is_clobbered_by_pipe_input` pins that hazard. Wire a ported
+/// node's audio inputs with explicit `connect_input` calls.
+pub fn wire_param_mod(
+    net: &mut Net,
+    sink: NodeId,
+    port: usize,
+    base: f32,
+    min: f32,
+    max: f32,
+    edges: &[ParamModEdge],
+) -> ParamModChain {
+    let chain = build_param_mod(net, base, min, max, edges);
+
+    net.connect(chain.base, 0, chain.sum, 0); // port 0 = base
+    for (i, (edge, &shaper)) in edges.iter().zip(chain.shapers.iter()).enumerate() {
+        net.connect(edge.source, 0, shaper, 0);
+        // Offsets occupy ports 1..=N; port 0 is the base and must not be
+        // overwritten by an off-by-one here.
+        net.connect(shaper, 0, chain.sum, i + 1);
+    }
+    net.connect(chain.sum, 0, sink, port);
+
+    chain
 }

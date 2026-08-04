@@ -144,3 +144,56 @@ fn sharing_one_cell_makes_control_rate_and_audio_rate_compose() {
         out[0]
     );
 }
+
+/// **A private base cell cannot be moved by a control-rate write.**
+///
+/// The negative of `sharing_one_cell_makes_control_rate_and_audio_rate_compose`
+/// above, and the reason [`AtomicSourceUnit::over`] exists. Build the chain's
+/// base with `new()` — a cell only the chain can see — and a control-rate
+/// accumulator mirroring into *its own* cell has nowhere to land.
+///
+/// Nothing errors. The graph is valid, the node renders, and the authored value
+/// is simply frozen at whatever it was when the chain was built. That is the
+/// failure mode this file exists to make unmissable: it presented downstream as
+/// "the cutoff knob does nothing".
+#[test]
+fn a_private_base_cell_cannot_be_moved_by_a_control_rate_write() {
+    use tutti_mod::{AtomicTarget, ModTarget};
+
+    let mut net = Net::new(2, 2);
+    let dist = DistortionNode::with_param_inputs(2, ShapeKind::Tanh, 1.0, true);
+    let port = dist.param_port(UnitParam::Drive).unwrap();
+    let target = net.push(Box::new(dist));
+
+    // The chain's base is a private cell: `new`, and the handle is dropped.
+    let base = net.push(Box::new(AtomicSourceUnit::new(1.0)));
+    let sum = net.push(Box::new(ParamSumUnit::new(0, 0.0, 10.0)));
+    net.connect(base, 0, sum, 0);
+    net.connect(sum, 0, target, port);
+    net.connect_input(0, target, 0);
+    net.connect_input(1, target, 1);
+
+    let quiet = render(&mut net, target);
+
+    // A control-rate accumulator over a *different* cell — which is what an
+    // unshared chain leaves you with.
+    let elsewhere = Arc::new(AtomicF32::new(1.0));
+    let acc = AtomicTarget::with_mirror(1.0, 0.0, 10.0, Arc::clone(&elsewhere));
+    acc.set_base(9.0);
+
+    let mut out = [0.0f32; 2];
+    net.tick(&[0.5, 0.5], &mut out);
+
+    assert_eq!(
+        elsewhere.load(Ordering::Acquire),
+        9.0,
+        "the accumulator did flush — the write is not the thing that failed"
+    );
+    assert!(
+        (out[0] - quiet).abs() < 1e-6,
+        "with a private base cell the node cannot see the control-rate write, \
+         yet the output moved ({quiet} -> {}). If this fails, the two cells \
+         are somehow shared and the test no longer proves what it claims.",
+        out[0]
+    );
+}

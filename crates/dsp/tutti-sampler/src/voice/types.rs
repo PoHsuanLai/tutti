@@ -309,7 +309,10 @@ impl Voice {
     pub fn isolate(&mut self) {
         use tutti_core::AudioUnit;
         match &mut self.source {
-            VoiceSource::Memory(_) => {}
+            // Was a no-op while this tier shared nothing. It shares its gain
+            // cell now, so a render clone would otherwise follow the live
+            // voice's fader — see `MemorySource::isolate_gain`.
+            VoiceSource::Memory(s) => s.isolate_gain(),
             VoiceSource::Disk(voice) => voice.isolate(),
         }
     }

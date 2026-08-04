@@ -46,7 +46,6 @@ pub struct DiskSource {
     consumer: SharedReader,
     playing: AtomicBool,
 
-    gain: Amplitude,
     sample_rate: SampleRate,
 
     /// Shared state for cross-thread communication (speed, direction, seeking).
@@ -100,7 +99,6 @@ impl std::fmt::Debug for DiskSource {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DiskSource")
             .field("playing", &self.playing.load(Ordering::Relaxed))
-            .field("gain", &self.gain)
             .field("sample_rate", &self.sample_rate)
             .field("has_shared_state", &self.shared_state.is_some())
             .field("applied_reset_epoch", &self.applied_reset_epoch)
@@ -113,7 +111,6 @@ impl Clone for DiskSource {
         Self {
             consumer: Arc::clone(&self.consumer),
             playing: AtomicBool::new(self.playing.load(Ordering::Relaxed)),
-            gain: self.gain,
             sample_rate: self.sample_rate,
             shared_state: self.shared_state.clone(),
             applied_reset_epoch: self.applied_reset_epoch,
@@ -143,7 +140,6 @@ impl DiskSource {
         Self {
             consumer,
             playing: AtomicBool::new(true),
-            gain: Amplitude::new(1.0),
             sample_rate: SampleRate::SR_44K1,
             shared_state: Some(shared_state),
             applied_reset_epoch,
@@ -189,12 +185,27 @@ impl DiskSource {
         self.playing.load(Ordering::Relaxed)
     }
 
-    pub fn set_gain(&mut self, gain: Amplitude) {
-        self.gain = gain;
+    /// Publish a new output gain.
+    ///
+    /// `&self` and stored in the shared [`RtState`], not in a field: a value
+    /// stored by value here is written on a frontend clone and discarded by
+    /// `Net::migrate`, so a clip's fader would do nothing once its voice
+    /// existed. See `tutti_units`' crate docs for the rule.
+    pub fn set_gain(&self, gain: Amplitude) {
+        if let Some(ref state) = self.shared_state {
+            state.set_gain(gain);
+        }
     }
 
+    /// The current output gain.
+    ///
+    /// `Amplitude::new(1.0)` when this source has no shared state — unreachable
+    /// via the one constructor, which takes an `Arc<RtState>`, but the field is
+    /// an `Option` and unity is the honest answer for "no gain configured".
     pub fn gain(&self) -> Amplitude {
-        self.gain
+        self.shared_state
+            .as_ref()
+            .map_or(Amplitude::new(1.0), |s| s.gain())
     }
 
     /// Output width — this unit's `outputs()`.
@@ -246,7 +257,7 @@ impl DiskSource {
         let samples_needed = base_rate.advance(Samples(size)).get().ceil() as usize + 4;
 
         let ch = self.stride;
-        let gain = self.gain.get();
+        let gain = self.gain().get();
 
         // Fetch only the SHORTFALL, and keep whatever this block does not
         // consume for the next one.
@@ -392,7 +403,7 @@ impl AudioUnit for DiskSource {
             return;
         }
 
-        let gain = self.gain.get();
+        let gain = self.gain().get();
         if let Some(ref state) = self.shared_state {
             if state.next_seek_crossfade_frame_into(&mut output[..n]) {
                 for s in output[..n].iter_mut() {
@@ -469,7 +480,7 @@ impl AudioUnit for DiskSource {
             if state.is_seek_crossfading() {
                 for i in 0..size {
                     if state.next_seek_crossfade_frame_into(&mut xfade[..n]) {
-                        let g = self.gain.get();
+                        let g = self.gain().get();
                         for (c, &s) in xfade[..n].iter().enumerate() {
                             output.set_f32(c, i, s * g);
                         }
@@ -484,7 +495,7 @@ impl AudioUnit for DiskSource {
             if state.is_loop_crossfading() {
                 for i in 0..size {
                     if state.next_loop_crossfade_frame_into(&mut xfade[..n]) {
-                        let g = self.gain.get();
+                        let g = self.gain().get();
                         for (c, &s) in xfade[..n].iter().enumerate() {
                             output.set_f32(c, i, s * g);
                         }
@@ -695,7 +706,10 @@ impl DiskVoice {
         self.was_inside = false;
     }
 
-    pub fn set_gain(&mut self, gain: Amplitude) {
+    /// Publish a new output gain. `&self`: the write lands in the shared
+    /// [`RtState`], so no exclusivity is needed — and asking for `&mut` would
+    /// wrongly suggest this is a restructuring change requiring a respawn.
+    pub fn set_gain(&self, gain: Amplitude) {
         self.inner.set_gain(gain);
     }
 
@@ -1763,5 +1777,51 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// **A gain change must reach a voice that is already rendering.**
+    ///
+    /// The clone half of the live-value rule, at the disk tier. `Net`'s
+    /// frontend holds clones of its vertices, so a gain stored **by value** in
+    /// `DiskSource` is written on one copy and rendered from another — the
+    /// authored value silently stops having any effect once the voice exists.
+    /// `tutti_units`' crate docs state the rule; this pins it for the tier that
+    /// broke it.
+    ///
+    /// Asserted through a **clone**, not through the original, because that is
+    /// the only way the two storage conventions differ: a by-value field looks
+    /// perfect until something clones the unit, which `Net::commit` does to
+    /// every node on every graph edit.
+    #[test]
+    fn a_gain_change_reaches_a_cloned_voice() {
+        let (mut unit, _state) = make_unit(&[(1.0, 1.0); 256]);
+        unit.set_sample_rate(SampleRate(48_000.0));
+        unit.play();
+
+        // The clone stands in for the copy `Net::commit` hands the audio
+        // thread; the original stands in for the frontend the app writes to.
+        let mut rendering = unit.clone();
+
+        unit.set_gain(Amplitude::new(0.25));
+
+        let input = BufferVec::new(0);
+        let mut output = BufferVec::new(2);
+        let mut rendered = 0.0f32;
+        for _ in 0..4 {
+            rendering.process(8, &input.buffer_ref(), &mut output.buffer_mut());
+            for i in 0..8 {
+                let v = output.buffer_ref().at_f32(0, i).abs();
+                if v > rendered {
+                    rendered = v;
+                }
+            }
+        }
+
+        assert!(
+            (rendered - 0.25).abs() < 1e-4,
+            "a gain written on one copy of the voice must be seen by the copy \
+             that renders; expected ~0.25, got {rendered}. A value near 1.0 \
+             means `gain` is still stored by value and the write went nowhere."
+        );
     }
 }

@@ -538,3 +538,100 @@ fn a_range_edit_reaches_a_live_chain_without_respawning_it() {
          LFO's phase, which is exactly what the arity check protects"
     );
 }
+
+/// **A depth edit on a live route reaches its shaper.**
+///
+/// `ParamShaperUnit` bakes depth, polarity and curve into a LUT at construction
+/// and has no setter, and the reconciler's shape test is the group's *arity* —
+/// so before this was fixed, a depth slider changed the declaration and nothing
+/// else. The chain kept rendering with the depth it was born with, for its
+/// whole life. A dead control, exactly like the frozen base beside it.
+///
+/// # The assertions, and why each is needed
+///
+/// - The **shaper's output moved**: read by ticking the live node, not by
+///   trusting the declaration. This is the bug.
+/// - The **sum and base survived**: a whole-chain respawn would also make the
+///   first assertion pass while silently reverting the authored base to
+///   `ModParamRange`'s, which is the regression this shape of fix invites.
+/// - The **LFO's node survived**: the module's anti-respawn note protects the
+///   modulator's phase, and this pins that a shaper swap does not touch it.
+#[test]
+fn a_depth_edit_reaches_a_live_shaper() {
+    let (mut app, target, _) = app_with_target();
+    let lfo = spawn_lfo(&mut app);
+    let route = app
+        .world_mut()
+        .spawn(
+            ModRoute::new(lfo, target, ParamAddr::Unit(UnitParam::Drive))
+                .with_depth(Depth(0.1))
+                .per_sample(),
+        )
+        .id();
+    app.update();
+    app.update();
+
+    /// The shaper's offset at full-scale input — its effective depth.
+    fn shaped(app: &App, target: Entity) -> f32 {
+        let chains = app.world().resource::<AudioRateChains>();
+        let chain = chains
+            .get(target, ParamAddr::Unit(UnitParam::Drive))
+            .expect("the chain must exist");
+        let node = app.world().get::<AudioNode>(chain.shapers[0]).unwrap().0;
+        let graph = app.world().resource::<AudioGraphRes>();
+        let unit = graph
+            .0
+            .node_as::<tutti_units::ParamShaperUnit>(node)
+            .expect("the shaper is a ParamShaperUnit");
+        let mut out = [0.0f32; 1];
+        tutti_core::dsp::AudioUnit::tick(&mut unit.clone(), &[1.0], &mut out);
+        out[0]
+    }
+
+    let before = shaped(&app, target);
+    assert!(
+        (before - 0.1).abs() < 1e-3,
+        "the chain starts at its authored depth; got {before}"
+    );
+
+    let (sum_before, base_before, lfo_node_before) = {
+        let chains = app.world().resource::<AudioRateChains>();
+        let chain = chains
+            .get(target, ParamAddr::Unit(UnitParam::Drive))
+            .unwrap();
+        let lfo_node = app
+            .world()
+            .get::<ModSourceNode>(lfo)
+            .expect("the LFO must have a node")
+            .0;
+        (chain.sum, chain.base, lfo_node)
+    };
+
+    app.world_mut().get_mut::<ModRoute>(route).unwrap().depth = Depth(0.8);
+    app.update();
+
+    let after = shaped(&app, target);
+    assert!(
+        (after - 0.8).abs() < 1e-3,
+        "the edited depth must reach the live shaper; got {after} (was \
+         {before}). An unchanged value means the declaration moved and the \
+         rendered node did not."
+    );
+
+    let chains = app.world().resource::<AudioRateChains>();
+    let chain = chains
+        .get(target, ParamAddr::Unit(UnitParam::Drive))
+        .unwrap();
+    assert_eq!(
+        (chain.sum, chain.base),
+        (sum_before, base_before),
+        "only the shaper may be rebuilt — respawning the whole chain would \
+         revert the authored base to whatever ModParamRange last declared"
+    );
+    assert_eq!(
+        app.world().get::<ModSourceNode>(lfo).unwrap().0,
+        lfo_node_before,
+        "the LFO's node must survive: respawning it restarts its phase, which \
+         is what the anti-respawn policy actually protects"
+    );
+}

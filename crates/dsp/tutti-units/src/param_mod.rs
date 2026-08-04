@@ -342,7 +342,14 @@ impl ParamModChain {
 /// [`wire_param_mod`] takes the sources alongside, while a declarative host
 /// ([`build_param_mod`]) never tells this crate its sources at all. Putting a
 /// `NodeId` here would force that host to invent one.
-#[derive(Debug, Clone, Copy)]
+///
+/// `PartialEq` is load-bearing rather than a convenience derive.
+/// [`ParamShaperUnit`] bakes these three into a LUT at construction and exposes
+/// no setter, so the only way a reconciler can notice a route's shaping has
+/// moved is to compare what the declaration says against what the node was
+/// built from. Without that comparison a depth slider — which changes no node
+/// *count* — is invisible to a reconciler keyed on shape alone.
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ParamModShaping {
     pub depth: tutti_types::Depth,
     pub polarity: Polarity,

@@ -15,8 +15,16 @@
 //! [`rebuild`](super::rebuild) compiles the *value* matrix — a routing table the
 //! driver reads. This compiles a *graph*, and a graph is reconciled against what
 //! already exists rather than rebuilt from scratch: respawning the chain every
-//! time a depth slider moved would restart every LFO's phase and re-allocate
-//! nodes on a frame that only needed one atomic written.
+//! time a depth slider moved would re-allocate nodes on a frame that only
+//! needed one atomic written, and would revert the authored base — the chain's
+//! base cell does not survive a respawn.
+//!
+//! **What "do not respawn" protects, precisely.** The instinct is "it restarts
+//! the LFO", and that is true of a *source* node but not of this chain: the
+//! `LfoNode` lives on the `ModSource` entity ([`ModSourceNode`]), spawned once
+//! by [`ensure_source_nodes`] and skipped forever after. So a shaper can be
+//! swapped without touching a modulator's phase, which is what
+//! [`reshape_chain`] does for an edit no setter can carry.
 //!
 //! So the two are deliberately separate systems over the same declaration. A
 //! route asks for audio rate with [`ModDelivery::PerSample`]; anything else
@@ -60,6 +68,14 @@ pub struct ParamChain {
     pub sum: Entity,
     /// One shaper per route, in the order their offsets occupy the sum's ports.
     pub shapers: Vec<Entity>,
+    /// The shaping each live shaper was **built with**.
+    ///
+    /// `ParamShaperUnit` bakes depth, polarity and curve into a LUT at
+    /// construction and exposes no setter, so the only way to know a route's
+    /// shaping has moved is to remember what the node was made from. Without
+    /// this the reconciler's sole identity test is the group's *arity*, and a
+    /// depth slider — which changes no count — is invisible to it.
+    shaping: Vec<tutti_units::ParamModShaping>,
     /// The sink's param-port index, resolved from `ParamPorts` at spawn.
     pub port: usize,
     /// The atomic the base unit reads — **the chain's single base owner**.
@@ -244,6 +260,7 @@ fn spawn_chain(
         base,
         sum,
         shapers,
+        shaping,
         port,
         base_cell,
     })
@@ -441,13 +458,29 @@ pub fn reconcile_audio_rate(
         // restart. `min`/`max` are *not* refreshed — they are baked into
         // `ParamSumUnit` at construction and would need a respawn, which is
         // tracked separately.
-        if let Some(chain) = chains.0.get(&key) {
-            if chain.shapers.len() == group.len() {
-                if let Some(range) = ranges.get(key.0).ok().and_then(|r| r.get(key.1)) {
+        //
+        // Shaping is handled just below, and needs more than a store because
+        // `ParamShaperUnit` has no setter either.
+        if chains
+            .0
+            .get(&key)
+            .is_some_and(|c| c.shapers.len() == group.len())
+        {
+            if let Some(range) = ranges.get(key.0).ok().and_then(|r| r.get(key.1)) {
+                if let Some(chain) = chains.0.get(&key) {
                     chain.refresh_base(range.base);
                 }
-                continue;
             }
+            reshape_chain(
+                &mut commands,
+                &mut graph,
+                &mut dirty,
+                &mut chains,
+                key,
+                &group,
+                &source_nodes,
+            );
+            continue;
         }
         if let Some(old) = chains.0.remove(&key) {
             despawn_chain(&mut commands, &mut graph, &mut dirty, key.0, &old);
@@ -475,6 +508,90 @@ pub fn reconcile_audio_rate(
         ) {
             chains.0.insert(key, chain);
         }
+    }
+}
+
+/// Rebuild only those shapers whose declared shaping has moved.
+///
+/// # Why a targeted respawn rather than a setter or a whole-chain rebuild
+///
+/// [`ParamShaperUnit`](tutti_units::ParamShaperUnit) bakes depth, polarity and
+/// curve into a LUT at construction and exposes no setter, so a moved slider
+/// cannot be written into the live node — something has to be rebuilt.
+///
+/// Rebuilding the *chain* is what the module's anti-respawn note warns against,
+/// but read that note precisely: it protects the **LFO's phase**, and the LFO is
+/// not in the chain. `ensure_source_nodes` spawns it on the `ModSource` entity
+/// (`ModSourceNode`) and skips any source that already has one, so it survives
+/// anything done here. What a whole-chain respawn would actually cost is the
+/// base cell — the authored value would silently revert to `ModParamRange`'s —
+/// and two extra nodes churned for a param that only needed one.
+///
+/// So: one shaper out, one shaper in, the sum and the base untouched. A depth
+/// drag churns exactly one node per moved route per frame.
+fn reshape_chain(
+    commands: &mut Commands<'_, '_>,
+    graph: &mut AudioGraphRes,
+    dirty: &mut GraphDirty,
+    chains: &mut AudioRateChains,
+    key: ParamKey,
+    routes: &[&ModRoute],
+    source_nodes: &HashMap<Entity, Entity>,
+) {
+    let Some(chain) = chains.0.get_mut(&key) else {
+        return;
+    };
+
+    let mut sum_sources: Option<AudioSources> = None;
+    for (i, route) in routes.iter().enumerate() {
+        let want = tutti_units::ParamModShaping {
+            depth: route.depth,
+            polarity: route.polarity,
+            curve: route.curve,
+        };
+        if chain.shaping.get(i) == Some(&want) {
+            continue;
+        }
+
+        let unit = tutti_units::ParamShaperUnit::new(want.depth, want.polarity, want.curve);
+        let id = graph.0.add(unit);
+        let replacement = commands.spawn(tutti_core::AudioNode(id)).id();
+
+        // The new shaper needs the same feed the old one had. Re-declared from
+        // the route rather than copied off the old entity, because the route is
+        // the source of truth and the old entity is about to be despawned.
+        //
+        // A source with no node is not an error here — it means the LFO has not
+        // spawned yet. Leaving the old shaper in place is the right failure: a
+        // stale depth beats an offset port fed by nothing.
+        let Some(&feed) = source_nodes.get(&route.source) else {
+            commands.entity(replacement).despawn();
+            continue;
+        };
+        commands
+            .entity(replacement)
+            .insert(AudioSources::from(feed));
+
+        let old = std::mem::replace(&mut chain.shapers[i], replacement);
+        commands.entity(old).despawn();
+        chain.shaping[i] = want;
+
+        // The sum's declaration names the shaper *entity*, so it has to be
+        // re-declared with the replacement. Built once and inserted after the
+        // loop so N moved routes cost one component write, not N.
+        let sources = sum_sources.get_or_insert_with(|| {
+            let mut s = AudioSources::silent().with(0, AudioSource::node(chain.base));
+            for (j, &sh) in chain.shapers.iter().enumerate() {
+                s = s.with(j + 1, AudioSource::node(sh));
+            }
+            s
+        });
+        *sources = sources.clone().with(i + 1, AudioSource::node(replacement));
+        dirty.0 = true;
+    }
+
+    if let Some(sources) = sum_sources {
+        commands.entity(chain.sum).insert(sources);
     }
 }
 

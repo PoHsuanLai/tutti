@@ -159,9 +159,27 @@ impl Vst2Instance {
         instance.init();
         instance.set_sample_rate(sample_rate as f32);
         instance.set_block_size(block_size as i64);
+
+        // Read before `resume` because the precision announcement below has to
+        // happen while the plugin is still suspended.
+        let info = instance.get_info();
+
+        // `effSetProcessPrecision` is a suspended-state opcode, and a plugin
+        // that switches its internal precision on it reallocates the same
+        // buffers `effMainsChanged` does — so it goes here, between
+        // `effSetBlockSize` and the first resume.
+        //
+        // Announcing what the plugin declared, rather than a fixed width: this
+        // host renders through whichever entry point the caller asks for, and
+        // `process_f64` narrows to f32 exactly when the plugin cannot do f64
+        // (see `process.rs`). So the widest width the plugin will ever be
+        // entered at is the one its own `effFlagsCanDoubleReplacing` claims.
+        // Declaring 64-bit to a plugin that cannot do it would configure it for
+        // a call it never receives.
+        instance.set_precision(info.f64_precision);
+
         instance.resume();
 
-        let info = instance.get_info();
         // MIDI classification. Pin count / category is the primary signal, but
         // MIDI-effect plugins routinely declare 0 MIDI pins and advertise
         // capability only via `canDo`, so those weaker signals are OR-ed in.

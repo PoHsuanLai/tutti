@@ -48,10 +48,32 @@ fn lock_probe() -> MutexGuard<'static, ()> {
 }
 
 fn load_probe() -> (Vst2Instance, RenderScratch, PathBuf) {
+    load_probe_inner(false)
+}
+
+/// As [`load_probe`], with `effFlagsCanDoubleReplacing` declared so the host
+/// takes the native f64 render path rather than the narrowing fallback.
+fn load_probe_f64() -> (Vst2Instance, RenderScratch, PathBuf) {
+    load_probe_inner(true)
+}
+
+fn load_probe_inner(declares_f64: bool) -> (Vst2Instance, RenderScratch, PathBuf) {
     let path = probe_path::probe_path().clone();
     reset_probe(&path);
+    // SAFETY: callers hold `PROBE_LOCK`, so no other test thread is reading or
+    // writing the environment concurrently.
+    unsafe {
+        if declares_f64 {
+            std::env::set_var("TUTTI_VST2_PROBE_F64", "1");
+        } else {
+            std::env::remove_var("TUTTI_VST2_PROBE_F64");
+        }
+    }
     let instance = Vst2Instance::load(&path, SAMPLE_RATE, BLOCK)
         .unwrap_or_else(|e| panic!("host failed to load reference plugin at {path:?}: {e:?}"));
+    // The AEffect is built; clearing keeps the variable from outliving this load.
+    // SAFETY: as above.
+    unsafe { std::env::remove_var("TUTTI_VST2_PROBE_F64") };
     let meta = instance.metadata().clone();
     let scratch = RenderScratch::new(meta.num_inputs, meta.num_outputs, BLOCK);
     (instance, scratch, path)
@@ -162,6 +184,65 @@ fn process_f32_with_transport_does_not_allocate() {
          path this test exists to cover was never exercised"
     );
     assert_eq!(cap.time_tempo, 120.0, "host served the wrong tempo");
+}
+
+/// Render `iters` f64 blocks of silence, all buffers on the stack.
+fn drive_silent_f64(
+    inst: &mut Vst2Instance,
+    scratch: &mut RenderScratch,
+    iters: usize,
+    transport: &TransportInfo,
+) {
+    let mut in_l = [0.0f64; BLOCK];
+    let mut in_r = [0.0f64; BLOCK];
+    let mut out_l = [0.0f64; BLOCK];
+    let mut out_r = [0.0f64; BLOCK];
+    let ctx = ProcessContext::new(SAMPLE_RATE).transport(transport);
+    for _ in 0..iters {
+        let ins: &[&[f64]] = &[&in_l[..], &in_r[..]];
+        let outs: &mut [&mut [f64]] = &mut [&mut out_l[..], &mut out_r[..]];
+        let _ = inst.process_f64(ins, outs, BLOCK, &ctx, scratch);
+        // Touch the inputs so the optimiser cannot hoist the buffers out.
+        in_l[0] = out_l[0] * 0.0;
+        in_r[0] = out_r[0] * 0.0;
+    }
+}
+
+/// The f64 render path must be allocation-free too.
+///
+/// `RenderScratch` grew a second set of channel buffers and pointer tables to
+/// reach `processReplacingF64`; sizing them lazily on the first f64 block
+/// would put a `Vec` growth inside the callback. They are allocated in
+/// `RenderScratch::new` instead, and this is what holds that.
+#[test]
+fn process_f64_does_not_allocate() {
+    let _guard = lock_probe();
+    let (mut inst, mut scratch, path) = load_probe_f64();
+    assert!(
+        inst.metadata().supports_f64,
+        "the probe must declare f64 here, or this gates the narrowing \
+         fallback rather than the native f64 path"
+    );
+    let transport = playing_transport();
+
+    drive_silent_f64(&mut inst, &mut scratch, 32, &transport);
+
+    assert_no_alloc::assert_no_alloc(|| {
+        drive_silent_f64(&mut inst, &mut scratch, 256, &transport);
+    });
+
+    let cap = read_capture(&path);
+    assert!(cap.valid, "probe observed no render");
+    assert!(
+        cap.process_calls >= 256,
+        "expected at least the gated renders, saw {}",
+        cap.process_calls
+    );
+    assert_eq!(
+        cap.entry,
+        tutti_vst2_test_plugin::ProcessEntry::ReplacingF64,
+        "the gate covered the f32 slot, not the f64 one it exists for"
+    );
 }
 
 /// Same gate with MIDI in flight, so the staging/drain pools are exercised

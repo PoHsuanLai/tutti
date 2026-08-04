@@ -342,6 +342,8 @@ fn dispatch_inner(
 
         Ok(OpCode::StartProcess) => get_plugin().start_process(),
         Ok(OpCode::StopProcess) => get_plugin().stop_process(),
+        // `value` is the width: 0 = 32-bit, anything else = 64-bit.
+        Ok(OpCode::SetPrecision) => get_plugin().set_precision(value != 0),
 
         Ok(OpCode::GetNumMidiInputs) => {
             return unsafe { (*effect).get_info() }.midi_inputs as isize

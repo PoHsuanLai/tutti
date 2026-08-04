@@ -54,8 +54,8 @@ impl Vst2Instance {
                 editor: EditorPresence::measured(host_meta.has_editor),
             };
             let mut features = Features::empty();
-            // VST2's advertised f64 is informational only (the `vst` crate is
-            // f32-internally), but the flag reflects what the plugin declares.
+            // Backed by the render path: with this bit set, an `F64` buffer
+            // reaches `processReplacingF64` rather than being narrowed.
             features.set(Features::F64_AUDIO, host_meta.supports_f64);
             features.set(Features::MIDI_IN, host_meta.receives_midi);
             // MIDI-out is the plugin's declared output-bus count, not the

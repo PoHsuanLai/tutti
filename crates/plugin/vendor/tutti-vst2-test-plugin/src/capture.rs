@@ -83,6 +83,14 @@ pub struct ProcessCapture {
     /// Whether `effOpen` was dispatched before any render.
     pub initialized: bool,
 
+    /// Count of `effSetProcessPrecision` dispatches. Separate from the width
+    /// below so "the host never sent the opcode" and "the host sent 32-bit"
+    /// cannot collapse into the same zero.
+    pub set_precision_count: u32,
+    /// `value` of the last `effSetProcessPrecision`: `0` = 32-bit, `1` =
+    /// 64-bit. Meaningless while `set_precision_count` is 0.
+    pub set_precision_value: i32,
+
     /// Whether `audioMasterGetTime` returned a non-null `VstTimeInfo`.
     /// A host that never answers the transport query is a distinct failure
     /// from one that answers with wrong numbers, so both are recorded.
@@ -130,6 +138,8 @@ impl ProcessCapture {
             resume_count: 0,
             suspend_count: 0,
             initialized: false,
+            set_precision_count: 0,
+            set_precision_value: 0,
             time_info_present: false,
             time_sample_pos: 0.0,
             time_tempo: 0.0,

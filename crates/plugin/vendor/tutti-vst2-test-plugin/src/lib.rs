@@ -342,6 +342,13 @@ impl Plugin for ProbePlugin {
         capture::with_capture(|cap| cap.max_block_size = size);
     }
 
+    fn set_precision(&mut self, double: bool) {
+        capture::with_capture(|cap| {
+            cap.set_precision_count = cap.set_precision_count.saturating_add(1);
+            cap.set_precision_value = double as i32;
+        });
+    }
+
     fn resume(&mut self) {
         capture::with_capture(|cap| cap.resume_count = cap.resume_count.saturating_add(1));
         // `effMainsChanged` has no failure return, so a refusal is expressed

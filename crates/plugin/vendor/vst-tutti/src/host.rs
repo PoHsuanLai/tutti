@@ -1113,6 +1113,22 @@ impl Plugin for PluginInstance {
         self.dispatch(plugin::OpCode::StopProcess, 0, 0, ptr::null_mut(), 0.0);
     }
 
+    /// Dispatch `effSetProcessPrecision`, carrying the width in `value`:
+    /// `0` = 32-bit, `1` = 64-bit.
+    ///
+    /// The host-side override is needed for the same reason as
+    /// [`start_process`](Self::start_process) — the trait's default body
+    /// dispatches nothing.
+    fn set_precision(&mut self, double: bool) {
+        self.dispatch(
+            plugin::OpCode::SetPrecision,
+            0,
+            double as isize,
+            ptr::null_mut(),
+            0.0,
+        );
+    }
+
     fn vendor_specific(&mut self, index: i32, value: isize, ptr: *mut c_void, opt: f32) -> isize {
         self.dispatch(plugin::OpCode::VendorSpecific, index, value, ptr, opt)
     }
@@ -1651,6 +1667,18 @@ mod tests {
         assert!(matches!(
             plugin::OpCode::try_from(72),
             Ok(plugin::OpCode::StopProcess)
+        ));
+    }
+
+    /// `effSetProcessPrecision = 77`, pinned for the same reason as the pair
+    /// above. It sits four variants below `effStopProcess`, so it is the one
+    /// most exposed to a variant inserted anywhere in that range.
+    #[test]
+    fn set_precision_opcode_matches_the_sdk() {
+        assert_eq!(plugin::OpCode::SetPrecision as i32, 77);
+        assert!(matches!(
+            plugin::OpCode::try_from(77),
+            Ok(plugin::OpCode::SetPrecision)
         ));
     }
 

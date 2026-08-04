@@ -237,7 +237,7 @@ re-sizing buffers while active.
 
 ## C. CLAP
 
-### C-1 · `gui.closed(was_destroyed=true)` skips the mandated `destroy()` · TODO
+### C-1 · `gui.closed(was_destroyed=true)` skips the mandated `destroy()` · DONE
 
 `src/host/callbacks.rs:276-287` latches `already_destroyed`;
 `src/instance/polling.rs:383-392` reads the latch and returns early, skipping
@@ -260,7 +260,7 @@ later `close_editor` can recover.
 Fixing this means correcting the two doc comments as well — they are the reason
 the code looks deliberate.
 
-### C-2 · `clap_plugin->reset()` is never called · TODO
+### C-2 · `clap_plugin->reset()` is never called · DONE
 
 No call site in `src/` (verified: greps hit only `drop_in_place` and
 `load_preset`).
@@ -275,6 +275,25 @@ Aggravating: the host **does** reset `steady_time` to 0 at
 
 Consequence: on locate, loop wrap or any discontinuity, stale reverb tails,
 ringing filters and hung voices bleed across the jump.
+
+**Landed** as `ClapActive::reset()` — on `ClapActive` rather than `ClapLoaded`
+because the annotation is `[audio-thread & active]` and that type's existence
+*is* the active half. (`flush_params` sits on `ClapLoaded` because CLAP gives it
+a two-branch contract, `[active ? audio-thread : main-thread]`; `reset` has no
+inactive contract.) It takes the `AudioThreadClaim` the way `stop_processing`
+does rather than a `debug_assert`, because the claim serializes against an
+in-flight `process` and an assertion does not. It also zeroes
+`scratch.steady_time`, which is what earns the backward jump the spec licences.
+
+**Follow-up, deliberately not done here (C-2a):** the *subprocess* path still
+cannot reset a CLAP plugin's DSP state. `PluginAudio` has no reset hook
+(`format_host.rs:38-50` — only `process` and `set_sample_rate`), and
+`HostMessage::Reset` is handled at `session.rs:183` as `Ok(Reaction::None)`.
+That handler's comment is correct about what it covers — host pipeline
+bookkeeping, dropped in-flight blocks, sequence numbers — but it is now
+incomplete: none of that clears the plugin's filters and voices. Wiring it needs
+a `PluginAudio::reset` default-no-op plus a `session.rs` dispatch, which is a
+cross-format trait decision rather than part of this fix.
 
 ### C-3 · Offline render unreachable · DONE — superseded by A-2
 
@@ -398,7 +417,7 @@ code degrades gracefully.
 
 ## D. VST2
 
-### D-1 · f64 is negotiated and then silently downcast to f32 · TODO
+### D-1 · f64 is negotiated and then silently downcast to f32 · DONE
 
 `formats/tutti-vst2-host/src/process.rs:124-137` — `process_block`
 unconditionally builds `vst::buffer::AudioBuffer<f32>`. Both `process_f32`

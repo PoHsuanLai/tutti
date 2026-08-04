@@ -553,6 +553,18 @@ pub trait Plugin: Send {
     /// This method is only called while the plugin is in the *suspended* state.
     fn set_block_size(&mut self, size: i64) {}
 
+    /// Called when the host chooses which render entry point it will use —
+    /// `effSetProcessPrecision`. `double` is true for `processReplacingF64`,
+    /// false for `processReplacing`.
+    ///
+    /// Distinct from `effFlagsCanDoubleReplacing`, which says only what the
+    /// plugin *can* do: a plugin supporting both widths configures its
+    /// internal precision on this call, and one never told stays at whatever
+    /// it defaulted to.
+    ///
+    /// This method is only called while the plugin is in the *suspended* state.
+    fn set_precision(&mut self, double: bool) {}
+
     /// Called to transition the plugin into the *resumed* state.
     fn resume(&mut self) {}
 

@@ -68,10 +68,11 @@ pub fn load_client(
         },
         editor: EditorPresence::measured(host_meta.has_editor),
     };
-    // VST2 feature set — mirrors the out-of-process VST2 loader: f64 (advertised,
-    // informational), MIDI both directions from the combined flag, editor, and a
-    // transport snapshot each block. No sample-accurate automation, note
-    // expression, sequencer context, or host-driven editor resize.
+    // VST2 feature set — mirrors the out-of-process VST2 loader: f64 (backed by
+    // `processReplacingF64`), MIDI both directions from the combined flag,
+    // editor, and a transport snapshot each block. No sample-accurate
+    // automation, note expression, sequencer context, or host-driven editor
+    // resize.
     let mut features = Features::empty();
     features.set(Features::F64_AUDIO, host_meta.supports_f64);
     features.set(Features::MIDI_IN, host_meta.receives_midi);

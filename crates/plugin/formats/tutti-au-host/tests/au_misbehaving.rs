@@ -48,7 +48,8 @@ use tutti_types::Samples;
 
 mod support;
 use support::probe_au::{
-    Misbehaviour, LIED_LATENCY_SAMPLES, LYING_ELEMENT_COUNT, PROBE_RENDER_LEVEL, STALE_POISON,
+    Misbehaviour, CLAMPED_MAX_FRAMES, LIED_LATENCY_SAMPLES, LYING_ELEMENT_COUNT,
+    PROBE_RENDER_LEVEL, STALE_POISON,
 };
 
 /// Block size every test renders at.
@@ -290,6 +291,132 @@ fn a_negative_latency_saturates_instead_of_wrapping() {
         result.expect("render must survive a negative latency report");
         assert!(all_finite(&out));
     }
+}
+
+/// An AU that clamps the block size at **load** must be refused, not recorded.
+///
+/// This is the load-path twin of `set_block_size`'s verification, and the gap it
+/// closes. `StreamConfig::apply` writes `MaximumFramesPerSlice` and `?`s on the
+/// *set* alone; a clamping AU returns `noErr` from that write while keeping a
+/// smaller figure. The constructor used to store the requested number
+/// regardless, so `block_size()` reported a width the AU had not allocated for
+/// and `process` — which admits any `num_frames` up to that recorded number —
+/// would wave through a render the AU writes past its own buffers on.
+///
+/// Every path into an AU goes through this constructor, so verifying only on the
+/// resize path left the hazard unguarded exactly where a host cannot avoid it.
+///
+/// The requested size is above [`CLAMPED_MAX_FRAMES`] so the clamp actually
+/// bites; the accepted-branch control below is what proves this probe is not
+/// simply refusing everything.
+#[test]
+fn a_clamped_block_size_is_refused_at_load() {
+    let over = CLAMPED_MAX_FRAMES * 4;
+    let err = Misbehaviour::ClampsBlockSize
+        .try_open(RATE, over)
+        .err()
+        .unwrap_or_else(|| {
+            panic!(
+                "the probe clamped {over} down to {CLAMPED_MAX_FRAMES} and the \
+                 host loaded anyway. `block_size()` now reports a width the AU \
+                 never allocated for, and `process` admits frame counts up to it."
+            )
+        });
+
+    match err {
+        tutti_au_host::AuError::BlockSizeRejected {
+            requested,
+            accepted,
+        } => {
+            assert_eq!(requested, over, "the error must carry what was asked for");
+            assert_eq!(
+                accepted, CLAMPED_MAX_FRAMES,
+                "the error must carry what the AU kept — the two figures \
+                 together are what makes this diagnosable"
+            );
+        }
+        other => panic!("expected BlockSizeRejected, got {other:?}"),
+    }
+}
+
+/// The control: a size the same probe accepts must load and render.
+///
+/// Without this, `a_clamped_block_size_is_refused_at_load` passes just as well
+/// against a host that refuses every load, or a probe that fails to instantiate
+/// at all — the assertion would be about the harness rather than about the
+/// clamp. Both sizes are driven through one probe, so the only difference
+/// between the two outcomes is whether the clamp bit.
+#[test]
+fn a_block_size_under_the_clamp_loads_and_renders() {
+    let under = CLAMPED_MAX_FRAMES / 2;
+    let mut au = Misbehaviour::ClampsBlockSize
+        .try_open(RATE, under)
+        .expect("a size at or below the probe's ceiling must be accepted");
+    assert_eq!(
+        au.block_size(),
+        under,
+        "an accepted size must be the one recorded"
+    );
+
+    au.initialize().expect("initialize at an accepted size");
+    let input = vec![vec![0.0f32; under as usize]; 2];
+    let mut output = vec![vec![STALE_POISON; under as usize]; 2];
+    {
+        let ins: Vec<&[f32]> = input.iter().map(|v| v.as_slice()).collect();
+        let mut outs: Vec<&mut [f32]> = output.iter_mut().map(|v| v.as_mut_slice()).collect();
+        au.process(&ins, &mut outs, under)
+            .expect("render at an accepted size");
+    }
+    assert!(all_finite(&output), "output must stay finite");
+}
+
+/// A resize into the clamp must be refused too, and must not corrupt the config.
+///
+/// `set_block_size` already verified; what this pins is that the rollback leaves
+/// the instance at the size the AU is still running at, so a caller that ignores
+/// the error does not inherit the rejected figure — the same guarantee
+/// `a_block_size_is_either_applied_or_rolled_back` makes across the corpus, but
+/// against a unit that genuinely drives the rejection branch. No Apple unit on
+/// this machine does.
+#[test]
+fn a_resize_into_the_clamp_is_refused_and_rolled_back() {
+    let under = CLAMPED_MAX_FRAMES / 2;
+    let mut au = Misbehaviour::ClampsBlockSize
+        .try_open(RATE, under)
+        .expect("open below the clamp");
+
+    let over = CLAMPED_MAX_FRAMES * 8;
+    let err = au
+        .set_block_size(over)
+        .expect_err("a size the AU clamps must not report success");
+    assert!(
+        matches!(
+            err,
+            tutti_au_host::AuError::BlockSizeRejected {
+                accepted: CLAMPED_MAX_FRAMES,
+                ..
+            }
+        ),
+        "expected the clamped figure in the error, got {err:?}"
+    );
+    assert_eq!(
+        au.block_size(),
+        under,
+        "a rejected resize must leave the previous size recorded, not the \
+         rejected one"
+    );
+
+    // And the instance is still usable at the size it rolled back to.
+    au.initialize().expect("initialize after a rejected resize");
+    let input = vec![vec![0.0f32; under as usize]; 2];
+    let mut output = vec![vec![0.0f32; under as usize]; 2];
+    {
+        let ins: Vec<&[f32]> = input.iter().map(|v| v.as_slice()).collect();
+        let mut outs: Vec<&mut [f32]> = output.iter_mut().map(|v| v.as_mut_slice()).collect();
+        au.process(&ins, &mut outs, under)
+            .expect("render after a rejected resize");
+    }
+    assert!(all_finite(&output));
 }
 
 /// An AU over-reporting `ElementCount` must not drive the host out of bounds.

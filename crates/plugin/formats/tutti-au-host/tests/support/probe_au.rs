@@ -91,6 +91,14 @@ pub const PROBE_RENDER_LEVEL: f32 = 0.5;
 /// correct render, silence, leaked scratch — are all distinguishable.
 pub const STALE_POISON: f32 = -0.75;
 
+/// The ceiling a [`Misbehaviour::ClampsBlockSize`] probe silently clamps every
+/// `MaximumFramesPerSlice` write down to.
+///
+/// Small enough that the sizes the suites open at (64, 512, 1024, 4096) sit on
+/// both sides of it, so the same probe exercises the accepted branch and the
+/// clamped one without a second component.
+pub const CLAMPED_MAX_FRAMES: u32 = 128;
+
 /// One spec violation a probe AU can commit.
 ///
 /// Each variant is registered as its own AudioComponent under the subtype code
@@ -135,6 +143,17 @@ pub enum Misbehaviour {
     /// Writes only half the requested frames, and reports an `mDataByteSize`
     /// smaller than the buffer the host supplied.
     WritesFewerFrames,
+    /// Accepts every `MaximumFramesPerSlice` write with `noErr` while clamping
+    /// the stored value to [`CLAMPED_MAX_FRAMES`], and reports the clamped
+    /// figure back.
+    ///
+    /// The property is documented as writable, so returning `noErr` from a write
+    /// the AU only partly honoured is within what a unit may do — which is
+    /// exactly why a host cannot learn the truth from the set's status and has to
+    /// read the value back. Every Apple unit measured on macOS 15.6 accepts every
+    /// size offered from 64 to 8192, so nothing in the corpus reaches this path
+    /// and only a probe can drive it.
+    ClampsBlockSize,
 }
 
 impl Misbehaviour {
@@ -155,6 +174,7 @@ impl Misbehaviour {
             Self::GarbageFactoryPresets => b"pgbp",
             Self::NullFactoryPresets => b"pnup",
             Self::WritesFewerFrames => b"pfew",
+            Self::ClampsBlockSize => b"pclm",
         }
     }
 
@@ -172,6 +192,7 @@ impl Misbehaviour {
             Self::GarbageFactoryPresets => "probe with garbage FactoryPresets",
             Self::NullFactoryPresets => "probe with NULL FactoryPresets",
             Self::WritesFewerFrames => "probe that writes fewer frames",
+            Self::ClampsBlockSize => "probe that clamps the block size",
         }
     }
 
@@ -189,6 +210,7 @@ impl Misbehaviour {
         Misbehaviour::GarbageFactoryPresets,
         Misbehaviour::NullFactoryPresets,
         Misbehaviour::WritesFewerFrames,
+        Misbehaviour::ClampsBlockSize,
     ];
 
     /// Register this probe (once per process) and return its component info.
@@ -221,12 +243,22 @@ impl Misbehaviour {
     /// transition; tests that want a running unit call
     /// [`open_initialized`](Self::open_initialized).
     pub fn open(self, rate: f64, block: u32) -> AuInstance {
+        self.try_open(rate, block)
+            .unwrap_or_else(|e| panic!("{}: instantiate failed: {e:?}", self.label()))
+    }
+
+    /// Instantiate this probe, surfacing a refusal instead of panicking.
+    ///
+    /// [`open`](Self::open) is the right shape for the probes whose misbehaviour
+    /// happens *after* construction, but a config the AU declines makes the
+    /// constructor itself the thing under test — and a panicking opener can only
+    /// assert that a load succeeded, never that it was correctly refused.
+    pub fn try_open(self, rate: f64, block: u32) -> tutti_au_host::Result<AuInstance> {
         let info = self.require();
         // SAFETY: `info.component` came from `AudioComponentFindNext` via
         // `enumerate_components_of_type`, so it is a live factory handle for the
         // lifetime of this process.
         unsafe { AuInstance::new(info.component, rate, block) }
-            .unwrap_or_else(|e| panic!("{}: instantiate failed: {e:?}", self.label()))
     }
 
     /// Instantiate and initialize, panicking if either step fails.
@@ -270,6 +302,15 @@ struct Probe {
     interface: PlugInInterface,
     behaviour: Misbehaviour,
     sample_rate: f64,
+    /// The `MaximumFramesPerSlice` this instance is holding.
+    ///
+    /// Stored rather than answered from a constant so the property behaves the
+    /// way the AU contract describes: a write updates it and a read reports what
+    /// the write left. Only [`Misbehaviour::ClampsBlockSize`] deviates, by
+    /// clamping on the way in. It previously read back a fixed 4096 no matter
+    /// what was written, which made *every* probe a clamping AU by accident and
+    /// would have masked the one that clamps on purpose.
+    max_frames_per_slice: u32,
     /// Backing store for the garbage `FactoryPresets` array, kept alive for as
     /// long as the instance so the host's walk reads registered memory rather
     /// than freed memory. The point of the test is the host's *handling*, not a
@@ -477,7 +518,10 @@ unsafe extern "C" fn probe_get_property(
                 write_property(data, io_size, n)
             }
             x if x == sys::kAudioUnitProperty_MaximumFramesPerSlice => {
-                write_property(data, io_size, 4096u32)
+                // Report what the last write left, which for every probe but
+                // `ClampsBlockSize` is exactly what the host asked for. See the
+                // field's docs for what a fixed answer here used to hide.
+                write_property(data, io_size, p.max_frames_per_slice)
             }
             x if x == sys::kAudioUnitProperty_LastRenderError => {
                 write_property(data, io_size, 0i32)
@@ -597,8 +641,24 @@ unsafe extern "C" fn probe_set_property(
             p.sample_rate = asbd.mSampleRate;
             return 0;
         }
-        // Render-callback installs, MaximumFramesPerSlice and bypass are all
-        // accepted silently: none of them is what any probe is testing.
+        if id == sys::kAudioUnitProperty_MaximumFramesPerSlice {
+            if data.is_null() || (size as usize) < std::mem::size_of::<u32>() {
+                return ERR_INVALID_PROPERTY_VALUE;
+            }
+            let requested = std::ptr::read_unaligned(data as *const u32);
+            // `noErr` either way — a clamping AU reports success and keeps a
+            // smaller figure, which is the whole point of the variant and the
+            // reason the host has to read the value back rather than trust this
+            // status.
+            p.max_frames_per_slice = if p.behaviour == Misbehaviour::ClampsBlockSize {
+                requested.min(CLAMPED_MAX_FRAMES)
+            } else {
+                requested
+            };
+            return 0;
+        }
+        // Render-callback installs and bypass are accepted silently: neither is
+        // what any probe is testing.
         0
     })
 }
@@ -826,6 +886,10 @@ fn make_probe(behaviour: Misbehaviour) -> *mut PlugInInterface {
         },
         behaviour,
         sample_rate: 48_000.0,
+        // AudioToolbox's own default before any host writes one. Every path into
+        // a probe applies a `StreamConfig` first, so this is only ever read if
+        // that write is skipped.
+        max_frames_per_slice: 1156,
         garbage_presets: None,
     });
     Box::into_raw(p) as *mut PlugInInterface
@@ -870,6 +934,7 @@ probe_factories! {
     factory_garbage_presets => Misbehaviour::GarbageFactoryPresets,
     factory_null_presets => Misbehaviour::NullFactoryPresets,
     factory_fewer_frames => Misbehaviour::WritesFewerFrames,
+    factory_clamps_block_size => Misbehaviour::ClampsBlockSize,
 }
 
 extern "C" {

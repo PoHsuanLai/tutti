@@ -96,7 +96,9 @@ impl AuInstance {
     ///
     /// # Errors
     /// Returns [`AuError::OsStatus`] if instantiation or initial stream-format
-    /// configuration fails.
+    /// configuration fails, or [`AuError::BlockSizeRejected`] if the AU keeps a
+    /// `MaximumFramesPerSlice` other than `block_size` — see
+    /// [`AuLoaded::new`] for why that is fatal at load.
     pub unsafe fn new(
         component: AudioComponent,
         sample_rate: f64,
@@ -1722,7 +1724,9 @@ impl AuInstance {
     ///   rather than recording a width the AU is not running at. `process`
     ///   rejects `num_frames > block_size`, so a config holding a larger figure
     ///   than the AU allocated turns that guard into a false negative — the
-    ///   render is admitted and the AU writes past its own buffers.
+    ///   render is admitted and the AU writes past its own buffers. The same
+    ///   read-back guards the load path too, in the shared constructor tail of
+    ///   [`AuLoaded`]; a size that never reaches this method is checked there.
     /// * on any failure the previous size is restored into the config **and**
     ///   re-applied to the AU, so a caller that ignores the error does not
     ///   inherit a lie.
@@ -1786,6 +1790,16 @@ impl AuLoaded {
     ///
     /// # Safety
     /// `component` must be a valid, non-null `AudioComponent`.
+    ///
+    /// # Errors
+    /// [`AuError::BlockSizeRejected`] when the AU keeps a
+    /// `MaximumFramesPerSlice` other than `block_size`. The write returns
+    /// `noErr` even from an AU that clamps to its own maximum, so the accepted
+    /// value is read back: recording the larger requested figure would turn
+    /// [`AuInstance::process`]'s `num_frames > block_size` guard into a false
+    /// negative, admitting a render the AU writes past its own buffers on.
+    /// Plus whatever the stream-format apply propagates, including
+    /// [`AuError::SampleRateRejected`].
     pub unsafe fn new(
         component: AudioComponent,
         sample_rate: f64,
@@ -1831,13 +1845,40 @@ impl AuLoaded {
         Self::with_layout(AuHandle::new(component)?, config)
     }
 
-    /// Shared tail of both constructors: apply the config, then record the layout
-    /// the AU actually accepted.
+    /// Shared tail of both constructors: apply the config, verify the block size
+    /// stuck, then record the layout the AU actually accepted.
+    ///
+    /// # Errors
+    /// [`AuError::BlockSizeRejected`] when the AU kept a `MaximumFramesPerSlice`
+    /// other than the requested one, plus whatever [`StreamConfig::apply`]
+    /// propagates.
+    ///
+    /// The block size is verified here, not only in
+    /// [`AuInstance::set_block_size`], because this is the tail **every** load
+    /// funnels through and the hazard is identical on both paths: an AU that
+    /// clamps to its own maximum returns `noErr` from the set while keeping a
+    /// smaller figure, and the recorded larger number then turns
+    /// [`AuInstance::process`]'s `num_frames > block_size` guard into a false
+    /// negative — the render is admitted and the AU writes past buffers it sized
+    /// for fewer frames. Verifying only on the resize path left that unguarded
+    /// on the one path a host cannot avoid taking.
+    ///
+    /// A failure is an `Err` rather than a silent adoption of the accepted
+    /// figure, which matches how the two other non-negotiable properties are
+    /// handled: `apply` `?`s on the `MaximumFramesPerSlice` *set* and makes a
+    /// rejected sample rate fatal. Adopting the AU's number instead would hand
+    /// back an instance configured at a width its caller never asked for, and
+    /// the caller sized its own buffers from the request — the same mismatch in
+    /// the other direction. The channel layout is the deliberate exception: it
+    /// is *returned* rather than enforced because a narrower width is
+    /// recoverable by resizing the scratch, and nothing downstream indexes past
+    /// an allocation on account of it.
     fn with_layout(handle: AuHandle, mut config: StreamConfig) -> Result<Self> {
         // `apply` returns the layout the AU actually accepted, which may differ
         // from what we requested. Store the effective layout so the render
         // scratch is later sized to the real topology (FIX 3).
         config.channels = config.apply(&handle)?;
+        config.verify_block_size(&handle)?;
 
         Ok(Self {
             handle,

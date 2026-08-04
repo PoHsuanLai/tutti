@@ -16,11 +16,15 @@ mod audio_unit;
 mod batcher;
 mod capability_view;
 mod harmony_source;
-mod input_slot;
+// `input_slot` / `transport_source` are `pub(crate)` rather than private: the
+// in-process VST2 node (`crate::format::vst2_in_process`) is a peer host, not a
+// subprocess client, and reuses the same gated per-block transport plumbing
+// rather than hand-rolling a second copy of the shared-cell contract.
+pub(crate) mod input_slot;
 mod note_expression_source;
 mod param_automation_source;
 mod process;
-mod transport_source;
+pub(crate) mod transport_source;
 
 #[cfg(test)]
 mod process_pipeline_tests;

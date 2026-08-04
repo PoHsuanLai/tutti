@@ -195,8 +195,16 @@ type ParamsNeedRebind = (
 /// accumulator each call and stores nothing. So each rebuild would mint a new
 /// `Arc`, hand it to the router, and leave the plugin reading the previous one —
 /// the param would sit silently at its base while the modulation appeared to be
-/// connected. That is harmless for a native node, whose `mod_target` returns its
-/// *existing* `AtomicTarget`, which is exactly why the trap is invisible.
+/// connected.
+///
+/// A native node survives this **not** because it returns an existing
+/// accumulator — `atomic_target` also constructs a fresh `AtomicTarget` every
+/// call — but because the accumulator it builds *mirrors into the node's own
+/// `AtomicF32`*, which the node keeps reading. The `Arc` is new; the cell it
+/// writes through is the same one. That is a narrower guarantee than it looks,
+/// and it has one real consequence: see
+/// [`rebuild`](crate::modulation::rebuild)'s note on a rebuild re-seeding the
+/// base from `ModParamRange`.
 ///
 /// So the target is built **once, here**, and supplied to the registry with
 /// `insert_target` — checked before the node path, so no downcast ever runs for

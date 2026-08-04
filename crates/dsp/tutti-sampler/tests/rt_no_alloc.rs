@@ -17,8 +17,8 @@ use std::sync::Arc;
 
 use assert_no_alloc::AllocDisabler;
 use tutti_core::{
-    AudioUnit, Beat, Bpm, BufferVec, Cents, ChannelLayout, SamplePosition, SampleRate,
-    StretchFactor, Timeline, Wave,
+    AudioUnit, Beat, BeatDuration, Bpm, BufferVec, Cents, ChannelLayout, SamplePosition,
+    SampleRate, StretchFactor, Timeline, Wave,
 };
 use tutti_sampler::stretch::Unit as TimeStretchUnit;
 use tutti_sampler::{
@@ -936,5 +936,72 @@ fn update_loop_drain_is_allocation_free_at_six_channels() {
 
     assert_no_alloc::assert_no_alloc(|| {
         reader.process(64, &input_vec.buffer_ref(), &mut output_vec.buffer_mut());
+    });
+}
+
+// ---------------------------------------------------------------------------
+// VoiceNode's command drain — the newest thing running inside the callback.
+// ---------------------------------------------------------------------------
+
+/// **Draining a placement command allocates nothing.**
+///
+/// `VoiceNode::drain_commands` runs at the top of every `tick`/`process`, which
+/// is the audio callback. The pool's drain is careful for a reason its own
+/// `AddVoice` doc spells out — a command that carries a `Voice` or a stretch
+/// filter has to be *built* on the control thread, or the callback pays for it.
+///
+/// A node's only command is two `Copy` scalars and applying it is a field write
+/// plus a gate re-arm, so this should be free. "Should be" is exactly the kind
+/// of claim this file exists to convert into a measurement: the queue is
+/// pre-allocated and `try_recv` on an empty one is the common case, but neither
+/// is obvious from the call site.
+///
+/// Both halves are covered — a drain with commands waiting, and the empty drain
+/// that runs on every other block.
+#[test]
+fn voice_node_command_drain_does_not_allocate() {
+    let transport = MockTransport::new(120.0, 0.0, true);
+    let mut source = MemorySource::new(sine_wave(1.0, 48_000.0));
+    source.replace_transport(transport);
+    source.set_window(VoiceWindow {
+        start: Beat::new(0.0),
+        duration: Some(BeatDuration(4.0)),
+    });
+    source.play();
+
+    let (mut node, handle) = tutti_sampler::VoiceNode::with_commands(
+        Voice {
+            source: VoiceSource::Memory(source),
+            play: Playback::default(),
+            channel_index: None,
+        },
+        ChannelLayout::STEREO,
+    );
+
+    let input_vec = BufferVec::new(0);
+    let mut output_vec = BufferVec::new(2);
+
+    // Warm-up outside the gate: the first blocks touch lazily-sized state, and
+    // `assert_no_alloc` would attribute that to the drain.
+    for _ in 0..16 {
+        node.process(64, &input_vec.buffer_ref(), &mut output_vec.buffer_mut());
+    }
+
+    // Queue more than one block's worth, so the drain loop runs repeatedly
+    // rather than taking its empty fast path once.
+    for i in 0..8u64 {
+        handle
+            .set_placement(Beat::new(i as f64 * 0.25), Some(BeatDuration(4.0)))
+            .expect("the command queue has room in a test");
+    }
+
+    assert_no_alloc::assert_no_alloc(|| {
+        // First block drains the eight queued commands...
+        node.process(64, &input_vec.buffer_ref(), &mut output_vec.buffer_mut());
+        // ...and the rest take the empty path, which is what every steady-state
+        // block does.
+        for _ in 0..64 {
+            node.process(64, &input_vec.buffer_ref(), &mut output_vec.buffer_mut());
+        }
     });
 }

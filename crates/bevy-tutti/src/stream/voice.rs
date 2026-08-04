@@ -38,7 +38,7 @@ use bevy_ecs::prelude::*;
 use std::sync::Arc;
 
 use tutti_core::{ChannelLayout, Timeline};
-use tutti_sampler::{MemorySource, Playback, Voice, VoiceNode, VoiceSource};
+use tutti_sampler::{MemorySource, Playback, Voice, VoiceNode, VoiceNodeHandle, VoiceSource};
 
 use crate::graph::InsertAudioNode;
 
@@ -49,6 +49,33 @@ use crate::graph::InsertAudioNode;
 /// the unit behind a `NodeId`.
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SamplerVoice;
+
+/// The control-thread handle to this entity's voice node.
+///
+/// # Why a component rather than a resource map
+///
+/// It shares the voice's lifetime **exactly**. A `Resource` holding
+/// `HashMap<Entity, VoiceNodeHandle>` would be a second owner of that lifetime,
+/// and keeping it honest needs an invalidation path that always has a case it
+/// cannot see — a despawned source, a voice rebuilt on a path change. A
+/// component is removed when the entity is, for free, which is the whole
+/// argument this codebase makes for components over caches.
+///
+/// # Why the handle is not simply rebuilt on demand
+///
+/// It cannot be. The sender half is minted inside
+/// [`VoiceNode::with_commands`] beside the receiver that lives in the unit, and
+/// once the unit is in the graph there is no way back to it — `node_as_mut`
+/// reaches the *frontend* clone, whose receiver is shared but whose sender was
+/// never stored anywhere. The constructor is the only moment both ends exist,
+/// so the handle has to be kept from there.
+///
+/// Present **iff** the voice was built through [`InsertVoice`]/[`SpawnVoice`],
+/// which is every voice this crate builds. A `VoiceNode` constructed directly by
+/// a host (resynth does this) has no channel and no handle, and renders exactly
+/// as it always did.
+#[derive(Component, Debug, Clone)]
+pub struct VoiceCommands(pub VoiceNodeHandle);
 
 /// Spawn a [`VoiceNode`] on an entity, wired to the transport.
 ///
@@ -104,8 +131,13 @@ impl InsertVoice for EntityCommands<'_> {
         timeline: Arc<dyn Timeline>,
     ) {
         voice.replace_transport(timeline);
-        self.insert_audio_node(VoiceNode::with_channels(voice, width));
-        self.insert(SamplerVoice);
+        // `with_commands`, not `with_channels`: a voice this crate builds is one
+        // a host will want to *move*, and the handle can only be taken at
+        // construction — see [`VoiceCommands`]. A node built without one cannot
+        // be given a channel later.
+        let (node, handle) = VoiceNode::with_commands(voice, width);
+        self.insert_audio_node(node);
+        self.insert((SamplerVoice, VoiceCommands(handle)));
     }
 }
 
@@ -115,8 +147,26 @@ impl InsertVoice for EntityCommands<'_> {
 /// a host writes one line rather than assembling a `Voice` by hand. The disk
 /// half needs a butler round-trip and so is not a pure function — see
 /// [`DiskStreamerRes`](super::DiskStreamerRes).
-pub fn memory_voice(wave: Arc<tutti_core::Wave>, width: ChannelLayout, play: Playback) -> Voice {
-    let source = MemorySource::with_channels(wave, width);
+/// `window` is the clip's authored placement on the timeline.
+///
+/// **Not optional, and not defaulted.** `MemorySource::with_channels` builds at
+/// `VoiceWindow::default()`, so a caller that omitted this got a resident clip
+/// playing at the default position regardless of what the document authored —
+/// silently, from the first frame. The streaming tier never had that gap
+/// (`take_disk_voice` takes the placement), so the bug was invisible to anyone
+/// testing with a long file.
+///
+/// Taking it as a parameter rather than letting a host patch it afterwards is
+/// what makes the omission impossible: `apply_placement` is `pub(crate)` in the
+/// sampler, so there is no after-the-fact fix available outside that crate.
+pub fn memory_voice(
+    wave: Arc<tutti_core::Wave>,
+    width: ChannelLayout,
+    play: Playback,
+    window: tutti_sampler::VoiceWindow,
+) -> Voice {
+    let mut source = MemorySource::with_channels(wave, width);
+    source.set_window(window);
     Voice {
         source: VoiceSource::Memory(source),
         play,
@@ -174,7 +224,12 @@ mod tests {
     #[test]
     fn a_memory_voice_carries_no_butler_channel() {
         let wave = Arc::new(Wave::with_capacity(2, 48_000.0, 128));
-        let v = memory_voice(wave, ChannelLayout::STEREO, Playback::default());
+        let v = memory_voice(
+            wave,
+            ChannelLayout::STEREO,
+            Playback::default(),
+            Default::default(),
+        );
         assert!(
             v.channel_index.is_none(),
             "the butler channel is a disk-tier concept; `Voice`'s doc calls it \

@@ -1,7 +1,8 @@
 //! [`VoiceNode`] — a single [`Voice`] as its own graph node.
 //!
-//! Zero inputs, N outputs, no command channel. For resynth and preview, where a
-//! whole pool would be ceremony. It shares [`VoiceSlot`] with the pool, so the
+//! Zero inputs, N outputs, and — via [`VoiceNode::with_commands`] — a command
+//! channel for the one control `AudioUnit::set` cannot carry. For resynth,
+//! preview and a single timeline clip, where a whole pool would be ceremony. It shares [`VoiceSlot`] with the pool, so the
 //! per-voice read is the same code in both — a fix in one is a fix in both.
 
 use std::sync::Arc;
@@ -9,8 +10,10 @@ use std::sync::Arc;
 use crate::stretch;
 use crate::{nonempty, MAX_SAMPLER_CHANNELS};
 
+use super::command::{VoiceCommand, VoiceNodeHandle, COMMAND_CAPACITY};
 use super::slot::{stretch_wanted, VoiceSlot};
 use super::types::{SlotId, Voice};
+use crossbeam_channel::{bounded, Receiver};
 use tutti_core::transport::BeatCursor;
 use tutti_core::{
     AudioUnit, BufferMut, BufferRef, ChannelLayout, SampleRate, SignalFrame, Timeline,
@@ -43,6 +46,14 @@ pub struct VoiceNode {
     ///
     /// `None` when the voice has no clock to watch (free-running / unplaced).
     pub(crate) cursor: Option<BeatCursor>,
+    /// Commands from the control thread, drained at the top of every block.
+    ///
+    /// **A dead channel when the node was built without one**, not an `Option`:
+    /// every constructor that predates this one keeps its signature and gets a
+    /// `bounded(0)` receiver, so the drain is one `try_recv` that immediately
+    /// answers `Empty` rather than a branch on every block. `VoicePool` makes the
+    /// same choice for [`detached`](super::pool::VoicePool::detached).
+    pub(crate) rx: Receiver<VoiceCommand>,
 }
 
 impl VoiceNode {
@@ -84,6 +95,74 @@ impl VoiceNode {
             slot,
             channels,
             cursor,
+            // Channel-less: this constructor and its callers predate the command
+            // channel and have no handle to give out. See
+            // [`with_commands`](Self::with_commands).
+            rx: bounded(0).1,
+        }
+    }
+
+    /// As [`with_channels`](Self::with_channels), plus a command channel.
+    ///
+    /// Returns the node **and** its control-thread handle, the same
+    /// `(unit, handle)` shape [`VoicePool::with_transport`] uses — because the
+    /// receiver has to live inside the unit (the audio thread drains it) while
+    /// the sender has to live outside it (the control thread fills it), and a
+    /// constructor is the only place both ends exist at once.
+    ///
+    /// # What the channel is for, and what it is not
+    ///
+    /// One control: **placement**. `AudioUnit::set` already carries every scalar
+    /// a voice exposes, and [`VoiceNode::set`] is where those belong. A
+    /// placement cannot go there — `Setting` is one `f32` wide and a window is a
+    /// `Beat` (f64) plus an optional duration — so it takes the tier the crate
+    /// reserves for multi-field state, which is this queue.
+    ///
+    /// A node built with [`with_channels`] instead keeps working exactly as
+    /// before; it simply has no way to be told to move.
+    pub fn with_commands(
+        voice: Voice,
+        channels: impl Into<ChannelLayout>,
+    ) -> (Self, VoiceNodeHandle) {
+        let (tx, rx) = bounded(COMMAND_CAPACITY);
+        let mut node = Self::with_channels(voice, channels);
+        node.rx = rx;
+        (node, VoiceNodeHandle { tx })
+    }
+
+    /// Apply every queued command. Runs at the top of each block.
+    ///
+    /// Allocation-free by construction: the only command a node accepts carries
+    /// two `Copy` scalars, and applying it is a field write plus a re-arm of the
+    /// source's own gate. The pool's drain has to be more careful because
+    /// `AddVoice` moves a whole `Voice` — which is why its handle builds the
+    /// stretch filter on the *control* thread before sending.
+    ///
+    /// Commands a node has no meaning for are ignored rather than rejected: the
+    /// wire format is shared with the pool, and a host that reaches for
+    /// `AddVoice` on a single-voice node is asking for something that does not
+    /// exist. Silently is the right register here — the alternative is a panic
+    /// in an audio callback.
+    #[inline]
+    fn drain_commands(&mut self) {
+        while let Ok(cmd) = self.rx.try_recv() {
+            if let VoiceCommand::UpdatePlacement {
+                start_beat,
+                duration_beats,
+                ..
+            } = cmd
+            {
+                // Both halves, for the reason `set` gives for gain: `Playback` is
+                // the intent record a rebind reads back, the source owns the gate
+                // the DSP consults. Except placement has no `Playback` field —
+                // it was deleted precisely because keeping two copies in sync by
+                // hand is how a rebind reaches the wrong one. So there is exactly
+                // one write, and `voice/types.rs` records why.
+                self.slot
+                    .voice
+                    .source
+                    .apply_placement(start_beat, duration_beats);
+            }
         }
     }
 
@@ -159,6 +238,29 @@ impl Clone for VoiceNode {
             // fresh cursor would read its first block as a discontinuity and
             // flush the filter on every graph edit.
             cursor: self.cursor.clone(),
+            // **The same `Receiver`, not a fresh one.** `AudioUnit: DynClone`, so
+            // `Net::commit` clones this node, and `migrate` installs the clone
+            // over the backend's unit whenever the vertex is marked *changed* —
+            // which `set_sample_rate`, `reset`, `isolate` and `rebind_offline`
+            // all do, and the first of those on every device-rate change. A
+            // clone that minted its own channel would then be handed to the
+            // audio thread already deaf, and every command the live handle sent
+            // after that would vanish — no error, no diagnostic, exactly the
+            // silent class of failure this line of work exists to close.
+            //
+            // (An *unchanged* vertex keeps the backend's own unit, so a bare
+            // commit does not exercise this. That is why
+            // `a_command_reaches_a_node_across_a_commit` sets a sample rate:
+            // without it the test passed with this line sabotaged.)
+            //
+            // Sharing is safe because crossbeam delivers each message to exactly
+            // one receiver and the graph ticks one instance at a time, so there
+            // is no double-drain. `VoicePool::clone` reaches the same conclusion
+            // for the same reason and states it at length.
+            //
+            // The offline render is the case where "exactly one receiver" bites
+            // rather than helps — see [`AudioUnit::isolate`].
+            rx: self.rx.clone(),
         }
     }
 }
@@ -197,6 +299,10 @@ impl AudioUnit for VoiceNode {
     }
 
     fn tick(&mut self, _input: &[f32], output: &mut [f32]) {
+        // **Before the early return below.** A zero-width call still has to
+        // accept commands, or a caller that happens to pass an empty frame
+        // silently swallows the user's edit and the queue backs up.
+        self.drain_commands();
         // Same single-voice read the mixer runs per slot, straight into the
         // caller's frame.
         // Stride derived once, above the read — never inside a loop.
@@ -209,6 +315,7 @@ impl AudioUnit for VoiceNode {
     }
 
     fn process(&mut self, size: usize, _input: &BufferRef, output: &mut BufferMut) {
+        self.drain_commands();
         // Stride derived once per block, above the loops.
         let n = (self.channels.count() as usize)
             .min(output.channels())
@@ -271,6 +378,20 @@ impl AudioUnit for VoiceNode {
         // A fresh cursor: the clone must not inherit the live playhead's
         // last-seen beat, or its first offline block reads as a discontinuity.
         self.cursor = None;
+        // **And the command channel.** `Clone` deliberately shares the receiver
+        // (see there), which is right for the frontend↔backend swap and wrong
+        // for a render: crossbeam delivers each message to exactly one receiver,
+        // so a worker draining this channel would *steal* the user's edits from
+        // the audio thread. The live voice would then miss a placement move with
+        // nothing logged anywhere.
+        //
+        // `VoicePool` cannot fix this here — its render path replaces each node
+        // with a channel-less `detached` one in a Prepare step, because by the
+        // time `isolate` runs the pool has already been cloned with live voices
+        // in it. A `VoiceNode` has no such staging step and nothing to empty, so
+        // severing in place is both sufficient and the simpler half of the same
+        // rule. `a_render_clone_steals_no_commands` pins it.
+        self.rx = bounded(0).1;
     }
 
     /// The host's door to a live voice's scalar controls.

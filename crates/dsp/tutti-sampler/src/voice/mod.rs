@@ -33,7 +33,7 @@ pub use disk_voice::{DiskSource, DiskVoice, DiskVoiceConfig};
 pub use memory_source::{LoopSetting, MemorySource, MemorySourceConfig, VoiceWindow};
 // Re-exported flat, so `voice::Voice` and `tutti_sampler::Voice` keep working —
 // the split is an internal reorganisation, not an API change.
-pub use command::{VoiceCommand, VoicePoolHandle};
+pub use command::{VoiceCommand, VoiceNodeHandle, VoicePoolHandle};
 pub use node::VoiceNode;
 pub use pool::VoicePool;
 #[cfg(feature = "bevy")]

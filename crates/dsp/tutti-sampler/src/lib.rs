@@ -136,7 +136,7 @@ pub mod stretch;
 // a doorway.
 pub use voice::{
     Direction, DiskVoice, LoopSetting, MemorySource, MemorySourceConfig, Playback, SlotId, Voice,
-    VoiceCommand, VoiceNode, VoicePool, VoicePoolHandle, VoiceSource, VoiceWindow,
+    VoiceCommand, VoiceNode, VoiceNodeHandle, VoicePool, VoicePoolHandle, VoiceSource, VoiceWindow,
 };
 // Entity-as-node markers for the voice pool. The asset loader and the playback
 // plugin moved to bevy-tutti (house rule R1); what stays here is the pair of

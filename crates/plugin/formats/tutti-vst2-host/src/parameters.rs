@@ -120,10 +120,17 @@ impl Vst2Instance {
     /// `USES_FLOAT_STEP` gates a granularity that carries no bounds. A plugin
     /// declaring only the latter gets steps without a plain range.
     ///
-    /// No flag is reported. VST2 has `effCanBeAutomated` (opcode 26), which the
-    /// vendored crate does not surface, so `AUTOMATABLE` is genuinely unknown
-    /// rather than assumed — this used to claim `ALL_AUTOMATABLE`, which
-    /// asserted something the ABI never said.
+    /// `AUTOMATABLE` is probed, not assumed. VST2 answers it with
+    /// `effCanBeAutomated` (opcode 26), one dispatch per parameter, so the flag
+    /// is reported as *known* with whatever the plugin said. It is the only bit
+    /// VST2 can answer: `READ_ONLY` and the rest have no opcode, so they stay
+    /// out of the `known` mask rather than being reported as absent.
+    ///
+    /// This used to claim `ALL_AUTOMATABLE`, asserting something the ABI never
+    /// said; it was then corrected to an empty `known` on the stated grounds
+    /// that the vendored crate did not surface the opcode. That was wrong —
+    /// `PluginParameters::can_be_automated` dispatches it, and the host already
+    /// holds the object it is called on.
     ///
     /// `default_value` comes from the load-time snapshot, not the live value.
     /// VST2 has no default-value opcode, so a plugin's initial state is the only
@@ -185,8 +192,14 @@ impl Vst2Instance {
                     unit: p.unit,
                     range,
                     steps,
-                    flags: ParamFlags::empty(),
-                    known: ParamFlags::empty(),
+                    // Asked per parameter: `effCanBeAutomated` takes the index,
+                    // so there is no whole-plugin answer to cache.
+                    flags: if self.params.can_be_automated(p.id) {
+                        ParamFlags::AUTOMATABLE
+                    } else {
+                        ParamFlags::empty()
+                    },
+                    known: ParamFlags::AUTOMATABLE,
                 }
             })
             .collect()

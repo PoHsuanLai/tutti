@@ -31,7 +31,7 @@
 use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
 
-use tutti_plugin_types::ParamSteps;
+use tutti_plugin_types::{ParamFlags, ParamSteps};
 use tutti_vst2_host::Vst2Instance;
 
 #[path = "support/probe_path.rs"]
@@ -650,6 +650,55 @@ fn a_declining_plugin_reports_no_range_and_no_steps() {
             info.id
         );
         assert_eq!(info.steps, ParamSteps::Unknown, "param {}", info.id);
+    }
+}
+
+/// `AUTOMATABLE` is reported as *known*, carrying whatever `effCanBeAutomated`
+/// said.
+///
+/// The load-bearing assertion is on the `known` mask, not on the flag value.
+/// For a while this host shipped `known: ParamFlags::empty()` — "the vendored
+/// crate does not surface opcode 26" — so every VST2 parameter came back
+/// claiming the format had never been asked. It had: `can_be_automated`
+/// dispatches the opcode, and the host already holds the object.
+///
+/// **What this fixture cannot witness:** the probe answers `in_range(index)`,
+/// and `parameter_list` enumerates only in-range indices, so every listed
+/// parameter answers `true`. This test therefore pins "the flag is probed and
+/// marked known", not "a `false` answer is carried through" — no input to
+/// `parameter_list` can produce a listed-but-non-automatable parameter. Making
+/// the probe decline a specific index would need a new switch; the value path
+/// is one branch on the vendored bool, and `known` is what regressed before.
+#[test]
+fn the_automatable_flag_is_probed_rather_than_left_unasked() {
+    let _guard = lock_probe();
+    let (instance, _path) = load_probe();
+
+    let listed = instance.parameter_list();
+    assert!(!listed.is_empty(), "the probe exposes no parameters");
+    for info in &listed {
+        assert!(
+            info.known.contains(ParamFlags::AUTOMATABLE),
+            "param {}: AUTOMATABLE left out of the known mask, so a consumer \
+             reads it as 'the format never said' when opcode 26 answered",
+            info.id
+        );
+        assert_eq!(
+            info.flag(ParamFlags::AUTOMATABLE),
+            Some(true),
+            "param {}: the probe automates every in-range index",
+            info.id
+        );
+    }
+
+    // The bits with no VST2 opcode stay out of the mask: reporting them as
+    // known-and-false would assert something the ABI never said.
+    for info in &listed {
+        assert!(
+            !info.known.contains(ParamFlags::READ_ONLY),
+            "param {}: READ_ONLY has no VST2 opcode and must stay unprobed",
+            info.id
+        );
     }
 }
 

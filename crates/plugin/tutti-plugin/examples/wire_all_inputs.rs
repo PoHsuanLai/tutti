@@ -19,11 +19,14 @@
 use std::sync::Arc;
 
 use tutti_plugin::catalog::{Plugin, PluginRole};
-use tutti_plugin::handles::{ChordValue, HarmonySource, ScaleValue, TimedChord, TimedScale};
+use tutti_plugin::handles::{
+    ChordValue, LfoCurve, LfoShape, ParamAddress, ParamId, ScaleValue, TimedChord, TimedParam,
+    TimedScale,
+};
 use tutti_plugin::Result;
 
 use tutti_core::transport::Transport;
-use tutti_core::{Beat, RtPublish, SampleRate};
+use tutti_core::{Beat, BeatDuration, Depth, PhaseIncrement, RtPublish, SampleRate};
 
 const SAMPLE_RATE: SampleRate = SampleRate::SR_48K;
 
@@ -52,7 +55,7 @@ fn main() -> Result<()> {
 
     let took_transport = plugin.set_transport_source(transport.clone(), Arc::clone(&meter));
 
-    let harmony = Arc::new(HarmonySource::new(
+    let took_harmony = plugin.set_harmony_source(
         [TimedChord {
             beat: Beat(0.0),
             value: ChordValue {
@@ -73,10 +76,27 @@ fn main() -> Result<()> {
                 text: "C major".to_string(),
             },
         }],
-        Arc::new(transport),
-        SAMPLE_RATE,
-    ));
-    let took_harmony = plugin.set_harmony_source(harmony);
+        transport.clone(),
+    );
+
+    // Parameter automation is ungated — every format carries it, so there is
+    // no "declined" answer and the call returns nothing. One slow LFO on the
+    // plugin's first parameter.
+    plugin.set_param_automation_source(
+        [TimedParam {
+            param_id: ParamAddress::Opaque(ParamId::new(0)),
+            curve: Arc::new(LfoCurve::new(
+                LfoShape::Sine,
+                BeatDuration(4.0),
+                Depth(1.0),
+                PhaseIncrement(0.0),
+                0.5, // base
+                0.0, // min
+                1.0, // max
+            )),
+        }],
+        transport.clone(),
+    );
 
     // MIDI has two paths that coexist: a live sender for hardware and panel
     // previews, and an installed source polled per block for clip playback.

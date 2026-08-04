@@ -514,12 +514,32 @@ impl PluginClient {
         self.midi.set_source(source);
     }
 
-    /// Install a [`HarmonySource`] override that supplies per-block chord/scale
-    /// context (VST3 `kChordEvent` / `kScaleEvent`) from a track's chord/scale
-    /// lanes. Mirrors [`set_midi_source`](Self::set_midi_source); the source is
-    /// held in an `Arc` so it survives fundsp's graph-commit clones.
-    pub fn set_harmony_source(&mut self, source: std::sync::Arc<HarmonySource>) {
-        self.inputs.harmony.install(source);
+    /// Install per-block chord/scale context (VST3 `kChordEvent` /
+    /// `kScaleEvent`) from a track's chord/scale lanes.
+    ///
+    /// Takes the lanes and the timeline, and builds the source here — the same
+    /// shape as [`set_transport_source`](Self::set_transport_source), and for
+    /// the same reason: the sample rate the source needs is the node's own, so
+    /// a caller passing one could only ever agree with it or be wrong. The
+    /// source is held in an `Arc` so it survives fundsp's graph-commit clones,
+    /// and its rate is re-stamped by [`restamp_source_rates`](Self::restamp_source_rates)
+    /// on a device change.
+    pub fn set_harmony_source(
+        &mut self,
+        chords: impl IntoIterator<Item = TimedChord>,
+        scales: impl IntoIterator<Item = TimedScale>,
+        transport: impl tutti_core::transport::Timeline + 'static,
+    ) {
+        self.inputs.harmony.install(Arc::new(HarmonySource::new(
+            chords,
+            scales,
+            // Erased here, not by the caller: `Transport` implements `Timeline`
+            // and is `Clone`, so an `Arc<dyn …>` at the boundary only asks a
+            // host to spell out a wrapping this can do itself — and asks it
+            // differently from `set_transport_source`, two lines away.
+            Arc::new(transport),
+            self.sample_rate,
+        )));
     }
 
     /// Drop a previously-installed harmony source. Subsequent blocks feed the
@@ -572,13 +592,36 @@ impl PluginClient {
         self.inputs.transport.clear();
     }
 
-    /// Install a [`ParamAutomationSource`] so the plugin receives sample-accurate
-    /// per-block [`ParameterChanges`] for the automated parameters. Held in an
-    /// `Arc` so it survives fundsp's graph-commit clones. This is the *only*
-    /// automation path for hosted-plugin parameters — the frame-rate
+    /// Install sample-accurate per-block [`ParameterChanges`] for the automated
+    /// parameters — one curve per parameter id.
+    ///
+    /// The *only* automation path for hosted-plugin parameters; the frame-rate
     /// `set_parameter` route is never wired for them.
-    pub fn set_param_automation_source(&mut self, source: std::sync::Arc<ParamAutomationSource>) {
-        self.inputs.params.install(source);
+    ///
+    /// Takes the curves and the transport and builds the source here, matching
+    /// [`set_transport_source`](Self::set_transport_source) and
+    /// [`set_harmony_source`](Self::set_harmony_source). The rate the source
+    /// divides by is the node's own, so a caller passing one could only agree
+    /// with it or be wrong. Held in an `Arc` so it survives fundsp's
+    /// graph-commit clones, and re-stamped by
+    /// [`restamp_source_rates`](Self::restamp_source_rates) on a device change.
+    ///
+    /// `transport` is a [`TransportState`](tutti_core::transport::TransportState),
+    /// not a bare `Timeline` like harmony's: `fill` reads `loop_range()` to wrap
+    /// the beat inside the active cycle, and looping lives on the live
+    /// supertrait. An offline render never drives this source.
+    pub fn set_param_automation_source(
+        &mut self,
+        params: impl IntoIterator<Item = TimedParam>,
+        transport: impl tutti_core::transport::TransportState + 'static,
+    ) {
+        self.inputs
+            .params
+            .install(Arc::new(ParamAutomationSource::new(
+                params,
+                Arc::new(transport),
+                self.sample_rate,
+            )));
     }
 
     /// Drop a previously-installed parameter-automation source; subsequent

@@ -35,7 +35,9 @@ pub use crate::host::node::{
 // `ParamAddress` alongside them because `TimedParam::param_id` is one: a
 // caller that can construct a `TimedParam` through this module must be able to
 // name its field's type without reaching into the private `protocol` module.
-pub use crate::protocol::{ChordValue, ParamAddress, ScaleValue};
+// `ParamId` for the same reason one step further in — every `ParamAddress`
+// variant wraps one, so naming the address without it builds nothing.
+pub use crate::protocol::{ChordValue, ParamAddress, ParamId, ScaleValue};
 pub use crate::util::window::{EditorCapabilities, EditorSize};
 pub use control_handle::PluginHandle;
 pub use tutti_units::{LfoShape, ModParams, ModTarget};

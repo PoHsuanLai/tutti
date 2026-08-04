@@ -56,6 +56,12 @@ pub use tutti_plugin_types::{AuComponentType, PluginClass, PluginDescriptor};
 /// loader maps its native category into it.
 pub use tutti_plugin_types::Vst2Category;
 
+/// The classification vocabularies the other three formats report, and the
+/// normalized [`PluginRole`] derived from all four. Same rationale as
+/// [`Vst2Category`] above: canonical in `tutti-plugin-types` so the persisted
+/// catalog stays nameable without any format feature enabled.
+pub use tutti_plugin_types::{ClapFeature, PluginRole, Vst3PlugType, Vst3SubCategories};
+
 /// Audio plugin format.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub enum PluginFormat {
@@ -105,6 +111,22 @@ impl PluginRecord {
     /// [`super::fs::format_from_path`] matches against, so the advertised list
     /// and the accepted list are the same list.
     pub const EXTENSIONS: &'static [&'static str] = &EXTENSION_NAMES;
+
+    /// What this plugin is, normalized across the formats — the browser-facing
+    /// question, without reaching through `descriptor.class` and matching each
+    /// format by hand.
+    pub fn role(&self) -> PluginRole {
+        self.descriptor.class.role()
+    }
+
+    /// Whether this plugin is a note-driven sound source.
+    ///
+    /// Sugar over [`role`](Self::role) for the common two-way browser split.
+    /// A [`Generator`](PluginRole::Generator) is deliberately **not** an
+    /// instrument: it makes sound without being played.
+    pub fn is_instrument(&self) -> bool {
+        self.role() == PluginRole::Instrument
+    }
 
     /// Probe a plugin file into a full record. Spawns a
     /// `tutti-plugin-server` subprocess to read metadata, falling back to

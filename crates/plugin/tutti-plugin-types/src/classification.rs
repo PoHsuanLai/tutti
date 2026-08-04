@@ -234,11 +234,28 @@ impl Vst3PlugType {
 /// An empty facet list means the plugin declared an empty string. "The factory
 /// is too old to report subcategories at all" is spelled by an absent
 /// `Vst3SubCategories`, not by an empty one — see the VST3 host's `ClassInfo`.
+/// Serialized as the raw string alone: `facets` is derived from it by
+/// [`parse`](Self::parse), so persisting both would let a hand-edited or
+/// truncated file carry a facet list that disagrees with the string it came
+/// from. Round-tripping through `String` makes that unrepresentable.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "serde", serde(from = "String", into = "String"))]
 pub struct Vst3SubCategories {
     facets: Vec<Vst3PlugType>,
     raw: String,
+}
+
+impl From<String> for Vst3SubCategories {
+    fn from(raw: String) -> Self {
+        Self::parse(&raw)
+    }
+}
+
+impl From<Vst3SubCategories> for String {
+    fn from(value: Vst3SubCategories) -> Self {
+        value.raw
+    }
 }
 
 impl Vst3SubCategories {
@@ -440,6 +457,120 @@ impl ClapFeature {
             Self::Other(s) => s,
         }
     }
+}
+
+/// What a plugin *is*, normalized across the four formats.
+///
+/// The counterpart to [`Features`](crate::Features), which answers what a
+/// plugin can *do*. The two are orthogonal and must stay so: an arpeggiator
+/// takes MIDI and is not an instrument, and AU's `aumf` takes MIDI *and* audio.
+/// Deriving one from the other misfiles both.
+///
+/// Each format's native taxonomy is kept verbatim in
+/// [`PluginClass`](crate::PluginClass); this is the derived view a host
+/// dispatches on, so the four-way match lives here once instead of at every
+/// call site.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub enum PluginRole {
+    /// Note-driven sound source: takes MIDI, produces audio, no audio input.
+    Instrument,
+    /// Processes incoming audio.
+    Effect,
+    /// MIDI in, MIDI out, no audio role — an arpeggiator or transposer.
+    NoteEffect,
+    /// Reports rather than processes; not an insert.
+    Analyzer,
+    /// Produces audio without being note-driven — tone, noise, test signal.
+    ///
+    /// Distinct from [`Instrument`](Self::Instrument) because three of the four
+    /// formats name it separately (VST2 `kPlugCategGenerator`, VST3
+    /// `"Fx|Generator"`, AU `augn`). Folding it into `Instrument` discards a
+    /// distinction the plugin bothered to declare.
+    Generator,
+    /// The format declared nothing, or nobody asked.
+    #[default]
+    Unknown,
+}
+
+impl Vst3SubCategories {
+    /// The role these facets describe.
+    ///
+    /// `Instrument` requires the absence of `Fx`, because `"Fx|Instrument"` is
+    /// SDK-defined as *"Fx which could be loaded as Instrument too"* — a plugin
+    /// declaring both is an effect that a host *may* also offer as a generator,
+    /// not a synth. A substring test for `"Instrument"` cannot see that
+    /// difference and files every such effect as an instrument.
+    pub fn role(&self) -> PluginRole {
+        let has = |f| self.has(&f);
+        if has(Vst3PlugType::Instrument) && !has(Vst3PlugType::Fx) {
+            PluginRole::Instrument
+        } else if has(Vst3PlugType::Analyzer) {
+            PluginRole::Analyzer
+        } else if has(Vst3PlugType::Generator) {
+            PluginRole::Generator
+        } else if has(Vst3PlugType::Fx) || has(Vst3PlugType::Spatial) {
+            PluginRole::Effect
+        } else {
+            // Only channel hints, only vendor facets, or nothing at all.
+            PluginRole::Unknown
+        }
+    }
+}
+
+impl Vst2Category {
+    /// The role this category describes.
+    ///
+    /// `Shell` is a container advertising *other* plugins rather than a
+    /// processor of its own, so it is `Unknown` rather than an effect;
+    /// `OfflineProcess` likewise never appears as an insert.
+    pub fn role(&self) -> PluginRole {
+        match self {
+            Self::Synth => PluginRole::Instrument,
+            Self::Generator => PluginRole::Generator,
+            Self::Analysis => PluginRole::Analyzer,
+            Self::Effect
+            | Self::Mastering
+            | Self::Spacializer
+            | Self::RoomFx
+            | Self::SurroundFx
+            | Self::Restoration => PluginRole::Effect,
+            Self::Shell | Self::OfflineProcess | Self::Unrecognized(_) | Self::Unasked => {
+                PluginRole::Unknown
+            }
+        }
+    }
+}
+
+impl ClapFeature {
+    /// The role this tag describes, or `None` if it only qualifies one.
+    ///
+    /// CLAP is the one format that names its primary roles as a closed set, so
+    /// only those five answer. The family tags (`synthesizer`, `reverb`, …) and
+    /// the channel hints qualify a role rather than assigning one — a plugin
+    /// declaring `["audio-effect", "synthesizer"]` is an effect.
+    pub fn role(&self) -> Option<PluginRole> {
+        match self {
+            Self::Instrument => Some(PluginRole::Instrument),
+            Self::AudioEffect => Some(PluginRole::Effect),
+            Self::NoteEffect | Self::NoteDetector => Some(PluginRole::NoteEffect),
+            Self::Analyzer => Some(PluginRole::Analyzer),
+            _ => None,
+        }
+    }
+}
+
+/// The role a CLAP feature list describes.
+///
+/// The tags are a set with no declared precedence, so a plugin may name more
+/// than one primary role. First-wins over the plugin's own ordering: that is
+/// the only ranking the format supplies, and inventing one here would override
+/// what the plugin chose to put first.
+pub fn clap_features_role(features: &[ClapFeature]) -> PluginRole {
+    features
+        .iter()
+        .find_map(ClapFeature::role)
+        .unwrap_or(PluginRole::Unknown)
 }
 
 #[cfg(test)]
@@ -730,5 +861,131 @@ mod tests {
                 "{spelled} did not round-trip"
             );
         }
+    }
+
+    /// `"Fx|Instrument"` is an effect, not an instrument.
+    ///
+    /// The SDK defines it as "Fx which could be loaded as Instrument too", so
+    /// `Fx` is the plugin's primary claim. The substring test this replaces
+    /// (`raw.contains("Instrument")`) files every such effect as a synth — the
+    /// bug that motivated the facet types.
+    #[test]
+    fn an_fx_that_can_also_load_as_an_instrument_is_an_effect() {
+        assert_eq!(
+            Vst3SubCategories::parse("Fx|Instrument").role(),
+            PluginRole::Effect
+        );
+        assert_eq!(
+            Vst3SubCategories::parse("Fx|Instrument|External").role(),
+            PluginRole::Effect
+        );
+        // The plain instrument spellings are unaffected.
+        assert_eq!(
+            Vst3SubCategories::parse("Instrument|Synth").role(),
+            PluginRole::Instrument
+        );
+        assert_eq!(
+            Vst3SubCategories::parse("Instrument").role(),
+            PluginRole::Instrument
+        );
+    }
+
+    /// Facets that only describe channel support say nothing about the role.
+    ///
+    /// A plugin declaring `"Stereo"` and nothing else has not classified
+    /// itself, and answering `Effect` would invent a claim it never made.
+    #[test]
+    fn channel_hints_alone_do_not_name_a_role() {
+        assert_eq!(
+            Vst3SubCategories::parse("Stereo").role(),
+            PluginRole::Unknown
+        );
+        assert_eq!(Vst3SubCategories::parse("").role(), PluginRole::Unknown);
+        // But they do not suppress a real facet sitting beside them.
+        assert_eq!(
+            Vst3SubCategories::parse("Fx|Reverb|Stereo").role(),
+            PluginRole::Effect
+        );
+    }
+
+    /// A VST3 generator is not an instrument: `"Fx|Generator"` is a tone/noise
+    /// source, not something a keyboard plays.
+    #[test]
+    fn a_vst3_generator_is_its_own_role() {
+        assert_eq!(
+            Vst3SubCategories::parse("Fx|Generator").role(),
+            PluginRole::Generator
+        );
+        assert_eq!(
+            Vst3SubCategories::parse("Analyzer").role(),
+            PluginRole::Analyzer
+        );
+    }
+
+    /// CLAP's family tags qualify a role; they never assign one.
+    ///
+    /// `["audio-effect", "synthesizer"]` is an effect — a vocoder may well
+    /// declare both, and reading `synthesizer` as primary would misfile it.
+    #[test]
+    fn a_clap_family_tag_does_not_override_the_primary_role() {
+        let features = [ClapFeature::AudioEffect, ClapFeature::Synthesizer];
+        assert_eq!(clap_features_role(&features), PluginRole::Effect);
+
+        // A family tag with no primary role beside it names nothing.
+        assert_eq!(
+            clap_features_role(&[ClapFeature::Synthesizer]),
+            PluginRole::Unknown
+        );
+        assert_eq!(clap_features_role(&[]), PluginRole::Unknown);
+    }
+
+    /// Each CLAP primary role maps to its own `PluginRole`.
+    #[test]
+    fn every_clap_primary_role_is_recognized() {
+        assert_eq!(
+            clap_features_role(&[ClapFeature::Instrument]),
+            PluginRole::Instrument
+        );
+        assert_eq!(
+            clap_features_role(&[ClapFeature::NoteEffect]),
+            PluginRole::NoteEffect
+        );
+        assert_eq!(
+            clap_features_role(&[ClapFeature::NoteDetector]),
+            PluginRole::NoteEffect
+        );
+        assert_eq!(
+            clap_features_role(&[ClapFeature::Analyzer]),
+            PluginRole::Analyzer
+        );
+    }
+
+    /// A VST2 shell hosts *other* plugins, so it is neither an instrument nor
+    /// an effect — and neither is a category nobody asked for.
+    #[test]
+    fn a_vst2_shell_and_an_unasked_category_both_decline_to_classify() {
+        assert_eq!(Vst2Category::Shell.role(), PluginRole::Unknown);
+        assert_eq!(Vst2Category::OfflineProcess.role(), PluginRole::Unknown);
+        assert_eq!(Vst2Category::Unasked.role(), PluginRole::Unknown);
+        assert_eq!(Vst2Category::Unrecognized(0).role(), PluginRole::Unknown);
+        // The ones that do classify.
+        assert_eq!(Vst2Category::Synth.role(), PluginRole::Instrument);
+        assert_eq!(Vst2Category::Generator.role(), PluginRole::Generator);
+        assert_eq!(Vst2Category::Analysis.role(), PluginRole::Analyzer);
+        assert_eq!(Vst2Category::RoomFx.role(), PluginRole::Effect);
+    }
+
+    /// Serializing keeps only the raw string, so the facet list cannot drift
+    /// from the string it was parsed out of.
+    #[cfg(feature = "serde")]
+    #[test]
+    fn subcategories_round_trip_through_their_raw_string() {
+        let original = Vst3SubCategories::parse("Fx|Reverb");
+        let json = serde_json::to_string(&original).unwrap();
+        assert_eq!(json, "\"Fx|Reverb\"", "should serialize as the bare string");
+
+        let back: Vst3SubCategories = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, original);
+        assert_eq!(back.facets().len(), 2, "facets are rebuilt on the way in");
     }
 }

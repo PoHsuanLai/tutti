@@ -395,8 +395,7 @@ mod tests {
     /// gets set here, something has invented a preset API VST3 does not have.
     #[test]
     fn vst3_answers_that_it_has_no_separate_preset_mechanism() {
-        let probed_both =
-            probed::VST3.contains(Features::PRESET_LIST | Features::PRESET_LOAD);
+        let probed_both = probed::VST3.contains(Features::PRESET_LIST | Features::PRESET_LOAD);
         assert!(probed_both, "both bits are asked");
 
         let report = FeatureReport::new(probed::VST3, Features::EDITOR);

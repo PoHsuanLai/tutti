@@ -73,6 +73,25 @@ pub struct Plugin {
     handle: PluginHandle,
 }
 
+/// Reports identity and where the plugin runs, not the node's guts: the
+/// backends wrap live subprocess and FFI state that has no useful `Debug`.
+impl std::fmt::Debug for Plugin {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Plugin")
+            .field("name", &self.descriptor().name)
+            .field("format", &self.descriptor().class.format_name())
+            .field(
+                "hosting",
+                &match &self.backend {
+                    Backend::Subprocess(_) => "subprocess",
+                    #[cfg(feature = "vst2")]
+                    Backend::InProcessVst2(_) => "in-process",
+                },
+            )
+            .finish_non_exhaustive()
+    }
+}
+
 impl Plugin {
     /// Open a plugin file.
     ///

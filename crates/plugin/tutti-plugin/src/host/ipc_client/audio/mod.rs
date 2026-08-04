@@ -137,6 +137,18 @@ impl AudioBridge {
         !self.lifecycle.is_crashed() && self.channels.push_command(Command::SetSampleRate { rate })
     }
 
+    /// Queue a render-mode change for the plugin.
+    ///
+    /// Named `_rt` like its neighbours because it shares their bounded,
+    /// non-blocking queue, not because the audio thread is the expected caller:
+    /// a bounce sets this once from the control thread before it starts
+    /// pulling. Riding the same queue is what keeps it ordered against the
+    /// blocks around it — a mode that overtook an in-flight block would apply
+    /// to audio the caller thought was already rendered.
+    pub fn set_render_mode_rt(&self, mode: crate::protocol::RenderMode) -> bool {
+        !self.lifecycle.is_crashed() && self.channels.push_command(Command::SetRenderMode { mode })
+    }
+
     pub fn reset_rt(&self) -> bool {
         !self.lifecycle.is_crashed() && self.channels.push_command(Command::Reset)
     }

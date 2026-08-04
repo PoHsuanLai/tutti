@@ -173,6 +173,19 @@ impl Session {
                 }
                 Ok(Reaction::None)
             }
+            M::SetRenderMode { mode } => {
+                // The plugin's answer is deliberately not returned to the host:
+                // whether a plugin honours the mode is a load-time capability
+                // (`Features::RENDER_MODE`), not a per-call outcome, and the
+                // host already has it. Logged rather than dropped so a refusal
+                // is greppable when a bounce sounds like the live path.
+                if let Some(plugin) = self.plugin.as_mut() {
+                    if !plugin.instance_mut().set_render_mode(mode) {
+                        tracing::debug!(?mode, "plugin did not accept the render mode");
+                    }
+                }
+                Ok(Reaction::None)
+            }
             // Deliberately a no-op, and the host depends on that. Clearing the
             // pipeline on a seek is entirely the host's job: it drops its
             // in-flight block and never rewinds its sequence, so a pre-seek

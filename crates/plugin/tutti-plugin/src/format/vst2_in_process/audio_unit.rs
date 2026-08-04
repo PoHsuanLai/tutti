@@ -171,6 +171,17 @@ impl InProcessVst2Client {
         self.midi.clear_out();
     }
 
+    /// Set the level reported through `audioMasterGetCurrentProcessLevel`.
+    ///
+    /// Always `true`: VST2 carries this on a host callback the plugin polls, so
+    /// there is no query for a plugin to decline. Takes the lock rather than
+    /// caching the flag locally — the answer lives on the `HostState` the
+    /// plugin already holds, and a second copy here could disagree with it.
+    pub fn set_render_mode(&self, mode: crate::protocol::RenderMode) -> bool {
+        self.inner.lock().set_offline_render(mode.is_offline());
+        true
+    }
+
     /// Cumulative audio-thread `try_lock` failures since construction.
     /// Shared across clones; intended for diagnostic introspection by
     /// embedders (no current internal caller).

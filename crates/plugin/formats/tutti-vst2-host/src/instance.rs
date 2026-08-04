@@ -226,7 +226,7 @@ impl Vst2Instance {
             params,
             initial_values,
             host_link: HostLink {
-                _state: host,
+                state: host,
                 time_info,
                 param_rx,
             },
@@ -323,6 +323,24 @@ impl Vst2Instance {
     /// No in-tree caller today — block size is fixed at [`load`](Self::load) and
     /// the engine re-loads rather than re-sizing — but it stays public as part
     /// of the VST2 host contract.
+    /// Set whether the host reports itself as rendering offline.
+    ///
+    /// Unlike the other three formats there is nothing to push: VST2 carries
+    /// this through `audioMasterGetCurrentProcessLevel`, a callback the plugin
+    /// makes whenever it likes. So this stores the answer the host will give,
+    /// and no plugin can decline it — there is no query to refuse.
+    ///
+    /// No suspend/resume bracket for the same reason: nothing is delivered to
+    /// the plugin at call time, so there is no buffer for it to re-size.
+    pub fn set_offline_render(&self, offline: bool) {
+        self.host_link.state.set_offline(offline);
+    }
+
+    /// Whether the host is currently reporting offline.
+    pub fn is_offline_render(&self) -> bool {
+        self.host_link.state.is_offline()
+    }
+
     pub fn set_block_size(&mut self, block_size: usize) {
         let was_resumed = self.suspend_for_reconfigure();
         self.handle.instance.set_block_size(block_size as i64);

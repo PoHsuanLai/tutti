@@ -101,7 +101,14 @@ pub mod shm;
 ///   The persisted JSON catalog changes shape too, and unlike this wire it has
 ///   no version negotiation: `PluginDatabase::load` quarantines a file it
 ///   cannot parse, so an existing catalog is discarded and rescanned.
-pub const PROTOCOL_VERSION: u32 = 12;
+/// - v13: `HostMessage` gains `SetRenderMode { mode }`, so an offline bounce can
+///   tell a hosted plugin it is not under realtime pressure. Appended, for the
+///   same reason v11's variant was: bincode encodes the discriminant over
+///   declaration order, so a v12 peer receiving this reads a tag it has no arm
+///   for. Mandatory in that direction only — a v13 host never *sends* it unless
+///   a caller asks for offline, so a v12 server survives a realtime session; the
+///   bump refuses the pairing outright rather than leaving that to luck.
+pub const PROTOCOL_VERSION: u32 = 13;
 
 /// Validate a subprocess-reported protocol version against [`PROTOCOL_VERSION`].
 /// Called at each handshake consumer so a version skew fails loudly instead of
@@ -145,8 +152,8 @@ pub use tutti_plugin_types::{
     LoadedPlugin, NoteExpressionChanges, NoteExpressionIntChanges, NoteExpressionIntValue,
     NoteExpressionTextChanges, NoteExpressionTextValue, NoteExpressionType, NoteExpressionValue,
     ParamAddress, ParamFlags, ParamId, ParamRange, ParamSteps, ParameterChanges, ParameterInfo,
-    ParameterPoint, ParameterQueue, PluginTail, Samples, ScaleChanges, ScaleValue, TimeSignature,
-    TransportInfo,
+    ParameterPoint, ParameterQueue, PluginTail, RenderMode, Samples, ScaleChanges, ScaleValue,
+    TimeSignature, TransportInfo,
 };
 
 #[cfg(test)]

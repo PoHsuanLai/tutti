@@ -65,6 +65,13 @@ pub(super) enum Command {
     SetSampleRate {
         rate: f64,
     },
+    /// Format-neutral render mode, encoded onto each format's own ABI at the
+    /// FFI edge (VST3 `ProcessSetup::processMode`, CLAP `clap.render`, AU
+    /// `kAudioUnitProperty_OfflineRender`, VST2
+    /// `audioMasterGetCurrentProcessLevel`).
+    SetRenderMode {
+        mode: crate::protocol::RenderMode,
+    },
     Reset,
     Shutdown,
     SaveState {

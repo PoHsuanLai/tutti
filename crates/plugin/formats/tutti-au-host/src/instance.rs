@@ -1297,6 +1297,36 @@ impl AuInstance {
         unsafe { crate::offline::set_offline_render(self.raw_unit(), offline) }
     }
 
+    /// Set offline-render mode, re-initializing around the change if the AU was
+    /// already initialized.
+    ///
+    /// The same uninitialize → set → re-initialize dance
+    /// [`set_sample_rate`](Self::set_sample_rate) and
+    /// [`set_block_size`](Self::set_block_size) perform, and for the same
+    /// reason: a unit that sizes an oversampling buffer from this flag can only
+    /// do so at `AudioUnitInitialize`, so writing it to a live unit is accepted
+    /// and then ignored. (Ardour brackets it identically —
+    /// `audio_unit.cc:865-884`.)
+    ///
+    /// Returns `Ok(false)` when the AU has no
+    /// `kAudioUnitProperty_OfflineRender`: the property is optional, and a unit
+    /// that does not implement it has genuinely declined rather than failed.
+    /// A failure to *re-initialize* is a different matter and stays an `Err` —
+    /// the unit is left uninitialized and the caller must know.
+    pub fn set_offline_render_bracketed(&mut self, offline: bool) -> Result<bool> {
+        let was_ready = self.is_initialized();
+        if was_ready {
+            self.uninitialize()?;
+        }
+        // SAFETY: as above.
+        let accepted =
+            unsafe { crate::offline::set_offline_render(self.raw_unit(), offline) }.is_ok();
+        if was_ready {
+            self.initialize()?;
+        }
+        Ok(accepted)
+    }
+
     /// Whether the AU is willing to render with its input and output buffers
     /// aliasing the same memory.
     ///

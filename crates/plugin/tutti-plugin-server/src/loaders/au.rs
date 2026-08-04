@@ -10,7 +10,7 @@ use tutti_plugin::server::{
 use tutti_plugin::server::{
     EditorSize, ParamAddress, ParamFlags, ParamRange, ParamSteps, ParameterInfo, PluginAudio,
     PluginEditorHost, PluginMeta, PluginParams, PluginResult, PluginState, PluginTail,
-    ProcessContext, ProcessOutput, WindowHandle,
+    ProcessContext, ProcessOutput, RenderMode, WindowHandle,
 };
 
 use crate::loaders::common::{single_bus, Meta};
@@ -490,6 +490,24 @@ impl PluginAudio for AuInstance {
 
     fn set_sample_rate(&mut self, rate: f64) {
         let _ = self.inner.set_sample_rate(rate);
+    }
+
+    /// Write `kAudioUnitProperty_OfflineRender`, bracketed by an
+    /// uninitialize/re-initialize cycle.
+    ///
+    /// The bracket is not optional: a unit that sizes an oversampling or
+    /// look-ahead buffer from this flag can only do so at
+    /// `AudioUnitInitialize`, so writing it to a live unit is accepted and then
+    /// has no effect.
+    ///
+    /// Returns whether *this unit* accepted the property — the AU half of the
+    /// live probe behind [`Features::RENDER_MODE`]. A re-initialization failure
+    /// also reports `false`: the caller asked for a mode and did not get it,
+    /// and that is the question this bool answers.
+    fn set_render_mode(&mut self, mode: RenderMode) -> bool {
+        self.inner
+            .set_offline_render_bracketed(mode.is_offline())
+            .unwrap_or(false)
     }
 }
 

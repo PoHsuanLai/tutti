@@ -493,6 +493,21 @@ impl PluginClient {
         let _ = self.bridge.set_automation_state_rt(mode);
     }
 
+    /// Push the [`RenderMode`](crate::protocol::RenderMode) to the plugin.
+    ///
+    /// Queued on the same command bus as the blocks around it, so the change
+    /// lands between two blocks rather than overtaking one in flight.
+    ///
+    /// Returns whether the command was *queued*, which is not whether the
+    /// plugin honoured it: the server applies it asynchronously, and whether a
+    /// given plugin acts on the mode is the load-time
+    /// [`Features::RENDER_MODE`](crate::protocol::Features) capability the
+    /// caller already has. `false` here means the bridge is crashed or its
+    /// queue is full.
+    pub fn set_render_mode(&self, mode: crate::protocol::RenderMode) -> bool {
+        self.bridge.set_render_mode_rt(mode)
+    }
+
     /// Producer handle for this plugin's MIDI inbox. Route live MIDI to the
     /// plugin by pushing through this sender (or by inserting it into a
     /// [`tutti_midi_runtime::MidiBus`]); clip playback uses [`Self::set_midi_source`].

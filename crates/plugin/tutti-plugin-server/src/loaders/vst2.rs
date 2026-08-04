@@ -11,7 +11,7 @@ use tutti_plugin::server::{
     AudioBufferMut, EditorPresence, EditorSize, Features, LoadedPlugin, MidiEventVec,
     NoteExpressionChanges, ParamAddress, ParameterChanges, ParameterInfo, PluginAudio, PluginClass,
     PluginDescriptor, PluginEditorHost, PluginMeta, PluginParams, PluginResult, PluginState,
-    PluginTail, ProcessContext, ProcessOutput, WindowHandle,
+    PluginTail, ProcessContext, ProcessOutput, RenderMode, WindowHandle,
 };
 // Only the `not(vst2)` fallback arms construct `PluginError` directly.
 #[cfg(not(feature = "vst2"))]
@@ -248,6 +248,21 @@ impl PluginAudio for Vst2Instance {
         self.sample_rate = rate;
         #[cfg(feature = "vst2")]
         self.inner.set_sample_rate(rate);
+    }
+
+    /// Store the level the host reports through
+    /// `audioMasterGetCurrentProcessLevel`.
+    ///
+    /// Always accepted: VST2 has no query a plugin could decline — the host
+    /// answers whenever the plugin asks. So unlike CLAP and AU this reports
+    /// `true` unconditionally, and `probed::VST2` carries `RENDER_MODE` for the
+    /// same reason.
+    fn set_render_mode(&mut self, mode: RenderMode) -> bool {
+        #[cfg(feature = "vst2")]
+        self.inner.set_offline_render(mode.is_offline());
+        #[cfg(not(feature = "vst2"))]
+        let _ = mode;
+        true
     }
 }
 

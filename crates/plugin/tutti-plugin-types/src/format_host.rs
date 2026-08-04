@@ -15,7 +15,7 @@
 
 use crate::{
     AudioBufferMut, EditorSize, LoadedPlugin, ParamAddress, ParameterInfo, PluginDescriptor,
-    ProcessContext, ProcessOutput, Result, WindowHandle,
+    ProcessContext, ProcessOutput, RenderMode, Result, WindowHandle,
 };
 
 /// Catalog identity + load-time engine-wiring snapshot.
@@ -47,6 +47,29 @@ pub trait PluginAudio: Send {
     ) -> Result<ProcessOutput>;
 
     fn set_sample_rate(&mut self, rate: f64);
+
+    /// Tell the plugin whether it is rendering under realtime pressure.
+    ///
+    /// Configure-time, beside [`set_sample_rate`](Self::set_sample_rate), and
+    /// for the same reason: three of the four formats can only accept it while
+    /// the plugin is deactivated, and a plugin may size buffers from it. See
+    /// [`RenderMode`] for why this is not a per-block field.
+    ///
+    /// Returns whether the plugin *accepted* the mode, so a caller can tell a
+    /// refusal from a plugin that was never asked — the same
+    /// absent-vs-reported split
+    /// [`FeatureReport`](crate::FeatureReport) makes one level up. The default
+    /// returns `false`: a host that has not implemented this for a format must
+    /// not claim the plugin is honouring it.
+    ///
+    /// Implementations are responsible for the deactivate/reactivate bracket
+    /// their format requires, and should be a no-op when the mode is unchanged
+    /// — an offline bounce sets it once, but a caller is entitled to be
+    /// idempotent.
+    fn set_render_mode(&mut self, mode: RenderMode) -> bool {
+        let _ = mode;
+        false
+    }
 }
 
 /// Parameter enumeration, read, and write.

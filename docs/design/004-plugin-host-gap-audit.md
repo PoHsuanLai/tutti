@@ -30,7 +30,58 @@ claims we have.
 
 ---
 
-## A. Cross-format — offline render is missing from the shared vocabulary
+## A. Cross-format
+
+### A-0 · Provenance sum types leak format disagreement to the consumer · TODO
+
+The rule this crate should hold: **a format host may model its format's
+disagreement; the plugin host must normalize it.** A caller asking "what is this
+parameter's range" should not have to know that VST2 sometimes declines
+`effGetParameterProperties`.
+
+Three types currently spell provenance into the *shape* a consumer matches on:
+
+| Type | Where | Variants |
+|---|---|---|
+| `ParamRange` | `tutti-plugin-types/src/parameters.rs:31` | `Normalized { default }` / `Plain { min, max, default }` |
+| `ParamSteps` | `parameters.rs:165` | `Unknown` / `Continuous` / `Toggle` / `Enumerated(n)` |
+| `EditorPresence` | `descriptor.rs:69` | `Unknown` / `Absent` / `Present` |
+
+**The good news, and why this is small.** Every match site on `ParamRange` and
+`ParamSteps` outside their own module is a *producer* — a format host or a
+loader building the value (`clap-host/instance/params.rs:458`,
+`vst2-host/parameters.rs:155-175`, `loaders/vst3.rs:476-496`). There are
+currently **zero consumer-side matches**. The accessors that make the enum
+unnecessary already exist: `ParamRange::{bounds, default_value, to_plain,
+to_normalized}`, `ParamSteps::count`, `EditorPresence::{measured, is_present}`.
+
+So the work is not a redesign; it is:
+
+1. Make the accessor path the *only* public one — `pub(crate)` the variants, or
+   keep the enum private to the crate and expose `ParameterInfo` accessors.
+2. Delete the variant-matching the format hosts do across the crate boundary,
+   replacing construction with the existing builders
+   (`with_plain_range` / `with_normalized_default` / `with_steps`).
+3. Keep the *distinction* where it belongs — `probed`-style, on the side, not in
+   the shape. "The format never said" is real information
+   ([[param-info-absent-vs-reported]]), but it belongs beside the value like
+   `ParamFlags::known` does, not as a variant a caller must destructure.
+
+**Not in scope, and why.** These enums look similar but are *not* provenance —
+each variant is a genuinely different thing, so normalizing would delete
+meaning, not friction:
+
+- `ParamAddress` (68 sites) — opaque id vs positional index. Two different
+  addressing models; collapsing them is the bug `4831c6115` fixed.
+- `PluginClass` / `AuComponentType` / `Vst2Category` / `Vst3PlugType` /
+  `ClapFeature` — deliberately verbatim per format, with `PluginRole::role()`
+  *already* the normalized view. This is the pattern A-0 wants, done right:
+  raw kept, normalized derived. See [[plugin-role-normalization]].
+- `PluginTail` (33 sites) — `Finite`/`Unbounded`/`Unknown` are different
+  quantities, not provenance about one.
+- `RenderMode` (added by A-1) — two modes, no provenance variant. The
+  "did the plugin honour it" half is `Features::RENDER_MODE`, deliberately kept
+  out of the enum.
 
 ### A-1 · `ProcessContext` cannot express realtime vs offline · TODO
 
@@ -567,6 +618,9 @@ correct.
 
 1. **A-1** — designs the field the three offline items need. Nothing downstream
    can be done first.
+1b. **A-0** — independent of everything else, and cheap while the accessors are
+   already written and no consumer matches on the variants. It gets more
+   expensive with every consumer that learns to destructure them.
 2. **E-4** — memory safety, one call, cheapest fix here.
 3. **B-1**, **D-2** — both are spec-violating calls on the wrong state/thread,
    both have a correct sibling implementation to copy.

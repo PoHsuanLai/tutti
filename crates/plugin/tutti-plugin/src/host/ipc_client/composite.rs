@@ -125,6 +125,16 @@ impl PluginBridge {
         self.audio.set_sample_rate_rt(rate)
     }
 
+    /// Audio instance only, unlike `set_automation_state_rt`.
+    ///
+    /// The render mode changes how the plugin *processes*; it drives no editor
+    /// feedback, so the GUI mirror has nothing to show. Sending it there would
+    /// also mean re-initializing the GUI instance on three of the four formats
+    /// for no visible effect.
+    pub fn set_render_mode_rt(&self, mode: crate::protocol::RenderMode) -> bool {
+        self.audio.set_render_mode_rt(mode)
+    }
+
     pub fn reset_rt(&self) -> bool {
         self.audio.reset_rt()
     }

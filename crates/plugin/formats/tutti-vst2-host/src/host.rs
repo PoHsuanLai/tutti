@@ -35,12 +35,14 @@ pub type ParameterChange = (i32, f32);
 /// transport snapshot the plugin reads back. All three are created together
 /// from one [`HostState`] at load and live for the instance's lifetime.
 pub(crate) struct HostLink {
-    /// Kept alive so the `Host`-trait callbacks keep firing; never read
-    /// directly — the plugin holds the other end. Drop ends the callbacks.
+    /// The host end of the callback link. Keeping it alive is what keeps the
+    /// `Host`-trait callbacks firing — dropping it ends them — and it also
+    /// carries the answers those callbacks give, so the host can move one
+    /// (`set_offline`) without rebuilding the link.
     ///
     /// No `Mutex`: this is reached from the plugin's audio thread on every
     /// `audioMasterGetTime`, and every field it exposes is already lock-free.
-    pub(crate) _state: Arc<HostState>,
+    pub(crate) state: Arc<HostState>,
     /// Transport snapshot the host pushes and the plugin reads via
     /// `get_time_info`. A seqlock, not an `ArcSwap`: the push happens on the
     /// audio thread every block, and `ArcSwap::store` allocated the new value
@@ -64,6 +66,13 @@ pub(crate) struct HostState {
     /// `get_sample_rate` before the transport has pushed a `TimeInfo`
     /// snapshot (its rate is authoritative once present).
     default_sample_rate: f64,
+    /// Whether the host is rendering offline, answered back through
+    /// `audioMasterGetCurrentProcessLevel`.
+    ///
+    /// Atomic rather than a plain `bool` because the plugin asks from its own
+    /// thread while the control thread sets it, and this struct is shared
+    /// behind an `Arc` with no lock by design (see [`HostLink`]).
+    offline: std::sync::atomic::AtomicBool,
 }
 
 impl HostState {
@@ -80,7 +89,22 @@ impl HostState {
             time_info,
             block_size: block_size as isize,
             default_sample_rate,
+            offline: std::sync::atomic::AtomicBool::new(false),
         }
+    }
+
+    /// Set the render mode reported through
+    /// `audioMasterGetCurrentProcessLevel`.
+    ///
+    /// `&self` because the plugin holds this behind an `Arc` — the mode moves
+    /// without rebuilding the link.
+    pub(crate) fn set_offline(&self, offline: bool) {
+        self.offline
+            .store(offline, std::sync::atomic::Ordering::Release);
+    }
+
+    pub(crate) fn is_offline(&self) -> bool {
+        self.offline.load(std::sync::atomic::Ordering::Acquire)
     }
 }
 
@@ -152,12 +176,21 @@ impl Host for HostState {
         }
     }
 
-    /// Real data: the live audio path is always realtime (2). Offline
-    /// export would report 4, but that signal is not plumbed into
-    /// `HostState` today (the export path does not construct this host),
-    /// so returning realtime is the honest answer for every current caller.
+    /// Real data: `kVstProcessLevelOffline` (4) while the host is rendering
+    /// offline, `kVstProcessLevelRealtime` (2) otherwise.
+    ///
+    /// The two the host can honestly answer. `User` (1) and `Prefetch` (3)
+    /// describe *which thread is asking* — this callback is re-entrant from
+    /// wherever the plugin chooses to call it, and the host cannot tell — so
+    /// answering either would be a guess. `Unknown` (0) is what the host
+    /// returned before the offline half existed, and it means "host does not
+    /// support the query", which is now false.
     fn get_process_level(&self) -> isize {
-        2 // kVstProcessLevelRealtime
+        if self.is_offline() {
+            4 // kVstProcessLevelOffline
+        } else {
+            2 // kVstProcessLevelRealtime
+        }
     }
 
     /// Neutral default: the plugin's editor-resize request. `HostState`
@@ -225,6 +258,21 @@ mod tests {
     fn get_process_level_is_realtime() {
         let time_info = Arc::new(TransportCell::new());
         let host = make_host(time_info, 48_000.0);
+        assert_eq!(host.get_process_level(), 2); // kVstProcessLevelRealtime
+    }
+
+    /// A plugin polls this callback to decide whether it may spend more per
+    /// block. Reporting realtime during a bounce is what made an offline render
+    /// silently produce the live-quality result.
+    #[test]
+    fn get_process_level_follows_the_render_mode() {
+        let time_info = Arc::new(TransportCell::new());
+        let host = make_host(time_info, 48_000.0);
+
+        host.set_offline(true);
+        assert_eq!(host.get_process_level(), 4); // kVstProcessLevelOffline
+
+        host.set_offline(false);
         assert_eq!(host.get_process_level(), 2); // kVstProcessLevelRealtime
     }
 }

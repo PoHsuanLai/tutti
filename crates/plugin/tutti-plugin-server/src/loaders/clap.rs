@@ -7,7 +7,7 @@ use tutti_plugin::server::{
     PluginClass, PluginDescriptor, PluginEditorHost, PluginError, PluginMeta, PluginParams,
     PluginResult, PluginState, PluginTail, Samples, WindowHandle,
 };
-use tutti_plugin::server::{ProcessContext, ProcessOutput};
+use tutti_plugin::server::{ProcessContext, ProcessOutput, RenderMode};
 
 use crate::loaders::common::{single_bus, Meta};
 use tutti_plugin::{BridgeError, LoadStage, Result};
@@ -393,6 +393,21 @@ impl PluginAudio for ClapInstance {
                     .to_string(),
             )),
         }
+    }
+
+    /// Forward to `clap.render`, reporting whether the plugin took it.
+    ///
+    /// `clap_plugin_render.set` is `[main-thread]` (`ext/render.h:33`) and
+    /// carries no activation constraint, so unlike VST3 and AU this needs no
+    /// deactivate/reactivate bracket — the live instance accepts it.
+    ///
+    /// `false` here is a real answer, not a failure to ask: the extension is
+    /// optional by design (*"If this information does not influence your
+    /// rendering code, then don't implement this extension"*), so a plugin
+    /// that does not export it has genuinely declined.
+    fn set_render_mode(&mut self, mode: RenderMode) -> bool {
+        let offline = mode.is_offline();
+        clap_dispatch_mut!(self, i => i.set_render_mode(offline))
     }
 
     fn set_sample_rate(&mut self, rate: f64) {

@@ -75,6 +75,20 @@ pub enum HostMessage {
         layout: SlabLayout,
     },
     Shutdown,
+    /// Tell the plugin whether it is rendering under realtime pressure.
+    ///
+    /// A sibling of [`SetSampleRate`](Self::SetSampleRate) rather than a field
+    /// on [`ProcessAudio`](Self::ProcessAudio): three of the four formats can
+    /// only accept this while the plugin is deactivated, and two of those
+    /// rebuild buffers around it. Sending it per block would be both wasteful
+    /// and unrepresentable.
+    ///
+    /// Appended rather than placed beside `SetSampleRate` because bincode
+    /// encodes the discriminant over declaration order, so inserting mid-enum
+    /// renumbers every later variant.
+    SetRenderMode {
+        mode: crate::protocol::RenderMode,
+    },
 }
 
 // `AudioProcessed` carries an inline-256 `IpcMidiEventVec` (~5 KB), dwarfing the

@@ -635,3 +635,82 @@ fn a_depth_edit_reaches_a_live_shaper() {
          is what the anti-respawn policy actually protects"
     );
 }
+
+/// **A range edit reaches a live chain's clamp.**
+///
+/// The third and last of the frozen-at-construction bugs on this path, after
+/// the base and the shaper. `ParamSumUnit` held `min`/`max` as plain fields, so
+/// narrowing a param's range moved the declaration and nothing else — the sum
+/// went on clamping to the range it was born with.
+///
+/// Asserts the entities are unchanged for the same reason
+/// `a_range_edit_reaches_a_live_chain_without_respawning_it` does: rebuilding
+/// the sum would apply the new clamp *and* silently revert the authored base,
+/// so a test that only checked the clamp would bless that trade.
+#[test]
+fn a_range_edit_reaches_a_live_clamp() {
+    let (mut app, target, _) = app_with_target();
+    let lfo = spawn_lfo(&mut app);
+    app.world_mut().spawn(
+        ModRoute::new(lfo, target, ParamAddr::Unit(UnitParam::Drive))
+            .with_depth(Depth(0.5))
+            .per_sample(),
+    );
+    app.update();
+    app.update();
+
+    /// What the live sum clamps `base` to, with every offset port at zero.
+    fn clamped(app: &App, target: Entity, base: f32) -> f32 {
+        let chains = app.world().resource::<AudioRateChains>();
+        let chain = chains
+            .get(target, ParamAddr::Unit(UnitParam::Drive))
+            .expect("the chain must exist");
+        let node = app.world().get::<AudioNode>(chain.sum).unwrap().0;
+        let graph = app.world().resource::<AudioGraphRes>();
+        let unit = graph
+            .0
+            .node_as::<tutti_units::ParamSumUnit>(node)
+            .expect("the sum is a ParamSumUnit");
+        let mut out = [0.0f32; 1];
+        tutti_core::dsp::AudioUnit::tick(&mut unit.clone(), &[base, 0.0], &mut out);
+        out[0]
+    }
+
+    assert_eq!(
+        clamped(&app, target, 100.0),
+        10.0,
+        "the chain starts clamped to its declared max"
+    );
+
+    let (sum_before, base_before) = {
+        let chains = app.world().resource::<AudioRateChains>();
+        let chain = chains
+            .get(target, ParamAddr::Unit(UnitParam::Drive))
+            .unwrap();
+        (chain.sum, chain.base)
+    };
+
+    // Narrow the declared range: 0..=10 becomes 0..=2.
+    app.world_mut()
+        .entity_mut(target)
+        .insert(ModParamRange::default().with(ParamAddr::Unit(UnitParam::Drive), 1.0, 0.0, 2.0));
+    app.update();
+
+    assert_eq!(
+        clamped(&app, target, 100.0),
+        2.0,
+        "the narrowed range must reach the live sum; still clamping at 10 \
+         means the declaration moved and the rendered node did not"
+    );
+
+    let chains = app.world().resource::<AudioRateChains>();
+    let chain = chains
+        .get(target, ParamAddr::Unit(UnitParam::Drive))
+        .unwrap();
+    assert_eq!(
+        (chain.sum, chain.base),
+        (sum_before, base_before),
+        "the clamp must move in place — rebuilding the sum would also revert \
+         the authored base, trading one frozen value for another"
+    );
+}

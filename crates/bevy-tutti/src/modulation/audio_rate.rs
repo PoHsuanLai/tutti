@@ -87,6 +87,14 @@ pub struct ParamChain {
     /// [`write_param`](crate::graph::write_param)'s audio-rate branch and
     /// [`refresh_base`](Self::refresh_base) both exist to prevent.
     base_cell: std::sync::Arc<tutti_core::AtomicF32>,
+    /// The sum's live clamp range.
+    ///
+    /// Held for the same reason as [`base_cell`](Self::base_cell), and against
+    /// the same failure: a range is authored state that moves without the graph
+    /// moving, and it is baked into `ParamSumUnit` at construction. Without a
+    /// handle the only way to apply a new range is to rebuild the sum — which
+    /// rebuilds the chain, which loses the base.
+    bounds: std::sync::Arc<tutti_units::ClampBounds>,
 }
 
 impl ParamChain {
@@ -105,6 +113,18 @@ impl ParamChain {
         use tutti_core::Ordering;
         if self.base_cell.load(Ordering::Acquire) != base {
             self.base_cell.store(base, Ordering::Release);
+        }
+    }
+
+    /// Store `(min, max)` if either differs from what the sum already clamps to.
+    ///
+    /// Guarded like [`refresh_base`](Self::refresh_base), and for the same
+    /// reason — but here the guard also narrows the window in which a reader can
+    /// observe the two stores half-applied. It cannot close it; `ParamSumUnit`
+    /// orders the pair at the read for that.
+    fn refresh_bounds(&self, min: f32, max: f32) {
+        if self.bounds.get() != (min, max) {
+            self.bounds.set(min, max);
         }
     }
 }
@@ -225,6 +245,7 @@ fn spawn_chain(
     // its own atomic, so this cell is the only address an authored write has —
     // see `ParamModChain::base_cell` and `write_param`'s audio-rate branch.
     let base_cell = built.base_cell();
+    let bounds = built.bounds();
 
     let base = commands.spawn(tutti_core::AudioNode(built.base)).id();
     let sum = commands.spawn(tutti_core::AudioNode(built.sum)).id();
@@ -263,6 +284,7 @@ fn spawn_chain(
         shaping,
         port,
         base_cell,
+        bounds,
     })
 }
 
@@ -454,10 +476,10 @@ pub fn reconcile_audio_rate(
         // read once at spawn and never again, so an authored edit to an
         // audio-rate param was silently discarded for the chain's whole life.
         //
-        // Cheap and in-place: one guarded atomic store, no respawn, no phase
-        // restart. `min`/`max` are *not* refreshed — they are baked into
-        // `ParamSumUnit` at construction and would need a respawn, which is
-        // tracked separately.
+        // Cheap and in-place: guarded atomic stores, no respawn. The bounds
+        // ride along for the same reason the base does — a range is authored
+        // state that moves without the graph moving, and `ParamSumUnit` now
+        // holds them in a shared cell rather than baking them at construction.
         //
         // Shaping is handled just below, and needs more than a store because
         // `ParamShaperUnit` has no setter either.
@@ -469,6 +491,7 @@ pub fn reconcile_audio_rate(
             if let Some(range) = ranges.get(key.0).ok().and_then(|r| r.get(key.1)) {
                 if let Some(chain) = chains.0.get(&key) {
                     chain.refresh_base(range.base);
+                    chain.refresh_bounds(range.min, range.max);
                 }
             }
             reshape_chain(

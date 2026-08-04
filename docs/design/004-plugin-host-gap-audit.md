@@ -676,13 +676,25 @@ plugin's requested origin is dropped. The vendor leaks on both sides:
 `// TODO: free memory`, and `host.rs:406` does `Some(unsafe { *rect })` with
 `// TODO: Who owns rect?`. One `Rect` leaks per editor open, minimum.
 
-### D-8 · `effCanBeAutomated` is surfaced but never called · TODO
+### D-8 · `effCanBeAutomated` is surfaced but never called · DONE
 
 `parameters.rs:188-189` ships `ParamFlags::empty()` with `known` empty. The doc
 at `:123-126` says the vendored crate "does not surface" `effCanBeAutomated` —
 **inaccurate**: `vendor/host.rs:1371` implements `can_be_automated`. Mild
 consequence (empty `known` correctly signals unprobed), but the stated
 justification is wrong and will mislead.
+
+**Fixed.** `can_be_automated` is on `PluginParameters`, which the host already
+holds as `Arc<dyn PluginParameters>` via `SendParams` — nothing stood in the
+way. Probed per parameter (the opcode takes an index), and `AUTOMATABLE` now
+ships in the `known` mask. The other flag bits have no VST2 opcode and stay
+out of it.
+
+Test-fixture limit, stated in the test rather than papered over: the probe
+answers `in_range(index)` and `parameter_list` enumerates only in-range
+indices, so every listed parameter answers `true`. The test pins "probed and
+marked known" — the part that regressed — not "a `false` answer is carried
+through", which no available input can witness.
 
 ### D-9 · Preset/program support absent despite full vendor coverage · HELD
 

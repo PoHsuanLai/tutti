@@ -198,16 +198,42 @@ fn dispatch_inner(
                 let size = editor.size();
                 let pos = editor.position();
 
-                unsafe {
-                    // Given a Rect** structure
-                    // TODO: Investigate whether we are given a valid Rect** pointer already
-                    *(ptr as *mut *mut c_void) = Box::into_raw(Box::new(Rect {
+                // The `Rect` the host reads through, owned by this plugin and
+                // reused on every call.
+                //
+                // `effEditGetRect` hands the host a `Rect**` and VST 2.4 gives
+                // it no way to release what it points at — there is no matching
+                // "free this rect" opcode, and the host cannot know the
+                // allocator. So a `Box::into_raw` here leaked one `Rect` per
+                // call, and hosts call this repeatedly: once before opening an
+                // editor, and again on every resize.
+                //
+                // Thread-local rather than a `static mut`: the pointer must stay
+                // valid after this returns, and a host may drive editors for
+                // several plugin instances. Per-thread is the right scope
+                // because `effEditGetRect` is a main-thread opcode, so the host
+                // reads the value on the same thread that wrote it, before it
+                // can call again.
+                thread_local! {
+                    static EDITOR_RECT: Cell<Rect> = const {
+                        Cell::new(Rect { left: 0, top: 0, right: 0, bottom: 0 })
+                    };
+                }
+
+                EDITOR_RECT.with(|slot| {
+                    slot.set(Rect {
                         left: pos.0 as i16,              // x coord of position
                         top: pos.1 as i16,               // y coord of position
                         right: (pos.0 + size.0) as i16,  // x coord of pos + x coord of size
                         bottom: (pos.1 + size.1) as i16, // y coord of pos + y coord of size
-                    })) as *mut _; // TODO: free memory
-                }
+                    });
+                    // SAFETY: `ptr` is the `Rect**` out-parameter the opcode
+                    // documents; the pointer written stays valid for the
+                    // thread's lifetime.
+                    unsafe {
+                        *(ptr as *mut *mut c_void) = slot.as_ptr() as *mut c_void;
+                    }
+                });
 
                 return 1;
             }

@@ -802,13 +802,39 @@ method is breaking for an external implementor that overrode it, but such an
 implementor was writing a body nothing in the pipeline would ever call, so the
 break surfaces a bug rather than causing one.
 
-### D-7 · `effEditGetRect` result partly discarded, and the `Rect` leaks · TODO
+### D-7 · `effEditGetRect` result partly discarded, and the `Rect` leaks · DONE
 
 `editor.rs:36-49` uses width/height only; `position()` is never called, so the
 plugin's requested origin is dropped. The vendor leaks on both sides:
 `interfaces.rs:190-195` does `Box::into_raw(...)` with a literal
 `// TODO: free memory`, and `host.rs:406` does `Some(unsafe { *rect })` with
 `// TODO: Who owns rect?`. One `Rect` leaks per editor open, minimum.
+
+**The leak is fixed; the dropped origin is not a defect.** They turned out to be
+two different things, only one of them a bug.
+
+`interfaces.rs` now writes into a thread-local `Cell<Rect>` reused on every
+call. The lifetime constraint is what forced the leak in the first place:
+`effEditGetRect`'s `Rect**` has no companion "free this" opcode and the host
+cannot know the plugin's allocator, so whatever it points at must outlive the
+call — `Box::into_raw` satisfies that and leaks one `Rect` per call, and hosts
+call it repeatedly (before opening, and on every resize). Thread-local rather
+than a `static`, since a host may drive editors for several instances; the
+opcode is main-thread, so the reader is the writer's thread.
+
+The origin is **deliberately** unread. `left`/`top` are where the plugin would
+like its window; this host embeds the view into a `parent` it owns, so the
+parent decides placement and there is nothing to act on. That would matter for
+a floating editor, which this path does not offer — now said in a comment at
+the read site rather than left looking like an omission.
+
+`host.rs:406`'s `// TODO: Who owns rect?` is the *reading* side of the same
+question and is answered by the above: the plugin owns it, and the host must
+copy rather than free. Left as-is; the comment is the finding, not a leak.
+
+Pointer identity is the testable form — a fresh allocation gives a different
+address, a reused buffer gives the same one. The `vst-tutti` test plugin gained
+a minimal editor, without which the whole arm is unreachable from any test.
 
 ### D-8 · `effCanBeAutomated` is surfaced but never called · DONE
 

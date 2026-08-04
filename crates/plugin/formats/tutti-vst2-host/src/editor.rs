@@ -26,6 +26,12 @@ impl Vst2Instance {
             .ok_or_else(|| Vst2Error::EditorError("Plugin has no editor".into()))?
             .0;
 
+        // The rect's *origin* is deliberately not read. `effEditGetRect`
+        // reports `left`/`top` as well as the extent, but this host embeds the
+        // view into a `parent` window it owns, so the parent decides placement
+        // and a plugin-requested screen position has nothing to act on. It
+        // would matter for a floating editor, which this path does not offer.
+        //
         // SDK convention: query the editor's size (effEditGetRect) BEFORE
         // embedding it (effEditOpen), so the host sizes its window before the
         // plugin attaches. vst-rs 0.3.0's `Editor` trait exposes no dedicated

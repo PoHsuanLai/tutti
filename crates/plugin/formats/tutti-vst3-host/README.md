@@ -97,10 +97,10 @@ let state = plugin.state()?;
 // Load
 plugin.set_state(&state)?;
 
-// Chainable configuration
-plugin
-    .set_sample_rate(48000.0)
-    .set_block_size(256);
+// Reconfiguration. A rate change deactivates the plugin around
+// `setupProcessing` and rolls back if the plugin refuses the new rate,
+// so it reports rather than returning a receiver to chain from.
+plugin.set_sample_rate(48000.0)?;
 plugin.set_use_f64(true)?;
 ```
 

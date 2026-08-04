@@ -129,7 +129,7 @@ Also note two things about issue #54:
 
 ## B. VST3 residue (not in issue #54)
 
-### B-1 · `set_sample_rate` calls `setupProcessing` on an active instance · TODO
+### B-1 · `set_sample_rate` calls `setupProcessing` on an active instance · DONE
 
 `formats/tutti-vst3-host/src/host/instance.rs:388`.
 
@@ -146,9 +146,41 @@ Three aggravations:
 1. The failure is discarded — `let _ = self.apply_process_setup();`
 2. The doc says *"Must be called only when not inside `process`"* — the wrong
    guard. The constraint is **not active**, not *not processing*.
-3. The correct machinery already exists on the same type:
-   `reactivate_for_latency` (`:821`) does `set_active(false)` → … →
-   `set_active(true)`.
+3. Machinery of the right *shape* already exists on the same type —
+   `restart_bus_configuration` (`:886`; this doc originally cited it under its
+   old name `reactivate_for_latency`).
+
+**Landed, but not by reusing that method.** It is not a generic bracket: inside
+its deactivate/activate cycle it also runs `negotiate_bus_arrangements()` and
+`reconcile_bus_counts()`, because it serves `kIoChanged`/`kLatencyChanged` —
+the plugin has just announced its bus layout changed. A rate change announces
+nothing about layout, and re-running `setBusArrangements` there would let a
+`kResultFalse` re-resolve the audio scratch from a read-back arrangement, so a
+rate change could reshape channel scratch behind an unrelated call.
+
+A separate private `reconfigure(rate)` reuses the four existing primitives
+(`stop_processing`, `set_active`, `apply_process_setup`, `read_latency_samples`)
+instead, so no VST3 call sequence is written twice. It rolls back to the previous
+rate on refusal; a *failed rollback* propagates as its own error rather than
+folding into the refusal, because "inactive and unrecoverable" is a worse fact
+than "still running at the old rate".
+
+`set_sample_rate` now returns `Result<()>` instead of `&mut Self`. Verified no
+code used the chaining — but the crate README documented it, in an example that
+also called a `set_block_size` VST3 never had. Doc examples are not
+compiler-checked, so that had gone stale unnoticed; corrected in the same change.
+
+Witnessed by a new `kModeSetupWhileActive` probe mode that counts
+`setupProcessing` calls arriving while active. `host-checker.vst3` cannot see
+this — it validates the `ProcessData` it is handed, not the lifecycle preceding
+the call — and neither can the host, since `setupProcessing` returns `kResultOk`
+either way. Only the plugin observes the ordering. Mutation-tested: the pre-fix
+body yields `11001` against an expected `11000`, i.e. exactly one violation.
+
+Note for anyone touching that probe: `kModeStepCount` is a stepped-parameter
+divisor, so adding a mode changes *every* mode's normalized value. Its Rust
+mirror `MODE_STEPS` moved 9.0 → 10.0 in the same change. A disagreement between
+them does not fail to compile — it silently selects the wrong renderer.
 
 Every other format brackets this correctly, which is what makes it a defect
 rather than a house style:
@@ -514,7 +546,7 @@ It also diverges from the transport clock: `src/transport.rs:258` publishes
 plugin reading both gets two answers for "where are we". `offline.rs:326,376,485`
 duplicates the pattern in `PushScratch`.
 
-### E-4 · `verify_block_size` is not on the load path · TODO
+### E-4 · `verify_block_size` is not on the load path · DONE
 
 `stream.rs:266` exists precisely because *"a successful set is not proof the
 value stuck — an AU that clamps to its own maximum returns `noErr` while keeping
@@ -528,6 +560,24 @@ takes (`loaders/au.rs:265` → `AuHostInstance::new`).
 
 So the exact hazard the function was written to prevent is unguarded where it
 matters. Memory-safety consequence, cheapest fix in this doc.
+
+**Landed.** One line in `with_layout`, the tail both constructors funnel through:
+`config.verify_block_size(&handle)?;`. A refusal is an `Err` rather than a silent
+adoption of the accepted figure, matching how `apply` already treats a rejected
+sample rate.
+
+Two things worth recording:
+
+- **No unit on this machine clamps.** `au_channel_config.rs:539` already says so
+  in its own caveat, so a corpus-driven test would have been vacuous
+  ([[vacuous-conditional-tests]]). The guard is pinned by a `ClampsBlockSize`
+  probe that genuinely drives the branch, plus a positive control on the same
+  probe so the assertion cannot pass by everything failing.
+- **The probe harness was itself an accidental clamping AU**: it returned a
+  hardcoded `4096u32` for `MaximumFramesPerSlice` while discarding writes. Once
+  the load path verifies, that made *every* probe test fail to construct — so
+  fixing the probe to store and report honestly was a precondition for the fix
+  being testable at all.
 
 ### E-5 · Latency, tail and parameter list are read once and cached forever · TODO
 

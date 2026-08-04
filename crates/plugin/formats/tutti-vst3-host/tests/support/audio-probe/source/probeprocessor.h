@@ -95,6 +95,18 @@ private:
 	/// it ran one.
 	int32 mActivationCount {0};
 
+	/// Whether the host currently has us active, tracked so `setupProcessing`
+	/// can tell which state it arrived in. `AudioEffect` keeps no such flag,
+	/// and `processSetup` records only the last setup's *contents*.
+	bool mActive {false};
+
+	/// `setupProcessing` calls that arrived while `mActive` — each one a
+	/// violation of `ivstaudioprocessor.h:328-330`. Not reset by `setActive`,
+	/// for the same reason as `mActivationCount`: a host that deactivates
+	/// around the call would otherwise erase the evidence of the one that came
+	/// before.
+	int32 mSetupWhileActiveCount {0};
+
 	/// Set at the end of `initialize`. `getProcessContextRequirements` reports
 	/// its requirements only once this is true, so the answer a host receives
 	/// records *when* it asked.

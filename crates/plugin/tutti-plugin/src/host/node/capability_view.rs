@@ -54,7 +54,7 @@ fn declined(client: &PluginClient, f: Features) -> bool {
 /// Split out so the decision can be tested without standing up a subprocess:
 /// building a [`PluginClient`] needs a live bridge, but the rule being pinned
 /// here is a pure function of what the plugin reported.
-fn is_declined(loaded: &crate::protocol::LoadedPlugin, f: Features) -> bool {
+pub(crate) fn is_declined(loaded: &crate::protocol::LoadedPlugin, f: Features) -> bool {
     loaded.capability(f) == Some(false)
 }
 

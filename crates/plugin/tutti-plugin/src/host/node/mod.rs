@@ -37,6 +37,7 @@ mod tests;
 // resolving.
 pub use crate::util::node::{route_with_latency, Midi, ParameterChangeSink};
 pub(crate) use crate::util::node::{InvalidateSink, RefreshSink};
+pub(crate) use capability_view::is_declined;
 pub use capability_view::{
     HarmonyView, MidiInView, MidiOutView, NoteExpressionView, TransportView,
 };

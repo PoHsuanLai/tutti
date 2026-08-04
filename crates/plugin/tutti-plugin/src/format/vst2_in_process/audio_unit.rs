@@ -108,6 +108,16 @@ impl InProcessVst2Client {
         self.midi.sender()
     }
 
+    /// Layer a transport-aware MIDI source over the live inbox, polled once per
+    /// block. The clip-playback path, where [`midi_sender`](Self::midi_sender)
+    /// is the live one; the port drains both.
+    ///
+    /// Held in an `Arc` so the same source survives the unit-clone fundsp
+    /// performs on each `commit()`.
+    pub fn set_midi_source(&mut self, source: Arc<dyn tutti_midi_types::MidiIn>) {
+        self.midi.set_source(source);
+    }
+
     /// Install a transport reader so the plugin receives a live per-block
     /// [`TransportInfo`] (tempo, playhead, meter, bar, loop), which the VST2
     /// host turns into the `audioMasterGetTime` snapshot the plugin polls.

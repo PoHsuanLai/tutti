@@ -12,4 +12,4 @@ mod loader;
 
 #[allow(unused_imports)]
 pub use audio_unit::InProcessVst2Client;
-pub use loader::load;
+pub use loader::{load, load_client};

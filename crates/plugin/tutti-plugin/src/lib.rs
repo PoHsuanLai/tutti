@@ -15,20 +15,27 @@
 //! # fn ex(window: &impl raw_window_handle::HasWindowHandle)
 //! # -> tutti_plugin::Result<()> {
 //! use std::path::PathBuf;
-//! use tutti_plugin::catalog::{CatalogConfig, Plugins};
+//! use tutti_plugin::catalog::{CatalogConfig, Plugin, Plugins};
 //!
 //! let plugins = Plugins::with_json_catalog(CatalogConfig::new(
 //!     PathBuf::from("/my/app/plugin-db.json"),
 //!     vec![PathBuf::from("/Library/Audio/Plug-Ins/VST3")],
 //! ))
 //! .with_fresh_scan();
-//! let (unit, handle) = plugins.load_by_name("TAL-NoiseMaker", 48000.0)?;
+//! // The catalog discovers; `Plugin::open` loads. A host that already knows
+//! // the path can skip the catalog entirely.
+//! let id = plugins.find("TAL-NoiseMaker").expect("scanned");
+//! let plugin = Plugin::open(id.path(), 48000.0)?;
 //!
-//! // `unit` is a `Box<dyn AudioUnit>` that goes into your fundsp graph.
-//! // `handle` is the main-thread control surface.
+//! // The main-thread control surface. Clone it before taking the node below —
+//! // `into_unit` consumes the `Plugin`.
+//! let handle = plugin.handle().clone();
 //! let size = handle.open_editor(window)
 //!     .map_err(|e| tutti_plugin::BridgeError::EditorError(e.to_string()))?;
 //! println!("editor opened at {}x{}", size.width, size.height);
+//!
+//! // Then hand the audio node to your fundsp graph.
+//! let unit = plugin.into_unit();
 //! # Ok(()) }
 //! ```
 //!
@@ -209,7 +216,8 @@ pub mod catalog {
         PluginDescriptor, PluginFormat, PluginRecord, PluginRole, PluginScanner, ScanHandle,
         ScanPhase, ScanProgress, ScanResult, Vst2Category, Vst3PlugType, Vst3SubCategories,
     };
-    pub use crate::host::plugins::{load_client_with, PluginId, Plugins, ScanTicket};
+    pub use crate::host::plugin::Plugin;
+    pub use crate::host::plugins::{PluginId, Plugins, ScanTicket};
     pub use crate::util::config::{AudioConfig, CatalogConfig};
 }
 

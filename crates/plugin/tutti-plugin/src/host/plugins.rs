@@ -28,20 +28,15 @@
 //! Audio knobs are separate and default sensibly; set them with
 //! [`Plugins::with_audio_config`] when the defaults don't fit.
 
-use crate::error::{BridgeError, Result};
-use crate::host::discovery::format_from_path;
-use crate::host::discovery::record::PluginFormat;
+use crate::error::Result;
 #[cfg(feature = "json")]
 use crate::host::discovery::JsonCatalog;
 use crate::host::discovery::{
     CatalogExt, PluginCatalog, PluginRecord, PluginScanner, ScanHandle, ScanResult,
 };
-use crate::host::handles::control_handle::PluginHandle;
-use crate::host::node::PluginClient;
 use crate::protocol::PluginDescriptor;
 use crate::util::config::{AudioConfig, CatalogConfig};
 use std::path::{Path, PathBuf};
-use tutti_core::SampleRate;
 
 /// Opaque identifier for a plugin in a [`Plugins`] catalog.
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
@@ -49,7 +44,7 @@ pub struct PluginId(PathBuf);
 
 impl PluginId {
     /// Construct from a plugin file path. The path must match a record
-    /// in the catalog at load time; otherwise `Plugins::load` returns
+    /// in the catalog at load time; otherwise `Plugins::open` returns
     /// `BridgeError::PluginNotFound`.
     pub fn from_path(path: impl Into<PathBuf>) -> Self {
         Self(path.into())
@@ -116,19 +111,20 @@ impl Plugins {
         self
     }
 
-    /// The audio settings every load from this catalog uses.
+    /// The audio settings this catalog hands to a load.
     ///
-    /// The counterpart to [`with_audio_config`](Self::with_audio_config), and
-    /// what makes an **off-thread** load possible. [`load`](Self::load) and
-    /// [`load_client`](Self::load_client) take `&self`, so a caller that must
-    /// not block its thread — a frame-driven host, where a load costs a
-    /// subprocess launch of half a second to fifteen — cannot call them
-    /// directly: the borrow would have to outlive the frame. Reading the config
-    /// here, cloning it with the [`PluginId`], and calling
-    /// [`load_with`](Self::load_with) on the worker is the way across, and the
-    /// [`load_client_with`] on the worker is the way across, and the settings a
-    /// host chose ride along instead of being silently replaced by
+    /// The counterpart to [`with_audio_config`](Self::with_audio_config).
+    /// Opening does not go through the catalog — [`Plugin::open_with`] takes
+    /// these settings and a path — so this is how a host that configured them
+    /// here passes them along rather than falling back to
     /// [`AudioConfig::default`].
+    ///
+    /// Being a plain value read off `&self` is also what makes an **off-thread**
+    /// load work: clone it, hand it to a worker with the path, and no borrow of
+    /// the catalog has to outlive the frame while a subprocess takes half a
+    /// second to fifteen to launch.
+    ///
+    /// [`Plugin::open_with`]: crate::catalog::Plugin::open_with
     pub fn audio_config(&self) -> &AudioConfig {
         &self.audio
     }
@@ -300,55 +296,6 @@ impl Plugins {
         id
     }
 
-    /// Load a plugin by id. Returns a graph-ready `Box<dyn AudioUnit>`
-    /// and a main-thread [`PluginHandle`]; both must be kept alive while
-    /// the plugin runs.
-    ///
-    /// Format dispatch:
-    /// - VST2 (with the `vst2` feature): runs entirely in the host process
-    ///   (single AEffect for audio + editor).
-    /// - Everything else: subprocess + IPC bridge (audio out-of-process,
-    ///   editor lazily loaded in-host).
-    pub fn load(
-        &self,
-        id: &PluginId,
-        sample_rate: impl Into<SampleRate>,
-    ) -> Result<(Box<dyn tutti_core::AudioUnit>, PluginHandle)> {
-        let sample_rate = sample_rate.into();
-        #[cfg(feature = "vst2")]
-        if matches!(format_from_path(&id.0), Some(PluginFormat::Vst2)) {
-            // `.get()` at the VST2 ABI, which takes a bare rate.
-            return crate::format::vst2_in_process::load(&id.0, sample_rate.get());
-        }
-        let _ = format_from_path; // keep import live without the vst2 feature
-        let _ = PluginFormat::Vst2;
-
-        let (client, handle) = load_client_with(&self.audio, id, sample_rate)?;
-        Ok((Box::new(client), handle))
-    }
-
-    /// Subprocess-formats variant of [`Plugins::load`] that returns the
-    /// raw [`PluginClient`] instead of `Box<dyn AudioUnit>`.
-    pub fn load_client(
-        &self,
-        id: &PluginId,
-        sample_rate: impl Into<SampleRate>,
-    ) -> Result<(PluginClient, PluginHandle)> {
-        load_client_with(&self.audio, id, sample_rate)
-    }
-
-    /// Shortcut for [`Plugins::find`] + [`Plugins::load`].
-    pub fn load_by_name(
-        &self,
-        name: &str,
-        sample_rate: impl Into<SampleRate>,
-    ) -> Result<(Box<dyn tutti_core::AudioUnit>, PluginHandle)> {
-        let id = self
-            .find(name)
-            .ok_or_else(|| BridgeError::PluginNotFound { name: name.into() })?;
-        self.load(&id, sample_rate)
-    }
-
     /// Commit the in-memory catalog to its backing store.
     pub fn flush(&mut self) -> std::io::Result<()> {
         self.catalog.flush()
@@ -407,31 +354,6 @@ impl Plugins {
         }
         missing
     }
-}
-
-/// Load a plugin from an [`AudioConfig`] alone, with no catalog.
-///
-/// The catalog's only contribution to a load is its [`AudioConfig`] — the
-/// record is looked up beforehand to get the [`PluginId`], and nothing else is
-/// read. Splitting that out is what lets a load run **off the caller's thread**:
-/// [`Plugins::load`] and [`Plugins::load_client`] take `&self`, so a frame-driven
-/// host cannot hold the borrow across the half-second-to-fifteen-second
-/// subprocess launch. It reads [`Plugins::audio_config`], clones it with the id,
-/// and calls this from a worker.
-///
-/// `Plugins::load_client` is this function with the config supplied, so there is
-/// one implementation rather than two that can drift.
-///
-/// Subprocess formats only — the in-process VST2 path is chosen by
-/// [`Plugins::load`], which dispatches on format before reaching here.
-pub fn load_client_with(
-    audio: &AudioConfig,
-    id: &PluginId,
-    sample_rate: impl Into<SampleRate>,
-) -> Result<(PluginClient, PluginHandle)> {
-    let client = PluginClient::new(audio.to_bridge_config(), id.0.clone(), sample_rate)?;
-    let handle = PluginHandle::from_client(&client);
-    Ok((client, handle))
 }
 
 /// Claim on the catalog an async [`Plugins::rescan`] took ownership of.

@@ -33,6 +33,22 @@ pub fn load(
     path: &Path,
     sample_rate: f64,
 ) -> Result<(Box<dyn tutti_core::AudioUnit>, PluginHandle)> {
+    let (client, handle) = load_client(path, sample_rate)?;
+    Ok((Box::new(client), handle))
+}
+
+/// [`load`], keeping the concrete [`InProcessVst2Client`].
+///
+/// The same load, one boxing step earlier, so a caller that needs the client's
+/// own surface (its MIDI port) is not left with only the `AudioUnit` supertrait.
+/// `load` is this plus a `Box::new`, so the two cannot drift.
+pub fn load_client(
+    path: &Path,
+    sample_rate: impl Into<tutti_core::SampleRate>,
+) -> Result<(InProcessVst2Client, PluginHandle)> {
+    // `.get()` here and not at the caller: this is the last hop before
+    // `Vst2Instance::load`, which crosses the VST2 ABI and takes a bare rate.
+    let sample_rate = sample_rate.into().get();
     let inner = Vst2Instance::load(path, sample_rate, MAX_BLOCK_SIZE).map_err(|e| {
         BridgeError::LoadFailed {
             path: path.to_path_buf(),
@@ -120,5 +136,5 @@ pub fn load(
         midi_sender,
     );
 
-    Ok((Box::new(client), handle))
+    Ok((client, handle))
 }

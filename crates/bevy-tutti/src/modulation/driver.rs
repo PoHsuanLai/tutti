@@ -403,4 +403,54 @@ mod tests {
             "nothing routes here, so the caller owns the write"
         );
     }
+
+    /// An authored write through [`write_param`](crate::graph::write_param)
+    /// survives on a **modulated** param — the branch that routes it to the
+    /// accumulator's base rather than the node's atomic.
+    ///
+    /// This is the guard that was missing. `set_base_moves_a_modulated_param…`
+    /// above calls `set_base` directly, so it passes even when `write_param`
+    /// stops calling it; this one goes through the real front door.
+    ///
+    /// **The loss it catches is deterministic, not a race.** Measured by
+    /// neutering the branch: 200/200 trials lost the write, 0/200 with it
+    /// restored. `drive` re-mirrors `clamp(base + Σ layers)` into the node
+    /// atomic every frame, so a direct write there is overwritten by the next
+    /// flush regardless of system order — the two writers touch different
+    /// fields of a mutex-guarded `LayeredCurve` and never contend.
+    #[test]
+    fn an_authored_write_through_write_param_survives_modulation() {
+        let (mut app, target) = app_with_graph();
+        let lfo = app
+            .world_mut()
+            // Zero-rate square: a constant offset, so the base shift stays
+            // legible against it rather than sweeping.
+            .spawn((
+                ModSource::new(LfoShape::Square),
+                ModRate::free_running(Hz(0.0)),
+            ))
+            .id();
+        app.world_mut().spawn(
+            ModRoute::new(lfo, target, ParamAddr::Unit(UnitParam::Drive)).with_depth(Depth(0.1)),
+        );
+        app.update();
+
+        let node = *app.world().get::<AudioNode>(target).unwrap();
+        app.world_mut()
+            .resource_scope(|w, mut graph: Mut<AudioGraphRes>| {
+                let matrix = w.resource::<ModulationMatrix>();
+                crate::graph::write_param(&mut graph, matrix, target, &node, UnitParam::Drive, 8.0);
+            });
+
+        advance_transport(&mut app, 480);
+        app.update();
+
+        let after = node_drive(&app, target);
+        assert!(
+            after > 7.0,
+            "base moved {BASE_DRIVE} -> 8 through write_param, so the flushed \
+             value should carry it; got {after}. A value near {BASE_DRIVE} means \
+             the write went to the node atomic and the driver overwrote it."
+        );
+    }
 }

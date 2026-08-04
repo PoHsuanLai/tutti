@@ -26,8 +26,8 @@
 //! # Modulated params
 //!
 //! A param the modulation driver owns must not be written here — modulation
-//! flushes `base + Σ offsets` into the same atomic every frame, so a plain
-//! write would be reverted within a frame and the fader would look stuck. The
+//! flushes `base + Σ layers` into the same atomic every frame, so a plain write
+//! is overwritten by the next flush and the fader snaps back. The
 //! reconciler asks
 //! [`ModulationMatrix::is_modulated`](crate::modulation::ModulationMatrix::is_modulated)
 //! and routes the authored value to the accumulator's *base* instead, which is
@@ -96,15 +96,30 @@ impl<U: Unit<Raw = f32> + Default, const P: u16> Default for AudioParam<U, P> {
 /// Taking only the first silently drops every write to an unmodulated param —
 /// which is why [`ModulationMatrix::set_base`] is crate-private.
 ///
-/// Taking only the second is worse than it looks, and worth stating precisely
-/// because a test will not show it. [`drive`](crate::modulation::drive) and the
-/// param reconcilers are **both in `GraphReconcileSystems::Params` with no
-/// ordering between them**, and `drive` writes `base + Σ offsets` to the same
-/// atomic every frame. So a direct write to a modulated param does not merely
-/// get overwritten on the *next* frame — it races the flush within the current
-/// one, and which value survives depends on a system order Bevy does not
-/// promise. At steady state the two branches are observationally identical,
-/// which is exactly why the hazard is invisible until it is intermittent.
+/// Taking only the second loses every write to a *modulated* param, and the
+/// loss is **deterministic rather than racy** — worth stating precisely, because
+/// the shape of the failure decides how you would find it.
+/// [`drive`](crate::modulation::drive) mirrors `clamp(base + Σ layers)` into the
+/// node's atomic every frame, so a direct write to that cell is overwritten by
+/// the next flush unconditionally. The symptom is a control that snaps back,
+/// reproducible on demand.
+///
+/// **System ordering is not what saves this, so do not try to fix it with a
+/// `.before()`.** `drive` and the param reconcilers do share
+/// `GraphReconcileSystems::Params` with no ordering between them, but the two
+/// writers never contend: `tutti_mod::AtomicTarget` holds a mutex-guarded
+/// `LayeredCurve`, and they touch *different fields* of it — `set_base` the
+/// base, `accumulate` a keyed layer — each recomputing the composite under the
+/// same lock. The writes commute and both survive in either order
+/// (`AtomicTarget`'s own `set_base_re_mirrors` pins exactly that). Adding an
+/// ordering constraint here would buy nothing and imply a hazard that is not
+/// there.
+///
+/// The engine tests the property that matters — that an authored write to a
+/// modulated param lands on the base and therefore *survives* — in
+/// `set_base_moves_a_modulated_param_without_fighting_the_driver`. This
+/// function's job is to route the write to the right field; the accumulator
+/// handles the rest.
 ///
 /// # Why this is a free function and not a method on a component
 ///

@@ -388,9 +388,9 @@ fn editing_a_range_does_not_drop_the_routes() {
 
     // Re-declare the range with a new base — what a host does when the user
     // moves the authored value of a modulated param.
-    app.world_mut().entity_mut(target).insert(
-        ModParamRange::default().with(ParamAddr::Unit(UnitParam::Drive), 7.0, 0.0, 10.0),
-    );
+    app.world_mut()
+        .entity_mut(target)
+        .insert(ModParamRange::default().with(ParamAddr::Unit(UnitParam::Drive), 7.0, 0.0, 10.0));
     app.update();
 
     assert!(

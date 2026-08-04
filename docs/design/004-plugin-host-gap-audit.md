@@ -167,7 +167,7 @@ That argues for a guard type rather than two bare calls.
 
 ---
 
-### A-3 · A runtime latency change never re-plans PDC, in any format · TODO
+### A-3 · A runtime latency change never re-plans PDC, in any format · DONE
 
 Split out of E-5, where it was found; it is not an AU gap.
 
@@ -190,6 +190,38 @@ One change serves all four formats, which is why it is here and not inside a
 per-format finding: a subscriber in `bevy-tutti` that turns
 `PluginInvalidation::Latency` into a `GraphDirty` / recompensate. Doing it inside
 E-5 would have made an AU fix look like it fixed VST3 and CLAP too.
+
+**Fixed — as a poll, not a subscriber.** `bevy_tutti::plugin_host::latency`
+raises `GraphDirty` when a plugin's reported latency differs from what the last
+compensation pass was planned against.
+
+Two findings changed the shape from what this entry proposed:
+
+- **`on_invalidate` is the wrong hook.** It is documented as emitted *only by
+  the out-of-process backend*, so subscribing would have fixed subprocess-hosted
+  plugins and silently not in-process ones. The latency atomic is written on
+  both paths, so polling it covers both. (A callback also cannot touch the
+  `World` — it would need a channel plus a drain system, a second route to a
+  value the graph already owns.) This is the same shape as `plugin_health_poll`,
+  which polls the crash flag rather than subscribing.
+- **No graph edit is needed.** The entry inherited "a graph edit
+  (`Net::commit()`) is required" from `host/node/mod.rs:432-437`. True of the
+  engine, not of the Bevy layer: `compensate_graph` is gated on the `GraphDirty`
+  *flag*, not on a rewire. Setting the flag is the whole job. The engine-side
+  comment is accurate for a direct `Net` consumer and was left as-is.
+
+`CompensatedLatency` is not a copy of the plugin's latency — that would be a
+second owner needing invalidation it could not see. It records what the graph
+last aligned *for*, which is different state with a different owner; the
+difference between the two is exactly the staleness condition.
+
+Coverage limit, stated in the module rather than implied: `PluginClient::new`
+launches a subprocess, so no unit test can put a live plugin in a graph. The
+decision rule is split into `needs_recompensation` and pinned (unchanged /
+changed both directions / never-compensated, including the `None` vs
+`Some(Samples(0))` conflation). The flag actually being raised for a live plugin
+needs an integration test loading a real binary, and no such harness exists in
+`bevy-tutti` yet.
 
 ---
 

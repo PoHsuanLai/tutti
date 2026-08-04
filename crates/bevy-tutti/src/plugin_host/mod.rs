@@ -37,6 +37,7 @@ pub mod bind;
 pub mod catalog;
 pub mod editor;
 pub mod health;
+pub mod latency;
 pub mod load;
 pub mod native_window;
 pub mod scan;
@@ -61,6 +62,7 @@ pub use editor::{
     SetEditorVisible, Visibility,
 };
 pub use health::{plugin_health_poll, plugin_state_snapshot, PluginHealth, PluginStatus};
+pub use latency::{plugin_latency_poll, CompensatedLatency};
 pub use load::{
     plugin_load_promote, plugin_load_start, PendingPlugin, PluginLoadDone, PluginLoadTerminated,
     PluginRequest,
@@ -230,6 +232,13 @@ impl Plugin for TuttiHostingPlugin {
                 // Ordered after the poll so a plugin declared dead this frame is
                 // not asked for state it can no longer produce.
                 plugin_state_snapshot.after(plugin_health_poll),
+                // Before `Compensate`, because it works by raising `GraphDirty`
+                // and that phase reads the flag; after `plugin_health_poll`, so
+                // a plugin declared dead this frame is not compensated for on
+                // its way out of the graph.
+                plugin_latency_poll
+                    .after(plugin_health_poll)
+                    .before(GraphReconcileSystems::Compensate),
             )
                 .run_if(crate::graph::engine_ready),
         );

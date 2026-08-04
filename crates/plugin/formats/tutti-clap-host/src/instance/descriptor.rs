@@ -9,6 +9,7 @@ use crate::types::PluginInfo;
 use clap_sys::entry::clap_plugin_entry;
 use clap_sys::factory::plugin_factory::{clap_plugin_factory, CLAP_PLUGIN_FACTORY_ID};
 use clap_sys::plugin::clap_plugin_descriptor;
+use clap_sys::version::{clap_version, clap_version_is_compatible, CLAP_VERSION_MAJOR};
 use std::ffi::{CStr, CString};
 use std::path::Path;
 
@@ -24,9 +25,23 @@ pub(super) fn load_descriptor<'lib>(
     bundle_path: &Path,
 ) -> Result<LoadedDescriptor<'lib>> {
     let entry = entry_struct(library, bundle_path)?;
+    // Before `init`, not after: an entry we cannot read is one whose `init`
+    // pointer we cannot trust to be at the offset we are about to call it from.
+    check_version(
+        entry.clap_version,
+        "clap_entry",
+        LoadStage::Opening,
+        bundle_path,
+    )?;
     let entry_guard = init_entry(entry, bundle_path)?;
     let (factory_ptr, factory) = plugin_factory(entry, bundle_path)?;
     let descriptor = first_descriptor(factory, factory_ptr, bundle_path)?;
+    check_version(
+        descriptor.clap_version,
+        "plugin descriptor",
+        LoadStage::Factory,
+        bundle_path,
+    )?;
     let info = descriptor_to_info(descriptor);
 
     Ok(LoadedDescriptor {
@@ -35,6 +50,59 @@ pub(super) fn load_descriptor<'lib>(
         factory,
         info,
     })
+}
+
+/// Reject a `clap_version` this host cannot read structs against.
+///
+/// Two bounds, and the SDK supplies only the lower one.
+///
+/// **Floor** — `clap_version_is_compatible` (`version.h:38-40`) is `major >= 1`,
+/// and the struct comment says why: `0.X.Y` was "the development stage, API and
+/// ABI are not stable". Nothing about a 0.x layout is promised to match 1.x, so
+/// reading one through 1.2 bindings misreads memory rather than missing a
+/// feature — a wrong field at a wrong offset, taken for a function pointer and
+/// called.
+///
+/// **Ceiling** — `major > CLAP_VERSION_MAJOR` is rejected here, on top of the
+/// SDK function. That predicate is written from the *plugin's* side, where the
+/// question is "is this host's version one I was designed against?", and a
+/// plugin has no future majors to worry about. A host reading a plugin faces
+/// the mirror question, and a major bump is precisely the announcement that the
+/// layout changed. `clap_version_is_compatible` alone would accept a 2.0
+/// descriptor and hand it to `descriptor_to_info`, which reads seven `*const
+/// c_char` at 1.x offsets.
+///
+/// Minor and revision are not bounded in either direction: CLAP adds within a
+/// major by appending fields and extension ids, so a 1.9 plugin read by a 1.2
+/// host sees a prefix it understands, and a 1.0 plugin read here simply lacks
+/// the later extensions — which every `get_extension` call already handles by
+/// returning null.
+///
+/// Checked at two sites because they are two separate claims. `clap_entry`'s is
+/// the DSO's, made before any call into it; the descriptor's is one plugin's,
+/// and a bundle may ship several. The spec initializes both to `CLAP_VERSION`
+/// and never says one implies the other. The two report different
+/// [`LoadStage`]s, so a scanner's log names which claim was rejected.
+fn check_version(
+    version: clap_version,
+    what: &str,
+    stage: LoadStage,
+    bundle_path: &Path,
+) -> Result<()> {
+    if clap_version_is_compatible(version) && version.major <= CLAP_VERSION_MAJOR {
+        return Ok(());
+    }
+    Err(fail(
+        bundle_path,
+        stage,
+        format!(
+            "{what} declares CLAP {}.{}.{}, which this host cannot read its \
+             structs against: it is built for major {CLAP_VERSION_MAJOR} \
+             (version.h sets the floor at major >= 1 — 0.x is the development \
+             stage, with no stable ABI)",
+            version.major, version.minor, version.revision,
+        ),
+    ))
 }
 
 fn fail(path: &Path, stage: LoadStage, reason: impl Into<String>) -> ClapError {

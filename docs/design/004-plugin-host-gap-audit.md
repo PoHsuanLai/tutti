@@ -301,9 +301,9 @@ cross-format trait decision rather than part of this fix.
 callers. `has_hard_realtime_requirement` (`:292`) likewise — so the host also
 cannot know when it must *not* go offline (hardware-proxy plugins).
 
-### C-4 · `set_scale()` is called on macOS, which the spec forbids · TODO
+### C-4 · `set_scale()` is called on macOS, which the spec forbids · DONE
 
-`src/instance/polling.rs:117-121` calls `set_scale` unconditionally, with no
+`src/instance/polling.rs:117-121` called `set_scale` unconditionally, with no
 platform branch.
 
 Spec (`ext/gui.h:56-57`): `CLAP_WINDOW_API_COCOA` — *"uses logical size, don't
@@ -311,13 +311,24 @@ call clap_plugin_gui->set_scale()"*. Same for `UIKIT` (`:59-60`). Only `win32`
 and `x11` use physical size and want it. And `ext/gui.h:141`: *"Should not be
 used if the windowing api relies upon logical pixels."*
 
-Currently masked: the scale passed is a hardcoded `1.0` (`polling.rs:270`), so
-the bug is latent until real DPI is wired — at which point a Retina editor
-double-applies the backing-scale factor and opens 2× oversized.
+Masked at the time: the scale passed is a hardcoded `1.0`, the identity, so the
+bug was latent until real DPI is wired — at which point a Retina editor
+double-applies the backing-scale factor and opens 2× oversized. That is why the
+fix is pinned on whether the *call happened*, not on the size it produced: an
+assertion about the size passes against the bug today and only starts failing
+once DPI lands, which is the moment the test exists to protect.
 
-The doc at `polling.rs:79-80` elevates the wrong ordering to a design rule
-(*"set_scale must land before get_size"*); on macOS `set_scale` has no effect on
-the size Cocoa reports, so that rationale needs correcting too.
+Gated on the window **api string** (`api_uses_logical_pixels`), not on
+`cfg!(target_os)`: the api is what the spec keys on, the host already resolves
+it through `platform_window_handle`, and an unrecognized string defaults to the
+physical-pixel path — both logical-pixel apis are named, so anything else is
+physical or future, and 1.0 on an api that wanted none is the identity.
+
+The doc at `polling.rs:79-80` elevated the ordering to a design rule
+(*"set_scale must land before get_size"*). Corrected: that holds only on a
+physical-pixel api, where the scale is an input to the geometry the plugin then
+reports. On cocoa/uikit the call does not happen at all, so its position in the
+sequence is vacuous rather than load-bearing.
 
 ### C-5 · No `_COMPAT` extension id is ever queried · TODO
 
@@ -398,19 +409,38 @@ than a stub. The dead `thread_pool_pending` atomic went with it.
 discarded. A bundle shipping a synth plus companion FX exposes only the first,
 and there is no API to select by index or id.
 
-### C-10 · `clap_version` compatibility is never checked · TODO
+### C-10 · `clap_version` compatibility is never checked · DONE
 
 Neither `clap_plugin_entry.clap_version` (`entry.h:61`) nor
-`clap_plugin_descriptor.clap_version` (`plugin.h:13`) is read;
-`clap_version_is_compatible()` (`version.h:38-40`) is unused. A 0.x-era or
-future-major `.clap` is dlopened and read under 1.2 layout assumptions — a
+`clap_plugin_descriptor.clap_version` (`plugin.h:13`) was read;
+`clap_version_is_compatible()` (`version.h:38-40`) was unused. A 0.x-era or
+future-major `.clap` was dlopened and read under 1.2 layout assumptions — a
 struct-layout misread, not a clean error.
 
-### C-11 · Two `[main-thread]` methods lack `assert_main_thread()` · TODO
+Both sites are checked, in `descriptor.rs::load_descriptor`, which `probe` and
+`load_with_library` share. They are two separate claims: the entry's is the
+DSO's and must be read *before* `init` (a 0.x entry gives no promise its `init`
+pointer sits at the 1.2 offset), the descriptor's is one plugin's, and the spec
+never says one implies the other. They report different `LoadStage`s.
+
+The SDK predicate supplies only the floor. `clap_version_is_compatible` is
+`major >= 1`, written from the plugin's side — it asks "is this host new
+enough?", a question with no ceiling. A host asks the mirror question, so
+`major <= CLAP_VERSION_MAJOR` is added: the SDK function alone accepts a 2.0
+descriptor and hands it to `descriptor_to_info`, which walks seven `*const
+c_char` at 1.x offsets. Minor and revision are unbounded in both directions —
+CLAP adds within a major by appending, so a later 1.x reads as a prefix and an
+earlier one simply lacks extensions `get_extension` already returns null for.
+Bounding them would reject most of the shipping corpus, as a clean error that
+looked correct.
+
+### C-11 · Two `[main-thread]` methods lack `assert_main_thread()` · DONE
 
 `polling.rs:540` (`poll_timers`) and `:635` (`on_main_thread`). Ten sibling
 methods do assert. These are the two most likely to be driven from a UI tick on
 a different thread than `HostState::new()` ran on.
+
+No existing test drove either off-thread, so nothing was asserting the gap.
 
 ### C-12 · Floating-window GUI mode unimplemented · HELD
 
@@ -567,6 +597,38 @@ The in-process path is fine — `control_backend.rs:94-105` → `editor.rs:68-74
 Same class as VST3's unpumped run loop (issue #54 finding 2). Decide whether the
 subprocess path should implement `editor_idle` or stop implementing
 `PluginEditorHost` at all.
+
+**Re-investigated — this finding is mis-scoped, and the real gap is wider.**
+Three facts, all verified on the current branch:
+
+1. **The `PluginAudio`-side `editor_idle` has no caller for *any* format.**
+   `grep` for it across `tutti-plugin-server/src/` returns nothing. The VST2
+   loader is not the exception; it is the rule. VST3/CLAP/AU loaders do not
+   implement it either, so all four inherit the same no-op.
+2. **A *different*, working `editor_idle` exists on the control surface.**
+   `PluginHandle::editor_idle` (`control_handle.rs:244`) →
+   `HostEditor::editor_idle` (`capabilities.rs:84`), implemented by the
+   composite backend (`composite.rs:363`) and the in-process VST2 backend
+   (`control_backend.rs:99`), with per-format GUI impls at `format/gui/{vst3,
+   clap,au}.rs`. `bevy-tutti/src/plugin_host/editor.rs:130` drives *that* one
+   every frame. Editors are pumped — through the host-side GUI instance, not
+   through the loader.
+3. **The subprocess VST2 editor path is unreachable from the public API when
+   the `vst2` feature is on**: `Plugin::open` (`host/plugin.rs:143-146`) routes
+   every `.vst` to the in-process client before the subprocess branch. It is
+   reachable only in a build without that feature — where `tutti-vst2-host` was
+   not compiled at all, so there is no in-process host to prefer.
+
+So `PluginAudio::editor_idle` is a **vestigial trait method**: a default no-op
+with no implementors in the server and no callers anywhere. The honest fix is to
+delete it, not to implement it — implementing it would add a second editor-pump
+path beside the working one, which is the "one write path per thing" rule this
+codebase already holds.
+
+Retitled work: **remove `PluginAudio::editor_idle`** and the doc comment that
+says "Only the in-process VST2 host needs this" (`format_host.rs:139`), which is
+what made this look like a VST2-specific gap. Check first whether any
+out-of-tree consumer could implement it — this is a library.
 
 ### D-7 · `effEditGetRect` result partly discarded, and the `Rect` leaks · TODO
 

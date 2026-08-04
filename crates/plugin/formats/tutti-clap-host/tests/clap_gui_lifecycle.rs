@@ -327,6 +327,26 @@ fn has_editor_asks_about_the_current_platform_api() {
 // open_editor — the embed sequence, against a real plugin.
 // ===========================================================================
 
+/// Whether the window api this platform embeds with denominates geometry in
+/// logical pixels, and therefore must not be sent `set_scale`
+/// (`ext/gui.h:56-60`). macOS embeds with `cocoa`; Windows uses `win32` and
+/// Linux `x11`, both of which are physical-pixel.
+///
+/// The host decides this from the api *string*, not from `cfg!`. Mirroring it
+/// with a `cfg!` here rather than importing the host's answer is deliberate:
+/// a test that asked the host what it does could not disagree with the host.
+const PLATFORM_USES_LOGICAL_PIXELS: bool = cfg!(target_os = "macos");
+
+/// The `GUI_CALL_*` ids `open_editor` must produce on this platform.
+fn expected_embed_sequence() -> Vec<u32> {
+    let mut expected = vec![GUI_CALL_IS_API_SUPPORTED, GUI_CALL_CREATE];
+    if !PLATFORM_USES_LOGICAL_PIXELS {
+        expected.push(GUI_CALL_SET_SCALE);
+    }
+    expected.extend([GUI_CALL_GET_SIZE, GUI_CALL_SET_PARENT, GUI_CALL_SHOW]);
+    expected
+}
+
 /// The spec's embed order, observed from inside a real plugin.
 ///
 /// `polling.rs`'s in-crate test asserts this order against a hand-written
@@ -354,17 +374,10 @@ fn open_editor_runs_the_spec_embed_sequence() {
     let cap = probe.capture();
     assert_eq!(
         calls(&cap),
-        vec![
-            GUI_CALL_IS_API_SUPPORTED,
-            GUI_CALL_CREATE,
-            GUI_CALL_SET_SCALE,
-            GUI_CALL_GET_SIZE,
-            GUI_CALL_SET_PARENT,
-            GUI_CALL_SHOW,
-        ],
-        "CLAP order: is_api_supported gates create, set_scale precedes get_size \
-         so the reported size already accounts for DPI, set_parent follows \
-         get_size and precedes show"
+        expected_embed_sequence(),
+        "CLAP order: is_api_supported gates create, set_parent follows get_size \
+         and precedes show. `set_scale` appears only on a physical-pixel api, \
+         where it must precede get_size so the reported size carries the factor"
     );
     assert!(cap.created, "create ran");
     assert_eq!(cap.create_balance, 1, "exactly one live editor");
@@ -377,11 +390,65 @@ fn open_editor_runs_the_spec_embed_sequence() {
         "…whose `api` names the current platform — a hardcoded \"x11\" fails \
          here on macOS and Windows"
     );
-    assert_eq!(
-        cap.last_scale, 1.0,
-        "the host passes a scale; 1.0 is today's placeholder until the frontend \
-         carries a real backing-scale factor"
+}
+
+/// **C-4.** `ext/gui.h:56-57` on `cocoa`, and `:59-60` on `uikit`: "uses
+/// logical size, don't call clap_plugin_gui->set_scale()". `set_scale` itself
+/// repeats it at `:141`. A logical-pixel api has already folded the display's
+/// backing-scale factor into every coordinate, so a host that sets it too
+/// applies the factor twice and a Retina editor opens at 2×.
+///
+/// The host passes a hardcoded 1.0 today, which is why this never showed as a
+/// visible bug — 1.0 is the identity. That makes the *call* the thing to
+/// assert, not the size it produced: pinning the size would pass against the
+/// bug and only start failing once real DPI is wired, which is the moment this
+/// test exists to protect.
+///
+/// Read `last_scale` alongside the call log, because they answer different
+/// questions: `last_scale` is 0.0 both when the host correctly skipped the call
+/// and when the probe was never asked anything at all. The `created` assertion
+/// rules the second out.
+#[test]
+fn open_editor_calls_set_scale_only_on_a_physical_pixel_api() {
+    let probe = Probe::acquire(GuiMode::Embeddable);
+    let mut loaded = probe.load();
+
+    loaded
+        .open_editor(fake_parent())
+        .expect("embeddable plugin opens");
+
+    let cap = probe.capture();
+    assert!(
+        cap.created,
+        "the embed sequence must have run at all, or every assertion below is \
+         vacuous"
     );
+
+    let called = calls(&cap).contains(&GUI_CALL_SET_SCALE);
+    if PLATFORM_USES_LOGICAL_PIXELS {
+        assert!(
+            !called,
+            "this platform embeds with a logical-pixel api, which the spec says \
+             must not be sent set_scale — the factor is already applied"
+        );
+        assert_eq!(
+            cap.last_scale, 0.0,
+            "and no scale reached the plugin (0.0 is the probe's never-called \
+             sentinel)"
+        );
+    } else {
+        assert!(
+            called,
+            "this platform embeds with a physical-pixel api, which needs the \
+             host's scale — skipping it leaves the editor at 1× on a HiDPI \
+             display"
+        );
+        assert_eq!(
+            cap.last_scale, 1.0,
+            "the host passes a scale; 1.0 is today's placeholder until the \
+             frontend carries a real backing-scale factor"
+        );
+    }
 }
 
 /// A floating-only plugin is refused at the first gate, before `create`.

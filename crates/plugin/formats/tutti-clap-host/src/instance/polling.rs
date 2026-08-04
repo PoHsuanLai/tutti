@@ -57,6 +57,33 @@ fn platform_window_handle(parent: *mut c_void) -> (*const i8, clap_window_handle
     )
 }
 
+/// Whether `api` denominates window geometry in **logical** pixels, in which
+/// case the windowing system has already applied the display's scale factor.
+///
+/// `ext/gui.h` annotates each window API with the answer: `cocoa` and `uikit`
+/// carry "uses logical size, don't call clap_plugin_gui->set_scale()", while
+/// `win32`, `x11` and `wayland` are marked "uses physical size". `set_scale`
+/// itself repeats the rule at `ext/gui.h:141` — "Should not be used if the
+/// windowing api relies upon logical pixels."
+///
+/// An api string this host does not recognize answers `false`, which routes it
+/// to the `set_scale` call. That is the conservative direction: the two logical
+/// APIs are both named here, so an unrecognized string is one of the physical
+/// ones or a future addition, and a scale of 1.0 on an api that wanted none is
+/// the identity.
+fn api_uses_logical_pixels(api: *const i8) -> bool {
+    use clap_sys::ext::gui::CLAP_WINDOW_API_COCOA;
+    if api.is_null() {
+        return false;
+    }
+    // SAFETY: the callers pass a `'static` C string from the clap-sys window-api
+    // constants, via `platform_window_handle`.
+    let api = unsafe { std::ffi::CStr::from_ptr(api as *const std::ffi::c_char) };
+    // `uikit` has no clap-sys constant (0.5.0 binds win32/cocoa/x11/wayland
+    // only), so it is matched by its spec-defined literal rather than left out.
+    api == CLAP_WINDOW_API_COCOA || api.to_bytes() == b"uikit"
+}
+
 /// Result of running the CLAP editor-embed sequence.
 struct EmbedOutcome {
     /// The editor's initial size (from `get_size`, or the 800×600 fallback).
@@ -70,16 +97,21 @@ struct EmbedOutcome {
 /// Run the CLAP GUI embed sequence against a raw `gui` vtable and `plugin`
 /// pointer, in the spec-mandated order:
 ///
-/// `is_api_supported` → `create` → `set_scale` (HiDPI) → `get_size` →
-/// `set_parent` → `show`.
+/// `is_api_supported` → `create` → `set_scale` (physical-pixel apis only) →
+/// `get_size` → `set_parent` → `show`.
 ///
-/// The order matters: `is_api_supported` must gate `create` (so a
-/// floating-only plugin is detected before we try to embed), `set_scale` must
-/// land before `get_size` (so the reported size already accounts for the DPI
-/// factor), and `set_parent` must follow `get_size` but precede `show`. The
-/// previous implementation created, set the parent, *then* asked for size,
-/// which reported the pre-embed size and skipped both `is_api_supported` and
-/// `set_scale`.
+/// The order matters: `is_api_supported` must gate `create` (so a floating-only
+/// plugin is detected before we try to embed), and `set_parent` must follow
+/// `get_size` but precede `show`. The previous implementation created, set the
+/// parent, *then* asked for size, which reported the pre-embed size and skipped
+/// `is_api_supported` entirely.
+///
+/// `set_scale` sits where it does for a narrower reason than the rest of the
+/// order. On a physical-pixel api it is an *input* to the geometry the plugin
+/// then reports, so it has to precede `get_size` or the size comes back in the
+/// wrong scale. On a logical-pixel api it is not called at all — see
+/// [`api_uses_logical_pixels`] — so on those platforms the position is vacuous
+/// rather than load-bearing, and nothing about `get_size` depends on it.
 ///
 /// # Safety
 /// `plugin` must be a valid `clap_plugin` pointer the `gui` vtable's fns
@@ -114,14 +146,22 @@ fn embed_editor_sequence(
         false
     };
 
-    // 3. set_scale (HiDPI) — before get_size so the size reflects the factor.
-    if let Some(set_scale_fn) = gui.set_scale {
+    // 3. set_scale (HiDPI) — only on a physical-pixel windowing api, and before
+    //    get_size so the reported size reflects the factor. On cocoa/uikit the
+    //    api already reports logical pixels, so calling this would apply the
+    //    backing-scale factor a second time on top of the one AppKit applied.
+    let set_scale_fn = if api_uses_logical_pixels(api) {
+        None
+    } else {
+        gui.set_scale
+    };
+    if let Some(set_scale_fn) = set_scale_fn {
         // A false return means the plugin does not honour host-set scale; that
         // is not an error (it will use its own).
         unsafe { set_scale_fn(plugin, scale) };
     }
 
-    // 4. get_size — now that scale is applied.
+    // 4. get_size.
     let size = if let Some(get_size_fn) = gui.get_size {
         let mut w: u32 = 0;
         let mut h: u32 = 0;
@@ -251,7 +291,8 @@ impl ClapLoaded {
     ///
     /// Follows the CLAP embed sequence: `is_api_supported` → `create` →
     /// `set_scale` → `get_size` → `set_parent` → `show`. See
-    /// [`embed_editor_sequence`] for the ordering rationale.
+    /// [`embed_editor_sequence`] for the ordering rationale and for which
+    /// window apis take the `set_scale` step.
     ///
     /// # Errors
     /// [`ClapError::GuiError`] if the plugin does not expose a GUI, if the
@@ -265,8 +306,10 @@ impl ClapLoaded {
 
         let (api, window_handle) = platform_window_handle(parent.as_ptr());
 
-        // TODO: real backing-scale from frontend — the host `WindowHandle`
-        // carries no DPI today, so we pass 1.0 and wire the `set_scale` call.
+        // TODO: backing-scale from the frontend — the host `WindowHandle`
+        // carries no DPI today, so we pass 1.0. Ignored outright on the
+        // logical-pixel apis; on win32/x11 it is the identity until this is
+        // wired.
         let scale = 1.0_f64;
 
         // Clear the previous editor's window-destroyed latch *before* the embed
@@ -538,7 +581,13 @@ impl ClapLoaded {
     /// Fire any expired timers the plugin registered via
     /// `CLAP_EXT_TIMER_SUPPORT`. Call periodically from the main thread.
     /// Returns the number of timer callbacks invoked.
+    ///
+    /// `on_timer` is `[main-thread]` (`ext/timer-support.h`). This is one of
+    /// the two methods most likely to be reached from a UI framework's tick,
+    /// which need not run on the thread `HostState::new()` did — hence the
+    /// guard, which the ten sibling `[main-thread]` methods already carry.
     pub fn poll_timers(&mut self) -> usize {
+        self.assert_main_thread();
         if self.extensions.system.timer_support.is_null() {
             return 0;
         }
@@ -633,7 +682,15 @@ impl ClapLoaded {
 
     /// Invoke the plugin's `on_main_thread` callback — call when
     /// [`Self::poll_callback_requested`] fires.
+    ///
+    /// The name states the contract (`plugin.h`'s `on_main_thread` is
+    /// `[main-thread]`), and it is the other method an embedder is likely to
+    /// drive from a UI tick, so it takes the same guard as
+    /// [`Self::poll_timers`]. A plugin reached here off-thread runs whatever
+    /// deferred work it queued on the wrong thread, which is the class of bug
+    /// that shows up as a crash somewhere else entirely.
     pub fn on_main_thread(&mut self) -> &mut Self {
+        self.assert_main_thread();
         let plugin_ref = unsafe { &*self.plugin.as_ptr() };
         if let Some(f) = plugin_ref.on_main_thread {
             unsafe { f(self.plugin.as_ptr()) };
@@ -1040,8 +1097,8 @@ mod embed_sequence_tests {
         plugin
     }
 
-    #[test]
-    fn embed_sequence_calls_in_spec_order() {
+    /// Drive the embed sequence against `api` and return the call log.
+    fn run_embed(api: &std::ffi::CStr) -> Vec<&'static str> {
         let mut order: Vec<&'static str> = Vec::new();
         let plugin = stub_plugin(&mut order);
         let gui = stub_gui();
@@ -1052,15 +1109,24 @@ mod embed_sequence_tests {
         let outcome = embed_editor_sequence(
             &gui,
             &plugin as *const clap_plugin,
-            std::ptr::null(),
+            api.as_ptr() as *const i8,
             handle,
-            1.0,
+            2.0,
         )
         .expect("embed sequence succeeds");
 
         assert!(outcome.did_create, "create ran");
         assert_eq!(outcome.size.width, 640);
         assert_eq!(outcome.size.height, 480);
+        order
+    }
+
+    #[test]
+    fn embed_sequence_calls_in_spec_order() {
+        // win32 is a physical-pixel api, so this is the shape that includes
+        // `set_scale`; the logical-pixel apis are covered below.
+        let order = run_embed(clap_sys::ext::gui::CLAP_WINDOW_API_WIN32);
+
         // The exact CLAP embed order: is_api_supported → create → set_scale →
         // get_size → set_parent → show.
         assert_eq!(
@@ -1073,6 +1139,61 @@ mod embed_sequence_tests {
                 "set_parent",
                 "show",
             ]
+        );
+    }
+
+    /// `ext/gui.h:56-57` on `cocoa`: "uses logical size, don't call
+    /// clap_plugin_gui->set_scale()". The api has already applied the display's
+    /// backing-scale factor to every coordinate, so a host that also sets it
+    /// makes a Retina editor open at twice its size.
+    #[test]
+    fn embed_sequence_skips_set_scale_on_cocoa() {
+        let order = run_embed(clap_sys::ext::gui::CLAP_WINDOW_API_COCOA);
+
+        assert!(
+            !order.contains(&"set_scale"),
+            "cocoa reports logical pixels; setting a scale on top of it applies \
+             the factor twice. Sequence was {order:?}"
+        );
+        assert_eq!(
+            order,
+            vec![
+                "is_api_supported",
+                "create",
+                "get_size",
+                "set_parent",
+                "show",
+            ],
+            "and the rest of the sequence is unchanged — only the one call drops"
+        );
+    }
+
+    /// `uikit` carries the identical annotation (`ext/gui.h:59-60`) and has no
+    /// clap-sys constant, so it is matched by literal. Asserted separately
+    /// because a fix written against the `CLAP_WINDOW_API_COCOA` constant alone
+    /// leaves it out.
+    #[test]
+    fn embed_sequence_skips_set_scale_on_uikit() {
+        let order = run_embed(c"uikit");
+
+        assert!(
+            !order.contains(&"set_scale"),
+            "uikit reports logical pixels, same as cocoa. Sequence was {order:?}"
+        );
+    }
+
+    /// An api string the host cannot classify takes the `set_scale` path. Both
+    /// logical-pixel apis are named explicitly, so anything else is a
+    /// physical-pixel one — and the alternative reading would silently drop the
+    /// call on win32/x11, where the plugin needs it.
+    #[test]
+    fn embed_sequence_sets_scale_for_an_unrecognized_api() {
+        let order = run_embed(c"some-future-windowing-api");
+
+        assert!(
+            order.contains(&"set_scale"),
+            "an unclassifiable api defaults to the physical-pixel path. \
+             Sequence was {order:?}"
         );
     }
 

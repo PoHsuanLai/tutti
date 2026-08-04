@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tutti_core::{
     Amplitude, AtomicSamplePosition, AudioUnit, Beat, BeatDuration, BufferMut, BufferRef,
-    ChannelLayout, PlaybackRate, ReadRate, SamplePosition, SampleRate, Samples, SignalFrame,
+    ChannelLayout, Param, PlaybackRate, ReadRate, SamplePosition, SampleRate, Samples, SignalFrame,
     SrcRatio, Timeline, Wave,
 };
 
@@ -191,7 +191,17 @@ pub struct MemorySource {
     /// Defaults to true (auto-play).
     playing: AtomicBool,
 
-    gain: Amplitude,
+    /// Linear output gain — **shared across clones**, unlike every other
+    /// control field here.
+    ///
+    /// `Param<Amplitude>` rather than a plain `Amplitude` for the reason
+    /// `tutti_units`' crate docs give: `Net`'s frontend holds clones, so a
+    /// control stored by value is written on one copy and rendered from
+    /// another. A clip's fader did nothing once its voice existed.
+    ///
+    /// Sharing it is what makes [`isolate`](Self::isolate) load-bearing on this
+    /// tier — see that method.
+    gain: Param<Amplitude>,
 
     /// Varispeed — user intent, bounded by the type. Composes with
     /// [`src_ratio`](Self::src_ratio) through
@@ -264,7 +274,7 @@ impl Clone for MemorySource {
             wave: Arc::clone(&self.wave),
             position: AtomicSamplePosition::new(self.position.load(Ordering::Relaxed)),
             playing: AtomicBool::new(self.playing.load(Ordering::Relaxed)),
-            gain: self.gain,
+            gain: self.gain.handle(),
             speed: self.speed,
             sample_rate: self.sample_rate,
             src_ratio: self.src_ratio,
@@ -288,7 +298,7 @@ impl MemorySource {
             wave,
             position: AtomicSamplePosition::new(SamplePosition::new(0.0)),
             playing: AtomicBool::new(true),
-            gain: Amplitude::new(1.0),
+            gain: Param::new(Amplitude::new(1.0)),
             speed: PlaybackRate::UNITY,
             sample_rate,
             src_ratio: SrcRatio::UNITY,
@@ -328,7 +338,7 @@ impl MemorySource {
     /// `crossfade_frames == 0` loops with no crossfade.
     pub fn with_config(wave: Arc<Wave>, config: MemorySourceConfig) -> Self {
         let mut unit = Self {
-            gain: config.gain,
+            gain: Param::new(config.gain),
             speed: config.speed,
             timeline: config.timeline,
             window: config.window,
@@ -468,12 +478,32 @@ impl MemorySource {
         self.wave.duration()
     }
 
-    pub fn set_gain(&mut self, gain: Amplitude) {
-        self.gain = gain;
+    /// Publish a new output gain.
+    ///
+    /// `&self` and stored in a shared cell: a value stored by value here is
+    /// written on a frontend clone and rendered from a different one. See the
+    /// field's doc.
+    pub fn set_gain(&self, gain: Amplitude) {
+        self.gain.store(gain);
     }
 
     pub fn gain(&self) -> Amplitude {
-        self.gain
+        self.gain.load()
+    }
+
+    /// Stop sharing the gain cell with whoever this was cloned from.
+    ///
+    /// The offline render clones the live net and ticks it on a worker thread
+    /// **while the original keeps playing**, so a shared control cell would let
+    /// the two fight: a fader move during an export would change the exported
+    /// audio. `AudioUnit::isolate` exists to sever exactly this, and sharing
+    /// the gain is what gives this tier something to sever — the arm in
+    /// `VoiceSource::isolate` was a no-op while nothing here was shared.
+    ///
+    /// Keeps the *current* value: the render must sound like what it was
+    /// isolated at, not snap to unity.
+    pub(crate) fn isolate_gain(&mut self) {
+        self.gain = Param::new(self.gain.load());
     }
 
     /// Set varispeed. Out-of-range and non-finite values are handled by
@@ -673,7 +703,7 @@ impl MemorySource {
     #[inline]
     pub fn get_sample_into(&self, position: f64, out: &mut [f32]) {
         self.get_sample_raw_into(position, out);
-        let gain = self.gain.get();
+        let gain = self.gain.load().get();
         for s in out.iter_mut() {
             *s *= gain;
         }
@@ -873,6 +903,16 @@ fn wrap_into_loop(pos: f64, loop_start: f64, loop_end: f64) -> f64 {
 }
 
 impl AudioUnit for MemorySource {
+    /// Stop sharing the gain cell with whoever this was cloned from.
+    ///
+    /// Implemented here rather than only in `VoiceSource::isolate` so the
+    /// severing happens wherever a unit is isolated — the offline render's
+    /// isolation pass walks *every node of the cloned net*, and a source
+    /// reached that way would otherwise keep following the live fader.
+    fn isolate(&mut self) {
+        self.isolate_gain();
+    }
+
     fn inputs(&self) -> usize {
         0
     }
@@ -2005,5 +2045,76 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// **A gain change must reach a voice that is already rendering.**
+    ///
+    /// The memory tier's half of the live-value rule (`tutti_units`' crate docs
+    /// state it). `Net`'s frontend holds clones, so a gain stored **by value**
+    /// is written on one copy and rendered from another — a clip's fader stops
+    /// having any effect once its voice exists, silently.
+    ///
+    /// Asserted through a **clone**, which is the only vantage point where the
+    /// two storage conventions differ: a by-value field looks perfect until
+    /// something clones the unit, and `Net::commit` clones every node on every
+    /// graph edit.
+    #[test]
+    fn a_gain_change_reaches_a_cloned_source() {
+        let wave = ramp_wave(64, 44_100.0);
+        let mut unit = MemorySource::new(wave);
+        unit.play();
+
+        // The clone stands in for the copy the audio thread renders; the
+        // original stands in for the frontend the app writes to.
+        let mut rendering = unit.clone();
+
+        unit.set_gain(Amplitude::new(0.25));
+
+        let mut out = [0.0f32; 1];
+        rendering.tick(&[], &mut out);
+
+        // The ramp's first frame is 1.0, so the rendered value *is* the gain.
+        assert!(
+            (out[0] - 0.25).abs() < 1e-4,
+            "a gain written on one copy must be seen by the copy that renders; \
+             expected ~0.25, got {}. A value near 1.0 means `gain` is still \
+             stored by value and the write went nowhere.",
+            out[0]
+        );
+    }
+
+    /// **An isolated source does not share control state with the live one.**
+    ///
+    /// The constraint that sharing introduces, and the reason
+    /// `VoiceSource::isolate`'s `Memory` arm cannot stay a no-op once gain is
+    /// shared. The offline render clones the live net and ticks it on a worker
+    /// thread **while the original keeps playing**; `AudioUnit::isolate` exists
+    /// so a clone can hold shared state safely, by severing it before the
+    /// worker touches it.
+    ///
+    /// Without this, a render would fight live playback: moving a fader during
+    /// an export would change the exported audio, or worse, the export's own
+    /// setup would change what the user hears.
+    #[test]
+    fn an_isolated_source_stops_sharing_gain() {
+        let wave = ramp_wave(64, 44_100.0);
+        let mut live = MemorySource::new(wave);
+        live.play();
+
+        let mut render_copy = live.clone();
+        render_copy.isolate();
+
+        // A live fader move after isolation must not reach the render.
+        live.set_gain(Amplitude::new(0.1));
+
+        let mut out = [0.0f32; 1];
+        render_copy.tick(&[], &mut out);
+
+        assert!(
+            (out[0] - 1.0).abs() < 1e-4,
+            "an isolated copy must keep the gain it was isolated at, not \
+             follow the live one; expected ~1.0, got {}",
+            out[0]
+        );
     }
 }

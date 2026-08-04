@@ -149,17 +149,19 @@ pub trait PluginState: Send {
 ///
 /// Distinct from the host-side `PluginEditor` (the second, editor-only dlopen
 /// in the main process): this is the editor surface a loader exposes *from
-/// inside* the plugin-server subprocess. Only the in-process VST2 host drives a real
-/// editor here; the subprocess-hosted formats run their editor on the platform
-/// GUI toolkit's own run loop and inherit the [`editor_idle`](Self::editor_idle)
-/// default no-op.
+/// inside* the plugin-server subprocess, where the editor runs on the platform
+/// GUI toolkit's own run loop.
+///
+/// **Idle ticking is not here.** Every editor this codebase pumps — including
+/// the in-process VST2 one — is pumped through the host-side surface
+/// (`HostEditor::editor_idle`, driven per frame by
+/// `bevy_tutti::plugin_host::editor`). This trait carried an `editor_idle` with
+/// a default no-op body, no implementor and no caller; a second pump path
+/// beside the working one would give one thing two writers, so it was removed
+/// rather than filled in.
 pub trait PluginEditorHost {
     fn open_editor(&mut self, parent: WindowHandle) -> Result<EditorSize>;
     fn close_editor(&mut self);
-    /// Pump one editor idle tick. Only the in-process VST2 host needs this (its
-    /// `AEffect` editor is driven by host-timer idle calls); everything else
-    /// inherits this default no-op.
-    fn editor_idle(&mut self) {}
 }
 
 /// A loaded plugin instance: the full capability bundle a format loader

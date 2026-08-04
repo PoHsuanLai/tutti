@@ -167,6 +167,32 @@ That argues for a guard type rather than two bare calls.
 
 ---
 
+### A-3 · A runtime latency change never re-plans PDC, in any format · TODO
+
+Split out of E-5, where it was found; it is not an AU gap.
+
+The whole chain from a plugin's latency change to `PluginClient::latency()` is
+built and works for VST3, CLAP and (as of E-5) AU: a format callback → an
+`AsyncEvent` → a `BridgeMessage` → the latency atomic → `PluginInvalidation::
+Latency` fired on the invalidate sink. It stops one step short.
+`PluginHandle::on_invalidate` (`host/handles/control_handle.rs:360`) is the
+subscription point, and **nothing in the repo calls it** — not `bevy-tutti`, not
+any `dawai-*` crate, not an example.
+
+`host/node/mod.rs:432-437` states the consequence in the code: updating what
+`AudioUnit::latency()` reports "does **not** re-run PDC on its own — a graph edit
+(`Net::commit()`) is required". `envelope.rs:159-160` repeats it. So a plugin
+that changes latency at runtime updates its own node's figure while every
+compensation delay in the graph keeps the old one, and the chain stays silently
+inert until a graph edit happens to occur for an unrelated reason.
+
+One change serves all four formats, which is why it is here and not inside a
+per-format finding: a subscriber in `bevy-tutti` that turns
+`PluginInvalidation::Latency` into a `GraphDirty` / recompensate. Doing it inside
+E-5 would have made an AU fix look like it fixed VST3 and CLAP too.
+
+---
+
 ## B. VST3 residue (not in issue #54)
 
 ### B-1 · `set_sample_rate` calls `setupProcessing` on an active instance · DONE
@@ -482,7 +508,7 @@ constraint"* — false, the constraint is this crate's — and
 `effSetProcessPrecision` (opcode 77) is never sent, so a plugin that switches
 internal precision on it stays wherever it defaulted.
 
-### D-2 · `reset()` and `set_sample_rate()` run suspend/resume on the audio thread · TODO
+### D-2 · `reset()` and `set_sample_rate()` run suspend/resume on the audio thread · DONE
 
 `tutti-plugin/src/format/vst2_in_process/audio_unit.rs:256-263` (f32) and
 `:403-407` (f64) call `instance.set_sample_rate(...)` from `AudioUnit::reset()`.
@@ -584,7 +610,7 @@ Also worth one line: `audioMasterGetLanguage`(38) returning 0 is out of range �
 slot 0. The other unhandled opcodes (`VendorSpecific`, `GetDirectory`,
 file-selector, offline family) return an honest "declined".
 
-### D-6 · Subprocess VST2 editors are never idled · TODO
+### D-6 · Subprocess VST2 editors are never idled · DONE (as a deletion)
 
 `tutti-plugin-server/src/loaders/vst2.rs` implements `open_editor` (`:303`) and
 `close_editor` (`:326`) but **not** `editor_idle`, so it inherits the no-op
@@ -629,6 +655,18 @@ Retitled work: **remove `PluginAudio::editor_idle`** and the doc comment that
 says "Only the in-process VST2 host needs this" (`format_host.rs:139`), which is
 what made this look like a VST2-specific gap. Check first whether any
 out-of-tree consumer could implement it — this is a library.
+
+**Resolved as a deletion.** `PluginEditorHost::editor_idle` is gone, and the
+trait doc now says where idle ticking actually happens. Re-verified at the point
+of removal: a repo-wide grep for `editor_idle` returns two disjoint sets — the
+host-side surface (`capabilities.rs:84`, `gui/mod.rs:36`, four format impls, and
+the `bevy-tutti` per-frame system) and this one declaration site. No implementor
+and no caller.
+
+The out-of-tree question the entry asked to check first: removing a defaulted
+method is breaking for an external implementor that overrode it, but such an
+implementor was writing a body nothing in the pipeline would ever call, so the
+break surfaces a bug rather than causing one.
 
 ### D-7 · `effEditGetRect` result partly discarded, and the `Rect` leaks · TODO
 
@@ -695,7 +733,7 @@ v3 unit has no editor route.
 `src/offline.rs` implements `set_offline_render` / `set_render_quality`
 correctly; nothing calls them. Structurally blocked by A-1.
 
-### E-3 · The render timestamp is a free-running counter `reset()` does not reset · TODO
+### E-3 · The render timestamp is a free-running counter `reset()` does not reset · DONE
 
 `src/instance.rs:1969` stamps each block from `self.scratch.advance(num_frames)`;
 `src/buffer.rs:157-164` returns then increments. `sample_position` is initialised
@@ -710,6 +748,44 @@ It also diverges from the transport clock: `src/transport.rs:258` publishes
 `info.position.samples` while the render stamp is an independent counter, so a
 plugin reading both gets two answers for "where are we". `offline.rs:326,376,485`
 duplicates the pattern in `PushScratch`.
+
+**Landed.** `RenderScratch::reset_position` sets the cursor to zero, and
+`AuInstance::reset` calls it — **only after `AudioUnitReset` returned `noErr`**.
+A refused flush leaves the AU holding its history, and restarting the clock
+beside it would produce the one state neither branch describes.
+
+**Zero, not a settable playhead**, and the header settles it. `AudioUnitRender`'s
+own doc says `inTimeStamp` is what lets a unit "determine without doubt that this
+the same render operation" — a per-instance render clock, a continuity signal.
+The project timeline has a *different* channel: `outCurrentSampleInTimeLine` on
+the transport callbacks, which an AU asks for separately and which
+`TransportState::set_transport` already publishes. Writing a playhead into
+`mSampleTime` too would answer "where are we" twice, in two places, with no bit
+anywhere telling the AU which clock it got. The divergence the finding notes is
+therefore not two answers to one question; it is two questions, and only one of
+them was being answered wrong.
+
+CLAP draws the same line and this repo already implements it there:
+`clap_process::steady_time` is documented as a counter that "may be specific to
+this plugin instance and have no relation to what other plugin instances may
+receive", and `tutti-clap-host`'s `reset` zeroes it (`instance/lifecycle.rs:222`).
+
+**`PushScratch` gets its own `reset_position` rather than being folded in.** The
+two cursors have different owners: the pull cursor lives inside the instance, so
+`reset` can reach it; the push one is host-owned — constructed by the host and
+lent per render — and `reset` never sees it. Giving `reset` an optional scratch
+would apply a discontinuity to whichever session was passed and leave the others
+running, which is worse than the caller making two calls. Pinned by
+`an_instance_reset_leaves_the_push_clock_alone`.
+
+Two things the fixture needed, both in `tests/support/probe_au.rs`:
+
+- **The probe now records the `mSampleTime` it is handed**, on every behaviour,
+  through a vendor-private property. No Apple unit reports the stamp it received,
+  so the only way to assert what the *host sent* is a component that records it.
+- **The probe now implements `kAudioUnitProcessSelect`.** Six corpus effects
+  implement the push selector and none reports its timestamp, so the push clock
+  had no fixture that could observe it at all.
 
 ### E-4 · `verify_block_size` is not on the load path · DONE
 
@@ -744,7 +820,7 @@ Two things worth recording:
   fixing the probe to store and report honestly was a precondition for the fix
   being testable at all.
 
-### E-5 · Latency, tail and parameter list are read once and cached forever · TODO
+### E-5 · Latency, tail and parameter list are read once and cached forever · DONE (scoped)
 
 `loaders/au.rs:288` (latency), `:303-314` (tail) and `:374` (param ranges) all
 capture at load. Both latency and tail are dynamic `Float64` seconds properties.
@@ -759,6 +835,47 @@ Consequence: a plugin that changes latency on a mode switch (linear-phase EQ,
 oversampling toggle) leaves PDC compensating the load-time figure permanently.
 `loaders/au.rs:426` already anticipates the parameter-list half in a comment
 while having no mechanism to refresh.
+
+**Landed, up to a line drawn deliberately.** The AU loader now installs one
+`AuParameterListener` per instance, watching `kAudioUnitProperty_Latency`,
+`_TailTime` and `_ParameterList`. A notification arrives on a GCD queue thread
+and raises one of three `AtomicBool`s; `AuInstance::poll_changes`, drained
+between blocks by `Plugin::poll_async_events`, consumes each flag with a `swap`,
+re-reads the changed property, refreshes the cached `LoadedPlugin`, and emits an
+`AsyncEvent`.
+
+**Where the line is.** This wires AU into an existing, already-consumed path —
+it builds no new plumbing. `AsyncEvent::{LatencyChanged, TailChanged,
+ParamTitlesChanged}` already cross IPC as `BridgeMessage`s, already reach
+`PluginClient`'s latency atomic, and already fire `PluginInvalidation::Latency`.
+VST3 and CLAP have been feeding that path; AU's `poll_async_events` arm was a
+`_ => {}` fallthrough. So this is not a change nobody consumes, and it is not
+half-wiring — it is the missing arm.
+
+**What is out of scope, and why it is not this finding's debt.** The invalidation
+does not currently cause a PDC re-plan for *any* format: `PluginHandle::
+on_invalidate` has no subscriber anywhere in the repo, which
+`host/node/mod.rs:432-437` states outright. Fixing that is one change for all
+four formats, and doing it inside an AU finding would hide it. Recorded as its
+own item rather than folded in.
+
+**Two things the fixture needed**, both in `tests/support/probe_au.rs`:
+
+- **The probe stores property listeners instead of discarding them.**
+  `probe_add_listener` returned `noErr` and dropped the proc, which made every
+  property-notification assertion against a probe vacuous by construction:
+  registration always succeeded, nothing ever arrived, and a host watching the
+  *wrong* property was indistinguishable from one watching the right one.
+- **Three vendor-private writable properties** move the probe's latency, tail and
+  parameter count and post the corresponding public notification, value first.
+  Nothing installed on this machine changes any of the three on request, so
+  without them the "host notices" half has no fixture at all.
+
+The split across crates is deliberate: `tutti-au-host`'s `au_property_watch.rs`
+owns *"the AU told us"* (a real notification raises the flag, an unrelated
+property does not, a dropped listener stops receiving);
+`tutti-plugin-server`'s `plugin.rs` owns *"the host passed it on"* (the flag
+becomes an `AsyncEvent`, and `loaded()` and the event agree).
 
 ### E-6 · Cocoa editor: hardcoded preferred size, and a leak on the error path · TODO
 

@@ -1077,7 +1077,14 @@ any implementor that ignores them, and let the probe answer differently.
 **`effSetSpeakerArrangement`(42) is reclassified, not done** — see D-11. It is
 not a peer of the other three.
 
-### D-11 · Speaker arrangement needs a negotiation policy, not an opcode · HELD
+### D-11 · Speaker arrangement needs a negotiation policy, not an opcode · DESIGNED
+
+**Design: `007-channel-topology.md`.** The survey below is what it is built on;
+the short version is that this is a vocabulary change in `tutti-types`
+(`ChannelTopology`, an ordered per-channel speaker list beside the count-only
+`ChannelLayout`), not a VST2 opcode. VST2's opcode 42 is explicitly the *last*
+step, because until the surface exists it would have no policy behind it —
+which was this entry's original objection, and it stands.
 
 Split out of D-10, where it sat beside three one-call gaps and read like a
 fourth. It is not one, and the difference is why it is still open.
@@ -1565,15 +1572,17 @@ landed. D-10's `effGetNumMidiInputChannels` half was the live bug flagged here �
 a plugin answering `Maybe` to `sendVstMidiEvent` classified MIDI-silent and its
 output dropped — and is fixed.
 
-**D-9 has since landed** — the cross-format preset surface, built as
-`005-plugin-presets.md`. It is the worked example of the shape below: what it
-needed was a decision about the *surface*, and the format calls were already
-there.
+The three below were all the same *kind* of open question, which is worth
+stating plainly: **each needs a policy decision above the format layer, not a
+missing call below it.** Two have since been answered — D-9 shipped, D-11 is
+designed — and both answers took the same shape the diagnosis predicted.
 
-The two that remain are the same *kind* of open question: **each needs a policy
-decision above the format layer, not a missing call below it.**
-
-- **D-11** (speaker arrangement) — surveyed across all four formats: every one
+- **D-9** (presets) — **SHIPPED** (PR #196, `005-plugin-presets.md`). All four
+  formats implemented presets; nothing above them did, and the two `Features`
+  preset bits had no reader anywhere in the workspace. The answer was a
+  cross-format surface, not VST2 plumbing.
+- **D-11** (speaker arrangement) — **DESIGNED** (`007-channel-topology.md`);
+  surveyed across all four formats: every one
   of them *reaches* speaker placement and discards it at its FFI boundary,
   because `ChannelLayout` is a `u16` width by deliberate design. AU models
   topology fully and has no consumers; VST3 reads the plugin's real mask and

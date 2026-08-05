@@ -137,15 +137,6 @@ mod util;
 
 pub(crate) mod protocol;
 
-#[cfg(feature = "au")]
-pub use host::builder::au;
-#[cfg(feature = "clap")]
-pub use host::builder::clap;
-#[cfg(feature = "vst2")]
-pub use host::builder::vst2;
-#[cfg(feature = "vst3")]
-pub use host::builder::vst3;
-pub use host::builder::PluginBuilder;
 pub use util::config::BridgeConfig;
 
 /// Mark the calling thread as the host's main/UI thread, enabling the

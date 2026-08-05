@@ -177,18 +177,44 @@ Both opcodes exist in the vendor enum; neither is currently sent.
 
 ### `Features` wiring
 
-No new bits. The probes each loader must add:
+No new bits — and **less new wiring than this design first assumed.** Three of
+the four masks are already correct and already test-pinned in
+`features.rs`'s test module, which anticipated this exact asymmetry:
 
-- **AU** — already declared, already correct.
-- **VST2** — add both to `probed::VST2`. `PRESET_LIST` = `Info::presets > 0`,
-  `PRESET_LOAD` = the same (VST2 has no separate refusal).
-- **VST3** — add `PRESET_LIST` only, set from `!program_lists().is_empty()`.
-  `PRESET_LOAD` stays **unprobed**, not clear-and-false: VST3 was never asked
-  whether it can load, because the question does not apply. This is the
-  `EDITOR_FLOATING` precedent from C-12 — a clear-but-probed bit would spell
-  "the plugin said no" for a question the format cannot be asked.
-- **CLAP** — add `PRESET_LOAD` only, from `supports_preset_load()`.
-  `PRESET_LIST` unprobed, same reasoning.
+- **AU** — probes both, from the one property that backs both. Correct.
+- **CLAP** — probes `PRESET_LOAD`, deliberately **not** `PRESET_LIST`; the doc
+  on `probed::CLAP` already says discovery is a factory-level extension this
+  host does not bind. Correct, and `a_format_can_load_a_preset_without_being_
+  able_to_list_one` pins it.
+- **VST3** — probes **both**, and reports `Some(false)` for each.
+
+That last one **corrects an earlier draft of this design**, which proposed
+leaving `PRESET_LOAD` unprobed on the `EDITOR_FLOATING` precedent. That is
+wrong here, and the existing test says why:
+`vst3_answers_that_it_has_no_separate_preset_mechanism` reads *"VST3's clear
+preset bits are an answer, not a gap … If a bit ever gets set here, something
+has invented a preset API VST3 does not have."*
+
+The distinction from `EDITOR_FLOATING`: there, the format has **no way to be
+asked** whether it embeds or floats, so the bit is genuinely unprobed. Here,
+VST3 *has* been asked and the answer is a definite no — its programs are
+ordinary parameters, so there is no second mechanism. `Some(false)` is the
+truthful report, and leaving it unprobed would understate what is known.
+
+So only one mask changes:
+
+- **VST2** — currently probes neither, correctly, because this host binds
+  neither opcode. `the_vst2_loader_does_not_claim_presets` pins that and **must
+  be updated in the same commit** that binds them. After step 3 both bits are
+  probed: `PRESET_LIST` = `Info::presets > 0`, `PRESET_LOAD` = the same, since
+  VST2 offers no separate refusal.
+
+**A consequence worth stating:** `presets()` returning empty is not the same
+question as `PRESET_LIST`. VST3 will return a non-empty list while reporting
+`PRESET_LIST = Some(false)` — the bit answers "is there a separate preset
+mechanism", the method answers "what can I show a user". A caller building a
+browser reads the method; a caller deciding whether to offer a *load* button
+reads `PRESET_LOAD`.
 
 ### IPC
 
@@ -241,9 +267,16 @@ a UI poll the subprocess. In-process backends answer it directly.
 
 Each step compiles and tests alone.
 
-1. **Vocabulary + protocol bump.** `PresetId`, `Preset` in
-   `tutti-plugin-types`; `PROTOCOL_VERSION` += 1. Round-trip test per variant.
-   → `cargo test -p tutti-plugin-types`
+1. **Vocabulary.** `PresetId`, `Preset` in `tutti-plugin-types`. Round-trip test
+   per variant, plus a test pinning each variant's *wire discriminant* — a
+   symmetric round-trip cannot catch a reordering, because both ends of
+   `serialize`/`deserialize` move together.
+   → `cargo test -p tutti-plugin-types --features serde`
+
+   **The `PROTOCOL_VERSION` bump belongs in step 7, not here.** Nothing crosses
+   the wire until the frames exist; bumping now would refuse a v13 pairing over
+   a capability neither side can yet use. The version gates the *frames*, and
+   the frames are step 7.
 2. **The trait**, plus `PluginHandle::presets()` / `load_preset()` /
    `current_preset()` and the `HostPresets` accessor, mirroring
    `render_mode()`'s `Option<&dyn>` shape for a format that does not implement

@@ -7,6 +7,7 @@ use crate::types::{
     AudioPortInfo, ChannelLayout, NoteDialect, NoteDialects, NoteName, NotePortInfo,
     SurroundChannel, VoiceInfo,
 };
+use tutti_types::ChannelTopology;
 // Audio-port *reconfiguration* is speculative (gated); the type it consumes.
 #[cfg(feature = "clap-extras")]
 use crate::types::AudioPortConfigRequest;
@@ -597,6 +598,24 @@ impl ClapLoaded {
             )
         } as usize;
         decode_surround_channel_map(&map, count)
+    }
+
+    /// The channel-to-speaker mapping for a port as a [`ChannelTopology`].
+    ///
+    /// The same query as
+    /// [`get_surround_channel_map`](Self::get_surround_channel_map), in the
+    /// shared vocabulary the other format hosts also speak — so a caller can
+    /// ask "which speaker is channel 3" without knowing it is holding a CLAP
+    /// plugin.
+    ///
+    /// `None` for the same reason: the plugin has no `clap.surround` extension
+    /// or no `get_channel_map`, which is distinct from answering with no
+    /// channels. Nothing is lost in the conversion — a position this crate
+    /// cannot name arrives as [`Speaker::Unknown`](tutti_types::Speaker::Unknown)
+    /// and keeps its channel's slot.
+    pub fn surround_topology(&self, is_input: bool, port_index: u32) -> Option<ChannelTopology> {
+        self.get_surround_channel_map(is_input, port_index)
+            .map(|map| crate::topology::topology_of(&map))
     }
 }
 

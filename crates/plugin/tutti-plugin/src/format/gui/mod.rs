@@ -32,6 +32,17 @@ use std::path::Path;
 /// cross-crate consumer ever appears.
 pub(crate) trait PluginEditor: Send {
     fn open_editor(&mut self, parent: WindowHandle) -> Result<EditorSize>;
+
+    /// Open as a plugin-owned floating window. No parent in, no size out.
+    ///
+    /// Defaulted to a refusal: only CLAP has the concept, so VST3 and AU are
+    /// not made to write an override that could only say this.
+    fn open_floating_editor(&mut self) -> Result<()> {
+        Err(BridgeError::ProtocolError(
+            "this plugin format has no floating-window editor".into(),
+        ))
+    }
+
     fn close_editor(&mut self);
     fn editor_idle(&mut self);
     fn set_parameter(&mut self, id: ParamAddress, value: f64);

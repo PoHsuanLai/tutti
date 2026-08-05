@@ -62,10 +62,10 @@ pub use bind::{plugin_bind_params, PluginParamsBound};
 pub use bind::{plugin_bind_transport, PluginTransportBound};
 pub use catalog::{poll_probes, start_probe, InFlightProbes, PluginProbed, ProbePlugin};
 pub use editor::{
-    plugin_editor_attach_system, plugin_editor_idle_system, plugin_editor_resize_request_system,
-    plugin_editor_window_close_system, plugin_editor_window_resize_system,
-    set_editor_visible_observer, PendingPluginEditor, PluginEditorOpen, PluginEmitter,
-    SetEditorVisible, Visibility,
+    editor_is_open, plugin_editor_attach_system, plugin_editor_idle_system,
+    plugin_editor_resize_request_system, plugin_editor_window_close_system,
+    plugin_editor_window_resize_system, set_editor_visible_observer, PendingPluginEditor,
+    PluginEditorOpen, PluginEmitter, PluginFloatingEditorOpen, SetEditorVisible, Visibility,
 };
 pub use health::{plugin_health_poll, plugin_state_snapshot, PluginHealth, PluginStatus};
 pub use latency::{plugin_latency_poll, CompensatedLatency};

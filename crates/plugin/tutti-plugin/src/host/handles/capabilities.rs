@@ -78,6 +78,23 @@ pub trait HostState: Send + Sync {
 pub trait HostEditor: Send + Sync {
     fn open_editor(&self, parent: *mut c_void) -> Result<EditorSize, EditorError>;
 
+    /// Open the editor as a **floating** window the plugin creates and owns.
+    ///
+    /// Takes no parent: that is the whole difference from
+    /// [`open_editor`](Self::open_editor), and returns no size because the host
+    /// does not lay out a window it did not create.
+    ///
+    /// Defaulted to a refusal rather than left abstract. Only CLAP has the
+    /// concept — VST3, VST2 and AU embed unconditionally — so a default keeps
+    /// three formats from carrying an override that could only say this. A
+    /// caller checks [`Features::EDITOR_FLOATING`](crate::protocol::Features)
+    /// before reaching here; the error is for one that did not.
+    fn open_floating_editor(&self) -> Result<(), EditorError> {
+        Err(EditorError::PluginError(
+            "this plugin format has no floating-window editor".into(),
+        ))
+    }
+
     fn close_editor(&self);
 
     /// Call periodically (~30 Hz) while the editor is open.

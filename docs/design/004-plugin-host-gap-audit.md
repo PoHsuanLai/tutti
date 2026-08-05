@@ -606,7 +606,7 @@ a different thread than `HostState::new()` ran on.
 
 No existing test drove either off-thread, so nothing was asserting the gap.
 
-### C-12 · Floating-window GUI mode unimplemented · DONE (host layer) / HELD (ECS layer)
+### C-12 · Floating-window GUI mode unimplemented · DONE
 
 `embed_editor_sequence` (`polling.rs:88-163`) hardcodes `is_floating = false`;
 `get_preferred_api`, `set_transient`, `suggest_title` are absent.
@@ -652,20 +652,50 @@ direction — all killed. The `editor_bits` extraction exists *because* the firs
 attempt at the union mutation survived: nothing tested the loader's capability
 bits, and reaching them through the loader needs a live plugin behind a dlopen.
 
-**The ECS layer is still held**, and this is the honest boundary: nothing in
-`bevy-tutti` calls the new path. Reaching it means a defaulted
-`open_floating_editor` through four traits — `HostEditor` → `PluginBridge` →
-`PluginEditor` → `ClapGuiInstance` — three of which are cross-format, so VST3,
-AU and VST2 would all carry a CLAP-only concept that answers "unsupported"
-forever. Then `plugin_editor_show_hide` spawns a Bevy `Window` unconditionally
-and five systems key on `PluginEditorOpen::editor_window`; a floating editor has
-no such entity, so the component needs an ownership split.
+**The ECS layer is now built too**, and it cost less than the first estimate
+because two guesses about the shape were wrong.
 
-Held rather than TODO because it cannot be tested here: the reference probe
-never opens a window, and no floating-only CLAP plugin is installed to try it
-against. Writing untestable plumbing through four shared traits, for a plugin
-shape nobody has produced, is worse than the gap. Revisit when such a plugin
-turns up — the host layer it would need is built and pinned.
+The estimate said "a defaulted method through four traits, three of them
+cross-format". It is two — `HostEditor` and `PluginEditor` — each with a
+defaulted body that refuses, so VST3, VST2 and AU write no override at all.
+`PluginBridge` and `ClapGuiInstance` are concrete types, not traits.
+
+The bigger correction is *where the mode is decided*. The obvious place is
+`EditorCapabilities`, which already carries per-format editor shape — but it is
+read **after** `open_editor` returns, and the host has to know which kind of
+window to prepare **before** opening anything. So the answer is a load-time
+capability bit, `Features::EDITOR_FLOATING`, set by the CLAP loader and read by
+the observer. It is probed only for CLAP: VST3's `probed` set now subtracts it,
+because VST3 embeds unconditionally and a clear-but-probed bit would spell "we
+asked and it said no" for a question that does not exist.
+
+`Features::EDITOR_FLOATING` means **embedding is unavailable**, not "the plugin
+would prefer to float". A plugin supporting both is hosted embedded, because
+that keeps placement, sizing and stacking with the session. `prefers_floating()`
+is deliberately not consulted — `ext/gui.h:113` calls the preference a hint the
+host need not honour, and honouring it would scatter windows the host can no
+longer manage.
+
+In the ECS, a floating editor gets its own marker (`PluginFloatingEditorOpen`)
+rather than an `Option<Entity>` on `PluginEditorOpen`. The difference is not a
+missing field: every system keyed on that component exists to manage a window
+*this host spawned* — resize it, echo-suppress its `WindowResized`, despawn it
+on close — and none of that applies to a window the host did not create. A
+separate component means those five systems simply do not match, instead of each
+growing a `None` arm for a case that is not theirs. The one thing both modes
+share is "an editor is open", which is `editor_is_open` / `EditorOpenFilter`.
+
+Tests: 4 in `plugin_host::editor` plus the `editor_bits` set. Mutation-checked
+at 3 further points; one **survived** and was worth the fix it forced — dropping
+the floating arm from the idle pump's query left every test green, because the
+pump needs a `PluginEmitter` and so cannot be driven without a subprocess. The
+filter is now the named `EditorOpenFilter`, testable on its own, and the
+mutation dies. That gap mattered: an unpumped editor is a *frozen* plugin UI,
+which is harder to attribute than an absent one.
+
+**What is still not covered, and cannot be here:** that a real floating-only
+plugin opens. No such plugin is installed, and the reference probe opens no
+windows. Every decision on the path is pinned; the final FFI call is not.
 
 ---
 
@@ -1310,13 +1340,9 @@ correct.
 **D-6** needs a decision before it needs code: does the subprocess VST2 path own
 editors at all?
 
-**Closed out.** 31 DONE, 1 part-done, 3 HELD, no TODO remaining.
+**Closed out.** 32 DONE, 3 HELD, no TODO remaining.
 
-**C-12** (CLAP floating-window GUI) is **done at the host layer** and held at the
-ECS layer — see its entry for what remains and why it is not worth building
-against a plugin shape nobody has produced.
-
-The three fully-held items are scope decisions rather than blocked work:
+The three held items are scope decisions rather than blocked work:
 **D-9** (VST2 preset/program support), **D-10** (smaller VST2 opcode gaps — note
 its `effGetNumMidiInputChannels` half hides a live bug, not just missing scope:
 a plugin answering `Maybe` to `sendVstMidiEvent` is classified MIDI-silent and

@@ -239,6 +239,22 @@ impl PluginHandle {
         editor.open_editor(ptr)
     }
 
+    /// Open the editor as a floating window the plugin owns.
+    ///
+    /// For a plugin whose [`Features::EDITOR_FLOATING`](crate::protocol::Features)
+    /// bit is set — CLAP plugins that cannot embed. Takes no parent and returns
+    /// no size: the window is the plugin's, so the host neither supplies nor
+    /// lays it out. Close it with the same
+    /// [`close_editor`](Self::close_editor) an embedded editor uses.
+    pub fn open_floating_editor(&self) -> Result<(), EditorError> {
+        let Some(editor) = self.editor.as_deref() else {
+            return Err(EditorError::GuiNotSupported {
+                format: self.descriptor.class.format_name().to_string(),
+            });
+        };
+        editor.open_floating_editor()
+    }
+
     pub fn close_editor(&self) -> &Self {
         if let Some(editor) = self.editor.as_deref() {
             editor.close_editor();

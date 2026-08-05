@@ -51,6 +51,13 @@ static READ_EXTRA_INPUT: AtomicBool = AtomicBool::new(false);
 static RESUMED: AtomicBool = AtomicBool::new(false);
 static ANSWER_PARAM_PROPERTIES: AtomicBool = AtomicBool::new(false);
 static ANSWER_MIDI_METADATA: AtomicBool = AtomicBool::new(false);
+/// Whether the probe accepts `effSetBypass`. Off by default, matching the
+/// plugins that do not implement the opcode at all.
+static ACCEPT_SOFT_BYPASS: AtomicBool = AtomicBool::new(false);
+/// The last `effSetBypass` value the probe was *told*, regardless of whether
+/// it accepted. `-1` until the host sends one, so "never asked" is distinct
+/// from "asked with 0".
+static LAST_BYPASS: AtomicI32 = AtomicI32::new(-1);
 static SERVICED_MIDI_PROGRAMS: AtomicI32 = AtomicI32::new(0);
 
 /// Latency the probe declares once it knows its sample rate, or 0 for none.
@@ -132,6 +139,32 @@ pub extern "C" fn tutti_vst2_probe_set_answer_param_properties(enable: bool) {
 
 pub(crate) fn answer_param_properties() -> bool {
     ANSWER_PARAM_PROPERTIES.load(Ordering::SeqCst)
+}
+
+/// Make the probe accept `effSetBypass` (44).
+///
+/// Off by default: a plugin with no soft bypass is the common case, and an
+/// unimplemented opcode returns 0 — the same "no" an explicit refusal gives.
+/// A host must not read either as success.
+#[no_mangle]
+pub extern "C" fn tutti_vst2_probe_set_accept_soft_bypass(enable: bool) {
+    ACCEPT_SOFT_BYPASS.store(enable, Ordering::SeqCst);
+}
+
+/// The last `effSetBypass` value the host sent: `-1` never, `0` resume,
+/// `1` bypass. Records what arrived even when the probe refuses it, so a test
+/// can tell "the host never dispatched" from "the plugin said no".
+#[no_mangle]
+pub extern "C" fn tutti_vst2_probe_last_bypass() -> i32 {
+    LAST_BYPASS.load(Ordering::SeqCst)
+}
+
+pub(crate) fn accept_soft_bypass() -> bool {
+    ACCEPT_SOFT_BYPASS.load(Ordering::SeqCst)
+}
+
+pub(crate) fn record_bypass(bypass: bool) {
+    LAST_BYPASS.store(i32::from(bypass), Ordering::SeqCst);
 }
 
 /// Make the probe answer the MIDI-metadata family (`effGetMidiProgramName`,
@@ -245,6 +278,8 @@ pub extern "C" fn tutti_vst2_probe_reset_switches() {
     ANSWER_PARAM_PROPERTIES.store(false, Ordering::SeqCst);
     ANSWER_MIDI_METADATA.store(false, Ordering::SeqCst);
     SERVICED_MIDI_PROGRAMS.store(0, Ordering::SeqCst);
+    ACCEPT_SOFT_BYPASS.store(false, Ordering::SeqCst);
+    LAST_BYPASS.store(-1, Ordering::SeqCst);
 }
 
 pub(crate) fn set_resumed(resumed: bool) {

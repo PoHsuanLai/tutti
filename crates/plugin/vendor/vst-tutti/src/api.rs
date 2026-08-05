@@ -52,6 +52,15 @@ pub mod consts {
     pub const MAX_PRODUCT_STR_LEN: usize = 64;
     pub const MAX_VENDOR_STR_LEN: usize = 64;
 
+    /// Buffer handed to `effGetEffectName` (45).
+    ///
+    /// `kVstMaxEffectNameLen` is 32 in the SDK. This is the *buffer* size, not
+    /// the bound: the opcode writes into host memory with no length argument,
+    /// so a plugin that ignores the limit overruns whatever it is given. 64
+    /// costs nothing on the stack of a load-time call and gives the same slack
+    /// as the product/vendor buffers beside it.
+    pub const MAX_EFFECT_NAME_LEN: usize = 64;
+
     /// VST plugins are identified by a magic number. This corresponds to 0x56737450.
     pub const VST_MAGIC: i32 =
         ('V' as i32) << 24 | ('s' as i32) << 16 | ('t' as i32) << 8 | ('P' as i32);

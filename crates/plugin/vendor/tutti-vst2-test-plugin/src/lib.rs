@@ -320,6 +320,27 @@ impl Plugin for ProbePlugin {
         }
     }
 
+    /// Accepts `effSetBypass` only when a test has enabled it.
+    ///
+    /// Records the value either way: a host that never dispatches the opcode
+    /// and one whose bypass the plugin refused are different failures, and only
+    /// the recording separates them.
+    fn set_bypass(&mut self, bypass: bool) -> bool {
+        switches::record_bypass(bypass);
+        switches::accept_soft_bypass()
+    }
+
+    /// Answers `effGetEffectName` only when a test asks for one.
+    ///
+    /// `None` is the default so the probe keeps behaving like the majority of
+    /// real plugins, which implement `effGetProductString` and not this. A test
+    /// that sets `TUTTI_VST2_PROBE_EFFECT_NAME` gets a name distinct from
+    /// [`PROBE_NAME`], which is the only way to observe *which* of the two
+    /// opcodes the host read.
+    fn get_effect_name(&self) -> Option<String> {
+        self.config.effect_name.clone()
+    }
+
     fn get_info(&self) -> Info {
         Info {
             name: PROBE_NAME.to_string(),

@@ -327,6 +327,19 @@ pub struct PluginLoader<T: Host> {
     host: Arc<T>,
 }
 
+/// What a plugin answered for its MIDI channel counts.
+///
+/// `None` on a field means the plugin did not answer that opcode — which is
+/// the common case, and is **not** the same as answering zero. See
+/// [`PluginInstance::read_midi_channels`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct MidiChannelCounts {
+    /// `effGetNumMidiInputChannels`, 1..=15 when answered.
+    pub inputs: Option<u8>,
+    /// `effGetNumMidiOutputChannels`, 1..=15 when answered.
+    pub outputs: Option<u8>,
+}
+
 /// An instance of an externally loaded VST plugin.
 #[allow(dead_code)] // To keep `lib` around.
 pub struct PluginInstance {
@@ -586,6 +599,33 @@ impl<T: Host> PluginLoader<T> {
 }
 
 impl PluginInstance {
+    /// Ask the plugin to enter or leave *soft* bypass, via `effSetBypass`(44).
+    ///
+    /// Returns `false` when the plugin refuses or does not implement the
+    /// opcode — the two are indistinguishable, since an unimplemented opcode
+    /// falls through the dispatcher returning 0, which is also "no".
+    ///
+    /// Soft bypass is the plugin's own passthrough, and it is what a host wants
+    /// where one exists: the plugin crossfades and flushes its tail instead of
+    /// cutting mid-reverb. It is **not** a substitute for the host's own mute,
+    /// it is an alternative to it — a refusal means the host must do the
+    /// bypass itself, which is why the answer is returned rather than dropped.
+    /// A caller that discards it leaves the plugin audibly processing while the
+    /// UI shows it bypassed.
+    ///
+    /// Check [`can_do(CanDo::Bypass)`](Plugin::can_do) first. A plugin that
+    /// does not advertise `"bypass"` may still return non-zero here, and the
+    /// advertisement is the documented contract.
+    pub fn set_bypass(&mut self, bypass: bool) -> bool {
+        self.dispatch(
+            plugin::OpCode::SoftBypass,
+            0,
+            isize::from(bypass),
+            ptr::null_mut(),
+            0.0,
+        ) != 0
+    }
+
     /// Read `AEffect::initialDelay` as it stands *now*.
     ///
     /// [`get_info`](Plugin::get_info) returns a clone of the snapshot taken in
@@ -603,6 +643,37 @@ impl PluginInstance {
         // lifetime; `initialDelay` is a plain `i32` field, not a call into the
         // plugin, so there is no re-entrancy or thread-affinity concern.
         unsafe { (*self.params.get_effect()).initialDelay }
+    }
+
+    /// Ask the plugin how many MIDI channels it uses, via
+    /// `effGetNumMidiInputChannels` / `effGetNumMidiOutputChannels`.
+    ///
+    /// `None` when the plugin does not implement the opcode. Both opcodes
+    /// return their count as the dispatcher's `isize` return value, and an
+    /// unimplemented opcode falls through the plugin's dispatcher returning 0 —
+    /// so a bare `0` cannot be told apart from "I use no MIDI channels". The
+    /// spec bounds a real answer at 1..=15, which is what makes the two
+    /// separable at all: anything outside that range is an absent answer, not a
+    /// count. A host must therefore treat `None` as "unknown", never as zero.
+    ///
+    /// Not folded into [`Info`](plugin::Info) because that snapshot is taken in
+    /// [`new`](Self::new), before `effOpen`, and a plugin may not know its MIDI
+    /// configuration until it is initialised — the same trap
+    /// [`read_initial_delay`](Self::read_initial_delay) documents for latency.
+    pub fn read_midi_channels(&self) -> MidiChannelCounts {
+        fn ask(this: &PluginInstance, opcode: plugin::OpCode) -> Option<u8> {
+            // VST 2.4 documents the valid answer as 1..=15. Out of that range —
+            // including the 0 an unimplemented opcode returns — means the
+            // plugin did not answer.
+            u8::try_from(this.opcode(opcode))
+                .ok()
+                .filter(|n| (1..=15).contains(n))
+        }
+
+        MidiChannelCounts {
+            inputs: ask(self, plugin::OpCode::GetNumMidiInputs),
+            outputs: ask(self, plugin::OpCode::GetNumMidiOutputs),
+        }
     }
 
     fn new(effect: *mut AEffect, lib: Arc<Library>) -> PluginInstance {
@@ -636,8 +707,28 @@ impl PluginInstance {
             // a real one.
             let category_code = plug.opcode(op::GetCategory).try_into().unwrap_or(i32::MAX);
 
+            // `effGetEffectName` is the plugin's own name for itself;
+            // `effGetProductString` is the product it ships in, which for a
+            // bundled suite is one name shared by every plugin in it. Asking
+            // only for the product string therefore collapses a whole suite to
+            // a single label.
+            //
+            // Both opcodes are optional and neither reports failure — an
+            // unimplemented one falls through the dispatcher without touching
+            // the buffer, which stays zero-filled. So an empty string is the
+            // only available "did not answer", and the fallback is driven by
+            // it. A caller that gets neither is left with an empty name and
+            // supplies its own (the file stem); that decision is not this
+            // layer's to make.
+            let effect_name = plug.read_string(op::GetEffectName, MAX_EFFECT_NAME_LEN);
+            let name = if effect_name.is_empty() {
+                plug.read_string(op::GetProductName, MAX_PRODUCT_STR_LEN)
+            } else {
+                effect_name
+            };
+
             plug.info = Info {
-                name: plug.read_string(op::GetProductName, MAX_PRODUCT_STR_LEN),
+                name,
                 vendor: plug.read_string(op::GetVendorName, MAX_VENDOR_STR_LEN),
 
                 presets: effect.numPrograms,

@@ -982,7 +982,7 @@ indices, so every listed parameter answers `true`. The test pins "probed and
 marked known" — the part that regressed — not "a `false` answer is carried
 through", which no available input can witness.
 
-### D-9 · Preset/program support absent despite full vendor coverage · HELD
+### D-9 · Preset support has no cross-format surface · HELD
 
 `probed::VST2` omits both preset bits, yet the vendor implements
 `change_preset`(2), `get_preset_num`(3), `set_preset_name`(4),
@@ -993,7 +993,26 @@ parameter-change storms during a switch.
 Held: defensible as scope. But the README table should say `○` (we didn't) and
 not read as `✕` (can't).
 
-### D-10 · Smaller opcode gaps · HELD
+**The entry is mis-scoped, and doing it as written would make things worse.**
+This reads as a VST2 gap. It is not. Every format already has preset support at
+its own layer:
+
+- AU — `factory_presets()` / `load_factory_preset()` / `current_preset()`
+- CLAP — `supports_preset_load()` / `load_preset()`
+- VST3 — `program_lists()` / `program_name()`
+- VST2 — all four vendor methods, as the entry says
+
+What does not exist is anything **above** them: no `HostPresets` capability
+trait, no `PluginHandle` preset method, no IPC frames. `Features::PRESET_LIST`
+and `PRESET_LOAD` are declared and **nothing in the workspace reads either bit**
+— the only hits are the definitions.
+
+So the work is a cross-format surface, and VST2 is the least of it. Wiring VST2's
+four opcodes alone would add a fifth dead-ended implementation and let the
+capability bits keep claiming a reachability that does not exist. The README `○`
+correction stands on its own and is worth doing either way.
+
+### D-10 · Smaller opcode gaps · DONE (three of four; the fourth reclassified)
 
 `effSetBypass`(44) never sent, so host bypass must be a hard mute (there is no
 `Features::BYPASS` bit at all). `effGetEffectName`(45) never sent — we use
@@ -1001,6 +1020,63 @@ not read as `✕` (can't).
 `OutputChannels`(79) never sent, so `emits_midi` (`instance.rs:195`) has a dead
 `false` term and a plugin answering `Maybe` to `sendVstMidiEvent` is classified
 as MIDI-silent, dropping its output. `effSetSpeakerArrangement`(42) never sent.
+
+**The MIDI half was the live bug and is fixed.** `read_midi_channels` queries
+both opcodes on the live instance rather than filling in `Info`, whose snapshot
+is taken in `PluginInstance::new` before `effOpen` — the trap
+`read_initial_delay` already documents for latency. A declined opcode returns 0
+through the dispatcher, indistinguishable from a genuine count of zero, so the
+spec's 1..=15 bound is what separates them: outside it the answer is `None`
+(unknown) and contributes nothing, rather than reading as a denial.
+
+Fixing it surfaced a test that had been passing for the wrong reason.
+`an_undocumented_can_do_answer_is_not_an_affirmative` calls its fixture "a plain
+Effect", but the probe defaults to declaring one MIDI input pin — the assertion
+only held because the pin term was dead. The fixture was corrected to match its
+own premise, not the assertion weakened.
+
+**Bypass and the effect name are done.** `supports_soft_bypass` /`set_bypass`
+pair the `effCanDo("bypass")` advertisement with the opcode, and the acceptance
+is returned rather than swallowed, for `AuInstance::set_bypass`'s reason: an
+unimplemented opcode and an explicit refusal both return 0, so the host cannot
+tell them apart and must treat both as "did not take". The name now prefers
+`effGetEffectName` and falls back to the product string, matching Ardour's scan
+order (`vst2_scan.cc:169`) — the product string names the *product*, so a
+bundled suite otherwise collapses to one label.
+
+Both needed vendor work before any test could witness them: the plugin side had
+no `effSetBypass` arm at all, and answered `effGetEffectName` from `Info::name`,
+i.e. the same string as opcode 48. Two defaulted `Plugin` methods (`set_bypass`
+→ `false`, `get_effect_name` → `None`) reproduce the old behaviour exactly for
+any implementor that ignores them, and let the probe answer differently.
+
+**`effSetSpeakerArrangement`(42) is reclassified, not done** — see D-11. It is
+not a peer of the other three.
+
+### D-11 · Speaker arrangement needs a negotiation policy, not an opcode · HELD
+
+Split out of D-10, where it sat beside three one-call gaps and read like a
+fourth. It is not one, and the difference is why it is still open.
+
+The other three send an existing opcode and read the answer. This one needs a
+`VstSpeakerArrangement` — a variable-length C struct (header plus a flexible
+array of `VstSpeakerProperties`) that **does not exist in `api.rs`**; only the
+`SpeakerArrangementType` enum does, and `plugin.rs:262` still marks the opcode
+`//TODO: Implement`. Writing that struct is the smallest part.
+
+The real gap is above it: this host does not negotiate channel layout at all. It
+takes `numInputs`/`numOutputs` as declared (`instance.rs:236-237`) and renders to
+them. `effSetSpeakerArrangement` is how a host *proposes* a layout and reads back
+what the plugin accepted — there is nothing here to propose one, so wiring the
+opcode would add a variable-length FFI surface with no caller and no policy
+deciding what to ask for.
+
+Ardour agrees by its behaviour: it implements speaker arrangements for VST3
+(`vst3_plugin.cc:2282`) and, for VST2, stubs only the *host-callback* direction
+(`session_vst.cc:453`, returning 0) — it never sends opcode 42 either.
+
+Held on the same question as D-9 and E-8: a cross-format channel-layout policy is
+a design decision, not a missing call.
 
 ---
 
@@ -1268,7 +1344,7 @@ The inbound test `sysex_is_dropped_without_derailing_the_rest` was justified as
 the real reason — inbound drops SysEx because `from_midi1_bytes` would have to
 allocate on the CoreMIDI read thread. Its doc comment is corrected.
 
-### E-8 · Three properties worth having · HELD
+### E-8 · Two properties worth having, one refuted · HELD
 
 `kAudioUnitProperty_PresentationLatency`(40) never written — a plugin doing
 look-ahead metering cannot align its display. `ShouldAllocateBuffer`(51) never
@@ -1276,6 +1352,38 @@ set `false` even though this host always supplies its own buffers
 (`instance.rs:1970-1977`) — pure per-instance waste, not a correctness bug.
 `DependentParameters`(45) absent — a meta-parameter silently moves others and
 our cached ranges go stale with no notification.
+
+**`ShouldAllocateBuffer` is REFUTED — do not implement it.** Tried, measured,
+reverted. The premise is right and the conclusion is still wrong.
+
+The header backs the idea exactly: *"If the audio unit is always going to be
+pulled for audio with the client providing audio data buffers to the
+AudioUnitRender call, then it will never need to create an audio buffer on the
+output side"* (`AudioUnitProperties.h:697-698`), which is this host's output
+path — `RenderScratch::bind_output` supplies a fully populated
+`AudioBufferList`. Setting it `false` on `K_AUDIO_UNIT_SCOPE_OUTPUT` before
+`AudioUnitInitialize` (the header forbids setting it on an initialised unit,
+`:703`) is the textbook use.
+
+**AUSampler accepts the write and then fails every subsequent render.** Measured
+on macOS 15.6: `set_property` returns `Ok(())`, and `AudioUnitRender` then
+returns `-10851` (`kAudioUnitErr_InvalidPropertyValue`) for mono, quad and the
+block-size path alike — three `au_channel_config` tests, all AUSampler, all
+green again on revert. The header even predicts the shape: *"If the audio unit
+needs a buffer, but one hasn't been allocated, then an error will be thrown from
+that call to AudioUnitRender"* (`:701`).
+
+What makes it unimplementable rather than merely fiddly is that **the refusal is
+silent at set time**. The AU says yes and means no, so there is no answer to
+gate on — a host cannot tell a unit that honours the property from one that will
+break at render until it renders. Guarding it would mean an allow-list of units
+known to behave, which is worse than the waste it saves.
+
+So the audit's own framing was the trap: *"pure per-instance waste, not a
+correctness bug"* is exactly backwards. Skipping it wastes a buffer nobody
+reads. Doing it breaks instruments.
+
+The other two properties are untouched and remain open.
 
 ---
 
@@ -1340,10 +1448,30 @@ correct.
 **D-6** needs a decision before it needs code: does the subprocess VST2 path own
 editors at all?
 
-**Closed out.** 32 DONE, 3 HELD, no TODO remaining.
+**Closed out.** 34 DONE, 3 HELD, no TODO remaining.
 
-The three held items are scope decisions rather than blocked work:
-**D-9** (VST2 preset/program support), **D-10** (smaller VST2 opcode gaps — note
-its `effGetNumMidiInputChannels` half hides a live bug, not just missing scope:
-a plugin answering `Maybe` to `sendVstMidiEvent` is classified MIDI-silent and
-its output dropped), and **E-8** (three AU properties).
+**C-12** (CLAP floating-window GUI) and **D-10** (VST2 opcode gaps) have since
+landed. D-10's `effGetNumMidiInputChannels` half was the live bug flagged here —
+a plugin answering `Maybe` to `sendVstMidiEvent` classified MIDI-silent and its
+output dropped — and is fixed.
+
+The three that remain are all the same *kind* of open question, which is worth
+stating plainly: **each needs a policy decision above the format layer, not a
+missing call below it.**
+
+- **D-9** (presets) — all four formats implement presets; nothing above them
+  does, and the two `Features` preset bits have no reader anywhere in the
+  workspace. Needs a cross-format surface, not VST2 plumbing.
+- **D-11** (speaker arrangement) — needs a channel-layout negotiation policy;
+  this host takes the plugin's declared counts and never proposes one.
+- **E-8** (two AU properties, down from three) — `PresentationLatency` and
+  `DependentParameters` both need a host-side model of what to do with the
+  answer. `ShouldAllocateBuffer` is **refuted**: implemented, measured against
+  the corpus, reverted. AUSampler accepts the write and then fails every render
+  with `-10851`, and the refusal is silent at set time, so there is nothing to
+  gate on.
+
+Doing any of them as a bare opcode/property wiring would add a surface with no
+caller. That is the shape to check for before picking one up — and
+`ShouldAllocateBuffer` is the reminder that "obviously safe, saves an
+allocation" deserves a corpus run before it deserves a commit.

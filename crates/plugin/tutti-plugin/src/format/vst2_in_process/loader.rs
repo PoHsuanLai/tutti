@@ -114,6 +114,11 @@ pub fn load_client(
         tail: PluginTail::Unknown,
         features,
         probed,
+        // VST2 reports no speaker placement — same as the out-of-process VST2
+        // loader. Empty lists claim nothing about any bus, which is the honest
+        // answer for a format that cannot be asked.
+        input_topology: Default::default(),
+        output_topology: Default::default(),
     };
 
     let inner = Arc::new(Mutex::new(inner));

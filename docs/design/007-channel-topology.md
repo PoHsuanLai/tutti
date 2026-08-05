@@ -185,6 +185,37 @@ Each compiles, tests, and is independently revertable.
 
 Steps 2–4 are independent of each other; each is worth landing alone.
 
+### Status: steps 1–6 landed
+
+All six are done. What the shipped surface looks like:
+
+```rust
+match handle.layout_support() {
+    LayoutSupport::Full    => // name every channel's speaker
+    LayoutSupport::Partial => // per bus: name what answered, number the rest
+    LayoutSupport::None    => // channel numbers only
+}
+handle.input_bus_topology(0);   // Option<&ChannelTopology>
+```
+
+Two things the build changed from what is written above, both recorded rather
+than quietly done:
+
+- **`PROTOCOL_VERSION` is 15, not 14.** The preset branch (#196) is unmerged and
+  already took 14. Whichever lands second rebases.
+- **`LayoutSupport` has three variants, not a `PresetSupport`-shaped four.**
+  `Partial` is real and common — an AU whose main bus publishes a tag while its
+  sidechain does not. There is deliberately **no** variant naming *proposal*:
+  nothing above the format hosts proposes a layout, and a `Negotiable` a caller
+  could not act on is the write-only shape this work exists to remove.
+
+One coverage note, per the plan's own promise to state limits in advance: the
+VST3 corpus is stereo-only, so the conversions are table-tested directly and
+`usable_topology` was extracted specifically to make the live-plugin rule
+reachable by a unit test. The end-to-end assertion runs against a real VST2
+plugin, which is the format that reports *nothing* — it pins the `None` case,
+not the naming ones.
+
 **Explicitly out of scope:** VST2's opcode 42. It needs a variable-length FFI
 struct that does not exist, and until step 6 gives it a caller it would be a
 surface with no policy behind it — the audit's original objection, which stands.

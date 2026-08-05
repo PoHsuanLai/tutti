@@ -1077,7 +1077,7 @@ any implementor that ignores them, and let the probe answer differently.
 **`effSetSpeakerArrangement`(42) is reclassified, not done** — see D-11. It is
 not a peer of the other three.
 
-### D-11 · Speaker arrangement needs a negotiation policy, not an opcode · DESIGNED
+### D-11 · Speaker arrangement needs a negotiation policy, not an opcode · DONE (reporting; proposal deferred)
 
 **Design: `007-channel-topology.md`.** The survey below is what it is built on;
 the short version is that this is a vocabulary change in `tutti-types`

@@ -178,6 +178,14 @@ pub use fundsp::wave::Wave;
 pub use fundsp::MAX_BUFFER_SIZE;
 pub use fundsp::{Sample, F32, F64};
 
+/// Which audio formats this build can decode.
+///
+/// Lives here rather than in `tutti-sampler` because this is where the codec
+/// features terminate: the sampler's `wav = ["tutti-core/wav"]` forwards, and
+/// this crate's `wav = ["fundsp/wav"]` is the line that pulls a decoder in. An
+/// answer computed anywhere else is a copy that goes stale.
+pub mod codec;
+
 pub mod node_id;
 
 // MIDI vocabulary types (MidiUnitId, MidiIn, MidiOut, …) live in the

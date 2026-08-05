@@ -7,8 +7,8 @@ use tutti_plugin::server::{
     EditorSize, Features, LoadedPlugin, NoteExpressionChanges, NoteExpressionIntChanges,
     NoteExpressionTextChanges, ParamAddress, ParamFlags, ParamRange, ParamSteps, ParameterInfo,
     PluginAudio, PluginClass, PluginDescriptor, PluginEditorHost, PluginError, PluginMeta,
-    PluginParams, PluginResult, PluginState, PluginTail, ProcessContext, ProcessOutput, RenderMode,
-    Samples, ScaleChanges, Vst3SubCategories, WindowHandle,
+    PluginParams, PluginPresets, PluginResult, PluginState, PluginTail, ProcessContext,
+    ProcessOutput, RenderMode, Samples, ScaleChanges, Vst3SubCategories, WindowHandle,
 };
 use tutti_plugin::{BridgeError, LoadStage, Result};
 
@@ -694,6 +694,13 @@ impl PluginEditorHost for Vst3Instance {
         vst_dispatch_mut!(self, inner => inner.close_editor());
     }
 }
+
+/// Not yet wired — the defaults report "this format cannot", which is the
+/// honest answer until the mapping lands.
+///
+/// VST3 programs are ordinary parameters carrying `kIsProgramChange`,
+/// reached through the parameter path. Enumeration lands in step 5.
+impl PluginPresets for Vst3Instance {}
 
 impl PluginState for Vst3Instance {
     fn get_state(&mut self) -> PluginResult<Vec<u8>> {

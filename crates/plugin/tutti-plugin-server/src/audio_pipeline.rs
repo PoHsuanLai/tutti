@@ -535,6 +535,9 @@ mod tests {
         }
         fn close_editor(&mut self) {}
     }
+    /// The probe has no presets; the defaults say so.
+    impl tutti_plugin::server::PluginPresets for NanPlugin {}
+
     impl PluginState for NanPlugin {
         fn get_state(&mut self) -> PluginResult<Vec<u8>> {
             Ok(Vec::new())
@@ -609,6 +612,9 @@ mod tests {
         }
         fn close_editor(&mut self) {}
     }
+    /// The probe has no presets; the defaults say so.
+    impl tutti_plugin::server::PluginPresets for EchoProbe {}
+
     impl PluginState for EchoProbe {
         fn get_state(&mut self) -> PluginResult<Vec<u8>> {
             Ok(Vec::new())

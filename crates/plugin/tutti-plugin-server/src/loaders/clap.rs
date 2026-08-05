@@ -5,7 +5,7 @@ use tutti_plugin::server::{
     BusChannels, ClapFeature, EditorPresence, EditorSize, Features, LoadedPlugin,
     NoteExpressionChanges, ParamAddress, ParamRange, ParameterChanges, ParameterInfo, PluginAudio,
     PluginClass, PluginDescriptor, PluginEditorHost, PluginError, PluginMeta, PluginParams,
-    PluginResult, PluginState, PluginTail, Samples, WindowHandle,
+    PluginPresets, PluginResult, PluginState, PluginTail, Samples, WindowHandle,
 };
 use tutti_plugin::server::{ProcessContext, ProcessOutput, RenderMode};
 
@@ -551,6 +551,12 @@ impl PluginEditorHost for ClapInstance {
         });
     }
 }
+
+/// Not yet wired — the defaults report "this format cannot", which is the
+/// honest answer until the mapping lands.
+///
+/// CLAP loads by path and cannot enumerate; the load half lands in step 6.
+impl PluginPresets for ClapInstance {}
 
 impl PluginState for ClapInstance {
     fn get_state(&mut self) -> PluginResult<Vec<u8>> {

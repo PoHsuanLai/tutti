@@ -10,8 +10,9 @@ use std::path::Path;
 use tutti_plugin::server::{
     AudioBufferMut, EditorPresence, EditorSize, Features, LoadedPlugin, MidiEventVec,
     NoteExpressionChanges, ParamAddress, ParameterChanges, ParameterInfo, PluginAudio, PluginClass,
-    PluginDescriptor, PluginEditorHost, PluginMeta, PluginParams, PluginResult, PluginState,
-    PluginTail, ProcessContext, ProcessOutput, RenderMode, WindowHandle,
+    PluginDescriptor, PluginEditorHost, PluginMeta, PluginParams, PluginPresets, PluginResult,
+    PluginState, PluginTail, Preset, PresetId, ProcessContext, ProcessOutput, RenderMode,
+    WindowHandle,
 };
 // Only the `not(vst2)` fallback arms construct `PluginError` directly.
 #[cfg(not(feature = "vst2"))]
@@ -341,6 +342,36 @@ impl PluginEditorHost for Vst2Instance {
     fn close_editor(&mut self) {
         #[cfg(feature = "vst2")]
         self.inner.close_editor();
+    }
+}
+
+impl PluginPresets for Vst2Instance {
+    /// VST2 programs. The index **is** the identifier — `effProgramChange`
+    /// takes a position in `[0, numPrograms)` — so unlike AU's sparse selectors
+    /// these are genuinely dense. Unnamed slots are kept: dropping one would
+    /// renumber every program after it.
+    #[cfg(feature = "vst2")]
+    fn get_presets(&mut self) -> Vec<Preset> {
+        self.inner
+            .programs()
+            .into_iter()
+            .map(|(index, name)| Preset::new(PresetId::Number(index), name))
+            .collect()
+    }
+
+    /// Switch program, bracketed by `effBeginSetProgram`/`effEndSetProgram` in
+    /// the host layer. `false` for an id this format cannot address.
+    #[cfg(feature = "vst2")]
+    fn load_preset(&mut self, id: &PresetId) -> bool {
+        match id.number() {
+            Some(index) => self.inner.set_program(index),
+            None => false,
+        }
+    }
+
+    #[cfg(feature = "vst2")]
+    fn get_current_preset(&mut self) -> Option<PresetId> {
+        Some(PresetId::Number(self.inner.current_program()))
     }
 }
 

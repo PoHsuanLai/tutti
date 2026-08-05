@@ -9,8 +9,8 @@ use tutti_plugin::server::{
 #[cfg(all(target_os = "macos", feature = "au"))]
 use tutti_plugin::server::{
     EditorSize, ParamAddress, ParamFlags, ParamRange, ParamSteps, ParameterInfo, PluginAudio,
-    PluginEditorHost, PluginMeta, PluginParams, PluginResult, PluginState, PluginTail,
-    ProcessContext, ProcessOutput, RenderMode, WindowHandle,
+    PluginEditorHost, PluginMeta, PluginParams, PluginPresets, PluginResult, PluginState,
+    PluginTail, Preset, PresetId, ProcessContext, ProcessOutput, RenderMode, WindowHandle,
 };
 
 use crate::loaders::common::{single_bus, Meta};
@@ -889,6 +889,68 @@ impl PluginState for AuInstance {
     }
 }
 
+/// The AU selector an id names, or `None` when it names none.
+///
+/// A free function so the decision is testable without a live unit: no AU
+/// loads through `AuInstance::load` in a headless test run on this machine
+/// (the component registry lists only codecs), so an inline `match` inside
+/// `load_preset` could not be exercised at all.
+///
+/// Only [`PresetId::Number`] addresses an AU preset. A VST3 `(list, index)`
+/// pair and a CLAP path name nothing in AU's selector space, and coercing
+/// either — taking the `index`, say — would load a real preset the caller
+/// never asked for. That is silent, and worse than a refusal.
+fn au_selector(id: &PresetId) -> Option<i32> {
+    match id {
+        PresetId::Number(n) => Some(*n),
+        PresetId::Program { .. } | PresetId::Location(_) => None,
+    }
+}
+
+impl PluginPresets for AuInstance {
+    /// The AU's factory presets.
+    ///
+    /// `AuPreset::number` is a **unit-assigned selector**, not a position: a
+    /// unit may number sparsely, and `load_factory_preset` takes the number the
+    /// unit reported. So the id is built from `p.number` and never from the
+    /// enumeration index — that is the whole reason `PresetId` is opaque.
+    ///
+    /// `bank` is `None`: AU exposes one flat factory set, and inventing a bank
+    /// name would be a claim the format never made.
+    fn get_presets(&mut self) -> Vec<Preset> {
+        self.inner
+            .factory_presets()
+            .into_iter()
+            .map(|p| Preset::new(PresetId::Number(p.number), p.name))
+            .collect()
+    }
+
+    /// `false` for an id this format cannot address — a `Program` or `Location`
+    /// belongs to another format and names no AU preset.
+    ///
+    /// A rejected load is a refusal, not an error: `load_factory_preset`
+    /// answers `kAudioUnitErr_InvalidPropertyValue` for a number the unit does
+    /// not advertise, and the AU is still renderable afterwards with its
+    /// parameters untouched.
+    fn load_preset(&mut self, id: &PresetId) -> bool {
+        match au_selector(id) {
+            Some(number) => self.inner.load_factory_preset(number).is_ok(),
+            None => false,
+        }
+    }
+
+    /// `None` when the unit does not implement
+    /// `kAudioUnitProperty_PresentPreset`, which `current_preset` reports as an
+    /// error precisely because there is no honest value to fabricate — a
+    /// "preset 0" would be a claim about the unit's state the host cannot back.
+    fn get_current_preset(&mut self) -> Option<PresetId> {
+        self.inner
+            .current_preset()
+            .ok()
+            .map(|p| PresetId::Number(p.number))
+    }
+}
+
 #[cfg(test)]
 #[cfg(all(target_os = "macos", feature = "au"))]
 mod tests {
@@ -898,6 +960,108 @@ mod tests {
     // Note: AU loading by path requires the component name to match the bundle name.
     // For system AUs, they live in /System/Library/Components/ or
     // /Library/Audio/Plug-Ins/Components/.
+
+    /// Build an initialized AU by four-char code, or `None` when absent.
+    fn open_au(ty: u32, sub: &[u8; 4]) -> Option<tutti_au_host::AuInstance> {
+        use tutti_au_host::component;
+        use tutti_au_host::types::AudioComponentDescription;
+
+        let desc = AudioComponentDescription {
+            componentType: ty,
+            componentSubType: u32::from_be_bytes(*sub),
+            componentManufacturer: u32::from_be_bytes(*b"appl"),
+            componentFlags: 0,
+            componentFlagsMask: 0,
+        };
+        let comp = component::find_component(&desc)?;
+        let mut inner = unsafe { tutti_au_host::AuInstance::new(comp, 44_100.0, 512) }.ok()?;
+        inner.initialize().ok()?;
+        Some(inner)
+    }
+
+    /// The `AuPreset` -> `PresetId` mapping round-trips against a real unit.
+    ///
+    /// The mapping is the only new logic here: `factory_presets()` and
+    /// `load_factory_preset()` are covered by `tutti-au-host`'s own suite. What
+    /// this pins is that the id carries the unit's **selector**, and that
+    /// handing it straight back loads the preset it named.
+    ///
+    /// **Corpus limit, stated rather than papered over.** `AuPreset::number` is
+    /// a unit-assigned selector and a unit may number sparsely — that is why
+    /// `PresetId` carries the number rather than a position. Measured on this
+    /// machine, all four preset-bearing Apple effects (AUDistortion,
+    /// AUMatrixReverb, AUReverb2, AUDynamicsProcessor) number densely `0..n`,
+    /// so **no available input here distinguishes "carries the selector" from
+    /// "uses the vec index"**. Verified by mutation: replacing `p.number` with
+    /// `.enumerate()`'s index leaves this test green, and no fixture on this
+    /// machine can make it fail. That half is covered where the value *can* be
+    /// constructed — `presets::tests::a_sparse_selector_is_carried_verbatim` —
+    /// and the reason the mapping must use `p.number` anyway is in
+    /// `AuPreset`'s own doc, which the AU layer pins.
+    #[test]
+    fn a_listed_preset_loads_the_preset_it_names() {
+        use tutti_au_host::types::K_AUDIO_UNIT_TYPE_EFFECT;
+
+        let Some(mut inner) = open_au(K_AUDIO_UNIT_TYPE_EFFECT, b"dist") else {
+            eprintln!("AUDistortion not installed; skipping");
+            return;
+        };
+
+        // The same mapping `<AuInstance as PluginPresets>::get_presets` does.
+        let presets: Vec<Preset> = inner
+            .factory_presets()
+            .into_iter()
+            .map(|p| Preset::new(PresetId::Number(p.number), p.name))
+            .collect();
+        assert!(
+            presets.len() > 2,
+            "AUDistortion ships a factory preset table; got {}",
+            presets.len()
+        );
+
+        // Taken from the listing, never constructed — what a caller does.
+        let wanted = presets[2].id.clone();
+        let number = wanted.number().expect("an AU preset id is a number");
+        assert!(
+            inner.load_factory_preset(number).is_ok(),
+            "a preset the unit listed must load"
+        );
+        assert_eq!(
+            inner
+                .current_preset()
+                .ok()
+                .map(|p| PresetId::Number(p.number)),
+            Some(wanted),
+            "the unit must report the preset just loaded"
+        );
+    }
+
+    /// An id from another format addresses no AU preset.
+    ///
+    /// `au_selector` is the guard `load_preset` consults. A VST3 `(list,
+    /// index)` pair and a CLAP path both answer `None`, so the load is refused
+    /// rather than coerced — taking the `index` would load a real preset the
+    /// caller never asked for, which is silent and worse than a `false`.
+    ///
+    /// Tested through the free function rather than through `load_preset`
+    /// because no AU loads in a headless run here; see `au_selector`.
+    #[test]
+    fn an_id_from_another_format_addresses_no_au_preset() {
+        assert_eq!(au_selector(&PresetId::Number(7)), Some(7));
+        assert_eq!(
+            au_selector(&PresetId::Program {
+                list_id: 0,
+                index: 1
+            }),
+            None,
+            "a VST3 program id must not yield an AU selector"
+        );
+        assert_eq!(
+            au_selector(&PresetId::Location("/x.clap-preset".into())),
+            None,
+            "a CLAP preset path must not yield an AU selector"
+        );
+    }
 
     /// An AU that declines `kAudioUnitProperty_TailTime` is `Unknown`, and one
     /// that reports an unbounded tail is `Unbounded` — never `None`, which is

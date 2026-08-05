@@ -50,7 +50,8 @@ pub use editor::{
 pub use error::{PluginError, Result, Result as PluginResult};
 pub use features::{FeatureReport, Features};
 pub use format_host::{
-    PluginAudio, PluginEditorHost, PluginInstance, PluginMeta, PluginParams, PluginState,
+    PluginAudio, PluginEditorHost, PluginInstance, PluginMeta, PluginParams, PluginPresets,
+    PluginState,
 };
 pub use harmony::{
     ChordChanges, ChordValue, NoteExpressionIntChanges, NoteExpressionIntValue,

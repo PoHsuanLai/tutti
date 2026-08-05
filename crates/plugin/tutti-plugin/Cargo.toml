@@ -37,7 +37,7 @@ tutti-core = { path = "../../core/tutti-core", default-features = false, feature
 tutti-types = { path = "../../core/tutti-types" }
 
 # Parameter range/scaling
-audio-automation = "0.4"
+audio-automation = { workspace = true }
 
 # The `Curve` trait (+ its `AutomationEnvelope` impl), which the plugin
 # parameter-automation source evaluates. default-features = false so bevy does

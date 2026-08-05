@@ -52,7 +52,7 @@ fft-convolver = { version = "0.3", optional = true }
 
 # Envelope primitives consumed by `AutomationLane` + `Recorder`, re-exported via
 # `tutti_units::automation`.
-audio-automation = { version = "0.4", default-features = false }
+audio-automation = { workspace = true }
 
 # Error handling
 thiserror = { version = "2", default-features = false }

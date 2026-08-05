@@ -54,6 +54,17 @@ bevy_asset = { version = "0.19", default-features = false }
 bevy_reflect = { version = "0.19", default-features = false }
 bevy_tasks = "0.19"
 thiserror = "2"
+
+# Automation curves. We track an unreleased commit (0.4.1, which adds the
+# `bevy_reflect` feature), so this is a direct git dep rather than crates.io
+# `0.4` plus a `[patch]`. Members inherit it with `workspace = true`; keep the
+# rev identical to the app workspace's pin, or the two trees resolve to
+# disjoint copies of the same types across the cross-workspace path deps.
+#
+# `default-features = false` here is the floor: members that need reflection
+# opt in with `features = ["bevy_reflect"]` on their own line.
+audio-automation = { git = "https://github.com/PoHsuanLai/audio-automation.git", rev = "be7ccb9", default-features = false }
+
 midir = "0.9"
 midly = { version = "0.5", default-features = false }
 midi2 = { version = "0.11", default-features = false, features = [
@@ -100,10 +111,12 @@ inherits = "release"
 debug = "line-tables-only"
 strip = "none"
 
-# The tutti crates depend on `audio-automation = "0.4"` from crates.io, but we
-# track an unreleased commit (0.4.1, which adds the `bevy_reflect` feature).
-# Redirect every crates.io reference to the pinned git commit so the whole graph
-# resolves to one version instead of coexisting crates.io 0.4.0 + git builds.
-# Mirrors the app workspace's patch — both must name the same rev.
-[patch.crates-io]
-audio-automation = { git = "https://github.com/PoHsuanLai/audio-automation.git", rev = "be7ccb9" }
+# NOTE: no `[patch.crates-io]` here any more. `audio-automation` is a direct
+# git dep in this workspace's `[workspace.dependencies]`, inherited by the four
+# members that use it (tutti-mod, tutti-units, tutti-plugin,
+# tutti-plugin-types), so no crates.io reference survives to redirect.
+#
+# The rev must stay identical to the app workspace's pin. The two workspaces
+# resolve separately, and the app reaches these crates through cross-workspace
+# path deps — so a rev skew here yields two disjoint copies of the same types
+# and a `expected Curve, found Curve` error at the seam.

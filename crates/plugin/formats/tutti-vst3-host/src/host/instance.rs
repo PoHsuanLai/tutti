@@ -22,7 +22,7 @@ use vst3::Steinberg::{
 };
 
 use tutti_plugin_types::RtMidiEvents;
-use tutti_types::ChannelLayout;
+use tutti_types::{ChannelLayout, ChannelTopology};
 
 use crate::com::{event_list_ptr, param_changes_ptr, EventList, ParameterChangesImpl};
 use crate::error::{LoadStage, Result, Vst3Error};
@@ -36,7 +36,7 @@ use super::bus_buffers::{BusBuffers, DirectionScratch};
 use super::loaded::Vst3Loaded;
 use super::midi_learn::MidiLearnProducer;
 use super::midi_mapping::{midi_to_mapped_controller, CcRoute, MidiCcMapping};
-use super::{IComponentExt, K_INPUT, K_OUTPUT};
+use super::{speakers, IComponentExt, K_INPUT, K_OUTPUT};
 
 pub(super) const K_EVENT: i32 = kEvent as i32;
 
@@ -45,38 +45,39 @@ pub(super) const K_EVENT: i32 = kEvent as i32;
 /// beyond this allocates once and then sticks.
 const OUTPUT_PARAM_QUEUE_RESERVE: usize = 32;
 
-/// A VST3 `SpeakerArrangement` (a u64 speaker bit mask) as a local newtype, so it
-/// can carry `From`/`Into` conversions with [`ChannelLayout`] — both the raw alias
-/// and `ChannelLayout` are foreign to this crate, so the impls have to hang off a
-/// type we own.
+/// The arrangement to propose for a bus of `layout` channels, when the host has
+/// no topology for it.
 ///
-/// The conversion is deliberately lossy on placement: we translate a count to a
-/// well-formed mask and back, never the specific surround topology (which speaker
-/// is where). A plugin that needs a named layout refuses our proposal via
-/// `kResultFalse`, and the caller reads its choice back with `getBusArrangement`.
-#[derive(Debug, Clone, Copy)]
-struct Vst3SpeakerArrangement(SpeakerArrangement);
-
-impl From<ChannelLayout> for Vst3SpeakerArrangement {
-    /// `0` → empty (disabled bus), mono/stereo → their canonical named masks; any
-    /// other width → an N-bit low mask whose popcount equals the channel count —
-    /// a valid arrangement to propose even without the exact topology.
-    fn from(layout: ChannelLayout) -> Self {
-        Self(match layout.count() {
-            0 => SpeakerArr::kEmpty,
-            1 => SpeakerArr::kMono,
-            2 => SpeakerArr::kStereo,
-            n if n < 64 => (1u64 << n) - 1,
-            _ => u64::MAX,
-        })
-    }
-}
-
-impl From<Vst3SpeakerArrangement> for ChannelLayout {
-    /// Recover the channel count as the mask's popcount.
-    fn from(arr: Vst3SpeakerArrangement) -> Self {
-        ChannelLayout::from(arr.0.count_ones() as u16)
-    }
+/// Named layouts, not a synthesized mask. The previous version built
+/// `(1u64 << n) - 1` — the low `n` bits — which has the right *popcount* and the
+/// wrong *speakers*: at width 4 it asks for `L R C Lfe` where a four-channel bus
+/// means a surround pair, and at width 8 it asks for a front-of-centre pair
+/// rather than the extra surround pair. Only 5.1 came out right, and only
+/// because bits 0–5 happen to be contiguous and in the engine's own order.
+///
+/// `None` for a width with no canonical arrangement, which is a real answer:
+/// `setBusArrangements` is a *proposal*, so proposing nothing and reading back
+/// what the plugin chose beats proposing a layout that names the wrong
+/// speakers.
+///
+/// Prefers [`speakers::to_arrangement`] once a caller has a real
+/// [`ChannelTopology`] to offer; this is the width-only fallback for the path
+/// that still enumerates counts.
+fn default_arrangement_for(layout: ChannelLayout) -> Option<SpeakerArrangement> {
+    Some(match layout.count() {
+        0 => SpeakerArr::kEmpty,
+        1 => SpeakerArr::kMono,
+        2 => SpeakerArr::kStereo,
+        // `k40Music` (`L R Ls Rs`), not `k40Cine` (`L R C Cs`): a four-channel
+        // bus in this engine is a front pair plus a surround pair.
+        4 => SpeakerArr::k40Music,
+        6 => SpeakerArr::k51,
+        // `k71Music`, whose extra pair sits beyond the 5.1 core — the same
+        // shape as the engine's own 7.1 order. `k71CineFullRear` is a different
+        // eight-channel layout.
+        8 => SpeakerArr::k71Music,
+        _ => return None,
+    })
 }
 
 /// Sample rate / block size / channel counts captured at activation. Read by
@@ -706,16 +707,29 @@ impl<T: Vst3Sample> Vst3Instance<T> {
         let processor = self.loaded.interfaces.processor.clone();
         let component = &self.loaded.interfaces.component;
 
-        let mut inputs: Vec<SpeakerArrangement> = component
+        // A bus whose width has no canonical arrangement makes the whole
+        // proposal unsendable: `setBusArrangements` takes one arrangement per
+        // bus, so there is no way to say "no opinion" about a single entry.
+        // Skipping the call entirely is the honest move — the plugin keeps the
+        // layout it already has, and the reconcile below reports it. Proposing
+        // a made-up mask for that bus is what this change exists to stop.
+        let proposals = component
             .audio_bus_channels(K_INPUT)
             .into_iter()
-            .map(|c| Vst3SpeakerArrangement::from(ChannelLayout::from(c)).0)
-            .collect();
-        let mut outputs: Vec<SpeakerArrangement> = component
-            .audio_bus_channels(K_OUTPUT)
-            .into_iter()
-            .map(|c| Vst3SpeakerArrangement::from(ChannelLayout::from(c)).0)
-            .collect();
+            .map(|c| default_arrangement_for(ChannelLayout::from(c)))
+            .collect::<Option<Vec<_>>>()
+            .zip(
+                component
+                    .audio_bus_channels(K_OUTPUT)
+                    .into_iter()
+                    .map(|c| default_arrangement_for(ChannelLayout::from(c)))
+                    .collect::<Option<Vec<_>>>(),
+            );
+
+        let Some((mut inputs, mut outputs)) = proposals else {
+            self.loaded.reconcile_bus_counts();
+            return Ok(());
+        };
 
         let result = unsafe {
             processor.setBusArrangements(
@@ -730,9 +744,12 @@ impl<T: Vst3Sample> Vst3Instance<T> {
         // the plugin kept its own layout. Read it back and re-resolve scratch
         // to match. Not an error.
         if result != kResultOk && result != vst3::Steinberg::kResultTrue {
-            let in_counts = self.read_back_arrangement_counts(&processor, K_INPUT, inputs.len());
-            let out_counts = self.read_back_arrangement_counts(&processor, K_OUTPUT, outputs.len());
-            self.resolve_scratch_from_counts(&in_counts, &out_counts);
+            let in_layouts = self.read_back_arrangements(&processor, K_INPUT, inputs.len());
+            let out_layouts = self.read_back_arrangements(&processor, K_OUTPUT, outputs.len());
+            let widths = |ls: &[ChannelTopology]| -> Vec<usize> {
+                ls.iter().map(|t| t.layout().count() as usize).collect()
+            };
+            self.resolve_scratch_from_counts(&widths(&in_layouts), &widths(&out_layouts));
         }
 
         // Re-enumerated from the component rather than from `in_counts` above,
@@ -745,24 +762,29 @@ impl<T: Vst3Sample> Vst3Instance<T> {
         Ok(())
     }
 
-    /// Read the plugin's chosen `SpeakerArrangement` for each of `num_buses`
-    /// buses in `direction` and translate each to a channel count (popcount of
-    /// the speaker mask). A bus whose query fails contributes 0, so the length
-    /// always equals `num_buses`.
-    fn read_back_arrangement_counts(
+    /// Read the plugin's chosen layout for each of `num_buses` buses in
+    /// `direction`. A bus whose query fails contributes an empty topology, so
+    /// the length always equals `num_buses`.
+    ///
+    /// Decoded into a [`ChannelTopology`] rather than straight to a count: the
+    /// mask that arrives here carries *which speaker each channel is*, and
+    /// `count_ones()` discarded it on the line after it arrived. The width is
+    /// still available from [`ChannelTopology::layout`] and is identical to the
+    /// popcount, so every existing caller reads the same number it did before.
+    fn read_back_arrangements(
         &self,
         processor: &vst3::ComPtr<vst3::Steinberg::Vst::IAudioProcessor>,
         direction: i32,
         num_buses: usize,
-    ) -> Vec<usize> {
+    ) -> Vec<ChannelTopology> {
         (0..num_buses)
             .map(|i| {
                 let mut arr: SpeakerArrangement = 0;
                 let res = unsafe { processor.getBusArrangement(direction, i as i32, &mut arr) };
                 if res == kResultOk {
-                    ChannelLayout::from(Vst3SpeakerArrangement(arr)).count() as usize
+                    speakers::from_arrangement(arr)
                 } else {
-                    0
+                    ChannelTopology::new([])
                 }
             })
             .collect()
@@ -982,6 +1004,87 @@ impl<T: Vst3Sample> Drop for Vst3Instance<T> {
         // once here.
         unsafe {
             ManuallyDrop::drop(&mut self.loaded);
+        }
+    }
+}
+
+#[cfg(test)]
+mod default_arrangement_tests {
+    use super::*;
+
+    /// Each width proposes the arrangement whose speakers the engine means.
+    ///
+    /// The table is asserted against `SpeakerArr`'s named constants rather than
+    /// against literals: a literal would agree with a wrong mask that happened
+    /// to have the right popcount, which is precisely how the previous
+    /// `(1 << n) - 1` survived. Widths 4 and 8 are the two it got wrong.
+    #[test]
+    fn each_width_proposes_its_named_arrangement() {
+        for (width, expected, name) in [
+            (0u16, SpeakerArr::kEmpty, "kEmpty"),
+            (1, SpeakerArr::kMono, "kMono"),
+            (2, SpeakerArr::kStereo, "kStereo"),
+            (4, SpeakerArr::k40Music, "k40Music"),
+            (6, SpeakerArr::k51, "k51"),
+            (8, SpeakerArr::k71Music, "k71Music"),
+        ] {
+            assert_eq!(
+                default_arrangement_for(ChannelLayout::from(width)),
+                Some(expected),
+                "width {width} must propose {name}"
+            );
+        }
+    }
+
+    /// The proposal a width makes decodes back to that many channels.
+    ///
+    /// Guards the pairing rather than the mask: an entry naming a real
+    /// arrangement of the *wrong width* — `k51` for width 4, say — would pass
+    /// the table test above if the expectation were edited to match, but a
+    /// plugin would then be handed a bus of a different size than the host
+    /// allocated.
+    #[test]
+    fn a_proposed_arrangement_has_the_width_it_was_asked_for() {
+        for width in [0u16, 1, 2, 4, 6, 8] {
+            let arr = default_arrangement_for(ChannelLayout::from(width)).expect("width is named");
+            assert_eq!(
+                speakers::from_arrangement(arr).layout().count(),
+                width,
+                "the arrangement proposed for width {width} is not {width} channels"
+            );
+        }
+    }
+
+    /// The 4- and 8-channel proposals are not the low-bit masks they replaced.
+    ///
+    /// Named explicitly because those two are the defect: the old masks had the
+    /// right channel count and the wrong speakers, so every width-based check
+    /// passed while a quad bus was negotiated as a centre-plus-LFE 3.1.
+    #[test]
+    fn the_four_and_eight_channel_proposals_are_not_the_low_bit_masks() {
+        for width in [4u16, 8] {
+            let proposed = default_arrangement_for(ChannelLayout::from(width)).expect("named");
+            let old_mask: SpeakerArrangement = (1u64 << width) - 1;
+            assert_ne!(
+                proposed, old_mask,
+                "width {width} is still proposing the low-{width}-bits mask"
+            );
+        }
+    }
+
+    /// A width with no canonical arrangement declines rather than inventing one.
+    ///
+    /// `None` is what makes the caller skip `setBusArrangements` entirely, so a
+    /// plugin keeps the layout it already had instead of being handed a
+    /// fabricated one.
+    #[test]
+    fn an_unnamed_width_has_no_proposal() {
+        for width in [3u16, 5, 7, 9, 12] {
+            assert_eq!(
+                default_arrangement_for(ChannelLayout::from(width)),
+                None,
+                "width {width} should have no canonical arrangement"
+            );
         }
     }
 }

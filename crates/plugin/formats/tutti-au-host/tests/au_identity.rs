@@ -59,7 +59,7 @@ use std::sync::Mutex;
 use support::corpus::{
     every_component, open_info, DELAY, DLS_SYNTH, DYNAMICS, INVALID_PROPERTY, MATRIX_REVERB,
 };
-use support::probe_au::Misbehaviour;
+use support::probe_au::{Misbehaviour, PROBE_MANUFACTURER};
 use tutti_au_host::AuError;
 
 /// AudioToolbox tolerates concurrent use of *distinct* units, but component
@@ -449,5 +449,40 @@ fn an_icon_url_names_a_file_that_exists() {
         "no unit of the {checked} instantiated offered an icon; measured 36 on \
          macOS 15.6, so this is a harness or decode failure rather than a \
          change in the corpus"
+    );
+}
+
+/// `every_component` hides this harness's probes from the corpus sweeps.
+///
+/// The sweeps in this file assert facts about *the units installed on this
+/// machine*. `AudioComponentRegister` puts each probe in the same process-wide
+/// registry the sweep walks, so once any test in this binary opens one, every
+/// later sweep can see it — and Rust runs those tests on several threads, so
+/// whether it did depended on which thread won. That is what made
+/// `every_unit_round_trips_a_context_name` fail about one run in five: it found
+/// `probe that fails ClassInfo`, whose whole purpose is to refuse properties,
+/// and reported the deliberate refusal as an installed unit's bug.
+///
+/// This opens a probe *first*, so the registry definitely contains one, and then
+/// asserts the sweep does not see it. Without the filter this fails outright
+/// rather than intermittently.
+#[test]
+fn the_corpus_sweep_never_sees_a_harness_probe() {
+    let _g = lock();
+
+    // Force the probes into the registry — this is the exact precondition that
+    // made the race reachable.
+    let _probe = Misbehaviour::None.open(48_000.0, 512);
+
+    let probes: Vec<_> = every_component()
+        .into_iter()
+        .filter(|c| c.manufacturer_code == PROBE_MANUFACTURER)
+        .map(|c| c.name)
+        .collect();
+
+    assert!(
+        probes.is_empty(),
+        "every_component() returned harness probes: {probes:?}; a corpus sweep \
+         would report their deliberate refusals as installed-unit failures"
     );
 }

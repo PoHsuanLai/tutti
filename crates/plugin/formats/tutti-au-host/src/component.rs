@@ -136,6 +136,12 @@ impl AuComponentInfo {
     /// `AuHandle::new` refuses these, so a scanner can report them as needing a
     /// route this host does not have rather than surfacing a load failure. The
     /// system sets the flag for v3 audio units with views.
+    ///
+    /// macOS-only, like the rest of this file's behaviour: the flag bit comes
+    /// from `crate::types`, which is `#[cfg(target_os = "macos")]` because its
+    /// constants are re-exported from the Apple SDK. The struct itself stays
+    /// portable so a scanner's types compile everywhere.
+    #[cfg(target_os = "macos")]
     pub fn requires_async_instantiation(&self) -> bool {
         self.flags & crate::types::K_AUDIO_COMPONENT_FLAG_REQUIRES_ASYNC_INSTANTIATION != 0
     }
@@ -145,6 +151,7 @@ impl AuComponentInfo {
     /// Not the same question as
     /// [`requires_async_instantiation`](Self::requires_async_instantiation): a
     /// v3 unit without a view is still v3 and can be created synchronously.
+    #[cfg(target_os = "macos")]
     pub fn is_v3(&self) -> bool {
         self.flags & crate::types::K_AUDIO_COMPONENT_FLAG_IS_V3_AUDIO_UNIT != 0
     }

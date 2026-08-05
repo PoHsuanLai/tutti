@@ -178,3 +178,112 @@ fn parked_units_are_freed_once_the_frontend_drains() {
         "parked units must reach the frontend and be freed there"
     );
 }
+
+/// A setting addressed to a node the network does not contain is **counted**,
+/// not silently discarded.
+///
+/// This is the top of the silent-no-op stack `tutti-units`' module docs
+/// describe, and it was the one layer with no counter at all: `Net::set` had an
+/// `if`/`else if` with no `else`, so a wrong `NodeId` vanished with
+/// `dropped_settings` still reading zero. A parameter wired to nothing then
+/// presented exactly like a working one — "the fader moves on screen and not in
+/// the sound" — which is the symptom this whole family of counters exists to
+/// make nameable.
+///
+/// **Read from the frontend, counted on the backend.** That split is the point:
+/// the frontend only enqueues, so the address is not resolved until the audio
+/// thread calls `set` on its own network. Without the shared cell installed by
+/// `Net::backend`, the count would accumulate where no host can reach it.
+#[test]
+fn unaddressed_settings_are_counted() {
+    let mut net = Net::new(0, 1);
+    let real = net.push(Box::new(DropCounter {
+        dropped: Arc::new(AtomicUsize::new(0)),
+    }));
+    net.pipe_output(real);
+
+    // A node that exists, then is removed — so its id is well-formed and stale
+    // rather than invented. That is the realistic shape of this bug: a caller
+    // holding an id across an edit that retired it.
+    let ghost = net.push(Box::new(DropCounter {
+        dropped: Arc::new(AtomicUsize::new(0)),
+    }));
+
+    let mut backend = net.backend();
+    let mut output = BufferVec::new(1);
+    assert_eq!(
+        net.take_unaddressed_settings(),
+        0,
+        "nothing misaddressed yet"
+    );
+
+    // Retire the ghost *after* the backend exists, so the removal reaches the
+    // audio thread through a commit — which is the only way its `node_index`
+    // stops containing the id.
+    net.remove(ghost);
+    net.commit();
+    backend.process(64, &BufferRef::empty(), &mut output.buffer_mut());
+
+    // Addressed to the live node: must be applied, never counted.
+    net.set(Setting::value(0.5).node(real));
+    backend.process(64, &BufferRef::empty(), &mut output.buffer_mut());
+    assert_eq!(
+        net.take_unaddressed_settings(),
+        0,
+        "a setting that resolves must not be counted as lost"
+    );
+
+    // Addressed to the removed node: unroutable, and must say so.
+    net.set(Setting::value(0.5).node(ghost));
+    backend.process(64, &BufferRef::empty(), &mut output.buffer_mut());
+    assert_eq!(
+        net.take_unaddressed_settings(),
+        1,
+        "a setting naming a node the network does not contain must be counted"
+    );
+    assert_eq!(
+        net.take_unaddressed_settings(),
+        0,
+        "taking the count resets it"
+    );
+
+    // And the two counters stay distinct: this was backpressure-free.
+    assert_eq!(
+        net.take_dropped_settings(),
+        0,
+        "an unaddressed setting is not a dropped one — merging the counters \
+         would make a wiring bug look like a full queue"
+    );
+}
+
+/// An address a `Net` cannot route at all is counted too, not just a stale id.
+///
+/// `Net` resolves [`Address::Node`] and nothing else, so `Index`/`Left`/`Right`
+/// and the default `Null` are unroutable here — they are addressed for a
+/// different shape of unit (a combinator resolves `left`/`right`;
+/// `Setting::interval` carries no address). All were discarded in silence before
+/// the counter existed. This pins that they now register, because the widened
+/// claim in `take_unaddressed_settings`'s doc is otherwise unverified.
+#[test]
+fn an_address_a_net_cannot_route_is_counted() {
+    let mut net = Net::new(0, 1);
+    let id = net.push(Box::new(DropCounter {
+        dropped: Arc::new(AtomicUsize::new(0)),
+    }));
+    net.pipe_output(id);
+    let mut backend = net.backend();
+    let mut output = BufferVec::new(1);
+
+    // No `.node(..)`: `Address::Null`, the default.
+    net.set(Setting::value(0.5));
+    // Addressed by vertex index, which `Net` does not resolve.
+    net.set(Setting::value(0.5).index(0));
+    backend.process(64, &BufferRef::empty(), &mut output.buffer_mut());
+
+    assert_eq!(
+        net.take_unaddressed_settings(),
+        2,
+        "a Net routes Address::Node alone; every other address is unroutable \
+         here and must be counted rather than vanish"
+    );
+}

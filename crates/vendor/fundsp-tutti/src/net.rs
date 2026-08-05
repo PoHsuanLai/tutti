@@ -14,6 +14,7 @@ use super::vertex::*;
 use super::*;
 use alloc::boxed::Box;
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicU64, Ordering};
 use hashbrown::HashMap;
 use tutti_types::Tail;
 
@@ -159,6 +160,28 @@ pub struct Net {
     /// it. Counting is what is left: silence here is what made this
     /// indistinguishable from a working fader.
     dropped_settings: u64,
+    /// Settings that named a node this network does not contain, since the last
+    /// [`take_unaddressed_settings`](Self::take_unaddressed_settings).
+    ///
+    /// **A different failure from `dropped_settings`, with the same symptom.** A
+    /// dropped setting is transient backpressure — the queue was full, the value
+    /// was real, the next one gets through. An unaddressed setting is a *bug*: the
+    /// address does not resolve and never will, so every future write to that
+    /// target is lost too. Counting them apart is what makes "the fader is ahead
+    /// of the audio thread" distinguishable from "this fader is wired to nothing".
+    ///
+    /// Shared rather than owned, because **the misaddress is detected on the
+    /// backend**. `Net::set` on a frontend enqueues without inspecting the
+    /// address; the backend then calls `set` on its own front-less `Net`, takes
+    /// the resolving branch, and finds nothing. A plain `u64` there would be
+    /// stranded on the audio thread, which is the one place a host cannot read.
+    ///
+    /// So `backend()` hands the backend's `Net` a clone of this `Arc`, and
+    /// [`take_unaddressed_settings`](Self::take_unaddressed_settings) on the
+    /// frontend reads what the audio thread counted. Incremented with `Relaxed`:
+    /// the count is a diagnostic, not a synchronisation edge, and nothing
+    /// downstream orders against it.
+    unaddressed_settings: Arc<AtomicU64>,
 }
 
 impl Clone for Net {
@@ -182,6 +205,11 @@ impl Clone for Net {
             // The count belongs to the frontend that dropped them, like
             // `front` and `edit_queue`.
             dropped_settings: 0,
+            // A fresh cell, not a shared one: a clone is a *separate* graph with
+            // its own `node_index`, so what is unaddressable in it is a different
+            // question. `backend()` overwrites this with the frontend's cell
+            // afterwards, because there the two halves are one network.
+            unaddressed_settings: Arc::new(AtomicU64::new(0)),
         }
     }
 }
@@ -262,6 +290,7 @@ impl Net {
     /// ```
     pub fn new(inputs: usize, outputs: usize) -> Self {
         let mut net = Self {
+            unaddressed_settings: Arc::new(AtomicU64::new(0)),
             input: BufferVec::new(inputs),
             output: BufferVec::new(outputs),
             output_edge: Vec::with_capacity(outputs),
@@ -307,6 +336,47 @@ impl Net {
     /// stuck fader this counter exists to make visible.
     pub fn take_dropped_settings(&mut self) -> u64 {
         core::mem::take(&mut self.dropped_settings)
+    }
+
+    /// Number of settings this network could not route, resetting the count to
+    /// zero.
+    ///
+    /// Non-zero means a parameter is wired to **nothing** — not merely late. The
+    /// sibling counter [`take_dropped_settings`](Self::take_dropped_settings)
+    /// reports a full queue, which is transient and self-correcting; this one
+    /// reports an address that does not resolve, so every future write to that
+    /// target is lost the same way. A host that polls this can name the offending
+    /// parameter instead of leaving it to present as a dead fader.
+    ///
+    /// Counts **every** address a `Net` cannot act on, which is wider than a bad
+    /// [`NodeId`]: `Net` routes [`Address::Node`] alone, so `Index`, `Left`,
+    /// `Right` and the default `Null` are unroutable here too. Those are
+    /// meaningful on other unit types — `Setting::interval(t)` carries no address
+    /// and a combinator resolves `left`/`right` — but reaching a `Net` with one
+    /// means the setting was addressed for a different shape of unit. It was
+    /// already discarded before this counter existed; now it is visible.
+    ///
+    /// # Startup is not steady state
+    ///
+    /// **A non-zero count right after `backend()` is expected, not a bug.** The
+    /// backend is cloned from the network as it stands, so its `node_index` is
+    /// empty until the first [`commit`](Self::commit) reaches it — and a host
+    /// that pushes a param the same frame it spawns a node addresses one the
+    /// audio thread has not seen yet. That setting is counted here and then
+    /// superseded by the next push once the node lands.
+    ///
+    /// So poll this against a *settled* graph, or drain it once after startup.
+    /// A host that alarms on the first non-zero reading will alarm on every
+    /// launch. What the counter is worth watching for is a count that keeps
+    /// climbing while the graph is quiet — that is a target nothing will ever
+    /// resolve.
+    ///
+    /// Readable on the **frontend** even though the miss is detected on the audio
+    /// thread: the counter is an `Arc<AtomicU64>` shared with the backend at
+    /// [`backend`](Self::backend). Taking it here clears what the audio thread
+    /// counted.
+    pub fn take_unaddressed_settings(&mut self) -> u64 {
+        self.unaddressed_settings.swap(0, Ordering::Relaxed)
     }
 
     /// Return current error condition, if any.
@@ -1317,6 +1387,15 @@ impl Net {
     /// control value belongs behind an `Arc` (`Param<U>`, `Arc<AtomicBool>`),
     /// where both copies see one cell and this swap is harmless.
     pub(crate) fn migrate(&mut self, new: &mut Net) {
+        // Carry the unaddressed counter into the incoming network, because the
+        // caller is about to `mem::swap` it into place as the live backend.
+        // `new` arrived from the frontend through `Clone`, which deliberately
+        // gives every clone a *fresh* cell — correct for an ordinary clone (a
+        // separate graph) and wrong for this one, which is about to *become* this
+        // backend. Without this line the counter is orphaned on the first commit:
+        // the audio thread keeps counting into a cell no host still holds, and
+        // `take_unaddressed_settings` reads zero forever.
+        new.unaddressed_settings = self.unaddressed_settings.clone();
         for (id, &index) in self.node_index.iter() {
             if let Some(&new_index) = new.node_index.get(id) {
                 // We may use the existing unit if no changes have been made since our last update.
@@ -1372,6 +1451,14 @@ impl Net {
         // Send over the original nodes to the backend.
         // This is necessary if the nodes contain any backends, which cannot be cloned effectively.
         core::mem::swap(&mut net.vertex, &mut self.vertex);
+        // Share the unaddressed counter, rather than let the clone keep its own.
+        // The backend is where a misaddressed setting is actually detected — it
+        // resolves against `node_index` while the frontend only enqueues — so
+        // without this the count would accumulate on the audio thread where no
+        // host can read it. `Clone` deliberately does *not* share (a cloned
+        // network is a separate graph); this is the one seam where the two halves
+        // are the same network and must agree.
+        net.unaddressed_settings = self.unaddressed_settings.clone();
         net.allocate();
         self.revision += 1;
         NetBackend::new(queue_return.clone(), queue_message.clone(), net)
@@ -1677,16 +1764,42 @@ impl AudioUnit for Net {
         self.process_2(size, input, output, &None);
     }
 
+    /// Apply a setting, or count it as lost.
+    ///
+    /// **Every path a setting can vanish down is counted.** It used to have an
+    /// `if`/`else if` with no `else`: a setting naming a node this network does
+    /// not contain was discarded in silence, and `dropped_settings` counted only
+    /// the queue-full case — so the counter read zero while parameter writes
+    /// disappeared. That is the top of the silent-no-op stack that
+    /// `tutti-units`' module docs describe, and it made a wrong `NodeId` present
+    /// as "the fader moves on screen and not in the sound", indistinguishable
+    /// from a unit that ignores the param.
+    ///
+    /// The two counters answer different questions and must not be merged:
+    /// [`dropped_settings`](Self::take_dropped_settings) is backpressure and
+    /// clears itself, [`unaddressed_settings`](Self::take_unaddressed_settings)
+    /// is a wiring bug that will lose every future write to the same target.
     fn set(&mut self, setting: Setting) {
         if let Some((sender, _receiver)) = &mut self.front {
+            // A frontend does not resolve the address — the backend owns the
+            // authoritative `node_index`, and this network's copy may be a
+            // revision behind. So this arm can only report queue-full; a bad
+            // address is caught on the other side.
             if sender.enqueue(NetMessage::Setting(setting)).is_err() {
                 self.dropped_settings += 1;
             }
-        } else if let Address::Node(id) = setting.direction()
+            return;
+        }
+        if let Address::Node(id) = setting.direction()
             && let Some(index) = self.node_index.get(&id)
         {
             self.vertex[*index].unit.set(setting.peel());
+            return;
         }
+        // Fell through: either the address is not a node at all, or it names one
+        // this network does not contain. Both are unroutable here and neither
+        // recovers on its own.
+        self.unaddressed_settings.fetch_add(1, Ordering::Relaxed);
     }
 
     fn get_id(&self) -> u64 {

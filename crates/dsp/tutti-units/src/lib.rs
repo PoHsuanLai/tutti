@@ -38,15 +38,26 @@
 //! it to share a 16-byte `Copy` struct pays two `SeqCst` loads, a thread-local
 //! lookup and a scarce guard slot for none of its benefit.
 //!
-//! ## The failure is silent at four layers
+//! ## The failure is silent at three layers, and counted at the fourth
 //!
 //! Worth knowing before assuming a setting arrived. [`AudioUnit::set`] has an
 //! **empty default body**, so a unit that does not implement it swallows every
 //! setting; a unit that does implement it ignores params it does not own (which
 //! is deliberate — it is what lets a host push without dispatching on node
-//! type); `from_setting` answers `None` for an unknown id; and `Net::set` drops
-//! a misaddressed setting with no `else`. The only counter that exists,
-//! `Net::take_dropped_settings`, measures **queue-full alone**.
+//! type); and `from_setting` answers `None` for an unknown id. Those three are
+//! still silent.
+//!
+//! The fourth used to be: `Net::set` discarded a misaddressed setting with no
+//! `else`, while `Net::take_dropped_settings` counted queue-full alone — so the
+//! counter read zero as parameter writes vanished. `Net::take_unaddressed_settings`
+//! now counts them, and the two are deliberately separate: a *dropped* setting is
+//! backpressure that clears itself, an *unaddressed* one is a wiring bug that
+//! will lose every future write to the same target.
+//!
+//! Neither counter reaches the first three layers, and no counter can — a unit
+//! that ignores a param it does not own is indistinguishable, from `Net`, from
+//! one that owns it and does nothing. That is what the audible end-to-end tests
+//! in `dawai-model` are for.
 
 // The crate's only fallible operation is VBAP speaker-layout construction, so
 // `Error` / `Result` exist only under `spatial` (without it `Error` would be an

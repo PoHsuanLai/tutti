@@ -1,15 +1,41 @@
 use crate::error::EditorError;
 use crate::host::handles::capabilities::{
-    HostAutomationState, HostEditor, HostParams, HostRenderMode, HostState,
+    HostAutomationState, HostEditor, HostParams, HostPresets, HostRenderMode, HostState,
 };
 use crate::host::ipc_client::audio::{PluginInvalidation, PluginRefresh};
 use crate::host::node::{InvalidateSink, ParameterChangeSink, RefreshSink};
 use crate::protocol::AutomationMode;
-use crate::protocol::{LoadedPlugin, ParamAddress, ParameterInfo, PluginDescriptor};
+use crate::protocol::{
+    LoadedPlugin, ParamAddress, ParameterInfo, PluginDescriptor, Preset, PresetId, PresetSupport,
+};
 use crate::util::window::{EditorCapabilities, EditorSize};
 use raw_window_handle::HasWindowHandle;
 use std::sync::Arc;
 use tutti_midi_runtime::MidiSender;
+
+/// The capabilities a backend may or may not honour, for
+/// [`PluginHandle::from_backend`].
+///
+/// Each field is independent — a backend can carry the render mode without
+/// hosting an editor, or reach presets without either. Default is "honours
+/// none"; name the ones a backend does.
+///
+/// ```ignore
+/// PluginHandle::from_backend(
+///     backend,
+///     OptionalCapabilities { editor: Some(editor), ..Default::default() },
+///     descriptor, loaded, param_sink, midi_sender,
+/// )
+/// ```
+#[derive(Default, Clone)]
+pub struct OptionalCapabilities {
+    /// Embeddable (and possibly floating) editor hosting.
+    pub editor: Option<Arc<dyn HostEditor>>,
+    /// The offline/realtime render-mode advisory.
+    pub render_mode: Option<Arc<dyn HostRenderMode>>,
+    /// Preset enumeration and loading.
+    pub presets: Option<Arc<dyn HostPresets>>,
+}
 
 /// Main-thread control handle for a loaded plugin.
 ///
@@ -30,6 +56,7 @@ pub struct PluginHandle {
     editor: Option<Arc<dyn HostEditor>>,
     automation_state: Option<Arc<dyn HostAutomationState>>,
     render_mode: Option<Arc<dyn HostRenderMode>>,
+    presets: Option<Arc<dyn HostPresets>>,
     descriptor: PluginDescriptor,
     loaded: LoadedPlugin,
     param_sink: ParameterChangeSink,
@@ -56,7 +83,10 @@ impl PluginHandle {
             automation_state: Some(backend.clone()),
             // Every subprocess format can carry a render mode; whether the
             // loaded plugin honours it is `Features::RENDER_MODE`, not this.
-            render_mode: Some(backend),
+            render_mode: Some(backend.clone()),
+            // Every subprocess format can reach presets; which half it can
+            // actually do is `Features::PRESET_LIST` / `PRESET_LOAD`, not this.
+            presets: Some(backend),
             descriptor: client.descriptor().clone(),
             loaded: client.loaded().clone(),
             param_sink: client.param_sink().clone(),
@@ -74,18 +104,24 @@ impl PluginHandle {
     /// `backend: Arc<B>` is coerced into the `params`/`state` slots at the call
     /// site (both are clones of the same object), so shared state stays intact.
     ///
-    /// `render_mode` is a parameter rather than a trait bound because the two
-    /// optional capabilities are independent: a backend may carry the mode
-    /// without hosting an editor, or the reverse.
+    /// The optional capabilities are a struct rather than positional parameters
+    /// because they are independent — a backend may carry the render mode
+    /// without hosting an editor, or the reverse — and a call site passing
+    /// `None, None, None` says nothing about which slot is which. Build it with
+    /// `..Default::default()` and name only what the backend honours.
     pub fn from_backend<B: HostParams + HostState + 'static>(
         backend: Arc<B>,
-        editor: Option<Arc<dyn HostEditor>>,
-        render_mode: Option<Arc<dyn HostRenderMode>>,
+        optional: OptionalCapabilities,
         descriptor: PluginDescriptor,
         loaded: LoadedPlugin,
         param_sink: ParameterChangeSink,
         midi_sender: MidiSender,
     ) -> Self {
+        let OptionalCapabilities {
+            editor,
+            render_mode,
+            presets,
+        } = optional;
         Self {
             params: backend.clone(),
             state: backend,
@@ -94,6 +130,7 @@ impl PluginHandle {
             // automation-state advisory, so `automation_state()` is `None`.
             automation_state: None,
             render_mode,
+            presets,
             descriptor,
             loaded,
             param_sink,
@@ -125,7 +162,8 @@ impl PluginHandle {
             state: backend.clone(),
             editor: Some(backend.clone()),
             automation_state: Some(backend.clone()),
-            render_mode: Some(backend),
+            render_mode: Some(backend.clone()),
+            presets: Some(backend),
             descriptor,
             loaded,
             param_sink: ParameterChangeSink::default(),
@@ -172,6 +210,78 @@ impl PluginHandle {
     /// [`from_backend`](Self::from_backend).
     pub fn render_mode(&self) -> Option<&dyn HostRenderMode> {
         self.render_mode.as_deref()
+    }
+
+    /// The preset capability, or `None` when this handle carries no route to
+    /// presets at all.
+    ///
+    /// Distinct from "the plugin has no presets", which is an *empty list* from
+    /// a present capability, and from "this format cannot enumerate", which is
+    /// `Features::PRESET_LIST` on [`loaded`](Self::loaded). Three different
+    /// answers, and a UI showing an empty browser wants to tell them apart.
+    pub fn presets_capability(&self) -> Option<&dyn HostPresets> {
+        self.presets.as_deref()
+    }
+
+    /// What this plugin's preset surface can do — one call instead of two
+    /// capability bits and two method returns.
+    ///
+    /// Match on it to decide what to render:
+    ///
+    /// ```ignore
+    /// match handle.preset_support() {
+    ///     PresetSupport::Full       => // browser; clicking loads
+    ///     PresetSupport::LoadByPath => // file picker, not an empty browser
+    ///     PresetSupport::ListOnly   => // read-only list
+    ///     PresetSupport::None       => // hide it
+    /// }
+    /// ```
+    ///
+    /// Derived from the capability report rather than from `presets()`, because
+    /// an empty list is ambiguous on its own: a plugin that declined and one
+    /// this host never asked both return `Some(vec![])`, and only the first
+    /// should hide the browser.
+    pub fn preset_support(&self) -> PresetSupport {
+        if self.presets.is_none() {
+            // No route at all: the plugin was never asked anything, whatever
+            // its own features say.
+            return PresetSupport::None;
+        }
+        let report = crate::protocol::FeatureReport::new(self.loaded.probed, self.loaded.features);
+        PresetSupport::from_report(&report)
+    }
+
+    /// Every preset the plugin advertises.
+    ///
+    /// `None` when this handle has no preset route; `Some(vec![])` when it has
+    /// one and the plugin listed nothing — which for CLAP is the normal state,
+    /// since its discovery extension is not bound. Read
+    /// `Features::PRESET_LIST` to tell "listed nothing" from "cannot be asked".
+    pub fn presets(&self) -> Option<Vec<Preset>> {
+        self.presets.as_deref().map(|p| p.presets())
+    }
+
+    /// Ask the plugin to load one, by an id [`presets`](Self::presets) produced.
+    ///
+    /// `false` when this handle carries no preset route *or* the plugin
+    /// declined. Those collapse deliberately — both mean the preset did not
+    /// load, and a caller must leave its selection where it was either way.
+    /// One that needs to tell them apart reads `Features::PRESET_LOAD`.
+    ///
+    /// Never construct a [`PresetId`] to pass here. It is opaque, and three of
+    /// the four formats number presets in a space that is not a position in the
+    /// list — an invented id loads the wrong preset rather than failing.
+    #[must_use = "a false return means the preset was not loaded"]
+    pub fn load_preset(&self, id: &PresetId) -> bool {
+        self.presets.as_deref().is_some_and(|p| p.load_preset(id))
+    }
+
+    /// Which preset the plugin considers current, when it will say.
+    ///
+    /// `None` covers all three of "no preset route", "the format has no query"
+    /// (VST3, CLAP) and "the plugin declined" — never "the first one".
+    pub fn current_preset(&self) -> Option<PresetId> {
+        self.presets.as_deref().and_then(|p| p.current_preset())
     }
 
     /// Tell the plugin whether it is rendering under realtime pressure.
@@ -400,5 +510,193 @@ impl PluginHandle {
     pub fn clear_invalidate_callback(&self) -> &Self {
         self.invalidate_sink.clear();
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A backend that reaches presets, standing in for a format layer that is
+    /// not wired yet. Doubles as proof the capability is implementable from
+    /// outside this crate's own backends.
+    struct FakePresets {
+        listed: Vec<Preset>,
+        accepts: bool,
+    }
+
+    impl HostPresets for FakePresets {
+        fn presets(&self) -> Vec<Preset> {
+            self.listed.clone()
+        }
+        fn load_preset(&self, _id: &PresetId) -> bool {
+            self.accepts
+        }
+        fn current_preset(&self) -> Option<PresetId> {
+            None
+        }
+    }
+
+    fn handle_with(presets: Option<Arc<dyn HostPresets>>) -> PluginHandle {
+        handle_with_loaded(presets, LoadedPlugin::default())
+    }
+
+    fn handle_with_loaded(
+        presets: Option<Arc<dyn HostPresets>>,
+        loaded: LoadedPlugin,
+    ) -> PluginHandle {
+        // Only the preset slot is under test; the rest of the handle is built
+        // from the same fake so no subprocess is needed.
+        struct Inert;
+        impl HostParams for Inert {
+            fn parameter_descriptors(&self) -> Option<Vec<ParameterInfo>> {
+                None
+            }
+            fn parameter_value(&self, _id: ParamAddress) -> Option<f32> {
+                None
+            }
+            fn set_parameter_value(&self, _id: ParamAddress, _value: f32) {}
+            fn is_crashed(&self) -> bool {
+                false
+            }
+        }
+        impl HostState for Inert {
+            fn save_state(&self) -> Option<Vec<u8>> {
+                None
+            }
+            fn load_state(&self, _data: &[u8]) {}
+        }
+
+        let (sender, _rx) =
+            tutti_midi_runtime::MidiMailbox::pair(tutti_midi_types::MidiUnitId::next());
+        PluginHandle::from_backend(
+            Arc::new(Inert),
+            OptionalCapabilities {
+                presets,
+                ..Default::default()
+            },
+            PluginDescriptor::default(),
+            loaded,
+            ParameterChangeSink::default(),
+            sender,
+        )
+    }
+
+    /// A handle with no preset route reports `None`, whatever the plugin's own
+    /// features claim.
+    ///
+    /// The route and the capability are independent facts, and the route wins:
+    /// a `LoadedPlugin` carrying both preset bits set means nothing if nothing
+    /// carries the call. Deriving `preset_support` from the bits alone would
+    /// have a UI offer a browser that cannot be driven.
+    #[test]
+    fn no_preset_route_reports_no_support() {
+        // Both bits probed and set — the plugin claims full preset support —
+        // but nothing carries the call. Without a `LoadedPlugin` saying yes,
+        // this test could not tell the route guard from the empty default.
+        let mut loaded = LoadedPlugin::default();
+        loaded.probed =
+            crate::protocol::Features::PRESET_LIST | crate::protocol::Features::PRESET_LOAD;
+        loaded.features = loaded.probed;
+
+        let handle = handle_with_loaded(None, loaded.clone());
+        assert_eq!(
+            handle.preset_support(),
+            PresetSupport::None,
+            "the route is missing, so the plugin's own claim cannot be honoured"
+        );
+
+        // The same plugin *with* a route reports what it claims — otherwise the
+        // assertion above would hold for the wrong reason.
+        let wired = handle_with_loaded(
+            Some(Arc::new(FakePresets {
+                listed: Vec::new(),
+                accepts: true,
+            })),
+            loaded,
+        );
+        assert_eq!(wired.preset_support(), PresetSupport::Full);
+    }
+
+    /// No preset route and an empty preset list are different answers.
+    ///
+    /// `None` means this handle cannot reach presets at all; `Some(vec![])`
+    /// means it asked and the plugin listed nothing — the normal state for
+    /// CLAP, whose discovery extension is not bound. Collapsing them to an
+    /// empty vec would make a UI show "no presets" for a plugin it never
+    /// asked, which is the same unprobed-versus-declined confusion
+    /// `FeatureReport` exists to prevent.
+    #[test]
+    fn no_preset_route_is_not_an_empty_preset_list() {
+        assert!(
+            handle_with(None).presets().is_none(),
+            "a handle with no preset capability must report None, not an empty list"
+        );
+
+        let empty = handle_with(Some(Arc::new(FakePresets {
+            listed: Vec::new(),
+            accepts: false,
+        })));
+        assert_eq!(
+            empty.presets(),
+            Some(Vec::new()),
+            "a capability that listed nothing must report an empty list, not None"
+        );
+    }
+
+    /// A refused load and an absent route both report `false`.
+    ///
+    /// Deliberate: both mean the preset did not load, and a caller must leave
+    /// its selection where it was either way. The test pins that a *successful*
+    /// load is the only `true`, so the collapse cannot hide one.
+    #[test]
+    fn only_an_accepted_load_reports_true() {
+        let id = PresetId::Number(0);
+
+        assert!(
+            !handle_with(None).load_preset(&id),
+            "no route is not a load"
+        );
+
+        let refusing = handle_with(Some(Arc::new(FakePresets {
+            listed: Vec::new(),
+            accepts: false,
+        })));
+        assert!(
+            !refusing.load_preset(&id),
+            "a refusal must not report success"
+        );
+
+        let accepting = handle_with(Some(Arc::new(FakePresets {
+            listed: Vec::new(),
+            accepts: true,
+        })));
+        assert!(
+            accepting.load_preset(&id),
+            "an accepted load must report true"
+        );
+    }
+
+    /// The listed presets reach the caller unchanged.
+    ///
+    /// Pins that the handle is a pass-through: it must not sort, dedupe or
+    /// renumber. A preset's id is opaque and its order is the plugin's, so any
+    /// rearrangement here would desynchronize a UI's row index from the id it
+    /// hands back.
+    #[test]
+    fn the_plugins_own_list_reaches_the_caller_verbatim() {
+        let listed = vec![
+            Preset::new(PresetId::Number(9000), "Sparse"),
+            Preset::new(PresetId::Number(0), "First"),
+        ];
+        let handle = handle_with(Some(Arc::new(FakePresets {
+            listed: listed.clone(),
+            accepts: true,
+        })));
+        assert_eq!(
+            handle.presets(),
+            Some(listed),
+            "the handle must not reorder or renumber what the plugin listed"
+        );
     }
 }

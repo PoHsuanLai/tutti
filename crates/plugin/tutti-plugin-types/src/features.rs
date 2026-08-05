@@ -273,9 +273,14 @@ pub mod probed {
         .difference(Features::AUTOMATION_STATE)
         .difference(Features::PRESET_LIST);
 
-    /// VST2 answers six, in or out of process. It has no query for editor
+    /// VST2 answers eight, in or out of process. It has no query for editor
     /// resize, note expression, or sequencer context, and neither loader probes
     /// `effCanDo` for sample-accurate automation.
+    ///
+    /// Both preset bits are answered from one number, `AEffect::numPrograms`:
+    /// VST2 has no separate "can you load" query, and a plugin declaring
+    /// programs can always be sent `effProgramChange`. They are still two bits
+    /// because *other* formats split them — CLAP loads without listing.
     ///
     /// `RENDER_MODE` is answered unconditionally: the mode rides
     /// `audioMasterGetCurrentProcessLevel`, a callback the *host* answers
@@ -286,7 +291,9 @@ pub mod probed {
         .union(Features::MIDI_OUT)
         .union(Features::EDITOR)
         .union(Features::TRANSPORT)
-        .union(Features::RENDER_MODE);
+        .union(Features::RENDER_MODE)
+        .union(Features::PRESET_LIST)
+        .union(Features::PRESET_LOAD);
 
     /// AU answers five: MIDI input, the editor, both preset bits, and the render
     /// mode. The rest
@@ -413,7 +420,7 @@ mod tests {
                 | Features::PRESET_LOAD
                 | Features::RENDER_MODE
         );
-        assert_eq!(probed::VST2.bits().count_ones(), 6);
+        assert_eq!(probed::VST2.bits().count_ones(), 8);
         assert!(!probed::VST3.contains(Features::AUTOMATION_STATE));
         assert!(!probed::CLAP.contains(Features::SEQUENCER_CONTEXT));
     }
@@ -529,14 +536,21 @@ mod tests {
         assert!(!Features::CONSUMES.contains(Features::PRESET_LOAD));
     }
 
-    /// VST2 asks neither. It has `effGetProgramName`/`effSetProgram`, which this
-    /// host does not bind, so both bits are unasked rather than declined.
+    /// VST2 asks both, from the one number that answers both.
+    ///
+    /// `AEffect::numPrograms` is the whole query: VST2 has no separate "can you
+    /// load" opcode, and a plugin declaring programs can always be sent
+    /// `effProgramChange`. So the two bits move together *for this format* —
+    /// they stay separate bits because CLAP splits them, loading without being
+    /// able to list.
     #[test]
-    fn the_vst2_loader_does_not_claim_presets() {
-        assert_eq!(probed::VST2.contains(Features::PRESET_LIST), false);
-        assert_eq!(probed::VST2.contains(Features::PRESET_LOAD), false);
+    fn the_vst2_loader_answers_both_preset_bits() {
+        assert!(probed::VST2.contains(Features::PRESET_LIST));
+        assert!(probed::VST2.contains(Features::PRESET_LOAD));
 
-        let report = FeatureReport::new(probed::VST2, Features::EDITOR);
-        assert_eq!(report.get(Features::PRESET_LOAD), None);
+        // A plugin with no programs declines both, rather than going silent.
+        let no_programs = FeatureReport::new(probed::VST2, Features::EDITOR);
+        assert_eq!(no_programs.get(Features::PRESET_LIST), Some(false));
+        assert_eq!(no_programs.get(Features::PRESET_LOAD), Some(false));
     }
 }

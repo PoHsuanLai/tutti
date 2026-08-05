@@ -28,7 +28,7 @@
 use std::ffi::c_void;
 
 use crate::error::EditorError;
-use crate::protocol::{AutomationMode, ParamAddress, ParameterInfo, RenderMode};
+use crate::protocol::{AutomationMode, ParamAddress, ParameterInfo, Preset, PresetId, RenderMode};
 use crate::util::window::{EditorCapabilities, EditorSize};
 
 /// Parameter catalog, live-value read, and imperative value write — plus the
@@ -166,7 +166,63 @@ pub trait HostRenderMode: Send + Sync {
     fn set_render_mode(&self, mode: RenderMode) -> bool;
 }
 
-/// Compile-time guard that all five control capabilities stay **object-safe** —
+/// Preset enumeration and loading — **optional**.
+///
+/// Two methods rather than one because **no format has both unconditionally**,
+/// and the pair a format answers differs:
+///
+/// - **CLAP** loads by filesystem path but cannot enumerate — discovery is a
+///   factory-level extension this host does not bind.
+/// - **VST3** enumerates richly but has no load call: a program is selected by
+///   writing the parameter flagged `kIsProgramChange`, through the ordinary
+///   parameter path.
+/// - **AU** and **VST2** answer both.
+///
+/// That asymmetry is why [`Features::PRESET_LIST`] and
+/// [`Features::PRESET_LOAD`] are two bits, and why this is not one
+/// `presets_supported() -> bool`.
+///
+/// A backend implements this only if it can reach presets at all; others do
+/// not, so [`PluginHandle::presets`] returns `None` — no stub.
+///
+/// [`Features::PRESET_LIST`]: crate::protocol::Features::PRESET_LIST
+/// [`Features::PRESET_LOAD`]: crate::protocol::Features::PRESET_LOAD
+/// [`PluginHandle::presets`]: super::control_handle::PluginHandle::presets
+pub trait HostPresets: Send + Sync {
+    /// Every preset the plugin advertises, in the plugin's own order.
+    ///
+    /// Empty when the format cannot enumerate (CLAP), which is **not** the same
+    /// as a plugin with no presets. A caller distinguishing the two reads
+    /// [`Features::PRESET_LIST`] on `loaded()`, exactly as it would for any
+    /// other unasked-versus-declined capability.
+    ///
+    /// [`Features::PRESET_LIST`]: crate::protocol::Features::PRESET_LIST
+    fn presets(&self) -> Vec<Preset>;
+
+    /// Ask the plugin to load one, by an id [`presets`](Self::presets) produced.
+    ///
+    /// Returns whether the plugin *accepted*. `false` is a refusal, not an
+    /// error — and it is also the honest answer for VST3, whose programs are
+    /// reached through the parameter path rather than a load call. Routing
+    /// program selection through here as well would give one operation two
+    /// write paths.
+    ///
+    /// The result is returned rather than swallowed for the reason
+    /// [`HostRenderMode::set_render_mode`] gives: a refusal changes what the
+    /// caller must do next — leave the UI selection where it was, rather than
+    /// move it to a preset the plugin never loaded.
+    fn load_preset(&self, id: &PresetId) -> bool;
+
+    /// Which preset the plugin considers current, when it will say.
+    ///
+    /// `None` means the format has no query for it (VST3, CLAP) or the plugin
+    /// declined — never "the first one". A caller must not substitute an index
+    /// of its own; see [`PresetId`], where three of four formats number in a
+    /// space that is not a position.
+    fn current_preset(&self) -> Option<PresetId>;
+}
+
+/// Compile-time guard that all six control capabilities stay **object-safe** —
 /// `PluginHandle` stores each as `Arc<dyn …>`, so a regression that breaks
 /// dyn-compatibility (e.g. adding a generic method) must fail here, not at a
 /// distant call site.
@@ -177,5 +233,6 @@ fn _assert_object_safe(
     _e: &dyn HostEditor,
     _a: &dyn HostAutomationState,
     _r: &dyn HostRenderMode,
+    _pr: &dyn HostPresets,
 ) {
 }

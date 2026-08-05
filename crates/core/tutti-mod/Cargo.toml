@@ -43,7 +43,7 @@ bevy = [
 [dependencies]
 # `CurveType` only for the pure floor — the project's established response-curve
 # vocabulary. Keeps a `Modulator` able to drive something non-audio.
-audio-automation = { version = "0.4", default-features = false }
+audio-automation = { workspace = true }
 
 # The measurement vocabulary. `Phase`/`PhaseIncrement` (a modulator's position
 # and its step) and `Depth` (a bipolar modulation amount) reach into the pure

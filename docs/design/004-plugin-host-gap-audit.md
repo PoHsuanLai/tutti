@@ -982,7 +982,7 @@ indices, so every listed parameter answers `true`. The test pins "probed and
 marked known" — the part that regressed — not "a `false` answer is carried
 through", which no available input can witness.
 
-### D-9 · Preset support has no cross-format surface · HELD
+### D-9 · Preset support has no cross-format surface · DONE
 
 `probed::VST2` omits both preset bits, yet the vendor implements
 `change_preset`(2), `get_preset_num`(3), `set_preset_name`(4),
@@ -1011,6 +1011,30 @@ So the work is a cross-format surface, and VST2 is the least of it. Wiring VST2'
 four opcodes alone would add a fifth dead-ended implementation and let the
 capability bits keep claiming a reachability that does not exist. The README `○`
 correction stands on its own and is worth doing either way.
+
+**Built as designed — see `005-plugin-presets.md`.** `PluginHandle::presets` /
+`load_preset` / `current_preset` over an opaque, format-shaped `PresetId`, plus
+`preset_support()` returning one `PresetSupport` so a caller matches once
+instead of cross-referencing two capability bits against two method returns.
+Reachable in-process and over IPC (`PROTOCOL_VERSION` 14).
+
+Two things the build changed about the plan:
+
+- **VST3 loads.** The design first had it decline, on the grounds that program
+  selection goes through the `kIsProgramChange` parameter and routing it through
+  `load_preset` would give one operation two write paths. That was right about
+  doing it *blindly*; done inside the format layer, where the owning parameter
+  is identifiable, it is still one write path. Leaving it would have meant a
+  "coherent" API with one format needing caller-side special handling.
+- **The flag was being dropped at the boundary.** `kIsProgramChange` was read at
+  the VST3 layer and never mapped — `build_param_info` carried five flags and
+  not this one. It now maps to a shared `ParamFlags::PROGRAM_CHANGE`.
+
+What remains genuinely absent is **CLAP enumeration**: discovery is a
+factory-level extension this host does not bind, so `PresetSupport::LoadByPath`
+reports that a caller supplies the path. Binding it is separate work, not
+something the surface can paper over — which is why that variant exists rather
+than an empty list that reads as "no presets".
 
 ### D-10 · Smaller opcode gaps · DONE (three of four; the fourth reclassified)
 
@@ -1448,20 +1472,21 @@ correct.
 **D-6** needs a decision before it needs code: does the subprocess VST2 path own
 editors at all?
 
-**Closed out.** 34 DONE, 3 HELD, no TODO remaining.
+**Closed out.** 35 DONE, 2 HELD, no TODO remaining.
 
 **C-12** (CLAP floating-window GUI) and **D-10** (VST2 opcode gaps) have since
 landed. D-10's `effGetNumMidiInputChannels` half was the live bug flagged here —
 a plugin answering `Maybe` to `sendVstMidiEvent` classified MIDI-silent and its
 output dropped — and is fixed.
 
-The three that remain are all the same *kind* of open question, which is worth
-stating plainly: **each needs a policy decision above the format layer, not a
-missing call below it.**
+**D-9 has since landed** — the cross-format preset surface, built as
+`005-plugin-presets.md`. It is the worked example of the shape below: what it
+needed was a decision about the *surface*, and the format calls were already
+there.
 
-- **D-9** (presets) — all four formats implement presets; nothing above them
-  does, and the two `Features` preset bits have no reader anywhere in the
-  workspace. Needs a cross-format surface, not VST2 plumbing.
+The two that remain are the same *kind* of open question: **each needs a policy
+decision above the format layer, not a missing call below it.**
+
 - **D-11** (speaker arrangement) — needs a channel-layout negotiation policy;
   this host takes the plugin's declared counts and never proposes one.
 - **E-8** (two AU properties, down from three) — `PresentationLatency` and

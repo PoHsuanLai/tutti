@@ -10,7 +10,7 @@ presets at its own layer:
 | Format | Enumerate | Load | Read current |
 |---|---|---|---|
 | AU | `factory_presets()` | `load_factory_preset(number)` | `current_preset()` |
-| VST3 | `program_lists()` + `program_name(list, idx)` | *no call — see below* | *no call* |
+| VST3 | `program_lists()` + `program_name(list, idx)` | *no direct call — the `kIsProgramChange` param* | *read that param back* |
 | VST2 | `get_preset_name(i)` × `Info::presets` | `change_preset(i)` | `get_preset_num()` |
 | CLAP | **cannot** | `load_preset(path)` | *no call* |
 
@@ -27,7 +27,7 @@ and mangles the other three.
 The obvious surface is `list() -> Vec<Preset>` + `load(index)`. Both halves
 break.
 
-### 1. CLAP cannot enumerate, and VST3 cannot load
+### 1. CLAP cannot enumerate, and VST3 has no load *call*
 
 These are *different* formats failing *different* halves, which is why one
 `PRESETS` capability bit cannot express it:
@@ -38,7 +38,10 @@ These are *different* formats failing *different* halves, which is why one
   `supports_preset_load()` already documents exactly this.
 - **VST3** enumerates richly and has **no load call at all**. A program is
   selected by writing a *parameter* — the one flagged
-  `kIsProgramChange` (`info.rs:173`) — through the ordinary parameter path.
+  `kIsProgramChange` (`info.rs:173`) — through the ordinary parameter path. The
+  format layer now does that write itself, so a caller sees a normal load; what
+  survives of the asymmetry is that VST3's two bits move together, where CLAP's
+  do not.
 
   `IUnitInfo::setUnitProgramData` exists in the bindings and is **not** it: it
   takes an `IBStream` of preset *bytes* and writes them *into* a program slot,
@@ -153,17 +156,40 @@ next (leave the UI selection where it was), so it cannot be dropped.
 |---|---|---|---|
 | **AU** | `factory_presets()` → `Number(p.number)` | `load_factory_preset(n)` | `current_preset()` → `Number` |
 | **VST2** | `0..Info::presets` × `get_preset_name(i)` → `Number(i)` | `change_preset(i)`, bracketed | `get_preset_num()` → `Number` |
-| **VST3** | `program_lists()` × `program_name` → `Program{..}`, `bank = list.name` | `false` — see below | `None` |
+| **VST3** | `program_lists()` × `program_name` → `Program{..}`, `bank = list.name` | write the `kIsProgramChange` param — see below | read it back |
 | **CLAP** | `Vec::new()` | `Location(p)` → `load_preset(&p)` | `None` |
 
-**VST3's `load_preset` deliberately returns `false`.** Selecting a program means
-writing the `kIsProgramChange` parameter through the existing parameter path,
-which is a *different mechanism* with its own automation and undo semantics.
-Routing it through `load_preset` would give one operation two write paths — the
-thing "one writer per field" exists to prevent. The trait reports honestly that
-it has no direct load; a follow-up exposes the program-change param id so a
-caller can drive it deliberately. `Features::PRESET_LOAD` stays clear for VST3,
-which is what the bit is *for*.
+**VST3's load goes through its program-change parameter.** *(Revised: this
+section first said `load_preset` returns `false`, and the follow-up it deferred
+was done immediately — see "How VST3's load landed" below.)*
+
+Selecting a program means writing the parameter flagged `kIsProgramChange`.
+That reasoning was right about not routing it through `load_preset` **blindly**;
+it was wrong to stop there. Done inside the format layer, where the owning
+parameter is identifiable, it is still a single write path — the parameter
+remains the only thing written — and it is what makes the four formats one API
+instead of three plus a special case.
+
+### How VST3's load landed
+
+The link is **parameter → unit → program list**: a program-change parameter
+belongs to a unit, and that unit names the list it selects from. Matching on the
+*flag* rather than a name or position is what makes it work for a plugin with
+several lists.
+
+`kIsProgramChange` was read at the VST3 layer and **dropped at the mapping** —
+`build_param_info` carried five flags and not this one. It now maps to a shared
+`ParamFlags::PROGRAM_CHANGE`, which is what lets the loader find the parameter.
+
+The normalization is `index / step_count`, and **the divisor is the finding**.
+`StringListParameter::toNormalized` is `value / stepCount` (`futils.h:87-90`)
+and `appendString` increments `stepCount` per entry from zero, so 128 programs
+report `step_count == 127` and index 2 is `2/127`, not `2/128`. Measured against
+the SDK sample, which reports exactly 127.
+
+That off-by-one **survives a round-trip test**: `get_current_preset` inverts the
+same formula, so a wrong divisor agrees with itself. Only pinning the absolute
+normalized value the plugin holds separates them.
 
 ### VST2's begin/end bracket
 
@@ -186,20 +212,17 @@ the four masks are already correct and already test-pinned in
   on `probed::CLAP` already says discovery is a factory-level extension this
   host does not bind. Correct, and `a_format_can_load_a_preset_without_being_
   able_to_list_one` pins it.
-- **VST3** — probes **both**, and reports `Some(false)` for each.
+- **VST3** — probes **both**, and now answers **both from one question**: does
+  the plugin publish program lists. A plugin with lists can do both halves,
+  since selecting is writing the parameter that owns the list; one without can
+  do neither. *(Revised: this said "reports `Some(false)` for each", true only
+  while VST3's load was unimplemented.)*
 
-That last one **corrects an earlier draft of this design**, which proposed
-leaving `PRESET_LOAD` unprobed on the `EDITOR_FLOATING` precedent. That is
-wrong here, and the existing test says why:
-`vst3_answers_that_it_has_no_separate_preset_mechanism` reads *"VST3's clear
-preset bits are an answer, not a gap … If a bit ever gets set here, something
-has invented a preset API VST3 does not have."*
-
-The distinction from `EDITOR_FLOATING`: there, the format has **no way to be
-asked** whether it embeds or floats, so the bit is genuinely unprobed. Here,
-VST3 *has* been asked and the answer is a definite no — its programs are
-ordinary parameters, so there is no second mechanism. `Some(false)` is the
-truthful report, and leaving it unprobed would understate what is known.
+That correction stands on the *probing* half, which was an earlier draft's
+error: it proposed leaving `PRESET_LOAD` unprobed on the `EDITOR_FLOATING`
+precedent. Wrong here — there, the format has **no way to be asked** whether it
+embeds or floats, so the bit is genuinely unprobed; VST3 *has* been asked, and
+now answers yes or no from its program lists rather than always no.
 
 So only one mask changes:
 
@@ -259,15 +282,18 @@ a UI poll the subprocess. In-process backends answer it directly.
 - **CLAP preset discovery.** Binding the factory-level discovery extension is
   its own piece of work; without it CLAP stays load-only, which the two-bit
   capability split represents honestly.
-- **VST3 program-change parameter routing.** Follow-up, per above.
+- ~~**VST3 program-change parameter routing.**~~ Done — see "How VST3's load
+  landed". Deferring it would have left one format needing caller-side special
+  handling, which is the thing this design exists to remove.
 - **Any ECS layer.** Nothing in `bevy-tutti` yet. Following the C-12 lesson:
   land the host surface, add ECS when a UI exists to drive it.
 
-## Implementation order
+## Implementation order — **all shipped**
 
-Each step compiles and tests alone.
+Each step compiled and tested alone. Noted below: what each step found that the
+plan did not predict.
 
-1. **Vocabulary.** `PresetId`, `Preset` in `tutti-plugin-types`. Round-trip test
+1. ✅ **Vocabulary.** `PresetId`, `Preset` in `tutti-plugin-types`. Round-trip test
    per variant, plus a test pinning each variant's *wire discriminant* — a
    symmetric round-trip cannot catch a reordering, because both ends of
    `serialize`/`deserialize` move together.
@@ -277,28 +303,32 @@ Each step compiles and tests alone.
    the wire until the frames exist; bumping now would refuse a v13 pairing over
    a capability neither side can yet use. The version gates the *frames*, and
    the frames are step 7.
-2. **The trait**, plus `PluginHandle::presets()` / `load_preset()` /
+2. ✅ **The trait**, plus `PluginHandle::presets()` / `load_preset()` /
    `current_preset()` and the `HostPresets` accessor, mirroring
    `render_mode()`'s `Option<&dyn>` shape for a format that does not implement
    it. → `cargo check -p tutti-plugin`
-3. **VST2** — the richest case, and the one with the bracket. Probe bits, the
+3. ✅ **VST2** — the richest case, and the one with the bracket. Probe bits, the
    begin/end wrap, and the enumeration hole to respect: the probe already models
    `serviced_programs` below `programs`, so a host walking `0..Info::presets`
    and trusting every answer reads names the plugin never had.
    → `cargo test -p tutti-vst2-host`
-4. **AU** — mapping only, both methods exist. Test against the corpus, and pin
+4. ✅ **AU** — mapping only, both methods exist. Test against the corpus, and pin
    that a sparsely-numbered unit round-trips (`Number` carries the selector, not
    a position). → `cargo test -p tutti-au-host`
-5. **VST3** — `presets()` with banks; `load_preset` → `false` with a test
-   pinning *that* rather than treating it as unimplemented.
-   → `cargo test -p tutti-vst3-host`
-6. **CLAP** — `presets()` → empty, `load_preset` on `Location`. Pin that an
+5. ✅ **VST3** — `presets()` with banks. Shipped in two parts: first
+   `load_preset` → `false` as planned, then the load itself once it was clear a
+   coherent API could not leave one format with a special case.
+   → `cargo test -p tutti-plugin-server --features vst3`
+6. ✅ **CLAP** — `presets()` → empty, `load_preset` on `Location`. Pin that an
    empty list plus a set `PRESET_LOAD` bit is a coherent state.
    → `cargo test -p tutti-clap-host`
-7. **IPC frames + loader wiring** in `tutti-plugin-server`.
+7. ✅ **IPC frames + loader wiring**, `PROTOCOL_VERSION` 13 → 14.
    → `cargo test -p tutti-plugin-server`
-8. **README capability table** — VST2 presets currently read `✕` ("the format
-   can't"); the truth is `○` ("we didn't"). Correct for every cell this changes.
+8. ✅ **README capability table** — VST2's two preset cells moved `○` → `◐`.
+9. ✅ **`PresetSupport`** — not in the original plan. Added because steps 1–8
+   produced a capability *report*, not an API: a caller still had to
+   cross-reference two bits against two method returns and get the three-state
+   reading of each right. One `handle.preset_support()` answers it.
 
 ## Verification
 
@@ -315,19 +345,58 @@ naive implementation:
   plugin exposing ≥2 lists, so collapsing to a bare index is witnessable.
 - *a CLAP plugin reports no presets and still loads one* — empty `presets()`
   with `PRESET_LOAD` set. Pins that empty-list ≠ no-preset-support.
-- *VST3 declines a direct load without claiming failure* — `load_preset` is
-  `false` **and** `PRESET_LOAD` is unprobed, not `Some(false)`.
+- *a VST3 program loads and reads back* — replaces the planned "declines a
+  direct load", which stopped being true. Round-tripped **and** pinned against
+  the absolute normalized value, because the round trip alone cannot catch the
+  `i / (N-1)` vs `i / N` divisor: `get_current_preset` inverts the same formula.
 
 **Plus:**
 
-- a VST2 preset switch is bracketed by begin/end (probe records both opcodes)
+- a VST2 preset switch is bracketed by begin/end, **in order** — the probe
+  records an ordered trace, because a `begin` arriving after the change it
+  brackets is as wrong as one that never arrives, and two counters cannot tell
+  those apart
 - the probe's enumeration hole is respected — `serviced_programs` below
-  `programs` must not produce named presets the plugin never had
-- `PROTOCOL_VERSION` round-trips every `PresetId` variant through postcard
+  `programs` must not produce named presets the plugin never had, and an unnamed
+  slot is *kept*, since dropping it renumbers every program after it
+- every `PresetId` variant round-trips through bincode, **and keeps its wire
+  discriminant** — a symmetric round-trip cannot catch a reordering
+- the v14 frames are pinned at absolute tags, not merely "later than" the v13
+  ones: a variant inserted *between* two existing ones survives a relative check
 - a refused load returns `false` rather than reporting success
+- `PresetSupport` maps each format's real mask to the right variant, and no
+  variant overclaims `can_list` / `can_load`
 
 **Fixture work needed up front:** the VST2 probe must record `effBeginSetProgram`
 / `effEndSetProgram` arrivals — the vendor dispatcher has no arm for either
 today, so no test can currently witness the bracket. Same shape as the
 `set_bypass` / `get_effect_name` hooks added in D-10: a defaulted `Plugin`
 method preserving current behaviour, overridden by the probe.
+
+## Coverage gaps, measured
+
+Two claims the code makes that no available fixture can witness. Both were found
+by mutation — the mutant survived — and are recorded at the code rather than
+papered over with a weaker assertion.
+
+- **AU's sparse selector.** `PresetId` carries `AuPreset::number` rather than a
+  vec position because a unit may number sparsely. All four preset-bearing Apple
+  effects number densely `0..n` on this machine, so replacing `p.number` with
+  `.enumerate()`'s index leaves the round trip green. Pinned instead where the
+  value *can* be constructed, in `presets::tests`.
+- **VST3's program-change flag.** `program_change_param` matches on the flag, not
+  on position. The SDK's `multiple_programchanges` sample gives each unit exactly
+  one parameter, so "first parameter of the unit" coincides. The fixture that
+  would separate them is `mda-vst3` — its controllers add Bypass to the same root
+  unit ahead of the preset parameter — but its shell exposes the base controller
+  with a dangling program-list id, and `load_class` cannot re-open the bundle
+  while the first load holds it.
+
+One *equivalent* mutation, distinct from the above: swapping
+`report.get(f) == Some(true)` for `report.enabled(f)` in `PresetSupport` cannot
+be distinguished by any input, because `FeatureReport::new` stores
+`features & probed`. Not a gap — the two are provably the same here.
+
+Also uncovered, for want of a plugin rather than a fixture design: a **CLAP
+preset actually loading**. No `.clap-preset` file exists on this machine, so only
+the refusal path is exercised.

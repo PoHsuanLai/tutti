@@ -1461,7 +1461,7 @@ The inbound test `sysex_is_dropped_without_derailing_the_rest` was justified as
 the real reason — inbound drops SysEx because `from_midi1_bytes` would have to
 allocate on the CoreMIDI read thread. Its doc comment is corrected.
 
-### E-8 · Two properties worth having, one refuted · HELD (2 open, 1 refuted)
+### E-8 · Two properties worth having, one refuted · DONE (2 shipped, 1 refuted)
 
 `kAudioUnitProperty_PresentationLatency`(40) never written — a plugin doing
 look-ahead metering cannot align its display. `ShouldAllocateBuffer`(51) never
@@ -1500,7 +1500,63 @@ So the audit's own framing was the trap: *"pure per-instance waste, not a
 correctness bug"* is exactly backwards. Skipping it wastes a buffer nobody
 reads. Doing it breaks instruments.
 
-The other two properties are untouched and remain open.
+**The other two are now implemented**, and the measurement that came with them
+is more interesting than either surface.
+
+`PresentationLatency` is written by
+`transport::set_presentation_latency`, surfaced as
+`AuInstance::set_presentation_latency(direction, bus, Seconds)`. Per `(scope,
+element)`, because the header asks for it "on each active input and output bus"
+— a multi-output AU's buses can be presented at different times.
+[`Seconds`], not `Samples`: Apple's width is `Float64` seconds, the host never
+allocates or indexes with the value, and converting would bake in one instance's
+sample rate at the moment of the call.
+
+`DependentParameters` is read by `parameters::dependents_of{,_at}`, returning
+`Option<Vec<DependentParam>>`. The `Option` is load-bearing and is the
+absent-versus-reported rule applied: `None` is "the AU did not say", distinct
+from `Some(vec![])`, "the AU says nothing depends on it". Collapsing them turns
+"I cannot tell you" into "there is nothing to tell", and a stale cached range is
+then never refreshed. `AuParameter` also gained `meta: Option<MetaScope>` for
+the two `Is*Meta` flags, which had never been decoded.
+
+**Measured on macOS 15.6 across all 39 instantiable registered units** (35 Apple
+plus TDR Nova, TAL Reverb 4, TAL-NoiseMaker):
+
+- `PresentationLatency`: **0 of 39 accept it.** Every one answers -10879, and
+  the refusal survives every spelling — input/output/global scope, before and
+  after `AudioUnitInitialize`, at `Float64` and `Float32` width.
+  `GetPropertyInfo` reports it absent rather than present-but-unwritable, so
+  these units genuinely do not implement it.
+- `DependentParameters`: **0 of 39 answer it** — including at the address of
+  each of the **28 parameters that do carry a meta flag** (AUNBandEQ's 8 band
+  "Type" controls, AUGraphicEQ's "Number of Bands", AUPitch's 9,
+  AURoundTripAAC's 3, AURogerBeep's "Sensitivity", AUNewPitch's "Spectral
+  Coherence", TDR Nova's 5).
+
+That last pair is the finding worth keeping. 28 real parameters announce
+"writing me may silently move others" and **not one will say which**, so a host
+cannot use this property as its staleness mechanism — the *flag* is the signal,
+and invalidation has to be broad. This is why `AuParameter::meta` is carried
+rather than derived from the property read, and it inverts the audit's original
+framing: the gap was never the missing property call, it was that the flag it
+depends on was never decoded.
+
+Unlike `ShouldAllocateBuffer`, neither of these is harmful when unimplemented —
+both are advisory, both fail loudly at the property call rather than silently at
+render, and neither changes a sample. So they ship despite nothing on this
+machine exercising them, which is the opposite conclusion to (51) and for a
+reason that generalizes: a write the AU *refuses* costs nothing, a write it
+*accepts and then dishonours* costs everything.
+
+Tests: `tests/au_e8_properties.rs`, 12 tests. The corpus can only witness the
+refusals, so the positive paths run against `support/probe_au.rs`, which grew a
+`RaggedDependentParameters` variant. That variant exists because of a mutation
+that **survived**: `chunks_exact` relaxed to `chunks` was indistinguishable from
+correct against every honest input, since a well-formed array is always a whole
+multiple of the 8-byte struct. Rather than weaken the assertion, the probe now
+reports a byte count that is not a multiple, which is the only input that tells
+the two apart. All 15 mutations are now killed.
 
 ---
 
@@ -1591,12 +1647,17 @@ designed — and both answers took the same shape the diagnosis predicted.
   `tutti-types` that revisits a settled decision. One live bug the survey found
   (a refused arrangement being reported as the proposed one) is **fixed**; see
   the D-11 entry.
-- **E-8** (two AU properties, down from three) — `PresentationLatency` and
-  `DependentParameters` both need a host-side model of what to do with the
-  answer. `ShouldAllocateBuffer` is **refuted**: implemented, measured against
-  the corpus, reverted. AUSampler accepts the write and then fails every render
-  with `-10851`, and the refusal is silent at set time, so there is nothing to
-  gate on.
+- **E-8** (two AU properties, down from three) — **SHIPPED**.
+  `PresentationLatency` and `DependentParameters` are both implemented, and the
+  measurement that came with them supplied the missing host-side model: no unit
+  on this machine implements either, but **28 parameters carry a meta flag that
+  was never decoded**, so the flag — not the property — is the staleness signal
+  a host actually gets. `ShouldAllocateBuffer` remains **refuted**: implemented,
+  measured against the corpus, reverted. AUSampler accepts the write and then
+  fails every render with `-10851`, and the refusal is silent at set time, so
+  there is nothing to gate on. The contrast is the reusable lesson — a write the
+  AU *refuses* costs nothing, a write it *accepts and then dishonours* costs
+  everything.
 
 Doing any of them as a bare opcode/property wiring would add a surface with no
 caller. That is the shape to check for before picking one up — and

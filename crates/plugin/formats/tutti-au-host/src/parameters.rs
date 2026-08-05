@@ -187,6 +187,79 @@ pub struct AuParameter {
     /// Whether the AU asks that this parameter be left out of saved presets
     /// (`kAudioUnitParameterFlag_OmitFromPresets`).
     pub omit_from_presets: bool,
+    /// Whether writing this parameter may silently move *others*.
+    ///
+    /// `None` when neither meta flag is set, which is the overwhelming majority.
+    /// A host that caches parameter values must re-read after writing one of
+    /// these, because the AU sends no notification for the parameters it moved
+    /// as a side effect. [`dependents_of`] names which ones, when the AU says.
+    ///
+    /// Measured on macOS 15.6: 28 meta-flagged parameters across the 39
+    /// instantiable registered units — AUNBandEQ's 8 per-band "Type" controls,
+    /// AUGraphicEQ's "Number of Bands", AUPitch's 9, AURoundTripAAC's 3,
+    /// AURogerBeep's "Sensitivity", AUNewPitch's "Spectral Coherence", and TDR
+    /// Nova's 5. So the flag is *not* rare surface even though
+    /// [`dependents_of`] is unanswered by every one of them.
+    pub meta: Option<MetaScope>,
+}
+
+/// How wide a meta-parameter's influence reaches.
+///
+/// A **closed** enum for the same reason [`DisplayCurve`] is: these are two
+/// specific bits in `AudioUnitParameterInfo::flags` naming a fixed structural
+/// role, not an extensible catalog. Apple defines exactly these two, their
+/// difference is a real difference in what a host must invalidate, and absence
+/// of both is spelled by `Option::None` on [`AuParameter::meta`] rather than by a
+/// third variant — "not a meta-parameter" is not a kind of meta-parameter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum MetaScope {
+    /// `kAudioUnitParameterFlag_IsGlobalMeta` — "changing this parameter may
+    /// change any number of others in the AudioUnit". Dependents may be on any
+    /// scope, and a non-global dependent is dependent in *every* element of its
+    /// scope, so a host must invalidate that parameter across all elements.
+    Global,
+    /// `kAudioUnitParameterFlag_IsElementMeta` — "changing this parameter may
+    /// change others in the same element". Dependents share one scope and apply
+    /// only within this element, so invalidation stays local.
+    Element,
+}
+
+impl MetaScope {
+    /// Classify the two meta bits of an `AudioUnitParameterInfo::flags` word.
+    ///
+    /// `None` when neither is set. When an AU sets **both** — which Apple's
+    /// header neither blesses nor forbids, and no unit on this machine does —
+    /// the answer is [`Global`](Self::Global), because that is the wider claim
+    /// and the two differ only in how much a host must invalidate. Picking the
+    /// narrower one on an ambiguous answer would under-invalidate, leaving a
+    /// stale cached value on another element with nothing to reveal it; picking
+    /// the wider one costs a re-read.
+    pub fn from_flags(flags: u32) -> Option<Self> {
+        if flags & K_AUDIO_UNIT_PARAMETER_FLAG_IS_GLOBAL_META != 0 {
+            Some(Self::Global)
+        } else if flags & K_AUDIO_UNIT_PARAMETER_FLAG_IS_ELEMENT_META != 0 {
+            Some(Self::Element)
+        } else {
+            None
+        }
+    }
+}
+
+/// One parameter a meta-parameter may move: the `(scope, id)` pair Apple's
+/// `AUDependentParameter` carries.
+///
+/// Not a bare `(u32, u32)`, for the reason [`ParamAddress`] is not: the two
+/// halves are the same type and adjacent in memory, so a transposition is
+/// invisible. Note this pairs a scope with a parameter **id**, not with an
+/// element — so it is deliberately *not* a [`ParamAddress`], which pairs a scope
+/// with an element. Which element the dependent applies to is answered by the
+/// meta-parameter's [`MetaScope`], not carried in the struct.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct DependentParam {
+    /// Raw `kAudioUnitScope_*` the dependent parameter lives on.
+    pub scope: u32,
+    /// The dependent parameter's id within that scope.
+    pub id: u32,
 }
 
 /// The taper a parameter's value should be displayed and edited on.
@@ -495,6 +568,7 @@ fn info_at(unit: AudioUnit, addr: ParamAddress, param_id: u32) -> Result<AuParam
         values_have_strings: raw.flags & K_AUDIO_UNIT_PARAMETER_FLAG_VALUES_HAVE_STRINGS != 0,
         can_ramp: raw.flags & K_AUDIO_UNIT_PARAMETER_FLAG_CAN_RAMP != 0,
         omit_from_presets: raw.flags & K_AUDIO_UNIT_PARAMETER_FLAG_OMIT_FROM_PRESETS != 0,
+        meta: MetaScope::from_flags(raw.flags),
     })
 }
 
@@ -746,6 +820,103 @@ pub fn clump_name_at(unit: AudioUnit, addr: ParamAddress, clump: u32) -> Option<
     }
     // Copy rule, as for every CF object retrieved from an AU property.
     unsafe { crate::cf::CfString::from_copied(request.out_name) }.map(|s| s.to_string())
+}
+
+/// Which parameters the meta-parameter `id` may move when it is written.
+///
+/// [`dependents_of_at`] against [`ParamAddress::GLOBAL`], which is where every
+/// meta-flagged parameter measured on this machine lives.
+pub fn dependents_of(unit: AudioUnit, id: u32) -> Option<Vec<DependentParam>> {
+    dependents_of_at(unit, ParamAddress::GLOBAL, id)
+}
+
+/// [`dependents_of`] at an explicit scope.
+///
+/// Reads `kAudioUnitProperty_DependentParameters`, an array of Apple's
+/// `AUDependentParameter`. Like [`info_at`] and [`value_strings_at`], this
+/// property takes the **parameter id in the element position** — `addr.element`
+/// deliberately does not appear below, because the thing being addressed is the
+/// meta-parameter itself, not a bus.
+///
+/// # `None` is "the AU did not say", and is not an empty list
+///
+/// Three states the caller must be able to tell apart, and a `Vec` alone can
+/// only spell two:
+///
+/// - `None` — the AU does not implement the property, or refused this
+///   parameter. **Nothing is known**; a host caching values must assume the
+///   worst and re-read everything after a write to this parameter.
+/// - `Some(vec![])` — the AU implements it and answered "this meta-parameter
+///   moves nothing". A host may skip the re-read.
+/// - `Some(non-empty)` — exactly these parameters went stale.
+///
+/// Collapsing the first into the second is the failure this signature exists to
+/// prevent: it would turn "I cannot tell you" into "there is nothing to tell",
+/// and the stale cached range would then never be refreshed. That is the same
+/// absent-versus-reported discipline the parameter-info surface follows.
+///
+/// # Measured: no unit on this machine implements it
+///
+/// macOS 15.6, all 39 instantiable registered units (35 Apple plus TDR Nova,
+/// TAL Reverb 4, TAL-NoiseMaker). `AudioUnitGetPropertyInfo` answers
+/// `kAudioUnitErr_InvalidProperty` (-10879) at every address tried, including
+/// once per each of the **28 parameters that do carry a meta flag** — AUNBandEQ's
+/// 8 band "Type" controls, AUGraphicEQ's "Number of Bands", AUPitch's 9,
+/// AURoundTripAAC's 3, AURogerBeep's "Sensitivity", AUNewPitch's "Spectral
+/// Coherence" and TDR Nova's 5.
+///
+/// That combination is the useful finding, and it is why
+/// [`AuParameter::meta`] is carried separately rather than being derived from
+/// this call: the flag is the *only* signal a host gets on this machine. Every
+/// one of those 28 parameters can silently move others, and not one will say
+/// which. A host must therefore treat `meta.is_some()` as "re-read the
+/// parameters this AU publishes", and use a non-`None` answer here purely as an
+/// optimization when a plugin does implement it.
+///
+/// # Errors
+/// None — every failure is the `None` above. A refusal is the documented normal
+/// case for an optional property, and this call is made speculatively for any
+/// meta-flagged parameter, so surfacing it as `Err` would make routine absence
+/// indistinguishable from a real fault at every call site.
+pub fn dependents_of_at(
+    unit: AudioUnit,
+    addr: ParamAddress,
+    id: u32,
+) -> Option<Vec<DependentParam>> {
+    // `AUDependentParameter` is `{ AudioUnitScope mScope; AudioUnitParameterID
+    // mParameterID; }` — two `u32`s, 8 bytes. Layout pinned by
+    // `tests::dependent_parameter_matches_the_c_abi`.
+    let bytes = unsafe {
+        get_property_bytes(
+            unit,
+            K_AUDIO_UNIT_PROPERTY_DEPENDENT_PARAMETERS,
+            addr.scope,
+            id,
+        )
+    }
+    .ok()?;
+
+    const ENTRY: usize = std::mem::size_of::<AUDependentParameter>();
+    // A trailing partial entry means the AU disagrees with the header about the
+    // struct width. Decode the whole entries and drop the remainder rather than
+    // reading past what it wrote: `get_property_bytes` sized the buffer from the
+    // AU's own `GetPropertyInfo`, so a non-multiple is the AU contradicting
+    // itself, not a short read.
+    Some(
+        bytes
+            .chunks_exact(ENTRY)
+            .map(|c| {
+                // `read_unaligned` because the `Vec<u8>` carries no alignment
+                // guarantee, even though 8-byte entries in practice land aligned.
+                let raw: AUDependentParameter =
+                    unsafe { std::ptr::read_unaligned(c.as_ptr() as *const AUDependentParameter) };
+                DependentParam {
+                    scope: raw.mScope,
+                    id: raw.mParameterID,
+                }
+            })
+            .collect(),
+    )
 }
 
 /// Prefer the modern CFString name if advertised; otherwise fall back to the

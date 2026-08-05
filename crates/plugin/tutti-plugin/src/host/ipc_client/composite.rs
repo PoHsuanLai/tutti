@@ -4,8 +4,8 @@ use super::audio::{AudioBridge, BridgeListener, BridgeThread, HarmonyInputs};
 use crate::error::{EditorError, Result};
 use crate::format::gui::PluginEditor;
 use crate::protocol::{
-    MidiEventVec, NoteExpressionChanges, ParamAddress, ParameterChanges, ParameterInfo,
-    TransportInfo,
+    MidiEventVec, NoteExpressionChanges, ParamAddress, ParameterChanges, ParameterInfo, Preset,
+    PresetId, TransportInfo,
 };
 use crate::util::transport::shm::AudioSlab;
 use crate::util::window::{EditorCapabilities, EditorSize, WindowHandle};
@@ -303,6 +303,27 @@ impl PluginBridge {
         self.audio.parameter(param_id)
     }
 
+    pub fn presets(&self) -> Option<Vec<Preset>> {
+        self.audio.presets()
+    }
+
+    /// Load a preset in the audio instance.
+    ///
+    /// Unlike [`load_state`](Self::load_state) this does **not** mirror into
+    /// the GUI instance: `load_state` pushes host-held bytes into both, but a
+    /// preset load is the plugin reading its own file, and the editor's copy
+    /// has no such file to read. A plugin whose editor shows a stale name
+    /// after this reports it through the existing
+    /// `PluginParamValuesChanged` / `PluginParamTitlesChanged` refresh path,
+    /// which is the mechanism for exactly this.
+    pub fn load_preset(&self, id: PresetId) -> bool {
+        self.audio.load_preset(id)
+    }
+
+    pub fn current_preset(&self) -> Option<PresetId> {
+        self.audio.current_preset()
+    }
+
     pub fn editor_capabilities(&self) -> EditorCapabilities {
         let Ok(mut guard) = self.gui.lock() else {
             return EditorCapabilities::default();
@@ -439,6 +460,24 @@ impl crate::host::handles::capabilities::HostAutomationState for SubprocessBacke
                 "automation-state push not delivered".into(),
             ))
         }
+    }
+}
+
+impl crate::host::handles::capabilities::HostPresets for SubprocessBackend {
+    fn presets(&self) -> Vec<Preset> {
+        // A crashed subprocess yields `None`; flattened to an empty list
+        // because the trait's contract is "what the plugin advertises", and a
+        // caller distinguishing "cannot ask" from "listed nothing" reads
+        // `Features::PRESET_LIST` rather than a sentinel here.
+        self.bridge.presets().unwrap_or_default()
+    }
+
+    fn load_preset(&self, id: &PresetId) -> bool {
+        !self.bridge.is_crashed() && self.bridge.load_preset(id.clone())
+    }
+
+    fn current_preset(&self) -> Option<PresetId> {
+        self.bridge.current_preset()
     }
 }
 

@@ -22,6 +22,7 @@ pub mod midi;
 pub mod note_expression;
 pub mod note_id;
 pub mod parameters;
+pub mod presets;
 pub mod process;
 pub mod render_mode;
 pub mod transport;
@@ -49,7 +50,8 @@ pub use editor::{
 pub use error::{PluginError, Result, Result as PluginResult};
 pub use features::{FeatureReport, Features};
 pub use format_host::{
-    PluginAudio, PluginEditorHost, PluginInstance, PluginMeta, PluginParams, PluginState,
+    PluginAudio, PluginEditorHost, PluginInstance, PluginMeta, PluginParams, PluginPresets,
+    PluginState,
 };
 pub use harmony::{
     ChordChanges, ChordValue, NoteExpressionIntChanges, NoteExpressionIntValue,
@@ -62,6 +64,7 @@ pub use midi::{MidiEventVec, RtMidiEvents, MIDI_STACK_CAPACITY, RT_MIDI_CAPACITY
 pub use note_expression::{NoteExpressionChanges, NoteExpressionType, NoteExpressionValue};
 pub use note_id::{note_id_for, note_id_to_channel_note, MAX_HOST_NOTE_ID};
 pub use parameters::{ParamAddress, ParamFlags, ParamId, ParamRange, ParamSteps, ParameterInfo};
+pub use presets::{Preset, PresetId, PresetSupport};
 pub use process::{ExpressiveContext, ProcessContext, ProcessOutput};
 pub use render_mode::RenderMode;
 pub use transport::{

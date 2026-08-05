@@ -84,7 +84,18 @@ pub fn load_client(
     // draining its transport slot into each `ProcessContext`, which is what
     // fills the `TimeInfo` that callback serves.
     features.insert(Features::TRANSPORT);
-    // The same five the out-of-process VST2 loader answers — this path differs
+    // Both preset bits come from one number: VST2 has no separate "can you
+    // load" query, and a plugin declaring programs can always be sent
+    // `effProgramChange`. A plugin with none answers `false` to both — a
+    // declination, not silence, which is why `probed::VST2` lists them.
+    if inner.programs().is_empty() {
+        features.remove(Features::PRESET_LIST);
+        features.remove(Features::PRESET_LOAD);
+    } else {
+        features.insert(Features::PRESET_LIST);
+        features.insert(Features::PRESET_LOAD);
+    }
+    // The same set the out-of-process VST2 loader answers — this path differs
     // in where the plugin runs, not in what it is asked, so both read one
     // constant.
     let probed = crate::server::probed::VST2;
@@ -138,10 +149,14 @@ pub fn load_client(
     // the very `Vst2Instance` the node renders.
     let editor: Arc<dyn crate::backend::HostEditor> = backend.clone();
     let render_mode: Arc<dyn crate::host::handles::capabilities::HostRenderMode> = backend.clone();
+    let presets: Arc<dyn crate::backend::HostPresets> = backend.clone();
     let handle = PluginHandle::from_backend(
         backend,
-        Some(editor),
-        Some(render_mode),
+        crate::handles::OptionalCapabilities {
+            editor: Some(editor),
+            render_mode: Some(render_mode),
+            presets: Some(presets),
+        },
         descriptor,
         loaded,
         param_sink,

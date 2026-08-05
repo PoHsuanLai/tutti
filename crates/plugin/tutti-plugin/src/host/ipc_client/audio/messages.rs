@@ -4,8 +4,8 @@
 use super::ask::Reply;
 use crate::protocol::{
     ChordChanges, MidiEventVec, NoteExpressionChanges, NoteExpressionIntChanges,
-    NoteExpressionTextChanges, ParamAddress, ParameterChanges, ParameterInfo, PluginTail, Samples,
-    ScaleChanges, TransportInfo,
+    NoteExpressionTextChanges, ParamAddress, ParameterChanges, ParameterInfo, PluginTail, Preset,
+    PresetId, Samples, ScaleChanges, TransportInfo,
 };
 
 /// Audio-thread bulk payload for one `Process` command. Heap-boxed and
@@ -87,6 +87,16 @@ pub(super) enum Command {
     GetParameter {
         param_id: ParamAddress,
         reply: Reply<Option<f32>>,
+    },
+    GetPresetList {
+        reply: Reply<Option<Vec<Preset>>>,
+    },
+    LoadPreset {
+        id: PresetId,
+        reply: Reply<bool>,
+    },
+    GetCurrentPreset {
+        reply: Reply<Option<PresetId>>,
     },
 }
 

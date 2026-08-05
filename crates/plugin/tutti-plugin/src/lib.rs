@@ -162,6 +162,9 @@ pub use tutti_plugin_types::RenderMode;
 // this type, so a consumer that reads a capability bit — e.g. deciding whether
 // to open an editor floating — must be able to name it.
 pub use tutti_plugin_types::Features;
+// `PluginHandle::presets` hands back these, and `load_preset` takes one, so a
+// caller must be able to name them without depending on tutti-plugin-types.
+pub use tutti_plugin_types::{FeatureReport, Preset, PresetId, PresetSupport};
 
 /// Building blocks for out-of-crate in-process loaders.
 ///
@@ -176,7 +179,7 @@ pub use tutti_plugin_types::Features;
 /// [`catalog`] and [`handles`].
 pub mod backend {
     pub use crate::host::handles::capabilities::{
-        HostAutomationState, HostEditor, HostParams, HostState,
+        HostAutomationState, HostEditor, HostParams, HostPresets, HostState,
     };
     pub use crate::host::node::{route_with_latency, Midi, ParameterChangeSink};
     pub use crate::util::node::node_id::PLUGIN_CLIENT_ID;

@@ -247,6 +247,12 @@ bitflags! {
         const PER_CHANNEL = 1 << 8;
         /// …a single port.
         const PER_PORT = 1 << 9;
+        /// Writing this parameter selects a program.
+        ///
+        /// VST3 only (`kIsProgramChange`). It is how that format loads a
+        /// preset — there is no separate call — so the flag is what lets a
+        /// caller find the one parameter a program change goes through.
+        const PROGRAM_CHANGE = 1 << 10;
     }
 }
 

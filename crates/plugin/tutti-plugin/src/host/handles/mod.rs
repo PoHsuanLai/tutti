@@ -37,9 +37,9 @@ pub use crate::host::node::{
 // name its field's type without reaching into the private `protocol` module.
 // `ParamId` for the same reason one step further in — every `ParamAddress`
 // variant wraps one, so naming the address without it builds nothing.
-pub use crate::protocol::{ChordValue, ParamAddress, ParamId, ScaleValue};
+pub use crate::protocol::{ChordValue, ParamAddress, ParamId, Preset, PresetId, ScaleValue};
 pub use crate::util::window::{EditorCapabilities, EditorSize};
-pub use control_handle::PluginHandle;
+pub use control_handle::{OptionalCapabilities, PluginHandle};
 pub use tutti_units::{LfoShape, ModParams, ModTarget};
 
 /// In-process VST2 audio-graph node. Used when a host loads VST2 plugins

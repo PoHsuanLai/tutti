@@ -148,6 +148,33 @@ impl Session {
                     .unwrap_or_default();
                 Ok(BridgeMessage::ParameterList { parameters }.into())
             }
+            M::GetPresetList => {
+                // `unwrap_or_default` — an empty list, matching
+                // `GetParameterList` above. A request arriving before a plugin
+                // is loaded is a host sequencing error, not something to report
+                // as a preset-less plugin, and the same shape already covers it
+                // for parameters.
+                let presets = self
+                    .plugin
+                    .as_mut()
+                    .map(|p| p.instance_mut().get_presets())
+                    .unwrap_or_default();
+                Ok(BridgeMessage::PresetList { presets }.into())
+            }
+            M::LoadPreset { id } => {
+                let ok = self
+                    .plugin
+                    .as_mut()
+                    .is_some_and(|p| p.instance_mut().load_preset(&id));
+                Ok(BridgeMessage::PresetLoaded { ok }.into())
+            }
+            M::GetCurrentPreset => {
+                let id = self
+                    .plugin
+                    .as_mut()
+                    .and_then(|p| p.instance_mut().get_current_preset());
+                Ok(BridgeMessage::CurrentPreset { id }.into())
+            }
             M::GetParameterInfo { param_id } => {
                 let info = self.plugin.as_ref().and_then(|p| {
                     p.instance()

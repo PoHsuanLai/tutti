@@ -9,7 +9,7 @@ use super::sample::SampleFormat;
 use super::shm::SlabLayout;
 use super::ParamAddress;
 use super::Samples;
-use super::{LoadedPlugin, ParameterInfo, PluginDescriptor, PluginTail};
+use super::{LoadedPlugin, ParameterInfo, PluginDescriptor, PluginTail, Preset, PresetId};
 
 /// Wire-deserialization fallback for [`HostMessage::LoadPlugin::block_size`]
 /// when an older/partial message arrives without the field. The operative
@@ -89,6 +89,22 @@ pub enum HostMessage {
     SetRenderMode {
         mode: crate::protocol::RenderMode,
     },
+    /// Ask for the plugin's preset list.
+    ///
+    /// Appended, like every variant since v11, because bincode encodes the
+    /// discriminant over declaration order.
+    GetPresetList,
+    /// Ask the plugin to load one preset, by an id its list produced.
+    ///
+    /// [`PresetId`](crate::protocol::PresetId) is opaque and format-shaped —
+    /// never construct one host-side. Three of the four formats number presets
+    /// in a space that is not a position in the list, so an invented id loads
+    /// the wrong preset rather than failing.
+    LoadPreset {
+        id: crate::protocol::PresetId,
+    },
+    /// Ask which preset the plugin considers current.
+    GetCurrentPreset,
 }
 
 // `AudioProcessed` carries an inline-256 `IpcMidiEventVec` (~5 KB), dwarfing the
@@ -184,6 +200,30 @@ pub enum BridgeMessage {
     /// (`kReloadComponent`). The host should resync all plugin state — it is
     /// effectively a fresh instance.
     PluginReloaded,
+    /// The plugin's preset list.
+    ///
+    /// Empty when the format cannot enumerate — CLAP, whose discovery is a
+    /// factory-level extension this host does not bind. That is **not** the
+    /// same as "this plugin has no presets"; a caller separates the two by
+    /// reading `Features::PRESET_LIST`, which is unprobed for CLAP and
+    /// `Some(false)` for a format that was asked and declined.
+    PresetList {
+        presets: Vec<Preset>,
+    },
+    /// Whether the plugin accepted a [`LoadPreset`](HostMessage::LoadPreset).
+    ///
+    /// `false` is a refusal rather than an error, and is also the honest
+    /// answer for VST3: its programs are selected through the parameter path,
+    /// so there is no direct load to report on.
+    PresetLoaded {
+        ok: bool,
+    },
+    /// The preset the plugin considers current, if it will say. `None` means
+    /// the format has no query (VST3, CLAP) or the plugin declined — never
+    /// "the first one".
+    CurrentPreset {
+        id: Option<PresetId>,
+    },
     SharedMemoryReady,
     Error {
         message: String,

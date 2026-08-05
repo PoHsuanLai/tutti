@@ -83,12 +83,10 @@ impl PluginHandle {
             automation_state: Some(backend.clone()),
             // Every subprocess format can carry a render mode; whether the
             // loaded plugin honours it is `Features::RENDER_MODE`, not this.
-            render_mode: Some(backend),
-            // Filled once the bridge carries the preset frames. `None` until
-            // then is the honest report: no route exists, so `presets()`
-            // returns `None` rather than an empty list that would read as "this
-            // plugin has no presets".
-            presets: None,
+            render_mode: Some(backend.clone()),
+            // Every subprocess format can reach presets; which half it can
+            // actually do is `Features::PRESET_LIST` / `PRESET_LOAD`, not this.
+            presets: Some(backend),
             descriptor: client.descriptor().clone(),
             loaded: client.loaded().clone(),
             param_sink: client.param_sink().clone(),
@@ -164,8 +162,8 @@ impl PluginHandle {
             state: backend.clone(),
             editor: Some(backend.clone()),
             automation_state: Some(backend.clone()),
-            render_mode: Some(backend),
-            presets: None,
+            render_mode: Some(backend.clone()),
+            presets: Some(backend),
             descriptor,
             loaded,
             param_sink: ParameterChangeSink::default(),

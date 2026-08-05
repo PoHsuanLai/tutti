@@ -140,8 +140,14 @@ pub fn load_client(
     let render_mode: Arc<dyn crate::host::handles::capabilities::HostRenderMode> = backend.clone();
     let handle = PluginHandle::from_backend(
         backend,
-        Some(editor),
-        Some(render_mode),
+        crate::handles::OptionalCapabilities {
+            editor: Some(editor),
+            render_mode: Some(render_mode),
+            // Filled in the VST2 preset step; `None` reports honestly that no
+            // route exists yet, rather than an empty list reading as "this
+            // plugin has no programs".
+            presets: None,
+        },
         descriptor,
         loaded,
         param_sink,

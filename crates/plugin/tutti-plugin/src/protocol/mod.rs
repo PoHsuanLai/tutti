@@ -152,8 +152,8 @@ pub use tutti_plugin_types::{
     LoadedPlugin, NoteExpressionChanges, NoteExpressionIntChanges, NoteExpressionIntValue,
     NoteExpressionTextChanges, NoteExpressionTextValue, NoteExpressionType, NoteExpressionValue,
     ParamAddress, ParamFlags, ParamId, ParamRange, ParamSteps, ParameterChanges, ParameterInfo,
-    ParameterPoint, ParameterQueue, PluginTail, RenderMode, Samples, ScaleChanges, ScaleValue,
-    TimeSignature, TransportInfo,
+    ParameterPoint, ParameterQueue, PluginTail, Preset, PresetId, RenderMode, Samples,
+    ScaleChanges, ScaleValue, TimeSignature, TransportInfo,
 };
 
 #[cfg(test)]

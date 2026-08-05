@@ -155,6 +155,7 @@ fn handle_with_mock_server(
         tail: PluginTail::Unknown,
         features: Features::EDITOR,
         probed: Features::EDITOR,
+        ..Default::default()
     };
     let plugin_handle = PluginHandle::from_bridge_and_metadata(bridge, descriptor, loaded);
 
@@ -260,6 +261,7 @@ fn handle_with_multi_reply_server(
         tail: PluginTail::Unknown,
         features: Features::EDITOR,
         probed: Features::EDITOR,
+        ..Default::default()
     };
     let plugin_handle =
         PluginHandle::from_bridge_and_metadata(Arc::clone(&bridge), descriptor, loaded);

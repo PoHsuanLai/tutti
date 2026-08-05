@@ -80,6 +80,31 @@ fn default_arrangement_for(layout: ChannelLayout) -> Option<SpeakerArrangement> 
     })
 }
 
+/// A read-back topology, or `None` when there is nothing usable to say about
+/// this bus.
+///
+/// Split out of `bus_topologies` so the decision is testable: that method needs
+/// a live COM plugin, so the rule inside it could otherwise only be exercised
+/// by loading one — and a rule no test can reach is a rule that quietly stops
+/// being true.
+///
+/// Three ways to have nothing to say, all of them `None`:
+///
+/// - **Not fully named** — the arrangement uses a speaker this vocabulary does
+///   not have, so the bus cannot be routed by speaker even though its width is
+///   known.
+/// - **Width disagrees** with the count reported beside it. The count sizes the
+///   buffers, so a topology describing a different number of channels describes
+///   a different bus.
+/// - **Zero width.** A failed `getBusArrangement` yields an empty topology,
+///   which is vacuously "fully named" and would otherwise be reported as a real
+///   bus that happens to have no channels.
+fn usable_topology(topology: ChannelTopology, width: usize) -> Option<ChannelTopology> {
+    let usable =
+        topology.is_fully_named() && topology.layout().count() as usize == width && width > 0;
+    usable.then_some(topology)
+}
+
 /// Sample rate / block size / channel counts captured at activation. Read by
 /// `apply_process_setup` to fill `ProcessSetup` and by `process` to size
 /// `ProcessData`. Channel counts are re-synced post-activation in
@@ -762,6 +787,55 @@ impl<T: Vst3Sample> Vst3Instance<T> {
         Ok(())
     }
 
+    /// The channel topology the plugin is running on each bus in `direction`.
+    ///
+    /// Queried live from `getBusArrangement` rather than cached from
+    /// negotiation, because the two branches of `negotiate_bus_arrangements`
+    /// leave different amounts behind — the accepting branch never reads back
+    /// at all — and a plugin may restructure its buses afterwards. Asking is
+    /// cheap and cannot go stale.
+    ///
+    /// An entry is `None` when the plugin's arrangement names a speaker this
+    /// vocabulary cannot, or when the query failed: both mean "cannot route
+    /// this bus by speaker", which is what a caller acts on. A bus whose
+    /// arrangement is fully named yields `Some`, and its width always equals
+    /// the count reported beside it.
+    /// The channel topology of each **input** bus. See
+    /// [`bus_topologies`](Self::bus_topologies).
+    ///
+    /// Two named methods rather than one taking a direction, so a caller does
+    /// not need the crate's private `kInput`/`kOutput` constants — and cannot
+    /// pass an `i32` that is neither.
+    pub fn input_bus_topologies(&self) -> Vec<Option<ChannelTopology>> {
+        self.bus_topologies(K_INPUT)
+    }
+
+    /// The channel topology of each **output** bus. See
+    /// [`bus_topologies`](Self::bus_topologies).
+    pub fn output_bus_topologies(&self) -> Vec<Option<ChannelTopology>> {
+        self.bus_topologies(K_OUTPUT)
+    }
+
+    fn bus_topologies(&self, direction: i32) -> Vec<Option<ChannelTopology>> {
+        let processor = self.loaded.interfaces.processor.clone();
+        let num_buses = self
+            .loaded
+            .interfaces
+            .component
+            .audio_bus_channels(direction)
+            .len();
+        let widths = self
+            .loaded
+            .interfaces
+            .component
+            .audio_bus_channels(direction);
+        self.read_back_arrangements(&processor, direction, num_buses)
+            .into_iter()
+            .zip(widths)
+            .map(|(topology, width)| usable_topology(topology, width))
+            .collect()
+    }
+
     /// Read the plugin's chosen layout for each of `num_buses` buses in
     /// `direction`. A bus whose query fails contributes an empty topology, so
     /// the length always equals `num_buses`.
@@ -1070,6 +1144,52 @@ mod default_arrangement_tests {
                 "width {width} is still proposing the low-{width}-bits mask"
             );
         }
+    }
+
+    /// A fully-named topology whose width matches its bus is reported.
+    #[test]
+    fn a_named_topology_matching_its_bus_width_is_usable() {
+        let stereo = speakers::from_arrangement(SpeakerArr::kStereo);
+        assert_eq!(usable_topology(stereo.clone(), 2), Some(stereo));
+    }
+
+    /// A topology naming a speaker this vocabulary lacks is not usable.
+    ///
+    /// The width is right and the bus is real — but nothing can route it by
+    /// speaker, so reporting it would promise more than is known.
+    #[test]
+    fn a_topology_with_an_unnamed_speaker_is_not_usable() {
+        // `kSpeakerLfe2` is a real VST3 speaker with no name here.
+        let arr = SpeakerArr::kStereo | vst3::Steinberg::Vst::kSpeakerLfe2;
+        let topology = speakers::from_arrangement(arr);
+        assert_eq!(topology.layout().count(), 3, "the width is still known");
+        assert_eq!(usable_topology(topology, 3), None);
+    }
+
+    /// A topology whose width disagrees with its bus is not usable.
+    ///
+    /// The count sizes the buffers, so a topology describing a different number
+    /// of channels describes a different bus — there is no way to adjudicate
+    /// which is right, and acting on the wrong one misroutes audio.
+    #[test]
+    fn a_topology_that_disagrees_with_its_bus_width_is_not_usable() {
+        let stereo = speakers::from_arrangement(SpeakerArr::kStereo);
+        assert_eq!(usable_topology(stereo, 6), None);
+    }
+
+    /// An empty topology on a zero-width bus is not reported as a real answer.
+    ///
+    /// This is the one a naive check misses: a failed `getBusArrangement`
+    /// yields an empty topology, which is *vacuously* fully named and whose
+    /// width *does* equal the zero count beside it. Both other guards pass, so
+    /// only the explicit `width > 0` stops "the plugin never answered" from
+    /// being reported as "this bus has no channels".
+    #[test]
+    fn an_empty_topology_is_not_a_usable_answer() {
+        let empty = speakers::from_arrangement(SpeakerArr::kEmpty);
+        assert!(empty.is_fully_named(), "vacuously true, which is the trap");
+        assert_eq!(empty.layout().count(), 0);
+        assert_eq!(usable_topology(empty, 0), None);
     }
 
     /// A width with no canonical arrangement declines rather than inventing one.

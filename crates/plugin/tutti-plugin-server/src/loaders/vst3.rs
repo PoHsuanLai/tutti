@@ -178,6 +178,13 @@ fn build_inner(p: &ReloadParams) -> Result<(VstInner, Meta)> {
     features.set(Features::PRESET_LOAD, has_programs);
     let probed = tutti_plugin::server::probed::VST3;
 
+    // Queried after activation, because that is when the plugin has settled its
+    // arrangements — `negotiate_bus_arrangements` runs inside `activate`.
+    let (input_topology, output_topology) = match &inner {
+        VstInner::F32(i) => (i.input_bus_topologies(), i.output_bus_topologies()),
+        VstInner::F64(i) => (i.input_bus_topologies(), i.output_bus_topologies()),
+    };
+
     let loaded_meta = LoadedPlugin {
         inputs: bus_channels(&info.input_bus_channels, info.num_inputs),
         outputs: bus_channels(&info.output_bus_channels, info.num_outputs),
@@ -185,6 +192,8 @@ fn build_inner(p: &ReloadParams) -> Result<(VstInner, Meta)> {
         tail,
         features,
         probed,
+        input_topology: input_topology.into_iter().collect(),
+        output_topology: output_topology.into_iter().collect(),
     };
 
     Ok((

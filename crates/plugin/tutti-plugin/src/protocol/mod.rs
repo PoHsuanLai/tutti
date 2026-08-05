@@ -117,7 +117,16 @@ pub mod shm;
 ///   Mandatory in both directions, unlike v13's. A v14 host asks for a preset
 ///   list whenever a caller opens a browser — not only when a caller opts into
 ///   something — so a v13 server would meet an unknown tag in ordinary use.
-pub const PROTOCOL_VERSION: u32 = 14;
+/// - v15: `LoadedPlugin` gains `input_topology` / `output_topology`, carrying
+///   *which speaker* each channel feeds beside the counts it already reported.
+///   Appended last, but a struct is **positional** on this wire in a way an
+///   appended enum variant is not: every field is written in declaration order
+///   with no tag, so a v14 peer stops reading before these two and a v14
+///   *server* sends a payload two fields short. `serde(default)` does not
+///   rescue that — bincode is not self-describing, so a short payload is a
+///   decode error rather than a defaulted field, which is exactly what this
+///   bump exists to turn into a clean refusal.
+pub const PROTOCOL_VERSION: u32 = 15;
 
 /// Validate a subprocess-reported protocol version against [`PROTOCOL_VERSION`].
 /// Called at each handshake consumer so a version skew fails loudly instead of

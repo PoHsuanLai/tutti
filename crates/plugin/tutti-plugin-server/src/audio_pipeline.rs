@@ -663,9 +663,11 @@ mod tests {
                 outputs: outputs.iter().map(|&c| ChannelLayout::from(c)).collect(),
                 latency_samples: Samples::ZERO,
                 tail: PluginTail::Unknown,
-                // This fixture is about bus widths; no capability is claimed.
+                // This fixture is about bus widths; no capability is claimed,
+                // and no speaker placement either.
                 features: Features::empty(),
                 probed: Features::empty(),
+                ..Default::default()
             },
         }
     }

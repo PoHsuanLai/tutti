@@ -692,6 +692,16 @@ impl<T: Vst3Sample> Vst3Instance<T> {
     /// the right number of channels. (`activate_buses` re-resolves again from
     /// the live component after activation, covering plugins that only finalise
     /// their layout once active.)
+    ///
+    /// **Either way this ends by reconciling `PluginInfo`.** The scratch and
+    /// the reported layout are two separate copies of the same fact, and only
+    /// the scratch was being updated: `resolve_scratch_from_counts` fixes what
+    /// this instance renders through, while `PluginInfo` is what every caller
+    /// above reads — `PluginClient::new` sizes its fundsp node from it. A
+    /// plugin that refused therefore had its *proposed* width reported while it
+    /// ran another. Reconciling on the accepting branch too is not belt-and-
+    /// braces: a plugin may accept the arrangement and still restructure its
+    /// buses in the same call, and one exit path is one thing to keep true.
     fn negotiate_bus_arrangements(&mut self) -> Result<()> {
         let processor = self.loaded.interfaces.processor.clone();
         let component = &self.loaded.interfaces.component;
@@ -716,17 +726,22 @@ impl<T: Vst3Sample> Vst3Instance<T> {
             )
         };
 
-        // `kResultTrue`/`kResultOk`: plugin accepted our proposal — the counts
-        // we derived it from are already correct.
-        if result == kResultOk || result == vst3::Steinberg::kResultTrue {
-            return Ok(());
+        // Anything but `kResultTrue`/`kResultOk` (typically `kResultFalse`):
+        // the plugin kept its own layout. Read it back and re-resolve scratch
+        // to match. Not an error.
+        if result != kResultOk && result != vst3::Steinberg::kResultTrue {
+            let in_counts = self.read_back_arrangement_counts(&processor, K_INPUT, inputs.len());
+            let out_counts = self.read_back_arrangement_counts(&processor, K_OUTPUT, outputs.len());
+            self.resolve_scratch_from_counts(&in_counts, &out_counts);
         }
 
-        // Anything else (typically `kResultFalse`): the plugin kept its own
-        // layout. Read it back and re-resolve scratch to match. Not an error.
-        let in_counts = self.read_back_arrangement_counts(&processor, K_INPUT, inputs.len());
-        let out_counts = self.read_back_arrangement_counts(&processor, K_OUTPUT, outputs.len());
-        self.resolve_scratch_from_counts(&in_counts, &out_counts);
+        // Re-enumerated from the component rather than from `in_counts` above,
+        // so there is one answer to "what is the layout" and it is the same
+        // enumeration `activate_buses` and the restart path use.
+        // `getBusArrangement` reports only the buses that existed at proposal
+        // time, and a refusal is exactly when a plugin may have restructured
+        // them.
+        self.loaded.reconcile_bus_counts();
         Ok(())
     }
 
@@ -891,10 +906,10 @@ impl<T: Vst3Sample> Vst3Instance<T> {
         // renegotiated before the counts are re-read, matching the activation
         // order in `from_loaded` — a plugin decides its channel layout in
         // `setBusArrangements`, so reading counts first would cache the layout
-        // it is about to replace.
+        // it is about to replace. The re-read is `negotiate_bus_arrangements`'s
+        // own last step, so it is not repeated here.
         self.negotiate_bus_arrangements()?;
         self.apply_process_setup()?;
-        self.loaded.reconcile_bus_counts();
         self.activate_buses()?;
 
         self.set_active(true)?;

@@ -339,6 +339,28 @@ enum ProbeMisbehaviour : int32
     /// the *component* end fails the first call, which needs no unwind and so
     /// exercises nothing.
     kMisbehaveControllerConnectFails = 10,
+
+    /// `setBusArrangements` returns `kResultFalse` and the plugin *keeps a
+    /// layout that differs from the one proposed* — the main input narrows to
+    /// mono.
+    ///
+    /// Not a violation: `ivstaudioprocessor.h` documents `kResultFalse` as
+    /// "the plugin did not accept your arrangement, it kept its own", and the
+    /// host is then required to read the kept layout back with
+    /// `getBusArrangement`. Plugins with fixed I/O (a mono-only analyser, a
+    /// hardwired upmixer) do exactly this.
+    ///
+    /// The *narrowing* is the whole point. A plugin that refuses but keeps the
+    /// layout the host happened to propose is indistinguishable from one that
+    /// accepted, so it witnesses nothing: the host reads back the same numbers
+    /// it already had. Only a divergence between "what the host proposed" and
+    /// "what the plugin kept" can catch a host that reports the former while
+    /// rendering the latter.
+    ///
+    /// Mono is chosen because the probe's main input is stereo, so the change
+    /// is a *narrowing* — a host that keeps the proposed width would over-read
+    /// a channel the plugin is not running.
+    kMisbehaveArrangementRefused = 11,
 };
 
 /// Read the selected misbehaviour from the environment. Returns
@@ -352,7 +374,11 @@ inline int32 probeMisbehaviour ()
     if (!raw || !*raw)
         return kMisbehaveNone;
     const int32 v = static_cast<int32> (std::strtol (raw, nullptr, 10));
-    return (v >= kMisbehaveNone && v <= kMisbehaveControllerConnectFails) ? v : kMisbehaveNone;
+    // The upper bound must name the *last* variant: an appended misbehaviour
+    // whose value falls outside this range is silently read as `kMisbehaveNone`,
+    // so the plugin behaves and the test passes against a probe that never
+    // misbehaved.
+    return (v >= kMisbehaveNone && v <= kMisbehaveArrangementRefused) ? v : kMisbehaveNone;
 }
 
 /// Bus count reported under [`kMisbehaveExtraBuses`]. Larger than any real

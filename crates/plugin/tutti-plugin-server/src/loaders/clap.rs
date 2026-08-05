@@ -40,6 +40,27 @@ fn per_bus_channels(loaded: &tutti_clap_host::ClapLoaded, is_input: bool) -> Bus
     }
 }
 
+/// Resolve the two editor answers into `(has_editor, resize_allowed)`.
+///
+/// CLAP asks about editors twice — once for embedded, once for floating — and
+/// the two capability bits want different combinations of the answers:
+///
+/// - **`Features::EDITOR` is the union.** It means "this plugin has a UI", and
+///   a floating-only plugin has one. Reporting only the embedded answer is what
+///   made such a plugin look editor-less, so the DAW drew no button for a UI it
+///   could have shown.
+/// - **`Features::EDITOR_RESIZE` is embedded-only.** `can_resize`,
+///   `adjust_size` and `set_size` are all marked `[main-thread & !floating]` in
+///   `ext/gui.h`; a floating window is the plugin's to size. Advertising a
+///   resize path for one would announce a capability nothing can drive.
+///
+/// A free function because the two rules are the finding, and reaching them
+/// through the loader needs a live plugin behind a real dlopen — see the tests
+/// below, which pin the combinations without one.
+fn editor_bits(embeddable: bool, floating: bool) -> (bool, bool) {
+    (embeddable || floating, embeddable)
+}
+
 fn clap_descriptor(info: &tutti_clap_host::PluginInfo, editor: EditorPresence) -> PluginDescriptor {
     PluginDescriptor {
         id: info.id.clone(),
@@ -155,8 +176,11 @@ impl ClapInstance {
             // Read metadata off the loaded (pre-activation) instance.
             let info = loaded.info();
             let supports_f64 = loaded.supports_f64();
-            let has_editor = loaded.has_editor();
-            let editor_resizable = has_editor && loaded.editor_capabilities().resize.resizable;
+            // Two questions, not one — see [`editor_bits`].
+            let embeddable = loaded.has_editor();
+            let (has_editor, resize_allowed) =
+                editor_bits(embeddable, loaded.has_floating_editor());
+            let editor_resizable = resize_allowed && loaded.editor_capabilities().resize.resizable;
             let has_note_in = loaded.note_port_count(true) > 0;
             let has_note_out = loaded.note_port_count(false) > 0;
             // Real per-port bus layout (main + any sidechain/aux), read off the
@@ -609,6 +633,60 @@ mod tests {
     };
 
     const CLAP_PLUGIN: &str = "/Library/Audio/Plug-Ins/CLAP/TAL-NoiseMaker.clap";
+
+    /// A floating-only plugin reports an editor.
+    ///
+    /// The user-visible half of the floating-window gap: `Features::EDITOR`
+    /// drives whether the DAW offers to open a UI at all, and keying it on the
+    /// embedded answer alone hid every floating-only plugin's editor behind a
+    /// button that was never drawn.
+    #[test]
+    fn a_floating_only_plugin_reports_an_editor() {
+        let (has_editor, _) = editor_bits(false, true);
+        assert!(
+            has_editor,
+            "floating-only means the plugin has a UI, just not an embeddable one"
+        );
+    }
+
+    /// ...but does not advertise resize.
+    ///
+    /// The pair that keeps the union from being applied to both bits. Every
+    /// resize entry point is `[!floating]`, so a host acting on this bit for a
+    /// floating window would be calling what the spec forbids.
+    #[test]
+    fn a_floating_only_plugin_does_not_advertise_resize() {
+        let (_, resize_allowed) = editor_bits(false, true);
+        assert!(
+            !resize_allowed,
+            "can_resize/adjust_size/set_size are all !floating — a floating \
+             window is the plugin's to size"
+        );
+    }
+
+    /// An embeddable plugin gets both bits, and a plugin with neither gets none.
+    ///
+    /// The two ends. Without the second, `editor_bits` returning `(true, true)`
+    /// unconditionally would satisfy every other case here.
+    #[test]
+    fn editor_bits_track_the_plugin() {
+        assert_eq!(
+            editor_bits(true, false),
+            (true, true),
+            "embeddable: a UI, and one the host can resize"
+        );
+        assert_eq!(
+            editor_bits(true, true),
+            (true, true),
+            "supporting both is still embeddable, so resize stays available"
+        );
+        assert_eq!(
+            editor_bits(false, false),
+            (false, false),
+            "no editor either way means no editor — this is the case \
+             `Features::EDITOR` must still be able to report"
+        );
+    }
 
     #[test]
     fn test_clap_load() {

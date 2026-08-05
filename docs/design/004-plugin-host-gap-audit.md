@@ -606,16 +606,66 @@ a different thread than `HostState::new()` ran on.
 
 No existing test drove either off-thread, so nothing was asserting the gap.
 
-### C-12 · Floating-window GUI mode unimplemented · HELD
+### C-12 · Floating-window GUI mode unimplemented · DONE (host layer) / HELD (ECS layer)
 
 `embed_editor_sequence` (`polling.rs:88-163`) hardcodes `is_floating = false`;
 `get_preferred_api`, `set_transient`, `suggest_title` are absent.
 
 `has_editor()` therefore queries `is_api_supported(api, false)` only, so a
-floating-only plugin reports **no editor**. Per `ext/gui.h:66-68` embedding is
-unsupported on Wayland — so every CLAP plugin is editor-less there by our
-reckoning. Held rather than TODO: correct today on macOS/Windows/X11, and the
-code degrades gracefully.
+floating-only plugin reports **no editor**.
+
+**One claim in the original entry was wrong.** It said embedding is unsupported
+on Wayland "so every CLAP plugin is editor-less there by our reckoning". The
+spec half is right (`ext/gui.h:68` — "embed is currently not supported, use
+floating windows"), but `platform_window_handle` has **no Wayland arm**: on
+Linux it returns `CLAP_WINDOW_API_X11` unconditionally (`polling.rs:51-58`), so
+this host never asks the Wayland question and works under XWayland. The real
+exposure was narrower — floating-only plugins on *any* platform, not all plugins
+on one.
+
+**Fixed at the host layer.** `ClapLoaded` gained:
+
+- `open_floating_editor(transient, title)` — the `ext/gui.h:20-27` sequence:
+  `is_api_supported(floating)` → `create(floating)` → `set_transient` →
+  `suggest_title` → `show`. Returns no size, deliberately: the plugin owns the
+  window, so a size would imply the host should lay it out.
+- `has_floating_editor()` — the other half of the editor question.
+  `has_editor()` keeps its embedded-only meaning, now documented as such.
+- `prefers_floating()` — `get_preferred_api`'s `is_floating` flag. `None`
+  (no preference stated) stays distinct from `Some(false)`.
+
+No geometry call is made on a floating window: `set_scale`, `set_parent`,
+`can_resize`, `adjust_size` and `set_size` are all `[main-thread & !floating]`
+in the header. `close_editor` is unchanged and serves both modes — `hide` and
+`destroy` are the two calls not `!floating`-gated.
+
+`Features::EDITOR` is now the **union** of the two questions (`editor_bits` in
+`loaders/clap.rs`), which is the user-visible half: the bit means "this plugin
+has a UI", and keying it on the embedded answer alone is what made a
+floating-only plugin look editor-less. `Features::EDITOR_RESIZE` stays keyed on
+the embedded answer, since every resize entry point is `!floating`.
+
+Tests: 7 new in `clap_gui_lifecycle.rs` (28 total, all green) plus 3 on
+`editor_bits`. Mutation-checked at 5 points — wrong `is_floating` on the query,
+wrong flag on `create`, dropped `suggest_title`, and the union reverted in each
+direction — all killed. The `editor_bits` extraction exists *because* the first
+attempt at the union mutation survived: nothing tested the loader's capability
+bits, and reaching them through the loader needs a live plugin behind a dlopen.
+
+**The ECS layer is still held**, and this is the honest boundary: nothing in
+`bevy-tutti` calls the new path. Reaching it means a defaulted
+`open_floating_editor` through four traits — `HostEditor` → `PluginBridge` →
+`PluginEditor` → `ClapGuiInstance` — three of which are cross-format, so VST3,
+AU and VST2 would all carry a CLAP-only concept that answers "unsupported"
+forever. Then `plugin_editor_show_hide` spawns a Bevy `Window` unconditionally
+and five systems key on `PluginEditorOpen::editor_window`; a floating editor has
+no such entity, so the component needs an ownership split.
+
+Held rather than TODO because it cannot be tested here: the reference probe
+never opens a window, and no floating-only CLAP plugin is installed to try it
+against. Writing untestable plumbing through four shared traits, for a plugin
+shape nobody has produced, is worse than the gap. Revisit when such a plugin
+turns up — the host layer it would need is built and pinned.
 
 ---
 
@@ -1260,8 +1310,13 @@ correct.
 **D-6** needs a decision before it needs code: does the subprocess VST2 path own
 editors at all?
 
-**Closed out.** 31 DONE, 4 HELD, no TODO remaining. The four held items are
-scope decisions rather than blocked work: **C-12** (CLAP floating-window GUI),
+**Closed out.** 31 DONE, 1 part-done, 3 HELD, no TODO remaining.
+
+**C-12** (CLAP floating-window GUI) is **done at the host layer** and held at the
+ECS layer — see its entry for what remains and why it is not worth building
+against a plugin shape nobody has produced.
+
+The three fully-held items are scope decisions rather than blocked work:
 **D-9** (VST2 preset/program support), **D-10** (smaller VST2 opcode gaps — note
 its `effGetNumMidiInputChannels` half hides a live bug, not just missing scope:
 a plugin answering `Maybe` to `sendVstMidiEvent` is classified MIDI-silent and

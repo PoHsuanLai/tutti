@@ -1102,6 +1102,63 @@ Ardour agrees by its behaviour: it implements speaker arrangements for VST3
 Held on the same question as D-9 and E-8: a cross-format channel-layout policy is
 a design decision, not a missing call.
 
+#### Surveyed across all four formats (2026-08-05)
+
+The entry above reads as "VST2 is behind the others". It is not: **every format
+reaches speaker placement and discards it at its own FFI boundary.**
+
+- **AU** models topology properly and is the counterexample: `AuLayoutTag`
+  (`channel_layout.rs:80-149`), get *and* set (`instance.rs:680/696/718`),
+  deliberately **no `Default`** ("a default would mean picking a speaker order
+  for a bus whose order is genuinely unknown", `channel_layout.rs:342-360`), 19
+  tests. It has **zero consumers outside `tutti-au-host`**.
+- **VST3** is bidirectional but lossy both ways. Outbound, counts ≥ 3 propose a
+  synthetic low-bit mask `(1u64 << n) - 1` (`instance.rs:69`), so a 6-channel bus
+  asks for "six channels in no order", not 5.1. Inbound, `getBusArrangement`
+  (`instance.rs:746`) receives the plugin's real mask and the next line reduces
+  it to `count_ones()`.
+- **CLAP** binds `clap.surround` + ambisonic getters
+  (`instance/ports.rs:499,525,554,575`) that have **no callers at all**;
+  `layout_from_clap_port` (`ports.rs:644-657`) recognizes only MONO/STEREO, so
+  surround and ambisonic tags flatten to a bare count. `surround_changed`
+  (`host/state.rs:115`) is set and never read.
+- **VST2** has nothing, as above.
+
+The root cause is one type: `ChannelLayout` is `pub struct ChannelLayout(u16)`
+(`tutti-types/src/channels.rs:73`) — a **width, not a layout** — and that is
+deliberate and documented (`channels.rs:8-13`): foreign layout types "convert to
+and from this at their crate boundary, **losing the placement deliberately**".
+`LoadedPlugin` (`metadata.rs:48-101`) accordingly has no placement field.
+
+So this is the `Features::PRESET_*` shape D-9 fixed: data fetched, then dropped
+for want of a consumer. **Adding a field to `LoadedPlugin` would accomplish
+nothing** — the information is already destroyed at `ports.rs:656`,
+`instance.rs:78` and `vst2 instance.rs:236` before anything could populate it.
+The work is a vocabulary change in `tutti-types` plus four boundary conversions,
+which is why it stays HELD: it revisits a settled decision.
+
+#### One live bug found by the survey and fixed separately · DONE
+
+Independent of the topology question, and fixed in
+`fix(vst3): report the arrangement the plugin kept, not the one proposed`.
+
+A `kResultFalse` from `setBusArrangements` means the plugin kept its own layout.
+The refusal path read that back and re-resolved the audio scratch, but never
+wrote it into `PluginInfo` — so `loaded()` reported the width the host
+*proposed* while the plugin rendered the width it *chose*. `PluginClient::new`
+sizes its fundsp node from those counts (`host/node/mod.rs:327`), so a fixed-I/O
+plugin was handed a channel it was not running.
+
+The restart path already reconciled; only the load path did not, because its own
+`reconcile_bus_counts` runs *before* negotiation. `negotiate_bus_arrangements`
+now ends by reconciling on both branches and the restart path drops its
+duplicate call.
+
+Witnessed by a new probe misbehaviour, `kMisbehaveArrangementRefused`, which
+refuses **and narrows** the main input to mono. The narrowing is the fixture: a
+plugin that refuses but keeps the proposed layout reads back the numbers the
+host already had, so it cannot tell a host that re-reads from one that does not.
+
 ---
 
 ## E. AU
@@ -1487,8 +1544,15 @@ there.
 The two that remain are the same *kind* of open question: **each needs a policy
 decision above the format layer, not a missing call below it.**
 
-- **D-11** (speaker arrangement) — needs a channel-layout negotiation policy;
-  this host takes the plugin's declared counts and never proposes one.
+- **D-11** (speaker arrangement) — surveyed across all four formats: every one
+  of them *reaches* speaker placement and discards it at its FFI boundary,
+  because `ChannelLayout` is a `u16` width by deliberate design. AU models
+  topology fully and has no consumers; VST3 reads the plugin's real mask and
+  popcounts it away on the next line; CLAP's surround getters have no callers.
+  So this is not VST2 plumbing either — it is a vocabulary change in
+  `tutti-types` that revisits a settled decision. One live bug the survey found
+  (a refused arrangement being reported as the proposed one) is **fixed**; see
+  the D-11 entry.
 - **E-8** (two AU properties, down from three) — `PresentationLatency` and
   `DependentParameters` both need a host-side model of what to do with the
   answer. `ShouldAllocateBuffer` is **refuted**: implemented, measured against

@@ -45,6 +45,7 @@ const PROBE_ENV_KEYS: &[&str] = &[
     "TUTTI_VST2_PROBE_SERVICED_PARAMS",
     "TUTTI_VST2_PROBE_MIDI_INPUTS",
     "TUTTI_VST2_PROBE_MIDI_OUTPUTS",
+    "TUTTI_VST2_PROBE_EFFECT_NAME",
 ];
 
 fn clear_probe_env() {
@@ -689,6 +690,47 @@ fn load_and_metadata() {
     assert!(!meta.name.is_empty());
     assert!(!meta.id.is_empty());
     assert!(meta.num_outputs.count() > 0);
+}
+
+/// `effGetEffectName` (45) is preferred over `effGetProductString` (48).
+///
+/// The two name different things: the effect name is the plugin's own, the
+/// product string names the product it ships in — one string shared by every
+/// plugin in a bundled suite. Reading only the product string collapses a
+/// suite to a single label, so a host that asks for one must ask for the
+/// other first.
+#[test]
+fn the_effect_name_is_preferred_over_the_product_string() {
+    let _guard = lock_probe();
+    let instance = load_probe_with(&[("TUTTI_VST2_PROBE_EFFECT_NAME", "Probe Effect 45")]);
+
+    assert_eq!(
+        instance.metadata().name,
+        "Probe Effect 45",
+        "the plugin answered effGetEffectName with its own name; the host \
+         reported the product string instead, which every plugin in a suite \
+         shares"
+    );
+}
+
+/// A plugin that declines `effGetEffectName` still gets named.
+///
+/// The opcode is optional and reports no failure — an unimplemented one falls
+/// through the dispatcher leaving the buffer zero-filled, so an empty string
+/// is the only "did not answer" available. Without the fallback, the majority
+/// of real plugins (which implement `effGetProductString` and not this) would
+/// load with an empty name.
+#[test]
+fn declining_the_effect_name_falls_back_to_the_product_string() {
+    let _guard = lock_probe();
+    let instance = load_probe();
+
+    assert_eq!(
+        instance.metadata().name,
+        tutti_vst2_test_plugin::PROBE_NAME,
+        "the probe declines effGetEffectName; the host must fall back to \
+         effGetProductString rather than reporting the empty buffer"
+    );
 }
 
 /// `default_value` reports the plugin's load-time state, not its live value.

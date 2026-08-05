@@ -75,6 +75,13 @@ pub struct ProbeConfig {
     pub midi_inputs: i32,
     /// Number of MIDI output channels declared.
     pub midi_outputs: i32,
+    /// What the probe answers to `effGetEffectName` (45).
+    ///
+    /// `None` declines the opcode, which is the default and the common case
+    /// among real plugins. `Some` makes the probe answer a name deliberately
+    /// different from `Info::name` (`effGetProductString`), so a test can tell
+    /// which of the two the host read.
+    pub effect_name: Option<String>,
 }
 
 impl Default for ProbeConfig {
@@ -95,6 +102,7 @@ impl Default for ProbeConfig {
             raw_tail_size: None,
             midi_inputs: 1,
             midi_outputs: 1,
+            effect_name: None,
         }
     }
 }
@@ -130,6 +138,7 @@ impl ProbeConfig {
                 .and_then(|v| v.parse::<isize>().ok()),
             midi_inputs: env_or("TUTTI_VST2_PROBE_MIDI_INPUTS", d.midi_inputs),
             midi_outputs: env_or("TUTTI_VST2_PROBE_MIDI_OUTPUTS", d.midi_outputs),
+            effect_name: env::var("TUTTI_VST2_PROBE_EFFECT_NAME").ok(),
         }
     }
 }

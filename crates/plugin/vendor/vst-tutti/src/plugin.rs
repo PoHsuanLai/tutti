@@ -493,6 +493,20 @@ pub trait Plugin: Send {
     /// This method must return an `Info` struct.
     fn get_info(&self) -> Info;
 
+    /// The plugin's own name, answering `effGetEffectName` (45).
+    ///
+    /// Distinct from [`Info::name`], which answers `effGetProductString` (48):
+    /// the product string names the *product* a plugin ships in, so every
+    /// plugin in a bundled suite shares one. A host that asks only for the
+    /// product string sees the suite, not the plugin.
+    ///
+    /// Defaults to `None`, which leaves the opcode unanswered — the host then
+    /// falls back to the product string, which is what it did before this
+    /// existed. Override only when the two names genuinely differ.
+    fn get_effect_name(&self) -> Option<String> {
+        None
+    }
+
     /// Called during initialization to pass a `HostCallback` to the plugin.
     ///
     /// This method can be overridden to set `host` as a field in the plugin struct.

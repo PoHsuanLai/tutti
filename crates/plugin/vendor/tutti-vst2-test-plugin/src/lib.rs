@@ -320,6 +320,17 @@ impl Plugin for ProbePlugin {
         }
     }
 
+    /// Answers `effGetEffectName` only when a test asks for one.
+    ///
+    /// `None` is the default so the probe keeps behaving like the majority of
+    /// real plugins, which implement `effGetProductString` and not this. A test
+    /// that sets `TUTTI_VST2_PROBE_EFFECT_NAME` gets a name distinct from
+    /// [`PROBE_NAME`], which is the only way to observe *which* of the two
+    /// opcodes the host read.
+    fn get_effect_name(&self) -> Option<String> {
+        self.config.effect_name.clone()
+    }
+
     fn get_info(&self) -> Info {
         Info {
             name: PROBE_NAME.to_string(),

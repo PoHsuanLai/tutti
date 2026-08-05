@@ -680,8 +680,28 @@ impl PluginInstance {
             // a real one.
             let category_code = plug.opcode(op::GetCategory).try_into().unwrap_or(i32::MAX);
 
+            // `effGetEffectName` is the plugin's own name for itself;
+            // `effGetProductString` is the product it ships in, which for a
+            // bundled suite is one name shared by every plugin in it. Asking
+            // only for the product string therefore collapses a whole suite to
+            // a single label.
+            //
+            // Both opcodes are optional and neither reports failure — an
+            // unimplemented one falls through the dispatcher without touching
+            // the buffer, which stays zero-filled. So an empty string is the
+            // only available "did not answer", and the fallback is driven by
+            // it. A caller that gets neither is left with an empty name and
+            // supplies its own (the file stem); that decision is not this
+            // layer's to make.
+            let effect_name = plug.read_string(op::GetEffectName, MAX_EFFECT_NAME_LEN);
+            let name = if effect_name.is_empty() {
+                plug.read_string(op::GetProductName, MAX_PRODUCT_STR_LEN)
+            } else {
+                effect_name
+            };
+
             plug.info = Info {
-                name: plug.read_string(op::GetProductName, MAX_PRODUCT_STR_LEN),
+                name,
                 vendor: plug.read_string(op::GetVendorName, MAX_VENDOR_STR_LEN),
 
                 presets: effect.numPrograms,

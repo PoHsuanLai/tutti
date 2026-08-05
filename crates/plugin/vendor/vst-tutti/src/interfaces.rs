@@ -324,7 +324,14 @@ fn dispatch_inner(
         }
 
         Ok(OpCode::GetEffectName) => {
-            return copy_string(ptr, &get_plugin().get_info().name, MAX_VENDOR_STR_LEN)
+            // Leave the buffer alone when the plugin declines. An unanswered
+            // optional opcode is a no-write, which is how a host tells "no
+            // effect name" from one — copying the product string in here would
+            // make every plugin look like it implements the opcode.
+            return match get_plugin().get_effect_name() {
+                Some(name) => copy_string(ptr, &name, MAX_EFFECT_NAME_LEN),
+                None => 0,
+            };
         }
 
         Ok(OpCode::GetVendorName) => {

@@ -290,6 +290,12 @@ fn an_affirmative_can_do_beats_the_effect_category() {
 /// An undocumented `Custom(n)` return must not be read as an affirmative.
 /// Real plugins return integers outside `{-1, 0, 1}`, and a host testing
 /// "non-zero, therefore yes" also turns `-1` into a capability.
+///
+/// The pins are forced to 0. `Custom` defers to the inference, so leaving the
+/// probe's default of one declared MIDI input pin would make this pass on the
+/// pin term no matter what the host did with `Custom` — the assertion would
+/// hold for the wrong reason. "A plain Effect" has to mean a plugin with no
+/// MIDI evidence at all, which is what these two overrides buy.
 #[test]
 fn an_undocumented_can_do_answer_is_not_an_affirmative() {
     let _guard = lock_probe();
@@ -297,11 +303,207 @@ fn an_undocumented_can_do_answer_is_not_an_affirmative() {
     reset_switches(&path);
     set_can_do(&path, can_do::CUSTOM, 42);
 
+    set_probe_env(&[
+        ("TUTTI_VST2_PROBE_MIDI_INPUTS", "0"),
+        ("TUTTI_VST2_PROBE_MIDI_OUTPUTS", "0"),
+    ]);
     let instance = Vst2Instance::load(&path, SAMPLE_RATE, BLOCK).expect("probe should load");
+    clear_probe_env();
+
     assert!(
         !instance.metadata().receives_midi,
         "effCanDo returned an undocumented 42; a plain Effect must not be \
          promoted to a MIDI receiver by a value the spec does not define"
+    );
+
+    drop(instance);
+    reset_switches(&path);
+}
+
+// ---------------------------------------------------------------------------
+// MIDI pin counts come from the live opcodes
+// ---------------------------------------------------------------------------
+
+/// A plugin declaring MIDI output pins and answering `Maybe` to
+/// `sendVstMidiEvent` emits MIDI.
+///
+/// This is the bug D-10 hid. `emits_midi`'s only inferred term was
+/// `info.midi_outputs > 0`, and `get_info()` hardcodes that to 0 — so the term
+/// was a dead `false`, `Maybe` resolved to `false`, and the plugin's MIDI
+/// output was dropped. `Maybe` is the common answer: plugins that route MIDI
+/// routinely declare pins and never implement `effCanDo`.
+#[test]
+fn a_maybe_answer_with_declared_output_pins_emits_midi() {
+    let _guard = lock_probe();
+    let path = probe_path::probe_path().clone();
+    reset_switches(&path);
+    set_can_do(&path, can_do::MAYBE, 0);
+
+    set_probe_env(&[("TUTTI_VST2_PROBE_MIDI_OUTPUTS", "2")]);
+    let instance = Vst2Instance::load(&path, SAMPLE_RATE, BLOCK).expect("probe should load");
+    clear_probe_env();
+
+    assert!(
+        instance.metadata().emits_midi,
+        "the plugin declared 2 MIDI output channels and answered effCanDo = 0 \
+         (don't know); the host must read the declaration and treat it as \
+         emitting MIDI, or its MIDI output is silently dropped"
+    );
+
+    drop(instance);
+    reset_switches(&path);
+}
+
+/// The same plugin with no output pins declared is not a MIDI source.
+///
+/// The negative half: without it, a host that hardcoded `emits_midi = true`
+/// would pass the test above. `Category::Synth` is set to pin that an
+/// instrument is not promoted to a MIDI *emitter* — it emits audio, and the
+/// two are unrelated.
+#[test]
+fn a_maybe_answer_without_output_pins_does_not_emit_midi() {
+    let _guard = lock_probe();
+    let path = probe_path::probe_path().clone();
+    reset_switches(&path);
+    set_can_do(&path, can_do::MAYBE, 0);
+
+    set_probe_env(&[
+        ("TUTTI_VST2_PROBE_MIDI_OUTPUTS", "0"),
+        ("TUTTI_VST2_PROBE_IS_SYNTH", "1"),
+    ]);
+    let instance = Vst2Instance::load(&path, SAMPLE_RATE, BLOCK).expect("probe should load");
+    clear_probe_env();
+
+    assert!(
+        !instance.metadata().emits_midi,
+        "the plugin declared no MIDI output channels; being a Synth says it \
+         emits audio, not MIDI, and must not promote it to a MIDI source"
+    );
+
+    drop(instance);
+    reset_switches(&path);
+}
+
+/// Declared MIDI *input* pins make a plugin a MIDI receiver even when it is
+/// not a synth and answers `Maybe`.
+///
+/// Pins the input half of the same read: before the opcodes were sent, the
+/// only surviving inference for `receives_midi` was `Category::Synth`, so a
+/// MIDI-driven effect that declared pins was classified as receiving nothing.
+#[test]
+fn declared_input_pins_make_a_non_synth_a_midi_receiver() {
+    let _guard = lock_probe();
+    let path = probe_path::probe_path().clone();
+    reset_switches(&path);
+    set_can_do(&path, can_do::MAYBE, 0);
+
+    set_probe_env(&[("TUTTI_VST2_PROBE_MIDI_INPUTS", "1")]);
+    let instance = Vst2Instance::load(&path, SAMPLE_RATE, BLOCK).expect("probe should load");
+    clear_probe_env();
+
+    assert!(
+        instance.metadata().receives_midi,
+        "the plugin declared 1 MIDI input channel and is not a Synth; the \
+         declaration is the evidence, and dropping it leaves a MIDI-driven \
+         effect classified as receiving nothing"
+    );
+
+    drop(instance);
+    reset_switches(&path);
+}
+
+/// A count outside the spec's `1..=15` is not an answer, and must not be read
+/// as one.
+///
+/// Both opcodes return their count as the dispatcher's `isize` return value,
+/// and an unimplemented opcode falls through returning `0` — so `0` cannot mean
+/// "I use no MIDI channels", it means "I did not answer". The range is the only
+/// thing separating the two. Without the filter a `0` becomes a real answer of
+/// zero; the classification lands in the same place here, but the host has
+/// stopped being able to tell a declined opcode from a declared absence, and
+/// the next reader of `read_midi_channels` inherits the confusion.
+#[test]
+fn an_out_of_range_midi_count_is_not_an_answer() {
+    let _guard = lock_probe();
+    let path = probe_path::probe_path().clone();
+    reset_switches(&path);
+
+    set_probe_env(&[
+        ("TUTTI_VST2_PROBE_MIDI_INPUTS", "0"),
+        ("TUTTI_VST2_PROBE_MIDI_OUTPUTS", "99"),
+    ]);
+    let instance = Vst2Instance::load(&path, SAMPLE_RATE, BLOCK).expect("probe should load");
+    clear_probe_env();
+
+    let counts = instance.midi_channel_counts();
+    assert_eq!(
+        counts.inputs, None,
+        "0 is what an unimplemented opcode returns, so it must read as \
+         'declined', not as a declared count of zero"
+    );
+    assert_eq!(
+        counts.outputs, None,
+        "99 is outside the spec's 1..=15; a value that was never a valid count \
+         must not be carried through as one"
+    );
+
+    drop(instance);
+    reset_switches(&path);
+}
+
+/// A count inside `1..=15` is carried through verbatim.
+///
+/// The positive half of the range check: without it, a filter that rejected
+/// everything would satisfy the test above.
+#[test]
+fn an_in_range_midi_count_is_reported_verbatim() {
+    let _guard = lock_probe();
+    let path = probe_path::probe_path().clone();
+    reset_switches(&path);
+
+    set_probe_env(&[
+        ("TUTTI_VST2_PROBE_MIDI_INPUTS", "1"),
+        ("TUTTI_VST2_PROBE_MIDI_OUTPUTS", "15"),
+    ]);
+    let instance = Vst2Instance::load(&path, SAMPLE_RATE, BLOCK).expect("probe should load");
+    clear_probe_env();
+
+    let counts = instance.midi_channel_counts();
+    assert_eq!(counts.inputs, Some(1), "the boundary value 1 must be kept");
+    assert_eq!(
+        counts.outputs,
+        Some(15),
+        "the boundary value 15 must be kept"
+    );
+
+    drop(instance);
+    reset_switches(&path);
+}
+
+/// An explicit `-1` still beats a declared pin.
+///
+/// The pin count is evidence for the `Maybe` case only. Wiring the opcodes up
+/// added a second term to the same OR that `an_explicit_can_do_refusal_beats_
+/// the_synth_category` guards, and a refusal has to outrank that one too.
+#[test]
+fn an_explicit_refusal_beats_declared_midi_pins() {
+    let _guard = lock_probe();
+    let path = probe_path::probe_path().clone();
+    reset_switches(&path);
+    set_can_do(&path, can_do::NO, 0);
+
+    set_probe_env(&[
+        ("TUTTI_VST2_PROBE_MIDI_INPUTS", "4"),
+        ("TUTTI_VST2_PROBE_MIDI_OUTPUTS", "4"),
+    ]);
+    let instance = Vst2Instance::load(&path, SAMPLE_RATE, BLOCK).expect("probe should load");
+    clear_probe_env();
+
+    let meta = instance.metadata();
+    assert!(
+        !meta.receives_midi && !meta.emits_midi,
+        "the plugin declared 4 MIDI channels each way but answered effCanDo = \
+         -1, an explicit refusal; the refusal must override the declaration"
     );
 
     drop(instance);

@@ -327,6 +327,19 @@ pub struct PluginLoader<T: Host> {
     host: Arc<T>,
 }
 
+/// What a plugin answered for its MIDI channel counts.
+///
+/// `None` on a field means the plugin did not answer that opcode — which is
+/// the common case, and is **not** the same as answering zero. See
+/// [`PluginInstance::read_midi_channels`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct MidiChannelCounts {
+    /// `effGetNumMidiInputChannels`, 1..=15 when answered.
+    pub inputs: Option<u8>,
+    /// `effGetNumMidiOutputChannels`, 1..=15 when answered.
+    pub outputs: Option<u8>,
+}
+
 /// An instance of an externally loaded VST plugin.
 #[allow(dead_code)] // To keep `lib` around.
 pub struct PluginInstance {
@@ -603,6 +616,37 @@ impl PluginInstance {
         // lifetime; `initialDelay` is a plain `i32` field, not a call into the
         // plugin, so there is no re-entrancy or thread-affinity concern.
         unsafe { (*self.params.get_effect()).initialDelay }
+    }
+
+    /// Ask the plugin how many MIDI channels it uses, via
+    /// `effGetNumMidiInputChannels` / `effGetNumMidiOutputChannels`.
+    ///
+    /// `None` when the plugin does not implement the opcode. Both opcodes
+    /// return their count as the dispatcher's `isize` return value, and an
+    /// unimplemented opcode falls through the plugin's dispatcher returning 0 —
+    /// so a bare `0` cannot be told apart from "I use no MIDI channels". The
+    /// spec bounds a real answer at 1..=15, which is what makes the two
+    /// separable at all: anything outside that range is an absent answer, not a
+    /// count. A host must therefore treat `None` as "unknown", never as zero.
+    ///
+    /// Not folded into [`Info`](plugin::Info) because that snapshot is taken in
+    /// [`new`](Self::new), before `effOpen`, and a plugin may not know its MIDI
+    /// configuration until it is initialised — the same trap
+    /// [`read_initial_delay`](Self::read_initial_delay) documents for latency.
+    pub fn read_midi_channels(&self) -> MidiChannelCounts {
+        fn ask(this: &PluginInstance, opcode: plugin::OpCode) -> Option<u8> {
+            // VST 2.4 documents the valid answer as 1..=15. Out of that range —
+            // including the 0 an unimplemented opcode returns — means the
+            // plugin did not answer.
+            u8::try_from(this.opcode(opcode))
+                .ok()
+                .filter(|n| (1..=15).contains(n))
+        }
+
+        MidiChannelCounts {
+            inputs: ask(self, plugin::OpCode::GetNumMidiInputs),
+            outputs: ask(self, plugin::OpCode::GetNumMidiOutputs),
+        }
     }
 
     fn new(effect: *mut AEffect, lib: Arc<Library>) -> PluginInstance {

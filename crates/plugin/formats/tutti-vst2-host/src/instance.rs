@@ -201,16 +201,33 @@ impl Vst2Instance {
             }
         }
 
-        // `midi_inputs` / `midi_outputs` are hardcoded to 0 in the fork (the
-        // host never dispatches `effGetNumMidiInputOutputChannels`), so the pin
-        // terms are dead constants today. Kept so that wiring the opcode up is a
-        // change to `Info`'s construction alone.
-        let midi_pins_declared = info.midi_inputs > 0 || info.midi_outputs > 0;
+        // Pin counts come from the live opcodes, not from `info`: `get_info()`
+        // hardcodes both to 0 (its snapshot predates `effOpen`, and the fork
+        // never filled them), so reading them there made every pin term a dead
+        // `false`. That was not merely a missing signal for `emits_midi` — it
+        // was its *only* inferred term, so a plugin answering `Maybe` to
+        // `sendVstMidiEvent` resolved to `false` and had its MIDI output
+        // dropped.
+        //
+        // A declined opcode is `None`, which is distinct from `Some(0)` and
+        // from a declared pin. Absence must not read as a denial: it leaves the
+        // pin term contributing nothing, so `Maybe` falls through to the
+        // remaining evidence rather than to `false`.
+        let midi_channels = instance.read_midi_channels();
+        let midi_in_pins = midi_channels.inputs.is_some_and(|n| n > 0);
+        let midi_out_pins = midi_channels.outputs.is_some_and(|n| n > 0);
+
         let receives_midi = resolve(
             instance.can_do(CanDo::ReceiveMidiEvent),
-            midi_pins_declared || matches!(info.category, Category::Synth),
+            midi_in_pins || midi_out_pins || matches!(info.category, Category::Synth),
         );
-        let emits_midi = resolve(instance.can_do(CanDo::SendMidiEvent), info.midi_outputs > 0);
+        // A plugin that declares MIDI output pins but only answers `Maybe` to
+        // `sendVstMidiEvent` is emitting MIDI; a plugin that declares none and
+        // says `Maybe` is an ordinary effect. `Category::Synth` is deliberately
+        // *not* an inference here — a synth emitting audio says nothing about
+        // whether it emits MIDI, and treating it as evidence would classify
+        // every instrument as a MIDI source.
+        let emits_midi = resolve(instance.can_do(CanDo::SendMidiEvent), midi_out_pins);
         let metadata = PluginInfo {
             id: format!("vst2.{}", info.unique_id),
             name: info.name.clone(),
@@ -439,6 +456,18 @@ impl Vst2Instance {
     /// either and re-plan compensation if the answer moved.
     pub fn latency(&self) -> Samples {
         Samples(self.handle.instance.read_initial_delay().max(0) as usize)
+    }
+
+    /// What the plugin answers for its MIDI channel counts, right now.
+    ///
+    /// `None` on a field means the plugin declined the opcode, which is
+    /// **not** the same as answering zero — see
+    /// [`MidiChannelCounts`](vst::host::MidiChannelCounts). The load-time read
+    /// of these is what [`metadata`](Self::metadata)'s `receives_midi` /
+    /// `emits_midi` are inferred from; this exposes the raw answer for a caller
+    /// that needs the distinction rather than the verdict.
+    pub fn midi_channel_counts(&self) -> vst::host::MidiChannelCounts {
+        self.handle.instance.read_midi_channels()
     }
 }
 

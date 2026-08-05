@@ -7,8 +7,9 @@ use tutti_plugin::server::{
     EditorSize, Features, LoadedPlugin, NoteExpressionChanges, NoteExpressionIntChanges,
     NoteExpressionTextChanges, ParamAddress, ParamFlags, ParamRange, ParamSteps, ParameterInfo,
     PluginAudio, PluginClass, PluginDescriptor, PluginEditorHost, PluginError, PluginMeta,
-    PluginParams, PluginPresets, PluginResult, PluginState, PluginTail, ProcessContext,
-    ProcessOutput, RenderMode, Samples, ScaleChanges, Vst3SubCategories, WindowHandle,
+    PluginParams, PluginPresets, PluginResult, PluginState, PluginTail, Preset, PresetId,
+    ProcessContext, ProcessOutput, RenderMode, Samples, ScaleChanges, Vst3SubCategories,
+    WindowHandle,
 };
 use tutti_plugin::{BridgeError, LoadStage, Result};
 
@@ -695,12 +696,53 @@ impl PluginEditorHost for Vst3Instance {
     }
 }
 
-/// Not yet wired — the defaults report "this format cannot", which is the
-/// honest answer until the mapping lands.
-///
-/// VST3 programs are ordinary parameters carrying `kIsProgramChange`,
-/// reached through the parameter path. Enumeration lands in step 5.
-impl PluginPresets for Vst3Instance {}
+impl PluginPresets for Vst3Instance {
+    /// The plugin's programs, flattened out of its named program lists.
+    ///
+    /// VST3 is the one format whose presets are **grouped**: programs live in
+    /// lists attached to units, so each `Preset` carries its list's name as
+    /// `bank`. The id keeps both coordinates — `getProgramName` takes
+    /// `(list_id, index)`, and the list id is plugin-chosen rather than a
+    /// position in `program_lists()`, so neither can be dropped.
+    ///
+    /// A program the plugin declines to name is kept with an empty name rather
+    /// than skipped: the index is half the identifier, so dropping one would
+    /// renumber every program after it within that list.
+    fn get_presets(&mut self) -> Vec<Preset> {
+        vst_dispatch!(self, inner => {
+            inner
+                .program_lists()
+                .into_iter()
+                .flat_map(|list| {
+                    (0..list.program_count).map(move |index| {
+                        let name = inner
+                            .program_name(list.id, index)
+                            .unwrap_or_default();
+                        Preset::in_bank(
+                            PresetId::Program { list_id: list.id, index },
+                            name,
+                            list.name.clone(),
+                        )
+                    })
+                })
+                .collect()
+        })
+    }
+
+    // `load_preset` and `get_current_preset` are deliberately left at their
+    // defaults — `false` and `None`.
+    //
+    // VST3 has no load call. A program is selected by writing the parameter
+    // flagged `kIsProgramChange`, through the ordinary parameter path, which
+    // carries its own automation and undo semantics. Routing selection through
+    // here as well would give one operation two write paths, so this reports
+    // honestly that it has no direct load and a caller drives the parameter.
+    //
+    // `IUnitInfo::setUnitProgramData` is not the missing call: it takes an
+    // `IBStream` of preset *bytes* and writes them into a program slot, the
+    // inverse operation. Named here because it is the obvious thing to find
+    // later and mistake for a load path.
+}
 
 impl PluginState for Vst3Instance {
     fn get_state(&mut self) -> PluginResult<Vec<u8>> {
@@ -723,6 +765,128 @@ mod tests {
     use tutti_plugin::server::{AudioBuffer, AudioBuffer64, AudioBufferMut, MidiEvent};
 
     const VST3_PLUGIN: &str = "/Library/Audio/Plug-Ins/VST3/TAL-NoiseMaker.vst3";
+
+    /// The SDK's `multiple-program-changes` sample, when the corpus is built.
+    ///
+    /// Looked up at *runtime* rather than through `env!`, so a checkout without
+    /// the corpus skips instead of failing to compile. Set
+    /// `VST3_SAMPLE_PLUGIN_DIR` to the directory holding the built samples.
+    fn multi_program_sample() -> Option<std::path::PathBuf> {
+        let dir = std::env::var("VST3_SAMPLE_PLUGIN_DIR").ok()?;
+        let path = Path::new(&dir).join("multiple-program-changes.vst3");
+        path.exists().then_some(path)
+    }
+
+    /// A VST3 program keeps both coordinates, and its list's name.
+    ///
+    /// The SDK's `multiple_programchanges` sample is the fixture that makes
+    /// this witnessable: it builds 16 program lists whose ids are
+    /// `kProgramStartId + i`, so a **list id is provably not a position** in
+    /// `program_lists()`. A mapping that dropped `list_id` and kept `index`
+    /// would collapse all 16 lists onto one another — 2048 presets becoming
+    /// 128 — which is what the count assertion catches.
+    ///
+    /// `bank` carries the list name because VST3 is the one format whose
+    /// presets are grouped; the other three expose a single flat set and
+    /// report `None`.
+    #[test]
+    fn a_vst3_program_keeps_its_list_id_and_bank() {
+        let Some(path) = multi_program_sample() else {
+            eprintln!("VST3_SAMPLE_PLUGIN_DIR unset or sample absent; skipping");
+            return;
+        };
+        let _lock = crate::test_utils::plugin_load_lock();
+        let mut instance = match Vst3Instance::load(&path, 44_100.0, 512, false) {
+            Ok(i) => i,
+            Err(e) => {
+                eprintln!("sample failed to load ({e:?}); skipping");
+                return;
+            }
+        };
+
+        let presets = instance.get_presets();
+        assert!(
+            presets.len() > 128,
+            "16 lists of 128 programs must not collapse onto one another; got {}",
+            presets.len()
+        );
+
+        // Every id keeps both coordinates, and more than one distinct list id
+        // appears — the property a flattened mapping would destroy.
+        let lists: std::collections::BTreeSet<i32> = presets
+            .iter()
+            .filter_map(|p| match &p.id {
+                PresetId::Program { list_id, .. } => Some(*list_id),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            lists.len() > 1,
+            "the sample publishes several program lists; saw {lists:?}"
+        );
+        assert_eq!(
+            lists.len(),
+            presets
+                .iter()
+                .filter_map(|p| p.bank.clone())
+                .collect::<std::collections::BTreeSet<_>>()
+                .len(),
+            "each list must contribute its own bank name"
+        );
+
+        // The same index appears in every list, so an id that dropped its
+        // list would be ambiguous.
+        let index_zero: Vec<&Preset> = presets
+            .iter()
+            .filter(|p| matches!(p.id, PresetId::Program { index: 0, .. }))
+            .collect();
+        assert_eq!(
+            index_zero.len(),
+            lists.len(),
+            "index 0 exists once per list; an id without list_id could not tell them apart"
+        );
+    }
+
+    /// VST3 declines a direct load, and says so through the capability bits.
+    ///
+    /// Not "unimplemented": a program is selected by writing the parameter
+    /// flagged `kIsProgramChange`, through the parameter path with its own
+    /// automation and undo semantics. Routing selection through `load_preset`
+    /// too would give one operation two write paths.
+    ///
+    /// So `get_presets` returning entries and `PRESET_LOAD` reporting
+    /// `Some(false)` is a **coherent** state, not a contradiction — the bit
+    /// answers "is there a separate preset mechanism", the method answers
+    /// "what can I show a user".
+    #[test]
+    fn vst3_lists_presets_without_offering_a_load() {
+        let Some(path) = multi_program_sample() else {
+            eprintln!("VST3_SAMPLE_PLUGIN_DIR unset or sample absent; skipping");
+            return;
+        };
+        let _lock = crate::test_utils::plugin_load_lock();
+        let mut instance = match Vst3Instance::load(&path, 44_100.0, 512, false) {
+            Ok(i) => i,
+            Err(e) => {
+                eprintln!("sample failed to load ({e:?}); skipping");
+                return;
+            }
+        };
+
+        let listed = instance.get_presets();
+        assert!(!listed.is_empty(), "the sample publishes programs");
+
+        let first = listed[0].id.clone();
+        assert!(
+            !instance.load_preset(&first),
+            "VST3 has no load call; reporting success would claim an API it does not have"
+        );
+        assert_eq!(
+            instance.get_current_preset(),
+            None,
+            "VST3 has no current-preset query either — None, never a fabricated first entry"
+        );
+    }
 
     #[test]
     fn test_vst3_load() {

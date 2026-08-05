@@ -512,12 +512,27 @@ impl AuInstance {
             let probed = tutti_plugin::server::probed::AU;
 
             // AU exposes a single main bus per direction here.
+            // One main bus per direction, so one topology entry each. The tag
+            // is the AU's own answer; `topology_of` declines the tags that name
+            // a processing relationship rather than speaker placement (MidSide,
+            // MatrixStereo, ambisonics), which arrive here as `None`.
+            let bus_topology = |direction: tutti_au_host::BusDirection| {
+                let tag = inner.layout_tag(direction, 0).ok()?;
+                tutti_au_host::topology_of(tag)
+            };
+            let input_topology =
+                core::iter::once(bus_topology(tutti_au_host::BusDirection::Input)).collect();
+            let output_topology =
+                core::iter::once(bus_topology(tutti_au_host::BusDirection::Output)).collect();
+
             let loaded = LoadedPlugin {
                 // `num_inputs`/`num_outputs` are `u32` off the AU element
                 // count; `From<u32>` canonicalizes them, so the `as usize`
                 // hop is gone.
                 inputs: single_bus(inner.num_inputs()),
                 outputs: single_bus(inner.num_outputs()),
+                input_topology,
+                output_topology,
                 latency_samples: latency,
                 tail,
                 features,

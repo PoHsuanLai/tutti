@@ -84,9 +84,24 @@ tresult PLUGIN_API AudioProbeProcessor::setBusArrangements (SpeakerArrangement* 
                                                             SpeakerArrangement* outputs,
                                                             int32 numOuts)
 {
-	// Accept whatever the host proposes: the probe's assertions are written
-	// against the layout the host actually negotiated, read back through
-	// PluginInfo, so refusing here would only limit coverage.
+	// Refuse, and keep a layout that differs from the proposal: the main input
+	// narrows to mono. `kResultFalse` means "kept my own arrangement", which
+	// obliges the host to re-read it with `getBusArrangement` — and the
+	// divergence is what makes that re-read observable. See
+	// `kMisbehaveArrangementRefused`.
+	if (mMisbehaviour == kMisbehaveArrangementRefused)
+	{
+		// Applied through the base class so `getBusArrangement` reports it: the
+		// bus objects are what that getter reads, so mutating them here is the
+		// only way the refusal becomes visible to the host.
+		if (auto* bus = FCast<AudioBus> (getAudioInput (0)))
+			bus->setArrangement (SpeakerArr::kMono);
+		return kResultFalse;
+	}
+
+	// Otherwise accept whatever the host proposes: the probe's assertions are
+	// written against the layout the host actually negotiated, read back
+	// through PluginInfo, so refusing here would only limit coverage.
 	return AudioEffect::setBusArrangements (inputs, numIns, outputs, numOuts);
 }
 

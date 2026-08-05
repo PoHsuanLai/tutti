@@ -6,7 +6,8 @@ use crate::host::ipc_client::audio::{PluginInvalidation, PluginRefresh};
 use crate::host::node::{InvalidateSink, ParameterChangeSink, RefreshSink};
 use crate::protocol::AutomationMode;
 use crate::protocol::{
-    LoadedPlugin, ParamAddress, ParameterInfo, PluginDescriptor, Preset, PresetId, PresetSupport,
+    ChannelTopology, LayoutSupport, LoadedPlugin, ParamAddress, ParameterInfo, PluginDescriptor,
+    Preset, PresetId, PresetSupport,
 };
 use crate::util::window::{EditorCapabilities, EditorSize};
 use raw_window_handle::HasWindowHandle;
@@ -317,6 +318,46 @@ impl PluginHandle {
     /// Engine-wiring data from load (per-bus channel widths, latency, f64).
     pub fn loaded(&self) -> &LoadedPlugin {
         &self.loaded
+    }
+
+    /// What is known about this plugin's channel placement.
+    ///
+    /// The one call a caller makes before deciding whether to speak in speaker
+    /// names or channel numbers:
+    ///
+    /// ```ignore
+    /// match handle.layout_support() {
+    ///     LayoutSupport::Full    => // name every channel's speaker
+    ///     LayoutSupport::Partial => // per bus: name what answered, number the rest
+    ///     LayoutSupport::None    => // channel numbers only
+    /// }
+    /// ```
+    ///
+    /// **Reporting only.** No variant means a layout can be *changed*: nothing
+    /// above the format hosts proposes one today, and naming a capability that
+    /// cannot be reached is the write-only shape this work exists to remove.
+    /// See [`LayoutSupport`].
+    pub fn layout_support(&self) -> LayoutSupport {
+        LayoutSupport::of(&self.loaded)
+    }
+
+    /// Which speaker each channel of one input bus feeds.
+    ///
+    /// `None` when that bus reported no placement — the plugin declined, the
+    /// format cannot say, or it names a speaker this vocabulary lacks. Never
+    /// "no speakers": a bus with no channels is `Some` of an empty topology.
+    ///
+    /// Reads the same per-bus data [`layout_support`](Self::layout_support)
+    /// summarises, so a caller that got [`LayoutSupport::Partial`] uses this to
+    /// find which buses actually answered.
+    pub fn input_bus_topology(&self, bus: usize) -> Option<&ChannelTopology> {
+        self.loaded.input_bus_topology(bus)
+    }
+
+    /// Which speaker each channel of one output bus feeds. See
+    /// [`input_bus_topology`](Self::input_bus_topology).
+    pub fn output_bus_topology(&self, bus: usize) -> Option<&ChannelTopology> {
+        self.loaded.output_bus_topology(bus)
     }
 
     pub fn name(&self) -> &str {

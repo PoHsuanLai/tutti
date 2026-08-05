@@ -92,6 +92,14 @@ impl Vst2Instance {
                 tail: PluginTail::Unknown,
                 features,
                 probed,
+                // VST2 reports no speaker placement. `effSetSpeakerArrangement`
+                // (opcode 42) exists, but the `VstSpeakerArrangement` struct its
+                // ABI needs is not defined anywhere in the vendored bindings and
+                // the host never sends it — see D-11 in the plugin-host audit.
+                // Empty lists claim nothing about any bus, which is the honest
+                // answer for a format that cannot be asked.
+                input_topology: Default::default(),
+                output_topology: Default::default(),
             };
 
             let scratch =

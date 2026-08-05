@@ -707,53 +707,118 @@ pub struct AmbisonicConfig {
 }
 
 /// Surround speaker positions (matches CLAP's `CLAP_SURROUND_*` constants).
+///
+/// # Why an `Unknown` arm, and why no `#[repr(u8)]`
+///
+/// The channel map is **positional**: `map[i]` is the speaker fed by channel
+/// `i`. So a position this crate cannot name must still occupy its slot —
+/// dropping it renumbers every channel after it, turning one unnameable
+/// speaker into a silently wrong routing for the whole tail of the bus. That is
+/// what [`Unknown`](Self::Unknown) is for: it carries the raw value verbatim so
+/// the map keeps its length and its indices.
+///
+/// The realistic source of one is a CLAP revision adding a position past
+/// `CLAP_SURROUND_TSR` — the same open-catalog reason `AuLayoutTag` carries an
+/// `Unknown` arm. A closed enum would turn that release into either a decode
+/// failure or a shifted map.
+///
+/// The `#[repr(u8)]` went with it: a payload variant cannot carry explicit
+/// discriminants. The wire values live in [`from_position`](Self::from_position)
+/// and [`position`](Self::position), which is where a reader checks them
+/// against the header anyway.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u8)]
 pub enum SurroundChannel {
-    FrontLeft = 0,
-    FrontRight = 1,
-    FrontCenter = 2,
-    LowFrequency = 3,
-    BackLeft = 4,
-    BackRight = 5,
-    FrontLeftCenter = 6,
-    FrontRightCenter = 7,
-    BackCenter = 8,
-    SideLeft = 9,
-    SideRight = 10,
-    TopCenter = 11,
-    TopFrontLeft = 12,
-    TopFrontCenter = 13,
-    TopFrontRight = 14,
-    TopBackLeft = 15,
-    TopBackCenter = 16,
-    TopBackRight = 17,
+    FrontLeft,
+    FrontRight,
+    FrontCenter,
+    LowFrequency,
+    BackLeft,
+    BackRight,
+    FrontLeftCenter,
+    FrontRightCenter,
+    BackCenter,
+    SideLeft,
+    SideRight,
+    TopCenter,
+    TopFrontLeft,
+    TopFrontCenter,
+    TopFrontRight,
+    TopBackLeft,
+    TopBackCenter,
+    TopBackRight,
+    /// `CLAP_SURROUND_TSL` (18).
+    TopSideLeft,
+    /// `CLAP_SURROUND_TSR` (19) — the last position CLAP defines.
+    TopSideRight,
+    /// A position this crate does not name, carried verbatim.
+    ///
+    /// Keeps the channel's slot in a positional map (see the type docs) and
+    /// lets the raw value be echoed back or logged.
+    Unknown(u8),
 }
 
 impl SurroundChannel {
-    /// Map a raw CLAP surround channel ID to a [`SurroundChannel`]. Returns
-    /// `None` for IDs outside the known range.
-    pub fn from_position(pos: u8) -> Option<Self> {
+    /// Map a raw CLAP surround channel ID to a [`SurroundChannel`].
+    ///
+    /// Total: an unrecognised id becomes [`Unknown`](Self::Unknown) rather than
+    /// `None`, because the caller decodes a *positional* map and has no way to
+    /// represent "channel 4's speaker is unreadable" other than by keeping the
+    /// slot.
+    pub fn from_position(pos: u8) -> Self {
         match pos {
-            0 => Some(Self::FrontLeft),
-            1 => Some(Self::FrontRight),
-            2 => Some(Self::FrontCenter),
-            3 => Some(Self::LowFrequency),
-            4 => Some(Self::BackLeft),
-            5 => Some(Self::BackRight),
-            6 => Some(Self::FrontLeftCenter),
-            7 => Some(Self::FrontRightCenter),
-            8 => Some(Self::BackCenter),
-            9 => Some(Self::SideLeft),
-            10 => Some(Self::SideRight),
-            11 => Some(Self::TopCenter),
-            12 => Some(Self::TopFrontLeft),
-            13 => Some(Self::TopFrontCenter),
-            14 => Some(Self::TopFrontRight),
-            15 => Some(Self::TopBackLeft),
-            16 => Some(Self::TopBackCenter),
-            17 => Some(Self::TopBackRight),
-            _ => None,
+            0 => Self::FrontLeft,
+            1 => Self::FrontRight,
+            2 => Self::FrontCenter,
+            3 => Self::LowFrequency,
+            4 => Self::BackLeft,
+            5 => Self::BackRight,
+            6 => Self::FrontLeftCenter,
+            7 => Self::FrontRightCenter,
+            8 => Self::BackCenter,
+            9 => Self::SideLeft,
+            10 => Self::SideRight,
+            11 => Self::TopCenter,
+            12 => Self::TopFrontLeft,
+            13 => Self::TopFrontCenter,
+            14 => Self::TopFrontRight,
+            15 => Self::TopBackLeft,
+            16 => Self::TopBackCenter,
+            17 => Self::TopBackRight,
+            18 => Self::TopSideLeft,
+            19 => Self::TopSideRight,
+            other => Self::Unknown(other),
+        }
+    }
+
+    /// The raw CLAP position id, the inverse of
+    /// [`from_position`](Self::from_position).
+    ///
+    /// Exists because the enum no longer carries `#[repr(u8)]` (see the type
+    /// docs), so `as u8` is not available — and because a round trip is what
+    /// pins the two tables against each other.
+    pub fn position(self) -> u8 {
+        match self {
+            Self::FrontLeft => 0,
+            Self::FrontRight => 1,
+            Self::FrontCenter => 2,
+            Self::LowFrequency => 3,
+            Self::BackLeft => 4,
+            Self::BackRight => 5,
+            Self::FrontLeftCenter => 6,
+            Self::FrontRightCenter => 7,
+            Self::BackCenter => 8,
+            Self::SideLeft => 9,
+            Self::SideRight => 10,
+            Self::TopCenter => 11,
+            Self::TopFrontLeft => 12,
+            Self::TopFrontCenter => 13,
+            Self::TopFrontRight => 14,
+            Self::TopBackLeft => 15,
+            Self::TopBackCenter => 16,
+            Self::TopBackRight => 17,
+            Self::TopSideLeft => 18,
+            Self::TopSideRight => 19,
+            Self::Unknown(raw) => raw,
         }
     }
 }

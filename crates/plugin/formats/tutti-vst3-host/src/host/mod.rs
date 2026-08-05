@@ -13,6 +13,7 @@ mod midi_learn;
 mod midi_mapping;
 mod module_entry;
 mod plugin_state;
+mod speakers;
 
 pub use instance::Vst3Instance;
 pub use library::{factory_flags, ClassInfo, FactoryInfo, Vst3Library};

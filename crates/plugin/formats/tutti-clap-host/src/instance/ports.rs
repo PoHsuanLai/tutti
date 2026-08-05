@@ -7,6 +7,7 @@ use crate::types::{
     AudioPortInfo, ChannelLayout, NoteDialect, NoteDialects, NoteName, NotePortInfo,
     SurroundChannel, VoiceInfo,
 };
+use tutti_types::ChannelTopology;
 // Audio-port *reconfiguration* is speculative (gated); the type it consumes.
 #[cfg(feature = "clap-extras")]
 use crate::types::AudioPortConfigRequest;
@@ -563,7 +564,11 @@ impl ClapLoaded {
     }
 
     /// Retrieve the channel-to-speaker mapping the plugin uses on a port.
-    /// Unknown positions are dropped silently.
+    ///
+    /// The result is indexed **by channel**: element `i` is the speaker fed by
+    /// channel `i`, so it always has `count` elements. A position this crate
+    /// cannot name arrives as [`SurroundChannel::Unknown`] rather than being
+    /// dropped — omitting it would renumber every channel after it.
     ///
     /// `None` means the plugin cannot answer — no `clap.surround` extension or
     /// no `get_channel_map`. An empty `Vec` means it answered with no channels:
@@ -594,6 +599,24 @@ impl ClapLoaded {
         } as usize;
         decode_surround_channel_map(&map, count)
     }
+
+    /// The channel-to-speaker mapping for a port as a [`ChannelTopology`].
+    ///
+    /// The same query as
+    /// [`get_surround_channel_map`](Self::get_surround_channel_map), in the
+    /// shared vocabulary the other format hosts also speak — so a caller can
+    /// ask "which speaker is channel 3" without knowing it is holding a CLAP
+    /// plugin.
+    ///
+    /// `None` for the same reason: the plugin has no `clap.surround` extension
+    /// or no `get_channel_map`, which is distinct from answering with no
+    /// channels. Nothing is lost in the conversion — a position this crate
+    /// cannot name arrives as [`Speaker::Unknown`](tutti_types::Speaker::Unknown)
+    /// and keeps its channel's slot.
+    pub fn surround_topology(&self, is_input: bool, port_index: u32) -> Option<ChannelTopology> {
+        self.get_surround_channel_map(is_input, port_index)
+            .map(|map| crate::topology::topology_of(&map))
+    }
 }
 
 /// Decode the first `count` entries of a plugin-filled surround channel map.
@@ -607,10 +630,13 @@ fn decode_surround_channel_map(map: &[u8], count: usize) -> Option<Vec<SurroundC
     if count > map.len() {
         return None;
     }
+    // `map`, not `filter_map`: the result is indexed by channel, so an
+    // unnameable position must keep its slot. Filtering shortened the vector
+    // and renumbered every channel after the dropped one.
     Some(
         map[..count]
             .iter()
-            .filter_map(|&pos| SurroundChannel::from_position(pos))
+            .map(|&pos| SurroundChannel::from_position(pos))
             .collect(),
     )
 }
@@ -709,6 +735,53 @@ mod surround_map_tests {
         assert_eq!(
             decoded,
             vec![SurroundChannel::FrontLeft, SurroundChannel::FrontRight]
+        );
+    }
+
+    /// Every position CLAP defines decodes, including the top-side pair.
+    ///
+    /// `CLAP_SURROUND_TSL`/`TSR` (18/19, `surround.h:55-56`) are the last two
+    /// constants and the ones a 7.1.4 / Atmos bed actually uses. They were
+    /// missing, which the next test shows is worse than a missing name.
+    #[test]
+    fn every_clap_position_decodes() {
+        let map: Vec<u8> = (0..=19).collect();
+        let decoded = decode_surround_channel_map(&map, map.len()).expect("valid count");
+        assert_eq!(
+            decoded.len(),
+            20,
+            "CLAP defines positions 0..=19; a short result means one was dropped"
+        );
+        assert_eq!(decoded[18], SurroundChannel::TopSideLeft);
+        assert_eq!(decoded[19], SurroundChannel::TopSideRight);
+    }
+
+    /// An unknown position keeps its channel's slot instead of collapsing it.
+    ///
+    /// The map is **positional** — `map[i]` is the speaker fed by channel `i` —
+    /// so dropping an entry silently renumbers every channel after it. That is
+    /// the failure this guards: a 12-channel bed whose channel 4 is unreadable
+    /// must not report channel 5's speaker as channel 4's.
+    ///
+    /// A future CLAP revision adding position 20 is the realistic source of an
+    /// unknown value, which is why this is `Unknown(u8)` rather than an error:
+    /// one unnameable speaker should not discard the eleven that decoded.
+    #[test]
+    fn an_unknown_position_holds_its_slot_rather_than_shifting_the_rest() {
+        // Positions 0..=3 then an unallocated one, then 5.
+        let map = [0u8, 1, 2, 3, 200, 5];
+        let decoded = decode_surround_channel_map(&map, 6).expect("valid count");
+
+        assert_eq!(
+            decoded.len(),
+            6,
+            "one unreadable position must not shorten a positional map"
+        );
+        assert_eq!(decoded[4], SurroundChannel::Unknown(200));
+        assert_eq!(
+            decoded[5],
+            SurroundChannel::BackRight,
+            "channel 5 must still report its own speaker, not channel 4's"
         );
     }
 }

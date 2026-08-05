@@ -10,10 +10,14 @@ categories = ["multimedia::audio"]
 
 [features]
 # Enables `Serialize`/`Deserialize` on wire-carried value types: `ChannelLayout`
-# (which rides the plugin-load IPC reply via `BusChannels`), the meter vocabulary
-# (which round-trips through the host's document), and the unit newtypes the
-# latter is built from.
-serde = ["dep:serde"]
+# (which rides the plugin-load IPC reply via `BusChannels`), `ChannelTopology`
+# (which rides the same reply once the format hosts report placement), the meter
+# vocabulary (which round-trips through the host's document), and the unit
+# newtypes the latter is built from.
+#
+# `smallvec/serde` because `ChannelTopology` stores its positions inline; the
+# same edge `tutti-plugin-types` already carries for `BusChannels`.
+serde = ["dep:serde", "smallvec/serde"]
 # Enables `Reflect` on the unit newtypes and the param vocabulary, so a Bevy
 # component built from them can be inspected and scene-serialized. Reflection
 # only — no `Component`/`Resource` derives: an app stores a `Volume`, never a

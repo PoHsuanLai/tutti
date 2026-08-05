@@ -241,9 +241,21 @@ impl ClapInstance {
             // Per-bus channel counts, main bus first (e.g. [2, 1] = stereo main
             // + mono sidechain). Falls back to a single aggregate main bus for
             // plugins that don't implement the `audio-ports` extension.
+            // Per port, from `clap.surround`. `None` for a port the plugin
+            // will not answer for — no extension, or no `get_channel_map`.
+            let port_topology = |is_input: bool, count: usize| {
+                (0..count)
+                    .map(|i| loaded.surround_topology(is_input, i as u32))
+                    .collect()
+            };
+            let input_topology = port_topology(true, input_buses.len());
+            let output_topology = port_topology(false, output_buses.len());
+
             let mut loaded_meta = LoadedPlugin {
                 inputs: input_buses,
                 outputs: output_buses,
+                input_topology,
+                output_topology,
                 latency_samples: Samples::ZERO,
                 // Both filled in after activation, below.
                 tail: PluginTail::Unknown,

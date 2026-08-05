@@ -111,3 +111,36 @@ fn handle_midi_sender_available() {
     // Cloning is cheap and the sender outlives the function — that's
     // the surface contract we care about.
 }
+
+/// VST2 reports no speaker placement, and the handle says so plainly.
+///
+/// The end-to-end half of `LayoutSupport`: a real plugin, loaded through the
+/// real path, reporting `None` because the format has no way to be asked —
+/// `effSetSpeakerArrangement` needs a `VstSpeakerArrangement` struct the
+/// vendored bindings do not define, and the host never sends it.
+///
+/// Worth an integration test rather than only a unit one: the unit tests build
+/// a `LoadedPlugin` by hand, so they would still pass if the VST2 loader
+/// silently populated the field with something. This asserts the loader's own
+/// answer.
+#[test]
+#[ignore]
+fn a_vst2_plugin_reports_no_channel_topology() {
+    use tutti_plugin_types::LayoutSupport;
+
+    let _lock = PLUGIN_LOAD_LOCK.lock().unwrap();
+    let (_unit, handle) =
+        tutti_plugin::in_process_vst2(Path::new(VST2_PLUGIN), 48_000.0).expect("load failed");
+
+    assert_eq!(
+        handle.layout_support(),
+        LayoutSupport::None,
+        "VST2 cannot be asked for speaker placement, so nothing may claim it can"
+    );
+    assert_eq!(handle.input_bus_topology(0), None);
+    assert_eq!(handle.output_bus_topology(0), None);
+
+    // The widths are still reported, unchanged by any of this — the placement
+    // half being absent must not disturb the count half.
+    assert_eq!(handle.loaded().total_outputs(), 2);
+}

@@ -259,6 +259,12 @@ impl StreamConfig {
     /// no value to disagree with, and `MaximumFramesPerSlice` is optional. Only a
     /// value the AU reports *differently* is rejected.
     ///
+    /// Called on both paths that write the property: every load, through
+    /// [`AuLoaded`](crate::instance::AuLoaded)'s shared constructor tail, and
+    /// every resize, through
+    /// [`AuInstance::set_block_size`](crate::instance::AuInstance::set_block_size).
+    /// The load path is the one a host cannot avoid taking.
+    ///
     /// # Errors
     /// [`AuError::BlockSizeRejected`] carrying both figures, because "the AU
     /// allocated 512 while the host thinks 2048" is the only diagnosable form of

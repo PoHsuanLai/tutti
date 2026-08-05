@@ -156,6 +156,8 @@ pub use tutti_plugin_types::mark_main_thread;
 // `PluginClient::set_automation_state` takes this, so callers must be able to
 // name it without depending on tutti-plugin-types directly.
 pub use tutti_plugin_types::AutomationMode;
+// Likewise for `PluginHandle::set_render_mode` / `Plugin::set_render_mode`.
+pub use tutti_plugin_types::RenderMode;
 
 /// Building blocks for out-of-crate in-process loaders.
 ///
@@ -181,6 +183,15 @@ pub mod backend {
 /// behind the `vst2` feature.
 #[cfg(feature = "vst2")]
 pub use format::vst2_in_process::load as in_process_vst2;
+
+/// [`in_process_vst2`], keeping the concrete node instead of boxing it.
+///
+/// The node implements `AudioUnit` twice — once at f32, once at f64 — and a
+/// `Box<dyn AudioUnit>` erases the second. A caller driving the f64 path, or
+/// one needing the node's own surface (its MIDI port, its render mode), takes
+/// this instead.
+#[cfg(feature = "vst2")]
+pub use format::vst2_in_process::{load_client as in_process_vst2_client, InProcessVst2Client};
 
 /// Discovering, persisting, and loading plugins — pick your layer.
 ///

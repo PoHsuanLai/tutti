@@ -15,7 +15,7 @@
 
 use crate::{
     AudioBufferMut, EditorSize, LoadedPlugin, ParamAddress, ParameterInfo, PluginDescriptor,
-    ProcessContext, ProcessOutput, Result, WindowHandle,
+    ProcessContext, ProcessOutput, RenderMode, Result, WindowHandle,
 };
 
 /// Catalog identity + load-time engine-wiring snapshot.
@@ -47,6 +47,29 @@ pub trait PluginAudio: Send {
     ) -> Result<ProcessOutput>;
 
     fn set_sample_rate(&mut self, rate: f64);
+
+    /// Tell the plugin whether it is rendering under realtime pressure.
+    ///
+    /// Configure-time, beside [`set_sample_rate`](Self::set_sample_rate), and
+    /// for the same reason: three of the four formats can only accept it while
+    /// the plugin is deactivated, and a plugin may size buffers from it. See
+    /// [`RenderMode`] for why this is not a per-block field.
+    ///
+    /// Returns whether the plugin *accepted* the mode, so a caller can tell a
+    /// refusal from a plugin that was never asked — the same
+    /// absent-vs-reported split
+    /// [`FeatureReport`](crate::FeatureReport) makes one level up. The default
+    /// returns `false`: a host that has not implemented this for a format must
+    /// not claim the plugin is honouring it.
+    ///
+    /// Implementations are responsible for the deactivate/reactivate bracket
+    /// their format requires, and should be a no-op when the mode is unchanged
+    /// — an offline bounce sets it once, but a caller is entitled to be
+    /// idempotent.
+    fn set_render_mode(&mut self, mode: RenderMode) -> bool {
+        let _ = mode;
+        false
+    }
 }
 
 /// Parameter enumeration, read, and write.
@@ -126,17 +149,19 @@ pub trait PluginState: Send {
 ///
 /// Distinct from the host-side `PluginEditor` (the second, editor-only dlopen
 /// in the main process): this is the editor surface a loader exposes *from
-/// inside* the plugin-server subprocess. Only the in-process VST2 host drives a real
-/// editor here; the subprocess-hosted formats run their editor on the platform
-/// GUI toolkit's own run loop and inherit the [`editor_idle`](Self::editor_idle)
-/// default no-op.
+/// inside* the plugin-server subprocess, where the editor runs on the platform
+/// GUI toolkit's own run loop.
+///
+/// **Idle ticking is not here.** Every editor this codebase pumps — including
+/// the in-process VST2 one — is pumped through the host-side surface
+/// (`HostEditor::editor_idle`, driven per frame by
+/// `bevy_tutti::plugin_host::editor`). This trait carried an `editor_idle` with
+/// a default no-op body, no implementor and no caller; a second pump path
+/// beside the working one would give one thing two writers, so it was removed
+/// rather than filled in.
 pub trait PluginEditorHost {
     fn open_editor(&mut self, parent: WindowHandle) -> Result<EditorSize>;
     fn close_editor(&mut self);
-    /// Pump one editor idle tick. Only the in-process VST2 host needs this (its
-    /// `AEffect` editor is driven by host-timer idle calls); everything else
-    /// inherits this default no-op.
-    fn editor_idle(&mut self) {}
 }
 
 /// A loaded plugin instance: the full capability bundle a format loader

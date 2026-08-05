@@ -94,6 +94,22 @@ bitflags! {
         /// [`Features::AUTOMATION_STATE`], both preset bits are edge-triggered
         /// host→plugin actions and so stay out of [`Features::CONSUMES`].
         const PRESET_LOAD = 1 << 11;
+
+        // --- Render mode (host → plugin advisory — NOT a per-block feed) ---
+        /// Plugin can be told whether it is rendering under realtime pressure
+        /// (see [`RenderMode`](crate::RenderMode)).
+        ///
+        /// A *reaction* gate like [`Features::AUTOMATION_STATE`], so it stays
+        /// out of [`Features::CONSUMES`]: the mode is set once while the plugin
+        /// is deactivated, not sent per block.
+        ///
+        /// The flag reports whether the *plugin* answered, not whether the
+        /// format has the concept — all four do. It is clear for a CLAP plugin
+        /// that does not implement `clap.render` (the extension is optional by
+        /// design: *"If this information does not influence your rendering
+        /// code, then don't implement this extension"*) and for an AU that
+        /// rejects the property write.
+        const RENDER_MODE = 1 << 12;
     }
 }
 
@@ -202,6 +218,10 @@ pub mod probed {
     /// The preset bits are *answered*, not skipped: VST3 routes program
     /// selection through a parameter flagged `kIsProgramChange`, so there is no
     /// separate preset mechanism to report. Both bits are probed and clear.
+    ///
+    /// `RENDER_MODE` is answered unconditionally: `processMode` is a field on
+    /// the `ProcessSetup` every VST3 plugin is configured with, so there is no
+    /// per-plugin query that could decline.
     pub const VST3: Features = Features::all().difference(Features::AUTOMATION_STATE);
 
     /// CLAP probes everything except sequencer context (no chord/scale events in
@@ -211,21 +231,32 @@ pub mod probed {
     /// through the preset-*discovery* extension, which is a factory-level query
     /// this host does not bind. `CLAP_EXT_PRESET_LOAD` answers only whether a
     /// preset can be loaded from a path, so it cannot stand in for the list.
+    ///
+    /// `RENDER_MODE` *is* probed, and is the one bit here a plugin can decline
+    /// by omission: `clap.render` is optional by design, so a plugin that does
+    /// not implement it answers `Some(false)` rather than silence.
     pub const CLAP: Features = Features::all()
         .difference(Features::SEQUENCER_CONTEXT)
         .difference(Features::AUTOMATION_STATE)
         .difference(Features::PRESET_LIST);
 
-    /// VST2 answers five, in or out of process. It has no query for editor
+    /// VST2 answers six, in or out of process. It has no query for editor
     /// resize, note expression, or sequencer context, and neither loader probes
     /// `effCanDo` for sample-accurate automation.
+    ///
+    /// `RENDER_MODE` is answered unconditionally: the mode rides
+    /// `audioMasterGetCurrentProcessLevel`, a callback the *host* answers
+    /// whenever the plugin asks, so there is nothing to query and no plugin
+    /// that can decline.
     pub const VST2: Features = Features::F64_AUDIO
         .union(Features::MIDI_IN)
         .union(Features::MIDI_OUT)
         .union(Features::EDITOR)
-        .union(Features::TRANSPORT);
+        .union(Features::TRANSPORT)
+        .union(Features::RENDER_MODE);
 
-    /// AU answers four: MIDI input, the editor, and both preset bits. The rest
+    /// AU answers five: MIDI input, the editor, both preset bits, and the render
+    /// mode. The rest
     /// are unimplemented in this host, not declined by the units.
     ///
     /// `MIDI_IN` is answered from the component type — an AU is an instrument,
@@ -240,10 +271,15 @@ pub mod probed {
     /// The preset bits are live-probed together because one AU property backs
     /// both: a unit answering `kAudioUnitProperty_FactoryPresets` can be asked
     /// to load any preset it listed.
+    ///
+    /// `RENDER_MODE` is live-probed: `kAudioUnitProperty_OfflineRender` is
+    /// optional, and a unit that does not implement it fails the write, so the
+    /// bit reports whether *this* unit accepted the mode.
     pub const AU: Features = Features::MIDI_IN
         .union(Features::EDITOR)
         .union(Features::PRESET_LIST)
-        .union(Features::PRESET_LOAD);
+        .union(Features::PRESET_LOAD)
+        .union(Features::RENDER_MODE);
 }
 
 #[cfg(test)]
@@ -338,15 +374,19 @@ mod tests {
     fn each_loader_claims_only_what_it_probes() {
         assert_eq!(
             probed::AU,
-            Features::MIDI_IN | Features::EDITOR | Features::PRESET_LIST | Features::PRESET_LOAD
+            Features::MIDI_IN
+                | Features::EDITOR
+                | Features::PRESET_LIST
+                | Features::PRESET_LOAD
+                | Features::RENDER_MODE
         );
-        assert_eq!(probed::VST2.bits().count_ones(), 5);
+        assert_eq!(probed::VST2.bits().count_ones(), 6);
         assert!(!probed::VST3.contains(Features::AUTOMATION_STATE));
         assert!(!probed::CLAP.contains(Features::SEQUENCER_CONTEXT));
     }
 
     /// The AU loader probes MIDI input, the editor and the two preset bits; the
-    /// remaining six read as "nobody asked" rather than as refusals. This is the
+    /// remaining five read as "nobody asked" rather than as refusals. This is the
     /// gap the mask exists to expose.
     #[test]
     fn the_au_loader_leaves_the_unimplemented_capabilities_unasked() {

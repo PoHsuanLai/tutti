@@ -34,6 +34,8 @@ use num_traits::Float;
 use vst::api::{self, AEffect, HostCallbackProc, Supported};
 use vst::buffer::AudioBuffer;
 use vst::editor::Editor;
+// `update_display` and `get_process_level` are `Host` methods on the callback,
+// not `Plugin` ones.
 use vst::host::Host as _;
 use vst::plugin::{CanDo, HostCallback, Info, Plugin, PluginParameters};
 
@@ -270,6 +272,19 @@ impl ProbePlugin {
         });
     }
 
+    /// Snapshot the host's `audioMasterGetCurrentProcessLevel` answer.
+    ///
+    /// Asked once per render, because the level is a per-block property: a
+    /// bounce sets it before pulling and clears it afterwards, so a probe that
+    /// asked only at load would report the wrong answer for the whole render.
+    fn capture_process_level(&self) {
+        let level = self.host.get_process_level();
+        capture::with_capture(|cap| {
+            cap.process_level_queries = cap.process_level_queries.saturating_add(1);
+            cap.process_level = level as i32;
+        });
+    }
+
     /// Record the geometry of a render call and return whether the probe
     /// should actually write output.
     fn begin_process(&self, entry: ProcessEntry, samples: usize) -> bool {
@@ -282,6 +297,7 @@ impl ProbePlugin {
             cap.entry = entry;
         });
         self.capture_time_info();
+        self.capture_process_level();
 
         // A refused resume renders silence — see
         // `tutti_vst2_probe_set_refuse_resume` for why in substance rather
@@ -323,7 +339,16 @@ impl Plugin for ProbePlugin {
             // struct directly rather than dispatching `effGetPlugCategory`, so
             // the code must agree with the enum beside it.
             category_code: self.config.category as i32,
-            initial_delay: self.config.initial_delay,
+            // The construction-time figure, plus any latency the probe only
+            // declares once it knows its rate. A host that copies this before
+            // `effSetSampleRate` sees the former and misses the latter, which
+            // is the case D-4 is about.
+            initial_delay: self.config.initial_delay
+                + if switches::rate_known() {
+                    switches::late_latency()
+                } else {
+                    0
+                },
             preset_chunks: self.config.preset_chunks,
             f64_precision: self.config.f64_precision,
             silent_when_stopped: false,
@@ -336,10 +361,21 @@ impl Plugin for ProbePlugin {
 
     fn set_sample_rate(&mut self, rate: f32) {
         capture::with_capture(|cap| cap.sample_rate = rate);
+        // From here on `get_info().initial_delay` reports the late figure — see
+        // `switches::late_latency`. The dispatch writes it back into the
+        // `AEffect` after this returns.
+        switches::set_rate_known(true);
     }
 
     fn set_block_size(&mut self, size: i64) {
         capture::with_capture(|cap| cap.max_block_size = size);
+    }
+
+    fn set_precision(&mut self, double: bool) {
+        capture::with_capture(|cap| {
+            cap.set_precision_count = cap.set_precision_count.saturating_add(1);
+            cap.set_precision_value = double as i32;
+        });
     }
 
     fn resume(&mut self) {
@@ -348,6 +384,11 @@ impl Plugin for ProbePlugin {
         // in behaviour: stay suspended, render silence. The count above still
         // increments, separating "host never resumed" from "plugin declined".
         switches::set_resumed(!switches::refuse_resume());
+        if switches::fire_update_display() {
+            // What a plugin does after switching preset from its own editor:
+            // tell the host the parameter view it holds is stale.
+            self.host.update_display();
+        }
     }
 
     fn suspend(&mut self) {

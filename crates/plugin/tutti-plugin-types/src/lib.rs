@@ -23,6 +23,7 @@ pub mod note_expression;
 pub mod note_id;
 pub mod parameters;
 pub mod process;
+pub mod render_mode;
 pub mod transport;
 
 pub use tutti_types::ChannelLayout;
@@ -62,6 +63,7 @@ pub use note_expression::{NoteExpressionChanges, NoteExpressionType, NoteExpress
 pub use note_id::{note_id_for, note_id_to_channel_note, MAX_HOST_NOTE_ID};
 pub use parameters::{ParamAddress, ParamFlags, ParamId, ParamRange, ParamSteps, ParameterInfo};
 pub use process::{ExpressiveContext, ProcessContext, ProcessOutput};
+pub use render_mode::RenderMode;
 pub use transport::{
     is_usable, BarInfo, LoopRegion, MusicalTiming, TransportFlags, TransportInfo, TransportPosition,
 };

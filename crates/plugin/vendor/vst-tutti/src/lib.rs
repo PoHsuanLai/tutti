@@ -298,9 +298,40 @@ mod tests {
 
     struct TestPlugin;
 
+    /// Minimal editor, so `effEditGetRect` reaches its dispatch arm.
+    ///
+    /// Without an editor that opcode returns 0 through the `if let Some(..)`
+    /// and never touches the rect at all — the arm would be unreachable from
+    /// any test here.
+    struct TestEditor;
+
+    impl crate::editor::Editor for TestEditor {
+        fn size(&self) -> (i32, i32) {
+            (320, 240)
+        }
+
+        fn position(&self) -> (i32, i32) {
+            (10, 20)
+        }
+
+        fn open(&mut self, _parent: *mut c_void) -> bool {
+            false
+        }
+
+        fn close(&mut self) {}
+
+        fn is_open(&mut self) -> bool {
+            false
+        }
+    }
+
     impl Plugin for TestPlugin {
         fn new(_host: HostCallback) -> Self {
             TestPlugin
+        }
+
+        fn get_editor(&mut self) -> Option<Box<dyn crate::editor::Editor>> {
+            Some(Box::new(TestEditor))
         }
 
         fn get_info(&self) -> Info {
@@ -443,6 +474,98 @@ mod tests {
         assert_opt_fn_eq!(
             aeffect.processReplacingF64,
             interfaces::process_replacing_f64
+        );
+    }
+
+    /// `effEditGetRect` hands back the same buffer every time.
+    ///
+    /// The opcode's `Rect**` out-parameter has no companion "free this"
+    /// opcode, and the host cannot know the plugin's allocator — so whatever it
+    /// is pointed at must be owned by the plugin and outlive the call. A
+    /// `Box::into_raw` per call satisfies the lifetime and leaks a `Rect` every
+    /// time, and hosts call this repeatedly: once before opening an editor, and
+    /// again on each resize.
+    ///
+    /// Pointer identity is the observable form of that: a fresh allocation
+    /// gives a different address, a reused buffer gives the same one.
+    #[test]
+    fn edit_get_rect_reuses_one_buffer_rather_than_leaking_per_call() {
+        use crate::plugin::OpCode;
+
+        let aeffect = unsafe { &mut *VSTPluginMain(pass_callback) };
+        let dispatch = aeffect.dispatcher.expect("dispatcher must be installed");
+
+        let mut first: *mut c_void = ptr::null_mut();
+        let mut second: *mut c_void = ptr::null_mut();
+
+        let ok = unsafe {
+            dispatch(
+                aeffect,
+                OpCode::EditorGetRect.into(),
+                0,
+                0,
+                &mut first as *mut _ as *mut c_void,
+                0.0,
+            )
+        };
+        assert_eq!(ok, 1, "the test plugin has an editor, so this must succeed");
+        assert!(
+            !first.is_null(),
+            "a successful get-rect must write a pointer"
+        );
+
+        unsafe {
+            dispatch(
+                aeffect,
+                OpCode::EditorGetRect.into(),
+                0,
+                0,
+                &mut second as *mut _ as *mut c_void,
+                0.0,
+            );
+        }
+
+        assert_eq!(
+            first, second,
+            "each call handed back a fresh allocation, so every get-rect leaks \
+             one Rect — and nothing in VST 2.4 lets the host free it"
+        );
+    }
+
+    /// The rect carries the editor's origin as well as its extent.
+    ///
+    /// `effEditGetRect` reports `left`/`top`/`right`/`bottom`, so the extent is
+    /// a *difference* — a plugin whose editor sits at a non-zero origin has a
+    /// right edge past its width. Writing the size into the origin fields would
+    /// still produce the correct width for the common `(0, 0)` case, which is
+    /// why the test editor sits at `(10, 20)`.
+    #[test]
+    fn edit_get_rect_reports_origin_and_extent() {
+        use crate::editor::Rect;
+        use crate::plugin::OpCode;
+
+        let aeffect = unsafe { &mut *VSTPluginMain(pass_callback) };
+        let dispatch = aeffect.dispatcher.expect("dispatcher must be installed");
+
+        let mut out: *mut Rect = ptr::null_mut();
+        unsafe {
+            dispatch(
+                aeffect,
+                OpCode::EditorGetRect.into(),
+                0,
+                0,
+                &mut out as *mut _ as *mut c_void,
+                0.0,
+            );
+        }
+        assert!(!out.is_null());
+
+        let rect = unsafe { *out };
+        assert_eq!((rect.left, rect.top), (10, 20), "origin");
+        assert_eq!(
+            (rect.right - rect.left, rect.bottom - rect.top),
+            (320, 240),
+            "extent is the difference between the edges, not the edges"
         );
     }
 }

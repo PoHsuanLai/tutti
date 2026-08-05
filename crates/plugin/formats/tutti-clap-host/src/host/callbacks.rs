@@ -3,7 +3,12 @@ use super::state::PosixFdEntry;
 use super::state::{HostState, TimerEntry};
 use crate::types::{TrackPortType, TransportRequest, UndoChange};
 use clap_sys::ext::ambisonic::{clap_host_ambisonic, CLAP_PORT_AMBISONIC};
-use clap_sys::ext::audio_ports::{clap_host_audio_ports, CLAP_PORT_MONO, CLAP_PORT_STEREO};
+use clap_sys::ext::audio_ports::{
+    clap_host_audio_ports, CLAP_AUDIO_PORTS_RESCAN_CHANNEL_COUNT, CLAP_AUDIO_PORTS_RESCAN_FLAGS,
+    CLAP_AUDIO_PORTS_RESCAN_IN_PLACE_PAIR, CLAP_AUDIO_PORTS_RESCAN_LIST,
+    CLAP_AUDIO_PORTS_RESCAN_NAMES, CLAP_AUDIO_PORTS_RESCAN_PORT_TYPE, CLAP_PORT_MONO,
+    CLAP_PORT_STEREO,
+};
 use clap_sys::ext::audio_ports_config::clap_host_audio_ports_config;
 use clap_sys::ext::context_menu::{
     clap_context_menu_builder, clap_context_menu_target, clap_host_context_menu,
@@ -276,12 +281,13 @@ unsafe extern "C" fn host_gui_request_hide(_host: *const ClapHostVtable) -> bool
 unsafe extern "C" fn host_gui_closed(host: *const ClapHostVtable, was_destroyed: bool) {
     if let Some(state) = get_host_state(host) {
         state.gui.closed.store(true, Ordering::Release);
-        // H5: `was_destroyed` means the plugin already destroyed its own
-        // editor. Record it so `close_editor` skips hide/destroy and only
-        // clears the created flag — calling `gui.destroy` again is a
-        // double-destroy the spec forbids.
+        // `was_destroyed` reports the plugin's *window* is gone. Record it so
+        // `close_editor` skips `gui.hide` — there is no window left to hide —
+        // while still calling `gui.destroy`, which `ext/gui.h` requires the
+        // host call "to acknowledge the gui destruction" and which releases
+        // what `create` allocated.
         if was_destroyed {
-            state.gui.already_destroyed.store(true, Ordering::Release);
+            state.gui.window_destroyed.store(true, Ordering::Release);
         }
     }
 }
@@ -291,16 +297,44 @@ pub(super) static HOST_AUDIO_PORTS: clap_host_audio_ports = clap_host_audio_port
     rescan: Some(host_audio_ports_rescan),
 };
 
+/// Which rescan kinds this host can actually carry out.
+///
+/// Answering an unconditional `true` told the plugin the host handles every
+/// rescan kind, so it took the aggressive path instead of its conservative
+/// fallback — a promise about behaviour the host had not implemented, since the
+/// flags were being discarded a few lines below.
+///
+/// The answer is now the set the host really honours: the six flags defined in
+/// `ext/audio-ports.h`, which is exactly what `AudioPortsRescan` decodes and
+/// reports. An unknown bit gets `false` rather than a blanket yes, so a flag
+/// added by a later CLAP revision is declined until it is decoded here.
 unsafe extern "C" fn host_audio_ports_is_rescan_flag_supported(
     _host: *const ClapHostVtable,
-    _flag: u32,
+    flag: u32,
 ) -> bool {
-    true
+    const KNOWN: u32 = CLAP_AUDIO_PORTS_RESCAN_NAMES
+        | CLAP_AUDIO_PORTS_RESCAN_FLAGS
+        | CLAP_AUDIO_PORTS_RESCAN_CHANNEL_COUNT
+        | CLAP_AUDIO_PORTS_RESCAN_PORT_TYPE
+        | CLAP_AUDIO_PORTS_RESCAN_IN_PLACE_PAIR
+        | CLAP_AUDIO_PORTS_RESCAN_LIST;
+    // A plugin asks about one flag at a time, but a caller passing several must
+    // not get a `true` that only covers some of them.
+    flag != 0 && flag & !KNOWN == 0
 }
 
-unsafe extern "C" fn host_audio_ports_rescan(host: *const ClapHostVtable, _flags: u32) {
+unsafe extern "C" fn host_audio_ports_rescan(host: *const ClapHostVtable, flags: u32) {
     if let Some(state) = get_host_state(host) {
         state.audio_ports.changed.store(true, Ordering::Release);
+        // Accumulated for the same reason as `params.rescan` above: five of the
+        // six flags are `[!active]`, so a consumer must be able to tell a
+        // cosmetic name change from a channel-count change that invalidates
+        // every buffer width. OR so multiple rescans between polls don't lose
+        // bits.
+        state
+            .audio_ports
+            .rescan_flags
+            .fetch_or(flags, Ordering::Release);
     }
 }
 
@@ -710,19 +744,18 @@ pub(super) static HOST_THREAD_POOL: clap_host_thread_pool = clap_host_thread_poo
     request_exec: Some(host_thread_pool_request_exec),
 };
 
+/// Always rejects. `ext/thread-pool.h:57` defines the return as "true if the
+/// host **did execute** all the tasks" and the call as blocking until they are
+/// done, so `true` from a host with no pool tells the plugin work completed
+/// that never ran — for a plugin splitting voices across the pool, silence for
+/// every task past whatever it computed inline. `false` is the answer the
+/// header documents for this case (`:10-11`): the plugin then runs the tasks
+/// itself, in the worst case a single-threaded loop.
 unsafe extern "C" fn host_thread_pool_request_exec(
-    host: *const ClapHostVtable,
-    num_tasks: u32,
+    _host: *const ClapHostVtable,
+    _num_tasks: u32,
 ) -> bool {
-    if let Some(state) = get_host_state(host) {
-        state
-            .processing
-            .thread_pool_pending
-            .store(num_tasks, Ordering::Release);
-        true
-    } else {
-        false
-    }
+    false
 }
 
 pub(super) static HOST_TRIGGERS: clap_host_triggers = clap_host_triggers {
@@ -972,5 +1005,139 @@ unsafe extern "C" fn host_posix_fd_unregister(host: *const ClapHostVtable, fd: i
         fds.len() < len_before
     } else {
         false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `is_rescan_flag_supported` answers for the flags this host decodes, and
+    /// declines the rest.
+    ///
+    /// It used to return an unconditional `true`, which told the plugin the
+    /// host handled every rescan kind — so the plugin took its aggressive path
+    /// instead of a conservative fallback — while `host_audio_ports_rescan`
+    /// discarded the flags a few lines below. The promise and the behaviour
+    /// disagreed.
+    ///
+    /// A null host pointer is fine here: this callback answers from a constant
+    /// and never dereferences it.
+    #[test]
+    fn is_rescan_flag_supported_answers_for_the_flags_this_host_decodes() {
+        let known = [
+            (CLAP_AUDIO_PORTS_RESCAN_NAMES, "NAMES"),
+            (CLAP_AUDIO_PORTS_RESCAN_FLAGS, "FLAGS"),
+            (CLAP_AUDIO_PORTS_RESCAN_CHANNEL_COUNT, "CHANNEL_COUNT"),
+            (CLAP_AUDIO_PORTS_RESCAN_PORT_TYPE, "PORT_TYPE"),
+            (CLAP_AUDIO_PORTS_RESCAN_IN_PLACE_PAIR, "IN_PLACE_PAIR"),
+            (CLAP_AUDIO_PORTS_RESCAN_LIST, "LIST"),
+        ];
+        for (flag, label) in known {
+            assert!(
+                unsafe { host_audio_ports_is_rescan_flag_supported(ptr::null(), flag) },
+                "{label} is decoded by AudioPortsRescan and must be claimed"
+            );
+        }
+    }
+
+    /// A flag this host does not decode is declined rather than blanket-accepted.
+    ///
+    /// This is the assertion the unconditional `true` could not satisfy, and
+    /// the reason the answer is a mask rather than a constant: a rescan kind
+    /// added by a later CLAP revision must be declined until someone has read
+    /// its `[!active]` annotation and taught `AudioPortsRescan` about it.
+    #[test]
+    fn an_undecoded_rescan_flag_is_declined() {
+        // Bit 6 and above are unassigned in ext/audio-ports.h as of clap-sys
+        // 0.5.0, where the six defined flags occupy bits 0..=5.
+        assert!(
+            !unsafe { host_audio_ports_is_rescan_flag_supported(ptr::null(), 1 << 6) },
+            "an unassigned flag must not be claimed as supported"
+        );
+        assert!(
+            !unsafe {
+                host_audio_ports_is_rescan_flag_supported(
+                    ptr::null(),
+                    CLAP_AUDIO_PORTS_RESCAN_NAMES | (1 << 6),
+                )
+            },
+            "a known flag paired with an unknown one must not be claimed — the \
+             host cannot honour the half it does not decode"
+        );
+        assert!(
+            !unsafe { host_audio_ports_is_rescan_flag_supported(ptr::null(), 0) },
+            "an empty flag set names no rescan kind to support"
+        );
+    }
+
+    /// A `clap_host` vtable pointing at `state`, as the plugin sees it.
+    ///
+    /// The callbacks reach their state through `host_data`, so a test that
+    /// wants to drive one the way a plugin does has to go through the same
+    /// pointer rather than touching the fields directly.
+    fn host_for(state: &HostState) -> ClapHostVtable {
+        // SAFETY: `clap_host` is POD (a version struct, pointers and
+        // `Option<fn>`); zeroed is a valid instance. Only `host_data` is read
+        // on this path.
+        let mut host: ClapHostVtable = unsafe { std::mem::zeroed() };
+        host.host_data = state as *const HostState as *mut c_void;
+        host
+    }
+
+    /// The rescan callback records *which* kinds were requested, not just that
+    /// one was.
+    ///
+    /// This is the finding. `host_audio_ports_rescan` took `flags` and threw it
+    /// away, setting a single bool, so a consumer could not tell a cosmetic
+    /// port rename from a channel-count change that invalidates every buffer
+    /// width — and `PortLayout` went stale against what the plugin expected.
+    #[test]
+    fn the_rescan_callback_records_which_kinds_were_requested() {
+        let state = HostState::new();
+        let host = host_for(&state);
+
+        unsafe {
+            host_audio_ports_rescan(&host, CLAP_AUDIO_PORTS_RESCAN_CHANNEL_COUNT);
+        }
+
+        assert!(
+            state.audio_ports.changed.load(Ordering::Acquire),
+            "a rescan must still raise the changed flag"
+        );
+        let flags = state.audio_ports.rescan_flags.load(Ordering::Acquire);
+        assert_eq!(
+            flags & CLAP_AUDIO_PORTS_RESCAN_CHANNEL_COUNT,
+            CLAP_AUDIO_PORTS_RESCAN_CHANNEL_COUNT,
+            "the callback discarded the flag, so a consumer cannot tell this \
+             from a port rename"
+        );
+    }
+
+    /// Two rescans between polls keep both sets of bits.
+    ///
+    /// The accumulation is why the field is `fetch_or` and not a store: a
+    /// plugin that renames a port and then changes a channel count before the
+    /// host polls must not have the second request mask the first, or the host
+    /// applies a channel-count change live.
+    #[test]
+    fn rescans_between_polls_accumulate_rather_than_overwrite() {
+        let state = HostState::new();
+        let host = host_for(&state);
+
+        unsafe {
+            host_audio_ports_rescan(&host, CLAP_AUDIO_PORTS_RESCAN_NAMES);
+            host_audio_ports_rescan(&host, CLAP_AUDIO_PORTS_RESCAN_CHANNEL_COUNT);
+        }
+
+        let flags = state.audio_ports.rescan_flags.load(Ordering::Acquire);
+        assert!(
+            flags & CLAP_AUDIO_PORTS_RESCAN_NAMES != 0,
+            "the first rescan's bits were lost"
+        );
+        assert!(
+            flags & CLAP_AUDIO_PORTS_RESCAN_CHANNEL_COUNT != 0,
+            "the second rescan's bits were lost"
+        );
     }
 }

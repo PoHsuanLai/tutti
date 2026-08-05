@@ -327,6 +327,26 @@ fn has_editor_asks_about_the_current_platform_api() {
 // open_editor — the embed sequence, against a real plugin.
 // ===========================================================================
 
+/// Whether the window api this platform embeds with denominates geometry in
+/// logical pixels, and therefore must not be sent `set_scale`
+/// (`ext/gui.h:56-60`). macOS embeds with `cocoa`; Windows uses `win32` and
+/// Linux `x11`, both of which are physical-pixel.
+///
+/// The host decides this from the api *string*, not from `cfg!`. Mirroring it
+/// with a `cfg!` here rather than importing the host's answer is deliberate:
+/// a test that asked the host what it does could not disagree with the host.
+const PLATFORM_USES_LOGICAL_PIXELS: bool = cfg!(target_os = "macos");
+
+/// The `GUI_CALL_*` ids `open_editor` must produce on this platform.
+fn expected_embed_sequence() -> Vec<u32> {
+    let mut expected = vec![GUI_CALL_IS_API_SUPPORTED, GUI_CALL_CREATE];
+    if !PLATFORM_USES_LOGICAL_PIXELS {
+        expected.push(GUI_CALL_SET_SCALE);
+    }
+    expected.extend([GUI_CALL_GET_SIZE, GUI_CALL_SET_PARENT, GUI_CALL_SHOW]);
+    expected
+}
+
 /// The spec's embed order, observed from inside a real plugin.
 ///
 /// `polling.rs`'s in-crate test asserts this order against a hand-written
@@ -354,17 +374,10 @@ fn open_editor_runs_the_spec_embed_sequence() {
     let cap = probe.capture();
     assert_eq!(
         calls(&cap),
-        vec![
-            GUI_CALL_IS_API_SUPPORTED,
-            GUI_CALL_CREATE,
-            GUI_CALL_SET_SCALE,
-            GUI_CALL_GET_SIZE,
-            GUI_CALL_SET_PARENT,
-            GUI_CALL_SHOW,
-        ],
-        "CLAP order: is_api_supported gates create, set_scale precedes get_size \
-         so the reported size already accounts for DPI, set_parent follows \
-         get_size and precedes show"
+        expected_embed_sequence(),
+        "CLAP order: is_api_supported gates create, set_parent follows get_size \
+         and precedes show. `set_scale` appears only on a physical-pixel api, \
+         where it must precede get_size so the reported size carries the factor"
     );
     assert!(cap.created, "create ran");
     assert_eq!(cap.create_balance, 1, "exactly one live editor");
@@ -377,11 +390,65 @@ fn open_editor_runs_the_spec_embed_sequence() {
         "…whose `api` names the current platform — a hardcoded \"x11\" fails \
          here on macOS and Windows"
     );
-    assert_eq!(
-        cap.last_scale, 1.0,
-        "the host passes a scale; 1.0 is today's placeholder until the frontend \
-         carries a real backing-scale factor"
+}
+
+/// **C-4.** `ext/gui.h:56-57` on `cocoa`, and `:59-60` on `uikit`: "uses
+/// logical size, don't call clap_plugin_gui->set_scale()". `set_scale` itself
+/// repeats it at `:141`. A logical-pixel api has already folded the display's
+/// backing-scale factor into every coordinate, so a host that sets it too
+/// applies the factor twice and a Retina editor opens at 2×.
+///
+/// The host passes a hardcoded 1.0 today, which is why this never showed as a
+/// visible bug — 1.0 is the identity. That makes the *call* the thing to
+/// assert, not the size it produced: pinning the size would pass against the
+/// bug and only start failing once real DPI is wired, which is the moment this
+/// test exists to protect.
+///
+/// Read `last_scale` alongside the call log, because they answer different
+/// questions: `last_scale` is 0.0 both when the host correctly skipped the call
+/// and when the probe was never asked anything at all. The `created` assertion
+/// rules the second out.
+#[test]
+fn open_editor_calls_set_scale_only_on_a_physical_pixel_api() {
+    let probe = Probe::acquire(GuiMode::Embeddable);
+    let mut loaded = probe.load();
+
+    loaded
+        .open_editor(fake_parent())
+        .expect("embeddable plugin opens");
+
+    let cap = probe.capture();
+    assert!(
+        cap.created,
+        "the embed sequence must have run at all, or every assertion below is \
+         vacuous"
     );
+
+    let called = calls(&cap).contains(&GUI_CALL_SET_SCALE);
+    if PLATFORM_USES_LOGICAL_PIXELS {
+        assert!(
+            !called,
+            "this platform embeds with a logical-pixel api, which the spec says \
+             must not be sent set_scale — the factor is already applied"
+        );
+        assert_eq!(
+            cap.last_scale, 0.0,
+            "and no scale reached the plugin (0.0 is the probe's never-called \
+             sentinel)"
+        );
+    } else {
+        assert!(
+            called,
+            "this platform embeds with a physical-pixel api, which needs the \
+             host's scale — skipping it leaves the editor at 1× on a HiDPI \
+             display"
+        );
+        assert_eq!(
+            cap.last_scale, 1.0,
+            "the host passes a scale; 1.0 is today's placeholder until the \
+             frontend carries a real backing-scale factor"
+        );
+    }
 }
 
 /// A floating-only plugin is refused at the first gate, before `create`.
@@ -450,15 +517,21 @@ fn close_editor_destroys_exactly_once() {
     );
 }
 
-/// When the plugin destroyed its own editor and told the host so via
-/// `gui.closed(was_destroyed = true)`, the host must **not** call `destroy`
-/// again.
+/// When the plugin's window went away and it told the host so via
+/// `gui.closed(was_destroyed = true)`, the host **must** still call `destroy`.
 ///
-/// A double-destroy is a use-after-free in the plugin, which is why the host
-/// keeps an `already_destroyed` latch rather than trusting `gui_created` alone.
-/// The probe's balance makes a second destroy visible: it would read -1.
+/// `ext/gui.h:241-242`: *"If was_destroyed is true, then the host must call
+/// clap_plugin_gui->destroy() to acknowledge the gui destruction."* The spec's
+/// own lifecycle (`gui.h:20-34`) pairs `destroy()` (step 14) with `create()`
+/// (step 2), so it releases the gui resources `create` allocated — not the
+/// window that just closed. The host read `was_destroyed` as "the plugin
+/// already ran destroy for you" and skipped it, leaking those resources for the
+/// instance's lifetime.
+///
+/// `hide` is the one call that *is* skipped: it acts on a window, and there is
+/// no longer one.
 #[test]
-fn close_editor_skips_destroy_after_plugin_self_destroyed() {
+fn close_editor_destroys_after_plugin_window_was_destroyed() {
     let probe = Probe::acquire(GuiMode::Embeddable);
     let mut loaded = probe.load();
 
@@ -474,35 +547,45 @@ fn close_editor_skips_destroy_after_plugin_self_destroyed() {
         "the host must record the plugin's `gui.closed` callback"
     );
     let after_open = probe.capture();
+    assert!(
+        after_open.window_destroyed,
+        "the probe must have reported was_destroyed = true — without it the \
+         assertions below would be testing the ordinary close path"
+    );
     assert_eq!(
-        after_open.create_balance, 0,
-        "the plugin destroyed its own editor, so nothing is live"
+        after_open.create_balance, 1,
+        "the window is gone but the gui object `create` allocated is not; the \
+         host still owes it a destroy"
     );
 
     loaded.close_editor();
 
     let cap = probe.capture();
+    assert!(
+        calls(&cap).contains(&GUI_CALL_DESTROY),
+        "the spec requires the host acknowledge the destruction with \
+         `gui.destroy`; skipping it leaks the plugin's gui resources"
+    );
     assert_eq!(
         cap.create_balance, 0,
-        "close_editor must skip hide/destroy entirely — calling destroy on an \
-         already-destroyed editor is a double-destroy, and would read -1 here"
+        "…and exactly once — a leak reads 1 here, a double-destroy -1"
     );
     assert!(
-        !calls(&cap).contains(&GUI_CALL_DESTROY),
-        "the host must not have called destroy at all"
+        !calls(&cap).contains(&GUI_CALL_HIDE),
+        "`hide` acts on a window, and the plugin just reported it has none"
     );
 }
 
-/// The same hazard, but the plugin self-destroys from **inside `show`** — while
-/// the host is still within `open_editor`.
+/// The same, but the plugin reports the destruction from **inside `show`** —
+/// while the host is still within `open_editor`.
 ///
-/// The host used to clear its `already_destroyed` latch *after*
+/// The host used to clear its window-destroyed latch *after*
 /// `embed_editor_sequence` returned, so this callback was wiped by the very
 /// call that carried it. Only a callback raised inside the sequence
 /// distinguishes clearing before it from clearing after; the out-of-band test
 /// above lands after the clear either way.
 #[test]
-fn close_editor_skips_destroy_after_plugin_self_destroyed_during_show() {
+fn close_editor_destroys_after_window_was_destroyed_during_show() {
     let probe = Probe::acquire(GuiMode::Embeddable);
     let mut loaded = probe.load();
 
@@ -518,42 +601,13 @@ fn close_editor_skips_destroy_after_plugin_self_destroyed_during_show() {
     );
 
     let after_open = probe.capture();
-    assert_eq!(
-        after_open.create_balance, 0,
-        "the plugin destroyed its own editor from inside show, so nothing is live"
-    );
-
-    loaded.close_editor();
-
-    let cap = probe.capture();
-    assert_eq!(
-        cap.create_balance, 0,
-        "close_editor must skip destroy — a second destroy on the editor the \
-         plugin already tore down would read -1 here"
-    );
     assert!(
-        !calls(&cap).contains(&GUI_CALL_DESTROY),
-        "the host must not have called destroy at all"
+        after_open.window_destroyed,
+        "the probe must have reported was_destroyed = true from inside `show`"
     );
-}
-
-/// `gui.closed(was_destroyed = false)` is the *other* half: the plugin's window
-/// went away but its resources are intact, so the host still owes it a
-/// `hide`/`destroy`. A host that treated every `closed` as self-destroyed would
-/// leak the plugin's GUI resources for the life of the instance.
-#[test]
-fn close_editor_still_destroys_when_plugin_was_not_destroyed() {
-    let probe = Probe::acquire(GuiMode::Embeddable);
-    let mut loaded = probe.load();
-
-    probe.command(GUI_CMD_CLOSED_NOT_DESTROYED);
-    loaded.open_editor(fake_parent()).expect("opens");
-
-    assert!(loaded.poll_gui_closed(), "the host records the callback");
     assert_eq!(
-        probe.capture().create_balance,
-        1,
-        "the editor is still allocated — the plugin only reported its window closed"
+        after_open.create_balance, 1,
+        "the gui object is still allocated — only the window went away"
     );
 
     loaded.close_editor();
@@ -561,8 +615,52 @@ fn close_editor_still_destroys_when_plugin_was_not_destroyed() {
     let cap = probe.capture();
     assert!(
         calls(&cap).contains(&GUI_CALL_DESTROY),
-        "was_destroyed = false means the plugin still holds gui resources, so \
-         the host must destroy them"
+        "a destruction reported mid-embed carries the same obligation as one \
+         reported between calls"
+    );
+    assert_eq!(cap.create_balance, 0, "…and exactly once");
+    assert!(
+        !calls(&cap).contains(&GUI_CALL_HIDE),
+        "`hide` is still skipped — the latch survived the embed sequence"
+    );
+}
+
+/// `gui.closed(was_destroyed = false)` is the *other* half: the plugin's window
+/// is still there and it merely lost the connection to its gui, so the host owes
+/// it the full `hide` **and** `destroy`.
+///
+/// The `hide` assertion is what keeps the two halves apart: `destroy` alone is
+/// now common to both, so a host that skipped the `was_destroyed` branch
+/// entirely would satisfy every other assertion here.
+#[test]
+fn close_editor_hides_and_destroys_when_window_was_not_destroyed() {
+    let probe = Probe::acquire(GuiMode::Embeddable);
+    let mut loaded = probe.load();
+
+    probe.command(GUI_CMD_CLOSED_NOT_DESTROYED);
+    loaded.open_editor(fake_parent()).expect("opens");
+
+    assert!(loaded.poll_gui_closed(), "the host records the callback");
+    let after_open = probe.capture();
+    assert!(
+        !after_open.window_destroyed,
+        "this path must report was_destroyed = false"
+    );
+    assert_eq!(
+        after_open.create_balance, 1,
+        "the editor is still allocated — the plugin only reported its window closed"
+    );
+
+    loaded.close_editor();
+
+    let cap = probe.capture();
+    assert!(
+        calls(&cap).contains(&GUI_CALL_HIDE),
+        "the window is still up, so CLAP wants it hidden before destroy"
+    );
+    assert!(
+        calls(&cap).contains(&GUI_CALL_DESTROY),
+        "and the host must destroy the gui resources it asked `create` for"
     );
     assert_eq!(cap.create_balance, 0, "…exactly once");
 }

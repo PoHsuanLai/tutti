@@ -119,7 +119,19 @@ pub use holes::HOLE_NONE;
 /// Plugin id the host instantiates by. The conformance test does not need
 /// to know this — the host reads it from the descriptor — but keep it
 /// stable and recognizable.
-const PLUGIN_ID: &CStr = c"tutti.conformance-probe";
+pub const PLUGIN_ID: &CStr = c"tutti.conformance-probe";
+
+/// A second plugin in the same factory, so multi-plugin bundles are testable.
+///
+/// A `.clap` file is a factory: `get_plugin_count` exists because one bundle may
+/// ship a synth plus companion effects. With a single descriptor no fixture can
+/// tell a host that enumerates the factory from one that hard-codes index 0 —
+/// both load the same plugin. This second entry is what makes that difference
+/// observable.
+///
+/// It is descriptor-only: `create_plugin` accepts it and returns the same probe
+/// state, since selection is what is under test, not a second DSP behaviour.
+pub const SECOND_PLUGIN_ID: &CStr = c"tutti.conformance-probe.second";
 
 // ---------------------------------------------------------------------------
 // Capture — what the host handed the plugin on the last `process` call.
@@ -345,7 +357,16 @@ unsafe extern "C" fn plugin_start_processing(plugin: *const clap_plugin) -> bool
 
 unsafe extern "C" fn plugin_stop_processing(_plugin: *const clap_plugin) {}
 
-unsafe extern "C" fn plugin_reset(_plugin: *const clap_plugin) {}
+unsafe extern "C" fn plugin_reset(plugin: *const clap_plugin) {
+    // THREADING: `[audio-thread & active]` — so `is_main` must read false here
+    // even though the host's test harness drives it from the OS main thread.
+    threading::record_thread_roles(threading::Site::Reset, plugin_host(plugin));
+    // Clear the cross-block processing state, which for this probe is the
+    // latency-mode delay line. A test feeds an impulse, resets, and asserts the
+    // tail no longer emerges — the observable that distinguishes a host which
+    // calls `reset` from one which does not.
+    clear_delay_lines();
+}
 
 unsafe extern "C" fn plugin_process(
     plugin: *const clap_plugin,
@@ -605,35 +626,126 @@ unsafe impl<T> Sync for SyncPtrs<T> {}
 // Feature list must be a null-terminated array of C strings.
 static FEATURES: SyncPtrs<[*const c_char; 2]> = SyncPtrs([c"audio-effect".as_ptr(), ptr::null()]);
 
-static SYNC_DESCRIPTOR: SyncPtrs<clap_plugin_descriptor> = SyncPtrs(clap_plugin_descriptor {
-    clap_version: CLAP_VERSION,
-    id: PLUGIN_ID.as_ptr(),
-    name: c"Tutti Conformance Probe".as_ptr(),
-    vendor: c"Tutti".as_ptr(),
-    url: c"".as_ptr(),
-    manual_url: c"".as_ptr(),
-    support_url: c"".as_ptr(),
-    version: c"0.1.0".as_ptr(),
-    description: c"Host-conformance probe (test fixture, not a real plugin)".as_ptr(),
-    features: FEATURES.0.as_ptr(),
-});
+/// A `static` the probe rewrites in place before the host reads it.
+///
+/// The two `clap_version` fields under test are not reachable through a
+/// callback the way `preferred_dialect` is: the host reads `clap_entry` by
+/// `dlsym`, and the descriptor straight off the pointer the factory returned,
+/// so there is no function in between that could answer differently. Interior
+/// mutability is the only way to present a different version to the next load.
+///
+/// `repr(transparent)` because one of these **is** the exported `clap_entry`
+/// symbol — the host reads a `clap_plugin_entry` at that address, so the
+/// wrapper must not perturb the layout.
+#[repr(transparent)]
+pub struct SyncCell<T>(std::cell::UnsafeCell<T>);
+unsafe impl<T> Sync for SyncCell<T> {}
+
+static SYNC_DESCRIPTOR: SyncCell<clap_plugin_descriptor> =
+    SyncCell(std::cell::UnsafeCell::new(clap_plugin_descriptor {
+        clap_version: CLAP_VERSION,
+        id: PLUGIN_ID.as_ptr(),
+        name: c"Tutti Conformance Probe".as_ptr(),
+        vendor: c"Tutti".as_ptr(),
+        url: c"".as_ptr(),
+        manual_url: c"".as_ptr(),
+        support_url: c"".as_ptr(),
+        version: c"0.1.0".as_ptr(),
+        description: c"Host-conformance probe (test fixture, not a real plugin)".as_ptr(),
+        features: FEATURES.0.as_ptr(),
+    }));
+
+/// The one descriptor pointer the factory, `create_plugin` and `clap_plugin.desc`
+/// all hand out. Stable across a version override — only the struct's first
+/// field changes.
+fn descriptor_ptr() -> *const clap_plugin_descriptor {
+    SYNC_DESCRIPTOR.0.get()
+}
+
+/// Descriptor for [`SECOND_PLUGIN_ID`], returned at factory index 1.
+static SECOND_DESCRIPTOR: SyncCell<clap_plugin_descriptor> =
+    SyncCell(std::cell::UnsafeCell::new(clap_plugin_descriptor {
+        clap_version: CLAP_VERSION,
+        id: SECOND_PLUGIN_ID.as_ptr(),
+        name: c"Tutti Conformance Probe (second)".as_ptr(),
+        vendor: c"Tutti".as_ptr(),
+        url: c"".as_ptr(),
+        manual_url: c"".as_ptr(),
+        support_url: c"".as_ptr(),
+        version: c"0.1.0".as_ptr(),
+        description: c"Second plugin in the probe factory (test fixture)".as_ptr(),
+        features: FEATURES.0.as_ptr(),
+    }));
+
+fn second_descriptor_ptr() -> *const clap_plugin_descriptor {
+    SECOND_DESCRIPTOR.0.get()
+}
+
+/// Which of the two `clap_version` fields
+/// [`tutti_test_plugin_set_clap_version`] rewrites.
+///
+/// They are separate targets because the host checks them at different points
+/// — the entry's before it calls `init`, the descriptor's after the factory
+/// answered — and a host that checks only one passes a test that overrides only
+/// the other.
+pub const CLAP_VERSION_TARGET_ENTRY: u32 = 0;
+/// See [`CLAP_VERSION_TARGET_ENTRY`].
+pub const CLAP_VERSION_TARGET_DESCRIPTOR: u32 = 1;
+
+/// Rewrite one of the probe's declared `clap_version`s.
+///
+/// Call **before** the host loads the plugin, and restore afterwards with
+/// [`tutti_test_plugin_reset_clap_version`] — this mutates the loaded image,
+/// which every suite in the process shares.
+///
+/// # Safety
+/// Not synchronized: the caller must hold whatever lock serializes its suite,
+/// and must not be racing a host load of this image.
+#[no_mangle]
+pub unsafe extern "C" fn tutti_test_plugin_set_clap_version(
+    target: u32,
+    major: u32,
+    minor: u32,
+    revision: u32,
+) {
+    let v = clap_sys::version::clap_version {
+        major,
+        minor,
+        revision,
+    };
+    match target {
+        CLAP_VERSION_TARGET_ENTRY => (*CLAP_ENTRY_CELL.0.get()).clap_version = v,
+        CLAP_VERSION_TARGET_DESCRIPTOR => (*SYNC_DESCRIPTOR.0.get()).clap_version = v,
+        _ => {}
+    }
+}
+
+/// Put both declared versions back to `CLAP_VERSION`.
+///
+/// # Safety
+/// Same as [`tutti_test_plugin_set_clap_version`].
+#[no_mangle]
+pub unsafe extern "C" fn tutti_test_plugin_reset_clap_version() {
+    (*CLAP_ENTRY_CELL.0.get()).clap_version = CLAP_VERSION;
+    (*SYNC_DESCRIPTOR.0.get()).clap_version = CLAP_VERSION;
+}
 
 // ---------------------------------------------------------------------------
 // Factory.
 // ---------------------------------------------------------------------------
 
 unsafe extern "C" fn factory_get_plugin_count(_factory: *const clap_plugin_factory) -> u32 {
-    1
+    2
 }
 
 unsafe extern "C" fn factory_get_plugin_descriptor(
     _factory: *const clap_plugin_factory,
     index: u32,
 ) -> *const clap_plugin_descriptor {
-    if index == 0 {
-        &SYNC_DESCRIPTOR.0
-    } else {
-        ptr::null()
+    match index {
+        0 => descriptor_ptr(),
+        1 => second_descriptor_ptr(),
+        _ => ptr::null(),
     }
 }
 
@@ -645,16 +757,23 @@ unsafe extern "C" fn factory_create_plugin(
     if plugin_id.is_null() {
         return ptr::null();
     }
-    if CStr::from_ptr(plugin_id) != PLUGIN_ID {
+    let requested = CStr::from_ptr(plugin_id);
+    // Both ids build the same probe state: which descriptor a host selected is
+    // what these tests observe, not a second set of DSP behaviour.
+    let desc = if requested == PLUGIN_ID {
+        descriptor_ptr()
+    } else if requested == SECOND_PLUGIN_ID {
+        second_descriptor_ptr()
+    } else {
         return ptr::null();
-    }
+    };
 
     // Allocate the state; the `clap_plugin` lives inside it and points back
     // at the state via `plugin_data`.
     let mut state = Box::new(PluginState {
         host,
         plugin: clap_plugin {
-            desc: &SYNC_DESCRIPTOR.0,
+            desc,
             plugin_data: ptr::null_mut(),
             init: Some(plugin_init),
             destroy: Some(plugin_destroy),
@@ -703,15 +822,18 @@ unsafe extern "C" fn entry_get_factory(factory_id: *const c_char) -> *const c_vo
     ptr::null()
 }
 
-/// The CLAP entry symbol. The host resolves `clap_entry` by name.
-#[no_mangle]
-#[allow(non_upper_case_globals)]
-pub static clap_entry: clap_plugin_entry = clap_plugin_entry {
-    clap_version: CLAP_VERSION,
-    init: Some(entry_init),
-    deinit: Some(entry_deinit),
-    get_factory: Some(entry_get_factory),
-};
+/// The CLAP entry symbol. The host resolves `clap_entry` by name and reads a
+/// `clap_plugin_entry` at that address; the `repr(transparent)` [`SyncCell`]
+/// wrapper exists only so [`tutti_test_plugin_set_clap_version`] can rewrite
+/// the `clap_version` field in place.
+#[export_name = "clap_entry"]
+pub static CLAP_ENTRY_CELL: SyncCell<clap_plugin_entry> =
+    SyncCell(std::cell::UnsafeCell::new(clap_plugin_entry {
+        clap_version: CLAP_VERSION,
+        init: Some(entry_init),
+        deinit: Some(entry_deinit),
+        get_factory: Some(entry_get_factory),
+    }));
 
 // ===========================================================================
 // AUDIO CORRECTNESS — the routing oracle.
@@ -905,6 +1027,15 @@ static DELAY: Mutex<DelayState> = Mutex::new(DelayState {
     cursor: 0,
 });
 
+/// Clear the latency-mode delay lines — the probe's whole cross-block
+/// processing state. Shared by the test-facing export below and by
+/// `plugin_reset`, which is the plugin honouring CLAP's `reset()` contract.
+fn clear_delay_lines() {
+    let mut d = DELAY.lock().unwrap_or_else(|p| p.into_inner());
+    d.lines = [[0.0; REPORTED_LATENCY_SAMPLES as usize]; MAX_DELAY_SLOTS];
+    d.cursor = 0;
+}
+
 /// Reset the latency-mode delay lines. A test drives several blocks through
 /// one instance, so state from a previous test would otherwise leak in.
 ///
@@ -912,9 +1043,7 @@ static DELAY: Mutex<DelayState> = Mutex::new(DelayState {
 /// Safe to call; `extern "C"` only so the test can reach it across `dlopen`.
 #[no_mangle]
 pub unsafe extern "C" fn tutti_test_plugin_reset_delay() {
-    let mut d = DELAY.lock().unwrap_or_else(|p| p.into_inner());
-    d.lines = [[0.0; REPORTED_LATENCY_SAMPLES as usize]; MAX_DELAY_SLOTS];
-    d.cursor = 0;
+    clear_delay_lines();
 }
 
 /// Write the selected closed-form output into the host's output buffers.
@@ -1029,6 +1158,31 @@ static NOTE_PORTS: clap_plugin_note_ports = clap_plugin_note_ports {
     get: Some(note_ports_get),
 };
 
+/// Sentinel meaning "no override": each note port reports its own preference.
+///
+/// `0` cannot be the sentinel — it is precisely the value under test, the one
+/// a plugin writes to say it prefers no dialect in particular. `u32::MAX` is
+/// not a `clap_note_dialect` bit, nor any combination of them.
+pub const PREFERRED_DIALECT_DEFAULT: u32 = u32::MAX;
+
+/// Raw `preferred_dialect` every note port reports, or
+/// [`PREFERRED_DIALECT_DEFAULT`].
+static PREFERRED_DIALECT_OVERRIDE: AtomicU32 = AtomicU32::new(PREFERRED_DIALECT_DEFAULT);
+
+/// Force every note port's `preferred_dialect` to `raw`.
+///
+/// Set to `0` to model a plugin that states no preference, or to a dialect bit
+/// this host does not send. Unlike the port layout this is read live in
+/// `note_ports_get`, so it may be set after load. Pass
+/// [`PREFERRED_DIALECT_DEFAULT`] to clear.
+///
+/// # Safety
+/// Safe to call; `extern "C"` only so the test can reach it across `dlopen`.
+#[no_mangle]
+pub unsafe extern "C" fn tutti_test_plugin_set_preferred_dialect(raw: u32) {
+    PREFERRED_DIALECT_OVERRIDE.store(raw, Ordering::SeqCst);
+}
+
 unsafe extern "C" fn note_ports_count(_plugin: *const clap_plugin, is_input: bool) -> u32 {
     if is_input {
         2
@@ -1063,6 +1217,10 @@ unsafe extern "C" fn note_ports_get(
     } else {
         info.supported_dialects = CLAP_NOTE_DIALECT_MIDI;
         info.preferred_dialect = CLAP_NOTE_DIALECT_MIDI;
+    }
+    let override_raw = PREFERRED_DIALECT_OVERRIDE.load(Ordering::SeqCst);
+    if override_raw != PREFERRED_DIALECT_DEFAULT {
+        info.preferred_dialect = override_raw;
     }
     info.name = [0; CLAP_NAME_SIZE];
     let label: &[u8] = if is_input { b"note-in" } else { b"note-out" };

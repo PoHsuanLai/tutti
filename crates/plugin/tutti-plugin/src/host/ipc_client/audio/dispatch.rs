@@ -174,6 +174,9 @@ pub(super) fn handle(
         Command::SetSampleRate { rate } => {
             ipc::send(stream, &HostMessage::SetSampleRate { rate })?;
         }
+        Command::SetRenderMode { mode } => {
+            ipc::send(stream, &HostMessage::SetRenderMode { mode })?;
+        }
         Command::Reset => {
             ipc::send(stream, &HostMessage::Reset)?;
         }

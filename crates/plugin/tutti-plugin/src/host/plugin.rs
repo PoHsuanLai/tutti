@@ -263,6 +263,31 @@ impl Plugin {
         true
     }
 
+    /// Tell the plugin whether it is being rendered under realtime pressure.
+    ///
+    /// Set this **before** pulling blocks for an offline bounce: a plugin may
+    /// spend more per block when it knows there is no deadline, and three of
+    /// the four formats can only take the change while the plugin is
+    /// deactivated. Leaving it unset renders the live-quality result into a
+    /// file the user asked to be exact.
+    ///
+    /// `false` if the plugin declared it does not honour a render-mode change
+    /// — a CLAP plugin that does not implement `clap.render`, or an AU without
+    /// `kAudioUnitProperty_OfflineRender`. That is a refusal, not a failure:
+    /// such a plugin renders identically either way, which is exactly what
+    /// declining the extension means.
+    #[must_use = "a false return means the plugin declined the render mode and nothing was applied"]
+    pub fn set_render_mode(&self, mode: crate::protocol::RenderMode) -> bool {
+        if !self.accepts(Features::RENDER_MODE) {
+            return false;
+        }
+        match &self.backend {
+            Backend::Subprocess(c) => c.set_render_mode(mode),
+            #[cfg(feature = "vst2")]
+            Backend::InProcessVst2(c) => c.set_render_mode(mode),
+        }
+    }
+
     /// Install a live transport reader. `false` if the plugin declared it does
     /// not want a transport snapshot.
     ///

@@ -70,14 +70,18 @@ impl Probe {
         Probe { _lock: lock }
     }
 
-    /// Load + activate the reference plugin through the real host.
-    fn activate(&self) -> ClapActive<f32> {
+    /// Load the reference plugin through the real host, without activating.
+    fn load(&self) -> ClapLoaded {
         let path = Path::new(probe_path());
         // Bare dylib: pass it as both bundle and library so the host dlopens it
         // directly, no `.clap` bundle structure needed.
-        let loaded = ClapLoaded::load_with_library(path, Some(path), 48_000.0, 512)
-            .expect("reference plugin should load");
-        loaded
+        ClapLoaded::load_with_library(path, Some(path), 48_000.0, 512)
+            .expect("reference plugin should load")
+    }
+
+    /// Load + activate the reference plugin through the real host.
+    fn activate(&self) -> ClapActive<f32> {
+        self.load()
             .activate::<f32>()
             .map_err(|(_, e)| e)
             .expect("reference plugin should activate")
@@ -213,6 +217,48 @@ fn host_answers_thread_check_correctly_at_every_call_site() {
     // host must still say so.
     assert_roles(&cap, Site::StartProcessing, false, true, "start_processing");
     assert_roles(&cap, Site::Process, false, true, "process");
+}
+
+/// `reset` is `[audio-thread & active]`, so the host must take the audio-thread
+/// claim around it — not merely call it and hope.
+///
+/// Driven here from the OS main thread, which is what a DAW does on a locate.
+/// Without the claim the host would tell the plugin `is_main_thread() == true`
+/// inside a call CLAP marks `[audio-thread]`, and — worse than the wrong answer
+/// — the call would not be serialized against a `process` block running on the
+/// real audio thread, which is precisely what clearing the buffers under it
+/// would corrupt.
+///
+/// `visits` is asserted so a host that never called `reset` at all fails here
+/// rather than passing on an unvisited site.
+#[test]
+fn reset_runs_under_the_audio_thread_claim() {
+    let probe = Probe::acquire();
+    let mut inst = probe.activate();
+
+    // A block first, so `reset` lands on an instance that has actually
+    // processed — the state it exists to clear.
+    drive_block(&mut inst, 64);
+    inst.reset();
+    // Runs strictly after `reset` returned: if the claim leaked, the host would
+    // still consider this thread the audio thread here.
+    assert!(inst.poll_callback_requested());
+    inst.on_main_thread();
+
+    let cap = probe.capture();
+    assert_eq!(
+        cap.sites[Site::Reset as usize].visits,
+        1,
+        "the host must have called `clap_plugin->reset()` exactly once"
+    );
+    assert_roles(&cap, Site::Reset, false, true, "reset");
+    assert_roles(
+        &cap,
+        Site::OnMainThread,
+        true,
+        false,
+        "on_main_thread after a completed reset",
+    );
 }
 
 /// Leaving an `[audio-thread]` call must hand the audio-thread role back.
@@ -588,4 +634,74 @@ fn host_routes_plugin_log_lines_at_every_severity() {
         0,
         "seven lines is far below the retention bound; nothing should have been dropped"
     );
+}
+
+// ---------------------------------------------------------------------------
+// 5. The host's own main-thread guard
+// ---------------------------------------------------------------------------
+
+/// **C-11.** `poll_timers` and `on_main_thread` are the two `[main-thread]`
+/// methods an embedder is most likely to reach from a UI framework's tick,
+/// which is not obliged to run on the thread `HostState::new()` did. Ten
+/// sibling methods already assert; these two did not, so a host calling them
+/// from a timer thread drove the plugin's `on_timer` / `on_main_thread` off the
+/// main thread with nothing to say so.
+///
+/// The guard is a `debug_assert`, so this has teeth only in a debug build —
+/// which is where `cargo test` runs. In release the call proceeds, and the
+/// second branch says so rather than expecting a panic that was compiled out.
+///
+/// The instance is *borrowed* into a scoped thread rather than moved: `Drop`
+/// runs `close_editor`, which asserts main-thread too, so a moved instance
+/// would panic a second time while unwinding and report the wrong call.
+/// `ClapLoaded` rather than `ClapActive` for the same borrow reason —
+/// `ClapLoaded` is the type that carries the `unsafe impl Send`, and neither
+/// method under test needs activation.
+#[test]
+fn main_thread_methods_reject_a_call_from_another_thread() {
+    let probe = Probe::acquire();
+    let mut inst = probe.load();
+
+    let timers = std::thread::scope(|s| s.spawn(|| inst.poll_timers()).join());
+    let callback = std::thread::scope(|s| {
+        s.spawn(|| {
+            inst.on_main_thread();
+        })
+        .join()
+    });
+
+    if cfg!(debug_assertions) {
+        assert!(
+            timers.is_err(),
+            "poll_timers is [main-thread]: it fires the plugin's on_timer, so a \
+             UI tick on another thread must be caught, not silently honoured"
+        );
+        assert!(
+            callback.is_err(),
+            "on_main_thread is [main-thread] by its own name: a plugin reached \
+             here off-thread runs its deferred work on the wrong thread"
+        );
+    } else {
+        assert!(
+            timers.is_ok() && callback.is_ok(),
+            "the guard is a debug_assert, so a release build carries none"
+        );
+    }
+}
+
+/// The positive control for the guard above: on the thread that loaded the
+/// plugin, both methods run normally. Without it, an `assert_main_thread`
+/// written as an unconditional `panic!` would satisfy the off-thread test.
+#[test]
+fn main_thread_methods_run_on_the_loading_thread() {
+    let probe = Probe::acquire();
+    let mut inst = probe.load();
+
+    assert_eq!(
+        inst.poll_timers(),
+        0,
+        "no timers are registered, so poll_timers reports none — the point is \
+         that it returns rather than panicking"
+    );
+    inst.on_main_thread();
 }

@@ -80,16 +80,17 @@ fn plugin_guard() -> std::sync::MutexGuard<'static, ()> {
 
 const PARAM_MODE: u32 = 100;
 const PARAM_RAMP: u32 = 101;
-/// Steps on `kParamMode`: 9 modes (0..=8) is 8 steps, and a stepped VST3
+/// Steps on `kParamMode`: 11 modes (0..=10) is 10 steps, and a stepped VST3
 /// parameter normalizes as `index / stepCount`. Adding a mode shifts every
 /// other mode's normalized value, so this must track `kModeStepCount` exactly —
 /// a stale count silently selects the wrong mode rather than failing.
-const MODE_STEPS: f64 = 9.0;
+const MODE_STEPS: f64 = 10.0;
 
 /// Normalized value selecting probe mode `index` (see `ProbeMode` in
 /// `probeids.h`): 0 tag-passthrough, 1 param-ramp, 2 block-counter,
 /// 3 latency, 4 note-gate, 5 event-transcript, 6 event-bus-active,
-/// 7 connect-balance, 8 activation-count, 9 audio-bus-active.
+/// 7 connect-balance, 8 activation-count, 9 audio-bus-active,
+/// 10 setup-while-active.
 fn mode(index: u32) -> f64 {
     f64::from(index) / MODE_STEPS
 }
@@ -112,6 +113,11 @@ const ACTIVATION_COUNT_BASE: f32 = 9000.0;
 /// Offset mode 9 adds to its audio-bus activation mask
 /// (`kAudioBusActiveBase`). Bit 0/1 = input bus 0/1, bit 2/3 = output bus 0/1.
 const AUDIO_BUS_ACTIVE_BASE: f32 = 10000.0;
+
+/// Offset mode 10 adds to its count of `setupProcessing` calls that arrived
+/// while the plugin was active (`kSetupWhileActiveBase`). Offset because 0 is
+/// the passing answer here and must not be confusable with a zeroed buffer.
+const SETUP_WHILE_ACTIVE_BASE: f32 = 11000.0;
 
 /// Writing non-zero here makes the probe's controller request
 /// `restartComponent(kIoChanged)` (`kParamRequestIoChanged`).
@@ -540,6 +546,63 @@ fn an_io_change_reactivates_the_plugin_rather_than_re_reading_it_live() {
         "the plugin was never reactivated — the host re-read its bus layout in \
          place while it was still active, which is the ordering kIoChanged \
          exists to prevent"
+    );
+}
+
+/// A sample-rate change deactivates the plugin around `setupProcessing`.
+///
+/// `ivstaudioprocessor.h:328-330`: *"Called in disable state (setActive not
+/// called with true) before setProcessing is called and processing will
+/// begin."* `Vst3Instance` is active by construction — `load` ends with
+/// `setActive(true)` — so `set_sample_rate` cannot deliver the new setup in
+/// place; it has to bracket the call.
+///
+/// Nothing on the host side can witness this. `setupProcessing` answers
+/// `kResultOk` whether or not the plugin was live, and every value readable
+/// afterwards is what the host just wrote. Only the plugin sees the order,
+/// which is what `kModeSetupWhileActive` reports.
+///
+/// The rate is one the probe accepts, so a non-zero count here is the host
+/// calling at the wrong time rather than the plugin declining.
+#[test]
+fn a_sample_rate_change_deactivates_the_plugin_around_setup_processing() {
+    if !harness_ready() {
+        return;
+    }
+    let _guard = plugin_guard();
+    let Some(mut inst) = load_probe(512) else {
+        return;
+    };
+    set_mode(&mut inst, mode(10));
+
+    let before = render(&mut inst, 512, &[], None, |_, _, _| 0.0).out[0][0][0];
+    assert_eq!(
+        before, SETUP_WHILE_ACTIVE_BASE,
+        "the activation sequence in `load` runs setupProcessing before \
+         setActive(true), so a freshly loaded instance must report no \
+         violations — a non-zero count here would make the assertion below \
+         unable to attribute anything to the rate change"
+    );
+
+    inst.set_sample_rate(96_000.0)
+        .expect("the probe accepts 96 kHz");
+    assert_eq!(
+        inst.sample_rate(),
+        96_000.0,
+        "an accepted rate change must be reflected in the instance"
+    );
+
+    // The processor's parameter copy comes back from a fresh activation, so
+    // re-assert the mode before reading the count.
+    set_mode(&mut inst, mode(10));
+    let after = render(&mut inst, 512, &[], None, |_, _, _| 0.0).out[0][0][0];
+
+    assert_eq!(
+        after, SETUP_WHILE_ACTIVE_BASE,
+        "setupProcessing reached the plugin while it was still active — the \
+         host changed the sample rate in place instead of deactivating around \
+         the call, so the plugin re-sized its buffers underneath a live \
+         instance"
     );
 }
 

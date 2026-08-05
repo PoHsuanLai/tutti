@@ -96,7 +96,9 @@ impl AuInstance {
     ///
     /// # Errors
     /// Returns [`AuError::OsStatus`] if instantiation or initial stream-format
-    /// configuration fails.
+    /// configuration fails, or [`AuError::BlockSizeRejected`] if the AU keeps a
+    /// `MaximumFramesPerSlice` other than `block_size` — see
+    /// [`AuLoaded::new`] for why that is fatal at load.
     pub unsafe fn new(
         component: AudioComponent,
         sample_rate: f64,
@@ -318,6 +320,24 @@ impl AuInstance {
     /// future AU refuses, that test fails rather than the behaviour changing
     /// silently.
     ///
+    /// # The render clock restarts too
+    ///
+    /// `AudioUnitReset` flushes the AU's signal history; the render cursor this
+    /// host stamps each block's `mSampleTime` from is *this crate's* state, and
+    /// AudioToolbox has no idea it exists. Leaving it running after a flush
+    /// hands the AU a timestamp saying the block after a locate follows
+    /// contiguously from the block before it, which is the opposite of what the
+    /// flush announced — see `crate::buffer::RenderScratch::reset_position` for
+    /// why it restarts at zero rather than seeking to the playhead.
+    ///
+    /// Only on success. A refused flush leaves the AU holding the history it
+    /// had, so restarting the clock beside it would produce the one state
+    /// neither branch describes: an AU whose tail belongs to bar 60 being told
+    /// it is at frame 0.
+    ///
+    /// The push path's cursor is a separate object the host owns — reset it
+    /// with [`PushScratch::reset_position`](crate::offline::PushScratch::reset_position).
+    ///
     /// # Errors
     /// Returns [`AuError::OsStatus`] with the AU's own status. Propagated rather
     /// than absorbed: a host that jumps the playhead and silently fails to flush
@@ -328,7 +348,13 @@ impl AuInstance {
         // reset; per-bus reset is not a thing AUv2 offers.
         check("AudioUnitReset", unsafe {
             AudioUnitReset(self.raw_unit(), K_AUDIO_UNIT_SCOPE_GLOBAL, 0)
-        })
+        })?;
+        // Pre-`initialize` there is no scratch: the cursor is created at zero by
+        // `initialize` and has nothing to carry over, so there is nothing to do.
+        if let State::Ready(r) = &mut self.state {
+            r.scratch.reset_position();
+        }
+        Ok(())
     }
 
     /// Read a parameter value.
@@ -442,18 +468,58 @@ impl AuInstance {
     /// Deliver a block of UMP MIDI events to an instrument / music-effect AU as
     /// legacy `MusicDeviceMIDIEvent` calls.
     ///
-    /// Each event is decoded to a 3-byte MIDI 1.0 channel-voice message (status
+    /// Each channel-voice event is decoded to a 3-byte MIDI 1.0 message (status
     /// byte + up to two data bytes, MIDI 2.0 resolutions scaled down per spec)
-    /// and delivered at its `frame_offset`. Message families with no legacy
-    /// 3-byte form (SysEx, per-note MIDI 2.0 messages, system real-time) are
-    /// skipped — AUv2's `MusicDeviceMIDIEvent` only speaks legacy channel voice.
+    /// and delivered at its `frame_offset` through `MusicDeviceMIDIEvent`.
+    ///
+    /// **SysEx goes out through `MusicDeviceSysEx`** (`MusicDevice.h:237-241`),
+    /// a separate entry point that takes a byte buffer rather than a packed
+    /// 3-byte word — there is no way to express a patch dump through
+    /// `MusicDeviceMIDIEvent`, which is why AU provides two calls. UMP carries
+    /// SysEx7 in 6-byte packets, so a message spanning several is reassembled
+    /// here before being sent as one buffer.
+    ///
+    /// Families with genuinely no AUv2 form (per-note MIDI 2.0 messages, UMP
+    /// stream and utility messages) are still skipped.
     ///
     /// Only meaningful for AUs whose type [`AuType::receives_midi`] is true;
     /// the caller gates on that. Errors from individual events are ignored so a
     /// single rejected message can't abort the whole block.
     pub fn send_midi(&self, events: &[MidiEvent]) {
+        // Reassembly state for a SysEx7 run spanning several UMP packets.
+        // Local to the call: a message is not carried across blocks, because a
+        // run left open at a block boundary has no defined resumption point in
+        // this host's delivery model and a stale prefix would corrupt the next
+        // message.
+        let mut sysex_buf: Vec<u8> = Vec::new();
+        let mut sysex_active = false;
         use tutti_midi_types::convert::{midi2_cc_to_midi1, midi2_pitch_bend_to_midi1};
+        use tutti_midi_types::ump::{
+            SYSEX7_STATUS_CONTINUE, SYSEX7_STATUS_END, SYSEX7_STATUS_SINGLE, SYSEX7_STATUS_START,
+        };
         use tutti_midi_types::MidiMessage;
+
+        /// Hand a complete SysEx message to the AU.
+        ///
+        /// `MusicDeviceSysEx` (`MusicDevice.h:237-241`) takes the bytes
+        /// *without* a frame offset — AUv2 has no way to schedule a SysEx
+        /// within a block, so it lands at the start of the current render
+        /// regardless of when it was stamped. That is the format's limit, not
+        /// a shortcut here.
+        ///
+        /// The status is ignored for the same reason every other call on this
+        /// path ignores one: a single rejected message must not abort the rest
+        /// of the block.
+        fn send_sysex(unit: AudioUnit, bytes: &[u8]) {
+            if bytes.is_empty() {
+                return;
+            }
+            // SAFETY: `unit` is live for the caller's lifetime; `bytes` is a
+            // valid slice read only for the duration of the call.
+            unsafe {
+                MusicDeviceSysEx(unit as _, bytes.as_ptr(), bytes.len() as u32);
+            }
+        }
 
         let unit = self.raw_unit();
         for ev in events {
@@ -507,6 +573,42 @@ impl AuInstance {
                         (bend14 & 0x7F) as u8,
                         (bend14 >> 7) as u8 & 0x7F,
                     )
+                }
+                // SysEx has no 3-byte form; it goes out through a different
+                // AU entry point entirely. Reassembled across packets first —
+                // a UMP SysEx7 packet carries at most 6 bytes, so anything
+                // longer than that arrives as START/CONTINUE.../END.
+                MidiMessage::Other(_) => {
+                    if let Some((sysex_status, bytes, n)) = ev.sysex7_payload() {
+                        match sysex_status {
+                            SYSEX7_STATUS_SINGLE => {
+                                send_sysex(unit, &bytes[..n]);
+                            }
+                            SYSEX7_STATUS_START => {
+                                sysex_buf.clear();
+                                sysex_buf.extend_from_slice(&bytes[..n]);
+                                sysex_active = true;
+                            }
+                            SYSEX7_STATUS_CONTINUE => {
+                                // A CONTINUE with no START is a stream this
+                                // host joined mid-message. Dropping it beats
+                                // sending the AU a fragment with no 0xF0.
+                                if sysex_active {
+                                    sysex_buf.extend_from_slice(&bytes[..n]);
+                                }
+                            }
+                            SYSEX7_STATUS_END => {
+                                if sysex_active {
+                                    sysex_buf.extend_from_slice(&bytes[..n]);
+                                    send_sysex(unit, &sysex_buf);
+                                    sysex_buf.clear();
+                                    sysex_active = false;
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    continue;
                 }
                 _ => continue,
             };
@@ -1297,6 +1399,36 @@ impl AuInstance {
         unsafe { crate::offline::set_offline_render(self.raw_unit(), offline) }
     }
 
+    /// Set offline-render mode, re-initializing around the change if the AU was
+    /// already initialized.
+    ///
+    /// The same uninitialize → set → re-initialize dance
+    /// [`set_sample_rate`](Self::set_sample_rate) and
+    /// [`set_block_size`](Self::set_block_size) perform, and for the same
+    /// reason: a unit that sizes an oversampling buffer from this flag can only
+    /// do so at `AudioUnitInitialize`, so writing it to a live unit is accepted
+    /// and then ignored. (Ardour brackets it identically —
+    /// `audio_unit.cc:865-884`.)
+    ///
+    /// Returns `Ok(false)` when the AU has no
+    /// `kAudioUnitProperty_OfflineRender`: the property is optional, and a unit
+    /// that does not implement it has genuinely declined rather than failed.
+    /// A failure to *re-initialize* is a different matter and stays an `Err` —
+    /// the unit is left uninitialized and the caller must know.
+    pub fn set_offline_render_bracketed(&mut self, offline: bool) -> Result<bool> {
+        let was_ready = self.is_initialized();
+        if was_ready {
+            self.uninitialize()?;
+        }
+        // SAFETY: as above.
+        let accepted =
+            unsafe { crate::offline::set_offline_render(self.raw_unit(), offline) }.is_ok();
+        if was_ready {
+            self.initialize()?;
+        }
+        Ok(accepted)
+    }
+
     /// Whether the AU is willing to render with its input and output buffers
     /// aliasing the same memory.
     ///
@@ -1692,7 +1824,9 @@ impl AuInstance {
     ///   rather than recording a width the AU is not running at. `process`
     ///   rejects `num_frames > block_size`, so a config holding a larger figure
     ///   than the AU allocated turns that guard into a false negative — the
-    ///   render is admitted and the AU writes past its own buffers.
+    ///   render is admitted and the AU writes past its own buffers. The same
+    ///   read-back guards the load path too, in the shared constructor tail of
+    ///   [`AuLoaded`]; a size that never reaches this method is checked there.
     /// * on any failure the previous size is restored into the config **and**
     ///   re-applied to the AU, so a caller that ignores the error does not
     ///   inherit a lie.
@@ -1756,6 +1890,16 @@ impl AuLoaded {
     ///
     /// # Safety
     /// `component` must be a valid, non-null `AudioComponent`.
+    ///
+    /// # Errors
+    /// [`AuError::BlockSizeRejected`] when the AU keeps a
+    /// `MaximumFramesPerSlice` other than `block_size`. The write returns
+    /// `noErr` even from an AU that clamps to its own maximum, so the accepted
+    /// value is read back: recording the larger requested figure would turn
+    /// [`AuInstance::process`]'s `num_frames > block_size` guard into a false
+    /// negative, admitting a render the AU writes past its own buffers on.
+    /// Plus whatever the stream-format apply propagates, including
+    /// [`AuError::SampleRateRejected`].
     pub unsafe fn new(
         component: AudioComponent,
         sample_rate: f64,
@@ -1801,13 +1945,40 @@ impl AuLoaded {
         Self::with_layout(AuHandle::new(component)?, config)
     }
 
-    /// Shared tail of both constructors: apply the config, then record the layout
-    /// the AU actually accepted.
+    /// Shared tail of both constructors: apply the config, verify the block size
+    /// stuck, then record the layout the AU actually accepted.
+    ///
+    /// # Errors
+    /// [`AuError::BlockSizeRejected`] when the AU kept a `MaximumFramesPerSlice`
+    /// other than the requested one, plus whatever [`StreamConfig::apply`]
+    /// propagates.
+    ///
+    /// The block size is verified here, not only in
+    /// [`AuInstance::set_block_size`], because this is the tail **every** load
+    /// funnels through and the hazard is identical on both paths: an AU that
+    /// clamps to its own maximum returns `noErr` from the set while keeping a
+    /// smaller figure, and the recorded larger number then turns
+    /// [`AuInstance::process`]'s `num_frames > block_size` guard into a false
+    /// negative — the render is admitted and the AU writes past buffers it sized
+    /// for fewer frames. Verifying only on the resize path left that unguarded
+    /// on the one path a host cannot avoid taking.
+    ///
+    /// A failure is an `Err` rather than a silent adoption of the accepted
+    /// figure, which matches how the two other non-negotiable properties are
+    /// handled: `apply` `?`s on the `MaximumFramesPerSlice` *set* and makes a
+    /// rejected sample rate fatal. Adopting the AU's number instead would hand
+    /// back an instance configured at a width its caller never asked for, and
+    /// the caller sized its own buffers from the request — the same mismatch in
+    /// the other direction. The channel layout is the deliberate exception: it
+    /// is *returned* rather than enforced because a narrower width is
+    /// recoverable by resizing the scratch, and nothing downstream indexes past
+    /// an allocation on account of it.
     fn with_layout(handle: AuHandle, mut config: StreamConfig) -> Result<Self> {
         // `apply` returns the layout the AU actually accepted, which may differ
         // from what we requested. Store the effective layout so the render
         // scratch is later sized to the real topology (FIX 3).
         config.channels = config.apply(&handle)?;
+        config.verify_block_size(&handle)?;
 
         Ok(Self {
             handle,

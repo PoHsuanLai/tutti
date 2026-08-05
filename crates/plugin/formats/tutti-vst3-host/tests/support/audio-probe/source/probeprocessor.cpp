@@ -121,6 +121,11 @@ int32 PLUGIN_API AudioProbeProcessor::getBusCount (MediaType type, BusDirection 
 //-----------------------------------------------------------------------------
 tresult PLUGIN_API AudioProbeProcessor::setupProcessing (ProcessSetup& setup)
 {
+	// Counted before the refusal below so `kMisbehaveSetupFails` does not hide
+	// a host that called at the wrong time.
+	if (mActive)
+		++mSetupWhileActiveCount;
+
 	if (mMisbehaviour == kMisbehaveSetupFails)
 		return kResultFalse;
 	return AudioEffect::setupProcessing (setup);
@@ -149,6 +154,10 @@ tresult PLUGIN_API AudioProbeProcessor::setActive (TBool state)
 		mDelay.assign (static_cast<size_t> (channels),
 		               std::vector<double> (static_cast<size_t> (kReportedLatencySamples), 0.0));
 	}
+	// Set after the refusal above returns early, so a plugin that declined to
+	// activate is not recorded as active — `kModeSetupWhileActive` would
+	// otherwise report a violation against a host that never got the plugin up.
+	mActive = state != 0;
 	return AudioEffect::setActive (state);
 }
 
@@ -439,6 +448,14 @@ void AudioProbeProcessor::renderBlock (ProcessData& data)
 				{
 					const double code = static_cast<double> (kAudioBusActiveBase) +
 					                    static_cast<double> (audioBusActiveMask ());
+					std::fill (dst, dst + frames, static_cast<T> (code));
+					break;
+				}
+
+				case kModeSetupWhileActive:
+				{
+					const double code = static_cast<double> (kSetupWhileActiveBase) +
+					                    static_cast<double> (mSetupWhileActiveCount);
 					std::fill (dst, dst + frames, static_cast<T> (code));
 					break;
 				}

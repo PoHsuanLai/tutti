@@ -586,6 +586,25 @@ impl<T: Host> PluginLoader<T> {
 }
 
 impl PluginInstance {
+    /// Read `AEffect::initialDelay` as it stands *now*.
+    ///
+    /// [`get_info`](Plugin::get_info) returns a clone of the snapshot taken in
+    /// [`new`](Self::new), which runs before `effOpen`, `effSetSampleRate` and
+    /// `effMainsChanged`. Plugins routinely set their latency during those —
+    /// a linear-phase EQ does not know its filter length until it knows the
+    /// sample rate — so the snapshot's `initial_delay` is a pre-init value and
+    /// is usually 0 for exactly the plugins that have latency.
+    ///
+    /// This reads the field back off the live `AEffect` instead, so a host can
+    /// re-ask after the init sequence and after any state change that lets a
+    /// plugin re-declare.
+    pub fn read_initial_delay(&self) -> i32 {
+        // SAFETY: `self.params` owns the `*mut AEffect` for this instance's
+        // lifetime; `initialDelay` is a plain `i32` field, not a call into the
+        // plugin, so there is no re-entrancy or thread-affinity concern.
+        unsafe { (*self.params.get_effect()).initialDelay }
+    }
+
     fn new(effect: *mut AEffect, lib: Arc<Library>) -> PluginInstance {
         use plugin::OpCode as op;
 
@@ -1111,6 +1130,22 @@ impl Plugin for PluginInstance {
     /// for why the host-side override is needed.
     fn stop_process(&mut self) {
         self.dispatch(plugin::OpCode::StopProcess, 0, 0, ptr::null_mut(), 0.0);
+    }
+
+    /// Dispatch `effSetProcessPrecision`, carrying the width in `value`:
+    /// `0` = 32-bit, `1` = 64-bit.
+    ///
+    /// The host-side override is needed for the same reason as
+    /// [`start_process`](Self::start_process) — the trait's default body
+    /// dispatches nothing.
+    fn set_precision(&mut self, double: bool) {
+        self.dispatch(
+            plugin::OpCode::SetPrecision,
+            0,
+            double as isize,
+            ptr::null_mut(),
+            0.0,
+        );
     }
 
     fn vendor_specific(&mut self, index: i32, value: isize, ptr: *mut c_void, opt: f32) -> isize {
@@ -1651,6 +1686,18 @@ mod tests {
         assert!(matches!(
             plugin::OpCode::try_from(72),
             Ok(plugin::OpCode::StopProcess)
+        ));
+    }
+
+    /// `effSetProcessPrecision = 77`, pinned for the same reason as the pair
+    /// above. It sits four variants below `effStopProcess`, so it is the one
+    /// most exposed to a variant inserted anywhere in that range.
+    #[test]
+    fn set_precision_opcode_matches_the_sdk() {
+        assert_eq!(plugin::OpCode::SetPrecision as i32, 77);
+        assert!(matches!(
+            plugin::OpCode::try_from(77),
+            Ok(plugin::OpCode::SetPrecision)
         ));
     }
 

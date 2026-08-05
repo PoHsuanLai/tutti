@@ -1,22 +1,23 @@
 //! Host-side capability backend for the in-process VST2 host.
 //!
-//! Implements [`HostParams`], [`HostState`], and [`HostEditor`] (VST2 has an
-//! embeddable editor). Holds the same `Arc<Mutex<Vst2Instance>>` the audio unit
+//! Implements [`HostParams`], [`HostState`], [`HostEditor`] (VST2 has an
+//! embeddable editor) and [`HostRenderMode`]. Holds the same `Arc<Mutex<Vst2Instance>>` the audio unit
 //! holds. GUI thread calls take the lock for the duration of one plugin operation
 //! — short for parameter / state methods, potentially long for editor ones. The
 //! audio thread always uses `try_lock` (in `super::audio_unit`) and falls back to
 //! silence on contention so a slow `editor_idle` can't underrun audio.
 
 use std::ffi::c_void;
+use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 
 use parking_lot::Mutex;
 use tutti_vst2_host::Vst2Instance;
 
 use crate::error::EditorError;
-use crate::host::handles::capabilities::{HostEditor, HostParams, HostState};
+use crate::host::handles::capabilities::{HostEditor, HostParams, HostRenderMode, HostState};
 use crate::host::node::ParameterChangeSink;
-use crate::protocol::{ParamAddress, ParameterInfo};
+use crate::protocol::{ParamAddress, ParameterInfo, RenderMode};
 use crate::util::window::EditorSize;
 
 /// Bundles the shared Mutex with the parameter-change sink so editor
@@ -25,6 +26,10 @@ use crate::util::window::EditorSize;
 pub(crate) struct InProcessVst2Backend {
     pub(crate) inner: Arc<Mutex<Vst2Instance>>,
     pub(crate) param_sink: ParameterChangeSink,
+    /// The cell the audio unit parks a rate change in, shared with every clone
+    /// of the node. Drained here because telling a VST2 plugin its rate runs
+    /// the `effMainsChanged` bracket, which allocates.
+    pub(crate) pending_sample_rate: Arc<AtomicU64>,
 }
 
 impl HostParams for InProcessVst2Backend {
@@ -71,6 +76,22 @@ impl HostState for InProcessVst2Backend {
     }
 }
 
+impl HostRenderMode for InProcessVst2Backend {
+    /// Always `true`: VST2 carries the mode on `audioMasterGetCurrentProcessLevel`,
+    /// a callback the *host* answers whenever the plugin asks, so there is no
+    /// query a plugin could decline. This matches `probed::VST2`, which lists
+    /// `RENDER_MODE` unconditionally for the same reason.
+    ///
+    /// Takes the lock rather than caching the flag here: the answer lives on the
+    /// `HostState` the plugin already polls, and a second copy could disagree
+    /// with it. `super::audio_unit::InProcessVst2Client::set_render_mode` writes
+    /// the same cell through the same `Arc`, so the two routes cannot drift.
+    fn set_render_mode(&self, mode: RenderMode) -> bool {
+        self.inner.lock().set_offline_render(mode.is_offline());
+        true
+    }
+}
+
 impl HostEditor for InProcessVst2Backend {
     fn open_editor(&self, parent_ptr: *mut c_void) -> std::result::Result<EditorSize, EditorError> {
         // SAFETY: caller supplied a valid native window handle (NSView*,
@@ -92,6 +113,12 @@ impl HostEditor for InProcessVst2Backend {
     }
 
     fn editor_idle(&self) {
+        // Before the lock below, not inside it: the drain takes the same lock
+        // and would deadlock under that guard. This runs on the main thread,
+        // every editor frame, which is what makes it the delivery point for the
+        // rate the audio thread had to park.
+        super::audio_unit::drain_sample_rate(&self.pending_sample_rate, &self.inner);
+
         let mut instance = self.inner.lock();
         instance.editor_idle();
         // Drain any plugin-internal parameter changes (knob movement on

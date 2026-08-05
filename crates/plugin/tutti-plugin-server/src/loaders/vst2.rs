@@ -11,7 +11,7 @@ use tutti_plugin::server::{
     AudioBufferMut, EditorPresence, EditorSize, Features, LoadedPlugin, MidiEventVec,
     NoteExpressionChanges, ParamAddress, ParameterChanges, ParameterInfo, PluginAudio, PluginClass,
     PluginDescriptor, PluginEditorHost, PluginMeta, PluginParams, PluginResult, PluginState,
-    PluginTail, ProcessContext, ProcessOutput, WindowHandle,
+    PluginTail, ProcessContext, ProcessOutput, RenderMode, WindowHandle,
 };
 // Only the `not(vst2)` fallback arms construct `PluginError` directly.
 #[cfg(not(feature = "vst2"))]
@@ -54,8 +54,8 @@ impl Vst2Instance {
                 editor: EditorPresence::measured(host_meta.has_editor),
             };
             let mut features = Features::empty();
-            // VST2's advertised f64 is informational only (the `vst` crate is
-            // f32-internally), but the flag reflects what the plugin declares.
+            // Backed by the render path: with this bit set, an `F64` buffer
+            // reaches `processReplacingF64` rather than being narrowed.
             features.set(Features::F64_AUDIO, host_meta.supports_f64);
             features.set(Features::MIDI_IN, host_meta.receives_midi);
             // MIDI-out is the plugin's declared output-bus count, not the
@@ -248,6 +248,21 @@ impl PluginAudio for Vst2Instance {
         self.sample_rate = rate;
         #[cfg(feature = "vst2")]
         self.inner.set_sample_rate(rate);
+    }
+
+    /// Store the level the host reports through
+    /// `audioMasterGetCurrentProcessLevel`.
+    ///
+    /// Always accepted: VST2 has no query a plugin could decline — the host
+    /// answers whenever the plugin asks. So unlike CLAP and AU this reports
+    /// `true` unconditionally, and `probed::VST2` carries `RENDER_MODE` for the
+    /// same reason.
+    fn set_render_mode(&mut self, mode: RenderMode) -> bool {
+        #[cfg(feature = "vst2")]
+        self.inner.set_offline_render(mode.is_offline());
+        #[cfg(not(feature = "vst2"))]
+        let _ = mode;
+        true
     }
 }
 

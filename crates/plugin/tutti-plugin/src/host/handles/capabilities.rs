@@ -28,7 +28,7 @@
 use std::ffi::c_void;
 
 use crate::error::EditorError;
-use crate::protocol::{AutomationMode, ParamAddress, ParameterInfo};
+use crate::protocol::{AutomationMode, ParamAddress, ParameterInfo, RenderMode};
 use crate::util::window::{EditorCapabilities, EditorSize};
 
 /// Parameter catalog, live-value read, and imperative value write — plus the
@@ -121,7 +121,35 @@ pub trait HostAutomationState: Send + Sync {
     fn set_automation_mode(&self, mode: AutomationMode) -> Result<(), EditorError>;
 }
 
-/// Compile-time guard that all four control capabilities stay **object-safe** —
+/// Host → plugin render-mode advisory — **optional**, Direction C-in.
+///
+/// The host tells the plugin whether it is rendering under realtime pressure so
+/// the plugin can pick a more expensive algorithm for an offline bounce. Unlike
+/// [`HostAutomationState`] this is not cosmetic: it changes what the plugin
+/// computes, which is why the return says whether the plugin took it.
+///
+/// Sits on the control surface rather than only on the audio node because the
+/// caller is a bounce driver, which holds a [`PluginHandle`] and runs on the
+/// control thread. Three of the four formats can only accept the change while
+/// the plugin is deactivated, so it is not something an audio-thread caller
+/// could deliver anyway.
+///
+/// A backend implements this only if it can carry the mode; others do not, so
+/// [`PluginHandle::render_mode`] returns `None` — no stub.
+///
+/// [`PluginHandle`]: super::control_handle::PluginHandle
+/// [`PluginHandle::render_mode`]: super::control_handle::PluginHandle::render_mode
+pub trait HostRenderMode: Send + Sync {
+    /// Tell the plugin whether it is rendering offline.
+    ///
+    /// Returns whether the plugin *accepted* the mode. `false` is a refusal, not
+    /// an error: a CLAP plugin that does not implement `clap.render` renders
+    /// identically either way, which is exactly what declining the extension
+    /// means. See [`Features::RENDER_MODE`](crate::protocol::Features).
+    fn set_render_mode(&self, mode: RenderMode) -> bool;
+}
+
+/// Compile-time guard that all five control capabilities stay **object-safe** —
 /// `PluginHandle` stores each as `Arc<dyn …>`, so a regression that breaks
 /// dyn-compatibility (e.g. adding a generic method) must fail here, not at a
 /// distant call site.
@@ -131,5 +159,6 @@ fn _assert_object_safe(
     _s: &dyn HostState,
     _e: &dyn HostEditor,
     _a: &dyn HostAutomationState,
+    _r: &dyn HostRenderMode,
 ) {
 }

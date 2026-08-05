@@ -38,7 +38,6 @@ pub struct ProcessingState {
     pub tail_changed: AtomicBool,
     pub state_dirty: AtomicBool,
     pub preset_loaded: AtomicBool,
-    pub thread_pool_pending: AtomicU32,
 }
 
 impl ProcessingState {
@@ -48,18 +47,19 @@ impl ProcessingState {
             tail_changed: AtomicBool::new(false),
             state_dirty: AtomicBool::new(false),
             preset_loaded: AtomicBool::new(false),
-            thread_pool_pending: AtomicU32::new(0),
         }
     }
 }
 
 pub struct GuiState {
     pub closed: AtomicBool,
-    /// Set when the plugin reported `gui.closed(was_destroyed = true)` — it
-    /// already tore its own editor down, so `close_editor` must NOT call
-    /// `gui.destroy` again (double-destroy). Latched until the next editor is
-    /// opened. (H5)
-    pub already_destroyed: AtomicBool,
+    /// Set when the plugin reported `gui.closed(was_destroyed = true)` — its
+    /// **window** is gone. `close_editor` reads this to skip `gui.hide`, which
+    /// has no window left to act on, and still calls `gui.destroy`: `ext/gui.h`
+    /// requires the host call `destroy()` to acknowledge the destruction, and
+    /// `destroy` releases what `create` allocated rather than the window.
+    /// Latched until the next editor is opened.
+    pub window_destroyed: AtomicBool,
     pub resize_hints_changed: AtomicBool,
     pub request_resize_width: AtomicU32,
     pub request_resize_height: AtomicU32,
@@ -71,7 +71,7 @@ impl GuiState {
     fn new() -> Self {
         Self {
             closed: AtomicBool::new(false),
-            already_destroyed: AtomicBool::new(false),
+            window_destroyed: AtomicBool::new(false),
             resize_hints_changed: AtomicBool::new(false),
             request_resize_width: AtomicU32::new(0),
             request_resize_height: AtomicU32::new(0),
@@ -102,6 +102,14 @@ impl ParamState {
 
 pub struct AudioPortState {
     pub changed: AtomicBool,
+    /// Accumulated `clap_audio_ports_rescan_flags` from every
+    /// `audio-ports.rescan` call since the last poll (OR-combined).
+    ///
+    /// Five of the six flags are `[!active]` in the spec, so a consumer has to
+    /// tell a live-applicable name change from one that requires
+    /// deactivate→re-enumerate→re-activate. OR so multiple rescans between
+    /// polls don't lose bits.
+    pub rescan_flags: AtomicU32,
     pub config_changed: AtomicBool,
     pub ambisonic_changed: AtomicBool,
     pub surround_changed: AtomicBool,
@@ -111,6 +119,7 @@ impl AudioPortState {
     fn new() -> Self {
         Self {
             changed: AtomicBool::new(false),
+            rescan_flags: AtomicU32::new(0),
             config_changed: AtomicBool::new(false),
             ambisonic_changed: AtomicBool::new(false),
             surround_changed: AtomicBool::new(false),

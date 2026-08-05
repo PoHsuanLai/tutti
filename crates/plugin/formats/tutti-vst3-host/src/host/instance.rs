@@ -383,12 +383,79 @@ impl<T: Vst3Sample> Vst3Instance<T> {
         unsafe { ManuallyDrop::take(&mut self.loaded) }
     }
 
-    /// Change the sample rate and re-run `setupProcessing`. Must be called
-    /// only when not inside [`process`](Self::process).
-    pub fn set_sample_rate(&mut self, rate: f64) -> &mut Self {
+    /// The sample rate this instance is currently activated at.
+    ///
+    /// Worth reading after a refused [`set_sample_rate`](Self::set_sample_rate):
+    /// the instance keeps running at the rate the plugin already accepted, and
+    /// this is what says which one that is.
+    pub fn sample_rate(&self) -> f64 {
+        self.audio.config.sample_rate
+    }
+
+    /// Change the sample rate, re-running `setupProcessing` across a
+    /// deactivate/reactivate cycle.
+    ///
+    /// `setupProcessing` is `[UI-thread & (Initialized | Connected)]` and
+    /// "called in disable state (setActive not called with true)"
+    /// (`ivstaudioprocessor.h:328-330`), so it cannot be delivered in place:
+    /// this type is active by construction. Setup-time only — never call from
+    /// the audio thread or from inside [`process`](Self::process), since it
+    /// deactivates the plugin and re-sizes its buffers.
+    ///
+    /// # Errors
+    /// [`Vst3Error::PluginError`] if the plugin refuses the new rate. The
+    /// instance is **rolled back** to the rate it was already running at and
+    /// left active there — see [`reconfigure`](Self::reconfigure) for why, and
+    /// for what a failed rollback reports.
+    pub fn set_sample_rate(&mut self, rate: f64) -> Result<()> {
+        if rate == self.audio.config.sample_rate {
+            return Ok(());
+        }
+        self.reconfigure(rate)
+    }
+
+    /// Deactivate → `setupProcessing` at `rate` → reactivate, restoring the
+    /// previous rate if the plugin refuses the new one.
+    ///
+    /// Distinct from [`restart_bus_configuration`](Self::restart_bus_configuration),
+    /// which brackets the same way but for a different reason: that one exists
+    /// to re-ask the plugin for a bus layout it has just announced changed, so
+    /// it renegotiates arrangements and re-reads counts inside the cycle. A
+    /// rate change announces nothing about the layout, and renegotiating one
+    /// the plugin never said had moved would let a `setBusArrangements`
+    /// refusal re-resolve scratch behind an unrelated call.
+    ///
+    /// Rolling back is the one recovery available — the plugin accepted the
+    /// previous rate once — and it restores an active instance the caller can
+    /// keep processing. A refused rollback is a worse fact than the refusal
+    /// that caused it, so it propagates as its own `Err` rather than folding
+    /// into the one below; the instance is then genuinely inactive, and `Drop`
+    /// still tears it down safely.
+    fn reconfigure(&mut self, rate: f64) -> Result<()> {
+        let previous = self.audio.config.sample_rate;
+
+        self.stop_processing();
+        self.set_active(false)?;
+
         self.audio.config.sample_rate = rate;
-        let _ = self.apply_process_setup();
-        self
+        if self.apply_process_setup().is_ok() && self.set_active(true).is_ok() {
+            // Latency is only valid once active, and a rate change moves it for
+            // any plugin whose group delay is a duration rather than a sample
+            // count. Same read as `from_loaded`, for the same reason.
+            let _ = self.loaded.read_latency_samples();
+            return Ok(());
+        }
+
+        // Refused. Put back what the plugin already accepted once.
+        self.audio.config.sample_rate = previous;
+        self.apply_process_setup()?;
+        self.set_active(true)?;
+        let _ = self.loaded.read_latency_samples();
+
+        Err(Vst3Error::PluginError {
+            stage: LoadStage::Setup,
+            code: kResultFalse,
+        })
     }
 
     /// The mode this instance's blocks are currently processed in.

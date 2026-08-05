@@ -41,6 +41,9 @@ pub use crate::util::window::{EditorSize, WindowHandle};
 pub use tutti_plugin_types::features::probed;
 /// Paired capability flags plus the mask saying which were probed.
 pub use tutti_plugin_types::FeatureReport;
+/// Whether a plugin is being rendered under realtime pressure. Configure-time,
+/// not per block — see [`RenderMode`](tutti_plugin_types::RenderMode).
+pub use tutti_plugin_types::RenderMode;
 /// Per-block process inputs/outputs, re-exported from `tutti-plugin-types`.
 pub use tutti_plugin_types::{ExpressiveContext, ProcessContext, ProcessOutput};
 /// The fine-grained plugin-instance capability traits plus the

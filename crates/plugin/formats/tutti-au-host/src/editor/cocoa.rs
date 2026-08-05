@@ -17,14 +17,15 @@ use crate::cf::{CfString, CfUrl};
 use crate::error::{AuError, Result};
 use crate::ffi::get_property_bytes;
 use crate::types::*;
+use tutti_plugin_types::EditorSize;
 
 /// Top-level entry: query the AU's CocoaUI info, load the view factory bundle,
 /// and instantiate the editor `NSView`.
-pub(super) unsafe fn create_view(unit: AudioUnit) -> Result<*mut AnyObject> {
+pub(super) unsafe fn create_view(unit: AudioUnit, preferred: EditorSize) -> Result<*mut AnyObject> {
     let (bundle_url, class_name) = load_cocoa_view_info(unit)?;
     let bundle = load_bundle(&bundle_url)?;
     let factory = instantiate_factory(&bundle, &class_name)?;
-    make_view(factory, unit)
+    make_view(factory, unit, preferred)
 }
 
 unsafe fn load_cocoa_view_info(unit: AudioUnit) -> Result<(CfUrl, CfString)> {
@@ -94,10 +95,21 @@ unsafe fn instantiate_factory(_bundle: &NSBundle, class_name: &CfString) -> Resu
     Ok(factory)
 }
 
-unsafe fn make_view(factory: *mut AnyObject, unit: AudioUnit) -> Result<*mut AnyObject> {
+unsafe fn make_view(
+    factory: *mut AnyObject,
+    unit: AudioUnit,
+    preferred: EditorSize,
+) -> Result<*mut AnyObject> {
+    // `inPreferredSize` is what the *host* would like, and
+    // `AUCocoaUIView.h:47-48` calls it exactly that — a preference. A plugin
+    // may return a view of any size, which is why the caller reads back the
+    // real frame afterwards rather than assuming it got what it asked for.
+    //
+    // This was hardcoded to 800×600, so every AU editor was told the host
+    // wanted that regardless of the window it was about to live in.
     let size = NSSize {
-        width: 800.0,
-        height: 600.0,
+        width: f64::from(preferred.width),
+        height: f64::from(preferred.height),
     };
     // `uiViewForAudioUnit:withSize:` lives on the plugin-provided factory class,
     // so it has no typed binding — dispatch dynamically. objc2's `msg_send!`

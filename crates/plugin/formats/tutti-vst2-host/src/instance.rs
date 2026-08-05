@@ -159,9 +159,27 @@ impl Vst2Instance {
         instance.init();
         instance.set_sample_rate(sample_rate as f32);
         instance.set_block_size(block_size as i64);
+
+        // Read before `resume` because the precision announcement below has to
+        // happen while the plugin is still suspended.
+        let info = instance.get_info();
+
+        // `effSetProcessPrecision` is a suspended-state opcode, and a plugin
+        // that switches its internal precision on it reallocates the same
+        // buffers `effMainsChanged` does — so it goes here, between
+        // `effSetBlockSize` and the first resume.
+        //
+        // Announcing what the plugin declared, rather than a fixed width: this
+        // host renders through whichever entry point the caller asks for, and
+        // `process_f64` narrows to f32 exactly when the plugin cannot do f64
+        // (see `process.rs`). So the widest width the plugin will ever be
+        // entered at is the one its own `effFlagsCanDoubleReplacing` claims.
+        // Declaring 64-bit to a plugin that cannot do it would configure it for
+        // a call it never receives.
+        instance.set_precision(info.f64_precision);
+
         instance.resume();
 
-        let info = instance.get_info();
         // MIDI classification. Pin count / category is the primary signal, but
         // MIDI-effect plugins routinely declare 0 MIDI pins and advertise
         // capability only via `canDo`, so those weaker signals are OR-ed in.
@@ -204,7 +222,14 @@ impl Vst2Instance {
             receives_midi,
             emits_midi,
             has_editor: false, // overwritten below once we ask the handle
-            latency_samples: Samples(info.initial_delay.max(0) as usize),
+            // Read live, not from `info`. `get_info()` returns a snapshot taken
+            // in `PluginInstance::new` — before `effOpen`, `effSetSampleRate`
+            // and `effMainsChanged` — and a plugin sets its latency during
+            // those: a linear-phase EQ does not know its filter length until it
+            // knows the sample rate. So `info.initial_delay` reads 0 for
+            // exactly the plugins that have latency, and PDC silently
+            // compensated nothing for them.
+            latency_samples: Samples(instance.read_initial_delay().max(0) as usize),
             supports_f64: info.f64_precision,
         };
 
@@ -226,7 +251,7 @@ impl Vst2Instance {
             params,
             initial_values,
             host_link: HostLink {
-                _state: host,
+                state: host,
                 time_info,
                 param_rx,
             },
@@ -266,6 +291,34 @@ impl Vst2Instance {
         }
         self.restore_after_reconfigure(true);
         true
+    }
+
+    /// Cycle the plugin through suspend and resume — `effStopProcess` →
+    /// `effMainsChanged(0)` → `effMainsChanged(1)` → `effStartProcess` — to
+    /// clear whatever processing state it chooses to clear on those edges.
+    ///
+    /// This is as close as VST 2.4 comes to a state clear, and it is not close.
+    /// The `OpCode` enum has no discrete reset. The only two opcodes that touch
+    /// DSP state are `effMainsChanged`, where plugins allocate and free their
+    /// rate-dependent buffers, and the `effStartProcess`/`effStopProcess` pair,
+    /// which announces a processing interruption and is only legal while
+    /// resumed. A plugin is obliged to clear nothing on either edge, so a
+    /// caller gets the cycle, not a guarantee.
+    ///
+    /// Returns whether the cycle was dispatched. `false` for a plugin that was
+    /// already suspended: it has no processing state to interrupt, and
+    /// `effMainsChanged` is not documented as idempotent, so a redundant
+    /// suspend would be a second buffer teardown rather than a no-op.
+    ///
+    /// # Threading
+    /// Main thread only, asserted. `effMainsChanged` allocates, so no
+    /// audio-thread caller may reach this — a host handling a locate or a loop
+    /// wrap calls it from the thread that owns the editor, between blocks.
+    pub fn reset_processing_state(&mut self) -> bool {
+        tutti_plugin_types::assert_main_thread();
+        let was_resumed = self.suspend_for_reconfigure();
+        self.restore_after_reconfigure(was_resumed);
+        was_resumed
     }
 
     /// Take the plugin out of the processing state, if it is in it, in the
@@ -310,10 +363,37 @@ impl Vst2Instance {
     ///
     /// `as f32` is not a unit-type regression: `effSetSampleRate` passes the
     /// rate in the dispatcher's `opt` field, a C `float` — an FFI boundary.
+    ///
+    /// # Threading
+    /// Main thread only, asserted. The bracket's `effMainsChanged` is where
+    /// plugins allocate and free, so this is not reachable from an audio-thread
+    /// caller — one wanting to change rate parks it for a main-thread drain.
+    /// The guard is here rather than only at the call sites because this is the
+    /// function that dispatches: a future caller inherits it without knowing to
+    /// ask.
     pub fn set_sample_rate(&mut self, sample_rate: f64) {
+        tutti_plugin_types::assert_main_thread();
         let was_resumed = self.suspend_for_reconfigure();
         self.handle.instance.set_sample_rate(sample_rate as f32);
         self.restore_after_reconfigure(was_resumed);
+    }
+
+    /// Set whether the host reports itself as rendering offline.
+    ///
+    /// Unlike the other three formats there is nothing to push: VST2 carries
+    /// this through `audioMasterGetCurrentProcessLevel`, a callback the plugin
+    /// makes whenever it likes. So this stores the answer the host will give,
+    /// and no plugin can decline it — there is no query to refuse.
+    ///
+    /// No suspend/resume bracket for the same reason: nothing is delivered to
+    /// the plugin at call time, so there is no buffer for it to re-size.
+    pub fn set_offline_render(&self, offline: bool) {
+        self.host_link.state.set_offline(offline);
+    }
+
+    /// Whether the host is currently reporting offline.
+    pub fn is_offline_render(&self) -> bool {
+        self.host_link.state.is_offline()
     }
 
     /// Notify the plugin of a maximum-block-size change. Bracketed for the same
@@ -327,6 +407,38 @@ impl Vst2Instance {
         let was_resumed = self.suspend_for_reconfigure();
         self.handle.instance.set_block_size(block_size as i64);
         self.restore_after_reconfigure(was_resumed);
+    }
+
+    /// Whether the plugin has asked the host to refresh what it displays,
+    /// consuming the request.
+    ///
+    /// Raised by `audioMasterUpdateDisplay`, which a plugin fires after
+    /// changing preset or program from its own editor. VST 2.4 carries no
+    /// detail with it, so the answer is to re-read: [`parameter_list`] and the
+    /// current values may all have moved.
+    ///
+    /// Consuming, so a caller polling each frame acts once per request rather
+    /// than re-reading forever after the first one.
+    ///
+    /// [`parameter_list`]: Self::parameter_list
+    pub fn take_display_stale(&self) -> bool {
+        self.host_link.state.take_display_stale()
+    }
+
+    /// The plugin's latency **as it currently stands**.
+    ///
+    /// Re-read from the live `AEffect` rather than returned from the load-time
+    /// metadata, because VST2 gives a plugin no way to announce a change: there
+    /// is no latency-changed callback in the ABI. `audioMasterIOChanged` is the
+    /// nearest thing and is about I/O configuration; a plugin that alters
+    /// `initialDelay` on a sample-rate change may not send anything at all.
+    ///
+    /// So the host has to ask. [`set_sample_rate`](Self::set_sample_rate) and
+    /// [`set_block_size`](Self::set_block_size) both suspend and resume, which
+    /// is exactly when a plugin recomputes a filter length — call this after
+    /// either and re-plan compensation if the answer moved.
+    pub fn latency(&self) -> Samples {
+        Samples(self.handle.instance.read_initial_delay().max(0) as usize)
     }
 }
 

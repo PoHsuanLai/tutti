@@ -18,6 +18,22 @@ pub enum AuError {
     },
     /// A null `AudioComponent` handle was passed where a valid one was required.
     NullComponent,
+    /// The component sets `kAudioComponentFlag_RequiresAsyncInstantiation`, so
+    /// `AudioComponentInstanceNew` cannot create it.
+    ///
+    /// `AudioComponent.h:498-502`: `AudioComponentInstantiate` "must be used to
+    /// instantiate any component with
+    /// kAudioComponentFlag_RequiresAsyncInstantiation set in its component
+    /// flags". The system sets that flag automatically for v3 audio units with
+    /// views.
+    ///
+    /// A distinct variant because the synchronous call's own answer is
+    /// `kAudioUnitErr_CannotDoInCurrentContext` (-10863) — "cannot do in
+    /// current context", which reads like a transient condition worth retrying
+    /// rather than a component this entry point can never create. Measured on
+    /// macOS 15.6: of 138 installed components, 5 set the flag and all 5 return
+    /// -10863 here, every time.
+    RequiresAsyncInstantiation,
     /// CoreFoundation declined to allocate a string the host needed to hand to
     /// the AU.
     ///
@@ -213,6 +229,9 @@ impl AuError {
                 AuError::OsStatus { code, .. } => *code,
                 AuError::RenderFailed { code, .. } => *code,
                 AuError::NullComponent => return "null component",
+                AuError::RequiresAsyncInstantiation => {
+                    return "component requires asynchronous instantiation (AUv3 with a view)"
+                }
                 AuError::CfStringAlloc => return "CoreFoundation string allocation failed",
                 AuError::InvalidBuffer(_) => return "invalid buffer",
                 AuError::SampleRateRejected { .. } => return "sample rate rejected",
@@ -294,6 +313,12 @@ impl fmt::Display for AuError {
                 ),
             },
             AuError::NullComponent => write!(f, "null AudioComponent handle"),
+            AuError::RequiresAsyncInstantiation => write!(
+                f,
+                "this component requires AudioComponentInstantiate (asynchronous); \
+                 it is a v3 Audio Unit with a view, which \
+                 AudioComponentInstanceNew cannot create"
+            ),
             AuError::CfStringAlloc => write!(f, "CoreFoundation string allocation failed"),
             AuError::InvalidBuffer(msg) => write!(f, "invalid buffer: {msg}"),
             AuError::SampleRateRejected {

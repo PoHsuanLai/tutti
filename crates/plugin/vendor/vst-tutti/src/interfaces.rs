@@ -169,7 +169,21 @@ fn dispatch_inner(
             return copy_string(ptr, &params.get_parameter_name(index), MAX_PARAM_STR_LEN)
         }
 
-        Ok(OpCode::SetSampleRate) => get_plugin().set_sample_rate(opt),
+        Ok(OpCode::SetSampleRate) => {
+            get_plugin().set_sample_rate(opt);
+            // Let the plugin publish a latency it could not know at
+            // construction. Real plugins do this constantly — a linear-phase EQ
+            // or an oversampling limiter sizes its filter from the sample rate,
+            // so `initialDelay` is 0 until `effSetSampleRate` lands. The trait
+            // has no way to reach the `AEffect`, so the dispatch writes back
+            // whatever `get_info()` now reports.
+            //
+            // SAFETY: `effect` is the live `AEffect` this dispatch was invoked
+            // through; `initialDelay` is a plain `i32` field.
+            unsafe {
+                (*effect).initialDelay = get_plugin().get_info().initial_delay;
+            }
+        }
         Ok(OpCode::SetBlockSize) => get_plugin().set_block_size(value as i64),
         Ok(OpCode::StateChanged) => {
             if value == 1 {
@@ -184,16 +198,42 @@ fn dispatch_inner(
                 let size = editor.size();
                 let pos = editor.position();
 
-                unsafe {
-                    // Given a Rect** structure
-                    // TODO: Investigate whether we are given a valid Rect** pointer already
-                    *(ptr as *mut *mut c_void) = Box::into_raw(Box::new(Rect {
+                // The `Rect` the host reads through, owned by this plugin and
+                // reused on every call.
+                //
+                // `effEditGetRect` hands the host a `Rect**` and VST 2.4 gives
+                // it no way to release what it points at — there is no matching
+                // "free this rect" opcode, and the host cannot know the
+                // allocator. So a `Box::into_raw` here leaked one `Rect` per
+                // call, and hosts call this repeatedly: once before opening an
+                // editor, and again on every resize.
+                //
+                // Thread-local rather than a `static mut`: the pointer must stay
+                // valid after this returns, and a host may drive editors for
+                // several plugin instances. Per-thread is the right scope
+                // because `effEditGetRect` is a main-thread opcode, so the host
+                // reads the value on the same thread that wrote it, before it
+                // can call again.
+                thread_local! {
+                    static EDITOR_RECT: Cell<Rect> = const {
+                        Cell::new(Rect { left: 0, top: 0, right: 0, bottom: 0 })
+                    };
+                }
+
+                EDITOR_RECT.with(|slot| {
+                    slot.set(Rect {
                         left: pos.0 as i16,              // x coord of position
                         top: pos.1 as i16,               // y coord of position
                         right: (pos.0 + size.0) as i16,  // x coord of pos + x coord of size
                         bottom: (pos.1 + size.1) as i16, // y coord of pos + y coord of size
-                    })) as *mut _; // TODO: free memory
-                }
+                    });
+                    // SAFETY: `ptr` is the `Rect**` out-parameter the opcode
+                    // documents; the pointer written stays valid for the
+                    // thread's lifetime.
+                    unsafe {
+                        *(ptr as *mut *mut c_void) = slot.as_ptr() as *mut c_void;
+                    }
+                });
 
                 return 1;
             }
@@ -342,6 +382,8 @@ fn dispatch_inner(
 
         Ok(OpCode::StartProcess) => get_plugin().start_process(),
         Ok(OpCode::StopProcess) => get_plugin().stop_process(),
+        // `value` is the width: 0 = 32-bit, anything else = 64-bit.
+        Ok(OpCode::SetPrecision) => get_plugin().set_precision(value != 0),
 
         Ok(OpCode::GetNumMidiInputs) => {
             return unsafe { (*effect).get_info() }.midi_inputs as isize
@@ -432,6 +474,32 @@ pub fn host_dispatch(
         Ok(OpCode::GetOutputLatency) => return host.get_output_latency(),
         Ok(OpCode::GetCurrentProcessLevel) => return host.get_process_level(),
         Ok(OpCode::GetAutomationState) => return host.get_automation_state(),
+
+        // `audioMasterUpdateDisplay`. A plugin fires this after changing preset
+        // or program from its own editor: the parameter set the host is showing
+        // is now stale and must be re-read. `Host::update_display` was declared
+        // with nothing routing to it, so the plugin got the fall-through's `0`
+        // and the host's parameter list silently drifted from the plugin's.
+        Ok(OpCode::UpdateDisplay) => {
+            host.update_display();
+            // 1 = handled. A plugin that reads this as "host will not refresh"
+            // may fall back to forcing its own repaint.
+            return 1;
+        }
+
+        // `audioMasterCurrentId`. A shell plugin (a bundle exposing several
+        // effects behind one binary) calls this during `VSTPluginMain` to learn
+        // which sub-plugin the host wants. The fall-through's `0` means "no
+        // particular id", so every shell loaded its default effect — and
+        // `Host::get_plugin_id` was overridden to a real value that nothing
+        // ever asked for.
+        Ok(OpCode::CurrentId) => return host.get_plugin_id() as isize,
+
+        // `audioMasterGetLanguage`. `HostLanguage` is 1-based (`English = 1`),
+        // so the fall-through's `0` is not a language — a plugin indexing a
+        // string table by it reads slot 0. English is the honest answer for a
+        // host with no localization rather than a placeholder.
+        Ok(OpCode::GetLanguage) => return api::HostLanguage::English as isize,
 
         _ => {
             trace!("VST: Got unimplemented host opcode ({:?})", opcode);

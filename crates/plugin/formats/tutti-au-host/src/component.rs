@@ -117,9 +117,37 @@ pub struct AuComponentInfo {
     /// `"major.minor.dot"` from `AudioComponentGetVersion`, or empty if the
     /// component refused. See [`component_version`].
     pub version: String,
+    /// Raw `componentFlags` from the component's description.
+    ///
+    /// Carried rather than dropped because one bit decides whether the
+    /// component can be loaded at all: `RequiresAsyncInstantiation` means
+    /// `AudioComponentInstanceNew` will refuse it. Read it through
+    /// [`requires_async_instantiation`](Self::requires_async_instantiation)
+    /// rather than by masking at a call site.
+    pub flags: u32,
     /// Opaque factory handle used to instantiate the AU.
     #[cfg(target_os = "macos")]
     pub component: AudioComponent,
+}
+
+impl AuComponentInfo {
+    /// Whether this component must be created with `AudioComponentInstantiate`.
+    ///
+    /// `AuHandle::new` refuses these, so a scanner can report them as needing a
+    /// route this host does not have rather than surfacing a load failure. The
+    /// system sets the flag for v3 audio units with views.
+    pub fn requires_async_instantiation(&self) -> bool {
+        self.flags & crate::types::K_AUDIO_COMPONENT_FLAG_REQUIRES_ASYNC_INSTANTIATION != 0
+    }
+
+    /// Whether the system registered this component as a version 3 Audio Unit.
+    ///
+    /// Not the same question as
+    /// [`requires_async_instantiation`](Self::requires_async_instantiation): a
+    /// v3 unit without a view is still v3 and can be created synchronously.
+    pub fn is_v3(&self) -> bool {
+        self.flags & crate::types::K_AUDIO_COMPONENT_FLAG_IS_V3_AUDIO_UNIT != 0
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -184,6 +212,7 @@ fn component_info(component: AudioComponent) -> Option<AuComponentInfo> {
 
     Some(AuComponentInfo {
         name,
+        flags: comp_desc.componentFlags,
         manufacturer: fourcc_to_string(comp_desc.componentManufacturer),
         manufacturer_code: comp_desc.componentManufacturer,
         sub_type: comp_desc.componentSubType,

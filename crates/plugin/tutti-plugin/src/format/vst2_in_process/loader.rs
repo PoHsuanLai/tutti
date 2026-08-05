@@ -68,10 +68,11 @@ pub fn load_client(
         },
         editor: EditorPresence::measured(host_meta.has_editor),
     };
-    // VST2 feature set — mirrors the out-of-process VST2 loader: f64 (advertised,
-    // informational), MIDI both directions from the combined flag, editor, and a
-    // transport snapshot each block. No sample-accurate automation, note
-    // expression, sequencer context, or host-driven editor resize.
+    // VST2 feature set — mirrors the out-of-process VST2 loader: f64 (backed by
+    // `processReplacingF64`), MIDI both directions from the combined flag,
+    // editor, and a transport snapshot each block. No sample-accurate
+    // automation, note expression, sequencer context, or host-driven editor
+    // resize.
     let mut features = Features::empty();
     features.set(Features::F64_AUDIO, host_meta.supports_f64);
     features.set(Features::MIDI_IN, host_meta.receives_midi);
@@ -108,9 +109,15 @@ pub fn load_client(
     let contention = Arc::new(AtomicU64::new(0));
     let param_sink = ParameterChangeSink::new();
 
+    // Built here rather than inside the node so the node's producer end and the
+    // backend's drain end are the same cell: the audio thread parks a rate in
+    // it, `editor_idle` dispatches from it.
+    let pending_sample_rate = Arc::new(AtomicU64::new(super::audio_unit::NO_PENDING_RATE));
+
     let backend = Arc::new(InProcessVst2Backend {
         inner: Arc::clone(&inner),
         param_sink: param_sink.clone(),
+        pending_sample_rate: Arc::clone(&pending_sample_rate),
     });
 
     // `loaded.features`, not the local `features`, so the node gates its
@@ -121,15 +128,20 @@ pub fn load_client(
         host_meta,
         loaded.features,
         sample_rate,
+        pending_sample_rate,
         Arc::clone(&contention),
     );
     let midi_sender = client.midi_sender();
 
-    // VST2 has an embeddable editor: the same backend Arc serves the editor slot.
+    // VST2 has an embeddable editor and carries a render mode: the same backend
+    // Arc serves both optional slots, so a mode set through the handle reaches
+    // the very `Vst2Instance` the node renders.
     let editor: Arc<dyn crate::backend::HostEditor> = backend.clone();
+    let render_mode: Arc<dyn crate::host::handles::capabilities::HostRenderMode> = backend.clone();
     let handle = PluginHandle::from_backend(
         backend,
         Some(editor),
+        Some(render_mode),
         descriptor,
         loaded,
         param_sink,

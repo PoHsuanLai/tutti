@@ -7,12 +7,13 @@ use tutti_plugin::server::{
     EditorSize, Features, LoadedPlugin, NoteExpressionChanges, NoteExpressionIntChanges,
     NoteExpressionTextChanges, ParamAddress, ParamFlags, ParamRange, ParamSteps, ParameterInfo,
     PluginAudio, PluginClass, PluginDescriptor, PluginEditorHost, PluginError, PluginMeta,
-    PluginParams, PluginResult, PluginState, PluginTail, ProcessContext, ProcessOutput, Samples,
-    ScaleChanges, Vst3SubCategories, WindowHandle,
+    PluginParams, PluginResult, PluginState, PluginTail, ProcessContext, ProcessOutput, RenderMode,
+    Samples, ScaleChanges, Vst3SubCategories, WindowHandle,
 };
 use tutti_plugin::{BridgeError, LoadStage, Result};
 
 use crate::loaders::common::{single_bus, Meta};
+use tutti_vst3_host::ProcessMode;
 
 pub use tutti_vst3_host;
 
@@ -59,6 +60,11 @@ struct ReloadParams {
     sample_rate: f64,
     block_size: usize,
     prefer_f64: bool,
+    /// The mode the instance is activated in. Retained here rather than read
+    /// back off the instance because it is an *input* to activation:
+    /// `setupProcessing` delivers it exactly once, so changing it means
+    /// rebuilding — which is what [`Vst3Instance::set_render_mode`] does.
+    mode: ProcessMode,
 }
 
 /// Outcome of [`Vst3Instance::poll_restart`] — the host-side restart effects
@@ -127,12 +133,12 @@ fn build_inner(p: &ReloadParams) -> Result<(VstInner, Meta)> {
 
     let inner = if p.prefer_f64 && info.supports_f64 {
         let inst = loaded
-            .activate::<f64>(p.sample_rate, p.block_size)
+            .activate_with_mode::<f64>(p.sample_rate, p.block_size, p.mode)
             .map_err(|e| map_vst3_error(e, &p.path))?;
         VstInner::F64(inst)
     } else {
         let inst = loaded
-            .activate::<f32>(p.sample_rate, p.block_size)
+            .activate_with_mode::<f32>(p.sample_rate, p.block_size, p.mode)
             .map_err(|e| map_vst3_error(e, &p.path))?;
         VstInner::F32(inst)
     };
@@ -245,6 +251,7 @@ impl Vst3Instance {
             sample_rate,
             block_size,
             prefer_f64,
+            mode: ProcessMode::Realtime,
         };
         let (inner, meta) = build_inner(&reload)?;
         Ok(Self {
@@ -599,8 +606,54 @@ impl PluginAudio for Vst3Instance {
 
     fn set_sample_rate(&mut self, rate: f64) {
         vst_dispatch_mut!(self, inner => {
-            inner.set_sample_rate(rate);
+            // `PluginAudio::set_sample_rate` is infallible, so a VST3 plugin's
+            // refusal cannot be propagated from here. It must still be *said*:
+            // the host rolls the instance back to the rate the plugin already
+            // accepted and stays active there, so the session keeps running —
+            // but at a rate the caller did not ask for, and a silent discard is
+            // how that becomes an unexplained pitch shift.
+            if let Err(e) = inner.set_sample_rate(rate) {
+                tracing::warn!(
+                    requested = rate,
+                    running_at = inner.sample_rate(),
+                    "VST3 plugin refused the sample rate: {e}"
+                );
+            }
         });
+    }
+
+    /// Re-activate the instance in the requested mode, preserving its state.
+    ///
+    /// VST3 delivers `processMode` through `setupProcessing`, which runs once
+    /// per activation and may only run while deactivated
+    /// (`ivstaudioprocessor.h:328`). Reaching `kOffline` from `kRealtime`
+    /// therefore *requires* a fresh setup — the spec says so explicitly at
+    /// `:142-143` — so this rebuilds through the same state-preserving path
+    /// `kReloadComponent` uses rather than mutating the live instance.
+    ///
+    /// The realtime↔prefetch pair is the one exception the spec carves out and
+    /// is `Vst3Instance::set_prefetch`, not this; prefetch is not reachable
+    /// through [`RenderMode`] by design (see its docs).
+    fn set_render_mode(&mut self, mode: RenderMode) -> bool {
+        let requested = if mode.is_offline() {
+            ProcessMode::Offline
+        } else {
+            ProcessMode::Realtime
+        };
+        if self.reload.mode == requested {
+            return true;
+        }
+        let previous = self.reload.mode;
+        self.reload.mode = requested;
+        if self.reload().is_err() {
+            // The rebuild failed and `reload` leaves the old instance in place,
+            // so the retained mode must go back to what is actually running —
+            // otherwise a later `kReloadComponent` would silently adopt a mode
+            // this plugin already refused.
+            self.reload.mode = previous;
+            return false;
+        }
+        true
     }
 }
 

@@ -318,11 +318,14 @@ pub struct PushScratch {
     /// Frames each bus's channel vectors were sized for — the bound the render
     /// functions enforce.
     block_size: u32,
-    /// Monotonic sample cursor for the render timestamp, mirroring the pull
-    /// path's. The push path keeps its **own** rather than sharing: they are
-    /// separate render sessions, and one shared cursor would make the timestamps
-    /// of whichever path was not driving jump forward, which an AU whose internal
-    /// LFO is phased off `mSampleTime` hears as a discontinuity.
+    /// Sample cursor for the render timestamp, mirroring the pull path's. The
+    /// push path keeps its **own** rather than sharing: they are separate render
+    /// sessions, and one shared cursor would make the timestamps of whichever
+    /// path was not driving jump forward, which an AU whose internal LFO is
+    /// phased off `mSampleTime` hears as a discontinuity.
+    ///
+    /// Advances by one block per render and returns to zero on
+    /// [`reset_position`](PushScratch::reset_position).
     sample_position: f64,
 }
 
@@ -401,6 +404,26 @@ impl PushScratch {
     /// How many output buses this scratch carries.
     pub fn output_bus_count(&self) -> usize {
         self.output_audio.len()
+    }
+
+    /// Send this scratch's render cursor back to zero.
+    ///
+    /// The push twin of the pull path's cursor restart, and it has to be a
+    /// separate call because the two cursors are separate objects with separate
+    /// owners: the pull cursor lives inside the instance, so
+    /// [`AuInstance::reset`](crate::instance::AuInstance::reset) can restart it
+    /// directly, while this one is host-owned — the host constructs it and
+    /// lends it per render, and `reset` never sees it. A host driving the push
+    /// path over a discontinuity therefore calls both, in either order; they
+    /// touch disjoint state.
+    ///
+    /// Not folded into `AuInstance::reset` by having it take an optional
+    /// scratch: the two paths deliberately do not share one, for the reason the
+    /// module docs give, and a `reset` that silently restarted only the cursor
+    /// the caller happened to pass would be a discontinuity applied to half the
+    /// render sessions in flight.
+    pub fn reset_position(&mut self) {
+        self.sample_position = 0.0;
     }
 
     /// Copy `src` (planar, one slice per channel) into input bus `bus`.

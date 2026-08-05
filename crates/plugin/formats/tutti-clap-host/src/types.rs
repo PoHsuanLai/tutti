@@ -296,6 +296,71 @@ impl ParamRescan {
     }
 }
 
+/// The scope of a plugin's `audio-ports.rescan` request, decoded from
+/// `clap_audio_ports_rescan_flags`.
+///
+/// The sibling of [`ParamRescan`], and for the same reason: five of the six
+/// flags are annotated `[!active]` in `ext/audio-ports.h`, meaning the host must
+/// deactivate the plugin before re-enumerating. Only `NAMES` is safe to pick up
+/// live. Collapsing all six into one bool left a consumer unable to tell a
+/// cosmetic port rename from a channel-count change, so `PortLayout` could go
+/// stale against the buffer widths the plugin actually expects.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct AudioPortsRescan {
+    /// Any rescan at all was requested since the last poll.
+    pub requested: bool,
+    /// `CLAP_AUDIO_PORTS_RESCAN_NAMES` — port names changed. The only flag
+    /// applicable while the plugin is active.
+    pub names: bool,
+    /// `CLAP_AUDIO_PORTS_RESCAN_FLAGS` — per-port flags changed. `[!active]`.
+    pub flags: bool,
+    /// `CLAP_AUDIO_PORTS_RESCAN_CHANNEL_COUNT` — a port's channel count
+    /// changed. `[!active]`, and the one that invalidates buffer sizing.
+    pub channel_count: bool,
+    /// `CLAP_AUDIO_PORTS_RESCAN_PORT_TYPE` — a port's type changed.
+    /// `[!active]`.
+    pub port_type: bool,
+    /// `CLAP_AUDIO_PORTS_RESCAN_IN_PLACE_PAIR` — in-place pairing changed.
+    /// `[!active]`.
+    pub in_place_pair: bool,
+    /// `CLAP_AUDIO_PORTS_RESCAN_LIST` — the set of ports itself changed.
+    /// `[!active]`.
+    pub list: bool,
+}
+
+impl AudioPortsRescan {
+    /// Decode the accumulated `clap_audio_ports_rescan_flags` bitset.
+    ///
+    /// `requested` is passed separately for the same reason as on
+    /// [`ParamRescan::from_flags`]: a plugin may legally call `rescan` with no
+    /// bits set, and "asked for nothing" must stay distinct from "never asked".
+    pub(crate) fn from_flags(requested: bool, flags: u32) -> Self {
+        use clap_sys::ext::audio_ports::{
+            CLAP_AUDIO_PORTS_RESCAN_CHANNEL_COUNT, CLAP_AUDIO_PORTS_RESCAN_FLAGS,
+            CLAP_AUDIO_PORTS_RESCAN_IN_PLACE_PAIR, CLAP_AUDIO_PORTS_RESCAN_LIST,
+            CLAP_AUDIO_PORTS_RESCAN_NAMES, CLAP_AUDIO_PORTS_RESCAN_PORT_TYPE,
+        };
+        Self {
+            requested,
+            names: flags & CLAP_AUDIO_PORTS_RESCAN_NAMES != 0,
+            flags: flags & CLAP_AUDIO_PORTS_RESCAN_FLAGS != 0,
+            channel_count: flags & CLAP_AUDIO_PORTS_RESCAN_CHANNEL_COUNT != 0,
+            port_type: flags & CLAP_AUDIO_PORTS_RESCAN_PORT_TYPE != 0,
+            in_place_pair: flags & CLAP_AUDIO_PORTS_RESCAN_IN_PLACE_PAIR != 0,
+            list: flags & CLAP_AUDIO_PORTS_RESCAN_LIST != 0,
+        }
+    }
+
+    /// Whether re-enumerating requires deactivating the plugin first.
+    ///
+    /// True for every flag except `NAMES`. Phrased as "anything but names"
+    /// rather than as a list, so a flag added to a later CLAP revision is
+    /// treated as unsafe-while-active until someone has read its annotation.
+    pub fn needs_deactivate(&self) -> bool {
+        self.flags || self.channel_count || self.port_type || self.in_place_pair || self.list
+    }
+}
+
 /// Description of an audio port exposed by the plugin.
 #[derive(Debug, Clone)]
 pub struct AudioPortInfo {
@@ -326,7 +391,37 @@ pub struct NotePortInfo {
     pub id: u32,
     pub name: String,
     pub supported_dialects: NoteDialects,
-    pub preferred_dialect: NoteDialect,
+    /// The port's preferred encoding, or `None` when the plugin named no
+    /// dialect this host recognises.
+    ///
+    /// `Option` rather than a default variant because there is no dialect a
+    /// host can substitute here without making a claim the plugin never made:
+    /// `preferred_dialect == 0` means the plugin stated no preference, and a
+    /// dialect added to CLAP after this host was built is equally unreadable.
+    /// Route through [`dialect_to_send`](Self::dialect_to_send) rather than
+    /// reading this field, so the absent case cannot be mistaken for a choice.
+    pub preferred_dialect: Option<NoteDialect>,
+}
+
+impl NotePortInfo {
+    /// The dialect to encode note events in for this port.
+    ///
+    /// Prefers the plugin's stated choice when this host can speak it, and
+    /// otherwise falls back to a dialect the port supports — CLAP first, then
+    /// MIDI 1.0. Returns `None` when the port supports neither, which is the
+    /// case a caller must not paper over: it can accept only MPE or MIDI 2.0,
+    /// and `host_note_ports_supported_dialects` tells the plugin this host
+    /// sends neither, so there is no encoding both sides agree on.
+    pub fn dialect_to_send(&self) -> Option<NoteDialect> {
+        match self.preferred_dialect {
+            Some(d @ (NoteDialect::Clap | NoteDialect::Midi)) => Some(d),
+            // A preference this host cannot send is no more usable than an
+            // absent one, so both take the supported-dialect fallback.
+            _ if self.supported_dialects.contains(NoteDialects::CLAP) => Some(NoteDialect::Clap),
+            _ if self.supported_dialects.contains(NoteDialects::MIDI) => Some(NoteDialect::Midi),
+            _ => None,
+        }
+    }
 }
 
 bitflags! {
@@ -712,6 +807,11 @@ pub struct UndoChange {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap_sys::ext::audio_ports::{
+        CLAP_AUDIO_PORTS_RESCAN_CHANNEL_COUNT, CLAP_AUDIO_PORTS_RESCAN_FLAGS,
+        CLAP_AUDIO_PORTS_RESCAN_IN_PLACE_PAIR, CLAP_AUDIO_PORTS_RESCAN_LIST,
+        CLAP_AUDIO_PORTS_RESCAN_NAMES, CLAP_AUDIO_PORTS_RESCAN_PORT_TYPE,
+    };
     use clap_sys::ext::params::{
         CLAP_PARAM_RESCAN_ALL, CLAP_PARAM_RESCAN_INFO, CLAP_PARAM_RESCAN_TEXT,
         CLAP_PARAM_RESCAN_VALUES,
@@ -750,5 +850,73 @@ mod tests {
         let r = ParamRescan::from_flags(false, 0);
         assert_eq!(r, ParamRescan::default());
         assert!(!r.requested);
+    }
+
+    /// A name change is the one rescan applicable while the plugin is active.
+    ///
+    /// This is the distinction the old `changed: bool` could not carry. A host
+    /// that deactivates on every port rename stalls audio for a cosmetic
+    /// update; one that treats every rescan as cosmetic re-reads a channel
+    /// count while active, which the spec forbids.
+    #[test]
+    fn audio_ports_rescan_names_is_safe_while_active() {
+        let r = AudioPortsRescan::from_flags(true, CLAP_AUDIO_PORTS_RESCAN_NAMES);
+        assert!(r.requested);
+        assert!(r.names);
+        assert!(
+            !r.needs_deactivate(),
+            "NAMES is the only flag not annotated [!active]"
+        );
+    }
+
+    /// Each of the five `[!active]` flags requires deactivation on its own.
+    ///
+    /// Individually rather than combined: a decoder that only checked, say,
+    /// `list` would pass a combined-flags test while silently letting a
+    /// channel-count change through live.
+    #[test]
+    fn every_non_name_rescan_flag_requires_deactivation() {
+        for (flag, label) in [
+            (CLAP_AUDIO_PORTS_RESCAN_FLAGS, "FLAGS"),
+            (CLAP_AUDIO_PORTS_RESCAN_CHANNEL_COUNT, "CHANNEL_COUNT"),
+            (CLAP_AUDIO_PORTS_RESCAN_PORT_TYPE, "PORT_TYPE"),
+            (CLAP_AUDIO_PORTS_RESCAN_IN_PLACE_PAIR, "IN_PLACE_PAIR"),
+            (CLAP_AUDIO_PORTS_RESCAN_LIST, "LIST"),
+        ] {
+            let r = AudioPortsRescan::from_flags(true, flag);
+            assert!(
+                r.needs_deactivate(),
+                "{label} is annotated [!active] and must require deactivation"
+            );
+        }
+    }
+
+    /// A channel-count change alongside a name change still needs deactivation.
+    ///
+    /// The mixed case is the one a host gets wrong by checking the wrong bit
+    /// first: the safe flag being present must not license applying the batch
+    /// live.
+    #[test]
+    fn a_name_change_does_not_excuse_a_channel_count_change() {
+        let flags = CLAP_AUDIO_PORTS_RESCAN_NAMES | CLAP_AUDIO_PORTS_RESCAN_CHANNEL_COUNT;
+        let r = AudioPortsRescan::from_flags(true, flags);
+        assert!(r.names && r.channel_count);
+        assert!(r.needs_deactivate());
+    }
+
+    /// A rescan carrying no bits is still a rescan, and no bits is not one.
+    ///
+    /// `requested` is tracked separately because a plugin may legally call
+    /// `rescan(0)`; folding it into the flags would make "asked for nothing"
+    /// indistinguishable from "never asked".
+    #[test]
+    fn audio_ports_rescan_tracks_requested_separately_from_flags() {
+        let asked_nothing = AudioPortsRescan::from_flags(true, 0);
+        assert!(asked_nothing.requested);
+        assert!(!asked_nothing.needs_deactivate());
+
+        let never_asked = AudioPortsRescan::from_flags(false, 0);
+        assert_eq!(never_asked, AudioPortsRescan::default());
+        assert!(!never_asked.requested);
     }
 }

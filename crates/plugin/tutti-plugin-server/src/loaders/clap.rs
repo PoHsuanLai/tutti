@@ -5,7 +5,7 @@ use tutti_plugin::server::{
     BusChannels, ClapFeature, EditorPresence, EditorSize, Features, LoadedPlugin,
     NoteExpressionChanges, ParamAddress, ParamRange, ParameterChanges, ParameterInfo, PluginAudio,
     PluginClass, PluginDescriptor, PluginEditorHost, PluginError, PluginMeta, PluginParams,
-    PluginPresets, PluginResult, PluginState, PluginTail, Samples, WindowHandle,
+    PluginPresets, PluginResult, PluginState, PluginTail, PresetId, Samples, WindowHandle,
 };
 use tutti_plugin::server::{ProcessContext, ProcessOutput, RenderMode};
 
@@ -552,11 +552,55 @@ impl PluginEditorHost for ClapInstance {
     }
 }
 
-/// Not yet wired — the defaults report "this format cannot", which is the
-/// honest answer until the mapping lands.
+/// The filesystem path an id names, or `None` when it names none.
 ///
-/// CLAP loads by path and cannot enumerate; the load half lands in step 6.
-impl PluginPresets for ClapInstance {}
+/// A free function so the decision is testable on its own. Through
+/// `load_preset` it is not: a coerced non-path id produces a path that does not
+/// exist, the plugin refuses *that*, and the caller sees the same `false` the
+/// guard would have produced. The two refusals are indistinguishable from
+/// outside, so only the guard's own inputs can pin it — verified by mutation.
+///
+/// Only [`PresetId::Location`] addresses a CLAP preset:
+/// `clap_plugin_preset_load::from_location` takes a filesystem path and nothing
+/// else. A `Number` or `Program` has no path to coerce *to*, which is why the
+/// id is opaque rather than an integer.
+fn clap_preset_path(id: &PresetId) -> Option<&std::path::Path> {
+    match id {
+        PresetId::Location(p) => Some(p.as_path()),
+        PresetId::Number(_) | PresetId::Program { .. } => None,
+    }
+}
+
+impl PluginPresets for ClapInstance {
+    /// Load a preset from the path an id names, via `CLAP_EXT_PRESET_LOAD`.
+    ///
+    /// [`PresetId::Location`] is the only shape CLAP can address: the
+    /// extension's `from_location` takes a filesystem path and nothing else.
+    /// A `Number` or `Program` names no CLAP preset and is refused rather than
+    /// coerced — there is no number to coerce it *to*, which is exactly why the
+    /// id is opaque.
+    #[cfg(feature = "clap")]
+    fn load_preset(&mut self, id: &PresetId) -> bool {
+        let Some(path) = clap_preset_path(id) else {
+            return false;
+        };
+        clap_dispatch_mut!(self, i => i.load_preset(path).is_ok())
+    }
+
+    // `get_presets` and `get_current_preset` stay at their defaults — an empty
+    // list and `None`.
+    //
+    // CLAP **cannot enumerate**. Discovery lives in the factory-level
+    // preset-discovery extension, which is queried on the *factory* rather than
+    // on a loaded instance and which this host does not bind, so there is no
+    // instance-level call that could answer. `CLAP_EXT_PRESET_LOAD` answers
+    // only "can this be pointed at a path".
+    //
+    // That is why an empty list here is not the same claim as an empty list
+    // from AU: `Features::PRESET_LIST` is *unprobed* for CLAP (see
+    // `probed::CLAP`), so a caller reads `None` — nobody asked — rather than
+    // `Some(false)`, which would say the plugin declined.
+}
 
 impl PluginState for ClapInstance {
     fn get_state(&mut self) -> PluginResult<Vec<u8>> {
@@ -817,6 +861,86 @@ mod tests {
                 param.id
             );
         }
+    }
+
+    /// CLAP lists nothing and can still load — a coherent state, not a
+    /// contradiction.
+    ///
+    /// The mirror of VST3, which lists richly and cannot load. CLAP's
+    /// enumeration lives in the factory-level preset-discovery extension, which
+    /// is queried on the *factory* rather than a loaded instance and which this
+    /// host does not bind; `CLAP_EXT_PRESET_LOAD` answers only "can this be
+    /// pointed at a path".
+    ///
+    /// So the empty list is **not** the same claim AU's empty list makes.
+    /// `PRESET_LIST` is unprobed for CLAP, so a caller reads `None` — nobody
+    /// asked — where AU reports `Some(false)`, meaning the unit declined. That
+    /// distinction is the whole reason the two bits are separate, and asserting
+    /// it here is what keeps a future "simplification" from collapsing them.
+    #[test]
+    fn clap_lists_nothing_and_still_reports_a_load_capability() {
+        let _lock = crate::test_utils::plugin_load_lock();
+        let path = Path::new(CLAP_PLUGIN);
+        let mut instance =
+            ClapInstance::load(path, 44100.0, 512).expect("Failed to load CLAP plugin");
+
+        assert!(
+            instance.get_presets().is_empty(),
+            "CLAP has no instance-level enumeration; a non-empty list would mean \
+             something invented one"
+        );
+        assert_eq!(
+            instance.get_current_preset(),
+            None,
+            "CLAP has no current-preset query either"
+        );
+
+        let loaded = instance.loaded();
+        let report = tutti_plugin::server::FeatureReport::new(loaded.probed, loaded.features);
+        assert_eq!(
+            report.get(tutti_plugin::server::Features::PRESET_LIST),
+            None,
+            "PRESET_LIST must read as unasked for CLAP, not as a declination"
+        );
+    }
+
+    /// Only a path-shaped id reaches CLAP's loader.
+    ///
+    /// The preset analogue of `clap_refuses_a_vst2_index`: `from_location`
+    /// takes a filesystem path and nothing else, so a `Number` or `Program`
+    /// names no CLAP preset. There is not even a number to coerce it *to*,
+    /// which is why the id is opaque rather than an integer.
+    #[test]
+    fn clap_refuses_an_id_that_is_not_a_path() {
+        let _lock = crate::test_utils::plugin_load_lock();
+        let path = Path::new(CLAP_PLUGIN);
+        let mut instance =
+            ClapInstance::load(path, 44100.0, 512).expect("Failed to load CLAP plugin");
+
+        // Asserted on the guard, not through `load_preset`: a coerced id
+        // yields a nonexistent path the plugin refuses anyway, so the two
+        // refusals look identical from outside.
+        assert_eq!(
+            clap_preset_path(&PresetId::Number(0)),
+            None,
+            "an AU selector / VST2 index addresses no CLAP preset"
+        );
+        assert_eq!(
+            clap_preset_path(&PresetId::Program {
+                list_id: 0,
+                index: 0
+            }),
+            None,
+            "a VST3 program id addresses no CLAP preset"
+        );
+        assert_eq!(
+            clap_preset_path(&PresetId::Location("/x.clap-preset".into())),
+            Some(Path::new("/x.clap-preset")),
+            "a path-shaped id reaches the loader verbatim"
+        );
+
+        // And the whole path still refuses, which is what a caller sees.
+        assert!(!instance.load_preset(&PresetId::Number(0)));
     }
 
     /// A VST2 index reaching a CLAP plugin addresses nothing, and must be

@@ -1137,6 +1137,35 @@ nothing** — the information is already destroyed at `ports.rs:656`,
 The work is a vocabulary change in `tutti-types` plus four boundary conversions,
 which is why it stays HELD: it revisits a settled decision.
 
+#### Three further defects the survey turned up
+
+**Fixed (2), both latent — nothing wires a multichannel plugin today.**
+
+- **CLAP dropped two positions *and* misaligned the map.** `SurroundChannel`
+  stopped at 17; CLAP defines `TSL`=18 / `TSR`=19 (`surround.h:55-56`), used by
+  7.1.4. `decode_surround_channel_map` used `filter_map`, so an unnameable
+  position was dropped from a **positional** vector — renumbering every channel
+  after it. `from_position` is now total with an `Unknown(u8)` arm. Note the
+  existing test asserted `from_position(18) == None`, i.e. it pinned the bug.
+- **The AU 5.1 order comment was wrong** — "L R C Ls Rs LFE" where Apple says
+  `L R C LFE Ls Rs` (`CoreAudioBaseTypes.h:1287,1347`). Inert (nothing reads
+  it) but it is the comment a remapping author would trust.
+
+**Open, folded into the D-11 work below:**
+
+- **VST3 proposes the wrong speaker *set* at 4 and 8 channels.**
+  `Vst3SpeakerArrangement::from` builds `(1u64 << n) - 1` (`instance.rs:69`).
+  For `n=6` that is bits 0–5 = `L R C Lfe Ls Rs`, which equals `k51` — correct
+  by coincidence, since those bits happen to be contiguous. For `n=4` it is
+  bits 0–3 = `L R C Lfe`, **not** quad `k40Music` = `L R Ls Rs` (bits 0,1,4,5),
+  and our own `downmix.rs:59` expects `FL FR BL BR`. For `n=8` it is
+  `L R C Lfe Ls Rs Lc Rc` (front-centre pair) rather than the rear-surround
+  layout `downmix.rs` assumes for 7.1.
+
+  Not fixed standalone deliberately: the correct fix is a named-layout table
+  (`4 → k40Music`, `8 → k71CineFullRear`, …), which *is* the topology vocabulary
+  D-11 needs. Patching it here would mean writing that table twice.
+
 #### One live bug found by the survey and fixed separately · DONE
 
 Independent of the topology question, and fixed in

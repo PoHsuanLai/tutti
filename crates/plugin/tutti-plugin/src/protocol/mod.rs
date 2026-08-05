@@ -157,12 +157,12 @@ pub use crate::host::discovery::record::{
     Vst3SubCategories,
 };
 pub use tutti_plugin_types::{
-    AutomationMode, BusChannels, ChannelLayout, ChordChanges, ChordValue, EditorPresence, Features,
-    LoadedPlugin, NoteExpressionChanges, NoteExpressionIntChanges, NoteExpressionIntValue,
-    NoteExpressionTextChanges, NoteExpressionTextValue, NoteExpressionType, NoteExpressionValue,
-    ParamAddress, ParamFlags, ParamId, ParamRange, ParamSteps, ParameterChanges, ParameterInfo,
-    ParameterPoint, ParameterQueue, PluginTail, Preset, PresetId, RenderMode, Samples,
-    ScaleChanges, ScaleValue, TimeSignature, TransportInfo,
+    AutomationMode, BusChannels, ChannelLayout, ChordChanges, ChordValue, EditorPresence,
+    FeatureReport, Features, LoadedPlugin, NoteExpressionChanges, NoteExpressionIntChanges,
+    NoteExpressionIntValue, NoteExpressionTextChanges, NoteExpressionTextValue, NoteExpressionType,
+    NoteExpressionValue, ParamAddress, ParamFlags, ParamId, ParamRange, ParamSteps,
+    ParameterChanges, ParameterInfo, ParameterPoint, ParameterQueue, PluginTail, Preset, PresetId,
+    PresetSupport, RenderMode, Samples, ScaleChanges, ScaleValue, TimeSignature, TransportInfo,
 };
 
 #[cfg(test)]

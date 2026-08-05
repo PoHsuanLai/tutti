@@ -164,7 +164,7 @@ pub use tutti_plugin_types::RenderMode;
 pub use tutti_plugin_types::Features;
 // `PluginHandle::presets` hands back these, and `load_preset` takes one, so a
 // caller must be able to name them without depending on tutti-plugin-types.
-pub use tutti_plugin_types::{FeatureReport, Preset, PresetId};
+pub use tutti_plugin_types::{FeatureReport, Preset, PresetId, PresetSupport};
 
 /// Building blocks for out-of-crate in-process loaders.
 ///

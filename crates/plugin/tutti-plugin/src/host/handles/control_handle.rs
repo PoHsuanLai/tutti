@@ -6,7 +6,7 @@ use crate::host::ipc_client::audio::{PluginInvalidation, PluginRefresh};
 use crate::host::node::{InvalidateSink, ParameterChangeSink, RefreshSink};
 use crate::protocol::AutomationMode;
 use crate::protocol::{
-    LoadedPlugin, ParamAddress, ParameterInfo, PluginDescriptor, Preset, PresetId,
+    LoadedPlugin, ParamAddress, ParameterInfo, PluginDescriptor, Preset, PresetId, PresetSupport,
 };
 use crate::util::window::{EditorCapabilities, EditorSize};
 use raw_window_handle::HasWindowHandle;
@@ -221,6 +221,34 @@ impl PluginHandle {
     /// answers, and a UI showing an empty browser wants to tell them apart.
     pub fn presets_capability(&self) -> Option<&dyn HostPresets> {
         self.presets.as_deref()
+    }
+
+    /// What this plugin's preset surface can do — one call instead of two
+    /// capability bits and two method returns.
+    ///
+    /// Match on it to decide what to render:
+    ///
+    /// ```ignore
+    /// match handle.preset_support() {
+    ///     PresetSupport::Full       => // browser; clicking loads
+    ///     PresetSupport::LoadByPath => // file picker, not an empty browser
+    ///     PresetSupport::ListOnly   => // read-only list
+    ///     PresetSupport::None       => // hide it
+    /// }
+    /// ```
+    ///
+    /// Derived from the capability report rather than from `presets()`, because
+    /// an empty list is ambiguous on its own: a plugin that declined and one
+    /// this host never asked both return `Some(vec![])`, and only the first
+    /// should hide the browser.
+    pub fn preset_support(&self) -> PresetSupport {
+        if self.presets.is_none() {
+            // No route at all: the plugin was never asked anything, whatever
+            // its own features say.
+            return PresetSupport::None;
+        }
+        let report = crate::protocol::FeatureReport::new(self.loaded.probed, self.loaded.features);
+        PresetSupport::from_report(&report)
     }
 
     /// Every preset the plugin advertises.
@@ -510,6 +538,13 @@ mod tests {
     }
 
     fn handle_with(presets: Option<Arc<dyn HostPresets>>) -> PluginHandle {
+        handle_with_loaded(presets, LoadedPlugin::default())
+    }
+
+    fn handle_with_loaded(
+        presets: Option<Arc<dyn HostPresets>>,
+        loaded: LoadedPlugin,
+    ) -> PluginHandle {
         // Only the preset slot is under test; the rest of the handle is built
         // from the same fake so no subprocess is needed.
         struct Inert;
@@ -541,10 +576,46 @@ mod tests {
                 ..Default::default()
             },
             PluginDescriptor::default(),
-            LoadedPlugin::default(),
+            loaded,
             ParameterChangeSink::default(),
             sender,
         )
+    }
+
+    /// A handle with no preset route reports `None`, whatever the plugin's own
+    /// features claim.
+    ///
+    /// The route and the capability are independent facts, and the route wins:
+    /// a `LoadedPlugin` carrying both preset bits set means nothing if nothing
+    /// carries the call. Deriving `preset_support` from the bits alone would
+    /// have a UI offer a browser that cannot be driven.
+    #[test]
+    fn no_preset_route_reports_no_support() {
+        // Both bits probed and set — the plugin claims full preset support —
+        // but nothing carries the call. Without a `LoadedPlugin` saying yes,
+        // this test could not tell the route guard from the empty default.
+        let mut loaded = LoadedPlugin::default();
+        loaded.probed =
+            crate::protocol::Features::PRESET_LIST | crate::protocol::Features::PRESET_LOAD;
+        loaded.features = loaded.probed;
+
+        let handle = handle_with_loaded(None, loaded.clone());
+        assert_eq!(
+            handle.preset_support(),
+            PresetSupport::None,
+            "the route is missing, so the plugin's own claim cannot be honoured"
+        );
+
+        // The same plugin *with* a route reports what it claims — otherwise the
+        // assertion above would hold for the wrong reason.
+        let wired = handle_with_loaded(
+            Some(Arc::new(FakePresets {
+                listed: Vec::new(),
+                accepts: true,
+            })),
+            loaded,
+        );
+        assert_eq!(wired.preset_support(), PresetSupport::Full);
     }
 
     /// No preset route and an empty preset list are different answers.

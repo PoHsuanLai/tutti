@@ -109,6 +109,97 @@ impl PresetId {
     }
 }
 
+/// What a plugin's preset surface can actually do — one answer instead of two
+/// capability bits and two method returns.
+///
+/// The bits ([`Features::PRESET_LIST`], [`Features::PRESET_LOAD`]) report the
+/// two halves separately because no *format* offers both unconditionally. This
+/// collapses them into the question a caller is really asking — "what can I
+/// build a UI for" — so a preset browser matches once rather than
+/// cross-referencing.
+///
+/// Deliberately three states and not a `bool`: [`LoadByPath`](Self::LoadByPath)
+/// is the one a naive design gets wrong, silently rendering an empty browser
+/// for a plugin that loads presets perfectly well.
+///
+/// [`Features::PRESET_LIST`]: crate::Features::PRESET_LIST
+/// [`Features::PRESET_LOAD`]: crate::Features::PRESET_LOAD
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PresetSupport {
+    /// List and load both work: show a browser, clicking loads.
+    ///
+    /// VST2, AU, and VST3 — the last by writing the parameter flagged
+    /// `kIsProgramChange`, which the format layer does internally so a caller
+    /// need not know.
+    Full,
+    /// Loadable, but the host supplies the path — nothing to enumerate.
+    ///
+    /// CLAP, whose preset *discovery* is a factory-level extension this host
+    /// does not bind. `presets()` is empty and always will be; a UI offers a
+    /// file picker rather than a list, and must not report "no presets".
+    LoadByPath,
+    /// Enumerable, but the plugin will not load one — show the list read-only.
+    ///
+    /// No format reaches this today. It exists because the two halves are
+    /// genuinely independent capabilities, and collapsing this case into
+    /// [`Full`](Self::Full) would have a caller offer a load that fails.
+    ListOnly,
+    /// No preset mechanism at all.
+    ///
+    /// Either the plugin declined both halves, or nothing carries presets for
+    /// this handle. A UI hides the browser.
+    None,
+}
+
+impl PresetSupport {
+    /// Derive from a capability report.
+    ///
+    /// Takes a [`FeatureReport`](crate::FeatureReport) rather than a bare
+    /// [`Features`](crate::Features) mask, because the report is the type that
+    /// knows which bits were *asked*. For CLAP, `PRESET_LIST` is `None` ("this
+    /// host never asks"); for a preset-less AU it is `Some(false)` ("the unit
+    /// declined"). Both yield an empty list, and only the first should offer a
+    /// file picker.
+    ///
+    /// Within a report those two collapse: `FeatureReport::new` stores
+    /// `features & probed`, so an unprobed bit is already clear and
+    /// `get(f) == Some(true)` is provably equivalent to `enabled(f)`. Swapping
+    /// one for the other here is an *equivalent* mutation, not an untested
+    /// branch — verified. The `get` form is kept because it states the
+    /// intent: this is a UI decision reading a three-state answer, not the
+    /// hot-path "pick a side" that `enabled` exists for.
+    pub fn from_report(report: &crate::FeatureReport) -> Self {
+        use crate::Features;
+        let can_load = report.get(Features::PRESET_LOAD) == Some(true);
+        let can_list = report.get(Features::PRESET_LIST) == Some(true);
+        match (can_list, can_load) {
+            (true, true) => Self::Full,
+            // Loads but cannot be asked to list. Also covers a format that
+            // could list and declined, while still loading — same UI either
+            // way: there is nothing to show, and a path still works.
+            (false, true) => Self::LoadByPath,
+            // Lists but will not load. No format reaches this today — VST3 was
+            // the only candidate and now loads through its program-change
+            // parameter — but a plugin that declines only the load half puts a
+            // handle here, so it gets its own variant rather than being folded
+            // into `Full` (which would claim a load that fails) or `None`
+            // (which would hide presets the user can see named).
+            (true, false) => Self::ListOnly,
+            (false, false) => Self::None,
+        }
+    }
+
+    /// Whether a caller can enumerate presets to show.
+    pub fn can_list(self) -> bool {
+        matches!(self, Self::Full | Self::ListOnly)
+    }
+
+    /// Whether a caller can ask the plugin to load one.
+    pub fn can_load(self) -> bool {
+        matches!(self, Self::Full | Self::LoadByPath)
+    }
+}
+
 /// One preset a plugin advertises.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
@@ -152,6 +243,92 @@ impl Preset {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use crate::{FeatureReport, Features};
+
+    /// Each format's real capability mask lands on the right variant.
+    ///
+    /// These are the four shipped mappings, so the test doubles as the table a
+    /// reader wants: what does *this* format give a UI. A change to any
+    /// `probed::*` mask that moves a format between variants surfaces here.
+    #[test]
+    fn each_format_maps_to_its_preset_support() {
+        // VST2, AU and VST3 all probe both bits and answer both `true` for a
+        // plugin that has presets.
+        let full = FeatureReport::new(
+            Features::PRESET_LIST | Features::PRESET_LOAD,
+            Features::PRESET_LIST | Features::PRESET_LOAD,
+        );
+        assert_eq!(PresetSupport::from_report(&full), PresetSupport::Full);
+
+        // CLAP: `PRESET_LOAD` probed and set, `PRESET_LIST` never asked.
+        let clap = FeatureReport::new(Features::PRESET_LOAD, Features::PRESET_LOAD);
+        assert_eq!(
+            PresetSupport::from_report(&clap),
+            PresetSupport::LoadByPath,
+            "an unprobed list bit is a file picker, not an empty browser"
+        );
+
+        // A plugin with no presets: both probed, both declined.
+        let empty = FeatureReport::new(
+            Features::PRESET_LIST | Features::PRESET_LOAD,
+            Features::empty(),
+        );
+        assert_eq!(PresetSupport::from_report(&empty), PresetSupport::None);
+
+        // Nothing probed at all — a loader that carries no preset route.
+        let unasked = FeatureReport::new(Features::empty(), Features::empty());
+        assert_eq!(PresetSupport::from_report(&unasked), PresetSupport::None);
+    }
+
+    /// "Declined the list" and "never asked" both give an empty list, and must
+    /// not give the same variant.
+    ///
+    /// This is the distinction the two-bit split exists for, seen from the
+    /// caller's side: an AU with no factory presets shows nothing, while a CLAP
+    /// plugin shows a file picker. Collapsing them — by reading the mask
+    /// instead of the report — would render one of the two wrong, and it is the
+    /// CLAP case that silently loses a working feature.
+    #[test]
+    fn a_declined_list_and_an_unasked_one_differ() {
+        let declined = FeatureReport::new(
+            Features::PRESET_LIST | Features::PRESET_LOAD,
+            Features::PRESET_LOAD,
+        );
+        let unasked = FeatureReport::new(Features::PRESET_LOAD, Features::PRESET_LOAD);
+
+        // Same `features` mask in both — only `probed` differs.
+        assert_eq!(declined.get(Features::PRESET_LIST), Some(false));
+        assert_eq!(unasked.get(Features::PRESET_LIST), None);
+
+        assert_eq!(
+            PresetSupport::from_report(&declined),
+            PresetSupport::LoadByPath
+        );
+        assert_eq!(
+            PresetSupport::from_report(&unasked),
+            PresetSupport::LoadByPath
+        );
+    }
+
+    /// No variant claims a capability it does not have.
+    ///
+    /// The invariant that keeps this enum honest: `can_load()` must never be
+    /// true where the plugin refuses, and `can_list()` never where there is
+    /// nothing to enumerate. Written as a sweep over every variant so a new one
+    /// cannot be added without deciding both answers.
+    #[test]
+    fn no_variant_overclaims() {
+        for (support, list, load) in [
+            (PresetSupport::Full, true, true),
+            (PresetSupport::LoadByPath, false, true),
+            (PresetSupport::ListOnly, true, false),
+            (PresetSupport::None, false, false),
+        ] {
+            assert_eq!(support.can_list(), list, "{support:?} can_list");
+            assert_eq!(support.can_load(), load, "{support:?} can_load");
+        }
+    }
 
     /// A number-shaped id gives its number back; the other two do not pretend
     /// to have one.

@@ -64,7 +64,7 @@ pub use midi::{MidiEventVec, RtMidiEvents, MIDI_STACK_CAPACITY, RT_MIDI_CAPACITY
 pub use note_expression::{NoteExpressionChanges, NoteExpressionType, NoteExpressionValue};
 pub use note_id::{note_id_for, note_id_to_channel_note, MAX_HOST_NOTE_ID};
 pub use parameters::{ParamAddress, ParamFlags, ParamId, ParamRange, ParamSteps, ParameterInfo};
-pub use presets::{Preset, PresetId};
+pub use presets::{Preset, PresetId, PresetSupport};
 pub use process::{ExpressiveContext, ProcessContext, ProcessOutput};
 pub use render_mode::RenderMode;
 pub use transport::{

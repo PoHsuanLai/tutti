@@ -1461,7 +1461,7 @@ The inbound test `sysex_is_dropped_without_derailing_the_rest` was justified as
 the real reason — inbound drops SysEx because `from_midi1_bytes` would have to
 allocate on the CoreMIDI read thread. Its doc comment is corrected.
 
-### E-8 · Two properties worth having, one refuted · HELD
+### E-8 · Two properties worth having, one refuted · HELD (2 open, 1 refuted)
 
 `kAudioUnitProperty_PresentationLatency`(40) never written — a plugin doing
 look-ahead metering cannot align its display. `ShouldAllocateBuffer`(51) never

@@ -40,6 +40,12 @@ pub mod health;
 pub mod latency;
 pub mod load;
 pub mod native_window;
+/// Needs [`crate::export`]'s `ExportInFlight` to know a bounce is running, and
+/// that module is itself `export`-gated. This is the one place a `cfg` is
+/// right rather than an `is_plugin_added` check: without the feature the type
+/// does not exist to name, so there is no plugin to ask about.
+#[cfg(feature = "export")]
+pub mod render_mode;
 pub mod scan;
 
 #[cfg(target_os = "macos")]
@@ -67,6 +73,8 @@ pub use load::{
     plugin_load_promote, plugin_load_start, PendingPlugin, PluginLoadDone, PluginLoadTerminated,
     PluginRequest,
 };
+#[cfg(feature = "export")]
+pub use render_mode::{plugin_render_mode_drive, PluginRenderMode, RenderModeAnnounced};
 pub use scan::{
     poll_scan, start_scan, InFlightScan, PluginCatalogState, PluginsScanned, RescanPlugins,
     ScanProgressed,
@@ -242,6 +250,29 @@ impl Plugin for TuttiHostingPlugin {
             )
                 .run_if(crate::graph::engine_ready),
         );
+
+        // Announce the render mode to hosted plugins, but only if this app can
+        // actually export — `ExportInFlight` is `crate::export`'s component, and
+        // without that plugin the query is over a type nothing ever spawns.
+        //
+        // `is_plugin_added` rather than a feature flag: whether a host bounces
+        // is a composition choice it makes at build time, and a flag would make
+        // it a compile-time property of this crate instead.
+        //
+        // After both export systems, so the frame's answer has settled before it
+        // is read — see the module docs on back-to-back renders. Ungated on the
+        // engine for the same reason `export` is: a render already in flight
+        // when audio stops still has to put its plugins back.
+        #[cfg(feature = "export")]
+        if app.is_plugin_added::<crate::export::ExportPlugin>() {
+            app.init_resource::<PluginRenderMode>();
+            app.add_systems(
+                Update,
+                plugin_render_mode_drive
+                    .after(crate::export::poll_exports)
+                    .after(crate::export::start_exports),
+            );
+        }
 
         // Scanning is deliberately **not** gated on `engine_ready`: it walks the
         // filesystem and probes subprocesses, touching neither the graph nor a

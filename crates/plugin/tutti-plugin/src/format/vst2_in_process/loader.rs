@@ -133,11 +133,15 @@ pub fn load_client(
     );
     let midi_sender = client.midi_sender();
 
-    // VST2 has an embeddable editor: the same backend Arc serves the editor slot.
+    // VST2 has an embeddable editor and carries a render mode: the same backend
+    // Arc serves both optional slots, so a mode set through the handle reaches
+    // the very `Vst2Instance` the node renders.
     let editor: Arc<dyn crate::backend::HostEditor> = backend.clone();
+    let render_mode: Arc<dyn crate::host::handles::capabilities::HostRenderMode> = backend.clone();
     let handle = PluginHandle::from_backend(
         backend,
         Some(editor),
+        Some(render_mode),
         descriptor,
         loaded,
         param_sink,

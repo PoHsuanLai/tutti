@@ -91,6 +91,15 @@ pub struct ProcessCapture {
     /// 64-bit. Meaningless while `set_precision_count` is 0.
     pub set_precision_value: i32,
 
+    /// Count of `audioMasterGetCurrentProcessLevel` queries the probe made.
+    /// Separate from the value below for the same reason
+    /// `set_precision_count` is: "the probe never asked" and "the host
+    /// answered 0 (unknown)" are different facts and must not share a zero.
+    pub process_level_queries: u32,
+    /// The host's answer to the most recent query: `2` realtime, `4` offline.
+    /// Meaningless while `process_level_queries` is 0.
+    pub process_level: i32,
+
     /// Whether `audioMasterGetTime` returned a non-null `VstTimeInfo`.
     /// A host that never answers the transport query is a distinct failure
     /// from one that answers with wrong numbers, so both are recorded.
@@ -140,6 +149,8 @@ impl ProcessCapture {
             initialized: false,
             set_precision_count: 0,
             set_precision_value: 0,
+            process_level_queries: 0,
+            process_level: 0,
             time_info_present: false,
             time_sample_pos: 0.0,
             time_tempo: 0.0,

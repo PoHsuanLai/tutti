@@ -99,13 +99,16 @@ meaning, not friction:
 realtime/offline field**, so `PluginAudio::process` cannot be told a bounce is
 running, for any format.
 
-The format halves are already built and are reachable only from tests:
+The format halves are already built and are reachable only from tests. (A-2
+later found this table understated the VST2 gap in one direction and overstated
+it in another: the host *did* answer `4` while offline, but no plugin could ask
+— the plugin-side `Host` trait had no `get_process_level`. Both ends now exist.)
 
 | Format | Call | Callers |
 |---|---|---|
 | CLAP | `set_render_mode` → `CLAP_RENDER_OFFLINE` (`instance/ports.rs:272`) | `loaders/clap.rs:1524` — past the `#[cfg(test)]` at 584 |
 | AU | `set_offline_render` (`instance.rs:1295`, `offline.rs`) | crate tests only |
-| VST2 | — | `get_process_level` returns a hardcoded `2` (`host.rs:159`), test-pinned |
+| VST2 | `set_offline_render` (`instance.rs:390`) → `get_process_level` answers `4` | crate tests only |
 | VST3 | `ProcessMode` (`host/instance.rs:394`) | issue #54 finding 1 |
 
 Consequence: an offline bounce renders in realtime mode in every format. A
@@ -130,7 +133,7 @@ Also note two things about issue #54:
   honouring the exception at `ivstaudioprocessor.h:139-143`. Re-verify the rest
   of #54 before acting on any of it.
 
-### A-2 · No bounce driver can reach a hosted plugin · TODO
+### A-2 · No bounce driver can reach a hosted plugin · DONE
 
 Found while looking for A-1's caller. C-3 / D-3 / E-2 were written as "wire the
 export path to set the mode", which assumes a seam that does not exist.
@@ -164,6 +167,49 @@ format's half is built and reachable; only the caller is missing.
 Open question for whoever takes it: a bounce that fails partway must still
 restore `Realtime`, or the session keeps running every plugin in offline mode.
 That argues for a guard type rather than two bare calls.
+
+**Fixed — `bevy_tutti::plugin_host::render_mode`.** A system announces
+`Offline` while any `ExportInFlight` exists and `Realtime` whenever none does,
+registered only when `ExportPlugin` is present (`is_plugin_added`, not a feature
+flag) and ordered after both export systems.
+
+Three things changed the shape from what this entry proposed:
+
+- **The guard cannot live on the export entity.** `ExportInFlight::cancel` drops
+  the task, and despawning the request does the same implicitly; neither fires
+  `ExportDone` and neither is seen by `poll_exports`. A component-based guard
+  would be destroyed with the entity, leaving every plugin stuck `Offline` for
+  the session. So the mode is a resource, restored by observing that *no* export
+  is in flight rather than by being told one ended — one rule covering
+  completion, failure, cancellation and despawn, since all four have the same
+  observable.
+- **The `PluginEmitter` route did not reach in-process VST2.** This entry
+  assumed `Query<&PluginEmitter>` was sufficient. It was not:
+  `PluginHandle::from_backend` left `render_mode: None` for that path on the
+  grounds that "the in-process VST2 node owns the render mode itself", reachable
+  through `Plugin::set_render_mode` — but `load.rs` calls `plugin.into_parts()`,
+  which *consumes* the `Plugin`. Only the handle survives into the ECS, so no
+  ECS-side driver could ever have reached those plugins. Fixed by implementing
+  `HostRenderMode` for `InProcessVst2Backend` (it already holds the same
+  `Arc<Mutex<Vst2Instance>>` the node renders) and making `render_mode` an
+  explicit `from_backend` parameter beside `editor`.
+- **No VST2 plugin could ask what mode it was in.** VST2 carries this on
+  `audioMasterGetCurrentProcessLevel`, which the host answered
+  (`vst-tutti/src/interfaces.rs`) — but the plugin-side `Host` trait had no
+  `get_process_level` to send it with. Both halves are needed for the query to
+  exist; the plugin-side accessor was added, and the reference probe now asks
+  once per render.
+
+Tests: seven in `render_mode.rs` for the decision (which mode a frame resolves
+to, and who gets told), four in `tutti-plugin`'s
+`tests/vst2_in_process_render_mode.rs` driving real FFI for the delivery.
+Mutation-checked at six points, including reverting the `render_mode` slot to
+`None` — the original bug — which fails three of the four delivery tests.
+
+One coverage boundary worth stating: the seven decision tests observe the
+decision, not the wire. Deleting the `set_render_mode` call in the loop body
+leaves all seven green, which is why the delivery half lives one crate down
+against a plugin that reads the level back.
 
 ---
 
@@ -1213,3 +1259,10 @@ correct.
 
 **D-6** needs a decision before it needs code: does the subprocess VST2 path own
 editors at all?
+
+**Closed out.** 31 DONE, 4 HELD, no TODO remaining. The four held items are
+scope decisions rather than blocked work: **C-12** (CLAP floating-window GUI),
+**D-9** (VST2 preset/program support), **D-10** (smaller VST2 opcode gaps — note
+its `effGetNumMidiInputChannels` half hides a live bug, not just missing scope:
+a plugin answering `Maybe` to `sendVstMidiEvent` is classified MIDI-silent and
+its output dropped), and **E-8** (three AU properties).

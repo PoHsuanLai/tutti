@@ -1,7 +1,7 @@
 //! Host-side capability backend for the in-process VST2 host.
 //!
-//! Implements [`HostParams`], [`HostState`], and [`HostEditor`] (VST2 has an
-//! embeddable editor). Holds the same `Arc<Mutex<Vst2Instance>>` the audio unit
+//! Implements [`HostParams`], [`HostState`], [`HostEditor`] (VST2 has an
+//! embeddable editor) and [`HostRenderMode`]. Holds the same `Arc<Mutex<Vst2Instance>>` the audio unit
 //! holds. GUI thread calls take the lock for the duration of one plugin operation
 //! — short for parameter / state methods, potentially long for editor ones. The
 //! audio thread always uses `try_lock` (in `super::audio_unit`) and falls back to
@@ -15,9 +15,9 @@ use parking_lot::Mutex;
 use tutti_vst2_host::Vst2Instance;
 
 use crate::error::EditorError;
-use crate::host::handles::capabilities::{HostEditor, HostParams, HostState};
+use crate::host::handles::capabilities::{HostEditor, HostParams, HostRenderMode, HostState};
 use crate::host::node::ParameterChangeSink;
-use crate::protocol::{ParamAddress, ParameterInfo};
+use crate::protocol::{ParamAddress, ParameterInfo, RenderMode};
 use crate::util::window::EditorSize;
 
 /// Bundles the shared Mutex with the parameter-change sink so editor
@@ -73,6 +73,22 @@ impl HostState for InProcessVst2Backend {
 
     fn load_state(&self, data: &[u8]) {
         let _ = self.inner.lock().load_state(data);
+    }
+}
+
+impl HostRenderMode for InProcessVst2Backend {
+    /// Always `true`: VST2 carries the mode on `audioMasterGetCurrentProcessLevel`,
+    /// a callback the *host* answers whenever the plugin asks, so there is no
+    /// query a plugin could decline. This matches `probed::VST2`, which lists
+    /// `RENDER_MODE` unconditionally for the same reason.
+    ///
+    /// Takes the lock rather than caching the flag here: the answer lives on the
+    /// `HostState` the plugin already polls, and a second copy could disagree
+    /// with it. `super::audio_unit::InProcessVst2Client::set_render_mode` writes
+    /// the same cell through the same `Arc`, so the two routes cannot drift.
+    fn set_render_mode(&self, mode: RenderMode) -> bool {
+        self.inner.lock().set_offline_render(mode.is_offline());
+        true
     }
 }
 

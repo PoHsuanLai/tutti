@@ -34,10 +34,10 @@ use num_traits::Float;
 use vst::api::{self, AEffect, HostCallbackProc, Supported};
 use vst::buffer::AudioBuffer;
 use vst::editor::Editor;
+// `update_display` and `get_process_level` are `Host` methods on the callback,
+// not `Plugin` ones.
 use vst::host::Host as _;
 use vst::plugin::{CanDo, HostCallback, Info, Plugin, PluginParameters};
-// `update_display` is a `Host` method on the callback, not a `Plugin` one.
-use vst::host::Host as _;
 
 pub use capture::{
     tutti_vst2_probe_capture, tutti_vst2_probe_reset_capture, CapturedEvent, ProcessCapture,
@@ -272,6 +272,19 @@ impl ProbePlugin {
         });
     }
 
+    /// Snapshot the host's `audioMasterGetCurrentProcessLevel` answer.
+    ///
+    /// Asked once per render, because the level is a per-block property: a
+    /// bounce sets it before pulling and clears it afterwards, so a probe that
+    /// asked only at load would report the wrong answer for the whole render.
+    fn capture_process_level(&self) {
+        let level = self.host.get_process_level();
+        capture::with_capture(|cap| {
+            cap.process_level_queries = cap.process_level_queries.saturating_add(1);
+            cap.process_level = level as i32;
+        });
+    }
+
     /// Record the geometry of a render call and return whether the probe
     /// should actually write output.
     fn begin_process(&self, entry: ProcessEntry, samples: usize) -> bool {
@@ -284,6 +297,7 @@ impl ProbePlugin {
             cap.entry = entry;
         });
         self.capture_time_info();
+        self.capture_process_level();
 
         // A refused resume renders silence — see
         // `tutti_vst2_probe_set_refuse_resume` for why in substance rather

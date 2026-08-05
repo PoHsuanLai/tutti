@@ -67,15 +67,20 @@ impl PluginHandle {
     }
 
     /// Construct from an in-process backend that implements the always-present
-    /// capabilities, plus an optional editor. Used by every in-process loader —
-    /// the in-crate VST2 path passes `Some(backend)` for the editor; a headless
-    /// out-of-crate loader passes `None`.
+    /// capabilities, plus optional editor and render-mode routes. Used by every
+    /// in-process loader — the in-crate VST2 path passes `Some(backend)` for
+    /// both; a headless out-of-crate loader passes `None`.
     ///
     /// `backend: Arc<B>` is coerced into the `params`/`state` slots at the call
     /// site (both are clones of the same object), so shared state stays intact.
+    ///
+    /// `render_mode` is a parameter rather than a trait bound because the two
+    /// optional capabilities are independent: a backend may carry the mode
+    /// without hosting an editor, or the reverse.
     pub fn from_backend<B: HostParams + HostState + 'static>(
         backend: Arc<B>,
         editor: Option<Arc<dyn HostEditor>>,
+        render_mode: Option<Arc<dyn HostRenderMode>>,
         descriptor: PluginDescriptor,
         loaded: LoadedPlugin,
         param_sink: ParameterChangeSink,
@@ -88,11 +93,7 @@ impl PluginHandle {
             // In-process backends don't implement the VST3-style
             // automation-state advisory, so `automation_state()` is `None`.
             automation_state: None,
-            // The in-process VST2 node owns the render mode itself — it answers
-            // `audioMasterGetCurrentProcessLevel` from its own `HostState`, and
-            // this handle has no route to that. `Plugin::set_render_mode`
-            // reaches it directly.
-            render_mode: None,
+            render_mode,
             descriptor,
             loaded,
             param_sink,
@@ -161,9 +162,14 @@ impl PluginHandle {
         self.automation_state.as_deref()
     }
 
-    /// The render-mode capability (Direction C-in), or `None` when this handle
-    /// has no route to it — the in-process VST2 node owns its own, reachable
-    /// through `Plugin::set_render_mode`.
+    /// The render-mode capability (Direction C-in), or `None` when the backend
+    /// carries no route to it.
+    ///
+    /// Every backend this crate builds fills the slot: the subprocess one for
+    /// all three out-of-process formats, and `InProcessVst2Backend` for the
+    /// in-crate VST2 path. `None` is reserved for an out-of-crate headless
+    /// loader that passes it explicitly to
+    /// [`from_backend`](Self::from_backend).
     pub fn render_mode(&self) -> Option<&dyn HostRenderMode> {
         self.render_mode.as_deref()
     }

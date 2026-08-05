@@ -147,6 +147,12 @@ impl PluginBridge {
         self.audio.is_crashed()
     }
 
+    /// Why the bridge died, or `None` while it is alive. See
+    /// [`AudioBridge::crash_cause`](super::audio::AudioBridge::crash_cause).
+    pub fn crash_cause(&self) -> Option<String> {
+        self.audio.crash_cause()
+    }
+
     pub fn open_editor(
         &self,
         parent_ptr: *mut c_void,
@@ -395,6 +401,10 @@ impl crate::host::handles::capabilities::HostParams for SubprocessBackend {
 
     fn is_crashed(&self) -> bool {
         self.bridge.is_crashed()
+    }
+
+    fn crash_cause(&self) -> Option<String> {
+        self.bridge.crash_cause()
     }
 }
 

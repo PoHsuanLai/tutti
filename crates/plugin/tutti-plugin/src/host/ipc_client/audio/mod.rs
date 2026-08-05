@@ -110,6 +110,15 @@ impl AudioBridge {
         self.lifecycle.is_crashed()
     }
 
+    /// Why this bridge died, or `None` while it is alive.
+    ///
+    /// Latched at the detection site, so it answers for a crash that happened
+    /// before any listener was installed — which the connect- and
+    /// handshake-failure paths routinely do.
+    pub fn crash_cause(&self) -> Option<String> {
+        self.lifecycle.crash_cause()
+    }
+
     pub fn audio_buffer(&self) -> &Arc<AudioSlab> {
         &self.audio_buffer
     }

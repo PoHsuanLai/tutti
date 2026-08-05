@@ -320,7 +320,9 @@ fn trailing_unsolicited_events_dont_poison_next_reply() {
             BridgeEvent::ParameterChanged { index, value } => {
                 *param_seen.lock() = Some((index as u32, value));
             }
-            BridgeEvent::TailChanged { .. } | BridgeEvent::Resync(_) => {}
+            BridgeEvent::TailChanged { .. }
+            | BridgeEvent::Resync(_)
+            | BridgeEvent::Crashed { .. } => {}
         })));
     }
 

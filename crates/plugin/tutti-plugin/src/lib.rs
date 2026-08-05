@@ -162,6 +162,9 @@ pub use tutti_plugin_types::RenderMode;
 // this type, so a consumer that reads a capability bit — e.g. deciding whether
 // to open an editor floating — must be able to name it.
 pub use tutti_plugin_types::Features;
+// `PluginHandle::presets` hands back these, and `load_preset` takes one, so a
+// caller must be able to name them without depending on tutti-plugin-types.
+pub use tutti_plugin_types::{FeatureReport, Preset, PresetId};
 
 /// Building blocks for out-of-crate in-process loaders.
 ///

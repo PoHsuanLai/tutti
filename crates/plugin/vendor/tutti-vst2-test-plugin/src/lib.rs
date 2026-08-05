@@ -320,6 +320,16 @@ impl Plugin for ProbePlugin {
         }
     }
 
+    /// Accepts `effSetBypass` only when a test has enabled it.
+    ///
+    /// Records the value either way: a host that never dispatches the opcode
+    /// and one whose bypass the plugin refused are different failures, and only
+    /// the recording separates them.
+    fn set_bypass(&mut self, bypass: bool) -> bool {
+        switches::record_bypass(bypass);
+        switches::accept_soft_bypass()
+    }
+
     /// Answers `effGetEffectName` only when a test asks for one.
     ///
     /// `None` is the default so the probe keeps behaving like the majority of

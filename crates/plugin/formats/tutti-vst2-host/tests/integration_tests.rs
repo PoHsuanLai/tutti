@@ -121,6 +121,23 @@ fn set_can_do(path: &Path, answer: i32, custom: isize) {
     });
 }
 
+/// Make the probe accept (or keep refusing) `effSetBypass`.
+fn set_accept_soft_bypass(path: &Path, enable: bool) {
+    probe_call(path, b"tutti_vst2_probe_set_accept_soft_bypass\0", |sym| {
+        let f: extern "C" fn(bool) = unsafe { std::mem::transmute(*sym) };
+        f(enable);
+    });
+}
+
+/// The last `effSetBypass` value the probe was sent: `-1` never, `0` resume,
+/// `1` bypass.
+fn last_bypass(path: &Path) -> i32 {
+    probe_call(path, b"tutti_vst2_probe_last_bypass\0", |sym| {
+        let f: extern "C" fn() -> i32 = unsafe { std::mem::transmute(*sym) };
+        f()
+    })
+}
+
 /// `CanDoAnswer` discriminants, mirrored from the probe's `switches.rs`.
 mod can_do {
     pub const YES: i32 = 0;
@@ -690,6 +707,112 @@ fn load_and_metadata() {
     assert!(!meta.name.is_empty());
     assert!(!meta.id.is_empty());
     assert!(meta.num_outputs.count() > 0);
+}
+
+// ---------------------------------------------------------------------------
+// Soft bypass
+// ---------------------------------------------------------------------------
+
+/// `effSetBypass` (44) reaches the plugin and its acceptance is reported.
+///
+/// Soft bypass is the plugin's own passthrough: it crossfades and flushes its
+/// tail rather than having a reverb cut mid-decay. Without the opcode a host
+/// can only hard-mute, which is audibly worse and is what this host was
+/// limited to.
+#[test]
+fn an_accepted_soft_bypass_reaches_the_plugin() {
+    let _guard = lock_probe();
+    let path = probe_path::probe_path().clone();
+    reset_switches(&path);
+    set_accept_soft_bypass(&path, true);
+
+    let mut instance = Vst2Instance::load(&path, SAMPLE_RATE, BLOCK).expect("probe should load");
+
+    assert!(
+        instance.set_bypass(true),
+        "the probe accepts effSetBypass but the host reported a refusal"
+    );
+    assert_eq!(
+        last_bypass(&path),
+        1,
+        "the host must dispatch effSetBypass with value=1; -1 means it never \
+         dispatched at all"
+    );
+
+    assert!(instance.set_bypass(false), "leaving bypass was refused");
+    assert_eq!(
+        last_bypass(&path),
+        0,
+        "leaving bypass must dispatch value=0, not repeat the 1"
+    );
+
+    drop(instance);
+    reset_switches(&path);
+}
+
+/// A refusal is reported, not swallowed.
+///
+/// An unimplemented `effSetBypass` falls through the dispatcher returning 0 —
+/// the same answer an explicit refusal gives — so the host cannot tell them
+/// apart and must treat both as "did not take". A caller that ignores this
+/// leaves the plugin processing while the UI shows it bypassed.
+#[test]
+fn a_refused_soft_bypass_is_reported() {
+    let _guard = lock_probe();
+    let path = probe_path::probe_path().clone();
+    reset_switches(&path);
+    set_accept_soft_bypass(&path, false);
+
+    let mut instance = Vst2Instance::load(&path, SAMPLE_RATE, BLOCK).expect("probe should load");
+
+    assert!(
+        !instance.set_bypass(true),
+        "the probe refuses effSetBypass; reporting success would leave the \
+         host believing a bypass took effect when the plugin is still \
+         processing"
+    );
+    // The refusal is the plugin's, not a missing dispatch: the host did ask.
+    assert_eq!(
+        last_bypass(&path),
+        1,
+        "the host must still dispatch — a refusal is the plugin's answer, not \
+         a reason to skip the opcode"
+    );
+
+    drop(instance);
+    reset_switches(&path);
+}
+
+/// `effCanDo("bypass")` is what a host checks before relying on soft bypass.
+///
+/// A plugin that does not advertise one has to be bypassed by the host itself.
+/// `Maybe` is the common answer and is not a yes — reading it as one is the
+/// same three-valued mistake `effCanDo` invites everywhere else.
+#[test]
+fn soft_bypass_support_is_advertised_not_assumed() {
+    let _guard = lock_probe();
+    let path = probe_path::probe_path().clone();
+
+    reset_switches(&path);
+    set_can_do(&path, can_do::YES, 0);
+    let advertising = Vst2Instance::load(&path, SAMPLE_RATE, BLOCK).expect("probe should load");
+    assert!(
+        advertising.supports_soft_bypass(),
+        "the probe answered effCanDo(bypass) = 1 and the host ignored it"
+    );
+    drop(advertising);
+
+    reset_switches(&path);
+    set_can_do(&path, can_do::MAYBE, 0);
+    let silent = Vst2Instance::load(&path, SAMPLE_RATE, BLOCK).expect("probe should load");
+    assert!(
+        !silent.supports_soft_bypass(),
+        "effCanDo = 0 is 'don't know', not a yes; a host that treats it as one \
+         relies on a bypass the plugin never promised"
+    );
+    drop(silent);
+
+    reset_switches(&path);
 }
 
 /// `effGetEffectName` (45) is preferred over `effGetProductString` (48).

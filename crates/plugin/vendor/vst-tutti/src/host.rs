@@ -599,6 +599,33 @@ impl<T: Host> PluginLoader<T> {
 }
 
 impl PluginInstance {
+    /// Ask the plugin to enter or leave *soft* bypass, via `effSetBypass`(44).
+    ///
+    /// Returns `false` when the plugin refuses or does not implement the
+    /// opcode — the two are indistinguishable, since an unimplemented opcode
+    /// falls through the dispatcher returning 0, which is also "no".
+    ///
+    /// Soft bypass is the plugin's own passthrough, and it is what a host wants
+    /// where one exists: the plugin crossfades and flushes its tail instead of
+    /// cutting mid-reverb. It is **not** a substitute for the host's own mute,
+    /// it is an alternative to it — a refusal means the host must do the
+    /// bypass itself, which is why the answer is returned rather than dropped.
+    /// A caller that discards it leaves the plugin audibly processing while the
+    /// UI shows it bypassed.
+    ///
+    /// Check [`can_do(CanDo::Bypass)`](Plugin::can_do) first. A plugin that
+    /// does not advertise `"bypass"` may still return non-zero here, and the
+    /// advertisement is the documented contract.
+    pub fn set_bypass(&mut self, bypass: bool) -> bool {
+        self.dispatch(
+            plugin::OpCode::SoftBypass,
+            0,
+            isize::from(bypass),
+            ptr::null_mut(),
+            0.0,
+        ) != 0
+    }
+
     /// Read `AEffect::initialDelay` as it stands *now*.
     ///
     /// [`get_info`](Plugin::get_info) returns a clone of the snapshot taken in

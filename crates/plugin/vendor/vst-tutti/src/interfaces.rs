@@ -323,6 +323,9 @@ fn dispatch_inner(
             return get_plugin().get_info().category.into();
         }
 
+        // `value` is the flag: 1 = bypass, 0 = resume processing.
+        Ok(OpCode::SoftBypass) => return isize::from(get_plugin().set_bypass(value != 0)),
+
         Ok(OpCode::GetEffectName) => {
             // Leave the buffer alone when the plugin declines. An unanswered
             // optional opcode is a no-write, which is how a host tells "no

@@ -493,6 +493,19 @@ pub trait Plugin: Send {
     /// This method must return an `Info` struct.
     fn get_info(&self) -> Info;
 
+    /// Enter or leave soft bypass, answering `effSetBypass` (44).
+    ///
+    /// Return `true` to accept. The default is `false` — declining, which is
+    /// what an unimplemented opcode reports anyway, so a plugin that does not
+    /// override this behaves exactly as it did before the hook existed.
+    ///
+    /// A plugin that accepts must also answer `"bypass"` to
+    /// [`can_do`](Self::can_do): the advertisement is what a host checks before
+    /// relying on soft bypass rather than muting the plugin itself.
+    fn set_bypass(&mut self, bypass: bool) -> bool {
+        false
+    }
+
     /// The plugin's own name, answering `effGetEffectName` (45).
     ///
     /// Distinct from [`Info::name`], which answers `effGetProductString` (48):

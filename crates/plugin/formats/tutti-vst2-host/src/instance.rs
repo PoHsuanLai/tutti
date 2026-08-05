@@ -469,6 +469,34 @@ impl Vst2Instance {
     pub fn midi_channel_counts(&self) -> vst::host::MidiChannelCounts {
         self.handle.instance.read_midi_channels()
     }
+
+    /// Whether the plugin advertises its own soft bypass, via
+    /// `effCanDo("bypass")`.
+    ///
+    /// Ask before [`set_bypass`](Self::set_bypass): `Maybe` is the common
+    /// answer and is not a yes. A plugin that does not advertise one has to be
+    /// bypassed by the host instead, by not routing audio through it.
+    pub fn supports_soft_bypass(&self) -> bool {
+        use vst::api::Supported;
+        use vst::plugin::{CanDo, Plugin as _};
+        matches!(self.handle.instance.can_do(CanDo::Bypass), Supported::Yes)
+    }
+
+    /// Ask the plugin to enter or leave its own soft bypass.
+    ///
+    /// Returns whether the plugin accepted. `false` means it refused or does
+    /// not implement `effSetBypass` — indistinguishable, since an unimplemented
+    /// opcode returns 0, which is also "no".
+    ///
+    /// Soft bypass is preferable to a host mute where a plugin offers one: the
+    /// plugin crossfades and flushes its tail rather than having its reverb cut
+    /// mid-decay. It is an *alternative* to the host's own bypass, not a
+    /// replacement, so the answer is returned rather than swallowed — a caller
+    /// that ignores a `false` leaves the plugin processing while its UI says
+    /// bypassed, and that surfaces as "the bypass button does nothing".
+    pub fn set_bypass(&mut self, bypass: bool) -> bool {
+        self.handle.instance.set_bypass(bypass)
+    }
 }
 
 /// Resolve a `.vst` bundle directory to its inner Mach-O / ELF binary.

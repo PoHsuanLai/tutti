@@ -40,6 +40,52 @@ fn per_bus_channels(loaded: &tutti_clap_host::ClapLoaded, is_input: bool) -> Bus
     }
 }
 
+/// What the two editor answers mean for the three capability bits.
+struct EditorBits {
+    /// `Features::EDITOR` — is there a UI at all?
+    has_editor: bool,
+    /// Whether `Features::EDITOR_RESIZE` may be set, subject to the plugin's
+    /// own resize hints.
+    resize_allowed: bool,
+    /// `Features::EDITOR_FLOATING` — does the plugin own the window?
+    floating: bool,
+}
+
+/// Resolve the two editor answers into the three bits that depend on them.
+///
+/// CLAP asks about editors twice — once for embedded, once for floating — and
+/// each bit wants a different combination:
+///
+/// - **`Features::EDITOR` is the union.** It means "this plugin has a UI", and
+///   a floating-only plugin has one. Reporting only the embedded answer is what
+///   made such a plugin look editor-less, so the DAW drew no button for a UI it
+///   could have shown.
+/// - **`Features::EDITOR_RESIZE` is embedded-only.** `can_resize`,
+///   `adjust_size` and `set_size` are all marked `[main-thread & !floating]` in
+///   `ext/gui.h`; a floating window is the plugin's to size. Advertising a
+///   resize path for one would announce a capability nothing can drive.
+/// - **`Features::EDITOR_FLOATING` is "embedding is not available".** Set only
+///   when the plugin floats *and cannot embed* — a plugin supporting both is
+///   hosted embedded, because that gives the host control over placement and
+///   keeps the editor inside the session's window management. Floating is the
+///   fallback for plugins with no choice, not a preference to honour.
+///
+/// That last rule is why `prefers_floating()` is not consulted here.
+/// `ext/gui.h:113` calls the preference a hint the host has no obligation to
+/// honour, and a host that floated every plugin asking to would scatter windows
+/// it can no longer place, size or stack.
+///
+/// A free function because these rules are the finding, and reaching them
+/// through the loader needs a live plugin behind a real dlopen — see the tests
+/// below, which pin the combinations without one.
+fn editor_bits(embeddable: bool, floating: bool) -> EditorBits {
+    EditorBits {
+        has_editor: embeddable || floating,
+        resize_allowed: embeddable,
+        floating: floating && !embeddable,
+    }
+}
+
 fn clap_descriptor(info: &tutti_clap_host::PluginInfo, editor: EditorPresence) -> PluginDescriptor {
     PluginDescriptor {
         id: info.id.clone(),
@@ -155,8 +201,14 @@ impl ClapInstance {
             // Read metadata off the loaded (pre-activation) instance.
             let info = loaded.info();
             let supports_f64 = loaded.supports_f64();
-            let has_editor = loaded.has_editor();
-            let editor_resizable = has_editor && loaded.editor_capabilities().resize.resizable;
+            // Two questions, not one — see [`editor_bits`].
+            let embeddable = loaded.has_editor();
+            let EditorBits {
+                has_editor,
+                resize_allowed,
+                floating,
+            } = editor_bits(embeddable, loaded.has_floating_editor());
+            let editor_resizable = resize_allowed && loaded.editor_capabilities().resize.resizable;
             let has_note_in = loaded.note_port_count(true) > 0;
             let has_note_out = loaded.note_port_count(false) > 0;
             // Real per-port bus layout (main + any sidechain/aux), read off the
@@ -171,6 +223,7 @@ impl ClapInstance {
             features.set(Features::MIDI_OUT, has_note_out);
             features.set(Features::EDITOR, has_editor);
             features.set(Features::EDITOR_RESIZE, editor_resizable);
+            features.set(Features::EDITOR_FLOATING, floating);
             // CLAP always carries transport, sample-accurate param automation, and
             // the full note-expression dimension set (see build_clap_transport /
             // PARAM_VALUE events / CLAP_EVENT_NOTE_EXPRESSION). No sequencer context
@@ -609,6 +662,85 @@ mod tests {
     };
 
     const CLAP_PLUGIN: &str = "/Library/Audio/Plug-Ins/CLAP/TAL-NoiseMaker.clap";
+
+    /// A floating-only plugin reports an editor.
+    ///
+    /// The user-visible half of the floating-window gap: `Features::EDITOR`
+    /// drives whether the DAW offers to open a UI at all, and keying it on the
+    /// embedded answer alone hid every floating-only plugin's editor behind a
+    /// button that was never drawn.
+    #[test]
+    fn a_floating_only_plugin_reports_an_editor() {
+        assert!(
+            editor_bits(false, true).has_editor,
+            "floating-only means the plugin has a UI, just not an embeddable one"
+        );
+    }
+
+    /// ...but does not advertise resize.
+    ///
+    /// The pair that keeps the union from being applied to both bits. Every
+    /// resize entry point is `[!floating]`, so a host acting on this bit for a
+    /// floating window would be calling what the spec forbids.
+    #[test]
+    fn a_floating_only_plugin_does_not_advertise_resize() {
+        assert!(
+            !editor_bits(false, true).resize_allowed,
+            "can_resize/adjust_size/set_size are all !floating — a floating \
+             window is the plugin's to size"
+        );
+    }
+
+    /// Floating is reported only when embedding is *unavailable*.
+    ///
+    /// The rule that keeps the host in control of its own window management: a
+    /// plugin supporting both is embedded, so the session can place, size and
+    /// stack it. Reading `EDITOR_FLOATING` as "the plugin would like to float"
+    /// instead would scatter windows the host can no longer manage — and
+    /// `ext/gui.h:113` explicitly calls the preference a hint the host need not
+    /// honour.
+    #[test]
+    fn floating_is_reported_only_when_embedding_is_unavailable() {
+        assert!(
+            editor_bits(false, true).floating,
+            "floating-only: nothing else is possible, so the host must float it"
+        );
+        assert!(
+            !editor_bits(true, true).floating,
+            "supports both: embed it, because that is the mode the host can manage"
+        );
+        assert!(
+            !editor_bits(true, false).floating,
+            "embed-only is not floating"
+        );
+        assert!(
+            !editor_bits(false, false).floating,
+            "no editor at all is not a floating editor"
+        );
+    }
+
+    /// An embeddable plugin gets both bits, and a plugin with neither gets none.
+    ///
+    /// The two ends. Without the second, `editor_bits` returning `(true, true)`
+    /// unconditionally would satisfy every other case here.
+    #[test]
+    fn editor_bits_track_the_plugin() {
+        let embed_only = editor_bits(true, false);
+        assert!(embed_only.has_editor && embed_only.resize_allowed);
+
+        let both = editor_bits(true, true);
+        assert!(
+            both.has_editor && both.resize_allowed,
+            "supporting both is still embeddable, so resize stays available"
+        );
+
+        let neither = editor_bits(false, false);
+        assert!(
+            !neither.has_editor && !neither.resize_allowed,
+            "no editor either way means no editor — this is the case \
+             `Features::EDITOR` must still be able to report"
+        );
+    }
 
     #[test]
     fn test_clap_load() {

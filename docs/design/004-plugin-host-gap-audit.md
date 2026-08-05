@@ -606,16 +606,96 @@ a different thread than `HostState::new()` ran on.
 
 No existing test drove either off-thread, so nothing was asserting the gap.
 
-### C-12 · Floating-window GUI mode unimplemented · HELD
+### C-12 · Floating-window GUI mode unimplemented · DONE
 
 `embed_editor_sequence` (`polling.rs:88-163`) hardcodes `is_floating = false`;
 `get_preferred_api`, `set_transient`, `suggest_title` are absent.
 
 `has_editor()` therefore queries `is_api_supported(api, false)` only, so a
-floating-only plugin reports **no editor**. Per `ext/gui.h:66-68` embedding is
-unsupported on Wayland — so every CLAP plugin is editor-less there by our
-reckoning. Held rather than TODO: correct today on macOS/Windows/X11, and the
-code degrades gracefully.
+floating-only plugin reports **no editor**.
+
+**One claim in the original entry was wrong.** It said embedding is unsupported
+on Wayland "so every CLAP plugin is editor-less there by our reckoning". The
+spec half is right (`ext/gui.h:68` — "embed is currently not supported, use
+floating windows"), but `platform_window_handle` has **no Wayland arm**: on
+Linux it returns `CLAP_WINDOW_API_X11` unconditionally (`polling.rs:51-58`), so
+this host never asks the Wayland question and works under XWayland. The real
+exposure was narrower — floating-only plugins on *any* platform, not all plugins
+on one.
+
+**Fixed at the host layer.** `ClapLoaded` gained:
+
+- `open_floating_editor(transient, title)` — the `ext/gui.h:20-27` sequence:
+  `is_api_supported(floating)` → `create(floating)` → `set_transient` →
+  `suggest_title` → `show`. Returns no size, deliberately: the plugin owns the
+  window, so a size would imply the host should lay it out.
+- `has_floating_editor()` — the other half of the editor question.
+  `has_editor()` keeps its embedded-only meaning, now documented as such.
+- `prefers_floating()` — `get_preferred_api`'s `is_floating` flag. `None`
+  (no preference stated) stays distinct from `Some(false)`.
+
+No geometry call is made on a floating window: `set_scale`, `set_parent`,
+`can_resize`, `adjust_size` and `set_size` are all `[main-thread & !floating]`
+in the header. `close_editor` is unchanged and serves both modes — `hide` and
+`destroy` are the two calls not `!floating`-gated.
+
+`Features::EDITOR` is now the **union** of the two questions (`editor_bits` in
+`loaders/clap.rs`), which is the user-visible half: the bit means "this plugin
+has a UI", and keying it on the embedded answer alone is what made a
+floating-only plugin look editor-less. `Features::EDITOR_RESIZE` stays keyed on
+the embedded answer, since every resize entry point is `!floating`.
+
+Tests: 7 new in `clap_gui_lifecycle.rs` (28 total, all green) plus 3 on
+`editor_bits`. Mutation-checked at 5 points — wrong `is_floating` on the query,
+wrong flag on `create`, dropped `suggest_title`, and the union reverted in each
+direction — all killed. The `editor_bits` extraction exists *because* the first
+attempt at the union mutation survived: nothing tested the loader's capability
+bits, and reaching them through the loader needs a live plugin behind a dlopen.
+
+**The ECS layer is now built too**, and it cost less than the first estimate
+because two guesses about the shape were wrong.
+
+The estimate said "a defaulted method through four traits, three of them
+cross-format". It is two — `HostEditor` and `PluginEditor` — each with a
+defaulted body that refuses, so VST3, VST2 and AU write no override at all.
+`PluginBridge` and `ClapGuiInstance` are concrete types, not traits.
+
+The bigger correction is *where the mode is decided*. The obvious place is
+`EditorCapabilities`, which already carries per-format editor shape — but it is
+read **after** `open_editor` returns, and the host has to know which kind of
+window to prepare **before** opening anything. So the answer is a load-time
+capability bit, `Features::EDITOR_FLOATING`, set by the CLAP loader and read by
+the observer. It is probed only for CLAP: VST3's `probed` set now subtracts it,
+because VST3 embeds unconditionally and a clear-but-probed bit would spell "we
+asked and it said no" for a question that does not exist.
+
+`Features::EDITOR_FLOATING` means **embedding is unavailable**, not "the plugin
+would prefer to float". A plugin supporting both is hosted embedded, because
+that keeps placement, sizing and stacking with the session. `prefers_floating()`
+is deliberately not consulted — `ext/gui.h:113` calls the preference a hint the
+host need not honour, and honouring it would scatter windows the host can no
+longer manage.
+
+In the ECS, a floating editor gets its own marker (`PluginFloatingEditorOpen`)
+rather than an `Option<Entity>` on `PluginEditorOpen`. The difference is not a
+missing field: every system keyed on that component exists to manage a window
+*this host spawned* — resize it, echo-suppress its `WindowResized`, despawn it
+on close — and none of that applies to a window the host did not create. A
+separate component means those five systems simply do not match, instead of each
+growing a `None` arm for a case that is not theirs. The one thing both modes
+share is "an editor is open", which is `editor_is_open` / `EditorOpenFilter`.
+
+Tests: 4 in `plugin_host::editor` plus the `editor_bits` set. Mutation-checked
+at 3 further points; one **survived** and was worth the fix it forced — dropping
+the floating arm from the idle pump's query left every test green, because the
+pump needs a `PluginEmitter` and so cannot be driven without a subprocess. The
+filter is now the named `EditorOpenFilter`, testable on its own, and the
+mutation dies. That gap mattered: an unpumped editor is a *frozen* plugin UI,
+which is harder to attribute than an absent one.
+
+**What is still not covered, and cannot be here:** that a real floating-only
+plugin opens. No such plugin is installed, and the reference probe opens no
+windows. Every decision on the path is pinned; the final FFI call is not.
 
 ---
 
@@ -1260,8 +1340,9 @@ correct.
 **D-6** needs a decision before it needs code: does the subprocess VST2 path own
 editors at all?
 
-**Closed out.** 31 DONE, 4 HELD, no TODO remaining. The four held items are
-scope decisions rather than blocked work: **C-12** (CLAP floating-window GUI),
+**Closed out.** 32 DONE, 3 HELD, no TODO remaining.
+
+The three held items are scope decisions rather than blocked work:
 **D-9** (VST2 preset/program support), **D-10** (smaller VST2 opcode gaps — note
 its `effGetNumMidiInputChannels` half hides a live bug, not just missing scope:
 a plugin answering `Maybe` to `sendVstMidiEvent` is classified MIDI-silent and

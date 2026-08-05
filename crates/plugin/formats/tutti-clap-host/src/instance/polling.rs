@@ -202,6 +202,87 @@ fn embed_editor_sequence(
     Ok(EmbedOutcome { size, did_create })
 }
 
+/// Run the CLAP GUI **floating** sequence against a raw `gui` vtable, in the
+/// order `ext/gui.h:20-27` gives:
+///
+/// `is_api_supported(floating)` → `create(floating)` → `set_transient` →
+/// `suggest_title` → `show`.
+///
+/// Shorter than the embedded path, and deliberately so: the plugin owns the
+/// window, so every call the host makes about *geometry* is either absent or
+/// marked `[main-thread & !floating]` in the header — `set_scale`, `set_parent`,
+/// `can_resize`, `adjust_size`, `set_size`. Asking them here would be the
+/// misbehaviour a plugin's validation layer prints about. `get_size` is not
+/// `!floating`-gated and is legal, but is not asked either: the answer describes
+/// a window this host does not lay out, so reading it would invite a caller to
+/// act on it.
+///
+/// `api` may legally be null or blank for a floating window (`ext/gui.h:47`).
+/// It is passed through anyway, because a plugin that supports several apis
+/// still wants to know which one this host speaks, and a plugin that ignores it
+/// is unaffected.
+///
+/// `transient` is a *hint*: it asks the plugin's window to stay above the host's.
+/// A null handle skips the call rather than passing null through, since "no
+/// parent to stay above" and "stay above nothing" are different requests.
+///
+/// # Safety
+/// `plugin` must be a valid `clap_plugin` pointer the `gui` vtable's fns accept,
+/// and `transient`'s handle, when non-null, must reference a live native window.
+unsafe fn floating_editor_sequence(
+    gui: &clap_sys::ext::gui::clap_plugin_gui,
+    plugin: *const clap_sys::plugin::clap_plugin,
+    api: *const i8,
+    transient: Option<clap_window_handle>,
+    title: &std::ffi::CStr,
+) -> Result<bool> {
+    // 1. is_api_supported(floating) — the floating question, which is the one
+    //    the embed path never asks and the whole reason a floating-only plugin
+    //    reported no editor at all.
+    if let Some(is_api_supported_fn) = gui.is_api_supported {
+        if !is_api_supported_fn(plugin, api, true) {
+            return Err(ClapError::GuiError(
+                "GUI floating window API not supported".to_string(),
+            ));
+        }
+    }
+
+    // 2. create(floating = true).
+    let did_create = if let Some(create_fn) = gui.create {
+        if !create_fn(plugin, api, true) {
+            return Err(ClapError::GuiError(
+                "GUI create (floating) failed".to_string(),
+            ));
+        }
+        true
+    } else {
+        false
+    };
+
+    // 3. set_transient — keep the plugin window above ours. A false return is
+    //    not an error: the plugin is entitled to decline, and the window still
+    //    exists, just unparented.
+    if let (Some(set_transient_fn), Some(handle)) = (gui.set_transient, transient) {
+        let window = clap_window {
+            api,
+            specific: handle,
+        };
+        set_transient_fn(plugin, &window);
+    }
+
+    // 4. suggest_title — the plugin owns its title bar, so this is advisory.
+    if let Some(suggest_title_fn) = gui.suggest_title {
+        suggest_title_fn(plugin, title.as_ptr());
+    }
+
+    // 5. show.
+    if let Some(show_fn) = gui.show {
+        show_fn(plugin);
+    }
+
+    Ok(did_create)
+}
+
 /// Read `can_resize` + `get_resize_hints` off a created editor.
 ///
 /// Split out of [`ClapActive::editor_capabilities`] for the same reason as
@@ -255,9 +336,16 @@ impl ClapLoaded {
     ///
     /// Not just "is there a `clap.gui` vtable?": a plugin may expose the
     /// extension but omit `create`, or support only a floating window. Both are
-    /// legal CLAP and both make [`embed_editor_sequence`] fail, so both must
-    /// answer `false` here — this feeds `Features::EDITOR` in the plugin
-    /// descriptor.
+    /// legal CLAP and both make [`embed_editor_sequence`] fail, so both answer
+    /// `false` here.
+    ///
+    /// **This is the embedded question only, and it is not "has an editor".**
+    /// A floating-only plugin has a perfectly good editor that this returns
+    /// `false` for — ask [`has_floating_editor`](Self::has_floating_editor) for
+    /// the other half. A caller deciding whether to show a UI at all wants the
+    /// union; one deciding whether it can *embed* wants this. Feeding only this
+    /// into `Features::EDITOR` is what made floating-only plugins report no
+    /// editor at all.
     ///
     /// Deliberately does not create a GUI to find out. `is_api_supported` is a
     /// side-effect-free predicate; `create` allocates the plugin's real GUI
@@ -329,6 +417,128 @@ impl ClapLoaded {
         }
 
         Ok(outcome.size)
+    }
+
+    /// Create the plugin's own top-level window, rather than embedding.
+    ///
+    /// The path for a plugin that answers `is_api_supported(api, true)` and not
+    /// the embedded question — legal CLAP, and the only option on windowing
+    /// systems where embedding is unavailable (`ext/gui.h:68` marks Wayland
+    /// "embed is currently not supported, use floating windows").
+    ///
+    /// **Returns no size, deliberately.** An embedded editor's size is a fact
+    /// the host needs, because the host lays out the window it owns. A floating
+    /// window is the plugin's, so there is nothing here for a caller to apply —
+    /// returning a size would imply otherwise, and a caller acting on it would
+    /// be fighting the plugin for control of a window it does not own.
+    ///
+    /// `transient` is the host window the plugin's should stay above; `None`
+    /// skips the hint. `title` is advisory — the plugin owns its title bar.
+    ///
+    /// # Errors
+    /// [`ClapError::GuiError`] if the plugin exposes no GUI, if it does not
+    /// support a floating window, or if `create` fails.
+    pub fn open_floating_editor(
+        &mut self,
+        transient: Option<WindowHandle>,
+        title: &std::ffi::CStr,
+    ) -> Result<()> {
+        self.assert_main_thread();
+        if self.extensions.gui.gui.is_null() {
+            return Err(ClapError::GuiError("No GUI extension".to_string()));
+        }
+        // SAFETY: non-null checked above; the cache holds the pointer the plugin
+        // returned from `get_extension`, valid for the plugin's life.
+        let gui = unsafe { &*self.extensions.gui.gui };
+
+        // The api this host speaks, resolved through the same helper the embed
+        // path uses so the two cannot disagree about which one that is. The
+        // handle it builds from a null pointer is discarded — a floating window
+        // has no parent to embed into.
+        let (api, _) = platform_window_handle(std::ptr::null_mut());
+        let transient_handle = transient.map(|w| platform_window_handle(w.as_ptr()).1);
+
+        // Cleared before the sequence for the same reason as in `open_editor`:
+        // the plugin may call `clap.gui.closed` from inside `create` or `show`,
+        // and clearing afterwards would wipe that signal.
+        self.host_state
+            .gui
+            .window_destroyed
+            .store(false, std::sync::atomic::Ordering::Release);
+
+        // SAFETY: `plugin` is live for `&mut self`; `api` is a 'static C string
+        // from the clap-sys constants; the transient handle, when present, came
+        // from a live host `WindowHandle`.
+        let did_create = unsafe {
+            floating_editor_sequence(gui, self.plugin.as_ptr(), api, transient_handle, title)
+        }?;
+
+        if did_create {
+            self.flags.gui_created = true;
+        }
+
+        Ok(())
+    }
+
+    /// Whether this plugin can present a floating (plugin-owned) window.
+    ///
+    /// The counterpart to [`has_editor`](Self::has_editor), which asks the
+    /// embedded question only. A host should consult both: a plugin may support
+    /// either, both, or — via [`prefers_floating`](Self::prefers_floating) —
+    /// have an opinion about which.
+    ///
+    /// Side-effect-free, like its embedded sibling: `is_api_supported` is a
+    /// predicate, `create` is what allocates.
+    pub fn has_floating_editor(&self) -> bool {
+        if self.extensions.gui.gui.is_null() {
+            return false;
+        }
+        // SAFETY: non-null checked above.
+        let gui = unsafe { &*self.extensions.gui.gui };
+        if gui.create.is_none() {
+            return false;
+        }
+        let (api, _) = platform_window_handle(std::ptr::null_mut());
+        match gui.is_api_supported {
+            // SAFETY: `plugin` is live for `&self`; `api` is a 'static C string.
+            Some(is_api_supported) => unsafe { is_api_supported(self.plugin.as_ptr(), api, true) },
+            // Absent `is_api_supported` is not a refusal — the same reading the
+            // embedded path uses.
+            None => true,
+        }
+    }
+
+    /// The plugin's preferred windowing api and mode, if it states one.
+    ///
+    /// `ext/gui.h:113` — "The host has no obligation to honor the plugin
+    /// preference, this is just a hint." Returned as the `is_floating` flag
+    /// alone: the api half is only useful to a host that speaks more than one
+    /// per platform, and this one does not — [`platform_window_handle`] resolves
+    /// exactly one api per target, so reporting a preference this host cannot
+    /// act on would invite a caller to try.
+    ///
+    /// `None` means the plugin expressed no preference, which is distinct from
+    /// preferring embedded — a caller that conflates them would override a
+    /// plugin that deliberately said nothing.
+    pub fn prefers_floating(&self) -> Option<bool> {
+        if self.extensions.gui.gui.is_null() {
+            return None;
+        }
+        // SAFETY: non-null checked above.
+        let gui = unsafe { &*self.extensions.gui.gui };
+        let get_preferred_api = gui.get_preferred_api?;
+
+        let mut api: *const i8 = std::ptr::null();
+        let mut is_floating = false;
+        // SAFETY: `plugin` is live for `&self`; both out-params are valid local
+        // storage the plugin writes through.
+        //
+        // The header requires `api` be assigned a pointer to one of the
+        // `CLAP_WINDOW_API_` constants rather than strcopied, so the pointer it
+        // leaves is 'static and this borrows nothing. It is dropped regardless —
+        // see the doc above.
+        let stated = unsafe { get_preferred_api(self.plugin.as_ptr(), &mut api, &mut is_floating) };
+        stated.then_some(is_floating)
     }
 
     /// Query the plugin's resize/aspect capabilities.
@@ -434,9 +644,13 @@ impl ClapLoaded {
             .gui
             .window_destroyed
             .swap(false, std::sync::atomic::Ordering::AcqRel);
-        // SAFETY: `gui_created` implies non-null — only `open_editor` sets it,
-        // past its own null guard, and `ExtensionCache::gui` is never
-        // reassigned after `load.rs` builds it.
+        // SAFETY: `gui_created` implies non-null — only `open_editor` and
+        // `open_floating_editor` set it, each past its own null guard, and
+        // `ExtensionCache::gui` is never reassigned after `load.rs` builds it.
+        //
+        // Mode-agnostic on purpose: `hide` and `destroy` are the two GUI calls
+        // the header does not mark `[!floating]`, so one teardown serves both
+        // and a floating editor needs no second path.
         let gui = unsafe { &*self.extensions.gui.gui };
         if let (false, Some(hide_fn)) = (window_destroyed, gui.hide) {
             unsafe { hide_fn(self.plugin.as_ptr()) };

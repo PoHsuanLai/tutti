@@ -52,6 +52,40 @@ pub struct PluginEditorOpen {
     // to the main thread.
 }
 
+/// Present while a plugin's GUI editor is open in a window the **plugin** owns.
+///
+/// The floating counterpart to [`PluginEditorOpen`], and a separate component
+/// rather than an `Option<Entity>` on that one. The difference is not a missing
+/// field — it is that every system keyed on `PluginEditorOpen` exists to manage
+/// a window this host spawned: resize it, echo-suppress its `WindowResized`,
+/// despawn it on close. None of that applies to a window the host did not
+/// create, so those systems should not match a floating editor at all, and an
+/// `Option` would make each of them carry a `None` arm for a case that is not
+/// theirs.
+///
+/// What the two share — "an editor is open", which drives idle ticking — is
+/// expressed by [`editor_is_open`] rather than by one component standing for
+/// both.
+///
+/// Carries no size: the plugin owns the window, so there is no geometry here
+/// for the host to apply. See `ClapLoaded::open_floating_editor`.
+#[derive(Component)]
+pub struct PluginFloatingEditorOpen;
+
+/// Whether this entity has an editor open, in either hosting mode.
+///
+/// The one question both components answer, named once so a caller does not
+/// have to know there are two. Used by the idle pump, which must tick a
+/// floating editor exactly as it ticks an embedded one — a plugin's GUI needs
+/// its main-thread slice regardless of who owns the window.
+pub fn editor_is_open(
+    entity: Entity,
+    embedded: &Query<&PluginEditorOpen>,
+    floating: &Query<&PluginFloatingEditorOpen>,
+) -> bool {
+    embedded.get(entity).is_ok() || floating.get(entity).is_ok()
+}
+
 /// Intermediate state: a Window has been spawned but `open_editor` hasn't
 /// been called yet (waiting for the native handle to become available).
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq, Hash, Reflect)]
@@ -127,14 +161,30 @@ impl SetEditorVisible {
 ///
 /// Call this in Bevy's `Update` schedule. Plugin GUIs require periodic
 /// idle ticks to handle redraws and event processing.
+/// Ticked for **both** hosting modes: a plugin's GUI needs its main-thread
+/// slice whether or not this host owns the window it draws into. Querying only
+/// `PluginEditorOpen` would leave a floating editor unpumped, which presents as
+/// a frozen UI rather than as a missing one.
+///
+/// `Or` rather than two systems, so the tick happens once per entity even for a
+/// plugin that somehow carried both markers.
 pub fn plugin_editor_idle_system(
     _main_thread: NonSend<PluginEditorMainThread>,
-    query: Query<(&PluginEmitter, &PluginEditorOpen)>,
+    query: Query<&PluginEmitter, EditorOpenFilter>,
 ) {
-    for (emitter, _) in query.iter() {
+    for emitter in query.iter() {
         emitter.handle.editor_idle();
     }
 }
+
+/// "Has an editor open, in either hosting mode", as a query filter.
+///
+/// Named rather than written inline at the one call site, because the call site
+/// cannot be tested: it needs a `PluginEmitter`, which needs a launched
+/// subprocess. The filter alone can be — see the tests — and it is the half
+/// that carries the bug: dropping the floating arm leaves such an editor
+/// unpumped, which looks like a frozen plugin rather than a missing one.
+pub type EditorOpenFilter = Or<(With<PluginEditorOpen>, With<PluginFloatingEditorOpen>)>;
 
 /// Observer: the one entry point for editor visibility.
 ///
@@ -158,6 +208,7 @@ pub fn set_editor_visible_observer(
     plugins: Query<&PluginEmitter>,
     open: Query<&PluginEditorOpen>,
     pending: Query<&PendingPluginEditor>,
+    floating: Query<&PluginFloatingEditorOpen>,
 ) {
     use bevy_window::{Window, WindowResolution};
 
@@ -168,7 +219,8 @@ pub fn set_editor_visible_observer(
         return;
     };
 
-    let showing = open.get(entity).is_ok() || pending.get(entity).is_ok();
+    let showing =
+        open.get(entity).is_ok() || pending.get(entity).is_ok() || floating.get(entity).is_ok();
     let want_visible = match request.visibility {
         Visibility::Show => true,
         Visibility::Hide => false,
@@ -182,6 +234,40 @@ pub fn set_editor_visible_observer(
     }
 
     if want_visible {
+        // A plugin that owns its own window needs none from us, and there is no
+        // native handle to wait for — so this opens now rather than going
+        // through `PendingPluginEditor`'s two-phase dance.
+        //
+        // Read from `Features` rather than from `EditorCapabilities`: this
+        // decision happens *before* the editor exists, and capabilities are not
+        // readable until after `open_editor` returns.
+        if emitter
+            .handle
+            .loaded()
+            .features
+            .contains(tutti_plugin::Features::EDITOR_FLOATING)
+        {
+            match emitter.handle.open_floating_editor() {
+                Ok(()) => {
+                    commands.entity(entity).insert(PluginFloatingEditorOpen);
+                    bevy_log::info!(
+                        "Plugin '{}' floating editor opened (entity {entity:?})",
+                        emitter.handle.name()
+                    );
+                }
+                Err(e) => {
+                    // No window was spawned, so there is nothing to clean up —
+                    // unlike the embedded path, whose failure has to despawn the
+                    // window it created.
+                    bevy_log::warn!(
+                        "Plugin '{}' floating editor failed to open: {e}",
+                        emitter.handle.name()
+                    );
+                }
+            }
+            return;
+        }
+
         // Spawned hidden: the plugin reports its real size when the editor
         // attaches, and showing it at 800x600 first would flash the wrong size.
         let window_entity = commands
@@ -209,6 +295,19 @@ pub fn set_editor_visible_observer(
     if let Ok(pend) = pending.get(entity) {
         commands.entity(pend.window_entity).try_despawn();
         commands.entity(entity).remove::<PendingPluginEditor>();
+        return;
+    }
+
+    // A floating editor: close the plugin's window, despawn nothing. There is
+    // no `live_resize_registry` entry either — that observer is installed on a
+    // window this host created, and no such window exists here.
+    if floating.get(entity).is_ok() {
+        emitter.handle.close_editor();
+        commands.entity(entity).remove::<PluginFloatingEditorOpen>();
+        bevy_log::info!(
+            "Plugin '{}' floating editor closed (entity {entity:?})",
+            emitter.handle.name()
+        );
         return;
     }
 
@@ -488,5 +587,134 @@ pub fn plugin_editor_window_close_system(
                 commands.trigger(SetEditorVisible::hide(entity));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bevy_app::prelude::*;
+
+    /// A `PluginEmitter` needs a `PluginHandle`, which needs a launched
+    /// subprocess, so nothing here can put a real plugin in the world. What is
+    /// covered is the part that does not need one: [`editor_is_open`], the
+    /// predicate every "is this plugin showing a UI" decision goes through.
+    ///
+    /// **Not covered here:** that a floating-capable plugin actually takes the
+    /// floating branch of `set_editor_visible_observer`. That needs a loaded
+    /// binary reporting `EDITOR_FLOATING`, and no floating-only CLAP plugin is
+    /// installed to be one. The branch is driven by a single
+    /// `Features::EDITOR_FLOATING` check, whose two arms are covered one crate
+    /// down by `editor_bits` in `tutti-plugin-server`.
+    ///
+    /// `editor_is_open` takes `Query`s, so it is exercised through a system
+    /// rather than called directly — a test that re-implemented the `||` would
+    /// pass whatever the function did.
+    #[derive(Resource, Default)]
+    struct Observed(Vec<(Entity, bool)>);
+
+    fn record_open(
+        mut out: ResMut<Observed>,
+        all: Query<Entity>,
+        embedded: Query<&PluginEditorOpen>,
+        floating: Query<&PluginFloatingEditorOpen>,
+    ) {
+        out.0 = all
+            .iter()
+            .map(|e| (e, editor_is_open(e, &embedded, &floating)))
+            .collect();
+    }
+
+    fn run(spawn: impl FnOnce(&mut World) -> Entity) -> bool {
+        let mut app = App::new();
+        app.init_resource::<Observed>();
+        app.add_systems(Update, record_open);
+        let entity = spawn(app.world_mut());
+        app.update();
+        app.world()
+            .resource::<Observed>()
+            .0
+            .iter()
+            .find(|(e, _)| *e == entity)
+            .map(|(_, open)| *open)
+            .expect("the spawned entity must have been visited")
+    }
+
+    /// An embedded editor counts as open.
+    #[test]
+    fn an_embedded_editor_is_open() {
+        assert!(run(|w| {
+            let window = w.spawn_empty().id();
+            w.spawn(PluginEditorOpen {
+                editor_window: window,
+                width: 100,
+                height: 100,
+                capabilities: Default::default(),
+                last_applied: (100, 100),
+            })
+            .id()
+        }));
+    }
+
+    /// A floating editor counts as open too — the case a check written against
+    /// `PluginEditorOpen` alone gets wrong.
+    ///
+    /// This is what the idle pump keys on. Miss it and a floating editor is
+    /// never ticked, which presents as a frozen plugin UI rather than an absent
+    /// one — the harder bug to attribute.
+    #[test]
+    fn a_floating_editor_is_open() {
+        assert!(
+            run(|w| w.spawn(PluginFloatingEditorOpen).id()),
+            "a floating editor is open, even though this host owns no window \
+             for it"
+        );
+    }
+
+    /// A plugin with neither component has no editor open.
+    ///
+    /// The negative half: without it, a predicate hardcoded to `true` would
+    /// satisfy both tests above.
+    #[test]
+    fn a_plugin_with_no_editor_component_is_not_open() {
+        assert!(
+            !run(|w| w.spawn_empty().id()),
+            "a bare entity has no editor in either hosting mode"
+        );
+    }
+
+    /// The idle pump's query filter matches both hosting modes.
+    ///
+    /// Separate from [`editor_is_open`] and not redundant with it: the pump does
+    /// not call that function, it uses [`EditorOpenFilter`], so a filter that
+    /// dropped the floating arm would leave these two in disagreement. That is
+    /// the frozen-UI bug, and it is invisible from the predicate's tests.
+    ///
+    /// Counted rather than asserted per-entity, so a filter that matched
+    /// *everything* fails too.
+    #[test]
+    fn the_idle_filter_matches_both_hosting_modes() {
+        let mut app = App::new();
+        let world = app.world_mut();
+        let window = world.spawn_empty().id();
+        world.spawn(PluginEditorOpen {
+            editor_window: window,
+            width: 10,
+            height: 10,
+            capabilities: Default::default(),
+            last_applied: (10, 10),
+        });
+        world.spawn(PluginFloatingEditorOpen);
+        // A plugin with no editor open, plus the bare window entity above:
+        // neither may match.
+        world.spawn_empty();
+
+        let mut q = world.query_filtered::<Entity, EditorOpenFilter>();
+        assert_eq!(
+            q.iter(world).count(),
+            2,
+            "the pump must tick exactly the two open editors — one embedded, \
+             one floating — and nothing else"
+        );
     }
 }

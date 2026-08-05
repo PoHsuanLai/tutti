@@ -49,6 +49,17 @@ impl PluginEditor for ClapGuiInstance {
         })
     }
 
+    fn open_floating_editor(&mut self) -> Result<()> {
+        // No transient parent: this crate does not hold the host's window, and
+        // `set_transient` is a stacking hint the plugin may ignore anyway. The
+        // title is what the host would have put on a window it owned.
+        let title = std::ffi::CString::new(self.inner.info().name.as_str())
+            .unwrap_or_else(|_| c"Plugin Editor".to_owned());
+        self.inner
+            .open_floating_editor(None, &title)
+            .map_err(|e| BridgeError::ProtocolError(format!("CLAP floating open failed: {e}")))
+    }
+
     fn close_editor(&mut self) {
         self.inner.close_editor();
     }

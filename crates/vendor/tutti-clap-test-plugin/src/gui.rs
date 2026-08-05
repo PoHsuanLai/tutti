@@ -141,6 +141,12 @@ pub const GUI_CALL_SET_PARENT: u32 = 10;
 pub const GUI_CALL_SHOW: u32 = 11;
 /// See [`GUI_CALL_IS_API_SUPPORTED`].
 pub const GUI_CALL_HIDE: u32 = 12;
+/// See [`GUI_CALL_IS_API_SUPPORTED`].
+pub const GUI_CALL_SET_TRANSIENT: u32 = 13;
+/// See [`GUI_CALL_IS_API_SUPPORTED`].
+pub const GUI_CALL_SUGGEST_TITLE: u32 = 14;
+/// See [`GUI_CALL_IS_API_SUPPORTED`].
+pub const GUI_CALL_GET_PREFERRED_API: u32 = 15;
 
 /// The GUI snapshot the conformance test reads across the dlopen seam.
 #[repr(C)]
@@ -191,7 +197,30 @@ pub struct GuiCapture {
     /// Whether that `clap_window`'s `api` string was the current platform's
     /// CLAP constant — the "do not hardcode X11" assertion.
     pub set_parent_api_matches_platform: bool,
+    /// Whether the host ever passed a non-null `clap_window` to `set_transient`.
+    ///
+    /// The floating counterpart to
+    /// [`set_parent_window_non_null`](GuiCapture::set_parent_window_non_null).
+    /// A host that passes null here has told the plugin to stay above nothing,
+    /// which is not the same request as skipping the hint.
+    pub set_transient_window_non_null: bool,
+    /// Whether `create` was last called with `is_floating == true`.
+    ///
+    /// Not a count: what matters is which *mode* the window that now exists was
+    /// built in, and a host that created embedded then floating has one window,
+    /// not two.
+    pub created_floating: bool,
+    /// The title the host passed to `suggest_title`, NUL-terminated and
+    /// truncated to fit. Empty if never called.
+    ///
+    /// Captured as bytes rather than a flag so a host sending an empty or
+    /// garbage title is distinguishable from one sending nothing.
+    pub suggested_title: [u8; MAX_TITLE_LEN],
 }
+
+/// Bound on [`GuiCapture::suggested_title`]. Fixed-size because the capture
+/// crosses the dlopen seam as `#[repr(C)]` — a `String` could not.
+pub const MAX_TITLE_LEN: usize = 64;
 
 impl Default for GuiCapture {
     fn default() -> Self {
@@ -211,6 +240,9 @@ impl Default for GuiCapture {
             last_adjust_in_h: 0,
             set_parent_window_non_null: false,
             set_parent_api_matches_platform: false,
+            set_transient_window_non_null: false,
+            created_floating: false,
+            suggested_title: [0; MAX_TITLE_LEN],
         }
     }
 }
@@ -243,6 +275,13 @@ struct GuiGlobals {
     last_adjust_in_h: AtomicU32,
     set_parent_window_non_null: AtomicBool,
     set_parent_api_matches_platform: AtomicBool,
+    set_transient_window_non_null: AtomicBool,
+    created_floating: AtomicBool,
+    /// The suggested title, one byte per cell. An array of atomics rather than
+    /// a `Mutex<String>` for the reason at the top of this block: these are
+    /// written from inside an FFI callback, and a title is short enough that
+    /// per-byte stores cost nothing.
+    suggested_title: [AtomicU32; MAX_TITLE_LEN],
     /// Latched command; see [`tutti_test_plugin_gui_command`].
     command: AtomicU32,
 }
@@ -266,6 +305,9 @@ static GUI: GuiGlobals = GuiGlobals {
     last_adjust_in_h: AtomicU32::new(0),
     set_parent_window_non_null: AtomicBool::new(false),
     set_parent_api_matches_platform: AtomicBool::new(false),
+    set_transient_window_non_null: AtomicBool::new(false),
+    created_floating: AtomicBool::new(false),
+    suggested_title: [ZERO_U32; MAX_TITLE_LEN],
     command: AtomicU32::new(GUI_CMD_NONE),
 };
 
@@ -308,10 +350,19 @@ pub unsafe extern "C" fn tutti_test_plugin_gui_capture(out: *mut GuiCapture) -> 
         set_parent_api_matches_platform: GUI
             .set_parent_api_matches_platform
             .load(Ordering::Acquire),
+        set_transient_window_non_null: GUI.set_transient_window_non_null.load(Ordering::Acquire),
+        created_floating: GUI.created_floating.load(Ordering::Acquire),
         ..GuiCapture::default()
     };
     for (dst, src) in cap.calls.iter_mut().zip(GUI.calls.iter()) {
         *dst = src.load(Ordering::Acquire);
+    }
+    for (dst, src) in cap
+        .suggested_title
+        .iter_mut()
+        .zip(GUI.suggested_title.iter())
+    {
+        *dst = src.load(Ordering::Acquire) as u8;
     }
     *out = cap;
     true
@@ -344,6 +395,15 @@ pub extern "C" fn tutti_test_plugin_gui_reset() {
         .store(false, Ordering::Release);
     GUI.set_parent_api_matches_platform
         .store(false, Ordering::Release);
+    GUI.set_transient_window_non_null
+        .store(false, Ordering::Release);
+    GUI.created_floating.store(false, Ordering::Release);
+    // Cleared, not left: a title from a previous scenario would make the next
+    // one's "the host sent a title" assertion pass without the host sending
+    // anything — green in one test order and red in another.
+    for slot in GUI.suggested_title.iter() {
+        slot.store(0, Ordering::Release);
+    }
     GUI.command.store(GUI_CMD_NONE, Ordering::Release);
 }
 
@@ -576,6 +636,7 @@ unsafe extern "C" fn gui_create(
         Ordering::Release,
     );
     GUI.created.store(true, Ordering::Release);
+    GUI.created_floating.store(is_floating, Ordering::Release);
     GUI.create_balance.fetch_add(1, Ordering::AcqRel);
     true
 }
@@ -692,6 +753,70 @@ unsafe extern "C" fn gui_set_parent(
     matches
 }
 
+/// The floating counterpart to [`gui_set_parent`].
+///
+/// Returns `true` even for a mismatched api: `set_transient` is a *hint* the
+/// plugin may act on or ignore, unlike `set_parent`, whose failure means the
+/// window was never embedded. Answering `false` here would tell a host its
+/// floating window is broken when it is merely unparented.
+unsafe extern "C" fn gui_set_transient(
+    _plugin: *const clap_plugin,
+    window: *const clap_window,
+) -> bool {
+    record(GUI_CALL_SET_TRANSIENT);
+    if window.is_null() {
+        return false;
+    }
+    GUI.set_transient_window_non_null
+        .store(true, Ordering::Release);
+    true
+}
+
+/// Record the host's suggested window title.
+///
+/// Stored rather than counted so a test can tell an empty or garbage title from
+/// no title at all — the same reason `set_parent` records the api string.
+unsafe extern "C" fn gui_suggest_title(
+    _plugin: *const clap_plugin,
+    title: *const std::ffi::c_char,
+) {
+    record(GUI_CALL_SUGGEST_TITLE);
+    if title.is_null() {
+        return;
+    }
+    let bytes = CStr::from_ptr(title).to_bytes();
+    // Leave the last cell as the NUL terminator, so a title at or over the
+    // bound reads back truncated rather than unterminated.
+    let n = bytes.len().min(MAX_TITLE_LEN - 1);
+    for (slot, byte) in GUI.suggested_title.iter().zip(&bytes[..n]) {
+        slot.store(*byte as u32, Ordering::Release);
+    }
+    GUI.suggested_title[n].store(0, Ordering::Release);
+}
+
+/// State a preference for the platform api, in whichever mode this probe
+/// supports.
+///
+/// A [`GuiMode::FloatingOnly`] probe prefers floating and everything else
+/// prefers embedded, so the preference always agrees with what
+/// `is_api_supported` will answer. A probe that preferred a mode it then
+/// refused would be testing the host against a plugin no host should humour.
+unsafe extern "C" fn gui_get_preferred_api(
+    _plugin: *const clap_plugin,
+    api: *mut *const std::ffi::c_char,
+    is_floating: *mut bool,
+) -> bool {
+    record(GUI_CALL_GET_PREFERRED_API);
+    if api.is_null() || is_floating.is_null() {
+        return false;
+    }
+    // Assigned as a pointer to the constant, never strcopied — `ext/gui.h:114`
+    // requires exactly this, and a host is entitled to compare it by address.
+    *api = platform_api().as_ptr();
+    *is_floating = gui_mode() == GuiMode::FloatingOnly;
+    true
+}
+
 unsafe extern "C" fn gui_show(plugin: *const clap_plugin) -> bool {
     record(GUI_CALL_SHOW);
     // The latched command runs here: `show` is the last call of the host's
@@ -709,7 +834,7 @@ unsafe extern "C" fn gui_hide(_plugin: *const clap_plugin) -> bool {
 /// The embeddable vtable — every fn present.
 static GUI_FULL: clap_plugin_gui = clap_plugin_gui {
     is_api_supported: Some(gui_is_api_supported),
-    get_preferred_api: None,
+    get_preferred_api: Some(gui_get_preferred_api),
     create: Some(gui_create),
     destroy: Some(gui_destroy),
     set_scale: Some(gui_set_scale),
@@ -719,8 +844,8 @@ static GUI_FULL: clap_plugin_gui = clap_plugin_gui {
     adjust_size: Some(gui_adjust_size),
     set_size: Some(gui_set_size),
     set_parent: Some(gui_set_parent),
-    set_transient: None,
-    suggest_title: None,
+    set_transient: Some(gui_set_transient),
+    suggest_title: Some(gui_suggest_title),
     show: Some(gui_show),
     hide: Some(gui_hide),
 };

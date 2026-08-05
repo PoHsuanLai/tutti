@@ -204,6 +204,42 @@ impl PluginBridge {
         Ok(size)
     }
 
+    /// [`open_editor`](Self::open_editor) for a plugin-owned floating window.
+    ///
+    /// Same lazy GUI load and the same post-open state sync — the editor
+    /// instance and its state are the plugin's either way. What differs is only
+    /// that no parent goes in and no size comes out.
+    pub fn open_floating_editor(&self) -> std::result::Result<(), EditorError> {
+        tutti_plugin_types::assert_main_thread();
+        if self.audio.is_crashed() {
+            return Err(EditorError::PluginCrashed);
+        }
+
+        let mut guard = self.gui.lock().map_err(|_| EditorError::Busy)?;
+        if guard.is_none() {
+            let instance =
+                crate::format::gui::load_gui_instance(&self.plugin_path).map_err(|e| {
+                    EditorError::PluginError(format!("failed to load in-process GUI: {e}"))
+                })?;
+            *guard = Some(instance);
+        }
+        let gui = guard.as_mut().expect("just inserted");
+
+        // Read before the open, as the embedded path does: audio is the source
+        // of truth for state, and some plugins refuse `set_state` until their
+        // view exists.
+        let state_to_sync = self.audio.save_state();
+
+        gui.open_floating_editor()
+            .map_err(|e| EditorError::PluginError(e.to_string()))?;
+
+        if let Some(state) = state_to_sync {
+            let _ = gui.set_state(&state);
+        }
+
+        Ok(())
+    }
+
     pub fn close_editor(&self) -> bool {
         tutti_plugin_types::assert_main_thread();
         self.close_editor_inner()
@@ -354,6 +390,10 @@ impl crate::host::handles::capabilities::HostState for SubprocessBackend {
 impl crate::host::handles::capabilities::HostEditor for SubprocessBackend {
     fn open_editor(&self, parent_ptr: *mut c_void) -> std::result::Result<EditorSize, EditorError> {
         self.bridge.open_editor(parent_ptr)
+    }
+
+    fn open_floating_editor(&self) -> std::result::Result<(), EditorError> {
+        self.bridge.open_floating_editor()
     }
 
     fn close_editor(&self) {

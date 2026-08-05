@@ -158,6 +158,10 @@ pub use tutti_plugin_types::mark_main_thread;
 pub use tutti_plugin_types::AutomationMode;
 // Likewise for `PluginHandle::set_render_mode` / `Plugin::set_render_mode`.
 pub use tutti_plugin_types::RenderMode;
+// `PluginHandle::loaded()` hands back a `LoadedPlugin` whose `features` field is
+// this type, so a consumer that reads a capability bit — e.g. deciding whether
+// to open an editor floating — must be able to name it.
+pub use tutti_plugin_types::Features;
 
 /// Building blocks for out-of-crate in-process loaders.
 ///

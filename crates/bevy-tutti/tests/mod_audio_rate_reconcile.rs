@@ -1,6 +1,12 @@
 //! The audio-rate reconciler: a `ModRoute` marked `at_audio_rate` becomes a
 //! real graph chain, and stops being one when the route goes away.
 
+// Every import below is behind `modulation`, so without the feature this file
+// is not "a test that finds nothing" — it does not compile. The five sibling
+// `mod_*` suites all carry this line; this one was missed, which is why a bare
+// `cargo check --all-targets` failed here and nowhere else.
+#![cfg(feature = "modulation")]
+
 use bevy_app::prelude::*;
 use bevy_ecs::prelude::*;
 

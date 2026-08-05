@@ -28,9 +28,9 @@ use tutti_clap_test_plugin::{
     GuiCapture, GuiMode, GUI_ASPECT_H, GUI_ASPECT_W, GUI_CALL_ADJUST_SIZE, GUI_CALL_CAN_RESIZE,
     GUI_CALL_CREATE, GUI_CALL_DESTROY, GUI_CALL_GET_RESIZE_HINTS, GUI_CALL_GET_SIZE, GUI_CALL_HIDE,
     GUI_CALL_IS_API_SUPPORTED, GUI_CALL_SET_PARENT, GUI_CALL_SET_SCALE, GUI_CALL_SET_SIZE,
-    GUI_CALL_SHOW, GUI_CMD_CLOSED_AND_DESTROYED, GUI_CMD_CLOSED_AND_DESTROYED_FROM_SHOW,
-    GUI_CMD_CLOSED_NOT_DESTROYED, GUI_CMD_REQUEST_RESIZE, GUI_HEIGHT, GUI_REQUESTED_RESIZE_H,
-    GUI_REQUESTED_RESIZE_W, GUI_SIZE_QUANTUM, GUI_WIDTH,
+    GUI_CALL_SET_TRANSIENT, GUI_CALL_SHOW, GUI_CALL_SUGGEST_TITLE, GUI_CMD_CLOSED_AND_DESTROYED,
+    GUI_CMD_CLOSED_AND_DESTROYED_FROM_SHOW, GUI_CMD_CLOSED_NOT_DESTROYED, GUI_CMD_REQUEST_RESIZE,
+    GUI_HEIGHT, GUI_REQUESTED_RESIZE_H, GUI_REQUESTED_RESIZE_W, GUI_SIZE_QUANTUM, GUI_WIDTH,
 };
 
 /// Serializes whole scenarios — set mode → reset → load → drive → read — so one
@@ -247,6 +247,15 @@ fn has_editor_false_for_floating_only_plugin() {
     assert!(
         loaded.open_editor(fake_parent()).is_err(),
         "and open_editor confirms it — the two must not disagree"
+    );
+
+    // The other half of the distinction: "cannot embed" is not "has no editor".
+    // Without this the test above is satisfied by a host that reports every
+    // floating-only plugin as having no UI at all, which is the bug C-12 names.
+    assert!(
+        loaded.has_floating_editor(),
+        "the same plugin *does* have a floating editor — a host that only ever \
+         asks the embedded question reports it as editor-less"
     );
 }
 
@@ -905,5 +914,239 @@ fn drop_destroys_a_live_editor() {
     assert_eq!(
         cap.create_balance, 0,
         "and leave nothing allocated behind it"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Floating windows — the plugin owns the window, the host only hints
+// ---------------------------------------------------------------------------
+
+/// The title the host suggests in these scenarios.
+const TEST_TITLE: &std::ffi::CStr = c"Tutti Test Editor";
+
+/// Read the probe's captured title back as a `&str`, up to its NUL.
+fn suggested_title(cap: &GuiCapture) -> String {
+    let end = cap
+        .suggested_title
+        .iter()
+        .position(|&b| b == 0)
+        .unwrap_or(cap.suggested_title.len());
+    String::from_utf8_lossy(&cap.suggested_title[..end]).into_owned()
+}
+
+/// A floating-only plugin opens, in the order `ext/gui.h:20-27` gives.
+///
+/// The whole point of C-12: before this, the only path into a CLAP editor was
+/// the embed sequence, which such a plugin refuses at its first gate. It could
+/// therefore never show a UI, and `Features::EDITOR` said it had none.
+#[test]
+fn open_floating_editor_runs_the_spec_sequence() {
+    let probe = Probe::acquire(GuiMode::FloatingOnly);
+    let mut loaded = probe.load();
+
+    loaded
+        .open_floating_editor(Some(fake_parent()), TEST_TITLE)
+        .expect("a floating-only plugin must open in floating mode");
+
+    let cap = probe.capture();
+    assert_eq!(
+        calls(&cap),
+        vec![
+            GUI_CALL_IS_API_SUPPORTED,
+            GUI_CALL_CREATE,
+            GUI_CALL_SET_TRANSIENT,
+            GUI_CALL_SUGGEST_TITLE,
+            GUI_CALL_SHOW,
+        ],
+        "the floating sequence is is_api_supported → create → set_transient → \
+         suggest_title → show"
+    );
+    assert!(
+        cap.created_floating,
+        "`create` must be called with is_floating = true — an embedded create \
+         on a floating-only plugin is the call it already refuses"
+    );
+}
+
+/// The floating path asks the *floating* question, and only that one.
+///
+/// The counterpart to `open_editor_refuses_floating_only_before_create`, which
+/// pins that the embed path asks only the embedded question. Keeping both means
+/// neither path can quietly start asking the other's.
+#[test]
+fn the_floating_path_asks_only_the_floating_question() {
+    let probe = Probe::acquire(GuiMode::FloatingOnly);
+    let mut loaded = probe.load();
+
+    loaded
+        .open_floating_editor(Some(fake_parent()), TEST_TITLE)
+        .expect("floating open should succeed");
+
+    let cap = probe.capture();
+    assert_eq!(
+        cap.is_api_supported_floating_queries, 1,
+        "the floating path must ask the floating question"
+    );
+    assert_eq!(
+        cap.is_api_supported_embedded_queries, 0,
+        "and must not ask the embedded one — a host that asks both and requires \
+         both would refuse the plugin it just opened"
+    );
+}
+
+/// No geometry call is made on a floating window.
+///
+/// `set_scale`, `set_parent`, `can_resize`, `adjust_size` and `set_size` are all
+/// marked `[main-thread & !floating]` in `ext/gui.h`. A host that calls them
+/// anyway is misbehaving against a window it does not own, and plugins with a
+/// validation layer print exactly that.
+///
+/// `get_size` is legal while floating but is not asked either — see
+/// `open_floating_editor`'s doc for why reporting a size the host cannot apply
+/// is worse than reporting none.
+#[test]
+fn a_floating_editor_is_asked_for_no_geometry() {
+    let probe = Probe::acquire(GuiMode::FloatingOnly);
+    let mut loaded = probe.load();
+
+    loaded
+        .open_floating_editor(Some(fake_parent()), TEST_TITLE)
+        .expect("floating open should succeed");
+
+    let observed = calls(&probe.capture());
+    for (id, name) in [
+        (GUI_CALL_SET_SCALE, "set_scale"),
+        (GUI_CALL_SET_PARENT, "set_parent"),
+        (GUI_CALL_GET_SIZE, "get_size"),
+        (GUI_CALL_CAN_RESIZE, "can_resize"),
+        (GUI_CALL_ADJUST_SIZE, "adjust_size"),
+        (GUI_CALL_SET_SIZE, "set_size"),
+    ] {
+        assert!(
+            !observed.contains(&id),
+            "{name} must not be called on a floating window — the header marks \
+             it !floating, or the answer describes a window the host cannot lay \
+             out"
+        );
+    }
+}
+
+/// The suggested title reaches the plugin verbatim.
+///
+/// Asserted on content, not on the call having happened: a host that called
+/// `suggest_title(NULL)` or sent an empty string would satisfy a call-order
+/// check while telling the plugin nothing.
+#[test]
+fn the_host_suggests_a_window_title() {
+    let probe = Probe::acquire(GuiMode::FloatingOnly);
+    let mut loaded = probe.load();
+
+    loaded
+        .open_floating_editor(Some(fake_parent()), TEST_TITLE)
+        .expect("floating open should succeed");
+
+    let cap = probe.capture();
+    assert_eq!(
+        suggested_title(&cap),
+        TEST_TITLE.to_str().unwrap(),
+        "the plugin must receive the title the host passed, not a truncation \
+         or an empty string"
+    );
+}
+
+/// A `None` transient skips the hint rather than passing null through.
+///
+/// "Stay above nothing" and "no opinion about stacking" are different requests,
+/// and only the second is what a host with no window to parent to means.
+#[test]
+fn no_transient_parent_skips_the_hint() {
+    let probe = Probe::acquire(GuiMode::FloatingOnly);
+    let mut loaded = probe.load();
+
+    loaded
+        .open_floating_editor(None, TEST_TITLE)
+        .expect("floating open should succeed without a transient parent");
+
+    let cap = probe.capture();
+    assert!(
+        !calls(&cap).contains(&GUI_CALL_SET_TRANSIENT),
+        "with no parent window there is nothing to stay above, so the hint is \
+         skipped, not sent as null"
+    );
+    assert!(
+        !cap.set_transient_window_non_null,
+        "and the plugin saw no transient window at all"
+    );
+}
+
+/// A floating editor tears down through the same `close_editor`.
+///
+/// `hide` and `destroy` are the two GUI calls the header does not mark
+/// `!floating`, so one teardown serves both modes. Pinned because the
+/// alternative — a second close path — is the kind of duplication that leaks a
+/// window when only one of the two is called.
+#[test]
+fn close_editor_tears_down_a_floating_editor() {
+    let probe = Probe::acquire(GuiMode::FloatingOnly);
+    let mut loaded = probe.load();
+
+    loaded
+        .open_floating_editor(Some(fake_parent()), TEST_TITLE)
+        .expect("floating open should succeed");
+    loaded.close_editor();
+
+    let cap = probe.capture();
+    assert!(
+        cap.destroyed,
+        "close_editor must destroy the plugin's window"
+    );
+    assert_eq!(
+        cap.create_balance, 0,
+        "and leave nothing allocated behind it — a floating window the host \
+         forgot to destroy outlives the plugin's editor state"
+    );
+}
+
+/// A plugin with no `create` has no floating editor either.
+///
+/// The negative that keeps [`has_floating_editor`] honest: it must consult the
+/// vtable rather than answer from the extension pointer, which is the same
+/// mistake `has_editor` used to make in the other direction.
+#[test]
+fn a_plugin_without_create_has_no_floating_editor() {
+    let probe = Probe::acquire(GuiMode::NoCreate);
+    let loaded = probe.load();
+
+    assert!(
+        !loaded.has_floating_editor(),
+        "a plugin with no `create` fn cannot present any window, floating \
+         included — the gui pointer being non-null says nothing about that"
+    );
+}
+
+/// `get_preferred_api` is reported, and `Some(false)` is distinct from `None`.
+///
+/// Two probes rather than one, because the interesting property is that the
+/// answer *tracks the plugin*. A `prefers_floating` hardcoded either way passes
+/// half of this.
+#[test]
+fn a_plugin_states_its_preferred_mode() {
+    {
+        let probe = Probe::acquire(GuiMode::FloatingOnly);
+        let loaded = probe.load();
+        assert_eq!(
+            loaded.prefers_floating(),
+            Some(true),
+            "a floating-only probe prefers floating"
+        );
+    }
+
+    let probe = Probe::acquire(GuiMode::Embeddable);
+    let loaded = probe.load();
+    assert_eq!(
+        loaded.prefers_floating(),
+        Some(false),
+        "an embeddable probe prefers embedded — `Some(false)` and `None` must \
+         not collapse, or a host cannot tell a stated preference from silence"
     );
 }

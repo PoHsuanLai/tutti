@@ -110,6 +110,28 @@ bitflags! {
         /// code, then don't implement this extension"*) and for an AU that
         /// rejects the property write.
         const RENDER_MODE = 1 << 12;
+
+        // --- Editor hosting mode (a property of the window, not an action) ---
+        /// The plugin's editor is a **floating** window the plugin creates and
+        /// owns, rather than one embedded into a host-supplied parent.
+        ///
+        /// Paired with [`Features::EDITOR`], not a replacement for it: `EDITOR`
+        /// answers *whether there is a UI*, this answers *who owns its window*.
+        /// A host reads both — the first to decide whether to offer an editor at
+        /// all, the second to decide whether to create a window for it.
+        ///
+        /// Clear for every embeddable plugin, which is nearly all of them, and
+        /// for every format but CLAP. VST3, VST2 and AU embed unconditionally;
+        /// CLAP is the one format where a plugin may support floating only
+        /// (`ext/gui.h` — and the only mode available where embedding is not,
+        /// which is why the concept exists at all).
+        ///
+        /// Read **before** the editor opens: the host has to know which kind of
+        /// window to prepare, and a post-open capability could not answer in
+        /// time. That is why this is a load-time `Features` bit and not a field
+        /// on [`EditorCapabilities`](crate::EditorCapabilities), which is read
+        /// after `open_editor` returns.
+        const EDITOR_FLOATING = 1 << 13;
     }
 }
 
@@ -222,7 +244,14 @@ pub mod probed {
     /// `RENDER_MODE` is answered unconditionally: `processMode` is a field on
     /// the `ProcessSetup` every VST3 plugin is configured with, so there is no
     /// per-plugin query that could decline.
-    pub const VST3: Features = Features::all().difference(Features::AUTOMATION_STATE);
+    ///
+    /// `EDITOR_FLOATING` is **unprobed**, not declined. VST3 embeds
+    /// unconditionally — `IPlugView::attached` takes a parent — so there is no
+    /// floating question to ask, and a clear-but-probed bit would spell "we
+    /// asked and it said no" for a query that does not exist.
+    pub const VST3: Features = Features::all()
+        .difference(Features::AUTOMATION_STATE)
+        .difference(Features::EDITOR_FLOATING);
 
     /// CLAP probes everything except sequencer context (no chord/scale events in
     /// the spec), `AUTOMATION_STATE`, and `PRESET_LIST`.
@@ -235,6 +264,10 @@ pub mod probed {
     /// `RENDER_MODE` *is* probed, and is the one bit here a plugin can decline
     /// by omission: `clap.render` is optional by design, so a plugin that does
     /// not implement it answers `Some(false)` rather than silence.
+    ///
+    /// `EDITOR_FLOATING` is probed here and nowhere else: CLAP is the only
+    /// format whose plugins choose, so it is the only one where a clear bit
+    /// carries information rather than the absence of a question.
     pub const CLAP: Features = Features::all()
         .difference(Features::SEQUENCER_CONTEXT)
         .difference(Features::AUTOMATION_STATE)

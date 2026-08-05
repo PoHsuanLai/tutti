@@ -6,10 +6,9 @@ use crate::host::ipc_client::audio::{PluginInvalidation, PluginRefresh};
 use crate::host::node::{InvalidateSink, ParameterChangeSink, RefreshSink};
 use crate::protocol::AutomationMode;
 use crate::protocol::{
-    ChannelTopology, LayoutSupport, LoadedPlugin, ParamAddress, ParameterInfo, PluginDescriptor,
-    Preset, PresetId, PresetSupport,
+    ChannelTopology, LayoutSupport, LoadedPlugin, PluginDescriptor, PresetSupport,
 };
-use crate::util::window::{EditorCapabilities, EditorSize};
+use crate::util::window::EditorSize;
 use raw_window_handle::HasWindowHandle;
 use std::sync::Arc;
 use tutti_midi_runtime::MidiSender;
@@ -220,7 +219,10 @@ impl PluginHandle {
     /// a present capability, and from "this format cannot enumerate", which is
     /// `Features::PRESET_LIST` on [`loaded`](Self::loaded). Three different
     /// answers, and a UI showing an empty browser wants to tell them apart.
-    pub fn presets_capability(&self) -> Option<&dyn HostPresets> {
+    ///
+    /// Ask [`preset_support`](Self::preset_support) what the surface can *do*
+    /// before rendering one; this is the route to doing it.
+    pub fn presets(&self) -> Option<&dyn HostPresets> {
         self.presets.as_deref()
     }
 
@@ -238,10 +240,15 @@ impl PluginHandle {
     /// }
     /// ```
     ///
-    /// Derived from the capability report rather than from `presets()`, because
-    /// an empty list is ambiguous on its own: a plugin that declined and one
-    /// this host never asked both return `Some(vec![])`, and only the first
+    /// Derived from the capability report rather than from the preset list,
+    /// because an empty list is ambiguous on its own: a plugin that declined
+    /// and one this host never asked both list nothing, and only the first
     /// should hide the browser.
+    ///
+    /// Stays on the handle rather than moving to [`HostPresets`] because it
+    /// reads [`loaded`](Self::loaded) — the capability object cannot see the
+    /// feature bits, and "no route at all" is a fact about the handle rather
+    /// than an answer any capability could give.
     pub fn preset_support(&self) -> PresetSupport {
         if self.presets.is_none() {
             // No route at all: the plugin was never asked anything, whatever
@@ -250,39 +257,6 @@ impl PluginHandle {
         }
         let report = crate::protocol::FeatureReport::new(self.loaded.probed, self.loaded.features);
         PresetSupport::from_report(&report)
-    }
-
-    /// Every preset the plugin advertises.
-    ///
-    /// `None` when this handle has no preset route; `Some(vec![])` when it has
-    /// one and the plugin listed nothing — which for CLAP is the normal state,
-    /// since its discovery extension is not bound. Read
-    /// `Features::PRESET_LIST` to tell "listed nothing" from "cannot be asked".
-    pub fn presets(&self) -> Option<Vec<Preset>> {
-        self.presets.as_deref().map(|p| p.presets())
-    }
-
-    /// Ask the plugin to load one, by an id [`presets`](Self::presets) produced.
-    ///
-    /// `false` when this handle carries no preset route *or* the plugin
-    /// declined. Those collapse deliberately — both mean the preset did not
-    /// load, and a caller must leave its selection where it was either way.
-    /// One that needs to tell them apart reads `Features::PRESET_LOAD`.
-    ///
-    /// Never construct a [`PresetId`] to pass here. It is opaque, and three of
-    /// the four formats number presets in a space that is not a position in the
-    /// list — an invented id loads the wrong preset rather than failing.
-    #[must_use = "a false return means the preset was not loaded"]
-    pub fn load_preset(&self, id: &PresetId) -> bool {
-        self.presets.as_deref().is_some_and(|p| p.load_preset(id))
-    }
-
-    /// Which preset the plugin considers current, when it will say.
-    ///
-    /// `None` covers all three of "no preset route", "the format has no query"
-    /// (VST3, CLAP) and "the plugin declined" — never "the first one".
-    pub fn current_preset(&self) -> Option<PresetId> {
-        self.presets.as_deref().and_then(|p| p.current_preset())
     }
 
     /// Tell the plugin whether it is rendering under realtime pressure.
@@ -295,7 +269,9 @@ impl PluginHandle {
     /// declined. Those collapse deliberately — both mean the render is
     /// unchanged — and a caller that needs to tell them apart reads
     /// [`Features::RENDER_MODE`](crate::protocol::Features) on
-    /// [`loaded`](Self::loaded).
+    /// [`loaded`](Self::loaded). Kept rather than left to
+    /// [`render_mode`](Self::render_mode) precisely because that collapse is
+    /// the useful answer: every caller so far wants the one bool.
     #[must_use = "a false return means the render mode was not applied"]
     pub fn set_render_mode(&self, mode: crate::protocol::RenderMode) -> bool {
         self.render_mode
@@ -306,6 +282,10 @@ impl PluginHandle {
     // ---- Meta -------------------------------------------------------------
 
     /// `true` if this plugin exposes an embeddable editor (post-load truth).
+    ///
+    /// A bool rather than `editor().is_some()` at the call site because the
+    /// question is asked while deciding whether to *offer* a window — often per
+    /// frame — and it answers without materialising the trait object.
     pub fn has_editor(&self) -> bool {
         self.editor.is_some()
     }
@@ -406,6 +386,11 @@ impl PluginHandle {
         editor.open_floating_editor()
     }
 
+    /// Close the editor, if one is open.
+    ///
+    /// A no-op without an editor route, so a caller tearing a window down need
+    /// not first ask whether there was one. Returns `&Self` for chaining with
+    /// the other editor calls.
     pub fn close_editor(&self) -> &Self {
         if let Some(editor) = self.editor.as_deref() {
             editor.close_editor();
@@ -414,6 +399,10 @@ impl PluginHandle {
     }
 
     /// Call periodically (~30Hz) while editor is open.
+    ///
+    /// Like [`close_editor`](Self::close_editor), a no-op without an editor:
+    /// this is driven from a per-frame system that should not branch on a
+    /// capability that cannot change after load.
     pub fn editor_idle(&self) -> &Self {
         if let Some(editor) = self.editor.as_deref() {
             editor.editor_idle();
@@ -421,15 +410,11 @@ impl PluginHandle {
         self
     }
 
-    /// Call after `open_editor`.
-    pub fn editor_capabilities(&self) -> EditorCapabilities {
-        self.editor
-            .as_deref()
-            .map(|e| e.editor_capabilities())
-            .unwrap_or_default()
-    }
-
     /// Returns the snapped/clamped size the plugin applied.
+    ///
+    /// Converts "no editor" into [`EditorError::GuiNotSupported`] rather than
+    /// making the caller unwrap an `Option` first, matching
+    /// [`open_editor`](Self::open_editor).
     pub fn set_editor_size(&self, requested: EditorSize) -> Result<EditorSize, EditorError> {
         match self.editor.as_deref() {
             Some(editor) => editor.set_editor_size(requested),
@@ -437,40 +422,6 @@ impl PluginHandle {
                 format: self.descriptor.class.format_name().to_string(),
             }),
         }
-    }
-
-    pub fn poll_editor_resize_request(&self) -> Option<EditorSize> {
-        self.editor.as_deref()?.poll_editor_resize_request()
-    }
-
-    // ---- State convenience -------------------------------------------------
-
-    pub fn save_state(&self) -> Option<Vec<u8>> {
-        self.state.save_state()
-    }
-
-    pub fn load_state(&self, data: &[u8]) -> &Self {
-        self.state.load_state(data);
-        self
-    }
-
-    // ---- Param convenience -------------------------------------------------
-
-    pub fn parameters(&self) -> Option<Vec<ParameterInfo>> {
-        self.params.parameter_descriptors()
-    }
-
-    /// `param_id` comes from [`ParameterInfo::id`] on this plugin's own
-    /// [`parameters`](Self::parameters) list — see [`ParamAddress`] for why a
-    /// bare number cannot stand in for it.
-    pub fn parameter(&self, param_id: ParamAddress) -> Option<f32> {
-        self.params.parameter_value(param_id)
-    }
-
-    /// Main-thread, fire-and-forget.
-    pub fn set_parameter(&self, param_id: ParamAddress, value: f32) -> &Self {
-        self.params.set_parameter_value(param_id, value);
-        self
     }
 
     // ---- Automation-state convenience --------------------------------------
@@ -557,6 +508,7 @@ impl PluginHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::protocol::{ParamAddress, ParameterInfo, Preset, PresetId};
 
     /// A backend that reaches presets, standing in for a format layer that is
     /// not wired yet. Doubles as proof the capability is implementable from
@@ -679,41 +631,47 @@ mod tests {
             accepts: false,
         })));
         assert_eq!(
-            empty.presets(),
+            empty.presets().map(|p| p.presets()),
             Some(Vec::new()),
             "a capability that listed nothing must report an empty list, not None"
         );
     }
 
-    /// A refused load and an absent route both report `false`.
+    /// Only an accepted load reports `true`, and an absent route is not a
+    /// refusal.
     ///
-    /// Deliberate: both mean the preset did not load, and a caller must leave
-    /// its selection where it was either way. The test pins that a *successful*
-    /// load is the only `true`, so the collapse cannot hide one.
+    /// Reaching presets through the capability keeps three answers apart that
+    /// the old `handle.load_preset(..) -> bool` collapsed into two: `None` (no
+    /// preset route at all), `Some(false)` (a route that refused) and
+    /// `Some(true)`. A caller leaves its selection alone for both of the first
+    /// two, but only the second is the plugin saying no — and a UI that wants
+    /// to report "this plugin cannot load presets" needs to tell them apart.
     #[test]
     fn only_an_accepted_load_reports_true() {
         let id = PresetId::Number(0);
 
         assert!(
-            !handle_with(None).load_preset(&id),
-            "no route is not a load"
+            handle_with(None).presets().is_none(),
+            "no route must stay distinct from a refusal, not collapse into one"
         );
 
         let refusing = handle_with(Some(Arc::new(FakePresets {
             listed: Vec::new(),
             accepts: false,
         })));
-        assert!(
-            !refusing.load_preset(&id),
-            "a refusal must not report success"
+        assert_eq!(
+            refusing.presets().map(|p| p.load_preset(&id)),
+            Some(false),
+            "a refusal must report a present route that said no"
         );
 
         let accepting = handle_with(Some(Arc::new(FakePresets {
             listed: Vec::new(),
             accepts: true,
         })));
-        assert!(
-            accepting.load_preset(&id),
+        assert_eq!(
+            accepting.presets().map(|p| p.load_preset(&id)),
+            Some(true),
             "an accepted load must report true"
         );
     }
@@ -735,7 +693,7 @@ mod tests {
             accepts: true,
         })));
         assert_eq!(
-            handle.presets(),
+            handle.presets().map(|p| p.presets()),
             Some(listed),
             "the handle must not reorder or renumber what the plugin listed"
         );

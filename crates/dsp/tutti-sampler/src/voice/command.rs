@@ -316,6 +316,19 @@ impl VoiceNodeHandle {
     /// fallible for the reason [`VoicePoolHandle::send`] gives: a full queue is
     /// reported rather than logged and forgotten, so a caller can back off
     /// instead of silently dropping a user's edit.
+    ///
+    /// **A node's drain understands exactly one variant: [`VoiceCommand::UpdatePlacement`].**
+    /// `VoiceNode::drain_commands` is an `if let` with no other arm, so every
+    /// other variant — `UpdateSpeed`, `UpdateStretch`, `UpdateGain`, `AddVoice` —
+    /// is accepted here, queued, drained and **dropped without a word**. `Ok(())`
+    /// means "queued", not "will take effect".
+    ///
+    /// That silence is deliberate (the wire format is shared with the pool, and
+    /// panicking in an audio callback is worse), but it makes this the wrong door
+    /// for anything but placement. A single-voice node's gain rides
+    /// `AudioUnit::set`; its speed and pitch are fixed at construction, so a host
+    /// changing either respawns the voice. Only [`VoicePool`](crate::VoicePool)
+    /// has the live-update path.
     pub fn send(&self, command: VoiceCommand) -> Result<(), SendError> {
         // The variants carry the lost command, deliberately — see `SendError`.
         // Dropping it here would leave a caller able to see *that* an edit

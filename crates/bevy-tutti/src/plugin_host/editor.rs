@@ -355,7 +355,15 @@ pub fn plugin_editor_attach_system(
             Ok(size) => {
                 let w = size.width;
                 let h = size.height;
-                let capabilities = emitter.handle.editor_capabilities();
+                // `open_editor` just returned `Ok`, so the editor capability is
+                // present — but it is an `Option` on the handle, and defaulting
+                // a missing one would report a non-resizable editor for a plugin
+                // that is resizable. Skipping instead keeps the window
+                // unconfigured rather than misconfigured.
+                let Some(capabilities) = emitter.handle.editor().map(|e| e.editor_capabilities())
+                else {
+                    continue;
+                };
                 bevy_log::info!(
                     "Plugin '{}' editor opened ({w}x{h}, resizable={})",
                     emitter.handle.name(),
@@ -523,7 +531,14 @@ pub fn plugin_editor_resize_request_system(
     mut windows: Query<&mut bevy_window::Window>,
 ) {
     for (emitter, mut editor) in editors.iter_mut() {
-        let Some(req) = emitter.handle.poll_editor_resize_request() else {
+        // No editor capability means no editor to resize — the same "nothing to
+        // do" as a present editor with no pending request, so both collapse
+        // into one `None`.
+        let Some(req) = emitter
+            .handle
+            .editor()
+            .and_then(|e| e.poll_editor_resize_request())
+        else {
             continue;
         };
         if (req.width, req.height) == editor.last_applied {

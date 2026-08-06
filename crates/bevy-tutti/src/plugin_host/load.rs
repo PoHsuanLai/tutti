@@ -248,7 +248,7 @@ pub fn plugin_load_promote(
                 // consumes the `Plugin`, and the handle has to outlive it.
                 let (unit, handle) = plugin.into_parts();
                 if let Some(blob) = &request.state {
-                    handle.load_state(blob);
+                    handle.state().load_state(blob);
                 }
                 let name = handle.name().to_string();
                 // `push`, not `add`: the unit is already boxed, and `add` boxes

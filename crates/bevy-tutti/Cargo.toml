@@ -52,6 +52,9 @@ tutti-io = { path = "../tutti/crates/core/tutti-io", optional = true }
 tutti-synth = { path = "../tutti/crates/dsp/tutti-synth", optional = true, default-features = false }
 tutti-export = { path = "../tutti/crates/core/tutti-export", optional = true }
 tutti-midi-io = { path = "../tutti/crates/midi/tutti-midi-io", optional = true }
+# SMF / Clip File codecs. Separate from `tutti-midi-io` because reading a `.mid`
+# needs no OS MIDI port.
+tutti-midi-file = { path = "../tutti/crates/midi/tutti-midi-file", optional = true }
 tutti-midi-runtime = { path = "../tutti/crates/midi/tutti-midi-runtime", optional = true, default-features = false }
 # `json` is explicit: this crate's `PluginsRes`/`PluginScanConfig` default path
 # builds a `Plugins` over the file-backed catalog (`with_json_catalog` / `empty`),
@@ -134,7 +137,7 @@ ogg = ["tutti-core/ogg", "tutti-sampler?/ogg"]
 # playback, sequencer, MPE, the clock-master *generation*, built-in synth MIDI —
 # no OS I/O, no `midir`. `midi-hardware` adds the OS layer (device connect/poll,
 # MidiIo send, CoreMIDI virtual ports) on top. `plugin` also enables `midi`.
-midi = ["dep:tutti-midi-io", "dep:tutti-midi-runtime", "tutti-core/midi", "tutti-synth?/midi", "tutti-cpal/midi"]
+midi = ["dep:tutti-midi-io", "dep:tutti-midi-file", "dep:tutti-midi-runtime", "tutti-core/midi", "tutti-synth?/midi", "tutti-cpal/midi"]
 midi-hardware = ["midi", "tutti-midi-io/midi-hardware"]
 
 # Synth & sampling. bevy-tutti registers these with the AssetServer, so it

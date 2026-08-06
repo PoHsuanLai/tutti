@@ -1,4 +1,4 @@
-use crate::error::{Error, Result};
+use crate::{Error, Result};
 // NOTE: `midly::MidiMessage` is the *MIDI 1.0 7-bit* SMF message — a different
 // type from `tutti_midi_io::MidiMessage` (the decoded MIDI-2 view). It is
 // imported under the alias `SmfMessage` so this SMF-1.0 codec never shadows the

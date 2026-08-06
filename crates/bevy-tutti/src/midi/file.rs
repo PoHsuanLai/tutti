@@ -125,8 +125,11 @@ pub enum MidiFileLoaderError {
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
     /// An SMF that did not parse.
+    ///
+    /// The *file* error, not the I/O crate's: this is a decode failure, and
+    /// nothing here opens a MIDI port.
     #[error(transparent)]
-    Smf(#[from] tutti_midi_io::Error),
+    Smf(#[from] tutti_midi_file::Error),
     /// A Clip File that did not parse. Kept distinct from [`Self::Smf`] because
     /// the two decoders have unrelated error vocabularies, and flattening them
     /// would lose which container was actually being read.

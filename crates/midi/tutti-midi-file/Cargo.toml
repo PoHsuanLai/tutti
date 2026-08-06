@@ -1,0 +1,18 @@
+[package]
+name = "tutti-midi-file"
+version = "0.0.1"
+edition = "2021"
+description = "MIDI file codecs — Standard MIDI File (SMF) and MIDI 2.0 Clip File"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/PoHsuanLai/Tutti"
+
+[dependencies]
+thiserror = "2"
+tracing = "0.1"
+
+tutti-midi-types = { path = "../tutti-midi-types" }
+tutti-core = { path = "../../core/tutti-core", default-features = false, features = ["midi"] }
+
+# midly's workspace base is no_std; re-add the `std` + `parallel` features this
+# crate's SMF I/O relies on (midly's own default).
+midly = { workspace = true, features = ["std", "parallel"] }

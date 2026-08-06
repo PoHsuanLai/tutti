@@ -20,6 +20,7 @@ members = [
     "crates/core/tutti-export",
     "crates/core/tutti-io",
     "crates/midi/tutti-midi-io",
+    "crates/midi/tutti-midi-file",
     "crates/midi/tutti-midi-types",
     "crates/midi/tutti-midi-runtime",
     "crates/dsp/tutti-sampler",

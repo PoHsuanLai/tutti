@@ -20,6 +20,9 @@ tracing = "0.1"
 
 # Core types
 tutti-midi-types = { path = "../tutti-midi-types" }
+# The SMF / Clip File codecs. Re-exported for the `tutti_midi_io::smf` spelling;
+# a consumer that only wants files should depend on it directly instead.
+tutti-midi-file = { path = "../tutti-midi-file" }
 tutti-core = { path = "../../core/tutti-core", default-features = false, features = ["midi"] }
 # MIDI fan-out runtime (MidiBus, MpeProcessor, PerNoteExpression, MidiEventSlot).
 # Acyclic: tutti-midi-runtime does NOT depend on tutti-midi-io.
@@ -30,10 +33,6 @@ crossbeam-channel = "0.5"
 arc-swap = "1.7"
 ringbuf = "0.4"
 
-# `midly` (SMF file I/O) is a hard dep — SMF read/write is engine-side, not OS
-# hardware. midly's workspace base is no_std; re-add the `std` + `parallel`
-# features this crate's SMF I/O relies on (midly's default).
-midly = { workspace = true, features = ["std", "parallel"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 coremidi = { workspace = true, optional = true }

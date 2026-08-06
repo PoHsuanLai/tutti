@@ -82,20 +82,16 @@ pub use crossbeam_channel;
 
 // --- Standard MIDI File codec ---
 
-/// MIDI 2.0 Clip File (M2-116) file I/O — read/write a clip by path, and
-/// identify which MIDI format a file holds ([`MidiFileKind`]) by magic rather
-/// than by extension. The byte-level codec lives in [`tutti_midi_types`].
-pub mod clip;
-pub use clip::{read_clip_file_from_path, write_clip_file_to_path, MidiFileKind};
-
-/// Standard MIDI File (SMF) read/write — parse a `.mid` into beat-positioned
-/// events ([`ParsedMidiFile`]) or per-track paired notes ([`smf::tracks`]), and
-/// encode events back out ([`encode_midi_file`]).
-pub mod smf;
-pub use smf::{
+// The file codecs moved to `tutti-midi-file` — reading a `.mid` and talking to
+// a MIDI port are different jobs, and pairing them behind one feature flag made
+// a consumer that wanted only the former link CoreMIDI. Re-exported here so the
+// `tutti_midi_io::smf` / `::clip` spellings keep working.
+pub use tutti_midi_file::{clip, smf};
+pub use tutti_midi_file::{
     encode_midi_file, write_midi_file, MidiWriteOptions, ParsedMidiFile, SmfMessage, SmfNote,
     SmfTimedEvent, SmfTrack,
 };
+pub use tutti_midi_file::{read_clip_file_from_path, write_clip_file_to_path, MidiFileKind};
 
 /// The umbrella MIDI prelude, for `use tutti_midi_io::prelude::*;` — everything a
 /// typical app touches, from one import.

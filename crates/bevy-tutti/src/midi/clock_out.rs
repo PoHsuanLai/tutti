@@ -24,9 +24,7 @@ use bevy_ecs::prelude::*;
 
 use tutti_midi_runtime::{ClockMaster, MidiReceiver};
 
-use super::hardware_out::{drain_receiver_through, MidiOutRouter};
-#[cfg(all(target_os = "macos", feature = "midi-hardware"))]
-use super::hardware_out::{JrStamperRes, UmpOutRes};
+use super::hardware_out::{drain_receiver_through, JrStamperRes, MidiOutRouter, UmpOutRes};
 
 /// The clock master + its output-mailbox receiver, claimed from the engine
 /// handoff.

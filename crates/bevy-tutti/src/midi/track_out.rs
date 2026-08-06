@@ -119,26 +119,16 @@ pub fn midi_out_send_system(out: Res<MidiOutRes>, mut requests: MessageReader<Se
 pub fn pump_midi_out_system(
     out: Option<Res<MidiOutRes>>,
     drops: Res<super::hardware_out::MidiOutDrops>,
-    #[cfg(feature = "midi-hardware")] midi_io: Option<Res<super::device::MidiIoRes>>,
-    #[cfg(all(target_os = "macos", feature = "midi-hardware"))] ump_out: Option<
-        ResMut<super::hardware_out::UmpOutRes>,
-    >,
-    #[cfg(all(target_os = "macos", feature = "midi-hardware"))] jr: Option<
-        Res<super::hardware_out::JrStamperRes>,
-    >,
+    ump_out: Option<ResMut<super::hardware_out::UmpOutRes>>,
+    jr: Option<Res<super::hardware_out::JrStamperRes>>,
 ) {
     let Some(out) = out else {
         return;
     };
 
     let mut router = MidiOutRouter {
-        #[cfg(feature = "midi-hardware")]
-        midi_io: midi_io.as_deref(),
-        #[cfg(all(target_os = "macos", feature = "midi-hardware"))]
-        jr_out: super::hardware_out::jr_out_active(ump_out, jr),
+        out: super::hardware_out::out_active(ump_out, jr),
         drops: Some(&drops),
-        #[cfg(not(feature = "midi-hardware"))]
-        _marker: std::marker::PhantomData,
     };
 
     drain_receiver_through(&out.receiver, &mut router);

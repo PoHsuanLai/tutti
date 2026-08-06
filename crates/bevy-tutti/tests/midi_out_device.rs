@@ -19,9 +19,7 @@ use tutti_midi_types::ump::MidiEvent;
 /// an output device.
 fn router_with_no_output(drops: &MidiOutDrops) -> MidiOutRouter<'_> {
     MidiOutRouter {
-        midi_io: None,
-        #[cfg(target_os = "macos")]
-        jr_out: None,
+        out: None,
         drops: Some(drops),
     }
 }
@@ -79,9 +77,7 @@ fn an_empty_batch_is_not_a_drop() {
 #[test]
 fn dropping_without_a_counter_is_allowed() {
     let mut router = MidiOutRouter {
-        midi_io: None,
-        #[cfg(target_os = "macos")]
-        jr_out: None,
+        out: None,
         drops: None,
     };
     router.route(&[MidiEvent::note_on(

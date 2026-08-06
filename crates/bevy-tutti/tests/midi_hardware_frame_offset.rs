@@ -53,9 +53,12 @@ fn offset_at(sample_rate: Option<f64>) -> u32 {
         "the fifo has room for one event"
     );
 
-    let events = inputs.cycle_start_read_all_inputs(NFRAMES);
-    assert_eq!(events.len(), 1, "exactly the event we pushed");
-    events[0].1.frame_offset
+    // The drain hands each event to a visitor rather than returning a slice, so
+    // nothing borrows into the audio-thread-only scratch.
+    let mut seen: Vec<MidiEvent> = Vec::new();
+    inputs.cycle_start_read_all_inputs(NFRAMES, |_port, event| seen.push(event));
+    assert_eq!(seen.len(), 1, "exactly the event we pushed");
+    seen[0].frame_offset
 }
 
 /// The rate the device reports is the rate the offset is computed against.

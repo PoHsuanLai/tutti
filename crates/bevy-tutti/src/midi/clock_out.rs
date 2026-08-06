@@ -62,21 +62,15 @@ pub fn pump_clock_out_system(
     // turns that into a panicked schedule rather than a quiet no-op.
     clock_out: Option<Res<ClockMasterRes>>,
     drops: Res<super::hardware_out::MidiOutDrops>,
-    #[cfg(feature = "midi-hardware")] midi_io: Option<Res<super::device::MidiIoRes>>,
-    #[cfg(all(target_os = "macos", feature = "midi-hardware"))] ump_out: Option<ResMut<UmpOutRes>>,
-    #[cfg(all(target_os = "macos", feature = "midi-hardware"))] jr: Option<Res<JrStamperRes>>,
+    ump_out: Option<ResMut<UmpOutRes>>,
+    jr: Option<Res<JrStamperRes>>,
 ) {
     let Some(clock_out) = clock_out else {
         return;
     };
     let mut router = MidiOutRouter {
-        #[cfg(feature = "midi-hardware")]
-        midi_io: midi_io.as_deref(),
-        #[cfg(all(target_os = "macos", feature = "midi-hardware"))]
-        jr_out: super::hardware_out::jr_out_active(ump_out, jr),
+        out: super::hardware_out::out_active(ump_out, jr),
         drops: Some(&drops),
-        #[cfg(not(feature = "midi-hardware"))]
-        _marker: std::marker::PhantomData,
     };
 
     drain_receiver_through(&clock_out.receiver, &mut router);

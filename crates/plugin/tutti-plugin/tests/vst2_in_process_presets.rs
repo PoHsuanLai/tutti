@@ -79,18 +79,19 @@ fn a_listed_preset_loads_the_program_it_names() {
     let _guard = lock_probe();
     let handle = load_handle(&[("TUTTI_VST2_PROBE_PROGRAMS", "3")]);
 
-    let presets = handle.presets().expect("the VST2 path carries presets");
+    let cap = handle.presets().expect("the VST2 path carries presets");
+    let presets = cap.presets();
     assert_eq!(presets.len(), 3, "the probe declared 3 programs");
 
     // Deliberately not `PresetId::Number(2)`: the id is opaque, and taking it
     // from the listing is what a caller does.
     let wanted = presets[2].id.clone();
     assert!(
-        handle.load_preset(&wanted),
+        cap.load_preset(&wanted),
         "loading a preset the plugin listed must be accepted"
     );
     assert_eq!(
-        handle.current_preset(),
+        cap.current_preset(),
         Some(wanted),
         "the plugin must report the program the handle just loaded"
     );
@@ -107,22 +108,26 @@ fn an_id_from_another_format_is_refused() {
     let _guard = lock_probe();
     let handle = load_handle(&[("TUTTI_VST2_PROBE_PROGRAMS", "3")]);
 
-    let before = handle.current_preset();
+    // Bound once rather than re-fetched per call: `presets()` returning `None`
+    // would make every `is_some_and` below read as a refusal, so a lost preset
+    // route would pass this test rather than fail it.
+    let cap = handle.presets().expect("the VST2 path carries presets");
+    let before = cap.current_preset();
 
     assert!(
-        !handle.load_preset(&PresetId::Program {
+        !cap.load_preset(&PresetId::Program {
             list_id: 0,
             index: 1
         }),
         "a VST3 program id addresses no VST2 program"
     );
     assert!(
-        !handle.load_preset(&PresetId::Location(PathBuf::from("/x.clap-preset"))),
+        !cap.load_preset(&PresetId::Location(PathBuf::from("/x.clap-preset"))),
         "a CLAP preset path addresses no VST2 program"
     );
 
     assert_eq!(
-        handle.current_preset(),
+        cap.current_preset(),
         before,
         "a refused load must not move the program"
     );
@@ -152,10 +157,17 @@ fn a_plugin_with_no_programs_declines_rather_than_going_silent() {
         "and declines the load, from the same number"
     );
 
+    // The route existing and the listing being empty are two separate facts,
+    // and the distinction is the whole point: `None` would mean this host
+    // cannot ask, which a browser must not confuse with a plugin that was asked
+    // and has nothing. The capability handle splits them, so assert both.
+    let cap = handle
+        .presets()
+        .expect("the route exists even for a plugin with no programs");
     assert_eq!(
-        handle.presets(),
-        Some(Vec::new()),
-        "the route exists and listed nothing — not None, which would mean no route"
+        cap.presets(),
+        Vec::new(),
+        "the plugin was asked and listed nothing"
     );
 }
 

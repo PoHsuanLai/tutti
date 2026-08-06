@@ -180,6 +180,25 @@ impl Session {
                     .and_then(|p| p.instance_mut().get_current_preset());
                 Ok(BridgeMessage::CurrentPreset { id }.into())
             }
+            M::GetParameterText { param_id, value } => {
+                let text = self
+                    .plugin
+                    .as_ref()
+                    .and_then(|p| p.instance().parameter_text(param_id, value));
+                Ok(BridgeMessage::ParameterText { text }.into())
+            }
+            M::GetParameterValueFromText { param_id, text } => {
+                // Reads as a query, but is not one on every format: VST2's
+                // `effString2Parameter` writes the parsed value into the plugin
+                // as it reads it. The trait takes `&self` because the plugin
+                // handle is interior-mutable at the FFI edge, so this stays on
+                // the `as_ref` path with the other queries.
+                let value = self
+                    .plugin
+                    .as_ref()
+                    .and_then(|p| p.instance().parameter_value_from_text(param_id, &text));
+                Ok(BridgeMessage::ParameterValueFromText { value }.into())
+            }
             M::GetParameterInfo { param_id } => {
                 let info = self.plugin.as_ref().and_then(|p| {
                     p.instance()
@@ -387,17 +406,25 @@ impl Session {
         }
     }
 
+    /// Always answers, so the host's waiting caller is never left guessing.
+    ///
+    /// Previously this replied only on failure, and did so with a
+    /// fire-and-forget `BridgeMessage::Error` that no caller was waiting on —
+    /// while the host's dispatcher fabricated its own `true`. Now every path
+    /// produces a `StateLoaded`, including "no plugin loaded", which is a
+    /// refusal rather than a silence.
     fn handle_load_state(&mut self, data: &[u8]) -> Reaction {
         let Some(plugin) = self.plugin.as_mut() else {
-            return Reaction::None;
-        };
-        match plugin.instance_mut().set_state(data) {
-            Ok(()) => Reaction::None,
-            Err(e) => BridgeMessage::Error {
-                message: format!("Failed to load state: {e}"),
+            return BridgeMessage::StateLoaded {
+                error: Some("no plugin is loaded".to_string()),
             }
-            .into(),
-        }
+            .into();
+        };
+        let error = match plugin.instance_mut().set_state(data) {
+            Ok(()) => None,
+            Err(e) => Some(format!("Failed to load state: {e}")),
+        };
+        BridgeMessage::StateLoaded { error }.into()
     }
 }
 
@@ -529,14 +556,28 @@ mod tests {
     }
 
     #[test]
-    fn load_state_no_plugin() {
+    /// A `LoadState` with no plugin loaded answers, and answers with a refusal.
+    ///
+    /// It used to answer `Reaction::None` — silence. That was the subprocess
+    /// half of a bug whose host half was a literal `reply.send(true)`: between
+    /// them, a caller asking a plugin-less session to load state was told the
+    /// state had loaded. The host now *waits* for this frame, so a silence here
+    /// would hang it until the state timeout.
+    #[test]
+    fn load_state_no_plugin_refuses_rather_than_going_silent() {
         let mut s = Session::new();
-        let r = s
+        let reply = s
             .handle(HostMessage::LoadState {
                 data: vec![1, 2, 3],
             })
-            .unwrap();
-        assert_none(r);
+            .unwrap()
+            .into_reply();
+        match reply {
+            BridgeMessage::StateLoaded { error: Some(msg) } => {
+                assert!(msg.contains("no plugin"), "unhelpful message: {msg:?}");
+            }
+            other => panic!("expected a StateLoaded carrying a refusal, got {other:?}"),
+        }
     }
 
     #[test]
@@ -735,6 +776,21 @@ mod tests {
         assert_none(r);
     }
 
+    /// A `LoadState` that the plugin accepted.
+    ///
+    /// Replaces an `assert_none` here: a successful load now *answers*, with
+    /// `StateLoaded { error: None }`, so the old assertion of silence would
+    /// reject the success. Asserting the acceptance is strictly stronger than
+    /// asserting nothing came back — a refusal used to be indistinguishable
+    /// from a success at this layer.
+    #[cfg(feature = "clap")]
+    fn assert_state_loaded(r: Reaction) {
+        match r.into_reply() {
+            BridgeMessage::StateLoaded { error: None } => {}
+            other => panic!("expected an accepted StateLoaded, got {other:?}"),
+        }
+    }
+
     /// Pull a SaveState blob out of a session, asserting it's non-empty.
     #[cfg(feature = "clap")]
     fn save_state_bytes(s: &mut Session) -> Vec<u8> {
@@ -754,7 +810,7 @@ mod tests {
         let (mut s, _shm) = load_clap("save_load_state_clap", SampleFormat::Float32);
         let data = save_state_bytes(&mut s);
         let r = s.handle(HostMessage::LoadState { data }).unwrap();
-        assert_none(r);
+        assert_state_loaded(r);
     }
 
     /// Byte-exact round-trip: the bytes a plugin emits must survive the
@@ -768,7 +824,7 @@ mod tests {
         let (mut s, _shm) = load_clap("rt_state_clap", SampleFormat::Float32);
 
         let first = save_state_bytes(&mut s);
-        assert_none(
+        assert_state_loaded(
             s.handle(HostMessage::LoadState {
                 data: first.clone(),
             })

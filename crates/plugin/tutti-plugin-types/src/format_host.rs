@@ -133,6 +133,63 @@ pub trait PluginParams {
     /// above is no longer expressible at this seam.
     fn set_parameter(&mut self, id: ParamAddress, value: Normalized);
 
+    /// The plugin's own display string for `value` — `"800 Hz"`, `"Bandpass"`,
+    /// `"-inf dB"` — or `None` if it will not say.
+    ///
+    /// Every format implements a value→text call, and until this method existed
+    /// none of the four answers reached a caller: a UI reading
+    /// [`get_parameter`](Self::get_parameter) had a bare `0.5` and no way to
+    /// learn the plugin would have written `"800 Hz"`. Formatting the number
+    /// host-side cannot recover it — only the plugin knows its own taper, that
+    /// index `3` is `"Bandpass"`, or that its minimum reads `"-inf"` rather than
+    /// `"-120.0"`.
+    ///
+    /// `value` is normalized, per [`get_parameter`](Self::get_parameter); the
+    /// plain-native loaders (AU, CLAP) denormalize against the same range table
+    /// their [`set_parameter`](Self::set_parameter) uses, so the text describes
+    /// the value the caller named rather than one a domain mix-up produced.
+    ///
+    /// `None` means **this plugin did not answer** — not "the value has no
+    /// text". A caller renders the raw number instead. The two are worth
+    /// keeping apart: `Some("")` would be a plugin claiming the empty string is
+    /// the right label, and the default below is `None` so a format that cannot
+    /// ask is never mistaken for a plugin that declined.
+    ///
+    /// Defaulted rather than required so a loader opts in as its format's call
+    /// is bound, and an out-of-tree implementor keeps compiling.
+    fn parameter_text(&self, id: ParamAddress, value: Normalized) -> Option<String> {
+        let _ = (id, value);
+        None
+    }
+
+    /// Parse `text` back to a value using the plugin's own interpretation — the
+    /// inverse of [`parameter_text`](Self::parameter_text), and what lets a user
+    /// type `"800 Hz"` or `"Bandpass"` into a field rather than hunting for the
+    /// raw float.
+    ///
+    /// Asking the plugin rather than running a host-side `str::parse` is the
+    /// point: only the plugin knows that `"Bandpass"` is index `3`, or where on
+    /// its own range `"-6 dB"` falls.
+    ///
+    /// Returns [`Normalized`], matching [`parameter_text`](Self::parameter_text),
+    /// so the pair round-trips and the result can be handed straight to
+    /// [`set_parameter`](Self::set_parameter). AU and CLAP answer in plain units
+    /// and re-normalize at their own edge.
+    ///
+    /// `None` when the plugin cannot parse the string. A caller must then leave
+    /// the field where it was rather than substituting a fallback — a
+    /// mis-parsed `0.0` would be committed to the user's preset silently.
+    ///
+    /// **Not guaranteed side-effect-free.** VST 2.4's `effString2Parameter` is a
+    /// *setter* with no parse-only counterpart, so on that format asking applies
+    /// the value; the other three parse without writing. A caller that wants a
+    /// preview before committing cannot get one on every format, and one that
+    /// does not intend to write must not call this speculatively.
+    fn parameter_value_from_text(&self, id: ParamAddress, text: &str) -> Option<Normalized> {
+        let _ = (id, text);
+        None
+    }
+
     /// Push the host [`AutomationMode`](crate::AutomationMode) to the plugin.
     /// Fire-and-forget; the default no-op covers formats without an
     /// automation-state concept. A format that supports it (VST3's

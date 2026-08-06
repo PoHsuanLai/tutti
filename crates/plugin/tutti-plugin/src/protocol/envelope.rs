@@ -7,6 +7,7 @@ use super::midi::IpcMidiEventVec;
 use super::process::ProcessAudioData;
 use super::sample::SampleFormat;
 use super::shm::SlabLayout;
+use super::Normalized;
 use super::ParamAddress;
 use super::Samples;
 use super::{LoadedPlugin, ParameterInfo, PluginDescriptor, PluginTail, Preset, PresetId};
@@ -105,6 +106,23 @@ pub enum HostMessage {
     },
     /// Ask which preset the plugin considers current.
     GetCurrentPreset,
+    /// Ask the plugin to render `value` as the text it would display for it.
+    ///
+    /// `value` is normalized, as everywhere on this wire; the loader converts
+    /// to its format's domain.
+    GetParameterText {
+        param_id: crate::protocol::ParamAddress,
+        value: crate::protocol::Normalized,
+    },
+    /// Ask the plugin to parse `text` into a value.
+    ///
+    /// Note this is not a pure query for VST2, whose `effString2Parameter`
+    /// applies the parsed value as it reads it — see that loader's
+    /// `parameter_value_from_text`.
+    GetParameterValueFromText {
+        param_id: crate::protocol::ParamAddress,
+        text: String,
+    },
 }
 
 // `AudioProcessed` carries an inline-256 `IpcMidiEventVec` (~5 KB), dwarfing the
@@ -238,4 +256,33 @@ pub enum BridgeMessage {
         protocol_version: u32,
     },
     Shutdown,
+    /// The plugin's display string for the value that was asked about. `None`
+    /// means the plugin did not answer — the caller renders the raw number
+    /// rather than treating this as an empty label.
+    ParameterText {
+        text: Option<String>,
+    },
+    /// The value the plugin parsed a string into, normalized. `None` means it
+    /// could not parse it, and the caller must leave its field unchanged.
+    ParameterValueFromText {
+        value: Option<Normalized>,
+    },
+    /// Acknowledges a [`HostMessage::LoadState`], carrying the plugin's refusal
+    /// if it had one.
+    ///
+    /// Before v18 there was no reply at all: the host's dispatcher answered its
+    /// own caller with a literal `reply.send(true)` immediately after writing
+    /// the request to the socket, so the `bool` it produced reported that the
+    /// message had been *sent*, never that the state had been *loaded*. The
+    /// subprocess did build an error — it emitted a fire-and-forget
+    /// `BridgeMessage::Error` — but on a channel nobody was waiting on, so a
+    /// plugin rejecting a chunk reached the user as a silently un-restored
+    /// preset.
+    ///
+    /// `error: None` is success. Carrying the message rather than a bool because
+    /// the subprocess has already formatted it (`"Failed to load state: {e}"`)
+    /// and a caller wants to show the user *why* their preset did not load.
+    StateLoaded {
+        error: Option<String>,
+    },
 }

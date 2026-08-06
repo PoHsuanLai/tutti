@@ -19,9 +19,9 @@ mod messages;
 mod payload_pool;
 mod thread;
 
-use crate::error::Result;
+use crate::error::{Delivered, Result, StateError};
 use crate::protocol::{
-    ChordChanges, MidiEventVec, NoteExpressionChanges, NoteExpressionIntChanges,
+    ChordChanges, MidiEventVec, Normalized, NoteExpressionChanges, NoteExpressionIntChanges,
     NoteExpressionTextChanges, ParamAddress, ParameterChanges, ParameterInfo, Preset, PresetId,
     ScaleChanges, TransportInfo,
 };
@@ -132,11 +132,29 @@ impl AudioBridge {
                 .push_command(Command::SetParameter { param_id, value })
     }
 
-    pub fn set_automation_state_rt(&self, mode: crate::protocol::AutomationMode) -> bool {
-        !self.lifecycle.is_crashed()
-            && self
-                .channels
-                .push_command(Command::SetAutomationState { mode })
+    /// Queue an automation-state push, saying **why** if it did not go.
+    ///
+    /// The one member of this family whose answer a caller reads and turns into
+    /// a user-visible message (`SubprocessBackend::set_automation_mode`). The
+    /// other nine are `let _ =`'d or forwarded, so they keep the bool: an enum
+    /// nobody matches on is ceremony, and this family is RT-adjacent.
+    ///
+    /// The two causes want opposite responses — a dead plugin will answer the
+    /// same forever, a full queue may take the very next call — and a `bool`
+    /// merged them into one "not delivered" that a caller could only report,
+    /// never act on.
+    pub fn set_automation_state_rt(&self, mode: crate::protocol::AutomationMode) -> Delivered {
+        if self.lifecycle.is_crashed() {
+            return Delivered::PluginDead;
+        }
+        if self
+            .channels
+            .push_command(Command::SetAutomationState { mode })
+        {
+            Delivered::Yes
+        } else {
+            Delivered::Dropped
+        }
     }
 
     pub fn set_sample_rate_rt(&self, rate: f64) -> bool {
@@ -252,18 +270,26 @@ impl AudioBridge {
         ask_resp.recv_timeout(STATE_TIMEOUT).ok().flatten()
     }
 
-    pub fn load_state(&self, data: &[u8]) -> bool {
+    pub fn load_state(&self, data: &[u8]) -> std::result::Result<(), StateError> {
         if self.lifecycle.is_crashed() {
-            return false;
+            return Err(StateError::PluginCrashed);
         }
-        let (ask_resp, reply) = ask::<bool>();
+        let (ask_resp, reply) = ask::<std::result::Result<(), StateError>>();
         if !self.channels.push_command(Command::LoadState {
             data: data.to_vec(),
             reply,
         }) {
-            return false;
+            // The queue refused the command, which on this path means the
+            // bridge thread is gone — the plugin is unreachable either way.
+            return Err(StateError::PluginCrashed);
         }
-        ask_resp.recv_timeout(STATE_TIMEOUT).unwrap_or(false)
+        // A timeout is a refusal to answer, not an acceptance. Before this the
+        // fallback was `false`, which a `()`-returning caller could not see.
+        ask_resp
+            .recv_timeout(STATE_TIMEOUT)
+            .unwrap_or(Err(StateError::Rejected(
+                "the plugin did not answer within the state timeout".to_string(),
+            )))
     }
 
     pub fn parameters(&self) -> Option<Vec<ParameterInfo>> {
@@ -335,6 +361,53 @@ impl AudioBridge {
         if !self
             .channels
             .push_command(Command::GetParameter { param_id, reply })
+        {
+            return None;
+        }
+        ask_resp.recv_timeout(PARAM_TIMEOUT).ok().flatten()
+    }
+
+    /// The plugin's display string for `value` on one parameter.
+    ///
+    /// `None` when the subprocess is gone, the request could not be queued, or
+    /// the plugin declined — all three mean there is no text, and a caller
+    /// renders the raw number.
+    pub fn parameter_text(&self, param_id: ParamAddress, value: Normalized) -> Option<String> {
+        if self.lifecycle.is_crashed() {
+            return None;
+        }
+        let (ask_resp, reply) = ask::<Option<String>>();
+        if !self.channels.push_command(Command::GetParameterText {
+            param_id,
+            value,
+            reply,
+        }) {
+            return None;
+        }
+        ask_resp.recv_timeout(PARAM_TIMEOUT).ok().flatten()
+    }
+
+    /// The value the plugin parses `text` into.
+    ///
+    /// `None` when it cannot parse the string, on the same three failure paths
+    /// as [`parameter_text`](Self::parameter_text). A caller must leave its
+    /// field unchanged rather than substituting a fallback.
+    pub fn parameter_value_from_text(
+        &self,
+        param_id: ParamAddress,
+        text: &str,
+    ) -> Option<Normalized> {
+        if self.lifecycle.is_crashed() {
+            return None;
+        }
+        let (ask_resp, reply) = ask::<Option<Normalized>>();
+        if !self
+            .channels
+            .push_command(Command::GetParameterValueFromText {
+                param_id,
+                text: text.to_string(),
+                reply,
+            })
         {
             return None;
         }

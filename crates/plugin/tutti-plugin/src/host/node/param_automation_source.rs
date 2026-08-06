@@ -657,6 +657,62 @@ mod tests {
         }
     }
 
+    /// A curve returning NaN must not put NaN into a queue.
+    ///
+    /// `Curve` is a public trait a user implements and its `value_at` carries
+    /// no finiteness contract, so this is reachable from ordinary code — an
+    /// envelope interpolating across a zero-length segment divides by zero and
+    /// returns `f32::NAN`.
+    ///
+    /// Before `ParameterPoint::value` became a `Normalized`, that NaN reached
+    /// the plugin: AU and CLAP clamped it through `ParamRange`, but VST2 and
+    /// VST3 guarded with `clamp`, which returns NaN unchanged. On a VST3 filter
+    /// cutoff it became a NaN coefficient, then a NaN IIR state, and every
+    /// subsequent sample on that channel was NaN until the plugin was
+    /// re-instantiated.
+    ///
+    /// Asserted on `is_finite` rather than on a specific value: what matters is
+    /// that nothing non-finite leaves here, not which finite value stands in.
+    #[test]
+    fn a_nan_curve_cannot_put_nan_into_a_queue() {
+        struct NanCurve;
+        impl Curve for NanCurve {
+            fn value_at(&self, _beat: Beat) -> Option<f32> {
+                Some(f32::NAN)
+            }
+        }
+
+        let transport = Arc::new(TestTransport::new(120.0));
+        let src = ParamAutomationSource::new(
+            vec![TimedParam {
+                param_id: ParamAddress::Opaque(ParamId::new(7)),
+                curve: Arc::new(NanCurve),
+            }],
+            Arc::clone(&transport) as Arc<dyn TransportState>,
+            44100.0,
+        );
+        let mut out = ParameterChanges::new();
+        src.fill(64, &mut out);
+
+        let points = &out.queues[0].points;
+        assert!(
+            !points.is_empty(),
+            "the curve answers everywhere, so it fills"
+        );
+        for p in points {
+            let v = p.value.get();
+            assert!(
+                v.is_finite(),
+                "a NaN reached a queue at offset {}",
+                p.sample_offset
+            );
+            assert!(
+                (0.0..=1.0).contains(&v),
+                "value {v} is off the unit interval"
+            );
+        }
+    }
+
     #[test]
     fn fills_one_queue_per_param_with_ramp() {
         let transport = Arc::new(TestTransport::new(120.0)); // 22050 samples/beat @ 44.1k
@@ -672,7 +728,7 @@ mod tests {
         assert_eq!(q.param_id, ParamAddress::Opaque(ParamId::new(7)));
         // First point at offset 0, beat 0 → value 0.
         assert_eq!(q.points[0].sample_offset, 0);
-        assert!(q.points[0].value.abs() < 1e-6);
+        assert!(q.points[0].value.get().abs() < 1e-6);
         // Points ascend in offset and the last is the block's final sample.
         assert_eq!(q.points.last().unwrap().sample_offset, 63);
         for w in q.points.windows(2) {
@@ -705,11 +761,11 @@ mod tests {
         );
         let mut out = ParameterChanges::new();
         src.fill(64, &mut out);
-        let start_v = out.queues[0].points[0].value;
+        let start_v = out.queues[0].points[0].value.get();
         // Jump to beat 4 (envelope top) — the first point should now read ~1.0.
         transport.set_beat(4.0);
         src.fill(64, &mut out);
-        let later_v = out.queues[0].points[0].value;
+        let later_v = out.queues[0].points[0].value.get();
         assert!(later_v > start_v);
         assert!((later_v - 1.0).abs() < 1e-3);
     }

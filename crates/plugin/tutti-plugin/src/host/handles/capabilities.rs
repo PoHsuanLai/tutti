@@ -27,7 +27,7 @@
 
 use std::ffi::c_void;
 
-use crate::error::EditorError;
+use crate::error::{EditorError, StateError};
 use crate::protocol::{
     AutomationMode, Normalized, ParamAddress, ParameterInfo, Preset, PresetId, RenderMode,
 };
@@ -71,6 +71,41 @@ pub trait HostParams: Send + Sync {
     /// point on that path where an out-of-range or NaN value was stopped.
     fn set_parameter_value(&self, id: ParamAddress, value: Normalized);
 
+    /// The plugin's own display string for `value` — `"800 Hz"`, `"Bandpass"`.
+    ///
+    /// `None` means the plugin did not answer, and the caller should render the
+    /// number itself. That is not the same as an empty label, which is why this
+    /// is an `Option<String>` rather than a `String` defaulting to `""`.
+    ///
+    /// Defaulted to `None` so a backend opts in rather than being forced to
+    /// fabricate: an out-of-crate in-process backend keeps compiling, and one
+    /// whose format cannot answer says so.
+    ///
+    /// See
+    /// [`PluginParams::parameter_text`](tutti_plugin_types::PluginParams::parameter_text)
+    /// for the domain rule — `value` is normalized here and each loader
+    /// converts at its own edge.
+    fn parameter_text(&self, id: ParamAddress, value: Normalized) -> Option<String> {
+        let _ = (id, value);
+        None
+    }
+
+    /// Parse `text` with the plugin's own interpretation, for a user typing into
+    /// a parameter field.
+    ///
+    /// `None` when it cannot parse the string; the caller must then leave the
+    /// field where it was, since a fabricated value would be committed to the
+    /// user's preset.
+    ///
+    /// **Not a pure query on every format.** VST2's `effString2Parameter` is a
+    /// setter with no parse-only counterpart, so on that backend asking applies
+    /// the value. Surfaced rather than hidden: the alternative is a VST2
+    /// parameter a user cannot type into at all.
+    fn parameter_value_from_text(&self, id: ParamAddress, text: &str) -> Option<Normalized> {
+        let _ = (id, text);
+        None
+    }
+
     /// `true` if the underlying plugin is gone (subprocess crashed). In-process
     /// backends never return `true` — a crash takes the host down with it.
     fn is_crashed(&self) -> bool;
@@ -95,7 +130,24 @@ pub trait HostParams: Send + Sync {
 /// business (the same shape the loader-side `PluginState::get_state` returns).
 pub trait HostState: Send + Sync {
     fn save_state(&self) -> Option<Vec<u8>>;
-    fn load_state(&self, data: &[u8]);
+
+    /// Restore a blob previously produced by [`save_state`](Self::save_state).
+    ///
+    /// Returns [`Result`] rather than `()` because a plugin declining a chunk is
+    /// **routine**, not exceptional: it is what happens when a preset saved by
+    /// an older build is loaded into a newer one, when a file is truncated, or
+    /// when a chunk from a different plugin is fed in by mistake. Every layer
+    /// below this already knew — `PluginState::set_state` returns a `Result` and
+    /// the subprocess formats `"Failed to load state: {e}"` — and the outcome
+    /// was discarded here, at the last step.
+    ///
+    /// The failure that motivated the change is silent and destructive: open a
+    /// project, the plugin rejects its state, and the DAW shows a loaded plugin
+    /// sitting at defaults while telling the user nothing. A caller must decide
+    /// what to do with a failure; it must not be possible to not notice one.
+    ///
+    /// [`Result`]: std::result::Result
+    fn load_state(&self, data: &[u8]) -> Result<(), StateError>;
 }
 
 /// Editor / GUI hosting — **optional**. A backend implements this only if it can

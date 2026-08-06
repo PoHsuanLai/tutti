@@ -3,7 +3,7 @@
 use super::channels::Channels;
 use super::messages::{AudioResponse, BridgeEvent, Command, ResyncKind};
 use super::payload_pool::PayloadPool;
-use crate::error::Result;
+use crate::error::{Result, StateError};
 use crate::protocol::{BridgeMessage, HostMessage, IpcMidiEvent, MidiEvent, ProcessAudioData};
 use crate::util::transport::control::{self as ipc, ControlStream};
 use crate::util::transport::shm::RING_SLOTS;
@@ -193,7 +193,19 @@ pub(super) fn handle(
         }
         Command::LoadState { data, reply } => {
             ipc::send(stream, &HostMessage::LoadState { data })?;
-            reply.send(true);
+            // Wait for the answer, as `SaveState` above does. This used to be a
+            // literal `reply.send(true)` issued straight after the write, which
+            // reported that the request had been *sent* and never whether the
+            // plugin accepted it.
+            let value = match recv_reply(stream, channels, STATE_TIMEOUT)? {
+                BridgeMessage::StateLoaded { error } => {
+                    error.map(StateError::Rejected).map_or(Ok(()), Err)
+                }
+                other => Err(StateError::Rejected(format!(
+                    "unexpected reply to LoadState: {other:?}"
+                ))),
+            };
+            reply.send(value);
         }
         Command::GetParameterList { reply } => {
             ipc::send(stream, &HostMessage::GetParameterList)?;
@@ -231,6 +243,33 @@ pub(super) fn handle(
             ipc::send(stream, &HostMessage::GetParameter { param_id })?;
             let value = match recv_reply(stream, channels, PARAM_TIMEOUT)? {
                 BridgeMessage::ParameterValue { value } => value,
+                _ => None,
+            };
+            reply.send(value);
+        }
+        Command::GetParameterText {
+            param_id,
+            value,
+            reply,
+        } => {
+            ipc::send(stream, &HostMessage::GetParameterText { param_id, value })?;
+            let text = match recv_reply(stream, channels, PARAM_TIMEOUT)? {
+                BridgeMessage::ParameterText { text } => text,
+                _ => None,
+            };
+            reply.send(text);
+        }
+        Command::GetParameterValueFromText {
+            param_id,
+            text,
+            reply,
+        } => {
+            ipc::send(
+                stream,
+                &HostMessage::GetParameterValueFromText { param_id, text },
+            )?;
+            let value = match recv_reply(stream, channels, PARAM_TIMEOUT)? {
+                BridgeMessage::ParameterValueFromText { value } => value,
                 _ => None,
             };
             reply.send(value);

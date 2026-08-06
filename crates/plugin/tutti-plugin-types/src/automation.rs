@@ -2,7 +2,7 @@
 
 use smallvec::SmallVec;
 
-use crate::ParamAddress;
+use crate::{Normalized, ParamAddress};
 
 /// One automation sample: the value at a specific sample offset within
 /// the current process block.
@@ -10,23 +10,24 @@ use crate::ParamAddress;
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ParameterPoint {
     pub sample_offset: i32,
-    /// **Normalized `0..=1`**, always — this is the host's authoring
-    /// convention, not the plugin's.
+    /// The automated value, on the host's `0..=1` scale.
     ///
-    /// Stated here because the value's meaning is not recoverable from its
-    /// type, and the formats disagree about what a parameter value *is*:
-    /// VST2 and VST3 take normalized values, CLAP and AU take plain ones in
-    /// the parameter's declared range (see [`PluginParams::get_parameter`]).
-    /// A loader for either of the latter must denormalize before the value
-    /// reaches the plugin — AU against the range it cached at load, CLAP
-    /// against its `ranges` map — and both do.
+    /// The formats disagree about what a parameter value *is*: VST2 and VST3
+    /// take normalized values, CLAP and AU take plain ones in the parameter's
+    /// declared range (see [`PluginParams::get_parameter`]). A loader for
+    /// either of the latter denormalizes before the value reaches the plugin —
+    /// AU against the range it cached at load, CLAP against its `ranges` map.
     ///
-    /// The convention was previously recorded only in those loaders' own
-    /// comments, three separate restatements of one invariant that the type
-    /// carrying it never mentioned.
+    /// This was a bare `f64` whose contract lived only in this comment, and the
+    /// four loaders each re-implemented the guard that backed it. Two of them
+    /// used `clamp`, which **returns NaN for a NaN input** — so a NaN reaching
+    /// here was clamped by AU and CLAP and passed through verbatim by VST2 and
+    /// VST3. [`Normalized`] makes the guard structural and single: it cannot be
+    /// built without passing the clamp, so the downstream copies are redundant
+    /// rather than load-bearing.
     ///
     /// [`PluginParams::get_parameter`]: crate::PluginParams::get_parameter
-    pub value: f64,
+    pub value: Normalized,
 }
 
 /// Ordered list of [`ParameterPoint`]s for a single parameter id within
@@ -75,10 +76,25 @@ impl ParameterQueue {
         }
     }
 
+    /// Append one automation point, clamping `value` onto `0..=1`.
+    ///
+    /// Takes a bare `f64` rather than a [`Normalized`] because the producer is
+    /// `Curve::value_at` (in `tutti-mod`), a **public trait a user
+    /// implements**, whose return
+    /// carries no finiteness contract — so the value arriving here is untrusted
+    /// by construction and the clamp belongs at this door rather than at every
+    /// call site. An envelope dividing by a zero-length segment returns
+    /// `f32::NAN`, and before this the NaN reached a plugin's parameter: two of
+    /// the four loaders guarded with `clamp`, which returns NaN unchanged.
+    ///
+    /// On a VST3 filter cutoff that meant a NaN coefficient, a NaN IIR state,
+    /// and every subsequent sample on that channel NaN until the plugin was
+    /// re-instantiated — a whole-channel outage from one bad envelope segment.
+    ///
     pub fn add_point(&mut self, sample_offset: i32, value: f64) {
         self.points.push(ParameterPoint {
             sample_offset,
-            value,
+            value: Normalized::new(value),
         });
     }
 
@@ -226,9 +242,9 @@ mod serde_tests {
         let offsets: Vec<i32> = got.points.iter().map(|p| p.sample_offset).collect();
         assert_eq!(offsets, vec![0, 16, 32]);
         // Values travel with their offsets, not independently.
-        assert_eq!(got.points[0].value, 0.0);
-        assert_eq!(got.points[1].value, 0.25);
-        assert_eq!(got.points[2].value, 0.5);
+        assert_eq!(got.points[0].value.get(), 0.0);
+        assert_eq!(got.points[1].value.get(), 0.25);
+        assert_eq!(got.points[2].value.get(), 0.5);
     }
 
     /// A negative offset is a sample index before the start of the buffer;
@@ -242,7 +258,7 @@ mod serde_tests {
         let got = round_trip(&q);
 
         assert_eq!(got.points[0].sample_offset, 0);
-        assert_eq!(got.points[0].value, 0.75);
+        assert_eq!(got.points[0].value.get(), 0.75);
         assert_eq!(got.points[1].sample_offset, 8);
     }
 
@@ -283,8 +299,14 @@ mod serde_tests {
         let bytes = bincode::serialize(&changes).expect("serialize");
         let got: ParameterChanges = bincode::deserialize(&bytes).expect("deserialize");
 
-        assert_eq!(got.get_queue(opaque).expect("opaque").points[0].value, 0.25);
-        assert_eq!(got.get_queue(index).expect("index").points[0].value, 0.75);
+        assert_eq!(
+            got.get_queue(opaque).expect("opaque").points[0].value.get(),
+            0.25
+        );
+        assert_eq!(
+            got.get_queue(index).expect("index").points[0].value.get(),
+            0.75
+        );
 
         // An opaque id above `i32::MAX` is routine (these are often name
         // hashes) and is exactly what a bare number could not carry: read as

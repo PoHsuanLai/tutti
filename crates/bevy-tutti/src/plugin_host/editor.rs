@@ -533,12 +533,9 @@ pub fn plugin_editor_resize_request_system(
     for (emitter, mut editor) in editors.iter_mut() {
         // No editor capability means no editor to resize — the same "nothing to
         // do" as a present editor with no pending request, so both collapse
-        // into one `None`.
-        let Some(req) = emitter
-            .handle
-            .editor()
-            .and_then(|e| e.poll_editor_resize_request())
-        else {
+        // into one `None`. That collapse is now the handle method's, rather
+        // than repeated at each call site.
+        let Some(req) = emitter.handle.poll_editor_resize_request() else {
             continue;
         };
         if (req.width, req.height) == editor.last_applied {

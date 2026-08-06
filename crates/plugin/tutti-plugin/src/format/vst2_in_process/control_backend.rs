@@ -14,7 +14,7 @@ use std::sync::Arc;
 use parking_lot::Mutex;
 use tutti_vst2_host::Vst2Instance;
 
-use crate::error::EditorError;
+use crate::error::{EditorError, StateError};
 use crate::host::handles::capabilities::{HostEditor, HostParams, HostRenderMode, HostState};
 use crate::host::node::ParameterChangeSink;
 use crate::protocol::{Normalized, ParamAddress, ParameterInfo, RenderMode};
@@ -66,6 +66,40 @@ impl HostParams for InProcessVst2Backend {
         }
     }
 
+    /// The plugin's display string, and only for the value it currently holds.
+    ///
+    /// `effGetParamDisplay` passes the plugin an index and nothing else, so it
+    /// formats its own current value — VST 2.4 has no call that formats an
+    /// arbitrary one. Answering with the current value's text regardless of
+    /// what was asked would give two different values the same label; setting
+    /// the parameter in order to read it would make a display query audible.
+    /// So a mismatch is `None`, which the caller renders as the raw number.
+    ///
+    /// `try_lock` for the same reason as
+    /// [`set_parameter_value`](Self::set_parameter_value): `PluginHandle` is
+    /// shared and the audio thread can reach this. A lost text lookup shows a
+    /// number for one frame.
+    fn parameter_text(&self, id: ParamAddress, value: Normalized) -> Option<String> {
+        let index = id.index()?;
+        let instance = self.inner.try_lock()?;
+        let current = instance.parameter(index)?;
+        (f64::from(current) == value.get())
+            .then(|| instance.parameter_display(index))
+            .flatten()
+    }
+
+    /// Parse through the plugin's own `effString2Parameter`.
+    ///
+    /// **This writes**, since that opcode parses by applying — see the trait
+    /// method. It therefore takes the same `try_lock` the other write on this
+    /// backend does.
+    fn parameter_value_from_text(&self, id: ParamAddress, text: &str) -> Option<Normalized> {
+        let index = id.index()?;
+        let instance = self.inner.try_lock()?;
+        let value = instance.set_parameter_from_string(index, text)?;
+        Some(Normalized::new(f64::from(value)))
+    }
+
     fn is_crashed(&self) -> bool {
         // In-process: if the plugin crashed it took the host with it,
         // so a returning caller can never observe a crashed state.
@@ -78,8 +112,15 @@ impl HostState for InProcessVst2Backend {
         self.inner.lock().save_state().ok()
     }
 
-    fn load_state(&self, data: &[u8]) {
-        let _ = self.inner.lock().load_state(data);
+    /// The plugin's own refusal, forwarded rather than dropped.
+    ///
+    /// This is the whole change on the in-process path: the `Result` was
+    /// already in hand and discarded on the previous line.
+    fn load_state(&self, data: &[u8]) -> Result<(), StateError> {
+        self.inner
+            .lock()
+            .load_state(data)
+            .map_err(|e| StateError::Rejected(e.to_string()))
     }
 }
 

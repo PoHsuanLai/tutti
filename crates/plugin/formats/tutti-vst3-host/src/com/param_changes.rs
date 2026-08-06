@@ -114,7 +114,7 @@ impl ParameterChangesImpl {
             // the number travel with its model unstated.
             let param_id = ParamAddress::Opaque(queue.param_id().into());
             queue.for_each_point(|point| {
-                out.add_change(param_id, point.sample_offset, point.value);
+                out.add_change(param_id, point.sample_offset, point.value.get());
             });
         }
     }

@@ -50,7 +50,7 @@ pub use descriptor::{AuComponentType, EditorPresence, PluginClass, PluginDescrip
 pub use editor::{
     AspectRatio, EditorCapabilities, EditorError, EditorSize, ResizeHints, WindowHandle,
 };
-pub use error::{PluginError, Result, Result as PluginResult};
+pub use error::{Delivered, PluginError, Result, Result as PluginResult, StateError};
 pub use features::{FeatureReport, Features};
 pub use format_host::{
     PluginAudio, PluginEditorHost, PluginInstance, PluginMeta, PluginParams, PluginPresets,

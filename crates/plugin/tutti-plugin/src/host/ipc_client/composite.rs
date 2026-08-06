@@ -1,7 +1,7 @@
 //! Plugin bridge — composites out-of-process audio with in-process GUI.
 
 use super::audio::{AudioBridge, BridgeListener, BridgeThread, HarmonyInputs};
-use crate::error::{EditorError, Result};
+use crate::error::{Delivered, EditorError, Result, StateError};
 use crate::format::gui::PluginEditor;
 use crate::protocol::{
     MidiEventVec, Normalized, NoteExpressionChanges, ParamAddress, ParameterChanges, ParameterInfo,
@@ -101,7 +101,7 @@ impl PluginBridge {
         self.audio.set_parameter_rt(param_id, value.get() as f32)
     }
 
-    pub fn set_automation_state_rt(&self, mode: crate::protocol::AutomationMode) -> bool {
+    pub fn set_automation_state_rt(&self, mode: crate::protocol::AutomationMode) -> Delivered {
         // Deliver to BOTH the audio subprocess AND the in-process GUI instance
         // (mirrors `set_parameter_rt`). The automation-state advisory drives
         // editor UI feedback (a glowing knob ring), which lives in the GUI
@@ -291,15 +291,22 @@ impl PluginBridge {
         self.audio.save_state()
     }
 
-    pub fn load_state(&self, data: &[u8]) -> bool {
-        let audio_ok = self.audio.load_state(data);
+    /// The **audio** instance's answer is the one returned.
+    ///
+    /// The GUI instance is a second dlopen of the same plugin kept only so its
+    /// editor displays the right values; a failure to mirror there leaves the
+    /// editor stale but the audio correct, which is not what a caller asking
+    /// "did my preset load" is asking about. Mirroring stays best-effort, and
+    /// the audio result is the return value.
+    pub fn load_state(&self, data: &[u8]) -> std::result::Result<(), StateError> {
+        let audio = self.audio.load_state(data);
         // Also load into GUI instance so its display stays in sync.
         if let Ok(mut guard) = self.gui.lock() {
             if let Some(gui) = guard.as_mut() {
                 let _ = gui.set_state(data);
             }
         }
-        audio_ok
+        audio
     }
 
     pub fn parameters(&self) -> Option<Vec<ParameterInfo>> {
@@ -308,6 +315,18 @@ impl PluginBridge {
 
     pub fn parameter(&self, param_id: ParamAddress) -> Option<f32> {
         self.audio.parameter(param_id)
+    }
+
+    pub fn parameter_text(&self, param_id: ParamAddress, value: Normalized) -> Option<String> {
+        self.audio.parameter_text(param_id, value)
+    }
+
+    pub fn parameter_value_from_text(
+        &self,
+        param_id: ParamAddress,
+        text: &str,
+    ) -> Option<Normalized> {
+        self.audio.parameter_value_from_text(param_id, text)
     }
 
     pub fn presets(&self) -> Option<Vec<Preset>> {
@@ -396,6 +415,21 @@ impl crate::host::handles::capabilities::HostParams for SubprocessBackend {
         self.bridge.parameter(id)
     }
 
+    fn parameter_text(&self, id: ParamAddress, value: Normalized) -> Option<String> {
+        self.bridge.parameter_text(id, value)
+    }
+
+    /// Asked of the audio instance, like every other parameter read here.
+    ///
+    /// On VST2 this also *writes* that instance (`effString2Parameter` parses by
+    /// applying), which is the same instance `set_parameter_value` targets — so
+    /// the value lands where a knob poke would, and the GUI mirror follows
+    /// through the existing `PluginParamValuesChanged` refresh rather than a
+    /// second write from here.
+    fn parameter_value_from_text(&self, id: ParamAddress, text: &str) -> Option<Normalized> {
+        self.bridge.parameter_value_from_text(id, text)
+    }
+
     fn set_parameter_value(&self, id: ParamAddress, value: Normalized) {
         // Stays `Normalized` all the way to the bridge, which narrows to the
         // `f32` the wire carries. The subprocess re-clamps on receipt — it
@@ -418,8 +452,8 @@ impl crate::host::handles::capabilities::HostState for SubprocessBackend {
         self.bridge.save_state()
     }
 
-    fn load_state(&self, data: &[u8]) {
-        self.bridge.load_state(data);
+    fn load_state(&self, data: &[u8]) -> std::result::Result<(), StateError> {
+        self.bridge.load_state(data)
     }
 }
 
@@ -465,16 +499,73 @@ impl crate::host::handles::capabilities::HostAutomationState for SubprocessBacke
             return Err(EditorError::PluginCrashed);
         }
         // Delivered to both the audio subprocess and the in-process GUI (the
-        // knob-glow lives in the GUI). The `bool` says the command was queued;
-        // no format confirms the plugin visibly reacted. The format-neutral
-        // `AutomationMode` flows all the way to each ABI edge, which encodes it.
-        if self.bridge.set_automation_state_rt(mode) {
-            Ok(())
-        } else {
-            Err(EditorError::PluginError(
-                "automation-state push not delivered".into(),
-            ))
-        }
+        // knob-glow lives in the GUI). [`Delivered`] says whether the command
+        // was *queued*; no format confirms the plugin visibly reacted. The
+        // format-neutral `AutomationMode` flows all the way to each ABI edge,
+        // which encodes it.
+        automation_push_outcome(self.bridge.set_automation_state_rt(mode))
+    }
+}
+
+/// Turn a queue outcome into the error a UI shows.
+///
+/// A free function so it is reachable from a test: building a
+/// [`SubprocessBackend`] needs a live subprocess, and the interesting behaviour
+/// here is the mapping, not the plumbing.
+///
+/// The two failures produce **different** errors because they call for
+/// different responses. Collapsed into one "not delivered" message, a UI could
+/// report the failure but never tell the user whether retrying was worth it.
+fn automation_push_outcome(delivered: Delivered) -> std::result::Result<(), EditorError> {
+    match delivered {
+        Delivered::Yes => Ok(()),
+        Delivered::Dropped => Err(EditorError::PluginError(
+            "automation-state push dropped: the command queue is full; \
+             the next change should land"
+                .into(),
+        )),
+        Delivered::PluginDead => Err(EditorError::PluginCrashed),
+    }
+}
+
+#[cfg(test)]
+mod automation_outcome_tests {
+    use super::*;
+
+    /// A dropped push and a dead plugin must not produce the same error.
+    ///
+    /// This is the property the `bool` could not express, and the only reason
+    /// [`Delivered`] exists rather than a two-state answer: one is transient and
+    /// worth retrying, the other is permanent. Asserting they *differ* is what
+    /// fails if someone later folds the two arms back together — an assertion
+    /// on either arm alone would survive that.
+    #[test]
+    fn a_dropped_push_and_a_dead_plugin_report_differently() {
+        let dropped = automation_push_outcome(Delivered::Dropped)
+            .expect_err("a dropped push is not a success");
+        let dead = automation_push_outcome(Delivered::PluginDead)
+            .expect_err("a dead plugin is not a success");
+
+        assert!(
+            matches!(dropped, EditorError::PluginError(_)),
+            "a full queue is the plugin declining to be reached, not a crash: {dropped:?}"
+        );
+        assert!(
+            matches!(dead, EditorError::PluginCrashed),
+            "a dead plugin must report as crashed: {dead:?}"
+        );
+        assert_ne!(
+            dropped.to_string(),
+            dead.to_string(),
+            "the two failures must be distinguishable by a user reading the message"
+        );
+    }
+
+    /// The negative half: a delivered push is not reported as a failure. Without
+    /// this, folding every arm to `Err` would still pass the test above.
+    #[test]
+    fn a_delivered_push_is_not_an_error() {
+        assert!(automation_push_outcome(Delivered::Yes).is_ok());
     }
 }
 

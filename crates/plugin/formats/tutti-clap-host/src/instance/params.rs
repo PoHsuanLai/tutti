@@ -188,10 +188,13 @@ impl ClapLoaded {
     /// Format a parameter `value` to its human-readable display string via the
     /// plugin's `clap_plugin_params.value_to_text`. Returns `None` if the
     /// plugin does not implement params / value_to_text or declines the id.
-    /// Crate-private: a UI-facing wrapper crosses the boundary in the shared
-    /// vocabulary at the loader edge.
-    #[allow(dead_code)]
-    pub(crate) fn value_to_text(&self, param_id: u32, value: f64) -> Option<String> {
+    ///
+    /// `value` is **plain**, in the parameter's declared range — CLAP has no
+    /// normalization concept. The loader's
+    /// `PluginParams::parameter_text` denormalizes against
+    /// [`parameter_range`](Self::parameter_range) before calling this, the same
+    /// conversion its `set_parameter` applies.
+    pub fn value_to_text(&self, param_id: u32, value: f64) -> Option<String> {
         let ext = unsafe { ext::opt(self.extensions.params.params) }?;
         unsafe { value_to_text_ffi(ext, self.plugin.as_ptr(), param_id, value) }
     }
@@ -199,10 +202,11 @@ impl ClapLoaded {
     /// Parse a display `text` back to a parameter value via the plugin's
     /// `clap_plugin_params.text_to_value`. Returns `None` if the plugin does
     /// not implement params / text_to_value, the string has an interior NUL,
-    /// or the plugin cannot parse it. Crate-private (see
-    /// [`value_to_text`](Self::value_to_text)).
-    #[allow(dead_code)]
-    pub(crate) fn text_to_value(&self, param_id: u32, text: &str) -> Option<f64> {
+    /// or the plugin cannot parse it.
+    ///
+    /// The answer is **plain**, in the parameter's declared range — see
+    /// [`value_to_text`](Self::value_to_text). The loader re-normalizes it.
+    pub fn text_to_value(&self, param_id: u32, text: &str) -> Option<f64> {
         let ext = unsafe { ext::opt(self.extensions.params.params) }?;
         unsafe { text_to_value_ffi(ext, self.plugin.as_ptr(), param_id, text) }
     }

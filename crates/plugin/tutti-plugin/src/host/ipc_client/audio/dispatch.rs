@@ -235,6 +235,33 @@ pub(super) fn handle(
             };
             reply.send(value);
         }
+        Command::GetParameterText {
+            param_id,
+            value,
+            reply,
+        } => {
+            ipc::send(stream, &HostMessage::GetParameterText { param_id, value })?;
+            let text = match recv_reply(stream, channels, PARAM_TIMEOUT)? {
+                BridgeMessage::ParameterText { text } => text,
+                _ => None,
+            };
+            reply.send(text);
+        }
+        Command::GetParameterValueFromText {
+            param_id,
+            text,
+            reply,
+        } => {
+            ipc::send(
+                stream,
+                &HostMessage::GetParameterValueFromText { param_id, text },
+            )?;
+            let value = match recv_reply(stream, channels, PARAM_TIMEOUT)? {
+                BridgeMessage::ParameterValueFromText { value } => value,
+                _ => None,
+            };
+            reply.send(value);
+        }
     }
     Ok(())
 }

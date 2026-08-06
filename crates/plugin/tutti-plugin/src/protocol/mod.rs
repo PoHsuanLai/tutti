@@ -139,7 +139,27 @@ pub mod shm;
 ///   `PluginTail` crossed this wire to no receiver and stayed write-only for a
 ///   release cycle, so a field appended here arrives with its consumer.
 ///   See `docs/design/010-parameter-grouping.md`.
-pub const PROTOCOL_VERSION: u32 = 16;
+/// - v17: parameter *display* crosses the wire. `HostMessage` gains
+///   `GetParameterText` and `GetParameterValueFromText`; `BridgeMessage` gains
+///   `ParameterText` and `ParameterValueFromText`.
+///
+///   All four formats implement value→text and text→value, and none of the four
+///   answers reached the host: a caller holding a `PluginHandle` had a
+///   normalized `0.5` where the plugin itself would have said `"800 Hz"`, and
+///   `0.375` where it would have said `"Bandpass"`. Formatting host-side cannot
+///   recover either — only the plugin knows its own taper and its own value
+///   names.
+///
+///   All four appended, for the reason every variant since v11 has been:
+///   bincode encodes the discriminant over declaration order, so a v16 peer
+///   receiving one reads a tag it has no arm for and fails the decode
+///   mid-stream rather than at a message boundary.
+///
+///   Mandatory in both directions. Unlike v13's one-way `SetRenderMode`, a v17
+///   host sends these whenever a caller renders a parameter field, which is
+///   ordinary use rather than an opt-in — so a v16 server would meet an unknown
+///   tag in a normal session.
+pub const PROTOCOL_VERSION: u32 = 17;
 
 /// Validate a subprocess-reported protocol version against [`PROTOCOL_VERSION`].
 /// Called at each handshake consumer so a version skew fails loudly instead of
@@ -339,6 +359,123 @@ mod tests {
         assert_eq!(
             tag(&bincode::serialize(&HostMessage::GetCurrentPreset).expect("serialize")),
             V13_LAST_TAG + 3,
+        );
+    }
+
+    /// Every parameter-display frame survives the wire in both directions.
+    ///
+    /// These are what make a plugin's own value text reachable out-of-process.
+    /// `None` is carried explicitly in both replies: it is the answer for a
+    /// plugin that declined, and a caller renders the raw number on it — so a
+    /// variant that dropped the `Option` would turn "did not answer" into an
+    /// empty label.
+    #[test]
+    fn every_parameter_display_frame_round_trips() {
+        let requests = [
+            HostMessage::GetParameterText {
+                param_id: ParamAddress::Opaque(ParamId::new(0x8000_0001)),
+                value: Normalized::new(0.375),
+            },
+            // The other addressing model, which VST2 uses.
+            HostMessage::GetParameterText {
+                param_id: ParamAddress::Index(3),
+                value: Normalized::new(1.0),
+            },
+            HostMessage::GetParameterValueFromText {
+                param_id: ParamAddress::Opaque(ParamId::new(7)),
+                text: "800 Hz".to_string(),
+            },
+            HostMessage::GetParameterValueFromText {
+                param_id: ParamAddress::Index(0),
+                text: String::new(),
+            },
+        ];
+        for msg in requests {
+            let bytes = bincode::serialize(&msg).expect("serialize");
+            let back: HostMessage = bincode::deserialize(&bytes).expect("deserialize");
+            assert_eq!(
+                format!("{back:?}"),
+                format!("{msg:?}"),
+                "{msg:?} did not survive the wire"
+            );
+        }
+
+        let responses = [
+            BridgeMessage::ParameterText {
+                text: Some("Bandpass".to_string()),
+            },
+            BridgeMessage::ParameterText { text: None },
+            BridgeMessage::ParameterValueFromText {
+                value: Some(Normalized::new(0.375)),
+            },
+            BridgeMessage::ParameterValueFromText { value: None },
+        ];
+        for msg in responses {
+            let bytes = bincode::serialize(&msg).expect("serialize");
+            let back: BridgeMessage = bincode::deserialize(&bytes).expect("deserialize");
+            assert_eq!(
+                format!("{back:?}"),
+                format!("{msg:?}"),
+                "{msg:?} did not survive the wire"
+            );
+        }
+    }
+
+    /// The v17 frames were **appended**, leaving every older tag untouched.
+    ///
+    /// Same argument as [`the_preset_frames_are_appended_not_inserted`], and the
+    /// same absolute pinning: a variant inserted between two existing ones keeps
+    /// both the tag-0 anchor and any "later than" ordering intact while
+    /// renumbering everything after it, so only literal numbers catch it.
+    #[test]
+    fn the_parameter_display_frames_are_appended_not_inserted() {
+        /// `GetCurrentPreset`'s tag — the last request variant v14 shipped.
+        const V16_LAST_REQUEST_TAG: u32 = 20;
+
+        let tag = |bytes: &[u8]| u32::from_le_bytes(bytes[..4].try_into().unwrap());
+
+        assert_eq!(
+            tag(&bincode::serialize(&HostMessage::GetCurrentPreset).expect("serialize")),
+            V16_LAST_REQUEST_TAG,
+            "v16's last request variant moved; a v16 peer would mis-decode it"
+        );
+        assert_eq!(
+            tag(&bincode::serialize(&HostMessage::GetParameterText {
+                param_id: ParamAddress::Index(0),
+                value: Normalized::new(0.0),
+            })
+            .expect("serialize")),
+            V16_LAST_REQUEST_TAG + 1,
+            "GetParameterText must be the first v17 request frame"
+        );
+        assert_eq!(
+            tag(
+                &bincode::serialize(&HostMessage::GetParameterValueFromText {
+                    param_id: ParamAddress::Index(0),
+                    text: String::new(),
+                })
+                .expect("serialize")
+            ),
+            V16_LAST_REQUEST_TAG + 2,
+        );
+
+        // The reply direction is a separate enum with its own numbering, so it
+        // needs its own anchor rather than an offset from the request side.
+        let shutdown = tag(&bincode::serialize(&BridgeMessage::Shutdown).expect("serialize"));
+        assert_eq!(
+            tag(
+                &bincode::serialize(&BridgeMessage::ParameterText { text: None })
+                    .expect("serialize")
+            ),
+            shutdown + 1,
+            "ParameterText must follow v16's last reply variant"
+        );
+        assert_eq!(
+            tag(
+                &bincode::serialize(&BridgeMessage::ParameterValueFromText { value: None })
+                    .expect("serialize")
+            ),
+            shutdown + 2,
         );
     }
 

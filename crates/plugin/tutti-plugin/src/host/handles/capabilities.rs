@@ -71,6 +71,41 @@ pub trait HostParams: Send + Sync {
     /// point on that path where an out-of-range or NaN value was stopped.
     fn set_parameter_value(&self, id: ParamAddress, value: Normalized);
 
+    /// The plugin's own display string for `value` — `"800 Hz"`, `"Bandpass"`.
+    ///
+    /// `None` means the plugin did not answer, and the caller should render the
+    /// number itself. That is not the same as an empty label, which is why this
+    /// is an `Option<String>` rather than a `String` defaulting to `""`.
+    ///
+    /// Defaulted to `None` so a backend opts in rather than being forced to
+    /// fabricate: an out-of-crate in-process backend keeps compiling, and one
+    /// whose format cannot answer says so.
+    ///
+    /// See
+    /// [`PluginParams::parameter_text`](tutti_plugin_types::PluginParams::parameter_text)
+    /// for the domain rule — `value` is normalized here and each loader
+    /// converts at its own edge.
+    fn parameter_text(&self, id: ParamAddress, value: Normalized) -> Option<String> {
+        let _ = (id, value);
+        None
+    }
+
+    /// Parse `text` with the plugin's own interpretation, for a user typing into
+    /// a parameter field.
+    ///
+    /// `None` when it cannot parse the string; the caller must then leave the
+    /// field where it was, since a fabricated value would be committed to the
+    /// user's preset.
+    ///
+    /// **Not a pure query on every format.** VST2's `effString2Parameter` is a
+    /// setter with no parse-only counterpart, so on that backend asking applies
+    /// the value. Surfaced rather than hidden: the alternative is a VST2
+    /// parameter a user cannot type into at all.
+    fn parameter_value_from_text(&self, id: ParamAddress, text: &str) -> Option<Normalized> {
+        let _ = (id, text);
+        None
+    }
+
     /// `true` if the underlying plugin is gone (subprocess crashed). In-process
     /// backends never return `true` — a crash takes the host down with it.
     fn is_crashed(&self) -> bool;

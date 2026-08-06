@@ -3,7 +3,7 @@
 
 use super::ask::Reply;
 use crate::protocol::{
-    ChordChanges, MidiEventVec, NoteExpressionChanges, NoteExpressionIntChanges,
+    ChordChanges, MidiEventVec, Normalized, NoteExpressionChanges, NoteExpressionIntChanges,
     NoteExpressionTextChanges, ParamAddress, ParameterChanges, ParameterInfo, PluginTail, Preset,
     PresetId, Samples, ScaleChanges, TransportInfo,
 };
@@ -97,6 +97,16 @@ pub(super) enum Command {
     },
     GetCurrentPreset {
         reply: Reply<Option<PresetId>>,
+    },
+    GetParameterText {
+        param_id: ParamAddress,
+        value: Normalized,
+        reply: Reply<Option<String>>,
+    },
+    GetParameterValueFromText {
+        param_id: ParamAddress,
+        text: String,
+        reply: Reply<Option<Normalized>>,
     },
 }
 

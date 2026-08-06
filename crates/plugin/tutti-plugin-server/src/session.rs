@@ -180,6 +180,25 @@ impl Session {
                     .and_then(|p| p.instance_mut().get_current_preset());
                 Ok(BridgeMessage::CurrentPreset { id }.into())
             }
+            M::GetParameterText { param_id, value } => {
+                let text = self
+                    .plugin
+                    .as_ref()
+                    .and_then(|p| p.instance().parameter_text(param_id, value));
+                Ok(BridgeMessage::ParameterText { text }.into())
+            }
+            M::GetParameterValueFromText { param_id, text } => {
+                // Reads as a query, but is not one on every format: VST2's
+                // `effString2Parameter` writes the parsed value into the plugin
+                // as it reads it. The trait takes `&self` because the plugin
+                // handle is interior-mutable at the FFI edge, so this stays on
+                // the `as_ref` path with the other queries.
+                let value = self
+                    .plugin
+                    .as_ref()
+                    .and_then(|p| p.instance().parameter_value_from_text(param_id, &text));
+                Ok(BridgeMessage::ParameterValueFromText { value }.into())
+            }
             M::GetParameterInfo { param_id } => {
                 let info = self.plugin.as_ref().and_then(|p| {
                     p.instance()

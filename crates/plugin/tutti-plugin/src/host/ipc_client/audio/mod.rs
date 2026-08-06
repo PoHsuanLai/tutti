@@ -21,7 +21,7 @@ mod thread;
 
 use crate::error::Result;
 use crate::protocol::{
-    ChordChanges, MidiEventVec, NoteExpressionChanges, NoteExpressionIntChanges,
+    ChordChanges, MidiEventVec, Normalized, NoteExpressionChanges, NoteExpressionIntChanges,
     NoteExpressionTextChanges, ParamAddress, ParameterChanges, ParameterInfo, Preset, PresetId,
     ScaleChanges, TransportInfo,
 };
@@ -335,6 +335,53 @@ impl AudioBridge {
         if !self
             .channels
             .push_command(Command::GetParameter { param_id, reply })
+        {
+            return None;
+        }
+        ask_resp.recv_timeout(PARAM_TIMEOUT).ok().flatten()
+    }
+
+    /// The plugin's display string for `value` on one parameter.
+    ///
+    /// `None` when the subprocess is gone, the request could not be queued, or
+    /// the plugin declined — all three mean there is no text, and a caller
+    /// renders the raw number.
+    pub fn parameter_text(&self, param_id: ParamAddress, value: Normalized) -> Option<String> {
+        if self.lifecycle.is_crashed() {
+            return None;
+        }
+        let (ask_resp, reply) = ask::<Option<String>>();
+        if !self.channels.push_command(Command::GetParameterText {
+            param_id,
+            value,
+            reply,
+        }) {
+            return None;
+        }
+        ask_resp.recv_timeout(PARAM_TIMEOUT).ok().flatten()
+    }
+
+    /// The value the plugin parses `text` into.
+    ///
+    /// `None` when it cannot parse the string, on the same three failure paths
+    /// as [`parameter_text`](Self::parameter_text). A caller must leave its
+    /// field unchanged rather than substituting a fallback.
+    pub fn parameter_value_from_text(
+        &self,
+        param_id: ParamAddress,
+        text: &str,
+    ) -> Option<Normalized> {
+        if self.lifecycle.is_crashed() {
+            return None;
+        }
+        let (ask_resp, reply) = ask::<Option<Normalized>>();
+        if !self
+            .channels
+            .push_command(Command::GetParameterValueFromText {
+                param_id,
+                text: text.to_string(),
+                reply,
+            })
         {
             return None;
         }

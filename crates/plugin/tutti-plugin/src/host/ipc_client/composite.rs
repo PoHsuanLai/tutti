@@ -310,6 +310,18 @@ impl PluginBridge {
         self.audio.parameter(param_id)
     }
 
+    pub fn parameter_text(&self, param_id: ParamAddress, value: Normalized) -> Option<String> {
+        self.audio.parameter_text(param_id, value)
+    }
+
+    pub fn parameter_value_from_text(
+        &self,
+        param_id: ParamAddress,
+        text: &str,
+    ) -> Option<Normalized> {
+        self.audio.parameter_value_from_text(param_id, text)
+    }
+
     pub fn presets(&self) -> Option<Vec<Preset>> {
         self.audio.presets()
     }
@@ -394,6 +406,21 @@ impl crate::host::handles::capabilities::HostParams for SubprocessBackend {
 
     fn parameter_value(&self, id: ParamAddress) -> Option<f32> {
         self.bridge.parameter(id)
+    }
+
+    fn parameter_text(&self, id: ParamAddress, value: Normalized) -> Option<String> {
+        self.bridge.parameter_text(id, value)
+    }
+
+    /// Asked of the audio instance, like every other parameter read here.
+    ///
+    /// On VST2 this also *writes* that instance (`effString2Parameter` parses by
+    /// applying), which is the same instance `set_parameter_value` targets — so
+    /// the value lands where a knob poke would, and the GUI mirror follows
+    /// through the existing `PluginParamValuesChanged` refresh rather than a
+    /// second write from here.
+    fn parameter_value_from_text(&self, id: ParamAddress, text: &str) -> Option<Normalized> {
+        self.bridge.parameter_value_from_text(id, text)
     }
 
     fn set_parameter_value(&self, id: ParamAddress, value: Normalized) {

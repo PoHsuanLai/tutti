@@ -1,9 +1,8 @@
 //! The no-backend backend.
 //!
 //! Used where no native-UMP path exists: Windows (no `windows` crate version
-//! binds Windows MIDI Services; WinRT `Devices.Midi` is MIDI-1.0 message types),
-//! a Linux built against alsa-lib < 1.2.10, and any build without the
-//! `midi-hardware` feature.
+//! binds Windows MIDI Services; WinRT `Devices.Midi` is MIDI-1.0 message types)
+//! and a Linux built against alsa-lib < 1.2.10.
 //!
 //! # It reports "unsupported", not "no devices"
 //!
@@ -27,7 +26,7 @@ use crate::core::InputProducerHandle;
 use tutti_midi_types::MidiOut;
 
 /// Why every call here fails, in the error a caller will surface.
-const REASON: &str = "this build has no native-UMP MIDI backend (Windows, or alsa-lib < 1.2.10)";
+const REASON: &str = "no native-UMP MIDI backend on this platform (Windows, or alsa-lib < 1.2.10)";
 
 /// A [`MidiEndpoints`] that has none.
 #[derive(Debug, Default)]

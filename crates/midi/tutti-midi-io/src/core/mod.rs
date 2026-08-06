@@ -32,5 +32,5 @@ pub use port::{HardwareMidiInputs, InputProducerHandle, PortInfo, PortType};
 pub use session::MidiSession;
 pub use sysex::Sysex7Assembler;
 
-#[cfg(all(target_os = "macos", feature = "midi-hardware"))]
+#[cfg(target_os = "macos")]
 pub use backend::coremidi::{UmpVirtualDestination, UmpVirtualSource};

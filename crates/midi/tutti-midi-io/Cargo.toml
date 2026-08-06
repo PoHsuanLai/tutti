@@ -2,17 +2,17 @@
 name = "tutti-midi-io"
 version = "0.0.1"
 edition = "2021"
-description = "MIDI hardware I/O — device connection, SMF file read/write"
+description = "Native-UMP OS MIDI I/O — endpoint enumeration, connection, send/receive"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/PoHsuanLai/Tutti"
 
-[features]
-default = []
-# OS MIDI I/O, native UMP. On macOS this pulls CoreMIDI (`coremidi` +
-# `coremidi-sys` for the one call the safe wrapper lacks). Off → the engine still
-# has full MIDI (bus, routing, clips, sequencer, MPE, clock-master *generation*)
-# but no OS ports. This is the engine-vs-OS-I/O axis.
-midi-hardware = ["coremidi", "coremidi-sys", "core-foundation"]
+# No features. This crate IS the OS MIDI edge — with the file codecs split out
+# to `tutti-midi-file`, there is nothing here that is not a port. The old
+# `midi-hardware` flag left the whole session/port/capability surface compiled
+# with no backend to drive it, which is not a configuration anyone wants.
+#
+# The per-platform deps below are gated by `cfg(target_os)` alone, which is what
+# actually decides whether CoreMIDI exists.
 
 [dependencies]
 thiserror = "2"
@@ -35,23 +35,14 @@ ringbuf = "0.4"
 
 
 [target.'cfg(target_os = "macos")'.dependencies]
-coremidi = { workspace = true, optional = true }
-# Raw FFI for the native-UMP virtual source (the safe `coremidi` wrapper only
-# exposes MIDI-1.0 virtual sources). Enabled with `coremidi` via `midi-hardware`.
-coremidi-sys = { workspace = true, optional = true }
-core-foundation = { workspace = true, optional = true }
+coremidi = { workspace = true }
+# Raw FFI for the native-UMP virtual source — the safe `coremidi` wrapper has
+# `virtual_destination_with_protocol` but no `virtual_source_with_protocol`.
+coremidi-sys = { workspace = true }
+core-foundation = { workspace = true }
 
 [dev-dependencies]
 tracing-subscriber = "0.3"
 # The RT gate in tests/rt_no_alloc_hardware_poll.rs drives the real
 # `HardwareMidiInputs` through `MidiPreBlock` under a disabled allocator.
 assert_no_alloc = { version = "1", default-features = false }
-
-# These examples drive the OS `MidiIo` orchestrator, so they need the hardware axis.
-[[example]]
-name = "list_devices"
-required-features = ["midi-hardware"]
-
-[[example]]
-name = "iac_loopback_test"
-required-features = ["midi-hardware"]

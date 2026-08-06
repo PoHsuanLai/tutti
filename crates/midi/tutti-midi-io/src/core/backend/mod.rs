@@ -27,8 +27,14 @@
 
 use crate::core::endpoints::MidiEndpoints;
 
-#[cfg(all(target_os = "macos", feature = "midi-hardware"))]
+#[cfg(target_os = "macos")]
 pub mod coremidi;
+
+/// The Linux backend, present only when `build.rs` found alsa-lib ≥ 1.2.10.
+/// Below that floor the `alsa_ump` cfg is unset and [`stub`] takes over, with a
+/// `cargo:warning` explaining why — see `build.rs`.
+#[cfg(all(target_os = "linux", alsa_ump))]
+pub mod alsa;
 
 pub mod stub;
 
@@ -38,11 +44,11 @@ pub mod stub;
 /// does not change per platform — a caller stores it in one field, which is what
 /// keeps the `cfg` from leaking outward.
 pub fn active() -> Box<dyn MidiEndpoints> {
-    #[cfg(all(target_os = "macos", feature = "midi-hardware"))]
+    #[cfg(target_os = "macos")]
     {
         Box::new(coremidi::CoreMidiEndpoints::new())
     }
-    #[cfg(not(all(target_os = "macos", feature = "midi-hardware")))]
+    #[cfg(not(target_os = "macos"))]
     {
         Box::new(stub::StubEndpoints::new())
     }

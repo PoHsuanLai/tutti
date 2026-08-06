@@ -25,7 +25,7 @@ pub use core::{HardwareMidiInputs, InputProducerHandle, PortInfo, PortType};
 /// module path for the `tutti_midi_io::port::*` spelling consumers already use.
 pub use core::port;
 
-#[cfg(all(target_os = "macos", feature = "midi-hardware"))]
+#[cfg(target_os = "macos")]
 pub use core::{UmpVirtualDestination, UmpVirtualSource};
 
 // --- Re-exports from tutti-midi-types (the pure MIDI vocabulary) ---
@@ -132,8 +132,6 @@ pub mod prelude {
         TimedMidiEvent,
     };
 
-    // The OS orchestrator only exists under `midi-hardware`.
-    #[cfg(feature = "midi-hardware")]
     pub use crate::MidiSession;
 }
 

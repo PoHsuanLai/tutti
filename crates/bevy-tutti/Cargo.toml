@@ -135,10 +135,12 @@ ogg = ["tutti-core/ogg", "tutti-sampler?/ogg"]
 
 # MIDI — two axes. `midi` is the hardware-free engine: types, bus, routing, clip
 # playback, sequencer, MPE, the clock-master *generation*, built-in synth MIDI —
-# no OS I/O, no `midir`. `midi-hardware` adds the OS layer (device connect/poll,
-# MidiIo send, CoreMIDI virtual ports) on top. `plugin` also enables `midi`.
-midi = ["dep:tutti-midi-io", "dep:tutti-midi-file", "dep:tutti-midi-runtime", "tutti-core/midi", "tutti-synth?/midi", "tutti-cpal/midi"]
-midi-hardware = ["midi", "tutti-midi-io/midi-hardware"]
+# no OS I/O. `midi-hardware` adds the OS layer (endpoint enumeration, connect,
+# native-UMP send/receive) on top. `plugin` also enables `midi`.
+midi = ["dep:tutti-midi-file", "dep:tutti-midi-runtime", "tutti-core/midi", "tutti-synth?/midi", "tutti-cpal/midi"]
+# The OS MIDI layer. `tutti-midi-io` has no features of its own — it IS the OS
+# edge — so this simply pulls the crate in.
+midi-hardware = ["midi", "dep:tutti-midi-io"]
 
 # Synth & sampling. bevy-tutti registers these with the AssetServer, so it
 # wants the asset derives on both.

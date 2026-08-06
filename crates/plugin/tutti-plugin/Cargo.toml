@@ -49,7 +49,6 @@ atomic_float = "1.1"
 
 # MIDI support
 tutti-midi-types = { path = "../../midi/tutti-midi-types", default-features = false }
-tutti-midi-io = { path = "../../midi/tutti-midi-io", default-features = false }
 tutti-midi-runtime = { path = "../../midi/tutti-midi-runtime" }
 
 # Shared value vocabulary used across host crates + IPC protocol.

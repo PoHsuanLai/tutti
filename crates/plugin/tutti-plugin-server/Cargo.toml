@@ -37,7 +37,6 @@ tutti-core = { path = "../../core/tutti-core", default-features = false, feature
 
 # MIDI support
 tutti-midi-types = { path = "../../midi/tutti-midi-types" }
-tutti-midi-io = { path = "../../midi/tutti-midi-io", default-features = false }
 
 # Serialization for IPC
 serde = { version = "1", features = ["derive"] }

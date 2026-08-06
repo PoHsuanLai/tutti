@@ -9,7 +9,7 @@ repository = "https://github.com/PoHsuanLai/Tutti"
 [features]
 default = ["midi"]
 std = []
-midi = ["tutti-core/midi", "dep:tutti-midi-types", "dep:tutti-midi-runtime", "dep:tutti-midi-io"]
+midi = ["tutti-core/midi", "dep:tutti-midi-types", "dep:tutti-midi-runtime"]
 # SoundFont synthesis. Framework-free: a host loads the `.sf2` itself and calls
 # `SoundFontUnit::new`.
 soundfont = ["std", "dep:rustysynth", "midi"]
@@ -25,9 +25,6 @@ tutti-mod = { path = "../../core/tutti-mod", default-features = false, features 
 
 tutti-midi-types = { path = "../../midi/tutti-midi-types", optional = true, default-features = false }
 tutti-midi-runtime = { path = "../../midi/tutti-midi-runtime", optional = true, default-features = false }
-# For MidiBusRes — registering a promoted SoundFont unit's sender on the bus
-# inline at promote (acyclic: midi-io does not depend on synth).
-tutti-midi-io = { path = "../../midi/tutti-midi-io", optional = true, default-features = false }
 
 # Lock-free collections (for SoundFont manager)
 dashmap = "6.1"

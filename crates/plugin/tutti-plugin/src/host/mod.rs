@@ -13,9 +13,8 @@
 //! - [`handles`] — the public [`PluginHandle`](handles::PluginHandle) control
 //!   surface and the granular capability traits (`HostParams`/`HostState`/
 //!   `HostEditor`) each backend implements the subset of.
-//! - [`builder`] / [`plugins`] — the public load API.
+//! - [`plugin`] / [`plugins`] — the public load API.
 
-pub mod builder;
 pub mod discovery;
 pub mod handles;
 pub mod ipc_client;

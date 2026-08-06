@@ -81,15 +81,23 @@ fn handle_is_not_crashed_in_process() {
 
 #[test]
 #[ignore]
-fn vst2_builder_routes_to_in_process() {
-    // The public `tutti_plugin::vst2(...)` builder should detect a `.vst`
-    // path and route to the in-process backend (with the `vst2` feature
-    // on, which the integration test gate requires). Confirm by checking
-    // has_editor reports true and no crash.
+fn open_routes_a_vst2_to_the_in_process_backend() {
+    // `Plugin::open` detects the format from the path and routes a VST2 to
+    // the in-process backend (with the `vst2` feature on, which the
+    // integration-test gate requires). Confirm by checking has_editor reports
+    // true and no crash.
+    //
+    // This replaces `vst2_builder_routes_to_in_process`, which asserted the
+    // same routing through `tutti_plugin::vst2(..).build()`. That builder is
+    // gone; it matched only `Some("vst") | Some("VST")` while
+    // `format_from_path` — which `open` uses — also maps `.dll` and `.so` to
+    // VST2, so the two disagreed on every Windows and Linux VST2. Routing had
+    // to keep a test either way, so it moved here rather than being deleted
+    // with the builder.
     let _lock = PLUGIN_LOAD_LOCK.lock().unwrap();
-    let (_unit, handle) = tutti_plugin::vst2(48_000.0, VST2_PLUGIN)
-        .build()
-        .expect("vst2() builder should load TAL-NoiseMaker in-process");
+    let plugin = tutti_plugin::catalog::Plugin::open(VST2_PLUGIN, 48_000.0)
+        .expect("Plugin::open should load TAL-NoiseMaker in-process");
+    let (_unit, handle) = plugin.into_parts();
 
     assert!(!handle.is_crashed());
     assert!(

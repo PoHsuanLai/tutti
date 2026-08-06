@@ -139,16 +139,12 @@ fn load_n(
     let mut handles = Vec::with_capacity(count);
     for i in 0..count {
         let path = paths[i % paths.len()];
-        let built = match () {
-            #[cfg(feature = "clap")]
-            () if path.ends_with(".clap") => tutti_plugin::clap(SAMPLE_RATE, path).build(),
-            #[cfg(feature = "vst3")]
-            () if path.ends_with(".vst3") => tutti_plugin::vst3(SAMPLE_RATE, path).build(),
-            () => {
-                eprintln!("{path}: no host compiled in for this format — skipping");
-                return None;
-            }
-        };
+        // `Plugin::open` infers the format from the path, so this no longer
+        // dispatches on the extension itself. `available_effects` has already
+        // filtered to what is installed, and the whole function is cfg'd on the
+        // formats `EFFECTS` can name.
+        let built = tutti_plugin::catalog::Plugin::open(path, SAMPLE_RATE)
+            .map(|plugin| plugin.into_parts());
         match built {
             Ok((unit, handle)) => {
                 units.push(unit);
@@ -634,10 +630,13 @@ fn au_output_nulls_against_the_input_delayed_by_the_declared_latency() {
     assert_nulls_at_declared_latency(unit, PASSTHROUGH_AU);
 }
 
-/// Load an installed passthrough plugin, choosing the host from its extension.
+/// Load an installed passthrough plugin.
 ///
 /// Returns `None` only when the plugin is absent — a genuine skip. A plugin that
 /// is installed but will not load panics, for the reason `load_n` does.
+///
+/// `Plugin::open` picks the host from the path itself, so this no longer
+/// dispatches on the extension.
 #[cfg(any(feature = "vst3", feature = "au"))]
 #[allow(clippy::type_complexity)]
 fn load_passthrough(
@@ -647,16 +646,8 @@ fn load_passthrough(
         eprintln!("{path} not installed — skipping");
         return None;
     }
-    let built = match () {
-        #[cfg(feature = "au")]
-        () if path.ends_with(".component") => tutti_plugin::au(SAMPLE_RATE, path).build(),
-        #[cfg(feature = "vst3")]
-        () if path.ends_with(".vst3") => tutti_plugin::vst3(SAMPLE_RATE, path).build(),
-        () => {
-            eprintln!("{path}: no host compiled in for this format — skipping");
-            return None;
-        }
-    };
+    let built =
+        tutti_plugin::catalog::Plugin::open(path, SAMPLE_RATE).map(|plugin| plugin.into_parts());
     Some(built.unwrap_or_else(|e| panic!("{path} is installed but failed to load: {e}")))
 }
 

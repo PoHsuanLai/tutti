@@ -20,6 +20,7 @@ use vst3::Steinberg::{
 use vst3::{Class, ComWrapper};
 
 use crate::types::{ParameterPoint, ParameterQueue};
+use tutti_plugin_types::Normalized;
 #[cfg(test)]
 use tutti_plugin_types::ParamAddress;
 use tutti_types::AudioThreadCell;
@@ -80,7 +81,13 @@ impl ParamValueQueueImpl {
         for p in &queue.points {
             points.push(ParameterPoint {
                 sample_offset: p.sample_offset,
-                value: p.value.clamp(0.0, 1.0),
+                // Copied verbatim. The `clamp(0.0, 1.0)` that stood here was
+                // one of four copies of the unit-interval guard, and it was the
+                // unsafe spelling — `f64::clamp` returns NaN for a NaN input,
+                // so it passed through exactly the value it looked like it was
+                // stopping. `Normalized` now carries the guard at construction,
+                // making this copy redundant rather than wrong.
+                value: p.value,
             });
         }
         // VST3 requires the points a plugin reads via `getPoint(0..n)` to be in
@@ -103,7 +110,7 @@ impl ParamValueQueueImpl {
     pub fn to_queue(&self) -> ParameterQueue {
         let mut queue = ParameterQueue::new(ParamAddress::Opaque(self.param_id().into()));
         self.for_each_point(|p| {
-            queue.add_point(p.sample_offset, p.value);
+            queue.add_point(p.sample_offset, p.value.get());
         });
         queue
     }
@@ -150,7 +157,7 @@ impl IParamValueQueueTrait for ParamValueQueueImpl {
             *sample_offset = point.sample_offset;
         }
         if !value.is_null() {
-            *value = point.value;
+            *value = point.value.get();
         }
         kResultOk
     }
@@ -159,7 +166,10 @@ impl IParamValueQueueTrait for ParamValueQueueImpl {
         let mut points = self.points.borrow_mut();
         points.push(ParameterPoint {
             sample_offset,
-            value,
+            // Inbound across the ABI: the *plugin* calls this, so the value is
+            // as untrusted as anything else crossing that edge. `Normalized`
+            // clamps it, which is a guard this direction never had.
+            value: Normalized::new(value),
         });
         if !index.is_null() {
             *index = (points.len() - 1) as i32;
@@ -199,7 +209,7 @@ mod tests {
         queue.refill_from_queue(&source);
 
         let mut got = Vec::new();
-        queue.for_each_point(|p| got.push((p.sample_offset, p.value)));
+        queue.for_each_point(|p| got.push((p.sample_offset, p.value.get())));
         assert_eq!(
             got,
             vec![(0, 0.25), (128, 0.5), (384, 0.75)],
@@ -220,7 +230,7 @@ mod tests {
         queue.refill_from_queue(&source);
 
         let mut got = Vec::new();
-        queue.for_each_point(|p| got.push(p.value));
+        queue.for_each_point(|p| got.push(p.value.get()));
         assert_eq!(
             got,
             vec![0.1, 0.9],

@@ -697,7 +697,9 @@ impl PluginAudio for AuInstance {
                         continue;
                     };
                     if let Some(bounds) = lookup_bounds(&self.param_ranges, id) {
-                        let _ = self.inner.set_parameter(id, bounds.to_plain(point.value));
+                        let _ = self
+                            .inner
+                            .set_parameter(id, bounds.to_plain(point.value.get()));
                     }
                 }
             }

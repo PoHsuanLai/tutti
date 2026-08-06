@@ -308,8 +308,11 @@ impl CcRoute {
         if let Some(pc) = param_changes {
             for queue in &pc.queues {
                 for point in &queue.points {
-                    self.param_changes
-                        .add_change(queue.param_id, point.sample_offset, point.value);
+                    self.param_changes.add_change(
+                        queue.param_id,
+                        point.sample_offset,
+                        point.value.get(),
+                    );
                 }
             }
         }
@@ -472,7 +475,7 @@ mod tests {
         assert_eq!(queue.points[0].sample_offset, 8);
         // Value decoded at MIDI-2 width then normalized; ~64/127, not bit-exact
         // (the source CC was a MIDI-1→MIDI-2 promotion).
-        assert!((queue.points[0].value - 64.0 / 127.0).abs() < 0.01);
+        assert!((queue.points[0].value.get() - 64.0 / 127.0).abs() < 0.01);
 
         // Note-on and the unmapped CC 74 stayed as MIDI events.
         assert_eq!(filtered.len(), 2);
@@ -616,7 +619,7 @@ mod tests {
         let got: Vec<(i32, f64)> = q
             .points
             .iter()
-            .map(|p| (p.sample_offset, p.value))
+            .map(|p| (p.sample_offset, p.value.get()))
             .collect();
 
         let want: Vec<(i32, f64)> = expected

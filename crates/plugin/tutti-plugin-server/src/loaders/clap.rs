@@ -686,7 +686,7 @@ fn convert_process_output(
     for queue in &output.param_changes.queues {
         let mut tutti_queue = tutti_plugin::server::ParameterQueue::new(queue.param_id);
         for point in &queue.points {
-            tutti_queue.add_point(point.sample_offset, point.value);
+            tutti_queue.add_point(point.sample_offset, point.value.get());
         }
         param_changes.add_queue(tutti_queue);
     }

@@ -364,7 +364,7 @@ fn test_output_event_list_push_param_value() {
         changes.queues[0].param_id,
         ParamAddress::Opaque(7u32.into())
     );
-    assert!((changes.queues[0].points[0].value - 0.42).abs() < 0.001);
+    assert!((changes.queues[0].points[0].value.get() - 0.42).abs() < 0.001);
 }
 
 // sort_by_time test removed alongside other MIDI-shape-dependent tests.
@@ -1190,7 +1190,7 @@ fn test_smallvec_parameter_queue() {
     }
     assert_eq!(queue.points.len(), 8);
     assert_eq!(queue.param_id, ParamAddress::Opaque(42u32.into()));
-    assert!((queue.points[3].value - 0.3).abs() < f64::EPSILON);
+    assert!((queue.points[3].value.get() - 0.3).abs() < f64::EPSILON);
     assert_eq!(queue.points[3].sample_offset, 3);
 }
 

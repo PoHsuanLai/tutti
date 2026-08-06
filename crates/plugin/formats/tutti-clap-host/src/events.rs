@@ -33,7 +33,9 @@ use clap_sys::events::{
     CLAP_NOTE_EXPRESSION_VIBRATO, CLAP_NOTE_EXPRESSION_VOLUME,
 };
 use std::ptr;
-use tutti_plugin_types::{note_id_for, note_id_to_channel_note, ParamAddress, RtMidiEvents};
+use tutti_plugin_types::{
+    note_id_for, note_id_to_channel_note, Normalized, ParamAddress, RtMidiEvents,
+};
 
 use crate::types::RtNoteExpressions;
 use tutti_midi_types::tutti_types::{CCNumber, MidiChannel, MidiGroup};
@@ -753,7 +755,7 @@ impl InputEventList {
                             clippy::cast_possible_truncation,
                             reason = "normalized 0..=1 from CLAP; the plain range is f32"
                         )]
-                        let normalized = point.value as f32;
+                        let normalized = point.value.get() as f32;
                         let plain = min + normalized * (max - min);
                         // `f32::clamp` panics when `lo > hi`, and `min`/`max`
                         // come straight from the plugin's own reported
@@ -762,7 +764,7 @@ impl InputEventList {
                         // not panic the audio thread — order the bounds first.
                         plain.clamp(min.min(max), min.max(max)) as f64
                     }
-                    None => point.value,
+                    None => point.value.get(),
                 };
                 self.events.push(ClapEvent::param_value(
                     // H3: `sample_offset` is `i32`; a bare `as u32` turns a
@@ -1022,7 +1024,9 @@ impl OutputEventList {
                 // the block. Found by the module's cast deny; the identical bug
                 // in the VST3 event path was fixed separately.
                 sample_offset: i32::try_from(e.header.time).unwrap_or(i32::MAX),
-                value: e.value,
+                // Inbound from the plugin: clamped at the boundary, since a
+                // plugin's output event is as untrusted as any other input.
+                value: Normalized::new(e.value),
             };
             // Linear scan: distinct param_ids per block are typically ≤8;
             // a SmallVec scan stays in cache and is fully branch-predicted.

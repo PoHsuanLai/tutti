@@ -192,8 +192,13 @@ impl PluginAudio for Vst2Instance {
                         let Some(index) = queue.param_id.index() else {
                             continue;
                         };
-                        self.inner
-                            .set_parameter(index, (point.value as f32).clamp(0.0, 1.0));
+                        // Already on the unit interval: `Normalized` cannot
+                        // be built otherwise. The `.clamp(0.0, 1.0)` that stood
+                        // here was one of four copies of that guard and was the
+                        // unsafe spelling — `f32::clamp` returns NaN for a NaN
+                        // input, so a NaN automation point reached the plugin
+                        // through the very call that looked like it stopped it.
+                        self.inner.set_parameter(index, point.value.get() as f32);
                     }
                 }
             }

@@ -88,33 +88,34 @@ struct ParamBounds {
 
 #[cfg(all(target_os = "macos", feature = "au"))]
 impl ParamBounds {
+    /// These bounds as the shared range type, which owns the conversion.
+    ///
+    /// `default` is unused by [`to_plain`](ParamRange::to_plain) /
+    /// [`to_normalized`](ParamRange::to_normalized) — only the endpoints
+    /// participate — so `min` stands in rather than a value invented here.
+    fn as_range(self) -> ParamRange {
+        ParamRange::Plain {
+            min: self.min as f64,
+            max: self.max as f64,
+            default: self.min as f64,
+        }
+    }
+
     /// Map a normalized `0..=1` value onto `[min, max]`.
     ///
-    /// Mirrors `tutti_plugin_types::ParameterInfo::to_plain` — the same linear
-    /// endpoint map, applied here in `f32` because that is what
-    /// `AudioUnitSetParameter` takes.
+    /// Delegates to [`ParamRange::to_plain`], narrowing to the `f32` that
+    /// `AudioUnitSetParameter` takes. This used to be a hand-copy of that
+    /// function in `f32` — its doc said so — which meant the four guards it
+    /// depends on (non-finite bounds, degenerate range, NaN value, clamp
+    /// order) existed twice and could drift apart. They are stated once, on
+    /// [`ParamRange::to_plain`], and the argument for each lives there.
     ///
-    /// This is the *live* path: the return value goes straight into
-    /// `AudioUnitSetParameter` on a running unit, so it must never be non-finite.
-    /// `normalized` arrives over IPC and the bounds come from the plugin's own
-    /// `kAudioUnitProperty_ParameterInfo`, so neither is trusted. NaN needs an
-    /// explicit check rather than a clamp: `f32::clamp` returns NaN for NaN, and
-    /// `max <= min` is `false` when either is NaN. An infinite *value* still clamps
-    /// to an endpoint; an infinite *bound* has no endpoint to clamp to. See
-    /// `ParameterInfo::to_plain` for the full argument.
+    /// The narrowing is safe for the property this path needs: `to_plain`
+    /// never returns a non-finite `f64`, and every finite `f64` narrows to a
+    /// finite `f32` or to an infinity — which cannot arise here, because the
+    /// result is bounded by `[min, max]` and both came *from* an `f32`.
     fn to_plain(self, normalized: f64) -> f32 {
-        if !(self.min.is_finite() && self.max.is_finite()) {
-            return 0.0;
-        }
-        if self.max <= self.min {
-            return self.min;
-        }
-        let n = if normalized.is_nan() {
-            0.0
-        } else {
-            normalized.clamp(0.0, 1.0) as f32
-        };
-        self.min + n * (self.max - self.min)
+        self.as_range().to_plain(normalized) as f32
     }
 
     /// Inverse of [`to_plain`](Self::to_plain): map the AU's plain value back
@@ -124,18 +125,8 @@ impl ParamBounds {
     /// is normalized for every format, and `AudioUnitGetParameter` answers in
     /// plain units, so a read without this reports a cutoff of `22050` where
     /// the caller expects `1.0`.
-    ///
-    /// Same non-finite argument as `to_plain`, in the same order: bounds that
-    /// are not finite have no span to divide by, and a degenerate range has no
-    /// position to report — both answer `0.0` rather than a NaN or an infinity.
     fn to_normalized(self, plain: f32) -> f64 {
-        if !(self.min.is_finite() && self.max.is_finite()) {
-            return 0.0;
-        }
-        if self.max <= self.min || plain.is_nan() {
-            return 0.0;
-        }
-        f64::from((plain.clamp(self.min, self.max) - self.min) / (self.max - self.min))
+        self.as_range().to_normalized(plain as f64)
     }
 }
 

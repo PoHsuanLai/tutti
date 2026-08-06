@@ -193,19 +193,28 @@ does not tell you whether a collapse matters — the body tells you whether one
 happened, and the call sites tell you whether anyone is harmed by it.** Both
 have to be read.
 
-### 3. `set_midi_source` / `set_midi_out` — a fieldless enum
+### 3. `set_midi_source` / `set_midi_out` — **leave**, on inspection
 
-`false` today means either "this plugin does not accept MIDI" (it is an effect,
-not an instrument — a fact about the plugin) or "the wiring failed" (a fact
-about this attempt). A CLI piping a MIDI file into a plugin cannot tell "you
-picked a reverb" from "something broke", and those need different messages.
+This section originally claimed `false` merges "this plugin does not accept
+MIDI" with "the wiring failed". Reading the body refutes it: there is a single
+`accepts(Features::MIDI_IN)` gate, and the backend calls below it return `()`.
+Wiring cannot fail. One cause, no message — `bool` is honest, and `#[must_use]`
+is already on both.
 
-### 4. `load_preset` — a fieldless enum
+### 4. `load_preset` — **already solved**, before this note was written
 
-Reasons differ by format and are known at the call: no preset route at all, an
-id whose addressing model this format cannot use, the plugin declining.
-`PresetSupport` already exists to describe the *capability*; this describes the
-*attempt*.
+The three-way distinction this section asked for exists: `presets()` returns
+`Option<&dyn HostPresets>`, so `None` is "no preset route", `Some(false)` is "a
+route that refused" and `Some(true)` is acceptance. It is pinned by
+`only_an_accepted_load_reports_true`, whose doc comment makes exactly the
+argument this note makes:
+
+> Reaching presets through the capability keeps three answers apart that the old
+> `handle.load_preset(..) -> bool` collapsed into two … a UI that wants to report
+> "this plugin cannot load presets" needs to tell them apart.
+
+Listing it here was a miss — the survey read the signature and not its
+surroundings, which is the same error recorded under the `_rt` case.
 
 ### 5. `unblacklist` — leave
 
@@ -278,7 +287,24 @@ type, not the behaviour.
    wire gained `BridgeMessage::StateLoaded` at `PROTOCOL_VERSION` 18.
 2. ~~The `_rt` family~~ — **DONE**, but only for the one member whose answer is
    read (`e2f71fbcc`). See the case above for why the other nine were left.
-3. `set_midi_source`/`set_midi_out`, `load_preset` — same shape, lower stakes.
+3. ~~`set_midi_source`/`set_midi_out`, `load_preset`~~ — **no work needed**;
+   see the two cases above. One has a single honest cause, the other was
+   already solved by the capability accessor.
 
 Deliberately separate from the parameter-grouping PR, which is at eight commits
 across four themes already.
+
+## Outcome
+
+Nine methods were surveyed. **One was a real bug** (`load_state`, silent data
+loss — and worse than described here, since the reply was fabricated three
+layers down rather than merely narrowed). **One was a real collapse worth an
+enum** (`set_automation_state_rt`). **Seven needed nothing**: two were already
+solved, one had a single honest cause, one had its collapse argued in writing
+with an escape hatch, and the rest have no caller that reads the answer.
+
+That ratio is the finding. A survey by signature flagged nine; reading bodies
+and call sites left two. The rule at the top of this note is sound, but it can
+only be applied after both — the signature shows a collapse might exist, the
+body shows whether one does, and the call sites show whether anyone is harmed.
+Applied to a signature alone it produces churn that looks like rigour.

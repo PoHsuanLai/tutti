@@ -23,9 +23,7 @@ pub use core::{MidiDevice, MidiInputRecord, MidiIo};
 pub use core::port;
 
 #[cfg(all(target_os = "macos", feature = "midi-hardware"))]
-pub use core::{
-    UmpVirtualDestination, UmpVirtualSource, VirtualMidiDestination, VirtualMidiSource,
-};
+pub use core::{UmpVirtualDestination, UmpVirtualSource};
 
 // --- Re-exports from tutti-midi-types (the pure MIDI vocabulary) ---
 

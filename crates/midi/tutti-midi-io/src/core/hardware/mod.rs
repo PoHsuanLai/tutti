@@ -25,9 +25,7 @@ pub use output::list_output_devices;
 pub(crate) use output::{OutputCmd, OutputThread};
 
 #[cfg(all(target_os = "macos", feature = "midi-hardware"))]
-pub use virtual_port::{
-    UmpVirtualDestination, UmpVirtualSource, VirtualMidiDestination, VirtualMidiSource,
-};
+pub use virtual_port::{UmpVirtualDestination, UmpVirtualSource};
 
 /// A detected MIDI device (input or output).
 #[cfg(feature = "midi-hardware")]

@@ -1080,51 +1080,6 @@ impl AuInstance {
         unsafe { transport::tail_time(self.raw_unit()) }
     }
 
-    /// Tell this AU how far downstream of it the listener is, on one bus.
-    ///
-    /// The inverse direction of [`get_latency`](Self::get_latency): that asks
-    /// the AU what it costs the host, this tells the AU what the rest of the
-    /// chain costs it, so a plugin doing look-ahead metering can align its
-    /// display against audio the user has not heard yet.
-    ///
-    /// Advisory only — nothing in the audio path depends on it, and an AU that
-    /// ignores it renders identically. Call once per *active* bus, per Apple's
-    /// header, and again whenever the downstream chain changes; a stale value
-    /// is what makes a meter drift away from the audio.
-    ///
-    /// # Errors
-    /// Propagates the AU's refusal. Measured on macOS 15.6, **every one of the
-    /// 39 instantiable registered units refuses** with
-    /// `kAudioUnitErr_InvalidProperty` (-10879), so a caller treating this as
-    /// best-effort should discard the `Result` explicitly rather than expect a
-    /// success. See
-    /// [`transport::set_presentation_latency`] for the full measurement and for
-    /// why the refusal is not absorbed here.
-    pub fn set_presentation_latency(
-        &self,
-        direction: BusDirection,
-        bus: u32,
-        latency: Seconds,
-    ) -> Result<()> {
-        // SAFETY: `raw_unit` is live for the lifetime of this instance.
-        unsafe { transport::set_presentation_latency(self.raw_unit(), direction, bus, latency) }
-    }
-
-    /// Which parameters writing the meta-parameter `id` may silently move.
-    ///
-    /// `None` means the AU did not answer — **not** that nothing moves. See
-    /// [`parameters::dependents_of`] for why those two must stay distinct, and
-    /// for the measurement that no unit on this machine answers at all despite
-    /// 28 of their parameters carrying a meta flag.
-    ///
-    /// Global scope, which is where every meta-flagged parameter measured here
-    /// lives; a mixer-hosting caller reaches for
-    /// [`parameters::dependents_of_at`] directly, as with the rest of this
-    /// crate's per-element parameter surface.
-    pub fn dependent_parameters(&self, id: u32) -> Option<Vec<parameters::DependentParam>> {
-        parameters::dependents_of(self.raw_unit(), id)
-    }
-
     /// Install the four AUv2 host transport callbacks, so tempo-synced AUs can
     /// pull project tempo, beat position and transport state during render.
     ///

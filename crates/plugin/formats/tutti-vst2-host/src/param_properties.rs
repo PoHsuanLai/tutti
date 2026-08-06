@@ -580,35 +580,6 @@ mod tests {
         out
     }
 
-    /// A category index of 0 is "uncategorised", even with the flag set.
-    ///
-    /// VST2 numbers categories from 1, so 0 is the sentinel and not a real
-    /// group. A decoder that trusted the flag alone would publish category 0
-    /// with whatever label happened to sit in `category_label` — and since the
-    /// shared `ParameterInfo.group` renders that label as a section heading,
-    /// the visible result is every ungrouped parameter filed under one
-    /// arbitrary name.
-    #[test]
-    fn a_zero_category_index_is_uncategorised() {
-        let mut raw = raw_properties(api::ParameterFlags::USES_CATEGORY.bits());
-        raw.category = 0;
-        raw.category_label = label("Osc");
-        assert_eq!(
-            ParameterProperties::decode(0, &raw).category,
-            None,
-            "category 0 is VST2's uncategorised sentinel, not a group"
-        );
-
-        // …and a real index does decode, so the guard above is not simply
-        // refusing everything.
-        raw.category = 1;
-        let decoded = ParameterProperties::decode(0, &raw)
-            .category
-            .expect("a non-zero index is a real category");
-        assert_eq!(decoded.index, 1);
-        assert_eq!(decoded.label, "Osc");
-    }
-
     /// The integer range must be readable only under `USES_INT_STEP`.
     ///
     /// Catches a decoder that populates `integer_range` unconditionally: the

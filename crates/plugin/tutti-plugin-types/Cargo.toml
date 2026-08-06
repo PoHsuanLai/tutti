@@ -24,6 +24,8 @@ tutti-midi-types = { path = "../../midi/tutti-midi-types", default-features = fa
 # names its roles in the doc contract.
 tutti-types = { path = "../../core/tutti-types" }
 serde = { version = "1", features = ["derive"], optional = true }
+# Parameter range/scaling, for `ParameterInfo::to_range`.
+audio-automation = { workspace = true }
 # Structured editor-open errors (`EditorError`).
 thiserror = "1"
 

@@ -493,21 +493,6 @@ pub trait Plugin: Send {
     /// This method must return an `Info` struct.
     fn get_info(&self) -> Info;
 
-    /// Called before the host changes preset, answering `effBeginSetProgram`
-    /// (67).
-    ///
-    /// A preset switch moves many parameters at once. Without this bracket each
-    /// one looks to the host like an individual edit, so a plugin that reports
-    /// changes through `audioMasterAutomate` floods the host with what reads as
-    /// forty separate automation writes rather than one atomic event.
-    ///
-    /// Defaults to a no-op, which is what an unimplemented opcode already does.
-    fn begin_set_preset(&mut self) {}
-
-    /// Called after the host has changed preset, answering `effEndSetProgram`
-    /// (68). See [`begin_set_preset`](Self::begin_set_preset).
-    fn end_set_preset(&mut self) {}
-
     /// Enter or leave soft bypass, answering `effSetBypass` (44).
     ///
     /// Return `true` to accept. The default is `false` — declining, which is

@@ -58,15 +58,6 @@ static ACCEPT_SOFT_BYPASS: AtomicBool = AtomicBool::new(false);
 /// it accepted. `-1` until the host sends one, so "never asked" is distinct
 /// from "asked with 0".
 static LAST_BYPASS: AtomicI32 = AtomicI32::new(-1);
-
-/// Ordered log of preset-related opcodes the probe received, one bit-packed
-/// entry per call. Records *order*, not just arrival: an `effBeginSetProgram`
-/// that lands after the change it was meant to bracket is as wrong as one that
-/// never arrives, and a plain counter cannot tell those apart.
-static PRESET_TRACE: AtomicI32 = AtomicI32::new(0);
-/// How many entries `PRESET_TRACE` holds. Saturates at 8 (2 bits each in an
-/// i32); a test needing more should assert on a prefix.
-static PRESET_TRACE_LEN: AtomicI32 = AtomicI32::new(0);
 static SERVICED_MIDI_PROGRAMS: AtomicI32 = AtomicI32::new(0);
 
 /// Latency the probe declares once it knows its sample rate, or 0 for none.
@@ -289,41 +280,6 @@ pub extern "C" fn tutti_vst2_probe_reset_switches() {
     SERVICED_MIDI_PROGRAMS.store(0, Ordering::SeqCst);
     ACCEPT_SOFT_BYPASS.store(false, Ordering::SeqCst);
     LAST_BYPASS.store(-1, Ordering::SeqCst);
-    PRESET_TRACE.store(0, Ordering::SeqCst);
-    PRESET_TRACE_LEN.store(0, Ordering::SeqCst);
-}
-
-/// One preset opcode, as recorded in [`PRESET_TRACE`]. Mirrored in
-/// `tutti-vst2-host`'s tests.
-pub mod preset_event {
-    /// `effBeginSetProgram` (67).
-    pub const BEGIN: i32 = 1;
-    /// `effProgramChange` (2).
-    pub const CHANGE: i32 = 2;
-    /// `effEndSetProgram` (68).
-    pub const END: i32 = 3;
-}
-
-pub(crate) fn record_preset_event(event: i32) {
-    let len = PRESET_TRACE_LEN.load(Ordering::SeqCst);
-    if len < 8 {
-        let packed = PRESET_TRACE.load(Ordering::SeqCst) | (event << (len * 2));
-        PRESET_TRACE.store(packed, Ordering::SeqCst);
-        PRESET_TRACE_LEN.store(len + 1, Ordering::SeqCst);
-    }
-}
-
-/// The packed preset-opcode trace. Decode with [`preset_event`]'s constants,
-/// two bits per entry, oldest first.
-#[no_mangle]
-pub extern "C" fn tutti_vst2_probe_preset_trace() -> i32 {
-    PRESET_TRACE.load(Ordering::SeqCst)
-}
-
-/// How many entries [`tutti_vst2_probe_preset_trace`] holds.
-#[no_mangle]
-pub extern "C" fn tutti_vst2_probe_preset_trace_len() -> i32 {
-    PRESET_TRACE_LEN.load(Ordering::SeqCst)
 }
 
 pub(crate) fn set_resumed(resumed: bool) {

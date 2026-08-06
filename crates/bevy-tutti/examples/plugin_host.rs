@@ -41,8 +41,8 @@ use bevy_tutti::graph::{
     SpawnAudioNode, TransportRes,
 };
 use bevy_tutti::plugin_host::{
-    PluginCatalogState, PluginEditorOpen, PluginHealth, PluginLiveness, PluginLoadDone,
-    PluginLoadTerminated, PluginRequest, PluginsRes, SetEditorVisible, TuttiHostingPlugin,
+    PluginCatalogState, PluginEditorOpen, PluginHealth, PluginLoadDone, PluginLoadTerminated,
+    PluginRequest, PluginStatus, PluginsRes, SetEditorVisible, TuttiHostingPlugin,
 };
 use bevy_tutti::AudioEngineState;
 use tutti_core::dsp::Net;
@@ -335,7 +335,7 @@ fn report(world: &mut World) {
                     "  recoverable state captured: {}",
                     has_snapshot == Some(true)
                 );
-                if matches!(status, PluginLiveness::Dead { .. }) {
+                if matches!(status, PluginStatus::Dead { .. }) {
                     println!(
                         "  (dead plugins are unwired by removing `AudioNode`; the same\n   \
                          observers that unwire the graph take the MIDI sender off the bus)"

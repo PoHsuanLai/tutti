@@ -17,8 +17,7 @@ use tutti_vst2_host::Vst2Instance;
 use crate::error::EditorError;
 use crate::host::handles::capabilities::{HostEditor, HostParams, HostRenderMode, HostState};
 use crate::host::node::ParameterChangeSink;
-use crate::protocol::{Normalized, ParamAddress, ParameterInfo, RenderMode};
-use crate::protocol::{Preset, PresetId};
+use crate::protocol::{ParamAddress, ParameterInfo, RenderMode};
 use crate::util::window::EditorSize;
 
 /// Bundles the shared Mutex with the parameter-change sink so editor
@@ -50,19 +49,13 @@ impl HostParams for InProcessVst2Backend {
         self.inner.lock().parameter(id.index()?)
     }
 
-    fn set_parameter_value(&self, id: ParamAddress, value: Normalized) {
+    fn set_parameter_value(&self, id: ParamAddress, value: f32) {
         // The audio thread can take this path (PluginHandle is shared);
         // use `try_lock` so we never block audio. Lost writes are
         // recoverable — the GUI thread will retry on the next idle.
-        //
-        // In-process, so this write reaches the plugin directly with no
-        // subprocess boundary to re-clamp at. VST2 is normalized natively, so
-        // the value passes through as-is — but it is a `Normalized` rather
-        // than a bare float precisely because nothing downstream would catch
-        // one that was not.
         let Some(index) = id.index() else { return };
         if let Some(instance) = self.inner.try_lock() {
-            instance.set_parameter(index, value.get() as f32);
+            instance.set_parameter(index, value);
         }
     }
 
@@ -80,40 +73,6 @@ impl HostState for InProcessVst2Backend {
 
     fn load_state(&self, data: &[u8]) {
         let _ = self.inner.lock().load_state(data);
-    }
-}
-
-impl crate::backend::HostPresets for InProcessVst2Backend {
-    /// VST2 programs, as `Preset`s.
-    ///
-    /// The index **is** the identifier here — `effProgramChange` takes a
-    /// position in `[0, numPrograms)` — so unlike AU's sparse selectors these
-    /// really are dense. `bank` is `None`: VST2 exposes one flat set, and
-    /// inventing a bank name to fill the field would be a claim the format
-    /// never made.
-    fn presets(&self) -> Vec<Preset> {
-        self.inner
-            .lock()
-            .programs()
-            .into_iter()
-            .map(|(index, name)| Preset::new(PresetId::Number(index), name))
-            .collect()
-    }
-
-    /// Switch program, bracketed by `effBeginSetProgram` / `effEndSetProgram`.
-    ///
-    /// `false` for an id this format cannot address — a `Program` or `Location`
-    /// belongs to another format and names no VST2 program, so it is refused
-    /// rather than coerced into an index.
-    fn load_preset(&self, id: &PresetId) -> bool {
-        match id.number() {
-            Some(index) => self.inner.lock().set_program(index),
-            None => false,
-        }
-    }
-
-    fn current_preset(&self) -> Option<PresetId> {
-        Some(PresetId::Number(self.inner.lock().current_program()))
     }
 }
 

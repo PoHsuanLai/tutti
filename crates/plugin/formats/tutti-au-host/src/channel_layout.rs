@@ -131,26 +131,16 @@ pub enum AuLayoutTag {
     /// [`Self::Pentagonal`] despite both being five channels. Measured:
     /// AUMatrixReverb publishes this on its output.
     AudioUnit5_0,
-    /// Six channels, **L R C LFE Ls Rs** — the AU 5.1 order, and the layout
+    /// Six channels, L R C Ls Rs LFE — the **AU** 5.1 order, and the layout
     /// whose order the module docs are about. Also
     /// `kAudioChannelLayoutTag_MPEG_5_1_A` and `ITU_3_2_1`.
-    ///
-    /// LFE is at index **3**, not last: `CoreAudioBaseTypes.h:1287` annotates
-    /// `MPEG_5_1_A` `L R C LFE Ls Rs`, and `:1347` aliases `AudioUnit_5_1` to
-    /// it. That happens to match the engine's own SMPTE/WAV order
-    /// (`tutti_types::downmix`), so no remap is needed for this tag — but the
-    /// agreement is per-tag, not general: `MPEG_5_1_B` (`:1288`) is the same
-    /// six speakers as `L R Ls Rs C LFE`, and Apple defines four such orders
-    /// for one speaker set.
     AudioUnit5_1,
     /// Six channels, L R Ls Rs C Cs.
     AudioUnit6_0,
     /// Seven channels, L R Ls Rs C Rls Rrs.
     AudioUnit7_0,
-    /// Eight channels, **L R C LFE Ls Rs Rls Rrs** — the AU 7.1 order. Also
-    /// `kAudioChannelLayoutTag_MPEG_7_1_C` and `ITU_3_4_1`
-    /// (`CoreAudioBaseTypes.h:1291,1349`). LFE at index 3, as in
-    /// [`AudioUnit5_1`](Self::AudioUnit5_1).
+    /// Eight channels — the **AU** 7.1 order. Also
+    /// `kAudioChannelLayoutTag_MPEG_7_1_C` and `ITU_3_4_1`.
     AudioUnit7_1,
     /// A tag this crate does not name. Carried verbatim so it can be echoed back
     /// to the AU, compared for equality, and logged — a newer SDK's spatial

@@ -169,76 +169,6 @@ pub const PROBE_PROPERTY_SET_TAIL: u32 = 0x5474_746C;
 /// about nothing.
 pub const PROBE_PROPERTY_SET_PARAM_COUNT: u32 = 0x5474_746D;
 
-/// Vendor-private, **readable**: the last `kAudioUnitProperty_PresentationLatency`
-/// the probe was told, for the `(scope, element)` this is read at.
-///
-/// The public property is write-only by design — Apple's header says so, and the
-/// host writer honours it — so a test has no way to observe what the AU
-/// received. Without this back channel the only assertable fact would be the
-/// status code, which is exactly the vacuity the AU suites are written to avoid:
-/// a writer that computed the wrong number, wrote it to the wrong scope, or
-/// dropped it entirely would return `noErr` all the same.
-///
-/// Reads as an `f64` of seconds, or `NAN` when nothing has been written to that
-/// address yet — so "never told" is not spelled the same way as "told zero",
-/// which matters because zero is a meaningful value here ("no latency or an
-/// unknown latency").
-pub const PROBE_PROPERTY_LAST_PRESENTATION_LATENCY: u32 = 0x5474_746E;
-
-/// The parameter id the probe marks `kAudioUnitParameterFlag_IsGlobalMeta` and
-/// publishes dependents for.
-///
-/// A probe is the only way to reach either path: measured on macOS 15.6, no
-/// registered unit implements `kAudioUnitProperty_DependentParameters` at all,
-/// including the 28 that do carry a meta flag. See
-/// [`tutti_au_host::parameters::dependents_of`].
-pub const PROBE_META_PARAM_ID: u32 = 0;
-
-/// The dependents the probe declares for [`PROBE_META_PARAM_ID`], as
-/// `(scope, parameter id)`.
-///
-/// Deliberately **not** on the global scope and **not** in id order: a decoder
-/// that transposed the struct's two `u32` fields, or that reported the entries
-/// sorted, would still satisfy a fixture whose scopes were all `Global` or whose
-/// ids happened to ascend. `kAudioUnitScope_Input` is 1 and `_Output` is 2, both
-/// distinct from the ids here for the same reason.
-pub const PROBE_DEPENDENT_PARAMS: &[(u32, u32)] = &[
-    (sys::kAudioUnitScope_Output, 7),
-    (sys::kAudioUnitScope_Input, 3),
-    (sys::kAudioUnitScope_Global, 1),
-];
-
-/// Read back the presentation latency the probe was told at `(scope, element)`.
-///
-/// `None` when the probe was never told one at that address — see
-/// [`PROBE_PROPERTY_LAST_PRESENTATION_LATENCY`] for why that is distinct from a
-/// zero.
-///
-/// # Panics
-/// If the probe refuses the read, which would mean the component answering is
-/// not this file's probe.
-pub fn last_presentation_latency(au: &AuInstance, scope: u32, element: u32) -> Option<f64> {
-    let mut out = f64::NAN;
-    let mut size = std::mem::size_of::<f64>() as u32;
-    // SAFETY: `raw_unit` is live for `&au`; the probe answers exactly one `f64`
-    // at this id (see `probe_get_property`).
-    let status = unsafe {
-        sys::AudioUnitGetProperty(
-            au.raw_unit(),
-            PROBE_PROPERTY_LAST_PRESENTATION_LATENCY,
-            scope,
-            element,
-            &mut out as *mut f64 as *mut c_void,
-            &mut size,
-        )
-    };
-    assert_eq!(
-        status, 0,
-        "probe refused the presentation-latency read-back at scope {scope} element {element}"
-    );
-    (!out.is_nan()).then_some(out)
-}
-
 /// The tail, in seconds, a probe reports before any test moves it.
 ///
 /// Non-zero and finite so the load-time read lands on `PluginTail::Finite` — the
@@ -373,24 +303,6 @@ pub enum Misbehaviour {
     /// size offered from 64 to 8192, so nothing in the corpus reaches this path
     /// and only a probe can drive it.
     ClampsBlockSize,
-    /// Returns a `DependentParameters` array whose byte count is **not** a
-    /// multiple of `AUDependentParameter`'s 8 bytes: three whole entries plus a
-    /// trailing 4-byte fragment, reported that way by `GetPropertyInfo` and
-    /// echoed back from the read.
-    ///
-    /// A ragged size is the AU contradicting itself — the property is defined as
-    /// an array of a fixed-width struct — but nothing in AudioToolbox validates
-    /// it, and the host sizes its buffer from the AU's own answer. A decoder
-    /// that walked the buffer in 8-byte steps without requiring whole entries
-    /// would read 4 bytes of the fragment plus 4 bytes past the end of the
-    /// allocation and report them as a real dependent.
-    ///
-    /// No registered unit reaches this, for the reason the whole item's docs
-    /// give: none implements the property at all. This variant exists because
-    /// the alternative was an unfalsifiable assertion — `chunks_exact` versus
-    /// `chunks` survived mutation with no input in the suite able to tell them
-    /// apart.
-    RaggedDependentParameters,
 }
 
 impl Misbehaviour {
@@ -412,7 +324,6 @@ impl Misbehaviour {
             Self::NullFactoryPresets => b"pnup",
             Self::WritesFewerFrames => b"pfew",
             Self::ClampsBlockSize => b"pclm",
-            Self::RaggedDependentParameters => b"prdp",
         }
     }
 
@@ -431,7 +342,6 @@ impl Misbehaviour {
             Self::NullFactoryPresets => "probe with NULL FactoryPresets",
             Self::WritesFewerFrames => "probe that writes fewer frames",
             Self::ClampsBlockSize => "probe that clamps the block size",
-            Self::RaggedDependentParameters => "probe with a ragged dependents array",
         }
     }
 
@@ -450,7 +360,6 @@ impl Misbehaviour {
         Misbehaviour::NullFactoryPresets,
         Misbehaviour::WritesFewerFrames,
         Misbehaviour::ClampsBlockSize,
-        Misbehaviour::RaggedDependentParameters,
     ];
 
     /// Register this probe (once per process) and return its component info.
@@ -570,16 +479,6 @@ struct Probe {
     /// How many parameters `kAudioUnitProperty_ParameterList` reports. Moved by
     /// [`PROBE_PROPERTY_SET_PARAM_COUNT`].
     param_count: u32,
-    /// Every `kAudioUnitProperty_PresentationLatency` write this instance has
-    /// received, keyed by the `(scope, element)` it arrived at.
-    ///
-    /// Keyed rather than a single scalar because the property is *per bus* —
-    /// the header asks a host to set it "on each active input and output bus",
-    /// and a writer that ignored the address and wrote everything to the global
-    /// scope would be indistinguishable from a correct one if the probe only
-    /// remembered the last value. Read through
-    /// [`PROBE_PROPERTY_LAST_PRESENTATION_LATENCY`].
-    presentation_latency: Vec<((u32, u32), f64)>,
     /// Property listeners the host installed through
     /// `kAudioUnitAddPropertyListenerSelect`.
     ///
@@ -704,22 +603,6 @@ fn probe_asbd(rate: f64) -> sys::AudioStreamBasicDescription {
     }
 }
 
-/// The byte count this probe reports for `kAudioUnitProperty_DependentParameters`.
-///
-/// [`Misbehaviour::RaggedDependentParameters`] adds half a struct to the honest
-/// figure, so `GetPropertyInfo` and the read agree with each other and both
-/// disagree with the struct width — which is the only way a host can be handed a
-/// buffer it cannot divide evenly.
-fn dependents_byte_size(behaviour: Misbehaviour) -> u32 {
-    let whole =
-        (PROBE_DEPENDENT_PARAMS.len() * std::mem::size_of::<sys::AUDependentParameter>()) as u32;
-    if behaviour == Misbehaviour::RaggedDependentParameters {
-        whole + std::mem::size_of::<u32>() as u32
-    } else {
-        whole
-    }
-}
-
 /// # Safety
 /// `out_size` / `out_writable` must be null or writable.
 unsafe extern "C" fn probe_get_property_info(
@@ -762,18 +645,6 @@ unsafe extern "C" fn probe_get_property_info(
                 std::mem::size_of::<sys::CFPropertyListRef>() as u32
             }
             x if x == sys::kAudioUnitProperty_TailTime => 8,
-            x if x == sys::kAudioUnitProperty_PresentationLatency => 8,
-            x if x == sys::kAudioUnitProperty_DependentParameters => {
-                // Answered only for the one meta-flagged parameter, and only at
-                // the address `ParameterInfo` uses — the id in the ELEMENT
-                // position. Answering at every element instead would let a host
-                // that passed `addr.element` through (the bug `info_at`
-                // documents for the sibling properties) look correct.
-                if scope != sys::kAudioUnitScope_Global || elem != PROBE_META_PARAM_ID {
-                    return ERR_INVALID_PROPERTY;
-                }
-                dependents_byte_size(p.behaviour)
-            }
             x if x == sys::kAudioUnitProperty_ParameterInfo => {
                 if elem >= p.param_count {
                     return ERR_INVALID_PARAMETER;
@@ -789,7 +660,6 @@ unsafe extern "C" fn probe_get_property_info(
             PROBE_PROPERTY_LAST_RENDER_TIME => 8,
             PROBE_PROPERTY_RENDER_COUNT => 4,
             PROBE_PROPERTY_SET_LATENCY | PROBE_PROPERTY_SET_TAIL => 8,
-            PROBE_PROPERTY_LAST_PRESENTATION_LATENCY => 8,
             PROBE_PROPERTY_SET_PARAM_COUNT => 4,
             _ => return ERR_INVALID_PROPERTY,
         };
@@ -962,47 +832,6 @@ unsafe extern "C" fn probe_get_property(
             PROBE_PROPERTY_SET_LATENCY => write_property(data, io_size, p.latency_seconds),
             PROBE_PROPERTY_SET_TAIL => write_property(data, io_size, p.tail_seconds),
             PROBE_PROPERTY_SET_PARAM_COUNT => write_property(data, io_size, p.param_count),
-            PROBE_PROPERTY_LAST_PRESENTATION_LATENCY => {
-                // `NAN` for an address never written, so a test can tell "never
-                // told" from "told zero" — see the constant's docs.
-                let seen = p
-                    .presentation_latency
-                    .iter()
-                    .find(|((s, e), _)| *s == scope && *e == elem)
-                    .map(|(_, v)| *v)
-                    .unwrap_or(f64::NAN);
-                write_property(data, io_size, seen)
-            }
-            x if x == sys::kAudioUnitProperty_DependentParameters => {
-                // Same address rule as the `GetPropertyInfo` arm: id in the
-                // element position, global scope only.
-                if scope != sys::kAudioUnitScope_Global || elem != PROBE_META_PARAM_ID {
-                    return ERR_INVALID_PROPERTY;
-                }
-                let need = dependents_byte_size(p.behaviour);
-                if io_size.is_null() {
-                    return ERR_PARAM;
-                }
-                if *io_size < need || data.is_null() {
-                    return ERR_INVALID_PROPERTY_VALUE;
-                }
-                for (i, &(scope, id)) in PROBE_DEPENDENT_PARAMS.iter().enumerate() {
-                    std::ptr::write_unaligned(
-                        (data as *mut sys::AUDependentParameter).add(i),
-                        sys::AUDependentParameter {
-                            mScope: scope,
-                            mParameterID: id,
-                        },
-                    );
-                }
-                *io_size = need;
-                0
-            }
-            // The public property is write-only per Apple's header, and the
-            // probe honours that: a read is refused, so a host that tried to
-            // read back what it wrote finds the same refusal a real AU gives.
-            // The observation channel is the vendor-private id above.
-            x if x == sys::kAudioUnitProperty_PresentationLatency => ERR_INVALID_PROPERTY,
             _ => ERR_INVALID_PROPERTY,
         }
     })
@@ -1041,14 +870,6 @@ fn probe_param_info(id: u32) -> sys::AudioUnitParameterInfo {
     info.maxValue = max;
     info.defaultValue = min;
     info.flags = sys::kAudioUnitParameterFlag_IsReadable | sys::kAudioUnitParameterFlag_IsWritable;
-    // One parameter carries the meta flag and the rest do not, so a decoder that
-    // reported *every* parameter as meta — or none — fails either way. The flag
-    // rides here rather than in the `DependentParameters` handler because the two
-    // are independent: a real AU may set the flag and never answer the property,
-    // which is what all 28 meta-flagged units on this machine do.
-    if id == PROBE_META_PARAM_ID {
-        info.flags |= sys::kAudioUnitParameterFlag_IsGlobalMeta;
-    }
     info
 }
 
@@ -1093,32 +914,13 @@ fn garbage_preset_array() -> core_foundation::array::CFArray<core_foundation::da
 unsafe extern "C" fn probe_set_property(
     self_: *mut c_void,
     id: u32,
-    scope: u32,
-    elem: u32,
+    _scope: u32,
+    _elem: u32,
     data: *const c_void,
     size: u32,
 ) -> sys::OSStatus {
     guard(|| {
         let p = probe_of(self_);
-        if id == sys::kAudioUnitProperty_PresentationLatency {
-            // Apple's header types this `Float64`, so a write of any other
-            // width is refused rather than reinterpreted. That refusal is what
-            // makes the host's choice of `f64` assertable: were the probe to
-            // accept a short write it would also accept an `f32` one, and the
-            // two spellings would be indistinguishable from outside.
-            if data.is_null() || (size as usize) != std::mem::size_of::<f64>() {
-                return ERR_INVALID_PROPERTY_VALUE;
-            }
-            let seconds = std::ptr::read_unaligned(data as *const f64);
-            // Recorded per address, so a writer that ignored the bus and put
-            // everything on one scope is caught. Last write to an address wins.
-            let key = (scope, elem);
-            match p.presentation_latency.iter_mut().find(|(k, _)| *k == key) {
-                Some((_, v)) => *v = seconds,
-                None => p.presentation_latency.push((key, seconds)),
-            }
-            return 0;
-        }
         if id == sys::kAudioUnitProperty_ClassInfo && p.behaviour == Misbehaviour::FailsClassInfo {
             return ERR_INVALID_PROPERTY;
         }
@@ -1570,7 +1372,6 @@ fn make_probe(behaviour: Misbehaviour) -> *mut PlugInInterface {
         latency_seconds: 0.0,
         tail_seconds: PROBE_INITIAL_TAIL_SECONDS,
         param_count: PROBE_INITIAL_PARAM_COUNT,
-        presentation_latency: Vec::new(),
         property_listeners: Vec::new(),
         // Filled by `probe_open`, which AudioToolbox calls before anything else.
         instance: std::ptr::null_mut(),
@@ -1619,7 +1420,6 @@ probe_factories! {
     factory_null_presets => Misbehaviour::NullFactoryPresets,
     factory_fewer_frames => Misbehaviour::WritesFewerFrames,
     factory_clamps_block_size => Misbehaviour::ClampsBlockSize,
-    factory_ragged_dependents => Misbehaviour::RaggedDependentParameters,
 }
 
 extern "C" {

@@ -63,12 +63,7 @@ mod misbehave {
     pub const STATE_NOT_IMPLEMENTED: &str = "8";
     pub const INITIALIZE_FAILS: &str = "9";
     pub const CONTROLLER_CONNECT_FAILS: &str = "10";
-    pub const ARRANGEMENT_REFUSED: &str = "11";
 }
-
-/// Width the probe's main *input* keeps under `ARRANGEMENT_REFUSED`, having
-/// refused the host's stereo proposal (`kMisbehaveArrangementRefused`).
-const REFUSED_MAIN_INPUT_CHANNELS: usize = 1;
 
 /// Latency the probe claims but never applies under `LATENCY_LIES`
 /// (`kLiedLatencySamples`).
@@ -362,81 +357,6 @@ fn an_overreported_bus_count_does_not_run_the_host_off_the_end() {
         claimed <= LYING_BUS_COUNT,
         "the host reported more buses ({claimed}) than the plugin even claimed \
          ({LYING_BUS_COUNT}) — it is inventing buses of its own"
-    );
-}
-
-// ── a refused speaker arrangement ────────────────────────────────────────────
-
-/// A plugin that refuses the host's arrangement has its *kept* layout reported.
-///
-/// `kResultFalse` from `setBusArrangements` means "I did not accept yours, I
-/// kept my own" — legal, and what any fixed-I/O plugin returns. The host must
-/// then re-read the kept layout and report *that*, because everything above it
-/// sizes buffers from `info()`: `PluginClient::new` builds its fundsp node from
-/// these counts, so a host that keeps reporting what it proposed hands the
-/// plugin a channel it is not running.
-///
-/// The assertion is on the **reported** counts rather than on rendering, and
-/// that is the point. The internal scratch was always re-resolved from the
-/// read-back; what was missing is the write-back into `PluginInfo`, so a test
-/// that only drove audio passed against the bug.
-#[test]
-fn a_refused_arrangement_is_reported_as_the_plugin_kept_it() {
-    let path = probe_path();
-
-    // Baseline first: the probe declares a stereo main input, so "narrowed to
-    // mono" is only evidence if it started out wider. Taken under the guard,
-    // like every load in this file.
-    let baseline_main_in = {
-        let _m = Misbehaviour::behaving();
-        let loaded = Vst3Loaded::load(&path).expect("load");
-        let info = loaded.info().clone();
-        info.input_bus_channels
-            .first()
-            .copied()
-            .expect("the probe declares a main input bus")
-    };
-    assert!(
-        baseline_main_in > REFUSED_MAIN_INPUT_CHANNELS,
-        "the probe's main input should start wider than the refused width, but \
-         it is {baseline_main_in}; this test cannot witness a narrowing"
-    );
-
-    let _m = Misbehaviour::set(misbehave::ARRANGEMENT_REFUSED);
-    let loaded = Vst3Loaded::load(&path).expect("a refusal must not fail the load");
-    let mut inst = loaded
-        .activate::<f32>(SAMPLE_RATE, BLOCK)
-        .expect("a refusal is not an error; the plugin must still activate");
-
-    let main_in = inst
-        .info()
-        .input_bus_channels
-        .first()
-        .copied()
-        .expect("the probe declares a main input bus");
-    assert_eq!(
-        main_in, REFUSED_MAIN_INPUT_CHANNELS,
-        "the plugin refused the stereo proposal and kept mono, but the host \
-         still reports {main_in} channels — it is reporting what it asked for, \
-         not what the plugin is running"
-    );
-
-    // And the reported total agrees, since that is what sizes a caller's
-    // buffers. Asserted separately: `total_input_channels` sums the bus list,
-    // so a fix that updated only the main entry would leave the two disagreeing.
-    let expected_total: usize = inst.info().input_bus_channels.iter().sum();
-    assert_eq!(
-        inst.info().total_input_channels(),
-        expected_total,
-        "the reported total must agree with the per-bus list it sums"
-    );
-
-    // Rendering at the reported layout must still work — `drive_block_with`
-    // allocates from `info()`, so this drives exactly what a caller would.
-    let out = drive_block(&mut inst);
-    assert!(
-        out.iter().flatten().all(|s| s.is_finite()),
-        "a refused arrangement produced non-finite output"
     );
 }
 

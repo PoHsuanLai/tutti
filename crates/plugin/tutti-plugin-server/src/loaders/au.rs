@@ -2,18 +2,15 @@
 //!
 //! Follows the same pattern as `vst3_loader.rs` and `clap_loader.rs`.
 
-#[cfg(all(target_os = "macos", feature = "au"))]
-use std::collections::HashMap;
 use std::path::Path;
 use tutti_plugin::server::{
     AuComponentType, EditorPresence, Features, LoadedPlugin, PluginClass, PluginDescriptor,
 };
 #[cfg(all(target_os = "macos", feature = "au"))]
 use tutti_plugin::server::{
-    EditorSize, Normalized, ParamAddress, ParamFlags, ParamRange, ParamSteps, ParameterInfo,
-    PluginAudio, PluginEditorHost, PluginMeta, PluginParams, PluginPresets, PluginResult,
-    PluginState, PluginTail, Preset, PresetId, ProcessContext, ProcessOutput, RenderMode,
-    WindowHandle,
+    EditorSize, ParamAddress, ParamFlags, ParamRange, ParamSteps, ParameterInfo, PluginAudio,
+    PluginEditorHost, PluginMeta, PluginParams, PluginResult, PluginState, PluginTail,
+    ProcessContext, ProcessOutput, RenderMode, WindowHandle,
 };
 
 use crate::loaders::common::{single_bus, Meta};
@@ -89,34 +86,33 @@ struct ParamBounds {
 
 #[cfg(all(target_os = "macos", feature = "au"))]
 impl ParamBounds {
-    /// These bounds as the shared range type, which owns the conversion.
-    ///
-    /// `default` is unused by [`to_plain`](ParamRange::to_plain) /
-    /// [`to_normalized`](ParamRange::to_normalized) — only the endpoints
-    /// participate — so `min` stands in rather than a value invented here.
-    fn as_range(self) -> ParamRange {
-        ParamRange::Plain {
-            min: self.min as f64,
-            max: self.max as f64,
-            default: self.min as f64,
-        }
-    }
-
     /// Map a normalized `0..=1` value onto `[min, max]`.
     ///
-    /// Delegates to [`ParamRange::to_plain`], narrowing to the `f32` that
-    /// `AudioUnitSetParameter` takes. This used to be a hand-copy of that
-    /// function in `f32` — its doc said so — which meant the four guards it
-    /// depends on (non-finite bounds, degenerate range, NaN value, clamp
-    /// order) existed twice and could drift apart. They are stated once, on
-    /// [`ParamRange::to_plain`], and the argument for each lives there.
+    /// Mirrors `tutti_plugin_types::ParameterInfo::to_plain` — the same linear
+    /// endpoint map, applied here in `f32` because that is what
+    /// `AudioUnitSetParameter` takes.
     ///
-    /// The narrowing is safe for the property this path needs: `to_plain`
-    /// never returns a non-finite `f64`, and every finite `f64` narrows to a
-    /// finite `f32` or to an infinity — which cannot arise here, because the
-    /// result is bounded by `[min, max]` and both came *from* an `f32`.
+    /// This is the *live* path: the return value goes straight into
+    /// `AudioUnitSetParameter` on a running unit, so it must never be non-finite.
+    /// `normalized` arrives over IPC and the bounds come from the plugin's own
+    /// `kAudioUnitProperty_ParameterInfo`, so neither is trusted. NaN needs an
+    /// explicit check rather than a clamp: `f32::clamp` returns NaN for NaN, and
+    /// `max <= min` is `false` when either is NaN. An infinite *value* still clamps
+    /// to an endpoint; an infinite *bound* has no endpoint to clamp to. See
+    /// `ParameterInfo::to_plain` for the full argument.
     fn to_plain(self, normalized: f64) -> f32 {
-        self.as_range().to_plain(normalized) as f32
+        if !(self.min.is_finite() && self.max.is_finite()) {
+            return 0.0;
+        }
+        if self.max <= self.min {
+            return self.min;
+        }
+        let n = if normalized.is_nan() {
+            0.0
+        } else {
+            normalized.clamp(0.0, 1.0) as f32
+        };
+        self.min + n * (self.max - self.min)
     }
 
     /// Inverse of [`to_plain`](Self::to_plain): map the AU's plain value back
@@ -126,8 +122,18 @@ impl ParamBounds {
     /// is normalized for every format, and `AudioUnitGetParameter` answers in
     /// plain units, so a read without this reports a cutoff of `22050` where
     /// the caller expects `1.0`.
+    ///
+    /// Same non-finite argument as `to_plain`, in the same order: bounds that
+    /// are not finite have no span to divide by, and a degenerate range has no
+    /// position to report — both answer `0.0` rather than a NaN or an infinity.
     fn to_normalized(self, plain: f32) -> f64 {
-        self.as_range().to_normalized(plain as f64)
+        if !(self.min.is_finite() && self.max.is_finite()) {
+            return 0.0;
+        }
+        if self.max <= self.min || plain.is_nan() {
+            return 0.0;
+        }
+        f64::from((plain.clamp(self.min, self.max) - self.min) / (self.max - self.min))
     }
 }
 
@@ -506,27 +512,12 @@ impl AuInstance {
             let probed = tutti_plugin::server::probed::AU;
 
             // AU exposes a single main bus per direction here.
-            // One main bus per direction, so one topology entry each. The tag
-            // is the AU's own answer; `topology_of` declines the tags that name
-            // a processing relationship rather than speaker placement (MidSide,
-            // MatrixStereo, ambisonics), which arrive here as `None`.
-            let bus_topology = |direction: tutti_au_host::BusDirection| {
-                let tag = inner.layout_tag(direction, 0).ok()?;
-                tutti_au_host::topology_of(tag)
-            };
-            let input_topology =
-                core::iter::once(bus_topology(tutti_au_host::BusDirection::Input)).collect();
-            let output_topology =
-                core::iter::once(bus_topology(tutti_au_host::BusDirection::Output)).collect();
-
             let loaded = LoadedPlugin {
                 // `num_inputs`/`num_outputs` are `u32` off the AU element
                 // count; `From<u32>` canonicalizes them, so the `as usize`
                 // hop is gone.
                 inputs: single_bus(inner.num_inputs()),
                 outputs: single_bus(inner.num_outputs()),
-                input_topology,
-                output_topology,
                 latency_samples: latency,
                 tail,
                 features,
@@ -803,30 +794,17 @@ impl PluginParams for AuInstance {
     /// Normalized `0..=1` in, matching [`get_parameter`](Self::get_parameter) —
     /// so this pair round-trips. `AudioUnitSetParameter` takes plain units, so
     /// the value is denormalized against the same table.
-    fn set_parameter(&mut self, id: ParamAddress, value: Normalized) {
+    fn set_parameter(&mut self, id: ParamAddress, value: f64) {
         let Some(id) = id.opaque() else { return };
         let plain = match lookup_bounds(&self.param_ranges, id.get()) {
-            Some(bounds) => bounds.to_plain(value.get()),
-            None => value.get() as f32,
+            Some(bounds) => bounds.to_plain(value),
+            None => value as f32,
         };
         let _ = parameters::set(self.inner.raw_unit(), id.get(), plain);
     }
 
     fn get_parameter_list(&self) -> Vec<ParameterInfo> {
-        let unit = self.inner.raw_unit();
-        let params = parameters::list(unit);
-
-        // Resolve each distinct clump once. `clump_name` is a property read
-        // into the AU per call, and a synth with 400 parameters across 7 clumps
-        // would otherwise pay 400 round trips for 7 answers.
-        let mut clump_names: HashMap<u32, String> = HashMap::new();
-        for clump in params.iter().filter_map(|p| p.clump) {
-            clump_names
-                .entry(clump)
-                .or_insert_with(|| parameters::clump_name(unit, clump).unwrap_or_default());
-        }
-
-        params
+        parameters::list(self.inner.raw_unit())
             .into_iter()
             .map(|p| {
                 // Indexed params are a choice list whose `[min, max]` are the
@@ -860,16 +838,6 @@ impl PluginParams for AuInstance {
                         ParamFlags::READ_ONLY
                     },
                     known: ParamFlags::READ_ONLY,
-                    // `p.clump` is `None` unless the AU set
-                    // `kAudioUnitParameterFlag_HasClump`, so an AU that
-                    // declared no clump cannot arrive here as clump 0 — the
-                    // gate is in the decoder. A clump the AU declines to name
-                    // yields no group rather than a numeric placeholder.
-                    group: p
-                        .clump
-                        .and_then(|c| clump_names.get(&c))
-                        .cloned()
-                        .unwrap_or_default(),
                 }
             })
             .collect()
@@ -921,68 +889,6 @@ impl PluginState for AuInstance {
     }
 }
 
-/// The AU selector an id names, or `None` when it names none.
-///
-/// A free function so the decision is testable without a live unit: no AU
-/// loads through `AuInstance::load` in a headless test run on this machine
-/// (the component registry lists only codecs), so an inline `match` inside
-/// `load_preset` could not be exercised at all.
-///
-/// Only [`PresetId::Number`] addresses an AU preset. A VST3 `(list, index)`
-/// pair and a CLAP path name nothing in AU's selector space, and coercing
-/// either — taking the `index`, say — would load a real preset the caller
-/// never asked for. That is silent, and worse than a refusal.
-fn au_selector(id: &PresetId) -> Option<i32> {
-    match id {
-        PresetId::Number(n) => Some(*n),
-        PresetId::Program { .. } | PresetId::Location(_) => None,
-    }
-}
-
-impl PluginPresets for AuInstance {
-    /// The AU's factory presets.
-    ///
-    /// `AuPreset::number` is a **unit-assigned selector**, not a position: a
-    /// unit may number sparsely, and `load_factory_preset` takes the number the
-    /// unit reported. So the id is built from `p.number` and never from the
-    /// enumeration index — that is the whole reason `PresetId` is opaque.
-    ///
-    /// `bank` is `None`: AU exposes one flat factory set, and inventing a bank
-    /// name would be a claim the format never made.
-    fn get_presets(&mut self) -> Vec<Preset> {
-        self.inner
-            .factory_presets()
-            .into_iter()
-            .map(|p| Preset::new(PresetId::Number(p.number), p.name))
-            .collect()
-    }
-
-    /// `false` for an id this format cannot address — a `Program` or `Location`
-    /// belongs to another format and names no AU preset.
-    ///
-    /// A rejected load is a refusal, not an error: `load_factory_preset`
-    /// answers `kAudioUnitErr_InvalidPropertyValue` for a number the unit does
-    /// not advertise, and the AU is still renderable afterwards with its
-    /// parameters untouched.
-    fn load_preset(&mut self, id: &PresetId) -> bool {
-        match au_selector(id) {
-            Some(number) => self.inner.load_factory_preset(number).is_ok(),
-            None => false,
-        }
-    }
-
-    /// `None` when the unit does not implement
-    /// `kAudioUnitProperty_PresentPreset`, which `current_preset` reports as an
-    /// error precisely because there is no honest value to fabricate — a
-    /// "preset 0" would be a claim about the unit's state the host cannot back.
-    fn get_current_preset(&mut self) -> Option<PresetId> {
-        self.inner
-            .current_preset()
-            .ok()
-            .map(|p| PresetId::Number(p.number))
-    }
-}
-
 #[cfg(test)]
 #[cfg(all(target_os = "macos", feature = "au"))]
 mod tests {
@@ -992,166 +898,6 @@ mod tests {
     // Note: AU loading by path requires the component name to match the bundle name.
     // For system AUs, they live in /System/Library/Components/ or
     // /Library/Audio/Plug-Ins/Components/.
-
-    /// Build an initialized AU by four-char code, or `None` when absent.
-    fn open_au(ty: u32, sub: &[u8; 4]) -> Option<tutti_au_host::AuInstance> {
-        use tutti_au_host::component;
-        use tutti_au_host::types::AudioComponentDescription;
-
-        let desc = AudioComponentDescription {
-            componentType: ty,
-            componentSubType: u32::from_be_bytes(*sub),
-            componentManufacturer: u32::from_be_bytes(*b"appl"),
-            componentFlags: 0,
-            componentFlagsMask: 0,
-        };
-        let comp = component::find_component(&desc)?;
-        let mut inner = unsafe { tutti_au_host::AuInstance::new(comp, 44_100.0, 512) }.ok()?;
-        inner.initialize().ok()?;
-        Some(inner)
-    }
-
-    /// An AU's clumps reach the shared `ParameterInfo` as group labels.
-    ///
-    /// AUDistortion is the fixture because it is measurably grouped: macOS 15.6
-    /// reports its 22 parameters across 7 named clumps ("Delay", "Ring
-    /// Modulation", "Decimation", …). Before this mapping every one of them
-    /// arrived ungrouped, so the whole unit rendered as one flat list.
-    ///
-    /// Two halves, and the second is the one worth having: parameters that
-    /// declare a clump get its **name**, and the group is never the clump
-    /// *number*. A mapping that stringified the id would satisfy "non-empty"
-    /// while showing the user "3".
-    #[test]
-    fn an_au_clump_becomes_a_group_label() {
-        // Loaded through the real entry point, so this exercises
-        // `get_parameter_list` itself rather than a copy of its mapping. AU
-        // resolves by matching the file stem against the component registry, so
-        // the path need not exist on disk.
-        let instance = match AuInstance::load(Path::new("AUDistortion"), 44_100.0, 512) {
-            Ok(i) => i,
-            Err(e) => {
-                eprintln!("AUDistortion unavailable ({e:?}); skipping");
-                return;
-            }
-        };
-
-        let params = instance.get_parameter_list();
-        assert!(!params.is_empty(), "AUDistortion declares parameters");
-
-        let groups: std::collections::BTreeSet<&str> = params
-            .iter()
-            .map(|p| p.group.as_str())
-            .filter(|g| !g.is_empty())
-            .collect();
-        assert!(
-            groups.len() > 1,
-            "AUDistortion groups its parameters into several named clumps; got {groups:?}"
-        );
-
-        // A label, not a stringified id — the failure a bare `!is_empty()`
-        // would wave through.
-        for group in &groups {
-            assert!(
-                group.parse::<u32>().is_err(),
-                "a group must be the clump's name, not its number: {group:?}"
-            );
-        }
-
-        // And a grouped parameter qualifies, which is what a consumer renders.
-        let grouped = params
-            .iter()
-            .find(|p| !p.group.is_empty())
-            .expect("at least one grouped parameter");
-        assert_eq!(
-            grouped.qualified_name(),
-            format!("{} / {}", grouped.group, grouped.name)
-        );
-    }
-
-    /// The `AuPreset` -> `PresetId` mapping round-trips against a real unit.
-    ///
-    /// The mapping is the only new logic here: `factory_presets()` and
-    /// `load_factory_preset()` are covered by `tutti-au-host`'s own suite. What
-    /// this pins is that the id carries the unit's **selector**, and that
-    /// handing it straight back loads the preset it named.
-    ///
-    /// **Corpus limit, stated rather than papered over.** `AuPreset::number` is
-    /// a unit-assigned selector and a unit may number sparsely — that is why
-    /// `PresetId` carries the number rather than a position. Measured on this
-    /// machine, all four preset-bearing Apple effects (AUDistortion,
-    /// AUMatrixReverb, AUReverb2, AUDynamicsProcessor) number densely `0..n`,
-    /// so **no available input here distinguishes "carries the selector" from
-    /// "uses the vec index"**. Verified by mutation: replacing `p.number` with
-    /// `.enumerate()`'s index leaves this test green, and no fixture on this
-    /// machine can make it fail. That half is covered where the value *can* be
-    /// constructed — `presets::tests::a_sparse_selector_is_carried_verbatim` —
-    /// and the reason the mapping must use `p.number` anyway is in
-    /// `AuPreset`'s own doc, which the AU layer pins.
-    #[test]
-    fn a_listed_preset_loads_the_preset_it_names() {
-        use tutti_au_host::types::K_AUDIO_UNIT_TYPE_EFFECT;
-
-        let Some(mut inner) = open_au(K_AUDIO_UNIT_TYPE_EFFECT, b"dist") else {
-            eprintln!("AUDistortion not installed; skipping");
-            return;
-        };
-
-        // The same mapping `<AuInstance as PluginPresets>::get_presets` does.
-        let presets: Vec<Preset> = inner
-            .factory_presets()
-            .into_iter()
-            .map(|p| Preset::new(PresetId::Number(p.number), p.name))
-            .collect();
-        assert!(
-            presets.len() > 2,
-            "AUDistortion ships a factory preset table; got {}",
-            presets.len()
-        );
-
-        // Taken from the listing, never constructed — what a caller does.
-        let wanted = presets[2].id.clone();
-        let number = wanted.number().expect("an AU preset id is a number");
-        assert!(
-            inner.load_factory_preset(number).is_ok(),
-            "a preset the unit listed must load"
-        );
-        assert_eq!(
-            inner
-                .current_preset()
-                .ok()
-                .map(|p| PresetId::Number(p.number)),
-            Some(wanted),
-            "the unit must report the preset just loaded"
-        );
-    }
-
-    /// An id from another format addresses no AU preset.
-    ///
-    /// `au_selector` is the guard `load_preset` consults. A VST3 `(list,
-    /// index)` pair and a CLAP path both answer `None`, so the load is refused
-    /// rather than coerced — taking the `index` would load a real preset the
-    /// caller never asked for, which is silent and worse than a `false`.
-    ///
-    /// Tested through the free function rather than through `load_preset`
-    /// because no AU loads in a headless run here; see `au_selector`.
-    #[test]
-    fn an_id_from_another_format_addresses_no_au_preset() {
-        assert_eq!(au_selector(&PresetId::Number(7)), Some(7));
-        assert_eq!(
-            au_selector(&PresetId::Program {
-                list_id: 0,
-                index: 1
-            }),
-            None,
-            "a VST3 program id must not yield an AU selector"
-        );
-        assert_eq!(
-            au_selector(&PresetId::Location("/x.clap-preset".into())),
-            None,
-            "a CLAP preset path must not yield an AU selector"
-        );
-    }
 
     /// An AU that declines `kAudioUnitProperty_TailTime` is `Unknown`, and one
     /// that reports an unbounded tail is `Unbounded` — never `None`, which is
@@ -1413,7 +1159,7 @@ mod tests {
         };
         let addr = ParamAddress::Opaque(cutoff_id.into());
 
-        au.set_parameter(addr, Normalized::new(1.0));
+        au.set_parameter(addr, 1.0);
         let plain = parameters::get(au.inner.raw_unit(), cutoff_id).expect("cutoff is readable");
         assert!(
             (plain - bounds.max).abs() < 1.0,
@@ -1427,7 +1173,7 @@ mod tests {
         );
         assert!((au.get_parameter(addr) - 1.0).abs() < 1e-3);
 
-        au.set_parameter(addr, Normalized::new(0.0));
+        au.set_parameter(addr, 0.0);
         assert!((au.get_parameter(addr)).abs() < 1e-3);
     }
 

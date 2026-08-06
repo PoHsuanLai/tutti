@@ -72,24 +72,14 @@ What each format supports, as reported by its loader in `tutti-plugin-server/src
 | `PARAM_AUTOMATION` | Best-effort | ● | ● | ○ | ○ |
 | `NOTE_EXPRESSION` | Best-effort | ◐ | ◐ | ✕ | ✕ |
 | `SEQUENCER_CONTEXT` | Best-effort | ◐ | ✕ | ✕ | ✕ |
-| `PRESET_LIST` | Reaction | ✕ | ○ | ◐ | ◐ |
-| `PRESET_LOAD` | Reaction | ✕ | ◐ | ◐ | ◐ |
+| `PRESET_LIST` | Reaction | ✕ | ○ | ◐ | ○ |
+| `PRESET_LOAD` | Reaction | ✕ | ◐ | ◐ | ○ |
 
 Notes: the AU loader reports `MIDI_IN`, `EDITOR` and the two preset bits — its MIDI-output / transport / f64 paths are unimplemented (`○`), not spec-impossible. AU's `MIDI_IN` is `◐` off the component type (`aumu` / `aumf` / `aumi` receive MIDI, `aufx` does not), which is the same predicate the process path gates its per-block `send_midi` on. `MIDI_OUT` is not its mirror: reading events back needs a host callback this loader does not install, so it stays `○`. VST2's `F64_AUDIO` is advisory (the `vst` crate is f32 internally). `SEQUENCER_CONTEXT` (chord/scale/per-note text) is a VST3-only concept by spec.
 
-The preset bits are the one place a `✕` means "the format solves this elsewhere" rather than "the format cannot". A VST3 program is an ordinary parameter carrying `kIsProgramChange`, selected through the parameter path, so there is no separate preset mechanism for a flag to describe — reporting one would assert an API VST3 does not have. CLAP splits the two: `CLAP_EXT_PRESET_LOAD` loads from a path, while enumeration lives in the factory-level preset-discovery extension this host does not bind, which is why the bits are independent. AU backs both from `kAudioUnitProperty_FactoryPresets`, and VST2 backs both from
-one number — `AEffect::numPrograms`, since it has no separate "can you load"
-opcode and a plugin declaring programs can always be sent `effProgramChange`.
-That the two move together *for VST2* is why the bits are still independent:
-CLAP splits them, and one bit could not describe both formats. Both bits are edge-triggered host→plugin actions, so like `AUTOMATION_STATE` neither joins `Features::CONSUMES`.
+The preset bits are the one place a `✕` means "the format solves this elsewhere" rather than "the format cannot". A VST3 program is an ordinary parameter carrying `kIsProgramChange`, selected through the parameter path, so there is no separate preset mechanism for a flag to describe — reporting one would assert an API VST3 does not have. CLAP splits the two: `CLAP_EXT_PRESET_LOAD` loads from a path, while enumeration lives in the factory-level preset-discovery extension this host does not bind, which is why the bits are independent. AU backs both from `kAudioUnitProperty_FactoryPresets`. Both bits are edge-triggered host→plugin actions, so like `AUTOMATION_STATE` neither joins `Features::CONSUMES`.
 
-**Wired for VST2 only.** `PluginHandle::presets` / `load_preset` /
-`current_preset` are the cross-format surface, over an opaque `PresetId` that
-carries each format's own identifier (an AU selector, a VST3 `(list, index)`
-pair, a CLAP path) — a single index would work for VST2 and silently corrupt
-AU's sparse numbering. The in-process VST2 path implements it. AU and CLAP
-report the capability but their calls do not cross the IPC boundary yet, so a
-consumer can read the flag and not act on it.
+**Reported, not yet wired.** These flags describe what a loaded plugin can do; the AU and CLAP preset calls do not cross the IPC boundary yet, so a consumer can read the capability but not act on it. Each needs its own format-specific wire message — they share no address space (an AU selector, a CLAP path), so there is no one preset call to add.
 
 ### `probed` — which capabilities a loader actually asked
 

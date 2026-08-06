@@ -17,10 +17,10 @@ mod descriptor;
 mod entry;
 mod ext;
 mod extensions;
+mod handle;
 mod lifecycle;
 mod load;
 mod params;
-mod plugin_ptr;
 mod polling;
 mod ports;
 /// Plugin resource-directory extension — speculative, gated behind `clap-extras`.
@@ -40,7 +40,7 @@ use crate::types::PluginInfo;
 use config::{AudioConfig, AudioScratch, LifecycleFlags, PortLayout};
 use entry::EntryGuard;
 use extensions::ExtensionCache;
-use plugin_ptr::PluginPtr;
+use handle::PluginHandle;
 use std::marker::PhantomData;
 use std::sync::Arc;
 
@@ -58,7 +58,7 @@ pub struct ClapLoaded {
     // runs while the library is still mapped. When nested inside
     // `ClapActive`, that type's `scratch` drops before this `loaded`, so the
     // RT buffers are gone before the plugin is destroyed.
-    pub(crate) plugin: PluginPtr,
+    pub(crate) plugin: PluginHandle,
     pub(crate) _entry_guard: EntryGuard,
     pub(crate) _library: libloading::Library,
     pub(crate) _host: Box<ClapHost>,

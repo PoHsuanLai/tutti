@@ -6,7 +6,7 @@ use super::config::{AudioConfig, LifecycleFlags, PortLayout};
 use super::descriptor::{self, load_descriptor};
 use super::ext;
 use super::extensions::ExtensionCache;
-use super::plugin_ptr::PluginPtr;
+use super::handle::PluginHandle;
 use super::ports::layout_from_clap_port;
 use super::ClapLoaded;
 use crate::error::{ClapError, LoadStage, Result};
@@ -177,8 +177,8 @@ impl ClapLoaded {
         // init returns false, the host must destroy the plugin instance."
         // Previously both early returns below (missing `init`, `init` false)
         // dropped the raw pointer on the floor and then `dlclose`d the library
-        // out from under a live instance. `PluginPtr::drop` now covers both.
-        let plugin = PluginPtr::new(plugin_ptr);
+        // out from under a live instance. `PluginHandle::drop` now covers both.
+        let plugin = PluginHandle::new(plugin_ptr);
 
         let plugin_init_fn =
             unsafe { plugin.as_ref() }

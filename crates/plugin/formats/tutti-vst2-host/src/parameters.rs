@@ -200,18 +200,6 @@ impl Vst2Instance {
                         ParamFlags::empty()
                     },
                     known: ParamFlags::AUTOMATABLE,
-                    // `effGetParameterProperties` carries the category under
-                    // `USES_CATEGORY`. The "numbered from 1, so 0 means
-                    // uncategorised" rule is already applied in the decoder —
-                    // `category` is `None` for a zero index — so there is no
-                    // sentinel left to check here. A category with an empty
-                    // label yields no group, which is the same flat list by a
-                    // shorter route.
-                    group: props
-                        .as_ref()
-                        .and_then(|q| q.category.as_ref())
-                        .map(|c| c.label.clone())
-                        .unwrap_or_default(),
                 }
             })
             .collect()

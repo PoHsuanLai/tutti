@@ -323,15 +323,6 @@ fn dispatch_inner(
             return get_plugin().get_info().category.into();
         }
 
-        Ok(OpCode::BeginSetPreset) => {
-            get_plugin().begin_set_preset();
-            return 1;
-        }
-        Ok(OpCode::EndSetPreset) => {
-            get_plugin().end_set_preset();
-            return 1;
-        }
-
         // `value` is the flag: 1 = bypass, 0 = resume processing.
         Ok(OpCode::SoftBypass) => return isize::from(get_plugin().set_bypass(value != 0)),
 

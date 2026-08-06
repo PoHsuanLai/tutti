@@ -22,8 +22,8 @@ mod thread;
 use crate::error::Result;
 use crate::protocol::{
     ChordChanges, MidiEventVec, NoteExpressionChanges, NoteExpressionIntChanges,
-    NoteExpressionTextChanges, ParamAddress, ParameterChanges, ParameterInfo, Preset, PresetId,
-    ScaleChanges, TransportInfo,
+    NoteExpressionTextChanges, ParamAddress, ParameterChanges, ParameterInfo, ScaleChanges,
+    TransportInfo,
 };
 use crate::util::transport::shm::AudioSlab;
 
@@ -108,15 +108,6 @@ impl AudioBridge {
 
     pub fn is_crashed(&self) -> bool {
         self.lifecycle.is_crashed()
-    }
-
-    /// Why this bridge died, or `None` while it is alive.
-    ///
-    /// Latched at the detection site, so it answers for a crash that happened
-    /// before any listener was installed — which the connect- and
-    /// handshake-failure paths routinely do.
-    pub fn crash_cause(&self) -> Option<String> {
-        self.lifecycle.crash_cause()
     }
 
     pub fn audio_buffer(&self) -> &Arc<AudioSlab> {
@@ -274,53 +265,6 @@ impl AudioBridge {
         if !self
             .channels
             .push_command(Command::GetParameterList { reply })
-        {
-            return None;
-        }
-        ask_resp.recv_timeout(PARAM_TIMEOUT).ok().flatten()
-    }
-
-    /// The plugin's preset list, or `None` when the subprocess is gone.
-    ///
-    /// `None` and `Some(vec![])` are different answers: the first means the
-    /// question could not be asked, the second that the plugin listed nothing.
-    pub fn presets(&self) -> Option<Vec<Preset>> {
-        if self.lifecycle.is_crashed() {
-            return None;
-        }
-        let (ask_resp, reply) = ask::<Option<Vec<Preset>>>();
-        if !self.channels.push_command(Command::GetPresetList { reply }) {
-            return None;
-        }
-        ask_resp.recv_timeout(PARAM_TIMEOUT).ok().flatten()
-    }
-
-    /// Ask the plugin to load a preset. `false` when it refused, the format has
-    /// no load path, or the subprocess is gone — all three mean the preset did
-    /// not load, and a caller must leave its selection where it was.
-    pub fn load_preset(&self, id: PresetId) -> bool {
-        if self.lifecycle.is_crashed() {
-            return false;
-        }
-        let (ask_resp, reply) = ask::<bool>();
-        if !self
-            .channels
-            .push_command(Command::LoadPreset { id, reply })
-        {
-            return false;
-        }
-        ask_resp.recv_timeout(PARAM_TIMEOUT).unwrap_or(false)
-    }
-
-    /// Which preset the plugin considers current, if it will say.
-    pub fn current_preset(&self) -> Option<PresetId> {
-        if self.lifecycle.is_crashed() {
-            return None;
-        }
-        let (ask_resp, reply) = ask::<Option<PresetId>>();
-        if !self
-            .channels
-            .push_command(Command::GetCurrentPreset { reply })
         {
             return None;
         }

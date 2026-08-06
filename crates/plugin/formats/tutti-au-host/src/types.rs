@@ -25,10 +25,10 @@ use coreaudio_sys as sys;
 
 // Opaque handles + scalar aliases (verbatim from coreaudio-sys).
 pub use sys::{
-    AUDependentParameter, AUPreset, AURenderCallback, AURenderCallbackStruct, AudioBuffer,
-    AudioBufferList, AudioChannelDescription, AudioChannelLayout, AudioComponent,
-    AudioComponentDescription, AudioComponentInstance, AudioStreamBasicDescription, AudioTimeStamp,
-    AudioUnit, AudioUnitCocoaViewInfo, AudioUnitParameter, AudioUnitParameterInfo,
+    AUPreset, AURenderCallback, AURenderCallbackStruct, AudioBuffer, AudioBufferList,
+    AudioChannelDescription, AudioChannelLayout, AudioComponent, AudioComponentDescription,
+    AudioComponentInstance, AudioStreamBasicDescription, AudioTimeStamp, AudioUnit,
+    AudioUnitCocoaViewInfo, AudioUnitParameter, AudioUnitParameterInfo,
     AudioUnitParameterStringFromValue, AudioUnitParameterValueFromString,
     AudioUnitRenderActionFlags, CFArrayRef, CFStringRef, OSStatus,
 };
@@ -196,38 +196,6 @@ pub const K_AUDIO_UNIT_PROPERTY_LATENCY: u32 = sys::kAudioUnitProperty_Latency;
 /// audio in time, tail extends how long it lasts. An offline bounce that stops
 /// at the last note truncates every tail on the master bus.
 pub const K_AUDIO_UNIT_PROPERTY_TAIL_TIME: u32 = sys::kAudioUnitProperty_TailTime;
-/// How long the audio on a given bus takes to *reach the listener* — the
-/// latency the AU sits behind, not the latency it adds.
-///
-/// The exact inverse of [`K_AUDIO_UNIT_PROPERTY_LATENCY`] in direction: `Latency`
-/// is the AU telling the host what it costs, this is the host telling the AU
-/// what the rest of the chain costs. Apple's header: "This property is set by a
-/// host to describe to the audio unit the presentation latency of both any of
-/// its input and/or output audio data. It describes this latency in seconds. A
-/// value of zero means either no latency or an unknown latency." Write-only, and
-/// per `(scope, element)` — the header asks for it "on each active input and
-/// output bus", because a multi-output AU's buses can be presented at different
-/// times.
-///
-/// A `Float64` count of **seconds**, like `Latency` and `TailTime`. See
-/// [`presentation_latency`](crate::transport::set_presentation_latency) for why
-/// the host-side signature takes [`Seconds`] rather than converting to samples.
-pub const K_AUDIO_UNIT_PROPERTY_PRESENTATION_LATENCY: u32 =
-    sys::kAudioUnitProperty_PresentationLatency;
-/// Which other parameters a *meta*-parameter moves when it is written.
-///
-/// Read-only, an array of `AUDependentParameter` (a `(scope, parameter id)`
-/// pair, 8 bytes). Keyed by the meta-parameter's own address: the query is made
-/// at the meta-parameter's scope with its **id in the element position**, the
-/// same addressing `ParameterInfo` uses (see [`crate::parameters::info_at`]).
-///
-/// The property exists because a parameter carrying
-/// `kAudioUnitParameterFlag_IsGlobalMeta` or `..._IsElementMeta` may change any
-/// number of others when written, and the AU sends no per-parameter
-/// notification for the ones it moved. A host caching parameter values or ranges
-/// has no other way to learn what went stale.
-pub const K_AUDIO_UNIT_PROPERTY_DEPENDENT_PARAMETERS: u32 =
-    sys::kAudioUnitProperty_DependentParameters;
 pub const K_AUDIO_UNIT_PROPERTY_SUPPORTED_NUM_CHANNELS: u32 =
     sys::kAudioUnitProperty_SupportedNumChannels;
 pub const K_AUDIO_UNIT_PROPERTY_MAXIMUM_FRAMES_PER_SLICE: u32 =
@@ -369,16 +337,6 @@ pub const K_AUDIO_UNIT_PARAMETER_FLAG_NON_REAL_TIME: u32 = sys::kAudioUnitParame
 pub const K_AUDIO_UNIT_PARAMETER_FLAG_CAN_RAMP: u32 = sys::kAudioUnitParameterFlag_CanRamp;
 pub const K_AUDIO_UNIT_PARAMETER_FLAG_OMIT_FROM_PRESETS: u32 =
     sys::kAudioUnitParameterFlag_OmitFromPresets;
-/// "Changing this parameter may change any number of others in the AudioUnit."
-/// The dependents may live on any scope, and per Apple's header a non-global
-/// dependent is dependent "in every element of their scope".
-pub const K_AUDIO_UNIT_PARAMETER_FLAG_IS_GLOBAL_META: u32 =
-    sys::kAudioUnitParameterFlag_IsGlobalMeta;
-/// "Changing this parameter may change others in the same element as the current
-/// parameter." Narrower than `IsGlobalMeta`: the dependents must share one scope
-/// and apply only within that single element.
-pub const K_AUDIO_UNIT_PARAMETER_FLAG_IS_ELEMENT_META: u32 =
-    sys::kAudioUnitParameterFlag_IsElementMeta;
 
 // Display-curve flags. `DISPLAY_MASK` covers a *non-contiguous* field: bits
 // 16..=18 hold the curve index and bit 22 is the separate Logarithmic flag

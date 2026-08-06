@@ -2,10 +2,10 @@
 
 use std::path::Path;
 use tutti_plugin::server::{
-    BusChannels, ClapFeature, EditorPresence, EditorSize, Features, LoadedPlugin, Normalized,
+    BusChannels, ClapFeature, EditorPresence, EditorSize, Features, LoadedPlugin,
     NoteExpressionChanges, ParamAddress, ParamRange, ParameterChanges, ParameterInfo, PluginAudio,
     PluginClass, PluginDescriptor, PluginEditorHost, PluginError, PluginMeta, PluginParams,
-    PluginPresets, PluginResult, PluginState, PluginTail, PresetId, Samples, WindowHandle,
+    PluginResult, PluginState, PluginTail, Samples, WindowHandle,
 };
 use tutti_plugin::server::{ProcessContext, ProcessOutput, RenderMode};
 
@@ -241,21 +241,9 @@ impl ClapInstance {
             // Per-bus channel counts, main bus first (e.g. [2, 1] = stereo main
             // + mono sidechain). Falls back to a single aggregate main bus for
             // plugins that don't implement the `audio-ports` extension.
-            // Per port, from `clap.surround`. `None` for a port the plugin
-            // will not answer for — no extension, or no `get_channel_map`.
-            let port_topology = |is_input: bool, count: usize| {
-                (0..count)
-                    .map(|i| loaded.surround_topology(is_input, i as u32))
-                    .collect()
-            };
-            let input_topology = port_topology(true, input_buses.len());
-            let output_topology = port_topology(false, output_buses.len());
-
             let mut loaded_meta = LoadedPlugin {
                 inputs: input_buses,
                 outputs: output_buses,
-                input_topology,
-                output_topology,
                 latency_samples: Samples::ZERO,
                 // Both filled in after activation, below.
                 tail: PluginTail::Unknown,
@@ -522,7 +510,7 @@ impl PluginParams for ClapInstance {
     /// Normalized `0..=1` in, matching [`get_parameter`](Self::get_parameter).
     /// CLAP events carry the plain value, so the declared range denormalizes it
     /// — the same conversion `add_param_changes` applies on the automation path.
-    fn set_parameter(&mut self, id: ParamAddress, value: Normalized) {
+    fn set_parameter(&mut self, id: ParamAddress, value: f64) {
         let Some(id) = id.opaque() else { return };
         let plain = match clap_dispatch!(self, i => i.parameter_range(id.get())) {
             Some((min, max)) => ParamRange::Plain {
@@ -530,8 +518,8 @@ impl PluginParams for ClapInstance {
                 max,
                 default: min,
             }
-            .to_plain(value.get()),
-            None => value.get(),
+            .to_plain(value),
+            None => value,
         };
         clap_dispatch_mut!(self, i => {
             i.set_parameter(id.get(), plain);
@@ -562,56 +550,6 @@ impl PluginEditorHost for ClapInstance {
             i.close_editor();
         });
     }
-}
-
-/// The filesystem path an id names, or `None` when it names none.
-///
-/// A free function so the decision is testable on its own. Through
-/// `load_preset` it is not: a coerced non-path id produces a path that does not
-/// exist, the plugin refuses *that*, and the caller sees the same `false` the
-/// guard would have produced. The two refusals are indistinguishable from
-/// outside, so only the guard's own inputs can pin it — verified by mutation.
-///
-/// Only [`PresetId::Location`] addresses a CLAP preset:
-/// `clap_plugin_preset_load::from_location` takes a filesystem path and nothing
-/// else. A `Number` or `Program` has no path to coerce *to*, which is why the
-/// id is opaque rather than an integer.
-fn clap_preset_path(id: &PresetId) -> Option<&std::path::Path> {
-    match id {
-        PresetId::Location(p) => Some(p.as_path()),
-        PresetId::Number(_) | PresetId::Program { .. } => None,
-    }
-}
-
-impl PluginPresets for ClapInstance {
-    /// Load a preset from the path an id names, via `CLAP_EXT_PRESET_LOAD`.
-    ///
-    /// [`PresetId::Location`] is the only shape CLAP can address: the
-    /// extension's `from_location` takes a filesystem path and nothing else.
-    /// A `Number` or `Program` names no CLAP preset and is refused rather than
-    /// coerced — there is no number to coerce it *to*, which is exactly why the
-    /// id is opaque.
-    #[cfg(feature = "clap")]
-    fn load_preset(&mut self, id: &PresetId) -> bool {
-        let Some(path) = clap_preset_path(id) else {
-            return false;
-        };
-        clap_dispatch_mut!(self, i => i.load_preset(path).is_ok())
-    }
-
-    // `get_presets` and `get_current_preset` stay at their defaults — an empty
-    // list and `None`.
-    //
-    // CLAP **cannot enumerate**. Discovery lives in the factory-level
-    // preset-discovery extension, which is queried on the *factory* rather than
-    // on a loaded instance and which this host does not bind, so there is no
-    // instance-level call that could answer. `CLAP_EXT_PRESET_LOAD` answers
-    // only "can this be pointed at a path".
-    //
-    // That is why an empty list here is not the same claim as an empty list
-    // from AU: `Features::PRESET_LIST` is *unprobed* for CLAP (see
-    // `probed::CLAP`), so a caller reads `None` — nobody asked — rather than
-    // `Some(false)`, which would say the plugin declined.
 }
 
 impl PluginState for ClapInstance {
@@ -875,86 +813,6 @@ mod tests {
         }
     }
 
-    /// CLAP lists nothing and can still load — a coherent state, not a
-    /// contradiction.
-    ///
-    /// The mirror of VST3, which lists richly and cannot load. CLAP's
-    /// enumeration lives in the factory-level preset-discovery extension, which
-    /// is queried on the *factory* rather than a loaded instance and which this
-    /// host does not bind; `CLAP_EXT_PRESET_LOAD` answers only "can this be
-    /// pointed at a path".
-    ///
-    /// So the empty list is **not** the same claim AU's empty list makes.
-    /// `PRESET_LIST` is unprobed for CLAP, so a caller reads `None` — nobody
-    /// asked — where AU reports `Some(false)`, meaning the unit declined. That
-    /// distinction is the whole reason the two bits are separate, and asserting
-    /// it here is what keeps a future "simplification" from collapsing them.
-    #[test]
-    fn clap_lists_nothing_and_still_reports_a_load_capability() {
-        let _lock = crate::test_utils::plugin_load_lock();
-        let path = Path::new(CLAP_PLUGIN);
-        let mut instance =
-            ClapInstance::load(path, 44100.0, 512).expect("Failed to load CLAP plugin");
-
-        assert!(
-            instance.get_presets().is_empty(),
-            "CLAP has no instance-level enumeration; a non-empty list would mean \
-             something invented one"
-        );
-        assert_eq!(
-            instance.get_current_preset(),
-            None,
-            "CLAP has no current-preset query either"
-        );
-
-        let loaded = instance.loaded();
-        let report = tutti_plugin::server::FeatureReport::new(loaded.probed, loaded.features);
-        assert_eq!(
-            report.get(tutti_plugin::server::Features::PRESET_LIST),
-            None,
-            "PRESET_LIST must read as unasked for CLAP, not as a declination"
-        );
-    }
-
-    /// Only a path-shaped id reaches CLAP's loader.
-    ///
-    /// The preset analogue of `clap_refuses_a_vst2_index`: `from_location`
-    /// takes a filesystem path and nothing else, so a `Number` or `Program`
-    /// names no CLAP preset. There is not even a number to coerce it *to*,
-    /// which is why the id is opaque rather than an integer.
-    #[test]
-    fn clap_refuses_an_id_that_is_not_a_path() {
-        let _lock = crate::test_utils::plugin_load_lock();
-        let path = Path::new(CLAP_PLUGIN);
-        let mut instance =
-            ClapInstance::load(path, 44100.0, 512).expect("Failed to load CLAP plugin");
-
-        // Asserted on the guard, not through `load_preset`: a coerced id
-        // yields a nonexistent path the plugin refuses anyway, so the two
-        // refusals look identical from outside.
-        assert_eq!(
-            clap_preset_path(&PresetId::Number(0)),
-            None,
-            "an AU selector / VST2 index addresses no CLAP preset"
-        );
-        assert_eq!(
-            clap_preset_path(&PresetId::Program {
-                list_id: 0,
-                index: 0
-            }),
-            None,
-            "a VST3 program id addresses no CLAP preset"
-        );
-        assert_eq!(
-            clap_preset_path(&PresetId::Location("/x.clap-preset".into())),
-            Some(Path::new("/x.clap-preset")),
-            "a path-shaped id reaches the loader verbatim"
-        );
-
-        // And the whole path still refuses, which is what a caller sees.
-        assert!(!instance.load_preset(&PresetId::Number(0)));
-    }
-
     /// A VST2 index reaching a CLAP plugin addresses nothing, and must be
     /// refused rather than read as an id.
     ///
@@ -986,7 +844,7 @@ mod tests {
 
         // And the write must not land either.
         let target = if before > 0.5 { 0.1 } else { 0.9 };
-        instance.set_parameter(as_index, Normalized::new(target));
+        instance.set_parameter(as_index, target);
         assert_eq!(
             instance.get_parameter(opaque),
             before,
@@ -1242,7 +1100,7 @@ mod tests {
         assert!(!params.is_empty(), "Need at least one parameter");
 
         let param_id = params[0].id;
-        instance.set_parameter(param_id, Normalized::new(0.5));
+        instance.set_parameter(param_id, 0.5);
     }
 
     // ── Group A: Plugin Lifecycle ──
@@ -1446,7 +1304,7 @@ mod tests {
 
         // Set to a different value
         let new_value = if original < 0.5 { 0.75 } else { 0.25 };
-        instance.set_parameter(param_id, Normalized::new(new_value));
+        instance.set_parameter(param_id, new_value);
 
         let readback = instance.get_parameter(param_id);
         assert!(
@@ -1485,7 +1343,7 @@ mod tests {
 
         // Change parameter
         let new_value = if original_value < 0.5 { 0.75 } else { 0.25 };
-        instance.set_parameter(param_id, Normalized::new(new_value));
+        instance.set_parameter(param_id, new_value);
 
         // Restore state
         instance.set_state(&saved).expect("restore should succeed");
@@ -1678,7 +1536,7 @@ mod tests {
 
         let original_value = instance.get_parameter(param_id);
         let new_value = if original_value < 0.5 { 0.75 } else { 0.25 };
-        instance.set_parameter(param_id, Normalized::new(new_value));
+        instance.set_parameter(param_id, new_value);
 
         instance.set_state(&saved).expect("restore should succeed");
 

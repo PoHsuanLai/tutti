@@ -59,7 +59,6 @@ pub mod meter;
 pub mod pcm;
 pub mod rt;
 pub mod tail;
-pub mod topology;
 
 // RT-callback primitives.
 pub use rt::{
@@ -77,12 +76,8 @@ pub use value::{
     StereoWidth, StretchFactor, Tail, Unit, UnitParam, UnitParamOutOfRange, Velocity, Q,
 };
 
-// Channel layout — how many channels.
+// Channel layout.
 pub use channels::ChannelLayout;
-
-// Channel topology — which speaker each channel feeds. Distinct from the count
-// above, and additive to it: a width-only caller keeps using `ChannelLayout`.
-pub use topology::{ChannelTopology, Speaker};
 
 // Surround → stereo / mono downmix matrices (ITU-R BS.775 / Dolby).
 pub use downmix::{

@@ -9,28 +9,12 @@
 
 use super::PluginEditor;
 use crate::error::{BridgeError, LoadStage, Result};
-use crate::protocol::{Normalized, ParamAddress, ParamRange};
-
-/// Look up declared bounds for `id` in a table sorted by id.
-fn lookup_range(table: &[(u32, (f64, f64))], id: u32) -> Option<(f64, f64)> {
-    table
-        .binary_search_by_key(&id, |(k, _)| *k)
-        .ok()
-        .map(|i| table[i].1)
-}
+use crate::protocol::ParamAddress;
 use crate::util::window::{EditorCapabilities, EditorSize, WindowHandle};
 use std::path::Path;
 
 pub(crate) struct ClapGuiInstance {
     inner: tutti_clap_host::ClapLoaded,
-    /// Declared plain-unit bounds per parameter id, sorted, captured at load.
-    ///
-    /// CLAP parameter values are in the plugin's own units where this host
-    /// speaks normalized, so a mirrored write has to be denormalized. Cached
-    /// because `ClapLoaded::parameter_range` is a linear scan that makes one
-    /// FFI call per parameter to find one id — acceptable once at load, not on
-    /// every knob movement.
-    param_ranges: Vec<(u32, (f64, f64))>,
 }
 
 impl ClapGuiInstance {
@@ -48,23 +32,7 @@ impl ClapGuiInstance {
                     reason: format!("CLAP GUI-only load failed: {e}"),
                 }
             })?;
-        // One pass over the catalog instead of a scan per write. Params are
-        // readable on an unactivated instance, which is what this GUI-only
-        // load is.
-        let mut param_ranges: Vec<(u32, (f64, f64))> = inner
-            .parameter_list()
-            .into_iter()
-            .filter_map(|p| {
-                let id = p.id.opaque()?.get();
-                p.bounds().map(|b| (id, b))
-            })
-            .collect();
-        param_ranges.sort_unstable_by_key(|(id, _)| *id);
-
-        Ok(Self {
-            inner,
-            param_ranges,
-        })
+        Ok(Self { inner })
     }
 }
 
@@ -103,30 +71,10 @@ impl PluginEditor for ClapGuiInstance {
         }
     }
 
-    fn set_parameter(&mut self, id: ParamAddress, value: Normalized) {
+    fn set_parameter(&mut self, id: ParamAddress, value: f64) {
         // `clap_id` is opaque; a VST2 index addresses nothing here.
         let Some(id) = id.opaque() else { return };
-
-        // CLAP values are in the plugin's native plain range, so the host's
-        // normalized value is denormalized against the declared bounds — the
-        // same conversion the subprocess loader applies on the audio path.
-        // Without it, a mirrored write moved the editor to the wrong position
-        // while the audio path went where it was asked.
-        //
-        // A parameter that declared no bounds is written through unconverted,
-        // matching the loader: `ParamRange::Normalized` means there is nothing
-        // to convert against, and inventing `0..=1` would rescale a parameter
-        // the plugin never described.
-        let plain = match lookup_range(&self.param_ranges, id.get()) {
-            Some((min, max)) => ParamRange::Plain {
-                min,
-                max,
-                default: min,
-            }
-            .to_plain(value.get()),
-            None => value.get(),
-        };
-        self.inner.set_parameter(id.get(), plain);
+        self.inner.set_parameter(id.get(), value);
     }
 
     fn set_state(&mut self, data: &[u8]) -> Result<()> {

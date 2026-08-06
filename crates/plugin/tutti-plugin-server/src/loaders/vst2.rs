@@ -8,11 +8,10 @@
 use std::path::Path;
 
 use tutti_plugin::server::{
-    AudioBufferMut, EditorPresence, EditorSize, Features, LoadedPlugin, MidiEventVec, Normalized,
+    AudioBufferMut, EditorPresence, EditorSize, Features, LoadedPlugin, MidiEventVec,
     NoteExpressionChanges, ParamAddress, ParameterChanges, ParameterInfo, PluginAudio, PluginClass,
-    PluginDescriptor, PluginEditorHost, PluginMeta, PluginParams, PluginPresets, PluginResult,
-    PluginState, PluginTail, Preset, PresetId, ProcessContext, ProcessOutput, RenderMode,
-    WindowHandle,
+    PluginDescriptor, PluginEditorHost, PluginMeta, PluginParams, PluginResult, PluginState,
+    PluginTail, ProcessContext, ProcessOutput, RenderMode, WindowHandle,
 };
 // Only the `not(vst2)` fallback arms construct `PluginError` directly.
 #[cfg(not(feature = "vst2"))]
@@ -92,14 +91,6 @@ impl Vst2Instance {
                 tail: PluginTail::Unknown,
                 features,
                 probed,
-                // VST2 reports no speaker placement. `effSetSpeakerArrangement`
-                // (opcode 42) exists, but the `VstSpeakerArrangement` struct its
-                // ABI needs is not defined anywhere in the vendored bindings and
-                // the host never sends it — see D-11 in the plugin-host audit.
-                // Empty lists claim nothing about any bus, which is the honest
-                // answer for a format that cannot be asked.
-                input_topology: Default::default(),
-                output_topology: Default::default(),
             };
 
             let scratch =
@@ -298,14 +289,14 @@ impl PluginParams for Vst2Instance {
         }
     }
 
-    fn set_parameter(&mut self, id: ParamAddress, value: Normalized) {
+    fn set_parameter(&mut self, id: ParamAddress, value: f64) {
         // Same boundary flattening: the shared trait returns `()`, so a write
         // the plugin cannot accept — including one addressed by an opaque
         // handle — is dropped here rather than reported.
         #[cfg(feature = "vst2")]
         let _ = id
             .index()
-            .map(|i| self.inner.set_parameter(i, value.get() as f32));
+            .map(|i| self.inner.set_parameter(i, value as f32));
         #[cfg(not(feature = "vst2"))]
         let _ = (id, value);
     }
@@ -350,36 +341,6 @@ impl PluginEditorHost for Vst2Instance {
     fn close_editor(&mut self) {
         #[cfg(feature = "vst2")]
         self.inner.close_editor();
-    }
-}
-
-impl PluginPresets for Vst2Instance {
-    /// VST2 programs. The index **is** the identifier — `effProgramChange`
-    /// takes a position in `[0, numPrograms)` — so unlike AU's sparse selectors
-    /// these are genuinely dense. Unnamed slots are kept: dropping one would
-    /// renumber every program after it.
-    #[cfg(feature = "vst2")]
-    fn get_presets(&mut self) -> Vec<Preset> {
-        self.inner
-            .programs()
-            .into_iter()
-            .map(|(index, name)| Preset::new(PresetId::Number(index), name))
-            .collect()
-    }
-
-    /// Switch program, bracketed by `effBeginSetProgram`/`effEndSetProgram` in
-    /// the host layer. `false` for an id this format cannot address.
-    #[cfg(feature = "vst2")]
-    fn load_preset(&mut self, id: &PresetId) -> bool {
-        match id.number() {
-            Some(index) => self.inner.set_program(index),
-            None => false,
-        }
-    }
-
-    #[cfg(feature = "vst2")]
-    fn get_current_preset(&mut self) -> Option<PresetId> {
-        Some(PresetId::Number(self.inner.current_program()))
     }
 }
 

@@ -1,16 +1,14 @@
 //! VST3 plugin loader using the `vst3-host` crate.
 
-use std::collections::HashMap;
 use std::path::Path;
 
 use tutti_plugin::server::{
     AudioBufferMut, AutomationMode, BusChannels, ChannelLayout, ChordChanges, EditorPresence,
-    EditorSize, Features, LoadedPlugin, Normalized, NoteExpressionChanges,
-    NoteExpressionIntChanges, NoteExpressionTextChanges, ParamAddress, ParamFlags, ParamRange,
-    ParamSteps, ParameterInfo, PluginAudio, PluginClass, PluginDescriptor, PluginEditorHost,
-    PluginError, PluginMeta, PluginParams, PluginPresets, PluginResult, PluginState, PluginTail,
-    Preset, PresetId, ProcessContext, ProcessOutput, RenderMode, Samples, ScaleChanges,
-    Vst3SubCategories, WindowHandle,
+    EditorSize, Features, LoadedPlugin, NoteExpressionChanges, NoteExpressionIntChanges,
+    NoteExpressionTextChanges, ParamAddress, ParamFlags, ParamRange, ParamSteps, ParameterInfo,
+    PluginAudio, PluginClass, PluginDescriptor, PluginEditorHost, PluginError, PluginMeta,
+    PluginParams, PluginResult, PluginState, PluginTail, ProcessContext, ProcessOutput, RenderMode,
+    Samples, ScaleChanges, Vst3SubCategories, WindowHandle,
 };
 use tutti_plugin::{BridgeError, LoadStage, Result};
 
@@ -132,12 +130,6 @@ fn build_inner(p: &ReloadParams) -> Result<(VstInner, Meta)> {
     let has_note_expression = loaded.note_expression_count(0, 0) > 0;
     let wants_transport = loaded.wants_transport();
     let wants_sequencer_context = loaded.wants_sequencer_context();
-    // Both preset bits come from the same question — does the plugin publish
-    // program lists — because for VST3 they are the same capability. A program
-    // is *selected* by writing the `kIsProgramChange` parameter that owns the
-    // list, so a plugin with lists can do both halves and one without can do
-    // neither. They stay separate bits because CLAP splits them.
-    let has_programs = !loaded.program_lists().is_empty();
 
     let inner = if p.prefer_f64 && info.supports_f64 {
         let inst = loaded
@@ -175,16 +167,7 @@ fn build_inner(p: &ReloadParams) -> Result<(VstInner, Meta)> {
     features.set(Features::TRANSPORT, wants_transport);
     features.set(Features::NOTE_EXPRESSION, has_note_expression);
     features.set(Features::SEQUENCER_CONTEXT, wants_sequencer_context);
-    features.set(Features::PRESET_LIST, has_programs);
-    features.set(Features::PRESET_LOAD, has_programs);
     let probed = tutti_plugin::server::probed::VST3;
-
-    // Queried after activation, because that is when the plugin has settled its
-    // arrangements — `negotiate_bus_arrangements` runs inside `activate`.
-    let (input_topology, output_topology) = match &inner {
-        VstInner::F32(i) => (i.input_bus_topologies(), i.output_bus_topologies()),
-        VstInner::F64(i) => (i.input_bus_topologies(), i.output_bus_topologies()),
-    };
 
     let loaded_meta = LoadedPlugin {
         inputs: bus_channels(&info.input_bus_channels, info.num_inputs),
@@ -193,8 +176,6 @@ fn build_inner(p: &ReloadParams) -> Result<(VstInner, Meta)> {
         tail,
         features,
         probed,
-        input_topology: input_topology.into_iter().collect(),
-        output_topology: output_topology.into_iter().collect(),
     };
 
     Ok((
@@ -382,19 +363,12 @@ impl Vst3Instance {
     }
 
     pub fn get_parameter_list(&self) -> Vec<ParameterInfo> {
-        // Read the unit tree once, not once per parameter: `units()` is a
-        // round trip into the plugin per unit, and a parameter list is the one
-        // place that cost would multiply. The root unit is excluded — see
-        // `unit_names`.
-        let units = vst_dispatch!(self, inner => inner.units());
-        let groups = unit_names(&units);
-
         let count = vst_dispatch!(self, inner => inner.parameter_count());
         (0..count)
             .filter_map(|i| {
                 let info = vst_dispatch!(self, inner => inner.parameter_info(i))?;
                 let plain = vst_dispatch!(self, inner => inner.parameter_plain_range(info.id));
-                Some(build_param_info(info, plain, &groups))
+                Some(build_param_info(info, plain))
             })
             .collect()
     }
@@ -477,37 +451,16 @@ fn process_block<'t, 'd: 't, T: tutti_vst3_host::Vst3Sample>(
 /// its `normalizedParamToPlain` is incoherent — see
 /// [`Vst3Loaded::parameter_plain_range`](tutti_vst3_host::Vst3Loaded::parameter_plain_range).
 /// The parameter is then `Normalized`, which is what the ABI alone reports.
-/// Index a plugin's unit list by id, keeping only units that can name a group.
-///
-/// Two exclusions, both deliberate:
-///
-/// - **The root unit** (`unit_ids::ROOT`, id 0) is every plugin's implicit
-///   top-level unit, and its name is the plugin's own. Every parameter that
-///   declares no unit reports 0, so mapping it would label the entire flat
-///   majority with the plugin name — noise on exactly the parameters that have
-///   no group.
-/// - **Unnamed units.** A unit with an empty name resolves to no group rather
-///   than to an empty label, which is the same answer by a shorter route.
-fn unit_names(units: &[tutti_vst3_host::Vst3UnitInfo]) -> HashMap<i32, &str> {
-    units
-        .iter()
-        .filter(|u| u.id != tutti_vst3_host::unit_ids::ROOT && !u.name.is_empty())
-        .map(|u| (u.id, u.name.as_str()))
-        .collect()
-}
-
 fn build_param_info(
     info: tutti_vst3_host::Vst3ParameterInfo,
     plain: Option<(f64, f64)>,
-    groups: &HashMap<i32, &str>,
 ) -> ParameterInfo {
-    // VST3 reports every one of these, so all six are known.
+    // VST3 reports every one of these, so all five are known.
     const KNOWN: ParamFlags = ParamFlags::AUTOMATABLE
         .union(ParamFlags::READ_ONLY)
         .union(ParamFlags::WRAP)
         .union(ParamFlags::BYPASS)
-        .union(ParamFlags::HIDDEN)
-        .union(ParamFlags::PROGRAM_CHANGE);
+        .union(ParamFlags::HIDDEN);
 
     let mut reported = ParamFlags::empty();
     reported.set(ParamFlags::AUTOMATABLE, info.can_automate());
@@ -515,7 +468,6 @@ fn build_param_info(
     reported.set(ParamFlags::WRAP, info.is_wrap());
     reported.set(ParamFlags::BYPASS, info.is_bypass());
     reported.set(ParamFlags::HIDDEN, info.is_hidden());
-    reported.set(ParamFlags::PROGRAM_CHANGE, info.is_program_change());
 
     // `defaultNormalizedValue` is normalized even when the range is plain, so
     // it goes through the same map as any other incoming value.
@@ -558,16 +510,6 @@ fn build_param_info(
         steps,
         flags: reported & KNOWN,
         known: KNOWN,
-        // A `unitId` naming a unit the plugin never published resolves to no
-        // group. Several plugins carry dangling ids — the same class of bug
-        // `Vst3UnitInfo::program_list` already absorbs for program lists — and
-        // the alternatives are worse: a lookup that panicked would take down a
-        // parameter list over a display label, and one that fell back to a
-        // neighbour would mislabel silently.
-        group: groups
-            .get(&info.unit_id)
-            .map(|n| n.to_string())
-            .unwrap_or_default(),
     }
 }
 
@@ -722,11 +664,9 @@ impl PluginParams for Vst3Instance {
         vst_dispatch!(self, inner => inner.parameter(id.get()))
     }
 
-    fn set_parameter(&mut self, id: ParamAddress, value: Normalized) {
-        // VST3 is normalized natively (`setParamNormalized`), so this is the
-        // one format where the seam's domain and the ABI's coincide.
+    fn set_parameter(&mut self, id: ParamAddress, value: f64) {
         let Some(id) = id.opaque() else { return };
-        vst_dispatch_mut!(self, inner => inner.set_parameter(id.get(), value.get()));
+        vst_dispatch_mut!(self, inner => inner.set_parameter(id.get(), value));
     }
 
     fn set_automation_state(&mut self, mode: AutomationMode) {
@@ -755,142 +695,6 @@ impl PluginEditorHost for Vst3Instance {
     }
 }
 
-impl PluginPresets for Vst3Instance {
-    /// The plugin's programs, flattened out of its named program lists.
-    ///
-    /// VST3 is the one format whose presets are **grouped**: programs live in
-    /// lists attached to units, so each `Preset` carries its list's name as
-    /// `bank`. The id keeps both coordinates — `getProgramName` takes
-    /// `(list_id, index)`, and the list id is plugin-chosen rather than a
-    /// position in `program_lists()`, so neither can be dropped.
-    ///
-    /// A program the plugin declines to name is kept with an empty name rather
-    /// than skipped: the index is half the identifier, so dropping one would
-    /// renumber every program after it within that list.
-    fn get_presets(&mut self) -> Vec<Preset> {
-        vst_dispatch!(self, inner => {
-            inner
-                .program_lists()
-                .into_iter()
-                .flat_map(|list| {
-                    (0..list.program_count).map(move |index| {
-                        let name = inner
-                            .program_name(list.id, index)
-                            .unwrap_or_default();
-                        Preset::in_bank(
-                            PresetId::Program { list_id: list.id, index },
-                            name,
-                            list.name.clone(),
-                        )
-                    })
-                })
-                .collect()
-        })
-    }
-
-    /// Select a program by writing the parameter that owns its list.
-    ///
-    /// VST3 has no load-preset call, so this *is* the load: the format routes a
-    /// program change through the parameter flagged `kIsProgramChange`, whose
-    /// unit names the program list. Doing it here rather than leaving it to the
-    /// caller is what makes the four formats one API — and it stays a single
-    /// write path, because the parameter is still the only thing written.
-    ///
-    /// `false` when the id names no VST3 program, when no parameter claims that
-    /// list, or when the list has fewer than two entries (nothing to select
-    /// between, and the normalization would divide by zero).
-    ///
-    /// `IUnitInfo::setUnitProgramData` is *not* this call: it takes an
-    /// `IBStream` of preset bytes and writes them into a slot, the inverse
-    /// operation. Named because it is the obvious thing to find later and
-    /// mistake for a load path.
-    fn load_preset(&mut self, id: &PresetId) -> bool {
-        let PresetId::Program { list_id, index } = id else {
-            return false;
-        };
-        let Some((param_id, step_count)) = self.program_change_param(*list_id) else {
-            return false;
-        };
-        // `StringListParameter::toNormalized` is `value / stepCount`
-        // (`futils.h:87-90`), and `appendString` increments `stepCount` per
-        // entry from zero — so a list of N programs has `stepCount == N - 1`
-        // and index `i` normalizes to `i / (N - 1)`, not `i / N`. The
-        // off-by-one is silent and lands on a neighbouring program.
-        if step_count <= 0 || *index > step_count as u32 {
-            return false;
-        }
-        let normalized = f64::from(*index) / f64::from(step_count);
-        vst_dispatch_mut!(self, inner => inner.set_parameter(param_id, normalized));
-        true
-    }
-
-    /// The program the plugin currently has selected, read back off the same
-    /// parameter [`load_preset`](Self::load_preset) writes.
-    ///
-    /// `None` when no unit publishes a program list, which is every plugin
-    /// that does not implement `IUnitInfo`.
-    fn get_current_preset(&mut self) -> Option<PresetId> {
-        let list_id = vst_dispatch!(self, inner => {
-            inner.units().into_iter().find_map(|u| u.program_list)
-        })?;
-        let (param_id, step_count) = self.program_change_param(list_id)?;
-        if step_count <= 0 {
-            return None;
-        }
-        let normalized = vst_dispatch!(self, inner => inner.parameter(param_id));
-        // Inverse of the write: `FromNormalized` is `value * stepCount`, then
-        // rounded — the parameter is a discrete list, so a value between two
-        // steps belongs to the nearer one.
-        let index = (normalized * f64::from(step_count)).round();
-        if !index.is_finite() || index < 0.0 {
-            return None;
-        }
-        Some(PresetId::Program {
-            list_id,
-            index: index as u32,
-        })
-    }
-}
-
-impl Vst3Instance {
-    /// The `(parameter id, step count)` of the program-change parameter that
-    /// selects from `list_id`, if one exists.
-    ///
-    /// The link runs parameter -> unit -> program list: a program-change
-    /// parameter belongs to a unit, and that unit names the list it selects
-    /// from. Matching on the *flag* rather than on a name or position is what
-    /// makes this work for a plugin with several lists.
-    ///
-    /// **The flag check is uncovered, measured rather than assumed.** Dropping
-    /// `is_program_change()` and taking the unit's first parameter leaves every
-    /// test green: the SDK's `multiple_programchanges` sample gives each unit
-    /// exactly one parameter, so the two rules coincide. The fixture that would
-    /// separate them is `mda-vst3`, whose controllers add a Bypass parameter to
-    /// the same root unit *before* the preset one — but its shell exposes the
-    /// base controller (dangling `programListId`, zero published lists) and
-    /// `load_class` cannot re-open the bundle while the first load holds it. So
-    /// no available input distinguishes the two, and a plugin that puts any
-    /// parameter ahead of its program-change one would have the wrong parameter
-    /// written. The flag is correct per `vsteditcontroller.cpp:604`; it is the
-    /// test that is missing, not the rule.
-    #[cfg(feature = "vst3")]
-    fn program_change_param(&self, list_id: i32) -> Option<(u32, i32)> {
-        vst_dispatch!(self, inner => {
-            let owning_unit = inner
-                .units()
-                .into_iter()
-                .find(|u| u.program_list == Some(list_id))?
-                .id;
-            let count = inner.parameter_count();
-            (0..count).find_map(|i| {
-                let info = inner.parameter_info(i)?;
-                (info.is_program_change() && info.unit_id == owning_unit)
-                    .then_some((info.id, info.step_count))
-            })
-        })
-    }
-}
-
 impl PluginState for Vst3Instance {
     fn get_state(&mut self) -> PluginResult<Vec<u8>> {
         vst_dispatch_mut!(self, inner => inner.state())
@@ -912,253 +716,6 @@ mod tests {
     use tutti_plugin::server::{AudioBuffer, AudioBuffer64, AudioBufferMut, MidiEvent};
 
     const VST3_PLUGIN: &str = "/Library/Audio/Plug-Ins/VST3/TAL-NoiseMaker.vst3";
-
-    /// Build a unit as the plugin would report it, with no program list.
-    fn unit(id: i32, name: &str) -> tutti_vst3_host::Vst3UnitInfo {
-        tutti_vst3_host::Vst3UnitInfo {
-            id,
-            parent: Some(tutti_vst3_host::unit_ids::ROOT),
-            name: name.to_string(),
-            program_list: None,
-            program_list_id_raw: tutti_vst3_host::unit_ids::NO_PROGRAM_LIST,
-        }
-    }
-
-    /// A parameter naming a published unit is labelled with that unit's name.
-    #[test]
-    fn a_parameter_takes_the_name_of_the_unit_it_declares() {
-        let units = [unit(1, "Filter"), unit(2, "Amp")];
-        let groups = unit_names(&units);
-        assert_eq!(groups.get(&1).copied(), Some("Filter"));
-        assert_eq!(groups.get(&2).copied(), Some("Amp"));
-    }
-
-    /// The root unit names no group.
-    ///
-    /// This is the case that decides whether grouping is useful or noise:
-    /// every parameter that declares no unit reports id 0, so if the root were
-    /// mapped, the flat majority of parameters on every plugin would be
-    /// labelled with the plugin's own name.
-    #[test]
-    fn the_root_unit_is_not_a_group() {
-        let units = [
-            unit(tutti_vst3_host::unit_ids::ROOT, "TAL-NoiseMaker"),
-            unit(1, "Filter"),
-        ];
-        let groups = unit_names(&units);
-        assert_eq!(
-            groups.get(&tutti_vst3_host::unit_ids::ROOT),
-            None,
-            "the root unit's name is the plugin's, not a group's"
-        );
-        assert_eq!(groups.get(&1).copied(), Some("Filter"));
-    }
-
-    /// A `unitId` naming a unit the plugin never published resolves to no
-    /// group, rather than to a neighbour's label.
-    ///
-    /// Dangling ids are a real plugin bug — the same class
-    /// `Vst3UnitInfo::program_list` already absorbs — and the failure mode
-    /// worth refusing is a *plausible* wrong answer: a lookup that fell back to
-    /// the first unit would silently file the parameter under someone else's
-    /// heading.
-    #[test]
-    fn a_unit_id_that_names_nothing_yields_no_group() {
-        let units = [unit(1, "Filter")];
-        let groups = unit_names(&units);
-        assert_eq!(groups.get(&7), None);
-    }
-
-    /// A unit the plugin published without a name yields no group, rather than
-    /// an empty heading a UI would render as a blank section.
-    #[test]
-    fn an_unnamed_unit_is_not_a_group() {
-        let units = [unit(1, "")];
-        let groups = unit_names(&units);
-        assert_eq!(groups.get(&1), None);
-    }
-
-    /// The SDK's `multiple-program-changes` sample, when the corpus is built.
-    ///
-    /// Looked up at *runtime* rather than through `env!`, so a checkout without
-    /// the corpus skips instead of failing to compile. Set
-    /// `VST3_SAMPLE_PLUGIN_DIR` to the directory holding the built samples.
-    fn multi_program_sample() -> Option<std::path::PathBuf> {
-        let dir = std::env::var("VST3_SAMPLE_PLUGIN_DIR").ok()?;
-        let path = Path::new(&dir).join("multiple-program-changes.vst3");
-        path.exists().then_some(path)
-    }
-
-    /// A VST3 program keeps both coordinates, and its list's name.
-    ///
-    /// The SDK's `multiple_programchanges` sample is the fixture that makes
-    /// this witnessable: it builds 16 program lists whose ids are
-    /// `kProgramStartId + i`, so a **list id is provably not a position** in
-    /// `program_lists()`. A mapping that dropped `list_id` and kept `index`
-    /// would collapse all 16 lists onto one another — 2048 presets becoming
-    /// 128 — which is what the count assertion catches.
-    ///
-    /// `bank` carries the list name because VST3 is the one format whose
-    /// presets are grouped; the other three expose a single flat set and
-    /// report `None`.
-    #[test]
-    fn a_vst3_program_keeps_its_list_id_and_bank() {
-        let Some(path) = multi_program_sample() else {
-            eprintln!("VST3_SAMPLE_PLUGIN_DIR unset or sample absent; skipping");
-            return;
-        };
-        let _lock = crate::test_utils::plugin_load_lock();
-        let mut instance = match Vst3Instance::load(&path, 44_100.0, 512, false) {
-            Ok(i) => i,
-            Err(e) => {
-                eprintln!("sample failed to load ({e:?}); skipping");
-                return;
-            }
-        };
-
-        let presets = instance.get_presets();
-        assert!(
-            presets.len() > 128,
-            "16 lists of 128 programs must not collapse onto one another; got {}",
-            presets.len()
-        );
-
-        // Every id keeps both coordinates, and more than one distinct list id
-        // appears — the property a flattened mapping would destroy.
-        let lists: std::collections::BTreeSet<i32> = presets
-            .iter()
-            .filter_map(|p| match &p.id {
-                PresetId::Program { list_id, .. } => Some(*list_id),
-                _ => None,
-            })
-            .collect();
-        assert!(
-            lists.len() > 1,
-            "the sample publishes several program lists; saw {lists:?}"
-        );
-        assert_eq!(
-            lists.len(),
-            presets
-                .iter()
-                .filter_map(|p| p.bank.clone())
-                .collect::<std::collections::BTreeSet<_>>()
-                .len(),
-            "each list must contribute its own bank name"
-        );
-
-        // The same index appears in every list, so an id that dropped its
-        // list would be ambiguous.
-        let index_zero: Vec<&Preset> = presets
-            .iter()
-            .filter(|p| matches!(p.id, PresetId::Program { index: 0, .. }))
-            .collect();
-        assert_eq!(
-            index_zero.len(),
-            lists.len(),
-            "index 0 exists once per list; an id without list_id could not tell them apart"
-        );
-    }
-
-    /// A program listed through the loader loads, and reads back.
-    ///
-    /// VST3 has no load-preset call — this *is* the load, routed through the
-    /// `kIsProgramChange` parameter that owns the list. Before this the loader
-    /// reported `false` and a caller had to find and drive that parameter
-    /// itself, which is the branch a cross-format API exists to remove.
-    ///
-    /// Round-tripped rather than merely accepted: `load_preset` returning
-    /// `true` says the parameter was written, and only reading it back through
-    /// `get_current_preset` shows the write landed on the program asked for.
-    /// That is what catches the normalization off-by-one — `i / (N - 1)`, not
-    /// `i / N` — which lands on a neighbour rather than failing.
-    #[test]
-    fn a_vst3_program_loads_and_reads_back() {
-        let Some(path) = multi_program_sample() else {
-            eprintln!("VST3_SAMPLE_PLUGIN_DIR unset or sample absent; skipping");
-            return;
-        };
-        let _lock = crate::test_utils::plugin_load_lock();
-        let mut instance = match Vst3Instance::load(&path, 44_100.0, 512, false) {
-            Ok(i) => i,
-            Err(e) => {
-                eprintln!("sample failed to load ({e:?}); skipping");
-                return;
-            }
-        };
-
-        let presets = instance.get_presets();
-        assert!(presets.len() > 2, "the sample publishes many programs");
-
-        // Taken from the listing, never constructed.
-        let wanted = presets[2].id.clone();
-        assert!(
-            instance.load_preset(&wanted),
-            "a program the plugin listed must load"
-        );
-        assert_eq!(
-            instance.get_current_preset(),
-            Some(wanted.clone()),
-            "the plugin must report the program just written"
-        );
-
-        // The round trip alone cannot catch the off-by-one: `get_current_preset`
-        // inverts the *same* formula, so a wrong divisor agrees with itself.
-        // Only the absolute value the plugin now holds distinguishes them.
-        // Measured on the SDK sample: 128 programs -> `step_count == 127`, so
-        // index 2 is 2/127 = 0.015748…, where `i / N` would give 2/128 =
-        // 0.015625 and select a neighbouring program on a longer list.
-        let PresetId::Program { list_id, index } = &wanted else {
-            unreachable!("VST3 ids are programs")
-        };
-        let (param_id, step_count) = instance
-            .program_change_param(*list_id)
-            .expect("the list has a program-change parameter");
-        assert_eq!(step_count, 127, "128 programs report 127 steps, not 128");
-        let raw = vst_dispatch!(instance, inner => inner.parameter(param_id));
-        let expected = f64::from(*index) / f64::from(step_count);
-        assert!(
-            (raw - expected).abs() < 1e-9,
-            "wrote {raw}, expected {expected} — the divisor is `step_count`, \
-             not the program count"
-        );
-    }
-
-    /// An id from another format is refused rather than coerced.
-    ///
-    /// `Number` and `Location` name nothing in VST3's `(list, index)` space.
-    /// A `Number` is the dangerous one: it *looks* like a program index, and
-    /// treating it as one would write a real program in whichever list
-    /// happened to be found first.
-    #[test]
-    fn a_vst3_load_refuses_an_id_from_another_format() {
-        let Some(path) = multi_program_sample() else {
-            eprintln!("VST3_SAMPLE_PLUGIN_DIR unset or sample absent; skipping");
-            return;
-        };
-        let _lock = crate::test_utils::plugin_load_lock();
-        let mut instance = match Vst3Instance::load(&path, 44_100.0, 512, false) {
-            Ok(i) => i,
-            Err(e) => {
-                eprintln!("sample failed to load ({e:?}); skipping");
-                return;
-            }
-        };
-
-        let before = instance.get_current_preset();
-        assert!(
-            !instance.load_preset(&PresetId::Number(1)),
-            "an AU selector / VST2 index addresses no VST3 program"
-        );
-        assert!(
-            !instance.load_preset(&PresetId::Location("/x.clap-preset".into())),
-            "a CLAP path addresses no VST3 program"
-        );
-        assert_eq!(
-            instance.get_current_preset(),
-            before,
-            "a refused load must not move the program"
-        );
-    }
 
     #[test]
     fn test_vst3_load() {

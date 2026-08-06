@@ -599,43 +599,6 @@ impl<T: Host> PluginLoader<T> {
 }
 
 impl PluginInstance {
-    /// Read `AEffect::numPrograms` as it stands *now*.
-    ///
-    /// [`get_info`](Plugin::get_info) returns the snapshot taken in
-    /// [`new`](Self::new), before `effOpen`. A **shell** plugin — one bundle
-    /// exposing many effects — picks which effect it is during init, and its
-    /// program count is that effect's, not the shell's. Reading the snapshot
-    /// gives the count from before the choice.
-    ///
-    /// Same live-field reasoning as
-    /// [`read_initial_delay`](Self::read_initial_delay); `numPrograms` is a
-    /// plain `i32` on the `AEffect`, not a call into the plugin.
-    pub fn read_num_programs(&self) -> i32 {
-        // SAFETY: `self.params` owns the `*mut AEffect` for this instance's
-        // lifetime; `numPrograms` is a plain `i32` field, so there is no
-        // re-entrancy or thread-affinity concern.
-        unsafe { (*self.params.get_effect()).numPrograms }
-    }
-
-    /// Bracket a preset change with `effBeginSetProgram`(67) /
-    /// `effEndSetProgram`(68), running `change` between them.
-    ///
-    /// A preset switch moves many parameters at once. Unbracketed, each one
-    /// reaches the host as an individual `audioMasterAutomate` edit, so a
-    /// switch reads as a storm of automation writes rather than one atomic
-    /// event — and this host has that callback wired and draining, so the storm
-    /// is real rather than hypothetical.
-    ///
-    /// Both opcodes are optional and their return is not load-bearing: an
-    /// unimplemented one falls through the dispatcher and the change still
-    /// happens. The bracket is advisory, so there is nothing here to report.
-    pub fn with_preset_bracket<R>(&mut self, change: impl FnOnce(&mut Self) -> R) -> R {
-        self.opcode(plugin::OpCode::BeginSetPreset);
-        let result = change(self);
-        self.opcode(plugin::OpCode::EndSetPreset);
-        result
-    }
-
     /// Ask the plugin to enter or leave *soft* bypass, via `effSetBypass`(44).
     ///
     /// Returns `false` when the plugin refuses or does not implement the

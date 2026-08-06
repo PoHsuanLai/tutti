@@ -155,7 +155,6 @@ fn handle_with_mock_server(
         tail: PluginTail::Unknown,
         features: Features::EDITOR,
         probed: Features::EDITOR,
-        ..Default::default()
     };
     let plugin_handle = PluginHandle::from_bridge_and_metadata(bridge, descriptor, loaded);
 
@@ -261,7 +260,6 @@ fn handle_with_multi_reply_server(
         tail: PluginTail::Unknown,
         features: Features::EDITOR,
         probed: Features::EDITOR,
-        ..Default::default()
     };
     let plugin_handle =
         PluginHandle::from_bridge_and_metadata(Arc::clone(&bridge), descriptor, loaded);
@@ -320,25 +318,21 @@ fn trailing_unsolicited_events_dont_poison_next_reply() {
             BridgeEvent::ParameterChanged { index, value } => {
                 *param_seen.lock() = Some((index as u32, value));
             }
-            BridgeEvent::TailChanged { .. }
-            | BridgeEvent::Resync(_)
-            | BridgeEvent::Crashed { .. } => {}
+            BridgeEvent::TailChanged { .. } | BridgeEvent::Resync(_) => {}
         })));
     }
 
     // First request: receives `ParameterList`. Trailing events sit in
     // the socket buffer until the next `recv_reply` pulls them — which
     // happens on the next request.
-    let params = handle.params().parameter_descriptors().unwrap();
+    let params = handle.parameters().unwrap();
     assert_eq!(params.len(), 1);
     assert_eq!(params[0].name, "Vol");
 
     // Second request: the helper must peel the two trailing events off
     // before returning the real `ParameterValue` reply.
     assert_eq!(
-        handle
-            .params()
-            .parameter_value(ParamAddress::Opaque(ParamId::new(0))),
+        handle.parameter(ParamAddress::Opaque(ParamId::new(0))),
         Some(0.5)
     );
 
@@ -392,11 +386,9 @@ fn a_tail_change_reaches_the_listener() {
 
     // First request takes the reply; the trailing event waits in the socket
     // buffer until the next `recv_reply` drains it.
-    assert_eq!(handle.params().parameter_descriptors().unwrap().len(), 1);
+    assert_eq!(handle.parameters().unwrap().len(), 1);
     assert_eq!(
-        handle
-            .params()
-            .parameter_value(ParamAddress::Opaque(ParamId::new(0))),
+        handle.parameter(ParamAddress::Opaque(ParamId::new(0))),
         Some(0.5)
     );
 
@@ -419,7 +411,7 @@ fn handle_save_state_roundtrip() {
         _ => None,
     });
 
-    let state = handle.state().save_state();
+    let state = handle.save_state();
     assert_eq!(state.unwrap(), vec![0xDE, 0xAD, 0xBE, 0xEF]);
 }
 
@@ -436,7 +428,7 @@ fn handle_get_parameter_list() {
         _ => None,
     });
 
-    let params = handle.params().parameter_descriptors().unwrap();
+    let params = handle.parameters().unwrap();
     assert_eq!(params.len(), 3);
     assert_eq!(params[0].name, "Volume");
     assert_eq!(params[1].name, "Pan");
@@ -456,9 +448,7 @@ fn handle_get_parameter_value() {
     });
 
     assert_eq!(
-        handle
-            .params()
-            .parameter_value(ParamAddress::Opaque(ParamId::new(42))),
+        handle.parameter(ParamAddress::Opaque(ParamId::new(42))),
         Some(0.75)
     );
 }

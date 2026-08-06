@@ -169,7 +169,6 @@ impl PluginParameters for ProbeParameters {
     }
 
     fn change_preset(&self, preset: i32) {
-        switches::record_preset_event(switches::preset_event::CHANGE);
         if preset >= 0 && preset < self.serviced_programs {
             self.current_program
                 .store(preset, std::sync::atomic::Ordering::SeqCst);
@@ -319,17 +318,6 @@ impl Plugin for ProbePlugin {
             config,
             params,
         }
-    }
-
-    /// Records `effBeginSetProgram` so a test can check the bracket's *order*,
-    /// not merely that it arrived.
-    fn begin_set_preset(&mut self) {
-        switches::record_preset_event(switches::preset_event::BEGIN);
-    }
-
-    /// Records `effEndSetProgram`. See [`begin_set_preset`](Self::begin_set_preset).
-    fn end_set_preset(&mut self) {
-        switches::record_preset_event(switches::preset_event::END);
     }
 
     /// Accepts `effSetBypass` only when a test has enabled it.

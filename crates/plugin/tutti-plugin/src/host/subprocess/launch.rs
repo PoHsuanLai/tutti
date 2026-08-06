@@ -16,29 +16,10 @@ use std::path::Path;
 use std::process::{Child, Command};
 use std::sync::Arc;
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-/// How long to keep retrying the connect while the plugin-server binds.
-///
-/// This replaced a flat 500 ms `sleep`. The server binds its socket as its
-/// first real act — `main` reads one argv entry and calls `PluginServer::run`,
-/// which binds before anything else — so the wait was never for setup work, it
-/// was padding for process spawn. Paying it unconditionally cost half a second
-/// on *every* load, including the ones that were ready in five milliseconds,
-/// and a project with twenty plugins spent ten seconds sleeping.
-///
-/// A retry loop pays only what the spawn actually takes. The bound is generous
-/// rather than tight because the failure it guards is a slow machine under
-/// load, and the cost of being generous is only paid when the server never
-/// arrives at all — which is a failed load either way.
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
-
-/// How long to wait between connect attempts.
-///
-/// Short enough that a fast spawn is not rounded up to something a user
-/// notices, long enough that a slow one does not spin the CPU. At this interval
-/// the common case returns in single-digit milliseconds.
-const CONNECT_RETRY_INTERVAL: Duration = Duration::from_millis(2);
+/// How long to let the plugin-server bind its socket before we connect.
+const STARTUP_DELAY: Duration = Duration::from_millis(500);
 
 pub struct LaunchedServer {
     pub process: Child,
@@ -72,17 +53,14 @@ pub fn launch(
 ) -> Result<LaunchedServer> {
     let mut process = spawn_process(config)?;
 
-    // `&mut process` rather than a move: the connect retry polls the child so a
-    // server that died on startup is reported at once, and the teardown below
-    // still needs to reap it.
-    let result = (|process: &mut Child| {
-        let mut stream = handshake(config, process)?;
+    let result = (|| {
+        let mut stream = handshake(config)?;
         let shm_name = next_shm_name();
         let (descriptor, loaded, format) =
             load_plugin(&mut stream, config, plugin_path, sample_rate, &shm_name)?;
         let audio_buffer = setup_shm(&mut stream, config, &loaded, format, shm_name)?;
         Ok((descriptor, loaded, format, audio_buffer))
-    })(&mut process);
+    })();
 
     match result {
         Ok((descriptor, loaded, format, audio_buffer)) => Ok(LaunchedServer {
@@ -114,39 +92,9 @@ fn spawn_process(config: &BridgeConfig) -> Result<Child> {
         .map_err(BridgeError::Io)
 }
 
-/// Connect as soon as the server is listening, rather than after a fixed wait.
-///
-/// `connect` fails immediately while nothing is bound, so retrying is how the
-/// host learns the socket is up. The path is unique per launch
-/// (`unique_socket_path`), so a successful connect can only be *this* server —
-/// there is no stale socket from a previous run to attach to by mistake.
-///
-/// `process` is polled between attempts. A server that died on startup — a
-/// missing dynamic library, an immediate panic — never binds, and without this
-/// the host would retry for the full timeout before reporting a failure whose
-/// cause was known within milliseconds.
-fn connect_when_listening(socket: &Path, process: &mut Child) -> Result<ControlStream> {
-    let deadline = Instant::now() + CONNECT_TIMEOUT;
-    loop {
-        match ipc::connect(socket) {
-            Ok(stream) => return Ok(stream),
-            Err(e) => {
-                if let Ok(Some(status)) = process.try_wait() {
-                    return Err(BridgeError::ConnectionFailed(format!(
-                        "plugin-server exited before binding its socket ({status})"
-                    )));
-                }
-                if Instant::now() >= deadline {
-                    return Err(e);
-                }
-                thread::sleep(CONNECT_RETRY_INTERVAL);
-            }
-        }
-    }
-}
-
-fn handshake(config: &BridgeConfig, process: &mut Child) -> Result<ControlStream> {
-    let mut stream = connect_when_listening(&config.socket_path, process)?;
+fn handshake(config: &BridgeConfig) -> Result<ControlStream> {
+    thread::sleep(STARTUP_DELAY);
+    let mut stream = ipc::connect(&config.socket_path)?;
     let timeout = Duration::from_millis(config.timeout_ms);
     match ipc::recv_within(&mut stream, timeout)? {
         BridgeMessage::Ready { protocol_version } => {
@@ -630,18 +578,7 @@ mod tests {
             timeout_ms: 2_000,
             ..Default::default()
         };
-        // The listener above stands in for the server, so there is no child to
-        // poll — but `handshake` takes one to notice a spawn that died. A
-        // long-lived `sleep` is the cheapest stand-in that stays alive for the
-        // whole test; it is killed below.
-        let mut stand_in = Command::new("sleep")
-            .arg("30")
-            .spawn()
-            .expect("failed to spawn the stand-in child");
-        let err = handshake(&config, &mut stand_in)
-            .expect_err("a v3 server must not complete the v4 handshake");
-        let _ = stand_in.kill();
-        let _ = stand_in.wait();
+        let err = handshake(&config).expect_err("a v3 server must not complete the v4 handshake");
 
         match err {
             BridgeError::ProtocolMismatch { expected, got } => {
@@ -660,91 +597,6 @@ mod tests {
         );
 
         let _ = server.join();
-        let _ = std::fs::remove_file(&path);
-    }
-
-    /// The connect waits for a socket that is not bound yet, instead of failing.
-    ///
-    /// This is the property that replaced the flat 500 ms sleep. The listener is
-    /// deliberately created *after* `connect_when_listening` is already
-    /// retrying, so a single attempt — which is what the code did before the
-    /// sleep was introduced — cannot pass: the first `connect` is guaranteed to
-    /// find nothing bound.
-    #[test]
-    fn the_connect_waits_for_a_socket_that_is_not_bound_yet() {
-        use interprocess::local_socket::{prelude::*, GenericFilePath, ListenerOptions};
-
-        let path = std::env::temp_dir().join(format!("tutti_late_bind_{}", std::process::id()));
-        let _ = std::fs::remove_file(&path);
-
-        let listen_path = path.clone();
-        let server = std::thread::spawn(move || {
-            // Long enough that the first few connect attempts must fail.
-            std::thread::sleep(Duration::from_millis(60));
-            let name = listen_path
-                .clone()
-                .to_fs_name::<GenericFilePath>()
-                .expect("socket name");
-            let listener = ListenerOptions::new()
-                .name(name)
-                .create_sync()
-                .expect("bind the late listener");
-            // Hold the connection open briefly so the host's connect succeeds.
-            let _ = listener.accept();
-            std::thread::sleep(Duration::from_millis(50));
-        });
-
-        let mut stand_in = Command::new("sleep")
-            .arg("30")
-            .spawn()
-            .expect("failed to spawn the stand-in child");
-        let result = connect_when_listening(&path, &mut stand_in);
-        let _ = stand_in.kill();
-        let _ = stand_in.wait();
-
-        assert!(
-            result.is_ok(),
-            "the connect must retry until the server binds, got: {:?}",
-            result.err()
-        );
-
-        let _ = server.join();
-        let _ = std::fs::remove_file(&path);
-    }
-
-    /// A server that dies before binding is reported at once, not after the
-    /// full timeout.
-    ///
-    /// Without the `try_wait` poll this case is indistinguishable from a slow
-    /// spawn, so the host would retry for the whole `CONNECT_TIMEOUT` before
-    /// reporting a failure whose cause was known in milliseconds. The elapsed
-    /// assertion is the point — a test that only checked for `Err` would pass
-    /// on the slow path too.
-    #[test]
-    fn a_server_that_never_binds_is_reported_before_the_timeout() {
-        let path = std::env::temp_dir().join(format!("tutti_never_bound_{}", std::process::id()));
-        let _ = std::fs::remove_file(&path);
-
-        // Exits immediately and binds nothing — the shape of a plugin-server
-        // that dies on a missing dynamic library.
-        let mut dead = Command::new("true")
-            .spawn()
-            .expect("failed to spawn the exiting child");
-
-        let started = Instant::now();
-        let err = connect_when_listening(&path, &mut dead)
-            .expect_err("a server that never binds cannot connect");
-        let elapsed = started.elapsed();
-
-        assert!(
-            elapsed < CONNECT_TIMEOUT / 2,
-            "a dead server must be noticed promptly, took {elapsed:?} of {CONNECT_TIMEOUT:?}"
-        );
-        assert!(
-            format!("{err}").contains("exited before binding"),
-            "the error must say the server died rather than blaming the socket, got: {err}"
-        );
-
         let _ = std::fs::remove_file(&path);
     }
 }

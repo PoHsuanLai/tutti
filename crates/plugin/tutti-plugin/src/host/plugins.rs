@@ -231,26 +231,9 @@ impl Plugins {
         self.catalog.blacklisted()
     }
 
-    /// `true` if [`open`](Self::open) would refuse the plugin at `path`.
-    ///
-    /// **Answers the same question `open` asks, and must keep doing so.** This
-    /// used to call the raw [`CatalogExt::is_blacklisted`] while `open` called
-    /// the mtime-aware [`CatalogExt::is_blacklisted_and_unchanged`], so a
-    /// plugin whose file had changed since it was blacklisted reported `true`
-    /// here and opened fine there. A host greying out a browser entry on this
-    /// answer hid a plugin it could have loaded — and hid it *permanently*,
-    /// because the reinstall that was supposed to lift the blacklist is exactly
-    /// what makes the two disagree.
-    ///
-    /// A raw flag check is still available as
-    /// [`CatalogExt::is_blacklisted`] for a host that genuinely wants "was this
-    /// ever blacklisted" — but that is a different question, and it is not the
-    /// one a UI asking "can I load this" wants.
-    ///
-    /// [`CatalogExt::is_blacklisted`]: crate::catalog::CatalogExt::is_blacklisted
-    /// [`CatalogExt::is_blacklisted_and_unchanged`]: crate::catalog::CatalogExt::is_blacklisted_and_unchanged
+    /// `true` if the plugin at `path` is blacklisted.
     pub fn is_blacklisted(&self, path: &Path) -> bool {
-        self.catalog.is_blacklisted_and_unchanged(path)
+        self.catalog.is_blacklisted(path)
     }
 
     /// Open a plugin, refusing one this catalog recorded as having brought a
@@ -577,61 +560,6 @@ mod tests {
         assert!(
             !matches!(err, BridgeError::Blacklisted { .. }),
             "a changed file must not be refused as blacklisted, got {err:?}"
-        );
-
-        std::fs::remove_file(&path).ok();
-    }
-
-    /// The query and the door agree about a plugin whose file has changed.
-    ///
-    /// They used to disagree: `is_blacklisted` read the raw flag while `open`
-    /// used the mtime-aware check, so an updated plugin reported blacklisted
-    /// and opened anyway. A browser greying entries out on the query hid a
-    /// plugin it could load — and hid it permanently, because the reinstall
-    /// meant to lift the blacklist is exactly what made the two diverge.
-    ///
-    /// Asserting *agreement* rather than a fixed answer is what makes this
-    /// survive a future change to the staleness rule: whatever `open` decides,
-    /// the query has to say the same thing.
-    #[test]
-    fn the_query_and_the_door_agree_after_the_file_changes() {
-        let dir = std::env::temp_dir().join("tutti-bl-stale");
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("Updated.vst3");
-        std::fs::write(&path, b"not a real plugin").unwrap();
-
-        // Unchanged first: both halves must still refuse.
-        let fresh = catalog_with(blacklisted_record(&path, "SIGSEGV during probe"));
-        assert!(
-            fresh.is_blacklisted(&path),
-            "unchanged and blacklisted: the query must say so"
-        );
-        assert!(
-            matches!(
-                fresh.open(&path, 48_000.0),
-                Err(BridgeError::Blacklisted { .. })
-            ),
-            "unchanged and blacklisted: the door must refuse"
-        );
-
-        // Now the vendor ships a fix. Backdating the *record* rather than
-        // rewriting the file is what the sibling test does, and for a reason:
-        // `file_modification_time` is second-resolution, so a rewrite inside
-        // the same second leaves the times equal and the test proves nothing.
-        let mut stale = blacklisted_record(&path, "SIGSEGV during probe");
-        stale.modification_time = stale.modification_time.saturating_sub(1_000);
-        let plugins = catalog_with(stale);
-
-        assert!(
-            !plugins.is_blacklisted(&path),
-            "a changed file lifts the blacklist — this is the half that was wrong"
-        );
-        let err = plugins
-            .open(&path, 48_000.0)
-            .expect_err("the fixture is not a loadable plugin");
-        assert!(
-            !matches!(err, BridgeError::Blacklisted { .. }),
-            "the door must admit it too, so the two answers agree; got {err:?}"
         );
 
         std::fs::remove_file(&path).ok();

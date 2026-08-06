@@ -14,7 +14,7 @@ use smallvec::SmallVec;
 
 use tutti_types::Samples;
 
-use crate::{ChannelLayout, ChannelTopology, FeatureReport, Features};
+use crate::{ChannelLayout, FeatureReport, Features};
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
@@ -26,18 +26,6 @@ use serde::{Deserialize, Serialize};
 /// is `[main, aux/sidechain, …]`, so summing the counts gives the total channel
 /// width the host must supply flat (see `tutti-vst3-host`'s bus buffers).
 pub type BusChannels = SmallVec<[ChannelLayout; 4]>;
-
-/// Per-bus channel *topology* for one process direction, in bus-index order —
-/// the placement half of [`BusChannels`].
-///
-/// `None` at an index means the layout for that bus is unknown: the plugin
-/// declined, the format cannot express it (VST2), or it names speakers this
-/// vocabulary does not yet have. That is deliberately distinct from
-/// `Some(empty topology)`, which means a bus with no channels.
-///
-/// An empty *list* carries no claim about any bus, which is what a host that
-/// never asked reports.
-pub type BusTopologies = SmallVec<[Option<ChannelTopology>; 4]>;
 
 /// How long a plugin keeps producing audio after its input goes silent.
 ///
@@ -110,33 +98,6 @@ pub struct LoadedPlugin {
     /// construction, where the honest default is "nothing was asked".
     #[cfg_attr(feature = "serde", serde(default))]
     pub probed: Features,
-    /// Which speaker each channel feeds, per bus, in the same order as
-    /// [`inputs`](Self::inputs) / [`outputs`](Self::outputs).
-    ///
-    /// The placement half of what those two carry as counts. A format host
-    /// reports it when it can name every channel; an entry is `None` when the
-    /// plugin declined, the format has no way to say (VST2), or the layout uses
-    /// speakers this vocabulary does not yet name. `None` is therefore
-    /// "unknown", never "no speakers" — an empty topology is a real, distinct
-    /// answer meaning a bus with no channels.
-    ///
-    /// **Widths still come from `inputs`/`outputs`.** This does not duplicate
-    /// them: a caller sizing buffers reads the counts exactly as before, and a
-    /// caller routing *by speaker* reads this. Keeping the count authoritative
-    /// avoids two owners of one number — a topology that disagreed with its
-    /// bus's count would be a mismatch nothing could adjudicate.
-    ///
-    /// Appended last and `serde(default)` for the reason
-    /// [`probed`](Self::probed) documents: bincode is positional, so a field in
-    /// the middle would renumber everything after it. The `default` covers the
-    /// JSON path and struct-update construction; a short *bincode* payload is
-    /// `PROTOCOL_VERSION`'s job, not serde's.
-    #[cfg_attr(feature = "serde", serde(default))]
-    pub input_topology: BusTopologies,
-    /// Per-bus output channel topology. See
-    /// [`input_topology`](Self::input_topology).
-    #[cfg_attr(feature = "serde", serde(default))]
-    pub output_topology: BusTopologies,
 }
 
 impl LoadedPlugin {
@@ -157,46 +118,6 @@ impl LoadedPlugin {
     /// can't drift from the actual channel layout.
     pub fn multi_bus(&self) -> bool {
         self.inputs.len() > 1 || self.outputs.len() > 1
-    }
-
-    /// The channel topology of one input bus, if the loader could name it.
-    ///
-    /// `None` covers every "not known" case in one answer — the bus index is
-    /// past the reported list, the format cannot express placement, or the
-    /// plugin declined. A caller that needs to distinguish those reads
-    /// [`input_topology`](Self::input_topology) directly.
-    ///
-    /// Accessors rather than raw indexing because the topology list and the
-    /// count list are parallel, and a caller indexing both by hand is one
-    /// off-by-one away from reading another bus's speakers.
-    pub fn input_bus_topology(&self, bus: usize) -> Option<&ChannelTopology> {
-        self.input_topology.get(bus)?.as_ref()
-    }
-
-    /// The channel topology of one output bus. See
-    /// [`input_bus_topology`](Self::input_bus_topology).
-    pub fn output_bus_topology(&self, bus: usize) -> Option<&ChannelTopology> {
-        self.output_topology.get(bus)?.as_ref()
-    }
-
-    /// `true` if every bus in both directions reported a topology whose width
-    /// matches the count beside it.
-    ///
-    /// The consistency a caller routing by speaker depends on: the counts size
-    /// the buffers and the topology says what each channel is, so a topology
-    /// describing a different number of channels than its own bus cannot be
-    /// acted on. False when any topology is absent, which is the honest answer
-    /// for "can I route this by speaker" — not an error, just not enough
-    /// information.
-    pub fn topology_is_complete(&self) -> bool {
-        let agrees = |counts: &BusChannels, topos: &BusTopologies| {
-            counts.len() == topos.len()
-                && counts
-                    .iter()
-                    .zip(topos.iter())
-                    .all(|(c, t)| t.as_ref().is_some_and(|t| t.layout() == *c))
-        };
-        agrees(&self.inputs, &self.input_topology) && agrees(&self.outputs, &self.output_topology)
     }
 
     /// `true` if the plugin reports non-zero processing latency (participates in
@@ -236,7 +157,6 @@ mod tests {
             tail: PluginTail::Finite(Samples(48_000)),
             features: Features::F64_AUDIO | Features::MIDI_IN,
             probed: Features::F64_AUDIO | Features::MIDI_IN | Features::EDITOR,
-            ..Default::default()
         };
         let bytes = bincode::serialize(&loaded).unwrap();
         let back: LoadedPlugin = bincode::deserialize(&bytes).unwrap();
@@ -254,95 +174,6 @@ mod tests {
         assert!(back.features.contains(Features::F64_AUDIO));
         assert!(back.multi_bus()); // two input buses
         assert!(back.latency()); // 128 samples
-    }
-
-    /// Per-bus topology survives the real bincode wire, `None` entries included.
-    ///
-    /// The `None` is the load-bearing part: it means "this bus's placement is
-    /// unknown", which is a different answer from `Some(empty)` ("this bus has
-    /// no channels"). A round trip that collapsed the two would let a caller
-    /// read a sidechain's speakers off a bus that never reported any.
-    #[cfg(feature = "serde")]
-    #[test]
-    fn per_bus_topology_round_trips_including_the_unknown_entries() {
-        let stereo = ChannelTopology::smpte(ChannelLayout::STEREO).expect("stereo has an order");
-        let loaded = LoadedPlugin {
-            inputs: SmallVec::from_slice(&[ChannelLayout::STEREO, ChannelLayout::MONO]),
-            outputs: SmallVec::from_slice(&[ChannelLayout::STEREO]),
-            // The main input is named; the sidechain's placement is not known.
-            input_topology: SmallVec::from_vec(vec![Some(stereo.clone()), None]),
-            output_topology: SmallVec::from_vec(vec![Some(stereo.clone())]),
-            ..Default::default()
-        };
-
-        let bytes = bincode::serialize(&loaded).unwrap();
-        let back: LoadedPlugin = bincode::deserialize(&bytes).unwrap();
-        assert_eq!(back, loaded);
-
-        assert_eq!(back.input_bus_topology(0), Some(&stereo));
-        assert_eq!(
-            back.input_bus_topology(1),
-            None,
-            "an unknown bus must stay unknown, not become an empty topology"
-        );
-        assert_eq!(
-            back.input_bus_topology(9),
-            None,
-            "a bus index past the list is also unknown"
-        );
-
-        // Widths still come from the counts, unchanged by any of this.
-        assert_eq!(back.total_inputs(), 3);
-        assert_eq!(back.total_outputs(), 2);
-    }
-
-    /// An unknown bus makes the topology incomplete, and a full one completes it.
-    ///
-    /// `topology_is_complete` is what a caller checks before routing by
-    /// speaker, so both answers are pinned — a predicate hardwired to `false`
-    /// would satisfy the negative half alone.
-    #[test]
-    fn topology_is_complete_only_when_every_bus_agrees_with_its_count() {
-        let stereo = ChannelTopology::smpte(ChannelLayout::STEREO).expect("stereo has an order");
-        let mono = ChannelTopology::smpte(ChannelLayout::MONO).expect("mono has an order");
-
-        let full = LoadedPlugin {
-            inputs: SmallVec::from_slice(&[ChannelLayout::STEREO]),
-            outputs: SmallVec::from_slice(&[ChannelLayout::STEREO]),
-            input_topology: SmallVec::from_vec(vec![Some(stereo.clone())]),
-            output_topology: SmallVec::from_vec(vec![Some(stereo.clone())]),
-            ..Default::default()
-        };
-        assert!(full.topology_is_complete());
-
-        let missing = LoadedPlugin {
-            input_topology: SmallVec::from_vec(vec![None]),
-            ..full.clone()
-        };
-        assert!(
-            !missing.topology_is_complete(),
-            "an unknown bus is not complete"
-        );
-
-        // A topology whose width disagrees with its own bus count cannot be
-        // acted on: the count sizes the buffer, so the two must describe the
-        // same channels.
-        let disagreeing = LoadedPlugin {
-            input_topology: SmallVec::from_vec(vec![Some(mono)]),
-            ..full.clone()
-        };
-        assert!(
-            !disagreeing.topology_is_complete(),
-            "a mono topology on a stereo bus describes a different bus"
-        );
-
-        // A host that never asked reports nothing, which is also not complete.
-        let never_asked = LoadedPlugin {
-            input_topology: SmallVec::new(),
-            output_topology: SmallVec::new(),
-            ..full
-        };
-        assert!(!never_asked.topology_is_complete());
     }
 
     /// The probed mask crosses the wire, so an unprobed capability stays

@@ -108,38 +108,7 @@ pub mod shm;
 ///   for. Mandatory in that direction only — a v13 host never *sends* it unless
 ///   a caller asks for offline, so a v12 server survives a realtime session; the
 ///   bump refuses the pairing outright rather than leaving that to luck.
-/// - v14: presets cross the wire. `HostMessage` gains `GetPresetList`,
-///   `LoadPreset` and `GetCurrentPreset`; `BridgeMessage` gains `PresetList`,
-///   `PresetLoaded` and `CurrentPreset`. All six appended, for the reason v11
-///   and v13 were: bincode encodes the discriminant over declaration order, so
-///   a v13 peer receiving one reads a tag it has no arm for.
-///
-///   Mandatory in both directions, unlike v13's. A v14 host asks for a preset
-///   list whenever a caller opens a browser — not only when a caller opts into
-///   something — so a v13 server would meet an unknown tag in ordinary use.
-/// - v15: `LoadedPlugin` gains `input_topology` / `output_topology`, carrying
-///   *which speaker* each channel feeds beside the counts it already reported.
-///   Appended last, but a struct is **positional** on this wire in a way an
-///   appended enum variant is not: every field is written in declaration order
-///   with no tag, so a v14 peer stops reading before these two and a v14
-///   *server* sends a payload two fields short. `serde(default)` does not
-///   rescue that — bincode is not self-describing, so a short payload is a
-///   decode error rather than a defaulted field, which is exactly what this
-///   bump exists to turn into a clean refusal.
-/// - v16: `ParameterInfo` gains `group`, the display label for the group a
-///   parameter belongs to. Every hosted format has a grouping mechanism, all
-///   four format crates already decoded theirs, and all four answers stopped at
-///   the shared type — so a 400-parameter synth presented as one flat list.
-///
-///   Appended last, and a struct on this wire is **positional** exactly as
-///   v15's was: a v15 peer stops reading before this field, and a v15 *server*
-///   sends a payload one field short. Same bump for the same reason.
-///
-///   `ParameterInfo::qualified_name` lands with it. That is not decoration —
-///   `PluginTail` crossed this wire to no receiver and stayed write-only for a
-///   release cycle, so a field appended here arrives with its consumer.
-///   See `docs/design/010-parameter-grouping.md`.
-pub const PROTOCOL_VERSION: u32 = 16;
+pub const PROTOCOL_VERSION: u32 = 13;
 
 /// Validate a subprocess-reported protocol version against [`PROTOCOL_VERSION`].
 /// Called at each handshake consumer so a version skew fails loudly instead of
@@ -179,13 +148,12 @@ pub use crate::host::discovery::record::{
     Vst3SubCategories,
 };
 pub use tutti_plugin_types::{
-    AutomationMode, BusChannels, BusTopologies, ChannelLayout, ChannelTopology, ChordChanges,
-    ChordValue, EditorPresence, FeatureReport, Features, LayoutSupport, LoadedPlugin, Normalized,
-    NoteExpressionChanges, NoteExpressionIntChanges, NoteExpressionIntValue,
+    AutomationMode, BusChannels, ChannelLayout, ChordChanges, ChordValue, EditorPresence, Features,
+    LoadedPlugin, NoteExpressionChanges, NoteExpressionIntChanges, NoteExpressionIntValue,
     NoteExpressionTextChanges, NoteExpressionTextValue, NoteExpressionType, NoteExpressionValue,
     ParamAddress, ParamFlags, ParamId, ParamRange, ParamSteps, ParameterChanges, ParameterInfo,
-    ParameterPoint, ParameterQueue, PluginTail, Preset, PresetId, PresetSupport, RenderMode,
-    Samples, ScaleChanges, ScaleValue, TimeSignature, TransportInfo,
+    ParameterPoint, ParameterQueue, PluginTail, RenderMode, Samples, ScaleChanges, ScaleValue,
+    TimeSignature, TransportInfo,
 };
 
 #[cfg(test)]
@@ -216,130 +184,6 @@ mod tests {
             }
             _ => panic!("Wrong message type"),
         }
-    }
-
-    /// Every preset frame survives the wire in both directions.
-    ///
-    /// These are the frames that make presets reachable out-of-process: an id
-    /// produced by `PresetList` in the subprocess is handed back through
-    /// `LoadPreset`, so a variant that does not round-trip is a preset that can
-    /// be listed and never loaded.
-    #[test]
-    fn every_preset_frame_round_trips() {
-        let requests = [
-            HostMessage::GetPresetList,
-            HostMessage::LoadPreset {
-                id: PresetId::Number(9000),
-            },
-            HostMessage::LoadPreset {
-                id: PresetId::Program {
-                    list_id: 3,
-                    index: 7,
-                },
-            },
-            HostMessage::LoadPreset {
-                id: PresetId::Location(PathBuf::from("/p/lead.clap-preset")),
-            },
-            HostMessage::GetCurrentPreset,
-        ];
-        for msg in requests {
-            let bytes = bincode::serialize(&msg).expect("serialize");
-            let back: HostMessage = bincode::deserialize(&bytes).expect("deserialize");
-            assert_eq!(
-                format!("{back:?}"),
-                format!("{msg:?}"),
-                "{msg:?} did not survive the wire"
-            );
-        }
-
-        let responses = [
-            BridgeMessage::PresetList {
-                presets: vec![
-                    Preset::new(PresetId::Number(0), "Init"),
-                    Preset::in_bank(
-                        PresetId::Program {
-                            list_id: 1,
-                            index: 2,
-                        },
-                        "Warm",
-                        "Bank 1",
-                    ),
-                ],
-            },
-            BridgeMessage::PresetLoaded { ok: true },
-            BridgeMessage::PresetLoaded { ok: false },
-            BridgeMessage::CurrentPreset {
-                id: Some(PresetId::Number(4)),
-            },
-            BridgeMessage::CurrentPreset { id: None },
-        ];
-        for msg in responses {
-            let bytes = bincode::serialize(&msg).expect("serialize");
-            let back: BridgeMessage = bincode::deserialize(&bytes).expect("deserialize");
-            assert_eq!(
-                format!("{back:?}"),
-                format!("{msg:?}"),
-                "{msg:?} did not survive the wire"
-            );
-        }
-    }
-
-    /// The preset frames were **appended**, leaving every older tag untouched.
-    ///
-    /// bincode encodes an enum as a leading `u32` discriminant over declaration
-    /// order, so inserting a variant mid-enum silently renumbers every later
-    /// one — and a symmetric round-trip cannot catch it, because both ends move
-    /// together. The two ends here are not one build: a host and its subprocess
-    /// negotiate `PROTOCOL_VERSION` and then trust each other's bytes.
-    ///
-    /// Pinning the *first* variant's tag is what makes this an append check
-    /// rather than a restatement: tag 0 stays 0 only if nothing was inserted
-    /// ahead of it, and the new variants land past every v13 tag.
-    #[test]
-    fn the_preset_frames_are_appended_not_inserted() {
-        /// `SetRenderMode`'s tag — the last variant v13 shipped. Pinned as a
-        /// literal so a shift is a failure here rather than an agreement
-        /// between two expressions that move together.
-        const V13_LAST_TAG: u32 = 17;
-
-        let tag = |bytes: &[u8]| u32::from_le_bytes(bytes[..4].try_into().unwrap());
-
-        let first = bincode::serialize(&HostMessage::ProbePlugin {
-            path: PathBuf::new(),
-        })
-        .expect("serialize");
-        assert_eq!(tag(&first), 0, "ProbePlugin must stay tag 0");
-
-        // Absolute tags, not a relative comparison. A variant inserted
-        // *between* two existing ones keeps both the tag-0 anchor and any
-        // "later than" ordering intact while renumbering everything after the
-        // insertion point — so only pinned numbers catch it. Verified by
-        // mutation: inserting ahead of `SetRenderMode` survives a relative
-        // check and fails these.
-        assert_eq!(
-            tag(&bincode::serialize(&HostMessage::SetRenderMode {
-                mode: RenderMode::Offline,
-            })
-            .expect("serialize")),
-            V13_LAST_TAG,
-            "v13's last request variant moved; a v13 peer would mis-decode it"
-        );
-        assert_eq!(
-            tag(&bincode::serialize(&HostMessage::GetPresetList).expect("serialize")),
-            V13_LAST_TAG + 1,
-            "GetPresetList must be the first v14 request frame"
-        );
-        assert_eq!(
-            tag(&bincode::serialize(&HostMessage::LoadPreset {
-                id: PresetId::Number(0),
-            })
-            .expect("serialize")),
-            V13_LAST_TAG + 2,
-        );
-        assert_eq!(
-            tag(&bincode::serialize(&HostMessage::GetCurrentPreset).expect("serialize")),
-            V13_LAST_TAG + 3,
-        );
     }
 
     use tutti_midi_types::convert::{midi1_cc_to_midi2, midi1_velocity_to_midi2};

@@ -4,8 +4,8 @@ use super::audio::{AudioBridge, BridgeListener, BridgeThread, HarmonyInputs};
 use crate::error::{EditorError, Result};
 use crate::format::gui::PluginEditor;
 use crate::protocol::{
-    MidiEventVec, Normalized, NoteExpressionChanges, ParamAddress, ParameterChanges, ParameterInfo,
-    Preset, PresetId, TransportInfo,
+    MidiEventVec, NoteExpressionChanges, ParamAddress, ParameterChanges, ParameterInfo,
+    TransportInfo,
 };
 use crate::util::transport::shm::AudioSlab;
 use crate::util::window::{EditorCapabilities, EditorSize, WindowHandle};
@@ -85,7 +85,7 @@ impl PluginBridge {
         self.audio.set_listener(listener);
     }
 
-    pub fn set_parameter_rt(&self, param_id: ParamAddress, value: Normalized) -> bool {
+    pub fn set_parameter_rt(&self, param_id: ParamAddress, value: f32) -> bool {
         // Cosmetic GUI mirror (keeps the display in sync): `try_lock`, never
         // block. The `_rt` contract must stay non-blocking — a blocking
         // `lock()` here could stall the caller behind a multi-millisecond
@@ -94,11 +94,10 @@ impl PluginBridge {
         // self-heals on the next edit / editor idle.
         if let Ok(mut guard) = self.gui.try_lock() {
             if let Some(gui) = guard.as_mut() {
-                gui.set_parameter(param_id, value);
+                gui.set_parameter(param_id, value as f64);
             }
         }
-        // The wire carries `f32`; the domain is enforced up to this point.
-        self.audio.set_parameter_rt(param_id, value.get() as f32)
+        self.audio.set_parameter_rt(param_id, value)
     }
 
     pub fn set_automation_state_rt(&self, mode: crate::protocol::AutomationMode) -> bool {
@@ -146,12 +145,6 @@ impl PluginBridge {
 
     pub fn is_crashed(&self) -> bool {
         self.audio.is_crashed()
-    }
-
-    /// Why the bridge died, or `None` while it is alive. See
-    /// [`AudioBridge::crash_cause`](super::audio::AudioBridge::crash_cause).
-    pub fn crash_cause(&self) -> Option<String> {
-        self.audio.crash_cause()
     }
 
     pub fn open_editor(
@@ -310,27 +303,6 @@ impl PluginBridge {
         self.audio.parameter(param_id)
     }
 
-    pub fn presets(&self) -> Option<Vec<Preset>> {
-        self.audio.presets()
-    }
-
-    /// Load a preset in the audio instance.
-    ///
-    /// Unlike [`load_state`](Self::load_state) this does **not** mirror into
-    /// the GUI instance: `load_state` pushes host-held bytes into both, but a
-    /// preset load is the plugin reading its own file, and the editor's copy
-    /// has no such file to read. A plugin whose editor shows a stale name
-    /// after this reports it through the existing
-    /// `PluginParamValuesChanged` / `PluginParamTitlesChanged` refresh path,
-    /// which is the mechanism for exactly this.
-    pub fn load_preset(&self, id: PresetId) -> bool {
-        self.audio.load_preset(id)
-    }
-
-    pub fn current_preset(&self) -> Option<PresetId> {
-        self.audio.current_preset()
-    }
-
     pub fn editor_capabilities(&self) -> EditorCapabilities {
         let Ok(mut guard) = self.gui.lock() else {
             return EditorCapabilities::default();
@@ -396,20 +368,12 @@ impl crate::host::handles::capabilities::HostParams for SubprocessBackend {
         self.bridge.parameter(id)
     }
 
-    fn set_parameter_value(&self, id: ParamAddress, value: Normalized) {
-        // Stays `Normalized` all the way to the bridge, which narrows to the
-        // `f32` the wire carries. The subprocess re-clamps on receipt — it
-        // must, since the wire is a foreign boundary and the peer is another
-        // process — but the value leaving here is already on the unit interval.
+    fn set_parameter_value(&self, id: ParamAddress, value: f32) {
         self.bridge.set_parameter_rt(id, value);
     }
 
     fn is_crashed(&self) -> bool {
         self.bridge.is_crashed()
-    }
-
-    fn crash_cause(&self) -> Option<String> {
-        self.bridge.crash_cause()
     }
 }
 
@@ -475,24 +439,6 @@ impl crate::host::handles::capabilities::HostAutomationState for SubprocessBacke
                 "automation-state push not delivered".into(),
             ))
         }
-    }
-}
-
-impl crate::host::handles::capabilities::HostPresets for SubprocessBackend {
-    fn presets(&self) -> Vec<Preset> {
-        // A crashed subprocess yields `None`; flattened to an empty list
-        // because the trait's contract is "what the plugin advertises", and a
-        // caller distinguishing "cannot ask" from "listed nothing" reads
-        // `Features::PRESET_LIST` rather than a sentinel here.
-        self.bridge.presets().unwrap_or_default()
-    }
-
-    fn load_preset(&self, id: &PresetId) -> bool {
-        !self.bridge.is_crashed() && self.bridge.load_preset(id.clone())
-    }
-
-    fn current_preset(&self) -> Option<PresetId> {
-        self.bridge.current_preset()
     }
 }
 

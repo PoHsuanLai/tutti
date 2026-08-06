@@ -963,30 +963,8 @@ pub const INVALID_PROPERTY_VALUE: i32 = -10851;
 /// `MIDIOutputCallbackInfo` — and a negative asserted over a hand-picked corpus
 /// proves nothing. This walks the whole registry so the claim is about the machine
 /// rather than about five chosen units.
-///
-/// **Excludes this harness's own probes.** `AudioComponentRegister` adds them to
-/// the same process-wide registry `enumerate_components` walks, so any test
-/// binary that opens a probe makes them visible to every sweep in that binary
-/// from then on. Since Rust runs a binary's tests on several threads, whether a
-/// sweep saw them depended on which thread won — `au_identity`'s
-/// `every_unit_round_trips_a_context_name` failed roughly one run in five,
-/// finding `probe that fails ClassInfo` and reporting its deliberate
-/// `InvalidProperty` refusal as an installed unit's bug.
-///
-/// Excluding them is the correct reading of the name rather than a workaround:
-/// each caller asserts something about *the units on this machine*, and a probe
-/// registered by the harness is not one. It matters most for the negative sweep
-/// — a probe that grew a `MIDIOutputCallbackInfo` would silently falsify
-/// `au_midi_out`'s claim about the machine.
-///
-/// Reads `PROBE_MANUFACTURER` from `probe_au` rather than re-spelling the
-/// four-char code, so the filter and the registration cannot drift apart.
-/// Pinned by `the_corpus_sweep_never_sees_a_harness_probe`.
 pub fn every_component() -> Vec<AuComponentInfo> {
     tutti_au_host::component::enumerate_components()
-        .into_iter()
-        .filter(|c| c.manufacturer_code != super::probe_au::PROBE_MANUFACTURER)
-        .collect()
 }
 
 /// The `is_output` booleans the layout tables above carry, as a [`BusDirection`].

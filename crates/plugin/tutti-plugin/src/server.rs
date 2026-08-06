@@ -24,13 +24,13 @@ pub use crate::protocol::audio::{
 pub use crate::protocol::{
     AuComponentType, AutomationMode, BridgeMessage, BusChannels, ChannelLayout, ChordChanges,
     ChordValue, ClapFeature, EditorPresence, Features, HostMessage, IpcMidiEvent, IpcMidiEventVec,
-    LoadedPlugin, MidiEvent, MidiEventVec, Normalized, NoteExpressionChanges,
-    NoteExpressionIntChanges, NoteExpressionIntValue, NoteExpressionTextChanges,
-    NoteExpressionTextValue, NoteExpressionType, NoteExpressionValue, ParamAddress, ParamFlags,
-    ParamId, ParamRange, ParamSteps, ParameterChanges, ParameterInfo, ParameterPoint,
-    ParameterQueue, PluginClass, PluginDescriptor, PluginTail, Preset, PresetId, ProcessAudioData,
-    SampleFormat, Samples, ScaleChanges, ScaleValue, SlabLayout, TimeSignature, TransportInfo,
-    Vst2Category, Vst3PlugType, Vst3SubCategories, MIDI_STACK_CAPACITY, PROTOCOL_VERSION,
+    LoadedPlugin, MidiEvent, MidiEventVec, NoteExpressionChanges, NoteExpressionIntChanges,
+    NoteExpressionIntValue, NoteExpressionTextChanges, NoteExpressionTextValue, NoteExpressionType,
+    NoteExpressionValue, ParamAddress, ParamFlags, ParamId, ParamRange, ParamSteps,
+    ParameterChanges, ParameterInfo, ParameterPoint, ParameterQueue, PluginClass, PluginDescriptor,
+    PluginTail, ProcessAudioData, SampleFormat, Samples, ScaleChanges, ScaleValue, SlabLayout,
+    TimeSignature, TransportInfo, Vst2Category, Vst3PlugType, Vst3SubCategories,
+    MIDI_STACK_CAPACITY, PROTOCOL_VERSION,
 };
 pub use crate::util::config::BridgeConfig;
 pub use crate::util::transport::shm::{AudioSlab, RING_SLOTS};
@@ -51,11 +51,9 @@ pub use tutti_plugin_types::{ExpressiveContext, ProcessContext, ProcessOutput};
 /// from `tutti-plugin-types` so the loaders reach them through the same
 /// `tutti_plugin::server::*` import point. A loader implements the small traits
 /// ([`PluginMeta`], [`PluginAudio`], [`PluginParams`], [`PluginState`],
-/// [`PluginEditorHost`], [`PluginPresets`]) and gets `PluginInstance` via its
-/// blanket impl.
+/// [`PluginEditorHost`]) and gets `PluginInstance` via its blanket impl.
 pub use tutti_plugin_types::{
-    PluginAudio, PluginEditorHost, PluginInstance, PluginMeta, PluginParams, PluginPresets,
-    PluginState,
+    PluginAudio, PluginEditorHost, PluginInstance, PluginMeta, PluginParams, PluginState,
 };
 /// The lean, format-agnostic error the trait returns, plus its `Result` alias
 /// and the shared `ParameterInfo` builders — re-exported so the loaders reach

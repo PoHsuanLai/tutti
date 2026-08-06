@@ -458,52 +458,6 @@ impl Vst2Instance {
         Samples(self.handle.instance.read_initial_delay().max(0) as usize)
     }
 
-    /// The plugin's programs, as `(index, name)` pairs.
-    ///
-    /// VST2 programs are genuinely positional — `effProgramChange` takes an
-    /// index in `[0, numPrograms)` — so unlike AU's sparse selectors the index
-    /// *is* the identifier.
-    ///
-    /// **A plugin may advertise more programs than it will name.** That is the
-    /// same enumeration hole `parameter_list` walks on the parameter axis: a
-    /// host that trusts `numPrograms` and reads every slot gets names the
-    /// plugin never had. An unnamed slot yields an empty string and is kept,
-    /// not skipped — dropping it would renumber every program after it, and the
-    /// number is the identifier.
-    pub fn programs(&self) -> Vec<(i32, String)> {
-        let count = self.handle.instance.read_num_programs().max(0);
-        (0..count)
-            .map(|i| (i, self.params.get_preset_name(i)))
-            .collect()
-    }
-
-    /// Which program the plugin currently reports as active.
-    pub fn current_program(&self) -> i32 {
-        self.params.get_preset_num()
-    }
-
-    /// Switch program, bracketed by `effBeginSetProgram` / `effEndSetProgram`.
-    ///
-    /// The bracket is why this is on the instance rather than a bare
-    /// `params.change_preset`: a switch moves many parameters at once, and
-    /// unbracketed each one reaches the host as an individual
-    /// `audioMasterAutomate` edit. This host has that callback wired and
-    /// draining, so an unbracketed switch really does flood it.
-    ///
-    /// Returns `false` for an out-of-range index without dispatching anything.
-    /// VST2 gives no confirmation that an in-range change took — `effProgramChange`
-    /// returns nothing — so `true` means "dispatched", not "the plugin moved".
-    pub fn set_program(&mut self, index: i32) -> bool {
-        if index < 0 || index >= self.handle.instance.read_num_programs() {
-            return false;
-        }
-        let params = self.params.0.clone();
-        self.handle
-            .instance
-            .with_preset_bracket(|_| params.change_preset(index));
-        true
-    }
-
     /// What the plugin answers for its MIDI channel counts, right now.
     ///
     /// `None` on a field means the plugin declined the opcode, which is

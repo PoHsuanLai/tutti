@@ -203,30 +203,6 @@ pub(super) fn handle(
             };
             reply.send(value);
         }
-        Command::GetPresetList { reply } => {
-            ipc::send(stream, &HostMessage::GetPresetList)?;
-            let value = match recv_reply(stream, channels, PARAM_TIMEOUT)? {
-                BridgeMessage::PresetList { presets } => Some(presets),
-                _ => None,
-            };
-            reply.send(value);
-        }
-        Command::LoadPreset { id, reply } => {
-            ipc::send(stream, &HostMessage::LoadPreset { id })?;
-            let ok = matches!(
-                recv_reply(stream, channels, PARAM_TIMEOUT)?,
-                BridgeMessage::PresetLoaded { ok: true }
-            );
-            reply.send(ok);
-        }
-        Command::GetCurrentPreset { reply } => {
-            ipc::send(stream, &HostMessage::GetCurrentPreset)?;
-            let value = match recv_reply(stream, channels, PARAM_TIMEOUT)? {
-                BridgeMessage::CurrentPreset { id } => id,
-                _ => None,
-            };
-            reply.send(value);
-        }
         Command::GetParameter { param_id, reply } => {
             ipc::send(stream, &HostMessage::GetParameter { param_id })?;
             let value = match recv_reply(stream, channels, PARAM_TIMEOUT)? {

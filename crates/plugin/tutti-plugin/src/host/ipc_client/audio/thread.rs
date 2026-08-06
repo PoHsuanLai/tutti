@@ -5,7 +5,7 @@
 use super::channels::Channels;
 use super::dispatch::handle;
 use super::lifecycle::Lifecycle;
-use super::messages::{AudioResponse, BridgeEvent, Command};
+use super::messages::{AudioResponse, Command};
 use super::payload_pool::PayloadPool;
 use super::ListenerSlot;
 use crate::util::transport::control::{self as ipc, ControlStream};
@@ -88,17 +88,9 @@ fn run_thread(
     // only because the slab sequence happened never to match. That made correct
     // behaviour a coincidence of the numbering rather than the decision the
     // check exists to make.
-    let stream = ipc::connect(&socket_path);
-    let mut stream = match stream {
-        Ok(s) => s,
-        Err(e) => {
-            crash(
-                &lifecycle,
-                &listener,
-                format!("could not connect to plugin-server: {e}"),
-            );
-            return;
-        }
+    let Ok(mut stream) = ipc::connect(&socket_path) else {
+        lifecycle.mark_crashed();
+        return;
     };
     // Consume the server's Ready handshake for connection 2, and check its
     // version rather than discarding it. `launch.rs` already gated the same
@@ -109,19 +101,8 @@ fn run_thread(
     match ipc::recv(&mut stream) {
         Ok(crate::protocol::BridgeMessage::Ready { protocol_version })
             if crate::protocol::check_protocol_version(protocol_version).is_ok() => {}
-        // The reason is spelled out per case rather than as one string: a
-        // version skew and a peer that never said `Ready` are different
-        // problems for whoever reads the message, and the first is actionable.
-        other => {
-            let why = match other {
-                Ok(crate::protocol::BridgeMessage::Ready { protocol_version }) => format!(
-                    "plugin-server speaks protocol v{protocol_version}, this host speaks v{}",
-                    crate::protocol::PROTOCOL_VERSION
-                ),
-                Ok(_) => "plugin-server did not send Ready as its first message".to_string(),
-                Err(e) => format!("plugin-server handshake failed: {e}"),
-            };
-            crash(&lifecycle, &listener, why);
+        _ => {
+            lifecycle.mark_crashed();
             return;
         }
     }
@@ -153,12 +134,8 @@ fn pump(
         let result = handle(cmd, stream, channels, payloads);
         drain_unsolicited(channels, listener);
 
-        if let Err(e) = result {
-            // The error is stringified here, at the only place it exists.
-            // `BridgeError` is not `Clone`, and the crash notification outlives
-            // this frame, so the alternative is the hardcoded placeholder the
-            // host used to report for every death alike.
-            crash(lifecycle, listener, format!("{e}"));
+        if result.is_err() {
+            lifecycle.mark_crashed();
             // Connection-level: the stream is gone, so this ends every
             // in-flight and queued block, not just one. `None` matches
             // whichever request the audio thread is waiting on.
@@ -166,26 +143,6 @@ fn pump(
             drain_with_errors(channels);
             return;
         }
-    }
-}
-
-/// Declare the bridge dead: latch the cause, then tell whoever is listening.
-///
-/// One helper rather than two calls at each site, because the latch and the
-/// notification must not drift apart — a crash that fired an event without
-/// latching would be invisible to anything that asked later, and one that
-/// latched without firing is the polling design this replaces.
-///
-/// The listener may legitimately be absent. `PluginBridge::new` spawns this
-/// thread and `set_listener` runs afterwards, so the connect- and
-/// handshake-failure sites usually have no subscriber yet. That is exactly why
-/// the latch comes first and is authoritative: `Lifecycle::crash_cause` answers
-/// for a crash nobody heard.
-fn crash(lifecycle: &Lifecycle, listener: &ListenerSlot, cause: String) {
-    lifecycle.mark_crashed(cause.clone());
-    let cb = listener.lock().clone();
-    if let Some(f) = cb.as_ref() {
-        f(BridgeEvent::Crashed { cause });
     }
 }
 

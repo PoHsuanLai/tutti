@@ -135,17 +135,6 @@ impl Vst3ParameterInfo {
         (self.flags & parameter_flags::IS_BYPASS) != 0
     }
 
-    /// True if writing this parameter selects a program.
-    ///
-    /// VST3 has no load-preset call: a program is chosen by writing the
-    /// parameter carrying this flag, whose normalized value maps onto
-    /// `[0, program_count)` in the unit's program list. This is the *only*
-    /// route, which is why the flag has to survive the boundary rather than
-    /// stopping at the format layer.
-    pub fn is_program_change(&self) -> bool {
-        (self.flags & parameter_flags::IS_PROGRAM_CHANGE) != 0
-    }
-
     /// True if the parameter wraps around at its extremes.
     pub fn is_wrap(&self) -> bool {
         (self.flags & parameter_flags::IS_WRAP) != 0

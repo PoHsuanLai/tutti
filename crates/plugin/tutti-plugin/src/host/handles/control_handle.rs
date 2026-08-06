@@ -537,6 +537,32 @@ impl PluginHandle {
         }
     }
 
+    /// A size the *plugin* has asked to become, if it asked since the last
+    /// poll. Call it beside [`editor_idle`](Self::editor_idle) on the host's
+    /// frame loop.
+    ///
+    /// The other half of the conversation [`set_editor_size`](Self::set_editor_size)
+    /// starts: that one is the host resizing the plugin, this one is the plugin
+    /// asking the host to resize the window it lives in. A plugin with a
+    /// zoom control or a collapsible panel drives its own size this way, and a
+    /// host that never polls leaves the editor clipped inside a window that
+    /// does not match it.
+    ///
+    /// [`None`] rather than a `Result`, unlike its sibling: "no editor" and "the
+    /// plugin has not asked" are the same answer to a poll — nothing to do —
+    /// whereas `set_editor_size` is a request that deserves to be told it went
+    /// nowhere.
+    ///
+    /// Reachable before this only as
+    /// `handle.editor().and_then(|e| e.poll_editor_resize_request())`. Added for
+    /// symmetry rather than to remove duplication — there is one caller today —
+    /// because [`set_editor_size`](Self::set_editor_size) has always had the
+    /// convenience, and the asymmetry read as "one of these is not part of the
+    /// handle API".
+    pub fn poll_editor_resize_request(&self) -> Option<EditorSize> {
+        self.editor.as_deref()?.poll_editor_resize_request()
+    }
+
     // ---- Automation-state convenience --------------------------------------
 
     /// Announce the host's automation [`AutomationMode`] to the plugin so its

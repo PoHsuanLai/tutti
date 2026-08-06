@@ -12,9 +12,6 @@ mod input;
 #[cfg(feature = "midi-hardware")]
 mod output;
 
-#[cfg(all(target_os = "macos", feature = "midi-hardware"))]
-pub mod virtual_port;
-
 #[cfg(feature = "midi-hardware")]
 pub(crate) use input::connect_midi_input;
 #[cfg(feature = "midi-hardware")]
@@ -24,8 +21,11 @@ pub use output::list_output_devices;
 #[cfg(feature = "midi-hardware")]
 pub(crate) use output::{OutputCmd, OutputThread};
 
+// The native-UMP virtual endpoints moved to `core::backend::coremidi`, beside
+// the rest of the CoreMIDI code. Re-exported here only until `MidiIo` (this
+// module's consumer) is replaced by `MidiSession`.
 #[cfg(all(target_os = "macos", feature = "midi-hardware"))]
-pub use virtual_port::{UmpVirtualDestination, UmpVirtualSource};
+pub use crate::core::backend::coremidi::{UmpVirtualDestination, UmpVirtualSource};
 
 /// A detected MIDI device (input or output).
 #[cfg(feature = "midi-hardware")]

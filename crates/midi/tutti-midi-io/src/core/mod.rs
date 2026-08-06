@@ -24,6 +24,7 @@ pub mod error;
 #[cfg(feature = "midi-hardware")]
 pub mod midi_io;
 
+pub mod backend;
 pub mod capability;
 pub mod endpoints;
 pub(crate) mod hardware;

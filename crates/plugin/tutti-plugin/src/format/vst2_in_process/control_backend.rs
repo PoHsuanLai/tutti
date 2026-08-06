@@ -17,7 +17,7 @@ use tutti_vst2_host::Vst2Instance;
 use crate::error::EditorError;
 use crate::host::handles::capabilities::{HostEditor, HostParams, HostRenderMode, HostState};
 use crate::host::node::ParameterChangeSink;
-use crate::protocol::{ParamAddress, ParameterInfo, RenderMode};
+use crate::protocol::{Normalized, ParamAddress, ParameterInfo, RenderMode};
 use crate::protocol::{Preset, PresetId};
 use crate::util::window::EditorSize;
 
@@ -50,13 +50,19 @@ impl HostParams for InProcessVst2Backend {
         self.inner.lock().parameter(id.index()?)
     }
 
-    fn set_parameter_value(&self, id: ParamAddress, value: f32) {
+    fn set_parameter_value(&self, id: ParamAddress, value: Normalized) {
         // The audio thread can take this path (PluginHandle is shared);
         // use `try_lock` so we never block audio. Lost writes are
         // recoverable — the GUI thread will retry on the next idle.
+        //
+        // In-process, so this write reaches the plugin directly with no
+        // subprocess boundary to re-clamp at. VST2 is normalized natively, so
+        // the value passes through as-is — but it is a `Normalized` rather
+        // than a bare float precisely because nothing downstream would catch
+        // one that was not.
         let Some(index) = id.index() else { return };
         if let Some(instance) = self.inner.try_lock() {
-            instance.set_parameter(index, value);
+            instance.set_parameter(index, value.get() as f32);
         }
     }
 

@@ -579,7 +579,7 @@ impl PluginHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol::{ParamAddress, ParameterInfo, Preset, PresetId};
+    use crate::protocol::{Normalized, ParamAddress, ParameterInfo, Preset, PresetId};
 
     /// A backend that reaches presets, standing in for a format layer that is
     /// not wired yet. Doubles as proof the capability is implementable from
@@ -619,7 +619,7 @@ mod tests {
             fn parameter_value(&self, _id: ParamAddress) -> Option<f32> {
                 None
             }
-            fn set_parameter_value(&self, _id: ParamAddress, _value: f32) {}
+            fn set_parameter_value(&self, _id: ParamAddress, _value: Normalized) {}
             fn is_crashed(&self) -> bool {
                 false
             }

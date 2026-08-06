@@ -28,7 +28,9 @@
 use std::ffi::c_void;
 
 use crate::error::EditorError;
-use crate::protocol::{AutomationMode, ParamAddress, ParameterInfo, Preset, PresetId, RenderMode};
+use crate::protocol::{
+    AutomationMode, Normalized, ParamAddress, ParameterInfo, Preset, PresetId, RenderMode,
+};
 use crate::util::window::{EditorCapabilities, EditorSize};
 
 /// Parameter catalog, live-value read, and imperative value write — plus the
@@ -53,7 +55,21 @@ pub trait HostParams: Send + Sync {
     /// Write one parameter value (a UI knob poke / initial preset value).
     /// Main-thread; fire-and-forget. In-process backends `try_lock` internally so
     /// a shared handle can never block the audio thread.
-    fn set_parameter_value(&self, id: ParamAddress, value: f32);
+    ///
+    /// [`Normalized`], not a bare float, because this is the *front door*: a
+    /// caller here holds a [`ParameterInfo`] and can see a `[10, 22050]` Hz
+    /// range on it, which is exactly what invites writing `20_000.0` and
+    /// getting full scale. Denormalizing against the declared range is the
+    /// backend's job, discharged where the range is known — see
+    /// [`PluginParams::set_parameter`](tutti_plugin_types::PluginParams::set_parameter)
+    /// for the same argument one layer down.
+    ///
+    /// The clamp is not merely documentation here. The subprocess path clamps
+    /// again on receipt, but the **in-process** backends
+    /// (`vst2_in_process`, and any other that owns the plugin directly) write
+    /// straight through to the plugin, so before this signature there was no
+    /// point on that path where an out-of-range or NaN value was stopped.
+    fn set_parameter_value(&self, id: ParamAddress, value: Normalized);
 
     /// `true` if the underlying plugin is gone (subprocess crashed). In-process
     /// backends never return `true` — a crash takes the host down with it.

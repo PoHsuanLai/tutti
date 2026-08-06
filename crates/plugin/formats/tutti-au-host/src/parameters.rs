@@ -527,6 +527,16 @@ pub fn set_at(unit: AudioUnit, addr: ParamAddress, id: u32, value: f32) -> Resul
     })
 }
 
+/// Read one parameter's metadata, from the global scope / element 0.
+///
+/// The single-parameter counterpart of [`list`]. Without it, a caller wanting
+/// one parameter's declared range had to `list()` the whole catalog and filter
+/// — an O(n) walk, each step a property fetch into the plugin, for an O(1)
+/// question.
+pub fn info(unit: AudioUnit, param_id: u32) -> Result<AuParameter> {
+    info_at(unit, ParamAddress::GLOBAL, param_id)
+}
+
 /// Read one parameter's metadata at `addr`.
 ///
 /// Note the AudioToolbox quirk this preserves: `kAudioUnitProperty_ParameterInfo`
@@ -536,7 +546,7 @@ pub fn set_at(unit: AudioUnit, addr: ParamAddress, id: u32, value: f32) -> Resul
 /// per-`(scope, element, id)`, and `addr.element` deliberately does not appear
 /// below. Passing it here instead would query metadata for whatever parameter
 /// happened to share that number.
-fn info_at(unit: AudioUnit, addr: ParamAddress, param_id: u32) -> Result<AuParameter> {
+pub fn info_at(unit: AudioUnit, addr: ParamAddress, param_id: u32) -> Result<AuParameter> {
     let raw: AudioUnitParameterInfo = unsafe {
         get_property(
             unit,

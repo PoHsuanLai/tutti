@@ -60,8 +60,8 @@ use crate::host::node::input_slot::{BlockCtx, InputSlot};
 use crate::host::node::transport_source::TransportSource;
 use crate::host::subprocess;
 use crate::protocol::{
-    Features, LoadedPlugin, ParamAddress, ParameterChanges, PluginDescriptor, SampleFormat,
-    TransportInfo,
+    Features, LoadedPlugin, Normalized, ParamAddress, ParameterChanges, PluginDescriptor,
+    SampleFormat, TransportInfo,
 };
 use crate::util::config::BridgeConfig;
 use arc_swap::ArcSwap;
@@ -488,7 +488,7 @@ impl PluginClient {
     /// on [`crate::host::handles::PluginHandle`]; this method exists because registry
     /// builders push initial parameter values through the `PluginClient`
     /// before any `PluginHandle` has been constructed.
-    pub fn set_parameter(&self, param_id: ParamAddress, value: f32) {
+    pub fn set_parameter(&self, param_id: ParamAddress, value: Normalized) {
         let _ = self.bridge.set_parameter_rt(param_id, value);
     }
 

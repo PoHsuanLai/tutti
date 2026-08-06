@@ -8,7 +8,7 @@
 
 use super::PluginEditor;
 use crate::error::{BridgeError, LoadStage, Result};
-use crate::protocol::ParamAddress;
+use crate::protocol::{Normalized, ParamAddress};
 use crate::util::window::{EditorCapabilities, EditorSize, WindowHandle};
 use std::path::Path;
 
@@ -60,10 +60,11 @@ impl PluginEditor for Vst3GuiInstance {
         // VST3 editors don't have explicit idle.
     }
 
-    fn set_parameter(&mut self, id: ParamAddress, value: f64) {
-        // `ParamID` is opaque; a VST2 index addresses nothing here.
+    fn set_parameter(&mut self, id: ParamAddress, value: Normalized) {
+        // `ParamID` is opaque; a VST2 index addresses nothing here. VST3's
+        // `setParamNormalized` takes the host domain unchanged.
         let Some(id) = id.opaque() else { return };
-        self.inner.set_parameter(id.get(), value);
+        self.inner.set_parameter(id.get(), value.get());
     }
 
     fn set_automation_state(&mut self, mode: crate::protocol::AutomationMode) {

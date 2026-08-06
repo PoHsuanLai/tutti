@@ -14,7 +14,7 @@ mod clap;
 mod vst3;
 
 use crate::error::{BridgeError, LoadStage, Result};
-use crate::protocol::ParamAddress;
+use crate::protocol::{Normalized, ParamAddress};
 use crate::util::window::{EditorCapabilities, EditorSize, WindowHandle};
 use std::path::Path;
 
@@ -45,7 +45,11 @@ pub(crate) trait PluginEditor: Send {
 
     fn close_editor(&mut self);
     fn editor_idle(&mut self);
-    fn set_parameter(&mut self, id: ParamAddress, value: f64);
+    /// Mirror a parameter write onto the GUI instance so the editor's display
+    /// follows a host-side edit. [`Normalized`] for the same reason the audio
+    /// path takes one: this is the host's authoring domain, and each impl
+    /// denormalizes at its own FFI edge if its format needs plain units.
+    fn set_parameter(&mut self, id: ParamAddress, value: Normalized);
     fn set_state(&mut self, data: &[u8]) -> Result<()>;
     /// Poll GUI-originated parameter changes to forward to the audio bridge.
     ///

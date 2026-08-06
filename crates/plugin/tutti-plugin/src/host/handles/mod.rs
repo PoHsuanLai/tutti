@@ -39,7 +39,7 @@ pub use crate::host::node::{
 // variant wraps one, so naming the address without it builds nothing.
 pub use crate::protocol::{ChordValue, ParamAddress, ParamId, Preset, PresetId, ScaleValue};
 pub use crate::util::window::{EditorCapabilities, EditorSize};
-pub use control_handle::{OptionalCapabilities, PluginHandle};
+pub use control_handle::{OptionalCapabilities, PluginHandle, PluginStatus};
 pub use tutti_units::{LfoShape, ModParams, ModTarget};
 
 /// In-process VST2 audio-graph node. Used when a host loads VST2 plugins

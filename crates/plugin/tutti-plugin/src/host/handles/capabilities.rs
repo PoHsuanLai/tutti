@@ -58,6 +58,21 @@ pub trait HostParams: Send + Sync {
     /// `true` if the underlying plugin is gone (subprocess crashed). In-process
     /// backends never return `true` — a crash takes the host down with it.
     fn is_crashed(&self) -> bool;
+
+    /// Why the plugin died, when the backend can say.
+    ///
+    /// Defaulted to `None` so a backend that only tracks the bool keeps
+    /// compiling: an out-of-crate in-process loader implements this trait, and
+    /// a required method would have broken it for a fact it cannot report
+    /// anyway (an in-process crash takes the host down with it).
+    ///
+    /// `Some` only when [`is_crashed`](Self::is_crashed) is `true`. The
+    /// subprocess backend latches the reason at the detection site, so this
+    /// answers even for a crash that happened before the host installed a
+    /// listener.
+    fn crash_cause(&self) -> Option<String> {
+        None
+    }
 }
 
 /// Opaque preset-chunk save / load. Raw `Vec<u8>` — the bytes are the plugin's

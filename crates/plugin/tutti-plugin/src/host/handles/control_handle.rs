@@ -48,6 +48,42 @@ pub struct OptionalCapabilities {
 /// intact), and passes the optional editor slot explicitly. There is no stored
 /// bundle/union trait object.
 ///
+/// Whether a plugin is still answering — [`PluginHandle::status`].
+///
+/// Two variants because the engine can only speak to what it can *detect*. A
+/// dead bridge is a fact latched at a known site with a known reason; a plugin
+/// that is merely misbehaving is a judgement made by counting failed calls, and
+/// how many failures over how long is the host's policy, not the engine's. See
+/// [`PluginHandle::status`] for why `Alive` must not be read as "healthy".
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PluginStatus {
+    /// The bridge is up. **Not** a promise the plugin is behaving — only that
+    /// it has not died in a way the engine can see.
+    Alive,
+    /// The plugin is gone and is not coming back: the subprocess never
+    /// connected, failed the handshake, or its stream dropped mid-session.
+    ///
+    /// Terminal. The engine offers no relaunch, so recovery means loading a
+    /// replacement and restoring whatever state was captured while the plugin
+    /// was alive.
+    Dead { cause: String },
+}
+
+impl PluginStatus {
+    /// `true` for [`Dead`](Self::Dead), for a call site that wants the bool.
+    pub fn is_dead(&self) -> bool {
+        matches!(self, Self::Dead { .. })
+    }
+
+    /// Why the plugin died, or `None` while it is alive.
+    pub fn cause(&self) -> Option<&str> {
+        match self {
+            Self::Dead { cause } => Some(cause),
+            Self::Alive => None,
+        }
+    }
+}
+
 /// Clone is cheap (Arc-based). Action methods return `&Self` for chaining.
 #[derive(Clone)]
 pub struct PluginHandle {
@@ -280,6 +316,41 @@ impl PluginHandle {
     }
 
     // ---- Meta -------------------------------------------------------------
+
+    /// Whether the plugin is still answering, and why not if it is not.
+    ///
+    /// The honest form of [`is_crashed`](Self::is_crashed), which is a `bool`
+    /// that cannot carry a reason: the `BridgeError` behind a death is dropped
+    /// as soon as the failing call returns, so a host that polled the flag
+    /// could only ever report a placeholder. The cause is latched where the
+    /// crash is noticed, so this answers even for a plugin that died before the
+    /// host installed a listener — the connect- and handshake-failure cases,
+    /// which are the common ones for a bad install.
+    ///
+    /// **Two variants, not three.** There is deliberately no `Failing` here.
+    /// A peer that answers a control call with a well-formed reply of the wrong
+    /// kind leaves this reporting [`Alive`](PluginStatus::Alive) while the call
+    /// returns `None`, and that mode has no detection site to latch from — it
+    /// is only visible by counting failed calls, which is a policy (how many,
+    /// how fast) belonging to the host rather than to the engine. Pair this
+    /// with your own debounce if you need one; do not read `Alive` as "healthy".
+    ///
+    /// For prompt notice rather than polling, subscribe with
+    /// [`on_invalidate`](Self::on_invalidate) and match
+    /// [`PluginInvalidation::Crashed`].
+    pub fn status(&self) -> PluginStatus {
+        match self.params.crash_cause() {
+            Some(cause) => PluginStatus::Dead { cause },
+            // A backend that reports the flag without a cause still reports
+            // death — `crash_cause` is defaulted for backends that cannot say
+            // why, and losing the death because the reason is missing would be
+            // the worse failure.
+            None if self.params.is_crashed() => PluginStatus::Dead {
+                cause: "the backend reported a crash without a cause".to_string(),
+            },
+            None => PluginStatus::Alive,
+        }
+    }
 
     /// `true` if this plugin exposes an embeddable editor (post-load truth).
     ///

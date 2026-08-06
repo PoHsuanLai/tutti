@@ -757,3 +757,147 @@ fn an_out_of_range_id_never_reaches_the_plugin() {
         assert!(instance.parameter_info(id).is_some());
     }
 }
+
+// ------------------------------------------------------- parameter display
+
+/// `parameter_display` joins the plugin's own value text with its unit label,
+/// and reports the *current* value.
+///
+/// The probe answers both opcodes with index-dependent data — `get_parameter_text`
+/// formats the live value to three decimals, `get_parameter_label` cycles
+/// `["dB", "Hz", "%", "ms"]` — so this pins three separable things a bare
+/// `!is_empty()` would wave through:
+///
+/// - The **value** half tracks the parameter, rather than a constant or a stale
+///   read: it is asserted after a write, against that written value.
+/// - The **unit** half is present and is *this* parameter's, which is what
+///   catches a host handing back one shared buffer for every index — the
+///   failure the probe's non-uniform labels exist to expose.
+/// - The two are **joined**, not one silently dropped.
+#[test]
+fn a_parameter_display_carries_the_current_value_and_its_unit() {
+    let _guard = lock_probe();
+    let (instance, _path) = load_probe();
+
+    let count = instance.parameters().len() as i32;
+    assert!(
+        count >= 4,
+        "the probe must declare enough params to cycle its labels"
+    );
+
+    // Distinct per index, so a shared-buffer bug cannot pass.
+    const UNITS: [&str; 4] = ["dB", "Hz", "%", "ms"];
+
+    for id in 0..count.min(4) {
+        assert!(
+            instance.set_parameter(id, 0.25),
+            "param {id} should accept a write"
+        );
+
+        let shown = instance
+            .parameter_display(id)
+            .unwrap_or_else(|| panic!("param {id} should have a display string"));
+
+        // The value the plugin was just set to, formatted by the plugin.
+        assert!(
+            shown.contains("0.250"),
+            "param {id}: display should carry the current value 0.250, got {shown:?}"
+        );
+
+        // …and this parameter's own unit, not its neighbour's.
+        let expected = UNITS[(id as usize) % 4];
+        assert!(
+            shown.contains(expected),
+            "param {id}: display should carry the unit {expected:?}, got {shown:?}"
+        );
+    }
+
+    // It tracks the parameter rather than caching: a second value reads differently.
+    assert!(instance.set_parameter(0, 0.75));
+    let after = instance
+        .parameter_display(0)
+        .expect("param 0 has a display");
+    assert!(
+        after.contains("0.750"),
+        "the display must follow the parameter, got {after:?}"
+    );
+
+    // An out-of-range index addresses nothing and must not dispatch.
+    assert_eq!(instance.parameter_display(count), None);
+    assert_eq!(instance.parameter_display(-1), None);
+}
+
+/// The probe declines `effString2Parameter`, and a decline is reported as
+/// `None` rather than as a parsed value.
+///
+/// `PluginParameters::string_to_parameter` defaults to `false` in the vendored
+/// crate and the probe does not override it — which matches every real VST2
+/// plugin measured for this suite (see the module header). So the honest
+/// assertion is the refusal: a `Some` here would mean a number the plugin never
+/// produced was about to be written into the user's preset.
+///
+/// The parameter must also be *unchanged* by the refused parse. That half is
+/// the one worth having: `set_parameter_from_string` reads the value back after
+/// dispatching, so a version that ignored the opcode's return code would report
+/// whatever the parameter already held — a plausible number, indistinguishable
+/// from a successful parse.
+#[test]
+fn a_refused_string_parse_reports_none_and_writes_nothing() {
+    let _guard = lock_probe();
+    let (instance, _path) = load_probe();
+
+    assert!(instance.set_parameter(0, 0.5));
+
+    for text in ["0.75", "-6 dB", "Bandpass", ""] {
+        assert_eq!(
+            instance.set_parameter_from_string(0, text),
+            None,
+            "the probe declines effString2Parameter; {text:?} must not parse"
+        );
+    }
+
+    let after = instance.parameter(0).expect("param 0 is readable");
+    assert!(
+        (after - 0.5).abs() < 1e-6,
+        "a refused parse must leave the parameter alone, got {after}"
+    );
+
+    // Out-of-range indices do not dispatch either.
+    let count = instance.parameters().len() as i32;
+    assert_eq!(instance.set_parameter_from_string(count, "0.5"), None);
+    assert_eq!(instance.set_parameter_from_string(-1, "0.5"), None);
+}
+
+/// The display string is only valid for the value the plugin currently holds,
+/// which is what forces the loader seam to compare before it answers.
+///
+/// `effGetParamDisplay` passes the plugin an index and nothing else, so it
+/// formats its own current value — VST 2.4 has no call that formats an
+/// arbitrary one. This pins the property the shared-seam impl depends on: the
+/// string changes when the parameter changes, so answering with it regardless of
+/// what value was *asked about* would label two different values identically.
+///
+/// Without this, the seam's comparison looks like defensive noise a later reader
+/// could delete; the failure it prevents is a UI showing "0.250" beside a slider
+/// the user has dragged to 0.75.
+#[test]
+fn the_display_string_describes_only_the_current_value() {
+    let _guard = lock_probe();
+    let (instance, _path) = load_probe();
+
+    assert!(instance.set_parameter(0, 0.25));
+    let at_quarter = instance
+        .parameter_display(0)
+        .expect("param 0 has a display");
+
+    assert!(instance.set_parameter(0, 0.75));
+    let at_three_quarters = instance
+        .parameter_display(0)
+        .expect("param 0 has a display");
+
+    assert_ne!(
+        at_quarter, at_three_quarters,
+        "the plugin formats its live value, so two different values must not \
+         share a label — the seam's current-value guard rests on this"
+    );
+}

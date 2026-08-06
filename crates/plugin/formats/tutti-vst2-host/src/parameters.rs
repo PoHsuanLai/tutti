@@ -84,6 +84,65 @@ impl Vst2Instance {
         }
     }
 
+    /// The plugin's own display string for a parameter's **current** value,
+    /// with its unit label appended — `"800 Hz"`, `"Plate"`, `"-6.0 dB"`.
+    ///
+    /// `None` when `id` addresses no declared parameter.
+    ///
+    /// ## Why this takes no value
+    ///
+    /// `effGetParamDisplay` passes only the index: the plugin formats whatever
+    /// it currently holds, and VST 2.4 offers no way to ask it about a value it
+    /// is not set to. The other three formats do take one
+    /// (`getParamStringByValue`, `value_to_text`, `ParameterStringFromValue`),
+    /// so this is the format's limit rather than this crate's.
+    ///
+    /// The shared-seam method is therefore only answerable for the value the
+    /// plugin is already at; its loader impl compares before calling rather than
+    /// setting the parameter to ask. Writing a parameter to read its label would
+    /// make a display query audible, and would race automation writing the same
+    /// parameter.
+    ///
+    /// The unit comes from the separate `effGetParamLabel` opcode — VST2 splits
+    /// the number and its unit across two calls, so a caller joining them
+    /// itself would have to know that. An empty label yields no trailing space.
+    pub fn parameter_display(&self, id: i32) -> Option<String> {
+        let index = self.param_index(id)?;
+        let text = self.params.get_parameter_text(index);
+        let label = self.params.get_parameter_label(index);
+        Some(match (text.trim().is_empty(), label.trim().is_empty()) {
+            (true, _) => return None,
+            (false, true) => text,
+            (false, false) => format!("{text} {label}"),
+        })
+    }
+
+    /// Hand `text` to the plugin's `effString2Parameter`, letting it parse the
+    /// string with its own interpretation and write the result to parameter
+    /// `id`.
+    ///
+    /// Returns the value the plugin arrived at, normalized — read back after
+    /// the write, because the opcode reports only whether the string was
+    /// accepted and never yields the number.
+    ///
+    /// `None` when `id` addresses no declared parameter, or the plugin refused
+    /// the string. A caller must leave its field unchanged on `None`.
+    ///
+    /// ## This one writes
+    ///
+    /// Unlike the other three formats' parse calls, `effString2Parameter` is a
+    /// *setter*: there is no VST2 opcode that parses without applying. So a
+    /// caller cannot preview a typed string here — asking is committing. The
+    /// read-back is what makes the answer usable at the shared seam, which
+    /// expects a value rather than a bool.
+    pub fn set_parameter_from_string(&self, id: i32, text: &str) -> Option<f32> {
+        let index = self.param_index(id)?;
+        if !self.params.string_to_parameter(index, text.to_string()) {
+            return None;
+        }
+        self.params.get_parameter(index)
+    }
+
     /// List every parameter the plugin advertises, with current value.
     pub fn parameters(&self) -> Vec<ParameterInfo> {
         let count = self.handle.instance.get_info().parameters;

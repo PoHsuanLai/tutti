@@ -475,6 +475,66 @@ impl Vst3Loaded {
         }
     }
 
+    /// The plugin's own display string for a normalized `value` on parameter
+    /// `param_id` — `"800 Hz"`, `"Bandpass"`, `"-inf"`.
+    ///
+    /// `None` when the plugin has no edit controller or refuses the id. VST3 is
+    /// the one format whose ABI takes the value already normalized, so nothing
+    /// is converted on the way in.
+    ///
+    /// The value is a *parameter* of the call, not the plugin's current one:
+    /// `getParamStringByValue` formats whatever is named, which is what an
+    /// automation lane drawing labels along a curve needs. Reading the live
+    /// value first would answer a different question.
+    ///
+    /// Main/UI thread, as with every other `IEditController` call here.
+    pub fn parameter_string_by_value(&self, param_id: u32, value: f64) -> Option<String> {
+        tutti_plugin_types::assert_main_thread();
+        let ctrl = self.interfaces.controller.as_ref()?;
+        let mut string: vst3::Steinberg::Vst::String128 = [0; 128];
+        let result = unsafe { ctrl.getParamStringByValue(param_id, value, &mut string) };
+        (result == kResultOk).then(|| utf16_to_string(&string))
+    }
+
+    /// Parse `text` into a normalized value using the plugin's own
+    /// interpretation — the inverse of
+    /// [`parameter_string_by_value`](Self::parameter_string_by_value).
+    ///
+    /// `None` when the plugin has no controller or cannot parse the string. A
+    /// caller must leave its field unchanged rather than substituting a
+    /// fallback: a fabricated `0.0` would be written into the user's preset.
+    ///
+    /// The buffer is a NUL-terminated UTF-16 copy the plugin borrows for the
+    /// duration of the call. It is a local rather than a borrow of `text`
+    /// because the ABI takes `*mut TChar` — non-const, so the plugin is
+    /// entitled to scribble on it — and because a Rust `&str` carries no
+    /// terminator. The copy is bounded at 128 units to match the `String128`
+    /// the display direction uses: a longer string is one no plugin's own
+    /// formatter could have produced, so truncating it costs no round-trip
+    /// that would otherwise have worked.
+    ///
+    /// Main/UI thread.
+    pub fn parameter_value_by_string(&self, param_id: u32, text: &str) -> Option<f64> {
+        tutti_plugin_types::assert_main_thread();
+        let ctrl = self.interfaces.controller.as_ref()?;
+
+        let mut buf: Vec<u16> = text.encode_utf16().take(127).collect();
+        buf.push(0);
+
+        let mut value: vst3::Steinberg::Vst::ParamValue = 0.0;
+        let result = unsafe {
+            ctrl.getParamValueByString(
+                param_id,
+                buf.as_mut_ptr() as *mut vst3::Steinberg::Vst::TChar,
+                &mut value,
+            )
+        };
+        // A plugin may answer `kResultOk` without touching `value`; a non-finite
+        // result would reach `Normalized::new`, which maps NaN to 0.0 and would
+        // commit that to the parameter as if the user had typed it.
+        (result == kResultOk && value.is_finite()).then_some(value)
+    }
+
     /// The **ParamID** of the parameter at `index` in `0 .. parameter_count()`.
     /// `None` when the index is out of range or the plugin has no controller.
     ///

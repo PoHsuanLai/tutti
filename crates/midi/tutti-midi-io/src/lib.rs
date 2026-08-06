@@ -1,10 +1,10 @@
 //! Hardware and file MIDI I/O for the Tutti engine.
 //!
-//! [`core`] is the hardware edge: [`MidiIo`], the `midir`/`coremidi` drivers,
-//! and the audio-thread ring buffers. Plus [`smf`], the Standard MIDI File
-//! codec, and passthrough re-exports of the pure MIDI vocabulary from
+//! [`core`] is the hardware edge: [`MidiSession`], the per-OS native-UMP
+//! backends, and the audio-thread ring buffers. Plus [`smf`], the Standard MIDI
+//! File codec, and passthrough re-exports of the pure MIDI vocabulary from
 //! [`tutti_midi_types`]. The whole surface re-exports at the crate root, so
-//! consumers write `tutti_midi_io::MidiIo`.
+//! consumers write `tutti_midi_io::MidiSession`.
 
 // --- Framework-free hardware I/O core ---
 
@@ -19,12 +19,7 @@ pub use core::{
     EndpointId, EndpointInfo, InputConnection, MidiEndpoints, MidiSession, UmpCapability,
 };
 pub use core::{Error, Result};
-// OS hardware orchestrator, the device descriptor, and the record its observer
-// channel carries — only present under `midi-hardware` (they own the `midir`
-// edge).
 pub use core::{HardwareMidiInputs, InputProducerHandle, PortInfo, PortType};
-#[cfg(feature = "midi-hardware")]
-pub use core::{MidiDevice, MidiInputRecord, MidiIo};
 
 /// `HardwareMidiInputs` and friends live in [`core::port`]; kept as a crate-root
 /// module path for the `tutti_midi_io::port::*` spelling consumers already use.
@@ -108,7 +103,7 @@ pub use smf::{
 /// It re-exports [`tutti_midi_types::prelude`] (the wire event + decoded view +
 /// clip-file codec + per-note identity) and adds this crate's I/O and delivery:
 ///
-/// - **Hardware I/O** — [`MidiIo`] (connect / send / observe) and [`MidiDevice`].
+/// - **Hardware I/O** — [`MidiSession`] (enumerate / connect / send).
 /// - **Delivery** — [`MidiBus`] / [`MidiSender`] / [`MidiReceiver`] (lock-free
 ///   fan-out), and beat-scheduled playback ([`MidiClipSource`], [`MidiSnapshot`],
 ///   [`TimedMidiEvent`]).
@@ -141,9 +136,9 @@ pub mod prelude {
         TimedMidiEvent,
     };
 
-    // The OS orchestrator + device descriptor only exist under `midi-hardware`.
+    // The OS orchestrator only exists under `midi-hardware`.
     #[cfg(feature = "midi-hardware")]
-    pub use crate::{MidiDevice, MidiIo};
+    pub use crate::MidiSession;
 }
 
 // This crate is OS MIDI I/O plus the value types a host drives. The ECS

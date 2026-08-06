@@ -46,25 +46,8 @@ impl From<midly::Error> for Error {
     }
 }
 
-#[cfg(feature = "midi-hardware")]
-impl From<midir::InitError> for Error {
-    fn from(e: midir::InitError) -> Self {
-        Self::MidiDevice(e.to_string())
-    }
-}
-
-#[cfg(feature = "midi-hardware")]
-impl From<midir::ConnectError<midir::MidiOutput>> for Error {
-    fn from(e: midir::ConnectError<midir::MidiOutput>) -> Self {
-        Self::MidiPort(e.to_string())
-    }
-}
-
-#[cfg(feature = "midi-hardware")]
-impl From<midir::ConnectError<midir::MidiInput>> for Error {
-    fn from(e: midir::ConnectError<midir::MidiInput>) -> Self {
-        Self::MidiPort(e.to_string())
-    }
-}
+// The three `From<midir::*>` impls that used to sit here are gone with midir.
+// `MidiPort` and `MidiDevice` survive — the CoreMIDI and ALSA backends raise
+// them directly.
 
 pub type Result<T> = std::result::Result<T, Error>;

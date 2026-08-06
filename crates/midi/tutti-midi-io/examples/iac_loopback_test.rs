@@ -12,24 +12,28 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
-use tutti_midi_io::{HardwareMidiInputs, MidiEvent, MidiIo, MidiMessage, NoteId};
+use tutti_midi_io::{HardwareMidiInputs, MidiEvent, MidiMessage, MidiSession, NoteId};
 use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
 
 fn main() {
     let pm = Arc::new(HardwareMidiInputs::new(256));
-    let io = MidiIo::new(pm.clone());
+    let io = MidiSession::new(pm.clone());
 
-    let inputs = io.list_input_devices();
+    let inputs = io.inputs();
     let Some(iac_input) = inputs.iter().find(|d| d.name.contains("IAC")) else {
         eprintln!("ERROR: IAC Driver not found. Enable it in Audio MIDI Setup.");
         std::process::exit(1);
     };
-    println!("Found IAC input: [{}] {}", iac_input.index, iac_input.name);
+    println!(
+        "Found IAC input: [{}] {}",
+        iac_input.id.raw(),
+        iac_input.name
+    );
 
-    io.connect_input(iac_input.index).unwrap();
+    io.connect_input(iac_input.id).unwrap();
     thread::sleep(Duration::from_millis(200));
     assert!(
-        io.is_input_connected(&iac_input.name),
+        io.is_any_input_connected(),
         "Should be connected to IAC input"
     );
     println!("Connected inputs: {:?}", io.connected_input_names());
@@ -47,7 +51,7 @@ fn main() {
     // `MidiMessage`. The app speaks messages at both ends — the port and codec
     // handle the wire form, and the MIDI-1-vs-2 distinction never surfaces.
     let roundtrip = |label: &str, msg: MidiMessage, check: &dyn Fn(MidiMessage) -> bool| {
-        io.send(MidiEvent::try_from(msg).expect("message is encodable"));
+        io.send(&[MidiEvent::try_from(msg).expect("message is encodable")]);
         thread::sleep(Duration::from_millis(100));
         let mut first: Option<MidiEvent> = None;
         pm.cycle_start_read_all_inputs(512, |_, ev| {
@@ -121,12 +125,12 @@ fn main() {
 
     println!("\n=== Test 5: Rapid burst (10 notes) ===");
     for n in 60..70u8 {
-        io.send(MidiEvent::note_on(
+        io.send(&[MidiEvent::note_on(
             MidiGroup::FIRST,
             MidiChannel::FIRST,
             n,
             0xA000,
-        ));
+        )]);
     }
     thread::sleep(Duration::from_millis(200));
     let mut count = 0usize;
@@ -144,7 +148,7 @@ fn main() {
         },
     );
 
-    io.disconnect_input(&iac_input.name);
+    io.disconnect_input(iac_input.id);
     io.disconnect_output();
 
     println!("\nAll tests complete!");

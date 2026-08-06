@@ -8,12 +8,11 @@ repository = "https://github.com/PoHsuanLai/Tutti"
 
 [features]
 default = []
-# OS MIDI hardware I/O: pulls `midir` (device connect / poll / send, the `MidiIo`
-# orchestrator + hardware input/output threads) and, on macOS, `coremidi` for
-# virtual ports. Off → the engine still has full MIDI (bus, routing, clips,
-# sequencer, MPE, clock-master *generation*) but no OS ports; `midir` is not
-# linked. This is the engine-vs-OS-I/O axis.
-midi-hardware = ["dep:midir", "coremidi", "coremidi-sys", "core-foundation"]
+# OS MIDI I/O, native UMP. On macOS this pulls CoreMIDI (`coremidi` +
+# `coremidi-sys` for the one call the safe wrapper lacks). Off → the engine still
+# has full MIDI (bus, routing, clips, sequencer, MPE, clock-master *generation*)
+# but no OS ports. This is the engine-vs-OS-I/O axis.
+midi-hardware = ["coremidi", "coremidi-sys", "core-foundation"]
 
 [dependencies]
 thiserror = "2"
@@ -30,13 +29,10 @@ tutti-midi-runtime = { path = "../tutti-midi-runtime", default-features = false 
 crossbeam-channel = "0.5"
 arc-swap = "1.7"
 ringbuf = "0.4"
-parking_lot = "0.12"
 
-# OS MIDI hardware, gated by `midi-hardware`. `midly` (SMF file I/O) is a hard
-# dep — SMF read/write is engine-side, not OS hardware. midly's workspace base
-# is no_std; re-add the `std` + `parallel` features this crate's SMF I/O relies
-# on (midly's default).
-midir = { workspace = true, optional = true }
+# `midly` (SMF file I/O) is a hard dep — SMF read/write is engine-side, not OS
+# hardware. midly's workspace base is no_std; re-add the `std` + `parallel`
+# features this crate's SMF I/O relies on (midly's default).
 midly = { workspace = true, features = ["std", "parallel"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]

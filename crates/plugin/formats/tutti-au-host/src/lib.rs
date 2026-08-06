@@ -126,6 +126,12 @@ pub use bus::{AuChannelConfig, AuChannelCount, BusDirection};
 pub use channel_layout::AuLayoutTag;
 // Tag <-> ChannelTopology. Flat-re-exported for the same reason `AuLayoutTag`
 // is: a caller converting a layout should not have to name the module.
+//
+// macOS-gated like every other re-export here, because `topology.rs` carries an
+// inner `#![cfg(target_os = "macos")]` — the module is declared unconditionally
+// but is *empty* off macOS, so an ungated re-export names items that do not
+// exist and fails to compile on Linux.
+#[cfg(target_os = "macos")]
 pub use topology::{tag_for, topology_of};
 // `AuMidiOutput` is the registration a host holds to keep a MIDI-output callback
 // installed — dropping it is what withdraws the callback, so the type has to be

@@ -228,7 +228,7 @@ pub fn plugin_state_snapshot(mut plugins: Query<(&PluginEmitter, &mut PluginHeal
         // `None` means the plugin declined or the bridge went down between the
         // guard above and here. Keep the previous snapshot rather than
         // overwriting a good one with nothing.
-        if let Some(state) = plugin.handle.save_state() {
+        if let Some(state) = plugin.handle.state().save_state() {
             health.last_snapshot = Some(state);
         }
     }

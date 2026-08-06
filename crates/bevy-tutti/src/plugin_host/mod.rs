@@ -67,7 +67,7 @@ pub use editor::{
     plugin_editor_window_resize_system, set_editor_visible_observer, PendingPluginEditor,
     PluginEditorOpen, PluginEmitter, PluginFloatingEditorOpen, SetEditorVisible, Visibility,
 };
-pub use health::{plugin_health_poll, plugin_state_snapshot, PluginHealth, PluginStatus};
+pub use health::{plugin_health_poll, plugin_state_snapshot, PluginHealth, PluginLiveness};
 pub use latency::{plugin_latency_poll, CompensatedLatency};
 pub use load::{
     plugin_load_promote, plugin_load_start, PendingPlugin, PluginLoadDone, PluginLoadTerminated,

@@ -434,7 +434,7 @@ impl Drop for ClapLoaded {
         // stop/deactivate to do here.
         self.close_editor();
 
-        // PluginHandle::Drop calls destroy(); EntryGuard::Drop is a no-op;
+        // PluginPtr::Drop calls destroy(); EntryGuard::Drop is a no-op;
         // library unloads last.
     }
 }

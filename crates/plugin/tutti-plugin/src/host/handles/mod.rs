@@ -37,9 +37,15 @@ pub use crate::host::node::{
 // name its field's type without reaching into the private `protocol` module.
 // `ParamId` for the same reason one step further in — every `ParamAddress`
 // variant wraps one, so naming the address without it builds nothing.
-pub use crate::protocol::{ChordValue, ParamAddress, ParamId, ScaleValue};
+// `Normalized` for the same rule applied to values rather than addresses:
+// `HostParams::set_parameter_value` takes one, so a caller that cannot name it
+// cannot call the method, and an out-of-crate backend cannot implement the
+// trait at all.
+pub use crate::protocol::{
+    ChordValue, Normalized, ParamAddress, ParamId, Preset, PresetId, ScaleValue,
+};
 pub use crate::util::window::{EditorCapabilities, EditorSize};
-pub use control_handle::PluginHandle;
+pub use control_handle::{OptionalCapabilities, PluginHandle, PluginStatus};
 pub use tutti_units::{LfoShape, ModParams, ModTarget};
 
 /// In-process VST2 audio-graph node. Used when a host loads VST2 plugins

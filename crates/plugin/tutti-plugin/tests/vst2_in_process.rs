@@ -81,15 +81,23 @@ fn handle_is_not_crashed_in_process() {
 
 #[test]
 #[ignore]
-fn vst2_builder_routes_to_in_process() {
-    // The public `tutti_plugin::vst2(...)` builder should detect a `.vst`
-    // path and route to the in-process backend (with the `vst2` feature
-    // on, which the integration test gate requires). Confirm by checking
-    // has_editor reports true and no crash.
+fn open_routes_a_vst2_to_the_in_process_backend() {
+    // `Plugin::open` detects the format from the path and routes a VST2 to
+    // the in-process backend (with the `vst2` feature on, which the
+    // integration-test gate requires). Confirm by checking has_editor reports
+    // true and no crash.
+    //
+    // This replaces `vst2_builder_routes_to_in_process`, which asserted the
+    // same routing through `tutti_plugin::vst2(..).build()`. That builder is
+    // gone; it matched only `Some("vst") | Some("VST")` while
+    // `format_from_path` — which `open` uses — also maps `.dll` and `.so` to
+    // VST2, so the two disagreed on every Windows and Linux VST2. Routing had
+    // to keep a test either way, so it moved here rather than being deleted
+    // with the builder.
     let _lock = PLUGIN_LOAD_LOCK.lock().unwrap();
-    let (_unit, handle) = tutti_plugin::vst2(48_000.0, VST2_PLUGIN)
-        .build()
-        .expect("vst2() builder should load TAL-NoiseMaker in-process");
+    let plugin = tutti_plugin::catalog::Plugin::open(VST2_PLUGIN, 48_000.0)
+        .expect("Plugin::open should load TAL-NoiseMaker in-process");
+    let (_unit, handle) = plugin.into_parts();
 
     assert!(!handle.is_crashed());
     assert!(
@@ -110,4 +118,37 @@ fn handle_midi_sender_available() {
     let _sender = handle.midi_sender();
     // Cloning is cheap and the sender outlives the function — that's
     // the surface contract we care about.
+}
+
+/// VST2 reports no speaker placement, and the handle says so plainly.
+///
+/// The end-to-end half of `LayoutSupport`: a real plugin, loaded through the
+/// real path, reporting `None` because the format has no way to be asked —
+/// `effSetSpeakerArrangement` needs a `VstSpeakerArrangement` struct the
+/// vendored bindings do not define, and the host never sends it.
+///
+/// Worth an integration test rather than only a unit one: the unit tests build
+/// a `LoadedPlugin` by hand, so they would still pass if the VST2 loader
+/// silently populated the field with something. This asserts the loader's own
+/// answer.
+#[test]
+#[ignore]
+fn a_vst2_plugin_reports_no_channel_topology() {
+    use tutti_plugin_types::LayoutSupport;
+
+    let _lock = PLUGIN_LOAD_LOCK.lock().unwrap();
+    let (_unit, handle) =
+        tutti_plugin::in_process_vst2(Path::new(VST2_PLUGIN), 48_000.0).expect("load failed");
+
+    assert_eq!(
+        handle.layout_support(),
+        LayoutSupport::None,
+        "VST2 cannot be asked for speaker placement, so nothing may claim it can"
+    );
+    assert_eq!(handle.input_bus_topology(0), None);
+    assert_eq!(handle.output_bus_topology(0), None);
+
+    // The widths are still reported, unchanged by any of this — the placement
+    // half being absent must not disturb the count half.
+    assert_eq!(handle.loaded().total_outputs(), 2);
 }

@@ -4,8 +4,8 @@
 use super::ask::Reply;
 use crate::protocol::{
     ChordChanges, MidiEventVec, NoteExpressionChanges, NoteExpressionIntChanges,
-    NoteExpressionTextChanges, ParamAddress, ParameterChanges, ParameterInfo, PluginTail, Samples,
-    ScaleChanges, TransportInfo,
+    NoteExpressionTextChanges, ParamAddress, ParameterChanges, ParameterInfo, PluginTail, Preset,
+    PresetId, Samples, ScaleChanges, TransportInfo,
 };
 
 /// Audio-thread bulk payload for one `Process` command. Heap-boxed and
@@ -88,6 +88,16 @@ pub(super) enum Command {
         param_id: ParamAddress,
         reply: Reply<Option<f32>>,
     },
+    GetPresetList {
+        reply: Reply<Option<Vec<Preset>>>,
+    },
+    LoadPreset {
+        id: PresetId,
+        reply: Reply<bool>,
+    },
+    GetCurrentPreset {
+        reply: Reply<Option<PresetId>>,
+    },
 }
 
 /// Bridge-thread → audio-thread (RT response path).
@@ -153,6 +163,28 @@ pub enum BridgeEvent {
     /// (preset load, param-title change, IO change, full reload). Carries no
     /// payload — the host re-reads from the plugin in response.
     Resync(ResyncKind),
+    /// The bridge died: the subprocess never connected, failed the handshake,
+    /// or its stream dropped mid-session.
+    ///
+    /// Unlike every other variant, this one is not the *plugin* speaking — it
+    /// is the bridge reporting that the plugin can no longer speak at all. It
+    /// fires once, from the site that noticed, and is terminal: the engine
+    /// offers no relaunch, so recovery means loading a fresh plugin.
+    ///
+    /// `cause` is a message rather than a `BridgeError` because that type is
+    /// not `Clone` and the reason has to outlive the call that produced it.
+    /// Stringifying at the detection site is what makes the cause available at
+    /// all — a host that asks later gets the real reason instead of a
+    /// placeholder.
+    ///
+    /// **May arrive with no listener.** Two of the three crash sites run before
+    /// `set_listener`, so a subscriber is not guaranteed to see this. The
+    /// authoritative answer is the latched cause behind
+    /// `PluginHandle::status`; this event is how a host learns *promptly*, not
+    /// how it learns *reliably*.
+    Crashed {
+        cause: String,
+    },
 }
 
 /// Which aspect of plugin state a [`BridgeEvent::Resync`] asks the host to
@@ -193,7 +225,9 @@ impl ResyncKind {
 
 /// The consequence a [`ResyncKind`] maps to — which of the two split callbacks
 /// the host should fire.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// Not `Copy`, following [`PluginInvalidation`], which it wraps.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ResyncClass {
     Refresh(PluginRefresh),
     Invalidate(PluginInvalidation),
@@ -217,7 +251,12 @@ pub enum PluginRefresh {
 /// latency compensation (PDC). Delivered via
 /// [`PluginHandle::on_invalidate`](crate::host::handles::PluginHandle::on_invalidate).
 /// Mirrors CLAP `request_restart()` + `audio_ports.rescan()` + `latency.changed()`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// **Not `Copy`**: [`Crashed`](Self::Crashed) carries an owned cause. The
+/// derive was dropped rather than the cause boxed or interned, because nothing
+/// relied on it — every consumer takes this by value through
+/// `Fn(PluginInvalidation)`, which `Clone` satisfies.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PluginInvalidation {
     /// The plugin reported new processing latency. Carries the new value; the
     /// node's own atomic is already updated live, but compensation delays across
@@ -231,4 +270,16 @@ pub enum PluginInvalidation {
     Io,
     /// The plugin instance was rebuilt in place; re-plan everything.
     Reloaded,
+    /// The plugin died and is not coming back — unwire it.
+    ///
+    /// Structural rather than cosmetic, and terminal rather than a request to
+    /// re-read: every other variant asks the host to *update* its plan, this one
+    /// says there is nothing left to plan around. The engine offers no relaunch,
+    /// so a host recovers by loading a replacement, carrying whatever state it
+    /// captured while the plugin was healthy.
+    ///
+    /// A host that misses this event is not left guessing — `PluginHandle`'s
+    /// status query reports the same cause, latched. See
+    /// [`BridgeEvent::Crashed`] for why both exist.
+    Crashed { cause: String },
 }

@@ -76,14 +76,38 @@ impl VoiceSlot {
     ///   allocated in the callback.
     ///
     /// A slot that arrives already needing stretch (non-unity `play.stretch` /
-    /// `play.pitch`) is given its unit by the SENDER, on the control thread,
-    /// before the command is queued — see `VoicePoolHandle::prepare`, which
-    /// fills in `VoiceCommand::AddVoice`'s `stretch` field. Turning stretch on
-    /// *later* goes through the same door via `VoiceCommand::UpdateStretch`.
+    /// `play.pitch`) gets its unit built on the **control thread**, before the
+    /// audio thread ever sees the slot. The two owners do that differently, and
+    /// the difference is not cosmetic:
     ///
-    /// (Both used to be described as `VoiceSlot::materialize_stretch`, a method
-    /// that has never existed. That dangling name is why the update path went
-    /// unbuilt: every reader took the doc's word that a filter would arrive.)
+    /// - **`VoicePool`** takes a pre-built filter from the sender — see
+    ///   `VoicePoolHandle::prepare`, which fills in `VoiceCommand::AddVoice`'s
+    ///   `stretch` field. It has to: `AddVoice` is drained in the callback, so the
+    ///   pool cannot build one at the point it learns it needs one.
+    /// - **`VoiceNode` builds its own**, in `VoiceNode::with_channels`, because
+    ///   that constructor *is* control-thread code. Nothing prepares a filter for
+    ///   a node, and nothing needs to.
+    ///
+    /// **Turning stretch on later is a pool-only capability.**
+    /// `VoiceCommand::UpdateStretch` reaches `set_stretch` below through the
+    /// pool's drain; `VoiceNode::drain_commands` handles `UpdatePlacement` and
+    /// nothing else, so the same command sent to a `VoiceNodeHandle` is discarded
+    /// without a word. A node's pitch is therefore fixed at construction, and a
+    /// host that wants to change it respawns the voice — which is what
+    /// `dawai_model::audio_graph::source` does.
+    ///
+    /// If that gap is ever closed, `VoiceNode::set_sample_rate` has to close with
+    /// it. It refreshes an existing unit (`if let Some(unit) = &mut
+    /// self.slot.stretch`) and cannot create one, so a filter adopted mid-flight
+    /// would keep the `SR_44K1` its constructor assumed and never be corrected —
+    /// a pitch error proportional to the device's real rate, with nothing logged.
+    ///
+    /// (Both paths used to be described here as `VoiceSlot::materialize_stretch`,
+    /// a method that has never existed. That dangling name is why the update path
+    /// went unbuilt: every reader took the doc's word that a filter would arrive.
+    /// A later revision replaced it with a flat "the SENDER builds it", which was
+    /// true of the pool and false of the node — and reading it that way is what
+    /// made the node's spawn path look broken when it was not.)
     pub(crate) fn with_channels(
         id: SlotId,
         voice: Voice,

@@ -10,7 +10,7 @@ use crate::audio_pipeline::{AudioBlock, AudioPipeline, Clock, ProcessExtras};
 use crate::editor::EditorState;
 use crate::plugin::{AsyncEvent, Plugin};
 use tutti_plugin::server::{
-    AudioSlab, BridgeMessage, HostMessage, IpcMidiEvent, IpcMidiEventVec, MidiEventVec,
+    AudioSlab, BridgeMessage, HostMessage, IpcMidiEvent, IpcMidiEventVec, MidiEventVec, Normalized,
     SampleFormat, WindowHandle, MIDI_STACK_CAPACITY,
 };
 use tutti_plugin::Result;
@@ -123,7 +123,12 @@ impl Session {
 
             M::SetParameter { param_id, value } => {
                 if let Some(plugin) = self.plugin.as_mut() {
-                    plugin.instance_mut().set_parameter(param_id, value as f64);
+                    // The wire carries a bare `f32` from another process, so
+                    // this is where an out-of-range or NaN value would enter a
+                    // live plugin. `Normalized::new` is the clamp, applied once
+                    // at the boundary rather than trusted from the peer.
+                    let value = Normalized::new(value as f64);
+                    plugin.instance_mut().set_parameter(param_id, value);
                 }
                 Ok(Reaction::None)
             }
@@ -147,6 +152,33 @@ impl Session {
                     .map(|p| p.instance().get_parameter_list())
                     .unwrap_or_default();
                 Ok(BridgeMessage::ParameterList { parameters }.into())
+            }
+            M::GetPresetList => {
+                // `unwrap_or_default` — an empty list, matching
+                // `GetParameterList` above. A request arriving before a plugin
+                // is loaded is a host sequencing error, not something to report
+                // as a preset-less plugin, and the same shape already covers it
+                // for parameters.
+                let presets = self
+                    .plugin
+                    .as_mut()
+                    .map(|p| p.instance_mut().get_presets())
+                    .unwrap_or_default();
+                Ok(BridgeMessage::PresetList { presets }.into())
+            }
+            M::LoadPreset { id } => {
+                let ok = self
+                    .plugin
+                    .as_mut()
+                    .is_some_and(|p| p.instance_mut().load_preset(&id));
+                Ok(BridgeMessage::PresetLoaded { ok }.into())
+            }
+            M::GetCurrentPreset => {
+                let id = self
+                    .plugin
+                    .as_mut()
+                    .and_then(|p| p.instance_mut().get_current_preset());
+                Ok(BridgeMessage::CurrentPreset { id }.into())
             }
             M::GetParameterInfo { param_id } => {
                 let info = self.plugin.as_ref().and_then(|p| {

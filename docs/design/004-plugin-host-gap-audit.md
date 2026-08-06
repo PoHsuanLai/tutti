@@ -982,7 +982,7 @@ indices, so every listed parameter answers `true`. The test pins "probed and
 marked known" — the part that regressed — not "a `false` answer is carried
 through", which no available input can witness.
 
-### D-9 · Preset support has no cross-format surface · HELD
+### D-9 · Preset support has no cross-format surface · DONE
 
 `probed::VST2` omits both preset bits, yet the vendor implements
 `change_preset`(2), `get_preset_num`(3), `set_preset_name`(4),
@@ -1011,6 +1011,30 @@ So the work is a cross-format surface, and VST2 is the least of it. Wiring VST2'
 four opcodes alone would add a fifth dead-ended implementation and let the
 capability bits keep claiming a reachability that does not exist. The README `○`
 correction stands on its own and is worth doing either way.
+
+**Built as designed — see `005-plugin-presets.md`.** `PluginHandle::presets` /
+`load_preset` / `current_preset` over an opaque, format-shaped `PresetId`, plus
+`preset_support()` returning one `PresetSupport` so a caller matches once
+instead of cross-referencing two capability bits against two method returns.
+Reachable in-process and over IPC (`PROTOCOL_VERSION` 14).
+
+Two things the build changed about the plan:
+
+- **VST3 loads.** The design first had it decline, on the grounds that program
+  selection goes through the `kIsProgramChange` parameter and routing it through
+  `load_preset` would give one operation two write paths. That was right about
+  doing it *blindly*; done inside the format layer, where the owning parameter
+  is identifiable, it is still one write path. Leaving it would have meant a
+  "coherent" API with one format needing caller-side special handling.
+- **The flag was being dropped at the boundary.** `kIsProgramChange` was read at
+  the VST3 layer and never mapped — `build_param_info` carried five flags and
+  not this one. It now maps to a shared `ParamFlags::PROGRAM_CHANGE`.
+
+What remains genuinely absent is **CLAP enumeration**: discovery is a
+factory-level extension this host does not bind, so `PresetSupport::LoadByPath`
+reports that a caller supplies the path. Binding it is separate work, not
+something the surface can paper over — which is why that variant exists rather
+than an empty list that reads as "no presets".
 
 ### D-10 · Smaller opcode gaps · DONE (three of four; the fourth reclassified)
 
@@ -1053,7 +1077,14 @@ any implementor that ignores them, and let the probe answer differently.
 **`effSetSpeakerArrangement`(42) is reclassified, not done** — see D-11. It is
 not a peer of the other three.
 
-### D-11 · Speaker arrangement needs a negotiation policy, not an opcode · HELD
+### D-11 · Speaker arrangement needs a negotiation policy, not an opcode · DONE (reporting; proposal deferred)
+
+**Design: `007-channel-topology.md`.** The survey below is what it is built on;
+the short version is that this is a vocabulary change in `tutti-types`
+(`ChannelTopology`, an ordered per-channel speaker list beside the count-only
+`ChannelLayout`), not a VST2 opcode. VST2's opcode 42 is explicitly the *last*
+step, because until the surface exists it would have no policy behind it —
+which was this entry's original objection, and it stands.
 
 Split out of D-10, where it sat beside three one-call gaps and read like a
 fourth. It is not one, and the difference is why it is still open.
@@ -1077,6 +1108,92 @@ Ardour agrees by its behaviour: it implements speaker arrangements for VST3
 
 Held on the same question as D-9 and E-8: a cross-format channel-layout policy is
 a design decision, not a missing call.
+
+#### Surveyed across all four formats (2026-08-05)
+
+The entry above reads as "VST2 is behind the others". It is not: **every format
+reaches speaker placement and discards it at its own FFI boundary.**
+
+- **AU** models topology properly and is the counterexample: `AuLayoutTag`
+  (`channel_layout.rs:80-149`), get *and* set (`instance.rs:680/696/718`),
+  deliberately **no `Default`** ("a default would mean picking a speaker order
+  for a bus whose order is genuinely unknown", `channel_layout.rs:342-360`), 19
+  tests. It has **zero consumers outside `tutti-au-host`**.
+- **VST3** is bidirectional but lossy both ways. Outbound, counts ≥ 3 propose a
+  synthetic low-bit mask `(1u64 << n) - 1` (`instance.rs:69`), so a 6-channel bus
+  asks for "six channels in no order", not 5.1. Inbound, `getBusArrangement`
+  (`instance.rs:746`) receives the plugin's real mask and the next line reduces
+  it to `count_ones()`.
+- **CLAP** binds `clap.surround` + ambisonic getters
+  (`instance/ports.rs:499,525,554,575`) that have **no callers at all**;
+  `layout_from_clap_port` (`ports.rs:644-657`) recognizes only MONO/STEREO, so
+  surround and ambisonic tags flatten to a bare count. `surround_changed`
+  (`host/state.rs:115`) is set and never read.
+- **VST2** has nothing, as above.
+
+The root cause is one type: `ChannelLayout` is `pub struct ChannelLayout(u16)`
+(`tutti-types/src/channels.rs:73`) — a **width, not a layout** — and that is
+deliberate and documented (`channels.rs:8-13`): foreign layout types "convert to
+and from this at their crate boundary, **losing the placement deliberately**".
+`LoadedPlugin` (`metadata.rs:48-101`) accordingly has no placement field.
+
+So this is the `Features::PRESET_*` shape D-9 fixed: data fetched, then dropped
+for want of a consumer. **Adding a field to `LoadedPlugin` would accomplish
+nothing** — the information is already destroyed at `ports.rs:656`,
+`instance.rs:78` and `vst2 instance.rs:236` before anything could populate it.
+The work is a vocabulary change in `tutti-types` plus four boundary conversions,
+which is why it stays HELD: it revisits a settled decision.
+
+#### Three further defects the survey turned up
+
+**Fixed (2), both latent — nothing wires a multichannel plugin today.**
+
+- **CLAP dropped two positions *and* misaligned the map.** `SurroundChannel`
+  stopped at 17; CLAP defines `TSL`=18 / `TSR`=19 (`surround.h:55-56`), used by
+  7.1.4. `decode_surround_channel_map` used `filter_map`, so an unnameable
+  position was dropped from a **positional** vector — renumbering every channel
+  after it. `from_position` is now total with an `Unknown(u8)` arm. Note the
+  existing test asserted `from_position(18) == None`, i.e. it pinned the bug.
+- **The AU 5.1 order comment was wrong** — "L R C Ls Rs LFE" where Apple says
+  `L R C LFE Ls Rs` (`CoreAudioBaseTypes.h:1287,1347`). Inert (nothing reads
+  it) but it is the comment a remapping author would trust.
+
+**Open, folded into the D-11 work below:**
+
+- **VST3 proposes the wrong speaker *set* at 4 and 8 channels.**
+  `Vst3SpeakerArrangement::from` builds `(1u64 << n) - 1` (`instance.rs:69`).
+  For `n=6` that is bits 0–5 = `L R C Lfe Ls Rs`, which equals `k51` — correct
+  by coincidence, since those bits happen to be contiguous. For `n=4` it is
+  bits 0–3 = `L R C Lfe`, **not** quad `k40Music` = `L R Ls Rs` (bits 0,1,4,5),
+  and our own `downmix.rs:59` expects `FL FR BL BR`. For `n=8` it is
+  `L R C Lfe Ls Rs Lc Rc` (front-centre pair) rather than the rear-surround
+  layout `downmix.rs` assumes for 7.1.
+
+  Not fixed standalone deliberately: the correct fix is a named-layout table
+  (`4 → k40Music`, `8 → k71CineFullRear`, …), which *is* the topology vocabulary
+  D-11 needs. Patching it here would mean writing that table twice.
+
+#### One live bug found by the survey and fixed separately · DONE
+
+Independent of the topology question, and fixed in
+`fix(vst3): report the arrangement the plugin kept, not the one proposed`.
+
+A `kResultFalse` from `setBusArrangements` means the plugin kept its own layout.
+The refusal path read that back and re-resolved the audio scratch, but never
+wrote it into `PluginInfo` — so `loaded()` reported the width the host
+*proposed* while the plugin rendered the width it *chose*. `PluginClient::new`
+sizes its fundsp node from those counts (`host/node/mod.rs:327`), so a fixed-I/O
+plugin was handed a channel it was not running.
+
+The restart path already reconciled; only the load path did not, because its own
+`reconcile_bus_counts` runs *before* negotiation. `negotiate_bus_arrangements`
+now ends by reconciling on both branches and the restart path drops its
+duplicate call.
+
+Witnessed by a new probe misbehaviour, `kMisbehaveArrangementRefused`, which
+refuses **and narrows** the main input to mono. The narrowing is the fixture: a
+plugin that refuses but keeps the proposed layout reads back the numbers the
+host already had, so it cannot tell a host that re-reads from one that does not.
 
 ---
 
@@ -1344,7 +1461,7 @@ The inbound test `sysex_is_dropped_without_derailing_the_rest` was justified as
 the real reason — inbound drops SysEx because `from_midi1_bytes` would have to
 allocate on the CoreMIDI read thread. Its doc comment is corrected.
 
-### E-8 · Two properties worth having, one refuted · HELD
+### E-8 · Two properties worth having, one refuted · DONE (2 shipped, 1 refuted)
 
 `kAudioUnitProperty_PresentationLatency`(40) never written — a plugin doing
 look-ahead metering cannot align its display. `ShouldAllocateBuffer`(51) never
@@ -1383,7 +1500,63 @@ So the audit's own framing was the trap: *"pure per-instance waste, not a
 correctness bug"* is exactly backwards. Skipping it wastes a buffer nobody
 reads. Doing it breaks instruments.
 
-The other two properties are untouched and remain open.
+**The other two are now implemented**, and the measurement that came with them
+is more interesting than either surface.
+
+`PresentationLatency` is written by
+`transport::set_presentation_latency`, surfaced as
+`AuInstance::set_presentation_latency(direction, bus, Seconds)`. Per `(scope,
+element)`, because the header asks for it "on each active input and output bus"
+— a multi-output AU's buses can be presented at different times.
+[`Seconds`], not `Samples`: Apple's width is `Float64` seconds, the host never
+allocates or indexes with the value, and converting would bake in one instance's
+sample rate at the moment of the call.
+
+`DependentParameters` is read by `parameters::dependents_of{,_at}`, returning
+`Option<Vec<DependentParam>>`. The `Option` is load-bearing and is the
+absent-versus-reported rule applied: `None` is "the AU did not say", distinct
+from `Some(vec![])`, "the AU says nothing depends on it". Collapsing them turns
+"I cannot tell you" into "there is nothing to tell", and a stale cached range is
+then never refreshed. `AuParameter` also gained `meta: Option<MetaScope>` for
+the two `Is*Meta` flags, which had never been decoded.
+
+**Measured on macOS 15.6 across all 39 instantiable registered units** (35 Apple
+plus TDR Nova, TAL Reverb 4, TAL-NoiseMaker):
+
+- `PresentationLatency`: **0 of 39 accept it.** Every one answers -10879, and
+  the refusal survives every spelling — input/output/global scope, before and
+  after `AudioUnitInitialize`, at `Float64` and `Float32` width.
+  `GetPropertyInfo` reports it absent rather than present-but-unwritable, so
+  these units genuinely do not implement it.
+- `DependentParameters`: **0 of 39 answer it** — including at the address of
+  each of the **28 parameters that do carry a meta flag** (AUNBandEQ's 8 band
+  "Type" controls, AUGraphicEQ's "Number of Bands", AUPitch's 9,
+  AURoundTripAAC's 3, AURogerBeep's "Sensitivity", AUNewPitch's "Spectral
+  Coherence", TDR Nova's 5).
+
+That last pair is the finding worth keeping. 28 real parameters announce
+"writing me may silently move others" and **not one will say which**, so a host
+cannot use this property as its staleness mechanism — the *flag* is the signal,
+and invalidation has to be broad. This is why `AuParameter::meta` is carried
+rather than derived from the property read, and it inverts the audit's original
+framing: the gap was never the missing property call, it was that the flag it
+depends on was never decoded.
+
+Unlike `ShouldAllocateBuffer`, neither of these is harmful when unimplemented —
+both are advisory, both fail loudly at the property call rather than silently at
+render, and neither changes a sample. So they ship despite nothing on this
+machine exercising them, which is the opposite conclusion to (51) and for a
+reason that generalizes: a write the AU *refuses* costs nothing, a write it
+*accepts and then dishonours* costs everything.
+
+Tests: `tests/au_e8_properties.rs`, 12 tests. The corpus can only witness the
+refusals, so the positive paths run against `support/probe_au.rs`, which grew a
+`RaggedDependentParameters` variant. That variant exists because of a mutation
+that **survived**: `chunks_exact` relaxed to `chunks` was indistinguishable from
+correct against every honest input, since a well-formed array is always a whole
+multiple of the 8-byte struct. Rather than weaken the assertion, the probe now
+reports a byte count that is not a multiple, which is the only input that tells
+the two apart. All 15 mutations are now killed.
 
 ---
 
@@ -1448,28 +1621,43 @@ correct.
 **D-6** needs a decision before it needs code: does the subprocess VST2 path own
 editors at all?
 
-**Closed out.** 34 DONE, 3 HELD, no TODO remaining.
+**Closed out.** 35 DONE, 2 HELD, no TODO remaining.
 
 **C-12** (CLAP floating-window GUI) and **D-10** (VST2 opcode gaps) have since
 landed. D-10's `effGetNumMidiInputChannels` half was the live bug flagged here —
 a plugin answering `Maybe` to `sendVstMidiEvent` classified MIDI-silent and its
 output dropped — and is fixed.
 
-The three that remain are all the same *kind* of open question, which is worth
+The three below were all the same *kind* of open question, which is worth
 stating plainly: **each needs a policy decision above the format layer, not a
-missing call below it.**
+missing call below it.** Two have since been answered — D-9 shipped, D-11 is
+designed — and both answers took the same shape the diagnosis predicted.
 
-- **D-9** (presets) — all four formats implement presets; nothing above them
-  does, and the two `Features` preset bits have no reader anywhere in the
-  workspace. Needs a cross-format surface, not VST2 plumbing.
-- **D-11** (speaker arrangement) — needs a channel-layout negotiation policy;
-  this host takes the plugin's declared counts and never proposes one.
-- **E-8** (two AU properties, down from three) — `PresentationLatency` and
-  `DependentParameters` both need a host-side model of what to do with the
-  answer. `ShouldAllocateBuffer` is **refuted**: implemented, measured against
-  the corpus, reverted. AUSampler accepts the write and then fails every render
-  with `-10851`, and the refusal is silent at set time, so there is nothing to
-  gate on.
+- **D-9** (presets) — **SHIPPED** (PR #196, `005-plugin-presets.md`). All four
+  formats implemented presets; nothing above them did, and the two `Features`
+  preset bits had no reader anywhere in the workspace. The answer was a
+  cross-format surface, not VST2 plumbing.
+- **D-11** (speaker arrangement) — **DESIGNED** (`007-channel-topology.md`);
+  surveyed across all four formats: every one
+  of them *reaches* speaker placement and discards it at its FFI boundary,
+  because `ChannelLayout` is a `u16` width by deliberate design. AU models
+  topology fully and has no consumers; VST3 reads the plugin's real mask and
+  popcounts it away on the next line; CLAP's surround getters have no callers.
+  So this is not VST2 plumbing either — it is a vocabulary change in
+  `tutti-types` that revisits a settled decision. One live bug the survey found
+  (a refused arrangement being reported as the proposed one) is **fixed**; see
+  the D-11 entry.
+- **E-8** (two AU properties, down from three) — **SHIPPED**.
+  `PresentationLatency` and `DependentParameters` are both implemented, and the
+  measurement that came with them supplied the missing host-side model: no unit
+  on this machine implements either, but **28 parameters carry a meta flag that
+  was never decoded**, so the flag — not the property — is the staleness signal
+  a host actually gets. `ShouldAllocateBuffer` remains **refuted**: implemented,
+  measured against the corpus, reverted. AUSampler accepts the write and then
+  fails every render with `-10851`, and the refusal is silent at set time, so
+  there is nothing to gate on. The contrast is the reusable lesson — a write the
+  AU *refuses* costs nothing, a write it *accepts and then dishonours* costs
+  everything.
 
 Doing any of them as a bare opcode/property wiring would add a surface with no
 caller. That is the shape to check for before picking one up — and

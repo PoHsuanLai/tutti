@@ -46,6 +46,8 @@ const PROBE_ENV_KEYS: &[&str] = &[
     "TUTTI_VST2_PROBE_MIDI_INPUTS",
     "TUTTI_VST2_PROBE_MIDI_OUTPUTS",
     "TUTTI_VST2_PROBE_EFFECT_NAME",
+    "TUTTI_VST2_PROBE_PROGRAMS",
+    "TUTTI_VST2_PROBE_SERVICED_PROGRAMS",
 ];
 
 fn clear_probe_env() {
@@ -136,6 +138,26 @@ fn last_bypass(path: &Path) -> i32 {
         let f: extern "C" fn() -> i32 = unsafe { std::mem::transmute(*sym) };
         f()
     })
+}
+
+/// The probe's packed preset-opcode trace and its length.
+fn preset_trace(path: &Path) -> Vec<i32> {
+    let packed = probe_call(path, b"tutti_vst2_probe_preset_trace\0", |sym| {
+        let f: extern "C" fn() -> i32 = unsafe { std::mem::transmute(*sym) };
+        f()
+    });
+    let len = probe_call(path, b"tutti_vst2_probe_preset_trace_len\0", |sym| {
+        let f: extern "C" fn() -> i32 = unsafe { std::mem::transmute(*sym) };
+        f()
+    });
+    (0..len).map(|i| (packed >> (i * 2)) & 0b11).collect()
+}
+
+/// Preset-opcode trace values, mirrored from the probe's `switches.rs`.
+mod preset_event {
+    pub const BEGIN: i32 = 1;
+    pub const CHANGE: i32 = 2;
+    pub const END: i32 = 3;
 }
 
 /// `CanDoAnswer` discriminants, mirrored from the probe's `switches.rs`.
@@ -707,6 +729,111 @@ fn load_and_metadata() {
     assert!(!meta.name.is_empty());
     assert!(!meta.id.is_empty());
     assert!(meta.num_outputs.count() > 0);
+}
+
+// ---------------------------------------------------------------------------
+// Programs
+// ---------------------------------------------------------------------------
+
+/// A program switch is bracketed by begin/end, in that order.
+///
+/// `effBeginSetProgram`(67) / `effEndSetProgram`(68) tell the plugin that the
+/// parameter moves about to arrive are one atomic event. Without them a switch
+/// reaches the host as forty individual `audioMasterAutomate` edits — and this
+/// host has that callback wired and draining, so the storm is real.
+///
+/// The trace records *order*, not arrival: a `begin` that lands after the
+/// change it was meant to bracket is as wrong as one that never arrives, and a
+/// pair of counters cannot tell those apart.
+#[test]
+fn a_program_switch_is_bracketed_in_order() {
+    let _guard = lock_probe();
+    let path = probe_path::probe_path().clone();
+    reset_switches(&path);
+
+    let mut instance = Vst2Instance::load(&path, SAMPLE_RATE, BLOCK).expect("probe should load");
+    assert!(instance.set_program(1), "program 1 is in range");
+
+    assert_eq!(
+        preset_trace(&path),
+        vec![preset_event::BEGIN, preset_event::CHANGE, preset_event::END],
+        "the switch must be bracketed begin -> change -> end"
+    );
+
+    drop(instance);
+    reset_switches(&path);
+}
+
+/// An out-of-range program dispatches nothing at all.
+///
+/// Not merely "returns false": a rejected switch must not open a bracket it
+/// never closes around a change that never happened. An empty trace is the
+/// assertion.
+#[test]
+fn an_out_of_range_program_dispatches_nothing() {
+    let _guard = lock_probe();
+    let path = probe_path::probe_path().clone();
+    reset_switches(&path);
+
+    let mut instance = Vst2Instance::load(&path, SAMPLE_RATE, BLOCK).expect("probe should load");
+    assert!(!instance.set_program(999), "999 is past numPrograms");
+    assert!(
+        !instance.set_program(-1),
+        "a negative index is not a program"
+    );
+
+    assert!(
+        preset_trace(&path).is_empty(),
+        "a rejected switch must dispatch no opcode, not an empty bracket"
+    );
+
+    drop(instance);
+    reset_switches(&path);
+}
+
+/// Programs are listed at the count the plugin declares, names included.
+#[test]
+fn the_declared_programs_are_listed_with_their_names() {
+    let _guard = lock_probe();
+    let instance = load_probe_with(&[("TUTTI_VST2_PROBE_PROGRAMS", "3")]);
+
+    let programs = instance.programs();
+    assert_eq!(programs.len(), 3, "the probe declared 3 programs");
+    assert_eq!(
+        programs.iter().map(|(i, _)| *i).collect::<Vec<_>>(),
+        vec![0, 1, 2],
+        "the index is the identifier and must be dense and in order"
+    );
+    assert_eq!(programs[0].1, "Probe Program 0");
+}
+
+/// A program the plugin declares but will not name keeps its slot.
+///
+/// The enumeration hole on the program axis: the probe advertises more
+/// programs than it services, so the unnamed tail answers an empty string.
+/// Those slots must be *kept* — dropping them would renumber every program
+/// after the hole, and for VST2 the index **is** the identifier, so a
+/// renumbered list loads the wrong program.
+#[test]
+fn an_unnamed_program_keeps_its_index() {
+    let _guard = lock_probe();
+    let instance = load_probe_with(&[
+        ("TUTTI_VST2_PROBE_PROGRAMS", "4"),
+        ("TUTTI_VST2_PROBE_SERVICED_PROGRAMS", "2"),
+    ]);
+
+    let programs = instance.programs();
+    assert_eq!(programs.len(), 4, "all declared slots are reported");
+    assert_eq!(
+        programs.iter().map(|(i, _)| *i).collect::<Vec<_>>(),
+        vec![0, 1, 2, 3],
+        "the unnamed tail must not be skipped — the index is the identifier"
+    );
+    assert!(!programs[1].1.is_empty(), "serviced programs are named");
+    assert!(
+        programs[3].1.is_empty(),
+        "an unserviced slot answers empty rather than inventing a name"
+    );
 }
 
 // ---------------------------------------------------------------------------

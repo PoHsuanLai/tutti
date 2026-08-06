@@ -415,8 +415,8 @@ fn with_audio_buffer_f64<R>(
 mod tests {
     use super::*;
     use tutti_plugin::server::{
-        ParamAddress, PluginAudio, PluginEditorHost, PluginMeta, PluginParams, PluginState,
-        PluginTail, Samples,
+        Normalized, ParamAddress, PluginAudio, PluginEditorHost, PluginMeta, PluginParams,
+        PluginState, PluginTail, Samples,
     };
 
     #[test]
@@ -521,7 +521,7 @@ mod tests {
         fn get_parameter(&self, _id: ParamAddress) -> f64 {
             0.0
         }
-        fn set_parameter(&mut self, _id: ParamAddress, _value: f64) {}
+        fn set_parameter(&mut self, _id: ParamAddress, _value: Normalized) {}
         fn get_parameter_list(&self) -> Vec<tutti_plugin::server::ParameterInfo> {
             Vec::new()
         }
@@ -535,6 +535,9 @@ mod tests {
         }
         fn close_editor(&mut self) {}
     }
+    /// The probe has no presets; the defaults say so.
+    impl tutti_plugin::server::PluginPresets for NanPlugin {}
+
     impl PluginState for NanPlugin {
         fn get_state(&mut self) -> PluginResult<Vec<u8>> {
             Ok(Vec::new())
@@ -595,7 +598,7 @@ mod tests {
         fn get_parameter(&self, _id: ParamAddress) -> f64 {
             0.0
         }
-        fn set_parameter(&mut self, _id: ParamAddress, _value: f64) {}
+        fn set_parameter(&mut self, _id: ParamAddress, _value: Normalized) {}
         fn get_parameter_list(&self) -> Vec<tutti_plugin::server::ParameterInfo> {
             Vec::new()
         }
@@ -609,6 +612,9 @@ mod tests {
         }
         fn close_editor(&mut self) {}
     }
+    /// The probe has no presets; the defaults say so.
+    impl tutti_plugin::server::PluginPresets for EchoProbe {}
+
     impl PluginState for EchoProbe {
         fn get_state(&mut self) -> PluginResult<Vec<u8>> {
             Ok(Vec::new())
@@ -657,9 +663,11 @@ mod tests {
                 outputs: outputs.iter().map(|&c| ChannelLayout::from(c)).collect(),
                 latency_samples: Samples::ZERO,
                 tail: PluginTail::Unknown,
-                // This fixture is about bus widths; no capability is claimed.
+                // This fixture is about bus widths; no capability is claimed,
+                // and no speaker placement either.
                 features: Features::empty(),
                 probed: Features::empty(),
+                ..Default::default()
             },
         }
     }

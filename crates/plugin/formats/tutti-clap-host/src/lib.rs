@@ -25,6 +25,7 @@ pub mod error;
 pub mod events;
 pub mod host;
 pub mod instance;
+pub mod topology;
 pub mod types;
 
 /// Copy a nul-terminated C string into an owned `String`, substituting lossy
@@ -48,6 +49,10 @@ pub use instance::{ClapActive, ClapLoaded, ClapSample, ProcessContext};
 #[cfg(feature = "clap-extras")]
 pub use instance::ParamMapping;
 #[cfg(all(unix, feature = "clap-extras"))]
+// CLAP channel map <-> the shared ChannelTopology. Flat-re-exported so a
+// caller converting a layout does not have to name the module.
+pub use topology::{channel_map_of, topology_of};
+
 pub use types::PosixFdFlags;
 // The CLAP-native, voice-addressed note expression is re-exported under its
 // own distinct name (it does NOT shadow the shared

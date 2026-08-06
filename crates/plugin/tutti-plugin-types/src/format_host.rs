@@ -14,8 +14,9 @@
 //! objects in different processes, so this is not a duplicate of `AudioUnit`.
 
 use crate::{
-    AudioBufferMut, EditorSize, LoadedPlugin, ParamAddress, ParameterInfo, PluginDescriptor,
-    ProcessContext, ProcessOutput, RenderMode, Result, WindowHandle,
+    AudioBufferMut, EditorSize, LoadedPlugin, Normalized, ParamAddress, ParameterInfo,
+    PluginDescriptor, Preset, PresetId, ProcessContext, ProcessOutput, RenderMode, Result,
+    WindowHandle,
 };
 
 /// Catalog identity + load-time engine-wiring snapshot.
@@ -104,9 +105,7 @@ pub trait PluginParams {
     /// A conversion is therefore a *loader's* obligation, discharged where the
     /// range is known, exactly as the automation path has always done it.
     /// Callers that hold a [`ParameterInfo`] and want the plain value should ask
-    /// for it explicitly with [`ParameterInfo::to_plain`]; do not reuse
-    /// [`ParameterInfo::to_range`], which answers the unrelated question of
-    /// display taper.
+    /// for it explicitly with [`ParameterInfo::to_plain`].
     ///
     /// A parameter whose range the plugin never declared
     /// ([`ParamRange::Normalized`](crate::ParamRange::Normalized)) is already
@@ -124,10 +123,15 @@ pub trait PluginParams {
     /// write in [`set_parameter`](Self::set_parameter). Neither invents a cast.
     fn get_parameter(&self, id: ParamAddress) -> f64;
 
-    /// Write a parameter, **normalized `0..=1`** — see
-    /// [`get_parameter`](Self::get_parameter) for why every format speaks that
-    /// convention here, and for how an address of the wrong model is treated.
-    fn set_parameter(&mut self, id: ParamAddress, value: f64);
+    /// Write a parameter — see [`get_parameter`](Self::get_parameter) for why
+    /// every format speaks the normalized convention here, and for how an
+    /// address of the wrong model is treated.
+    ///
+    /// The domain is in the signature rather than only in this sentence:
+    /// [`Normalized`](crate::Normalized) cannot be built from a plain value
+    /// without passing its clamp, so the plain-for-normalized mistake described
+    /// above is no longer expressible at this seam.
+    fn set_parameter(&mut self, id: ParamAddress, value: Normalized);
 
     /// Push the host [`AutomationMode`](crate::AutomationMode) to the plugin.
     /// Fire-and-forget; the default no-op covers formats without an
@@ -143,6 +147,53 @@ pub trait PluginParams {
 pub trait PluginState: Send {
     fn get_state(&mut self) -> Result<Vec<u8>>;
     fn set_state(&mut self, data: &[u8]) -> Result<()>;
+}
+
+/// Preset enumeration and loading, subprocess side.
+///
+/// The mirror of the host-side `HostPresets`, on the far end of the IPC. Every
+/// method is defaulted to "this format cannot", so a loader implements only
+/// what its format actually offers — which matters more here than for the other
+/// capabilities, because **no format offers both halves unconditionally**:
+///
+/// - **CLAP** loads by path but cannot enumerate: discovery is a factory-level
+///   extension this host does not bind.
+/// - **VST3** enumerates but has no load call — a program is selected by writing
+///   the parameter flagged `kIsProgramChange`, through the parameter path.
+/// - **AU** and **VST2** offer both.
+///
+/// That split is what [`Features::PRESET_LIST`](crate::Features::PRESET_LIST)
+/// and [`Features::PRESET_LOAD`](crate::Features::PRESET_LOAD) report, and why
+/// they are two bits rather than one.
+pub trait PluginPresets: Send {
+    /// Every preset the plugin advertises, in the plugin's own order.
+    ///
+    /// Empty is the default and is the honest answer for a format that cannot
+    /// enumerate. It is **not** the same as "this plugin has no presets" — a
+    /// caller separates the two by reading `Features::PRESET_LIST`.
+    fn get_presets(&mut self) -> Vec<Preset> {
+        Vec::new()
+    }
+
+    /// Load one, by an id [`get_presets`](Self::get_presets) produced.
+    ///
+    /// Returns whether the plugin accepted. `false` is the default, and is the
+    /// honest answer for VST3: its programs go through the parameter path, and
+    /// routing them here as well would give one operation two write paths.
+    ///
+    /// An id whose shape this format does not use addresses nothing — a CLAP
+    /// path names no AU preset — and must be refused rather than coerced into
+    /// whatever number is nearest. See [`PresetId`].
+    fn load_preset(&mut self, _id: &PresetId) -> bool {
+        false
+    }
+
+    /// Which preset the plugin considers current, when it will say. `None`
+    /// means the format has no query or the plugin declined — never "the first
+    /// one".
+    fn get_current_preset(&mut self) -> Option<PresetId> {
+        None
+    }
 }
 
 /// The subprocess-side editor hooks.
@@ -172,12 +223,24 @@ pub trait PluginEditorHost {
 /// `PluginInstance` for free, and a consumer that needs "the whole plugin"
 /// (the session dispatch) depends on this one bound. Consumers that need only
 /// one capability should depend on that trait alone.
+///
+/// [`PluginPresets`] is in the bundle even though every one of its methods is
+/// defaulted: a loader that offers no presets writes `impl PluginPresets for X
+/// {}` and the defaults report "cannot", which is the honest answer. Leaving it
+/// out would mean the dispatch could not reach presets on a loader that *does*
+/// offer them without a second bound at every call site.
 pub trait PluginInstance:
-    PluginMeta + PluginAudio + PluginParams + PluginState + PluginEditorHost + Send
+    PluginMeta + PluginAudio + PluginParams + PluginState + PluginEditorHost + PluginPresets + Send
 {
 }
 
 impl<T> PluginInstance for T where
-    T: PluginMeta + PluginAudio + PluginParams + PluginState + PluginEditorHost + Send
+    T: PluginMeta
+        + PluginAudio
+        + PluginParams
+        + PluginState
+        + PluginEditorHost
+        + PluginPresets
+        + Send
 {
 }

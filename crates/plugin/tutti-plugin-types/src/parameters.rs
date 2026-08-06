@@ -30,6 +30,58 @@ use bitflags::bitflags;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
+/// A parameter value on the host's `0..=1` scale.
+///
+/// The four hosted formats disagree about which domain a parameter value is
+/// in — VST3 and VST2 speak normalized natively, AU and CLAP speak the
+/// plugin's own units — and the shared seam
+/// ([`PluginFormatHost`](crate::PluginFormatHost)) picks normalized, leaving
+/// each plain-native loader to adapt at its own edge. That rule was carried
+/// only in prose, over a `f64` that a plain value fits just as well. Writing
+/// `set_parameter(id, 20_000.0)` against a filter cutoff compiled and set the
+/// parameter to full scale rather than 20 kHz.
+///
+/// The invariant is enforced at construction: [`new`](Self::new) clamps into
+/// `0..=1` and maps NaN to `0.0`, so a `Normalized` is always a finite value on
+/// the unit interval. That is the same guard [`ParamRange::to_plain`] applies
+/// internally — it exists here so a caller cannot skip it.
+///
+/// Deliberately no `Deref`, no `From<f64>` and no arithmetic: those are the
+/// routes by which a raw float becomes a `Normalized` without passing the
+/// clamp, which is the whole point. Same discipline as
+/// [`ParamAddress`] — the models do not silently interconvert.
+///
+/// There is no matching `Plain` newtype. A plain value's legal range is
+/// per-parameter, so the type could promise only "finite" — and after the
+/// conversion was unified onto [`ParamRange`], every plain value lives inside
+/// a single format crate and never crosses a boundary where it could be
+/// confused. One newtype where the invariant is real beats two where one is
+/// decoration.
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Default)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct Normalized(f64);
+
+impl Normalized {
+    /// Clamp `v` onto `0..=1`.
+    ///
+    /// Total rather than fallible: every caller of a `Result` here would
+    /// `unwrap_or(0.0)` or clamp anyway, and the values arriving are automation
+    /// output and IPC payloads rather than user input — a rejected write would
+    /// be a dropped automation point, which is worse than a clamped one.
+    ///
+    /// NaN maps to `0.0` rather than clamping, because `f64::clamp` returns NaN
+    /// for a NaN input. This value reaches a live plugin parameter, and a NaN in
+    /// a filter coefficient does not stay confined to the parameter it entered.
+    pub fn new(v: f64) -> Self {
+        Self(clamp_unit(v))
+    }
+
+    /// The underlying `0..=1` value.
+    pub const fn get(self) -> f64 {
+        self.0
+    }
+}
+
 /// What the plugin declared about a parameter's value range.
 ///
 /// A sum type rather than bounds plus a discriminant: with a flag, the
@@ -247,6 +299,12 @@ bitflags! {
         const PER_CHANNEL = 1 << 8;
         /// …a single port.
         const PER_PORT = 1 << 9;
+        /// Writing this parameter selects a program.
+        ///
+        /// VST3 only (`kIsProgramChange`). It is how that format loads a
+        /// preset — there is no separate call — so the flag is what lets a
+        /// caller find the one parameter a program change goes through.
+        const PROGRAM_CHANGE = 1 << 10;
     }
 }
 
@@ -482,6 +540,26 @@ pub struct ParameterInfo {
     pub flags: ParamFlags,
     /// Which bits of [`flags`](Self::flags) the format actually reported.
     pub known: ParamFlags,
+    /// The group this parameter belongs to, as a display label. Empty when the
+    /// plugin declared none.
+    ///
+    /// Every hosted format has a grouping mechanism and no two agree on its
+    /// shape: VST3 has a real tree of units, CLAP a `/`-separated module path,
+    /// VST2 a numbered category, AU an optional integer clump. What they share
+    /// is that each resolves to a *name*, so that is what crosses this
+    /// boundary. A caller wanting VST3's tree reaches into `tutti-vst3-host`,
+    /// which still has it.
+    ///
+    /// Deliberately a `String` rather than an `Option<String>`, unlike the
+    /// [`known`](Self::known) mask beside it: "the format never said" and "the
+    /// format said none" are the same flat list to every consumer, so there is
+    /// no second state to keep. The group *id* is deliberately absent — AU
+    /// clump 3, VST2 category 3 and VST3 unit 3 are unrelated numbers, and a
+    /// bare number that does not say which model it belongs to is the mistake
+    /// [`ParamAddress`] exists to prevent.
+    ///
+    /// See `docs/design/010-parameter-grouping.md`.
+    pub group: String,
 }
 
 impl ParameterInfo {
@@ -494,7 +572,14 @@ impl ParameterInfo {
             steps: ParamSteps::Unknown,
             flags: ParamFlags::empty(),
             known: ParamFlags::empty(),
+            group: String::new(),
         }
+    }
+
+    /// Declare the group this parameter belongs to (builder).
+    pub fn with_group(mut self, group: impl Into<String>) -> Self {
+        self.group = group.into();
+        self
     }
 
     /// Declare the plugin's own range (builder).
@@ -574,39 +659,27 @@ impl ParameterInfo {
         self.steps.count()
     }
 
-    /// Infers a *display* scale from the step count and unit string.
+    /// The parameter's name qualified by its group — `"Delay / Mix"` — or the
+    /// bare name when it has no group.
     ///
-    /// Distinct from [`to_plain`](Self::to_plain), which maps declared
-    /// endpoints. A logarithmic answer here is a rendering hint, not a taper the
-    /// plugin declared, so it must not be reused for value conversion.
-    pub fn to_range(&self) -> audio_automation::ParameterRange {
-        use audio_automation::{ParameterRange, ParameterScale};
-
-        let (min, max) = self.range.bounds().unwrap_or((0.0, 1.0));
-        let scale = match self.steps {
-            ParamSteps::Toggle => ParameterScale::Toggle,
-            ParamSteps::Enumerated(_) => ParameterScale::Integer,
-            _ if is_log_unit(&self.unit) && min > 0.0 => ParameterScale::Logarithmic,
-            _ => ParameterScale::Linear,
-        };
-
-        ParameterRange::new(
-            min as f32,
-            max as f32,
-            self.range.default_value() as f32,
-            scale,
-        )
+    /// This is the operation every consumer of [`group`](Self::group) performs,
+    /// and it is why the field lands with its own reader rather than after one.
+    /// It also states the limit of what grouping fixes: two parameters that a
+    /// plugin genuinely distinguishes but names identically *within one group*
+    /// still qualify to the same string. Addressing is unaffected — that always
+    /// goes through [`id`](Self::id).
+    pub fn qualified_name(&self) -> String {
+        if self.group.is_empty() {
+            self.name.clone()
+        } else {
+            format!("{} / {}", self.group, self.name)
+        }
     }
-}
-
-fn is_log_unit(unit: &str) -> bool {
-    unit.contains("dB") || unit.contains("Hz") || unit.contains("hz")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use audio_automation::ParameterScale;
 
     /// A `Plain` parameter maps normalized input onto its declared range.
     #[test]
@@ -675,6 +748,60 @@ mod tests {
         assert!(!p.flags.contains(ParamFlags::BYPASS));
     }
 
+    /// `Normalized` holds the unit interval, whatever it is handed.
+    ///
+    /// The three inputs that reach this from a live system: an automation curve
+    /// overshooting its endpoints, a wire payload from another process, and a
+    /// division that produced NaN. None may reach a plugin parameter unclamped
+    /// — see the type's docs for why NaN is mapped rather than clamped.
+    #[test]
+    fn a_normalized_value_is_always_on_the_unit_interval() {
+        for (input, want) in [
+            (0.5, 0.5),
+            (0.0, 0.0),
+            (1.0, 1.0),
+            (1.5, 1.0),
+            (-0.5, 0.0),
+            (f64::INFINITY, 1.0),
+            (f64::NEG_INFINITY, 0.0),
+            (f64::NAN, 0.0),
+        ] {
+            let n = Normalized::new(input);
+            assert_eq!(n.get(), want, "Normalized::new({input})");
+            assert!((0.0..=1.0).contains(&n.get()));
+        }
+    }
+
+    /// A plain value handed to `Normalized::new` is clamped, not carried.
+    ///
+    /// This is the mistake the type exists to stop: `set_parameter(id, 20_000.0)`
+    /// against a `[10, 22050]` Hz cutoff used to compile and set full scale.
+    /// It still compiles — the clamp is total by design — but it can no longer
+    /// be mistaken for a plain write, because the seam takes `Normalized` and
+    /// the only way to build one is through this clamp.
+    #[test]
+    fn a_plain_value_cannot_masquerade_as_a_normalized_one() {
+        assert_eq!(Normalized::new(20_000.0).get(), 1.0);
+    }
+
+    /// A grouped parameter qualifies its name; an ungrouped one does not.
+    ///
+    /// The second half is the one that matters: the overwhelming majority of
+    /// parameters declare no group, and a `" / Mix"` with a dangling separator
+    /// would be visible on every one of them.
+    #[test]
+    fn a_group_qualifies_the_name_and_its_absence_does_not() {
+        let grouped = ParameterInfo::new(ParamId::new(1), "Mix").with_group("Delay");
+        assert_eq!(grouped.qualified_name(), "Delay / Mix");
+
+        let ungrouped = ParameterInfo::new(ParamId::new(1), "Mix");
+        assert_eq!(
+            ungrouped.qualified_name(),
+            "Mix",
+            "an ungrouped parameter must not gain a separator"
+        );
+    }
+
     /// `Unknown` and `Continuous` are different answers.
     #[test]
     fn unknown_steps_are_not_continuous_steps() {
@@ -741,47 +868,16 @@ mod tests {
         assert_eq!(back.flag(ParamFlags::AUTOMATABLE), None);
     }
 
+    /// The group survives the wire — it is decoded in the plugin subprocess and
+    /// consumed in the host, so it is only useful if it crosses.
+    #[cfg(feature = "serde")]
     #[test]
-    fn test_to_range_toggle() {
-        let info = ParameterInfo::new(ParamId::new(1), "Bypass").with_steps(ParamSteps::Toggle);
-        assert_eq!(info.to_range().scale, ParameterScale::Toggle);
-    }
-
-    #[test]
-    fn test_to_range_integer() {
-        let info =
-            ParameterInfo::new(ParamId::new(2), "Algorithm").with_steps(ParamSteps::Enumerated(5));
-        assert_eq!(info.to_range().scale, ParameterScale::Integer);
-    }
-
-    #[test]
-    fn test_to_range_logarithmic_db() {
-        let mut info =
-            ParameterInfo::new(ParamId::new(3), "Gain").with_plain_range(0.001, 10.0, 1.0);
-        info.unit = "dB".to_string();
-        assert_eq!(info.to_range().scale, ParameterScale::Logarithmic);
-    }
-
-    #[test]
-    fn test_to_range_logarithmic_hz() {
-        let mut info =
-            ParameterInfo::new(ParamId::new(4), "Cutoff").with_plain_range(20.0, 20_000.0, 440.0);
-        info.unit = "Hz".to_string();
-        assert_eq!(info.to_range().scale, ParameterScale::Logarithmic);
-    }
-
-    #[test]
-    fn test_to_range_log_fallback_non_positive_min() {
-        let mut info =
-            ParameterInfo::new(ParamId::new(5), "Freq").with_plain_range(0.0, 20_000.0, 440.0);
-        info.unit = "Hz".to_string();
-        assert_eq!(info.to_range().scale, ParameterScale::Linear);
-    }
-
-    #[test]
-    fn test_to_range_linear_default() {
-        let info = ParameterInfo::new(ParamId::new(6), "Mix");
-        assert_eq!(info.to_range().scale, ParameterScale::Linear);
+    fn the_group_survives_the_bincode_round_trip() {
+        let info = ParameterInfo::new(ParamId::new(1), "Mix").with_group("Ring Modulation");
+        let bytes = bincode::serialize(&info).expect("serialize");
+        let back: ParameterInfo = bincode::deserialize(&bytes).expect("deserialize");
+        assert_eq!(back.group, "Ring Modulation");
+        assert_eq!(back.qualified_name(), "Ring Modulation / Mix");
     }
 
     /// Apple's AUDelay Lowpass Cutoff: `[10, 22050]` Hz, native units. Writing
@@ -892,16 +988,6 @@ mod tests {
             assert!((-96.0..=6.0).contains(&plain));
             assert!((info.to_normalized(plain) - n).abs() < 1e-12);
         }
-    }
-
-    #[test]
-    fn test_to_range_values_preserved() {
-        let info =
-            ParameterInfo::new(ParamId::new(7), "Volume").with_plain_range(-96.0, 6.0, -12.0);
-        let range = info.to_range();
-        assert_eq!(range.min, -96.0);
-        assert_eq!(range.max, 6.0);
-        assert_eq!(range.default, -12.0);
     }
 
     /// A consumer asks `ParameterInfo` and never destructures `ParamRange`.

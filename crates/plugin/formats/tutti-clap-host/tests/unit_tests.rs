@@ -1903,23 +1903,59 @@ fn test_ambisonic_normalization_variants() {
     }
 }
 
+/// Every id CLAP defines maps to a named position, and anything else is
+/// carried rather than discarded.
+///
+/// This previously asserted `from_position(18) == None`. 18 is
+/// `CLAP_SURROUND_TSL` (`surround.h:55`) — a position CLAP does define — so the
+/// test was pinning the bug: the enum stopped at 17, and the decoder's
+/// `filter_map` then dropped the channel entirely.
 #[test]
 fn test_surround_channel_from_position() {
     use tutti_clap_host::SurroundChannel;
     assert_eq!(
         SurroundChannel::from_position(0),
-        Some(SurroundChannel::FrontLeft)
+        SurroundChannel::FrontLeft
     );
     assert_eq!(
         SurroundChannel::from_position(3),
-        Some(SurroundChannel::LowFrequency)
+        SurroundChannel::LowFrequency
     );
     assert_eq!(
         SurroundChannel::from_position(17),
-        Some(SurroundChannel::TopBackRight)
+        SurroundChannel::TopBackRight
     );
-    assert_eq!(SurroundChannel::from_position(18), None);
-    assert_eq!(SurroundChannel::from_position(255), None);
+    // The two that were missing.
+    assert_eq!(
+        SurroundChannel::from_position(18),
+        SurroundChannel::TopSideLeft
+    );
+    assert_eq!(
+        SurroundChannel::from_position(19),
+        SurroundChannel::TopSideRight
+    );
+    // Past the last CLAP position: named as unknown, not discarded.
+    assert_eq!(
+        SurroundChannel::from_position(255),
+        SurroundChannel::Unknown(255)
+    );
+}
+
+/// `position` inverts `from_position` for every id in the byte range.
+///
+/// The two tables are written out by hand, so nothing but a round trip stops
+/// one from drifting — a transposed pair would still compile and still decode
+/// "successfully", just to the wrong speaker.
+#[test]
+fn a_surround_position_round_trips_through_the_enum() {
+    use tutti_clap_host::SurroundChannel;
+    for raw in 0u8..=255 {
+        assert_eq!(
+            SurroundChannel::from_position(raw).position(),
+            raw,
+            "position {raw} did not survive the round trip"
+        );
+    }
 }
 
 #[test]

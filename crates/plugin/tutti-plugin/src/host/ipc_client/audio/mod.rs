@@ -19,7 +19,7 @@ mod messages;
 mod payload_pool;
 mod thread;
 
-use crate::error::{Result, StateError};
+use crate::error::{Delivered, Result, StateError};
 use crate::protocol::{
     ChordChanges, MidiEventVec, Normalized, NoteExpressionChanges, NoteExpressionIntChanges,
     NoteExpressionTextChanges, ParamAddress, ParameterChanges, ParameterInfo, Preset, PresetId,
@@ -132,11 +132,29 @@ impl AudioBridge {
                 .push_command(Command::SetParameter { param_id, value })
     }
 
-    pub fn set_automation_state_rt(&self, mode: crate::protocol::AutomationMode) -> bool {
-        !self.lifecycle.is_crashed()
-            && self
-                .channels
-                .push_command(Command::SetAutomationState { mode })
+    /// Queue an automation-state push, saying **why** if it did not go.
+    ///
+    /// The one member of this family whose answer a caller reads and turns into
+    /// a user-visible message (`SubprocessBackend::set_automation_mode`). The
+    /// other nine are `let _ =`'d or forwarded, so they keep the bool: an enum
+    /// nobody matches on is ceremony, and this family is RT-adjacent.
+    ///
+    /// The two causes want opposite responses — a dead plugin will answer the
+    /// same forever, a full queue may take the very next call — and a `bool`
+    /// merged them into one "not delivered" that a caller could only report,
+    /// never act on.
+    pub fn set_automation_state_rt(&self, mode: crate::protocol::AutomationMode) -> Delivered {
+        if self.lifecycle.is_crashed() {
+            return Delivered::PluginDead;
+        }
+        if self
+            .channels
+            .push_command(Command::SetAutomationState { mode })
+        {
+            Delivered::Yes
+        } else {
+            Delivered::Dropped
+        }
     }
 
     pub fn set_sample_rate_rt(&self, rate: f64) -> bool {

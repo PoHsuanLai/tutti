@@ -48,7 +48,12 @@ pub fn active() -> Box<dyn MidiEndpoints> {
     {
         Box::new(coremidi::CoreMidiEndpoints::new())
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(all(target_os = "linux", alsa_ump))]
+    {
+        Box::new(alsa::AlsaEndpoints::new())
+    }
+    // Windows, and a Linux whose alsa-lib predates the UMP API.
+    #[cfg(not(any(target_os = "macos", all(target_os = "linux", alsa_ump))))]
     {
         Box::new(stub::StubEndpoints::new())
     }

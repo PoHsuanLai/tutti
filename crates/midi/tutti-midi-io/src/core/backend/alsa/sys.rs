@@ -44,6 +44,9 @@ pub enum snd_ump_block_info_t {}
 /// Opaque `snd_seq_client_info_t`.
 pub enum snd_seq_client_info_t {}
 
+/// Opaque `snd_seq_port_info_t`.
+pub enum snd_seq_port_info_t {}
+
 /// A sequencer address: `(client, port)`.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -123,6 +126,20 @@ pub const SND_SEQ_NONBLOCK: c_int = 1;
 
 /// `SND_SEQ_CLIENT_UMP_MIDI_2_0` — the client speaks UMP with MIDI 2.0 protocol.
 pub const SND_SEQ_CLIENT_UMP_MIDI_2_0: c_int = 2;
+
+/// `SND_SEQ_ADDRESS_SUBSCRIBERS` — deliver to everything subscribed to the
+/// sending port, rather than to one named address.
+///
+/// This is the correct `dest` for a port that used `snd_seq_connect_to`: naming
+/// the destination explicitly *on top of* a subscription is rejected with
+/// `-EINVAL`.
+pub const SND_SEQ_ADDRESS_SUBSCRIBERS: u8 = 254;
+
+/// `SND_SEQ_QUEUE_DIRECT` — dispatch immediately instead of scheduling.
+///
+/// Must be set explicitly: a zeroed `queue` field means queue 0, a real queue
+/// this client never created, and the send fails.
+pub const SND_SEQ_QUEUE_DIRECT: u8 = 253;
 
 /// Port capabilities.
 pub const SND_SEQ_PORT_CAP_READ: c_uint = 1 << 0;
@@ -223,6 +240,16 @@ extern "C" {
         seq: *mut snd_seq_t,
         info: *mut snd_seq_client_info_t,
     ) -> c_int;
+
+    // Port enumeration.
+    pub fn snd_seq_port_info_malloc(ptr: *mut *mut snd_seq_port_info_t) -> c_int;
+    pub fn snd_seq_port_info_free(ptr: *mut snd_seq_port_info_t);
+    pub fn snd_seq_port_info_set_client(info: *mut snd_seq_port_info_t, client: c_int);
+    pub fn snd_seq_port_info_set_port(info: *mut snd_seq_port_info_t, port: c_int);
+    pub fn snd_seq_port_info_get_port(info: *const snd_seq_port_info_t) -> c_int;
+    pub fn snd_seq_port_info_get_name(info: *const snd_seq_port_info_t) -> *const c_char;
+    pub fn snd_seq_port_info_get_capability(info: *const snd_seq_port_info_t) -> c_uint;
+    pub fn snd_seq_query_next_port(seq: *mut snd_seq_t, info: *mut snd_seq_port_info_t) -> c_int;
 
     // Function blocks. Opaque + getters, so no struct layout to get wrong.
     // @@ALSA_1.2.10

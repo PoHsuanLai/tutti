@@ -10,6 +10,9 @@
 
 pub mod core;
 pub use core::error;
+/// MIDI 1.0 SysEx reassembly → UMP SysEx7. OS-free, so every driver edge shares
+/// it and it is testable without a device.
+pub use core::Sysex7Assembler;
 pub use core::{Error, Result};
 // OS hardware orchestrator, the device descriptor, and the record its observer
 // channel carries — only present under `midi-hardware` (they own the `midir`

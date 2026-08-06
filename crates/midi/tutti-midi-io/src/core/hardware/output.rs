@@ -148,9 +148,9 @@ fn connect_device(device_index: usize) -> Result<(Midi1Port, String), crate::cor
     Ok((Midi1Port { conn }, name))
 }
 
-use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
 #[cfg(test)]
 mod tests {
+    use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
     use tutti_midi_types::MidiEvent;
 
     /// The `Midi1Port::send` contract hinges on `to_midi1_bytes`: a message with

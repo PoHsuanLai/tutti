@@ -814,6 +814,43 @@ impl PluginParams for AuInstance {
         let _ = parameters::set(self.inner.raw_unit(), id.get(), plain);
     }
 
+    /// The AU's own display string, denormalized on the way in.
+    ///
+    /// `AudioUnitParameterStringFromValue` takes the value in **plain** units,
+    /// so the same `param_ranges` table `set_parameter` writes through converts
+    /// first. Skipping that asks a `[10, 22050]` Hz cutoff to describe `1.0` and
+    /// gets `"1 Hz"` back — a plausible-looking string for a value the caller
+    /// never named, which is worse than no string at all.
+    ///
+    /// Measured on macOS 15.6: **no Apple AU implements this property**, so this
+    /// returns `None` across the whole system corpus. It is wired anyway because
+    /// third-party AUs do implement it, and the alternative is a host that
+    /// cannot display their values. See
+    /// `tutti-au-host`'s `au_param_display` suite, which pins the absence.
+    fn parameter_text(&self, id: ParamAddress, value: Normalized) -> Option<String> {
+        let id = id.opaque()?;
+        let plain = match lookup_bounds(&self.param_ranges, id.get()) {
+            Some(bounds) => bounds.to_plain(value.get()),
+            None => value.get() as f32,
+        };
+        parameters::string_from_value(self.inner.raw_unit(), id.get(), plain)
+    }
+
+    /// The inverse, re-normalized on the way out so the result can be handed
+    /// straight to [`set_parameter`](Self::set_parameter).
+    ///
+    /// As with [`parameter_text`](Self::parameter_text), no Apple AU implements
+    /// the underlying property on macOS 15.6.
+    fn parameter_value_from_text(&self, id: ParamAddress, text: &str) -> Option<Normalized> {
+        let id = id.opaque()?;
+        let plain = parameters::value_from_string(self.inner.raw_unit(), id.get(), text)?;
+        let normalized = match lookup_bounds(&self.param_ranges, id.get()) {
+            Some(bounds) => bounds.to_normalized(plain),
+            None => f64::from(plain),
+        };
+        Some(Normalized::new(normalized))
+    }
+
     fn get_parameter_list(&self) -> Vec<ParameterInfo> {
         let unit = self.inner.raw_unit();
         let params = parameters::list(unit);
@@ -1676,5 +1713,101 @@ mod tests {
                 target.name,
             );
         }
+    }
+
+    /// The display seam denormalizes before asking the AU, and reports the AU's
+    /// silence as `None` rather than inventing a label.
+    ///
+    /// **This asserts an absence, and that is the honest measurement.** No Apple
+    /// AU on macOS 15.6 implements `ParameterStringFromValue` — probed across 15
+    /// units × every parameter × several values in `tutti-au-host`'s
+    /// `au_param_display` suite, which pins the same thing one layer down. So
+    /// there is no Apple fixture on this machine that can demonstrate a *string*
+    /// coming back, and a test asserting `"Hz"` appears would fail against every
+    /// unit macOS ships.
+    ///
+    /// What is still worth pinning here, and what would otherwise be untested:
+    ///
+    /// - The seam **asks at all** — it reaches the AU rather than short-circuiting.
+    /// - It asks about the **right value**. The conversion is the half most
+    ///   likely to be wrong and the half that fails silently: a third-party AU
+    ///   answering for a `[10, 22050]` Hz cutoff would describe `1 Hz` where the
+    ///   caller named full scale, and the string would look perfectly plausible.
+    ///   Pinned below by driving the identical conversion the impl uses and
+    ///   checking it lands where `set_parameter` puts the same input — so if the
+    ///   two ever diverge, this fails even while the AU keeps answering `None`.
+    /// **Not covered here, deliberately:** that an address of the wrong model
+    /// (a VST2 `Index`) addresses nothing. It cannot be — since every AU answers
+    /// `None`, no input distinguishes "refused the address" from "the AU
+    /// declined", and an assertion on it passes even with the guard replaced by
+    /// a raw `Index → ParamId` coercion. That mutation was run and survived, so
+    /// the assertion was removed rather than left claiming coverage it does not
+    /// have. The guard is covered where it is decidable: on VST3 and CLAP, whose
+    /// plugins do answer.
+    #[test]
+    fn au_parameter_text_denormalizes_and_reports_absence_honestly() {
+        use tutti_au_host::types::K_AUDIO_UNIT_TYPE_EFFECT;
+
+        let Some(inner) = open_au(K_AUDIO_UNIT_TYPE_EFFECT, b"dely") else {
+            eprintln!("AUDelay unavailable; skipping");
+            return;
+        };
+        let param_ranges = read_param_ranges(inner.raw_unit());
+        let mut au = AuInstance {
+            watch: None,
+            inner,
+            editor: None,
+            param_ranges,
+            meta: Meta::default(),
+        };
+
+        let target = au
+            .get_parameter_list()
+            .into_iter()
+            .find(|p| p.range.bounds().is_some_and(|(_, max)| max > 2.0))
+            .expect("AUDelay should expose a wide-range parameter");
+        let (min, max) = target.range.bounds().expect("AU declares a plain range");
+        let opaque = target.id.opaque().expect("AU ids are opaque").get();
+
+        // The impl's conversion, driven here against the same table. Full scale
+        // must reach the AU as `max`, not as the raw `1.0` — that is the bug
+        // this guards, and the one a returned string could not reveal.
+        let bounds = lookup_bounds(&au.param_ranges, opaque).expect("the range table holds it");
+        let plain_at_full = bounds.to_plain(1.0);
+        let tolerance = ((max - min).abs() * 1e-4) as f32;
+        assert!(
+            (f64::from(plain_at_full) - max).abs() <= f64::from(tolerance),
+            "param {} ('{}'): normalized 1.0 must denormalize to {max}, got \
+             {plain_at_full} — a text query would then describe the wrong value",
+            target.id,
+            target.name,
+        );
+
+        // And that is the same value `set_parameter` writes, so the string a
+        // third-party AU returns describes the value the parameter is at.
+        au.set_parameter(target.id, Normalized::new(1.0));
+        let after = parameters::get(au.inner.raw_unit(), opaque).expect("param is readable");
+        assert!(
+            (after - plain_at_full).abs() <= tolerance,
+            "the text path and the write path must denormalize identically: \
+             write landed at {after}, text would ask about {plain_at_full}",
+        );
+
+        // The AU is asked, and declines — see the doc comment.
+        assert_eq!(
+            au.parameter_text(target.id, Normalized::new(1.0)),
+            None,
+            "param {} ('{}'): no Apple AU implements ParameterStringFromValue. \
+             A Some() here means macOS gained the property — re-measure and \
+             tighten this into a real round-trip rather than relaxing it.",
+            target.id,
+            target.name,
+        );
+        assert_eq!(
+            au.parameter_value_from_text(target.id, "1000 Hz"),
+            None,
+            "nor ParameterValueFromString — a fabricated number here would be \
+             written into the user's preset",
+        );
     }
 }

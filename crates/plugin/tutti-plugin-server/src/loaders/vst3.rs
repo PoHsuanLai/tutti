@@ -729,6 +729,25 @@ impl PluginParams for Vst3Instance {
         vst_dispatch_mut!(self, inner => inner.set_parameter(id.get(), value.get()));
     }
 
+    /// VST3's `getParamStringByValue` takes the value already normalized, so
+    /// this is the one format where no conversion stands between the seam's
+    /// domain and the ABI's — the same coincidence
+    /// [`set_parameter`](Self::set_parameter) notes.
+    fn parameter_text(&self, id: ParamAddress, value: Normalized) -> Option<String> {
+        let id = id.opaque()?;
+        vst_dispatch!(self, inner => inner.parameter_string_by_value(id.get(), value.get()))
+    }
+
+    /// The inverse. `getParamValueByString` answers normalized too, so the
+    /// result passes through `Normalized::new`'s clamp only — a plugin
+    /// returning a slightly out-of-range value is corrected rather than
+    /// forwarded to its own parameter.
+    fn parameter_value_from_text(&self, id: ParamAddress, text: &str) -> Option<Normalized> {
+        let id = id.opaque()?;
+        let value = vst_dispatch!(self, inner => inner.parameter_value_by_string(id.get(), text))?;
+        Some(Normalized::new(value))
+    }
+
     fn set_automation_state(&mut self, mode: AutomationMode) {
         // Encode the format-neutral mode onto the VST3 `IAutomationState` bitmask
         // HERE, at the VST3 FFI edge, via the VST3 crate's own SDK-backed

@@ -538,6 +538,45 @@ impl PluginParams for ClapInstance {
         });
     }
 
+    /// The plugin's own display string, denormalized on the way in.
+    ///
+    /// `clap_plugin_params.value_to_text` takes a **plain** value in the
+    /// parameter's declared range — CLAP has no normalization concept — so this
+    /// applies the same range conversion
+    /// [`set_parameter`](Self::set_parameter) does. A parameter the plugin
+    /// declared no range for is passed through rather than scaled against
+    /// invented bounds, matching the read/write pair above.
+    fn parameter_text(&self, id: ParamAddress, value: Normalized) -> Option<String> {
+        let id = id.opaque()?;
+        let plain = match clap_dispatch!(self, i => i.parameter_range(id.get())) {
+            Some((min, max)) => ParamRange::Plain {
+                min,
+                max,
+                default: min,
+            }
+            .to_plain(value.get()),
+            None => value.get(),
+        };
+        clap_dispatch!(self, i => i.value_to_text(id.get(), plain))
+    }
+
+    /// The inverse, re-normalized on the way out so the result round-trips into
+    /// [`set_parameter`](Self::set_parameter).
+    fn parameter_value_from_text(&self, id: ParamAddress, text: &str) -> Option<Normalized> {
+        let id = id.opaque()?;
+        let plain = clap_dispatch!(self, i => i.text_to_value(id.get(), text))?;
+        let normalized = match clap_dispatch!(self, i => i.parameter_range(id.get())) {
+            Some((min, max)) => ParamRange::Plain {
+                min,
+                max,
+                default: min,
+            }
+            .to_normalized(plain),
+            None => plain,
+        };
+        Some(Normalized::new(normalized))
+    }
+
     fn get_parameter_list(&self) -> Vec<ParameterInfo> {
         // The host crate projects CLAP-native param info onto the shared
         // `ParameterInfo` at its own boundary; the loader no longer maps flags.

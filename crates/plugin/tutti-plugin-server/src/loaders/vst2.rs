@@ -315,6 +315,67 @@ impl PluginParams for Vst2Instance {
         let _ = (id, value);
     }
 
+    /// The plugin's display string, but **only for the value it currently
+    /// holds**.
+    ///
+    /// `effGetParamDisplay` passes the plugin an index and nothing else, so it
+    /// formats its own current value; VST 2.4 has no call that formats an
+    /// arbitrary one. The other three formats take the value as an argument.
+    ///
+    /// So this answers when `value` is the value the plugin is already at, and
+    /// `None` otherwise. Setting the parameter in order to read its label would
+    /// make a display query *audible* and would race whatever else is writing
+    /// that parameter — a text lookup must not move a knob. Returning the
+    /// current value's string regardless would be worse still: it is the wrong
+    /// answer, presented as the right one, and a caller comparing two values
+    /// would see the same label for both.
+    ///
+    /// The comparison is exact rather than epsilon'd. Both sides come from the
+    /// same `f32` the plugin holds — `parameter` reads it back and
+    /// `Normalized::get` did not rescale it — so a value that round-tripped
+    /// through this seam compares bit-equal, and one that did not is not a value
+    /// the plugin can describe anyway.
+    fn parameter_text(&self, id: ParamAddress, value: Normalized) -> Option<String> {
+        #[cfg(feature = "vst2")]
+        {
+            let index = id.index()?;
+            let current = self.inner.parameter(index)?;
+            (f64::from(current) == value.get())
+                .then(|| self.inner.parameter_display(index))
+                .flatten()
+        }
+        #[cfg(not(feature = "vst2"))]
+        {
+            let _ = (id, value);
+            None
+        }
+    }
+
+    /// Parse `text` through the plugin's own `effString2Parameter`.
+    ///
+    /// **This writes.** The VST2 opcode is a setter with no parse-only
+    /// counterpart, so the parameter lands on the parsed value as a side effect
+    /// of asking. That is a real divergence from the other three formats, where
+    /// this method is a pure query; it is surfaced here rather than hidden
+    /// because the alternative — refusing to implement it — would leave a user
+    /// unable to type a value into a VST2 field at all.
+    ///
+    /// The value is read back after the write, since the opcode reports only
+    /// acceptance. Already normalized, as all VST2 parameter values are.
+    fn parameter_value_from_text(&self, id: ParamAddress, text: &str) -> Option<Normalized> {
+        #[cfg(feature = "vst2")]
+        {
+            let index = id.index()?;
+            let value = self.inner.set_parameter_from_string(index, text)?;
+            Some(Normalized::new(f64::from(value)))
+        }
+        #[cfg(not(feature = "vst2"))]
+        {
+            let _ = (id, text);
+            None
+        }
+    }
+
     fn get_parameter_list(&self) -> Vec<ParameterInfo> {
         #[cfg(feature = "vst2")]
         {

@@ -1,10 +1,4 @@
-//! Hardware and file MIDI I/O for the Tutti engine.
-//!
-//! [`core`] is the hardware edge: [`MidiSession`], the per-OS native-UMP
-//! backends, and the audio-thread ring buffers. Plus [`smf`], the Standard MIDI
-//! File codec, and passthrough re-exports of the pure MIDI vocabulary from
-//! [`tutti_midi_types`]. The whole surface re-exports at the crate root, so
-//! consumers write `tutti_midi_io::MidiSession`.
+#![doc = include_str!("../README.md")]
 
 // --- Framework-free hardware I/O core ---
 

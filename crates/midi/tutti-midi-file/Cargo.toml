@@ -5,6 +5,7 @@ edition = "2021"
 description = "MIDI file codecs — Standard MIDI File (SMF) and MIDI 2.0 Clip File"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/PoHsuanLai/Tutti"
+readme = "README.md"
 
 [dependencies]
 thiserror = "2"

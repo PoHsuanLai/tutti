@@ -1,23 +1,4 @@
-//! MIDI **file** codecs: Standard MIDI File (SMF) and MIDI 2.0 Clip File.
-//!
-//! - [`smf`] — SMF read/write. Parse a `.mid` into beat-positioned events
-//!   ([`ParsedMidiFile`]) or per-track paired notes ([`smf::tracks`]), and
-//!   encode events back out ([`encode_midi_file`]).
-//! - [`clip`] — MIDI 2.0 Clip File (M2-116) by path, plus [`MidiFileKind`],
-//!   which tells the two formats apart **by magic bytes rather than by
-//!   extension**.
-//!
-//! # Why this is its own crate
-//!
-//! It was part of `tutti-midi-io`, behind that crate's `midi-hardware` feature
-//! being *off*. That made "I want to read a `.mid` file" and "I want to talk to
-//! a MIDI port" two settings of one flag, when they are simply different jobs —
-//! and it meant a consumer wanting only the file codecs had to know to pass
-//! `default-features = false`, or silently link CoreMIDI.
-//!
-//! Splitting turns that feature flag into a dependency edge: depend on this
-//! crate for files, on `tutti-midi-io` for ports. Nothing here touches an OS
-//! MIDI API, and nothing here is `cfg`-gated.
+#![doc = include_str!("../README.md")]
 
 pub mod clip;
 pub mod smf;

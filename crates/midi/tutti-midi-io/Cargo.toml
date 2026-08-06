@@ -5,6 +5,7 @@ edition = "2021"
 description = "Native-UMP OS MIDI I/O — endpoint enumeration, connection, send/receive"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/PoHsuanLai/Tutti"
+readme = "README.md"
 
 # No features. This crate IS the OS MIDI edge — with the file codecs split out
 # to `tutti-midi-file`, there is nothing here that is not a port. The old

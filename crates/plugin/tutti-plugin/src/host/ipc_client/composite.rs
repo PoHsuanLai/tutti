@@ -4,8 +4,8 @@ use super::audio::{AudioBridge, BridgeListener, BridgeThread, HarmonyInputs};
 use crate::error::{EditorError, Result};
 use crate::format::gui::PluginEditor;
 use crate::protocol::{
-    MidiEventVec, NoteExpressionChanges, ParamAddress, ParameterChanges, ParameterInfo, Preset,
-    PresetId, TransportInfo,
+    MidiEventVec, Normalized, NoteExpressionChanges, ParamAddress, ParameterChanges, ParameterInfo,
+    Preset, PresetId, TransportInfo,
 };
 use crate::util::transport::shm::AudioSlab;
 use crate::util::window::{EditorCapabilities, EditorSize, WindowHandle};
@@ -85,7 +85,7 @@ impl PluginBridge {
         self.audio.set_listener(listener);
     }
 
-    pub fn set_parameter_rt(&self, param_id: ParamAddress, value: f32) -> bool {
+    pub fn set_parameter_rt(&self, param_id: ParamAddress, value: Normalized) -> bool {
         // Cosmetic GUI mirror (keeps the display in sync): `try_lock`, never
         // block. The `_rt` contract must stay non-blocking — a blocking
         // `lock()` here could stall the caller behind a multi-millisecond
@@ -94,10 +94,11 @@ impl PluginBridge {
         // self-heals on the next edit / editor idle.
         if let Ok(mut guard) = self.gui.try_lock() {
             if let Some(gui) = guard.as_mut() {
-                gui.set_parameter(param_id, value as f64);
+                gui.set_parameter(param_id, value);
             }
         }
-        self.audio.set_parameter_rt(param_id, value)
+        // The wire carries `f32`; the domain is enforced up to this point.
+        self.audio.set_parameter_rt(param_id, value.get() as f32)
     }
 
     pub fn set_automation_state_rt(&self, mode: crate::protocol::AutomationMode) -> bool {
@@ -395,7 +396,11 @@ impl crate::host::handles::capabilities::HostParams for SubprocessBackend {
         self.bridge.parameter(id)
     }
 
-    fn set_parameter_value(&self, id: ParamAddress, value: f32) {
+    fn set_parameter_value(&self, id: ParamAddress, value: Normalized) {
+        // Stays `Normalized` all the way to the bridge, which narrows to the
+        // `f32` the wire carries. The subprocess re-clamps on receipt — it
+        // must, since the wire is a foreign boundary and the peer is another
+        // process — but the value leaving here is already on the unit interval.
         self.bridge.set_parameter_rt(id, value);
     }
 

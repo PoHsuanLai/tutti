@@ -126,7 +126,20 @@ pub mod shm;
 ///   rescue that — bincode is not self-describing, so a short payload is a
 ///   decode error rather than a defaulted field, which is exactly what this
 ///   bump exists to turn into a clean refusal.
-pub const PROTOCOL_VERSION: u32 = 15;
+/// - v16: `ParameterInfo` gains `group`, the display label for the group a
+///   parameter belongs to. Every hosted format has a grouping mechanism, all
+///   four format crates already decoded theirs, and all four answers stopped at
+///   the shared type — so a 400-parameter synth presented as one flat list.
+///
+///   Appended last, and a struct on this wire is **positional** exactly as
+///   v15's was: a v15 peer stops reading before this field, and a v15 *server*
+///   sends a payload one field short. Same bump for the same reason.
+///
+///   `ParameterInfo::qualified_name` lands with it. That is not decoration —
+///   `PluginTail` crossed this wire to no receiver and stayed write-only for a
+///   release cycle, so a field appended here arrives with its consumer.
+///   See `docs/design/010-parameter-grouping.md`.
+pub const PROTOCOL_VERSION: u32 = 16;
 
 /// Validate a subprocess-reported protocol version against [`PROTOCOL_VERSION`].
 /// Called at each handshake consumer so a version skew fails loudly instead of
@@ -167,7 +180,7 @@ pub use crate::host::discovery::record::{
 };
 pub use tutti_plugin_types::{
     AutomationMode, BusChannels, BusTopologies, ChannelLayout, ChannelTopology, ChordChanges,
-    ChordValue, EditorPresence, FeatureReport, Features, LayoutSupport, LoadedPlugin,
+    ChordValue, EditorPresence, FeatureReport, Features, LayoutSupport, LoadedPlugin, Normalized,
     NoteExpressionChanges, NoteExpressionIntChanges, NoteExpressionIntValue,
     NoteExpressionTextChanges, NoteExpressionTextValue, NoteExpressionType, NoteExpressionValue,
     ParamAddress, ParamFlags, ParamId, ParamRange, ParamSteps, ParameterChanges, ParameterInfo,

@@ -415,8 +415,8 @@ fn with_audio_buffer_f64<R>(
 mod tests {
     use super::*;
     use tutti_plugin::server::{
-        ParamAddress, PluginAudio, PluginEditorHost, PluginMeta, PluginParams, PluginState,
-        PluginTail, Samples,
+        Normalized, ParamAddress, PluginAudio, PluginEditorHost, PluginMeta, PluginParams,
+        PluginState, PluginTail, Samples,
     };
 
     #[test]
@@ -521,7 +521,7 @@ mod tests {
         fn get_parameter(&self, _id: ParamAddress) -> f64 {
             0.0
         }
-        fn set_parameter(&mut self, _id: ParamAddress, _value: f64) {}
+        fn set_parameter(&mut self, _id: ParamAddress, _value: Normalized) {}
         fn get_parameter_list(&self) -> Vec<tutti_plugin::server::ParameterInfo> {
             Vec::new()
         }
@@ -598,7 +598,7 @@ mod tests {
         fn get_parameter(&self, _id: ParamAddress) -> f64 {
             0.0
         }
-        fn set_parameter(&mut self, _id: ParamAddress, _value: f64) {}
+        fn set_parameter(&mut self, _id: ParamAddress, _value: Normalized) {}
         fn get_parameter_list(&self) -> Vec<tutti_plugin::server::ParameterInfo> {
             Vec::new()
         }

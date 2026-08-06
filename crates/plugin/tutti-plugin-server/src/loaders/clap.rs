@@ -2,7 +2,7 @@
 
 use std::path::Path;
 use tutti_plugin::server::{
-    BusChannels, ClapFeature, EditorPresence, EditorSize, Features, LoadedPlugin,
+    BusChannels, ClapFeature, EditorPresence, EditorSize, Features, LoadedPlugin, Normalized,
     NoteExpressionChanges, ParamAddress, ParamRange, ParameterChanges, ParameterInfo, PluginAudio,
     PluginClass, PluginDescriptor, PluginEditorHost, PluginError, PluginMeta, PluginParams,
     PluginPresets, PluginResult, PluginState, PluginTail, PresetId, Samples, WindowHandle,
@@ -522,7 +522,7 @@ impl PluginParams for ClapInstance {
     /// Normalized `0..=1` in, matching [`get_parameter`](Self::get_parameter).
     /// CLAP events carry the plain value, so the declared range denormalizes it
     /// — the same conversion `add_param_changes` applies on the automation path.
-    fn set_parameter(&mut self, id: ParamAddress, value: f64) {
+    fn set_parameter(&mut self, id: ParamAddress, value: Normalized) {
         let Some(id) = id.opaque() else { return };
         let plain = match clap_dispatch!(self, i => i.parameter_range(id.get())) {
             Some((min, max)) => ParamRange::Plain {
@@ -530,8 +530,8 @@ impl PluginParams for ClapInstance {
                 max,
                 default: min,
             }
-            .to_plain(value),
-            None => value,
+            .to_plain(value.get()),
+            None => value.get(),
         };
         clap_dispatch_mut!(self, i => {
             i.set_parameter(id.get(), plain);
@@ -986,7 +986,7 @@ mod tests {
 
         // And the write must not land either.
         let target = if before > 0.5 { 0.1 } else { 0.9 };
-        instance.set_parameter(as_index, target);
+        instance.set_parameter(as_index, Normalized::new(target));
         assert_eq!(
             instance.get_parameter(opaque),
             before,
@@ -1242,7 +1242,7 @@ mod tests {
         assert!(!params.is_empty(), "Need at least one parameter");
 
         let param_id = params[0].id;
-        instance.set_parameter(param_id, 0.5);
+        instance.set_parameter(param_id, Normalized::new(0.5));
     }
 
     // ── Group A: Plugin Lifecycle ──
@@ -1446,7 +1446,7 @@ mod tests {
 
         // Set to a different value
         let new_value = if original < 0.5 { 0.75 } else { 0.25 };
-        instance.set_parameter(param_id, new_value);
+        instance.set_parameter(param_id, Normalized::new(new_value));
 
         let readback = instance.get_parameter(param_id);
         assert!(
@@ -1485,7 +1485,7 @@ mod tests {
 
         // Change parameter
         let new_value = if original_value < 0.5 { 0.75 } else { 0.25 };
-        instance.set_parameter(param_id, new_value);
+        instance.set_parameter(param_id, Normalized::new(new_value));
 
         // Restore state
         instance.set_state(&saved).expect("restore should succeed");
@@ -1678,7 +1678,7 @@ mod tests {
 
         let original_value = instance.get_parameter(param_id);
         let new_value = if original_value < 0.5 { 0.75 } else { 0.25 };
-        instance.set_parameter(param_id, new_value);
+        instance.set_parameter(param_id, Normalized::new(new_value));
 
         instance.set_state(&saved).expect("restore should succeed");
 

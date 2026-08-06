@@ -2,15 +2,18 @@
 //!
 //! Follows the same pattern as `vst3_loader.rs` and `clap_loader.rs`.
 
+#[cfg(all(target_os = "macos", feature = "au"))]
+use std::collections::HashMap;
 use std::path::Path;
 use tutti_plugin::server::{
     AuComponentType, EditorPresence, Features, LoadedPlugin, PluginClass, PluginDescriptor,
 };
 #[cfg(all(target_os = "macos", feature = "au"))]
 use tutti_plugin::server::{
-    EditorSize, ParamAddress, ParamFlags, ParamRange, ParamSteps, ParameterInfo, PluginAudio,
-    PluginEditorHost, PluginMeta, PluginParams, PluginPresets, PluginResult, PluginState,
-    PluginTail, Preset, PresetId, ProcessContext, ProcessOutput, RenderMode, WindowHandle,
+    EditorSize, Normalized, ParamAddress, ParamFlags, ParamRange, ParamSteps, ParameterInfo,
+    PluginAudio, PluginEditorHost, PluginMeta, PluginParams, PluginPresets, PluginResult,
+    PluginState, PluginTail, Preset, PresetId, ProcessContext, ProcessOutput, RenderMode,
+    WindowHandle,
 };
 
 use crate::loaders::common::{single_bus, Meta};
@@ -86,33 +89,34 @@ struct ParamBounds {
 
 #[cfg(all(target_os = "macos", feature = "au"))]
 impl ParamBounds {
+    /// These bounds as the shared range type, which owns the conversion.
+    ///
+    /// `default` is unused by [`to_plain`](ParamRange::to_plain) /
+    /// [`to_normalized`](ParamRange::to_normalized) — only the endpoints
+    /// participate — so `min` stands in rather than a value invented here.
+    fn as_range(self) -> ParamRange {
+        ParamRange::Plain {
+            min: self.min as f64,
+            max: self.max as f64,
+            default: self.min as f64,
+        }
+    }
+
     /// Map a normalized `0..=1` value onto `[min, max]`.
     ///
-    /// Mirrors `tutti_plugin_types::ParameterInfo::to_plain` — the same linear
-    /// endpoint map, applied here in `f32` because that is what
-    /// `AudioUnitSetParameter` takes.
+    /// Delegates to [`ParamRange::to_plain`], narrowing to the `f32` that
+    /// `AudioUnitSetParameter` takes. This used to be a hand-copy of that
+    /// function in `f32` — its doc said so — which meant the four guards it
+    /// depends on (non-finite bounds, degenerate range, NaN value, clamp
+    /// order) existed twice and could drift apart. They are stated once, on
+    /// [`ParamRange::to_plain`], and the argument for each lives there.
     ///
-    /// This is the *live* path: the return value goes straight into
-    /// `AudioUnitSetParameter` on a running unit, so it must never be non-finite.
-    /// `normalized` arrives over IPC and the bounds come from the plugin's own
-    /// `kAudioUnitProperty_ParameterInfo`, so neither is trusted. NaN needs an
-    /// explicit check rather than a clamp: `f32::clamp` returns NaN for NaN, and
-    /// `max <= min` is `false` when either is NaN. An infinite *value* still clamps
-    /// to an endpoint; an infinite *bound* has no endpoint to clamp to. See
-    /// `ParameterInfo::to_plain` for the full argument.
+    /// The narrowing is safe for the property this path needs: `to_plain`
+    /// never returns a non-finite `f64`, and every finite `f64` narrows to a
+    /// finite `f32` or to an infinity — which cannot arise here, because the
+    /// result is bounded by `[min, max]` and both came *from* an `f32`.
     fn to_plain(self, normalized: f64) -> f32 {
-        if !(self.min.is_finite() && self.max.is_finite()) {
-            return 0.0;
-        }
-        if self.max <= self.min {
-            return self.min;
-        }
-        let n = if normalized.is_nan() {
-            0.0
-        } else {
-            normalized.clamp(0.0, 1.0) as f32
-        };
-        self.min + n * (self.max - self.min)
+        self.as_range().to_plain(normalized) as f32
     }
 
     /// Inverse of [`to_plain`](Self::to_plain): map the AU's plain value back
@@ -122,18 +126,8 @@ impl ParamBounds {
     /// is normalized for every format, and `AudioUnitGetParameter` answers in
     /// plain units, so a read without this reports a cutoff of `22050` where
     /// the caller expects `1.0`.
-    ///
-    /// Same non-finite argument as `to_plain`, in the same order: bounds that
-    /// are not finite have no span to divide by, and a degenerate range has no
-    /// position to report — both answer `0.0` rather than a NaN or an infinity.
     fn to_normalized(self, plain: f32) -> f64 {
-        if !(self.min.is_finite() && self.max.is_finite()) {
-            return 0.0;
-        }
-        if self.max <= self.min || plain.is_nan() {
-            return 0.0;
-        }
-        f64::from((plain.clamp(self.min, self.max) - self.min) / (self.max - self.min))
+        self.as_range().to_normalized(plain as f64)
     }
 }
 
@@ -809,17 +803,30 @@ impl PluginParams for AuInstance {
     /// Normalized `0..=1` in, matching [`get_parameter`](Self::get_parameter) —
     /// so this pair round-trips. `AudioUnitSetParameter` takes plain units, so
     /// the value is denormalized against the same table.
-    fn set_parameter(&mut self, id: ParamAddress, value: f64) {
+    fn set_parameter(&mut self, id: ParamAddress, value: Normalized) {
         let Some(id) = id.opaque() else { return };
         let plain = match lookup_bounds(&self.param_ranges, id.get()) {
-            Some(bounds) => bounds.to_plain(value),
-            None => value as f32,
+            Some(bounds) => bounds.to_plain(value.get()),
+            None => value.get() as f32,
         };
         let _ = parameters::set(self.inner.raw_unit(), id.get(), plain);
     }
 
     fn get_parameter_list(&self) -> Vec<ParameterInfo> {
-        parameters::list(self.inner.raw_unit())
+        let unit = self.inner.raw_unit();
+        let params = parameters::list(unit);
+
+        // Resolve each distinct clump once. `clump_name` is a property read
+        // into the AU per call, and a synth with 400 parameters across 7 clumps
+        // would otherwise pay 400 round trips for 7 answers.
+        let mut clump_names: HashMap<u32, String> = HashMap::new();
+        for clump in params.iter().filter_map(|p| p.clump) {
+            clump_names
+                .entry(clump)
+                .or_insert_with(|| parameters::clump_name(unit, clump).unwrap_or_default());
+        }
+
+        params
             .into_iter()
             .map(|p| {
                 // Indexed params are a choice list whose `[min, max]` are the
@@ -853,6 +860,16 @@ impl PluginParams for AuInstance {
                         ParamFlags::READ_ONLY
                     },
                     known: ParamFlags::READ_ONLY,
+                    // `p.clump` is `None` unless the AU set
+                    // `kAudioUnitParameterFlag_HasClump`, so an AU that
+                    // declared no clump cannot arrive here as clump 0 — the
+                    // gate is in the decoder. A clump the AU declines to name
+                    // yields no group rather than a numeric placeholder.
+                    group: p
+                        .clump
+                        .and_then(|c| clump_names.get(&c))
+                        .cloned()
+                        .unwrap_or_default(),
                 }
             })
             .collect()
@@ -992,6 +1009,64 @@ mod tests {
         let mut inner = unsafe { tutti_au_host::AuInstance::new(comp, 44_100.0, 512) }.ok()?;
         inner.initialize().ok()?;
         Some(inner)
+    }
+
+    /// An AU's clumps reach the shared `ParameterInfo` as group labels.
+    ///
+    /// AUDistortion is the fixture because it is measurably grouped: macOS 15.6
+    /// reports its 22 parameters across 7 named clumps ("Delay", "Ring
+    /// Modulation", "Decimation", …). Before this mapping every one of them
+    /// arrived ungrouped, so the whole unit rendered as one flat list.
+    ///
+    /// Two halves, and the second is the one worth having: parameters that
+    /// declare a clump get its **name**, and the group is never the clump
+    /// *number*. A mapping that stringified the id would satisfy "non-empty"
+    /// while showing the user "3".
+    #[test]
+    fn an_au_clump_becomes_a_group_label() {
+        // Loaded through the real entry point, so this exercises
+        // `get_parameter_list` itself rather than a copy of its mapping. AU
+        // resolves by matching the file stem against the component registry, so
+        // the path need not exist on disk.
+        let instance = match AuInstance::load(Path::new("AUDistortion"), 44_100.0, 512) {
+            Ok(i) => i,
+            Err(e) => {
+                eprintln!("AUDistortion unavailable ({e:?}); skipping");
+                return;
+            }
+        };
+
+        let params = instance.get_parameter_list();
+        assert!(!params.is_empty(), "AUDistortion declares parameters");
+
+        let groups: std::collections::BTreeSet<&str> = params
+            .iter()
+            .map(|p| p.group.as_str())
+            .filter(|g| !g.is_empty())
+            .collect();
+        assert!(
+            groups.len() > 1,
+            "AUDistortion groups its parameters into several named clumps; got {groups:?}"
+        );
+
+        // A label, not a stringified id — the failure a bare `!is_empty()`
+        // would wave through.
+        for group in &groups {
+            assert!(
+                group.parse::<u32>().is_err(),
+                "a group must be the clump's name, not its number: {group:?}"
+            );
+        }
+
+        // And a grouped parameter qualifies, which is what a consumer renders.
+        let grouped = params
+            .iter()
+            .find(|p| !p.group.is_empty())
+            .expect("at least one grouped parameter");
+        assert_eq!(
+            grouped.qualified_name(),
+            format!("{} / {}", grouped.group, grouped.name)
+        );
     }
 
     /// The `AuPreset` -> `PresetId` mapping round-trips against a real unit.
@@ -1338,7 +1413,7 @@ mod tests {
         };
         let addr = ParamAddress::Opaque(cutoff_id.into());
 
-        au.set_parameter(addr, 1.0);
+        au.set_parameter(addr, Normalized::new(1.0));
         let plain = parameters::get(au.inner.raw_unit(), cutoff_id).expect("cutoff is readable");
         assert!(
             (plain - bounds.max).abs() < 1.0,
@@ -1352,7 +1427,7 @@ mod tests {
         );
         assert!((au.get_parameter(addr) - 1.0).abs() < 1e-3);
 
-        au.set_parameter(addr, 0.0);
+        au.set_parameter(addr, Normalized::new(0.0));
         assert!((au.get_parameter(addr)).abs() < 1e-3);
     }
 

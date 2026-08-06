@@ -1,15 +1,16 @@
 //! VST3 plugin loader using the `vst3-host` crate.
 
+use std::collections::HashMap;
 use std::path::Path;
 
 use tutti_plugin::server::{
     AudioBufferMut, AutomationMode, BusChannels, ChannelLayout, ChordChanges, EditorPresence,
-    EditorSize, Features, LoadedPlugin, NoteExpressionChanges, NoteExpressionIntChanges,
-    NoteExpressionTextChanges, ParamAddress, ParamFlags, ParamRange, ParamSteps, ParameterInfo,
-    PluginAudio, PluginClass, PluginDescriptor, PluginEditorHost, PluginError, PluginMeta,
-    PluginParams, PluginPresets, PluginResult, PluginState, PluginTail, Preset, PresetId,
-    ProcessContext, ProcessOutput, RenderMode, Samples, ScaleChanges, Vst3SubCategories,
-    WindowHandle,
+    EditorSize, Features, LoadedPlugin, Normalized, NoteExpressionChanges,
+    NoteExpressionIntChanges, NoteExpressionTextChanges, ParamAddress, ParamFlags, ParamRange,
+    ParamSteps, ParameterInfo, PluginAudio, PluginClass, PluginDescriptor, PluginEditorHost,
+    PluginError, PluginMeta, PluginParams, PluginPresets, PluginResult, PluginState, PluginTail,
+    Preset, PresetId, ProcessContext, ProcessOutput, RenderMode, Samples, ScaleChanges,
+    Vst3SubCategories, WindowHandle,
 };
 use tutti_plugin::{BridgeError, LoadStage, Result};
 
@@ -381,12 +382,19 @@ impl Vst3Instance {
     }
 
     pub fn get_parameter_list(&self) -> Vec<ParameterInfo> {
+        // Read the unit tree once, not once per parameter: `units()` is a
+        // round trip into the plugin per unit, and a parameter list is the one
+        // place that cost would multiply. The root unit is excluded — see
+        // `unit_names`.
+        let units = vst_dispatch!(self, inner => inner.units());
+        let groups = unit_names(&units);
+
         let count = vst_dispatch!(self, inner => inner.parameter_count());
         (0..count)
             .filter_map(|i| {
                 let info = vst_dispatch!(self, inner => inner.parameter_info(i))?;
                 let plain = vst_dispatch!(self, inner => inner.parameter_plain_range(info.id));
-                Some(build_param_info(info, plain))
+                Some(build_param_info(info, plain, &groups))
             })
             .collect()
     }
@@ -469,9 +477,29 @@ fn process_block<'t, 'd: 't, T: tutti_vst3_host::Vst3Sample>(
 /// its `normalizedParamToPlain` is incoherent — see
 /// [`Vst3Loaded::parameter_plain_range`](tutti_vst3_host::Vst3Loaded::parameter_plain_range).
 /// The parameter is then `Normalized`, which is what the ABI alone reports.
+/// Index a plugin's unit list by id, keeping only units that can name a group.
+///
+/// Two exclusions, both deliberate:
+///
+/// - **The root unit** (`unit_ids::ROOT`, id 0) is every plugin's implicit
+///   top-level unit, and its name is the plugin's own. Every parameter that
+///   declares no unit reports 0, so mapping it would label the entire flat
+///   majority with the plugin name — noise on exactly the parameters that have
+///   no group.
+/// - **Unnamed units.** A unit with an empty name resolves to no group rather
+///   than to an empty label, which is the same answer by a shorter route.
+fn unit_names(units: &[tutti_vst3_host::Vst3UnitInfo]) -> HashMap<i32, &str> {
+    units
+        .iter()
+        .filter(|u| u.id != tutti_vst3_host::unit_ids::ROOT && !u.name.is_empty())
+        .map(|u| (u.id, u.name.as_str()))
+        .collect()
+}
+
 fn build_param_info(
     info: tutti_vst3_host::Vst3ParameterInfo,
     plain: Option<(f64, f64)>,
+    groups: &HashMap<i32, &str>,
 ) -> ParameterInfo {
     // VST3 reports every one of these, so all six are known.
     const KNOWN: ParamFlags = ParamFlags::AUTOMATABLE
@@ -530,6 +558,16 @@ fn build_param_info(
         steps,
         flags: reported & KNOWN,
         known: KNOWN,
+        // A `unitId` naming a unit the plugin never published resolves to no
+        // group. Several plugins carry dangling ids — the same class of bug
+        // `Vst3UnitInfo::program_list` already absorbs for program lists — and
+        // the alternatives are worse: a lookup that panicked would take down a
+        // parameter list over a display label, and one that fell back to a
+        // neighbour would mislabel silently.
+        group: groups
+            .get(&info.unit_id)
+            .map(|n| n.to_string())
+            .unwrap_or_default(),
     }
 }
 
@@ -684,9 +722,11 @@ impl PluginParams for Vst3Instance {
         vst_dispatch!(self, inner => inner.parameter(id.get()))
     }
 
-    fn set_parameter(&mut self, id: ParamAddress, value: f64) {
+    fn set_parameter(&mut self, id: ParamAddress, value: Normalized) {
+        // VST3 is normalized natively (`setParamNormalized`), so this is the
+        // one format where the seam's domain and the ABI's coincide.
         let Some(id) = id.opaque() else { return };
-        vst_dispatch_mut!(self, inner => inner.set_parameter(id.get(), value));
+        vst_dispatch_mut!(self, inner => inner.set_parameter(id.get(), value.get()));
     }
 
     fn set_automation_state(&mut self, mode: AutomationMode) {
@@ -872,6 +912,71 @@ mod tests {
     use tutti_plugin::server::{AudioBuffer, AudioBuffer64, AudioBufferMut, MidiEvent};
 
     const VST3_PLUGIN: &str = "/Library/Audio/Plug-Ins/VST3/TAL-NoiseMaker.vst3";
+
+    /// Build a unit as the plugin would report it, with no program list.
+    fn unit(id: i32, name: &str) -> tutti_vst3_host::Vst3UnitInfo {
+        tutti_vst3_host::Vst3UnitInfo {
+            id,
+            parent: Some(tutti_vst3_host::unit_ids::ROOT),
+            name: name.to_string(),
+            program_list: None,
+            program_list_id_raw: tutti_vst3_host::unit_ids::NO_PROGRAM_LIST,
+        }
+    }
+
+    /// A parameter naming a published unit is labelled with that unit's name.
+    #[test]
+    fn a_parameter_takes_the_name_of_the_unit_it_declares() {
+        let units = [unit(1, "Filter"), unit(2, "Amp")];
+        let groups = unit_names(&units);
+        assert_eq!(groups.get(&1).copied(), Some("Filter"));
+        assert_eq!(groups.get(&2).copied(), Some("Amp"));
+    }
+
+    /// The root unit names no group.
+    ///
+    /// This is the case that decides whether grouping is useful or noise:
+    /// every parameter that declares no unit reports id 0, so if the root were
+    /// mapped, the flat majority of parameters on every plugin would be
+    /// labelled with the plugin's own name.
+    #[test]
+    fn the_root_unit_is_not_a_group() {
+        let units = [
+            unit(tutti_vst3_host::unit_ids::ROOT, "TAL-NoiseMaker"),
+            unit(1, "Filter"),
+        ];
+        let groups = unit_names(&units);
+        assert_eq!(
+            groups.get(&tutti_vst3_host::unit_ids::ROOT),
+            None,
+            "the root unit's name is the plugin's, not a group's"
+        );
+        assert_eq!(groups.get(&1).copied(), Some("Filter"));
+    }
+
+    /// A `unitId` naming a unit the plugin never published resolves to no
+    /// group, rather than to a neighbour's label.
+    ///
+    /// Dangling ids are a real plugin bug — the same class
+    /// `Vst3UnitInfo::program_list` already absorbs — and the failure mode
+    /// worth refusing is a *plausible* wrong answer: a lookup that fell back to
+    /// the first unit would silently file the parameter under someone else's
+    /// heading.
+    #[test]
+    fn a_unit_id_that_names_nothing_yields_no_group() {
+        let units = [unit(1, "Filter")];
+        let groups = unit_names(&units);
+        assert_eq!(groups.get(&7), None);
+    }
+
+    /// A unit the plugin published without a name yields no group, rather than
+    /// an empty heading a UI would render as a blank section.
+    #[test]
+    fn an_unnamed_unit_is_not_a_group() {
+        let units = [unit(1, "")];
+        let groups = unit_names(&units);
+        assert_eq!(groups.get(&1), None);
+    }
 
     /// The SDK's `multiple-program-changes` sample, when the corpus is built.
     ///

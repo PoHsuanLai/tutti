@@ -8,7 +8,7 @@
 use std::path::Path;
 
 use tutti_plugin::server::{
-    AudioBufferMut, EditorPresence, EditorSize, Features, LoadedPlugin, MidiEventVec,
+    AudioBufferMut, EditorPresence, EditorSize, Features, LoadedPlugin, MidiEventVec, Normalized,
     NoteExpressionChanges, ParamAddress, ParameterChanges, ParameterInfo, PluginAudio, PluginClass,
     PluginDescriptor, PluginEditorHost, PluginMeta, PluginParams, PluginPresets, PluginResult,
     PluginState, PluginTail, Preset, PresetId, ProcessContext, ProcessOutput, RenderMode,
@@ -298,14 +298,14 @@ impl PluginParams for Vst2Instance {
         }
     }
 
-    fn set_parameter(&mut self, id: ParamAddress, value: f64) {
+    fn set_parameter(&mut self, id: ParamAddress, value: Normalized) {
         // Same boundary flattening: the shared trait returns `()`, so a write
         // the plugin cannot accept — including one addressed by an opaque
         // handle — is dropped here rather than reported.
         #[cfg(feature = "vst2")]
         let _ = id
             .index()
-            .map(|i| self.inner.set_parameter(i, value as f32));
+            .map(|i| self.inner.set_parameter(i, value.get() as f32));
         #[cfg(not(feature = "vst2"))]
         let _ = (id, value);
     }

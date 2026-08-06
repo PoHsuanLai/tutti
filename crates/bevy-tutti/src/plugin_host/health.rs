@@ -285,7 +285,7 @@ mod tests {
     use super::*;
     use bevy_app::prelude::*;
     use std::sync::Arc;
-    use tutti_plugin::handles::{OptionalCapabilities, ParamAddress, PluginHandle};
+    use tutti_plugin::handles::{Normalized, OptionalCapabilities, ParamAddress, PluginHandle};
     use tutti_plugin::server::ParameterInfo;
 
     /// A backend whose liveness is whatever the test says it is.
@@ -315,7 +315,7 @@ mod tests {
         fn parameter_value(&self, _id: ParamAddress) -> Option<f32> {
             None
         }
-        fn set_parameter_value(&self, _id: ParamAddress, _value: f32) {}
+        fn set_parameter_value(&self, _id: ParamAddress, _value: Normalized) {}
         fn is_crashed(&self) -> bool {
             self.cause.is_some()
         }

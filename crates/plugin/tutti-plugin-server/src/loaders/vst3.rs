@@ -5,12 +5,12 @@ use std::path::Path;
 
 use tutti_plugin::server::{
     AudioBufferMut, AutomationMode, BusChannels, ChannelLayout, ChordChanges, EditorPresence,
-    EditorSize, Features, LoadedPlugin, NoteExpressionChanges, NoteExpressionIntChanges,
-    NoteExpressionTextChanges, ParamAddress, ParamFlags, ParamRange, ParamSteps, ParameterInfo,
-    PluginAudio, PluginClass, PluginDescriptor, PluginEditorHost, PluginError, PluginMeta,
-    PluginParams, PluginPresets, PluginResult, PluginState, PluginTail, Preset, PresetId,
-    ProcessContext, ProcessOutput, RenderMode, Samples, ScaleChanges, Vst3SubCategories,
-    WindowHandle,
+    EditorSize, Features, LoadedPlugin, Normalized, NoteExpressionChanges,
+    NoteExpressionIntChanges, NoteExpressionTextChanges, ParamAddress, ParamFlags, ParamRange,
+    ParamSteps, ParameterInfo, PluginAudio, PluginClass, PluginDescriptor, PluginEditorHost,
+    PluginError, PluginMeta, PluginParams, PluginPresets, PluginResult, PluginState, PluginTail,
+    Preset, PresetId, ProcessContext, ProcessOutput, RenderMode, Samples, ScaleChanges,
+    Vst3SubCategories, WindowHandle,
 };
 use tutti_plugin::{BridgeError, LoadStage, Result};
 
@@ -722,9 +722,11 @@ impl PluginParams for Vst3Instance {
         vst_dispatch!(self, inner => inner.parameter(id.get()))
     }
 
-    fn set_parameter(&mut self, id: ParamAddress, value: f64) {
+    fn set_parameter(&mut self, id: ParamAddress, value: Normalized) {
+        // VST3 is normalized natively (`setParamNormalized`), so this is the
+        // one format where the seam's domain and the ABI's coincide.
         let Some(id) = id.opaque() else { return };
-        vst_dispatch_mut!(self, inner => inner.set_parameter(id.get(), value));
+        vst_dispatch_mut!(self, inner => inner.set_parameter(id.get(), value.get()));
     }
 
     fn set_automation_state(&mut self, mode: AutomationMode) {

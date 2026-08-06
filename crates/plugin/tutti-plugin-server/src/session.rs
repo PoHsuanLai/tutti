@@ -10,7 +10,7 @@ use crate::audio_pipeline::{AudioBlock, AudioPipeline, Clock, ProcessExtras};
 use crate::editor::EditorState;
 use crate::plugin::{AsyncEvent, Plugin};
 use tutti_plugin::server::{
-    AudioSlab, BridgeMessage, HostMessage, IpcMidiEvent, IpcMidiEventVec, MidiEventVec,
+    AudioSlab, BridgeMessage, HostMessage, IpcMidiEvent, IpcMidiEventVec, MidiEventVec, Normalized,
     SampleFormat, WindowHandle, MIDI_STACK_CAPACITY,
 };
 use tutti_plugin::Result;
@@ -123,7 +123,12 @@ impl Session {
 
             M::SetParameter { param_id, value } => {
                 if let Some(plugin) = self.plugin.as_mut() {
-                    plugin.instance_mut().set_parameter(param_id, value as f64);
+                    // The wire carries a bare `f32` from another process, so
+                    // this is where an out-of-range or NaN value would enter a
+                    // live plugin. `Normalized::new` is the clamp, applied once
+                    // at the boundary rather than trusted from the peer.
+                    let value = Normalized::new(value as f64);
+                    plugin.instance_mut().set_parameter(param_id, value);
                 }
                 Ok(Reaction::None)
             }

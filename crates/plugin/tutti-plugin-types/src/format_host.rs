@@ -14,8 +14,9 @@
 //! objects in different processes, so this is not a duplicate of `AudioUnit`.
 
 use crate::{
-    AudioBufferMut, EditorSize, LoadedPlugin, ParamAddress, ParameterInfo, PluginDescriptor,
-    Preset, PresetId, ProcessContext, ProcessOutput, RenderMode, Result, WindowHandle,
+    AudioBufferMut, EditorSize, LoadedPlugin, Normalized, ParamAddress, ParameterInfo,
+    PluginDescriptor, Preset, PresetId, ProcessContext, ProcessOutput, RenderMode, Result,
+    WindowHandle,
 };
 
 /// Catalog identity + load-time engine-wiring snapshot.
@@ -104,9 +105,7 @@ pub trait PluginParams {
     /// A conversion is therefore a *loader's* obligation, discharged where the
     /// range is known, exactly as the automation path has always done it.
     /// Callers that hold a [`ParameterInfo`] and want the plain value should ask
-    /// for it explicitly with [`ParameterInfo::to_plain`]; do not reuse
-    /// [`ParameterInfo::to_range`], which answers the unrelated question of
-    /// display taper.
+    /// for it explicitly with [`ParameterInfo::to_plain`].
     ///
     /// A parameter whose range the plugin never declared
     /// ([`ParamRange::Normalized`](crate::ParamRange::Normalized)) is already
@@ -124,10 +123,15 @@ pub trait PluginParams {
     /// write in [`set_parameter`](Self::set_parameter). Neither invents a cast.
     fn get_parameter(&self, id: ParamAddress) -> f64;
 
-    /// Write a parameter, **normalized `0..=1`** — see
-    /// [`get_parameter`](Self::get_parameter) for why every format speaks that
-    /// convention here, and for how an address of the wrong model is treated.
-    fn set_parameter(&mut self, id: ParamAddress, value: f64);
+    /// Write a parameter — see [`get_parameter`](Self::get_parameter) for why
+    /// every format speaks the normalized convention here, and for how an
+    /// address of the wrong model is treated.
+    ///
+    /// The domain is in the signature rather than only in this sentence:
+    /// [`Normalized`](crate::Normalized) cannot be built from a plain value
+    /// without passing its clamp, so the plain-for-normalized mistake described
+    /// above is no longer expressible at this seam.
+    fn set_parameter(&mut self, id: ParamAddress, value: Normalized);
 
     /// Push the host [`AutomationMode`](crate::AutomationMode) to the plugin.
     /// Fire-and-forget; the default no-op covers formats without an

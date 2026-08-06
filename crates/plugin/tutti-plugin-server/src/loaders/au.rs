@@ -10,9 +10,10 @@ use tutti_plugin::server::{
 };
 #[cfg(all(target_os = "macos", feature = "au"))]
 use tutti_plugin::server::{
-    EditorSize, ParamAddress, ParamFlags, ParamRange, ParamSteps, ParameterInfo, PluginAudio,
-    PluginEditorHost, PluginMeta, PluginParams, PluginPresets, PluginResult, PluginState,
-    PluginTail, Preset, PresetId, ProcessContext, ProcessOutput, RenderMode, WindowHandle,
+    EditorSize, Normalized, ParamAddress, ParamFlags, ParamRange, ParamSteps, ParameterInfo,
+    PluginAudio, PluginEditorHost, PluginMeta, PluginParams, PluginPresets, PluginResult,
+    PluginState, PluginTail, Preset, PresetId, ProcessContext, ProcessOutput, RenderMode,
+    WindowHandle,
 };
 
 use crate::loaders::common::{single_bus, Meta};
@@ -802,11 +803,11 @@ impl PluginParams for AuInstance {
     /// Normalized `0..=1` in, matching [`get_parameter`](Self::get_parameter) —
     /// so this pair round-trips. `AudioUnitSetParameter` takes plain units, so
     /// the value is denormalized against the same table.
-    fn set_parameter(&mut self, id: ParamAddress, value: f64) {
+    fn set_parameter(&mut self, id: ParamAddress, value: Normalized) {
         let Some(id) = id.opaque() else { return };
         let plain = match lookup_bounds(&self.param_ranges, id.get()) {
-            Some(bounds) => bounds.to_plain(value),
-            None => value as f32,
+            Some(bounds) => bounds.to_plain(value.get()),
+            None => value.get() as f32,
         };
         let _ = parameters::set(self.inner.raw_unit(), id.get(), plain);
     }
@@ -1412,7 +1413,7 @@ mod tests {
         };
         let addr = ParamAddress::Opaque(cutoff_id.into());
 
-        au.set_parameter(addr, 1.0);
+        au.set_parameter(addr, Normalized::new(1.0));
         let plain = parameters::get(au.inner.raw_unit(), cutoff_id).expect("cutoff is readable");
         assert!(
             (plain - bounds.max).abs() < 1.0,
@@ -1426,7 +1427,7 @@ mod tests {
         );
         assert!((au.get_parameter(addr) - 1.0).abs() < 1e-3);
 
-        au.set_parameter(addr, 0.0);
+        au.set_parameter(addr, Normalized::new(0.0));
         assert!((au.get_parameter(addr)).abs() < 1e-3);
     }
 

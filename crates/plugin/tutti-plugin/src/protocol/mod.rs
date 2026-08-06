@@ -180,7 +180,7 @@ pub use crate::host::discovery::record::{
 };
 pub use tutti_plugin_types::{
     AutomationMode, BusChannels, BusTopologies, ChannelLayout, ChannelTopology, ChordChanges,
-    ChordValue, EditorPresence, FeatureReport, Features, LayoutSupport, LoadedPlugin,
+    ChordValue, EditorPresence, FeatureReport, Features, LayoutSupport, LoadedPlugin, Normalized,
     NoteExpressionChanges, NoteExpressionIntChanges, NoteExpressionIntValue,
     NoteExpressionTextChanges, NoteExpressionTextValue, NoteExpressionType, NoteExpressionValue,
     ParamAddress, ParamFlags, ParamId, ParamRange, ParamSteps, ParameterChanges, ParameterInfo,

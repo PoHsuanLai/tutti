@@ -30,6 +30,58 @@ use bitflags::bitflags;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
+/// A parameter value on the host's `0..=1` scale.
+///
+/// The four hosted formats disagree about which domain a parameter value is
+/// in — VST3 and VST2 speak normalized natively, AU and CLAP speak the
+/// plugin's own units — and the shared seam
+/// ([`PluginFormatHost`](crate::PluginFormatHost)) picks normalized, leaving
+/// each plain-native loader to adapt at its own edge. That rule was carried
+/// only in prose, over a `f64` that a plain value fits just as well. Writing
+/// `set_parameter(id, 20_000.0)` against a filter cutoff compiled and set the
+/// parameter to full scale rather than 20 kHz.
+///
+/// The invariant is enforced at construction: [`new`](Self::new) clamps into
+/// `0..=1` and maps NaN to `0.0`, so a `Normalized` is always a finite value on
+/// the unit interval. That is the same guard [`ParamRange::to_plain`] applies
+/// internally — it exists here so a caller cannot skip it.
+///
+/// Deliberately no `Deref`, no `From<f64>` and no arithmetic: those are the
+/// routes by which a raw float becomes a `Normalized` without passing the
+/// clamp, which is the whole point. Same discipline as
+/// [`ParamAddress`] — the models do not silently interconvert.
+///
+/// There is no matching `Plain` newtype. A plain value's legal range is
+/// per-parameter, so the type could promise only "finite" — and after the
+/// conversion was unified onto [`ParamRange`], every plain value lives inside
+/// a single format crate and never crosses a boundary where it could be
+/// confused. One newtype where the invariant is real beats two where one is
+/// decoration.
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Default)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct Normalized(f64);
+
+impl Normalized {
+    /// Clamp `v` onto `0..=1`.
+    ///
+    /// Total rather than fallible: every caller of a `Result` here would
+    /// `unwrap_or(0.0)` or clamp anyway, and the values arriving are automation
+    /// output and IPC payloads rather than user input — a rejected write would
+    /// be a dropped automation point, which is worse than a clamped one.
+    ///
+    /// NaN maps to `0.0` rather than clamping, because `f64::clamp` returns NaN
+    /// for a NaN input. This value reaches a live plugin parameter, and a NaN in
+    /// a filter coefficient does not stay confined to the parameter it entered.
+    pub fn new(v: f64) -> Self {
+        Self(clamp_unit(v))
+    }
+
+    /// The underlying `0..=1` value.
+    pub const fn get(self) -> f64 {
+        self.0
+    }
+}
+
 /// What the plugin declared about a parameter's value range.
 ///
 /// A sum type rather than bounds plus a discriminant: with a flag, the
@@ -694,6 +746,42 @@ mod tests {
             "a bit outside the known mask must not become readable"
         );
         assert!(!p.flags.contains(ParamFlags::BYPASS));
+    }
+
+    /// `Normalized` holds the unit interval, whatever it is handed.
+    ///
+    /// The three inputs that reach this from a live system: an automation curve
+    /// overshooting its endpoints, a wire payload from another process, and a
+    /// division that produced NaN. None may reach a plugin parameter unclamped
+    /// — see the type's docs for why NaN is mapped rather than clamped.
+    #[test]
+    fn a_normalized_value_is_always_on_the_unit_interval() {
+        for (input, want) in [
+            (0.5, 0.5),
+            (0.0, 0.0),
+            (1.0, 1.0),
+            (1.5, 1.0),
+            (-0.5, 0.0),
+            (f64::INFINITY, 1.0),
+            (f64::NEG_INFINITY, 0.0),
+            (f64::NAN, 0.0),
+        ] {
+            let n = Normalized::new(input);
+            assert_eq!(n.get(), want, "Normalized::new({input})");
+            assert!((0.0..=1.0).contains(&n.get()));
+        }
+    }
+
+    /// A plain value handed to `Normalized::new` is clamped, not carried.
+    ///
+    /// This is the mistake the type exists to stop: `set_parameter(id, 20_000.0)`
+    /// against a `[10, 22050]` Hz cutoff used to compile and set full scale.
+    /// It still compiles — the clamp is total by design — but it can no longer
+    /// be mistaken for a plain write, because the seam takes `Normalized` and
+    /// the only way to build one is through this clamp.
+    #[test]
+    fn a_plain_value_cannot_masquerade_as_a_normalized_one() {
+        assert_eq!(Normalized::new(20_000.0).get(), 1.0);
     }
 
     /// A grouped parameter qualifies its name; an ungrouped one does not.

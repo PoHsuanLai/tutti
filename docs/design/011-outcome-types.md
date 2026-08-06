@@ -174,6 +174,25 @@ no message, so `bool` is honest" — wrong, because it read the return type rath
 than the body. The two conditions are `is_crashed()` and `push_command()`, and
 they are not the same failure.
 
+**Then it was argued too far the other way.** "Convert the `_rt` family" is what
+this section originally said, and reading the call sites before doing it showed
+why that was wrong too: there are **ten** such functions, and **nine of them have
+no caller that reads the answer** — every site either `let _ =`s it or forwards
+it unread, and nothing outside `tutti-plugin` calls any of them at all. Only
+`set_automation_state_rt` is consumed, by `SubprocessBackend::set_automation_mode`,
+which turns it into a user-visible error.
+
+So `Delivered` landed on that one (`e2f71fbcc`) and the other nine kept the bool.
+This is the rule above applied honestly rather than abandoned: an enum earns its
+place when *the caller's response differs*, and for nine of these there is no
+response to differ. Converting them would have been ~20 edits serving zero
+branches, on the RT-adjacent path.
+
+The general lesson, which cost two wrong readings on one case: **the signature
+does not tell you whether a collapse matters — the body tells you whether one
+happened, and the call sites tell you whether anyone is harmed by it.** Both
+have to be read.
+
 ### 3. `set_midi_source` / `set_midi_out` — a fieldless enum
 
 `false` today means either "this plugin does not accept MIDI" (it is an effect,
@@ -257,7 +276,8 @@ type, not the behaviour.
    signature is shared, so changing it forces both implementors at once.
    `StateError` landed in `tutti-plugin-types` beside `PluginError`, and the
    wire gained `BridgeMessage::StateLoaded` at `PROTOCOL_VERSION` 18.
-2. The `_rt` family — one enum, seven call sites, no message needed.
+2. ~~The `_rt` family~~ — **DONE**, but only for the one member whose answer is
+   read (`e2f71fbcc`). See the case above for why the other nine were left.
 3. `set_midi_source`/`set_midi_out`, `load_preset` — same shape, lower stakes.
 
 Deliberately separate from the parameter-grouping PR, which is at eight commits

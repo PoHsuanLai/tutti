@@ -15,7 +15,9 @@ pub use core::error;
 pub use core::Sysex7Assembler;
 /// The endpoint vocabulary: what a MIDI endpoint is, what it can carry, and the
 /// backend seam that enumerates and opens them.
-pub use core::{EndpointId, EndpointInfo, InputConnection, MidiEndpoints, UmpCapability};
+pub use core::{
+    EndpointId, EndpointInfo, InputConnection, MidiEndpoints, MidiSession, UmpCapability,
+};
 pub use core::{Error, Result};
 // OS hardware orchestrator, the device descriptor, and the record its observer
 // channel carries — only present under `midi-hardware` (they own the `midir`

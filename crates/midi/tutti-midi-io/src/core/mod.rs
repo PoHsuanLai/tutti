@@ -29,6 +29,7 @@ pub mod capability;
 pub mod endpoints;
 pub(crate) mod hardware;
 pub mod port;
+pub mod session;
 pub mod sysex;
 
 pub use capability::{EndpointId, EndpointInfo, UmpCapability};
@@ -39,6 +40,7 @@ pub use hardware::{MidiDevice, MidiInputRecord};
 #[cfg(feature = "midi-hardware")]
 pub use midi_io::MidiIo;
 pub use port::{HardwareMidiInputs, InputProducerHandle, PortInfo, PortType};
+pub use session::MidiSession;
 pub use sysex::Sysex7Assembler;
 
 #[cfg(all(target_os = "macos", feature = "midi-hardware"))]

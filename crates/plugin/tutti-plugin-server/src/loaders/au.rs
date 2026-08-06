@@ -656,6 +656,21 @@ impl AuInstance {
     pub(crate) fn property_flags(&self) -> Option<&std::sync::Arc<PropertyFlags>> {
         self.watch.as_ref().map(|w| &w.flags)
     }
+
+    /// Overwrite the cached latency, so a test can prove `poll_changes` replaces
+    /// it rather than leaves it.
+    ///
+    /// Without this the assertion "`loaded()` and the event agree" is satisfied
+    /// by *any* AU whose latency does not change during the test — which is
+    /// every AU, since nothing installed changes latency on request. Both values
+    /// would read the load-time figure and match, refresh or no refresh.
+    /// Deleting the refresh line was mutation-tested and survived for exactly
+    /// this reason. Poisoning the cache first is what makes the two figures
+    /// differ when the refresh is missing.
+    #[cfg(test)]
+    pub(crate) fn poison_cached_latency(&mut self, samples: Samples) {
+        self.meta.loaded.latency_samples = samples;
+    }
 }
 
 #[cfg(all(target_os = "macos", feature = "au"))]

@@ -310,6 +310,43 @@ impl Plugin {
 mod tests {
     use super::*;
 
+    /// An AU to run the property-notification tests below against.
+    ///
+    /// This used to be a hardcoded absolute path to TAL-Reverb-4, a third-party
+    /// plugin that is not part of macOS — so both tests failed on every checkout
+    /// that did not happen to have it installed. Nothing they assert is specific
+    /// to that unit: what is under test is the wiring from a property flag to a
+    /// re-read, which is the same for any AU.
+    ///
+    /// `AUPeakLimiter` ships with macOS, so it is present wherever these tests
+    /// can run at all. It also reports a non-zero latency (88 at 44.1 kHz),
+    /// which most bundled units do not — `AUDelay`, `AUMatrixReverb`,
+    /// `AUNBandEQ` and the filters all report zero. That is not what makes the
+    /// latency test valid (`poison_cached_latency` does), but it keeps the
+    /// figures under test away from a value that coincides with the default.
+    ///
+    /// `AU_SAMPLE_PLUGIN` overrides the choice for a machine that has something
+    /// more interesting installed.
+    #[cfg(all(feature = "au", target_os = "macos"))]
+    fn au_fixture() -> Option<String> {
+        fn loadable(name: &str) -> bool {
+            crate::loaders::au::AuInstance::load(Path::new(name), 44100.0, 512).is_ok()
+        }
+
+        if let Ok(named) = std::env::var("AU_SAMPLE_PLUGIN") {
+            if loadable(&named) {
+                return Some(named);
+            }
+            eprintln!("AU_SAMPLE_PLUGIN={named} would not load; falling back");
+        }
+        const FALLBACK: &str = "AUPeakLimiter";
+        if loadable(FALLBACK) {
+            return Some(FALLBACK.to_string());
+        }
+        eprintln!("no loadable AU found (tried {FALLBACK}); skipping");
+        None
+    }
+
     #[test]
     fn probe_missing_path_errors() {
         let result = Plugin::probe(Path::new("/nonexistent/plugin.vst3"));
@@ -425,7 +462,8 @@ mod tests {
     ///
     /// A missing listener fails the test rather than skipping it: `poll_changes`
     /// returns an empty result when `watch` is `None`, so a silent skip would
-    /// make every assertion below vacuous.
+    /// make every assertion below vacuous. That is the *listener*, though — a
+    /// missing **plugin** is a machine fact and skips, per [`au_fixture`].
     #[cfg(all(feature = "au", target_os = "macos"))]
     #[test]
     fn an_au_property_change_reaches_the_event_list() {
@@ -433,9 +471,11 @@ mod tests {
         use std::sync::atomic::Ordering;
 
         let _lock = crate::test_utils::plugin_load_lock();
-        const AU_PLUGIN: &str = "/Library/Audio/Plug-Ins/Components/TAL-Reverb-4.component";
-        let instance = AuInstance::load(Path::new(AU_PLUGIN), 44100.0, 512)
-            .expect("failed to load the AU test plugin");
+        let Some(fixture) = au_fixture() else {
+            return;
+        };
+        let instance = AuInstance::load(Path::new(&fixture), 44100.0, 512)
+            .expect("the AU fixture resolved but would not load");
         let mut plugin = Plugin::Au(instance);
 
         // Nothing pending: the drain must be empty, or the assertions below
@@ -506,14 +546,24 @@ mod tests {
         use tutti_plugin::server::PluginMeta;
 
         let _lock = crate::test_utils::plugin_load_lock();
-        const AU_PLUGIN: &str = "/Library/Audio/Plug-Ins/Components/TAL-Reverb-4.component";
-        let mut au = AuInstance::load(Path::new(AU_PLUGIN), 44100.0, 512)
-            .expect("failed to load the AU test plugin");
+        let Some(fixture) = au_fixture() else {
+            return;
+        };
+        let mut au = AuInstance::load(Path::new(&fixture), 44100.0, 512)
+            .expect("the AU fixture resolved but would not load");
 
         let flags = std::sync::Arc::clone(
             au.property_flags()
                 .expect("the AU property listener was not installed"),
         );
+        // Poison the cache before polling. Without this the test cannot fail:
+        // no installed AU changes its latency on request, so `loaded()` and the
+        // re-read both return the load-time figure and agree whether or not the
+        // refresh happened. Deleting the refresh line survives this test without
+        // the poisoning — verified by mutation.
+        let real_latency = au.loaded().latency_samples;
+        au.poison_cached_latency(Samples(real_latency.0 + 1234));
+
         flags.latency.store(true, Ordering::Release);
         flags.tail.store(true, Ordering::Release);
 
@@ -524,6 +574,13 @@ mod tests {
         let reported_tail = changes
             .tail
             .expect("a raised tail flag must produce a re-read");
+
+        // The re-read must report the AU's real figure, not the poisoned one —
+        // otherwise `poll_changes` echoed the cache instead of asking the unit.
+        assert_eq!(
+            reported_latency, real_latency,
+            "the emitted latency must come from a fresh read, not the cache"
+        );
 
         assert_eq!(
             au.loaded().latency_samples,

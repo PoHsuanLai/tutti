@@ -3,26 +3,41 @@
 //!
 //! # Why a state and not a bool
 //!
-//! The engine exposes liveness as a single latched `AtomicBool`. That one flag
-//! collapses five distinct conditions — the peer died, a reply timed out, a
-//! frame was undecodable, a length prefix was absurd, the protocol version
-//! disagreed — and the `BridgeError` carrying the real cause is discarded before
-//! it reaches us. It is also *write-once*: nothing ever clears it.
+//! The engine reports liveness as [`tutti_plugin::handles::PluginStatus`] — a
+//! latched death plus the reason for it. That answers *whether* a plugin died
+//! and *why*, but not the condition this module exists for:
 //!
-//! Two consequences shape this module:
-//!
-//! - **A failed call returns before the flag is published.** The bridge marks
+//! - **A failed call returns before the death is published.** The bridge marks
 //!   the crash on its own thread with a `Release` store, so a system that checks
-//!   immediately after a failed call can legitimately see `false`. Reacting to
-//!   one observation races the publish.
-//! - **`!is_crashed()` does not mean healthy.** A peer that answers a
-//!   `GetParameter` with a well-formed reply of the *wrong kind* leaves the flag
-//!   clear while the call returns `None`.
+//!   immediately after a failed call can legitimately see the plugin alive.
+//!   Reacting to one observation races the publish.
+//! - **`Alive` does not mean healthy.** A peer that answers a `GetParameter`
+//!   with a well-formed reply of the *wrong kind* leaves the engine reporting
+//!   `Alive` while the call returns `None`. The engine documents this and
+//!   declines to model it, because how many failures over how long is a host's
+//!   policy — this module is that host.
 //!
-//! So health is debounced: [`PluginStatus::Failing`] counts consecutive
-//! observations and only [`PluginStatus::Dead`] unwires. The cost is that a
+//! So liveness is debounced here: [`PluginLiveness::Failing`] counts consecutive
+//! observations and only [`PluginLiveness::Dead`] unwires. The cost is that a
 //! genuinely dead plugin emits silence for a few extra frames — which it was
 //! emitting anyway, since a crashed bridge returns zeros rather than erroring.
+//!
+//! # Why the cause is read, not subscribed to
+//!
+//! `PluginHandle::on_invalidate` fires [`PluginInvalidation::Crashed`] with the
+//! same cause this module reports, and a callback would learn of a death
+//! sooner. It is deliberately not used, for the reason
+//! [`plugin_latency_poll`](super::latency::plugin_latency_poll) gives: a
+//! callback cannot touch the `World`, so it would need a channel and a drain
+//! system — a second route to a value the engine already owns and will hand
+//! over on request.
+//!
+//! Reading it here keeps one owner. The engine latches the cause where the
+//! crash is noticed and `status()` returns it at any later time, so polling
+//! loses nothing but the few frames the debounce was already spending. A
+//! subscriber would arrive earlier and still have to wait out the same count.
+//!
+//! [`PluginInvalidation::Crashed`]: tutti_plugin::handles::PluginInvalidation::Crashed
 //!
 //! # Why snapshots have to be proactive
 //!
@@ -33,6 +48,12 @@
 
 use bevy_ecs::prelude::*;
 use bevy_log::error;
+
+// Aliased at the import rather than named in full at the use site: this module
+// defines its own `PluginStatus`-shaped type (`PluginLiveness`), and two types
+// one word apart in the same file is how a reader mistakes the host's belief
+// for the engine's observation.
+use tutti_plugin::handles::PluginStatus as EngineStatus;
 
 use crate::plugin_host::editor::{PluginEditorOpen, PluginEmitter};
 
@@ -54,8 +75,13 @@ const DEATHS_BEFORE_DEAD: u8 = 3;
 const SNAPSHOT_INTERVAL_FRAMES: u32 = 512;
 
 /// What the host believes about a plugin's liveness.
+///
+/// Distinct from [`tutti_plugin::handles::PluginStatus`], which reports what the
+/// *engine* has observed: a latched death, or nothing yet. This adds the
+/// debounce between them — `Failing` is a belief this module forms by counting,
+/// and has no engine counterpart by design.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub enum PluginStatus {
+pub enum PluginLiveness {
     /// Answering normally.
     #[default]
     Healthy,
@@ -64,6 +90,9 @@ pub enum PluginStatus {
     Failing { consecutive: u8 },
     /// Written off. The node has been unwired; the plugin is not coming back
     /// without a fresh load, because the engine offers no relaunch.
+    ///
+    /// The cause comes from the engine's latch, so it names the actual failure
+    /// — a refused connection, a protocol mismatch, a dropped stream.
     Dead { cause: String },
 }
 
@@ -72,7 +101,7 @@ pub enum PluginStatus {
 /// Inserted by the load path alongside [`PluginEmitter`].
 #[derive(Component, Debug, Default)]
 pub struct PluginHealth {
-    pub status: PluginStatus,
+    pub status: PluginLiveness,
     /// The most recent state captured while healthy, if any.
     ///
     /// Private: this is a snapshot [`plugin_state_snapshot`] maintains, and a
@@ -96,7 +125,7 @@ impl PluginHealth {
 
     /// Whether this plugin has been written off.
     pub fn is_dead(&self) -> bool {
-        matches!(self.status, PluginStatus::Dead { .. })
+        matches!(self.status, PluginLiveness::Dead { .. })
     }
 }
 
@@ -140,34 +169,35 @@ pub fn plugin_health_poll(
         if health.is_dead() {
             continue;
         }
-        if !plugin.handle.is_crashed() {
+        let EngineStatus::Dead { cause } = plugin.handle.status() else {
             // Any healthy observation resets the count: the debounce is for
             // *consecutive* failures, and a single late reply is not a death.
-            if health.status != PluginStatus::Healthy {
-                health.status = PluginStatus::Healthy;
+            if health.status != PluginLiveness::Healthy {
+                health.status = PluginLiveness::Healthy;
             }
             continue;
-        }
+        };
 
         let consecutive = match health.status {
-            PluginStatus::Failing { consecutive } => consecutive.saturating_add(1),
+            PluginLiveness::Failing { consecutive } => consecutive.saturating_add(1),
             _ => 1,
         };
 
         if consecutive < DEATHS_BEFORE_DEAD {
-            health.status = PluginStatus::Failing { consecutive };
+            health.status = PluginLiveness::Failing { consecutive };
             continue;
         }
 
-        // The engine discards the `BridgeError` that carried the real cause, so
-        // this is as specific as the host can be. Surfacing the true reason
-        // needs an engine change; until then, do not invent one.
-        let cause = "bridge reported the plugin as crashed".to_string();
+        // The engine's latched reason, not a placeholder. It is captured where
+        // the crash is noticed rather than reconstructed from the flag, so it
+        // names the actual failure — a refused connection, a protocol
+        // mismatch, a dropped stream — including for a plugin that died before
+        // this host could have subscribed to anything.
         error!(
             "plugin '{}' declared dead ({cause}); unwiring entity {entity:?}",
             plugin.handle.name()
         );
-        health.status = PluginStatus::Dead { cause };
+        health.status = PluginLiveness::Dead { cause };
 
         commands
             .entity(entity)
@@ -186,7 +216,7 @@ pub fn plugin_health_poll(
 /// and would return `None` anyway.
 pub fn plugin_state_snapshot(mut plugins: Query<(&PluginEmitter, &mut PluginHealth)>) {
     for (plugin, mut health) in plugins.iter_mut() {
-        if health.status != PluginStatus::Healthy {
+        if health.status != PluginLiveness::Healthy {
             continue;
         }
         health.frames_since_snapshot = health.frames_since_snapshot.saturating_add(1);
@@ -201,5 +231,193 @@ pub fn plugin_state_snapshot(mut plugins: Query<(&PluginEmitter, &mut PluginHeal
         if let Some(state) = plugin.handle.save_state() {
             health.last_snapshot = Some(state);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bevy_app::prelude::*;
+    use std::sync::Arc;
+    use tutti_plugin::handles::{OptionalCapabilities, ParamAddress, PluginHandle};
+    use tutti_plugin::server::ParameterInfo;
+
+    /// A backend whose liveness is whatever the test says it is.
+    ///
+    /// `PluginClient::new` launches a subprocess, so no test can put a real
+    /// plugin here — but `PluginHandle::from_backend` takes any `HostParams +
+    /// HostState`, which makes the *system* testable rather than only the
+    /// decision rule extracted out of it. That matters for the case this module
+    /// is about: the cause has to survive the trip from the backend, through the
+    /// handle, into a component, and only an end-to-end assertion sees that.
+    struct FakeBackend {
+        cause: Option<String>,
+    }
+
+    impl tutti_plugin::backend::HostParams for FakeBackend {
+        fn parameter_descriptors(&self) -> Option<Vec<ParameterInfo>> {
+            None
+        }
+        fn parameter_value(&self, _id: ParamAddress) -> Option<f32> {
+            None
+        }
+        fn set_parameter_value(&self, _id: ParamAddress, _value: f32) {}
+        fn is_crashed(&self) -> bool {
+            self.cause.is_some()
+        }
+        fn crash_cause(&self) -> Option<String> {
+            self.cause.clone()
+        }
+    }
+
+    impl tutti_plugin::backend::HostState for FakeBackend {
+        fn save_state(&self) -> Option<Vec<u8>> {
+            None
+        }
+        fn load_state(&self, _data: &[u8]) {}
+    }
+
+    /// A handle over a backend that reports `cause`, dead if `Some`.
+    fn handle_reporting(cause: Option<&str>) -> PluginHandle {
+        let backend = Arc::new(FakeBackend {
+            cause: cause.map(str::to_string),
+        });
+        let (sender, _receiver) =
+            tutti_midi_runtime::MidiMailbox::pair(tutti_midi_types::MidiUnitId::next());
+        PluginHandle::from_backend(
+            backend,
+            OptionalCapabilities::default(),
+            Default::default(),
+            Default::default(),
+            Default::default(),
+            sender,
+        )
+    }
+
+    fn test_app() -> App {
+        let mut app = App::new();
+        app.insert_resource(crate::graph::AudioGraphRes(tutti_core::dsp::Net::new(0, 2)));
+        app.add_systems(Update, plugin_health_poll);
+        app
+    }
+
+    /// Spawn a plugin that reports `cause`, run `frames` updates, return the
+    /// entity.
+    ///
+    /// `AudioNode` is a real graph node rather than a fabricated id: its
+    /// *removal* is the whole teardown this system performs, so the component
+    /// has to be present for the unwire to be observable at all. A `dc` node
+    /// stands in for the plugin — nothing here reads what the node computes.
+    fn run(app: &mut App, cause: Option<&str>, frames: usize) -> Entity {
+        let id = {
+            let mut graph = app
+                .world_mut()
+                .resource_mut::<crate::graph::AudioGraphRes>();
+            graph.0.push(Box::new(tutti_core::dsp::dc(0.0)))
+        };
+        let entity = app
+            .world_mut()
+            .spawn((
+                PluginEmitter {
+                    handle: handle_reporting(cause),
+                },
+                PluginHealth::default(),
+                tutti_core::AudioNode(id),
+            ))
+            .id();
+        for _ in 0..frames {
+            app.update();
+        }
+        entity
+    }
+
+    /// The engine's latched reason reaches the component verbatim.
+    ///
+    /// This is the whole point of the change: the host used to write the fixed
+    /// string "bridge reported the plugin as crashed" for every death alike,
+    /// because the flag was a bool and the `BridgeError` behind it was dropped.
+    /// Asserting on the *content* is what distinguishes reading the engine's
+    /// cause from inventing one — an assertion that merely checked for `Dead`
+    /// would pass against the placeholder.
+    #[test]
+    fn a_dead_plugin_reports_the_engines_cause_not_a_placeholder() {
+        let mut app = test_app();
+        let entity = run(
+            &mut app,
+            Some("could not connect to plugin-server: No such file or directory"),
+            DEATHS_BEFORE_DEAD as usize,
+        );
+
+        let health = app.world().get::<PluginHealth>(entity).unwrap();
+        assert_eq!(
+            health.status,
+            PluginLiveness::Dead {
+                cause: "could not connect to plugin-server: No such file or directory".to_string(),
+            },
+            "the cause must be the engine's latched reason, carried through unchanged"
+        );
+    }
+
+    /// A plugin is not written off on the first bad observation.
+    ///
+    /// The debounce is the reason this module keeps a state rather than
+    /// mirroring the engine's: the crash is published from the bridge thread
+    /// after the failing call returns, so one look can race the publish. Pinned
+    /// at every frame below the threshold, because an off-by-one here would
+    /// unwire a live plugin.
+    #[test]
+    fn a_crash_is_not_declared_until_the_debounce_elapses() {
+        for frames in 1..DEATHS_BEFORE_DEAD as usize {
+            let mut app = test_app();
+            let entity = run(&mut app, Some("stream closed"), frames);
+
+            let health = app.world().get::<PluginHealth>(entity).unwrap();
+            assert_eq!(
+                health.status,
+                PluginLiveness::Failing {
+                    consecutive: frames as u8
+                },
+                "at {frames} observation(s) the plugin is failing, not dead"
+            );
+            assert!(
+                app.world().get::<tutti_core::AudioNode>(entity).is_some(),
+                "a failing plugin must stay wired — unwiring it early silences a live plugin"
+            );
+        }
+    }
+
+    /// Declaring a plugin dead removes `AudioNode`, which is the whole teardown.
+    ///
+    /// The `On<Remove, AudioNode>` observers take the node out of the graph and
+    /// the sender off the MIDI bus, so this system's only job is the removal. A
+    /// status set without it would leave a dead plugin's node still processing.
+    #[test]
+    fn declaring_death_unwires_the_node() {
+        let mut app = test_app();
+        let entity = run(&mut app, Some("stream closed"), DEATHS_BEFORE_DEAD as usize);
+
+        assert!(
+            app.world().get::<tutti_core::AudioNode>(entity).is_none(),
+            "a dead plugin must be unwired by removing AudioNode"
+        );
+    }
+
+    /// A plugin the engine reports as alive is never written off, however long
+    /// it runs.
+    ///
+    /// The negative case, and worth its own test: every assertion above fires
+    /// only for a backend already reporting a crash, so none of them would
+    /// notice a poll that declared death unconditionally.
+    #[test]
+    fn a_live_plugin_is_never_declared_dead() {
+        let mut app = test_app();
+        let entity = run(&mut app, None, DEATHS_BEFORE_DEAD as usize + 5);
+
+        let health = app.world().get::<PluginHealth>(entity).unwrap();
+        assert_eq!(health.status, PluginLiveness::Healthy);
+        assert!(
+            app.world().get::<tutti_core::AudioNode>(entity).is_some(),
+            "a healthy plugin must stay wired"
+        );
     }
 }

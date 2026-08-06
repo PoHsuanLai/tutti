@@ -477,6 +477,13 @@ fn project_param_info(info: ClapParamInfo) -> tutti_plugin_types::ParameterInfo 
         steps,
         flags,
         known: KNOWN,
+        // `clap_param_info.module` is a `/`-separated path ("Osc 1/Filter"),
+        // and CLAP documents it as a display hint rather than an addressing
+        // scheme — a host is free to render or ignore it. It passes through
+        // verbatim: splitting it here would impose a hierarchy the shared
+        // vocabulary does not model, and three of the four hosted formats
+        // could not fill.
+        group: info.module,
     }
 }
 
@@ -518,6 +525,38 @@ unsafe fn text_to_value_ffi(
     let mut out: f64 = 0.0;
     let ok = text_to_value_fn(plugin, param_id, c_text.as_ptr(), &mut out);
     ok.then_some(out)
+}
+
+#[cfg(test)]
+mod grouping_tests {
+    use super::*;
+
+    /// CLAP's `module` reaches the shared type as the group, unchanged.
+    ///
+    /// Kept verbatim rather than split on `/`: CLAP documents the path as a
+    /// display hint, and splitting here would build a hierarchy the shared
+    /// vocabulary does not model and three of the four hosted formats could
+    /// not fill. See `docs/design/010-parameter-grouping.md`.
+    #[test]
+    fn a_clap_module_becomes_the_group_verbatim() {
+        let mut info = ClapParamInfo::new(1, "Cutoff");
+        info.module = "Osc 1/Filter".to_string();
+
+        let projected = project_param_info(info);
+        assert_eq!(projected.group, "Osc 1/Filter");
+        assert_eq!(projected.qualified_name(), "Osc 1/Filter / Cutoff");
+    }
+
+    /// A parameter that declares no module has no group.
+    ///
+    /// The common case — CLAP leaves `module` empty unless the plugin fills it
+    /// — so this is what most parameters must produce.
+    #[test]
+    fn a_clap_parameter_without_a_module_has_no_group() {
+        let projected = project_param_info(ClapParamInfo::new(1, "Cutoff"));
+        assert!(projected.group.is_empty());
+        assert_eq!(projected.qualified_name(), "Cutoff");
+    }
 }
 
 #[cfg(test)]

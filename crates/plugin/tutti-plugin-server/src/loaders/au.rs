@@ -2,6 +2,8 @@
 //!
 //! Follows the same pattern as `vst3_loader.rs` and `clap_loader.rs`.
 
+#[cfg(all(target_os = "macos", feature = "au"))]
+use std::collections::HashMap;
 use std::path::Path;
 use tutti_plugin::server::{
     AuComponentType, EditorPresence, Features, LoadedPlugin, PluginClass, PluginDescriptor,
@@ -819,7 +821,20 @@ impl PluginParams for AuInstance {
     }
 
     fn get_parameter_list(&self) -> Vec<ParameterInfo> {
-        parameters::list(self.inner.raw_unit())
+        let unit = self.inner.raw_unit();
+        let params = parameters::list(unit);
+
+        // Resolve each distinct clump once. `clump_name` is a property read
+        // into the AU per call, and a synth with 400 parameters across 7 clumps
+        // would otherwise pay 400 round trips for 7 answers.
+        let mut clump_names: HashMap<u32, String> = HashMap::new();
+        for clump in params.iter().filter_map(|p| p.clump) {
+            clump_names
+                .entry(clump)
+                .or_insert_with(|| parameters::clump_name(unit, clump).unwrap_or_default());
+        }
+
+        params
             .into_iter()
             .map(|p| {
                 // Indexed params are a choice list whose `[min, max]` are the
@@ -853,6 +868,16 @@ impl PluginParams for AuInstance {
                         ParamFlags::READ_ONLY
                     },
                     known: ParamFlags::READ_ONLY,
+                    // `p.clump` is `None` unless the AU set
+                    // `kAudioUnitParameterFlag_HasClump`, so an AU that
+                    // declared no clump cannot arrive here as clump 0 — the
+                    // gate is in the decoder. A clump the AU declines to name
+                    // yields no group rather than a numeric placeholder.
+                    group: p
+                        .clump
+                        .and_then(|c| clump_names.get(&c))
+                        .cloned()
+                        .unwrap_or_default(),
                 }
             })
             .collect()
@@ -992,6 +1017,64 @@ mod tests {
         let mut inner = unsafe { tutti_au_host::AuInstance::new(comp, 44_100.0, 512) }.ok()?;
         inner.initialize().ok()?;
         Some(inner)
+    }
+
+    /// An AU's clumps reach the shared `ParameterInfo` as group labels.
+    ///
+    /// AUDistortion is the fixture because it is measurably grouped: macOS 15.6
+    /// reports its 22 parameters across 7 named clumps ("Delay", "Ring
+    /// Modulation", "Decimation", …). Before this mapping every one of them
+    /// arrived ungrouped, so the whole unit rendered as one flat list.
+    ///
+    /// Two halves, and the second is the one worth having: parameters that
+    /// declare a clump get its **name**, and the group is never the clump
+    /// *number*. A mapping that stringified the id would satisfy "non-empty"
+    /// while showing the user "3".
+    #[test]
+    fn an_au_clump_becomes_a_group_label() {
+        // Loaded through the real entry point, so this exercises
+        // `get_parameter_list` itself rather than a copy of its mapping. AU
+        // resolves by matching the file stem against the component registry, so
+        // the path need not exist on disk.
+        let instance = match AuInstance::load(Path::new("AUDistortion"), 44_100.0, 512) {
+            Ok(i) => i,
+            Err(e) => {
+                eprintln!("AUDistortion unavailable ({e:?}); skipping");
+                return;
+            }
+        };
+
+        let params = instance.get_parameter_list();
+        assert!(!params.is_empty(), "AUDistortion declares parameters");
+
+        let groups: std::collections::BTreeSet<&str> = params
+            .iter()
+            .map(|p| p.group.as_str())
+            .filter(|g| !g.is_empty())
+            .collect();
+        assert!(
+            groups.len() > 1,
+            "AUDistortion groups its parameters into several named clumps; got {groups:?}"
+        );
+
+        // A label, not a stringified id — the failure a bare `!is_empty()`
+        // would wave through.
+        for group in &groups {
+            assert!(
+                group.parse::<u32>().is_err(),
+                "a group must be the clump's name, not its number: {group:?}"
+            );
+        }
+
+        // And a grouped parameter qualifies, which is what a consumer renders.
+        let grouped = params
+            .iter()
+            .find(|p| !p.group.is_empty())
+            .expect("at least one grouped parameter");
+        assert_eq!(
+            grouped.qualified_name(),
+            format!("{} / {}", grouped.group, grouped.name)
+        );
     }
 
     /// The `AuPreset` -> `PresetId` mapping round-trips against a real unit.

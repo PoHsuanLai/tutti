@@ -488,6 +488,26 @@ pub struct ParameterInfo {
     pub flags: ParamFlags,
     /// Which bits of [`flags`](Self::flags) the format actually reported.
     pub known: ParamFlags,
+    /// The group this parameter belongs to, as a display label. Empty when the
+    /// plugin declared none.
+    ///
+    /// Every hosted format has a grouping mechanism and no two agree on its
+    /// shape: VST3 has a real tree of units, CLAP a `/`-separated module path,
+    /// VST2 a numbered category, AU an optional integer clump. What they share
+    /// is that each resolves to a *name*, so that is what crosses this
+    /// boundary. A caller wanting VST3's tree reaches into `tutti-vst3-host`,
+    /// which still has it.
+    ///
+    /// Deliberately a `String` rather than an `Option<String>`, unlike the
+    /// [`known`](Self::known) mask beside it: "the format never said" and "the
+    /// format said none" are the same flat list to every consumer, so there is
+    /// no second state to keep. The group *id* is deliberately absent — AU
+    /// clump 3, VST2 category 3 and VST3 unit 3 are unrelated numbers, and a
+    /// bare number that does not say which model it belongs to is the mistake
+    /// [`ParamAddress`] exists to prevent.
+    ///
+    /// See `docs/design/010-parameter-grouping.md`.
+    pub group: String,
 }
 
 impl ParameterInfo {
@@ -500,7 +520,14 @@ impl ParameterInfo {
             steps: ParamSteps::Unknown,
             flags: ParamFlags::empty(),
             known: ParamFlags::empty(),
+            group: String::new(),
         }
+    }
+
+    /// Declare the group this parameter belongs to (builder).
+    pub fn with_group(mut self, group: impl Into<String>) -> Self {
+        self.group = group.into();
+        self
     }
 
     /// Declare the plugin's own range (builder).
@@ -578,6 +605,23 @@ impl ParameterInfo {
     /// a capability report rather than a UI.
     pub fn step_count(&self) -> Option<u32> {
         self.steps.count()
+    }
+
+    /// The parameter's name qualified by its group — `"Delay / Mix"` — or the
+    /// bare name when it has no group.
+    ///
+    /// This is the operation every consumer of [`group`](Self::group) performs,
+    /// and it is why the field lands with its own reader rather than after one.
+    /// It also states the limit of what grouping fixes: two parameters that a
+    /// plugin genuinely distinguishes but names identically *within one group*
+    /// still qualify to the same string. Addressing is unaffected — that always
+    /// goes through [`id`](Self::id).
+    pub fn qualified_name(&self) -> String {
+        if self.group.is_empty() {
+            self.name.clone()
+        } else {
+            format!("{} / {}", self.group, self.name)
+        }
     }
 
     /// Infers a *display* scale from the step count and unit string.
@@ -681,6 +725,24 @@ mod tests {
         assert!(!p.flags.contains(ParamFlags::BYPASS));
     }
 
+    /// A grouped parameter qualifies its name; an ungrouped one does not.
+    ///
+    /// The second half is the one that matters: the overwhelming majority of
+    /// parameters declare no group, and a `" / Mix"` with a dangling separator
+    /// would be visible on every one of them.
+    #[test]
+    fn a_group_qualifies_the_name_and_its_absence_does_not() {
+        let grouped = ParameterInfo::new(ParamId::new(1), "Mix").with_group("Delay");
+        assert_eq!(grouped.qualified_name(), "Delay / Mix");
+
+        let ungrouped = ParameterInfo::new(ParamId::new(1), "Mix");
+        assert_eq!(
+            ungrouped.qualified_name(),
+            "Mix",
+            "an ungrouped parameter must not gain a separator"
+        );
+    }
+
     /// `Unknown` and `Continuous` are different answers.
     #[test]
     fn unknown_steps_are_not_continuous_steps() {
@@ -745,6 +807,18 @@ mod tests {
         let back: ParameterInfo = bincode::deserialize(&bytes).expect("deserialize");
         assert_eq!(back.flag(ParamFlags::READ_ONLY), Some(true));
         assert_eq!(back.flag(ParamFlags::AUTOMATABLE), None);
+    }
+
+    /// The group survives the wire — it is decoded in the plugin subprocess and
+    /// consumed in the host, so it is only useful if it crosses.
+    #[cfg(feature = "serde")]
+    #[test]
+    fn the_group_survives_the_bincode_round_trip() {
+        let info = ParameterInfo::new(ParamId::new(1), "Mix").with_group("Ring Modulation");
+        let bytes = bincode::serialize(&info).expect("serialize");
+        let back: ParameterInfo = bincode::deserialize(&bytes).expect("deserialize");
+        assert_eq!(back.group, "Ring Modulation");
+        assert_eq!(back.qualified_name(), "Ring Modulation / Mix");
     }
 
     #[test]

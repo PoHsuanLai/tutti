@@ -37,17 +37,6 @@ pub struct OptionalCapabilities {
     pub presets: Option<Arc<dyn HostPresets>>,
 }
 
-/// Main-thread control handle for a loaded plugin.
-///
-/// Backend-agnostic: it holds each control capability as a separate `Arc<dyn …>`
-/// slot ([`HostParams`], [`HostState`], and an *optional* [`HostEditor`]), so
-/// out-of-process VST3/CLAP/AU and in-process VST2 hosting share this surface
-/// while advertising only the capabilities they honor. One backend object
-/// implements several capability traits; construction clones the *same* backend
-/// `Arc` into each always-present slot (cheap — Arc-based — and shared state stays
-/// intact), and passes the optional editor slot explicitly. There is no stored
-/// bundle/union trait object.
-///
 /// Whether a plugin is still answering — [`PluginHandle::status`].
 ///
 /// Two variants because the engine can only speak to what it can *detect*. A
@@ -84,7 +73,60 @@ impl PluginStatus {
     }
 }
 
+/// Main-thread control handle for a loaded plugin.
+///
+/// Backend-agnostic: it holds each control capability as a separate `Arc<dyn …>`
+/// slot ([`HostParams`], [`HostState`], and an *optional* [`HostEditor`]), so
+/// out-of-process VST3/CLAP/AU and in-process VST2 hosting share this surface
+/// while advertising only the capabilities they honor. One backend object
+/// implements several capability traits; construction clones the *same* backend
+/// `Arc` into each always-present slot (cheap — Arc-based — and shared state stays
+/// intact), and passes the optional editor slot explicitly. There is no stored
+/// bundle/union trait object.
+///
 /// Clone is cheap (Arc-based). Action methods return `&Self` for chaining.
+///
+/// # What each call costs
+///
+/// Nothing in a method's signature says whether it touches the plugin, so the
+/// surface divides into three tiers that a caller has to know about. Getting
+/// this wrong is not a slow frame — it is a **ten-second** one.
+///
+/// **Free.** [`descriptor`](Self::descriptor), [`loaded`](Self::loaded),
+/// [`name`](Self::name), [`has_editor`](Self::has_editor),
+/// [`preset_support`](Self::preset_support),
+/// [`layout_support`](Self::layout_support), the bus-topology accessors, and
+/// every capability accessor read a struct filled in at load time.
+/// [`status`](Self::status) and [`is_crashed`](Self::is_crashed) read an atomic.
+/// Call these per frame.
+///
+/// **Fire-and-forget.** [`HostParams::set_parameter_value`],
+/// [`set_render_mode`](Self::set_render_mode) and
+/// [`set_automation_mode`](Self::set_automation_mode) push onto a lock-free
+/// queue and return without waiting. A knob turn must never stall a UI, so
+/// these deliberately have no reply to wait for — and therefore no way to
+/// report that the plugin refused.
+///
+/// **Blocking round-trips.** [`HostState::save_state`],
+/// [`HostState::load_state`], [`HostParams::parameter_descriptors`],
+/// [`HostParams::parameter_value`], [`HostPresets::presets`],
+/// [`HostPresets::load_preset`] and [`HostPresets::current_preset`] each send a
+/// command to the subprocess and **wait for the reply** — five seconds for the
+/// parameter and preset calls, ten for state. A wedged plugin spends the whole
+/// timeout before returning `None`.
+///
+/// The last group is why this type is `Send + Sync + Clone`: clone the handle
+/// into whatever the host already uses for off-thread work and call it there.
+/// Under Bevy that is one line —
+/// `AsyncComputeTaskPool::get().spawn(async move { handle.state().save_state() })`
+/// — held in a component and polled next frame, the shape `bevy_tutti`'s plugin
+/// load and state snapshot both use.
+///
+/// These are deliberately **not** `async` and do not return futures. That would
+/// put an executor choice inside a library that needs none, and would not save
+/// a host any work: the reply arrives on a `crossbeam` channel, so a future
+/// would have to be driven by *something* — which is the same something that
+/// can run the blocking call directly.
 #[derive(Clone)]
 pub struct PluginHandle {
     params: Arc<dyn HostParams>,

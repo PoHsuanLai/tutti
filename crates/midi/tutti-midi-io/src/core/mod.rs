@@ -13,15 +13,25 @@
 //!   audio graph.
 //! - [`sysex`] — MIDI 1.0 SysEx reassembly and its promotion to UMP SysEx7.
 //!   OS-free, so it is shared by every driver edge and testable without one.
+//! - [`capability`] — what an endpoint is ([`EndpointInfo`]) and what it can
+//!   carry ([`UmpCapability`]). A value, not a `cfg`, because two devices behind
+//!   one backend can differ.
+//! - [`endpoints`] — the [`MidiEndpoints`] backend seam: enumerate and open this
+//!   OS's endpoints. Its `open_output` yields a `Box<dyn MidiOut>`, so callers
+//!   never learn which OS produced it.
 
 pub mod error;
 #[cfg(feature = "midi-hardware")]
 pub mod midi_io;
 
+pub mod capability;
+pub mod endpoints;
 pub(crate) mod hardware;
 pub mod port;
 pub mod sysex;
 
+pub use capability::{EndpointId, EndpointInfo, UmpCapability};
+pub use endpoints::{InputConnection, MidiEndpoints};
 pub use error::{Error, Result};
 #[cfg(feature = "midi-hardware")]
 pub use hardware::{MidiDevice, MidiInputRecord};

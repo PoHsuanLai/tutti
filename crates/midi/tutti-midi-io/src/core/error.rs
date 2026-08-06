@@ -23,6 +23,19 @@ pub enum Error {
         status: i32,
     },
 
+    #[error("ALSA error: {operation} ({code})")]
+    Alsa { operation: &'static str, code: i32 },
+
+    /// No MIDI backend exists for this build.
+    ///
+    /// Distinct from "no devices found", which is an empty list and not an
+    /// error. This says the *platform* has no native-UMP path compiled in —
+    /// Windows, or a Linux built against an alsa-lib older than 1.2.10. A caller
+    /// that shows the user "no MIDI devices" for this case is hiding a build
+    /// fact behind a runtime one.
+    #[error("no native-UMP MIDI backend on this platform: {0}")]
+    Unsupported(&'static str),
+
     #[error("Invalid config: {0}")]
     InvalidConfig(String),
 }

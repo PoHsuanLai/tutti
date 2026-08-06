@@ -27,7 +27,7 @@
 
 use std::ffi::c_void;
 
-use crate::error::EditorError;
+use crate::error::{EditorError, StateError};
 use crate::protocol::{
     AutomationMode, Normalized, ParamAddress, ParameterInfo, Preset, PresetId, RenderMode,
 };
@@ -130,7 +130,24 @@ pub trait HostParams: Send + Sync {
 /// business (the same shape the loader-side `PluginState::get_state` returns).
 pub trait HostState: Send + Sync {
     fn save_state(&self) -> Option<Vec<u8>>;
-    fn load_state(&self, data: &[u8]);
+
+    /// Restore a blob previously produced by [`save_state`](Self::save_state).
+    ///
+    /// Returns [`Result`] rather than `()` because a plugin declining a chunk is
+    /// **routine**, not exceptional: it is what happens when a preset saved by
+    /// an older build is loaded into a newer one, when a file is truncated, or
+    /// when a chunk from a different plugin is fed in by mistake. Every layer
+    /// below this already knew — `PluginState::set_state` returns a `Result` and
+    /// the subprocess formats `"Failed to load state: {e}"` — and the outcome
+    /// was discarded here, at the last step.
+    ///
+    /// The failure that motivated the change is silent and destructive: open a
+    /// project, the plugin rejects its state, and the DAW shows a loaded plugin
+    /// sitting at defaults while telling the user nothing. A caller must decide
+    /// what to do with a failure; it must not be possible to not notice one.
+    ///
+    /// [`Result`]: std::result::Result
+    fn load_state(&self, data: &[u8]) -> Result<(), StateError>;
 }
 
 /// Editor / GUI hosting — **optional**. A backend implements this only if it can

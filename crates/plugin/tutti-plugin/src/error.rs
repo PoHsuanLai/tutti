@@ -10,6 +10,10 @@ pub use tutti_plugin_types::LoadStage;
 /// Re-exported so callers keep referring to `crate::error::EditorError`.
 pub use tutti_plugin_types::EditorError;
 
+/// Re-exported alongside [`EditorError`], for the same reason: a caller naming
+/// `crate::error::StateError` should not have to know which crate defines it.
+pub use tutti_plugin_types::StateError;
+
 /// The lean, format-agnostic error the shared `PluginFormatHost` trait speaks.
 /// Re-exported so callers keep referring to `crate::error::PluginError`.
 pub use tutti_plugin_types::PluginError;

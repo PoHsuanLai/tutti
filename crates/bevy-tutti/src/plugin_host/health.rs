@@ -330,7 +330,9 @@ mod tests {
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             self.state.clone()
         }
-        fn load_state(&self, _data: &[u8]) {}
+        fn load_state(&self, _data: &[u8]) -> Result<(), tutti_plugin::error::StateError> {
+            Ok(())
+        }
     }
 
     /// A handle over a backend that reports `cause`, dead if `Some`.

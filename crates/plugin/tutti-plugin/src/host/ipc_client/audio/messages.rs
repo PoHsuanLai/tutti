@@ -2,6 +2,7 @@
 //! Distinct from wire-format `HostMessage`/`BridgeMessage` in `protocol/`.
 
 use super::ask::Reply;
+use crate::error::StateError;
 use crate::protocol::{
     ChordChanges, MidiEventVec, Normalized, NoteExpressionChanges, NoteExpressionIntChanges,
     NoteExpressionTextChanges, ParamAddress, ParameterChanges, ParameterInfo, PluginTail, Preset,
@@ -79,7 +80,7 @@ pub(super) enum Command {
     },
     LoadState {
         data: Vec<u8>,
-        reply: Reply<bool>,
+        reply: Reply<std::result::Result<(), StateError>>,
     },
     GetParameterList {
         reply: Reply<Option<Vec<ParameterInfo>>>,

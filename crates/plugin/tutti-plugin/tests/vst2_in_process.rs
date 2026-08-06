@@ -15,6 +15,7 @@
 use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard};
 
+use tutti_plugin::error::StateError;
 use tutti_plugin::handles::PluginHandle;
 use tutti_plugin::server::EditorPresence;
 use tutti_plugin_types::{Normalized, ParamAddress};
@@ -161,6 +162,56 @@ fn handle_state_roundtrip() {
         after, original,
         "a load that did nothing would leave the original bytes"
     );
+}
+
+/// A plugin that refuses a chunk says so, and says why.
+///
+/// This is the case the old `-> ()` signature made unreportable, and it is the
+/// common one in the field: a preset saved by an older build of a plugin, a
+/// truncated file, a chunk belonging to a different plugin. Before this there
+/// was no expression a caller could write to tell a rejected load from an
+/// accepted one — the DAW showed a restored plugin sitting at its defaults.
+///
+/// The probe refuses an empty blob (`load_bank_data` in
+/// `tutti-vst2-test-plugin` returns `false` for one, deliberately, so a host
+/// can be seen ignoring a refusal). That makes the refusal reachable without a
+/// second plugin or a version skew.
+#[test]
+fn a_refused_chunk_reports_the_refusal() {
+    let _lock = lock_probe();
+    let handle = load_handle(&[]);
+
+    let err = handle
+        .state()
+        .load_state(&[])
+        .expect_err("the probe refuses an empty chunk");
+
+    // `Rejected` specifically: the plugin was asked and said no. `NoStateRoute`
+    // would mean this backend cannot carry state at all, and `PluginCrashed`
+    // that it is gone — three different things a caller acts on differently,
+    // which is the whole reason this is not a bool.
+    assert!(
+        matches!(err, StateError::Rejected(_)),
+        "an in-process refusal must be Rejected, got {err:?}"
+    );
+    assert!(
+        !err.to_string().is_empty(),
+        "the refusal must carry a message a user can be shown"
+    );
+}
+
+/// A blob the plugin accepts reports success, so the test above is not merely
+/// observing that everything fails.
+#[test]
+fn an_accepted_chunk_reports_success() {
+    let _lock = lock_probe();
+    let handle = load_handle(&[]);
+
+    let blob = handle.state().save_state().expect("probe declares state");
+    handle
+        .state()
+        .load_state(&blob)
+        .expect("a chunk the plugin just produced must be accepted");
 }
 
 #[test]

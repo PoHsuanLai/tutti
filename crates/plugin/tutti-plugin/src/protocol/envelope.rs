@@ -267,4 +267,22 @@ pub enum BridgeMessage {
     ParameterValueFromText {
         value: Option<Normalized>,
     },
+    /// Acknowledges a [`HostMessage::LoadState`], carrying the plugin's refusal
+    /// if it had one.
+    ///
+    /// Before v18 there was no reply at all: the host's dispatcher answered its
+    /// own caller with a literal `reply.send(true)` immediately after writing
+    /// the request to the socket, so the `bool` it produced reported that the
+    /// message had been *sent*, never that the state had been *loaded*. The
+    /// subprocess did build an error — it emitted a fire-and-forget
+    /// `BridgeMessage::Error` — but on a channel nobody was waiting on, so a
+    /// plugin rejecting a chunk reached the user as a silently un-restored
+    /// preset.
+    ///
+    /// `error: None` is success. Carrying the message rather than a bool because
+    /// the subprocess has already formatted it (`"Failed to load state: {e}"`)
+    /// and a caller wants to show the user *why* their preset did not load.
+    StateLoaded {
+        error: Option<String>,
+    },
 }

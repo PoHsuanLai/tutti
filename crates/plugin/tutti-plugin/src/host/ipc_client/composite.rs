@@ -1,7 +1,7 @@
 //! Plugin bridge — composites out-of-process audio with in-process GUI.
 
 use super::audio::{AudioBridge, BridgeListener, BridgeThread, HarmonyInputs};
-use crate::error::{EditorError, Result};
+use crate::error::{EditorError, Result, StateError};
 use crate::format::gui::PluginEditor;
 use crate::protocol::{
     MidiEventVec, Normalized, NoteExpressionChanges, ParamAddress, ParameterChanges, ParameterInfo,
@@ -291,15 +291,22 @@ impl PluginBridge {
         self.audio.save_state()
     }
 
-    pub fn load_state(&self, data: &[u8]) -> bool {
-        let audio_ok = self.audio.load_state(data);
+    /// The **audio** instance's answer is the one returned.
+    ///
+    /// The GUI instance is a second dlopen of the same plugin kept only so its
+    /// editor displays the right values; a failure to mirror there leaves the
+    /// editor stale but the audio correct, which is not what a caller asking
+    /// "did my preset load" is asking about. Mirroring stays best-effort, and
+    /// the audio result is the return value.
+    pub fn load_state(&self, data: &[u8]) -> std::result::Result<(), StateError> {
+        let audio = self.audio.load_state(data);
         // Also load into GUI instance so its display stays in sync.
         if let Ok(mut guard) = self.gui.lock() {
             if let Some(gui) = guard.as_mut() {
                 let _ = gui.set_state(data);
             }
         }
-        audio_ok
+        audio
     }
 
     pub fn parameters(&self) -> Option<Vec<ParameterInfo>> {
@@ -445,8 +452,8 @@ impl crate::host::handles::capabilities::HostState for SubprocessBackend {
         self.bridge.save_state()
     }
 
-    fn load_state(&self, data: &[u8]) {
-        self.bridge.load_state(data);
+    fn load_state(&self, data: &[u8]) -> std::result::Result<(), StateError> {
+        self.bridge.load_state(data)
     }
 }
 

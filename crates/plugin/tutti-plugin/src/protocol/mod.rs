@@ -159,7 +159,24 @@ pub mod shm;
 ///   host sends these whenever a caller renders a parameter field, which is
 ///   ordinary use rather than an opt-in — so a v16 server would meet an unknown
 ///   tag in a normal session.
-pub const PROTOCOL_VERSION: u32 = 17;
+/// - v18: `load_state` gets an answer. `BridgeMessage` gains `StateLoaded`.
+///
+///   There was no reply frame at all: the host dispatcher answered its own
+///   caller with a literal `reply.send(true)` immediately after writing the
+///   request, so the `bool` it produced said the message had been *sent*, not
+///   that the state had been *loaded*. The subprocess did format a reason and
+///   put it on the wire — as a fire-and-forget `Error`, on a channel nobody
+///   awaited — so a plugin rejecting a chunk reached the user as a silently
+///   un-restored preset.
+///
+///   Appended, for the reason every variant since v11 has been: bincode encodes
+///   the discriminant over declaration order, so a v17 peer receiving one reads
+///   a tag it has no arm for and fails the decode mid-stream.
+///
+///   Mandatory in both directions. A v18 host now *waits* for this frame, so a
+///   v17 server — which never sends it — would hang the caller until the state
+///   timeout rather than merely omitting a fact.
+pub const PROTOCOL_VERSION: u32 = 18;
 
 /// Validate a subprocess-reported protocol version against [`PROTOCOL_VERSION`].
 /// Called at each handshake consumer so a version skew fails loudly instead of

@@ -19,7 +19,7 @@ mod messages;
 mod payload_pool;
 mod thread;
 
-use crate::error::Result;
+use crate::error::{Result, StateError};
 use crate::protocol::{
     ChordChanges, MidiEventVec, Normalized, NoteExpressionChanges, NoteExpressionIntChanges,
     NoteExpressionTextChanges, ParamAddress, ParameterChanges, ParameterInfo, Preset, PresetId,
@@ -252,18 +252,26 @@ impl AudioBridge {
         ask_resp.recv_timeout(STATE_TIMEOUT).ok().flatten()
     }
 
-    pub fn load_state(&self, data: &[u8]) -> bool {
+    pub fn load_state(&self, data: &[u8]) -> std::result::Result<(), StateError> {
         if self.lifecycle.is_crashed() {
-            return false;
+            return Err(StateError::PluginCrashed);
         }
-        let (ask_resp, reply) = ask::<bool>();
+        let (ask_resp, reply) = ask::<std::result::Result<(), StateError>>();
         if !self.channels.push_command(Command::LoadState {
             data: data.to_vec(),
             reply,
         }) {
-            return false;
+            // The queue refused the command, which on this path means the
+            // bridge thread is gone — the plugin is unreachable either way.
+            return Err(StateError::PluginCrashed);
         }
-        ask_resp.recv_timeout(STATE_TIMEOUT).unwrap_or(false)
+        // A timeout is a refusal to answer, not an acceptance. Before this the
+        // fallback was `false`, which a `()`-returning caller could not see.
+        ask_resp
+            .recv_timeout(STATE_TIMEOUT)
+            .unwrap_or(Err(StateError::Rejected(
+                "the plugin did not answer within the state timeout".to_string(),
+            )))
     }
 
     pub fn parameters(&self) -> Option<Vec<ParameterInfo>> {

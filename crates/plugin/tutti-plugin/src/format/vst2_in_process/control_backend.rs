@@ -14,7 +14,7 @@ use std::sync::Arc;
 use parking_lot::Mutex;
 use tutti_vst2_host::Vst2Instance;
 
-use crate::error::EditorError;
+use crate::error::{EditorError, StateError};
 use crate::host::handles::capabilities::{HostEditor, HostParams, HostRenderMode, HostState};
 use crate::host::node::ParameterChangeSink;
 use crate::protocol::{Normalized, ParamAddress, ParameterInfo, RenderMode};
@@ -112,8 +112,15 @@ impl HostState for InProcessVst2Backend {
         self.inner.lock().save_state().ok()
     }
 
-    fn load_state(&self, data: &[u8]) {
-        let _ = self.inner.lock().load_state(data);
+    /// The plugin's own refusal, forwarded rather than dropped.
+    ///
+    /// This is the whole change on the in-process path: the `Result` was
+    /// already in hand and discarded on the previous line.
+    fn load_state(&self, data: &[u8]) -> Result<(), StateError> {
+        self.inner
+            .lock()
+            .load_state(data)
+            .map_err(|e| StateError::Rejected(e.to_string()))
     }
 }
 

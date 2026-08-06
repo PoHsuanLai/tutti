@@ -696,7 +696,14 @@ mod tests {
             fn save_state(&self) -> Option<Vec<u8>> {
                 None
             }
-            fn load_state(&self, _data: &[u8]) {}
+            /// `NoStateRoute`, not a silent success: this backend carries no
+            /// plugin at all, so a caller must not read "state loaded" from it.
+            fn load_state(
+                &self,
+                _data: &[u8],
+            ) -> std::result::Result<(), crate::error::StateError> {
+                Err(crate::error::StateError::NoStateRoute)
+            }
         }
 
         let (sender, _rx) =

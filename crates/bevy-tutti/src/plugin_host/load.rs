@@ -30,7 +30,7 @@
 //! [`PlaySoundFont`]: crate::synth::PlaySoundFont
 
 use bevy_ecs::prelude::*;
-use bevy_log::{error, info};
+use bevy_log::{error, info, warn};
 use bevy_tasks::{block_on, futures_lite::future, AsyncComputeTaskPool, Task};
 
 use tutti_core::SampleRate;
@@ -248,7 +248,19 @@ pub fn plugin_load_promote(
                 // consumes the `Plugin`, and the handle has to outlive it.
                 let (unit, handle) = plugin.into_parts();
                 if let Some(blob) = &request.state {
-                    handle.state().load_state(blob);
+                    // A refusal does **not** abort the load: a plugin sitting at
+                    // its defaults is better than no plugin, and the user can
+                    // still re-dial it. But it must not be silent — this is a
+                    // project load, and before `load_state` returned a result
+                    // the DAW showed a restored plugin that had restored
+                    // nothing.
+                    if let Err(e) = handle.state().load_state(blob) {
+                        warn!(
+                            "{}: saved state was not restored ({e}); the plugin is \
+                             loaded at its defaults",
+                            handle.name()
+                        );
+                    }
                 }
                 let name = handle.name().to_string();
                 // `push`, not `add`: the unit is already boxed, and `add` boxes

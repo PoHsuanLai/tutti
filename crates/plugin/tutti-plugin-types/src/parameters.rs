@@ -623,40 +623,11 @@ impl ParameterInfo {
             format!("{} / {}", self.group, self.name)
         }
     }
-
-    /// Infers a *display* scale from the step count and unit string.
-    ///
-    /// Distinct from [`to_plain`](Self::to_plain), which maps declared
-    /// endpoints. A logarithmic answer here is a rendering hint, not a taper the
-    /// plugin declared, so it must not be reused for value conversion.
-    pub fn to_range(&self) -> audio_automation::ParameterRange {
-        use audio_automation::{ParameterRange, ParameterScale};
-
-        let (min, max) = self.range.bounds().unwrap_or((0.0, 1.0));
-        let scale = match self.steps {
-            ParamSteps::Toggle => ParameterScale::Toggle,
-            ParamSteps::Enumerated(_) => ParameterScale::Integer,
-            _ if is_log_unit(&self.unit) && min > 0.0 => ParameterScale::Logarithmic,
-            _ => ParameterScale::Linear,
-        };
-
-        ParameterRange::new(
-            min as f32,
-            max as f32,
-            self.range.default_value() as f32,
-            scale,
-        )
-    }
-}
-
-fn is_log_unit(unit: &str) -> bool {
-    unit.contains("dB") || unit.contains("Hz") || unit.contains("hz")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use audio_automation::ParameterScale;
 
     /// A `Plain` parameter maps normalized input onto its declared range.
     #[test]
@@ -821,49 +792,6 @@ mod tests {
         assert_eq!(back.qualified_name(), "Ring Modulation / Mix");
     }
 
-    #[test]
-    fn test_to_range_toggle() {
-        let info = ParameterInfo::new(ParamId::new(1), "Bypass").with_steps(ParamSteps::Toggle);
-        assert_eq!(info.to_range().scale, ParameterScale::Toggle);
-    }
-
-    #[test]
-    fn test_to_range_integer() {
-        let info =
-            ParameterInfo::new(ParamId::new(2), "Algorithm").with_steps(ParamSteps::Enumerated(5));
-        assert_eq!(info.to_range().scale, ParameterScale::Integer);
-    }
-
-    #[test]
-    fn test_to_range_logarithmic_db() {
-        let mut info =
-            ParameterInfo::new(ParamId::new(3), "Gain").with_plain_range(0.001, 10.0, 1.0);
-        info.unit = "dB".to_string();
-        assert_eq!(info.to_range().scale, ParameterScale::Logarithmic);
-    }
-
-    #[test]
-    fn test_to_range_logarithmic_hz() {
-        let mut info =
-            ParameterInfo::new(ParamId::new(4), "Cutoff").with_plain_range(20.0, 20_000.0, 440.0);
-        info.unit = "Hz".to_string();
-        assert_eq!(info.to_range().scale, ParameterScale::Logarithmic);
-    }
-
-    #[test]
-    fn test_to_range_log_fallback_non_positive_min() {
-        let mut info =
-            ParameterInfo::new(ParamId::new(5), "Freq").with_plain_range(0.0, 20_000.0, 440.0);
-        info.unit = "Hz".to_string();
-        assert_eq!(info.to_range().scale, ParameterScale::Linear);
-    }
-
-    #[test]
-    fn test_to_range_linear_default() {
-        let info = ParameterInfo::new(ParamId::new(6), "Mix");
-        assert_eq!(info.to_range().scale, ParameterScale::Linear);
-    }
-
     /// Apple's AUDelay Lowpass Cutoff: `[10, 22050]` Hz, native units. Writing
     /// a normalized `1.0` straight through set 1 Hz; `to_plain` is the call that
     /// makes it 22050.
@@ -972,16 +900,6 @@ mod tests {
             assert!((-96.0..=6.0).contains(&plain));
             assert!((info.to_normalized(plain) - n).abs() < 1e-12);
         }
-    }
-
-    #[test]
-    fn test_to_range_values_preserved() {
-        let info =
-            ParameterInfo::new(ParamId::new(7), "Volume").with_plain_range(-96.0, 6.0, -12.0);
-        let range = info.to_range();
-        assert_eq!(range.min, -96.0);
-        assert_eq!(range.max, 6.0);
-        assert_eq!(range.default, -12.0);
     }
 
     /// A consumer asks `ParameterInfo` and never destructures `ParamRange`.

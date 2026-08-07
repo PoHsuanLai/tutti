@@ -236,7 +236,7 @@ impl Plugin {
     /// This is the clip-playback path; [`midi_sender`](Self::midi_sender) is the
     /// live one. They coexist — the port drains both.
     #[must_use = "a false return means the plugin declined this input and nothing was installed"]
-    pub fn set_midi_source(&mut self, source: Arc<dyn tutti_midi_types::MidiUnitSource>) -> bool {
+    pub fn set_midi_source(&mut self, source: Arc<dyn tutti_midi_types::MidiUnitIn>) -> bool {
         if !self.accepts(Features::MIDI_IN) {
             return false;
         }

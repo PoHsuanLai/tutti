@@ -1,16 +1,28 @@
-//! The audio-thread MIDI plumbing traits — two roles on the hot path:
+//! The audio-thread MIDI plumbing traits — four, in two pairs, one pair per
+//! direction. Each pair splits on **arity**: does this touch one stream, or one
+//! of many selected by a [`MidiUnitId`]?
 //!
-//! - [`MidiOut`] — the **push** side: routing code hands events to a routing
-//!   address (a per-unit inbox, a fan-out bus, a plugin's out-port).
-//! - [`MidiIn`] — the **pull** side: whoever needs events drains them during
-//!   `process()`. Implemented by per-unit inboxes, clip players, export
-//!   snapshots, and the hardware input edge alike — a hardware source is just a
-//!   `MidiIn` that ignores the unit id and returns everything pending, its
-//!   ring-buffer + timestamp→`frame_offset` machinery private to its impl.
+//! |            | one stream  | one of many, by id |
+//! |------------|-------------|--------------------|
+//! | **push**   | [`MidiOut`] | [`MidiRouter`]     |
+//! | **pull**   | [`MidiIn`] | [`MidiUnitIn`] |
 //!
-//! Both are `MidiEvent` + [`MidiUnitId`] plumbing; they live together because
-//! they *are* the routing hot path. A unit's routing address (its
-//! [`MidiUnitId`]) is exposed by each unit's own inherent `midi_unit_id()`.
+//! The id is what separates the columns, and it is not decoration: a
+//! single-stream endpoint *is* its address, so passing one would be meaningless,
+//! while a fan-out cannot answer without one.
+//!
+//! The read side used to be a single `MidiIn` spanning both columns, with a
+//! `unit_id` parameter for the fan-out half. Three of its four implementors
+//! treated that parameter as dead weight — two checked it against an id they
+//! already owned, one ignored it outright — and the hardware edge had to be
+//! polled with a `MidiUnitId::new(0)` sentinel, which is a *real* id and would
+//! have handed the whole hardware stream to any per-unit source installed at
+//! that seam. Splitting on arity removes the parameter where it was noise and
+//! keeps it where it selects.
+//!
+//! All four live together because they *are* the routing hot path: lock-free,
+//! alloc-free, called once per block. A unit's routing address is exposed by its
+//! own inherent `midi_unit_id()`.
 
 use crate::ump::MidiEvent;
 use crate::unit_id::MidiUnitId;
@@ -22,7 +34,8 @@ use crate::unit_id::MidiUnitId;
 /// Push MIDI events at a single **terminal sink** — the write-side complement to
 /// [`MidiIn`]. A sink is already addressed: it *is* the destination (a per-unit
 /// mailbox, a hardware wire), so `queue` carries no id. Consuming units drain
-/// the delivered events via [`MidiIn::poll_into`].
+/// the delivered events via [`MidiIn::poll_block`] or
+/// [`MidiUnitIn::poll_unit`].
 ///
 /// Implementations must be **lock-free** and **alloc-free** — `queue` runs on
 /// the audio thread, once per routed event.
@@ -75,30 +88,6 @@ pub trait MidiRouter: Send + Sync {
     fn queue(&self, unit_id: MidiUnitId, events: &[MidiEvent]) -> usize;
 }
 
-/// Pull MIDI events in the audio thread — the read-side complement to
-/// [`MidiOut`].
-///
-/// Audio units store `Option<Box<dyn MidiIn>>` and call `poll_into()`
-/// during `tick()`/`process()`. The concrete implementation determines whether
-/// events come from a live registry (destructively draining SPSC channels), an
-/// export snapshot, or a beat-scheduled clip player.
-///
-/// `block_size` describes the audio block currently being rendered. Schedulers
-/// use it to convert beat-domain events into per-block `MidiEvent::frame_offset`
-/// values that the consuming unit's `process()` loop can split on for
-/// sample-accurate timing (the beat position comes from the source's own
-/// `Timeline`, not from an absolute sample count). Live sources that stamp
-/// `frame_offset` themselves (e.g. the lock-free MIDI registry) ignore it and
-/// pass the queue contents through unchanged.
-pub trait MidiIn: Send + Sync {
-    /// Poll available MIDI events for the given unit into the buffer.
-    ///
-    /// Returns the number of events written to `buffer`. Each event's
-    /// `frame_offset` field must lie in `[0, block_size)`. Zero allocations, no
-    /// blocking — safe for the audio thread.
-    fn poll_into(&self, unit_id: MidiUnitId, block_size: usize, buffer: &mut [MidiEvent]) -> usize;
-}
-
 /// Drain everything that has arrived at one **pre-routing** input edge for this
 /// block.
 ///
@@ -108,7 +97,7 @@ pub trait MidiIn: Send + Sync {
 /// drainer takes events the first will never see.
 ///
 /// This is the read-side complement to [`MidiOut`]: one undifferentiated stream,
-/// no id. To read *one of many* streams selected by id, use [`MidiUnitSource`].
+/// no id. To read *one of many* streams selected by id, use [`MidiUnitIn`].
 ///
 /// `block_size` is the frame count of the upcoming audio block. An edge that
 /// converts arrival timestamps into offsets uses it, and every returned event's
@@ -116,7 +105,7 @@ pub trait MidiIn: Send + Sync {
 ///
 /// Implementations must be **lock-free** and **alloc-free** — this runs on the
 /// audio thread, once per block.
-pub trait MidiSource: Send + Sync {
+pub trait MidiIn: Send + Sync {
     /// Write this block's pending events into `buffer`; return how many.
     ///
     /// **A full `buffer` drops the overflow.** An implementation draining a
@@ -133,7 +122,7 @@ pub trait MidiSource: Send + Sync {
 /// The id is a selector, not a filter: a store polled for unit A must leave unit
 /// B's stream untouched, so one store feeds every unit reading from it. This is
 /// the read-side twin of [`MidiRouter`] — same fan-out, opposite direction — and
-/// the post-routing counterpart to [`MidiSource`], whose caller has no id to
+/// the post-routing counterpart to [`MidiIn`], whose caller has no id to
 /// give because routing has not run yet.
 ///
 /// `block_size` is the frame count of the upcoming audio block; a beat-domain
@@ -142,12 +131,7 @@ pub trait MidiSource: Send + Sync {
 ///
 /// Implementations must be **lock-free** and **alloc-free** — this runs on the
 /// audio thread, once per block per unit.
-pub trait MidiUnitSource: Send + Sync {
+pub trait MidiUnitIn: Send + Sync {
     /// Write `unit_id`'s events for this block into `buffer`; return how many.
-    fn poll_unit(
-        &self,
-        unit_id: MidiUnitId,
-        block_size: usize,
-        buffer: &mut [MidiEvent],
-    ) -> usize;
+    fn poll_unit(&self, unit_id: MidiUnitId, block_size: usize, buffer: &mut [MidiEvent]) -> usize;
 }

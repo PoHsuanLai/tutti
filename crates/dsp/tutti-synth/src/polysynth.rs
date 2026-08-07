@@ -11,7 +11,7 @@ use tutti_core::{
 use tutti_midi_runtime::{MidiInPort, MidiSender};
 use tutti_midi_types::tutti_types::CCNumber;
 use tutti_midi_types::ump::MidiEvent;
-use tutti_midi_types::{cc, MidiUnitId, MidiUnitSource, NoteId};
+use tutti_midi_types::{cc, MidiUnitId, MidiUnitIn, NoteId};
 
 use std::sync::Arc;
 
@@ -155,7 +155,7 @@ impl PolySynth {
     /// [`MidiInPort`]), so the same instance reaches the box the audio thread runs.
     ///
     /// [`MidiSnapshotReader`]: tutti_midi_runtime::MidiSnapshotReader
-    pub fn set_midi_source(&mut self, source: Arc<dyn MidiUnitSource>) {
+    pub fn set_midi_source(&mut self, source: Arc<dyn MidiUnitIn>) {
         self.midi.install(source);
     }
 
@@ -1235,7 +1235,7 @@ mod tests {
     struct NoteOnceSource {
         note: u8,
     }
-    impl MidiUnitSource for NoteOnceSource {
+    impl MidiUnitIn for NoteOnceSource {
         fn poll_unit(&self, _unit: MidiUnitId, _block: usize, buffer: &mut [MidiEvent]) -> usize {
             if buffer.is_empty() {
                 return 0;

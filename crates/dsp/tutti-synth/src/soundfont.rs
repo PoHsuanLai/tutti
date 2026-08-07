@@ -84,7 +84,7 @@ impl SoundFontUnit {
     /// [`MidiInPort`]), so the same source reaches the box the audio thread runs.
     ///
     /// [`MidiSnapshotReader`]: tutti_midi_runtime::MidiSnapshotReader
-    pub fn set_midi_source(&mut self, source: Arc<dyn MidiUnitSource>) {
+    pub fn set_midi_source(&mut self, source: Arc<dyn MidiUnitIn>) {
         self.midi.install(source);
     }
 

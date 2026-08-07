@@ -6,10 +6,11 @@
 //! [`MidiReceiver`] pair), and an optional pull override (a clip player, an
 //! export snapshot). This bundles them into one owned endpoint.
 //!
-//! The key simplification: the two roles are already the two
-//! [`tutti_midi_types`] traits — [`MidiSender`] *is* a [`MidiOut`], [`MidiReceiver`]
-//! *is* a [`MidiIn`]. So there is no "inbox vs. override" duality to switch on;
-//! both are polled through one trait.
+//! The key simplification: the push half is already a [`tutti_midi_types`]
+//! trait — [`MidiSender`] *is* a [`MidiOut`](tutti_midi_types::MidiOut). The
+//! pull half is this port's own [`poll`](MidiInPort::poll), which reads the
+//! mailbox through [`MidiReceiver`]'s inherent method and layers any installed
+//! [`MidiUnitIn`] over it, supplying its own id.
 //!
 //! ## Layering, not replacement
 //!
@@ -18,7 +19,7 @@
 //! preview, musical typing and a scheduled sequence coexist, which is what a
 //! player expects when they touch the keys during playback.
 //!
-//! It used to replace instead — one `Arc<dyn MidiIn>` cell defaulting to the
+//! It used to replace instead — one `Arc<dyn MidiUnitIn>` cell defaulting to the
 //! receiver, swapped by `install`. That silenced preview for as long as a clip
 //! was installed, and worse, the mailbox kept accepting pushes the whole time:
 //! the events did not vanish, they *queued*, and popped out stale on the next
@@ -47,7 +48,7 @@ use std::sync::Arc;
 
 use arc_swap::ArcSwapOption;
 use tutti_midi_types::ump::MidiEvent;
-use tutti_midi_types::{MidiUnitId, MidiUnitSource};
+use tutti_midi_types::{MidiUnitId, MidiUnitIn};
 
 use crate::registry::{MidiMailbox, MidiReceiver, MidiSender};
 
@@ -68,12 +69,12 @@ pub struct MidiInPort {
     /// it back. Optional rather than defaulting to the receiver because the
     /// receiver is now polled unconditionally — a default of "the receiver"
     /// would drain the mailbox twice.
-    source: Arc<ArcSwapOption<Arc<dyn MidiUnitSource>>>,
+    source: Arc<ArcSwapOption<Arc<dyn MidiUnitIn>>>,
 }
 
 impl std::fmt::Debug for MidiInPort {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // The installed source is a `dyn MidiIn` (no Debug bound), so report
+        // The installed source is a `dyn MidiUnitIn` (no Debug bound), so report
         // the routing address; the source's guts aren't Debug-inspectable.
         f.debug_struct("MidiInPort")
             .field("unit_id", &self.unit_id)
@@ -119,13 +120,13 @@ impl MidiInPort {
     /// Both are polled: a clip plays *and* the keyboard still sounds. Installing
     /// a second source replaces the first — the port layers the mailbox with one
     /// source, not a stack of them.
+    ///
     /// The port supplies its own [`unit_id`](Self::unit_id) when it polls, so a
     /// source can only ever be asked for the events belonging to *this* unit.
-    /// That is why the parameter is a [`MidiUnitSource`] and not a
-    /// [`MidiSource`](tutti_midi_types::MidiSource): a pre-routing edge would
-    /// hand back the whole undifferentiated stream, which is not this port's to
-    /// take.
-    pub fn install(&self, source: Arc<dyn MidiUnitSource>) {
+    /// That is why the parameter is a [`MidiUnitIn`] and not a
+    /// [`MidiIn`](tutti_midi_types::MidiIn): a pre-routing edge hands back the
+    /// whole undifferentiated stream, which is not this port's to take.
+    pub fn install(&self, source: Arc<dyn MidiUnitIn>) {
         self.source.store(Some(Arc::new(source)));
     }
 
@@ -206,7 +207,7 @@ mod tests {
 
     /// A source that emits one note-on on its first poll — proves it was polled.
     struct OneNote(u8);
-    impl MidiUnitSource for OneNote {
+    impl MidiUnitIn for OneNote {
         fn poll_unit(&self, _u: MidiUnitId, _b: usize, out: &mut [MidiEvent]) -> usize {
             if out.is_empty() {
                 return 0;
@@ -220,7 +221,7 @@ mod tests {
     /// supplied its own rather than a sentinel.
     #[derive(Default)]
     struct RecordsUnit(std::sync::Mutex<Vec<MidiUnitId>>);
-    impl MidiUnitSource for RecordsUnit {
+    impl MidiUnitIn for RecordsUnit {
         fn poll_unit(&self, u: MidiUnitId, _b: usize, _out: &mut [MidiEvent]) -> usize {
             self.0.lock().unwrap().push(u);
             0

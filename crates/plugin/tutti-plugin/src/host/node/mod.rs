@@ -541,7 +541,7 @@ impl PluginClient {
         self.midi.port()
     }
 
-    /// Install a [`tutti_midi_types::MidiUnitSource`] override (typically
+    /// Install a [`tutti_midi_types::MidiUnitIn`] override (typically
     /// [`tutti_midi_runtime::MidiClipSource`] from a track's MIDI
     /// clips) that the plugin polls per block instead of its live
     /// `MidiReceiver`. Mirrors `PolySynth::set_midi_source` so
@@ -550,7 +550,7 @@ impl PluginClient {
     ///
     /// The source is held in an `Arc`, so the same instance survives
     /// the unit-clone fundsp performs on each `commit()`.
-    pub fn set_midi_source(&mut self, source: std::sync::Arc<dyn tutti_midi_types::MidiUnitSource>) {
+    pub fn set_midi_source(&mut self, source: std::sync::Arc<dyn tutti_midi_types::MidiUnitIn>) {
         self.midi.set_source(source);
     }
 

@@ -142,7 +142,7 @@ pub use downmix_unit::DownmixUnit;
 mod strip;
 pub use strip::BusStripUnit;
 
-// NOTE: the spatial panners (`SpatialPannerNode`, the HRTF binaural pair) and
+// NOTE: the spatial panners (`VbapPannerNode`, the HRTF binaural pair) and
 // `build_surround_mix` moved to the `tutti-spatial` crate. They were the crate's
 // only *geometry* — azimuth, elevation, speaker layouts — where everything left
 // here is per-channel signal processing. `tutti-spatial` depends on this crate

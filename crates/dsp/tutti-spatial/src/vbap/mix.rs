@@ -1,7 +1,7 @@
 //! Assembling a surround mix: place each source into the speaker field with a
 //! panner, then fold the panners into one N-wide master.
 //!
-//! [`SpatialPannerNode`](crate::SpatialPannerNode) does the placing. The folding
+//! [`VbapPannerNode`](crate::vbap::VbapPannerNode) does the placing. The folding
 //! is [`ChannelSumUnit`](tutti_units::ChannelSumUnit)'s — which lives in
 //! `tutti-units` rather than here, because summing `K` sources of `N` channels
 //! is arity arithmetic with no geometry in it, and mixers that never touch VBAP
@@ -11,7 +11,8 @@ use tutti_core::dsp::Net;
 use tutti_core::{Azimuth, ChannelLayout, Elevation, Hz, NodeId, Q};
 use tutti_units::{ChannelSumUnit, SvfFilterNode, SvfType};
 
-use crate::{Result, SpatialPannerNode};
+use super::error::Result;
+use super::node::VbapPannerNode;
 
 /// LFE bass-management low-pass cutoff. 120 Hz is the standard consumer LFE
 /// crossover (Dolby/DTS bass management typically low-pass the LFE feed at
@@ -46,7 +47,7 @@ impl SurroundSource {
 
 /// Assemble a surround producer into `net` and return the summed mix node.
 ///
-/// Each source gets a [`SpatialPannerNode::for_layout`] placed at its position;
+/// Each source gets a [`VbapPannerNode::for_layout`] placed at its position;
 /// every panner's `CH` outputs are summed by a [`ChannelSumUnit`] into one
 /// `layout`-wide node, whose id is returned. The caller decides what to do with
 /// it — `net.pipe_output(mix)` for a direct surround render, or feed it into a
@@ -60,7 +61,7 @@ impl SurroundSource {
 /// Each source node is wired stereo-in (its ports 0 and 1) to its panner. A
 /// mono source should present the same sample on both — the panner treats a
 /// single input channel as centered anyway. Errors if `layout` has no VBAP
-/// preset (see [`SpatialPannerNode::for_layout`]). An empty `sources` yields a
+/// preset (see [`VbapPannerNode::for_layout`]). An empty `sources` yields a
 /// silent (but valid) `layout`-wide sum node.
 pub fn build_surround_mix(
     net: &mut Net,
@@ -71,7 +72,7 @@ pub fn build_surround_mix(
 
     let mut panner_ids = Vec::with_capacity(sources.len());
     for src in sources {
-        let panner = SpatialPannerNode::for_layout(layout)?;
+        let panner = VbapPannerNode::for_layout(layout)?;
         panner.set_position(src.azimuth, src.elevation);
         let pid = net.push(Box::new(panner));
         // Stereo-in: feed the source's first two outputs into the panner.
@@ -86,7 +87,7 @@ pub fn build_surround_mix(
     // source to mono, low-pass it (~120 Hz), and route it into the LFE channel
     // as one extra input group on the main sum. Without this, a 5.1/7.1 export's
     // LFE channel would be empty.
-    let lfe_group = crate::nodes::lfe_channel(layout).map(|lfe_ch| {
+    let lfe_group = crate::layout::lfe_channel(layout).map(|lfe_ch| {
         // Mono-sum the sources' first channel, then low-pass.
         let mono_sum = net.push(Box::new(ChannelSumUnit::new(
             sources.len().max(1),
@@ -211,33 +212,33 @@ mod tests {
 
     #[test]
     fn for_layout_dispatches_and_rejects_unsupported() {
-        use crate::SpatialPannerNode;
+        use crate::vbap::VbapPannerNode;
         use tutti_types::ChannelLayout;
 
         // Each supported width builds a panner of the right output count.
         assert_eq!(
-            SpatialPannerNode::for_layout(ChannelLayout::STEREO)
+            VbapPannerNode::for_layout(ChannelLayout::STEREO)
                 .unwrap()
                 .num_channels(),
             2
         );
         assert_eq!(
-            SpatialPannerNode::for_layout(ChannelLayout::QUAD)
+            VbapPannerNode::for_layout(ChannelLayout::QUAD)
                 .unwrap()
                 .num_channels(),
             4
         );
         assert_eq!(
-            SpatialPannerNode::for_layout(ChannelLayout::from(6u16))
+            VbapPannerNode::for_layout(ChannelLayout::from(6u16))
                 .unwrap()
                 .num_channels(),
             6
         );
         // A width with no preset errors rather than silently falling back.
-        let err = SpatialPannerNode::for_layout(ChannelLayout::from(3u16));
+        let err = VbapPannerNode::for_layout(ChannelLayout::from(3u16));
         assert!(matches!(
             err,
-            Err(crate::Error::UnsupportedSpeakerLayout(3))
+            Err(crate::vbap::VbapError::UnsupportedSpeakerLayout(3))
         ));
     }
 
@@ -293,7 +294,7 @@ mod tests {
         );
         assert!(matches!(
             err,
-            Err(crate::Error::UnsupportedSpeakerLayout(3))
+            Err(crate::vbap::VbapError::UnsupportedSpeakerLayout(3))
         ));
     }
 

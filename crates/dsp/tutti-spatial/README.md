@@ -6,7 +6,9 @@ Spatial audio: VBAP speaker panning, binaural HRTF rendering, surround mix assem
 
 The engine's only **geometry** — azimuth, elevation, speaker layouts, HRIR spheres. Everything that processes a signal per channel lives in [`tutti-units`](../tutti-units); everything that needs to know *where a sound is* lives here.
 
-`SpatialPannerNode` places a source in a speaker field via [vbap](https://crates.io/crates/vbap) (presets for 2/4/6/8/12 channels — stereo, quad, 5.1, 7.1, 7.1.4). `HrtfBinauralNode` renders to headphones by FFT convolution against a measured HRIR sphere, using the [hrtf](https://crates.io/crates/hrtf) crate; the dataset is supplied by the caller as bytes. `build_surround_mix` assembles the whole `sources → panners → sum` graph in one call, including LFE bass management.
+Two independent renderers, each named for its algorithm rather than the category: `vbap` (loudspeakers, `layout.count()` outputs) and `hrtf` (headphones, always 2). Each owns its own error type; there is no crate-level `Error`. Shared between them: `SpatialTarget`, the position de-zipper, and the SMPTE/WAV channel-order conventions in `layout`.
+
+`vbap::VbapPannerNode` places a source in a speaker field via [vbap](https://crates.io/crates/vbap) (presets for 2/4/6/8/12 channels — stereo, quad, 5.1, 7.1, 7.1.4). `hrtf::HrtfBinauralNode` renders to headphones by FFT convolution against a measured HRIR sphere, using the [hrtf](https://crates.io/crates/hrtf) crate; the dataset is supplied by the caller as bytes. `build_surround_mix` assembles the whole `sources → panners → sum` graph in one call, including LFE bass management.
 
 Position changes are de-zippered by a one-pole smoother, so a moving source does not click.
 
@@ -39,3 +41,7 @@ net.pipe_output(mix);
 ## Node ids
 
 The `AudioUnit` fingerprints in `node_id.rs` are **persisted values** and must not be renumbered. `assert_unique` guards them within this crate; cross-crate uniqueness rests on the mnemonic convention described in `tutti_core::node_id`.
+
+## RT safety
+
+`tests/rt_no_alloc.rs` asserts both panners' `process` paths never allocate. Mutation-verified: injecting a `vec!` into the VBAP process path aborts the test.

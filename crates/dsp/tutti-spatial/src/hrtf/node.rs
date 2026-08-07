@@ -1,10 +1,7 @@
-//! [`HrtfBinauralNode`] — a real-HRTF drop-in replacement for
-//! [`crate::nodes::BinauralPannerNode`].
+//! [`HrtfBinauralNode`] — the binaural `AudioUnit`, 2 in / 2 out.
 //!
-//! Same 2-in / 2-out `AudioUnit` shape and the same position/width control
-//! surface, so a host can swap one for the other. The only construction
-//! difference: HRTF rendering needs a measured HRIR sphere, so
-//! [`HrtfBinauralNode::new`] takes the dataset bytes.
+//! Construction needs a measured HRIR sphere, so [`HrtfBinauralNode::new`]
+//! takes the dataset bytes.
 
 use tutti_core::ChannelLayout;
 use tutti_core::{
@@ -12,14 +9,13 @@ use tutti_core::{
     SampleRate, Samples, SignalFrame, Tail,
 };
 
-use crate::hrtf_panner::{HrtfBinaural, HrtfBinauralError};
-use crate::nodes::SpatialTarget;
+use super::panner::{HrtfBinaural, HrtfBinauralError};
+use crate::SpatialTarget;
 
 /// FFT-convolution binaural panner for headphone 3D audio.
 ///
-/// Position is controlled via lock-free atomics ([`SpatialTarget`]) exactly
-/// like [`crate::nodes::BinauralPannerNode`]; the audio path reads them once
-/// per block. Rendering lags input by one HRTF frame (see [`HrtfBinaural`]).
+/// Position is controlled via lock-free atomics ([`SpatialTarget`]); the audio
+/// path reads them once per block. Rendering lags input by one HRTF frame.
 pub struct HrtfBinauralNode {
     panner: HrtfBinaural,
     target: SpatialTarget,
@@ -70,14 +66,17 @@ impl HrtfBinauralNode {
         self.target.elevation.load()
     }
 
-    /// Kept for API parity with the ITD/ILD node. HRTF rendering is inherently
-    /// full-sphere, so width is a post-render dry/processed blend rather than a
-    /// virtual-source spread: 1.0 = full HRTF, 0.0 = center/mono passthrough.
-    pub fn set_width(&self, width: impl Into<Mix>) {
-        self.width.store(Mix::new_clamped(width.into().get()));
+    /// Blend between the HRTF-rendered signal and the dry mono center:
+    /// 1.0 = full HRTF, 0.0 = passthrough.
+    ///
+    /// Named `blend`, not `width`: VBAP's `set_width` is a virtual-source
+    /// spread in `StereoWidth`, while this is a `Mix`. Same word, different
+    /// unit and different meaning.
+    pub fn set_blend(&self, blend: impl Into<Mix>) {
+        self.width.store(Mix::new_clamped(blend.into().get()));
     }
 
-    pub fn width(&self) -> Mix {
+    pub fn blend(&self) -> Mix {
         self.width.load()
     }
 
@@ -264,7 +263,7 @@ mod tests {
         // renderer eventually emits non-silence (output lags by one frame).
         let mut produced_nonzero = false;
         let mut out = [0.0f32; 2];
-        for n in 0..(crate::hrtf_panner::FRAME_LEN * 2) {
+        for n in 0..(crate::hrtf::panner::FRAME_LEN * 2) {
             let s = ((n as f32) * 0.05).sin();
             node.tick(&[s, s], &mut out);
             if out[0].abs() > 1e-6 || out[1].abs() > 1e-6 {

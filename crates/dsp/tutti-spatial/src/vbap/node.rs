@@ -1,113 +1,18 @@
-use crate::Result;
+use super::error::Result;
 use tutti_core::AudioUnit;
 use tutti_core::ChannelLayout;
 use tutti_core::{
     Azimuth, BufferMut, BufferRef, Elevation, Param, SampleRate, SignalFrame, Spread, StereoWidth,
 };
 
-use crate::vbap_panner::SpatialPanner;
-
-/// Azimuth/elevation pair as typed parameters. Both spatial panner nodes
-/// carry exactly this pair; grouping them here names the concept and lets
-/// nodes forward a single field through their Clone impls.
-///
-/// The two fields are *different types* on purpose: a bearing wraps (190
-/// degrees is 170 to the right) and a height saturates (past straight up, you
-/// stop). They were one `Degrees` until the two behaviours had to diverge.
-#[derive(Clone)]
-pub struct SpatialTarget {
-    pub azimuth: Param<Azimuth>,
-    pub elevation: Param<Elevation>,
-}
-
-impl SpatialTarget {
-    pub fn new() -> Self {
-        Self {
-            azimuth: Param::new(Azimuth::FRONT),
-            elevation: Param::new(Elevation::LEVEL),
-        }
-    }
-
-    /// The typed pair, for the panners' trigonometry.
-    ///
-    /// Typed rather than raw: both panners immediately rebuild `Azimuth(..)` /
-    /// `Elevation(..)` from what they receive here (that is where the two
-    /// long-way-around bugs lived), so handing out bare floats only created a
-    /// strip/re-wrap round trip that a caller could get wrong in between.
-    #[inline]
-    pub fn load(&self) -> (Azimuth, Elevation) {
-        (self.azimuth.load(), self.elevation.load())
-    }
-
-    /// Store a bearing/height pair, normalized on the way in.
-    ///
-    /// Each coordinate is constrained the way its own space requires: the
-    /// bearing wraps onto the circle, the height clamps at the poles. Taking
-    /// the two newtypes is what makes the pairing unmixable — with a raw
-    /// `(f32, f32)` a caller could swap them and the compiler would agree.
-    pub fn store(&self, azimuth: impl Into<Azimuth>, elevation: impl Into<Elevation>) {
-        self.azimuth.store(azimuth.into().wrap());
-        self.elevation
-            .store(Elevation::new_clamped(elevation.into().get()));
-    }
-
-    pub fn reset_origin(&self) {
-        self.store(Azimuth::FRONT, Elevation::LEVEL);
-    }
-}
-
-impl Default for SpatialTarget {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-/// Map a VBAP gain index to the file/output channel it belongs in, for a given
-/// layout — because the VBAP speaker order is NOT the file channel order once
-/// LFE enters the picture.
-///
-/// VBAP presets are pure *spatialized* speakers with no LFE (the vbap crate's
-/// 5.1/7.1 presets are literally 5.0/7.0 — "LFE handled separately"), and their
-/// order is `[L, R, C, surrounds…]`. The file/interchange order (SMPTE / WAV
-/// `WAVEFORMATEXTENSIBLE`) is `[FL, FR, C, LFE, SL, SR, …]` with LFE at index 3.
-/// So a straight gain-i → channel-i write puts the surrounds one slot early and
-/// leaves a hole. This returns `map[i] = file channel for VBAP speaker i`; the
-/// LFE channel is deliberately absent (it is fed a separate low-passed send by
-/// [`build_surround_mix`](crate::build_surround_mix), not by the panner).
-///
-/// - **Stereo / Quad**: identity — no LFE, order already matches.
-/// - **5.1** (6ch, VBAP `[L,R,C,Ls,Rs]`): `[0,1,2,4,5]` — skip LFE at 3.
-/// - **7.1** (8ch, VBAP `[L,R,C,Lss,Rss,Lrs,Rrs]`): `[0,1,2,4,5,6,7]` — skip LFE.
-/// - **Atmos 7.1.4** (12ch): the 7.1 base skips LFE, then the 4 height channels
-///   follow at 8..12: `[0,1,2,4,5,6,7,8,9,10,11]`.
-/// - Any other width: identity (best effort).
-fn speaker_channel_map(layout: ChannelLayout) -> Vec<usize> {
-    match layout.count() {
-        6 => vec![0, 1, 2, 4, 5],
-        8 => vec![0, 1, 2, 4, 5, 6, 7],
-        12 => vec![0, 1, 2, 4, 5, 6, 7, 8, 9, 10, 11],
-        n => (0..n as usize).collect(),
-    }
-}
-
-/// The LFE (`.1`) output channel index for a layout, if it has one. LFE lives at
-/// channel 3 in the 5.1 / 7.1 / 7.1.4 file order (SMPTE / WAV). Layouts without
-/// an LFE (mono / stereo / quad) return `None`.
-///
-/// LFE is *not* a panned speaker (see [`speaker_channel_map`]); this is the
-/// channel [`build_surround_mix`](crate::build_surround_mix) feeds with a
-/// separate low-passed bass-management send.
-pub(crate) fn lfe_channel(layout: ChannelLayout) -> Option<usize> {
-    match layout.count() {
-        6 | 8 | 12 => Some(3),
-        _ => None,
-    }
-}
+use super::panner::VbapPanner;
+use crate::layout::speaker_channel_map;
+use crate::SpatialTarget;
 
 /// VBAP multichannel panner (stereo/quad/5.1/7.1/Atmos).
 /// Position controlled via lock-free atomics for RT-safe automation.
-pub struct SpatialPannerNode {
-    panner: SpatialPanner,
+pub struct VbapPannerNode {
+    panner: VbapPanner,
     layout: ChannelLayout,
     target: SpatialTarget,
     /// VBAP diffusion, `0..1`: how many speakers a point source is smeared
@@ -119,20 +24,20 @@ pub struct SpatialPannerNode {
     width: Param<StereoWidth>,
     sample_rate: SampleRate,
     scratch_output: Vec<f32>,
-    /// Gain-index → output-channel scatter map (see [`speaker_channel_map`]).
+    /// Gain-index → output-channel scatter map (see [`crate::layout`]).
     /// Precomputed per layout so the RT path just indexes it.
     channel_map: Vec<usize>,
 }
 
-impl Clone for SpatialPannerNode {
+impl Clone for VbapPannerNode {
     fn clone(&self) -> Self {
         let mut new_panner = match self.layout.count() {
-            2 => SpatialPanner::stereo().expect("stereo preset"),
-            4 => SpatialPanner::quad().expect("quad preset"),
-            6 => SpatialPanner::surround_5_1().expect("5.1 preset"),
-            8 => SpatialPanner::surround_7_1().expect("7.1 preset"),
-            12 => SpatialPanner::atmos_7_1_4().expect("Atmos preset"),
-            _ => SpatialPanner::stereo().expect("stereo fallback"),
+            2 => VbapPanner::stereo().expect("stereo preset"),
+            4 => VbapPanner::quad().expect("quad preset"),
+            6 => VbapPanner::surround_5_1().expect("5.1 preset"),
+            8 => VbapPanner::surround_7_1().expect("7.1 preset"),
+            12 => VbapPanner::atmos_7_1_4().expect("Atmos preset"),
+            _ => VbapPanner::stereo().expect("stereo fallback"),
         };
 
         let (azimuth, elevation) = self.target.load();
@@ -153,29 +58,29 @@ impl Clone for SpatialPannerNode {
     }
 }
 
-impl SpatialPannerNode {
+impl VbapPannerNode {
     pub fn stereo() -> Result<Self> {
-        let panner = SpatialPanner::stereo()?;
+        let panner = VbapPanner::stereo()?;
         Ok(Self::from_panner(panner, ChannelLayout::STEREO))
     }
 
     pub fn quad() -> Result<Self> {
-        let panner = SpatialPanner::quad()?;
+        let panner = VbapPanner::quad()?;
         Ok(Self::from_panner(panner, ChannelLayout::from(4u16)))
     }
 
     pub fn surround_5_1() -> Result<Self> {
-        let panner = SpatialPanner::surround_5_1()?;
+        let panner = VbapPanner::surround_5_1()?;
         Ok(Self::from_panner(panner, ChannelLayout::from(6u16)))
     }
 
     pub fn surround_7_1() -> Result<Self> {
-        let panner = SpatialPanner::surround_7_1()?;
+        let panner = VbapPanner::surround_7_1()?;
         Ok(Self::from_panner(panner, ChannelLayout::from(8u16)))
     }
 
     pub fn atmos_7_1_4() -> Result<Self> {
-        let panner = SpatialPanner::atmos_7_1_4()?;
+        let panner = VbapPanner::atmos_7_1_4()?;
         Ok(Self::from_panner(panner, ChannelLayout::from(12u16)))
     }
 
@@ -194,11 +99,11 @@ impl SpatialPannerNode {
             6 => Self::surround_5_1(),
             8 => Self::surround_7_1(),
             12 => Self::atmos_7_1_4(),
-            n => Err(crate::Error::UnsupportedSpeakerLayout(n)),
+            n => Err(crate::vbap::VbapError::UnsupportedSpeakerLayout(n)),
         }
     }
 
-    fn from_panner(panner: SpatialPanner, layout: ChannelLayout) -> Self {
+    fn from_panner(panner: VbapPanner, layout: ChannelLayout) -> Self {
         Self {
             panner,
             layout,
@@ -259,7 +164,7 @@ impl SpatialPannerNode {
     }
 }
 
-impl AudioUnit for SpatialPannerNode {
+impl AudioUnit for VbapPannerNode {
     fn inputs(&self) -> usize {
         2
     }
@@ -343,7 +248,7 @@ impl AudioUnit for SpatialPannerNode {
     }
 
     fn get_id(&self) -> u64 {
-        crate::node_id::SPATIAL_PANNER_BASE_ID | (self.layout.count() as u64)
+        crate::node_id::VBAP_PANNER_BASE_ID | (self.layout.count() as u64)
     }
 
     fn as_any(&self) -> &dyn core::any::Any {
@@ -373,8 +278,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_spatial_panner_tick() {
-        let mut panner = SpatialPannerNode::stereo().unwrap();
+    fn vbap_panner_tick() {
+        let mut panner = VbapPannerNode::stereo().unwrap();
         panner.set_position(0.0, 0.0);
 
         let input = [1.0f32, 1.0f32];
@@ -387,8 +292,8 @@ mod tests {
     }
 
     #[test]
-    fn test_spatial_panner_clone() {
-        let panner = SpatialPannerNode::surround_5_1().unwrap();
+    fn vbap_panner_clone() {
+        let panner = VbapPannerNode::surround_5_1().unwrap();
         panner.set_position(45.0, 15.0);
         panner.set_spread(0.3);
 
@@ -403,8 +308,8 @@ mod tests {
     }
 
     #[test]
-    fn test_spatial_clone_shares_atomics() {
-        let panner = SpatialPannerNode::stereo().unwrap();
+    fn vbap_clone_shares_atomics() {
+        let panner = VbapPannerNode::stereo().unwrap();
         let cloned = panner.clone();
 
         // Setting position on original should be visible from clone

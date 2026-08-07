@@ -39,3 +39,6 @@ thiserror = { version = "2", default-features = false }
 
 [dev-dependencies]
 approx = "0.5"
+# The RT no-alloc gate. Must be a dev-dep of the crate that OWNS the nodes:
+# `assert_no_alloc` installs a global allocator, which only a test binary may do.
+assert_no_alloc = { version = "1", default-features = false }

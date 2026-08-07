@@ -304,8 +304,10 @@ mod tests {
     /// them on the platform meant CI never ran them at all.
     struct CountingSink(Arc<AtomicUsize>);
     impl tutti_midi_types::MidiOut for CountingSink {
-        fn queue(&self, events: &[MidiEvent]) {
+        fn queue(&self, events: &[MidiEvent]) -> usize {
             self.0.fetch_add(events.len(), Ordering::SeqCst);
+            // A counter cannot refuse; accepting everything is the honest answer.
+            events.len()
         }
     }
 

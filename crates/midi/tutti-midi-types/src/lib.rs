@@ -55,7 +55,7 @@ pub use mpe::{
 };
 pub use note_id::{NoteId, PerNoteMap};
 pub use routing::{MidiRoute, MidiRoutingSnapshot, MidiRoutingTable, RouteIterator};
-pub use traits::{MidiIn, MidiOut, MidiRouter};
+pub use traits::{MidiIn, MidiOut, MidiRouter, MidiUnitIn};
 pub use translation::{normalize, Midi1ToMidi2Translator, MidiParseError};
 pub use ump::{
     Alteration, BarAccents, ChordBass, ChordName, ChordSharpsFlats, ChordType,
@@ -150,7 +150,7 @@ pub use unit_id::MidiUnitId;
 pub mod prelude {
     pub use crate::{
         normalize, read_clip_file, write_clip_file, write_clip_file_from_beats, ClipEvent,
-        ClipFileError, ControllerNamespace, MidiEvent, MidiIn, MidiMessage, MidiUnitId,
+        ClipFileError, ControllerNamespace, MidiEvent, MidiMessage, MidiUnitId, MidiUnitIn,
         NoteAttribute, NoteId, ParsedClipFile, PerNoteController, Protocol,
     };
     // The clip API positions events in `Beat` and measures them in

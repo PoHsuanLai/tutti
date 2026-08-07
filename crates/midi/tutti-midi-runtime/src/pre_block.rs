@@ -27,17 +27,22 @@ use tutti_midi_types::tutti_types::RtPublish;
 use tutti_core::{AudioThreadCell, RtEventBuf};
 use tutti_midi_types::ump::MidiEvent;
 use tutti_midi_types::Midi1ToMidi2Translator;
-use tutti_midi_types::{MidiIn, MidiRouter, MidiRoutingSnapshot, MidiUnitId};
+use tutti_midi_types::{MidiIn, MidiRouter, MidiRoutingSnapshot};
 
 use crate::mpe_ingest::MpeIngest;
 use tutti_midi_types::mpe::MpeMode;
 
-/// Per-block outbound clock/timecode generator (e.g. a `ClockMaster`).
+/// Something ticked once per audio block, before event delivery, whose output
+/// **bypasses unit routing**.
 ///
-/// Ticked once per audio block, before event delivery, so it emits regardless of
-/// whether any inbound MIDI is present this block. Its output goes to its own
-/// ring (independent of the unit-keyed routing below), so System Real-Time
-/// messages reach hardware-out rather than being dropped by the router.
+/// The engine's own implementation is [`ClockMaster`](crate::ClockMaster) —
+/// outbound Beat Clock + MTC. This is a trait rather than that concrete type
+/// because System Real-Time and timecode are *not addressed to a unit*, so
+/// anything generating them needs a slot outside the router, and a consumer's
+/// own generator (LTC, a proprietary sync flavour) is as entitled to that slot
+/// as ours. It emits regardless of whether inbound MIDI arrived this block.
+///
+/// Lock-free and alloc-free: audio thread.
 pub trait BlockClock: Send + Sync {
     /// Generate this block's clock/timecode output. `block_size` is the frame
     /// count of the upcoming audio block.
@@ -45,10 +50,6 @@ pub trait BlockClock: Send + Sync {
 }
 
 const MIDI_EVENT_BUFFER_CAPACITY: usize = 512;
-
-/// Sentinel unit id passed to the pre-routing hardware [`MidiIn`], which ignores
-/// it and returns every pending event (routing decides the real targets).
-const HARDWARE_POLL_UNIT: MidiUnitId = MidiUnitId::new(0);
 
 /// The once-per-block MIDI producer: polls the hardware input, routes events into
 /// unit inboxes, and ticks the outbound clock — all *before* the graph renders.
@@ -71,9 +72,10 @@ pub struct MidiPreBlock {
     /// [`MIDI_EVENT_BUFFER_CAPACITY`] are dropped (never allocated) on the audio
     /// thread.
     events: RtEventBuf<(usize, MidiEvent), MIDI_EVENT_BUFFER_CAPACITY>,
-    /// Scratch the hardware [`MidiIn`] fills each block via `poll_into`, before
-    /// we copy into `events`. Interior-mutable so `run` stays `&self` on the
-    /// audio path; single-audio-thread access (same contract `events` relies on).
+    /// Scratch the hardware [`MidiIn`] fills each block via `poll_block`,
+    /// before we copy into `events`. Interior-mutable so `run` stays `&self` on
+    /// the audio path; single-audio-thread access (same contract `events` relies
+    /// on).
     poll_scratch: AudioThreadCell<[MidiEvent; MIDI_EVENT_BUFFER_CAPACITY]>,
     /// Optional outbound clock/timecode generator, ticked once per block.
     clock: Option<Arc<dyn BlockClock>>,
@@ -127,6 +129,13 @@ impl MidiPreBlock {
     }
 
     /// Install the hardware / live MIDI source polled each block.
+    /// A [`MidiIn`] and not a [`MidiUnitIn`]: this phase *decides* the
+    /// unit ids, so it has none to pass. It used to poll a `MidiIn` with a
+    /// `MidiUnitId::new(0)` sentinel — a real id, which meant a per-unit source
+    /// installed here would silently have received the entire hardware stream.
+    /// The type now refuses that install.
+    ///
+    /// [`MidiUnitIn`]: tutti_midi_types::MidiUnitIn
     pub fn set_input(&mut self, input: Arc<dyn MidiIn>) {
         self.input = Some(input);
     }
@@ -257,12 +266,11 @@ impl MidiPreBlock {
         };
 
         // Drain the input into scratch, then copy the routed subset into
-        // `events` — all inside one `borrow_mut`. `poll_into` ignores the unit id
-        // (hardware is pre-routing) and returns everything pending; the copy is
-        // bounded and allocation-free. We drain even when nothing is routed, so
-        // the hardware rings don't back up.
+        // `events` — all inside one `borrow_mut`. The copy is bounded and
+        // allocation-free. We drain even when nothing is routed, so the hardware
+        // rings don't back up.
         let mut scratch = self.poll_scratch.borrow_mut();
-        let n = input.poll_into(HARDWARE_POLL_UNIT, frames, &mut scratch[..]);
+        let n = input.poll_block(frames, &mut scratch[..]);
 
         // Only "nothing arrived" short-circuits. Emptiness of the routing table
         // must NOT, even though nothing can be delivered: both stages below are
@@ -417,14 +425,15 @@ mod tests {
     use tutti_midi_types::midi2::UmpMessage;
     use tutti_midi_types::mpe::{MpeMode, MpeZoneConfig};
     use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
-    use tutti_midi_types::MidiRoutingTable;
+    use tutti_midi_types::{MidiRoutingTable, MidiUnitId};
 
-    /// A one-shot [`MidiIn`] that returns a fixed event list on its first poll.
+    /// A one-shot [`MidiIn`] that returns a fixed event list on its first
+    /// poll.
     struct FixedInput {
         events: Mutex<Vec<MidiEvent>>,
     }
     impl MidiIn for FixedInput {
-        fn poll_into(&self, _unit: MidiUnitId, _block_size: usize, out: &mut [MidiEvent]) -> usize {
+        fn poll_block(&self, _block_size: usize, out: &mut [MidiEvent]) -> usize {
             let mut evs = self.events.lock().unwrap();
             let n = evs.len().min(out.len());
             for (slot, ev) in out.iter_mut().zip(evs.drain(..n)) {
@@ -513,7 +522,7 @@ mod tests {
             table: Mutex<MidiRoutingTable>,
         }
         impl MidiIn for RepublishOnPoll {
-            fn poll_into(&self, _unit: MidiUnitId, _frames: usize, out: &mut [MidiEvent]) -> usize {
+            fn poll_block(&self, _frames: usize, out: &mut [MidiEvent]) -> usize {
                 // Retire every route *while the block is in flight*.
                 let mut table = self.table.lock().unwrap();
                 table.set_routes(Vec::new(), None);
@@ -611,7 +620,7 @@ mod tests {
             blocks: Mutex<Vec<Vec<MidiEvent>>>,
         }
         impl MidiIn for PerBlockInput {
-            fn poll_into(&self, _unit: MidiUnitId, _frames: usize, out: &mut [MidiEvent]) -> usize {
+            fn poll_block(&self, _frames: usize, out: &mut [MidiEvent]) -> usize {
                 let mut blocks = self.blocks.lock().unwrap();
                 if blocks.is_empty() {
                     return 0;

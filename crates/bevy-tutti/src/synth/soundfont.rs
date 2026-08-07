@@ -73,7 +73,7 @@ impl AssetLoader for SoundFontAssetLoader {
 /// Compile-time proof that [`SoundFontUnit`] is `Send`, which is what lets us
 /// build it on the [`AsyncComputeTaskPool`] instead of the Bevy main thread
 /// (the B5 gate). It holds a rustysynth `Synthesizer` (plain `Vec`/`Arc`
-/// struct) plus `Arc<dyn MidiIn>` where `MidiIn: Send + Sync`, so this
+/// struct) plus `Arc<dyn MidiUnitIn>` where `MidiUnitIn: Send + Sync`, so this
 /// assertion holds. If it ever stops compiling, the async decode below is
 /// unsound and the decode must move back onto the main thread.
 const _: () = {

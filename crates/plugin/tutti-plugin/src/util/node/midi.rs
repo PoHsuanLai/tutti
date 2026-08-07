@@ -23,8 +23,8 @@ use arc_swap::ArcSwapOption;
 use crate::protocol::MidiEventVec;
 use tutti_midi_runtime::{MidiInPort, MidiOutSink, MidiSender};
 use tutti_midi_types::ump::MidiEvent;
-use tutti_midi_types::MidiIn;
 use tutti_midi_types::MidiUnitId;
+use tutti_midi_types::MidiUnitIn;
 
 const POLL_BUFFER_SIZE: usize = 256;
 
@@ -117,7 +117,7 @@ impl Midi {
     /// polled per block in `drain_for_process`, so a clip-driven plugin
     /// synth still answers live events. Used by clip players
     /// (`tutti_midi_runtime::MidiClipSource`).
-    pub fn set_source(&mut self, source: Arc<dyn MidiIn>) {
+    pub fn set_source(&mut self, source: Arc<dyn MidiUnitIn>) {
         self.port.install(source);
     }
 
@@ -209,8 +209,8 @@ mod tests {
     struct CountingSource {
         n: usize,
     }
-    impl MidiIn for CountingSource {
-        fn poll_into(&self, _unit: MidiUnitId, _block: usize, buffer: &mut [MidiEvent]) -> usize {
+    impl MidiUnitIn for CountingSource {
+        fn poll_unit(&self, _unit: MidiUnitId, _block: usize, buffer: &mut [MidiEvent]) -> usize {
             let n = self.n.min(buffer.len());
             for slot in buffer.iter_mut().take(n) {
                 *slot = MidiEvent::noop();

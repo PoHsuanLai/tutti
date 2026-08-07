@@ -83,7 +83,7 @@ pub struct MidiInView<'a>(&'a mut PluginClient);
 impl MidiInView<'_> {
     /// Install a transport-aware source polled once per block, layered over the
     /// live mailbox.
-    pub fn set_source(&mut self, source: Arc<dyn tutti_midi_types::MidiIn>) {
+    pub fn set_source(&mut self, source: Arc<dyn tutti_midi_types::MidiUnitIn>) {
         self.0.set_midi_source(source);
     }
 }

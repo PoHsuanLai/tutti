@@ -10,7 +10,7 @@
 //! — the same discipline as [`MidiClipSource`](crate::MidiClipSource), so
 //! receiving gear locks tightly instead of chasing frame-quantised jitter.
 //!
-//! It is **not** a [`MidiIn`](tutti_midi_types::MidiIn): the processor input
+//! It is **not** a [`MidiUnitIn`](tutti_midi_types::MidiUnitIn): the processor input
 //! feeds internal synth routing (keyed by [`MidiUnitId`]), and System
 //! Real-Time messages aren't addressed to a unit, so they'd be dropped there.
 //! Instead the master pushes into a [`MidiSender`](crate::MidiSender) — the

@@ -9,7 +9,7 @@
 //!   [`MidiSender`], dispatching queued events to the right inbox; the
 //!   `tutti` engine installs one as its audio-thread dispatch target
 //! - [`MidiSnapshot`] — non-destructive event storage for offline export
-//! - [`MidiSnapshotReader`] — [`tutti_midi_types::MidiIn`] implementation that
+//! - [`MidiSnapshotReader`] — [`tutti_midi_types::MidiUnitIn`] implementation that
 //!   reads a snapshot on an offline timeline
 //! - [`MidiRoutingTable`] — UI-thread writer for routing rules, publishing
 //!   immutable [`tutti_midi_types::MidiRoutingSnapshot`] values via `RtPublish`

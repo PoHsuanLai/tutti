@@ -10,10 +10,11 @@
 //! MIDI-1 treatment (JR Timestamps reach the wire iff a native-UMP source +
 //! enabled stamper are present).
 //!
-//! **One primitive, both roles.** This mailbox is exactly the pair of MIDI
-//! traits: the [`MidiSender`] is the [`MidiOut`] push half (lock-free `&self`,
-//! audio-thread-safe), the [`MidiReceiver`] is the [`MidiIn`] pull half the pump
-//! drains. It replaced a separate `ringbuf`-backed output ring — there is now
+//! **One primitive, both roles.** The [`MidiSender`] is the [`MidiOut`] push
+//! half (lock-free `&self`, audio-thread-safe); the [`MidiReceiver`] is the pull
+//! half the pump drains through its inherent `poll_into`, which needs no unit id
+//! because a mailbox *is* one unit's stream. It replaced a separate
+//! `ringbuf`-backed output ring — there is now
 //! one output-mailbox type across the clock master, the track path, and the RT
 //! clip tap, and no mutex anywhere on the push side.
 //!

@@ -199,7 +199,7 @@ impl MidiEndpoints for CoreMidiEndpoints {
                 status,
             })?;
 
-        Ok(Box::new(CoreMidiInput { id, _port: port }))
+        Ok(Box::new(CoreMidiInput { _port: port }))
     }
 
     fn open_output(&self, id: EndpointId) -> Result<Box<dyn MidiOut>> {
@@ -226,7 +226,6 @@ impl MidiEndpoints for CoreMidiEndpoints {
 
 /// An open CoreMIDI input. Dropping it closes the port.
 struct CoreMidiInput {
-    id: EndpointId,
     /// Held for its `Drop`: releasing the port is what disconnects.
     _port: InputPortWithContext<()>,
 }
@@ -236,11 +235,7 @@ struct CoreMidiInput {
 // contract `UmpVirtualSource` relies on.
 unsafe impl Send for CoreMidiInput {}
 
-impl InputConnection for CoreMidiInput {
-    fn endpoint(&self) -> EndpointId {
-        self.id
-    }
-}
+impl InputConnection for CoreMidiInput {}
 
 /// An open CoreMIDI output, as a [`MidiOut`].
 ///
@@ -285,12 +280,21 @@ impl CoreMidiOutput {
 }
 
 impl MidiOut for CoreMidiOutput {
-    fn queue(&self, events: &[MidiEvent]) {
+    /// Returns how many events reached the endpoint. Stops at the first failure
+    /// so the count names an unbroken prefix — see [`AlsaOutput::queue`] for why
+    /// skipping would be worse than stopping.
+    ///
+    /// [`AlsaOutput::queue`]: crate::core::backend
+    fn queue(&self, events: &[MidiEvent]) -> usize {
+        let mut accepted = 0;
         for event in events {
             if let Err(e) = self.send_ump(event.data_words()) {
                 tracing::debug!("CoreMIDI send: {e}");
+                break;
             }
+            accepted += 1;
         }
+        accepted
     }
 }
 

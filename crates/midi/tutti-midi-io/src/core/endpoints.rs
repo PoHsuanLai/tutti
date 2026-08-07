@@ -42,16 +42,23 @@ use crate::core::error::Result;
 use crate::core::InputProducerHandle;
 use tutti_midi_types::MidiOut;
 
-/// An open input connection.
+/// An open input connection: a live subscription to one endpoint.
 ///
-/// Carries no methods: events flow through the [`InputProducerHandle`] the
-/// backend was handed, not through this. It exists so that **dropping it closes
-/// the port** — the lifetime is the connection, which is why it must be held
-/// rather than discarded.
-pub trait InputConnection: Send {
-    /// The endpoint this connection was opened against.
-    fn endpoint(&self) -> EndpointId;
-}
+/// **Method-less by design.** Events flow through the [`InputProducerHandle`]
+/// the backend was handed, never through this value; what it carries is a
+/// *lifetime*. Dropping it closes the port, which is why
+/// [`MidiEndpoints::open_input`] returns it rather than `()` and why a caller
+/// must hold it.
+///
+/// It briefly declared `fn endpoint(&self) -> EndpointId` — directly under a doc
+/// sentence saying it carried no methods. Nothing ever called it: the id is
+/// already the key of the map these are stored in, so a connection is never
+/// asked for its own address.
+///
+/// The name survives the method because `Box<dyn Send>` would say nothing about
+/// what dropping the value does. This trait is where a backend author reads that
+/// contract, which is a distinct thing to be even with no behaviour attached.
+pub trait InputConnection: Send {}
 
 /// This OS's MIDI endpoints.
 pub trait MidiEndpoints: Send + Sync {

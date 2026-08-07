@@ -27,16 +27,11 @@ const EAGAIN: i32 = -11;
 
 /// An open ALSA input. Dropping it stops the pump and closes the port.
 pub struct AlsaInput {
-    id: EndpointId,
     running: Arc<AtomicBool>,
     thread: Option<std::thread::JoinHandle<()>>,
 }
 
-impl InputConnection for AlsaInput {
-    fn endpoint(&self) -> EndpointId {
-        self.id
-    }
-}
+impl InputConnection for AlsaInput {}
 
 impl Drop for AlsaInput {
     fn drop(&mut self) {
@@ -77,7 +72,6 @@ pub fn open(id: EndpointId, producer: InputProducerHandle) -> Result<Box<dyn Inp
         .map_err(|e| crate::core::error::Error::MidiDevice(format!("spawn MIDI pump: {e}")))?;
 
     Ok(Box::new(AlsaInput {
-        id,
         running,
         thread: Some(thread),
     }))

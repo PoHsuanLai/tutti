@@ -82,12 +82,22 @@ impl AlsaOutput {
 }
 
 impl MidiOut for AlsaOutput {
-    fn queue(&self, events: &[MidiEvent]) {
+    /// Returns how many events reached the sequencer.
+    ///
+    /// Stops at the first failure rather than skipping it: the count names an
+    /// unbroken prefix, so a caller can tell exactly where the stream stopped.
+    /// Skipping would report a number that no contiguous run matches, and would
+    /// deliver a note-off whose note-on never left.
+    fn queue(&self, events: &[MidiEvent]) -> usize {
+        let mut accepted = 0;
         for event in events {
             if let Err(e) = self.send_ump(event.data_words()) {
                 tracing::debug!("ALSA MIDI send: {e}");
+                break;
             }
+            accepted += 1;
         }
+        accepted
     }
 }
 

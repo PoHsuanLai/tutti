@@ -131,15 +131,18 @@ impl MidiSender {
 }
 
 impl tutti_midi_types::MidiOut for MidiSender {
-    fn queue(&self, events: &[MidiEvent]) {
-        self.queue(events);
+    fn queue(&self, events: &[MidiEvent]) -> usize {
+        self.queue(events)
     }
 }
 
 /// Consumer handle for a [`MidiMailbox`]. Owned by the audio unit.
 ///
-/// Implements [`tutti_midi_types::MidiIn`] so it can plug into any node that
-/// polls events through the trait.
+/// Read through its inherent [`poll_into`](Self::poll_into), which takes no unit
+/// id: a mailbox *is* one unit's stream, so there is nothing to select. It
+/// briefly also implemented a read trait whose only added behaviour was checking
+/// the caller's id against the one this receiver was paired with — a check its
+/// sole caller ([`MidiInPort`](crate::MidiInPort)) deliberately routed around.
 ///
 /// Cloneable via [`Clone`] to support fundsp graph commits that duplicate
 /// nodes — the clone shares the same underlying slot so events queued
@@ -186,18 +189,6 @@ impl MidiReceiver {
         while let Some(event) = self.slot.events.pop() {
             snapshot.add_event(self.unit_id, beat, event);
         }
-    }
-}
-
-impl tutti_midi_types::MidiIn for MidiReceiver {
-    fn poll_into(&self, unit_id: MidiUnitId, _block_size: usize, out: &mut [MidiEvent]) -> usize {
-        if unit_id != self.unit_id {
-            return 0;
-        }
-        // Live producers (MIDI input drivers, panel previews) are
-        // responsible for stamping `frame_offset` when they push into
-        // the slot. We pass through whatever they set.
-        self.poll_into(out)
     }
 }
 

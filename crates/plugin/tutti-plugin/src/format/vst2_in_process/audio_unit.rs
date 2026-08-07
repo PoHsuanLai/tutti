@@ -175,7 +175,7 @@ impl InProcessVst2Client {
     ///
     /// Held in an `Arc` so the same source survives the unit-clone fundsp
     /// performs on each `commit()`.
-    pub fn set_midi_source(&mut self, source: Arc<dyn tutti_midi_types::MidiIn>) {
+    pub fn set_midi_source(&mut self, source: Arc<dyn tutti_midi_types::MidiUnitIn>) {
         self.midi.set_source(source);
     }
 

@@ -30,12 +30,7 @@ struct FixedInput {
 }
 
 impl MidiIn for FixedInput {
-    fn poll_into(
-        &self,
-        _unit_id: MidiUnitId,
-        _block_size: usize,
-        buffer: &mut [MidiEvent],
-    ) -> usize {
+    fn poll_block(&self, _block_size: usize, buffer: &mut [MidiEvent]) -> usize {
         let n = self.events.len().min(buffer.len());
         buffer[..n].copy_from_slice(&self.events[..n]);
         n

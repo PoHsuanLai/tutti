@@ -18,7 +18,6 @@
 //! is the one that fills it; `max_voices` past the inline capacity is
 //! refused by the constructor and covered separately.
 
-
 use assert_no_alloc::AllocDisabler;
 use tutti_core::{AudioUnit, BufferVec, Hz, SampleRate, Q};
 use tutti_midi_types::convert::midi1_velocity_to_midi2;

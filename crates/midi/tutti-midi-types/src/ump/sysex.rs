@@ -5,7 +5,7 @@
 //! payload and split its words into 2-word [`MidiEvent`]s — midi2 owns the
 //! Start/Continue/End fragmentation and the status-nibble/count assignment. The
 //! decode side keeps a direct first-word reader ([`MidiEvent::sysex7_payload`])
-//! because the [`Sysex7Reassembler`](crate) + CI/VST3 callers want the raw
+//! because the [`Sysex7PacketReassembler`](crate) + CI/VST3 callers want the raw
 //! `(status, [u8; 6], n)` per-packet view, not a whole-message payload iterator.
 
 use std::vec::Vec;

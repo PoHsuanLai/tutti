@@ -38,7 +38,7 @@ use tutti_core::{Beat, BeatDuration, SampleRate};
 use tutti_midi_types::sync::SmpteFrameRate;
 use tutti_midi_types::ump::MidiEvent;
 
-use crate::registry::MidiSender;
+use crate::block::registry::MidiSender;
 
 /// MIDI clocks per quarter-note (24 PPQN — the MIDI Beat Clock standard).
 const PPQN: f64 = 24.0;
@@ -85,7 +85,7 @@ pub struct ClockMaster {
     mtc_piece: AtomicU8,
 }
 
-impl crate::pre_block::BlockClock for ClockMaster {
+impl crate::block::pre_block::BlockClock for ClockMaster {
     #[inline]
     fn tick(&self, block_size: usize) {
         ClockMaster::tick(self, block_size)

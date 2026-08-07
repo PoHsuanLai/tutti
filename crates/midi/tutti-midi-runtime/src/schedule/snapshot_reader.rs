@@ -9,7 +9,7 @@ use tutti_core::Beat;
 use tutti_midi_types::ump::MidiEvent;
 use tutti_midi_types::MidiUnitId;
 
-use crate::snapshot::MidiSnapshot;
+use super::snapshot::MidiSnapshot;
 
 /// Export-mode MIDI source that reads from a snapshot based on transport beat.
 ///

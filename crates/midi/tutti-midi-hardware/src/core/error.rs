@@ -33,7 +33,6 @@ pub enum Error {
 
     #[error("Invalid config: {0}")]
     InvalidConfig(String),
-
     // NOTE: there is deliberately no `File(tutti_midi_file::Error)` variant.
     // It existed only to serve the SMF re-export this crate used to carry, and
     // nothing ever constructed or matched it. A parse failure is not a port

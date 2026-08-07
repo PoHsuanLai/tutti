@@ -169,10 +169,10 @@ impl MidiEndpoints for CoreMidiEndpoints {
         let source = Self::find_source(id)
             .ok_or_else(|| Error::MidiDevice(format!("no MIDI source with id {}", id.raw())))?;
 
-        // No `Sysex7Assembler` on this path, deliberately. We open with
+        // No `Sysex7ByteAssembler` on this path, deliberately. We open with
         // `Protocol::Midi20`, so CoreMIDI hands us UMP words — a MIDI-1.0
         // device's SysEx arrives already fragmented into UMP SysEx7 packets,
-        // which `Sysex7Reassembler` (one layer up) rejoins. The byte-run
+        // which `Sysex7PacketReassembler` (one layer up) rejoins. The byte-run
         // assembler is for transports that deliver raw `F0 … F7`; ALSA's legacy
         // bridge is one, and it is the ALSA backend that will need it.
         let mut port = client

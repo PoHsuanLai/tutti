@@ -6,7 +6,7 @@ pub mod core;
 pub use core::error;
 /// MIDI 1.0 SysEx reassembly → UMP SysEx7. OS-free, so every driver edge shares
 /// it and it is testable without a device.
-pub use core::Sysex7Assembler;
+pub use core::Sysex7ByteAssembler;
 /// The endpoint vocabulary: what a MIDI endpoint is, what it can carry, and the
 /// backend seam that enumerates and opens them.
 pub use core::{
@@ -72,7 +72,7 @@ pub use tutti_midi_types::sync::{
 
 pub use tutti_midi_runtime::{
     MidiBus, MidiClipSource, MidiMailbox, MidiReceiver, MidiSender, MidiSnapshot,
-    Sysex7Reassembler, TimedClipEvent, TimedMidiEvent,
+    Sysex7PacketReassembler, TimedClipEvent, TimedMidiEvent,
 };
 
 pub use crossbeam_channel;

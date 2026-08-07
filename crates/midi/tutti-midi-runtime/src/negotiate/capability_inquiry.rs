@@ -2,7 +2,7 @@
 //!
 //! The message codec lives in [`tutti_midi_types::ci`]; this module is the
 //! *behavior* around it, mirroring the two halves of the UMP-Stream endpoint
-//! work in [`crate::endpoint`]:
+//! work in [`super::endpoint`]:
 //!
 //! - [`CiResponder`] — the answering side. Pure `config-in → messages-out`:
 //!   given an inbound [`CiMessage`], it returns the replies (Discovery Reply,

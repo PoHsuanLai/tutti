@@ -27,7 +27,7 @@ use tutti_core::Beat;
 use tutti_midi_types::ump::MidiEvent;
 use tutti_midi_types::MidiUnitId;
 
-use crate::snapshot::MidiSnapshot;
+use crate::schedule::snapshot::MidiSnapshot;
 
 const EVENTS_PER_UNIT: usize = 256;
 

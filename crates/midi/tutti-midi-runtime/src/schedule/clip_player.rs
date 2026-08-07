@@ -27,7 +27,7 @@ use tutti_midi_types::{MidiOut, MidiUnitIn};
 /// `(beat, event)` tuples, and a clip all speak one currency and move between
 /// each other without repacking. Build with `TimedMidiEvent::new(beat, event)`,
 /// `.into()` from a `(beat, event)` tuple, or the field literal (`beat`/`event`).
-pub type TimedClipEvent = crate::snapshot::TimedMidiEvent;
+pub type TimedClipEvent = super::snapshot::TimedMidiEvent;
 
 /// MIDI clip player. Constructed with a sorted-by-beat event list,
 /// a transport reader, and the audio sample rate. Events are emitted
@@ -349,7 +349,7 @@ mod tests {
 
     #[test]
     fn out_tap_forwards_the_same_stamped_events() {
-        use crate::registry::MidiMailbox;
+        use crate::block::registry::MidiMailbox;
 
         let unit = MidiUnitId::new(3);
         let transport = Arc::new(TestTransport::new(120.0));

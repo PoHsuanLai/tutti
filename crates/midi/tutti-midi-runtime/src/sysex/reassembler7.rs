@@ -6,8 +6,8 @@
 //! MIDI-CI negotiator, a bulk-dump reader) sees these one event at a time and
 //! must buffer until the run completes.
 //!
-//! [`Sysex7Reassembler`] is that buffer: feed each inbound event to
-//! [`push`](Sysex7Reassembler::push); it returns the complete packet run the
+//! [`Sysex7PacketReassembler`] is that buffer: feed each inbound event to
+//! [`push`](Sysex7PacketReassembler::push); it returns the complete packet run the
 //! moment one finishes (ready to hand to
 //! [`tutti_midi_types::ci::sysex7_to_ci`] or any other
 //! [`sysex7_payload`](tutti_midi_types::ump::MidiEvent::sysex7_payload)-based
@@ -65,7 +65,7 @@ const SYSEX7_BYTES_PER_PACKET: usize = 6;
 
 /// Reassembles multi-packet SysEx7 runs, one buffer per UMP group.
 #[derive(Clone, Debug)]
-pub struct Sysex7Reassembler {
+pub struct Sysex7PacketReassembler {
     /// In-flight messages keyed by group. A `Vec` (not a map) because a handful
     /// of groups are ever active at once; linear scan is cheaper than hashing.
     in_flight: Vec<InFlight>,
@@ -73,13 +73,13 @@ pub struct Sysex7Reassembler {
     max_bytes: usize,
 }
 
-impl Default for Sysex7Reassembler {
+impl Default for Sysex7PacketReassembler {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl Sysex7Reassembler {
+impl Sysex7PacketReassembler {
     /// A reassembler with no in-flight messages, bounded at
     /// [`DEFAULT_MAX_SYSEX_BYTES`].
     pub fn new() -> Self {
@@ -225,7 +225,7 @@ mod tests {
         MidiEvent::sysex7_fragments(MidiGroup::FIRST, &[0x01, 0x02, 0x03], &mut packets);
         assert_eq!(packets.len(), 1, "small payload is a single packet");
 
-        let mut r = Sysex7Reassembler::new();
+        let mut r = Sysex7PacketReassembler::new();
         let run = r.push(&packets[0]).expect("single completes");
         assert_eq!(run.len(), 1);
     }
@@ -238,7 +238,7 @@ mod tests {
         ci_to_sysex7(MidiGroup::FIRST, &msg, &mut packets);
         assert!(packets.len() > 1, "CI discovery spans multiple packets");
 
-        let mut r = Sysex7Reassembler::new();
+        let mut r = Sysex7PacketReassembler::new();
         let mut completed = None;
         for p in &packets {
             if let Some(run) = r.push(p) {
@@ -259,7 +259,7 @@ mod tests {
         ci_to_sysex7(MidiGroup::new(1), &b, &mut pb);
 
         // Interleave the two multi-packet runs on groups 0 and 1.
-        let mut r = Sysex7Reassembler::new();
+        let mut r = Sysex7PacketReassembler::new();
         let mut got_a = None;
         let mut got_b = None;
         let max = pa.len().max(pb.len());
@@ -281,7 +281,7 @@ mod tests {
 
     #[test]
     fn non_sysex7_event_is_ignored() {
-        let mut r = Sysex7Reassembler::new();
+        let mut r = Sysex7PacketReassembler::new();
         assert!(r
             .push(&MidiEvent::note_on(
                 MidiGroup::FIRST,
@@ -305,7 +305,7 @@ mod tests {
         // M2-104 §7.7.1: any same-group UMP other than a SysEx Continue or a
         // System Real Time message terminates the message in flight.
         let packets = multi_packet_run(MidiGroup::FIRST);
-        let mut r = Sysex7Reassembler::new();
+        let mut r = Sysex7PacketReassembler::new();
         r.push(&packets[0]); // START
         assert_eq!(r.in_flight_count(), 1);
 
@@ -327,7 +327,7 @@ mod tests {
     #[test]
     fn real_time_and_groupless_and_other_groups_do_not_terminate() {
         let packets = multi_packet_run(MidiGroup::FIRST);
-        let mut r = Sysex7Reassembler::new();
+        let mut r = Sysex7PacketReassembler::new();
         for p in &packets[..packets.len() - 1] {
             r.push(p);
         }
@@ -357,7 +357,7 @@ mod tests {
         // System Common (0xF1..=0xF6) shares MT 0x1 with Real Time but is not
         // exempt — the status byte decides, not the type nibble.
         let packets = multi_packet_run(MidiGroup::FIRST);
-        let mut r = Sysex7Reassembler::new();
+        let mut r = Sysex7PacketReassembler::new();
         r.push(&packets[0]);
         assert!(r
             .push(&MidiEvent::song_select(MidiGroup::FIRST, 3))
@@ -369,7 +369,7 @@ mod tests {
     fn an_unterminated_run_cannot_grow_without_bound() {
         // START + endless CONTINUE is the DoS shape: it never completes, so
         // only a cap stops the buffer growing until the host is out of memory.
-        let mut r = Sysex7Reassembler::with_max_bytes(64);
+        let mut r = Sysex7PacketReassembler::with_max_bytes(64);
         let packets = multi_packet_run(MidiGroup::FIRST);
         r.push(&packets[0]);
 
@@ -392,7 +392,7 @@ mod tests {
     fn a_message_within_the_cap_still_completes() {
         let packets = multi_packet_run(MidiGroup::FIRST);
         // Cap generous enough for this message's payload.
-        let mut r = Sysex7Reassembler::with_max_bytes(packets.len() * 6);
+        let mut r = Sysex7PacketReassembler::with_max_bytes(packets.len() * 6);
         let mut completed = None;
         for p in &packets {
             if let Some(run) = r.push(p) {

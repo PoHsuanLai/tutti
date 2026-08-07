@@ -1,5 +1,5 @@
 //! [`MidiPostBlock`] — the once-per-block MIDI *consumer* that runs **after**
-//! the graph renders. The mirror of [`MidiPreBlock`](crate::pre_block).
+//! the graph renders. The mirror of [`MidiPreBlock`](crate::block::pre_block).
 //!
 //! # Why outbound needs a phase of its own
 //!
@@ -187,7 +187,7 @@ impl Default for MidiOutSink {
 /// after the graph has finished.
 ///
 /// Held by the audio-callback assembly alongside the engine and
-/// [`MidiPreBlock`](crate::pre_block::MidiPreBlock); the callback calls
+/// [`MidiPreBlock`](crate::block::pre_block::MidiPreBlock); the callback calls
 /// `pre_block.run` → `engine.process` → [`run`](Self::run).
 pub struct MidiPostBlock {
     /// The collection point nodes push into. Handed to each emitting node at

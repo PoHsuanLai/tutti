@@ -2,7 +2,7 @@
 //!
 //! A driver hands us SysEx in whatever chunks the transport happened to produce:
 //! a long dump spans several callbacks, a middle chunk arrives with no leading
-//! `0xF0`, and two short dumps can share one buffer. [`Sysex7Assembler`] absorbs
+//! `0xF0`, and two short dumps can share one buffer. [`Sysex7ByteAssembler`] absorbs
 //! that and yields complete payloads as UMP SysEx7 packets.
 //!
 //! # Why this survives the move to native UMP
@@ -53,7 +53,7 @@ const MAX_SYSEX_BYTES: usize = 64 * 1024;
 /// One per open input port: the in-flight state is per-connection, and two ports
 /// interleaving into one assembler would splice their dumps together.
 #[derive(Debug, Default)]
-pub struct Sysex7Assembler {
+pub struct Sysex7ByteAssembler {
     /// Bytes of the run currently in flight, excluding any leading `0xF0`.
     /// Non-empty ⇒ mid-SysEx.
     buf: Vec<u8>,
@@ -63,7 +63,7 @@ pub struct Sysex7Assembler {
     overflowed: bool,
 }
 
-impl Sysex7Assembler {
+impl Sysex7ByteAssembler {
     /// A fresh assembler with nothing in flight.
     pub fn new() -> Self {
         Self::default()
@@ -180,7 +180,7 @@ mod tests {
 
     /// Drive one buffer through a fresh assembler and return its packets.
     fn run(message: &[u8]) -> (Vec<MidiEvent>, usize) {
-        let mut asm = Sysex7Assembler::new();
+        let mut asm = Sysex7ByteAssembler::new();
         let mut out = Vec::new();
         let n = asm.push(message, &mut out);
         (out, n)
@@ -195,7 +195,7 @@ mod tests {
 
     #[test]
     fn split_sysex_reassembles_across_buffers() {
-        let mut asm = Sysex7Assembler::new();
+        let mut asm = Sysex7ByteAssembler::new();
         let mut out = Vec::new();
         // A dump split across three transport callbacks; only the last completes.
         assert_eq!(asm.push(&[0xF0, 0x10, 0x11], &mut out), 0);
@@ -213,7 +213,7 @@ mod tests {
     /// the second one entirely, with no error anywhere.
     #[test]
     fn two_runs_in_one_buffer_both_survive() {
-        let mut asm = Sysex7Assembler::new();
+        let mut asm = Sysex7ByteAssembler::new();
         let mut out = Vec::new();
         let n = asm.push(&[0xF0, 0x01, 0x02, 0xF7, 0xF0, 0x03, 0x04, 0xF7], &mut out);
         assert_eq!(n, 2, "both runs must complete");
@@ -227,7 +227,7 @@ mod tests {
     /// BUG 1, the asymmetric case: a trailing partial run must be retained.
     #[test]
     fn run_after_a_terminator_keeps_buffering() {
-        let mut asm = Sysex7Assembler::new();
+        let mut asm = Sysex7ByteAssembler::new();
         let mut out = Vec::new();
         assert_eq!(asm.push(&[0xF0, 0x01, 0xF7, 0xF0, 0x02], &mut out), 1);
         assert!(
@@ -245,7 +245,7 @@ mod tests {
     /// terminator resyncs rather than splicing the garbage onto a good message.
     #[test]
     fn an_unterminated_run_is_capped_and_resyncs() {
-        let mut asm = Sysex7Assembler::new();
+        let mut asm = Sysex7ByteAssembler::new();
         let mut out = Vec::new();
 
         let mut flood = vec![0xF0];
@@ -283,7 +283,7 @@ mod tests {
     /// dropping that truncated run beats splicing it onto a good one.
     #[test]
     fn f0_mid_run_restarts_rather_than_corrupting() {
-        let mut asm = Sysex7Assembler::new();
+        let mut asm = Sysex7ByteAssembler::new();
         let mut out = Vec::new();
         assert_eq!(asm.push(&[0xF0, 0x01], &mut out), 0);
         assert_eq!(asm.push(&[0xF0, 0x02, 0xF7], &mut out), 1);
@@ -301,13 +301,13 @@ mod tests {
     /// other speaks MIDI 2.0. So a real CI probe arrives here as raw
     /// `F0 7E … F7` bytes even on a UMP-era stack.
     ///
-    /// This asserts the whole promotion chain: raw bytes → `Sysex7Assembler` →
-    /// UMP SysEx7 fragments → `Sysex7Reassembler` → a typed `CiMessage`. The
+    /// This asserts the whole promotion chain: raw bytes → `Sysex7ByteAssembler` →
+    /// UMP SysEx7 fragments → `Sysex7PacketReassembler` → a typed `CiMessage`. The
     /// codec's own round-trip tests start from UMP and so can't catch a break at
     /// the wire edge (a dropped `0xF0`, a mis-sized payload split).
     #[test]
     fn midi1_wire_sysex_promotes_to_a_typed_ci_message() {
-        use tutti_midi_runtime::{CiInitiator, Sysex7Reassembler};
+        use tutti_midi_runtime::{CiInitiator, Sysex7PacketReassembler};
         use tutti_midi_types::ci::{ci_to_sysex7, sysex7_to_ci, DiscoveryData, Muid};
 
         // A Discovery probe exactly as a peer device would send it.
@@ -339,11 +339,11 @@ mod tests {
         wire.push(0xF7);
 
         // Drive the driver's reassembly, then the UMP-side reassembler.
-        let mut asm = Sysex7Assembler::new();
+        let mut asm = Sysex7ByteAssembler::new();
         let mut fragments = Vec::new();
         assert_eq!(asm.push(&wire, &mut fragments), 1, "complete on the F7");
 
-        let mut reassembler = Sysex7Reassembler::new();
+        let mut reassembler = Sysex7PacketReassembler::new();
         let decoded = fragments
             .iter()
             .find_map(|ev| reassembler.push(ev).and_then(|run| sysex7_to_ci(&run)));

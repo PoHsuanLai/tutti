@@ -29,7 +29,7 @@ use tutti_midi_types::ump::MidiEvent;
 use tutti_midi_types::Midi1ToMidi2Translator;
 use tutti_midi_types::{MidiIn, MidiRouter, MidiRoutingSnapshot};
 
-use crate::mpe_ingest::MpeIngest;
+use crate::outbound::mpe_ingest::MpeIngest;
 use tutti_midi_types::mpe::MpeMode;
 
 /// Something ticked once per audio block, before event delivery, whose output

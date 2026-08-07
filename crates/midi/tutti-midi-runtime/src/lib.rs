@@ -1,7 +1,7 @@
 //! MIDI runtime state machines for the Tutti audio engine.
 //!
 //! Pure MIDI types live in [`tutti_midi_types`]. Hardware I/O lives in
-//! `tutti-midi-io`. This crate owns the *runtime state* that connects them:
+//! `tutti-midi-hardware`. This crate owns the *runtime state* that connects them:
 //!
 //! - [`MidiMailbox`] / [`MidiSender`] / [`MidiReceiver`] — lock-free
 //!   per-unit MIDI inboxes; nodes own a receiver, callers push via senders

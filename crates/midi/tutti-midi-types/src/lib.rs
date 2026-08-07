@@ -79,7 +79,7 @@ pub use unit_id::MidiUnitId;
 /// import doesn't flood scope. Reach for them by path when you need them.
 ///
 /// For hardware and file I/O on top of these types, use
-/// `tutti_midi_io::prelude::*`, which re-exports this prelude plus [`MidiIo`]
+/// `tutti_midi_hardware::prelude::*`, which re-exports this prelude plus [`MidiIo`]
 /// and the runtime delivery types.
 ///
 /// ```
@@ -146,7 +146,7 @@ pub use unit_id::MidiUnitId;
 /// ```
 ///
 /// [`MidiEvent::message`]: crate::MidiMessage
-/// [`MidiIo`]: https://docs.rs/tutti-midi-io
+/// [`MidiIo`]: https://docs.rs/tutti-midi-hardware
 pub mod prelude {
     pub use crate::{
         normalize, read_clip_file, write_clip_file, write_clip_file_from_beats, ClipEvent,

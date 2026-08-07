@@ -1,4 +1,4 @@
-# tutti-midi-io
+# tutti-midi-hardware
 
 Native-UMP OS MIDI I/O: enumerate endpoints, connect them, send and receive
 MIDI 2.0.
@@ -35,7 +35,7 @@ the stub, so a distro with an older alsa-lib still builds.
 
 ```rust,no_run
 use std::sync::Arc;
-use tutti_midi_io::{HardwareMidiInputs, MidiSession};
+use tutti_midi_hardware::{HardwareMidiInputs, MidiSession};
 use tutti_midi_types::ump::MidiEvent;
 use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
 
@@ -63,7 +63,7 @@ session.send(&[MidiEvent::note_on(
 
 // Inbound events never pass through the session. A backend pushes them into
 // `ports`, which the audio thread drains through `MidiIn::poll_into`.
-# Ok::<(), tutti_midi_io::Error>(())
+# Ok::<(), tutti_midi_hardware::Error>(())
 ```
 
 ## Examples

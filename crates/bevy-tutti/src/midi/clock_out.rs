@@ -7,7 +7,7 @@
 //! owns the *off-RT* half: [`ClockMasterRes`] holds the master handle (for
 //! enable/config from the UI) plus the mailbox's [`MidiReceiver`], and
 //! [`pump_clock_out_system`] drains it each frame to the OS MIDI output via
-//! [`MidiIo::send`](tutti_midi_io::MidiIo).
+//! [`MidiIo::send`](tutti_midi_hardware::MidiIo).
 //!
 //! Modeled on the hardware-input drain: engine produces on the audio thread, a
 //! per-frame Bevy system forwards the results. The drain cadence doesn't affect

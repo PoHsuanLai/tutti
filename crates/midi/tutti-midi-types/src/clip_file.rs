@@ -245,7 +245,7 @@ impl ParsedClipFile {
     }
 
     /// Pair the event stream into whole notes with durations — the shape an
-    /// importer wants, and the MIDI-2 analogue of `tutti_midi_io::smf::tracks`.
+    /// importer wants, and the MIDI-2 analogue of `tutti_midi_hardware::smf::tracks`.
     ///
     /// Velocity stays 16-bit ([`ClipNote::velocity`]): pairing here rather than
     /// in a caller is what keeps a clip file's full-resolution velocity from
@@ -300,7 +300,7 @@ impl ParsedClipFile {
 }
 
 /// One note from a clip file, paired from its Note On / Note Off, in beats from
-/// the clip start. The MIDI-2 counterpart of `tutti_midi_io::smf::SmfNote` —
+/// the clip start. The MIDI-2 counterpart of `tutti_midi_hardware::smf::SmfNote` —
 /// same shape, but velocity keeps all 16 bits and the UMP group is carried.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ClipNote {

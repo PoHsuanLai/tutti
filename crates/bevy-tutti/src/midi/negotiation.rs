@@ -36,7 +36,7 @@
 //!
 //! **UMP-Stream needs a native-UMP transport.** That family has no MIDI-1.0
 //! encoding, so it cannot arrive over midir (a MIDI-1.0 API) at all. On macOS
-//! [`UmpVirtualDestination`](tutti_midi_io::UmpVirtualDestination) provides the
+//! [`UmpVirtualDestination`](tutti_midi_hardware::UmpVirtualDestination) provides the
 //! MIDI-2.0-protocol endpoint it needs — point it at the same input ring with
 //! `with_producer` and UMP-Stream messages join the ordinary inbound stream,
 //! reaching the `UmpStream` arm of the app's drain. (Its outbound counterpart is

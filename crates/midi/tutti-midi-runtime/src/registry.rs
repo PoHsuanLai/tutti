@@ -14,7 +14,7 @@
 //! Delivery here is *inbound only*: a mailbox feeds a unit that polls it.
 //! Protocol messages aimed at peer devices (MIDI-CI, UMP-Stream discovery,
 //! Flex metadata) are not delivered through this bus — they go to the
-//! hardware-out mailbox (`tutti_midi_io::MidiOutRes`), the only path drained to
+//! hardware-out mailbox (`tutti_midi_hardware::MidiOutRes`), the only path drained to
 //! the wire.
 
 use std::sync::Arc;
@@ -204,7 +204,7 @@ impl MidiReceiver {
 ///
 /// Delivery is *addressed only*: this bus feeds units that poll their inbox.
 /// Messages destined for external peer devices go to the hardware-out mailbox
-/// (`tutti_midi_io::MidiOutRes`) instead — a synth inbox is not a wire.
+/// (`tutti_midi_hardware::MidiOutRes`) instead — a synth inbox is not a wire.
 ///
 /// # Real-time safety
 ///

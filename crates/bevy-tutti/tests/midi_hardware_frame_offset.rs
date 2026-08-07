@@ -19,7 +19,7 @@
 
 use std::time::{Duration, Instant};
 
-use tutti_midi_io::HardwareMidiInputs;
+use tutti_midi_hardware::HardwareMidiInputs;
 use tutti_midi_runtime::tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
 use tutti_midi_types::ump::MidiEvent;
 

@@ -5,7 +5,7 @@
 //! ```
 
 use std::sync::Arc;
-use tutti_midi_io::{HardwareMidiInputs, MidiSession};
+use tutti_midi_hardware::{HardwareMidiInputs, MidiSession};
 
 fn main() {
     let session = MidiSession::new(Arc::new(HardwareMidiInputs::new(256)));

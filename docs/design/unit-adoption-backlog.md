@@ -78,7 +78,7 @@ duration_beats() = inf
 ```
 
 The SMF path rejects the identical condition —
-`tutti-midi-io/src/smf.rs:172-174` returns `Error::MidiFileParse("zero ticks-per-beat")`.
+`tutti-midi-hardware/src/smf.rs:172-174` returns `Error::MidiFileParse("zero ticks-per-beat")`.
 This is its MIDI-2 twin, unguarded.
 
 Fix: a `ClipFileError::ZeroDctpq` (or fold into `MissingDctpq` — a zero tick
@@ -86,7 +86,7 @@ unit *is* a missing declaration) rejected at `read_clip_file`.
 
 ### 1b. The same SMF header field is guarded on one path and not the other
 
-Within `tutti-midi-io/src/smf.rs`, two functions read `smf.header.timing`:
+Within `tutti-midi-hardware/src/smf.rs`, two functions read `smf.header.timing`:
 
 - `tracks()` at `:168` — guards zero, returns `MidiUnsupportedTiming` / `MidiFileParse`
 - `ParsedMidiFile::parse()` at `:46` — no zero check; `parse_track` at `:105`
@@ -148,9 +148,9 @@ Ordered by blast radius. Each is two-or-more same-typed neighbours of
 | `tutti-export/src/process/resample.rs:140` | `Resampler::new(channels, source_rate: u32, target_rate: u32, chunk)` | `SampleRate` ×2 |
 | `tutti-synth/src/synth.rs:138-150` | `FilterModConfig { mod_wheel_depth, velocity_depth, lfo_rate, lfo_depth }` — four `pub f32` | `Depth`, `Depth`, `Hz`, `Depth` |
 | `tutti-units/src/modulation/modulated_delay.rs:16-36` | `ModulatedDelayConfig { base_delay_secs, max_delay_secs, lr_phase_offset }` | `Seconds` ×2, `PhaseIncrement` |
-| `tutti-midi-io/src/smf.rs:147,149` | `SmfNote { start_beats, duration_beats }` | `Beat`, `BeatDuration` |
+| `tutti-midi-hardware/src/smf.rs:147,149` | `SmfNote { start_beats, duration_beats }` | `Beat`, `BeatDuration` |
 | `tutti-midi-types/src/clip_file.rs:314,316` | `ClipNote { start_beats, duration_beats }` | `Beat`, `BeatDuration` |
-| `tutti-midi-io/src/smf.rs:88` | `get_events_in_range(start_beats: f64, end_beats: f64)` | `Beat` ×2 |
+| `tutti-midi-hardware/src/smf.rs:88` | `get_events_in_range(start_beats: f64, end_beats: f64)` | `Beat` ×2 |
 | `tutti-synth/src/portamento.rs:49-58` | `start_freq`, `target_freq`, `current_freq` — three private `f32` | `Hz` ×3 |
 | `tutti-units/src/spatial/hrtf_panner.rs:353` | `direction_from_degrees(azimuth_deg: f32, elevation_deg: f32)` | `Azimuth`, `Elevation` |
 | `tutti-units/src/delay.rs:175` | `process_sample(input: f32, delay_samples: f32, fb: f32, mix: Mix)` | `Feedback` — note `mix` is *already* typed in the same signature |
@@ -234,7 +234,7 @@ travels bare, and is re-wrapped at the far end. Same shape as #108's AU latency.
   truncation under-allocates a frame), `freq` (`Hz`), `accent_volume`
   (`Amplitude`), and `2.0 * PI * freq * t` (the `PhaseIncrement`/`Radians`
   path). Self-contained, so medium severity despite the count.
-- `tutti-midi-io/src/smf.rs:117` and `:328` — BPM ↔ µs-per-quarter, both
+- `tutti-midi-hardware/src/smf.rs:117` and `:328` — BPM ↔ µs-per-quarter, both
   directions, both unguarded. The MIDI-2 twin
   (`ump/flex_data.rs:86-98`) guards both directions and uses a named constant.
   Three copies of one relation; one is unprotected.
@@ -376,7 +376,7 @@ looking for and both reported "clean" by earlier passes:
 
 And three **feature-gated builds were simply broken on `main`**, none
 reachable from a default check: `bevy-tutti --features plugin` (fixed in
-tier 5), `tutti-plugin --features vst2`, and `tutti-midi-io --all-features`.
+tier 5), `tutti-plugin --features vst2`, and `tutti-midi-hardware --all-features`.
 A feature that is off by default is a feature nobody rebuilds.
 
 The lesson generalizes past units: any audit of this repo should run

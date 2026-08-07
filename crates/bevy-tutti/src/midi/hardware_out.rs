@@ -221,10 +221,10 @@ impl MidiOutDrops {
 /// where you built.
 ///
 /// It collapses because every backend now yields a `Box<dyn MidiOut>`
-/// ([`MidiEndpoints::open_output`](tutti_midi_io::MidiEndpoints::open_output)),
+/// ([`MidiEndpoints::open_output`](tutti_midi_hardware::MidiEndpoints::open_output)),
 /// so a CoreMIDI port and an ALSA port are one static type. The remaining
 /// platform choice happens once, at construction, inside
-/// `tutti_midi_io::core::backend::active()`.
+/// `tutti_midi_hardware::core::backend::active()`.
 pub struct MidiOutRouter<'a> {
     /// The open output, JR-stamping as it sends. `None` when nothing is
     /// connected — which is *why* it is an `Option`: a sink that is present but

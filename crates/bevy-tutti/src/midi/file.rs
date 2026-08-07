@@ -57,7 +57,7 @@ use bevy_ecs::prelude::*;
 use bevy_reflect::prelude::*;
 use bevy_tasks::{block_on, futures_lite::future, AsyncComputeTaskPool, Task};
 
-// Straight from `tutti-midi-file`, not through `tutti-midi-io`'s re-export.
+// Straight from `tutti-midi-file`, not through `tutti-midi-hardware`'s re-export.
 // This module decodes bytes an asset loader already read; it opens no MIDI port,
 // so it must not depend on the crate that does — `midi-hardware` gates that one,
 // and reaching through it made *reading a `.mid` file* require an OS MIDI layer.

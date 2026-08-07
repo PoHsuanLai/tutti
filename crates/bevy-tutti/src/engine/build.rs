@@ -32,7 +32,7 @@ use crate::midi::MidiIoRes;
 #[cfg(feature = "midi")]
 use crate::midi::{ClockMasterRes, MidiBusRes, MidiOutSinkRes, MidiRoutingRes};
 #[cfg(feature = "midi-hardware")]
-use tutti_midi_io::MidiSession;
+use tutti_midi_hardware::MidiSession;
 #[cfg(feature = "midi")]
 use tutti_midi_runtime::{MidiBus, MidiPostBlock, MidiPreBlock};
 #[cfg(feature = "midi")]
@@ -54,7 +54,7 @@ pub fn build_into(plugin: &crate::TuttiPlugin, app: &mut App) -> Result<()> {
     // (Software MIDI fan-out via `MidiBus` is always present under `midi`.)
     #[cfg(feature = "midi-hardware")]
     let midi_io = {
-        let port_manager = Arc::new(tutti_midi_io::HardwareMidiInputs::new(256));
+        let port_manager = Arc::new(tutti_midi_hardware::HardwareMidiInputs::new(256));
         Some(MidiSession::new(port_manager))
     };
 

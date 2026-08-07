@@ -19,7 +19,7 @@ members = [
     "crates/core/tutti-mod",
     "crates/core/tutti-export",
     "crates/core/tutti-io",
-    "crates/midi/tutti-midi-io",
+    "crates/midi/tutti-midi-hardware",
     "crates/midi/tutti-midi-file",
     "crates/midi/tutti-midi-types",
     "crates/midi/tutti-midi-runtime",

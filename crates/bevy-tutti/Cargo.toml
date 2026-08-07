@@ -51,9 +51,9 @@ tutti-sampler = { path = "../tutti/crates/dsp/tutti-sampler", optional = true, d
 tutti-io = { path = "../tutti/crates/core/tutti-io", optional = true }
 tutti-synth = { path = "../tutti/crates/dsp/tutti-synth", optional = true, default-features = false }
 tutti-export = { path = "../tutti/crates/core/tutti-export", optional = true }
-tutti-midi-io = { path = "../tutti/crates/midi/tutti-midi-io", optional = true }
-# SMF / Clip File codecs. Separate from `tutti-midi-io` because reading a `.mid`
-# needs no OS MIDI port.
+tutti-midi-hardware = { path = "../tutti/crates/midi/tutti-midi-hardware", optional = true }
+# SMF / Clip File codecs. Separate from `tutti-midi-hardware` because reading a
+# `.mid` needs no OS MIDI port.
 tutti-midi-file = { path = "../tutti/crates/midi/tutti-midi-file", optional = true }
 tutti-midi-runtime = { path = "../tutti/crates/midi/tutti-midi-runtime", optional = true, default-features = false }
 # `json` is explicit: this crate's `PluginsRes`/`PluginScanConfig` default path
@@ -138,9 +138,10 @@ ogg = ["tutti-core/ogg", "tutti-sampler?/ogg"]
 # no OS I/O. `midi-hardware` adds the OS layer (endpoint enumeration, connect,
 # native-UMP send/receive) on top. `plugin` also enables `midi`.
 midi = ["dep:tutti-midi-file", "dep:tutti-midi-runtime", "tutti-core/midi", "tutti-synth?/midi", "tutti-cpal/midi"]
-# The OS MIDI layer. `tutti-midi-io` has no features of its own — it IS the OS
-# edge — so this simply pulls the crate in.
-midi-hardware = ["midi", "dep:tutti-midi-io"]
+# The OS MIDI layer. Note the feature and the crate share the name `midi-hardware`
+# — deliberately, since the feature does nothing but pull the crate in.
+# `tutti-midi-hardware` has no features of its own; it IS the OS edge.
+midi-hardware = ["midi", "dep:tutti-midi-hardware"]
 
 # Synth & sampling. bevy-tutti registers these with the AssetServer, so it
 # wants the asset derives on both.

@@ -15,8 +15,9 @@ pub use core::{
 pub use core::{Error, Result};
 pub use core::{HardwareMidiInputs, InputProducerHandle, PortInfo, PortType};
 
-/// `HardwareMidiInputs` and friends live in [`core::port`]; kept as a crate-root
-/// module path for the `tutti_midi_io::port::*` spelling consumers already use.
+/// `HardwareMidiInputs` and friends live in [`core::port`]; re-exported at the
+/// crate root so a consumer can name the port vocabulary as a group
+/// (`hardware::port::*`) without knowing it sits under `core`.
 pub use core::port;
 
 #[cfg(target_os = "macos")]
@@ -64,8 +65,10 @@ pub use tutti_midi_types::sync::{
 // --- Runtime delivery (event fan-out + beat-scheduled playback) ---
 //
 // The lock-free dispatch (`MidiBus`/`MidiSender`/`MidiReceiver`) and the offline
-// snapshot / clip playback live in `tutti-midi-runtime`; surface them here so an
-// app depends on this one umbrella crate rather than reaching into the runtime.
+// snapshot / clip playback live in `tutti-midi-runtime`; surfaced here because
+// delivery is what a port feeds — an inbound event goes straight from a driver
+// into the bus, so a hardware consumer needs both. That is the test the dropped
+// file re-export failed: a `.mid` reader needs no port, and no port needs it.
 
 pub use tutti_midi_runtime::{
     MidiBus, MidiClipSource, MidiMailbox, MidiReceiver, MidiSender, MidiSnapshot,
@@ -74,21 +77,17 @@ pub use tutti_midi_runtime::{
 
 pub use crossbeam_channel;
 
-// --- Standard MIDI File codec ---
+// --- Standard MIDI File codec: NOT here ---
+//
+// The file codecs live in `tutti-midi-file` and are deliberately *not*
+// re-exported. Reading a `.mid` and talking to a MIDI port are different jobs;
+// pairing them once made a consumer that wanted only the former link CoreMIDI.
+// This crate used to pass the SMF surface through under its old `-io` name,
+// which read as plausible; under `-hardware` it is plainly a category error — a
+// file is not a device. Depend on `tutti-midi-file` directly for `smf` / `clip`.
 
-// The file codecs moved to `tutti-midi-file` — reading a `.mid` and talking to
-// a MIDI port are different jobs, and pairing them behind one feature flag made
-// a consumer that wanted only the former link CoreMIDI. Re-exported here so the
-// `tutti_midi_io::smf` / `::clip` spellings keep working.
-pub use tutti_midi_file::{clip, smf};
-pub use tutti_midi_file::{
-    encode_midi_file, write_midi_file, MidiWriteOptions, ParsedMidiFile, SmfMessage, SmfNote,
-    SmfTimedEvent, SmfTrack,
-};
-pub use tutti_midi_file::{read_clip_file_from_path, write_clip_file_to_path, MidiFileKind};
-
-/// The umbrella MIDI prelude, for `use tutti_midi_io::prelude::*;` — everything a
-/// typical app touches, from one import.
+/// The hardware MIDI prelude, for `use tutti_midi_hardware::prelude::*;` —
+/// everything a typical app touches, from one import.
 ///
 /// It re-exports [`tutti_midi_types::prelude`] (the wire event + decoded view +
 /// clip-file codec + per-note identity) and adds this crate's I/O and delivery:
@@ -98,13 +97,14 @@ pub use tutti_midi_file::{read_clip_file_from_path, write_clip_file_to_path, Mid
 ///   fan-out), and beat-scheduled playback ([`MidiClipSource`], [`MidiSnapshot`],
 ///   [`TimedMidiEvent`]).
 ///
-/// Deliberately excludes the rarer surfaces — SMF codec internals, UMP-Stream
-/// endpoint negotiation, the Bevy ECS layer, sync decoders, MPE zone config —
-/// which stay explicit imports (`tutti_midi_io::smf`, `::MidiClockDecoder`,
-/// `::ecs::*`, …). Glob this for the 90% path; import the rest by name.
+/// Deliberately excludes the rarer surfaces — UMP-Stream endpoint negotiation,
+/// the Bevy ECS layer, sync decoders, MPE zone config — which stay explicit
+/// imports (`::MidiClockDecoder`, `::ecs::*`, …). Glob this for the 90% path;
+/// import the rest by name. The SMF / Clip File codecs are not here at all:
+/// they are `tutti-midi-file`'s, and this crate does not re-export them.
 ///
 /// ```
-/// use tutti_midi_io::prelude::*;
+/// use tutti_midi_hardware::prelude::*;
 ///
 /// // The types prelude comes along: build + decode an event.
 /// let ev = MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000);

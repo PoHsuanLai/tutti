@@ -19,11 +19,11 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
-use tutti_midi_io::{HardwareMidiInputs, MidiEvent, MidiSession};
+use tutti_midi_hardware::{HardwareMidiInputs, MidiEvent, MidiSession};
 use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
 
 /// Pick the loopback endpoint. See the module doc for why this is not VirMIDI.
-fn pick(list: &[tutti_midi_io::EndpointInfo]) -> Option<&tutti_midi_io::EndpointInfo> {
+fn pick(list: &[tutti_midi_hardware::EndpointInfo]) -> Option<&tutti_midi_hardware::EndpointInfo> {
     list.iter().find(|e| e.name.contains("Midi Through"))
 }
 

@@ -9,14 +9,15 @@ API, and nothing is `cfg`-gated.
 
 ## Why it is separate
 
-It used to live in [`tutti-midi-io`](../tutti-midi-io), behind that crate's
+It used to live in [`tutti-midi-hardware`](../tutti-midi-hardware) — then named
+`tutti-midi-io` — behind that crate's
 `midi-hardware` feature being *off*. That made "I want to read a `.mid` file" and
 "I want to talk to a MIDI port" two settings of one flag, when they are simply
 different jobs — and a consumer wanting only the codecs had to know to pass
 `default-features = false`, or silently link CoreMIDI.
 
 Splitting turned that flag into a dependency edge. Depend on this crate for
-files, on `tutti-midi-io` for ports.
+files, on `tutti-midi-hardware` for ports.
 
 ## Quick start
 

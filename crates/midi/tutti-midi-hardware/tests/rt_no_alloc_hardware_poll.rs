@@ -4,7 +4,7 @@
 //! through a `FixedInput` fake, which copies from a pre-built `Vec` and can
 //! never allocate — so it proves nothing about the production input. That is
 //! `HardwareMidiInputs`, and reaching it needs this crate, because
-//! `tutti-midi-runtime` cannot depend on `tutti-midi-io` (the dependency runs
+//! `tutti-midi-runtime` cannot depend on `tutti-midi-hardware` (the dependency runs
 //! the other way).
 //!
 //! What the real path does that the fake does not: drain N port rings into a
@@ -16,7 +16,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use assert_no_alloc::AllocDisabler;
-use tutti_midi_io::HardwareMidiInputs;
+use tutti_midi_hardware::HardwareMidiInputs;
 use tutti_midi_runtime::MidiPreBlock;
 use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup, RtPublish};
 use tutti_midi_types::ump::MidiEvent;

@@ -24,10 +24,10 @@ use bevy_log::warn;
 /// when the `midi-hardware` feature is compiled; claimed into the world by
 /// [`TuttiMidiPlugin`](super::plugin::TuttiMidiPlugin) from the engine handoff.
 #[derive(Resource, Clone, Debug)]
-pub struct MidiIoRes(pub tutti_midi_io::MidiSession);
+pub struct MidiIoRes(pub tutti_midi_hardware::MidiSession);
 
 impl std::ops::Deref for MidiIoRes {
-    type Target = tutti_midi_io::MidiSession;
+    type Target = tutti_midi_hardware::MidiSession;
     fn deref(&self) -> &Self::Target {
         &self.0
     }

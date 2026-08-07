@@ -25,7 +25,7 @@ For audio UI components, see [Armas](https://github.com/PoHsuanLai/Armas).
 Umbrella crate that coordinates multiple audio subsystems:
 
 - **[tutti-core]** - Audio graph runtime (Net, Transport, Metering, PDC, MIDI routing)
-- **[tutti-midi-io]** - MIDI I/O subsystem (Hardware I/O, ports, MPE, MIDI 2.0, CC mapping)
+- **[tutti-midi-hardware]** - MIDI I/O subsystem (Hardware I/O, ports, MPE, MIDI 2.0, CC mapping)
 - **[tutti-sampler]** - Sample playback (Butler, streaming, recording, time-stretch)
 - **[tutti-units]** - Built-in AudioUnits (LFO, filters, delays, dynamics, modulation, spatial)
 - **[tutti-plugin]** - Plugin hosting (VST2, VST3, CLAP)
@@ -289,7 +289,7 @@ cargo run --example midi_synth --features "midi,synth"
 MIT OR Apache-2.0
 
 [tutti-core]: https://crates.io/crates/tutti-core
-[tutti-midi-io]: https://crates.io/crates/tutti-midi-io
+[tutti-midi-hardware]: https://crates.io/crates/tutti-midi-hardware
 [tutti-sampler]: https://crates.io/crates/tutti-sampler
 [tutti-units]: https://crates.io/crates/tutti-units
 [tutti-plugin]: https://crates.io/crates/tutti-plugin

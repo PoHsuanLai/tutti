@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`tutti-midi-io` is renamed `tutti-midi-hardware`.** The crate is the OS port
+  edge and nothing else; `-io` invited the reading that it also covered file I/O,
+  which is `tutti-midi-file`'s job. `bevy-tutti`'s `midi-hardware` feature now
+  shares the crate's name, which is the intent — the feature does nothing but
+  pull the crate in.
+
+- **`tutti-midi-hardware` no longer re-exports the SMF / Clip File codecs.** The
+  `tutti_midi_io::smf` and `::clip` spellings are gone, along with the
+  `tutti-midi-file` dependency behind them. Under the old name passing the file
+  API through was merely odd; under `-hardware` it was a category error, since a
+  file is not a device. Depend on `tutti-midi-file` directly — `bevy-tutti` and
+  `dawai-model` already did, and nothing used the re-export.
+
+  `Error::File(tutti_midi_file::Error)` went with it. It existed only to make
+  the re-exported codecs share this crate's `Result`, and nothing ever
+  constructed or matched it; a consumer that reads files owns that error itself
+  (`bevy_tutti::midi::file::MidiFileError::Smf`).
+
 - **The MIDI delivery traits split on arity.** There are now four, in two pairs,
   one pair per direction — keeping the `In`/`Out` axis `AudioIn`/`AudioOut` set:
 

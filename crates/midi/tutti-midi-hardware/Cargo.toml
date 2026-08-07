@@ -1,5 +1,5 @@
 [package]
-name = "tutti-midi-io"
+name = "tutti-midi-hardware"
 version = "0.0.1"
 edition = "2021"
 description = "Native-UMP OS MIDI I/O — endpoint enumeration, connection, send/receive"
@@ -7,8 +7,8 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/PoHsuanLai/Tutti"
 readme = "README.md"
 
-# No features. This crate IS the OS MIDI edge — with the file codecs split out
-# to `tutti-midi-file`, there is nothing here that is not a port. The old
+# No features. This crate IS the OS MIDI edge — with the file codecs in
+# `tutti-midi-file`, there is nothing here that is not a port. The old
 # `midi-hardware` flag left the whole session/port/capability surface compiled
 # with no backend to drive it, which is not a configuration anyone wants.
 #
@@ -21,12 +21,13 @@ tracing = "0.1"
 
 # Core types
 tutti-midi-types = { path = "../tutti-midi-types" }
-# The SMF / Clip File codecs. Re-exported for the `tutti_midi_io::smf` spelling;
-# a consumer that only wants files should depend on it directly instead.
-tutti-midi-file = { path = "../tutti-midi-file" }
+# NOTE: no `tutti-midi-file` dep. A file is not hardware — this crate is the OS
+# port edge, and re-exporting an SMF codec through it was a category error left
+# over from the old `tutti-midi-io` name. Consumers depend on `tutti-midi-file`
+# directly; `bevy-tutti` and `dawai-model` already did.
 tutti-core = { path = "../../core/tutti-core", default-features = false, features = ["midi"] }
 # MIDI fan-out runtime (MidiBus, MpeProcessor, PerNoteExpression, MidiEventSlot).
-# Acyclic: tutti-midi-runtime does NOT depend on tutti-midi-io.
+# Acyclic: tutti-midi-runtime does NOT depend on tutti-midi-hardware.
 tutti-midi-runtime = { path = "../tutti-midi-runtime", default-features = false }
 
 # Lock-free

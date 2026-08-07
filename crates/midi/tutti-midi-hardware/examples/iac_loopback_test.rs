@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
-use tutti_midi_io::{HardwareMidiInputs, MidiEvent, MidiMessage, MidiSession, NoteId};
+use tutti_midi_hardware::{HardwareMidiInputs, MidiEvent, MidiMessage, MidiSession, NoteId};
 use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
 
 fn main() {

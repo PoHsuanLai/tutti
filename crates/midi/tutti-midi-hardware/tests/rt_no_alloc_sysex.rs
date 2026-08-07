@@ -35,7 +35,7 @@
 //! caught exactly that, which is why this file exists.
 
 use assert_no_alloc::AllocDisabler;
-use tutti_midi_io::Sysex7Assembler;
+use tutti_midi_hardware::Sysex7Assembler;
 
 #[global_allocator]
 static A: AllocDisabler = AllocDisabler;

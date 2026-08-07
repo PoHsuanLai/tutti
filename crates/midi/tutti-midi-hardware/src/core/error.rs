@@ -34,16 +34,11 @@ pub enum Error {
     #[error("Invalid config: {0}")]
     InvalidConfig(String),
 
-    /// A MIDI **file** error, from [`tutti_midi_file`].
-    ///
-    /// Kept reachable because this crate re-exports the file codecs, so callers
-    /// written against `tutti_midi_io::smf` also expect `tutti_midi_io::Result`.
-    /// It is a wrapped variant rather than flattened copies of the file crate's
-    /// cases: a parse failure is not a port failure, and collapsing them would
-    /// make an unreadable `.mid` and an unopenable device indistinguishable in a
-    /// match.
-    #[error("MIDI file: {0}")]
-    File(#[from] tutti_midi_file::Error),
+    // NOTE: there is deliberately no `File(tutti_midi_file::Error)` variant.
+    // It existed only to serve the SMF re-export this crate used to carry, and
+    // nothing ever constructed or matched it. A parse failure is not a port
+    // failure — a consumer that reads files owns that error itself
+    // (`bevy_tutti::midi::file::MidiFileError::Smf` is the live example).
 }
 
 // The three `From<midir::*>` impls that used to sit here are gone with midir.

@@ -158,7 +158,7 @@ pub fn build_into(plugin: &crate::TuttiPlugin, app: &mut App) -> Result<()> {
             .world()
             .get_resource::<crate::midi::MpeModeConfig>()
             .map(|c| c.0)
-            .unwrap_or(tutti_midi_io::MpeMode::Disabled);
+            .unwrap_or(tutti_midi_types::MpeMode::Disabled);
         pre_block.set_mpe_ingest(tutti_midi_runtime::MpeIngest::new(mpe_mode));
         // The live handle, so MPE stays configurable after build rather than
         // being fixed here. `MpeModeConfig` above is the *seed*; a host that

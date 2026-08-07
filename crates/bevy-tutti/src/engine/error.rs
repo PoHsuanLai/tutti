@@ -24,8 +24,11 @@ pub enum Error {
 
     /// MIDI subsystem failure.
     ///
-    /// Wraps [`tutti_midi_io::Error`].
-    #[cfg(feature = "midi")]
+    /// Wraps [`tutti_midi_io::Error`], and is therefore gated on
+    /// **`midi-hardware`** rather than `midi`: the error type comes from the OS
+    /// port layer, and the software-only build has no fallible MIDI step —
+    /// building a bus, a routing table and the block phases cannot fail.
+    #[cfg(feature = "midi-hardware")]
     #[error("MIDI: {0}")]
     Midi(#[from] tutti_midi_io::Error),
 

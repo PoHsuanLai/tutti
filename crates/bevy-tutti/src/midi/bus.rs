@@ -41,7 +41,7 @@ impl std::ops::Deref for MidiBusRes {
 /// Configures the MPE mode the engine installs. Insert this *before* the engine
 /// builds to override the default.
 ///
-/// Default is [`MpeMode::Disabled`](tutti_midi_io::MpeMode) — apps that want MPE
+/// Default is [`MpeMode::Disabled`](tutti_midi_types::MpeMode) — apps that want MPE
 /// flip it to `LowerZone` / `UpperZone` / `DualZone` / `SingleChannelRotation`.
 ///
 /// Read once, at build time, to construct the input-edge
@@ -53,11 +53,11 @@ impl std::ops::Deref for MidiBusRes {
 /// It lives here rather than in a module of its own because it is read exactly
 /// once, by the same build step that mints the bus above.
 #[derive(Resource, Debug, Clone)]
-pub struct MpeModeConfig(pub tutti_midi_io::MpeMode);
+pub struct MpeModeConfig(pub tutti_midi_types::MpeMode);
 
 impl Default for MpeModeConfig {
     fn default() -> Self {
-        Self(tutti_midi_io::MpeMode::Disabled)
+        Self(tutti_midi_types::MpeMode::Disabled)
     }
 }
 

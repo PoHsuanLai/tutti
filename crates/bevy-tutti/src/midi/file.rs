@@ -57,11 +57,15 @@ use bevy_ecs::prelude::*;
 use bevy_reflect::prelude::*;
 use bevy_tasks::{block_on, futures_lite::future, AsyncComputeTaskPool, Task};
 
-use tutti_midi_io::clip::MidiFileKind;
-use tutti_midi_io::smf::{tracks, SmfTrack};
-use tutti_midi_io::ParsedClipFile;
-// The byte-slice clip decoder lives in `tutti-midi-types`; `tutti-midi-io`
-// re-imports it privately for its own path-taking wrapper.
+// Straight from `tutti-midi-file`, not through `tutti-midi-io`'s re-export.
+// This module decodes bytes an asset loader already read; it opens no MIDI port,
+// so it must not depend on the crate that does — `midi-hardware` gates that one,
+// and reaching through it made *reading a `.mid` file* require an OS MIDI layer.
+use tutti_midi_file::clip::MidiFileKind;
+use tutti_midi_file::smf::{tracks, SmfTrack};
+use tutti_midi_file::ParsedClipFile;
+// The byte-slice clip decoder lives one crate further down, in
+// `tutti-midi-types`; `tutti-midi-file` wraps it for the path-taking form.
 use tutti_midi_types::read_clip_file;
 
 /// What a decoded MIDI file carries.

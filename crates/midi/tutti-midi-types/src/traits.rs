@@ -30,7 +30,23 @@ use crate::unit_id::MidiUnitId;
 /// To deliver to *one of many* sinks selected by id (a fan-out bus), use
 /// [`MidiRouter`] instead — the id belongs to the routing step, not the sink.
 pub trait MidiOut: Send + Sync {
-    fn queue(&self, events: &[MidiEvent]);
+    /// Deliver `events`; return how many the sink **accepted**.
+    ///
+    /// `< events.len()` means the rest were dropped — a full ring, a device that
+    /// refused the write. Dropping a note-off whose note-on landed is what
+    /// produces a stuck note, so a caller with anywhere to report it must.
+    /// A sink that cannot fail returns `events.len()`.
+    ///
+    /// The count is here rather than on the implementations alone because it
+    /// used to be: `MidiSender::queue` computed one and the `()` trait impl threw
+    /// it away, so the capable path and the obvious path differed with nothing to
+    /// signal which was which — and `MidiSession::send` reported
+    /// `events.len()` for a device that had refused every one.
+    ///
+    /// A partial accept is a **prefix**, not a subset: an implementation that
+    /// hits a failure stops there rather than skipping and continuing, so the
+    /// count always names an unbroken run and the stream stays in order.
+    fn queue(&self, events: &[MidiEvent]) -> usize;
 }
 
 /// Route MIDI events to a registered sink selected by [`MidiUnitId`] — a fan-out

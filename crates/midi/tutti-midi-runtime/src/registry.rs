@@ -131,8 +131,8 @@ impl MidiSender {
 }
 
 impl tutti_midi_types::MidiOut for MidiSender {
-    fn queue(&self, events: &[MidiEvent]) {
-        self.queue(events);
+    fn queue(&self, events: &[MidiEvent]) -> usize {
+        self.queue(events)
     }
 }
 

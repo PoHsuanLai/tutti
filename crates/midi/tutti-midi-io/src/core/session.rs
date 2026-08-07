@@ -285,17 +285,18 @@ impl MidiSession {
 
     /// Send events to the open output.
     ///
-    /// Returns how many were accepted: `0` when nothing is connected. That is
-    /// the number a caller needs in order to count what was lost — the old
-    /// `send` returned `()` and queued regardless, so "nothing is coming out"
-    /// had no answer above `debug!`.
+    /// Returns how many the device **accepted**: `0` when nothing is connected,
+    /// and `< events.len()` when the endpoint refused part of the batch. That is
+    /// the number a caller needs in order to count what was lost.
+    ///
+    /// It reported `events.len()` for anything sent while an output was open,
+    /// which made "the device refused every event" indistinguishable from
+    /// success — the backends log a refusal at `debug!` and there was no other
+    /// channel for it. The count now comes from the sink, so the two differ.
     pub fn send(&self, events: &[MidiEvent]) -> usize {
         let open = self.inner.open.lock().unwrap();
         match open.output.as_ref() {
-            Some(out) => {
-                out.sink.queue(events);
-                events.len()
-            }
+            Some(out) => out.sink.queue(events),
             None => 0,
         }
     }
@@ -306,8 +307,8 @@ impl MidiSession {
 /// The thin trait impl over the inherent [`send`](MidiSession::send), which
 /// keeps the accepted count — the same idiom `MidiSender` uses.
 impl MidiOut for MidiSession {
-    fn queue(&self, events: &[MidiEvent]) {
-        self.send(events);
+    fn queue(&self, events: &[MidiEvent]) -> usize {
+        self.send(events)
     }
 }
 
@@ -327,6 +328,8 @@ mod tests {
         outputs: Vec<EndpointInfo>,
         sent: Arc<AtomicUsize>,
         opens: Arc<AtomicUsize>,
+        /// How many events per batch the sink it hands out will accept.
+        accepts: usize,
     }
 
     struct FakeConn(EndpointId);
@@ -336,10 +339,20 @@ mod tests {
         }
     }
 
-    struct FakeSink(Arc<AtomicUsize>);
+    /// A sink that counts what it was handed and accepts `accepts` of each
+    /// batch.
+    ///
+    /// `accepts` is what lets a test express a device that refuses — the shape
+    /// `MidiOut`'s old `()` return made unrepresentable, and therefore the shape
+    /// no test could catch `send` getting wrong.
+    struct FakeSink {
+        sent: Arc<AtomicUsize>,
+        accepts: usize,
+    }
     impl MidiOut for FakeSink {
-        fn queue(&self, events: &[MidiEvent]) {
-            self.0.fetch_add(events.len(), Ordering::SeqCst);
+        fn queue(&self, events: &[MidiEvent]) -> usize {
+            self.sent.fetch_add(events.len(), Ordering::SeqCst);
+            self.accepts.min(events.len())
         }
     }
 
@@ -353,8 +366,16 @@ mod tests {
 
     impl FakeBackend {
         /// The backend plus the two counters its fakes bump: events sent, and
-        /// ports opened.
+        /// ports opened. Its sink accepts everything.
         fn build() -> (Box<dyn MidiEndpoints>, Arc<AtomicUsize>, Arc<AtomicUsize>) {
+            Self::build_accepting(usize::MAX)
+        }
+
+        /// As [`build`](Self::build), but the sink accepts at most `accepts`
+        /// events per batch — `0` models a device refusing everything.
+        fn build_accepting(
+            accepts: usize,
+        ) -> (Box<dyn MidiEndpoints>, Arc<AtomicUsize>, Arc<AtomicUsize>) {
             let sent = Arc::new(AtomicUsize::new(0));
             let opens = Arc::new(AtomicUsize::new(0));
             let b = FakeBackend {
@@ -362,6 +383,7 @@ mod tests {
                 outputs: vec![endpoint(10, "Synth A"), endpoint(11, "IAC Bus 1")],
                 sent: sent.clone(),
                 opens: opens.clone(),
+                accepts,
             };
             (Box::new(b), sent, opens)
         }
@@ -389,7 +411,10 @@ mod tests {
             if !self.outputs.iter().any(|e| e.id == id) {
                 return Err(Error::MidiDevice("no such output".into()));
             }
-            Ok(Box::new(FakeSink(self.sent.clone())))
+            Ok(Box::new(FakeSink {
+                sent: self.sent.clone(),
+                accepts: self.accepts,
+            }))
         }
     }
 
@@ -477,6 +502,45 @@ mod tests {
         assert_eq!(s.output_device_name(), Some("Synth A".to_string()));
         assert_eq!(s.send(&[note(), note()]), 2);
         assert_eq!(sent.load(Ordering::SeqCst), 2);
+    }
+
+    /// A connected device that refuses everything must report `0`, not
+    /// `events.len()`.
+    ///
+    /// This is the case `send` got wrong: it returned the *attempted* count
+    /// whenever an output was open, so a device rejecting every event was
+    /// indistinguishable from one accepting them all. No test could catch it
+    /// while `MidiOut::queue` returned `()` — refusal was unrepresentable, which
+    /// is why the fake sink gained an `accepts` field along with the fix.
+    ///
+    /// Note it asserts `is_output_connected()` too: without that, this would
+    /// also pass for a session that had silently dropped its output, which is a
+    /// different bug wearing the same number.
+    #[test]
+    fn a_refusing_output_reports_zero_accepted() {
+        let (backend, sent, _) = FakeBackend::build_accepting(0);
+        let ports = Arc::new(HardwareMidiInputs::new(64));
+        let s = MidiSession::with_backend(backend, ports);
+        s.connect_output_by_name("synth a").unwrap();
+
+        assert!(s.is_output_connected(), "the output is open");
+        assert_eq!(s.send(&[note(), note()]), 0, "the device accepted none");
+        assert_eq!(
+            sent.load(Ordering::SeqCst),
+            2,
+            "both were offered to the sink"
+        );
+    }
+
+    /// A partial accept reports the prefix that landed, not the batch size.
+    #[test]
+    fn a_partial_accept_reports_what_landed() {
+        let (backend, _, _) = FakeBackend::build_accepting(1);
+        let ports = Arc::new(HardwareMidiInputs::new(64));
+        let s = MidiSession::with_backend(backend, ports);
+        s.connect_output_by_name("synth a").unwrap();
+
+        assert_eq!(s.send(&[note(), note(), note()]), 1);
     }
 
     #[test]

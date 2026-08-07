@@ -285,12 +285,21 @@ impl CoreMidiOutput {
 }
 
 impl MidiOut for CoreMidiOutput {
-    fn queue(&self, events: &[MidiEvent]) {
+    /// Returns how many events reached the endpoint. Stops at the first failure
+    /// so the count names an unbroken prefix — see [`AlsaOutput::queue`] for why
+    /// skipping would be worse than stopping.
+    ///
+    /// [`AlsaOutput::queue`]: crate::core::backend
+    fn queue(&self, events: &[MidiEvent]) -> usize {
+        let mut accepted = 0;
         for event in events {
             if let Err(e) = self.send_ump(event.data_words()) {
                 tracing::debug!("CoreMIDI send: {e}");
+                break;
             }
+            accepted += 1;
         }
+        accepted
     }
 }
 

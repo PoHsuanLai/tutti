@@ -12,7 +12,7 @@ use tutti_core::ChannelLayout;
 /// VBAP presets carry no LFE (5.1/7.1 are literally 5.0/7.0) and run
 /// `[L, R, C, surrounds…]`, while the file order is `[FL, FR, C, LFE, SL, SR, …]`
 /// with LFE at 3. A straight gain-i → channel-i write would put the surrounds
-/// one slot early. LFE is absent here — [`build_surround_mix`](crate::vbap::build_surround_mix)
+/// one slot early. LFE is absent here — [`build_vbap_mix`](crate::vbap::build_vbap_mix)
 /// feeds it separately. Widths without a preset map identity.
 pub(crate) fn speaker_channel_map(layout: ChannelLayout) -> Vec<usize> {
     match layout.count() {

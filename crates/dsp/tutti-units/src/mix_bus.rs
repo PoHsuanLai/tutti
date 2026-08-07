@@ -21,7 +21,7 @@
 //!
 //! Deliberately **not** behind the `spatial` feature. The unit is pure
 //! arity/width arithmetic with no geometry in it, and its consumers are not all
-//! spatial: `spatial`'s `build_surround_mix` uses it, but so does any mixer.
+//! spatial: `spatial`'s `build_vbap_mix` uses it, but so does any mixer.
 //! Gating it there would have made a VBAP dependency the price of summing two
 //! stereo signals.
 

@@ -37,9 +37,9 @@ fn export(net: tutti_core::dsp::Net, layout: ChannelLayout, secs: f64, path: &st
     )
     .expect("export");
 }
-use tutti_spatial::{build_surround_mix, SurroundSource};
+use tutti_spatial::{build_vbap_mix, VbapSource};
 
-/// Build a quad surround graph via the engine's `build_surround_mix` helper: one
+/// Build a quad surround graph via the engine's `build_vbap_mix` helper: one
 /// source at the front-left speaker (45°) and one at the rear-left speaker
 /// (135°), each placed by a panner and summed into a 4-wide `Net` output.
 fn quad_surround_net() -> Net {
@@ -48,12 +48,12 @@ fn quad_surround_net() -> Net {
     let src_front = net.push(Box::new(dc((1.0, 1.0))));
     let src_rear = net.push(Box::new(dc((1.0, 1.0))));
 
-    let mix = build_surround_mix(
+    let mix = build_vbap_mix(
         &mut net,
         ChannelLayout::QUAD,
         &[
-            SurroundSource::at(src_front, 45.0), // FL (ch0)
-            SurroundSource::at(src_rear, 135.0), // RL (ch2)
+            VbapSource::at(src_front, 45.0), // FL (ch0)
+            VbapSource::at(src_rear, 135.0), // RL (ch2)
         ],
     )
     .expect("build quad surround mix");
@@ -116,12 +116,12 @@ fn stereo_net_widened_then_exports_four_channels() {
     assert_eq!(net.outputs(), 2, "starts at device stereo width");
     let src_front = net.push(Box::new(dc((1.0, 1.0))));
     let src_rear = net.push(Box::new(dc((1.0, 1.0))));
-    let mix = build_surround_mix(
+    let mix = build_vbap_mix(
         &mut net,
         ChannelLayout::QUAD,
         &[
-            SurroundSource::at(src_front, 45.0),
-            SurroundSource::at(src_rear, 135.0),
+            VbapSource::at(src_front, 45.0),
+            VbapSource::at(src_rear, 135.0),
         ],
     )
     .expect("build quad mix");
@@ -174,10 +174,10 @@ fn surround_5_1_export_places_center_and_feeds_lfe() {
     let mut net = Net::new(0, 6);
     let src = net.push(Box::new(dc((1.0, 1.0))));
     // A single dead-center source.
-    let mix = build_surround_mix(
+    let mix = build_vbap_mix(
         &mut net,
         ChannelLayout::from(6u16),
-        &[SurroundSource::at(src, 0.0)],
+        &[VbapSource::at(src, 0.0)],
     )
     .expect("build 5.1 mix");
     net.pipe_output(mix);
@@ -244,10 +244,10 @@ fn surround_5_1_export_places_center_and_feeds_lfe() {
 fn surround_5_1_downmixes_center_to_both_stereo_channels() {
     let mut net = Net::new(0, 6);
     let src = net.push(Box::new(dc((1.0, 1.0))));
-    let mix = build_surround_mix(
+    let mix = build_vbap_mix(
         &mut net,
         ChannelLayout::from(6u16),
-        &[SurroundSource::at(src, 0.0)], // dead center → C channel
+        &[VbapSource::at(src, 0.0)], // dead center → C channel
     )
     .expect("build 5.1 mix");
     net.pipe_output(mix);
@@ -327,10 +327,10 @@ fn stereo_graph_exports_folded_mono_not_left_only() {
 fn surround_5_1_exports_folded_mono_keeps_center() {
     let mut net = Net::new(0, 6);
     let src = net.push(Box::new(dc((1.0, 1.0))));
-    let mix = build_surround_mix(
+    let mix = build_vbap_mix(
         &mut net,
         ChannelLayout::from(6u16),
-        &[SurroundSource::at(src, 0.0)], // dead center → C channel (2)
+        &[VbapSource::at(src, 0.0)], // dead center → C channel (2)
     )
     .expect("build 5.1 mix");
     net.pipe_output(mix);
@@ -367,10 +367,10 @@ fn surround_5_1_exports_folded_mono_keeps_center() {
 fn atmos_7_1_4_exports_twelve_channels_with_rear_energy() {
     let mut net = Net::new(0, 12);
     let src = net.push(Box::new(dc((1.0, 1.0))));
-    let mix = build_surround_mix(
+    let mix = build_vbap_mix(
         &mut net,
         ChannelLayout::from(12u16),
-        &[SurroundSource::at(src, 150.0)], // hard rear-left
+        &[VbapSource::at(src, 150.0)], // hard rear-left
     )
     .expect("build 7.1.4 mix");
     net.pipe_output(mix);
@@ -410,10 +410,10 @@ fn atmos_7_1_4_exports_twelve_channels_with_rear_energy() {
 fn atmos_7_1_4_downmixes_surround_into_front() {
     let mut net = Net::new(0, 12);
     let src = net.push(Box::new(dc((1.0, 1.0))));
-    let mix = build_surround_mix(
+    let mix = build_vbap_mix(
         &mut net,
         ChannelLayout::from(12u16),
-        &[SurroundSource::at(src, 150.0)], // hard rear-left → Lrs (discrete ch 6)
+        &[VbapSource::at(src, 150.0)], // hard rear-left → Lrs (discrete ch 6)
     )
     .expect("build 7.1.4 mix");
     net.pipe_output(mix);

@@ -232,7 +232,7 @@ impl AudioUnit for VbapPannerNode {
             // scratch_output[0..num_speakers]. Scatter each to its file channel
             // via channel_map (which skips LFE), zeroing every output channel
             // first so unmapped channels (LFE) stay silent — the panner never
-            // feeds LFE; build_surround_mix feeds it a separate low-passed send.
+            // feeds LFE; build_vbap_mix feeds it a separate low-passed send.
             self.panner
                 .process_stereo_into(left, right, width, &mut self.scratch_output);
 

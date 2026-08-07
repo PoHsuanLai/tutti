@@ -28,7 +28,7 @@ pub mod hrtf;
 pub(crate) use target::AngleSmoother;
 pub use target::SpatialTarget;
 
-pub use vbap::{build_surround_mix, SurroundSource, VbapError, VbapPannerNode};
+pub use vbap::{build_vbap_mix, VbapError, VbapPannerNode, VbapSource};
 
 #[cfg(feature = "hrtf")]
 pub use hrtf::{HrtfBinauralError, HrtfBinauralNode};

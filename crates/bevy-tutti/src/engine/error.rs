@@ -32,12 +32,22 @@ pub enum Error {
     #[error("MIDI: {0}")]
     Midi(#[from] tutti_midi_hardware::Error),
 
-    /// Software-synth subsystem failure.
+    /// Polyphonic-synth subsystem failure.
     ///
-    /// Wraps [`tutti_synth::Error`].
+    /// Wraps [`tutti_polysynth::Error`].
     #[cfg(feature = "synth")]
     #[error("Synth: {0}")]
-    Synth(#[from] tutti_synth::Error),
+    Synth(#[from] tutti_polysynth::Error),
+
+    /// SoundFont subsystem failure.
+    ///
+    /// Wraps [`tutti_soundfont::Error`]. A separate variant from [`Self::Synth`]
+    /// because the two are separate crates with disjoint failure modes — a
+    /// rejected `.sf2` is not a bad `SynthConfig`, and the feature axes are
+    /// independent (`soundfont` no longer implies `synth`).
+    #[cfg(feature = "soundfont")]
+    #[error("SoundFont: {0}")]
+    SoundFont(#[from] tutti_soundfont::Error),
 
     /// Sampler subsystem failure.
     ///

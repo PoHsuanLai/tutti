@@ -212,7 +212,7 @@ impl Note {
     ///
     /// This is the plain default. Alternative temperaments — just intonation,
     /// Pythagorean, meantone — are a tuning table's job, not a note's; see
-    /// `tutti_synth::tuning`.
+    /// `tutti_polysynth::tuning`.
     #[inline]
     pub fn frequency(self) -> Hz {
         let steps = (self.semitones_from_c0() - Self::A4.semitones_from_c0()) as f32;

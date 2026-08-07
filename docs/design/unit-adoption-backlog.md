@@ -97,7 +97,7 @@ pattern from #103 and #107 for the third time.
 
 ### 1c. Pitch bend bends a held note differently from a new one
 
-`crates/tutti/crates/dsp/tutti-synth/src/polysynth.rs`. Two incompatible
+`crates/tutti/crates/dsp/tutti-polysynth/src/polysynth.rs`. Two incompatible
 derivations of one wheel position:
 
 | Path | Line | Derivation |
@@ -146,12 +146,12 @@ Ordered by blast radius. Each is two-or-more same-typed neighbours of
 |---|---|---|
 | `tutti-midi-runtime/src/clock_master.rs:236` | `tick_mtc(block_size: usize, beats_per_sample: f64, beat: f64, max_offset: u32)` | `BeatDuration`, `Beat` |
 | `tutti-export/src/process/resample.rs:140` | `Resampler::new(channels, source_rate: u32, target_rate: u32, chunk)` | `SampleRate` ×2 |
-| `tutti-synth/src/synth.rs:138-150` | `FilterModConfig { mod_wheel_depth, velocity_depth, lfo_rate, lfo_depth }` — four `pub f32` | `Depth`, `Depth`, `Hz`, `Depth` |
+| `tutti-polysynth/src/synth.rs:138-150` | `FilterModConfig { mod_wheel_depth, velocity_depth, lfo_rate, lfo_depth }` — four `pub f32` | `Depth`, `Depth`, `Hz`, `Depth` |
 | `tutti-units/src/modulation/modulated_delay.rs:16-36` | `ModulatedDelayConfig { base_delay_secs, max_delay_secs, lr_phase_offset }` | `Seconds` ×2, `PhaseIncrement` |
 | `tutti-midi-hardware/src/smf.rs:147,149` | `SmfNote { start_beats, duration_beats }` | `Beat`, `BeatDuration` |
 | `tutti-midi-types/src/clip_file.rs:314,316` | `ClipNote { start_beats, duration_beats }` | `Beat`, `BeatDuration` |
 | `tutti-midi-hardware/src/smf.rs:88` | `get_events_in_range(start_beats: f64, end_beats: f64)` | `Beat` ×2 |
-| `tutti-synth/src/portamento.rs:49-58` | `start_freq`, `target_freq`, `current_freq` — three private `f32` | `Hz` ×3 |
+| `tutti-polysynth/src/portamento.rs:49-58` | `start_freq`, `target_freq`, `current_freq` — three private `f32` | `Hz` ×3 |
 | `tutti-units/src/spatial/hrtf_panner.rs:353` | `direction_from_degrees(azimuth_deg: f32, elevation_deg: f32)` | `Azimuth`, `Elevation` |
 | `tutti-units/src/delay.rs:175` | `process_sample(input: f32, delay_samples: f32, fb: f32, mix: Mix)` | `Feedback` — note `mix` is *already* typed in the same signature |
 

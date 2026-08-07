@@ -13,7 +13,7 @@
 //! expected to have harmonics at 1/k because that is what a sawtooth *is*, not
 //! because the Rust said so.
 //!
-//! Run: `cargo run --release -p tutti-synth --example render_synth_cases -- <outdir>`
+//! Run: `cargo run --release -p tutti-polysynth --example render_synth_cases -- <outdir>`
 
 use std::path::Path;
 
@@ -22,7 +22,7 @@ use tutti_core::{Amplitude, AudioUnit, Hz, Seconds, Spread, Q};
 use tutti_midi_types::translation::scaling::midi1_velocity_to_midi2;
 use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
 use tutti_midi_types::ump::MidiEvent;
-use tutti_synth::{
+use tutti_polysynth::{
     EnvelopeConfig, FilterType, OscillatorType, PolySynth, SvfMode, SynthConfig, UnisonConfig,
 };
 
@@ -105,7 +105,7 @@ fn write_wav(path: &Path, left: &[f32], right: &[f32]) {
 fn main() {
     let out = std::env::args()
         .nth(1)
-        .unwrap_or_else(|| "/tmp/tutti-synth".to_string());
+        .unwrap_or_else(|| "/tmp/tutti-polysynth".to_string());
     let out = Path::new(&out);
     std::fs::create_dir_all(out).expect("create output dir");
 

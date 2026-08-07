@@ -361,7 +361,7 @@ impl MemorySource {
     /// transport at `start_beat` for `duration_beats`, everything else default.
     /// Equivalent to `with_config(wave, MemorySourceConfig { timeline: Some(..),
     /// window, ..Default::default() })`; kept because it reads better at the
-    /// timeline call sites (tutti-synth likewise keeps convenience ctors
+    /// timeline call sites (tutti-polysynth likewise keeps convenience ctors
     /// alongside its config one).
     pub fn with_transport(
         wave: Arc<Wave>,

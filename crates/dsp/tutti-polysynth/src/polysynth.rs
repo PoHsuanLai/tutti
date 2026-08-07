@@ -39,7 +39,7 @@ fn q7_9_to_fractional_note(bits: u16) -> f32 {
     bits as f32 / (1u16 << 9) as f32
 }
 
-/// Polyphonic synthesizer combining tutti-synth building blocks with FunDSP.
+/// Polyphonic synthesizer combining tutti-polysynth building blocks with FunDSP.
 ///
 /// Construct one from a [`SynthConfig`] via [`PolySynth::new`]. The synth always
 /// owns a lock-free MIDI inbox; callers push events via [`PolySynth::midi_sender`].
@@ -132,10 +132,9 @@ impl PolySynth {
     /// source-install slot, in one borrow.
     ///
     /// The whole-port accessor exists so a host can reach all three through a
-    /// single downcast. See [`SoundFontUnit::midi_port`] for why one borrow
-    /// beats three.
-    ///
-    /// [`SoundFontUnit::midi_port`]: crate::soundfont::SoundFontUnit::midi_port
+    /// single downcast — one borrow beats three, and it keeps the routing
+    /// address, the mailbox and the source slot from drifting apart.
+    /// `tutti_soundfont::SoundFontUnit::midi_port` is the same shape.
     pub fn midi_port(&self) -> &MidiInPort {
         &self.midi
     }

@@ -11,7 +11,7 @@
 //!
 //! The trait lives here, in `tutti-mod`, because it is node-agnostic — it names
 //! only [`ParamAddr`] (from `tutti-types`) and [`ModTarget`] (this crate). The
-//! *impls* live in each node's own crate (`tutti-units`, `tutti-synth`,
+//! *impls* live in each node's own crate (`tutti-units`, `tutti-polysynth`,
 //! `tutti-plugin`), which is why no single node crate owns the trait. `tutti-units`
 //! re-exports it so existing `tutti_units::ModParams` users are unaffected.
 //!

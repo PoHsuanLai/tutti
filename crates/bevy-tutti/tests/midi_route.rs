@@ -24,7 +24,7 @@ use tutti_core::{AudioNode, RtPublish};
 use tutti_midi_runtime::tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
 use tutti_midi_types::ump::MidiEvent;
 use tutti_midi_types::{MidiRoutingSnapshot, MidiUnitId};
-use tutti_synth::{PolySynth, SynthConfig};
+use tutti_polysynth::{PolySynth, SynthConfig};
 
 const SAMPLE_RATE: f64 = 48_000.0;
 

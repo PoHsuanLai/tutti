@@ -27,7 +27,7 @@
 //! [`PluginLoadDone`] triggered on the entity either way and
 //! [`PluginLoadTerminated`] marking the attempt as spent.
 //!
-//! [`PlaySoundFont`]: crate::synth::PlaySoundFont
+//! [`PlaySoundFont`]: crate::soundfont::PlaySoundFont
 
 use bevy_ecs::prelude::*;
 use bevy_log::{error, info, warn};

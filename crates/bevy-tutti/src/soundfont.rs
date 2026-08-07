@@ -9,7 +9,7 @@ use bevy_tasks::{block_on, futures_lite::future, AsyncComputeTaskPool, Task};
 use std::sync::Arc;
 
 use crate::graph::{engine_ready, AudioConfig, AudioGraphRes, GraphDirty, GraphReconcileSystems};
-use tutti_synth::soundfont::{SoundFont, SoundFontError, SoundFontUnit, SynthesizerSettings};
+use tutti_soundfont::{SoundFont, SoundFontError, SoundFontUnit, SynthesizerSettings};
 
 /// A parsed `.sf2` as a loadable asset.
 ///
@@ -121,7 +121,7 @@ pub struct PlaySoundFont {
 /// [`AsyncComputeTaskPool`]. `promote_pending_soundfonts` drains it.
 #[derive(Component)]
 pub struct PendingSoundFontUnit {
-    task: Task<Result<SoundFontUnit, tutti_synth::Error>>,
+    task: Task<Result<SoundFontUnit, tutti_soundfont::Error>>,
     preset: i32,
     channel: i32,
 }

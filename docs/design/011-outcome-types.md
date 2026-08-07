@@ -128,7 +128,7 @@ signature change:
 
 | backend | what it takes |
 |---|---|
-| in-process VST2, `dawai-wasm-plugin` | signature only — the `Result` is already in hand and discarded on one line (`let _ = self.inner.lock().load_state(data);`) |
+| in-process VST2 (and, when written, the `dawai:node` host) | signature only — the `Result` is already in hand and discarded on one line (`let _ = self.inner.lock().load_state(data);`) |
 | subprocess (IPC) | a new `BridgeMessage::StateLoaded { error: Option<String> }` ack, `dispatch.rs` waiting on it like `SaveState` does, and a `PROTOCOL_VERSION` bump |
 
 Worth doing in that order — the in-process half is small, self-contained, and

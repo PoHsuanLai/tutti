@@ -17,7 +17,7 @@
 //! ```rust,ignore
 //! app.world_mut()
 //!     .resource_mut::<MidiTargetRegistry>()
-//!     .register::<tutti_synth::SoundFontUnit>();
+//!     .register::<tutti_soundfont::SoundFontUnit>();
 //! ```
 
 pub mod bus;

@@ -18,7 +18,7 @@ use bevy_tutti::midi::{MidiRegistered, MidiTargetRegistry, TuttiMidiPlugin};
 use bevy_tutti::AudioEngineState;
 use tutti_core::dsp::Net;
 use tutti_core::AudioNode;
-use tutti_synth::{PolySynth, SynthConfig};
+use tutti_polysynth::{PolySynth, SynthConfig};
 
 /// An app with a graph, a MIDI bus, and `PolySynth` registered as addressable.
 ///

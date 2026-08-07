@@ -3,7 +3,21 @@
 //! Build a [`SoundFontUnit`] with [`SoundFontUnit::new`] from a decoded
 //! `SoundFont` and a [`SynthesizerSettings`], then `program_change` to pick the
 //! preset/channel. A host that wants asset-managed loading wires it in its own
-//! adapter layer; this module only needs the decoded `SoundFont`.
+//! adapter layer; this crate only needs the decoded `SoundFont`.
+//!
+//! Split out of the old `tutti-synth` (renamed [`tutti-polysynth`]) because a
+//! `.sf2` player and a subtractive voice engine share no code: this unit
+//! reaches for none of that crate's voice allocation, tuning, portamento or
+//! unison. What they share is the *shape* — both are `AudioUnit`s with a
+//! [`MidiInPort`] — and that comes from `tutti-core` and `tutti-midi-runtime`,
+//! not from each other.
+//!
+//! [`tutti-polysynth`]: https://docs.rs/tutti-polysynth
+
+pub mod error;
+pub use error::{Error, Result};
+
+mod node_id;
 
 pub use rustysynth::{SoundFont, SoundFontError, SynthesizerSettings};
 
@@ -37,9 +51,9 @@ impl SoundFontUnit {
     pub fn new(
         soundfont: Arc<SoundFont>,
         settings: &SynthesizerSettings,
-    ) -> Result<Self, crate::Error> {
+    ) -> Result<Self> {
         let synthesizer = Synthesizer::new(&soundfont, settings)
-            .map_err(|e| crate::Error::SoundFont(e.to_string()))?;
+            .map_err(|e| Error::SoundFont(e.to_string()))?;
 
         let buffer_size = 64;
 
@@ -295,7 +309,7 @@ impl AudioUnit for SoundFontUnit {
     fn set(&mut self, _setting: Setting) {}
 
     fn get_id(&self) -> u64 {
-        crate::node_id::SOUNDFONT_ID
+        node_id::SOUNDFONT_ID
     }
 
     fn as_any(&self) -> &dyn core::any::Any {

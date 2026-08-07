@@ -19,8 +19,8 @@
 //! This module holds ONLY the ids for tutti-core's own infrastructure nodes
 //! (PDC delays + transport/automation). Higher crates own the ids for the node
 //! types they define, in their own `node_id` module: tutti-units (filters,
-//! delay, modulation, dynamics, spatial, automation-lane), tutti-synth
-//! (`POLYSYNT`, `\0RUSTYSY`), tutti-plugin (`PLUGINCL`), tutti-sampler
+//! delay, modulation, dynamics, spatial, automation-lane), tutti-polysynth
+//! (`POLYSYNT`), tutti-soundfont (`\0RUSTYSY`), tutti-plugin (`PLUGINCL`), tutti-sampler
 //! (`SAMPLRND`, `STRSMPLR`, `TSTRCHNT`, `VOICENOD`), tutti-io (`MICMONIT`).
 //! This keeps core the bottom layer: it names no node type that lives above
 //! it.
@@ -41,7 +41,8 @@
 //!          SCCOMP  SSCGAT  SSCCOM  LIMITER1 BRKWLLMT PAN\0  BIN\0
 //!          (svf/ladder/phaser also derive a stereo sibling via `^ 0xDA02`;
 //!           PAN\0 ORs num_outputs into the low byte)
-//! synth:   POLYSYNT \0RUSTYSY
+//! polysynth: POLYSYNT
+//! soundfont: \0RUSTYSY
 //! plugin:  PLUGINCL
 //! sampler: SAMPLRND STRSMPLR TSTRCHNT VOICENOD
 //! io:      MICMONIT

@@ -18,8 +18,8 @@ use bevy_app::prelude::*;
 use bevy_asset::{AssetPlugin, Assets, Handle};
 
 use bevy_tutti::graph::{AudioConfig, AudioGraphRes, GraphReconcilePlugin, TransportRes};
-use bevy_tutti::synth::soundfont::SoundFontAsset;
-use bevy_tutti::synth::{PlaySoundFont, TuttiSoundFontPlugin};
+use bevy_tutti::soundfont::SoundFontAsset;
+use bevy_tutti::soundfont::{PlaySoundFont, TuttiSoundFontPlugin};
 use bevy_tutti::AudioEngineState;
 use tutti_core::dsp::Net;
 use tutti_core::AudioNode;
@@ -110,7 +110,7 @@ fn a_triggered_soundfont_is_bound_to_the_graph_by_its_node_handle() {
     );
     assert!(
         app.world()
-            .get::<bevy_tutti::synth::PendingSoundFontUnit>(entity)
+            .get::<bevy_tutti::soundfont::PendingSoundFontUnit>(entity)
             .is_none(),
         "and the pending marker is cleared"
     );

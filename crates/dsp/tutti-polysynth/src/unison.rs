@@ -1,13 +1,7 @@
 //! Unison engine: voice detuning and stereo spread.
 
-use tutti_core::Cents;
-
-// The modulatable-param plumbing (`Param`/atomics) is only used by
-// `UnisonEngine`, which is itself gated on `midi`/`test`.
-#[cfg(any(feature = "midi", test))]
 use std::sync::Arc;
-#[cfg(any(feature = "midi", test))]
-use tutti_core::{Amplitude, AtomicF32, Pan, Param, Phase, Spread};
+use tutti_core::{Amplitude, AtomicF32, Cents, Pan, Param, Phase, Spread};
 
 const MAX_UNISON_VOICES: usize = 16;
 
@@ -43,7 +37,6 @@ pub struct UnisonVoiceParams {
     pub amplitude: Amplitude,
 }
 
-#[cfg(any(feature = "midi", test))]
 #[derive(Debug, Clone)]
 pub struct UnisonEngine {
     config: UnisonConfig,
@@ -59,7 +52,6 @@ pub struct UnisonEngine {
     spread: Param<Spread>,
 }
 
-#[cfg(any(feature = "midi", test))]
 impl UnisonEngine {
     pub fn new(config: UnisonConfig) -> Self {
         let detune = Param::new(config.detune_cents);

@@ -11,7 +11,7 @@
 //!
 //! A CC number and a MIDI channel are both small integers that arrive together
 //! and mask silently — `handle_cc(cc_num: u8, value: f32, channel: u8)` is a
-//! real signature in `tutti-synth`, with two interchangeable `u8`s. Swapping
+//! real signature in `tutti-polysynth`, with two interchangeable `u8`s. Swapping
 //! them does not crash: CC 1 on channel 3 becomes CC 3 on channel 1, so the mod
 //! wheel silently drives brightness, or a sustain pedal lands on a channel
 //! nobody is playing. Both failures are audible-but-plausible, which is the

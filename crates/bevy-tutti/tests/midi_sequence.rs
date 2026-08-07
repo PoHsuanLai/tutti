@@ -20,7 +20,7 @@ use tutti_core::{Beat, BeatDuration, SampleRate};
 use tutti_midi_runtime::tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
 use tutti_midi_runtime::TimedMidiEvent;
 use tutti_midi_types::ump::MidiEvent;
-use tutti_synth::{PolySynth, SynthConfig};
+use tutti_polysynth::{PolySynth, SynthConfig};
 
 const SAMPLE_RATE: f64 = 48_000.0;
 

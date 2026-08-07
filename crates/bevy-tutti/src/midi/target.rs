@@ -10,7 +10,7 @@
 //! ```rust,ignore
 //! app.world_mut()
 //!     .resource_mut::<MidiTargetRegistry>()
-//!     .register::<tutti_synth::SoundFontUnit>();
+//!     .register::<tutti_soundfont::SoundFontUnit>();
 //! ```
 //!
 //! # Why resolve rather than remember
@@ -109,16 +109,16 @@ pub trait MidiNode {
 // Fully-qualified calls, not `self.midi_port()` — the inherent method and the
 // trait method share a name, and method syntax would resolve back to this impl.
 #[cfg(feature = "soundfont")]
-impl MidiNode for tutti_synth::SoundFontUnit {
+impl MidiNode for tutti_soundfont::SoundFontUnit {
     fn midi_port(&self) -> &MidiInPort {
-        tutti_synth::SoundFontUnit::midi_port(self)
+        tutti_soundfont::SoundFontUnit::midi_port(self)
     }
 }
 
 #[cfg(feature = "synth")]
-impl MidiNode for tutti_synth::PolySynth {
+impl MidiNode for tutti_polysynth::PolySynth {
     fn midi_port(&self) -> &MidiInPort {
-        tutti_synth::PolySynth::midi_port(self)
+        tutti_polysynth::PolySynth::midi_port(self)
     }
 }
 

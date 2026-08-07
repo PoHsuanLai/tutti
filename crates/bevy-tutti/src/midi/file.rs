@@ -20,7 +20,7 @@
 //! The two halves look symmetric and are not, so they use different mechanisms.
 //!
 //! **A read is an asset load**, and this crate already says so twice:
-//! [`SoundFontAssetLoader`](crate::synth::SoundFontAssetLoader) and
+//! [`SoundFontAssetLoader`](crate::soundfont::SoundFontAssetLoader) and
 //! `WaveAssetLoader` both take this route. Bevy itself asset-loads *shaders* —
 //! small text files — which is the tell that size was never the criterion.
 //! Being a file the app reads by path is. Going through `AssetLoader` buys the

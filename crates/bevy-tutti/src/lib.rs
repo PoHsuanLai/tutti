@@ -84,9 +84,10 @@ pub mod io;
 #[cfg(feature = "sampler")]
 pub mod stream;
 
-/// SoundFont assets and their playback systems.
+/// SoundFont assets and their playback systems. Named for `tutti-soundfont`,
+/// the engine crate it adapts — every module here matches its crate.
 #[cfg(feature = "soundfont")]
-pub mod synth;
+pub mod soundfont;
 
 /// Plugin (VST2/VST3/CLAP/AU) editor lifecycle, crash detection and catalog
 /// scanning.

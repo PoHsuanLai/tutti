@@ -7,14 +7,14 @@ harmonic series, filter transfer functions, unison beating.
 just verify-audio                 # renders + judges everything, this included
 # or directly:
 cargo run --release --manifest-path crates/bevy-tutti/Cargo.toml \
-    -p tutti-synth --example render_synth_cases -- /tmp/tutti-synth
+    -p tutti-polysynth --example render_synth_cases -- /tmp/tutti-polysynth
 cd crates/tutti && uv run python \
-    crates/dsp/tutti-synth/examples/verify_synth.py /tmp/tutti-synth
+    crates/dsp/tutti-polysynth/examples/verify_synth.py /tmp/tutti-polysynth
 ```
 
 ## Why this exists
 
-`tutti-synth` is not an untested crate — it carries 3,134 lines of tests, over
+`tutti-polysynth` is not an untested crate — it carries 3,134 lines of tests, over
 half its source. But they test **plumbing**: MIDI events reach voices, allocation
 picks the right slot, `isolate` severs a shared inbox, atomics propagate across
 clones. Almost nothing asserted what comes out of `process`.
@@ -87,7 +87,7 @@ and 0.740, against the 0.707 that *defines* a cutoff frequency.
 
 ## Result
 
-No defect found in `tutti-synth`. Every oscillator produces the correct pitch and
+No defect found in `tutti-polysynth`. Every oscillator produces the correct pitch and
 the textbook harmonic series; filters hit their −3 dB point within a few percent;
 unison beats and decorrelates as configured; polyphony sums correctly.
 

@@ -49,7 +49,10 @@ tutti-sampler = { path = "../tutti/crates/dsp/tutti-sampler", optional = true, d
 # The live I/O edge — `WavOut`, `MicMonitorNode`, `Recorder`. Separate from the
 # sampler since the layering split; re-exported through `engine`.
 tutti-io = { path = "../tutti/crates/core/tutti-io", optional = true }
-tutti-synth = { path = "../tutti/crates/dsp/tutti-synth", optional = true, default-features = false }
+tutti-polysynth = { path = "../tutti/crates/dsp/tutti-polysynth", optional = true }
+# SoundFont playback. A separate crate, not a feature of the polysynth: a `.sf2`
+# player shares no voice engine with a subtractive synth.
+tutti-soundfont = { path = "../tutti/crates/dsp/tutti-soundfont", optional = true }
 tutti-export = { path = "../tutti/crates/core/tutti-export", optional = true }
 tutti-midi-hardware = { path = "../tutti/crates/midi/tutti-midi-hardware", optional = true }
 # SMF / Clip File codecs. Separate from `tutti-midi-hardware` because reading a
@@ -137,7 +140,10 @@ ogg = ["tutti-core/ogg", "tutti-sampler?/ogg"]
 # playback, sequencer, MPE, the clock-master *generation*, built-in synth MIDI —
 # no OS I/O. `midi-hardware` adds the OS layer (endpoint enumeration, connect,
 # native-UMP send/receive) on top. `plugin` also enables `midi`.
-midi = ["dep:tutti-midi-file", "dep:tutti-midi-runtime", "tutti-core/midi", "tutti-synth?/midi", "tutti-cpal/midi"]
+# `tutti-polysynth` is absent from this list on purpose: it has no `midi`
+# feature to enable. MIDI is unconditional there — a synth you cannot send a
+# note to is not a smaller synth — so pulling the crate in at all brings it.
+midi = ["dep:tutti-midi-file", "dep:tutti-midi-runtime", "tutti-core/midi", "tutti-cpal/midi"]
 # The OS MIDI layer. Note the feature and the crate share the name `midi-hardware`
 # — deliberately, since the feature does nothing but pull the crate in.
 # `tutti-midi-hardware` has no features of its own; it IS the OS edge.
@@ -145,11 +151,13 @@ midi-hardware = ["midi", "dep:tutti-midi-hardware"]
 
 # Synth & sampling. bevy-tutti registers these with the AssetServer, so it
 # wants the asset derives on both.
-synth = ["dep:tutti-synth"]
-# `tutti-synth/soundfont` requires `tutti-synth/midi`, which pulls tutti-core
-# with `midi` under feature unification — so enable bevy-tutti's own `midi` to
-# keep `engine/build.rs` in step with the tutti-core that actually compiles.
-soundfont = ["synth", "midi", "tutti-synth/soundfont"]
+synth = ["dep:tutti-polysynth"]
+# SoundFont no longer implies `synth`. It used to, because `SoundFontUnit` was a
+# feature of the one synth crate; now it is its own crate and pulls no voice
+# engine. `midi` stays: `tutti-soundfont` needs `tutti-core/midi`, and enabling
+# it here keeps `engine/build.rs` in step with the tutti-core that compiles
+# under feature unification.
+soundfont = ["midi", "dep:tutti-soundfont"]
 # Clip playback: the butler streaming engine and the `.wav` asset loader
 # (`tutti-sampler` → `crate::stream`).
 #

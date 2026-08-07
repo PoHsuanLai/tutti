@@ -18,14 +18,13 @@
 //! is the one that fills it; `max_voices` past the inline capacity is
 //! refused by the constructor and covered separately.
 
-#![cfg(feature = "midi")]
 
 use assert_no_alloc::AllocDisabler;
 use tutti_core::{AudioUnit, BufferVec, Hz, SampleRate, Q};
 use tutti_midi_types::convert::midi1_velocity_to_midi2;
 use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
 use tutti_midi_types::ump::MidiEvent;
-use tutti_synth::{FilterType, OscillatorType, PolySynth, SynthConfig};
+use tutti_polysynth::{FilterType, OscillatorType, PolySynth, SynthConfig};
 
 #[global_allocator]
 static A: AllocDisabler = AllocDisabler;
@@ -83,7 +82,7 @@ fn polysynth_process_with_active_voices_is_allocation_free() {
         filter: FilterType::Svf {
             cutoff: Hz(2_000.0),
             q: Q(0.707),
-            mode: tutti_synth::SvfMode::Lowpass,
+            mode: tutti_polysynth::SvfMode::Lowpass,
         },
         ..Default::default()
     })

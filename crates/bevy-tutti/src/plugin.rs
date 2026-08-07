@@ -14,7 +14,7 @@ use crate::plugin_host::TuttiHostingPlugin;
 #[cfg(feature = "sampler")]
 use crate::stream::TuttiPlaybackPlugin;
 #[cfg(feature = "soundfont")]
-use crate::synth::TuttiSoundFontPlugin;
+use crate::soundfont::TuttiSoundFontPlugin;
 
 /// Opens the audio device, builds the DSP graph, starts the CPAL callback, and
 /// registers the ECS surface for every enabled subsystem.

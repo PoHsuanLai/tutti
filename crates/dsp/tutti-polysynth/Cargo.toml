@@ -1,0 +1,47 @@
+[package]
+name = "tutti-polysynth"
+version = "0.0.1"
+edition = "2021"
+description = "Polyphonic subtractive synth for Tutti (voice allocation, unison, portamento, tuning)"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/PoHsuanLai/Tutti"
+
+# No features. Two used to be here and both were removed:
+#
+# `midi` — never compiled with it off. `voice.rs` imports `NoteId`/`PerNoteMap`
+# unconditionally, and it must: a voice is *addressed* by per-note identity, so
+# the allocator, MPE state and `PolySynth` itself are all built on it. The flag
+# named no axis — turning it off left a config vocabulary with nothing to
+# configure, since `PolySynth` was itself `#[cfg(feature = "midi")]`. A synth
+# you cannot send a note to is not a smaller synth. Same reasoning as
+# `tutti-soundfont`, which ships featureless for the same reason.
+#
+# `soundfont` — SoundFont synthesis moved to `tutti-soundfont`. It shared none
+# of this crate's voice engine, so the flag was a dependency edge wearing a
+# feature's clothes. Depend on that crate directly.
+[features]
+default = []
+std = []
+
+[dependencies]
+tutti-core = { path = "../../core/tutti-core", default-features = false, features = ["midi"] }
+
+# The `ModParams` control-rate-modulation trait + its target surface
+# (`AtomicTarget`/`ModTarget`), so `PolySynth` implements the same modulation
+# trait every other node does. `routing` (std-only) keeps it bevy-free.
+tutti-mod = { path = "../../core/tutti-mod", default-features = false, features = ["routing"] }
+
+tutti-midi-types = { path = "../../midi/tutti-midi-types", default-features = false }
+tutti-midi-runtime = { path = "../../midi/tutti-midi-runtime", default-features = false }
+
+# RT-safe small vectors
+smallvec = "1.13"
+
+# Error handling
+thiserror = "2"
+
+[dev-dependencies]
+approx = "0.5"
+assert_no_alloc = { version = "1", default-features = false }
+tutti-midi-types = { path = "../../midi/tutti-midi-types", default-features = false }
+tutti-midi-runtime = { path = "../../midi/tutti-midi-runtime", default-features = false }

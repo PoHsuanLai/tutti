@@ -179,6 +179,12 @@ impl InProcessVst2Client {
         self.midi.set_source(source);
     }
 
+    /// Drop a previously-installed source override; subsequent blocks poll the
+    /// live `MidiReceiver` again.
+    pub fn clear_midi_source(&mut self) {
+        self.midi.clear_source();
+    }
+
     /// Install a transport reader so the plugin receives a live per-block
     /// [`TransportInfo`] (tempo, playhead, meter, bar, loop), which the VST2
     /// host turns into the `audioMasterGetTime` snapshot the plugin polls.

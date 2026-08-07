@@ -47,32 +47,79 @@
 /// ```
 #[must_use]
 pub fn decodable_extensions() -> &'static [&'static str] {
-    &[
-        #[cfg(feature = "wav")]
-        "wav",
-        // `.wave` is the same RIFF container under a longer name. Listed
-        // beside `wav` rather than treated as an alias, because a caller
-        // matching on extensions needs both spellings and has no way to know
-        // they are the same format.
-        #[cfg(feature = "wav")]
-        "wave",
-        #[cfg(feature = "flac")]
-        "flac",
-        #[cfg(feature = "mp3")]
-        "mp3",
-        #[cfg(feature = "ogg")]
-        "ogg",
-        // No AIFF. Checked rather than assumed, and the first version of this
-        // module got it wrong: symphonia *has* an `aiff` feature
-        // (`symphonia-format-riff/aiff`), but `fundsp`'s `wav` maps to
-        // `["symphonia/wav", "symphonia/pcm"]` and never enables it. So no
-        // current build decodes AIFF, however much the format resembles WAV.
-        //
-        // Adding it is a one-line change in `fundsp-tutti/Cargo.toml` plus an
-        // entry here. Until then, listing it would be exactly the lie this
-        // module exists to stop.
-    ]
+    &EXTENSIONS
 }
+
+/// The extensions, derived once from the readers this build registers.
+///
+/// # Derived, not written down
+///
+/// Every reader already declares its own extensions in a `Descriptor` — the
+/// same data the probe registers itself from — so a hand-written list here is a
+/// second copy of something upstream owns, and it drifts. It had: the list this
+/// replaced named `ogg` alone, where `OggReader` declares seven (`oga`, `opus`,
+/// `spx`, … all decode today), and named `mp3` alone where `MpaReader` declares
+/// three. Both errors *hid working files from the browser* — the same lie this
+/// module exists to prevent, pointed the other way.
+///
+/// What stays hand-written is the **feature → reader** mapping below, because
+/// that is tutti's own knowledge and not symphonia's: nothing upstream can know
+/// that `fundsp/wav` resolves to `symphonia/{wav,pcm}` and never `symphonia/aiff`.
+///
+/// A `LazyLock` rather than a `const`, because `Descriptor::extensions` is only
+/// reachable through a trait method. The work is a few slice copies, once per
+/// process.
+static EXTENSIONS: std::sync::LazyLock<Vec<&'static str>> = std::sync::LazyLock::new(|| {
+    #[cfg(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg"))]
+    use fundsp::symphonia::core::probe::QueryDescriptor;
+
+    #[allow(unused_mut)]
+    let mut exts: Vec<&'static str> = Vec::new();
+
+    // Append every extension a reader declares, skipping repeats. Two containers
+    // claiming one extension is possible in principle, and a duplicate would
+    // make this list unusable for building a display string.
+    #[cfg(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg"))]
+    macro_rules! add {
+        ($reader:ty) => {
+            for d in <$reader as QueryDescriptor>::query() {
+                for e in d.extensions {
+                    if !exts.contains(e) {
+                        exts.push(e);
+                    }
+                }
+            }
+        };
+    }
+
+    // One arm per *feature*. AIFF's absence is the case worth stating: symphonia
+    // has an `AiffReader` in the very crate that provides `WavReader`
+    // (`symphonia-format-riff`), but `fundsp`'s `wav` enables `symphonia/wav`
+    // and `symphonia/pcm` only — never `symphonia/aiff`. So no current build
+    // decodes AIFF, however much the format resembles WAV, and listing it would
+    // be exactly the lie this module exists to stop. Adding it is one line in
+    // `fundsp-tutti/Cargo.toml` plus an arm here.
+    #[cfg(feature = "wav")]
+    add!(fundsp::symphonia::default::formats::WavReader);
+    #[cfg(feature = "flac")]
+    add!(fundsp::symphonia::default::formats::FlacReader);
+    #[cfg(feature = "mp3")]
+    add!(fundsp::symphonia::default::formats::MpaReader);
+    #[cfg(feature = "ogg")]
+    add!(fundsp::symphonia::default::formats::OggReader);
+
+    // The descriptors are upstream data, so the case guarantee this module's
+    // docs make is asserted rather than assumed. symphonia documents them as
+    // case-insensitive and writes them lowercase; a release that shipped an
+    // uppercase one would otherwise silently break `can_decode`, which
+    // lowercases its argument before comparing.
+    debug_assert!(
+        exts.iter().all(|e| **e == *e.to_ascii_lowercase()),
+        "symphonia declared a non-lowercase extension: {exts:?}"
+    );
+
+    exts
+});
 
 /// Whether this build can decode a file with this extension.
 ///
@@ -151,6 +198,30 @@ mod tests {
                 !all[i + 1..].contains(a),
                 "{a} appears twice in decodable_extensions()"
             );
+        }
+    }
+
+    /// The list is *derived*, and this is the case that proves it.
+    ///
+    /// The hand-written table this replaced listed `ogg` alone. `OggReader`
+    /// actually declares seven extensions, so `.opus` and `.oga` files were
+    /// decodable by the build and hidden by the browser — a filter that lied in
+    /// the one direction this module exists to prevent. Nobody would have
+    /// written these seven out by hand; that is the argument for deriving them.
+    #[cfg(feature = "ogg")]
+    #[test]
+    fn the_ogg_feature_covers_every_extension_its_reader_declares() {
+        for ext in ["ogg", "oga", "ogv", "ogx", "ogm", "spx", "opus"] {
+            assert!(can_decode(ext), "{ext} is decodable but was not listed");
+        }
+    }
+
+    /// Likewise: the `mp3` feature registers three descriptors, not one.
+    #[cfg(feature = "mp3")]
+    #[test]
+    fn the_mp3_feature_covers_mp1_and_mp2_as_well() {
+        for ext in ["mp1", "mp2", "mp3"] {
+            assert!(can_decode(ext), "{ext} is decodable but was not listed");
         }
     }
 

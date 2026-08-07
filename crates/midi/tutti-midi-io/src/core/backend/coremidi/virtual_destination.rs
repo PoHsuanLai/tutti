@@ -93,12 +93,12 @@ impl UmpVirtualDestination {
     }
 
     /// Create a MIDI-2.0 virtual destination that pushes every received message
-    /// into an input ring, exactly like the midir input callback does.
+    /// into an input ring, exactly like a hardware input port does.
     ///
     /// This is the wiring an app wants: the events land in the same
-    /// [`HardwareMidiInput`](crate::core::HardwareMidiInput) ring the MIDI-1.0
-    /// path feeds, so downstream consumers see one merged stream regardless of
-    /// which transport a message arrived on.
+    /// [`HardwareMidiInputs`](crate::core::HardwareMidiInputs) rings a physical
+    /// endpoint feeds, so downstream consumers see one merged stream regardless
+    /// of which transport a message arrived on.
     pub fn with_producer(name: &str, producer: crate::core::InputProducerHandle) -> Result<Self> {
         Self::new(name, move |event| {
             if !producer.push(event, std::time::Instant::now()) {

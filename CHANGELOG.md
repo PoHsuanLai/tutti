@@ -9,6 +9,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The MIDI delivery traits split on arity.** There are now four, in two pairs,
+  one pair per direction — keeping the `In`/`Out` axis `AudioIn`/`AudioOut` set:
+
+  |          | one stream | one of many, by id |
+  |----------|------------|--------------------|
+  | **push** | `MidiOut`  | `MidiRouter`       |
+  | **pull** | `MidiIn`   | `MidiUnitIn` *(new)* |
+
+  `MidiIn` previously spanned both columns, carrying a `unit_id` for the fan-out
+  half. Three of its four implementors treated that parameter as dead weight —
+  two checked it against an id they already owned, one ignored it — and the
+  hardware edge had to be polled with a `MidiUnitId::new(0)` **sentinel**. Since
+  `0` is a real id, a per-unit source installed at that seam would silently have
+  received the entire hardware stream. That install is now a compile error.
+
+  Migrating an implementor: if it ignored `unit_id`, implement `MidiIn` and drop
+  the parameter (`poll_into` → `poll_block`). If it dispatched on it, implement
+  `MidiUnitIn` (`poll_into` → `poll_unit`). `MidiInPort::install` and
+  `MidiPreBlock::set_input` now take the respective trait.
+
+  `MidiReceiver` no longer implements a read trait at all. Its inherent
+  `poll_into(&self, out)` is unchanged and is what every caller already used —
+  the trait impl's only added behaviour was a check its sole caller deliberately
+  routed around.
+
+- **`MidiOut::queue` returns the accepted count** (`()` → `usize`). A sink that
+  cannot fail returns `events.len()`; a short count means the rest were dropped.
+
+  This fixes a live bug: `MidiSession::send` returned `events.len()` whenever an
+  output was open, under a doc promising an *accepted* count, so a device
+  refusing every event reported full success. Both OS backends now count what
+  they wrote and stop at the first failure, so the number names an unbroken
+  prefix rather than a subset with holes.
+
+  **The return value's meaning changed without its type changing** — a consumer
+  treating `send(&e) == e.len()` as "connected" now correctly gets `false` when
+  the device is refusing.
+
+- **`InputConnection` carries no methods.** Its doc said exactly that and then
+  declared `fn endpoint()`, which had no callers — the id is already the key of
+  the map connections are stored under. The trait remains as the RAII marker its
+  doc describes: dropping it closes the port.
+
 - **`tutti-midi-io` is native-UMP; `midir` is gone.** MIDI reaches the wire as
   UMP words on every supported platform, so MIDI-2-only messages — per-note
   controllers, per-note pitch bend, JR Timestamps — survive. They were

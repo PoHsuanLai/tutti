@@ -32,12 +32,17 @@ use tutti_midi_types::{MidiIn, MidiRouter, MidiRoutingSnapshot};
 use crate::mpe_ingest::MpeIngest;
 use tutti_midi_types::mpe::MpeMode;
 
-/// Per-block outbound clock/timecode generator (e.g. a `ClockMaster`).
+/// Something ticked once per audio block, before event delivery, whose output
+/// **bypasses unit routing**.
 ///
-/// Ticked once per audio block, before event delivery, so it emits regardless of
-/// whether any inbound MIDI is present this block. Its output goes to its own
-/// ring (independent of the unit-keyed routing below), so System Real-Time
-/// messages reach hardware-out rather than being dropped by the router.
+/// The engine's own implementation is [`ClockMaster`](crate::ClockMaster) —
+/// outbound Beat Clock + MTC. This is a trait rather than that concrete type
+/// because System Real-Time and timecode are *not addressed to a unit*, so
+/// anything generating them needs a slot outside the router, and a consumer's
+/// own generator (LTC, a proprietary sync flavour) is as entitled to that slot
+/// as ours. It emits regardless of whether inbound MIDI arrived this block.
+///
+/// Lock-free and alloc-free: audio thread.
 pub trait BlockClock: Send + Sync {
     /// Generate this block's clock/timecode output. `block_size` is the frame
     /// count of the upcoming audio block.

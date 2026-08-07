@@ -36,8 +36,11 @@ tutti-core = { path = "../tutti/crates/core/tutti-core", default-features = fals
 tutti-types = { path = "../tutti/crates/core/tutti-types", default-features = false, features = ["bevy"] }
 tutti-midi-types = { path = "../tutti/crates/midi/tutti-midi-types", default-features = false }
 # tutti-units is pure DSP now (its ECS binding moved to dawai_model::engine_bind).
-# The optional features below add spatial / convolution / automation DSP on top.
+# The optional features below add convolution / automation DSP on top.
 tutti-units = { path = "../tutti/crates/dsp/tutti-units", default-features = false }
+
+# Spatial audio (VBAP + binaural panners), gated by our `spatial` feature.
+tutti-spatial = { path = "../tutti/crates/dsp/tutti-spatial", default-features = false, optional = true }
 
 # Optional subsystems (gated by bevy-tutti features below).
 # `routing` is the mod-matrix layer (targets, bus, table, driver); tutti-mod's
@@ -108,18 +111,18 @@ full = [
     "sampler",
     "audio-io",
     "export",
-    "dsp", "spatial",
+    "spatial",
     "modulation",
 ]
 
-# Spatial audio. The spatial graph reconciler + position-sync (GlobalTransform)
-# live in `tutti_units::spatial_graph`, behind tutti-units' own `spatial` feature.
-spatial = ["dsp", "tutti-units/spatial"]
-
-# DSP: the DSP spawn pipeline + reconcilers live (unconditionally) in
-# `tutti_units::{dsp, reconcile}`; this feature enables the VBAP/binaural panner
-# unit. Dynamics always compiled.
-dsp = ["tutti-units/spatial"]
+# Spatial audio: the VBAP / binaural panner units, now their own crate.
+#
+# NOTE: this used to be `["dsp", "tutti-units/spatial"]` while `dsp` was itself
+# `["tutti-units/spatial"]` — i.e. the two features were synonyms for the same
+# single flag, and both doc comments pointed at `tutti_units::spatial_graph`, a
+# module that moved app-side to `dawai_model::engine_bind` long ago. `spatial`
+# now names exactly one thing: the dependency on `tutti-spatial`.
+spatial = ["dep:tutti-spatial"]
 
 # FFT convolution reverb (partitioned IR) in tutti-units.
 convolution = ["tutti-units/convolution"]

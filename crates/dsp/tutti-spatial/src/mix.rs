@@ -1,16 +1,17 @@
 //! Assembling a surround mix: place each source into the speaker field with a
 //! panner, then fold the panners into one N-wide master.
 //!
-//! [`SpatialPannerNode`](super::SpatialPannerNode) does the placing. The folding
-//! is [`ChannelSumUnit`](crate::ChannelSumUnit)'s — which lives at the crate root
-//! rather than here, because summing `K` sources of `N` channels is arity
-//! arithmetic with no geometry in it, and mixers that never touch VBAP need it
-//! too.
+//! [`SpatialPannerNode`](crate::SpatialPannerNode) does the placing. The folding
+//! is [`ChannelSumUnit`](tutti_units::ChannelSumUnit)'s — which lives in
+//! `tutti-units` rather than here, because summing `K` sources of `N` channels
+//! is arity arithmetic with no geometry in it, and mixers that never touch VBAP
+//! need it too.
 
 use tutti_core::dsp::Net;
 use tutti_core::{Azimuth, ChannelLayout, Elevation, Hz, NodeId, Q};
+use tutti_units::{ChannelSumUnit, SvfFilterNode, SvfType};
 
-use crate::{ChannelSumUnit, Result, SpatialPannerNode, SvfFilterNode, SvfType};
+use crate::{Result, SpatialPannerNode};
 
 /// LFE bass-management low-pass cutoff. 120 Hz is the standard consumer LFE
 /// crossover (Dolby/DTS bass management typically low-pass the LFE feed at
@@ -85,7 +86,7 @@ pub fn build_surround_mix(
     // source to mono, low-pass it (~120 Hz), and route it into the LFE channel
     // as one extra input group on the main sum. Without this, a 5.1/7.1 export's
     // LFE channel would be empty.
-    let lfe_group = super::nodes::lfe_channel(layout).map(|lfe_ch| {
+    let lfe_group = crate::nodes::lfe_channel(layout).map(|lfe_ch| {
         // Mono-sum the sources' first channel, then low-pass.
         let mono_sum = net.push(Box::new(ChannelSumUnit::new(
             sources.len().max(1),

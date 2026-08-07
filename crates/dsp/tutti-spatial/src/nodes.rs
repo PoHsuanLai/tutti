@@ -5,7 +5,7 @@ use tutti_core::{
     Azimuth, BufferMut, BufferRef, Elevation, Param, SampleRate, SignalFrame, Spread, StereoWidth,
 };
 
-use super::vbap_panner::SpatialPanner;
+use crate::vbap_panner::SpatialPanner;
 
 /// Azimuth/elevation pair as typed parameters. Both spatial panner nodes
 /// carry exactly this pair; grouping them here names the concept and lets
@@ -73,7 +73,7 @@ impl Default for SpatialTarget {
 /// So a straight gain-i → channel-i write puts the surrounds one slot early and
 /// leaves a hole. This returns `map[i] = file channel for VBAP speaker i`; the
 /// LFE channel is deliberately absent (it is fed a separate low-passed send by
-/// [`build_surround_mix`](super::build_surround_mix), not by the panner).
+/// [`build_surround_mix`](crate::build_surround_mix), not by the panner).
 ///
 /// - **Stereo / Quad**: identity — no LFE, order already matches.
 /// - **5.1** (6ch, VBAP `[L,R,C,Ls,Rs]`): `[0,1,2,4,5]` — skip LFE at 3.
@@ -95,7 +95,7 @@ fn speaker_channel_map(layout: ChannelLayout) -> Vec<usize> {
 /// an LFE (mono / stereo / quad) return `None`.
 ///
 /// LFE is *not* a panned speaker (see [`speaker_channel_map`]); this is the
-/// channel [`build_surround_mix`](super::build_surround_mix) feeds with a
+/// channel [`build_surround_mix`](crate::build_surround_mix) feeds with a
 /// separate low-passed bass-management send.
 pub(crate) fn lfe_channel(layout: ChannelLayout) -> Option<usize> {
     match layout.count() {

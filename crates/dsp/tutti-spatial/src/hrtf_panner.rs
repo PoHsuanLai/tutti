@@ -30,7 +30,7 @@
 use hrtf::{HrirSphere, HrtfContext, HrtfProcessor, Vec3};
 use tutti_core::{Azimuth, Elevation, Radians, SampleRate};
 
-use super::smoothing::{ExponentialSmoother, DEFAULT_POSITION_SMOOTH_TIME};
+use crate::smoothing::{ExponentialSmoother, DEFAULT_POSITION_SMOOTH_TIME};
 
 /// Samples per `hrtf` convolution block. Small: latency is
 /// `INTERPOLATION_STEPS * BLOCK_LEN` samples (~10ms at 48kHz).

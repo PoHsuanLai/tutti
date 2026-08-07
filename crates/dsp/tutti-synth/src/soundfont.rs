@@ -12,7 +12,7 @@ use tutti_core::Arc;
 use tutti_core::{AudioUnit, BufferMut, BufferRef, SampleRate, Setting, SignalFrame};
 use tutti_midi_runtime::{MidiInPort, MidiSender};
 use tutti_midi_types::ump::MidiEvent;
-use tutti_midi_types::{MidiIn, MidiUnitId};
+use tutti_midi_types::{MidiUnitId, MidiUnitIn};
 
 /// Capacity of the scratch buffer used to poll MIDI events per audio callback.
 ///

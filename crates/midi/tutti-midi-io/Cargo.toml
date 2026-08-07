@@ -2,18 +2,18 @@
 name = "tutti-midi-io"
 version = "0.0.1"
 edition = "2021"
-description = "MIDI hardware I/O — device connection, SMF file read/write"
+description = "Native-UMP OS MIDI I/O — endpoint enumeration, connection, send/receive"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/PoHsuanLai/Tutti"
+readme = "README.md"
 
-[features]
-default = []
-# OS MIDI hardware I/O: pulls `midir` (device connect / poll / send, the `MidiIo`
-# orchestrator + hardware input/output threads) and, on macOS, `coremidi` for
-# virtual ports. Off → the engine still has full MIDI (bus, routing, clips,
-# sequencer, MPE, clock-master *generation*) but no OS ports; `midir` is not
-# linked. This is the engine-vs-OS-I/O axis.
-midi-hardware = ["dep:midir", "coremidi", "coremidi-sys", "core-foundation"]
+# No features. This crate IS the OS MIDI edge — with the file codecs split out
+# to `tutti-midi-file`, there is nothing here that is not a port. The old
+# `midi-hardware` flag left the whole session/port/capability surface compiled
+# with no backend to drive it, which is not a configuration anyone wants.
+#
+# The per-platform deps below are gated by `cfg(target_os)` alone, which is what
+# actually decides whether CoreMIDI exists.
 
 [dependencies]
 thiserror = "2"
@@ -21,6 +21,9 @@ tracing = "0.1"
 
 # Core types
 tutti-midi-types = { path = "../tutti-midi-types" }
+# The SMF / Clip File codecs. Re-exported for the `tutti_midi_io::smf` spelling;
+# a consumer that only wants files should depend on it directly instead.
+tutti-midi-file = { path = "../tutti-midi-file" }
 tutti-core = { path = "../../core/tutti-core", default-features = false, features = ["midi"] }
 # MIDI fan-out runtime (MidiBus, MpeProcessor, PerNoteExpression, MidiEventSlot).
 # Acyclic: tutti-midi-runtime does NOT depend on tutti-midi-io.
@@ -30,33 +33,17 @@ tutti-midi-runtime = { path = "../tutti-midi-runtime", default-features = false 
 crossbeam-channel = "0.5"
 arc-swap = "1.7"
 ringbuf = "0.4"
-parking_lot = "0.12"
 
-# OS MIDI hardware, gated by `midi-hardware`. `midly` (SMF file I/O) is a hard
-# dep — SMF read/write is engine-side, not OS hardware. midly's workspace base
-# is no_std; re-add the `std` + `parallel` features this crate's SMF I/O relies
-# on (midly's default).
-midir = { workspace = true, optional = true }
-midly = { workspace = true, features = ["std", "parallel"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-coremidi = { workspace = true, optional = true }
-# Raw FFI for the native-UMP virtual source (the safe `coremidi` wrapper only
-# exposes MIDI-1.0 virtual sources). Enabled with `coremidi` via `midi-hardware`.
-coremidi-sys = { workspace = true, optional = true }
-core-foundation = { workspace = true, optional = true }
+coremidi = { workspace = true }
+# Raw FFI for the native-UMP virtual source — the safe `coremidi` wrapper has
+# `virtual_destination_with_protocol` but no `virtual_source_with_protocol`.
+coremidi-sys = { workspace = true }
+core-foundation = { workspace = true }
 
 [dev-dependencies]
 tracing-subscriber = "0.3"
 # The RT gate in tests/rt_no_alloc_hardware_poll.rs drives the real
 # `HardwareMidiInputs` through `MidiPreBlock` under a disabled allocator.
 assert_no_alloc = { version = "1", default-features = false }
-
-# These examples drive the OS `MidiIo` orchestrator, so they need the hardware axis.
-[[example]]
-name = "list_devices"
-required-features = ["midi-hardware"]
-
-[[example]]
-name = "iac_loopback_test"
-required-features = ["midi-hardware"]

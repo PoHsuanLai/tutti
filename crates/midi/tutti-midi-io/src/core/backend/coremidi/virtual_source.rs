@@ -31,9 +31,10 @@ const MIDI_TIMESTAMP_NOW: MIDITimeStamp = 0;
 
 /// A CoreMIDI virtual source that speaks the **MIDI 2.0 (UMP) protocol**.
 ///
-/// Unlike [`super::VirtualMidiSource`] (MIDI 1.0, byte packets), this endpoint
-/// carries UMP words end to end, so JR Timestamps and other MIDI-2-only messages
-/// survive to the wire. Owns its client + endpoint; both are disposed on drop.
+/// Unlike a MIDI-1.0 virtual source (byte packets, whose only send path forces
+/// every event through `MidiEvent::to_midi1_bytes`), this endpoint carries UMP
+/// words end to end, so JR Timestamps and other MIDI-2-only messages survive to
+/// the wire. Owns its client + endpoint; both are disposed on drop.
 pub struct UmpVirtualSource {
     client: MIDIClientRef,
     source: MIDIEndpointRef,

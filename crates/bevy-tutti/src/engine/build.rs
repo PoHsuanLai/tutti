@@ -32,7 +32,7 @@ use crate::midi::MidiIoRes;
 #[cfg(feature = "midi")]
 use crate::midi::{ClockMasterRes, MidiBusRes, MidiRoutingRes};
 #[cfg(feature = "midi-hardware")]
-use tutti_midi_io::MidiIo;
+use tutti_midi_io::MidiSession;
 #[cfg(feature = "midi")]
 use tutti_midi_runtime::{MidiBus, MidiPreBlock};
 #[cfg(feature = "midi")]
@@ -55,7 +55,7 @@ pub fn build_into(plugin: &crate::TuttiPlugin, app: &mut App) -> Result<()> {
     #[cfg(feature = "midi-hardware")]
     let midi_io = {
         let port_manager = Arc::new(tutti_midi_io::HardwareMidiInputs::new(256));
-        Some(MidiIo::new(port_manager))
+        Some(MidiSession::new(port_manager))
     };
 
     let mut audio_engine = AudioEngine::new(plugin.output_device)?;
@@ -71,7 +71,7 @@ pub fn build_into(plugin: &crate::TuttiPlugin, app: &mut App) -> Result<()> {
     // `HardwareMidiInputs::set_sample_rate` documents.
     #[cfg(feature = "midi-hardware")]
     if let Some(ref io) = midi_io {
-        io.port_manager().set_sample_rate(sample_rate);
+        io.ports().set_sample_rate(sample_rate);
     }
 
     let inputs = plugin.inputs;
@@ -168,7 +168,7 @@ pub fn build_into(plugin: &crate::TuttiPlugin, app: &mut App) -> Result<()> {
         // Hardware MIDI input only exists under `midi-hardware`.
         #[cfg(feature = "midi-hardware")]
         if let Some(ref io) = midi_io {
-            pre_block.set_input(io.port_manager().clone());
+            pre_block.set_input(io.ports().clone());
         }
 
         pre_block

@@ -1,31 +1,26 @@
-//! Hardware and file MIDI I/O for the Tutti engine.
-//!
-//! [`core`] is the hardware edge: [`MidiIo`], the `midir`/`coremidi` drivers,
-//! and the audio-thread ring buffers. Plus [`smf`], the Standard MIDI File
-//! codec, and passthrough re-exports of the pure MIDI vocabulary from
-//! [`tutti_midi_types`]. The whole surface re-exports at the crate root, so
-//! consumers write `tutti_midi_io::MidiIo`.
+#![doc = include_str!("../README.md")]
 
 // --- Framework-free hardware I/O core ---
 
 pub mod core;
 pub use core::error;
+/// MIDI 1.0 SysEx reassembly → UMP SysEx7. OS-free, so every driver edge shares
+/// it and it is testable without a device.
+pub use core::Sysex7Assembler;
+/// The endpoint vocabulary: what a MIDI endpoint is, what it can carry, and the
+/// backend seam that enumerates and opens them.
+pub use core::{
+    EndpointId, EndpointInfo, InputConnection, MidiEndpoints, MidiSession, UmpCapability,
+};
 pub use core::{Error, Result};
-// OS hardware orchestrator, the device descriptor, and the record its observer
-// channel carries — only present under `midi-hardware` (they own the `midir`
-// edge).
 pub use core::{HardwareMidiInputs, InputProducerHandle, PortInfo, PortType};
-#[cfg(feature = "midi-hardware")]
-pub use core::{MidiDevice, MidiInputRecord, MidiIo};
 
 /// `HardwareMidiInputs` and friends live in [`core::port`]; kept as a crate-root
 /// module path for the `tutti_midi_io::port::*` spelling consumers already use.
 pub use core::port;
 
-#[cfg(all(target_os = "macos", feature = "midi-hardware"))]
-pub use core::{
-    UmpVirtualDestination, UmpVirtualSource, VirtualMidiDestination, VirtualMidiSource,
-};
+#[cfg(target_os = "macos")]
+pub use core::{UmpVirtualDestination, UmpVirtualSource};
 
 // --- Re-exports from tutti-midi-types (the pure MIDI vocabulary) ---
 
@@ -81,20 +76,16 @@ pub use crossbeam_channel;
 
 // --- Standard MIDI File codec ---
 
-/// MIDI 2.0 Clip File (M2-116) file I/O — read/write a clip by path, and
-/// identify which MIDI format a file holds ([`MidiFileKind`]) by magic rather
-/// than by extension. The byte-level codec lives in [`tutti_midi_types`].
-pub mod clip;
-pub use clip::{read_clip_file_from_path, write_clip_file_to_path, MidiFileKind};
-
-/// Standard MIDI File (SMF) read/write — parse a `.mid` into beat-positioned
-/// events ([`ParsedMidiFile`]) or per-track paired notes ([`smf::tracks`]), and
-/// encode events back out ([`encode_midi_file`]).
-pub mod smf;
-pub use smf::{
+// The file codecs moved to `tutti-midi-file` — reading a `.mid` and talking to
+// a MIDI port are different jobs, and pairing them behind one feature flag made
+// a consumer that wanted only the former link CoreMIDI. Re-exported here so the
+// `tutti_midi_io::smf` / `::clip` spellings keep working.
+pub use tutti_midi_file::{clip, smf};
+pub use tutti_midi_file::{
     encode_midi_file, write_midi_file, MidiWriteOptions, ParsedMidiFile, SmfMessage, SmfNote,
     SmfTimedEvent, SmfTrack,
 };
+pub use tutti_midi_file::{read_clip_file_from_path, write_clip_file_to_path, MidiFileKind};
 
 /// The umbrella MIDI prelude, for `use tutti_midi_io::prelude::*;` — everything a
 /// typical app touches, from one import.
@@ -102,7 +93,7 @@ pub use smf::{
 /// It re-exports [`tutti_midi_types::prelude`] (the wire event + decoded view +
 /// clip-file codec + per-note identity) and adds this crate's I/O and delivery:
 ///
-/// - **Hardware I/O** — [`MidiIo`] (connect / send / observe) and [`MidiDevice`].
+/// - **Hardware I/O** — [`MidiSession`] (enumerate / connect / send).
 /// - **Delivery** — [`MidiBus`] / [`MidiSender`] / [`MidiReceiver`] (lock-free
 ///   fan-out), and beat-scheduled playback ([`MidiClipSource`], [`MidiSnapshot`],
 ///   [`TimedMidiEvent`]).
@@ -135,9 +126,7 @@ pub mod prelude {
         TimedMidiEvent,
     };
 
-    // The OS orchestrator + device descriptor only exist under `midi-hardware`.
-    #[cfg(feature = "midi-hardware")]
-    pub use crate::{MidiDevice, MidiIo};
+    pub use crate::MidiSession;
 }
 
 // This crate is OS MIDI I/O plus the value types a host drives. The ECS

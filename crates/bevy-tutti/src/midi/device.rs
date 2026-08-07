@@ -20,14 +20,14 @@ use bevy_ecs::message::{Message, MessageReader, MessageWriter};
 use bevy_ecs::prelude::*;
 use bevy_log::warn;
 
-/// Hardware MIDI I/O (OS port management + virtual ports). Only present when
-/// the `midi-hardware` feature is compiled; claimed into the world by
+/// The open MIDI connections and the endpoints available to open. Only present
+/// when the `midi-hardware` feature is compiled; claimed into the world by
 /// [`TuttiMidiPlugin`](super::plugin::TuttiMidiPlugin) from the engine handoff.
 #[derive(Resource, Clone, Debug)]
-pub struct MidiIoRes(pub tutti_midi_io::MidiIo);
+pub struct MidiIoRes(pub tutti_midi_io::MidiSession);
 
 impl std::ops::Deref for MidiIoRes {
-    type Target = tutti_midi_io::MidiIo;
+    type Target = tutti_midi_io::MidiSession;
     fn deref(&self) -> &Self::Target {
         &self.0
     }
@@ -145,7 +145,7 @@ pub fn midi_device_connect_system(
         }
     }
     for disconnect in disconnect_events.read() {
-        midi_io.0.disconnect_input(&disconnect.name);
+        midi_io.0.disconnect_input_by_name(&disconnect.name);
         acted = true;
     }
     for connect in connect_out.read() {

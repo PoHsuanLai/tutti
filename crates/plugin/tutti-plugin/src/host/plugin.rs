@@ -248,6 +248,20 @@ impl Plugin {
         true
     }
 
+    /// Drop a previously-installed MIDI source; subsequent blocks poll only the
+    /// live inbox again.
+    ///
+    /// Returns nothing, unlike its installing counterpart: there is no input to
+    /// decline, and clearing a plugin that was never routed is already the
+    /// no-op the caller wants.
+    pub fn clear_midi_source(&mut self) {
+        match &mut self.backend {
+            Backend::Subprocess(c) => c.clear_midi_source(),
+            #[cfg(feature = "vst2")]
+            Backend::InProcessVst2(c) => c.clear_midi_source(),
+        }
+    }
+
     /// Route this plugin's MIDI-out back into the graph. `false` if it declared
     /// no MIDI output.
     #[must_use = "a false return means the plugin declined this input and nothing was installed"]
@@ -261,6 +275,18 @@ impl Plugin {
             Backend::InProcessVst2(c) => c.set_midi_out(sink),
         }
         true
+    }
+
+    /// Drop the outbound routing target; subsequent blocks discard MIDI-out.
+    ///
+    /// Returns nothing, for the same reason as
+    /// [`clear_midi_source`](Self::clear_midi_source).
+    pub fn clear_midi_out(&self) {
+        match &self.backend {
+            Backend::Subprocess(c) => c.clear_midi_out(),
+            #[cfg(feature = "vst2")]
+            Backend::InProcessVst2(c) => c.clear_midi_out(),
+        }
     }
 
     /// Tell the plugin whether it is being rendered under realtime pressure.

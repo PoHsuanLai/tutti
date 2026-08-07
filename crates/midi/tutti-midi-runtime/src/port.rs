@@ -47,7 +47,7 @@ use std::sync::Arc;
 
 use arc_swap::ArcSwapOption;
 use tutti_midi_types::ump::MidiEvent;
-use tutti_midi_types::{MidiIn, MidiUnitId};
+use tutti_midi_types::{MidiUnitId, MidiUnitSource};
 
 use crate::registry::{MidiMailbox, MidiReceiver, MidiSender};
 
@@ -68,7 +68,7 @@ pub struct MidiInPort {
     /// it back. Optional rather than defaulting to the receiver because the
     /// receiver is now polled unconditionally — a default of "the receiver"
     /// would drain the mailbox twice.
-    source: Arc<ArcSwapOption<Arc<dyn MidiIn>>>,
+    source: Arc<ArcSwapOption<Arc<dyn MidiUnitSource>>>,
 }
 
 impl std::fmt::Debug for MidiInPort {
@@ -119,7 +119,13 @@ impl MidiInPort {
     /// Both are polled: a clip plays *and* the keyboard still sounds. Installing
     /// a second source replaces the first — the port layers the mailbox with one
     /// source, not a stack of them.
-    pub fn install(&self, source: Arc<dyn MidiIn>) {
+    /// The port supplies its own [`unit_id`](Self::unit_id) when it polls, so a
+    /// source can only ever be asked for the events belonging to *this* unit.
+    /// That is why the parameter is a [`MidiUnitSource`] and not a
+    /// [`MidiSource`](tutti_midi_types::MidiSource): a pre-routing edge would
+    /// hand back the whole undifferentiated stream, which is not this port's to
+    /// take.
+    pub fn install(&self, source: Arc<dyn MidiUnitSource>) {
         self.source.store(Some(Arc::new(source)));
     }
 
@@ -142,12 +148,13 @@ impl MidiInPort {
     /// unreachable.
     #[inline]
     pub fn poll(&self, block_size: usize, buffer: &mut [MidiEvent]) -> usize {
-        // The receiver's *inherent* `poll_into` — its `MidiIn` impl only adds a
-        // unit-id check against the id this port already owns.
         let n = self.receiver.poll_into(buffer);
         match self.source.load().as_deref() {
             Some(source) if n < buffer.len() => {
-                n + source.poll_into(self.unit_id, block_size, &mut buffer[n..])
+                // This port is the only thing that mints the selector: the id it
+                // passes is the id it owns, so an installed source cannot be
+                // asked for another unit's events.
+                n + source.poll_unit(self.unit_id, block_size, &mut buffer[n..])
             }
             _ => n,
         }
@@ -199,13 +206,24 @@ mod tests {
 
     /// A source that emits one note-on on its first poll — proves it was polled.
     struct OneNote(u8);
-    impl MidiIn for OneNote {
-        fn poll_into(&self, _u: MidiUnitId, _b: usize, out: &mut [MidiEvent]) -> usize {
+    impl MidiUnitSource for OneNote {
+        fn poll_unit(&self, _u: MidiUnitId, _b: usize, out: &mut [MidiEvent]) -> usize {
             if out.is_empty() {
                 return 0;
             }
             out[0] = note_on(self.0);
             1
+        }
+    }
+
+    /// Records the unit id it was polled with, so a test can assert the port
+    /// supplied its own rather than a sentinel.
+    #[derive(Default)]
+    struct RecordsUnit(std::sync::Mutex<Vec<MidiUnitId>>);
+    impl MidiUnitSource for RecordsUnit {
+        fn poll_unit(&self, u: MidiUnitId, _b: usize, _out: &mut [MidiEvent]) -> usize {
+            self.0.lock().unwrap().push(u);
+            0
         }
     }
 
@@ -266,6 +284,35 @@ mod tests {
         let mut buf = [MidiEvent::noop(); 1];
         assert_eq!(port.poll(64, &mut buf), 1);
         assert_eq!(buf[0].note(), Some(60), "the mailbox event survives");
+    }
+
+    /// The port polls an installed source with **its own** unit id.
+    ///
+    /// This is the positive form of the guard that used to be missing. The
+    /// pre-block polled its hardware source with a `MidiUnitId::new(0)`
+    /// sentinel, and `0` is a real id — so a per-unit source installed at that
+    /// seam would have been handed the whole hardware stream instead of its own
+    /// events. The type system now separates the two seams; this pins the half
+    /// that still passes an id.
+    #[test]
+    fn the_port_supplies_the_unit_id_the_source_is_polled_with() {
+        let port = MidiInPort::new();
+        let recorder = Arc::new(RecordsUnit::default());
+        port.install(recorder.clone());
+
+        let mut buf = [MidiEvent::noop(); 4];
+        port.poll(64, &mut buf);
+
+        assert_eq!(
+            recorder.0.lock().unwrap().as_slice(),
+            &[port.unit_id()],
+            "the source must be polled with this port's id, not a sentinel"
+        );
+        assert_ne!(
+            port.unit_id(),
+            MidiUnitId::new(0),
+            "a fresh port must not be issued the id the old sentinel used"
+        );
     }
 
     #[test]

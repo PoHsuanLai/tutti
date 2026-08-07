@@ -17,7 +17,7 @@ use assert_no_alloc::AllocDisabler;
 use tutti_midi_runtime::MidiPreBlock;
 use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup, RtPublish};
 use tutti_midi_types::ump::MidiEvent;
-use tutti_midi_types::{MidiIn, MidiRoute, MidiRouter, MidiRoutingSnapshot, MidiUnitId};
+use tutti_midi_types::{MidiRoute, MidiRouter, MidiRoutingSnapshot, MidiSource, MidiUnitId};
 
 #[global_allocator]
 static A: AllocDisabler = AllocDisabler;
@@ -29,13 +29,8 @@ struct FixedInput {
     events: Vec<MidiEvent>,
 }
 
-impl MidiIn for FixedInput {
-    fn poll_into(
-        &self,
-        _unit_id: MidiUnitId,
-        _block_size: usize,
-        buffer: &mut [MidiEvent],
-    ) -> usize {
+impl MidiSource for FixedInput {
+    fn poll_block(&self, _block_size: usize, buffer: &mut [MidiEvent]) -> usize {
         let n = self.events.len().min(buffer.len());
         buffer[..n].copy_from_slice(&self.events[..n]);
         n

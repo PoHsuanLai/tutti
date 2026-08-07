@@ -27,7 +27,7 @@ use tutti_midi_types::tutti_types::RtPublish;
 use tutti_core::{AudioThreadCell, RtEventBuf};
 use tutti_midi_types::ump::MidiEvent;
 use tutti_midi_types::Midi1ToMidi2Translator;
-use tutti_midi_types::{MidiIn, MidiRouter, MidiRoutingSnapshot, MidiUnitId};
+use tutti_midi_types::{MidiRouter, MidiRoutingSnapshot, MidiSource};
 
 use crate::mpe_ingest::MpeIngest;
 use tutti_midi_types::mpe::MpeMode;
@@ -46,10 +46,6 @@ pub trait BlockClock: Send + Sync {
 
 const MIDI_EVENT_BUFFER_CAPACITY: usize = 512;
 
-/// Sentinel unit id passed to the pre-routing hardware [`MidiIn`], which ignores
-/// it and returns every pending event (routing decides the real targets).
-const HARDWARE_POLL_UNIT: MidiUnitId = MidiUnitId::new(0);
-
 /// The once-per-block MIDI producer: polls the hardware input, routes events into
 /// unit inboxes, and ticks the outbound clock — all *before* the graph renders.
 ///
@@ -60,7 +56,7 @@ pub struct MidiPreBlock {
     /// Hardware / live MIDI source, polled once per block. `None` when no
     /// hardware input is compiled or connected (software fan-out still works —
     /// producers push straight into unit inboxes).
-    input: Option<Arc<dyn MidiIn>>,
+    input: Option<Arc<dyn MidiSource>>,
     /// The fan-out that delivers a routed event to a destination unit's inbox,
     /// keyed by [`MidiUnitId`]. `None` before wiring.
     queue: Option<Arc<dyn MidiRouter>>,
@@ -71,9 +67,10 @@ pub struct MidiPreBlock {
     /// [`MIDI_EVENT_BUFFER_CAPACITY`] are dropped (never allocated) on the audio
     /// thread.
     events: RtEventBuf<(usize, MidiEvent), MIDI_EVENT_BUFFER_CAPACITY>,
-    /// Scratch the hardware [`MidiIn`] fills each block via `poll_into`, before
-    /// we copy into `events`. Interior-mutable so `run` stays `&self` on the
-    /// audio path; single-audio-thread access (same contract `events` relies on).
+    /// Scratch the hardware [`MidiSource`] fills each block via `poll_block`,
+    /// before we copy into `events`. Interior-mutable so `run` stays `&self` on
+    /// the audio path; single-audio-thread access (same contract `events` relies
+    /// on).
     poll_scratch: AudioThreadCell<[MidiEvent; MIDI_EVENT_BUFFER_CAPACITY]>,
     /// Optional outbound clock/timecode generator, ticked once per block.
     clock: Option<Arc<dyn BlockClock>>,
@@ -127,7 +124,14 @@ impl MidiPreBlock {
     }
 
     /// Install the hardware / live MIDI source polled each block.
-    pub fn set_input(&mut self, input: Arc<dyn MidiIn>) {
+    /// A [`MidiSource`] and not a [`MidiUnitSource`]: this phase *decides* the
+    /// unit ids, so it has none to pass. It used to poll a `MidiIn` with a
+    /// `MidiUnitId::new(0)` sentinel — a real id, which meant a per-unit source
+    /// installed here would silently have received the entire hardware stream.
+    /// The type now refuses that install.
+    ///
+    /// [`MidiUnitSource`]: tutti_midi_types::MidiUnitSource
+    pub fn set_input(&mut self, input: Arc<dyn MidiSource>) {
         self.input = Some(input);
     }
 
@@ -257,12 +261,11 @@ impl MidiPreBlock {
         };
 
         // Drain the input into scratch, then copy the routed subset into
-        // `events` — all inside one `borrow_mut`. `poll_into` ignores the unit id
-        // (hardware is pre-routing) and returns everything pending; the copy is
-        // bounded and allocation-free. We drain even when nothing is routed, so
-        // the hardware rings don't back up.
+        // `events` — all inside one `borrow_mut`. The copy is bounded and
+        // allocation-free. We drain even when nothing is routed, so the hardware
+        // rings don't back up.
         let mut scratch = self.poll_scratch.borrow_mut();
-        let n = input.poll_into(HARDWARE_POLL_UNIT, frames, &mut scratch[..]);
+        let n = input.poll_block(frames, &mut scratch[..]);
 
         // Only "nothing arrived" short-circuits. Emptiness of the routing table
         // must NOT, even though nothing can be delivered: both stages below are
@@ -417,14 +420,15 @@ mod tests {
     use tutti_midi_types::midi2::UmpMessage;
     use tutti_midi_types::mpe::{MpeMode, MpeZoneConfig};
     use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
-    use tutti_midi_types::MidiRoutingTable;
+    use tutti_midi_types::{MidiRoutingTable, MidiUnitId};
 
-    /// A one-shot [`MidiIn`] that returns a fixed event list on its first poll.
+    /// A one-shot [`MidiSource`] that returns a fixed event list on its first
+    /// poll.
     struct FixedInput {
         events: Mutex<Vec<MidiEvent>>,
     }
-    impl MidiIn for FixedInput {
-        fn poll_into(&self, _unit: MidiUnitId, _block_size: usize, out: &mut [MidiEvent]) -> usize {
+    impl MidiSource for FixedInput {
+        fn poll_block(&self, _block_size: usize, out: &mut [MidiEvent]) -> usize {
             let mut evs = self.events.lock().unwrap();
             let n = evs.len().min(out.len());
             for (slot, ev) in out.iter_mut().zip(evs.drain(..n)) {
@@ -512,8 +516,8 @@ mod tests {
             events: Mutex<Vec<MidiEvent>>,
             table: Mutex<MidiRoutingTable>,
         }
-        impl MidiIn for RepublishOnPoll {
-            fn poll_into(&self, _unit: MidiUnitId, _frames: usize, out: &mut [MidiEvent]) -> usize {
+        impl MidiSource for RepublishOnPoll {
+            fn poll_block(&self, _frames: usize, out: &mut [MidiEvent]) -> usize {
                 // Retire every route *while the block is in flight*.
                 let mut table = self.table.lock().unwrap();
                 table.set_routes(Vec::new(), None);
@@ -610,8 +614,8 @@ mod tests {
         struct PerBlockInput {
             blocks: Mutex<Vec<Vec<MidiEvent>>>,
         }
-        impl MidiIn for PerBlockInput {
-            fn poll_into(&self, _unit: MidiUnitId, _frames: usize, out: &mut [MidiEvent]) -> usize {
+        impl MidiSource for PerBlockInput {
+            fn poll_block(&self, _frames: usize, out: &mut [MidiEvent]) -> usize {
                 let mut blocks = self.blocks.lock().unwrap();
                 if blocks.is_empty() {
                     return 0;

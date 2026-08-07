@@ -66,7 +66,7 @@ fn hardware_poll_is_allocation_free() {
     let port = inputs.create_input_port("Test Input");
 
     let mut pre = MidiPreBlock::new(routing());
-    pre.set_input(Arc::clone(&inputs) as Arc<dyn tutti_midi_types::MidiIn>);
+    pre.set_input(inputs.clone());
     let queue = Arc::new(CountingQueue {
         count: std::sync::atomic::AtomicUsize::new(0),
     });
@@ -104,7 +104,7 @@ fn hardware_poll_over_capacity_is_allocation_free() {
         .collect();
 
     let mut pre = MidiPreBlock::new(routing());
-    pre.set_input(Arc::clone(&inputs) as Arc<dyn tutti_midi_types::MidiIn>);
+    pre.set_input(inputs.clone());
 
     // Warm with a *light* load — one event per port.
     //
@@ -138,7 +138,7 @@ fn hardware_poll_across_block_sizes_is_allocation_free() {
     let port = inputs.create_input_port("Test Input");
 
     let mut pre = MidiPreBlock::new(routing());
-    pre.set_input(Arc::clone(&inputs) as Arc<dyn tutti_midi_types::MidiIn>);
+    pre.set_input(inputs.clone());
 
     const SIZES: [usize; 5] = [64, 128, 256, 512, 1024];
     for frames in SIZES {
@@ -168,7 +168,7 @@ fn hardware_poll_with_stale_timestamps_is_allocation_free() {
     let port = inputs.create_input_port("Test Input");
 
     let mut pre = MidiPreBlock::new(routing());
-    pre.set_input(Arc::clone(&inputs) as Arc<dyn tutti_midi_types::MidiIn>);
+    pre.set_input(inputs.clone());
 
     let handle = inputs.get_input_producer_handle(port).expect("port exists");
     // An arrival a full second ago converts to a `samples_ago` far past any

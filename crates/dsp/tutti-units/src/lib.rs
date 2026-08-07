@@ -129,7 +129,7 @@ pub use tutti_mod::{
 // The fan-in every mixer needs: `K` sources × `N` channels summed into one
 // `N`-wide output. Ungated on purpose — it is arity arithmetic, not geometry, so
 // gating it under `spatial` made a VBAP dependency the price of summing two
-// stereo signals. `spatial`'s `build_surround_mix` is one consumer, not the only
+// stereo signals. `spatial`'s `build_vbap_mix` is one consumer, not the only
 // one.
 mod mix_bus;
 pub use mix_bus::ChannelSumUnit;
@@ -142,8 +142,8 @@ pub use downmix_unit::DownmixUnit;
 mod strip;
 pub use strip::BusStripUnit;
 
-// NOTE: the spatial panners (`SpatialPannerNode`, the HRTF binaural pair) and
-// `build_surround_mix` moved to the `tutti-spatial` crate. They were the crate's
+// NOTE: the spatial panners (`VbapPannerNode`, the HRTF binaural pair) and
+// `build_vbap_mix` moved to the `tutti-spatial` crate. They were the crate's
 // only *geometry* — azimuth, elevation, speaker layouts — where everything left
 // here is per-channel signal processing. `tutti-spatial` depends on this crate
 // (its mix builder is assembled from `ChannelSumUnit` + `SvfFilterNode`), so the

@@ -30,7 +30,7 @@
 use hrtf::{HrirSphere, HrtfContext, HrtfProcessor, Vec3};
 use tutti_core::{Azimuth, Elevation, Radians, SampleRate};
 
-use crate::smoothing::{ExponentialSmoother, DEFAULT_POSITION_SMOOTH_TIME};
+use crate::AngleSmoother;
 
 /// Samples per `hrtf` convolution block. Small: latency is
 /// `INTERPOLATION_STEPS * BLOCK_LEN` samples (~10ms at 48kHz).
@@ -190,8 +190,7 @@ impl OverlapTails {
 /// Turns a target azimuth/elevation (degrees) into a de-zippered direction
 /// vector: one-pole smoothers on each angle, stepped once per rendered frame.
 struct PositionSmoother {
-    azimuth: ExponentialSmoother,
-    elevation: ExponentialSmoother,
+    smoother: AngleSmoother,
     target_azimuth: f32,
     target_elevation: f32,
 }
@@ -199,8 +198,7 @@ struct PositionSmoother {
 impl PositionSmoother {
     fn new(sample_rate: SampleRate) -> Self {
         Self {
-            azimuth: ExponentialSmoother::new(DEFAULT_POSITION_SMOOTH_TIME, sample_rate),
-            elevation: ExponentialSmoother::new(DEFAULT_POSITION_SMOOTH_TIME, sample_rate),
+            smoother: AngleSmoother::new(sample_rate),
             target_azimuth: 0.0,
             target_elevation: 0.0,
         }
@@ -217,19 +215,16 @@ impl PositionSmoother {
     }
 
     fn retune(&mut self, sample_rate: SampleRate) {
-        self.azimuth.set_sample_rate(sample_rate);
-        self.elevation.set_sample_rate(sample_rate);
+        self.smoother.set_sample_rate(sample_rate);
     }
 
     /// Advance both smoothers one frame and return the smoothed direction.
     #[inline]
     fn step(&mut self) -> Vec3 {
-        // The bearing takes the short arc; the height is a plain ramp. Before
-        // this split both used the linear form, so a source crossing directly
-        // behind the listener (170 -> -170, a 20 degree move) swept 340 degrees
-        // the wrong way around the head.
-        let az = self.azimuth.process_angle(Azimuth(self.target_azimuth));
-        let el = self.elevation.process(Elevation(self.target_elevation));
+        let (az, el) = self.smoother.step(
+            Azimuth(self.target_azimuth),
+            Elevation(self.target_elevation),
+        );
         direction_from_degrees(az, el)
     }
 }

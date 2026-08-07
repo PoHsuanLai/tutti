@@ -58,14 +58,11 @@ pub enum Error {
 
     /// Spatial-audio subsystem failure.
     ///
-    /// Wraps [`tutti_spatial::Error`] — VBAP speaker-layout construction, the
-    /// only fallible operation in the engine's DSP tier. It was
-    /// `tutti_units::Error` behind a `dsp` feature until the panners moved to
-    /// `tutti-spatial`; `tutti-units` itself is now infallible and exports no
-    /// error type at all.
+    /// Wraps [`tutti_spatial::VbapError`] — VBAP speaker-layout construction.
+    /// HRTF has its own error type and does not route through here.
     #[cfg(feature = "spatial")]
     #[error("Spatial: {0}")]
-    Spatial(#[from] tutti_spatial::Error),
+    Spatial(#[from] tutti_spatial::VbapError),
 
     /// Plugin-host bridge failure (VST2/VST3/CLAP).
     ///

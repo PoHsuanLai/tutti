@@ -1,4 +1,4 @@
-use crate::Result;
+use super::error::Result;
 use core::sync::atomic::Ordering;
 use tutti_core::Arc;
 use tutti_core::AtomicF32;
@@ -8,18 +8,17 @@ use tutti_core::{
 };
 use vbap::VBAPanner;
 
-use crate::smoothing::{ExponentialSmoother, DEFAULT_POSITION_SMOOTH_TIME};
+use crate::AngleSmoother;
 
 /// Maximum number of speakers supported (Atmos 7.1.4).
 const MAX_SPEAKERS: usize = 12;
 
-/// VBAP panner internals. Use `SpatialPannerNode` instead.
-pub(crate) struct SpatialPanner {
+/// VBAP panner internals. Use `VbapPannerNode` instead.
+pub(crate) struct VbapPanner {
     panner: VBAPanner,
     azimuth_target: Arc<AtomicF32>,
     elevation_target: Arc<AtomicF32>,
-    azimuth_smoother: ExponentialSmoother,
-    elevation_smoother: ExponentialSmoother,
+    smoother: AngleSmoother,
     spread: Spread,
     /// Pre-allocated scratch used by [`VBAPanner::compute_gains_into`].
     /// Sized to the layout's speaker count on construction; reused per
@@ -30,7 +29,7 @@ pub(crate) struct SpatialPanner {
     gains_scratch_b: RtScratch<f64>,
 }
 
-impl SpatialPanner {
+impl VbapPanner {
     fn new_with_layout(panner: VBAPanner) -> Self {
         let sample_rate = SampleRate(48000.0);
         let speaker_count = panner.num_speakers();
@@ -38,8 +37,7 @@ impl SpatialPanner {
             panner,
             azimuth_target: Arc::new(AtomicF32::new(0.0)),
             elevation_target: Arc::new(AtomicF32::new(0.0)),
-            azimuth_smoother: ExponentialSmoother::new(DEFAULT_POSITION_SMOOTH_TIME, sample_rate),
-            elevation_smoother: ExponentialSmoother::new(DEFAULT_POSITION_SMOOTH_TIME, sample_rate),
+            smoother: AngleSmoother::new(sample_rate),
             spread: Spread::POINT,
             gains_scratch_a: RtScratch::new(speaker_count),
             gains_scratch_b: RtScratch::new(speaker_count),
@@ -100,8 +98,7 @@ impl SpatialPanner {
     /// Retune the position smoothers so the 50ms de-zipper ramp holds at any
     /// sample rate (the smoothers are built at 48kHz in `new_with_layout`).
     pub(crate) fn set_sample_rate(&mut self, sample_rate: SampleRate) {
-        self.azimuth_smoother.set_sample_rate(sample_rate);
-        self.elevation_smoother.set_sample_rate(sample_rate);
+        self.smoother.set_sample_rate(sample_rate);
     }
 
     /// Apply spread to `gains[..count]` in place. Normalises the result
@@ -131,18 +128,15 @@ impl SpatialPanner {
         let target_azimuth = self.azimuth_target.load(Ordering::Acquire);
         let target_elevation = self.elevation_target.load(Ordering::Acquire);
 
-        // Angular for the bearing, linear for the height — the smoother has
-        // one entry point per space because the arithmetic genuinely differs.
-        let smoothed_azimuth = self
-            .azimuth_smoother
-            .process_angle(Azimuth(target_azimuth))
-            .get();
-        let smoothed_elevation = self.elevation_smoother.process(Elevation(target_elevation));
+        let (smoothed_azimuth, smoothed_elevation) = self
+            .smoother
+            .step(Azimuth(target_azimuth), Elevation(target_elevation));
+        let smoothed_azimuth = smoothed_azimuth.get();
 
         // RT invariant: must be `compute_gains_into`, not `compute_gains`.
         // The latter allocates a fresh `Vec<f64>` per call (and is
         // `#[deprecated]` in vbap 0.1.2). Backstop:
-        // `tutti-units/tests/rt_no_alloc.rs::spatial_panner_stereo_process_is_allocation_free`.
+        // `tutti-spatial/tests/rt_no_alloc.rs::vbap_panner_stereo_process_is_allocation_free`.
         let speaker_count = self.gains_scratch_a.capacity();
         let scratch = self.gains_scratch_a.active(speaker_count);
         self.panner.compute_gains_into(
@@ -191,9 +185,9 @@ impl SpatialPanner {
         let target_azimuth = self.azimuth_target.load(Ordering::Acquire);
         let target_elevation = self.elevation_target.load(Ordering::Acquire);
 
-        // Same split as `compute_gains`: the bearing takes the short arc.
-        let smoothed_azimuth = self.azimuth_smoother.process_angle(Azimuth(target_azimuth));
-        let smoothed_elevation = self.elevation_smoother.process(Elevation(target_elevation));
+        let (smoothed_azimuth, smoothed_elevation) = self
+            .smoother
+            .step(Azimuth(target_azimuth), Elevation(target_elevation));
 
         // The two virtual sources sit one offset either side of the bearing.
         // `rotate_by`, not `+`: the sum crosses the seam. At azimuth 170 with

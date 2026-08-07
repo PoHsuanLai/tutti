@@ -1,7 +1,7 @@
-//! Assembling a surround mix: place each source into the speaker field with a
-//! panner, then fold the panners into one N-wide master.
+//! Assembling a VBAP surround mix: place each source into the speaker field
+//! with a panner, then fold the panners into one N-wide master.
 //!
-//! [`SpatialPannerNode`](crate::SpatialPannerNode) does the placing. The folding
+//! [`VbapPannerNode`](crate::vbap::VbapPannerNode) does the placing. The folding
 //! is [`ChannelSumUnit`](tutti_units::ChannelSumUnit)'s — which lives in
 //! `tutti-units` rather than here, because summing `K` sources of `N` channels
 //! is arity arithmetic with no geometry in it, and mixers that never touch VBAP
@@ -11,7 +11,8 @@ use tutti_core::dsp::Net;
 use tutti_core::{Azimuth, ChannelLayout, Elevation, Hz, NodeId, Q};
 use tutti_units::{ChannelSumUnit, SvfFilterNode, SvfType};
 
-use crate::{Result, SpatialPannerNode};
+use super::error::Result;
+use super::node::VbapPannerNode;
 
 /// LFE bass-management low-pass cutoff. 120 Hz is the standard consumer LFE
 /// crossover (Dolby/DTS bass management typically low-pass the LFE feed at
@@ -20,20 +21,20 @@ const LFE_CUTOFF_HZ: Hz = Hz(120.0);
 /// Butterworth Q for the LFE low-pass (maximally flat, no resonant bump).
 const LFE_Q: Q = Q(0.707);
 
-/// One source to place in a surround mix: the node whose (stereo) output feeds a
+/// One source to place in a VBAP mix: the node whose (stereo) output feeds a
 /// panner, and the position to place it at.
 ///
 /// The two coordinates are different types because they behave differently: a
 /// bearing wraps onto the circle, a height saturates at the poles. That is also
 /// what keeps them from being passed in the wrong order.
 #[derive(Debug, Clone, Copy)]
-pub struct SurroundSource {
+pub struct VbapSource {
     pub node: NodeId,
     pub azimuth: Azimuth,
     pub elevation: Elevation,
 }
 
-impl SurroundSource {
+impl VbapSource {
     /// A source at ear level ([`Elevation::LEVEL`]) at the given bearing.
     pub fn at(node: NodeId, azimuth: impl Into<Azimuth>) -> Self {
         Self {
@@ -44,9 +45,9 @@ impl SurroundSource {
     }
 }
 
-/// Assemble a surround producer into `net` and return the summed mix node.
+/// Assemble a VBAP surround producer into `net` and return the summed mix node.
 ///
-/// Each source gets a [`SpatialPannerNode::for_layout`] placed at its position;
+/// Each source gets a [`VbapPannerNode::for_layout`] placed at its position;
 /// every panner's `CH` outputs are summed by a [`ChannelSumUnit`] into one
 /// `layout`-wide node, whose id is returned. The caller decides what to do with
 /// it — `net.pipe_output(mix)` for a direct surround render, or feed it into a
@@ -60,18 +61,18 @@ impl SurroundSource {
 /// Each source node is wired stereo-in (its ports 0 and 1) to its panner. A
 /// mono source should present the same sample on both — the panner treats a
 /// single input channel as centered anyway. Errors if `layout` has no VBAP
-/// preset (see [`SpatialPannerNode::for_layout`]). An empty `sources` yields a
+/// preset (see [`VbapPannerNode::for_layout`]). An empty `sources` yields a
 /// silent (but valid) `layout`-wide sum node.
-pub fn build_surround_mix(
+pub fn build_vbap_mix(
     net: &mut Net,
     layout: tutti_types::ChannelLayout,
-    sources: &[SurroundSource],
+    sources: &[VbapSource],
 ) -> Result<NodeId> {
     let channels = layout.count() as usize;
 
     let mut panner_ids = Vec::with_capacity(sources.len());
     for src in sources {
-        let panner = SpatialPannerNode::for_layout(layout)?;
+        let panner = VbapPannerNode::for_layout(layout)?;
         panner.set_position(src.azimuth, src.elevation);
         let pid = net.push(Box::new(panner));
         // Stereo-in: feed the source's first two outputs into the panner.
@@ -86,7 +87,7 @@ pub fn build_surround_mix(
     // source to mono, low-pass it (~120 Hz), and route it into the LFE channel
     // as one extra input group on the main sum. Without this, a 5.1/7.1 export's
     // LFE channel would be empty.
-    let lfe_group = crate::nodes::lfe_channel(layout).map(|lfe_ch| {
+    let lfe_group = crate::layout::lfe_channel(layout).map(|lfe_ch| {
         // Mono-sum the sources' first channel, then low-pass.
         let mono_sum = net.push(Box::new(ChannelSumUnit::new(
             sources.len().max(1),
@@ -132,7 +133,7 @@ mod tests {
     use tutti_core::AudioUnit;
 
     /// The pure-tutti surround producer, end to end, assembled via
-    /// [`build_surround_mix`]: two DC sources, one placed at a *front* speaker
+    /// [`build_vbap_mix`]: two DC sources, one placed at a *front* speaker
     /// and one at a *rear* speaker of a quad field. Asserts the front source
     /// lands in a front channel and the rear source lands in a rear channel —
     /// i.e. per-source placement survives the panner → sum → global-output path,
@@ -159,12 +160,12 @@ mod tests {
         // Place one at the front-left speaker (45° → ch0) and one at the
         // rear-left speaker (135° → ch2). The builder wires each source through a
         // quad panner and sums them into one 4-wide node.
-        let mix = build_surround_mix(
+        let mix = build_vbap_mix(
             &mut net,
             ChannelLayout::QUAD,
             &[
-                SurroundSource::at(src_front, 45.0),
-                SurroundSource::at(src_rear, 135.0),
+                VbapSource::at(src_front, 45.0),
+                VbapSource::at(src_rear, 135.0),
             ],
         )
         .expect("build quad surround mix");
@@ -211,38 +212,38 @@ mod tests {
 
     #[test]
     fn for_layout_dispatches_and_rejects_unsupported() {
-        use crate::SpatialPannerNode;
+        use crate::vbap::VbapPannerNode;
         use tutti_types::ChannelLayout;
 
         // Each supported width builds a panner of the right output count.
         assert_eq!(
-            SpatialPannerNode::for_layout(ChannelLayout::STEREO)
+            VbapPannerNode::for_layout(ChannelLayout::STEREO)
                 .unwrap()
                 .num_channels(),
             2
         );
         assert_eq!(
-            SpatialPannerNode::for_layout(ChannelLayout::QUAD)
+            VbapPannerNode::for_layout(ChannelLayout::QUAD)
                 .unwrap()
                 .num_channels(),
             4
         );
         assert_eq!(
-            SpatialPannerNode::for_layout(ChannelLayout::from(6u16))
+            VbapPannerNode::for_layout(ChannelLayout::from(6u16))
                 .unwrap()
                 .num_channels(),
             6
         );
         // A width with no preset errors rather than silently falling back.
-        let err = SpatialPannerNode::for_layout(ChannelLayout::from(3u16));
+        let err = VbapPannerNode::for_layout(ChannelLayout::from(3u16));
         assert!(matches!(
             err,
-            Err(crate::Error::UnsupportedSpeakerLayout(3))
+            Err(crate::vbap::VbapError::UnsupportedSpeakerLayout(3))
         ));
     }
 
     #[test]
-    fn build_surround_mix_wires_expected_arity() {
+    fn build_vbap_mix_wires_expected_arity() {
         use tutti_core::dsp::{dc, Net};
         use tutti_types::ChannelLayout;
 
@@ -252,13 +253,13 @@ mod tests {
         let c = net.push(Box::new(dc((1.0, 1.0))));
 
         // 3 sources into a 5.1 mix → the sum node is 6-out.
-        let mix = build_surround_mix(
+        let mix = build_vbap_mix(
             &mut net,
             ChannelLayout::from(6u16),
             &[
-                SurroundSource::at(a, 0.0),
-                SurroundSource::at(b, 90.0),
-                SurroundSource::at(c, -90.0),
+                VbapSource::at(a, 0.0),
+                VbapSource::at(b, 90.0),
+                VbapSource::at(c, -90.0),
             ],
         )
         .expect("build 5.1 mix");
@@ -267,37 +268,37 @@ mod tests {
     }
 
     #[test]
-    fn build_surround_mix_empty_sources_is_a_silent_valid_node() {
+    fn build_vbap_mix_empty_sources_is_a_silent_valid_node() {
         use tutti_core::dsp::Net;
         use tutti_types::ChannelLayout;
 
         let mut net = Net::new(0, 4);
         let mix =
-            build_surround_mix(&mut net, ChannelLayout::QUAD, &[]).expect("empty mix still builds");
+            build_vbap_mix(&mut net, ChannelLayout::QUAD, &[]).expect("empty mix still builds");
         // ChannelSumUnit clamps 0 sources to 1 input group, so it's a valid
         // 4-out node reading zeros.
         assert_eq!(net.outputs_in(mix), 4);
     }
 
     #[test]
-    fn build_surround_mix_rejects_unsupported_layout() {
+    fn build_vbap_mix_rejects_unsupported_layout() {
         use tutti_core::dsp::{dc, Net};
         use tutti_types::ChannelLayout;
 
         let mut net = Net::new(0, 3);
         let a = net.push(Box::new(dc((1.0, 1.0))));
-        let err = build_surround_mix(
+        let err = build_vbap_mix(
             &mut net,
             ChannelLayout::from(3u16),
-            &[SurroundSource::at(a, 0.0)],
+            &[VbapSource::at(a, 0.0)],
         );
         assert!(matches!(
             err,
-            Err(crate::Error::UnsupportedSpeakerLayout(3))
+            Err(crate::vbap::VbapError::UnsupportedSpeakerLayout(3))
         ));
     }
 
-    /// Render a 5.1 `build_surround_mix` graph and return settled per-channel
+    /// Render a 5.1 `build_vbap_mix` graph and return settled per-channel
     /// energy over the last block. `src_freq_hz` sets the DC/tone for each
     /// source (constant if 0). Positions are `(azimuth, elevation)` per source.
     fn render_5_1_energy(
@@ -317,18 +318,18 @@ mod tests {
                 net.push(Box::new(sub))
             })
             .collect();
-        let surround: Vec<SurroundSource> = src_ids
+        let surround: Vec<VbapSource> = src_ids
             .iter()
             .zip(sources)
-            .map(|(&node, &(az, el))| SurroundSource {
+            .map(|(&node, &(az, el))| VbapSource {
                 node,
                 azimuth: Azimuth(az),
                 elevation: Elevation(el),
             })
             .collect();
 
-        let mix = build_surround_mix(&mut net, ChannelLayout::from(6u16), &surround)
-            .expect("build 5.1 mix");
+        let mix =
+            build_vbap_mix(&mut net, ChannelLayout::from(6u16), &surround).expect("build 5.1 mix");
         net.pipe_output(mix);
         net.set_sample_rate(tutti_core::SampleRate(48000.0));
 

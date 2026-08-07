@@ -27,6 +27,7 @@ members = [
     "crates/dsp/tutti-polysynth",
     "crates/dsp/tutti-soundfont",
     "crates/dsp/tutti-units",
+    "crates/dsp/tutti-spatial",
     "crates/dsp/tutti-analysis",
     "crates/plugin/tutti-plugin",
     "crates/plugin/tutti-plugin-server",

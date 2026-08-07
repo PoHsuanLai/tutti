@@ -56,13 +56,16 @@ pub enum Error {
     #[error("Sampler: {0}")]
     Sampler(#[from] tutti_sampler::Error),
 
-    /// Built-in units subsystem failure.
+    /// Spatial-audio subsystem failure.
     ///
-    /// Wraps [`tutti_units::Error`], which only exists when tutti-units'
-    /// `spatial` module is compiled in (pulled by our `dsp` feature).
-    #[cfg(feature = "dsp")]
-    #[error("Units: {0}")]
-    Dsp(#[from] tutti_units::Error),
+    /// Wraps [`tutti_spatial::Error`] — VBAP speaker-layout construction, the
+    /// only fallible operation in the engine's DSP tier. It was
+    /// `tutti_units::Error` behind a `dsp` feature until the panners moved to
+    /// `tutti-spatial`; `tutti-units` itself is now infallible and exports no
+    /// error type at all.
+    #[cfg(feature = "spatial")]
+    #[error("Spatial: {0}")]
+    Spatial(#[from] tutti_spatial::Error),
 
     /// Plugin-host bridge failure (VST2/VST3/CLAP).
     ///

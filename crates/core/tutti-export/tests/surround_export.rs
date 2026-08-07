@@ -37,7 +37,7 @@ fn export(net: tutti_core::dsp::Net, layout: ChannelLayout, secs: f64, path: &st
     )
     .expect("export");
 }
-use tutti_units::{build_surround_mix, SurroundSource};
+use tutti_spatial::{build_surround_mix, SurroundSource};
 
 /// Build a quad surround graph via the engine's `build_surround_mix` helper: one
 /// source at the front-left speaker (45°) and one at the rear-left speaker

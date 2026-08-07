@@ -1,0 +1,41 @@
+[package]
+name = "tutti-spatial"
+version = "0.0.1"
+edition = "2021"
+description = "Spatial audio for the Tutti engine — VBAP speaker panning, binaural HRTF rendering, surround mix assembly"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/PoHsuanLai/Tutti"
+
+[features]
+default = []
+# Real HRTF (head-related transfer function) binaural rendering via FFT
+# convolution against a measured HRIR sphere, replacing the crude ITD/ILD
+# `BinauralPanner`. Pulls the `hrtf` crate. The HRIR dataset is supplied by the
+# caller as bytes (see `HrtfBinauralNode::new`).
+hrtf = ["dep:hrtf"]
+
+[dependencies]
+# AudioUnit trait + DSP primitives. default-features = false: this crate is pure
+# DSP and needs none of tutti-core's Bevy layer.
+tutti-core = { path = "../../core/tutti-core", default-features = false }
+
+# `ChannelLayout`, named directly by `build_surround_mix`'s signature.
+tutti-types = { path = "../../core/tutti-types", default-features = false }
+
+# `build_surround_mix` assembles its graph out of general-purpose units:
+# `ChannelSumUnit` folds the panners, `SvfFilterNode` low-passes the LFE send.
+# This is a plain consumer edge — geometry depends on signal processing, not the
+# reverse, and neither unit has anything spatial in it.
+tutti-units = { path = "../tutti-units", default-features = false }
+
+# Vector Base Amplitude Panning: the speaker-field placement math.
+vbap = "0.1"
+
+# Real HRTF binaural rendering (optional, gated by the `hrtf` feature).
+hrtf = { version = "0.8", optional = true }
+
+# Error handling
+thiserror = { version = "2", default-features = false }
+
+[dev-dependencies]
+approx = "0.5"

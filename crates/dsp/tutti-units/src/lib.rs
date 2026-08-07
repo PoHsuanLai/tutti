@@ -59,13 +59,9 @@
 //! one that owns it and does nothing. That is what the audible end-to-end tests
 //! in `dawai-model` are for.
 
-// The crate's only fallible operation is VBAP speaker-layout construction, so
-// `Error` / `Result` exist only under `spatial` (without it `Error` would be an
-// uninhabited enum with no users).
-#[cfg(feature = "spatial")]
-mod error;
-#[cfg(feature = "spatial")]
-pub use error::{Error, Result};
+// NOTE: this crate has no fallible operation and therefore no `Error` type. The
+// only one it ever had was VBAP speaker-layout construction, which left with the
+// panners for `tutti-spatial`.
 
 mod node_id;
 
@@ -146,12 +142,12 @@ pub use downmix_unit::DownmixUnit;
 mod strip;
 pub use strip::BusStripUnit;
 
-#[cfg(feature = "spatial")]
-mod spatial;
-#[cfg(feature = "spatial")]
-pub use spatial::{build_surround_mix, SpatialPannerNode, SurroundSource};
-#[cfg(feature = "hrtf")]
-pub use spatial::{HrtfBinauralError, HrtfBinauralNode};
+// NOTE: the spatial panners (`SpatialPannerNode`, the HRTF binaural pair) and
+// `build_surround_mix` moved to the `tutti-spatial` crate. They were the crate's
+// only *geometry* — azimuth, elevation, speaker layouts — where everything left
+// here is per-channel signal processing. `tutti-spatial` depends on this crate
+// (its mix builder is assembled from `ChannelSumUnit` + `SvfFilterNode`), so the
+// arrow points geometry → DSP and nothing here names it.
 
 mod modulation;
 pub use modulation::{ChorusNode, FlangerNode, PhaserNode, StereoPhaserNode};

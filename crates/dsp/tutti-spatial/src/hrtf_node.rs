@@ -1,5 +1,5 @@
 //! [`HrtfBinauralNode`] — a real-HRTF drop-in replacement for
-//! [`super::nodes::BinauralPannerNode`].
+//! [`crate::nodes::BinauralPannerNode`].
 //!
 //! Same 2-in / 2-out `AudioUnit` shape and the same position/width control
 //! surface, so a host can swap one for the other. The only construction
@@ -12,13 +12,13 @@ use tutti_core::{
     SampleRate, Samples, SignalFrame, Tail,
 };
 
-use super::hrtf_panner::{HrtfBinaural, HrtfBinauralError};
-use super::nodes::SpatialTarget;
+use crate::hrtf_panner::{HrtfBinaural, HrtfBinauralError};
+use crate::nodes::SpatialTarget;
 
 /// FFT-convolution binaural panner for headphone 3D audio.
 ///
 /// Position is controlled via lock-free atomics ([`SpatialTarget`]) exactly
-/// like [`super::nodes::BinauralPannerNode`]; the audio path reads them once
+/// like [`crate::nodes::BinauralPannerNode`]; the audio path reads them once
 /// per block. Rendering lags input by one HRTF frame (see [`HrtfBinaural`]).
 pub struct HrtfBinauralNode {
     panner: HrtfBinaural,
@@ -264,7 +264,7 @@ mod tests {
         // renderer eventually emits non-silence (output lags by one frame).
         let mut produced_nonzero = false;
         let mut out = [0.0f32; 2];
-        for n in 0..(super::super::hrtf_panner::FRAME_LEN * 2) {
+        for n in 0..(crate::hrtf_panner::FRAME_LEN * 2) {
             let s = ((n as f32) * 0.05).sin();
             node.tick(&[s, s], &mut out);
             if out[0].abs() > 1e-6 || out[1].abs() > 1e-6 {

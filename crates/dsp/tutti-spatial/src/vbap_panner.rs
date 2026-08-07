@@ -8,7 +8,7 @@ use tutti_core::{
 };
 use vbap::VBAPanner;
 
-use super::smoothing::{ExponentialSmoother, DEFAULT_POSITION_SMOOTH_TIME};
+use crate::smoothing::{ExponentialSmoother, DEFAULT_POSITION_SMOOTH_TIME};
 
 /// Maximum number of speakers supported (Atmos 7.1.4).
 const MAX_SPEAKERS: usize = 12;

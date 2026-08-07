@@ -1,0 +1,41 @@
+# Tutti Spatial
+
+Spatial audio: VBAP speaker panning, binaural HRTF rendering, surround mix assembly.
+
+## What this is
+
+The engine's only **geometry** — azimuth, elevation, speaker layouts, HRIR spheres. Everything that processes a signal per channel lives in [`tutti-units`](../tutti-units); everything that needs to know *where a sound is* lives here.
+
+`SpatialPannerNode` places a source in a speaker field via [vbap](https://crates.io/crates/vbap) (presets for 2/4/6/8/12 channels — stereo, quad, 5.1, 7.1, 7.1.4). `HrtfBinauralNode` renders to headphones by FFT convolution against a measured HRIR sphere, using the [hrtf](https://crates.io/crates/hrtf) crate; the dataset is supplied by the caller as bytes. `build_surround_mix` assembles the whole `sources → panners → sum` graph in one call, including LFE bass management.
+
+Position changes are de-zippered by a one-pole smoother, so a moving source does not click.
+
+## Quick Start
+
+```rust
+use tutti_spatial::{build_surround_mix, SurroundSource};
+use tutti_types::ChannelLayout;
+
+// Place two sources in a quad field and get back the summed 4-wide mix node.
+let mix = build_surround_mix(
+    &mut net,
+    ChannelLayout::QUAD,
+    &[
+        SurroundSource::at(front, 45.0),   // front-left
+        SurroundSource::at(rear, 135.0),   // rear-left
+    ],
+)?;
+net.pipe_output(mix);
+```
+
+## Features
+
+- `hrtf` — real HRTF binaural rendering (`HrtfBinauralNode`). Off by default; pulls the `hrtf` crate.
+
+## Why it depends on tutti-units
+
+`build_surround_mix` builds its graph out of general-purpose units: `ChannelSumUnit` folds the panners into one N-wide node, and `SvfFilterNode` low-passes the LFE send at ~120 Hz. That is a plain consumer edge — geometry depends on signal processing, never the reverse, and neither of those units has anything spatial in it.
+
+## Node ids
+
+The `AudioUnit` fingerprints in `node_id.rs` are **persisted values** and must not be renumbered. `assert_unique` guards them within this crate; cross-crate uniqueness rests on the mnemonic convention described in `tutti_core::node_id`.

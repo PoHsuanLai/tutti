@@ -2,11 +2,19 @@
 //!
 //! [`FileIn`] decodes an audio file sequentially, frame by frame, without
 //! loading the whole file into RAM. It is an [`AudioIn`]: [`poll_into`] fills a
-//! caller buffer of flat interleaved **stereo** `f32` from the current cursor
-//! and reports how many **frames** it produced (a short count then `0` at
-//! end-of-stream). A wider file is *folded* to stereo, never truncated; a caller
-//! wanting the file's native width uses
-//! [`fill_sequential_interleaved`](FileIn::fill_sequential_interleaved). To read from an
+//! caller buffer of flat interleaved `f32` **at the file's own channel width**
+//! from the current cursor and reports how many **frames** it produced (a short
+//! count then `0` at end-of-stream). [`layout`](AudioIn::layout) reports that
+//! width, so a caller sizes its buffer from the trait and never has to ask the
+//! concrete type.
+//!
+//! **It does not downmix.** A caller wanting stereo folds the frames itself
+//! through [`tutti_types::fold_frame`], as every other engine edge does. This
+//! used to fold internally and present a fixed stereo `layout()`, which meant a
+//! 6-channel file came back silently downmixed — see the [`AudioIn`] impl for
+//! why that was wrong and what replaced it.
+//!
+//! To read from an
 //! arbitrary position, call [`seek`] first — it hooks
 //! `FormatReader::seek(SeekMode::Accurate, ...)` (which lands *before* the
 //! requested frame) and decodes-and-discards the preroll to hit the exact frame,
@@ -34,11 +42,10 @@ use symphonia::core::io::{MediaSource, MediaSourceStream};
 use symphonia::core::meta::MetadataOptions;
 use symphonia::core::probe::Hint;
 
-/// Widest file this decoder interleaves into a bounded stack scratch when
-/// folding to stereo. Matches the engine's other stack-frame ceilings; a file
-/// wider than this still decodes at its own width through
-/// [`FileIn::fill_sequential_interleaved`], it only bounds the fold chunk.
-const MAX_FILE_CHANNELS: usize = 16;
+// `MAX_FILE_CHANNELS = 16` was removed with the stereo fold. It bounded the
+// stack scratch that fold chunked through and constrained nothing else — reads
+// were always at the file's own width, and still are. This decoder now has no
+// channel ceiling of its own.
 
 /// Incremental range decoder over a single audio track.
 ///
@@ -225,45 +232,17 @@ impl FileIn {
         self.cursor
     }
 
-    /// Fill the front of `out` with the next sequential frames from the current
-    /// cursor and return how many were produced (`0..=out.len()`). A short count
-    /// (then `0`) marks end-of-stream; frames past the returned count are left
-    /// untouched. This is the fallible core of the [`AudioIn`] impl — the trait
-    /// method calls it and treats a decode error as end-of-stream.
-    ///
-    /// The `leftover` remainder from the last packet is drained first
-    /// (seek-free, alloc-free), then packets are pulled forward. To read from a
-    /// non-current position, call [`seek`](Self::seek) first.
-    pub fn fill_sequential(&mut self, out: &mut [[f32; 2]]) -> WaveResult<usize> {
-        if self.channels == 2 {
-            // Fast path: `[[f32; 2]]` and a 2-wide interleaved `[f32]` have the
-            // same layout, so the native read fills the caller's buffer directly.
-            return self.fill_sequential_interleaved(out.as_flattened_mut());
-        }
-
-        // Fold to stereo through the engine's one matrix, a bounded chunk at a
-        // time so this stays allocation-free at any file width. Mono duplicates
-        // (`fold_frame`'s 1→2 arm), surround folds per ITU-R BS.775 rather than
-        // dropping the centre and surrounds.
-        const CHUNK_FRAMES: usize = 256;
-        let ch = self.channels.max(1);
-        let mut scratch = [0.0f32; CHUNK_FRAMES * MAX_FILE_CHANNELS];
-        let per_chunk = CHUNK_FRAMES.min(scratch.len() / ch);
-
-        let mut filled = 0usize;
-        while filled < out.len() {
-            let want = per_chunk.min(out.len() - filled);
-            let got = self.fill_sequential_interleaved(&mut scratch[..want * ch])?;
-            if got == 0 {
-                break;
-            }
-            for (f, dst) in out[filled..filled + got].iter_mut().enumerate() {
-                tutti_types::fold_frame(&scratch[f * ch..(f + 1) * ch], dst);
-            }
-            filled += got;
-        }
-        Ok(filled)
-    }
+    // `fill_sequential(&mut [[f32; 2]])` — the stereo-folding read — was
+    // **removed** with the stereo `AudioIn` impl it existed to serve. It had no
+    // other caller: the butler reads natively at both refill sites, and so does
+    // the waveform summariser.
+    //
+    // The replacement is the pair every other engine edge already uses:
+    // `fill_sequential_interleaved` for the read, then
+    // `tutti_types::fold_frame` per frame if the caller genuinely wants stereo.
+    // That is exactly what this method did internally, minus the decision being
+    // made on the caller's behalf. `mic.rs`, `wav_out.rs` and `engine.rs` are
+    // worked examples.
 
     /// Fill `out` with the next sequential frames at the file's **own** channel
     /// width, interleaved, and return how many frames were produced.
@@ -336,39 +315,51 @@ impl FileIn {
     }
 }
 
-/// Sequential stereo-`f32` read half. A decode error surfaces as end-of-stream
-/// (`0`): the butler refill treats a short/zero poll as a boundary, and the
-/// fallible detail is available through [`fill_sequential`](FileIn::fill_sequential)
-/// for callers that want it.
+/// Sequential read half, at the file's **own** channel width. A decode error
+/// surfaces as end-of-stream (`0`): the butler refill treats a short/zero poll
+/// as a boundary, and the fallible detail is available through
+/// [`fill_sequential_interleaved`](FileIn::fill_sequential_interleaved) for
+/// callers that want it.
+///
+/// # This impl used to fold to stereo, and stopping was the fix
+///
+/// `layout()` returned `STEREO` unconditionally while `channels()` returned the
+/// truth, so a 6-channel file polled through the trait came back downmixed with
+/// nothing to indicate it. That is the one thing a runtime `layout()` exists to
+/// prevent: `AudioIn`'s contract is that `layout()` describes what `poll_into`
+/// produces, and a fixed answer over a variable source cannot.
+///
+/// It was survivable only because nothing used it — every real consumer
+/// (`butler/io/refill.rs` at both sites, `dawai-waveform`) already called
+/// `fill_sequential_interleaved` and read `channels()`, precisely to escape the
+/// fold. The trait path's only callers were this file's own tests.
+///
+/// **Folding is not lost, it moved to the caller**, which is where every other
+/// engine edge already puts it: `mic.rs`, `wav_out.rs`, `engine.rs` and
+/// `tutti-units`' `DownmixUnit` all narrow through [`tutti_types::fold_frame`]
+/// themselves. A caller wanting stereo does the same, and now *chooses* to.
 impl AudioIn for FileIn {
     /// A file has an end, and this impl folds a decode error into it (see the
     /// doc above): either way `0` means there is no more to read.
     const ON_EMPTY: OnEmpty = OnEmpty::EndOfStream;
 
-    /// Stereo — the width this *impl* presents, not the file's.
+    /// The file's own width — what [`poll_into`](Self::poll_into) actually
+    /// produces.
     ///
-    /// `AudioIn` now carries a runtime width, so a wider file could in
-    /// principle be presented at its own. This impl deliberately does not:
-    /// [`fill_sequential`](FileIn::fill_sequential) folds to stereo, and that is
-    /// the contract every existing consumer reads it under. A caller wanting the
-    /// file's native width calls
-    /// [`fill_sequential_interleaved`](FileIn::fill_sequential_interleaved) and
-    /// reads [`channels`](FileIn::channels) — both already public, both
-    /// unchanged.
+    /// `channels()` is the same number. It stays because it is `usize` and
+    /// predates the trait; this returns the layout the trait is denominated in.
     fn layout(&self) -> ChannelLayout {
-        ChannelLayout::STEREO
+        ChannelLayout::from(self.channels.max(1) as u16)
     }
 
-    /// Flat interleaved stereo. `out` holds `out.len() / 2` frames, and the
-    /// return is that many FRAMES at most — never samples.
+    /// Flat interleaved at [`layout`](Self::layout)'s width. `out` holds
+    /// `out.len() / channels` frames, and the return is that many FRAMES at
+    /// most — never samples.
     ///
-    /// `[[f32; 2]]` and a 2-wide interleaved `[f32]` have identical layout, so
-    /// this is a reinterpretation of the caller's slice, not a copy: the whole
-    /// adapter is `as_chunks_mut`. A trailing odd sample is not a frame and is
-    /// left untouched.
+    /// A trailing partial frame is not filled: a short frame desynchronises the
+    /// interleave for everything after it.
     fn poll_into(&mut self, out: &mut [f32]) -> usize {
-        let (frames, _odd) = out.as_chunks_mut::<2>();
-        self.fill_sequential(frames).unwrap_or(0)
+        self.fill_sequential_interleaved(out).unwrap_or(0)
     }
 }
 
@@ -585,12 +576,14 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
-    /// The `AudioIn<f32, 2>` impl folds rather than truncating: a centre-only
-    /// 5.1 file must reach BOTH stereo outputs, not be dropped with the
-    /// surrounds. Cross-checked against `fold_frame` so this asserts "the
-    /// engine's matrix ran", not a constant I picked.
+    /// **`poll_into` preserves every channel.** A centre-only 5.1 file must come
+    /// back with the energy still in channel 2 and the other five silent — no
+    /// fold, no truncation.
+    ///
+    /// This replaces `stereo_poll_folds_surround_instead_of_truncating`, which
+    /// asserted the opposite and was correct until the impl stopped folding.
     #[test]
-    fn stereo_poll_folds_surround_instead_of_truncating() {
+    fn poll_into_delivers_the_files_own_width() {
         let frames = 64;
         let sample_rate = 44100.0;
         // 5.1 order L R C LFE Ls Rs — centre only.
@@ -603,49 +596,99 @@ mod tests {
         wave.save_wav16(&path).expect("save wav");
 
         let mut decoder = FileIn::open(&path, None).expect("open");
-        let mut out = [[0.0f32; 2]; 16];
-        let got = decoder.poll_into(out.as_flattened_mut());
+        assert_eq!(decoder.layout().count(), 6u16, "the trait reports the file");
+
+        let mut out = [0.0f32; 6 * 16];
+        let got = decoder.poll_into(&mut out);
         assert!(got > 0);
 
-        let mut expected = [0.0f32; 2];
-        tutti_types::fold_frame(&[0.0, 0.0, 0.5, 0.0, 0.0, 0.0], &mut expected);
+        // Frame 0, channel by channel: the centre survived and nothing leaked
+        // into the front pair. A fold would put ~0.35 in both L and R.
         assert!(
-            (out[0][0] - expected[0]).abs() < 1e-2 && (out[0][1] - expected[1]).abs() < 1e-2,
-            "expected the engine fold {expected:?}, got {:?}",
-            out[0]
+            (out[2] - 0.5).abs() < 1e-2,
+            "centre channel was not preserved: {:?}",
+            &out[..6]
         );
-        assert!(
-            out[0][0].abs() > 0.1 && out[0][1].abs() > 0.1,
-            "centre was dropped — front-pair truncation, not a fold: {:?}",
-            out[0]
-        );
+        for c in [0usize, 1, 3, 4, 5] {
+            assert!(
+                out[c].abs() < 1e-3,
+                "channel {c} should be silent — did this fold? {:?}",
+                &out[..6]
+            );
+        }
         let _ = std::fs::remove_file(&path);
     }
 
-    /// Mono still duplicates to both sides. The duplication moved out of
-    /// `decode_next_packet` and into the stereo impl (via `fold_frame`'s 1->2
-    /// arm), so this pins that the move preserved the behaviour.
+    /// **A mono file stays one channel wide.** It is not duplicated to stereo,
+    /// which is what the old impl did via `fold_frame`'s 1→2 arm.
+    ///
+    /// The predecessor of this test (`mono_file_still_duplicates_to_both_stereo_sides`)
+    /// kept passing after the fold was removed, for the wrong reason: it read a
+    /// flattened `[[f32; 2]]` buffer, so `out[0]` was two *consecutive frames*
+    /// of a constant signal rather than one duplicated frame, and `out[0][0] ==
+    /// out[0][1]` held either way. Asserting the width is what makes it real.
     #[test]
-    fn mono_file_still_duplicates_to_both_stereo_sides() {
+    fn a_mono_file_is_not_widened() {
         let frames = 64;
         let sample_rate = 44100.0;
         let mut wave = Wave::zero(1, sample_rate, frames as f64 / sample_rate);
+        // A ramp, not a constant: a constant cannot distinguish "one frame
+        // duplicated" from "two frames read", which is exactly how the old test
+        // fooled itself.
         for i in 0..frames {
-            wave.set(0, i, 0.25);
+            wave.set(0, i, i as f32 / frames as f32);
         }
         let mut path = std::env::temp_dir();
-        path.push("tutti_stream_mono_dup.wav");
+        path.push("tutti_stream_mono_native.wav");
         wave.save_wav16(&path).expect("save wav");
 
         let mut decoder = FileIn::open(&path, None).expect("open");
         assert_eq!(decoder.channels(), 1);
-        let mut out = [[0.0f32; 2]; 16];
-        let got = decoder.poll_into(out.as_flattened_mut());
+        assert_eq!(decoder.layout(), ChannelLayout::MONO, "no widening");
+
+        let mut out = [0.0f32; 16];
+        let got = decoder.poll_into(&mut out);
         assert!(got > 0);
+
+        // One sample per frame, so consecutive slots differ by one ramp step.
+        // Under the old duplicating impl they would have come in equal pairs.
         assert!(
-            (out[0][0] - out[0][1]).abs() < 1e-6 && out[0][0].abs() > 0.1,
-            "mono must duplicate to both sides, got {:?}",
-            out[0]
+            (out[1] - out[0]).abs() > 1e-3,
+            "consecutive samples are equal — is this still duplicating? {:?}",
+            &out[..4]
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// A caller that *wants* stereo still gets the engine's fold — it just asks
+    /// for it. This is the replacement path named in the impl docs, exercised so
+    /// the removal shipped with a working substitute rather than a promise.
+    #[test]
+    fn a_caller_can_still_fold_to_stereo_itself() {
+        let frames = 64;
+        let sample_rate = 44100.0;
+        let mut wave = Wave::zero(6, sample_rate, frames as f64 / sample_rate);
+        for i in 0..frames {
+            wave.set(2, i, 0.5); // centre only, as above
+        }
+        let mut path = std::env::temp_dir();
+        path.push("tutti_stream_caller_fold.wav");
+        wave.save_wav16(&path).expect("save wav");
+
+        let mut decoder = FileIn::open(&path, None).expect("open");
+        let ch = decoder.layout().count() as usize;
+        let mut native = vec![0.0f32; ch * 16];
+        let got = decoder.poll_into(&mut native);
+        assert!(got > 0);
+
+        let mut stereo = [0.0f32; 2];
+        tutti_types::fold_frame(&native[..ch], &mut stereo);
+
+        // The centre reaches both sides rather than being dropped with the
+        // surrounds — the property the old in-decoder fold guaranteed.
+        assert!(
+            stereo[0].abs() > 0.1 && stereo[1].abs() > 0.1,
+            "centre was lost in the caller-side fold: {stereo:?}"
         );
         let _ = std::fs::remove_file(&path);
     }

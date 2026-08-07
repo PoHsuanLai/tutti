@@ -170,6 +170,15 @@ impl MidiClipSource {
     }
 }
 
+impl tutti_midi_types::MidiUnitSource for MidiClipSource {
+    /// The `unit_id` check against `target_unit` is the selector contract, not a
+    /// redundant guard: a clip is addressed to one unit, and polling it for
+    /// another must yield nothing.
+    fn poll_unit(&self, unit_id: MidiUnitId, block_size: usize, out: &mut [MidiEvent]) -> usize {
+        MidiIn::poll_into(self, unit_id, block_size, out)
+    }
+}
+
 impl MidiIn for MidiClipSource {
     fn poll_into(&self, unit_id: MidiUnitId, block_size: usize, out: &mut [MidiEvent]) -> usize {
         if unit_id != self.target_unit {

@@ -98,3 +98,56 @@ pub trait MidiIn: Send + Sync {
     /// blocking — safe for the audio thread.
     fn poll_into(&self, unit_id: MidiUnitId, block_size: usize, buffer: &mut [MidiEvent]) -> usize;
 }
+
+/// Drain everything that has arrived at one **pre-routing** input edge for this
+/// block.
+///
+/// The events are not yet addressed: routing has not run, so nothing here knows
+/// which unit any of them belongs to — deciding that is what the consumer does
+/// with what it gets back. Exactly one owner drains this per block; a second
+/// drainer takes events the first will never see.
+///
+/// This is the read-side complement to [`MidiOut`]: one undifferentiated stream,
+/// no id. To read *one of many* streams selected by id, use [`MidiUnitSource`].
+///
+/// `block_size` is the frame count of the upcoming audio block. An edge that
+/// converts arrival timestamps into offsets uses it, and every returned event's
+/// `frame_offset` lies in `[0, block_size)`.
+///
+/// Implementations must be **lock-free** and **alloc-free** — this runs on the
+/// audio thread, once per block.
+pub trait MidiSource: Send + Sync {
+    /// Write this block's pending events into `buffer`; return how many.
+    ///
+    /// **A full `buffer` drops the overflow.** An implementation draining a
+    /// hardware ring has already consumed those events by the time it finds
+    /// there is no room, and holding them back would need a stash outliving the
+    /// call — so the contract is truncation, not deferral. Size `buffer` for the
+    /// largest burst worth surviving.
+    fn poll_block(&self, block_size: usize, buffer: &mut [MidiEvent]) -> usize;
+}
+
+/// Read the events addressed to one [`MidiUnitId`] out of a store that holds
+/// **many** units' streams.
+///
+/// The id is a selector, not a filter: a store polled for unit A must leave unit
+/// B's stream untouched, so one store feeds every unit reading from it. This is
+/// the read-side twin of [`MidiRouter`] — same fan-out, opposite direction — and
+/// the post-routing counterpart to [`MidiSource`], whose caller has no id to
+/// give because routing has not run yet.
+///
+/// `block_size` is the frame count of the upcoming audio block; a beat-domain
+/// store uses it to place each event's `frame_offset`, which must lie in
+/// `[0, block_size)`.
+///
+/// Implementations must be **lock-free** and **alloc-free** — this runs on the
+/// audio thread, once per block per unit.
+pub trait MidiUnitSource: Send + Sync {
+    /// Write `unit_id`'s events for this block into `buffer`; return how many.
+    fn poll_unit(
+        &self,
+        unit_id: MidiUnitId,
+        block_size: usize,
+        buffer: &mut [MidiEvent],
+    ) -> usize;
+}

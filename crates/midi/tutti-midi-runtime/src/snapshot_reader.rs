@@ -51,6 +51,19 @@ impl MidiSnapshotReader {
     }
 }
 
+impl tutti_midi_types::MidiUnitSource for MidiSnapshotReader {
+    /// One snapshot holds every unit's stream with a per-unit cursor, so this is
+    /// a genuine selector: polling for unit A leaves unit B's events and cursor
+    /// untouched. That is what makes this a [`MidiUnitSource`] rather than a
+    /// [`MidiSource`] — there is no "everything pending" for it to answer.
+    ///
+    /// [`MidiUnitSource`]: tutti_midi_types::MidiUnitSource
+    /// [`MidiSource`]: tutti_midi_types::MidiSource
+    fn poll_unit(&self, unit_id: MidiUnitId, block_size: usize, buffer: &mut [MidiEvent]) -> usize {
+        MidiIn::poll_into(self, unit_id, block_size, buffer)
+    }
+}
+
 impl MidiIn for MidiSnapshotReader {
     fn poll_into(&self, unit_id: MidiUnitId, block_size: usize, buffer: &mut [MidiEvent]) -> usize {
         let current_beat = self.timeline.beat();

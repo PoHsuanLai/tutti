@@ -267,6 +267,27 @@ impl Default for HardwareMidiInputs {
     }
 }
 
+impl tutti_midi_types::MidiSource for HardwareMidiInputs {
+    /// Drain every connected hardware input for this block into `buffer`.
+    ///
+    /// `block_size` drives the timestamp → `frame_offset` conversion (it is the
+    /// block's `nframes`). RT-safe: the events already sit in the manager's
+    /// internal scratch, so this is a bounded copy with no allocation.
+    ///
+    /// A full `buffer` drops the overflow — the drain is destructive at the
+    /// ring, so by the time there is no room the events are already out of it.
+    fn poll_block(&self, block_size: usize, buffer: &mut [MidiEvent]) -> usize {
+        let mut written = 0usize;
+        self.cycle_start_read_all_inputs(block_size, |_port, event| {
+            if written < buffer.len() {
+                buffer[written] = event;
+                written += 1;
+            }
+        });
+        written
+    }
+}
+
 impl tutti_midi_types::MidiIn for HardwareMidiInputs {
     /// Drain all connected hardware inputs for this block into `buffer`. The
     /// hardware is pre-routing — it isn't addressed to one unit, so `unit_id` is

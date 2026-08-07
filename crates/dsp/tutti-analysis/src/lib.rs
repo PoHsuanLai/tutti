@@ -9,7 +9,9 @@
 //! - [`detect_onsets`] — onset detection over four selectable detection
 //!   functions
 //! - [`correlate`] — inter-channel phase correlation and stereo image
-//! - [`summarize`] — min/max/RMS waveform blocks for a timeline
+//! - [`summarize`] — min/max/RMS waveform blocks for a timeline, **per
+//!   channel**; folding to one series is [`PeakBlocks::to_mono`], a caller's
+//!   choice rather than this crate's default
 //!
 //! ## Configs, and carries where they are needed
 //!
@@ -47,11 +49,14 @@
 //! let samples: Vec<f32> = vec![0.0; 44100];
 //! let mut fft = FftScratch::new();
 //!
-//! // Waveform blocks for display.
+//! // Waveform blocks for display — one series per channel.
 //! let blocks = summarize(
-//!     &PeakConfig::new(Samples(512), ChannelLayout::MONO),
-//!     Interleaved::new(&samples, ChannelLayout::MONO),
+//!     &PeakConfig::new(Samples(512), ChannelLayout::STEREO),
+//!     Interleaved::new(&samples, ChannelLayout::STEREO),
 //! );
+//! let left = blocks.channel(0).expect("stereo has a channel 0");
+//! // A meter wants one number per block; a waveform draws both channels.
+//! let merged = blocks.to_mono();
 //!
 //! // Onsets, via spectral flux.
 //! let geometry = StftGeometry::new(sample_rate, Samples(2048), Samples(512))?;
@@ -102,8 +107,8 @@ pub use onset::{
     OnsetState,
 };
 pub use peaks::{
-    finish as finish_peaks, step_peaks, summarize, summarize_block, PeakBlock, PeakConfig,
-    PeakState,
+    finish as finish_peaks, step_peaks, summarize, summarize_block, PeakAccum, PeakBlock,
+    PeakBlocks, PeakConfig, PeakState,
 };
 pub use stereo::{
     correlate, step_ballistics, Ballistics, BallisticsState, StereoLevels, StereoReading,

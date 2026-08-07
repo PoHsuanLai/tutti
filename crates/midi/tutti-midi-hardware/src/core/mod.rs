@@ -30,7 +30,7 @@ pub use endpoints::{InputConnection, MidiEndpoints};
 pub use error::{Error, Result};
 pub use port::{HardwareMidiInputs, InputProducerHandle, PortInfo, PortType};
 pub use session::MidiSession;
-pub use sysex::Sysex7Assembler;
+pub use sysex::Sysex7ByteAssembler;
 
 #[cfg(target_os = "macos")]
 pub use backend::coremidi::{UmpVirtualDestination, UmpVirtualSource};

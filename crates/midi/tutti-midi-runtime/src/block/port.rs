@@ -50,7 +50,7 @@ use arc_swap::ArcSwapOption;
 use tutti_midi_types::ump::MidiEvent;
 use tutti_midi_types::{MidiUnitId, MidiUnitIn};
 
-use crate::registry::{MidiMailbox, MidiReceiver, MidiSender};
+use crate::block::registry::{MidiMailbox, MidiReceiver, MidiSender};
 
 /// A MIDI-receiving unit's input endpoint: a routing address, a push mailbox,
 /// and an optional pull source layered over it.

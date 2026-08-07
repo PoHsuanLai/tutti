@@ -1,6 +1,6 @@
 //! Streaming reassembly of multi-packet SysEx8 UMP messages.
 //!
-//! The SysEx8 counterpart to [`Sysex7Reassembler`](crate::Sysex7Reassembler),
+//! The SysEx8 counterpart to [`Sysex7PacketReassembler`](crate::Sysex7PacketReassembler),
 //! and deliberately *not* the same shape, because M2-104 gives the two opposite
 //! interleaving rules:
 //!
@@ -22,7 +22,7 @@ use tutti_midi_types::ump::{
 };
 
 /// Default cap on a reassembled SysEx8 payload, in bytes. See
-/// [`Sysex8Reassembler::with_max_bytes`].
+/// [`Sysex8PacketReassembler::with_max_bytes`].
 pub const DEFAULT_MAX_SYSEX8_BYTES: usize = 4096;
 
 /// SysEx8 carries up to 13 payload bytes per packet (M2-104 §7.8: 14 bytes from
@@ -48,7 +48,7 @@ struct InFlight {
     packets: Vec<MidiEvent>,
 }
 
-/// What [`Sysex8Reassembler::push`] produced for one event.
+/// What [`Sysex8PacketReassembler::push`] produced for one event.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Sysex8Event {
     /// A message completed: its stream id and reassembled 8-bit payload.
@@ -59,18 +59,18 @@ pub enum Sysex8Event {
 
 /// Reassembles multi-packet SysEx8 runs, one buffer per `(group, stream_id)`.
 #[derive(Clone, Debug)]
-pub struct Sysex8Reassembler {
+pub struct Sysex8PacketReassembler {
     in_flight: Vec<InFlight>,
     max_bytes: usize,
 }
 
-impl Default for Sysex8Reassembler {
+impl Default for Sysex8PacketReassembler {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl Sysex8Reassembler {
+impl Sysex8PacketReassembler {
     /// A reassembler with no in-flight messages, bounded at
     /// [`DEFAULT_MAX_SYSEX8_BYTES`].
     pub fn new() -> Self {
@@ -205,7 +205,7 @@ mod tests {
         MidiEvent::sysex8_fragments(MidiGroup::FIRST, 0x11, &[1, 2, 3], &mut out);
         assert_eq!(out.len(), 1);
 
-        let mut r = Sysex8Reassembler::new();
+        let mut r = Sysex8PacketReassembler::new();
         assert_eq!(payload_of(r.push(&out[0])), vec![1, 2, 3]);
     }
 
@@ -216,7 +216,7 @@ mod tests {
         MidiEvent::sysex8_fragments(MidiGroup::FIRST, 0x55, &data, &mut out);
         assert_eq!(out.len(), 3);
 
-        let mut r = Sysex8Reassembler::new();
+        let mut r = Sysex8PacketReassembler::new();
         assert!(r.push(&out[0]).is_none());
         assert!(r.push(&out[1]).is_none());
         assert_eq!(payload_of(r.push(&out[2])), data);
@@ -233,7 +233,7 @@ mod tests {
         MidiEvent::sysex8_fragments(MidiGroup::FIRST, 0x02, &b, &mut pb);
 
         // Start(1) Start(2) Continue(1) Continue(2) End(2) End(1)
-        let mut r = Sysex8Reassembler::new();
+        let mut r = Sysex8PacketReassembler::new();
         assert!(r.push(&pa[0]).is_none());
         assert!(r.push(&pb[0]).is_none());
         assert_eq!(r.in_flight_count(), 2, "both streams in flight at once");
@@ -250,7 +250,7 @@ mod tests {
         let mut out = Vec::new();
         MidiEvent::sysex8_fragments(MidiGroup::FIRST, 0x7F, &data, &mut out);
 
-        let mut r = Sysex8Reassembler::new();
+        let mut r = Sysex8PacketReassembler::new();
         r.push(&out[0]);
         assert!(r
             .push(&MidiEvent::note_on(
@@ -273,7 +273,7 @@ mod tests {
         let mut out = Vec::new();
         MidiEvent::sysex8_fragments(MidiGroup::FIRST, 0x09, &data, &mut out);
 
-        let mut r = Sysex8Reassembler::new();
+        let mut r = Sysex8PacketReassembler::new();
         r.push(&out[0]);
         r.push(&out[1]);
 
@@ -300,7 +300,7 @@ mod tests {
         let mut out = Vec::new();
         MidiEvent::sysex8_fragments(MidiGroup::FIRST, 0x03, &data, &mut out);
 
-        let mut r = Sysex8Reassembler::with_max_bytes(64);
+        let mut r = Sysex8PacketReassembler::with_max_bytes(64);
         r.push(&out[0]);
         let cont = out[1];
         let mut aborted = false;
@@ -320,7 +320,7 @@ mod tests {
 
     #[test]
     fn non_sysex8_event_is_ignored() {
-        let mut r = Sysex8Reassembler::new();
+        let mut r = Sysex8PacketReassembler::new();
         assert!(r
             .push(&MidiEvent::note_on(
                 MidiGroup::FIRST,

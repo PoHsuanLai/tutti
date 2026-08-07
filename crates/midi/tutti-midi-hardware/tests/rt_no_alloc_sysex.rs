@@ -1,7 +1,7 @@
 //! What the SysEx assembler allocates on the driver callback thread — and what
 //! it still does, which is not zero.
 //!
-//! [`Sysex7Assembler`] runs on CoreMIDI's delivery thread or ALSA's seq pump.
+//! [`Sysex7ByteAssembler`] runs on CoreMIDI's delivery thread or ALSA's seq pump.
 //! Not the audio thread, but still a context that should not take a `malloc`
 //! lock per message.
 //!
@@ -35,7 +35,7 @@
 //! caught exactly that, which is why this file exists.
 
 use assert_no_alloc::AllocDisabler;
-use tutti_midi_hardware::Sysex7Assembler;
+use tutti_midi_hardware::Sysex7ByteAssembler;
 
 #[global_allocator]
 static A: AllocDisabler = AllocDisabler;
@@ -52,7 +52,7 @@ static A: AllocDisabler = AllocDisabler;
 /// reuse, and this fails.
 #[test]
 fn buffering_a_run_in_flight_is_allocation_free() {
-    let mut asm = Sysex7Assembler::new();
+    let mut asm = Sysex7ByteAssembler::new();
     let mut out = Vec::new();
 
     // Warm the internal buffer to its steady size, then complete the run so the
@@ -91,7 +91,7 @@ fn buffering_a_run_in_flight_is_allocation_free() {
 /// not itself allocate, or a fault becomes a second fault.
 #[test]
 fn an_overflowing_run_is_allocation_free() {
-    let mut asm = Sysex7Assembler::new();
+    let mut asm = Sysex7ByteAssembler::new();
     let mut out = Vec::new();
 
     // Drive it past the cap once so every buffer is at its steady size, then

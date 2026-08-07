@@ -48,12 +48,9 @@ pub struct SoundFontUnit {
 }
 
 impl SoundFontUnit {
-    pub fn new(
-        soundfont: Arc<SoundFont>,
-        settings: &SynthesizerSettings,
-    ) -> Result<Self> {
-        let synthesizer = Synthesizer::new(&soundfont, settings)
-            .map_err(|e| Error::SoundFont(e.to_string()))?;
+    pub fn new(soundfont: Arc<SoundFont>, settings: &SynthesizerSettings) -> Result<Self> {
+        let synthesizer =
+            Synthesizer::new(&soundfont, settings).map_err(|e| Error::SoundFont(e.to_string()))?;
 
         let buffer_size = 64;
 

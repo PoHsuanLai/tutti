@@ -28,7 +28,7 @@
 //! `input::midi::hardware_route`), which classifies by UMP message type and
 //! feeds these. The chain behind it is real: `core/hardware/input.rs`
 //! reassembles MIDI-1.0 SysEx across driver callbacks and promotes it to UMP
-//! SysEx7, which a `Sysex7Reassembler` + `ci::sysex7_to_ci` turn back into a
+//! SysEx7, which a `Sysex7PacketReassembler` + `ci::sysex7_to_ci` turn back into a
 //! typed [`CiMessage`]. That works because MIDI-CI is Universal SysEx by design
 //! (M2-101) — it has to survive a MIDI-1.0 transport, since it's how two devices
 //! discover each other *before* either knows the other speaks MIDI 2.0.

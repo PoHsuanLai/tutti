@@ -23,44 +23,39 @@
 
 pub use tutti_midi_types;
 
-pub mod capability_inquiry;
-pub mod clip_player;
-pub mod clock_master;
-pub mod endpoint;
-pub mod jr_timestamp;
-pub mod mpe_ingest;
-pub mod port;
-pub mod post_block;
-pub mod pre_block;
-pub mod registry;
-pub mod routing_table;
-pub mod snapshot;
-pub mod snapshot_reader;
-pub mod sysex8_reassembler;
-pub mod sysex_reassembler;
+pub mod block;
+pub mod negotiate;
+pub mod outbound;
+pub mod schedule;
+pub mod sysex;
 
-pub use capability_inquiry::{CiInitiator, CiProperty, CiResponder, DiscoveredCiDevice};
-pub use clip_player::{MidiClipSource, TimedClipEvent};
-pub use clock_master::ClockMaster;
-pub use endpoint::{
-    DeviceIdentity, DiscoveredEndpoint, EndpointInquiry, EndpointNegotiator, FunctionBlock,
+pub use block::{
+    BlockClock, MidiBus, MidiInPort, MidiMailbox, MidiOutSink, MidiPostBlock, MidiPreBlock,
+    MidiReceiver, MidiSender, MpeModeRequest, MIDI_OUT_LATENCY_BLOCKS,
 };
-pub use jr_timestamp::{
-    JrClock, JrClockEmitter, JrReceiver, JrStamper, JrStream, JR_CLOCK_INTERVAL,
-    JR_CLOCK_MAX_INTERVAL,
+pub use negotiate::{
+    CiInitiator, CiProperty, CiResponder, DeviceIdentity, DiscoveredCiDevice, DiscoveredEndpoint,
+    EndpointInquiry, EndpointNegotiator, FunctionBlock,
 };
-pub use port::MidiInPort;
-pub use post_block::{MidiOutSink, MidiPostBlock, MIDI_OUT_LATENCY_BLOCKS};
-pub use pre_block::{BlockClock, MidiPreBlock, MpeModeRequest};
-pub use registry::{MidiBus, MidiMailbox, MidiReceiver, MidiSender};
-pub use routing_table::MidiRoutingTable;
-pub use snapshot::{MidiSnapshot, TimedMidiEvent};
-pub use snapshot_reader::MidiSnapshotReader;
-pub use sysex8_reassembler::{Sysex8Abort, Sysex8Event, Sysex8Reassembler};
-pub use sysex_reassembler::Sysex7Reassembler;
+pub use outbound::{
+    ClockMaster, JrClock, JrClockEmitter, JrReceiver, JrStamper, JrStream, MpeIngest,
+    JR_CLOCK_INTERVAL, JR_CLOCK_MAX_INTERVAL,
+};
+pub use schedule::{
+    MidiClipSource, MidiSnapshot, MidiSnapshotReader, TimedClipEvent, TimedMidiEvent,
+};
+pub use sysex::{Sysex7PacketReassembler, Sysex8Abort, Sysex8Event, Sysex8PacketReassembler};
 
-// MPE mode/zone value types live in tutti-midi-types; re-exported here for
-// source compatibility (the runtime's own MPE state machine is gone — MPE is now
-// an input-edge transform, `MpeIngest`).
-pub use mpe_ingest::MpeIngest;
+// Value types that live one crate down, re-exported so a consumer of the runtime
+// needs one import rather than two.
+//
+// `MidiRoutingTable` sits in `tutti-midi-types` beside the immutable
+// `MidiRoutingSnapshot` it publishes — the mutable and published halves of one
+// concept. It reached consumers through a local `routing_table` module that did
+// nothing but re-export it; the module's only reference repo-wide was its own
+// doc comment, so it is gone and this is direct.
+//
+// The MPE mode/zone types are here for the same reason. The runtime's own MPE
+// state machine is not — MPE is an input-edge transform now, `MpeIngest`.
 pub use tutti_midi_types::mpe::{MpeMode, MpeZone, MpeZoneConfig};
+pub use tutti_midi_types::MidiRoutingTable;

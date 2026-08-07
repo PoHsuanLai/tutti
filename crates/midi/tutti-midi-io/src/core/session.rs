@@ -332,12 +332,8 @@ mod tests {
         accepts: usize,
     }
 
-    struct FakeConn(EndpointId);
-    impl InputConnection for FakeConn {
-        fn endpoint(&self) -> EndpointId {
-            self.0
-        }
-    }
+    struct FakeConn;
+    impl InputConnection for FakeConn {}
 
     /// A sink that counts what it was handed and accepts `accepts` of each
     /// batch.
@@ -405,7 +401,7 @@ mod tests {
                 return Err(Error::MidiDevice("no such input".into()));
             }
             self.opens.fetch_add(1, Ordering::SeqCst);
-            Ok(Box::new(FakeConn(id)))
+            Ok(Box::new(FakeConn))
         }
         fn open_output(&self, id: EndpointId) -> Result<Box<dyn MidiOut>> {
             if !self.outputs.iter().any(|e| e.id == id) {

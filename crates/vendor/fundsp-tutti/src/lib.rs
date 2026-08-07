@@ -1062,6 +1062,29 @@ pub mod read;
 ))]
 pub mod stream;
 
+/// The decoder this crate reads files with, re-exported.
+///
+/// [`read`] and [`stream`] are the engine's only decode path, and both are built
+/// on symphonia's traits — `FormatReader`, `Decoder`, `MediaSource`. Those are
+/// already public upstream; what was missing was a way for a consumer to *name*
+/// them without adding its own `symphonia` dependency, which would let a second,
+/// differently-resolved copy into the graph. Re-exporting from here makes the
+/// version the one this crate actually decodes with, by construction.
+///
+/// Gated exactly as [`read`]/[`stream`] are: with no codec feature there is no
+/// symphonia to re-export, and this is absent rather than empty.
+#[cfg(all(
+    feature = "std",
+    any(
+        feature = "wav",
+        feature = "flac",
+        feature = "mp3",
+        feature = "ogg",
+        feature = "files"
+    )
+))]
+pub use symphonia;
+
 #[cfg(all(feature = "std", feature = "fft"))]
 pub mod convolve;
 

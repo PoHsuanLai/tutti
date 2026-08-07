@@ -30,11 +30,11 @@ use crate::graph::{
 #[cfg(feature = "midi-hardware")]
 use crate::midi::MidiIoRes;
 #[cfg(feature = "midi")]
-use crate::midi::{ClockMasterRes, MidiBusRes, MidiRoutingRes};
+use crate::midi::{ClockMasterRes, MidiBusRes, MidiOutSinkRes, MidiRoutingRes};
 #[cfg(feature = "midi-hardware")]
 use tutti_midi_io::MidiSession;
 #[cfg(feature = "midi")]
-use tutti_midi_runtime::{MidiBus, MidiPreBlock};
+use tutti_midi_runtime::{MidiBus, MidiPostBlock, MidiPreBlock};
 #[cfg(feature = "midi")]
 use tutti_midi_types::MidiRoutingTable;
 
@@ -174,10 +174,40 @@ pub fn build_into(plugin: &crate::TuttiPlugin, app: &mut App) -> Result<()> {
         pre_block
     };
 
+    // The outbound half, run *after* the graph render: it fans out whatever the
+    // graph emitted (a hosted plugin's MIDI-out) into the same unit inboxes
+    // inbound events reach.
+    //
+    // `tutti-cpal` has always held an `Option<MidiPostBlock>` and called `run()`
+    // in the callback, but nothing ever *built* one — so plugin MIDI-out reached
+    // nothing at all. Assembly needs the routing table and the bus, which are
+    // this adapter's to own, which is why it belongs here rather than in the
+    // device layer. The engine-side path itself needs no adapter:
+    // `tutti-midi-runtime`'s `outbound_block_path` test assembles the whole
+    // round trip with no Bevy in scope, and exists to keep that true.
+    //
+    // `midi_route.snapshot_arc()` is deliberately the *same* handle the pre-block
+    // took: a node's MIDI-out is routed by exactly the rules a hardware input is,
+    // and two tables would let the two directions disagree about where a channel
+    // goes.
+    #[cfg(feature = "midi")]
+    let post_block = {
+        let mut post_block = MidiPostBlock::new(midi_route.snapshot_arc());
+        post_block.set_queue(Arc::new(midi_bus.clone()));
+        post_block
+    };
+
+    // The collection point emitting nodes push into. Taken before the post-block
+    // moves into the callback state, and published as `MidiOutSinkRes` for a host
+    // to hand to whatever emits (`plugin.set_midi_out(sink.handle())`). Nothing
+    // is installed automatically — `midi::out_sink` states why.
+    #[cfg(feature = "midi")]
+    let midi_out_sink = post_block.sink();
+
     let callback_state = {
         let state = AudioCallbackState::new(engine, meter.clone(), tap.clone());
         #[cfg(feature = "midi")]
-        let state = state.with_pre_block(pre_block);
+        let state = state.with_pre_block(pre_block).with_post_block(post_block);
         Arc::new(state)
     };
     audio_engine.start(callback_state.clone())?;
@@ -247,6 +277,10 @@ pub fn build_into(plugin: &crate::TuttiPlugin, app: &mut App) -> Result<()> {
         app.insert_resource(MidiBusRes::new(midi_bus));
         app.insert_resource(MidiRoutingRes::new(midi_route));
         app.insert_resource(ClockMasterRes::new(clock_master, clock_out_consumer));
+        // The outbound collection point, from the post-block now living in the
+        // callback state. A host hands `handle()` to whatever emits; nothing is
+        // installed automatically — see `midi::out_sink` for why.
+        app.insert_resource(MidiOutSinkRes::new(midi_out_sink));
         #[cfg(feature = "midi-hardware")]
         if let Some(io) = midi_io {
             app.insert_resource(MidiIoRes(io));

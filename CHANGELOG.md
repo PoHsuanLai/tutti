@@ -64,6 +64,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - JR-stamped output used to be macOS-only, because `UmpOutRes` wrapped a
     CoreMIDI type. It now takes an erased sink, so every backend gets it.
 
+### Fixed
+
+- **Plugin MIDI-out reached nothing.** `tutti-cpal` held an
+  `Option<MidiPostBlock>` and called `run()` in the audio callback, but nothing
+  anywhere *constructed* one — so the whole outbound path was assembled, tested,
+  RT-safe, and unreachable. `bevy-tutti`'s engine build now creates it from the
+  same routing snapshot and bus the inbound phase uses, so a node's MIDI-out is
+  routed by exactly the rules a hardware input is.
+
+  The new `MidiOutSinkRes` publishes the collection point; a host hands it to
+  whatever emits (`plugin.set_midi_out(sink.handle())`). It is deliberately
+  **not** installed automatically: an inbox is an *address* and costs one map
+  slot, but a sink is a *routing decision* — and a plugin's MIDI-out capability
+  is a per-instance negotiated fact that the node's Rust type cannot answer.
+
+  `tutti-midi-runtime`'s new `outbound_block_path` test assembles the entire
+  round trip with no Bevy in scope, pinning the path as engine-side: if it ever
+  needs an adapter type to compile, the adapter has stopped being a wrapper.
+
 ### Added
 
 - **`tutti-midi-file`** — the SMF and MIDI 2.0 Clip File codecs, split out of

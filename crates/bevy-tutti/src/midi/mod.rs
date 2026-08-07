@@ -25,6 +25,7 @@ pub mod clock_out;
 pub mod hardware_out;
 pub mod metadata;
 pub mod negotiation;
+pub mod out_sink;
 pub mod registration;
 pub mod route;
 pub mod routing_table;
@@ -123,6 +124,7 @@ pub use negotiation::{
     CiDeviceDiscovered, CiRes, EndpointDiscovered, EndpointDiscoveryRes, InboundCiMessage,
     InboundEndpointReply, MidiNegotiationPlugin, StartCiDiscovery, StartEndpointDiscovery,
 };
+pub use out_sink::MidiOutSinkRes;
 pub use plugin::TuttiMidiPlugin;
 pub use registration::{
     register_midi_senders, unregister_midi_sender, MidiRegistered, MidiRegistrationPlugin,

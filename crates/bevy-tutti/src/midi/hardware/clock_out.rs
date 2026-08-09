@@ -75,7 +75,7 @@ pub fn pump_clock_out_system(
 }
 
 /// Registers the clock-master output pump. The [`ClockMasterRes`] itself is
-/// claimed by [`TuttiMidiPlugin`](super::plugin::TuttiMidiPlugin) from the engine
+/// claimed by [`TuttiMidiPlugin`](crate::midi::plugin::TuttiMidiPlugin) from the engine
 /// handoff; this plugin only schedules the drain.
 pub struct ClockOutPlugin;
 

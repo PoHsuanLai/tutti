@@ -22,7 +22,7 @@ use bevy_ecs::prelude::*;
 /// No `Default`, no `Clone`, and a crate-private field, so that mistake is a
 /// compile error rather than a silent one. It only arrives via
 /// [`build_into`](crate::engine::build_into)'s handoff, the same way
-/// [`MidiBusRes`](super::MidiBusRes) does.
+/// [`MidiBusRes`](crate::midi::MidiBusRes) does.
 ///
 /// The field used to be `pub`, which left the guarantee above as a doc comment
 /// the type did not actually enforce — `MidiRoutingRes(MidiRoutingTable::new())`

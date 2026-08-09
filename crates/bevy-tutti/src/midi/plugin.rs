@@ -7,14 +7,14 @@ use bevy_app::{App, Plugin};
 ///
 /// Composes the per-duty sub-plugins:
 ///
-/// - [`MidiRegistrationPlugin`](super::registration::MidiRegistrationPlugin) —
+/// - [`MidiRegistrationPlugin`](super::endpoint::registration::MidiRegistrationPlugin) —
 ///   keeps the bus in step with the graph
-/// - [`MidiRoutePlugin`](super::route::MidiRoutePlugin) — where inbound MIDI goes
+/// - [`MidiRoutePlugin`](super::inbound::route::MidiRoutePlugin) — where inbound MIDI goes
 /// - [`MidiSequencePlugin`](super::sequence::MidiSequencePlugin) — beat-scheduled playback
-/// - [`ClockOutPlugin`](super::clock_out::ClockOutPlugin) — outbound Beat Clock / MTC
-/// - [`MidiOutPlugin`](super::track_out::MidiOutPlugin) — MIDI-out to external hardware
-/// - [`MidiNegotiationPlugin`](super::negotiation::MidiNegotiationPlugin) — MIDI-CI + UMP-Stream
-/// - [`MidiMetadataPlugin`](super::metadata::MidiMetadataPlugin) — Flex Data metadata
+/// - [`ClockOutPlugin`](super::hardware::clock_out::ClockOutPlugin) — outbound Beat Clock / MTC
+/// - [`MidiOutPlugin`](super::hardware::track_out::MidiOutPlugin) — MIDI-out to external hardware
+/// - [`MidiNegotiationPlugin`](super::hardware::negotiation::MidiNegotiationPlugin) — MIDI-CI + UMP-Stream
+/// - [`MidiMetadataPlugin`](super::hardware::metadata::MidiMetadataPlugin) — Flex Data metadata
 /// - `MidiDevicePlugin` — hardware connect/poll (`midi-hardware`)
 ///
 /// The handles these read — [`MidiBusRes`](super::MidiBusRes),
@@ -33,18 +33,18 @@ pub struct TuttiMidiPlugin;
 
 impl Plugin for TuttiMidiPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<super::target::MidiTargetRegistry>();
+        app.init_resource::<super::endpoint::target::MidiTargetRegistry>();
 
-        app.add_plugins(super::registration::MidiRegistrationPlugin);
-        app.add_plugins(super::route::MidiRoutePlugin);
+        app.add_plugins(super::endpoint::registration::MidiRegistrationPlugin);
+        app.add_plugins(super::inbound::route::MidiRoutePlugin);
         app.add_plugins(super::sequence::MidiSequencePlugin);
-        app.add_plugins(super::clock_out::ClockOutPlugin);
-        app.add_plugins(super::track_out::MidiOutPlugin);
-        app.add_plugins(super::negotiation::MidiNegotiationPlugin);
-        app.add_plugins(super::metadata::MidiMetadataPlugin);
+        app.add_plugins(super::hardware::clock_out::ClockOutPlugin);
+        app.add_plugins(super::hardware::track_out::MidiOutPlugin);
+        app.add_plugins(super::hardware::negotiation::MidiNegotiationPlugin);
+        app.add_plugins(super::hardware::metadata::MidiMetadataPlugin);
         app.add_plugins(super::file::MidiFilePlugin);
 
         #[cfg(feature = "midi-hardware")]
-        app.add_plugins(super::device::MidiDevicePlugin);
+        app.add_plugins(super::hardware::device::MidiDevicePlugin);
     }
 }

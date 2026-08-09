@@ -8,8 +8,24 @@
 //! exception to the one-module-per-engine-crate shape, because the four crates
 //! underneath don't each earn an adapter. `tutti-midi-types` is vocabulary and
 //! needs none; [`file`] adapts `tutti-midi-file` (codecs, no OS port);
-//! [`device`] adapts `tutti-midi-hardware` and is gated with it behind
-//! `midi-hardware`; every other module here adapts `tutti-midi-runtime`.
+//! [`hardware::device`] adapts `tutti-midi-hardware` and is gated with it
+//! behind `midi-hardware`; everything else adapts `tutti-midi-runtime`.
+//!
+//! Within the tier, the modules group by duty, and each directory's rule is
+//! one sentence:
+//!
+//! - [`endpoint`] — how a node becomes reachable, in both directions. No
+//!   routing, no hardware, no time.
+//! - [`inbound`] — where MIDI entering from outside goes. Only the inbound
+//!   edge consults it.
+//! - [`hardware`] — the machine's MIDI ports: device lifecycle, MIDI-CI, and
+//!   every outbound drain toward an OS endpoint.
+//! - [`sequence`] and [`file`] stay ungrouped: beat-scheduled playback is
+//!   policy over `endpoint`, and file IO is the `tutti-midi-file` adapter.
+//!
+//! The dependency arrows only point down the list ([`hardware`] names nothing
+//! outside itself; [`inbound`] and [`sequence`] lean on [`endpoint`]), with
+//! [`plugin`] as the one file that names every group.
 //!
 //! # Addressing a synth
 //!
@@ -18,8 +34,9 @@
 //! installs into. The ECS layer never stores that address — it resolves it from
 //! the graph each time, because a `crossfade` can replace a node's unit while
 //! keeping its `NodeId`, leaving any stored copy silently stale. See
-//! [`target`] for the registry a host fills in, and [`registration`] for how a
-//! node's sender gets on (and off) the bus.
+//! [`endpoint::target`] for the registry a host fills in, and
+//! [`endpoint::registration`] for how a node's sender gets on (and off) the
+//! bus.
 //!
 //! ```rust,ignore
 //! app.world_mut()
@@ -27,21 +44,10 @@
 //!     .register::<tutti_soundfont::SoundFontUnit>();
 //! ```
 
-pub mod bus;
-pub mod clock_out;
-pub mod hardware_out;
-pub mod metadata;
-pub mod negotiation;
-pub mod out_sink;
-pub mod registration;
-pub mod route;
-pub mod routing_table;
+pub mod endpoint;
+pub mod hardware;
+pub mod inbound;
 pub mod sequence;
-pub mod target;
-pub mod track_out;
-
-#[cfg(feature = "midi-hardware")]
-pub mod device;
 
 /// MIDI file IO on the task pool.
 pub mod file;
@@ -88,12 +94,12 @@ pub mod test_support {
     /// Everything sitting in the outbound MIDI-out mailbox, drained.
     ///
     /// **Tests only.** The production drain is
-    /// [`pump_midi_out_system`](super::track_out::pump_midi_out_system), which
-    /// routes each event to hardware and keeps none — so a test asserting *what
-    /// a producer queued* has to read the mailbox itself, and an integration
-    /// test cannot reach `MidiOutRes`'s crate-private receiver.
+    /// [`pump_midi_out_system`](super::hardware::track_out::pump_midi_out_system),
+    /// which routes each event to hardware and keeps none — so a test asserting
+    /// *what a producer queued* has to read the mailbox itself, and an
+    /// integration test cannot reach `MidiOutRes`'s crate-private receiver.
     pub fn drain_midi_out(
-        out: &super::track_out::MidiOutRes,
+        out: &super::hardware::track_out::MidiOutRes,
     ) -> Vec<tutti_midi_runtime::tutti_midi_types::ump::MidiEvent> {
         out.drain_for_test()
     }
@@ -116,41 +122,47 @@ pub mod test_support {
     }
 }
 
-pub use bus::{MidiBusRes, MpeModeConfig, MpeModeHandle};
-pub use clock_out::{pump_clock_out_system, ClockMasterRes, ClockOutPlugin};
-pub use file::{
-    MidiFileAsset, MidiFileAssetLoader, MidiFileContents, MidiFileLoaderError, MidiFilePlugin,
-    MidiFileWrite, MidiFileWriteInFlight, MidiFileWritten,
+pub use endpoint::bus::{MidiBusRes, MpeModeConfig, MpeModeHandle};
+pub use endpoint::out_sink::MidiOutSinkRes;
+pub use endpoint::registration::{
+    register_midi_senders, unregister_midi_sender, MidiRegistered, MidiRegistrationPlugin,
 };
+pub use endpoint::target::{MidiNode, MidiTargetRegistry, MidiTargetResolver};
+
+pub use inbound::route::{
+    rebuild as rebuild_midi_routes, MidiRouteFallback, MidiRoutePlugin, MidiRouteRule,
+};
+pub use inbound::routing_table::MidiRoutingRes;
+
+pub use hardware::clock_out::{pump_clock_out_system, ClockMasterRes, ClockOutPlugin};
 #[cfg(all(target_os = "macos", feature = "midi-hardware"))]
-pub use hardware_out::UmpOutRes;
-pub use hardware_out::{drain_receiver_through, JrStamperRes, MidiOutDrops, MidiOutRouter};
-pub use metadata::{flex_metadata_broadcast_system, BroadcastFlexMetadata, MidiMetadataPlugin};
-pub use negotiation::{
+pub use hardware::hardware_out::UmpOutRes;
+pub use hardware::hardware_out::{
+    drain_receiver_through, JrStamperRes, MidiOutDrops, MidiOutRouter,
+};
+pub use hardware::metadata::{
+    flex_metadata_broadcast_system, BroadcastFlexMetadata, MidiMetadataPlugin,
+};
+pub use hardware::negotiation::{
     ci_discovery_system, ci_ingest_system, endpoint_discovery_system, endpoint_ingest_system,
     CiDeviceDiscovered, CiRes, EndpointDiscovered, EndpointDiscoveryRes, InboundCiMessage,
     InboundEndpointReply, MidiNegotiationPlugin, StartCiDiscovery, StartEndpointDiscovery,
 };
-pub use out_sink::MidiOutSinkRes;
-pub use plugin::TuttiMidiPlugin;
-pub use registration::{
-    register_midi_senders, unregister_midi_sender, MidiRegistered, MidiRegistrationPlugin,
-};
-pub use route::{
-    rebuild as rebuild_midi_routes, MidiRouteFallback, MidiRoutePlugin, MidiRouteRule,
-};
-pub use routing_table::MidiRoutingRes;
-pub use sequence::{
-    rebuild as rebuild_midi_sources, InstalledMidiSources, MidiSequencePlugin, MidiSourceInstall,
-};
-pub use target::{MidiNode, MidiTargetRegistry, MidiTargetResolver};
-pub use track_out::{
+pub use hardware::track_out::{
     midi_out_send_system, pump_midi_out_system, MidiOutPlugin, MidiOutRes, SendMidiOut,
 };
-
 #[cfg(feature = "midi-hardware")]
-pub use device::{
+pub use hardware::device::{
     midi_device_connect_system, midi_device_poll_system, ConnectMidiDevice, ConnectMidiOutput,
     DisconnectMidiDevice, DisconnectMidiOutput, MidiDeviceEvent, MidiDevicePlugin, MidiDeviceState,
     MidiDirection, MidiIoRes,
+};
+
+pub use file::{
+    MidiFileAsset, MidiFileAssetLoader, MidiFileContents, MidiFileLoaderError, MidiFilePlugin,
+    MidiFileWrite, MidiFileWriteInFlight, MidiFileWritten,
+};
+pub use plugin::TuttiMidiPlugin;
+pub use sequence::{
+    rebuild as rebuild_midi_sources, InstalledMidiSources, MidiSequencePlugin, MidiSourceInstall,
 };

@@ -19,7 +19,7 @@
 //!
 //! A rule names the *entity* it feeds and [`rebuild`] resolves that to a
 //! [`MidiUnitId`] each time it runs, for the reason
-//! [`target`](super::target) documents at length: a `crossfade` replaces a
+//! [`target`](crate::midi::endpoint::target) documents at length: a `crossfade` replaces a
 //! node's unit while keeping its `NodeId`, so any id stored on an entity is
 //! silently stale from that moment on. Re-deriving is immune, and it means an
 //! app never handles an engine id.
@@ -43,7 +43,7 @@ use tutti_midi_types::routing::MAX_TARGETS_PER_ROUTE;
 use tutti_midi_types::{MidiRoute, MidiUnitId};
 
 use super::routing_table::MidiRoutingRes;
-use super::target::MidiTargetResolver;
+use crate::midi::endpoint::target::MidiTargetResolver;
 use crate::graph::{engine_ready, GraphReconcileSystems};
 
 /// One inbound routing rule: which channel reaches which entities.
@@ -200,7 +200,7 @@ pub fn rebuild(
 /// motivated it reach the audio thread together — the engine's `set_routes`
 /// documents that coalescing as the point of deferring the publish. It runs
 /// after `Spawn` for the same reason
-/// [`register_midi_senders`](super::register_midi_senders) does: a node must be
+/// [`register_midi_senders`](crate::midi::endpoint::registration::register_midi_senders) does: a node must be
 /// in the graph before it can be asked for its port.
 pub struct MidiRoutePlugin;
 

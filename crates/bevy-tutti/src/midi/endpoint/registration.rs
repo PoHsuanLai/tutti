@@ -53,7 +53,7 @@ impl MidiRegistered {
 /// Put every unregistered MIDI-capable node's sender on the bus.
 ///
 /// Entities whose node is not yet reachable, or whose node type was never
-/// registered with [`MidiTargetRegistry`](super::MidiTargetRegistry), are simply
+/// registered with [`MidiTargetRegistry`](super::target::MidiTargetRegistry), are simply
 /// skipped — they are retried next frame, and most never become MIDI targets at
 /// all, so a log line here would be noise on every non-synth in the graph.
 ///

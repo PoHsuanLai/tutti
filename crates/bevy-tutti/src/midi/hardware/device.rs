@@ -22,7 +22,7 @@ use bevy_log::warn;
 
 /// The open MIDI connections and the endpoints available to open. Only present
 /// when the `midi-hardware` feature is compiled; claimed into the world by
-/// [`TuttiMidiPlugin`](super::plugin::TuttiMidiPlugin) from the engine handoff.
+/// [`TuttiMidiPlugin`](crate::midi::plugin::TuttiMidiPlugin) from the engine handoff.
 #[derive(Resource, Clone, Debug)]
 pub struct MidiIoRes(pub tutti_midi_hardware::MidiSession);
 

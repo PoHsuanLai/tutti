@@ -16,7 +16,7 @@
 use bevy_app::prelude::*;
 
 use bevy_tutti::midi::test_support::drain_midi_out;
-use bevy_tutti::midi::{track_out::MidiOutRes, BroadcastFlexMetadata, MidiMetadataPlugin};
+use bevy_tutti::midi::{MidiOutRes, BroadcastFlexMetadata, MidiMetadataPlugin};
 use bevy_tutti::AudioEngineState;
 use tutti_midi_types::midi2::ux::u3;
 use tutti_midi_types::ump::{

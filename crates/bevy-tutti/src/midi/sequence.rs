@@ -48,7 +48,7 @@ use std::sync::Arc;
 use tutti_midi_runtime::{MidiClipSource, TimedMidiEvent};
 use tutti_midi_types::ump::MidiEvent;
 
-use super::target::MidiTargetResolver;
+use super::endpoint::target::MidiTargetResolver;
 use crate::graph::{engine_ready, AudioConfig, GraphReconcileSystems, TransportRes};
 use tutti_midi_runtime::tutti_midi_types::cc;
 use tutti_midi_runtime::tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
@@ -63,7 +63,7 @@ use tutti_midi_runtime::tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
 #[derive(Component, Debug, Clone)]
 pub struct MidiSourceInstall {
     /// The entity whose synth plays this. Resolved through
-    /// [`MidiTargetRegistry`](super::MidiTargetRegistry), so it must carry an
+    /// [`MidiTargetRegistry`](super::endpoint::target::MidiTargetRegistry), so it must carry an
     /// `AudioNode` of a registered type.
     pub target: Entity,
     /// Absolute-beat positioned events, in any order — the engine sorts them.
@@ -197,7 +197,7 @@ impl Plugin for MidiSequencePlugin {
                 // the node it belongs to. After registration, because a target
                 // resolves through the same registry that populates the bus.
                 .after(GraphReconcileSystems::Spawn)
-                .after(super::registration::register_midi_senders)
+                .after(super::endpoint::registration::register_midi_senders)
                 .before(GraphReconcileSystems::Commit)
                 .run_if(engine_ready),
         );

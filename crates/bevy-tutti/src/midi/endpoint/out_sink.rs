@@ -17,7 +17,7 @@ use tutti_core::Arc;
 /// plugin's MIDI-out silently vanishes, with no error and nothing in the log.
 ///
 /// Hence no `Default` and a private field — exactly the hazard, and exactly the
-/// guard, that [`MidiBusRes`](super::MidiBusRes) documents.
+/// guard, that [`MidiBusRes`](super::bus::MidiBusRes) documents.
 ///
 /// [`MidiPostBlock`]: tutti_midi_runtime::MidiPostBlock
 #[derive(Resource, Clone)]

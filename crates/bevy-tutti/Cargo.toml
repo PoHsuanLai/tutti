@@ -162,7 +162,7 @@ synth = ["dep:tutti-polysynth"]
 # under feature unification.
 soundfont = ["midi", "dep:tutti-soundfont"]
 # Clip playback: the butler streaming engine and the `.wav` asset loader
-# (`tutti-sampler` → `crate::stream`).
+# (`tutti-sampler` → `crate::sampler`).
 #
 # This used to also carry the live I/O edge, on the reasoning that both were
 # "sampler things". They are not: they are separate engine crates, neither

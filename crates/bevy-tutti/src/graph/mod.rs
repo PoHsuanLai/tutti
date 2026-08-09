@@ -11,8 +11,10 @@
 //!   [`crossfade_audio_node`]), [`despawn`] ([`reconcile_node_despawn`]) and
 //!   [`commit`] ([`commit_graph`]) — composed by [`GraphReconcilePlugin`],
 //! - params ([`AudioParam`]) in [`param`],
-//! - the I/O edge ([`AudioPump`]) in [`io`] — an `AudioIn → AudioOut` pump
+//! - the I/O edge ([`AudioPump`]) in [`pump`] — an `AudioIn → AudioOut` pump
 //!   whose thread the ECS owns, so its sink is finalized exactly once,
+//! - opt-in latency (PDC) compensation in [`latency`] — the read side of
+//!   tutti-core's PDC, run in [`GraphReconcileSystems::Compensate`],
 //! - and the wrappers for metering ([`MeteringRes`]) and transport
 //!   ([`TransportRes`], [`MetronomeRes`]).
 //!
@@ -21,10 +23,11 @@
 
 pub mod commit;
 pub mod despawn;
-pub mod io;
+pub mod latency;
 pub mod metering;
 pub mod param;
 pub mod plugin;
+pub mod pump;
 pub mod resources;
 pub mod schedule;
 pub mod spawn;
@@ -34,7 +37,7 @@ pub mod wire;
 
 pub use commit::commit_graph;
 pub use despawn::reconcile_node_despawn;
-pub use io::{
+pub use pump::{
     drain_audio_pumps, finalize_removed_pumps, AudioPump, AudioPumpAppExt, PumpFinished, IDLE_PARK,
 };
 pub use metering::MeteringRes;

@@ -1,9 +1,12 @@
-//! Streaming and sample assets: the `.wav` loader and the disk-streaming
-//! engine handle.
+//! Clip playback and sample assets: the `.wav` loader, the disk-streaming
+//! engine handle and voice spawning.
 //!
-//! Named for what the engine calls these things. There is no `Sampler` type in
-//! `tutti-sampler` — the crate's noun is [`DiskStreamer`], the handle that owns
-//! the butler thread — so a `SamplerRes` here named a type that does not exist.
+//! Named for `tutti-sampler`, the engine crate it adapts — one adapter module
+//! per engine crate is this crate's shape. The *resources* keep the engine's
+//! own nouns, though: there is no `Sampler` type in `tutti-sampler` — the
+//! crate's noun is [`DiskStreamer`], the handle that owns the butler thread —
+//! so the handle here is [`DiskStreamerRes`], not a `SamplerRes` naming a type
+//! that does not exist.
 
 use bevy_app::{App, Plugin};
 use bevy_asset::AssetApp;

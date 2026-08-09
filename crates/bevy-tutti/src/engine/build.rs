@@ -39,7 +39,7 @@ use tutti_midi_runtime::{MidiBus, MidiPostBlock, MidiPreBlock};
 use tutti_midi_types::MidiRoutingTable;
 
 #[cfg(feature = "sampler")]
-use crate::stream::DiskStreamerRes;
+use crate::sampler::DiskStreamerRes;
 #[cfg(feature = "sampler")]
 use tutti_sampler::DiskStreamer;
 
@@ -85,7 +85,7 @@ pub fn build_into(plugin: &crate::TuttiPlugin, app: &mut App) -> Result<()> {
     // Per-channel pre-roll for sources outside the graph. Stays empty unless the
     // app adds `LatencyCompensationPlugin`, which owns publishing into it; the
     // sampler subscribes here so the wiring exists either way.
-    let compensation = crate::latency::ChannelCompensation::default();
+    let compensation = crate::graph::latency::ChannelCompensation::default();
 
     let mut net = Net::new(inputs, outputs);
 

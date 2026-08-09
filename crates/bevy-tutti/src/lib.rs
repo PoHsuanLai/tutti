@@ -59,9 +59,6 @@
 //! A node added this way is **unwired** and renders nothing. What feeds it, and
 //! what reaches the speakers, is declared — see [`graph::spawn`] for the shape.
 
-mod device_state;
-mod engine_state;
-pub mod latency;
 mod plugin;
 
 /// Binding the DSP graph to an ECS world: resources, the reconcile pipeline,
@@ -80,14 +77,28 @@ pub mod modulation;
 #[cfg(feature = "audio-io")]
 pub mod io;
 
-/// Streaming and sample assets: the `.wav` loader and the `DiskStreamer` handle.
+/// Clip playback and sample assets: the `.wav` loader, the `DiskStreamer`
+/// handle and voice spawning. Adapts `tutti-sampler`.
 #[cfg(feature = "sampler")]
-pub mod stream;
+pub mod sampler;
 
 /// SoundFont assets and their playback systems. Named for `tutti-soundfont`,
 /// the engine crate it adapts — every module here matches its crate.
 #[cfg(feature = "soundfont")]
 pub mod soundfont;
+
+/// The polyphonic synth, re-exported whole from `tutti-polysynth`. There is no
+/// adapter code: `PolySynth` is an `AudioUnit` spawned like any other node, and
+/// its one ECS touchpoint is the `MidiNode` impl beside the trait in
+/// `midi::target`.
+#[cfg(feature = "synth")]
+pub use tutti_polysynth as polysynth;
+
+/// Spatial audio, re-exported whole from `tutti-spatial`. There is no adapter
+/// code: the VBAP / binaural panners are plain `AudioUnit`s, and
+/// `build_vbap_mix` assembles a subgraph a host spawns like any other node.
+#[cfg(feature = "spatial")]
+pub use tutti_spatial as spatial;
 
 /// Plugin (VST2/VST3/CLAP/AU) editor lifecycle, crash detection and catalog
 /// scanning.
@@ -105,8 +116,8 @@ pub use plugin::TuttiPlugin;
 
 // Latency (plugin delay) compensation. Opt-in: `TuttiPlugin` does not add it,
 // because it costs a graph walk per commit and a host with no latency-reporting
-// nodes never needs it. See the `latency` module docs for ordering.
-pub use latency::{ChannelCompensation, GraphLatency, LatencyCompensationPlugin};
+// nodes never needs it. See the `graph::latency` module docs for ordering.
+pub use graph::latency::{ChannelCompensation, GraphLatency, LatencyCompensationPlugin};
 
 #[cfg(feature = "plugin")]
 pub use plugin_host::{PluginEmitter, PluginsRes, SetEditorVisible, TuttiHostingPlugin};
@@ -115,11 +126,11 @@ pub use plugin_host::{PluginEmitter, PluginsRes, SetEditorVisible, TuttiHostingP
 pub use engine::{DeviceInfo, Error, Net, Result, TuttiDriver};
 
 /// The audio device's UI-facing mirror. Its CPAL driver is this crate's, so the
-/// mirror lives here too.
-pub use device_state::AudioDeviceState;
+/// mirror lives here too — in [`engine`], with the rest of the device lifecycle.
+pub use engine::AudioDeviceState;
 
 /// Whether the engine is running, and if not, why.
-pub use engine_state::AudioEngineState;
+pub use engine::AudioEngineState;
 
 /// Everything a typical host needs, in one import.
 pub mod prelude {
@@ -154,7 +165,7 @@ pub mod prelude {
     #[cfg(feature = "plugin")]
     pub use crate::plugin_host::{PluginsRes, SetEditorVisible, TuttiHostingPlugin};
     #[cfg(feature = "sampler")]
-    pub use crate::stream::{DiskStreamerRes, TuttiPlaybackPlugin};
+    pub use crate::sampler::{DiskStreamerRes, TuttiPlaybackPlugin};
 
     // The engine vocabulary a host writes graph edits in.
     pub use tutti_core::{AudioNode, NodeId};

@@ -8,6 +8,11 @@
 //! Bevy-free core to gate. A non-Bevy host uses the (Bevy-free) `tutti-plugin`
 //! crate directly and wires the equivalent itself.
 //!
+//! This module mirrors the engine's `plugin/` *tier* (`tutti-plugin` plus the
+//! `tutti-plugin-server` subprocess it launches) rather than a single crate. It
+//! is `plugin_host`, not `plugin`, because that name belongs to the crate's
+//! composition root, [`TuttiPlugin`](crate::TuttiPlugin).
+//!
 //! # Life of a plugin
 //!
 //! A host spawns a [`PluginRequest`]. [`load`] picks it up, runs the subprocess

@@ -14,7 +14,7 @@
 //! # Why the scan is not on `AsyncComputeTaskPool`
 //!
 //! Because it does not run to completion in bounded time. That pool defaults to
-//! ~4 threads, and [`graph::io`](crate::graph) documents what happens when
+//! ~4 threads, and [`graph::pump`](crate::graph::pump) documents what happens when
 //! long-lived work occupies them: soundfont decodes and everything else stop
 //! running, with no error anywhere. The engine already puts the scan on a
 //! dedicated thread; this module only polls its channels.

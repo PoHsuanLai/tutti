@@ -4,6 +4,13 @@
 //! [`TuttiMidiPlugin`] (in [`plugin`]) as the composition root. The MIDI engine
 //! these systems drive is framework-free; this layer only wraps it.
 //!
+//! This module mirrors the engine's `midi/` *tier*, not a single crate — the
+//! exception to the one-module-per-engine-crate shape, because the four crates
+//! underneath don't each earn an adapter. `tutti-midi-types` is vocabulary and
+//! needs none; [`file`] adapts `tutti-midi-file` (codecs, no OS port);
+//! [`device`] adapts `tutti-midi-hardware` and is gated with it behind
+//! `midi-hardware`; every other module here adapts `tutti-midi-runtime`.
+//!
 //! # Addressing a synth
 //!
 //! A MIDI-receiving node owns a [`MidiInPort`](tutti_midi_runtime::MidiInPort):

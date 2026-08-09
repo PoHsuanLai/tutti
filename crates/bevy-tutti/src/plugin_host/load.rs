@@ -67,7 +67,7 @@ const _: () = {
 /// How many loads may be in flight at once.
 ///
 /// `AsyncComputeTaskPool` defaults to about four threads, and
-/// [`graph::io`](crate::graph) documents what long-lived work parked there does:
+/// [`graph::pump`](crate::graph::pump) documents what long-lived work parked there does:
 /// soundfont decodes and everything else stop running, with no error anywhere. A
 /// load is bounded but slow, so leaving headroom is the difference between a
 /// busy project loading and the whole pool wedged behind it.

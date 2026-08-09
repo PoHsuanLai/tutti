@@ -3,7 +3,7 @@
 use bevy_app::{App, Plugin, Startup, Update};
 use bevy_log::{error, info};
 
-use crate::device_state;
+use crate::engine::device_state;
 use crate::graph::{AudioConfig, GraphReconcilePlugin};
 use crate::{AudioDeviceState, AudioEngineState};
 
@@ -14,7 +14,7 @@ use crate::plugin_host::TuttiHostingPlugin;
 #[cfg(feature = "soundfont")]
 use crate::soundfont::TuttiSoundFontPlugin;
 #[cfg(feature = "sampler")]
-use crate::stream::TuttiPlaybackPlugin;
+use crate::sampler::TuttiPlaybackPlugin;
 
 /// Opens the audio device, builds the DSP graph, starts the CPAL callback, and
 /// registers the ECS surface for every enabled subsystem.

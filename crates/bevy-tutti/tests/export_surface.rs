@@ -54,7 +54,7 @@ fn app_with_engine() -> (App, Entity) {
     app.add_plugins(ExportPlugin);
     app.insert_resource(graph);
     app.insert_resource(AudioConfig {
-        sample_rate: 44_100.0,
+        sample_rate: tutti_core::SampleRate(44_100.0),
         channels: ChannelLayout::STEREO,
     });
     // `engine_ready` gates `start_exports` on this state, not on the graph
@@ -355,7 +355,7 @@ fn the_callers_timeline_is_the_one_nodes_are_rebound_onto() {
 
     // A deliberately un-default transport: neither 120 BPM nor beat 0.
     let timeline = Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
-        start_beat: 16.0,
+        start_beat: tutti_core::Beat(16.0),
         tempo: tutti_core::Bpm(90.0).into(),
         sample_rate: tutti_core::SampleRate(44_100.0),
         loop_range: None,

@@ -42,7 +42,7 @@ fn app() -> App {
         tutti_core::transport::Transport::new(48_000.0),
     ));
     app.insert_resource(bevy_tutti::graph::AudioConfig {
-        sample_rate: 48_000.0,
+        sample_rate: tutti_core::SampleRate(48_000.0),
         channels: Default::default(),
     });
     app.insert_resource(AudioEngineState::Running);
@@ -54,6 +54,12 @@ fn app() -> App {
     // present, and the route rebuild takes `MidiRoutingRes` as a plain
     // `ResMut` on that promise. A test asserting readiness supplies it.
     app.insert_resource(bevy_tutti::midi::test_support::routing_table_for_test().0);
+    // `TuttiMidiPlugin` registers the `MidiFileAsset` loader at build time,
+    // which panics without an `AssetServer` — a headless app supplies it.
+    app.add_plugins((
+        bevy_app::TaskPoolPlugin::default(),
+        bevy_asset::AssetPlugin::default(),
+    ));
     app.add_plugins((GraphReconcilePlugin, TuttiMidiPlugin));
     app.world_mut()
         .resource_mut::<MidiTargetRegistry>()

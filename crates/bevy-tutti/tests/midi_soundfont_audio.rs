@@ -28,7 +28,7 @@ use tutti_core::{Beat, BeatDuration, SampleRate};
 use tutti_midi_runtime::tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
 use tutti_midi_runtime::TimedMidiEvent;
 use tutti_midi_types::ump::MidiEvent;
-use tutti_polysynth::{SoundFont, SoundFontUnit, SynthesizerSettings};
+use tutti_soundfont::{SoundFont, SoundFontUnit, SynthesizerSettings};
 
 const SAMPLE_RATE: f64 = 48_000.0;
 
@@ -117,6 +117,12 @@ fn app_with_soundfont() -> Option<(App, Entity)> {
     // present, and the route rebuild takes `MidiRoutingRes` as a plain
     // `ResMut` on that promise. A test asserting readiness supplies it.
     app.insert_resource(bevy_tutti::midi::test_support::routing_table_for_test().0);
+    // `TuttiMidiPlugin` registers the `MidiFileAsset` loader at build time,
+    // which panics without an `AssetServer` — a headless app supplies it.
+    app.add_plugins((
+        bevy_app::TaskPoolPlugin::default(),
+        bevy_asset::AssetPlugin::default(),
+    ));
     app.add_plugins((GraphReconcilePlugin, TuttiMidiPlugin));
     app.world_mut()
         .resource_mut::<MidiTargetRegistry>()

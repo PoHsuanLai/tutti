@@ -39,7 +39,7 @@ fn main() {
     app.insert_resource(AudioEngineState::Running);
     app.insert_resource(TransportRes(Transport::new(SAMPLE_RATE)));
     app.insert_resource(AudioConfig {
-        sample_rate: SAMPLE_RATE,
+        sample_rate: tutti_core::SampleRate(SAMPLE_RATE),
         channels: ChannelLayout::STEREO,
     });
     app.add_plugins((bevy_app::TaskPoolPlugin::default(), GraphReconcilePlugin));
@@ -131,7 +131,7 @@ fn request_exports(mut commands: Commands, transport: Res<TransportRes>, filter:
     // AND the timeline the nodes read, from one argument — they are the same
     // object, and any other arrangement is a bug.
     let timeline = Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
-        start_beat: 0.0,
+        start_beat: tutti_core::Beat(0.0),
         tempo: transport.settings.tempo(),
         sample_rate: tutti_core::SampleRate(SAMPLE_RATE),
         loop_range: None,

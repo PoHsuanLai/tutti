@@ -42,7 +42,7 @@ fn app() -> (App, RtView) {
         SAMPLE_RATE,
     )));
     app.insert_resource(AudioConfig {
-        sample_rate: SAMPLE_RATE,
+        sample_rate: tutti_core::SampleRate(SAMPLE_RATE),
         channels: Default::default(),
     });
     app.insert_resource(AudioEngineState::Running);
@@ -54,6 +54,12 @@ fn app() -> (App, RtView) {
     let (routing, rt_view) = bevy_tutti::midi::test_support::routing_table_for_test();
     app.insert_resource(routing);
 
+    // `TuttiMidiPlugin` registers the `MidiFileAsset` loader at build time,
+    // which panics without an `AssetServer` — a headless app supplies it.
+    app.add_plugins((
+        bevy_app::TaskPoolPlugin::default(),
+        bevy_asset::AssetPlugin::default(),
+    ));
     app.add_plugins((GraphReconcilePlugin, TuttiMidiPlugin));
     app.world_mut()
         .resource_mut::<MidiTargetRegistry>()

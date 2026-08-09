@@ -48,7 +48,7 @@ fn app() -> App {
         SAMPLE_RATE,
     )));
     app.insert_resource(AudioConfig {
-        sample_rate: SAMPLE_RATE,
+        sample_rate: tutti_core::SampleRate(SAMPLE_RATE),
         channels: Default::default(),
     });
     app.insert_resource(AudioEngineState::Running);

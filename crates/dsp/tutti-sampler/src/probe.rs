@@ -13,8 +13,8 @@
 //! butler already applies internally when a stream is registered
 //! (`butler::handlers::open_stream`). A host deriving the same verdict from
 //! `Wave::probe_metadata` would be re-implementing a rule it cannot see, and the
-//! two would drift the moment the butler's capabilities changed. So the butler
-//! and the host now read the **same function** — the point of it being public.
+//! two would drift the moment the butler's capabilities changed. Butler and host
+//! read the **same function** — which is the point of it being public.
 //!
 //! This is not a decode: `Wave::probe_metadata` reads the container head and
 //! stops. Deciding *how much* of a file to keep resident is the caller's policy;
@@ -33,17 +33,23 @@ use tutti_core::{ChannelLayout, SampleRate, Samples};
 /// `==` as usual; it just cannot use one as a `HashMap` key.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SampleFacts {
-    /// Total frames, if the container reports one.
+    /// Total length in **frames**, not interleaved samples, if the container
+    /// reports one.
     ///
-    /// `None` for some streamed/VBR formats that do not store a frame count.
-    /// A caller sizing a preload window against this must treat `None` as
+    /// `None` for some streamed/VBR formats that do not store a length. A
+    /// caller sizing a preload window against this must treat `None` as
     /// "unknown", not as "zero" — and note that [`streamable`](Self::streamable)
     /// is already `false` whenever this is `None`, because the butler cannot
     /// stream a file whose end it cannot find.
     pub frames: Option<Samples>,
     /// The file's own rate, which need not be the engine's.
+    ///
+    /// A voice reading this file converts through it, not through the session
+    /// rate; the ratio between the two is the [`SrcRatio`](tutti_core::SrcRatio)
+    /// the streaming path carries.
     pub sample_rate: SampleRate,
-    /// The file's channel count.
+    /// The file's channel count. Multiply by [`frames`](Self::frames) to size an
+    /// interleaved buffer.
     pub layout: ChannelLayout,
     /// **Whether this build's butler can stream this file.**
     ///
@@ -59,7 +65,7 @@ pub struct SampleFacts {
 }
 
 impl SampleFacts {
-    /// This file's duration in frames, or `Samples(0)` when unknown.
+    /// This file's length in **frames**, or `Samples(0)` when unknown.
     ///
     /// A convenience for the common "how big is it" question. Deliberately does
     /// **not** hide the `None`: a caller deciding residency must distinguish

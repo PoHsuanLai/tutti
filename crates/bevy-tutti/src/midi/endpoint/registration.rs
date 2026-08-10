@@ -1,12 +1,10 @@
 //! Keeping the [`MidiBus`](tutti_midi_runtime::MidiBus) in step with the graph.
 //!
-//! The bus routes by [`MidiUnitId`](tutti_midi_types::MidiUnitId), so every
+//! The bus routes by [`MidiUnitId`], so every
 //! MIDI-receiving node has to put its sender there before anything can address
-//! it, and take it back out when the node goes. Previously only the first half
-//! happened, open-coded in the soundfont spawner with a comment claiming it was
-//! done "like every other MIDI-producing unit" — there was no other, and there
-//! was no removal anywhere in the crate. Ids come from a monotonic counter and
-//! are never reused, so the map grew without bound across spawn/despawn cycles.
+//! it, and take it back out when the node goes. Both halves matter: ids come
+//! from a monotonic counter and are never reused, so a registration pass without
+//! a matching removal grows the map without bound across spawn/despawn cycles.
 //!
 //! # Why a steady-state pass, not `Added<AudioNode>`
 //!
@@ -16,7 +14,7 @@
 //! pass over the not-yet-registered instead converges whenever the node turns
 //! up, which is the same "skip and retry" the modulation resolver documents.
 //!
-//! Registration is idempotent regardless — [`MidiBus::insert`] keys on the
+//! Registration is idempotent regardless — `MidiBus::insert` keys on the
 //! sender's own unit id — so the retry is cheap and a double-register is a
 //! no-op rather than a duplicate.
 

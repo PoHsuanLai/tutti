@@ -1,12 +1,36 @@
+//! MIDI Time Code: assembling quarter-frame messages into SMPTE positions.
+//!
+//! MTC transmits a wall-clock position one nibble at a time, eight messages per
+//! two frames, so a decoder is a small state machine rather than a parse
+//! function — [`MtcDecoder`] holds the partial frame between bytes.
+//!
+//! This is the *wall-clock* half of MIDI sync; the musical half (beat position
+//! and inferred tempo) is [`crate::sync::clock`]. A device sends one or the
+//! other, and which you decode is decided by the source, not by preference.
+
 use crate::sync::SmpteFrameRate;
 use tutti_types::Bpm;
 
+/// An assembled SMPTE position: `HH:MM:SS:FF` plus the rate that gives the frame
+/// count meaning.
+///
+/// The fields are the timecode's own *labels*, not a duration — under
+/// [`SmpteFrameRate::Fps2997Df`] some frame numbers never occur, so arithmetic on
+/// these fields directly is wrong. Convert with [`to_seconds`](Self::to_seconds)
+/// first.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SmpteTimecode {
+    /// Hours, 0..=23. MTC carries this in 5 bits split across two nibbles.
     pub hours: u8,
+    /// Minutes, 0..=59.
     pub minutes: u8,
+    /// Seconds, 0..=59.
     pub seconds: u8,
+    /// Frames within the second, 0..`frame_rate`.
     pub frames: u8,
+    /// The rate this position is counted at. Carried in the same quarter-frame as
+    /// the top hours bit, so it arrives with the position rather than being
+    /// configured out of band.
     pub frame_rate: SmpteFrameRate,
 }
 
@@ -22,6 +46,16 @@ impl core::fmt::Display for SmpteTimecode {
 }
 
 impl SmpteTimecode {
+    /// Elapsed time from `00:00:00:00`, in seconds.
+    ///
+    /// `f64` rather than `Seconds`, which is `f32`: an hour-scale position at
+    /// 29.97 fps needs more mantissa than `f32` has, and this is the documented
+    /// precision carve-out from the units rule.
+    ///
+    /// Counts frame *labels* at face value, so under drop-frame this over-reports
+    /// by the frames the numbering skips. A caller needing wall-clock accuracy
+    /// under [`SmpteFrameRate::Fps2997Df`] must correct for
+    /// [`is_drop_frame`](SmpteFrameRate::is_drop_frame) itself.
     pub fn to_seconds(&self) -> f64 {
         f64::from(self.hours) * 3600.0
             + f64::from(self.minutes) * 60.0
@@ -29,6 +63,11 @@ impl SmpteTimecode {
             + f64::from(self.frames) / self.frame_rate.fps()
     }
 
+    /// Position in beats at a constant `tempo`, from `00:00:00:00`.
+    ///
+    /// Assumes the tempo held for the whole span — there is no tempo map here, so
+    /// this is exact only for a fixed-tempo project.
+    ///
     /// The tempo is a [`Bpm`]; the return stays `f64`, like
     /// [`to_seconds`](Self::to_seconds), because SMPTE timecode is the
     /// documented precision carve-out — `Beat` would carry it, but the
@@ -51,6 +90,10 @@ pub struct MtcDecoder {
 }
 
 impl MtcDecoder {
+    /// Builds a decoder holding no partial frame and no timecode.
+    ///
+    /// [`timecode`](Self::timecode) stays `None` until eight in-order
+    /// quarter-frames have arrived.
     pub fn new() -> Self {
         Self {
             nibbles: [0; 8],
@@ -64,6 +107,14 @@ impl MtcDecoder {
     ///
     /// The upper nibble (bits 4-6) identifies the piece (0-7).
     /// The lower nibble (bits 0-3) carries 4 bits of timecode data.
+    ///
+    /// Pieces must arrive in order. A gap discards the partial frame and waits
+    /// for the next piece 0 rather than publishing a timecode assembled from two
+    /// different frames — so a dropped byte costs one frame of position, not a
+    /// wrong one. [`timecode`](Self::timecode) keeps its previous value across a
+    /// discarded frame.
+    ///
+    /// Allocation-free, so it is safe to call from the audio thread.
     pub fn feed(&mut self, quarter_frame: u8) {
         let piece = (quarter_frame >> 4) & 0x07;
         let nibble = quarter_frame & 0x0F;
@@ -119,10 +170,20 @@ impl MtcDecoder {
         });
     }
 
+    /// The most recently completed timecode, or `None` before the first full
+    /// frame has been assembled.
+    ///
+    /// MTC transmits one full position per *two* frames, so this lags the sender
+    /// by up to two frames even when every byte arrives.
     pub fn timecode(&self) -> Option<SmpteTimecode> {
         self.timecode
     }
 
+    /// Drops the partial frame and the last completed timecode.
+    ///
+    /// Call this on a locate or a transport stop: without it,
+    /// [`timecode`](Self::timecode) keeps reporting the old position until a
+    /// whole new frame arrives.
     pub fn reset(&mut self) {
         self.nibbles = [0; 8];
         self.count = 0;

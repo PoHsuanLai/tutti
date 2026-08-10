@@ -84,6 +84,8 @@ pub struct MidiSender {
 }
 
 impl MidiSender {
+    /// The [`MidiUnitId`] this sender's mailbox is paired with. Baked in at
+    /// [`MidiMailbox::pair`], so a push never has to name it.
     pub fn unit_id(&self) -> MidiUnitId {
         self.unit_id
     }
@@ -139,10 +141,10 @@ impl tutti_midi_types::MidiOut for MidiSender {
 /// Consumer handle for a [`MidiMailbox`]. Owned by the audio unit.
 ///
 /// Read through its inherent [`poll_into`](Self::poll_into), which takes no unit
-/// id: a mailbox *is* one unit's stream, so there is nothing to select. It
-/// briefly also implemented a read trait whose only added behaviour was checking
-/// the caller's id against the one this receiver was paired with — a check its
-/// sole caller ([`MidiInPort`](crate::MidiInPort)) deliberately routed around.
+/// id: a mailbox *is* one unit's stream, so there is nothing to select. That is
+/// why there is no read-trait impl here — a trait taking an id could only check
+/// it against the paired one, and [`MidiInPort`](crate::MidiInPort), the sole
+/// caller, deliberately routes around that check.
 ///
 /// Cloneable via [`Clone`] to support fundsp graph commits that duplicate
 /// nodes — the clone shares the same underlying slot so events queued
@@ -156,6 +158,8 @@ pub struct MidiReceiver {
 }
 
 impl MidiReceiver {
+    /// The [`MidiUnitId`] this receiver's mailbox is paired with, and the id
+    /// [`drain_into_snapshot`](Self::drain_into_snapshot) files events under.
     pub fn unit_id(&self) -> MidiUnitId {
         self.unit_id
     }
@@ -176,10 +180,16 @@ impl MidiReceiver {
         count
     }
 
+    /// Whether the mailbox holds at least one event. A cheap peek that does not
+    /// consume; racy against a concurrent push, so treat it as a hint rather
+    /// than a guarantee that a following `poll_into` returns non-zero.
     pub fn has_events(&self) -> bool {
         !self.slot.events.is_empty()
     }
 
+    /// Discard every pending event. Use when a unit is reset or re-purposed and
+    /// stale events would sound — note-offs are discarded too, so pair this with
+    /// whatever silences already-sounding voices.
     pub fn clear(&self) {
         while self.slot.events.pop().is_some() {}
     }
@@ -225,6 +235,8 @@ impl std::fmt::Debug for MidiBus {
 }
 
 impl MidiBus {
+    /// An empty bus with no units registered. Queuing to any id is a no-op
+    /// until [`insert`](Self::insert) attaches a sender.
     pub fn new() -> Self {
         Self::default()
     }
@@ -244,8 +256,8 @@ impl MidiBus {
     /// Returns how many were accepted — `0` for an unknown id (nothing is
     /// registered, which is legitimate), and `< events.len()` when the unit's
     /// 256-slot ring filled and the rest were dropped. That second case is the
-    /// stuck note [`MidiSender::queue`] warns about, and this used to discard the
-    /// count that reports it.
+    /// stuck note [`MidiSender::queue`] warns about, and the count is what makes
+    /// it distinguishable from the benign unknown-id case.
     pub fn queue(&self, unit_id: MidiUnitId, events: &[MidiEvent]) -> usize {
         match self.senders.get(&unit_id) {
             Some(sender) => sender.queue(events),
@@ -258,10 +270,13 @@ impl MidiBus {
         self.senders.contains_key(&unit_id)
     }
 
+    /// How many units currently have a sender registered.
     pub fn len(&self) -> usize {
         self.senders.len()
     }
 
+    /// Whether no unit is registered — every [`queue`](Self::queue) would
+    /// return `0`.
     pub fn is_empty(&self) -> bool {
         self.senders.is_empty()
     }
@@ -455,7 +470,7 @@ mod tests {
 
         assert!(receiver.has_events());
 
-        // An event for an unsubscribed unit is dropped — and now says so.
+        // An event for an unsubscribed unit is dropped, and the count says so.
         assert_eq!(
             bus.queue(MidiUnitId::new(999), &[note_on]),
             0,
@@ -465,10 +480,9 @@ mod tests {
 
     /// A full destination ring is reported, not swallowed.
     ///
-    /// This is the case the bus used to make invisible: it called
-    /// `MidiSender::queue`, which returns an accepted count precisely so a
-    /// stuck note can be noticed, and dropped it. Unknown-id and ring-full then
-    /// looked identical from the bus — both `()`.
+    /// The hazard: `MidiSender::queue` returns an accepted count precisely so a
+    /// stuck note can be noticed, and a bus that discards it makes unknown-id
+    /// and ring-full indistinguishable to the caller.
     #[test]
     fn bus_reports_a_full_destination_ring() {
         let bus = MidiBus::new();

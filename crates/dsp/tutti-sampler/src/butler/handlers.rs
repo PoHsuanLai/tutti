@@ -35,14 +35,20 @@ pub(super) struct Handles {
 
 /// Butler-thread-local state. Never shared. Plain data.
 pub(super) struct Local {
+    /// Every live region's producer half.
     pub regions: RegionMap,
+    /// Headroom multiplier on the refill threshold — a larger margin refills
+    /// earlier and more often.
     pub buffer_margin: f64,
+    /// Monotonic id source; see [`mint_region_id`](Self::mint_region_id).
     pub next_region_id: u64,
     /// Flat interleaved refill scratch. Butler-thread-local, so it may grow.
     pub interleave_buffer: Vec<f32>,
 }
 
 impl Local {
+    /// Thread-local state with no regions and a scratch buffer pre-sized for one
+    /// `base_chunk_size` refill.
     pub(super) fn new(base_chunk_size: usize) -> Self {
         Self {
             regions: RegionMap::new(),
@@ -52,12 +58,20 @@ impl Local {
         }
     }
 
+    /// The next region id, starting at 1. Monotonic and never reused, which is
+    /// what lets [`RegionMap`] skip compaction on removal.
     pub(super) fn mint_region_id(&mut self) -> RegionId {
         self.next_region_id += 1;
         RegionId(self.next_region_id)
     }
 }
 
+/// Dispatch one command on the butler thread.
+///
+/// Every arm is infallible and silently no-ops when its channel is absent or not
+/// streaming: commands race the streams they name (a `Stop` may arrive after the
+/// stream already ended), and there is no caller left to report to by the time
+/// the butler sees one.
 pub(super) fn handle_command(
     cmd: ButlerCommand,
     shared: &Handles,
@@ -158,6 +172,16 @@ fn open_stream(
     Some((meta, decoder))
 }
 
+/// Start streaming `file_path` on `channel_index` from frame `offset_samples`.
+///
+/// Probes metadata for ring sizing and the conversion ratio *without* decoding
+/// the whole file, builds the region ring at the **file's own width**, installs
+/// the reader on the channel's plan, and pins the wave in the cache for the
+/// stream's lifetime. Falls back to the whole-file `load_wave` path when the
+/// format is not seekable.
+///
+/// Silently returns when the file cannot be turned into audio at all — there is
+/// no caller left to report to on this thread.
 fn handle_stream_file(
     channel_index: usize,
     file_path: PathBuf,
@@ -223,9 +247,10 @@ fn handle_stream_file(
 
     shared.plans.entry(channel_index).or_default();
 
-    // Same derivation the in-memory tier uses (`MemorySource::set_session_sample_rate`),
-    // via the one shared constructor — this was a hand-rolled copy that had to
-    // agree with it by convention.
+    // Same derivation the in-memory tier uses
+    // (`MemorySource::set_session_sample_rate`), through the one shared
+    // constructor. Hand-rolling the division here instead would leave the two
+    // tiers agreeing only by convention.
     let src_ratio = SrcRatio::for_rates(file_sr, sample_rate);
 
     // Pin the streamed wave in the LRU cache for the stream's lifetime. On the

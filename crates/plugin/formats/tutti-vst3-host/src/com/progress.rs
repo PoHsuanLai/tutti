@@ -30,14 +30,26 @@ pub enum ProgressEvent {
     /// operation across its lifetime; `progress_type` is the raw VST3
     /// `ProgressType` value; `description` is a human-readable label.
     Started {
+        /// Identifies this operation across its lifetime; matches the `id` of
+        /// the later `Updated` and `Finished` events.
         id: u64,
+        /// The raw VST3 `ProgressType` value.
         progress_type: u32,
+        /// Human-readable label supplied by the plugin.
         description: String,
     },
     /// Progress update, normalized to `0.0..=1.0`.
-    Updated { id: u64, progress: f64 },
+    Updated {
+        /// The operation this update belongs to.
+        id: u64,
+        /// Completion fraction, `0.0..=1.0`.
+        progress: f64,
+    },
     /// The operation with this id has finished.
-    Finished { id: u64 },
+    Finished {
+        /// The operation that ended. No further events carry this id.
+        id: u64,
+    },
 }
 
 #[cfg(test)]

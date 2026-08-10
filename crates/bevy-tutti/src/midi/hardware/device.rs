@@ -8,12 +8,12 @@
 //! or by hot-plug, indistinguishably, because the engine's list is the one
 //! source either way.
 //!
-//! Both directions are covered. Output used to have no ECS surface at all, which
-//! meant the whole outbound path ([`hardware_out`](super::hardware_out),
-//! [`track_out`](super::track_out), [`clock_out`](super::clock_out)) could never
-//! be made live from an app: it drained its mailboxes into `MidiIo::send`, which
-//! pushes into a channel with no connected port and logs at `debug!`. Events
-//! left the ring and reached nothing.
+//! **Both directions are covered, and the output half is what makes the
+//! outbound path reachable at all.** Without a connected output,
+//! [`hardware_out`](super::hardware_out), [`track_out`](super::track_out) and
+//! [`clock_out`](super::clock_out) drain their mailboxes into `MidiIo::send`,
+//! which pushes into a channel with no connected port and logs at `debug!` —
+//! events leave the ring and reach nothing.
 
 use bevy_app::{App, Plugin, Update};
 use bevy_ecs::message::{Message, MessageReader, MessageWriter};
@@ -24,7 +24,11 @@ use bevy_log::warn;
 /// when the `midi-hardware` feature is compiled; claimed into the world by
 /// [`TuttiMidiPlugin`](crate::midi::plugin::TuttiMidiPlugin) from the engine handoff.
 #[derive(Resource, Clone, Debug)]
-pub struct MidiIoRes(pub tutti_midi_hardware::MidiSession);
+pub struct MidiIoRes(
+    /// The OS session. Shares its state behind an `Arc`, so this clone and the
+    /// one the RT port manager holds are the same set of open ports.
+    pub tutti_midi_hardware::MidiSession,
+);
 
 impl std::ops::Deref for MidiIoRes {
     type Target = tutti_midi_hardware::MidiSession;
@@ -36,12 +40,17 @@ impl std::ops::Deref for MidiIoRes {
 /// Fire-and-forget request: connect to a MIDI input device by name (partial match).
 #[derive(Message, Debug, Clone)]
 pub struct ConnectMidiDevice {
+    /// Matched case-insensitively as a substring of the OS device name; the
+    /// first endpoint that contains it wins.
     pub name: String,
 }
 
 /// Fire-and-forget request: disconnect a specific MIDI input device by name.
+///
+/// Named, unlike [`DisconnectMidiOutput`], because inputs are many-at-once.
 #[derive(Message, Debug, Clone)]
 pub struct DisconnectMidiDevice {
+    /// Matched the same way [`ConnectMidiDevice::name`] is.
     pub name: String,
 }
 
@@ -59,6 +68,7 @@ pub struct DisconnectMidiDevice {
 /// subsystem this layer exists to make loud.
 #[derive(Message, Debug, Clone)]
 pub struct ConnectMidiOutput {
+    /// Matched the same way [`ConnectMidiDevice::name`] is.
     pub name: String,
 }
 
@@ -71,9 +81,8 @@ pub struct DisconnectMidiOutput;
 
 /// Which half of the wire a device event is about.
 ///
-/// A host almost always cares — a disappeared *input* means a dead controller,
-/// a disappeared *output* means everything sent from now on is dropped — and
-/// before this the two were indistinguishable.
+/// A host almost always cares: a disappeared *input* means a dead controller, a
+/// disappeared *output* means everything sent from now on is dropped.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum MidiDirection {
     /// A device the app receives MIDI from.
@@ -82,14 +91,25 @@ pub enum MidiDirection {
     Output,
 }
 
+/// A device appeared or vanished, by request or by hot-plug.
+///
+/// Emitted only by [`midi_device_poll_system`], which reports what the engine's
+/// device list actually shows — so an event here means the change happened, not
+/// that it was asked for.
 #[derive(Event, Message, Clone, Debug)]
 pub enum MidiDeviceEvent {
+    /// A device is now open and carrying MIDI.
     Connected {
+        /// The device's OS-reported name.
         name: String,
+        /// Which half of the wire it is.
         direction: MidiDirection,
     },
+    /// A device is gone. Anything sent to a departed output is dropped.
     Disconnected {
+        /// The name the device was known by while connected.
         name: String,
+        /// Which half of the wire it was.
         direction: MidiDirection,
     },
 }
@@ -100,9 +120,9 @@ pub enum MidiDeviceEvent {
 /// that, in an `ArcSwap` it updates itself, and a second copy here could only
 /// disagree with it. It is the previous frame's snapshot, kept solely to diff
 /// against the current one and turn "the set changed" into per-device messages.
-///
-/// It used to be that second copy: the connect system inserted into it by hand
-/// and the 2-second poll existed partly to repair the divergence.
+/// Nothing but the poll writes it — a connect system inserting into it by hand
+/// would make it that second copy, and the poll would then exist partly to
+/// repair its own divergence.
 #[derive(Resource, Default, Debug)]
 pub struct MidiDeviceState {
     pub(crate) seen: std::collections::HashSet<String>,
@@ -112,15 +132,18 @@ pub struct MidiDeviceState {
     /// most one output, so a set would model a cardinality the engine does not
     /// have and would need a second lookup to answer "which one".
     pub(crate) seen_output: Option<String>,
+    /// When the last poll ran. `None` forces the next one, which is how a
+    /// serviced request gets reported on its own frame instead of up to two
+    /// seconds later.
     pub(crate) last_check: Option<std::time::Instant>,
 }
 
 /// Service connect/disconnect requests against the OS port manager.
 ///
 /// Emits no [`MidiDeviceEvent`] itself — [`midi_device_poll_system`] observes
-/// what actually changed and reports it. A request that the driver silently
-/// declines therefore produces no event, which is the honest outcome; announcing
-/// a connection the engine does not have was the previous behaviour.
+/// what actually changed and reports it. A request the driver silently declines
+/// therefore produces no event, which is the honest outcome — announcing a
+/// connection the engine does not have would be worse than silence.
 pub fn midi_device_connect_system(
     midi_io: Option<Res<super::device::MidiIoRes>>,
     mut connect_events: MessageReader<ConnectMidiDevice>,
@@ -189,7 +212,7 @@ pub fn midi_device_poll_system(
     }
     state.last_check = Some(now);
 
-    // The engine's own list is the truth; `seen` is only what we reported last.
+    // The engine's own list is the truth; `seen` is only what was reported last.
     let live: std::collections::HashSet<String> =
         midi_io.0.connected_input_names().into_iter().collect();
 

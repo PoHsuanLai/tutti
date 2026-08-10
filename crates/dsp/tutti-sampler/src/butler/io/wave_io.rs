@@ -62,11 +62,16 @@ pub(crate) fn wave_frame_into(wave: &Wave, idx: usize, out: &mut [f32]) {
     fold_frame(&src[..n], out);
 }
 
-/// Wrap `pos` back into `[start, end)` when it has run past the end.
+/// Wrap `pos` back into `[start, end)` when it has run past the end. All three
+/// are file **frames**.
 ///
 /// Modulo, not a single subtraction: at high varispeed one advance can overshoot
 /// a short loop by more than its own length, and subtracting once would land
-/// outside the region. Callers guarantee `end > start`.
+/// outside the region.
+///
+/// # Panics
+///
+/// Callers guarantee `end > start`; an empty range divides by zero.
 #[inline]
 pub(crate) fn wrap_into(pos: usize, start: usize, end: usize) -> usize {
     if pos >= end {
@@ -77,9 +82,12 @@ pub(crate) fn wrap_into(pos: usize, start: usize, end: usize) -> usize {
 }
 
 /// Wrap `pos` into the half-open loop range if it has run past the end.
-/// `loop_range` is `(start, end)` in samples; `None` (or an empty range) is the
-/// identity. The single source of truth for the loop-wrap arithmetic shared by
-/// [`WaveIn`] and the streaming/whole-file forward refills.
+///
+/// `pos` and `loop_range` are file **frames**; `None`, or a range that is empty
+/// or inverted, is the identity — which is what makes this safe to call where
+/// [`wrap_into`] would divide by zero. The single source of truth for the
+/// loop-wrap arithmetic shared by [`WaveIn`] and the streaming/whole-file
+/// forward refills.
 #[inline]
 pub(crate) fn wrap_position(pos: usize, loop_range: Option<(u64, u64)>) -> usize {
     match loop_range {
@@ -91,17 +99,15 @@ pub(crate) fn wrap_position(pos: usize, loop_range: Option<(u64, u64)>) -> usize
 /// A forward reader over a resident `Wave`, reading from an internal cursor
 /// with optional loop wrap. Past the end (with no loop) it yields silence, so it
 /// is an *unbounded* source — the caller bounds the transfer by the size of the
-/// scratch buffer it fills, mirroring the old zero-pad-to-`chunk_size` fill.
+/// scratch buffer it fills.
 ///
-/// # Deliberately NOT an [`AudioIn`], and this time not because of the width
+/// # Deliberately NOT an [`AudioIn`], and not because of the width
 ///
-/// `WaveIn` and [`RegionOut`](crate::butler::prefetch::RegionOut) both used to
-/// implement the engine's I/O traits and both dropped the impls when the ring
-/// went to a runtime width, because `AudioIn`/`AudioOut` fixed the frame width
-/// as a const parameter. **That blocker is gone** — the traits now carry a
-/// runtime [`ChannelLayout`] — and `RegionOut` has re-adopted `AudioOut`
-/// accordingly. `WaveIn` has not, for an unrelated reason that the const was
-/// masking.
+/// Width is no obstacle: [`AudioIn`](tutti_core::AudioIn) and
+/// [`AudioOut`](tutti_core::AudioOut) carry a runtime [`ChannelLayout`], which is
+/// exactly why [`RegionOut`](crate::butler::prefetch::RegionOut) — the sink at
+/// the other end of this refill — does implement `AudioOut`. `WaveIn` stays
+/// inherent for a different reason, about what a short count *means*.
 ///
 /// [`AudioIn::poll_into`](tutti_core::AudioIn::poll_into)'s contract is entirely
 /// about what a **short or zero count means**: `0` is either "the producer has
@@ -137,11 +143,20 @@ pub(crate) struct WaveIn<'w> {
     /// [`wave_frame_into`]'s policy reconciles per frame.
     channels: ChannelLayout,
     cursor: usize,
-    /// `(start, end)` half-open loop bounds in samples, if looping.
+    /// `(start, end)` half-open loop bounds in **frames**, if looping.
+    /// Pre-validated non-empty at construction.
     loop_bounds: Option<(usize, usize)>,
 }
 
 impl<'w> WaveIn<'w> {
+    /// A cursor over `wave` starting at frame `start`, emitting frames at
+    /// `channels` wide.
+    ///
+    /// `loop_range` is `(start, end)` in file **frames**, half-open; an empty or
+    /// inverted range is treated as no loop, so the reader runs off the end into
+    /// silence instead of wrapping on a degenerate region. `channels` is floored
+    /// at one — the output width is independent of `wave.channels()`, which
+    /// [`wave_frame_into`]'s policy reconciles per frame.
     pub(crate) fn new(
         wave: &'w Wave,
         start: usize,
@@ -163,7 +178,7 @@ impl<'w> WaveIn<'w> {
 
     /// Fill `out` with interleaved frames at this source's width, advancing the
     /// cursor (with loop wrap). Always fills the whole buffer — past the end
-    /// with no loop that means silence, mirroring the old zero-pad behaviour.
+    /// with no loop that means zero-padded silence.
     ///
     /// # Why the return is not an `AudioIn::poll_into` count
     ///

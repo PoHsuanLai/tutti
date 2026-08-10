@@ -58,7 +58,10 @@ pub enum ExportTarget {
     /// the whole signal is held in memory so a gain can be measured from it.
     /// The choice is visible at the call site because the cost differs.
     File {
+        /// Where to write. A cancelled render may leave a partial file here.
         path: PathBuf,
+        /// `None` streams; `Some` measures a gain over the whole signal first,
+        /// which costs holding it all in memory.
         normalize: Option<Normalize>,
     },
     /// Render into memory, one `Vec` per channel.
@@ -74,7 +77,9 @@ pub enum ExportTarget {
 /// handle the result.
 #[derive(Component)]
 pub struct ExportRequest {
+    /// Which audio to render — the whole mix, or one node in isolation.
     pub source: ExportSource,
+    /// Where the rendered audio goes.
     pub target: ExportTarget,
     /// Rate, duration, format, bit depth, channel width, resample, dither.
     ///
@@ -129,7 +134,7 @@ impl ExportRequest {
     ///
     /// Sets both ends from one argument, because they are the same object —
     /// which is the only configuration that is ever correct. Takes anything that
-    /// is both a [`RenderClock`] and a [`Timeline`]; `OfflineTimeline` is the
+    /// is both a [`RenderClock`] and a `Timeline`; `OfflineTimeline` is the
     /// usual one.
     pub fn on_timeline<T>(mut self, timeline: Arc<T>) -> Self
     where
@@ -227,7 +232,10 @@ pub enum ExportOutput {
 /// ```
 #[derive(EntityEvent, Debug)]
 pub struct ExportDone {
+    /// The request entity. Still alive and no longer carrying
+    /// [`ExportInFlight`]; the caller despawns it.
     pub entity: Entity,
+    /// What the render produced, or why it failed.
     pub result: tutti_export::Result<ExportOutput>,
 }
 
@@ -252,7 +260,11 @@ pub struct ExportDone {
 /// `None` — that net keeps its live transport bindings, which the caller's own
 /// clock drives.
 pub struct PreparedNet<'a> {
+    /// The net about to be rendered. Mutate it here or not at all — after this
+    /// it moves to the task pool.
     pub net: &'a mut tutti_core::dsp::Net,
+    /// The render's offline transport, `Some` only for [`ExportSource::Node`].
+    /// Voices built in the hook must bind to *this*, not the live transport.
     pub ctx: Option<&'a OfflineTransport>,
 }
 
@@ -264,10 +276,10 @@ pub struct PreparedNet<'a> {
 /// from inside itself — the back-channel the projection arrow is not supposed
 /// to have.
 ///
-/// This is a plain boxed closure rather than a registered trait object. An
-/// earlier design had a `PopulateNet` trait behind a `NetPopulator` resource;
-/// that was one filler for the whole app, so two plugins that both needed one
-/// silently clobbered each other, and forgetting to register it rendered
-/// silence with no diagnostic. Attaching it to the *request* means the caller
-/// that knows what this net needs is the one that says so.
+/// A plain boxed closure rather than a trait object behind a resource. A
+/// registered filler would be one filler for the whole app: two plugins that
+/// both needed one would silently clobber each other, and forgetting to
+/// register it renders silence with no diagnostic. Attaching the hook to the
+/// *request* means the caller that knows what this net needs is the one that
+/// says so.
 pub type PrepareNet = Box<dyn Fn(PreparedNet, &World) + Send + Sync>;

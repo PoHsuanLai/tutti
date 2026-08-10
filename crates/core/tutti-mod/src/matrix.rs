@@ -99,6 +99,8 @@ impl Default for ModMatrix {
 }
 
 impl ModMatrix {
+    /// An empty matrix — no targets, no sources, no edges. Layer keys are
+    /// handed out from `1`, leaving [`LayerKey::AUTOMATION`] (`0`) reserved.
     pub fn new() -> Self {
         Self {
             bus: Arc::new(ModBus::new()),
@@ -274,8 +276,8 @@ mod tests {
         // The node/plugin case: a target whose value lives in an atomic the
         // *consumer* owns (a filter's `frequency()`, say). `add_target`
         // registers it; the LFO drives that atomic through the matrix.
-        // (Here we stand in for a node with a bare `AtomicF32` + `with_mirror`,
-        // exactly what `ModParams::mod_target` builds.)
+        // A bare `AtomicF32` + `with_mirror` stands in for the node here —
+        // exactly what `ModParams::mod_target` builds.
         let param = Arc::new(atomic_float::AtomicF32::new(1000.0));
         let node_target: Arc<dyn ModTarget> = Arc::new(AtomicTarget::with_mirror(
             1000.0,
@@ -352,8 +354,8 @@ mod tests {
             .depth(1.0); // +1 at phase 0
         let mut driver = m.build();
         frame(&mut driver, 0.0);
-        // Both contribute independently: +1 + +1 = +2 (clamped to max 2.0). If
-        // the keys collided, we'd see only +1.
+        // Both contribute independently: +1 + +1 = +2 (clamped to max 2.0).
+        // Colliding keys would show only +1.
         assert!((t.value() - 2.0).abs() < 1e-6, "got {}", t.value());
     }
 

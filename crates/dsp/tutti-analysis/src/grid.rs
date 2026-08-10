@@ -29,11 +29,14 @@ macro_rules! grid_newtype {
         pub struct $name(pub usize);
 
         impl $name {
+            #[doc = concat!("Wrap a raw `usize` as a [`", stringify!($name), "`].")]
             #[inline]
             pub const fn new(v: usize) -> Self {
                 Self(v)
             }
 
+            /// The wrapped `usize`. Differences and offsets are taken in this
+            /// scalar space, never between two of these newtypes.
             #[inline]
             pub const fn get(self) -> usize {
                 self.0
@@ -111,7 +114,9 @@ pub struct Grid<T> {
 impl<T> Grid<T> {
     /// Wrap `data` as a `frames × bins` grid.
     ///
-    /// Fails unless `data.len() == frames * bins`.
+    /// # Errors
+    /// Returns [`AnalysisError::GridShapeMismatch`] unless
+    /// `data.len() == frames * bins`.
     pub fn new(data: Vec<T>, frames: FrameCount, bins: BinCount) -> Result<Self> {
         let expected = frames.get() * bins.get();
         if data.len() != expected {
@@ -124,16 +129,19 @@ impl<T> Grid<T> {
         Ok(Self { data, frames, bins })
     }
 
+    /// Row count — the time axis.
     #[inline]
     pub fn frames(&self) -> FrameCount {
         self.frames
     }
 
+    /// Column count — the frequency axis.
     #[inline]
     pub fn bins(&self) -> BinCount {
         self.bins
     }
 
+    /// Whether the backing buffer holds no values at all.
     #[inline]
     pub fn is_empty(&self) -> bool {
         self.data.is_empty()
@@ -141,13 +149,14 @@ impl<T> Grid<T> {
 
     /// The value at `(frame, bin)`.
     ///
-    /// Panics if either coordinate is out of range — index semantics, like
-    /// slice indexing. Use [`get`](Self::get) to check.
+    /// # Panics
+    /// If either coordinate is out of range — index semantics, like slice
+    /// indexing. Use [`get`](Self::get) to check instead.
     ///
     /// Both axes are checked, not just the flattened offset. A bin past the
     /// end of its frame lands *inside* the backing buffer, so a flat bounds
-    /// check would silently return a neighbouring frame's value instead of
-    /// panicking — which is the failure `get` was written to document.
+    /// check silently returns a neighbouring frame's value instead of
+    /// panicking.
     #[inline]
     pub fn at(&self, frame: FrameIndex, bin: BinIndex) -> &T {
         assert!(
@@ -159,6 +168,8 @@ impl<T> Grid<T> {
         &self.data[self.offset(frame, bin)]
     }
 
+    /// The value at `(frame, bin)`, or `None` if either coordinate is out of
+    /// range on its own axis. The checked counterpart to [`at`](Self::at).
     #[inline]
     pub fn get(&self, frame: FrameIndex, bin: BinIndex) -> Option<&T> {
         if frame.get() >= self.frames.get() || bin.get() >= self.bins.get() {
@@ -167,6 +178,8 @@ impl<T> Grid<T> {
         self.data.get(self.offset(frame, bin))
     }
 
+    /// Mutable access to `(frame, bin)`, or `None` if either coordinate is out
+    /// of range on its own axis.
     #[inline]
     pub fn get_mut(&mut self, frame: FrameIndex, bin: BinIndex) -> Option<&mut T> {
         if frame.get() >= self.frames.get() || bin.get() >= self.bins.get() {
@@ -177,12 +190,19 @@ impl<T> Grid<T> {
     }
 
     /// All bins of one frame.
+    ///
+    /// # Panics
+    /// If `frame` is past the last row.
     #[inline]
     pub fn row(&self, frame: FrameIndex) -> &[T] {
         let start = frame.get() * self.bins.get();
         &self.data[start..start + self.bins.get()]
     }
 
+    /// All bins of one frame, mutably.
+    ///
+    /// # Panics
+    /// If `frame` is past the last row.
     #[inline]
     pub fn row_mut(&mut self, frame: FrameIndex) -> &mut [T] {
         let start = frame.get() * self.bins.get();
@@ -215,11 +235,14 @@ impl<T> Grid<T> {
         &self.data
     }
 
+    /// The backing buffer mutably, row-major. The shape is fixed — writing
+    /// through this may change values but never the length.
     #[inline]
     pub fn as_mut_slice(&mut self) -> &mut [T] {
         &mut self.data
     }
 
+    /// Move the row-major buffer out, dropping the shape with it.
     #[inline]
     pub fn into_vec(self) -> Vec<T> {
         self.data

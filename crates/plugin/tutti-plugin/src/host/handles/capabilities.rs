@@ -67,8 +67,8 @@ pub trait HostParams: Send + Sync {
     /// The clamp is not merely documentation here. The subprocess path clamps
     /// again on receipt, but the **in-process** backends
     /// (`vst2_in_process`, and any other that owns the plugin directly) write
-    /// straight through to the plugin, so before this signature there was no
-    /// point on that path where an out-of-range or NaN value was stopped.
+    /// straight through to the plugin. Without the type, that path has no point
+    /// at which an out-of-range or NaN value is stopped.
     fn set_parameter_value(&self, id: ParamAddress, value: Normalized);
 
     /// The plugin's own display string for `value` — `"800 Hz"`, `"Bandpass"`.
@@ -129,6 +129,7 @@ pub trait HostParams: Send + Sync {
 /// Opaque preset-chunk save / load. Raw `Vec<u8>` — the bytes are the plugin's
 /// business (the same shape the loader-side `PluginState::get_state` returns).
 pub trait HostState: Send + Sync {
+    /// Serialize the plugin's current state, or `None` if it will not.
     fn save_state(&self) -> Option<Vec<u8>>;
 
     /// Restore a blob previously produced by [`save_state`](Self::save_state).
@@ -136,15 +137,12 @@ pub trait HostState: Send + Sync {
     /// Returns [`Result`] rather than `()` because a plugin declining a chunk is
     /// **routine**, not exceptional: it is what happens when a preset saved by
     /// an older build is loaded into a newer one, when a file is truncated, or
-    /// when a chunk from a different plugin is fed in by mistake. Every layer
-    /// below this already knew — `PluginState::set_state` returns a `Result` and
-    /// the subprocess formats `"Failed to load state: {e}"` — and the outcome
-    /// was discarded here, at the last step.
+    /// when a chunk from a different plugin is fed in by mistake.
     ///
-    /// The failure that motivated the change is silent and destructive: open a
-    /// project, the plugin rejects its state, and the DAW shows a loaded plugin
-    /// sitting at defaults while telling the user nothing. A caller must decide
-    /// what to do with a failure; it must not be possible to not notice one.
+    /// Discarding that outcome is silent and destructive: open a project, the
+    /// plugin rejects its state, and the DAW shows a loaded plugin sitting at
+    /// defaults while telling the user nothing. A caller must decide what to do
+    /// with a failure; it must not be possible to not notice one.
     ///
     /// [`Result`]: std::result::Result
     fn load_state(&self, data: &[u8]) -> Result<(), StateError>;
@@ -159,6 +157,8 @@ pub trait HostState: Send + Sync {
 /// the trait stays object-safe; the ergonomic `HasWindowHandle` entry lives on
 /// [`PluginHandle::open_editor`](super::control_handle::PluginHandle::open_editor).
 pub trait HostEditor: Send + Sync {
+    /// Embed the plugin's editor as a child of `parent`, returning the size it
+    /// asked for.
     fn open_editor(&self, parent: *mut c_void) -> Result<EditorSize, EditorError>;
 
     /// Open the editor as a **floating** window the plugin creates and owns.
@@ -178,11 +178,16 @@ pub trait HostEditor: Send + Sync {
         ))
     }
 
+    /// Tear down the editor, whether embedded or floating.
     fn close_editor(&self);
 
     /// Call periodically (~30 Hz) while the editor is open.
     fn editor_idle(&self);
 
+    /// What this editor supports — resizing, DPI scaling, and the rest.
+    ///
+    /// Defaulted so a backend that embeds but negotiates nothing need not
+    /// override it.
     fn editor_capabilities(&self) -> EditorCapabilities {
         EditorCapabilities::default()
     }
@@ -194,6 +199,10 @@ pub trait HostEditor: Send + Sync {
         ))
     }
 
+    /// Take a pending plugin-initiated resize request, if one is queued.
+    ///
+    /// Polled rather than delivered by callback: the request arrives on the
+    /// plugin's own thread, and the host resizes its window on the UI thread.
     fn poll_editor_resize_request(&self) -> Option<EditorSize> {
         None
     }
@@ -291,7 +300,7 @@ pub trait HostPresets: Send + Sync {
     /// write paths.
     ///
     /// The result is returned rather than swallowed for the reason
-    /// [`HostRenderMode::set_render_mode`] gives: a refusal changes what the
+    /// `HostRenderMode::set_render_mode` gives: a refusal changes what the
     /// caller must do next — leave the UI selection where it was, rather than
     /// move it to a preset the plugin never loaded.
     fn load_preset(&self, id: &PresetId) -> bool;

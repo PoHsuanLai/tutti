@@ -1,3 +1,5 @@
+//! Compressor with external sidechain, soft knee and makeup gain.
+
 use tutti_core::Arc;
 use tutti_core::AtomicF32;
 use tutti_core::{dsp::DEFAULT_SR, AudioUnit, BufferMut, BufferRef, SignalFrame};
@@ -60,7 +62,8 @@ impl CompressorCore {
 
     /// The sidechain peak the detector last saw. An `Amplitude`, not a
     /// unitless envelope — `GateCore::gate_level` has the same shape and name
-    /// but is a 0..1 open-fraction, and the two used to be swappable.
+    /// but is a 0..1 open-fraction, and the types are what stop the two being
+    /// swapped.
     pub fn envelope_level(&self) -> Amplitude {
         Amplitude(self.envelope)
     }
@@ -118,11 +121,13 @@ impl CompressorCore {
 /// The audio inputs (`0..ch`) come first, then the sidechain inputs
 /// (`ch..2*ch`). For audio-rate threshold modulation the node can grow **one
 /// optional param-input port after all audio+sidechain inputs** (see
-/// [`Compressor::with_param_inputs`]): if [`Compressor::mod_threshold`] is set,
-/// the threshold port sits at index `2*ch` (e.g. index 4 for a stereo
-/// compressor) and overrides the threshold atomic per sample. Absent → a plain
-/// `2*ch`-in node, bit-identical output to the unmodulated path and zero added
-/// cost (the common case).
+/// [`Compressor::with_param_inputs`]): the threshold port sits at index `2*ch`
+/// — index 4 for a stereo compressor — and overrides the threshold atomic per
+/// sample, in [`Db`]. Absent, the node is a plain `2*ch`-in node with zero
+/// added cost, which is the common case.
+///
+/// Ask [`threshold_port`](Self::threshold_port) rather than computing the
+/// index: it moves with the width.
 pub struct Compressor {
     core: CompressorCore,
     channels: ChannelLayout,
@@ -133,7 +138,17 @@ pub struct Compressor {
 }
 
 impl Compressor {
-    /// Mono + mono sidechain: 2 inputs, 1 output.
+    /// Mono + mono sidechain: 2 inputs (audio, sidechain), 1 output.
+    ///
+    /// `threshold_db` is the level in [`Db`] above which reduction begins —
+    /// typically negative, since 0 dB is full scale. `ratio` is the
+    /// [`CompressionRatio`]: `4.0` means 4 dB in yields 1 dB out above the
+    /// threshold, and it is clamped to at least `1.0` (no expansion). `attack`
+    /// and `release` are [`Seconds`] envelope times — short attacks catch
+    /// transients, long releases sound smoother.
+    ///
+    /// Knee is hard and makeup is 0 dB; add them with
+    /// [`with_soft_knee`](Self::with_soft_knee) / [`with_makeup`](Self::with_makeup).
     pub fn mono(
         threshold_db: impl Into<Db>,
         ratio: impl Into<CompressionRatio>,
@@ -143,7 +158,11 @@ impl Compressor {
         Self::with_channels(threshold_db, ratio, attack, release, 1)
     }
 
-    /// Stereo + stereo sidechain: 4 inputs, 2 outputs, linked gain.
+    /// Stereo + stereo sidechain: 4 inputs (L, R, SC-L, SC-R), 2 outputs.
+    ///
+    /// The gain is **linked** — one reduction computed from the loudest
+    /// sidechain channel and applied to both — so the stereo image does not
+    /// shift when one side is louder. Parameters are as [`mono`](Self::mono).
     pub fn stereo(
         threshold_db: impl Into<Db>,
         ratio: impl Into<CompressionRatio>,
@@ -153,7 +172,11 @@ impl Compressor {
         Self::with_channels(threshold_db, ratio, attack, release, 2)
     }
 
-    /// Arbitrary channel count (e.g. 4 for quad, 6 for 5.1).
+    /// Arbitrary channel count — 4 for quad, 6 for 5.1 — clamped to at least 1.
+    ///
+    /// `N` audio inputs, then `N` sidechain inputs, then `N` outputs, with one
+    /// **linked** gain computed from the loudest sidechain channel. Parameters
+    /// are as [`mono`](Self::mono).
     pub fn with_channels(
         threshold_db: impl Into<Db>,
         ratio: impl Into<CompressionRatio>,
@@ -192,16 +215,33 @@ impl Compressor {
             .then_some(2 * self.channels.count() as usize)
     }
 
+    /// Softens the threshold over a `knee_db`-wide band in [`Db`], floored at
+    /// 0.
+    ///
+    /// The ratio eases in across the knee rather than switching on at the
+    /// threshold, which is what makes compression on vocals and busses sound
+    /// gradual instead of grabbing. `0.0` is a hard knee — the default. Typical
+    /// musical values are 6–12 dB; the band straddles the threshold, so half
+    /// sits below it.
     pub fn with_soft_knee(mut self, knee_db: impl Into<Db>) -> Self {
         self.core = self.core.with_soft_knee(knee_db);
         self
     }
 
+    /// Adds `makeup_db` of output gain in [`Db`], applied after reduction.
+    ///
+    /// Compression lowers the peaks, so makeup restores the perceived level —
+    /// it is what makes a compressed signal comparable to the uncompressed one.
+    /// Applied unconditionally, including when nothing is being reduced.
     pub fn with_makeup(mut self, makeup_db: impl Into<Db>) -> Self {
         self.core = self.core.with_makeup(makeup_db);
         self
     }
 
+    /// The audio channel width this compressor was built for.
+    ///
+    /// It has `2 * channels` inputs (audio then sidechain) and `channels`
+    /// outputs, plus a threshold port if one was requested.
     pub fn channels(&self) -> u8 {
         self.channels.count() as u8
     }
@@ -213,40 +253,70 @@ impl Compressor {
         self.channels
     }
 
+    /// The shared threshold cell in [`Db`] — the level above which reduction
+    /// begins.
+    ///
+    /// **A present threshold param-input port overrides this per sample.** Read
+    /// once per sample otherwise. Shared across clones.
     pub fn threshold(&self) -> Arc<AtomicF32> {
         self.core.threshold.threshold.as_atomic()
     }
 
+    /// The shared [`CompressionRatio`] cell: dB in per dB out above the
+    /// threshold.
+    ///
+    /// Writing the raw cell bypasses [`set_ratio`](Self::set_ratio)'s clamp to
+    /// at least `1.0`; below that a compressor would expand.
     pub fn ratio(&self) -> Arc<AtomicF32> {
         self.core.ratio.as_atomic()
     }
 
+    /// The shared attack-time cell in [`Seconds`] — how fast the envelope rises
+    /// toward a new, louder level.
+    ///
+    /// Shorter catches transients, longer lets them through. Coefficients are
+    /// recomputed once per block from this.
     pub fn attack_time(&self) -> Arc<AtomicF32> {
         self.core.timing.attack.as_atomic()
     }
 
+    /// The shared release-time cell in [`Seconds`] — how fast the envelope
+    /// falls once the signal drops.
+    ///
+    /// Too short pumps audibly on sustained material; longer sounds smoother.
     pub fn release_time(&self) -> Arc<AtomicF32> {
         self.core.timing.release.as_atomic()
     }
 
+    /// The shared makeup-gain cell in [`Db`], applied after reduction.
     pub fn makeup_gain(&self) -> Arc<AtomicF32> {
         self.core.makeup_db.as_atomic()
     }
 
+    /// The shared knee-width cell in [`Db`]. `0.0` is a hard knee.
     pub fn knee_width(&self) -> Arc<AtomicF32> {
         self.core.threshold.knee.as_atomic()
     }
 
+    /// Sets the threshold in [`Db`], unclamped.
+    ///
+    /// With a threshold param-input port present this sets the *base* the port
+    /// overrides, not what the compressor runs at.
     pub fn set_threshold(&self, db: impl Into<Db>) {
         self.core.threshold.threshold.store(db.into());
     }
 
+    /// Sets the [`CompressionRatio`], clamped to at least `1.0`.
+    ///
+    /// `1.0` is no compression; higher reduces more. The clamp is what keeps a
+    /// compressor from becoming an expander.
     pub fn set_ratio(&self, ratio: impl Into<CompressionRatio>) {
         self.core
             .ratio
             .store(CompressionRatio::new_clamped(ratio.into().get()));
     }
 
+    /// Sets the attack time in [`Seconds`], floored at 0.
     pub fn set_attack(&self, seconds: impl Into<Seconds>) {
         self.core
             .timing
@@ -254,6 +324,7 @@ impl Compressor {
             .store(Seconds(seconds.into().get().max(0.0)));
     }
 
+    /// Sets the release time in [`Seconds`], floored at 0.
     pub fn set_release(&self, seconds: impl Into<Seconds>) {
         self.core
             .timing
@@ -261,14 +332,27 @@ impl Compressor {
             .store(Seconds(seconds.into().get().max(0.0)));
     }
 
+    /// Sets the makeup gain in [`Db`], applied after reduction.
     pub fn set_makeup(&self, db: impl Into<Db>) {
         self.core.makeup_db.store(db.into());
     }
 
+    /// The gain reduction currently applied, in [`Db`] — a **measurement**, for
+    /// driving a reduction meter.
+    ///
+    /// [`Db::UNITY`] means nothing is being reduced; larger values mean more
+    /// reduction. Reflects the smoothed envelope, so it follows the attack and
+    /// release times rather than the instantaneous level.
     pub fn gain_reduction_db(&self) -> Db {
         self.core.gain_reduction_db()
     }
 
+    /// The sidechain peak the detector last saw, as an [`Amplitude`] — a
+    /// **measurement**, for driving an input meter.
+    ///
+    /// This is the level *fed to* the detector, before any gain decision.
+    /// Distinct from `Gate`'s similarly-shaped reading, which is an open
+    /// fraction rather than a level; the unit types are what keep them apart.
     pub fn envelope_level(&self) -> Amplitude {
         self.core.envelope_level()
     }

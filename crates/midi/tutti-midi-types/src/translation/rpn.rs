@@ -60,6 +60,11 @@ pub struct Midi1ToMidi2Translator {
 }
 
 impl Midi1ToMidi2Translator {
+    /// Builds a translator with every channel's (N)RPN accumulator empty.
+    ///
+    /// The state is per channel and persists across events, so one translator
+    /// must serve one MIDI stream for its whole life — sharing it between two
+    /// sources interleaves their Data Entry runs and mixes their parameters.
     pub fn new() -> Self {
         Self::default()
     }

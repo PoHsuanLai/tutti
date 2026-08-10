@@ -33,13 +33,12 @@ use super::MidiEvent;
 /// plausible-but-wrong value (note 200 → 72). No-op in release, where the
 /// `& 0x7F` at the call site keeps the emitted UMP valid.
 ///
-/// Group and channel used to be checked here too. They no longer can be:
-/// [`MidiGroup`] and [`MidiChannel`] mask on construction, so by the time one
-/// reaches a constructor it is in range by type. That is a strict improvement
-/// even though it removes two assertions — the assertions could only catch an
+/// Group and channel need no equivalent: [`MidiGroup`] and [`MidiChannel`] mask
+/// on construction, so both are in range by type before a constructor sees them.
+/// A width check would not have been worth much anyway — it can only catch an
 /// out-of-*range* group or channel, never a group and channel *transposed*,
 /// which is the error that actually happens and which both fields being 4 bits
-/// made invisible to any width check.
+/// makes invisible to any width check.
 #[inline]
 fn debug_assert_note(note: u8) {
     debug_assert!(note < 128, "MIDI note {note} out of range (0..128)");
@@ -74,9 +73,10 @@ impl MidiEvent {
     ///
     /// This is the one MIDI-1→2 upconvert used across the engine's edges, so a
     /// note delivered via this helper carries the same native 16-bit value as one
-    /// promoted from the wire — 0 → 0, 64 → 0x8000, 127 → 65535. (It previously
-    /// used a lossy `<< 9` that mapped 127 → 65024; unified here to the spec
-    /// scaler so the default delivery path isn't the lossy one.)
+    /// promoted from the wire — 0 → 0, 64 → 0x8000, 127 → 65535.
+    ///
+    /// Do not substitute a `<< 9`: it is the obvious widening and it maps 127 to
+    /// 65024, so full-scale velocity stops being full scale.
     #[inline]
     pub fn note_on_7bit(group: MidiGroup, channel: MidiChannel, note: u8, velocity_u7: u8) -> Self {
         Self::note_on(
@@ -87,6 +87,18 @@ impl MidiEvent {
         )
     }
 
+    /// A MIDI 2.0 Channel Voice **Note Off**. `velocity` is the **16-bit**
+    /// release velocity — pass `0` if the source has none.
+    ///
+    /// There is no velocity-0 folding to do here: that is a MIDI 1.0 idiom which
+    /// [`normalize`](crate::normalize()) resolves on the way in, so a MIDI 2.0
+    /// note-off is always an explicit one.
+    ///
+    /// # Panics
+    ///
+    /// Debug builds assert `note < 128`. Release masks to 7 bits, which turns an
+    /// out-of-range note into a plausible wrong one — see
+    /// [`note_on`](Self::note_on).
     #[inline]
     pub fn note_off(group: MidiGroup, channel: MidiChannel, note: u8, velocity: u16) -> Self {
         use midi2::channel_voice2::NoteOff;
@@ -99,20 +111,33 @@ impl MidiEvent {
         Self::from_ump(0, m.data())
     }
 
+    /// A MIDI 2.0 Channel Voice **Control Change**. `value` is the full **32-bit**
+    /// MIDI-2 field, not a 7-bit 0–127.
+    ///
+    /// A 7-bit CC from a MIDI 1.0 source must be widened first — see
+    /// [`crate::convert`]. Passing `64` raw sets the controller to roughly
+    /// 0.000001 of full scale rather than to centre.
     #[inline]
     pub fn cc(group: MidiGroup, channel: MidiChannel, cc: CCNumber, value: u32) -> Self {
         use midi2::channel_voice2::ControlChange;
         let mut m = ControlChange::<[u32; 2]>::new();
         m.set_group(u4::new(group.get()));
         m.set_channel(u4::new(channel.get()));
-        // `.get()` is a wire boundary: `u7::new` wants the raw 7-bit byte.
-        // Already in range by type, so the old `debug_assert!`/`& 0x7F` here
-        // are both gone — `CCNumber::new` did the masking.
+        // `.get()` is a wire boundary: `u7::new` wants the raw 7-bit byte. No
+        // assert or mask is needed — `CCNumber::new` already did the masking, so
+        // the value is in range by type.
         m.set_control(u7::new(cc.get()));
         m.set_control_change_data(value);
         Self::from_ump(0, m.data())
     }
 
+    /// A MIDI 2.0 Channel Voice **Pitch Bend**, applying to every note on the
+    /// channel.
+    ///
+    /// `bend` is **32-bit bipolar**: centre is `0x8000_0000`, not `0`. The
+    /// semitone span it maps to is set out of band by RPN 0
+    /// ([`PitchBendSensitivity`](crate::PitchBendSensitivity)), so the same value
+    /// bends by different amounts on differently-configured receivers.
     #[inline]
     pub fn pitch_bend(group: MidiGroup, channel: MidiChannel, bend: u32) -> Self {
         use midi2::channel_voice2::ChannelPitchBend;
@@ -123,6 +148,15 @@ impl MidiEvent {
         Self::from_ump(0, m.data())
     }
 
+    /// A MIDI 2.0 **Per-Note Pitch Bend**, scoped to one sounding note.
+    ///
+    /// `bend` is 32-bit bipolar, centre `0x8000_0000`, like
+    /// [`pitch_bend`](Self::pitch_bend). This is what MIDI 2.0 gives natively and
+    /// MPE has to spend a whole channel per note to approximate.
+    ///
+    /// # Panics
+    ///
+    /// Debug builds assert `note < 128`.
     #[inline]
     pub fn per_note_pitch_bend(
         group: MidiGroup,
@@ -140,6 +174,19 @@ impl MidiEvent {
         Self::from_ump(0, m.data())
     }
 
+    /// A MIDI 2.0 Channel Voice **Program Change**, with an optional bank.
+    ///
+    /// `bank` is the 14-bit value as `MSB << 7 | LSB`, masked to range. `None`
+    /// clears the message's bank-valid bit, which means "keep the current bank" —
+    /// distinct from `Some(0)`, which selects bank 0.
+    ///
+    /// MIDI 2.0 carries program and bank in *one* message, so the MIDI 1.0
+    /// three-message CC 0 / CC 32 / Program Change sequence cannot be split
+    /// across a block boundary here.
+    ///
+    /// # Panics
+    ///
+    /// Debug builds assert `program < 128`.
     #[inline]
     pub fn program_change(
         group: MidiGroup,
@@ -160,6 +207,11 @@ impl MidiEvent {
         Self::from_ump(0, m.data())
     }
 
+    /// A MIDI 2.0 Channel Voice **Channel Pressure** (mono aftertouch), applying
+    /// to every note on the channel.
+    ///
+    /// `pressure` is 32-bit unipolar, full scale `u32::MAX`. For per-note
+    /// aftertouch use [`poly_pressure`](Self::poly_pressure).
     #[inline]
     pub fn channel_pressure(group: MidiGroup, channel: MidiChannel, pressure: u32) -> Self {
         use midi2::channel_voice2::ChannelPressure;
@@ -170,6 +222,14 @@ impl MidiEvent {
         Self::from_ump(0, m.data())
     }
 
+    /// A MIDI 2.0 Channel Voice **Poly Pressure** (per-note aftertouch),
+    /// addressing one note by number.
+    ///
+    /// `pressure` is 32-bit unipolar, full scale `u32::MAX`.
+    ///
+    /// # Panics
+    ///
+    /// Debug builds assert `note < 128`.
     #[inline]
     pub fn poly_pressure(group: MidiGroup, channel: MidiChannel, note: u8, pressure: u32) -> Self {
         use midi2::channel_voice2::KeyPressure;
@@ -288,12 +348,11 @@ mod tests {
         }
     }
 
-    /// The channel and the CC number do not collide. Both used to be `u8`, and
-    /// `cc(group, channel, cc, value)` put them adjacent — a swap emitted a
+    /// The channel and the CC number do not collide. They sit adjacent in
+    /// `cc(group, channel, cc, value)`, and as bare `u8`s a swap would emit a
     /// well-formed packet addressing the wrong controller on the wrong channel.
-    /// The swap is now a compile error; this pins that the two fields still
-    /// land in *different* places on the wire, which is the property the
-    /// compile error is protecting.
+    /// The newtypes make that a compile error; this pins the property the
+    /// compile error protects — that the two land in *different* wire fields.
     #[test]
     fn the_channel_and_the_cc_number_land_in_different_fields() {
         // Deliberately equal raw values, so a field mix-up cannot hide behind

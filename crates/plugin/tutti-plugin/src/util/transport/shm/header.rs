@@ -171,7 +171,7 @@ impl SlabHeader {
         self.control.magic.store(SLAB_MAGIC, Ordering::Release);
     }
 
-    /// Check that this mapping is a tutti slab of a shape we understand.
+    /// Check that this mapping is a tutti slab of a recognized shape.
     ///
     /// `Acquire` on the magic pairs with the `Release` in
     /// [`initialize`](Self::initialize); the two `Relaxed` loads after it are

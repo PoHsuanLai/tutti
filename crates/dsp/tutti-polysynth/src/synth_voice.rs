@@ -1,4 +1,15 @@
-//! Internal voice implementation for PolySynth.
+//! One sounding note: the oscillator/filter/envelope chain, its per-note MPE
+//! state, and the per-sample modulation applied to both.
+//!
+//! Separate from `crate::voice` because that module decides *which* slot a note
+//! gets and this one decides what the slot sounds like — allocation is pure
+//! bookkeeping over slot indices, while everything here touches DSP. A voice
+//! holds one chain per unison sub-voice, each with its own pitch cell but
+//! sharing the voice's gate, cutoff and resonance cells.
+//!
+//! `tick_stereo` runs per sample on the audio thread and must not allocate.
+//! The two places that do allocate — building a chain in `from_config` and
+//! growing the sub-voice set in `resize_unison` — are control-thread only.
 
 use crate::{FilterModConfig, FilterType, OscillatorType, SvfMode, SynthConfig};
 use crate::{MpeVoiceState, UnisonEngine};
@@ -313,8 +324,8 @@ impl SynthVoice {
             }
 
             if fm.lfo_depth > Depth(0.0) && fm.lfo_rate > Hz(0.0) {
-                // The named converter: this used to narrow the rate to f32
-                // before dividing, computing the step at f32 precision.
+                // The named converter, which computes the step without
+                // narrowing the rate to f32 first.
                 //
                 // `advance` rather than `% 1.0`: the remainder operator keeps
                 // the dividend's sign, so it is not a wrap for a negative

@@ -1,3 +1,5 @@
+//! Stereo flanger — a short modulated delay whose comb notches sweep.
+
 use tutti_core::Arc;
 use tutti_core::AtomicF32;
 use tutti_core::{AudioUnit, BufferMut, BufferRef, Feedback, Mix, SignalFrame};
@@ -6,9 +8,13 @@ use super::modulated_delay::{ModulatedDelay, ModulatedDelayConfig};
 
 /// Stereo flanger effect. 2-in, 2-out.
 ///
-/// Thin wrapper over an internal `ModulatedDelay` with flanger-flavor defaults:
-/// short base delay (1 ms), shallow LFO depth, high feedback for the
-/// signature comb-filter sweep, and half-cycle L/R phase offset.
+/// A `ModulatedDelay` with flanger defaults: a 1 ms base delay, a shallow
+/// sweep, high feedback and a half-cycle L/R phase offset. The short base delay
+/// is the whole difference from chorus — the copy lands close enough to
+/// interfere with the original, producing the comb-filter notches whose sweep
+/// is the flanger's signature. Feedback sharpens those notches into the
+/// familiar metallic ring; the half-cycle offset puts the channels in
+/// opposition for a wide sweep.
 pub struct FlangerNode {
     core: ModulatedDelay,
 }
@@ -20,43 +26,82 @@ impl Default for FlangerNode {
 }
 
 impl FlangerNode {
+    /// Builds a flanger at 0.5 Hz rate, 2 ms sweep depth, 0.7 feedback and a
+    /// 50/50 [`Mix`].
+    ///
+    /// Allocates its delay lines, so build before the node goes live.
     pub fn new() -> Self {
         Self {
             core: ModulatedDelay::new(ModulatedDelayConfig::FLANGER, 0.5, 0.002, 0.7, 0.5),
         }
     }
 
+    /// The shared LFO rate cell in [`Hz`](tutti_core::Hz) — how fast the notches
+    /// sweep.
+    ///
+    /// Flanger rates are slow, typically 0.1–1 Hz. Shared across clones.
     pub fn rate(&self) -> Arc<AtomicF32> {
         self.core.lfo.rate.as_atomic()
     }
+
+    /// The shared sweep-depth cell in [`Seconds`](tutti_core::Seconds) — how far
+    /// the delay time moves.
+    ///
+    /// **Denominated in seconds of delay, not a fraction.** Flanger depths are
+    /// an order of magnitude shallower than chorus, which is what keeps the
+    /// notches in comb range.
     pub fn depth(&self) -> Arc<AtomicF32> {
         self.core.mix.depth.as_atomic()
     }
+
+    /// The shared [`Feedback`] cell — how much of the delayed signal
+    /// recirculates.
+    ///
+    /// The flanger's most characterful control: higher feedback sharpens the
+    /// comb notches into a resonant, metallic sweep. Writing the raw cell
+    /// bypasses [`set_feedback`](Self::set_feedback)'s stability clamp.
     pub fn feedback(&self) -> Arc<AtomicF32> {
         self.core.mix.feedback.as_atomic()
     }
+
+    /// The shared wet/dry [`Mix`] cell: `0.0` dry, `1.0` fully wet.
+    ///
+    /// A flanger needs both halves — the comb notches come from wet and dry
+    /// interfering, so 50/50 is the deepest setting and fully wet cancels the
+    /// effect.
     pub fn mix(&self) -> Arc<AtomicF32> {
         self.core.mix.mix.as_atomic()
     }
 
+    /// Sets the LFO rate in [`Hz`](tutti_core::Hz), floored at 0.01 Hz.
     pub fn set_rate(&self, hz: impl Into<tutti_core::Hz>) {
         self.core
             .lfo
             .rate
             .store(tutti_core::Hz(hz.into().get().max(0.01)));
     }
+
+    /// Sets the sweep depth in [`Seconds`](tutti_core::Seconds), clamped to
+    /// `0.0001..=0.01`.
+    ///
+    /// The 10 ms ceiling keeps the sweep inside comb-filter range; past it the
+    /// effect drifts toward chorus. The floor keeps the sweep audible.
     pub fn set_depth(&self, secs: impl Into<tutti_core::Seconds>) {
         self.core
             .mix
             .depth
             .store(tutti_core::Seconds(secs.into().get().clamp(0.0001, 0.01)));
     }
+
+    /// Sets the [`Feedback`], clamped to the stable range.
     pub fn set_feedback(&self, fb: impl Into<Feedback>) {
         self.core
             .mix
             .feedback
             .store(Feedback::new_clamped(fb.into().get()));
     }
+
+    /// Sets the wet/dry [`Mix`], clamped to `0.0..=1.0`.
     pub fn set_mix(&self, mix: impl Into<Mix>) {
         self.core.mix.mix.store(Mix::new_clamped(mix.into().get()));
     }

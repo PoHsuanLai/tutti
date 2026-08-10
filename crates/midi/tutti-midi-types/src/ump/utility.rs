@@ -6,6 +6,10 @@ use midi2::prelude::*;
 use super::MidiEvent;
 
 impl MidiEvent {
+    /// A UMP **NOOP** utility message — one zero word that a receiver discards.
+    ///
+    /// Useful as padding where a slot must hold a well-formed UMP but carry no
+    /// musical meaning.
     #[inline]
     pub fn noop() -> Self {
         use midi2::utility::NoOp;

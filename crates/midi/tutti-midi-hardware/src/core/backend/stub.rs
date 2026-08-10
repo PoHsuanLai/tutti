@@ -33,6 +33,8 @@ const REASON: &str = "no native-UMP MIDI backend on this platform (Windows, or a
 pub struct StubEndpoints;
 
 impl StubEndpoints {
+    /// The stub backend. Stateless — this is `Default` under another name, kept
+    /// so every backend is constructed the same way.
     pub fn new() -> Self {
         Self
     }

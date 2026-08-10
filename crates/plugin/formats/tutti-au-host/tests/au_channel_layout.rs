@@ -552,9 +552,9 @@ fn element_names_read_back_what_the_au_published() {
 /// CoreFoundation returns a short `CFString` with its payload inside the pointer
 /// word, which makes the pointer legitimately misaligned. `element_name` routes
 /// through `cfstring_to_string_checked`, whose plausibility gate admits a value
-/// that is tagged *or* aligned — an earlier version of that gate rejected anything
-/// unaligned and so silently dropped exactly these strings. "unused" is six
-/// characters and "stereo mix" is ten; both are in tagged-pointer range.
+/// that is tagged *or* aligned. A gate rejecting anything unaligned silently
+/// drops exactly these strings: "unused" is six characters and "stereo mix" is
+/// ten, both in tagged-pointer range.
 ///
 /// Asserting non-emptiness is the whole test: a dropped tagged pointer comes back
 /// as an error or an empty string, never as a wrong name.
@@ -691,10 +691,10 @@ fn the_element_name_boundary_is_the_bus_count() {
 /// AU — a UI polling bus names on redraw leaks unboundedly.
 ///
 /// This test **observes the retain count**, not merely that the call keeps
-/// succeeding. A prior review on this branch was paid for by exactly that mistake:
-/// an over-release passed 7/7 GUI tests because they only checked pointer
-/// nullness. A call that returns `Ok` a hundred times proves nothing about
-/// ownership; the count is the only observable that does.
+/// succeeding. An over-release survives any number of successful calls — a call
+/// that returns `Ok` a hundred times proves nothing about ownership, and a
+/// pointer-nullness check proves less. The count is the only observable that
+/// does.
 ///
 /// It runs against an **Apple** unit (immortal string, saturated count) as well as
 /// the general shape, because the corpus rule is that absence of a required AU is a

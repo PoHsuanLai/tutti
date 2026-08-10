@@ -46,6 +46,8 @@ pub struct AudioCallbackState {
 }
 
 impl AudioCallbackState {
+    /// Assemble the state a stream's callback reads, with no MIDI phases
+    /// installed. Called once at engine build, on the control thread.
     pub fn new(engine: Engine, meter: MasterMeter, tap: AudioTap) -> Self {
         Self {
             engine,
@@ -72,6 +74,11 @@ impl AudioCallbackState {
         self
     }
 
+    /// Clear the RT processors' recorded owner thread-IDs.
+    ///
+    /// Control-thread only, and only while no stream is running: a restart
+    /// moves the callback to a new CPAL thread, and the owner checks would
+    /// otherwise flag the new thread as an intruder.
     pub fn reset_owners(&self) {
         self.engine.reset_owners();
         #[cfg(feature = "midi")]
@@ -88,6 +95,13 @@ impl AudioCallbackState {
 /// Render one block into `output`, an interleaved device buffer that carries
 /// its own width. The graph root is folded to that width (see
 /// [`Engine::process`]).
+///
+/// # Real-time
+///
+/// **Runs on the audio thread. Must not allocate, lock, or block.** Every
+/// buffer it touches is sized once at stream build to [`MAX_FRAMES`]; a longer
+/// callback is clamped and its tail silenced rather than reallocating here.
+/// `tests/rt_no_alloc.rs` gates this against a disabled allocator.
 #[inline]
 pub fn process_audio(state: &AudioCallbackState, output: &mut InterleavedMut<'_>) {
     let _no_denormals = ScopedNoDenormals::new();
@@ -120,7 +134,11 @@ struct StreamHandle(#[allow(dead_code)] cpal::Stream);
 
 unsafe impl Send for StreamHandle {}
 
-/// Owns the CPAL stream and device configuration. Private to the engine.
+/// Owns the CPAL stream and the device configuration it was built from.
+///
+/// The lifecycle half of the device layer: [`TuttiDriver`](crate::TuttiDriver)
+/// wraps one and is what a host normally holds. Every method here runs on the
+/// control thread — none is callable from the RT callback.
 pub struct AudioEngine {
     sample_rate: SampleRate,
     channels: ChannelLayout,
@@ -130,6 +148,12 @@ pub struct AudioEngine {
 }
 
 impl AudioEngine {
+    /// Open a device and read its default output config, without starting a
+    /// stream. `None` selects the host's default device.
+    ///
+    /// # Errors
+    /// Returns [`Error::InvalidDevice`] if `device_index` is out of range, or
+    /// [`Error::DeviceNotAvailable`] if the device has no default output config.
     pub fn new(device_index: Option<usize>) -> Result<Self> {
         let device = get_device(device_index)?;
         let config = device.default_output_config()?;
@@ -143,6 +167,18 @@ impl AudioEngine {
         })
     }
 
+    /// Build a stream on the selected device and start it. A no-op if one is
+    /// already running.
+    ///
+    /// Re-reads the device's config, so [`sample_rate`](Self::sample_rate) and
+    /// [`channels`](Self::channels) describe the stream that is actually
+    /// playing rather than whatever [`new`](Self::new) saw.
+    ///
+    /// # Errors
+    /// Returns [`Error::InvalidDevice`] for a bad index,
+    /// [`Error::DeviceNotAvailable`] if the config cannot be read,
+    /// [`Error::InvalidConfig`] for a sample format the engine does not build,
+    /// or [`Error::BuildStream`] / [`Error::PlayStream`] from CPAL.
     pub fn start(&mut self, state: Arc<AudioCallbackState>) -> Result<()> {
         if self.is_running {
             return Ok(());
@@ -152,14 +188,14 @@ impl AudioEngine {
         let config = device.default_output_config()?;
 
         // The reported layout is the layout of the stream about to be built,
-        // not the one the *constructor* happened to see. `set_device` +
-        // `start` (what `TuttiDriver::restart` does) reaches here with a
-        // different device than `new` read, and `build_stream` derives its
-        // real layout from this same `config` — so leaving these fields at
-        // their construction values makes `channels()` / `sample_rate()`
-        // describe a device that is no longer playing, while the audio itself
-        // is correct. A reader sizing a buffer from `channels()` gets the old
-        // width with nothing to warn it.
+        // not the one the constructor happened to see. `set_device` + `start`
+        // (what `TuttiDriver::restart` does) reaches here with a different
+        // device than `new` read, and `build_stream` derives its real layout
+        // from this same `config`. Leaving these fields at their construction
+        // values makes `channels()` / `sample_rate()` describe a device that is
+        // no longer playing while the audio itself is correct — so a reader
+        // sizing a buffer from `channels()` gets the old width with nothing to
+        // warn it.
         self.sample_rate = SampleRate::from(config.sample_rate().0);
         self.channels = ChannelLayout::from(usize::from(config.channels()));
 
@@ -186,31 +222,53 @@ impl AudioEngine {
         Ok(())
     }
 
+    /// Drop the stream, which stops the callback. Idempotent.
+    ///
+    /// Dropping is the stop: CPAL runs the callback for exactly as long as the
+    /// stream value lives.
     pub fn stop(&mut self) {
         self._stream = None;
         self.is_running = false;
     }
 
+    /// Rate of the running stream, or of the config read at construction if
+    /// none has started.
     pub fn sample_rate(&self) -> SampleRate {
         self.sample_rate
     }
 
+    /// Channel layout of the running stream, or of the config read at
+    /// construction if none has started. This is the width
+    /// [`process_audio`] is handed.
     pub fn channels(&self) -> ChannelLayout {
         self.channels
     }
 
+    /// Whether a stream is currently open and playing.
     pub fn is_running(&self) -> bool {
         self.is_running
     }
 
+    /// Select the device the next [`start`](Self::start) opens. `None` means
+    /// the host default. Does not disturb a running stream.
     pub fn set_device(&mut self, index: Option<usize>) {
         self.device_index = index;
     }
 
+    /// The selected device's name, queried fresh from the host.
+    ///
+    /// # Errors
+    /// Returns [`Error::InvalidDevice`] if the index no longer resolves, or
+    /// [`Error::DeviceNameError`] if the host cannot name it.
     pub fn device_name(&self) -> Result<String> {
         Ok(get_device(self.device_index)?.name()?)
     }
 
+    /// Enumerate output devices as `(index, name)` pairs. The index is
+    /// positional in this enumeration — see [`DeviceInfo::index`](crate::DeviceInfo::index).
+    ///
+    /// # Errors
+    /// Returns [`Error::DevicesError`] if the host cannot enumerate.
     pub fn output_devices() -> Result<impl Iterator<Item = (usize, String)>> {
         Ok(cpal::default_host()
             .output_devices()?

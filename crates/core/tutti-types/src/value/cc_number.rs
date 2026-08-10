@@ -17,13 +17,12 @@
 //! nobody is playing. Both failures are audible-but-plausible, which is the
 //! worst kind.
 //!
-//! `tutti-midi-types` used to carry a `pub type CCNumber = u8` alias next to
-//! the `pub type MidiChannel = u8` one, which prevented none of that — an alias
-//! is the same type as what it aliases. This is the real one, and that alias
-//! now re-exports it, exactly as [`MidiChannel`](super::MidiChannel) already
-//! did. It lives here rather than in `tutti-midi-types` because a document has
-//! to persist a CC number (a CC automation lane is keyed by one), and that
-//! crate carries no serde.
+//! A `pub type CCNumber = u8` alias prevents none of that — an alias is the
+//! same type as what it aliases. This is the real newtype, and
+//! `tutti-midi-types` re-exports it, exactly as it does
+//! [`MidiChannel`](super::MidiChannel). It lives here rather than there because
+//! a document has to persist a CC number (a CC automation lane is keyed by
+//! one), and that crate carries no serde.
 //!
 //! # Why 7-bit, in a MIDI 2.0 engine
 //!

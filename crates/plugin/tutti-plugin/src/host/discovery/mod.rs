@@ -15,7 +15,7 @@
 //! process and auto-blacklists the culprit on the next run).
 //!
 //! Persistence is pluggable — implement [`PluginCatalog`] over whatever store
-//! you like. [`JsonCatalog`] is one ready-made implementation, behind the
+//! you like. `JsonCatalog` is one ready-made implementation, behind the
 //! opt-in `json` feature.
 
 pub mod catalog;

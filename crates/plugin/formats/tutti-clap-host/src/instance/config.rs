@@ -231,9 +231,9 @@ impl PortLayout {
     /// because it is what the overwhelming majority of plugins present — the same
     /// rule, and the same reason, as the subprocess host's `default_if_empty`.
     ///
-    /// Call this **before** reading the channel totals. The totals used to carry
-    /// their own `.max(2)` floor instead, which made a genuine mono plugin report
-    /// 2-in/2-out while `self` still held the true `[Mono]` — two sources of
+    /// Call this **before** reading the channel totals. Putting a `.max(2)`
+    /// floor on the totals instead makes a genuine mono plugin report
+    /// 2-in/2-out while `self` still holds the true `[Mono]` — two sources of
     /// truth about one width, disagreeing.
     pub fn default_empty_buses(&mut self) {
         if self.inputs.is_empty() {
@@ -250,8 +250,8 @@ mod port_layout_tests {
     use super::*;
 
     /// A plugin that reports a real mono bus keeps width 1 all the way to the
-    /// totals. The `.max(2)` floor this replaced reported 2 here, which then
-    /// sized a stereo slab for a mono plugin.
+    /// totals. A `.max(2)` floor on the totals would report 2 here, sizing a
+    /// stereo slab for a mono plugin.
     #[test]
     fn a_mono_bus_is_not_widened_to_stereo() {
         let mut ports = PortLayout {

@@ -50,8 +50,12 @@ use crate::sampler::TuttiPlaybackPlugin;
 /// compiled; OS MIDI ports are opened whenever `midi-hardware` is. MPE is
 /// configured at runtime through the `MpeModeConfig` resource, not a field here.
 pub struct TuttiPlugin {
-    /// `None` = system default device
+    /// Index into the host's output-device list, or `None` for the system
+    /// default.
     pub output_device: Option<usize>,
+    /// How many input channels to open. `0` opens no input stream at all,
+    /// which is the default — a host that never records should not hold a
+    /// microphone permission.
     pub inputs: usize,
     /// How many channels the graph root renders — a **floor, not a ceiling**.
     ///

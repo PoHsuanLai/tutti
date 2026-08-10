@@ -19,5 +19,5 @@ pub use amplitude::{AtomicAmplitude, MasterMeter, MeterReading};
 pub use rt::{meter_output, MeteringContext};
 pub use tap::{AudioTap, TapBusy};
 
-// The Bevy wrapper (`MeteringRes`) lives in `crate::ecs::metering` — import it
-// from `tutti_core::ecs`.
+// The Bevy resource wrapper (`MeteringRes`) belongs to the host adapter,
+// `bevy_tutti::graph`, not to this crate.

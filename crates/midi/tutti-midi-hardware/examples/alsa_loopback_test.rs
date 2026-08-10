@@ -7,8 +7,8 @@
 //! it feeds the raw-MIDI device, not that port's own subscribers, so a
 //! send/receive pair on one virmidi port receives nothing. `Midi Through` is the
 //! kernel's loopback and does exactly what its name says. Verified against a
-//! standalone C probe before this example was written — the same pairing on
-//! virmidi sends fine (`rc=28`) and never delivers.
+//! standalone C probe: on virmidi the same pairing sends fine (`rc=28`) and
+//! never delivers, so a failure there is not this crate's.
 //!
 //! ```text
 //! sudo modprobe snd-virmidi     # if /proc/asound/seq/clients has none

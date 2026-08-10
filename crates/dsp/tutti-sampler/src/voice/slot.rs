@@ -1,4 +1,4 @@
-//! [`VoiceSlot`] — a [`Voice`] plus its resident time-stretch processor, and the
+//! `VoiceSlot` — a [`Voice`] plus its resident time-stretch processor, and the
 //! per-sample read that turns the pair into audio.
 //!
 //! This is where the two source tiers and the two stretch states meet: four
@@ -16,14 +16,25 @@ use tutti_core::{
     Samples, StretchFactor,
 };
 
-// ---------------------------------------------------------------------------
-// VoiceSlot — a `Voice` plus the resident time-stretch DSP processor. The
-// processor is the DSP object (not config), so it stays on the slot alongside
-// the engine sample rate; the control intent lives in `voice.play`.
-// ---------------------------------------------------------------------------
-
+/// A [`Voice`] plus the resident time-stretch DSP processor, and the read that
+/// turns the pair into audio.
+///
+/// The processor is the DSP object rather than a config record, so it stays on
+/// the slot alongside the engine sample rate it is tuned to; the control
+/// *intent* — factor, pitch, gain, direction, loop — lives in `voice.play`, and
+/// the two are kept in step by [`set_stretch`](Self::set_stretch) writing both.
+///
+/// Shared verbatim by [`VoicePool`](super::pool::VoicePool)'s slot vector and by
+/// [`VoiceNode`], which holds exactly one — so the per-voice read has one
+/// definition and a fix in it is a fix in both.
 pub(crate) struct VoiceSlot {
+    /// Addresses this slot for every command after the add. `SlotId(0)` on a
+    /// `VoiceNode`, whose single voice has nothing to disambiguate.
     pub(crate) id: SlotId,
+    /// The source (in-memory or streaming) plus the control intent recorded for
+    /// it. Which tier is live is the [`VoiceSource`] arm; the read below forks
+    /// on that enum at each call site rather than through a trait, so a
+    /// tier-conditional difference stays visible.
     pub(crate) voice: Voice,
     /// The time-stretch processor is **always resident**: it is built once (one
     /// phase-vocoder construction + two `RtScratch` buffers *per channel*) when
@@ -35,18 +46,14 @@ pub(crate) struct VoiceSlot {
     /// single source and route its frame through this filter, or read the source
     /// directly.
     ///
-    /// **"Built once" is not the same as "built off the audio thread", and this
-    /// distinction used to be blurred here.** Per-buffer *updates* are genuinely
-    /// allocation-free — [`VoiceCommand::UpdateStretch`] only sets atomics. But
-    /// the construction itself happens in `insert_voice`, reached from
+    /// **"Built once" is not the same as "built off the audio thread".**
+    /// Per-buffer *updates* are genuinely allocation-free —
+    /// [`VoiceCommand::UpdateStretch`] only sets atomics. But the construction
+    /// itself happens in `insert_voice`, reached from
     /// [`VoiceCommand::AddVoice`], which `drain_commands` pulls from `tick` /
     /// `process`. So adding a voice mid-playback DOES build the vocoders in the
-    /// callback, and at width `n` that is `n` FFT setups plus `2n` scratch
-    /// allocations rather than the stereo pair the old wording implied.
-    ///
-    /// Pre-existing, and not made reachable by the width work — but the cost now
-    /// scales with channel count, so it is worth stating plainly instead of
-    /// leaving the reader to infer safety.
+    /// callback, and the cost scales with channel count: at width `n` that is
+    /// `n` FFT setups plus `2n` scratch allocations.
     ///
     /// Structural invariant: `voice.play.stretch` / `voice.play.pitch` cannot
     /// drift from the processor's atomics — every mutation goes through
@@ -55,16 +62,24 @@ pub(crate) struct VoiceSlot {
     /// Width the stretch unit must be built at, remembered so a later
     /// materialisation matches the reader rather than defaulting.
     pub(crate) channels: ChannelLayout,
+    /// The engine rate the resident stretch unit is tuned to, kept in step by
+    /// the owner's `set_sample_rate`. A stale value here is a pitch error
+    /// proportional to the device's real rate, reported nowhere.
     pub(crate) sample_rate: SampleRate,
 }
 
 impl VoiceSlot {
-    /// Build a slot. Width is explicit at every call site — there is no
-    /// stereo-defaulting `new`, because both callers (the reader's drain and
-    /// `VoiceNode`) know their own width and a default here would silently
-    /// mismatch it.
+    /// Build a slot at an explicit width.
     ///
-    /// The stretch unit is **not** built here. It is `None` until the slot
+    /// # Width is explicit at every call site
+    ///
+    /// There is no stereo-defaulting `new`, because both callers (the reader's
+    /// drain and `VoiceNode`) know their own width and a default here would
+    /// silently mismatch it.
+    ///
+    /// # The stretch unit is not built here
+    ///
+    /// It is `None` until the slot
     /// actually needs it, for two reasons:
     ///
     /// - Most voices never stretch. A `stretch::Unit` is one FFT setup plus two
@@ -74,6 +89,8 @@ impl VoiceSlot {
     ///   `VoiceCommand::AddVoice` is drained by `drain_commands`, which runs from
     ///   `tick`/`process`, so eager construction meant adding a voice mid-playback
     ///   allocated in the callback.
+    ///
+    /// # Who builds one, when the voice needs it
     ///
     /// A slot that arrives already needing stretch (non-unity `play.stretch` /
     /// `play.pitch`) gets its unit built on the **control thread**, before the
@@ -88,7 +105,8 @@ impl VoiceSlot {
     ///   that constructor *is* control-thread code. Nothing prepares a filter for
     ///   a node, and nothing needs to.
     ///
-    /// **Turning stretch on later is a pool-only capability.**
+    /// # Turning stretch on later is a pool-only capability
+    ///
     /// `VoiceCommand::UpdateStretch` reaches `set_stretch` below through the
     /// pool's drain; `VoiceNode::drain_commands` handles `UpdatePlacement` and
     /// nothing else, so the same command sent to a `VoiceNodeHandle` is discarded
@@ -101,13 +119,6 @@ impl VoiceSlot {
     /// self.slot.stretch`) and cannot create one, so a filter adopted mid-flight
     /// would keep the `SR_44K1` its constructor assumed and never be corrected —
     /// a pitch error proportional to the device's real rate, with nothing logged.
-    ///
-    /// (Both paths used to be described here as `VoiceSlot::materialize_stretch`,
-    /// a method that has never existed. That dangling name is why the update path
-    /// went unbuilt: every reader took the doc's word that a filter would arrive.
-    /// A later revision replaced it with a flat "the SENDER builds it", which was
-    /// true of the pool and false of the node — and reading it that way is what
-    /// made the node's spawn path look broken when it was not.)
     pub(crate) fn with_channels(
         id: SlotId,
         voice: Voice,
@@ -207,12 +218,15 @@ impl VoiceSlot {
         surplus
     }
 
-    /// Read ONE mixed stereo frame from this slot: the exact per-variant read the
-    /// `tick` mixdown does for a single slot, routed through the resident stretch
-    /// filter when `needs_stretch()`. Factored so the mixer loop and the
-    /// standalone [`VoiceNode`] share one definition — no duplication, no dyn.
-    /// Alloc-free: returns a stack frame. RT: the `VoiceSource` enum match is
-    /// unchanged, only relocated here.
+    /// Read ONE frame from this slot into `out`, whose length is the frame's
+    /// channel count: the exact per-variant read the `tick` mixdown does for a
+    /// single slot, routed through the resident stretch filter when
+    /// `needs_stretch()`. Factored so the mixer loop and the standalone
+    /// [`VoiceNode`] share one definition — no duplication, no per-sample dyn.
+    ///
+    /// **Audio-thread safe**: allocation-free, working out of a stack frame
+    /// capped at `MAX_SAMPLER_CHANNELS`, and the tier fork is a
+    /// [`VoiceSource`] match rather than a virtual call.
     #[inline]
     pub(crate) fn tick_frame_into(&mut self, out: &mut [f32]) {
         let direction = self.voice.play.direction;
@@ -264,10 +278,13 @@ impl VoiceSlot {
         }
     }
 
-    /// Accumulate this slot's block-rate contribution into `output`: the exact
-    /// per-variant read the `process` mixdown does for a single slot. Factored so
-    /// the mixer loop and the standalone [`VoiceNode`] share one definition. RT:
-    /// the `VoiceSource` enum match is unchanged, only relocated here.
+    /// Accumulate this slot's contribution to `size` FRAMES into `output`: the
+    /// exact per-variant read the `process` mixdown does for a single slot.
+    /// Factored so the mixer loop and the standalone [`VoiceNode`] share one
+    /// definition.
+    ///
+    /// **Audio-thread safe**: allocation-free, and the tier fork is a
+    /// [`VoiceSource`] match rather than a virtual call.
     ///
     /// `width` is a plain `usize`, deliberately **not** a [`ChannelLayout`]: it is
     /// an already-intersected clamp that callers compute as
@@ -316,11 +333,12 @@ impl VoiceSlot {
                     // a full block ahead of where the previous one finished, so
                     // the stretch is discarded at every boundary.
                     //
-                    // Without this the factor behaved as pure varispeed — 2.0x
-                    // turned 440 Hz into 880 Hz with the duration unchanged.
-                    // Folding the rate into the step *only* was worse still
-                    // (pitch +35% off, purity 0.95 -> 0.54): origin and step then
-                    // disagreed within each block as well as across them.
+                    // Without this the factor degenerates to pure varispeed —
+                    // 2.0x turns 440 Hz into 880 Hz with the duration unchanged.
+                    // Folding the rate into the step *only* is worse still
+                    // (measured: pitch 35% off, purity 0.95 -> 0.54), because
+                    // origin and step then disagree within each block as well as
+                    // across them.
                     //
                     // Both come from `stretched_window_position` / the same
                     // composed rate for exactly that reason — the two must be
@@ -367,10 +385,10 @@ impl VoiceSlot {
                     let Some(start_pos) = sampler.window_position() else {
                         return;
                     };
-                    // `window_rate`, not a hand-rolled `speed * src_ratio`: this
-                    // site multiplied the two by hand, which double-applied
-                    // `src_ratio` against a gate origin that had already resolved
-                    // it. The named method is what keeps origin and step matched.
+                    // `window_rate`, not a hand-rolled `speed * src_ratio`:
+                    // multiplying the two here double-applies `src_ratio`
+                    // against a gate origin that has already resolved it. The
+                    // named method is what keeps origin and step matched.
                     let rate = sampler.window_rate();
                     for i in 0..size {
                         let pos = start_pos + rate.advance(Samples(i));

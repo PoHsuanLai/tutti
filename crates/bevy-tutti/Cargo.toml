@@ -22,12 +22,11 @@ bevy_reflect.workspace = true
 # render, plugin scan, wave import, soundfont decode). See src/task.rs.
 bevy_tasks.workspace = true
 
-# Tutti audio engine — bevy-tutti is now the umbrella, so it depends on the
-# subsystem crates directly (the old `tutti` umbrella package is dissolved).
-# `tutti-core/bevy_ecs` enables the `Component` derives on the entity-as-node
-# primitives; `tutti-core/bevy_asset` the Asset/TypePath derives on loadable
-# types. bevy-tutti supplies the reconcile systems + the CPAL audio callback
-# (relocated into src/engine/).
+# Tutti audio engine — bevy-tutti is the umbrella, so it depends on the
+# subsystem crates directly. `tutti-core/bevy_ecs` enables the `Component`
+# derives on the entity-as-node primitives; `tutti-core/bevy_asset` the
+# Asset/TypePath derives on loadable types. bevy-tutti supplies the reconcile
+# systems and the CPAL audio callback (src/engine/).
 tutti-core = { path = "../tutti/crates/core/tutti-core", default-features = false, features = ["bevy_ecs", "bevy_asset"] }
 # `bevy` here is the `Reflect` derives only (no ECS surface). Needed
 # unconditionally, not just under `modulation`: `AudioConfig` reflects its
@@ -115,13 +114,8 @@ full = [
     "modulation",
 ]
 
-# Spatial audio: the VBAP / binaural panner units, now their own crate.
-#
-# NOTE: this used to be `["dsp", "tutti-units/spatial"]` while `dsp` was itself
-# `["tutti-units/spatial"]` — i.e. the two features were synonyms for the same
-# single flag, and both doc comments pointed at `tutti_units::spatial_graph`, a
-# module that moved app-side to `dawai_model::engine_bind` long ago. `spatial`
-# now names exactly one thing: the dependency on `tutti-spatial`.
+# Spatial audio: the VBAP / binaural panner units, in their own crate.
+# Names exactly one thing — the dependency on `tutti-spatial`.
 spatial = ["dep:tutti-spatial"]
 
 # FFT convolution reverb (partitioned IR) in tutti-units.
@@ -155,19 +149,18 @@ midi-hardware = ["midi", "dep:tutti-midi-hardware"]
 # Synth & sampling. bevy-tutti registers these with the AssetServer, so it
 # wants the asset derives on both.
 synth = ["dep:tutti-polysynth"]
-# SoundFont no longer implies `synth`. It used to, because `SoundFontUnit` was a
-# feature of the one synth crate; now it is its own crate and pulls no voice
-# engine. `midi` stays: `tutti-soundfont` needs `tutti-core/midi`, and enabling
-# it here keeps `engine/build.rs` in step with the tutti-core that compiles
-# under feature unification.
+# SoundFont does NOT imply `synth`: it is its own crate and pulls no voice
+# engine. `midi` is required — `tutti-soundfont` needs `tutti-core/midi`, and
+# enabling it here keeps `engine/build.rs` in step with the tutti-core that
+# compiles under feature unification.
 soundfont = ["midi", "dep:tutti-soundfont"]
 # Clip playback: the butler streaming engine and the `.wav` asset loader
 # (`tutti-sampler` → `crate::sampler`).
 #
-# This used to also carry the live I/O edge, on the reasoning that both were
-# "sampler things". They are not: they are separate engine crates, neither
-# depends on the other, and a host wanting only mic→WAV was compiling the
-# butler thread to get it. `audio-io` below is that half.
+# Deliberately does NOT carry the live I/O edge — that is `audio-io` below.
+# They are separate engine crates and neither depends on the other, so folding
+# them together would make a host wanting only mic→WAV compile the butler
+# thread to get it.
 sampler = ["wav", "dep:tutti-sampler", "tutti-sampler/bevy"]
 
 # The live audio I/O edge: mic capture, WAV sink, and the pump between them
@@ -233,3 +226,9 @@ required-features = ["export", "wav"]
 [[example]]
 name = "plugin_host"
 required-features = ["plugin", "modulation"]
+
+# docs.rs renders with every feature on. `default = []` keeps the engine
+# Bevy-free for consumers, but it would otherwise publish a page with the
+# feature-gated half of the public API missing.
+[package.metadata.docs.rs]
+all-features = true

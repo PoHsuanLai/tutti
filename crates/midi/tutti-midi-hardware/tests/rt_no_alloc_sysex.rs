@@ -7,18 +7,16 @@
 //!
 //! # The honest state of this, measured not assumed
 //!
-//! The rewrite removed **the assembler's own** per-message allocations: the old
-//! code did `payload.to_vec()` plus a fresh `Vec` for fragments on every
-//! completed run. Both are gone — the payload buffer and the caller's fragment
-//! scratch are now reused across calls.
+//! **The assembler's own** per-message allocations are gone: the payload buffer
+//! and the caller's fragment scratch are both reused across calls, so a run in
+//! flight costs nothing once warm.
 //!
-//! It did **not** reach zero, because
+//! It does **not** reach zero, because
 //! [`MidiEvent::sysex7_fragments`](tutti_midi_types::ump::MidiEvent::sysex7_fragments)
 //! itself allocates on every call: it builds a `Sysex7::<Vec<u32>>::new()`
-//! internally (`tutti-midi-types/src/ump/sysex.rs:33`). That is upstream of this
-//! crate and cannot be fixed from here — it needs an
-//! `Sysex7::<[u32; N]>`-shaped API, or a reusable builder threaded through the
-//! call, which is a `tutti-midi-types` change.
+//! internally. That is upstream of this crate and cannot be fixed from here — it
+//! needs an `Sysex7::<[u32; N]>`-shaped API, or a reusable builder threaded
+//! through the call, which is a `tutti-midi-types` change.
 //!
 //! So the gate below asserts the **reachable** property: reassembling a run
 //! across many buffers — the path that dominates a long dump — allocates nothing

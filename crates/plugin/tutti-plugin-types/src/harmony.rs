@@ -21,9 +21,15 @@ const STACK_CAPACITY: usize = 4;
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct NoteExpressionTextValue {
+    /// Frame offset from the start of the process block.
     pub sample_offset: i32,
+    /// The note this annotates, as a host note id — see
+    /// [`note_id_for`](crate::note_id_for).
     pub note_id: i32,
+    /// Which text dimension this is, in the format's own numbering. VST3 passes
+    /// it through to the plugin verbatim; nothing here interprets it.
     pub type_id: u32,
+    /// The annotation, owned UTF-8. The VST3 boundary converts it to UTF-16.
     pub text: String,
 }
 
@@ -31,9 +37,16 @@ pub struct NoteExpressionTextValue {
 #[derive(Debug, Clone, Copy)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct NoteExpressionIntValue {
+    /// Frame offset from the start of the process block.
     pub sample_offset: i32,
+    /// The note this drives, as a host note id — see
+    /// [`note_id_for`](crate::note_id_for).
     pub note_id: i32,
+    /// Which stepped dimension this is, in the format's own numbering. Passed
+    /// through to the plugin verbatim; nothing here interprets it.
     pub type_id: u32,
+    /// The step, in whatever space `type_id` names. Not normalized — the
+    /// stepped dimensions are exactly the ones a `0..=1` scale cannot carry.
     pub value: i64,
 }
 
@@ -42,10 +55,19 @@ pub struct NoteExpressionIntValue {
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct ChordValue {
+    /// Frame offset from the start of the process block, at which the chord
+    /// takes effect.
     pub sample_offset: i32,
+    /// Root pitch as a MIDI note number, `0..=127`.
     pub root: i16,
+    /// Bass pitch as a MIDI note number, `0..=127`. Equal to `root` for a chord
+    /// in root position; different for a slash chord.
     pub bass_note: i16,
+    /// The chord's degrees as a 12-bit mask relative to `root`, bit `n` set when
+    /// semitone `n` sounds.
     pub mask: i16,
+    /// Display name (`"Cmaj7"`), owned UTF-8. Presentation only — the degrees a
+    /// plugin acts on are in `mask`. The VST3 boundary converts it to UTF-16.
     pub text: String,
 }
 
@@ -54,9 +76,16 @@ pub struct ChordValue {
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct ScaleValue {
+    /// Frame offset from the start of the process block, at which the scale
+    /// takes effect.
     pub sample_offset: i32,
+    /// Tonic pitch as a MIDI note number, `0..=127`.
     pub root: i16,
+    /// The scale's degrees as a 12-bit mask relative to `root`, bit `n` set when
+    /// semitone `n` is in the scale.
     pub mask: i16,
+    /// Display name (`"D Dorian"`), owned UTF-8. Presentation only — the degrees
+    /// a plugin acts on are in `mask`. The VST3 boundary converts it to UTF-16.
     pub text: String,
 }
 
@@ -66,18 +95,25 @@ macro_rules! changes_container {
         #[derive(Debug, Clone, Default)]
         #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
         pub struct $name {
+            /// The block's events, in the order the sequencer appended them.
+            /// The first `STACK_CAPACITY` live inline, so a typical block adds
+            /// no allocation on the RT path.
             pub $field: SmallVec<[$item; STACK_CAPACITY]>,
         }
 
         impl $name {
+            /// Builds an empty container.
             pub fn new() -> Self {
                 Self::default()
             }
 
+            /// Appends one event. Order is the caller's to maintain; nothing
+            /// here sorts by `sample_offset`.
             pub fn add_change(&mut self, change: $item) {
                 self.$field.push(change);
             }
 
+            /// Returns `true` when the block carries no event of this kind.
             pub fn is_empty(&self) -> bool {
                 self.$field.is_empty()
             }

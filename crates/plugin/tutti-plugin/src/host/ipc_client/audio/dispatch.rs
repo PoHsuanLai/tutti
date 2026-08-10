@@ -15,9 +15,9 @@ use std::time::Duration;
 /// Bounded by the *block period*, not an absolute duration. A bridge thread
 /// blocked in `recv_reply` dequeues no further commands — `pump` is a single
 /// loop — while the audio thread keeps pushing one command per block, so a single
-/// slow reply used to overflow the 128-slot queue and produce sustained silence
-/// long after the server recovered. The old 500 ms constant against a 667 µs
-/// block (64 frames @ 48 kHz) was a ~750x mismatch, some 750 queued blocks.
+/// slow reply overflows the 128-slot queue and produces sustained silence long
+/// after the server recovers. A fixed 500 ms against a 667 µs block (64 frames
+/// @ 48 kHz) is a ~750x mismatch, some 750 queued blocks.
 ///
 /// A few periods rather than exactly one: the bridge may still be waiting after
 /// the audio thread has moved on, and that reply is simply unmatched by the
@@ -193,10 +193,9 @@ pub(super) fn handle(
         }
         Command::LoadState { data, reply } => {
             ipc::send(stream, &HostMessage::LoadState { data })?;
-            // Wait for the answer, as `SaveState` above does. This used to be a
-            // literal `reply.send(true)` issued straight after the write, which
-            // reported that the request had been *sent* and never whether the
-            // plugin accepted it.
+            // Wait for the answer, as `SaveState` above does. Answering the
+            // caller straight after the write would report that the request had
+            // been *sent*, never whether the plugin accepted it.
             let value = match recv_reply(stream, channels, STATE_TIMEOUT)? {
                 BridgeMessage::StateLoaded { error } => {
                     error.map(StateError::Rejected).map_or(Ok(()), Err)
@@ -325,11 +324,11 @@ mod tests {
         Duration::from_secs_f64(num_samples as f64 / rate)
     }
 
-    /// The regression this fix exists for: a fixed 500 ms timeout sat ~750x
-    /// above the audio thread's 667 us budget at 64 frames / 48 kHz. While the
-    /// bridge thread blocks in `recv_reply` it dequeues nothing, so the audio
-    /// thread's one-command-per-block kept filling the 128-slot queue and one
-    /// slow reply became a sustained run of silence. Bound it to a few periods.
+    /// A fixed 500 ms timeout sits ~750x above the audio thread's 667 us budget
+    /// at 64 frames / 48 kHz. While the bridge thread blocks in `recv_reply` it
+    /// dequeues nothing, so the audio thread's one-command-per-block fills the
+    /// 128-slot queue and one slow reply becomes a sustained run of silence.
+    /// The timeout is therefore bound to a few block periods.
     #[test]
     fn timeout_is_a_small_multiple_of_the_block_period() {
         for rate in RATES {
@@ -353,10 +352,9 @@ mod tests {
     /// whose slots are still live — declaring a plugin unresponsive while its
     /// reply was still wanted.
     ///
-    /// This replaces a test that compared the timeout against the audio thread's
-    /// own wait budget. That comparison died with the budget: the audio thread
-    /// no longer waits at all, so there is nothing to outlast on that side. The
-    /// ring depth is what bounds usefulness now.
+    /// Bounded against the ring depth rather than the audio thread's wait
+    /// budget: the audio thread never waits, so there is nothing to outlast on
+    /// that side.
     #[test]
     fn timeout_keeps_the_bridge_within_the_ring_depth() {
         for rate in RATES {
@@ -413,8 +411,8 @@ mod tests {
     }
 
     /// A backlog collapses to the live blocks in one pass rather than being
-    /// ground through. This is the whole point: the old behaviour sent all ten,
-    /// each a socket round-trip, while the audio thread kept adding more.
+    /// ground through. Sending all ten, each a socket round-trip, loses ground
+    /// while the audio thread keeps adding more.
     #[test]
     fn a_backlog_collapses_to_the_live_blocks() {
         let newest = 10u64;

@@ -103,6 +103,7 @@ pub struct ClickSettings {
 }
 
 impl ClickSettings {
+    /// Default settings: mode [`MetronomeMode::Off`], half volume, 4/4.
     pub fn new() -> Self {
         Self {
             volume: AtomicF32::new(0.5),
@@ -111,11 +112,14 @@ impl ClickSettings {
         }
     }
 
+    /// Set the click level, clamped to `0.0..=1.0` in [`Amplitude`] (linear,
+    /// not dB).
     pub fn set_volume(&self, volume: impl Into<Amplitude>) {
         self.volume
             .store(volume.into().get().clamp(0.0, 1.0), Ordering::Release);
     }
 
+    /// The click level, always within `0.0..=1.0`.
     pub fn volume(&self) -> Amplitude {
         Amplitude(self.volume.load(Ordering::Acquire))
     }
@@ -144,10 +148,13 @@ impl ClickSettings {
         Arc::clone(&self.meter)
     }
 
+    /// Choose when the metronome sounds. Takes effect on the audio thread's
+    /// next block.
     pub fn set_mode(&self, mode: MetronomeMode) {
         self.mode.store(mode.into(), Ordering::Release);
     }
 
+    /// The mode in force.
     pub fn mode(&self) -> MetronomeMode {
         MetronomeMode::from(self.mode.load(Ordering::Acquire))
     }
@@ -159,13 +166,16 @@ impl Default for ClickSettings {
     }
 }
 
+/// Alias for [`ClickSettings`], for callers that name the metronome's shared
+/// cell as state rather than settings.
 pub type ClickState = ClickSettings;
 
 /// Click generator AudioNode.
 ///
 /// Outputs stereo click sounds synced to the transport beat.
 ///
-/// Takes the live [`Transport`] concretely rather than a [`Timeline`]: the
+/// Takes the live [`Transport`] concretely rather than a
+/// [`Timeline`](super::Timeline): the
 /// metronome's modes depend on `recording` / `in_preroll`, which are
 /// live-session facts an offline timeline has no answer for. It only ever
 /// reads — no transport control.
@@ -193,6 +203,11 @@ pub struct ClickNode {
 }
 
 impl ClickNode {
+    /// Build a click node reading `transport` and `settings`, with both click
+    /// waveforms rendered for `sample_rate`.
+    ///
+    /// `settings` is taken as an `Arc` so a later `set_meter` / `set_volume`
+    /// reaches whichever clone fundsp is running — see [`ClickSettings`].
     pub fn with_transport(
         transport: Transport,
         settings: Arc<ClickSettings>,
@@ -292,10 +307,11 @@ impl ClickNode {
     ///
     /// The index counts *notated* beats, not quarter notes: in 7/8 that is an
     /// eighth, so the metronome clicks seven times per bar rather than four.
-    #[inline]
+    ///
     /// Takes its three mutable fields individually rather than `&mut self`:
     /// the meter arrives as a read lease borrowed from `self.settings`, so a
     /// whole-`self` mutable borrow would collide with it at every call site.
+    #[inline]
     fn advance_to(
         last_click_onset: &mut Option<Beat>,
         click_pos: &mut usize,
@@ -326,9 +342,9 @@ impl ClickNode {
         if changed {
             *last_click_onset = Some(onset);
             *click_pos = 0;
-            // The accent is the bar's downbeat, straight from the meter. This
-            // replaces a standalone `accent_every` count that defaulted to 4 and
-            // was never set by anything.
+            // The accent is the bar's downbeat, straight from the meter — never
+            // a standalone every-N count, which drifts against the bar the
+            // moment the time signature is not 4/4.
             *is_accent = position.is_downbeat();
         }
     }
@@ -538,9 +554,8 @@ mod tests {
         assert!(found_nonzero, "Click should play after loop wrap");
     }
 
-    /// The accent is the bar's downbeat, taken from the meter — replacing the
-    /// old standalone `accent_every` count that defaulted to 4 regardless of the
-    /// project's time signature.
+    /// The accent is the bar's downbeat, taken from the meter — not a fixed
+    /// every-N count, which would ignore the project's time signature.
     #[test]
     fn accent_follows_the_meter_downbeat() {
         let (transport, settings, mut node) = make_click();
@@ -559,8 +574,8 @@ mod tests {
         assert!(!accents_at(&mut node, 1.0));
         assert!(accents_at(&mut node, 4.0));
 
-        // 3/4: the accent moves to every 3 quarters. The old fixed count of 4
-        // would have drifted against the bar here.
+        // 3/4: the accent moves to every 3 quarters. A fixed count of 4 would
+        // drift against the bar here.
         settings.set_meter(Arc::new(MeterMap::new([MeterChange::new(
             Beat(0.0),
             TimeSignature::new(BeatsPerBar::new(3), NoteValue::QUARTER),
@@ -606,11 +621,11 @@ mod tests {
 
     /// Clicks must stay distinct across a meter change.
     ///
-    /// The first version identified a beat by a running index scaled by the
-    /// *current* segment's `beat_length` — which changes at a `MeterChange`, so
-    /// indices from a 7/8 segment collided with indices from a following 4/4
-    /// segment and silently suppressed clicks. Identifying the beat by its onset
-    /// position removes the scale entirely.
+    /// A running index scaled by the *current* segment's `beat_length` cannot
+    /// do this: `beat_length` changes at a `MeterChange`, so indices from a 7/8
+    /// segment collide with indices from a following 4/4 segment and silently
+    /// suppress clicks. Identifying the beat by its onset position removes the
+    /// scale entirely.
     #[test]
     fn clicks_stay_distinct_across_a_meter_change() {
         let (transport, settings, mut node) = make_click();
@@ -660,8 +675,9 @@ mod tests {
         assert!(onsets.contains(&Beat(10.5)), "the change begins a bar");
     }
 
-    /// Pre-roll sits at negative beats. The old accent test did
-    /// `(beat as u32).is_multiple_of(..)`, which turned -1 into 4294967295.
+    /// Pre-roll sits at negative beats, so the accent must be derived from the
+    /// meter rather than from a cast — `(beat as u32)` turns -1 into
+    /// 4294967295 and accents an arbitrary beat.
     #[test]
     fn negative_beats_do_not_wrap() {
         let (transport, settings, mut node) = make_click();

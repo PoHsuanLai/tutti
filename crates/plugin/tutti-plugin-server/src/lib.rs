@@ -21,6 +21,17 @@
 //! PluginServer::new(config).unwrap().run().unwrap();
 //! ```
 //!
+//! # The wire
+//!
+//! Framing is a u32 big-endian length prefix plus a bincode payload. The message
+//! shapes and the version constant are [`tutti_plugin`]'s — this crate imports
+//! `PROTOCOL_VERSION` and never restates its history. Both phases open by
+//! sending it, and a host that does not recognise the version refuses.
+//!
+//! This is an **IPC boundary, so the unit newtypes stop here**, as they do at
+//! the C ABIs of the hosted plugin formats. A raw `f64` sample rate crossing the
+//! wire or entering `AudioUnitSetParameter` is correct, not an omission.
+//!
 //! # Internal layout
 //!
 //! - `server` — outer shell ([`PluginServer`]); orchestrates the two-phase

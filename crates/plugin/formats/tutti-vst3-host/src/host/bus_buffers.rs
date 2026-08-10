@@ -218,7 +218,8 @@ impl<T: Vst3Sample> BusBuffers<T> {
     /// When `silence_aux_channels` is set (input direction — `aux` is provably
     /// zero), each real channel that fell back to `aux` gets its `silenceFlags`
     /// bit set, so the plugin may skip processing it. Channels backed by a
-    /// supplied `live` pointer are never flagged: we can't claim they're zero.
+    /// supplied `live` pointer are never flagged — their contents are unknown,
+    /// and claiming silence the host cannot prove mutes real audio.
     /// The flag is left clear for the output direction, where `aux` is an
     /// unzeroed sink.
     ///
@@ -448,7 +449,7 @@ mod tests {
     /// An `f64` direction must write the `channelBuffers64` union member, not
     /// `channelBuffers32`. Both alias the same bytes, so reading either back
     /// yields the same pointer — this asserts the value landed and that the
-    /// 64-bit member is the one we wrote through.
+    /// 64-bit member is the one written through.
     #[test]
     fn f64_direction_writes_channel_buffers_64() {
         let mut bb = BusBuffers::<f64>::new(&[2], ChannelLayout::from(2u16), BLOCK);

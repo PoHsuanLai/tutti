@@ -1,17 +1,49 @@
+//! Delay lines and the delay nodes built on them.
+//!
+//! [`DelayLine`] is the bare fractional-read ring; [`DelayLineNode`] and
+//! [`StereoDelayLineNode`] wrap it into `AudioUnit`s with feedback, wet/dry
+//! [`Mix`] and optional audio-rate param-input ports. The fractional read is the
+//! reason this is not just a [`CircularBuffer`](crate::buffer::CircularBuffer):
+//! a delay whose time is modulated must interpolate between taps or it steps
+//! audibly.
+
 use tutti_core::Arc;
 use tutti_core::AtomicF32;
 use tutti_core::{dsp::DEFAULT_SAMPLE_RATE, AudioUnit, BufferMut, BufferRef, SignalFrame};
 
 use tutti_core::{Feedback, Mix, Param, SampleRate, Seconds};
 
+/// How a fractional delay position is turned into a sample.
+///
+/// The cost/quality ladder for a *modulated* delay: a moving delay time lands
+/// between samples, and how that gap is filled is what separates a clean chorus
+/// from a gritty one. At a fixed, integral delay all three agree.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum InterpolationMode {
+    /// Round to the nearest whole sample. Cheapest, and it quantises the delay
+    /// to frame boundaries — a swept delay steps audibly ("zipper"). Fine for a
+    /// static echo, wrong for chorus or flanger.
     None,
+    /// Linear blend between the two neighbouring samples. The default: no
+    /// stepping under modulation, at the cost of slight high-frequency damping
+    /// that worsens as the fraction approaches 0.5.
     #[default]
     Linear,
+    /// Four-point cubic Hermite. Keeps the highs that [`Linear`](Self::Linear)
+    /// damps, for roughly four reads per sample instead of two. Reach for it on
+    /// audibly-swept delays; it is wasted on a static one.
     CubicHermite,
 }
 
+/// A fractional-delay ring buffer: push a sample per frame, read back at any
+/// real-valued delay.
+///
+/// The read position is fractional and interpolated
+/// ([`InterpolationMode`]), which is what makes it usable as the core of a
+/// modulated delay. Capacity is fixed at construction — [`read_sample`] clamps
+/// rather than growing, so the line never allocates on the audio thread.
+///
+/// [`read_sample`]: Self::read_sample
 #[derive(Clone)]
 pub struct DelayLine {
     pub(crate) buffer: Vec<f32>,
@@ -20,6 +52,11 @@ pub struct DelayLine {
 }
 
 impl DelayLine {
+    /// Allocates a line holding up to `max_delay_samples` frames of history.
+    ///
+    /// The backing buffer is one frame longer than the maximum delay, so that
+    /// an interpolating read at exactly `max_delay_samples` still has a second
+    /// tap to blend toward. Allocates — build before going live.
     pub fn new(max_delay_samples: usize) -> Self {
         Self {
             buffer: vec![0.0; max_delay_samples + 1],
@@ -28,20 +65,31 @@ impl DelayLine {
         }
     }
 
+    /// Allocates a line sized for `max_delay_secs` at `sample_rate`.
+    ///
+    /// The length is rounded **up**, so the line always holds at least the
+    /// requested duration. Note that the size is baked in here: a node changing
+    /// its sample rate has to rebuild the line, which is what
+    /// `AudioUnit::set_sample_rate` does.
     pub fn from_seconds(
         max_delay_secs: impl Into<Seconds>,
         sample_rate: impl Into<SampleRate>,
     ) -> Self {
         // `to_samples_ceil`, not a nearest-rounding cast: a line sized for
         // `max_delay` must hold *at least* that long, and rounding to nearest
-        // under-allocates for half of all inputs. The multiply also stays in
-        // f64 now — the old form narrowed the sample rate to f32 first.
+        // under-allocates for half of all inputs. The multiply stays in f64 —
+        // narrowing the sample rate to f32 first loses precision.
         let samples = max_delay_secs
             .into()
             .to_samples_ceil(sample_rate.into().get());
         Self::new(samples.get())
     }
 
+    /// Writes one frame at the cursor and advances, overwriting the oldest
+    /// sample.
+    ///
+    /// Call exactly once per frame: the cursor *is* the line's clock, so a
+    /// skipped or doubled push shifts every subsequent read by that much.
     pub fn push_sample(&mut self, sample: f32) {
         self.buffer[self.write_pos] = sample;
         self.write_pos += 1;
@@ -50,6 +98,15 @@ impl DelayLine {
         }
     }
 
+    /// Reads the line `delay_samples` frames back from the newest write,
+    /// interpolating per `mode`.
+    ///
+    /// `delay_samples` is a **fractional frame count**, not [`Seconds`] — the
+    /// caller converts, because keeping the fraction is the whole point of an
+    /// interpolated read. `0.0` is the sample just pushed.
+    ///
+    /// The delay is clamped to `0.0..=max_delay_samples`, so an over-long
+    /// request shortens silently rather than panicking. Does not allocate.
     pub fn read_sample(&self, delay_samples: f32, mode: InterpolationMode) -> f32 {
         let delay = delay_samples.clamp(0.0, self.max_delay_samples as f32);
         match mode {
@@ -80,6 +137,10 @@ impl DelayLine {
         }
     }
 
+    /// Zeroes the line and returns the cursor to 0, dropping any tail still in
+    /// flight.
+    ///
+    /// Does not reallocate, so it is safe on the audio thread.
     pub fn reset(&mut self) {
         self.buffer.fill(0.0);
         self.write_pos = 0;
@@ -100,16 +161,25 @@ impl DelayLine {
 /// fractional part — rounding here would quantise every delay to a frame
 /// boundary and step audibly under modulation.
 ///
-/// The multiply stays in `f64` and narrows once at the end. The old form was
-/// `secs * self.sample_rate as f32`, which narrowed the *rate* first and so
-/// computed the position at `f32` precision throughout.
+/// The multiply stays in `f64` and narrows once at the end. Narrowing the
+/// *rate* first (`secs * sample_rate as f32`) computes the whole position at
+/// `f32` precision, which is coarser than the fractional read can resolve.
 #[inline]
 fn fractional_samples(secs: Seconds, sample_rate: SampleRate) -> f32 {
     (secs.get() as f64 * sample_rate.get()) as f32
 }
 
-/// Mono delay with feedback. 1 input (audio), 1 output.
-/// Delay time can be modulated via the typed parameter handles.
+/// Mono delay with feedback: 1 audio input, 1 output.
+///
+/// [`Seconds`] delay time, [`Feedback`] recirculation and wet/dry [`Mix`] are
+/// all live [`Param`]s shared across clones, so a write reaches a node already
+/// in the graph. All three are read **once per block** in `process`, so
+/// automation lands at block granularity; for sample-accurate delay-time
+/// modulation use [`StereoDelayLineNode`]'s param-input ports.
+///
+/// The maximum delay is baked at construction and the line is never
+/// reallocated; a longer request is clamped at the read
+/// ([`DelayLine::read_sample`]) rather than rejected.
 pub struct DelayLineNode {
     delay: DelayLine,
     delay_time: Param<Seconds>,
@@ -123,6 +193,18 @@ pub struct DelayLineNode {
 }
 
 impl DelayLineNode {
+    /// Builds a mono delay: a line sized for `max_delay_secs`, an initial
+    /// `delay_secs` tap and `feedback` recirculation.
+    ///
+    /// `feedback` is clamped to the stable range — at or past unity a delay
+    /// self-oscillates and grows without bound. `mix` starts fully wet
+    /// ([`Mix::WET`]); set it for a parallel send.
+    ///
+    /// The line is sized at [`DEFAULT_SAMPLE_RATE`] and rebuilt by
+    /// `AudioUnit::set_sample_rate`, so `max_delay_secs` holds regardless of the
+    /// rate the graph ends up running at. Allocates.
+    ///
+    /// [`DEFAULT_SAMPLE_RATE`]: tutti_core::dsp::DEFAULT_SAMPLE_RATE
     pub fn new(
         max_delay_secs: impl Into<Seconds>,
         delay_secs: impl Into<Seconds>,
@@ -142,40 +224,71 @@ impl DelayLineNode {
         }
     }
 
+    /// Selects the fractional-read [`InterpolationMode`], replacing the
+    /// [`Linear`](InterpolationMode::Linear) default.
+    ///
+    /// Baked at construction — there is no live setter, because the mode is a
+    /// build-time quality choice rather than something to automate.
     pub fn with_interpolation(mut self, mode: InterpolationMode) -> Self {
         self.interpolation = mode;
         self
     }
 
+    /// The shared [`Seconds`] delay-time cell, for driving the delay time from
+    /// a modulator.
+    ///
+    /// Read once per block, so writes land at block granularity. Values past
+    /// the constructed maximum are clamped at the read rather than refused.
+    /// Shared across clones, so a write reaches the live node.
     pub fn delay_time(&self) -> Arc<AtomicF32> {
         self.delay_time.as_atomic()
     }
 
+    /// The shared [`Feedback`] cell governing how much of the delayed signal
+    /// recirculates.
+    ///
+    /// Writing the raw cell **bypasses the stability clamp** that
+    /// [`set_feedback`](Self::set_feedback) applies: at or past unity the delay
+    /// self-oscillates and grows without bound. Prefer the setter unless the
+    /// writer bounds the value itself.
     pub fn feedback(&self) -> Arc<AtomicF32> {
         self.feedback.as_atomic()
     }
 
+    /// The shared wet/dry [`Mix`] cell: `0.0` is the dry input untouched,
+    /// `1.0` the delayed signal alone.
+    ///
+    /// Shared across clones, so a write reaches the live node.
     pub fn mix(&self) -> Arc<AtomicF32> {
         self.mix.as_atomic()
     }
 
+    /// Sets the delay time in [`Seconds`], floored at 0.
+    ///
+    /// **Not** clamped to the constructed maximum — a longer request is
+    /// shortened at the read instead, so it takes effect as the longest delay
+    /// the line can hold.
     pub fn set_delay_time(&self, secs: impl Into<Seconds>) {
         self.delay_time.store(Seconds(secs.into().get().max(0.0)));
     }
 
+    /// Sets the [`Feedback`] amount, clamped to the stable range.
+    ///
+    /// The clamp is what keeps a delay from self-oscillating; it is why this is
+    /// the preferred path over writing [`feedback`](Self::feedback) directly.
     pub fn set_feedback(&self, fb: impl Into<Feedback>) {
         self.feedback.store(Feedback::new_clamped(fb.into().get()));
     }
 
+    /// Sets the wet/dry [`Mix`], clamped to `0.0..=1.0`.
     pub fn set_mix(&self, mix: impl Into<Mix>) {
         self.mix.store(Mix::new_clamped(mix.into().get()));
     }
 
-    /// `fb` is a [`Feedback`] beside an already-typed [`Mix`] — it was the one
-    /// bare control in a signature that had four `f32`s and one unit. `input`
-    /// and `delay_samples` stay raw: a sample value and a fractional read
-    /// position are per-sample scratch feeding an interpolating read, not
-    /// roster quantities.
+    /// `fb` is a [`Feedback`] beside an already-typed [`Mix`]. `input` and
+    /// `delay_samples` stay raw: a sample value and a fractional read position
+    /// are per-sample scratch feeding an interpolating read, not roster
+    /// quantities.
     #[inline]
     fn process_sample(&mut self, input: f32, delay_samples: f32, fb: Feedback, mix: Mix) -> f32 {
         let feedback_tap = self
@@ -249,8 +362,8 @@ impl AudioUnit for DelayLineNode {
 
     fn route(&mut self, input: &SignalFrame, _frequency: f64) -> SignalFrame {
         let mut out = SignalFrame::new(1);
-        // `route` wants f64, so this one never narrows: the old form went
-        // f32 → f64 and threw away precision on the way through.
+        // `route` wants f64, so this never narrows: going f32 → f64 would throw
+        // away precision on the way through.
         let delay_samples = self.delay_time.load().get() as f64 * self.sample_rate.get();
         out.set(0, input.at(0).delay(delay_samples));
         out
@@ -279,11 +392,14 @@ impl Clone for DelayLineNode {
 /// duplication across stereo DSP nodes.
 #[derive(Debug, Clone)]
 pub struct StereoPair<T> {
+    /// The left-channel value.
     pub l: T,
+    /// The right-channel value.
     pub r: T,
 }
 
 impl<T> StereoPair<T> {
+    /// Pairs `l` and `r` in channel order.
     #[inline]
     pub const fn new(l: T, r: T) -> Self {
         Self { l, r }
@@ -332,6 +448,15 @@ pub struct StereoDelayLineNode {
 }
 
 impl StereoDelayLineNode {
+    /// Builds a stereo delay with independent left and right delay times.
+    ///
+    /// Different L/R times are the classic ping-pong / widening setup. Both
+    /// lines are sized for `max_delay_secs`; `feedback` is clamped to the
+    /// stable range and applies to each channel's own recirculation.
+    /// Cross-feedback starts at [`Feedback::NONE`] — set it with
+    /// [`set_cross_feedback`](Self::set_cross_feedback) — and `mix` fully wet.
+    ///
+    /// Allocates.
     pub fn new(
         max_delay_secs: impl Into<Seconds>,
         delay_l_secs: impl Into<Seconds>,
@@ -404,20 +529,19 @@ impl StereoDelayLineNode {
     ///
     /// Width and modulation are **independent axes**: `channels` says how wide
     /// the delay is, the `mod_*` flags say which params it reads at audio rate.
-    /// They were not independent — this constructor delegated to [`Self::new`],
-    /// which is width 2 — so asking for a modulated 5.1 delay silently returned
-    /// a *stereo* one, and the only symptom was a `set_source` on a param port
-    /// that resolved and carried the wrong signal.
+    /// Collapsing them — building the modulated form at a fixed width 2 — turns
+    /// a request for a modulated 5.1 delay into a *stereo* one, and the only
+    /// symptom is a `set_source` on a param port that resolves and carries the
+    /// wrong signal.
     ///
     /// The param ports follow the audio inputs, so their indices **move with the
     /// width**. Ask [`ParamPorts::param_port`](crate::ParamPorts::param_port);
     /// never assume an index.
     ///
-    /// This takes one `delay_secs` for every channel, matching
-    /// [`Self::with_channels`], rather than the separate L/R times it used to:
-    /// per-channel authored delay has no positional meaning above width 2. The
-    /// stereo case is not lost, only moved past construction — set the two
-    /// apart with [`Self::set_delay_time_l`] / [`Self::set_delay_time_r`].
+    /// One `delay_secs` covers every channel, matching
+    /// [`Self::with_channels`]: per-channel authored delay has no positional
+    /// meaning above width 2. Set a stereo pair apart after construction with
+    /// [`Self::set_delay_time_l`] / [`Self::set_delay_time_r`].
     pub fn with_param_inputs(
         channels: usize,
         max_delay_secs: impl Into<Seconds>,
@@ -447,37 +571,71 @@ impl StereoDelayLineNode {
             .then_some(self.width() + self.mod_feedback as usize)
     }
 
+    /// Selects the fractional-read [`InterpolationMode`], replacing the
+    /// [`Linear`](InterpolationMode::Linear) default. Baked at construction.
     pub fn with_interpolation(mut self, mode: InterpolationMode) -> Self {
         self.interpolation = mode;
         self
     }
 
+    /// The shared [`Seconds`] delay-time cell for channel 0 (left).
+    ///
+    /// A present delay-time param-input port **overrides this per sample** —
+    /// see [`with_param_inputs`](Self::with_param_inputs). Otherwise read once
+    /// per block. Shared across clones.
     pub fn delay_time_l(&self) -> Arc<AtomicF32> {
         self.delay_time[0].as_atomic()
     }
 
+    /// The shared [`Seconds`] delay-time cell for channel 1 (right).
+    ///
+    /// On a mono-width node this is channel 0's cell, so the call is safe at
+    /// any width. Overridden per sample by a present delay-time port.
     pub fn delay_time_r(&self) -> Arc<AtomicF32> {
         self.delay_time[1.min(self.delay_time.len() - 1)].as_atomic()
     }
 
+    /// The shared [`Feedback`] cell for each channel's own recirculation.
+    ///
+    /// Writing the raw cell bypasses the stability clamp
+    /// [`set_feedback`](Self::set_feedback) applies. It is also bounded jointly
+    /// with cross-feedback at read time, since both feed the same loop.
     pub fn feedback(&self) -> Arc<AtomicF32> {
         self.feedback.as_atomic()
     }
 
+    /// The shared L↔R cross-[`Feedback`] cell: how much of each channel's delay
+    /// recirculates into the *other*.
+    ///
+    /// **Stereo only.** Above width 2 there is no meaningful N-way cross-feed,
+    /// so this is inert and each channel uses self-feedback alone.
     pub fn cross_feedback(&self) -> Arc<AtomicF32> {
         self.cross_feedback.as_atomic()
     }
 
+    /// The shared wet/dry [`Mix`] cell, applied to every channel alike.
     pub fn mix(&self) -> Arc<AtomicF32> {
         self.mix.as_atomic()
     }
 
+    /// Sets the L↔R cross-[`Feedback`], clamped to the stable range.
+    ///
+    /// Inert above width 2. Cross- and self-feedback feed the same
+    /// recirculation, so they are additionally bounded *as a pair* at read
+    /// time: clamping each to the stable maximum independently still admits a
+    /// combined value that runs away.
     pub fn set_cross_feedback(&self, cf: impl Into<Feedback>) {
         self.cross_feedback
             .store(Feedback::new_clamped(cf.into().get()));
     }
 
-    /// Set all channel delay times to the same value.
+    /// Sets every channel's delay time to the same value, clamped to
+    /// `0..=max_delay`.
+    ///
+    /// The linked control — use it when the channels should track. For a
+    /// ping-pong spread set the two apart with
+    /// [`set_delay_time_l`](Self::set_delay_time_l) /
+    /// [`set_delay_time_r`](Self::set_delay_time_r).
     pub fn set_delay_time(&self, secs: impl Into<Seconds>) {
         let v = self.clamp_delay(secs.into());
         for dt in &self.delay_time {
@@ -485,19 +643,29 @@ impl StereoDelayLineNode {
         }
     }
 
+    /// Sets channel 0's (left) delay time, clamped to `0..=max_delay`.
     pub fn set_delay_time_l(&self, secs: impl Into<Seconds>) {
         self.delay_time[0].store(self.clamp_delay(secs.into()));
     }
 
+    /// Sets channel 1's (right) delay time, clamped to `0..=max_delay`.
+    ///
+    /// Falls back to channel 0 on a mono-width node, so the call is safe at any
+    /// width.
     pub fn set_delay_time_r(&self, secs: impl Into<Seconds>) {
         let idx = 1.min(self.delay_time.len() - 1);
         self.delay_time[idx].store(self.clamp_delay(secs.into()));
     }
 
+    /// Sets each channel's self-[`Feedback`], clamped to the stable range.
+    ///
+    /// Bounded jointly with cross-feedback at read time — see
+    /// [`set_cross_feedback`](Self::set_cross_feedback).
     pub fn set_feedback(&self, fb: impl Into<Feedback>) {
         self.feedback.store(Feedback::new_clamped(fb.into().get()));
     }
 
+    /// Sets the wet/dry [`Mix`] for every channel, clamped to `0.0..=1.0`.
     pub fn set_mix(&self, mix: impl Into<Mix>) {
         self.mix.store(Mix::new_clamped(mix.into().get()));
     }
@@ -566,7 +734,7 @@ impl StereoDelayLineNode {
     }
 
     /// The stereo (width-2) sample step: L↔R cross-feedback. Reads/writes
-    /// `delays[0]` (L) and `delays[1]` (R). Bit-identical to the original.
+    /// `delays[0]` (L) and `delays[1]` (R).
     #[inline]
     fn process_sample(&mut self, in_l: f32, in_r: f32, p: &StereoDelayParams) -> (f32, f32) {
         let fb_l = self.delays[0].read_sample((p.dl.max(1.0) - 1.0).max(0.0), p.interp);
@@ -656,7 +824,7 @@ impl AudioUnit for StereoDelayLineNode {
     #[inline]
     fn tick(&mut self, input: &[f32], output: &mut [f32]) {
         if self.width() == 2 {
-            // Stereo cross-feed path — bit-identical to the original unit.
+            // Stereo cross-feed path.
             let params = if !self.mod_feedback && !self.mod_delay_time {
                 self.snapshot_params()
             } else {
@@ -676,7 +844,7 @@ impl AudioUnit for StereoDelayLineNode {
 
     fn process(&mut self, size: usize, input: &BufferRef, output: &mut BufferMut) {
         if self.width() == 2 {
-            // Fast path: no param ports — snapshot once per block, bit-identical.
+            // Fast path: no param ports — snapshot once per block.
             if !self.mod_feedback && !self.mod_delay_time {
                 let params = self.snapshot_params();
                 for i in 0..size {
@@ -1107,9 +1275,8 @@ mod tests {
 
     /// Width and modulation are independent axes.
     ///
-    /// The regression for the bug this constructor had: it delegated to
-    /// `Self::new`, which is width 2, so a modulated 6-channel delay came back
-    /// *stereo*. The arity assertion fails against that version.
+    /// Building the modulated form at a fixed width 2 makes a 6-channel request
+    /// come back *stereo*; the arity assertion is what catches it.
     #[test]
     fn a_modulated_delay_is_as_wide_as_it_was_asked_for() {
         let d = StereoDelayLineNode::with_param_inputs(6, 1.0, 0.01, 0.5, true, true);

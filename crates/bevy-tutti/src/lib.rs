@@ -61,29 +61,23 @@
 
 mod plugin;
 
-/// Binding the DSP graph to an ECS world: resources, the reconcile pipeline,
-/// and the transport / metering wrappers.
 pub mod graph;
 
-/// MIDI routing, sequencing, device management and MIDI-CI negotiation.
+// Each `pub mod` below carries its own `//!` header. A `///` here would shadow
+// it *and* be resolved in this module's scope, so every intra-doc link in the
+// module's header would break.
 #[cfg(feature = "midi")]
 pub mod midi;
 
-/// Control-rate modulation: LFO sources and mod-matrix edges as ECS entities.
 #[cfg(feature = "modulation")]
 pub mod modulation;
 
-/// The live audio I/O edge: mic in, WAV out, and the pump between them.
 #[cfg(feature = "audio-io")]
 pub mod io;
 
-/// Clip playback and sample assets: the `.wav` loader, the `DiskStreamer`
-/// handle and voice spawning. Adapts `tutti-sampler`.
 #[cfg(feature = "sampler")]
 pub mod sampler;
 
-/// SoundFont assets and their playback systems. Named for `tutti-soundfont`,
-/// the engine crate it adapts — every module here matches its crate.
 #[cfg(feature = "soundfont")]
 pub mod soundfont;
 
@@ -100,16 +94,12 @@ pub use tutti_polysynth as polysynth;
 #[cfg(feature = "spatial")]
 pub use tutti_spatial as spatial;
 
-/// Plugin (VST2/VST3/CLAP/AU) editor lifecycle, crash detection and catalog
-/// scanning.
 #[cfg(feature = "plugin")]
 pub mod plugin_host;
 
-/// Offline export: runs `tutti-export`'s synchronous renders on the task pool.
 #[cfg(feature = "export")]
 pub mod export;
 
-/// The Tutti audio engine: CPAL callback, DSP graph, device driver, bootstrap.
 pub mod engine;
 
 pub use plugin::TuttiPlugin;

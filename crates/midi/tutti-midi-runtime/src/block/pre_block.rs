@@ -72,8 +72,8 @@ pub struct MidiPreBlock {
     /// [`MIDI_EVENT_BUFFER_CAPACITY`] are dropped (never allocated) on the audio
     /// thread.
     events: RtEventBuf<(usize, MidiEvent), MIDI_EVENT_BUFFER_CAPACITY>,
-    /// Scratch the hardware [`MidiIn`] fills each block via `poll_block`,
-    /// before we copy into `events`. Interior-mutable so `run` stays `&self` on
+    /// Scratch the hardware [`MidiIn`] fills each block via `poll_block`, read
+    /// out into `events`. Interior-mutable so `run` stays `&self` on
     /// the audio path; single-audio-thread access (same contract `events` relies
     /// on).
     poll_scratch: AudioThreadCell<[MidiEvent; MIDI_EVENT_BUFFER_CAPACITY]>,
@@ -130,10 +130,10 @@ impl MidiPreBlock {
 
     /// Install the hardware / live MIDI source polled each block.
     /// A [`MidiIn`] and not a [`MidiUnitIn`]: this phase *decides* the
-    /// unit ids, so it has none to pass. It used to poll a `MidiIn` with a
-    /// `MidiUnitId::new(0)` sentinel — a real id, which meant a per-unit source
-    /// installed here would silently have received the entire hardware stream.
-    /// The type now refuses that install.
+    /// unit ids, so it has none to pass. The distinction is load-bearing: a
+    /// `MidiUnitId::new(0)` sentinel is not a distinguishable "no unit" — `0` is
+    /// a real id, so a per-unit source installed at this seam would silently
+    /// receive the entire hardware stream. The type refuses that install.
     ///
     /// [`MidiUnitIn`]: tutti_midi_types::MidiUnitIn
     pub fn set_input(&mut self, input: Arc<dyn MidiIn>) {
@@ -159,7 +159,7 @@ impl MidiPreBlock {
     }
 
     /// Install the classic-MPE → native-per-note ingestion transform for the
-    /// configured [`MpeMode`](tutti_midi_types::mpe::MpeMode). Applied after the
+    /// configured [`MpeMode`]. Applied after the
     /// (N)RPN assembler, so downstream nodes receive only native per-note MIDI-2.
     /// Off-RT; call at wiring time (and on MPE-mode change).
     pub fn set_mpe_ingest(&mut self, ingest: MpeIngest) {
@@ -267,8 +267,8 @@ impl MidiPreBlock {
 
         // Drain the input into scratch, then copy the routed subset into
         // `events` — all inside one `borrow_mut`. The copy is bounded and
-        // allocation-free. We drain even when nothing is routed, so the hardware
-        // rings don't back up.
+        // allocation-free. The drain runs even when nothing is routed, so the
+        // hardware rings don't back up.
         let mut scratch = self.poll_scratch.borrow_mut();
         let n = input.poll_block(frames, &mut scratch[..]);
 

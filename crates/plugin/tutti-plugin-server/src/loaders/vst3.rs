@@ -226,7 +226,7 @@ fn vst3_descriptor(info: &tutti_vst3_host::PluginInfo, editor: EditorPresence) -
 }
 
 /// Per-bus channel counts for one direction. The host already enumerates every
-/// audio bus; we carry the full list verbatim so sidechain/aux buses survive.
+/// audio bus; the full list is carried verbatim so sidechain/aux buses survive.
 /// Falls back to a single main bus of `main_channels` when the host reported no
 /// per-bus list (e.g. a plugin with exactly one bus that mirrors `num_*`).
 fn bus_channels(host_buses: &[usize], main_channels: usize) -> BusChannels {

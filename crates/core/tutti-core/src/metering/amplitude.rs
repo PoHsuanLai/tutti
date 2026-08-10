@@ -11,9 +11,13 @@ use tutti_types::{Amplitude, StereoPlanes};
 /// RMS, and no compiler catches it. Naming them does.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct MeterReading {
+    /// Largest absolute sample on the left channel over the measured block.
     pub peak_left: Amplitude,
+    /// Largest absolute sample on the right channel over the measured block.
     pub peak_right: Amplitude,
+    /// Root-mean-square level of the left channel over the measured block.
     pub rms_left: Amplitude,
+    /// Root-mean-square level of the right channel over the measured block.
     pub rms_right: Amplitude,
 }
 
@@ -37,6 +41,7 @@ impl Default for AtomicAmplitude {
 }
 
 impl AtomicAmplitude {
+    /// A silent cell — all four levels at zero.
     pub fn new() -> Self {
         Self {
             peak_left: AtomicF32::new(0.0),
@@ -46,6 +51,11 @@ impl AtomicAmplitude {
         }
     }
 
+    /// The four levels as last published.
+    ///
+    /// The four loads are independent, so a reading may straddle two blocks —
+    /// acceptable for a meter, where the display refreshes far slower than the
+    /// audio thread writes.
     #[inline]
     pub fn get(&self) -> MeterReading {
         MeterReading {
@@ -56,6 +66,7 @@ impl AtomicAmplitude {
         }
     }
 
+    /// Publish all four levels. RT-safe: four stores, no allocation.
     #[inline]
     pub fn set(&self, reading: MeterReading) {
         self.peak_left
@@ -73,12 +84,12 @@ impl AtomicAmplitude {
     /// RT-safe: reads two slices, does four folds, stores four atomics.
     ///
     /// Takes a [`StereoPlanes`] rather than two loose slices because the RMS
-    /// divisor is the pair's *shared* frame count. This was
-    /// `measure(left, right)` deriving `frames = left.len()` and never checking
-    /// `right`, so a short right channel divided its sum of squares by the wrong
-    /// count and published a quietly wrong level. The pairing cannot be formed
-    /// unless the two agree, so the bug is now unrepresentable rather than
-    /// merely unreached.
+    /// divisor is the pair's *shared* frame count. Two loose slices let a
+    /// caller derive `frames` from the left and never check the right, so a
+    /// short right channel divides its sum of squares by the wrong count and
+    /// publishes a quietly wrong level. The pairing cannot be formed unless the
+    /// two agree, which makes that unrepresentable rather than merely
+    /// unreached.
     ///
     /// The four folds below read the planes directly rather than through an
     /// accessor per sample — they autovectorize, and the newtype's inner-loop
@@ -118,18 +129,25 @@ pub struct MasterMeter {
 }
 
 impl MasterMeter {
+    /// A silent, **disabled** meter. Nothing is measured until
+    /// [`enable`](Self::enable) is called.
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Start measuring. The audio callback begins deinterleaving its buffer on
+    /// the next block.
     pub fn enable(&self) {
         self.enabled.store(true, Ordering::Release);
     }
 
+    /// Stop measuring, skipping the deinterleave entirely. The last reading
+    /// stays readable and goes stale.
     pub fn disable(&self) {
         self.enabled.store(false, Ordering::Release);
     }
 
+    /// Whether the audio callback is filling this meter.
     pub fn is_enabled(&self) -> bool {
         self.enabled.load(Ordering::Acquire)
     }

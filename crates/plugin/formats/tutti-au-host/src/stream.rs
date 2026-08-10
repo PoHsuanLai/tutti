@@ -110,9 +110,10 @@ impl StreamConfig {
     /// Sets `MaximumFramesPerSlice`, then the input/output stream formats.
     /// Stream-format sets are best-effort (a rejection is not fatal) because
     /// many AUs refuse mono/non-native formats and keep their own layout. When
-    /// that happens we must not assume the requested channel counts stuck: we
-    /// re-`get_property` the accepted format and report the layout the AU is
-    /// really running, so the caller sizes `RenderScratch` to match. Sizing the
+    /// that happens the requested channel counts must not be assumed to have
+    /// stuck: the accepted format is re-`get_property`'d and the layout the AU
+    /// is really running is reported, so the caller sizes `RenderScratch` to
+    /// match. Sizing the
     /// scratch to a rejected (larger) layout is a topology mismatch that reads
     /// out-of-bounds during render.
     ///
@@ -124,8 +125,8 @@ impl StreamConfig {
     /// and keep their own width, which is what this returns.
     ///
     /// The **sample rate**, unlike the channel layout, is NOT best-effort.
-    /// A channel-count rejection is recoverable — we resize the
-    /// scratch and carry on — but a rejected sample rate is not: the config
+    /// A channel-count rejection is recoverable — resize the scratch and carry
+    /// on — but a rejected sample rate is not: the config
     /// would record a rate the AU is not running at, and `sample_rate()` /
     /// `get_latency()` both trust that number, so the block would be rendered
     /// at the wrong rate (pitch/time drift) with a PDC latency computed against
@@ -336,9 +337,11 @@ mod tests {
         )
     }
 
-    /// The old code `let _`'d the stream-format set, re-read only
-    /// `mChannelsPerFrame`, and returned `Ok(())` regardless — so a rejected
-    /// rate was recorded as if accepted. The read-back must reject it.
+    /// A rate the AU did not take must be an error, not a silent `Ok`.
+    ///
+    /// Reading back only `mChannelsPerFrame` and returning `Ok(())` regardless
+    /// records a rejected rate as if accepted; the rate read-back is the only
+    /// thing that catches it.
     #[test]
     fn a_rate_the_au_did_not_accept_is_an_error() {
         let config = config_at(48_000.0);
@@ -346,9 +349,8 @@ mod tests {
         // Exactly what was asked for: accepted.
         assert!(config.check_sample_rate("output", 48_000.0).is_ok());
 
-        // The AU kept its own rate. This is the case that used to pass silently
-        // and then render at the wrong rate with a PDC latency computed against
-        // a phantom 48 kHz.
+        // The AU kept its own rate. Passing this silently renders at the wrong
+        // rate, with a PDC latency computed against a phantom 48 kHz.
         let err = config
             .check_sample_rate("output", 44_100.0)
             .expect_err("a different rate must not be reported as success");

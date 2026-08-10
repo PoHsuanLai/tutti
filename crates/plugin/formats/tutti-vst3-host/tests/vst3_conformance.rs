@@ -2569,13 +2569,13 @@ fn param_id_for_function_name_resolves_known_functions() {
 
 /// The factory's flag word survives the read.
 ///
-/// `PFactoryInfo::flags` used to be dropped on the floor — `get_factory_info`
-/// copied vendor, url and email and simply did not mention the fourth field.
-/// Nothing in tutti acts on the flags yet, which is exactly why the omission
-/// went unnoticed: no caller could miss what no caller could ask for.
+/// `PFactoryInfo::flags` is easy to drop on the floor — copying vendor, url and
+/// email and simply not mentioning the fourth field. Nothing in tutti acts on
+/// the flags yet, which is exactly why such an omission goes unnoticed: no
+/// caller can miss what no caller can ask for.
 ///
 /// Every plugin in the corpus reports `kUnicode` and nothing else, so this is
-/// checkable without any plugin setting the flag we actually care about.
+/// checkable without any plugin setting the flag that would matter most.
 /// `kClassesDiscardable` is set by none of them — which is also why the drop
 /// was invisible from the outside, and why the decode itself is pinned by unit
 /// tests rather than here.

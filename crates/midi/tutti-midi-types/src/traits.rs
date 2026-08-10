@@ -11,14 +11,13 @@
 //! single-stream endpoint *is* its address, so passing one would be meaningless,
 //! while a fan-out cannot answer without one.
 //!
-//! The read side used to be a single `MidiIn` spanning both columns, with a
-//! `unit_id` parameter for the fan-out half. Three of its four implementors
-//! treated that parameter as dead weight — two checked it against an id they
-//! already owned, one ignored it outright — and the hardware edge had to be
-//! polled with a `MidiUnitId::new(0)` sentinel, which is a *real* id and would
-//! have handed the whole hardware stream to any per-unit source installed at
-//! that seam. Splitting on arity removes the parameter where it was noise and
-//! keeps it where it selects.
+//! Do not collapse the read side back into one trait carrying an optional
+//! `unit_id`. A single-stream implementor has nothing to compare the id against,
+//! so it either re-checks an id it already owns or ignores it — and the hardware
+//! edge then has to be polled with a `MidiUnitId::new(0)` sentinel, which is a
+//! *real* id: install a per-unit source at that seam and the whole hardware
+//! stream silently goes to it. Splitting on arity drops the parameter where it is
+//! noise and keeps it where it selects.
 //!
 //! All four live together because they *are* the routing hot path: lock-free,
 //! alloc-free, called once per block. A unit's routing address is exposed by its
@@ -50,11 +49,11 @@ pub trait MidiOut: Send + Sync {
     /// produces a stuck note, so a caller with anywhere to report it must.
     /// A sink that cannot fail returns `events.len()`.
     ///
-    /// The count is here rather than on the implementations alone because it
-    /// used to be: `MidiSender::queue` computed one and the `()` trait impl threw
-    /// it away, so the capable path and the obvious path differed with nothing to
-    /// signal which was which — and `MidiSession::send` reported
-    /// `events.len()` for a device that had refused every one.
+    /// The count belongs on the trait, not on individual implementations: leave
+    /// it off and a capable sink computes a real figure while a trivial one
+    /// discards it, so the two paths disagree with nothing to signal which is
+    /// which — and a session layer ends up reporting `events.len()` for a device
+    /// that refused every event.
     ///
     /// A partial accept is a **prefix**, not a subset: an implementation that
     /// hits a failure stops there rather than skipping and continuing, so the

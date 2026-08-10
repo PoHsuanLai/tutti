@@ -19,16 +19,15 @@
 //! }
 //! ```
 //!
-//! The fluent builder this replaced put every setter on every path, including
-//! four that one path silently ignored. A literal cannot do that: the fields a
+//! A literal is what keeps a setter off a path that ignores it: the fields a
 //! stage reads are the fields in the struct it is handed.
 //!
-//! **This module is data, and only data.** No method here reads a graph, opens
-//! a file, or decides anything — the derivations that used to hang off these
-//! structs live next to the code that needs them (`render::plan` for frame
-//! counts, `encode` for the codec rate). A config you can construct without a
-//! `Net` and compare with `==` is one a caller can build up, log, diff, and hand
-//! around; one with an "ask the graph" mode is not.
+//! **This module is data, and only data.** No method here reads a graph, opens a
+//! file, or decides anything — the derivations live next to the code that needs
+//! them (`render::plan` for frame counts, `encode` for the codec rate). A config
+//! constructible without a `Net` and comparable with `==` is one a caller can
+//! build up, log, diff, and hand around; one with an "ask the graph" mode is
+//! not.
 
 use crate::options::{AudioFormat, BitDepth, Dither};
 use crate::process::ChunkSize;
@@ -41,19 +40,21 @@ pub struct RenderConfig {
     /// Rate the graph is rendered at. The output rate may differ — see
     /// [`ExportConfig::resample`].
     pub sample_rate: SampleRate,
-    /// Length in seconds. `f64` deliberately — see [`duration_to_frames`].
+    /// Length of the audible span, in seconds. `f64` deliberately — see
+    /// [`duration_to_frames`](crate::duration_to_frames), which explains why
+    /// `Seconds` (an f32) cannot carry an hour-long render.
     pub duration_seconds: f64,
-    /// Leading frames to drop — look-ahead limiters, linear-phase filters.
+    /// Leading FRAMES to drop — look-ahead limiters, linear-phase filters.
     ///
-    /// A plain count, not a `Trim { None, Reported, Exact }` enum. `Reported`
-    /// meant "ask the graph", which forced `RenderPlan::new` to take a
-    /// `&mut Net` for arithmetic that is otherwise pure, and put a decision
-    /// inside a value. Callers that want the graph's own figure call
+    /// A plain count, not a `{ None, Reported, Exact }` enum: an "ask the graph"
+    /// mode would force `RenderPlan::new` to take a `&mut Net` for arithmetic
+    /// that is otherwise pure, putting a decision inside a value. Callers that
+    /// want the graph's own figure call
     /// [`reported_latency`](crate::reported_latency) and pass the answer — the
     /// same shape as the clock, for the same reason: the caller knows, so the
     /// caller says.
     pub latency: Samples,
-    /// Trailing frames to render past the audible span — reverb decay, delay
+    /// Trailing FRAMES to render past the audible span — reverb decay, delay
     /// repeats.
     ///
     /// Unlike [`latency`](Self::latency) these are *kept*: they are audio the
@@ -83,7 +84,10 @@ impl Default for RenderConfig {
 /// The encode stage: what file to write.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct EncodeConfig {
+    /// The container to write, carrying that format's own settings.
     pub format: AudioFormat,
+    /// Depth the samples are quantized to. `Float32` does not quantize, so it is
+    /// also the depth [`ExportConfig::dither`] is ignored at.
     pub bit_depth: BitDepth,
     /// Width of the written file. A graph wider than this is folded with the
     /// ITU/Dolby matrix, never truncated; a narrower one is zero-filled.
@@ -93,11 +97,17 @@ pub struct EncodeConfig {
 /// Sample-rate conversion applied on the way out.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Resample {
+    /// Rate the file is written at. Equal to the render rate means no
+    /// conversion — the comparison is made on the integer rate the codec headers
+    /// speak, so two rates an ULP apart are the same rate.
     pub target_rate: SampleRate,
+    /// Input FRAMES per FFT chunk, and how finely each is subdivided. Sets the
+    /// converter's anti-alias steepness and its latency.
     pub chunk: ChunkSize,
 }
 
 impl Resample {
+    /// Convert to `target_rate` with the default [`ChunkSize`].
     pub fn to(target_rate: impl Into<SampleRate>) -> Self {
         Self {
             target_rate: target_rate.into(),
@@ -115,7 +125,9 @@ impl Resample {
 /// `Loudness::gain_to`, apply it. That is why this crate can stream.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct ExportConfig {
+    /// What to produce, and for how long.
     pub render: RenderConfig,
+    /// What file to write it into.
     pub encode: EncodeConfig,
     /// `None` writes at the render rate.
     pub resample: Option<Resample>,

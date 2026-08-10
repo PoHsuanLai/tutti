@@ -44,7 +44,7 @@ pub(crate) enum Reaction {
     Reply(BridgeMessage),
     /// No reply; keep looping.
     None,
-    /// Host asked us to shut down.
+    /// The host asked for shutdown; leave the loop.
     Shutdown,
 }
 
@@ -64,15 +64,30 @@ impl Reaction {
     }
 }
 
+/// All state one hosted plugin needs, and the dispatch over it.
+///
+/// Holds no transport, so a test drives it by calling [`Session::handle`]
+/// directly with a [`HostMessage`].
 pub(crate) struct Session {
+    /// The hosted plugin, or `None` before a load and after an unload. Every
+    /// handler that needs one refuses explicitly rather than going silent.
     pub(crate) plugin: Option<Plugin>,
+    /// The shared-memory audio slab, established during the handshake phase.
+    /// `None` until then, and cleared on unload alongside `plugin`.
     pub(crate) shm: Option<AudioSlab>,
+    /// Per-block scratch and the process driver. Outlives individual plugins so
+    /// its buffers survive a reload without re-allocating.
     pub(crate) pipeline: AudioPipeline,
+    /// Whether the plugin's editor window is open, and its native handle.
     pub(crate) editor: EditorState,
+    /// Sample rate + negotiated format. Written on load and on an explicit
+    /// `SetSampleRate`; read by every block.
     pub(crate) clock: Clock,
 }
 
 impl Session {
+    /// An empty session: no plugin, no slab, editor closed, and a default
+    /// [`Clock`] that the first load overwrites.
     pub(crate) fn new() -> Self {
         let clock = Clock::default();
         Self {
@@ -85,6 +100,16 @@ impl Session {
     }
 
     /// Translate `msg` into state changes + a [`Reaction`].
+    ///
+    /// **A request that expects a frame always gets one**, including on the
+    /// refusal paths: the host blocks waiting for the reply, so answering
+    /// [`Reaction::None`] where it expects one hangs it until its timeout.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error only when a failure cannot be expressed as a reply the
+    /// host can act on. Plugin-level failures — a load that fails, a request
+    /// with no plugin loaded — come back as an error-carrying `Reply` instead.
     pub(crate) fn handle(&mut self, msg: HostMessage) -> Result<Reaction> {
         use HostMessage as M;
         match msg {
@@ -558,11 +583,10 @@ mod tests {
     #[test]
     /// A `LoadState` with no plugin loaded answers, and answers with a refusal.
     ///
-    /// It used to answer `Reaction::None` — silence. That was the subprocess
-    /// half of a bug whose host half was a literal `reply.send(true)`: between
-    /// them, a caller asking a plugin-less session to load state was told the
-    /// state had loaded. The host now *waits* for this frame, so a silence here
-    /// would hang it until the state timeout.
+    /// Answering `Reaction::None` — silence — is the failure this pins. The host
+    /// *waits* for this frame, so a silence hangs it until the state timeout;
+    /// and paired with a host that assumes success, it reports a state load that
+    /// never happened.
     #[test]
     fn load_state_no_plugin_refuses_rather_than_going_silent() {
         let mut s = Session::new();
@@ -778,11 +802,9 @@ mod tests {
 
     /// A `LoadState` that the plugin accepted.
     ///
-    /// Replaces an `assert_none` here: a successful load now *answers*, with
-    /// `StateLoaded { error: None }`, so the old assertion of silence would
-    /// reject the success. Asserting the acceptance is strictly stronger than
-    /// asserting nothing came back — a refusal used to be indistinguishable
-    /// from a success at this layer.
+    /// Asserts `StateLoaded { error: None }` rather than mere silence, which is
+    /// strictly stronger: against an `assert_none`, a refusal is
+    /// indistinguishable from a success at this layer.
     #[cfg(feature = "clap")]
     fn assert_state_loaded(r: Reaction) {
         match r.into_reply() {

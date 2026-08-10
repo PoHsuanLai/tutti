@@ -119,3 +119,9 @@ tutti-midi-types = { path = "../../midi/tutti-midi-types" }
 # *node* dispatched rather than what the instance API does.
 libloading = "0.8"
 tutti-vst2-test-plugin = { path = "../vendor/tutti-vst2-test-plugin" }
+
+# docs.rs renders with every feature on. `default = []` keeps the engine
+# Bevy-free for consumers, but it would otherwise publish a page with the
+# feature-gated half of the public API missing.
+[package.metadata.docs.rs]
+all-features = true

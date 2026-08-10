@@ -6,9 +6,9 @@
 //! that `Sample.loop_start` was moved to `SamplePosition` (f64) to escape — so
 //! it takes the tier this crate reserves for multi-field state: a command queue.
 //!
-//! `VoicePool` has had one since before this file existed. `VoiceNode` did not,
-//! and its own module doc said so ("no command channel"), which is why moving a
-//! sample clip on a timeline could not reach a playing voice at all.
+//! `VoicePool` carries such a queue, and `VoiceNode` needs its own for the same
+//! reason: without one, moving a sample clip on a timeline cannot reach a
+//! playing standalone voice at all.
 //!
 //! # The two hazards this file exists to pin
 //!

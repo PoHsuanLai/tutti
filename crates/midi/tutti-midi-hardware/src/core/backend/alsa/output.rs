@@ -34,6 +34,18 @@ impl AlsaOutput {
     /// The inherent-method-plus-thin-trait-impl idiom: a caller holding the
     /// concrete type gets the ALSA code, while the erased [`MidiOut`] keeps the
     /// ring-shaped `queue`.
+    ///
+    /// `words` is one complete UMP message; only its first 4 words are sent,
+    /// which is the whole of any UMP message. Empty input is a no-op.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Alsa`](crate::Error::Alsa) with the code
+    /// `snd_seq_ump_event_output_direct` returned.
+    ///
+    /// # Panics
+    ///
+    /// If the output mutex was poisoned by a previous panic while sending.
     pub fn send_ump(&self, words: &[u32]) -> Result<()> {
         if words.is_empty() {
             return Ok(());
@@ -49,7 +61,7 @@ impl AlsaOutput {
                 client: inner.own_client as u8,
                 port: inner.port as u8,
             },
-            // **Not** the destination's own address, even though we know it.
+            // **Not** the destination's own address, even though it is known.
             //
             // The port is already subscribed (`snd_seq_connect_to` at open), and
             // an explicit `dest` on top of a subscription is rejected outright —
@@ -102,6 +114,11 @@ impl MidiOut for AlsaOutput {
 }
 
 /// Open `id` for output.
+///
+/// # Errors
+///
+/// [`Error::Alsa`](crate::Error::Alsa) if the sequencer cannot be opened, the
+/// port created, or the subscription to `id` made.
 pub fn open(id: EndpointId) -> Result<Box<dyn MidiOut>> {
     let (dest_client, dest_port) = unpack_id(id);
 

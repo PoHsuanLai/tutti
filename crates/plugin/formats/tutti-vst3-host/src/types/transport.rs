@@ -246,11 +246,11 @@ mod tests {
     /// A TransportInfo with every field set to a recognisable non-zero value,
     /// so a "field was populated" check is unambiguous.
     ///
-    /// Built through the `with_*` constructors, **not** struct literals. The
-    /// literal form used to hand-fill `LoopRegion { start_quarters, end_quarters }`
-    /// directly, which is precisely why `with_loop` shipping without setting the
-    /// `_quarters` pair passed CI: the test asserted this host reads the fields,
-    /// never that the constructor writes them.
+    /// Built through the `with_*` constructors, **not** struct literals. A
+    /// literal hand-filling `LoopRegion { start_quarters, end_quarters }`
+    /// directly would let `with_loop` ship without setting the `_quarters` pair
+    /// and still pass: the test would assert this host reads the fields, never
+    /// that the constructor writes them.
     fn populated_transport() -> TransportInfo {
         TransportInfo::new()
             .with_sample_rate(48_000.0)

@@ -74,6 +74,7 @@ impl BeatsPerBar {
         })
     }
 
+    /// The numerator, clamped into `1..=MAX_BEATS_PER_BAR` on the way in.
     #[inline]
     pub const fn get(self) -> u32 {
         self.0
@@ -143,6 +144,7 @@ impl NoteValue {
         )
     }
 
+    /// The denominator as written — `8` for 7/8. Always a power of two.
     #[inline]
     pub const fn get(self) -> u32 {
         self.0
@@ -286,11 +288,14 @@ impl TimeSignature {
         Self::new(BeatsPerBar::new(beats_per_bar), NoteValue::new(note_value))
     }
 
+    /// The numerator. **Not** a bar length — see
+    /// [`bar_length`](Self::bar_length).
     #[inline]
     pub const fn beats_per_bar(self) -> BeatsPerBar {
         self.beats_per_bar
     }
 
+    /// The denominator: which note value gets one notated beat.
     #[inline]
     pub const fn note_value(self) -> NoteValue {
         self.note_value
@@ -352,11 +357,15 @@ impl BarNumber {
     /// The first bar of the timeline.
     pub const FIRST: Self = Self(1);
 
+    /// Wraps a **1-based** bar number. For a 0-based index use
+    /// [`from_index`](Self::from_index).
     #[inline]
     pub const fn new(n: i64) -> Self {
         Self(n)
     }
 
+    /// The 1-based bar number as displayed. Signed, so a pickup bar before bar
+    /// 1 is representable.
     #[inline]
     pub const fn get(self) -> i64 {
         self.0
@@ -379,11 +388,13 @@ impl BarNumber {
 }
 
 impl BarCount {
+    /// Wraps a signed displacement in bars. Negative counts run backwards.
     #[inline]
     pub const fn new(n: i64) -> Self {
         Self(n)
     }
 
+    /// The raw displacement in bars.
     #[inline]
     pub const fn get(self) -> i64 {
         self.0
@@ -600,10 +611,15 @@ pub struct MeterChange {
     /// Where the new signature takes effect. Always a bar line — see
     /// [`MeterMap`].
     pub beat: Beat,
+    /// The signature in force from `beat` until the next change, or forever.
     pub signature: TimeSignature,
 }
 
 impl MeterChange {
+    /// Pairs a signature with the bar line it takes effect on.
+    ///
+    /// The bar-line alignment is [`MeterMap::new`]'s to enforce, not this
+    /// constructor's — a change built here is not yet validated.
     #[inline]
     pub const fn new(beat: Beat, signature: TimeSignature) -> Self {
         Self { beat, signature }
@@ -636,11 +652,11 @@ pub struct MeterMap {
 
 /// Serialize as the change list alone, and rebuild through [`MeterMap::new`].
 ///
-/// **Both directions are hand-written**, which is one more than
-/// [`BeatsPerBar`]/[`NoteValue`] need. Those keep a derived `Serialize` because
-/// writing out an already-valid value needs no checking; `MeterMap` cannot,
-/// because `starts` is a *derived cache* and a derived `Serialize` would put it
-/// on the wire.
+/// # Why `Serialize` is hand-written too
+///
+/// [`BeatsPerBar`]/[`NoteValue`] keep a derived `Serialize`, because writing out
+/// an already-valid value needs no checking. `MeterMap` cannot: `starts` is a
+/// *derived cache*, and a derived `Serialize` would put it on the wire.
 ///
 /// Emitting it would make the format carry two fields that can contradict each
 /// other, and [`bar_at`](MeterMap::bar_at) / [`bar_start`](MeterMap::bar_start)
@@ -650,6 +666,8 @@ pub struct MeterMap {
 /// host's `save → load → save` byte-identical: the round trip re-derives `starts`,
 /// so a persisted cache that ever drifted would surface as a mystery
 /// fixed-point failure instead of the corruption it is.
+///
+/// # Why `Deserialize` routes through `new`
 ///
 /// `Deserialize` routes through `new()` for the reason the whole module already
 /// gives for [`TimeSignature`]: deserialization is the untrusted edge the
@@ -1056,9 +1074,9 @@ mod tests {
         // fragment, it still counts as one bar, so the change always begins
         // bar 2 — and bar 1 has exactly one downbeat.
         //
-        // Swept rather than fixed at a single offset: the first version of this
-        // test used only 2.0, which is the one value where the old `.round()`
-        // happened to give the right answer. Every other offset exposed the bug.
+        // Swept rather than fixed at a single offset: 2.0 is the one value a
+        // `.round()`-based bar count gets right by accident, so a test pinned
+        // there passes over the bug every other offset exposes.
         for offset in [0.5, 1.0, 2.0, 3.0, 3.5] {
             let map = MeterMap::new([
                 MeterChange::new(Beat(0.0), TimeSignature::default()),
@@ -1196,7 +1214,7 @@ mod tests {
 
     #[test]
     fn abi_conversions_coerce_hostile_input() {
-        // The CLAP boundary used to do `as u16` on an i32: -1 became 65535.
+        // A bare `as u16` on an i32 at the CLAP boundary turns -1 into 65535.
         assert_eq!(BeatsPerBar::from(-1i32).get(), 1);
         assert_eq!(BeatsPerBar::from(i32::MAX).get(), MAX_BEATS_PER_BAR);
         assert_eq!(NoteValue::from(-1i32).get(), 1);

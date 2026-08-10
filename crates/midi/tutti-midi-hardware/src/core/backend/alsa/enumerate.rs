@@ -47,8 +47,11 @@ pub(super) fn unpack_id(id: EndpointId) -> (c_int, c_int) {
 
 /// Every port on the system usable in `direction`.
 ///
-/// Skips this client's own ports — offering the user our own port as a device
-/// invites a feedback loop, and it is never what they meant.
+/// Skips this client's own ports — offering the engine's own port back as a
+/// device invites a feedback loop, and it is never what a user meant.
+///
+/// Names are `"Client: Port"`, matching how `aconnect -l` presents them, unless
+/// the port name already starts with the client's.
 pub(super) fn endpoints(seq: &SeqClient, direction: Direction) -> Vec<EndpointInfo> {
     let mut out = Vec::new();
     let own_id = seq.id().unwrap_or(-1);
@@ -113,7 +116,7 @@ pub(super) fn endpoints(seq: &SeqClient, direction: Direction) -> Vec<EndpointIn
 /// What a client can carry.
 ///
 /// A client with UMP block info is a genuine UMP endpoint and speaks MIDI 2.0;
-/// one without is legacy, reaching us through the kernel's converter. The
+/// one without is legacy, arriving through the kernel's converter. The
 /// distinction is real and worth recording — a per-note controller sent to a
 /// converted legacy port is dropped in translation, not carried.
 fn capability_of(seq: &SeqClient, client: c_int) -> UmpCapability {

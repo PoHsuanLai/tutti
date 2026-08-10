@@ -16,9 +16,8 @@
 //! user intent), and [`StretchFactor`](tutti_core::StretchFactor) drives the
 //! phase vocoder (pitch-independent). They compose only through
 //! `PlaybackRate::read_rate`, and the varispeed range lives in one shared
-//! bounded constructor that every user-input path goes through — it used to
-//! live inside a single backend's setter, so the other tier silently accepted
-//! out-of-range speeds.
+//! bounded constructor that every user-input path goes through — a bound that
+//! sits in one tier's setter is a bound the other tier silently ignores.
 //!
 //! A voice bound to a transport derives its read position from the playhead
 //! every frame rather than carrying a cursor, matching `tutti_core`'s transport:
@@ -87,12 +86,11 @@ pub const MAX_SAMPLER_CHANNELS: usize = tutti_core::engine::MAX_ROOT_CHANNELS;
 /// node that reports zero outputs is a node nothing can be wired to. So the
 /// widths that reach `AudioUnit::outputs` go through here.
 ///
-/// This is the one place that clamp lives now. It used to be eleven scattered
-/// `channels.max(1)` calls on raw `usize` fields, where each site had to
-/// re-remember the rule; the layout carries the declaration and this carries
-/// the node-arity invariant, once. The upper bound is *not* applied here —
-/// `MAX_SAMPLER_CHANNELS` is a per-read stack ceiling, not a limit on what a
-/// node may declare, and only [`DiskVoice`] needs it.
+/// This is the one place that clamp lives: the layout carries the declaration
+/// and this carries the node-arity invariant, so no call site has to re-remember
+/// the rule. The upper bound is *not* applied here — [`MAX_SAMPLER_CHANNELS`] is
+/// a per-read stack ceiling, not a limit on what a node may declare, and only
+/// [`DiskVoice`] needs it.
 #[inline]
 pub(crate) fn nonempty(layout: tutti_core::ChannelLayout) -> tutti_core::ChannelLayout {
     if layout.count() == 0 {
@@ -114,8 +112,8 @@ mod test_transport;
 
 // The I/O edge vocabulary is defined once in `tutti-types` and re-exported by
 // `tutti-core`. Re-exported again here because the butler's refill path speaks
-// it: `FileIn` is the `AudioIn` it polls, and the region ring (`RegionOut`)
-// is itself an `AudioOut` now that the traits carry a runtime width.
+// it: `FileIn` is the `AudioIn` it polls, and the region ring (`RegionOut`) is
+// itself an `AudioOut`, both carrying their width as a runtime `ChannelLayout`.
 pub use tutti_core::io::{pump, AudioIn, AudioOut, OnEmpty};
 
 // Voice playback: the two tier units, the mixer over them, and the kernels they
@@ -170,12 +168,10 @@ mod probe;
 #[cfg(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg"))]
 pub use probe::{probe, ProbeError, SampleFacts};
 
-// `PendingDiskStreamer` / `TuttiSamplerPlugin` are gone. `DiskStreamer` is an
-// engine service, not a Bevy noun (house rule R2), so bevy-tutti wraps it as
-// `DiskStreamerRes` and inserts it directly; bevy-tutti also adds
-// `TuttiPlaybackPlugin` itself.
-
-// The live I/O edge — `MicMonitorNode`, `WavOut`, `Recorder` — moved to
-// `tutti-io`. It never coupled to this crate in either direction, and keeping
-// it here made `tutti-cpal` (the device layer) depend on a DSP crate to reach
-// it.
+// This crate exposes no Bevy plugin of its own. `DiskStreamer` is an engine
+// service, not a Bevy noun (house rule R2): bevy-tutti wraps it as
+// `DiskStreamerRes` and owns `TuttiPlaybackPlugin`.
+//
+// The live I/O edge — `MicMonitorNode`, `WavOut`, `Recorder` — belongs to
+// `tutti-io`, not here, so that `tutti-cpal` (the device layer) need not depend
+// on a DSP crate to reach it.

@@ -3,16 +3,13 @@
 //! `AudioTap` (in `tutti-core`) is the RT-push half: the audio callback copies
 //! every master block into a lock-free ring, and `AudioTap::open` hands back the
 //! consumer. That consumer is a bare `HeapCons<(f32, f32)>` — perfectly usable
-//! by an analysis thread that wants to drain it directly, but *not* an
-//! [`AudioIn`], so it could not feed a [`pump`](tutti_core::io::pump) or a
+//! by an analysis thread draining it directly, but *not* an [`AudioIn`], so on
+//! its own it can feed neither a [`pump`](tutti_core::io::pump) nor a
 //! [`Recorder`](crate::Recorder).
 //!
-//! Which meant the most obvious thing a host asks for — *record what I am
-//! hearing* — was the one capture path the I/O vocabulary could not express.
-//! Every piece existed; nothing joined them.
-//!
-//! This is that join, and deliberately nothing more: a newtype that pops the
-//! ring into the frame layout `AudioIn` speaks.
+//! This is the join that makes *record what I am hearing* expressible in the I/O
+//! vocabulary, and deliberately nothing more: a newtype that pops the ring into
+//! the flat interleaved frame layout `AudioIn` speaks.
 //!
 //! ```no_run
 //! # use tutti_io::{TapIn, WavOut, BitDepth, Recorder};
@@ -79,10 +76,12 @@ impl AudioIn for TapIn {
         ChannelLayout::STEREO
     }
 
+    /// Pop up to `out.len() / 2` FRAMES into `out`, returning the FRAME count.
+    ///
+    /// `out` is flat interleaved stereo — two samples per frame — so the return
+    /// is half its filled length, never the sample count. A short or zero count
+    /// is normal for a live source; the pump parks and retries.
     fn poll_into(&mut self, out: &mut [f32]) -> usize {
-        // Pop up to `out.len() / 2` FRAMES — the return is frames, the slice is
-        // samples. A short or zero count is normal for a live source; the pump
-        // parks and retries.
         let frames = out.len() / 2;
         let mut n = 0;
         while n < frames {

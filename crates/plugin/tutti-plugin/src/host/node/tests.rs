@@ -164,7 +164,7 @@ fn handle_with_mock_server(
 
 /// Variant that (1) returns the `PluginBridge` so tests can install a
 /// listener, and (2) lets `respond` emit zero-or-more messages per
-/// request — letting us script trailing unsolicited events.
+/// request — which is what allows scripting trailing unsolicited events.
 fn handle_with_multi_reply_server(
     respond: impl Fn(HostMessage) -> Vec<BridgeMessage> + Send + 'static,
 ) -> (

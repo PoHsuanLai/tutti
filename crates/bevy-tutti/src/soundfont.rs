@@ -1,4 +1,7 @@
 //! Loading `.sf2` files as Bevy assets and promoting them into playing voices.
+//!
+//! Named for `tutti-soundfont`, the engine crate it adapts — one adapter module
+//! per engine crate is this crate's shape.
 
 use bevy_app::{App, Plugin, Update};
 use bevy_asset::{io::Reader, AssetApp, AssetLoader, Assets, Handle, LoadContext};
@@ -41,10 +44,13 @@ impl SoundFontAsset {
 #[derive(Default, TypePath)]
 pub struct SoundFontAssetLoader;
 
+/// Why loading a `.sf2` asset failed.
 #[derive(Debug, thiserror::Error)]
 pub enum SoundFontAssetLoaderError {
+    /// The bytes could not be read from the asset source.
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
+    /// The bytes were read but are not a well-formed SoundFont.
     #[error(transparent)]
     Parse(SoundFontError),
 }
@@ -70,12 +76,12 @@ impl AssetLoader for SoundFontAssetLoader {
     }
 }
 
-/// Compile-time proof that [`SoundFontUnit`] is `Send`, which is what lets us
-/// build it on the [`AsyncComputeTaskPool`] instead of the Bevy main thread
-/// (the B5 gate). It holds a rustysynth `Synthesizer` (plain `Vec`/`Arc`
-/// struct) plus `Arc<dyn MidiUnitIn>` where `MidiUnitIn: Send + Sync`, so this
-/// assertion holds. If it ever stops compiling, the async decode below is
-/// unsound and the decode must move back onto the main thread.
+// Compile-time proof that `SoundFontUnit` is `Send`, which is what permits
+// building it on the `AsyncComputeTaskPool` instead of the Bevy main thread. It
+// holds a rustysynth `Synthesizer` (a plain `Vec`/`Arc` struct) plus
+// `Arc<dyn MidiUnitIn>` where `MidiUnitIn: Send + Sync`, so the assertion holds.
+// If it ever stops compiling, the async decode below is unsound and must move
+// back onto the main thread.
 const _: () = {
     fn assert_send<T: Send>() {}
     let _ = assert_send::<SoundFontUnit>;
@@ -83,17 +89,14 @@ const _: () = {
 
 /// Trigger component: spawn an entity with this to create a SoundFont instrument.
 ///
-/// The [`soundfont_playback_system`] processes entities that carry
-/// `PlaySoundFont` but not yet a [`PendingSoundFontUnit`] or an
-/// [`AudioNode`](tutti_core::AudioNode), spawns an off-thread `SoundFontUnit`
-/// build onto the [`AsyncComputeTaskPool`] and attaches
-/// [`PendingSoundFontUnit`]. Once the build completes,
-/// `promote_pending_soundfonts` adds the unit to tutti's graph, attaches
-/// `AudioNode`, and removes the pending marker.
+/// [`soundfont_playback_system`] takes it from here — an off-thread
+/// `SoundFontUnit` build, then [`PendingSoundFontUnit`], then an
+/// [`AudioNode`](tutti_core::AudioNode) once the build lands.
 ///
-/// The trigger query is steady-state (not `Added`), so an entity whose `.sf2`
-/// asset has not finished loading is retried each frame until it resolves —
-/// the same fire-once-trap fix applied to the sampler `PlayAudio` trigger.
+/// The trigger query is steady-state, not `Added`, so an entity whose `.sf2`
+/// asset has not finished loading is retried each frame until it resolves. An
+/// `Added` gate would fire once, before the asset existed, and the instrument
+/// would never appear.
 ///
 /// # Examples
 ///
@@ -108,8 +111,11 @@ const _: () = {
 #[derive(Component, Debug, Clone, Default, Reflect)]
 #[reflect(Component, Clone, Default)]
 pub struct PlaySoundFont {
+    /// The `.sf2` to play. No meaningful default; set it explicitly.
     pub source: Handle<SoundFontAsset>,
+    /// SoundFont preset (instrument) number, as the file numbers them.
     pub preset: i32,
+    /// MIDI channel the voice listens on, `0..16`.
     pub channel: i32,
 }
 
@@ -193,14 +199,15 @@ pub fn soundfont_playback_system(
 /// Two things this deliberately does *not* do, for the same reason — neither is
 /// a decision a loader gets to make on the host's behalf:
 ///
-/// - **MIDI registration.** It used to be here, open-coded, with no counterpart
-///   to take the sender back off the bus; it belongs to
+/// - **MIDI registration.** It belongs to
 ///   [`register_midi_senders`](crate::midi::register_midi_senders), which sees
-///   this entity by its `AudioNode` and pairs insertion with removal.
-/// - **Output wiring.** `graph.0.pipe_output(id)` used to be here too, which
-///   made every soundfont that finished loading claim the entire master bus —
-///   overwriting the metronome, then the previous soundfont, silently, in query
-///   order. Whether a soundfont is audible is declared with
+///   this entity by its `AudioNode` and pairs insertion with removal. Doing it
+///   here open-coded would leave the sender on the bus forever, with no
+///   counterpart to take it back off.
+/// - **Output wiring.** A `pipe_output` here would make every soundfont that
+///   finished loading claim the entire master bus — overwriting the metronome,
+///   then the previous soundfont, silently, in query order. Whether a soundfont
+///   is audible is declared with
 ///   [`MasterSources`](crate::graph::MasterSources) or an
 ///   [`AudioSources`](crate::graph::AudioSources) on a mixer.
 pub fn promote_pending_soundfonts(
@@ -257,18 +264,16 @@ pub fn promote_pending_soundfonts(
 /// # It also teaches the MIDI registry to reach a `SoundFontUnit`
 ///
 /// Building the unit and putting it in the graph is not enough to make it
-/// *playable*: [`MidiTargetRegistry`] resolves a node to its `MidiInPort` by
+/// *playable*: `MidiTargetRegistry` resolves a node to its `MidiInPort` by
 /// downcasting to a concrete type, so a unit type nothing registered has no
 /// reachable port and every `MidiSourceInstall` naming it resolves to nothing.
 ///
-/// That registration belongs here rather than in each consumer. It was previously
-/// left to the caller, and the only caller that knew to do it was a test —
-/// `midi_soundfont_audio.rs` calls `register::<SoundFontUnit>()` by hand, which is
-/// precisely why that test could prove the engine half while a real host driving
-/// the same pipeline got silence. The failure is invisible: the asset loads, the
-/// unit builds, the node appears in the `Net`, the install is emitted, and the
-/// audio graph is correctly wired end to end — every observable step succeeds and
-/// no note ever sounds.
+/// That registration belongs here rather than with each consumer, because the
+/// failure it prevents is invisible: the asset loads, the unit builds, the node
+/// appears in the `Net`, the install is emitted, and the graph is correctly
+/// wired end to end — every observable step succeeds and no note ever sounds.
+/// Leaving it to the caller means only a caller that already knows gets sound,
+/// which is a test rather than a host.
 ///
 /// Registering the type this plugin exists to serve is what makes "add the plugin"
 /// sufficient. A host that wants a different unit type still registers its own.
@@ -284,9 +289,9 @@ impl Plugin for TuttiSoundFontPlugin {
             .world_mut()
             .resource_mut::<crate::midi::MidiTargetRegistry>()
             .register::<SoundFontUnit>();
-        // `promote_pending_soundfonts` stages graph edits + sets GraphDirty,
-        // so anchor the chain before the Commit phase where `commit_graph`
-        // flushes it (it no longer commits inline).
+        // `promote_pending_soundfonts` stages graph edits and sets GraphDirty
+        // rather than committing inline, so anchor the chain before the Commit
+        // phase where `commit_graph` flushes it.
         app.init_asset::<SoundFontAsset>()
             .register_asset_loader(SoundFontAssetLoader)
             .add_systems(
@@ -639,11 +644,11 @@ mod tests {
         // Clone
         let mut clone = unit.clone();
 
-        // Clone should NOT have the note playing (fresh state)
         // RustySynth clones the synthesizer state, so both start with the note
-
-        // But we can verify they're independent by playing different notes
-        clone.note_on(0, 72, 100); // Different note on clone
+        // already sounding — a clone is not a fresh voice. Independence is
+        // therefore checked by playing a *different* note on the clone and
+        // asserting the two renders diverge.
+        clone.note_on(0, 72, 100);
 
         let samples_original = render_samples(&mut unit, 1000);
         let samples_clone = render_samples(&mut clone, 1000);

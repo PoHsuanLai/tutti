@@ -11,12 +11,11 @@
 //! - a scheduled *ramp* does what the installed plugins actually do with it,
 //!   which is not what `kAudioUnitParameterFlag_CanRamp` advertises
 //!
-//! ## The two lessons this suite was written against
+//! ## The two rules this suite is written against
 //!
 //! **Observe the count, not the nullness.** `the_notify_stops_after_the_handle_is_dropped`
-//! asserts on a delivery counter that the callback itself increments. An earlier
-//! round of review on this branch found an over-release that passed the entire
-//! 7/7 GUI suite because those tests only checked that a pointer was non-null —
+//! asserts on a delivery counter that the callback itself increments. An
+//! over-release passes a whole suite that only checks a pointer for non-null —
 //! a resource-balance claim has to watch the resource.
 //!
 //! **A small value must also be a finite one.** `peak()` folds with `f32::max`,
@@ -301,10 +300,10 @@ fn every_render_delivers_exactly_one_pair() {
 /// closure. That does not reliably crash — it reads whatever the allocator left
 /// behind — so **the count is the evidence**, not survival.
 ///
-/// Per the review lesson in this module's docs: this observes a delivery counter
-/// the callback increments, rather than checking a pointer for null. An earlier
-/// over-release on this branch passed 7/7 GUI tests precisely because those
-/// tests only checked nullness.
+/// Per the first rule in this module's docs: this observes a delivery counter
+/// the callback increments, rather than checking a pointer for null. An
+/// over-release is invisible to a nullness check — the pointer is null either
+/// way — so only the count separates "stopped" from "never started".
 #[test]
 fn the_notify_stops_after_the_handle_is_dropped() {
     let _g = lock();

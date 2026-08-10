@@ -3,7 +3,7 @@
 //! Each host crate (`tutti-vst2-host`, `tutti-vst3-host`, `tutti-clap-host`,
 //! `tutti-plugin`) tags its load/init error variants with the phase that
 //! failed, so callers can distinguish "file not found" from "plugin rejected
-//! our sample rate" without parsing free-form messages.
+//! the sample rate" without parsing free-form messages.
 //!
 //! This is the superset of every format's phases; a given host uses only the
 //! subset its ABI has. The doc comments record what each phase means per

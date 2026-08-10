@@ -32,9 +32,16 @@ use crate::ump::MidiEvent;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PerNoteController {
     /// A Registered Per-Note Controller identified by its spec bank/index.
-    Registered { index: u8 },
+    Registered {
+        /// Spec-assigned controller number (M2-104 §7.4.5): 1 modulation,
+        /// 2 breath, 3 pitch 7.25, 7 volume, 10 pan, 74 brightness.
+        index: u8,
+    },
     /// An Assignable Per-Note Controller identified by its raw index.
-    Assignable { index: u8 },
+    Assignable {
+        /// Device-defined controller number; carries no spec meaning.
+        index: u8,
+    },
 }
 
 /// Which channel-wide controller namespace a [`MidiMessage::RegisteredController`]
@@ -75,71 +82,127 @@ pub type NoteAttribute = midi2::channel_voice2::NoteAttribute;
 pub enum MidiMessage {
     /// Note on. `velocity` is the full 16-bit MIDI 2.0 value.
     NoteOn {
+        /// Sample offset within the block this event lands on.
         frame_offset: u32,
+        /// Host-internal voice identity, distinct even between two live notes of
+        /// the same number. Minted on decode; not carried on the wire.
         id: NoteId,
+        /// Channel, 0-indexed (0..=15).
         channel: u8,
+        /// Note number, 0..=127.
         note: u8,
+        /// **16-bit** velocity. A promoted MIDI 1.0 note upscales its 7 bits by
+        /// Min-Center-Max, so `0x7F` becomes `0xFFFF` exactly; narrowing back
+        /// with a shift is lossy and
+        /// [`MidiEvent::velocity_u7`](crate::MidiEvent::velocity_u7) is the
+        /// correct inverse.
         velocity: u16,
+        /// MIDI 2.0 note attribute, preserved so a decode/re-encode round-trip
+        /// does not drop it. `None` on a promoted MIDI 1.0 note.
         attribute: Option<NoteAttribute>,
     },
     /// Note off (also a MIDI 1.0 velocity-0 note-on, folded by `normalize`).
     NoteOff {
+        /// Sample offset within the block this event lands on.
         frame_offset: u32,
+        /// Voice identity of the note being released.
         id: NoteId,
+        /// Channel, 0-indexed (0..=15).
         channel: u8,
+        /// Note number, 0..=127.
         note: u8,
+        /// **16-bit** release velocity. Zero for a folded MIDI 1.0 note-off.
         velocity: u16,
+        /// MIDI 2.0 note attribute, if the source carried one.
         attribute: Option<NoteAttribute>,
     },
     /// Polyphonic key pressure (per-note aftertouch). `pressure` is 32-bit.
     PolyPressure {
+        /// Sample offset within the block this event lands on.
         frame_offset: u32,
+        /// Voice identity the pressure applies to.
         id: NoteId,
+        /// Channel, 0-indexed (0..=15).
         channel: u8,
+        /// Note number the pressure addresses, 0..=127.
         note: u8,
+        /// **32-bit** unipolar pressure, full scale `u32::MAX`. A promoted MIDI
+        /// 1.0 value occupies the whole range, not just its low 7 bits.
         pressure: u32,
     },
     /// Control change. `value` is the full 32-bit MIDI 2.0 value.
     ControlChange {
+        /// Sample offset within the block this event lands on.
         frame_offset: u32,
+        /// Channel, 0-indexed (0..=15).
         channel: u8,
+        /// Controller number, 0..=127. See [`crate::cc`] for the named roster.
         index: u8,
+        /// **32-bit** unipolar value, full scale `u32::MAX`. This is where the
+        /// 7-bit/32-bit gap bites hardest: a consumer expecting CC's familiar
+        /// 0..=127 reads full scale as `0xFFFFFFFF` and must downscale through
+        /// [`crate::convert`], never by truncation.
         value: u32,
     },
     /// Program change, with an optional bank (MSB<<7 | LSB) when present.
     ProgramChange {
+        /// Sample offset within the block this event lands on.
         frame_offset: u32,
+        /// Channel, 0-indexed (0..=15).
         channel: u8,
+        /// Program number, 0..=127.
         program: u8,
+        /// 14-bit bank as `MSB << 7 | LSB`, or `None` when the message's bank
+        /// valid bit is clear — which means "keep the current bank", not "bank 0".
         bank: Option<u16>,
     },
     /// Channel (mono) aftertouch. `pressure` is 32-bit.
     ChannelPressure {
+        /// Sample offset within the block this event lands on.
         frame_offset: u32,
+        /// Channel, 0-indexed (0..=15).
         channel: u8,
+        /// **32-bit** unipolar pressure applying to every note on the channel.
         pressure: u32,
     },
     /// Channel pitch bend. `value` is 32-bit, bipolar around `0x8000_0000`.
     PitchBend {
+        /// Sample offset within the block this event lands on.
         frame_offset: u32,
+        /// Channel, 0-indexed (0..=15).
         channel: u8,
+        /// **32-bit** bend, centre `0x8000_0000` — *not* zero. Treating this as
+        /// unipolar puts a centred wheel at full positive bend. The semitone span
+        /// it maps to is set out of band by RPN 0; see
+        /// [`PitchBendSensitivity`](crate::PitchBendSensitivity).
         value: u32,
     },
     /// Per-note pitch bend (MIDI 2.0). Addresses one voice by `id`.
     PerNotePitchBend {
+        /// Sample offset within the block this event lands on.
         frame_offset: u32,
+        /// Voice identity the bend applies to.
         id: NoteId,
+        /// Channel, 0-indexed (0..=15).
         channel: u8,
+        /// Note number the bend addresses, 0..=127.
         note: u8,
+        /// **32-bit** bend, centre `0x8000_0000`, scoped to this one note.
         value: u32,
     },
     /// Per-note controller (MIDI 2.0). `value` is 32-bit.
     PerNoteController {
+        /// Sample offset within the block this event lands on.
         frame_offset: u32,
+        /// Voice identity the controller applies to.
         id: NoteId,
+        /// Channel, 0-indexed (0..=15).
         channel: u8,
+        /// Note number the controller addresses, 0..=127.
         note: u8,
+        /// Which controller, and in which of the two namespaces.
         controller: PerNoteController,
+        /// **32-bit** unipolar value, full scale `u32::MAX`.
         value: u32,
     },
     /// Channel-wide Registered (RPN) or Assignable (NRPN) Controller, absolute
@@ -151,11 +214,17 @@ pub enum MidiMessage {
     /// running-status reassembly is needed — the address and the whole value
     /// arrive in one packet.
     RegisteredController {
+        /// Sample offset within the block this event lands on.
         frame_offset: u32,
+        /// Channel, 0-indexed (0..=15).
         channel: u8,
+        /// Whether `bank`/`index` address the registered or assignable space.
         namespace: ControllerNamespace,
+        /// High 7 bits of the 14-bit parameter address.
         bank: u8,
+        /// Low 7 bits of the 14-bit parameter address.
         index: u8,
+        /// **32-bit** value the parameter is set *to*, replacing what it held.
         data: u32,
     },
     /// Channel-wide Relative Registered/Assignable Controller (M2-104 §7.4.8):
@@ -172,47 +241,99 @@ pub enum MidiMessage {
     /// scale. Per §7.4.8 these share the absolute form's address space and banks
     /// but "cannot be translated to the MIDI 1.0 Protocol".
     RelativeController {
+        /// Sample offset within the block this event lands on.
         frame_offset: u32,
+        /// Channel, 0-indexed (0..=15).
         channel: u8,
+        /// Whether `bank`/`index` address the registered or assignable space.
         namespace: ControllerNamespace,
+        /// High 7 bits of the 14-bit parameter address.
         bank: u8,
+        /// Low 7 bits of the 14-bit parameter address.
         index: u8,
+        /// Signed **32-bit** increment to *add* to the parameter's current value.
+        /// The wire field is already two's-complement across the full width, so
+        /// decoding is a reinterpretation and nothing is lost — but see the
+        /// variant docs for what reading it back as unsigned would do.
         delta: i32,
     },
     /// Per-Note Management (MIDI 2.0): detach / reset the addressed note's
     /// controllers.
     PerNoteManagement {
+        /// Sample offset within the block this event lands on.
         frame_offset: u32,
+        /// Voice identity being managed.
         id: NoteId,
+        /// Channel, 0-indexed (0..=15).
         channel: u8,
+        /// Note number being managed, 0..=127.
         note: u8,
+        /// Detach this note from its channel's controllers, so subsequent
+        /// channel-wide messages stop affecting it.
         detach: bool,
+        /// Reset this note's per-note controllers to their default values.
         reset: bool,
     },
     /// System Real-Time: timing clock (M2-104 §7.6, status 0xF8 — 24 clocks per
     /// quarter-note). Carries no channel or data.
-    TimingClock { frame_offset: u32 },
+    TimingClock {
+        /// Sample offset within the block this tick lands on.
+        frame_offset: u32,
+    },
     /// System Real-Time: transport start (M2-104 §7.6, status 0xFA — rewind to
     /// zero and play).
-    Start { frame_offset: u32 },
+    Start {
+        /// Sample offset within the block this event lands on.
+        frame_offset: u32,
+    },
     /// System Real-Time: transport continue (M2-104 §7.6, status 0xFB — play
     /// from the current position).
-    Continue { frame_offset: u32 },
+    Continue {
+        /// Sample offset within the block this event lands on.
+        frame_offset: u32,
+    },
     /// System Real-Time: transport stop (M2-104 §7.6, status 0xFC).
-    Stop { frame_offset: u32 },
+    Stop {
+        /// Sample offset within the block this event lands on.
+        frame_offset: u32,
+    },
     /// System Common: MIDI Time Code quarter-frame (M2-104 §7.6, status 0xF1).
     /// `code` is the 7-bit data byte: message type in bits 4..6, value in
     /// bits 0..3.
-    TimeCode { frame_offset: u32, code: u8 },
+    TimeCode {
+        /// Sample offset within the block this event lands on.
+        frame_offset: u32,
+        /// The 7-bit quarter-frame byte. Feed it straight to
+        /// [`MtcDecoder::feed`](crate::sync::MtcDecoder::feed), which owns the
+        /// nibble reassembly.
+        code: u8,
+    },
     /// System Common: song position pointer (M2-104 §7.6, status 0xF2). 14-bit
     /// position in MIDI beats (1/16 notes) since song start.
-    SongPosition { frame_offset: u32, position: u16 },
+    SongPosition {
+        /// Sample offset within the block this event lands on.
+        frame_offset: u32,
+        /// Position in sixteenth notes since song start, 0..=16383. Six MIDI
+        /// clock ticks per unit — not a beat count.
+        position: u16,
+    },
     /// System Common: song select (M2-104 §7.6, status 0xF3). 7-bit song number.
-    SongSelect { frame_offset: u32, song: u8 },
+    SongSelect {
+        /// Sample offset within the block this event lands on.
+        frame_offset: u32,
+        /// Song number, 0..=127.
+        song: u8,
+    },
     /// System Real-Time: active sensing (M2-104 §7.6, status 0xFE).
-    ActiveSensing { frame_offset: u32 },
+    ActiveSensing {
+        /// Sample offset within the block this event lands on.
+        frame_offset: u32,
+    },
     /// System Real-Time: reset (M2-104 §7.6, status 0xFF).
-    Reset { frame_offset: u32 },
+    Reset {
+        /// Sample offset within the block this event lands on.
+        frame_offset: u32,
+    },
     /// Any message family this view does not model (SysEx, Flex Data, UMP
     /// Stream, utility) — carries the whole source [`MidiEvent`] so it is never
     /// information-free. Inspect it via `event.data_words()` + `midi2`.
@@ -600,7 +721,7 @@ impl TryFrom<MidiMessage> for MidiEvent {
                 )
             }
             // The namespace picks the constructor; the absolute/relative split
-            // is already carried by which variant we are in.
+            // is already carried by the variant itself.
             MidiMessage::RegisteredController {
                 channel,
                 namespace,

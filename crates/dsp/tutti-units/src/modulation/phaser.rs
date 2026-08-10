@@ -1,3 +1,9 @@
+//! Phaser — a swept all-pass chain, mono and stereo.
+//!
+//! The one modulation effect here with no delay line: it notches by phase
+//! cancellation, which is why its notches are fewer and unevenly spaced
+//! compared with a flanger's.
+
 use tutti_core::Arc;
 use tutti_core::AtomicF32;
 use tutti_core::{dsp::DEFAULT_SAMPLE_RATE, AudioUnit, BufferMut, BufferRef, SignalFrame};
@@ -10,11 +16,23 @@ const MAX_STAGES: usize = 12;
 /// Inclusive frequency range that the phaser LFO sweeps across.
 #[derive(Debug, Clone, Copy)]
 pub struct FrequencyRange {
+    /// Bottom of the sweep in [`Hz`] — where the all-pass centre sits at the
+    /// LFO's trough.
     pub min_hz: Hz,
+    /// Top of the sweep in [`Hz`] — where the all-pass centre sits at the LFO's
+    /// peak.
+    ///
+    /// Bounded at 0.90 of Nyquist when applied to a node: several all-pass
+    /// stages compound their phase error near the limit.
     pub max_hz: Hz,
 }
 
 impl FrequencyRange {
+    /// Pairs a sweep floor and ceiling in [`Hz`].
+    ///
+    /// Neither bound is validated here — the clamping happens where the range
+    /// meets a node's sample rate, in
+    /// [`PhaserNode::set_frequency_range`].
     pub fn new(min_hz: impl Into<Hz>, max_hz: impl Into<Hz>) -> Self {
         Self {
             min_hz: min_hz.into(),
@@ -49,8 +67,16 @@ impl AllPassStage {
 }
 
 /// Mono phaser effect. 1-in, 1-out.
-/// Chain of all-pass filters modulated by an internal LFO sweeping the
-/// configured frequency range.
+///
+/// A chain of all-pass stages whose centre frequency an internal LFO sweeps
+/// across a configured frequency range. Each stage passes every frequency at
+/// unity and shifts only phase; blending that against the dry signal turns the
+/// shift into cancellation notches, and sweeping the centre moves them.
+///
+/// **This is not a delay effect.** Unlike chorus and flanger it holds no delay
+/// line, so its notches are unevenly spaced and fewer — the reason a phaser
+/// sounds hollower and less metallic than a flanger. Stage count sets how many
+/// notches there are; feedback deepens them.
 pub struct PhaserNode {
     stages: Vec<AllPassStage>,
     lfo: LfoDrive,
@@ -61,6 +87,12 @@ pub struct PhaserNode {
 }
 
 impl PhaserNode {
+    /// Builds a phaser with `stages` all-pass sections, clamped to `2..=12`.
+    ///
+    /// Stages come in pairs — each pair produces one notch — so 4 gives the
+    /// classic two-notch phaser and higher counts thicken the effect. Defaults:
+    /// 0.3 Hz rate, half depth, 0.5 feedback, 50/50 [`Mix`], sweeping
+    /// 200–4000 Hz.
     pub fn new(stages: usize) -> Self {
         let n = stages.clamp(2, MAX_STAGES);
         Self {
@@ -74,34 +106,71 @@ impl PhaserNode {
         }
     }
 
+    /// The shared LFO rate cell in [`Hz`] — how fast the notches sweep.
+    ///
+    /// Phaser rates are slow, typically 0.1–2 Hz. Shared across clones.
     pub fn rate(&self) -> Arc<AtomicF32> {
         self.lfo.rate.as_atomic()
     }
+
+    /// The shared [`Depth`] cell — how much of the configured frequency range
+    /// the sweep actually covers.
+    ///
+    /// **Unitless, `0.0..=1.0`**, unlike chorus and flanger whose depth is in
+    /// seconds of delay. `1.0` sweeps the full configured range; `0.0` parks the
+    /// notches at the range floor.
     pub fn depth(&self) -> Arc<AtomicF32> {
         self.mix.depth.as_atomic()
     }
+
+    /// The shared [`Feedback`] cell — how much of the all-pass output
+    /// recirculates.
+    ///
+    /// Deepens and sharpens the notches. Writing the raw cell bypasses
+    /// [`set_feedback`](Self::set_feedback)'s stability clamp.
     pub fn feedback(&self) -> Arc<AtomicF32> {
         self.mix.feedback.as_atomic()
     }
+
+    /// The shared wet/dry [`Mix`] cell: `0.0` dry, `1.0` fully wet.
+    ///
+    /// A phaser needs both halves — the notches come from the phase-shifted and
+    /// dry signals cancelling, so 50/50 is deepest and fully wet is nearly
+    /// inaudible, since an all-pass chain alone barely changes the magnitude.
     pub fn mix(&self) -> Arc<AtomicF32> {
         self.mix.mix.as_atomic()
     }
 
+    /// Sets the LFO rate in [`Hz`], floored at 0.01 Hz.
     pub fn set_rate(&self, hz: impl Into<Hz>) {
         self.lfo.rate.store(Hz(hz.into().get().max(0.01)));
     }
+
+    /// Sets the sweep [`Depth`], clamped to the unit range.
     pub fn set_depth(&self, d: impl Into<Depth>) {
         self.mix.depth.store(Depth::new_clamped(d.into().get()));
     }
+
+    /// Sets the [`Feedback`], clamped to the stable range.
     pub fn set_feedback(&self, fb: impl Into<Feedback>) {
         self.mix
             .feedback
             .store(Feedback::new_clamped(fb.into().get()));
     }
+
+    /// Sets the wet/dry [`Mix`], clamped to `0.0..=1.0`.
     pub fn set_mix(&self, mix: impl Into<Mix>) {
         self.mix.mix.store(Mix::new_clamped(mix.into().get()));
     }
 
+    /// Sets the band the notches sweep across, in [`Hz`].
+    ///
+    /// `min_hz` is floored at 20 Hz and `max_hz` capped at 0.90 of Nyquist —
+    /// a wider margin than the filters take, because several all-pass stages
+    /// compound their phase error near the limit. A narrow range gives a
+    /// focused sweep; a wide one sounds more dramatic.
+    ///
+    /// `&mut self`, so it cannot reach a node already live in the graph.
     pub fn set_frequency_range(&mut self, min_hz: impl Into<Hz>, max_hz: impl Into<Hz>) {
         self.range.min_hz = Hz(min_hz.into().get().max(20.0));
         self.range.max_hz = max_hz.into().min(self.range_ceiling());
@@ -109,9 +178,8 @@ impl PhaserNode {
 
     /// The highest all-pass centre this rate allows.
     ///
-    /// 0.90 of Nyquist is the old `sample_rate * 0.45`. The wider margin than
-    /// the SVF's 0.998 is the all-pass chain's: several stages compound their
-    /// phase error near the limit.
+    /// 0.90 of Nyquist — a wider margin than the SVF's 0.998, because several
+    /// all-pass stages compound their phase error near the limit.
     #[inline]
     fn range_ceiling(&self) -> Hz {
         self.sample_rate.nyquist_scaled(0.90)
@@ -225,42 +293,66 @@ impl Clone for PhaserNode {
     }
 }
 
-/// Stereo wrapper around two independent [`PhaserNode`] instances that
-/// share the same atomic parameter handles. 2-in, 2-out.
+/// Stereo phaser: two [`PhaserNode`]s sharing one set of parameter handles.
+/// 2-in, 2-out.
+///
+/// The two channels share every control and each keeps its own all-pass state,
+/// so they phase identically without bleeding into each other. There is no L/R
+/// phase offset here — unlike chorus and flanger, the two sides sweep in step,
+/// so this widens nothing by itself.
 pub struct StereoPhaserNode {
     left: PhaserNode,
     right: PhaserNode,
 }
 
 impl StereoPhaserNode {
+    /// Builds a stereo phaser with `stages` all-pass sections per channel,
+    /// clamped to `2..=12`.
+    ///
+    /// Both channels are built from one node, so they start with identical
+    /// parameters and shared cells. Defaults are [`PhaserNode::new`]'s.
     pub fn new(stages: usize) -> Self {
         let left = PhaserNode::new(stages);
         let right = left.clone();
         Self { left, right }
     }
 
+    /// The shared LFO rate cell in [`Hz`], governing both channels.
     pub fn rate(&self) -> Arc<AtomicF32> {
         self.left.rate()
     }
+
+    /// The shared [`Depth`] cell (`0.0..=1.0`), governing both channels.
     pub fn depth(&self) -> Arc<AtomicF32> {
         self.left.depth()
     }
+
+    /// The shared [`Feedback`] cell, governing both channels.
     pub fn feedback(&self) -> Arc<AtomicF32> {
         self.left.feedback()
     }
+
+    /// The shared wet/dry [`Mix`] cell, governing both channels.
     pub fn mix(&self) -> Arc<AtomicF32> {
         self.left.mix()
     }
 
+    /// Sets the LFO rate in [`Hz`] for both channels, floored at 0.01 Hz.
     pub fn set_rate(&self, hz: impl Into<Hz>) {
         self.left.set_rate(hz);
     }
+
+    /// Sets the sweep [`Depth`] for both channels, clamped to the unit range.
     pub fn set_depth(&self, d: impl Into<Depth>) {
         self.left.set_depth(d);
     }
+
+    /// Sets the [`Feedback`] for both channels, clamped to the stable range.
     pub fn set_feedback(&self, fb: impl Into<Feedback>) {
         self.left.set_feedback(fb);
     }
+
+    /// Sets the wet/dry [`Mix`] for both channels, clamped to `0.0..=1.0`.
     pub fn set_mix(&self, mix: impl Into<Mix>) {
         self.left.set_mix(mix);
     }

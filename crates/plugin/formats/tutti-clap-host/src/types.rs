@@ -16,18 +16,29 @@ pub use tutti_plugin_types::{
 };
 
 /// Metadata describing a loaded plugin, returned from
-/// [`ClapInstance::probe`](crate::ClapInstance::probe) and
-/// [`ClapInstance::info`](crate::ClapInstance::info).
+/// [`ClapLoaded::probe`](crate::ClapLoaded::probe) and
+/// [`ClapLoaded::info`](crate::ClapLoaded::info).
 #[derive(Debug, Clone)]
 pub struct PluginInfo {
+    /// Reverse-DNS plugin identifier from `clap_plugin_descriptor.id`, stable
+    /// across versions and the key a host stores to re-find this plugin.
     pub id: String,
+    /// Display name for user-facing lists.
     pub name: String,
+    /// Vendor name; empty when the descriptor omits it.
     pub vendor: String,
+    /// Vendor-formatted version string, not parsed or ordered by this crate.
     pub version: String,
+    /// Plugin homepage; empty when the descriptor omits it.
     pub url: String,
+    /// One-line description; empty when the descriptor omits it.
     pub description: String,
+    /// CLAP feature/category tags (`"audio-effect"`, `"instrument"`, …) used
+    /// for browser categorisation.
     pub features: Vec<String>,
+    /// Total input channels summed across every audio input port.
     pub audio_inputs: usize,
+    /// Total output channels summed across every audio output port.
     pub audio_outputs: usize,
 }
 
@@ -103,12 +114,22 @@ impl fmt::Display for PluginInfo {
 /// this CLAP-native shape at its edge.
 #[derive(Debug, Clone, Copy)]
 pub struct ClapNoteExpression {
+    /// Frame offset within the current block at which the expression fires.
     pub sample_offset: i32,
+    /// The voice this targets, matching the `note_id` of the note-on that
+    /// started it. `-1` addresses every voice matching the key/channel scope.
     pub note_id: i32,
+    /// Note port the voice was started on.
     pub port_index: i16,
+    /// MIDI channel to scope to; `-1` means any channel.
     pub channel: i16,
+    /// MIDI key to scope to; `-1` means any key.
     pub key: i16,
+    /// Which expression dimension this carries (tuning, brightness, …).
     pub expression_type: NoteExpressionType,
+    /// The expression value. Raw `f64` because the valid range is
+    /// per-`expression_type` (semitones for tuning, `0..1` for most others) —
+    /// this is a C-ABI-shaped value and unit types stop here.
     pub value: f64,
 }
 
@@ -179,21 +200,40 @@ bitflags! {
     /// the crate boundary.
     #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
     pub struct ClapParamFlags: u32 {
+        /// Only integral values within the range are valid.
         const STEPPED                 = 1 << 0;
+        /// The range wraps: max and min denote the same point.
         const PERIODIC                = 1 << 1;
+        /// Not to be shown in a generic parameter list.
         const HIDDEN                  = 1 << 2;
+        /// The host must not write this value; the plugin owns it.
         const READONLY                = 1 << 3;
+        /// This parameter is the plugin's bypass switch.
         const BYPASS                  = 1 << 4;
+        /// The host may automate this parameter.
         const AUTOMATABLE             = 1 << 5;
+        /// Automatable with per-voice addressing by `note_id`.
         const AUTOMATABLE_PER_NOTE_ID = 1 << 6;
+        /// Automatable with per-key addressing.
         const AUTOMATABLE_PER_KEY     = 1 << 7;
+        /// Automatable with per-channel addressing.
         const AUTOMATABLE_PER_CHANNEL = 1 << 8;
+        /// Automatable with per-port addressing.
         const AUTOMATABLE_PER_PORT    = 1 << 9;
+        /// The host may send modulation offsets for this parameter.
         const MODULATABLE             = 1 << 10;
+        /// Modulatable with per-voice addressing by `note_id`.
         const MODULATABLE_PER_NOTE_ID = 1 << 11;
+        /// Modulatable with per-key addressing.
         const MODULATABLE_PER_KEY     = 1 << 12;
+        /// Modulatable with per-channel addressing.
         const MODULATABLE_PER_CHANNEL = 1 << 13;
+        /// Modulatable with per-port addressing.
         const MODULATABLE_PER_PORT    = 1 << 14;
+        /// Changes must be delivered in event order through `process()`
+        /// rather than out-of-band via `flush()`. Gates
+        /// [`set_parameter`](crate::ClapLoaded::set_parameter) on an actively
+        /// processing instance.
         const REQUIRES_PROCESS        = 1 << 15;
     }
 }
@@ -204,12 +244,20 @@ bitflags! {
 /// down to the shared shape at the crate boundary.
 #[derive(Debug, Clone)]
 pub struct ClapParamInfo {
+    /// Stable parameter id. Chosen by the plugin and persisted by the host —
+    /// it is the key in automation and state, not the enumeration index.
     pub id: u32,
+    /// Display name.
     pub name: String,
+    /// Slash-separated grouping path (`"Filter/Cutoff"`); empty for ungrouped.
     pub module: String,
+    /// Low end of the valid range, in the parameter's own plain units.
     pub min_value: f64,
+    /// High end of the valid range, in the parameter's own plain units.
     pub max_value: f64,
+    /// Value the plugin starts at, within `min_value..=max_value`.
     pub default_value: f64,
+    /// Behaviour bits governing automation, modulation and visibility.
     pub flags: ClapParamFlags,
 }
 
@@ -364,13 +412,19 @@ impl AudioPortsRescan {
 /// Description of an audio port exposed by the plugin.
 #[derive(Debug, Clone)]
 pub struct AudioPortInfo {
+    /// Stable port id, distinct from the port's enumeration index.
     pub id: u32,
+    /// Display name for the port.
     pub name: String,
-    /// The port's channel layout. Carries the count directly; a CLAP port tag we
-    /// don't recognize as mono/stereo becomes `Multi(channel_count)` — the tag
-    /// string itself is dropped (nothing consumes it).
+    /// The port's channel layout. Carries the count directly; a CLAP port tag
+    /// this host does not recognize as mono/stereo becomes
+    /// `Multi(channel_count)` — the tag string itself is dropped (nothing
+    /// consumes it).
     pub layout: ChannelLayout,
+    /// Capability bits for this port.
     pub flags: AudioPortFlags,
+    /// Id of the opposite-direction port this one can process in place with,
+    /// or CLAP's invalid-id sentinel when in-place is unsupported.
     pub in_place_pair_id: u32,
 }
 
@@ -378,9 +432,15 @@ bitflags! {
     /// Audio port capability flags from `clap_audio_port_info`.
     #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
     pub struct AudioPortFlags: u32 {
+        /// This is the plugin's main port for its direction. At most one
+        /// input and one output port may carry it.
         const MAIN                      = 1 << 0;
+        /// The port can process 64-bit buffers as well as 32-bit.
         const SUPPORTS_64BIT            = 1 << 1;
+        /// The port would rather be given 64-bit buffers.
         const PREFERS_64BIT             = 1 << 2;
+        /// Every port on the plugin must be given the same sample width in a
+        /// given `process` call — 32 and 64 bit cannot be mixed.
         const REQUIRES_COMMON_SAMPLE_SIZE = 1 << 3;
     }
 }
@@ -388,8 +448,11 @@ bitflags! {
 /// Description of a note (MIDI) port exposed by the plugin.
 #[derive(Debug, Clone)]
 pub struct NotePortInfo {
+    /// Stable port id, distinct from the port's enumeration index.
     pub id: u32,
+    /// Display name for the port.
     pub name: String,
+    /// Every dialect the port can accept.
     pub supported_dialects: NoteDialects,
     /// The port's preferred encoding, or `None` when the plugin named no
     /// dialect this host recognises.
@@ -428,19 +491,31 @@ bitflags! {
     /// Bitset of note-event dialects a port can accept.
     #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
     pub struct NoteDialects: u32 {
+        /// CLAP's own note events, carrying `note_id` voice addressing.
         const CLAP     = 1 << 0;
+        /// MIDI 1.0 byte messages.
         const MIDI     = 1 << 1;
+        /// MIDI 1.0 under the MPE conventions.
         const MIDI_MPE = 1 << 2;
+        /// MIDI 2.0 UMP packets.
         const MIDI2    = 1 << 3;
     }
 }
 
 /// A single note-event dialect (the port's preferred encoding).
+///
+/// This host can encode only [`Clap`](Self::Clap) and [`Midi`](Self::Midi);
+/// the other two are recognised when a plugin names them but never sent. See
+/// [`NotePortInfo::dialect_to_send`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NoteDialect {
+    /// CLAP native note events.
     Clap,
+    /// MIDI 1.0.
     Midi,
+    /// MIDI 1.0 with MPE conventions.
     MidiMpe,
+    /// MIDI 2.0 UMP.
     Midi2,
 }
 
@@ -448,21 +523,34 @@ pub enum NoteDialect {
 /// `CLAP_EXT_VOICE_INFO`.
 #[derive(Debug, Clone, Copy)]
 pub struct VoiceInfo {
+    /// Voices the plugin currently expects to use, at most `voice_capacity`.
     pub voice_count: u32,
+    /// Hard upper bound on simultaneous voices; the host must not allocate
+    /// `note_id`s expecting more than this to sound at once.
     pub voice_capacity: u32,
+    /// Whether two notes on the same key may overlap. When false, the host
+    /// must end the sounding note before starting another on that key.
     pub supports_overlapping_notes: bool,
 }
 
 /// A predefined audio-port configuration the plugin can switch to.
 #[derive(Debug, Clone)]
 pub struct AudioPortConfig {
+    /// Stable id, passed back to select this configuration.
     pub id: u32,
+    /// Display name, e.g. `"Stereo"` or `"5.1"`.
     pub name: String,
+    /// Number of input ports this configuration exposes.
     pub input_port_count: u32,
+    /// Number of output ports this configuration exposes.
     pub output_port_count: u32,
+    /// Whether a main input port exists in this configuration.
     pub has_main_input: bool,
+    /// Channel count of the main input; meaningless unless `has_main_input`.
     pub main_input_channel_count: u32,
+    /// Whether a main output port exists in this configuration.
     pub has_main_output: bool,
+    /// Channel count of the main output; meaningless unless `has_main_output`.
     pub main_output_channel_count: u32,
 }
 
@@ -470,17 +558,27 @@ pub struct AudioPortConfig {
 /// drum kits and similar instruments.
 #[derive(Debug, Clone)]
 pub struct NoteName {
+    /// The name to display for this key, e.g. `"Kick"`.
     pub name: String,
+    /// Note port the name applies to; `-1` means every port.
     pub port: i16,
+    /// MIDI channel the name applies to; `-1` means every channel.
     pub channel: i16,
+    /// MIDI key the name applies to; `-1` means every key.
     pub key: i16,
 }
 
 /// Which use-case a state save/load is for, from `CLAP_EXT_STATE_CONTEXT`.
+///
+/// The plugin may serialize differently per context — a preset typically
+/// excludes the project-specific bindings a project save keeps.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StateContext {
+    /// Saving or loading a user preset.
     ForPreset,
+    /// Saving or loading as part of the enclosing project.
     ForProject,
+    /// Duplicating an existing instance.
     ForDuplicate,
 }
 
@@ -501,9 +599,13 @@ impl From<StateContext> for clap_sys::ext::state_context::clap_plugin_state_cont
 /// 32-bit ARGB color used by track info and parameter indication.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Color {
+    /// Opacity; `255` is fully opaque.
     pub alpha: u8,
+    /// Red channel.
     pub red: u8,
+    /// Green channel.
     pub green: u8,
+    /// Blue channel.
     pub blue: u8,
 }
 
@@ -543,9 +645,13 @@ impl Color {
 /// tag adds, so the two travel together in [`TrackInfo::audio`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrackPortType {
+    /// `CLAP_PORT_MONO` — one channel.
     Mono,
+    /// `CLAP_PORT_STEREO` — two channels, L/R.
     Stereo,
+    /// `CLAP_PORT_SURROUND` — channels carry speaker positions.
     Surround,
+    /// `CLAP_PORT_AMBISONIC` — channels carry ambisonic components.
     Ambisonic,
 }
 
@@ -558,6 +664,7 @@ pub enum TrackPortType {
 /// be constructed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TrackAudio {
+    /// The track's channel count.
     pub layout: ChannelLayout,
     /// The tag to advertise. `None` sends no port type, which is what a host
     /// that only knows the width should do — CLAP treats an absent tag as
@@ -582,14 +689,19 @@ impl TrackAudio {
 /// Track metadata the host exposes through `CLAP_EXT_TRACK_INFO`.
 #[derive(Debug, Clone, Default)]
 pub struct TrackInfo {
+    /// Track name; `None` leaves the plugin without one.
     pub name: Option<String>,
+    /// Track colour for the plugin's GUI; `None` leaves it unset.
     pub color: Option<Color>,
     /// Audio width + port tag. `None` sets neither the channel-count flag nor a
     /// port type, so the plugin learns nothing about the track's audio — which
     /// is the correct signal when the host does not know it.
     pub audio: Option<TrackAudio>,
+    /// The track receives from sends rather than carrying its own material.
     pub is_return_track: bool,
+    /// The track sums other tracks.
     pub is_bus: bool,
+    /// The track is the project's master output.
     pub is_master: bool,
 }
 
@@ -597,10 +709,15 @@ pub struct TrackInfo {
 /// `CLAP_EXT_PARAM_INDICATION` to drive GUI feedback.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ParamAutomationState {
+    /// No automation exists for the parameter.
     None,
+    /// Automation exists but the transport is not applying it.
     Present,
+    /// Automation is being played back onto the parameter.
     Playing,
+    /// Automation is being written from the parameter.
     Recording,
+    /// Automation exists but a live edit is currently overriding it.
     Overriding,
 }
 
@@ -608,34 +725,57 @@ pub enum ParamAutomationState {
 /// surfaces with physical knobs/faders.
 #[derive(Debug, Clone)]
 pub struct RemoteControlsPage {
+    /// Name of the section this page belongs to; empty when ungrouped.
     pub section_name: String,
+    /// Stable page id.
     pub page_id: u32,
+    /// Display name for the page.
     pub page_name: String,
+    /// The eight parameter ids to bind, in knob order, copied verbatim from
+    /// the plugin. Unused slots carry CLAP's invalid-id sentinel rather than
+    /// being absent, so the array's indices stay the knob positions.
     pub param_ids: [u32; 8],
+    /// The page is meant for preset browsing rather than live control.
     pub is_for_preset: bool,
 }
 
 /// A transport-state request a plugin has issued via `CLAP_EXT_TRANSPORT_CONTROL`.
 ///
-/// Drain these with [`ClapInstance::drain_transport_requests`](crate::ClapInstance::drain_transport_requests)
-/// and translate them to your host's transport model.
+/// Drain these with `ClapLoaded::drain_transport_requests` (itself gated
+/// behind `clap-extras`) and translate them to your host's transport model.
+/// A request is advisory:
+/// the host decides whether to honour it.
 #[derive(Debug, Clone, PartialEq)]
 pub enum TransportRequest {
+    /// Begin playback from the current position.
     Start,
+    /// Stop playback and return to the start position.
     Stop,
+    /// Resume playback from where it was paused.
     Continue,
+    /// Halt playback, keeping the current position.
     Pause,
+    /// Start if stopped, stop if playing.
     TogglePlay,
+    /// Relocate the playhead.
     Jump {
+        /// Target position, in beats from the timeline origin.
         position_beats: f64,
     },
+    /// Redefine the loop bounds.
     LoopRegion {
+        /// Loop start, in beats from the timeline origin.
         start_beats: f64,
+        /// Loop length in beats.
         duration_beats: f64,
     },
+    /// Invert whether looping is enabled.
     ToggleLoop,
+    /// Set looping on or off explicitly.
     EnableLoop(bool),
+    /// Set recording on or off explicitly.
     Record(bool),
+    /// Invert whether recording is armed.
     ToggleRecord,
 }
 
@@ -643,66 +783,106 @@ pub enum TransportRequest {
 /// specific parameter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ContextMenuTarget {
+    /// The plugin instance itself.
     Global,
+    /// One parameter, by its stable id.
     Param(u32),
 }
 
 /// A single item in a plugin-supplied context menu.
+///
+/// Submenus are expressed as a flat sequence bracketed by
+/// [`BeginSubmenu`](Self::BeginSubmenu) / [`EndSubmenu`](Self::EndSubmenu)
+/// rather than by nesting, matching CLAP's builder callback order.
 #[derive(Debug, Clone)]
 pub enum ContextMenuItem {
+    /// A clickable entry.
     Entry {
+        /// Text to display.
         label: String,
+        /// Whether the entry can be chosen.
         is_enabled: bool,
+        /// Id to pass back when the entry is chosen.
         action_id: u32,
     },
+    /// A clickable entry carrying a checkbox.
     CheckEntry {
+        /// Text to display.
         label: String,
+        /// Whether the entry can be chosen.
         is_enabled: bool,
+        /// Current state of the checkbox.
         is_checked: bool,
+        /// Id to pass back when the entry is chosen.
         action_id: u32,
     },
+    /// A horizontal divider.
     Separator,
+    /// A non-clickable heading.
     Title {
+        /// Text to display.
         title: String,
+        /// Whether the heading renders as active.
         is_enabled: bool,
     },
+    /// Opens a submenu; items until the matching `EndSubmenu` belong to it.
     BeginSubmenu {
+        /// Text to display for the submenu.
         label: String,
+        /// Whether the submenu can be opened.
         is_enabled: bool,
     },
+    /// Closes the most recently opened submenu.
     EndSubmenu,
 }
 
 /// A request to reconfigure a single audio port's channel count/type.
 #[derive(Debug, Clone)]
 pub struct AudioPortConfigRequest {
+    /// Whether the port is an input; `false` selects an output port.
     pub is_input: bool,
+    /// The port's enumeration index within its direction.
     pub port_index: u32,
+    /// Requested channel count.
     pub channel_count: u32,
+    /// Requested CLAP port-type tag; `None` requests no particular type.
+    /// A `String` because this crosses to C as a raw tag.
     pub port_type: Option<String>,
 }
 
 /// Ambisonic channel ordering (Furse-Malham or Ambisonic Channel Number).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AmbisonicOrdering {
+    /// Furse-Malham ordering.
     Fuma,
+    /// Ambisonic Channel Number ordering.
     Acn,
 }
 
 /// Ambisonic normalization scheme.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AmbisonicNormalization {
+    /// maxN.
     MaxN,
+    /// SN3D, the AmbiX convention.
     Sn3d,
+    /// N3D, full three-dimensional normalization.
     N3d,
+    /// SN2D, the two-dimensional counterpart of SN3D.
     Sn2d,
+    /// N2D, the two-dimensional counterpart of N3D.
     N2d,
 }
 
 /// Combined ambisonic ordering + normalization.
+///
+/// Both halves are needed to read a channel: the ordering says which component
+/// a channel carries, the normalization says how it is scaled.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AmbisonicConfig {
+    /// Which component each channel carries.
     pub ordering: AmbisonicOrdering,
+    /// How component amplitudes are scaled.
     pub normalization: AmbisonicNormalization,
 }
 
@@ -728,23 +908,41 @@ pub struct AmbisonicConfig {
 /// against the header anyway.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SurroundChannel {
+    /// `CLAP_SURROUND_FL` (0).
     FrontLeft,
+    /// `CLAP_SURROUND_FR` (1).
     FrontRight,
+    /// `CLAP_SURROUND_FC` (2).
     FrontCenter,
+    /// `CLAP_SURROUND_LFE` (3).
     LowFrequency,
+    /// `CLAP_SURROUND_BL` (4).
     BackLeft,
+    /// `CLAP_SURROUND_BR` (5).
     BackRight,
+    /// `CLAP_SURROUND_FLC` (6).
     FrontLeftCenter,
+    /// `CLAP_SURROUND_FRC` (7).
     FrontRightCenter,
+    /// `CLAP_SURROUND_BC` (8).
     BackCenter,
+    /// `CLAP_SURROUND_SL` (9).
     SideLeft,
+    /// `CLAP_SURROUND_SR` (10).
     SideRight,
+    /// `CLAP_SURROUND_TC` (11).
     TopCenter,
+    /// `CLAP_SURROUND_TFL` (12).
     TopFrontLeft,
+    /// `CLAP_SURROUND_TFC` (13).
     TopFrontCenter,
+    /// `CLAP_SURROUND_TFR` (14).
     TopFrontRight,
+    /// `CLAP_SURROUND_TBL` (15).
     TopBackLeft,
+    /// `CLAP_SURROUND_TBC` (16).
     TopBackCenter,
+    /// `CLAP_SURROUND_TBR` (17).
     TopBackRight,
     /// `CLAP_SURROUND_TSL` (18).
     TopSideLeft,
@@ -828,8 +1026,11 @@ impl SurroundChannel {
 #[cfg(unix)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PosixFdFlags {
+    /// The descriptor is readable without blocking.
     pub read: bool,
+    /// The descriptor is writable without blocking.
     pub write: bool,
+    /// The descriptor is in an error state.
     pub error: bool,
 }
 
@@ -837,9 +1038,14 @@ pub struct PosixFdFlags {
 /// momentary action, like "reset oscillators").
 #[derive(Debug, Clone)]
 pub struct TriggerInfo {
+    /// Stable trigger id, passed back to fire it.
     pub id: u32,
+    /// Raw `clap_trigger_info` flag bits, carried undecoded — this host has no
+    /// trigger flags it acts on.
     pub flags: u32,
+    /// Display name.
     pub name: String,
+    /// Slash-separated grouping path; empty for ungrouped.
     pub module: String,
 }
 
@@ -847,16 +1053,25 @@ pub struct TriggerInfo {
 /// `CLAP_EXT_TUNING`.
 #[derive(Debug, Clone)]
 pub struct TuningInfo {
+    /// Stable id the host uses to refer to this tuning.
     pub tuning_id: u32,
+    /// Display name of the tuning.
     pub name: String,
+    /// Whether the table may change while in use, so the plugin must re-read
+    /// it rather than caching.
     pub is_dynamic: bool,
 }
 
 /// Undo delta-format capabilities reported by the plugin.
 #[derive(Debug, Clone, Copy)]
 pub struct UndoDeltaProperties {
+    /// The plugin can produce undo deltas at all.
     pub has_delta: bool,
+    /// Deltas stay valid across save/load, so the host may persist them. When
+    /// false they are only usable within the current session.
     pub are_deltas_persistent: bool,
+    /// Version of the plugin's delta encoding. A delta must only be replayed
+    /// into a plugin reporting the same version.
     pub format_version: u32,
 }
 
@@ -864,8 +1079,13 @@ pub struct UndoDeltaProperties {
 /// delta blob whose meaning is private to the plugin.
 #[derive(Debug, Clone)]
 pub struct UndoChange {
+    /// Display name for the step, e.g. `"Set Cutoff"`.
     pub name: String,
+    /// The plugin's own encoding of the change. Opaque to the host, which may
+    /// only store it and hand it back.
     pub delta: Vec<u8>,
+    /// Whether this delta can be applied in the undo direction. A plugin may
+    /// record a step it can only redo.
     pub delta_can_undo: bool,
 }
 

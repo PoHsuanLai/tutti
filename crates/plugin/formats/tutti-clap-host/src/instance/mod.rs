@@ -1,14 +1,15 @@
 //! CLAP plugin instance.
 //!
 //! The two lifecycle types live here as the shared anchor; their behaviour is
-//! split across sibling modules by duty:
-//! - [`entry`] — once-per-library `clap_entry` init registry + guard.
-//! - [`load`] — `ClapLoaded` construction (probe / load / editor-only).
-//! - [`lifecycle`] — metadata queries, `activate`/`deactivate` transitions,
+//! split across private sibling modules by duty (the module names below are
+//! internal, so they are not linked):
+//! - `entry` — once-per-library `clap_entry` init registry + guard.
+//! - `load` — `ClapLoaded` construction (probe / load / editor-only).
+//! - `lifecycle` — metadata queries, `activate`/`deactivate` transitions,
 //!   the `Deref` bridge, and `Drop` teardown.
-//! - [`audio`] — the active-only `ClapActive::process` path.
-//! - per-extension method blocks: [`params`], [`ports`], [`state`],
-//!   [`polling`], [`undo`], [`resources`] (all `impl ClapLoaded`, inherited by
+//! - `audio` — the active-only `ClapActive::process` path.
+//! - per-extension method blocks: `params`, `ports`, `state`,
+//!   `polling`, `undo`, `resources` (all `impl ClapLoaded`, inherited by
 //!   `ClapActive` via `Deref`).
 
 mod audio;
@@ -23,11 +24,11 @@ mod params;
 mod plugin_ptr;
 mod polling;
 mod ports;
-/// Plugin resource-directory extension — speculative, gated behind `clap-extras`.
+// Plugin resource-directory extension — speculative, gated behind `clap-extras`.
 #[cfg(feature = "clap-extras")]
 mod resources;
 mod state;
-/// Plugin undo/redo delta extension — speculative, gated behind `clap-extras`.
+// Plugin undo/redo delta extension — speculative, gated behind `clap-extras`.
 #[cfg(feature = "clap-extras")]
 mod undo;
 
@@ -75,7 +76,8 @@ pub struct ClapLoaded {
 /// The sample format `T` is fixed at activation: `ClapActive<f32>` (the
 /// default) processes f32, `ClapActive<f64>` processes f64 (requires the
 /// plugin to advertise 64-bit support). Embeds a [`ClapLoaded`]; every
-/// parameter / editor / state / polling method is inherited via [`Deref`].
+/// parameter / editor / state / polling method is inherited via
+/// [`Deref`](std::ops::Deref).
 /// Obtain via [`ClapLoaded::activate`]; drop back to a [`ClapLoaded`] with
 /// [`deactivate`](ClapActive::deactivate).
 pub struct ClapActive<T: ClapSample = f32> {

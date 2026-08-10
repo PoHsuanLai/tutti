@@ -40,11 +40,15 @@ pub struct AutomationLane {
     last_value: f32,
 }
 
-/// Alias kept for the `graph.node_as::<LiveAutomationLane>(..)` lookups in
-/// consumers. The lane is no longer generic over the envelope's label.
+/// Alias for the `graph.node_as::<LiveAutomationLane>(..)` lookups in
+/// consumers. The lane is not generic over the envelope's label.
 pub type LiveAutomationLane = AutomationLane;
 
 impl AutomationLane {
+    /// Builds a lane that evaluates `curve` at the transport beat.
+    ///
+    /// The curve is held behind an `Arc` and read on the audio thread, so it
+    /// must be cheap to evaluate and must not allocate in `value_at`.
     pub fn new(curve: impl Curve + 'static) -> Self {
         Self {
             curve: Arc::new(curve),
@@ -52,6 +56,11 @@ impl AutomationLane {
         }
     }
 
+    /// Replaces the curve, allocating a new `Arc`.
+    ///
+    /// `&mut self`, so it cannot reach a node already live in the graph — a
+    /// live curve swap goes through a respawn. Does not clear
+    /// [`last_value`](Self::last_value).
     pub fn set_curve(&mut self, curve: impl Curve + 'static) {
         self.curve = Arc::new(curve);
     }
@@ -65,6 +74,12 @@ impl AutomationLane {
         self.last_value
     }
 
+    /// Evaluates the curve at `beat` **without** recording it as the last
+    /// value.
+    ///
+    /// Returns `0.0` where the curve has no value — before its first point, or
+    /// on an empty envelope. Use [`update_to`](Self::update_to) to evaluate and
+    /// record in one step.
     pub fn get_value_at(&self, beat: Beat) -> f32 {
         self.curve.value_at(beat).unwrap_or(0.0)
     }

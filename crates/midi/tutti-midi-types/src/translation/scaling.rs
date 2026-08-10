@@ -56,7 +56,7 @@ pub fn midi1_velocity_to_midi2(v: u8) -> u16 {
 /// Lives here rather than on `Velocity` itself because the widening is the
 /// spec's Min-Center-Max scaler, not a multiply: `0.5` must land on `0x8000`
 /// exactly, and a plain `* 65535.0` misses it. `tutti-types` cannot host this —
-/// it does not depend on this crate, and copying [`mcm_up`] there would be a
+/// it does not depend on this crate, and copying `mcm_up` there would be a
 /// second home for a spec algorithm, the thing the ITU downmix coefficients are
 /// kept single-homed to avoid.
 ///
@@ -64,7 +64,7 @@ pub fn midi1_velocity_to_midi2(v: u8) -> u16 {
 ///
 /// # What this trades
 ///
-/// It no longer reproduces [`midi1_velocity_to_midi2`] at every 7-bit input.
+/// It does not reproduce [`midi1_velocity_to_midi2`] at every 7-bit input.
 /// Away from the three fixed points the two differ by up to 258 codes — 0.4% of
 /// full scale, well under a JND for velocity, and no caller compares them. What
 /// is preserved exactly is what a listener or a device can actually notice:
@@ -77,20 +77,17 @@ pub fn midi1_velocity_to_midi2(v: u8) -> u16 {
 /// by exact MCM. This function is only for values that start as a `Velocity`,
 /// where there is no 7-bit original to be faithful to.
 ///
-/// # This used to quantize to 7 bits
+/// # Do not route this through the 7-bit rung
 ///
-/// It was `midi1_velocity_to_midi2(velocity_to_midi1(v))` — via the 7-bit rung,
-/// because that rung's center is exactly representable and a plain `* 65535.0`
-/// misses `0x8000`. The center property was real; the cost was not noticed.
-/// Routing through `u8` meant a `Velocity` could only ever produce **128
-/// distinct 16-bit codes**, so the float-backed type — which exists precisely
-/// because the wire field is 16-bit — was narrowed to the resolution it was
-/// introduced to escape. Every note-on in the engine went through this.
+/// `midi1_velocity_to_midi2(velocity_to_midi1(v))` is the tempting
+/// implementation, because the 7-bit rung's center is exactly representable
+/// where a plain `* 65535.0` misses `0x8000`. It buys that one property by
+/// capping a `Velocity` at **128 distinct 16-bit codes** — narrowing the
+/// float-backed type to exactly the resolution it exists to escape, on every
+/// note-on in the engine.
 ///
-/// The two directions were also asymmetric (`to` via MCM, `from` a plain
-/// divide), which is what let the loss hide: a round trip of any *7-bit* value
-/// is exact, and those are the only values the old path could emit, so it was
-/// self-consistently lossy.
+/// The loss hides because such a path is self-consistently lossy: a round trip
+/// of any *7-bit* value is exact, and those are the only values it can emit.
 ///
 /// # The mapping is piecewise, because MCM is
 ///

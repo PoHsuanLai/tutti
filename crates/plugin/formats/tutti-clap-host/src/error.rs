@@ -18,8 +18,12 @@ pub enum ClapError {
     /// The plugin could not be loaded. `stage` pinpoints which step failed.
     #[error("Failed to load plugin at {path}: {stage} - {reason}")]
     LoadFailed {
+        /// Bundle or library path that was being loaded.
         path: PathBuf,
+        /// Which step of the load sequence failed.
         stage: LoadStage,
+        /// Human-readable cause, from the OS loader or the plugin's own
+        /// refusal.
         reason: String,
     },
 
@@ -50,7 +54,13 @@ pub enum ClapError {
         "Processing error: block size {requested} exceeds activated max_frames {max_frames}; \
          grow it off the audio thread with `set_max_block_size`"
     )]
-    BlockTooLarge { requested: u32, max_frames: u32 },
+    BlockTooLarge {
+        /// Frames the `process` call asked for.
+        requested: u32,
+        /// Frames the instance was activated for — the ceiling `requested`
+        /// exceeded.
+        max_frames: u32,
+    },
 
     /// The plugin's `start_processing` returned false.
     ///

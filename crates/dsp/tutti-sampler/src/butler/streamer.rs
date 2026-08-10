@@ -95,12 +95,13 @@ pub struct DiskStreamerConfig {
     /// Butler buffer / cache configuration. Default is tuned for
     /// 64-channel streaming on a typical desktop.
     pub buffer_config: BufferConfig,
-    /// Subscription to a per-channel delay-compensation table.
+    /// Subscription to a per-channel delay-compensation table, indexed by
+    /// channel index and denominated in [`Samples`].
     ///
-    /// While set, butler pre-rolls each stream by its channel's entry so
+    /// While set, the butler pre-rolls each stream by its channel's entry so
     /// downstream effects stay sample-aligned. Published by whoever runs
-    /// `tutti_core::latency::compensate` over the audio graph — see
-    /// [`DelayPlan::channel_compensations`](tutti_types::DelayPlan::channel_compensations).
+    /// `tutti_core::latency::compensate` over the audio graph — the table is
+    /// [`Compensation::channels`](tutti_core::Compensation::channels).
     pub pdc: Option<Arc<RtPublish<Vec<Samples>>>>,
 }
 

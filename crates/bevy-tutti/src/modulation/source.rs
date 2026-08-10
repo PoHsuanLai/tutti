@@ -19,7 +19,7 @@
 //! config and leave most fields meaningless for any given one. A component per
 //! kind keeps each modulator's parameters typed, individually
 //! change-detectable, and reflectable — the same reasoning that already keeps
-//! [`ModRate`](super::ModRate) off `ModSource`.
+//! [`ModRate`] off `ModSource`.
 //!
 //! [`ModRate`] stays shared: *how a source derives phase from the transport* is
 //! a property of being a source at all, not of which kind it is.
@@ -99,6 +99,14 @@ pub trait ModSourceKind: Component + Clone + Send + Sync + Sized + 'static {
 /// learning which kind it came from.
 pub(crate) type CurveBuilder = Box<dyn Fn(EdgeShape) -> Option<Arc<dyn Curve>> + Send + Sync>;
 
+/// What the registered source kinds built this frame, for [`rebuild`] to drain.
+///
+/// A staging buffer, not state: [`rebuild`] consumes it, and
+/// `clear_collected` drops anything a frame built but no rebuild took. It
+/// exists so `rebuild` can recompile without naming a kind type — each kind's
+/// own collector pushes here.
+///
+/// [`rebuild`]: super::rebuild
 #[derive(Resource, Default)]
 pub struct CollectedModSources {
     pub(crate) sources: Vec<(Entity, Box<dyn ErasedModulator>)>,
@@ -121,6 +129,7 @@ impl CollectedModSources {
         self.sources.len()
     }
 
+    /// Whether no kind built a source this frame.
     pub fn is_empty(&self) -> bool {
         self.sources.is_empty()
     }
@@ -140,7 +149,7 @@ pub(crate) fn clear_collected(mut collected: ResMut<CollectedModSources>) {
 /// Give every source a route points at the cell its rate will be read from.
 ///
 /// Runs ahead of [`mark_dirty`], and that ordering is the whole reason it is a
-/// system of its own. The cell must exist *before* [`collect`] builds the
+/// system of its own. The cell must exist *before* `collect` builds the
 /// [`Sourced`](tutti_mod::Sourced) that reads it, but only a route declares
 /// that a rate is modulated — and routes are resolved by
 /// [`rebuild`](super::rebuild), which runs after both. Adding the cell here
@@ -184,7 +193,7 @@ pub(crate) fn ensure_rate_cells(
 
 /// Report whether kind `K`'s declaration moved this frame.
 ///
-/// Split from [`collect`] and scheduled ahead of it because **building a source
+/// Split from `collect` and scheduled ahead of it because **building a source
 /// is not free of consequence**: a fresh [`Sourced`](tutti_mod::Sourced) starts
 /// at phase zero, so constructing one per frame would restart every modulator
 /// sixty times a second. The build must happen only when a rebuild will
@@ -226,10 +235,9 @@ fn collect<K: ModSourceKind>(
         collected.sources.push((entity, source));
 
         // A curve is clocked by the beat, so a synced span is already in the
-        // curve's own units and passes through unchanged. This used to take the
-        // reciprocal, on the reading that the field meant cycles-per-beat; the
-        // arm now carries a `BeatDuration`, so there is no second reading to
-        // pick wrong.
+        // curve's own units and passes through unchanged — no reciprocal. The
+        // arm carries a `BeatDuration`, which is what leaves no second reading
+        // (cycles-per-beat) available to pick wrong.
         //
         // A free-running rate is in Hz and has no fixed beat mapping, so it has
         // no curve form — the scalar path stays correct for it.
@@ -281,7 +289,7 @@ impl ModSourceAppExt for App {
 ///
 /// `rebuild` runs on `Or<(Changed<ModRoute>, Changed<ModParamRange>)>` *or* a
 /// dirty source, and it builds its source registry by **draining**
-/// `CollectedModSources::sources`. But [`collect`] refills that list only when
+/// `CollectedModSources::sources`. But `collect` refills that list only when
 /// `dirty` is set, and `dirty` tracked source changes alone.
 ///
 /// So a rebuild triggered by a route or range change found an empty registry,
@@ -341,7 +349,7 @@ struct RegisteredModSources(std::collections::HashSet<core::any::TypeId>);
 /// [`ModRate`].
 ///
 /// It is a **component, not a build-time value**, and that is load-bearing:
-/// [`collect`] reconstructs every [`Sourced`](tutti_mod::Sourced) on each
+/// `collect` reconstructs every [`Sourced`](tutti_mod::Sourced) on each
 /// rebuild, so a cell minted there would be a fresh one each time and the
 /// accumulator writing the *previous* cell would go unread. Living on the
 /// entity, it outlives every rebuild and both halves keep pointing at one cell.
@@ -370,7 +378,7 @@ impl ModRateCell {
     /// The frequency the source is running at *now* — the authored rate until
     /// modulation moves it, and the modulated value thereafter.
     ///
-    /// This is the live read a UI wants: [`ModRate::frequency`] is what the user
+    /// This is the live read a UI wants: `ModRate::frequency` is what the user
     /// authored and does not move.
     pub fn frequency(&self) -> Hz {
         self.0.load()

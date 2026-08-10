@@ -1,7 +1,7 @@
 //! Turning an entity + a param address into a live accumulator.
 //!
 //! This is the one step the adapter cannot do generically, and the reason is
-//! worth stating: [`ModParams`](tutti_mod::ModParams) is implemented on concrete
+//! worth stating: [`ModParams`] is implemented on concrete
 //! node types (`Compressor`, `ChorusNode`, `PolySynth`, …), and reaching one
 //! through the graph needs [`node_as::<T>`](tutti_core::dsp::Net::node_as) —
 //! which takes a concrete `T`. There is no `&dyn ModParams` to recover from a
@@ -224,6 +224,10 @@ impl ModTargetResolver<'_, '_> {
         )))
     }
 
+    /// The shared [`ModBus`] a resolved target is registered on.
+    ///
+    /// The one bus [`ModBusRes`] holds — see it for why a second would leave the
+    /// driver dispatching into accumulators nothing reads.
     pub fn bus(&self) -> Arc<ModBus> {
         Arc::clone(&self.bus.0)
     }

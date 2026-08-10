@@ -3,10 +3,10 @@
 //!
 //! A loaded plugin (VST2 / VST3 / CLAP / AU) is a *subprocess-local* object:
 //! it lives entirely inside `tutti-plugin-server`, reached through
-//! `Plugin::instance_mut()`, and never crosses the IPC wire. Its surface used
-//! to be one 13-method god-trait; it is now split along the real capability
-//! axis, one trait per concern, so a loader implements only the capabilities it
-//! has and a consumer depends only on the capability it uses.
+//! `Plugin::instance_mut()`, and never crosses the IPC wire. The surface is
+//! split along the real capability axis, one trait per concern, so a loader
+//! implements only the capabilities it has and a consumer depends only on the
+//! capability it uses.
 //!
 //! Note the audio methods here ([`PluginAudio`]) are the *subprocess* render
 //! path — distinct from the host-side `AudioUnit` node (`PluginClient`) on the
@@ -28,7 +28,12 @@ use crate::{
 /// node (`AudioUnit::get_id()` is a shared *type* tag, not per-instance
 /// identity).
 pub trait PluginMeta {
+    /// Static catalog identity as reported at load: name, vendor, native class,
+    /// whether an editor exists.
     fn descriptor(&self) -> &PluginDescriptor;
+
+    /// The load-time engine-wiring snapshot: per-bus channel widths, reported
+    /// latency, f64 support.
     fn loaded(&self) -> &LoadedPlugin;
 }
 
@@ -47,6 +52,12 @@ pub trait PluginAudio: Send {
         ctx: &ProcessContext,
     ) -> Result<ProcessOutput>;
 
+    /// Sets the render sample rate in Hz.
+    ///
+    /// A raw `f64` rather than `Hz`: this is the value handed straight to a C
+    /// ABI (`effSetSampleRate`, `IComponent::setupProcessing`), which is where
+    /// the unit types stop. Configure-time — most formats accept it only while
+    /// the plugin is deactivated.
     fn set_sample_rate(&mut self, rate: f64);
 
     /// Tell the plugin whether it is rendering under realtime pressure.
@@ -81,10 +92,9 @@ pub trait PluginAudio: Send {
 pub trait PluginParams {
     /// Parameter value, **normalized `0..=1`**, for every format.
     ///
-    /// This is the host's authoring convention, and it is the same one
-    /// [`ParameterPoint::value`](crate::ParameterPoint) already carries — the
-    /// direct path and the automation path now speak one vocabulary rather than
-    /// two.
+    /// This is the host's authoring convention, and the same one
+    /// [`ParameterPoint::value`](crate::ParameterPoint) carries: the direct path
+    /// and the automation path speak one vocabulary.
     ///
     /// The formats do not agree, and this trait is where the disagreement stops:
     ///
@@ -95,17 +105,14 @@ pub trait PluginParams {
     ///   their impls convert against the range table each already keeps for
     ///   automation.
     ///
-    /// It used to be the *caller's* job to know which, from a bare `f64` that
-    /// said nothing. That is unimplementable for a caller that does not know the
-    /// format: writing `1.0` to Apple's AUDelay "Lowpass Cutoff" (`[10, 22050]`
-    /// Hz) sets **1 Hz**, not full scale — an inaudible filter that reads as
-    /// "the plugin ignored me". Two of the four formats punished the naive
-    /// reading, and the naive reading was the documented one.
-    ///
-    /// A conversion is therefore a *loader's* obligation, discharged where the
-    /// range is known, exactly as the automation path has always done it.
-    /// Callers that hold a [`ParameterInfo`] and want the plain value should ask
-    /// for it explicitly with [`ParameterInfo::to_plain`].
+    /// Leaving the domain to the *caller* is unimplementable for a caller that
+    /// does not know the format: writing `1.0` to Apple's AUDelay "Lowpass
+    /// Cutoff" (`[10, 22050]` Hz) as a plain value sets **1 Hz**, not full scale
+    /// — an inaudible filter that reads as "the plugin ignored me". Conversion
+    /// is therefore a *loader's* obligation, discharged where the range is
+    /// known, exactly as the automation path does it. Callers that hold a
+    /// [`ParameterInfo`] and want the plain value ask for it explicitly with
+    /// [`ParameterInfo::to_plain`].
     ///
     /// A parameter whose range the plugin never declared
     /// ([`ParamRange::Normalized`](crate::ParamRange::Normalized)) is already
@@ -128,21 +135,21 @@ pub trait PluginParams {
     /// address of the wrong model is treated.
     ///
     /// The domain is in the signature rather than only in this sentence:
-    /// [`Normalized`](crate::Normalized) cannot be built from a plain value
-    /// without passing its clamp, so the plain-for-normalized mistake described
-    /// above is no longer expressible at this seam.
+    /// [`Normalized`] cannot be built from a plain value without passing its
+    /// clamp, so the plain-for-normalized mistake described above is not
+    /// expressible at this seam. The clamp is silent, so a plain value passed
+    /// anyway arrives saturated rather than rejected.
     fn set_parameter(&mut self, id: ParamAddress, value: Normalized);
 
     /// The plugin's own display string for `value` — `"800 Hz"`, `"Bandpass"`,
     /// `"-inf dB"` — or `None` if it will not say.
     ///
-    /// Every format implements a value→text call, and until this method existed
-    /// none of the four answers reached a caller: a UI reading
-    /// [`get_parameter`](Self::get_parameter) had a bare `0.5` and no way to
-    /// learn the plugin would have written `"800 Hz"`. Formatting the number
-    /// host-side cannot recover it — only the plugin knows its own taper, that
-    /// index `3` is `"Bandpass"`, or that its minimum reads `"-inf"` rather than
-    /// `"-120.0"`.
+    /// Asking the plugin is the only way to get this: formatting the number
+    /// host-side cannot recover it, because only the plugin knows its own taper,
+    /// that index `3` is `"Bandpass"`, or that its minimum reads `"-inf"` rather
+    /// than `"-120.0"`. Without it a UI reading
+    /// [`get_parameter`](Self::get_parameter) holds a bare `0.5` and no way to
+    /// learn the plugin would have written `"800 Hz"`.
     ///
     /// `value` is normalized, per [`get_parameter`](Self::get_parameter); the
     /// plain-native loaders (AU, CLAP) denormalize against the same range table
@@ -196,13 +203,28 @@ pub trait PluginParams {
     /// `IAutomationState`) encodes the mode onto its own ABI at the FFI edge.
     fn set_automation_state(&mut self, _mode: crate::AutomationMode) {}
 
+    /// Every parameter the plugin advertises, in the plugin's own order.
+    ///
+    /// The order is presentation, not addressing: index `n` in this vector is
+    /// not parameter id `n` for VST3, CLAP or AU. Address through each entry's
+    /// [`ParameterInfo::id`].
     fn get_parameter_list(&self) -> Vec<ParameterInfo>;
 }
 
 /// Opaque preset-chunk save/load. No fundsp node has serializable opaque state,
 /// so this is genuinely irreducible.
 pub trait PluginState: Send {
+    /// The plugin's full state as an opaque chunk, for the host to persist.
+    ///
+    /// The bytes are the plugin's own format and carry no host-readable
+    /// structure; only the same plugin can interpret them.
     fn get_state(&mut self) -> Result<Vec<u8>>;
+
+    /// Restores state from a chunk [`get_state`](Self::get_state) produced.
+    ///
+    /// `&mut self` because every format applies this to the live instance.
+    /// Handing a chunk from a different plugin is the caller's error to avoid —
+    /// nothing here can validate the opaque bytes.
     fn set_state(&mut self, data: &[u8]) -> Result<()>;
 }
 
@@ -263,12 +285,21 @@ pub trait PluginPresets: Send {
 /// **Idle ticking is not here.** Every editor this codebase pumps — including
 /// the in-process VST2 one — is pumped through the host-side surface
 /// (`HostEditor::editor_idle`, driven per frame by
-/// `bevy_tutti::plugin_host::editor`). This trait carried an `editor_idle` with
-/// a default no-op body, no implementor and no caller; a second pump path
-/// beside the working one would give one thing two writers, so it was removed
-/// rather than filled in.
+/// `bevy_tutti::plugin_host::editor`). This trait deliberately has no
+/// `editor_idle`: a second pump path beside the working one would give one thing
+/// two writers.
 pub trait PluginEditorHost {
+    /// Embeds the plugin's editor into `parent`, returning the size it asks for.
+    ///
+    /// Runs on the platform GUI toolkit's run loop inside the plugin-server
+    /// subprocess, never on the audio thread.
     fn open_editor(&mut self, parent: WindowHandle) -> Result<EditorSize>;
+
+    /// Tears the editor down.
+    ///
+    /// Infallible and idempotent: a caller unwinding from a failed
+    /// [`open_editor`](Self::open_editor) has nothing better to do than ask, so
+    /// closing an editor that was never opened must be a no-op.
     fn close_editor(&mut self);
 }
 

@@ -69,3 +69,9 @@ atomic_float = { version = "1.1", optional = true }
 # Bevy derives — workspace deps, gated on the `bevy` feature.
 bevy_ecs = { workspace = true, optional = true }
 bevy_reflect = { workspace = true, optional = true }
+
+# docs.rs renders with every feature on. `default = []` keeps the engine
+# Bevy-free for consumers, but it would otherwise publish a page with the
+# feature-gated half of the public API missing.
+[package.metadata.docs.rs]
+all-features = true

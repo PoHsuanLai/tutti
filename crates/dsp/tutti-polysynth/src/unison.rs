@@ -1,18 +1,47 @@
-//! Unison engine: voice detuning and stereo spread.
+//! Unison: the detune ratios, pans, phases and gains for the stack of
+//! sub-voices that sound one note.
+//!
+//! Pure derivation — this module computes per-sub-voice parameters and never
+//! touches a sample. `crate::synth_voice` reads them when it renders. Detune
+//! and spread are recomputed only when they change, so the audio thread does an
+//! array index rather than the trigonometry.
 
 use std::sync::Arc;
 use tutti_core::{Amplitude, AtomicF32, Cents, Pan, Param, Phase, Spread};
 
 const MAX_UNISON_VOICES: usize = 16;
 
+/// Stacked, detuned copies of a single note — the "supersaw" thickener.
+///
+/// Every field here multiplies the cost of *each* voice: a synth with
+/// `max_voices: 8` and `voice_count: 7` runs 56 oscillator chains. The
+/// sub-voices are summed to a constant-power total, so raising
+/// [`voice_count`](Self::voice_count) thickens the tone without raising the
+/// level.
 #[derive(Debug, Clone)]
 pub struct UnisonConfig {
-    /// 1-16
+    /// Sub-voices per note, 1..=16 (clamped, not rejected). `1` is plain
+    /// unison-off and the default. Even counts have no centre voice, so the
+    /// written pitch is not itself sounded.
     pub voice_count: u8,
-    /// Total spread (not per-voice)
+    /// Detune amount in [`Cents`], applied symmetrically: sub-voices are spaced
+    /// evenly over ±this value, so the outermost pair sits `2 * detune_cents`
+    /// apart and the centre (odd counts only) stays at the written pitch.
+    /// Negative values are clamped to zero. A few cents is a chorus shimmer;
+    /// tens of cents is an overtly out-of-tune stack.
     pub detune_cents: Cents,
-    /// 0.0 = mono, 1.0 = full stereo
+    /// How wide the sub-voices are panned, as a [`Spread`] in 0.0..1.0.
+    /// `0.0` stacks them all at centre, `1.0` puts the outermost pair hard
+    /// left and hard right, with the rest spaced evenly between. Pans track
+    /// detune position, so the lowest sub-voice is always the leftmost.
     pub stereo_spread: Spread,
+    /// Whether each note-on starts its sub-voices at random phases.
+    ///
+    /// `false` (the default) starts them all in phase, so every note begins
+    /// with a brief transient spike as the copies reinforce before the detune
+    /// pulls them apart. `true` trades that consistent attack for a softer,
+    /// note-to-note-varying one. The generator is a seeded xorshift, so a
+    /// render is reproducible after `seed_unison_rng`.
     pub phase_randomize: bool,
 }
 

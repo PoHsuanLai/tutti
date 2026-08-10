@@ -3,7 +3,9 @@
 use super::{AudioTap, MasterMeter};
 use crate::RtScratch;
 
-/// Maximum expected frame count per buffer (covers all common audio interfaces)
+/// Largest per-buffer **frame** count the scratch is sized for — above every
+/// common audio interface's block size. A larger buffer is clamped, not grown:
+/// the excess frames go unmetered rather than allocating on the audio thread.
 const MAX_FRAMES: usize = 8192;
 
 /// Pre-allocated deinterleave scratch for [`meter_output`].
@@ -16,6 +18,10 @@ pub struct MeteringContext {
 }
 
 impl MeteringContext {
+    /// Allocate both scratch planes at the 8192-frame ceiling.
+    ///
+    /// Call from the control thread before handing this to the callback — this
+    /// is the only allocation on the metering path.
     pub fn new() -> Self {
         Self {
             left: RtScratch::new(MAX_FRAMES),
@@ -59,12 +65,21 @@ impl Default for MeteringContext {
 
 /// Measure `meter` and feed `tap` from one interleaved stereo output buffer.
 ///
+/// `frames` is a **frame** count, so `output` must hold at least `frames * 2`
+/// samples. Stereo only — this is the master-bus tap, not a general meter.
+///
 /// Called from the audio callback after DSP. Both consumers are opt-in: with
 /// the meter disabled and the tap closed this costs two atomic loads. The
 /// deinterleave only runs when the meter is on — the tap takes the interleaved
 /// buffer directly.
 ///
-/// RT-safe. Backstop: `tutti-core/tests/rt_no_alloc.rs`.
+/// RT-safe: no allocation, no locks (the tap `try_lock`s and skips). Backstop:
+/// `tutti-core/tests/rt_no_alloc.rs`.
+///
+/// # Panics
+///
+/// In debug builds, if `frames` exceeds the scratch ceiling. In release the
+/// excess frames are silently unmetered.
 #[inline]
 pub fn meter_output(
     output: &[f32],

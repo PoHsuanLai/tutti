@@ -44,7 +44,11 @@ use crate::plugin_host::PluginsRes;
 /// Cheaper than a rescan by the size of the plugin directory: this probes
 /// exactly one file. Emits [`PluginProbed`] either way.
 #[derive(Message, Debug, Clone)]
-pub struct ProbePlugin(pub std::path::PathBuf);
+pub struct ProbePlugin(
+    /// The plugin file to examine. Probing the same path twice concurrently is
+    /// collapsed into one subprocess by [`InFlightProbes`].
+    pub std::path::PathBuf,
+);
 
 /// Outcome of a [`ProbePlugin`].
 ///
@@ -52,7 +56,10 @@ pub struct ProbePlugin(pub std::path::PathBuf);
 /// call `PluginsRes::flush` for that.
 #[derive(Message, Debug)]
 pub struct PluginProbed {
+    /// The path that was probed, echoed back so a caller can match the request.
     pub path: std::path::PathBuf,
+    /// The catalog id on success, or why the subprocess could not identify the
+    /// file.
     pub result: Result<PluginId, BridgeError>,
 }
 
@@ -70,6 +77,7 @@ impl InFlightProbes {
         self.tasks.len()
     }
 
+    /// Whether no probe is running.
     pub fn is_empty(&self) -> bool {
         self.tasks.is_empty()
     }

@@ -41,8 +41,13 @@ use tutti_types::{Amplitude, ChannelLayout, Interleaved, Samples};
 /// together, both to draw and to serialize.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct PeakBlock {
+    /// Most negative sample in the block. A raw signal excursion, so it is
+    /// signed and not an `Amplitude`.
     pub min: f32,
+    /// Most positive sample in the block. Signed, for the same reason as
+    /// [`min`](Self::min).
     pub max: f32,
+    /// Root-mean-square level over the block, as an [`Amplitude`].
     pub rms: Amplitude,
 }
 
@@ -170,11 +175,10 @@ impl PeakBlocks {
     /// Reduce to one series, merging the channels block by block.
     ///
     /// **This is not the same as folding the samples first, and the difference
-    /// is the reason this module stopped doing that.** Folding samples then
-    /// blocking gives the min/max of the *sum*, so a phase-inverted pair
-    /// cancels to a flat line. Blocking then merging gives min-of-mins and
-    /// max-of-maxes — the envelope of what is actually present, which cannot
-    /// cancel.
+    /// is why this module never folds.** Folding samples then blocking gives
+    /// the min/max of the *sum*, so a phase-inverted pair cancels to a flat
+    /// line. Blocking then merging gives min-of-mins and max-of-maxes — the
+    /// envelope of what is actually present, which cannot cancel.
     ///
     /// So this is the right reduction for a *waveform* that needs one row. It
     /// is **not** a downmix: a caller that wants the mono signal's own peaks —
@@ -201,11 +205,16 @@ impl PeakBlocks {
 /// How input is blocked.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PeakConfig {
+    /// How many [`Samples`] of one channel each block summarizes. Sets the
+    /// horizontal resolution of a waveform display.
     pub samples_per_block: Samples,
+    /// Channel layout of the fed frames. One block series is produced per
+    /// channel.
     pub layout: ChannelLayout,
 }
 
 impl PeakConfig {
+    /// A config blocking `samples_per_block` per channel over `layout`.
     pub fn new(samples_per_block: impl Into<Samples>, layout: ChannelLayout) -> Self {
         Self {
             samples_per_block: samples_per_block.into(),
@@ -216,9 +225,9 @@ impl PeakConfig {
     /// Whether `chunk` is the width this config blocks at.
     ///
     /// The carried half-frame is `layout`-wide, so a chunk of a different width
-    /// spliced onto it would realign at the wrong stride and fold two adjacent
-    /// chunks into one wrong frame. That disagreement was inexpressible while
-    /// the chunk was a bare slice.
+    /// spliced onto it realigns at the wrong stride and folds two adjacent
+    /// chunks into one wrong frame. Expressible only because the width travels
+    /// with the buffer — as a bare slice the disagreement cannot be stated.
     #[inline]
     pub fn chunk_matches(&self, chunk: Interleaved<'_>) -> bool {
         chunk.layout() == self.layout
@@ -243,10 +252,8 @@ pub fn summarize_block(samples: &[f32]) -> PeakBlock {
     }
 }
 
-/// Samples not yet forming a whole block.
-///
-/// The state the old implementation lacked, which is why non-aligned chunks
-/// dropped a block.
+/// Samples not yet forming a whole block. Without this carry, non-aligned
+/// chunks drop a block at every boundary.
 ///
 /// **Two** carries, not one, and the second is easy to forget: a chunk can end
 /// mid-*frame* as well as mid-*block*. Deinterleaving each chunk independently
@@ -255,7 +262,7 @@ pub fn summarize_block(samples: &[f32]) -> PeakBlock {
 /// exists to prevent, one level down.
 ///
 /// That second carry is why [`step_peaks`] takes an
-/// [`Interleaved`](tutti_types::Interleaved) rather than a slice plus a width:
+/// [`Interleaved`] rather than a slice plus a width:
 /// the split between "consumed now" and "carried forward" is a *frame* boundary
 /// inside a *sample* buffer, and that is precisely the confusion the type
 /// exists to make unwritable.
@@ -281,6 +288,7 @@ pub struct PeakState {
 }
 
 impl PeakState {
+    /// An empty carry: no partial frame, no pending block, nothing consumed.
     pub fn new() -> Self {
         Self::default()
     }
@@ -291,6 +299,8 @@ impl PeakState {
         self.consumed
     }
 
+    /// Drop every carry and the consumed count, so the next chunk starts a
+    /// fresh stream. Scratch capacity is kept.
     pub fn reset(&mut self) {
         self.partial_frame.clear();
         for plane in &mut self.pending {
@@ -423,6 +433,8 @@ pub struct PeakAccum {
 }
 
 impl PeakAccum {
+    /// An empty accumulator. The channel layout is adopted from the first
+    /// chunk appended, so this needs no width up front.
     pub fn new() -> Self {
         Self::default()
     }

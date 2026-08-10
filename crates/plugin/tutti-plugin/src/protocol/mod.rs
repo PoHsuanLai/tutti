@@ -13,169 +13,121 @@ pub mod sample;
 pub mod shm;
 
 /// Wire protocol version, exchanged in the [`BridgeMessage::Ready`] handshake.
-/// Bump on ANY change to the host↔server wire shape (a new/reordered field on a
-/// serialized enum), since bincode is not self-describing and a skew would
-/// mis-parse silently. Host and subprocess refuse to handshake on a mismatch.
+///
+/// Bump on ANY change to the host↔server wire shape (a new or reordered field on
+/// a serialized type), since bincode is not self-describing and a skew mis-parses
+/// silently. Host and subprocess refuse to handshake on a mismatch.
+///
+/// # Why an appended field is still a bump
+///
+/// Two shapes recur in the log below, and neither is safe to skip:
+///
+/// - A **struct** is positional: fields are written in declaration order with no
+///   tags, so a peer one version behind stops reading before the new field, and
+///   a payload from the newer side runs the decoder off the end or into the next
+///   field's bytes. `serde(default)` does not rescue this — it covers the JSON
+///   and struct-update paths, not this wire.
+/// - An **enum variant** is a varint discriminant over declaration order, so a
+///   peer receiving a tag it has no arm for fails the decode mid-stream rather
+///   than at a message boundary.
+///
+/// # Version log
 ///
 /// - v1: baseline.
 /// - v2: `BridgeMessage::AudioProcessed` carries plugin `midi_out`.
-/// - v3: `BridgeMessage::AudioProcessed` echoes the request's `buffer_id`, so
-///   the host can tell a reply for THIS block from a stale one.
-/// - v4: pipelined audio. `buffer_id: u32` becomes `seq: u64` and indexes a
-///   ring of slots in the slab; `SlabLayout` drops its flat `channels` total and
-///   gains `slots`, with the two directions in disjoint regions. The bump is
-///   mandatory rather than housekeeping: a v3 server handed a v4
-///   `SetupSharedMemory` would read `slots` out of the bytes that used to hold
-///   `channels`, get a plausible small integer, and map a wrong-sized region in
-///   silence. The slab header's magic is the second line of defence.
+/// - v3: `AudioProcessed` echoes the request's `buffer_id`, so the host can tell
+///   a reply for THIS block from a stale one.
+/// - v4: pipelined audio. `buffer_id: u32` becomes `seq: u64` indexing a ring of
+///   slab slots; `SlabLayout` trades a flat `channels` total for `slots`, with
+///   the two directions in disjoint regions. Mandatory: a v3 server reads `slots`
+///   out of the bytes holding `channels`, gets a plausible small integer, and
+///   maps a wrong-sized region in silence. The slab header's magic is the second
+///   line of defence.
 /// - v5: `ParameterInfo` is restructured so an absent declaration is not spelled
-///   as a number. `min_value`/`max_value`/`default_value` become a `ParamRange`
-///   sum type whose `Normalized` arm carries no bounds; `step_count: u32`
-///   becomes `ParamSteps`, splitting "continuous" from "unreported" (a bare
-///   count fused them at zero); `ParameterFlags`'s five bools become a
-///   `ParamFlags` bitset plus a `known` mask, so a capability the format never
-///   reported reads as `None` instead of `false`. Mandatory: bincode carries no
-///   field names, so a v4 payload deserializes from misaligned bytes.
+///   as a number — `ParamRange` (whose `Normalized` arm carries no bounds),
+///   `ParamSteps` (splitting "continuous" from "unreported", which a bare count
+///   fused at zero), and a `ParamFlags` bitset plus a `known` mask, so a
+///   capability the format never reported reads as `None` rather than `false`.
+///   Mandatory: bincode carries no field names, so a v4 payload deserializes from
+///   misaligned bytes.
 /// - v6: `PluginDescriptor::has_editor: bool` becomes `editor: EditorPresence`,
-///   a three-valued enum. The probe paths cannot instantiate, so they used to
-///   persist `false` for a question nobody had asked. Mandatory for the same
-///   reason as v5: on this bincode wire the bool and the enum discriminant are
-///   both one byte, so a skewed peer decodes plausible garbage rather than
-///   failing.
+///   three-valued, because the probe paths cannot instantiate and so cannot
+///   answer. Mandatory: the bool and the discriminant are both one byte, so a
+///   skewed peer decodes plausible garbage rather than failing.
 ///
 ///   The persisted catalog is NOT governed by this constant — it is JSON, and
 ///   `PluginDescriptor::editor` carries `serde(default)` so an existing database
-///   loads with `Unknown` instead of being quarantined. See the field.
+///   loads with `Unknown` instead of being quarantined.
 /// - v7: `LoadedPlugin` gains `probed: Features`, the mask saying which
-///   capabilities the loader actually asked about. Without it a clear
-///   `Features` bit answers "the plugin declined", "this loader never asked",
-///   and "the format has no query" identically — and the AU loader probes
-///   exactly one of the ten. Mandatory: the new field appends to the struct, so a v6 peer stops
-///   reading before it and a v6 *payload* runs the decoder off the end of the
-///   buffer or into the next field's bytes.
-/// - v8: the `HostMessage` `param_id: u32` fields become a `ParamAddress`, which
-///   distinguishes an opaque plugin-chosen handle (VST3/CLAP/AU) from a VST2
-///   positional index.
-///   The two were indistinguishable on the wire, so the receiving loader had to
-///   assume its own format's model — correct only because each session hosts one
-///   format, and silently wrong the moment an address is forwarded. Mandatory:
-///   the enum adds a discriminant byte ahead of the number, so a v7 peer reads
-///   the tag as the low byte of the id.
-/// - v9: `ParameterQueue::param_id` becomes a `ParamAddress` too. v8 moved the
-///   direct parameter path and left the *automation* path on a bare `u32`,
-///   reasoning that types stop at the IPC boundary — a rule about foreign
-///   boundaries, which this is not: both ends are this workspace. The cost was
-///   visible in the loaders, where VST2 narrowed with `i32::try_from` to rebuild
-///   an index while AU and CLAP read the same field as opaque, each recovering
-///   the model from its own identity. Mandatory for the same reason as v8: the
-///   discriminant byte shifts every following field.
+///   capabilities the loader actually asked about. Without it a clear `Features`
+///   bit fuses "the plugin declined", "this loader never asked" and "the format
+///   has no query" — and the AU loader probes exactly one of the ten. Appended
+///   struct field.
+/// - v8: the `HostMessage` `param_id: u32` fields become `ParamAddress`,
+///   distinguishing an opaque plugin-chosen handle (VST3/CLAP/AU) from a VST2
+///   positional index. Indistinguishable on the wire, the receiving loader had
+///   to assume its own format's model — silently wrong the moment an address is
+///   forwarded. Mandatory: the discriminant byte shifts every following field.
+/// - v9: `ParameterQueue::param_id` becomes a `ParamAddress`, putting the
+///   automation path on the same address type as v8's direct path. Mandatory for
+///   v8's reason: the discriminant byte shifts every following field.
 /// - v10: `LoadedPlugin` gains `tail: PluginTail` — how long a plugin keeps
-///   sounding after its input stops, which a bounce needs so it does not
-///   truncate a reverb mid-decay. A sum type rather than a count because
-///   "unbounded" and "never asked" are real answers and neither is a number:
-///   TAL Reverb 4 reports an infinite tail, and through `Seconds::to_samples`
-///   that arrives as `Samples(0)` — bit-identical to a plugin with no tail.
-///   Mandatory: the new field appends to the struct, so a v9 peer stops reading
-///   before it and a v9 *payload* runs the decoder off the end. The field also
-///   carries `serde(default)`, which covers the JSON and struct-update paths
-///   but not this bincode wire.
-/// - v11: `BridgeMessage` gains `TailChanged { tail }`, so a runtime tail change
-///   reaches the host instead of being polled and dropped. v10 made the tail
-///   *travel*; it still only ever carried the value read at load, which is wrong
-///   for CLAP — `clap.tail` pairs the plugin's `get` with a host `changed`
-///   callback precisely because raising a reverb's decay changes the tail after
-///   load. Mandatory even though the variant is appended: bincode encodes the
-///   discriminant as a varint over the enum's *declaration* order, so this sits
-///   after the variants a v10 peer knows, and a v10 host receiving it reads a
-///   tag it has no arm for and fails the decode mid-stream rather than at a
-///   message boundary.
-/// - v12: `PluginClass` carries parsed classification vocabularies instead of
-///   raw strings — `Vst3 { category }` is a `Vst3SubCategories` and
-///   `Clap { features }` a `Vec<ClapFeature>`. Mandatory: both are *inside* an
-///   existing field rather than appended, so a v11 peer decodes a `Vec<String>`
-///   where a `Vec<ClapFeature>` was written and desynchronizes mid-message.
-///   `Vst3SubCategories` round-trips through its raw string, so that half is
-///   byte-identical on the wire; the CLAP half is not, which is what forces the
-///   bump.
+///   sounding after its input stops, which a bounce needs so it does not truncate
+///   a reverb mid-decay. A sum type rather than a count because "unbounded" and
+///   "never asked" are real answers and neither is a number: an infinite tail
+///   through `Seconds::to_samples` arrives as `Samples(0)`, bit-identical to no
+///   tail at all. Appended struct field.
+/// - v11: `BridgeMessage` gains `TailChanged { tail }`, so a tail that changes at
+///   runtime reaches the host rather than being polled and dropped. CLAP requires
+///   it: `clap.tail` pairs the plugin's `get` with a host `changed` callback
+///   because raising a reverb's decay changes the tail after load. Appended
+///   variant.
+/// - v12: `PluginClass` carries parsed classification vocabularies instead of raw
+///   strings — `Vst3 { category }` is a `Vst3SubCategories`, `Clap { features }` a
+///   `Vec<ClapFeature>`. Mandatory: both sit *inside* an existing field rather
+///   than appended, so a v11 peer decodes a `Vec<String>` where a
+///   `Vec<ClapFeature>` was written and desynchronizes mid-message.
 ///
-///   The persisted JSON catalog changes shape too, and unlike this wire it has
-///   no version negotiation: `PluginDatabase::load` quarantines a file it
-///   cannot parse, so an existing catalog is discarded and rescanned.
+///   The persisted JSON catalog changes shape too, and unlike this wire it has no
+///   version negotiation: `PluginDatabase::load` quarantines a file it cannot
+///   parse, so an existing catalog is discarded and rescanned.
 /// - v13: `HostMessage` gains `SetRenderMode { mode }`, so an offline bounce can
-///   tell a hosted plugin it is not under realtime pressure. Appended, for the
-///   same reason v11's variant was: bincode encodes the discriminant over
-///   declaration order, so a v12 peer receiving this reads a tag it has no arm
-///   for. Mandatory in that direction only — a v13 host never *sends* it unless
-///   a caller asks for offline, so a v12 server survives a realtime session; the
-///   bump refuses the pairing outright rather than leaving that to luck.
-/// - v14: presets cross the wire. `HostMessage` gains `GetPresetList`,
+///   tell a hosted plugin it is not under realtime pressure. Appended variant,
+///   but mandatory in one direction only — a v13 host sends it only when a caller
+///   asks for offline, so a v12 server would survive a realtime session. The bump
+///   refuses the pairing outright rather than leaving that to luck.
+/// - v14: presets cross the wire — `HostMessage` gains `GetPresetList`,
 ///   `LoadPreset` and `GetCurrentPreset`; `BridgeMessage` gains `PresetList`,
-///   `PresetLoaded` and `CurrentPreset`. All six appended, for the reason v11
-///   and v13 were: bincode encodes the discriminant over declaration order, so
-///   a v13 peer receiving one reads a tag it has no arm for.
-///
-///   Mandatory in both directions, unlike v13's. A v14 host asks for a preset
-///   list whenever a caller opens a browser — not only when a caller opts into
-///   something — so a v13 server would meet an unknown tag in ordinary use.
+///   `PresetLoaded` and `CurrentPreset`. Six appended variants, mandatory in both
+///   directions: a v14 host asks for a preset list whenever a caller opens a
+///   browser, so a v13 server meets an unknown tag in ordinary use.
 /// - v15: `LoadedPlugin` gains `input_topology` / `output_topology`, carrying
 ///   *which speaker* each channel feeds beside the counts it already reported.
-///   Appended last, but a struct is **positional** on this wire in a way an
-///   appended enum variant is not: every field is written in declaration order
-///   with no tag, so a v14 peer stops reading before these two and a v14
-///   *server* sends a payload two fields short. `serde(default)` does not
-///   rescue that — bincode is not self-describing, so a short payload is a
-///   decode error rather than a defaulted field, which is exactly what this
-///   bump exists to turn into a clean refusal.
+///   Appended struct fields, so a v14 server sends a payload two fields short.
 /// - v16: `ParameterInfo` gains `group`, the display label for the group a
-///   parameter belongs to. Every hosted format has a grouping mechanism, all
-///   four format crates already decoded theirs, and all four answers stopped at
-///   the shared type — so a 400-parameter synth presented as one flat list.
+///   parameter belongs to. Every hosted format has a grouping mechanism and all
+///   four format crates already decoded theirs, but the answers stopped at the
+///   shared type — so a 400-parameter synth presented as one flat list. Appended
+///   struct field.
 ///
-///   Appended last, and a struct on this wire is **positional** exactly as
-///   v15's was: a v15 peer stops reading before this field, and a v15 *server*
-///   sends a payload one field short. Same bump for the same reason.
-///
-///   `ParameterInfo::qualified_name` lands with it. That is not decoration —
-///   `PluginTail` crossed this wire to no receiver and stayed write-only for a
-///   release cycle, so a field appended here arrives with its consumer.
-///   See `docs/design/010-parameter-grouping.md`.
-/// - v17: parameter *display* crosses the wire. `HostMessage` gains
+///   `ParameterInfo::qualified_name` lands with it, so the field arrives with its
+///   consumer rather than write-only. See
+///   `docs/design/010-parameter-grouping.md`.
+/// - v17: parameter *display* crosses the wire — `HostMessage` gains
 ///   `GetParameterText` and `GetParameterValueFromText`; `BridgeMessage` gains
-///   `ParameterText` and `ParameterValueFromText`.
-///
-///   All four formats implement value→text and text→value, and none of the four
-///   answers reached the host: a caller holding a `PluginHandle` had a
-///   normalized `0.5` where the plugin itself would have said `"800 Hz"`, and
-///   `0.375` where it would have said `"Bandpass"`. Formatting host-side cannot
-///   recover either — only the plugin knows its own taper and its own value
-///   names.
-///
-///   All four appended, for the reason every variant since v11 has been:
-///   bincode encodes the discriminant over declaration order, so a v16 peer
-///   receiving one reads a tag it has no arm for and fails the decode
-///   mid-stream rather than at a message boundary.
-///
-///   Mandatory in both directions. Unlike v13's one-way `SetRenderMode`, a v17
-///   host sends these whenever a caller renders a parameter field, which is
-///   ordinary use rather than an opt-in — so a v16 server would meet an unknown
-///   tag in a normal session.
-/// - v18: `load_state` gets an answer. `BridgeMessage` gains `StateLoaded`.
-///
-///   There was no reply frame at all: the host dispatcher answered its own
-///   caller with a literal `reply.send(true)` immediately after writing the
-///   request, so the `bool` it produced said the message had been *sent*, not
-///   that the state had been *loaded*. The subprocess did format a reason and
-///   put it on the wire — as a fire-and-forget `Error`, on a channel nobody
-///   awaited — so a plugin rejecting a chunk reached the user as a silently
-///   un-restored preset.
-///
-///   Appended, for the reason every variant since v11 has been: bincode encodes
-///   the discriminant over declaration order, so a v17 peer receiving one reads
-///   a tag it has no arm for and fails the decode mid-stream.
-///
-///   Mandatory in both directions. A v18 host now *waits* for this frame, so a
-///   v17 server — which never sends it — would hang the caller until the state
-///   timeout rather than merely omitting a fact.
+///   `ParameterText` and `ParameterValueFromText`. All four formats implement
+///   value↔text and none of the answers reached the host, leaving a caller with a
+///   normalized `0.5` where the plugin would say `"800 Hz"`. Host-side formatting
+///   cannot recover it — only the plugin knows its own taper and value names.
+///   Four appended variants, mandatory in both directions: a v17 host sends these
+///   whenever a caller renders a parameter field.
+/// - v18: `load_state` gets an answer — `BridgeMessage` gains `StateLoaded`.
+///   Without a reply frame the host dispatcher answered its own caller
+///   immediately after writing the request, so the `bool` said the message had
+///   been *sent*, not that the state had been *loaded*, and a plugin rejecting a
+///   chunk surfaced as a silently un-restored preset. Appended variant, mandatory
+///   in both directions: a v18 host waits for this frame, so a v17 server hangs
+///   the caller until the state timeout.
 pub const PROTOCOL_VERSION: u32 = 18;
 
 /// Validate a subprocess-reported protocol version against [`PROTOCOL_VERSION`].

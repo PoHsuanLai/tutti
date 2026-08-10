@@ -1,9 +1,24 @@
 //! Modulation for the Tutti engine — source, target, and routing.
 //!
+//! Pure modulation: **audio-free and Bevy-free**. Nothing here touches a sample
+//! buffer or an ECS `World`, so a `Modulator` is as usable driving a UI colour or
+//! a spring as it is driving a filter cutoff. The Bevy-side reconciliation that
+//! binds routes onto engine params is `bevy_tutti::modulation`'s, one layer up;
+//! the vocabulary below is its foundation and stands alone without it.
+//!
 //! Three roles: rules (routing table), dispatch (router), receive (target).
 //!
-//! ## Quick start — [`ModMatrix`]
-//! The front door is a fluent builder; you rarely touch the primitives below.
+//! # A note on the links below
+//!
+//! Most types named here are gated behind the `routing` feature, which is **off**
+//! under `default = []`. They are written as plain `code spans` rather than
+//! intra-doc links so this header resolves cleanly whether or not the feature is
+//! enabled; docs.rs renders with `all-features = true`, where each name is a
+//! search away.
+//!
+//! ## Quick start — `ModMatrix`
+//! The front door is a fluent builder; the primitives below are rarely touched
+//! directly.
 //! ```
 //! # #[cfg(feature = "routing")] {
 //! use tutti_mod::{ModMatrix, Lfo, LfoShape, SourceRate};
@@ -39,61 +54,61 @@
 //! three speeds, and knowing that is the difference between picking a rate and
 //! thinking you must pick a mechanism.
 //!
-//! [`Curve`] is that function: `beat -> Option<f32>`, holding no clock and
-//! consulting no loop range, so the *reader* supplies the position. An
-//! automation envelope, an LFO, a constant, and the summing [`LayeredCurve`]
+//! `Curve` is that function: `beat -> Option<f32>`, holding no clock and
+//! consulting no loop range, so the *reader* supplies the [`Beat`](tutti_types::Beat).
+//! An automation envelope, an LFO, a constant, and the summing `LayeredCurve`
 //! are all `Curve`s. Because `LayeredCurve` is itself one, the accumulator
 //! (`clamp(base + Σ layer(beat), [min, max])`) is shared across every rate —
 //! one summation rule, the rate chosen by whoever reads it.
 //!
 //! | Rate | Sink | How it gets the beat |
 //! |---|---|---|
-//! | per **frame** | [`AtomicTarget`] | the driver is handed the beat; it collapses to a scalar and mirrors it into an `AtomicF32` |
-//! | per **block** | a plugin's param producer | holds the [`LayeredCurve`] and samples it at each block's real beats |
+//! | per **frame** | `AtomicTarget` | the driver is handed the beat; it collapses to a scalar and mirrors it into an `AtomicF32` |
+//! | per **block** | a plugin's param producer | holds the `LayeredCurve` and samples it at each block's real beats |
 //! | per **sample** | `AutomationLane`, `ModulatorNode` (`tutti-units`) | the beat arrives as a *signal* on the node's `BEAT_PORTS` inputs |
 //!
-//! **Which do I want?** The frame rate is the default and is always correct —
-//! ask for more only when the sink reads faster than the frame rate, where a
-//! frame scalar shows up as a staircase and a finer rate traces the ramp. The
-//! per-sample tier costs a graph edge (the node must be wired to the transport
+//! **Which rate to reach for.** The frame rate is the default and is always
+//! correct — ask for more only when the sink reads faster than the frame rate,
+//! where a frame scalar shows up as a staircase and a finer rate traces the ramp.
+//! The per-sample tier costs a graph edge (the node must be wired to the transport
 //! clock); the per-block tier costs nothing extra but requires a sink that
-//! accepts a curve, which [`AtomicTarget`] deliberately does not — it collapses
+//! accepts a curve, which `AtomicTarget` deliberately does not — it collapses
 //! at a fixed beat, so a curve stored there would never move.
 //!
 //! The tiers agree on *values* by construction, not by coincidence: both the
-//! scalar path ([`ModPreFrame::run`]) and the curve path ([`ShapedCurve`])
+//! scalar path (`ModPreFrame::run`) and the curve path (`ShapedCurve`)
 //! apply the identical `shape(raw, depth, polarity, curve) * (max - min)`
 //! expression to the same [`shape`] function, so a route that switches delivery
 //! does not change what the listener hears.
 //!
 //! **Where the tiers are reached from.** A [`Modulator`] is rate-agnostic — the
 //! *adapter* around it picks the tier. `tutti_mod::Lfo` sampled by
-//! [`ModPreFrame`] is frame-rate; the same `Lfo` inside
+//! `ModPreFrame` is frame-rate; the same `Lfo` inside
 //! `tutti_units::ModulatorNode` (aliased `LfoNode`) is per-sample. One
 //! modulator, two adapters — not two LFOs.
 //!
-//! One gap is known and deliberate: the routing subsystem cannot currently
-//! deliver a curve to a **per-sample** sink for a native param, because
-//! [`AtomicTarget`] is the only sink native nodes use. Its module doc tracks
-//! the audio-rate sink as later work.
+//! One gap is known and deliberate: the routing subsystem cannot deliver a curve
+//! to a **per-sample** sink for a native param, because `AtomicTarget` is the
+//! only sink native nodes use. Its module doc tracks the audio-rate sink as
+//! later work.
 //!
 //! ## The target + routing (the `routing`/`bevy` features)
 //! - **Receive** — [`ModTarget`]: a keyed accumulator (`base + Σ keyed offsets`,
-//!   clamped). Concrete: [`AtomicTarget`] (mirrors its value into a shared
+//!   clamped). Concrete: `AtomicTarget` (mirrors its value into a shared
 //!   `AtomicF32` the consumer reads lock-free), a frame-rate cap over a
-//!   [`LayeredCurve`].
-//! - **Dispatch** — [`ModRouter`] / [`ModBus`]: an id→target map keyed by
+//!   `LayeredCurve`.
+//! - **Dispatch** — `ModRouter` / `ModBus`: an id→target map keyed by
 //!   [`ModTargetId`].
-//! - **Rules** — [`ModRoutingSnapshot`] / [`ModRoutingTable`]: an `RtPublish`-hot-
-//!   swapped mod-matrix of [`ModEdge`]s.
-//! - **Driver** — [`ModPreFrame`]: the once-per-frame producer that samples each
+//! - **Rules** — `ModRoutingSnapshot` / `ModRoutingTable`: an `RtPublish`-hot-
+//!   swapped mod-matrix of `ModEdge`s.
+//! - **Driver** — `ModPreFrame`: the once-per-frame producer that samples each
 //!   source and dispatches its shaped offset by id.
 //!   It owns the sources and threads their state across frames.
 //!
 //! ## Cascading — a source that modulates another source
-//! A [`SourceRate`]'s frequency is a [`Rate`]: either a constant, or a
-//! [`Param<Hz>`](tutti_types::Param) read fresh each frame. Point an
-//! [`AtomicTarget`] at that same cell and one LFO drives another's rate, using
+//! A `SourceRate`'s frequency is a `Rate`: either a constant [`Hz`](tutti_types::Hz),
+//! or a [`Param<Hz>`](tutti_types::Param) read fresh each frame. Point an
+//! `AtomicTarget` at that same cell and one LFO drives another's rate, using
 //! the ordinary target/edge machinery — no special case in the driver:
 //! ```
 //! # #[cfg(feature = "routing")] {
@@ -119,7 +134,7 @@
 //! - `target` — [`ModTarget`], the keyed sink.
 //! - `param`, `router`, `routing`, `driver` — the routing subsystem
 //!   (feature-gated).
-//! - `matrix` — [`ModMatrix`], the fluent builder over all of the above.
+//! - `matrix` — `ModMatrix`, the fluent builder over all of the above.
 
 #![forbid(unsafe_code)]
 

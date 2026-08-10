@@ -17,10 +17,15 @@ bitflags! {
     /// asks the peer for one reply message; OR them together.
     #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
     pub struct EndpointDiscoveryRequest: u8 {
+        /// Ask for UMP version, Function Block count and capabilities.
         const ENDPOINT_INFO         = 1 << 0;
+        /// Ask for the manufacturer / family / model / revision identity.
         const DEVICE_IDENTITY       = 1 << 1;
+        /// Ask for the endpoint's human-readable name.
         const ENDPOINT_NAME         = 1 << 2;
+        /// Ask for the per-unit serial, which distinguishes two identical devices.
         const PRODUCT_INSTANCE_ID    = 1 << 3;
+        /// Ask which protocol and JR-timestamp directions are currently active.
         const STREAM_CONFIGURATION  = 1 << 4;
     }
 }
@@ -258,15 +263,20 @@ pub const ALL_FUNCTION_BLOCKS: u8 = 0xFF;
 /// Direction of a Function Block, for [`MidiEvent::function_block_info`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FunctionBlockDirection {
+    /// The block only receives MIDI.
     Input,
+    /// The block only transmits MIDI.
     Output,
+    /// Both directions on the one block.
     Bidirectional,
 }
 
 /// UMP protocol version an endpoint speaks, for [`MidiEvent::endpoint_info`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct UmpVersion {
+    /// Major version. `1` for every UMP revision published so far.
     pub major: u8,
+    /// Minor version. `1` adds UMP Stream and Flex Data over `0`.
     pub minor: u8,
 }
 
@@ -279,7 +289,11 @@ impl UmpVersion {
 /// blocks it exposes and whether that set is fixed (`is_static`) or may change.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FunctionBlocks {
+    /// How many Function Blocks the endpoint exposes, 0..=32.
     pub count: u8,
+    /// `true` if the set never changes while the endpoint is connected, so a
+    /// host may cache it. `false` obliges the host to re-inquire after a
+    /// Function Block Info Notification.
     pub is_static: bool,
 }
 
@@ -288,6 +302,9 @@ pub struct FunctionBlocks {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 #[repr(u8)]
 pub enum Protocol {
+    /// MIDI 1.0 Protocol in UMP: 7-bit values in UMP packets. Negotiate this
+    /// only for a peer that cannot speak MIDI 2.0 — every value crossing the
+    /// boundary narrows.
     Midi1 = 1,
     /// The default — this engine is MIDI-2-native.
     #[default]
@@ -299,9 +316,13 @@ bitflags! {
     /// (M2-104 §7.1.2): supported protocols and JR-timestamp directions.
     #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
     pub struct EndpointCapabilities: u8 {
+        /// Can run the MIDI 2.0 Protocol.
         const MIDI2_PROTOCOL = 1 << 0;
+        /// Can run the MIDI 1.0 Protocol in UMP.
         const MIDI1_PROTOCOL = 1 << 1;
+        /// Can transmit Jitter Reduction timestamps.
         const SEND_JR        = 1 << 2;
+        /// Can act on received Jitter Reduction timestamps.
         const RECEIVE_JR     = 1 << 3;
     }
 }
@@ -311,7 +332,9 @@ bitflags! {
     /// [`MidiEvent::stream_configuration_notification`].
     #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
     pub struct JrTimestamps: u8 {
+        /// JR timestamps are being transmitted on this stream.
         const SEND    = 1 << 0;
+        /// JR timestamps are being acted on when received.
         const RECEIVE = 1 << 1;
     }
 }

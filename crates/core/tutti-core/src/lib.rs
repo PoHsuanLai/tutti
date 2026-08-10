@@ -2,22 +2,31 @@
 //!
 //! # Primary API
 //!
-//! This crate is a vocabulary crate. End users typically compose through the
-//! `tutti` umbrella crate, which owns a single `TuttiEngine` struct. The
-//! vocabulary here (DSP graph, transport, metering, latency, MIDI registry) is
-//! re-exported and used by sibling crates (tutti-plugin, tutti-sampler, …).
+//! This crate is a vocabulary crate: it owns the DSP graph, transport, metering
+//! and latency types, and the sibling crates (tutti-plugin, tutti-sampler, …)
+//! build on and re-export them. A consumer wanting the whole engine behind one
+//! dependency takes `bevy-tutti`, the umbrella; a consumer wanting audio without
+//! Bevy depends on these crates directly.
 //!
 //! - [`dsp::Net`]: the DSP graph itself (fundsp) — tutti adds no wrapper
-//! - [`TransportHandle`]: Playback control (play/stop/seek/loop)
-//! - [`MasterMeter`] / [`AudioTap`]: Audio level monitoring + the analysis tap
-//! - [`latency`]: Delay compensation — explicit, opt-in, over any graph
+//! - [`Transport`]: playback control (play/stop/seek/loop)
+//! - [`MasterMeter`] / [`AudioTap`]: audio level monitoring + the analysis tap
+//! - [`latency`]: delay compensation — explicit, opt-in, over any graph
 //!
 //! # Feature-gated APIs
 //!
-//! - `"midi"`: `MidiBus`, `Midi1Event` for MIDI routing
+//! All are off by default (`default = []`), which is what keeps this crate
+//! Bevy-free unless a consumer asks:
 //!
-//! For CPAL audio I/O, use the `tutti` umbrella crate — it owns the device stream
-//! and wires the RT callback around this vocabulary.
+//! - `"bevy"`: a `Component` derive on [`AudioNode`] — see below
+//! - `"bevy_asset"`: the above plus fundsp's asset integration
+//! - `"wav"` / `"flac"`: fundsp's decoders, for loading a [`Wave`] from disk
+//!
+//! MIDI is **not** here. The vocabulary lives in `tutti-midi-types`, the state
+//! machines in `tutti-midi-runtime`, and the OS edge in `tutti-midi-hardware`.
+//!
+//! For audio I/O, `tutti-cpal` is the device layer — it opens the stream and
+//! wires the real-time callback around this vocabulary.
 //!
 //! # std + Bevy
 //!
@@ -37,9 +46,8 @@ pub use error::{Error, Result};
 // `Param` cell, and the `UnitParam` address enum all live in `tutti-types`
 // (pure vocabulary, no engine dependency) and are re-exported here so consumers
 // reach them via the engine root. `SampleRate` and the `unit_param` fundsp-glue
-// (`setting` / `from_setting`) come from `fundsp-tutti` (which owns fundsp's
-// `Setting`). There is no longer a `tutti_core::param` module — the vocabulary
-// has no engine-side home to gather under.
+// (`setting` / `from_setting`) come from `fundsp-tutti`, which owns fundsp's
+// `Setting`.
 pub use fundsp::params::SampleRate;
 pub use fundsp::unit_param;
 pub use tutti_types::value::{
@@ -49,14 +57,16 @@ pub use tutti_types::value::{
     Semitones, Spread, SrcRatio, StereoWidth, StretchFactor, Unit, UnitParam, Q,
 };
 
-/// Back-compat alias for the unit newtypes' old module path
-/// (`tutti_core::params::Bpm`, …). The vocabulary now lives in
-/// [`tutti_types::value`]; this keeps existing `tutti_core::params::*` imports
-/// resolving. Prefer the crate-root re-exports in new code.
+/// Compatibility path for the unit newtypes (`tutti_core::params::Bpm`, …).
+///
+/// The vocabulary is [`tutti_types::value`]'s; this module keeps
+/// `tutti_core::params::*` imports resolving. Prefer the crate-root re-exports
+/// in new code.
 pub mod params {
     pub use tutti_types::value::*;
-    // `SampleRate` is fundsp's, not part of tutti-types' value vocabulary, but
-    // it belonged to this alias before the move — keep it here.
+    // `SampleRate` is fundsp's rather than part of tutti-types' value
+    // vocabulary, but callers reach for it through this path, so it is carried
+    // here too.
     pub use fundsp::params::SampleRate;
 }
 
@@ -168,9 +178,9 @@ pub use fundsp::read::WaveMetadata;
 pub use fundsp::realnet::NetBackend;
 #[cfg(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg"))]
 pub use fundsp::stream::FileIn;
-// `Fade` is used by the graph crossfade path (`Net::crossfade`,
-// reverb/distortion node-rebuild). The rest of `sequencer` (Sequencer/EventId/
-// ReplayMode) had no consumers and was dropped — see docs/fundsp-fork-audit.md.
+// `Fade` is the graph crossfade path's shape (`Net::crossfade`, and the
+// reverb/distortion node rebuilds). It is the only part of fundsp's `sequencer`
+// this fork carries — see docs/fundsp-fork-audit.md.
 pub use fundsp::sequencer::Fade;
 pub use fundsp::setting::Setting;
 pub use fundsp::signal::{Signal, SignalFrame};
@@ -192,10 +202,9 @@ pub mod node_id;
 // `tutti-midi-types` crate; consumers import them from there directly rather
 // than through a tutti-core pass-through.
 
-// The graph-node handle. Was the `graph` module (params + Bevy hub), but the
-// DAW param components moved app-side, leaving only `AudioNode` — so it
-// collapsed to this one file. Consumers reach it via the crate root
-// (`tutti_core::AudioNode`) or `tutti_core::node::AudioNode`.
+// The graph-node handle, reachable via the crate root
+// (`tutti_core::AudioNode`) or `tutti_core::node::AudioNode`. The DAW param
+// components are app-side, not here, which is why this module holds one type.
 pub mod node;
 pub use node::AudioNode;
 

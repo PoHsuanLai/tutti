@@ -38,14 +38,18 @@ pub use com::{ParameterEditEvent, ProgressEvent, RestartFlags, UnitEvent};
 #[cfg(feature = "conformance")]
 pub use com::RunLoopActivity;
 
-/// Tagged-enum wrappers over VST3's typed event structs, plus the event-type
-/// discriminant constants.
-///
-/// Re-exported here so downstream crates that need to construct
-/// `NoteOnEvent`/`NoteOffEvent`/etc. literally (rather than going through the
-/// [`Vst3Event::to_midi`] / [`Vst3Event::from_midi`] helpers) can do so without
-/// depending on the raw `vst3` crate.
+// No `///` here: a doc comment on a `pub mod` re-resolves its intra-doc links in
+// this parent scope, where `Vst3Event`'s methods are not in scope. The module's
+// own `//!` below is the correct home for both the prose and the links.
 pub mod events {
+    //! Tagged-enum wrappers over VST3's typed event structs, plus the event-type
+    //! discriminant constants.
+    //!
+    //! Re-exported here so downstream crates that need to construct
+    //! `NoteOnEvent`/`NoteOffEvent`/etc. literally (rather than going through the
+    //! [`Vst3Event::to_midi`] / [`Vst3Event::from_midi`] helpers) can do so
+    //! without depending on the raw `vst3` crate.
+
     pub use crate::types::{
         ChordEvent, DataEvent, EventHeader, LegacyMidiCcOutEvent, NoteExpressionIntValueEvent,
         NoteExpressionTextEvent, NoteExpressionValueEvent, NoteOffEvent, NoteOnEvent,

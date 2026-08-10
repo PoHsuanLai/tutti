@@ -5,7 +5,7 @@
 //!
 //! - [`stft`] / [`istft_transform`] — the short-time Fourier transform, in
 //!   three result types so invertibility is a compile-time question
-//! - [`yin`] — monophonic pitch estimation (de Cheveigné & Kawahara, 2002)
+//! - [`yin()`] — monophonic pitch estimation (de Cheveigné & Kawahara, 2002)
 //! - [`detect_onsets`] — onset detection over four selectable detection
 //!   functions
 //! - [`correlate`] — inter-channel phase correlation and stereo image
@@ -26,7 +26,7 @@
 //! *fold that same step*, so the two paths cannot drift. Tests pin the
 //! equality across chunk sizes and channel layouts.
 //!
-//! The rest are stateless: [`yin`] and [`correlate`] are pure functions of
+//! The rest are stateless: [`yin()`] and [`correlate`] are pure functions of
 //! their input, and [`stft`] is batch-only — there is no incremental
 //! transform. Meter ballistics ([`step_ballistics`]) carries a smoothed
 //! reading, but that is a filter over results rather than a step of the
@@ -83,8 +83,8 @@ pub mod grid;
 pub mod loudness;
 pub mod onset;
 pub mod peaks;
-/// The YIN numerics `yin` drives. Private engine, not public surface:
-/// `PitchEstimate` and `YinConfig` are the API.
+// No `///` here: a doc comment on a `mod` line shadows the module's own `//!`.
+// The module header carries the description.
 mod pitch;
 pub mod stereo;
 pub mod transform;

@@ -9,8 +9,8 @@
 //!   Profile lists, Property data, or a NAK for anything unsupported).
 //! - [`CiInitiator`] — the inquiring side. Builds a Discovery, ingests replies
 //!   into a [`DiscoveredCiDevice`], and — the one bit of real protocol state —
-//!   detects a MUID collision (a reply bearing *our* MUID) and emits an
-//!   Invalidate MUID.
+//!   detects a MUID collision (a reply bearing this initiator's own MUID) and
+//!   emits an Invalidate MUID.
 //!
 //! Both are pure and loopback-testable: a `CiInitiator`'s Discovery fed to a
 //! `CiResponder`, whose reply is fed back, reconstructs the responder's identity.
@@ -84,8 +84,8 @@ impl CiResponder {
             properties: Vec::new(),
             pe_capabilities: PropertyCapabilities {
                 // One in-flight request. Honest for a responder with no request
-                // queue: claiming more would invite a peer to pipeline
-                // inquiries we would then have to drop.
+                // queue: claiming more invites a peer to pipeline inquiries that
+                // would then have to be dropped.
                 simultaneous_requests: 1,
                 // M2-101 §8.5 Table 31: Common Rules for PE 1.0/1.1 is major
                 // 0x00, minor 0x00.
@@ -120,7 +120,8 @@ impl CiResponder {
         self.muid
     }
 
-    /// A reply header addressed back to `dest`, sourced from our MUID.
+    /// A reply header addressed back to `dest`, sourced from this responder's
+    /// MUID.
     fn reply_header(&self, dest: Muid) -> CiHeader {
         CiHeader {
             device_id: CI_DEVICE_ID_FUNCTION_BLOCK,
@@ -130,14 +131,18 @@ impl CiResponder {
         }
     }
 
-    /// The reply stream for one inbound CI message. Empty if the message needs no
-    /// reply (e.g. an enabled-report we merely observe); a single NAK for a
-    /// message type we don't handle.
+    /// The reply stream for one inbound CI message.
+    ///
+    /// Empty when the message needs no reply — a report or a reply this
+    /// responder merely observes. A single NAK for a message family this layer
+    /// does not model: M2-101 §5.11 lists that as the first intended use of a
+    /// NAK, and silence would leave the initiator waiting out its §5.5.5
+    /// timeout.
     pub fn respond_to(&self, inbound: &CiMessage) -> Vec<CiMessage> {
         let src = inbound.header().source;
         match inbound {
-            // A Discovery inquiry → our Discovery Reply. (We ignore inbound
-            // replies — we're the responder.)
+            // A Discovery inquiry → this device's Discovery Reply. Inbound
+            // replies are ignored: this is the responder half.
             CiMessage::Discovery {
                 is_reply: false,
                 data: inquiry,
@@ -148,14 +153,15 @@ impl CiResponder {
                 data: DiscoveryData {
                     // §5.6.1: "The Reply to Discovery shall return the same
                     // Output Path ID provided in the originating Discovery
-                    // Message." It identifies the initiator's MIDI Out
-                    // connection, so echoing ours would name the wrong path.
+                    // Message." It identifies the *initiator's* MIDI Out
+                    // connection, so substituting this device's own would name
+                    // the wrong path.
                     output_path_id: inquiry.output_path_id,
                     ..self.identity
                 },
             }],
 
-            // Profile Inquiry → our enabled/disabled profile lists.
+            // Profile Inquiry → this device's enabled/disabled profile lists.
             CiMessage::Profile {
                 state: ProfileState::Inquiry,
                 ..
@@ -178,8 +184,8 @@ impl CiResponder {
                 }]
             }
 
-            // Set Profile On/Off → the matching Enabled/Disabled report (only if
-            // we actually expose that profile; otherwise NAK).
+            // Set Profile On/Off → the matching Enabled/Disabled report, but
+            // only for a profile this device exposes; otherwise NAK.
             CiMessage::Profile {
                 state: ProfileState::SetOn(id),
                 ..
@@ -189,7 +195,7 @@ impl CiResponder {
                 ..
             } => self.profile_report(src, *id, false),
 
-            // A property Get we can satisfy → its reply; else NAK.
+            // A property Get this device can satisfy → its reply; else NAK.
             CiMessage::Property {
                 data:
                     PropertyData {
@@ -238,9 +244,10 @@ impl CiResponder {
                 ..
             } => self.subscription_reply(src, *request_id, header),
 
-            // PE Capabilities inquiry → what we support. §8.4 recommends a peer
-            // asks this once before any other Property Exchange inquiry, so a
-            // NAK here would stall the whole family before it starts.
+            // PE Capabilities inquiry → the declared capabilities. §8.4
+            // recommends a peer asks this once before any other Property
+            // Exchange inquiry, so a NAK here stalls the whole family before it
+            // starts.
             CiMessage::PropertyCapabilities {
                 is_reply: false, ..
             } => vec![CiMessage::PropertyCapabilities {
@@ -251,8 +258,8 @@ impl CiResponder {
 
             // Profile Details Inquiry. The detail formats are defined per
             // profile (§7.6.1) or by M2-102, neither of which this layer
-            // models, so answer only for a profile we actually expose and say
-            // so with an empty target data rather than inventing values.
+            // models, so answer only for a profile this device exposes, and do
+            // so with empty target data rather than inventing values.
             CiMessage::Profile {
                 state: ProfileState::DetailsInquiry { profile, target },
                 ..
@@ -277,12 +284,12 @@ impl CiResponder {
                 }
             }
 
-            // Reports and replies we merely observe — no response.
+            // Reports and replies that are merely observed — no response.
             //
             // Notify (§8.13) is here deliberately. It is deprecated in favour of
-            // ACK/NAK, and the spec's requirement is that we "continue to honor
-            // the rules receiving a Notify message" — receiving, not answering.
-            // Replying would be inventing traffic the spec asks us not to send.
+            // ACK/NAK, and the spec's requirement is to "continue to honor the
+            // rules receiving a Notify message" — receiving, not answering.
+            // Replying would invent traffic the spec asks a device not to send.
             CiMessage::Property {
                 data:
                     PropertyData {
@@ -322,16 +329,16 @@ impl CiResponder {
             | CiMessage::InvalidateMuid { .. }
             | CiMessage::Nak { .. } => Vec::new(),
 
-            // A CI family we don't model. M2-101 §5.11 lists "Reply to a MIDI-CI
-            // message the Device does not support" as the first intended use of
-            // a NAK, and Table 16 has the code for it. Staying silent instead
-            // leaves the initiator waiting out its §5.5.5 timeout, so answer.
+            // A CI family this layer does not model. M2-101 §5.11 lists "Reply
+            // to a MIDI-CI message the Device does not support" as the first
+            // intended use of a NAK, and Table 16 has the code for it. Silence
+            // instead leaves the initiator waiting out its §5.5.5 timeout.
             _ => self.nak_with(src, 0, Nak::STATUS_MESSAGE_NOT_SUPPORTED),
         }
     }
 
-    /// Emit the Enabled/Disabled report for a profile we expose, or a NAK if we
-    /// don't expose it.
+    /// The Enabled/Disabled report for a profile this device exposes, or a NAK
+    /// for one it does not.
     fn profile_report(&self, dest: Muid, id: ProfileId, enable: bool) -> Vec<CiMessage> {
         if self.profiles.iter().any(|(p, _)| *p == id) {
             let state = if enable {
@@ -368,8 +375,9 @@ impl CiResponder {
                     body: prop.body.clone(),
                 },
             }],
-            // We don't hold this property — the resource, not the message, is
-            // what's unsupported, and retrying won't change that.
+            // The property is not held here — the *resource*, not the message,
+            // is what is unsupported, so retrying will not change the answer.
+            // That is why this is a Do-Not-Retry status.
             None => self.nak_with(
                 dest,
                 tutti_midi_types::ci::property::SUB_ID2_GET_PROPERTY_DATA,
@@ -386,8 +394,9 @@ impl CiResponder {
     /// failure of a command", and it is the reply — not silence — that lets the
     /// sender "decide to retry or end the Subscription".
     ///
-    /// A `start` for a resource we do not hold is the one case that NAKs: the
-    /// resource, not the message, is unsupported, and no retry will change that.
+    /// A `start` naming a resource this device does not hold is the one case
+    /// that NAKs: the resource, not the message, is unsupported, and no retry
+    /// will change that.
     fn subscription_reply(&self, dest: Muid, request_id: u8, header: &[u8]) -> Vec<CiMessage> {
         let command = header_str_field(header, "command").and_then(SubscriptionCommand::parse);
 
@@ -403,7 +412,8 @@ impl CiResponder {
             }
         }
 
-        // A `start` names a resource; we can only subscribe to what we hold.
+        // A `start` names a resource, and a peer can only be subscribed to a
+        // resource this device actually holds.
         if command == Some(SubscriptionCommand::Start) {
             let resource = header_str_field(header, "resource");
             let known = resource.is_some_and(|r| {
@@ -451,18 +461,25 @@ impl CiResponder {
 /// What a [`CiInitiator`] has learned about a peer from its Discovery Reply.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DiscoveredCiDevice {
+    /// The peer's MUID, taken from the *source* of its Discovery Reply. This is
+    /// the address subsequent inquiries are sent to.
     pub muid: Muid,
+    /// The peer's Discovery identity: manufacturer, family, model, version and
+    /// its maximum SysEx size.
     pub identity: DiscoveryData,
+    /// Which CI families the peer declared support for — profiles, property
+    /// exchange, process inquiry. Asking outside this set earns a NAK.
     pub categories: CiCategories,
-    /// Enabled + disabled profiles, filled in once a Profile Inquiry Reply arrives.
+    /// Enabled + disabled profiles, concatenated. Empty until a Profile Inquiry
+    /// Reply arrives; the two lists are not distinguishable here.
     pub profiles: Vec<ProfileId>,
 }
 
 /// The **inquiring** half of MIDI-CI. Build [`discovery`](Self::discovery), send
 /// it, feed replies to [`ingest`](Self::ingest); [`discovered`](Self::discovered)
 /// yields the peer once its Discovery Reply arrives. `ingest` also returns any
-/// message we must send back — specifically an Invalidate MUID when a reply
-/// carries *our* MUID (a collision).
+/// message that must be sent back — specifically an Invalidate MUID when a
+/// reply carries this initiator's own MUID (a collision).
 #[derive(Clone, Debug)]
 pub struct CiInitiator {
     muid: Muid,
@@ -471,7 +488,8 @@ pub struct CiInitiator {
 }
 
 impl CiInitiator {
-    /// An initiator with our MUID and Discovery identity.
+    /// An initiator with the given MUID and Discovery identity, having
+    /// discovered nothing yet.
     pub fn new(muid: Muid, identity: DiscoveryData) -> Self {
         Self {
             muid,
@@ -480,7 +498,8 @@ impl CiInitiator {
         }
     }
 
-    /// Our MUID.
+    /// This initiator's own MUID — the `source` of every message it builds, and
+    /// the value a reply must *not* carry.
     pub fn muid(&self) -> Muid {
         self.muid
     }
@@ -500,8 +519,8 @@ impl CiInitiator {
     }
 
     /// Feed one inbound message. Records a Discovery Reply / Profile list, and
-    /// returns any message we must emit in response — an Invalidate MUID on a
-    /// MUID collision, otherwise nothing.
+    /// returns any message that must be emitted in response — an Invalidate MUID
+    /// on a MUID collision, otherwise nothing.
     pub fn ingest(&mut self, inbound: &CiMessage) -> Vec<CiMessage> {
         match inbound {
             CiMessage::Discovery {
@@ -509,7 +528,8 @@ impl CiInitiator {
                 header,
                 data,
             } => {
-                // MUID collision: a peer replied claiming our own MUID.
+                // MUID collision: a peer replied claiming this initiator's own
+                // MUID.
                 if header.source == self.muid {
                     return vec![CiMessage::InvalidateMuid {
                         header: CiHeader {
@@ -819,7 +839,7 @@ mod tests {
         // §8.13 deprecates Notify in favour of ACK/NAK: devices "should not
         // send a Notify message" but "shall continue to honor the rules
         // receiving" one. Honoring it means accepting it — replying would emit
-        // traffic the spec asks us not to produce.
+        // traffic the spec asks a device not to produce.
         let resp = responder();
         let inbound = CiMessage::Property {
             header: CiHeader {
@@ -910,7 +930,7 @@ mod tests {
 
     #[test]
     fn a_start_for_an_unheld_resource_is_nakked() {
-        // We cannot subscribe a peer to data we do not have. The resource, not
+        // A peer cannot be subscribed to data this device does not hold. The resource, not
         // the message, is unsupported — so a NAK, not an empty reply.
         let resp = responder();
         let reply = resp.respond_to(&subscription(
@@ -1003,7 +1023,7 @@ mod tests {
     #[test]
     fn muid_collision_emits_invalidate() {
         let mut init = CiInitiator::new(Muid(0x0AAA_AAAA), identity([1, 2, 3]));
-        // A reply that (wrongly) carries our own MUID as its source.
+        // A reply that (wrongly) carries the initiator's own MUID as its source.
         let colliding = CiMessage::Discovery {
             header: CiHeader {
                 device_id: CI_DEVICE_ID_FUNCTION_BLOCK,

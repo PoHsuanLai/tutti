@@ -58,9 +58,9 @@
 //! declaration.
 //!
 //! Do **not** justify this by comparing it to
-//! `kAudioUnitProperty_AudioUnitMIDIProtocol` (64) — an earlier version of this
-//! comment did, and was wrong. The two are independent by design: 64 is the
-//! AU's protocol, 65 the host's, and the framework converts between them.
+//! `kAudioUnitProperty_AudioUnitMIDIProtocol` (64). The two are independent by
+//! design: 64 is the AU's protocol, 65 the host's, and the framework converts
+//! between them, so 64's value says nothing about whether 65 is needed.
 //!
 //! One measured trap if this is ever implemented: the header says twice that 65
 //! cannot be changed after initialize, but 0 of 55 units enforce that.

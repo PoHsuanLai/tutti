@@ -105,11 +105,10 @@ impl ParamBounds {
     /// Map a normalized `0..=1` value onto `[min, max]`.
     ///
     /// Delegates to [`ParamRange::to_plain`], narrowing to the `f32` that
-    /// `AudioUnitSetParameter` takes. This used to be a hand-copy of that
-    /// function in `f32` — its doc said so — which meant the four guards it
-    /// depends on (non-finite bounds, degenerate range, NaN value, clamp
-    /// order) existed twice and could drift apart. They are stated once, on
-    /// [`ParamRange::to_plain`], and the argument for each lives there.
+    /// `AudioUnitSetParameter` takes. **Delegation rather than an `f32`
+    /// hand-copy**: the four guards this depends on — non-finite bounds,
+    /// degenerate range, NaN value, clamp order — are stated once there, and two
+    /// copies would drift apart silently.
     ///
     /// The narrowing is safe for the property this path needs: `to_plain`
     /// never returns a non-finite `f64`, and every finite `f64` narrows to a
@@ -400,7 +399,7 @@ impl AuInstance {
             let components = component::enumerate_components();
             let matching = components.iter().find(|c| {
                 // AU names are typically "Manufacturer: PluginName"
-                // Match if the name contains our bundle name
+                // Match if the name contains this plugin's bundle name
                 c.name.contains(&bundle_name)
                     || c.name.ends_with(&bundle_name)
                     // Also try exact match on the part after ": "
@@ -487,11 +486,12 @@ impl AuInstance {
             // here plumbs a callback to it, so the bit stays unprobed.
             let mut features = Features::empty();
             features.set(Features::EDITOR, has_editor);
-            // The process path already routes MIDI to any AU whose component
-            // type `receives_midi()` — instruments, music effects, MIDI
-            // processors. Reporting the same predicate here keeps one fact from
-            // being answered twice: before this, every AU instrument declared no
-            // MIDI_IN while being sent MIDI on every block.
+            // The process path routes MIDI to any AU whose component type
+            // `receives_midi()` — instruments, music effects, MIDI processors.
+            // Reporting the same predicate here keeps one fact from being
+            // answered twice; a second, hand-maintained answer is how an AU
+            // instrument ends up declaring no MIDI_IN while being sent MIDI on
+            // every block.
             features.set(
                 Features::MIDI_IN,
                 component_info.component_type.receives_midi(),

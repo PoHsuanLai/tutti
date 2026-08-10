@@ -665,9 +665,9 @@ fn a_half_refused_connection_is_unwound_on_the_component_half() {
 ///
 /// `ivstcomponent.h:52` says "All busses are initially inactive" without
 /// qualification, and `kEvent` is a `MediaTypes` value beside `kAudio`, so an
-/// event bus needs the same `activateBus` call an audio bus does. The host
-/// used to enumerate event buses only to decide whether the plugin spoke MIDI,
-/// and activate none of them.
+/// event bus needs the same `activateBus` call an audio bus does. Enumerating
+/// event buses only to decide whether the plugin speaks MIDI, activating none
+/// of them, is the failure this pins.
 ///
 /// Every other MIDI test here passes with or without that call, which is why
 /// this one exists. Steinberg's samples and this probe's other modes all read

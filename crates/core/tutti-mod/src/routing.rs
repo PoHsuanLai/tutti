@@ -35,16 +35,19 @@ pub struct ModEdge {
     pub key: LayerKey,
     /// Bipolar routing depth. Negative inverts the source.
     pub depth: Depth,
-    /// Target range, baked in so scaling needs no lock.
+    /// Lower bound of the target range, baked in so scaling needs no lock.
     ///
-    /// Bare floats because these are in the *target's* units — Hz for a cutoff,
-    /// linear gain for a fader, semitones for a pitch — so no one newtype is
-    /// right for the field. The unit lives with the target that declared the
-    /// range, and the driver only ever uses the span to scale by.
+    /// Bare floats because `min`/`max` are in the *target's* units — `Hz` for a
+    /// cutoff, linear gain for a fader, `Semitones` for a pitch — so no one
+    /// newtype is right for the field. The unit lives with the target that
+    /// declared the range, and the driver only ever uses the span to scale by.
     pub min: f32,
+    /// Upper bound of the target range. See [`min`](Self::min).
     pub max: f32,
     /// How the raw value is shaped (see [`crate::shape`]).
     pub polarity: Polarity,
+    /// Response curve applied to the shaped magnitude. Only the parametric
+    /// [`CurveType`] variants bend the offset; the rest fall back to linear.
     pub curve: CurveType,
     /// A disabled edge contributes nothing and is skipped at snapshot build.
     pub enabled: bool,
@@ -122,6 +125,10 @@ impl ModRoutingSnapshot {
         self.source_count
     }
 
+    /// Whether any source has a live edge. False for an empty snapshot and also
+    /// for one whose every edge was disabled or pointed at an out-of-range
+    /// source — those are dropped at build, so the edge list may be non-empty
+    /// while this is false.
     #[inline]
     pub fn has_edges(&self) -> bool {
         self.by_source.iter().any(|v| !v.is_empty())
@@ -153,6 +160,8 @@ impl Default for ModRoutingTable {
 }
 
 impl ModRoutingTable {
+    /// A writer over a freshly published empty snapshot. Stage edges with
+    /// [`set_edges`](Self::set_edges), then [`commit`](Self::commit).
     pub fn new() -> Self {
         Self {
             edges: Vec::new(),

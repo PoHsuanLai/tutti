@@ -109,9 +109,8 @@ impl ClapLoaded {
         Self::load_selected(bundle_path, library_path, None, sample_rate, max_frames)
     }
 
-    /// The one load path. `plugin_id` `None` means "the bundle's first plugin",
-    /// which is what every single-plugin bundle wants and what this crate did
-    /// unconditionally before multi-plugin bundles were reachable.
+    /// The one load path. `plugin_id` `None` means "the bundle's first
+    /// plugin", which is what every single-plugin bundle wants.
     pub fn load_selected(
         bundle_path: &Path,
         library_path: Option<&Path>,
@@ -175,9 +174,9 @@ impl ClapLoaded {
         // checks. `create_plugin` has already handed us ownership, so every
         // exit from here on must `destroy()` it — CLAP's spec is explicit: "If
         // init returns false, the host must destroy the plugin instance."
-        // Previously both early returns below (missing `init`, `init` false)
-        // dropped the raw pointer on the floor and then `dlclose`d the library
-        // out from under a live instance. `PluginPtr::drop` now covers both.
+        // Both early returns below (missing `init`, `init` false) would
+        // otherwise drop the raw pointer on the floor and then `dlclose` the
+        // library out from under a live instance; `PluginPtr::drop` covers both.
         let plugin = PluginPtr::new(plugin_ptr);
 
         let plugin_init_fn =

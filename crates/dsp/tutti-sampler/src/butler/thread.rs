@@ -23,7 +23,12 @@ use super::loop_body::butler_loop_async;
 use super::metrics::Metrics;
 use super::plan::ChannelPlan;
 
-/// Butler thread for asynchronous disk I/O.
+/// Owner of the butler thread and of every handle shared with it.
+///
+/// Control-thread side: build with [`with_config`](Self::with_config), spawn
+/// with [`start`](Self::start), drive through
+/// [`command_sender`](Self::command_sender), and read stream state through
+/// [`plans`](Self::plans). `Drop` stops the thread and joins it.
 pub struct ButlerThread {
     tx: Sender<ButlerCommand>,
     rx: Option<Receiver<ButlerCommand>>,
@@ -35,6 +40,13 @@ pub struct ButlerThread {
 }
 
 impl ButlerThread {
+    /// Build the controller and its shared handles without spawning anything —
+    /// [`start`](Self::start) does that.
+    ///
+    /// `channel_capacity` bounds the command queue in messages; a full queue
+    /// blocks the sender rather than dropping a command. `sample_rate` is the
+    /// *session* rate, against which each file's own rate becomes the stream's
+    /// [`SrcRatio`](tutti_core::SrcRatio).
     pub fn with_config(
         channel_capacity: usize,
         sample_rate: SampleRate,
@@ -63,19 +75,35 @@ impl ButlerThread {
         }
     }
 
-    /// Subscribe to a per-channel delay-compensation table.
+    /// Subscribe to a per-channel delay-compensation table, indexed by channel
+    /// index and denominated in [`Samples`].
     ///
     /// Published by whoever runs `tutti_core::latency::compensate` over the
-    /// audio graph. Readers call `.load()` to obtain a current snapshot.
+    /// audio graph; the butler takes a fresh [`RtPublish::read`] snapshot each
+    /// refill cycle and pre-rolls each stream by its channel's entry. The
+    /// subscription is shared, not copied, so later publications are observed.
     pub fn with_pdc(mut self, snapshot: Arc<RtPublish<Vec<Samples>>>) -> Self {
         self.shared.pdc = Some(snapshot);
         self
     }
 
+    /// A cloneable sender onto the butler's command queue.
+    ///
+    /// Valid before `start`: commands sent then simply queue until the thread
+    /// drains them. Sending is control-thread work — it blocks when the queue is
+    /// full, so it must not be done from the audio thread.
     pub fn command_sender(&self) -> Sender<ButlerCommand> {
         self.tx.clone()
     }
 
+    /// Spawn the butler thread at maximum priority. Idempotent — a second call
+    /// while the thread runs is a no-op.
+    ///
+    /// # Panics
+    ///
+    /// If the thread cannot be spawned. Every stream and every refill depends on
+    /// it, so a failure here (the OS out of threads) would otherwise degrade
+    /// into an engine that accepts commands and stays mute.
     pub fn start(&mut self) {
         if self.thread_handle.is_some() {
             return;
@@ -107,6 +135,12 @@ impl ButlerThread {
         self.thread_handle = Some(handle);
     }
 
+    /// Signal shutdown and join the butler thread, blocking until it exits.
+    ///
+    /// Both a flag and a `Shutdown` command are sent: the flag ends the loop
+    /// even mid-cycle, the command wakes a thread parked waiting for one. Called
+    /// by `Drop`, and idempotent — stopping an unstarted or already-stopped
+    /// controller does nothing.
     pub fn stop(&mut self) {
         self.shutdown.store(true, Ordering::SeqCst);
         let _ = self.tx.send_blocking(ButlerCommand::Shutdown);
@@ -116,7 +150,12 @@ impl ButlerThread {
         }
     }
 
-    /// Access stream states for creating DiskSource instances.
+    /// The shared per-channel plan map, keyed by channel index.
+    ///
+    /// This is the reader-factory: a plan whose `link` the butler has installed
+    /// yields the ring consumer and the `RtState` a disk voice is built from.
+    /// Both the butler and the control thread hold it, so an entry may appear or
+    /// change between two reads.
     pub fn plans(&self) -> Arc<DashMap<usize, ChannelPlan>> {
         Arc::clone(&self.shared.plans)
     }

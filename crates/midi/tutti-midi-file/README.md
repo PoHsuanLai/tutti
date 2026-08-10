@@ -7,17 +7,16 @@ MIDI **file** codecs: Standard MIDI File (SMF) and MIDI 2.0 Clip File (M2-116).
 Reading and writing `.mid` and `.midi2` files. Nothing here touches an OS MIDI
 API, and nothing is `cfg`-gated.
 
-## Why it is separate
+## Why it is its own crate
 
-It used to live in [`tutti-midi-hardware`](../tutti-midi-hardware) — then named
-`tutti-midi-io` — behind that crate's
-`midi-hardware` feature being *off*. That made "I want to read a `.mid` file" and
-"I want to talk to a MIDI port" two settings of one flag, when they are simply
-different jobs — and a consumer wanting only the codecs had to know to pass
-`default-features = false`, or silently link CoreMIDI.
+Reading a `.mid` file and talking to a MIDI port are different jobs, and this
+crate is the boundary that keeps them apart. Depend on this one for files, on
+[`tutti-midi-hardware`](../tutti-midi-hardware) for ports.
 
-Splitting turned that flag into a dependency edge. Depend on this crate for
-files, on `tutti-midi-hardware` for ports.
+The consequence worth stating: **a consumer that only reads files never links an
+OS MIDI API.** No CoreMIDI on macOS, no ALSA sequencer on Linux. That is a
+dependency edge rather than a feature flag, so it cannot be got wrong by
+forgetting `default-features = false`.
 
 ## Quick start
 

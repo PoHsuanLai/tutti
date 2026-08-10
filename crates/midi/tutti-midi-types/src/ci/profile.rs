@@ -63,7 +63,10 @@ pub enum ProfileState {
     Inquiry,
     /// The device's profile lists (M2-101 §6.3).
     InquiryReply {
+        /// Profiles currently switched on.
         enabled: Vec<ProfileId>,
+        /// Profiles the device supports but has switched off. Absence from
+        /// *both* lists means the device does not implement the profile at all.
         disabled: Vec<ProfileId>,
     },
     /// Request a profile be turned on (M2-101 §6.6).
@@ -88,6 +91,7 @@ pub enum ProfileState {
     /// Ask what a responder's implementation of a profile supports — channel
     /// counts, optional features (M2-101 §7.6).
     DetailsInquiry {
+        /// The profile being asked about.
         profile: ProfileId,
         /// What class of detail is being asked for. §7.6.1 splits the range:
         /// `0x00..=0x3F` is Registered Target Data with one format across all
@@ -100,7 +104,9 @@ pub enum ProfileState {
     /// §7.7.1: the target "shall be the same as in the Profile Details Inquiry
     /// message which was received", so it is echoed rather than re-chosen.
     DetailsReply {
+        /// The profile being described.
         profile: ProfileId,
+        /// Echoed from the inquiry, per §7.7.1 — not chosen by the responder.
         target: u8,
         /// Opaque reply data; its format is defined by the profile spec or by
         /// M2-102 for registered targets, not by this codec.
@@ -108,7 +114,12 @@ pub enum ProfileState {
     },
     /// Profile-defined data for an already-negotiated profile (M2-101 §7.12).
     /// Either side may send it.
-    SpecificData { profile: ProfileId, data: Vec<u8> },
+    SpecificData {
+        /// The profile the data belongs to.
+        profile: ProfileId,
+        /// Opaque payload, interpreted by that profile's specification alone.
+        data: Vec<u8>,
+    },
 }
 
 impl ProfileState {
@@ -367,7 +378,7 @@ mod tests {
     fn specific_data_uses_a_four_byte_length() {
         // §7.12 Table 28 gives this length four bytes, unlike the two every
         // other length in this family uses. Assert the byte positions: a
-        // 2-byte length here would round-trip through our own codec happily
+        // 2-byte length here would round-trip through this crate's own codec happily
         // and be unparseable by anything else.
         let m = msg(ProfileState::SpecificData {
             profile: ProfileId([1, 2, 3, 4, 5]),

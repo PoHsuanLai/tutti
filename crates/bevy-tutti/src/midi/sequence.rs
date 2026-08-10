@@ -2,15 +2,14 @@
 //!
 //! A [`MidiSourceInstall`] names a target entity and the events to play at it.
 //! [`rebuild`] compiles those into a
-//! [`MidiClipSource`](tutti_midi_runtime::MidiClipSource) and installs it on the
+//! [`MidiClipSource`] and installs it on the
 //! target's port; the engine converts beats to sample offsets *on the audio
 //! thread*, where the block being rendered is known.
 //!
 //! # Why the ECS cannot do the scheduling
 //!
 //! A per-frame system firing notes as the beat passes them is the obvious
-//! design, and it is what the previous version did. It cannot be sample-accurate,
-//! for three independent reasons:
+//! design, and it cannot be sample-accurate, for three independent reasons:
 //!
 //! - `frame_offset` is meaningful only relative to the block that *pops* the
 //!   event, and an off-thread producer cannot know which block that will be.
@@ -34,11 +33,10 @@
 //!
 //! A note-with-duration record is *authoring* vocabulary, and this adapter is
 //! not where it belongs. MIDI 2.0 defines no such record — the wire carries a
-//! note-on and a note-off, and duration is only the gap between them — so any
-//! host wanting one is inventing engine vocabulary. That invention should
-//! happen once, in the engine, not per-adapter; a `from_notes` constructor here
-//! made bevy-tutti the accidental owner of a type every host needs. Callers
-//! build `TimedMidiEvent`s, which is the vocabulary the engine already has.
+//! note-on and a note-off, and duration is only the gap between them — so a host
+//! wanting one is inventing engine vocabulary, and a `from_notes` constructor
+//! here would make bevy-tutti the accidental owner of a type every host needs.
+//! Callers build `TimedMidiEvent`s, the vocabulary the engine already has.
 
 use bevy_app::{App, Plugin, Update};
 use bevy_ecs::prelude::*;
@@ -80,9 +78,9 @@ impl MidiSourceInstall {
 /// The targets [`rebuild`] currently has a source installed on.
 ///
 /// Kept because the removal of a `MidiSourceInstall` says nothing about *which*
-/// target lost it — the component is gone by the time we look, and its `target`
-/// with it. Remembering what we installed is what lets a target be cleared when
-/// the last install naming it goes away.
+/// target lost it — the component is gone by the time the rebuild runs, and its
+/// `target` field with it. This record is what lets a target be cleared when the
+/// last install naming it goes away.
 #[derive(Resource, Default)]
 pub struct InstalledMidiSources(HashSet<Entity>);
 
@@ -154,9 +152,9 @@ pub fn rebuild(
         // beat, so they would never be delivered.
         all_notes_off(port);
 
-        // `timeline()` rather than a hand-rolled `Arc::new(transport.0.clone())`
-        // — the accessor is where the per-frame/per-block seam is named, and
-        // where "the clone shares state, it is not a snapshot" is written down.
+        // `timeline()` rather than a hand-rolled `Arc::new(transport.0.clone())`:
+        // the accessor is where the per-frame/per-block seam is named, and where
+        // "the clone shares state, it is not a snapshot" is written down.
         port.install(Arc::new(MidiClipSource::new(
             port.unit_id(),
             events,

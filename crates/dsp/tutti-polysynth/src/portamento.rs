@@ -1,36 +1,71 @@
-//! Portamento (pitch glide) for synthesizers.
+//! Portamento: one pitch glide, ticked per sample.
+//!
+//! There is a single glide per synth rather than one per voice — it tracks the
+//! last note targeted, and every sounding voice is driven to its current
+//! frequency. That is what makes glide a monophonic idea in practice even when
+//! the synth is polyphonic.
+//!
+//! Interpolation is logarithmic, so a glide is even in musical interval rather
+//! than in [`Hz`]; [`PortamentoCurve`] reshapes only how far along that
+//! interval the glide has travelled.
 
 use tutti_core::{Hz, SampleRate, Seconds, Semitones};
 
+/// When a new note glides from the previous pitch rather than jumping to its
+/// own.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PortamentoMode {
-    /// Always glide between notes
+    /// Glide into every note, whether or not the previous one is still held.
     Always,
-    /// Only glide during legato (overlapping notes)
+    /// Glide only when the new note overlaps a sounding one. Pairs with
+    /// [`VoiceMode::Legato`](crate::VoiceMode), which is what makes a note
+    /// overlap reach the same voice.
     LegatoOnly,
-    /// Disabled (no glide)
+    /// No glide: every note starts at its own pitch. The default, and the value
+    /// that makes `set_target` snap rather than ramp.
     #[default]
     Off,
 }
 
+/// The shape of the glide's progress over its duration.
+///
+/// All three interpolate the pitch itself **logarithmically** — the glide is
+/// even in musical interval, not in [`Hz`] — and all three end exactly on the
+/// target. The curve only reshapes how the progress fraction advances.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PortamentoCurve {
-    /// Linear interpolation
+    /// Constant rate of interval change. The default.
     #[default]
     Linear,
-    /// Exponential curve (slow start, fast finish)
+    /// Slow start, fast finish (progress squared): the pitch lingers near the
+    /// old note and arrives abruptly.
     Exponential,
-    /// Logarithmic curve (fast start, slow finish)
+    /// Fast start, slow finish (square root of progress): the pitch leaves the
+    /// old note immediately and eases into the new one.
     Logarithmic,
 }
 
+/// How pitch glide behaves between notes.
+///
+/// A [`PolySynth`](crate::PolySynth) built with `None` here has no glide state
+/// at all and cannot gain one later.
 #[derive(Debug, Clone)]
 pub struct PortamentoConfig {
+    /// When to glide. [`Off`](PortamentoMode::Off) by default, which makes the
+    /// rest of these fields inert.
     pub mode: PortamentoMode,
+    /// The shape of the glide.
     pub curve: PortamentoCurve,
+    /// Glide duration in [`Seconds`], or the *base* duration when
+    /// [`constant_time`](Self::constant_time) is false. `0.0` disables the
+    /// glide as surely as [`PortamentoMode::Off`] does.
     pub time: Seconds,
-    /// If true, glide time is constant regardless of interval.
-    /// If false, larger intervals take proportionally longer.
+    /// Whether every glide takes the same time regardless of how far it travels.
+    ///
+    /// `true` (the default) is constant-*time*: an octave and a semitone both
+    /// take [`time`](Self::time). `false` is constant-*rate*: the duration
+    /// scales with the interval in octaves, floored at 10% of `time` so a tiny
+    /// interval still glides audibly rather than snapping.
     pub constant_time: bool,
 }
 
@@ -103,8 +138,8 @@ impl Portamento {
             };
 
             // A fractional glide length feeding a reciprocal, not a frame
-            // count: multiply in f64 and narrow once, rather than narrowing
-            // the rate first as this did before.
+            // count: multiply in f64 and narrow once. Narrowing the rate first
+            // computes the step at f32 precision and drifts over a long glide.
             let glide_samples = (glide_time as f64 * self.sample_rate.get()) as f32;
             self.rate = if glide_samples > 0.0 {
                 1.0 / glide_samples

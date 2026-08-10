@@ -22,18 +22,26 @@ const EVENT_SCRATCH_CAPACITY: usize = 256;
 const PARAM_QUEUE_CAPACITY: usize = 16;
 
 impl ClapLoaded {
+    /// Whether any of the plugin's audio ports advertises 64-bit support.
+    /// Activating as `ClapActive<f64>` requires this.
     pub fn supports_f64(&self) -> bool {
         self.audio.supports_f64
     }
 
+    /// Metadata read from the plugin's descriptor at load time.
     pub fn info(&self) -> &PluginInfo {
         &self.info
     }
 
+    /// Sample rate in Hz the plugin was initialized with. A bare `f64`
+    /// because it crosses to C as one; unit types stop at this boundary.
     pub fn sample_rate(&self) -> f64 {
         self.audio.sample_rate
     }
 
+    /// Largest block, in **frames**, the plugin was activated for. A `process`
+    /// call asking for more is refused with
+    /// [`crate::ClapError::BlockTooLarge`].
     pub fn block_size(&self) -> u32 {
         self.audio.max_frames
     }
@@ -181,6 +189,9 @@ impl ClapLoaded {
 }
 
 impl<T: super::ClapSample> ClapActive<T> {
+    /// Whether `start_processing` has succeeded and no `stop_processing` has
+    /// followed. Distinct from *active*: an activated instance is not
+    /// processing until the first `process` call self-starts it.
     pub fn is_processing(&self) -> bool {
         self.loaded.flags.processing
     }
@@ -314,7 +325,7 @@ impl<T: super::ClapSample> ClapActive<T> {
     /// [`ClapError::NotSupported`] if the plugin refuses `activate` at the new
     /// ceiling; the instance is **rolled back** to the previous `max_frames`
     /// and left active there. [`ClapError::LoadFailed`] if the rollback also
-    /// fails. See [`Self::reconfigure`].
+    /// fails.
     pub fn set_max_block_size(&mut self, max_frames: u32) -> Result<()> {
         if max_frames <= self.loaded.audio.max_frames {
             return Ok(());
@@ -339,8 +350,8 @@ impl<T: super::ClapSample> ClapActive<T> {
     /// Deactivate → re-activate at `(sample_rate, max_frames)`, restoring the
     /// previous configuration if the plugin refuses the new one.
     ///
-    /// A failed `activate` must not be discarded (both setters used to write
-    /// `let _ =`): `activate_plugin` returns early without setting
+    /// A failed `activate` must not be discarded — no `let _ =` here:
+    /// `activate_plugin` returns early without setting
     /// `flags.active`, leaving a `ClapActive` whose plugin is deactivated —
     /// exactly the state the type exists to rule out. `process` would then
     /// `start_processing` on a deactivated plugin, and

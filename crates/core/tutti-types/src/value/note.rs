@@ -17,22 +17,35 @@ use super::units::{Cents, Hz, Semitones};
 
 /// One of the twelve pitch classes.
 ///
-/// Replaces the `[&str; 12]` lookup tables that were copied per spelling and
-/// indexed by an open-coded `% 12`.
+/// Ordered C-first, and spelled with sharps throughout: a `[&str; 12]` lookup
+/// indexed by an open-coded `% 12` is the shape this replaces, and it gets the
+/// wrap wrong for negative input.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum PitchClass {
+    /// C — the origin of the octave numbering.
     C,
+    /// C sharp, enharmonically D flat.
     CSharp,
+    /// D.
     D,
+    /// D sharp, enharmonically E flat.
     DSharp,
+    /// E.
     E,
+    /// F.
     F,
+    /// F sharp, enharmonically G flat.
     FSharp,
+    /// G.
     G,
+    /// G sharp, enharmonically A flat.
     GSharp,
+    /// A — A4 is the 440 Hz tuning reference.
     A,
+    /// A sharp, enharmonically B flat.
     ASharp,
+    /// B.
     B,
 }
 
@@ -162,16 +175,22 @@ impl Note {
         octave: 4,
     };
 
+    /// Builds a note from its class and octave.
+    ///
+    /// Any `i8` octave is accepted, including ones outside MIDI's `0..=127` —
+    /// that range is a property of the encoding, not of the note.
     #[inline]
     pub const fn new(class: PitchClass, octave: i8) -> Self {
         Self { class, octave }
     }
 
+    /// Returns the pitch class, discarding the octave.
     #[inline]
     pub const fn class(self) -> PitchClass {
         self.class
     }
 
+    /// Returns the octave in scientific pitch notation, where middle C is 4.
     #[inline]
     pub const fn octave(self) -> i8 {
         self.octave
@@ -227,11 +246,10 @@ impl Note {
         if freq.get() <= 0.0 {
             return None;
         }
-        // The named inverse of `frequency`'s `Semitones::to_pitch_ratio`, which
-        // is what this line used to spell out as `12.0 * ratio.log2()`. Both
-        // directions now go through the converter, and the guard above is the
-        // same one `from_pitch_ratio` applies — kept because `None` is a
-        // better answer here than a unison.
+        // The named inverse of `frequency`'s `Semitones::to_pitch_ratio`, not a
+        // hand-rolled `12.0 * ratio.log2()`: both directions go through the one
+        // converter. The guard above duplicates `from_pitch_ratio`'s on purpose
+        // — `None` is a better answer here than a unison.
         let steps = Semitones::from_pitch_ratio(freq.get() / Self::A4_HZ.get());
         let nearest = steps.get().round();
         let note = Self::from_semitones_from_c0(Self::A4.semitones_from_c0() + nearest as i32);

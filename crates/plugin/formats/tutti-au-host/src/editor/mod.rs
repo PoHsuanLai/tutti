@@ -32,8 +32,8 @@ pub struct AuEditor {
     unit: AudioUnit,
 }
 
-// SAFETY: the view is released only by our Drop; we never hand out the raw
-// pointer except through `view_ptr()`, so there is no aliasing across threads.
+// SAFETY: the view is released only by this type's `Drop`, and the raw pointer
+// leaves only through `view_ptr()`, so there is no aliasing across threads.
 unsafe impl Send for AuEditor {}
 
 impl AuEditor {
@@ -44,9 +44,9 @@ impl AuEditor {
     /// `preferred` is the size the host would like, passed to the factory as
     /// `inPreferredSize` (`AUCocoaUIView.h:47-48`). It is a *hint*: the plugin
     /// may return a view of any size, so read the actual frame back afterwards
-    /// rather than assuming the request was honoured. This used to be
-    /// hardcoded to 800×600, so every AU editor was told the host wanted that
-    /// whatever window it was about to live in.
+    /// rather than assuming the request was honoured. It must be the host's real
+    /// window size: a fixed figure tells every AU the host wants that size
+    /// whatever window the editor is about to live in.
     ///
     /// # Safety
     /// `unit` must be a valid, initialized `AudioUnit`. If `parent` is

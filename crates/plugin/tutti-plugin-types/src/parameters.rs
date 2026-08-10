@@ -34,16 +34,22 @@ use serde::{Deserialize, Serialize};
 ///
 /// The four hosted formats disagree about which domain a parameter value is
 /// in — VST3 and VST2 speak normalized natively, AU and CLAP speak the
-/// plugin's own units — and the shared seam
-/// ([`PluginFormatHost`](crate::PluginFormatHost)) picks normalized, leaving
-/// each plain-native loader to adapt at its own edge. That rule was carried
-/// only in prose, over a `f64` that a plain value fits just as well. Writing
-/// `set_parameter(id, 20_000.0)` against a filter cutoff compiled and set the
+/// plugin's own units — and the shared seam ([`PluginParams`](crate::PluginParams))
+/// picks normalized, leaving each plain-native loader to adapt at its own edge.
+/// Carried only in prose over a bare `f64`, that rule is unenforceable: writing
+/// `set_parameter(id, 20_000.0)` against a filter cutoff compiles and sets the
 /// parameter to full scale rather than 20 kHz.
 ///
-/// The invariant is enforced at construction: [`new`](Self::new) clamps into
-/// `0..=1` and maps NaN to `0.0`, so a `Normalized` is always a finite value on
-/// the unit interval. That is the same guard [`ParamRange::to_plain`] applies
+/// # The clamp is silent
+///
+/// [`new`](Self::new) clamps into `0..=1` and maps NaN to `0.0`, reporting
+/// neither. A `Normalized` is therefore always a finite value on the unit
+/// interval — but a caller who passes `40.0` gets `1.0` back with no error, no
+/// `Result` and no log line, and a run of such values reads downstream as a
+/// legitimate parameter sweep pinned at maximum rather than as bad input.
+/// Normalize before constructing; this type will not tell you that you did not.
+///
+/// That structural guard is the same one [`ParamRange::to_plain`] applies
 /// internally — it exists here so a caller cannot skip it.
 ///
 /// Deliberately no `Deref`, no `From<f64>` and no arithmetic: those are the
@@ -62,7 +68,11 @@ use serde::{Deserialize, Serialize};
 pub struct Normalized(f64);
 
 impl Normalized {
-    /// Clamp `v` onto `0..=1`.
+    /// Clamps `v` onto `0..=1`, **silently**.
+    ///
+    /// Out-of-range input saturates at the nearest bound and NaN becomes `0.0`,
+    /// with nothing returned to say so — an encoding mistake at the call site
+    /// survives as a plausible value rather than surfacing as an error.
     ///
     /// Total rather than fallible: every caller of a `Result` here would
     /// `unwrap_or(0.0)` or clamp anyway, and the values arriving are automation
@@ -529,11 +539,18 @@ pub struct ParameterInfo {
     /// plugin-chosen handle for VST3/CLAP/AU, a dense index for VST2. Match on
     /// it rather than reaching for a number — the two are not interchangeable.
     pub id: ParamAddress,
+    /// The plugin's display name for this parameter, unqualified by its group.
+    /// Not unique — see [`qualified_name`](Self::qualified_name).
     pub name: String,
     /// Display unit (`"dB"`, `"Hz"`, …). Empty when the format carries none —
     /// CLAP has no unit string at all.
     pub unit: String,
+    /// What the plugin declared about the value range, including the case where
+    /// it declared nothing. Read through [`bounds`](Self::bounds) and
+    /// [`default_value`](Self::default_value) rather than matching.
     pub range: ParamRange,
+    /// How many positions the parameter has, distinguishing "continuous" from
+    /// "the format never said". Read through [`step_count`](Self::step_count).
     pub steps: ParamSteps,
     /// Capability bits. Read through [`flag`](Self::flag), not directly, so an
     /// unreported capability cannot be mistaken for a reported `false`.
@@ -563,6 +580,10 @@ pub struct ParameterInfo {
 }
 
 impl ParameterInfo {
+    /// Builds a parameter with an address and a name, everything else
+    /// undeclared: no unit, no group, a normalized range defaulting to `0.0`,
+    /// [`ParamSteps::Unknown`], and an empty `known` mask so every capability
+    /// reads as unreported. The `with_*` builders fill in what a format states.
     pub fn new(id: impl Into<ParamAddress>, name: impl Into<String>) -> Self {
         Self {
             id: id.into(),
@@ -718,7 +739,7 @@ mod tests {
     ///
     /// The reason the `known` mask exists: AUv2 has no automation metadata, so
     /// reporting `automatable: false` would be a claim the ABI never made — and
-    /// reporting `true` (which `ALL_AUTOMATABLE` used to do) is worse.
+    /// blanket-reporting `true` is worse.
     #[test]
     fn an_unreported_flag_is_not_a_false_flag() {
         let p = ParameterInfo::new(ParamId::new(1), "Gain")
@@ -775,10 +796,11 @@ mod tests {
     /// A plain value handed to `Normalized::new` is clamped, not carried.
     ///
     /// This is the mistake the type exists to stop: `set_parameter(id, 20_000.0)`
-    /// against a `[10, 22050]` Hz cutoff used to compile and set full scale.
-    /// It still compiles — the clamp is total by design — but it can no longer
-    /// be mistaken for a plain write, because the seam takes `Normalized` and
-    /// the only way to build one is through this clamp.
+    /// against a `[10, 22050]` Hz cutoff sets full scale, not 20 kHz. The write
+    /// still compiles — the clamp is total by design — but it cannot be mistaken
+    /// for a plain write, because the seam takes `Normalized` and the only way
+    /// to build one is through this clamp. Note the clamp is silent: the wrong
+    /// value arrives saturated rather than rejected.
     #[test]
     fn a_plain_value_cannot_masquerade_as_a_normalized_one() {
         assert_eq!(Normalized::new(20_000.0).get(), 1.0);

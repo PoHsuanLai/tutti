@@ -20,7 +20,7 @@
 //!
 //! **[`io`]** — the I/O edge vocabulary: [`AudioIn`] / [`AudioOut`] — the two
 //! traits every audio source and sink in the engine speaks (mic, file, disk,
-//! plugin boundary), plus [`pump`](io::pump). Homed here, at the root leaf, so
+//! plugin boundary), plus [`pump`]. Homed here, at the root leaf, so
 //! every subsystem can implement them without an absurd dependency edge.
 //!
 //! **[`latency`]** — latency compensation: the [`LatencyGraph`] trait and the

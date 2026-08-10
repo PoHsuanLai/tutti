@@ -325,8 +325,8 @@ fn a_non_implementing_unit_reports_the_gap_rather_than_an_empty_list() {
 fn the_string_readers_report_a_missing_property_as_an_error() {
     let _g = lock();
     // `icon_location` is witnessed by the real corpus: 16 units refuse it, so
-    // the sweep runs to completion rather than returning on the first refusal —
-    // an earlier version did, and could only ever reach one of the two readers.
+    // the sweep must run to completion rather than return on the first refusal.
+    // Returning early can only ever reach one of the two readers.
     let mut icon_refusals = 0;
     for info in every_component() {
         let Ok(au) = std::panic::catch_unwind(|| open_info(&info, 48_000.0, 512)) else {

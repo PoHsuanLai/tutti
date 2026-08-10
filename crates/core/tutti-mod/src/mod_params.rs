@@ -31,6 +31,21 @@ use tutti_types::ParamAddr;
 /// writes its folded value into wherever the param actually lives (a native
 /// node's `AtomicF32`, a plugin's IPC stream).
 pub trait ModParams {
+    /// The [`ModTarget`] for `param`, or `None` if this node exposes no
+    /// control-rate modulation for that address.
+    ///
+    /// `base`, `min` and `max` are the caller's — the node does not know its
+    /// own range (see the module doc). They are bare `f32` because they are in
+    /// the *param's* units, which differ per address: `Hz` for a cutoff, linear
+    /// gain for a fader, `Semitones` for a pitch. No one newtype is right for
+    /// the triple.
+    ///
+    /// Which [`ParamAddr`] arm to answer on is the whole addressing contract:
+    /// a native node answers on [`ParamAddr::Unit`] (an engine-known
+    /// [`UnitParam`](tutti_types::UnitParam)) and returns `None` on
+    /// [`ParamAddr::Id`]; a plugin or WASM node does the reverse, because its
+    /// param names are exactly what the app's name table cannot know.
+    /// Answering on the wrong arm binds no route and reports no error.
     fn mod_target(
         &self,
         param: ParamAddr,

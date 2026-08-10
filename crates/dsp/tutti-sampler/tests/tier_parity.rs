@@ -48,8 +48,8 @@ const SR: f64 = 48_000.0;
 const BLOCK: usize = 64;
 /// Blocks rendered for the actual comparison, after warm-up.
 const COMPARE_BLOCKS: usize = 200;
-/// Ceiling on how long the butler gets to prime its ring before we call it
-/// broken. Generous — this is a liveness bound, not a performance assertion.
+/// Ceiling on how long the butler gets to prime its ring before the test calls
+/// it broken. Generous — a liveness bound, not a performance assertion.
 const READY_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// How far a measured chirp frequency may sit from the one its target position
@@ -427,8 +427,8 @@ fn the_disk_and_memory_tiers_render_the_same_material() {
 /// A disk voice must reach audio at all, within a bounded time.
 ///
 /// Split out from the parity test so a butler that never primes its ring is
-/// reported as its own failure rather than as "the tiers disagree". The butler
-/// had no end-to-end coverage before this file; this is the minimum claim.
+/// reported as its own failure rather than as "the tiers disagree" — the
+/// minimum end-to-end claim the streaming path has to satisfy.
 #[test]
 fn a_disk_voice_produces_audio_from_a_real_file() {
     let d = tempfile::tempdir().unwrap();

@@ -12,9 +12,9 @@ use std::path::{Path, PathBuf};
 ///
 /// The VST3 SDK derives this name from the running architecture, not just the
 /// OS: `module_linux.cpp` builds `uname().machine + "-linux"`, and
-/// `module_win32.cpp` enumerates six Windows variants. Keying on
-/// `target_os` alone (as this module used to) means zero VST3/CLAP bundles
-/// resolve on ARM Linux or Windows-on-ARM.
+/// `module_win32.cpp` enumerates six Windows variants. Keying on `target_os`
+/// alone would mean zero VST3/CLAP bundles resolve on ARM Linux or
+/// Windows-on-ARM.
 ///
 /// This is deliberately a function rather than a `#[cfg]` chain at the call
 /// site so the tests can consume the *same* list — a test helper that
@@ -256,9 +256,9 @@ mod tests {
         }
     }
 
-    /// Regression for the arch subdir must track `target_arch`, not
-    /// just `target_os`. On ARM Linux / Windows-on-ARM the old OS-only
-    /// `#[cfg]` produced `x86_64-*`, so zero bundles resolved.
+    /// The arch subdir must track `target_arch`, not just `target_os`. An
+    /// OS-only `#[cfg]` yields `x86_64-*` on ARM Linux and Windows-on-ARM, so
+    /// zero bundles resolve.
     #[test]
     fn arch_subdir_tracks_target_architecture() {
         let dirs = super::arch_subdirs();

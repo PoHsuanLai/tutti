@@ -89,27 +89,36 @@ impl ConvolverNode {
         }
     }
 
+    /// The node's [`WetDry`] parameter block, for reading both cells at once.
     pub fn params(&self) -> &WetDry {
         &self.params
     }
 
+    /// The shared wet/dry [`Mix`] cell: `0.0` dry, `1.0` fully wet.
     pub fn mix(&self) -> Arc<AtomicF32> {
         self.params.mix_handle()
     }
 
+    /// The shared wet-path [`Amplitude`] cell, applied before the blend.
     pub fn gain(&self) -> Arc<AtomicF32> {
         self.params.gain_handle()
     }
 
+    /// Sets the wet/dry [`Mix`], clamped to `0.0..=1.0`.
     pub fn set_mix(&self, mix: impl Into<Mix>) {
         self.params.set_mix(mix);
     }
 
+    /// Sets the wet-path [`Amplitude`], floored at 0.
     pub fn set_gain(&self, gain: impl Into<Amplitude>) {
         self.params.set_gain(gain);
     }
 
-    /// Latency (one FFT block).
+    /// The node's latency in [`Samples`] — one FFT block.
+    ///
+    /// Partitioned convolution cannot emit a sample until its first block is
+    /// full, so this delay is inherent. A graph mixing this against a dry path
+    /// must compensate it, or the two arrive misaligned and comb-filter.
     pub fn latency_samples(&self) -> Samples {
         Samples(self.latency_samples)
     }
@@ -245,30 +254,43 @@ impl StereoConvolverNode {
         )
     }
 
+    /// How the node's impulse responses map onto its two channels.
+    ///
+    /// Fixed at construction — the config picks which constructor built it, so
+    /// changing it means building a new node.
     pub fn config(&self) -> IrChannelConfig {
         self.config
     }
 
+    /// The node's [`WetDry`] parameter block, shared across both channels.
     pub fn params(&self) -> &WetDry {
         &self.params
     }
 
+    /// The shared wet/dry [`Mix`] cell, governing both channels.
     pub fn mix(&self) -> Arc<AtomicF32> {
         self.params.mix_handle()
     }
 
+    /// The shared wet-path [`Amplitude`] cell, governing both channels.
     pub fn gain(&self) -> Arc<AtomicF32> {
         self.params.gain_handle()
     }
 
+    /// Sets the wet/dry [`Mix`] for both channels, clamped to `0.0..=1.0`.
     pub fn set_mix(&self, mix: impl Into<Mix>) {
         self.params.set_mix(mix);
     }
 
+    /// Sets the wet-path [`Amplitude`] for both channels, floored at 0.
     pub fn set_gain(&self, gain: impl Into<Amplitude>) {
         self.params.set_gain(gain);
     }
 
+    /// The node's latency in [`Samples`] — one FFT block, the same on both
+    /// channels.
+    ///
+    /// Must be compensated by any graph mixing this against a dry path.
     pub fn latency_samples(&self) -> Samples {
         Samples(self.latency_samples)
     }

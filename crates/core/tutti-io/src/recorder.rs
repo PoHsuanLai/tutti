@@ -25,24 +25,32 @@
 //! stop flag, finalizes, and returns the `io::Result` that
 //! [`stop`](Recorder::stop) recovers by joining.
 //!
-//! The scratch buffer is allocated once before the loop, at the source's own
-//! width; the loop body never allocates. Whether an empty poll means "back off"
-//! or "we are done" is the source's own
-//! [`ON_EMPTY`](tutti_core::io::AudioIn::ON_EMPTY) — a mic parks and retries, a
-//! file finishes.
+//! The scratch buffer is allocated once before the loop, sized
+//! `SCRATCH_FRAMES * channels` samples at the source's own width; the loop body
+//! never allocates.
+//!
+//! Whether a zero-FRAME poll means "back off" or "finished" is the source's
+//! own [`ON_EMPTY`](tutti_core::io::AudioIn::ON_EMPTY), and the pump loop is
+//! where that const is spent. `AudioIn` unifies live and finite sources, so the
+//! same zero carries two meanings: a mic has nothing ready *yet*, a decoded file
+//! has nothing ready *ever*. Reading a live source as finite ends a take
+//! milliseconds in, with no error anywhere; reading a finite one as live spins
+//! the thread forever. Neither is detectable from the count alone, which is why
+//! the source declares it.
 //!
 //! # The width check lives here
 //!
 //! [`start`](Recorder::start) refuses a source and sink whose channel counts
 //! disagree. That check is not incidental bookkeeping: it is the **replacement**
-//! for a compile-time guarantee that was deliberately given up. `AudioIn` and
-//! `AudioOut` used to carry the frame width as a `const CH`, so "a stereo mic
-//! cannot feed a 6-channel WAV" was a type error. Making the width runtime — the
-//! only way to express a width that comes from *data*, like a decoded file or a
-//! surround capture device — removed that. Per the project rule that an omitted
-//! guarantee ships with its replacement in the same change, it is restored as
-//! two runtime checks: a `debug_assert` inside
-//! [`pump`](tutti_core::io::pump), and the error below.
+//! for a compile-time guarantee deliberately given up. `AudioIn` and `AudioOut`
+//! carry the frame width as a runtime
+//! [`ChannelLayout`](tutti_core::ChannelLayout), not a `const CH`, because only
+//! a runtime width can express one that comes from *data* — a decoded file, a
+//! surround capture device. The cost is that "a stereo mic cannot feed a
+//! 6-channel WAV" stopped being a type error. Per the project rule that an
+//! omitted guarantee ships with its replacement, it is restored as two runtime
+//! checks: a `debug_assert` on the two layouts inside [`pump`], and **the error
+//! `start` returns — which lives in this crate.**
 //!
 //! This is the right home for the checked half because it is the one place both
 //! endpoints are in scope *before any frame moves*. A mismatch caught here costs
@@ -246,11 +254,9 @@ mod tests {
 
     /// **The replacement for the lost compile error, outer half.**
     ///
-    /// A stereo source into a 6-channel sink used not to compile at all: the
-    /// traits' `const CH` had to unify. That guarantee was given up to let a
-    /// width come from data, so it is restored here as a returned error —
-    /// checked BEFORE the thread spawns, so no frame is ever written to a file
-    /// whose channels would rotate.
+    /// A width mismatch is a returned error, checked BEFORE the thread spawns,
+    /// so no frame is ever written to a file whose channels would rotate. This
+    /// is the guarantee the runtime `ChannelLayout` gave up at the type level.
     ///
     /// The matching pair must still be accepted, which is the half that stops
     /// this from passing vacuously.
@@ -334,13 +340,11 @@ mod tests {
         );
     }
 
-    /// A live (starving) source records until stopped — the composability the
-    /// `AudioIn` signature buys.
+    /// A live (starving) source records until stopped — the composability a
+    /// generic `AudioIn` bound buys over a signature that opens a device itself.
     ///
-    /// The old signature opened a device itself, so this case could not be
-    /// written at all: anything that is not a microphone had no way in. The
-    /// fixture withholds frames without being exhausted, so a recorder that
-    /// mistook an empty poll for end-of-stream would stop early.
+    /// The fixture withholds frames without being exhausted, so a recorder that
+    /// mistook a zero-frame poll for end-of-stream would stop early.
     #[test]
     fn a_non_mic_live_source_records_until_stopped() {
         struct Starving {

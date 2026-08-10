@@ -28,14 +28,14 @@ use tutti_midi_types::MidiUnitIn;
 
 const POLL_BUFFER_SIZE: usize = 256;
 
-// An `OutHandle { queue, routing }` used to live here, because `emit` delivered
-// directly. Both now belong to `MidiPostBlock`, which owns the delivery phase —
-// a node needs neither, only somewhere to put its events.
+// The queue and routing table belong to `MidiPostBlock`, which owns the delivery
+// phase. A node needs neither — only somewhere to put its events.
 
 fn empty_poll_scratch() -> Vec<MidiEvent> {
     vec![MidiEvent::noop(); POLL_BUFFER_SIZE]
 }
 
+/// A hosted plugin's MIDI endpoint: the inbound port and the outbound slot.
 pub struct Midi {
     /// The inbound half: this plugin's mailbox plus the swappable source
     /// installed over it. Identical in duty to a built-in synth's port, so it
@@ -86,6 +86,7 @@ impl Default for Midi {
 }
 
 impl Midi {
+    /// Creates an endpoint with a fresh routing address and no source installed.
     pub fn new() -> Self {
         Self {
             port: MidiInPort::new(),
@@ -104,6 +105,7 @@ impl Midi {
         &self.port
     }
 
+    /// This endpoint's routing address, which MIDI is addressed to.
     pub fn unit_id(&self) -> MidiUnitId {
         self.port.unit_id()
     }
@@ -113,9 +115,9 @@ impl Midi {
         self.port.sender()
     }
 
-    /// Layer an `Arc`-backed [`MidiIn`] over the live receiver. Both are
-    /// polled per block in `drain_for_process`, so a clip-driven plugin
-    /// synth still answers live events. Used by clip players
+    /// Layer an `Arc`-backed [`MidiUnitIn`](tutti_midi_types::MidiUnitIn) over
+    /// the live receiver. Both are polled per block in `drain_for_process`, so a
+    /// clip-driven plugin synth still answers live events. Used by clip players
     /// (`tutti_midi_runtime::MidiClipSource`).
     pub fn set_source(&mut self, source: Arc<dyn MidiUnitIn>) {
         self.port.install(source);
@@ -152,19 +154,16 @@ impl Midi {
     /// whole graph has rendered.
     ///
     /// That split is the point. Fanning out from here — inside `process` —
-    /// made delivery interleave with consumption, so whether a downstream unit
-    /// saw an event this block or next depended on **graph traversal order**,
-    /// which nothing in the MIDI layer controls (fundsp orders by *audio*
-    /// edges, and two units in a MIDI relationship may share no audio edge).
-    /// Collecting here and delivering once, later, makes that order
-    /// unobservable: every consumer has already polled by the time anything is
-    /// delivered.
+    /// interleaves delivery with consumption, so whether a downstream unit sees
+    /// an event this block or next depends on **graph traversal order**, which
+    /// nothing in the MIDI layer controls (fundsp orders by *audio* edges, and
+    /// two units in a MIDI relationship may share no audio edge). Collecting
+    /// here and delivering once, later, makes that order unobservable: every
+    /// consumer has already polled by the time anything is delivered.
     ///
     /// The cost is a uniform one-block delay
-    /// ([`MIDI_OUT_LATENCY_BLOCKS`](tutti_midi_runtime::MIDI_OUT_LATENCY_BLOCKS)),
-    /// which for the batched path was already the case and for the in-process
-    /// path is new. Each event keeps its own `frame_offset` for the destination
-    /// to time it.
+    /// ([`MIDI_OUT_LATENCY_BLOCKS`](tutti_midi_runtime::MIDI_OUT_LATENCY_BLOCKS)).
+    /// Each event keeps its own `frame_offset` for the destination to time it.
     ///
     /// Returns how many events were accepted — `< events.len()` means the sink
     /// was full and the rest were **dropped**. A dropped note-off whose note-on

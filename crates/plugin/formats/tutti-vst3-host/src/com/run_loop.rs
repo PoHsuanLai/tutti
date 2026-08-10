@@ -2,7 +2,7 @@
 //!
 //! X11 has no ambient run loop the way Cocoa and Win32 do, so VST3 makes the
 //! host provide one. The plugin registers its X connection's file descriptor
-//! and any repeating timers with us, and we call back when they are ready.
+//! and any repeating timers with the host, which calls back when they are ready.
 //!
 //! ## Why this lives in its own module
 //!
@@ -16,7 +16,7 @@
 //!   `IRunLoop` and pushes it into VSTGUI's `LinuxFactory` at **factory-load
 //!   time**, long before any editor exists.
 //! - [`HostPlugFrame`](super::HostPlugFrame) — handed to `IPlugView::setFrame`.
-//!   Some toolkits look here instead, so we answer here too.
+//!   Some toolkits look here instead, so it is answered here too.
 //!
 //! Registering on one and pumping the other would leave handlers in a queue
 //! nothing services, so both delegate to one [`RunLoop`] owned at library
@@ -43,7 +43,7 @@ use vst3::Steinberg::kResultOk;
 use vst3::Steinberg::tresult;
 use vst3::Steinberg::Linux::{FileDescriptor, IEventHandler, ITimerHandler, TimerInterval};
 
-/// A timer the plugin asked us to run, and when it last fired.
+/// A timer the plugin asked the host to run, and when it last fired.
 struct TimerEntry {
     handler: *mut ITimerHandler,
     period: Duration,

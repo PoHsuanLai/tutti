@@ -10,16 +10,14 @@
 //! and sent as UMP words. With the stamper disabled the events still go out,
 //! unstamped; `JrStamperRes` gates timestamps, not delivery.
 //!
-//! This used to be macOS-only, because `UmpOutRes` wrapped a CoreMIDI
-//! `UmpVirtualSource` and the portable path was a lossy MIDI-1.0 port that
-//! dropped JR words. Now that every backend yields a `Box<dyn MidiOut>`, there
-//! is one path and no `#[cfg]` — a Linux ALSA seq-UMP output stamps too.
+//! [`UmpOutRes`] holds an erased `Box<dyn MidiOut>`, so there is one path and no
+//! `#[cfg]`: a Linux ALSA seq-UMP output stamps exactly as a CoreMIDI one does.
 //!
-//! # Why these live here and not with the metadata they used to
+//! # Why these live here rather than beside the Flex Data metadata
 //!
 //! [`UmpOutRes`] is a *transport* and [`JrStamperRes`] is its stamping config;
-//! neither is Flex Data, and `metadata.rs` — which held both — never used
-//! either. They belong beside the router that reads them.
+//! neither is Flex Data, and nothing in `metadata.rs` reads either. They belong
+//! beside the router that does.
 
 use bevy_ecs::prelude::*;
 
@@ -71,16 +69,15 @@ impl Default for JrStamperRes {
 /// The [`JrStream`](tutti_midi_runtime::JrStream) is the whole endpoint's, not
 /// one pump's: both the clock master and the track path stamp through here, and
 /// a per-pump origin would restart each at zero and interleave stamps that walk
-/// backwards. bevy-tutti used to carry that origin itself, which is engine state
-/// an adapter should not own — it now lives in the engine, where the invariant
-/// is structural.
+/// backwards. The origin lives in the engine rather than in this adapter, which
+/// is what makes that invariant structural.
 ///
 /// Not inserted by default; an app that wants JR-out creates the source and
 /// inserts this.
 #[derive(Resource)]
 pub struct UmpOutRes {
-    /// The open output. Erased, so this type no longer knows which OS produced
-    /// it — which is what let it shed its `#[cfg(target_os = "macos")]`.
+    /// The open output. Erased, so this type does not know which OS produced it
+    /// — which is what keeps the whole module free of `#[cfg(target_os)]`.
     sink: Box<dyn tutti_midi_types::MidiOut>,
     stream: tutti_midi_runtime::JrStream,
     /// Whether to JR-stamp. Mirrored from [`JrStamperRes`] by
@@ -111,10 +108,9 @@ impl UmpOutRes {
     /// §7.2.2.3 has a receiver that has seen no JR Clock render messages "as
     /// soon as possible", discarding the timing entirely.
     ///
-    /// **Previously macOS-only.** It took a `UmpVirtualSource` — a CoreMIDI
-    /// type — so JR-stamped output existed on exactly one platform. Taking the
-    /// erased sink instead means every backend gets it, which is a capability
-    /// gain rather than a refactor: a Linux ALSA seq-UMP output now stamps too.
+    /// `sink` is erased rather than a concrete backend type, which is what makes
+    /// JR-stamped output portable: an ALSA seq-UMP output stamps exactly as a
+    /// CoreMIDI one does.
     pub fn new(sink: Box<dyn tutti_midi_types::MidiOut>, sample_rate: f64) -> Self {
         Self {
             sink,
@@ -215,21 +211,17 @@ impl MidiOutDrops {
 ///
 /// # There is no `#[cfg]` here, and that is the point
 ///
-/// This used to be a ladder — a macOS-only JR-stamped arm that returned early,
-/// then a lossy MIDI-1.0 arm, then the drop. Two transports of different
-/// capability, chosen by *platform*, so which messages survived depended on
-/// where you built.
-///
-/// It collapses because every backend now yields a `Box<dyn MidiOut>`
+/// Every backend yields a `Box<dyn MidiOut>`
 /// ([`MidiEndpoints::open_output`](tutti_midi_hardware::MidiEndpoints::open_output)),
-/// so a CoreMIDI port and an ALSA port are one static type. The remaining
-/// platform choice happens once, at construction, inside
+/// so a CoreMIDI port and an ALSA port are one static type and there is one arm
+/// rather than a per-platform ladder. A ladder would make *which messages
+/// survive* a property of where the binary was built. The remaining platform
+/// choice happens once, at construction, inside
 /// `tutti_midi_hardware::core::backend::active()`.
 pub struct MidiOutRouter<'a> {
     /// The open output, JR-stamping as it sends. `None` when nothing is
     /// connected — which is *why* it is an `Option`: a sink that is present but
-    /// silently discarding is what made "nothing is coming out" unanswerable
-    /// before.
+    /// silently discarding leaves "nothing is coming out" unanswerable.
     pub out: Option<&'a mut UmpOutRes>,
     /// Where events with nowhere to go are counted. `None` keeps the drop
     /// silent, which is what a caller with no interest in the tally passes.
@@ -277,10 +269,10 @@ pub fn drain_receiver_through(receiver: &MidiReceiver, router: &mut MidiOutRoute
 /// The open output, if there is one.
 ///
 /// [`JrStamperRes`] gates *stamping*, not *sending* — a missing or disabled
-/// stamper must still deliver events, unstamped. Conflating the two was the old
-/// `jr_out_active`: with the stamper off it returned `None`, which used to fall
-/// through to the MIDI-1.0 arm. Now that there is no second arm, returning
-/// `None` there would drop every event whenever stamping was off.
+/// stamper must still deliver events, unstamped. So this returns the output
+/// whenever one is open, and mirrors the switch onto it. Returning `None` for a
+/// disabled stamper instead would drop every event whenever stamping was off:
+/// there is no second, unstamped transport to fall through to.
 pub fn out_active<'a>(
     ump_out: Option<ResMut<'a, UmpOutRes>>,
     jr: Option<Res<'a, JrStamperRes>>,
@@ -299,9 +291,9 @@ mod tests {
 
     /// Counts what reached the wire.
     ///
-    /// Replaces a real `UmpVirtualSource`, which is why this module is no longer
-    /// `#[cfg(target_os = "macos")]`: these are engine invariants, and gating
-    /// them on the platform meant CI never ran them at all.
+    /// Stands in for a real OS endpoint so these tests run on every platform.
+    /// They cover engine invariants, and gating them behind `target_os` would
+    /// mean CI never ran them at all.
     struct CountingSink(Arc<AtomicUsize>);
     impl tutti_midi_types::MidiOut for CountingSink {
         fn queue(&self, events: &[MidiEvent]) -> usize {
@@ -347,10 +339,9 @@ mod tests {
 
     /// **Stamping off must still send.**
     ///
-    /// `JrStamperRes` gates timestamps, not delivery. The old `jr_out_active`
-    /// returned `None` when the stamper was disabled, which used to fall through
-    /// to the MIDI-1.0 arm — harmless then, and silently muting MIDI out now
-    /// that no second arm exists. This pins the distinction.
+    /// `JrStamperRes` gates timestamps, not delivery. There is no second,
+    /// unstamped transport to fall through to, so treating a disabled stamper as
+    /// "no output" would silently mute MIDI out. This pins the distinction.
     #[test]
     fn stamping_disabled_still_delivers_events() {
         let (mut out, count) = out_with_counter(false);
@@ -396,16 +387,14 @@ mod tests {
 
     /// **`out_active` must return the output whether or not stamping is on.**
     ///
-    /// This drives the real function through a `World`, not the `stamping` field
-    /// directly — and that distinction is load-bearing. The other tests here set
-    /// `stamping` themselves, so they never execute `out_active` and cannot see
-    /// it regress. Reverting it to the old `jr_out_active` semantics (stamper
-    /// off ⇒ `None`) passed every one of them; only this fails, which is why it
-    /// exists.
+    /// This drives the real function through a `World` rather than setting the
+    /// `stamping` field directly, and that distinction is load-bearing: the
+    /// other tests here set the field themselves, so they never execute
+    /// `out_active` and cannot see it regress. A "stamper off ⇒ `None`"
+    /// implementation passes every one of them and fails only this.
     ///
-    /// With no second transport left to fall through to, returning `None` here
-    /// would silently mute MIDI out whenever stamping was disabled — which is
-    /// the default.
+    /// With no second transport to fall through to, returning `None` here would
+    /// silently mute MIDI out whenever stamping was disabled — the default.
     #[test]
     fn out_active_yields_the_output_with_stamping_disabled() {
         use bevy_ecs::system::RunSystemOnce;

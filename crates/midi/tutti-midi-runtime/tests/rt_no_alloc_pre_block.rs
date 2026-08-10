@@ -37,7 +37,7 @@ impl MidiIn for FixedInput {
     }
 }
 
-/// Minimal MIDI queue: counts events so we can sanity-check routing ran.
+/// Minimal MIDI queue: counts events, so a test can confirm routing ran.
 /// `queue` must be alloc-free — a relaxed counter bump is.
 struct CountingQueue {
     count: std::sync::atomic::AtomicUsize,

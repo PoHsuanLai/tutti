@@ -28,7 +28,7 @@
 //! Both writing means whichever runs last wins, which is a scheduling accident
 //! rather than a decision. [`ModulationMatrix::is_modulated`] settles it: a
 //! reconciler asks before writing, and routes an authored change through
-//! [`set_base`](ModulationMatrix::set_base) when the answer is yes, so the value
+//! `set_base` when the answer is yes, so the value
 //! lands *under* the modulation instead of fighting it.
 //!
 //! # Cascading — modulating a source's own rate
@@ -61,7 +61,7 @@
 //! # Delivery: per-frame scalar, or beat-evaluated curve
 //!
 //! By default the driver samples each source once a frame and writes a scalar.
-//! A route can instead ask for its source to be installed as a [`Curve`] the
+//! A route can instead ask for its source to be installed as a `Curve` the
 //! *sink* evaluates:
 //!
 //! ```rust,ignore

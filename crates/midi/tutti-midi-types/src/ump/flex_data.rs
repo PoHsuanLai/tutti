@@ -52,19 +52,30 @@ pub type Alteration = midi2::flex_data::Alteration;
 /// encoding.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ChordName {
+    /// Root pitch class of the chord.
     pub tonic: Tonic,
+    /// Accidental applied to `tonic`.
     pub tonic_sharps_flats: ChordSharpsFlats,
+    /// Chord quality (major, minor 7th, …).
     pub chord_type: ChordType,
+    /// Up to four alterations. Each slot maps to its own wire field positionally,
+    /// so a `None` in the middle is preserved rather than compacted away.
     pub alterations: [Option<Alteration>; 4],
+    /// Separate bass note, or `None` for the "bass same as tonic" encoding.
     pub bass: Option<ChordBass>,
 }
 
 /// The bass half of a [`ChordName`] (the "/G" in "Cmaj7/G").
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ChordBass {
+    /// Pitch class of the bass note.
     pub note: Tonic,
+    /// Accidental applied to `note`.
     pub sharps_flats: ChordSharpsFlats,
+    /// Quality of the chord built on the bass note.
     pub chord_type: ChordType,
+    /// Up to two alterations — the bass half carries half as many fields as the
+    /// tonic half does.
     pub alterations: [Option<Alteration>; 2],
 }
 
@@ -72,8 +83,11 @@ pub struct ChordBass {
 /// marks a subdivision (in clicks) that receives an accent, `0` meaning "none".
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct BarAccents {
+    /// Subdivision (in clicks) carrying the strongest accent; `0` for none.
     pub primary: u8,
+    /// Subdivision carrying the second accent; `0` for none.
     pub secondary: u8,
+    /// Subdivision carrying the third accent; `0` for none.
     pub tertiary: u8,
 }
 
@@ -251,23 +265,39 @@ pub fn flex_chord_name(event: &MidiEvent) -> Option<ChordName> {
 pub enum FlexTextKind {
     /// Free metadata text with no specific status (Metadata bank, status 0x0).
     UnknownMetadata,
+    /// Name of the project or session the clip belongs to.
     ProjectName,
+    /// Name of the musical work, independent of any one recording of it.
     CompositionName,
+    /// Name of this clip specifically — the finest-grained of the three names.
     MidiClipName,
+    /// Copyright notice for the material.
     CopyrightNotice,
+    /// Who wrote the music.
     ComposerName,
+    /// Who wrote the words.
     LyricistName,
+    /// Who arranged this setting of the work.
     ArrangerName,
+    /// Who published it.
     PublisherName,
+    /// Lead performer.
     PrimaryPerformerName,
+    /// A supporting performer. Repeatable — one message per performer.
     AccompanyingPerformerName,
+    /// When the material was recorded, as free text rather than a parsed date.
     RecordingDate,
+    /// Where it was recorded.
     RecordingLocation,
     /// Free performance text with no specific status (Performance bank, status 0x0).
     UnknownPerformance,
+    /// Lyric text, positioned in the stream at the point it is sung.
     Lyrics,
+    /// Language tag for the [`Lyrics`](Self::Lyrics) that accompany it.
     LyricsLanguage,
+    /// Ruby text — the pronunciation gloss set above East Asian lyrics.
     Ruby,
+    /// Language tag for the [`Ruby`](Self::Ruby) text.
     RubyLanguage,
 }
 
@@ -360,7 +390,7 @@ impl FlexTextReassembler {
         }
         self.words.extend_from_slice(event.data_words());
         // midi2 owns the Format-field fragmentation rules, so decoding the
-        // accumulated words is what tells us the run is complete.
+        // accumulated words is what marks the run complete.
         match flex_text_from_words(&self.words) {
             Some(done) => {
                 self.words.clear();

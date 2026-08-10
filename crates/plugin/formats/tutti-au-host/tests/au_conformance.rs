@@ -124,13 +124,14 @@ fn initialize_and_uninitialize_are_idempotent() {
 }
 
 /// An AU instrument has **no input bus**. Installing an input render callback
-/// on its input scope is a property error (`-10877`), and the host used to do
-/// exactly that — gating the install on the render scratch's input buffer
-/// count, which `RenderScratch::new` over-allocates to `max(in, out)` so a
-/// 0-in/2-out instrument still reported 2 input buffers.
+/// on its input scope is a property error (`-10877`). The trap is to gate the
+/// install on the render scratch's input buffer count, which `RenderScratch::new`
+/// over-allocates to `max(in, out)` — so a 0-in/2-out instrument reports 2 input
+/// buffers and the host installs a callback the AU refuses.
 ///
-/// The result: `initialize` failed for every instrument on the system, so the
-/// host could not load a single AU synth. This asserts the gate now keys off
+/// The cost of getting it wrong: `initialize` fails for every instrument on the
+/// system, so the host cannot load a single AU synth. This asserts the gate keys
+/// off
 /// the AU's own `has_input`.
 #[test]
 fn instrument_with_no_input_bus_initializes() {

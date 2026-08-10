@@ -30,7 +30,11 @@ pub use wave_loader::{WaveAssetLoader, WaveAssetLoaderError};
 /// graph. Neither is wrapped in ECS vocabulary — both speak in channel indices
 /// and `Timeline` placements, which is clip-scheduling policy a host owns.
 #[derive(Resource)]
-pub struct DiskStreamerRes(pub DiskStreamer);
+pub struct DiskStreamerRes(
+    /// The engine handle. Reachable through this crate's `Deref` too, which is
+    /// how the two ports above are normally called.
+    pub DiskStreamer,
+);
 
 impl std::ops::Deref for DiskStreamerRes {
     type Target = DiskStreamer;

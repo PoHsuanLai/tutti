@@ -17,7 +17,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 ///
 /// The pid keeps it unique across concurrent hosts; the counter keeps it unique
 /// within one. Public because this is the only correct way to name a bridge
-/// socket, and callers that hand-rolled it are how the collision arose.
+/// socket — hand-rolling one is how the collision above arises.
 pub fn unique_socket_path() -> PathBuf {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     std::env::temp_dir().join(format!(
@@ -27,27 +27,33 @@ pub fn unique_socket_path() -> PathBuf {
     ))
 }
 
+/// How this process connects to and manages one plugin-server subprocess.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BridgeConfig {
+    /// Unix socket this bridge's host/server pair rendezvous on. Must be unique
+    /// per bridge — see `unique_socket_path`.
     pub socket_path: PathBuf,
+    /// Prefix for the shared-memory audio slab's OS name.
     pub shm_prefix: String,
+    /// Largest block, in **frames**, the plugin will be asked to process. Sizes
+    /// the slab, so a later block may not exceed it.
     pub max_buffer_size: usize,
+    /// How long to wait on a subprocess reply before erroring, in milliseconds.
     pub timeout_ms: u64,
+    /// Sample format to request; the subprocess replies with what it negotiated.
     #[serde(default)]
     pub preferred_format: SampleFormat,
 }
 
 impl Default for BridgeConfig {
-    /// **`socket_path` is unique per call, not a constant.** It used to be a
-    /// fixed `tutti-bridge.sock`, which made every `..BridgeConfig::default()`
-    /// a latent collision: `Plugins::load` inherited it through
-    /// `CatalogConfig::to_bridge_config`, so loading a second plugin unlinked
-    /// the first one's live socket. The sites that worked did so only because
-    /// they happened to override the field.
+    /// **`socket_path` is unique per call, not a constant.**
     ///
-    /// A default that is safe only when overridden is not a default. Deriving
-    /// it here means a caller must go out of its way to create a collision
-    /// rather than go out of its way to avoid one.
+    /// A fixed path would make every `..BridgeConfig::default()` a latent
+    /// collision — the second bridge to bind unlinks the first's live socket,
+    /// and the symptom is a plugin dying when an unrelated plugin is unloaded.
+    /// A default that is safe only when overridden is not a default: deriving it
+    /// here means a caller must go out of its way to *create* a collision rather
+    /// than to avoid one.
     fn default() -> Self {
         Self {
             socket_path: unique_socket_path(),
@@ -63,10 +69,9 @@ impl Default for BridgeConfig {
 mod tests {
     use super::*;
 
-    /// The property the catalog needed and did not have. Asserted on `default()`
-    /// itself rather than on the helper, because the bug was that a *default*
-    /// config collided — testing only `unique_socket_path` would have passed
-    /// while the collision remained.
+    /// Asserted on `default()` itself rather than on `unique_socket_path`: the
+    /// property that matters is that a *default* config does not collide, and a
+    /// test of the helper alone passes even when `default()` stops calling it.
     #[test]
     fn each_default_config_gets_its_own_socket_path() {
         let a = BridgeConfig::default();
@@ -79,7 +84,7 @@ mod tests {
     }
 
     /// A partial-update construction is the exact shape `to_bridge_config` uses,
-    /// and the shape that inherited the shared path.
+    /// and the shape through which a shared path would propagate.
     #[test]
     fn partial_update_from_default_still_gets_a_unique_socket() {
         let a = BridgeConfig {

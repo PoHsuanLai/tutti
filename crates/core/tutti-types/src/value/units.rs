@@ -7,8 +7,26 @@
 //! associated type so [`Param`](super::Param) can be generic over the unit.
 //!
 //! [`SampleRate`] is defined here too, and re-exported by `fundsp-tutti` for
-//! the `AudioNode` / `AudioUnit` trait surfaces that take one. It used to be
-//! defined *there* — the direction is what changed, not the type.
+//! the `AudioNode` / `AudioUnit` trait surfaces that take one.
+//!
+//! # Operators are opt-in, and every omission is deliberate
+//!
+//! A unit gets exactly the algebra it has. `Db * 2.0` squares the amplitude
+//! rather than doubling the gain; `Beat + Beat` adds two timeline positions and
+//! has no origin to add them about; [`Azimuth`] has no ordering because a circle
+//! has no ends. Each type's own docs name the omission and the method that
+//! replaces it, and the ledger is enumerated in this module's tests.
+//!
+//! **An omission must ship with its replacement.** Naming a substitute method
+//! and not writing it is worse than the operator: call sites escape to raw
+//! floats, and the type stops being consulted at all.
+//!
+//! # Measurements are not controls
+//!
+//! [`Correlation`], [`Pan`] and [`Confidence`] are values the engine *reports*;
+//! [`Depth`] and [`Mix`] are values a user *sets*. The ranges coincide and the
+//! meanings do not, so they are distinct types — swapping a reading for a
+//! control is otherwise silent. [`Q`] and [`Resonance`] split on the same line.
 
 // `Seconds::to_samples*` lands in the frame-count vocabulary, which is
 // integer-backed and lives next door in `samples.rs` rather than being one of
@@ -21,8 +39,15 @@ use super::samples::Samples;
 /// `SampleRate` uses `f64` because sample rates need a wider range and
 /// precision than `f32` comfortably provides.
 pub trait Unit: Copy + Clone + core::fmt::Debug + PartialEq {
+    /// The underlying float representation — `f32` for most units, `f64` where
+    /// the range or precision demands it.
     type Raw: Copy;
+    /// Wraps a raw float, asserting it is already in this unit's denomination.
+    ///
+    /// No conversion and no validation: a caller passing seconds to `Hz::from_raw`
+    /// gets a wrong-but-well-typed value. Prefer a named converter where one exists.
     fn from_raw(v: Self::Raw) -> Self;
+    /// Unwraps to the raw float, discarding the unit.
     fn to_raw(self) -> Self::Raw;
 }
 
@@ -55,9 +80,18 @@ macro_rules! unit_newtype {
         pub struct $name(pub $raw);
 
         impl $name {
+            /// Wraps a raw float already denominated in this unit.
+            ///
+            /// No conversion is performed — see the type's own docs for the
+            /// range it expects and for any named converter that reaches it
+            /// from another unit.
             #[inline]
             pub const fn new(v: $raw) -> Self { Self(v) }
 
+            /// Returns the raw float, discarding the unit.
+            ///
+            /// Reach for this at a boundary the unit types do not cross (C ABI,
+            /// IPC, WIT), not to do arithmetic the type deliberately omits.
             #[inline]
             pub const fn get(self) -> $raw { self.0 }
         }
@@ -119,14 +153,20 @@ macro_rules! unit_ordered {
 macro_rules! unit_bounded {
     ($name:ident, $raw:ty) => {
         impl $name {
+            /// Returns the smaller of the two, in this unit.
             #[inline]
             pub fn min(self, other: Self) -> Self {
                 Self(<$raw>::min(self.0, other.0))
             }
+            /// Returns the larger of the two, in this unit.
             #[inline]
             pub fn max(self, other: Self) -> Self {
                 Self(<$raw>::max(self.0, other.0))
             }
+            /// Clamps into `lo..=hi`, in this unit.
+            ///
+            /// # Panics
+            ///
             /// Panics if `lo > hi`, matching `f32::clamp` / `f64::clamp`.
             #[inline]
             pub fn clamp(self, lo: Self, hi: Self) -> Self {
@@ -395,10 +435,9 @@ impl Db {
     /// Amplitude as decibels, with silence pinned to [`FLOOR`](Self::FLOOR).
     ///
     /// The metering form. Two floors exist on purpose — see
-    /// [`from_amplitude_exact`](Self::from_amplitude_exact). The engine had
-    /// three different ones before this (`-96` in `dynamics/utils.rs`, `-144`
-    /// in `loudness.rs`, and none at all elsewhere); the split here is between
-    /// *display* and *arithmetic*, not between two crates' habits.
+    /// [`from_amplitude_exact`](Self::from_amplitude_exact). The split is
+    /// between *display* and *arithmetic*: one engine-wide floor for a meter to
+    /// bottom out at, and no floor at all where the value is computed on.
     #[inline]
     pub fn from_amplitude(amp: Amplitude) -> Db {
         if amp.0 <= 0.0 {
@@ -533,7 +572,7 @@ unit_newtype!(
     ///
     /// Must stay below 1.0 or the loop it feeds grows without bound — a
     /// delay line at unity feedback never decays. [`MAX_STABLE`](Self::MAX_STABLE)
-    /// is the ceiling every consumer used to spell as a bare `0.99`.
+    /// is the one ceiling every consumer clamps against.
     Feedback
 );
 unit_ordered!(Feedback);
@@ -549,9 +588,9 @@ impl Feedback {
 
     /// The largest coefficient that still decays.
     ///
-    /// 0.99 — repeated as a bare literal at 13 sites before this constant
-    /// existed, including two audio-rate modulation paths where the value
-    /// arrives off an input port and never passes through a constructor.
+    /// 0.99. Audio-rate modulation paths take a coefficient straight off an
+    /// input port without passing a constructor, so this is the bound they
+    /// clamp against by hand.
     pub const MAX_STABLE: Feedback = Feedback(0.99);
 
     /// Constrain into the stable range.
@@ -564,7 +603,7 @@ impl Feedback {
     ///
     /// Cross-coupled delays add their direct and cross terms into one
     /// recirculation (`in_l + fb_l·fb + fb_r·cross`), so clamping each to
-    /// [`MAX_STABLE`] independently still permits a combined 1.98 and a
+    /// [`Feedback::MAX_STABLE`] independently still permits a combined 1.98 and a
     /// runaway. This scales the pair down together when their sum would
     /// exceed the bound, preserving their ratio.
     #[inline]
@@ -927,7 +966,7 @@ unit_newtype!(
     ///
     /// Normalized rather than a 7-bit code because MIDI 2.0's field is 16-bit:
     /// storing `u8` would quantize to 128 steps permanently, and the widening
-    /// back out is not a multiply (see [`Velocity::to_midi2_u16`]). Note-on and
+    /// back out is not a multiply (`tutti_midi_types` owns the wire codec). Note-on and
     /// note-off velocity are the same quantity, which is why one type serves
     /// both.
     ///
@@ -981,22 +1020,19 @@ impl Velocity {
 
 // ── Angles ──────────────────────────────────────────────────────────────────
 //
-// Three types where there was one (`Degrees`), because a circle and a segment
-// are not the same space and the single type could not tell them apart.
+// Three types, because a circle and a segment are not the same space and one
+// type cannot tell them apart. `Azimuth` wraps and `Elevation` saturates, so
+// the correct clamp for one is a bug in the other — under a single `Degrees`
+// those two call sites are textually identical, and here the wrong one does
+// not compile.
 //
-// The old type omitted `Ord` and `Add` for exactly the right reason — the
-// comment named `shortest_arc_to` and `wrap_signed` as the replacements — but
-// those methods were never written. With the operators gone and no replacement,
-// every call site escaped to raw `f32`, and two real bugs shipped in the escape
-// (a saturating clamp on a wrapping coordinate, and a smoother that sweeps 340
-// degrees to travel 20). The omissions below therefore ship *with* their
-// replacements; that is the rule this split exists to establish.
-//
-// The split itself is the second half of the fix. `Azimuth` wraps and
-// `Elevation` saturates, so the correct clamp for one is the shipped bug for
-// the other — and under a single `Degrees` those two call sites are textually
-// identical. Now they cannot be confused, because the wrong one no longer
-// compiles.
+// This is where "an omission must ship with its replacement" was paid for. A
+// single `Degrees` omitted `Ord` and `Add` for the right reason and named
+// `shortest_arc_to` / `wrap_signed` as the substitutes, but never wrote them.
+// With the operators gone and no replacement, every call site escaped to raw
+// `f32` and two angular bugs shipped in the escape: a saturating clamp on a
+// wrapping coordinate, and a smoother that sweeps 340 degrees to travel 20.
+// Every omission below therefore has its replacement written.
 
 unit_newtype!(
     /// A bearing on the horizontal circle, in degrees. 0 = front, positive =
@@ -1135,17 +1171,11 @@ unit_scalable!(ArcDegrees, f32);
 // modulator's shape table is indexed by turns, and the conversion to radians
 // happens once, at the `sin`/`cos` call.
 //
-// The engine had three different phase wraps before this type existed, and two
-// of them were wrong for negative input:
-//
-//   `%`        (lfo.rs)        keeps the dividend's sign
-//   `.fract()` (modulator.rs)  keeps the dividend's sign
-//   `rem_euclid` (driver.rs)   correct
-//
-// A negative phase escapes the `[0, 1)` range every consumer assumes, and the
-// consumers do not check — a reverse-rate LFO or a negative phase offset reads
-// off the front of a shape table. `Phase` performs exactly one wrap,
-// `rem_euclid`, and offers no other.
+// `Phase` performs exactly one wrap, `rem_euclid`, and offers no other. The two
+// obvious alternatives are both wrong for negative input: `%` and `.fract()`
+// keep the dividend's sign. A negative phase escapes the `[0, 1)` range every
+// consumer assumes, and the consumers do not check — a reverse-rate LFO or a
+// negative phase offset reads off the front of a shape table.
 
 unit_newtype!(
     /// Oscillator phase in *turns*: `0.0` starts a cycle, `1.0` completes it.
@@ -1210,7 +1240,7 @@ unit_newtype!(
     /// [`Phase`].
     ///
     /// Signed: a negative increment runs a modulator backwards, which is
-    /// exactly the case the old `%`/`.fract()` wraps got wrong.
+    /// exactly the case a sign-preserving `%` or `.fract()` wrap gets wrong.
     PhaseIncrement
 );
 unit_ordered!(PhaseIncrement);
@@ -1387,8 +1417,8 @@ impl Beat {
     /// place beats-per-cycle is interpreted.
     ///
     /// The divisor is a span, not a frequency: doubling it makes the source
-    /// *slower*. Substituting an `Hz` is a silent reciprocal, which shipped
-    /// twice before this was centralized.
+    /// *slower*. Substituting an `Hz` is a silent reciprocal — the whole reason
+    /// the interpretation lives here and not at each call site.
     ///
     /// Un-wrapped so a stepped shape can read its cycle index off the integer
     /// part. `None` for a non-positive span — a frozen source holds its phase
@@ -1499,10 +1529,7 @@ impl Semitones {
 
 // `From` for the conversions with exactly one answer.
 //
-// The rule this file follows, stated once here because the split was
-// previously accidental — `Azimuth`/`Elevation` had `From<_> for Radians`
-// while every other conversion was a named method, for no reason anyone
-// recorded:
+// The rule this file follows, stated once so the split is never accidental:
 //
 // A conversion is `From` when it is total, lossless, and there is only one
 // sensible result. It stays a *named method* when any of those fails:
@@ -1560,11 +1587,9 @@ unit_newtype!(
     /// that over a long render drifts audibly).
     ///
     /// Also used at the `AudioNode` / `AudioUnit` trait surfaces in
-    /// `fundsp-tutti`, which re-exports it. It lived *there* until this crate
-    /// grew the unit vocabulary: the trait taking the parameter must see the
-    /// type, and `fundsp-tutti` depends on this crate, so a definition here was
-    /// only possible once a re-export replaced the definition. That is why the
-    /// module doc no longer carries a "one unit defined elsewhere" exception.
+    /// `fundsp-tutti`, which re-exports it rather than defining its own: a
+    /// second `SampleRate` in the crate the traits live in would not unify with
+    /// this one, and every engine crate would have to pick a side.
     ///
     /// Builds from `f64` and from `u32` (file headers, device configs) — both
     /// widen exactly. Deliberately **not** from `f32`: that widening is
@@ -1644,11 +1669,11 @@ impl From<u32> for SampleRate {
 
 // ── Playback rates ──────────────────────────────────────────────────────────
 //
-// Three distinct quantities that all used to be `Ratio`, all multiplied into
-// one advance. Keeping them apart is the point: `SrcRatio` is derived from the
-// two sample rates and is never user intent, `PlaybackRate` is user intent that
-// couples pitch to speed, and `StretchFactor` is user intent that does not.
-// Multiplying the wrong pair is now a type error rather than a silent bug.
+// Three distinct quantities that all multiply into one advance, kept apart
+// because that is the point: `SrcRatio` is derived from the two sample rates
+// and is never user intent, `PlaybackRate` is user intent that couples pitch to
+// speed, and `StretchFactor` is user intent that does not. Under one `Ratio`
+// they multiply together silently; here the wrong pair is a type error.
 
 unit_newtype!(
     /// Sample-rate conversion ratio: source rate ÷ destination rate.
@@ -1706,10 +1731,11 @@ unit_newtype!(
     /// document field must use `new_clamped`; bare `new` is for reading back a
     /// value that was already clamped on the way in (an atomic reload).
     ///
-    /// The range is a resampler limit. It used to live inside one backend's
-    /// setter, so the other silently accepted out-of-range speeds — same
-    /// command, different audio per tier. One shared constructor is what fixed
-    /// that; a newtype alone could not.
+    /// The range is a resampler limit, and it lives on the constructor rather
+    /// than in each backend's setter. Split across two setters, one tier
+    /// accepts an out-of-range speed the other rejects — same command,
+    /// different audio. A newtype alone does not close that; the shared
+    /// constructor does.
     PlaybackRate
 );
 unit_ordered!(PlaybackRate);
@@ -2015,23 +2041,27 @@ impl BeatDuration {
 
 /// Lock-free [`SamplePosition`] cell, shareable with the audio thread.
 ///
-/// Stores the `f64` position as its raw bits inside an [`AtomicU64`], so the
-/// sampler no longer has to sprinkle `f64::to_bits`/`from_bits` across its call
-/// sites. `load`/`store` take/return [`SamplePosition`] directly.
+/// Stores the `f64` position as its raw bits inside an
+/// [`AtomicU64`](core::sync::atomic::AtomicU64), keeping `f64::to_bits` /
+/// `from_bits` in one place instead of at every call site. `load` and `store`
+/// take and return [`SamplePosition`] directly.
 #[derive(Debug)]
 pub struct AtomicSamplePosition(core::sync::atomic::AtomicU64);
 
 impl AtomicSamplePosition {
+    /// Wraps an initial position in a lock-free cell.
     #[inline]
     pub fn new(v: SamplePosition) -> Self {
         Self(core::sync::atomic::AtomicU64::new(v.get().to_bits()))
     }
 
+    /// Reads the current position under `order`. Audio-thread safe.
     #[inline]
     pub fn load(&self, order: core::sync::atomic::Ordering) -> SamplePosition {
         SamplePosition::new(f64::from_bits(self.0.load(order)))
     }
 
+    /// Writes a new position under `order`. Audio-thread safe.
     #[inline]
     pub fn store(&self, v: SamplePosition, order: core::sync::atomic::Ordering) {
         self.0.store(v.get().to_bits(), order)
@@ -2047,28 +2077,31 @@ impl Default for AtomicSamplePosition {
 
 /// Lock-free [`ReadRate`] cell, shareable with the audio thread.
 ///
-/// The [`AtomicSamplePosition`] shape, for the type that advances one. It
-/// exists for the same reason `ReadRate` is `f64`-backed: the rate is the term
-/// a disk voice accumulates into its read position once per sample, forever, so
-/// a cell that narrowed to `f32` and widened back on every read would reinstate
-/// exactly the drift the width was chosen to avoid.
+/// The [`AtomicSamplePosition`] shape, for the type that advances one, and
+/// `f64`-backed for the same reason: the rate is the term a disk voice
+/// accumulates into its read position once per sample, forever, so a cell that
+/// narrowed to `f32` and widened back on every read reinstates exactly the drift
+/// the width was chosen to avoid.
 ///
-/// `Param<ReadRate>` cannot serve here — [`Param`](super::Param) is
-/// `Unit<Raw = f32>` only, which is the constraint that produced the narrowing.
+/// [`Param`](super::Param) cannot serve here — it is `Unit<Raw = f32>` only,
+/// which is the constraint that produces the narrowing.
 #[derive(Debug)]
 pub struct AtomicReadRate(core::sync::atomic::AtomicU64);
 
 impl AtomicReadRate {
+    /// Wraps an initial rate in a lock-free cell.
     #[inline]
     pub fn new(v: ReadRate) -> Self {
         Self(core::sync::atomic::AtomicU64::new(v.get().to_bits()))
     }
 
+    /// Reads the current rate under `order`. Audio-thread safe.
     #[inline]
     pub fn load(&self, order: core::sync::atomic::Ordering) -> ReadRate {
         ReadRate::new(f64::from_bits(self.0.load(order)))
     }
 
+    /// Writes a new rate under `order`. Audio-thread safe.
     #[inline]
     pub fn store(&self, v: ReadRate, order: core::sync::atomic::Ordering) {
         self.0.store(v.get().to_bits(), order)
@@ -2181,8 +2214,8 @@ mod tests {
     ///
     /// The fourth is the sharpest, because the two are *inverse*: a beat-synced
     /// rate is a [`BeatDuration`] (beats per cycle), never an [`Hz`]. Doubling
-    /// the span halves the rate, so the substitution is a silent reciprocal —
-    /// it shipped twice. [`Beat::cycles_of`] is the only interpreter.
+    /// the span halves the rate, so the substitution is a silent reciprocal.
+    /// [`Beat::cycles_of`] is the only interpreter.
     #[test]
     fn omitted_operators_are_documented() {}
 
@@ -2672,8 +2705,8 @@ mod tests {
 
     #[test]
     fn amplitude_is_not_a_normalized_scale() {
-        // The claim the old `Linear` doc got backwards: a gain routinely
-        // exceeds 1.0. +6 dB is roughly a doubling.
+        // A gain routinely exceeds 1.0 — this is not a normalized `0..1`
+        // scale. +6 dB is roughly a doubling.
         assert!(Db(6.0).to_amplitude() > Amplitude::UNITY);
         assert_eq!(Db::UNITY.to_amplitude(), Amplitude::UNITY);
         assert_eq!(Amplitude::UNITY.to_db(), Db::UNITY);
@@ -2906,12 +2939,12 @@ mod tests {
 
     #[test]
     fn seconds_to_samples_takes_the_typed_rate() {
-        // The converter the DSP nodes call. It used to take a bare f64, which
-        // is why holding an untyped rate in a node field was frictionless.
+        // The converter the DSP nodes call: it takes the typed rate, so an
+        // untyped rate in a node field has to justify itself at the call.
         assert_eq!(Seconds(1.0).to_samples(SampleRate::SR_48K), Samples(48_000));
-        // Raw floats still infer through `impl Into`, so no call site churned.
+        // Raw floats still infer through `impl Into`.
         assert_eq!(Seconds(1.0).to_samples(48_000.0), Samples(48_000));
-        // The rounding split survives the retype.
+        // And the rounding split holds through the typed form.
         assert_eq!(Seconds(0.5).to_samples_floor(SampleRate(3.0)), Samples(1));
         assert_eq!(Seconds(0.5).to_samples_ceil(SampleRate(3.0)), Samples(2));
     }

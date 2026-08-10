@@ -15,10 +15,8 @@
 //! closure has no frame-to-frame residency, so it cannot retry — **the component
 //! is the retry state**. This mirrors [`PlaySoundFont`], for the same reason.
 //!
-//! There is deliberately no second entry point. When this crate last had two
-//! ways to name one thing (`MidiTargetRegistry::insert_target` beside `port`)
-//! the two lookups drifted and the redundant one was deleted rather than
-//! reconciled.
+//! There is deliberately no second entry point: two ways to name one thing
+//! drift, and reconciling them costs more than the convenience is worth.
 //!
 //! # Shape
 //!
@@ -98,10 +96,6 @@ pub struct PluginRequest {
     /// Rate to instantiate at. Read this off
     /// [`AudioConfig`](crate::graph::AudioConfig) rather than assuming 44.1k —
     /// the plugin is built for this rate and a mismatch is audible.
-    ///
-    /// `SampleRate`, which is what `AudioConfig::sample_rate` already is: the
-    /// doc above and the example below both said to copy it from there, and
-    /// the field then untyped it on arrival.
     pub sample_rate: SampleRate,
     /// Optional preset chunk to restore once loaded, as returned by
     /// `PluginHandle::save_state`.
@@ -163,7 +157,12 @@ pub struct PluginLoadTerminated;
 /// ```
 #[derive(EntityEvent, Debug)]
 pub struct PluginLoadDone {
+    /// The request entity, which by now carries [`PluginLoadTerminated`] and —
+    /// on success — `AudioNode` plus [`PluginEmitter`].
     pub entity: Entity,
+    /// `Ok` once the plugin is in the graph. `Err` carries why the subprocess
+    /// launch or handshake failed; a refused *preset* is only warned about and
+    /// still reports `Ok`.
     pub result: Result<(), BridgeError>,
 }
 
@@ -251,9 +250,8 @@ pub fn plugin_load_promote(
                     // A refusal does **not** abort the load: a plugin sitting at
                     // its defaults is better than no plugin, and the user can
                     // still re-dial it. But it must not be silent — this is a
-                    // project load, and before `load_state` returned a result
-                    // the DAW showed a restored plugin that had restored
-                    // nothing.
+                    // project load, and a swallowed refusal shows the user a
+                    // restored plugin that restored nothing.
                     if let Err(e) = handle.state().load_state(blob) {
                         warn!(
                             "{}: saved state was not restored ({e}); the plugin is \

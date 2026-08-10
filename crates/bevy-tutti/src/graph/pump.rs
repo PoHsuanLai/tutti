@@ -33,7 +33,7 @@
 //! occupy all of them permanently — soundfont decodes and plugin scans would
 //! stop running with no error anywhere. `IoTaskPool` has the same cap. A
 //! starving source also needs a real sleep between polls, which is illegal on a
-//! shared pool. [`tutti_io::Recorder`] already runs exactly this loop on a
+//! shared pool. `tutti_io::Recorder` already runs exactly this loop on a
 //! dedicated thread; this wraps that shape rather than reimplementing it.
 
 use std::marker::PhantomData;
@@ -49,7 +49,7 @@ use bevy_ecs::prelude::*;
 use tutti_core::io::{pump, AudioIn, AudioOut, OnEmpty};
 
 /// How long the pump parks when a [`Starved`](OnEmpty::Starved) source yields
-/// nothing. Matches [`tutti_io::Recorder`]: long enough not to spin a core,
+/// nothing. Matches `tutti_io::Recorder`: long enough not to spin a core,
 /// far shorter than the ring it drains can overrun.
 pub const IDLE_PARK: Duration = Duration::from_millis(5);
 
@@ -60,10 +60,10 @@ pub const IDLE_PARK: Duration = Duration::from_millis(5);
 /// parameter**: the I/O traits carry it as a runtime
 /// [`ChannelLayout`](tutti_core::ChannelLayout), read off the source at
 /// [`start`](Self::start), so one `AudioPump<f32>` covers stereo, 5.1, and a
-/// width that only exists at runtime. It used to be `AudioPump<S, CH>`, which
-/// meant a host recording a 5.1 device had to register a distinct drain system
-/// for that width — and could not register one at all for a width it learns
-/// from the device.
+/// width that only exists at runtime. A const width would put the width in the
+/// schedule instead: a host recording 5.1 would register a distinct drain system
+/// per width, and could register none at all for a width it learns from the
+/// device.
 ///
 /// The **endpoints are deliberately not type parameters** — `pump` is
 /// monomorphized over the concrete source and sink (never `dyn`, by design), so
@@ -201,6 +201,8 @@ impl<S> AudioPump<S> {
 pub struct PumpFinished {
     /// The entity that carried the pump. Already had its [`AudioPump`] removed.
     pub entity: Entity,
+    /// What [`AudioOut::finalize`] returned. An `Err` means the sink never
+    /// closed cleanly — for a WAV, a header that was never patched.
     pub result: std::io::Result<()>,
 }
 
@@ -232,7 +234,8 @@ pub fn drain_audio_pumps<S: Send + Sync + 'static>(
 /// Finalize a pump whose component is being removed.
 ///
 /// `On<Remove, AudioPump<S>>` fires at command-flush with the value still
-/// readable, mirroring [`unwire_removed_sources`](super::unwire_removed_sources).
+/// readable, mirroring
+/// [`unwire_removed_sources`](super::wire::unwire_removed_sources).
 /// Without it, despawning an entity mid-recording would drop the `JoinHandle`
 /// and detach the thread — the sink is owned *by that thread*, so its
 /// `finalize` would never run and the WAV would be left unreadable. Nothing
@@ -272,11 +275,10 @@ pub trait AudioPumpAppExt {
     /// Idempotent, so a host and a library plugin can both declare the element
     /// type they share.
     ///
-    /// **One registration now covers every channel width.** This used to be
-    /// `add_audio_pump::<S, CH>()`, so a host had to name each width it might
-    /// record — and could not name one it only learns from a device at runtime.
-    /// The width moved onto the value as a `ChannelLayout`, so the schedule no
-    /// longer depends on it.
+    /// **One registration covers every channel width.** The width rides on the
+    /// value as a `ChannelLayout` rather than in the type, so the schedule does
+    /// not depend on it and a host need not name a width it only learns from a
+    /// device at runtime.
     ///
     /// ```rust,ignore
     /// app.add_audio_pump::<f32>();   // covers stereo, 5.1, whatever the mic is

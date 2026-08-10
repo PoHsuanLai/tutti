@@ -19,11 +19,11 @@
 //! `c`; output port `c` is the sum of channel `c` across all sources. With
 //! `channels == 2` this is exactly the classic stereo fan-in.
 //!
-//! Deliberately **not** behind the `spatial` feature. The unit is pure
-//! arity/width arithmetic with no geometry in it, and its consumers are not all
-//! spatial: `spatial`'s `build_vbap_mix` uses it, but so does any mixer.
-//! Gating it there would have made a VBAP dependency the price of summing two
-//! stereo signals.
+//! Deliberately **ungated**. The unit is pure arity/width arithmetic with no
+//! geometry in it, and its consumers are not all spatial: `tutti-spatial`'s
+//! `build_vbap_mix` uses it, but so does any mixer. Gating it under a spatial
+//! feature would make a VBAP dependency the price of summing two stereo
+//! signals.
 
 use tutti_core::dsp::Signal;
 use tutti_core::{ChannelLayout, Tail};
@@ -46,13 +46,12 @@ pub struct ChannelSumUnit {
     sources: usize,
     /// The width this bus sums at — its declared output layout.
     ///
-    /// The count is derived at use via [`channels`](Self::channels) rather than
-    /// cached beside this. An earlier version kept both and justified it as
-    /// keeping a `match` out of the summing loop, but that is not what the count
-    /// is used for: it is the loop *bound* and the indexing *stride*, both
-    /// loop-invariant, so it is read once and hoisted. `count()` is a `const fn`
-    /// over a four-variant `Copy` enum. A second field bought nothing and gave
-    /// the two a way to disagree.
+    /// The count is derived at use via [`channels`](Self::channels), never
+    /// cached beside this. Caching it to keep a `match` out of the summing loop
+    /// buys nothing — the count is the loop *bound* and the indexing *stride*,
+    /// both loop-invariant, so it is read once and hoisted, and `count()` is a
+    /// `const fn` over a four-variant `Copy` enum. A second field would only
+    /// give the two a way to disagree.
     layout: ChannelLayout,
 }
 

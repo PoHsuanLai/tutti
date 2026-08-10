@@ -1,18 +1,16 @@
 //! [`MidiSession`] — what is connected, and the sink to reach it.
 //!
-//! Replaces `MidiIo`. Same job, three differences that matter:
+//! Three properties this type is built around:
 //!
 //! 1. **It owns no driver code.** Everything OS-specific is behind
 //!    [`MidiEndpoints`], so this file has no `#[cfg]` at all.
 //! 2. **The output sink is `Option<Box<dyn MidiOut>>`, absent when nothing is
-//!    connected.** `MidiIo::send` queued whether or not a port was open, so the
-//!    caller had to pre-check `is_output_connected()` — and one that forgot
-//!    dropped events into a `debug!` forever. An unconnected sink is now
-//!    *absent*, so a caller cannot accidentally send into nothing.
-//! 3. **No background threads.** `MidiIo` spawned an input thread (to own
-//!    `midir` connection handles) and an output thread (because `midir`'s send
-//!    blocks). Neither is needed: a native-UMP send is a non-blocking syscall,
-//!    and connections are held right here.
+//!    connected.** An unconnected sink is *absent* rather than a sink that
+//!    silently swallows, so a caller cannot accidentally send into nothing —
+//!    [`send`](MidiSession::send) reports `0` and the loss is countable.
+//! 3. **No background threads.** A native-UMP send is a non-blocking syscall
+//!    and connections are held right here, so nothing needs an output thread.
+//!    (The ALSA *input* pump is the backend's own thread, not this type's.)
 //!
 //! # Threading
 //!
@@ -95,8 +93,8 @@ impl MidiSession {
     ///
     /// This is what makes the session testable: a fake [`MidiEndpoints`] drives
     /// every connect/disconnect path deterministically, on any platform,
-    /// including one with no MIDI hardware. `MidiIo`'s tests could only assert
-    /// "does not panic" for exactly this reason.
+    /// including one with no MIDI hardware. Without it a test can assert only
+    /// "does not panic".
     pub fn with_backend(backend: Box<dyn MidiEndpoints>, ports: Arc<HardwareMidiInputs>) -> Self {
         Self {
             inner: Arc::new(Inner {
@@ -114,18 +112,24 @@ impl MidiSession {
 
     // --- Enumeration ---
 
-    /// Endpoints that can send us MIDI, as of now.
+    /// Endpoints that can send MIDI to this engine, as of now.
+    ///
+    /// A fresh snapshot per call, in the backend's own order — device lists go
+    /// stale on hot-plug, so nothing here is cached.
     pub fn inputs(&self) -> Vec<EndpointInfo> {
         self.inner.backend.inputs()
     }
 
-    /// Endpoints we can send MIDI to, as of now.
+    /// Endpoints this engine can send MIDI to, as of now. A fresh snapshot per
+    /// call, as [`inputs`](Self::inputs) is.
     pub fn outputs(&self) -> Vec<EndpointInfo> {
         self.inner.backend.outputs()
     }
 
-    /// Find an endpoint by case-insensitive substring, as the old
-    /// `connect_*_by_name` did.
+    /// The shared name match for every `*_by_name` method here: **case-
+    /// insensitive substring, first hit wins**, in the backend's enumeration
+    /// order. See [`connect_input_by_name`](MidiSession::connect_input_by_name)
+    /// for what that means for a caller.
     fn find(list: Vec<EndpointInfo>, name: &str) -> Option<EndpointInfo> {
         let needle = name.to_lowercase();
         list.into_iter()
@@ -135,7 +139,18 @@ impl MidiSession {
     // --- Input ---
 
     /// Open an input endpoint. Idempotent — connecting an already-open endpoint
-    /// succeeds without reopening it.
+    /// succeeds without reopening it, because a second driver connection to one
+    /// device duplicates every inbound event.
+    ///
+    /// Each newly opened input gets its own ring in [`ports`](Self::ports); the
+    /// backend pushes into it from the driver's thread and the audio thread
+    /// drains it. Events never pass through this type.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::MidiDevice`] when `id` names no current input — the shape a
+    /// stale id takes after a hot-plug. Otherwise whatever the backend raises
+    /// while opening the port.
     pub fn connect_input(&self, id: EndpointId) -> Result<()> {
         let mut open = self.inner.open.lock().unwrap();
         if open.inputs.contains_key(&id) {
@@ -159,6 +174,21 @@ impl MidiSession {
     }
 
     /// Open the first input endpoint whose name contains `name`.
+    ///
+    /// # Matching
+    ///
+    /// **Case-insensitive substring, first hit wins.** `name` is lowercased and
+    /// tested with `contains` against each endpoint's lowercased name, in the
+    /// order [`inputs`](Self::inputs) returns them — which is the backend's
+    /// enumeration order, not sorted and not stable across a hot-plug. So
+    /// `"iac"` matches `"IAC Driver Bus 1"`, and a `name` matching two devices
+    /// silently picks whichever the OS listed first. Connect by
+    /// [`EndpointId`] when that matters.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::MidiDevice`] when nothing matches. A device that is absent is an
+    /// error here, never a silent no-op.
     pub fn connect_input_by_name(&self, name: &str) -> Result<()> {
         let info = Self::find(self.inputs(), name)
             .ok_or_else(|| Error::MidiDevice(format!("no MIDI input matching '{name}'")))?;
@@ -181,7 +211,18 @@ impl MidiSession {
         open.input_names.remove(&id);
     }
 
-    /// Close the first open input whose name contains `name`.
+    /// Close one open input whose name contains `name`, matched
+    /// case-insensitively.
+    ///
+    /// Closes **at most one**, and the search runs over a `HashMap` of open
+    /// connections — so unlike the `connect_*_by_name` pair there is no
+    /// "first" to speak of: a `name` matching two open inputs closes an
+    /// arbitrary one of them. Pass an [`EndpointId`] to
+    /// [`disconnect_input`](Self::disconnect_input) to be exact, or
+    /// [`disconnect_all_inputs`](Self::disconnect_all_inputs) to close every
+    /// one.
+    ///
+    /// Matching nothing is a no-op, not an error.
     pub fn disconnect_input_by_name(&self, name: &str) {
         let needle = name.to_lowercase();
         let id = {
@@ -224,7 +265,13 @@ impl MidiSession {
 
     /// Open an output endpoint, replacing any currently open one.
     ///
-    /// One at a time, as before: a session sends to a single destination.
+    /// One at a time: a session sends to a single destination, so connecting a
+    /// second output closes the first rather than fanning out.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::MidiDevice`] when `id` names no current output, plus whatever
+    /// the backend raises while opening.
     pub fn connect_output(&self, id: EndpointId) -> Result<()> {
         let info = self
             .inner
@@ -244,7 +291,17 @@ impl MidiSession {
         Ok(())
     }
 
-    /// Open the first output endpoint whose name contains `name`.
+    /// Open the first output endpoint whose name contains `name`, replacing any
+    /// currently open one.
+    ///
+    /// Matches exactly as
+    /// [`connect_input_by_name`](Self::connect_input_by_name) does:
+    /// case-insensitive substring, first hit in [`outputs`](Self::outputs)
+    /// order.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::MidiDevice`] when nothing matches.
     pub fn connect_output_by_name(&self, name: &str) -> Result<()> {
         let info = Self::find(self.outputs(), name)
             .ok_or_else(|| Error::MidiDevice(format!("no MIDI output matching '{name}'")))?;
@@ -289,10 +346,14 @@ impl MidiSession {
     /// and `< events.len()` when the endpoint refused part of the batch. That is
     /// the number a caller needs in order to count what was lost.
     ///
-    /// It reported `events.len()` for anything sent while an output was open,
-    /// which made "the device refused every event" indistinguishable from
-    /// success — the backends log a refusal at `debug!` and there was no other
-    /// channel for it. The count now comes from the sink, so the two differ.
+    /// The count comes from the sink, not from `events.len()`, which is what
+    /// makes "the device refused every event" distinguishable from success —
+    /// the backends only log a refusal at `debug!`, so this return is the sole
+    /// programmatic channel for it.
+    ///
+    /// Both backends stop at the first failure rather than skipping it, so the
+    /// count names an unbroken **prefix** of `events`. Control-thread only: this
+    /// takes a lock and the backends allocate per send.
     pub fn send(&self, events: &[MidiEvent]) -> usize {
         let open = self.inner.open.lock().unwrap();
         match open.output.as_ref() {
@@ -321,8 +382,7 @@ mod tests {
     /// A backend with a fixed device list and no OS behind it.
     ///
     /// This is what makes every path below deterministic and platform-free —
-    /// the thing `MidiIo`'s tests could not do, which is why they asserted only
-    /// "does not panic".
+    /// without it these tests could assert only "does not panic".
     struct FakeBackend {
         inputs: Vec<EndpointInfo>,
         outputs: Vec<EndpointInfo>,
@@ -338,9 +398,9 @@ mod tests {
     /// A sink that counts what it was handed and accepts `accepts` of each
     /// batch.
     ///
-    /// `accepts` is what lets a test express a device that refuses — the shape
-    /// `MidiOut`'s old `()` return made unrepresentable, and therefore the shape
-    /// no test could catch `send` getting wrong.
+    /// `accepts` is what lets a test express a device that refuses. A
+    /// `MidiOut::queue` returning `()` would make that shape unrepresentable,
+    /// and therefore make `send`'s accepted count untestable.
     struct FakeSink {
         sent: Arc<AtomicUsize>,
         accepts: usize,
@@ -480,9 +540,9 @@ mod tests {
     }
 
     /// **The reason the sink is an `Option`.** With nothing connected, `send`
-    /// accepts nothing and says so. `MidiIo::send` queued regardless and
-    /// reported the loss at `debug!`, so a caller could drain into silence
-    /// forever with no way to count it.
+    /// accepts nothing and says so. A sink that queued regardless and reported
+    /// the loss only at `debug!` would let a caller drain into silence forever
+    /// with no way to count it.
     #[test]
     fn sending_with_no_output_accepts_nothing() {
         let (s, sent, _) = session();
@@ -503,11 +563,10 @@ mod tests {
     /// A connected device that refuses everything must report `0`, not
     /// `events.len()`.
     ///
-    /// This is the case `send` got wrong: it returned the *attempted* count
-    /// whenever an output was open, so a device rejecting every event was
-    /// indistinguishable from one accepting them all. No test could catch it
-    /// while `MidiOut::queue` returned `()` — refusal was unrepresentable, which
-    /// is why the fake sink gained an `accepts` field along with the fix.
+    /// The failure this pins: returning the *attempted* count whenever an output
+    /// is open makes a device rejecting every event indistinguishable from one
+    /// accepting them all. Catching that needs both halves — a `MidiOut::queue`
+    /// that can express refusal, and a fake sink with an `accepts` budget.
     ///
     /// Note it asserts `is_output_connected()` too: without that, this would
     /// also pass for a session that had silently dropped its output, which is a

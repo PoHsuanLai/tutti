@@ -6,10 +6,15 @@
 //! reuse them. The Bevy call sites unwrap `bevy_window::RawHandleWrapper`
 //! (`.get_window_handle()`) before calling in.
 
-/// Extract a u64 native handle pointer from a [`raw_window_handle::RawWindowHandle`].
+/// Flattens a [`raw_window_handle::RawWindowHandle`] to the one native integer
+/// the OS APIs below take.
 ///
-/// Returns the NSView pointer (macOS), HWND (Windows), or X11/Wayland
-/// window/surface ID.
+/// That is an `NSView*` on macOS, an `HWND` on Windows, and an X11 window or
+/// Wayland surface id on Linux — different things widened to a common `u64`, so
+/// a caller must already know which platform it is on before dereferencing one.
+///
+/// `None` for any handle variant this crate does not host plugin editors on
+/// (Android, iOS, web).
 pub fn native_view_ptr(raw: raw_window_handle::RawWindowHandle) -> Option<u64> {
     use raw_window_handle::RawWindowHandle;
     match raw {
@@ -22,11 +27,21 @@ pub fn native_view_ptr(raw: raw_window_handle::RawWindowHandle) -> Option<u64> {
     }
 }
 
-/// Attach a child window to a parent so they move together.
+/// Attach a child window to a parent so the two move together.
 ///
-/// - **macOS**: `addChildWindow:ordered:` — child follows parent.
-/// - **Windows**: `SetWindowLongPtrW(GWL_HWNDPARENT)` — owned window.
-/// - **Linux**: No-op — X11/Wayland don't support toplevel parent-child.
+/// - **macOS**: `addChildWindow:ordered:` — the child follows the parent.
+/// - **Windows**: `SetWindowLongPtrW(GWL_HWNDPARENT)` — an owned window.
+/// - **Linux**: a no-op. X11 and Wayland have no toplevel parent-child
+///   relationship, so plugin windows float independently.
+///
+/// **Main thread only.** Both the AppKit and Win32 calls are window operations,
+/// which those APIs require on the thread that owns the window.
+///
+/// # Panics
+///
+/// On macOS, if either handle is not an AppKit handle, or if either view is not
+/// yet installed in an `NSWindow`. Call this only once Bevy has created the
+/// window and its native handle is available.
 pub fn attach_child_window(
     child: raw_window_handle::RawWindowHandle,
     parent: raw_window_handle::RawWindowHandle,
@@ -82,12 +97,22 @@ pub fn attach_child_window(
     }
 }
 
-/// Make every existing subview of `host`'s NSView resize with its
-/// parent. Plugins like Surge XT attach their content as a subview
-/// of the parent NSView passed to `IPlugView::attached`; without an
-/// autoresizing mask they stay fixed during a host edge-drag, which
-/// produces a visible flash as the plugin briefly pokes outside (or
-/// is clipped by) the new host bounds.
+/// Make every existing subview of `host`'s `NSView` resize with its parent.
+///
+/// Plugins like Surge XT attach their content as a subview of the parent
+/// `NSView` passed to `IPlugView::attached`; without an autoresizing mask they
+/// stay fixed during a host edge-drag, which produces a visible flash as the
+/// plugin briefly pokes outside — or is clipped by — the new host bounds.
+///
+/// The AppKit-friendly half of live resize. A plugin whose format needs an
+/// explicit `set_size` instead gets `live_resize`'s notification observer.
+///
+/// **Main thread only**, and a no-op off macOS. Only subviews present *now* are
+/// masked, so call this after the plugin has attached its content.
+///
+/// # Panics
+///
+/// If `host` is not an AppKit handle.
 pub fn enable_subview_autoresize(host: raw_window_handle::RawWindowHandle) {
     #[cfg(target_os = "macos")]
     {

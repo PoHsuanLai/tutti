@@ -1,11 +1,10 @@
 //! [`UnitParam`] — the stable, id-addressable vocabulary of every scalar a
 //! built-in tutti unit may expose.
 //!
-//! Every tutti `*Node` historically exposed bespoke typed setters
-//! (`set_frequency`, `set_q`, `set_mix`, …) that callers reached by downcasting
-//! to the concrete type. `UnitParam` replaces that with a uniform *name* for
-//! each scalar, so a host addresses "cutoff" or "threshold" without knowing the
-//! node's concrete type.
+//! One uniform *name* per scalar, so a host addresses "cutoff" or "threshold"
+//! without knowing a node's concrete type. The alternative is bespoke typed
+//! setters (`set_frequency`, `set_q`, `set_mix`, …) reached by downcasting,
+//! which makes every generic host path a match on concrete node types.
 //!
 //! This module is the **pure vocabulary** half: the enum and its `u16`
 //! conversions, with no audio-engine dependency. The other half — carrying a

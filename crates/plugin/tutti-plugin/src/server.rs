@@ -42,12 +42,12 @@ pub use tutti_plugin_types::features::probed;
 /// Paired capability flags plus the mask saying which were probed.
 pub use tutti_plugin_types::FeatureReport;
 /// Whether a plugin is being rendered under realtime pressure. Configure-time,
-/// not per block — see [`RenderMode`](tutti_plugin_types::RenderMode).
+/// not per block.
 pub use tutti_plugin_types::RenderMode;
 /// Per-block process inputs/outputs, re-exported from `tutti-plugin-types`.
 pub use tutti_plugin_types::{ExpressiveContext, ProcessContext, ProcessOutput};
 /// The fine-grained plugin-instance capability traits plus the
-/// [`PluginInstance`](tutti_plugin_types::PluginInstance) bundle, re-exported
+/// `PluginInstance` bundle, re-exported
 /// from `tutti-plugin-types` so the loaders reach them through the same
 /// `tutti_plugin::server::*` import point. A loader implements the small traits
 /// ([`PluginMeta`], [`PluginAudio`], [`PluginParams`], [`PluginState`],

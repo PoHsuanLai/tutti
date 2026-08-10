@@ -1,23 +1,23 @@
-// The VST3 editor-lifecycle tests and their helpers, shared verbatim by two
-// targets:
-//
-// - `tests/vst3_gui_lifecycle.rs` — the default cargo harness. Works wherever
-//   winit can build an event loop off the main thread (X11, Wayland, Windows);
-//   on macOS every test skips, because Cocoa will not allow it.
-// - `tests/gui_lifecycle_main.rs` — a `harness = false` binary that owns
-//   `main()`, and so runs these on the main thread. That is the only
-//   configuration macOS accepts, and it matches how a real host drives an
-//   editor.
-//
-// It lives under `tests/support/` because cargo compiles every top-level file
-// in `tests/` as its own target; a shared module must sit in a subdirectory or
-// it would be built a third time on its own.
-//
-// Each test below is wrapped in `gui_test!`, which the two roots define
-// differently: the harness one attaches `#[test]`/`#[ignore]`, the main-thread
-// one emits a plain function. The attributes cannot be written here directly —
-// rustc strips an `#[ignore]` function out of a `harness = false` binary, so
-// the runner would have nothing left to call.
+//! The VST3 editor-lifecycle tests and their helpers, shared verbatim by two
+//! targets:
+//!
+//! - `tests/vst3_gui_lifecycle.rs` — the default cargo harness. Works wherever
+//!   winit can build an event loop off the main thread (X11, Wayland, Windows);
+//!   on macOS every test skips, because Cocoa will not allow it.
+//! - `tests/gui_lifecycle_main.rs` — a `harness = false` binary that owns
+//!   `main()`, and so runs these on the main thread. That is the only
+//!   configuration macOS accepts, and it matches how a real host drives an
+//!   editor.
+//!
+//! It lives under `tests/support/` because cargo compiles every top-level file
+//! in `tests/` as its own target; a shared module must sit in a subdirectory or
+//! it would be built a third time on its own.
+//!
+//! Each test below is wrapped in `gui_test!`, which the two roots define
+//! differently: the harness one attaches `#[test]`/`#[ignore]`, the main-thread
+//! one emits a plain function. The attributes cannot be written here directly —
+//! rustc strips an `#[ignore]` function out of a `harness = false` binary, so
+//! the runner would have nothing left to call.
 
 use std::ffi::c_void;
 use std::path::{Path, PathBuf};
@@ -569,9 +569,9 @@ fn open_editor_run_loop_is_pumped() {
 gui_test! {
 /// `has_editor()` must agree with whether an editor can actually be opened.
 ///
-/// It used to be `controller.is_some()`, which answers a *different question*:
+/// Answering it with `controller.is_some()` answers a *different question*:
 /// nearly every VST3 has an edit controller, because that is where parameters
-/// live, and only some of them also publish a view. So it returned `true`
+/// live, and only some of them also publish a view. That returns `true`
 /// unconditionally — for `audio-probe` and `adelay`, whose `open_editor` fails,
 /// exactly as much as for `host-checker` and `again`, whose succeeds.
 ///

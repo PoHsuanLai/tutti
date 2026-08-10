@@ -3,12 +3,11 @@
 //! Loads the reference probe (`tutti-vst2-test-plugin`), which is built from
 //! this tree by a dev-dependency edge in the same `cargo test` invocation.
 //!
-//! These used to load TAL-NoiseMaker from a hardcoded absolute path and were
-//! `#[ignore]`d because of it — so they never ran anywhere, and drifted out of
-//! sync with the handle API until they no longer compiled. Nothing they assert
-//! needs a commercial synth: the subject is the *backend*, and the probe can be
-//! told to declare parameters, an editor, chunk-based state and a channel count
-//! on demand. They now run by default, on every machine.
+//! Nothing here needs a commercial synth: the subject is the *backend*, and the
+//! probe can be told to declare parameters, an editor, chunk-based state and a
+//! channel count on demand. That is what lets these run by default on every
+//! machine — pinned to a hardcoded plugin path they would be `#[ignore]`d, never
+//! run, and free to drift out of sync with the handle API.
 
 #![cfg(feature = "vst2")]
 
@@ -168,11 +167,11 @@ fn handle_state_roundtrip() {
 
 /// A plugin that refuses a chunk says so, and says why.
 ///
-/// This is the case the old `-> ()` signature made unreportable, and it is the
-/// common one in the field: a preset saved by an older build of a plugin, a
-/// truncated file, a chunk belonging to a different plugin. Before this there
-/// was no expression a caller could write to tell a rejected load from an
-/// accepted one — the DAW showed a restored plugin sitting at its defaults.
+/// The common case in the field: a preset saved by an older build of a plugin,
+/// a truncated file, a chunk belonging to a different plugin. A `-> ()`
+/// signature makes it unreportable — no expression a caller can write tells a
+/// rejected load from an accepted one, and the DAW shows a restored plugin
+/// sitting at its defaults.
 ///
 /// The probe refuses an empty blob (`load_bank_data` in
 /// `tutti-vst2-test-plugin` returns `false` for one, deliberately, so a host
@@ -326,8 +325,8 @@ fn a_vst2_plugin_reports_no_channel_topology() {
 ///
 /// This is a **reachability** test: it pins that the two `clear_*` methods
 /// exist on the exported type, are callable on a really-loaded plugin, and
-/// leave it in a state that still accepts a re-install. Before this change the
-/// two calls below did not compile, which is the regression it guards.
+/// leave it in a state that still accepts a re-install. The regression it
+/// guards is the two calls below ceasing to compile.
 ///
 /// It deliberately does **not** claim to prove the clear reached the sink slot.
 /// It cannot: nothing on the public surface reports whether a sink is

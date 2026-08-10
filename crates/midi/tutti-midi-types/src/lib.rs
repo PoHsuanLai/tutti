@@ -17,10 +17,10 @@ pub use midi2;
 pub use midly;
 pub use tutti_types;
 
+// No `///` on a `pub mod` line: it would shadow the module's own `//!` header
+// and re-resolve that text's intra-doc links in this scope rather than the
+// module's, breaking every link to a sibling item.
 pub mod cc;
-/// MIDI Capability Inquiry (MIDI-CI, M2-101) — Discovery, Profile Configuration,
-/// and Property Exchange over Universal SysEx, transported by the SysEx7
-/// fragmenter. Hand-rolled (midi2's `ci` module is a WIP stub).
 pub mod ci;
 pub mod clip_file;
 pub mod message;
@@ -29,9 +29,6 @@ pub mod note_id;
 pub mod routing;
 pub mod sync;
 pub mod traits;
-/// Translation between the MIDI 1.0 and MIDI 2.0 Protocols (M2-104 §4.1 / App. D):
-/// bit scaling, the wire codec, and the stateless / stateful promotions. See
-/// [`translation`] for the layering.
 pub mod translation;
 pub mod ump;
 pub mod unit_id;

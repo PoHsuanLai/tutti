@@ -28,14 +28,26 @@ use crate::loaders::clap::ClapInstance;
 #[cfg(all(feature = "au", target_os = "macos"))]
 use crate::loaders::au::AuInstance;
 
+/// One loaded plugin, whichever format backs it.
+///
+/// Every variant is behind its format's feature, and AU additionally behind
+/// macOS — so a build with no format features enabled has an uninhabited enum,
+/// which is why the accessors below carry an `unreachable!` arm.
+///
+/// Reach for [`Plugin::instance_mut`] rather than matching: the point of the
+/// enum is that callers above it see only `&mut dyn PluginInstance`.
 #[allow(clippy::large_enum_variant)]
 pub(crate) enum Plugin {
+    /// A VST2 plugin (`.vst`, `.dll`, `.so`).
     #[cfg(feature = "vst2")]
     Vst2(Vst2Instance),
+    /// A VST3 plugin (`.vst3`).
     #[cfg(feature = "vst3")]
     Vst3(Vst3Instance),
+    /// A CLAP plugin (`.clap`).
     #[cfg(feature = "clap")]
     Clap(ClapInstance),
+    /// An Audio Unit (`.component`). macOS only.
     #[cfg(all(feature = "au", target_os = "macos"))]
     Au(AuInstance),
 }
@@ -45,11 +57,20 @@ pub(crate) enum Plugin {
 #[derive(Debug, Clone)]
 #[allow(dead_code)] // Variants are constructed only under vst2/clap/vst3 features.
 pub(crate) enum AsyncEvent {
+    /// The plugin moved one of its own parameters — a knob turned in its editor.
+    /// VST2 only; the other formats signal this as `ParamValuesChanged`.
     ParameterChanged {
+        /// The plugin's own parameter index, not a `ParamAddress`.
         index: i32,
+        /// The new value, normalized to `0..1` as VST2 reports it.
         value: f32,
     },
+    /// The plugin reported new PDC latency at runtime. The host must re-plan
+    /// delay compensation; ignoring it leaves the graph compensating a stale
+    /// figure permanently.
     LatencyChanged {
+        /// The new latency in `Samples`, freshly read from the plugin rather
+        /// than served from the load-time cache.
         samples: Samples,
     },
     /// Plugin reported a new tail length at runtime.
@@ -62,6 +83,8 @@ pub(crate) enum AsyncEvent {
     /// flags carry no tail member, so there the load-time read is the whole
     /// answer.
     TailChanged {
+        /// The new tail length. A bounce sized from a stale value truncates the
+        /// decay the user just dialled in.
         tail: PluginTail,
     },
     /// Plugin changed its own parameter values at runtime (e.g. preset load).
@@ -79,9 +102,19 @@ pub(crate) enum AsyncEvent {
 }
 
 impl Plugin {
-    /// Probe metadata without a full load. VST2 has no lightweight probe
-    /// path in the underlying crate; we fall through to `load` and drop
-    /// the instance, which matches the previous behavior.
+    /// Read a plugin's catalog metadata without keeping it loaded. Dispatches
+    /// on the file extension.
+    ///
+    /// VST3, CLAP and AU have real probe paths. **VST2 does not** — the
+    /// underlying crate offers none, so this falls through to a full `load` and
+    /// drops the instance. Probing a directory of VST2s is correspondingly
+    /// expensive, and runs the plugin's own init code.
+    ///
+    /// # Errors
+    ///
+    /// Returns `BridgeError::LoadFailed` with `LoadStage::Scanning` if the path
+    /// does not exist, or `LoadStage::Opening` if the extension names no format
+    /// this build supports.
     #[allow(unreachable_code, unused_variables)]
     pub(crate) fn probe(path: &Path) -> Result<PluginDescriptor> {
         if !path.exists() {
@@ -115,8 +148,18 @@ impl Plugin {
 
     /// Fully load and instantiate a plugin. Returns the wrapped plugin, its
     /// catalog descriptor, its runtime load data, and the negotiated sample
-    /// format (which already accounts for the plugin's declared f64 support,
-    /// and for VST3 rejecting the f64 setup call).
+    /// format.
+    ///
+    /// `preferred_format` is a request, not a setting: the returned format is
+    /// `Float64` only when the caller asked for it **and** the plugin advertised
+    /// `Features::F64_AUDIO`. VST3 narrows it further by rejecting the f64 setup
+    /// call outright. Use the returned format, never the requested one.
+    ///
+    /// # Errors
+    ///
+    /// Returns `BridgeError::LoadFailed` with `LoadStage::Scanning` if the path
+    /// does not exist, `LoadStage::Opening` for an unsupported extension, or the
+    /// format loader's own error if instantiation fails.
     #[allow(unreachable_code, unused_variables)]
     pub(crate) fn load(
         path: &Path,
@@ -181,6 +224,12 @@ impl Plugin {
         Ok((plugin, descriptor, loaded, negotiated))
     }
 
+    /// The loaded plugin as the format-agnostic trait object.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the crate was built with no format feature enabled, which makes
+    /// the enum uninhabited and this arm unreachable.
     #[allow(dead_code)] // used by `#[cfg(feature = "clap")]` tests
     pub(crate) fn instance(&self) -> &dyn PluginInstance {
         match self {
@@ -202,6 +251,13 @@ impl Plugin {
         }
     }
 
+    /// The loaded plugin as a mutable, format-agnostic trait object — the
+    /// handle the audio path and every request handler work through.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the crate was built with no format feature enabled, which makes
+    /// the enum uninhabited and this arm unreachable.
     pub(crate) fn instance_mut(&mut self) -> &mut dyn PluginInstance {
         match self {
             #[cfg(feature = "vst2")]
@@ -312,11 +368,10 @@ mod tests {
 
     /// An AU to run the property-notification tests below against.
     ///
-    /// This used to be a hardcoded absolute path to TAL-Reverb-4, a third-party
-    /// plugin that is not part of macOS — so both tests failed on every checkout
-    /// that did not happen to have it installed. Nothing they assert is specific
-    /// to that unit: what is under test is the wiring from a property flag to a
-    /// re-read, which is the same for any AU.
+    /// Deliberately a *bundled* unit, not a named third-party one: nothing these
+    /// tests assert is specific to a particular AU — what is under test is the
+    /// wiring from a property flag to a re-read — so depending on an installed
+    /// plugin would fail every checkout that lacks it.
     ///
     /// `AUPeakLimiter` ships with macOS, so it is present wherever these tests
     /// can run at all. It also reports a non-zero latency (88 at 44.1 kHz),
@@ -401,7 +456,7 @@ mod tests {
         let mut plugin = Plugin::Clap(instance);
 
         // Nothing pending: the drain must be empty, or the assertions below
-        // would pass on a stuck flag rather than on the one we set.
+        // would pass on a stuck flag rather than on the one raised here.
         assert!(
             plugin.poll_async_events().is_empty(),
             "a freshly loaded plugin reported an async event nobody raised"
@@ -445,11 +500,10 @@ mod tests {
     /// An AU latency, tail or parameter-list change must reach the drained
     /// event list.
     ///
-    /// This is E-5. Before it, `poll_async_events` had no `Plugin::Au` arm at
-    /// all — it fell through `_ => {}` — so an AU that changed its latency on a
-    /// mode switch left PDC compensating the load-time figure permanently. The
-    /// `AUEventListener` machinery that carries the signal existed and worked,
-    /// and no production code constructed one.
+    /// Without a `Plugin::Au` arm in `poll_async_events` the match falls through
+    /// `_ => {}`, and an AU that changes its latency on a mode switch leaves PDC
+    /// compensating the load-time figure permanently — with the `AUEventListener`
+    /// machinery carrying the signal working perfectly and nobody reading it.
     ///
     /// The flags are raised directly rather than by making a plugin move its
     /// latency, which is the same fixture `a_clap_tail_change_reaches_the_event_list`

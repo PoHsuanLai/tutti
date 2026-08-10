@@ -187,6 +187,10 @@ impl BusStripUnit {
         self.pan.load()
     }
 
+    /// Set the fader position as a linear [`Amplitude`], unclamped.
+    ///
+    /// Linear, not [`Db`](tutti_core::Db): `1.0` is unity, `0.0` silent, and
+    /// values above 1.0 amplify. Read once per block.
     pub fn set_volume(&self, volume: impl Into<Amplitude>) {
         self.volume.store(volume.into());
     }
@@ -197,10 +201,16 @@ impl BusStripUnit {
         self.pan.store(Pan(pan.into().get().clamp(-1.0, 1.0)));
     }
 
+    /// Mute or unmute the strip.
+    ///
+    /// A hard gate on the output, applied after volume and pan — muting does
+    /// not disturb the fader position, so unmuting restores the previous level.
+    /// Shared across clones, so the write reaches a live node.
     pub fn set_muted(&self, muted: bool) {
         self.muted.store(muted, Ordering::Release);
     }
 
+    /// Whether the strip is currently muted and emitting silence.
     pub fn is_muted(&self) -> bool {
         self.muted.load(Ordering::Acquire)
     }

@@ -19,7 +19,21 @@ use super::loops::handle_loops;
 use super::preroll::apply_pdc_updates;
 use tutti_core::SampleRate;
 
-/// Main butler thread entry point (async).
+/// The butler thread's main loop; returns only on shutdown.
+///
+/// Each cycle drains pending commands, then — when any channel is streaming —
+/// applies PDC preroll changes, applies audio-thread seek requests, advances
+/// loop state, and refills the rings. Seeks are applied *before* refill so the
+/// ring refills from the new offset in the same cycle.
+///
+/// # Pacing
+///
+/// This thread runs at maximum priority, so it must not spin. With no streams it
+/// parks on the command channel against a 1 ms timer; with every ring above its
+/// refill threshold it does the same against
+/// [`HEALTHY_SLEEP_MS`]. A genuine refill need keeps a ring below threshold,
+/// which drops it straight back to yield-and-loop — so the parking adds no
+/// latency to refills that actually matter.
 pub(super) async fn butler_loop_async(
     rx: Receiver<ButlerCommand>,
     shared: Handles,
@@ -55,7 +69,7 @@ pub(super) async fn butler_loop_async(
             continue;
         }
 
-        // Active: synchronous CPU-bound work (unchanged)
+        // Active: synchronous CPU-bound work.
         apply_pdc_updates(
             &shared.pdc,
             &shared.plans,

@@ -52,6 +52,16 @@ pub struct ParamShaperUnit {
 }
 
 impl ParamShaperUnit {
+    /// Bakes `depth`, `polarity` and `curve` into a lookup table over the
+    /// modulator's `[-1, 1]` output range.
+    ///
+    /// **The shaping is fixed at construction — there is no setter.** A route
+    /// whose depth or curve changes needs a *new* unit, which is why
+    /// [`ParamModShaping`] derives `PartialEq`: comparing the declaration
+    /// against what the node was built from is the only way a reconciler can
+    /// see that a depth slider moved.
+    ///
+    /// Allocates the table, so build it off the audio thread.
     pub fn new(depth: impl Into<tutti_types::Depth>, polarity: Polarity, curve: CurveType) -> Self {
         let depth = depth.into();
         let mut lut = [0.0_f32; LUT_N];
@@ -158,7 +168,8 @@ pub struct ParamSumUnit {
 /// One allocation holding both halves, so a host that moves a range moves it
 /// atomically-enough: the two stores are still independent, but they share a
 /// cache line and a handle, and no reader can see a bound from a *different*
-/// chain. Crossed bounds are handled at the read (see [`ParamSumUnit::fold`]).
+/// chain. Crossed bounds — a `min` above its `max` — are handled where the sum
+/// is folded, not rejected here.
 #[derive(Debug)]
 pub struct ClampBounds {
     min: AtomicF32,
@@ -182,6 +193,13 @@ impl ClampBounds {
 }
 
 impl ParamSumUnit {
+    /// A summing node folding a base value plus `mods` modulation inputs,
+    /// clamped to `min..=max`.
+    ///
+    /// The bounds are the target parameter's own range, so a stack of
+    /// modulators cannot drive it outside what the parameter accepts. Unlike
+    /// the shaping, they are live — see
+    /// [`bounds`](Self::bounds) for control-thread writes.
     pub fn new(mods: usize, min: f32, max: f32) -> Self {
         Self {
             mods,
@@ -438,8 +456,14 @@ impl ParamModChain {
 /// *count* — is invisible to a reconciler keyed on shape alone.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ParamModShaping {
+    /// How far the modulator swings the target, as a [`Depth`](tutti_types::Depth)
+    /// fraction of the parameter's range. `0.0` is inert.
     pub depth: tutti_types::Depth,
+    /// Whether the modulator's `[-1, 1]` output is applied bipolar (both
+    /// directions from the base) or folded to unipolar (one direction only).
     pub polarity: Polarity,
+    /// The response curve mapping the modulator's output onto the target —
+    /// linear, exponential, and so on.
     pub curve: CurveType,
 }
 

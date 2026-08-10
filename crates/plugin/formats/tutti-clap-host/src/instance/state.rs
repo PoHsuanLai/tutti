@@ -72,10 +72,10 @@ impl ClapLoaded {
     ///
     /// `save` has no third "I don't handle this context" value — a plugin
     /// declines contexts by not exposing the extension — so `false` is a hard
-    /// failure, not a fallback trigger. Falling through on `false` (what this
-    /// used to do) silently answers a *preset* request with a project-context
-    /// blob tagged `Ok`; the two legitimately differ, so that writes the wrong
-    /// bytes into a `.preset` and surfaces only when someone loads it.
+    /// failure, not a fallback trigger. Falling through on `false` would
+    /// silently answer a *preset* request with a project-context blob tagged
+    /// `Ok`; the two legitimately differ, so that writes the wrong bytes into
+    /// a `.preset` and surfaces only when someone loads it.
     pub fn state_with_context(&self, context: StateContext) -> Result<Vec<u8>> {
         self.assert_main_thread();
         if let Some(ext) = unsafe { ext::opt(self.extensions.state.context) } {

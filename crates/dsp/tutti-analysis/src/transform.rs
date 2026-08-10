@@ -25,23 +25,25 @@ use crate::Complex;
 /// Linear magnitudes, in the units the transform produced. **The invertible
 /// form.**
 ///
-/// Distinct from [`NormalizedMagnitudes`] on purpose: the two were both
-/// `Vec<f32>`, and the inverse accepted either. Passing the normalized set
-/// compiles and yields audio scaled by `1/peak` — quiet, plausible, and hard
-/// to notice.
+/// Distinct from [`NormalizedMagnitudes`] on purpose. As bare `Vec<f32>` both
+/// reach the inverse interchangeably, and passing the normalized set compiles
+/// and yields audio scaled by `1/peak` — quiet, plausible, and hard to notice.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RawMagnitudes(Grid<f32>);
 
 impl RawMagnitudes {
+    /// Wrap a `frames x bins` grid of linear magnitudes.
     pub fn new(grid: Grid<f32>) -> Self {
         Self(grid)
     }
 
+    /// The underlying `frames x bins` grid, borrowed.
     #[inline]
     pub fn grid(&self) -> &Grid<f32> {
         &self.0
     }
 
+    /// Move the grid out, dropping the "raw" marker with it.
     #[inline]
     pub fn into_grid(self) -> Grid<f32> {
         self.0
@@ -58,11 +60,11 @@ impl RawMagnitudes {
         )
     }
 
-    /// Scale to `0..1` against the peak.
+    /// Scale to `0..1` against the peak, returning the display-only form.
     ///
-    /// The old transform did this eagerly at construction and stored *both*
-    /// forms — roughly 84 MB of duplication for a 4-minute file, when no
-    /// consumer reads both. Now the caller decides whether to pay for it.
+    /// Lazy on purpose. Normalizing eagerly at construction means storing both
+    /// forms — roughly 84 MB of duplication for a 4-minute file — when no
+    /// consumer reads both, so the caller decides whether to pay for it.
     pub fn normalize(&self) -> NormalizedMagnitudes {
         let peak = self.peak();
         let values = if peak.get() > 0.0 {
@@ -89,11 +91,13 @@ pub struct NormalizedMagnitudes {
 }
 
 impl NormalizedMagnitudes {
+    /// The `frames x bins` grid of `0..1` values, borrowed.
     #[inline]
     pub fn grid(&self) -> &Grid<f32> {
         &self.values
     }
 
+    /// Move the `0..1` grid out, dropping the peak that scaled it.
     #[inline]
     pub fn into_grid(self) -> Grid<f32> {
         self.values
@@ -133,10 +137,9 @@ pub struct StftPolar {
 
 /// Magnitudes with phase discarded. **Not invertible.**
 ///
-/// What a decimated display transform produces. The old code returned this
-/// shape as a `StftResult` with an empty phase vector — statically
-/// indistinguishable from an invertible result, and a panic inside the
-/// inverse.
+/// What a decimated display transform produces. Its own type rather than an
+/// invertible result carrying an empty phase vector: that shape is statically
+/// indistinguishable from a real one, and reaches the inverse as a panic.
 #[derive(Debug, Clone, PartialEq)]
 pub struct StftMagnitude {
     magnitudes: RawMagnitudes,
@@ -144,16 +147,19 @@ pub struct StftMagnitude {
 }
 
 impl Stft {
+    /// The complex bins as a `frames x bins` grid, `DC..=Nyquist` per frame.
     #[inline]
     pub fn bins(&self) -> &Grid<Complex> {
         &self.bins
     }
 
+    /// The window, hop and sample rate this transform was taken at.
     #[inline]
     pub fn geometry(&self) -> StftGeometry {
         self.geometry
     }
 
+    /// How many frames the transform produced.
     #[inline]
     pub fn frames(&self) -> FrameCount {
         self.bins.frames()
@@ -166,11 +172,14 @@ impl Stft {
         (self.bins.frames().get(), self.bins.bins().get())
     }
 
+    /// Whether the transform produced no frames at all.
     #[inline]
     pub fn is_empty(&self) -> bool {
         self.bins.is_empty()
     }
 
+    /// The [`Amplitude`] at one bin — the complex bin's modulus, phase
+    /// discarded for this read only.
     #[inline]
     pub fn magnitude_at(&self, frame: FrameIndex, bin: BinIndex) -> Amplitude {
         Amplitude(self.bins.at(frame, bin).norm())
@@ -180,6 +189,10 @@ impl Stft {
     ///
     /// Offered because the unmasked accessor alone forces callers to redo the
     /// multiply; the spectral view currently pools masked magnitudes itself.
+    ///
+    /// # Errors
+    /// Returns [`AnalysisError::GridShapeDisagreement`] if `mask` does not
+    /// match this transform's `frames x bins` shape.
     pub fn masked_magnitude_at(
         &self,
         mask: &Grid<Complex>,
@@ -231,10 +244,12 @@ impl Stft {
         istft(self, fft)
     }
 
-    /// Apply a complex mask and resynthesize.
+    /// Apply a complex mask and resynthesize — the edit path's whole operation
+    /// in one call, so no caller hand-writes the zip plus the inverse.
     ///
-    /// The edit path's whole operation in one call, replacing the hand-written
-    /// zip plus two six-argument inverse calls it used to take.
+    /// # Errors
+    /// Returns [`AnalysisError::GridShapeDisagreement`] if `mask` does not
+    /// match this transform's `frames x bins` shape.
     pub fn resynthesize_masked(
         &self,
         mask: &Grid<Complex>,
@@ -259,16 +274,20 @@ impl Stft {
 }
 
 impl StftPolar {
+    /// The magnitude half, in the units the transform produced.
     #[inline]
     pub fn magnitudes(&self) -> &RawMagnitudes {
         &self.magnitudes
     }
 
+    /// The phase half, in radians — same `frames x bins` shape as the
+    /// magnitudes, and required to reconstruct.
     #[inline]
     pub fn phases(&self) -> &Grid<f32> {
         &self.phases
     }
 
+    /// The window, hop and sample rate this transform was taken at.
     #[inline]
     pub fn geometry(&self) -> StftGeometry {
         self.geometry
@@ -297,22 +316,29 @@ impl StftPolar {
         (self.magnitudes.into_grid(), self.phases)
     }
 
+    /// Resynthesize to audio, converting back to rectangular first. Lossless
+    /// against the transform this came from.
     pub fn resynthesize(&self, fft: &mut FftScratch) -> Vec<f32> {
         istft(&self.to_rectangular(), fft)
     }
 }
 
 impl StftMagnitude {
+    /// The magnitudes, in the units the transform produced. There is no phase
+    /// counterpart — that is what makes this type one-way.
     #[inline]
     pub fn magnitudes(&self) -> &RawMagnitudes {
         &self.magnitudes
     }
 
+    /// The window, hop and sample rate this transform was taken at. A decimated
+    /// hop generally breaks COLA, which is why this result cannot invert.
     #[inline]
     pub fn geometry(&self) -> StftGeometry {
         self.geometry
     }
 
+    /// How many frames the transform produced.
     #[inline]
     pub fn frames(&self) -> FrameCount {
         self.magnitudes.grid().frames()
@@ -325,6 +351,7 @@ impl StftMagnitude {
         (grid.frames().get(), grid.bins().get())
     }
 
+    /// Whether the transform produced no frames at all.
     #[inline]
     pub fn is_empty(&self) -> bool {
         self.magnitudes.grid().is_empty()
@@ -333,12 +360,12 @@ impl StftMagnitude {
 
 /// How the hop between frames is chosen.
 ///
-/// Replaces an `Option<usize>` doing enum duty — where `None` meant "use the
-/// hop I gave you" and `Some(n)` meant "override it to hit n frames" — plus a
-/// second entry point with a mandatory target.
+/// A named policy rather than an `Option<usize>` doing enum duty, where `None`
+/// and `Some(n)` have to carry "use my hop" and "override it to hit n frames"
+/// between them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HopPolicy {
-    /// Use exactly this hop.
+    /// Use exactly this hop, in [`Samples`].
     Fixed(Samples),
     /// Widen the hop to produce roughly `frames` frames, never going below
     /// `min_hop`.
@@ -346,7 +373,9 @@ pub enum HopPolicy {
     /// Decimation is a display concern: the resulting hop generally breaks
     /// COLA, so this yields [`StftMagnitude`], which cannot be inverted.
     TargetFrames {
+        /// Roughly how many frames to land on.
         frames: FrameCount,
+        /// Floor on the widened hop, in [`Samples`].
         min_hop: Samples,
     },
 }
@@ -354,10 +383,13 @@ pub enum HopPolicy {
 /// Which part of the buffer to analyze.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SampleRange {
+    /// The whole buffer.
     All,
     /// Half-open `[start, end)`, clamped to the buffer.
     Span {
+        /// First sample analyzed, clamped to the buffer length.
         start: Samples,
+        /// One past the last sample analyzed, clamped to `start..=len`.
         end: Samples,
     },
 }
@@ -375,18 +407,20 @@ impl SampleRange {
 }
 
 /// An analysis request: what to analyze, at what resolution.
-///
-/// `dawai-model`'s `StftSettings` had already reinvented this shape
-/// independently.
 #[derive(Debug, Clone, Copy)]
 pub struct StftRequest {
+    /// Rate the buffer is denominated at, used to resolve bin frequencies.
     pub sample_rate: SampleRate,
+    /// Analysis window, in [`Samples`]. Also the FFT size.
     pub window: Samples,
+    /// How far to advance between frames — fixed, or decimated to a frame count.
     pub hop: HopPolicy,
+    /// Which span of the buffer to transform.
     pub range: SampleRange,
 }
 
 impl StftRequest {
+    /// A request over the whole buffer at a fixed hop.
     pub fn new(
         sample_rate: impl Into<SampleRate>,
         window: impl Into<Samples>,
@@ -409,6 +443,8 @@ impl StftRequest {
         self
     }
 
+    /// Restrict the request to the half-open span `[start, end)`, clamped to
+    /// the buffer at resolve time.
     pub fn over(mut self, start: impl Into<Samples>, end: impl Into<Samples>) -> Self {
         self.range = SampleRange::Span {
             start: start.into(),
@@ -421,12 +457,21 @@ impl StftRequest {
     ///
     /// Only ever an overlapping grid — use [`resolve_cola`](Self::resolve_cola)
     /// when the result must invert.
+    ///
+    /// # Errors
+    /// Returns an [`AnalysisError`] for a zero window or hop, a hop wider than
+    /// the window, or a non-positive sample rate.
     pub fn resolve(&self, len: Samples) -> Result<StftGeometry> {
         let hop = self.effective_hop(len.get());
         StftGeometry::new(self.sample_rate, self.window, hop)
     }
 
     /// The geometry, additionally required to be invertible.
+    ///
+    /// # Errors
+    /// Everything [`resolve`](Self::resolve) rejects, plus
+    /// [`AnalysisError::NotColaCompliant`] when the hop does not divide the
+    /// window at 4x overlap.
     pub fn resolve_cola(&self, len: Samples) -> Result<StftGeometry> {
         let hop = self.effective_hop(len.get());
         StftGeometry::cola(self.sample_rate, self.window, hop)

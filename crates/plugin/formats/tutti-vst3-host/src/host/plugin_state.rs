@@ -85,7 +85,7 @@ pub(super) enum Controller {
     /// Component and controller are the same COM object (common single-component
     /// plugins). No extra `initialize()`/connection wiring needed.
     Same(ComPtr<IEditController>),
-    /// Controller is a distinct COM object created from a separate CID. We
+    /// Controller is a distinct COM object created from a separate CID. The host
     /// `initialize()` it and wire the connection points.
     Separate(ComPtr<IEditController>),
     /// Plugin has no editor controller (no parameters, no UI).

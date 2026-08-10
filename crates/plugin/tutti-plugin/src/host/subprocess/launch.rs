@@ -196,9 +196,8 @@ fn load_plugin(
 /// Split out of [`setup_shm`] because it is the whole of the decision and none
 /// of the I/O — every input is a plain value, so it is unit-testable, whereas
 /// `setup_shm` needs a live subprocess on the other end of `stream`. That
-/// matters more than it looks: the only production construction site for a
-/// `SlabLayout` used to be unreachable from a test, so the in-place aliasing
-/// decision below could only be checked by launching a real plugin.
+/// matters more than it looks: with the decision fused to the I/O, the aliasing
+/// choice below can only be checked by launching a real plugin.
 fn slab_layout_for(
     loaded: &LoadedPlugin,
     format: SampleFormat,
@@ -286,9 +285,9 @@ mod tests {
     /// A failed launch must not leave the subprocess running.
     ///
     /// `process` is a bare [`Child`], whose `Drop` explicitly does *not* kill or
-    /// reap — so before this was fixed, every `?` between the spawn and
-    /// `ProcessGuard`'s construction (which happens much later, in
-    /// `PluginClient::new`) stranded a `plugin-server` with nothing holding it.
+    /// reap — so any `?` between the spawn and `ProcessGuard`'s construction
+    /// (which happens much later, in `PluginClient::new`) would strand a
+    /// `plugin-server` with nothing holding it.
     /// It outlives the host, keeps its socket bound, and holds the plugin's
     /// device claim; a user retrying a failing plugin accumulates them.
     ///
@@ -434,12 +433,11 @@ mod tests {
     /// tests below read as "the shipped default", not as a magic number.
     const DEFAULT_MAX_BUFFER: usize = 8192;
 
-    /// **The exact shape that regressed**, now asserting the inverse of what it
-    /// used to. A plain stereo-in/stereo-out plugin with one bus per direction
-    /// is the *common* case, and it is the case the old code collapsed onto a
-    /// single shared region: `output_base == 0`, so the host's own input write
-    /// landed where it later read the plugin's output. The two directions must
-    /// now be separately sized and separately addressed.
+    /// A plain stereo-in/stereo-out plugin with one bus per direction is the
+    /// *common* case, and the one most easily collapsed onto a single shared
+    /// region: at `output_base == 0` the host's own input write lands where it
+    /// later reads the plugin's output. The two directions must be separately
+    /// sized and separately addressed.
     #[test]
     fn stereo_one_bus_each_direction_gets_disjoint_regions() {
         let layout = slab_layout_for(
@@ -480,10 +478,9 @@ mod tests {
     /// A plugin whose bus layout was never determined (filename-fallback
     /// discovery) gets an explicit stereo bus per direction.
     ///
-    /// Not merely a convenience: an empty list is now *invalid* at the slab, and
-    /// it used to be the encoding for "share one region in place". Defaulting
-    /// here is what keeps an undiscoverable plugin loadable without resurrecting
-    /// that meaning.
+    /// Not merely a convenience: an empty list is *invalid* at the slab, since
+    /// it would otherwise encode "share one region in place". Defaulting here
+    /// keeps an undiscoverable plugin loadable without reviving that meaning.
     #[test]
     fn unknown_buses_default_to_stereo_per_direction() {
         let layout = slab_layout_for(&loaded(&[], &[]), SampleFormat::Float32, DEFAULT_MAX_BUFFER);

@@ -132,10 +132,9 @@ fn test_load_any_available_plugin() {
 /// corresponding per-bus vec — no rounding up, in either direction.
 ///
 /// This is the assertion that pins `audio_bus_channel_count` to what the plugin
-/// declared. It used to carry a `min_channels` floor, so an output bus the
-/// plugin declared with 0 channels was reported as 1, and `build_plugin_info`
-/// then defaulted a *missing* output bus to 2 on top of that. Both are gone;
-/// this fails if either comes back.
+/// declared. Two floors would break it if reintroduced: a `min_channels` floor
+/// reporting a 0-channel output bus as 1, and `build_plugin_info` defaulting a
+/// *missing* output bus to 2 on top of that. This fails if either comes back.
 ///
 /// Swept over the whole corpus rather than `find_available_plugin`, which
 /// returns the first *existing* path — on this machine that is a bundle that

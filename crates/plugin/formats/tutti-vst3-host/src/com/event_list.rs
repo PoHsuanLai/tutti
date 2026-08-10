@@ -271,13 +271,12 @@ mod tests {
     ///
     /// A plugin's normal pattern is `getEventCount()` then `getEvent(i)` for
     /// every `i`, keeping each returned `Event` (and therefore each borrowed
-    /// `bytes` pointer) live for the rest of `process`. `getEvent` used to copy
-    /// the event and push its bytes into a `SmallVec<[[u8; 16]; 8]>` scratch
-    /// that was only cleared once per *block*: the 9th push spilled the inline
-    /// storage to the heap and moved it, dangling every pointer already handed
-    /// out. This test stages well past the 8-element inline capacity and reads
-    /// every pointer only *after* the whole batch has been fetched — the exact
-    /// order that used to read freed memory.
+    /// `bytes` pointer) live for the rest of `process`. Copying each event's
+    /// bytes into a `SmallVec<[[u8; 16]; 8]>` scratch cleared once per *block*
+    /// breaks that: the 9th push spills the inline storage to the heap and moves
+    /// it, dangling every pointer already handed out. This test stages well past
+    /// the 8-element inline capacity and reads every pointer only *after* the
+    /// whole batch has been fetched — the exact order that reads freed memory.
     ///
     /// Every channel-voice non-note MIDI message becomes a `Data` event, so 32
     /// CCs is not a contrived input.

@@ -1,8 +1,8 @@
 //! `Param<U>` — a modulatable audio-thread parameter typed by its unit.
 //!
 //! Wraps `Arc<AtomicF32>` with a `PhantomData<U>` marker so different unit
-//! aliases are distinct types at compile time. Zero runtime cost versus the
-//! raw `Arc<AtomicF32>` pattern it replaces.
+//! aliases are distinct types at compile time — zero runtime cost over a bare
+//! `Arc<AtomicF32>`.
 //!
 //! Only meaningful for units whose raw representation is `f32` (see the
 //! `Unit<Raw = f32>` bound). `SampleRate` is `f64`-backed and is not
@@ -18,12 +18,19 @@ use super::units::Unit;
 use atomic_float::AtomicF32;
 use std::sync::Arc;
 
+/// A shared, lock-free scalar parameter carrying its unit in the type.
+///
+/// Cloning shares the cell rather than copying the value, so a control thread
+/// and the audio thread hold the same `Param` and neither allocates to read or
+/// write it. See the [module docs](self) for the `Unit<Raw = f32>` restriction.
 pub struct Param<U: Unit<Raw = f32>> {
     inner: Arc<AtomicF32>,
     _unit: PhantomData<U>,
 }
 
 impl<U: Unit<Raw = f32>> Param<U> {
+    /// Allocates a new cell holding `v`. Control-thread only — this is the one
+    /// constructor that allocates.
     #[inline]
     pub fn new(v: U) -> Self {
         Self {
@@ -32,8 +39,8 @@ impl<U: Unit<Raw = f32>> Param<U> {
         }
     }
 
-    /// Load the current value with `Acquire` ordering (pairs with `store`'s
-    /// `Release` — matches the pattern every call site here already used).
+    /// Load the current value with `Acquire` ordering, pairing with `store`'s
+    /// `Release`. Audio-thread safe: no clone, no allocation.
     #[inline]
     pub fn load(&self) -> U {
         U::from_raw(self.inner.load(Ordering::Acquire))

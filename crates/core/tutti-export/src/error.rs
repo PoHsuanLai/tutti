@@ -1,38 +1,63 @@
+//! What an export can fail with.
+//!
+//! One `#[non_exhaustive]` [`Error`] for the whole crate — every stage (plan,
+//! render, resample, dither, encode) reports through it, so a caller matches one
+//! type whichever entry point it used.
+
 use std::io;
 use thiserror::Error;
 
+/// Anything that can go wrong rendering or writing an export.
+///
+/// `#[non_exhaustive]`: the codecs behind the format features each bring their
+/// own failure modes, so a caller must keep a wildcard arm.
 #[derive(Error, Debug)]
 #[non_exhaustive]
 pub enum Error {
+    /// Creating, writing or finalizing the output file failed. Also carries the
+    /// codec libraries' own I/O faults, via the `From` impls below.
     #[error("I/O error: {0}")]
     Io(#[from] io::Error),
 
+    /// The requested [`AudioFormat`](crate::AudioFormat) cannot be written: its
+    /// cargo feature is off, its extension is unrecognised, or the format does
+    /// not support the configured bit depth (FLAC refuses `Float32`).
     #[error("Unsupported format: {0}")]
     UnsupportedFormat(String),
 
+    /// A config field the encoder cannot act on — a zero sample rate, a zero
+    /// channel count. Caught before any frame is rendered.
     #[error("Invalid configuration: {0}")]
     InvalidConfig(String),
 
+    /// The codec rejected a block or failed to finalize its container. The
+    /// string carries the library's own report.
     #[error("Encoding error: {0}")]
     Encoding(String),
 
+    /// The render loop could not produce the planned frames.
+    ///
+    /// Reserved: no path in this crate constructs it today. A render is driven
+    /// to a known frame count and its source never starves.
     #[error("Render error: {0}")]
     Render(String),
 
+    /// rubato could not be constructed for this rate pair, or rejected a chunk.
+    /// Converted from both of its error types by the `From` impls below.
     #[error("Resampling error: {0}")]
     Resample(String),
 
+    /// The samples handed in are not something an encoder can write.
+    ///
+    /// Reserved: no path in this crate constructs it today.
     #[error("Invalid audio data: {0}")]
     InvalidData(String),
 
-    /// A width the render cannot use — today that means **zero** and nothing
-    /// else.
+    /// A width the render cannot use, which means **zero** and nothing else.
     ///
-    /// It used to mean "not one of 1/2/4/6/8/12", because the render pipeline
-    /// was const-generic in its frame width and a macro enumerated the
-    /// monomorphizations. The width is now a runtime value, so any positive
-    /// count exports; the variant is kept (rather than removed) because it is
-    /// public, and re-purposed rather than left dead.
+    /// The frame width is a runtime `ChannelLayout`, so any positive count
+    /// exports — including the 3- and 5-wide masters a fixed enumeration of
+    /// widths could not express.
     #[error("Unsupported channel count: {0} (a render needs at least one channel)")]
     UnsupportedChannels(u16),
 
@@ -47,6 +72,8 @@ pub enum Error {
     Unmeasurable(String),
 }
 
+/// `std::result::Result` with this crate's [`Error`](enum@Error) as the error
+/// type.
 pub type Result<T> = std::result::Result<T, Error>;
 
 #[cfg(feature = "wav")]

@@ -38,7 +38,12 @@ pub const CLIP_FILE_MAGIC: [u8; 8] = *b"SMF2CLIP";
 /// never build these by hand.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ClipEvent {
+    /// Ticks since the *previous* event, not since the clip start. Absolute
+    /// position is the running sum, which is why a dropped event shifts every
+    /// event after it.
     pub delta_ticks: u32,
+    /// The event itself. Only its UMP words are written; position in the clip
+    /// comes from `delta_ticks`, not from the event's own frame offset.
     pub event: MidiEvent,
 }
 
@@ -195,7 +200,11 @@ pub fn write_clip_file_from_beats(
 /// A parsed MIDI Clip File.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ParsedClipFile {
+    /// Ticks per quarter note — the resolution every `delta_ticks` in `events`
+    /// is denominated in. Needed to convert any of them to `Beat`.
     pub ticks_per_quarter: u16,
+    /// Events in file order. Their positions are relative, so the order is
+    /// load-bearing; use [`timed`](Self::timed) to get absolute `Beat`s.
     pub events: Vec<ClipEvent>,
 }
 

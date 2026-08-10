@@ -1,14 +1,13 @@
 //! Reusable FFT working set.
 //!
 //! The one place this crate compromises on purity. A planner is expensive to
-//! build — measured at **82 ns cached against 8.06 µs fresh, ~98x** — and the
-//! old code constructed one at nine sites, six of them inside functions that
-//! ran per call.
+//! build — measured at **82 ns cached against 8.06 µs fresh, ~98x** — so one is
+//! threaded through the kernels rather than constructed per call.
 //!
-//! Threading it explicitly keeps the kernels honest: they are pure *in their
+//! Threading it explicitly keeps the kernels honest: they stay pure *in their
 //! inputs*, since the same scratch always yields the same answer, and the
-//! mutation is confined to one visible parameter instead of being smeared
-//! across nine hidden ones.
+//! mutation is confined to one visible parameter rather than hidden inside each
+//! call site.
 
 use rustfft::{Fft, FftPlanner};
 use std::sync::Arc;
@@ -25,6 +24,8 @@ pub struct FftScratch {
 }
 
 impl FftScratch {
+    /// An empty working set. Planners and buffers are built lazily on the
+    /// first transform of each size and reused after that.
     pub fn new() -> Self {
         Self {
             planner: FftPlanner::new(),

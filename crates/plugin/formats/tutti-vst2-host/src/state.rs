@@ -1,14 +1,13 @@
 //! Plugin state save / restore.
 //!
-//! VST2's state model has two shapes and we wrap both in a tiny header
-//! so the host can tell them apart on restore:
+//! VST2's state model has two shapes, and both are wrapped in a four-byte header
+//! so a restore can tell them apart:
 //!
-//! - `b"CHK\0"` — the plugin opted into "preset_chunks" and handed us
-//!   its own opaque binary blob. Round-trips via `get_preset_data` /
-//!   `load_preset_data`.
-//! - `b"PRM\0"` — fallback. We serialize each normalized f32 parameter
-//!   value and replay them on restore. Loses any non-parameter state
-//!   the plugin holds, but works for plugins without a chunk mechanism.
+//! - `b"CHK\0"` — the plugin opted into "preset_chunks" and supplied its own
+//!   opaque binary blob. Round-trips via `get_preset_data` / `load_preset_data`.
+//! - `b"PRM\0"` — fallback: each normalized `f32` parameter value, serialized in
+//!   index order and replayed on restore. Loses any non-parameter state the
+//!   plugin holds, but works for a plugin with no chunk mechanism.
 
 use vst::plugin::Plugin as _;
 

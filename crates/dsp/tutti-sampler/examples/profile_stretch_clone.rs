@@ -1,42 +1,38 @@
 //! Where the time goes when a graph commit clones stretched voices.
 //!
-//! Run under a sampling profiler, not for the wall-clock number it prints:
-//!
 //! ```text
 //! cargo build --manifest-path crates/bevy-tutti/Cargo.toml \
 //!     -p tutti-sampler --profile profiling --example profile_stretch_clone
-//! samply record /Volumes/Archive/cargo-target/profiling/examples/profile_stretch_clone
+//! samply record target/profiling/examples/profile_stretch_clone
 //! ```
 //!
-//! # Why this exists
+//! # The question
 //!
-//! `Net::commit` deep-clones every node to build the next graph generation, on
-//! the main thread, and a stretch unit's clone allocates ~100 KB of mutable
-//! state per channel. The open question is whether 640 voice nodes (32 tracks x
-//! 20 voices — the Stage 6-7 gate) can commit inside the ~2 ms a graph edit has
-//! before it risks a dropout.
+//! `Net::commit` clones every node on the main thread to build the next graph
+//! generation. The gate is whether 640 voice nodes (32 tracks x 20 voices) can
+//! commit inside the ~2 ms a graph edit has before it risks a dropout.
 //!
-//! Wall-clock timing could not answer it. Timing this same work across six
-//! identical generations gave 4.8 ms to 656 ms — an 81x spread. Two live
-//! generations of 640 six-channel vocoders is ~810 MB, so the numbers tracked
-//! the OS's paging behaviour, not the code. A buffer pool built against those
-//! numbers turned out to save nothing (`Buffers::new` ~0.9 us, a pooled hit the
-//! same within noise) and was removed.
+//! # Read the profile, not the printed times
 //!
-//! So the point of profiling rather than timing: a sampler attributes the cost
-//! to *frames* — `malloc`, `memset`, page-fault, FFT table setup — which is the
-//! distinction an `Instant::now()` delta cannot make, and the one that decides
-//! whether the fix is pooling, sharing, or not cloning at all.
+//! Wall-clock cannot answer that question here, and the numbers this binary
+//! prints are the ones known to lie. Timing identical work across six
+//! generations spread 4.8 ms to 656 ms — 81x — because two live generations of
+//! 640 six-channel vocoders is ~810 MB and the numbers track the OS's paging
+//! rather than the code. A sampling profiler attributes cost to *frames*
+//! (`malloc`, `memset`, page fault, FFT table setup), which is the distinction
+//! that decides whether the fix is pooling, sharing, or not cloning at all.
 //!
-//! # What each phase isolates
+//! The [`Counting`] global allocator exists for the same reason: bytes moved per
+//! commit is a fact that does not vary with machine load, and it is what the
+//! design question actually turns on.
 //!
-//! Each runs long enough to collect thousands of samples at samply's default
-//! rate, and they are separated by [`marker`] frames so the inverted call tree
-//! can be read per phase rather than in aggregate.
+//! Phases are separated by [`marker`] frames so the inverted call tree reads per
+//! phase rather than in aggregate. [`fresh_construction`] is the **control** —
+//! it allocates eagerly and should not move when a clone-path change lands.
 //!
-//! # First run — 669 samples at 4 kHz, M-series, release codegen
+//! # The measured shape of the cost
 //!
-//! Self time by library, which is the split wall-clock could not produce:
+//! Self time by library, at 669 samples / 4 kHz, M-series, release codegen:
 //!
 //! | library              | self | what it is |
 //! |----------------------|------|------------|
@@ -45,123 +41,55 @@
 //! | `libsystem_m`        | 13%  | `cos()`, from `hann` in [`fresh_construction`] |
 //! | this binary          |  6%  | `Vocoder::new`, `hann`'s own loop |
 //!
-//! So ~79% is allocate-and-zero, and it is genuinely this code's cost rather
-//! than a paging artifact — the earlier suspicion that the numbers were all
-//! paging was itself too pessimistic. `libsystem_kernel` is 1.3%, so page faults
-//! are not the story at this working-set size.
+//! ~79% is allocate-and-zero, and genuinely this code's cost: `libsystem_kernel`
+//! is 1.3%, so page faults are not the story at this working-set size.
 //!
-//! **The `memset` half is why the removed pool did not help.** A pool recycles
-//! the allocation but a recycled buffer still has to be cleared, and `clear()`
-//! is the same `memset` as a fresh `vec![0.0; n]`. Pooling can only ever
-//! address the 42%, and only when the pool is non-empty — which, in
-//! `commit_inner`'s clone-before-retire order, it is not.
+//! **That 37% is why a buffer pool does not help.** A pool recycles the
+//! allocation, but a recycled buffer still has to be cleared, and the clear is
+//! the same `memset` as a fresh `vec![0.0; n]`. Pooling can only ever address
+//! the allocator's 42%, and only when the pool is non-empty — which, in
+//! `commit_inner`'s clone-before-retire order, it never is. A pool built against
+//! these numbers measured identical to a fresh build, within noise.
 //!
-//! The phase split matters too, at 6 channels:
+//! Allocation and free come out **exactly balanced** in steady state: a commit
+//! builds a generation and frees the one before it, so any fix that removes the
+//! clone removes the free with it. They are one problem, not two.
 //!
-//! - [`generations`] (one live generation, commit's real order): ~10-145 ms
-//! - [`two_live_generations`] (the old benchmark's shape): ~542-754 ms
+//! `Net::migrate` does not rescue this. It swaps the *backend's* live units into
+//! the incoming net for nodes whose `changed <= revision`, which is real
+//! recycling — but it runs on the audio thread after delivery, long after
+//! `commit_inner` has paid for the frontend clone. Pumping lowers the median
+//! without changing the per-commit allocation count at all. Recycling that
+//! happens after the allocation cannot prevent it.
 //!
-//! Same 640 clones, 5-14x apart. The old measurement used the second shape, so
-//! it overstated a commit by roughly an order of magnitude. Both still miss the
-//! 2 ms budget at 6 channels, and the run-to-run spread within a phase is still
-//! wide enough that a single number should not be quoted from it — take the
-//! library split as the finding, not the milliseconds.
+//! # The gate is met, by not cloning what carries nothing
 //!
-//! # What that led to, and how this harness confirmed it
+//! Two changes, each measured here:
 //!
-//! The block scratch (`scratch_in`/`scratch_out`, 64 KB per channel) carries
-//! nothing across blocks, so `Unit::clone` stopped copying it and
-//! `AudioUnit::allocate` sizes it instead. Re-profiled:
+//! 1. **Share the vocoder bank** — `Arc<Bank>`, deep-copied only in
+//!    `AudioUnit::isolate`, where an offline render genuinely needs private
+//!    state.
+//! 2. **Move the block scratch onto that bank.** Merely deferring it to
+//!    `allocate` changes only *when* it is paid, since the graph calls
+//!    `allocate` on every generation — it was still 64 KB per channel per
+//!    commit, **98% of what remained at both widths**. On the bank, a successor
+//!    inherits it already sized.
 //!
-//! | phase                  | before | after | |
-//! |------------------------|--------|-------|--|
-//! | `two_live_generations` | 461    | 215   | **-53%** |
-//! | `fresh_construction`   | 180    | 179   | unchanged — the control |
+//! | width | deep-cloning | after both |
+//! |-------|-------------:|-----------:|
+//! | 2ch traffic |   201.8 MB |     1.3 MB |
+//! | 6ch traffic |   604.6 MB |     3.3 MB |
+//! | 2ch commit  | ~91-164 ms | **~0.17 ms** |
+//! | 6ch commit  | ~182-334 ms | **~0.22 ms** |
 //!
-//! [`fresh_construction`] is what makes this readable: it still allocates its
-//! scratch eagerly, so it *should not* move, and it doesn't. Wall-clock over the
-//! same change was useless — the phase swung 16 ms to 149 ms run to run — which
-//! is the whole argument for keeping this harness rather than a timing test.
+//! A ~180x reduction against a 2 ms budget, landing inside it *unpumped* as well
+//! as pumped. At this traffic the wall-clock spread disappears too — there is
+//! too little memory moving for the OS's paging to register. What remains (6406
+//! allocs, ~1-3 MB) is fundsp's own per-`Vertex` bookkeeping — three
+//! `BufferVec`s and edge vectors — not vocoder state.
 //!
-//! # The budget answer: not close
-//!
-//! [`real_commits`] measures the thing the 2 ms budget is actually about — one
-//! `Net::commit` on a graph of `VOICES` stretch nodes — rather than extrapolating
-//! from the clone loops. Median of 9 commits, three runs:
-//!
-//! | width | median      | best case | budget | over by |
-//! |-------|-------------|-----------|--------|---------|
-//! | 2ch   | 70-135 ms   | 11 ms     | 2 ms   | ~35-65x |
-//! | 6ch   | 393-488 ms  | 69 ms     | 2 ms   | ~200-245x |
-//!
-//! Even the best commit ever observed is 5x over. Profiled, the phase is **77%
-//! allocator, 19% memset** — the ratio tilts further toward malloc than the
-//! isolated clone loops, because a commit also allocates fundsp's own per-node
-//! bookkeeping on top of the vocoders.
-//!
-//! The arithmetic says why it cannot be tuned into range: 96 KB of vocoder state
-//! per channel, times 640 nodes, is 120 MB per commit at stereo and 360 MB at
-//! six channels — with two generations live, up to 720 MB. No allocator reaches
-//! 2 ms moving that much, so the remaining work is not "allocate faster" but
-//! "do not deep-clone the filter" — share it behind a handle, which is a design
-//! change to the node rather than to this path.
-//!
-//! # The counted traffic — a fact, not a timing
-//!
-//! Wall-clock here is unreliable enough that it is worth having one number that
-//! is not. The [`Counting`] global allocator reports the **last** commit (steady
-//! state, not first-commit), and it does not vary with machine load:
-//!
-//! | width | per commit                   | with the backend pumped |
-//! |-------|------------------------------|--------------------------|
-//! | 2ch   | 19,846 allocs / **201.8 MB** | + 19,846 frees / 201.8 MB |
-//! | 6ch   | 40,326 allocs / **604.6 MB** | + 40,326 frees / 604.6 MB |
-//!
-//! Two things fall out. Allocation and free are **exactly balanced** in steady
-//! state, which is the counted form of the profile's ~55%-in-`drop` finding: a
-//! commit builds a generation and frees the one before it, so any fix that
-//! removes the clone removes the free with it — they are one problem, not two.
-//!
-//! And `Net::migrate` does **not** rescue this. It swaps the *backend's* live
-//! units into the incoming net for nodes whose `changed <= revision`, which is
-//! real recycling — but it runs on the audio thread after delivery, long after
-//! `commit_inner` has already paid for the frontend clone. Pumping lowers the median
-//! (backend delivery lets the next commit free promptly) without changing the
-//! per-commit allocation count at all: 19,846 either way. Recycling that happens
-//! after the allocation cannot prevent it.
-//!
-//! Per node that is ~323 KB at stereo and ~967 KB at six channels, against ~192
-//! and ~576 KB of vocoder state — the remainder is fundsp's own per-`Vertex`
-//! bookkeeping (three `BufferVec`s, edge vectors) plus allocator size-class
-//! rounding, ~31 and ~63 allocations per node respectively.
-//!
-//! # Resolved: both widths are inside the budget
-//!
-//! Two changes, each measured here, closed it:
-//!
-//! 1. **Share the vocoder bank** (`Arc<Bank>`, deep-copied only in `isolate`).
-//!    201.8 -> 81.5 MB at stereo, 604.6 -> 243.8 MB at six channels.
-//! 2. **Move the block scratch onto that bank.** Deferring it to `allocate` had
-//!    only changed *when* it was paid: the graph calls `allocate` on every
-//!    generation, so it was still 64 KB per channel per commit — **98% of what
-//!    remained at both widths**. On the bank, a successor inherits it sized.
-//!
-//! | width | originally | after both | budget |
-//! |-------|-----------:|-----------:|--------|
-//! | 2ch   |   201.8 MB |     1.3 MB | — |
-//! | 6ch   |   604.6 MB |     3.3 MB | — |
-//! | 2ch commit |  ~91-164 ms |  **~0.17 ms** | 2 ms |
-//! | 6ch commit | ~182-334 ms |  **~0.22 ms** | 2 ms |
-//!
-//! A ~180x reduction in allocation traffic, and both widths land inside the
-//! budget *unpumped* as well as pumped — the wall-clock spread that made every
-//! earlier number untrustworthy is gone too, because there is no longer enough
-//! memory traffic for the OS to matter. What is left (6406 allocs, ~1-3 MB) is
-//! fundsp's own per-`Vertex` bookkeeping.
-//!
-//! So the Stage 6-7 gate is **met**: 640 voice nodes commit in well under 2 ms
-//! at both widths. Keep this harness — it is what turned three wrong conclusions
-//! into measured ones.
+//! Keep this harness. Every conclusion above that a wall-clock benchmark
+//! reached, it reached wrongly.
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::hint::black_box;
@@ -253,11 +181,11 @@ fn generations(channels: usize, count: usize) {
 
 /// Clone a whole generation while the previous one is still fully resident.
 ///
-/// This is the shape that produced the unreliable numbers: two live generations
-/// at once. Kept as its own phase so the profile can show directly whether the
-/// cost here is allocation or page-fault — if this phase is dominated by fault
-/// frames and [`generations`] is not, the working set was the problem and not
-/// the clone.
+/// **Not** commit's shape — this holds two live generations at once, which is
+/// 5-14x more expensive than [`generations`] and is how a benchmark overstates a
+/// commit by an order of magnitude. Kept as its own phase precisely so the
+/// profile can show that: if this phase is dominated by page-fault frames and
+/// `generations` is not, the working set was the problem and not the clone.
 #[inline(never)]
 fn two_live_generations(channels: usize) {
     let src = Unit::with_channels(44_100.0, channels);

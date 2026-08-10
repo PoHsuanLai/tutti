@@ -1,5 +1,5 @@
 //! IHostApplication COM implementation — minimal host, plus IPlugInterfaceSupport
-//! so plugins can probe which host interfaces we expose.
+//! so plugins can probe which host interfaces this host exposes.
 //!
 //! On Linux this object also carries `Linux::IRunLoop`, and that is not
 //! optional. This is the object handed to `IPluginFactory3::setHostContext` and

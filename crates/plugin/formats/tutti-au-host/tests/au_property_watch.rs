@@ -19,9 +19,10 @@
 //! * tail moves only with a decay parameter, on units that report tail at all
 //! * no unit adds or removes parameters after load
 //!
-//! So the fixture is the probe, which now stores the property listeners the host
-//! installs (it used to discard them) and posts a notification when a test moves
-//! one of the three values. See `support/probe_au.rs`.
+//! So the fixture is the probe, which stores the property listeners the host
+//! installs and posts a notification when a test moves one of the three values.
+//! A probe that discarded them would make every assertion here vacuous. See
+//! `support/probe_au.rs`.
 //!
 //! # What this does not cover
 //!

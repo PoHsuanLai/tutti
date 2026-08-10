@@ -23,7 +23,7 @@
 //! flow is a different graph — an arpeggiator feeding a synth may share no
 //! audio edge at all. The two cannot simply be merged either, because MIDI
 //! targets resolve *per event* through a channel-keyed
-//! [`MidiRoutingSnapshot`](tutti_midi_types::MidiRoutingSnapshot) that a control
+//! [`MidiRoutingSnapshot`] that a control
 //! thread can swap, and MIDI routing may legitimately contain cycles that an
 //! audio schedule has no way to order.
 //!
@@ -47,9 +47,8 @@
 //!
 //! **This makes the latency uniform and declarable. It does not make it zero** —
 //! see [`MIDI_OUT_LATENCY_BLOCKS`]. Every emitted event is delivered exactly one
-//! block late. For the batched (out-of-process) plugin path that was already
-//! true. For the in-process path it is **new**: it used to emit mid-block with
-//! intact offsets and no floor at all. That regression is deliberate — it buys
+//! block late, on both the batched (out-of-process) plugin path and the
+//! in-process one. Paying that floor uniformly is the trade: it buys
 //! order-independence, and a delivery time that can be stated rather than
 //! discovered.
 
@@ -104,6 +103,8 @@ pub struct MidiOutSink {
 }
 
 impl MidiOutSink {
+    /// An empty sink sized for one block's emissions, with its overflow flag
+    /// clear.
     pub fn new() -> Self {
         Self {
             events: RtEventBuf::new(),
@@ -151,6 +152,8 @@ impl MidiOutSink {
         self.events.len()
     }
 
+    /// Whether nothing is waiting for fan-out. The common case, and the one the
+    /// phase short-circuits on.
     #[inline]
     pub fn is_empty(&self) -> bool {
         self.events.is_empty()

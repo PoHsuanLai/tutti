@@ -1,4 +1,12 @@
 //! WAV (hound). Streams; hound back-patches the RIFF sizes on `finalize`.
+//!
+//! The offline twin of `tutti_io::WavOut`, and the two stay separate because
+//! this one **pulls** (it drives the render to a planned frame count) while a
+//! live sink is **pushed** blocks by whoever owns the loop. They share the
+//! quantization — both dispatch through
+//! [`BitDepth::quantize`](tutti_core::pcm::BitDepth::quantize) — so a bounced
+//! and a recorded WAV agree sample-for-sample at a given depth. The one
+//! deliberate difference: an export dithers first, a live capture does not.
 
 use crate::config::ExportConfig;
 use crate::encode::{pump_blocks, Encoder};
@@ -49,11 +57,10 @@ impl Encoder for WavEncoder {
     ) -> Result<()> {
         pump_blocks(src, source_rate, plan, config, |frames| {
             // Already interleaved — hound wants a flat sample stream, which is
-            // exactly what the render hands over. The `interleave` helper this
-            // replaced re-copied a buffer that was never de-interleaved.
+            // exactly what the render hands over. No de-interleave step to undo.
             for &s in frames.samples() {
                 // The depth dispatch is `tutti-types`', shared with the live
-                // `WavOut` sink; only the writer call per variant is ours. An
+                // `WavOut` sink; only the writer call per variant is local. An
                 // offline render and a live capture therefore quantize a given
                 // sample identically by construction, not by two hand-written
                 // matches happening to agree.

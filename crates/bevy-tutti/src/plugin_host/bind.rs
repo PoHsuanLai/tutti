@@ -64,6 +64,7 @@ type TransportUnbound = (With<PluginEmitter>, Without<PluginTransportBound>);
 /// lets a later tempo-map edit reach a plugin that is already running, with
 /// nothing reinstalled. Meter is deliberately not read off the transport: it is
 /// a layer over the timeline, not transport state.
+///
 /// # Every resource here is optional, deliberately
 ///
 /// All three come from `engine::build_into`, and `engine_ready` only reads
@@ -109,8 +110,8 @@ pub fn plugin_bind_transport(
 /// With the type registered, `register_midi_senders` picks a plugin up off its
 /// `AudioNode` like any other unit, and `unregister_midi_sender` takes it off
 /// the bus when that component goes. No plugin-specific system, and — more to
-/// the point — no plugin-specific *path*: inventing one would be the second
-/// lookup that `midi/target.rs` deleted the last time this crate had two.
+/// the point — no plugin-specific *path*: inventing one would be a second
+/// lookup beside the shared one, and two lookups for one question drift.
 ///
 /// # Modulation is registered here but resolved elsewhere
 ///
@@ -215,14 +216,15 @@ type ParamsNeedRebind = (
 /// (`AtomicTarget` declines them, since it collapses at a fixed beat), so a
 /// plugin param modulated with `ModRoute::as_curve` traces a real ramp where a
 /// native param would get a frame-rate staircase.
+///
 /// # Every resource here is optional, deliberately
 ///
 /// `engine_ready` reads `AudioEngineState`, which says nothing about whether
 /// `build_into` ran (graph, config, transport) or whether the host added
 /// `TuttiModulationPlugin` (the registry). `TuttiPlugin` notably does **not**
-/// add the modulation plugin, so `--features plugin,modulation` used to panic
-/// here on frame one — this system is scheduled by the hosting plugin but reads
-/// a resource only a different plugin inserts.
+/// add the modulation plugin, so under `--features plugin,modulation` this
+/// system is scheduled by the hosting plugin while reading a resource only a
+/// different plugin inserts — a hard `Res` would panic on frame one.
 #[cfg(feature = "modulation")]
 pub fn plugin_bind_params(
     mut commands: Commands,
@@ -264,11 +266,9 @@ pub fn plugin_bind_params(
             let target = client.param_target(param_id, range.base, range.min, range.max);
             registry.insert_target(entity, range.param, target.clone());
             timed.push(tutti_plugin::handles::TimedParam {
-                // `TimedParam::param_id` became a `ParamAddress` in #105/#108,
-                // and this adapter was not rebuilt with the `plugin` feature so
-                // the break went unseen. `Opaque` is the right arm: `Index` is
-                // VST2-only and dense, while `ParamAddr::Id` is the app's
-                // plugin-chosen handle — exactly what `Opaque` models.
+                // `Opaque` is the right `ParamAddress` arm: `Index` is VST2-only
+                // and dense, while `ParamAddr::Id` is the app's plugin-chosen
+                // handle — exactly what `Opaque` models.
                 param_id: tutti_plugin::handles::ParamAddress::Opaque(param_id.into()),
                 curve: target,
             });

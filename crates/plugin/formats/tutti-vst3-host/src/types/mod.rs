@@ -59,7 +59,9 @@ pub struct ProcessOutput {
 /// `process` call, which clears them in place. RT-safe.
 #[derive(Debug, Clone, Copy)]
 pub struct ProcessOutputRef<'a> {
+    /// MIDI the plugin emitted this block, in the pooled buffer.
     pub midi_events: &'a [MidiEvent],
+    /// Parameter changes the plugin reported via `outputParameterChanges`.
     pub parameter_changes: &'a ParameterChanges,
 }
 
@@ -83,8 +85,11 @@ impl<'a> ProcessOutputRef<'a> {
 pub struct PluginInfo {
     /// Unique id, formatted as `vst3.<CID>` by this crate.
     pub id: String,
+    /// Display name from the factory's class info.
     pub name: String,
+    /// Vendor string; empty when the factory declares none.
     pub vendor: String,
+    /// Vendor-formatted version string; empty when the factory declares none.
     pub version: String,
     /// Input channel count on bus 0.
     pub num_inputs: usize,
@@ -117,6 +122,9 @@ pub struct PluginInfo {
 }
 
 impl PluginInfo {
+    /// Starts a descriptor from the two fields with no sensible default.
+    /// Channel counts default to stereo in and out; every other field is empty
+    /// or `false` until a builder method sets it.
     pub fn new(id: impl Into<String>, name: impl Into<String>) -> Self {
         Self {
             id: id.into(),
@@ -134,11 +142,13 @@ impl PluginInfo {
         }
     }
 
+    /// Sets the vendor string.
     pub fn vendor(mut self, vendor: impl Into<String>) -> Self {
         self.vendor = vendor.into();
         self
     }
 
+    /// Sets the version string.
     pub fn version(mut self, version: impl Into<String>) -> Self {
         self.version = version.into();
         self
@@ -152,6 +162,9 @@ impl PluginInfo {
         self
     }
 
+    /// Sets the bus-0 channel counts. For plugins with aux or sidechain buses,
+    /// follow with [`bus_channels`](Self::bus_channels) — the totals fall back
+    /// to these counts only while no per-bus layout is recorded.
     pub fn audio_io(mut self, inputs: usize, outputs: usize) -> Self {
         self.num_inputs = inputs;
         self.num_outputs = outputs;
@@ -193,16 +206,20 @@ impl PluginInfo {
         }
     }
 
+    /// Sets whether the plugin has a MIDI **input** bus. The output direction is
+    /// separate — see [`midi_output`](Self::midi_output).
     pub fn midi(mut self, has_midi: bool) -> Self {
         self.has_midi_input = has_midi;
         self
     }
 
+    /// Sets whether the plugin emits MIDI the host can read back.
     pub fn midi_output(mut self, has_midi_output: bool) -> Self {
         self.has_midi_output = has_midi_output;
         self
     }
 
+    /// Sets whether the plugin advertises `kSample64` processing.
     pub fn f64_support(mut self, supports: bool) -> Self {
         self.supports_f64 = supports;
         self

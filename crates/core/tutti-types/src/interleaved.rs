@@ -281,13 +281,12 @@ impl<'a> InterleavedMut<'a> {
 ///
 /// # Why construction is fallible
 ///
-/// The pair's shared length is the whole point. `AtomicAmplitude::measure`
-/// previously took `(left, right)` and derived `frames = left.len()`, never
-/// checking `right` — so a short right channel divided its sum of squares by the
-/// wrong count and published a quietly wrong RMS. It was unreachable in practice
-/// only because the single caller passed two equal prefixes, and it would have
-/// stayed unreachable right up until a second caller existed. Making
-/// construction fallible turns that into an obligation the compiler enforces.
+/// The pair's shared length is the whole point. A `(left, right)` signature
+/// that derives `frames = left.len()` and never checks `right` divides a sum of
+/// squares by the wrong count and publishes a quietly wrong RMS —
+/// `AtomicAmplitude::measure` had exactly that shape, unreachable only because
+/// its single caller happened to pass two equal prefixes. Fallible construction
+/// turns "the lengths match" into an obligation the compiler enforces.
 #[derive(Clone, Copy, Debug)]
 pub struct StereoPlanes<'a> {
     left: &'a [f32],

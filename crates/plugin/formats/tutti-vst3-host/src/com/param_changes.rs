@@ -54,7 +54,7 @@ impl ParameterChangesImpl {
 
     /// Refill this changes list from `changes` in place. Reuses existing
     /// `ComWrapper<ParamValueQueueImpl>` slots; grows once (off the hot
-    /// path in practice) if `changes` carries more queues than we've
+    /// path in practice) if `changes` carries more queues than have been
     /// seen before, and keeps the larger capacity thereafter.
     ///
     /// # Real-time
@@ -66,7 +66,7 @@ impl ParameterChangesImpl {
         let mut queues = self.queues.borrow_mut();
         // Grow (off-the-hot-path) if needed.
         while queues.len() < changes.queues.len() {
-            // Placeholder param_id — we immediately refill it below.
+            // Placeholder param_id — refilled immediately below.
             queues.push(ParamValueQueueImpl::new_empty(0));
         }
         // Refill the live slots in place.

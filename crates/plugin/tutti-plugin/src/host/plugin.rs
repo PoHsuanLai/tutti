@@ -2,8 +2,8 @@
 //!
 //! # Why this type exists
 //!
-//! Loading used to hand back `(Box<dyn AudioUnit>, PluginHandle)`. Two problems,
-//! and the first is the reason for the boxing:
+//! Loading returns one owned type rather than a `(Box<dyn AudioUnit>,
+//! PluginHandle)` pair. Two reasons, the first of which is why the boxing:
 //!
 //! **The process boundary leaked.** VST2 runs in the host process (its `AEffect`
 //! fuses editor and audio processor into one instance, so the two cannot be
@@ -66,7 +66,7 @@ enum Backend {
 /// A loaded plugin: its audio node, its control surface, and the per-block
 /// inputs it can accept.
 ///
-/// See the [module docs](self) for why this replaces
+/// See the module docs for why this replaces
 /// `(Box<dyn AudioUnit>, PluginHandle)`.
 pub struct Plugin {
     backend: Backend,

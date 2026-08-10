@@ -39,9 +39,12 @@
 /// handled.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum BitDepth {
+    /// 16-bit signed integer — CD depth.
     Int16,
+    /// 24-bit signed integer, packed three bytes per sample. The export default.
     #[default]
     Int24,
+    /// 32-bit float, written unquantized — no dither and no clipping decision.
     Float32,
 }
 
@@ -52,9 +55,11 @@ pub enum BitDepth {
 /// file format. See the [module docs](self) for why that separation is load-bearing.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Sample {
+    /// 16-bit signed, ready to write little-endian.
     I16(i16),
-    /// 24-bit signed, stored in an `i32`.
+    /// 24-bit signed, stored in an `i32`. Only the low three bytes are written.
     I24(i32),
+    /// 32-bit float, carried through unquantized.
     F32(f32),
 }
 

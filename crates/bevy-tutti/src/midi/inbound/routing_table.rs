@@ -24,10 +24,6 @@ use bevy_ecs::prelude::*;
 /// [`build_into`](crate::engine::build_into)'s handoff, the same way
 /// [`MidiBusRes`](crate::midi::MidiBusRes) does.
 ///
-/// The field used to be `pub`, which left the guarantee above as a doc comment
-/// the type did not actually enforce — `MidiRoutingRes(MidiRoutingTable::new())`
-/// compiled, and produced exactly the orphan the doc warns about.
-///
 /// [`MidiPreBlock`]: tutti_midi_runtime::MidiPreBlock
 #[derive(Resource)]
 pub struct MidiRoutingRes(pub(crate) tutti_midi_types::MidiRoutingTable);

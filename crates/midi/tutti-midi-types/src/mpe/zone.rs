@@ -1,11 +1,23 @@
+//! MPE zone layout (RP-053): which of the sixteen MIDI 1.0 channels are master
+//! and which are members, and the MPE Configuration Message that declares it.
+//!
+//! Every channel number here is **0-indexed** — `0` is the channel a device's
+//! front panel calls "Ch1" — because that is what UMP carries. The one place the
+//! distinction bites is the two zone anchors: the lower zone's master is `0` and
+//! the upper zone's is `15`.
+
 use super::PitchBendSensitivity;
 use tutti_types::{MidiChannel, MidiGroup};
 
+/// Which of the two RP-053 zones (or neither) a configuration describes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum MpeZone {
+    /// Master on channel 0, members counting up from channel 1.
     Lower,
+    /// Master on channel 15, members counting down from channel 14.
     Upper,
+    /// Not MPE at all: one ordinary channel, no member spreading.
     SingleChannel(u8),
 }
 
@@ -17,11 +29,23 @@ pub enum MpeZone {
 const MASTER_PITCH_BEND_SEMITONES: u8 = 48;
 const MEMBER_PITCH_BEND_SEMITONES: u8 = 2;
 
+/// One zone's layout and bend ranges — the whole description of how an MPE
+/// instrument occupies the sixteen channels.
+///
+/// Prefer the constructors ([`lower`](Self::lower), [`upper`](Self::upper),
+/// [`single_channel`](Self::single_channel)) over building this literally: they
+/// place the master channel where RP-053 requires and install the two default
+/// bend ranges, which differ by a factor of 24.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct MpeZoneConfig {
+    /// Which zone this is, and hence which direction members count in.
     pub zone: MpeZone,
+    /// The zone's master channel, 0-indexed: `0` for a lower zone, `15` for an
+    /// upper one. Zone-wide messages (bend, pressure) arrive here.
     pub master_channel: u8,
+    /// How many member channels the zone claims, 1..=15. A count of `0` in an
+    /// incoming MCM means "disable the zone" and is not stored here.
     pub member_count: u8,
     /// Bend range for the zone's **master** channel — applies to every note in
     /// the zone at once. RP-053 default ±48 semitones.
@@ -30,6 +54,8 @@ pub struct MpeZoneConfig {
     /// note. RP-053 default ±2 semitones; using the master's ±48 here bends a
     /// per-note gesture 24× too far.
     pub member_pitch_bend_range: PitchBendSensitivity,
+    /// Whether the zone is active. A disabled zone keeps its layout so a host can
+    /// restore it without re-deriving the channel assignment.
     pub enabled: bool,
 }
 
@@ -106,11 +132,16 @@ impl MpeZoneConfig {
         self
     }
 
+    /// Reports whether `channel` is this zone's master.
     #[inline]
     pub fn is_master_channel(&self, channel: u8) -> bool {
         channel == self.master_channel
     }
 
+    /// Reports whether `channel` is one of this zone's member channels.
+    ///
+    /// False for the master channel and false for every channel of a
+    /// [`MpeZone::SingleChannel`] configuration, which has no members at all.
     #[inline]
     pub fn is_member_channel(&self, channel: u8) -> bool {
         match self.zone {
@@ -128,11 +159,18 @@ impl MpeZoneConfig {
         }
     }
 
+    /// Reports whether `channel` belongs to this zone in either role.
     #[inline]
     pub fn handles_channel(&self, channel: u8) -> bool {
         self.is_master_channel(channel) || self.is_member_channel(channel)
     }
 
+    /// The inclusive span of member channels, in ascending order regardless of
+    /// which direction the zone counts.
+    ///
+    /// A [`MpeZone::SingleChannel`] configuration yields its one channel, so the
+    /// range is never empty even where [`is_member_channel`](Self::is_member_channel)
+    /// answers `false` for every value in it.
     pub fn member_channel_range(&self) -> core::ops::RangeInclusive<u8> {
         match self.zone {
             MpeZone::Lower => 1..=self.member_count,
@@ -143,7 +181,8 @@ impl MpeZoneConfig {
 
     /// Encode this zone as an **MPE Configuration Message** (MCM): a MIDI 2.0
     /// Registered Controller (RPN) on the zone's *master* channel, bank
-    /// [`RPN_BANK_MPE`], index [`RPN_INDEX_MCM`], data = member count. Per
+    /// [`RPN_BANK_MPE`](crate::ump::RPN_BANK_MPE), index
+    /// [`RPN_INDEX_MCM`](crate::ump::RPN_INDEX_MCM), data = member count. Per
     /// RP-053 / M2-104, the master channel (Ch1 lower / Ch16 upper) is what a
     /// receiver reads to know which zone is being configured; `member_count`
     /// = `0` would disable the zone.
@@ -198,15 +237,29 @@ impl MpeZoneConfig {
     }
 }
 
+/// How an instrument occupies the sixteen channels as a whole — the zone
+/// arrangement, rather than one zone's layout.
+///
+/// [`MpeZoneConfig`] describes *a* zone; this says how many there are and
+/// whether MPE is in play at all.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum MpeMode {
+    /// No MPE. Channels behave as ordinary MIDI 1.0 channels.
     #[default]
     Disabled,
+    /// One zone anchored at channel 0, counting up.
     LowerZone(MpeZoneConfig),
+    /// One zone anchored at channel 15, counting down.
     UpperZone(MpeZoneConfig),
+    /// Both zones at once — two instruments sharing the sixteen channels.
+    ///
+    /// The two member spans must not overlap; RP-053 makes that the sender's
+    /// responsibility, and nothing here checks it.
     DualZone {
+        /// The zone anchored at channel 0.
         lower: MpeZoneConfig,
+        /// The zone anchored at channel 15.
         upper: MpeZoneConfig,
     },
     /// Single-channel **Note Number Rotation**: full 128-note polyphony on one
@@ -214,6 +267,7 @@ pub enum MpeMode {
     /// distinct host-internal note id so same-pitch notes get their own voices.
     /// See [`NoteRotationAllocator`](super::NoteRotationAllocator).
     SingleChannelRotation {
+        /// The one channel every note is sent on, 0-indexed.
         channel: u8,
     },
 }

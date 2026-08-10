@@ -24,9 +24,10 @@ use crate::voice::types::Direction;
 /// the butler thread exits. Every later command fails the same way, so a caller
 /// that sees this should stop rather than retry.
 ///
-/// This exists because the whole control surface used to swallow it: every send
-/// ended in `let _ =`, so a dead butler accepted `Stream`/`Seek`/`Loop`/`Stop`
-/// indefinitely and did nothing, indistinguishable from working playback.
+/// It is an error type rather than a silent `let _ =` because swallowing it
+/// leaves a dead butler accepting `Stream`/`Seek`/`Loop`/`Stop` indefinitely and
+/// doing nothing — indistinguishable, from the caller's side, from working
+/// playback.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ButlerGone;
 

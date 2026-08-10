@@ -44,10 +44,10 @@ pub trait Modulator {
     /// tighter inner loop.
     ///
     /// A negative `dphase` runs the modulator backwards, and
-    /// [`Phase::advance`] wraps correctly for it — that case is exactly what
-    /// the `%` and `.fract()` wraps this signature replaced got wrong, since
-    /// both keep the sign of their input and walk the phase off the front of a
-    /// shape table.
+    /// [`Phase::advance`] wraps correctly for it. That is the case a hand-rolled
+    /// `%` or `.fract()` wrap gets wrong: both keep the sign of their input, so
+    /// the phase walks off the front of a shape table instead of round to its
+    /// end. Advance through the type, never by hand.
     fn fill(
         &self,
         mut state: Self::State,
@@ -83,10 +83,10 @@ mod tests {
 
     #[test]
     fn fill_keeps_phase_in_range_when_running_backwards() {
-        // A negative `dphase` is a modulator running in reverse. Under the old
-        // `.fract()` wrap this walked straight past zero and stayed negative,
-        // because `fract` preserves the sign of its input — every sample after
-        // the first would index off the front of a shape table.
+        // A negative `dphase` is a modulator running in reverse. A `.fract()`
+        // wrap walks straight past zero and stays negative, because `fract`
+        // preserves the sign of its input — every sample after the first would
+        // index off the front of a shape table.
         let mut out = [0.0_f32; 16];
         PhaseProbe.fill((), Phase(0.1), PhaseIncrement(-0.25), &mut out);
 
@@ -101,11 +101,10 @@ mod tests {
         assert!((out[2] - 0.60).abs() < 1e-6);
     }
 
-    /// `fill` no longer wraps its starting phase, because [`Phase`] cannot
-    /// arrive out of range — `wrapped` is the only constructor that accepts
-    /// arbitrary input, so the guarantee moved from the loop into the type.
-    /// This pins that it is the *same* guarantee: the wrap `fill` used to
-    /// perform is still available, one call earlier.
+    /// `fill` does not wrap its starting phase, because [`Phase`] cannot arrive
+    /// out of range — `wrapped` is the only constructor that accepts arbitrary
+    /// input, so the guarantee lives in the type rather than the loop. This
+    /// pins that it is the *same* guarantee, available one call earlier.
     #[test]
     fn a_wrapped_starting_phase_enters_the_range() {
         let mut out = [0.0_f32; 4];

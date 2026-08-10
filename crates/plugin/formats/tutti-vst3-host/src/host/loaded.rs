@@ -607,7 +607,7 @@ impl Vst3Loaded {
             return None;
         }
         // A range the endpoints alone would accept but whose interior
-        // contradicts them is not a range we can map onto. Inclusive because a
+        // contradicts them is not a mappable range. Inclusive because a
         // legitimately constant parameter probes flat.
         let monotonic = (lo <= mid && mid <= hi) || (hi <= mid && mid <= lo);
         monotonic.then_some(if lo <= hi { (lo, hi) } else { (hi, lo) })
@@ -849,8 +849,9 @@ impl Vst3Loaded {
     /// with its own editor can follow. Returns `false` if the plugin doesn't
     /// implement `IUnitInfo` or refuses the id.
     ///
-    /// The one write on this interface. Pass [`unit_ids::ROOT`] to select the
-    /// implicit top-level unit. Main/UI thread.
+    /// The one write on this interface. Pass
+    /// [`unit_ids::ROOT`](crate::types::unit_ids::ROOT) to select the implicit
+    /// top-level unit. Main/UI thread.
     #[must_use]
     pub fn select_unit(&mut self, unit_id: i32) -> bool {
         tutti_plugin_types::assert_main_thread();
@@ -957,10 +958,10 @@ impl Vst3Loaded {
     /// compatible successor and migrate its state.
     ///
     /// Unlike the other accessors this is a **factory-level** class, not a
-    /// controller/processor extension: we enumerate the factory's classes, find
-    /// the one in the "Plugin Compatibility Class" category, instantiate it, and
-    /// read its JSON. Returns `None` if the bundle ships no such class. Main/UI
-    /// thread.
+    /// controller/processor extension: it enumerates the factory's classes,
+    /// finds the one in the "Plugin Compatibility Class" category, instantiates
+    /// it, and reads its JSON. Returns `None` if the bundle ships no such class.
+    /// Main/UI thread.
     pub fn compatibility_json(&self) -> Option<String> {
         tutti_plugin_types::assert_main_thread();
         // The SDK category string for the compatibility class (kPluginCompatibilityClass).
@@ -1002,7 +1003,7 @@ impl Vst3Loaded {
     /// Tell the plugin the downstream presentation latency (in samples) for a
     /// given bus, via `IAudioPresentationLatency` — the delay between the
     /// plugin's output and what the listener hears, so latency-aware plugins can
-    /// compensate. `dir` is [`K_INPUT`](super::K_INPUT) / [`K_OUTPUT`](super::K_OUTPUT).
+    /// compensate. `dir` is the VST3 `kInput` / `kOutput` bus-direction constant.
     /// Returns `true` if delivered; no-op if the plugin doesn't implement the
     /// interface. Main/UI thread.
     pub fn set_audio_presentation_latency(
@@ -1056,11 +1057,11 @@ impl Vst3Loaded {
                     // `&mut Vst3Loaded`, which cannot deactivate anything — the
                     // same constraint `reload_requested` is surfaced for.
                     //
-                    // It used to call `reconcile_bus_counts()` from here, which
-                    // reads fine until you notice `Vst3Instance` `DerefMut`s to
-                    // this type: the production caller polls on a live active
-                    // instance, so the re-enumeration ran mid-activation. The
-                    // owner calls `Vst3Instance::restart_bus_configuration`.
+                    // Do not call `reconcile_bus_counts()` from here. It reads
+                    // fine until you notice `Vst3Instance` `DerefMut`s to this
+                    // type: the production caller polls on a live active
+                    // instance, so the re-enumeration would run mid-activation.
+                    // The owner calls `Vst3Instance::restart_bus_configuration`.
                     notifications.restart.merge_flags(flags);
                 }
                 other => notifications.param_edits.push(other),
@@ -1126,9 +1127,9 @@ impl Vst3Loaded {
     /// selected tab, a meter's display mode. Saving just the component stream
     /// discards all of it on every save/restore.
     ///
-    /// The two are packed by [`pack_state`] rather than concatenated, because
-    /// each half is a private format of unknown length — only an explicit
-    /// length prefix can split them again.
+    /// The two are length-prefixed rather than concatenated, because each half
+    /// is a private format of unknown length — only an explicit length prefix
+    /// can split them again.
     ///
     /// The bytes within each half are the plugin's private format; the host
     /// never interprets them. A plugin with no state at all yields an empty
@@ -1139,7 +1140,7 @@ impl Vst3Loaded {
     /// Returns [`Vst3Error::StateError`](crate::Vst3Error::StateError) if the
     /// host-side `IBStream` wrapper cannot be created, or
     /// [`Vst3Error::PluginError`](crate::Vst3Error::PluginError) if the plugin
-    /// fails `getState`. We do **not** substitute a parameter dump: a plugin's
+    /// fails `getState`. A parameter dump is **not** substituted: a plugin's
     /// state covers more than parameters (active preset, internal DSP state,
     /// sample references), so a lossy synthetic blob would restore incorrectly
     /// while masquerading as faithful state.
@@ -1396,9 +1397,10 @@ impl Vst3Loaded {
         // that don't implement the interface (cast returns None) simply no-op.
         //
         // TODO: thread the real backing-scale from the frontend WindowHandle —
-        // `WindowHandle` is a bare `*mut c_void` today and carries no DPI, so we
-        // pass 1.0 (the neutral default: correct on standard-DPI displays, a safe
-        // no-op elsewhere). The important part is that the *call* is wired, so a
+        // `WindowHandle` is a bare `*mut c_void` today and carries no DPI, so
+        // this passes 1.0 (the neutral default: correct on standard-DPI
+        // displays, a safe no-op elsewhere). The *call* being wired is what
+        // matters, so a
         // real factor becomes a one-line change once the frontend supplies it.
         set_content_scale(&view, host_backing_scale(&parent));
 
@@ -1439,6 +1441,10 @@ impl Vst3Loaded {
         }
     }
 
+    /// What the currently open editor supports, queried live from the view.
+    ///
+    /// Returns the all-`false` default when no editor is open — a closed editor
+    /// reports no capabilities rather than the ones it had while open.
     pub fn editor_capabilities(&self) -> EditorCapabilities {
         let EditorState::Open { view, .. } = &self.editor else {
             return EditorCapabilities::default();
@@ -1504,12 +1510,12 @@ impl Vst3Loaded {
         self._library.run_loop().run_iteration();
     }
 
-    /// What the plugin has registered with our run loop, and how much this host
-    /// has dispatched. Test-only observation seam behind the `conformance`
-    /// feature — see [`RunLoopActivity`](crate::RunLoopActivity).
+    /// What the plugin has registered with this host's run loop, and how much
+    /// the host has dispatched. Test-only observation seam behind the
+    /// `conformance` feature — see [`RunLoopActivity`](crate::RunLoopActivity).
     ///
     /// All-zero off Linux, where the OS owns the run loop and plugins register
-    /// nothing with us, so callers need no `cfg` of their own.
+    /// nothing with the host, so callers need no `cfg` of their own.
     #[cfg(feature = "conformance")]
     pub fn run_loop_activity(&self) -> crate::RunLoopActivity {
         #[cfg(target_os = "linux")]
@@ -1651,7 +1657,7 @@ impl Vst3Loaded {
             bottom: requested.height as i32,
         };
         // `checkSizeConstraint` snaps the rect to the nearest size the plugin
-        // will accept (aspect-ratio locks, min/max, integer-multiple grids). We
+        // will accept (aspect-ratio locks, min/max, integer-multiple grids). The host
         // must apply that *constrained* rect via `onSize`, not the raw request —
         // otherwise a plugin that only accepts, say, 4:3 sizes gets handed a
         // size it rejects. The call snaps the rect in place and returns
@@ -1794,16 +1800,16 @@ impl Vst3Loaded {
         // controller already shares the component's state, so this is only
         // needed (and only correct) for `Controller::Separate`. `setState` is
         // the sole other path that reaches `setComponentState`; at load there is
-        // no host-supplied blob, so we read the component's current state and
-        // push it across. Tolerate a plugin with no state (empty blob / the
+        // no host-supplied blob, so this reads the component's current state and
+        // pushes it across. Tolerate a plugin with no state (empty blob / the
         // controller returning `kResultFalse`) — never fail `load()` on a
         // state-sync miss.
         if separate_controller {
             // `read_component_state` only errors if the host-side BStream can't
             // be wrapped or the plugin's `getState` returns a hard failure;
             // treat either as "no state to sync" and continue — the editor then
-            // opens at defaults exactly as before this fix, rather than failing
-            // the load. (No logging framework is wired into this crate.)
+            // opens at defaults rather than failing the load. (No logging
+            // framework is wired into this crate.)
             if let Ok(state) = self.read_component_state() {
                 self.push_controller_state(&state);
             }
@@ -1876,8 +1882,8 @@ impl Vst3Loaded {
     ///
     /// `pub(crate)` only so `Vst3Instance::restart_bus_configuration` can call
     /// it from inside the deactivate/reactivate cycle. Deliberately not public:
-    /// on a live instance this must not be reached on its own, which is exactly
-    /// the mistake the `kIoChanged` path used to make.
+    /// on a live instance this must never be reached on its own, or the
+    /// re-enumeration runs mid-activation.
     pub(crate) fn reconcile_bus_counts(&mut self) {
         if let Some(layout) = self.interfaces.component.audio_bus_channel_count(K_INPUT) {
             // `PluginInfo` carries raw usize channel counts; take the count at
@@ -1927,8 +1933,8 @@ impl Vst3Loaded {
             .midi_output(emits_midi);
     }
 
-    /// Hand the controller our `IComponentHandler` so it can report param
-    /// edits, bus-activation requests, etc.
+    /// Hand the controller this host's `IComponentHandler` so it can report
+    /// param edits, bus-activation requests, etc.
     fn attach_component_handler(&self) {
         let Some(ctrl) = self.interfaces.controller.as_ref() else {
             return;
@@ -1957,7 +1963,7 @@ impl Drop for Vst3Loaded {
         // Retract the handler before terminating. Unlike `initialize`, which
         // borrows the host context, `setComponentHandler` *retains* — so a
         // plugin that overrides `terminate` without chaining up to the base
-        // class (which resets it) would hold our handler past its own teardown.
+        // class (which resets it) would hold the handler past its own teardown.
         // Order — retract, controller, component — follows Steinberg's own
         // wrapper (`basewrapper.cpp:369`).
         if let Some(ctrl) = self.interfaces.controller.as_ref() {
@@ -1983,7 +1989,7 @@ fn check_exists(path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// One factory class — the handful of fields we need to keep together when
+/// One factory class — the handful of fields that must stay together when
 /// walking the `IPluginFactory`. Returned by [`find_audio_class`].
 pub(super) struct AudioClass {
     /// Steinberg-signed class id, used for `IPluginFactory::createInstance`.
@@ -2015,8 +2021,8 @@ fn ensure_has_classes(library: &Vst3Library, path: &Path) -> Result<()> {
 /// The backing-store scale factor to advertise to the plugin view.
 ///
 /// The host `WindowHandle` is a raw pointer with no attached DPI/scale
-/// information, so there is nothing to read from it yet — we return the neutral
-/// `1.0`. When the frontend grows a way to carry the display's backing scale
+/// information, so there is nothing to read from it yet — this returns the
+/// neutral `1.0`. When the frontend grows a way to carry the display's backing scale
 /// (e.g. `NSWindow.backingScaleFactor` / Win32 `GetDpiForWindow`), source it
 /// here and the wired `setContentScaleFactor` call starts delivering real
 /// values with no further plumbing.
@@ -2039,8 +2045,8 @@ fn host_backing_scale(_parent: &WindowHandle) -> f32 {
 /// Wayland-only-view-handed-an-X11-id case this check exists to catch.
 ///
 /// The asymmetry is deliberate — a false "unsupported" costs the user their
-/// editor, while a false "supported" only lands us where we already were
-/// before this check existed.
+/// editor, while a false "supported" only reaches the failure the check was
+/// meant to catch, which is where an unchecked call ends up anyway.
 pub fn platform_type_refused(result: i32) -> bool {
     result == kResultFalse || result == kInvalidArgument
 }
@@ -2050,9 +2056,9 @@ pub fn platform_type_refused(result: i32) -> bool {
 /// **`kNotImplemented`, not `kResultFalse`** — and getting this backwards is not
 /// a hypothetical. The SDK's own `Component` base returns `kNotImplemented` from
 /// both methods (`vstcomponent.cpp:159,165`), so *every* plugin that does not
-/// override state answers that way. This used to accept
-/// `kResultOk || kResultFalse`, which rejected exactly those plugins: saving a
-/// project containing one failed with a `PluginError`.
+/// override state answers that way. Accepting `kResultOk || kResultFalse`
+/// instead rejects exactly those plugins: saving a project containing one fails
+/// with a `PluginError`.
 ///
 /// The list matches `verify` in the SDK's own preset writer
 /// (`vstpresetfile.cpp:53`), which is the closest thing to a reference host for
@@ -2060,7 +2066,7 @@ pub fn platform_type_refused(result: i32) -> bool {
 ///
 /// `kResultFalse` is deliberately *not* here. Unlike the state methods, where
 /// "I have none" is the common honest answer, a plugin that actively fails a
-/// state round-trip has told us the blob is bad — and silently returning an
+/// state round-trip is reporting the blob is bad — and silently returning an
 /// empty one would persist a project that cannot be restored.
 fn state_result_ok(result: i32) -> bool {
     result == kResultOk || result == kNotImplemented
@@ -2118,8 +2124,8 @@ fn pack_state(component: &[u8], controller: &Option<Vec<u8>>) -> Vec<u8> {
 ///
 /// A blob that starts with the magic but is then malformed (unknown version,
 /// truncated, a length past the end) is treated the same way. That cannot
-/// restore the controller half, but the alternative — splitting at a length we
-/// have reason to distrust — hands the *component* a corrupt stream, and the
+/// restore the controller half, but the alternative — splitting at a length
+/// there is reason to distrust — hands the *component* a corrupt stream, and the
 /// component half is the one a project cannot be restored without.
 fn unpack_state(data: &[u8]) -> (&[u8], Option<&[u8]>) {
     let Some(rest) = data.strip_prefix(STATE_MAGIC.as_slice()) else {
@@ -2210,7 +2216,7 @@ pub fn set_view_focus(view: &ComPtr<IPlugView>, focused: bool) {
 /// Render a `kPlatformType*` constant as text for error messages. These are C
 /// string literals from the SDK, not Rust `&str`, so they need decoding at the
 /// FFI edge; a malformed one degrades to a placeholder rather than failing the
-/// error path we are already on.
+/// error path this is already on.
 fn platform_type_name(platform_type: vst3::Steinberg::FIDString) -> String {
     if platform_type.is_null() {
         return "<null>".to_string();
@@ -2234,7 +2240,7 @@ fn set_content_scale(view: &ComPtr<IPlugView>, scale: f32) {
     }
 }
 
-/// Read the plug-view's `getSize()` and translate it into our `(width, height)`
+/// Read the plug-view's `getSize()` and translate it into a `(width, height)`
 /// tuple. Returns `None` if the view refuses — callers fall back to a default.
 fn query_view_size(view: &ComPtr<IPlugView>) -> Option<(u32, u32)> {
     let mut rect = ViewRect {
@@ -2274,10 +2280,9 @@ fn build_plugin_info_raw(
             .map(|info| info.vendor)
             .unwrap_or_default()
     });
-    // Every VST3 plugin used to report "1.0.0" — a literal, unconditional, for
-    // all of them. The real string is on the class (e.g. "1.0.0.512",
-    // Major.Minor.Subversion.Build). A plugin that declares none keeps the old
-    // placeholder rather than showing an empty version field.
+    // The real version string lives on the class (e.g. "1.0.0.512",
+    // Major.Minor.Subversion.Build). A plugin that declares none falls back to
+    // the "1.0.0" placeholder rather than showing an empty version field.
     let version = class.version.clone().unwrap_or_else(|| "1.0.0".to_string());
     // `PluginInfo` carries raw usize channel counts; take the count at this
     // boundary. A plugin that reports no bus, or whose query fails, contributes
@@ -2312,7 +2317,7 @@ fn build_plugin_info_raw(
     .sub_categories(class.sub_categories.clone())
 }
 
-/// Convenience wrapper for the load path where we always have a processor.
+/// Convenience wrapper for the load path, where a processor is always present.
 fn build_plugin_info(
     library: &Vst3Library,
     component: &ComPtr<IComponent>,
@@ -2379,9 +2384,8 @@ fn find_audio_class(library: &Vst3Library, path: &Path) -> Result<AudioClass> {
 /// skip populating the rest.
 ///
 /// Plugins that don't implement the interface get [`u32::MAX`] — every bit set,
-/// i.e. "send everything", which is both the pre-spec default and exactly what
-/// this host did before this interface was wired. So the gating is a strict
-/// no-op for them.
+/// i.e. "send everything", which is the pre-spec default. The gating is a
+/// strict no-op for them.
 /// Copy a Rust `&str` into a fixed `[char8; 64]` (`i8`) VST3 string buffer as
 /// NUL-terminated ASCII/UTF-8 bytes, truncating to fit (leaving room for the
 /// terminator). Used to fill `RepresentationInfo`'s vendor/name/version/host.
@@ -2603,11 +2607,11 @@ mod restart_outcome_tests {
 
     /// Every flag the decode understands reaches the outcome.
     ///
-    /// Six of the twelve used to stop at `RestartFlags`: decoded into a named
-    /// field, then dropped by `merge_flags`, so a plugin could signal them and
-    /// no consumer could ever see it. A per-flag test would not have caught
-    /// that — each one passes by simply not being written — so this asserts the
-    /// *whole* mapping at once.
+    /// The failure this guards against is a flag that stops at `RestartFlags`:
+    /// decoded into a named field, then dropped by `merge_flags`, so a plugin
+    /// can signal it and no consumer ever sees it. A per-flag test would not
+    /// catch that — each one passes by simply not being written — so this
+    /// asserts the *whole* mapping at once.
     ///
     /// Deliberately spelled without `..Default::default()` on the input: adding
     /// a thirteenth flag must fail to compile here rather than silently join

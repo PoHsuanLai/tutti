@@ -24,12 +24,19 @@ type ParamCb = Arc<dyn Fn(u32, f32) + Send + Sync>;
 type RefreshCb = Arc<dyn Fn(PluginRefresh) + Send + Sync>;
 type InvalidateCb = Arc<dyn Fn(PluginInvalidation) + Send + Sync>;
 
+/// A one-slot callback for plugin-initiated parameter moves.
+///
+/// Cloneable and shared: the audio-side node holds one end and the host installs
+/// the callback through the other. Setting a second callback replaces the first
+/// rather than fanning out.
 #[derive(Clone, Default)]
 pub struct ParameterChangeSink {
     inner: Arc<Mutex<Option<ParamCb>>>,
 }
 
 impl ParameterChangeSink {
+    /// Creates an empty sink, which drops every notification until a callback is
+    /// installed.
     pub fn new() -> Self {
         Self::default()
     }
@@ -84,8 +91,8 @@ impl RefreshSink {
 
 /// Sink for **structural** invalidation signals ([`PluginInvalidation`]): the
 /// plugin changed latency / bus layout, or reloaded, so the graph plan is stale
-/// and PDC must re-run. Absorbs what used to be the separate latency-changed
-/// callback — latency and IO changes demand the identical host response.
+/// and PDC must re-run. Latency and IO changes share one sink because they
+/// demand the identical host response.
 #[derive(Clone, Default)]
 pub(crate) struct InvalidateSink {
     inner: Arc<Mutex<Option<InvalidateCb>>>,

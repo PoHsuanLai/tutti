@@ -30,9 +30,12 @@ use crate::core::endpoints::MidiEndpoints;
 #[cfg(target_os = "macos")]
 pub mod coremidi;
 
-/// The Linux backend, present only when `build.rs` found alsa-lib ≥ 1.2.10.
-/// Below that floor the `alsa_ump` cfg is unset and [`stub`] takes over, with a
-/// `cargo:warning` explaining why — see `build.rs`.
+// No `///` on a `pub mod`: it shadows the module's own `//!` and re-resolves
+// that module's intra-doc links in this scope. `alsa/mod.rs` carries the text.
+//
+// Present only when `build.rs` found alsa-lib >= 1.2.10. Below that floor the
+// `alsa_ump` cfg is unset and `stub` takes over, with a `cargo:warning`
+// explaining why — see `build.rs`.
 #[cfg(all(target_os = "linux", alsa_ump))]
 pub mod alsa;
 

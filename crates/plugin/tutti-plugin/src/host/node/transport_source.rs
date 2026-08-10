@@ -196,8 +196,8 @@ mod tests {
         assert!((out.sample_rate - 48000.0).abs() < 1e-9);
     }
 
-    /// The signature and bar fields used to be left at their 4/4 / zero
-    /// defaults, so every hosted plugin was told the song was in 4/4 at bar 0.
+    /// The signature and bar fields must come from the meter map. Left at
+    /// their defaults, every hosted plugin is told the song is 4/4 at bar 0.
     #[test]
     fn snapshot_carries_meter_and_bar() {
         let seven_eight = TimeSignature::new(BeatsPerBar::new(7), NoteValue::EIGHTH);

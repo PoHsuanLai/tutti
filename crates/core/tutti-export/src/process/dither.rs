@@ -3,8 +3,8 @@
 //! Dither is the only mastering step that is genuinely streamable: it needs no
 //! look-ahead, only a continuous RNG across block boundaries. Resampling is also
 //! block-based (rubato), and normalization is the caller's two-pass composition
-//! (see `tutti_analysis::loudness`), so this is all that remains of what used to
-//! be a "mastering" stage.
+//! (see `tutti_analysis::loudness`), so this is the whole of what a "mastering"
+//! stage would otherwise hold.
 
 use crate::config::ExportConfig;
 use crate::options::{BitDepth, Dither};
@@ -24,12 +24,12 @@ pub(crate) struct DitherState {
 impl DitherState {
     /// The dither a config calls for.
     ///
-    /// **`Float32` never dithers.** Dither exists to decorrelate *quantization*
-    /// error, and a 32-bit float output does not quantize. The previous version
-    /// applied it anyway and computed its step as `1 << (bits - 1)` — at 32 bits
-    /// that is `1 << 31`, which overflows `i32` to `-2147483648` and produced a
-    /// *negative* LSB, i.e. sign-flipped noise. Inaudible at ~4.7e-10, and it
-    /// would have panicked in a build with overflow checks on.
+    /// **`Float32` never dithers**, and the guard is load-bearing rather than
+    /// tidy. Dither exists to decorrelate *quantization* error, and a 32-bit
+    /// float output does not quantize — but the LSB expression below is
+    /// `1 << (bits - 1)`, which at 32 bits is `1 << 31`: an `i32` overflow to
+    /// `-2147483648`, i.e. a *negative* LSB and sign-flipped noise, and a panic
+    /// outright in a build with overflow checks on.
     pub(crate) fn for_config(config: &ExportConfig) -> Self {
         let lsb = match (config.dither, config.encode.bit_depth) {
             (Dither::Off, _) | (_, BitDepth::Float32) => None,
@@ -104,8 +104,8 @@ mod tests {
         }
     }
 
-    /// The regression: at `Float32`, `1 << 31` overflows to a negative LSB.
-    /// Nothing should be added at all.
+    /// At `Float32` nothing may be added at all — the guard whose absence makes
+    /// `1 << 31` overflow to a negative LSB.
     #[test]
     fn float32_is_never_dithered() {
         let mut d = DitherState::for_config(&config(Dither::Triangular, BitDepth::Float32));

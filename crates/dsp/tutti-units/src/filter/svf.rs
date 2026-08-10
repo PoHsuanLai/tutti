@@ -1,3 +1,10 @@
+//! State-variable filter — the crate's general-purpose filter.
+//!
+//! One coefficient computation serves eight responses ([`SvfType`]), so
+//! switching type is as cheap as any parameter change. Mono, and a width-native
+//! variant that shares coefficients across channels while keeping per-channel
+//! integrator state.
+
 use tutti_core::Arc;
 use tutti_core::AtomicF32;
 use tutti_core::{
@@ -13,17 +20,38 @@ const FREQ_EPS: f32 = 0.01;
 const Q_EPS: f32 = 0.0001;
 const GAIN_EPS: f32 = 0.01;
 
+/// Which response the state-variable filter presents.
+///
+/// All eight share one coefficient computation and differ only in the output
+/// mix (`m0`/`m1`/`m2`), so switching type is as cheap as any other parameter
+/// change. The last three ([`Bell`](Self::Bell), [`LowShelf`](Self::LowShelf),
+/// [`HighShelf`](Self::HighShelf)) are the only ones that read the gain
+/// parameter; the rest ignore it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SvfType {
+    /// Passes below cutoff, attenuates above it at 12 dB/octave. The default.
     #[default]
     LowPass,
+    /// Passes above cutoff, attenuates below it at 12 dB/octave.
     HighPass,
+    /// Passes a band around cutoff; [`Q`] sets how narrow.
     BandPass,
+    /// Rejects a band around cutoff and passes everything else — the inverse of
+    /// [`BandPass`](Self::BandPass). High [`Q`] gives a narrow, deep notch.
     Notch,
     /// Allpass: flat magnitude, frequency-dependent phase shift.
+    ///
+    /// Passes every frequency at unity and changes only phase, which is what
+    /// makes it the building block of a phaser.
     Allpass,
+    /// Peaking/bell EQ: boosts or cuts a band around cutoff by the gain
+    /// parameter, leaving the rest flat. [`Q`] sets the bandwidth.
     Bell,
+    /// Shelf boosting or cutting everything *below* cutoff by the gain
+    /// parameter, flat above it.
     LowShelf,
+    /// Shelf boosting or cutting everything *above* cutoff by the gain
+    /// parameter, flat below it.
     HighShelf,
 }
 
@@ -40,10 +68,11 @@ pub(super) struct SvfCoeffs {
 
 /// Compute SVF filter coefficients from parameters (pure function, no state).
 ///
-/// The three tuning parameters are three different units. As bare `f32`s they
-/// were adjacent and interchangeable, and the call reads as a run of positional
-/// numbers — `(LowPass, 1000.0, 0.707, 0.0, 44100.0)` — where transposing any
-/// two compiles and detunes the filter.
+/// The three tuning parameters are three different units, and taking them as
+/// [`Hz`] / [`Q`] / [`Db`] is what keeps them apart. As bare `f32`s they are
+/// adjacent and interchangeable — the call reads as a run of positional numbers,
+/// `(LowPass, 1000.0, 0.707, 0.0, 44100.0)`, where transposing any two compiles
+/// and detunes the filter.
 pub(super) fn compute_svf_coeffs(
     filter_type: SvfType,
     freq: impl Into<Hz>,
@@ -53,8 +82,7 @@ pub(super) fn compute_svf_coeffs(
 ) -> SvfCoeffs {
     let (freq, q, gain_db) = (freq.into().get(), q.into().get(), gain_db.into().get());
     let sample_rate = sample_rate.into();
-    // 0.998 of Nyquist is the old `sample_rate * 0.499`: `tan` diverges at
-    // Nyquist itself, so the cutoff has to stop just short.
+    // `tan` diverges at Nyquist itself, so the cutoff stops just short of it.
     let fc = (freq as f64).clamp(1.0, f64::from(sample_rate.nyquist_scaled(0.998).get()));
     let g = (core::f64::consts::PI * fc / sample_rate.get()).tan();
     let k = 1.0 / (q as f64).max(0.01);
@@ -87,15 +115,11 @@ pub(super) fn compute_svf_coeffs(
     }
 }
 
-/// State-variable filter (LP/HP/BP/Notch/Bell/LowShelf/HighShelf).
-/// 1 input, 1 output. Frequency, Q, and gain are modulatable via AtomicF32.
+/// Parameter-derived filter coefficients, plus the last-seen parameter values
+/// that gate recomputation.
 ///
-/// `F` is the internal state precision. Defaults to `f64` for accuracy at low
-/// cutoffs; use `SvfFilterNode::<f32>::new(...)` to trade precision for CPU.
-///
-/// State is split into [`SvfCoefficients`] (parameter-derived; shared across
-/// channels in stereo / multi-channel variants) and [`SvfIntegrator`] (the
-/// per-channel z-1 / z-2 delay registers).
+/// Shared across channels in the multi-channel variants — the params are one
+/// linked control surface, so widening replicates only `SvfIntegrator`.
 #[derive(Clone)]
 struct SvfCoefficients<F: Real> {
     a1: F,
@@ -178,6 +202,21 @@ impl<F: Real> SvfIntegrator<F> {
     }
 }
 
+/// Mono state-variable filter: 1 input, 1 output.
+///
+/// Cutoff ([`Hz`]), [`Q`] and gain ([`Db`]) are live [`Param`]s shared across
+/// clones. All three are read **once per block** and the coefficients are
+/// recomputed only when one moves past a small epsilon, so a held value costs
+/// nothing. For sample-accurate cutoff modulation use
+/// [`StereoSvfFilterNode`]'s param-input ports.
+///
+/// Gain applies only to [`Bell`](SvfType::Bell),
+/// [`LowShelf`](SvfType::LowShelf) and [`HighShelf`](SvfType::HighShelf); the
+/// other types ignore it.
+///
+/// `F` is the internal state precision. It defaults to `f64` for accuracy at
+/// low cutoffs, where an `f32` integrator loses resolution in the feedback
+/// path; `SvfFilterNode::<f32>::new(…)` trades that for CPU.
 pub struct SvfFilterNode<F: Real = f64> {
     filter_type: SvfType,
     frequency: Param<Hz>,
@@ -189,6 +228,12 @@ pub struct SvfFilterNode<F: Real = f64> {
 }
 
 impl<F: Real> SvfFilterNode<F> {
+    /// Builds a filter of `filter_type` at `frequency` cutoff and resonance
+    /// `q`, with 0 dB gain.
+    ///
+    /// `q` around `0.707` is the flattest (Butterworth) response; higher values
+    /// resonate at the cutoff, and a band-pass or notch narrows as it rises.
+    /// Coefficients are computed here, so the node is ready to run.
     pub fn new(filter_type: SvfType, frequency: impl Into<Hz>, q: impl Into<Q>) -> Self {
         let frequency = frequency.into();
         let q = q.into();
@@ -205,6 +250,12 @@ impl<F: Real> SvfFilterNode<F> {
         node
     }
 
+    /// Sets the shelf/bell gain in [`Db`], recomputing coefficients
+    /// immediately.
+    ///
+    /// Only [`Bell`](SvfType::Bell), [`LowShelf`](SvfType::LowShelf) and
+    /// [`HighShelf`](SvfType::HighShelf) read it; on the other types it is
+    /// stored and ignored. Positive boosts, negative cuts, `0.0` is flat.
     pub fn with_gain_db(mut self, db: impl Into<Db>) -> Self {
         let db = db.into();
         self.gain_db = Param::new(db);
@@ -212,31 +263,58 @@ impl<F: Real> SvfFilterNode<F> {
         self
     }
 
+    /// The shared cutoff cell in [`Hz`], for driving cutoff from a modulator.
+    ///
+    /// Read once per block. Writing the raw cell bypasses the 1 Hz floor
+    /// [`set_frequency`](Self::set_frequency) applies; the coefficient
+    /// computation clamps to `1.0..=0.998 * Nyquist` regardless, since `tan`
+    /// diverges at Nyquist. Shared across clones.
     pub fn frequency(&self) -> Arc<AtomicF32> {
         self.frequency.as_atomic()
     }
 
+    /// The shared resonance cell in [`Q`].
+    ///
+    /// Read once per block. Writing the raw cell bypasses
+    /// [`set_q`](Self::set_q)'s clamp; the coefficient computation floors the
+    /// value at `0.01` to avoid a division blow-up. Shared across clones.
     pub fn q(&self) -> Arc<AtomicF32> {
         self.q.as_atomic()
     }
 
+    /// The shared shelf/bell gain cell in [`Db`]. Inert on the non-gain filter
+    /// types.
     pub fn gain_db(&self) -> Arc<AtomicF32> {
         self.gain_db.as_atomic()
     }
 
+    /// Sets the cutoff in [`Hz`], floored at 1 Hz.
+    ///
+    /// The upper bound is applied when coefficients are computed, at `0.998` of
+    /// Nyquist — so this accepts a higher value and the filter tops out there.
     pub fn set_frequency(&self, hz: impl Into<Hz>) {
         self.frequency.store(Hz(hz.into().get().max(1.0)));
     }
 
+    /// Sets the resonance [`Q`], clamped to the type's valid range.
+    ///
+    /// `0.707` is the flattest response; higher resonates at the cutoff.
     pub fn set_q(&self, q: impl Into<Q>) {
         self.q.store(Q::new_clamped(q.into().get()));
     }
 
+    /// Sets the shelf/bell gain in [`Db`]. Inert on the non-gain filter types.
     pub fn set_gain_db(&self, db: impl Into<Db>) {
         self.gain_db.store(db.into());
     }
 
-    /// Switch filter mode. Forces a coefficient recalculation on the next sample.
+    /// Switches the filter response, forcing a coefficient recompute on the
+    /// next sample.
+    ///
+    /// `&mut self`, so this cannot reach a node already live in the graph —
+    /// the response is a structural choice, not an automatable parameter.
+    /// Integrator state is deliberately kept, so the switch is continuous
+    /// rather than a click.
     pub fn set_filter_type(&mut self, filter_type: SvfType) {
         self.filter_type = filter_type;
         self.coeffs.invalidate();
@@ -361,15 +439,14 @@ impl<F: Real> Clone for SvfFilterNode<F> {
 ///
 /// The default filter is 2-in / 2-out (stereo audio on ports 0/1). For
 /// audio-rate parameter modulation it can grow *optional param-input ports*
-/// after the audio inputs (see [`Self::with_param_inputs`]):
-/// - if [`Self::mod_cutoff`]: a cutoff param-input port (Hz),
-/// - if [`Self::mod_q`]: a Q param-input port,
+/// after the audio inputs (see [`Self::with_param_inputs`]): a cutoff port in
+/// [`Hz`], then a [`Q`] port, each present only if its `mod_*` flag was set.
 ///
-/// in that order. A present param-input port **overrides** the corresponding
-/// atomic per sample, forcing a coefficient recompute that sample (the
-/// block-rate skip only applies to the unmodulated parameters). When neither
-/// flag is set the filter is a plain 2-in/2-out node — bit-identical output to
-/// the unmodulated path and zero added cost (the common case).
+/// A present param-input port **overrides** the corresponding atomic per
+/// sample, forcing a coefficient recompute that sample — the block-rate skip
+/// only applies to the unmodulated parameters, so a modulated filter is
+/// materially more expensive. When neither flag is set the filter is a plain
+/// 2-in/2-out node with zero added cost, which is the common case.
 pub struct StereoSvfFilterNode<F: Real = f64> {
     filter_type: SvfType,
     frequency: Param<Hz>,
@@ -383,23 +460,31 @@ pub struct StereoSvfFilterNode<F: Real = f64> {
     /// construction — never resized in `tick`/`process` (RT no-alloc).
     channels: Vec<SvfIntegrator<F>>,
     /// When true, a cutoff param-input port follows the audio inputs and
-    /// overrides [`Self::frequency`] per sample.
+    /// overrides the `frequency` atomic per sample.
     mod_cutoff: bool,
     /// When true, a Q param-input port follows the cutoff port (or the audio
-    /// inputs if `mod_cutoff` is false) and overrides [`Self::q`] per sample.
+    /// inputs if `mod_cutoff` is false) and overrides the `q` atomic per sample.
     mod_q: bool,
 }
 
 impl<F: Real> StereoSvfFilterNode<F> {
+    /// Builds a stereo (width-2) filter with no param-input ports.
+    ///
+    /// Shorthand for [`with_channels(2, …)`](Self::with_channels). The two
+    /// channels share one coefficient set and keep independent integrator
+    /// state, so they filter identically without bleeding into each other.
     pub fn new(filter_type: SvfType, frequency: impl Into<Hz>, q: impl Into<Q>) -> Self {
         Self::with_channels(2, filter_type, frequency, q)
     }
 
-    /// An `n`-channel filter. The coefficients are channel-shared (one linked
-    /// control surface across all channels); only the per-channel integrator
-    /// state is replicated. `with_channels(2, …)` is bit-identical to
-    /// [`Self::new`]. Speaker placement is the upstream panner's job — this is a
-    /// per-channel filter, not a spatial process.
+    /// An `n`-channel filter (clamped to at least 1).
+    ///
+    /// The coefficients are channel-shared — one linked control surface across
+    /// all channels — and only the per-channel integrator state is replicated,
+    /// so widening costs state but not parameter work.
+    ///
+    /// Speaker placement is the upstream panner's job: this is a per-channel
+    /// filter, not a spatial process.
     pub fn with_channels(
         channels: usize,
         filter_type: SvfType,
@@ -432,10 +517,10 @@ impl<F: Real> StereoSvfFilterNode<F> {
     ///
     /// Width and modulation are **independent axes**: `channels` says how wide
     /// the filter is, the `mod_*` flags say which params it reads at audio rate.
-    /// They were not independent — this constructor hardcoded width 2 — so
-    /// asking for a modulated 5.1 filter silently returned a *stereo* one, and
-    /// the only symptom was a `set_source` on a param port that resolved and
-    /// carried the wrong signal.
+    /// Collapsing them — hardcoding width 2 in the modulated form — turns a
+    /// request for a modulated 5.1 filter into a *stereo* one, and the only
+    /// symptom is a `set_source` on a param port that resolves and carries the
+    /// wrong signal.
     ///
     /// The param ports follow the audio inputs, so their indices **move with the
     /// width**. Ask [`ParamPorts::param_port`](crate::ParamPorts::param_port);
@@ -475,6 +560,8 @@ impl<F: Real> StereoSvfFilterNode<F> {
             .then_some(self.width() + self.mod_cutoff as usize)
     }
 
+    /// Sets the shelf/bell gain in [`Db`], recomputing coefficients
+    /// immediately. Read only by the gain-bearing filter types.
     pub fn with_gain_db(mut self, db: impl Into<Db>) -> Self {
         let db = db.into();
         self.gain_db = Param::new(db);
@@ -482,30 +569,57 @@ impl<F: Real> StereoSvfFilterNode<F> {
         self
     }
 
+    /// The shared cutoff cell in [`Hz`], applied to every channel alike.
+    ///
+    /// **A present cutoff param-input port overrides this per sample**; without
+    /// one it is read once per block. Shared across clones.
     pub fn frequency(&self) -> Arc<AtomicF32> {
         self.frequency.as_atomic()
     }
 
+    /// The shared resonance cell in [`Q`], applied to every channel alike.
+    ///
+    /// **A present Q param-input port overrides this per sample**; without one
+    /// it is read once per block. Shared across clones.
     pub fn q(&self) -> Arc<AtomicF32> {
         self.q.as_atomic()
     }
 
+    /// The shared shelf/bell gain cell in [`Db`].
+    ///
+    /// Always read from the atomic — there is no gain param-input port. Inert
+    /// on the non-gain filter types.
     pub fn gain_db(&self) -> Arc<AtomicF32> {
         self.gain_db.as_atomic()
     }
 
+    /// Sets the cutoff in [`Hz`] for every channel, floored at 1 Hz.
+    ///
+    /// When a cutoff param-input port is present this sets the *base* the port
+    /// overrides, not what the filter runs at.
     pub fn set_frequency(&self, hz: impl Into<Hz>) {
         self.frequency.store(Hz(hz.into().get().max(1.0)));
     }
 
+    /// Sets the resonance [`Q`] for every channel, clamped to the valid range.
+    ///
+    /// When a Q param-input port is present this sets the *base* the port
+    /// overrides.
     pub fn set_q(&self, q: impl Into<Q>) {
         self.q.store(Q::new_clamped(q.into().get()));
     }
 
+    /// Sets the shelf/bell gain in [`Db`]. Inert on the non-gain filter types.
     pub fn set_gain_db(&self, db: impl Into<Db>) {
         self.gain_db.store(db.into());
     }
 
+    /// Switches the filter response for every channel, forcing a coefficient
+    /// recompute on the next sample.
+    ///
+    /// `&mut self`, so it cannot reach a node already live in the graph.
+    /// Integrator state is kept, so the switch is continuous rather than a
+    /// click.
     pub fn set_filter_type(&mut self, filter_type: SvfType) {
         self.filter_type = filter_type;
         self.coeffs.invalidate();
@@ -571,8 +685,7 @@ impl<F: Real + 'static> AudioUnit for StereoSvfFilterNode<F> {
                 self.maybe_update_modulated(freq, q);
             }
         }
-        // Per-channel integrator, channel-shared coeffs. Width 2 is
-        // bit-identical to the old left/right tick.
+        // Per-channel integrator, channel-shared coeffs.
         for (c, ch) in self.channels.iter_mut().enumerate() {
             output[c] = ch.tick(&self.coeffs, F::from_f32(input[c])).to_f32();
         }
@@ -581,8 +694,7 @@ impl<F: Real + 'static> AudioUnit for StereoSvfFilterNode<F> {
     fn process(&mut self, size: usize, input: &BufferRef, output: &mut BufferMut) {
         let cutoff_port = self.cutoff_port();
         let q_port = self.q_port();
-        // Fast path: no param ports — block-rate coeff update, bit-identical to
-        // before.
+        // Fast path: no param ports — one block-rate coeff update.
         if cutoff_port.is_none() && q_port.is_none() {
             self.maybe_update();
             for i in 0..size {
@@ -895,14 +1007,14 @@ mod tests {
 
     /// Cutoff and Q are not interchangeable, and the types are what say so.
     ///
-    /// They were adjacent `f32`s, so `(freq, q)` and `(q, freq)` both compiled
-    /// and the second silently detuned the filter. Passing them as `Hz` and `Q`
-    /// makes the transposition a type error — this pins the difference the swap
-    /// would have made, so the two are never quietly given one type again.
+    /// As adjacent `f32`s, `(freq, q)` and `(q, freq)` both compile and the
+    /// second silently detunes the filter. Passing them as `Hz` and `Q` makes
+    /// the transposition a type error — this pins the difference the swap would
+    /// make, so the two are never quietly given one type again.
     #[test]
     fn cutoff_and_q_are_not_interchangeable() {
         let right = compute_svf_coeffs(SvfType::LowPass, Hz(1000.0), Q(0.707), Db(0.0), 44100.0);
-        // What the transposed call used to compute: a 0.707 Hz cutoff at Q 1000.
+        // What the transposed call computes: a 0.707 Hz cutoff at Q 1000.
         let swapped = compute_svf_coeffs(SvfType::LowPass, Hz(0.707), Q(1000.0), Db(0.0), 44100.0);
         assert!(
             (right.a2 - swapped.a2).abs() > 1e-6,
@@ -1196,9 +1308,9 @@ mod tests {
 
     /// Width and modulation are independent axes.
     ///
-    /// The regression for the bug this constructor had: it hardcoded
-    /// `vec![SvfIntegrator::zeroed(); 2]`, so a modulated 6-channel filter came
-    /// back *stereo*. The arity assertion fails against that version.
+    /// Hardcoding `vec![SvfIntegrator::zeroed(); 2]` in the modulated
+    /// constructor makes a 6-channel request come back *stereo*; the arity
+    /// assertion is what catches it.
     #[test]
     fn a_modulated_filter_is_as_wide_as_it_was_asked_for() {
         let f = StereoSvfFilterNode::<f64>::with_param_inputs(
@@ -1221,10 +1333,11 @@ mod tests {
 
     /// The modulated constructor must be the unmodulated one plus flags.
     ///
-    /// It was a *duplicated struct literal* — a second initialisation path that
-    /// could drift from `with_channels` field by field. Ticking both is what
-    /// catches a drift arity alone would miss: coefficients computed from a
-    /// different gain, or an uninvalidated cache, still report 6 outputs.
+    /// Written as a *duplicated struct literal* it becomes a second
+    /// initialisation path that can drift from `with_channels` field by field.
+    /// Ticking both is what catches a drift arity alone would miss:
+    /// coefficients computed from a different gain, or an uninvalidated cache,
+    /// still report 6 outputs.
     #[test]
     fn a_modulated_filter_ticks_identically_to_its_unmodulated_twin() {
         let mut plain = StereoSvfFilterNode::<f64>::with_channels(6, SvfType::LowPass, 1000.0, 0.7);

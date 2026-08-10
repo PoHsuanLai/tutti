@@ -235,7 +235,7 @@ fn not_implemented_is_not_a_refusal() {
 ///
 /// Unknown codes are treated as permission rather than denial deliberately: a
 /// false "unsupported" costs the user their editor, while a false "supported"
-/// only lands us where the host already was before this check existed.
+/// only reaches the failure the check exists to catch.
 #[test]
 fn success_and_unknown_codes_are_not_refusals() {
     assert!(!platform_type_refused(kResultTrue), "kResultTrue is a yes");

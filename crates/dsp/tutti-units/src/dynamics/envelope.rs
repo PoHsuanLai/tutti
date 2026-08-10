@@ -1,3 +1,10 @@
+//! One-pole envelope followers, shared by every dynamics processor.
+//!
+//! Two variants because the gain decision differs: `EnvelopeFollower` smooths a
+//! continuous level for the compressor and limiter, while
+//! `GateEnvelopeFollower` adds the hold stage a gate needs between opening and
+//! releasing.
+
 use super::utils::{smooth_envelope, time_to_coeff};
 use tutti_core::{SampleRate, Seconds};
 

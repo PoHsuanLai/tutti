@@ -16,10 +16,8 @@
 //! add work to the hot path. The vocabulary names the *roles*; this module owns
 //! the RT-planar realisation.
 //!
-//! The reason is **layout, not width**. `AudioIn`/`AudioOut` used to fix the
-//! frame width as a `const CH: usize`, which a runtime-width plugin bus could
-//! not satisfy — that constraint is gone. Interleaved-vs-planar is what keeps
-//! them apart now, and it is the durable reason.
+//! The reason is **layout, not width**: interleaved-versus-planar is what keeps
+//! the two apart, and a plugin bus's runtime width is no obstacle to either.
 //!
 //! Audio crosses the plugin boundary one buffer *per channel* (deinterleaved),
 //! and the C plugin ABIs (VST3, AU) take those channel buffers as a `void**` —
@@ -67,14 +65,25 @@ impl Sample for f64 {}
 /// allocation-free. An instance holds one of these per sample width — see
 /// [`Sample`] for why both widths are kept rather than a single `BufferPtrs<T>`.
 pub struct BufferPtrs<T> {
+    /// One slot per input channel, refilled each block by
+    /// [`prepare`](Self::prepare). Null between calls — the pointers are only
+    /// valid for the block they were filled from.
     pub input: Vec<*mut T>,
+    /// One slot per output channel, with the same per-block validity as
+    /// [`input`](Self::input).
     pub output: Vec<*mut T>,
 }
 
+// Sound because the `Vec`s hold no owned data — only pointer slots that are
+// null except within a single `prepare`-then-process window on one thread. The
+// raw pointers are what makes the auto-impls absent; nothing here is shared.
 unsafe impl<T> Send for BufferPtrs<T> {}
 unsafe impl<T> Sync for BufferPtrs<T> {}
 
 impl<T> BufferPtrs<T> {
+    /// Allocates null-filled pointer arrays for the given channel counts.
+    ///
+    /// Allocating: call at instance setup, never on the audio thread.
     pub fn new(num_inputs: usize, num_outputs: usize) -> Self {
         Self {
             input: vec![std::ptr::null_mut(); num_inputs],
@@ -82,18 +91,34 @@ impl<T> BufferPtrs<T> {
         }
     }
 
+    /// Reallocates the input array for a new channel count, discarding any
+    /// pointers it held.
+    ///
+    /// Allocating: call when a bus is renegotiated, never on the audio thread.
     pub fn resize_inputs(&mut self, count: usize) {
         self.input = vec![std::ptr::null_mut(); count];
     }
 
+    /// Reallocates the output array for a new channel count, discarding any
+    /// pointers it held.
+    ///
+    /// Allocating: call when a bus is renegotiated, never on the audio thread.
     pub fn resize_outputs(&mut self, count: usize) {
         self.output = vec![std::ptr::null_mut(); count];
     }
 
-    /// Fill pointer arrays from buffer slices, returning raw `*mut *mut
-    /// c_void` for FFI. Input slices are cast to `*mut T` to satisfy C APIs
-    /// that use `*mut *mut c_void` for both directions — well-behaved
-    /// plugins must not mutate inputs.
+    /// Fills the pointer arrays from buffer slices, returning the
+    /// `(inputs, outputs)` raw `*mut *mut c_void` pair for FFI.
+    ///
+    /// Allocation-free, so it is the one method here that belongs on the audio
+    /// thread. Channels beyond the arrays' capacity are **silently dropped** —
+    /// this refills, it never grows, which is what keeps it RT-safe; size the
+    /// arrays with [`new`](Self::new) or the `resize_*` methods first.
+    ///
+    /// Input slices are cast to `*mut T` because the C APIs use
+    /// `*mut *mut c_void` for both directions; a well-behaved plugin must not
+    /// mutate through the input pointers. The returned pointers borrow both
+    /// `self` and the passed slices and are valid only until either moves.
     pub fn prepare(
         &mut self,
         inputs: &[&[T]],
@@ -126,13 +151,22 @@ impl<T> BufferPtrs<T> {
 /// *data* lives, with `'d: 't` (data outlives the table). Splitting them lets
 /// a caller build the output table with a plain `for … zip` loop — the borrow
 /// checker sees the short-lived outer array's `Drop` as ending at `'t`, so it
-/// no longer collides with the `'d` data borrows. A single coincident lifetime
-/// forced the old hand-unrolled `split_first_mut` recursion in the server's
-/// `with_audio_buffer_*` to sidestep exactly that false conflict.
+/// does not collide with the `'d` data borrows. Made coincident, the two force a
+/// caller into a hand-unrolled `split_first_mut` recursion to sidestep a
+/// conflict that was never real.
 pub struct AudioBuffer<'t, 'd: 't, T: Sample = f32> {
+    /// One deinterleaved slice per input channel, each `num_samples` long.
     pub inputs: &'t [&'d [T]],
+    /// One deinterleaved slice per output channel, each `num_samples` long.
+    /// Contents on entry are undefined — a plugin that does not write every
+    /// channel leaves whatever the previous block did; see
+    /// [`clear_outputs`](Self::clear_outputs).
     pub outputs: &'t mut [&'d mut [T]],
+    /// Block length in **frames**, not samples: each channel slice holds this
+    /// many elements, so the total sample count is `num_samples * channels`.
     pub num_samples: usize,
+    /// Render rate in Hz. A raw `f64` because it is handed straight to a C ABI,
+    /// which is where the unit types stop.
     pub sample_rate: f64,
 }
 
@@ -156,14 +190,23 @@ impl<'t, 'd: 't, T: Sample> AudioBuffer<'t, 'd, T> {
         }
     }
 
+    /// Number of input channels.
     pub fn num_inputs(&self) -> usize {
         self.inputs.len()
     }
 
+    /// Number of output channels, which need not equal
+    /// [`num_inputs`](Self::num_inputs).
     pub fn num_outputs(&self) -> usize {
         self.outputs.len()
     }
 
+    /// Zeroes every output channel.
+    ///
+    /// The way to make a silent block actually silent: an output slice's
+    /// contents are otherwise whatever the last block left, so a plugin that
+    /// declines to render repeats stale audio rather than going quiet.
+    /// Allocation-free and RT-safe.
     pub fn clear_outputs(&mut self) {
         for output in self.outputs.iter_mut() {
             output.fill(T::default());
@@ -171,7 +214,10 @@ impl<'t, 'd: 't, T: Sample> AudioBuffer<'t, 'd, T> {
     }
 }
 
+/// An [`AudioBuffer`] of 32-bit samples — the width every format negotiates.
 pub type AudioBuffer32<'t, 'd> = AudioBuffer<'t, 'd, f32>;
+/// An [`AudioBuffer`] of 64-bit samples, for a plugin that negotiated a 64-bit
+/// bus.
 pub type AudioBuffer64<'t, 'd> = AudioBuffer<'t, 'd, f64>;
 
 /// Sample-format-tagged buffer handed to
@@ -184,11 +230,14 @@ pub type AudioBuffer64<'t, 'd> = AudioBuffer<'t, 'd, f64>;
 /// `'d` = sample data, `'d: 't`) so the split survives the enum boundary — a
 /// caller can still build the output table with a short-lived borrow.
 pub enum AudioBufferMut<'t, 'd: 't> {
+    /// A 32-bit block.
     F32(AudioBuffer<'t, 'd, f32>),
+    /// A 64-bit block, from a plugin that negotiated a 64-bit bus.
     F64(AudioBuffer<'t, 'd, f64>),
 }
 
 impl<'t, 'd: 't> AudioBufferMut<'t, 'd> {
+    /// Block length in **frames**, whichever width this carries.
     pub fn num_samples(&self) -> usize {
         match self {
             Self::F32(b) => b.num_samples,
@@ -196,6 +245,7 @@ impl<'t, 'd: 't> AudioBufferMut<'t, 'd> {
         }
     }
 
+    /// Render rate in Hz, whichever width this carries.
     pub fn sample_rate(&self) -> f64 {
         match self {
             Self::F32(b) => b.sample_rate,

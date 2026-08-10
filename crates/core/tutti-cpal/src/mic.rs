@@ -225,7 +225,7 @@ impl AudioIn for MicIn {
     /// Always stereo, whatever the device's own width is.
     ///
     /// The capture callback **folds** every device frame down to a stereo pair
-    /// before it reaches the ring (see [`build_input`]), so what a consumer
+    /// before it reaches the ring (in `build_input`), so what a consumer
     /// polls is stereo by construction. The ring's element is `[f32; 2]`, and
     /// widening that means widening a lock-free ring element — a separate
     /// change with its own cost. Reporting the *device's* layout here would be a
@@ -281,10 +281,10 @@ fn input_device(index: Option<usize>) -> Result<cpal::Device> {
 ///
 /// # Folding, not truncating
 ///
-/// This used to read `frame[0]` and `frame[1]` and discard the rest. On a 5.1
-/// capture device that silently threw away the **centre channel — the dialogue
-/// — and both surrounds**, which is precisely the defect `downmix`'s module doc
-/// calls out. It now routes every device frame through
+/// Reading `frame[0]` and `frame[1]` and discarding the rest would, on a 5.1
+/// capture device, silently throw away the **centre channel — the dialogue —
+/// and both surrounds**, which is precisely the defect `downmix`'s module doc
+/// calls out. Every device frame instead routes through
 /// [`fold_frame`](tutti_core::fold_frame), the engine's single ITU-R BS.775 /
 /// Dolby implementation, so a wide capture arrives correctly downmixed and a
 /// mono one still duplicates into both sides (the fold's 1→2 arm).

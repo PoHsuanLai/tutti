@@ -33,19 +33,34 @@ use tutti_midi_types::{
 // default direction to synthesise.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FunctionBlock {
+    /// The block's index within the endpoint, `0..=31` (§7.1.8 gives the field
+    /// 5 bits). [`ALL_FUNCTION_BLOCKS`] is the wildcard a discovery may name
+    /// instead, and is not a valid value here.
     pub block_number: u8,
+    /// The first UMP group this block covers.
     pub first_group: MidiGroup,
+    /// How many consecutive groups the block spans, starting at `first_group`.
+    /// A block owns `first_group ..= first_group + num_groups - 1`.
     pub num_groups: u8,
+    /// Which way MIDI flows through the block. §7.1.8 makes `0b00` Reserved, so
+    /// there is no honest default — hence no `Default` impl on this type.
     pub direction: FunctionBlockDirection,
+    /// The block's label, reported in a Function Block Name Notification. Empty
+    /// omits that reply entirely rather than claiming the block is named "".
     pub name: String,
 }
 
 /// SysEx-style device identity carried in a Device Identity notification.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DeviceIdentity {
+    /// The MMA/AMEI manufacturer SysEx id. A one-byte id is carried as
+    /// `[id, 0, 0]`; a three-byte id occupies all three.
     pub manufacturer: [u8; 3],
+    /// Manufacturer-assigned device family code.
     pub family: u16,
+    /// Manufacturer-assigned model within [`family`](Self::family).
     pub family_model: u16,
+    /// Software revision, four bytes whose meaning is the manufacturer's.
     pub software_version: [u8; 4],
 }
 
@@ -244,13 +259,31 @@ impl EndpointNegotiator {
 /// [`product_instance_id`]: Self::product_instance_id
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DiscoveredEndpoint {
+    /// The UMP version the peer declared, or `None` until its Endpoint Info
+    /// notification arrives.
     pub ump_version: Option<UmpVersion>,
+    /// Which protocols and JR-timestamp directions the peer *can* do. This is
+    /// the capability set, not the current configuration — compare against
+    /// [`protocol`](Self::protocol) and [`jr`](Self::jr) for what is live.
     pub capabilities: EndpointCapabilities,
+    /// The protocol the peer is currently configured for, or `None` until its
+    /// Stream Configuration notification arrives.
     pub protocol: Option<Protocol>,
+    /// The JR-timestamp directions currently active, from the same Stream
+    /// Configuration notification. Empty until it arrives.
     pub jr: JrTimestamps,
+    /// The peer's SysEx-style identity, or `None` until its Device Identity
+    /// notification arrives.
     pub identity: Option<DeviceIdentity>,
+    /// The peer's endpoint name. Empty until its (possibly multi-packet) Name
+    /// notification completes, and empty forever for a peer that sends none.
     pub name: String,
+    /// The peer's product instance id, on the same terms as
+    /// [`name`](Self::name).
     pub product_instance_id: String,
+    /// One entry per Function Block Info notification received, in arrival
+    /// order. A later Name notification fills in the matching block's
+    /// [`name`](FunctionBlock::name).
     pub function_blocks: Vec<FunctionBlock>,
 }
 

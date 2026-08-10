@@ -34,9 +34,8 @@ pub use super::fsm::MotionState;
 /// How a motion change reaches the output.
 ///
 /// The transport's only real fade decision: ramp the gain to zero first, or
-/// switch on the next buffer. This was previously encoded by having two
-/// variants per verb (`Stop`/`StopNow`, `Locate`/`LocateWithDeclick`) — a
-/// parameter promoted to a type.
+/// switch on the next buffer. A parameter rather than a variant per verb, so
+/// adding a new motion verb does not double the event list.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum FadeOut {
     /// Ramp out over the declick window, then complete the action. What a
@@ -72,18 +71,25 @@ pub enum Then {
 /// makes them parameters rather than more variants.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum MotionEvent {
+    /// Roll from the current position. A no-op while already rolling.
     Play,
-    /// Stop where we are.
+    /// Stop at the current position.
     Stop {
+        /// Whether to ramp the output down first.
         fade: FadeOut,
     },
     /// Jump to `beat`.
     Locate {
+        /// The absolute target position.
         beat: Beat,
+        /// Whether to ramp the output down before jumping.
         fade: FadeOut,
+        /// What the transport should be doing once the jump lands.
         then: Then,
     },
+    /// Begin scrubbing forward.
     FastForward,
+    /// Begin scrubbing backward.
     Rewind,
     /// Leave fast-forward/rewind, returning to the previous motion.
     EndScrub,
@@ -149,6 +155,7 @@ const COMMAND_QUEUE_CAPACITY: usize = 64;
 /// bug — the queue holds 64 user-driven commands.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct QueueFull {
+    /// The event that was dropped, handed back so a caller can retry it.
     pub event: MotionEvent,
 }
 
@@ -197,6 +204,7 @@ impl core::fmt::Debug for MotionFsm {
 }
 
 impl MotionFsm {
+    /// A stopped machine publishing into `settings`, with an empty queue.
     pub fn new(settings: TransportSettings) -> Self {
         Self {
             queue: Arc::new(ArrayQueue::new(COMMAND_QUEUE_CAPACITY)),
@@ -215,8 +223,11 @@ impl MotionFsm {
     /// available synchronously. Observe the outcome by reading
     /// [`MotionFsm::motion`] on a later frame.
     ///
-    /// `Err` means the queue was full and the event is gone. That is the one
-    /// failure a caller can act on, so it is `#[must_use]`.
+    /// `Err` means the queue was full and the event is gone — the one failure
+    /// a caller can act on, and the event is handed back inside [`QueueFull`]
+    /// so it can be retried.
+    ///
+    /// RT-safe: lock-free, no allocation.
     pub fn try_send(&self, event: MotionEvent) -> Result<(), QueueFull> {
         self.queue.push(event).map_err(|event| QueueFull { event })
     }
@@ -237,18 +248,29 @@ impl MotionFsm {
         MotionState::from(self.motion.load(Ordering::Acquire))
     }
 
+    /// Whether the published motion is exactly [`MotionState::Rolling`] —
+    /// `false` while scrubbing or mid-fade.
     pub fn is_playing(&self) -> bool {
         self.motion() == MotionState::Rolling
     }
 
+    /// Whether the published motion is exactly [`MotionState::Stopped`] —
+    /// `false` during a fade that has not yet completed.
     pub fn is_stopped(&self) -> bool {
         self.motion() == MotionState::Stopped
     }
 
     /// Drain the queue into the FSM and publish the results.
     ///
-    /// **Audio thread only** — `AudioThreadCell` panics in debug builds
-    /// otherwise.
+    /// **Audio thread only.** RT-safe: no allocation, no locks, bounded by the
+    /// queue's 64-command capacity.
+    ///
+    /// # Panics
+    ///
+    /// In debug builds, if called from a thread other than the one that first
+    /// borrowed the FSM's `AudioThreadCell`. Announce a new callback thread
+    /// with [`reset_owner`](Self::reset_owner) rather than letting it be
+    /// discovered here.
     pub fn drain(&self) {
         while let Some(event) = self.queue.pop() {
             let result = {
@@ -308,8 +330,11 @@ impl MotionFsm {
     /// action the fade was covering for.
     ///
     /// Driven by the outcome the FSM parked when the fade started, not by
-    /// reading the published mirror back — the mirror is a projection, and
-    /// dispatching on it is how a desynced FSM used to go unnoticed.
+    /// reading the published mirror back: the mirror is a projection, so
+    /// dispatching on it lets an FSM/mirror disagreement pass unnoticed.
+    ///
+    /// **Audio thread only**, for the same reason as
+    /// [`drain`](Self::drain) — it borrows the FSM's cell.
     pub fn complete_declick(&self) {
         self.declick.clear();
 
@@ -417,11 +442,11 @@ mod tests {
         assert_eq!(m.seek.take(), Some(Beat(4.0)));
         assert!(m.is_playing());
 
-        // D3 regression. The assertion above passed even while the FSM was
-        // desynced from its published mirror — the mirror said `Rolling` while
-        // the FSM still held `Stopped`, so both stop arms hit their `None` case
-        // and the transport could not be stopped at all. Proving it *stops* is
-        // what actually pins the fix.
+        // The assertion above passes even when the FSM is desynced from its
+        // published mirror — a mirror reading `Rolling` over an FSM holding
+        // `Stopped` sends both stop arms into their `None` case, and the
+        // transport cannot be stopped at all. Proving it *stops* is what pins
+        // the real property.
         let _ = m.try_send(MotionEvent::stop_now());
         m.drain();
         assert!(
@@ -430,13 +455,14 @@ mod tests {
         );
     }
 
-    /// D1: the Stop button used to send `Stop` + `Locate(0.0)`. `drain` pops
-    /// both in one callback, so the seek landed immediately while 480 samples of
-    /// fade remained — the declick then ramped down audio rendered from the new
-    /// position, protecting nothing, and the click it exists to suppress
-    /// happened unmasked at the seek instant.
+    /// The Stop button's fade and its return-to-zero must be ONE event.
     ///
-    /// One event now carries both halves, and the jump waits for silence.
+    /// Sent as `Stop` + `Locate(0.0)`, `drain` pops both in one callback, so
+    /// the seek lands immediately while the fade still has samples to run —
+    /// the declick then ramps down audio rendered from the *new* position,
+    /// protecting nothing, and the click it exists to suppress happens unmasked
+    /// at the seek instant. `stop_and_return` carries both halves, so the jump
+    /// waits for silence.
     #[test]
     fn stop_and_return_holds_the_playhead_until_the_fade_ends() {
         let m = fsm();
@@ -463,8 +489,7 @@ mod tests {
     }
 
     /// Pressing Stop while already stopped has nothing to fade, so it returns
-    /// to zero immediately — matching the old two-event behaviour and the
-    /// standard DAW second-press-rewinds idiom.
+    /// to zero immediately — the standard DAW second-press-rewinds idiom.
     #[test]
     fn stop_and_return_from_a_stop_jumps_immediately() {
         let m = fsm();

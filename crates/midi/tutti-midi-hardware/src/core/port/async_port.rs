@@ -1,3 +1,11 @@
+//! One hardware input port: its ring, its active flag, and the producer handle
+//! a driver callback pushes through.
+//!
+//! [`HardwareMidiInput`] is the per-connection half; [`HardwareMidiInputs`] in
+//! `manager` holds N of them and drives the per-block drain across all of them.
+//!
+//! [`HardwareMidiInputs`]: super::HardwareMidiInputs
+
 use std::time::Instant;
 
 use tutti_midi_types::ump::MidiEvent;
@@ -7,9 +15,11 @@ use super::spsc::{SpscProducer, SpscRing};
 /// Producer handle for a port's input ring (timestamped events).
 ///
 /// # Safety
-/// Must only be used from a single thread (the midir callback thread) — the
-/// SPSC single-producer invariant. The wrapped `SpscProducer` encapsulates
-/// the unsafe; this newtype only pairs each event with its arrival `Instant`.
+/// Must only be used from a single thread — the driver callback thread that
+/// owns it, per the SPSC single-producer invariant. `Clone` is provided so the
+/// handle can be *moved* into a callback, not so two threads can push: every
+/// clone aliases the same producer. The wrapped `SpscProducer` encapsulates the
+/// unsafe; this newtype only pairs each event with its arrival `Instant`.
 #[derive(Clone)]
 pub struct InputProducerHandle {
     producer: SpscProducer<(Instant, MidiEvent)>,
@@ -25,19 +35,26 @@ impl core::fmt::Debug for InputProducerHandle {
 }
 
 impl InputProducerHandle {
+    /// Push one event with its arrival `timestamp`, which the drain converts
+    /// into a `frame_offset` within the block that reads it.
+    ///
+    /// Returns `false` when the ring is full; the event is then dropped, not
+    /// queued. Lock-free and allocation-free, so it is safe to call from a
+    /// driver callback.
     #[inline]
     pub fn push(&self, event: MidiEvent, timestamp: Instant) -> bool {
         self.producer.push((timestamp, event))
     }
 }
 
-/// A hardware **input** port: a lock-free ring fed by the midir callback thread
+/// A hardware **input** port: a lock-free ring fed by the driver callback thread
 /// (each event paired with its arrival `Instant`) and drained by the engine
 /// cycle. This is the one MIDI path that genuinely needs [`SpscRing`] — a
 /// cross-thread producer/consumer with wall-clock timestamps — which the
 /// engine-internal [`MidiMailbox`](tutti_midi_runtime::MidiMailbox) mailbox
 /// (the single MIDI-*out* ring) does not model. There is no output counterpart
-/// here: outbound MIDI rides the mailbox → [`OutputThread`](crate) sink instead.
+/// here: outbound MIDI rides the mailbox to a
+/// [`MidiOut`](tutti_midi_types::MidiOut) sink instead.
 pub struct HardwareMidiInput {
     name: String,
     active: std::sync::atomic::AtomicBool,

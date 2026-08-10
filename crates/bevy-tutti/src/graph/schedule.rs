@@ -81,17 +81,24 @@ pub enum GraphReconcileSystems {
 ///
 /// The safe ones are those inserted by the *same plugin* that schedules the
 /// system, since a host cannot have one without the other. That is the real
-/// test — not whether the engine is up, but who owns the insertion.
-///
-/// (An earlier version of this doc named only `MidiIoRes` and `PluginsRes` as
-/// exceptions, and three MIDI systems took hard `Res` on the strength of it. All
-/// three panicked the first time a host added `TuttiMidiPlugin` without the full
-/// engine bootstrap.)
+/// test — not whether the engine is up, but who owns the insertion. Treating the
+/// list above as short enough to take hard is how a host that adds
+/// `TuttiMidiPlugin` without the full engine bootstrap gets a panic instead of a
+/// no-op.
 pub fn engine_ready(state: Option<Res<AudioEngineState>>) -> bool {
     state.is_some_and(|s| s.is_running())
 }
 
-/// Per-frame "did anything change?" flag used to coalesce
-/// `graph.commit()` to at most one call per frame.
+/// Per-frame "did anything change?" flag that coalesces `graph.commit()` to at
+/// most one call per frame.
+///
+/// Any reconcile system that mutates the graph sets it; [`commit_graph`] clears
+/// it. Set it after staging an edit rather than committing inline — a commit per
+/// edit costs a graph rebuild per edit.
+///
+/// [`commit_graph`]: super::commit_graph
 #[derive(Resource, Default)]
-pub struct GraphDirty(pub bool);
+pub struct GraphDirty(
+    /// Whether any reconcile system mutated the graph this frame.
+    pub bool,
+);

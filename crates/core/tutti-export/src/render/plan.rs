@@ -24,14 +24,14 @@ pub(crate) struct RenderPlan {
 }
 
 impl RenderPlan {
-    /// Derive the plan from a config. **Pure** — arithmetic over three numbers.
+    /// Derive the plan from a config. **Pure** — arithmetic over three FRAME
+    /// counts, and no `Net` in sight.
     ///
-    /// It used to take `&mut tutti_core::dsp::Net`, for one reason: resolving a
-    /// `LatencyTrim::Reported` variant by calling `net.latency()`. One mode on
-    /// one field made a frame-count calculation require a mutable audio graph,
-    /// which meant it could not be tested, reused, or reasoned about without
-    /// building a graph first. The caller resolves the latency now (see
-    /// [`reported_latency`](crate::reported_latency)) and passes a number.
+    /// That purity is the point: an "ask the graph" latency mode would make a
+    /// frame-count calculation require a mutable audio graph, so it could not be
+    /// tested, reused, or reasoned about without building one first. The caller
+    /// resolves the latency (see [`reported_latency`](crate::reported_latency))
+    /// and passes a number.
     pub fn new(config: &RenderConfig) -> Self {
         let duration = duration_to_frames(config.duration_seconds, config.sample_rate);
         // The tail extends what the sink KEEPS, not just what the net produces.
@@ -141,8 +141,8 @@ mod tests {
         }
     }
 
-    /// Note there is no `Net` in any of these. That is the point of the change:
-    /// the plan is arithmetic, so it can be checked as arithmetic.
+    /// Note there is no `Net` in any of these: the plan is arithmetic, so it is
+    /// checked as arithmetic.
     #[test]
     fn no_trim_renders_exactly_the_audible_span() {
         let plan = RenderPlan::new(&config(Samples(0)));
@@ -186,7 +186,7 @@ mod tests {
         );
     }
 
-    /// A zero tail is exactly the arithmetic from before tails existed.
+    /// A zero tail leaves the plan as the head trim alone determines it.
     #[test]
     fn no_tail_leaves_the_plan_unchanged() {
         let plan = RenderPlan::new(&config(Samples(512)));

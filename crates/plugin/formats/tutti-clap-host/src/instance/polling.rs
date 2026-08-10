@@ -101,10 +101,9 @@ struct EmbedOutcome {
 /// `get_size` → `set_parent` → `show`.
 ///
 /// The order matters: `is_api_supported` must gate `create` (so a floating-only
-/// plugin is detected before we try to embed), and `set_parent` must follow
-/// `get_size` but precede `show`. The previous implementation created, set the
-/// parent, *then* asked for size, which reported the pre-embed size and skipped
-/// `is_api_supported` entirely.
+/// plugin is detected before the embed is attempted), and `set_parent` must
+/// follow `get_size` but precede `show`. Creating, setting the parent and
+/// *then* asking for size reports the pre-embed size instead.
 ///
 /// `set_scale` sits where it does for a narrower reason than the rest of the
 /// order. On a physical-pixel api it is an *input* to the geometry the plugin
@@ -286,7 +285,7 @@ unsafe fn floating_editor_sequence(
 /// Read `can_resize` + `get_resize_hints` off a created editor.
 ///
 /// Split out of [`ClapActive::editor_capabilities`] for the same reason as
-/// [`embed_editor_sequence`]: the CLAP call order is the contract, and a free
+/// `embed_editor_sequence`: the CLAP call order is the contract, and a free
 /// function over a vtable can be tested against a logging stub. The caller owns
 /// the *precondition* — `create()` must already have run — because that lives in
 /// `LifecycleFlags`, not in the vtable.
@@ -336,7 +335,7 @@ impl ClapLoaded {
     ///
     /// Not just "is there a `clap.gui` vtable?": a plugin may expose the
     /// extension but omit `create`, or support only a floating window. Both are
-    /// legal CLAP and both make [`embed_editor_sequence`] fail, so both answer
+    /// legal CLAP and both make `embed_editor_sequence` fail, so both answer
     /// `false` here.
     ///
     /// **This is the embedded question only, and it is not "has an editor".**
@@ -352,7 +351,7 @@ impl ClapLoaded {
     /// resources. So a plugin whose `is_api_supported` says yes and whose
     /// `create` then fails still reports `true` here; that surfaces as
     /// [`open_editor`](Self::open_editor)'s error. An absent `is_api_supported`
-    /// is not a refusal — the same reading [`embed_editor_sequence`] uses.
+    /// is not a refusal — the same reading `embed_editor_sequence` uses.
     pub fn has_editor(&self) -> bool {
         if self.extensions.gui.gui.is_null() {
             return false;
@@ -379,7 +378,7 @@ impl ClapLoaded {
     ///
     /// Follows the CLAP embed sequence: `is_api_supported` → `create` →
     /// `set_scale` → `get_size` → `set_parent` → `show`. See
-    /// [`embed_editor_sequence`] for the ordering rationale and for which
+    /// `embed_editor_sequence` for the ordering rationale and for which
     /// window apis take the `set_scale` step.
     ///
     /// # Errors
@@ -513,7 +512,7 @@ impl ClapLoaded {
     /// `ext/gui.h:113` — "The host has no obligation to honor the plugin
     /// preference, this is just a hint." Returned as the `is_floating` flag
     /// alone: the api half is only useful to a host that speaks more than one
-    /// per platform, and this one does not — [`platform_window_handle`] resolves
+    /// per platform, and this one does not — `platform_window_handle` resolves
     /// exactly one api per target, so reporting a preference this host cannot
     /// act on would invite a caller to try.
     ///
@@ -601,6 +600,11 @@ impl ClapLoaded {
         })
     }
 
+    /// Consume the plugin's pending `gui.request_resize`, if any.
+    ///
+    /// Draining: a second call with no new request answers `None`. The host
+    /// is free to ignore or clamp the size — CLAP treats it as a request, not
+    /// an instruction.
     pub fn poll_editor_resize_request(&self) -> Option<EditorSize> {
         if !self
             .host_state

@@ -98,7 +98,9 @@ pub use fundsp::latency::PDC_DELAY_ID;
 // ──────────────────────────────────────────────────────────────────────
 // Transport / control nodes
 // ──────────────────────────────────────────────────────────────────────
-pub const TRANSPORT_CLOCK_ID: u64 = 0x_5452_4E53_434C_4B00; // "TRNSCLK\0"
+/// [`TransportClock`](crate::TransportClock)'s type fingerprint — the mnemonic
+/// `"TRNSCLK\0"`.
+pub const TRANSPORT_CLOCK_ID: u64 = 0x_5452_4E53_434C_4B00;
 
 // Compile-time intra-crate uniqueness guard for core's own ids.
 const _: () = assert_unique(&[PDC_DELAY_ID, TRANSPORT_CLOCK_ID]);

@@ -59,26 +59,54 @@ impl Clone for VbapPannerNode {
 }
 
 impl VbapPannerNode {
+    /// A 2-out panner over the stereo speaker pair.
+    ///
+    /// # Errors
+    /// Returns [`VbapError::Vbap`](crate::vbap::VbapError::Vbap) if the preset
+    /// geometry is rejected.
     pub fn stereo() -> Result<Self> {
         let panner = VbapPanner::stereo()?;
         Ok(Self::from_panner(panner, ChannelLayout::STEREO))
     }
 
+    /// A 4-out panner over the quad field (FL/FR/RL/RR, no LFE).
+    ///
+    /// # Errors
+    /// Returns [`VbapError::Vbap`](crate::vbap::VbapError::Vbap) if the preset
+    /// geometry is rejected.
     pub fn quad() -> Result<Self> {
         let panner = VbapPanner::quad()?;
         Ok(Self::from_panner(panner, ChannelLayout::from(4u16)))
     }
 
+    /// A 6-out panner over the 5.1 field. The preset is literally 5.0 — LFE is
+    /// left silent here and fed separately by
+    /// [`build_vbap_mix`](super::build_vbap_mix).
+    ///
+    /// # Errors
+    /// Returns [`VbapError::Vbap`](crate::vbap::VbapError::Vbap) if the preset
+    /// geometry is rejected.
     pub fn surround_5_1() -> Result<Self> {
         let panner = VbapPanner::surround_5_1()?;
         Ok(Self::from_panner(panner, ChannelLayout::from(6u16)))
     }
 
+    /// An 8-out panner over the 7.1 field. Like 5.1, the preset is 7.0 and LFE
+    /// is fed separately.
+    ///
+    /// # Errors
+    /// Returns [`VbapError::Vbap`](crate::vbap::VbapError::Vbap) if the preset
+    /// geometry is rejected.
     pub fn surround_7_1() -> Result<Self> {
         let panner = VbapPanner::surround_7_1()?;
         Ok(Self::from_panner(panner, ChannelLayout::from(8u16)))
     }
 
+    /// A 12-out panner over the 7.1.4 Atmos bed — 7.1 plus four height speakers.
+    ///
+    /// # Errors
+    /// Returns [`VbapError::Vbap`](crate::vbap::VbapError::Vbap) if the preset
+    /// geometry is rejected.
     pub fn atmos_7_1_4() -> Result<Self> {
         let panner = VbapPanner::atmos_7_1_4()?;
         Ok(Self::from_panner(panner, ChannelLayout::from(12u16)))
@@ -89,9 +117,12 @@ impl VbapPannerNode {
     /// matching VBAP preset. This is the single place the count→preset mapping
     /// lives, so reconcilers and graph builders call it instead of re-matching.
     ///
-    /// Errors with [`Error::UnsupportedSpeakerLayout`] for a width that has no
-    /// preset (only 2/4/6/8/12 are defined). The node keeps the count enum and
-    /// resolves it to a VBAP speaker preset internally.
+    /// The node keeps the count enum and resolves it to a VBAP speaker preset
+    /// internally.
+    ///
+    /// # Errors
+    /// Returns [`VbapError::UnsupportedSpeakerLayout`](crate::vbap::VbapError::UnsupportedSpeakerLayout)
+    /// for a width that has no preset — only 2/4/6/8/12 are defined.
     pub fn for_layout(layout: tutti_types::ChannelLayout) -> Result<Self> {
         match layout.count() {
             2 => Self::stereo(),
@@ -124,33 +155,44 @@ impl VbapPannerNode {
         self.target.store(azimuth, elevation);
     }
 
+    /// The commanded bearing in [`Azimuth`] degrees — the target, not the
+    /// smoothed position the panner is currently at.
     pub fn azimuth(&self) -> Azimuth {
         self.target.azimuth.load()
     }
 
+    /// The commanded height in [`Elevation`] degrees — the target, not the
+    /// smoothed position the panner is currently at.
     pub fn elevation(&self) -> Elevation {
         self.target.elevation.load()
     }
 
-    /// Set spread factor (0.0 = point source, 1.0 = diffuse)
+    /// Set the VBAP diffusion, clamped to [`Spread`]'s `0..1`: 0 is a point
+    /// source, 1 smears it across the whole speaker field. Lock-free.
     pub fn set_spread(&self, spread: impl Into<Spread>) {
         self.spread.store(Spread::new_clamped(spread.into().get()));
     }
 
+    /// The current [`Spread`], `0..1`.
     pub fn spread(&self) -> Spread {
         self.spread.load()
     }
 
-    /// Set stereo width for stereo input mode (0.0 = mono, 1.0 = full stereo)
+    /// Set the mid/side width applied to a stereo input, clamped to
+    /// [`StereoWidth`]: 0 is mono, 1 unchanged, above 1 wider than the source.
+    /// Lock-free.
     pub fn set_width(&self, width: impl Into<StereoWidth>) {
         self.width
             .store(StereoWidth::new_clamped(width.into().get()));
     }
 
+    /// The current [`StereoWidth`].
     pub fn width(&self) -> StereoWidth {
         self.width.load()
     }
 
+    /// Output channel count — the speaker layout's width, and what
+    /// `AudioUnit::outputs` reports.
     pub fn num_channels(&self) -> usize {
         self.layout.count() as usize
     }

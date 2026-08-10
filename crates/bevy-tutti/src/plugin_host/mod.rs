@@ -45,10 +45,10 @@ pub mod health;
 pub mod latency;
 pub mod load;
 pub mod native_window;
-/// Needs [`crate::export`]'s `ExportInFlight` to know a bounce is running, and
-/// that module is itself `export`-gated. This is the one place a `cfg` is
-/// right rather than an `is_plugin_added` check: without the feature the type
-/// does not exist to name, so there is no plugin to ask about.
+// `render_mode` needs `crate::export`'s `ExportInFlight` to know a bounce is
+// running, and that module is itself `export`-gated. This is the one place a
+// `cfg` is right rather than an `is_plugin_added` check: without the feature
+// the type does not exist to name, so there is no plugin to ask about.
 #[cfg(feature = "export")]
 pub mod render_mode;
 pub mod scan;
@@ -85,11 +85,12 @@ pub use scan::{
     ScanProgressed,
 };
 
-/// Non-Send marker resource that forces plugin editor systems to run on the
-/// main thread. AppKit (macOS), Win32, and X11 window operations must happen
-/// on the main thread. JUCE, VSTGUI, and other plugin GUI frameworks assume
-/// this. Inserted as `insert_non_send` so any system that takes
-/// `NonSend<PluginEditorMainThread>` is pinned to the main thread.
+/// Non-send marker that pins plugin editor systems to the main thread.
+///
+/// AppKit (macOS), Win32 and X11 window operations must happen there, and JUCE,
+/// VSTGUI and every other plugin GUI framework assumes it. Inserted with
+/// `insert_non_send`, so any system taking `NonSend<PluginEditorMainThread>` is
+/// pinned by Bevy's own scheduler rather than by convention.
 pub struct PluginEditorMainThread;
 
 /// Whether this app has windowing, and so whether a plugin editor can exist.
@@ -110,18 +111,22 @@ pub fn windowing_ready(
     close_events.is_some() && resize_events.is_some()
 }
 
-/// The plugin discovery + loading catalog. Owns the on-disk DB and the
-/// scan-dir config; systems reach in to `register_bundled_plugin`,
-/// `unregister_bundled_plugins`, `rescan`, etc.
+/// The plugin discovery and loading catalog: the on-disk DB plus the scan-dir
+/// config.
 ///
-/// `Plugins` is `Send + Sync` (the `PluginCatalog` trait carries
-/// `Send + Sync` supertraits, which propagate through `Box<dyn ...>`), so
-/// Bevy's `ResMut<PluginsRes>` exclusivity is the only synchronization
-/// needed — no extra `Mutex`.
+/// **Absent while a rescan is running** — [`scan`] moves the catalog onto the
+/// scan thread and re-inserts it on completion, so every reader takes
+/// `Option<Res<PluginsRes>>`.
+///
+/// `Plugins` is `Send + Sync` (the `PluginCatalog` trait carries those
+/// supertraits, which propagate through `Box<dyn ..>`), so Bevy's
+/// `ResMut<PluginsRes>` exclusivity is the only synchronization needed — no
+/// extra `Mutex`.
 #[derive(Resource)]
 pub struct PluginsRes(pub tutti_plugin::catalog::Plugins);
 
 impl PluginsRes {
+    /// Wraps a catalog as the world's one [`PluginsRes`].
     pub fn new(plugins: tutti_plugin::catalog::Plugins) -> Self {
         Self(plugins)
     }
@@ -131,7 +136,7 @@ impl PluginsRes {
 // component. They are runtime-discovered `u32` ids with per-instance ranges,
 // which `AudioParam<U, P>` (const-generic over a closed `UnitParam` enum)
 // cannot express. Automation reaches them sample-accurately over the per-block
-// `ParamAutomationSource` path instead — see [`bind`].
+// `ParamAutomationSource` path instead — see the `bind` module.
 
 /// Bevy plugin: plugin load, engine binding, health, editor lifecycle, and
 /// catalog scanning.
@@ -162,24 +167,24 @@ impl Plugin for TuttiHostingPlugin {
 
         app.add_observer(set_editor_visible_observer);
 
-        // `Plugin::build` runs on the thread that builds the `App`, which for
-        // a windowed Bevy app is the main/UI thread — the same thread every
+        // `Plugin::build` runs on the thread that builds the `App`, which for a
+        // windowed Bevy app is the main/UI thread — the same thread every
         // `NonSend` editor system below is pinned to. Marking it here is what
         // arms the `assert_main_thread()` guards throughout the VST3/CLAP/AU/
-        // VST2 hosts: those are `debug_assert!`s that *also* no-op while the
-        // main thread is unrecorded, so with no caller anywhere in the engine
-        // every main-thread guard in the plugin layer was decorative in every
-        // configuration.
+        // VST2 hosts: those are `debug_assert!`s that also no-op while the main
+        // thread is unrecorded, so without this call every main-thread guard in
+        // the plugin layer is decorative.
         //
-        // Idempotent (`OnceLock::set`): a host that already marked its own
-        // main thread wins and this call is a no-op.
+        // Idempotent (`OnceLock::set`): a host that already marked its own main
+        // thread wins and this call is a no-op.
         tutti_plugin::mark_main_thread();
 
         app.insert_non_send(PluginEditorMainThread);
 
         // macOS AppKit live-resize observers. `NonSend` so Bevy pins every
         // access — and therefore every `removeObserver` drop — to the main
-        // thread, replacing the old `unsafe impl Send + Sync` on the handle.
+        // thread, which is what keeps the observer out of a `Send + Sync`
+        // component.
         #[cfg(target_os = "macos")]
         app.insert_non_send(live_resize::LiveResizeRegistry::default());
 
@@ -214,9 +219,9 @@ impl Plugin for TuttiHostingPlugin {
         // frame rather than simply finding nothing to read.
         //
         // The engine is the wrong gate for these: a plugin's GUI is perfectly
-        // meaningful with audio stopped, and gating on `engine_ready` was both
-        // too strict (no editor without a device) and too loose (it says nothing
-        // about windows, which is what these actually need).
+        // meaningful with audio stopped, so `engine_ready` is both too strict
+        // (no editor without a device) and too loose (it says nothing about
+        // windows, which is what these actually need).
         app.add_systems(
             Update,
             (
@@ -309,8 +314,8 @@ impl Plugin for TuttiHostingPlugin {
 
         // `PluginClient` is only reachable through the shared MIDI resolver if
         // its type is registered — an unregistered node type is invisible to
-        // `register_midi_senders`, which is why a hosted plugin could not
-        // receive MIDI however it was wired.
+        // `register_midi_senders`, so without this a hosted plugin receives no
+        // MIDI however it is wired.
         bind::register_plugin_node_types(app);
 
         // Binding sits between spawn and commit, alongside MIDI registration and

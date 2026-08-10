@@ -52,9 +52,8 @@ impl Vst2Instance {
     /// number reaches the plugin's own array indexing, which is what this
     /// guards. A negative index is refused here for the same reason.
     ///
-    /// One helper rather than a check per entry point: `parameter_info` used to
-    /// be the only site that guarded, which made the other three read like a
-    /// deliberate convention rather than an omission.
+    /// One helper rather than a check per entry point, so that a site without the
+    /// guard reads as an omission rather than a convention.
     fn param_index(&self, id: i32) -> Option<i32> {
         let count = self.handle.instance.get_info().parameters;
         (id >= 0 && id < count).then_some(id)
@@ -185,15 +184,9 @@ impl Vst2Instance {
     /// VST2 can answer: `READ_ONLY` and the rest have no opcode, so they stay
     /// out of the `known` mask rather than being reported as absent.
     ///
-    /// This used to claim `ALL_AUTOMATABLE`, asserting something the ABI never
-    /// said; it was then corrected to an empty `known` on the stated grounds
-    /// that the vendored crate did not surface the opcode. That was wrong —
-    /// `PluginParameters::can_be_automated` dispatches it, and the host already
-    /// holds the object it is called on.
-    ///
     /// `default_value` comes from the load-time snapshot, not the live value.
     /// VST2 has no default-value opcode, so a plugin's initial state is the only
-    /// place its defaults are observable — see [`Vst2Instance::initial_values`].
+    /// place its defaults are observable.
     pub fn parameter_list(&self) -> Vec<SharedParameterInfo> {
         self.parameters()
             .into_iter()
@@ -245,7 +238,7 @@ impl Vst2Instance {
                     // The one format that addresses by position. `p.id` is the
                     // enumeration counter from `parameters()`, already bounded
                     // by `get_info().parameters`, so it is an index by
-                    // construction — see [`Vst2Instance::param_index`].
+                    // construction — see `param_index`.
                     id: ParamAddress::Index(p.id),
                     name: p.name,
                     unit: p.unit,

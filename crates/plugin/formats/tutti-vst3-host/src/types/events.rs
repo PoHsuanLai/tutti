@@ -11,7 +11,7 @@
 
 //! # Narrowing casts are denied in this module
 //!
-//! This file is a boundary between our vocabulary and the VST3 C ABI, and every
+//! This file is a boundary between the engine's vocabulary and the VST3 C ABI, and every
 //! bug it has had was a cast that silently changed a value's meaning: a `u32`
 //! frame offset wrapping negative into an `i32` `sampleOffset`, and a release
 //! velocity dropped on the way through. Both compiled without complaint.
@@ -41,16 +41,25 @@ use vst3::Steinberg::Vst::Event_::EventTypes_;
 /// than threading six parallel slices.
 #[derive(Clone, Copy, Default)]
 pub struct Vst3InputEvents<'a> {
+    /// UMP MIDI for the block, in ascending frame-offset order.
     pub midi: &'a [MidiEvent],
+    /// Continuous per-note expression values, addressed by note id.
     pub note_expressions: &'a [NoteExpressionValue],
+    /// Chord context changes (root, bass, degree mask) for chord-aware plugins.
     pub chords: &'a [ChordValue],
+    /// Scale/key context changes (root plus a 12-bit degree mask).
     pub scales: &'a [ScaleValue],
+    /// Per-note text annotations; the strings are copied into the event list's
+    /// UTF-16 arena during staging.
     pub expr_texts: &'a [NoteExpressionText],
+    /// Stepped/enumerated per-note expressions carrying an `i64` rather than a
+    /// normalized `f64`.
     pub expr_ints: &'a [NoteExpressionIntValue],
 }
 
 impl Vst3InputEvents<'_> {
-    /// True when at least one stream carries an event this block.
+    /// True when no stream carries an event this block, so staging can be
+    /// skipped entirely.
     pub fn is_empty(&self) -> bool {
         self.midi.is_empty()
             && self.note_expressions.is_empty()
@@ -152,8 +161,11 @@ pub struct EventHeader {
 /// Note-on event. Velocity is normalized to `0.0..=1.0`.
 #[derive(Debug, Clone, Copy)]
 pub struct NoteOnEvent {
+    /// Bus, frame offset and event-type discriminant.
     pub header: EventHeader,
+    /// Zero-based MIDI channel within the event bus.
     pub channel: i16,
+    /// MIDI note number, 0..=127.
     pub pitch: i16,
     /// Fractional tuning offset from 12-TET, in semitones.
     pub tuning: f32,
@@ -168,13 +180,17 @@ pub struct NoteOnEvent {
 /// Note-off event. Velocity is normalized to `0.0..=1.0`.
 #[derive(Debug, Clone, Copy)]
 pub struct NoteOffEvent {
+    /// Bus, frame offset and event-type discriminant.
     pub header: EventHeader,
+    /// Zero-based MIDI channel within the event bus.
     pub channel: i16,
+    /// MIDI note number, 0..=127; must match the originating note-on.
     pub pitch: i16,
     /// Normalized release velocity (0.0 – 1.0).
     pub velocity: f32,
     /// Plugin-assigned note id matching the originating note-on, or `-1`.
     pub note_id: i32,
+    /// Fractional tuning offset from 12-TET, in semitones.
     pub tuning: f32,
 }
 
@@ -182,6 +198,7 @@ pub struct NoteOffEvent {
 /// channel pressure, and SysEx.
 #[derive(Debug, Clone, Copy)]
 pub struct DataEvent {
+    /// Bus, frame offset and event-type discriminant.
     pub header: EventHeader,
     /// Valid byte count in `bytes`.
     pub size: u32,
@@ -194,11 +211,15 @@ pub struct DataEvent {
 /// Polyphonic pressure (per-note aftertouch).
 #[derive(Debug, Clone, Copy)]
 pub struct PolyPressureEvent {
+    /// Bus, frame offset and event-type discriminant.
     pub header: EventHeader,
+    /// Zero-based MIDI channel within the event bus.
     pub channel: i16,
+    /// MIDI note number the pressure applies to, 0..=127.
     pub pitch: i16,
     /// Normalized pressure (0.0 – 1.0).
     pub pressure: f32,
+    /// Plugin-assigned note id, or `-1` if channel/pitch-based.
     pub note_id: i32,
 }
 
@@ -206,7 +227,10 @@ pub struct PolyPressureEvent {
 /// rather than a channel.
 #[derive(Debug, Clone, Copy)]
 pub struct NoteExpressionValueEvent {
+    /// Bus, frame offset and event-type discriminant.
     pub header: EventHeader,
+    /// Note id assigned by the originating note-on; expression is per-note, not
+    /// per-channel, so this is the only addressing available.
     pub note_id: i32,
     /// VST3 `NoteExpressionTypeIDs`: 0=volume, 1=pan, 2=tuning, 3=vibrato,
     /// 4=expression, 5=brightness. See [`note_expression_type_to_id`].
@@ -225,10 +249,12 @@ pub struct NoteExpressionValueEvent {
 /// code units, excluding any terminator.
 ///
 /// `DataEvent` needs no arena: its payload is already an inline `[u8; 16]` in
-/// the event, and [`to_c_event`] points the C struct straight at it.
+/// the event, and the C-struct conversion points straight at it.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct TextRef {
+    /// Offset of the first `u16` code unit within the arena.
     pub start: u32,
+    /// Length in `u16` code units, excluding any terminator.
     pub len: u32,
 }
 
@@ -236,9 +262,13 @@ pub struct TextRef {
 /// owning event list's arena; `type_id` is a VST3 note-expression type id.
 #[derive(Debug, Clone, Copy)]
 pub struct NoteExpressionTextEvent {
+    /// Bus, frame offset and event-type discriminant.
     pub header: EventHeader,
+    /// VST3 note-expression type id the text annotates.
     pub type_id: u32,
+    /// Note id assigned by the originating note-on.
     pub note_id: i32,
+    /// The annotation, as a slice into the event list's UTF-16 arena.
     pub text: TextRef,
 }
 
@@ -246,10 +276,16 @@ pub struct NoteExpressionTextEvent {
 /// display name in the arena. Drives chord-aware instruments / harmonizers.
 #[derive(Debug, Clone, Copy)]
 pub struct ChordEvent {
+    /// Bus, frame offset and event-type discriminant.
     pub header: EventHeader,
+    /// Chord root as a MIDI note number, 0..=127.
     pub root: i16,
+    /// Bass note as a MIDI note number, 0..=127; differs from `root` for
+    /// inversions and slash chords.
     pub bass_note: i16,
+    /// Bitmask of chord degrees present.
     pub mask: i16,
+    /// Display name, as a slice into the event list's UTF-16 arena.
     pub text: TextRef,
 }
 
@@ -257,9 +293,13 @@ pub struct ChordEvent {
 /// (bit 0 = C), and a display name in the arena.
 #[derive(Debug, Clone, Copy)]
 pub struct ScaleEvent {
+    /// Bus, frame offset and event-type discriminant.
     pub header: EventHeader,
+    /// Scale root as a MIDI note number, 0..=127.
     pub root: i16,
+    /// 12-bit mask of scale degrees, bit 0 = C.
     pub mask: i16,
+    /// Display name, as a slice into the event list's UTF-16 arena.
     pub text: TextRef,
 }
 
@@ -267,9 +307,13 @@ pub struct ScaleEvent {
 /// [`NoteExpressionValueEvent`] (used for stepped / enumerated dimensions).
 #[derive(Debug, Clone, Copy)]
 pub struct NoteExpressionIntValueEvent {
+    /// Bus, frame offset and event-type discriminant.
     pub header: EventHeader,
+    /// VST3 note-expression type id; its declared info states the valid range.
     pub type_id: u32,
+    /// Note id assigned by the originating note-on.
     pub note_id: i32,
+    /// The stepped value, in the type's own units rather than normalized.
     pub value: i64,
 }
 
@@ -278,10 +322,16 @@ pub struct NoteExpressionIntValueEvent {
 /// the second data byte for pitch-bend / poly-pressure. Output-only.
 #[derive(Debug, Clone, Copy)]
 pub struct LegacyMidiCcOutEvent {
+    /// Bus, frame offset and event-type discriminant.
     pub header: EventHeader,
+    /// A VST3 `ControllerNumbers` index, not always a plain CC number: the
+    /// enum's upper values stand for pitch bend, aftertouch and program change.
     pub control_number: u8,
+    /// Zero-based MIDI channel.
     pub channel: i8,
+    /// First data byte, 0..=127.
     pub value: i8,
+    /// Second data byte, used by pitch-bend and poly-pressure; 0 otherwise.
     pub value2: i8,
 }
 
@@ -291,15 +341,25 @@ pub struct LegacyMidiCcOutEvent {
 /// (see [`TextRef`]) so the enum stays `Copy`.
 #[derive(Debug, Clone, Copy)]
 pub enum Vst3Event {
+    /// A note started.
     NoteOn(NoteOnEvent),
+    /// A note ended, carrying release velocity.
     NoteOff(NoteOffEvent),
+    /// Raw bytes: CC, pitch bend, program change, channel pressure or SysEx.
     Data(DataEvent),
+    /// Per-note aftertouch.
     PolyPressure(PolyPressureEvent),
+    /// A continuous per-note expression value.
     NoteExpression(NoteExpressionValueEvent),
+    /// A per-note text annotation; the string lives in the arena.
     NoteExpressionText(NoteExpressionTextEvent),
+    /// A chord context change.
     Chord(ChordEvent),
+    /// A scale/key context change.
     Scale(ScaleEvent),
+    /// A stepped per-note expression carrying an `i64`.
     NoteExpressionInt(NoteExpressionIntValueEvent),
+    /// A legacy MIDI CC the plugin emitted back to the host. Output-only.
     LegacyMidiCcOut(LegacyMidiCcOutEvent),
 }
 
@@ -344,7 +404,7 @@ impl Vst3Event {
     }
 }
 
-/// Convert our flat `Vst3Event` into the C `Event` struct the vst3 crate expects.
+/// Convert the flat `Vst3Event` into the C `Event` struct the vst3 crate expects.
 ///
 /// # Pointer lifetimes (the whole reason for the `'a` binding)
 ///
@@ -497,11 +557,11 @@ pub(crate) fn to_c_event<'a>(
     out
 }
 
-/// Largest UTF-16 text we copy out of a plugin-supplied chord/scale/text event.
+/// Largest UTF-16 text copied out of a plugin-supplied chord/scale/text event.
 /// Plugin display names are short; this caps a malicious/garbage `textLen`.
 const MAX_EVENT_TEXT_LEN: usize = 256;
 
-/// Convert from the vst3 crate's tagged-union `Event` to our safe enum.
+/// Convert from the vst3 crate's tagged-union `Event` to the safe enum.
 ///
 /// `text_arena` owns the UTF-16 for any chord / scale / note-expression-text
 /// event decoded here (these arrive on a plugin's *output* event list); the
@@ -689,7 +749,7 @@ pub(crate) fn vst3_event_from_midi(event: &MidiEvent) -> Option<Vst3Event> {
 
     // `frame_offset` is `u32`; VST3's `sampleOffset` is `i32`. A value past
     // `i32::MAX` wraps negative, and the plugin indexes its buffers with it —
-    // an out-of-bounds read inside the plugin, not in our code. Saturating keeps
+    // an out-of-bounds read inside the plugin, not in host code. Saturating keeps
     // it in range; the mirror path (`vst3_to_midi_event`) already guards with
     // `.max(0)` and this direction was left unguarded.
     let sample_offset = i32::try_from(event.frame_offset).unwrap_or(i32::MAX);
@@ -818,7 +878,7 @@ pub(crate) fn vst3_event_from_midi(event: &MidiEvent) -> Option<Vst3Event> {
     // owned, growable buffer that spans events — which would force
     // [`Vst3Event`] to heap-allocate and lose its `Copy` + no-alloc RT
     // guarantee (see `vst3_event_is_copy` and the RT no-alloc harness). Rather
-    // than pay that cost for a rare case, we degrade explicitly:
+    // than pay that cost for a rare case, it degrades explicitly:
     // - `START`  → forward the opening 0xF0 + first-packet bytes (no 0xF7; the
     //   message is deliberately left unterminated because the rest didn't fit).
     //   A plugin sees the message *begin*; it is not dropped without trace.
@@ -904,7 +964,7 @@ fn per_note_controller_expression(index: u8) -> Option<NoteExpressionType> {
 /// VST3 note-expression dimension it corresponds to, with its raw 32-bit data.
 ///
 /// Registered controllers carry spec meaning by *name*, not by a bare index, so
-/// we match the enum directly. Only the dimensions with a VST3 standard
+/// the enum is matched directly. Only the dimensions with a VST3 standard
 /// expression counterpart are forwarded (Volume, Pan, Brightness = CC74 /
 /// SoundController #5); the rest have no VST3 equivalent and are dropped.
 fn registered_controller_expression(
@@ -1142,8 +1202,8 @@ fn is_text_type_id(id: u32) -> bool {
 /// The six standard value dimensions map to their named variants; anything else
 /// becomes [`Custom`](NoteExpressionType::Custom) carrying the id, because VST3
 /// reserves `kCustomStart` upward for plugin-defined dimensions declared through
-/// `INoteExpressionController`. Those used to return `None` and be dropped by
-/// the caller, which made a plugin's own expression dimensions invisible.
+/// `INoteExpressionController`. Returning `None` for those would have the
+/// caller drop them, making a plugin's own expression dimensions invisible.
 ///
 /// Still `None` for `kTextTypeID` / `kPhonemeTypeID`: those slots carry a string
 /// on `NoteExpressionTextEvent`, so there is no `f64` value to decode and
@@ -1266,9 +1326,13 @@ fn text_header(sample_offset: i32, event_type: u16) -> EventHeader {
 /// IPC `String` at this boundary); staging interns it into the event arena.
 #[derive(Debug, Clone)]
 pub struct NoteExpressionText {
+    /// Frame offset within the block the event is staged into.
     pub sample_offset: i32,
+    /// Note id assigned by the originating note-on.
     pub note_id: i32,
+    /// VST3 note-expression type id the text annotates.
     pub type_id: u32,
+    /// The annotation as UTF-16 code units, owned until staging interns it.
     pub text: Vec<u16>,
 }
 
@@ -1287,14 +1351,20 @@ impl NoteExpressionText {
 /// Host-facing chord context (see [`ChordEvent`]).
 #[derive(Debug, Clone)]
 pub struct ChordValue {
+    /// Frame offset within the block the event is staged into.
     pub sample_offset: i32,
+    /// Chord root as a MIDI note number, 0..=127.
     pub root: i16,
+    /// Bass note as a MIDI note number, 0..=127.
     pub bass_note: i16,
+    /// Bitmask of chord degrees present.
     pub mask: i16,
+    /// Display name as UTF-16 code units, owned until staging interns it.
     pub text: Vec<u16>,
 }
 
 impl ChordValue {
+    /// Stage into a [`Vst3Event`], interning the display name into `arena`.
     pub fn to_vst3_event(&self, arena: &mut TextArena) -> Vst3Event {
         Vst3Event::Chord(ChordEvent {
             header: text_header(self.sample_offset, K_CHORD_EVENT),
@@ -1309,13 +1379,18 @@ impl ChordValue {
 /// Host-facing scale/key context (see [`ScaleEvent`]).
 #[derive(Debug, Clone)]
 pub struct ScaleValue {
+    /// Frame offset within the block the event is staged into.
     pub sample_offset: i32,
+    /// Scale root as a MIDI note number, 0..=127.
     pub root: i16,
+    /// 12-bit mask of scale degrees, bit 0 = C.
     pub mask: i16,
+    /// Display name as UTF-16 code units, owned until staging interns it.
     pub text: Vec<u16>,
 }
 
 impl ScaleValue {
+    /// Stage into a [`Vst3Event`], interning the display name into `arena`.
     pub fn to_vst3_event(&self, arena: &mut TextArena) -> Vst3Event {
         Vst3Event::Scale(ScaleEvent {
             header: text_header(self.sample_offset, K_SCALE_EVENT),
@@ -1330,13 +1405,18 @@ impl ScaleValue {
 /// [`NoteExpressionIntValueEvent`]). No text, so no arena needed.
 #[derive(Debug, Clone, Copy)]
 pub struct NoteExpressionIntValue {
+    /// Frame offset within the block the event is staged into.
     pub sample_offset: i32,
+    /// Note id assigned by the originating note-on.
     pub note_id: i32,
+    /// VST3 note-expression type id; its declared info states the valid range.
     pub type_id: u32,
+    /// The stepped value, in the type's own units rather than normalized.
     pub value: i64,
 }
 
 impl NoteExpressionIntValue {
+    /// Stage into a [`Vst3Event`]. No arena is needed — the payload is an `i64`.
     pub fn to_vst3_event(&self) -> Vst3Event {
         Vst3Event::NoteExpressionInt(NoteExpressionIntValueEvent {
             header: EventHeader {
@@ -1724,9 +1804,9 @@ mod tests {
     /// A plugin-defined `typeId` survives instead of being dropped.
     ///
     /// VST3 reserves `kCustomStart` (100000) upward for dimensions a plugin
-    /// declares through `INoteExpressionController`. The decoder used to return
-    /// `None` for those and the caller discarded the event, so a plugin whose
-    /// expressiveness is entirely custom looked silent.
+    /// declares through `INoteExpressionController`. Decoding those to `None`
+    /// has the caller discard the event, so a plugin whose expressiveness is
+    /// entirely custom looks silent.
     #[test]
     fn a_plugin_defined_type_id_is_carried_not_dropped() {
         for id in [100_000, 100_001, 8, 12345, u32::MAX] {
@@ -1791,8 +1871,8 @@ mod tests {
     }
 
     /// `Expression` is a real VST3 dimension (id 4) and must survive staging
-    /// into an event and reading back out — it used to be hardcoded `None`
-    /// while Brightness consumed its id.
+    /// into an event and reading back out. The failure mode this guards is
+    /// Brightness consuming id 4, leaving Expression decoding to `None`.
     #[test]
     fn expression_dimension_stages_and_reads_back() {
         let expr = NoteExpressionValue {
@@ -2021,7 +2101,7 @@ mod tests {
     #[test]
     fn fragmented_sysex_start_forwards_opening_rest_dropped() {
         // A multi-packet SysEx (>6 bytes) produces Start/Continue/End fragments.
-        // We can't reassemble across events without breaking the Copy/no-alloc
+        // Reassembly across events is impossible without breaking the Copy/no-alloc
         // event invariant, so the host degrades explicitly (not silently):
         // the START fragment forwards the message opening (0xF0 + first bytes,
         // deliberately unterminated), while CONTINUE/END — which carry no 0xF0

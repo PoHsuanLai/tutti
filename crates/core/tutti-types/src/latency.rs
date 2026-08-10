@@ -68,7 +68,7 @@ pub trait LatencyGraph {
 
 /// A [`LatencyGraph`] that can also have compensation delays inserted into it.
 pub trait DelayInsertion: LatencyGraph {
-    /// Remove every previously-inserted compensation delay.
+    /// Remove every compensation delay this trait has inserted.
     ///
     /// [`compensate`] calls this first so each run analyses the graph as
     /// authored, never one already carrying last run's delays.

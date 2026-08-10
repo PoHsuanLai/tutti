@@ -429,6 +429,9 @@ impl PluginClient {
         &self.process_guard
     }
 
+    /// The plugin's reported latency, in **frames**.
+    ///
+    /// RT-safe: one atomic load, no allocation.
     pub fn latency(&self) -> Samples {
         Samples(self.latency.load(Ordering::Acquire))
     }
@@ -475,6 +478,7 @@ impl PluginClient {
         &self.loaded
     }
 
+    /// The sample format negotiated with the plugin at load.
     pub fn format(&self) -> SampleFormat {
         self.format
     }
@@ -562,7 +566,7 @@ impl PluginClient {
     /// the same reason: the sample rate the source needs is the node's own, so
     /// a caller passing one could only ever agree with it or be wrong. The
     /// source is held in an `Arc` so it survives fundsp's graph-commit clones,
-    /// and its rate is re-stamped by [`restamp_source_rates`](Self::restamp_source_rates)
+    /// and its rate is re-stamped by `restamp_source_rates`
     /// on a device change.
     pub fn set_harmony_source(
         &mut self,
@@ -644,7 +648,7 @@ impl PluginClient {
     /// divides by is the node's own, so a caller passing one could only agree
     /// with it or be wrong. Held in an `Arc` so it survives fundsp's
     /// graph-commit clones, and re-stamped by
-    /// [`restamp_source_rates`](Self::restamp_source_rates) on a device change.
+    /// `restamp_source_rates` on a device change.
     ///
     /// `transport` is a [`TransportState`](tutti_core::transport::TransportState),
     /// not a bare `Timeline` like harmony's: `fill` reads `loop_range()` to wrap

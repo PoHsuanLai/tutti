@@ -1,17 +1,15 @@
 //! [`ChannelTopology`] — *which speaker* each channel feeds, as opposed to
-//! [`ChannelLayout`](crate::ChannelLayout)'s *how many*.
+//! [`ChannelLayout`]'s *how many*.
 //!
-//! The two are deliberately separate types. `ChannelLayout` is a count and says
-//! so in its own module docs: foreign layout types "convert to and from this at
-//! their crate boundary, losing the placement deliberately". That remains true
-//! and is not being reversed — this type is what a caller reaches for when the
-//! placement is the thing it needs, and nothing that only needs a width should
-//! change.
+//! The two are deliberately separate types. `ChannelLayout` is a count, and a
+//! foreign layout type converts to and from it at a crate boundary losing the
+//! placement on purpose. Reach for this type only when the placement is the
+//! thing needed; a caller that wants a width keeps the count.
 //!
-//! The cost of having only a count is visible in the vocabulary today:
-//! [`ChannelLayout::QUAD`](crate::ChannelLayout::QUAD) is documented "quad /
-//! ambisonic B-format" — one constant for two incompatible meanings, because a
-//! count cannot tell four speaker feeds from a spherical-harmonic encoding.
+//! What a count alone cannot carry is visible in the vocabulary:
+//! [`ChannelLayout::QUAD`](crate::ChannelLayout::QUAD) reads "quad / ambisonic
+//! B-format" — one constant for two incompatible meanings, because a count
+//! cannot tell four speaker feeds from a spherical-harmonic encoding.
 //!
 //! # Why an ordered list rather than a set of speakers
 //!
@@ -72,28 +70,45 @@ const INLINE_CHANNELS: usize = 8;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Speaker {
+    /// Front left — channel 0 of any stereo or surround bed.
     FrontLeft,
+    /// Front right — channel 1 of any stereo or surround bed.
     FrontRight,
+    /// Front centre, the dialogue channel in a film bed.
     FrontCenter,
     /// The `.1` — a band-limited effects channel, not a placed speaker.
     LowFrequency,
+    /// Rear left, behind the listener.
     BackLeft,
+    /// Rear right, behind the listener.
     BackRight,
     /// Front left-of-centre, between `FrontLeft` and `FrontCenter`.
     FrontLeftOfCenter,
-    /// Front right-of-centre.
+    /// Front right-of-centre, between `FrontCenter` and `FrontRight`.
     FrontRightOfCenter,
+    /// Rear centre — the single surround speaker of a 6.1 bed.
     BackCenter,
+    /// Side left, level with the listener rather than behind.
     SideLeft,
+    /// Side right, level with the listener rather than behind.
     SideRight,
+    /// Overhead centre, directly above the listener.
     TopCenter,
+    /// Overhead front left — the height layer of an Atmos-style bed.
     TopFrontLeft,
+    /// Overhead front centre.
     TopFrontCenter,
+    /// Overhead front right.
     TopFrontRight,
+    /// Overhead rear left.
     TopBackLeft,
+    /// Overhead rear centre.
     TopBackCenter,
+    /// Overhead rear right.
     TopBackRight,
+    /// Overhead side left, level with the listener in plan.
     TopSideLeft,
+    /// Overhead side right, level with the listener in plan.
     TopSideRight,
     /// A position this vocabulary does not name, carried verbatim so it keeps
     /// its channel's slot. The payload is the *format's* raw value and is only
@@ -195,9 +210,9 @@ impl ChannelTopology {
     ///
     /// This is the SMPTE / WAV `WAVEFORMATEXTENSIBLE` order that
     /// [`crate::downmix`] already folds by and that the spatial panner already
-    /// maps to — `FL FR C LFE SL SR [BL BR]`. It is written down here because
-    /// it was previously implicit in a `match` on channel count in three
-    /// separate places, which is a convention nothing could state or check.
+    /// maps to — `FL FR C LFE SL SR [BL BR]`. Written down here rather than
+    /// left implicit in a `match` on channel count at each site, which is a
+    /// convention nothing can state or check.
     ///
     /// `None` for a width the engine has no order for — including **4**, which
     /// is genuinely ambiguous: quad `FL FR BL BR` and ambisonic B-format

@@ -74,7 +74,7 @@ mod platform {
     type BundleExitFn = unsafe extern "C" fn() -> bool;
 
     /// macOS keeps the `CFBundleRef` alive until `bundleExit` has run: the
-    /// plugin is entitled to hold the reference we handed it for the module's
+    /// plugin is entitled to hold the reference it was handed for the module's
     /// whole lifetime.
     pub(super) struct Entry {
         bundle: CFBundleRef,
@@ -92,6 +92,18 @@ mod platform {
             .find(|p| p.extension().is_some_and(|e| e == "vst3") && p.is_dir())
     }
 
+    /// Build a `CFBundleRef` for a `.vst3` bundle directory, or `None` if
+    /// CoreFoundation rejects the path or cannot open it as a bundle.
+    ///
+    /// Ownership follows the CoreFoundation Create Rule: the returned reference
+    /// is `+1` and the caller must `CFRelease` it exactly once. The intermediate
+    /// `CFURLRef` is released here.
+    ///
+    /// # Safety
+    ///
+    /// Calls into the CoreFoundation C API, so it must run on a process where
+    /// that framework is loaded (macOS). The caller owns the returned reference
+    /// and must not release it more than once, nor use it after releasing.
     unsafe fn make_bundle(dir: &Path) -> Option<CFBundleRef> {
         let bytes = dir.as_os_str().as_bytes();
         let url: CFURLRef = CFURLCreateFromFileSystemRepresentation(
@@ -163,7 +175,7 @@ mod platform {
     pub(super) struct Entry {
         exit: Option<ModuleExitFn>,
         /// A second, independently-owned `dlopen` reference on the same DSO,
-        /// held for as long as the plugin may still use the handle we passed it.
+        /// held for as long as the plugin may still use the handle it was passed.
         /// `None` when the module exports no `ModuleEntry`. See [`enter`].
         handle: Option<libloading::os::unix::Library>,
     }
@@ -176,7 +188,7 @@ mod platform {
         let Some(entry) = symbol::<ModuleEntryFn>(library, "ModuleEntry") else {
             // No `ModuleEntry` export. The SDK's own loader treats this as fatal
             // on Linux, but tutti is a library and a module that never asks to
-            // be initialised is harmless to us — matching the macOS and Windows
+            // be initialised is harmless here — matching the macOS and Windows
             // arms, where a missing entry point is likewise a supported no-op.
             return Ok(Entry { exit, handle: None });
         };
@@ -219,8 +231,8 @@ mod platform {
         if let Some(exit) = entry.exit.take() {
             unsafe { exit() };
         }
-        // Release our extra `dlopen` reference only after `ModuleExit` has run:
-        // the plugin is entitled to use the handle we gave it right up to that
+        // Release the extra `dlopen` reference only after `ModuleExit` has run:
+        // the plugin is entitled to use the handle it was given right up to that
         // call, and on the last reference `dlclose` unmaps the image.
         drop(entry.handle.take());
     }

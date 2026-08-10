@@ -1,23 +1,47 @@
+//! The OS edge for MIDI: native UMP through CoreMIDI (macOS) and the ALSA
+//! seq-UMP sequencer (Linux).
+//!
+//! Enumerate endpoints, open them, send MIDI 2.0 out and receive it back. There
+//! are **no cargo features** — the crate *is* the OS edge, so there is nothing
+//! here to switch off. `backend::active()` is the only `cfg(target_os)` in the
+//! crate that decides anything, and it decides once at construction.
+//!
+//! # What this crate does not do
+//!
+//! - **No file codecs.** Reading a `.mid` and talking to a MIDI port are
+//!   different jobs; `smf` and `clip` live in `tutti-midi-file`, which this
+//!   crate does not re-export. Pairing them once made a consumer that wanted
+//!   only the former link CoreMIDI.
+//! - **No MIDI value types or state machines.** The wire vocabulary is
+//!   `tutti-midi-types`' and the routing / allocation / expression machinery is
+//!   `tutti-midi-runtime`'s. Both are re-exported below for convenience; neither
+//!   is defined here.
+//! - **No audio.** Nothing here touches a sample buffer.
+//! - **No ECS.** The Bevy systems that drive this — routing, scheduled dispatch,
+//!   clock-out, device management, MPE — are `bevy_tutti::midi`'s.
+//! - **No MIDI 1.0 transport.** Events reach the wire as UMP words, so
+//!   MIDI-2-only messages (per-note controllers, per-note pitch bend, JR
+//!   Timestamps) survive rather than vanishing into a `to_midi1_bytes` `None`.
+//!
+//! The full picture — backend table, quick start, and the two Linux loopback
+//! traps — is in the crate README, included below.
 #![doc = include_str!("../README.md")]
 
 // --- Framework-free hardware I/O core ---
 
+// No `///` here: a doc comment on a `pub mod` shadows the module's own `//!`
+// and re-resolves its intra-doc links in this scope. See `core/mod.rs`.
 pub mod core;
 pub use core::error;
-/// MIDI 1.0 SysEx reassembly → UMP SysEx7. OS-free, so every driver edge shares
-/// it and it is testable without a device.
 pub use core::Sysex7ByteAssembler;
-/// The endpoint vocabulary: what a MIDI endpoint is, what it can carry, and the
-/// backend seam that enumerates and opens them.
 pub use core::{
     EndpointId, EndpointInfo, InputConnection, MidiEndpoints, MidiSession, UmpCapability,
 };
 pub use core::{Error, Result};
 pub use core::{HardwareMidiInputs, InputProducerHandle, PortInfo, PortType};
 
-/// `HardwareMidiInputs` and friends live in [`core::port`]; re-exported at the
-/// crate root so a consumer can name the port vocabulary as a group
-/// (`hardware::port::*`) without knowing it sits under `core`.
+/// The port vocabulary as a group, so a consumer can write
+/// `tutti_midi_hardware::port::*` without knowing it sits under [`crate::core`].
 pub use core::port;
 
 #[cfg(target_os = "macos")]
@@ -44,8 +68,9 @@ pub use tutti_midi_types::ci;
 pub use tutti_midi_types::Midi1ToMidi2Translator;
 
 /// MIDI 2.0 Clip File (M2-116) interchange — a portable single-clip UMP stream,
-/// distinct from project save (Loro) and from SMF. See [`crate::smf`] for the
-/// MIDI 1.0 equivalent, and [`crate::clip`] for the file-level (path) codec.
+/// distinct from project save and from SMF. The MIDI 1.0 equivalent (`smf`) and
+/// the file-level path codec (`clip`) are `tutti-midi-file`'s and are not
+/// re-exported here.
 pub use tutti_midi_types::{
     read_clip_file, write_clip_file, write_clip_file_from_beats, write_clip_file_with_header,
     ClipEvent, ClipFileError, ClipHeader, ClipNote, ParsedClipFile, CLIP_FILE_MAGIC,
@@ -53,9 +78,8 @@ pub use tutti_midi_types::{
 
 pub use tutti_midi_types::mpe::{MpeMode, MpeZone, MpeZoneConfig};
 
-// `MidiChannel` re-exports through `cc::mapping` as it always has, but the
-// name now resolves to the real `tutti_types` newtype rather than the
-// `pub type MidiChannel = u8` alias that used to live there.
+// `MidiChannel` re-exports through `cc::mapping`, and the name resolves to the
+// `tutti_types` newtype — not a `u8` alias.
 pub use tutti_midi_types::cc::mapping::{CCMapping, CCNumber, CCTarget, MappingId, MidiChannel};
 
 pub use tutti_midi_types::sync::{
@@ -67,8 +91,8 @@ pub use tutti_midi_types::sync::{
 // The lock-free dispatch (`MidiBus`/`MidiSender`/`MidiReceiver`) and the offline
 // snapshot / clip playback live in `tutti-midi-runtime`; surfaced here because
 // delivery is what a port feeds — an inbound event goes straight from a driver
-// into the bus, so a hardware consumer needs both. That is the test the dropped
-// file re-export failed: a `.mid` reader needs no port, and no port needs it.
+// into the bus, so a hardware consumer needs both. That is the test a file codec
+// fails: a `.mid` reader needs no port, and no port needs it.
 
 pub use tutti_midi_runtime::{
     MidiBus, MidiClipSource, MidiMailbox, MidiReceiver, MidiSender, MidiSnapshot,
@@ -82,9 +106,7 @@ pub use crossbeam_channel;
 // The file codecs live in `tutti-midi-file` and are deliberately *not*
 // re-exported. Reading a `.mid` and talking to a MIDI port are different jobs;
 // pairing them once made a consumer that wanted only the former link CoreMIDI.
-// This crate used to pass the SMF surface through under its old `-io` name,
-// which read as plausible; under `-hardware` it is plainly a category error — a
-// file is not a device. Depend on `tutti-midi-file` directly for `smf` / `clip`.
+// A file is not a device. Depend on `tutti-midi-file` directly for `smf`/`clip`.
 
 /// The hardware MIDI prelude, for `use tutti_midi_hardware::prelude::*;` —
 /// everything a typical app touches, from one import.

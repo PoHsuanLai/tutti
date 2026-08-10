@@ -8,8 +8,11 @@ use std::path::{Path, PathBuf};
 /// On-disk record for a single discovered plugin.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PluginRecord {
+    /// Where the plugin lives on disk.
     pub path: PathBuf,
+    /// Which format's loader can open it.
     pub format: PluginFormat,
+    /// Catalog identity — id, name, vendor, version, class, editor presence.
     pub descriptor: PluginDescriptor,
     /// Seconds since the Unix epoch of the plugin file's last modification.
     pub modification_time: u64,
@@ -18,23 +21,29 @@ pub struct PluginRecord {
     pub blacklist: Blacklist,
 }
 
-/// Blacklist state for a record. Folds the old `blacklisted: bool` +
-/// `blacklist_reason: Option<String>` pair so a reason can't drift from
-/// the flag.
+/// Blacklist state for a record.
+///
+/// A sum type rather than a flag beside an `Option<String>`, so a reason cannot
+/// drift from the state that justifies it.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub enum Blacklist {
+    /// The plugin is loadable.
     #[default]
     Ok,
+    /// The plugin brought a scan down and will not be opened.
     Blacklisted {
+        /// Why, so a host can report it and offer to load the plugin anyway.
         reason: String,
     },
 }
 
 impl Blacklist {
+    /// Returns whether this record is barred from loading.
     pub fn is_blacklisted(&self) -> bool {
         matches!(self, Blacklist::Blacklisted { .. })
     }
 
+    /// Returns why the plugin was blacklisted, or `None` if it was not.
     pub fn reason(&self) -> Option<&str> {
         match self {
             Blacklist::Ok => None,
@@ -43,31 +52,35 @@ impl Blacklist {
     }
 }
 
-/// Catalog-identity types, now homed in `tutti-plugin-types` so crates that
-/// depend only on the shared vocab (the four format host crates) can name them
-/// without pulling in `tutti-plugin`. Re-exported here so every existing
-/// `crate::host::discovery::record::{PluginDescriptor, PluginClass,
-/// AuComponentType}` path still resolves.
+/// Catalog-identity types, defined in `tutti-plugin-types` so crates depending
+/// only on the shared vocabulary — the four format host crates — can name them
+/// without pulling in `tutti-plugin`.
 pub use tutti_plugin_types::{AuComponentType, PluginClass, PluginDescriptor};
 
-/// The VST2 plugin-category mirror. Canonical definition lives in
-/// `tutti-plugin-types` (the unconditional shared dep), so this persisted
-/// wire vocab stays nameable without the optional `vst2` feature; the VST2
-/// loader maps its native category into it.
+/// The VST2 plugin-category mirror, which the VST2 loader maps its native
+/// category into.
+///
+/// Canonical in `tutti-plugin-types`, the unconditional shared dep, so this
+/// persisted wire vocabulary stays nameable without the optional `vst2` feature.
 pub use tutti_plugin_types::Vst2Category;
 
 /// The classification vocabularies the other three formats report, and the
-/// normalized [`PluginRole`] derived from all four. Same rationale as
-/// [`Vst2Category`] above: canonical in `tutti-plugin-types` so the persisted
-/// catalog stays nameable without any format feature enabled.
+/// normalized [`PluginRole`] derived from all four.
+///
+/// Canonical in `tutti-plugin-types` for the same reason as [`Vst2Category`]:
+/// the persisted catalog stays nameable with no format feature enabled.
 pub use tutti_plugin_types::{ClapFeature, PluginRole, Vst3PlugType, Vst3SubCategories};
 
 /// Audio plugin format.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub enum PluginFormat {
+    /// Steinberg VST3.
     Vst3,
+    /// Steinberg VST2.
     Vst2,
+    /// CLAP.
     Clap,
+    /// Apple Audio Unit (macOS only).
     AudioUnit,
 }
 
@@ -83,11 +96,11 @@ impl PluginFormat {
     }
 }
 
-/// Compile-time projection of the extension column out of
-/// [`super::fs::FORMAT_BY_EXTENSION`]. Keeping this derived (rather than a
-/// second hand-written list) is the fix for the two lists disagreeing: this
-/// const used to advertise `dll`/`so` while `format_from_path` rejected both,
-/// so no VST2 plugin was discoverable on Windows or Linux.
+// Compile-time projection of the extension column out of `FORMAT_BY_EXTENSION`.
+// Derived rather than hand-written because the two lists silently disagreeing is
+// a whole-platform outage: an extension advertised here but rejected by
+// `format_from_path` makes every plugin of that format undiscoverable, with no
+// error anywhere.
 const fn extension_names<const N: usize>() -> [&'static str; N] {
     let table = super::fs::FORMAT_BY_EXTENSION;
     assert!(
@@ -107,7 +120,7 @@ const EXTENSION_NAMES: [&str; 6] = extension_names::<6>();
 
 impl PluginRecord {
     /// Plugin file extensions a scanner / asset path recognises. Derived from
-    /// the one [`super::fs::FORMAT_BY_EXTENSION`] table that
+    /// the one `FORMAT_BY_EXTENSION` table that
     /// [`super::fs::format_from_path`] matches against, so the advertised list
     /// and the accepted list are the same list.
     pub const EXTENSIONS: &'static [&'static str] = &EXTENSION_NAMES;

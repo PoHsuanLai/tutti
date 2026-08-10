@@ -1,3 +1,5 @@
+//! Parametric EQ band: an SVF plus a zero-cost bypass.
+
 use tutti_core::Arc;
 use tutti_core::AtomicF32;
 use tutti_core::{dsp::Real, AudioUnit, BufferMut, BufferRef, SignalFrame};
@@ -10,17 +12,27 @@ use super::svf::{SvfFilterNode, SvfType};
 /// modes have names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum BandState {
+    /// The band filters its input. The default.
     #[default]
     Active,
+    /// The band passes its input through untouched, at zero DSP cost.
+    ///
+    /// Filter state is retained while bypassed, so re-enabling resumes from
+    /// stale integrator contents — call `AudioUnit::reset` first if that
+    /// matters.
     Bypassed,
 }
 
 impl BandState {
+    /// Returns whether the band is [`Active`](Self::Active) — i.e. whether it
+    /// filters rather than passing through.
     #[inline]
     pub fn is_active(self) -> bool {
         matches!(self, Self::Active)
     }
 
+    /// Maps a plain `enabled` flag onto the two states: `true` is
+    /// [`Active`](Self::Active), `false` [`Bypassed`](Self::Bypassed).
     #[inline]
     pub fn from_enabled(enabled: bool) -> Self {
         if enabled {
@@ -38,8 +50,16 @@ impl From<bool> for BandState {
     }
 }
 
-/// Parametric EQ band wrapping [`SvfFilterNode`] with zero-cost bypass.
-/// 1 input, 1 output.
+/// Parametric EQ band: an [`SvfFilterNode`] plus a zero-cost bypass. 1 input, 1
+/// output.
+///
+/// The band adds nothing to the filter but [`BandState`] — cutoff, [`Q`] and
+/// gain are the inner SVF's live params, reached through the accessors here and
+/// through `AudioUnit::set`. Stack several to build a parametric EQ, one band
+/// per [`SvfType`].
+///
+/// Bypass is a branch around the filter, not a dry/wet blend: it costs one
+/// `match` per block and passes samples through bit-exactly.
 ///
 /// `F` is the internal state precision; defaults to `f64`.
 pub struct EqBandNode<F: Real = f64> {
@@ -48,6 +68,12 @@ pub struct EqBandNode<F: Real = f64> {
 }
 
 impl<F: Real> EqBandNode<F> {
+    /// Builds an [`Active`](BandState::Active) band of `filter_type` at
+    /// `frequency`, `q` and `gain_db`.
+    ///
+    /// `gain_db` is read only by [`Bell`](SvfType::Bell),
+    /// [`LowShelf`](SvfType::LowShelf) and [`HighShelf`](SvfType::HighShelf) —
+    /// the usual EQ-band types. On the others it is stored and ignored.
     pub fn new(
         filter_type: SvfType,
         frequency: impl Into<Hz>,
@@ -60,34 +86,53 @@ impl<F: Real> EqBandNode<F> {
         }
     }
 
+    /// The inner filter's shared centre-frequency cell in [`Hz`]. Read once per
+    /// block; shared across clones.
     pub fn frequency(&self) -> Arc<AtomicF32> {
         self.svf.frequency()
     }
 
+    /// The inner filter's shared [`Q`] cell — the band's width. Higher is
+    /// narrower.
     pub fn q(&self) -> Arc<AtomicF32> {
         self.svf.q()
     }
 
+    /// The inner filter's shared gain cell in [`Db`]: positive boosts, negative
+    /// cuts, `0.0` is flat.
     pub fn gain_db(&self) -> Arc<AtomicF32> {
         self.svf.gain_db()
     }
 
+    /// Enables or bypasses the band.
+    ///
+    /// `&mut self`, so it cannot reach a node already live in the graph — drive
+    /// a live bypass from the host instead.
     pub fn set_enabled(&mut self, enabled: bool) {
         self.state = BandState::from_enabled(enabled);
     }
 
+    /// Returns whether the band is filtering rather than passing through.
     pub fn is_enabled(&self) -> bool {
         self.state.is_active()
     }
 
+    /// Returns the band's [`BandState`].
     pub fn state(&self) -> BandState {
         self.state
     }
 
+    /// Sets the band's [`BandState`] — the named form of
+    /// [`set_enabled`](Self::set_enabled).
     pub fn set_state(&mut self, state: BandState) {
         self.state = state;
     }
 
+    /// Switches the inner filter's response, forcing a coefficient recompute on
+    /// the next sample.
+    ///
+    /// Filter state is retained, so the switch is continuous rather than a
+    /// click.
     pub fn set_filter_type(&mut self, filter_type: SvfType) {
         self.svf.set_filter_type(filter_type);
     }

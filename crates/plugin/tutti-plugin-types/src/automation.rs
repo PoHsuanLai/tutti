@@ -9,22 +9,25 @@ use crate::{Normalized, ParamAddress};
 #[derive(Debug, Clone, Copy)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ParameterPoint {
+    /// Frame offset from the start of the current process block.
+    ///
+    /// Non-negative and ascending across a [`ParameterQueue`]'s `points`; a
+    /// negative value is a sample index before the start of the buffer, and
+    /// VST3's `getPoint` hands it to the plugin verbatim.
     pub sample_offset: i32,
     /// The automated value, on the host's `0..=1` scale.
+    ///
+    /// **[`Normalized`] clamps silently.** Anything outside `0..=1` saturates at
+    /// the nearest bound with no error and no log line, so a producer that
+    /// encodes data on some other scale here reads back as a run of `1.0` that
+    /// looks like a legitimate parameter sweep. Values must already be
+    /// normalized before they reach this field.
     ///
     /// The formats disagree about what a parameter value *is*: VST2 and VST3
     /// take normalized values, CLAP and AU take plain ones in the parameter's
     /// declared range (see [`PluginParams::get_parameter`]). A loader for
     /// either of the latter denormalizes before the value reaches the plugin —
     /// AU against the range it cached at load, CLAP against its `ranges` map.
-    ///
-    /// This was a bare `f64` whose contract lived only in this comment, and the
-    /// four loaders each re-implemented the guard that backed it. Two of them
-    /// used `clamp`, which **returns NaN for a NaN input** — so a NaN reaching
-    /// here was clamped by AU and CLAP and passed through verbatim by VST2 and
-    /// VST3. [`Normalized`] makes the guard structural and single: it cannot be
-    /// built without passing the clamp, so the downstream copies are redundant
-    /// rather than load-bearing.
     ///
     /// [`PluginParams::get_parameter`]: crate::PluginParams::get_parameter
     pub value: Normalized,
@@ -46,17 +49,10 @@ pub struct ParameterQueue {
     /// A [`ParamAddress`] rather than a bare `u32` for the same reason the
     /// direct path takes one: the number alone does not say whether it is an
     /// opaque plugin-chosen handle (VST3/CLAP/AU) or a VST2 positional index,
-    /// and the two do not even share a range.
-    ///
-    /// This field carried a bare `u32` while the rest of the parameter surface
-    /// moved to `ParamAddress`, on the argument that types stop at the IPC
-    /// boundary. That rule is about *foreign* boundaries — a C ABI or a WIT
-    /// interface, where the other side is not ours to type. Both ends of this
-    /// wire are this workspace, and the cost of the omission was visible in the
-    /// loaders: the VST2 one narrowed with `i32::try_from` to rebuild an index
-    /// while AU and CLAP read the same field as opaque, each re-deriving the
-    /// addressing model from *which loader it is*. That is correct only because
-    /// a session hosts one format, which nothing states and nothing checks.
+    /// and the two do not even share a range. The address survives the wire, so
+    /// a receiving loader reads the model off the value rather than assuming
+    /// its own format's — which is correct only while a session hosts exactly
+    /// one format, something nothing states and nothing checks.
     pub param_id: ParamAddress,
     /// Points in ascending, non-negative `sample_offset` order.
     ///
@@ -69,6 +65,7 @@ pub struct ParameterQueue {
 }
 
 impl ParameterQueue {
+    /// Builds an empty queue addressed to `param_id`.
     pub fn new(param_id: ParamAddress) -> Self {
         Self {
             param_id,
@@ -76,21 +73,23 @@ impl ParameterQueue {
         }
     }
 
-    /// Append one automation point, clamping `value` onto `0..=1`.
+    /// Appends one automation point, **silently clamping `value` onto `0..=1`**.
+    ///
+    /// The clamp is the whole point of the door and it reports nothing: a value
+    /// of `40.0` is stored as `1.0`, and NaN becomes `0.0`. A caller passing
+    /// anything but a normalized value gets a queue full of saturated points
+    /// that reads back as a plausible parameter sweep, so normalize before
+    /// calling — this method will not tell you that you did not.
     ///
     /// Takes a bare `f64` rather than a [`Normalized`] because the producer is
-    /// `Curve::value_at` (in `tutti-mod`), a **public trait a user
-    /// implements**, whose return
-    /// carries no finiteness contract — so the value arriving here is untrusted
-    /// by construction and the clamp belongs at this door rather than at every
-    /// call site. An envelope dividing by a zero-length segment returns
-    /// `f32::NAN`, and before this the NaN reached a plugin's parameter: two of
-    /// the four loaders guarded with `clamp`, which returns NaN unchanged.
-    ///
-    /// On a VST3 filter cutoff that meant a NaN coefficient, a NaN IIR state,
-    /// and every subsequent sample on that channel NaN until the plugin was
-    /// re-instantiated — a whole-channel outage from one bad envelope segment.
-    ///
+    /// `Curve::value_at` (in `tutti-mod`), a **public trait a user implements**,
+    /// whose return carries no finiteness contract — so the value arriving here
+    /// is untrusted by construction and the clamp belongs at this door rather
+    /// than at every call site. An envelope dividing by a zero-length segment
+    /// returns `f32::NAN`; unguarded, that NaN reaches a VST3 filter cutoff as a
+    /// NaN coefficient, then a NaN IIR state, and every subsequent sample on the
+    /// channel is NaN until the plugin is re-instantiated — a whole-channel
+    /// outage from one bad envelope segment.
     pub fn add_point(&mut self, sample_offset: i32, value: f64) {
         self.points.push(ParameterPoint {
             sample_offset,
@@ -98,14 +97,18 @@ impl ParameterQueue {
         });
     }
 
+    /// Returns `true` when no point has been appended for this block.
     pub fn is_empty(&self) -> bool {
         self.points.is_empty()
     }
 
+    /// Returns the number of automation points in this block.
     pub fn len(&self) -> usize {
         self.points.len()
     }
 
+    /// Drops every point, keeping `param_id` and the inline capacity so the
+    /// queue can be reused across blocks without allocating.
     pub fn clear(&mut self) {
         self.points.clear();
     }
@@ -139,11 +142,11 @@ impl ParameterQueue {
 /// is in `tutti-types`: a derived impl writes `points` straight through, and
 /// deserialization is the one place with no caller to maintain the ordering the
 /// field's doc promises. A peer handing over an unsorted or negatively-offset
-/// queue reaches a plugin unmodified — VST3's `IParamValueQueue::getPoint`
-/// (`com/param_queue.rs`) and CLAP's event emitter both iterate `points` in
-/// index order and hand the offset to the plugin verbatim, so an out-of-order
-/// point becomes a parameter ramp that jumps backwards mid-block, and a negative
-/// offset is a sample index before the start of the buffer.
+/// queue reaches a plugin unmodified — VST3's `IParamValueQueue::getPoint` and
+/// CLAP's event emitter both iterate `points` in index order and hand the offset
+/// to the plugin verbatim, so an out-of-order point becomes a parameter ramp
+/// that jumps backwards mid-block, and a negative offset is a sample index
+/// before the start of the buffer.
 ///
 /// `Serialize` stays derived: a value that already holds the invariant needs no
 /// checking on the way out.
@@ -175,12 +178,21 @@ pub struct ParameterChanges {
 }
 
 impl ParameterChanges {
+    /// Builds an empty set of changes.
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Append a point to the queue for `param_id`, creating the queue if
-    /// it doesn't exist yet.
+    /// Appends a point to the queue for `param_id`, creating that queue if it
+    /// does not exist yet.
+    ///
+    /// **`value` is silently clamped onto `0..=1`** by
+    /// [`ParameterQueue::add_point`] — out-of-range input saturates with no
+    /// error, so pass an already-normalized value.
+    ///
+    /// Queues are matched by full [`ParamAddress`] equality, so an opaque handle
+    /// and a positional index that happen to be the same number address two
+    /// different queues.
     pub fn add_change(&mut self, param_id: ParamAddress, sample_offset: i32, value: f64) {
         if let Some(queue) = self.queues.iter_mut().find(|q| q.param_id == param_id) {
             queue.add_point(sample_offset, value);
@@ -191,27 +203,40 @@ impl ParameterChanges {
         }
     }
 
+    /// Pushes a prebuilt queue, returning `self` for chaining.
+    ///
+    /// Appends unconditionally: it does not merge into an existing queue for the
+    /// same address, so a duplicate address leaves two queues that
+    /// [`get_queue`](Self::get_queue) resolves to the first of.
     pub fn add_queue(&mut self, queue: ParameterQueue) -> &mut Self {
         self.queues.push(queue);
         self
     }
 
+    /// Returns `true` when no queue holds a point — including the case where
+    /// queues exist but are all empty.
     pub fn is_empty(&self) -> bool {
         self.queues.is_empty() || self.queues.iter().all(|q| q.is_empty())
     }
 
+    /// Returns the number of queues, which is the number of distinct parameter
+    /// addresses touched — not the total point count.
     pub fn len(&self) -> usize {
         self.queues.len()
     }
 
+    /// Drops every queue, keeping the inline capacity for reuse across blocks.
     pub fn clear(&mut self) {
         self.queues.clear();
     }
 
+    /// Returns the queue addressed by `param_id`, if one has been created.
     pub fn get_queue(&self, param_id: ParamAddress) -> Option<&ParameterQueue> {
         self.queues.iter().find(|q| q.param_id == param_id)
     }
 
+    /// Returns the queue addressed by `param_id` for mutation, if one has been
+    /// created.
     pub fn get_queue_mut(&mut self, param_id: ParamAddress) -> Option<&mut ParameterQueue> {
         self.queues.iter_mut().find(|q| q.param_id == param_id)
     }
@@ -279,11 +304,10 @@ mod serde_tests {
     /// The two addressing models stay distinct across the wire, and a queue
     /// keyed by one is not found by the other.
     ///
-    /// This is what the field's type buys. While it was a bare `u32`, an
-    /// opaque id and a positional index were the same value on the wire, and
-    /// the receiving loader recovered the model from *which loader it was* —
-    /// correct only because a session hosts one format. `ParamId::new(3)` and
-    /// `Index(3)` are the same number and must not be the same address.
+    /// This is what the field's type buys: `ParamId::new(3)` and `Index(3)` are
+    /// the same number and must not be the same address. Fused into one number,
+    /// the receiving loader can only recover the model from *which loader it
+    /// is* — correct solely because a session hosts one format.
     #[test]
     fn the_addressing_model_survives_the_wire() {
         let opaque = ParamAddress::Opaque(ParamId::new(3));

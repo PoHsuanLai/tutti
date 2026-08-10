@@ -1,4 +1,10 @@
 //! Wire-envelope enums — the host↔server message types.
+//!
+//! [`HostMessage`] travels host → subprocess, [`BridgeMessage`] back. Both are
+//! bincode-encoded, so **variant order is wire-significant**: a discriminant is a
+//! varint over declaration order, and inserting mid-enum renumbers every later
+//! variant. Append, and bump
+//! [`PROTOCOL_VERSION`](super::PROTOCOL_VERSION).
 
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -22,59 +28,97 @@ fn default_block_size() -> usize {
     DEFAULT_BLOCK_SIZE
 }
 
+/// A request travelling host → subprocess.
+///
+/// Variant order is wire-significant; see the module docs.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum HostMessage {
     /// Lightweight metadata-only probe — reads factory/descriptor info
     /// without activating the plugin (avoids license dialogs).
     ProbePlugin {
+        /// Filesystem path to the plugin bundle or shared library.
         path: PathBuf,
     },
+    /// Instantiate and activate the plugin, ready to process audio.
     LoadPlugin {
+        /// Filesystem path to the plugin bundle or shared library.
         path: PathBuf,
+        /// Sample rate in Hz, as `f64` because plugin ABIs denominate it so.
         sample_rate: f64,
+        /// Maximum frames per [`ProcessAudio`](Self::ProcessAudio) block. The
+        /// plugin sizes its internal buffers from this, so a later block may not
+        /// exceed it.
         #[serde(default = "default_block_size")]
         block_size: usize,
+        /// Sample format the host would rather exchange; the subprocess replies
+        /// with what it actually negotiated.
         #[serde(default)]
         preferred_format: SampleFormat,
+        /// Name of the shared-memory audio slab, empty if not yet set up.
         #[serde(default)]
         shm_name: String,
     },
+    /// Deactivate and destroy the plugin instance, keeping the subprocess alive.
     UnloadPlugin,
     /// Process one audio block. Audio rides the shared `AudioSlab`, in the ring
     /// slot `seq` selects; the boxed payload carries the per-block side-band.
     ProcessAudio(Box<ProcessAudioData>),
+    /// Set one parameter to a normalized value.
     SetParameter {
+        /// Which parameter — opaque handle or positional index, per format.
         param_id: ParamAddress,
+        /// Normalized `0.0..=1.0`; the loader maps it into the plugin's domain.
         value: f32,
     },
+    /// Enter or leave an automation gesture, so the plugin can record it.
     SetAutomationState {
         /// Format-neutral automation mode; the format loader encodes it onto its
         /// own ABI server-side. See [`AutomationMode`](crate::protocol::AutomationMode).
         mode: crate::protocol::AutomationMode,
     },
+    /// Read one parameter's current normalized value.
     GetParameter {
+        /// Which parameter — opaque handle or positional index, per format.
         param_id: ParamAddress,
     },
+    /// Ask for every parameter the plugin declares.
     GetParameterList,
+    /// Ask for one parameter's declaration (name, range, flags, group).
     GetParameterInfo {
+        /// Which parameter — opaque handle or positional index, per format.
         param_id: ParamAddress,
     },
+    /// Re-rate the plugin. Deactivates and reactivates it server-side.
     SetSampleRate {
+        /// Sample rate in Hz, as `f64` because plugin ABIs denominate it so.
         rate: f64,
     },
+    /// Clear the plugin's internal state — tails, delay lines, voices.
     Reset,
+    /// Ask the plugin to serialize its state, answered by
+    /// [`BridgeMessage::StateData`].
     SaveState,
+    /// Restore plugin state from a chunk a previous `SaveState` produced.
     LoadState {
+        /// Opaque, format-defined state chunk. Never interpret it host-side.
         data: Vec<u8>,
     },
+    /// Open the plugin's editor window.
     OpenEditor {
+        /// Native parent window handle, cast to `u64` for the wire — an `NSView*`
+        /// on macOS, an `HWND` on Windows, an X11 window id on Linux.
         parent_handle: u64,
     },
+    /// Close the plugin's editor window.
     CloseEditor,
+    /// Point the subprocess at the shared-memory audio slab.
     SetupSharedMemory {
+        /// OS name of the shared-memory object to map.
         shm_name: String,
+        /// Region geometry, which both sides must agree on exactly.
         layout: SlabLayout,
     },
+    /// Ask the subprocess to exit cleanly.
     Shutdown,
     /// Tell the plugin whether it is rendering under realtime pressure.
     ///
@@ -83,17 +127,11 @@ pub enum HostMessage {
     /// only accept this while the plugin is deactivated, and two of those
     /// rebuild buffers around it. Sending it per block would be both wasteful
     /// and unrepresentable.
-    ///
-    /// Appended rather than placed beside `SetSampleRate` because bincode
-    /// encodes the discriminant over declaration order, so inserting mid-enum
-    /// renumbers every later variant.
     SetRenderMode {
+        /// Realtime or offline.
         mode: crate::protocol::RenderMode,
     },
     /// Ask for the plugin's preset list.
-    ///
-    /// Appended, like every variant since v11, because bincode encodes the
-    /// discriminant over declaration order.
     GetPresetList,
     /// Ask the plugin to load one preset, by an id its list produced.
     ///
@@ -102,6 +140,7 @@ pub enum HostMessage {
     /// in a space that is not a position in the list, so an invented id loads
     /// the wrong preset rather than failing.
     LoadPreset {
+        /// Opaque, format-shaped preset id taken from the plugin's own list.
         id: crate::protocol::PresetId,
     },
     /// Ask which preset the plugin considers current.
@@ -111,7 +150,9 @@ pub enum HostMessage {
     /// `value` is normalized, as everywhere on this wire; the loader converts
     /// to its format's domain.
     GetParameterText {
+        /// Which parameter — opaque handle or positional index, per format.
         param_id: crate::protocol::ParamAddress,
+        /// The value to render, normalized.
         value: crate::protocol::Normalized,
     },
     /// Ask the plugin to parse `text` into a value.
@@ -120,7 +161,9 @@ pub enum HostMessage {
     /// applies the parsed value as it reads it — see that loader's
     /// `parameter_value_from_text`.
     GetParameterValueFromText {
+        /// Which parameter — opaque handle or positional index, per format.
         param_id: crate::protocol::ParamAddress,
+        /// Display text to parse, in whatever form the plugin renders.
         text: String,
     },
 }
@@ -130,9 +173,13 @@ pub enum HostMessage {
 // (0–handful of events) case heap-free. `BridgeMessage` is only ever
 // (de)serialized on the off-RT bridge thread, so its stack size is not an RT
 // concern, and boxing would just add an off-RT allocation.
+/// A reply or notification travelling subprocess → host.
+///
+/// Variant order is wire-significant; see the module docs.
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum BridgeMessage {
+    /// The plugin was probed or loaded successfully.
     PluginLoaded {
         /// Catalog identity (id, name, vendor, version, native class, editor).
         /// The probe path uses only this half; `loaded` is defaulted for a
@@ -142,50 +189,68 @@ pub enum BridgeMessage {
         /// Empty/default for a `ProbePlugin` reply.
         #[serde(default)]
         loaded: LoadedPlugin,
+        /// The sample format actually agreed on, which may differ from the
+        /// host's preference.
         negotiated_format: SampleFormat,
     },
+    /// The plugin instance was destroyed; the subprocess remains alive.
     PluginUnloaded,
     /// Acknowledges a processed block. Audio output goes into the block's slot
     /// in the shared `AudioSlab`'s output ring, published there before this
     /// message is sent; the measured latency and any MIDI the plugin emitted
-    /// travel here. (Parameter / note-expression output is still not routed
-    /// back.) `midi_out` is capped at `MIDI_STACK_CAPACITY` server-side so it
-    /// stays inline (no heap on the RT-adjacent path).
+    /// travel here. (Parameter / note-expression output is not routed back.)
+    /// `midi_out` is capped at `MIDI_STACK_CAPACITY` server-side so it stays
+    /// inline (no heap on the RT-adjacent path).
     ///
-    /// **This message is not what makes the audio readable.** It used to be: the
-    /// echoed `buffer_id` was the only evidence a reply belonged to a given
-    /// block, because the slab carried no generation counter and reported a
-    /// full-length success whether or not anyone had written the region. The
-    /// slab now answers that itself, per slot, so the host would emit silence for
-    /// an unpublished block even if this arrived for it. The echoed `seq` is kept
-    /// for diagnostics and ordering.
+    /// **This message is not what makes the audio readable.** The slab carries a
+    /// per-slot generation counter and answers that itself, so the host emits
+    /// silence for an unpublished block even if this arrives for it. The echoed
+    /// `seq` is for diagnostics and ordering.
     AudioProcessed {
+        /// Wall-clock time the plugin spent in `process`, in microseconds.
         latency_us: u64,
         /// Echo of the request's [`ProcessAudioData::seq`].
         #[serde(default)]
         seq: u64,
+        /// MIDI the plugin emitted during the block.
         #[serde(default)]
         midi_out: IpcMidiEventVec,
     },
+    /// One parameter's normalized value, or `None` if the plugin declined.
     ParameterValue {
+        /// Normalized `0.0..=1.0`.
         value: Option<f32>,
     },
+    /// Every parameter the plugin declares, in the plugin's own order.
     ParameterList {
+        /// The declarations, empty if the plugin exposes no parameters.
         parameters: Vec<ParameterInfo>,
     },
+    /// One parameter's declaration, or `None` if the address is unknown.
     ParameterInfoResponse {
+        /// The declaration, if the plugin recognized the address.
         info: Option<ParameterInfo>,
     },
+    /// The plugin's serialized state, answering
+    /// [`HostMessage::SaveState`].
     StateData {
+        /// Opaque, format-defined state chunk. Never interpret it host-side.
         data: Vec<u8>,
     },
+    /// The editor window opened, at the size the plugin asked for.
     EditorOpened {
+        /// Editor width in pixels.
         width: u32,
+        /// Editor height in pixels.
         height: u32,
     },
+    /// The editor window closed, whether the host or the plugin closed it.
     EditorClosed,
+    /// The plugin moved one of its own parameters, typically from its editor.
     ParameterChanged {
+        /// Positional parameter index as the plugin reported it.
         index: i32,
+        /// Normalized `0.0..=1.0`.
         value: f32,
     },
     /// Plugin reported a latency change at runtime. Host updates the
@@ -193,6 +258,7 @@ pub enum BridgeMessage {
     /// reports the new value. Note: does NOT trigger PDC re-analysis;
     /// the graph must be committed again for compensation to update.
     LatencyChanged {
+        /// The plugin's new reported latency, in frames.
         samples: Samples,
     },
     /// Plugin reported a new tail length at runtime. The host updates the value
@@ -203,6 +269,7 @@ pub enum BridgeMessage {
     /// with a host `changed` callback. VST3's restart flags have no tail member
     /// and AU has no tail property listener, so both are settled at load.
     TailChanged {
+        /// The plugin's new tail, which may be bounded, unbounded or unreported.
         tail: PluginTail,
     },
     /// Plugin changed its own parameter values at runtime (e.g. an in-plugin
@@ -226,6 +293,7 @@ pub enum BridgeMessage {
     /// reading `Features::PRESET_LIST`, which is unprobed for CLAP and
     /// `Some(false)` for a format that was asked and declined.
     PresetList {
+        /// The plugin's presets, in its own order.
         presets: Vec<Preset>,
     },
     /// Whether the plugin accepted a [`LoadPreset`](HostMessage::LoadPreset).
@@ -234,16 +302,24 @@ pub enum BridgeMessage {
     /// answer for VST3: its programs are selected through the parameter path,
     /// so there is no direct load to report on.
     PresetLoaded {
+        /// Whether the plugin accepted the preset.
         ok: bool,
     },
     /// The preset the plugin considers current, if it will say. `None` means
     /// the format has no query (VST3, CLAP) or the plugin declined — never
     /// "the first one".
     CurrentPreset {
+        /// The current preset's opaque id, if the plugin will say.
         id: Option<PresetId>,
     },
+    /// The subprocess mapped the shared-memory slab and is ready to process.
     SharedMemoryReady,
+    /// The subprocess failed at something it was asked to do.
+    ///
+    /// Fire-and-forget: nothing awaits this, so a request that a caller blocks
+    /// on needs its own reply variant rather than relying on this.
     Error {
+        /// Human-readable reason, already formatted subprocess-side.
         message: String,
     },
     /// Handshake sent once the subprocess is live. Carries the wire
@@ -252,37 +328,34 @@ pub enum BridgeMessage {
     /// each other's messages (bincode is not self-describing). `#[serde(default)]`
     /// = 0 for an ancient binary that predates the field → treated as a mismatch.
     Ready {
+        /// The subprocess's [`PROTOCOL_VERSION`](super::PROTOCOL_VERSION).
         #[serde(default)]
         protocol_version: u32,
     },
+    /// The subprocess is exiting.
     Shutdown,
     /// The plugin's display string for the value that was asked about. `None`
     /// means the plugin did not answer — the caller renders the raw number
     /// rather than treating this as an empty label.
     ParameterText {
+        /// The plugin's display string, or `None` if it did not answer.
         text: Option<String>,
     },
     /// The value the plugin parsed a string into, normalized. `None` means it
     /// could not parse it, and the caller must leave its field unchanged.
     ParameterValueFromText {
+        /// The parsed value, normalized.
         value: Option<Normalized>,
     },
     /// Acknowledges a [`HostMessage::LoadState`], carrying the plugin's refusal
     /// if it had one.
     ///
-    /// Before v18 there was no reply at all: the host's dispatcher answered its
-    /// own caller with a literal `reply.send(true)` immediately after writing
-    /// the request to the socket, so the `bool` it produced reported that the
-    /// message had been *sent*, never that the state had been *loaded*. The
-    /// subprocess did build an error — it emitted a fire-and-forget
-    /// `BridgeMessage::Error` — but on a channel nobody was waiting on, so a
-    /// plugin rejecting a chunk reached the user as a silently un-restored
-    /// preset.
-    ///
-    /// `error: None` is success. Carrying the message rather than a bool because
-    /// the subprocess has already formatted it (`"Failed to load state: {e}"`)
-    /// and a caller wants to show the user *why* their preset did not load.
+    /// A caller awaits this frame, so the answer reports that the state was
+    /// *loaded* rather than merely that the request was sent. It carries the
+    /// message rather than a bool because the subprocess has already formatted
+    /// it and a caller wants to show the user *why* their preset did not load.
     StateLoaded {
+        /// The plugin's refusal, or `None` on success.
         error: Option<String>,
     },
 }

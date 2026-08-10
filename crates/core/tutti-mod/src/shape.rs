@@ -27,18 +27,34 @@ pub enum Polarity {
     Unipolar,
 }
 
-/// LFO waveform. Owned here (the single source of truth); app-side and
-/// tutti_units LfoShape are From-bridged mirrors.
+/// LFO waveform. Owned here (the single source of truth); the app-side and
+/// `tutti_units` `LfoShape`s are `From`-bridged mirrors.
+///
+/// The first five are pure functions of [`Phase`] and evaluate through
+/// [`LfoShape::evaluate_periodic`]. The last two are *stepped* — their value
+/// depends on per-instance state, so a caller must branch on
+/// [`LfoShape::is_random`] first.
 #[cfg_attr(feature = "bevy", derive(bevy_reflect::Reflect))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum LfoShape {
+    /// Sine over the cycle: `sin(phase · 2π)`.
     #[default]
     Sine,
+    /// Linear rise to `+1` at quarter phase, fall through `-1` at three
+    /// quarters, back to zero.
     Triangle,
+    /// `+1` for the first half of the cycle, `-1` for the second. Discontinuous
+    /// at the halfway point and at the wrap.
     Square,
+    /// Rising ramp: `-1` at the cycle start climbing to `+1` at its end.
     Sawtooth,
+    /// Falling ramp — [`Sawtooth`](Self::Sawtooth) reversed: `+1` down to `-1`.
     SawtoothDown,
+    /// Stepped noise: one value per cycle, held across it. Needs per-instance
+    /// state ([`is_random`](Self::is_random) is true).
     Random,
+    /// [`Random`](Self::Random)'s steps, linearly interpolated across the cycle
+    /// instead of held. Needs per-instance state.
     RandomSmooth,
 }
 
@@ -90,6 +106,8 @@ impl LfoShape {
         }
     }
 
+    /// Every shape, in declaration order — for populating a picker or
+    /// exhaustively exercising the roster in a test.
     pub fn all() -> &'static [Self] {
         &[
             Self::Sine,
@@ -102,6 +120,8 @@ impl LfoShape {
         ]
     }
 
+    /// Display label for a UI (`"Saw Down"`, `"Random (Smooth)"`) — not the
+    /// variant's Rust name, and not stable enough to parse or persist.
     pub fn name(&self) -> &'static str {
         match self {
             Self::Sine => "Sine",

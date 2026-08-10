@@ -4,29 +4,31 @@
 //! problems: `+1` is identical channels, `0` uncorrelated, `-1` polarity
 //! inverted and cancelling.
 //!
-//! Split into a pure kernel and an explicit smoother, which fixes two defects
-//! the old meter had. Its `set_smoothing` stored a field nothing read, and its
-//! `width` was a stored second field smoothed independently of the correlation
-//! it is defined from — so the smoothed pair could contradict the invariant the
-//! kernel guarantees.
+//! Split into a pure kernel ([`correlate`]) and an explicit smoother
+//! ([`step_ballistics`]). Folding the two together invites a `width` stored
+//! beside the correlation it is defined from and smoothed independently of it,
+//! so the smoothed pair contradicts the invariant the kernel guarantees.
 
 use tutti_types::{Amplitude, Correlation, Db, Pan, Seconds, StereoPlanes, StereoWidth};
 
 /// Mid/side and per-channel levels.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct StereoLevels {
+    /// RMS [`Amplitude`] of the mid (sum) component.
     pub mid: Amplitude,
+    /// RMS [`Amplitude`] of the side (difference) component.
     pub side: Amplitude,
+    /// RMS [`Amplitude`] of the left channel.
     pub left: Amplitude,
+    /// RMS [`Amplitude`] of the right channel.
     pub right: Amplitude,
 }
 
 impl StereoLevels {
     /// Mid-to-side ratio in dB. Positive is more mid — a narrower image.
     ///
-    /// Clamped, never infinite. The old version returned `f32::INFINITY` from
-    /// a function whose name promises dB, and consumers propagated it into
-    /// meters.
+    /// Clamped to ±60 dB and never infinite: a function whose name promises dB
+    /// must not hand a meter an infinity to propagate.
     pub fn ms_ratio(&self) -> Db {
         // A meter range, deliberately not `Db::FLOOR`: this is a ratio between
         // two amplitudes on a ±60 dB scale, not a level pinned at the noise
@@ -53,28 +55,34 @@ impl StereoLevels {
 /// One correlation reading.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct StereoReading {
+    /// Inter-channel phase [`Correlation`], `-1..=1`: `+1` identical channels,
+    /// `0` uncorrelated, `-1` polarity inverted. A measurement, deliberately
+    /// not `Depth` despite the coinciding range.
     pub correlation: Correlation,
-    /// Where the energy sits on the left/right axis.
+    /// Where the energy sits on the left/right axis, as a [`Pan`] reading.
     pub balance: Pan,
+    /// Mid/side and per-channel RMS levels for this block.
     pub levels: StereoLevels,
 }
 
 impl StereoReading {
     /// The image width this correlation implies.
     ///
-    /// Derived, not stored. The old struct kept it as a field that the
-    /// smoother could move independently, letting `current()` return a pair
-    /// violating `width == 1 - correlation`.
+    /// Derived, not stored — a stored field can be smoothed independently of
+    /// the correlation, letting the pair violate `width == 1 - correlation`.
     #[inline]
     pub fn width(&self) -> StereoWidth {
         self.correlation.to_stereo_width()
     }
 
+    /// Whether the correlation is negative enough that a mono fold would
+    /// cancel audibly.
     #[inline]
     pub fn has_phase_issues(&self) -> bool {
         self.correlation.has_phase_issues()
     }
 
+    /// Whether the channels are near-identical (correlation above 0.95).
     #[inline]
     pub fn is_mono(&self) -> bool {
         self.correlation > Correlation(0.95)
@@ -85,9 +93,9 @@ impl StereoReading {
 ///
 /// Takes a [`StereoPlanes`] rather than two loose slices: mid/side and L/R
 /// correlation are only defined at exactly two channels, and every statistic
-/// below divides by a single frame count. The pair used to be reconciled here
-/// with `left.len().min(right.len())`, which silently measured the shorter of
-/// two mismatched blocks; the pairing now cannot be formed unless they agree.
+/// below divides by a single frame count. Reconciling the pair here with
+/// `left.len().min(right.len())` silently measures the shorter of two
+/// mismatched blocks; the pairing cannot be formed at all unless they agree.
 pub fn correlate(planes: StereoPlanes<'_>) -> StereoReading {
     let n = planes.frames();
     if n == 0 {
@@ -153,10 +161,9 @@ pub struct Ballistics {
 
 impl Ballistics {
     /// Both times in [`Seconds`], like every other time-valued setter in the
-    /// engine. The old pair took milliseconds and were two adjacent `f32`s, so
-    /// transposing them compiled and made the meter sluggish to peaks and
-    /// instant to release — under-reporting exactly the problems it exists to
-    /// show.
+    /// engine. As two adjacent bare `f32` milliseconds, transposing them
+    /// compiles and makes the meter sluggish to peaks and instant to release —
+    /// under-reporting exactly the problems it exists to show.
     pub fn new(attack: impl Into<Seconds>, release: impl Into<Seconds>) -> Self {
         Self {
             attack: attack.into(),
@@ -185,6 +192,7 @@ pub struct BallisticsState {
 }
 
 impl BallisticsState {
+    /// A state seeded with a default (silent, uncorrelated) reading.
     pub fn new() -> Self {
         Self::default()
     }
@@ -195,6 +203,8 @@ impl BallisticsState {
         self.current
     }
 
+    /// Discard the smoothed reading, so the next step starts from silence
+    /// rather than decaying from the previous signal.
     pub fn reset(&mut self) {
         self.current = StereoReading::default();
     }
@@ -202,10 +212,9 @@ impl BallisticsState {
 
 /// Smooth an instantaneous reading and return the result.
 ///
-/// Returns the *smoothed* value, which is the useful one. The old `process`
-/// returned the instantaneous reading and hid the smoothed one behind a
-/// separate `current()` call, so the obvious use of the return value was the
-/// wrong one.
+/// Returns the *smoothed* value, which is the useful one — returning the
+/// instantaneous reading instead and hiding the smoothed one behind a separate
+/// `current()` call makes the obvious use of the return value the wrong one.
 ///
 /// Only `correlation` and the levels are smoothed; width is derived from the
 /// smoothed correlation afterwards, so the two cannot disagree.
@@ -408,14 +417,13 @@ mod tests {
         assert_eq!(correlate(pair(&[], &[])), StereoReading::default());
     }
 
-    /// Ragged planes are now **unrepresentable** rather than silently truncated.
+    /// Ragged planes are **unrepresentable** rather than silently truncated.
     ///
-    /// This used to be `empty_and_ragged_input_do_not_panic`, and it pinned that
-    /// `correlate` reconciled a mismatch with `left.len().min(right.len())` — so
-    /// a three-frame left against a one-frame right reported a correlation of
-    /// 1.0 from a single frame, and the caller never learned that two thirds of
+    /// Reconciling a mismatch with `left.len().min(right.len())` makes a
+    /// three-frame left against a one-frame right report a correlation of 1.0
+    /// from a single frame, with the caller never learning that two thirds of
     /// its left channel went unmeasured. `StereoPlanes` refuses the pairing
-    /// instead, which is the behaviour change this test now records.
+    /// instead, which is what this test pins.
     #[test]
     fn ragged_planes_cannot_be_paired() {
         assert!(

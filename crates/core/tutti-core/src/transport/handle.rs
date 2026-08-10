@@ -13,28 +13,31 @@ use crate::params::{Beat, BeatDuration, Bpm, SampleRate, Samples};
 /// There is no facade here — the fields are public and carry their own APIs:
 ///
 /// ```ignore
-/// transport.motion.send(MotionEvent::Play);      // a request; may be refused
+/// transport.motion.try_send(MotionEvent::Play)?; // a request; may be refused
 /// transport.settings.set_tempo(140.0);           // a value; cannot fail
 /// transport.settings.loop_span.set_range(0.0, 4.0);
 /// ```
 ///
 /// The split is by *who decides*. A motion change goes through a state
 /// machine on the audio thread, which may reject or defer it. A setting is
-/// just a store. Fusing them is what made the old `TransportManager` carry 19
-/// fields and 11 atomic getters.
+/// just a store. Fusing the two is what grows a transport into a wall of
+/// atomic getters with no rule for which of them can fail.
 ///
-/// This type exists because [`Timeline`](super::Timeline)
-/// spans both halves — a reader wants the beat (settings) *and* whether we are
-/// rolling (motion) — and needs one `Clone + Send + Sync + 'static` type to be
-/// erased behind `Arc<dyn …>`.
+/// This type exists because [`Timeline`](super::Timeline) spans both halves — a
+/// reader needs the beat (settings) *and* whether it is rolling (motion) — and
+/// needs one `Clone + Send + Sync + 'static` type to be erased behind
+/// `Arc<dyn …>`.
 #[derive(Clone, Debug)]
 pub struct Transport {
+    /// The state machine: play, stop, locate, scrub. Requests may be refused.
     pub motion: MotionFsm,
+    /// The plain shared values: tempo, playhead, loop region, record arm.
     pub settings: TransportSettings,
     sample_rate: SampleRate,
 }
 
 impl Transport {
+    /// Build a stopped transport at 120 BPM, running at `sample_rate`.
     pub fn new(sample_rate: impl Into<SampleRate>) -> Self {
         let settings = TransportSettings::new();
         Self {
@@ -44,13 +47,13 @@ impl Transport {
         }
     }
 
-    /// Everything a `TransportClock` shares with this transport — the inputs it
-    /// reads *and* the playhead it writes.
+    /// Everything a [`TransportClock`](super::TransportClock) shares with this
+    /// transport — the inputs it reads *and* the playhead it writes.
     ///
-    /// Supplying both halves here is the point: the writeback used to be a
-    /// separate builder call, so every construction site had to remember to
-    /// chain it. `settings.beat` is documented as "written by `TransportClock`
-    /// via its position writeback"; this is what closes that loop.
+    /// Both halves come from this one call on purpose. `settings.beat` is only
+    /// ever filled by the clock's position writeback, so a construction path
+    /// that supplies the inputs without the writeback yields a transport whose
+    /// playhead never moves.
     pub fn clock_links(&self) -> ClockLinks {
         ClockLinks {
             tempo: Arc::clone(&self.settings.tempo),
@@ -62,22 +65,23 @@ impl Transport {
         }
     }
 
+    /// The device rate this transport converts musical time against. Fixed at
+    /// construction.
     pub fn sample_rate(&self) -> SampleRate {
         self.sample_rate
     }
 
-    /// Frames one beat spans at the current tempo.
+    /// Frames one beat spans at the current tempo, rounded to the nearest
+    /// frame.
     ///
     /// Derived from [`beats_per_sample`](super::beats_per_sample) rather than
-    /// from a second `/ 60.0`: that association is documented as load-bearing,
-    /// and this used to be the third hand-rolled spelling of it, via a
-    /// `beats_per_second` helper that existed only to feed this line.
+    /// from a second `/ 60.0`: the grouping of that division is load-bearing,
+    /// and a second spelling of it would round differently.
     ///
     /// A non-positive tempo gives [`Samples::ZERO`] rather than an infinity.
     /// `set_tempo` does not clamp, so `Bpm(0.0)` is reachable from the control
-    /// thread, and the old form returned `inf` — which as a frame count is an
-    /// unbounded allocation waiting for its first caller. There are none today;
-    /// that is what made this a latent hole rather than a live bug.
+    /// thread, and an infinite frame count is an unbounded allocation waiting
+    /// for its first caller.
     pub fn samples_per_beat(&self) -> Samples {
         let bps = super::beats_per_sample(self.settings.tempo(), self.sample_rate);
         if bps <= BeatDuration(0.0) {
@@ -174,8 +178,8 @@ mod tests {
         t.settings.set_tempo(60.0);
         assert_eq!(t.samples_per_beat(), Samples(44100), "60 BPM");
 
-        // `set_tempo` does not clamp, so this is reachable. It used to be
-        // `inf`, which as a frame count is an unbounded allocation.
+        // `set_tempo` does not clamp, so this is reachable from the control
+        // thread. An `inf` frame count here is an unbounded allocation.
         t.settings.set_tempo(0.0);
         assert_eq!(t.samples_per_beat(), Samples::ZERO, "zero tempo");
         t.settings.set_tempo(-120.0);

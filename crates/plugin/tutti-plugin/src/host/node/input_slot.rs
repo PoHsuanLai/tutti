@@ -11,9 +11,9 @@
 //! `set_*_source` call mutates, and `Net::migrate` discards `node_mut`/clone
 //! edits on commit. So the *slot itself* is an `Arc<ArcSwapOption<…>>` shared
 //! across clones: an install on any clone is seen live by whichever clone the
-//! audio thread runs, lock-free, no commit needed. Each of the (formerly
-//! hand-rolled) producer slots had this contract copy-pasted — and the bug of
-//! *not* sharing it lived in each copy. Here it lives once. See
+//! audio thread runs, lock-free, no commit needed. The contract lives here
+//! once rather than copy-pasted into each producer slot, because a slot that
+//! forgets to share silently never fires. See
 //! [[plugin-source-install-shared-cell]].
 //!
 //! **Feature gating is data, not logic.** Some inputs are only sent to plugins

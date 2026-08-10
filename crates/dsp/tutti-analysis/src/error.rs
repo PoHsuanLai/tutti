@@ -15,28 +15,56 @@ pub enum AnalysisError {
     /// A zero hop: frames would never advance.
     ZeroHop,
     /// Frames would not overlap, so the transform cannot reconstruct.
-    HopExceedsWindow { window: Samples, hop: Samples },
+    HopExceedsWindow {
+        /// The analysis window, in [`Samples`].
+        window: Samples,
+        /// The hop, in [`Samples`]; larger than `window`.
+        hop: Samples,
+    },
     /// Hann² needs `window % hop == 0` and `window / hop >= 4` to
     /// constant-overlap-add. Without it the inverse's normalization is
     /// inexact and untouched bins do not reconstruct.
-    NotColaCompliant { window: Samples, hop: Samples },
+    NotColaCompliant {
+        /// The analysis window, in [`Samples`].
+        window: Samples,
+        /// The hop, in [`Samples`]; does not divide `window` at 4x overlap.
+        hop: Samples,
+    },
     /// A sample rate of zero or below.
     NonPositiveSampleRate,
-    /// `min >= max`, or either bound at or below zero. The old detector
-    /// accepted this and then reported "unvoiced" forever.
-    EmptyFrequencyRange { min: Hz, max: Hz },
+    /// `min >= max`, or either bound at or below zero. Refused at construction
+    /// because a detector that accepts it reports "unvoiced" forever instead.
+    EmptyFrequencyRange {
+        /// The lower bound in [`Hz`]; not below `max`.
+        min: Hz,
+        /// The upper bound in [`Hz`].
+        max: Hz,
+    },
     /// A frequency bound above Nyquist for the given rate.
-    AboveNyquist { freq: Hz, nyquist: Hz },
+    AboveNyquist {
+        /// The offending bound, in [`Hz`].
+        freq: Hz,
+        /// Half the sample rate, in [`Hz`].
+        nyquist: Hz,
+    },
     /// A grid's data length disagrees with `frames * bins`.
     GridShapeMismatch {
+        /// Values actually present.
         len: usize,
+        /// Declared frame count.
         rows: usize,
+        /// Declared bin count.
         cols: usize,
     },
     /// Two grids that must share a shape do not.
     GridShapeDisagreement,
     /// Input shorter than the algorithm's minimum.
-    InsufficientInput { needed: Samples, got: Samples },
+    InsufficientInput {
+        /// The algorithm's minimum, in [`Samples`].
+        needed: Samples,
+        /// What the caller supplied, in [`Samples`].
+        got: Samples,
+    },
 }
 
 impl core::fmt::Display for AnalysisError {
@@ -77,4 +105,5 @@ impl core::fmt::Display for AnalysisError {
 
 impl core::error::Error for AnalysisError {}
 
+/// Result of an analysis call, defaulting the error to [`AnalysisError`].
 pub type Result<T> = core::result::Result<T, AnalysisError>;

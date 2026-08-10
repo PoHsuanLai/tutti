@@ -8,8 +8,8 @@
 //!
 //! The device *driver* types are re-exported so a host reaches the whole engine
 //! through `bevy_tutti` without naming the device crate. Mic capture and
-//! recording are not here — they are the live I/O edge, and live in
-//! [`io`](crate::io).
+//! recording are not here — they are the live I/O edge, and live in `crate::io`
+//! (compiled with the `audio-io` feature).
 
 mod build;
 pub(crate) mod device_state;

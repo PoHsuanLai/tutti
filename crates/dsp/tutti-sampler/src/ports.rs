@@ -22,14 +22,28 @@ use crate::voice::{Direction, DiskVoice, DiskVoiceConfig, LoopSetting, VoiceWind
 use tutti_core::{Beat, BeatDuration, PlaybackRate, SamplePosition, SampleRate, Timeline, Wave};
 
 /// The caller's stated choice of playback tier for a voice: whole-file in memory
-/// (`Memory`) or incremental disk streaming (`Disk`). Plain data — the sampler
-/// never decides the tier on its own; it plays whichever variant it is handed.
-/// The caller owns the tier decision (e.g. dawai-model's `TieringPolicy`).
+/// (`Memory`) or incremental disk streaming (`Disk`).
+///
+/// Plain data. The sampler never decides the tier on its own; it plays whichever
+/// variant it is handed, and the caller owns the decision (dawai-model's
+/// `TieringPolicy`, say). [`probe`](crate::probe) reports what a file *allows* —
+/// a `streamable: false` file has no `Disk` option at all.
+///
+/// An enum rather than a trait over the two tiers, for the reason the runtime
+/// side documents on `VoiceSource`: the tiers differ only in the essential
+/// per-sample read, and a trait makes every cold control operation
+/// tier-conditional in its *meaning* while looking uniform at the call site.
 #[derive(Clone)]
 pub enum Source {
-    /// Whole file decoded into memory, played by a `MemorySource`.
+    /// Whole file already decoded into memory, played by a `MemorySource`.
+    ///
+    /// The `Wave` is shared by `Arc`, so several voices over one sample cost one
+    /// copy of the audio.
     Memory(Arc<Wave>),
-    /// File streamed incrementally from disk via the butler.
+    /// File streamed incrementally from disk by the butler thread.
+    ///
+    /// The path is opened on the butler thread, not here, so constructing this
+    /// variant does no I/O and cannot fail.
     Disk(PathBuf),
 }
 
@@ -52,38 +66,65 @@ impl std::fmt::Debug for Source {
 ///
 /// Each variant maps to exactly one internal `ButlerCommand`; the [`Commands`]
 /// port performs that mapping in [`send`](Commands::send).
+///
+/// # Positions are in frames
+///
+/// Every [`SamplePosition`] here indexes the **file** in frames, not in
+/// interleaved samples and not in engine-rate frames. A caller that divides by
+/// the channel count, or that converts through the session rate instead of the
+/// file's own, addresses a fraction of the intended point — a 6-channel file
+/// then seeks to a sixth of where it was asked to.
+///
+/// Negative positions are clamped to zero on dispatch rather than rejected.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub enum Command {
     /// Register a disk-streaming source for a timeline clip on `channel_index`,
-    /// starting at `offset` in file samples. Maps to `StreamAudioFile`.
+    /// starting `offset` frames into the file. Maps to `StreamAudioFile`.
     Stream {
+        /// Butler channel this stream occupies. One live stream per index.
         channel_index: usize,
+        /// The file to stream. Opened by the butler thread, not here.
         file_path: PathBuf,
+        /// Start position, in frames from the head of the file.
         offset: SamplePosition,
     },
-    /// Reposition a live stream to an absolute file sample offset (timeline
-    /// seek). Maps to `SeekStream`.
+    /// Reposition a live stream — a timeline seek. Maps to `SeekStream`.
     Seek {
+        /// Butler channel carrying the stream to move.
         channel_index: usize,
+        /// Absolute target, in frames from the head of the file.
         file_position: SamplePosition,
     },
-    /// Set varispeed (playback speed magnitude + direction). Maps to
+    /// Set varispeed: playback speed magnitude plus direction. Maps to
     /// `SetVarispeed`.
+    ///
+    /// [`PlaybackRate`] is the pitch-coupled kind of speed change — reading
+    /// faster transposes up. The pitch-independent kind is `StretchFactor`, and
+    /// it does not travel this port; it lives on the voice's stretch filter.
     SetSpeed {
+        /// Butler channel carrying the stream to respeed.
         channel_index: usize,
+        /// Magnitude only; the sign is carried by `direction`.
         speed: PlaybackRate,
+        /// Forward or reverse.
         direction: Direction,
     },
-    /// Enable/replace or disable looping. `LoopSetting::On { .. }` maps to
+    /// Enable, replace or disable looping. `LoopSetting::On { .. }` maps to
     /// `SetStreamLoop`; `LoopSetting::Off` maps to `ClearStreamLoop`.
     Loop {
+        /// Butler channel carrying the stream to loop.
         channel_index: usize,
+        /// The loop intent. Its `start`/`end` are file frames and its
+        /// `crossfade_frames` are frames, matching this enum's rule.
         setting: LoopSetting,
     },
-    /// Stop the stream on a channel — drops its ring + link. Maps to
+    /// Stop the stream on a channel, dropping its ring and link. Maps to
     /// `StopStreaming`.
-    Stop { channel_index: usize },
+    Stop {
+        /// Butler channel to tear down.
+        channel_index: usize,
+    },
 }
 
 /// WRITE port onto the butler: a cloneable wrapper over the command channel
@@ -106,14 +147,15 @@ impl Commands {
     /// `Ok` means the command was *queued* — the butler applies it on its own
     /// thread, and that outcome is not available synchronously.
     ///
-    /// `Err(`[`ButlerGone`]`)` means the butler thread has exited and the
-    /// command was **discarded**. It is permanent: every later command fails the
-    /// same way, so a caller should stop rather than retry.
+    /// # Errors
     ///
-    /// This is the crate's documented WRITE port — the primary control surface —
-    /// and it previously returned `()`, with every arm ending in `let _ =`. A
-    /// dead butler therefore accepted `Stream`/`Seek`/`Loop`/`Stop` indefinitely
-    /// and did nothing, which is indistinguishable from working playback.
+    /// `ButlerGone` means the butler thread has exited and the command was
+    /// **discarded**. It is permanent: every later command fails the same way,
+    /// so a caller should stop rather than retry.
+    ///
+    /// Ignoring that error is the failure this port is shaped to prevent — a
+    /// dead butler silently accepting `Stream`, `Seek`, `Loop` and `Stop`
+    /// forever is indistinguishable from working playback.
     #[must_use = "a discarded command is a stream that never starts, seeks, or stops"]
     pub fn send(&self, cmd: Command) -> Result<(), ButlerGone> {
         match cmd {
@@ -177,9 +219,8 @@ impl Commands {
     ///
     /// A count rather than a bare `Result` because the batch is *partially*
     /// applied: commands queued before the failure still stand, so a caller
-    /// needs to know where the stream of intent actually stopped. Previously
-    /// this returned `()`, so a whole batch could vanish with no indication how
-    /// many had landed.
+    /// needs to know where the stream of intent actually stopped. A bare
+    /// `Result` cannot say whether one command landed or all of them.
     #[must_use = "a short count means the rest of the batch was discarded"]
     pub fn send_all(&self, cmds: impl IntoIterator<Item = Command>) -> usize {
         let mut queued = 0;
@@ -222,13 +263,17 @@ impl Status {
         self.sample_rate
     }
 
-    /// Build a [`DiskVoice`] for a channel whose butler stream is
-    /// ready, binding it to the timeline placement gate.
+    /// Build a [`DiskVoice`] for a channel whose butler stream is ready, binding
+    /// it to the timeline placement gate.
     ///
-    /// Pulls the ring consumer + shared `RtState` out of the channel's
-    /// [`ChannelPlan`] link and wraps them in a placement-gated reader. Returns
-    /// `None` while the butler hasn't installed the link yet (the caller retries
-    /// next frame).
+    /// Pulls the ring consumer and shared RT state out of the channel's plan and
+    /// wraps them in a placement-gated reader. `start_beat` and `duration` are
+    /// musical time — the gate converts them to **file frames** using the file's
+    /// own rate, not the session's, which is why the file rate is recovered from
+    /// the plan's [`SrcRatio`](tutti_core::SrcRatio) here rather than assumed.
+    ///
+    /// Returns `None` while the butler has not installed the link yet; a caller
+    /// polls again next frame rather than treating it as a failure.
     pub fn take_disk_voice(
         &self,
         channel_index: usize,
@@ -274,12 +319,11 @@ mod tests {
 
     /// Every command variant reports a dead butler.
     ///
-    /// This is the crate's documented WRITE port. It used to return `()` with
-    /// every arm ending in `let _ =`, so a dead butler accepted `Stream`,
-    /// `Seek`, `Loop` and `Stop` indefinitely and did nothing — indistinguishable
-    /// from working playback. Covering every variant matters because the arms
-    /// discard independently: fixing one and missing another would leave exactly
-    /// the same silent hole for the command that was missed.
+    /// Covering every variant, not one representative: the arms send
+    /// independently, so a variant whose `Result` went unpropagated would accept
+    /// `Stream`, `Seek`, `Loop` or `Stop` indefinitely and do nothing —
+    /// indistinguishable from working playback, and invisible to a test that
+    /// only exercised its neighbours.
     #[test]
     fn every_command_reports_a_dead_butler() {
         let cmds = dead_butler();

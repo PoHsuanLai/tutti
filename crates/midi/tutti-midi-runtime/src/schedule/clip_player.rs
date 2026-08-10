@@ -40,9 +40,10 @@ pub type TimedClipEvent = super::snapshot::TimedMidiEvent;
 pub struct MidiClipSource {
     events: Arc<[TimedClipEvent]>,
     /// The live transport plus this source's last-block beat. Owns the
-    /// backwards-seek detection that used to be open-coded here.
+    /// backwards-seek detection, so the rewind rule lives in one place rather
+    /// than at each poll site.
     beats: BeatCursor,
-    /// Index into `events` of the first event we haven't emitted yet.
+    /// Index into `events` of the first event not yet emitted.
     /// Atomic so `poll_into` is `&self`.
     cursor: Arc<AtomicU64>,
     /// Only events targeting this unit are emitted. Events whose unit
@@ -94,10 +95,16 @@ impl MidiClipSource {
         self
     }
 
+    /// The [`MidiUnitId`] this source emits for. Events in the shared list
+    /// addressed to any other unit are skipped, which is what lets one event
+    /// list back several per-unit players.
     pub fn target_unit(&self) -> MidiUnitId {
         self.target_unit
     }
 
+    /// How many events the backing list holds **in total**, across every unit —
+    /// not the count this source will emit. Filtering to
+    /// [`target_unit`](Self::target_unit) happens per poll.
     pub fn event_count(&self) -> usize {
         self.events.len()
     }
@@ -439,7 +446,7 @@ mod tests {
         let source = one_note_source(&transport);
 
         // Paused → no window, but the beat watermark is still tracked so a
-        // seek-while-paused doesn't surprise us on resume. Observable through
+        // seek-while-paused does not surprise the next resume. Observable through
         // the rewind below: if the paused poll had skipped the cursor write,
         // resuming lower would not register as a backwards jump.
         transport.playing.store(false, Ordering::Release);

@@ -20,18 +20,15 @@
 //! `(param, value)` pair to the addressed node, and the unit's own `set`
 //! decodes it — a unit ignores params it does not own. That is the opposite of
 //! resolving a *modulation target*, which needs a concrete downcast (see
-//! [`modulation::target`](crate::modulation::target)). Reconciling is uniform;
-//! resolving is not.
+//! `modulation::target`). Reconciling is uniform; resolving is not.
 //!
 //! # Modulated params
 //!
 //! A param the modulation driver owns must not be written here — modulation
 //! flushes `base + Σ layers` into the same atomic every frame, so a plain write
-//! is overwritten by the next flush and the fader snaps back. The
-//! reconciler asks
-//! [`ModulationMatrix::is_modulated`](crate::modulation::ModulationMatrix::is_modulated)
-//! and routes the authored value to the accumulator's *base* instead, which is
-//! what makes the two writers one.
+//! is overwritten by the next flush and the fader snaps back. The reconciler
+//! asks `ModulationMatrix::is_modulated` and routes the authored value to the
+//! accumulator's *base* instead, which is what makes the two writers one.
 
 use bevy_app::{App, Update};
 use bevy_ecs::prelude::*;
@@ -59,10 +56,13 @@ use crate::graph::{engine_ready, AudioGraphRes, GraphReconcileSystems};
 /// another. Either alone would let one of those through.
 #[derive(Component, Debug, Clone, Copy, PartialEq)]
 pub struct AudioParam<U: Unit<Raw = f32>, const P: u16> {
+    /// The authored value, in `U`. Written by the host; read by the reconciler,
+    /// which decides where it lands (see [`write_param`]).
     pub value: U,
 }
 
 impl<U: Unit<Raw = f32>, const P: u16> AudioParam<U, P> {
+    /// A param holding `value`.
     pub fn new(value: U) -> Self {
         Self { value }
     }
@@ -109,15 +109,15 @@ impl<U: Unit<Raw = f32> + Default, const P: u16> Default for AudioParam<U, P> {
 /// engine-level statement of it.
 ///
 /// Taking only the first silently drops every write to an unmodulated param —
-/// which is why [`ModulationMatrix::set_base`] is crate-private.
+/// which is why `ModulationMatrix::set_base` is crate-private.
 ///
 /// Taking only the second loses every write to a *modulated* param, and the
 /// loss is **deterministic rather than racy** — worth stating precisely, because
 /// the shape of the failure decides how you would find it.
-/// [`drive`](crate::modulation::drive) mirrors `clamp(base + Σ layers)` into the
-/// node's atomic every frame, so a direct write to that cell is overwritten by
-/// the next flush unconditionally. The symptom is a control that snaps back,
-/// reproducible on demand.
+/// `modulation::drive` mirrors `clamp(base + Σ layers)` into the node's atomic
+/// every frame, so a direct write to that cell is overwritten by the next flush
+/// unconditionally. The symptom is a control that snaps back, reproducible on
+/// demand.
 ///
 /// **System ordering is not what saves this, so do not try to fix it with a
 /// `.before()`.** `drive` and the param reconcilers do share

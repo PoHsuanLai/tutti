@@ -25,14 +25,14 @@ use crate::host::node::transport_source::TransportSource;
 use crate::host::node::Midi;
 use crate::protocol::{Features, TransportInfo};
 
-/// Maximum block size we pre-size scratch for. Matches fundsp's
+/// Maximum block size the scratch buffers are pre-sized for. Matches fundsp's
 /// `MAX_BUFFER_SIZE` so a single block lands in one `process()` call.
 const BLOCK_SIZE: usize = 64;
 
 /// Per-channel f32/f64 staging buffers + reusable ref vectors.
 ///
-/// The `vst2-host` API takes `&[&[f32]]` / `&mut [&mut [f32]]`, so we
-/// stage caller samples into our own contiguous `Vec<f32>` arrays and
+/// The `vst2-host` API takes `&[&[f32]]` / `&mut [&mut [f32]]`, so caller
+/// samples are staged into owned contiguous `Vec<f32>` arrays and
 /// reborrow them as slice-of-slices each call. The Vecs are sized
 /// once at construction; the ref-vector capacity is also pre-reserved.
 struct ProcessScratch {
@@ -637,7 +637,7 @@ fn block_context<'a>(
 }
 
 /// Reborrow the staging arrays as slice-of-slices and call into
-/// `vst2-host`. Free function so we can take disjoint borrows of the
+/// `vst2-host`. A free function so it can take disjoint borrows of the
 /// fields on the caller side without a self-borrow conflict.
 #[allow(clippy::too_many_arguments)]
 fn drive_f32(

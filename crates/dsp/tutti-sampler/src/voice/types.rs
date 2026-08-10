@@ -12,27 +12,29 @@ use tutti_core::{
     Amplitude, AudioUnit, Beat, BeatDuration, Cents, PlaybackRate, StretchFactor, Timeline,
 };
 
-// ---------------------------------------------------------------------------
-// Slot ID — opaque u128 so bevy-tutti stays independent of dawai-types.
-// dawai-model converts ClipId ↔ SlotId at the boundary.
-// ---------------------------------------------------------------------------
-
+/// Opaque identifier for one voice slot in a [`VoicePool`](super::VoicePool).
+///
+/// Deliberately a bare `u128` and not a DAW noun: the engine assigns no meaning
+/// to the value, so a host may map its own clip identity onto it without this
+/// crate depending on the host's vocabulary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct SlotId(pub u128);
 
-// ---------------------------------------------------------------------------
-// Direction — playback direction for a voice. Replaces loose `reverse: bool`
-// so the intent reads at every call site.
-// ---------------------------------------------------------------------------
-
+/// Playback direction for a voice.
+///
+/// A named pair rather than a `reverse: bool`, so the intent reads at the call
+/// site instead of at the declaration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Direction {
+    /// Read the source from its start toward its end.
     #[default]
     Forward,
+    /// Read the source from its end toward its start.
     Reverse,
 }
 
 impl Direction {
+    /// Returns `true` for [`Reverse`](Self::Reverse).
     #[inline]
     pub fn is_reverse(self) -> bool {
         matches!(self, Self::Reverse)
@@ -49,32 +51,40 @@ impl Direction {
     }
 }
 
-// ---------------------------------------------------------------------------
-// VoiceSource — a voice's audio source, monomorphized. Either the whole source is
-// resident in memory (`Memory`) or it streams incrementally from the butler ring
-// (`Disk`).
-//
-// DESIGN INVARIANT: the two variants differ ONLY in the *essential* per-sample
-// read — `Memory` indexes an `Arc<Wave>`; `Disk` pops the butler-fed ring,
-// emitting silence while `is_seeking()` and crossfading on refill. Every *cold*
-// control op is a `match` on this enum — see `apply_gain` / `apply_speed` /
-// `apply_direction` / `apply_placement`. A `ClipReader` trait used to sit over
-// the pair, but half its methods no-opped on one side or the other, which hid
-// the divergence instead of removing it (streaming clamped speed, in-memory did
-// not; `set_wave` silently did nothing on disk). With two in-crate impls the
-// enum is the better tool: it inlines, it surfaces the fork at the call site,
-// and adding a variant makes the compiler list every decision to make.
-//
-// The enum (not a `Box<dyn AudioUnit>`) is also what RT needs: monomorphized
-// dispatch on `tick`/`process`, so the per-sample read never touches a vtable
-// or the heap.
-// Both variants are `Clone` and `impl AudioUnit`, so the field-wise `Voice`
-// clone and the stretch wrapper work uniformly across them.
-// ---------------------------------------------------------------------------
-
+/// A voice's audio source, monomorphized over the two playback tiers.
+///
+/// # The two variants differ only in the essential per-sample read
+///
+/// [`Memory`](Self::Memory) indexes an `Arc<Wave>`; [`Disk`](Self::Disk) pops
+/// the butler-fed ring, emitting silence while seeking and crossfading on
+/// refill. Every *cold* control op is a `match` on this enum — `apply_gain`,
+/// `apply_speed`, `apply_direction` and `apply_placement`.
+///
+/// # There is deliberately no `ClipReader` trait
+///
+/// A trait over the pair is the obvious shape and it is the wrong one: half its
+/// methods no-op on one side (streaming clamps speed, in-memory does not;
+/// setting a wave means nothing on disk), so the trait *hides* the divergence
+/// instead of removing it. With two in-crate impls the enum is the better tool —
+/// it inlines, it surfaces the fork at the call site, and adding a variant makes
+/// the compiler enumerate every decision to make.
+///
+/// The rule this generalizes: share pure *functions* across the tiers
+/// (`SrcRatio::for_rates` is the pattern), never trait methods whose meaning is
+/// tier-conditional.
+///
+/// # Real-time
+///
+/// The enum rather than a `Box<dyn AudioUnit>` is what the audio thread needs:
+/// dispatch on `tick`/`process` is monomorphized, so the per-sample read touches
+/// neither a vtable nor the heap. Both variants are `Clone` and `impl
+/// AudioUnit`, so the field-wise [`Voice`] clone and the stretch wrapper work
+/// uniformly across them.
 #[non_exhaustive]
 pub enum VoiceSource {
+    /// The whole source is resident in memory.
     Memory(MemorySource),
+    /// The source streams incrementally from the butler's ring.
     Disk(DiskVoice),
 }
 
@@ -99,15 +109,12 @@ impl Clone for VoiceSource {
 }
 
 impl VoiceSource {
-    /// The source as an [`AudioUnit`], for the verbs every node has
-    /// (`reset`, `set_sample_rate`). Tier-specific control is a `match` at the
-    /// call site instead — see [`apply_gain`](Self::apply_gain).
-    #[inline]
     /// The transport clock this source reads, if any.
     ///
     /// `None` for a free-running memory source. The disk tier always has one —
     /// its gate is unconditional, so a `DiskVoice` without a clock could not
     /// decide when to play.
+    #[inline]
     pub(crate) fn timeline(&self) -> Option<Arc<dyn Timeline>> {
         match self {
             Self::Memory(s) => s.timeline(),
@@ -115,6 +122,9 @@ impl VoiceSource {
         }
     }
 
+    /// The source as an [`AudioUnit`], for the verbs every node has
+    /// (`reset`, `set_sample_rate`). Tier-specific control is a `match` at the
+    /// call site instead — see `apply_gain`.
     pub(crate) fn as_audio_unit_mut(&mut self) -> &mut dyn AudioUnit {
         match self {
             Self::Memory(s) => s,
@@ -136,8 +146,8 @@ impl VoiceSource {
     ///
     /// The two tiers store it differently — a unit-local field in memory, an
     /// atomic shared with the butler and every clone on disk — which is exactly
-    /// why the bound now lives in [`PlaybackRate`] rather than in one of these
-    /// arms.
+    /// why the bound belongs to [`PlaybackRate`] rather than to either of these
+    /// arms: a bound applied in one arm is a bound the other silently skips.
     #[inline]
     pub(crate) fn apply_speed(&mut self, speed: PlaybackRate) {
         match self {
@@ -173,38 +183,39 @@ impl VoiceSource {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Playback — the control-INTENT record for one voice. It says *what* the voice
-// should do (gain, speed, direction, loop, timeline placement, stretch, pitch);
-// each [`VoiceSource`] APPLIES it its own way (the in-memory `MemorySource` stores
-// the state on its resident DSP; the streaming reader forwards to the butler's
-// shared `RtState`). The apply fan-out is the `VoiceSource` match — Playback is
-// the description, not the applied state.
-//
-// `Default` is hand-written: the newtypes default to zero, so a derived default
-// would ship silent (`gain = 0`) and frozen (`speed = 0` / `stretch = 0`).
-// ---------------------------------------------------------------------------
-
+/// The control-*intent* record for one voice: what the voice should do, not what
+/// it is currently doing.
+///
+/// Each [`VoiceSource`] applies this its own way — the in-memory tier stores the
+/// state on its resident DSP, the streaming tier forwards to the butler's shared
+/// control cell — and the apply fan-out is the [`VoiceSource`] match. This is
+/// the description; the source holds the applied state.
+///
+/// # There is deliberately no `placement` field
+///
+/// Placement is the source's alone. Carrying a second copy here makes two clocks
+/// kept in sync by hand, and a rebind that reaches only the record leaves the
+/// real read clock on the live transport — rendering silence with nothing to
+/// point at. Ask the source for its placement.
 #[derive(Debug)]
 pub struct Playback {
+    /// Output gain, applied after the source read. Linear, not decibels.
     pub gain: Amplitude,
+    /// Varispeed. Couples pitch to rate; unity is `PlaybackRate::UNITY`.
     pub speed: PlaybackRate,
+    /// Whether the source is read forward or reversed.
     pub direction: Direction,
+    /// Loop mode and, where looping, its bounds and crossfade.
     pub loop_: LoopSetting,
-    /// Time-stretch factor (1.0 = no stretch). Absorbed here so the stretch and
-    /// pitch intent live in one record rather than in a sidecar.
-    ///
-    /// There is deliberately **no `placement` here**. Placement lived in this
-    /// record too until it was found to be write-only: it was cloned, rebound by
-    /// the offline render, and asserted on in tests, but no code ever derived a
-    /// position from it — every read went to the source's own copy. Two clocks
-    /// kept in sync by hand, one of them never consulted, is a rebind that can
-    /// silently reach the wrong one. The source owns its placement; ask it.
+    /// Time-stretch factor (`1.0` = no stretch), driving the phase vocoder.
+    /// Pitch-independent, unlike [`speed`](Self::speed).
     pub stretch: StretchFactor,
-    /// Pitch shift in cents (0.0 = no shift).
+    /// Pitch shift in cents (`0.0` = no shift), independent of `stretch`.
     pub pitch: Cents,
 }
 
+// Hand-written, not derived: the newtypes default to zero, so a derived default
+// would ship silent (`gain = 0`) and frozen (`speed = 0` / `stretch = 0`).
 impl Default for Playback {
     fn default() -> Self {
         Self {
@@ -231,25 +242,23 @@ impl Clone for Playback {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Voice — one voice's playback state, and what the reader STORES per slot. Its
-// `source` is either an in-memory `MemorySource` or a streaming
-// `DiskVoice` (the [`VoiceSource`] enum); `play` is the [`Playback`]
-// control-intent record; `channel_index` is the butler channel for a `Disk`
-// source (`None` for `Memory`), kept on the Voice because the butler loop routing
-// needs it.
-// ---------------------------------------------------------------------------
-
+/// One voice's playback state — what a [`VoicePool`](super::VoicePool) stores
+/// per slot.
 #[derive(Debug)]
 pub struct Voice {
+    /// The audio itself, resident or streaming.
     pub source: VoiceSource,
+    /// The control intent applied to [`source`](Self::source).
     pub play: Playback,
-    /// Butler channel index for a `Disk` source; `None` for `Memory`. The reader
-    /// drain forwards streaming loop ops (`SetStreamLoop` / `ClearStreamLoop`)
-    /// to this channel via the typed [`Commands`] handle — loop is butler-owned
-    /// (it reads a fadein head off disk + mutates `plan.link.loop_config`,
-    /// neither reachable from the reader), so the forward is the honest path.
-    /// Meaningless for `Memory` (loop is primed directly on the `MemorySource`).
+    /// Butler channel index for a [`VoiceSource::Disk`] source; `None` for
+    /// [`Memory`](VoiceSource::Memory).
+    ///
+    /// The pool forwards streaming loop ops to this channel over the typed
+    /// [`Commands`](crate::Commands) handle. Looping on the disk tier is
+    /// butler-owned — it reads a fade-in head off disk and mutates the stream
+    /// plan, neither of which the reader can reach — so forwarding is the honest
+    /// path rather than an indirection. Meaningless for `Memory`, where the loop
+    /// is primed directly on the source.
     pub channel_index: Option<usize>,
 }
 
@@ -268,12 +277,8 @@ impl Voice {
     /// start-beat / duration. Used by the offline region render to rebind a
     /// standalone voice onto the export transport.
     ///
-    /// Rebinds the source's own read clock — the only clock there is.
-    ///
-    /// It used to rebind two: this record also carried a `placement`, and the
-    /// comment here warned that rebinding only *that* one would leave the real
-    /// read clock on the live transport and render silence. The second clock was
-    /// write-only, so it is gone; a rebind can no longer reach the wrong one.
+    /// Rebinds the source's own read clock — the only clock there is, which is
+    /// what makes rebinding the wrong one unrepresentable.
     ///
     /// Only the `Memory` [`MemorySource`] exposes a whole-transport swap, so a
     /// `Disk` voice is unchanged here — it needs the whole offline context, not
@@ -288,11 +293,11 @@ impl Voice {
     /// Rebind this voice onto an offline render's transport, whichever source
     /// backs it.
     ///
-    /// [`replace_transport`](Self::replace_transport) covers only the `Memory`
-    /// arm, and used to be the whole of the offline rebind — which meant a
-    /// `Disk` voice in a pool slot silently kept the live clock and rendered
-    /// against a playhead nothing advanced. A slot is not a graph vertex, so the
-    /// net-wide walk never reaches it either; this is the only path that does.
+    /// Use this and not [`replace_transport`](Self::replace_transport), which
+    /// covers only the `Memory` arm: a `Disk` voice left on the live clock
+    /// renders against a playhead nothing advances. A slot is not a graph
+    /// vertex, so the net-wide walk never reaches it either — this is the only
+    /// path that does.
     pub fn rebind_offline(&mut self, ctx: &dyn core::any::Any) {
         use tutti_core::AudioUnit;
         match &mut self.source {
@@ -303,15 +308,13 @@ impl Voice {
 
     /// Sever this voice from live-thread state, whichever source backs it.
     ///
-    /// Only `Disk` holds any — the shared ring and control cell its `Clone`
-    /// duplicates by `Arc`. Left unsevered, an offline render pops frames the
-    /// live audio thread is waiting on.
+    /// Both tiers share something a `Clone` duplicates by `Arc`: `Disk` shares
+    /// the ring and control cell, `Memory` its gain cell. Left unsevered, an
+    /// offline render pops frames the live audio thread is waiting on, and
+    /// follows the live voice's fader while it does.
     pub fn isolate(&mut self) {
         use tutti_core::AudioUnit;
         match &mut self.source {
-            // Was a no-op while this tier shared nothing. It shares its gain
-            // cell now, so a render clone would otherwise follow the live
-            // voice's fader — see `MemorySource::isolate_gain`.
             VoiceSource::Memory(s) => s.isolate_gain(),
             VoiceSource::Disk(voice) => voice.isolate(),
         }

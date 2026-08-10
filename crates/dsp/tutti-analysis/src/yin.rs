@@ -83,21 +83,28 @@ impl YinConfig {
         self
     }
 
+    /// The rate the analyzed buffer is denominated at.
     #[inline]
     pub fn sample_rate(&self) -> SampleRate {
         self.sample_rate
     }
 
+    /// Lowest detectable frequency in [`Hz`] — the one that sets the longest
+    /// period, and so the minimum buffer length.
     #[inline]
     pub fn min_freq(&self) -> Hz {
         self.min_freq
     }
 
+    /// Highest detectable frequency in [`Hz`], validated below Nyquist at
+    /// construction.
     #[inline]
     pub fn max_freq(&self) -> Hz {
         self.max_freq
     }
 
+    /// The YIN aperiodicity cutoff as a [`Confidence`], `0.01..=0.5`. A
+    /// reading's threshold, not a blend.
     #[inline]
     pub fn threshold(&self) -> Confidence {
         self.threshold
@@ -132,39 +139,46 @@ impl YinConfig {
 
 /// A pitch estimate: either a pitch, or the absence of one.
 ///
-/// The old shape stored `midi_note: Option<u8>` that was never `None` at any
-/// real construction site, while the genuine two-state domain — voiced or not
-/// — was reconstructed by hand from two float comparisons. It also admitted
-/// nonsense like `{frequency: 0.0, confidence: 0.9, midi_note: Some(69)}`.
+/// Two variants rather than a flat struct with placeholder fields. A flat shape
+/// admits nonsense like `{frequency: 0.0, confidence: 0.9, note: Some(A4)}`, and
+/// pushes callers to reconstruct "is this voiced?" from two float comparisons.
 ///
-/// The note is now a [`Note`] rather than a raw MIDI integer — a note is a
-/// musical fact, and MIDI is one encoding of it. `u8::try_from(pitch.note)`
-/// crosses into that encoding where a caller actually needs it.
+/// The note is a [`Note`] rather than a raw MIDI integer — a note is a musical
+/// fact and MIDI one encoding of it. `u8::try_from(pitch.note)` crosses into
+/// that encoding where a caller actually needs it.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum PitchEstimate {
+    /// No pitch found: the aperiodicity never fell below the threshold.
     #[default]
     Unvoiced,
+    /// A pitch was found, with its frequency, confidence and nearest note.
     Voiced(Pitch),
 }
 
-/// A detected pitch. Every field is meaningful, unlike the flat struct where
-/// three of four were placeholders when unvoiced.
+/// A detected pitch. Every field is meaningful — that is what the enum above
+/// buys over a flat struct.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Pitch {
+    /// The estimated fundamental in [`Hz`], parabolically interpolated for
+    /// sub-sample period accuracy.
     pub frequency: Hz,
+    /// How periodic the frame was, as a [`Confidence`] reading in `0..=1`. A
+    /// measurement, not a blend — deliberately not `Mix`.
     pub confidence: Confidence,
     /// The nearest equal-tempered note.
     pub note: Note,
-    /// Distance from that note, −50..+50.
+    /// Distance from that note in [`Cents`], −50..+50.
     pub cents_offset: Cents,
 }
 
 impl PitchEstimate {
+    /// Whether a pitch was found at all.
     #[inline]
     pub fn is_voiced(&self) -> bool {
         matches!(self, Self::Voiced(_))
     }
 
+    /// The [`Pitch`] if voiced, `None` otherwise.
     #[inline]
     pub fn pitch(&self) -> Option<&Pitch> {
         match self {
@@ -173,12 +187,14 @@ impl PitchEstimate {
         }
     }
 
-    /// 0 Hz when unvoiced — the old field-read ergonomics, preserved.
+    /// The frequency in [`Hz`], or `Hz(0.0)` when unvoiced — field-read
+    /// ergonomics for callers that treat silence as zero.
     #[inline]
     pub fn frequency(&self) -> Hz {
         self.pitch().map_or(Hz(0.0), |p| p.frequency)
     }
 
+    /// The [`Confidence`], or [`Confidence::NONE`] when unvoiced.
     #[inline]
     pub fn confidence(&self) -> Confidence {
         self.pitch().map_or(Confidence::NONE, |p| p.confidence)
@@ -189,9 +205,8 @@ impl Pitch {
     /// Sharp notation, e.g. `A4`, `C#5`.
     ///
     /// Delegates to [`Note`], which owns the twelve pitch classes and the
-    /// octave convention. Both spellings used to be `[&str; 12]` tables copied
-    /// here, indexed by an open-coded `% 12` with the octave offset written
-    /// twice.
+    /// octave convention — so neither spelling is a `[&str; 12]` table copied
+    /// here and indexed by an open-coded `% 12`.
     pub fn note_name(&self) -> String {
         self.note.sharp_name()
     }
@@ -205,6 +220,11 @@ impl Pitch {
 /// Estimate the pitch of one buffer.
 ///
 /// Stateless: the same input always yields the same estimate.
+///
+/// # Errors
+/// Returns [`AnalysisError::InsufficientInput`] if `samples` is shorter than
+/// [`YinConfig::buffer_size`] — an explicit refusal rather than a silent
+/// "unvoiced".
 pub fn yin(cfg: &YinConfig, samples: &[f32]) -> Result<PitchEstimate> {
     let needed = cfg.buffer_size();
     if samples.len() < needed.get() {
@@ -366,7 +386,7 @@ mod tests {
         assert!(pitch.confidence > Confidence(0.5));
     }
 
-    /// The construction error that used to be a silent runtime nothing.
+    /// A construction error, rather than a silent runtime nothing.
     #[test]
     fn an_inverted_range_is_refused_at_construction() {
         assert_eq!(

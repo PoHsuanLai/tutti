@@ -17,7 +17,7 @@ impl Pedal {
         Self { path: path.into() }
     }
 
-    /// Record the plugin we are about to probe.
+    /// Record the plugin that is about to be probed.
     pub(super) fn arm(&self, plugin: &Path) -> std::io::Result<()> {
         let mut f = std::fs::File::create(&self.path)?;
         f.write_all(plugin.to_string_lossy().as_bytes())?;

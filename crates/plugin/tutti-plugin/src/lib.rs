@@ -70,8 +70,8 @@
 //! them. Fuller rationale + the per-format capability table are in the crate
 //! README.
 //!
-//! 1. **Define the functionality we support, then score each format against
-//!    it.** [`Features`] is a fixed list of the capabilities we handle; each
+//! 1. **Define the functionality the host supports, then score each format
+//!    against it.** [`Features`] is a fixed list of those capabilities; each
 //!    format either supports a row or doesn't (see the capability table in the
 //!    README). Don't instead collect everything the formats emit into a neutral
 //!    superset — that leaks format names into shared types and grows a special
@@ -109,7 +109,7 @@
 //! support are the embedding app's choices, so you wire up exactly what you
 //! use and the default build pulls no `serde_json` and no format FFI.
 //!
-//! - `json` — JSON-file-backed [`catalog::JsonCatalog`]. One ready-made
+//! - `json` — JSON-file-backed `catalog::JsonCatalog`. One ready-made
 //!   [`catalog::PluginCatalog`] impl, not the shape of the API: implement the
 //!   trait over your own store instead, or skip it entirely and use the pure
 //!   [`catalog::discover`] / [`PluginRecord::probe`][catalog::PluginRecord::probe]
@@ -214,7 +214,7 @@ pub use format::vst2_in_process::{load_client as in_process_vst2_client, InProce
 /// multi-minute startup and an instant one) and crash recovery (a plugin that
 /// hard-crashes the scanner is auto-blacklisted on the next run).
 ///
-/// [`JsonCatalog`](catalog::JsonCatalog) is one such store, behind the opt-in
+/// `JsonCatalog` is one such store, behind the opt-in
 /// `json` feature. Implement [`PluginCatalog`](catalog::PluginCatalog) yourself
 /// for SQLite, a CRDT, or an in-memory map.
 pub mod catalog {

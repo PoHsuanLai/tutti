@@ -1,4 +1,17 @@
 //! Lock-free ring buffers for audio streaming.
+//!
+//! One SPSC ring per streaming region: the butler pushes decoded frames into a
+//! [`RegionOut`], the audio thread pops them through a [`RegionReader`]. The
+//! reader is reached via a [`SharedReader`], an `ArcSwap` the audio thread loads
+//! wait-free — no lock ever sits on the hot path.
+//!
+//! # Frames, not samples
+//!
+//! The rings are flat `HeapRb<f32>`, but **every count crossing this module's
+//! boundary is denominated in frames** and the interleave stride never leaks
+//! out. `plan.rs` compares `read_position` against a loop range in file frames
+//! and `loops.rs` indexes the file with it, so a sample-denominated count would
+//! wrap a looped 6-channel source at one sixth of its true length.
 
 use ringbuf::{
     traits::{Consumer, Observer, Producer, Split},
@@ -63,6 +76,8 @@ impl<T> SendCons<T> {
     }
 }
 
+/// A region's identity and write cursor, shared by both halves of its ring so
+/// either can report which file it streams and where the *writer* has reached.
 pub(crate) struct RegionMeta {
     region_id: RegionId,
     file_path: PathBuf,
@@ -70,10 +85,15 @@ pub(crate) struct RegionMeta {
 }
 
 impl RegionMeta {
+    /// The writer's cursor as an absolute offset into the file, in **frames**.
+    /// Distinct from the reader's `read_position`, which counts frames the audio
+    /// thread has consumed.
     pub fn file_position(&self) -> u64 {
         self.file_position.load(Ordering::Relaxed)
     }
 
+    /// Move the writer's cursor to absolute file frame `pos`. Butler thread —
+    /// set after each refill and on every loop wrap or seek.
     pub fn set_file_position(&self, pos: u64) {
         self.file_position.store(pos, Ordering::Relaxed);
     }
@@ -83,9 +103,10 @@ impl RegionMeta {
 ///
 /// # Frames, not samples
 ///
-/// The ring itself is a flat `HeapRb<f32>` (a runtime channel count cannot be a
-/// const-generic element type), but **every public method here is denominated in
-/// frames** and the stride never leaks out. That is deliberate: `plan.rs`
+/// The ring itself is a flat `HeapRb<f32>` — the width is a property of the
+/// file, so it is a runtime [`ChannelLayout`], never baked into the element
+/// type. **Every public method here is denominated in frames** and the stride
+/// never leaks out. That is deliberate: `plan.rs`
 /// compares `read_position` against a loop range in *file frames*, and
 /// `loops.rs` uses it to index the file directly. Exposing samples anywhere on
 /// this boundary would silently multiply every loop point by the channel count.
@@ -110,6 +131,7 @@ pub(crate) struct RegionOut {
 }
 
 impl RegionOut {
+    /// The writer's cursor as an absolute offset into the file, in **frames**.
     pub fn file_position(&self) -> u64 {
         self.meta.file_position()
     }
@@ -128,11 +150,13 @@ impl RegionOut {
         self.decoder.as_mut()
     }
 
+    /// Move the writer's cursor to absolute file frame `pos`.
     pub fn set_file_position(&self, pos: u64) {
         self.meta.set_file_position(pos);
     }
 
-    /// Declared ring width.
+    /// Declared ring width — the file's own layout, since the streaming tier
+    /// defers the channel policy to the reader rather than folding on the way in.
     pub fn channels(&self) -> ChannelLayout {
         self.channels
     }
@@ -200,6 +224,8 @@ impl RegionOut {
         written
     }
 
+    /// The file this region streams. The butler uses it to reach the whole-file
+    /// [`Wave`](tutti_core::Wave) when capturing crossfade buffers.
     pub fn file_path(&self) -> &PathBuf {
         &self.meta.file_path
     }
@@ -209,11 +235,11 @@ impl RegionOut {
     }
 }
 
-/// The ring is the engine's [`AudioOut`] shape: flat interleaved in, a runtime
-/// [`ChannelLayout`] for the width, counts in frames. That is now expressible as
-/// the trait, so it is stated as the trait — a region ring can feed any generic
-/// consumer written against the engine vocabulary ([`pump`](tutti_core::pump)
-/// included) rather than only code that knows the name `push_interleaved`.
+/// The ring is the engine's [`AudioOut`](tutti_core::AudioOut) shape: flat
+/// interleaved in, a runtime [`ChannelLayout`] for the width, counts in frames.
+/// Stating it as the trait lets a region ring feed any generic consumer written
+/// against the engine vocabulary ([`pump`](tutti_core::pump) included) rather
+/// than only code that knows the name `push_interleaved`.
 ///
 /// # Additive, not a replacement — the inherent methods stay
 ///
@@ -256,6 +282,11 @@ impl tutti_core::AudioOut<f32> for RegionOut {
     }
 }
 
+/// The consumer half of a region's SPSC ring: the audio thread's end.
+///
+/// Popped one frame at a time by [`read_into`](Self::read_into), which is
+/// lock-free and allocation-free. Like [`RegionOut`], every count it reports or
+/// advances is in **frames**.
 pub struct RegionReader {
     cons: SendCons<f32>,
     /// Declared ring width — see [`RegionOut`]'s note on frames vs samples.
@@ -276,7 +307,8 @@ impl RegionReader {
         self.region_id
     }
 
-    /// Declared ring width.
+    /// Declared ring width — the width the producer interleaved at, which the
+    /// reader's own channel policy reconciles against the output frame.
     pub fn channels(&self) -> ChannelLayout {
         self.channels
     }
@@ -309,8 +341,13 @@ impl RegionReader {
         true
     }
 
-    /// Clear all buffered frames without processing them.
-    /// Used for loop resets — much faster than draining one-by-one.
+    /// Discard every buffered frame without rendering it, advancing
+    /// `read_position` by the **frames** dropped so the butler's view of where
+    /// the reader stands stays honest.
+    ///
+    /// Applied by the audio thread when the butler has requested a ring reset
+    /// after a seek or loop wrap. The butler must never call this: it does not
+    /// own the consumer.
     pub fn clear(&mut self) {
         let frames = self.cons.occupied_len() / self.stride;
         for _ in 0..frames * self.stride {
@@ -325,7 +362,9 @@ impl RegionReader {
             .fetch_add(frames as u64, Ordering::Relaxed);
     }
 
-    /// Get a shared handle to the read position for lock-free access.
+    /// A shared handle to the read cursor, in **frames** consumed. The butler
+    /// caches this on the `Link` so it can classify loop status without
+    /// reaching through the [`SharedReader`].
     pub(crate) fn read_position_shared(&self) -> Arc<AtomicU64> {
         Arc::clone(&self.read_position)
     }
@@ -335,14 +374,14 @@ impl RegionReader {
 /// consumer pop through a shared `&self`, so the reader can be held behind an
 /// [`ArcSwap`] instead of a `Mutex`.
 ///
-/// # Why this exists
+/// # Why this exists rather than a `Mutex`
 ///
-/// The old design put the reader behind `Arc<Mutex<RegionReader>>` and had the
-/// audio thread `try_lock()` it in `tick`/`process`. That is wrong on two
-/// counts: (1) locking on the audio hot path, and (2) a `try_lock` *miss* was
-/// counted as an underrun even though the ring was full — the butler merely
-/// happened to hold the lock. A [`RegionReader`] wraps a single-consumer SPSC
-/// ring, so no lock is architecturally required: exactly one party ever pops.
+/// A [`RegionReader`] wraps a single-consumer SPSC ring, so no lock is
+/// architecturally required: exactly one party ever pops. Putting the reader
+/// behind `Arc<Mutex<RegionReader>>` and having the audio thread `try_lock` it
+/// per block is wrong on two counts — it puts a lock on the audio hot path, and
+/// it makes a `try_lock` *miss* indistinguishable from an underrun, reporting a
+/// starved ring when the ring was full and the butler merely held the lock.
 ///
 /// # Single-consumer safety invariant (why the `UnsafeCell` is sound)
 ///
@@ -371,8 +410,7 @@ pub(crate) struct ReaderCell {
     inner: UnsafeCell<RegionReader>,
     region_id: RegionId,
     /// Declared ring width, cached here so a reader lookup does not need the
-    /// `UnsafeCell` reborrow. This cell already cached the count before the
-    /// `ChannelLayout` conversion; the pattern is unchanged, only the type.
+    /// `UnsafeCell` reborrow.
     channels: ChannelLayout,
     read_position: Arc<AtomicU64>,
 }
@@ -429,9 +467,11 @@ impl ReaderCell {
 }
 
 /// The audio-thread reader handle: a wait-free-loadable, butler-replaceable
-/// [`ReaderCell`]. Replaces the former `Arc<Mutex<RegionReader>>`. The audio
-/// thread `load`s it (wait-free) and pops; the butler `store`s a replacement on
-/// a stream (re)start. No lock ever sits on the audio hot path.
+/// [`ReaderCell`].
+///
+/// The audio thread `load`s it (wait-free) and pops; the butler `store`s a
+/// replacement on a stream (re)start and never pops. No lock ever sits on the
+/// audio hot path.
 pub(crate) type SharedReader = Arc<ArcSwap<ReaderCell>>;
 
 /// Wrap a freshly-built [`RegionReader`] into a [`SharedReader`] for handoff to
@@ -440,13 +480,24 @@ pub(crate) fn share_reader(reader: RegionReader) -> SharedReader {
     Arc::new(ArcSwap::from_pointee(ReaderCell::new(reader)))
 }
 
+/// Constructor namespace for a region's ring — see
+/// [`with_capacity`](Self::with_capacity). Carries no state of its own; the two
+/// halves it returns own everything.
 pub(crate) struct RegionBuffer;
 
 impl RegionBuffer {
     /// Build a region's ring sized for `capacity` **frames** of `channels`
-    /// each. `capacity` is a frame count, so the backing store is
+    /// each, returning the producer and consumer halves.
+    ///
+    /// `capacity` is a frame count, so the backing store is
     /// `capacity * channels` samples and every frame-denominated accessor on
     /// [`RegionOut`] / [`RegionReader`] reports the value the caller passed.
+    /// Sizing in whole frames is what makes a torn push structurally impossible:
+    /// a producer physically cannot stop mid-frame in a ring whose slot count is
+    /// a frame multiple.
+    ///
+    /// `capacity` is floored at 4096 frames, and `channels` at one — a
+    /// zero-width ring would divide by zero on every accessor.
     pub(crate) fn with_capacity(
         region_id: RegionId,
         file_path: PathBuf,
@@ -597,10 +648,6 @@ mod tests {
     /// k+1). A tear permanently rotates channels for the rest of the stream and
     /// is INAUDIBLE as a glitch — it just sounds like a wrong mix. Deliberately
     /// overfills the ring, the condition where a naive implementation tears.
-    /// A full ring never hands out a torn frame (channel 0 of frame k beside
-    /// channel 1 of frame k+1). A tear permanently rotates channels for the rest
-    /// of the stream and is INAUDIBLE as a glitch — it just sounds like a wrong
-    /// mix.
     ///
     /// Note this passes even without `push_interleaved`'s all-or-nothing gate,
     /// and that is worth stating rather than hiding: the ring is allocated as

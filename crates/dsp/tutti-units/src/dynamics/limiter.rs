@@ -1,3 +1,12 @@
+//! Two limiters: the lookahead [`LimiterNode`] and the hard-clipping
+//! [`BrickwallLimiter`].
+//!
+//! They are not interchangeable. The lookahead limiter delays its audio so the
+//! gain decision runs ahead of a peak, which costs latency and sounds
+//! transparent; the brickwall clamps in place, which costs nothing and
+//! distorts. Reach for the first to limit musically, the second as a safety
+//! catch.
+
 use tutti_core::Arc;
 use tutti_core::AtomicF32;
 use tutti_core::{
@@ -84,11 +93,22 @@ impl LookaheadRing {
     }
 }
 
-/// Lookahead limiter with stereo-linked gain reduction.
-/// 2 inputs (L/R), 2 outputs (L/R).
+/// Lookahead limiter with gain reduction linked across channels. 2 inputs, 2
+/// outputs by default.
 ///
-/// The minimum gain over the lookahead window is tracked with a monotonic
-/// deque, so each sample costs O(1) amortized regardless of lookahead length.
+/// A limiter is a compressor at an effectively infinite ratio: nothing is
+/// allowed past the ceiling. The **lookahead** is what makes that possible
+/// without distortion — the audio is delayed by the lookahead window while the
+/// gain decision runs ahead of it, so reduction is already in place when a peak
+/// arrives rather than chasing it.
+///
+/// That delay is real latency: the node reports it via `AudioUnit`, and a graph
+/// that mixes this against a dry path needs the delay compensated.
+///
+/// The minimum gain over the lookahead window is tracked with a
+/// [`MonotonicMinDeque`], so each sample costs O(1) amortized regardless of
+/// lookahead length. Nothing in the RT path allocates: the rings and scratch
+/// frames are sized at construction.
 ///
 /// # Port layout & audio-rate modulation
 ///
@@ -97,8 +117,11 @@ impl LookaheadRing {
 /// (see [`LimiterNode::with_param_inputs`]) in the order **ceiling, then
 /// threshold** (both dB): ceiling at index 2 if present, threshold next. Each
 /// present port overrides its atomic per sample; the atomics still hold the
-/// base. Absent → a plain 2-in/2-out node, bit-identical output to the
-/// unmodulated path (the common case).
+/// base. Absent, the node is a plain 2-in/2-out node, which is the common case.
+///
+/// Ask [`ceiling_port`](Self::ceiling_port) /
+/// [`threshold_port`](Self::threshold_port) rather than computing an index:
+/// they move with the width.
 pub struct LimiterNode {
     threshold_db: Param<Db>,
     ceiling_db: Param<Db>,
@@ -137,15 +160,26 @@ pub struct LimiterNode {
 }
 
 impl LimiterNode {
+    /// Builds a stereo lookahead limiter with a 5 ms lookahead and 100 ms
+    /// release.
+    ///
+    /// `threshold_db` is where reduction starts and `ceiling_db` the hard
+    /// output bound, both in [`Db`] and typically negative — a mastering
+    /// limiter often sits at a ceiling of `-0.3` to leave inter-sample
+    /// headroom. Adjust the window with
+    /// [`with_lookahead`](Self::with_lookahead) and the recovery with
+    /// [`with_release`](Self::with_release).
     pub fn new(threshold_db: impl Into<Db>, ceiling_db: impl Into<Db>) -> Self {
         Self::with_channels(ChannelLayout::STEREO, threshold_db, ceiling_db)
     }
 
-    /// An `n`-channel lookahead limiter with gain reduction **linked** across
-    /// all channels (peak = max-abs over the frame, one gain applied to every
-    /// channel) — the surround generalization of the stereo-linked design.
-    /// `with_channels(ChannelLayout::STEREO, …)` is bit-identical to
-    /// [`Self::new`].
+    /// An `n`-channel lookahead limiter (clamped to at least mono), with gain
+    /// reduction **linked** across all channels.
+    ///
+    /// The peak is the max-abs over the whole frame and one gain is applied to
+    /// every channel, so a loud peak in one channel ducks them all together and
+    /// the image does not shift — the surround generalization of the stereo
+    /// design. Parameters are as [`new`](Self::new).
     pub fn with_channels(
         channels: impl Into<ChannelLayout>,
         threshold_db: impl Into<Db>,
@@ -160,7 +194,7 @@ impl LimiterNode {
         let lookahead_secs = Seconds(0.005);
         // `_ceil`, the allocation form: the ring must hold at *least* the
         // lookahead, and nearest-rounding under-allocates for half of all
-        // inputs. Previously this narrowed the rate to f32 before the multiply.
+        // inputs.
         let lookahead_samples = lookahead_secs.to_samples_ceil(DEFAULT_SAMPLE_RATE).get();
 
         Self {
@@ -189,10 +223,10 @@ impl LimiterNode {
     ///
     /// Width and modulation are **independent axes**: `channels` says how wide
     /// the limiter is, the `mod_*` flags say which params it reads at audio
-    /// rate. They were not independent — this constructor delegated to
-    /// [`Self::new`], which is width 2 — so asking for a modulated 5.1 limiter
-    /// silently returned a *stereo* one, and the only symptom was a `set_source`
-    /// on a param port that resolved and carried the wrong signal.
+    /// rate. Collapsing them — building the modulated form at a fixed width 2 —
+    /// turns a request for a modulated 5.1 limiter into a *stereo* one, and the
+    /// only symptom is a `set_source` on a param port that resolves and carries
+    /// the wrong signal.
     ///
     /// The param ports follow the audio inputs, so their indices **move with the
     /// width**. Ask [`ParamPorts::param_port`](crate::ParamPorts::param_port);
@@ -244,6 +278,15 @@ impl LimiterNode {
         (threshold, ceiling)
     }
 
+    /// Sets the lookahead window in [`Seconds`], reallocating the rings.
+    ///
+    /// **This is the node's latency**: the audio is delayed by the window so
+    /// the gain decision can run ahead of it. Longer catches peaks more
+    /// transparently and delays more; the 5 ms default is a typical
+    /// compromise. Clamped to at least one frame.
+    ///
+    /// Allocates and clears the rings, so call it during setup — never on a
+    /// live node.
     pub fn with_lookahead(mut self, lookahead: impl Into<Seconds>) -> Self {
         // Ceil: a lookahead ring must hold at least the requested window.
         let samples = lookahead.into().to_samples_ceil(self.sample_rate);
@@ -251,36 +294,65 @@ impl LimiterNode {
         self
     }
 
+    /// Sets how fast the limiter recovers after reduction, in [`Seconds`],
+    /// floored at 1 ms.
+    ///
+    /// Short releases are louder but pump audibly on dense material; longer
+    /// ones sound transparent and hold reduction through a passage.
     pub fn with_release(self, release_secs: impl Into<Seconds>) -> Self {
         self.release
             .store(Seconds(release_secs.into().get().max(0.001)));
         self
     }
 
+    /// The shared threshold cell in [`Db`] — where reduction begins.
+    ///
+    /// **A present threshold param-input port overrides this per sample.**
+    /// Shared across clones.
     pub fn threshold(&self) -> Arc<AtomicF32> {
         self.threshold_db.as_atomic()
     }
 
+    /// The shared ceiling cell in [`Db`] — the hard bound the output is not
+    /// allowed to exceed.
+    ///
+    /// **A present ceiling param-input port overrides this per sample.**
     pub fn ceiling(&self) -> Arc<AtomicF32> {
         self.ceiling_db.as_atomic()
     }
 
+    /// The shared release-time cell in [`Seconds`].
+    ///
+    /// Read once per block to recompute the envelope coefficients. The attack
+    /// is fixed at zero — a limiter must not let a peak through.
     pub fn release_time(&self) -> Arc<AtomicF32> {
         self.release.as_atomic()
     }
 
+    /// Sets the threshold in [`Db`], unclamped.
+    ///
+    /// With a threshold param-input port present this sets the *base* the port
+    /// overrides.
     pub fn set_threshold(&self, db: impl Into<Db>) {
         self.threshold_db.store(db.into());
     }
 
+    /// Sets the output ceiling in [`Db`], unclamped.
     pub fn set_ceiling(&self, db: impl Into<Db>) {
         self.ceiling_db.store(db.into());
     }
 
+    /// Sets the release time in [`Seconds`], floored at 1 ms.
     pub fn set_release(&self, secs: impl Into<Seconds>) {
         self.release.store(Seconds(secs.into().get().max(0.001)));
     }
 
+    /// The gain reduction currently applied, in [`Db`] — a **measurement**, for
+    /// driving a reduction meter.
+    ///
+    /// [`Db::UNITY`] means nothing is being reduced. This is the window
+    /// minimum, so it reflects the lookahead decision rather than the
+    /// instantaneous peak.
     pub fn gain_reduction_db(&self) -> Db {
         self.gain_reduction_db
     }
@@ -532,6 +604,12 @@ pub struct BrickwallLimiter {
 }
 
 impl BrickwallLimiter {
+    /// Builds a stereo brickwall limiter clamping at `ceiling_db`.
+    ///
+    /// **This is a hard clipper, not [`LimiterNode`].** It has no lookahead, no
+    /// envelope and no latency — a sample past the ceiling is simply clamped,
+    /// which distorts rather than ducking. Reach for it as a safety catch on an
+    /// output, and for musical limiting use [`LimiterNode`].
     pub fn new(ceiling_db: impl Into<Db>) -> Self {
         Self::with_channels(ChannelLayout::STEREO, ceiling_db)
     }
@@ -575,10 +653,21 @@ impl BrickwallLimiter {
         self.mod_ceiling.then_some(self.channels)
     }
 
+    /// The shared ceiling cell in [`Db`] — the level samples are clamped to.
+    ///
+    /// **A present ceiling param-input port overrides this per sample.**
+    /// Writing the raw cell does *not* refresh the cached linear ceiling the
+    /// unmodulated path clamps against; use
+    /// [`set_ceiling`](Self::set_ceiling) for that.
     pub fn ceiling(&self) -> Arc<AtomicF32> {
         self.ceiling_db.as_atomic()
     }
 
+    /// Sets the clamp ceiling in [`Db`], refreshing the cached linear
+    /// amplitude.
+    ///
+    /// `&mut self` because of that cache, so this cannot reach a node already
+    /// live in the graph — a live ceiling change needs the param-input port.
     pub fn set_ceiling(&mut self, db: impl Into<Db>) {
         let db = db.into();
         self.ceiling_db.store(db);

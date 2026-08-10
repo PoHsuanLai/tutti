@@ -1,3 +1,9 @@
+//! Level detection and dB conversions shared by the dynamics processors.
+//!
+//! The sidechain detectors and the gain-computation curves live here rather
+//! than in any one processor, so a compressor and a gate measure a signal the
+//! same way and pin silence at the same floor.
+
 use tutti_core::{Amplitude, BufferRef, ChannelLayout, CompressionRatio, Db, SampleRate, Seconds};
 
 /// Max-abs sidechain detector level for the `tick` (single-sample slice) path.
@@ -35,13 +41,12 @@ pub(crate) fn sidechain_level_buffer(input: &BufferRef, ch: usize, i: usize) -> 
 
 /// Amplitude as decibels, for the dynamics detectors.
 ///
-/// Delegates to the shared converter. Note the floor moved: this used to pin
-/// silence at `-96` while `tutti-export`'s copy used `-144` and a third site
-/// used none. `Db::FLOOR` is `-144` (roughly the 24-bit noise floor), so a
-/// detector now sees a *lower* value for true digital silence than before.
-/// That is inaudible in a compressor — anything near either floor is far below
-/// any usable threshold — and it removes a divergence that was never a
-/// deliberate difference.
+/// Delegates to the shared converter, so every detector pins silence at one
+/// floor: `Db::FLOOR` is `-144`, roughly the 24-bit noise floor. Per-site
+/// floors are what let this diverge — a detector at `-96` against
+/// `tutti-export`'s `-144` against a third site with none. The exact value is
+/// inaudible in a compressor, since anything near either floor is far below any
+/// usable threshold; the agreement is the point.
 #[inline]
 pub(crate) fn amplitude_to_db(amp: impl Into<Amplitude>) -> Db {
     Db::from_amplitude(amp.into())

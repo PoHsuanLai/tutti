@@ -100,10 +100,33 @@ const _: () = {
 ///
 /// # Examples
 ///
-/// ```rust,ignore
-/// // Load a SoundFont and spawn a piano (preset 0)
-/// let gm = asset_server.load("sounds/GeneralMidi.sf2");
-/// commands.spawn(PlaySoundFont { source: gm, ..default() });
+/// ```rust
+/// use bevy_app::prelude::*;
+/// use bevy_asset::AssetServer;
+/// use bevy_ecs::prelude::*;
+/// use bevy_tutti::soundfont::PlaySoundFont;
+///
+/// fn play_piano(asset_server: Res<AssetServer>, mut commands: Commands) {
+///     // Load a SoundFont and spawn a piano (preset 0).
+///     let gm = asset_server.load("sounds/GeneralMidi.sf2");
+///     commands.spawn(PlaySoundFont { source: gm, ..Default::default() });
+/// }
+///
+/// let mut app = App::new();
+/// app.add_plugins((
+///     bevy_app::TaskPoolPlugin::default(),
+///     bevy_asset::AssetPlugin::default(),
+///     // `TuttiSoundFontPlugin` registers the asset type and its loader; a
+///     // handle cannot be allocated before that has happened.
+///     bevy_tutti::soundfont::TuttiSoundFontPlugin,
+/// ));
+/// app.add_systems(Startup, play_piano);
+/// app.update();
+///
+/// // The trigger component is in place; the playback system takes it from
+/// // here, retrying each frame until the `.sf2` asset resolves.
+/// let play = app.world_mut().query::<&PlaySoundFont>().single(app.world()).unwrap();
+/// assert_eq!(play.preset, 0);
 /// ```
 ///
 /// Configure it the idiomatic Bevy way — `Default` plus struct-update syntax —

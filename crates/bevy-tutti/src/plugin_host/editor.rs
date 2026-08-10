@@ -97,10 +97,38 @@ pub struct PendingPluginEditor {
 ///
 /// The one way to drive editor visibility:
 ///
-/// ```ignore
-/// commands.trigger(SetEditorVisible::show(entity));
-/// commands.trigger(SetEditorVisible::hide(entity));
-/// commands.trigger(SetEditorVisible::toggle(entity));   // menu item / double-click
+/// ```rust
+/// use bevy_app::prelude::*;
+/// use bevy_ecs::prelude::*;
+/// use bevy_tutti::plugin_host::{SetEditorVisible, Visibility};
+///
+/// /// Records what the host asked for. In a real app the observer reading these
+/// /// is `TuttiHostingPlugin`'s, and it drives a native child window.
+/// #[derive(Resource, Default)]
+/// struct Asked(Vec<Visibility>);
+///
+/// fn drive_editor(In(entity): In<Entity>, mut commands: Commands) {
+///     commands.trigger(SetEditorVisible::show(entity));
+///     commands.trigger(SetEditorVisible::hide(entity));
+///     commands.trigger(SetEditorVisible::toggle(entity)); // menu item / double-click
+/// }
+///
+/// let mut app = App::new();
+/// app.init_resource::<Asked>();
+/// let plugin = app.world_mut().spawn_empty().id();
+/// app.world_mut()
+///     .entity_mut(plugin)
+///     .observe(|ask: On<SetEditorVisible>, mut asked: ResMut<Asked>| {
+///         asked.0.push(ask.visibility);
+///     });
+/// app.world_mut().run_system_cached_with(drive_editor, plugin).unwrap();
+///
+/// // Three asks reached the entity, `Toggle` still unresolved — it is resolved
+/// // inside the observer, where `PluginEditorOpen` is authoritative.
+/// assert_eq!(
+///     app.world().resource::<Asked>().0,
+///     vec![Visibility::Show, Visibility::Hide, Visibility::Toggle],
+/// );
 /// ```
 ///
 /// # Why one event and not a caller-side "am I open?" check

@@ -6,9 +6,65 @@
 //! that policy for a Bevy host: a background thread running the loop, a
 //! component holding its handle, and a drain system that joins it.
 //!
-//! ```rust,ignore
+//! ```rust
+//! use bevy_app::prelude::*;
+//! use bevy_ecs::prelude::*;
+//! use bevy_tutti::graph::{AudioPump, AudioPumpAppExt, PumpFinished};
+//! use tutti_core::io::{AudioIn, AudioOut, OnEmpty};
+//! use tutti_core::ChannelLayout;
+//! use std::sync::{Arc, Mutex};
+//!
+//! /// A finite stereo source. `MicIn` (`audio-io`) is the live counterpart; the
+//! /// only difference that reaches this layer is `ON_EMPTY`.
+//! struct Tone { frames_left: usize }
+//! impl AudioIn<f32> for Tone {
+//!     // Finite: a 0-frame poll means "never again", so the pump exits rather
+//!     // than parking. A live source says `Starved` and the pump waits.
+//!     const ON_EMPTY: OnEmpty = OnEmpty::EndOfStream;
+//!     fn layout(&self) -> ChannelLayout { ChannelLayout::STEREO }
+//!     fn poll_into(&mut self, out: &mut [f32]) -> usize {
+//!         // `out` is flat interleaved, so it holds len/2 FRAMES — the return
+//!         // is a frame count, never a sample count.
+//!         let frames = (out.len() / 2).min(self.frames_left);
+//!         out[..frames * 2].fill(0.25);
+//!         self.frames_left -= frames;
+//!         frames
+//!     }
+//! }
+//!
+//! /// Counts what arrived, so the assertion can be about frames moved.
+//! #[derive(Clone, Default)]
+//! struct Counter(Arc<Mutex<usize>>);
+//! impl AudioOut<f32> for Counter {
+//!     fn layout(&self) -> ChannelLayout { ChannelLayout::STEREO }
+//!     fn write(&mut self, frames: &[f32]) { *self.0.lock().unwrap() += frames.len() / 2; }
+//!     fn finalize(self) -> std::io::Result<()> { Ok(()) }
+//! }
+//!
+//! let sink = Counter::default();
+//! let seen = sink.0.clone();
+//!
+//! let mut app = App::new();
+//! // One registration per element type — it covers every channel width, since
+//! // the width rides on the value rather than in the type.
+//! app.add_audio_pump::<f32>();
 //! // Any AudioIn into any AudioOut of the same frame type.
-//! commands.spawn(AudioPump::start(mic, wav, 1024));
+//! app.world_mut().spawn(AudioPump::start(Tone { frames_left: 4096 }, sink, 1024));
+//!
+//! // The source ends on its own; the drain system joins the thread and reports.
+//! let mut finalized = None;
+//! while finalized.is_none() {
+//!     app.update();
+//!     finalized = app
+//!         .world()
+//!         .resource::<bevy_ecs::message::Messages<PumpFinished>>()
+//!         .iter_current_update_messages()
+//!         .next()
+//!         .map(|done| done.result.is_ok());
+//! }
+//!
+//! assert_eq!(finalized, Some(true), "the sink must close cleanly");
+//! assert_eq!(*seen.lock().unwrap(), 4096);
 //! ```
 //!
 //! # What this layer adds, and what it does not
@@ -280,8 +336,18 @@ pub trait AudioPumpAppExt {
     /// not depend on it and a host need not name a width it only learns from a
     /// device at runtime.
     ///
-    /// ```rust,ignore
-    /// app.add_audio_pump::<f32>();   // covers stereo, 5.1, whatever the mic is
+    /// ```rust
+    /// use bevy_app::prelude::*;
+    /// use bevy_ecs::message::Messages;
+    /// use bevy_tutti::graph::{AudioPumpAppExt, PumpFinished};
+    ///
+    /// let mut app = App::new();
+    /// app.add_audio_pump::<f32>(); // covers stereo, 5.1, whatever the mic is
+    /// // Idempotent, so a host and a library plugin may both declare it.
+    /// app.add_audio_pump::<f32>();
+    ///
+    /// // The message the drain reports through is registered either way.
+    /// assert!(app.world().get_resource::<Messages<PumpFinished>>().is_some());
     /// ```
     fn add_audio_pump<S: Send + Sync + 'static>(&mut self) -> &mut Self;
 }

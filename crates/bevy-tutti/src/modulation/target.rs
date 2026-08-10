@@ -13,7 +13,14 @@
 //! node type in the engine — is the DAW vocabulary this crate exists to stay out
 //! of.
 //!
-//! ```rust,ignore
+//! ```rust
+//! use bevy_app::prelude::*;
+//! use bevy_tutti::modulation::{ModTargetRegistry, TuttiModulationPlugin};
+//!
+//! let mut app = App::new();
+//! app.add_plugins(TuttiModulationPlugin);
+//! // One line per node type this app modulates. Forgetting one is silent: the
+//! // route stays well-formed, the inspector shows the knob, nothing moves.
 //! app.world_mut()
 //!     .resource_mut::<ModTargetRegistry>()
 //!     .register::<tutti_units::Compressor>()

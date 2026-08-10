@@ -1,18 +1,67 @@
 //! MIDI files: **read as assets, written off the main thread**.
 //!
-//! ```ignore
-//! // Read — a handle, like any other asset.
-//! let handle: Handle<MidiFileAsset> = asset_server.load("song.mid");
-//! // ...later, once loaded:
-//! match &assets.get(&handle).unwrap().contents {
-//!     MidiFileContents::Smf(tracks) => { /* ... */ }
-//!     MidiFileContents::Clip(clip) => { /* ... */ }
-//! }
+//! **Write** — the request is an entity, and the result arrives on it. The bytes
+//! are the caller's: nothing here encodes, for the reason the last section
+//! gives.
 //!
-//! // Write — bytes some caller already encoded.
-//! commands
-//!     .spawn(MidiFileWrite::new("out.mid", bytes))
-//!     .observe(|done: On<MidiFileWritten>| { /* ... */ });
+//! ```rust
+//! use std::sync::{Arc, Mutex};
+//!
+//! use bevy_app::prelude::*;
+//! use bevy_ecs::prelude::*;
+//! use bevy_tutti::midi::{MidiFilePlugin, MidiFileWrite, MidiFileWritten};
+//! use tutti_core::Beat;
+//! use tutti_midi_file::{encode_midi_file, MidiWriteOptions, SmfMessage, SmfTimedEvent};
+//!
+//! let bytes = encode_midi_file(
+//!     &[vec![SmfTimedEvent {
+//!         time_beats: Beat(0.0),
+//!         channel: 0,
+//!         msg: SmfMessage::NoteOn { key: 60.into(), vel: 100.into() },
+//!     }]],
+//!     &MidiWriteOptions::default(),
+//! )
+//! .expect("one track encodes");
+//!
+//! let dir = tempfile::tempdir().expect("a temp dir");
+//! let landed: Arc<Mutex<Option<bool>>> = Arc::default();
+//! let seen = landed.clone();
+//!
+//! let mut app = App::new();
+//! app.add_plugins((
+//!     bevy_app::TaskPoolPlugin::default(),
+//!     // The read half registers an asset loader, so an `AssetServer` must exist.
+//!     bevy_asset::AssetPlugin::default(),
+//!     MidiFilePlugin,
+//! ));
+//! app.world_mut()
+//!     .spawn(MidiFileWrite::new(dir.path().join("out.mid"), bytes.clone()))
+//!     .observe(move |done: On<MidiFileWritten>| {
+//!         *seen.lock().unwrap() = Some(done.result.is_ok());
+//!     });
+//!
+//! // The IO runs on the task pool, so the app keeps ticking until it reports.
+//! for _ in 0..2000 {
+//!     app.update();
+//!     if landed.lock().unwrap().is_some() {
+//!         break;
+//!     }
+//!     std::thread::sleep(std::time::Duration::from_millis(2));
+//! }
+//! assert_eq!(*landed.lock().unwrap(), Some(true));
+//!
+//! // **Read** — a host takes `asset_server.load("song.mid")` and matches on the
+//! // loaded asset's `contents`. The loader is this call with the file's bytes,
+//! // which is the half worth showing without a file on disk:
+//! use bevy_tutti::midi::{MidiFileAsset, MidiFileContents};
+//!
+//! let asset = MidiFileAsset::from_bytes(&bytes).expect("the bytes we just encoded");
+//! match &asset.contents {
+//!     // Which arm you land in is decided by the leading magic bytes, not the
+//!     // extension — both containers wear `.mid`.
+//!     MidiFileContents::Smf(tracks) => assert_eq!(tracks.len(), 1),
+//!     MidiFileContents::Clip(_) => panic!("that was an SMF"),
+//! }
 //! ```
 //!
 //! # Why reads are assets and writes are not

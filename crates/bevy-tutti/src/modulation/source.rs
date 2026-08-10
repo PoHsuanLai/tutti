@@ -6,9 +6,15 @@
 //! constructor — [`Sourced<M>`](tutti_mod::Sourced) erases `M` at construction,
 //! so nothing downstream ever recovers the concrete type.
 //!
-//! ```rust,ignore
-//! app.add_mod_source::<Lfo>();          // built in
-//! app.add_mod_source::<StepSequencer>(); // yours
+//! ```rust
+//! use bevy_app::prelude::*;
+//! use bevy_tutti::modulation::{ModSource, ModSourceAppExt, TuttiModulationPlugin};
+//!
+//! let mut app = App::new();
+//! // `TuttiModulationPlugin` registers the built-in `ModSource` kind already;
+//! // a host adds its own the same way, and the call is idempotent.
+//! app.add_plugins(TuttiModulationPlugin);
+//! app.add_mod_source::<ModSource>();
 //! ```
 //!
 //! # Why a component, not a kind enum

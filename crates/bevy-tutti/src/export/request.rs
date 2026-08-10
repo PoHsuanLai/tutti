@@ -223,12 +223,41 @@ pub enum ExportOutput {
 /// component to avoid re-handling it is a hand-rolled one-shot. Observe it at
 /// the spawn site instead, where the surrounding context is still in scope:
 ///
-/// ```ignore
-/// commands
-///     .spawn(ExportRequest { .. })
-///     .observe(move |done: On<ExportDone>, mut commands: Commands| {
-///         // `view_entity` and friends are captured here.
-///     });
+/// ```rust
+/// use std::sync::Arc;
+///
+/// use bevy_app::prelude::*;
+/// use bevy_ecs::prelude::*;
+/// use bevy_tutti::prelude::*;
+/// use tutti_export::{ExportConfig, FrozenClock};
+///
+/// /// The panel that asked for the render — the context an observer captures
+/// /// and a polled `Query<&ExportOutput>` would have to look up again.
+/// #[derive(Component)]
+/// struct Toast(&'static str);
+///
+/// fn request_export(In(view_entity): In<Entity>, mut commands: Commands) {
+///     commands
+///         .spawn(ExportRequest::new(
+///             ExportSource::Master,
+///             ExportTarget::Buffers,
+///             ExportConfig::default(),
+///             Arc::new(FrozenClock),
+///         ))
+///         .observe(move |done: On<ExportDone>, mut commands: Commands| {
+///             // `view_entity` is captured here, still in scope.
+///             let label = if done.result.is_ok() { "exported" } else { "export failed" };
+///             commands.entity(view_entity).insert(Toast(label));
+///         });
+/// }
+///
+/// let mut app = App::new();
+/// let view = app.world_mut().spawn_empty().id();
+/// app.world_mut().run_system_cached_with(request_export, view).unwrap();
+///
+/// // One request entity, carrying the observer. Nothing has rendered yet —
+/// // `ExportPlugin` is what starts it; the module docs run that end to end.
+/// assert_eq!(app.world_mut().query::<&ExportRequest>().iter(app.world()).count(), 1);
 /// ```
 #[derive(EntityEvent, Debug)]
 pub struct ExportDone {

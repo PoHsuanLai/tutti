@@ -10,10 +10,25 @@
 //! latency-reporting node never needs it, so it is **not** part of
 //! [`TuttiPlugin`](crate::TuttiPlugin). Add it explicitly:
 //!
-//! ```rust,ignore
-//! App::new()
-//!     .add_plugins(TuttiPlugin::default())
+//! ```rust
+//! use bevy_app::prelude::*;
+//! use bevy_tutti::prelude::*;
+//!
+//! let mut app = App::new();
+//! // Ordinary Bevy prerequisites for the subsystems, not tutti's own; a real
+//! // host has both from `DefaultPlugins`.
+//! app.add_plugins((bevy_app::TaskPoolPlugin::default(), bevy_asset::AssetPlugin::default()));
+//! // `disabled` only so this opens no device; a real host drops that field and
+//! // the two `add_plugins` lines are unchanged.
+//! app.add_plugins(TuttiPlugin { disabled: true, ..Default::default() })
 //!     .add_plugins(LatencyCompensationPlugin);
+//! app.update();
+//!
+//! // Both resources exist from the first frame. `GraphLatency` is the figure a
+//! // DAW displays; zero until some node in the graph reports latency, which is
+//! // the common case and why this plugin is opt-in.
+//! assert!(app.world().get_resource::<ChannelCompensation>().is_some());
+//! assert!(app.world().resource::<GraphLatency>().is_empty());
 //! ```
 //!
 //! # Ordering
@@ -23,8 +38,29 @@
 //! to the audio thread. An app that schedules its own graph mutation must order
 //! it before that set, or its nodes miss the frame's compensation:
 //!
-//! ```rust,ignore
+//! ```rust
+//! use bevy_app::prelude::*;
+//! use bevy_ecs::prelude::*;
+//! use bevy_tutti::prelude::*;
+//! use tutti_core::dsp::{sine_hz, Net};
+//!
+//! /// A host system that edits the graph itself.
+//! fn my_graph_edits(mut graph: ResMut<AudioGraphRes>, mut dirty: ResMut<GraphDirty>) {
+//!     graph.0.add(sine_hz::<f32>(440.0));
+//!     // Say so, or the compensation pass skips the frame entirely.
+//!     dirty.0 = true;
+//! }
+//!
+//! let mut app = App::new();
+//! app.insert_resource(AudioGraphRes(Net::with_backend(2)));
+//! app.insert_resource(AudioEngineState::Running);
+//! app.add_plugins((GraphReconcilePlugin, LatencyCompensationPlugin));
 //! app.add_systems(Update, my_graph_edits.before(GraphReconcileSystems::Compensate));
+//! app.update();
+//!
+//! // The frame's edit was in before compensation ran, so `commit_graph`
+//! // cleared the flag on the way past.
+//! assert!(!app.world().resource::<GraphDirty>().0);
 //! ```
 //!
 //! # Sources outside the graph

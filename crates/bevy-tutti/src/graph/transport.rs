@@ -62,15 +62,32 @@ impl TransportRes {
     /// drift — but a future `set_sample_rate`, or a `Timeline` method that reads
     /// it, would make that a live bug rather than a footnote.)
     ///
-    /// ```rust,ignore
-    /// fn install(transport: Res<TransportRes>, config: Res<AudioConfig>) {
-    ///     port.install(Arc::new(MidiClipSource::new(
-    ///         port.unit_id(),
-    ///         events,
-    ///         transport.timeline(),
-    ///         config.sample_rate,
-    ///     )));
+    /// ```rust
+    /// use bevy_app::prelude::*;
+    /// use bevy_ecs::prelude::*;
+    /// use bevy_tutti::prelude::*;
+    /// use std::sync::Arc;
+    ///
+    /// /// Stands in for a beat-scheduled audio-thread source. The real ones
+    /// /// (`MidiClipSource`, an automation lane) hold the handle exactly like
+    /// /// this and read it per block.
+    /// #[derive(Resource)]
+    /// struct Sequencer(Arc<dyn Timeline>);
+    ///
+    /// /// Hand the handle over **once**, at install time — not a beat per frame.
+    /// fn install(transport: Res<TransportRes>, mut commands: Commands) {
+    ///     commands.insert_resource(Sequencer(transport.timeline()));
     /// }
+    ///
+    /// let mut app = App::new();
+    /// app.insert_resource(TransportRes(Transport::new(48_000.0)));
+    /// app.add_systems(Startup, install);
+    /// app.update();
+    ///
+    /// // The clone shares state rather than snapshotting it: a tempo set after
+    /// // the handle was taken is visible through it.
+    /// app.world().resource::<TransportRes>().settings.set_tempo(128.0);
+    /// assert_eq!(app.world().resource::<Sequencer>().0.tempo(), Bpm(128.0));
     /// ```
     pub fn timeline(&self) -> Arc<dyn Timeline> {
         Arc::new(self.0.clone())
@@ -150,11 +167,58 @@ pub struct EngineNodes {
     /// Wire both ports, in that order, to a node that takes the beat as a
     /// signal — `tutti_units::Lfo` in beat-synced mode, or an `AutomationLane`:
     ///
-    /// ```rust,ignore
-    /// commands.spawn_audio_node(lfo).insert(AudioSources(vec![
-    ///     AudioSource::Node { entity: nodes.clock, port: 0 },
-    ///     AudioSource::Node { entity: nodes.clock, port: 1 },
-    /// ]));
+    /// ```rust
+    /// use bevy_app::prelude::*;
+    /// use bevy_ecs::prelude::*;
+    /// use bevy_tutti::prelude::*;
+    /// use tutti_core::dsp::{pass, Net, Source};
+    /// use tutti_core::transport::{TransportClock, BEAT_PORTS};
+    ///
+    /// /// Stands in for a beat-driven node — `tutti_units::Lfo` in beat-synced
+    /// /// mode, or an automation lane. What matters is that it takes the beat on
+    /// /// two input ports, in port order.
+    /// fn beat_driven_node() -> impl tutti_core::dsp::AudioUnit {
+    ///     pass() | pass()
+    /// }
+    ///
+    /// fn wire_to_clock(mut commands: Commands, nodes: Res<EngineNodes>) {
+    ///     commands
+    ///         .spawn_audio_node(beat_driven_node())
+    ///         .insert(AudioSources(vec![
+    ///             AudioSource::Node { entity: nodes.clock, port: 0 },
+    ///             AudioSource::Node { entity: nodes.clock, port: 1 },
+    ///         ]));
+    /// }
+    ///
+    /// // `build_into` builds the clock and inserts `EngineNodes`; a device-less
+    /// // app does the same two steps by hand.
+    /// let transport = Transport::new(48_000.0);
+    /// let mut net = Net::with_backend(2);
+    /// let clock_id = net.add(TransportClock::new(transport.clock_links(), 48_000.0));
+    ///
+    /// let mut app = App::new();
+    /// app.insert_resource(AudioGraphRes(net));
+    /// app.insert_resource(AudioEngineState::Running);
+    /// app.add_plugins(GraphReconcilePlugin);
+    /// let clock = app.world_mut().spawn(AudioNode(clock_id)).id();
+    /// app.insert_resource(EngineNodes { clock, click: clock });
+    /// app.insert_resource(TransportRes(transport));
+    /// app.add_systems(Startup, wire_to_clock);
+    /// app.update();
+    ///
+    /// // Both beat ports reached the engine, in order. Wiring only port 0 would
+    /// // stair-step past beat 16384 — which is why the split exists.
+    /// let sink = app
+    ///     .world_mut()
+    ///     .query::<&AudioNode>()
+    ///     .iter(app.world())
+    ///     .map(|n| n.0)
+    ///     .find(|id| *id != clock_id)
+    ///     .unwrap();
+    /// let graph = app.world().resource::<AudioGraphRes>();
+    /// for port in 0..BEAT_PORTS {
+    ///     assert_eq!(graph.0.source(sink, port), Source::Local(clock_id, port));
+    /// }
     /// ```
     ///
     /// **Nothing in this crate wires it.** bevy-tutti's own modulation reads the

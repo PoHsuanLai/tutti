@@ -7,26 +7,82 @@
 //! component, runs the synchronous call on Bevy's `AsyncComputeTaskPool`, and
 //! reports the result as an entity event.
 //!
-//! ```ignore
-//! // Whole graph to a normalized file.
-//! commands.spawn(ExportRequest::new(
-//!     ExportSource::Master,
-//!     ExportTarget::File {
-//!         path: "mix.wav".into(),
-//!         normalize: Some(Normalize::lufs(Db(-14.0))),
-//!     },
-//!     config,
-//!     Arc::new(FrozenClock),
-//! ))
-//! .observe(|done: On<ExportDone>| { /* ... */ });
+//! An export is an **entity**: spawn a request, observe the result on that same
+//! entity, where the code that knows what the render was for still has scope.
 //!
-//! // One node's output into memory, filling its voices from the app's world
-//! // on the way past.
-//! commands.spawn(
-//!     ExportRequest::new(ExportSource::Node(node_id), ExportTarget::Buffers, config, clock)
-//!         .with_prepare(|prepared, world| fill_voices(prepared.net, prepared.ctx, world)),
-//! );
+//! ```rust
+//! use std::sync::{Arc, Mutex};
+//!
+//! use bevy_app::prelude::*;
+//! use bevy_ecs::prelude::*;
+//! use bevy_tutti::prelude::*;
+//! use bevy_tutti::graph::AudioConfig;
+//! use tutti_core::dsp::{dc, Net};
+//! use tutti_export::{
+//!     AudioFormat, BitDepth, ChannelLayout, EncodeConfig, ExportConfig, FrozenClock,
+//!     RenderConfig,
+//! };
+//!
+//! let config = ExportConfig {
+//!     render: RenderConfig {
+//!         sample_rate: tutti_core::SampleRate(44_100.0),
+//!         duration_seconds: 0.05,
+//!         ..Default::default()
+//!     },
+//!     encode: EncodeConfig {
+//!         format: AudioFormat::Wav,
+//!         bit_depth: BitDepth::Float32,
+//!         channels: ChannelLayout::STEREO,
+//!     },
+//!     ..Default::default()
+//! };
+//!
+//! let mut net = Net::with_backend(2);
+//! net.master(dc(0.5));
+//!
+//! let mut app = App::new();
+//! app.add_plugins((bevy_app::TaskPoolPlugin::default(), ExportPlugin));
+//! app.insert_resource(AudioGraphRes(net));
+//! app.insert_resource(AudioConfig {
+//!     sample_rate: tutti_core::SampleRate(44_100.0),
+//!     channels: ChannelLayout::STEREO,
+//! });
+//! // `start_exports` is gated on the engine state, not on the graph resource.
+//! app.insert_resource(AudioEngineState::Running);
+//!
+//! // The whole graph into memory. `ExportTarget::File { path, normalize }`
+//! // encodes to disk instead — `normalize: None` streams, `Some(..)` is a
+//! // two-pass render that holds the signal to measure a gain from it.
+//! let channels: Arc<Mutex<Option<usize>>> = Arc::default();
+//! let seen = channels.clone();
+//! app.world_mut()
+//!     .spawn(ExportRequest::new(
+//!         ExportSource::Master,
+//!         ExportTarget::Buffers,
+//!         config,
+//!         Arc::new(FrozenClock),
+//!     ))
+//!     .observe(move |done: On<ExportDone>| {
+//!         if let Ok(ExportOutput::Buffers(rendered)) = &done.result {
+//!             *seen.lock().unwrap() = Some(rendered.channels());
+//!         }
+//!     });
+//!
+//! // The render runs on the task pool, so the app has to keep ticking.
+//! for _ in 0..2000 {
+//!     app.update();
+//!     if channels.lock().unwrap().is_some() {
+//!         break;
+//!     }
+//!     std::thread::sleep(std::time::Duration::from_millis(2));
+//! }
+//!
+//! assert_eq!(*channels.lock().unwrap(), Some(2));
 //! ```
+//!
+//! A request may also carry a `with_prepare` hook — the last look at the net
+//! before it leaves the main thread, which is where an isolated clone's voices
+//! get refilled from the app's world. See [`ExportRequest::with_prepare`].
 //!
 //! # What is deliberately not here
 //!

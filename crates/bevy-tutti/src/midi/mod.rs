@@ -38,10 +38,21 @@
 //! [`endpoint::registration`] for how a node's sender gets on (and off) the
 //! bus.
 //!
-//! ```rust,ignore
-//! app.world_mut()
-//!     .resource_mut::<MidiTargetRegistry>()
-//!     .register::<tutti_soundfont::SoundFontUnit>();
+//! ```rust
+//! use bevy_app::prelude::*;
+//! use bevy_tutti::midi::{MidiTargetRegistry, TuttiMidiPlugin};
+//!
+//! let mut app = App::new();
+//! app.insert_resource(bevy_tutti::midi::test_support::midi_bus_for_test());
+//! app.add_plugins(bevy_asset::AssetPlugin::default());
+//! app.add_plugins(TuttiMidiPlugin);
+//!
+//! let mut registry = app.world_mut().resource_mut::<MidiTargetRegistry>();
+//! // One line per node type the build actually has. See [`endpoint::target`]
+//! // for why this cannot be a default list.
+//! # #[cfg(feature = "synth")]
+//! registry.register::<tutti_polysynth::PolySynth>();
+//! # let _ = &mut registry;
 //! ```
 
 pub mod endpoint;

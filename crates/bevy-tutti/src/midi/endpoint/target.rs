@@ -7,11 +7,35 @@
 //! There is no `&dyn` anything to recover a port from a `&dyn AudioUnit`, so the
 //! host supplies the dispatch by registering the node types it uses:
 //!
-//! ```rust,ignore
-//! app.world_mut()
-//!     .resource_mut::<MidiTargetRegistry>()
-//!     .register::<tutti_soundfont::SoundFontUnit>();
+//! ```rust
+//! use bevy_app::prelude::*;
+//! use bevy_tutti::graph::{AudioGraphRes, GraphReconcilePlugin};
+//! use bevy_tutti::midi::{MidiTargetRegistry, TuttiMidiPlugin};
+//! use bevy_tutti::AudioEngineState;
+//! use tutti_core::dsp::Net;
+//!
+//! let mut app = App::new();
+//! app.insert_resource(AudioGraphRes(Net::new(0, 2)));
+//! app.insert_resource(AudioEngineState::Running);
+//! app.insert_resource(bevy_tutti::midi::test_support::midi_bus_for_test());
+//! // `AssetPlugin` is a Bevy prerequisite for the subsystems registering
+//! // asset loaders; a real host has it from `DefaultPlugins`.
+//! app.add_plugins(bevy_asset::AssetPlugin::default());
+//! app.add_plugins((GraphReconcilePlugin, TuttiMidiPlugin));
+//!
+//! // The registry starts empty — a host that registers nothing has no MIDI
+//! // destination it can address, which is the failure this line prevents.
+//! let mut registry = app.world_mut().resource_mut::<MidiTargetRegistry>();
+//! # #[cfg(feature = "soundfont")]
+//! registry.register::<tutti_soundfont::SoundFontUnit>();
+//! # #[cfg(feature = "synth")]
+//! registry.register::<tutti_polysynth::PolySynth>();
+//! # let _ = &mut registry;
 //! ```
+//!
+//! Each `register::<T>` is one host-supplied downcast. Which node types to name
+//! is the host's call, and no default list can be right: this crate cannot know
+//! whether a build has a soundfont player, a synth, or a hosted plugin in it.
 //!
 //! # Why resolve rather than remember
 //!

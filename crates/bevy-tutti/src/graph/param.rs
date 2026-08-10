@@ -7,11 +7,40 @@
 //! component type plus a `QueryData` field plus an `Or<Changed<…>>` arm plus an
 //! `if let` branch.
 //!
-//! ```rust,ignore
-//! app.add_audio_param::<Hz, { UnitParam::Cutoff as u16 }>()
-//!    .add_audio_param::<Q, { UnitParam::Q as u16 }>();
+//! ```rust
+//! use bevy_app::prelude::*;
+//! use bevy_ecs::prelude::*;
+//! use bevy_tutti::graph::{AudioGraphRes, AudioParam, AudioParamAppExt, GraphReconcilePlugin};
+//! use bevy_tutti::AudioEngineState;
+//! use tutti_core::dsp::{AudioUnit as _, Net};
+//! use tutti_core::{AudioNode, SampleRate};
+//! use tutti_types::{Drive, UnitParam};
+//! use tutti_units::{DistortionNode, ShapeKind};
 //!
-//! commands.entity(filter).insert(Cutoff::new(Hz(1000.0)));
+//! /// One line per param — the unit and the address, both load-bearing.
+//! type DriveParam = AudioParam<Drive, { UnitParam::Drive as u16 }>;
+//!
+//! let mut net = Net::new(0, 1);
+//! let node = net.push(Box::new(DistortionNode::new(ShapeKind::Tanh, 1.0)));
+//! net.set_sample_rate(SampleRate(48_000.0));
+//!
+//! let mut app = App::new();
+//! app.insert_resource(AudioGraphRes(net));
+//! app.insert_resource(AudioEngineState::Running);
+//! app.add_plugins(GraphReconcilePlugin);
+//! // Under the `modulation` feature the reconciler asks the matrix whether a
+//! // param has a second writer, so the plugin that owns it must be present.
+//! #[cfg(feature = "modulation")]
+//! app.add_plugins(bevy_tutti::modulation::TuttiModulationPlugin);
+//! app.add_audio_param::<Drive, { UnitParam::Drive as u16 }>();
+//!
+//! let entity = app.world_mut().spawn((AudioNode(node), DriveParam::new(Drive(4.0)))).id();
+//! app.update();
+//!
+//! // Read the node's own atomic — the cell the DSP reads, not the component.
+//! let graph = app.world().resource::<AudioGraphRes>();
+//! let live = graph.0.node_as::<DistortionNode>(node).unwrap().drive();
+//! assert_eq!(live.load(std::sync::atomic::Ordering::Acquire), 4.0);
 //! ```
 //!
 //! # Why this can be generic at all

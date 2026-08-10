@@ -4,13 +4,34 @@
 //! input ports is declared with [`AudioSources`] on the sink entity; what
 //! reaches the speakers is declared with the [`MasterSources`] resource.
 //!
-//! ```rust,ignore
-//! let osc = commands.spawn_audio_node(sine_hz::<f32>(440.0)).id();
-//! let filt = commands
-//!     .spawn_audio_node(lowpass_hz(1000.0, 1.0))
-//!     .insert(AudioSources::from(osc))
-//!     .id();
-//! commands.insert_resource(MasterSources::from(filt));
+//! ```rust
+//! use bevy_app::prelude::*;
+//! use bevy_ecs::prelude::*;
+//! use bevy_tutti::prelude::*;
+//! use tutti_core::dsp::{lowpass_hz, sine_hz, split, Net, Source, U2};
+//!
+//! fn build(mut commands: Commands) {
+//!     let osc = commands.spawn_audio_node(sine_hz::<f32>(440.0)).id();
+//!     // Stereo out, so `MasterSources::from` has two output ports to take.
+//!     let filt = commands
+//!         .spawn_audio_node(lowpass_hz(1000.0f32, 1.0) >> split::<U2>())
+//!         .insert(AudioSources::from(osc))
+//!         .id();
+//!     commands.insert_resource(MasterSources::from(filt));
+//! }
+//!
+//! let mut app = App::new();
+//! app.insert_resource(AudioGraphRes(Net::with_backend(2)));
+//! app.insert_resource(AudioEngineState::Running);
+//! app.add_plugins(GraphReconcilePlugin);
+//! app.add_systems(Startup, build);
+//! app.update();
+//!
+//! // Read the edges back off the engine. This layer keeps no shadow state, so
+//! // the engine is the only thing worth asserting on.
+//! let graph = app.world().resource::<AudioGraphRes>();
+//! assert!(matches!(graph.0.output_source(0), Source::Local(_, 0)));
+//! assert!(matches!(graph.0.output_source(1), Source::Local(_, 1)));
 //! ```
 //!
 //! # Why the sink owns the declaration

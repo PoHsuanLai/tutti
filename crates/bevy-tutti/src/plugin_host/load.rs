@@ -77,12 +77,35 @@ const MAX_CONCURRENT_LOADS: usize = 2;
 /// idiomatic Bevy way — `Default` plus struct-update syntax — rather than
 /// builder methods.
 ///
-/// ```ignore
-/// commands.spawn(PluginRequest {
-///     id: PluginId::from_path("/path/to/Foo.vst3"),
-///     sample_rate: config.sample_rate,
-///     ..Default::default()
+/// ```rust
+/// use bevy_app::prelude::*;
+/// use bevy_ecs::prelude::*;
+/// use bevy_tutti::graph::AudioConfig;
+/// use bevy_tutti::plugin_host::PluginRequest;
+/// use tutti_plugin::catalog::PluginId;
+///
+/// fn load_plugin(config: Res<AudioConfig>, mut commands: Commands) {
+///     commands.spawn(PluginRequest {
+///         id: PluginId::from_path("/path/to/Foo.vst3"),
+///         // Read the rate off `AudioConfig` rather than assuming 44.1k — the
+///         // plugin is instantiated at it, and a mismatch is audible.
+///         sample_rate: config.sample_rate,
+///         ..Default::default()
+///     });
+/// }
+///
+/// let mut app = App::new();
+/// app.insert_resource(AudioConfig {
+///     sample_rate: tutti_types::SampleRate(48_000.0),
+///     channels: tutti_types::ChannelLayout::STEREO,
 /// });
+/// app.add_systems(Startup, load_plugin);
+/// app.update();
+///
+/// // The request is a component; the load systems pick it up from here. It
+/// // stays in place afterwards, so a host can see what an entity *is*.
+/// let request = app.world_mut().query::<&PluginRequest>().single(app.world()).unwrap();
+/// assert_eq!(request.sample_rate, app.world().resource::<AudioConfig>().sample_rate);
 /// ```
 ///
 /// The component is left in place after the load so the request stays inspectable
@@ -146,14 +169,31 @@ pub struct PluginLoadTerminated;
 /// Observe it at the spawn site, where the surrounding context is still in
 /// scope:
 ///
-/// ```ignore
-/// commands
-///     .spawn(PluginRequest { id, sample_rate, ..Default::default() })
-///     .observe(|done: On<PluginLoadDone>| {
-///         if let Err(e) = &done.result {
-///             warn!("plugin failed to load: {e}");
-///         }
-///     });
+/// ```rust
+/// use bevy_app::prelude::*;
+/// use bevy_ecs::prelude::*;
+/// use bevy_log::warn;
+/// use bevy_tutti::plugin_host::{PluginLoadDone, PluginRequest};
+/// use tutti_plugin::catalog::PluginId;
+/// use tutti_types::SampleRate;
+///
+/// fn load_plugin(In((id, sample_rate)): In<(PluginId, SampleRate)>, mut commands: Commands) {
+///     commands
+///         .spawn(PluginRequest { id, sample_rate, ..Default::default() })
+///         .observe(|done: On<PluginLoadDone>| {
+///             if let Err(e) = &done.result {
+///                 warn!("plugin failed to load: {e}");
+///             }
+///         });
+/// }
+///
+/// let mut app = App::new();
+/// let args = (PluginId::from_path("/path/to/Foo.vst3"), SampleRate::SR_48K);
+/// app.world_mut().run_system_cached_with(load_plugin, args).unwrap();
+///
+/// // One request, carrying its observer. Actually loading it needs a real
+/// // plugin binary on disk, which is `TuttiHostingPlugin`'s job to drive.
+/// assert_eq!(app.world_mut().query::<&PluginRequest>().iter(app.world()).count(), 1);
 /// ```
 #[derive(EntityEvent, Debug)]
 pub struct PluginLoadDone {

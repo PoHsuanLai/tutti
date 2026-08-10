@@ -22,23 +22,35 @@ use crate::sampler::TuttiPlaybackPlugin;
 /// Configure it the idiomatic Bevy way — `Default` plus public fields set with
 /// struct-update syntax — rather than builder methods:
 ///
-/// ```rust,ignore
-/// use bevy::prelude::*;
-/// use bevy_tutti::TuttiPlugin;
+/// ```rust
+/// use bevy_app::prelude::*;
+/// use bevy_tutti::{AudioEngineState, TuttiPlugin};
 ///
 /// // Defaults: stereo out, no input, MIDI on iff the `midi` feature is built.
-/// app.add_plugins(TuttiPlugin::default());
+/// assert_eq!(TuttiPlugin::default().outputs, 2);
 ///
-/// // Override only what you need:
+/// // Override only what you need. `disabled` rides along here so this example
+/// // opens no device; a host that wants sound simply leaves it out.
+/// let mut app = App::new();
+/// // Ordinary Bevy prerequisites, not tutti's — an asset loader needs an
+/// // `AssetServer`, off-main-thread IO needs the task pools. `DefaultPlugins`
+/// // carries both.
+/// app.add_plugins((bevy_app::TaskPoolPlugin::default(), bevy_asset::AssetPlugin::default()));
 /// app.add_plugins(TuttiPlugin {
 ///     inputs: 2,
 ///     outputs: 4,
 ///     output_device: Some(1),
-///     ..default()
+///     disabled: true,
+///     ..Default::default()
 /// });
+/// app.update();
 ///
-/// // Headless / CI: register the ECS surface, open no device.
-/// app.add_plugins(TuttiPlugin { disabled: true, ..default() });
+/// // Headless / CI: the ECS surface is registered and the state says why there
+/// // is no sound, rather than the app failing to start.
+/// assert_eq!(
+///     *app.world().resource::<AudioEngineState>(),
+///     AudioEngineState::Disabled,
+/// );
 /// ```
 ///
 /// Whether the engine actually came up is reported by

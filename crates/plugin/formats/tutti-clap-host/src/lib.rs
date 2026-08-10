@@ -7,19 +7,43 @@
 //!
 //! ## Example
 //!
-//! ```ignore
-//! use tutti_clap_host::{ClapLoaded, MidiEvent, ProcessContext, TransportInfo};
+//! Load, activate, render one block. `no_run`: the load needs a real `.clap`
+//! bundle on disk.
 //!
-//! // Load (GUI/params/state usable here), then activate to process audio.
-//! let loaded = ClapLoaded::load("/path/to/plugin.clap", 44100.0, 512)?;
+//! ```no_run
+//! use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
+//! use tutti_clap_host::{AudioBuffer32, ClapLoaded, MidiEvent, ProcessContext, TransportInfo};
+//!
+//! // `ClapLoaded` is the GUI / parameter / state stage; sample rate and the
+//! // max block length are fixed here, so `activate` takes no arguments.
+//! let loaded = ClapLoaded::load("/usr/lib/clap/MyPlugin.clap", 48_000.0, 512)?;
+//! println!("{} by {}", loaded.info().name, loaded.info().vendor);
+//!
+//! // `activate` hands `self` back on refusal — a plugin that declines f64 can
+//! // be retried at f32 without reloading.
 //! let mut active = loaded.activate::<f32>().map_err(|(_, e)| e)?;
+//!
+//! // 512 is the block length in FRAMES; each channel slice holds that many.
+//! let silence = vec![0.0f32; 512];
+//! let inputs: [&[f32]; 2] = [&silence, &silence];
+//! let (mut left, mut right) = (vec![0.0f32; 512], vec![0.0f32; 512]);
+//! let mut outputs: [&mut [f32]; 2] = [&mut left, &mut right];
+//! let mut buffer = AudioBuffer32::new(&inputs, &mut outputs, 48_000.0);
+//!
 //! let transport = TransportInfo::default().with_tempo(120.0).with_playing(true);
+//! let midi = [MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 16384)];
 //! active.process(&mut buffer, &ProcessContext {
-//!     midi: &[MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 16384)],
+//!     midi: &midi,
 //!     transport: Some(&transport),
 //!     ..Default::default()
 //! })?;
+//! # Ok::<(), tutti_clap_host::ClapError>(())
 //! ```
+//!
+//! CLAP addresses parameters by an opaque, plugin-chosen `clap_id`;
+//! [`ClapLoaded::parameter_list`] hands them back as the shared
+//! `tutti_plugin_types::ParameterInfo`, so a consumer never learns which format
+//! it is reading.
 
 pub mod error;
 pub mod events;

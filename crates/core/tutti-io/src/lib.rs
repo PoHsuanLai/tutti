@@ -32,6 +32,45 @@
 //! The producer half of the mic ring lives in `tutti-cpal`'s input callback,
 //! one layer up. [`Recorder`] likewise takes an already-open source rather than
 //! opening a device, which is what lets it live here.
+//!
+//! # Example — recording what the graph is playing
+//!
+//! The tap path end to end, and it needs no device: `tutti-core`'s `AudioTap`
+//! is pushed by the audio callback, [`TapIn`] is its consumer end as an
+//! [`AudioIn`], and [`pump`] moves one block into a [`WavOut`]. Swap [`TapIn`]
+//! for `tutti_cpal::MicIn` and the same three lines record a microphone —
+//! that interchangeability is the reason the traits exist.
+//!
+//! ```
+//! use tutti_core::AudioTap;
+//! use tutti_io::{pump, AudioIn, AudioOut, BitDepth, TapIn, WavOut};
+//!
+//! let tap = AudioTap::new();
+//! let mut src = TapIn::new(tap.open().expect("a fresh tap has no other reader"));
+//!
+//! // The callback's push is denominated in FRAMES; the slice it reads from is
+//! // interleaved, so it must hold `frames * 2` samples.
+//! let block = [0.25f32, -0.25, 0.5, -0.5, 0.75, -0.75];
+//! tap.push(&block, 3);
+//!
+//! let dir = tempfile::tempdir().expect("temp dir");
+//! let path = dir.path().join("take.wav");
+//! let mut wav = WavOut::create(&path, 48_000.0, 2u16, BitDepth::Float32)
+//!     .expect("sink opens");
+//! assert_eq!(src.layout(), AudioOut::layout(&wav), "pump requires equal widths");
+//!
+//! // The scratch is sized in SAMPLES (`frames * channels`) because a flat
+//! // interleaved slice has no other unit — but `pump` returns FRAMES. Conflating
+//! // the two is this boundary's most repeated defect: a stereo take compared
+//! // against a sample count runs half as long as it should.
+//! let channels = src.layout().count() as usize;
+//! let mut scratch = vec![0.0f32; 1024 * channels];
+//! assert_eq!(pump(&mut src, &mut wav, &mut scratch), 3);
+//!
+//! // `finalize` takes `self`, so the header back-patch happens exactly once and
+//! // writing after it is a compile error rather than a corrupt file.
+//! wav.finalize().expect("header back-patches");
+//! ```
 
 mod node_id;
 

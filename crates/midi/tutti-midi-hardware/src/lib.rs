@@ -23,6 +23,65 @@
 //!   MIDI-2-only messages (per-note controllers, per-note pitch bend, JR
 //!   Timestamps) survive rather than vanishing into a `to_midi1_bytes` `None`.
 //!
+//! # Example: enumerate, connect, send
+//!
+//! [`MidiSession`] is the whole OS edge. Inbound events never pass *through* it
+//! — each opened input gets its own lock-free ring in
+//! [`HardwareMidiInputs`], which the audio thread drains; the session only owns
+//! the connection, and dropping it closes the port.
+//!
+//! `no_run`: every path here opens a real device. It is still type-checked, so
+//! a wrong method name fails the build.
+//!
+//! ```no_run
+//! use std::sync::Arc;
+//! use tutti_midi_hardware::prelude::*;
+//! use tutti_midi_hardware::HardwareMidiInputs;
+//!
+//! // The rings inbound events land in, then a session over this platform's backend.
+//! let ports = Arc::new(HardwareMidiInputs::new(1024));
+//! let session = MidiSession::new(Arc::clone(&ports));
+//!
+//! // A fresh snapshot per call — device lists go stale on hot-plug, so nothing
+//! // here is cached.
+//! for endpoint in session.inputs() {
+//!     println!("{}: {:?}", endpoint.name, endpoint.capability);
+//! }
+//!
+//! // Connect by id when it matters; see the matching note below for by-name.
+//! if let Some(first) = session.inputs().first() {
+//!     session.connect_input(first.id)?;
+//! }
+//!
+//! // Outbound: UMP words on the wire, so a MIDI-2-only message survives.
+//! session.connect_output_by_name("iac")?;
+//! let note = MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000);
+//! assert_eq!(session.send(&[note]), 1);
+//! # Ok::<(), tutti_midi_hardware::Error>(())
+//! ```
+//!
+//! ## Matching by name picks a device you did not choose
+//!
+//! Every `*_by_name` method matches **case-insensitive substring, first hit
+//! wins**, in the backend's enumeration order — which is not sorted and not
+//! stable across a hot-plug. So `"iac"` matches `"IAC Driver Bus 1"`, and a
+//! name matching two devices silently takes whichever the OS listed first.
+//! Connect by [`EndpointId`] when the choice matters.
+//!
+//! [`disconnect_input_by_name`](MidiSession::disconnect_input_by_name) is
+//! weaker still: it searches a `HashMap` of open connections, so there is no
+//! "first" at all and a name matching two open inputs closes an **arbitrary**
+//! one. Use [`disconnect_input`](MidiSession::disconnect_input) with an id, or
+//! [`disconnect_all_inputs`](MidiSession::disconnect_all_inputs).
+//!
+//! ## A build may have no backend, and it is not an error
+//!
+//! ALSA's UMP sequencer API landed in alsa-lib 1.2.10. An older (or absent)
+//! alsa-lib compiles the same empty stub Windows gets — zero endpoints, and
+//! [`Error::Unsupported`] naming the reason — after a `cargo:warning` from the
+//! build script. It degrades rather than failing the build, so the code above
+//! compiles everywhere and simply enumerates nothing where there is no backend.
+//!
 //! The full picture — backend table, quick start, and the two Linux loopback
 //! traps — is in the crate README, included below.
 #![doc = include_str!("../README.md")]

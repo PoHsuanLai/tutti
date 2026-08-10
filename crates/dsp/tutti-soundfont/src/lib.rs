@@ -5,6 +5,37 @@
 //! preset/channel. A host that wants asset-managed loading wires it in its own
 //! adapter layer; this crate only needs the decoded `SoundFont`.
 //!
+//! Zero inputs, two outputs — the unit *is* the source, so it enters a `Net`
+//! with only its output piped.
+//!
+//! `no_run`: every path here needs a real `.sf2` on disk, and the crate ships
+//! no fixture. It is still type-checked.
+//!
+//! ```no_run
+//! use std::fs::File;
+//! use tutti_core::dsp::{AudioUnit, Net};
+//! use tutti_core::Arc;
+//! use tutti_soundfont::{SoundFont, SoundFontUnit, SynthesizerSettings};
+//!
+//! let mut file = File::open("piano.sf2")?;
+//! let soundfont = Arc::new(SoundFont::new(&mut file)?);
+//!
+//! // The rate is fixed here: `set_sample_rate` is a no-op on this unit, so a
+//! // graph at another rate needs a new one rather than a reconfigured one.
+//! let settings = SynthesizerSettings::new(44_100);
+//! let mut unit = SoundFontUnit::new(soundfont, &settings)?;
+//! unit.program_change(0, 0); // channel 0 → preset 0
+//!
+//! let mut net = Net::new(0, 2);
+//! let node = net.push(Box::new(unit));
+//! net.pipe_output(node);
+//! net.check();
+//!
+//! let mut out = [0.0f32; 2];
+//! net.tick(&[], &mut out);
+//! # Ok::<(), Box<dyn std::error::Error>>(())
+//! ```
+//!
 //! # A peer of `tutti-polysynth`, not a feature of it
 //!
 //! This is its own crate rather than a flag on the subtractive synth because a

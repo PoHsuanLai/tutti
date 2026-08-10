@@ -71,7 +71,9 @@ impl Default for OfflineTimelineConfig {
 /// [`Transport`](super::Transport).
 ///
 /// # Example
-/// ```ignore
+/// ```
+/// # use tutti_core::{Beat, Bpm, SampleRate, Timeline};
+/// # use tutti_core::transport::{OfflineTimeline, OfflineTimelineConfig};
 /// let timeline = OfflineTimeline::new(&OfflineTimelineConfig {
 ///     start_beat: Beat(0.0),
 ///     tempo: Bpm(120.0),

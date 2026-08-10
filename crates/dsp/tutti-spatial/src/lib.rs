@@ -15,6 +15,33 @@
 //! that column is absent from a default build, which is why its links are plain
 //! backticks.
 //!
+//! A panner is a mono-in, N-out node: it takes one source and distributes it
+//! across the layout's speakers by bearing. Moving the source is a lock-free
+//! write, so it may happen while the node renders.
+//!
+//! ```
+//! use tutti_core::dsp::{AudioUnit, Net};
+//! use tutti_core::{Azimuth, Elevation};
+//! use tutti_spatial::VbapPannerNode;
+//!
+//! // 5.1: one input, six outputs. Only 2/4/6/8/12 have presets.
+//! let panner = VbapPannerNode::surround_5_1().expect("5.1 is a defined preset");
+//! assert_eq!(panner.num_channels(), 6);
+//!
+//! // 45° to the right, level with the listener. `store` normalizes: the
+//! // bearing wraps, the height clamps.
+//! panner.set_position(Azimuth(45.0), Elevation(0.0));
+//!
+//! let mut net = Net::new(1, 6);
+//! let node = net.push(Box::new(panner));
+//! net.pipe_input(node);
+//! net.pipe_output(node);
+//! net.check();
+//!
+//! let mut out = [0.0f32; 6];
+//! net.tick(&[1.0], &mut out);
+//! ```
+//!
 //! Shared between them: [`SpatialTarget`] (bearing/height as lock-free params),
 //! the position de-zipper in `smoothing`/`target`, and `layout` (SMPTE/WAV
 //! channel order — a property of the destination buffer, not of either panner).

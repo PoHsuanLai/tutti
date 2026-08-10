@@ -8,7 +8,51 @@
 //! [`Vst3Instance::process`]. Transitions between stages move ownership, so the
 //! compiler rejects calls that would be invalid for the current state.
 //!
-//! See the crate's `README.md` for a worked example.
+//! # Example
+//!
+//! Walk the three stages, then render one block. `no_run`: the load needs a
+//! real `.vst3` bundle on disk.
+//!
+//! ```no_run
+//! use std::path::Path;
+//! use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
+//! use tutti_vst3_host::{
+//!     AudioBuffer, MidiEvent, TransportInfo, Vst3InputEvents, Vst3Loaded,
+//! };
+//!
+//! // Stage 2: initialized. Parameters and the editor are reachable here, with
+//! // no activation cost paid.
+//! let loaded = Vst3Loaded::load(Path::new("/usr/lib/vst3/MyPlugin.vst3"))?;
+//! println!("{} by {}", loaded.info().name, loaded.info().vendor);
+//!
+//! // Stage 3: activated. `T` fixes the sample width — `f64` errors out unless
+//! // the plugin advertises 64-bit support.
+//! let mut plugin = loaded.activate::<f32>(48_000.0, 512)?;
+//!
+//! // 512 is the block length in FRAMES; each channel slice holds that many.
+//! let silence = vec![0.0f32; 512];
+//! let inputs: [&[f32]; 2] = [&silence, &silence];
+//! let (mut left, mut right) = (vec![0.0f32; 512], vec![0.0f32; 512]);
+//! let mut outputs: [&mut [f32]; 2] = [&mut left, &mut right];
+//! let mut buffer = AudioBuffer::new(&inputs, &mut outputs, 48_000.0);
+//!
+//! // The sample rate stays a raw `f64` here: this is a C ABI, which is where
+//! // the engine's unit newtypes deliberately stop.
+//! let midi = [MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xC000)];
+//! let events = Vst3InputEvents {
+//!     midi: &midi,
+//!     ..Default::default()
+//! };
+//! let transport = TransportInfo::default().with_tempo(120.0).with_playing(true);
+//!
+//! let out = plugin.process(&mut buffer, &events, None, &transport);
+//! println!("plugin emitted {} MIDI events", out.midi_events.len());
+//! # Ok::<(), tutti_vst3_host::Vst3Error>(())
+//! ```
+//!
+//! VST3 addresses parameters by an opaque, plugin-chosen `ParamID` — see
+//! `tutti_plugin_types::ParamAddress`, whose other arm exists for VST2's
+//! positional index.
 
 pub(crate) mod com;
 pub mod error;

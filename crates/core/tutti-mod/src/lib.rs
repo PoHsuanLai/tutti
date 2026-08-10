@@ -16,9 +16,48 @@
 //! enabled; docs.rs renders with `all-features = true`, where each name is a
 //! search away.
 //!
+//! ## Example — source, shape, target, ungated
+//!
+//! The three roles on the **pure floor**, which is what `default = []` builds:
+//! a [`Modulator`] produces a raw `-1..1`, [`shape`] turns that into a signed
+//! offset in the target's own units, and [`fold`] accumulates offsets onto a
+//! base. No feature, no `Arc`, no audio buffer — the same three lines drive a
+//! filter cutoff, a UI colour, or a spring.
+//!
+//! ```
+//! use tutti_mod::{fold, shape, CurveType, Lfo, LfoShape, Modulator, Polarity};
+//! use tutti_types::{Depth, Hz, Phase, PhaseIncrement};
+//!
+//! // A 2 Hz sine, stepped at the frame rate. The increment is a *type*: a
+//! // hand-rolled `%` wrap keeps its input's sign and walks off the front of a
+//! // shape table when the rate goes negative.
+//! let lfo = Lfo::new(LfoShape::Sine);
+//! let step = PhaseIncrement::per_sample(Hz(2.0), 60.0);
+//!
+//! // State is threaded in and out, `Iterator::scan`-style — the modulator is
+//! // `&self` and stores nothing, which is what lets one be a graph node.
+//! let mut state = <Lfo as Modulator>::State::default();
+//! let mut phase = Phase::wrapped(0.25);        // a quarter turn: sine peak
+//! let (next, raw) = lfo.value(state, phase);
+//! state = next;
+//! phase = phase.advance(step);
+//! assert!((raw - 1.0).abs() < 1e-6);
+//!
+//! // Depth + polarity + curve turn the raw value into an offset. Bipolar keeps
+//! // the sign, so a cutoff modulated by half depth swings both ways.
+//! let offset = shape(raw, Depth(0.5), Polarity::Bipolar, CurveType::Linear);
+//! assert_eq!(offset, 0.5);
+//!
+//! // The accumulator every tier shares: `(base + Σ offsets).clamp(min, max)`.
+//! // Additive and order-independent, so two sources onto one param commute.
+//! let cutoff = fold(1_000.0, [offset * 2_000.0, -250.0].into_iter(), 20.0, 20_000.0);
+//! assert_eq!(cutoff, 1_750.0);
+//! # let _ = (state, phase);
+//! ```
+//!
 //! ## Quick start — `ModMatrix`
 //! The front door is a fluent builder; the primitives below are rarely touched
-//! directly.
+//! directly. Feature-gated, so this block is inert under `default = []`.
 //! ```
 //! # #[cfg(feature = "routing")] {
 //! use tutti_mod::{ModMatrix, Lfo, LfoShape, SourceRate};

@@ -7,37 +7,37 @@
 //!
 //! # Quick start
 //!
-//! With the `json` feature for ready-made persistence (see [Features](#features)
-//! — nothing is on by default):
+//! Load a plugin and put its node into a tutti graph. `no_run`: the load spawns
+//! a subprocess against a real `.vst3` / `.clap` on disk.
 //!
 //! ```no_run
-//! # #[cfg(feature = "json")]
-//! # fn ex(window: &impl raw_window_handle::HasWindowHandle)
-//! # -> tutti_plugin::Result<()> {
-//! use std::path::PathBuf;
-//! use tutti_plugin::catalog::{CatalogConfig, Plugin, Plugins};
+//! use tutti_core::{dsp::Net, SampleRate};
+//! use tutti_plugin::catalog::Plugin;
 //!
-//! let plugins = Plugins::with_json_catalog(CatalogConfig::new(
-//!     PathBuf::from("/my/app/plugin-db.json"),
-//!     vec![PathBuf::from("/Library/Audio/Plug-Ins/VST3")],
-//! ))
-//! .with_fresh_scan();
-//! // The catalog discovers; `Plugin::open` loads. A host that already knows
-//! // the path can skip the catalog entirely.
-//! let id = plugins.find("TAL-NoiseMaker").expect("scanned");
-//! let plugin = Plugin::open(id.path(), 48000.0)?;
+//! // `sample_rate` takes anything convertible to `SampleRate` — the engine's
+//! // unit type, not a bare rate that could be a block size.
+//! let plugin = Plugin::open("/usr/lib/vst3/MyPlugin.vst3", SampleRate::new(48_000.0))?;
+//! println!("{} by {}", plugin.descriptor().name, plugin.descriptor().vendor);
 //!
-//! // The main-thread control surface. Clone it before taking the node below —
-//! // `into_unit` consumes the `Plugin`.
-//! let handle = plugin.handle().clone();
-//! let size = handle.open_editor(window)
-//!     .map_err(|e| tutti_plugin::BridgeError::EditorError(e.to_string()))?;
-//! println!("editor opened at {}x{}", size.width, size.height);
+//! // Two handles, one subprocess. `into_parts` hands back both, because
+//! // `into_unit` alone consumes the `Plugin` and the control surface is still
+//! // wanted afterwards — the plugin dies when the last of either drops.
+//! let (unit, handle) = plugin.into_parts();
+//! println!("reported latency: {:?}", handle.loaded().latency());
 //!
-//! // Then hand the audio node to your fundsp graph.
-//! let unit = plugin.into_unit();
-//! # Ok(()) }
+//! // The node is a fundsp `AudioUnit`, so it enters `Net` like any other.
+//! let mut net = Net::new(0, 2);
+//! let id = net.push(unit);
+//! net.pipe_output(id);
+//! net.commit();
+//! # Ok::<(), tutti_plugin::BridgeError>(())
 //! ```
+//!
+//! A host that does not already know the path discovers one first — see
+//! [`catalog`], whose two pure functions ([`discover`](catalog::discover) and
+//! [`PluginRecord::probe`](catalog::PluginRecord::probe)) need no feature flag,
+//! and whose [`Plugins`](catalog::Plugins) adds incremental rescan and crash
+//! recovery on top.
 //!
 //! # Architecture
 //!

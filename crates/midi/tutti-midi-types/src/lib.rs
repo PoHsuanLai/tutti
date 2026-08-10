@@ -12,6 +12,68 @@
 //!
 //! SMF file parsing and MIDI-1 wire codec are provided by the re-exported
 //! `midly` crate. Typed UMP messages are provided by re-exported `midi2`.
+//!
+//! # Example: one vocabulary, whatever the source protocol
+//!
+//! Two notes enter — one off a MIDI 1.0 DIN cable, one authored natively at
+//! MIDI 2.0 width. [`normalize`] promotes the first to Channel Voice 2, so a
+//! consumer downstream matches a single protocol and never needs a
+//! Channel-Voice-1 arm.
+//!
+//! ```
+//! use tutti_midi_types::prelude::*;
+//! use tutti_midi_types::{convert, UmpMessageType};
+//!
+//! // From the wire: a MIDI 1.0 note-on, 7-bit velocity 100.
+//! let from_din = MidiEvent::from_midi1_bytes(0, &[0x90, 60, 100])
+//!     .expect("0x90 is a well-formed note-on");
+//! assert_eq!(from_din.message_type(), UmpMessageType::ChannelVoice1);
+//!
+//! let promoted = normalize(&from_din);
+//! assert_eq!(promoted.message_type(), UmpMessageType::ChannelVoice2);
+//!
+//! // Authored natively: 16 bits of velocity, no 7-bit original to be faithful to.
+//! let authored = MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xABCD);
+//! assert!(authored.message().is_note_on());
+//! ```
+//!
+//! # The resolution boundary, and why the loss hides
+//!
+//! Widening is the spec's Min-Center-Max scaler
+//! ([`convert::midi1_velocity_to_midi2`]), not a shift: `127` must reach full
+//! scale, and `127 << 9` is `65024`, which is not. Read a promoted note through
+//! [`MidiEvent::velocity_u16`] and the 7-bit original is recovered exactly, in
+//! both directions:
+//!
+//! ```
+//! # use tutti_midi_types::prelude::*;
+//! # use tutti_midi_types::convert;
+//! assert_eq!(convert::midi1_velocity_to_midi2(127), 65535);
+//! assert_eq!(convert::midi1_velocity_to_midi2(64), 0x8000);
+//!
+//! // Every 7-bit value round-trips exactly.
+//! for v in 0u8..128 {
+//!     let wide = convert::midi1_velocity_to_midi2(v);
+//!     assert_eq!(convert::midi2_velocity_to_midi1(wide), v);
+//! }
+//! ```
+//!
+//! **That exactness is the trap.** A path that narrows to 7 bits is
+//! *self-consistently* lossy — it round-trips every value it can emit, so a
+//! round-trip test passes and the loss never shows. It is only visible on a
+//! value that did not start at 7 bits:
+//!
+//! ```
+//! # use tutti_midi_types::prelude::*;
+//! # use tutti_midi_types::convert;
+//! let authored = 0xABCD_u16;
+//! let via_7bit = convert::midi1_velocity_to_midi2(convert::midi2_velocity_to_midi1(authored));
+//! assert_ne!(via_7bit, authored); // 43981 in, 43690 out — 128 codes survive of 65536
+//! ```
+//!
+//! So [`MidiEvent::velocity_u7`] is for a MIDI 1.0 *destination* only. Reading a
+//! velocity for any other purpose goes through [`MidiEvent::velocity_u16`],
+//! which is lossless from either protocol.
 
 pub use midi2;
 pub use midly;

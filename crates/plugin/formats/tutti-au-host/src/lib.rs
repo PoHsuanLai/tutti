@@ -10,6 +10,12 @@
 //!
 //! # Example
 //!
+//! `no_run`: instantiating an AU needs a real `.component` registered with the
+//! system. Note the `cfg` gate below is load-bearing for the *doctest* as well
+//! as the build — off macOS the body compiles to an empty block, so a green
+//! `cargo test --doc` on Linux says nothing about whether this example is
+//! correct. Only a macOS run type-checks it.
+//!
 //! ```rust,no_run
 //! # #[cfg(target_os = "macos")]
 //! # {

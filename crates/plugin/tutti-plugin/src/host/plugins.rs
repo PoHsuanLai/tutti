@@ -19,10 +19,29 @@
 //! Custom persistence (any [`crate::catalog::PluginCatalog`] impl —
 //! SQLite, in-memory, etc.) works without the `json` feature:
 //!
-//! ```ignore
-//! use tutti_plugin::catalog::{CatalogConfig, Plugins};
-//! let catalog = my_sqlite_catalog();
-//! let plugins = Plugins::with_catalog(catalog, CatalogConfig::new(db, vec![]));
+//! ```no_run
+//! use std::collections::HashMap;
+//! use std::path::{Path, PathBuf};
+//! use tutti_plugin::catalog::{CatalogConfig, PluginCatalog, PluginRecord, Plugins};
+//!
+//! // Four methods is the whole contract; `flush` defaults to a no-op, which is
+//! // right for a store that is not durable.
+//! #[derive(Default)]
+//! struct InMemory(HashMap<PathBuf, PluginRecord>);
+//!
+//! impl PluginCatalog for InMemory {
+//!     fn get(&self, path: &Path) -> Option<&PluginRecord> { self.0.get(path) }
+//!     fn upsert(&mut self, record: PluginRecord) { self.0.insert(record.path.clone(), record); }
+//!     fn remove(&mut self, path: &Path) { self.0.remove(path); }
+//!     fn iter(&self) -> Box<dyn Iterator<Item = &PluginRecord> + '_> {
+//!         Box::new(self.0.values())
+//!     }
+//! }
+//!
+//! let plugins = Plugins::with_catalog(
+//!     Box::new(InMemory::default()),
+//!     CatalogConfig::new(PathBuf::from("/unused"), vec![PathBuf::from("/usr/lib/vst3")]),
+//! );
 //! ```
 //!
 //! Audio knobs are separate and default sensibly; set them with

@@ -16,7 +16,46 @@
 //! ```
 //!
 //! A driver is built from an opened device plus the state its callback reads
-//! ([`TuttiDriver::from_parts`]); a host assembles those once at startup.
+//! ([`TuttiDriver::from_parts`]); a host assembles those once at startup:
+//!
+//! ```no_run
+//! use std::sync::Arc;
+//! use tutti_core::dsp::{sine_hz, Net};
+//! use tutti_core::{AudioTap, Engine, MasterMeter, Transport, TransportClock};
+//! use tutti_cpal::{AudioCallbackState, AudioEngine, TuttiDriver};
+//!
+//! # fn main() -> tutti_cpal::Result<()> {
+//! // Open a device first: it reports the rate the graph must be built at.
+//! let mut audio_engine = AudioEngine::new(None)?;
+//! let sample_rate = audio_engine.sample_rate();
+//!
+//! let transport = Transport::new(sample_rate);
+//! let mut net = Net::new(0, 2);
+//! net.push(Box::new(TransportClock::new(
+//!     transport.clock_links(),
+//!     sample_rate,
+//! )));
+//! let tone = net.push(Box::new(sine_hz::<f32>(440.0)));
+//! net.pipe_output(tone);
+//!
+//! // `backend()` is the audio thread's half of the graph; the control thread
+//! // keeps `net` and `commit`s edits across to it.
+//! let engine = Engine::new(transport.motion.clone(), net.backend());
+//! let state = Arc::new(AudioCallbackState::new(
+//!     engine,
+//!     MasterMeter::new(),
+//!     AudioTap::new(),
+//! ));
+//!
+//! audio_engine.start(Arc::clone(&state))?;
+//! let driver = TuttiDriver::from_parts(audio_engine, state);
+//! assert!(driver.is_running());
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! `no_run` rather than runnable: every line type-checks, but `AudioEngine::new`
+//! opens a real sound card, which a test runner has no business doing.
 //!
 //! # What belongs here
 //!

@@ -12,27 +12,52 @@
 //! expressed as a live pump. Reach here to bounce a mix; reach for `tutti-io` to
 //! record one.
 //!
-//! ```ignore
-//! use tutti_export::{render_to_file, ExportConfig, RenderConfig, EncodeConfig};
-//! use tutti_core::{SampleRate, FrozenClock};
+//! # Example — bounce a graph
 //!
-//! render_to_file(
-//!     net,
-//!     &ExportConfig {
-//!         render: RenderConfig {
-//!             sample_rate: SampleRate(48_000.0),
-//!             duration_seconds: 30.0,
-//!             ..Default::default()
-//!         },
-//!         encode: EncodeConfig {
-//!             format: AudioFormat::Flac(Flac::default()),
-//!             ..Default::default()
-//!         },
+//! A config is a struct literal, so a caller states what it means and lets
+//! `..Default::default()` cover the rest. The clock is not optional:
+//! [`tutti_core::FrozenClock`] is how a caller *says* "this graph
+//! has no time-dependent nodes", so forgetting a transport is a compile error
+//! rather than a silently silent render.
+//!
+//! ```
+//! use tutti_core::dsp::{sine_hz, Net};
+//! use tutti_core::{FrozenClock, SampleRate};
+//! use tutti_export::{
+//!     render_to_buffers, render_to_file, AudioFormat, EncodeConfig, ExportConfig, Flac,
+//!     RenderConfig,
+//! };
+//!
+//! let mut net = Net::new(0, 2);
+//! let tone = net.push(Box::new(sine_hz::<f32>(440.0)));
+//! net.pipe_output(tone);
+//!
+//! let config = ExportConfig {
+//!     render: RenderConfig {
+//!         sample_rate: SampleRate(48_000.0),
+//!         // `f64`, not `Seconds`: an f32 cannot carry an hour-long render.
+//!         duration_seconds: 0.5,
 //!         ..Default::default()
 //!     },
-//!     &FrozenClock,          // or your OfflineTimeline
-//!     "master.flac".as_ref(),
-//! )?;
+//!     encode: EncodeConfig {
+//!         format: AudioFormat::Flac(Flac::default()),
+//!         ..Default::default()
+//!     },
+//!     ..Default::default()
+//! };
+//!
+//! // To buffers: planar, one `Vec` per channel, and `frames()` is FRAMES per
+//! // plane rather than the total sample count.
+//! let rendered = render_to_buffers(net.clone(), &config, &FrozenClock)
+//!     .expect("a 0.5 s stereo render");
+//! assert_eq!(rendered.channels(), 2);
+//! assert_eq!(rendered.frames().get(), 24_000);
+//!
+//! // Or straight to a file, which streams — no PCM is held whole.
+//! let dir = tempfile::tempdir().expect("temp dir");
+//! let written = render_to_file(net, &config, &FrozenClock, &dir.path().join("master.flac"))
+//!     .expect("flac encodes");
+//! assert!(written.bytes > 0, "a finalized export reports its size on disk");
 //! ```
 //!
 //! ## What this crate does not do
@@ -186,12 +211,18 @@ fn frame_width(layout: ChannelLayout) -> Result<usize> {
 /// *action*, and folding it into a value dragged a `&mut Net` into what is
 /// otherwise pure arithmetic:
 ///
-/// ```ignore
+/// ```
+/// # use tutti_core::dsp::{sine_hz, Net};
+/// # use tutti_export::{reported_latency, ExportConfig, RenderConfig};
+/// # let mut net = Net::new(0, 2);
+/// # let tone = net.push(Box::new(sine_hz::<f32>(440.0)));
+/// # net.pipe_output(tone);
 /// let latency = reported_latency(&mut net);
 /// let config = ExportConfig {
 ///     render: RenderConfig { latency, ..Default::default() },
 ///     ..Default::default()
 /// };
+/// # let _ = config;
 /// ```
 ///
 /// Floored: trimming a partial frame is not something a sink can do.
@@ -213,7 +244,14 @@ pub fn reported_latency(net: &mut tutti_core::dsp::Net) -> Samples {
 /// never taught to answer. Resolving either into a number is a decision, so it
 /// happens at the call site:
 ///
-/// ```ignore
+/// ```
+/// # use tutti_core::dsp::{sine_hz, Net};
+/// # use tutti_core::{SampleRate, Seconds};
+/// # use tutti_export::{reported_tail, ExportConfig, RenderConfig};
+/// # let mut net = Net::new(0, 2);
+/// # let tone = net.push(Box::new(sine_hz::<f32>(440.0)));
+/// # net.pipe_output(tone);
+/// # let rate = SampleRate(48_000.0);
 /// let reported = reported_tail(&net);
 /// let tail = reported.samples().unwrap_or_else(|| {
 ///     // This bounce stops four seconds into an unbounded tail.
@@ -223,6 +261,7 @@ pub fn reported_latency(net: &mut tutti_core::dsp::Net) -> Samples {
 ///     render: RenderConfig { tail, ..Default::default() },
 ///     ..Default::default()
 /// };
+/// # let _ = config;
 /// ```
 pub fn reported_tail(net: &tutti_core::dsp::Net) -> tutti_types::GraphTail {
     tutti_types::tail::graph_tail(net)

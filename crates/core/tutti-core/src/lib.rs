@@ -28,6 +28,62 @@
 //! For audio I/O, `tutti-cpal` is the device layer — it opens the stream and
 //! wires the real-time callback around this vocabulary.
 //!
+//! # Example — a graph, a backend, and a transport
+//!
+//! The engine's centre in one block: build a [`Net`](dsp::Net), wire it, take
+//! the audio-thread [`backend`](dsp::Net::backend), then edit the graph and
+//! [`commit`](dsp::Net::commit) the edit across to it. `tutti-cpal` does exactly
+//! this around a real device; here the backend is pulled by hand, so the whole
+//! thing runs headless.
+//!
+//! ```
+//! use tutti_core::dsp::{lowpass_hz, sine_hz, Net};
+//! use tutti_core::{AudioUnit, Beat, Bpm, MotionEvent, Timeline, Transport, TransportClock};
+//!
+//! let sample_rate = 48_000.0;
+//! let transport = Transport::new(sample_rate);
+//!
+//! // The clock is a node: beat-driven sources read musical time off their
+//! // input ports rather than consulting the transport, so an offline render
+//! // behaves identically to a live one.
+//! let mut net = Net::new(0, 2);
+//! net.push(Box::new(TransportClock::new(
+//!     transport.clock_links(),
+//!     sample_rate,
+//! )));
+//!
+//! let source = net.push(Box::new(sine_hz::<f32>(220.0)));
+//! let filter = net.push(Box::new(lowpass_hz::<f32>(2_000.0, 0.7)));
+//! net.connect(source, 0, filter, 0);
+//! // Fans the filter's one output across both device channels; without this
+//! // every output edge stays `Port::Zero` and the graph renders silence.
+//! net.pipe_output(filter);
+//! net.check();
+//!
+//! // The backend is the audio thread's half. There is exactly one, and after
+//! // it exists every frontend edit needs a `commit` to reach it.
+//! let mut backend = net.backend();
+//! let (left, right) = backend.get_stereo();
+//! assert_eq!(left, right);
+//!
+//! net.connect(source, 0, filter, 0);
+//! net.commit();
+//!
+//! // Transport is a `motion`/`settings` split rather than a `play()` method:
+//! // settings anyone may store into, motion a state machine that may defer or
+//! // reject. Queued events apply on `drain`, which the audio callback runs.
+//! transport.settings.set_tempo(Bpm(90.0));
+//! transport.settings.set_beat(Beat(8.0));
+//! transport
+//!     .motion
+//!     .try_send(MotionEvent::Play)
+//!     .expect("the motion queue has room at startup");
+//! transport.motion.drain();
+//!
+//! assert!(transport.is_rolling());
+//! assert_eq!(transport.beat(), Beat(8.0));
+//! ```
+//!
 //! # std + Bevy
 //!
 //! tutti-core is a std crate whose DSP graph runtime (fundsp's [`Net`](dsp::Net),

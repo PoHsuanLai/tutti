@@ -65,12 +65,19 @@ impl<'a> ProcessOutputRef<'a> {
 /// All inputs for a single process call. Use `..Default::default()` to fill
 /// fields you don't need — compiles to zero-cost empty slices and None.
 ///
-/// ```ignore
-/// plugin.process(&mut buffer, &ProcessContext {
-///     midi: &[MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 16384)],
+/// ```no_run
+/// # use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
+/// # use tutti_clap_host::{AudioBuffer32, ClapActive, MidiEvent, ProcessContext, TransportInfo};
+/// # fn ex(plugin: &mut ClapActive<f32>, buffer: &mut AudioBuffer32<'_, '_>)
+/// # -> tutti_clap_host::Result<()> {
+/// let transport = TransportInfo::default().with_tempo(120.0);
+/// let midi = [MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 16384)];
+/// plugin.process(buffer, &ProcessContext {
+///     midi: &midi,
 ///     transport: Some(&transport),
 ///     ..Default::default()
 /// })?;
+/// # Ok(()) }
 /// ```
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ProcessContext<'a> {
@@ -251,12 +258,19 @@ impl<T: ClapSample> ClapActive<T> {
     /// `AudioBuffer32`, `ClapActive<f64>` an `AudioBuffer64`. (The 64-bit
     /// support check happened once in [`ClapLoaded::activate`](super::ClapLoaded::activate).)
     ///
-    /// ```ignore
-    /// active.process(&mut buffer, &ProcessContext {
-    ///     midi: &[Midi1Event::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 100)],
+    /// ```no_run
+    /// # use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
+    /// # use tutti_clap_host::{AudioBuffer32, ClapActive, MidiEvent, ProcessContext, TransportInfo};
+    /// # fn ex(active: &mut ClapActive<f32>, buffer: &mut AudioBuffer32<'_, '_>)
+    /// # -> tutti_clap_host::Result<()> {
+    /// let transport = TransportInfo::default().with_tempo(120.0);
+    /// let midi = [MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 16384)];
+    /// active.process(buffer, &ProcessContext {
+    ///     midi: &midi,
     ///     transport: Some(&transport),
     ///     ..Default::default()
     /// })?;
+    /// # Ok(()) }
     /// ```
     pub fn process(
         &mut self,

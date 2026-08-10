@@ -12,10 +12,13 @@ use crate::params::{Beat, BeatDuration, Bpm, SampleRate, Samples};
 ///
 /// There is no facade here — the fields are public and carry their own APIs:
 ///
-/// ```ignore
+/// ```
+/// # use tutti_core::{Bpm, MotionEvent, Transport};
+/// # let transport = Transport::new(48_000.0);
 /// transport.motion.try_send(MotionEvent::Play)?; // a request; may be refused
-/// transport.settings.set_tempo(140.0);           // a value; cannot fail
+/// transport.settings.set_tempo(Bpm(140.0));      // a value; cannot fail
 /// transport.settings.loop_span.set_range(0.0, 4.0);
+/// # Ok::<_, tutti_core::QueueFull>(())
 /// ```
 ///
 /// The split is by *who decides*. A motion change goes through a state

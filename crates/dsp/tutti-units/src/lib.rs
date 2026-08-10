@@ -1,5 +1,34 @@
 //! DSP nodes for the Tutti audio engine.
 //!
+//! Every node here is an `AudioUnit`: it goes into a [`Net`](tutti_core::dsp::Net),
+//! gets wired, and renders. Nothing in this crate is fallible — there is no
+//! `Error` type — so a node is ready to run the moment it is built.
+//!
+//! ```
+//! use tutti_core::dsp::{AudioUnit, Net};
+//! use tutti_core::{Hz, Q};
+//! use tutti_units::{SvfFilterNode, SvfType};
+//!
+//! // A stereo net whose single node is a lowpass, fed by the net's input.
+//! let mut net = Net::new(2, 2);
+//! let filter = SvfFilterNode::<f32>::new(SvfType::LowPass, Hz(800.0), Q(0.707));
+//! let cutoff = filter.frequency(); // the shared cell, before the node is moved
+//! let node = net.push(Box::new(filter));
+//! net.pipe_input(node);
+//! net.pipe_output(node);
+//! net.check();
+//!
+//! // The backend is what actually renders; `commit` only hands it a new net.
+//! let mut backend = Box::new(net.backend()) as Box<dyn AudioUnit>;
+//! let mut out = [0.0f32; 2];
+//! backend.tick(&[1.0, 1.0], &mut out);
+//!
+//! // Sweeping the cutoff on a *live* node: the write goes through the shared
+//! // `Param` cell, so it reaches the copy the backend is rendering.
+//! cutoff.store(Hz(2_000.0).get(), std::sync::atomic::Ordering::Release);
+//! backend.tick(&[1.0, 1.0], &mut out);
+//! ```
+//!
 //! # Live control values must live in shared storage (MANDATORY)
 //!
 //! > A value a user can change **while the node is rendering** lives behind an

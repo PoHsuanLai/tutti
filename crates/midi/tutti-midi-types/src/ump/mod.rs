@@ -11,10 +11,17 @@
 //! the raw `midi2` layer below when you need a message family `MidiMessage`
 //! doesn't model:
 //!
-//! ```ignore
-//! use midi2::UmpMessage;
-//! if let Ok(msg) = UmpMessage::try_from(ev.data_words()) {
-//!     // pattern match on the raw midi2 message
+//! ```
+//! use tutti_midi_types::midi2::{channel_voice2::ChannelVoice2, UmpMessage};
+//! use tutti_midi_types::MidiEvent;
+//! use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
+//!
+//! let ev = MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000);
+//! match UmpMessage::try_from(ev.data_words()) {
+//!     Ok(UmpMessage::ChannelVoice2(ChannelVoice2::NoteOn(m))) => {
+//!         assert_eq!(m.velocity(), 0x8000);
+//!     }
+//!     _ => panic!("a note-on built here decodes as one"),
 //! }
 //! ```
 

@@ -26,15 +26,31 @@ use super::Curve;
 ///
 /// # Example
 ///
-/// ```ignore
-/// let mut envelope = AutomationEnvelope::new("volume");
+/// A four-beat ramp from silence to unity, pushed into a [`Net`] whose two
+/// inputs are the [`BEAT_PORTS`] pair a `TransportClock` drives.
+///
+/// ```
+/// use tutti_core::dsp::{AudioUnit, Net};
+/// use tutti_units::automation::{AutomationEnvelope, AutomationLane, AutomationPoint};
+///
+/// let mut envelope: AutomationEnvelope<f32> = AutomationEnvelope::new(0.0);
 /// envelope.add_point(AutomationPoint::new(0.0, 0.0));
 /// envelope.add_point(AutomationPoint::new(4.0, 1.0));
 ///
-/// let lane = AutomationLane::new(envelope);
-/// graph.connect(clock_id, 0, lane_id, 0);
-/// graph.connect(clock_id, 1, lane_id, 1);
+/// // Two in (whole beats, fraction), one out (the curve's value).
+/// let mut net = Net::new(2, 1);
+/// let lane = net.push(Box::new(AutomationLane::new(envelope)));
+/// net.pipe_input(lane);
+/// net.pipe_output(lane);
+/// net.check();
+///
+/// // Beat 2.0 is halfway along the ramp.
+/// let mut out = [0.0f32; 1];
+/// net.tick(&[2.0, 0.0], &mut out);
+/// assert!((out[0] - 0.5).abs() < 1e-3, "midpoint of a 0..1 ramp, got {}", out[0]);
 /// ```
+///
+/// [`Net`]: tutti_core::dsp::Net
 pub struct AutomationLane {
     curve: Arc<dyn Curve>,
     last_value: f32,

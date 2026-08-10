@@ -12,10 +12,17 @@
 //! **declined** the capability, so the installer is not reachable at all rather
 //! than reachable and inert:
 //!
-//! ```ignore
-//! if let Some(t) = client.transport() {
+//! ```no_run
+//! # use std::sync::Arc;
+//! # use tutti_core::{meter::MeterMap, transport::Transport, RtPublish};
+//! # use tutti_plugin::handles::PluginClient;
+//! # fn ex(client: &mut PluginClient, reader: Transport, meter: Arc<RtPublish<MeterMap>>) {
+//! // `None` for a plugin that declined transport, so the install is not
+//! // reachable at all rather than reachable and inert.
+//! if let Some(mut t) = client.transport() {
 //!     t.set_source(reader, meter);
 //! }
+//! # }
 //! ```
 //!
 //! # Declined, not merely absent

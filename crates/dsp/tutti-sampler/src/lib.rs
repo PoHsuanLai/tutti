@@ -48,18 +48,36 @@
 //!   [`status()`](DiskStreamer::status) constructs a [`DiskVoice`] to wire
 //!   into your graph.
 //!
-//! ```no_run
-//! use std::sync::Arc;
-//! use tutti_sampler::{MemorySource, stretch};
-//! use tutti_core::Wave;
+//! An in-memory voice needs no butler and no file, so it is a plain node: build
+//! the [`Wave`](tutti_core::Wave), wrap it, push it into a `Net` and render.
 //!
-//! let wave = Arc::new(Wave::with_capacity(1, 44_100.0, 0));
-//! let unit = MemorySource::new(wave);
-//! // The stretcher is a pure frame-in → frame-out filter: it owns no source.
-//! // The caller ticks `unit` and feeds each frame into `stretched`.
-//! let stretched = stretch::Unit::new(44_100.0);
-//! # let _ = (unit, stretched);
 //! ```
+//! use std::sync::Arc;
+//! use tutti_core::dsp::{AudioUnit, Net};
+//! use tutti_core::Wave;
+//! use tutti_sampler::MemorySource;
+//!
+//! // 100 stereo FRAMES — `push` takes one frame, not one sample.
+//! let mut wave = Wave::new(2, 44_100.0);
+//! for _ in 0..100 {
+//!     wave.push((0.5, 0.5));
+//! }
+//!
+//! let source = MemorySource::new(Arc::new(wave));
+//! source.play();
+//!
+//! // No audio input: the voice *is* the source. Stereo out.
+//! let mut net = Net::new(0, 2);
+//! let voice = net.push(Box::new(source));
+//! net.pipe_output(voice);
+//! net.check();
+//!
+//! let mut out = [0.0f32; 2];
+//! net.tick(&[], &mut out);
+//! ```
+//!
+//! Streaming from disk is the other tier and cannot run here — it needs a real
+//! file, so [`DiskStreamer`]'s own example is `no_run`.
 
 pub mod error;
 pub use error::{Error, Result};

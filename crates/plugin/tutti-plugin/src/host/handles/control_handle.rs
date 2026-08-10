@@ -26,12 +26,27 @@ use tutti_midi_runtime::MidiSender;
 /// hosting an editor, or reach presets without either. Default is "honours
 /// none"; name the ones a backend does.
 ///
-/// ```ignore
+/// ```no_run
+/// # use std::sync::Arc;
+/// # use tutti_midi_runtime::MidiSender;
+/// # use tutti_plugin::backend::{HostEditor, HostParams, HostState, ParameterChangeSink};
+/// # use tutti_plugin::handles::{OptionalCapabilities, PluginHandle};
+/// # use tutti_plugin::server::{LoadedPlugin, PluginDescriptor};
+/// # fn ex<B: HostParams + HostState + 'static>(
+/// #     backend: Arc<B>,
+/// #     editor: Arc<dyn HostEditor>,
+/// #     descriptor: PluginDescriptor,
+/// #     loaded: LoadedPlugin,
+/// #     param_sink: ParameterChangeSink,
+/// #     midi_sender: MidiSender,
+/// # ) -> PluginHandle {
+/// // Hosts an editor; carries neither render mode nor presets.
 /// PluginHandle::from_backend(
 ///     backend,
 ///     OptionalCapabilities { editor: Some(editor), ..Default::default() },
 ///     descriptor, loaded, param_sink, midi_sender,
 /// )
+/// # }
 /// ```
 #[derive(Default, Clone)]
 pub struct OptionalCapabilities {
@@ -318,13 +333,20 @@ impl PluginHandle {
     ///
     /// Match on it to decide what to render:
     ///
-    /// ```ignore
+    /// ```no_run
+    /// # use tutti_plugin::{handles::PluginHandle, PresetSupport};
+    /// # fn ex(handle: &PluginHandle) {
     /// match handle.preset_support() {
-    ///     PresetSupport::Full       => // browser; clicking loads
-    ///     PresetSupport::LoadByPath => // file picker, not an empty browser
-    ///     PresetSupport::ListOnly   => // read-only list
-    ///     PresetSupport::None       => // hide it
+    ///     // Browser; clicking loads.
+    ///     PresetSupport::Full => {}
+    ///     // File picker, not an empty browser — CLAP enumerates nothing.
+    ///     PresetSupport::LoadByPath => {}
+    ///     // Read-only list.
+    ///     PresetSupport::ListOnly => {}
+    ///     // Hide it.
+    ///     PresetSupport::None => {}
     /// }
+    /// # }
     /// ```
     ///
     /// Derived from the capability report rather than from the preset list,
@@ -427,12 +449,20 @@ impl PluginHandle {
     /// The one call a caller makes before deciding whether to speak in speaker
     /// names or channel numbers:
     ///
-    /// ```ignore
+    /// ```no_run
+    /// # use tutti_plugin::handles::PluginHandle;
+    /// # use tutti_plugin_types::LayoutSupport;
+    /// # fn ex(handle: &PluginHandle) {
     /// match handle.layout_support() {
-    ///     LayoutSupport::Full    => // name every channel's speaker
-    ///     LayoutSupport::Partial => // per bus: name what answered, number the rest
-    ///     LayoutSupport::None    => // channel numbers only
+    ///     // Name every channel's speaker.
+    ///     LayoutSupport::Full => {}
+    ///     // Per bus: name what answered, number the rest. Do not assume the
+    ///     // gaps are stereo.
+    ///     LayoutSupport::Partial => {}
+    ///     // Channel numbers only.
+    ///     LayoutSupport::None => {}
     /// }
+    /// # }
     /// ```
     ///
     /// **Reporting only.** No variant means a layout can be *changed*: nothing

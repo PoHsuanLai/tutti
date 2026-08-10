@@ -9,17 +9,33 @@
 //! # Using the library
 //!
 //! Most callers want the `plugin-server` binary, not this library. Library
-//! users have exactly one entry point:
+//! users have exactly one entry point. `no_run`: `run` binds a socket and
+//! blocks for the lifetime of the session.
 //!
 //! ```no_run
 //! use tutti_plugin_server::{BridgeConfig, PluginServer};
 //!
+//! // The host chooses the rendezvous path and passes it in — a subprocess
+//! // deriving its own could not meet the host that spawned it. Everything else
+//! // defaults; `max_buffer_size` is denominated in FRAMES and sizes the slab,
+//! // so a later block may not exceed it.
 //! let config = BridgeConfig {
-//!     socket_path: "/tmp/tutti.sock".into(),
+//!     socket_path: std::env::args().nth(1).expect("socket path").into(),
 //!     ..Default::default()
 //! };
-//! PluginServer::new(config).unwrap().run().unwrap();
+//!
+//! // One server serves one host, then returns. A crash here takes the plugin
+//! // down and leaves the host running — which is the point of the split.
+//! PluginServer::new(config)
+//!     .expect("record parent pid")
+//!     .run()
+//!     .expect("session");
 //! ```
+//!
+//! The `socket_path` above is the one field with no safe default:
+//! [`BridgeConfig::default`] derives a *unique* path per call precisely so a
+//! `..Default::default()` cannot become a latent collision, in which the second
+//! bridge to bind unlinks the first's live socket.
 //!
 //! # The wire
 //!

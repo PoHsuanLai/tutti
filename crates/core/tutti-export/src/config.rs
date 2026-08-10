@@ -4,8 +4,10 @@
 //! There is no builder. Every field is public and every struct is `Default`, so
 //! a caller writes what it means and lets `..Default::default()` cover the rest:
 //!
-//! ```ignore
-//! ExportConfig {
+//! ```
+//! # use tutti_core::SampleRate;
+//! # use tutti_export::{AudioFormat, EncodeConfig, ExportConfig, Flac, RenderConfig};
+//! let config = ExportConfig {
 //!     render: RenderConfig {
 //!         sample_rate: SampleRate(48_000.0),
 //!         duration_seconds: 30.0,
@@ -16,7 +18,8 @@
 //!         ..Default::default()
 //!     },
 //!     ..Default::default()
-//! }
+//! };
+//! # let _ = config;
 //! ```
 //!
 //! A literal is what keeps a setter off a path that ignores it: the fields a

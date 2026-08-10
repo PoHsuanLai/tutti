@@ -8,9 +8,15 @@
 //! use tutti_polysynth::{
 //!     EnvelopeConfig, FilterType, OscillatorType, PolySynth, SynthConfig,
 //! };
+//! use tutti_core::dsp::{AudioUnit, Net};
 //! use tutti_core::{Amplitude, Hz, Resonance, Seconds};
+//! use tutti_midi_types::translation::scaling::midi1_velocity_to_midi2;
+//! use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
+//! use tutti_midi_types::ump::MidiEvent;
 //!
-//! let synth = PolySynth::new(SynthConfig {
+//! // `Moog` takes `Resonance`; the `Svf` variant takes `Q` instead. The two
+//! // filter families are deliberately not interchangeable.
+//! let mut synth = PolySynth::new(SynthConfig {
 //!     oscillator: OscillatorType::Saw,
 //!     max_voices: 8,
 //!     filter: FilterType::Moog {
@@ -26,7 +32,23 @@
 //!     ..Default::default()
 //! })?;
 //!
-//! let sender = synth.midi_sender();
+//! // Notes arrive through the lock-free inbox, so a control thread may queue
+//! // them while the audio thread renders.
+//! synth.midi_sender().queue(&[MidiEvent::note_on(
+//!     MidiGroup::FIRST,
+//!     MidiChannel::FIRST,
+//!     69, // A4
+//!     midi1_velocity_to_midi2(100),
+//! )]);
+//!
+//! // Into the graph: no audio input, stereo out.
+//! let mut net = Net::new(0, 2);
+//! let voice = net.push(Box::new(synth));
+//! net.pipe_output(voice);
+//! net.check();
+//!
+//! let mut out = [0.0f32; 2];
+//! net.tick(&[], &mut out);
 //! # Ok::<(), tutti_polysynth::Error>(())
 //! ```
 //!

@@ -11,16 +11,24 @@
 //!
 //! # Example
 //!
-//! ```ignore
-//! use tutti_sampler::stretch;
+//! ```
+//! use tutti_core::dsp::AudioUnit;
 //! use tutti_core::{Cents, StretchFactor};
+//! use tutti_sampler::stretch;
 //!
-//! // The stretcher is a pure filter: the caller ticks its own source and feeds
-//! // each frame in (it owns no source of its own).
-//! let stretched = stretch::Unit::new(44100.0);
+//! // A pure filter: it owns no source, so the caller ticks its own and feeds
+//! // each frame in.
+//! let mut stretched = stretch::Unit::new(44_100.0);
 //!
-//! stretched.set_stretch_factor(StretchFactor::new(2.0)); // half speed
-//! stretched.set_pitch_cents(Cents::new(1200.0));         // up an octave
+//! // The factor is clamped to `MIN..=MAX` at construction — an out-of-range
+//! // request saturates rather than being rejected.
+//! stretched.set_stretch_factor(StretchFactor::new_clamped(2.0)); // half speed
+//! stretched.set_pitch_cents(Cents(1200.0));                      // up an octave
+//!
+//! // One frame in, one frame out; the vocoder's latency means early frames
+//! // are the window filling rather than stretched audio.
+//! let mut out = [0.0f32; 2];
+//! stretched.tick(&[0.25, 0.25], &mut out);
 //! ```
 //!
 //! # Algorithm

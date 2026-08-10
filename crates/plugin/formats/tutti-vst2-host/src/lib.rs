@@ -50,6 +50,35 @@
 //!     plugin.process_f32(&in_refs, &mut out_refs, 512, &ctx, &mut scratch);
 //! # Ok::<(), tutti_vst2_host::Vst2Error>(())
 //! ```
+//!
+//! # Parameters address positionally — VST2 alone among the four
+//!
+//! `getParameter(effect, index)` and `numParams` are both `i32` in the ABI, and
+//! consecutive parameters really are consecutive. That is the whole reason
+//! [`tutti_plugin_types::ParamAddress`] has two arms: the other three formats
+//! hand out an opaque, plugin-chosen handle on which arithmetic means nothing.
+//!
+//! ```no_run
+//! # use std::path::Path;
+//! # use tutti_plugin_types::ParamAddress;
+//! # use tutti_vst2_host::Vst2Instance;
+//! # fn ex() -> tutti_vst2_host::Result<()> {
+//! let plugin = Vst2Instance::load(Path::new("/usr/lib/vst/MyPlugin.so"), 48_000.0, 512)?;
+//!
+//! for info in plugin.parameter_list() {
+//!     // Always the `Index` arm here. A VST2 host may iterate positions; a
+//!     // VST3/CLAP/AU host may not, which is what the enum keeps apart.
+//!     let ParamAddress::Index(index) = info.id else {
+//!         unreachable!("VST2 addresses parameters positionally")
+//!     };
+//!     println!("{index}: {} ({:?})", info.qualified_name(), info.bounds());
+//! }
+//!
+//! // The write takes the raw `i32` position and a normalized `0..=1` value —
+//! // a C ABI, which is where the engine's unit newtypes stop.
+//! plugin.set_parameter(0, 0.5);
+//! # Ok(()) }
+//! ```
 
 // The VST2 FFI layer is the vendored fork of vst-rs (`vst-tutti`), which adds
 // the host-side audioMaster callbacks upstream swallows. Aliased to `vst` at the

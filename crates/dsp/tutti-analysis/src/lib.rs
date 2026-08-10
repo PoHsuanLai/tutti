@@ -117,7 +117,7 @@ pub use transform::{
     istft as istft_transform, stft, stft_magnitude, stft_polar, HopPolicy, NormalizedMagnitudes,
     RawMagnitudes, SampleRange, Stft, StftMagnitude, StftPolar, StftRequest,
 };
-pub use window::hann;
+pub use window::{CosineWindow, Window};
 pub use yin::{median_filter, penalize_jumps, yin, yin_track, Pitch, PitchEstimate, YinConfig};
 
 /// Notes and pitch classes, re-exported from the engine vocabulary: a

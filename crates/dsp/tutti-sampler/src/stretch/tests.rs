@@ -13,6 +13,7 @@ use tutti_core::{
 };
 
 use std::f32::consts::PI;
+use tutti_analysis::WindowFn;
 use tutti_core::BufferVec;
 
 fn sine(freq: f32, sample_rate: f32, len: usize) -> Vec<f32> {
@@ -138,16 +139,22 @@ fn fifo_wraps_the_index_not_the_cursors() {
     assert_eq!(f.peek(0), 3.0);
 }
 
+/// Unity window energy, so `drain`'s normalization is the identity and these
+/// tests assert accumulation rather than accumulation-and-division. The
+/// division itself is covered by
+/// [`overlap_add_divides_by_the_accumulated_window_energy`].
+const UNIT_W: f32 = 1.0;
+
 #[test]
 fn overlap_add_accumulates_ahead_and_drains_behind() {
     let mut o = OverlapAdd::new(8);
 
     // Two frames summing into overlapping spans — the operation a FIFO
     // cannot express.
-    o.add_at(0, 0.5);
-    o.add_at(1, 0.5);
+    o.add_at(0, 0.5, UNIT_W);
+    o.add_at(1, 0.5, UNIT_W);
     o.advance(1);
-    o.add_at(0, 0.25); // lands on the slot the previous frame's offset 1 hit
+    o.add_at(0, 0.25, 0.0); // lands on the slot the previous frame's offset 1 hit
 
     let mut out = [0.0; 2];
     assert_eq!(o.drain(&mut out), 1, "only one hop has been published");
@@ -161,7 +168,7 @@ fn overlap_add_accumulates_ahead_and_drains_behind() {
 #[test]
 fn overlap_add_drain_reports_short_reads() {
     let mut o = OverlapAdd::new(8);
-    o.add_at(0, 1.0);
+    o.add_at(0, 1.0, UNIT_W);
     o.advance(1);
 
     let mut out = [0.0; 4];
@@ -172,13 +179,82 @@ fn overlap_add_drain_reports_short_reads() {
 #[test]
 fn overlap_add_clear_at_zeroes_a_future_slot() {
     let mut o = OverlapAdd::new(8);
-    o.add_at(3, 1.0);
+    o.add_at(3, 1.0, UNIT_W);
     o.clear_at(3);
     o.advance(4);
 
     let mut out = [0.0; 4];
     assert_eq!(o.drain(&mut out), 4);
     assert_eq!(out[3], 0.0, "cleared slot must not carry stale audio");
+}
+
+/// **The window-sum normalization, asserted directly.**
+///
+/// This is what replaced the hardcoded `COLA_GAIN = 1/1.5`. Two frames landing
+/// on one slot contribute both signal and window energy, and the read divides
+/// one by the other — so a slot covered by twice as much window energy is not
+/// twice as loud.
+///
+/// Mutation check: return `self.data.data[at]` undivided and the first
+/// assertion reads 1.0 instead of 0.5.
+#[test]
+fn overlap_add_divides_by_the_accumulated_window_energy() {
+    let mut o = OverlapAdd::new(8);
+
+    // One slot, two frames, each contributing 0.5 of signal and 1.0 of energy.
+    o.add_at(0, 0.5, 1.0);
+    o.add_at(0, 0.5, 1.0);
+    o.advance(1);
+
+    let mut out = [0.0; 1];
+    assert_eq!(o.drain(&mut out), 1);
+    assert_eq!(out[0], 0.5, "1.0 of signal over 2.0 of window energy");
+}
+
+/// Below the guard the slot reads as silence rather than as an unbounded
+/// amplification of whatever numerical dust is there.
+///
+/// This is the ramp-in and ramp-out case: at the very start of a stream too few
+/// frames overlap to normalize meaningfully. `istft` uses the same `1e-8`.
+#[test]
+fn overlap_add_does_not_divide_by_a_vanishing_window_sum() {
+    let mut o = OverlapAdd::new(8);
+    o.add_at(0, 1.0, 0.0);
+    o.advance(1);
+
+    let mut out = [0.0; 1];
+    assert_eq!(o.drain(&mut out), 1);
+    assert_eq!(
+        out[0], 0.0,
+        "no window energy means no sample, not infinity"
+    );
+    assert!(out[0].is_finite());
+}
+
+/// **`reset` must clear the window sum too**, or the first frames of the next
+/// stream divide by the previous stream's denominator.
+///
+/// Silent, and only at a boundary — the shape of bug that ships. Mutation
+/// check: drop `window_sum.reset()` and the drained value here is halved,
+/// because the stale energy from before the reset is still in the slot.
+#[test]
+fn reset_clears_the_window_sum_not_just_the_samples() {
+    let mut o = OverlapAdd::new(8);
+
+    // Pile energy into a slot, then reset before draining it.
+    o.add_at(0, 1.0, 1.0);
+    o.reset();
+
+    // A fresh stream putting half the energy in the same slot.
+    o.add_at(0, 0.5, 0.5);
+    o.advance(1);
+
+    let mut out = [0.0; 1];
+    assert_eq!(o.drain(&mut out), 1);
+    assert_eq!(
+        out[0], 1.0,
+        "0.5 over 0.5 — a stale 1.0 of window energy would read 0.5"
+    );
 }
 
 /// `available()` must not exceed the capacity, and an overrun must be
@@ -195,7 +271,7 @@ fn ring_available_saturates_at_capacity_and_reports_the_overrun() {
     assert!(!o.overrun());
 
     for i in 0..12 {
-        o.add_at(0, i as f32);
+        o.add_at(0, i as f32, UNIT_W);
         o.advance(1);
     }
 
@@ -1123,7 +1199,10 @@ fn input_rate_is_unity_when_bypassing() {
 #[test]
 fn overlap_add_flushes_subnormals() {
     let mut o = OverlapAdd::new(4);
-    o.add_at(0, f32::MIN_POSITIVE / 4.0);
+    // Unity window energy, so `drain`'s division cannot be what zeroes this —
+    // the flush in `add_at` has to be. Mutation check: drop the `is_subnormal`
+    // branch and this reads `MIN_POSITIVE / 4.0` rather than exactly zero.
+    o.add_at(0, f32::MIN_POSITIVE / 4.0, UNIT_W);
     o.advance(1);
 
     let mut out = [0.0; 1];
@@ -1388,6 +1467,70 @@ fn vocoder_reconstructs_its_input_at_unity() {
     assert!(
         error < 0.02,
         "vocoder should reconstruct at unity; relative error {error:.4}"
+    );
+}
+
+/// **The vocoder reconstructs under a window it was never tuned for.**
+///
+/// This is what the accumulated window-sum denominator bought, and it is the
+/// test that makes the change load-bearing rather than merely equivalent.
+///
+/// The old code multiplied by `COLA_GAIN = 1/1.5`, which is
+/// `1 / (4 · mean(hann²))` — a Hann fact at a 75% fact. Under Hamming the same
+/// grid sums to `4 · mean(hamming²) = 1.5896`, so the constant leaves the
+/// output **0.8 dB hot** with nothing erroring; the numbers are all finite and
+/// the audio merely sounds wrong.
+///
+/// Blackman is deliberately *not* tested here: it needs 8x overlap
+/// ([`WindowFn::cola_overlap`]) and `FftSize::hop` is pinned to `size / 4`, so
+/// the grid cannot express it. That refusal is itself pinned, in
+/// `a_hann_cola_grid_may_not_be_cola_for_another_window`.
+///
+/// Mutation check: restore the `/ 1.5` constant and this fails at ~0.06
+/// relative error while `vocoder_reconstructs_its_input_at_unity` still
+/// passes — which is precisely why the Hann case alone was not enough.
+#[test]
+fn vocoder_reconstructs_under_a_non_hann_window() {
+    let sample_rate = 44_100.0;
+    let fft = FftSize::N1024;
+    let size = fft.size().get();
+    let hop = fft.hop().get();
+
+    let geometry = Unit::geometry(sample_rate, fft).with_window_fn(WindowFn::Hamming);
+    // Hamming COLAs at 4x, same as Hann, so this grid genuinely inverts.
+    assert!(geometry.is_cola(), "Hamming at 4x must be COLA");
+    let mut v = Vocoder::new(geometry);
+
+    let len = size * 8;
+    let input: Vec<f32> = (0..len)
+        .map(|i| {
+            let t = (i as f64 / sample_rate) as f32;
+            0.4 * (Radians::TAU.get() * 440.0 * t).sin()
+                + 0.2 * (Radians::TAU.get() * 3000.0 * t).sin()
+                + 0.1
+        })
+        .collect();
+
+    let mut out = vec![0.0f32; len];
+    let mut written = 0usize;
+    for chunk in input.chunks(hop) {
+        v.input.push(chunk);
+        v.process(hop, hop);
+        written += v.output.drain(&mut out[written..]);
+    }
+
+    let (mut num, mut den) = (0.0f64, 0.0f64);
+    for i in size..written {
+        let want = input[i] as f64;
+        let got = out[i] as f64;
+        num += (got - want) * (got - want);
+        den += want * want;
+    }
+    let error = (num / den).sqrt();
+    assert!(
+        error < 0.02,
+        "a Hamming-windowed vocoder should reconstruct too; relative error \
+         {error:.4} — a denominator hardcoded for Hann reads ~0.06 here"
     );
 }
 

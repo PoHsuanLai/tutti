@@ -7,6 +7,8 @@
 
 use tutti_types::{Hz, Samples};
 
+use crate::window::WindowFn;
+
 /// Everything that can go wrong constructing or feeding an analysis.
 #[derive(Debug, Clone, PartialEq)]
 pub enum AnalysisError {
@@ -16,10 +18,19 @@ pub enum AnalysisError {
     ZeroHop,
     /// Frames would not overlap, so the transform cannot reconstruct.
     HopExceedsWindow { window: Samples, hop: Samples },
-    /// Hann² needs `window % hop == 0` and `window / hop >= 4` to
-    /// constant-overlap-add. Without it the inverse's normalization is
-    /// inexact and untouched bins do not reconstruct.
-    NotColaCompliant { window: Samples, hop: Samples },
+    /// A window squared needs `window % hop == 0` and an overlap of at least
+    /// its own [`cola_overlap`](crate::WindowFn::cola_overlap) to
+    /// constant-overlap-add. Without it the inverse's normalization is inexact
+    /// and untouched bins do not reconstruct.
+    ///
+    /// Carries the window shape because the required overlap depends on it —
+    /// 4x for Hann and Hamming, 8x for Blackman — so an error naming only the
+    /// pair could not say what it needed.
+    NotColaCompliant {
+        window: Samples,
+        hop: Samples,
+        window_fn: WindowFn,
+    },
     /// A sample rate of zero or below.
     NonPositiveSampleRate,
     /// `min >= max`, or either bound at or below zero. The old detector
@@ -48,10 +59,15 @@ impl core::fmt::Display for AnalysisError {
                 f,
                 "hop {hop} exceeds window {window}: frames would not overlap"
             ),
-            Self::NotColaCompliant { window, hop } => write!(
+            Self::NotColaCompliant {
+                window,
+                hop,
+                window_fn,
+            } => write!(
                 f,
-                "window {window} / hop {hop} is not Hann-COLA: needs the hop to \
-                 divide the window with at least 4x overlap"
+                "window {window} / hop {hop} is not {window_fn:?}-COLA: needs the hop to \
+                 divide the window with at least {}x overlap",
+                window_fn.cola_overlap()
             ),
             Self::NonPositiveSampleRate => write!(f, "sample rate must be positive"),
             Self::EmptyFrequencyRange { min, max } => {

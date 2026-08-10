@@ -126,16 +126,41 @@ impl SampleFifo {
 /// three frames — and only then advances by one synthesis hop. So writes land
 /// **ahead** of the cursor and are revisited by later frames, while reads drain
 /// behind it. A FIFO's `push` cannot express that.
-pub(super) struct OverlapAdd(pub(super) Ring);
+///
+/// # Two rings, and why the window sum is not a constant
+///
+/// Windowing twice — once on analysis, once on synthesis — means the overlapped
+/// frames sum to `Σw²` per sample rather than to unity, so synthesis has to
+/// divide it back out. This used to be a **precomputed scalar**
+/// (`COLA_GAIN = 1/1.5`, i.e. `1 / (4 · mean(hann²))`), correct only for a Hann
+/// window at exactly 75% overlap — its own doc comment said so.
+///
+/// It now accumulates the sum the same way `tutti_analysis::istft` always has:
+/// a parallel ring holding `Σw²`, divided out per sample at the read. That is
+/// what makes the vocoder correct for *any* window shape rather than for the
+/// one it was tuned on, and it costs one extra ring — sized once, in `new`, and
+/// never touched on the audio path.
+///
+/// The two rings share every cursor operation, which is why they are one type:
+/// a `window_sum` that advanced independently of `data` would divide by a
+/// neighbour's denominator, and nothing would error.
+pub(super) struct OverlapAdd {
+    data: Ring,
+    /// `Σw²` per sample, accumulated in lockstep with `data`.
+    window_sum: Ring,
+}
 
 impl OverlapAdd {
     pub(super) fn new(capacity: usize) -> Self {
-        Self(Ring::new(capacity))
+        Self {
+            data: Ring::new(capacity),
+            window_sum: Ring::new(capacity),
+        }
     }
 
     #[inline]
     pub(super) fn available(&self) -> usize {
-        self.0.available()
+        self.data.available()
     }
 
     /// See [`Ring::overrun`]. On this side an overrun means the caller fed the
@@ -143,20 +168,32 @@ impl OverlapAdd {
     #[cfg(test)]
     #[inline]
     pub(super) fn overrun(&self) -> bool {
-        self.0.overrun()
+        self.data.overrun()
     }
 
-    /// Sum `value` into the slot `offset` past the write cursor.
+    /// Sum one windowed sample and its window's square into the slot `offset`
+    /// past the write cursor.
+    ///
+    /// The two arrive together because they must: `value` is already
+    /// `sample · w[i]`, and `weight` is `w[i]²` for the same `i`. Taking them as
+    /// one call is what stops a caller windowing the sample and forgetting the
+    /// denominator, which would read as a gain bug rather than as a missing
+    /// accumulation.
     ///
     /// Flushes subnormals: this accumulator is IIR-like, so on a silent tail it
     /// decays into the subnormal range where x86 FPUs trap into microcode and
     /// spike. Snapping to zero never changes audible output — subnormals are
     /// below ~1.2e-38, far under the noise floor of 32-bit audio.
     #[inline]
-    pub(super) fn add_at(&mut self, offset: usize, value: f32) {
-        let i = self.0.mask(self.0.write + offset);
-        let sum = self.0.data[i] + value;
-        self.0.data[i] = if sum.is_subnormal() { 0.0 } else { sum };
+    pub(super) fn add_at(&mut self, offset: usize, value: f32, weight: f32) {
+        let i = self.data.mask(self.data.write + offset);
+        let sum = self.data.data[i] + value;
+        self.data.data[i] = if sum.is_subnormal() { 0.0 } else { sum };
+
+        // The window sum needs no subnormal flush: it is a sum of squares of a
+        // window that is zero only at its endpoints, so it does not decay
+        // toward zero the way the signal does.
+        self.window_sum.data[i] += weight;
     }
 
     /// Zero the slot `offset` past the write cursor, before a later frame sums
@@ -164,30 +201,48 @@ impl OverlapAdd {
     /// previous lap.
     #[inline]
     pub(super) fn clear_at(&mut self, offset: usize) {
-        let i = self.0.mask(self.0.write + offset);
-        self.0.data[i] = 0.0;
+        let i = self.data.mask(self.data.write + offset);
+        self.data.data[i] = 0.0;
+        self.window_sum.data[i] = 0.0;
     }
 
     /// Advance the write cursor by one synthesis hop, publishing that many
     /// finished samples to the reader.
     #[inline]
     pub(super) fn advance(&mut self, hop: usize) {
-        self.0.write += hop;
+        self.data.write += hop;
+        self.window_sum.write += hop;
     }
 
-    /// Drain up to `out.len()` finished samples. Returns how many were
-    /// available; the rest of `out` is left untouched.
+    /// Drain up to `out.len()` finished samples, each divided by the window
+    /// energy that landed on it. Returns how many were available; the rest of
+    /// `out` is left untouched.
+    ///
+    /// The guard matches `istft`'s: below `1e-8` of accumulated window energy
+    /// the sample is ramp-in or ramp-out, where too few frames overlap to
+    /// normalize meaningfully, and dividing would amplify whatever is there by
+    /// an unbounded factor.
     #[inline]
     pub(super) fn drain(&mut self, out: &mut [f32]) -> usize {
         let count = out.len().min(self.available());
         for (i, slot) in out.iter_mut().take(count).enumerate() {
-            *slot = self.0.data[self.0.mask(self.0.read + i)];
+            let at = self.data.mask(self.data.read + i);
+            let sum = self.window_sum.data[at];
+            *slot = if sum > 1e-8 {
+                self.data.data[at] / sum
+            } else {
+                0.0
+            };
         }
-        self.0.read += count;
+        self.data.read += count;
+        self.window_sum.read += count;
         count
     }
 
     pub(super) fn reset(&mut self) {
-        self.0.reset();
+        self.data.reset();
+        // **Both**, or the next stream's first frames divide by the previous
+        // stream's denominator — silent, and only at a boundary.
+        self.window_sum.reset();
     }
 }

@@ -20,6 +20,7 @@ use crate::error::{AnalysisError, Result};
 use crate::fft::FftScratch;
 use crate::geometry::StftGeometry;
 use crate::grid::{BinIndex, FrameCount, FrameIndex, Grid};
+use crate::window::WindowFn;
 use crate::Complex;
 
 /// Linear magnitudes, in the units the transform produced. **The invertible
@@ -384,6 +385,9 @@ pub struct StftRequest {
     pub window: Samples,
     pub hop: HopPolicy,
     pub range: SampleRange,
+    /// The window *shape*. [`WindowFn::Hann`] unless
+    /// [`with_window`](Self::with_window) says otherwise.
+    pub window_fn: WindowFn,
 }
 
 impl StftRequest {
@@ -397,7 +401,23 @@ impl StftRequest {
             window: window.into(),
             hop: HopPolicy::Fixed(hop.into()),
             range: SampleRange::All,
+            window_fn: WindowFn::Hann,
         }
+    }
+
+    /// Analyse with a different window shape.
+    ///
+    /// A builder rather than a fourth argument to `new`, for the reason
+    /// [`StftGeometry::with_window_fn`] gives: three `Samples`-adjacent
+    /// positional parameters are already the transposition limit.
+    ///
+    /// Note this can make a request that [`resolve_cola`](Self::resolve_cola)
+    /// refuses but [`resolve`](Self::resolve) accepts — Blackman needs 8x
+    /// overlap where Hann needs 4x, so a grid that inverted before may not
+    /// after. That refusal is the point.
+    pub fn with_window(mut self, window_fn: WindowFn) -> Self {
+        self.window_fn = window_fn;
+        self
     }
 
     /// Decimate to roughly `frames` frames — a display transform.
@@ -423,13 +443,13 @@ impl StftRequest {
     /// when the result must invert.
     pub fn resolve(&self, len: Samples) -> Result<StftGeometry> {
         let hop = self.effective_hop(len.get());
-        StftGeometry::new(self.sample_rate, self.window, hop)
+        Ok(StftGeometry::new(self.sample_rate, self.window, hop)?.with_window_fn(self.window_fn))
     }
 
     /// The geometry, additionally required to be invertible.
     pub fn resolve_cola(&self, len: Samples) -> Result<StftGeometry> {
         let hop = self.effective_hop(len.get());
-        StftGeometry::cola(self.sample_rate, self.window, hop)
+        StftGeometry::cola_with(self.sample_rate, self.window, hop, self.window_fn)
     }
 
     fn effective_hop(&self, len: usize) -> Samples {
@@ -495,7 +515,7 @@ pub fn istft(transform: &Stft, fft: &mut FftScratch) -> Vec<f32> {
         return Vec::new();
     }
 
-    let window = geometry.hann();
+    let window = geometry.window_coefficients();
     let mut out = vec![0.0f32; out_len];
     let mut window_sum = vec![0.0f32; out_len];
     let mut frame_buf = vec![0.0f32; window_len];
@@ -522,7 +542,7 @@ pub fn istft(transform: &Stft, fft: &mut FftScratch) -> Vec<f32> {
 fn compute(samples: &[f32], geometry: StftGeometry, fft: &mut FftScratch) -> Stft {
     let frames = geometry.frames_for(Samples(samples.len()));
     let bins_per_frame = geometry.bins_per_frame();
-    let window = geometry.hann();
+    let window = geometry.window_coefficients();
     let window_len = geometry.window().get();
 
     let mut bins = vec![Complex::default(); frames.get() * bins_per_frame.get()];
@@ -643,6 +663,55 @@ mod tests {
         // The display path accepts it and yields a type with no inverse.
         let display = stft_magnitude(&samples, request, &mut fft).unwrap();
         assert!(display.frames().get() > 0);
+    }
+
+    /// **The request's window shape reaches the resolved geometry**, on both
+    /// paths — otherwise `with_window` would be accepted, stored, and ignored,
+    /// which is the shape of failure that leaves an analysis quietly on Hann.
+    #[test]
+    fn a_requests_window_shape_reaches_its_geometry() {
+        let len = Samples(200_000);
+        let request = StftRequest::new(44100.0, 2048usize, 512usize).with_window(WindowFn::Hamming);
+
+        assert_eq!(
+            request.resolve(len).expect("valid").window_fn(),
+            WindowFn::Hamming
+        );
+        assert_eq!(
+            request
+                .resolve_cola(len)
+                .expect("Hamming COLAs at 4x")
+                .window_fn(),
+            WindowFn::Hamming
+        );
+    }
+
+    /// A window needing more overlap than the request gives is refused by the
+    /// invertible path and accepted by the display path — the same split
+    /// decimation already gets, for the same reason.
+    ///
+    /// 2048/512 is 4x: fine for Hann, short of Blackman's 8x.
+    #[test]
+    fn a_window_that_needs_more_overlap_is_refused_only_where_it_matters() {
+        let samples = tone(200_000, 440.0, 44100.0);
+        let mut fft = FftScratch::new();
+        let request =
+            StftRequest::new(44100.0, 2048usize, 512usize).with_window(WindowFn::Blackman);
+
+        assert!(matches!(
+            stft(&samples, request, &mut fft),
+            Err(AnalysisError::NotColaCompliant {
+                window_fn: WindowFn::Blackman,
+                ..
+            })
+        ));
+
+        // Analysable, just not invertible.
+        assert!(stft_magnitude(&samples, request, &mut fft).is_ok());
+
+        // And at the overlap Blackman asks for, it inverts.
+        let deeper = StftRequest::new(44100.0, 2048usize, 256usize).with_window(WindowFn::Blackman);
+        assert!(stft(&samples, deeper, &mut fft).is_ok());
     }
 
     #[test]

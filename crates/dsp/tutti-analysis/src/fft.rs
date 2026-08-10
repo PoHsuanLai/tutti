@@ -134,7 +134,7 @@ impl core::fmt::Debug for FftScratch {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::window::WindowFn;
+    use crate::window::{CosineWindow, Window};
 
     #[test]
     fn forward_finds_a_tone_in_the_right_bin() {
@@ -183,7 +183,7 @@ mod tests {
         let size = 512;
         let a: Vec<f32> = (0..size).map(|i| (i as f32 / 11.0).sin()).collect();
         let b: Vec<f32> = (0..size).map(|i| (i as f32 / 3.0).cos()).collect();
-        let window = WindowFn::Hann.coefficients(size);
+        let window = CosineWindow::HANN.coefficients(size);
 
         let mut shared = FftScratch::new();
         let mut first = vec![Complex::default(); size / 2 + 1];

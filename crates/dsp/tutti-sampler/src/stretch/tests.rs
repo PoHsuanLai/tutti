@@ -13,7 +13,7 @@ use tutti_core::{
 };
 
 use std::f32::consts::PI;
-use tutti_analysis::WindowFn;
+use tutti_analysis::CosineWindow;
 use tutti_core::BufferVec;
 
 fn sine(freq: f32, sample_rate: f32, len: usize) -> Vec<f32> {
@@ -1482,7 +1482,7 @@ fn vocoder_reconstructs_its_input_at_unity() {
 /// the audio merely sounds wrong.
 ///
 /// Blackman is deliberately *not* tested here: it needs 8x overlap
-/// ([`WindowFn::cola_overlap`]) and `FftSize::hop` is pinned to `size / 4`, so
+/// ([`CosineWindow::cola_overlap`]) and `FftSize::hop` is pinned to `size / 4`, so
 /// the grid cannot express it. That refusal is itself pinned, in
 /// `a_hann_cola_grid_may_not_be_cola_for_another_window`.
 ///
@@ -1496,7 +1496,7 @@ fn vocoder_reconstructs_under_a_non_hann_window() {
     let size = fft.size().get();
     let hop = fft.hop().get();
 
-    let geometry = Unit::geometry(sample_rate, fft).with_window_fn(WindowFn::Hamming);
+    let geometry = Unit::geometry(sample_rate, fft).with_window_fn(CosineWindow::HAMMING);
     // Hamming COLAs at 4x, same as Hann, so this grid genuinely inverts.
     assert!(geometry.is_cola(), "Hamming at 4x must be COLA");
     let mut v = Vocoder::new(geometry);

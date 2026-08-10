@@ -14,7 +14,7 @@ use tutti_types::{Hz, Samples, Seconds};
 
 use crate::error::{AnalysisError, Result};
 use crate::grid::{BinCount, BinIndex, FrameCount};
-use crate::window::WindowFn;
+use crate::window::{CosineWindow, Window};
 
 /// Window, hop, window shape, and sample rate — validated once, on construction.
 ///
@@ -32,7 +32,7 @@ pub struct StftGeometry {
     window: Samples,
     hop: Samples,
     sample_rate: SampleRate,
-    window_fn: WindowFn,
+    window_fn: CosineWindow,
 }
 
 impl StftGeometry {
@@ -64,10 +64,10 @@ impl StftGeometry {
             window,
             hop,
             sample_rate,
-            // Spelled literally rather than `WindowFn::default()`: changing the
+            // Spelled literally rather than `CosineWindow::default()`: changing the
             // default must not silently re-tune every grid this constructor
             // has ever built.
-            window_fn: WindowFn::Hann,
+            window_fn: CosineWindow::HANN,
         })
     }
 
@@ -82,11 +82,11 @@ impl StftGeometry {
     ///
     /// A window squared is constant-overlap-add when the hop divides the window
     /// and the overlap reaches that window's own factor
-    /// ([`WindowFn::cola_overlap`]). Under that condition the inverse's
+    /// ([`CosineWindow::cola_overlap`]). Under that condition the inverse's
     /// per-sample window-sum normalization is exact, so untouched bins
     /// reconstruct to float precision.
     ///
-    /// Built on [`WindowFn::Hann`]; use [`cola_with`](Self::cola_with) to check
+    /// Built on [`CosineWindow::HANN`]; use [`cola_with`](Self::cola_with) to check
     /// a different shape, whose required overlap may be stricter — Blackman
     /// needs 8x where Hann needs 4x.
     ///
@@ -98,7 +98,7 @@ impl StftGeometry {
         window: impl Into<Samples>,
         hop: impl Into<Samples>,
     ) -> Result<Self> {
-        Self::cola_with(sample_rate, window, hop, WindowFn::Hann)
+        Self::cola_with(sample_rate, window, hop, CosineWindow::HANN)
     }
 
     /// [`cola`](Self::cola) for a given window shape.
@@ -111,7 +111,7 @@ impl StftGeometry {
         sample_rate: impl Into<SampleRate>,
         window: impl Into<Samples>,
         hop: impl Into<Samples>,
-        window_fn: WindowFn,
+        window_fn: CosineWindow,
     ) -> Result<Self> {
         let geometry = Self::new(sample_rate, window, hop)?.with_window_fn(window_fn);
         if !geometry.frames_overlap() {
@@ -147,14 +147,14 @@ impl StftGeometry {
 
     /// The window *shape*. See [`window`](Self::window) for its length.
     #[inline]
-    pub const fn window_fn(self) -> WindowFn {
+    pub const fn window_fn(self) -> CosineWindow {
         self.window_fn
     }
 
     /// The same grid analysed with a different window shape.
     ///
     /// A builder rather than a fourth constructor argument: every call site in
-    /// the tree wants [`WindowFn::Hann`], and a fourth positional parameter on
+    /// the tree wants [`CosineWindow::HANN`], and a fourth positional parameter on
     /// two fallible three-argument constructors is exactly the transposition
     /// hazard `new` exists to reject.
     ///
@@ -165,7 +165,7 @@ impl StftGeometry {
     /// analyses fine and reconstructs with a 2.1% ripple. Use
     /// [`cola_with`](Self::cola_with) when the result must invert.
     #[inline]
-    pub const fn with_window_fn(mut self, window_fn: WindowFn) -> Self {
+    pub const fn with_window_fn(mut self, window_fn: CosineWindow) -> Self {
         self.window_fn = window_fn;
         self
     }
@@ -175,7 +175,7 @@ impl StftGeometry {
     /// Two conditions belonging to two different types: the hop must divide the
     /// window (a fact about the *grid*) and the overlap must reach the window's
     /// own COLA factor (a fact about the *window*, which is why the `4` that
-    /// used to sit here now lives on [`WindowFn::cola_overlap`]).
+    /// used to sit here now lives on [`CosineWindow::cola_overlap`]).
     #[inline]
     pub fn is_cola(self) -> bool {
         self.window.get().is_multiple_of(self.hop.get())
@@ -312,7 +312,7 @@ mod tests {
             Err(AnalysisError::NotColaCompliant {
                 window: Samples(2048),
                 hop: Samples(1024),
-                window_fn: WindowFn::Hann,
+                window_fn: CosineWindow::HANN,
             })
         );
 
@@ -337,20 +337,23 @@ mod tests {
         assert!(StftGeometry::cola(44100.0, Samples(2048), hop).is_ok());
 
         assert_eq!(
-            StftGeometry::cola_with(44100.0, Samples(2048), hop, WindowFn::Blackman),
+            StftGeometry::cola_with(44100.0, Samples(2048), hop, CosineWindow::BLACKMAN),
             Err(AnalysisError::NotColaCompliant {
                 window: Samples(2048),
                 hop,
-                window_fn: WindowFn::Blackman,
+                window_fn: CosineWindow::BLACKMAN,
             }),
             "Blackman needs 8x overlap; 2048/512 is 4x"
         );
 
         // And it is accepted at the overlap it actually asks for.
-        assert!(
-            StftGeometry::cola_with(44100.0, Samples(2048), Samples(256), WindowFn::Blackman)
-                .is_ok()
-        );
+        assert!(StftGeometry::cola_with(
+            44100.0,
+            Samples(2048),
+            Samples(256),
+            CosineWindow::BLACKMAN
+        )
+        .is_ok());
     }
 
     /// The builder does **not** re-check COLA, and the doc says so — this pins
@@ -361,7 +364,7 @@ mod tests {
         let hann = StftGeometry::cola(44100.0, Samples(2048), Samples(512)).expect("hann 4x");
         assert!(hann.is_cola());
 
-        let blackman = hann.with_window_fn(WindowFn::Blackman);
+        let blackman = hann.with_window_fn(CosineWindow::BLACKMAN);
         assert!(
             !blackman.is_cola(),
             "with_window_fn is infallible and does not re-validate"
@@ -373,7 +376,7 @@ mod tests {
     fn a_grid_carries_both_a_window_length_and_a_window_shape() {
         let g = geo(2048, 512);
         assert_eq!(g.window(), Samples(2048));
-        assert_eq!(g.window_fn(), WindowFn::Hann);
+        assert_eq!(g.window_fn(), CosineWindow::HANN);
         assert_eq!(g.window_coefficients().len(), 2048);
     }
 
@@ -387,14 +390,14 @@ mod tests {
         let hann = geo(1024, 256);
         assert!((hann.magnitude_gain() - 512.0).abs() < 1e-3, "0.5 * 1024");
 
-        let blackman = hann.with_window_fn(WindowFn::Blackman);
+        let blackman = hann.with_window_fn(CosineWindow::BLACKMAN);
         assert!(
             (blackman.magnitude_gain() - 430.08).abs() < 1e-2,
             "0.42 * 1024, got {}",
             blackman.magnitude_gain()
         );
 
-        let rect = hann.with_window_fn(WindowFn::Rectangular);
+        let rect = hann.with_window_fn(CosineWindow::RECTANGULAR);
         assert!((rect.magnitude_gain() - 1024.0).abs() < 1e-3, "1.0 * 1024");
     }
 

@@ -20,7 +20,7 @@ use crate::error::{AnalysisError, Result};
 use crate::fft::FftScratch;
 use crate::geometry::StftGeometry;
 use crate::grid::{BinIndex, FrameCount, FrameIndex, Grid};
-use crate::window::WindowFn;
+use crate::window::CosineWindow;
 use crate::Complex;
 
 /// Linear magnitudes, in the units the transform produced. **The invertible
@@ -385,9 +385,9 @@ pub struct StftRequest {
     pub window: Samples,
     pub hop: HopPolicy,
     pub range: SampleRange,
-    /// The window *shape*. [`WindowFn::Hann`] unless
+    /// The window *shape*. [`CosineWindow::HANN`] unless
     /// [`with_window`](Self::with_window) says otherwise.
-    pub window_fn: WindowFn,
+    pub window_fn: CosineWindow,
 }
 
 impl StftRequest {
@@ -401,7 +401,7 @@ impl StftRequest {
             window: window.into(),
             hop: HopPolicy::Fixed(hop.into()),
             range: SampleRange::All,
-            window_fn: WindowFn::Hann,
+            window_fn: CosineWindow::HANN,
         }
     }
 
@@ -415,7 +415,7 @@ impl StftRequest {
     /// refuses but [`resolve`](Self::resolve) accepts — Blackman needs 8x
     /// overlap where Hann needs 4x, so a grid that inverted before may not
     /// after. That refusal is the point.
-    pub fn with_window(mut self, window_fn: WindowFn) -> Self {
+    pub fn with_window(mut self, window_fn: CosineWindow) -> Self {
         self.window_fn = window_fn;
         self
     }
@@ -671,18 +671,19 @@ mod tests {
     #[test]
     fn a_requests_window_shape_reaches_its_geometry() {
         let len = Samples(200_000);
-        let request = StftRequest::new(44100.0, 2048usize, 512usize).with_window(WindowFn::Hamming);
+        let request =
+            StftRequest::new(44100.0, 2048usize, 512usize).with_window(CosineWindow::HAMMING);
 
         assert_eq!(
             request.resolve(len).expect("valid").window_fn(),
-            WindowFn::Hamming
+            CosineWindow::HAMMING
         );
         assert_eq!(
             request
                 .resolve_cola(len)
                 .expect("Hamming COLAs at 4x")
                 .window_fn(),
-            WindowFn::Hamming
+            CosineWindow::HAMMING
         );
     }
 
@@ -696,12 +697,12 @@ mod tests {
         let samples = tone(200_000, 440.0, 44100.0);
         let mut fft = FftScratch::new();
         let request =
-            StftRequest::new(44100.0, 2048usize, 512usize).with_window(WindowFn::Blackman);
+            StftRequest::new(44100.0, 2048usize, 512usize).with_window(CosineWindow::BLACKMAN);
 
         assert!(matches!(
             stft(&samples, request, &mut fft),
             Err(AnalysisError::NotColaCompliant {
-                window_fn: WindowFn::Blackman,
+                window_fn: CosineWindow::BLACKMAN,
                 ..
             })
         ));
@@ -710,7 +711,8 @@ mod tests {
         assert!(stft_magnitude(&samples, request, &mut fft).is_ok());
 
         // And at the overlap Blackman asks for, it inverts.
-        let deeper = StftRequest::new(44100.0, 2048usize, 256usize).with_window(WindowFn::Blackman);
+        let deeper =
+            StftRequest::new(44100.0, 2048usize, 256usize).with_window(CosineWindow::BLACKMAN);
         assert!(stft(&samples, deeper, &mut fft).is_ok());
     }
 

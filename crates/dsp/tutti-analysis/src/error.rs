@@ -7,7 +7,7 @@
 
 use tutti_types::{Hz, Samples};
 
-use crate::window::WindowFn;
+use crate::window::{CosineWindow, Window};
 
 /// Everything that can go wrong constructing or feeding an analysis.
 #[derive(Debug, Clone, PartialEq)]
@@ -19,7 +19,7 @@ pub enum AnalysisError {
     /// Frames would not overlap, so the transform cannot reconstruct.
     HopExceedsWindow { window: Samples, hop: Samples },
     /// A window squared needs `window % hop == 0` and an overlap of at least
-    /// its own [`cola_overlap`](crate::WindowFn::cola_overlap) to
+    /// its own [`cola_overlap`](crate::CosineWindow::cola_overlap) to
     /// constant-overlap-add. Without it the inverse's normalization is inexact
     /// and untouched bins do not reconstruct.
     ///
@@ -29,7 +29,7 @@ pub enum AnalysisError {
     NotColaCompliant {
         window: Samples,
         hop: Samples,
-        window_fn: WindowFn,
+        window_fn: CosineWindow,
     },
     /// A sample rate of zero or below.
     NonPositiveSampleRate,

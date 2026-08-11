@@ -31,6 +31,56 @@ const CAPACITY: usize = 131_072;
 /// thread `try_lock`s and skips the buffer on contention.
 type TapProducer = Arc<Mutex<Option<HeapProd<(f32, f32)>>>>;
 
+/// The consumer end of an opened [`AudioTap`] — stereo frames, in the order the
+/// audio thread pushed them.
+///
+/// A newtype rather than a bare `ringbuf::HeapCons` so that `ringbuf` stays an
+/// implementation detail of this crate. Returning the raw type would put a
+/// dependency this crate does not re-export into the signature of a public
+/// method: a caller who wants to *name* what [`AudioTap::open`] returned — to
+/// store it in a struct, or write a function over it — would have to add
+/// `ringbuf` to their own manifest and keep the version in lockstep with ours
+/// forever. `tutti-core` and `tutti-io` do not even pin the same feature set
+/// (`default-features = false` here, defaults there), so "just add ringbuf"
+/// is not reliably the same crate instantiation.
+///
+/// [`MicRing`](../../tutti_io/struct.MicRing.html) is the same decision for the
+/// mic capture ring; this is the sibling that was missed.
+pub struct TapCons(HeapCons<(f32, f32)>);
+
+impl TapCons {
+    /// Pop one stereo frame, or `None` when the ring is empty.
+    ///
+    /// Empty means "the callback has not pushed since the last poll", never
+    /// "finished" — see `TapIn`'s `ON_EMPTY` for why that distinction is the
+    /// whole reason the tap is not treated as a finite source.
+    #[inline]
+    pub fn try_pop(&mut self) -> Option<(f32, f32)> {
+        use ringbuf::traits::Consumer;
+        self.0.try_pop()
+    }
+
+    /// Frames readable right now.
+    ///
+    /// Advisory: the audio thread may push more between this call and the next
+    /// [`try_pop`](Self::try_pop). Useful for sizing a drain, not for deciding
+    /// that the tap is finished.
+    #[inline]
+    pub fn occupied_len(&self) -> usize {
+        use ringbuf::traits::Observer;
+        self.0.occupied_len()
+    }
+}
+
+impl std::fmt::Debug for TapCons {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Occupancy is a live value the audio thread is writing; reporting it
+        // here would make a `Debug` print race with the callback. The type's
+        // identity is all a formatter needs.
+        f.debug_struct("TapCons").finish_non_exhaustive()
+    }
+}
+
 /// [`AudioTap::open`] was called on a tap that already has a consumer.
 ///
 /// A ring has one reader. Returning this rather than minting a second ring is
@@ -67,7 +117,7 @@ impl AudioTap {
     ///
     /// Call [`close`](Self::close) first to hand the tap over deliberately.
     #[must_use = "the returned consumer is the only handle to the tap ring; drop it and the audio thread pushes into a ring nobody reads"]
-    pub fn open(&self) -> Result<HeapCons<(f32, f32)>, TapBusy> {
+    pub fn open(&self) -> Result<TapCons, TapBusy> {
         // Decide under the lock, not against `is_open`: `on` and `producer` are
         // separate, so a check-then-open would let two control threads both
         // pass the check and the loser's consumer would be orphaned — exactly
@@ -83,7 +133,7 @@ impl AudioTap {
         // `on` first and only then tries the lock, so flipping this earlier
         // would let a callback find `on == true` with nothing to push into.
         self.on.store(true, Ordering::Release);
-        Ok(cons)
+        Ok(TapCons(cons))
     }
 
     /// Close the tap and drop the producer. The consumer sees an empty ring.

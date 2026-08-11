@@ -149,6 +149,7 @@ pub use tutti_types::{RtPublish, RtRef};
 pub mod metering;
 pub use metering::{
     meter_output, AtomicAmplitude, AudioTap, MasterMeter, MeterReading, MeteringContext,
+    TapBusy, TapCons,
 };
 
 // Delay compensation: the graph-agnostic planner is homed in `tutti-types`,

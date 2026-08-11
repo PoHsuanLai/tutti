@@ -88,7 +88,7 @@ const IDLE_PARK: Duration = Duration::from_millis(5);
 /// ```no_run
 /// # use tutti_io::{Recorder, WavOut, BitDepth};
 /// # fn go<I: tutti_core::io::AudioIn + Send + 'static>(src: I) -> std::io::Result<()> {
-/// let wav = WavOut::create(&"take.wav".into(), 48_000.0, 2u16, BitDepth::Float32)
+/// let wav = WavOut::create("take.wav", 48_000.0, 2u16, BitDepth::Float32)
 ///     .expect("sink opens");
 /// let rec = Recorder::start(src, wav)?;   // errors if the widths disagree
 /// // ... later ...

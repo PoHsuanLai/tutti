@@ -32,7 +32,7 @@
 use hound::{SampleFormat, WavSpec, WavWriter};
 use std::fs::File;
 use std::io::BufWriter;
-use std::path::PathBuf;
+use std::path::Path;
 use tutti_core::io::AudioOut;
 use tutti_core::pcm::{BitDepth, Sample};
 use tutti_core::ChannelLayout;
@@ -82,14 +82,22 @@ impl std::fmt::Debug for WavOut {
 }
 
 impl WavOut {
-    /// Create the file and WAV header for `file_path`. Returns `None` if the
-    /// file can't be created or the header can't be written.
+    /// Create the file and WAV header for `file_path`.
+    ///
+    /// # Errors
+    ///
+    /// The `io::Error` from creating the file (a missing directory, a
+    /// permission denial, a full disk) or from writing the header. Carried
+    /// rather than flattened to a sentinel, because those cases want different
+    /// responses from a caller and only the error distinguishes them —
+    /// [`Recorder::start`](crate::Recorder::start), which consumes this type,
+    /// already returns `io::Result` for the same reason.
     pub fn create(
-        file_path: &PathBuf,
+        file_path: impl AsRef<Path>,
         sample_rate: impl Into<SampleRate>,
         channels: impl Into<ChannelLayout>,
         depth: BitDepth,
-    ) -> Option<Self> {
+    ) -> std::io::Result<Self> {
         let sample_rate = sample_rate.into();
         let sample_format = if depth.is_integer() {
             SampleFormat::Int
@@ -105,10 +113,14 @@ impl WavOut {
             sample_format,
         };
 
-        let file = File::create(file_path).ok()?;
+        let file = File::create(file_path)?;
         let buf_writer = BufWriter::new(file);
-        let writer = WavWriter::new(buf_writer, spec).ok()?;
-        Some(Self {
+        // Same `hound::Error` -> io error carry as `finalize`: the message is
+        // the only part a caller can act on, and dropping it here would be the
+        // information loss this signature exists to stop.
+        let writer =
+            WavWriter::new(buf_writer, spec).map_err(|e| std::io::Error::other(e.to_string()))?;
+        Ok(Self {
             writer,
             layout,
             depth,
@@ -292,6 +304,40 @@ impl AudioOut for WavOut {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A failed open reports *why*, and takes a path without ceremony.
+    ///
+    /// Both halves of the signature change in one assertion. The kind matters:
+    /// a caller distinguishing "make the directory and retry" from "give up"
+    /// can only do so from the error, and the `Option` this used to return
+    /// collapsed every cause into `None`.
+    #[test]
+    fn a_failed_open_reports_the_cause() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("no-such-dir").join("take.wav");
+
+        let err = WavOut::create(&missing, 48_000.0, 2u16, BitDepth::Float32)
+            .expect_err("a file under a missing directory cannot be created");
+        assert_eq!(
+            err.kind(),
+            std::io::ErrorKind::NotFound,
+            "the cause must survive to the caller, not flatten to a sentinel"
+        );
+    }
+
+    /// A path argument needs no `PathBuf`, which is the ergonomic half of the
+    /// same change. `&str` and `&Path` are the two forms a caller most often
+    /// already holds.
+    #[test]
+    fn create_accepts_any_path_like() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let as_str = dir.path().join("a.wav").to_str().unwrap().to_owned();
+        WavOut::create(&as_str, 48_000.0, 2u16, BitDepth::Float32).expect("&String opens");
+
+        let owned = dir.path().join("b.wav");
+        WavOut::create(owned.as_path(), 48_000.0, 2u16, BitDepth::Float32).expect("&Path opens");
+    }
 
     /// The sink writes INCREMENTALLY: feeding frames across many `write` calls
     /// and finalizing must yield a valid WAV whose frame count is the sum of

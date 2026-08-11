@@ -12,7 +12,6 @@
 
 use bevy_app::App;
 use bevy_tutti::graph::AudioTapRes;
-use ringbuf::traits::Consumer as _;
 
 /// A published tap starts closed: opening is the host's decision, not the
 /// engine's, and while closed the audio thread pays one atomic load.

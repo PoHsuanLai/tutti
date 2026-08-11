@@ -2,10 +2,9 @@
 //!
 //! `AudioTap` (in `tutti-core`) is the RT-push half: the audio callback copies
 //! every master block into a lock-free ring, and `AudioTap::open` hands back the
-//! consumer. That consumer is a bare `HeapCons<(f32, f32)>` — perfectly usable
-//! by an analysis thread draining it directly, but *not* an [`AudioIn`], so on
-//! its own it can feed neither a [`pump`](tutti_core::io::pump) nor a
-//! [`Recorder`](crate::Recorder).
+//! consumer as a [`TapCons`] — perfectly usable by an analysis thread draining
+//! it directly, but *not* an [`AudioIn`], so on its own it can feed neither a
+//! [`pump`](tutti_core::io::pump) nor a [`Recorder`](crate::Recorder).
 //!
 //! This is the join that makes *record what I am hearing* expressible in the I/O
 //! vocabulary, and deliberately nothing more: a newtype that pops the ring into
@@ -15,7 +14,7 @@
 //! # use tutti_io::{TapIn, WavOut, BitDepth, Recorder};
 //! # fn go(tap: &tutti_core::metering::AudioTap) -> std::io::Result<()> {
 //! let src = TapIn::new(tap.open().expect("tap is free"));
-//! let wav = WavOut::create(&"master.wav".into(), 48_000.0, 2u16, BitDepth::Float32)
+//! let wav = WavOut::create("master.wav", 48_000.0, 2u16, BitDepth::Float32)
 //!     .expect("sink opens");
 //! let rec = Recorder::start(src, wav)?;   // both are stereo, so this pairs
 //! // ... later ...
@@ -31,10 +30,8 @@
 //! `matching_sink` here as there is on `MicIn`, because a tap has no device to
 //! ask: the rate lives on `AudioConfig`, which is the host's.
 
-use ringbuf::{traits::Consumer, HeapCons};
-
 use tutti_core::io::{AudioIn, OnEmpty};
-use tutti_core::ChannelLayout;
+use tutti_core::{ChannelLayout, TapCons};
 
 /// The analysis tap's consumer end as an [`AudioIn`].
 ///
@@ -42,7 +39,7 @@ use tutti_core::ChannelLayout;
 /// Drained by a pump thread — never by the audio thread, which is the *producer*
 /// side of this ring.
 pub struct TapIn {
-    cons: HeapCons<(f32, f32)>,
+    cons: TapCons,
 }
 
 impl TapIn {
@@ -52,7 +49,7 @@ impl TapIn {
     /// pump that owns this owns the drain. `AudioTap::open` enforces the other
     /// half — it refuses while a consumer is live — so together they make "two
     /// readers on one ring" unrepresentable rather than merely discouraged.
-    pub fn new(cons: HeapCons<(f32, f32)>) -> Self {
+    pub fn new(cons: TapCons) -> Self {
         Self { cons }
     }
 }
@@ -101,8 +98,22 @@ impl AudioIn for TapIn {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ringbuf::traits::{Producer, Split};
-    use ringbuf::HeapRb;
+    use tutti_core::AudioTap;
+
+    /// An opened tap plus its consumer, fed through the real
+    /// `AudioTap::push` — the same call the audio callback makes.
+    ///
+    /// Built this way rather than from a hand-split `HeapRb` so the tests
+    /// exercise the production path: `push` takes flat interleaved samples and
+    /// pairs them into the ring, which is the conversion the first test below
+    /// is actually about.
+    fn tap_with(frames: &[(f32, f32)]) -> TapIn {
+        let tap = AudioTap::new();
+        let cons = tap.open().expect("a fresh tap opens");
+        let flat: Vec<f32> = frames.iter().flat_map(|&(l, r)| [l, r]).collect();
+        tap.push(&flat, frames.len());
+        TapIn::new(cons)
+    }
 
     /// Frames the callback pushed come back out in order, interleaved L then R.
     ///
@@ -111,12 +122,8 @@ mod tests {
     /// swap every recording's channels.
     #[test]
     fn pushed_frames_come_back_in_order_and_channel_side() {
-        let (mut prod, cons) = HeapRb::<(f32, f32)>::new(16).split();
-        for i in 0..4 {
-            prod.try_push((i as f32, -(i as f32))).unwrap();
-        }
-
-        let mut tap = TapIn::new(cons);
+        let frames: Vec<(f32, f32)> = (0..4).map(|i| (i as f32, -(i as f32))).collect();
+        let mut tap = tap_with(&frames);
         let mut out = [0.0f32; 8 * 2];
         assert_eq!(
             tap.poll_into(&mut out),
@@ -136,12 +143,7 @@ mod tests {
     /// be the kind of overrun no test above would notice.
     #[test]
     fn a_poll_never_writes_past_the_output_slice() {
-        let (mut prod, cons) = HeapRb::<(f32, f32)>::new(64).split();
-        for _ in 0..32 {
-            prod.try_push((1.0, 1.0)).unwrap();
-        }
-
-        let mut tap = TapIn::new(cons);
+        let mut tap = tap_with(&[(1.0, 1.0); 32]);
         let mut out = [0.0f32; 4 * 2];
         assert_eq!(tap.poll_into(&mut out), 4, "must fill exactly the slice");
 
@@ -157,8 +159,7 @@ mod tests {
     /// audio callbacks. `EndOfStream` here would end every take immediately.
     #[test]
     fn an_empty_tap_starves_rather_than_ending() {
-        let (_prod, cons) = HeapRb::<(f32, f32)>::new(8).split();
-        let mut tap = TapIn::new(cons);
+        let mut tap = tap_with(&[]);
 
         let mut out = [0.0f32; 4 * 2];
         assert_eq!(tap.poll_into(&mut out), 0);
@@ -179,7 +180,6 @@ mod tests {
     fn a_tap_is_accepted_where_a_live_source_is_required() {
         fn takes_a_live_source<I: AudioIn + Send + 'static>(_: I) {}
 
-        let (_prod, cons) = HeapRb::<(f32, f32)>::new(8).split();
-        takes_a_live_source(TapIn::new(cons));
+        takes_a_live_source(tap_with(&[]));
     }
 }

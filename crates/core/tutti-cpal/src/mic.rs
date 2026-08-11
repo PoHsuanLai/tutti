@@ -193,9 +193,15 @@ impl MicIn {
     /// with a different sink still builds its own — the obligation is only
     /// removed where it can be.
     ///
-    /// Returns `None` when the file cannot be created or the header written,
-    /// matching [`WavOut::create`].
-    pub fn matching_sink(&self, path: &std::path::PathBuf, depth: BitDepth) -> Option<WavOut> {
+    /// # Errors
+    ///
+    /// Whatever [`WavOut::create`] reports — the file could not be created or
+    /// the header not written.
+    pub fn matching_sink(
+        &self,
+        path: impl AsRef<std::path::Path>,
+        depth: BitDepth,
+    ) -> std::io::Result<WavOut> {
         // Read off `AudioIn::layout` rather than hard-coded, so this pairing
         // cannot drift from what `poll_into` actually hands back. (Today that is
         // always stereo — the callback folds every device frame to a pair before

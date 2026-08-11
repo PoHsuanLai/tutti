@@ -77,7 +77,7 @@
 //!     let mic = MicIn::open(None).expect("a capture device");
 //!     // Paired at the one place both halves are in scope, so the sink cannot
 //!     // declare a rate the source does not produce.
-//!     let wav = mic.matching_sink(&path, BitDepth::Float32).expect("sink opens");
+//!     let wav = mic.matching_sink(path, BitDepth::Float32).expect("sink opens");
 //!     commands.spawn(AudioPump::start(mic, wav, 1024));
 //! }
 //! ```

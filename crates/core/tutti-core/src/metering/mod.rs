@@ -17,7 +17,7 @@ mod tap;
 
 pub use amplitude::{AtomicAmplitude, MasterMeter, MeterReading};
 pub use rt::{meter_output, MeteringContext};
-pub use tap::{AudioTap, TapBusy};
+pub use tap::{AudioTap, TapBusy, TapCons};
 
 // The Bevy resource wrapper (`MeteringRes`) belongs to the host adapter,
 // `bevy_tutti::graph`, not to this crate.

@@ -193,10 +193,14 @@ fn the_capture_paths_the_docs_demonstrate_are_writable_from_the_prelude() {
     }
 
     // Recording a mic: `io/mod.rs`'s `matching_sink` example.
-    fn record_mic(path: std::path::PathBuf) -> Option<AudioPump> {
-        let mic = MicIn::open(None).ok()?;
-        let wav = mic.matching_sink(&path, BitDepth::Float32)?;
-        Some(AudioPump::start(mic, wav, 1024))
+    //
+    // `io::Result` rather than `Option`: `matching_sink` reports *why* the sink
+    // would not open, and a host writing this signature should be able to pass
+    // that on. The path goes in bare — it is `impl AsRef<Path>`.
+    fn record_mic(path: std::path::PathBuf) -> std::io::Result<AudioPump> {
+        let mic = MicIn::open(None).map_err(std::io::Error::other)?;
+        let wav = mic.matching_sink(path, BitDepth::Float32)?;
+        Ok(AudioPump::start(mic, wav, 1024))
     }
 
     // Live monitoring: `io/mod.rs`'s graph-wiring example.

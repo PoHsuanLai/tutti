@@ -12,6 +12,66 @@
 //! path — distinct from the host-side `AudioUnit` node (`PluginClient`) on the
 //! other end of the wire. Both are "process a block", but they are different
 //! objects in different processes, so this is not a duplicate of `AudioUnit`.
+//!
+//! # A plugin is a set of capabilities, not a state machine
+//!
+//! The obvious way to model a plugin host is to start from the lifecycle. Every
+//! format has one: a plugin is *loaded*, then *activated* against a sample rate
+//! and block size, and only then may it render. Four formats, one shape — it
+//! looks like the thing to put in the shared vocabulary.
+//!
+//! These traits do the opposite. There is no `activate` here, no `deactivate`,
+//! and no state enum anywhere in this file. A plugin is described by what it can
+//! *do* — [`PluginMeta`], [`PluginAudio`], [`PluginParams`], [`PluginState`],
+//! [`PluginPresets`], [`PluginEditorHost`] — and never by what state it is in.
+//!
+//! The reason is that the shared shape is the only part the formats agree on.
+//! Underneath it they disagree about what the states are called, which calls are
+//! legal in each, whether a transition can fail, and — the one that really
+//! hurts — whether a failed transition leaves the plugin in a state at all. A
+//! trait covering all four could only offer their intersection, and the useful
+//! guarantee each format provides lives precisely in what makes it different.
+//! The intersection inherits the constraints of all four and the benefits of
+//! none.
+//!
+//! Capabilities do not have that problem, because they differ *additively*. A
+//! format either has presets or it does not; a trait a loader does not implement
+//! is simply absent, and nothing else changes. A state machine is not local in
+//! that way — it constrains when every other method may be called, so a wrong
+//! guess about states contaminates the entire surface rather than one corner of
+//! it.
+//!
+//! Then there is a constraint that settles the question regardless of taste. The
+//! server erases the format deliberately: `Plugin` is a per-format enum whose
+//! whole purpose is that callers above it see only `&mut dyn PluginInstance`,
+//! with no downcast back. A type-state design cannot survive that, because
+//! consuming transitions need `self` by value and a concrete return type, and
+//! `dyn` offers neither. Whatever the formats do internally, the seam between
+//! them has to be capability-shaped.
+//!
+//! So the lifecycle is pushed down, and the traits admit it at the two points
+//! where it shows through. [`set_sample_rate`](PluginAudio::set_sample_rate) and
+//! [`set_render_mode`](PluginAudio::set_render_mode) are configure-time
+//! operations most formats accept only while deactivated, yet both are ordinary
+//! `&mut self` methods here — the implementation owns "the deactivate/reactivate
+//! bracket their format requires" and the caller never learns it happened. By
+//! the time a plugin is reachable through these traits it is loaded *and*
+//! activated, so a transition is never something a consumer performs.
+//!
+//! That turns out to be a good trade rather than merely a necessary one. Having
+//! declined to model states centrally, each format crate models its own as
+//! tightly as its contract allows — and because none of them has to meet in the
+//! middle, each lands somewhere different. VST3 and CLAP both make a large
+//! control surface legal before activation, so "loaded but not processing" is a
+//! real place to work and earns its own type, with transitions that consume
+//! `self` so a stale handle cannot be named. VST2 fuses everything into one
+//! type, because its whole init sequence runs in the constructor and a second
+//! type would carry no operations the first lacks. AU keeps an internal enum,
+//! because its transitions can fail in both directions and a failed one belongs
+//! to neither state — something two types cannot express but three variants can.
+//!
+//! Each crate argues its own case in its own docs; `tutti-plugin`'s crate-level
+//! docs compare all four and give the rule for choosing between them.
 
 use crate::{
     AudioBufferMut, EditorSize, LoadedPlugin, Normalized, ParamAddress, ParameterInfo,

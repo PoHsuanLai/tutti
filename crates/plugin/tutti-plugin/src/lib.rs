@@ -97,24 +97,27 @@
 //!
 //! # The plugin state machine
 //!
-//! Every one of the four formats has the same underlying shape: a plugin is
-//! first *loaded* (its library mapped, its instance created, its parameters and
-//! editor reachable) and only later *activated* (buffers allocated at a fixed
-//! sample rate and block size, `process` legal). The formats disagree about
-//! almost everything else — what the two states are called, which calls are
-//! legal in which, whether a transition can fail, and whether reactivation is
-//! permitted at all.
+//! The shared vocabulary describes a plugin as a set of *capabilities* —
+//! `PluginMeta`, `PluginAudio`, `PluginParams` and their siblings in
+//! `tutti_plugin_types::format_host` — and deliberately says nothing about what
+//! state a plugin is in. That crate's docs argue the case; the consequence for
+//! this one is that a lifecycle never reaches it. A plugin arrives already
+//! loaded and activated, driven inside the subprocess by whichever format crate
+//! owns it, and `BridgeMessage::PluginLoaded` reports only the outcome. A probe
+//! never activates at all.
 //!
-//! The four host crates therefore do **not** share a lifecycle type. There is no
-//! `PluginState` enum here and no `activate` on any trait in this crate, and
-//! that absence is deliberate: a shared abstraction would have to be the
-//! intersection of four incompatible contracts, and the useful guarantees each
-//! format offers live precisely in what makes it different. Instead each crate
-//! models its own format as closely as the type system allows, and this crate
-//! sees only the *result* — a plugin that is already loaded and activated, with
-//! its lifecycle driven inside the subprocess by whichever format crate owns
-//! it. `BridgeMessage::PluginLoaded` reports that outcome; a probe never
-//! activates at all.
+//! What that buys is room. No format crate has to meet another in the middle, so
+//! each one models its own lifecycle as tightly as its own contract allows — and
+//! left to do that, the four land on three different answers. They are worth
+//! reading together, because the differences are not stylistic: each is the
+//! format's own rule showing through, and the same reasoning decides the shape
+//! of any format added later.
+//!
+//! All four start from the same two states. A plugin is *loaded* — library
+//! mapped, instance created, parameters and editor reachable — and later
+//! *activated*, which allocates buffers at a fixed sample rate and block size
+//! and makes `process` legal. Everything below is disagreement about what to do
+//! with that shape.
 //!
 //! ## Which model each format gets, and why
 //!
@@ -164,15 +167,21 @@
 //! functions cannot without handing back a third type nobody wants. The price is
 //! that misuse is a runtime `Uninitialized` error rather than a compile error.
 //!
-//! ## The rule this leaves behind
+//! ## Choosing a shape for a fifth format
 //!
-//! Use a consuming type-state when the two states have genuinely different
-//! operations **and** the transition between them cannot fail in a way that
-//! belongs to neither state. When the pre-activation state has no distinct
-//! operations, fuse it; when the transition is fallible in both directions,
-//! carry the state as data and pay for it at runtime. Reaching for a
-//! compile-time guarantee that the underlying contract cannot honour is how a
-//! type ends up describing a state the plugin is not actually in.
+//! Read together, the three answers reduce to one question asked twice. Do the
+//! two states have genuinely different operations, and can the transition
+//! between them fail in a way that belongs to neither? Two distinct surfaces and
+//! a transition that always lands somewhere is the case a consuming type-state
+//! was made for. A pre-activation state with nothing of its own to do should be
+//! fused, because the extra type guards nothing. A transition that can fail in
+//! both directions has to carry its state as data and pay for the check at
+//! runtime, because there is no third type to return.
+//!
+//! The failure worth naming is the first one: reaching for a compile-time
+//! guarantee the underlying contract cannot honour. That is how a type ends up
+//! confidently describing a state the plugin is not actually in, which is worse
+//! than the runtime check it replaced.
 //!
 //! # Module map
 //!

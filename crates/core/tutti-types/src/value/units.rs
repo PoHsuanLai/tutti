@@ -421,63 +421,21 @@ impl Db {
         Amplitude(10.0_f32.powf(self.0 / 20.0))
     }
 
-    /// This gain as an `f64` amplitude multiplier.
+    /// Amplitude as decibels. **Silence is `-inf`, not [`FLOOR`](Self::FLOOR).**
     ///
-    /// Not a convenience: the loudness path (`tutti-export`'s EBU R128
-    /// normalization) works in `f64` because LUFS targets are `f64`, and
-    /// routing it through the `f32` form would change rendered export gain in
-    /// the low bits.
-    #[inline]
-    pub fn to_amplitude_f64(self) -> f64 {
-        10.0_f64.powf(self.0 as f64 / 20.0)
-    }
-
-    /// Amplitude as decibels, with silence pinned to [`FLOOR`](Self::FLOOR).
+    /// No floor is applied. Silence has no logarithm, and what to substitute
+    /// for it belongs to the consumer, not to the conversion: a meter wants one
+    /// engine-wide floor to bottom out at, a ratio on a ±60 dB scale wants its
+    /// own bound, and arithmetic that must round-trip wants no floor at all
+    /// (`to_amplitude` of `-inf` is exactly `0.0`, which a pinned floor loses).
+    /// A caller that needs a floor pins it at its own boundary, where the
+    /// choice is visible.
     ///
-    /// The metering form. Two floors exist on purpose — see
-    /// [`from_amplitude_exact`](Self::from_amplitude_exact). The split is
-    /// between *display* and *arithmetic*: one engine-wide floor for a meter to
-    /// bottom out at, and no floor at all where the value is computed on.
+    /// `From<Amplitude> for Db` is this method, so `.into()` also yields `-inf`
+    /// for silence — reach for it only where that is correct.
     #[inline]
     pub fn from_amplitude(amp: Amplitude) -> Db {
-        if amp.0 <= 0.0 {
-            Db::FLOOR
-        } else {
-            Db(20.0 * amp.0.log10())
-        }
-    }
-
-    /// Amplitude as decibels, letting silence be `-inf`.
-    ///
-    /// For arithmetic that must round-trip: `to_amplitude` of `-inf` is exactly
-    /// `0.0`, whereas the clamped form loses that. Use this when the value
-    /// feeds further computation, and [`from_amplitude`](Self::from_amplitude)
-    /// when it feeds a meter.
-    #[inline]
-    pub fn from_amplitude_exact(amp: Amplitude) -> Db {
         Db(20.0 * amp.0.log10())
-    }
-
-    /// An `f64` amplitude multiplier as decibels, with silence pinned to
-    /// [`FLOOR`](Self::FLOOR).
-    ///
-    /// The inverse of [`to_amplitude_f64`](Self::to_amplitude_f64), and the
-    /// metering counterpart to it. Takes a bare `f64` rather than an
-    /// `Amplitude` because that is what the `f64` loudness path holds — an
-    /// `Amplitude` is `f32`, so requiring one would narrow the input before
-    /// the `log10` and defeat the reason the `f64` path exists.
-    ///
-    /// This existed only in the `to_` direction for a while, and the gap is
-    /// what pushed the true-peak meter in `tutti-analysis` into hand-rolling
-    /// `20.0 * linear.log10()` with its own zero guard. A converter missing
-    /// its inverse gets hand-rolled, not worked around.
-    #[inline]
-    pub fn from_amplitude_f64(amp: f64) -> Db {
-        if amp <= 0.0 {
-            Db::FLOOR
-        } else {
-            Db((20.0 * amp.log10()) as f32)
-        }
     }
 }
 // ── Dimensionless amounts ───────────────────────────────────────────────────
@@ -1536,17 +1494,40 @@ impl Semitones {
 //
 //   - It needs another input. `Seconds::to_samples` takes a `SampleRate`,
 //     `BeatDuration::to_seconds` takes a `Bpm`. Not two-type conversions.
-//   - The answer is not unique. `Amplitude` → `Db` has three
-//     (`from_amplitude` pins silence at `Db::FLOOR`, `from_amplitude_exact`
-//     lets it be `-inf`, `from_amplitude_f64` takes the wider input). A
-//     `From` impl would have to pick one and apply it silently at every
-//     `.into()`, which is the ambiguity the three names exist to expose.
+//   - The answer is not unique — the shape to watch for is a conversion with
+//     a policy knob. If two call sites would want different results, a `From`
+//     impl has to pick one and apply it silently at every `.into()`.
+//
+//     The fix is to move the policy to the consumers that hold opinions about
+//     it, not to pick a default and bury it. `Amplitude` → `Db` is the worked
+//     example: the silence floor lives at the three boundaries that care
+//     (`tutti-units`' dynamics detectors, `ms_ratio` in `tutti-analysis`, and
+//     its true-peak reading), which leaves one answer here and makes the
+//     `From` impl honest. Collapsing such a set of names *without* relocating
+//     the policy is the failure this clause is about.
 //   - The target is a bare scalar. `Cents::to_pitch_ratio` and
 //     `Semitones::to_pitch_ratio` both land on `f32`; as `From` impls they
 //     would be two different meanings of one target type.
 //
 // The impls below delegate to the inherent methods rather than repeating the
 // arithmetic, so there is one implementation and two spellings.
+
+// Silence converts to `-inf`, per `Db::from_amplitude` — the floor belongs to
+// the consumer. A site that needs a finite floor pins it itself rather than
+// reaching for `.into()`.
+impl From<Amplitude> for Db {
+    #[inline]
+    fn from(amp: Amplitude) -> Db {
+        Db::from_amplitude(amp)
+    }
+}
+
+impl From<Db> for Amplitude {
+    #[inline]
+    fn from(db: Db) -> Amplitude {
+        db.to_amplitude()
+    }
+}
 
 impl From<Cents> for Semitones {
     #[inline]
@@ -2461,28 +2442,8 @@ mod tests {
         // +6 dB exceeds 1.0 — amplitude is not a 0..1 quantity.
         assert!(Db(6.0).to_amplitude().get() > 1.99);
 
-        let round = Db::from_amplitude_exact(Db(-12.0).to_amplitude());
+        let round = Db::from_amplitude(Db(-12.0).to_amplitude());
         assert!((round.get() - -12.0).abs() < 1e-4);
-    }
-
-    #[test]
-    fn the_f64_converters_are_inverses_and_share_the_metering_floor() {
-        // The pair the loudness path uses. Round-tripping through f64 holds
-        // tighter than the f32 form above — that precision is the whole
-        // reason these two exist.
-        let round = Db::from_amplitude_f64(Db(-12.0).to_amplitude_f64());
-        assert!((round.get() - -12.0).abs() < 1e-5);
-
-        // It is the metering form, so it agrees with `from_amplitude` at
-        // silence rather than going to -inf.
-        assert_eq!(Db::from_amplitude_f64(0.0), Db::FLOOR);
-        assert_eq!(Db::from_amplitude_f64(-1.0), Db::FLOOR);
-
-        // And agrees with the f32 form everywhere else it can be compared.
-        assert!(
-            (Db::from_amplitude_f64(0.5).get() - Db::from_amplitude(Amplitude(0.5)).get()).abs()
-                < 1e-5
-        );
     }
 
     #[test]
@@ -2510,11 +2471,10 @@ mod tests {
         // Needs a second input, so it is not a two-type conversion at all.
         assert_eq!(Seconds(1.0).to_samples(SampleRate::SR_48K), Samples(48_000));
 
-        // Not unique: three answers for one type pair. `From` would have to
-        // pick one and hide the choice behind `.into()`.
-        assert_eq!(Db::from_amplitude(Amplitude(0.0)), Db::FLOOR);
-        assert!(Db::from_amplitude_exact(Amplitude(0.0)).get().is_infinite());
-        assert_eq!(Db::from_amplitude_f64(0.0), Db::FLOOR);
+        // What stays named is the case where the second input is real. A
+        // policy knob hiding inside a conversion is not that case — it is
+        // relocated to the consumer instead, which is what lets
+        // `Amplitude` <-> `Db` be a `From`. See the test below.
 
         // Target is a bare scalar, and two different units convert into it —
         // as `From` impls these would be two meanings of one target type.
@@ -2529,36 +2489,38 @@ mod tests {
     }
 
     #[test]
-    fn the_two_db_floors_differ_only_at_silence() {
-        // The metering form pins silence to a finite value, because -inf
-        // cannot be drawn on a fader.
-        assert_eq!(Db::from_amplitude(Amplitude(0.0)), Db::FLOOR);
-        assert!(Db::from_amplitude(Amplitude(0.0)).get().is_finite());
+    fn db_leaves_the_silence_floor_to_its_consumer() {
+        // The conversion itself applies no floor. This is the property that
+        // makes it a single-answer conversion, and therefore a `From`.
+        assert!(Db::from_amplitude(Amplitude(0.0)).get().is_infinite());
+        assert!(Db::from(Amplitude::SILENT).get().is_infinite());
 
-        // The arithmetic form keeps -inf, which is what round-trips exactly:
-        // 10^(-inf/20) is 0.0, while 10^(-144/20) is merely very small.
-        assert!(Db::from_amplitude_exact(Amplitude(0.0)).get().is_infinite());
+        // -inf is what round-trips exactly: 10^(-inf/20) is 0.0, while
+        // 10^(-144/20) is merely very small. A floor applied here would lose
+        // that.
         assert_eq!(
-            Db::from_amplitude_exact(Amplitude::SILENT).to_amplitude(),
+            Db::from_amplitude(Amplitude::SILENT).to_amplitude(),
             Amplitude::SILENT
         );
         assert!(Db::FLOOR.to_amplitude().get() > 0.0);
 
-        // Above silence the two agree.
-        assert_eq!(
-            Db::from_amplitude(Amplitude(0.5)),
-            Db::from_amplitude_exact(Amplitude(0.5))
-        );
+        // `Db::FLOOR` still exists — it is what the consumers pin *to*, and
+        // the three that do are the dynamics detectors, `ms_ratio`, and the
+        // true-peak reading. It is simply not applied by the conversion.
+        assert!(Db::FLOOR.get().is_finite());
     }
 
     #[test]
-    fn db_to_amplitude_f64_is_not_just_the_f32_path_widened() {
-        // The loudness path works in f64 because LUFS targets are f64. The
-        // wider form must actually be computed wide, or export gain shifts in
-        // the low bits.
-        let wide = Db(-23.0).to_amplitude_f64();
-        assert!((wide - 0.070_794_578_438_413_79).abs() < 1e-15);
-        assert_eq!(Db::UNITY.to_amplitude_f64(), 1.0);
+    fn db_and_amplitude_convert_by_from_in_both_directions() {
+        // Both spellings delegate to the inherent method, so they cannot drift.
+        assert_eq!(Db::from(Amplitude(0.5)), Db::from_amplitude(Amplitude(0.5)));
+        assert_eq!(Amplitude::from(Db(-6.0)), Db(-6.0).to_amplitude());
+
+        // Mutually inverse away from silence, within transcendental error —
+        // "lossless" in the rule above means no information is *discarded*,
+        // not bit-exact.
+        let round = Amplitude::from(Db::from(Amplitude(0.25)));
+        assert!((round.get() - 0.25).abs() < 1e-6);
     }
 
     #[test]
@@ -2709,8 +2671,7 @@ mod tests {
         // scale. +6 dB is roughly a doubling.
         assert!(Db(6.0).to_amplitude() > Amplitude::UNITY);
         assert_eq!(Db::UNITY.to_amplitude(), Amplitude::UNITY);
-        assert_eq!(Amplitude::UNITY.to_db(), Db::UNITY);
-        assert_eq!(Amplitude::SILENT.to_db(), Db::FLOOR);
+        assert_eq!(Db::from(Amplitude::UNITY), Db::UNITY);
 
         // Scalable, because trimming a gain is meaningful.
         assert_eq!(Amplitude(2.0) * 0.5, Amplitude::UNITY);

@@ -189,10 +189,27 @@ pub fn finish(state: LoudnessState) -> Loudness {
 
     Loudness {
         lufs: Db(lufs as f32),
-        // Pins silence at `Db::FLOOR`, which is what the local
-        // `linear_to_dbtp` here used to do by hand.
-        true_peak: Db::from_amplitude_f64(peak_linear),
+        true_peak: true_peak_db(peak_linear),
         range: Db(range as f32),
+    }
+}
+
+/// An `f64` true-peak amplitude as dBTP, pinning silence at [`Db::FLOOR`].
+///
+/// [`Db::from_amplitude`] leaves silence at `-inf` because the floor belongs to
+/// the consumer; this is that consumer. An infinite peak would reach
+/// [`Loudness::gain_to`], which subtracts it into a `NaN` — the same hazard the
+/// `-70` LUFS gate guards against.
+///
+/// Not routed through [`Amplitude`], which is `f32`: converting first narrows
+/// the input before the `log10`, defeating the reason this path is `f64`. The
+/// arithmetic is [`Db::from_amplitude`]'s, at the width this boundary holds.
+#[inline]
+fn true_peak_db(peak_linear: f64) -> Db {
+    if peak_linear <= 0.0 {
+        Db::FLOOR
+    } else {
+        Db((20.0 * peak_linear.log10()) as f32)
     }
 }
 
@@ -210,6 +227,42 @@ pub fn measure_loudness(cfg: &LoudnessConfig, buffer: Interleaved<'_>) -> Option
 mod tests {
     use super::*;
     use std::f32::consts::TAU;
+    use tutti_types::Amplitude;
+
+    /// The true-peak floor lives at this boundary, not in `Db::from_amplitude`.
+    #[test]
+    fn true_peak_pins_silence_and_stays_wide() {
+        // The shared conversion does not floor; this boundary does.
+        assert!(Db::from_amplitude(Amplitude::SILENT).get().is_infinite());
+        assert_eq!(true_peak_db(0.0), Db::FLOOR);
+        assert!(true_peak_db(0.0).get().is_finite());
+
+        // Agrees with the shared conversion everywhere above silence.
+        let want = Db::from_amplitude(Amplitude(0.5));
+        assert!((true_peak_db(0.5).get() - want.get()).abs() < 1e-5);
+        assert!((true_peak_db(1.0).get() - 0.0).abs() < 1e-6);
+
+        // Computed at f64 width: narrowing to `Amplitude` (f32) before the
+        // log10 is the one thing this path exists to avoid.
+        let tiny = 1.0e-30_f64;
+        assert!(
+            (true_peak_db(tiny).get() - -600.0).abs() < 1.0,
+            "f64 input must survive the log10, got {:?}",
+            true_peak_db(tiny)
+        );
+    }
+
+    /// An infinite true peak poisons every gain derived from it — the same
+    /// reason `lufs` is clamped to the `-70` gate.
+    #[test]
+    fn silent_render_yields_a_finite_normalization_gain() {
+        let m = Loudness {
+            lufs: Db(-70.0),
+            true_peak: true_peak_db(0.0),
+            range: Db(0.0),
+        };
+        assert!(m.gain_to(Db(-14.0), Db(-1.0)).get().is_finite());
+    }
 
     /// Interleaved stereo sine at `amp`, `secs` long.
     fn sine(rate: f64, secs: f64, freq: f32, amp: f32) -> Vec<f32> {

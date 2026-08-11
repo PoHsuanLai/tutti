@@ -190,11 +190,24 @@ impl AudioSources {
     /// order pick the winner — the silent last-write-wins this module refuses
     /// for audio fan-in.
     pub fn with(mut self, port: usize, source: AudioSource) -> Self {
+        self.set(port, source);
+        self
+    }
+
+    /// [`with`](Self::with) against an existing value, for a caller holding
+    /// `&mut Self`.
+    ///
+    /// The consuming builder is the right shape when assembling a declaration
+    /// from nothing, and the wrong one when amending a component already in the
+    /// world: reaching it through `&mut` costs a full clone of the port vector
+    /// per amendment, which turns a loop over N changed routes into N clones of
+    /// an N-element vector. `modulation::audio_rate` re-points shaper entities
+    /// exactly that way.
+    pub fn set(&mut self, port: usize, source: AudioSource) {
         if self.0.len() <= port {
             self.0.resize(port + 1, AudioSource::Silence);
         }
         self.0[port] = source;
-        self
     }
 }
 

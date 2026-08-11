@@ -735,6 +735,26 @@ impl PluginAudio for AuInstance {
             }
             tutti_plugin::server::AudioBufferMut::F64(buf) => {
                 // AUv2 doesn't support f64 natively. Convert f32 -> process -> convert back.
+                //
+                // TODO(rt-alloc): this branch allocates four `Vec`s per block on
+                // the audio thread — two buffer sets and two pointer tables.
+                // Unlike the sibling loaders' conversions it is ungated: any AU
+                // running on the f64 path pays it every block.
+                //
+                // The fix is the one VST2 already uses — a resident
+                // `RenderScratch` on the instance, sized at `load` (which
+                // already receives `block_size`) and cleared per block, plus a
+                // `Vec<&[f32]>` / `Vec<&mut [f32]>` pair reused the same way.
+                // See `tutti-vst2-host/src/scratch.rs`, whose doc states the
+                // rule: "Call once at load time, never on the audio thread —
+                // this is the crate's only render-path allocation."
+                //
+                // Left undone deliberately: this module is
+                // `#[cfg(all(target_os = "macos", feature = "au"))]`, and the
+                // change was authored on Linux where it cannot be compiled,
+                // borrow-checked, or tested. Writing it blind would put
+                // unverified code on an audio path. Whoever picks this up needs
+                // a macOS box and an AU that negotiates f64.
                 let input_f32: Vec<Vec<f32>> = buf
                     .inputs
                     .iter()

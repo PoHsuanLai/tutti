@@ -610,7 +610,7 @@ fn reshape_chain(
             }
             s
         });
-        *sources = sources.clone().with(i + 1, AudioSource::node(replacement));
+        sources.set(i + 1, AudioSource::node(replacement));
         dirty.0 = true;
     }
 

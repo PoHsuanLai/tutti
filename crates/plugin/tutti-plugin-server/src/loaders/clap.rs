@@ -375,7 +375,9 @@ impl ClapInstance {
         ctx: &ProcessContext,
         sample_rate: f64,
     ) -> Result<tutti_clap_host::instance::ProcessOutputRef<'a>> {
-        let param_changes = ctx.param_changes.cloned().unwrap_or_default();
+        // Both sides of this hop are `Option<&ParameterChanges>`, so the borrow
+        // passes straight through — cloning here would deep-copy the change list
+        // on every block only to re-borrow it two lines later.
         let note_expressions: Vec<tutti_clap_host::ClapNoteExpression> = ctx
             .note_expression
             .map(convert_note_expressions)
@@ -384,11 +386,9 @@ impl ClapInstance {
 
         let clap_ctx = tutti_clap_host::ProcessContext {
             midi: ctx.midi_events,
-            params: if param_changes.is_empty() {
-                None
-            } else {
-                Some(&param_changes)
-            },
+            // An empty list means "no automation this block"; the plugin reads
+            // `None` and `Some(empty)` differently, so the mapping is kept.
+            params: ctx.param_changes.filter(|p| !p.is_empty()),
             expressions: &note_expressions,
             transport: transport.as_ref(),
         };

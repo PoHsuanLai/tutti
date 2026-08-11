@@ -6,6 +6,7 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use tutti_core::{Beat, BeatDuration};
 use tutti_midi_types::ump::MidiEvent;
 use tutti_midi_types::MidiUnitId;
@@ -68,12 +69,29 @@ impl From<(Beat, MidiEvent)> for TimedMidiEvent {
 #[derive(Debug, Default)]
 pub struct MidiSnapshot {
     /// Events per unit ID, sorted by beat.
-    events: HashMap<MidiUnitId, Vec<TimedMidiEvent>>,
+    ///
+    /// Behind an `Arc` because a clone must NOT copy them. fundsp `DynClone`s
+    /// every unit on `Net::commit`, so a graph edit during an offline render
+    /// used to deep-copy the entire score — every event of every unit — once
+    /// per clone. The map is written only while building (`add_event` /
+    /// `add_events`, via `Arc::make_mut`) and read-only thereafter, so sharing
+    /// it is free.
+    ///
+    /// The **cursors** below are deliberately NOT shared: see [`Clone`].
+    events: Arc<HashMap<MidiUnitId, Vec<TimedMidiEvent>>>,
     /// Current read cursor per unit (index into events vec).
     /// Atomic so `poll_range` can advance without `&mut self`.
     cursors: HashMap<MidiUnitId, AtomicUsize>,
 }
 
+/// Shares the events, copies the cursors.
+///
+/// The split is load-bearing in both directions. Sharing the events is what
+/// makes a clone cheap. Copying the cursors is what keeps it *correct*: fundsp
+/// clones a unit on every `Net::commit`, and if two live copies shared one read
+/// position they would consume each other's events — each poll advancing the
+/// cursor past events the other never saw, so MIDI would go missing with
+/// nothing to point at.
 impl Clone for MidiSnapshot {
     fn clone(&self) -> Self {
         let cursors = self
@@ -82,7 +100,7 @@ impl Clone for MidiSnapshot {
             .map(|(&k, v)| (k, AtomicUsize::new(v.load(Ordering::Relaxed))))
             .collect();
         Self {
-            events: self.events.clone(),
+            events: Arc::clone(&self.events),
             cursors,
         }
     }
@@ -103,7 +121,7 @@ impl MidiSnapshot {
     /// sort-every-call would cost. [`add_events`](Self::add_events) is still
     /// preferable when the events are already in hand.
     pub fn add_event(&mut self, unit_id: MidiUnitId, beat: Beat, event: MidiEvent) {
-        let events = self.events.entry(unit_id).or_default();
+        let events = Arc::make_mut(&mut self.events).entry(unit_id).or_default();
         // NaN never compares >=, so a NaN beat takes the re-sort path, where
         // `sort_by_beat`'s total order handles it.
         let in_order = events.last().is_none_or(|last| beat >= last.beat);
@@ -126,7 +144,7 @@ impl MidiSnapshot {
         unit_id: MidiUnitId,
         events: impl IntoIterator<Item = impl Into<TimedMidiEvent>>,
     ) {
-        let slot = self.events.entry(unit_id).or_default();
+        let slot = Arc::make_mut(&mut self.events).entry(unit_id).or_default();
         slot.extend(events.into_iter().map(Into::into));
         sort_by_beat(slot);
         self.cursors
@@ -277,6 +295,74 @@ mod tests {
 
     fn buf16() -> [MidiEvent; 16] {
         [MidiEvent::noop(); 16]
+    }
+
+    /// A clone shares the events and does NOT share the cursors.
+    ///
+    /// Both halves matter, and they pull in opposite directions.
+    ///
+    /// **Sharing the events** is the point: fundsp `DynClone`s every unit on
+    /// `Net::commit`, so a graph edit mid-render used to deep-copy the whole
+    /// score. Asserted with `Arc::ptr_eq` on the events map — the only
+    /// observable that distinguishes a shared allocation from an equal copy.
+    ///
+    /// **Not sharing the cursors** is what keeps it correct, and is why the
+    /// obvious `Arc<MidiSnapshot>` would have been a bug: two live copies
+    /// reading one cursor consume each other's events, each poll advancing past
+    /// events the other never saw. That failure is silent — missing MIDI with
+    /// nothing to point at.
+    #[test]
+    fn a_clone_shares_the_events_but_not_the_read_position() {
+        let mut snapshot = MidiSnapshot::new();
+        let unit = MidiUnitId::new(1);
+        snapshot.add_event(unit, Beat(0.0), note_on(60, 100));
+        snapshot.add_event(unit, Beat(1.0), note_on(64, 100));
+
+        let copy = snapshot.clone();
+
+        assert!(
+            Arc::ptr_eq(&snapshot.events, &copy.events),
+            "the event map must be shared, not copied"
+        );
+
+        // Drain the original completely.
+        let mut out = buf16();
+        assert_eq!(snapshot.poll_range(unit, Beat(0.0), Beat(10.0), &mut out), 2);
+        assert_eq!(snapshot.poll_range(unit, Beat(0.0), Beat(10.0), &mut out), 0);
+
+        // The clone's cursor is its own, so it still sees both events.
+        let mut out2 = buf16();
+        assert_eq!(
+            copy.poll_range(unit, Beat(0.0), Beat(10.0), &mut out2),
+            2,
+            "a shared cursor would have consumed these"
+        );
+    }
+
+    /// Writing to a snapshot that shares its events copies them first.
+    ///
+    /// `Arc::make_mut` is what keeps the sharing safe: a builder mutating one
+    /// snapshot must not reach into a clone that is mid-render.
+    #[test]
+    fn adding_to_a_shared_snapshot_does_not_touch_the_other() {
+        let mut original = MidiSnapshot::new();
+        let unit = MidiUnitId::new(1);
+        original.add_event(unit, Beat(0.0), note_on(60, 100));
+
+        let copy = original.clone();
+        original.add_event(unit, Beat(1.0), note_on(64, 100));
+
+        assert!(
+            !Arc::ptr_eq(&original.events, &copy.events),
+            "the write must have forked the map"
+        );
+
+        let mut out = buf16();
+        assert_eq!(
+            copy.poll_range(unit, Beat(0.0), Beat(10.0), &mut out),
+            1,
+            "the clone keeps the score it was made from"
+        );
     }
 
     /// `add_event` skips the sort when events arrive in beat order, so the

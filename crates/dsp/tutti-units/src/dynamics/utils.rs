@@ -50,12 +50,11 @@ pub(crate) fn sidechain_level_buffer(input: &BufferRef, ch: usize, i: usize) -> 
 /// compressor, since anything near either floor is far below any usable
 /// threshold; the agreement is the point.
 ///
-/// The guard is about *agreement*, not about containing a `NaN`. The gain
-/// curves happen to survive `-inf` — `compute_compressor_gain_reduction` sends
-/// it down the `input_db <= below` branch and returns `Db(0.0)` — so the
-/// argument for pinning here is the one above: one floor across every detector,
-/// and a level a caller can compare, clamp and display without special-casing
-/// infinity at each site.
+/// The guard buys agreement, not `NaN` containment: the gain curves tolerate
+/// `-inf` on their own ([`compute_compressor_gain_reduction`] sends it down the
+/// `input_db <= below` branch and returns `Db(0.0)`). What it does buy is a
+/// level every caller can compare, clamp and display without special-casing
+/// infinity.
 #[inline]
 pub(crate) fn amplitude_to_db(amp: impl Into<Amplitude>) -> Db {
     let amp = amp.into();
@@ -175,14 +174,12 @@ mod tests {
         assert_eq!(amplitude_to_db(-1.0), Db::FLOOR);
     }
 
-    /// What the floor actually buys, stated as the thing that breaks without
-    /// it: a *level* stays comparable and finite.
+    /// The floor's payoff: a detected *level* stays finite and comparable.
     ///
-    /// It is deliberately not "silence would produce NaN". It would not — the
-    /// gain curves send `-inf` down their below-threshold branch and return a
-    /// finite reduction, so a test asserting `is_finite()` on the gain passes
-    /// with the guard removed and proves nothing. The property the guard owns
-    /// is that the detector's own output is a usable number.
+    /// Assert on the level, never on a downstream gain. The gain curves send
+    /// `-inf` down their below-threshold branch and return a finite reduction,
+    /// so `is_finite()` on the gain holds with the guard removed and would
+    /// cover nothing.
     #[test]
     fn the_floor_keeps_a_detected_level_usable() {
         let level = amplitude_to_db(0.0);

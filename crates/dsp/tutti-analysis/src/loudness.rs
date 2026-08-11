@@ -196,16 +196,14 @@ pub fn finish(state: LoudnessState) -> Loudness {
 
 /// An `f64` true-peak amplitude as dBTP, pinning silence at [`Db::FLOOR`].
 ///
-/// **This is where the true-peak floor is applied.** `Db::from_amplitude`
-/// leaves silence at `-inf` because the floor belongs to the consumer; this is
-/// the consumer, and an infinite peak poisons every gain derived from it —
-/// `gain_to` subtracts it — into `NaN`, which is the same reason `lufs` is
-/// clamped to the `-70` gate above.
+/// [`Db::from_amplitude`] leaves silence at `-inf` because the floor belongs to
+/// the consumer; this is that consumer. An infinite peak would reach
+/// [`Loudness::gain_to`], which subtracts it into a `NaN` — the same hazard the
+/// `-70` LUFS gate guards against.
 ///
-/// Written out rather than routed through `Amplitude` because `Amplitude` is
-/// `f32`: converting first would narrow the input before the `log10`, which is
-/// the one thing the `f64` loudness path exists to avoid. The arithmetic is
-/// `Db::from_amplitude`'s, at the width this boundary holds.
+/// Not routed through [`Amplitude`], which is `f32`: converting first narrows
+/// the input before the `log10`, defeating the reason this path is `f64`. The
+/// arithmetic is [`Db::from_amplitude`]'s, at the width this boundary holds.
 #[inline]
 fn true_peak_db(peak_linear: f64) -> Db {
     if peak_linear <= 0.0 {

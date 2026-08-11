@@ -423,20 +423,16 @@ impl Db {
 
     /// Amplitude as decibels. **Silence is `-inf`, not [`FLOOR`](Self::FLOOR).**
     ///
-    /// The floor is deliberately *not* applied here. Silence has no logarithm,
-    /// and what to substitute for it is a property of the consumer, not of the
-    /// conversion: a meter wants one engine-wide floor to bottom out at, a
-    /// ratio on a ±60 dB scale wants its own bound, and arithmetic that must
-    /// round-trip wants no floor at all (`to_amplitude` of `-inf` is exactly
-    /// `0.0`, which a pinned floor loses). A caller that needs a floor pins it
-    /// at its own boundary, where the choice is visible.
+    /// No floor is applied. Silence has no logarithm, and what to substitute
+    /// for it belongs to the consumer, not to the conversion: a meter wants one
+    /// engine-wide floor to bottom out at, a ratio on a ±60 dB scale wants its
+    /// own bound, and arithmetic that must round-trip wants no floor at all
+    /// (`to_amplitude` of `-inf` is exactly `0.0`, which a pinned floor loses).
+    /// A caller that needs a floor pins it at its own boundary, where the
+    /// choice is visible.
     ///
-    /// This used to be three methods — one per floor policy — which is what
-    /// disqualified `Amplitude` → `Db` from being a `From` impl. Pushing the
-    /// policy out to the three boundaries that had it left exactly one answer
-    /// here, so the [`From`] impls below are now the same conversion under a
-    /// second spelling. Note that `.into()` therefore yields `-inf` for
-    /// silence: reach for it only where that is correct.
+    /// `From<Amplitude> for Db` is this method, so `.into()` also yields `-inf`
+    /// for silence — reach for it only where that is correct.
     #[inline]
     pub fn from_amplitude(amp: Amplitude) -> Db {
         Db(20.0 * amp.0.log10())
@@ -1498,22 +1494,17 @@ impl Semitones {
 //
 //   - It needs another input. `Seconds::to_samples` takes a `SampleRate`,
 //     `BeatDuration::to_seconds` takes a `Bpm`. Not two-type conversions.
-//   - The answer is not unique. `Cents::to_pitch_ratio` is fine as a method
-//     for the *scalar* reason below, but the shape to watch for is a
-//     conversion with a policy knob: if two call sites would want different
-//     results, a `From` impl has to pick one and apply it silently at every
-//     `.into()`.
+//   - The answer is not unique — the shape to watch for is a conversion with
+//     a policy knob. If two call sites would want different results, a `From`
+//     impl has to pick one and apply it silently at every `.into()`.
 //
-//     `Amplitude` → `Db` used to be exactly that, with three names
-//     (`from_amplitude` pinning silence at `Db::FLOOR`, `from_amplitude_exact`
-//     letting it be `-inf`, `from_amplitude_f64` taking the wider input), and
-//     this rule named it as the example of what may not be a `From`. It is one
-//     now, because the ambiguity was *removed* rather than hidden: the floor
-//     is a property of the consumer, so it moved to the three boundaries that
-//     had opinions about it (`tutti-units`' dynamics detectors, `ms_ratio` in
-//     `tutti-analysis`, and its true-peak reading), leaving one honest
-//     conversion here. Collapsing the names without moving the policy would
-//     have been the failure this clause is about.
+//     The fix is to move the policy to the consumers that hold opinions about
+//     it, not to pick a default and bury it. `Amplitude` → `Db` is the worked
+//     example: the silence floor lives at the three boundaries that care
+//     (`tutti-units`' dynamics detectors, `ms_ratio` in `tutti-analysis`, and
+//     its true-peak reading), which leaves one answer here and makes the
+//     `From` impl honest. Collapsing such a set of names *without* relocating
+//     the policy is the failure this clause is about.
 //   - The target is a bare scalar. `Cents::to_pitch_ratio` and
 //     `Semitones::to_pitch_ratio` both land on `f32`; as `From` impls they
 //     would be two different meanings of one target type.
@@ -2480,10 +2471,10 @@ mod tests {
         // Needs a second input, so it is not a two-type conversion at all.
         assert_eq!(Seconds(1.0).to_samples(SampleRate::SR_48K), Samples(48_000));
 
-        // `Amplitude` <-> `Db` used to be the example here, with three answers
-        // for one type pair. It is a `From` now — see the test below. What
-        // stays named is the case where the second input is real, not the case
-        // where a policy knob was hiding in the conversion.
+        // What stays named is the case where the second input is real. A
+        // policy knob hiding inside a conversion is not that case — it is
+        // relocated to the consumer instead, which is what lets
+        // `Amplitude` <-> `Db` be a `From`. See the test below.
 
         // Target is a bare scalar, and two different units convert into it —
         // as `From` impls these would be two meanings of one target type.
@@ -2506,7 +2497,7 @@ mod tests {
 
         // -inf is what round-trips exactly: 10^(-inf/20) is 0.0, while
         // 10^(-144/20) is merely very small. A floor applied here would lose
-        // that, which is why the arithmetic form is the one that survived.
+        // that.
         assert_eq!(
             Db::from_amplitude(Amplitude::SILENT).to_amplitude(),
             Amplitude::SILENT

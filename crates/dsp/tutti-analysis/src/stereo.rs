@@ -32,11 +32,12 @@ impl StereoLevels {
     pub fn ms_ratio(&self) -> Db {
         // A meter range, deliberately not `Db::FLOOR`: this is a ratio between
         // two amplitudes on a ±60 dB scale, not a level pinned at the noise
-        // floor. `Db::from_amplitude` gives silence `-inf`, leaving the floor
-        // to the consumer — this is the consumer, and its floor is `-60`
-        // applied by the clamp. The three early returns below cover every
-        // non-positive input, so the conversion never actually sees one; the
-        // clamp bounds the finite range, not the silent case.
+        // floor. `Db::from_amplitude` leaves the floor to its consumer, and
+        // this consumer's floor is the `-60` below, applied by the clamp.
+        //
+        // The three early returns cover every non-positive input, so the
+        // conversion never sees one — the clamp bounds the finite range, not
+        // the silent case.
         const FLOOR: Db = Db(-60.0);
         const CEILING: Db = Db(60.0);
 

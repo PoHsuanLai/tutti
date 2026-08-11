@@ -3,7 +3,7 @@
 //! Bounded cache with least-recently-used eviction.
 
 use dashmap::DashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use tutti_core::Wave;
@@ -62,7 +62,7 @@ impl LruCache {
     ///
     /// `None` is a plain miss — every caller treats it as "skip this region",
     /// never as an error.
-    pub fn get(&self, path: &PathBuf) -> Option<Arc<Wave>> {
+    pub fn get(&self, path: &Path) -> Option<Arc<Wave>> {
         self.cache.get(path).map(|entry| {
             entry.last_access.store(now_ms(), Ordering::Relaxed);
             entry.wave.clone()
@@ -110,13 +110,13 @@ impl LruCache {
     /// No-op-on-drop is safe if the entry is absent (e.g. never admitted): the
     /// pin count only exists on a live entry, so the guard's `Drop` simply finds
     /// nothing to decrement. Callers pin *after* insertion in practice.
-    pub fn pin(self: &Arc<Self>, path: &PathBuf) -> StreamPin {
+    pub fn pin(self: &Arc<Self>, path: &Path) -> StreamPin {
         if let Some(entry) = self.cache.get(path) {
             entry.pins.fetch_add(1, Ordering::Relaxed);
         }
         StreamPin {
             cache: Arc::clone(self),
-            path: path.clone(),
+            path: path.to_path_buf(),
         }
     }
 

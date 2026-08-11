@@ -83,21 +83,29 @@ impl JrStamper {
         }
     }
 
-    /// Return a new stream: each input event preceded by a JR Timestamp for its
+    /// Write each input event into `out`, preceded by a JR Timestamp for its
     /// `frame_offset`. `origin_samples` is the absolute sample position of this
     /// block's frame-offset zero, so stamps stay monotonic across blocks.
     ///
     /// Prefer [`JrStream`] over calling this directly: the origin has to advance
     /// by exactly the right amount between blocks, and that is the part a caller
     /// gets wrong.
-    pub fn stamp_block(&self, events: &[MidiEvent], origin_samples: u64) -> Vec<MidiEvent> {
-        let mut out = Vec::with_capacity(events.len() * 2);
+    ///
+    /// **Appends**; it does not clear. [`JrStream::stamp_span`] writes a due JR
+    /// Clock ahead of the events and then calls this, so clearing here would
+    /// drop it — the caller that owns the buffer is the one that clears it.
+    ///
+    /// Takes a buffer rather than returning a `Vec` because stamping is a
+    /// per-block operation whose consumers hand the result straight to
+    /// `MidiOut::queue` as a slice. Returning one allocated on every block for a
+    /// value nobody keeps.
+    pub fn stamp_block(&self, events: &[MidiEvent], origin_samples: u64, out: &mut Vec<MidiEvent>) {
+        out.reserve(events.len() * 2);
         for ev in events {
             let ticks = self.clock.ticks_at(origin_samples + ev.frame_offset as u64);
             out.push(MidiEvent::jr_timestamp(ticks).with_frame_offset(ev.frame_offset));
             out.push(*ev);
         }
-        out
     }
 
     /// How far the origin must advance after stamping `events` — one past the
@@ -267,8 +275,8 @@ impl JrStream {
     /// block. That is fine for stamping — an empty block stamps nothing — but it
     /// means a clock cadence driven from here would freeze on a silent stream.
     /// Use [`stamp_span`](Self::stamp_span) when clocking.
-    pub fn stamp(&mut self, events: &[MidiEvent]) -> Vec<MidiEvent> {
-        self.stamp_span(events, JrStamper::block_span(events))
+    pub fn stamp(&mut self, events: &[MidiEvent], out: &mut Vec<MidiEvent>) {
+        self.stamp_span(events, JrStamper::block_span(events), out);
     }
 
     /// Stamp one block of a known `block_samples` length, emitting a JR Clock
@@ -279,16 +287,24 @@ impl JrStream {
     /// "independent … not related to any other message", so the cadence has to
     /// keep running through silence — and it only can if time advances on empty
     /// blocks, which the true block length provides and `block_span` does not.
-    pub fn stamp_span(&mut self, events: &[MidiEvent], block_samples: u64) -> Vec<MidiEvent> {
-        let mut out = Vec::with_capacity(events.len() * 2 + 1);
+    /// `out` is cleared first, so it is a destination and not an accumulator.
+    /// Reusing one buffer across blocks is the point: this path runs once per
+    /// block, and its callers only borrow the result to hand it to
+    /// `MidiOut::queue`.
+    pub fn stamp_span(
+        &mut self,
+        events: &[MidiEvent],
+        block_samples: u64,
+        out: &mut Vec<MidiEvent>,
+    ) {
+        out.clear();
         if let Some(emitter) = self.emitter.as_mut() {
             if let Some(clock) = emitter.due(self.origin_samples) {
                 out.push(clock);
             }
         }
-        out.extend(self.stamper.stamp_block(events, self.origin_samples));
+        self.stamper.stamp_block(events, self.origin_samples, out);
         self.origin_samples = self.origin_samples.wrapping_add(block_samples);
-        out
     }
 
     /// The absolute sample position the next [`stamp`](Self::stamp) will start
@@ -416,7 +432,8 @@ mod tests {
         let mut clocks = 0;
         // 1 second of entirely silent blocks.
         for _ in 0..(sample_rate as u64 / block) {
-            let out = stream.stamp_span(&[], block);
+            let mut out = Vec::new();
+            stream.stamp_span(&[], block, &mut out);
             clocks += out.iter().filter(|e| e.jr_clock_value().is_some()).count();
             assert!(
                 out.iter().all(|e| e.jr_clock_value().is_some()),
@@ -438,7 +455,8 @@ mod tests {
             MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000)
                 .with_frame_offset(0),
         ];
-        let out = stream.stamp_span(&events, 512);
+        let mut out = Vec::new();
+        stream.stamp_span(&events, 512, &mut out);
         // clock, then stamp, then the note.
         assert_eq!(out.len(), 3);
         assert!(out[0].jr_clock_value().is_some(), "clock leads");
@@ -451,7 +469,8 @@ mod tests {
         // `new` alone stamps only — the cadence is opt-in, so existing
         // stamp-only callers keep their exact output.
         let mut stream = JrStream::new(48_000.0);
-        let out = stream.stamp_span(&[], 512);
+        let mut out = Vec::new();
+        stream.stamp_span(&[], 512, &mut out);
         assert!(out.is_empty(), "no clock, no events, no output");
     }
 
@@ -460,11 +479,11 @@ mod tests {
         // The distinction the cadence depends on: `stamp` cannot move time on an
         // empty block, `stamp_span` can.
         let mut by_events = JrStream::new(48_000.0);
-        by_events.stamp(&[]);
+        by_events.stamp(&[], &mut Vec::new());
         assert_eq!(by_events.origin_samples(), 0, "silence stalls the origin");
 
         let mut by_block = JrStream::new(48_000.0);
-        by_block.stamp_span(&[], 512);
+        by_block.stamp_span(&[], 512, &mut Vec::new());
         assert_eq!(by_block.origin_samples(), 512, "the block advanced it");
     }
 
@@ -510,12 +529,14 @@ mod tests {
                 .with_frame_offset(24_000),
         ];
 
-        let first = stream.stamp(&events);
+        let mut first = Vec::new();
+        stream.stamp(&events, &mut first);
         assert_eq!(first[0].jr_timestamp_value(), Some(0));
         assert_eq!(stream.origin_samples(), 24_001);
 
         // The second block's first event is stamped from the new origin, not zero.
-        let second = stream.stamp(&events);
+        let mut second = Vec::new();
+        stream.stamp(&events, &mut second);
         assert_eq!(second[0].jr_timestamp_value(), Some(15_625));
         assert_eq!(stream.origin_samples(), 48_002);
     }
@@ -542,8 +563,10 @@ mod tests {
                 .with_frame_offset(511),
         ];
 
-        let from_clock = wire.stamp(&clock_block);
-        let from_track = wire.stamp(&track_block);
+        let mut from_clock = Vec::new();
+        wire.stamp(&clock_block, &mut from_clock);
+        let mut from_track = Vec::new();
+        wire.stamp(&track_block, &mut from_track);
 
         let first = from_clock[0].jr_timestamp_value().unwrap();
         let second = from_track[0].jr_timestamp_value().unwrap();
@@ -563,7 +586,8 @@ mod tests {
             MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0)
                 .with_frame_offset(24_000),
         ];
-        let out = stamper.stamp_block(&events, 0);
+        let mut out = Vec::new();
+        stamper.stamp_block(&events, 0, &mut out);
         assert_eq!(out.len(), 4, "one timestamp + one event, twice");
         assert_eq!(out[0].jr_timestamp_value(), Some(0));
         assert!(out[1].is_note_on());
@@ -583,7 +607,8 @@ mod tests {
             MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 64, 0x8000)
                 .with_frame_offset(quarter_second),
         ];
-        let stream = stamper.stamp_block(&events, 0);
+        let mut stream = Vec::new();
+        stamper.stamp_block(&events, 0, &mut stream);
 
         let mut rx = JrReceiver::new();
         let mut recovered = Vec::new();

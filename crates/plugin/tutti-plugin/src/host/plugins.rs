@@ -150,16 +150,20 @@ impl Plugins {
         &self.audio
     }
 
-    /// Run a synchronous rescan and return `self`. Discards the
-    /// [`ScanResult`]; use [`Plugins::rescan_sync`] if you need the tally.
+    /// Run a blocking rescan and return `self`. Discards the
+    /// [`ScanResult`]; use [`Plugins::rescan`] if you need the tally.
     pub fn with_fresh_scan(mut self) -> Self {
-        let _ = self.rescan_sync();
+        let _ = self.rescan();
         self
     }
 
-    /// Scan plugin directories asynchronously, consuming `self`. Returns the
-    /// scan handle (progress + result channels) alongside a
+    /// Scan plugin directories on a background thread, consuming `self`.
+    /// Returns the scan handle (progress + result channels) alongside a
     /// [`ScanTicket`] that yields the catalog back once the scan completes.
+    ///
+    /// Named for [`std::process::Command::spawn`]: a thread is created and
+    /// something must be joined. This is not an `async fn` and returns no
+    /// future — see [`rescan`](Self::rescan) for the blocking form.
     ///
     /// Works with any [`PluginCatalog`] impl: the live catalog is *moved* onto
     /// the scanner thread rather than reloaded from disk, so this assumes no
@@ -168,7 +172,7 @@ impl Plugins {
     /// ```no_run
     /// # use tutti_plugin::catalog::Plugins;
     /// # fn ex(plugins: Plugins) {
-    /// let (handle, ticket) = plugins.rescan();
+    /// let (handle, ticket) = plugins.spawn_rescan();
     /// for progress in &handle.progress_rx {
     ///     println!("{}/{}", progress.current, progress.total);
     /// }
@@ -177,9 +181,9 @@ impl Plugins {
     /// let plugins = ticket.join().expect("scanner thread panicked");
     /// # }
     /// ```
-    pub fn rescan(self) -> (ScanHandle, ScanTicket) {
+    pub fn spawn_rescan(self) -> (ScanHandle, ScanTicket) {
         let scanner = PluginScanner::new(self.catalog, self.config.pedal_path());
-        let handle = scanner.scan_async(self.config.scan_dirs.clone());
+        let handle = scanner.spawn_scan(&self.config.scan_dirs);
         let ticket = ScanTicket {
             catalog_rx: handle.catalog_rx.clone(),
             config: self.config,
@@ -188,16 +192,16 @@ impl Plugins {
         (handle, ticket)
     }
 
-    /// Scan synchronously. Returns the scan summary; the in-memory
-    /// catalog is refreshed before returning.
-    pub fn rescan_sync(&mut self) -> ScanResult {
+    /// Scan on the calling thread (blocking). Returns the scan summary; the
+    /// in-memory catalog is refreshed before returning.
+    pub fn rescan(&mut self) -> ScanResult {
         // Move the current catalog into the scanner; leave a throwaway
         // placeholder while scanning. Works for any catalog impl because
         // the placeholder is never observed by callers.
         let placeholder: Box<dyn PluginCatalog> = Box::new(PlaceholderCatalog);
         let catalog = std::mem::replace(&mut self.catalog, placeholder);
         let mut scanner = PluginScanner::new(catalog, self.config.pedal_path());
-        let result = scanner.scan_sync(self.config.scan_dirs.clone());
+        let result = scanner.scan(&self.config.scan_dirs);
         self.catalog = scanner.into_catalog();
         result
     }
@@ -205,7 +209,7 @@ impl Plugins {
     /// Rebuild the in-memory catalog by re-reading the JSON database file.
     ///
     /// Only meaningful for a JSON-backed catalog whose file another process
-    /// may have rewritten — after [`Plugins::rescan`] the catalog comes back
+    /// may have rewritten — after [`Plugins::spawn_rescan`] the catalog comes back
     /// through [`ScanTicket::join`] instead, with no reload needed.
     #[cfg(feature = "json")]
     pub fn reload(&mut self) {
@@ -391,7 +395,7 @@ impl Plugins {
     pub fn recover_crash(&mut self) {
         // The scanner owns the recovery, and it takes the catalog by value, so
         // this is a move out and back rather than a borrow — the same shape as
-        // `rescan_sync`, and for the same reason: any `PluginCatalog` impl must
+        // `rescan`, and for the same reason: any `PluginCatalog` impl must
         // work here, not just cheaply-reloadable file-backed ones.
         let placeholder: Box<dyn PluginCatalog> = Box::new(PlaceholderCatalog);
         let catalog = std::mem::replace(&mut self.catalog, placeholder);
@@ -429,7 +433,7 @@ impl Plugins {
     }
 }
 
-/// Claim on the catalog an async [`Plugins::rescan`] took ownership of.
+/// Claim on the catalog a spawned [`Plugins::spawn_rescan`] took ownership of.
 ///
 /// `rescan` consumes the [`Plugins`] because the catalog moves onto the scan
 /// thread; this is how you get one back. Holding a ticket does not block —
@@ -477,7 +481,7 @@ impl ScanTicket {
     }
 }
 
-/// Zero-state stand-in used during `rescan_sync` so the live catalog can
+/// Zero-state stand-in used during `rescan` so the live catalog can
 /// be moved into the scanner and restored afterward.
 struct PlaceholderCatalog;
 

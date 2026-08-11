@@ -5,7 +5,7 @@
 //! cannot run on the Bevy main thread, and a host that only learns the final
 //! tally cannot draw a progress bar for it.
 //!
-//! `tutti-plugin` already solves both. [`Plugins::rescan`] spawns the scan on
+//! `tutti-plugin` already solves both. [`Plugins::spawn_rescan`] spawns the scan on
 //! its own named thread and hands back a `ScanHandle` carrying a per-plugin
 //! [`ScanProgress`] stream, plus a `ScanTicket` whose `try_join` is documented
 //! "for frame-driven hosts (a Bevy system, a UI tick) that must not stall".
@@ -21,7 +21,7 @@
 //!
 //! # Why the catalog moves rather than being rebuilt
 //!
-//! [`Plugins::rescan`] **consumes** the catalog — it moves onto the scan thread,
+//! [`Plugins::spawn_rescan`] **consumes** the catalog — it moves onto the scan thread,
 //! and the ticket is how ownership returns. So this module removes
 //! [`PluginsRes`] from the world for the duration and re-inserts it on
 //! completion: "the catalog is away being scanned" becomes a state you observe
@@ -32,10 +32,10 @@
 //! discards every unflushed in-memory edit — a user's `blacklist`,
 //! `unblacklist` or `register_path` since the last `flush` — and it hardcodes
 //! one catalog impl over whatever the host installed. Both engine scan paths
-//! are shaped to prevent the first (`rescan_sync` moves the live catalog
-//! through the scanner; [`Plugins::rescan`] returns it via the ticket).
+//! are shaped to prevent the first (`rescan` moves the live catalog
+//! through the scanner; [`Plugins::spawn_rescan`] returns it via the ticket).
 //!
-//! [`Plugins::rescan`]: tutti_plugin::catalog::Plugins::rescan
+//! [`Plugins::spawn_rescan`]: tutti_plugin::catalog::Plugins::spawn_rescan
 
 use bevy_ecs::message::Messages;
 use bevy_ecs::prelude::*;
@@ -105,7 +105,7 @@ pub enum PluginCatalogState {
 /// The in-flight scan. Absent when no scan is running.
 ///
 /// Private fields: [`start_scan`] inserts this, a host does not build one — the
-/// handle and ticket must come from the same [`Plugins::rescan`] call, and
+/// handle and ticket must come from the same [`Plugins::spawn_rescan`] call, and
 /// pairing two halves from different scans would deadlock or cross catalogs.
 #[derive(Resource)]
 pub struct InFlightScan {
@@ -118,7 +118,7 @@ pub struct InFlightScan {
 
 /// On [`RescanPlugins`], move the catalog onto a scan thread.
 ///
-/// Exclusive because [`Plugins::rescan`] consumes the `Plugins`: the resource
+/// Exclusive because [`Plugins::spawn_rescan`] consumes the `Plugins`: the resource
 /// has to *leave* the world, which a `ResMut` borrow cannot express.
 pub fn start_scan(world: &mut World) {
     // Drain regardless; one request is as good as five.
@@ -137,7 +137,7 @@ pub fn start_scan(world: &mut World) {
         return;
     };
 
-    let (handle, ticket) = plugins.0.rescan();
+    let (handle, ticket) = plugins.0.spawn_rescan();
     world.insert_resource(InFlightScan {
         handle,
         ticket: Some(ticket),

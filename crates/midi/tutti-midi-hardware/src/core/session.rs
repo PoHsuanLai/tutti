@@ -250,6 +250,14 @@ impl MidiSession {
     }
 
     /// The names of every open input.
+    ///
+    /// Returns an owned `Vec` rather than an iterator because the names live
+    /// behind a `Mutex`: an iterator would borrow the guard, and the guard
+    /// cannot outlive this call. Making the container generic over
+    /// `FromIterator` was tried and reverted — it saves one `collect` at the
+    /// single caller that wants a `HashSet`, and costs a turbofish at every
+    /// caller that just wants the names, because `String` and `Box<str>` both
+    /// satisfy the bound and inference has nothing to go on.
     pub fn connected_input_names(&self) -> Vec<String> {
         self.inner
             .open

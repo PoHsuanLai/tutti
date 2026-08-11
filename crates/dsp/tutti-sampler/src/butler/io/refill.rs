@@ -18,7 +18,7 @@ use super::super::region_map::RegionMap;
 use super::wave_io::{wave_frame_into, wrap_position, WaveIn};
 use dashmap::DashMap;
 use rayon::prelude::*;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tutti_core::Wave;
 
@@ -281,7 +281,7 @@ fn refill_one(
     cache: &LruCache,
     chunk_size: usize,
     is_reverse: bool,
-    file_path: &PathBuf,
+    file_path: &Path,
     fill_pct: f32,
     shared: &super::super::rt_state::RtState,
     buffer: &mut Vec<f32>,
@@ -498,7 +498,7 @@ fn refill_reverse(
 pub(in crate::butler) fn load_wave(
     cache: &LruCache,
     metrics: &Metrics,
-    file_path: &PathBuf,
+    file_path: &Path,
 ) -> Option<Arc<Wave>> {
     if let Some(cached) = cache.get(file_path) {
         return Some(cached);
@@ -513,7 +513,7 @@ pub(in crate::butler) fn load_wave(
             let arc_wave = Arc::new(w);
             let bytes = arc_wave.len() as u64 * arc_wave.channels() as u64 * 4;
             metrics.record_read(bytes);
-            cache.insert(file_path.clone(), arc_wave.clone());
+            cache.insert(file_path.to_path_buf(), arc_wave.clone());
             return Some(arc_wave);
         }
     }

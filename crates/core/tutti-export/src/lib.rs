@@ -178,15 +178,36 @@ impl Rendered {
     }
 
     /// The planes interleaved — the shape a meter or an encoder takes.
+    ///
+    /// **Allocates the whole render.** A `Rendered` holds an entire offline
+    /// pass in memory, so this doubles that for the duration of the call; on a
+    /// long export it is the largest single allocation in the crate. Prefer
+    /// [`interleaved_into`](Self::interleaved_into) wherever the interleaved
+    /// copy is read and dropped rather than kept.
     pub fn interleaved(&self) -> Vec<f32> {
+        let mut out = Vec::new();
+        self.interleaved_into(&mut out);
+        out
+    }
+
+    /// Interleave into a caller-owned buffer, reusing its allocation.
+    ///
+    /// `out` is cleared first, so it is a destination and not an accumulator.
+    /// This exists for the same reason
+    /// [`Interleaved::fold_to_mono_into`](tutti_types::Interleaved::fold_to_mono_into)
+    /// does — [`interleaved`](Self::interleaved) allocates once per call, and
+    /// its callers measure the result and drop it. A two-pass normalize that
+    /// interleaves twice in one scope pays that twice over a buffer it could
+    /// have reused.
+    pub fn interleaved_into(&self, out: &mut Vec<f32>) {
+        out.clear();
         let frames = self.frames().get();
-        let mut out = Vec::with_capacity(frames * self.channels());
+        out.reserve(frames * self.channels());
         for i in 0..frames {
             for plane in &self.planes {
                 out.push(plane[i]);
             }
         }
-        out
     }
 }
 

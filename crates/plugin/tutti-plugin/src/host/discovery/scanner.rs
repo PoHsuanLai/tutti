@@ -37,7 +37,7 @@ pub enum ScanPhase {
     Complete,
 }
 
-/// Handle returned by [`PluginScanner::scan_async`] for monitoring progress.
+/// Handle returned by [`PluginScanner::spawn_scan`] for monitoring progress.
 pub struct ScanHandle {
     /// Per-plugin progress, emitted as the scan advances.
     pub progress_rx: Receiver<ScanProgress>,
@@ -94,14 +94,30 @@ impl PluginScanner {
         self.catalog
     }
 
-    /// Scan directories asynchronously on a background thread.
+    /// Scan directories on a background thread, returning immediately.
     /// Runs crash recovery before scanning.
+    ///
+    /// Spawns a thread and hands back channels, in the shape of
+    /// [`std::process::Command::spawn`] — this is *not* an `async fn` and
+    /// returns no future. See [`scan`](Self::scan) for the blocking form.
     ///
     /// The catalog travels with the scanner onto the worker thread and comes
     /// back over [`ScanHandle::catalog_rx`] when the scan finishes. Drop the
     /// handle and the catalog is dropped with the thread; keep it to recover
     /// ownership.
-    pub fn scan_async(mut self, directories: Vec<PathBuf>) -> ScanHandle {
+    ///
+    /// The paths are collected into owned `PathBuf`s here, because they cross
+    /// the thread boundary with the scanner and cannot borrow from the caller's
+    /// frame. That collect is the difference from [`scan`](Self::scan), which
+    /// borrows for the duration of the call and keeps nothing.
+    pub fn spawn_scan(
+        mut self,
+        directories: impl IntoIterator<Item = impl AsRef<Path>>,
+    ) -> ScanHandle {
+        let directories: Vec<PathBuf> = directories
+            .into_iter()
+            .map(|d| d.as_ref().to_path_buf())
+            .collect();
         let (progress_tx, progress_rx) = crossbeam_channel::unbounded();
         let (result_tx, result_rx) = crossbeam_channel::bounded(1);
         let (catalog_tx, catalog_rx) = crossbeam_channel::bounded(1);
@@ -112,7 +128,7 @@ impl PluginScanner {
                 self.recover_crash();
                 let result = self.scan_inner(&directories, Some(&progress_tx));
                 if let Err(e) = self.catalog.flush() {
-                    warn!("failed to flush plugin catalog after async scan: {e}");
+                    warn!("failed to flush plugin catalog after spawned scan: {e}");
                 }
                 // Hand the catalog back before announcing completion, so a
                 // caller that reacts to `result_rx` finds it already waiting.
@@ -128,21 +144,31 @@ impl PluginScanner {
         }
     }
 
-    /// Scan directories synchronously (blocking). Runs crash recovery,
+    /// Scan directories on the calling thread (blocking). Runs crash recovery,
     /// scans, then flushes the catalog.
-    pub fn scan_sync(&mut self, directories: Vec<PathBuf>) -> ScanResult {
+    ///
+    /// The plain-verb form, per [`std::process::Command::status`] vs
+    /// [`spawn`](Self::spawn_scan): this one blocks and returns the tally.
+    ///
+    /// Takes anything iterable rather than `Vec<PathBuf>`: nothing here
+    /// outlives the call, so a caller scanning a directory list it already
+    /// owns — a config field, most often — should not have to clone it to be
+    /// read from. `&Vec<PathBuf>`, `&[PathBuf]`, an array of `&str` and a lazy
+    /// iterator all work. [`spawn_scan`](Self::spawn_scan) is the one that
+    /// genuinely needs owned paths, because they travel to another thread.
+    pub fn scan(&mut self, directories: impl IntoIterator<Item = impl AsRef<Path>>) -> ScanResult {
         self.recover_crash();
-        let result = self.scan_inner(&directories, None);
+        let result = self.scan_inner(directories, None);
         if let Err(e) = self.catalog.flush() {
-            warn!("failed to flush plugin catalog after sync scan: {e}");
+            warn!("failed to flush plugin catalog after blocking scan: {e}");
         }
         result
     }
 
-    /// Core scanning logic shared between sync and async paths.
+    /// Core scanning logic shared between the blocking and spawned paths.
     fn scan_inner(
         &mut self,
-        directories: &[PathBuf],
+        directories: impl IntoIterator<Item = impl AsRef<Path>>,
         progress_tx: Option<&Sender<ScanProgress>>,
     ) -> ScanResult {
         let emit = |p: ScanProgress| {
@@ -151,14 +177,19 @@ impl PluginScanner {
             }
         };
 
-        // Phase 1: Discovery
+        // Phase 1: Discovery. `dir_count` is tallied as we go rather than read
+        // from a `len()`: the input is an iterator, so it has no length to ask
+        // for and is consumed by this pass.
+        let mut dir_count = 0usize;
         let plugin_paths: Vec<(PathBuf, PluginFormat)> = directories
-            .iter()
+            .into_iter()
             .flat_map(|dir| {
+                dir_count += 1;
+                let dir = dir.as_ref();
                 emit(ScanProgress {
                     current: 0,
                     total: 0,
-                    current_path: dir.clone(),
+                    current_path: dir.to_path_buf(),
                     phase: ScanPhase::Discovery,
                 });
                 discover_plugins(dir)
@@ -166,10 +197,7 @@ impl PluginScanner {
             .collect();
 
         let total = plugin_paths.len();
-        info!(
-            "discovered {total} plugin files across {} directories",
-            directories.len()
-        );
+        info!("discovered {total} plugin files across {dir_count} directories");
 
         // Phase 2: Scanning — classify (pure) then execute (effectful).
         let result = plugin_paths
@@ -449,7 +477,7 @@ mod tests {
     }
 
     #[test]
-    fn sync_scan_discovers_and_records() {
+    fn scan_discovers_and_records() {
         let dir = TempDir::new().unwrap();
         let plugins_dir = dir.path().join("plugins");
         std::fs::create_dir(&plugins_dir).unwrap();
@@ -458,9 +486,43 @@ mod tests {
 
         let mut scanner = scanner_for(dir.path());
 
-        let result = scanner.scan_sync(vec![plugins_dir]);
+        let result = scanner.scan(&[plugins_dir]);
         assert_eq!(result.scanned, 2);
         assert_eq!(result.new + result.failed, 2);
+    }
+
+    /// `scan` accepts any path-like iterable, not just a `&[PathBuf]`.
+    ///
+    /// The point of the `IntoIterator<Item = impl AsRef<Path>>` bound is that a
+    /// caller with a `Vec<String>`, a borrowed config field, or a filtered
+    /// iterator does not have to materialise a `Vec<PathBuf>` first. Each arm
+    /// here is a distinct shape that fails to compile under a narrower
+    /// signature, so this is a compile-time assertion as much as a runtime one:
+    /// `&Vec<PathBuf>` is what `Plugins::rescan` passes, `[&str; 1]` covers the
+    /// no-PathBuf-in-sight caller, and the `filter` covers a lazy iterator with
+    /// no length to read.
+    #[test]
+    fn scan_accepts_any_path_like_iterable() {
+        let dir = TempDir::new().unwrap();
+        let plugins_dir = dir.path().join("plugins");
+        std::fs::create_dir(&plugins_dir).unwrap();
+        create_fake_plugin(&plugins_dir, "synth.vst3");
+
+        // A borrowed owned collection — the `Plugins::rescan` shape.
+        let owned: Vec<PathBuf> = vec![plugins_dir.clone()];
+        let mut scanner = scanner_for(dir.path());
+        assert_eq!(scanner.scan(&owned).scanned, 1);
+
+        // Borrowed `&str`s, never a `PathBuf`.
+        let as_str = plugins_dir.to_str().unwrap();
+        let mut scanner = scanner_for(dir.path());
+        assert_eq!(scanner.scan([as_str]).scanned, 1);
+
+        // A lazy iterator, which has no `len()` to read — the case that forced
+        // `scan_inner` to tally directories as it walks them.
+        let mut scanner = scanner_for(dir.path());
+        let lazy = owned.iter().filter(|p| p.exists());
+        assert_eq!(scanner.scan(lazy).scanned, 1);
     }
 
     /// An already-blacklisted plugin is skipped without being probed, and is
@@ -486,7 +548,7 @@ mod tests {
     /// in the target dir. `sync_scan_discovers_and_records` avoids the same trap
     /// by asserting on `new + failed`, and this now follows it.
     #[test]
-    fn sync_scan_skips_blacklisted() {
+    fn scan_skips_blacklisted() {
         let dir = TempDir::new().unwrap();
         let plugins_dir = dir.path().join("plugins");
         std::fs::create_dir(&plugins_dir).unwrap();
@@ -497,7 +559,7 @@ mod tests {
         db.blacklist(&bad, "known crasher".into());
 
         let mut scanner = PluginScanner::new(Box::new(db), dir.path().join(".scanning"));
-        let result = scanner.scan_sync(vec![plugins_dir]);
+        let result = scanner.scan(&[plugins_dir]);
 
         assert_eq!(result.scanned, 2);
         // The pre-blacklisted one was skipped, so it contributes to `blacklisted`
@@ -527,7 +589,7 @@ mod tests {
     }
 
     #[test]
-    fn sync_scan_skips_up_to_date() {
+    fn scan_skips_up_to_date() {
         let dir = TempDir::new().unwrap();
         let plugins_dir = dir.path().join("plugins");
         std::fs::create_dir(&plugins_dir).unwrap();
@@ -544,7 +606,7 @@ mod tests {
         });
 
         let mut scanner = PluginScanner::new(Box::new(db), dir.path().join(".scanning"));
-        let result = scanner.scan_sync(vec![plugins_dir]);
+        let result = scanner.scan(&[plugins_dir]);
 
         assert_eq!(result.scanned, 1);
         assert_eq!(result.new, 0);
@@ -568,7 +630,7 @@ mod tests {
     }
 
     #[test]
-    fn async_scan_with_progress() {
+    fn spawned_scan_with_progress() {
         let dir = TempDir::new().unwrap();
         let plugins_dir = dir.path().join("plugins");
         std::fs::create_dir(&plugins_dir).unwrap();
@@ -577,7 +639,7 @@ mod tests {
 
         let scanner = scanner_for(dir.path());
 
-        let handle = scanner.scan_async(vec![plugins_dir]);
+        let handle = scanner.spawn_scan(&[plugins_dir]);
 
         let mut saw_discovery = false;
         let mut saw_scanning = false;
@@ -608,7 +670,7 @@ mod tests {
         assert_eq!(result.new + result.failed, 2);
     }
 
-    /// An async scan must hand its catalog back. `scan_async` *moves* the
+    /// A spawned scan must hand its catalog back. `spawn_scan` *moves* the
     /// catalog onto the worker thread — that is what lets any `PluginCatalog`
     /// impl be scanned rather than only file-backed ones that can be cheaply
     /// reloaded from disk. Without this channel the records a scan produced
@@ -617,14 +679,14 @@ mod tests {
     /// fallback: if the handback were missing, the scan results would be
     /// unrecoverable.
     #[test]
-    fn async_scan_returns_the_catalog() {
+    fn spawned_scan_returns_the_catalog() {
         let dir = TempDir::new().unwrap();
         let plugins_dir = dir.path().join("plugins");
         std::fs::create_dir(&plugins_dir).unwrap();
         create_fake_plugin(&plugins_dir, "a.vst3");
 
         let scanner = scanner_for(dir.path());
-        let handle = scanner.scan_async(vec![plugins_dir]);
+        let handle = scanner.spawn_scan(&[plugins_dir]);
 
         let catalog = handle
             .catalog_rx

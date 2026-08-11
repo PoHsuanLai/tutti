@@ -87,6 +87,13 @@ pub struct UmpOutRes {
     /// *send*, just without timestamps. Folding the two together would make
     /// disabling the stamper silently mute MIDI out.
     stamping: bool,
+    /// Scratch for the stamped block, reused across sends.
+    ///
+    /// Stamping runs once per block and the result is only borrowed — it goes
+    /// straight to `MidiOut::queue` as a slice and is never handed on. Holding
+    /// the buffer here is what keeps that off the allocator; `JrStream::stamp`
+    /// clears it on entry, so nothing carries between blocks.
+    stamped: Vec<MidiEvent>,
 }
 
 impl core::fmt::Debug for UmpOutRes {
@@ -118,6 +125,7 @@ impl UmpOutRes {
             // Off until an app enables `JrStamperRes`, matching that resource's
             // own `disabled()` default.
             stamping: false,
+            stamped: Vec::new(),
         }
     }
 
@@ -137,8 +145,12 @@ impl UmpOutRes {
             self.send_all(events);
             return;
         }
-        let stamped = self.stream.stamp(events);
-        self.send_all(&stamped);
+        // Taken out and put back so `stream` and the buffer can be borrowed
+        // mutably at once; `stamp` clears it, so the swap carries no state.
+        let mut buf = core::mem::take(&mut self.stamped);
+        self.stream.stamp(events, &mut buf);
+        self.send_all(&buf);
+        self.stamped = buf;
     }
 
     /// Like [`send_stamped`](Self::send_stamped), but tells the stream how long
@@ -152,8 +164,10 @@ impl UmpOutRes {
             self.send_all(events);
             return;
         }
-        let stamped = self.stream.stamp_span(events, block_samples);
-        self.send_all(&stamped);
+        let mut buf = core::mem::take(&mut self.stamped);
+        self.stream.stamp_span(events, block_samples, &mut buf);
+        self.send_all(&buf);
+        self.stamped = buf;
     }
 
     fn send_all(&mut self, events: &[MidiEvent]) {

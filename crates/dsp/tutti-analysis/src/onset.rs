@@ -244,7 +244,7 @@ pub fn step_onset(
     }
 
     let position = Samples(frame.get() * cfg.geometry.hop().get());
-    let window = cfg.geometry.hann();
+    let window = cfg.geometry.window_coefficients();
     let mut spectrum = vec![Complex::default(); bins];
 
     // Every spectral branch stores its magnitudes, including the ones that do

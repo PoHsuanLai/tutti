@@ -14,19 +14,25 @@ use tutti_types::{Hz, Samples, Seconds};
 
 use crate::error::{AnalysisError, Result};
 use crate::grid::{BinCount, BinIndex, FrameCount};
-use crate::window::hann;
+use crate::window::{CosineWindow, Window};
 
-/// Window, hop, and sample rate — validated once, on construction.
+/// Window, hop, window shape, and sample rate — validated once, on construction.
 ///
 /// Fields are private and there is no literal constructor, so the invalid
 /// instances the old `pub`-field structs admitted cannot exist: a zero hop, a
 /// hop wider than its window, a non-positive sample rate, or a stored bin
 /// count contradicting the window it came from.
+///
+/// **`window` and `window_fn` are different nouns**, and the names are chosen
+/// to keep them apart: in DSP prose "the window is 2048" is a *length* and "the
+/// window function is Hann" is a *shape*. The length decides frequency
+/// resolution; the shape decides the sidelobe skirts around each partial.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct StftGeometry {
     window: Samples,
     hop: Samples,
     sample_rate: SampleRate,
+    window_fn: CosineWindow,
 }
 
 impl StftGeometry {
@@ -58,6 +64,10 @@ impl StftGeometry {
             window,
             hop,
             sample_rate,
+            // Spelled literally rather than `CosineWindow::default()`: changing the
+            // default must not silently re-tune every grid this constructor
+            // has ever built.
+            window_fn: CosineWindow::HANN,
         })
     }
 
@@ -70,10 +80,15 @@ impl StftGeometry {
 
     /// A COLA-compliant grid — the only kind an inverse transform accepts.
     ///
-    /// Hann² is constant-overlap-add when the hop divides the window and the
-    /// overlap is at least 75%. Under that condition the inverse's per-sample
-    /// window-sum normalization is exact, so untouched bins reconstruct to
-    /// float precision.
+    /// A window squared is constant-overlap-add when the hop divides the window
+    /// and the overlap reaches that window's own factor
+    /// ([`CosineWindow::cola_overlap`]). Under that condition the inverse's
+    /// per-sample window-sum normalization is exact, so untouched bins
+    /// reconstruct to float precision.
+    ///
+    /// Built on [`CosineWindow::HANN`]; use [`cola_with`](Self::cola_with) to check
+    /// a different shape, whose required overlap may be stricter — Blackman
+    /// needs 8x where Hann needs 4x.
     ///
     /// Checked here rather than left to the forward transform: a hop five times
     /// wider than its window otherwise reaches the inverse and produces a comb
@@ -82,13 +97,30 @@ impl StftGeometry {
     /// # Errors
     /// Returns [`AnalysisError::HopExceedsWindow`] if frames do not overlap, or
     /// [`AnalysisError::NotColaCompliant`] if the hop does not divide the
-    /// window at 4x overlap.
+    /// window at 4x overlap — this constructor fixes the shape as Hann, which
+    /// is where that figure comes from. Use
+    /// [`cola_with`](Self::cola_with) for another window.
     pub fn cola(
         sample_rate: impl Into<SampleRate>,
         window: impl Into<Samples>,
         hop: impl Into<Samples>,
     ) -> Result<Self> {
-        let geometry = Self::new(sample_rate, window, hop)?;
+        Self::cola_with(sample_rate, window, hop, CosineWindow::HANN)
+    }
+
+    /// [`cola`](Self::cola) for a given window shape.
+    ///
+    /// Separate from `with_window_fn` because the check is the point: a grid
+    /// that reconstructs under Hann may not under Blackman, and the difference
+    /// is silent — the transform runs, and the output has a 2.1% amplitude
+    /// ripple that reads as a tremolo nobody asked for.
+    pub fn cola_with(
+        sample_rate: impl Into<SampleRate>,
+        window: impl Into<Samples>,
+        hop: impl Into<Samples>,
+        window_fn: CosineWindow,
+    ) -> Result<Self> {
+        let geometry = Self::new(sample_rate, window, hop)?.with_window_fn(window_fn);
         if !geometry.frames_overlap() {
             return Err(AnalysisError::HopExceedsWindow {
                 window: geometry.window,
@@ -99,6 +131,7 @@ impl StftGeometry {
             return Err(AnalysisError::NotColaCompliant {
                 window: geometry.window,
                 hop: geometry.hop,
+                window_fn,
             });
         }
         Ok(geometry)
@@ -124,10 +157,41 @@ impl StftGeometry {
         self.sample_rate
     }
 
-    /// Whether Hann² reconstructs exactly at this window/hop pair.
+    /// The window *shape*. See [`window`](Self::window) for its length.
+    #[inline]
+    pub const fn window_fn(self) -> CosineWindow {
+        self.window_fn
+    }
+
+    /// The same grid analysed with a different window shape.
+    ///
+    /// A builder rather than a fourth constructor argument: every call site in
+    /// the tree wants [`CosineWindow::HANN`], and a fourth positional parameter on
+    /// two fallible three-argument constructors is exactly the transposition
+    /// hazard `new` exists to reject.
+    ///
+    /// **Infallible, and that is not the same as safe.** A grid built by
+    /// [`cola`](Self::cola) for one window may not be COLA for another, and
+    /// this does not re-check — Blackman needs 8x overlap where Hann needs 4x,
+    /// so `cola(rate, 2048, 512).with_window_fn(Blackman)` yields a grid that
+    /// analyses fine and reconstructs with a 2.1% ripple. Use
+    /// [`cola_with`](Self::cola_with) when the result must invert.
+    #[inline]
+    pub const fn with_window_fn(mut self, window_fn: CosineWindow) -> Self {
+        self.window_fn = window_fn;
+        self
+    }
+
+    /// Whether this window squared reconstructs exactly at this window/hop pair.
+    ///
+    /// Two conditions belonging to two different types: the hop must divide the
+    /// window (a fact about the *grid*) and the overlap must reach the window's
+    /// own COLA factor (a fact about the *window*, which is why the `4` that
+    /// used to sit here now lives on [`CosineWindow::cola_overlap`]).
     #[inline]
     pub fn is_cola(self) -> bool {
-        self.window.get().is_multiple_of(self.hop.get()) && self.window.get() / self.hop.get() >= 4
+        self.window.get().is_multiple_of(self.hop.get())
+            && self.window.get() / self.hop.get() >= self.window_fn.cola_overlap()
     }
 
     /// Real-spectrum bins, excluding Nyquist — the magnitude path's count.
@@ -178,10 +242,31 @@ impl StftGeometry {
         Seconds(self.window.get() as f32 / self.sample_rate.get() as f32)
     }
 
-    /// The analysis window, periodic Hann.
+    /// The analysis window's coefficients, `window` points of `window_fn`.
+    ///
+    /// Deliberately longer than its neighbours: it **allocates**, where
+    /// [`window`](Self::window) and [`window_fn`](Self::window_fn) are `const`
+    /// field reads. A short name would put an allocation and two free reads at
+    /// the same apparent cost.
     #[inline]
-    pub fn hann(self) -> Vec<f32> {
-        hann(self.window.get())
+    pub fn window_coefficients(self) -> Vec<f32> {
+        self.window_fn.coefficients(self.window.get())
+    }
+
+    /// The DC gain this grid's forward transform leaves in every magnitude.
+    ///
+    /// A forward transform sums `window` samples per bin without scaling, so
+    /// magnitudes carry a gain of `coherent_gain × window`. A display dividing
+    /// by that is window-*independent*: a 2048-point Hann analysis and a
+    /// 512-point Blackman one of the same audio land on the same scale, so a dB
+    /// window tuned once stays tuned.
+    ///
+    /// The reciprocal is what a magnitude consumer actually wants; it is
+    /// spelled out rather than provided because "gain" and "the thing you
+    /// multiply by" being two methods is how one of them gets used by mistake.
+    #[inline]
+    pub fn magnitude_gain(self) -> f32 {
+        self.window_fn.coherent_gain() * self.window.get().max(1) as f32
     }
 }
 
@@ -239,12 +324,93 @@ mod tests {
             Err(AnalysisError::NotColaCompliant {
                 window: Samples(2048),
                 hop: Samples(1024),
+                window_fn: CosineWindow::HANN,
             })
         );
 
         // Hop does not divide the window: analysable, not invertible.
         assert!(StftGeometry::new(44100.0, Samples(2048), Samples(500)).is_ok());
         assert!(StftGeometry::cola(44100.0, Samples(2048), Samples(500)).is_err());
+    }
+
+    /// **A grid that is COLA for one window is not automatically COLA for
+    /// another**, and this is the case that makes `cola_with` necessary.
+    ///
+    /// 2048/512 is 4x overlap: exact for Hann, and a 2.1% amplitude ripple for
+    /// Blackman, which needs 8x. Nothing about the grid changed — only the
+    /// shape laid over it.
+    ///
+    /// Mutation check: giving `Blackman` a `cola_overlap` of 4 (which is what
+    /// its two raised-cosine neighbours use, and what an eyeballed table would
+    /// say) makes the first assertion here fail.
+    #[test]
+    fn a_hann_cola_grid_may_not_be_cola_for_another_window() {
+        let hop = Samples(512);
+        assert!(StftGeometry::cola(44100.0, Samples(2048), hop).is_ok());
+
+        assert_eq!(
+            StftGeometry::cola_with(44100.0, Samples(2048), hop, CosineWindow::BLACKMAN),
+            Err(AnalysisError::NotColaCompliant {
+                window: Samples(2048),
+                hop,
+                window_fn: CosineWindow::BLACKMAN,
+            }),
+            "Blackman needs 8x overlap; 2048/512 is 4x"
+        );
+
+        // And it is accepted at the overlap it actually asks for.
+        assert!(StftGeometry::cola_with(
+            44100.0,
+            Samples(2048),
+            Samples(256),
+            CosineWindow::BLACKMAN
+        )
+        .is_ok());
+    }
+
+    /// The builder does **not** re-check COLA, and the doc says so — this pins
+    /// that, because a silently-invalidated grid is the hazard `cola_with`
+    /// exists to give callers a way to avoid.
+    #[test]
+    fn the_builder_can_produce_a_non_cola_grid() {
+        let hann = StftGeometry::cola(44100.0, Samples(2048), Samples(512)).expect("hann 4x");
+        assert!(hann.is_cola());
+
+        let blackman = hann.with_window_fn(CosineWindow::BLACKMAN);
+        assert!(
+            !blackman.is_cola(),
+            "with_window_fn is infallible and does not re-validate"
+        );
+    }
+
+    /// The two window nouns do not collide: one is a length, one is a shape.
+    #[test]
+    fn a_grid_carries_both_a_window_length_and_a_window_shape() {
+        let g = geo(2048, 512);
+        assert_eq!(g.window(), Samples(2048));
+        assert_eq!(g.window_fn(), CosineWindow::HANN);
+        assert_eq!(g.window_coefficients().len(), 2048);
+    }
+
+    /// **The magnitude gain follows the window shape, not just its length.**
+    ///
+    /// This is what lets a display divide out the forward transform's window
+    /// gain without knowing which window produced it. Mutation check: hardcode
+    /// `0.5` for the coherent gain and the Blackman case fails.
+    #[test]
+    fn magnitude_gain_tracks_the_window_shape() {
+        let hann = geo(1024, 256);
+        assert!((hann.magnitude_gain() - 512.0).abs() < 1e-3, "0.5 * 1024");
+
+        let blackman = hann.with_window_fn(CosineWindow::BLACKMAN);
+        assert!(
+            (blackman.magnitude_gain() - 430.08).abs() < 1e-2,
+            "0.42 * 1024, got {}",
+            blackman.magnitude_gain()
+        );
+
+        let rect = hann.with_window_fn(CosineWindow::RECTANGULAR);
+        assert!((rect.magnitude_gain() - 1024.0).abs() < 1e-3, "1.0 * 1024");
     }
 
     #[test]

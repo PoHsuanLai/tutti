@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use super::buffers::{OverlapAdd, SampleFifo};
 use super::{Bank, FftSize, MAX_BUFFER_SIZE};
-use tutti_analysis::{window::hann, StftGeometry};
+use tutti_analysis::StftGeometry;
 use tutti_core::{inverse_fft, real_fft, Complex32, Radians};
 
 /// One channel of phase-vocoder state.
@@ -16,7 +16,11 @@ use tutti_core::{inverse_fft, real_fft, Complex32, Radians};
 /// Sized once, at construction; `process` allocates nothing.
 pub(super) struct Vocoder {
     pub(super) geometry: StftGeometry,
-    /// The Hann analysis/synthesis window.
+    /// The analysis/synthesis window, taken from the grid.
+    ///
+    /// Whatever shape `geometry.window_fn()` names — it is no longer assumed to
+    /// be Hann, because the overlap-add normalization no longer assumes it
+    /// either (see [`OverlapAdd`]).
     ///
     /// `Arc` because it is immutable for the vocoder's lifetime and identical for
     /// every channel and every clone — and because building it costs `size`
@@ -82,7 +86,7 @@ impl Vocoder {
 
         Self {
             geometry,
-            window: Arc::new(hann(size)),
+            window: Arc::new(geometry.window_coefficients()),
             fft_buffer: vec![0.0; size],
             spectrum: vec![Complex32::new(0.0, 0.0); size],
             phase_accumulator: vec![Radians(0.0); bins],
@@ -264,8 +268,12 @@ impl Vocoder {
         // non-zero.
         inverse_fft(&mut self.spectrum);
         for i in 0..size {
-            self.output
-                .add_at(i, self.spectrum[i].re * self.window[i] * COLA_GAIN);
+            let w = self.window[i];
+            // The windowed sample and the window energy that carried it, summed
+            // into the same slot. `drain` divides one by the other — which is
+            // what `tutti_analysis::istft` has always done, and what the old
+            // `COLA_GAIN` scalar only approximated for one window at one hop.
+            self.output.add_at(i, self.spectrum[i].re * w, w * w);
         }
 
         // Zero the span the next frame will accumulate into, which this one has
@@ -293,13 +301,13 @@ pub(super) fn wrap_phase(phase: Radians) -> Radians {
     phase.wrapped_signed()
 }
 
-/// Overlap-add normalization for a Hann analysis/synthesis pair at 75% overlap.
-///
-/// Windowing twice — once on analysis, once on synthesis — means the overlapped
-/// frames sum to `Σ hann²` per sample rather than to unity. At a hop of
-/// `window / 4` that sum is exactly `4 × mean(hann²) = 4 × 3/8 = 1.5`, so
-/// synthesis divides it back out. Without this the vocoder is 3.5 dB hot.
-///
-/// Only correct at 75% overlap, which is why [`FftSize::hop`] is fixed at
-/// `size / 4` rather than configurable.
-const COLA_GAIN: f32 = 1.0 / 1.5;
+// `COLA_GAIN` used to live here: `1.0 / 1.5`, where `1.5 = 4 × mean(hann²)`.
+//
+// It was a precomputed scalar, and its own doc said what was wrong with it —
+// "only correct at 75% overlap". It was also only correct for Hann, silently:
+// point a Hamming window at it and every sample is 0.8 dB hot, a Blackman one
+// and it is 0.9 dB shy, with nothing erroring anywhere.
+//
+// The sum is now accumulated per sample in `OverlapAdd` and divided out at the
+// read, which is what `tutti_analysis::istft` has always done. See that type's
+// doc for why the two rings are one struct.

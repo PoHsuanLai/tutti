@@ -38,9 +38,9 @@ pub enum AuError {
     /// the AU.
     ///
     /// A distinct variant rather than a silent `Ok`, because the caller of
-    /// [`identity::set_nick_name`](crate::identity::set_nick_name) persists that
-    /// name: reporting success for a write that never happened would lose it
-    /// from the session with nothing to show the user.
+    /// `identity::set_nick_name` persists that name: reporting success for a
+    /// write that never happened would lose it from the session with nothing to
+    /// show the user.
     CfStringAlloc,
     /// A buffer supplied to `process` was malformed or inconsistent with the
     /// configured stream (wrong frame count, mismatched channels, etc.).
@@ -72,9 +72,8 @@ pub enum AuError {
     ///
     /// Fatal for the same reason [`AuError::SampleRateRejected`] is, but through
     /// a sharper edge. `MaximumFramesPerSlice` is what the AU sizes its internal
-    /// buffers from at `AudioUnitInitialize`, and
-    /// [`AuInstance::process`](crate::instance::AuInstance::process) admits any
-    /// `num_frames` up to the *recorded* block size. So a config holding a larger
+    /// buffers from at `AudioUnitInitialize`, and `AuInstance::process` admits
+    /// any `num_frames` up to the *recorded* block size. So a config holding a larger
     /// figure than the AU accepted disables that bound check in the unsafe
     /// direction: the render proceeds and the AU writes past buffers it allocated
     /// for fewer frames.
@@ -91,7 +90,7 @@ pub enum AuError {
     /// call's own OSStatus; `last_render_error` is the AU's
     /// `kAudioUnitProperty_LastRenderError` at failure time, when it could be
     /// read and was itself non-`noErr` — diagnostics only, enriching the render
-    /// status with the underlying error the AU recorded internally (A-2).
+    /// status with the underlying error the AU recorded internally.
     RenderFailed {
         /// The failing call — always `"AudioUnitRender"`.
         function: &'static str,
@@ -122,7 +121,7 @@ pub enum AuError {
     /// A `.aupreset` file is well-formed but belongs to a **different** AU.
     ///
     /// Refused rather than applied, and this is the variant the whole
-    /// [`crate::aupreset`] module exists to produce. Measured on macOS 15.6: an AU
+    /// `aupreset` module exists to produce. Measured on macOS 15.6: an AU
     /// handed a dictionary bearing its own identity keys but another plugin's
     /// `data` blob *accepts* it and adopts nonsense parameter values (AUDelay took
     /// a 0.5 Hz lowpass cutoff where it had 15 kHz). The AU trusts these keys, so
@@ -185,7 +184,7 @@ pub type Result<T> = std::result::Result<T, AuError>;
 
 impl AuError {
     /// Construct a [`AuError::RenderFailed`] from a failed `AudioUnitRender`
-    /// call, optionally enriched with the AU's last-render-error (A-2).
+    /// call, optionally enriched with the AU's last-render-error.
     pub(crate) fn render_failed(
         function: &'static str,
         code: i32,

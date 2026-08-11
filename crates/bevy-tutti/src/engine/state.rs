@@ -11,18 +11,35 @@ use bevy_reflect::prelude::*;
 /// it rather than probing for a resource, so a host cannot end up with the two
 /// disagreeing.
 ///
-/// A failed engine used to be invisible: `build_into` logged an error and the
-/// app ran on in silence with nothing in the world to show for it. A UI can now
-/// query this and say so.
+/// A failed engine is otherwise invisible — the app runs on in silence — so a UI
+/// queries this and says so.
 ///
-/// ```rust,ignore
-/// fn audio_status_ui(state: Res<AudioEngineState>) {
-///     match &*state {
-///         AudioEngineState::Running => {}
-///         AudioEngineState::Failed(why) => warn_banner(format!("No audio: {why}")),
-///         AudioEngineState::Disabled => {}
-///     }
+/// ```rust
+/// use bevy_app::prelude::*;
+/// use bevy_ecs::prelude::*;
+/// use bevy_tutti::{AudioEngineState, TuttiPlugin};
+///
+/// /// What a status bar would show. `None` means "nothing to say".
+/// #[derive(Resource, Default)]
+/// struct Banner(Option<String>);
+///
+/// fn audio_status_ui(state: Res<AudioEngineState>, mut banner: ResMut<Banner>) {
+///     banner.0 = match &*state {
+///         AudioEngineState::Running => None,
+///         AudioEngineState::Failed(why) => Some(format!("No audio: {why}")),
+///         // Not a failure — a headless or CI run asked for this.
+///         AudioEngineState::Disabled => None,
+///     };
 /// }
+///
+/// let mut app = App::new();
+/// app.add_plugins((bevy_app::TaskPoolPlugin::default(), bevy_asset::AssetPlugin::default()));
+/// app.add_plugins(TuttiPlugin { disabled: true, ..Default::default() });
+/// app.init_resource::<Banner>();
+/// app.add_systems(Update, audio_status_ui);
+/// app.update();
+///
+/// assert_eq!(app.world().resource::<Banner>().0, None);
 /// ```
 #[derive(Resource, Reflect, Debug, Clone, PartialEq, Eq, Default)]
 #[reflect(Resource, Debug, Default)]

@@ -327,6 +327,9 @@ const TAG_ONLY_LAYOUT_SIZE: usize =
 /// Duplicates are returned verbatim rather than deduplicated: AUNewPitch
 /// publishes `Quadraphonic` twice (measured), the AU describing its own table,
 /// and collapsing it would hide that from a host displaying the list.
+///
+/// # Safety
+/// `unit` must be a live `AudioUnit`.
 pub(crate) unsafe fn supported_layout_tags(
     unit: AudioUnit,
     direction: BusDirection,
@@ -374,6 +377,9 @@ pub(crate) unsafe fn supported_layout_tags(
 /// and a description array would need an owned allocation whose only consumer —
 /// a `UseChannelDescriptions` unit — none of them sets. If that changes, this
 /// returns the tag `UseChannelDescriptions` and a caller can tell.
+///
+/// # Safety
+/// `unit` must be a live `AudioUnit`.
 pub(crate) unsafe fn layout_tag(
     unit: AudioUnit,
     direction: BusDirection,
@@ -448,6 +454,9 @@ pub(crate) unsafe fn layout_tag(
 /// [`crate::instance::AuInstance::set_bypass`]: a host that believes it set 5.1
 /// while the AU kept stereo will route six channels into a two-channel bus and
 /// never learn why the surround came out wrong.
+///
+/// # Safety
+/// `unit` must be a live `AudioUnit`.
 pub(crate) unsafe fn set_layout_tag(
     unit: AudioUnit,
     direction: BusDirection,
@@ -538,6 +547,9 @@ pub(crate) unsafe fn set_layout_tag(
 ///
 /// The split is the useful part — a name-less bus versus one that does not
 /// exist — and `Ok(String::new())` for either would erase it.
+///
+/// # Safety
+/// `unit` must be a live `AudioUnit`.
 pub(crate) unsafe fn element_name(
     unit: AudioUnit,
     direction: BusDirection,
@@ -589,7 +601,7 @@ pub(crate) unsafe fn element_name(
 mod tests {
     use super::*;
 
-    /// The aliasing this type's docs claim must actually hold in the SDK we
+    /// The aliasing this type's docs claim must actually hold in the SDK this crate
     /// compile against. If a future CoreAudioTypes.h splits any of these pairs,
     /// `from_raw`'s `match` would gain an unreachable arm — or worse, start
     /// resolving to the other name — and this test is what notices.

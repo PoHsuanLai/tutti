@@ -1,4 +1,8 @@
-//! Loop handling and crossfade capture for butler thread.
+//! Loop handling and crossfade capture for the butler thread.
+//!
+//! Loop-boundary *policy*, not I/O: it classifies where each stream stands
+//! relative to its loop, arms the crossfade before the wrap, and repositions the
+//! writer at it. Every position here is a file **frame**.
 
 use super::cache::LruCache;
 use super::io::refill::load_wave;
@@ -12,10 +16,16 @@ use tutti_core::{ChannelLayout, SampleRate, Wave};
 
 use crate::nonempty;
 
-/// Check and handle stream loop conditions with crossfade support.
+/// Advance every streaming channel's loop state by one butler cycle.
 ///
-/// Loop crossfade is now handled via RtState for lock-free audio thread access.
-/// Butler captures fadeout/fadein samples and passes them to RtState.
+/// Approaching the loop end, capture the fadeout tail and the fadein head and
+/// arm the channel's loop crossfade — the buffers are built here, on the butler
+/// thread, so the audio thread only ever blends a finished pair. At the end,
+/// clear the fade, flush the ring, move the writer back to the loop start and
+/// prefill what fits.
+///
+/// The fadein head comes from the pre-captured `preloop_buffer` when the loop
+/// was set up with one, so a wrap re-reads nothing.
 pub(crate) fn handle_loops(
     plans: &DashMap<usize, ChannelPlan>,
     regions: &mut RegionMap,
@@ -121,8 +131,8 @@ pub(crate) fn capture_frames(
     samples
 }
 
-/// Capture the fadeout samples for a seek crossfade — the `count` samples about
-/// to play next, i.e. the ring's unplayed head.
+/// Capture the fadeout buffer for a seek crossfade — the `count` **frames**
+/// about to play next, i.e. the ring's unplayed head.
 ///
 /// Sourced from the wave file (via the cache) at the stream's current
 /// `read_position` rather than by popping the SPSC ring. The butler must never
@@ -154,7 +164,17 @@ pub(crate) fn fadeout_samples(
     fadein_samples(cache, metrics, file_path, read_position, count, channels)
 }
 
-/// Capture samples from the Wave file at the new seek position for fadein.
+/// Capture `count` **frames** from `file_path` starting at frame
+/// `position_samples`, flat interleaved at `channels` samples per frame — the
+/// fadein head for a seek or loop crossfade.
+///
+/// Despite its name `position_samples` is a **frame** offset: it is compared
+/// against and derived from `read_position` and `file_position`, both of which
+/// count frames.
+///
+/// Empty when `count` is zero or the file cannot be loaded; both callers treat
+/// an empty buffer as "skip the crossfade", which degrades to a hard cut rather
+/// than to silence.
 pub(crate) fn fadein_samples(
     cache: &LruCache,
     metrics: &Metrics,
@@ -174,6 +194,17 @@ pub(crate) fn fadein_samples(
     capture_frames(&wave, position_samples as usize, count, channels)
 }
 
+/// Ring capacity in **frames** for a file of `file_length_samples` frames at
+/// `sample_rate`.
+///
+/// Buys buffering depth in seconds of audio, tapering as the file grows: a small
+/// file is held whole up to a 30 s cap, then 10 s, 5 s and 3 s as the estimated
+/// size crosses 50 MB, 200 MB and 500 MB. Floored at 4096 frames, which is what
+/// keeps a very short file from producing a ring too small to absorb one block.
+///
+/// The size estimate assumes stereo `f32`. At a wider width it under-estimates,
+/// which only picks a slightly more generous buffer — the heuristic chooses a
+/// capacity, never a correctness boundary.
 pub(crate) fn buffer_size_for_file(
     file_length_samples: u64,
     sample_rate: impl Into<SampleRate>,

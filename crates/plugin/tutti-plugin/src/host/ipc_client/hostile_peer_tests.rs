@@ -343,8 +343,8 @@ fn a_server_that_dies_mid_session_marks_the_bridge_crashed() {
 ///
 /// The cause has to be captured where the failure is noticed: `BridgeError` is
 /// not `Clone` and is dropped as soon as the failing call returns, so a host
-/// that polls afterwards can only report a placeholder — which is exactly what
-/// it used to do, for every death alike.
+/// that polls afterwards could otherwise only report a placeholder, identical
+/// for every death alike.
 ///
 /// Asserts non-emptiness rather than an exact string: the message comes from
 /// the transport and differs across platforms ("connection reset", "broken

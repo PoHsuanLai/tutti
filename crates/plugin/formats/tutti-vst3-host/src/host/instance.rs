@@ -8,6 +8,27 @@
 //! To create one: `Vst3Instance::load(path, rate, block)` or
 //! `Vst3Loaded::load(path)?.activate(rate, block)?`. To drop back to
 //! non-processing state: [`Vst3Instance::deactivate`].
+//!
+//! What this type adds over [`Vst3Loaded`] is exactly the state that only
+//! exists between `setActive(1)` and `setActive(0)`: the scratch buffers sized
+//! to the negotiated arrangements, the input/output staging, and the sample
+//! width `T`. [`deactivate`](Vst3Instance::deactivate) takes `self` by value
+//! and returns the embedded [`Vst3Loaded`], which is what makes a handle to a
+//! deactivated plugin unrepresentable — the caller cannot keep the old value to
+//! call `process` on, because it was moved. A `&mut self` deactivation would
+//! leave one behind, and `process` would then have to answer it with a runtime
+//! error on the audio path.
+//!
+//! The reverse edge is total, which is the precondition a consuming type-state
+//! needs. `deactivate` returns a [`Vst3Loaded`] rather than a `Result`: a
+//! refusal from `setActive(0)` is dropped, because it leaves no state this host
+//! could act on — the COM interfaces are still valid and every loaded-state
+//! method is still legal, so the value handed back describes the plugin either
+//! way. (That is the asymmetry with `setActive(1)`, where a refusal is a real
+//! failure and is reported: a plugin that declined to activate must not be
+//! processed.) Contrast `tutti-au-host`, whose transitions can fail in *both*
+//! directions and therefore cannot use a consuming pair — a failed transition
+//! belongs to neither type, so it carries an internal state enum instead.
 
 use std::mem::ManuallyDrop;
 use std::ops::{Deref, DerefMut};
@@ -370,8 +391,8 @@ impl<T: Vst3Sample> Vst3Instance<T> {
         };
         // VST3 activation order: setBusArrangements → setupProcessing →
         // activateBus → setActive. Arrangements must be negotiated first so the
-        // plugin has decided its channel layout before we size scratch and set
-        // up processing.
+        // plugin has decided its channel layout before the scratch is sized and
+        // processing is set up.
         instance.negotiate_bus_arrangements()?;
         instance.apply_process_setup()?;
         instance.activate_buses()?;
@@ -431,8 +452,8 @@ impl<T: Vst3Sample> Vst3Instance<T> {
     /// # Errors
     /// [`Vst3Error::PluginError`] if the plugin refuses the new rate. The
     /// instance is **rolled back** to the rate it was already running at and
-    /// left active there — see [`reconfigure`](Self::reconfigure) for why, and
-    /// for what a failed rollback reports.
+    /// left active there. A rollback that itself fails leaves the instance
+    /// inactive and reports the second failure, not the first.
     pub fn set_sample_rate(&mut self, rate: f64) -> Result<()> {
         if rate == self.audio.config.sample_rate {
             return Ok(());
@@ -527,7 +548,8 @@ impl<T: Vst3Sample> Vst3Instance<T> {
     /// plugin's input event list (sorted by `sample_offset`); chord/scale/text
     /// strings are interned into the event list's arena for the duration of the
     /// call. `param_changes` is forwarded as `inputParameterChanges`;
-    /// `transport` populates `ProcessContext`. The returned [`ProcessOutput`]
+    /// `transport` populates `ProcessContext`. The returned
+    /// [`ProcessOutput`](crate::types::ProcessOutput)
     /// carries any MIDI / parameter-change events the plugin emitted
     /// (plugin-emitted legacy-MIDI-CC-out is decoded to MIDI).
     ///
@@ -688,7 +710,9 @@ impl<T: Vst3Sample> Vst3Instance<T> {
     }
 
     /// Re-query the `IMidiMapping` CC→parameter table from the controller.
-    /// Call this when [`RestartOutcome::midi_cc_assignment_changed`] is set.
+    /// Call this when
+    /// [`RestartOutcome::midi_cc_assignment_changed`](crate::RestartOutcome::midi_cc_assignment_changed)
+    /// is set.
     pub fn rebuild_midi_cc_mapping(&mut self) {
         tutti_plugin_types::assert_main_thread();
         self.audio.cc.mapping = MidiCcMapping::query(self.loaded.interfaces.controller.as_ref());
@@ -705,17 +729,17 @@ impl<T: Vst3Sample> Vst3Instance<T> {
     /// Negotiate per-bus speaker arrangements with the plugin via
     /// `IAudioProcessor::setBusArrangements`, before `setupProcessing`.
     ///
-    /// We propose one arrangement per bus derived from the channel counts the
+    /// One arrangement per bus is proposed, derived from the channel counts the
     /// component already enumerated (1 → mono, 2 → stereo, N → an N-bit low
     /// mask). Multichannel / surround / sidechain plugins need this: without it
     /// they fall back to a default layout that may not match the buses the host
     /// wired.
     ///
     /// A `kResultFalse` return means the plugin **kept its own layout** rather
-    /// than accepting ours — not an error. In that case we read back the
-    /// plugin's chosen arrangement per bus with `getBusArrangement`, re-derive
-    /// the channel counts, and re-resolve the audio scratch so `process` stages
-    /// the right number of channels. (`activate_buses` re-resolves again from
+    /// than accepting the host's — not an error. In that case the host reads
+    /// back the plugin's chosen arrangement per bus with `getBusArrangement`,
+    /// re-derives the channel counts, and re-resolves the audio scratch so
+    /// `process` stages the right number of channels. (`activate_buses` re-resolves again from
     /// the live component after activation, covering plugins that only finalise
     /// their layout once active.)
     ///
@@ -801,7 +825,7 @@ impl<T: Vst3Sample> Vst3Instance<T> {
     /// arrangement is fully named yields `Some`, and its width always equals
     /// the count reported beside it.
     /// The channel topology of each **input** bus. See
-    /// [`bus_topologies`](Self::bus_topologies).
+    /// `bus_topologies`.
     ///
     /// Two named methods rather than one taking a direction, so a caller does
     /// not need the crate's private `kInput`/`kOutput` constants — and cannot
@@ -811,7 +835,7 @@ impl<T: Vst3Sample> Vst3Instance<T> {
     }
 
     /// The channel topology of each **output** bus. See
-    /// [`bus_topologies`](Self::bus_topologies).
+    /// `bus_topologies`.
     pub fn output_bus_topologies(&self) -> Vec<Option<ChannelTopology>> {
         self.bus_topologies(K_OUTPUT)
     }
@@ -920,10 +944,10 @@ impl<T: Vst3Sample> Vst3Instance<T> {
     /// Event buses are activated on the same terms as audio ones: the spec
     /// starts every bus inactive regardless of media type, and `activateBus`
     /// takes the type as a parameter precisely because it is not audio-only.
-    /// Only the counts used to be read here, to decide whether the plugin
-    /// speaks MIDI at all — so a plugin that honoured the inactive default
-    /// received no events, and one that ignored it worked, which is why that
-    /// read as a plugin quirk rather than a host bug.
+    /// Reading only the counts — to decide whether the plugin speaks MIDI at
+    /// all — leaves event buses inactive: a plugin that honours the inactive
+    /// default then receives no events while one that ignores it works, which
+    /// presents as a plugin quirk rather than a host bug.
     fn activate_buses(&mut self) -> Result<()> {
         const K_AUDIO: i32 = super::K_AUDIO;
         let component = &self.loaded.interfaces.component;
@@ -954,10 +978,10 @@ impl<T: Vst3Sample> Vst3Instance<T> {
         // only; never on the audio thread.
         //
         // Both the flat count and the scratch come from this one enumeration.
-        // They used to be queried separately, and the flat one fell back to the
-        // pre-activation value when its query failed — which is the stale layout
-        // this re-resolve exists to replace, reinstated at the moment the live
-        // read said it could not be trusted.
+        // Querying them separately lets the flat one fall back to the
+        // pre-activation value when its query fails — reinstating the stale
+        // layout this re-resolve exists to replace, at exactly the moment the
+        // live read said it could not be trusted.
         let in_counts = component.audio_bus_channels(K_INPUT);
         let out_counts = component.audio_bus_channels(K_OUTPUT);
         let num_in = ChannelLayout::from(in_counts.first().copied().unwrap_or(0));
@@ -985,11 +1009,11 @@ impl<T: Vst3Sample> Vst3Instance<T> {
     /// that `getLatencySamples` should be read *after* `setActive(true)`.
     ///
     /// This lives on `Vst3Instance` rather than `Vst3Loaded` because only this
-    /// type knows whether the plugin is active. The re-enumeration used to run
-    /// through `DerefMut` on a live instance with no cycle at all — the bus
-    /// layout was re-read while the plugin was still active, which is the one
-    /// ordering the spec rules out. A plugin that only recomputes its layout or
-    /// its group delay inside `setActive(true)` answered with the old figures.
+    /// type knows whether the plugin is active. Reaching the re-enumeration
+    /// through `DerefMut` on a live instance skips the cycle entirely — the bus
+    /// layout is re-read while the plugin is still active, which is the one
+    /// ordering the spec rules out, and a plugin that only recomputes its layout
+    /// or its group delay inside `setActive(true)` answers with the old figures.
     ///
     /// A refused reactivation is reported, not swallowed: `set_active` treats
     /// `kResultFalse` as the refusal it is, and a caller that ignored this

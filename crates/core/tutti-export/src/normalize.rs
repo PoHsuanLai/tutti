@@ -49,15 +49,26 @@ use crate::{render_to_buffers, write_buffers, Result, Written};
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Normalize {
     /// Bring the loudest true peak to `target` dBTP.
-    Peak { target: Db },
+    Peak {
+        /// True-peak level to land on, in dBTP. Typically negative — 0 leaves no
+        /// headroom for a consumer DAC's reconstruction filter.
+        target: Db,
+    },
     /// Bring integrated loudness to `target` LUFS, pulled back so the true peak
     /// does not exceed `ceiling` dBTP.
-    Lufs { target: Db, ceiling: Db },
+    Lufs {
+        /// Integrated loudness to land on, in LUFS.
+        target: Db,
+        /// True-peak limit in dBTP. When the loudness gain would push the peak
+        /// past this, the ceiling wins and the file lands quieter than
+        /// `target`. [`Normalize::lufs`] sets it to −1.0.
+        ceiling: Db,
+    },
 }
 
 impl Normalize {
     /// Loudness normalization with a −1.0 dBTP ceiling — the value streaming
-    /// platforms ask for, and the one the old builder's `lufs()` hardcoded.
+    /// platforms ask for, carried here so callers need not know the number.
     pub const fn lufs(target: Db) -> Self {
         Self::Lufs {
             target,
@@ -88,21 +99,22 @@ impl Normalize {
 
     /// The gain that normalizes `rendered`.
     ///
-    /// For a caller that already holds a [`Rendered`] and is not writing it
-    /// with [`render_normalized_to_file`] — handing the PCM to another encoder,
-    /// say. Returning the gain rather than applying it keeps the reading
-    /// available to log or gate on, and is the same value the two-pass render
-    /// uses internally, so the two can never disagree.
+    /// For a caller that already holds a [`Rendered`](crate::Rendered) and is
+    /// not writing it with [`render_normalized_to_file`] — handing the PCM to
+    /// another encoder, say. Returning the gain rather than applying it keeps
+    /// the reading available to log or gate on, and is the same value the
+    /// two-pass render uses internally, so the two can never disagree.
     ///
     /// # Errors
     ///
-    /// [`Error::Unmeasurable`] when the meter will not read this signal:
+    /// [`Error::Unmeasurable`](crate::Error::Unmeasurable) when the meter will
+    /// not read this signal:
     /// EBU R128 accepts 1–64 channels at 16 Hz–2.8 MHz, and a `Rendered`
     /// outside that cannot produce a reading. This is an error rather than a
     /// `None` the caller might discard, because the alternative — writing the
     /// file un-normalized and reporting success — is silent: nothing in
-    /// [`Written`] records that the gain the caller asked for was never
-    /// applied.
+    /// [`Written`](crate::Written) records that the gain the caller asked for
+    /// was never applied.
     pub fn gain_for_rendered(&self, rendered: &crate::Rendered) -> Result<Db> {
         let meter = LoudnessConfig::new(rendered.sample_rate, rendered.layout());
         let samples = rendered.interleaved();
@@ -214,8 +226,8 @@ mod tests {
         );
     }
 
-    /// `Normalize::lufs` carries the −1.0 dBTP ceiling the old builder
-    /// hardcoded, so callers do not have to know the number.
+    /// `Normalize::lufs` carries the −1.0 dBTP ceiling, so callers do not have
+    /// to know the number.
     #[test]
     fn lufs_defaults_to_a_minus_one_dbtp_ceiling() {
         assert_eq!(

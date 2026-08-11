@@ -28,19 +28,30 @@ pub mod types;
 // private state a sibling module could not see.
 mod voice_pool;
 
-// Bevy-free reader value types + DSP unit.
+/// Disk-streaming playback: the reader, its source and its configuration.
+///
+/// See [`disk_voice`] for the full docs on each; they are re-exported flat so a
+/// consumer writes `tutti_sampler::DiskVoice` rather than tracking which file a
+/// type happens to live in.
 pub use disk_voice::{DiskSource, DiskVoice, DiskVoiceConfig};
+/// In-memory playback: the reader, its loop and window vocabulary, and its
+/// configuration. Documented on [`memory_source`].
 pub use memory_source::{LoopSetting, MemorySource, MemorySourceConfig, VoiceWindow};
-// Re-exported flat, so `voice::Voice` and `tutti_sampler::Voice` keep working —
-// the split is an internal reorganisation, not an API change.
+/// The control-plane protocol and the two handles that send it — one per owner
+/// ([`VoicePool`] and [`VoiceNode`]). Documented on [`command`].
 pub use command::{VoiceCommand, VoiceNodeHandle, VoicePoolHandle};
+/// One voice as a standalone graph node. Documented on [`node`].
 pub use node::VoiceNode;
+/// The per-track multi-voice mixer. Documented on [`pool`].
 pub use pool::VoicePool;
+/// ECS components that seat a pool on a track entity. Documented on [`pool`].
 #[cfg(feature = "bevy")]
 pub use pool::{VoicePoolNode, VoicePoolRef};
+/// The voice vocabulary: what a voice is, which tier it reads from, and the
+/// control intent recorded for it. Documented on [`types`].
 pub use types::{Direction, Playback, SlotId, Voice, VoiceSource};
 
-// `wave_loader` and `TuttiPlaybackPlugin` moved to bevy-tutti (house rule R1: an
+// `wave_loader` and `TuttiPlaybackPlugin` live in bevy-tutti (house rule R1: an
 // engine crate may derive Component/Resource on its own value types, but may not
-// define a Plugin). What stays is `VoicePoolNode` / `VoicePoolRef` above — plain
+// define a Plugin). `VoicePoolNode` / `VoicePoolRef` above stay here — plain
 // derives on this crate's own types.

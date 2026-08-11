@@ -1,7 +1,7 @@
 //! Editor window lifecycle.
 //!
-//! `vst::editor::Editor::open` wants a raw platform window pointer; we
-//! unpack [`WindowHandle`]'s `*mut c_void` at this single site so the rest
+//! `vst::editor::Editor::open` wants a raw platform window pointer.
+//! [`WindowHandle`]'s `*mut c_void` is unpacked at this single site, so the rest
 //! of the crate never touches the unsafe conversion.
 
 use crate::error::{Result, Vst2Error};
@@ -35,10 +35,9 @@ impl Vst2Instance {
         // SDK convention: query the editor's size (effEditGetRect) BEFORE
         // embedding it (effEditOpen), so the host sizes its window before the
         // plugin attaches. vst-rs 0.3.0's `Editor` trait exposes no dedicated
-        // `get_rect()` — `size()` is the only size query — so we read it once
-        // before `open()`. If the plugin reports a degenerate pre-open size
-        // (0×0, common when a plugin only computes its rect on open), we fall
-        // back to the post-open `size()`.
+        // `get_rect()` — `size()` is the only size query — so it is read once
+        // before `open()`. A degenerate pre-open size (0x0, common when a plugin
+        // only computes its rect on open) falls back to the post-open `size()`.
         let pre = editor.size();
 
         let opened = editor.open(parent.as_ptr());

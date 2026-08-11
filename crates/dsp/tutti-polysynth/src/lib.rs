@@ -1,19 +1,73 @@
-//! Polyphonic subtractive synthesis for Tutti.
+//! Polyphonic subtractive and wavetable synthesis for tutti.
 //!
-//! Provides polyphonic synthesis via [`PolySynth`], built from a [`SynthConfig`].
-//! Configure the config the idiomatic Bevy way — `Default` plus struct-update:
+//! One type does the work: [`PolySynth`], an `AudioUnit` built from a
+//! [`SynthConfig`] and driven by MIDI. It takes no audio input — notes arrive
+//! through its own lock-free MIDI inbox — and renders stereo.
 //!
-//! ```ignore
-//! let synth = PolySynth::new(SynthConfig {
+//! ```
+//! use tutti_polysynth::{
+//!     EnvelopeConfig, FilterType, OscillatorType, PolySynth, SynthConfig,
+//! };
+//! use tutti_core::dsp::{AudioUnit, Net};
+//! use tutti_core::{Amplitude, Hz, Resonance, Seconds};
+//! use tutti_midi_types::translation::scaling::midi1_velocity_to_midi2;
+//! use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
+//! use tutti_midi_types::ump::MidiEvent;
+//!
+//! // `Moog` takes `Resonance`; the `Svf` variant takes `Q` instead. The two
+//! // filter families are deliberately not interchangeable.
+//! let mut synth = PolySynth::new(SynthConfig {
 //!     oscillator: OscillatorType::Saw,
 //!     max_voices: 8,
-//!     filter: FilterType::Moog { cutoff: 2000.0, resonance: 0.7 },
-//!     envelope: EnvelopeConfig { attack: 0.01, decay: 0.2, sustain: 0.6, release: 0.3 },
-//!     ..default()
+//!     filter: FilterType::Moog {
+//!         cutoff: Hz(2000.0),
+//!         resonance: Resonance(0.7),
+//!     },
+//!     envelope: EnvelopeConfig {
+//!         attack: Seconds(0.01),
+//!         decay: Seconds(0.2),
+//!         sustain: Amplitude(0.6),
+//!         release: Seconds(0.3),
+//!     },
+//!     ..Default::default()
 //! })?;
 //!
-//! let synth_id = graph.add(synth);
+//! // Notes arrive through the lock-free inbox, so a control thread may queue
+//! // them while the audio thread renders.
+//! synth.midi_sender().queue(&[MidiEvent::note_on(
+//!     MidiGroup::FIRST,
+//!     MidiChannel::FIRST,
+//!     69, // A4
+//!     midi1_velocity_to_midi2(100),
+//! )]);
+//!
+//! // Into the graph: no audio input, stereo out.
+//! let mut net = Net::new(0, 2);
+//! let voice = net.push(Box::new(synth));
+//! net.pipe_output(voice);
+//! net.check();
+//!
+//! let mut out = [0.0f32; 2];
+//! net.tick(&[], &mut out);
+//! # Ok::<(), tutti_polysynth::Error>(())
 //! ```
+//!
+//! # What is fixed at construction, and what is not
+//!
+//! The DSP chain each voice runs is assembled once from the oscillator, filter
+//! and envelope, so those three need a new synth to change. Unison detune,
+//! spread and sub-voice count, master volume, and MPE enablement all have live
+//! setters. `max_voices` is capped at 16 — the ceiling exists so the per-block
+//! finished-voice list stays inline and the audio callback never allocates.
+//!
+//! # Not a SoundFont player
+//!
+//! `.sf2` playback is [`tutti-soundfont`]'s, a peer crate rather than a feature
+//! of this one: a sample player shares no voice engine, envelope model or
+//! filter with a subtractive synth, so the two have nothing to hold in common
+//! beyond the `AudioUnit` trait.
+//!
+//! [`tutti-soundfont`]: https://docs.rs/tutti-soundfont
 
 pub mod error;
 
@@ -39,11 +93,6 @@ pub use portamento::{PortamentoConfig, PortamentoCurve, PortamentoMode};
 mod tuning;
 // Public: `Tuning` appears in `SynthConfig`.
 pub use tuning::Tuning;
-
-// NOTE: SoundFont synthesis is NOT here — it lives in `tutti-soundfont`.
-// `SoundFontUnit` reached for none of this crate's voice allocation, tuning,
-// portamento or unison, so the old `soundfont` feature gated a module that
-// merely happened to sit in the same directory.
 
 mod synth;
 pub use synth::{

@@ -1,3 +1,20 @@
+//! Publishing non-scalar state to the audio thread as a *borrow*.
+//!
+//! [`RtPublish`] is the cell a control thread stores into; [`RtRef`] is the
+//! non-`Send`, lifetime-tied handle the audio thread reads back. Scalars use
+//! [`Param`](crate::value::Param) instead — this is for a routing table, a meter
+//! map, a coefficient set.
+//!
+//! The hazard it removes is an *owning* read on the audio thread: hold the last
+//! reference to a retired value and the callback runs `free` on its `Vec`s
+//! inside the block. `ClickSettings::meter` did exactly that through
+//! `ArcSwap::load_full`.
+//!
+//! **A no-alloc test cannot pin this property**, and one that claimed to did
+//! not: the hazard is a race between a reader and a publisher, and a
+//! single-threaded sampling test has no schedule that exhausts it. The guarantee
+//! therefore lives in [`RtRef`]'s type, where it is checked at compile time.
+
 use std::marker::PhantomData;
 use std::ops::Deref;
 use std::sync::Arc;
@@ -56,6 +73,9 @@ pub struct RtPublish<T> {
 }
 
 impl<T> RtPublish<T> {
+    /// Wraps an initial value, allocating the `Arc` that carries it.
+    ///
+    /// Control-thread only, like [`publish`](Self::publish).
     pub fn new(value: T) -> Self {
         Self {
             cell: ArcSwap::from_pointee(value),
@@ -198,18 +218,17 @@ mod tests {
     /// over the trait's default only when `T: Send`, so `IS_SEND` resolves to
     /// `false` exactly when the type is *not* `Send`. A plain
     /// `assert_not_send::<T>()` helper cannot express this — there is no stable
-    /// negative bound — and a bare `assert_send` would pin the opposite of what
-    /// we want.
+    /// negative bound — and a bare `assert_send` pins the opposite claim.
     ///
     /// # Why `const` rather than `assert!`
     ///
-    /// Both operands are compile-time constants, so a runtime `assert!` was the
-    /// wrong tool twice over: clippy flagged it as an assertion on a constant,
-    /// and — the part that mattered — the check only ran if someone ran the
-    /// tests. A `const` block is evaluated during compilation, so this property
-    /// now fails the *build*. That matches what it guards: `RtRef`'s non-`Send`
-    /// ness is a type-system claim, and the whole point of moving the guarantee
-    /// into the return type was to stop relying on anyone remembering to check.
+    /// Both operands are compile-time constants, so a runtime `assert!` is the
+    /// wrong tool twice over: clippy flags it as an assertion on a constant, and
+    /// — the part that matters — it only runs if someone runs the tests. A
+    /// `const` block is evaluated during compilation, so this property fails the
+    /// *build*. That matches what it guards: `RtRef`'s non-`Send`ness is a
+    /// type-system claim, and putting the guarantee in the return type is what
+    /// stops it depending on anyone remembering to check.
     #[test]
     fn rt_ref_is_not_send() {
         struct Wrap<T>(PhantomData<T>);

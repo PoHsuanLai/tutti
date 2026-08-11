@@ -5,10 +5,11 @@
 //! — gating, dither, the encoder — pulls from it, so the graph is stepped
 //! exactly once per block no matter which encoder is driving.
 //!
-//! The frame width is a **runtime** value carried by [`Frames`], not a
-//! `const CH`. It used to be const-generic, which forced the public entry points
-//! through a `dispatch_channels!` macro that enumerated 1/2/4/6/8/12 and refused
-//! everything else — so a 3- or 5-wide master could not be exported at all.
+//! The frame width is a **runtime** value carried by [`Frames`], never a
+//! `const CH`. A width in the type can only carry one that is a property of the
+//! *code*; the destination width here is a property of the caller's config, so
+//! any positive count renders — 3- and 5-wide masters included.
+//!
 //! `NetSource` **folds** the net's real output width onto the requested one (see
 //! [`fold_net_frame`]), so a graph wider than the file is downmixed rather than
 //! truncated, and a narrower one is zero-filled rather than duplicated.
@@ -92,12 +93,12 @@ impl<'a> Frames<'a> {
 /// destination frame of whatever width `dst` is.
 ///
 /// This is the entire up/down-mix policy, and it is [`tutti_types::fold_frame`]
-/// for every width — no special cases. That matters: this function used to
-/// short-circuit `n_out == 1` with `dst.fill(s)`, which put a full-level copy of
-/// a mono graph into *every* destination channel. For a 5.1 file that meant
-/// program material in the LFE and both surrounds, +6 dB on any downmix, and
-/// correlated-mono comb filtering — none of which any DAW does, and none of
-/// which `fold_frame` does either (beyond stereo it copies and zero-fills).
+/// for every width — **no special cases, and the mono one is the trap.** A
+/// `n_out == 1` short-circuit spraying `dst.fill(s)` puts a full-level copy of a
+/// mono graph into every destination channel: for a 5.1 file that is program
+/// material in the LFE and both surrounds, +6 dB on any downmix, and
+/// correlated-mono comb filtering. No DAW does that, and neither does
+/// `fold_frame` — beyond stereo it copies and zero-fills.
 #[inline]
 fn fold_net_frame(net: &BufferMut<'_>, n_out: usize, i: usize, dst: &mut [f32]) {
     // Stack, sized by the fixed ceiling rather than by the (runtime)
@@ -133,10 +134,10 @@ impl<'a> NetSource<'a> {
     ) -> Self {
         net.set_sample_rate(sample_rate);
         let n_out = net.outputs();
-        // Exactly one plane per REAL output channel. Sizing this to the file
-        // width when the file is wider than the graph made `Net::process` walk
-        // `0..output.channels()` while indexing `output_edge[channel]`, which is
-        // only `net.outputs()` long — a hard panic on every upmix export.
+        // Exactly one plane per REAL output channel, never the file width.
+        // `Net::process` walks `0..output.channels()` while indexing
+        // `output_edge[channel]`, which is only `net.outputs()` long — so a
+        // scratch sized to a wider file panics on every upmix export.
         let scratch = BufferVec::new(n_out.max(1));
         Self {
             net,
@@ -164,14 +165,13 @@ pub(crate) trait FrameSource {
 
 impl FrameSource for NetSource<'_> {
     /// A render never starves: the net produces a full block on demand, so the
-    /// only `0` this returns is for a zero-length request. An offline render is
-    /// driven to a known frame count, not polled until it runs dry.
+    /// only `0` this returns is for a zero-length request.
     ///
-    /// This used to be a `tutti_core::io::AudioIn<f32, CH>` impl that `fill`
-    /// delegated to. The trait was the crate's only genuine need for a const
-    /// frame width, and nothing outside this module ever polled a `NetSource`
-    /// through it — so the body lives here directly rather than keeping a
-    /// const-generic alive for one vestigial impl.
+    /// That is the offline/live split in one line. An `AudioIn`'s zero-frame
+    /// poll is ambiguous — "not yet" for a live source, "never again" for a
+    /// finite one — which is why that trait carries `ON_EMPTY`. An offline
+    /// render is driven to a known frame count rather than polled until dry, so
+    /// the ambiguity never arises and this is not an `AudioIn`.
     fn fill(&mut self, out: &mut [f32], ch: usize) -> usize {
         debug_assert!(ch > 0, "frame width must be non-zero");
         let block_size = (out.len() / ch).min(MAX_BUFFER_SIZE);
@@ -356,12 +356,12 @@ mod tests {
         }
     }
 
-    /// Rendering a graph NARROWER than the file must not panic. The scratch
-    /// buffer used to be sized to the frame width, so `Net::process` indexed
-    /// past `output_edge` and blew up on every upmix.
+    /// Rendering a graph NARROWER than the file must not panic — a scratch
+    /// sized to the frame width rather than to `net.outputs()` indexes past
+    /// `output_edge` on every upmix.
     ///
-    /// Widths 3 and 5 are here on purpose: they are the ones the old
-    /// `dispatch_channels!` refused outright.
+    /// Widths 3 and 5 are here on purpose: they are the ones a fixed enumeration
+    /// of widths would refuse outright.
     #[test]
     fn rendering_a_narrow_graph_to_a_wide_file_does_not_panic() {
         for ch in [2usize, 3, 4, 5, 12] {

@@ -18,15 +18,24 @@ pub enum Vst3Error {
     /// plugin could be instantiated. `stage` pinpoints which step failed.
     #[error("Failed to load plugin at {path}: {stage} - {reason}")]
     LoadFailed {
+        /// Bundle or DSO path the host attempted to load.
         path: PathBuf,
+        /// Which loading step failed.
         stage: LoadStage,
+        /// Human-readable cause, for logs rather than matching.
         reason: String,
     },
 
     /// A plugin call returned a non-OK `tresult`. `code` is the raw VST3 return
     /// code as defined in `pluginterfaces/base/funknown.h`.
     #[error("Plugin error at {stage}: code {code}")]
-    PluginError { stage: LoadStage, code: i32 },
+    PluginError {
+        /// Which step the failing call belonged to.
+        stage: LoadStage,
+        /// The raw VST3 `tresult`, passed through unmapped so a caller can
+        /// distinguish the SDK's specific codes.
+        code: i32,
+    },
 
     /// Operation requires the plugin to be in the active (processing) state.
     #[error("Plugin is not active")]

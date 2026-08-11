@@ -28,18 +28,22 @@ use tutti_types::{ChannelLayout, Db, Interleaved};
 /// What the meter is measuring: the rate and channel layout of the frames fed
 /// to [`step_loudness`].
 ///
-/// The rate is **not** optional and **not** defaulted. Both true-peak sites in
-/// the code this replaced hardcoded 48 kHz while their sibling threaded the
-/// real rate, so a 44.1 kHz render measured its peaks through a filter built
-/// for the wrong rate and normalized to a biased target. Carrying the rate in
-/// the config makes that unrepresentable.
+/// The rate is **not** optional and **not** defaulted. Hardcode it to 48 kHz
+/// and a 44.1 kHz render measures its peaks through a filter built for the
+/// wrong rate and normalizes to a biased target. Carrying the rate in the
+/// config makes that unrepresentable.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LoudnessConfig {
+    /// Rate the fed frames are denominated at. Sets the true-peak
+    /// oversampling filter, so a wrong value biases the reading silently.
     pub rate: SampleRate,
+    /// Channel layout of the fed frames. Fixed at meter construction — a chunk
+    /// of a different width is read as a different signal.
     pub layout: ChannelLayout,
 }
 
 impl LoudnessConfig {
+    /// A config for frames at `rate` in `layout`.
     pub fn new(rate: impl Into<SampleRate>, layout: ChannelLayout) -> Self {
         Self {
             rate: rate.into(),
@@ -50,10 +54,9 @@ impl LoudnessConfig {
     /// Whether `chunk` is the width this config's meter was built for.
     ///
     /// The meter's channel count is fixed at construction, so a chunk of a
-    /// different width would be split into the wrong number of frames and read
-    /// as a different signal. Before the width travelled with the buffer, this
-    /// disagreement was not even expressible — the caller passed a bare slice
-    /// and the config's layout was simply assumed to describe it.
+    /// different width is split into the wrong number of frames and read as a
+    /// different signal. Expressible only because the width travels with the
+    /// buffer — a bare slice leaves the config's layout merely assumed.
     #[inline]
     pub fn chunk_matches(&self, chunk: Interleaved<'_>) -> bool {
         chunk.layout() == self.layout
@@ -135,10 +138,10 @@ impl LoudnessState {
 /// Feed one chunk of frames.
 ///
 /// The chunk arrives as an [`Interleaved`], so its width travels with it rather
-/// than beside it: `cfg.layout` and the buffer used to be two separate
-/// arguments that had to agree, and nothing checked that they did. The meter is
-/// built from `cfg.layout`, so a chunk at a different width would be metered as
-/// the wrong number of frames — [`chunk_matches`](LoudnessConfig::chunk_matches)
+/// than beside it — as a separate `cfg.layout` and a bare buffer, the two have
+/// to agree and nothing checks that they do. The meter is built from
+/// `cfg.layout`, so a chunk at a different width is metered as the wrong number
+/// of frames — [`chunk_matches`](LoudnessConfig::chunk_matches)
 /// makes that a value the caller can act on. Here a mismatch is simply ignored,
 /// because a metering miss must not fail a render.
 ///

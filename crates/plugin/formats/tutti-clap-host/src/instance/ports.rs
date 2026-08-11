@@ -37,10 +37,10 @@ impl ClapLoaded {
     /// Number of input or output audio ports exposed by the plugin.
     ///
     /// `u32` because that is what CLAP's own `count`/`get` pair speaks, and it
-    /// is the type every port index in this file is denominated in. Four of
-    /// these accessors used to widen the count to `usize` and narrow the index
-    /// back to `u32` at the FFI call — a matched pair of conversions that
-    /// bought nothing and left one concept with two spellings in one file.
+    /// is the type every port index in this file is denominated in. Widening
+    /// the count to `usize` and narrowing the index back at the FFI call is a
+    /// matched pair of conversions that buys nothing and leaves one concept
+    /// with two spellings in one file.
     pub fn audio_port_count(&self, is_input: bool) -> u32 {
         if self.extensions.audio.ports.is_null() {
             return 0;
@@ -658,7 +658,7 @@ fn audio_port_info_from_clap(info: &clap_audio_port_info) -> AudioPortInfo {
 /// `channel_count` into a [`ChannelLayout`].
 ///
 /// Kept a named boundary fn rather than a `From` impl: it needs the
-/// `channel_count` fallback for tags we don't recognize (the tag string itself
+/// `channel_count` fallback for tags this host does not recognize (the tag string itself
 /// is dropped — nothing downstream reads it), and it borrows a raw FFI pointer.
 /// `CLAP_PORT_MONO`/`CLAP_PORT_STEREO` map to the named variants; any other tag
 /// (surround, ambisonic, vendor-specific) becomes `Multi(channel_count)`.

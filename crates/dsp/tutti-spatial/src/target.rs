@@ -12,11 +12,18 @@ use crate::smoothing::{ExponentialSmoother, DEFAULT_POSITION_SMOOTH_TIME};
 /// to the right), a height saturates (past straight up, you stop).
 #[derive(Clone)]
 pub struct SpatialTarget {
+    /// Bearing in [`Azimuth`] degrees, wrapped onto the circle: 0 is front,
+    /// 90 left, -90 right. Written lock-free from the control thread and read
+    /// once per block by the panner.
     pub azimuth: Param<Azimuth>,
+    /// Height in [`Elevation`] degrees, clamped to -90..90: 0 is ear level,
+    /// positive is up. Saturates at the poles rather than wrapping.
     pub elevation: Param<Elevation>,
 }
 
 impl SpatialTarget {
+    /// A target aimed straight ahead at ear level
+    /// ([`Azimuth::FRONT`] / [`Elevation::LEVEL`]).
     pub fn new() -> Self {
         Self {
             azimuth: Param::new(Azimuth::FRONT),
@@ -39,6 +46,7 @@ impl SpatialTarget {
             .store(Elevation::new_clamped(elevation.into().get()));
     }
 
+    /// Re-aim straight ahead at ear level, discarding the current position.
     pub fn reset_origin(&self) {
         self.store(Azimuth::FRONT, Elevation::LEVEL);
     }
@@ -53,9 +61,9 @@ impl Default for SpatialTarget {
 /// One smoother per coordinate, each with its own arithmetic: the bearing takes
 /// the short arc, the height is a plain ramp.
 ///
-/// Shared because that asymmetry is easy to get wrong twice. Both used the
-/// linear form once, and a source crossing behind the listener (170° → -170°, a
-/// 20° move) swept 340° the wrong way around the head.
+/// Shared because that asymmetry is easy to get wrong twice. Give the bearing
+/// the linear form and a source crossing behind the listener (170° → -170°, a
+/// 20° move) sweeps 340° the wrong way around the head.
 pub(crate) struct AngleSmoother {
     azimuth: ExponentialSmoother,
     elevation: ExponentialSmoother,

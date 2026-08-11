@@ -1,3 +1,13 @@
+//! Lock-free interior mutability for the audio callback.
+//!
+//! [`AudioThreadCell`] backs a `&self`-reachable value with a bare `UnsafeCell`
+//! and one contract — at most one borrow live at a time — rather than a
+//! `Mutex`. [`BorrowGuard`] and [`BorrowRef`] are its two guards.
+//!
+//! Its own module because the contract is unusual enough to need stating in one
+//! place: debug builds catch a violation with an atomic flag, release builds
+//! carry none, and the caller is what makes it sound.
+
 use core::cell::UnsafeCell;
 use core::ops::{Deref, DerefMut};
 
@@ -10,11 +20,12 @@ use core::sync::atomic::{AtomicBool, Ordering};
 ///
 /// In debug builds the cell uses an atomic "in-use" flag to *catch concurrent
 /// borrows*: if a second thread enters `borrow`/`borrow_mut` while a first
-/// borrow is still alive, the second call panics. This matches the documented
-/// contract — "one thread at a time" — rather than the stricter and incorrect
-/// "always the same thread" check used previously, which produced false
-/// positives when an OS audio stack (notably CoreAudio on macOS) legitimately
-/// migrates its callback to a different thread between invocations.
+/// borrow is still alive, the second call panics.
+///
+/// The check is "one thread at a time", never "always the same thread". Pinning
+/// an owner thread is the stricter and *wrong* check: an OS audio stack
+/// (notably CoreAudio) legitimately migrates its callback to a different thread
+/// between invocations, and an owner check fires on every such migration.
 ///
 /// In release builds the cell compiles down to a bare `UnsafeCell` with zero
 /// overhead; the caller's invariant is what keeps it sound.
@@ -36,6 +47,7 @@ pub struct AudioThreadCell<T> {
 }
 
 impl<T> AudioThreadCell<T> {
+    /// Wraps a value. `const`, so a cell can be a `static` or a const field.
     pub const fn new(val: T) -> Self {
         Self {
             inner: UnsafeCell::new(val),
@@ -44,9 +56,9 @@ impl<T> AudioThreadCell<T> {
         }
     }
 
-    /// No-op kept for source compatibility — the cell no longer pins an owner
-    /// thread, so device switching needs no reset. Will be removed once all
-    /// callers have dropped their `reset_owner()` calls.
+    /// No-op, kept for source compatibility. Safe to delete at the call site.
+    ///
+    /// The cell pins no owner thread, so a device switch needs no reset.
     #[inline]
     pub fn reset_owner(&self) {}
 
@@ -181,8 +193,8 @@ mod tests {
 
     #[test]
     fn sequential_borrows_across_threads_are_ok() {
-        // After one thread's borrow drops, another thread may borrow — that
-        // is the macOS CoreAudio scenario the old check tripped on.
+        // After one thread's borrow drops, another thread may borrow. This is
+        // the CoreAudio callback-migration case an owner-pinning check rejects.
         use std::sync::Arc;
         let cell = Arc::new(AudioThreadCell::new(0u32));
         *cell.borrow_mut() = 7;

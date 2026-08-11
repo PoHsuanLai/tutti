@@ -28,8 +28,8 @@
 //! # Input does not return a trait object
 //!
 //! Asymmetric on purpose. Output is a sink the caller pushes to, so an erased
-//! `MidiOut` is exactly right. Input is *pushed to us* by a driver callback on
-//! its own thread, and the engine already has the destination for that: the
+//! `MidiOut` is exactly right. Input arrives the other way — a driver callback
+//! pushes it on its own thread — and the engine already has a destination: the
 //! [`InputProducerHandle`] into a [`HardwareMidiInputs`] ring, which the audio
 //! thread drains through `MidiIn`. A backend therefore takes the handle and
 //! wires its callback to it, rather than handing back a source nobody would
@@ -50,30 +50,36 @@ use tutti_midi_types::MidiOut;
 /// [`MidiEndpoints::open_input`] returns it rather than `()` and why a caller
 /// must hold it.
 ///
-/// It briefly declared `fn endpoint(&self) -> EndpointId` — directly under a doc
-/// sentence saying it carried no methods. Nothing ever called it: the id is
-/// already the key of the map these are stored in, so a connection is never
-/// asked for its own address.
-///
-/// The name survives the method because `Box<dyn Send>` would say nothing about
-/// what dropping the value does. This trait is where a backend author reads that
-/// contract, which is a distinct thing to be even with no behaviour attached.
+/// Do not give it an `endpoint()` accessor: the [`EndpointId`] is already the
+/// key of the map these are stored in, so a connection is never asked for its
+/// own address. The trait is named rather than erased to `Box<dyn Send>`
+/// precisely because a bare `Send` says nothing about what dropping the value
+/// does — this is where a backend author reads that contract, which is a
+/// distinct thing to be even with no behaviour attached.
 pub trait InputConnection: Send {}
 
 /// This OS's MIDI endpoints.
 pub trait MidiEndpoints: Send + Sync {
-    /// Endpoints that can send us MIDI.
+    /// Endpoints that can send MIDI to this engine.
     ///
     /// A fresh snapshot per call — device lists go stale on hot-plug, and a
     /// cached one is a second owner of state the OS already holds.
     fn inputs(&self) -> Vec<EndpointInfo>;
 
-    /// Endpoints we can send MIDI to.
+    /// Endpoints this engine can send MIDI to. A fresh snapshot per call, as
+    /// [`inputs`](Self::inputs) is.
     fn outputs(&self) -> Vec<EndpointInfo>;
 
     /// Open `id` for input, delivering events into `producer`.
     ///
     /// The returned connection must be **held**: dropping it closes the port.
+    /// An implementation takes `producer` onto whatever thread the OS delivers
+    /// on and pushes from there alone — one handle, one pusher.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::MidiDevice`](crate::Error::MidiDevice) when `id` names no
+    /// current endpoint, or the platform error from opening the port.
     fn open_input(
         &self,
         id: EndpointId,
@@ -85,5 +91,11 @@ pub trait MidiEndpoints: Send + Sync {
     /// The result speaks [`MidiOut`] — the same trait a per-unit mailbox
     /// implements — so callers route to a hardware wire and to a synth inbox
     /// through one vocabulary.
+    ///
+    /// # Errors
+    ///
+    /// As [`open_input`](Self::open_input), plus
+    /// [`Error::Unsupported`](crate::Error::Unsupported) from the stub backend
+    /// on a platform with no native-UMP path.
     fn open_output(&self, id: EndpointId) -> Result<Box<dyn MidiOut>>;
 }

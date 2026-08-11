@@ -5,15 +5,30 @@
 //!
 //! # Enabled is a default, not a decision
 //!
-//! Measuring is on from the start because consumers read [`MeteringRes::get`]
-//! directly, and handing four zeros to a host that never opted in is a silent
-//! failure. It is reversible — a host that is not watching turns it off through
-//! the `Deref`:
+//! Measuring is on from the start because consumers read
+//! [`MasterMeter::get`](tutti_core::metering::MasterMeter::get) through the
+//! `Deref` below, and handing four zeros to a host that never opted in is a
+//! silent failure. It is reversible — a host that is not watching turns it off
+//! the same way:
 //!
-//! ```rust,ignore
+//! ```rust
+//! use bevy_app::prelude::*;
+//! use bevy_ecs::prelude::*;
+//! use bevy_tutti::prelude::*;
+//!
 //! fn stop_metering(meter: Res<MeteringRes>) {
 //!     meter.disable();
 //! }
+//!
+//! let mut app = App::new();
+//! // `build_into` inserts this, already enabled; a device-less app stands the
+//! // same resource up by hand.
+//! app.insert_resource(MeteringRes::default());
+//! app.world().resource::<MeteringRes>().enable();
+//! app.add_systems(Update, stop_metering);
+//! app.update();
+//!
+//! assert!(!app.world().resource::<MeteringRes>().is_enabled());
 //! ```
 //!
 //! What that saves is smaller than the switch suggests, which is worth knowing

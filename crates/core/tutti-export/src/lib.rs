@@ -1,28 +1,63 @@
 //! # tutti-export
 //!
-//! Offline audio export: render a Tutti graph to a file, or to buffers.
+//! **The OFFLINE edge**: render a Tutti graph to a file, or to buffers, faster
+//! (or slower) than real time. The graph is *pulled* to a known frame count that
+//! [`RenderConfig`] fixes up front.
 //!
-//! ```ignore
-//! use tutti_export::{render_to_file, ExportConfig, RenderConfig, EncodeConfig};
-//! use tutti_core::{SampleRate, FrozenClock};
+//! Its peer is `tutti-io`, the **LIVE** edge — a microphone, a tap, a `Recorder`
+//! pushing blocks into a WAV as they arrive. The distinction is structural
+//! rather than stylistic: a live capture has no total frame count (it ends when
+//! someone stops it), so it cannot be expressed as an export, and an export
+//! needs a total (to size a plan, trim latency, cap output), so it cannot be
+//! expressed as a live pump. Reach here to bounce a mix; reach for `tutti-io` to
+//! record one.
 //!
-//! render_to_file(
-//!     net,
-//!     &ExportConfig {
-//!         render: RenderConfig {
-//!             sample_rate: SampleRate(48_000.0),
-//!             duration_seconds: 30.0,
-//!             ..Default::default()
-//!         },
-//!         encode: EncodeConfig {
-//!             format: AudioFormat::Flac(Flac::default()),
-//!             ..Default::default()
-//!         },
+//! # Example — bounce a graph
+//!
+//! A config is a struct literal, so a caller states what it means and lets
+//! `..Default::default()` cover the rest. The clock is not optional:
+//! [`tutti_core::FrozenClock`] is how a caller *says* "this graph
+//! has no time-dependent nodes", so forgetting a transport is a compile error
+//! rather than a silently silent render.
+//!
+//! ```
+//! use tutti_core::dsp::{sine_hz, Net};
+//! use tutti_core::{FrozenClock, SampleRate};
+//! use tutti_export::{
+//!     render_to_buffers, render_to_file, AudioFormat, EncodeConfig, ExportConfig, Flac,
+//!     RenderConfig,
+//! };
+//!
+//! let mut net = Net::new(0, 2);
+//! let tone = net.push(Box::new(sine_hz::<f32>(440.0)));
+//! net.pipe_output(tone);
+//!
+//! let config = ExportConfig {
+//!     render: RenderConfig {
+//!         sample_rate: SampleRate(48_000.0),
+//!         // `f64`, not `Seconds`: an f32 cannot carry an hour-long render.
+//!         duration_seconds: 0.5,
 //!         ..Default::default()
 //!     },
-//!     &FrozenClock,          // or your OfflineTimeline
-//!     "master.flac".as_ref(),
-//! )?;
+//!     encode: EncodeConfig {
+//!         format: AudioFormat::Flac(Flac::default()),
+//!         ..Default::default()
+//!     },
+//!     ..Default::default()
+//! };
+//!
+//! // To buffers: planar, one `Vec` per channel, and `frames()` is FRAMES per
+//! // plane rather than the total sample count.
+//! let rendered = render_to_buffers(net.clone(), &config, &FrozenClock)
+//!     .expect("a 0.5 s stereo render");
+//! assert_eq!(rendered.channels(), 2);
+//! assert_eq!(rendered.frames().get(), 24_000);
+//!
+//! // Or straight to a file, which streams — no PCM is held whole.
+//! let dir = tempfile::tempdir().expect("temp dir");
+//! let written = render_to_file(net, &config, &FrozenClock, &dir.path().join("master.flac"))
+//!     .expect("flac encodes");
+//! assert!(written.bytes > 0, "a finalized export reports its size on disk");
 //! ```
 //!
 //! ## What this crate does not do
@@ -37,13 +72,13 @@
 //! the whole signal first, which is two passes. So normalization is not a field
 //! on [`ExportConfig`] that quietly changes what `render_to_file` costs — it is
 //! [`render_normalized_to_file`], a separate entry point whose name says which
-//! path you are on. Hiding the two passes inside one export is what forced the
-//! whole signal into memory before.
+//! path the caller is on. Hiding the two passes inside one export is what
+//! forces the whole signal into memory.
 //!
-//! For a gain of your own — logged, gated, or derived some other way — compose
-//! the steps directly: measure with `tutti_analysis::loudness` (a streaming
-//! meter, so it can run *while* rendering), take `Loudness::gain_to`, apply it
-//! with [`Rendered::apply_gain`], and write with [`write_buffers`].
+//! For a gain that is logged, gated, or derived some other way, compose the
+//! steps directly: measure with `tutti_analysis::loudness` (a streaming meter,
+//! so it can run *while* rendering), take `Loudness::gain_to`, apply it with
+//! [`Rendered::apply_gain`], and write with [`write_buffers`].
 //!
 //! **It does not decide how to buffer.** Every format streams, because every
 //! codec library it uses supports incremental encoding. There is no
@@ -81,24 +116,37 @@ use tutti_types::Samples;
 /// A file that was written.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Written {
+    /// Where it landed — the `path` the entry point was given.
     pub path: PathBuf,
+    /// Size on disk after finalization. `0` if the file could not be stat'd.
+    ///
+    /// This is the only thing an export reports back, which is why a
+    /// normalization that silently failed to apply would leave no trace: no
+    /// field here records the gain.
     pub bytes: u64,
 }
 
 /// Rendered audio, one `Vec` per channel.
 ///
-/// Planes rather than a `(left, right)` pair: the pair could not express a
-/// surround render, so the in-memory path used to silently fold anything wider
-/// than stereo — and its callers hardcoded "2 channels" downstream because the
-/// type gave them no other answer.
+/// Planes rather than a `(left, right)` pair: a pair cannot express a surround
+/// render, so it forces the in-memory path to fold anything wider than stereo
+/// and leaves callers hardcoding "2 channels" downstream because the type gives
+/// them no other answer.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Rendered {
+    /// One `Vec` per channel, all the same length. Planar, not interleaved —
+    /// [`interleaved`](Self::interleaved) is the conversion.
     pub planes: Vec<Vec<f32>>,
+    /// The rate these samples are **at**, which is not necessarily the rate a
+    /// config asked to write: [`render_to_buffers`] does not resample, so this
+    /// is always the render rate. An encoder must read it from here rather than
+    /// from a config, or it converts from a rate the samples were never at.
     pub sample_rate: tutti_core::SampleRate,
 }
 
 impl Rendered {
-    /// Frames per plane.
+    /// FRAMES per plane — the length of one channel, not the total sample
+    /// count.
     pub fn frames(&self) -> Samples {
         Samples(self.planes.first().map_or(0, |p| p.len()))
     }
@@ -142,14 +190,12 @@ impl Rendered {
     }
 }
 
-/// The frame width an export config asks for.
+/// The frame width an export config asks for, as the interleave stride.
 ///
 /// The one place a [`ChannelLayout`] becomes the `usize` stride the render and
-/// the encoders use. Zero is the only rejected width — this used to be a
-/// `dispatch_channels!` macro that monomorphized the whole pipeline at one of
-/// 1/2/4/6/8/12 and returned [`Error::UnsupportedChannels`] for everything else,
-/// which meant a 3- or 5-wide master (`ChannelLayout::from(n)` for any
-/// unenumerated `n`) could not be exported at all.
+/// the encoders use, and **zero is the only rejected width**. That the check is
+/// a bound rather than a list of enumerated widths is what lets a 3- or 5-wide
+/// master export at all: nothing here is generic over the count.
 fn frame_width(layout: ChannelLayout) -> Result<usize> {
     match layout.count() {
         0 => Err(Error::UnsupportedChannels(0)),
@@ -165,12 +211,18 @@ fn frame_width(layout: ChannelLayout) -> Result<usize> {
 /// *action*, and folding it into a value dragged a `&mut Net` into what is
 /// otherwise pure arithmetic:
 ///
-/// ```ignore
+/// ```
+/// # use tutti_core::dsp::{sine_hz, Net};
+/// # use tutti_export::{reported_latency, ExportConfig, RenderConfig};
+/// # let mut net = Net::new(0, 2);
+/// # let tone = net.push(Box::new(sine_hz::<f32>(440.0)));
+/// # net.pipe_output(tone);
 /// let latency = reported_latency(&mut net);
 /// let config = ExportConfig {
 ///     render: RenderConfig { latency, ..Default::default() },
 ///     ..Default::default()
 /// };
+/// # let _ = config;
 /// ```
 ///
 /// Floored: trimming a partial frame is not something a sink can do.
@@ -192,7 +244,14 @@ pub fn reported_latency(net: &mut tutti_core::dsp::Net) -> Samples {
 /// never taught to answer. Resolving either into a number is a decision, so it
 /// happens at the call site:
 ///
-/// ```ignore
+/// ```
+/// # use tutti_core::dsp::{sine_hz, Net};
+/// # use tutti_core::{SampleRate, Seconds};
+/// # use tutti_export::{reported_tail, ExportConfig, RenderConfig};
+/// # let mut net = Net::new(0, 2);
+/// # let tone = net.push(Box::new(sine_hz::<f32>(440.0)));
+/// # net.pipe_output(tone);
+/// # let rate = SampleRate(48_000.0);
 /// let reported = reported_tail(&net);
 /// let tail = reported.samples().unwrap_or_else(|| {
 ///     // This bounce stops four seconds into an unbounded tail.
@@ -202,6 +261,7 @@ pub fn reported_latency(net: &mut tutti_core::dsp::Net) -> Samples {
 ///     render: RenderConfig { tail, ..Default::default() },
 ///     ..Default::default()
 /// };
+/// # let _ = config;
 /// ```
 pub fn reported_tail(net: &tutti_core::dsp::Net) -> tutti_types::GraphTail {
     tutti_types::tail::graph_tail(net)
@@ -209,13 +269,15 @@ pub fn reported_tail(net: &tutti_core::dsp::Net) -> tutti_types::GraphTail {
 
 /// Write already-rendered audio to `path`.
 ///
-/// The third of the API, and the one that makes measure-then-apply usable:
-/// render to buffers, measure, apply a gain, write. Without it a caller who
-/// normalized would have nowhere to put the result.
+/// The third of the API, and what makes measure-then-apply usable: render to
+/// buffers, measure, apply a gain, write. Without it a caller who normalized has
+/// nowhere to put the result.
 ///
-/// `config.encode` is honoured as-is. `config.render` is not consulted — the frames
-/// already exist — but `config.resample` still applies, so a caller can convert on
-/// the way out.
+/// `config.encode` is honoured as-is. `config.render` is not consulted — the
+/// frames already exist and carry their own rate in [`Rendered::sample_rate`] —
+/// but `config.resample` still applies, so a caller can convert on the way out.
+/// Dither is applied here, at the real depth and after any resample, which is
+/// the only point where one LSB is known.
 pub fn write_buffers(rendered: &Rendered, config: &ExportConfig, path: &Path) -> Result<Written> {
     frame_width(config.encode.channels)?;
     encode::encode_planes(rendered, config, path)

@@ -21,17 +21,29 @@ use tutti_types::RtPublish;
 /// Supports layering up to 8 synths on a single channel.
 pub const MAX_TARGETS_PER_ROUTE: usize = 8;
 
+/// One routing rule: which events it claims, and where they go.
+///
+/// A rule fans one event out to up to [`MAX_TARGETS_PER_ROUTE`] units. Several
+/// rules may claim the same event; the snapshot unions their targets rather than
+/// picking a winner, so layering is additive.
 #[derive(Clone, Debug)]
 pub struct MidiRoute {
-    /// Channel filter: `None` = any channel, `Some(n)` = channel n only (0-15)
+    /// Channel filter: `None` = any channel, `Some(n)` = channel n only (0-15).
+    ///
+    /// Only constrains messages that *carry* a channel — see
+    /// [`matches`](Self::matches).
     pub channel: Option<u8>,
-    /// Target unit IDs to receive matching events
+    /// Units that receive matching events. Silently capped at
+    /// [`MAX_TARGETS_PER_ROUTE`] by the builders.
     pub targets: Vec<MidiUnitId>,
-    /// Whether this route is enabled
+    /// Whether this route is live. A disabled route matches nothing.
     pub enabled: bool,
 }
 
 impl MidiRoute {
+    /// Builds an enabled route with no channel filter and no targets.
+    ///
+    /// Matches every event and delivers it nowhere until targets are added.
     pub fn new() -> Self {
         Self {
             channel: None,
@@ -40,6 +52,7 @@ impl MidiRoute {
         }
     }
 
+    /// Builds an enabled route filtered to one channel, 0-indexed.
     pub fn for_channel(channel: u8) -> Self {
         Self {
             channel: Some(channel),
@@ -48,6 +61,12 @@ impl MidiRoute {
         }
     }
 
+    /// Adds one target, **ignoring** the call once the route already holds
+    /// [`MAX_TARGETS_PER_ROUTE`].
+    ///
+    /// The overflow is silent by design — a routing table is edited from a UI and
+    /// dropping the surplus beats failing the whole edit — so a caller that needs
+    /// to know must check `targets.len()` itself.
     pub fn with_target(mut self, unit_id: MidiUnitId) -> Self {
         if self.targets.len() < MAX_TARGETS_PER_ROUTE {
             self.targets.push(unit_id);
@@ -55,6 +74,10 @@ impl MidiRoute {
         self
     }
 
+    /// Adds targets until the route holds [`MAX_TARGETS_PER_ROUTE`], then stops.
+    ///
+    /// Truncates the tail of `unit_ids` silently, exactly as
+    /// [`with_target`](Self::with_target) does.
     pub fn with_targets(mut self, unit_ids: &[MidiUnitId]) -> Self {
         for &id in unit_ids {
             if self.targets.len() >= MAX_TARGETS_PER_ROUTE {
@@ -73,9 +96,9 @@ impl MidiRoute {
     /// messages are group- or stream-scoped, so there is nothing for a channel
     /// filter to compare against and they pass every enabled route.
     ///
-    /// Dropping them instead — which is what comparing `Some(c) != None` did —
-    /// meant a per-channel route never saw a Set Tempo, so a clip's own tempo
-    /// map could not reach a channel-scoped consumer.
+    /// Treating a channelless message as a mismatch is the tempting error, and it
+    /// is silent: a per-channel route stops seeing Set Tempo, and a clip's own
+    /// tempo map never reaches a channel-scoped consumer.
     #[inline]
     pub fn matches(&self, event: &MidiEvent) -> bool {
         if !self.enabled {
@@ -113,6 +136,7 @@ pub struct MidiRoutingSnapshot {
 }
 
 impl MidiRoutingSnapshot {
+    /// Builds a snapshot with no routes and no fallback — every event is dropped.
     pub fn empty() -> Self {
         Self {
             routes: Vec::new(),
@@ -121,6 +145,13 @@ impl MidiRoutingSnapshot {
         }
     }
 
+    /// Builds a snapshot from `routes`, precomputing the per-channel lookup.
+    ///
+    /// This is where the allocation happens, on the control thread — after it,
+    /// [`route`](Self::route) is a pure read and allocation-free, which is what
+    /// makes the snapshot safe to hand to the audio thread through `RtPublish`.
+    ///
+    /// `fallback` receives events no enabled route claims; `None` drops them.
     pub fn from_routes(routes: Vec<MidiRoute>, fallback: Option<MidiUnitId>) -> Self {
         let mut snapshot = Self {
             routes,
@@ -150,7 +181,12 @@ impl MidiRoutingSnapshot {
         }
     }
 
-    /// Returns iterator over targets. Zero allocations, deduplicates.
+    /// Every unit `event` should be delivered to, deduplicated.
+    ///
+    /// Allocation-free — the iterator dedupes through a fixed 16-slot stack
+    /// array, so this is the accessor to call from the audio thread. Past 16
+    /// distinct targets the array stops recording and deduplication degrades: no
+    /// target is lost, but one may be yielded twice.
     #[inline]
     pub fn route<'a>(&'a self, event: &'a MidiEvent) -> RouteIterator<'a> {
         RouteIterator {
@@ -164,6 +200,15 @@ impl MidiRoutingSnapshot {
         }
     }
 
+    /// The single highest-priority target for `event`, or `None` if nothing
+    /// claims it and there is no fallback.
+    ///
+    /// For a monophonic consumer that cannot fan out. Prefer
+    /// [`route`](Self::route) where layering matters — this discards every target
+    /// after the first, and which one survives is the lookup's order, not a
+    /// documented priority among equal routes.
+    ///
+    /// Allocation-free.
     #[inline]
     pub fn route_single(&self, event: &MidiEvent) -> Option<MidiUnitId> {
         // A channelless message (Flex Data, UMP Stream, SysEx, utility) has no
@@ -197,6 +242,10 @@ impl MidiRoutingSnapshot {
         self.fallback_target
     }
 
+    /// Every unit any enabled route can reach, deduplicated, plus the fallback.
+    ///
+    /// **Allocates** — a control-thread query (which units to instantiate, what to
+    /// show in a UI), not something to call per event.
     pub fn all_targets(&self) -> Vec<MidiUnitId> {
         let mut targets = Vec::new();
         for route in &self.routes {
@@ -217,11 +266,16 @@ impl MidiRoutingSnapshot {
         targets
     }
 
+    /// Reports whether this snapshot can deliver anywhere at all.
+    ///
+    /// True if any route exists — enabled or not — or a fallback is set, so this
+    /// answers "is the table configured", not "will this event go somewhere".
     #[inline]
     pub fn has_routes(&self) -> bool {
         !self.routes.is_empty() || self.fallback_target.is_some()
     }
 
+    /// The unit receiving events no enabled route claims, if one is set.
     #[inline]
     pub fn fallback(&self) -> Option<MidiUnitId> {
         self.fallback_target
@@ -242,7 +296,10 @@ enum RoutePhase {
     Done,
 }
 
-/// Zero allocations - uses stack-allocated seen buffer.
+/// Iterator over the units an event routes to, yielded in lookup order.
+///
+/// Allocation-free: the deduplication buffer is a fixed 16-slot array on the
+/// stack. See [`MidiRoutingSnapshot::route`] for what happens past 16.
 pub struct RouteIterator<'a> {
     snapshot: &'a MidiRoutingSnapshot,
     event: &'a MidiEvent,
@@ -362,6 +419,10 @@ pub struct MidiRoutingTable {
 }
 
 impl MidiRoutingTable {
+    /// Builds a table with no routes, having already published an empty
+    /// snapshot — so an audio thread reading before the first
+    /// [`commit`](Self::commit) sees a valid table that routes nowhere, never an
+    /// uninitialised one.
     pub fn new() -> Self {
         let snapshot = MidiRoutingSnapshot::empty();
         Self {
@@ -372,10 +433,21 @@ impl MidiRoutingTable {
         }
     }
 
+    /// The published cell, for handing to the audio thread.
+    ///
+    /// Clone this once at setup; the audio thread then calls
+    /// [`RtPublish::read`] on it per block. This is the *cell*, not the snapshot —
+    /// handing over an owning snapshot instead would let the audio thread free a
+    /// retired one inside the callback.
     pub fn snapshot_arc(&self) -> Arc<RtPublish<MidiRoutingSnapshot>> {
         self.snapshot.clone()
     }
 
+    /// Borrows the currently published snapshot.
+    ///
+    /// Read once per block and never park the returned `RtRef` — its lifetime is
+    /// what keeps the audio thread from holding an owning handle across a
+    /// [`commit`](Self::commit).
     #[inline]
     pub fn load(&self) -> tutti_types::RtRef<'_, MidiRoutingSnapshot> {
         self.snapshot.read()
@@ -398,10 +470,15 @@ impl MidiRoutingTable {
         self.dirty = true;
     }
 
+    /// How many rules are *staged*, including any not yet committed.
+    ///
+    /// Not necessarily what the audio thread is currently routing on — compare
+    /// [`is_dirty`](Self::is_dirty).
     pub fn route_count(&self) -> usize {
         self.routes.len()
     }
 
+    /// Whether staged rules are waiting for a [`commit`](Self::commit).
     pub fn is_dirty(&self) -> bool {
         self.dirty
     }

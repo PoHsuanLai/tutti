@@ -1,9 +1,17 @@
+//! [`VbapError`] and the module-local [`Result`] alias.
+//!
+//! Scoped to `vbap` because both variants are speaker geometry. The binaural
+//! side owns `HrtfBinauralError`; there is no crate-level error type to unify
+//! them, and adding one would claim a shared failure mode that does not exist.
+
 use thiserror::Error;
 
 /// What VBAP panning can fail at. Module-scoped because both variants are
 /// speaker geometry; HRTF has its own error type.
 #[derive(Debug, Clone, Error)]
 pub enum VbapError {
+    /// The `vbap` crate rejected the speaker geometry — a degenerate preset
+    /// whose speaker triplets do not span the sphere.
     #[error("VBAP error: {0:?}")]
     Vbap(vbap::VBAPError),
 
@@ -18,4 +26,5 @@ impl From<vbap::VBAPError> for VbapError {
     }
 }
 
+/// Result of a VBAP operation, defaulting the error to [`VbapError`].
 pub type Result<T> = core::result::Result<T, VbapError>;

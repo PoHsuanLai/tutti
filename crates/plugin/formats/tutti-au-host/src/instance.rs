@@ -60,13 +60,13 @@ pub struct AuReady {
     /// moves in [`AuInstance::initialize`]/[`AuInstance::uninitialize`]. The
     /// AU's input render callback holds a `ref_con` pointing at `*scratch`;
     /// moving the `Box` moves only its 8-byte pointer, not the body, so that
-    /// `ref_con` stays valid across state transitions (FIX 1 / FIX 2). Anything
-    /// that frees this box MUST have already run `AudioUnitUninitialize` so the
-    /// AU can no longer call back into freed memory.
+    /// `ref_con` stays valid across state transitions. Anything that frees this
+    /// box MUST have already run `AudioUnitUninitialize`, or the AU calls back
+    /// into freed memory on its render thread.
     scratch: Box<RenderScratch>,
     /// Test-only: counts input-render-callback installs on THIS instance, to
-    /// prove the FIX-1 invariant (installed once per initialize, never per
-    /// render block) without a process-global that races parallel tests.
+    /// prove the callback is installed once per initialize and never per render
+    /// block — without a process-global that races parallel tests.
     #[cfg(test)]
     callback_installs: std::sync::atomic::AtomicU32,
 }
@@ -111,9 +111,6 @@ impl AuInstance {
 
     /// Instantiate at an explicit [`StreamConfig`] — the way to open an AU in
     /// mono, or at any width other than the stereo default [`Self::new`] picks.
-    ///
-    /// Purely additive: [`Self::new`] is unchanged, and the `tutti-plugin-server`
-    /// loader keeps calling it.
     ///
     /// # Safety
     /// `component` must be a valid, non-null `AudioComponent` handle obtained
@@ -1028,11 +1025,10 @@ impl AuInstance {
 
     /// Plugin-reported processing latency in samples at the current sample rate.
     ///
-    /// A refusal is propagated rather than flattened to zero. It used to be
-    /// swallowed with `unwrap_or(0.0)` *inside* this function, which made the
-    /// `Result` unable to ever be `Err` — so every caller's error handling,
-    /// including the loader's `unwrap_or(0)`, was unreachable code that read as
-    /// if it had considered the case.
+    /// A refusal is propagated rather than flattened to zero. Swallowing it
+    /// inside this function would make the `Result` unable to ever be `Err`,
+    /// which turns every caller's error handling into unreachable code that
+    /// reads as if it had considered the case.
     ///
     /// Zero is a real answer here, not a fallback. Measured across every AU
     /// registered on macOS 15.6 (29 effects, instruments and music effects):
@@ -1233,7 +1229,7 @@ impl AuInstance {
     /// [`load_factory_preset`](Self::load_factory_preset), not indices into this
     /// vec — see [`AuPreset`].
     pub fn factory_presets(&self) -> Vec<AuPreset> {
-        // The property's value is a `CFArrayRef` the AU *copies* for us: the
+        // The property's value is a `CFArrayRef` the AU *copies*: the
         // host owns that reference and must release it. `CfArray::from_copied`
         // takes it under the Create rule so the release happens on drop, on
         // every path out of this function including the early returns below.
@@ -1313,7 +1309,7 @@ impl AuInstance {
         // `presetName` is ignored by the AU on a *set* — the number is the
         // selector, and the AU fills the name back in from its own table. Pass
         // null rather than manufacturing a string: a host-owned string here
-        // would either leak (the AU does not release what we hand it) or be
+        // would either leak (the AU does not release what it is handed) or be
         // read back out of `current_preset` as a name the AU never assigned.
         let preset = AUPreset {
             presetNumber: number,
@@ -1817,7 +1813,8 @@ impl AuInstance {
             let previous = l.config.sample_rate;
             l.config.sample_rate = rate;
             // Re-apply and capture the effective layout the AU accepts at the
-            // new rate, so the rebuilt scratch is sized correctly (FIX 3).
+            // new rate, so the rebuilt scratch is sized to the real topology.
+            // The AU may take a different width at a different rate.
             match l.config.apply(&l.handle) {
                 Ok(channels) => l.config.channels = channels,
                 Err(e) => {
@@ -1971,10 +1968,9 @@ impl AuLoaded {
     /// default [`AuLoaded::new`] applies.
     ///
     /// This is how a host requests mono, or any other width the AU will take.
-    /// There was previously no way to do it from outside the crate at all:
-    /// `apply` is `pub(crate)` and both the constructor and `apply` forced
-    /// `outputs >= 2`, so a mono track paid for a doubled channel through every
-    /// AU in its chain.
+    /// It is the only route to a sub-stereo width from outside the crate:
+    /// `apply` is `pub(crate)`, and without this a mono track pays for a doubled
+    /// channel through every AU in its chain.
     ///
     /// # Safety
     /// `component` must be a valid, non-null `AudioComponent`.
@@ -2020,8 +2016,8 @@ impl AuLoaded {
     /// an allocation on account of it.
     fn with_layout(handle: AuHandle, mut config: StreamConfig) -> Result<Self> {
         // `apply` returns the layout the AU actually accepted, which may differ
-        // from what we requested. Store the effective layout so the render
-        // scratch is later sized to the real topology (FIX 3).
+        // from what was requested. Store the effective layout so the render
+        // scratch is later sized to the real topology, not the wished-for one.
         config.channels = config.apply(&handle)?;
         config.verify_block_size(&handle)?;
 
@@ -2036,17 +2032,16 @@ impl AuLoaded {
     /// `AudioUnitInitialize`.
     ///
     /// The input render callback is installed exactly ONCE here, off the
-    /// heap-pinned scratch's stable address, rather than every render block on
-    /// the RT thread (FIX 1). The `ref_con` is `&*scratch`; because `scratch`
-    /// lives behind a `Box`, its body never moves even as the enclosing
-    /// [`AuReady`]/`State` is `mem::replace`d, so the pointer the AU retains
-    /// stays valid (FIX 2).
+    /// heap-pinned scratch's stable address — never per render block on the RT
+    /// thread. The `ref_con` is `&*scratch`; because `scratch` lives behind a
+    /// `Box`, its body never moves even as the enclosing [`AuReady`]/`State` is
+    /// `mem::replace`d, so the pointer the AU retains stays valid.
     ///
     /// # Errors
     /// The error carries `self` back, because this is a by-value typestate
     /// transition: without it a refusing AU is simply destroyed, and
     /// [`AuInstance::initialize`] has nothing to put back into its state
-    /// machine. See that method for what the resulting hole did.
+    /// machine. See that method for what the resulting hole costs.
     ///
     /// The recovered state is an `Option` for the one case that cannot produce
     /// a `Loaded` AU: the callback install failed *and* the compensating
@@ -2077,7 +2072,8 @@ impl AuLoaded {
         // Install the render callback ONCE, immediately after init, from the
         // scratch's stable heap address. AU accepts a render-callback set on the
         // input scope post-`AudioUnitInitialize`. There is deliberately no
-        // per-block install in `process` (that was the RT-thread bug, FIX 1).
+        // per-block install in `process` — that is a property write on the RT
+        // thread, every block.
         // Gate on `has_input`, the AU's own answer to "is there an input bus",
         // NOT on the scratch's input buffer count: `RenderScratch::new`
         // over-allocates inputs to `in_ch.max(out_ch)` so a 0-in/2-out
@@ -2133,11 +2129,11 @@ impl AuReady {
         // Disable the Drop path (which would also uninitialize) to avoid a
         // double `AudioUnitUninitialize`.
         let mut me = std::mem::ManuallyDrop::new(self);
-        // ORDERING INVARIANT (FIX 2): `AudioUnitUninitialize` MUST run before the
-        // boxed scratch is freed below. After uninitialize the AU can no longer
-        // fire the input render callback, so the ref_con pointing at `*scratch`
-        // is guaranteed dead before we drop the Box. Reordering these two would
-        // let the AU call back into freed memory.
+        // ORDERING INVARIANT: `AudioUnitUninitialize` MUST run before the boxed
+        // scratch is freed below. Uninitialize is what stops the AU firing the
+        // input render callback, so it is what makes the ref_con pointing at
+        // `*scratch` provably dead before the Box drops. Reordering these two
+        // lets the AU call back into freed memory on its render thread.
         let status = unsafe { AudioUnitUninitialize(me.loaded.handle.raw_unit()) };
         if let Err(e) = check("AudioUnitUninitialize", status) {
             // The AU refused to uninitialize, so it is still initialized and
@@ -2177,10 +2173,10 @@ impl AuReady {
         self.scratch.stage_input(input, num_frames);
 
         // NOTE: the render callback is installed ONCE at initialize time off the
-        // scratch's stable heap address — deliberately NOT here. Re-installing it
-        // per block issued an `AudioUnitSetProperty` on the RT thread every call
-        // (FIX 1) and, with the old inline scratch, handed the AU a ref_con that
-        // dangled once the state machine moved (FIX 2).
+        // scratch's stable heap address — deliberately NOT here. Re-installing
+        // per block issues an `AudioUnitSetProperty` on the RT thread every call,
+        // and off an inline scratch it would hand the AU a ref_con that dangles
+        // the moment the state machine moves.
         let abl = self.scratch.bind_output(num_frames);
         let timestamp = AudioTimeStamp::with_sample_time(self.scratch.advance(num_frames));
         let mut flags: AudioUnitRenderActionFlags = 0;
@@ -2323,11 +2319,21 @@ impl Drop for AuLoaded {
     }
 }
 
-/// The AU calls this on its render thread to pull input. It is `extern "C"`, so
-/// A panic must never escape it: unwinding across the FFI boundary into
-/// AudioToolbox is undefined behaviour. The whole body runs inside
+/// The AU calls this on its render thread to pull input.
+///
+/// It is `extern "C"`, so a panic must never escape it: unwinding across the FFI
+/// boundary into AudioToolbox is undefined behaviour. The whole body runs inside
 /// [`catch_unwind`](std::panic::catch_unwind) and a caught panic is reported as
 /// an error status, not swallowed.
+///
+/// # Safety
+/// Called by AudioToolbox with the `(proc, ref_con)` pair registered by
+/// `AuReady::install_input_callback`. `in_ref_con` must be null or point at a
+/// live `RenderScratch` — the heap-pinned box owned by the [`AuReady`] whose
+/// unit is rendering, which stays alive because `AudioUnitUninitialize` runs
+/// before that box is freed. `io_data` must be null or a well-formed
+/// `AudioBufferList` whose `mDataByteSize` honestly bounds each `mData`; the
+/// body trusts neither pointer and clamps every write to the declared capacity.
 unsafe extern "C" fn au_input_render_callback(
     in_ref_con: *mut c_void,
     _io_action_flags: *mut AudioUnitRenderActionFlags,
@@ -2378,19 +2384,19 @@ unsafe fn render_input(
     let requested = in_number_frames as usize;
 
     for (ch, buf) in iter_buffers_mut(io_data).enumerate() {
-        // Never trust the buffer the AU handed us. `mData` may be null
-        // (the AU asking us to supply our own pointer) and `mDataByteSize` may
+        // Never trust the buffer the AU handed over. `mData` may be null
+        // (the AU asking the host to supply its own pointer) and `mDataByteSize` may
         // describe FEWER frames than `in_number_frames`. Writing
         // `in_number_frames` blind is a null deref in the first case and an
         // out-of-bounds store in the second.
         if buf.mData.is_null() {
             // Nothing to write into; report the size honestly as zero rather
-            // than claiming we filled a buffer that does not exist.
+            // than claiming a buffer that does not exist was filled.
             buf.mDataByteSize = 0;
             continue;
         }
         // The buffer's own declared capacity, in f32 frames. This channel is
-        // non-interleaved (mNumberChannels == 1 in our ASBD), but honour a
+        // non-interleaved (mNumberChannels == 1 in this crate's ASBD), but honour a
         // wider mNumberChannels defensively by dividing it out.
         let per_channel = (buf.mNumberChannels as usize).max(1);
         let capacity_frames =
@@ -2422,8 +2428,8 @@ unsafe fn render_input(
 
 /// Test-only counter of how many times the input render callback property has
 /// been set via `AudioUnitSetProperty(SetRenderCallback)`. Used by
-/// `test_render_callback_installed_once` to prove the FIX-1 invariant: the
-/// callback is installed once per initialize, never per render block.
+/// `test_render_callback_installed_once` to prove the install invariant: once
+/// per initialize, never per render block.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2616,7 +2622,7 @@ mod tests {
             inst.process(&in_slices, &mut out_slices, 512).unwrap();
         }
 
-        // Still exactly one — process() must not re-install per block (FIX 1).
+        // Still exactly one — process() must not re-install per block.
         assert_eq!(
             inst.callback_install_count(),
             1,
@@ -2627,14 +2633,13 @@ mod tests {
     /// A refused `initialize` must leave the instance usable.
     ///
     /// `initialize` takes the state out with `mem::replace(.., State::Empty)`
-    /// and the by-value transition consumes it, so the failure arm used to
-    /// return the error with `Empty` still installed. Every later accessor —
-    /// `raw_unit`, `au_type`, `num_outputs`, even `is_initialized` — routes
-    /// through `handle()`/`config()`, which `unreachable!()` on `Empty`. So a
-    /// host scanning installed AUs would panic on the next thing it asked about
-    /// any unit that declined to initialize, and some do: AUSoundIsolation
-    /// refuses on this machine, and any unit whose hardware or entitlement is
-    /// absent will too.
+    /// and the by-value transition consumes it, so the failure arm must put a
+    /// real state back. Every later accessor — `raw_unit`, `au_type`,
+    /// `num_outputs`, even `is_initialized` — routes through
+    /// `handle()`/`config()`, which `unreachable!()` on `Empty`. Leaving `Empty`
+    /// installed panics a host on the next thing it asks about any unit that
+    /// declined to initialize, and units do decline: AUSoundIsolation refuses on
+    /// this machine, as will any unit whose hardware or entitlement is absent.
     ///
     /// Driven through a real refusal rather than a mocked one. `vois` is not in
     /// the corpus because it is not part of the *rendering* contract; it is
@@ -2691,11 +2696,12 @@ mod tests {
         assert!(inst.is_initialized());
     }
 
-    /// `sample_rate()` used to report the *requested* rate whether or
-    /// not the AU took it, because the stream-format set was `let _`'d and only
-    /// `mChannelsPerFrame` was read back. Now an `Ok` from `set_sample_rate`
-    /// means the AU's own ASBD agrees — so assert against the AU, not against
-    /// the number we just stored.
+    /// An `Ok` from `set_sample_rate` must mean the AU's own ASBD agrees, not
+    /// merely that the request was recorded.
+    ///
+    /// So this asserts against the AU's read-back ASBD rather than against
+    /// `sample_rate()`, which reports the stored figure and would agree with the
+    /// request even if the stream-format write had been dropped.
     #[test]
     fn set_sample_rate_ok_means_the_au_really_moved() {
         let comp = find_apple_delay().unwrap();
@@ -2804,10 +2810,12 @@ mod tests {
         (storage, abl)
     }
 
-    /// The callback used to build its destination slice straight from
-    /// `mData` for the full `in_number_frames` extent, never reading
-    /// `mDataByteSize` and never null-checking `mData`. A short buffer was an
-    /// out-of-bounds write; a null one was a null deref.
+    /// The callback must honour `mDataByteSize` and null-check `mData` rather
+    /// than trusting `in_number_frames` to describe the buffer it was handed.
+    ///
+    /// Building the destination slice from `mData` over the full frame extent
+    /// is an out-of-bounds write against a short buffer, and a null deref
+    /// against a null one — both on the render thread.
     #[test]
     fn render_callback_respects_a_short_buffer() {
         let scratch = RenderScratch::new(
@@ -2847,7 +2855,8 @@ mod tests {
             );
         }
         // And the reported size is the capacity actually written, not the
-        // host's requested figure (which the old code wrote back blindly).
+        // host's requested figure — writing the request back blindly would
+        // tell the AU a short buffer is full-length.
         unsafe {
             let b = &raw const (*abl).mBuffers[0];
             assert_eq!((*b).mDataByteSize as usize, CAPACITY * 4);

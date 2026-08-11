@@ -1,4 +1,10 @@
 //! In-memory sample playback with optional loop crossfade.
+//!
+//! The resident half of the sampler's two playback tiers: a whole `Arc<Wave>` in
+//! RAM, indexed at a fractional position, against the disk tier's ring-fed
+//! stream. The two share their interpolation kernel and their transport
+//! placement gate (`super::interp`) so the same file cannot sound different
+//! depending on which tier loaded it.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -15,9 +21,10 @@ use crate::{nonempty, MAX_SAMPLER_CHANNELS};
 /// [`LoopCrossfade`] DSP object, which callers can neither build nor observe —
 /// the public loop *intent* is [`LoopSetting`].
 ///
-/// Modeled on the butler's `Link.loop_config`: making loop state a single enum
-/// means `OneShot` renders `range`/`crossfade` unreachable, and `Looping`
-/// guarantees a range — the three fields can no longer disagree.
+/// Modeled on the butler's `Link.loop_config`. One enum rather than three
+/// fields: `OneShot` renders `range`/`crossfade` unreachable and `Looping`
+/// guarantees a range, so a loop with no range — or a range with looping off —
+/// is unrepresentable rather than merely unlikely.
 #[derive(Default)]
 pub(crate) enum LoopMode {
     /// Play through once, then stop.
@@ -31,12 +38,13 @@ pub(crate) enum LoopMode {
 }
 
 /// Public loop *intent* for a [`MemorySourceConfig`] — a plain, buildable value
-/// that says whether and how to loop, without exposing the live
-/// [`LoopCrossfade`] runtime state. [`MemorySource::with_config`] converts it
-/// into the internal [`LoopMode`], priming the crossfade privately.
+/// that says whether and how to loop, without exposing the live `LoopCrossfade`
+/// runtime state. [`MemorySource::with_config`] converts it into the internal
+/// loop mode, priming the crossfade privately.
 ///
-/// This mirrors how the streaming/timeline loop already speaks in
-/// `(start, end, crossfade_frames)` via `VoiceCommand::UpdateLoop`.
+/// Mirrors how the streaming/timeline loop speaks in
+/// `(start, end, crossfade_frames)` via `VoiceCommand::UpdateLoop`, so the same
+/// intent crosses both tiers unchanged.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub enum LoopSetting {
     /// Play through once, then stop.
@@ -54,16 +62,16 @@ pub enum LoopSetting {
 /// The span of timeline a voice occupies: where it starts, and how long it
 /// lasts.
 ///
-/// **Pure geometry — no clock.** It used to carry the `Arc<dyn Timeline>` too,
-/// under the reasoning that a whole-or-nothing bundle stops the three fields
-/// drifting apart. But a window and a clock are different kinds of thing: the
-/// window is a value a voice owns, while the clock is a shared dependency many
-/// voices read. Bundling them meant every offline rebind had to reach inside
-/// each source to swap one field of a value, and the gate kernel took them apart
-/// again at every call site anyway.
+/// **Pure geometry — no clock.** A window and a clock are different kinds of
+/// thing: the window is a value a voice owns, while the clock is a shared
+/// dependency many voices read. Bundling the `Arc<dyn Timeline>` in here would
+/// make every offline rebind reach inside each source to swap one field of a
+/// value, and the gate kernel takes the two apart again at every call site
+/// anyway.
 ///
-/// `Copy`, which the bundled form could not be — so passing one around no longer
-/// clones an `Arc`, and there is no hand-written `Clone`/`Debug` to keep in sync.
+/// Keeping the clock out is what makes this `Copy`: passing a window around
+/// clones no `Arc`, and there is no hand-written `Clone`/`Debug` to keep in
+/// sync.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct VoiceWindow {
     /// Start position in beats on the timeline.
@@ -113,7 +121,15 @@ impl Default for VoiceWindow {
 // same treatment `MemorySource` itself gets.
 #[derive(Clone)]
 pub struct MemorySourceConfig {
+    /// Linear output gain, applied as one scalar to every channel.
+    /// `Amplitude::new(1.0)` is unity — the `Default` value, and not the
+    /// newtype's own zero default, which would ship silent.
     pub gain: Amplitude,
+    /// Varispeed. Bounded by [`PlaybackRate`]'s own constructor;
+    /// [`PlaybackRate::UNITY`] is normal speed and the `Default`. Composes with
+    /// the sample-rate conversion through
+    /// [`PlaybackRate::read_rate`](tutti_core::PlaybackRate::read_rate), never
+    /// by a bare multiply.
     pub speed: PlaybackRate,
     /// Loop intent. `Off` plays once; `On { .. }` loops over the range and
     /// [`MemorySource::with_config`] primes the crossfade internally.
@@ -179,11 +195,29 @@ impl std::fmt::Debug for LoopMode {
     }
 }
 
-/// In-memory sample playback with optional loop crossfade.
+/// In-memory sample playback with optional loop crossfade — the resident tier of
+/// [`VoiceSource`](super::types::VoiceSource), reading an `Arc<Wave>` by index
+/// rather than streaming.
 ///
-/// By default, plays immediately when added to the graph (suitable for timeline voices
-/// and offline export). Use `stop()` and `trigger()` for manual control if needed
-/// (e.g., MIDI-triggered one-shots).
+/// Plays immediately when added to the graph, which is what timeline voices and
+/// offline export want. [`stop`](Self::stop) and [`trigger`](Self::trigger) give
+/// manual control for a MIDI-triggered one-shot.
+///
+/// # Two position models
+///
+/// A **placed** voice (one with a [`timeline`](Self::timeline)) derives its
+/// position from the playhead every frame and cannot drift from the transport; a
+/// **free-running** one advances its own cursor by
+/// [`read_rate`](Self::read_rate). Which applies decides whether
+/// [`position`](Self::position) or [`window_position`](Self::window_position) is
+/// the meaningful reading, and which rate the caller must step by.
+///
+/// # Real-time
+///
+/// Every playback path is allocation-free and lock-free, including the loop
+/// change in [`set_loop_range`](Self::set_loop_range) — the audio thread drains
+/// `VoiceCommand::UpdateLoop` inline. The one exception is
+/// [`set_wave`](Self::set_wave), which is control-thread only.
 pub struct MemorySource {
     wave: Arc<Wave>,
     position: AtomicSamplePosition,
@@ -357,12 +391,14 @@ impl MemorySource {
         unit
     }
 
-    /// Convenience constructor for the common transport-bound voice case: bind a
-    /// transport at `start_beat` for `duration_beats`, everything else default.
+    /// Convenience constructor for the common transport-bound voice: bind a
+    /// clock at `start_beat` for `duration_beats`, everything else default.
+    ///
     /// Equivalent to `with_config(wave, MemorySourceConfig { timeline: Some(..),
-    /// window, ..Default::default() })`; kept because it reads better at the
-    /// timeline call sites (tutti-polysynth likewise keeps convenience ctors
-    /// alongside its config one).
+    /// window, ..Default::default() })`, and it exists because it reads better
+    /// at the timeline call sites — the same reason tutti-polysynth keeps
+    /// convenience constructors alongside its config one. `duration_beats` of
+    /// `None` plays the whole source.
     pub fn with_transport(
         wave: Arc<Wave>,
         transport: Arc<dyn Timeline>,
@@ -390,33 +426,46 @@ impl MemorySource {
 
     /// Swap the transport clock, used by export to inject the offline timeline.
     ///
-    /// The window is untouched, because it is no longer part of the same value.
-    /// This used to be a two-arm `match` that had to *reconstruct* start/duration
-    /// on the unbound path (defaulting them to `0` / whole-source) — a swap that
-    /// silently rewrote geometry. Separating the two makes the swap a swap.
+    /// The window is untouched, because it is not part of the same value — see
+    /// [`VoiceWindow`]. A swap that also had to reconstruct start/duration would
+    /// silently rewrite geometry on the unbound path; keeping the two apart
+    /// makes this swap a swap.
     pub fn replace_transport(&mut self, transport: Arc<dyn Timeline>) {
         self.timeline = Some(transport);
     }
 
+    /// Rewind to sample 0 and start playing. Two relaxed atomic stores, so this
+    /// is safe from the audio thread.
+    ///
+    /// Only affects the **free-running** path: a placed voice derives its
+    /// position from the transport, so triggering one changes nothing audible.
     pub fn trigger(&self) {
         self.position
             .store(SamplePosition::new(0.0), Ordering::Relaxed);
         self.playing.store(true, Ordering::Relaxed);
     }
 
+    /// [`trigger`](Self::trigger) from an arbitrary [`SamplePosition`] in source
+    /// samples rather than from 0.
     pub fn trigger_at(&self, position: SamplePosition) {
         self.position.store(position, Ordering::Relaxed);
         self.playing.store(true, Ordering::Relaxed);
     }
 
+    /// Resume from wherever the cursor sits, without rewinding. Free-running
+    /// path only, as with [`trigger`](Self::trigger).
     pub fn play(&self) {
         self.playing.store(true, Ordering::Relaxed);
     }
 
+    /// Stop and hold the cursor where it is. Subsequent frames are silence until
+    /// [`play`](Self::play) or [`trigger`](Self::trigger).
     pub fn stop(&self) {
         self.playing.store(false, Ordering::Relaxed);
     }
 
+    /// Whether the free-running cursor is advancing. A placed voice ignores this
+    /// flag entirely — its silence comes from the window gate, not from here.
     pub fn is_playing(&self) -> bool {
         self.playing.load(Ordering::Relaxed)
     }
@@ -442,10 +491,18 @@ impl MemorySource {
         }
     }
 
+    /// Whether a loop range is set. Says nothing about a crossfade — a loop may
+    /// be hard (0 crossfade frames).
     pub fn is_looping(&self) -> bool {
         matches!(self.loop_mode, LoopMode::Looping { .. })
     }
 
+    /// The free-running cursor, in fractional source samples from the start of
+    /// the wave.
+    ///
+    /// Meaningful only for an unplaced voice. A placed one derives its position
+    /// from the playhead each frame and never writes this — read
+    /// [`window_position`](Self::window_position) instead.
     pub fn position(&self) -> SamplePosition {
         self.position.load(Ordering::Relaxed)
     }
@@ -461,19 +518,27 @@ impl MemorySource {
         self.window
     }
 
+    /// Where on the timeline this voice's window opens, in [`Beat`]s.
     pub fn start_beat(&self) -> Beat {
         self.window.start
     }
 
-    /// None means play entire sample.
+    /// How long the window stays open, in [`BeatDuration`], or `None` to play
+    /// the whole source. The end is **exclusive**: at `start + duration` the
+    /// gate already reports silence.
     pub fn duration_beats(&self) -> Option<BeatDuration> {
         self.window.duration
     }
 
+    /// Length of the loaded wave in **frames** — one per output sample at unity
+    /// read rate, regardless of the wave's channel count.
     pub fn duration_samples(&self) -> usize {
         self.wave.len()
     }
 
+    /// Length of the loaded wave in seconds at the *file's* own sample rate,
+    /// which is not the session's unless [`src_ratio`](Self::src_ratio) is
+    /// unity. `f64` because a long render's duration outruns `Seconds`' f32.
     pub fn duration_seconds(&self) -> f64 {
         self.wave.duration()
     }
@@ -487,6 +552,8 @@ impl MemorySource {
         self.gain.store(gain);
     }
 
+    /// The current output gain, read from the shared cell — so a clone reports
+    /// what the frontend last published, not what it was cloned at.
     pub fn gain(&self) -> Amplitude {
         self.gain.load()
     }
@@ -496,9 +563,9 @@ impl MemorySource {
     /// The offline render clones the live net and ticks it on a worker thread
     /// **while the original keeps playing**, so a shared control cell would let
     /// the two fight: a fader move during an export would change the exported
-    /// audio. `AudioUnit::isolate` exists to sever exactly this, and sharing
-    /// the gain is what gives this tier something to sever — the arm in
-    /// `VoiceSource::isolate` was a no-op while nothing here was shared.
+    /// audio. `AudioUnit::isolate` exists to sever exactly this, and sharing the
+    /// gain is what gives this tier something to sever — `VoiceSource::isolate`'s
+    /// `Memory` arm does nothing else.
     ///
     /// Keeps the *current* value: the render must sound like what it was
     /// isolated at, not snap to unity.
@@ -514,10 +581,15 @@ impl MemorySource {
         self.speed = speed;
     }
 
+    /// The varispeed this voice was set to — user intent alone, with no
+    /// sample-rate conversion folded in.
     pub fn speed(&self) -> PlaybackRate {
         self.speed
     }
 
+    /// The sample-rate conversion factor, `file_rate / session_rate`. Derived
+    /// by [`set_session_sample_rate`](Self::set_session_sample_rate), never
+    /// authored — [`speed`](Self::speed) is the authored quantity.
     pub fn src_ratio(&self) -> SrcRatio {
         self.src_ratio
     }
@@ -587,21 +659,26 @@ impl MemorySource {
         }
     }
 
+    /// Loop over `[loop_start, loop_end)` in source samples, with
+    /// `crossfade_frames` **frames** of loop crossfade (0 = a hard loop).
+    ///
+    /// **Allocation-free, and it has to be**: `VoiceCommand::UpdateLoop` is
+    /// drained by `VoicePool::drain_commands`, which `tick`/`process` call — so
+    /// this runs inside the audio callback. The resident crossfade buffer is
+    /// reserved once at `MAX_CROSSFADE_FRAMES`, retuned rather than regrown, and
+    /// its pre-loop tail is filled in place.
+    ///
+    /// A `crossfade_frames` past the reservation is clamped, costing a shorter
+    /// fade instead of a real-time violation.
     pub fn set_loop_range(
         &mut self,
         loop_start: SamplePosition,
         loop_end: SamplePosition,
         crossfade_frames: usize,
     ) {
-        // Reuse the resident crossfade rather than building one.
-        //
-        // This runs on the audio thread: `VoiceCommand::UpdateLoop` is drained by
-        // `VoicePool::drain_commands`, which `tick`/`process` call. So
-        // changing a loop mid-playback used to allocate `crossfade_frames *
-        // channels` floats in the callback, plus a temporary buffer to read the
-        // wave into. Both are gone: the crossfade's buffer is reserved once at
-        // `MAX_CROSSFADE_FRAMES`, `retune` re-points it without growing, and
-        // `fill_preloop_with` writes the tail in place.
+        // Reuse the resident crossfade rather than building one: constructing
+        // here would allocate `crossfade_frames * channels` floats in the audio
+        // callback, plus a temporary buffer to read the wave into.
         let crossfade = if crossfade_frames > 0 {
             let mut xfade = self
                 .loop_crossfade
@@ -644,6 +721,9 @@ impl MemorySource {
         };
     }
 
+    /// Drop the loop range and revert to one-shot playback. Allocation-free, so
+    /// it is safe on the same audio-thread command drain
+    /// [`set_loop_range`](Self::set_loop_range) runs on.
     pub fn clear_loop_range(&mut self) {
         // Reclaim the crossfade rather than dropping it, so re-enabling a loop
         // later still finds a resident buffer and stays allocation-free.
@@ -656,6 +736,9 @@ impl MemorySource {
         }
     }
 
+    /// The loop's `(start, end)` in source samples, or `None` when one-shot.
+    /// The end is exclusive. Carries no crossfade length — for that, read
+    /// [`loop_setting`](Self::loop_setting).
     pub fn loop_range(&self) -> Option<(SamplePosition, SamplePosition)> {
         match &self.loop_mode {
             LoopMode::Looping { range, .. } => Some(*range),
@@ -663,11 +746,13 @@ impl MemorySource {
         }
     }
 
-    /// The current loop as a public [`LoopSetting`] intent (crossfade length
-    /// recovered from the live [`LoopCrossfade`]). Lets a caller that built this
-    /// unit imperatively read its loop back as a value — used by the
-    /// `VoicePool` add shim to fold a pre-configured `MemorySource`'s loop
-    /// into a `Playback` record.
+    /// The current loop as a public [`LoopSetting`] intent, with the crossfade
+    /// length in **frames** recovered from the live crossfade (0 when there is
+    /// none).
+    ///
+    /// Lets a caller that built this unit imperatively read its loop back as a
+    /// value — the `VoicePool` add shim uses it to fold a pre-configured
+    /// `MemorySource`'s loop into a `Playback` record.
     pub fn loop_setting(&self) -> LoopSetting {
         match &self.loop_mode {
             LoopMode::Looping { range, crossfade } => LoopSetting::On {
@@ -712,8 +797,7 @@ impl MemorySource {
     /// Where the playhead sits in this source's samples, or `None` when outside
     /// the window / unplaced. See [`window_position`](super::interp::window_position).
     ///
-    /// **Varispeed alone, not [`read_rate`](Self::read_rate)** — and this was a
-    /// live bug until `both_tier_splits_agree_on_the_same_position` caught it.
+    /// # Varispeed alone, never [`read_rate`](Self::read_rate)
     ///
     /// The gate maps wall-clock seconds onto *this wave's own* samples, and
     /// `wave.sample_rate()` is already that wave's rate — so the beat→sample
@@ -722,17 +806,17 @@ impl MemorySource {
     /// *free-running* path, where a cursor steps through file samples once per
     /// output sample and genuinely needs both factors.
     ///
-    /// Applying it here multiplied the derived position by `src_ratio` a second
-    /// time: a 48 kHz file in a 44.1 kHz session read 104,490 samples in at the
+    /// Passing it here multiplies the derived position by `src_ratio` a second
+    /// time: a 48 kHz file in a 44.1 kHz session reads 104,490 samples in at the
     /// two-second mark instead of 96,000 — 8.8% deep, drifting further the longer
-    /// the voice plays. `set_sample_rate` seeds `src_ratio` from the live graph, so
-    /// this fired for every placed voice whose file rate differed from the
-    /// session's; it stayed invisible because every test on this path used matched
-    /// rates, where `src_ratio` is `UNITY` and the extra factor is 1.0.
+    /// the voice plays. `set_sample_rate` seeds `src_ratio` from the live graph,
+    /// so that reaches every placed voice whose file rate differs from the
+    /// session's, and stays invisible at matched rates where `src_ratio` is
+    /// `UNITY` and the extra factor is exactly 1.0.
     ///
-    /// The disk tier had the same hazard in mirror image and a comment warning
-    /// about it. The comment was right about the arithmetic and wrong about which
-    /// tier had the bug.
+    /// The disk tier reaches the same product by the mirror-image split. Two
+    /// splits, one product — `both_tier_splits_agree_on_the_same_position` pins
+    /// the agreement.
     #[inline]
     pub fn window_position(&self) -> Option<SamplePosition> {
         let timeline = self.timeline.as_ref()?;
@@ -756,17 +840,17 @@ impl MemorySource {
     /// N+1 re-seats a full `block_size` further on, discarding the difference. At
     /// 2x the read jumps forward 32 samples every 64, forever.
     ///
-    /// Measured before this existed: a placed voice at 2.0x emitted 880 Hz from a
-    /// 440 Hz source with its duration unchanged — the stretch factor acting as
-    /// pure varispeed. Folding the rate into the step alone made it *worse*, not
-    /// better (pitch +35% off, spectral purity 0.95 -> 0.54), because then the
-    /// two disagreed within every block as well as across them.
+    /// Measured, with the rate reaching neither origin nor step: a placed voice
+    /// at 2.0x emits 880 Hz from a 440 Hz source with its duration unchanged —
+    /// the stretch factor acting as pure varispeed. Folding the rate into the
+    /// step *alone* is worse, not better (pitch 35% off, spectral purity 0.95
+    /// against 0.54), because then the two disagree within every block as well
+    /// as across them.
     ///
-    /// Kept separate from `window_position` rather than folded into it: that
-    /// method's varispeed-only contract was itself a bug fix
-    /// (`both_tier_splits_agree_on_the_same_position`), and the disk tier plus the
-    /// unstretched memory path both still depend on it. Two named methods, each
-    /// with one meaning.
+    /// Separate from `window_position` rather than folded into it: that method's
+    /// varispeed-only contract is load-bearing for the disk tier and for the
+    /// unstretched memory path, both of which still call it. Two named methods,
+    /// each with one meaning.
     #[inline]
     pub fn stretched_window_position(&self, stretch_rate: ReadRate) -> Option<SamplePosition> {
         let timeline = self.timeline.as_ref()?;
@@ -781,14 +865,18 @@ impl MemorySource {
 
     /// Produce one output frame and advance whatever state that entails.
     ///
+    /// # One algorithm, two entry points
+    ///
     /// The single playback algorithm. `tick` calls it once, `process` calls it
     /// per sample — the same relationship `TransportClock::tick`/`process` have
-    /// in `tutti-core`. Previously the two entry points were written out
-    /// separately and had drifted apart: `tick` ignored `speed` entirely for a
-    /// placed voice while `process` applied it, so the same unit produced
-    /// different audio depending on which the graph happened to call.
+    /// in `tutti-core`. Writing the two entry points out separately is what lets
+    /// them drift: a `tick` that dropped `speed` on the placed path while
+    /// `process` applied it made the same unit produce different audio depending
+    /// on which one the graph happened to call.
     ///
-    /// Two position models live here, and the split is deliberate:
+    /// # Two position models
+    ///
+    /// The split is deliberate:
     ///
     /// - **Placed** (a timeline clip) — position is *derived* from the playhead,
     ///   so the voice cannot drift from the transport. Varispeed is folded into
@@ -796,14 +884,16 @@ impl MemorySource {
     /// - **Free-running** (no transport) — nothing else owns this voice's time,
     ///   so it advances its own cursor by `read_rate`.
     ///
-    /// `offset_in_block` is the sample's index within the current `process`
-    /// call (always 0 from `tick`). The placed branch NEEDS it: a transport
-    /// advances once per block, not per sample — the offline driver calls
-    /// `advance(block_size)` after `process` returns
-    /// (`tutti-export/src/render/driver.rs`), and `TransportClock` is
-    /// emit-then-advance. Re-reading `beat()` for every sample would therefore
-    /// return the same value all block long and emit a constant frame instead
-    /// of the material under the playhead.
+    /// # `offset_in_block` is why a block is not DC
+    ///
+    /// It is the sample's index within the current `process` call (always 0 from
+    /// `tick`), and the placed branch NEEDS it: a transport advances once per
+    /// *block*, not per sample — the offline driver calls `advance(block_size)`
+    /// after `process` returns (`tutti-export/src/render/driver.rs`), and
+    /// `TransportClock` is emit-then-advance. Re-reading `beat()` for every
+    /// sample returns the same value all block long and emits a constant frame
+    /// instead of the material under the playhead.
+    ///
     /// Writes every element of `out` on every path, so a caller never pre-zeros
     /// and a partial write can never leave a stale channel from the previous
     /// block in a trailing slot.
@@ -932,8 +1022,8 @@ impl AudioUnit for MemorySource {
     ///
     /// A `MemorySource` reaches the graph two ways: wrapped in a `VoicePool` /
     /// `VoiceNode` (which cascade into it), and — since it is itself an
-    /// `AudioUnit` — directly as a node. The predecessor rebind knew only the
-    /// wrappers, so a bare memory source rendered against the live playhead.
+    /// `AudioUnit` — directly as a node. A rebind that knows only the wrappers
+    /// leaves a bare memory source rendering against the live playhead.
     /// Declaring it here covers both routes, and any future one.
     fn rebind_offline(&mut self, ctx: &dyn core::any::Any) {
         let Some(transport) = ctx.downcast_ref::<tutti_core::transport::OfflineTransport>() else {
@@ -1015,10 +1105,10 @@ mod tests {
     // `advance_wraps_once_per_block_not_once_per_sample`.
     //
     // KNOWN LIMIT: these are CONSISTENCY checks, not correctness ones. Both
-    // paths now call `next_frame`, so a change moves them together — an
-    // injected off-by-one in the placed branch still passes here, because
-    // advancing the mock one sample per tick compensates it exactly. What
-    // catches that class of bug is `placed_clip_reads_across_a_block_not_dc`
+    // paths call `next_frame`, so a change moves them together — an injected
+    // off-by-one in the placed branch still passes here, because advancing the
+    // mock one sample per tick compensates it exactly. What catches that class
+    // of bug is `placed_clip_reads_across_a_block_not_dc`
     // and `placed_clip_block_step_follows_playback_rate`, which assert the
     // shape of the output *within* one block. Keep these as regression guards
     // against the two paths being rewritten apart again; do not read a pass
@@ -1147,11 +1237,11 @@ mod tests {
 
     // --- varispeed actually reaches a placed voice ---
     //
-    // The equivalence tests above cannot catch the original defect on their own:
-    // both entry points now call `next_frame`, so any change affects them
-    // identically. These pin the *behaviour* instead — that speed reaches the
-    // placed path at all. Previously `tick` returned a position derived without
-    // the rate, so a placed voice played at 1x no matter what speed was set.
+    // The equivalence tests above cannot catch this class on their own: both
+    // entry points call `next_frame`, so any change affects them identically.
+    // These pin the *behaviour* instead — that speed reaches the placed path at
+    // all. A `tick` deriving position without the rate plays a placed voice at
+    // 1x no matter what speed was set, and the equivalence pair stays green.
 
     fn placed_unit(wave: &Arc<Wave>, transport: &Arc<MockTransport>, rate: f32) -> MemorySource {
         MemorySource::with_config(
@@ -1167,7 +1257,7 @@ mod tests {
     #[test]
     fn placed_clip_honours_speed_in_tick() {
         // A ramp wave encodes position in its amplitude, so the sample value at
-        // a fixed playhead tells us which source frame was read.
+        // a fixed playhead names which source frame was read.
         // Beat 0.25 @ 120 BPM / 44.1 kHz = 5512.5 samples in, comfortably
         // inside a 16k wave at both 1x and 0.5x.
         let wave = ramp_wave(16_384, 44100.0);
@@ -1256,8 +1346,9 @@ mod tests {
     #[test]
     fn loop_wrap_handles_overshoot_longer_than_the_loop() {
         // At high varispeed one advance can jump past the loop end by more than
-        // the loop's own length. The old `loop_start + (pos - loop_end)` form
-        // landed *outside* the region and never recovered; modulo lands inside.
+        // the loop's own length. A single `loop_start + (pos - loop_end)`
+        // subtraction lands *outside* the region and never recovers; modulo
+        // lands inside.
         let wrapped = wrap_into_loop(105.0, 10.0, 20.0);
         assert!(
             (10.0..20.0).contains(&wrapped),
@@ -1268,7 +1359,8 @@ mod tests {
 
     #[test]
     fn loop_wrap_is_stable_for_a_single_overshoot() {
-        // The common case still behaves exactly as the subtraction form did.
+        // The common single-overshoot case wraps to the same place a plain
+        // subtraction would.
         assert_eq!(wrap_into_loop(22.0, 10.0, 20.0), 12.0);
     }
 
@@ -1488,15 +1580,15 @@ mod tests {
     /// **The placement gate must apply `src_ratio` exactly once** — at the unit,
     /// not just at the kernel.
     ///
-    /// This is the in-memory mirror of `disk_voice`'s
-    /// `placement_gate_applies_src_ratio_exactly_once`, and the memory tier failed
-    /// it: `window_position` passed the full `read_rate` against a rate argument
-    /// (`wave.sample_rate()`) that had already resolved the beat→sample
-    /// conversion, so `src_ratio` was applied twice.
+    /// The in-memory mirror of `disk_voice`'s
+    /// `placement_gate_applies_src_ratio_exactly_once`. The trap is passing the
+    /// full `read_rate` against a rate argument (`wave.sample_rate()`) that has
+    /// already resolved the beat→sample conversion, which applies `src_ratio`
+    /// twice.
     ///
-    /// The mismatched rate is the whole test. Every other test on this path uses a
-    /// wave at the session rate, where `src_ratio` is `UNITY` and a doubled factor
-    /// is exactly 1.0 — which is why a live 8.8% position error survived here.
+    /// The mismatched rate is the whole test. Every other test on this path uses
+    /// a wave at the session rate, where `src_ratio` is `UNITY` and a doubled
+    /// factor is exactly 1.0 — an 8.8% position error hides there completely.
     ///
     /// Asserted at the unit rather than only at the kernel because the kernel
     /// cannot see this: it takes the rate as an argument, so a caller passing the
@@ -1531,15 +1623,16 @@ mod tests {
     /// A window is geometry: it does not need a clock to exist, and setting one
     /// before the transport is bound must stick.
     ///
-    /// Binding order is not fixed, and the guarded form of this setter lost the
-    /// window silently — the voice then played from beat 0 for its whole length.
+    /// Binding order is not fixed, so a setter guarded on "only if placed" loses
+    /// the window silently, and the voice plays from beat 0 for its whole
+    /// length.
     #[test]
     fn the_window_can_be_set_before_a_clock_is_bound() {
         let wave = ramp_wave(100, 44_100.0);
         let mut sampler = MemorySource::new(wave);
         assert_eq!(sampler.window(), VoiceWindow::default());
 
-        // No clock yet — this used to be a silent no-op.
+        // No clock yet — a placement-guarded setter would drop this silently.
         sampler.set_window(VoiceWindow::span(Beat::new(8.0), BeatDuration::new(4.0)));
         assert_eq!(sampler.start_beat(), Beat::new(8.0));
         assert_eq!(sampler.duration_beats(), Some(BeatDuration::new(4.0)));

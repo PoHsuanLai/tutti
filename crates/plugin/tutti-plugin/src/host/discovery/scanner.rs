@@ -15,9 +15,14 @@ use tracing::{debug, info, warn};
 /// Progress information emitted during a scan.
 #[derive(Debug, Clone)]
 pub struct ScanProgress {
+    /// How many plugins have been processed so far.
     pub current: usize,
+    /// How many were discovered in total. Zero during
+    /// [`Discovery`](ScanPhase::Discovery), when the count is not yet known.
     pub total: usize,
+    /// The plugin being processed as this was emitted.
     pub current_path: PathBuf,
+    /// Which phase the scan is in.
     pub phase: ScanPhase,
 }
 
@@ -34,7 +39,9 @@ pub enum ScanPhase {
 
 /// Handle returned by [`PluginScanner::scan_async`] for monitoring progress.
 pub struct ScanHandle {
+    /// Per-plugin progress, emitted as the scan advances.
     pub progress_rx: Receiver<ScanProgress>,
+    /// Yields the summary once, when the scan finishes.
     pub result_rx: Receiver<ScanResult>,
     /// Yields the catalog back once the scan thread finishes with it.
     ///
@@ -199,14 +206,12 @@ impl PluginScanner {
 
     /// Probe one plugin with pedal protection and upsert into the catalog.
     ///
-    /// A failing probe is *recorded*, not merely warned about. Previously the
-    /// pedal was armed and disarmed unconditionally and a failure produced no
-    /// catalog write at all, so `needs_rescan` stayed true and the plugin was
-    /// re-probed at full cost — a 5 s hang, or a crashing subprocess — on
-    /// every scan, forever. Crash and timeout go to the blacklist, which
-    /// is exactly the case the module doc advertises and the only case the
-    /// pedal could not cover (the pedal fires when the *scanner host* dies,
-    /// which is what out-of-process probing prevents).
+    /// A failing probe is *recorded*, not merely warned about. Without a catalog
+    /// write `needs_rescan` stays true and the plugin is re-probed at full cost —
+    /// a 5 s hang, or a crashing subprocess — on every scan, forever. Crash and
+    /// timeout go to the blacklist, which is the one case the pedal cannot cover:
+    /// the pedal fires when the *scanner host* dies, which is exactly what
+    /// out-of-process probing prevents.
     ///
     /// JUCE does the same: a scan attempt that yields nothing goes into
     /// `failedFiles` and then `addToBlacklist` — failure, not just a hard
@@ -384,8 +389,8 @@ fn probe_plugin(path: &Path, format: PluginFormat) -> Result<PluginDescriptor, P
 }
 
 /// Decide what a raw probe result means. Split from [`probe_plugin`] so the
-/// fallback rule is testable without a subprocess: spawning a real server is what
-/// made the old test depend on whether `target/debug/` happened to be warm.
+/// fallback rule is testable without a subprocess — a test that spawns a real
+/// server depends on whether `target/debug/` happens to be warm.
 fn interpret_probe(
     result: Result<PluginDescriptor, crate::error::BridgeError>,
     path: &Path,
@@ -503,8 +508,8 @@ mod tests {
             "exactly one plugin was hidden before this scan started"
         );
         // The skipped plugin must not also be counted as processed. This is what
-        // keeps the test non-vacuous once `new` is no longer asserted: a scanner
-        // that probed the blacklisted file anyway would land it in one of these
+        // keeps the test non-vacuous without asserting `new`: a scanner that
+        // probed the blacklisted file anyway would land it in one of these
         // buckets.
         //
         // `new + failed` and not `+ newly_blacklisted`: `tally` deliberately
@@ -636,15 +641,14 @@ mod tests {
         );
     }
 
-    /// A failure that is a property of the plugin
-    /// must earn a catalog entry, not just a `warn!`. `probe_and_record` used to
-    /// arm and disarm the pedal unconditionally and upsert nothing on failure, so
-    /// `needs_rescan` stayed true and the plugin was re-probed at full cost — the
-    /// crash, the 5 s stall, or the failing `dlopen` — on every scan, forever.
+    /// A failure that is a property of the plugin must earn a catalog entry, not
+    /// just a `warn!` — without one `needs_rescan` stays true and the plugin is
+    /// re-probed at full cost (the crash, the 5 s stall, the failing `dlopen`) on
+    /// every scan, forever.
     ///
-    /// The dividing line is "did we learn about the plugin or about ourselves?",
-    /// not severity: a broken library is as informative as a crash, while a missing
-    /// `plugin-server` is not informative at all.
+    /// The dividing line is whether the failure taught us about the *plugin* or
+    /// about the *environment*, not severity: a broken library is as informative
+    /// as a crash, while a missing `plugin-server` is not informative at all.
     #[test]
     fn plugin_failures_are_blacklistable_environmental_ones_are_not() {
         use crate::error::BridgeError;
@@ -722,9 +726,9 @@ mod tests {
         ));
     }
 
-    /// Regression for an mtime change (reinstall, vendor update)
-    /// must re-admit a blacklisted plugin. `classify` used to check the raw
-    /// `is_blacklisted` flag *before* `needs_rescan`, so a false positive was
+    /// An mtime change — a reinstall or a vendor update — must re-admit a
+    /// blacklisted plugin. `classify` therefore consults `needs_rescan` *before*
+    /// the `is_blacklisted` flag; checking the flag first makes a false positive
     /// permanent short of hand-editing the JSON.
     #[test]
     fn mtime_change_readmits_a_blacklisted_plugin() {
@@ -815,7 +819,7 @@ mod tests {
         let broken = create_fake_plugin(&plugins_dir, "Broken.vst3");
 
         let mut db = MemoryCatalog::default();
-        // What `probe_and_record` now does for a LoadFailed.
+        // What `probe_and_record` does for a LoadFailed.
         let failure = ProbeFailure::from_bridge_error(crate::error::BridgeError::LoadFailed {
             path: broken.clone(),
             stage: tutti_plugin_types::LoadStage::Opening,

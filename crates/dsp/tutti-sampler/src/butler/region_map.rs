@@ -6,20 +6,25 @@
 //! would force `Sync`. The index collapses the lookup pattern
 //! `index.get(id).and_then(|&i| writers.get(i))` into one call.
 //!
-//! `RegionId`s are monotonic and never reused, so we don't compact on removal
-//! today. If that ever matters, `remove` can swap_remove + reindex.
+//! `RegionId`s are monotonic and never reused, so removal does not compact the
+//! id space — only the `Vec`, via `swap_remove` plus a reindex of whatever moved.
 
 use std::collections::HashMap;
 
 use super::command::RegionId;
 use super::prefetch::RegionOut;
 
+/// The butler thread's private table of live region writers.
+///
+/// Not shared: the producer half of every ring lives here and nowhere else,
+/// which is what lets the parallel refill hand out disjoint `&mut`s.
 pub(super) struct RegionMap {
     writers: Vec<RegionOut>,
     index: HashMap<RegionId, usize>,
 }
 
 impl RegionMap {
+    /// An empty map, holding no regions.
     pub(super) fn new() -> Self {
         Self {
             writers: Vec::new(),
@@ -27,6 +32,11 @@ impl RegionMap {
         }
     }
 
+    /// Take ownership of `writer` under `region_id`.
+    ///
+    /// Ids are minted monotonically and never reused, so this does not check for
+    /// an existing entry — registering a duplicate id would orphan the old
+    /// writer's index entry rather than replace it.
     pub(super) fn register(&mut self, region_id: RegionId, writer: RegionOut) {
         let idx = self.writers.len();
         self.writers.push(writer);
@@ -42,8 +52,8 @@ impl RegionMap {
             return false;
         };
         self.writers.swap_remove(idx);
-        // `swap_remove` moved the last writer into `idx` (unless we removed the
-        // last one); fix that writer's index entry to point at its new slot.
+        // `swap_remove` moved the last writer into `idx` (unless the removed one
+        // WAS last); fix that writer's index entry to point at its new slot.
         if idx < self.writers.len() {
             let moved_region = self.writers[idx].region_id();
             self.index.insert(moved_region, idx);
@@ -51,12 +61,16 @@ impl RegionMap {
         true
     }
 
+    /// The writer for `region_id`, or `None` if it was never registered or has
+    /// been removed.
     pub(super) fn get(&self, region_id: RegionId) -> Option<&RegionOut> {
         self.index
             .get(&region_id)
             .and_then(|&idx| self.writers.get(idx))
     }
 
+    /// Mutable access to the writer for `region_id` — the serial refill and seek
+    /// paths' way in. `None` if the region is unknown.
     pub(super) fn get_mut(&mut self, region_id: RegionId) -> Option<&mut RegionOut> {
         let idx = *self.index.get(&region_id)?;
         self.writers.get_mut(idx)

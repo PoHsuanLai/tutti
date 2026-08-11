@@ -1,6 +1,13 @@
 //! IPC transport — sync wire framing for host↔server message pairs.
 //!
-//! Framing: u32 big-endian length prefix + bincode payload.
+//! Framing: u32 big-endian length prefix + bincode payload. The payload's
+//! schema and its version constant are `tutti_plugin::server`'s; this module
+//! only moves bytes.
+//!
+//! The other duty here is **not outliving the host**. A subprocess parked in
+//! `accept` has nothing to interrupt it, so both [`wait_for_connection`] and
+//! [`parent_is_alive`] exist to bound that wait by whether there is still
+//! anyone to serve.
 
 use interprocess::local_socket::{
     traits::Listener as _, GenericFilePath, ListenerOptions, ToFsName as _,
@@ -23,16 +30,39 @@ type PlatformListener = interprocess::local_socket::Listener;
 #[cfg(not(unix))]
 type PlatformStream = interprocess::local_socket::Stream;
 
+/// One framed, blocking message channel to the host.
+///
+/// A trait rather than the concrete socket so [`crate::session::Session`] can be
+/// driven from a test double without a real socket pair.
 pub(crate) trait Transport: Send {
+    /// Block until one complete host message arrives.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on EOF (the host disconnected), a short read, or a
+    /// payload bincode cannot decode — the last meaning a protocol-version
+    /// mismatch the `Ready` handshake failed to catch.
     fn recv(&mut self) -> Result<HostMessage>;
+
+    /// Write one length-prefixed message. Returns once it is handed to the OS,
+    /// which is not a guarantee the host has read it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the payload cannot be serialized, or if the write
+    /// fails — a broken pipe here means the host went away.
     fn send(&mut self, msg: &BridgeMessage) -> Result<()>;
 }
 
+/// [`Transport`] over the platform's local socket (Unix domain socket, or a
+/// Windows named pipe).
 pub(crate) struct SocketTransport {
     stream: PlatformStream,
 }
 
 impl SocketTransport {
+    /// Wrap an already-accepted stream. The stream must be in blocking mode;
+    /// see [`TransportListener::accept`] for why that is not incidental.
     pub(crate) fn new(stream: PlatformStream) -> Self {
         Self { stream }
     }
@@ -56,11 +86,20 @@ impl Transport for SocketTransport {
     }
 }
 
+/// The listening endpoint the host connects to, twice: once for the handshake
+/// phase and once for the audio phase.
 pub(crate) struct TransportListener {
     listener: PlatformListener,
 }
 
 impl TransportListener {
+    /// Create the socket at `socket_path`, removing any stale file there first.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the path is not a valid socket name, or if the
+    /// socket cannot be created — a directory that does not exist, or one this
+    /// process may not write to.
     pub(crate) fn bind(socket_path: &std::path::Path) -> Result<Self> {
         let _ = std::fs::remove_file(socket_path);
         let name = socket_path
@@ -72,13 +111,12 @@ impl TransportListener {
 
     /// Wait for the host to connect, giving up if the host dies first.
     ///
-    /// The accept itself stays blocking — the listener is never put into
-    /// non-blocking mode, so the accepted stream cannot inherit `O_NONBLOCK` and
-    /// the handshake behaves exactly as it always has. All that changes is that
-    /// the wait happens in [`wait_for_connection`] beforehand, which can notice a
-    /// dead host and bail out.
+    /// The accept itself is blocking, and the listener is never put into
+    /// non-blocking mode — that is what keeps the accepted stream from
+    /// inheriting `O_NONBLOCK`. The bail-out lives in [`wait_for_connection`],
+    /// which runs *before* the accept and can notice a dead host.
     ///
-    /// Without that, a host killed between the two connections this server
+    /// Without that check, a host killed between the two connections this server
     /// accepts — handshake, then audio — strands the subprocess permanently. The
     /// audio loop exits cleanly on EOF, but it is never reached: the server is
     /// parked in the second accept with nothing to interrupt it. One orphaned
@@ -108,8 +146,8 @@ fn wait_for_connection(listener: &PlatformListener) -> Result<()> {
     use std::os::fd::AsFd;
 
     /// How long each `poll` waits before host liveness is re-checked. Also the
-    /// worst-case delay this adds to a connection that arrives while we are
-    /// between polls, so it stays well inside the host's handshake timeout.
+    /// worst-case delay this adds to a connection arriving between two polls,
+    /// so it stays well inside the host's handshake timeout.
     const POLL_SLICE_MS: libc::c_int = 50;
 
     let fd = listener.as_fd();
@@ -156,7 +194,7 @@ fn wait_for_connection(listener: &PlatformListener) -> Result<()> {
 /// Windows named pipes expose no fd to `poll`, and `interprocess` gives no
 /// timed accept, so liveness is checked *before* committing to a blocking
 /// accept rather than interleaved with it. That is a weaker guarantee than the
-/// Unix arm: a host that dies while we are already blocked in `accept` is not
+/// Unix arm: a host that dies once this process is blocked in `accept` is not
 /// noticed until it connects or the process is killed. It still covers the case
 /// that actually strands servers — the host dying between spawn and connect.
 #[cfg(windows)]
@@ -178,7 +216,7 @@ fn wait_for_connection(_listener: &PlatformListener) -> Result<()> {
     Ok(())
 }
 
-/// The PID that spawned us, sampled once at startup.
+/// The PID of the spawning host, sampled once at startup.
 ///
 /// Compared against rather than tested for pid 1 — see [`parent_is_alive`].
 #[cfg(unix)]
@@ -201,7 +239,7 @@ pub fn record_parent_pid() {
     }
 }
 
-/// Whether the process that spawned us is still running.
+/// Whether the spawning host process is still running.
 ///
 /// **Not `getppid() == 1`.** That reads "an orphan is reparented to init", which
 /// is only true when init is the reaper. Linux lets any ancestor claim orphans
@@ -209,15 +247,14 @@ pub fn record_parent_pid() {
 /// ones: systemd user services (so: most Linux desktop sessions), Docker with
 /// `--init`, Flatpak, and Snap. Under any of them an orphan is reparented to the
 /// subreaper, whose PID is not 1, so the comparison never fires and a stranded
-/// server stays stranded. The check was silently inert on the platform it was
-/// most needed on.
+/// server stays stranded — inert on the platform it is most needed on.
 ///
-/// Recording the spawner's PID and watching for it to *change* works under both
-/// regimes: reparenting alters `getppid()` whoever the new parent is. The
-/// residual risk is PID reuse — if the recorded PID is recycled by an unrelated
-/// process before this runs, the parent reads as alive. That errs toward
-/// waiting, which is the safe direction, and it is the same tradeoff the Windows
-/// path makes.
+/// Comparing against the PID recorded by [`record_parent_pid`] and watching for
+/// it to *change* works under both regimes: reparenting alters `getppid()`
+/// whoever the new parent is. The residual risk is PID reuse — if the recorded
+/// PID is recycled by an unrelated process before this runs, the parent reads as
+/// alive. That errs toward waiting, which is the safe direction, and it is the
+/// same tradeoff the Windows path makes.
 #[cfg(unix)]
 fn parent_is_alive() -> bool {
     // SAFETY: `getppid` takes no arguments, touches no memory, and cannot fail.
@@ -231,7 +268,7 @@ fn parent_is_alive() -> bool {
     }
 }
 
-/// Whether the process that spawned us is still running.
+/// Whether the spawning host process is still running.
 ///
 /// Windows has no `getppid` and, crucially, **does not reparent orphans**: the
 /// parent PID recorded for this process stays whatever it was, pointing at a
@@ -241,18 +278,17 @@ fn parent_is_alive() -> bool {
 ///
 /// PIDs are reused on Windows, so a false *positive* is possible if the parent
 /// died and its PID was recycled before this ran. That errs toward waiting,
-/// which is the pre-existing behaviour and the safe direction: this check exists
-/// to stop stranded servers, and a stranded server is better than one that exits
-/// while its host is still coming up.
+/// which is the safe direction: this check exists to stop stranded servers, and
+/// a stranded server is better than one that exits while its host is still
+/// coming up.
 ///
 /// **"Cannot determine" therefore means alive, on every path** — only a positive
-/// answer counts as death. An earlier version returned "dead" whenever
-/// `OpenProcess` failed, contradicting the paragraph above, and it is wrong in
-/// exactly the case most likely to occur: `OpenProcess` returns null for *access
-/// denied* as readily as for *no such process*, so a host at a higher integrity
-/// level than its own plugin server (a UAC-elevated DAW) would have every server
-/// decide it was orphaned and exit at startup. Telling the two apart needs
-/// `GetLastError`, so it is consulted rather than assumed.
+/// answer counts as death. Treating a failed `OpenProcess` as death is wrong in
+/// exactly the case most likely to occur: it returns null for *access denied* as
+/// readily as for *no such process*, so a host at a higher integrity level than
+/// its own plugin server (a UAC-elevated DAW) would have every server decide it
+/// was orphaned and exit at startup. Telling the two apart needs `GetLastError`,
+/// so it is consulted rather than assumed.
 #[cfg(windows)]
 fn parent_is_alive() -> bool {
     use windows_sys::Win32::Foundation::{
@@ -279,21 +315,22 @@ fn parent_is_alive() -> bool {
         let err = unsafe { GetLastError() };
         // `ERROR_INVALID_PARAMETER` is what Windows reports for a PID naming no
         // live process — the one unambiguous "it is gone". Anything else, and
-        // `ERROR_ACCESS_DENIED` in particular, means we were not permitted to
-        // ask, which says nothing about whether it is running.
+        // `ERROR_ACCESS_DENIED` in particular, means the caller was not
+        // permitted to ask, which says nothing about whether it is running.
         return err != ERROR_INVALID_PARAMETER;
     }
     // A process handle becomes signalled when the process exits, so a zero-length
     // wait is a liveness probe. Test for the *signalled* result specifically
     // rather than for `WAIT_TIMEOUT`: timing out means alive, but so does
     // `WAIT_FAILED`, which is a failure to ask rather than an answer.
-    // SAFETY: `handle` is a valid handle we just opened.
+    // SAFETY: `handle` was just opened above and is still valid.
     let alive = unsafe { WaitForSingleObject(handle, 0) } != WAIT_OBJECT_0;
-    // SAFETY: closing a handle we opened and have not closed.
+    // SAFETY: closing a handle opened above and not yet closed.
     unsafe { CloseHandle(handle) };
     return alive;
 
-    /// Our parent's PID, from the process table. `None` if it cannot be found.
+    /// This process's parent PID, from the process table. `None` if the
+    /// snapshot fails or this process is not in it.
     fn parent_pid() -> Option<u32> {
         let me = std::process::id();
         // SAFETY: scalar arguments; the returned handle is closed below.
@@ -317,7 +354,7 @@ fn parent_is_alive() -> bool {
             // SAFETY: as above.
             ok = unsafe { Process32NextW(snapshot, &mut entry) } != 0;
         }
-        // SAFETY: closing a handle we opened and have not closed.
+        // SAFETY: closing a handle opened above and not yet closed.
         unsafe { CloseHandle(snapshot) };
         found
     }

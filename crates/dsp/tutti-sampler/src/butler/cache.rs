@@ -43,6 +43,12 @@ impl Drop for StreamPin {
 }
 
 impl LruCache {
+    /// An empty cache bounded by `max_entries` resident waves and `max_bytes`
+    /// total.
+    ///
+    /// Both bounds are targets, not guarantees: an insert that can find no
+    /// unpinned victim is admitted over-budget rather than evicting a wave a
+    /// live stream is still reading.
     pub fn new(max_entries: usize, max_bytes: u64) -> Self {
         Self {
             cache: DashMap::new(),
@@ -52,6 +58,10 @@ impl LruCache {
         }
     }
 
+    /// The resident wave for `path`, if any, marking it most-recently-used.
+    ///
+    /// `None` is a plain miss — every caller treats it as "skip this region",
+    /// never as an error.
     pub fn get(&self, path: &PathBuf) -> Option<Arc<Wave>> {
         self.cache.get(path).map(|entry| {
             entry.last_access.store(now_ms(), Ordering::Relaxed);
@@ -59,7 +69,14 @@ impl LruCache {
         })
     }
 
-    /// Evicts LRU entries if necessary.
+    /// Admit `wave` under `path`, evicting least-recently-used **unpinned**
+    /// entries until it fits.
+    ///
+    /// Re-inserting a resident path only refreshes its access time — the bytes
+    /// are not counted twice. When nothing evictable remains the wave is
+    /// admitted over budget, which is the deliberate trade: exceeding a byte
+    /// target is recoverable, pulling a wave out from under a playing stream is
+    /// not.
     pub fn insert(&self, path: PathBuf, wave: Arc<Wave>) {
         let size = wave.len() as u64 * wave.channels() as u64 * 4;
 

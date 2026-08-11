@@ -25,15 +25,11 @@
 //! [`ChannelLayout`] the source or sink reports from [`AudioIn::layout`] /
 //! [`AudioOut::layout`].
 //!
-//! That is deliberate, and it is a correction. These traits used to fix the
-//! width as a `const CH: usize` and speak `[[S; CH]]`. A const parameter can
-//! only carry a width that is a property of the *code* — a stereo device, a
-//! stereo ring. It cannot carry a width that is a property of the *data*, which
-//! is what a decoded file, a streamed region, or the device a user just plugged
-//! in actually has. The sampler hit that wall first and backed its ring types
-//! out of these traits entirely, hand-rolling the same slice-plus-stride shape
-//! with a runtime `channels` field. Dropping the const is what lets a
-//! data-determined width be expressed here at all.
+//! That is deliberate. A const width can only carry a width that is a property
+//! of the *code* — a stereo device, a stereo ring. It cannot carry one that is a
+//! property of the *data*, which is what a decoded file, a streamed region, or
+//! the device a user just plugged in actually has. A runtime width is what lets
+//! a data-determined source be expressed here at all.
 //!
 //! # Counts are in FRAMES. Always. Everywhere.
 //!
@@ -55,16 +51,12 @@
 //! presents as "the loop points are wrong", sending the next reader off to
 //! debug the loop config rather than this boundary.
 //!
-//! The sampler's `RegionOut::push_interleaved` / `RegionReader::read_into` pair
-//! is the proven precedent this generalizes: flat slice in, runtime `channels`
-//! field, **frames** out.
+//! # Width agreement is a runtime check
 //!
-//! # Width agreement is now a runtime check
-//!
-//! With the const gone, "a stereo source cannot feed a 6-channel sink" is no
-//! longer a type error. It is replaced, in the same change, by two runtime
-//! checks: [`pump`]'s `debug_assert_eq!` and `tutti_io::Recorder::start`'s
-//! returned error. See [`pump`]'s docs for why there are two.
+//! With a runtime width, "a stereo source cannot feed a 6-channel sink" is not a
+//! type error. Two runtime checks carry it instead, and both are load-bearing:
+//! [`pump`]'s `debug_assert_eq!` and `tutti_io::Recorder::start`'s returned
+//! error. See [`pump`]'s docs for why there are two.
 //!
 //! # Deliberately minimal
 //!
@@ -230,10 +222,9 @@ pub trait AudioOut<S = f32> {
 ///
 /// # The width check — replacing a lost compile error
 ///
-/// The source and sink must agree on width. That **used to be a compile error**:
-/// with `AudioIn<S, CH>` the two `CH`s had to unify, so a stereo mic simply
-/// could not be pumped into a 6-channel sink. A runtime width gives that up, so
-/// it is replaced here and at the one entry point that owns a pairing:
+/// The source and sink must agree on width, and with a runtime width that is not
+/// a compile error. Two checks carry it instead — here, and at the one entry
+/// point that owns a pairing:
 ///
 /// - **this `debug_assert_eq!`**, which fires in every test and debug build the
 ///   moment a mismatched pair is pumped;
@@ -274,9 +265,8 @@ mod tests {
     /// and a stand-in for a live source in a test.
     ///
     /// The width is a *field*, not a type parameter, so the same fixture
-    /// exercises stereo and any other width. That is the whole point of the
-    /// change: a fixture that needed a distinct type per width was the shape a
-    /// data-determined source could never satisfy.
+    /// exercises stereo and any other width — the shape a data-determined
+    /// source needs and a per-width type cannot give.
     struct SliceSource<S> {
         /// Flat interleaved at `layout`'s width.
         samples: Vec<S>,
@@ -309,7 +299,7 @@ mod tests {
     /// contract (write exactly the polled count, never the untouched tail) can
     /// be asserted without touching disk. Carries its own width, so a
     /// mismatched pair is *expressible* — which is exactly what the runtime
-    /// check has to catch now that the type system no longer can.
+    /// check has to catch, since the type system cannot.
     struct CountingSink<S> {
         written: Vec<S>,
         layout: ChannelLayout,
@@ -538,9 +528,9 @@ mod tests {
         );
     }
 
-    /// The replacement for the lost compile error, **inner half**: pumping a
-    /// mismatched pair trips the `debug_assert` rather than quietly writing a
-    /// stream whose channels rotate every frame.
+    /// The width check, **inner half**: pumping a mismatched pair trips the
+    /// `debug_assert` rather than quietly writing a stream whose channels
+    /// rotate every frame.
     ///
     /// The outer half — a checked constructor that errors in release builds too
     /// — is `tutti_io::Recorder::start`, which is the one place both endpoints

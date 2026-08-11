@@ -14,14 +14,25 @@
 //! Master-channel messages (global) and already-native per-note messages pass
 //! through unchanged. Downstream nodes then only ever see native per-note MIDI-2.
 //!
-//! This replaces the old `MpeProcessor`, which was a *sink* (it wrote a
-//! `PerNoteExpression` atomics table nothing on the audio path read). Expression
-//! state now lives where the spec puts it: on the synth voices, derived from the
-//! native per-note messages this transform emits.
+//! # Where expression state lives
 //!
-//! Each input event yields **at most one** output event, so the transform returns
-//! `Option<MidiEvent>` (like [`Midi1ToMidi2Translator`](tutti_midi_types::Midi1ToMidi2Translator)).
-//! RT-safe: no allocation, no locking.
+//! Not here. This transform is stateless about *values* — it holds only the
+//! channel→note map needed to address a per-note message, and forgets each note
+//! at note-off. Expression state belongs on the synth voices, derived from the
+//! native per-note messages this emits, which is where the spec puts it. A
+//! transform that also wrote an expression table would be a second owner of a
+//! value the voices already hold.
+//!
+//! Each input event yields **at most one** output event, so the transform
+//! returns `Option<MidiEvent>` (like
+//! [`Midi1ToMidi2Translator`](tutti_midi_types::Midi1ToMidi2Translator)).
+//!
+//! # Real-time safety
+//!
+//! Runs on the audio thread inside the pre-block phase: no allocation, no
+//! locking. The channel→note maps are fixed-size and pre-built at
+//! [`MpeIngest::new`], so reconfiguring is off-RT and rebuilds the whole
+//! transform.
 
 use tutti_midi_types::midi2::channel_voice2::ChannelVoice2;
 use tutti_midi_types::midi2::{Channeled, UmpMessage};
@@ -40,14 +51,20 @@ pub struct MpeIngest {
     lower_zone_map: Option<MpeChannelVoiceMap>,
     upper_zone_map: Option<MpeChannelVoiceMap>,
     /// Present only in [`MpeMode::SingleChannelRotation`]. Rotation is a *sender*
-    /// scheme (M2-104 C.3): a receiver need not rotate. We keep an allocator only
-    /// to mint a stable per-note identity for same-pitch notes on the one channel
-    /// so downstream voices stay independent; the emitted messages are already
-    /// native per-note, so nothing downstream is rotation-aware.
+    /// scheme (M2-104 C.3): a receiver need not rotate. The allocator exists
+    /// only to mint a stable per-note identity for same-pitch notes on the one
+    /// channel, so downstream voices stay independent. The emitted messages are
+    /// already native per-note, so nothing downstream is rotation-aware.
     rotation: Option<NoteRotationAllocator>,
 }
 
 impl MpeIngest {
+    /// An ingest configured for `mode`, holding no notes.
+    ///
+    /// Builds the per-zone channel→note maps the mode calls for: one for a
+    /// single zone, two for [`MpeMode::DualZone`], none for
+    /// [`MpeMode::Disabled`] or [`MpeMode::SingleChannelRotation`] (which
+    /// carries a rotation allocator instead).
     pub fn new(mode: MpeMode) -> Self {
         let (lower_zone_map, upper_zone_map) = match &mode {
             MpeMode::Disabled | MpeMode::SingleChannelRotation { .. } => (None, None),
@@ -69,10 +86,22 @@ impl MpeIngest {
         }
     }
 
+    /// The configured zone layout. Which channels are master and which are
+    /// members follows from this, and so does whether an inbound channel message
+    /// is folded to per-note or passed through.
     pub fn mode(&self) -> &MpeMode {
         &self.mode
     }
 
+    /// Reconfigure to a new zone layout, **dropping all held-note state**.
+    ///
+    /// The channel→note maps are keyed by a channel range the new mode may not
+    /// share, so they cannot be carried over. Any note held across this call is
+    /// forgotten: its note-off arrives on a channel with no mapping and is
+    /// passed through rather than folded, so silence the sounding voices
+    /// separately. Off-RT — call at wiring time, or via
+    /// [`MpeModeRequest`](crate::MpeModeRequest), which defers adoption to the
+    /// top of a block.
     pub fn set_mode(&mut self, mode: MpeMode) {
         *self = Self::new(mode);
     }
@@ -345,6 +374,12 @@ impl MpeIngest {
         }
     }
 
+    /// Forget every held note and every rotation assignment, leaving the zone
+    /// configuration intact.
+    ///
+    /// The counterpart to [`set_mode`](Self::set_mode) for a panic / all-notes-off:
+    /// the mapping tables are cleared, so a subsequent member-channel message
+    /// with no matching note-on is dropped rather than addressed at a stale note.
     pub fn reset(&mut self) {
         if let Some(map) = &mut self.lower_zone_map {
             map.clear();

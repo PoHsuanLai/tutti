@@ -8,7 +8,7 @@
 //! `sample_offset` stamped to the sample-accurate position inside the block.
 //!
 //! Chord / scale are *stepwise context*, not discrete note events: a change
-//! holds until the next one. So unlike MIDI we don't re-emit on every poll —
+//! holds until the next one. So unlike MIDI, it is not re-emitted per poll —
 //! only when a change boundary actually falls in the block. (A plugin that
 //! joins mid-clip and wants the *current* context can be re-primed by a seek;
 //! priming-on-join is out of scope for this first cut, matching how the host
@@ -28,14 +28,18 @@ use crate::protocol::{ChordValue, ScaleValue};
 /// is filled per block by [`HarmonySource::fill`].
 #[derive(Clone, Debug)]
 pub struct TimedChord {
+    /// Absolute timeline position of the change.
     pub beat: Beat,
+    /// The chord taking effect, whose `sample_offset` is filled per block.
     pub value: ChordValue,
 }
 
 /// A scale change scheduled at an absolute beat.
 #[derive(Clone, Debug)]
 pub struct TimedScale {
+    /// Absolute timeline position of the change.
     pub beat: Beat,
+    /// The scale taking effect, whose `sample_offset` is filled per block.
     pub value: ScaleValue,
 }
 
@@ -87,6 +91,8 @@ impl HarmonySource {
         self.beats.set_sample_rate(sample_rate);
     }
 
+    /// Whether this source holds no chords and no scales, in which case every
+    /// block feeds empty harmony context.
     pub fn is_empty(&self) -> bool {
         self.chords.is_empty() && self.scales.is_empty()
     }

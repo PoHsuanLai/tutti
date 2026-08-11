@@ -19,10 +19,29 @@
 //! Custom persistence (any [`crate::catalog::PluginCatalog`] impl —
 //! SQLite, in-memory, etc.) works without the `json` feature:
 //!
-//! ```ignore
-//! use tutti_plugin::catalog::{CatalogConfig, Plugins};
-//! let catalog = my_sqlite_catalog();
-//! let plugins = Plugins::with_catalog(catalog, CatalogConfig::new(db, vec![]));
+//! ```no_run
+//! use std::collections::HashMap;
+//! use std::path::{Path, PathBuf};
+//! use tutti_plugin::catalog::{CatalogConfig, PluginCatalog, PluginRecord, Plugins};
+//!
+//! // Four methods is the whole contract; `flush` defaults to a no-op, which is
+//! // right for a store that is not durable.
+//! #[derive(Default)]
+//! struct InMemory(HashMap<PathBuf, PluginRecord>);
+//!
+//! impl PluginCatalog for InMemory {
+//!     fn get(&self, path: &Path) -> Option<&PluginRecord> { self.0.get(path) }
+//!     fn upsert(&mut self, record: PluginRecord) { self.0.insert(record.path.clone(), record); }
+//!     fn remove(&mut self, path: &Path) { self.0.remove(path); }
+//!     fn iter(&self) -> Box<dyn Iterator<Item = &PluginRecord> + '_> {
+//!         Box::new(self.0.values())
+//!     }
+//! }
+//!
+//! let plugins = Plugins::with_catalog(
+//!     Box::new(InMemory::default()),
+//!     CatalogConfig::new(PathBuf::from("/unused"), vec![PathBuf::from("/usr/lib/vst3")]),
+//! );
 //! ```
 //!
 //! Audio knobs are separate and default sensibly; set them with
@@ -65,7 +84,7 @@ impl From<PathBuf> for PluginId {
 }
 
 /// Catalog of discoverable + loadable plugins. Backed by any
-/// [`PluginCatalog`] impl; [`Plugins::with_json_catalog`] supplies a
+/// [`PluginCatalog`] impl; `Plugins::with_json_catalog` supplies a
 /// file-backed one when the opt-in `json` feature is enabled.
 pub struct Plugins {
     catalog: Box<dyn PluginCatalog>,
@@ -143,9 +162,8 @@ impl Plugins {
     /// [`ScanTicket`] that yields the catalog back once the scan completes.
     ///
     /// Works with any [`PluginCatalog`] impl: the live catalog is *moved* onto
-    /// the scanner thread rather than reloaded from disk, so this no longer
-    /// assumes JSON — and no longer silently discards in-memory records that
-    /// were never flushed.
+    /// the scanner thread rather than reloaded from disk, so this assumes no
+    /// JSON and discards no in-memory record that was never flushed.
     ///
     /// ```no_run
     /// # use tutti_plugin::catalog::Plugins;
@@ -233,12 +251,12 @@ impl Plugins {
 
     /// `true` if [`open`](Self::open) would refuse the plugin at `path`.
     ///
-    /// **Answers the same question `open` asks, and must keep doing so.** This
-    /// used to call the raw [`CatalogExt::is_blacklisted`] while `open` called
-    /// the mtime-aware [`CatalogExt::is_blacklisted_and_unchanged`], so a
-    /// plugin whose file had changed since it was blacklisted reported `true`
-    /// here and opened fine there. A host greying out a browser entry on this
-    /// answer hid a plugin it could have loaded — and hid it *permanently*,
+    /// **Answers the same question `open` asks, and must keep doing so.** Both
+    /// go through the mtime-aware [`CatalogExt::is_blacklisted_and_unchanged`];
+    /// reading the raw [`CatalogExt::is_blacklisted`] here would report `true`
+    /// for a plugin whose file had changed since it was blacklisted, while
+    /// `open` admitted it. A host greying out a browser entry on this answer
+    /// then hides a plugin it could have loaded — and hides it *permanently*,
     /// because the reinstall that was supposed to lift the blacklist is exactly
     /// what makes the two disagree.
     ///
@@ -584,11 +602,11 @@ mod tests {
 
     /// The query and the door agree about a plugin whose file has changed.
     ///
-    /// They used to disagree: `is_blacklisted` read the raw flag while `open`
-    /// used the mtime-aware check, so an updated plugin reported blacklisted
-    /// and opened anyway. A browser greying entries out on the query hid a
-    /// plugin it could load — and hid it permanently, because the reinstall
-    /// meant to lift the blacklist is exactly what made the two diverge.
+    /// Were the query to read the raw flag while `open` used the mtime-aware
+    /// check, an updated plugin would report blacklisted and open anyway. A
+    /// browser greying entries out on the query then hides a plugin it could
+    /// load — permanently, because the reinstall meant to lift the blacklist is
+    /// exactly what makes the two diverge.
     ///
     /// Asserting *agreement* rather than a fixed answer is what makes this
     /// survive a future change to the staleness rule: whatever `open` decides,

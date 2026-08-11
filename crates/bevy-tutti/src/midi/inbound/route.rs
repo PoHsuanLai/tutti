@@ -7,12 +7,40 @@
 //!
 //! A rule is an entity:
 //!
-//! ```rust,ignore
-//! // Channel 1 plays the lead synth and the pad at once.
-//! commands.spawn(MidiRouteRule::for_channel(0).to(lead).to(pad));
+//! ```rust
+//! use bevy_app::prelude::*;
+//! use bevy_ecs::prelude::*;
+//! use bevy_tutti::midi::{MidiRouteFallback, MidiRouteRule};
 //!
-//! // Anything unmatched falls through to the sampler.
-//! commands.insert_resource(MidiRouteFallback(Some(sampler)));
+//! /// The three synth entities a host already has. Real ones carry `AudioNode`;
+//! /// a rule names the entity either way, and `rebuild` resolves it.
+//! #[derive(Resource, Clone, Copy)]
+//! struct Synths { lead: Entity, pad: Entity, sampler: Entity }
+//!
+//! fn declare_routes(synths: Res<Synths>, mut commands: Commands) {
+//!     // Channel 1 plays the lead synth and the pad at once.
+//!     commands.spawn(MidiRouteRule::for_channel(0).to(synths.lead).to(synths.pad));
+//!
+//!     // Anything unmatched falls through to the sampler.
+//!     commands.insert_resource(MidiRouteFallback(Some(synths.sampler)));
+//! }
+//!
+//! let mut app = App::new();
+//! let synths = Synths {
+//!     lead: app.world_mut().spawn_empty().id(),
+//!     pad: app.world_mut().spawn_empty().id(),
+//!     sampler: app.world_mut().spawn_empty().id(),
+//! };
+//! app.insert_resource(synths);
+//! app.add_systems(Startup, declare_routes);
+//! app.update();
+//!
+//! // A rule is an entity, and it names entities rather than engine ids — which
+//! // is what keeps a `crossfade` from stranding it.
+//! let rule = app.world_mut().query::<&MidiRouteRule>().single(app.world()).unwrap();
+//! assert_eq!(rule.channel, Some(0));
+//! assert_eq!(rule.targets, vec![synths.lead, synths.pad]);
+//! assert_eq!(app.world().resource::<MidiRouteFallback>().0, Some(synths.sampler));
 //! ```
 //!
 //! # Entities, not unit ids

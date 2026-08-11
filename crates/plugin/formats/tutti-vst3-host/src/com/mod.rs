@@ -24,7 +24,7 @@ mod tests;
 
 /// What one run-loop pump actually did, plus what the plugin has registered.
 ///
-/// Only meaningful to assert on: "the plugin registered a timer and our pump
+/// Only meaningful to assert on: "the plugin registered a timer and the pump
 /// fired it" is otherwise invisible from outside — the handlers are plugin-side
 /// COM objects and the effects land in the plugin's own GUI.
 ///

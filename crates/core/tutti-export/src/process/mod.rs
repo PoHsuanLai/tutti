@@ -8,10 +8,10 @@
 //!
 //! There is deliberately no "mastering" type and no whole-signal pass.
 //! Normalization is the one step that genuinely needs two passes (measure, then
-//! apply), and it is not this crate's: `tutti_analysis::loudness` measures —
+//! apply), and it is not a stage here: `tutti_analysis::loudness` measures —
 //! streaming, while the render runs — and the caller applies the `Db` that
-//! `Loudness::gain_to` returns. Keeping that out here is precisely what lets
-//! every export stream.
+//! `Loudness::gain_to` returns. Keeping that out is precisely what lets every
+//! export stream.
 
 pub(crate) mod dither;
 pub(crate) mod resample;

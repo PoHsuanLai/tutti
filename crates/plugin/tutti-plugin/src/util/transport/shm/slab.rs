@@ -6,7 +6,7 @@
 //! and the memcpy must stay a straight per-channel copy with no transpose. That
 //! is why it does not `impl` [`tutti_types::io`]'s `AudioIn`/`AudioOut`, which
 //! move flat *interleaved* samples. The mismatch is layout, not width — those
-//! traits no longer fix a frame width as a const parameter.
+//! traits carry a runtime `ChannelLayout`, not a const frame width.
 //!
 //! # Why shared memory
 //!
@@ -21,15 +21,14 @@
 //!
 //! # Synchronization lives here, not above
 //!
-//! This module used to carry none at all, delegating the single-writer invariant
-//! to a request/reply handshake "one layer up" that **did not exist**. The gap
-//! was invisible because this layer could not report it: a read of an untouched
-//! region returned full length and plausible bytes. With both directions aliased
-//! onto one offset, an unmatched read handed the host its own input back — a
-//! silent bypass that measured as working audio.
+//! Delegating the single-writer invariant to a handshake "one layer up" fails
+//! invisibly, because this layer cannot report the gap: a read of an untouched
+//! region returns full length and plausible bytes. With both directions aliased
+//! onto one offset, an unmatched read hands the host its own input back — a
+//! silent bypass that measures as working audio.
 //!
-//! Validity is now answered *in the slab*, by [`SlabHeader`]'s per-slot sequence
-//! numbers, and the two directions occupy disjoint regions:
+//! Validity is therefore answered *in the slab*, by `SlabHeader`'s per-slot
+//! sequence numbers, and the two directions occupy disjoint regions:
 //!
 //! - A writer fills every channel of a slot, then calls `publish_*` **once**.
 //! - A reader calls `*_sequence` first and only copies if it matches the block
@@ -44,14 +43,12 @@
 //!
 //! # Lifecycle
 //!
-//! One side [`create`s](AudioSlab::create) the slab (the [`Owner`], which
+//! One side [`create`s](AudioSlab::create) the slab (the `Owner`, which
 //! unlinks the backing file on drop) and stamps its header; the other
-//! [`open`s](AudioSlab::open) it (a [`View`]) using a matching [`SlabLayout`]
+//! [`open`s](AudioSlab::open) it (a `View`) using a matching [`SlabLayout`]
 //! and validates that header before trusting a byte. [`Clone`] reopens the same
 //! backing file as a fresh view so a cloned audio node points at the same pages.
 //!
-//! [`Owner`]: Ownership::Owner
-//! [`View`]: Ownership::View
 
 use crate::error::{BridgeError, Result};
 use crate::protocol::audio::Sample;
@@ -70,7 +67,7 @@ enum Ownership {
     View,
 }
 
-/// Named mmap region: a [`SlabHeader`], then a ring per direction.
+/// Named mmap region: a `SlabHeader`, then a ring per direction.
 ///
 /// Create on one side, open on the other with a matching [`SlabLayout`].
 /// The creator owns the backing file and unlinks it on drop; the opener
@@ -87,10 +84,9 @@ impl AudioSlab {
 
     /// Create the slab: allocate the named backing file, size it to hold the
     /// header and both rings, map it, and stamp the header. This side is the
-    /// [`Owner`] and unlinks the file on drop. Exactly one side calls this; the
+    /// `Owner` and unlinks the file on drop. Exactly one side calls this; the
     /// other calls [`open`](Self::open) with a matching `layout`.
     ///
-    /// [`Owner`]: Ownership::Owner
     pub fn create(name: impl Into<String>, layout: SlabLayout) -> Result<Self> {
         check_layout(&layout)?;
         let name = name.into();
@@ -108,17 +104,15 @@ impl AudioSlab {
         Ok(slab)
     }
 
-    /// Open an existing slab as a [`View`], validating its header.
+    /// Open an existing slab as a `View`, validating its header.
     ///
-    /// The `layout` must match the one the [`Owner`] created it with — both
+    /// The `layout` must match the one the `Owner` created it with — both
     /// sides agree on the shape out of band (over the control channel) before
     /// mapping. Unlike the previous version, which validated *nothing*, this
     /// rejects a file that is too short, is not a tutti slab, or was written by
     /// a build with a different header shape. Detaches on drop without deleting
     /// the backing file.
     ///
-    /// [`View`]: Ownership::View
-    /// [`Owner`]: Ownership::Owner
     pub fn open(name: impl Into<String>, layout: SlabLayout) -> Result<Self> {
         check_layout(&layout)?;
         let name = name.into();
@@ -326,15 +320,15 @@ fn byte_size(layout: &SlabLayout) -> usize {
 
 /// Reject a layout this build cannot address before it becomes a mapping.
 ///
-/// Both conditions used to be silently representable, and both produced wrong
-/// audio rather than an error: an empty bus list meant "single flat range shared
-/// in place" (the aliasing bug), and a mismatched slot count would have indexed
-/// the wrong ring slot.
+/// Both conditions would otherwise be silently representable, and both produce
+/// wrong audio rather than an error: an empty bus list reads as "single flat
+/// range shared in place" (the aliasing bypass), and a mismatched slot count
+/// indexes the wrong ring slot.
 fn check_layout(layout: &SlabLayout) -> Result<()> {
     if layout.inputs.is_empty() || layout.outputs.is_empty() {
         return Err(oob(
             "slab layout must name at least one bus per direction; \
-             an empty list used to mean 'share one region in place', which is the bypass bug",
+             an empty list would read as 'share one region in place', which is the bypass",
         ));
     }
     if layout.slots as usize != RING_SLOTS {
@@ -347,11 +341,10 @@ fn check_layout(layout: &SlabLayout) -> Result<()> {
 }
 
 impl Clone for AudioSlab {
-    /// Reopen the same backing file as a fresh [`View`], so a cloned audio
+    /// Reopen the same backing file as a fresh `View`, so a cloned audio
     /// node still points at the same physical pages. The clone never owns
-    /// the file, regardless of this side's [`Ownership`].
+    /// the file, regardless of this side's ownership.
     ///
-    /// [`View`]: Ownership::View
     fn clone(&self) -> Self {
         Self::open(self.name.clone(), self.layout.clone())
             .expect("failed to reopen shared-memory slab for clone")
@@ -359,10 +352,8 @@ impl Clone for AudioSlab {
 }
 
 impl Drop for AudioSlab {
-    /// Only the [`Owner`] unlinks the backing file; [`View`]s just detach.
+    /// Only the `Owner` unlinks the backing file; `View`s just detach.
     ///
-    /// [`Owner`]: Ownership::Owner
-    /// [`View`]: Ownership::View
     fn drop(&mut self) {
         if matches!(self.ownership, Ownership::Owner) {
             let _ = std::fs::remove_file(shm_path(&self.name));
@@ -430,10 +421,10 @@ mod tests {
     use smallvec::SmallVec;
 
     /// A real two-bus-per-direction layout. Deliberately *asymmetric* (3 in, 2
-    /// out): the old test helper built everything at base 0 with equal widths,
-    /// so an offset error that swapped the directions or dropped the slot term
-    /// still produced matching bytes. With different widths and a non-zero
-    /// output base, those mistakes cannot round-trip.
+    /// out): built at base 0 with equal widths, an offset error that swapped the
+    /// directions or dropped the slot term still produces matching bytes. With
+    /// different widths and a non-zero output base, those mistakes cannot
+    /// round-trip.
     fn layout(samples: usize, format: SampleFormat) -> SlabLayout {
         SlabLayout {
             samples_per_channel: samples,

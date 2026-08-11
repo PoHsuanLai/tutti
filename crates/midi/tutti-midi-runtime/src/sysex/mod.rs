@@ -7,10 +7,10 @@
 //!
 //! # The third one, and why it is not here
 //!
-//! `tutti-midi-hardware` has a `Sysex7ByteAssembler`, and the three used to be
-//! easy to confuse: `Assembler` versus `Reassembler` is not a distinction anyone
-//! can infer. They are named by **what they consume** now, because that is the
-//! thing that actually differs:
+//! `tutti-midi-hardware` has a `Sysex7ByteAssembler`, and the three are easy to
+//! confuse: `Assembler` versus `Reassembler` is not a distinction anyone can
+//! infer. Read them by **what they consume**, which is the thing that actually
+//! differs:
 //!
 //! | type | consumes | produces |
 //! |---|---|---|

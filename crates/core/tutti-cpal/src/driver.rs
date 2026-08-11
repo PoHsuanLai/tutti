@@ -20,7 +20,13 @@ use crate::Result;
 /// [`TuttiDriver::set_device`] or [`TuttiDriver::restart`].
 #[derive(Debug, Clone)]
 pub struct DeviceInfo {
+    /// Position in the host's output-device enumeration — the value
+    /// [`TuttiDriver::set_device`] and [`TuttiDriver::restart`] take. Positional,
+    /// so it is only valid against the enumeration that produced it: devices
+    /// appearing or disappearing renumber the rest.
     pub index: usize,
+    /// The device's human-readable name, as the OS reports it. Empty if the
+    /// host failed to name it.
     pub name: String,
 }
 

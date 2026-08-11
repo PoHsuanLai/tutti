@@ -103,7 +103,12 @@ pub enum ParameterEditEvent {
     BeginEdit(u32),
     /// Plugin is reporting a new normalized (0.0 – 1.0) value for the
     /// parameter.
-    PerformEdit { param_id: u32, value: f64 },
+    PerformEdit {
+        /// The parameter being edited.
+        param_id: u32,
+        /// Normalized value, `0.0..=1.0`.
+        value: f64,
+    },
     /// Plugin has finished editing the parameter (mouse-up).
     EndEdit(u32),
     /// Plugin requests that the host restart the component with the given
@@ -120,9 +125,13 @@ pub enum ParameterEditEvent {
     FinishGroupEdit,
     /// Plugin requests that a bus be activated or deactivated.
     RequestBusActivation {
+        /// VST3 `MediaTypes` value: audio or event.
         media_type: i32,
+        /// VST3 `BusDirections` value: `kInput` or `kOutput`.
         direction: i32,
+        /// Bus index within that media type and direction.
         index: i32,
+        /// `true` to activate the bus, `false` to deactivate it.
         state: bool,
     },
 }
@@ -226,7 +235,7 @@ impl IComponentHandler3Trait for ComponentHandler {
     /// ask the host for a menu it can populate with host-contributed items (and
     /// into which the plugin then injects its own), but returning `null` is the
     /// documented way to say "the host offers no menu here" — the plugin falls
-    /// back to its own built-in menu. We decline deliberately because nothing in
+    /// back to its own built-in menu. Declining is deliberate because nothing in
     /// the host or frontend contributes plugin context-menu items or consumes an
     /// `IContextMenu`; building a real host menu object would be dead surface. If
     /// a frontend consumer is ever added, this becomes a real `IContextMenu`

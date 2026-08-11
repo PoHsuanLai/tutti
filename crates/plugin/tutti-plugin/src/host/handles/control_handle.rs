@@ -1,3 +1,9 @@
+//! [`PluginHandle`] — the control-side face of a loaded plugin.
+//!
+//! Assembled from whichever capability traits its backend implements, so a
+//! capability the backend lacks reads as `None` rather than erroring at the call.
+//! Audio never travels through here; this is the off-RT half.
+
 use crate::error::EditorError;
 use crate::host::handles::capabilities::{
     HostAutomationState, HostEditor, HostParams, HostPresets, HostRenderMode, HostState,
@@ -20,12 +26,27 @@ use tutti_midi_runtime::MidiSender;
 /// hosting an editor, or reach presets without either. Default is "honours
 /// none"; name the ones a backend does.
 ///
-/// ```ignore
+/// ```no_run
+/// # use std::sync::Arc;
+/// # use tutti_midi_runtime::MidiSender;
+/// # use tutti_plugin::backend::{HostEditor, HostParams, HostState, ParameterChangeSink};
+/// # use tutti_plugin::handles::{OptionalCapabilities, PluginHandle};
+/// # use tutti_plugin::server::{LoadedPlugin, PluginDescriptor};
+/// # fn ex<B: HostParams + HostState + 'static>(
+/// #     backend: Arc<B>,
+/// #     editor: Arc<dyn HostEditor>,
+/// #     descriptor: PluginDescriptor,
+/// #     loaded: LoadedPlugin,
+/// #     param_sink: ParameterChangeSink,
+/// #     midi_sender: MidiSender,
+/// # ) -> PluginHandle {
+/// // Hosts an editor; carries neither render mode nor presets.
 /// PluginHandle::from_backend(
 ///     backend,
 ///     OptionalCapabilities { editor: Some(editor), ..Default::default() },
 ///     descriptor, loaded, param_sink, midi_sender,
 /// )
+/// # }
 /// ```
 #[derive(Default, Clone)]
 pub struct OptionalCapabilities {
@@ -55,7 +76,10 @@ pub enum PluginStatus {
     /// Terminal. The engine offers no relaunch, so recovery means loading a
     /// replacement and restoring whatever state was captured while the plugin
     /// was alive.
-    Dead { cause: String },
+    Dead {
+        /// Why the plugin died, latched at the detection site.
+        cause: String,
+    },
 }
 
 impl PluginStatus {
@@ -309,13 +333,20 @@ impl PluginHandle {
     ///
     /// Match on it to decide what to render:
     ///
-    /// ```ignore
+    /// ```no_run
+    /// # use tutti_plugin::{handles::PluginHandle, PresetSupport};
+    /// # fn ex(handle: &PluginHandle) {
     /// match handle.preset_support() {
-    ///     PresetSupport::Full       => // browser; clicking loads
-    ///     PresetSupport::LoadByPath => // file picker, not an empty browser
-    ///     PresetSupport::ListOnly   => // read-only list
-    ///     PresetSupport::None       => // hide it
+    ///     // Browser; clicking loads.
+    ///     PresetSupport::Full => {}
+    ///     // File picker, not an empty browser — CLAP enumerates nothing.
+    ///     PresetSupport::LoadByPath => {}
+    ///     // Read-only list.
+    ///     PresetSupport::ListOnly => {}
+    ///     // Hide it.
+    ///     PresetSupport::None => {}
     /// }
+    /// # }
     /// ```
     ///
     /// Derived from the capability report rather than from the preset list,
@@ -418,12 +449,20 @@ impl PluginHandle {
     /// The one call a caller makes before deciding whether to speak in speaker
     /// names or channel numbers:
     ///
-    /// ```ignore
+    /// ```no_run
+    /// # use tutti_plugin::handles::PluginHandle;
+    /// # use tutti_plugin_types::LayoutSupport;
+    /// # fn ex(handle: &PluginHandle) {
     /// match handle.layout_support() {
-    ///     LayoutSupport::Full    => // name every channel's speaker
-    ///     LayoutSupport::Partial => // per bus: name what answered, number the rest
-    ///     LayoutSupport::None    => // channel numbers only
+    ///     // Name every channel's speaker.
+    ///     LayoutSupport::Full => {}
+    ///     // Per bus: name what answered, number the rest. Do not assume the
+    ///     // gaps are stereo.
+    ///     LayoutSupport::Partial => {}
+    ///     // Channel numbers only.
+    ///     LayoutSupport::None => {}
     /// }
+    /// # }
     /// ```
     ///
     /// **Reporting only.** No variant means a layout can be *changed*: nothing
@@ -453,10 +492,13 @@ impl PluginHandle {
         self.loaded.output_bus_topology(bus)
     }
 
+    /// The plugin's display name, as its descriptor reports it.
     pub fn name(&self) -> &str {
         &self.descriptor.name
     }
 
+    /// Whether the plugin has died. See [`PluginStatus::Dead`] for what is
+    /// recoverable.
     pub fn is_crashed(&self) -> bool {
         self.params.is_crashed()
     }
@@ -553,11 +595,10 @@ impl PluginHandle {
     /// whereas `set_editor_size` is a request that deserves to be told it went
     /// nowhere.
     ///
-    /// Reachable before this only as
-    /// `handle.editor().and_then(|e| e.poll_editor_resize_request())`. Added for
-    /// symmetry rather than to remove duplication — there is one caller today —
-    /// because [`set_editor_size`](Self::set_editor_size) has always had the
-    /// convenience, and the asymmetry read as "one of these is not part of the
+    /// Exists for symmetry rather than to remove duplication — there is one
+    /// caller today — because [`set_editor_size`](Self::set_editor_size) carries
+    /// the same convenience, and the asymmetry reads as "one of these is not
+    /// part of the
     /// handle API".
     pub fn poll_editor_resize_request(&self) -> Option<EditorSize> {
         self.editor.as_deref()?.poll_editor_resize_request()
@@ -616,10 +657,10 @@ impl PluginHandle {
     /// changed its latency ([`PluginInvalidation::Latency`]) or bus layout
     /// ([`PluginInvalidation::Io`]), or reloaded in place
     /// ([`PluginInvalidation::Reloaded`]) — the host must rewire and re-run
-    /// latency compensation (PDC). Absorbs what used to be a separate
-    /// latency-changed callback. See [`Self::on_parameter_changed`] for thread
-    /// caveats. Only the out-of-process backend emits these; replaces any
-    /// previous callback.
+    /// latency compensation (PDC). Latency and IO changes share one callback
+    /// because they demand the identical host response. See
+    /// [`Self::on_parameter_changed`] for thread caveats. Only the
+    /// out-of-process backend emits these; replaces any previous callback.
     pub fn on_invalidate<F: Fn(PluginInvalidation) + Send + Sync + 'static>(&self, f: F) -> &Self {
         self.invalidate_sink.set(f);
         self
@@ -786,12 +827,12 @@ mod tests {
     /// Only an accepted load reports `true`, and an absent route is not a
     /// refusal.
     ///
-    /// Reaching presets through the capability keeps three answers apart that
-    /// the old `handle.load_preset(..) -> bool` collapsed into two: `None` (no
-    /// preset route at all), `Some(false)` (a route that refused) and
-    /// `Some(true)`. A caller leaves its selection alone for both of the first
-    /// two, but only the second is the plugin saying no — and a UI that wants
-    /// to report "this plugin cannot load presets" needs to tell them apart.
+    /// Reaching presets through the capability keeps three answers apart that a
+    /// bare `-> bool` collapses into two: `None` (no preset route at all),
+    /// `Some(false)` (a route that refused) and `Some(true)`. A caller leaves
+    /// its selection alone for both of the first two, but only the second is
+    /// the plugin saying no — and a UI reporting "this plugin cannot load
+    /// presets" must tell them apart.
     #[test]
     fn only_an_accepted_load_reports_true() {
         let id = PresetId::Number(0);

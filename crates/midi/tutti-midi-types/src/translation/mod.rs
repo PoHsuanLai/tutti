@@ -5,18 +5,18 @@
 //! place that knows the older protocol, and it sits at each MIDI-1↔2 boundary
 //! exactly as the spec's Translator does. It is layered bottom-up:
 //!
-//! - [`scaling`](crate::translation::scaling) — **Bit Scaling and Resolution** (M2-104 §1.7 /
+//! - [`scaling`] — **Bit Scaling and Resolution** (M2-104 §1.7 /
 //!   Appendix D.1, the Min-Center-Max up/downscaling). The scalar primitive the
 //!   rest build on.
-//! - [`wire`](crate::translation::wire) — MIDI 1.0 *wire bytes* ↔ UMP:
+//! - [`wire`] — MIDI 1.0 *wire bytes* ↔ UMP:
 //!   [`MidiEvent::from_midi1_bytes`] / [`MidiEvent::to_midi1_bytes`] (the hardware
 //!   edge speaks these).
-//! - [`promote`](crate::translation::promote) — **MIDI 1.0 → MIDI 2.0 Default Translation**
+//! - [`promote`] — **MIDI 1.0 → MIDI 2.0 Default Translation**
 //!   (Appendix D.3): the stateless per-message promotions (Channel Voice 1 ⇒
-//!   Channel Voice 2, widths via [`scaling`](crate::translation::scaling)), plus the velocity-0
+//!   Channel Voice 2, widths via [`scaling`]), plus the velocity-0
 //!   NoteOn ⇒ NoteOff fold. Exposed as the single [`normalize`] seam every
 //!   consumer calls.
-//! - [`rpn`](crate::translation::rpn) — the part of Default Translation that spans *several*
+//! - [`rpn`] — the part of Default Translation that spans *several*
 //!   MIDI-1 messages: RPN/NRPN Data-Entry runs collapsed into single MIDI-2
 //!   Registered / Assignable Controller messages ([`Midi1ToMidi2Translator`]).
 //!

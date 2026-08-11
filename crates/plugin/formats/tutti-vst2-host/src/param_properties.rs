@@ -87,7 +87,7 @@ impl ParameterPropertyFlags {
     ///
     /// Undefined bits are ignored rather than rejected: the flags word is
     /// plugin-authored and VST2 reserves the high bits, so a plugin setting one
-    /// must not invalidate the bits we do understand.
+    /// must not invalidate the bits that are understood.
     fn from_bits(raw: i32) -> Self {
         let bits = api::ParameterFlags::from_bits_truncate(raw);
         Self {
@@ -108,7 +108,11 @@ impl ParameterPropertyFlags {
 /// alternative invites reading a `min`/`max` pair that is meaningless.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct IntegerRange {
+    /// Lowest value in plain (not normalized) units. May exceed `max` — a plugin
+    /// is free to report an inverted range, which [`Self::step_count`] refuses
+    /// rather than trusts.
     pub min: i32,
+    /// Highest value in plain (not normalized) units.
     pub max: i32,
     /// Increment for a single step.
     pub step: i32,
@@ -134,10 +138,17 @@ impl IntegerRange {
 }
 
 /// The float step granularity a parameter declares, under `USES_FLOAT_STEP`.
+///
+/// Granularity only — this carries no bounds. `USES_FLOAT_STEP` and
+/// `USES_INT_STEP` are independent flags, so a plugin may declare steps here
+/// while declaring no [`IntegerRange`] at all.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct FloatSteps {
+    /// Increment for a single step, in normalized units.
     pub step: f32,
+    /// Increment for a fine step, typically a modifier-held drag.
     pub small_step: f32,
+    /// Increment for a coarse (page) step.
     pub large_step: f32,
 }
 
@@ -204,7 +215,9 @@ pub struct MidiProgram {
 /// A category grouping MIDI programs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MidiProgramCategory {
+    /// Index the category was queried for.
     pub index: i32,
+    /// Category name; may be empty even on a successful query.
     pub name: String,
     /// Enclosing category, or `None` at the top level.
     pub parent_category: Option<i32>,

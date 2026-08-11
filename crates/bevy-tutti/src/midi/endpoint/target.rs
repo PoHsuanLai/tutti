@@ -1,29 +1,53 @@
 //! Turning an entity into the MIDI endpoint its audio node owns.
 //!
-//! The same constraint [`modulation::target`](crate::modulation::target) hits,
+//! The same constraint `modulation::target` hits,
 //! for the same reason: a unit's MIDI port is reached by an inherent method on a
 //! *concrete* node type (`SoundFontUnit::midi_port`, `PolySynth::midi_port`, …),
 //! and [`node_as::<T>`](tutti_core::dsp::Net::node_as) takes a concrete `T`.
 //! There is no `&dyn` anything to recover a port from a `&dyn AudioUnit`, so the
 //! host supplies the dispatch by registering the node types it uses:
 //!
-//! ```rust,ignore
-//! app.world_mut()
-//!     .resource_mut::<MidiTargetRegistry>()
-//!     .register::<tutti_soundfont::SoundFontUnit>();
+//! ```rust
+//! use bevy_app::prelude::*;
+//! use bevy_tutti::graph::{AudioGraphRes, GraphReconcilePlugin};
+//! use bevy_tutti::midi::{MidiTargetRegistry, TuttiMidiPlugin};
+//! use bevy_tutti::AudioEngineState;
+//! use tutti_core::dsp::Net;
+//!
+//! let mut app = App::new();
+//! app.insert_resource(AudioGraphRes(Net::new(0, 2)));
+//! app.insert_resource(AudioEngineState::Running);
+//! app.insert_resource(bevy_tutti::midi::test_support::midi_bus_for_test());
+//! // `AssetPlugin` is a Bevy prerequisite for the subsystems registering
+//! // asset loaders; a real host has it from `DefaultPlugins`.
+//! app.add_plugins(bevy_asset::AssetPlugin::default());
+//! app.add_plugins((GraphReconcilePlugin, TuttiMidiPlugin));
+//!
+//! // The registry starts empty — a host that registers nothing has no MIDI
+//! // destination it can address, which is the failure this line prevents.
+//! let mut registry = app.world_mut().resource_mut::<MidiTargetRegistry>();
+//! # #[cfg(feature = "soundfont")]
+//! registry.register::<tutti_soundfont::SoundFontUnit>();
+//! # #[cfg(feature = "synth")]
+//! registry.register::<tutti_polysynth::PolySynth>();
+//! # let _ = &mut registry;
 //! ```
+//!
+//! Each `register::<T>` is one host-supplied downcast. Which node types to name
+//! is the host's call, and no default list can be right: this crate cannot know
+//! whether a build has a soundfont player, a synth, or a hosted plugin in it.
 //!
 //! # Why resolve rather than remember
 //!
-//! The obvious alternative is to store the [`MidiUnitId`] on the entity when the
-//! synth spawns — the spawner holds the unit at exactly that moment. It is also
-//! what the previous version of this module did, in three separate places, and
-//! it cannot be made correct: [`crossfade`](crate::graph::crossfade_audio_node)
-//! replaces a node's unit while **keeping its `NodeId`**, and promises callers
-//! they "don't need to update any other components". The new unit carries a new
-//! `MidiInPort` with a new id, so every stored copy is silently stale and MIDI
-//! to that synth stops with no error. Re-deriving from the graph each time is
-//! immune, which is worth the registration the host has to write.
+//! The obvious alternative is to store the `MidiUnitId` on the entity when the
+//! synth spawns — the spawner holds the unit at exactly that moment — and it
+//! cannot be made correct:
+//! [`crossfade`](crate::graph::crossfade_audio_node) replaces a node's unit while
+//! **keeping its `NodeId`**, and promises callers they "don't need to update any
+//! other components". The new unit carries a new `MidiInPort` with a new id, so
+//! every stored copy is silently stale and MIDI to that synth stops with no
+//! error. Re-deriving from the graph each time is immune, which is worth the
+//! registration the host has to write.
 //!
 //! # One borrow, not three
 //!
@@ -54,20 +78,19 @@ type ResolveFn = for<'a> fn(&'a AudioGraphRes, NodeId) -> Option<&'a MidiInPort>
 ///
 /// # Only graph nodes
 ///
-/// There was once a second path here: `insert_target`, which stored a bare
-/// `MidiSender` for an endpoint outside the graph. Nothing ever read it. Its own
-/// doc conceded why — "nothing here polls it" — so a host that supplied one had
-/// already taken over scheduling and held the sender itself; the registry copy
-/// bought nothing. Meanwhile the two lookups disagreed: registration and
-/// sequencing resolve through [`port`](MidiTargetResolver::port), which never
-/// consulted it, so a supplied sender was unreachable in practice.
-///
-/// Reconciling them was not possible without changing what a target *is*: a
-/// supplied sender has no port, no `unit_id` slot, and nothing to install a
-/// beat-scheduled source into, so `port` would have had to start returning
-/// something half-populated. A target is its node's port, or it is nothing.
+/// **A target is its node's port, or it is nothing.** There is no way to supply
+/// a bare `MidiSender` for an endpoint outside the graph, and adding one would
+/// change what a target *is*: such a sender has no port, no `unit_id` slot, and
+/// nothing to install a beat-scheduled source into, so
+/// [`port`](MidiTargetResolver::port) would have to start returning something
+/// half-populated.
 #[derive(Resource, Default)]
 pub struct MidiTargetRegistry {
+    // The rule above is paid for. A supplied-sender path once sat beside port
+    // resolution, and the two lookups disagreed: registration and sequencing go
+    // through `port`, which never consulted it, so a supplied sender was
+    // unreachable in practice. `out_sink` cites this as the reason it hands its
+    // sink out on request rather than installing it.
     resolvers: Vec<ResolveFn>,
 }
 

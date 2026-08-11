@@ -46,8 +46,7 @@ pub fn beat_from_ports(whole: f32, frac: f32) -> Beat {
 ///
 /// The conversion every beat-driven consumer needs: the clock caches it per
 /// buffer, `BeatWindow` derives a block's span from it, `OfflineTimeline`
-/// precomputes it once. Written out by hand in each of those before this
-/// existed.
+/// precomputes it once.
 ///
 /// The association is load-bearing: `(tempo / 60) / sample_rate`, **not**
 /// `tempo / (60 * sample_rate)`. The two round differently, and the offline
@@ -67,11 +66,14 @@ pub fn beats_per_sample(
 /// position with `target` and clears `pending`.
 #[derive(Clone, Debug)]
 pub struct SeekSlot {
+    /// The absolute beat to land on. Meaningless unless `pending` is set.
     pub target: Arc<AtomicF64>,
+    /// Whether a jump is due. Cleared by the clock when it takes the target.
     pub pending: Arc<AtomicBool>,
 }
 
 impl SeekSlot {
+    /// An empty slot with no seek pending.
     pub fn new() -> Self {
         Self {
             target: Arc::new(AtomicF64::new(0.0)),
@@ -92,6 +94,8 @@ impl SeekSlot {
             .then(|| Beat(self.target.load(Ordering::Acquire)))
     }
 
+    /// Whether a jump is waiting for the clock. Advisory — the clock may
+    /// consume it between this read and any action taken on the answer.
     pub fn is_pending(&self) -> bool {
         self.pending.load(Ordering::Acquire)
     }
@@ -106,10 +110,9 @@ impl Default for SeekSlot {
 /// A loop region on the timeline: `start..end`, guaranteed non-empty and
 /// correctly ordered.
 ///
-/// The `(f64, f64)` tuple this replaces carried no invariant, so every
-/// consumer re-checked `end > start` before using it — the clock did so in two
-/// separate places. Constructing this type performs that check once, and
-/// `None` means "not a usable loop" rather than "a loop you must validate".
+/// The check lives in the constructor, so `None` means "not a usable loop"
+/// rather than "a loop you must validate". A consumer holding one of these
+/// needs no `end > start` guard of its own, and `wrap` relies on exactly that.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LoopRange {
     start: Beat,
@@ -123,11 +126,13 @@ impl LoopRange {
         (end > start).then_some(Self { start, end })
     }
 
+    /// First beat of the region, inclusive.
     #[inline]
     pub fn start(&self) -> Beat {
         self.start
     }
 
+    /// One past the last beat of the region, exclusive.
     #[inline]
     pub fn end(&self) -> Beat {
         self.end
@@ -139,6 +144,8 @@ impl LoopRange {
         self.end - self.start
     }
 
+    /// Whether `beat` falls in `[start, end)`. The end beat is *not* contained
+    /// — it is the first beat of the next pass.
     #[inline]
     pub fn contains(&self, beat: Beat) -> bool {
         beat >= self.start && beat < self.end
@@ -146,10 +153,9 @@ impl LoopRange {
 
     /// Wrap `beat` back into the region, preserving overshoot.
     ///
-    /// The remainder is safe because `len()` is positive by construction — the
-    /// guard every caller used to write is now unnecessary. `rem_euclid` rather
-    /// than `%` so a beat below `start` wraps *into* the region instead of
-    /// landing outside it on the negative side.
+    /// The remainder needs no zero guard because `len()` is positive by
+    /// construction. `rem_euclid` rather than `%` so a beat below `start` wraps
+    /// *into* the region instead of landing outside it on the negative side.
     #[inline]
     pub fn wrap(&self, beat: Beat) -> Beat {
         if beat < self.end {
@@ -165,12 +171,17 @@ impl LoopRange {
 /// off and on again restores the same region.
 #[derive(Clone, Debug)]
 pub struct LoopSpan {
+    /// Whether looping is armed. The bounds are kept either way.
     pub enabled: Arc<AtomicBool>,
+    /// Region start, in beats. Unvalidated — may exceed `end` mid-drag.
     pub start: Arc<AtomicF64>,
+    /// Region end, in beats. Unvalidated — may precede `start` mid-drag.
     pub end: Arc<AtomicF64>,
 }
 
 impl LoopSpan {
+    /// A disarmed span over `start..end`. The bounds are stored as given and
+    /// are not validated here; [`range`](Self::range) is where validity lives.
     pub fn new(start: impl Into<Beat>, end: impl Into<Beat>) -> Self {
         Self {
             enabled: Arc::new(AtomicBool::new(false)),
@@ -179,17 +190,20 @@ impl LoopSpan {
         }
     }
 
+    /// Whether looping is armed. Says nothing about whether the bounds are
+    /// usable — [`range`](Self::range) answers both at once.
     pub fn is_enabled(&self) -> bool {
         self.enabled.load(Ordering::Acquire)
     }
 
+    /// Arm or disarm looping, leaving the bounds intact.
     pub fn set_enabled(&self, enabled: bool) {
         self.enabled.store(enabled, Ordering::Release);
     }
 
     /// The active region: `None` when looping is disarmed *or* when the stored
-    /// bounds are not a usable range. Consumers get a validated region or
-    /// nothing, and no longer re-check `end > start` themselves.
+    /// bounds are not a usable range. A consumer gets a validated region or
+    /// nothing, so it never re-checks `end > start` itself.
     pub fn range(&self) -> Option<LoopRange> {
         if !self.is_enabled() {
             return None;
@@ -212,6 +226,8 @@ impl LoopSpan {
         )
     }
 
+    /// Store new bounds. Not validated and not ordered — an inverted pair is
+    /// accepted, and simply yields no [`range`](Self::range).
     pub fn set_range(&self, start: impl Into<Beat>, end: impl Into<Beat>) {
         self.start.store(start.into().get(), Ordering::Release);
         self.end.store(end.into().get(), Ordering::Release);
@@ -226,14 +242,17 @@ impl Default for LoopSpan {
 
 /// Declick fade contract between the transport FSM and `Engine`.
 ///
-/// The FSM arms a fade; the processor reads `remaining` every buffer to
-/// shape the output gain and reports completion. Both halves are load-bearing
-/// — this is a real two-thread handshake, not vestigial state.
-/// Frames are `u32` in the atomics and [`Samples`] at the API. The narrowing is
-/// real — `Samples` is `usize`-backed — so it happens once, here, saturating
-/// rather than truncating: a fade longer than `u32::MAX` frames (over a day)
-/// is nonsense, but wrapping it to a short fade would click, which is the one
-/// thing this type exists to prevent.
+/// The FSM arms a fade; the processor reads `remaining` every buffer to shape
+/// the output gain and reports completion. Both halves are load-bearing — this
+/// is a real two-thread handshake, not vestigial state.
+///
+/// # Frames narrow once, and saturate
+///
+/// Frames are `u32` in the atomics and [`Samples`] at the API, and `Samples` is
+/// `usize`-backed, so the narrowing is real. It happens once, in
+/// [`start`](Self::start), saturating rather than truncating: a fade longer
+/// than `u32::MAX` frames (over a day) is nonsense, but wrapping it to a short
+/// fade would click, which is the one thing this type exists to prevent.
 #[derive(Clone, Debug)]
 pub struct Declick {
     /// Frames left in the fade. 0 = no fade active.
@@ -243,6 +262,7 @@ pub struct Declick {
 }
 
 impl Declick {
+    /// An idle contract: no fade armed, no length stamped.
     pub fn new() -> Self {
         Self {
             remaining: Arc::new(AtomicU32::new(0)),
@@ -250,12 +270,16 @@ impl Declick {
         }
     }
 
-    /// Arm a fade of `frames`.
+    /// Arm a fade of `frames`, resetting the ramp to full gain.
     ///
-    /// Takes [`Samples`] because that is what the callers hold and what the
+    /// Takes [`Samples`] because that is what callers hold and what the
     /// processor compares against — `Seconds::to_samples_*` returns one, and
-    /// the RT loop bounds itself by the block's frame count. A bare `u32` here
-    /// meant every one of those had to narrow at its own call site.
+    /// the RT loop bounds itself by the block's frame count, so the narrowing
+    /// happens here instead of at every call site.
+    ///
+    /// **Not for retargeting a fade in flight.** Resetting `remaining` mid-fade
+    /// steps the gain back to 1.0, which clicks — the FSM keeps the ramp
+    /// counting and swaps only its outcome instead.
     pub fn start(&self, frames: impl Into<Samples>) {
         let n = u32::try_from(frames.into().get()).unwrap_or(u32::MAX);
         self.total.store(n, Ordering::Release);
@@ -274,10 +298,13 @@ impl Declick {
         Samples(self.total.load(Ordering::Acquire) as usize)
     }
 
+    /// Whether a fade is still ramping.
     pub fn is_active(&self) -> bool {
         self.remaining.load(Ordering::Acquire) > 0
     }
 
+    /// Abandon any fade in flight. `total` is left stamped, so the length of
+    /// the last fade stays inspectable.
     pub fn clear(&self) {
         self.remaining.store(0, Ordering::Release);
     }
@@ -299,12 +326,17 @@ impl Default for Declick {
 /// whole distinction the type draws.
 ///
 /// Four are read to advance time; `position_writeback` and `steady_time` are the
-/// output half of the same handshake, written every buffer. Naming it `Inputs`
-/// was accurate only while the writeback lived outside.
+/// output half of the same handshake, written every buffer. Both directions
+/// travel together because a clock given only the inputs advances a playhead
+/// nothing can read.
 #[derive(Clone, Debug)]
 pub struct ClockLinks {
+    /// Beats per minute, re-read every buffer so a tempo edit takes effect
+    /// within one block.
     pub tempo: Arc<AtomicF64>,
+    /// Whether to hold position. Written by the motion FSM, never set directly.
     pub paused: Arc<AtomicBool>,
+    /// Pending absolute jump, consumed once per buffer.
     pub seek: SeekSlot,
     /// `None` = this clock ignores looping entirely (offline renders).
     pub loop_span: Option<LoopSpan>,
@@ -346,8 +378,7 @@ impl ClockLinks {
     ///
     /// The destructure is exhaustive on purpose: adding another shared field
     /// becomes a compile error here rather than a silently-forgotten `isolate`,
-    /// which is the bug class this cut exists to prevent. (It has already earned
-    /// that once — `steady_time` could not be added without coming through here.)
+    /// which is the bug class this cut exists to prevent.
     pub fn severed(&self) -> Self {
         let Self {
             tempo,

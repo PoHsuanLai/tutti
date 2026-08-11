@@ -52,7 +52,7 @@ pub const NO_FUNCTION_BLOCK: u8 = 0x7F;
 ///   Block`.
 ///
 /// Encoding therefore takes the direction rather than the struct carrying two
-/// shapes; see [`encode_body`](Self::encode_body).
+/// shapes; see `encode_body`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DiscoveryData {
     /// 3-byte SysEx device manufacturer id.
@@ -202,7 +202,7 @@ pub struct Nak {
 impl Nak {
     /// Generic failure, no further detail (M2-101 Table 16).
     pub const STATUS_NAK: u8 = 0x00;
-    /// "MIDI-CI message not supported" — we don't implement this message at all.
+    /// "MIDI-CI message not supported" — the message is not implemented at all.
     pub const STATUS_MESSAGE_NOT_SUPPORTED: u8 = 0x01;
     /// "MIDI-CI version not supported".
     pub const STATUS_VERSION_NOT_SUPPORTED: u8 = 0x02;

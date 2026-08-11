@@ -54,8 +54,8 @@ pub const CI_SUB_ID_1: u8 = 0x0D;
 ///
 /// Older peers still interoperate: §5.4 requires a receiver to "process the
 /// fields, values, and bits defined in the received version" when it is lower
-/// than its own, and our decoders default each absent Version-2 field rather
-/// than rejecting the message.
+/// than its own, and the decoders here default each absent Version-2 field
+/// rather than rejecting the message.
 ///
 /// Changing this value at runtime is not a free edit — §5.3: "If a Device wishes
 /// to change to sending a different Message Format Version, the Device shall
@@ -123,7 +123,10 @@ pub struct CiHeader {
     pub device_id: u8,
     /// CI message version (normally [`CI_VERSION`]).
     pub ci_version: u8,
+    /// MUID of the sender.
     pub source: Muid,
+    /// MUID of the intended recipient, or [`Muid::BROADCAST`] to address every
+    /// device on the port.
     pub destination: Muid,
 }
 
@@ -170,23 +173,40 @@ pub enum CiMessage {
     /// Discovery / Discovery Reply — the initial handshake advertising identity
     /// and capabilities (M2-101 §5.2). `is_reply` distinguishes the two.
     Discovery {
+        /// Addressing preamble.
         header: CiHeader,
+        /// `true` for Discovery Reply (sub-ID#2 0x71), `false` for the inquiry.
         is_reply: bool,
+        /// Advertised identity and capabilities.
         data: DiscoveryData,
     },
     /// Invalidate MUID — tells a device its MUID collided and it must pick a new
     /// one (M2-101 §5.5). Carries the target MUID.
-    InvalidateMuid { header: CiHeader, target: Muid },
+    InvalidateMuid {
+        /// Addressing preamble.
+        header: CiHeader,
+        /// The MUID being invalidated — the colliding one, not the sender's.
+        target: Muid,
+    },
     /// NAK — a device rejects a CI message it can't handle (M2-101 §5.6).
-    Nak { header: CiHeader, nak: Nak },
+    Nak {
+        /// Addressing preamble.
+        header: CiHeader,
+        /// Which message was rejected, and why.
+        nak: Nak,
+    },
     /// Profile Configuration message (inquiry/reply/enable/disable) — see [`profile`].
     Profile {
+        /// Addressing preamble.
         header: CiHeader,
+        /// Which profile operation this is, and its payload.
         state: ProfileState,
     },
     /// Property Exchange message (get/set data) — see [`property`].
     Property {
+        /// Addressing preamble.
         header: CiHeader,
+        /// Which property operation this is, and its chunked payload.
         data: PropertyData,
     },
     /// Property Exchange **Capabilities** inquiry or reply (M2-101 §8.4/§8.6).
@@ -195,8 +215,11 @@ pub enum CiMessage {
     /// 0x30-0x3F category but not the chunked body, carrying three scalars
     /// instead. `is_reply` distinguishes 0x30 from 0x31.
     PropertyCapabilities {
+        /// Addressing preamble.
         header: CiHeader,
+        /// `true` for the reply (sub-ID#2 0x31), `false` for the inquiry (0x30).
         is_reply: bool,
+        /// The three negotiated scalars.
         data: property::PropertyCapabilities,
     },
 }

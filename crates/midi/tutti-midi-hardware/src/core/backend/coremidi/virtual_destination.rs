@@ -1,13 +1,13 @@
 //! A **native-UMP** virtual MIDI destination (macOS / CoreMIDI) — the inbound
 //! counterpart to [`UmpVirtualSource`](super::UmpVirtualSource).
 //!
-//! Why this exists: `midir` is a MIDI-1.0 API, so every message reaching us
-//! through it arrives as legacy bytes. Most of MIDI 2.0 survives that — MIDI-CI
-//! is Universal SysEx *by design* (M2-101), precisely so two devices can
-//! negotiate before either knows the other speaks MIDI 2.0 — but **UMP Stream**
-//! (message type 0xF: Endpoint Discovery / Info / Function Block, M2-104 §7.1)
-//! has *no* MIDI-1.0 encoding at all. It can only arrive over a MIDI-2.0-protocol
-//! endpoint.
+//! Why this exists: over a MIDI-1.0 transport every inbound message arrives as
+//! legacy bytes. Most of MIDI 2.0 survives that — MIDI-CI is Universal SysEx *by
+//! design* (M2-101), precisely so two devices can negotiate before either knows
+//! the other speaks MIDI 2.0 — but **UMP Stream** (message type 0xF: Endpoint
+//! Discovery / Info / Function Block, M2-104 §7.1) has *no* MIDI-1.0 encoding at
+//! all. It can only arrive over a MIDI-2.0-protocol endpoint, which is what this
+//! publishes.
 //!
 //! [`UmpVirtualDestination`] creates one such endpoint with
 //! `MIDIDestinationCreateWithProtocol` and hands every received UMP message to a
@@ -56,6 +56,11 @@ impl UmpVirtualDestination {
     /// `on_event` runs on CoreMIDI's delivery thread, so it must not block —
     /// push into a lock-free ring (see
     /// [`with_producer`](Self::with_producer)) rather than doing work inline.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::CoreMidi`] if CoreMIDI refuses either the client or the
+    /// destination endpoint.
     pub fn new<F>(name: &str, mut on_event: F) -> Result<Self>
     where
         F: FnMut(MidiEvent) + Send + 'static,

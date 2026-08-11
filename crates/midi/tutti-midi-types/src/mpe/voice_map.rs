@@ -1,3 +1,13 @@
+//! Per-note identity under MPE: which member channel carries which note, and the
+//! single-channel alternative that mints a [`NoteId`] instead of spending a
+//! channel.
+//!
+//! Two ways to give a note its own expression, and this module holds both:
+//! [`MpeChannelVoiceMap`] spends a *channel* per note (classic MPE, capped at 15
+//! simultaneous notes), while [`NoteRotationAllocator`] spends a host-internal
+//! *id* per note (128-note polyphony on one channel, at the cost of the wire
+//! addressing caveat documented on that type).
+
 use super::zone::MpeZoneConfig;
 use crate::note_id::NoteId;
 
@@ -35,6 +45,7 @@ impl Default for NoteRotationAllocator {
 }
 
 impl NoteRotationAllocator {
+    /// Builds an allocator with no live notes, minting ids from 1.
     #[inline]
     pub fn new() -> Self {
         Self {
@@ -114,6 +125,10 @@ pub struct MpeChannelVoiceMap {
 }
 
 impl MpeChannelVoiceMap {
+    /// Builds an empty map over `zone_config`'s member channels.
+    ///
+    /// The zone is fixed for the map's lifetime — a reconfigured zone needs a new
+    /// map, since the old one's bindings name channels the new zone may not own.
     pub fn new(zone_config: MpeZoneConfig) -> Self {
         Self {
             channel_to_note: [None; 16],
@@ -162,6 +177,12 @@ impl MpeChannelVoiceMap {
         Some(channel)
     }
 
+    /// Frees the channel held by `note`, if it holds one.
+    ///
+    /// The counterpart to [`assign_note`](Self::assign_note); a note bound with
+    /// [`bind_channel`](Self::bind_channel) is released with
+    /// [`unbind_channel`](Self::unbind_channel) instead. A note number of 128 or
+    /// above is ignored rather than panicking.
     pub fn release_note(&mut self, note: u8) {
         if note >= 128 {
             return;
@@ -196,6 +217,11 @@ impl MpeChannelVoiceMap {
         }
     }
 
+    /// The note `channel` is currently playing, if any.
+    ///
+    /// This is the lookup that turns a per-*channel* expression message into a
+    /// per-*note* one: pressure arriving on a member channel belongs to whatever
+    /// note that channel holds.
     #[inline]
     pub fn get_note_for_channel(&self, channel: u8) -> Option<u8> {
         if channel < 16 {
@@ -205,6 +231,7 @@ impl MpeChannelVoiceMap {
         }
     }
 
+    /// The channel currently carrying `note`, if any.
     #[inline]
     pub fn get_channel_for_note(&self, note: u8) -> Option<u8> {
         if note < 128 {
@@ -214,11 +241,15 @@ impl MpeChannelVoiceMap {
         }
     }
 
+    /// Reports whether `channel` belongs to this map's zone in either role.
     #[inline]
     pub fn handles_channel(&self, channel: u8) -> bool {
         self.zone_config.handles_channel(channel)
     }
 
+    /// Drops every binding and resets the stealing clock.
+    ///
+    /// The zone configuration survives — only the live notes go.
     pub fn clear(&mut self) {
         self.channel_to_note = [None; 16];
         self.note_to_channel = [None; 128];
@@ -227,10 +258,17 @@ impl MpeChannelVoiceMap {
     }
 }
 
+/// One channel's role within a zone, answered in a single lookup.
+///
+/// All three flags are `false` for a channel the zone does not own, so absence of
+/// a role is distinguishable from membership without a separate query.
 #[derive(Clone, Copy, Debug)]
 pub struct ZoneInfo {
+    /// The channel carries the zone's zone-wide messages.
     pub is_master: bool,
+    /// The channel carries one note's per-note expression.
     pub is_member: bool,
+    /// The zone is anchored at channel 0 rather than channel 15.
     pub is_lower_zone: bool,
 }
 

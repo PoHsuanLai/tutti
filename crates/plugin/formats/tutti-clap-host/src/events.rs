@@ -5,7 +5,7 @@
 
 //! # Narrowing casts are denied in this module
 //!
-//! This file converts between our vocabulary and the CLAP C ABI, and its worst
+//! This file converts between this crate's vocabulary and the CLAP C ABI, and its worst
 //! bug was a cast that changed a value's meaning: CLAP's `-1` wildcard for
 //! "all channels / all keys" masked into channel 15, note 127 — one phantom
 //! voice, while every real voice kept ringing.
@@ -46,21 +46,37 @@ use tutti_midi_types::tutti_types::{CCNumber, MidiChannel, MidiGroup};
 /// Construct via the `note_on`/`note_off`/`midi`/`param_value`/`note_expression`
 /// helpers, or from [`MidiEvent`] via [`ClapEvent::from_midi`].
 pub enum ClapEvent {
+    /// A voice starts. Host→plugin.
     NoteOn(clap_event_note),
+    /// A voice is released and may ring out through its tail. Host→plugin.
     NoteOff(clap_event_note),
+    /// A voice is cut immediately, skipping the release. Host→plugin.
     NoteChoke(clap_event_note),
+    /// A voice has finished sounding and its `note_id` may be reused.
+    /// Plugin→host.
     NoteEnd(clap_event_note),
+    /// A raw MIDI 1.0 message.
     Midi(clap_event_midi),
+    /// A per-voice expression change (tuning, brightness, …).
     NoteExpression(clap_event_note_expression),
+    /// A parameter is set to a value, in the parameter's plain range.
     ParamValue(clap_event_param_value),
+    /// A parameter is offset by a modulation amount, leaving its base value
+    /// untouched.
     ParamMod(clap_event_param_mod),
+    /// A user began a continuous edit (a knob-drag starting), bracketing the
+    /// `ParamValue` events that follow.
     ParamGestureBegin(clap_event_param_gesture),
+    /// The continuous edit opened by `ParamGestureBegin` finished.
     ParamGestureEnd(clap_event_param_gesture),
     /// Sysex event that owns its buffer. The inner C struct's `buffer`
     /// pointer aliases `_data`, so this variant must not be moved out of
     /// its containing [`InputEventList`]/[`OutputEventList`].
     MidiSysex {
+        /// The C event whose `buffer` field points into `_data`.
         inner: clap_event_midi_sysex,
+        /// Backing storage for `inner.buffer`. Kept alive alongside it; moving
+        /// the variant would dangle that pointer.
         _data: Vec<u8>,
     },
 }
@@ -1069,7 +1085,7 @@ impl OutputEventList {
     /// param *modulation* events into a caller-supplied pooled `Vec`, clearing
     /// it first. These carry information (a knob-drag beginning/ending, or an
     /// output modulation) that the shared param-value vocabulary can't express,
-    /// so rather than drop them silently ([`fill_param_changes`] only matches
+    /// so rather than drop them silently (`fill_param_changes` only matches
     /// `ParamValue`) they are surfaced here for CLAP-aware callers. The gesture
     /// and mod C structs are POD, so this reconstructs (not clones) each event.
     pub fn fill_gestures(&self, out: &mut Vec<ClapEvent>) {
@@ -1125,8 +1141,8 @@ impl EventList for OutputEventList {
         self.events.len()
     }
 
-    /// Empty the list, **recycling** SysEx payload buffers into
-    /// [`Self::sysex_pool`] rather than freeing them. `process` calls this every
+    /// Empty the list, **recycling** SysEx payload buffers into the internal
+    /// `sysex_pool` rather than freeing them. `process` calls this every
     /// block; a plain `events.clear()` dropped the `Vec<u8>` inside each
     /// `MidiSysex`, pairing a free here with an allocation in `try_push`.
     fn clear(&mut self) {

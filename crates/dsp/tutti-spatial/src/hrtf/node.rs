@@ -58,10 +58,14 @@ impl HrtfBinauralNode {
         self.target.store(azimuth, elevation);
     }
 
+    /// The commanded bearing in [`Azimuth`] degrees — the target, not the
+    /// smoothed direction the convolver is currently rendering.
     pub fn azimuth(&self) -> Azimuth {
         self.target.azimuth.load()
     }
 
+    /// The commanded height in [`Elevation`] degrees — the target, not the
+    /// smoothed direction the convolver is currently rendering.
     pub fn elevation(&self) -> Elevation {
         self.target.elevation.load()
     }
@@ -76,6 +80,7 @@ impl HrtfBinauralNode {
         self.width.store(Mix::new_clamped(blend.into().get()));
     }
 
+    /// The current HRTF/dry [`Mix`], `0..1`.
     pub fn blend(&self) -> Mix {
         self.width.load()
     }

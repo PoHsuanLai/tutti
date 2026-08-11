@@ -1,3 +1,30 @@
+//! Standard MIDI File reading and writing — the MIDI **1.0** half of this crate.
+//!
+//! Two read shapes over the same bytes: [`ParsedMidiFile`] is the flat, merged
+//! event stream, and [`tracks`] is the higher-level view that pairs note-on/off
+//! into whole [`SmfNote`]s and keeps SMF tracks separate. An importer generally
+//! wants the second.
+//!
+//! # Everything here is 7-bit
+//!
+//! An SMF cannot express MIDI 2.0 resolution. Key, velocity and controller
+//! values are `u8` in 0..=127 and pitch bend is 14-bit — they are protocol
+//! integers on the wire, not measurements, and stay `u8` for that reason. The
+//! MIDI 2.0 side of the crate ([`crate::clip`], 16-bit velocity and 32-bit
+//! controllers) is a *different format*, not a wider encoding of this one.
+//!
+//! Musical time is the exception, deliberately: positions are [`Beat`] and spans
+//! are [`BeatDuration`], because a position and a span are transposable at a call
+//! site when both are bare `f64`.
+//!
+//! # Metrical timing only
+//!
+//! Beats come from the file's division. An SMPTE/timecode-divided file has no
+//! beat grid to read them from and returns [`Error::MidiUnsupportedTiming`]
+//! rather than a guess. The tempo map is not applied either — beat positions are
+//! as the file states them, and `tempo_bpm` is reported separately for a caller
+//! that wants to convert.
+
 use crate::{Error, Result};
 // NOTE: `midly::MidiMessage` is the *MIDI 1.0 7-bit* SMF message — a different
 // type from `tutti_midi_hardware::MidiMessage` (the decoded MIDI-2 view). It is
@@ -8,7 +35,7 @@ use tutti_core::{Beat, BeatDuration};
 
 /// The MIDI 1.0 7-bit channel-voice message carried by [`SmfTimedEvent`] — a
 /// re-export of `midly::MidiMessage`, aliased so an SMF caller never confuses it
-/// with the engine's MIDI-2 [`MidiMessage`](crate::MidiMessage).
+/// with the engine's MIDI-2 `MidiMessage` in `tutti_midi_hardware`.
 pub use midly::MidiMessage as SmfMessage;
 use std::path::Path;
 use tracing::debug;
@@ -21,14 +48,21 @@ pub struct SmfTimedEvent {
     /// MIDI channel (0-15).
     pub channel: u8,
     /// The channel-voice message. This is a **MIDI 1.0** `midly` message
-    /// (re-exported as [`SmfMessage`]), not the engine's MIDI-2
-    /// [`MidiMessage`](crate::MidiMessage).
+    /// (re-exported as [`SmfMessage`]), not the engine's MIDI-2 `MidiMessage`.
     pub msg: SmfMessage,
 }
 
+/// An SMF read as one flat event stream, merged across all tracks.
+///
+/// The low-level read shape. For per-track notes with durations, use [`tracks`].
 #[derive(Debug, Clone)]
 pub struct ParsedMidiFile {
+    /// Every channel-voice event in the file, merged across tracks and sorted by
+    /// [`Beat`]. Meta events (tempo, track name) are not included — tempo is
+    /// surfaced as `tempo_bpm` instead.
     pub events: Vec<SmfTimedEvent>,
+    /// The file's division: SMF ticks per quarter note, from the header. Never
+    /// zero — a zero division is rejected at parse.
     pub ticks_per_beat: u16,
     /// Default tempo in BPM (from first tempo event, or 120 if none).
     pub tempo_bpm: f64,
@@ -41,11 +75,24 @@ pub struct ParsedMidiFile {
 }
 
 impl ParsedMidiFile {
+    /// Reads and parses the SMF at `path`.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Io`] if the file cannot be read; otherwise as [`Self::parse`].
     pub fn load(path: impl AsRef<Path>) -> Result<Self> {
         let data = std::fs::read(path.as_ref())?;
         Self::parse(&data)
     }
 
+    /// Parses SMF bytes into a merged, beat-positioned event stream.
+    ///
+    /// # Errors
+    ///
+    /// - [`Error::MidiUnsupportedTiming`] if the header declares SMPTE/timecode
+    ///   division rather than metrical.
+    /// - [`Error::MidiFileParse`] if the division is zero, or `midly` rejects the
+    ///   bytes.
     pub fn parse(data: &[u8]) -> Result<Self> {
         let smf = Smf::parse(data)?;
 
@@ -53,9 +100,9 @@ impl ParsedMidiFile {
             Timing::Metrical(tpb) => tpb.as_int(),
             Timing::Timecode(_, _) => return Err(Error::MidiUnsupportedTiming),
         };
-        // The same rejection `tracks()` has always made, on the same field.
-        // Only that one had it, so a zero-division reached `parse_track` here
-        // and every `time_beats` in the file came back infinite.
+        // Both readers of this field reject a zero: it is the divisor for every
+        // `time_beats` in the file, so letting one through returns a parse in
+        // which every event sits at infinity. `tracks()` makes the same check.
         if ticks_per_beat == 0 {
             return Err(Error::MidiFileParse("zero ticks-per-beat".into()));
         }
@@ -100,10 +147,12 @@ impl ParsedMidiFile {
         })
     }
 
-    /// Events whose onset lands in `[start_beats, end_beats)`.
+    /// Events whose onset lands in `[start_beats, end_beats)` — start inclusive,
+    /// end exclusive, so adjacent ranges tile without double-counting.
     ///
-    /// Both bounds are [`Beat`]: they were two bare `f64`s, and transposing
-    /// them at a call site returned an empty slice rather than an error.
+    /// Both bounds are [`Beat`] rather than `f64` because transposing them yields
+    /// an empty slice rather than an error, which is silent at a call site.
+    /// Binary search over the sorted `events`; no allocation.
     pub fn get_events_in_range(&self, start_beats: Beat, end_beats: Beat) -> &[SmfTimedEvent] {
         let start = self.events.partition_point(|e| e.time_beats < start_beats);
         let end = self.events[start..].partition_point(|e| e.time_beats < end_beats) + start;
@@ -134,17 +183,20 @@ fn parse_track(track: &Track, ticks_per_beat: u16) -> Vec<SmfTimedEvent> {
 /// Microseconds in a minute — the numerator of the SMF tempo relation, where
 /// a Set Tempo meta event carries microseconds per quarter note.
 ///
-/// Named because the same relation is spelled three times in the engine, and
-/// the MIDI-2 twin (`ump::flex_data::TEN_NS_UNITS_PER_MINUTE`) already had a
-/// name for its own units while the two SMF copies used a bare literal.
+/// Named rather than spelled as a literal because the same relation appears in
+/// both directions here; the MIDI-2 twin is
+/// `ump::flex_data::TEN_NS_UNITS_PER_MINUTE`.
 const US_PER_MINUTE: f64 = 60_000_000.0;
 
 /// The first Set Tempo in `track` as BPM, or `None` if it declares none.
 ///
-/// A zero microseconds-per-quarter is `None` rather than an infinite BPM. That
-/// is what the MIDI-2 inverse (`ten_ns_per_quarter_to_bpm`) has always done for
-/// the identical wire condition; this copy returned `inf`, which then became
-/// `ParsedMidiFile::tempo_bpm` and reached every consumer of the parse.
+/// A zero microseconds-per-quarter is wire-representable and yields `None` rather
+/// than an infinite BPM — an infinity here would become
+/// `ParsedMidiFile::tempo_bpm` and reach every consumer of the parse. The MIDI-2
+/// inverse (`ten_ns_per_quarter_to_bpm`) guards the identical condition.
+///
+/// Stays `f64`: BPM is a rate a caller may convert against long durations, and
+/// `Bpm` is f32.
 fn extract_tempo(track: &Track) -> Option<f64> {
     track.iter().find_map(|e| match &e.kind {
         TrackEventKind::Meta(MetaMessage::Tempo(t)) => match t.as_int() {
@@ -196,7 +248,11 @@ pub struct SmfNote {
 /// One SMF track's paired notes plus its track-name meta event (if any).
 #[derive(Debug, Clone, Default)]
 pub struct SmfTrack {
+    /// The track's `TrackName` meta event, trimmed; `None` if it declares none or
+    /// declares an empty one.
     pub name: Option<String>,
+    /// Paired notes in onset order, then by `(channel, key)` so simultaneous
+    /// notes have a stable order rather than one set by NoteOff arrival.
     pub notes: Vec<SmfNote>,
 }
 
@@ -306,10 +362,22 @@ fn track_name(track: &Track) -> Option<String> {
 
 // --- Writing ---
 
+/// How to encode an SMF: division, plus the optional meta events for track 0.
 #[derive(Debug, Clone)]
 pub struct MidiWriteOptions {
+    /// The header's division — SMF ticks per quarter note. Defaults to 480. Sets
+    /// the write resolution: an event's tick is `beat * ticks_per_beat`
+    /// truncated, so a coarse value quantises onsets.
     pub ticks_per_beat: u16,
+    /// Tempo for the Set Tempo meta event on the first track. `None` writes no
+    /// tempo, leaving a reader to assume the SMF default of 120.
+    ///
+    /// `f64` rather than `Bpm`, matching what the parse returns. A non-positive
+    /// value writes the wire's own "no valid tempo" zero.
     pub tempo_bpm: Option<f64>,
+    /// Time signature as `(numerator, denominator_power_of_two)` — `(4, 2)` is
+    /// 4/4, `(6, 3)` is 6/8 — for the first track's meta event. This is the SMF
+    /// wire encoding, not a fraction.
     pub time_signature: Option<(u8, u8)>,
 }
 
@@ -323,7 +391,15 @@ impl Default for MidiWriteOptions {
     }
 }
 
-/// Single track produces format 0; multiple tracks produce format 1.
+/// Encodes `tracks` and writes the result to `path`.
+///
+/// A single track produces a format 0 file; multiple tracks produce format 1.
+/// Only the first track carries the tempo and time-signature meta events.
+///
+/// # Errors
+///
+/// [`Error::InvalidConfig`] if `tracks` is empty, or [`Error::Io`] if the write
+/// fails.
 pub fn write_midi_file(
     path: impl AsRef<Path>,
     tracks: &[Vec<SmfTimedEvent>],
@@ -334,7 +410,13 @@ pub fn write_midi_file(
     Ok(())
 }
 
-/// Encode MIDI file to bytes in memory.
+/// Encodes `tracks` to SMF bytes in memory. The in-memory half of
+/// [`write_midi_file`], with the same format rules.
+///
+/// # Errors
+///
+/// [`Error::InvalidConfig`] if `tracks` is empty — an SMF must carry at least one
+/// track chunk. [`Error::MidiFileParse`] if `midly` refuses to serialise.
 pub fn encode_midi_file(
     tracks: &[Vec<SmfTimedEvent>],
     options: &MidiWriteOptions,

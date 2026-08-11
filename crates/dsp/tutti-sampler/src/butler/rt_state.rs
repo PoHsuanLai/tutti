@@ -1,9 +1,27 @@
 //! Shared state between butler and audio thread.
 //!
-//! All fields are atomic or lock-free. Organized into orthogonal sub-structs
-//! (playback, health, seek/loop crossfade) — one `Arc`, one allocation, but
-//! fields are grouped by concern to reduce false sharing and make the
-//! ownership story obvious.
+//! Every field is atomic or lock-free, so both sides read and publish without a
+//! lock ever reaching the audio callback. The fields are grouped into orthogonal
+//! sub-structs (playback, health, seek/loop crossfade) — one `Arc`, one
+//! allocation — each `#[repr(align(64))]` so a butler write to one group cannot
+//! false-share a cache line with an audio-thread read of another.
+//!
+//! # Which side writes what
+//!
+//! Most cells have one writer and one reader, and the direction is the thing to
+//! keep straight:
+//!
+//! * **Butler writes, audio reads** — speed, direction, `src_ratio`, gain,
+//!   `reset_epoch` (ring-clear request), and both crossfades' buffers.
+//! * **Audio writes, butler reads** — `underrun_count`, `buffer_fill_level`, and
+//!   the seek request (`seek_target` + `seek_request_epoch`), the mirror image of
+//!   `reset_epoch`.
+//! * **One side only** — `applied_seek_epoch` is butler-private bookkeeping and
+//!   the audio thread never touches it.
+//!
+//! Both epoch pairs exist so neither side has to touch state the other owns: the
+//! butler must never pop the SPSC ring and the audio thread must never seek a
+//! decoder, so each *requests* and the owner *applies*.
 
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
 use tutti_core::ChannelLayout;
@@ -12,7 +30,11 @@ use tutti_core::{Amplitude, AtomicF32, AtomicReadRate, PlaybackRate, ReadRate, S
 use super::crossfader::StreamingCrossfader;
 use crate::voice::types::Direction;
 
-/// Playback parameters read by the audio thread every sample.
+/// Varispeed, direction, rate conversion, stretch and gain — the cells the audio
+/// thread loads on the per-sample path.
+///
+/// Cache-line aligned so butler writes here do not false-share with
+/// [`BufferHealth`], which the audio thread writes on the same block.
 #[repr(align(64))]
 pub struct PlaybackParams {
     speed: AtomicF32,
@@ -20,13 +42,13 @@ pub struct PlaybackParams {
     direction: AtomicU8,
     /// file_sample_rate / session_sample_rate. 1.0 = no conversion.
     src_ratio: AtomicF32,
-    /// Linear output gain.
+    /// Linear output gain, an [`Amplitude`] in the cell.
     ///
-    /// Here rather than on `DiskSource` for the reason `tutti_units`' crate
-    /// docs give: a control stored **by value** in a unit cannot be changed on
-    /// a live node, because `Net`'s frontend holds clones and `Net::migrate`
-    /// discards edits to them. Gain was a plain `Amplitude` field, so a clip's
-    /// fader did nothing once its voice existed — silently.
+    /// Here rather than on `DiskSource` for the reason `tutti_units`' crate docs
+    /// give: a control stored **by value** in a unit cannot be changed on a live
+    /// node, because `Net`'s frontend holds clones and `Net::migrate` discards
+    /// edits to them. A plain `Amplitude` field would make a clip's fader do
+    /// nothing once its voice existed — silently, with the knob still moving.
     gain: AtomicF32,
     /// Source samples consumed per output sample by a wrapping time-stretcher:
     /// `1 / stretch`. 1.0 when the voice does not stretch.
@@ -37,9 +59,10 @@ pub struct PlaybackParams {
     /// share, and it is where the other two rate factors compose.
     ///
     /// `AtomicReadRate`, not `AtomicF32`, unlike the two neighbours: those hold
-    /// `f32`-backed units, while `ReadRate` is `f64` precisely because a disk
-    /// voice accumulates it into a read position once per sample. Storing it
-    /// narrowed reinstated that drift on every load.
+    /// `f32`-backed units, while [`ReadRate`] is `f64` precisely because a disk
+    /// voice accumulates it into a read position once per sample. Narrowing it
+    /// through the cell would reinstate that drift on every load — the error
+    /// does not average out, it integrates.
     stretch_rate: AtomicReadRate,
 }
 
@@ -55,12 +78,22 @@ impl Default for PlaybackParams {
     }
 }
 
-/// Buffer health / underrun reporting.
+/// Ring occupancy, underrun counts, and the two epoch-based reposition
+/// requests that cross between the threads.
+///
+/// Cache-line aligned: the audio thread writes `buffer_fill_level` and
+/// `underrun_count` every block, and that must not evict [`PlaybackParams`]
+/// out from under the butler.
 #[repr(align(64))]
 pub struct BufferHealth {
+    /// Set while the butler is mid-reposition, so the audio thread mutes rather
+    /// than reading a half-seeked stream.
     seeking: AtomicBool,
+    /// Underruns since the last [`RtState::take_underruns`]. Audio thread
+    /// increments, butler drains.
     underrun_count: AtomicU64,
-    /// 0-1000 representing 0.0-1.0.
+    /// Ring occupancy as 0-1000, i.e. 0.0-1.0 in thousandths. Fixed-point
+    /// because the cell is an integer atomic; the accessors do the scaling.
     buffer_fill_level: AtomicU32,
     /// Butler-bumped ring-reset request. The butler increments this when it
     /// repositions the stream (seek / loop-wrap) and needs the audio thread to
@@ -96,11 +129,23 @@ impl Default for BufferHealth {
     }
 }
 
-/// Shared state between butler and audio thread.
+/// The one cell a streaming channel's butler side and audio side both hold.
+///
+/// Lives behind an `Arc` shared by the [`ChannelPlan`](super::plan::ChannelPlan)
+/// and the disk voice, which is why every publisher below takes `&self`: no
+/// exclusive reference exists on either side, and none is needed.
+///
+/// Outlives any single stream — `stop_streaming` resets the fields but keeps the
+/// `Arc` alive, because the audio thread may still hold its clone.
 pub struct RtState {
+    /// Varispeed, direction, conversion ratio, stretch and gain.
     pub playback: PlaybackParams,
+    /// Ring occupancy, underruns, and the seek/reset epochs.
     pub health: BufferHealth,
+    /// Armed when the butler repositions the stream, drained by the audio
+    /// thread one frame per block.
     pub seek_crossfade: StreamingCrossfader,
+    /// Armed as playback approaches a loop end, so the wrap is not a click.
     pub loop_crossfade: StreamingCrossfader,
 }
 
@@ -111,6 +156,8 @@ impl Default for RtState {
 }
 
 impl RtState {
+    /// A state at rest: unity speed and conversion ratio, unity gain, forward,
+    /// not seeking, no crossfade armed, all counters zero.
     pub fn new() -> Self {
         Self {
             playback: PlaybackParams::default(),
@@ -120,6 +167,7 @@ impl RtState {
         }
     }
 
+    /// The current varispeed. [`PlaybackRate::UNITY`] is normal speed.
     #[inline]
     pub fn speed(&self) -> PlaybackRate {
         PlaybackRate::new(self.playback.speed.load(Ordering::Acquire))
@@ -127,11 +175,11 @@ impl RtState {
 
     /// Publish a new varispeed.
     ///
-    /// Takes the already-bounded [`PlaybackRate`] rather than a raw `f32`: the
-    /// range used to be enforced here and *only* here, so the in-memory tier —
-    /// which never went through this function — accepted speeds this one
-    /// clamped. Same command, different audio per tier. The type carries the
-    /// bound now, so both tiers get it.
+    /// Takes the already-bounded [`PlaybackRate`] rather than a raw `f32` so the
+    /// range is enforced where the value is *built*. A clamp applied here
+    /// instead would bind only this tier — the in-memory sampler never calls
+    /// this setter, so the same command would produce different audio depending
+    /// on which tier happened to be playing.
     pub fn set_speed(&self, speed: PlaybackRate) {
         self.playback.speed.store(speed.get(), Ordering::Release);
     }
@@ -151,9 +199,9 @@ impl RtState {
         self.playback.gain.store(gain.get(), Ordering::Release);
     }
 
-    /// Current playback speed. Same as [`speed`] — kept distinct from the
-    /// raw atomic load for the audio-thread call site which reads it every
-    /// sample.
+    /// The varispeed as the audio thread's per-sample path names it. Identical
+    /// to [`speed`](Self::speed); the separate name marks the hot call site
+    /// rather than the raw atomic load.
     #[inline]
     pub fn effective_speed(&self) -> PlaybackRate {
         self.speed()
@@ -174,10 +222,10 @@ impl RtState {
     /// instead would need all three to remember, and the fetch estimate is the
     /// one that fails silently.
     ///
-    /// Without it the factor acted as varispeed on this tier: a 2x-stretched
-    /// disk voice consumed exactly as many source frames as an unstretched one
-    /// (measured 512 vs 512), so the vocoder was fed at full rate and had
-    /// nothing to spread.
+    /// Drop the stretch term and it degenerates into varispeed on this tier: a
+    /// 2x-stretched disk voice consumes exactly as many source frames as an
+    /// unstretched one (512 vs 512, measured), so the vocoder is fed at full
+    /// rate and has nothing to spread.
     #[inline]
     pub fn read_rate(&self) -> ReadRate {
         self.speed()
@@ -210,12 +258,15 @@ impl RtState {
         }
     }
 
+    /// Publish the playback direction. The butler reads it each refill cycle to
+    /// choose the forward or the reversed refill path.
     pub fn set_direction(&self, direction: Direction) {
         self.playback
             .direction
             .store(u8::from(direction.is_reverse()), Ordering::Release);
     }
 
+    /// Whether playback currently runs backwards through the file.
     #[inline]
     pub fn is_reverse(&self) -> bool {
         self.direction().is_reverse()
@@ -226,22 +277,31 @@ impl RtState {
         self.set_direction(Direction::from_reverse(reverse));
     }
 
+    /// Sample-rate conversion ratio: file rate over session rate.
+    /// [`SrcRatio::UNITY`] means the file already plays at the session rate.
     #[inline]
     pub fn src_ratio(&self) -> SrcRatio {
         SrcRatio::new(self.playback.src_ratio.load(Ordering::Acquire))
     }
 
+    /// Publish the conversion ratio. Written by the butler when a stream starts,
+    /// from [`SrcRatio::for_rates`] — the same derivation the in-memory tier
+    /// uses, so neither tier can pick the ratio up backwards.
     pub fn set_src_ratio(&self, ratio: SrcRatio) {
         self.playback
             .src_ratio
             .store(ratio.get(), Ordering::Release);
     }
 
+    /// Whether the butler is mid-reposition. The audio thread reads this to mute
+    /// rather than render a stream whose read head is moving under it.
     #[inline]
     pub fn is_seeking(&self) -> bool {
         self.health.seeking.load(Ordering::Acquire)
     }
 
+    /// Bracket a reposition. The butler sets it before flushing and clears it
+    /// once the new position and crossfade are both published.
     pub fn set_seeking(&self, seeking: bool) {
         self.health.seeking.store(seeking, Ordering::Release);
     }
@@ -300,15 +360,23 @@ impl RtState {
         Some(target)
     }
 
+    /// Count one frame the ring could not supply. Audio side: a single relaxed
+    /// increment, allocation-free and safe on the hot path.
     #[inline]
     pub fn report_underrun(&self) {
         self.health.underrun_count.fetch_add(1, Ordering::Relaxed);
     }
 
+    /// Read and zero the underrun count, returning the frames missed since the
+    /// previous call. Draining rather than peeking is what makes the figure a
+    /// per-interval rate instead of an ever-growing total.
     pub fn take_underruns(&self) -> u64 {
         self.health.underrun_count.swap(0, Ordering::Relaxed)
     }
 
+    /// Publish ring occupancy as a fraction, clamped to `0.0..=1.0` and stored
+    /// in thousandths. The butler compares it against a refill threshold to
+    /// decide both chunk size and whether it may park on a timer.
     pub fn set_buffer_fill(&self, level: f32) {
         let scaled = (level.clamp(0.0, 1.0) * 1000.0) as u32;
         self.health
@@ -322,6 +390,12 @@ impl RtState {
         self.health.buffer_fill_level.load(Ordering::Relaxed) as f32 / 1000.0
     }
 
+    /// Arm the seek crossfade with the tail of the old position and the head of
+    /// the new one, both flat interleaved at `channels` samples per frame.
+    ///
+    /// Butler thread: the buffers are allocated here precisely so the audio side
+    /// receives something finished. The fade runs for as many **frames** as the
+    /// shorter buffer holds.
     pub fn start_seek_crossfade(
         &self,
         fadeout: Vec<f32>,
@@ -331,15 +405,25 @@ impl RtState {
         self.seek_crossfade.start(fadeout, fadein, channels);
     }
 
+    /// Whether a seek crossfade is armed and still has frames left to blend.
     #[inline]
     pub fn is_seek_crossfading(&self) -> bool {
         self.seek_crossfade.is_active()
     }
 
+    /// Blend one frame of the seek crossfade into `out`, returning `false` when
+    /// the fade is finished or was never armed (leaving `out` untouched).
+    ///
+    /// Audio thread: atomic loads and one `ArcSwap` read, no allocation.
     pub fn next_seek_crossfade_frame_into(&self, out: &mut [f32]) -> bool {
         self.seek_crossfade.next_frame_into(out)
     }
 
+    /// Arm the loop crossfade with the tail before the loop end and the head at
+    /// the loop start, both flat interleaved at `channels` samples per frame.
+    ///
+    /// Butler thread, called as playback approaches the loop end; the head is
+    /// usually the pre-captured `preloop_buffer`, so no wrap re-reads the file.
     pub fn start_loop_crossfade(
         &self,
         fadeout: Vec<f32>,
@@ -349,15 +433,22 @@ impl RtState {
         self.loop_crossfade.start(fadeout, fadein, channels);
     }
 
+    /// Whether a loop crossfade is armed and still has frames left to blend.
     #[inline]
     pub fn is_loop_crossfading(&self) -> bool {
         self.loop_crossfade.is_active()
     }
 
+    /// Blend one frame of the loop crossfade into `out`, returning `false` when
+    /// the fade is finished or was never armed (leaving `out` untouched).
+    ///
+    /// Audio thread: atomic loads and one `ArcSwap` read, no allocation.
     pub fn next_loop_crossfade_frame_into(&self, out: &mut [f32]) -> bool {
         self.loop_crossfade.next_frame_into(out)
     }
 
+    /// Disarm the loop crossfade and drop its buffers. Called at the wrap
+    /// itself, and by `stop_streaming` so a fade cannot outlive its stream.
     pub fn clear_loop_crossfade(&self) {
         self.loop_crossfade.clear();
     }
@@ -377,8 +468,8 @@ mod tests {
 
     /// The stretch rate survives the cell bit-for-bit.
     ///
-    /// It used to round-trip through an `AtomicF32`, so every load returned a
-    /// value the control thread never wrote. That matters here and not for the
+    /// Narrowing it through an `AtomicF32` would make every load return a value
+    /// the control thread never wrote. That matters here and not for the
     /// neighbouring `speed`/`src_ratio` cells because this is the term a disk
     /// voice accumulates into its read position once per sample: the error does
     /// not average out, it integrates.
@@ -410,9 +501,9 @@ mod tests {
 
     #[test]
     fn test_speed_clamping() {
-        // The clamp moved into `PlaybackRate` so BOTH playback tiers get it —
-        // this used to be the only place it happened, so the in-memory sampler,
-        // which never called this setter, accepted out-of-range speeds.
+        // The clamp lives in `PlaybackRate`, not in this setter, so BOTH
+        // playback tiers get it — the in-memory sampler never calls this
+        // setter, and a clamp here would leave it accepting out-of-range speeds.
         let state = RtState::new();
 
         state.set_speed(PlaybackRate::new_clamped(0.1));

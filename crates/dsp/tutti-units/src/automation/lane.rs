@@ -26,25 +26,45 @@ use super::Curve;
 ///
 /// # Example
 ///
-/// ```ignore
-/// let mut envelope = AutomationEnvelope::new("volume");
+/// A four-beat ramp from silence to unity, pushed into a [`Net`] whose two
+/// inputs are the [`BEAT_PORTS`] pair a `TransportClock` drives.
+///
+/// ```
+/// use tutti_core::dsp::{AudioUnit, Net};
+/// use tutti_units::automation::{AutomationEnvelope, AutomationLane, AutomationPoint};
+///
+/// let mut envelope: AutomationEnvelope<f32> = AutomationEnvelope::new(0.0);
 /// envelope.add_point(AutomationPoint::new(0.0, 0.0));
 /// envelope.add_point(AutomationPoint::new(4.0, 1.0));
 ///
-/// let lane = AutomationLane::new(envelope);
-/// graph.connect(clock_id, 0, lane_id, 0);
-/// graph.connect(clock_id, 1, lane_id, 1);
+/// // Two in (whole beats, fraction), one out (the curve's value).
+/// let mut net = Net::new(2, 1);
+/// let lane = net.push(Box::new(AutomationLane::new(envelope)));
+/// net.pipe_input(lane);
+/// net.pipe_output(lane);
+/// net.check();
+///
+/// // Beat 2.0 is halfway along the ramp.
+/// let mut out = [0.0f32; 1];
+/// net.tick(&[2.0, 0.0], &mut out);
+/// assert!((out[0] - 0.5).abs() < 1e-3, "midpoint of a 0..1 ramp, got {}", out[0]);
 /// ```
+///
+/// [`Net`]: tutti_core::dsp::Net
 pub struct AutomationLane {
     curve: Arc<dyn Curve>,
     last_value: f32,
 }
 
-/// Alias kept for the `graph.node_as::<LiveAutomationLane>(..)` lookups in
-/// consumers. The lane is no longer generic over the envelope's label.
+/// Alias for the `graph.node_as::<LiveAutomationLane>(..)` lookups in
+/// consumers. The lane is not generic over the envelope's label.
 pub type LiveAutomationLane = AutomationLane;
 
 impl AutomationLane {
+    /// Builds a lane that evaluates `curve` at the transport beat.
+    ///
+    /// The curve is held behind an `Arc` and read on the audio thread, so it
+    /// must be cheap to evaluate and must not allocate in `value_at`.
     pub fn new(curve: impl Curve + 'static) -> Self {
         Self {
             curve: Arc::new(curve),
@@ -52,6 +72,11 @@ impl AutomationLane {
         }
     }
 
+    /// Replaces the curve, allocating a new `Arc`.
+    ///
+    /// `&mut self`, so it cannot reach a node already live in the graph — a
+    /// live curve swap goes through a respawn. Does not clear
+    /// [`last_value`](Self::last_value).
     pub fn set_curve(&mut self, curve: impl Curve + 'static) {
         self.curve = Arc::new(curve);
     }
@@ -65,6 +90,12 @@ impl AutomationLane {
         self.last_value
     }
 
+    /// Evaluates the curve at `beat` **without** recording it as the last
+    /// value.
+    ///
+    /// Returns `0.0` where the curve has no value — before its first point, or
+    /// on an empty envelope. Use [`update_to`](Self::update_to) to evaluate and
+    /// record in one step.
     pub fn get_value_at(&self, beat: Beat) -> f32 {
         self.curve.value_at(beat).unwrap_or(0.0)
     }

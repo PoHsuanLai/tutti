@@ -197,19 +197,19 @@ fn instruments_report_no_input_buses() {
 /// ## What this does and does not pin
 ///
 /// `StreamConfig::probe` derives `has_input` from the input **element count**.
-/// It used to infer it from whether the input stream-format read succeeded,
-/// which is a different question: an AU may legally have an input element whose
-/// format it declines to report, and for that unit the old inference says "no
-/// input", so the host skips installing the input render callback and the unit
+/// Inferring it from whether the input stream-format read succeeded answers a
+/// different question: an AU may legally have an input element whose format it
+/// declines to report, and for that unit the format-based inference says "no
+/// input" — so the host skips installing the input render callback and the unit
 /// renders from silence.
 ///
-/// **This test does not catch that revert, and neither can any other test on
-/// this machine.** Measured across all 132 installed AUs, the two inference
-/// methods agree on every single one — 55 with an input element, 77 without,
-/// zero disagreements. So the element-count form is *defensive*: correct per
-/// Apple's model, but with no locally observable behavioural difference. A
-/// mutation swapping it back passes the entire suite, and that is a property of
-/// the available corpus, not a gap in the assertions.
+/// **This test does not catch a swap to the format-based form, and neither can
+/// any other test on this machine.** Measured across all 132 installed AUs, the
+/// two inference methods agree on every single one — 55 with an input element,
+/// 77 without, zero disagreements. So the element-count form is *defensive*:
+/// correct per Apple's model, but with no locally observable behavioural
+/// difference. A mutation swapping it passes the entire suite, and that is a
+/// property of the available corpus, not a gap in the assertions.
 ///
 /// What it does pin is the invariant itself — the host's derived view never
 /// drifts from the AU's element count — which is what would break first if

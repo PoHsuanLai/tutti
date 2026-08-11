@@ -1,7 +1,7 @@
 //! [`SpscRing`] — a lock-free single-producer / single-consumer ring whose
 //! producer and consumer halves are touched from *different* threads at the
-//! same time (the producer from a midir or audio callback, the consumer from
-//! the engine cycle).
+//! same time (the producer from a driver callback, the consumer from the engine
+//! cycle).
 //!
 //! This is the one concurrency pattern [`AudioThreadCell`](tutti_core::AudioThreadCell)
 //! deliberately cannot express: its contract is "at most one borrow at any
@@ -14,7 +14,8 @@
 //!
 //! The soundness rests on the SPSC invariant, which the *caller* upholds:
 //! - At most one thread calls [`SpscProducer::push`] (the single producer).
-//! - At most one thread calls [`SpscRing::drain_each`] (the single consumer).
+//! - At most one thread calls [`SpscRing::drain_each_limited`] (the single
+//!   consumer).
 //!
 //! The underlying `ringbuf` halves are themselves lock-free and tolerate a
 //! concurrent producer and consumer; what they cannot tolerate is *two*
@@ -39,7 +40,7 @@ pub struct SpscRing<T> {
 
 // SAFETY: the producer is only ever touched via the `*mut` a `SpscProducer`
 // carries (single producer thread); the consumer is only ever touched via
-// `pop`/`drain_into` on the owning thread (single consumer). Never two of
+// `drain_each_limited` on the owning thread (single consumer). Never two of
 // either concurrently — the SPSC invariant the caller upholds.
 unsafe impl<T: Send> Sync for SpscRing<T> {}
 
@@ -64,8 +65,6 @@ impl<T> SpscRing<T> {
         }
     }
 
-    /// Drain every available item through `f` (consumer side).
-    #[inline]
     /// Pop at most `limit` items, passing each to `f`, and return how many were
     /// taken.
     ///
@@ -73,6 +72,7 @@ impl<T> SpscRing<T> {
     /// the audio thread use this to keep a fixed-capacity sink from growing:
     /// deferring an event costs one block of latency, where reallocating the
     /// sink costs a deadline. Pass `usize::MAX` to drain the ring completely.
+    #[inline]
     pub fn drain_each_limited(&self, limit: usize, mut f: impl FnMut(T)) -> usize {
         // SAFETY: single consumer — this is the only consumer-side access and
         // is called from one thread at a time (the SPSC invariant).

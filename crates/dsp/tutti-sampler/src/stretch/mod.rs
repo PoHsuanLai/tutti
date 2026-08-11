@@ -11,16 +11,24 @@
 //!
 //! # Example
 //!
-//! ```ignore
-//! use tutti_sampler::stretch;
+//! ```
+//! use tutti_core::dsp::AudioUnit;
 //! use tutti_core::{Cents, StretchFactor};
+//! use tutti_sampler::stretch;
 //!
-//! // The stretcher is a pure filter: the caller ticks its own source and feeds
-//! // each frame in (it owns no source of its own).
-//! let stretched = stretch::Unit::new(44100.0);
+//! // A pure filter: it owns no source, so the caller ticks its own and feeds
+//! // each frame in.
+//! let mut stretched = stretch::Unit::new(44_100.0);
 //!
-//! stretched.set_stretch_factor(StretchFactor::new(2.0)); // half speed
-//! stretched.set_pitch_cents(Cents::new(1200.0));         // up an octave
+//! // The factor is clamped to `MIN..=MAX` at construction — an out-of-range
+//! // request saturates rather than being rejected.
+//! stretched.set_stretch_factor(StretchFactor::new_clamped(2.0)); // half speed
+//! stretched.set_pitch_cents(Cents(1200.0));                      // up an octave
+//!
+//! // One frame in, one frame out; the vocoder's latency means early frames
+//! // are the window filling rather than stretched audio.
+//! let mut out = [0.0f32; 2];
+//! stretched.tick(&[0.25, 0.25], &mut out);
 //! ```
 //!
 //! # Algorithm
@@ -31,8 +39,11 @@
 //!
 //! # RT-safety
 //!
-//! Every buffer is allocated in [`Unit::with_fft_size_and_channels`]. Neither
-//! `tick` nor `process` allocates, and neither does the vocoder beneath them.
+//! Every buffer is allocated in [`Unit::with_fft_size_and_channels`], or — for
+//! a unit produced by `clone`, which leaves its per-block scratch empty — in
+//! `AudioUnit::allocate`, which the graph calls before running the node.
+//! Neither `tick` nor `process` allocates or blocks, and neither does the
+//! vocoder beneath them. Dropping a `Unit` is *not* RT-safe; see its `Drop`.
 
 /// Per-channel RT scratch capacity, in samples.
 ///
@@ -52,10 +63,10 @@ use tutti_core::{AudioThreadCell, AudioUnit, Ordering, RtScratch, SampleRate, Sa
 /// The vocoder bank, shared by refcount across graph generations.
 ///
 /// `Net::commit` clones every node per graph edit, and a deep copy of this is
-/// ~96 KB per channel allocated and the previous generation's freed — measured
-/// at 201.8 MB per commit over 640 stereo nodes, with allocation and free
-/// exactly balanced. Sharing makes the commit clone a refcount bump and removes
-/// both halves: 81.5 MB at stereo, 243.8 MB at six channels.
+/// ~96 KB per channel allocated with the previous generation's freed — 201.8 MB
+/// per commit over 640 stereo nodes, against a 2 ms budget. Sharing makes the
+/// commit clone a refcount bump and removes both halves at once. Full figures:
+/// `examples/profile_stretch_clone.rs`.
 ///
 /// # The invariant, and why it is enforced rather than documented
 ///
@@ -89,11 +100,11 @@ struct Bank {
     ///
     /// Here rather than on [`Unit`] because they follow the same rule the
     /// vocoders do: only the one handle holding the bank's claim may touch them,
-    /// and they carry nothing between blocks. Leaving them on the handle meant a
-    /// fresh 64 KB per channel per generation — after the bank was shared, that
-    /// was **98% of a commit's remaining traffic at both widths** (240 MB of
-    /// 243.8 at six channels). Deferring their allocation to
-    /// [`AudioUnit::allocate`] had only moved when it was paid, not whether.
+    /// and they carry nothing between blocks. On the handle instead they cost a
+    /// fresh 64 KB per channel per generation — **98% of a shared-bank commit's
+    /// remaining traffic at both widths**. Deferring them to
+    /// [`AudioUnit::allocate`] moves only *when* that is paid, not whether: the
+    /// graph calls `allocate` on every generation.
     scratch_in: AudioThreadCell<Vec<RtScratch<f32>>>,
     scratch_out: AudioThreadCell<Vec<RtScratch<f32>>>,
     /// Which [`Unit`] may tick this bank; `UNCLAIMED` until the first tick.
@@ -223,8 +234,9 @@ impl Bank {
 /// Two invariants hold for every instance, and both are enforced in `new`
 /// rather than argued about at the use site:
 ///
-/// - **A power of two between 2 and 32768**, because [`real_fft`] dispatches on
-///   exactly those lengths and panics otherwise.
+/// - **A power of two between 2 and 32768**, because
+///   [`real_fft`](tutti_core::real_fft) dispatches on exactly those lengths and
+///   panics otherwise.
 /// - **Divisible by 4**, so [`hop`](Self::hop) is `size / 4` exactly — 75%
 ///   overlap, the minimum Hann² constant-overlap-add requires. Any power of two
 ///   ≥ 4 satisfies this; it is stated because the hop, not the window, is what

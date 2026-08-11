@@ -1,40 +1,74 @@
+//! Binding a MIDI CC to a DAW target, and the linear map from the CC's 7-bit
+//! range onto that target's own range.
+//!
+//! This is the *description* of a binding, not the machinery that applies one:
+//! nothing here touches a document or a graph. A host holds a list of
+//! [`CCMapping`], asks each whether it [`matches`](CCMapping::matches) an
+//! incoming CC, and applies [`map_value`](CCMapping::map_value) to whatever the
+//! [`CCTarget`] names.
+
+/// Stable identifier for one [`CCMapping`] in a host's list, so a UI can address
+/// a binding without holding its index (which shifts as bindings are removed).
 pub type MappingId = u64;
 
-// Both of these used to be `pub type X = u8` aliases right here — the same type
-// as what they alias, and therefore preventing nothing: a `u8` CC number and a
-// `u8` channel remained freely interchangeable at every call. The real newtypes
-// live in `tutti-types` (a document has to persist a channel, and a CC
-// automation lane is keyed by a CC number, and this crate carries no serde),
-// and are re-exported below so the names resolve where they always did.
+// `CCNumber` and `MidiChannel` are `tutti-types`' newtypes rather than aliases
+// declared here: a document has to persist a channel and key a CC automation
+// lane by a CC number, and this crate carries no serde. Re-exported so the names
+// resolve from `cc::` as well as from the vocabulary crate.
 pub use tutti_types::{CCNumber, MidiChannel};
 
+/// What a CC binding drives.
+///
+/// Indices are the host's, not the model's — this crate names no document type,
+/// so a `usize` here is whatever ordinal the host assigns its tracks.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum CCTarget {
+    /// Fader level of the track at this index.
     TrackVolume(usize),
+    /// Stereo position of the track at this index.
     TrackPan(usize),
+    /// One parameter of one effect in a track's chain.
     EffectParam {
+        /// Host ordinal of the track carrying the chain.
         track_index: usize,
+        /// Position of the effect within that track's chain.
         effect_slot: u8,
+        /// Parameter index as the effect itself enumerates them.
         param_index: u16,
     },
+    /// Level of the master output.
     MasterVolume,
+    /// Project tempo, in `Bpm`.
     Tempo,
 }
 
+/// One CC-to-target binding: which messages it claims, and how it scales them.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CCMapping {
-    /// `None` = all channels.
+    /// Channel this binding listens on; `None` claims every channel.
     pub channel: Option<MidiChannel>,
+    /// Controller number this binding claims.
     pub cc_number: CCNumber,
+    /// What the scaled value is written to.
     pub target: CCTarget,
-    /// CC 0 maps to this value.
+    /// Value that CC 0 maps to. Denominated in the target's own units, so a
+    /// [`CCTarget::Tempo`] binding holds BPM here and a volume binding holds a
+    /// gain — this type does not know which.
     pub min_value: f32,
-    /// CC 127 maps to this value.
+    /// Value that CC 127 maps to. May be *below* `min_value`, which inverts the
+    /// binding; nothing here rejects that.
     pub max_value: f32,
+    /// Whether the binding is live. A disabled binding never
+    /// [`matches`](Self::matches), so a host can mute one without losing it.
     pub enabled: bool,
 }
 
 impl CCMapping {
+    /// Builds an enabled binding over the given range.
+    ///
+    /// `min_value` and `max_value` are in the target's units and are not
+    /// validated against each other; passing them reversed is the supported way
+    /// to invert a controller.
     pub fn new(
         channel: Option<MidiChannel>,
         cc_number: CCNumber,
@@ -52,13 +86,23 @@ impl CCMapping {
         }
     }
 
-    /// Linearly interpolate CC value (0-127) into `min_value..=max_value`.
+    /// Maps a 7-bit CC value linearly onto `min_value..=max_value`.
+    ///
+    /// This is the **MIDI 1.0** width — 0..=127 — normalized through
+    /// [`crate::convert::u7_to_unit_f32`], which is Min-Center-Max scaling and
+    /// therefore does *not* put CC 64 exactly at the midpoint. A MIDI 2.0
+    /// controller carries 32 bits and should be narrowed by the caller before it
+    /// arrives here; this entry point cannot represent that resolution.
     #[inline]
     pub fn map_value(&self, cc_value: u8) -> f32 {
         let normalized = crate::convert::u7_to_unit_f32(cc_value);
         self.min_value + normalized * (self.max_value - self.min_value)
     }
 
+    /// Reports whether this binding claims a CC arriving on `channel`.
+    ///
+    /// False for a disabled binding regardless of the address, and true on any
+    /// channel when [`channel`](Self::channel) is `None`.
     #[inline]
     pub fn matches(&self, channel: MidiChannel, cc_number: CCNumber) -> bool {
         if !self.enabled {

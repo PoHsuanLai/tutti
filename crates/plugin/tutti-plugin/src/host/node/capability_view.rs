@@ -12,10 +12,17 @@
 //! **declined** the capability, so the installer is not reachable at all rather
 //! than reachable and inert:
 //!
-//! ```ignore
-//! if let Some(t) = client.transport() {
+//! ```no_run
+//! # use std::sync::Arc;
+//! # use tutti_core::{meter::MeterMap, transport::Transport, RtPublish};
+//! # use tutti_plugin::handles::PluginClient;
+//! # fn ex(client: &mut PluginClient, reader: Transport, meter: Arc<RtPublish<MeterMap>>) {
+//! // `None` for a plugin that declined transport, so the install is not
+//! // reachable at all rather than reachable and inert.
+//! if let Some(mut t) = client.transport() {
 //!     t.set_source(reader, meter);
 //! }
+//! # }
 //! ```
 //!
 //! # Declined, not merely absent
@@ -93,6 +100,8 @@ impl MidiInView<'_> {
 pub struct HarmonyView<'a>(&'a mut PluginClient);
 
 impl HarmonyView<'_> {
+    /// Install a beat-scheduled chord and scale stream, replacing any already
+    /// set. Neither list need be pre-sorted.
     pub fn set_source(
         &mut self,
         chords: impl IntoIterator<Item = super::TimedChord>,
@@ -113,6 +122,7 @@ impl HarmonyView<'_> {
 pub struct NoteExpressionView<'a>(&'a mut PluginClient);
 
 impl NoteExpressionView<'_> {
+    /// Install the per-note expression stream, replacing any already set.
     pub fn set_source(&mut self, source: Arc<super::NoteExpressionSource>) {
         self.0.set_note_expression_source(source);
     }
@@ -128,6 +138,10 @@ impl NoteExpressionView<'_> {
 pub struct TransportView<'a>(&'a mut PluginClient);
 
 impl TransportView<'_> {
+    /// Install the transport and meter map the per-block snapshot is read from.
+    ///
+    /// The meter map arrives as an `RtPublish` because the audio thread reads it
+    /// once per block and never holds an owning handle.
     pub fn set_source(
         &mut self,
         reader: tutti_core::transport::Transport,

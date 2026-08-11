@@ -1,10 +1,9 @@
 //! Pre-allocated scratch buffers for VST2 process calls.
 //!
-//! The `vst` crate's `AudioBuffer` wants raw pointer arrays; we can't
-//! point directly at the caller's `&[&[f32]]` slice-of-slices because
-//! VST2 wants contiguous pointer tables. These scratch buffers are
-//! allocated once at load time and reused on every block to keep the
-//! audio thread allocation-free.
+//! The `vst` crate's `AudioBuffer` wants contiguous raw pointer tables, which a
+//! caller's `&[&[f32]]` slice-of-slices cannot supply — the inner slices are not
+//! adjacent in memory. These buffers are allocated once at load time and reused
+//! on every block, which is what keeps the audio thread allocation-free.
 //!
 //! Both widths are resident. VST 2.4 has two render entry points —
 //! `processReplacing` and `processReplacingF64` — and the caller picks per
@@ -47,6 +46,12 @@ unsafe impl Send for RenderScratch {}
 unsafe impl Sync for RenderScratch {}
 
 impl RenderScratch {
+    /// Allocates both widths' buffers and pointer tables up front.
+    ///
+    /// Call once at load time, never on the audio thread — this is the crate's
+    /// only render-path allocation, and hoisting it here is the point.
+    /// `block_size` is the maximum block in **frames**; a process call may render
+    /// fewer, never more.
     pub fn new(num_inputs: ChannelLayout, num_outputs: ChannelLayout, block_size: usize) -> Self {
         let inputs: Vec<Vec<f32>> = (0..num_inputs.count())
             .map(|_| vec![0.0f32; block_size])
@@ -150,11 +155,11 @@ impl RenderScratch {
     /// plugin was asked to render — a caller whose slices are *longer* than that
     /// keeps whatever was past the block, same as the f64 path.
     ///
-    /// Both sides are sliced deliberately. This was `copy_from_slice`, which
-    /// requires equal lengths and so panicked whenever a caller passed a slice
-    /// longer than `num_samples` — reachable through the public `process_f32`,
-    /// which documents `num_samples` as a separate argument precisely so the two
-    /// need not match.
+    /// Both sides are sliced deliberately, and the `min` is load-bearing: a bare
+    /// `copy_from_slice` requires equal lengths and panics on any caller slice
+    /// that is not exactly the block. That is reachable through the public
+    /// `process_f32`, which takes `num_samples` as a separate argument precisely
+    /// so the two need not match.
     pub fn copy_out_f32(&self, caller_outputs: &mut [&mut [f32]], num_samples: usize) {
         for (i, out_channel) in caller_outputs.iter_mut().enumerate() {
             if i < self.outputs.len() {
@@ -170,9 +175,8 @@ impl RenderScratch {
     ///
     /// Bounded on both sides for the same reason as
     /// [`copy_out_f32`](Self::copy_out_f32): `out_channel[..num_samples]` alone
-    /// panics on a caller slice *shorter* than the block, the mirror image of the
-    /// `copy_from_slice` fault. The `zip` already stopped at the scratch's end;
-    /// the `min` is what makes the destination safe too.
+    /// panics on a caller slice *shorter* than the block. The `zip` already stops
+    /// at the scratch's end; the `min` is what makes the destination safe too.
     pub fn copy_out_f64(&self, caller_outputs: &mut [&mut [f64]], num_samples: usize) {
         for (i, out_channel) in caller_outputs.iter_mut().enumerate() {
             if i < self.outputs_f64.len() {

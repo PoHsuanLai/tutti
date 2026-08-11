@@ -7,20 +7,19 @@
 //!
 //! # Why this is not tutti-export's encoder
 //!
-//! tutti-export has its own hound-backed WAV writer, and the two stay separate
-//! for a structural reason: **this one is pushed, that one pulls.** An
-//! `AudioOut` is fed blocks by whoever owns the loop; an export `Encoder` *is*
-//! the loop (it takes the source, so flacenc can be handed it directly) and is
-//! driven by a `RenderPlan` carrying a total frame count. A live capture has no
-//! total — it ends when someone stops it — so it cannot be expressed as an
-//! export encode.
+//! `tutti-export` is the OFFLINE edge and has its own hound-backed WAV writer.
+//! The two stay separate for a structural reason: **this one is pushed, that one
+//! pulls.** An `AudioOut` is fed blocks by whoever owns the loop; an export
+//! `Encoder` *is* the loop (it takes the source, so flacenc can be handed it
+//! directly) and is driven by a `RenderPlan` carrying a total frame count. A
+//! live capture has no total — it ends when someone stops it — so it cannot be
+//! expressed as an export encode.
 //!
-//! They do share the quantization: this sink and tutti-export's WAV encoder
-//! both dispatch through
-//! [`BitDepth::quantize`](tutti_core::pcm::BitDepth::quantize), so a recorded
-//! and an exported WAV agree sample-for-sample at a given depth by
-//! construction. (AIFF and FLAC quantize their own way; they call the same
-//! `pcm` primitives, so they agree in fact — just not structurally.)
+//! They do share the quantization: this sink and tutti-export's WAV encoder both
+//! dispatch through [`BitDepth::quantize`](tutti_core::pcm::BitDepth::quantize),
+//! so a recorded and an exported WAV agree sample-for-sample at a given depth by
+//! construction. AIFF and FLAC quantize their own way over the same `pcm`
+//! primitives, so they agree in fact — just not structurally.
 //!
 //! One difference is deliberate: export dithers before quantizing and a live
 //! capture does not, because noise shaping is a decision a capture path should
@@ -151,9 +150,10 @@ impl WavOut {
 
     /// Write flat interleaved frames at this sink's own declared width.
     ///
-    /// Emits exactly `layout().count()` samples per frame — no more, no fewer.
-    /// A short trailing frame is ignored; a frame wider than the header is
-    /// truncated to it.
+    /// `samples` is a flat interleaved buffer holding `frames *
+    /// layout().count()` samples. Emits exactly `layout().count()` samples per
+    /// frame — no more, no fewer. A short trailing frame is ignored; a frame
+    /// wider than the header is truncated to it.
     ///
     /// Emitting anything else corrupts the file: a width the header disagrees
     /// with makes every reader interleave-misalign, rotating channels each
@@ -203,18 +203,18 @@ impl WavOut {
     /// Write flat interleaved frames of some **other** width, folding each one
     /// to this sink's declared width on the way in.
     ///
-    /// This is the successor to the old stereo `write` shim, and the reason the
-    /// shim could be deleted rather than merely rewritten: the fold is
-    /// [`tutti_types::fold_frame`], the engine's single ITU/Dolby
-    /// implementation, so a mono sink **averages** `(l + r) * 0.5` and a 5.1
-    /// source keeps its centre and surrounds instead of being truncated to the
-    /// front pair. The old shim did neither — it dropped the right channel at
-    /// mono and copied only channels 0/1 at any wider width.
+    /// `src` is a flat interleaved buffer at `src_layout`'s width; the fold runs
+    /// once per `src` FRAME and emits one whole destination frame. A trailing
+    /// partial `src` frame is ignored.
     ///
-    /// A trailing partial `src` frame is ignored. Allocation-free: the
-    /// destination frame is a fixed stack scratch used as a prefix, per the
-    /// engine's established RT pattern, rather than the per-frame
-    /// `vec![0.0; ch]` the old shim allocated.
+    /// The fold is [`fold_frame`](tutti_core::fold_frame), the engine's single
+    /// ITU/Dolby implementation, so a mono sink **averages** `(l + r) * 0.5` and
+    /// a 5.1 source keeps its centre and surrounds instead of being truncated to
+    /// the front pair. The policy lives in exactly one place; this sink has no
+    /// private copy of it to get wrong.
+    ///
+    /// Allocation-free: the destination frame is a fixed stack scratch used as a
+    /// prefix, per the engine's RT pattern.
     ///
     /// The scratch caps the width this can *fold into* at
     /// [`MAX_WAV_FOLD_CHANNELS`]. A sink declared wider than that still gets a
@@ -256,21 +256,16 @@ impl AudioOut for WavOut {
 
     /// Write flat interleaved samples **already at this sink's own width**.
     ///
-    /// The trait now speaks a runtime [`ChannelLayout`], and the sink's layout
-    /// is the header's, so `write` and
-    /// [`write_interleaved`](WavOut::write_interleaved) are the same operation
-    /// and there is nothing left to shim. A caller feeding some *other* width
-    /// folds first, through [`tutti_types::fold_frame`] — see
+    /// `frames` holds `frames * layout().count()` samples; the trait speaks a
+    /// runtime [`ChannelLayout`] and the sink's layout is the header's, so this
+    /// and [`write_interleaved`](WavOut::write_interleaved) are the same
+    /// operation. A caller feeding some *other* width folds first — see
     /// [`write_folding`](WavOut::write_folding).
-    ///
-    /// This is where a real defect lived. `write` used to take `&[[f32; 2]]`
-    /// and re-fit it to the header with a three-arm match whose mono arm was
-    /// `for &[left, _] in frames` — it **dropped the right channel** where the
-    /// engine's own downmix averages `(l + r) * 0.5`, and its wide arm
-    /// allocated a `vec![0.0; ch]` per frame. Both are gone: the fold policy
-    /// lives in exactly one place, and this sink no longer has a private copy
-    /// of it to get wrong.
     fn write(&mut self, frames: &[f32]) {
+        // Straight delegation, deliberately: a private re-fit here is what
+        // dropped the right channel at mono and allocated a `vec![0.0; ch]` per
+        // frame. Any width adaptation belongs in `write_folding`, over the
+        // engine's single `fold_frame`.
         self.write_interleaved(frames);
     }
 
@@ -347,14 +342,12 @@ mod tests {
         assert_eq!(reader.len() as usize, 128);
     }
 
-    /// **Defect 2, the regression gate.** A stereo source folded into a mono
-    /// sink must AVERAGE `(l + r) * 0.5`, not drop the right channel.
+    /// A stereo source folded into a mono sink must AVERAGE `(l + r) * 0.5`,
+    /// not drop the right channel.
     ///
-    /// This fails on the old code by construction: `write`'s mono arm was
-    /// `for &[left, _] in frames`, so it wrote `0.5` where the correct answer
-    /// is `0.7`. Asymmetric inputs are what make the two distinguishable — with
-    /// `[0.5, 0.5]` a dropped channel and an average agree, which is exactly
-    /// how the defect survived a test suite that already covered mono.
+    /// Asymmetric inputs are what make the two distinguishable — with
+    /// `[0.5, 0.5]` a dropped channel and an average agree, which is exactly how
+    /// a channel-dropping mono fold survives a suite that already covers mono.
     #[test]
     fn folding_to_mono_averages_rather_than_dropping_the_right_channel() {
         let dir = tempfile::tempdir().unwrap();
@@ -381,8 +374,8 @@ mod tests {
         );
     }
 
-    /// **Defect 3's shape, at the sink.** A 5.1 frame folded to stereo or mono
-    /// must keep the centre and surrounds, not truncate to channels 0/1.
+    /// A 5.1 frame folded to stereo or mono must keep the centre and surrounds,
+    /// not truncate to channels 0/1.
     ///
     /// A centre-only frame is the sharpest case: truncation writes pure
     /// silence, so the assertion is "any signal at all reached the file". This
@@ -578,9 +571,8 @@ mod tests {
         );
     }
 
-    /// 16-bit capture, which the old `CaptureFormat` (F32 / I24 only) could not
-    /// express at all. Round-trips through the file, so the header and the data
-    /// have to agree.
+    /// 16-bit capture round-trips through a real file, so the header and the
+    /// data have to agree.
     #[test]
     fn sixteen_bit_capture_round_trips() {
         let dir = tempfile::tempdir().unwrap();
@@ -655,10 +647,8 @@ mod tests {
         );
     }
 
-    /// `Int24` — the default depth — round-trips through a real file.
-    ///
-    /// Int16 and Float32 were covered; the default was not, which is the one a
-    /// caller gets by writing `BitDepth::default()`.
+    /// `Int24` — the default depth, and so the one a caller gets by writing
+    /// `BitDepth::default()` — round-trips through a real file.
     #[test]
     fn twenty_four_bit_capture_round_trips() {
         let dir = tempfile::tempdir().unwrap();

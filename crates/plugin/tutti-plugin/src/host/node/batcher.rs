@@ -192,7 +192,7 @@ pub(crate) struct Batcher {
     /// The sequence number the next submitted block will carry. Starts at 1
     /// because 0 means "nothing published" in a freshly zeroed slab.
     next_seq: u64,
-    /// The block whose output we expect to collect on the *next* call, or `None`
+    /// The block whose output is expected on the *next* call, or `None`
     /// when nothing is in flight (start-up, and after a reset).
     expect_seq: Option<u64>,
 }

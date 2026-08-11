@@ -1,18 +1,33 @@
-//! Transport state machine.
+//! The transport state machine: which motion an event actually produces.
+//!
+//! [`MotionState`] is the published vocabulary; `TransportFsm` is the private
+//! machine that decides transitions, and `TransitionResult` is what it hands
+//! back for [`MotionFsm`](super::MotionFsm) to publish.
 
 use super::motion::{FadeOut, MotionEvent, Then};
 use crate::params::Beat;
 use crate::Samples;
 
+/// What the transport is doing.
+///
+/// The four settled states are what a UI shows; the two `Declick*` states are
+/// transient — audio is still sounding while its gain ramps to zero, and the
+/// fade's completion is what performs the stop or the jump.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(u8)]
 pub enum MotionState {
+    /// Not moving. The default, and the safe reading of a corrupt mirror byte.
     #[default]
     Stopped,
+    /// Playing forward at the session tempo.
     Rolling,
+    /// Scrubbing forward.
     FastForward,
+    /// Scrubbing backward.
     Rewind,
+    /// Fading out, and stopping when the fade reaches zero.
     DeclickToStop,
+    /// Fading out, and jumping to a parked target when the fade reaches zero.
     DeclickToLocate,
 }
 
@@ -28,7 +43,8 @@ impl From<MotionState> for u8 {
 
 /// Decode from the published mirror.
 ///
-/// Total rather than fallible: the only writer is [`MotionFsm`], which encodes
+/// Total rather than fallible: the only writer is
+/// [`MotionFsm`](super::MotionFsm), which encodes
 /// via the `From` above, so an out-of-range byte cannot occur through the
 /// public API. A torn or corrupt read degrades to `Stopped` — the safe
 /// interpretation for a transport — rather than panicking on the audio thread.
@@ -67,7 +83,7 @@ impl core::fmt::Display for MotionState {
 /// computed nothing.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub(crate) enum DeclickOutcome {
-    /// Stop where we are.
+    /// Stop at the position the fade ended on.
     #[default]
     Stop,
     /// Jump to `pos`, landing in `motion`.
@@ -100,8 +116,11 @@ pub(crate) enum TransitionResult {
 /// as a fade.
 pub(crate) const DEFAULT_DECLICK_FRAMES: Samples = Samples(480);
 
+/// The machine itself. Audio-thread-only — [`MotionFsm`](super::MotionFsm)
+/// keeps it behind an `AudioThreadCell` and publishes its results.
 pub(crate) struct TransportFsm {
     motion: MotionState,
+    /// The motion to restore when a scrub ends. Never a declick state.
     prev_motion: MotionState,
     /// What the in-flight fade completes into. `None` when no fade is armed.
     pending: Option<DeclickOutcome>,
@@ -129,8 +148,8 @@ impl TransportFsm {
     /// A declick state must never be remembered: restoring `DeclickToStop` with
     /// `remaining == 0` makes `Engine::apply_declick` early-return, so
     /// `complete_declick` never fires and the FSM hangs in that state forever.
-    /// A fade interrupted by a scrub is abandoned, and what it was fading
-    /// *towards* is what we return to.
+    /// A fade interrupted by a scrub is abandoned, and the anchor becomes what
+    /// the fade was heading *towards*.
     ///
     /// Scrubbing while already scrubbing keeps the pre-scrub anchor, so
     /// fast-forward → rewind → end-scrub returns to what was playing rather
@@ -206,6 +225,12 @@ impl TransportFsm {
         !matches!(self.motion, MotionState::Stopped)
     }
 
+    /// Apply `event`, returning what changed or `None` if the FSM refused it.
+    ///
+    /// Every path that returns `Some` assigns `self.motion` first — that is
+    /// what keeps the published mirror and the machine from diverging, and it
+    /// is why all the arms route through `settle` / `locate_now` /
+    /// `start_declick` / `retarget_declick` rather than assigning inline.
     pub fn transition(&mut self, event: MotionEvent) -> Option<TransitionResult> {
         use MotionState as S;
 
@@ -286,8 +311,9 @@ impl TransportFsm {
 
             MotionEvent::EndScrub => match self.motion {
                 S::FastForward | S::Rewind => self.settle(self.prev_motion),
-                // Not scrubbing — nothing to end. Previously this clobbered the
-                // motion with a stale anchor, silently stopping playback.
+                // Not scrubbing — nothing to end. Settling on `prev_motion`
+                // here would clobber the motion with a stale anchor and
+                // silently stop playback.
                 _ => None,
             },
         }
@@ -416,14 +442,14 @@ mod tests {
         ));
     }
 
-    /// D3: `LocateAndPlay` used to return `Locating` without ever assigning
-    /// `self.motion`, so the FSM stayed `Stopped` while the published mirror
-    /// said `Rolling`. Every later event then dispatched against the wrong
-    /// state and both stop arms became no-ops — an unstoppable transport.
+    /// The FSM and its published mirror must never disagree.
     ///
-    /// The rewrite makes that unrepresentable: every path that returns `Some`
-    /// goes through `settle`/`locate_now`/`start_declick`, all of which assign
-    /// `self.motion`. This test pins the invariant directly.
+    /// A transition that reports a motion without storing it leaves later
+    /// events dispatching against the wrong state: both stop arms fall into
+    /// their `None` case and the transport becomes unstoppable. Every path that
+    /// returns `Some` goes through `settle`/`locate_now`/`start_declick`, all
+    /// of which assign `self.motion`; this pins that invariant exhaustively
+    /// over every (state, event) pair.
     #[test]
     fn every_accepted_transition_settles_the_fsm() {
         let events = [
@@ -472,9 +498,9 @@ mod tests {
         }
     }
 
-    /// D5: both scrub arms assigned `prev_motion` unconditionally, so changing
-    /// scrub direction overwrote the anchor with the *other* scrub state and
-    /// `EndScrub` restored fast-forward instead of what was playing.
+    /// Changing scrub direction must not overwrite the anchor with the *other*
+    /// scrub state — `EndScrub` would then restore fast-forward instead of
+    /// whatever was playing before the scrub began.
     #[test]
     fn scrub_direction_change_keeps_the_pre_scrub_anchor() {
         let mut fsm = TransportFsm::new();
@@ -492,9 +518,9 @@ mod tests {
         );
     }
 
-    /// D2: `prev_motion` could capture `DeclickToStop`. `EndScrub` then restored
-    /// it with the fade already cleared, so `Engine::apply_declick` early-returns,
-    /// `complete_declick` never fires, and the FSM hangs in "stopping" forever.
+    /// `prev_motion` must never capture a declick state. Restoring one with the
+    /// fade already cleared makes `Engine::apply_declick` early-return, so
+    /// `complete_declick` never fires and the FSM hangs in "stopping" forever.
     #[test]
     fn scrubbing_never_resurrects_an_abandoned_fade() {
         let mut fsm = TransportFsm::new();
@@ -514,8 +540,8 @@ mod tests {
         );
     }
 
-    /// `EndScrub` when not scrubbing used to clobber the motion with a stale
-    /// anchor, silently stopping playback.
+    /// `EndScrub` when not scrubbing must change nothing. Settling on the stale
+    /// anchor instead would silently stop playback.
     #[test]
     fn end_scrub_while_not_scrubbing_is_a_no_op() {
         let mut fsm = TransportFsm::new();
@@ -525,9 +551,9 @@ mod tests {
         assert_eq!(fsm.motion, MotionState::Rolling, "playback must continue");
     }
 
-    /// D4: the locate bookkeeping was never cleared on the arms that returned
-    /// `None`, so a discarded jump could survive indefinitely. `settle` now
-    /// clears `pending`, so a stop discards the fade's pending outcome.
+    /// A discarded jump must not survive. `settle` clears `pending`, so
+    /// stopping during a locate-fade drops the fade's parked outcome rather
+    /// than letting it resurface on the next completed fade.
     #[test]
     fn stopping_discards_a_pending_locate() {
         let mut fsm = TransportFsm::new();

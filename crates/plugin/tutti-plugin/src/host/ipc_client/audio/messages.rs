@@ -116,13 +116,11 @@ pub(super) enum Command {
 /// `Process` is on the RT path so it stays on a dedicated lock-free
 /// queue, not on a per-request `Reply` (audio thread can't block).
 ///
-/// **This queue no longer carries evidence about audio.** It once did: the RT
-/// thread waited for the reply matching the block it had just submitted, because
-/// nothing else could tell it whether the slab held that block's output. The
-/// slab now answers that itself, with a per-slot sequence number the server
-/// publishes after the last sample. So these are notifications, not permissions
-/// — the host reads audio on the strength of the slab, and would emit silence
-/// for an unpublished block even if a reply for it arrived.
+/// **This queue carries no evidence about audio.** The slab answers that itself,
+/// with a per-slot sequence number the server publishes after the last sample.
+/// So these are notifications, not permissions — the host reads audio on the
+/// strength of the slab, and emits silence for an unpublished block even if a
+/// reply for it arrives.
 ///
 /// What remains is the plugin's MIDI-out. The `IpcMidiEvent → MidiEvent`
 /// conversion happens on the bridge thread (off-RT, see `dispatch`), so the
@@ -198,7 +196,7 @@ pub enum BridgeEvent {
     },
 }
 
-/// Which aspect of plugin state a [`BridgeEvent::Resync`] asks the host to
+/// Which aspect of plugin state a `BridgeEvent::Resync` asks the host to
 /// re-read. Distinct from `LatencyChanged`/`ParameterChanged`, which carry the
 /// new value inline; these say only "your cached view of X is stale."
 ///
@@ -263,20 +261,25 @@ pub enum PluginRefresh {
 /// [`PluginHandle::on_invalidate`](crate::host::handles::PluginHandle::on_invalidate).
 /// Mirrors CLAP `request_restart()` + `audio_ports.rescan()` + `latency.changed()`.
 ///
-/// **Not `Copy`**: [`Crashed`](Self::Crashed) carries an owned cause. The
-/// derive was dropped rather than the cause boxed or interned, because nothing
-/// relied on it — every consumer takes this by value through
-/// `Fn(PluginInvalidation)`, which `Clone` satisfies.
+/// **Not `Copy`**, because [`Crashed`](Self::Crashed) carries an owned cause.
+/// `Clone` is enough: every consumer takes this by value through
+/// `Fn(PluginInvalidation)`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PluginInvalidation {
     /// The plugin reported new processing latency. Carries the new value; the
     /// node's own atomic is already updated live, but compensation delays across
     /// the graph only re-plan on a commit.
-    Latency { samples: Samples },
+    Latency {
+        /// The plugin's new latency, in **frames**.
+        samples: Samples,
+    },
     /// The plugin reported a new tail length. Carries the new value; the node's
     /// own cell is already updated live, but an offline render sizes its length
     /// once at the start, so a bounce already in flight keeps the old figure.
-    Tail { tail: PluginTail },
+    Tail {
+        /// The plugin's new tail, which may be bounded, unbounded or unreported.
+        tail: PluginTail,
+    },
     /// The plugin's bus layout changed — re-read it and rewire the graph.
     Io,
     /// The plugin instance was rebuilt in place; re-plan everything.
@@ -291,6 +294,9 @@ pub enum PluginInvalidation {
     ///
     /// A host that misses this event is not left guessing — `PluginHandle`'s
     /// status query reports the same cause, latched. See
-    /// [`BridgeEvent::Crashed`] for why both exist.
-    Crashed { cause: String },
+    /// `BridgeEvent::Crashed` for why both exist.
+    Crashed {
+        /// Why the plugin died, latched at the detection site.
+        cause: String,
+    },
 }

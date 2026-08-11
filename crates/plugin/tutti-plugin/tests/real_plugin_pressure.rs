@@ -284,11 +284,10 @@ fn report(label: &str, costs: &[Duration], non_silent: usize) -> Duration {
 /// **The headline pressure test.** Eight real plugin subprocesses driven for
 /// 500 blocks at true callback pacing.
 ///
-/// Under the old synchronous design this arrangement was hopeless: eight
-/// plugins x 667 us of budget each = 5333 us against a 1333 us deadline, a 4x
-/// overrun on every block where the subprocesses were slow. Pipelined, the
-/// per-block cost is memcpy plus a queue push, so eight should sit far under
-/// the deadline.
+/// A synchronous design makes this arrangement hopeless: eight plugins x 667 us
+/// of budget each = 5333 us against a 1333 us deadline, a 4x overrun on every
+/// block where the subprocesses are slow. Pipelined, the per-block cost is a
+/// memcpy plus a queue push, so eight sit far under the deadline.
 ///
 /// # What this test does and does not assert
 ///
@@ -362,17 +361,16 @@ fn eight_real_plugins_stay_under_the_callback_deadline() {
     );
 }
 
-/// **Per-plugin cost must stay an order of magnitude below the old budget.**
+/// **Per-plugin cost must stay an order of magnitude below a waiting budget.**
 ///
-/// Cost does grow with plugin count — each plugin is a real memcpy across a
-/// real shared-memory region, so it must. Growth is therefore the wrong thing
-/// to assert on; my first attempt at this test asserted `8x < 1x * 4` and
-/// failed on correct behaviour for exactly that reason.
+/// Cost does grow with plugin count — each plugin is a real memcpy across a real
+/// shared-memory region, so it must. Growth is therefore the wrong thing to
+/// assert on: a bound like `8x < 1x * 4` fails on correct behaviour.
 ///
 /// What distinguishes the two designs is the *per-plugin* figure:
 ///
 /// - summing budgets: each plugin costs up to its full wait budget, 667 us at
-///   64/48k, and that is the number that used to accumulate;
+///   64/48k, and that is the number that accumulates;
 /// - pipelined: each plugin costs a memcpy and a queue push.
 ///
 /// Measured on this machine (12-core, debug build, TAL-Reverb-4 x N):
@@ -392,11 +390,12 @@ fn eight_real_plugins_stay_under_the_callback_deadline() {
 #[ignore = "requires plugins installed on the machine"]
 fn per_plugin_cost_stays_far_below_the_old_wait_budget() {
     let _machine = exclusive();
-    /// The synchronous design's per-plugin wait at 64 frames / 48 kHz: half a
-    /// block period. The number this change exists to stop paying N times.
+    /// A synchronous design's per-plugin wait at 64 frames / 48 kHz: half a
+    /// block period. The number the pipelined path exists to avoid paying N
+    /// times.
     const OLD_BUDGET_PER_PLUGIN: Duration = Duration::from_micros(667);
     /// Between the two regimes: ~2.5x headroom over the ~75 us measured, and
-    /// ~3.3x under the old budget. A regression to waiting misses it by far
+    /// ~3.3x under the waiting budget. A regression to waiting misses it by far
     /// more than the noise on this measurement.
     const CEILING_PER_PLUGIN: Duration = Duration::from_micros(200);
 
@@ -456,7 +455,8 @@ fn per_plugin_cost_stays_far_below_the_old_wait_budget() {
 ///
 /// Driving with no pacing gives the subprocesses no wall-clock time, so nothing
 /// is published and every block reads back silent. That is the designed failure
-/// mode; the old design echoed the host's own input back at unity gain instead.
+/// mode — the failure it replaces echoed the host's own input back at unity
+/// gain.
 ///
 /// This is the property that most directly guards the original bypass, checked
 /// against real subprocesses rather than a mock.
@@ -635,8 +635,8 @@ fn au_output_nulls_against_the_input_delayed_by_the_declared_latency() {
 /// Returns `None` only when the plugin is absent — a genuine skip. A plugin that
 /// is installed but will not load panics, for the reason `load_n` does.
 ///
-/// `Plugin::open` picks the host from the path itself, so this no longer
-/// dispatches on the extension.
+/// `Plugin::open` picks the host from the path itself, so this does not
+/// dispatch on the extension.
 #[cfg(any(feature = "vst3", feature = "au"))]
 #[allow(clippy::type_complexity)]
 fn load_passthrough(

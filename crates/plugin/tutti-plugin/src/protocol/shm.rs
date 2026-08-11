@@ -16,25 +16,24 @@ use super::BusChannels;
 /// [ header ][ input ring: slots x input_channels x samples ][ output ring: ... ]
 /// ```
 ///
-/// # Why there is no flat `channels` total
+/// # There is no flat `channels` total, deliberately
 ///
-/// There used to be one, alongside the bus lists, and the pair was the bug. A
-/// separately-serialized total is a second source of truth about the same fact,
-/// and the two could disagree: the old `is_multibus()` returned false for a
-/// plugin with one bus per direction, which collapsed the output region onto the
-/// input region at offset 0 — while `channels` still said 2. The host then read
-/// back its own input as though it were the plugin's output, at unity gain, and
-/// nothing in the system could tell. Deriving every width from the bus lists
-/// makes that disagreement unrepresentable.
+/// Every width derives from the bus lists. A separately-serialized total would be
+/// a second source of truth about the same fact, and the two disagreeing is
+/// silent: a region-offset calculation that collapses the output ring onto the
+/// input ring at offset 0, while the total still reads 2, makes the host read
+/// back its own input as though it were the plugin's output, at unity gain, with
+/// nothing in the system able to tell. Deriving makes that unrepresentable.
 ///
 /// Both lists are therefore **mandatory and non-empty**. A loader that cannot
 /// determine a plugin's buses supplies a stereo default rather than an empty
-/// list; "empty" no longer has a meaning to fall back to.
+/// list; "empty" has no meaning to fall back to.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SlabLayout {
     /// Samples per channel in one block — the largest block that can cross the
     /// boundary, not the host's configured maximum buffer size.
     pub samples_per_channel: usize,
+    /// Width of one sample in the rings, which fixes their stride.
     pub format: SampleFormat,
     /// Ring depth, per direction. Carried on the wire (rather than assumed) so
     /// the opening side can reject a peer built with a different depth instead
@@ -47,6 +46,7 @@ pub struct SlabLayout {
 }
 
 impl SlabLayout {
+    /// Returns the size of one sample in bytes, per [`format`](Self::format).
     pub fn sample_size(&self) -> usize {
         match self.format {
             SampleFormat::Float32 => std::mem::size_of::<f32>(),
@@ -69,10 +69,12 @@ impl SlabLayout {
         self.slots as usize * channels * self.samples_per_channel * self.sample_size()
     }
 
+    /// Returns the bytes the input ring occupies, across all slots and channels.
     pub fn input_ring_bytes(&self) -> usize {
         self.ring_bytes(self.input_channels())
     }
 
+    /// Returns the bytes the output ring occupies, across all slots and channels.
     pub fn output_ring_bytes(&self) -> usize {
         self.ring_bytes(self.output_channels())
     }
@@ -108,9 +110,9 @@ mod tests {
         }
     }
 
-    /// The shape that regressed. Both directions get their own ring, so the
-    /// total is the sum — never the `max` that the old single-bus branch used to
-    /// justify sharing one region in place.
+    /// Both directions get their own ring, so the total is the sum — never the
+    /// `max` that a single-bus branch would use to justify sharing one region
+    /// in place.
     #[test]
     fn stereo_in_stereo_out_sizes_both_directions() {
         let l = layout(&[ChannelLayout::STEREO], &[ChannelLayout::STEREO]);

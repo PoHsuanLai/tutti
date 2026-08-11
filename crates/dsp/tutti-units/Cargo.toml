@@ -50,3 +50,9 @@ audio-automation = { workspace = true }
 [dev-dependencies]
 approx = "0.5"
 assert_no_alloc = { version = "1", default-features = false }
+
+# docs.rs renders with every feature on. `default = []` keeps the engine
+# Bevy-free for consumers, but it would otherwise publish a page with the
+# feature-gated half of the public API missing.
+[package.metadata.docs.rs]
+all-features = true

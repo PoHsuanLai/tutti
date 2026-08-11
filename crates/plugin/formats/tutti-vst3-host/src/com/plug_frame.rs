@@ -1,13 +1,13 @@
 //! `IPlugFrame` host-side impl. The plugin calls `resizeView` from its
-//! UI thread; we queue the size for the main thread to drain. The
+//! UI thread; the size is queued for the main thread to drain. The
 //! main thread is responsible for resizing the parent window and
-//! calling `onSize` — we don't call it reentrantly from here, since
+//! calling `onSize` — it is not called reentrantly from here, since
 //! many plugins re-issue `resizeView` from their own `onSize`
 //! handler, which causes a feedback loop.
 //!
 //! On Linux this object also carries `IRunLoop`, delegating to the shared
 //! [`RunLoop`](super::run_loop::RunLoop). Some plugin toolkits look for the run
-//! loop on the frame rather than on the host context, so we answer here too —
+//! loop on the frame rather than on the host context, so it is answered here too —
 //! but note the frame is *not* the path that prevents the editor-open crash;
 //! see `run_loop.rs` for why the host context is the load-bearing one.
 //!

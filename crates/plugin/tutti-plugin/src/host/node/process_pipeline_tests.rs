@@ -11,12 +11,12 @@
 //!   had already overwritten the region the output read draws from — so the host
 //!   read its own input back at unity gain. A silent bypass.
 //!
-//! **The expected result has inverted, and that is deliberate.** The audio
-//! thread no longer waits for a reply at all: it submits block N and collects
-//! block N-1, because waiting summed across serially-run nodes and overran the
-//! callback (see `batcher`'s module docs). One block of lag is now the *correct*
-//! answer, declared to PDC so it is compensated rather than heard. What must
-//! never happen is wrong audio: a wrong block, or the input echoed back.
+//! **One block of lag is the correct answer here.** The audio thread never
+//! waits for a reply: it submits block N and collects block N-1, because
+//! waiting sums across serially-run nodes and overruns the callback (see
+//! `batcher`'s module docs). That lag is declared to PDC, so it is compensated
+//! rather than heard. What must never happen is wrong audio: a wrong block, or
+//! the input echoed back.
 //!
 //! Two properties do the work here:
 //!
@@ -88,10 +88,9 @@ fn send_bridge_msg(stream: &interprocess::local_socket::Stream, msg: &BridgeMess
     stream.write_all(&data).unwrap();
 }
 
-/// One stereo bus per direction — the common shape, and the one that used to
-/// collapse both directions onto offset 0. It is still the shape under test;
-/// what changed is that the two directions now get their own regions, so the
-/// input-echo failure is structurally impossible rather than merely unlikely.
+/// One stereo bus per direction — the common shape, and the one most easily
+/// collapsed onto offset 0. Each direction gets its own region, which makes the
+/// input-echo failure structurally impossible rather than merely unlikely.
 fn stereo_layout() -> SlabLayout {
     SlabLayout {
         samples_per_channel: BATCH_SIZE,
@@ -595,19 +594,18 @@ fn a_stale_slot_holding_real_audio_still_yields_silence() {
 /// the common arrangement. The defect was the waiting, not the serialism.
 ///
 /// The loop below drives the plugins one after another within each block, which
-/// is exactly the arrangement whose budgets used to sum.
+/// is exactly the arrangement whose budgets would sum if the thread waited.
 ///
 /// # On the threshold
 ///
 /// The limit is expressed **per block-plugin step**, and derived from the wait
 /// budget this test exists to detect rather than picked as a round number.
 ///
-/// An earlier version asserted a 300 ms wall-clock bound over the whole test.
-/// That could not do its job: rig setup alone (three mock servers, each with a
-/// 50 ms startup settle) accounted for ~150 ms of it, so the budget left for
-/// the measured work was enormous relative to the ~20 us/step it actually
-/// costs. Re-inserting the old synchronous wait — 667 us per plugin per block,
-/// half the block period — still came in under the bound and still passed.
+/// A wall-clock bound over the *whole* test cannot do this job: rig setup alone
+/// (three mock servers, each with a 50 ms startup settle) accounts for ~150 ms,
+/// so the budget left for the measured work is enormous relative to the
+/// ~20 us/step it actually costs. A synchronous wait of 667 us per plugin per
+/// block — half the block period — still comes in under such a bound.
 ///
 /// So only the driving loop is timed, and the bound is
 /// [`SYNC_WAIT_BUDGET`] / 4: comfortably above the real cost (~30x headroom,

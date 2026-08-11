@@ -4,13 +4,34 @@
 //! input ports is declared with [`AudioSources`] on the sink entity; what
 //! reaches the speakers is declared with the [`MasterSources`] resource.
 //!
-//! ```rust,ignore
-//! let osc = commands.spawn_audio_node(sine_hz::<f32>(440.0)).id();
-//! let filt = commands
-//!     .spawn_audio_node(lowpass_hz(1000.0, 1.0))
-//!     .insert(AudioSources::from(osc))
-//!     .id();
-//! commands.insert_resource(MasterSources::from(filt));
+//! ```rust
+//! use bevy_app::prelude::*;
+//! use bevy_ecs::prelude::*;
+//! use bevy_tutti::prelude::*;
+//! use tutti_core::dsp::{lowpass_hz, sine_hz, split, Net, Source, U2};
+//!
+//! fn build(mut commands: Commands) {
+//!     let osc = commands.spawn_audio_node(sine_hz::<f32>(440.0)).id();
+//!     // Stereo out, so `MasterSources::from` has two output ports to take.
+//!     let filt = commands
+//!         .spawn_audio_node(lowpass_hz(1000.0f32, 1.0) >> split::<U2>())
+//!         .insert(AudioSources::from(osc))
+//!         .id();
+//!     commands.insert_resource(MasterSources::from(filt));
+//! }
+//!
+//! let mut app = App::new();
+//! app.insert_resource(AudioGraphRes(Net::with_backend(2)));
+//! app.insert_resource(AudioEngineState::Running);
+//! app.add_plugins(GraphReconcilePlugin);
+//! app.add_systems(Startup, build);
+//! app.update();
+//!
+//! // Read the edges back off the engine. This layer keeps no shadow state, so
+//! // the engine is the only thing worth asserting on.
+//! let graph = app.world().resource::<AudioGraphRes>();
+//! assert!(matches!(graph.0.output_source(0), Source::Local(_, 0)));
+//! assert!(matches!(graph.0.output_source(1), Source::Local(_, 1)));
 //! ```
 //!
 //! # Why the sink owns the declaration
@@ -28,10 +49,10 @@
 //! Summing is a node's job: `Net` has no summing bus and this layer must not
 //! invent one.
 //!
-//! That is also why the old `AudioFeedsTo` edge component is not coming back. It
-//! kept a tracked `HashMap<Entity, (NodeId, PortIndex)>` to know what to
-//! disconnect — adapter shadow state mirroring the engine. This layer keeps
-//! none: [`Net::source`](tutti_core::dsp::Net::source) and
+//! An edge-component model is also ruled out. Such a component needs a tracked
+//! `HashMap<Entity, (NodeId, PortIndex)>` to know what to disconnect — adapter
+//! shadow state mirroring the engine. This layer keeps none:
+//! [`Net::source`](tutti_core::dsp::Net::source) and
 //! [`output_source`](tutti_core::dsp::Net::output_source) read every port back,
 //! so [`rebuild`] diffs against the engine and remembers nothing.
 //!
@@ -44,12 +65,6 @@
 //! the loop. The imperative value simply stays until something unrelated
 //! dirties the rebuild, at which point the declaration wins — silently, and at
 //! an unpredictable moment.
-//!
-//! (An earlier draft of this doc claimed the diff reverts such a write "within a
-//! frame" and "warns once". It does neither. The claim was written from the
-//! shape of [`graph::param`](super::param)'s modulated-param rule, where both
-//! writers are inside this crate and can cooperate; here the second writer is
-//! host code the crate never sees.)
 //!
 //! Declare the port, or own it — not both.
 
@@ -75,10 +90,20 @@ use super::{engine_ready, AudioGraphRes, GraphDirty, GraphReconcileSystems};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum AudioSource {
     /// Output `port` of the node bound to `entity`. Mirrors [`Source::Local`].
-    Node { entity: Entity, port: usize },
+    Node {
+        /// The entity carrying the source node. Resolved to a `NodeId` on every
+        /// rebuild, so a crossfade cannot strand it.
+        entity: Entity,
+        /// Which of that node's **output** ports to take.
+        port: usize,
+    },
     /// Global network input `port` — a hardware or host input channel.
     /// Mirrors [`Source::Global`].
-    Input { port: usize },
+    Input {
+        /// Index into the graph's global inputs. Out of range resolves to
+        /// nothing rather than to silence.
+        port: usize,
+    },
     /// Silence. Mirrors [`Source::Zero`], and what an unlisted port gets.
     #[default]
     Silence,
@@ -251,7 +276,7 @@ impl MasterSources {
 ///
 /// The gate is `Changed<AudioNode>`, not `Added`: a replacement `insert` on an
 /// entity that already has the component fires `Changed` but **not** `Added`, so
-/// gating on `Added` left a re-bound entity's wires pointing at the retired node
+/// an `Added` gate leaves a re-bound entity's wires pointing at the retired node
 /// forever. `Added` is a subset of `Changed`, so this covers arrival too.
 ///
 /// # Why a diff rather than a wholesale replace
@@ -314,11 +339,10 @@ pub fn rebuild(
         }
     }
 
-    // A declaration wider than the root widens the root — it does not get
-    // silently truncated. Before this, a 6-entry `MasterSources` on a stereo
-    // root dropped channels 2-5 with no warning and nothing in the ECS to
-    // inspect: the loop below clamped, and the clamp looked like a bound rather
-    // than a policy.
+    // A declaration wider than the root widens the root — it is not silently
+    // truncated. Clamping instead would drop a 6-entry `MasterSources` down to a
+    // stereo root's channels 0-1 with no warning and nothing in the ECS to
+    // inspect, and the clamp would read as a bound rather than a policy.
     //
     // **Widen only, never narrow.** A *shorter* declaration means undeclared
     // (see the comment below), so narrowing on it would tear down channels the
@@ -353,9 +377,9 @@ pub fn rebuild(
     // that silence by zeroing every channel would tear down whatever the host
     // wired itself. Declaring silence explicitly is `AudioSource::Silence`.
     //
-    // The `.min` is now always satisfied for a widened declaration, but stays:
-    // it is what makes an out-of-range channel unrepresentable if the arity
-    // change is capped by `MAX_ROOT_CHANNELS` or does not happen at all.
+    // The `.min` is redundant for a declaration the widening above satisfied,
+    // but it is what makes an out-of-range channel unrepresentable when the
+    // arity change is capped by `MAX_ROOT_CHANNELS` or does not happen at all.
     for channel in 0..master.0.len().min(graph.0.outputs()) {
         let want = master.0[channel];
         // `None` here means unresolvable, not silent — skip and retry.

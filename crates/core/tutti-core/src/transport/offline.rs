@@ -20,20 +20,23 @@ use crate::{AtomicF64, Ordering};
 /// named type because `fundsp-tutti` cannot name [`Timeline`](super::Timeline),
 /// not because the indirection buys anything.
 ///
+/// # What a node does on rebind
+///
 /// Nodes holding a transport re-point at this. Nodes carrying their own internal
 /// clock re-seat it from [`Timeline::beat`](super::Timeline::beat) and
 /// [`Timeline::tempo`](super::Timeline::tempo): `isolate()` severs the live
-/// links but leaves the clock at whatever beat the *live* playhead happened to
-/// be at, so without this every beat-driven node (LFO, automation) would render
-/// from an arbitrary position. Read at rebind time — before the renderer has
-/// advanced anything — so those are the seeded start values, not a moving
-/// position.
+/// links but leaves the clock at whatever beat the *live* playhead held, so
+/// without this every beat-driven node (LFO, automation) renders from an
+/// arbitrary position and the output depends on *when* the render started.
+/// Read at rebind time, before the renderer has advanced anything, so these are
+/// the seeded start values rather than a moving position.
 ///
-/// This carried `start_beat` and `tempo` as separate fields once. Both are
-/// things a timeline already answers, so the copies could disagree with it, and
-/// two rebind paths read different ones — `TransportClock` took the scalars
-/// while `MemorySource` followed the transport. A mismatch rendered half the
-/// graph at one tempo and half at another, silently.
+/// # No scalars beside the timeline
+///
+/// It carries **no** `start_beat` or `tempo` of its own. Both are things a
+/// timeline already answers, and a copy beside it can disagree — one rebind path
+/// reading the scalar while another follows the timeline renders half the graph
+/// at one tempo and half at another, silently.
 pub type OfflineTransport = Arc<dyn super::Timeline>;
 
 /// Configuration for constructing an [`OfflineTimeline`].
@@ -63,12 +66,14 @@ impl Default for OfflineTimelineConfig {
 
 /// Simulated transport that advances by sample count.
 ///
-/// Implements [`super::Timeline`], so any node that accepts a
+/// Implements [`Timeline`](super::Timeline), so any node that accepts a
 /// `&dyn Timeline` treats it interchangeably with the live
-/// [`super::TransportHandle`].
+/// [`Transport`](super::Transport).
 ///
 /// # Example
-/// ```ignore
+/// ```
+/// # use tutti_core::{Beat, Bpm, SampleRate, Timeline};
+/// # use tutti_core::transport::{OfflineTimeline, OfflineTimelineConfig};
 /// let timeline = OfflineTimeline::new(&OfflineTimelineConfig {
 ///     start_beat: Beat(0.0),
 ///     tempo: Bpm(120.0),
@@ -108,6 +113,8 @@ pub struct OfflineTimeline {
 }
 
 impl OfflineTimeline {
+    /// Build a timeline seated at `config.start_beat`, precomputing the
+    /// per-sample beat increment from its tempo and sample rate.
     pub fn new(config: &OfflineTimelineConfig) -> Self {
         Self {
             current_beat: AtomicF64::new(config.start_beat.get()),
@@ -118,7 +125,7 @@ impl OfflineTimeline {
         }
     }
 
-    /// Advance the timeline by the given number of samples.
+    /// Advance the playhead by `samples` **frames** of render.
     ///
     /// If a loop region is set and the timeline crosses its end, the position
     /// wraps back into the region.
@@ -140,26 +147,33 @@ impl OfflineTimeline {
         self.current_beat.store(beat.get(), Ordering::Release);
     }
 
+    /// The current playhead.
     #[inline]
     pub fn beat(&self) -> Beat {
         Beat(self.current_beat.load(Ordering::Acquire))
     }
 
+    /// The render tempo. Fixed at construction — an offline render does not
+    /// ramp.
     #[inline]
     pub fn tempo(&self) -> Bpm {
         self.tempo
     }
 
+    /// The render sample rate. Fixed at construction.
     #[inline]
     pub fn sample_rate(&self) -> SampleRate {
         self.sample_rate
     }
 
+    /// Re-seat the playhead at `start_beat`, for reusing one timeline across
+    /// several renders.
     pub fn reset(&self, start_beat: impl Into<Beat>) {
         self.current_beat
             .store(start_beat.into().get(), Ordering::Release);
     }
 
+    /// Musical time one frame covers, precomputed at construction.
     #[inline]
     pub fn beats_per_sample(&self) -> BeatDuration {
         self.beats_per_sample
@@ -205,12 +219,13 @@ impl super::RenderClock for OfflineTimeline {
 mod tests {
     use super::*;
 
-    /// Regression: the config used to carry an unvalidated `(f64, f64)`. An
-    /// inverted pair produced `loop_enabled: true` with `end < start`, so
-    /// `advance` armed the loop and then silently never wrapped — the render ran
-    /// straight past the loop end with no diagnostic. `Option<LoopRange>` makes
-    /// that state unrepresentable: it is rejected at the boundary and the
-    /// timeline is honestly un-looped.
+    /// An inverted region must not arm a loop that never wraps.
+    ///
+    /// Carried as an unvalidated pair plus an `enabled` flag, `end < start`
+    /// arms the loop and then silently never wraps — the render runs straight
+    /// past the loop end with no diagnostic. `Option<LoopRange>` makes that
+    /// state unrepresentable: it is rejected at the boundary and the timeline
+    /// is honestly un-looped.
     #[test]
     fn an_inverted_loop_region_is_rejected_not_silently_ignored() {
         let timeline = OfflineTimeline::new(&OfflineTimelineConfig {
@@ -236,8 +251,8 @@ mod tests {
         );
     }
 
-    /// The empty region is what the deleted `loop_length > 0.0` guard existed to
-    /// catch. `LoopRange` catches it one layer earlier.
+    /// The empty region — the case a `loop_length > 0.0` guard inside `advance`
+    /// would catch. `LoopRange` catches it one layer earlier, at construction.
     #[test]
     fn an_empty_loop_region_is_rejected() {
         let timeline = OfflineTimeline::new(&OfflineTimelineConfig {
@@ -252,9 +267,8 @@ mod tests {
     /// `advance` adds the whole block's beats at once and wraps ONCE, rather
     /// than accumulating and wrapping per sample. For a loop shorter than one
     /// block the two differ — a per-sample walk would wrap repeatedly and land
-    /// elsewhere. This is a lock, not a new assertion: it passes identically
-    /// before and after the refactor, and exists so a future "simplification"
-    /// into a per-sample loop fails loudly.
+    /// elsewhere. A lock, so that "simplifying" this into a per-sample loop
+    /// fails loudly.
     #[test]
     fn advance_wraps_once_per_block_not_once_per_sample() {
         let timeline = OfflineTimeline::new(&OfflineTimelineConfig {
@@ -285,10 +299,10 @@ mod tests {
     /// `OfflineTimeline` feeds clip readers and samplers. Started at the same
     /// beat, they must report the same beat for the same sample.
     ///
-    /// Regression: the export driver used to `advance(1)` before the first
-    /// block, justified as matching "advance-then-tick semantics". The clock is
-    /// emit-then-advance, so that prime put the two exactly one
-    /// `beats_per_sample` apart for the entire render.
+    /// The order is emit-then-advance. A driver that primes with `advance(1)`
+    /// before the first block — "advance-then-tick semantics" — puts the two
+    /// clocks exactly one `beats_per_sample` apart for the entire render, which
+    /// reads as "the samplers are slightly late" and nothing else.
     #[test]
     fn offline_timeline_agrees_with_transport_clock_sample_for_sample() {
         use crate::transport::TransportClock;

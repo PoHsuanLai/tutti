@@ -579,7 +579,7 @@ impl PluginParams for ClapInstance {
 
     fn get_parameter_list(&self) -> Vec<ParameterInfo> {
         // The host crate projects CLAP-native param info onto the shared
-        // `ParameterInfo` at its own boundary; the loader no longer maps flags.
+        // `ParameterInfo` at its own boundary, so the loader maps no flags here.
         clap_dispatch!(self, i => i.parameter_list())
     }
 }
@@ -709,8 +709,8 @@ fn convert_transport(
             transport.loop_region.start_quarters,
             transport.loop_region.end_quarters,
         )
-        // The bar number now arrives over the wire, so pass it through instead
-        // of the hardcoded 0 this used to send.
+        // The bar number arrives over the wire; pass it through rather than
+        // hardcoding 0, which would put every plugin at bar one.
         .with_bar(transport.bar.position_quarters, transport.bar.number)
 }
 
@@ -1243,7 +1243,7 @@ mod tests {
 
         // Process block with NoteOn + follow-up blocks.
         // Surge XT is strict about CLAP thread contracts and may not produce
-        // audio when process() is called from a non-audio thread, so we only
+        // audio when process() is called from a non-audio thread, so this only
         // verify no crash rather than asserting on output content.
         for i in 0..5 {
             let input_data = vec![vec![0.0f32; num_samples]; 2];

@@ -40,8 +40,9 @@
 //!   while writing garbage — a `Misbehaviour` variant, not a corpus unit.
 //!
 //! * **`RenderScratch::new`'s `in_ch.max(out_ch)` narrowed to `in_ch`.** This is
-//!   recorded because the over-allocation is *documented* as the fix for an
-//!   instrument out-of-bounds, and that is no longer what it does. `render_input`
+//!   recorded because the over-allocation is *documented* as the guard against
+//!   an instrument out-of-bounds, and it is not what actually guards that.
+//!   `render_input`
 //!   bounds every write by the AU's own `mDataByteSize` and resolves a channel
 //!   past the end of `scratch.inputs` through `.get(ch)` with
 //!   `None => dst.fill(0.0)`, so a short `inputs` vec is memory-safe — the guard

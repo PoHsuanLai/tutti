@@ -155,7 +155,7 @@ pub struct MidiOutputInfo {
     ///
     /// An entry is `None` when the AU published a value at that index that is not
     /// a usable `CFString` — a `None` rather than an empty string, so a host can
-    /// tell "the AU named this output the empty string" from "the AU handed us
+    /// tell "the AU named this output the empty string" from "the AU returned
     /// something that was not a name". The slot is kept rather than skipped
     /// because dropping it would renumber every output after it, and those
     /// numbers are what the callback is keyed by.
@@ -194,7 +194,7 @@ impl MidiOutputInfo {
 /// # Safety
 /// `unit` must be a live `AudioUnit`.
 pub(crate) unsafe fn midi_output_info(unit: AudioUnit) -> Option<MidiOutputInfo> {
-    // The property's value is a `CFArrayRef` the AU *copies* for us — Apple's
+    // The property's value is a `CFArrayRef` the AU *copies* for the caller — Apple's
     // header says outright "The host owns this array and its elements and should
     // release them". `CfArray::from_copied` takes that +1 under the Create rule
     // so the release happens on drop, on every path out including the early
@@ -342,7 +342,7 @@ impl AuMidiOutput {
     ///
     /// The property write **MUST** complete before the boxed state is freed. This
     /// is the MIDI-output twin of the invariant
-    /// [`crate::instance::AuReady::uninitialize`] documents as FIX 2 (there:
+    /// [`crate::instance::AuReady::uninitialize`] documents (there:
     /// `AudioUnitUninitialize` before the boxed `RenderScratch` is dropped) and of
     /// the one `Drop for AuLoaded` documents for `HostCallbackInfo`. All three are
     /// the same hazard: while the property holds the live `userData` the AU may
@@ -419,6 +419,21 @@ impl Drop for AuMidiOutput {
 /// `instance.rs::au_input_render_callback` applies, and for the identical reason.
 /// A host sink is arbitrary user code; a `[]` index in it must degrade to a
 /// dropped block, not to undefined behaviour.
+///
+/// # Safety
+/// Called by AudioToolbox with the `userData` registered through
+/// `kAudioUnitProperty_MIDIOutputCallback`. `user_data` must be null or point at
+/// a live `MidiOutState` box, which the withdrawing property write outlives —
+/// that write is what makes the pointer unreachable before the box is freed.
+///
+/// The body forms a `&mut MidiOutState` from it, so no other reference to that
+/// box may exist for the duration of the call. That holds because the AU invokes
+/// this only from inside its own render, one call at a time, and the host side
+/// touches the box only before installing and after the withdrawing write
+/// returns.
+///
+/// `pktlist` must be null or a well-formed `MIDIPacketList` valid for the
+/// duration of the call.
 unsafe extern "C" fn au_midi_output_callback(
     user_data: *mut c_void,
     _time_stamp: *const AudioTimeStamp,
@@ -552,7 +567,7 @@ unsafe fn for_each_message(pktlist: *const MIDIPacketList, mut f: impl FnMut(u32
         // `MIDIServices.h` declares `Byte data[256]`, so a packet claiming more
         // than that is malformed by the framework's own definition, and honouring
         // the claim would read past the end of the list. This is the packet-level
-        // twin of `render_input`'s "never trust the buffer the AU handed us": a
+        // twin of `render_input`'s "never trust the buffer the AU handed over": a
         // `u16` length can say 65535, which is 255 packets' worth of memory the AU
         // never wrote.
         //

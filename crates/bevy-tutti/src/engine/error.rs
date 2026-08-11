@@ -44,7 +44,7 @@ pub enum Error {
     /// Wraps [`tutti_soundfont::Error`]. A separate variant from [`Self::Synth`]
     /// because the two are separate crates with disjoint failure modes — a
     /// rejected `.sf2` is not a bad `SynthConfig`, and the feature axes are
-    /// independent (`soundfont` no longer implies `synth`).
+    /// independent (`soundfont` does not imply `synth`).
     #[cfg(feature = "soundfont")]
     #[error("SoundFont: {0}")]
     SoundFont(#[from] tutti_soundfont::Error),

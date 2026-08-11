@@ -42,8 +42,8 @@
 //!
 //! It is an **offset** curve, swinging around zero: the owning
 //! [`LayeredCurve`](crate::LayeredCurve) adds the base and applies the clamp.
-//! Returning an absolute value here would double-count the base — a bug the
-//! plugin crate's `LfoOffset` documents having already paid for once.
+//! Returning an absolute value here double-counts the base, which reads as a
+//! param sitting at twice its authored value rather than as an error anywhere.
 
 use std::sync::Arc;
 
@@ -115,15 +115,21 @@ pub fn hash_bipolar(n: i64) -> f32 {
 /// expression the driver does.
 #[derive(Debug, Clone, Copy)]
 pub struct EdgeShape {
+    /// Bipolar routing depth. Negative inverts the source rather than
+    /// attenuating it.
     pub depth: Depth,
+    /// Whether the offset swings both ways around zero or only one.
     pub polarity: Polarity,
+    /// Response curve applied to the shaped magnitude.
     pub curve: CurveType,
     /// A displacement applied after phase generation. Meaningfully negative,
     /// which is why it is a [`PhaseIncrement`] and not a [`Phase`].
     pub phase_offset: PhaseIncrement,
-    /// The target param's range. The offset scales by its width, matching the
-    /// control-rate contract `raw * depth * (max - min)`.
+    /// Lower bound of the target param's range. The offset scales by the
+    /// range's width, matching the control-rate contract
+    /// `raw * depth * (max - min)`.
     pub min: f32,
+    /// Upper bound of the target param's range. See [`min`](Self::min).
     pub max: f32,
 }
 
@@ -140,21 +146,27 @@ impl EdgeShape {
         }
     }
 
+    /// Set the routing [`Depth`]. Negative inverts the source.
     pub fn with_depth(mut self, depth: impl Into<Depth>) -> Self {
         self.depth = depth.into();
         self
     }
 
+    /// Set the [`Polarity`] — whether the offset swings both ways around zero
+    /// or pushes one direction only.
     pub fn with_polarity(mut self, polarity: Polarity) -> Self {
         self.polarity = polarity;
         self
     }
 
+    /// Set the response [`CurveType`] applied to the shaped magnitude.
     pub fn with_curve(mut self, curve: CurveType) -> Self {
         self.curve = curve;
         self
     }
 
+    /// Set the phase displacement applied after phase generation. A
+    /// [`PhaseIncrement`], so it may be negative.
     pub fn with_phase_offset(mut self, offset: impl Into<PhaseIncrement>) -> Self {
         self.phase_offset = offset.into();
         self
@@ -183,6 +195,8 @@ pub struct ShapedCurve<M: CurveModulator> {
 }
 
 impl<M: CurveModulator> ShapedCurve<M> {
+    /// Pair a [`CurveModulator`] with the [`EdgeShape`] that turns its raw
+    /// `[-1, 1]` output into an offset in the target's units.
     pub fn new(modulator: M, edge: EdgeShape) -> Self {
         Self { modulator, edge }
     }
@@ -213,8 +227,9 @@ impl<M: CurveModulator> Curve for ShapedCurve<M> {
 /// scalar path drives `Random`/`RandomSmooth` from a threaded xorshift, which
 /// only advances — so it cannot be evaluated at an arbitrary beat, and it does
 /// not replay a bar identically after a seek. Keying the same randomness on the
-/// *cycle index* instead (see [`hash_bipolar`]) removes both limitations at
-/// once: the value becomes addressable, and therefore reproducible.
+/// *cycle index* instead (a splitmix64 hash of the index) removes both
+/// limitations at once: the value becomes addressable, and therefore
+/// reproducible.
 ///
 /// The two formulations are different sequences of numbers — the same shape,
 /// not the same samples. That is the honest cost, and it buys a property the
@@ -287,17 +302,16 @@ mod tests {
     /// (`BeatLfo::beats_per_cycle`) must read the SAME rate off the same
     /// number — one param driven by both must not run at two speeds.
     ///
-    /// Pinned because the units are reciprocals of each other and coincide at
-    /// `1.0`: the adapter that feeds `BeatLfo` once took `1.0 / frequency` on
-    /// the reading that the field meant cycles-per-beat, and every example
-    /// using `1.0` agreed anyway. At 2.0 they did not.
+    /// Pinned because the two units are reciprocals that coincide at `1.0`: a
+    /// `1.0 / frequency` slipped into either adapter agrees with every example
+    /// written at `1.0` and disagrees at `2.0`.
     ///
-    /// This drives the real `Sourced::tick_phase` rather than re-deriving the
-    /// phase inline. The previous version hand-copied the driver's arithmetic,
-    /// so it compared a copy against a copy and could not have caught the two
-    /// paths diverging — which is what it exists to do. The non-power-of-two
-    /// spans are here for the same reason: `[0.5, 1, 2, 4]` are all exact in
-    /// f32, so they agreed even while both paths narrowed.
+    /// Two details are load-bearing. It drives the real `Sourced::tick_phase`
+    /// rather than re-deriving the phase inline — hand-copying the driver's
+    /// arithmetic compares a copy against a copy and cannot catch the paths
+    /// diverging, which is the whole job. And the non-power-of-two spans are
+    /// deliberate: `[0.5, 1, 2, 4]` are all exact in f32, so they agree even
+    /// while both paths narrow.
     #[test]
     fn curve_and_scalar_paths_read_the_rate_identically() {
         use crate::{ErasedModulator, SourceRate, Sourced};
@@ -327,9 +341,9 @@ mod tests {
         }
     }
 
-    /// A larger span is a *slower* source. Under the `Hz` reading this field
-    /// used to carry, doubling it would double the rate instead — the reciprocal
-    /// that shipped twice.
+    /// A larger span is a *slower* source. Read as `Hz`, doubling it would
+    /// double the rate instead — the reciprocal this field's unit exists to
+    /// rule out.
     #[test]
     fn a_longer_span_completes_fewer_cycles() {
         let one_beat = ShapedCurve::new(sine(1.0), EdgeShape::new(-0.5, 0.5));
@@ -348,8 +362,8 @@ mod tests {
     }
 
     /// A non-positive span freezes rather than dividing by zero or running
-    /// backwards. One guard now, in `Beat::cycles_of`; there used to be three
-    /// spellings across the paths and they disagreed on the negative case.
+    /// backwards. One guard, in `Beat::cycles_of` — every path routes through
+    /// it, so the negative case cannot be answered two ways.
     #[test]
     fn a_non_positive_span_freezes_at_the_phase_offset() {
         for span in [0.0f64, -2.0] {
@@ -392,10 +406,10 @@ mod tests {
         );
     }
 
-    /// `RandomSmooth` ramps between the same steps. This is the bug the plugin
-    /// crate's hash had: one value per cycle under a name that promises
-    /// interpolation, which is `Random`'s behaviour wearing the wrong label —
-    /// and it defeats the point of sub-block delivery, which exists to be smooth.
+    /// `RandomSmooth` ramps between the same steps. The failure this guards is
+    /// one value per cycle under a name that promises interpolation — which is
+    /// `Random`'s behaviour wearing the wrong label, and defeats the point of
+    /// sub-block delivery, which exists to be smooth.
     #[test]
     fn random_smooth_ramps_instead_of_stepping() {
         let smooth = BeatLfo::new(LfoShape::RandomSmooth, 1.0);

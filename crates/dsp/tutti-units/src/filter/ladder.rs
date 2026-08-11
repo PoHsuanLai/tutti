@@ -1,3 +1,10 @@
+//! Moog-style four-stage ladder filter with resonance and drive.
+//!
+//! Unlike the SVF this is a *nonlinear* filter: the resonance feedback runs
+//! through a `tanh` saturator, so pushing resonance or drive grits and
+//! compresses rather than blowing up. That saturation is the character, not a
+//! safety measure.
+
 use tutti_core::Arc;
 use tutti_core::AtomicF32;
 use tutti_core::{
@@ -12,12 +19,23 @@ use tutti_core::{Drive, Hz, Param, Resonance, SampleRate};
 const FREQ_EPS: f32 = 0.01;
 const RES_EPS: f32 = 0.0001;
 
+/// Which tap of the four-stage ladder is taken as the output, and so what
+/// response and slope the filter presents.
+///
+/// All four run the same four stages and the same feedback; they differ only in
+/// which tap is read, so the type costs nothing to switch. The 24 dB variants
+/// are the classic Moog sound.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum LadderType {
+    /// Low-pass at 12 dB/octave — the second stage tap. The default.
     #[default]
     LP12,
+    /// Low-pass at 24 dB/octave — the fourth stage tap, the classic Moog
+    /// response.
     LP24,
+    /// High-pass at 12 dB/octave, formed as input minus the 12 dB low-pass.
     HP12,
+    /// High-pass at 24 dB/octave, formed as input minus the 24 dB low-pass.
     HP24,
 }
 
@@ -54,10 +72,25 @@ impl<F: Real> LadderState<F> {
     }
 }
 
-/// Moog-style ladder filter with resonance and drive.
-/// 1 input, 1 output.
+/// Moog-style four-stage ladder filter with resonance and drive: 1 input, 1
+/// output.
 ///
-/// `F` is the internal state precision. Defaults to `f64`.
+/// Cutoff ([`Hz`]), [`Resonance`] and [`Drive`] are live [`Param`]s shared
+/// across clones. Cutoff and resonance are read once per block and recompute
+/// coefficients only when one moves past a small epsilon; drive is read per
+/// sample and needs no coefficients.
+///
+/// **Resonance is `0.0..=1.0`, not a [`Q`](tutti_core::Q).** It scales the
+/// ladder's feedback: `0.0` is no emphasis, and toward `1.0` the filter
+/// resonates hard at the cutoff and approaches self-oscillation. The feedback
+/// runs through a `tanh` saturator, so it grits rather than blowing up.
+///
+/// [`Drive`] multiplies the input into that same saturator, so it is a
+/// distortion control rather than a level one: above unity it adds harmonics
+/// and compresses. `1.0` is clean.
+///
+/// `F` is the internal state precision, defaulting to `f64` for accuracy at low
+/// cutoffs.
 pub struct LadderFilterNode<F: Real = f64> {
     ladder_type: LadderType,
     frequency: Param<Hz>,
@@ -68,6 +101,11 @@ pub struct LadderFilterNode<F: Real = f64> {
 }
 
 impl<F: Real> LadderFilterNode<F> {
+    /// Builds a ladder filter of `ladder_type` at `frequency` cutoff and
+    /// `resonance`, with unity [`Drive`].
+    ///
+    /// `resonance` is clamped to `0.0..=1.0`; `0.0` gives no emphasis at the
+    /// cutoff and values near `1.0` approach self-oscillation.
     pub fn new(
         ladder_type: LadderType,
         frequency: impl Into<Hz>,
@@ -87,34 +125,56 @@ impl<F: Real> LadderFilterNode<F> {
         node
     }
 
+    /// The shared cutoff cell in [`Hz`].
+    ///
+    /// Read once per block. The coefficient computation clamps to
+    /// `1.0..=0.998 * Nyquist`, since `tan` diverges at Nyquist. Shared across
+    /// clones.
     pub fn frequency(&self) -> Arc<AtomicF32> {
         self.frequency.as_atomic()
     }
 
+    /// The shared [`Resonance`] cell, `0.0..=1.0`.
+    ///
+    /// Scales the ladder feedback: `0.0` no emphasis, near `1.0` approaching
+    /// self-oscillation. The computation clamps to that range regardless of
+    /// what is written here. Read once per block.
     pub fn resonance(&self) -> Arc<AtomicF32> {
         self.resonance.as_atomic()
     }
 
+    /// The shared [`Drive`] cell — input gain into the `tanh` saturator.
+    ///
+    /// Read **per sample**, so it modulates smoothly and needs no coefficient
+    /// recompute. `1.0` is clean; higher adds harmonics and compresses.
     pub fn drive(&self) -> Arc<AtomicF32> {
         self.drive.as_atomic()
     }
 
+    /// Sets the cutoff in [`Hz`], floored at 1 Hz.
+    ///
+    /// The upper bound is applied when coefficients are computed, at `0.998` of
+    /// Nyquist.
     pub fn set_frequency(&self, hz: impl Into<Hz>) {
         self.frequency.store(Hz(hz.into().get().max(1.0)));
     }
 
+    /// Sets the [`Resonance`], clamped to `0.0..=1.0`.
     pub fn set_resonance(&self, res: impl Into<Resonance>) {
         self.resonance
             .store(Resonance::new_clamped(res.into().get()));
     }
 
+    /// Sets the [`Drive`] into the saturator, floored at `0.1`.
+    ///
+    /// The floor keeps drive from silencing the filter: it multiplies the
+    /// input, so `0.0` would mute rather than clean up.
     pub fn set_drive(&self, drive: impl Into<Drive>) {
         self.drive.store(Drive(drive.into().get().max(0.1)));
     }
 
     fn update_coefficients(&mut self, freq: Hz, resonance: Resonance) {
-        // 0.998 of Nyquist is the old `sample_rate * 0.499`: `tan` diverges at
-        // Nyquist itself, so the cutoff has to stop just short.
+        // `tan` diverges at Nyquist itself, so the cutoff stops just short of it.
         let fc = f64::from(freq.get())
             .clamp(1.0, f64::from(self.sample_rate.nyquist_scaled(0.998).get()));
         self.state.g = F::from_f64((core::f64::consts::PI * fc / self.sample_rate.get()).tan());
@@ -265,9 +325,12 @@ impl<F: Real> Clone for LadderFilterNode<F> {
 /// The default filter is 2-in / 2-out (audio on ports 0/1). For audio-rate
 /// modulation it can grow optional param-input ports after the audio inputs
 /// (see [`Self::with_param_inputs`]), in the order cutoff, Q, drive. A present
-/// port overrides the corresponding atomic per sample (forcing a coefficient
-/// recompute for cutoff/Q); absent → a plain 2-in/2-out node, bit-identical
-/// output to the unmodulated path and zero added cost.
+/// port overrides the corresponding atomic per sample, forcing a coefficient
+/// recompute for cutoff/Q; absent, the node is a plain 2-in/2-out filter with
+/// zero added cost.
+///
+/// Note the port is named `q` for consistency with the other filters, but it
+/// carries [`Resonance`] (`0.0..=1.0`), not a [`Q`](tutti_core::Q).
 pub struct StereoLadderFilterNode<F: Real = f64> {
     /// One filter per channel; `channels[0]` is the canonical param holder (the
     /// UI/atomic handle path reads/writes it). All channels share the same
@@ -281,6 +344,11 @@ pub struct StereoLadderFilterNode<F: Real = f64> {
 }
 
 impl<F: Real> StereoLadderFilterNode<F> {
+    /// Builds a stereo (width-2) ladder filter with no param-input ports.
+    ///
+    /// Shorthand for [`with_channels(2, …)`](Self::with_channels). Both
+    /// channels share one authored parameter set and keep independent filter
+    /// state.
     pub fn new(
         ladder_type: LadderType,
         frequency: impl Into<Hz>,
@@ -289,10 +357,11 @@ impl<F: Real> StereoLadderFilterNode<F> {
         Self::with_channels(2, ladder_type, frequency, resonance)
     }
 
-    /// An `n`-channel ladder filter. All channels share the authored params
-    /// (one linked control surface via `channels[0]`); only the per-channel
-    /// filter state is replicated. `with_channels(2, …)` is bit-identical to
-    /// [`Self::new`].
+    /// An `n`-channel ladder filter (clamped to at least 1).
+    ///
+    /// All channels share the authored params — one linked control surface,
+    /// held canonically by channel 0 — and only the per-channel filter state is
+    /// replicated.
     pub fn with_channels(
         channels: usize,
         ladder_type: LadderType,
@@ -316,10 +385,10 @@ impl<F: Real> StereoLadderFilterNode<F> {
     ///
     /// Width and modulation are **independent axes**: `channels` says how wide
     /// the filter is, the `mod_*` flags say which params it reads at audio rate.
-    /// They were not independent — this constructor delegated to [`Self::new`],
-    /// which is width 2 — so asking for a modulated 5.1 filter silently returned
-    /// a *stereo* one, and the only symptom was a `set_source` on a param port
-    /// that resolved and carried the wrong signal.
+    /// Collapsing them — building the modulated form at a fixed width 2 — turns
+    /// a request for a modulated 5.1 filter into a *stereo* one, and the only
+    /// symptom is a `set_source` on a param port that resolves and carries the
+    /// wrong signal.
     ///
     /// The param ports follow the audio inputs, so their indices **move with the
     /// width**. Ask [`ParamPorts::param_port`](crate::ParamPorts::param_port);
@@ -367,26 +436,42 @@ impl<F: Real> StereoLadderFilterNode<F> {
             .then_some(self.width() + self.mod_cutoff as usize + self.mod_q as usize)
     }
 
+    /// The shared cutoff cell in [`Hz`], governing every channel.
+    ///
+    /// **A present cutoff param-input port overrides this per sample.** Shared
+    /// across clones.
     pub fn frequency(&self) -> Arc<AtomicF32> {
         self.channels[0].frequency()
     }
 
+    /// The shared [`Resonance`] cell (`0.0..=1.0`), governing every channel.
+    ///
+    /// **A present Q param-input port overrides this per sample.**
     pub fn resonance(&self) -> Arc<AtomicF32> {
         self.channels[0].resonance()
     }
 
+    /// The shared [`Drive`] cell, governing every channel.
+    ///
+    /// **A present drive param-input port overrides this per sample.**
     pub fn drive(&self) -> Arc<AtomicF32> {
         self.channels[0].drive()
     }
 
+    /// Sets the cutoff in [`Hz`] for every channel, floored at 1 Hz.
+    ///
+    /// With a cutoff param-input port present this sets the *base* the port
+    /// overrides.
     pub fn set_frequency(&self, hz: impl Into<Hz>) {
         self.channels[0].set_frequency(hz);
     }
 
+    /// Sets the [`Resonance`] for every channel, clamped to `0.0..=1.0`.
     pub fn set_resonance(&self, res: impl Into<Resonance>) {
         self.channels[0].set_resonance(res);
     }
 
+    /// Sets the [`Drive`] for every channel, floored at `0.1`.
     pub fn set_drive(&self, drive: impl Into<Drive>) {
         self.channels[0].set_drive(drive);
     }
@@ -842,9 +927,8 @@ mod tests {
 
     /// Width and modulation are independent axes.
     ///
-    /// The regression for the bug this constructor had: it delegated to
-    /// `Self::new`, which is width 2, so a modulated 6-channel filter came back
-    /// *stereo*. The arity assertion fails against that version.
+    /// Building the modulated form at a fixed width 2 makes a 6-channel request
+    /// come back *stereo*; the arity assertion is what catches it.
     #[test]
     fn a_modulated_ladder_is_as_wide_as_it_was_asked_for() {
         let f = StereoLadderFilterNode::<f64>::with_param_inputs(

@@ -156,12 +156,12 @@ impl Convolver {
     /// Zero the working buffers without discarding the IR. Safe to
     /// call on a stream discontinuity.
     ///
-    /// **Both** halves of the state have to be cleared. This used to clear only
-    /// `partition` — the local scratch — leaving the `FFTConvolver`'s own
-    /// partition buffers holding the previous signal's tail, which then bled
-    /// into whatever played next. With an 8-tap IR the first sample after a
-    /// reset came back at 3.5 instead of silence. `reset` is called precisely at
-    /// stream discontinuities (a seek, a region change), so the leak lands
+    /// **Both** halves of the state have to be cleared. Clearing only
+    /// `partition` — the local scratch — leaves the `FFTConvolver`'s own
+    /// partition buffers holding the previous signal's tail, which then bleeds
+    /// into whatever plays next: with an 8-tap IR the first sample after a
+    /// reset comes back at 3.5 instead of silence. `reset` is called precisely
+    /// at stream discontinuities (a seek, a region change), so that leak lands
     /// exactly where a ghost of the old audio is most audible.
     pub fn reset(&mut self) {
         self.partition.clear();

@@ -43,17 +43,18 @@ pub struct PluginDescriptor {
     /// [`Features::EDITOR`](crate::Features); the loader sets both.
     ///
     /// Three-valued because the scan path cannot answer it: AU and VST3 probe
-    /// without instantiating, and an editor is a property of an instance. Those
-    /// paths used to persist `false`, which a badge reads as "no GUI" — for a
-    /// plugin that may well have one. See [`EditorPresence`].
+    /// without instantiating, and an editor is a property of an instance.
+    /// Persisting `false` from such a path is what a badge reads as "no GUI" —
+    /// for a plugin that may well have one. See [`EditorPresence`].
     ///
     /// `serde(default)` is load-bearing here, unlike on the bincode-only wire
     /// types: this record is persisted as **JSON**, and an existing catalog was
     /// written before the field existed. Without the attribute that is a parse
     /// error, and `PluginDatabase::load` quarantines the entire file — every
     /// scan result and blacklist entry discarded because one field was added.
-    /// `Unknown` is the right value to default to: the old `false` it replaces
-    /// was itself a guess in every record a probe wrote.
+    /// `Unknown` is the right value to default to: a record written without
+    /// this field never examined the plugin, so any concrete answer would be a
+    /// guess.
     #[cfg_attr(feature = "serde", serde(default))]
     pub editor: EditorPresence,
 }
@@ -145,21 +146,34 @@ pub enum PluginClass {
     #[default]
     Unknown,
     /// VST2 plugin category (`effFlagsIsSynth` / `getPlugCategory`).
-    Vst2 { category: crate::Vst2Category },
+    Vst2 {
+        /// The single category VST2 reports; that format has no facet list.
+        category: crate::Vst2Category,
+    },
     /// VST3 `PClassInfo2::subCategories`, e.g. `"Fx|Reverb"`,
     /// `"Instrument|Synth"`, parsed into its `|`-delimited facets.
-    Vst3 { category: Vst3SubCategories },
+    Vst3 {
+        /// The parsed facet set, retaining every facet the string carried.
+        category: Vst3SubCategories,
+    },
     /// CLAP feature tags, e.g. `["instrument", "synthesizer"]`,
     /// `["audio-effect"]`.
-    Clap { features: Vec<ClapFeature> },
+    Clap {
+        /// Every tag the plugin declared, in its own order.
+        features: Vec<ClapFeature>,
+    },
     /// Apple AudioUnit component type (`aufx`, `aumu`, `aumf`, `aumi`, …).
-    Au { component_type: AuComponentType },
+    Au {
+        /// The four-char component type, mirrored so this vocabulary needs no
+        /// `tutti-au-host` dependency.
+        component_type: AuComponentType,
+    },
 }
 
 impl PluginClass {
     /// The plugin format's short name (`"vst2"`, `"vst3"`, `"clap"`, `"au"`,
-    /// or `"unknown"`). Used e.g. to fill
-    /// [`EditorError::GuiNotSupported`](crate::error::EditorError::GuiNotSupported)
+    /// or `"unknown"`). Fills
+    /// [`EditorError::GuiNotSupported`](crate::editor::EditorError::GuiNotSupported)
     /// with which format has no hostable editor.
     pub fn format_name(&self) -> &'static str {
         match self {
@@ -222,14 +236,26 @@ impl AuComponentType {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum AuComponentType {
+    /// `aufx` — audio in, audio out.
     Effect,
+    /// `aumu` — note-driven audio generator.
     Instrument,
+    /// `augn` — audio generator that takes no notes.
     Generator,
+    /// `aumf` — audio *and* MIDI in, audio out. An effect that wants notes, not
+    /// an instrument; see [`AuComponentType::role`].
     MusicEffect,
+    /// `aumx` — summing infrastructure, not an insertable processor.
     Mixer,
+    /// `aufc` — format/rate conversion infrastructure.
     Converter,
+    /// `auou` — an output device endpoint.
     Output,
+    /// `aumi` — MIDI in, MIDI out, no audio.
     MidiProcessor,
+    /// A four-char code this enum does not name, kept raw so a future AU type
+    /// survives the wire and the persisted catalog rather than collapsing into
+    /// a known variant.
     Unknown(u32),
 }
 

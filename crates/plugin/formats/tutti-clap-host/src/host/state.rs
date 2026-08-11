@@ -1,3 +1,12 @@
+//! Shared host↔plugin state: the latches a plugin's callbacks set and the
+//! host's poll methods drain, plus the `[audio-thread]` role guard.
+//!
+//! A plugin calls host callbacks from its own threads at times the host does
+//! not choose, so almost everything here is an atomic flag *set* by a callback
+//! and *cleared* by the matching `poll_*` on the main thread. The flags are
+//! grouped into one struct per CLAP extension so a caller can see which
+//! extension a request came from.
+
 use crate::types::{TrackInfo, TransportRequest, TuningInfo, UndoChange};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, AtomicU64, Ordering};
@@ -11,15 +20,27 @@ pub(crate) struct TimerEntry {
     pub last_fire: Instant,
 }
 
+/// One POSIX file descriptor the plugin asked the host to watch
+/// (`CLAP_EXT_POSIX_FD_SUPPORT`).
 #[cfg(unix)]
 pub struct PosixFdEntry {
+    /// The descriptor to poll. Owned by the plugin — the host watches it but
+    /// must not close it.
     pub fd: i32,
+    /// Raw `clap_posix_fd_flags` bits naming which events to watch for.
     pub flags: u32,
 }
 
+/// Plugin requests to change its own lifecycle, from `clap_host`'s core
+/// callbacks. Each is latched until the matching `poll_*` drains it.
 pub struct LifecycleFlags {
+    /// The plugin asked to be deactivated and reactivated, typically because
+    /// its port layout or sample-rate needs changed.
     pub restart_requested: AtomicBool,
+    /// The plugin asked the host to resume calling `process`, having gone
+    /// idle earlier.
     pub process_requested: AtomicBool,
+    /// The plugin asked for a main-thread callback (`on_main_thread`).
     pub callback_requested: AtomicBool,
 }
 
@@ -33,10 +54,18 @@ impl LifecycleFlags {
     }
 }
 
+/// Notifications about values the host caches but the plugin owns. Each is
+/// latched until the matching `poll_*` drains it; the host then re-reads the
+/// value from the plugin.
 pub struct ProcessingState {
+    /// The plugin's reported latency changed, so PDC compensation is stale.
     pub latency_changed: AtomicBool,
+    /// The plugin's reported tail length changed.
     pub tail_changed: AtomicBool,
+    /// The plugin's saveable state changed, so a state blob written earlier no
+    /// longer matches the instance.
     pub state_dirty: AtomicBool,
+    /// The plugin loaded a preset of its own accord.
     pub preset_loaded: AtomicBool,
 }
 
@@ -51,7 +80,11 @@ impl ProcessingState {
     }
 }
 
+/// Editor-window requests the plugin raised through `CLAP_EXT_GUI`.
 pub struct GuiState {
+    /// The plugin reported its editor closed. Says nothing about whether the
+    /// window survived — [`window_destroyed`](Self::window_destroyed) carries
+    /// that, and the two differ in whether `gui.hide` still has a target.
     pub closed: AtomicBool,
     /// Set when the plugin reported `gui.closed(was_destroyed = true)` — its
     /// **window** is gone. `close_editor` reads this to skip `gui.hide`, which
@@ -60,8 +93,14 @@ pub struct GuiState {
     /// `destroy` releases what `create` allocated rather than the window.
     /// Latched until the next editor is opened.
     pub window_destroyed: AtomicBool,
+    /// The plugin's resize constraints (aspect ratio, step size) changed, so
+    /// cached hints must be re-read before the next user resize.
     pub resize_hints_changed: AtomicBool,
+    /// Width in pixels the plugin asked to be resized to. Only meaningful
+    /// while [`request_resize_pending`](Self::request_resize_pending) is set.
     pub request_resize_width: AtomicU32,
+    /// Height in pixels the plugin asked to be resized to. Only meaningful
+    /// while [`request_resize_pending`](Self::request_resize_pending) is set.
     pub request_resize_height: AtomicU32,
     /// Distinguishes a fresh request from stale width/height values.
     pub request_resize_pending: AtomicBool,
@@ -80,13 +119,19 @@ impl GuiState {
     }
 }
 
+/// Parameter-side requests from `CLAP_EXT_PARAMS`.
 pub struct ParamState {
+    /// A `params.rescan` arrived. Tracked apart from
+    /// [`rescan_flags`](Self::rescan_flags) because a plugin may legally
+    /// rescan with no bits set, and "asked for nothing" must stay distinct
+    /// from "never asked".
     pub rescan_requested: AtomicBool,
     /// Accumulated `clap_param_rescan_flags` from every `params.rescan` call
     /// since the last poll (OR-combined). Distinguishes RESCAN_ALL — which the
     /// spec requires the host handle only while the plugin is deactivated —
     /// from value-only (RESCAN_VALUES) rescans that can be applied live.
     pub rescan_flags: AtomicU32,
+    /// The plugin asked the host to flush pending parameter changes.
     pub flush_requested: AtomicBool,
 }
 
@@ -100,7 +145,12 @@ impl ParamState {
     }
 }
 
+/// Port-topology change notifications, from the audio-ports family of
+/// extensions.
 pub struct AudioPortState {
+    /// An `audio-ports.rescan` arrived. Tracked apart from
+    /// [`rescan_flags`](Self::rescan_flags) for the same reason as on
+    /// [`ParamState`]: a bit-less rescan is still a rescan.
     pub changed: AtomicBool,
     /// Accumulated `clap_audio_ports_rescan_flags` from every
     /// `audio-ports.rescan` call since the last poll (OR-combined).
@@ -110,8 +160,12 @@ pub struct AudioPortState {
     /// deactivate→re-enumerate→re-activate. OR so multiple rescans between
     /// polls don't lose bits.
     pub rescan_flags: AtomicU32,
+    /// The set of selectable port configurations changed
+    /// (`CLAP_EXT_AUDIO_PORTS_CONFIG`).
     pub config_changed: AtomicBool,
+    /// The plugin's ambisonic ordering/normalization changed.
     pub ambisonic_changed: AtomicBool,
+    /// The plugin's surround channel map changed.
     pub surround_changed: AtomicBool,
 }
 
@@ -127,9 +181,14 @@ impl AudioPortState {
     }
 }
 
+/// Note-side change notifications, from the note-ports, note-names and
+/// voice-info extensions.
 pub struct NoteState {
+    /// The note-port layout changed and must be re-enumerated.
     pub ports_changed: AtomicBool,
+    /// The plugin's per-key names changed (a drum kit swapping its mapping).
     pub names_changed: AtomicBool,
+    /// The plugin's reported voice count or capacity changed.
     pub voice_info_changed: AtomicBool,
 }
 
@@ -143,11 +202,22 @@ impl NoteState {
     }
 }
 
+/// Undo/redo traffic from `CLAP_EXT_UNDO`, in both directions: steps the
+/// plugin recorded, and requests it made of the host's undo stack.
 pub struct UndoState {
+    /// A change the plugin opened with `begin_change` has neither been
+    /// committed via `change_made` nor withdrawn via `cancel_change`. Not a
+    /// latch — it tracks a span, and both endpoints clear it.
     pub in_progress: AtomicBool,
+    /// The plugin asked the host to undo one step of the *host's* stack.
     pub requested: AtomicBool,
+    /// The plugin asked the host to redo one step of the *host's* stack.
     pub redo_requested: AtomicBool,
+    /// The plugin subscribed to undo-context updates, so the host should keep
+    /// it informed about what the next undo/redo step would be.
     pub wants_context: AtomicBool,
+    /// Steps the plugin has committed, oldest first. Unbounded — a host that
+    /// never drains it grows it without limit.
     pub changes: Mutex<Vec<UndoChange>>,
 }
 
@@ -171,7 +241,9 @@ impl UndoState {
 /// away.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LogRecord {
+    /// The raw `clap_log_severity` the plugin passed, unmapped.
     pub severity: i32,
+    /// The decoded message text.
     pub message: String,
 }
 
@@ -225,6 +297,9 @@ impl LogState {
     }
 }
 
+/// Periodic timers the plugin registered through `CLAP_EXT_TIMER_SUPPORT`.
+///
+/// The host is responsible for firing them; nothing here drives a clock.
 pub struct TimerState {
     pub(crate) timers: Mutex<Vec<TimerEntry>>,
     pub(crate) next_id: AtomicU32,
@@ -239,6 +314,8 @@ impl TimerState {
     }
 }
 
+/// Transport requests the plugin issued via `CLAP_EXT_TRANSPORT_CONTROL`,
+/// queued in arrival order for the host to drain and act on (or ignore).
 pub struct TransportState {
     pub(crate) requests: Mutex<Vec<TransportRequest>>,
 }
@@ -251,7 +328,10 @@ impl TransportState {
     }
 }
 
+/// Remote-control page state from `CLAP_EXT_REMOTE_CONTROLS`.
 pub struct RemoteControlState {
+    /// The plugin's set of remote-control pages changed and must be
+    /// re-enumerated.
     pub changed: AtomicBool,
     pub(crate) suggested_page: AtomicU32,
 }
@@ -265,6 +345,11 @@ impl RemoteControlState {
     }
 }
 
+/// Host-owned resources a plugin can query: track metadata, registered event
+/// spaces, tuning tables, storage directories and watched descriptors.
+///
+/// Unlike the latch groups above, most of this is state the *host* publishes
+/// for the plugin to read rather than a request the plugin made.
 pub struct ResourceState {
     pub(crate) track_info: Mutex<Option<TrackInfo>>,
     pub(crate) event_spaces: Mutex<HashMap<String, u16>>,
@@ -272,7 +357,9 @@ pub struct ResourceState {
     pub(crate) tuning_infos: Mutex<Vec<TuningInfo>>,
     pub(crate) directory_shared: Mutex<Option<std::path::PathBuf>>,
     pub(crate) directory_private: Mutex<Option<std::path::PathBuf>>,
+    /// The plugin's trigger list changed and must be re-enumerated.
     pub triggers_rescan_requested: AtomicBool,
+    /// Descriptors the plugin asked the host to watch, in registration order.
     #[cfg(unix)]
     pub posix_fds: Mutex<Vec<PosixFdEntry>>,
 }
@@ -295,10 +382,14 @@ impl ResourceState {
 
 /// Shared state for host↔plugin communication via atomic flags.
 pub struct HostState {
+    /// The thread that constructed this `HostState`, taken as the
+    /// `[main-thread]` role for the instance's whole life. Fixed at
+    /// construction, so a `HostState` must be built on the thread that will
+    /// drive the plugin's main-thread calls.
     pub main_thread_id: ThreadId,
     /// Current audio-thread identity, as a hash of the claiming [`ThreadId`].
-    /// [`NO_AUDIO_THREAD`] means no claim is outstanding, so a thread holds the
-    /// role only *during* an `[audio-thread]` call.
+    /// Zero means no claim is outstanding, so a thread holds the role only
+    /// *during* an `[audio-thread]` call.
     ///
     /// Read from the audio thread on every CLAP callback that queries
     /// `is_audio_thread`, and written on entry to and exit from every
@@ -322,9 +413,13 @@ pub struct HostState {
     ///
     /// Hashing sidesteps both: a `u64` needs no allocation, no retirement, and
     /// no reader coordination. `ThreadId` is opaque (`as_u64` is unstable), so
-    /// the hash is the portable way to fit it in an atomic. Collisions are
-    /// possible in principle; see [`thread_id_hash`] for why that is sound
-    /// here.
+    /// the hash is the portable way to fit it in an atomic.
+    ///
+    /// Collisions are possible in principle, and are sound here: the property
+    /// CLAP requires — one OS thread inside an `[audio-thread]` call at a time
+    /// — is enforced by [`audio_thread_lock`](Self::audio_thread_lock), not by
+    /// this value. A collision could mislead a plugin's own thread-check
+    /// assertion, never admit a second thread.
     pub audio_thread_id: AtomicU64,
     /// The `[audio-thread]` concurrency guard (C1/C2).
     ///
@@ -345,22 +440,32 @@ pub struct HostState {
     /// `deactivate`, `Drop`) block on it, which is exactly the intended
     /// serialization.
     pub audio_thread_lock: Mutex<()>,
+    /// Restart / resume-processing / main-thread-callback requests.
     pub lifecycle: LifecycleFlags,
+    /// Latency, tail, state-dirty and preset-loaded notifications.
     pub processing: ProcessingState,
+    /// Editor close and resize requests.
     pub gui: GuiState,
+    /// Parameter rescan and flush requests.
     pub params: ParamState,
+    /// Audio-port topology change notifications.
     pub audio_ports: AudioPortState,
+    /// Note-port, note-name and voice-info change notifications.
     pub notes: NoteState,
+    /// Undo steps the plugin recorded and undo/redo it requested.
     pub undo: UndoState,
+    /// The bounded ring of routed `clap.log` lines.
     pub log: LogState,
+    /// Timers the plugin registered for the host to fire.
     pub timer: TimerState,
+    /// Queued transport requests awaiting a drain.
     pub transport: TransportState,
+    /// Remote-control page change notification and suggested page.
     pub remote_controls: RemoteControlState,
+    /// Host-published resources the plugin may read.
     pub resources: ResourceState,
 }
 
-/// RAII claim on the `[audio-thread]` role for one plugin instance (C1/C2).
-///
 /// Sentinel for "no thread currently holds the `[audio-thread]` role".
 ///
 /// Zero because that is what a freshly constructed `AtomicU64` holds, so a
@@ -395,6 +500,8 @@ fn thread_id_hash(id: ThreadId) -> u64 {
     }
 }
 
+/// RAII claim on the `[audio-thread]` role for one plugin instance (C1/C2).
+///
 /// While alive it holds [`HostState::audio_thread_lock`] and has published the
 /// claiming OS thread into [`HostState::audio_thread_id`], so:
 /// - `is_audio_thread()` answers `true` on this thread and `false` everywhere else;
@@ -430,6 +537,8 @@ impl Drop for AudioThreadClaim<'_> {
 }
 
 impl HostState {
+    /// Build an unclaimed `HostState`, taking the calling thread as the
+    /// `[main-thread]` role for the instance's whole life.
     pub fn new() -> Self {
         Self {
             main_thread_id: std::thread::current().id(),
@@ -450,6 +559,9 @@ impl HostState {
         }
     }
 
+    /// Read a latch and clear it in one atomic step, returning whether it was
+    /// set. Draining is the point: two consecutive polls of one unrepeated
+    /// request answer `true` then `false`.
     pub fn poll(&self, flag: &AtomicBool) -> bool {
         flag.swap(false, Ordering::AcqRel)
     }
@@ -497,7 +609,7 @@ impl HostState {
     /// **Exclusive with [`is_audio_thread`](Self::is_audio_thread)** (C1): the
     /// spec lets a host mark the OS main thread as the audio thread, but the
     /// two symbolic roles are alternatives, not simultaneous identities. While
-    /// an [`AudioThreadClaim`] is held on this thread we answer `false` here,
+    /// an [`AudioThreadClaim`] is held on this thread, this answers `false`,
     /// so a plugin asserting `!is_main_thread()` inside an `[audio-thread]`
     /// call is not silently defeated by a host that claims to be both.
     ///

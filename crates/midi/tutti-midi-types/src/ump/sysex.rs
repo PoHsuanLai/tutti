@@ -16,6 +16,8 @@ use midi2::sysex7::Sysex7;
 
 use super::MidiEvent;
 
+/// SysEx7 status nibble: the whole message fits one packet, so there is nothing
+/// to reassemble.
 pub const SYSEX7_STATUS_SINGLE: u8 = 0x0;
 /// SysEx7 status nibble: first packet of a multi-packet message.
 pub const SYSEX7_STATUS_START: u8 = 0x1;

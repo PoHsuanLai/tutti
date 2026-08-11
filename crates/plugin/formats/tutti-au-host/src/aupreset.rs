@@ -415,7 +415,7 @@ fn as_dictionary(plist: CFPropertyList) -> Option<CFDictionary<CFString, CFType>
             raw.as_CFTypeRef() as core_foundation_sys::dictionary::CFDictionaryRef
         )
     };
-    // `into_CFType` handed us a value that still owns its reference; forget it so
+    // `into_CFType` returns a value that still owns its reference; forget it so
     // that reference is not released twice (once here, once by `dict`).
     std::mem::forget(raw);
     Some(dict)

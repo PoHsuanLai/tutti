@@ -37,8 +37,8 @@ const _: () = assert!(std::mem::align_of::<AblWord>() >= std::mem::align_of::<Au
 
 /// Backing storage for an `AudioBufferList` plus its trailing `AudioBuffer`s.
 ///
-/// The real C struct ends with a flexible-array member, so we allocate a
-/// correctly-sized, correctly-aligned slab and reinterpret it.
+/// The real C struct ends with a flexible-array member, so this allocates a
+/// correctly-sized, correctly-aligned slab and reinterprets it.
 pub(crate) struct RenderBufferList {
     storage: Box<[AblWord]>,
     channels: ChannelLayout,
@@ -215,8 +215,11 @@ mod tests {
         assert_eq!(std::mem::offset_of!(AudioBufferList, mBuffers), 8);
         assert_eq!(std::mem::size_of::<AudioBufferList>(), 24);
 
-        // The header contribution is the *offset*, which is strictly larger
-        // than `size_of::<u32>()` — that inequality IS the bug.
+        // The header contribution is the *offset*, strictly larger than
+        // `size_of::<u32>()` because of the alignment padding after
+        // `mNumberBuffers`. Sizing from the field width instead of the offset
+        // under-allocates by exactly that padding, so this inequality is what
+        // makes the two formulas distinguishable at all.
         assert!(
             std::mem::offset_of!(AudioBufferList, mBuffers) > std::mem::size_of::<u32>(),
             "if these were equal the old formula would have been correct"

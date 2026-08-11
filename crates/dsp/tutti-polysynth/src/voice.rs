@@ -71,22 +71,54 @@ impl MpeVoiceState {
     }
 }
 
+/// Which sounding voice gets taken when every slot is busy and another note
+/// arrives.
+///
+/// Only the tiebreak among *active* voices differs between these. A voice that
+/// is already releasing or stolen is always preferred over any active one
+/// whatever the strategy says, and among those the quietest goes first — so a
+/// chord fading out is consumed before a held note is cut off.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum AllocationStrategy {
+    /// Take the voice that started longest ago. The default, and the safe
+    /// general choice: it cuts the note the player is least likely to still be
+    /// listening for.
     #[default]
     Oldest,
+    /// Take the voice with the lowest current envelope level — the least
+    /// audible cut, but it can steal a held note that happens to sit in a decay
+    /// dip.
     Quietest,
+    /// Take the highest-pitched sounding note. Preserves bass lines.
     HighestNote,
+    /// Take the lowest-pitched sounding note. Preserves melody.
     LowestNote,
+    /// Take the most recently started voice, so a held chord survives a run of
+    /// fast notes at the cost of dropping the new ones.
     Newest,
+    /// Steal nothing: the note is dropped and never sounds. The allocator
+    /// returns `Unavailable` and no voice is disturbed.
     NoSteal,
 }
 
+/// How many notes may sound at once, and whether a new note restarts the
+/// envelope.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum VoiceMode {
+    /// Polyphonic: notes sound simultaneously up to `max_voices`, then the
+    /// [`AllocationStrategy`] decides. The default.
     #[default]
     Poly,
+    /// Monophonic: one note at a time on a channel. A new note releases the
+    /// sounding one and retriggers the envelope from attack. Only slot 0 is
+    /// used, however large `max_voices` is.
     Mono,
+    /// Monophonic with legato: a new note while one is already sounding takes
+    /// over the same voice **without** retriggering the envelope, so the note
+    /// glides or steps in at the envelope's current level. The first note of a
+    /// phrase (nothing sounding) triggers normally. This is what makes
+    /// [`PortamentoMode::LegatoOnly`](crate::PortamentoMode::LegatoOnly)
+    /// meaningful.
     Legato,
 }
 

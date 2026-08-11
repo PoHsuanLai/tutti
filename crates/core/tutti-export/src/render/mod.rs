@@ -7,7 +7,7 @@
 //!
 //! There is no sink type here. The *encoder* owns the pull (see
 //! [`crate::encode`]): FLAC's library is itself pull-based, and giving every
-//! format the same shape is what let the buffering decorators go away.
+//! format the same shape is what keeps buffering decorators unnecessary.
 
 pub(crate) mod driver;
 pub(crate) mod plan;

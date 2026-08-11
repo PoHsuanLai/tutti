@@ -5,4 +5,9 @@
 //! the same stable `AudioUnit::get_id()` fingerprint as the native plugin
 //! clients — fundsp uses this id to treat the node as identity-stable across
 //! graph commits.
+/// Stable `AudioUnit::get_id()` fingerprint for every plugin-client node.
+///
+/// The ASCII bytes `"PLUGINCL"`. fundsp uses this id to treat a node as
+/// identity-stable across graph commits, so every plugin node — in-process or
+/// bridged — must report exactly this value.
 pub const PLUGIN_CLIENT_ID: u64 = 0x_504C_5547_494E_434C; // "PLUGINCL"

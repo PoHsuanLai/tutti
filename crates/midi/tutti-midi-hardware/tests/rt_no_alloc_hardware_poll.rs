@@ -51,7 +51,7 @@ fn note() -> MidiEvent {
     MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000)
 }
 
-/// Feed `count` events into `port` on `inputs`, as the midir callback thread would.
+/// Feed `count` events into `port` on `inputs`, as a driver callback thread would.
 fn feed(inputs: &HardwareMidiInputs, port: usize, count: usize) {
     for _ in 0..count {
         inputs.push_input_event(port, note());
@@ -92,7 +92,7 @@ fn hardware_poll_is_allocation_free() {
 
 /// The overflow case: more events queued than one block may carry.
 ///
-/// This is the path that used to grow both scratch buffers. Four ports of 256
+/// This is the path that can grow both scratch buffers. Four ports of 256
 /// events offer 1024 against a 256 cap, so the drain must stop at the cap and
 /// leave the rest — without reallocating to hold them.
 #[test]

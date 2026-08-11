@@ -1,4 +1,14 @@
 //! Ring buffer refill logic for butler thread.
+//!
+//! Decides, per streaming channel and per cycle, whether the ring needs frames
+//! and how many to move — then moves them, forward or reversed, from an
+//! incremental disk decoder or from a resident whole-file [`Wave`].
+//!
+//! **Every count here is denominated in frames.** `chunk_size`, `write_space`
+//! and `file_position` are all frame counts; the `* ch` that appears at each
+//! scratch-buffer resize is the only place the interleave stride enters. A
+//! sample-denominated `chunk_size` would over-request by the channel count and
+//! desynchronise `file_position` from the loop range it is compared against.
 
 use super::super::cache::LruCache;
 use super::super::metrics::Metrics;
@@ -12,14 +22,20 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tutti_core::Wave;
 
-/// Calculate optimal chunk size using varifill strategy.
+/// How many **frames** to read this cycle, under the varifill strategy.
 ///
-/// Adapts chunk size based on:
-/// - Buffer urgency (how empty the buffer is)
-/// - Disk bandwidth (recent read throughput)
-/// - Playback speed (varispeed)
+/// Scales `base_chunk` by three independent factors, then clamps their product
+/// to `0.25..=4.0` and floors the result at 1024 frames:
 ///
-/// Returns chunk size in samples.
+/// - **Urgency** — `1.0 - buffer_fill`, so an empty ring pulls harder.
+/// - **Bandwidth** — the square root of `read_rate_bytes_per_sec` against a
+///   10 MB/s baseline, clamped to `0.5..=2.0`. A non-positive or unmeasured rate
+///   contributes a neutral 1.0.
+/// - **Speed** — `playback_speed`, floored at 1.0: playing faster consumes the
+///   ring faster, but playing slower is no reason to read in smaller pieces.
+///
+/// Robust to a nonsensical `buffer_fill` (negative, above one, or NaN) because
+/// the clamp and the floor between them bound every path.
 #[inline]
 fn varifill_chunk(
     buffer_fill: f32,
@@ -49,15 +65,16 @@ fn varifill_chunk(
     chunk_size.max(1024)
 }
 
-/// Refill ring buffers from disk with varifill strategy.
+/// Refill every streaming channel's ring in turn, serially.
 ///
-/// Uses a pre-allocated buffer to avoid allocation in the hot path.
-/// Loop crossfade is handled by the audio thread via RtState.
+/// Publishes each ring's fill level to its `RtState`, skips the channels already
+/// at or above the refill threshold, and sizes the rest through
+/// [`varifill_chunk`]. A region carrying a decoder streams the range from disk;
+/// one without falls back to the resident whole-file [`Wave`].
 ///
-/// Chunk size is dynamically adjusted (varifill) based on:
-/// - Buffer urgency (how empty the buffer is)
-/// - Disk throughput (recent read rate)
-/// - Playback speed (varispeed)
+/// `interleave_buffer` is the butler's reusable scratch, passed in so a refill
+/// does not allocate per cycle. Butler thread throughout — this both blocks on
+/// disk and may grow that buffer, so it must never run on the audio thread.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn refill_all(
     plans: &DashMap<usize, ChannelPlan>,
@@ -140,25 +157,38 @@ pub(crate) fn refill_all(
     }
 }
 
+/// One channel's refill decision, snapshotted before the parallel pass so no
+/// plan reference is held across it.
 struct RefillWorkItem {
+    /// Position in the region `Vec`, which is what `par_iter_mut` enumerates.
     writer_idx: usize,
+    /// Frames to read this cycle, from [`varifill_chunk`].
     chunk_size: usize,
     is_reverse: bool,
     file_path: PathBuf,
+    /// Ring occupancy at decision time, republished to `RtState` by the worker.
     fill_pct: f32,
     shared: Arc<super::super::rt_state::RtState>,
     /// Carried per item so the parallel path wraps at the loop bounds exactly
-    /// like the serial one. It used to be hardcoded `None` at the refill call,
-    /// so any session with 3+ concurrent streams (the threshold that selects
-    /// this path) silently lost loop handling in refill.
+    /// like the serial one. Hardcoding `None` here would silently drop loop
+    /// handling for every session with 3+ concurrent streams — the very
+    /// threshold that selects this path.
     loop_range: Option<(u64, u64)>,
 }
 
-/// Parallel refill using rayon's par_iter_mut with varifill strategy.
+/// The same refill across rayon workers, chosen when `parallel_io` is on and
+/// three or more channels are streaming.
 ///
-/// Uses Vec<RegionOut> with par_iter_mut which only requires Send, not Sync.
-/// Each rayon worker gets exclusive &mut access to a different producer.
-/// Only used when parallel_io is enabled and there are 3+ streams.
+/// Work items are collected first — one per channel that is actually below its
+/// refill threshold — so every plan reference is released before the parallel
+/// pass begins. `par_iter_mut` over the region `Vec` then hands each worker an
+/// exclusive `&mut` to a *different* producer, which is why the regions are a
+/// `Vec` rather than a `DashMap`: this needs `Send`, not `Sync`. Scratch is a
+/// thread-local per worker.
+///
+/// Each item carries its own `loop_range`, so a looped stream wraps here exactly
+/// as it does serially. Dropping that would make looping depend on how many
+/// voices happened to be streaming.
 pub(crate) fn refill_all_parallel(
     plans: &DashMap<usize, ChannelPlan>,
     regions: &mut RegionMap,
@@ -240,8 +270,11 @@ pub(crate) fn refill_all_parallel(
         });
 }
 
-/// Refill a single stream (used by parallel path). Takes a direct mutable
-/// reference to the writer from `par_iter_mut`.
+/// Refill one stream from a work item, on a rayon worker.
+///
+/// Takes the writer as a direct `&mut` straight from `par_iter_mut` — the
+/// exclusivity that makes the parallel pass sound is the borrow itself, so this
+/// never looks a region up by id. `buffer` is the worker's thread-local scratch.
 #[allow(clippy::too_many_arguments)]
 fn refill_one(
     writer: &mut RegionOut,
@@ -278,11 +311,11 @@ fn refill_one(
         refill_reverse(writer, &wave, file_position, chunk_size, buffer);
     } else {
         // Whole-file forward via the WaveIn source into the region ring. WaveIn
-        // zero-pads past end, so one block fill of `chunk_size` frames matches
-        // the old `fill_buffer_forward` shape. `loop_range` is honoured here for
-        // the same reason as the decoder path above: this function serves the
-        // 3+-stream parallel refill, and dropping it there made looping depend
-        // on how many voices happened to be streaming.
+        // zero-pads past end, so one block fill of `chunk_size` frames always
+        // produces a full buffer. `loop_range` is honoured here for the same
+        // reason as the decoder path above: this function serves the 3+-stream
+        // parallel refill, and dropping it there would make looping depend on
+        // how many voices happened to be streaming.
         refill_forward(writer, &wave, file_position, chunk_size, buffer, loop_range);
     }
 }
@@ -382,10 +415,10 @@ fn refill_reverse_stream(
         interleave_buffer[got * ch..].fill(0.0);
     }
 
-    // NOT `interleave_buffer.reverse()`: that reversed whole `[f32; 2]`
-    // elements, which only reversed frames because the element WAS a frame. On
-    // a flat buffer it would reverse individual samples and swap every channel
-    // pair. `write_interleaved_reversed` reverses the frame sequence and keeps
+    // NOT `interleave_buffer.reverse()`: on a flat buffer that reverses
+    // individual SAMPLES, swapping every channel pair within each frame. It is
+    // only equivalent when the element type is itself a frame, which here it is
+    // not. `write_interleaved_reversed` reverses the frame sequence and keeps
     // channels in order within each frame.
     let written = writer.write_interleaved_reversed(interleave_buffer);
     writer.set_file_position(file_position.saturating_sub(written) as u64);
@@ -424,8 +457,8 @@ fn refill_forward(
 }
 
 /// Refill for reverse playback from a resident `Wave`. Reads frames forward
-/// through [`wave_frame`], then pushes them reversed into the ring. `pump` can't
-/// express reversal, so this stays hand-rolled.
+/// through [`wave_frame_into`], then pushes them reversed into the ring.
+/// `pump` cannot express reversal, so this stays hand-rolled.
 fn refill_reverse(
     writer: &mut RegionOut,
     wave: &Wave,
@@ -472,8 +505,8 @@ pub(in crate::butler) fn load_wave(
     }
 
     // `Wave::load` lives in fundsp's `read` module, which is compiled only when
-    // a codec is on. Calling it unconditionally is what made
-    // `--no-default-features` fail to build.
+    // a codec feature is on — calling it unconditionally breaks the
+    // `--no-default-features` build.
     #[cfg(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg"))]
     {
         if let Ok(w) = Wave::load(file_path) {

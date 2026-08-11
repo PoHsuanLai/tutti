@@ -5,7 +5,7 @@
 //! surface — editor, parameters, state). They share subprocess lifetime via
 //! `Arc`: the plugin stays alive as long as either does.
 //!
-//! The control surface splits into granular [`capabilities`] traits
+//! The control surface splits into granular capability traits
 //! ([`HostParams`](capabilities::HostParams) / [`HostState`](capabilities::HostState)
 //! / [`HostEditor`](capabilities::HostEditor)), so out-of-process VST3/CLAP/AU and
 //! in-process VST2 hosting each implement exactly the subset they honor while

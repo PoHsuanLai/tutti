@@ -14,9 +14,14 @@ use thiserror::Error;
 /// What can go wrong reading or writing a MIDI file.
 #[derive(Error, Debug)]
 pub enum Error {
+    /// The file could not be read or written at all — missing, unreadable, or
+    /// the write failed.
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 
+    /// The bytes are not a well-formed file of the expected format. Covers
+    /// `midly`'s own parse failures, a zero ticks-per-beat division, and a
+    /// clip-file parse error forwarded with its path.
     #[error("MIDI parse error: {0}")]
     MidiFileParse(String),
 
@@ -38,6 +43,7 @@ impl From<midly::Error> for Error {
     }
 }
 
+/// `Result` with this crate's [`enum@Error`] as the failure type.
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// The MIDI 2.0 Clip File byte codec, re-exported from `tutti-midi-types`.

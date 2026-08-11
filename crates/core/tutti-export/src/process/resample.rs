@@ -6,13 +6,13 @@
 //!
 //! # The delay
 //!
-//! An FFT resampler has latency: `output_delay()` frames of its output are the
-//! filter warming up, not signal. The previous version never called it, so every
-//! resampled export was shifted late by that much (measured: 320 frames at
-//! 44.1→48 k, ~6.7 ms of leading silence) and lost the same amount off the tail,
-//! where a blind `truncate()` to the expected length cut exactly where the
-//! delayed content would have been. [`Resampler`] drops those frames at the head
-//! and flushes with silence at the end to push the real tail out.
+//! An FFT resampler has latency: `output_delay()` FRAMES of its output are the
+//! filter warming up, not signal. Ignoring that figure shifts every resampled
+//! export late by exactly it (320 frames at 44.1→48 k, ~6.7 ms of leading
+//! silence) and loses the same amount off the tail, because a blind `truncate()`
+//! to the expected length cuts where the delayed content would have been.
+//! [`Resampler`] drops those frames at the head and flushes with silence at the
+//! end to push the real tail out.
 
 use crate::error::Result;
 use tutti_types::{SampleRate, Samples};
@@ -20,11 +20,11 @@ use tutti_types::{SampleRate, Samples};
 /// Input frames per FFT chunk, and how finely each chunk is subdivided.
 ///
 /// Named for the quantity, not for a ranking. A `Fast | Medium | High | Best`
-/// enum said which end of a scale a caller was on and nothing about what
-/// changed between two of them — so the trade could not be reasoned about
-/// (longer chunks are a steeper anti-alias filter and more latency; more
-/// sub-chunks is finer time resolution and more work) and a point the enum did
-/// not list could not be expressed at all.
+/// enum names which end of a scale a caller is on and nothing about what changes
+/// between two of them, so the trade cannot be reasoned about — longer chunks
+/// are a steeper anti-alias filter and more latency; more sub-chunks is finer
+/// time resolution and more work — and a point the enum does not list cannot be
+/// expressed at all.
 ///
 /// Shaped like `FftSize` in `tutti-sampler`: constants named for their numbers,
 /// `MIN`/`MAX` bounds, and a fallible constructor for anything else.

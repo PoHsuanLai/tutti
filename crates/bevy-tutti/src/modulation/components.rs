@@ -27,10 +27,13 @@ use tutti_types::{BeatDuration, Depth, Hz, ParamAddr, PhaseIncrement};
 #[reflect(Component, Debug, Default)]
 #[require(ModRate)]
 pub struct ModSource {
+    /// The waveform this source traces over one cycle. `tutti_mod`'s vocabulary,
+    /// named directly rather than mirrored.
     pub shape: LfoShape,
 }
 
 impl ModSource {
+    /// A source tracing `shape`, at [`ModRate`]'s default rate.
     pub fn new(shape: LfoShape) -> Self {
         Self { shape }
     }
@@ -74,10 +77,17 @@ impl super::ModSourceKind for ModSource {
 #[derive(Reflect, Debug, Clone, Copy, PartialEq)]
 pub enum ModClock {
     /// Free-running at this many cycles per second.
-    Free { hz: Hz },
+    Free {
+        /// Cycles per second. Independent of tempo.
+        hz: Hz,
+    },
     /// Locked to the transport, one cycle per this many beats — a span, so a
     /// larger value is *slower*.
-    Synced { beats_per_cycle: BeatDuration },
+    Synced {
+        /// Beats per cycle. A **span**, the reciprocal of a frequency: `4.0` is
+        /// one cycle every four beats, so larger is slower.
+        beats_per_cycle: BeatDuration,
+    },
 }
 
 impl Default for ModClock {
@@ -121,6 +131,9 @@ impl ModRate {
         }
     }
 
+    /// Displace the generated phase by `offset`, leaving the clock untouched.
+    ///
+    /// Signed: this is what stereo-spreads two otherwise identical sources.
     pub fn with_phase_offset(mut self, offset: impl Into<PhaseIncrement>) -> Self {
         self.phase_offset = offset.into();
         self
@@ -148,7 +161,11 @@ pub struct ModRoute {
     pub param: ParamAddr,
     /// Bipolar. Negative inverts the source rather than attenuating it.
     pub depth: Depth,
+    /// Whether the source's swing is mapped bipolar or folded unipolar before
+    /// `depth` scales it.
     pub polarity: Polarity,
+    /// The response curve applied across the source's swing — how a linear
+    /// source maps onto the param's range.
     pub curve: CurveType,
     /// A disabled route keeps its declaration but contributes nothing, and its
     /// layer is cleared from the target — the difference between muting a route
@@ -250,16 +267,19 @@ impl ModRoute {
         self.deliver(ModDelivery::PerSample)
     }
 
+    /// Scale the source's contribution. Bipolar — negative inverts.
     pub fn with_depth(mut self, depth: impl Into<Depth>) -> Self {
         self.depth = depth.into();
         self
     }
 
+    /// Map the source's swing bipolar or unipolar before `depth` scales it.
     pub fn with_polarity(mut self, polarity: Polarity) -> Self {
         self.polarity = polarity;
         self
     }
 
+    /// Shape the response across the source's swing.
     pub fn with_curve(mut self, curve: CurveType) -> Self {
         self.curve = curve;
         self
@@ -287,9 +307,14 @@ pub struct ModParamRange {
 /// One param's authored base and bounds. See [`ModParamRange`].
 #[derive(Reflect, Debug, Clone, Copy, PartialEq)]
 pub struct ParamRange {
+    /// Which param on the owning entity this describes.
     pub param: ParamAddr,
+    /// The authored value, in the param's own units. Modulation rides on top of
+    /// it; it is not the midpoint of `[min, max]`.
     pub base: f32,
+    /// Lower clamp bound, in the param's own units.
     pub min: f32,
+    /// Upper clamp bound, in the param's own units.
     pub max: f32,
 }
 
@@ -305,6 +330,8 @@ impl ModParamRange {
         self
     }
 
+    /// The declared range for `param`, or `None` if it was never declared —
+    /// which is what makes it unmodulatable.
     pub fn get(&self, param: ParamAddr) -> Option<&ParamRange> {
         self.params.iter().find(|p| p.param == param)
     }

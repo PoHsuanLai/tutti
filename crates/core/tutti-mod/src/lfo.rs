@@ -17,9 +17,15 @@ use tutti_types::{Depth, Phase};
 /// not something the modulator stores.
 #[derive(Debug, Clone, Copy)]
 pub struct RandomState {
+    /// The sample currently held, in `[-1, 1]`. What `Random` emits outright.
     pub current: f32,
+    /// The sample held before the last step. `RandomSmooth` interpolates from
+    /// this toward `current` across the cycle.
     pub previous: f32,
+    /// The [`Phase`] seen on the previous call — the wrap detector's reference.
     pub last_phase: Phase,
+    /// The xorshift register. Nonzero, or the generator sticks at zero forever;
+    /// [`RandomState::default`] seeds it.
     pub seed: u32,
 }
 
@@ -85,13 +91,17 @@ impl RandomState {
 ///
 /// **Rate-agnostic** — this is the pure `phase -> value` function, and the
 /// *adapter* around it decides how often it is sampled. Sampled by
-/// [`ModPreFrame`](crate::ModPreFrame) it runs at frame rate; wrapped in
+/// `ModPreFrame` (the `routing` feature) it runs at frame rate; wrapped in
 /// `tutti_units::ModulatorNode` (aliased `LfoNode`) it runs per sample off the
 /// transport clock's beat ports. Same LFO, two tiers — see the sampling-rate
 /// section in the [crate docs](crate) for which to reach for.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Lfo {
+    /// The waveform sampled at each [`Phase`].
     pub shape: LfoShape,
+    /// Modulation amount baked into the output. [`Depth::INVERTED`] flips the
+    /// shape rather than quieting it — that sign behaviour is why this is a
+    /// [`Depth`] and not an `Amplitude`.
     pub depth: Depth,
 }
 
@@ -144,6 +154,9 @@ impl Modulator for Lfo {
 pub struct SampleHold;
 
 impl SampleHold {
+    /// A sample & hold stepper. Carries no configuration — the step rate is the
+    /// caller's phase advance, and the value lives in the threaded
+    /// [`RandomState`].
     pub fn new() -> Self {
         Self
     }
@@ -193,8 +206,7 @@ mod tests {
 
     #[test]
     fn depth_scales_output() {
-        // Was tutti_units::lfo::test_depth_control — depth 0.5 on a square at
-        // phase 0 → 0.5.
+        // Depth 0.5 on a square at phase 0 → 0.5.
         let lfo = Lfo::new(LfoShape::Square).with_depth(Depth(0.5));
         assert!((sample(&lfo, 0.0) - 0.5).abs() < 0.01);
     }
@@ -209,8 +221,8 @@ mod tests {
 
     #[test]
     fn random_produces_different_values() {
-        // Was tutti_units::lfo::test_random_produces_different_values. Thread the
-        // state forward across many phase wraps so the stepper advances.
+        // Thread the state forward across many phase wraps so the stepper
+        // actually advances.
         let lfo = Lfo::new(LfoShape::Random);
         let mut state = RandomState::default();
         let mut values = Vec::new();

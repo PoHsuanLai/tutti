@@ -42,6 +42,7 @@ pub struct NoteExpressionSource {
 }
 
 impl NoteExpressionSource {
+    /// Creates a source bound to `transport`, stamped at `sample_rate`.
     pub fn new(transport: Arc<dyn Timeline>, sample_rate: impl Into<SampleRate>) -> Self {
         Self {
             transport,

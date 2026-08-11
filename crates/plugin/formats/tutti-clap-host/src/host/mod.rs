@@ -56,7 +56,7 @@ pub struct ClapHost {
 
 impl ClapHost {
     /// Build a host vtable backed by the given [`HostState`]. The state is
-    /// shared (via `Arc`) with [`ClapInstance`](crate::ClapInstance) so both
+    /// shared (via `Arc`) with [`ClapLoaded`](crate::ClapLoaded) so both
     /// sides can observe plugin callbacks.
     pub fn new(state: Arc<HostState>) -> Self {
         let mut host = Self {

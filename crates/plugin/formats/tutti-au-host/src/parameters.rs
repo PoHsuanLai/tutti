@@ -12,8 +12,8 @@
 //! element across 64 of them. Writes to the same id on different elements were
 //! verified independent — setting input element 0's volume to 0.25 and element
 //! 1's to 0.75 reads back 0.25 and 0.75 respectively. Addressing every one of
-//! those through element 0, as this module used to, collapsed a whole mixer's
-//! per-channel strip onto a single control.
+//! those through element 0 would collapse a whole mixer's per-channel strip
+//! onto a single control, which is why the `_at` functions take an element.
 //!
 //! LIMITATION (intentional): [`ParamView`] and [`crate::instance::AuInstance`]'s
 //! parameter methods stay global/element-0. They are the DAW-facing surface, and
@@ -621,7 +621,7 @@ pub fn value_strings_at(unit: AudioUnit, addr: ParamAddress, id: u32) -> Vec<Str
         Ok(r) => r,
         Err(_) => return Vec::new(),
     };
-    // The AU *copies* the array for us (Create rule), so the host owns this
+    // The AU *copies* the array (Create rule), so the host owns this
     // reference and must release it. `CfArray::from_copied` takes that +1 and
     // releases on drop, on every path out of this function — a leak here would
     // be per-call, and a UI rebuilding a menu polls it.
@@ -632,7 +632,7 @@ pub fn value_strings_at(unit: AudioUnit, addr: ParamAddress, id: u32) -> Vec<Str
     (0..array.len())
         .filter_map(|i| {
             let ptr = array.value_at(i)?;
-            // GET rule, not Create: the elements belong to the array we already
+            // GET rule, not Create: the elements belong to the array already
             // own. Wrapping them with `from_copied` would over-release strings
             // the host never retained and corrupt the AU's own table.
             let s = unsafe { cfstring_to_string(ptr as CFStringRef) };
@@ -681,7 +681,7 @@ pub fn string_from_value_at(
     // parameter directly is what keeps it alive across the call below: the
     // pointer must stay valid for the whole `AudioUnitGetProperty`, and the
     // parameter outlives this function body. (A null `inValue` would ask the AU
-    // to format its own current value; we always name one explicitly.)
+    // to format its own current value; this always names one explicitly.)
     let mut request = AudioUnitParameterStringFromValue {
         inParamID: id,
         inValue: &value,

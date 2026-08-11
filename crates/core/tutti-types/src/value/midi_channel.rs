@@ -13,11 +13,10 @@
 //! crash: the note plays on the wrong channel, which under MPE means the wrong
 //! *voice*, and per-note expression lands on a note nobody is holding.
 //!
-//! `tutti-midi-types` used to carry a `pub type MidiChannel = u8` alias, which
-//! prevented none of that — an alias is the same type. This is the real one,
-//! and that alias now re-exports it. It lives here rather than in
-//! `tutti-midi-types` because a document has to persist a channel, and that
-//! crate carries no serde.
+//! A `pub type MidiChannel = u8` alias prevents none of that — an alias is the
+//! same type. This is the real newtype, and `tutti-midi-types` re-exports it.
+//! It lives here rather than there because a document has to persist a channel
+//! and that crate carries no serde.
 //!
 //! See [`MidiGroup`](super::MidiGroup) for the other half: typing a channel
 //! alone still leaves `(group, channel)` transposable, since both are 4-bit and

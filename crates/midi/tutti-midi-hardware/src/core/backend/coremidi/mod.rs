@@ -9,15 +9,15 @@
 //! which takes UMP words directly, and even `Properties::protocol_id()` for
 //! capability detection.
 //!
-//! Raw `coremidi-sys` survives in exactly one place, [`virtual_source`], because
-//! the wrapper has `virtual_destination_with_protocol` but **no**
+//! Raw `coremidi-sys` is confined to exactly one place, [`virtual_source`],
+//! because the wrapper has `virtual_destination_with_protocol` but **no**
 //! `virtual_source_with_protocol` — publishing a MIDI-2.0-protocol virtual
 //! source needs `MIDISourceCreateWithProtocol` by hand.
 //!
 //! # Protocol is asked, not assumed
 //!
-//! We open input ports with `Protocol::Midi20`, which makes CoreMIDI convert a
-//! MIDI-1.0 device's traffic to UMP for us. That is *not* the same as the device
+//! Input ports open with `Protocol::Midi20`, which makes CoreMIDI up-convert a
+//! MIDI-1.0 device's traffic to UMP. That is *not* the same as the device
 //! speaking MIDI 2.0, so [`UmpCapability`] records `kMIDIPropertyProtocolID` as
 //! the OS reports it — and falls back to `Midi1` when the property is absent,
 //! which is the conservative direction (see `UmpCapability::default`).
@@ -169,12 +169,12 @@ impl MidiEndpoints for CoreMidiEndpoints {
         let source = Self::find_source(id)
             .ok_or_else(|| Error::MidiDevice(format!("no MIDI source with id {}", id.raw())))?;
 
-        // No `Sysex7ByteAssembler` on this path, deliberately. We open with
-        // `Protocol::Midi20`, so CoreMIDI hands us UMP words — a MIDI-1.0
+        // No `Sysex7ByteAssembler` on this path, deliberately. The port opens
+        // with `Protocol::Midi20`, so CoreMIDI delivers UMP words — a MIDI-1.0
         // device's SysEx arrives already fragmented into UMP SysEx7 packets,
         // which `Sysex7PacketReassembler` (one layer up) rejoins. The byte-run
         // assembler is for transports that deliver raw `F0 … F7`; ALSA's legacy
-        // bridge is one, and it is the ALSA backend that will need it.
+        // bridge is one, which is where it is needed.
         let mut port = client
             .input_port_with_protocol("tutti-in", CmProtocol::Midi20, move |event_list, _ctx| {
                 let now = std::time::Instant::now();
@@ -280,11 +280,12 @@ impl CoreMidiOutput {
 }
 
 impl MidiOut for CoreMidiOutput {
-    /// Returns how many events reached the endpoint. Stops at the first failure
-    /// so the count names an unbroken prefix — see [`AlsaOutput::queue`] for why
-    /// skipping would be worse than stopping.
+    /// Returns how many events reached the endpoint.
     ///
-    /// [`AlsaOutput::queue`]: crate::core::backend
+    /// Stops at the first failure rather than skipping it, so the count names an
+    /// unbroken **prefix** of `events`. Skipping would report a number no
+    /// contiguous run matches, and would deliver a note-off whose note-on never
+    /// left. The ALSA backend's `queue` behaves identically.
     fn queue(&self, events: &[MidiEvent]) -> usize {
         let mut accepted = 0;
         for event in events {
@@ -336,9 +337,9 @@ mod tests {
 
     /// Capability must be *read from the endpoint*, not assumed.
     ///
-    /// The trap this guards: we open inputs with `Protocol::Midi20` so CoreMIDI
-    /// up-converts MIDI-1.0 traffic for us. If `endpoint_capability` returned
-    /// that choice rather than reading `kMIDIPropertyProtocolID`, every endpoint
+    /// The trap this guards: inputs open with `Protocol::Midi20` so CoreMIDI
+    /// up-converts MIDI-1.0 traffic. If `endpoint_capability` returned that
+    /// choice rather than reading `kMIDIPropertyProtocolID`, every endpoint
     /// would claim MIDI 2.0 and `UmpCapability` would be vestigial.
     ///
     /// Enumerating real devices **cannot** catch that here: every endpoint on a
@@ -373,7 +374,7 @@ mod tests {
     /// The `Midi2` direction is covered by the real-device enumeration above
     /// (every endpoint on this machine reports MIDI 2.0), so a hardcoded
     /// `midi1()` would fail *there*. Pinning it here too would need a
-    /// MIDI-2.0-protocol endpoint we can hand to `endpoint_capability` as a
+    /// MIDI-2.0-protocol endpoint to hand `endpoint_capability` as a
     /// `coremidi::Object` — `UmpVirtualSource` keeps its `MIDIEndpointRef`
     /// private, and widening that API purely for a test is the wrong trade.
     /// Between the two, neither constant survives.

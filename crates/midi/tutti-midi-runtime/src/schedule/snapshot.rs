@@ -17,6 +17,9 @@ use tutti_midi_types::MidiUnitId;
 /// all speak this one type, so events move between them without repacking.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TimedMidiEvent {
+    /// The event itself. Its own `frame_offset` is meaningless in storage —
+    /// [`beat`](Self::beat) is the authority, and a reader stamps the offset
+    /// from it at poll time.
     pub event: MidiEvent,
     /// Beat position when this event should trigger.
     pub beat: Beat,
@@ -86,6 +89,7 @@ impl Clone for MidiSnapshot {
 }
 
 impl MidiSnapshot {
+    /// An empty snapshot holding no units and no events.
     pub fn new() -> Self {
         Self::default()
     }
@@ -167,9 +171,11 @@ impl MidiSnapshot {
     /// `timing` is `Some(beats_per_sample)` to stamp frame offsets, `None` to
     /// leave each event's own offset alone.
     ///
-    /// It used to be `Option<(f64, f64)>` — an unnamed (origin, rate) pair whose
-    /// origin was always a copy of `start_beat`. Two same-typed fields with no
-    /// names, one of them redundant: the rate is all that was ever needed.
+    /// The rate alone is sufficient: an origin would only ever be a copy of
+    /// `start_beat`, and a same-typed pair with no field names is exactly the
+    /// shape that gets swapped silently. [`BeatDuration`] names it as a *span*
+    /// of beats per sample — not an [`Hz`](tutti_core::Hz), which is its
+    /// inverse.
     fn poll_range_inner(
         &self,
         unit_id: MidiUnitId,
@@ -211,6 +217,8 @@ impl MidiSnapshot {
         written
     }
 
+    /// Whether `unit_id` has any stored events at all. Ignores cursors, so it
+    /// stays true for a fully-replayed unit until [`reset`](Self::reset).
     pub fn has_events(&self, unit_id: MidiUnitId) -> bool {
         self.events.get(&unit_id).is_some_and(|e| !e.is_empty())
     }
@@ -528,8 +536,9 @@ mod tests {
 
     #[test]
     fn nan_beat_does_not_panic_the_sort() {
-        // A NaN beat used to panic `partial_cmp(..).unwrap()`; now it's kept in
-        // place rather than crashing the (audio-adjacent) builder.
+        // A NaN beat must not reach a `partial_cmp(..).unwrap()`: the builder
+        // is audio-adjacent, so an unorderable beat is kept in place rather
+        // than panicking.
         let mut snap = MidiSnapshot::new();
         let unit = MidiUnitId::new(9);
         snap.add_event(unit, Beat(0.0), note_on(60, 100));

@@ -1,4 +1,4 @@
-//! [`Unit`] — the public filter: frame in, frame out, one [`Vocoder`] per channel.
+//! [`Unit`] — the public filter: frame in, frame out, one `Vocoder` per channel.
 //!
 //! Owns no source. The caller ticks its own source and feeds each frame in,
 //! which is why stretch and pitch compose here rather than fight: the hop
@@ -20,16 +20,34 @@ use tutti_core::{
 ///
 /// A pure frame-in → frame-out **filter**: it owns NO source. The caller ticks
 /// the real audio source itself and feeds the resulting frame in as this unit's
-/// `input`; what lives here is the latent phase-vocoder state (one [`Vocoder`]
-/// per channel, the scratch buffers, the atomics).
+/// `input`; what lives here is the latent phase-vocoder state (one vocoder per
+/// channel, the scratch buffers, the atomics).
+///
+/// # Stretch, pitch and read rate are three different quantities
+///
+/// - [`set_stretch_factor`](Self::set_stretch_factor) takes a
+///   [`StretchFactor`] — duration scaling that leaves pitch alone, which is the
+///   operation `PlaybackRate` cannot express because resampling couples the two.
+/// - [`set_pitch_cents`](Self::set_pitch_cents) takes [`Cents`] — transposition
+///   that leaves duration alone.
+/// - [`input_rate`](Self::input_rate) returns a [`ReadRate`] — how fast a
+///   *placed* caller must advance its own source cursor. Derived from the
+///   stretch factor; never a user intent in itself.
+///
+/// # Real-time safety
+///
+/// Every buffer is allocated in
+/// [`with_fft_size_and_channels`](Self::with_fft_size_and_channels), and a
+/// clone's per-block scratch in [`AudioUnit::allocate`]. Neither `tick` nor
+/// `process` allocates or blocks; both are safe on the audio thread.
 ///
 /// # Channels
 ///
-/// One [`Vocoder`] per channel, plus one in/out [`RtScratch`] pair each. The
-/// vocoders are **independent** — there is no phase locking between them, so a
-/// correlated source can drift channel-to-channel. That was already true of the
-/// original stereo pair; widening does not make it worse, and fixing it is a
-/// separate question from width.
+/// One vocoder per channel, plus one in/out
+/// [`RtScratch`](tutti_core::RtScratch) pair each. The vocoders are
+/// **independent** — there is no phase locking between them, so a correlated
+/// source can drift channel-to-channel. Fixing that is a separate question from
+/// width.
 pub struct Unit {
     /// One per channel; the bank's length **is** the unit's width, so the
     /// scratch vectors are always the same length.
@@ -50,9 +68,9 @@ pub struct Unit {
     ///
     /// A counter, **not** `self as *const Self`. The address is not an identity:
     /// `Net::push(Box::new(unit))` moves the value, so a handle that claimed the
-    /// bank before the move could never release its own claim afterwards — the
-    /// guard would then fire on the legitimate successor. Found the hard way, by
-    /// this exact bug in `a_successor_generation_continues_the_stream`.
+    /// bank before the move could never release its own claim afterwards — and
+    /// the guard would then fire on the legitimate successor. Pinned by
+    /// `a_successor_generation_continues_the_stream`.
     pub(super) id: usize,
     pub(super) stretch_factor: Arc<AtomicF32>,
     pub(super) pitch_cents: Arc<AtomicF32>,
@@ -159,7 +177,12 @@ impl Unit {
         self.width.count() as usize
     }
 
-    /// Clamped into [`StretchFactor::MIN`]..=[`StretchFactor::MAX`].
+    /// Set the duration scaling, clamped into
+    /// [`StretchFactor::MIN`]..=[`StretchFactor::MAX`].
+    ///
+    /// Above unity the material gets longer, below it shorter, and pitch is
+    /// untouched either way. `&self` and a single atomic store, so a control
+    /// thread may call it while the audio thread ticks.
     pub fn set_stretch_factor(&self, factor: StretchFactor) {
         self.stretch_factor.store(
             StretchFactor::new_clamped(factor.get()).get(),
@@ -167,16 +190,28 @@ impl Unit {
         );
     }
 
+    /// The duration scaling currently in force, as last clamped and stored.
     pub fn stretch_factor(&self) -> StretchFactor {
         StretchFactor::new(self.stretch_factor.load(Ordering::Acquire))
     }
 
-    /// Arc for lock-free external control.
+    /// The stretch cell itself, for a caller driving it lock-free from
+    /// elsewhere — automation, or a pool holding the filter across voices.
+    ///
+    /// Writes through this handle bypass the clamp that
+    /// [`set_stretch_factor`](Self::set_stretch_factor) applies, so a caller
+    /// using it owns keeping the value inside
+    /// [`StretchFactor::MIN`]..=[`StretchFactor::MAX`].
     pub fn stretch_factor_arc(&self) -> Arc<AtomicF32> {
         Arc::clone(&self.stretch_factor)
     }
 
-    /// Clamped to ±2 octaves.
+    /// Set the transposition in [`Cents`], clamped to ±2400 (two octaves each
+    /// way).
+    ///
+    /// Duration is untouched: the resample that transposes is undone by the
+    /// hops. `&self` and a single atomic store, so it is safe alongside a
+    /// running audio thread.
     pub fn set_pitch_cents(&self, cents: Cents) {
         self.pitch_cents.store(
             cents.get().clamp(MIN_PITCH_CENTS, MAX_PITCH_CENTS),
@@ -184,24 +219,45 @@ impl Unit {
         );
     }
 
+    /// The transposition currently in force, as last clamped and stored.
     pub fn pitch_cents(&self) -> Cents {
         Cents::new(self.pitch_cents.load(Ordering::Acquire))
     }
 
-    /// Arc for lock-free external control.
+    /// The pitch cell itself, for a caller driving it lock-free from elsewhere.
+    ///
+    /// As with [`stretch_factor_arc`](Self::stretch_factor_arc), writes here
+    /// skip the ±2400-cent clamp and the caller owns the range.
     pub fn pitch_cents_arc(&self) -> Arc<AtomicF32> {
         Arc::clone(&self.pitch_cents)
     }
 
+    /// Engage or bypass the vocoder outright.
+    ///
+    /// Bypassing is not the same as setting unity stretch and zero pitch even
+    /// though both take the pass-through branch: this flag survives any later
+    /// parameter write, so a disabled unit stays silent-cost regardless of what
+    /// automation does to the atomics. Reported latency falls to zero either way
+    /// — see [`latency_samples`](Self::latency_samples).
     pub fn set_enabled(&mut self, enabled: bool) {
         self.enabled = enabled;
     }
 
+    /// Whether the vocoder is engaged at all, ignoring the current parameters.
+    ///
+    /// An enabled unit sitting at unity stretch and zero pitch still reports
+    /// `true` here while [`is_processing`](Self::is_processing) reports `false`.
     pub fn is_enabled(&self) -> bool {
         self.enabled
     }
 
     /// Whether the unit is doing anything but passing audio through.
+    ///
+    /// `false` when disabled, or when stretch is within `0.001` of unity *and*
+    /// pitch within half a cent of zero — both beneath audibility, so the unit
+    /// bypasses rather than paying for an FFT. This is the condition every other
+    /// branch keys off: latency, `tail`, and the fast paths in `tick` and
+    /// `process`.
     pub fn is_processing(&self) -> bool {
         self.enabled
             && ((self.stretch_factor().get() - StretchFactor::UNITY.get()).abs() > STRETCH_EPSILON
@@ -355,17 +411,16 @@ impl Unit {
     ///
     /// **Pitch is deliberately absent**, and this is the subtle half of the
     /// design. Pitch shifting is a resample, and the unit performs that resample
-    /// internally by consuming fed frames at
-    /// [`intake_rate`](Self::intake_rate). Folding the pitch ratio in here as
-    /// well would resample *twice* — once at the caller's cursor, once at the
-    /// intake — and the second cancels the first exactly. Measured: with pitch
-    /// folded in here, the output holds 440 Hz at every requested interval, which
-    /// is the same silent no-op this fix removed.
+    /// internally by consuming fed frames at its own intake rate. Folding the
+    /// pitch ratio in here as well would resample *twice* — once at the caller's
+    /// cursor, once at the intake — and the second cancels the first exactly.
+    /// Measured: with pitch folded in here the output holds 440 Hz at every
+    /// requested interval, a silent no-op rather than a transposition.
     ///
-    /// Contrast [`intake_rate`](Self::intake_rate), which carries both halves
-    /// because it *is* the resample. The two are not interchangeable despite both
-    /// being "samples consumed per output sample": one scales a cursor into a
-    /// wave, the other scales consumption of an already-produced stream.
+    /// The internal intake rate carries both halves because it *is* the
+    /// resample. The two are not interchangeable despite both being "samples
+    /// consumed per output sample": one scales a cursor into a wave, the other
+    /// scales consumption of an already-produced stream.
     ///
     /// `1.0` when the unit is bypassing, so a caller can apply it
     /// unconditionally.
@@ -425,18 +480,19 @@ impl Drop for Unit {
     /// to tick the bank it inherited. Without this the claim outlives the handle
     /// and every post-commit tick trips the guard.
     ///
-    /// The body is release-only, but **dropping a `Unit` is not free**: after it
-    /// runs, `channels: Arc<Bank>` is dropped too, and when that is the last
+    /// # Dropping a `Unit` is not real-time safe
+    ///
+    /// This body is release-only, but the drop that follows it is not: once it
+    /// returns, `channels: Arc<Bank>` is dropped too, and when that is the last
     /// reference the vocoders and block scratch (~192 KB at six channels) are
-    /// deallocated right there. This comment used to claim the opposite, which
-    /// was true of the body and false of the type.
+    /// deallocated right there. Read the *body* as free and the *type* as
+    /// expensive.
     ///
     /// That matters because `VoiceCommand::Remove` retires a slot inside
-    /// `drain_commands`, which runs from the audio callback. `VoicePool` now
-    /// hands removed slots to a retirement channel so the free happens on the
-    /// control thread — see `VoicePool::retired`. Any *other* caller dropping a
-    /// `Unit` on the audio thread has the same hazard and needs the same
-    /// treatment.
+    /// `drain_commands`, which runs from the audio callback. `VoicePool` hands
+    /// removed slots to a retirement channel so the free lands on the control
+    /// thread — see `VoicePool::retired`. Any other caller dropping a `Unit` on
+    /// the audio thread has the same hazard and needs the same treatment.
     fn drop(&mut self) {
         self.channels.release(self.id);
     }
@@ -668,13 +724,13 @@ impl AudioUnit for Unit {
     ///
     /// The render's isolation pass already calls this on every node of the clone
     /// before it reaches the worker, so the deep copy lands exactly where
-    /// concurrency begins and nowhere else. Cost is the ~96 KB per channel that
-    /// the commit path no longer pays, on a path that is already
-    /// admission-capped for being expensive.
+    /// concurrency begins and nowhere else — ~96 KB per channel, on a path that
+    /// is already admission-capped for being expensive.
     ///
-    /// Fresh state rather than a copy of the running one, matching what
-    /// `Unit::clone` used to produce: an isolated render starts its filter clean
-    /// rather than mid-frame on audio it will not emit.
+    /// Fresh state rather than a copy of the running one: an isolated render
+    /// starts its filter clean rather than mid-frame on audio it will not emit.
+    ///
+    /// Control thread only — it allocates.
     fn isolate(&mut self) {
         let geometry = self
             .channels

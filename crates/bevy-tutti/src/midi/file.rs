@@ -1,18 +1,67 @@
 //! MIDI files: **read as assets, written off the main thread**.
 //!
-//! ```ignore
-//! // Read — a handle, like any other asset.
-//! let handle: Handle<MidiFileAsset> = asset_server.load("song.mid");
-//! // ...later, once loaded:
-//! match &assets.get(&handle).unwrap().contents {
-//!     MidiFileContents::Smf(tracks) => { /* ... */ }
-//!     MidiFileContents::Clip(clip) => { /* ... */ }
-//! }
+//! **Write** — the request is an entity, and the result arrives on it. The bytes
+//! are the caller's: nothing here encodes, for the reason the last section
+//! gives.
 //!
-//! // Write — bytes some caller already encoded.
-//! commands
-//!     .spawn(MidiFileWrite::new("out.mid", bytes))
-//!     .observe(|done: On<MidiFileWritten>| { /* ... */ });
+//! ```rust
+//! use std::sync::{Arc, Mutex};
+//!
+//! use bevy_app::prelude::*;
+//! use bevy_ecs::prelude::*;
+//! use bevy_tutti::midi::{MidiFilePlugin, MidiFileWrite, MidiFileWritten};
+//! use tutti_core::Beat;
+//! use tutti_midi_file::{encode_midi_file, MidiWriteOptions, SmfMessage, SmfTimedEvent};
+//!
+//! let bytes = encode_midi_file(
+//!     &[vec![SmfTimedEvent {
+//!         time_beats: Beat(0.0),
+//!         channel: 0,
+//!         msg: SmfMessage::NoteOn { key: 60.into(), vel: 100.into() },
+//!     }]],
+//!     &MidiWriteOptions::default(),
+//! )
+//! .expect("one track encodes");
+//!
+//! let dir = tempfile::tempdir().expect("a temp dir");
+//! let landed: Arc<Mutex<Option<bool>>> = Arc::default();
+//! let seen = landed.clone();
+//!
+//! let mut app = App::new();
+//! app.add_plugins((
+//!     bevy_app::TaskPoolPlugin::default(),
+//!     // The read half registers an asset loader, so an `AssetServer` must exist.
+//!     bevy_asset::AssetPlugin::default(),
+//!     MidiFilePlugin,
+//! ));
+//! app.world_mut()
+//!     .spawn(MidiFileWrite::new(dir.path().join("out.mid"), bytes.clone()))
+//!     .observe(move |done: On<MidiFileWritten>| {
+//!         *seen.lock().unwrap() = Some(done.result.is_ok());
+//!     });
+//!
+//! // The IO runs on the task pool, so the app keeps ticking until it reports.
+//! for _ in 0..2000 {
+//!     app.update();
+//!     if landed.lock().unwrap().is_some() {
+//!         break;
+//!     }
+//!     std::thread::sleep(std::time::Duration::from_millis(2));
+//! }
+//! assert_eq!(*landed.lock().unwrap(), Some(true));
+//!
+//! // **Read** — a host takes `asset_server.load("song.mid")` and matches on the
+//! // loaded asset's `contents`. The loader is this call with the file's bytes,
+//! // which is the half worth showing without a file on disk:
+//! use bevy_tutti::midi::{MidiFileAsset, MidiFileContents};
+//!
+//! let asset = MidiFileAsset::from_bytes(&bytes).expect("the bytes we just encoded");
+//! match &asset.contents {
+//!     // Which arm you land in is decided by the leading magic bytes, not the
+//!     // extension — both containers wear `.mid`.
+//!     MidiFileContents::Smf(tracks) => assert_eq!(tracks.len(), 1),
+//!     MidiFileContents::Clip(_) => panic!("that was an SMF"),
+//! }
 //! ```
 //!
 //! # Why reads are assets and writes are not
@@ -36,11 +85,6 @@
 //! IO off the main thread owns a task pool better at it than a raw
 //! `std::thread`.
 //!
-//! An earlier version of this module put *both* halves on the task pool. That
-//! was a mistake of omission rather than of judgement — the reasoning weighed
-//! blocking-vs-async and never asked what the crate's existing convention for
-//! reading a file was.
-//!
 //! # The codecs stay pure; this is the only part that touches a path
 //!
 //! Encoding and decoding are separately callable on byte slices, and callers
@@ -60,7 +104,7 @@ use bevy_tasks::{block_on, futures_lite::future, AsyncComputeTaskPool, Task};
 // Straight from `tutti-midi-file`, not through `tutti-midi-hardware`'s re-export.
 // This module decodes bytes an asset loader already read; it opens no MIDI port,
 // so it must not depend on the crate that does — `midi-hardware` gates that one,
-// and reaching through it made *reading a `.mid` file* require an OS MIDI layer.
+// and reaching through it makes *reading a `.mid` file* require an OS MIDI layer.
 use tutti_midi_file::clip::MidiFileKind;
 use tutti_midi_file::smf::{tracks, SmfTrack};
 use tutti_midi_file::ParsedClipFile;
@@ -76,7 +120,9 @@ use tutti_midi_types::read_clip_file;
 /// other lacks, in a layer whose job is only to move bytes.
 #[derive(Debug)]
 pub enum MidiFileContents {
+    /// A Standard MIDI File: named tracks, 7-bit velocities.
     Smf(Vec<SmfTrack>),
+    /// A MIDI 2.0 Clip File: one stream, keeping 16-bit velocities.
     Clip(Box<ParsedClipFile>),
 }
 
@@ -89,6 +135,7 @@ pub enum MidiFileContents {
 /// by extension, so two loaders both claiming `.mid` could not be told apart.
 #[derive(Debug, bevy_asset::Asset, TypePath)]
 pub struct MidiFileAsset {
+    /// The decoded file, in whichever of the two containers it turned out to be.
     pub contents: MidiFileContents,
 }
 
@@ -124,8 +171,10 @@ impl MidiFileAsset {
 #[derive(Default, TypePath)]
 pub struct MidiFileAssetLoader;
 
+/// Why a [`MidiFileAsset`] load failed: unreadable, unrecognised, or malformed.
 #[derive(Debug, thiserror::Error)]
 pub enum MidiFileLoaderError {
+    /// The bytes could not be read at all.
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
     /// An SMF that did not parse.
@@ -139,6 +188,7 @@ pub enum MidiFileLoaderError {
     /// would lose which container was actually being read.
     #[error(transparent)]
     Clip(#[from] tutti_midi_types::ClipFileError),
+    /// The leading magic matched neither container, so no decoder was run.
     #[error("not a Standard MIDI File or a MIDI 2.0 Clip File")]
     UnknownFormat,
 }
@@ -174,11 +224,15 @@ impl AssetLoader for MidiFileAssetLoader {
 /// on the same entity. The entity is left in place for the caller to despawn.
 #[derive(Component, Debug, Clone)]
 pub struct MidiFileWrite {
+    /// Where to write. Created or truncated; no directories are made.
     pub path: PathBuf,
+    /// The encoded file, whole — this is written verbatim.
     pub bytes: Vec<u8>,
 }
 
 impl MidiFileWrite {
+    /// A request to write `bytes` to `path`. Spawn it on an entity to start the
+    /// write.
     pub fn new(path: impl Into<PathBuf>, bytes: Vec<u8>) -> Self {
         Self {
             path: path.into(),
@@ -212,7 +266,10 @@ impl MidiFileWriteInFlight {
 /// keeps the surrounding context in scope.
 #[derive(EntityEvent, Debug)]
 pub struct MidiFileWritten {
+    /// The request entity, still alive — the caller despawns it.
     pub entity: Entity,
+    /// Whether the write landed. An `Err` here is the filesystem's, never an
+    /// encoding failure: nothing in this module inspects the bytes.
     pub result: std::io::Result<()>,
 }
 

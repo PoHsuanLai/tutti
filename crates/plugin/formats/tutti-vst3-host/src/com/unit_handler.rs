@@ -29,7 +29,12 @@ pub enum UnitEvent {
     /// the list is invalid, and only otherwise names a single one. That is a
     /// sentinel, not an index — spending it as one reads before the start of
     /// whatever array holds the list.
-    ProgramListChanged { list_id: i32, program_index: i32 },
+    ProgramListChanged {
+        /// The program list to re-read.
+        list_id: i32,
+        /// A single stale program, or `-1` for "all of them" — see above.
+        program_index: i32,
+    },
     /// The unit ↔ bus mapping has changed (IUnitHandler2).
     UnitByBusChanged,
 }

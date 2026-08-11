@@ -7,7 +7,7 @@
 //! This module mirrors the engine's `midi/` *tier*, not a single crate — the
 //! exception to the one-module-per-engine-crate shape, because the four crates
 //! underneath don't each earn an adapter. `tutti-midi-types` is vocabulary and
-//! needs none; [`file`] adapts `tutti-midi-file` (codecs, no OS port);
+//! needs none; [`file`](mod@self::file) adapts `tutti-midi-file` (codecs, no OS port);
 //! [`hardware::device`] adapts `tutti-midi-hardware` and is gated with it
 //! behind `midi-hardware`; everything else adapts `tutti-midi-runtime`.
 //!
@@ -20,7 +20,7 @@
 //!   edge consults it.
 //! - [`hardware`] — the machine's MIDI ports: device lifecycle, MIDI-CI, and
 //!   every outbound drain toward an OS endpoint.
-//! - [`sequence`] and [`file`] stay ungrouped: beat-scheduled playback is
+//! - [`sequence`] and [`file`](mod@self::file) stay ungrouped: beat-scheduled playback is
 //!   policy over `endpoint`, and file IO is the `tutti-midi-file` adapter.
 //!
 //! The dependency arrows only point down the list ([`hardware`] names nothing
@@ -38,10 +38,21 @@
 //! [`endpoint::registration`] for how a node's sender gets on (and off) the
 //! bus.
 //!
-//! ```rust,ignore
-//! app.world_mut()
-//!     .resource_mut::<MidiTargetRegistry>()
-//!     .register::<tutti_soundfont::SoundFontUnit>();
+//! ```rust
+//! use bevy_app::prelude::*;
+//! use bevy_tutti::midi::{MidiTargetRegistry, TuttiMidiPlugin};
+//!
+//! let mut app = App::new();
+//! app.insert_resource(bevy_tutti::midi::test_support::midi_bus_for_test());
+//! app.add_plugins(bevy_asset::AssetPlugin::default());
+//! app.add_plugins(TuttiMidiPlugin);
+//!
+//! let mut registry = app.world_mut().resource_mut::<MidiTargetRegistry>();
+//! // One line per node type the build actually has. See [`endpoint::target`]
+//! // for why this cannot be a default list.
+//! # #[cfg(feature = "synth")]
+//! registry.register::<tutti_polysynth::PolySynth>();
+//! # let _ = &mut registry;
 //! ```
 
 pub mod endpoint;
@@ -49,7 +60,6 @@ pub mod hardware;
 pub mod inbound;
 pub mod sequence;
 
-/// MIDI file IO on the task pool.
 pub mod file;
 
 pub mod plugin;
@@ -61,10 +71,9 @@ pub mod plugin;
 /// mode the type exists to prevent. But a test that wants to prove registration
 /// works has no audio device and no pre-block, so it needs *some* way in.
 ///
-/// Gated on `cfg(test)`-equivalent visibility would not reach an integration
-/// test (a separate crate), hence a module rather than `#[cfg(test)]`. It is
-/// documented as test-only and named to make a production call site look wrong
-/// in review.
+/// A `#[cfg(test)]` gate would not reach an integration test, which is a
+/// separate crate — hence an ordinary public module, documented as test-only and
+/// named to make a production call site look wrong in review.
 pub mod test_support {
     use super::MidiBusRes;
 

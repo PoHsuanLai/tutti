@@ -10,11 +10,13 @@
 //! — the same discipline as [`MidiClipSource`](crate::MidiClipSource), so
 //! receiving gear locks tightly instead of chasing frame-quantised jitter.
 //!
-//! It is **not** a [`MidiUnitIn`](tutti_midi_types::MidiUnitIn): the processor input
-//! feeds internal synth routing (keyed by [`MidiUnitId`]), and System
-//! Real-Time messages aren't addressed to a unit, so they'd be dropped there.
-//! Instead the master pushes into a [`MidiSender`](crate::MidiSender) — the
-//! push half of a [`MidiMailbox`](crate::MidiMailbox) mailbox — whose paired
+//! It is **not** a [`MidiUnitIn`](tutti_midi_types::MidiUnitIn): the processor
+//! input feeds internal synth routing keyed by
+//! [`MidiUnitId`](tutti_midi_types::MidiUnitId), and System Real-Time messages
+//! are not addressed to a unit — there is no id to route them by, so they would
+//! be dropped there. Instead the master pushes into a
+//! [`crate::MidiSender`] — the push half of a
+//! [`MidiMailbox`](crate::MidiMailbox) mailbox — whose paired
 //! [`MidiReceiver`](crate::MidiReceiver) an off-RT pump drains to hardware
 //! MIDI-out. The sender's `queue(&self)` is lock-free, so there is no mutex on
 //! the audio path.
@@ -116,18 +118,36 @@ impl ClockMaster {
         }
     }
 
+    /// Turn clock generation on or off. Disabled masters emit nothing at all —
+    /// [`tick`](Self::tick) returns immediately, without even reading the
+    /// transport. `&self` and lock-free, so a control thread may flip it while
+    /// the audio thread ticks.
+    ///
+    /// Enabling mid-playback does not synthesise a Start: the next tick sees
+    /// `prev_playing` false against a playing transport and emits the
+    /// Continue + Song Position that resyncs the receiver.
     pub fn set_enabled(&self, enabled: bool) {
         self.enabled.store(enabled, Ordering::Release);
     }
 
+    /// Whether clock generation is on.
     pub fn is_enabled(&self) -> bool {
         self.enabled.load(Ordering::Acquire)
     }
 
+    /// Turn MTC quarter-frame emission on or off, independently of the 24-PPQN
+    /// Beat Clock. Both ride the same mailbox; a receiver that wants only one
+    /// is served by disabling the other here rather than filtering downstream.
     pub fn set_send_mtc(&self, send: bool) {
         self.send_mtc.store(send, Ordering::Release);
     }
 
+    /// Set the SMPTE frame rate the MTC quarter-frames are denominated in.
+    ///
+    /// It appears twice in the stream: as the quarter-frame cadence
+    /// (frame-rate × 4) and encoded into the hours nibble. Changing it does not
+    /// reset the quarter-frame phase, so a receiver sees the new rate from the
+    /// next complete 8-piece cycle.
     pub fn set_mtc_fps(&self, fps: SmpteFrameRate) {
         self.mtc_fps.store(fps as u8, Ordering::Release);
     }
@@ -145,7 +165,8 @@ impl ClockMaster {
         if !self.enabled.load(Ordering::Acquire) || block_size == 0 || self.sample_rate.get() <= 0.0
         {
             // Keep prev_playing honest so re-enabling mid-playback emits a fresh
-            // Start/Continue rather than silently assuming we were already going.
+            // Start/Continue rather than silently assuming playback was already
+            // under way.
             self.prev_playing
                 .store(self.transport.is_rolling(), Ordering::Release);
             return;
@@ -186,9 +207,11 @@ impl ClockMaster {
         if tempo.get() <= 0.0 {
             return;
         }
-        // The shared derivation, rather than a third hand-rolled copy. Kept as
-        // the `BeatDuration` it returns: this is a rate, and `beat` below is a
-        // position, and they used to reach `tick_mtc` as two bare `f64`s.
+        // Kept as the `BeatDuration` the shared derivation returns rather than
+        // unwrapped to f64: this is a *span* of beats per sample, while `beat`
+        // below is a *position*. Both are beats-denominated and neither is an
+        // `Hz` — a beat-synced rate is beats-per-cycle, the inverse of a
+        // frequency. Unwrapping either lets the two mix silently.
         let beats_per_sample = tutti_core::transport::beats_per_sample(tempo, self.sample_rate);
         let expected_advance = beats_per_sample * block_size as f64;
         let is_edge = playing && !was_playing;
@@ -206,14 +229,14 @@ impl ClockMaster {
         // --- 24-PPQN clock ticks --------------------------------------------
         // Emit a 0xF8 at every 1/24-beat boundary inside the block window
         // [beat, beat + expected_advance), sample-accurate. `tick_beats` is the
-        // clock-tick spacing in beats (1/24). We find the first tick boundary at
-        // or after `beat` and walk forward.
+        // clock-tick spacing in beats (1/24). The walk starts at the first tick
+        // boundary strictly after `beat` and steps forward.
         let tick_beats = BeatDuration(1.0 / PPQN);
         let end_beat = beat + expected_advance;
         let max_offset = (block_size - 1) as u32;
-        // First tick index strictly *after* `beat`. `floor + 1` guarantees we
-        // skip a boundary sitting exactly on `beat` (already emitted at the tail
-        // of the previous block) — using `ceil` would re-send that boundary.
+        // First tick index strictly *after* `beat`. `floor + 1` skips a boundary
+        // sitting exactly on `beat`, which the tail of the previous block
+        // already emitted — `ceil` would re-send it.
         let mut tick_idx = (beat.get() / tick_beats.get()).floor() as i64 + 1;
         loop {
             let tick_beat = Beat(tick_idx as f64 * tick_beats.get());
@@ -450,7 +473,7 @@ mod tests {
                 clock_ticks += 1;
             }
         }
-        // Over ~1 beat we expect 24 ticks (allow ±1 for boundary rounding).
+        // Over ~1 beat, 24 ticks are expected (allow ±1 for boundary rounding).
         assert!(
             (clock_ticks as i64 - 24).abs() <= 1,
             "expected ~24 clock ticks over one beat, got {clock_ticks}"
@@ -548,7 +571,7 @@ mod tests {
 
     #[test]
     fn generated_clock_round_trips_through_decoder() {
-        // The strongest check: feed our own output into the decoder and confirm
+        // The strongest check: feed this master's own output into the decoder and confirm
         // it recovers the tempo and beat — the in-repo loopback from the plan.
         let sr = 48_000.0;
         let (cm, transport, cons) = master(120.0, sr);

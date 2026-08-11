@@ -9,18 +9,26 @@ use super::prefetch::SharedReader;
 use super::rt_state::RtState;
 use crate::voice::types::Direction;
 
+/// Where the reader stands relative to an active loop, as classified each
+/// butler cycle by [`ChannelPlan::check_loop_status`].
+///
+/// Positions throughout are file **frames**, matching `read_position`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum LoopStatus {
+    /// Nothing to do: not looping, or still clear of the loop end.
     Normal,
-    /// Within crossfade distance of loop end.
+    /// Within `crossfade_frames` of the loop end — time to arm the loop
+    /// crossfade, before the wrap rather than at it.
     ApproachingEnd,
-    /// At or past loop end; value is loop start position to wrap to.
+    /// At or past the loop end. Carries the loop start **frame** to wrap to.
     AtEnd(u64),
 }
 
-/// Loop playback configuration.
+/// Loop playback configuration for one streaming channel.
 pub(crate) struct LoopConfig {
+    /// `(start, end)` in file **frames**, half-open.
     pub(crate) range: (u64, u64),
+    /// Crossfade length in **frames**; 0 disables the fade and wraps hard.
     pub(crate) crossfade_frames: usize,
     /// Cached fadein samples from loop start; avoids re-reading on each loop.
     /// Flat interleaved at the region ring's width.
@@ -60,7 +68,11 @@ pub(crate) struct Link {
 /// clone that must stay alive).
 pub struct ChannelPlan {
     pub(crate) link: Option<Link>,
-    /// Samples to pre-roll for plugin delay compensation.
+    /// How far to pre-roll this channel's read head for plugin delay
+    /// compensation, in **frames** — subtracted from every target file position,
+    /// so a larger preroll seeks earlier. Sourced from the published
+    /// compensation table, whose entries are [`Samples`](tutti_core::Samples) at
+    /// the session rate.
     pub(crate) pdc_preroll: u64,
     pub(crate) rt_state: Arc<RtState>,
 }
@@ -158,7 +170,11 @@ impl ChannelPlan {
         LoopStatus::Normal
     }
 
-    /// Mirrors to `rt_state` since it's behind an `Arc` with interior mutability.
+    /// Bracket a reposition, so the audio thread mutes rather than rendering a
+    /// stream whose read head is moving.
+    ///
+    /// Takes `&self`: the flag lives in the `Arc`-shared `RtState`, which has
+    /// interior mutability, so no exclusive borrow of the plan is needed.
     pub fn set_seeking(&self, seeking: bool) {
         self.rt_state.set_seeking(seeking);
     }

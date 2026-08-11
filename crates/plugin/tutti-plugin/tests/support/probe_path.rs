@@ -12,8 +12,8 @@
 //! `<profile>/deps/<name>` and hardlinks it up to `<profile>/<name>` without
 //! always refreshing the uplifted copy, so the more obvious path can be stale.
 //! A stale probe reverses results silently: the misbehaviour switch the test
-//! set does not exist in the old image, the plugin behaves well, and the test
-//! asserting the host survives misbehaviour passes for the wrong reason.
+//! sets does not exist in the stale image, the plugin behaves well, and the
+//! test asserting the host survives misbehaviour passes for the wrong reason.
 
 use std::path::PathBuf;
 use std::sync::OnceLock;

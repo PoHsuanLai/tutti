@@ -9,13 +9,12 @@
 //!
 //! [`LfoNode`] is `ModulatorNode<Lfo>` — the concrete, monomorphized LFO node
 //! the graph builds. Because `M` is a concrete type param (not `Box<dyn>`),
-//! `value()` inlines: codegen is identical to the old hand-inlined `LfoNode`,
-//! so the extraction is RT-cost-free.
+//! `value()` inlines, so the adapter is RT-cost-free.
 //!
 //! The waveform math (`LfoShape::evaluate_periodic`), the random stepper
-//! (`RandomState`), and the `Lfo` modulator now live in `tutti-mod`; this file
-//! is purely the adapter. `LfoShape` is re-exported so downstream `use
-//! tutti_units::LfoShape` keeps working.
+//! (`RandomState`), and the `Lfo` modulator live in `tutti-mod`; this file is
+//! purely the adapter. `LfoShape` is re-exported so `use
+//! tutti_units::LfoShape` resolves here.
 
 use tutti_core::Arc;
 use tutti_core::AtomicF32;
@@ -47,11 +46,22 @@ fn beat_phase(beat: tutti_core::Beat, beats_per_cycle: BeatDuration) -> Phase {
 /// modulation math — hence it lives here, not in `tutti-mod`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LfoMode {
+    /// Phase advances from the node's own sample clock at a rate in [`Hz`],
+    /// independent of the transport. The node takes no inputs, so it needs no
+    /// graph edge, and it keeps running while the transport is stopped.
     FreeRunning,
+    /// Phase is derived from the transport beat arriving on [`BEAT_PORTS`]
+    /// inputs, at a rate in [`BeatDuration`] beats per cycle. Sample-accurate
+    /// and identical offline, at the cost of an edge from the transport clock.
     BeatSynced,
 }
 
 impl LfoMode {
+    /// Returns the human-readable mode name (`"Free Running"` /
+    /// `"Beat Synced"`) for a UI mode selector.
+    ///
+    /// This is display text, not a stable identifier — do not parse or persist
+    /// it.
     pub fn name(&self) -> &'static str {
         match self {
             Self::FreeRunning => "Free Running",
@@ -142,11 +152,11 @@ impl<M: Modulator> ModulatorNode<M> {
     /// Free-running at `hz` cycles per second, switching to
     /// [`LfoMode::FreeRunning`].
     ///
-    /// **The mode switch is the point.** This took an `Hz` and left the mode
-    /// alone, so on a beat-synced node it wrote the span cell with a frequency
-    /// and the type system agreed:
-    /// `with_beat_sync(BeatDuration(4.0)).with_frequency(Hz(2.0))` gave a
-    /// 2-*beat* cycle, not 2 Hz. Setting a rate in one clock's unit now selects
+    /// **The mode switch is the point.** Both clocks share one cell, so taking
+    /// an `Hz` without selecting the clock would write a frequency into the
+    /// span reading with the type system agreeing —
+    /// `with_beat_sync(BeatDuration(4.0)).with_frequency(Hz(2.0))` would give a
+    /// 2-*beat* cycle, not 2 Hz. Setting a rate in one clock's unit selects
     /// that clock, which is the only reading under which both calls mean what
     /// they say.
     pub fn with_frequency(mut self, hz: impl Into<Hz>) -> Self {
@@ -163,10 +173,9 @@ impl<M: Modulator> ModulatorNode<M> {
     /// Takes a [`BeatDuration`] — a span, so a larger value is *slower*. The
     /// backing cell is a `Param<Hz>` because it is exposed as a raw `AtomicF32`
     /// for audio-rate modulation ([`frequency`](Self::frequency)); the span is
-    /// stored in it and read back through
-    /// [`beats_per_cycle`](Self::beats_per_cycle). The mode decides which of
-    /// the two readings applies, so every entry point that writes the cell has
-    /// to set it — see [`with_frequency`](Self::with_frequency).
+    /// stored in it and read back as a `BeatDuration`. The mode decides which
+    /// of the two readings applies, so every entry point that writes the cell
+    /// has to set it — see [`with_frequency`](Self::with_frequency).
     pub fn with_beat_sync(mut self, beats_per_cycle: impl Into<BeatDuration>) -> Self {
         self.mode = LfoMode::BeatSynced;
         self.frequency
@@ -180,36 +189,64 @@ impl<M: Modulator> ModulatorNode<M> {
         BeatDuration(f64::from(self.frequency.load().get()))
     }
 
-    /// Set the modulation depth, `-1.0` to `1.0`.
+    /// Set the modulation [`Depth`], clamped to `-1.0..=1.0`.
     ///
-    /// Bipolar since the `Depth` split: a negative depth inverts the
-    /// modulator, so `-1.0` is the same shape phase-flipped. This setter
-    /// previously clamped to `0.0..=1.0`, so a negative argument silenced
-    /// modulation instead of inverting it.
+    /// Bipolar: a negative depth inverts the modulator, so `-1.0` is the same
+    /// shape phase-flipped and `0.0` is flat. Values past full scale saturate
+    /// rather than wrapping.
     pub fn with_depth(self, depth: impl Into<Depth>) -> Self {
         self.depth.store(Depth::new_clamped(depth.into().get()));
         self
     }
 
-    /// Set the phase offset (0.0 - 1.0).
+    /// Set the [`PhaseIncrement`] offset, conventionally `0.0` to `1.0` for one
+    /// full cycle.
     ///
     /// Stored as given; the wrap happens where the offset is *applied*, via
-    /// `Phase::advance`. Wrapping here as well would be redundant, and the old
-    /// `% 1.0` was actively wrong for a negative offset — it left the value
-    /// negative, which then read off the front of the shape table.
+    /// `Phase::advance`, so any real value is valid. Wrapping here as well
+    /// would be redundant, and a bare `% 1.0` is actively wrong for a negative
+    /// offset — it leaves the value negative, which then reads off the front of
+    /// the shape table.
     pub fn with_phase_offset(self, offset: impl Into<PhaseIncrement>) -> Self {
         self.phase_offset.store(offset.into());
         self
     }
 
+    /// The shared rate cell, for wiring an audio-rate modulator onto this LFO's
+    /// own rate.
+    ///
+    /// **The reading depends on the mode**, because both clocks share this one
+    /// cell: [`Hz`] in [`LfoMode::FreeRunning`], beats per cycle in
+    /// [`LfoMode::BeatSynced`]. A writer that ignores the mode sets a rate in
+    /// the wrong clock's unit, and nothing refuses it — the typed setters
+    /// [`set_frequency`](Self::set_frequency) and
+    /// [`set_beats_per_cycle`](Self::set_beats_per_cycle) exist precisely
+    /// because they check.
+    ///
+    /// The handle is shared across clones, so a write reaches the live node.
     pub fn frequency(&self) -> Arc<AtomicF32> {
         self.frequency.as_atomic()
     }
 
+    /// The shared [`Depth`] cell, for modulating modulation depth.
+    ///
+    /// Bipolar, `-1.0..=1.0`: a negative depth inverts the shape rather than
+    /// silencing it, and `0.0` is flat. Unlike
+    /// [`set_depth`](Self::set_depth) this writes the raw cell, so out-of-range
+    /// values are **not** clamped here — the shape scales past full scale.
+    ///
+    /// The handle is shared across clones, so a write reaches the live node.
     pub fn depth(&self) -> Arc<AtomicF32> {
         self.depth.as_atomic()
     }
 
+    /// The shared [`PhaseIncrement`] offset cell, for phase-modulating the LFO.
+    ///
+    /// Read per sample and added to the running phase; the wrap happens at
+    /// application, so any real value is valid and a negative offset lags
+    /// rather than reading off the front of the shape.
+    ///
+    /// The handle is shared across clones, so a write reaches the live node.
     pub fn phase_offset(&self) -> Arc<AtomicF32> {
         self.phase_offset.as_atomic()
     }
@@ -236,10 +273,27 @@ impl<M: Modulator> ModulatorNode<M> {
         }
     }
 
+    /// Sets the modulation [`Depth`], clamped to `-1.0..=1.0`.
+    ///
+    /// Bipolar: `1.0` is the shape at full scale, `0.0` flat, `-1.0` the same
+    /// shape phase-flipped. Read once per sample, so a write lands on the next
+    /// sample of the block in flight.
+    ///
+    /// `&self`, and the cell is shared across clones, so this reaches a node
+    /// already live in the graph.
     pub fn set_depth(&self, depth: impl Into<Depth>) {
         self.depth.store(Depth::new_clamped(depth.into().get()));
     }
 
+    /// Sets the [`PhaseIncrement`] added to the running phase before the shape
+    /// is evaluated.
+    ///
+    /// Stored as given — the wrap to `[0, 1)` happens where the offset is
+    /// applied, so any real value is valid and a negative offset lags the
+    /// shape. `0.25` on a sine starts at the peak.
+    ///
+    /// `&self`, and the cell is shared across clones, so this reaches a node
+    /// already live in the graph.
     pub fn set_phase_offset(&self, offset: impl Into<PhaseIncrement>) {
         self.phase_offset.store(offset.into());
     }
@@ -275,8 +329,8 @@ impl<M: Modulator + Clone + Send + Sync + 'static> AudioUnit for ModulatorNode<M
     fn reset(&mut self) {
         self.phase = Phase::START;
         // The node owns the modulator's threaded state, so it resets it here to
-        // the seed — cleaner than the old node, which could not reach the
-        // modulator's internal RNG. Stateless modulators reset a `()`.
+        // the seed — this is what reaches a stateful modulator's RNG.
+        // Stateless modulators reset a `()`.
         self.mod_state = M::State::default();
     }
 
@@ -353,12 +407,12 @@ impl<M: Modulator + Clone + Send + Sync + 'static> AudioUnit for ModulatorNode<M
 
     fn route(&mut self, _input: &SignalFrame, _frequency: f64) -> SignalFrame {
         // A modulator's output is a running signal, not a statically-known
-        // constant, so report `Signal::Unknown` — fundsp's PDC/const-fold pass
-        // treats it as varying. (We deliberately don't try to fold a stopped
-        // deterministic LFO to a constant `Signal::Value`; that was a minor
-        // optimization whose only enabler — a per-modulator "is this foldable?"
-        // hook — has been dropped to keep the pure `Modulator` trait to
-        // `phase -> value`. `route` also must not step the modulator's state.)
+        // constant, so every shape reports `Signal::Unknown` and fundsp's
+        // PDC/const-fold pass treats it as varying. Folding a deterministic LFO
+        // to a constant `Signal::Value` would need a per-modulator "is this
+        // foldable?" hook, which the pure `Modulator` trait deliberately does
+        // not carry — it is `phase -> value` and nothing else. `route` must
+        // also not step the modulator's state.
         SignalFrame::new(1)
     }
 
@@ -411,10 +465,9 @@ mod tests {
 
     /// Setting a rate in one clock's unit selects that clock.
     ///
-    /// `with_frequency` used to leave the mode alone while writing the cell the
-    /// beat-synced reading uses, so this sequence produced a 2-beat cycle whose
-    /// author had asked for 2 Hz — the reciprocal confusion in the one place
-    /// the `SourceClock` split did not reach.
+    /// Both clocks share one cell, so a `with_frequency` that left the mode
+    /// alone would write an `Hz` into the beat-synced reading: this sequence
+    /// would produce a 2-beat cycle where its author asked for 2 Hz.
     #[test]
     fn setting_a_free_rate_leaves_beat_sync_behind() {
         let lfo = LfoNode::new(LfoShape::Sine)
@@ -532,9 +585,9 @@ mod tests {
 
     /// Negative depth inverts the modulator rather than silencing it.
     ///
-    /// This is a deliberate behaviour change from the `Depth` split: the old
-    /// setter clamped to `0.0..=1.0`, so `set_depth(-1.0)` stored `0.0` and
-    /// the LFO went flat. It now stores `-1.0` and phase-flips the shape.
+    /// `Depth` is bipolar: `set_depth(-1.0)` stores `-1.0` and phase-flips the
+    /// shape. Clamping to `0.0..=1.0` instead would store `0.0` and take the
+    /// LFO flat, which is silent in both senses.
     #[test]
     fn negative_depth_inverts_instead_of_silencing() {
         let mut positive = LfoNode::new(LfoShape::Square);
@@ -625,10 +678,10 @@ mod tests {
     #[test]
     fn test_route_reports_unknown_for_every_shape() {
         // A modulator's output is a running signal, so `route` reports
-        // `Signal::Unknown` for *every* shape — never a constant. This subsumes
-        // the old regression (Random must not be misreported as constant-0);
-        // now Sine, Random, and every other shape are uniformly Unknown, since
-        // we no longer try to fold a deterministic LFO to a `Signal::Value`.
+        // `Signal::Unknown` for *every* shape — never a constant. Sine, Random
+        // and the rest are uniformly Unknown; nothing folds a deterministic LFO
+        // to a `Signal::Value`. Covers the case where Random is misreported as
+        // constant-0.
         for shape in LfoShape::all() {
             let mut lfo = LfoNode::new(*shape);
             lfo.set_sample_rate(tutti_core::SampleRate(44100.0));

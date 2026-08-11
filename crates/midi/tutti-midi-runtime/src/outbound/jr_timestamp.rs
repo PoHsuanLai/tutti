@@ -134,8 +134,8 @@ pub const JR_CLOCK_INTERVAL: Duration = Duration::from_millis(100);
 ///
 /// This is what makes JR Timestamps mean anything. §7.2.2.3: a receiver that has
 /// seen no JR Clock "shall render those messages as soon as possible" — i.e. it
-/// discards our timestamps entirely. A stream that stamps but never clocks has
-/// done the work and gets none of the benefit.
+/// discards the sender's timestamps entirely. A stream that stamps but never
+/// clocks has done the work and gets none of the benefit.
 ///
 /// Driven by sample position rather than wall time, so it stays in step with the
 /// stream it clocks and is deterministic under test. The emitter is pure: ask it
@@ -336,7 +336,7 @@ impl JrReceiver {
         // A non-timestamp event: it happens at the pending timestamp. The interval
         // to report is the gap from the previous event's timestamp, already
         // returned when that timestamp arrived, so a bare event carries no *new*
-        // delay — return ZERO if we have a running clock, else None.
+        // delay — ZERO while a clock is running, else None.
         self.pending.map(|_| Duration::ZERO)
     }
 }

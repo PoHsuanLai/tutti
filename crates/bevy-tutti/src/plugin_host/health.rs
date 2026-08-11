@@ -32,10 +32,10 @@
 //! system — a second route to a value the engine already owns and will hand
 //! over on request.
 //!
-//! Reading it here keeps one owner. The engine latches the cause where the
-//! crash is noticed and `status()` returns it at any later time, so polling
-//! loses nothing but the few frames the debounce was already spending. A
-//! subscriber would arrive earlier and still have to wait out the same count.
+//! Reading it here keeps one owner, and costs nothing: the engine latches the
+//! cause where the crash is noticed and `status()` returns it at any later
+//! time, so a subscriber would arrive earlier and still have to wait out the
+//! same debounce count.
 //!
 //! [`PluginInvalidation::Crashed`]: tutti_plugin::handles::PluginInvalidation::Crashed
 //!
@@ -104,6 +104,9 @@ pub enum PluginLiveness {
 /// Not `Debug`: the in-flight snapshot is a `Task`, which is not.
 #[derive(Component, Default)]
 pub struct PluginHealth {
+    /// What this host believes about the plugin right now. Written only by
+    /// [`plugin_health_poll`]; a host reads it, or asks
+    /// [`is_dead`](Self::is_dead).
     pub status: PluginLiveness,
     /// The most recent state captured while healthy, if any.
     ///
@@ -144,18 +147,17 @@ impl PluginHealth {
     }
 }
 
-// # On deferring teardown — deliberately not done
+// # Deferring teardown into a graveyard — deliberately not done
 //
-// An earlier draft parked departing handles in a graveyard resource to keep the
-// bridge-thread join off the frame that removed them. Both halves of the premise
-// were wrong, and the shape is recorded here so it is not re-proposed.
+// Parking departing handles somewhere to keep the bridge-thread join off the
+// frame that removed them does not work, for two reasons.
 //
 // **A handle clone defers nothing.** The subprocess lifetime lives in an
 // `Arc<ProcessGuard>` shared between `PluginHandle` and the `PluginClient` in
 // the graph; the subprocess dies when the *last* `Arc` drops. Parking a clone
 // adds a reference rather than moving ownership, so the real teardown still
-// happens when the graph releases the node — the graveyard would only have
-// delayed the socket cleanup while keeping the process alive longer.
+// happens when the graph releases the node — a graveyard only delays the socket
+// cleanup while keeping the process alive longer.
 //
 // **And that teardown must stay where it is.** The node is dropped by
 // `commit_graph`, which is pinned to the main thread with a `NonSendMarker`
@@ -164,8 +166,8 @@ impl PluginHealth {
 // warning. Moving plugin drops anywhere else reintroduces the bug that marker
 // exists to prevent.
 //
-// The join itself is also far shorter than its worst case suggests: the bridge
-// thread parks with a one-millisecond timeout and the shutdown push unparks it
+// The join is also far shorter than its worst case suggests: the bridge thread
+// parks with a one-millisecond timeout and the shutdown push unparks it
 // immediately, so it waits out only the command actually in flight. The
 // ten-second bound needs a `save_state` crossing the wire at that instant.
 
@@ -227,16 +229,16 @@ pub fn plugin_health_poll(
 /// # Why the fetch is off-thread
 ///
 /// `save_state` is a blocking round-trip to the plugin subprocess, bounded by a
-/// **ten-second** timeout. This system runs in `Update`, so calling it directly
-/// put that whole worst case on the frame thread: a plugin that stopped
-/// answering — precisely the plugin whose state is most worth having — froze the
-/// app for ten seconds.
+/// **ten-second** timeout. This system runs in `Update`, so calling it inline
+/// would put that whole worst case on the frame thread: a plugin that stopped
+/// answering — precisely the plugin whose state is most worth having — freezes
+/// the app for ten seconds. The interval alone does not help; it makes the
+/// freeze rare rather than short, and rare-and-catastrophic is the harder bug
+/// to attribute.
 ///
-/// The interval mitigated the *cost* and not the *hazard*: it made the freeze
-/// rare rather than short, and rare-and-catastrophic is the harder bug to
-/// attribute. So the call moved to `AsyncComputeTaskPool`, the shape
-/// [`plugin_load_start`](super::load::plugin_load_start) already uses for the
-/// load itself, and this system only starts and collects.
+/// So the call runs on `AsyncComputeTaskPool`, the shape
+/// [`plugin_load_start`](super::load::plugin_load_start) uses for the load
+/// itself, and this system only starts and collects.
 ///
 /// Skipped entirely once a plugin is failing: the call would block against a
 /// peer that is already not answering, and would return `None` anyway.
@@ -249,8 +251,8 @@ pub fn plugin_state_snapshot(mut plugins: Query<(&PluginEmitter, &mut PluginHeal
         if let Some(task) = health.pending_snapshot.as_mut() {
             match block_on(future::poll_once(task)) {
                 // `None` from the plugin means it declined, or the bridge went
-                // down while we were asking. Keep the previous snapshot rather
-                // than overwriting a good one with nothing.
+                // down mid-call. Keep the previous snapshot rather than
+                // overwriting a good one with nothing.
                 Some(result) => {
                     health.pending_snapshot = None;
                     if let Some(state) = result {
@@ -402,12 +404,11 @@ mod tests {
 
     /// The engine's latched reason reaches the component verbatim.
     ///
-    /// This is the whole point of the change: the host used to write the fixed
-    /// string "bridge reported the plugin as crashed" for every death alike,
-    /// because the flag was a bool and the `BridgeError` behind it was dropped.
     /// Asserting on the *content* is what distinguishes reading the engine's
-    /// cause from inventing one — an assertion that merely checked for `Dead`
-    /// would pass against the placeholder.
+    /// cause from inventing one: an assertion that merely checked for `Dead`
+    /// would pass just as well against a fixed placeholder string, which is
+    /// what a host writes the moment the `BridgeError` behind the flag is
+    /// dropped instead of carried.
     #[test]
     fn a_dead_plugin_reports_the_engines_cause_not_a_placeholder() {
         let mut app = test_app();
@@ -515,11 +516,6 @@ mod tests {
         (app, entity, saves)
     }
 
-    /// Run frames until the in-flight snapshot resolves, or give up.
-    ///
-    /// The fetch is on the task pool, so the frame that starts it is not the
-    /// frame that collects it — a fixed frame count would be a race. Bounded so
-    /// a genuine hang fails the test rather than hanging the suite.
     /// Run frames until one full snapshot cycle has started *and* resolved.
     ///
     /// Both halves are driven here rather than by a frame count at the call
@@ -619,18 +615,15 @@ mod tests {
     /// the very `app.update()` that would release it — verified, it hangs
     /// indefinitely.
     ///
-    /// So the in-flight window that the guard exists for does not occur here at
-    /// all, and any assertion about it would pass whether the guard were
-    /// present or absent. That was confirmed the expensive way: an earlier
-    /// version of this test asserted the guard's behaviour and stayed **green**
+    /// So the in-flight window the guard exists for never occurs here, and any
+    /// assertion about it passes whether the guard is present or absent — a
+    /// version of this test asserting the guard's behaviour stayed **green**
     /// with the guard deleted.
     ///
-    /// The guard is still correct and still load-bearing — the app crates
-    /// (`dawai-frontend`, `dawai-model`, …) *do* enable `multi_threaded`, which
-    /// is the configuration it protects. Covering it needs an integration test
-    /// in a crate that enables that feature, which does not exist yet. Stated
-    /// rather than faked, because a test that cannot fail claims coverage it
-    /// does not have.
+    /// The guard is still load-bearing: a host that enables `multi_threaded` is
+    /// the configuration it protects. Covering it needs an integration test in
+    /// such a crate, which does not exist yet. Stated rather than faked,
+    /// because a test that cannot fail claims coverage it does not have.
     #[test]
     fn snapshots_happen_on_the_interval_not_every_frame() {
         let (mut app, entity, saves) = snapshot_app(Some(vec![9]));

@@ -1,11 +1,16 @@
 //! macOS live-resize observer.
 //!
-//! Bevy's `Update` schedule does not run during AppKit's modal live-
-//! resize tracking, so any plugin format that requires explicit
-//! `set_size` to reflow (CLAP, AU) lags one or more frames behind the
-//! host edge during a drag. We hook `NSWindowDidResizeNotification`
-//! directly, which fires on every step inside the tracking loop, and
-//! invoke a host-supplied resize callback synchronously.
+//! Bevy's `Update` schedule does not run during AppKit's modal live-resize
+//! tracking, so any plugin format that requires an explicit `set_size` to
+//! reflow (CLAP, AU) lags one or more frames behind the host edge during a
+//! drag. Hooking `NSWindowDidResizeNotification` directly — it fires on every
+//! step inside the tracking loop — and invoking a host-supplied callback
+//! synchronously closes that gap.
+//!
+//! Everything here is **main-thread only**, and structurally so: the observer
+//! lives in the `NonSend` [`LiveResizeRegistry`], never in a `Send + Sync`
+//! component, because its `Drop` calls AppKit's `removeObserver` and off-main
+//! AppKit is a hard crash rather than a warning.
 
 #![cfg(target_os = "macos")]
 
@@ -50,20 +55,19 @@ define_class!(
     unsafe impl NSObjectProtocol for LiveResizeObserver {}
 );
 
-/// RAII wrapper around a registered observer; drops it from the
-/// notification center on `Drop`.
+/// RAII wrapper around a registered observer; removes it from the notification
+/// center on `Drop`.
 ///
 /// **Deliberately not `Send`/`Sync`.** It owns a `Retained<NSView>` and its
 /// `Drop` calls `NSNotificationCenter::removeObserver`; AppKit is main-thread
-/// only, and an off-main `removeObserver` is a hard crash on macOS. This type
-/// previously carried `unsafe impl Send`/`Sync` purely so it could sit inside
-/// a plain Bevy `Component` — which put its drop wherever a `Commands` queue
-/// happened to be applied (e.g. `plugin_health_poll`, which is *not*
-/// main-thread pinned) or wherever the `World` was torn down.
+/// only, and an off-main `removeObserver` is a hard crash on macOS. That is
+/// what keeps it out of a Bevy `Component`, whose drop runs wherever a
+/// `Commands` queue happens to be applied (`plugin_health_poll` is *not*
+/// main-thread pinned) or wherever the `World` is torn down.
 ///
-/// It now lives in [`LiveResizeRegistry`], a `NonSend` resource, so Bevy
-/// itself enforces main-thread access. `Drop` additionally re-checks the
-/// thread and leaks rather than crashing if it ever runs off-main.
+/// It lives in [`LiveResizeRegistry`], a `NonSend` resource, so Bevy itself
+/// enforces main-thread access. `Drop` additionally re-checks the thread and
+/// leaks rather than crashing if it ever runs off-main.
 pub(crate) struct LiveResizeHandle {
     observer: Option<Retained<LiveResizeObserver>>,
 }
@@ -113,11 +117,11 @@ impl Drop for LiveResizeHandle {
             return;
         };
         // Defence in depth. `LiveResizeRegistry` is `NonSend`, so Bevy should
-        // already guarantee we are on the main thread — but a drop is easy to
-        // move by accident, and `removeObserver` off-main is a hard crash, not
-        // a warning. If we are not on the main thread, deliberately leak the
-        // observer: it keeps a retain on an object AppKit still knows about,
-        // which is inert, whereas the crash is not recoverable.
+        // already guarantee the main thread — but a drop is easy to move by
+        // accident, and `removeObserver` off-main is a hard crash, not a
+        // warning. Off-main, deliberately leak the observer: it keeps a retain
+        // on an object AppKit still knows about, which is inert, whereas the
+        // crash is not recoverable.
         if MainThreadMarker::new().is_none() {
             debug_assert!(
                 false,
@@ -139,8 +143,8 @@ impl Drop for LiveResizeHandle {
 ///
 /// Inserted as a `NonSend` resource by `TuttiHostingPlugin`, so every system
 /// that touches it — and therefore every install and every drop — is pinned to
-/// the main thread by Bevy's own scheduler. This is what replaces the unsound
-/// `unsafe impl Send + Sync` that let the handle ride inside a `Component`.
+/// the main thread by Bevy's own scheduler. That pinning is the whole reason
+/// the observers live here rather than in a `Component`.
 #[derive(Default)]
 pub struct LiveResizeRegistry {
     handles: std::collections::HashMap<bevy_ecs::entity::Entity, LiveResizeHandle>,
@@ -167,8 +171,8 @@ impl LiveResizeRegistry {
 
 /// Reaps observers whose plugin lost its `PluginEditorOpen` without going
 /// through `set_editor_visible_observer` — most importantly
-/// `plugin_health_poll`, which is *not* main-thread pinned and used to
-/// drop the observer wherever its `Commands` queue happened to be applied.
+/// `plugin_health_poll`, which unwires a dead plugin and is *not* main-thread
+/// pinned, so it cannot drop the observer itself.
 ///
 /// `NonSendMut` pins this system to the main thread, so the AppKit
 /// `removeObserver` in `LiveResizeHandle::drop` always runs where it is legal.
@@ -186,16 +190,16 @@ pub fn reap_orphaned_live_resize_observers(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    //! These pin the main-thread guarantee as a *type* property.
+    //!
+    //! `LiveResizeHandle` owns a `Retained<NSView>` and its `Drop` calls
+    //! AppKit's `removeObserver`, which is a hard crash off the main thread.
+    //! Bevy requires `Component: Send + Sync`, so an `unsafe impl Send`/`Sync`
+    //! added to squeeze the handle into a component would put that drop
+    //! wherever a `Commands` queue is applied or the `World` is torn down.
+    //! Adding either impl makes these tests fail, which is the point.
 
-    // `LiveResizeHandle` owns a `Retained<NSView>`
-    // and its `Drop` calls AppKit's `removeObserver`, which is a hard crash
-    // off the main thread. It previously carried `unsafe impl Send`/`Sync`
-    // solely so it could ride inside a `Component` (Bevy requires
-    // `Component: Send + Sync`), which put that drop wherever a `Commands`
-    // queue was applied or the `World` was torn down. These tests pin the
-    // fix: reinstating either impl to squeeze it back into a component makes
-    // them fail.
+    use super::*;
     use std::marker::PhantomData;
 
     /// Autoref specialization: the inherent `check` (which requires

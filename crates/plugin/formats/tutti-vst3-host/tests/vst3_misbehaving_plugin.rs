@@ -218,10 +218,10 @@ fn drive_block(inst: &mut Vst3Instance) -> Vec<Vec<f32>> {
 /// A plugin that refuses activation must not be reported as activated.
 ///
 /// `setActive` returning `kResultFalse` is how a plugin says its licence check,
-/// dongle, or device claim failed — it is the *only* way it can say so. The host
-/// used to accept `kResultFalse` as success here, so it went on to call
-/// `process` on a plugin that had explicitly declined to become active. Nothing
-/// downstream could detect that, because the refusal had already been discarded.
+/// dongle, or device claim failed — it is the *only* way it can say so. Treating
+/// `kResultFalse` as success here means calling `process` on a plugin that
+/// explicitly declined to become active, and nothing downstream can detect it:
+/// the refusal has already been discarded.
 ///
 /// Steinberg's own suite (`validstatetransition.cpp`) fails a plugin unless
 /// `setActive` returns exactly `kResultTrue`, and `kResultTrue == kResultOk`.

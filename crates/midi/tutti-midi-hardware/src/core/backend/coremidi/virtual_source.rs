@@ -3,9 +3,9 @@
 //! The safe `coremidi` 0.8 wrapper only exposes a MIDI-1.0 virtual source
 //! (`MIDISourceCreate`), whose only send path is legacy packet bytes — which
 //! forces every event through `MidiEvent::to_midi1_bytes`, dropping any
-//! MIDI-2-only message (per-note controllers, **and JR Timestamps**). To publish
-//! a genuine UMP stream — the one transport where a JR Timestamp actually reaches
-//! the wire — we need a MIDI-2.0-protocol endpoint, created via
+//! MIDI-2-only message (per-note controllers, **and JR Timestamps**). Publishing
+//! a genuine UMP stream — the one transport where a JR Timestamp actually
+//! reaches the wire — needs a MIDI-2.0-protocol endpoint, created via
 //! `MIDISourceCreateWithProtocol` and fed `MIDIReceivedEventList` with raw UMP
 //! words. That FFI isn't in the safe wrapper, so this module owns the small
 //! `coremidi-sys` bridge for it.
@@ -61,12 +61,23 @@ unsafe impl Sync for UmpVirtualSource {}
 impl UmpVirtualSource {
     /// Create a MIDI-2.0 virtual source named `name`, visible to other apps as a
     /// UMP-capable MIDI source.
+    ///
+    /// Keep the value alive: dropping it disposes the endpoint and its client.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::CoreMidi`] if CoreMIDI refuses either the client or the
+    /// endpoint. A failed endpoint disposes the client rather than leaking it.
     pub fn new(name: &str) -> Result<Self> {
         let client_name = CFString::new(&format!("tutti-ump-src-{name}"));
         let source_name = CFString::new(name);
 
-        // Create our own client (the safe wrapper hides its `MIDIClientRef`).
+        // A client of this module's own: the safe wrapper hides its
+        // `MIDIClientRef`, and `MIDISourceCreateWithProtocol` needs the raw one.
         let mut client: MIDIClientRef = 0;
+        // SAFETY: `client_name` outlives the call; `client` is a valid
+        // out-pointer. A NULL notify proc with a NULL context is the documented
+        // "no notifications" form.
         let status = unsafe {
             MIDIClientCreate(
                 client_name.as_concrete_TypeRef(),
@@ -83,6 +94,8 @@ impl UmpVirtualSource {
         }
 
         let mut source: MIDIEndpointRef = 0;
+        // SAFETY: `client` was just created successfully; `source_name` outlives
+        // the call and `source` is a valid out-pointer.
         let status = unsafe {
             MIDISourceCreateWithProtocol(
                 client,
@@ -92,7 +105,9 @@ impl UmpVirtualSource {
             )
         };
         if status != 0 {
-            // Roll back the client we just made so we don't leak it.
+            // Roll back the client created above rather than leaking it.
+            // SAFETY: `client` is live and disposed exactly once on this path —
+            // the function returns immediately after.
             unsafe { MIDIClientDispose(client) };
             return Err(Error::CoreMidi {
                 operation: "create ump virtual source",
@@ -113,6 +128,11 @@ impl UmpVirtualSource {
     /// `words` is a complete UMP message; its length must match the message type
     /// (a JR Timestamp is 1 word, a note is 1–2, SysEx8 is 4). Empty input is a
     /// no-op. CoreMIDI copies the words, so no lifetime escapes this call.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::CoreMidi`] when the message will not fit the event list, or when
+    /// `MIDIReceivedEventList` returns a non-zero `OSStatus`.
     pub fn send_ump(&self, words: &[u32]) -> Result<()> {
         if words.is_empty() {
             return Ok(());
@@ -125,6 +145,10 @@ impl UmpVirtualSource {
         let list_ptr = list.as_mut_ptr();
         let list_size = std::mem::size_of::<MIDIEventList>();
 
+        // SAFETY: `list_ptr` addresses the whole `MIDIEventList`, and `Init`
+        // is what initialises it — `assume_init_ref` below is reached only
+        // after both calls have run. `list_size` is that allocation's real size,
+        // so `Add` cannot write past it, and `words` outlives the call.
         let status = unsafe {
             let mut packet = MIDIEventListInit(list_ptr, kMIDIProtocol_2_0 as MIDIProtocolID);
             packet = MIDIEventListAdd(
@@ -165,6 +189,8 @@ impl UmpVirtualSource {
 impl Drop for UmpVirtualSource {
     fn drop(&mut self) {
         debug!(name = %self.name, "Dropping native-UMP virtual MIDI source");
+        // SAFETY: both handles were created in `new` and are disposed exactly
+        // once, here. The endpoint goes first: it belongs to the client.
         unsafe {
             MIDIEndpointDispose(self.source);
             MIDIClientDispose(self.client);

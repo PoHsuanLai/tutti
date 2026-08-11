@@ -1,16 +1,17 @@
 //! Regression gate: sampler hot paths must not allocate per-buffer.
 //!
-//! Covers in-memory `MemorySource::process` + `tick` (the workhorse
-//! playback unit).
+//! Each gate here aborts the process (SIGABRT) on a regression rather than
+//! failing an assertion, because an allocation inside `assert_no_alloc`'s guard
+//! is caught where it happens rather than reported afterwards.
 //!
-//! `DiskSource` is not covered here — it requires a real
-//! `RegionReader` from the butler. Its non-alloc safety is guarded by
-//! the streaming-buffer regression tests in `tutti-sampler/butler`
-//! instead.
+//! Covered: in-memory `MemorySource::process` and `tick` (the workhorse playback
+//! unit), the voice-pool command drain, and `stretch::Unit`, whose
+//! fixed-capacity `RtScratch` buffers make `process` non-allocating for any
+//! block size up to the preallocated maximum.
 //!
-//! `TimeStretchUnit` (`stretch::Unit`) is covered here too: its
-//! fixed-capacity `RtScratch` scratch buffers make `process` non-allocating
-//! for any block size up to the preallocated maximum.
+//! `DiskSource` is **not** covered here: it needs a real `RegionReader` from a
+//! live butler, so its non-allocation is guarded by the streaming-buffer tests
+//! in the `butler` module instead.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
@@ -646,10 +647,10 @@ fn six_channel_clip_reaches_six_reader_outputs_without_allocating() {
 // Command-drain allocation gates.
 //
 // `drain_commands` runs from `tick`/`process`, so anything it builds is built
-// in the audio callback. Two paths used to: `AddVoice` constructed the stretch
-// filter (an FFT setup plus two `RtScratch` buffers PER CHANNEL), and
-// `UpdateLoop` allocated the pre-loop crossfade plus a temporary read buffer.
-// Both now happen off the callback — the sender builds the filter, and the
+// in the audio callback. Two paths are the standing temptation: `AddVoice`
+// needs a stretch filter (an FFT setup plus two `RtScratch` buffers PER
+// CHANNEL), and `UpdateLoop` needs a pre-loop crossfade plus a read buffer.
+// Both are kept off the callback — the sender builds the filter, and the
 // crossfade buffer is resident and re-pointed in place.
 //
 // These abort (SIGABRT) rather than fail if they regress, like every other gate

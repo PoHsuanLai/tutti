@@ -1,3 +1,5 @@
+//! Noise gate with external sidechain: attenuates below a threshold.
+
 use tutti_core::Arc;
 use tutti_core::AtomicF32;
 use tutti_core::{dsp::DEFAULT_SR, AudioUnit, BufferMut, BufferRef, SignalFrame};
@@ -107,10 +109,13 @@ impl GateCore {
 /// The audio inputs (`0..ch`) come first, then the sidechain inputs
 /// (`ch..2*ch`). For audio-rate threshold modulation the node can grow **one
 /// optional param-input port after all audio+sidechain inputs** (see
-/// [`Gate::with_param_inputs`]): if [`Gate::mod_threshold`] is set, the
-/// threshold port sits at index `2*ch` (e.g. index 4 for a stereo gate) and
-/// overrides the threshold atomic per sample. Absent → a plain `2*ch`-in node,
-/// bit-identical output to the unmodulated path (the common case).
+/// [`Gate::with_param_inputs`]): the threshold port sits at index `2*ch` —
+/// index 4 for a stereo gate — and overrides the threshold atomic per sample,
+/// in [`Db`]. Absent, the node is a plain `2*ch`-in node, which is the common
+/// case.
+///
+/// Ask [`threshold_port`](Self::threshold_port) rather than computing the
+/// index: it moves with the width.
 pub struct Gate {
     core: GateCore,
     channels: ChannelLayout,
@@ -121,7 +126,15 @@ pub struct Gate {
 }
 
 impl Gate {
-    /// Mono + mono sidechain: 2 inputs, 1 output.
+    /// Mono + mono sidechain: 2 inputs (audio, sidechain), 1 output.
+    ///
+    /// `threshold_db` is the sidechain level in [`Db`] at or above which the
+    /// gate opens. `attack` is how fast it opens, `hold` how long it stays open
+    /// after the signal falls back below the threshold, and `release` how fast
+    /// it then closes — all [`Seconds`]. Hold is what stops a gate chattering
+    /// on a signal hovering at the threshold.
+    ///
+    /// The closed floor is −80 dB; set it with [`with_range`](Self::with_range).
     pub fn mono(
         threshold_db: impl Into<Db>,
         attack: impl Into<Seconds>,
@@ -131,7 +144,11 @@ impl Gate {
         Self::with_channels(threshold_db, attack, hold, release, 1)
     }
 
-    /// Stereo + stereo sidechain: 4 inputs, 2 outputs, linked gate.
+    /// Stereo + stereo sidechain: 4 inputs (L, R, SC-L, SC-R), 2 outputs.
+    ///
+    /// The gate is **linked** — one open/closed decision from the loudest
+    /// sidechain channel, applied to both — so the two channels always gate
+    /// together. Parameters are as [`mono`](Self::mono).
     pub fn stereo(
         threshold_db: impl Into<Db>,
         attack: impl Into<Seconds>,
@@ -141,7 +158,11 @@ impl Gate {
         Self::with_channels(threshold_db, attack, hold, release, 2)
     }
 
-    /// Arbitrary channel count.
+    /// Arbitrary channel count, clamped to at least 1.
+    ///
+    /// `N` audio inputs, then `N` sidechain inputs, then `N` outputs, with one
+    /// **linked** gate decision from the loudest sidechain channel. Parameters
+    /// are as [`mono`](Self::mono).
     pub fn with_channels(
         threshold_db: impl Into<Db>,
         attack: impl Into<Seconds>,
@@ -180,11 +201,22 @@ impl Gate {
             .then_some(2 * self.channels.count() as usize)
     }
 
+    /// Sets how far the gate attenuates when closed, in [`Db`], clamped to at
+    /// most `0.0`.
+    ///
+    /// This is a *floor*, not a mute: `-80.0` (the default) is effectively
+    /// silent, while a gentler `-12.0` ducks the signal without removing it,
+    /// which sounds more natural on drums and room mics. `0.0` disables the
+    /// gate's effect entirely.
     pub fn with_range(mut self, range_db: impl Into<Db>) -> Self {
         self.core = self.core.with_range(range_db);
         self
     }
 
+    /// The audio channel width this gate was built for.
+    ///
+    /// It has `2 * channels` inputs (audio then sidechain) and `channels`
+    /// outputs, plus a threshold port if one was requested.
     pub fn channels(&self) -> u8 {
         self.channels.count() as u8
     }
@@ -196,38 +228,75 @@ impl Gate {
         self.channels
     }
 
+    /// The shared threshold cell in [`Db`] — the sidechain level at or above
+    /// which the gate opens.
+    ///
+    /// **A present threshold param-input port overrides this per sample.**
+    /// Shared across clones.
     pub fn threshold(&self) -> Arc<AtomicF32> {
         self.core.threshold_db.as_atomic()
     }
 
+    /// The shared attack-time cell in [`Seconds`] — how fast the gate opens
+    /// once the sidechain crosses the threshold.
+    ///
+    /// Very short attacks can click on low-frequency material; longer ones
+    /// soften the onset.
     pub fn attack_time(&self) -> Arc<AtomicF32> {
         self.core.timing.attack.as_atomic()
     }
 
+    /// The shared hold-time cell in [`Seconds`] — how long the gate stays fully
+    /// open after the sidechain falls back below the threshold.
+    ///
+    /// This is what stops chatter on a signal hovering at the threshold. The
+    /// release only begins once hold expires.
     pub fn hold_time(&self) -> Arc<AtomicF32> {
         self.core.hold.as_atomic()
     }
 
+    /// The shared release-time cell in [`Seconds`] — how fast the gate closes
+    /// after the hold expires.
     pub fn release_time(&self) -> Arc<AtomicF32> {
         self.core.timing.release.as_atomic()
     }
 
+    /// The shared range cell in [`Db`] — the attenuation floor when closed.
+    ///
+    /// At most `0.0`; `-80.0` is effectively silent, gentler values duck rather
+    /// than mute.
     pub fn range(&self) -> Arc<AtomicF32> {
         self.core.range_db.as_atomic()
     }
 
+    /// Whether the gate is currently more than half open — a **measurement**,
+    /// for driving an open/closed indicator.
+    ///
+    /// A threshold over [`gate_level`](Self::gate_level), so it flips partway
+    /// through the attack and release rather than at their edges.
     pub fn is_open(&self) -> bool {
         self.core.is_open()
     }
 
+    /// The gate's open fraction, `0.0` (fully closed) to `1.0` (fully open) — a
+    /// **measurement**, for driving a gate indicator.
+    ///
+    /// Unitless, and deliberately not an `Amplitude`: it is how far through its
+    /// envelope the gate is, not a signal level. The applied attenuation is
+    /// this fraction scaled into the range.
     pub fn gate_level(&self) -> f32 {
         self.core.gate_level()
     }
 
+    /// Sets the threshold in [`Db`], unclamped.
+    ///
+    /// With a threshold param-input port present this sets the *base* the port
+    /// overrides.
     pub fn set_threshold(&self, db: impl Into<Db>) {
         self.core.threshold_db.store(db.into());
     }
 
+    /// Sets the attack time in [`Seconds`], floored at 0.
     pub fn set_attack(&self, seconds: impl Into<Seconds>) {
         self.core
             .timing
@@ -235,6 +304,9 @@ impl Gate {
             .store(Seconds(seconds.into().get().max(0.0)));
     }
 
+    /// Sets the release time in [`Seconds`], floored at 0.
+    ///
+    /// Takes effect only after the hold time expires.
     pub fn set_release(&self, seconds: impl Into<Seconds>) {
         self.core
             .timing

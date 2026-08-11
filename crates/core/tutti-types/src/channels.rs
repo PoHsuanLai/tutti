@@ -75,9 +75,8 @@ pub struct ChannelLayout(u16);
 /// Names the common widths, so a diagnostic reads `Stereo` rather than
 /// `ChannelLayout(2)`.
 ///
-/// Hand-written rather than derived because the derive on a newtype prints the
-/// wrapper and the number, losing the name the enum this replaced used to give
-/// for free — and error messages had come to depend on it. `Recorder::start`
+/// Hand-written rather than derived: the derive on a newtype prints the wrapper
+/// and the number, and error messages depend on the name. `Recorder::start`
 /// reports a source/sink width mismatch by `Debug`-formatting both layouts, and
 /// "cannot record Stereo into 6 channels" is the line an author has to act on.
 impl core::fmt::Debug for ChannelLayout {

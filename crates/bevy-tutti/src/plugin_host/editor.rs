@@ -10,65 +10,62 @@ use crate::plugin_host::PluginEditorMainThread;
 /// Marks an entity as a loaded plugin with a control handle.
 ///
 /// Inserted by [`plugin_load_promote`](crate::plugin_host::load::plugin_load_promote)
-/// once the off-thread load resolves. Use the `handle` to control parameters,
-/// open/close the editor, save/load state, etc.
-///
-/// The audio node is tracked separately via `AudioNode`.
+/// once the off-thread load resolves. The audio node is tracked separately via
+/// `AudioNode`.
 ///
 /// Not `Debug` / `Reflect`: `PluginHandle` wraps a foreign plugin-control
-/// handle that doesn't implement `Debug` and isn't reflected.
+/// handle that implements neither.
 #[derive(Component, Clone)]
 pub struct PluginEmitter {
+    /// The control-thread handle: parameters, editor open/close, state
+    /// save/load. `Arc`-backed, so cloning it into a task is cheap.
     pub handle: tutti_plugin::handles::PluginHandle,
 }
 
 /// Present while a plugin's GUI editor is open in a separate Bevy window.
 ///
-/// `plugin_editor_idle_system` calls `handle.editor_idle()` every frame
-/// for entities that have this component.
+/// [`plugin_editor_idle_system`] calls `handle.editor_idle()` every frame for
+/// entities carrying this.
 ///
-/// Not `Reflect`: `EditorCapabilities` and the macOS live-resize observer
-/// are foreign types.
+/// Not `Reflect`: `EditorCapabilities` is a foreign type.
 #[derive(Component)]
 pub struct PluginEditorOpen {
-    /// The Bevy Window entity hosting the plugin editor.
+    /// The Bevy `Window` entity this host spawned to hold the plugin's editor.
     pub editor_window: Entity,
     /// Editor width in logical pixels as reported by the plugin.
     pub width: u32,
     /// Editor height in logical pixels as reported by the plugin.
     pub height: u32,
+    /// What the plugin says its editor supports — chiefly whether it is
+    /// resizable, which decides whether the window gets resize constraints.
     pub capabilities: tutti_plugin::handles::EditorCapabilities,
-    /// Last size written to either side. A `WindowResized` matching
-    /// this is an echo of our own write and is ignored.
+    /// Last size written to either side, in logical pixels. A `WindowResized`
+    /// matching this is an echo of this host's own write and is ignored.
     pub last_applied: (u32, u32),
-    // NOTE (macOS): the AppKit live-resize observer used to be a field here,
-    // which forced an `unsafe impl Send + Sync` over a `Retained<NSView>`
-    // solely to satisfy `Component: Send + Sync`. That placed an AppKit
-    // `removeObserver` inside a `Drop` that runs wherever a `Commands` queue
-    // is applied (`plugin_health_poll` is not main-thread pinned) or
-    // wherever the `World` is torn down — off-main AppKit is a hard crash on
-    // macOS. The observer now lives in the `NonSend` `LiveResizeRegistry`,
-    // keyed by this plugin entity, so Bevy pins every access and every drop
-    // to the main thread.
+    // The macOS AppKit live-resize observer is deliberately NOT a field here.
+    // It owns a `Retained<NSView>` whose `Drop` calls `removeObserver`, and a
+    // component's drop runs wherever a `Commands` queue is applied
+    // (`plugin_health_poll` is not main-thread pinned) or wherever the `World`
+    // is torn down — off-main AppKit is a hard crash. It lives in the
+    // `NonSend` `LiveResizeRegistry` keyed by this plugin entity, so Bevy pins
+    // every access and every drop to the main thread.
 }
 
 /// Present while a plugin's GUI editor is open in a window the **plugin** owns.
 ///
 /// The floating counterpart to [`PluginEditorOpen`], and a separate component
 /// rather than an `Option<Entity>` on that one. The difference is not a missing
-/// field — it is that every system keyed on `PluginEditorOpen` exists to manage
-/// a window this host spawned: resize it, echo-suppress its `WindowResized`,
-/// despawn it on close. None of that applies to a window the host did not
-/// create, so those systems should not match a floating editor at all, and an
+/// field — every system keyed on `PluginEditorOpen` exists to manage a window
+/// this host spawned (resize it, echo-suppress its `WindowResized`, despawn it
+/// on close), and none of that applies to a window the host did not create. An
 /// `Option` would make each of them carry a `None` arm for a case that is not
-/// theirs.
+/// theirs; a separate component makes them simply not match.
 ///
 /// What the two share — "an editor is open", which drives idle ticking — is
-/// expressed by [`editor_is_open`] rather than by one component standing for
-/// both.
+/// [`editor_is_open`].
 ///
 /// Carries no size: the plugin owns the window, so there is no geometry here
-/// for the host to apply. See `ClapLoaded::open_floating_editor`.
+/// for the host to apply.
 #[derive(Component)]
 pub struct PluginFloatingEditorOpen;
 
@@ -86,11 +83,13 @@ pub fn editor_is_open(
     embedded.get(entity).is_ok() || floating.get(entity).is_ok()
 }
 
-/// Intermediate state: a Window has been spawned but `open_editor` hasn't
-/// been called yet (waiting for the native handle to become available).
+/// Intermediate state: a `Window` has been spawned but `open_editor` has not
+/// been called yet, because the native handle does not exist until Bevy has
+/// created the window.
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq, Hash, Reflect)]
 #[reflect(Component)]
 pub struct PendingPluginEditor {
+    /// The `Window` entity awaiting its native handle.
     pub window_entity: Entity,
 }
 
@@ -98,43 +97,71 @@ pub struct PendingPluginEditor {
 ///
 /// The one way to drive editor visibility:
 ///
-/// ```ignore
-/// commands.trigger(SetEditorVisible::show(entity));
-/// commands.trigger(SetEditorVisible::hide(entity));
-/// commands.trigger(SetEditorVisible::toggle(entity));   // menu item / double-click
+/// ```rust
+/// use bevy_app::prelude::*;
+/// use bevy_ecs::prelude::*;
+/// use bevy_tutti::plugin_host::{SetEditorVisible, Visibility};
+///
+/// /// Records what the host asked for. In a real app the observer reading these
+/// /// is `TuttiHostingPlugin`'s, and it drives a native child window.
+/// #[derive(Resource, Default)]
+/// struct Asked(Vec<Visibility>);
+///
+/// fn drive_editor(In(entity): In<Entity>, mut commands: Commands) {
+///     commands.trigger(SetEditorVisible::show(entity));
+///     commands.trigger(SetEditorVisible::hide(entity));
+///     commands.trigger(SetEditorVisible::toggle(entity)); // menu item / double-click
+/// }
+///
+/// let mut app = App::new();
+/// app.init_resource::<Asked>();
+/// let plugin = app.world_mut().spawn_empty().id();
+/// app.world_mut()
+///     .entity_mut(plugin)
+///     .observe(|ask: On<SetEditorVisible>, mut asked: ResMut<Asked>| {
+///         asked.0.push(ask.visibility);
+///     });
+/// app.world_mut().run_system_cached_with(drive_editor, plugin).unwrap();
+///
+/// // Three asks reached the entity, `Toggle` still unresolved — it is resolved
+/// // inside the observer, where `PluginEditorOpen` is authoritative.
+/// assert_eq!(
+///     app.world().resource::<Asked>().0,
+///     vec![Visibility::Show, Visibility::Hide, Visibility::Toggle],
+/// );
 /// ```
 ///
-/// # Why one event rather than an open-component and a close-event
+/// # Why one event and not a caller-side "am I open?" check
 ///
-/// This replaced a trigger *component* (`OpenPluginEditor`, inserted and then
-/// removed by the system that saw it) beside an *event* (`CloseEditor`) — two
-/// shapes for one concern, and neither could express "toggle" without the caller
-/// first asking whether the editor was open. That question has no good answer
-/// from outside: a `Query<&PluginEditorOpen>` reads the previous frame, so a
-/// fast double-click could open twice or close a window already gone. Resolving
+/// A caller cannot answer that question from outside: a
+/// `Query<&PluginEditorOpen>` reads the previous frame, so a fast double-click
+/// could open twice or close a window already gone. Resolving
 /// [`Visibility::Toggle`] inside the observer, where `PluginEditorOpen` is
 /// authoritative, makes that unrepresentable.
 ///
-/// A component also implied a state it did not have: `OpenPluginEditor` was
-/// present for exactly one frame, so "is this plugin's editor open" was never
-/// answerable from it — that is `PluginEditorOpen`, which this event does not
-/// duplicate.
+/// This event does not say whether an editor *is* open — that is
+/// [`PluginEditorOpen`], and [`editor_is_open`] reads it.
 #[derive(EntityEvent, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct SetEditorVisible {
+    /// The plugin entity — the one carrying [`PluginEmitter`], not its window.
     pub entity: Entity,
+    /// What to do with its editor.
     pub visibility: Visibility,
 }
 
 /// What [`SetEditorVisible`] asks for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Visibility {
+    /// Open the editor. A no-op if one is already open or pending.
     Show,
+    /// Close the editor. A no-op if none is open.
     Hide,
-    /// Whichever the editor is not right now.
+    /// Whichever the editor is not right now, resolved inside the observer.
     Toggle,
 }
 
 impl SetEditorVisible {
+    /// Ask for `entity`'s editor to be shown.
     pub fn show(entity: Entity) -> Self {
         Self {
             entity,
@@ -142,6 +169,7 @@ impl SetEditorVisible {
         }
     }
 
+    /// Ask for `entity`'s editor to be closed.
     pub fn hide(entity: Entity) -> Self {
         Self {
             entity,
@@ -149,6 +177,7 @@ impl SetEditorVisible {
         }
     }
 
+    /// Flip `entity`'s editor between open and closed.
     pub fn toggle(entity: Entity) -> Self {
         Self {
             entity,
@@ -157,17 +186,19 @@ impl SetEditorVisible {
     }
 }
 
-/// Ticks `editor_idle()` on all plugins that have `PluginEditorOpen`.
+/// Ticks `editor_idle()` on every plugin with an editor open, so its GUI can
+/// redraw and process events.
 ///
-/// Call this in Bevy's `Update` schedule. Plugin GUIs require periodic
-/// idle ticks to handle redraws and event processing.
-/// Ticked for **both** hosting modes: a plugin's GUI needs its main-thread
+/// Runs in Bevy's `Update` schedule, and **main-thread pinned** by the
+/// [`PluginEditorMainThread`] non-send param: plugin GUI frameworks assume it.
+///
+/// Ticked for **both** hosting modes — a plugin's GUI needs its main-thread
 /// slice whether or not this host owns the window it draws into. Querying only
-/// `PluginEditorOpen` would leave a floating editor unpumped, which presents as
-/// a frozen UI rather than as a missing one.
+/// [`PluginEditorOpen`] would leave a floating editor unpumped, which presents
+/// as a frozen UI rather than as a missing one.
 ///
-/// `Or` rather than two systems, so the tick happens once per entity even for a
-/// plugin that somehow carried both markers.
+/// One [`EditorOpenFilter`] rather than two systems, so the tick happens once
+/// per entity even for a plugin that somehow carried both markers.
 pub fn plugin_editor_idle_system(
     _main_thread: NonSend<PluginEditorMainThread>,
     query: Query<&PluginEmitter, EditorOpenFilter>,
@@ -179,11 +210,10 @@ pub fn plugin_editor_idle_system(
 
 /// "Has an editor open, in either hosting mode", as a query filter.
 ///
-/// Named rather than written inline at the one call site, because the call site
-/// cannot be tested: it needs a `PluginEmitter`, which needs a launched
-/// subprocess. The filter alone can be — see the tests — and it is the half
-/// that carries the bug: dropping the floating arm leaves such an editor
-/// unpumped, which looks like a frozen plugin rather than a missing one.
+/// Named rather than written inline at its one call site, because that call
+/// site cannot be tested: it needs a `PluginEmitter`, which needs a launched
+/// subprocess. The filter alone can be, and it is the half that carries the bug
+/// — see the tests.
 pub type EditorOpenFilter = Or<(With<PluginEditorOpen>, With<PluginFloatingEditorOpen>)>;
 
 /// Observer: the one entry point for editor visibility.
@@ -234,9 +264,9 @@ pub fn set_editor_visible_observer(
     }
 
     if want_visible {
-        // A plugin that owns its own window needs none from us, and there is no
-        // native handle to wait for — so this opens now rather than going
-        // through `PendingPluginEditor`'s two-phase dance.
+        // A plugin that owns its own window needs none from this host, and
+        // there is no native handle to wait for — so this opens now rather
+        // than going through `PendingPluginEditor`'s two-phase dance.
         //
         // Read from `Features` rather than from `EditorCapabilities`: this
         // decision happens *before* the editor exists, and capabilities are not
@@ -327,12 +357,16 @@ pub fn set_editor_visible_observer(
     );
 }
 
-/// Phase 2: once the native handle is available, call `open_editor` on the plugin.
+/// Phase 2 of showing an embedded editor: once Bevy has created the window and
+/// its native handle exists, call `open_editor` on the plugin, size the window
+/// to what the plugin reports, and parent it to the primary window.
+///
+/// Main-thread pinned. On failure the window this host spawned is despawned and
+/// [`PendingPluginEditor`] removed, so a refused editor leaves no orphan.
 pub fn plugin_editor_attach_system(
     _main_thread: NonSend<PluginEditorMainThread>,
-    // `NonSendMut` pins this system (and therefore every observer install and
-    // every observer drop) to the main thread — the AppKit requirement that
-    // the old `unsafe impl Send + Sync` was papering over.
+    // `NonSendMut` pins this system — and therefore every observer install and
+    // every observer drop — to the main thread, which AppKit requires.
     #[cfg(target_os = "macos")] mut live_resize_registry: NonSendMut<
         crate::plugin_host::live_resize::LiveResizeRegistry,
     >,
@@ -429,7 +463,7 @@ pub fn plugin_editor_attach_system(
                             )
                         };
                         // The observer is owned by the main-thread-only
-                        // registry, never by the (Send + Sync) component.
+                        // registry, never by a (Send + Sync) component.
                         if let Some(installed) = installed {
                             live_resize_registry.insert(entity, installed);
                         }
@@ -466,8 +500,13 @@ pub fn plugin_editor_attach_system(
     }
 }
 
-/// Forwards OS-driven editor-window resizes to the plugin and writes
-/// the plugin's snapped reply back to the window.
+/// Forwards OS-driven editor-window resizes to the plugin, and writes the
+/// plugin's snapped reply back to the window.
+///
+/// A `WindowResized` matching `last_applied` is an echo of this host's own
+/// write and is skipped, which is what stops the two sides trading resizes. A
+/// plugin that refuses outright has the window put back to the last size it
+/// accepted.
 pub fn plugin_editor_window_resize_system(
     _main_thread: NonSend<PluginEditorMainThread>,
     mut events: bevy_ecs::message::MessageReader<bevy_window::WindowResized>,
@@ -533,8 +572,8 @@ pub fn plugin_editor_resize_request_system(
     for (emitter, mut editor) in editors.iter_mut() {
         // No editor capability means no editor to resize — the same "nothing to
         // do" as a present editor with no pending request, so both collapse
-        // into one `None`. That collapse is now the handle method's, rather
-        // than repeated at each call site.
+        // into one `None` inside the handle method rather than at each call
+        // site.
         let Some(req) = emitter.handle.poll_editor_resize_request() else {
             continue;
         };
@@ -558,9 +597,8 @@ pub fn plugin_editor_resize_request_system(
             }
         }
 
-        // Drive onSize so the plugin lays out at the new bounds. If
-        // the plugin snaps further, last_applied gets a follow-up
-        // update — but we don't loop here.
+        // Drive onSize so the plugin lays out at the new bounds. A further
+        // snap gets one follow-up update; this deliberately does not loop.
         if let Ok(snapped) = emitter.handle.set_editor_size(req) {
             if (snapped.width, snapped.height) != (req.width, req.height) {
                 editor.last_applied = (snapped.width, snapped.height);
@@ -579,12 +617,12 @@ pub fn plugin_editor_resize_request_system(
 ///
 /// Routes the close through [`SetEditorVisible::hide`] so the native
 /// `close_editor()` runs before the window despawns, and removes the
-/// `ClosingWindow` marker so Bevy's default `close_when_requested` doesn't
-/// despawn the window out from under us.
+/// `ClosingWindow` marker so Bevy's default `close_when_requested` does not
+/// despawn the window out from under it.
 ///
-/// The user closing the window and a host calling `hide` are the same operation,
-/// so they share the one path rather than each tearing the editor down their own
-/// way.
+/// The user closing the window and a host calling `hide` are the same
+/// operation, so they share one path rather than each tearing the editor down
+/// their own way.
 pub fn plugin_editor_window_close_system(
     mut commands: Commands,
     mut close_events: bevy_ecs::message::MessageReader<bevy_window::WindowCloseRequested>,
@@ -604,24 +642,26 @@ pub fn plugin_editor_window_close_system(
 
 #[cfg(test)]
 mod tests {
+    //! A `PluginEmitter` needs a `PluginHandle`, which needs a launched
+    //! subprocess, so nothing here can put a real plugin in the world. What is
+    //! covered is the part that does not need one: `editor_is_open`, the
+    //! predicate every "is this plugin showing a UI" decision goes through.
+    //!
+    //! **Not covered here:** that a floating-capable plugin actually takes the
+    //! floating branch of `set_editor_visible_observer`. That needs a loaded
+    //! binary reporting `EDITOR_FLOATING`, and no floating-only CLAP plugin is
+    //! installed to be one. The branch is driven by a single
+    //! `Features::EDITOR_FLOATING` check, whose two arms are covered one crate
+    //! down by `editor_bits` in `tutti-plugin-server`.
+    //!
+    //! `editor_is_open` takes `Query`s, so it is exercised through a system
+    //! rather than called directly — a test that re-implemented the `||` would
+    //! pass whatever the function did.
+
     use super::*;
     use bevy_app::prelude::*;
 
-    /// A `PluginEmitter` needs a `PluginHandle`, which needs a launched
-    /// subprocess, so nothing here can put a real plugin in the world. What is
-    /// covered is the part that does not need one: [`editor_is_open`], the
-    /// predicate every "is this plugin showing a UI" decision goes through.
-    ///
-    /// **Not covered here:** that a floating-capable plugin actually takes the
-    /// floating branch of `set_editor_visible_observer`. That needs a loaded
-    /// binary reporting `EDITOR_FLOATING`, and no floating-only CLAP plugin is
-    /// installed to be one. The branch is driven by a single
-    /// `Features::EDITOR_FLOATING` check, whose two arms are covered one crate
-    /// down by `editor_bits` in `tutti-plugin-server`.
-    ///
-    /// `editor_is_open` takes `Query`s, so it is exercised through a system
-    /// rather than called directly — a test that re-implemented the `||` would
-    /// pass whatever the function did.
+    /// What `record_open` saw: one `(entity, is_open)` pair per entity.
     #[derive(Resource, Default)]
     struct Observed(Vec<(Entity, bool)>);
 

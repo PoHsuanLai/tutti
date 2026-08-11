@@ -2,6 +2,22 @@
 //! [`Vst3Loaded`] (initialized plugin, no audio), and [`Vst3Instance`] (active,
 //! ready to `process`). Stages are encoded as distinct types — transitions
 //! consume `self` so the compiler enforces the ordering.
+//!
+//! The three types are one state machine split across three files, and the
+//! split follows the transitions: `library` builds a [`Vst3Loaded`] from a
+//! factory, `loaded` owns the pre-activation surface and the `activate` edge,
+//! `instance` owns the audio path and the `deactivate` edge back. Each edge is
+//! written in the file for the state it *produces*, which is why
+//! `Vst3Instance::from_loaded` — the activation sequence itself — lives in
+//! `instance` rather than beside `activate`.
+//!
+//! [`Vst3Loaded`] is the state most of this module's code is about: it holds
+//! the COM interfaces, the host context and the editor, and it survives an
+//! activate/deactivate round trip intact ([`Vst3Instance`] embeds it and
+//! `Deref`s to it). Only the scratch buffers and the process staging are
+//! created and destroyed by the transitions. Why the lifecycle is types rather
+//! than a flag on one type is argued at the crate root under *The lifecycle,
+//! and why it is shaped this way*.
 
 mod bus_buffers;
 #[cfg(feature = "conformance")]

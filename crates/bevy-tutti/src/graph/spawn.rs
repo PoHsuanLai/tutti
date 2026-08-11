@@ -27,13 +27,42 @@ use crate::graph::{AudioGraphRes, GraphDirty};
 /// [`AudioSources`](crate::graph::AudioSources) on this entity, and declare what
 /// reaches the speakers with [`MasterSources`](crate::graph::MasterSources):
 ///
-/// ```rust,ignore
-/// let osc = commands.spawn_audio_node(sine_hz::<f32>(440.0)).id();
-/// let filt = commands
-///     .spawn_audio_node(lowpass_hz(1000.0, 1.0))
-///     .insert(AudioSources::from(osc))
-///     .id();
-/// commands.insert_resource(MasterSources::from(filt));
+/// ```rust
+/// use bevy_app::prelude::*;
+/// use bevy_ecs::prelude::*;
+/// use bevy_tutti::prelude::*;
+/// use tutti_core::dsp::{lowpass_hz, sine_hz, Net, Source};
+///
+/// /// Marks the filter so the assertion below can find it again.
+/// #[derive(Component)]
+/// struct Filter;
+///
+/// fn build(mut commands: Commands) {
+///     let osc = commands.spawn_audio_node(sine_hz::<f32>(440.0)).id();
+///     let filt = commands
+///         .spawn_audio_node(lowpass_hz(1000.0, 1.0))
+///         .insert((Filter, AudioSources::from(osc)))
+///         .id();
+///     commands.insert_resource(MasterSources::mono_from(filt));
+/// }
+///
+/// let mut app = App::new();
+/// app.insert_resource(AudioGraphRes(Net::with_backend(2)));
+/// app.insert_resource(AudioEngineState::Running);
+/// app.add_plugins(GraphReconcilePlugin);
+/// app.add_systems(Startup, build);
+/// app.update();
+///
+/// let filt = app
+///     .world_mut()
+///     .query_filtered::<&AudioNode, With<Filter>>()
+///     .single(app.world())
+///     .unwrap()
+///     .0;
+/// let graph = app.world().resource::<AudioGraphRes>();
+/// // Port 0 of the filter is fed by the oscillator — the declaration reached
+/// // the engine. Without the `AudioSources`, this would still read `Zero`.
+/// assert!(matches!(graph.0.source(filt, 0), Source::Local(_, 0)));
 /// ```
 ///
 /// The entity is bound to the node via [`AudioNode`] only. A host that needs to

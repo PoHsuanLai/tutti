@@ -25,22 +25,65 @@ use tutti_core::metering::AudioTap;
 /// so a system that opens for recording cannot silently kill a system that
 /// opened for analysis. `close()` first to hand it over deliberately.
 ///
-/// ```rust,ignore
+/// ```rust
+/// use bevy_app::prelude::*;
+/// use bevy_ecs::prelude::*;
+/// use bevy_tutti::prelude::*;
+///
 /// fn start_analysis(tap: Res<AudioTapRes>) {
 ///     let consumer = tap.open().expect("tap is free");
 ///     std::thread::spawn(move || { /* drain `consumer` */ });
 /// }
+///
+/// let mut app = App::new();
+/// // `build_into` inserts this — closed, unlike the meter.
+/// app.insert_resource(AudioTapRes::default());
+/// assert!(!app.world().resource::<AudioTapRes>().is_open());
+///
+/// app.add_systems(Startup, start_analysis);
+/// app.update();
+///
+/// let tap = app.world().resource::<AudioTapRes>();
+/// assert!(tap.is_open());
+/// // One consumer at a time: a second opener is refused rather than silently
+/// // minting a ring the first one's owner will never see.
+/// assert!(tap.open().is_err());
 /// ```
 ///
 /// To *record* the master rather than analyse it, wrap the consumer in
 /// `TapIn` (`audio-io`) — the same ring, adapted to the `AudioIn` a pump takes:
 ///
-/// ```rust,ignore
-/// fn record_master(tap: Res<AudioTapRes>, mut commands: Commands) {
-///     let wav = WavOut::create(&path, sample_rate, ChannelLayout::STEREO, BitDepth::Float32)?;
+/// ```rust
+/// # #[cfg(feature = "audio-io")] {
+/// use bevy_app::prelude::*;
+/// use bevy_ecs::prelude::*;
+/// use bevy_tutti::prelude::*;
+///
+/// /// Where the take lands. A real host reads this off its project settings.
+/// #[derive(Resource)]
+/// struct TakePath(std::path::PathBuf);
+///
+/// fn record_master(tap: Res<AudioTapRes>, path: Res<TakePath>, mut commands: Commands) {
+///     // `create` returns an `Option` — `None` is "the path could not be
+///     // opened", which is the caller's to report.
+///     let wav = WavOut::create(&path.0, 48_000.0, ChannelLayout::STEREO, BitDepth::Float32)
+///         .expect("a writable path");
 ///     let src = TapIn::new(tap.open().expect("tap is free"));
 ///     commands.spawn(AudioPump::start(src, wav, 1024));
 /// }
+///
+/// let dir = tempfile::tempdir().expect("a temp dir");
+/// let mut app = App::new();
+/// app.add_audio_pump::<f32>();
+/// app.insert_resource(AudioTapRes::default());
+/// app.insert_resource(TakePath(dir.path().join("take.wav")));
+/// app.add_systems(Startup, record_master);
+/// app.update();
+///
+/// // The tap is open and one pump is running against it.
+/// assert!(app.world().resource::<AudioTapRes>().is_open());
+/// assert_eq!(app.world_mut().query::<&AudioPump<f32>>().iter(app.world()).count(), 1);
+/// # }
 /// ```
 #[derive(Resource, Clone, Default)]
 pub struct AudioTapRes(pub AudioTap);

@@ -1,4 +1,15 @@
 //! Disk streaming sample playback, fed by the butler thread.
+//!
+//! Two types, one tier: [`DiskSource`] is the `AudioUnit` that pops frames from
+//! the butler's ring and interpolates them, and [`DiskVoice`] wraps it in the
+//! transport placement gate a timeline clip needs. The split is the same one
+//! [`MemorySource`](super::memory_source::MemorySource) collapses into a single
+//! type, because the resident tier can gate by index where this one must ask the
+//! butler to reposition a stream.
+//!
+//! Every count crossing the ring is in **frames**; the interleaved buffers hold
+//! `frames * channels` samples. Nothing on the `tick`/`process` path allocates,
+//! locks, or blocks.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -18,30 +29,37 @@ use crate::butler::{RtState, SharedReader};
 /// Per-block fetch budget in **frames**, reserved once per unit so the RT
 /// `clear()` + `push()` in `process_normal_samples` can never reallocate.
 ///
-/// The old comment read "8192 frames at 4x speed", and both halves are wrong in
-/// ways worth recording, because the headroom this buys is accidental rather
-/// than designed:
+/// # The margin here is accidental, so check it rather than trust it
 ///
-/// - fundsp caps a `process` block at `MAX_BUFFER_SIZE = 64`, not 8192, so the
-///   real per-block demand is ~64 frames, not ~8192.
-/// - the read rate is not capped at 4x. It is `PlaybackRate` (≤ 4.0) times
-///   `SrcRatio`, which is `file_rate / session_rate` and has no clamp — a 192k
-///   file in a 44.1k session gives ≈ 4.35, so the true ceiling is ≈ 17.4x.
+/// Two quantities set the real demand, and neither is the one the constant's
+/// arithmetic suggests:
 ///
-/// Worst case is therefore `64 * 17.4 + 4 ≈ 1119` frames against 32,776
-/// reserved — a 29x margin. That margin survives the rate ceiling being 4x
-/// larger than documented only because the block size is 128x smaller. **If
-/// fundsp's block size ever grows, recompute this** rather than trusting the
-/// number.
+/// - fundsp caps a `process` block at `MAX_BUFFER_SIZE = 64` frames, so the
+///   per-block demand is ~64 frames, not ~8192.
+/// - the read rate is **not** capped at 4x. It is [`PlaybackRate`] (≤ 4.0) times
+///   [`SrcRatio`], which is `file_rate / session_rate` and has no clamp — a
+///   192 kHz file in a 44.1 kHz session gives ≈ 4.35, so the ceiling is ≈ 17.4x.
+///
+/// Worst case is `64 * 17.4 + 4 ≈ 1119` frames against 32,776 reserved — a 29x
+/// margin. It survives the rate ceiling being 4x larger than a naive reading
+/// only because the block size is 128x smaller. **If fundsp's block size grows,
+/// recompute this** rather than trusting the number.
 const MAX_FETCH_SAMPLES: usize = 8192 * 4 + 8;
 
-/// Disk streaming sampler with varispeed, seeking, and crossfade support.
+/// Disk streaming sampler with varispeed, seeking, and crossfade support — the
+/// streaming tier of [`VoiceSource`](super::types::VoiceSource), against
+/// [`MemorySource`](super::memory_source::MemorySource)'s resident one.
 ///
-/// The audio thread is the sole consumer of the ring. It holds the reader
-/// through a wait-free [`SharedReader`] (an `ArcSwap`, never a `Mutex`): each
-/// buffer it `load`s the current [`ReaderCell`](crate::butler::prefetch::ReaderCell)
-/// and pops from it. No lock ever sits on `tick`/`process`, so a butler
-/// operation can never stall the audio thread or be miscounted as an underrun.
+/// The audio thread is the **sole consumer** of the ring, and that is an
+/// invariant, not a description: it holds the reader through a wait-free
+/// `SharedReader` (an `ArcSwap`, never a `Mutex`), `load`ing the current reader
+/// cell each buffer and popping from it. No lock ever sits on `tick`/`process`,
+/// so a butler operation can neither stall the audio thread nor be miscounted as
+/// an underrun. A second consumer would steal frames from live playback, which
+/// is what [`isolate`](AudioUnit::isolate) exists to prevent.
+///
+/// Counts on the ring boundary are **frames**; `history` and `fetch_scratch`
+/// hold `frames * channels` samples interleaved.
 pub struct DiskSource {
     consumer: SharedReader,
     playing: AtomicBool,
@@ -173,21 +191,28 @@ impl DiskSource {
         }
     }
 
+    /// Start pulling frames from the ring. One relaxed atomic store, safe from
+    /// the audio thread.
     pub fn play(&self) {
         self.playing.store(true, Ordering::Relaxed);
     }
 
+    /// Emit silence and stop draining the ring. The butler keeps refilling —
+    /// this gates the consumer, not the producer.
     pub fn stop(&self) {
         self.playing.store(false, Ordering::Relaxed);
     }
 
+    /// Whether frames are being pulled from the ring. Both `tick` and `process`
+    /// check this before touching either handle, which is what makes clearing it
+    /// a complete severing in [`isolate`](AudioUnit::isolate).
     pub fn is_playing(&self) -> bool {
         self.playing.load(Ordering::Relaxed)
     }
 
     /// Publish a new output gain.
     ///
-    /// `&self` and stored in the shared [`RtState`], not in a field: a value
+    /// `&self` and stored in the shared `RtState`, not in a field: a value
     /// stored by value here is written on a frontend clone and discarded by
     /// `Net::migrate`, so a clip's fader would do nothing once its voice
     /// existed. See `tutti_units`' crate docs for the rule.
@@ -232,7 +257,12 @@ impl DiskSource {
         self.history[t * self.stride + c]
     }
 
-    /// Call after seek to reset interpolation state.
+    /// Zero the 4-tap history and the fractional position, after a seek.
+    ///
+    /// Without it the kernel interpolates across the discontinuity, smearing
+    /// pre-seek material into the first frames at the new position. Costs a
+    /// four-frame fade-in from silence instead. Allocation-free — this runs on
+    /// the audio thread.
     pub fn reset_interpolation(&mut self) {
         self.fractional_pos = 0.0;
         self.history.fill(0.0);
@@ -246,9 +276,9 @@ impl DiskSource {
         self.apply_pending_reset();
 
         // One composition point (`RtState::read_rate`) rather than multiplying
-        // speed by src_ratio by hand — this used to be written out twice in this
-        // function, and the fetch estimate below has to agree with the per-sample
-        // advance or the ring under- or over-runs.
+        // speed by src_ratio by hand: the fetch estimate below has to agree with
+        // the per-sample advance, or the ring under- or over-runs. Two
+        // hand-rolled products in one function is how they stop agreeing.
         let base_rate = self
             .shared_state
             .as_ref()
@@ -263,19 +293,19 @@ impl DiskSource {
         // consume for the next one.
         //
         // The `+ 4` above is interpolator head-room — the kernel needs taps
-        // ahead of the sample it emits — not extra material to play. This used
-        // to `clear()` the scratch each block and pop `samples_needed` frames
-        // fresh, so those 4 frames were popped off the ring and then dropped on
-        // the floor. The ring drained at `(size + 4) / size` while playback
-        // advanced at `size / size`: at a 64-frame block the source ran 68/64 =
-        // 6.25% fast, forever. That is a transposition — every partial of a
-        // streamed file came out a quarter-tone sharp, with the level and the
-        // waveform otherwise perfect, which is why nothing caught it. The
-        // in-memory tier indexes a `Wave` and has no such fetch step, so the
-        // same file played correctly if it happened to fit in RAM.
+        // ahead of the sample it emits — not extra material to play. Clearing
+        // the scratch each block and popping `samples_needed` frames fresh would
+        // pop those 4 frames off the ring and drop them on the floor: the ring
+        // drains at `(size + 4) / size` while playback advances at `size /
+        // size`, so at a 64-frame block the source runs 68/64 = 6.25% fast,
+        // forever. That is a transposition — every partial of a streamed file a
+        // quarter-tone sharp, with the level and the waveform otherwise perfect,
+        // which is what makes it so easy to miss. The in-memory tier indexes a
+        // `Wave` and has no fetch step, so the same file is correct whenever it
+        // happens to fit in RAM.
         //
         // Carrying the tail is also what makes the fetch estimate's `ceil()`
-        // harmless: rounding up now borrows from the next block instead of
+        // harmless: rounding up borrows from the next block instead of
         // discarding.
         let have = self.fetch_scratch.len() / ch;
         if samples_needed > have {
@@ -420,12 +450,11 @@ impl AudioUnit for DiskSource {
 
         self.apply_pending_reset();
 
-        // `read_rate`, not a hand-rolled `effective_speed * src_ratio`. This site
-        // multiplied the two by hand and so bypassed the one place the factors
-        // compose — which meant a stretch rate published into `RtState` reached
-        // `process` but not here, and a `tick`-driven voice kept draining its
-        // ring at full speed. Exactly the divergence `RtState::read_rate`'s doc
-        // warns about, in the function that pre-dated it.
+        // `read_rate`, not a hand-rolled `effective_speed * src_ratio`.
+        // Multiplying the two here bypasses the one place the factors compose,
+        // so a stretch rate published into `RtState` reaches `process` and not
+        // this path, and a `tick`-driven voice keeps draining its ring at full
+        // speed. Exactly the divergence `RtState::read_rate`'s doc warns about.
         let rate = self
             .shared_state
             .as_ref()
@@ -533,28 +562,21 @@ impl AudioUnit for DiskSource {
 }
 
 // ---------------------------------------------------------------------------
-// DiskVoice — a `DiskSource` wrapped in the transport
-// placement gate that the raw unit lacks.
+// DiskVoice — the transport placement gate over `DiskSource`.
 //
-// `DiskSource` streams whatever the butler ring feeds it, unaware of
-// *where on the timeline* the voice lives. A timeline clip only sounds while the
-// playhead is inside its [start_beat, start_beat + duration) window; outside it
-// must be silent. `MemorySource` bakes this in via `window_position`;
-// the streaming unit does not, so this wrapper adds the same gate:
+// Three outcomes per block:
 //
 //   * inside the window  → pull from the ring (the raw unit's normal path)
 //   * outside the window → emit silence, do not drain the ring
-//   * playhead *jumps* into/within the window (seek, loop wrap, first entry)
-//     → request a butler seek to the target sample so the ring refills from the
-//       right disk offset before we start pulling.
+//   * a jump into/within the window (seek, loop wrap, first entry, varispeed
+//     change) → publish a seek target so the ring refills from the right disk
+//     offset before pulling resumes.
 //
-// The gate math is a copy of `MemorySource::window_position`: it is the
-// single source of truth for "is the playhead inside this window, and at what
-// sample offset". Kept lock-free / alloc-free so `tick`/`process` stay RT-safe —
-// the actual disk seek is deferred to the butler; here we only publish the
-// requested target to the lock-free `RtState` (two atomic stores), which the
-// butler polls each loop and applies click-free. The butler owns the seek flag
-// so it can clear it; the reader never sets it.
+// The disk seek itself is the butler's; this side only stores the requested
+// target into the lock-free `RtState` (two atomic stores), which the butler
+// polls each loop and applies click-free. The butler owns the seeking flag so
+// that it can clear it — a reader that set the flag itself would mute forever,
+// there being no butler on that path to clear it.
 // ---------------------------------------------------------------------------
 
 /// Sentinel for "no seek has been requested yet" — any real target differs from
@@ -562,9 +584,9 @@ impl AudioUnit for DiskSource {
 const NO_SEEK_TARGET: SamplePosition = SamplePosition(f64::NEG_INFINITY);
 
 /// Max sample-offset drift between the position the ring is streaming and the
-/// position the transport wants before we treat it as a discontinuity (seek /
-/// loop wrap) rather than normal contiguous playback. One buffer's worth of
-/// slack at a generous block size keeps normal advance from tripping a seek.
+/// position the transport wants before the divergence counts as a discontinuity
+/// (seek / loop wrap) rather than normal contiguous playback. One buffer's worth
+/// of slack at a generous block size keeps normal advance from tripping a seek.
 const SEEK_EPSILON_SAMPLES: f64 = 4096.0;
 
 /// Wiring for [`DiskVoice::new`]: the placement gate plus the file
@@ -600,6 +622,21 @@ impl std::fmt::Debug for DiskVoiceConfig {
     }
 }
 
+/// A [`DiskSource`] plus the transport placement gate the raw unit lacks.
+///
+/// `DiskSource` streams whatever the butler ring feeds it, unaware of *where on
+/// the timeline* the voice lives. A timeline clip must sound only while the
+/// playhead is inside its `[start, start + duration)` window, and outside it must
+/// leave the ring alone; this wrapper is that gate. The gate itself is
+/// [`window_position`](super::interp::window_position), the same one
+/// [`MemorySource`](super::memory_source::MemorySource) uses — one definition of
+/// "is the playhead inside this window, and at what sample offset".
+///
+/// A *jump* into or within the window (seek, loop wrap, first entry, or a
+/// varispeed change) publishes a seek target to the shared state; the butler
+/// polls it and repositions the stream click-free. Nothing on this path
+/// allocates, locks, or touches the disk, so `tick`/`process` stay real-time
+/// safe.
 pub struct DiskVoice {
     inner: DiskSource,
     shared_state: Arc<RtState>,
@@ -614,11 +651,11 @@ pub struct DiskVoice {
     /// `wave.sample_rate()`.
     file_sample_rate: SampleRate,
 
-    /// The window-relative sample offset we last requested the butler stream from.
-    /// `NO_SEEK_TARGET` until the first inside-frame. Used to detect a
-    /// discontinuous jump: when the transport's desired offset diverges from the
-    /// contiguously-advanced expectation by more than `SEEK_EPSILON_SAMPLES`, we
-    /// issue a fresh seek.
+    /// The window-relative sample offset the butler was last asked to stream
+    /// from. `NO_SEEK_TARGET` until the first inside-frame. Detects a
+    /// discontinuous jump: a transport offset diverging from the
+    /// contiguously-advanced expectation by more than `SEEK_EPSILON_SAMPLES`
+    /// triggers a fresh seek.
     streamed_offset: SamplePosition,
 
     /// Whether the previous frame was inside the voice window. A false→true edge
@@ -682,7 +719,7 @@ impl DiskVoice {
     /// Tell the ring how fast a wrapping time-stretcher wants its source.
     ///
     /// `1 / stretch`, or [`ReadRate::UNITY`] when nothing wraps this voice. See
-    /// [`RtState::read_rate`] for why the factor lands there rather than at the
+    /// `RtState::read_rate` for why the factor lands there rather than at the
     /// per-sample advance: three consumers read that rate, and the fetch estimate
     /// is the one that fails silently when they disagree.
     ///
@@ -695,6 +732,12 @@ impl DiskVoice {
         self.shared_state.set_stretch_rate(rate);
     }
 
+    /// Move the voice's window to `[start_beat, start_beat + duration)`, or to
+    /// the whole source when `duration` is `None`.
+    ///
+    /// Forces a re-seek on the next inside-frame: a placement change can move
+    /// the window out from under the playhead, so the offset the ring is
+    /// streaming no longer corresponds to anything the transport wants.
     pub fn set_placement(&mut self, start_beat: Beat, duration: Option<BeatDuration>) {
         self.window = VoiceWindow {
             start: start_beat,
@@ -707,17 +750,22 @@ impl DiskVoice {
     }
 
     /// Publish a new output gain. `&self`: the write lands in the shared
-    /// [`RtState`], so no exclusivity is needed — and asking for `&mut` would
+    /// `RtState`, so no exclusivity is needed — and asking for `&mut` would
     /// wrongly suggest this is a restructuring change requiring a respawn.
     pub fn set_gain(&self, gain: Amplitude) {
         self.inner.set_gain(gain);
     }
 
+    /// The current output gain, read from the shared state — so a clone reports
+    /// what the frontend last published, not what it was cloned at.
     pub fn gain(&self) -> Amplitude {
         self.inner.gain()
     }
 
-    /// The file sample rate this stream decodes at.
+    /// The file sample rate this stream decodes at — `session_rate × src_ratio`,
+    /// so the sample-rate conversion is **already folded in**. Composing it with
+    /// a rate that also carries `src_ratio` applies the factor twice — which is
+    /// why the placement gate composes with [`SrcRatio::UNITY`].
     pub fn file_sample_rate(&self) -> SampleRate {
         self.file_sample_rate
     }
@@ -763,7 +811,7 @@ impl DiskVoice {
     /// Ask the butler to stream from `target_offset` (window-relative samples).
     ///
     /// Records the target for drift tracking, then publishes it to the shared
-    /// [`RtState`](crate::butler::RtState) via `request_seek` — two lock-free
+    /// `RtState` via `request_seek` — two lock-free
     /// atomic stores. The butler polls the request each loop and repositions the
     /// live stream click-free (flush + seek + crossfade), owning the seek flag so
     /// it can clear it; the reader must NOT flip `set_seeking` itself (with no
@@ -777,7 +825,7 @@ impl DiskVoice {
     }
 
     /// Set the playback speed magnitude. Routes directly to the shared
-    /// [`RtState`], which is exactly what the butler's `SetVarispeed` handler
+    /// `RtState`, which is exactly what the butler's `SetVarispeed` handler
     /// does for speed (`rt_state.set_speed`) — two lock-free atomic stores, no
     /// butler round-trip needed. Direction is a separate concern (the reader has
     /// no direction verb), so this leaves it untouched, mirroring how
@@ -786,7 +834,7 @@ impl DiskVoice {
         self.shared_state.set_speed(speed);
     }
 
-    /// Set the playback direction. Routes directly to the shared [`RtState`],
+    /// Set the playback direction. Routes directly to the shared `RtState`,
     /// which is exactly the direction leg of the butler's `SetVarispeed` handler
     /// (`rt_state.set_direction`) — one lock-free atomic store, no butler
     /// round-trip. Pairs with [`set_speed`](Self::set_speed) so the reader can
@@ -796,8 +844,8 @@ impl DiskVoice {
     }
 
     /// Public seek: reposition the live stream to window-relative `to`. Delegates
-    /// to the private [`request_seek`](Self::request_seek), which publishes the
-    /// target to the shared [`RtState`] (two atomic stores) for the butler to
+    /// to the private `request_seek`, which publishes the
+    /// target to the shared `RtState` (two atomic stores) for the butler to
     /// apply click-free — the same mechanism the placement gate uses on a
     /// discontinuous jump, and the same one the `Command::Seek` butler path
     /// ultimately drives. RT-safe: no alloc, no I/O.
@@ -808,11 +856,11 @@ impl DiskVoice {
     /// Run the placement gate for this block: `Some` when the playhead is inside
     /// the window (having issued any needed reposition), `None` when it is not.
     ///
-    /// The single definition of "am I playing, and from where" for this tier.
-    /// `tick` and `process` previously open-coded the same five lines — gate,
+    /// The single definition of "is this voice playing, and from where" for this
+    /// tier. Open-coding the same five lines in `tick` and `process` — gate,
     /// maybe_seek, set `was_inside`, delegate, else clear `was_inside` and
-    /// silence — which is exactly the shape that lets two entry points drift
-    /// apart. They already had, twice, elsewhere in this crate.
+    /// silence — is exactly the shape that lets two entry points drift apart,
+    /// which they have twice elsewhere in this crate.
     #[inline]
     fn enter_window(&mut self) -> Option<SamplePosition> {
         match self.window_position() {
@@ -917,9 +965,9 @@ impl AudioUnit for DiskVoice {
         if self.enter_window().is_some() {
             self.inner.tick(input, output);
         } else {
-            // Every channel, not a hardcoded pair: at width 1 the old
-            // `output.len() >= 2` guard silenced nothing at all, and at width 6
-            // it left channels 2..6 holding the previous block.
+            // Every channel, not a hardcoded pair: an `output.len() >= 2` guard
+            // silences nothing at all at width 1, and at width 6 leaves channels
+            // 2..6 holding the previous block. Both are invisible at width 2.
             let n = self.outputs().min(output.len());
             output[..n].fill(0.0);
         }
@@ -979,13 +1027,13 @@ mod tests {
     ///
     /// The fetch estimate asks for `size + 4` frames because the interpolation
     /// kernel needs taps *ahead* of the sample it emits. Those extra frames are
-    /// head-room, not material: `process` used to pop all of them off the ring
-    /// and discard whatever the block did not consume, so the source advanced
-    /// `(size + 4) / size` per block — 68/64 at a 64-frame block, a permanent
-    /// 6.25% overspeed. Since pitch and rate are the same thing for a sampler,
-    /// every streamed file played a quarter-tone sharp while its level and
-    /// waveform stayed perfect. The in-memory tier indexes a `Wave` directly and
-    /// has no fetch step, so the same file was correct if it fit in RAM.
+    /// head-room, not material: popping all of them off the ring and discarding
+    /// whatever the block does not consume advances the source `(size + 4) /
+    /// size` per block — 68/64 at a 64-frame block, a permanent 6.25%
+    /// overspeed. Since pitch and rate are the same thing for a sampler, every
+    /// streamed file plays a quarter-tone sharp while its level and waveform
+    /// stay perfect. The in-memory tier indexes a `Wave` directly and has no
+    /// fetch step, so the same file is correct whenever it fits in RAM.
     ///
     /// Asserted by counting what the ring actually gave up, which is the
     /// quantity that was wrong. `tests/tier_parity.rs` pins the audible
@@ -1103,10 +1151,11 @@ mod tests {
 
     /// **Why `maybe_seek` cannot be replaced by the pool's `BeatCursor`.**
     ///
-    /// The plan for this crate assumed the disk tier's drift check was redundant:
-    /// window entry is visible from the gate, playhead jumps are visible from the
-    /// cursor, so `DiskVoice` should need only a `seek_to`. That is true for both
-    /// of those triggers — and misses a third the cursor is structurally blind to.
+    /// The tempting simplification is that the disk tier's drift check is
+    /// redundant: window entry is visible from the gate, playhead jumps are
+    /// visible from the cursor, so `DiskVoice` should need only a `seek_to`.
+    /// True for both of those triggers — and it misses a third the cursor is
+    /// structurally blind to.
     ///
     /// The cursor watches BEATS. A varispeed change moves the *file* position
     /// without moving the playhead at all: at beat 20 of a 120 BPM timeline,
@@ -1360,9 +1409,9 @@ mod tests {
         state.set_speed(PlaybackRate::new(2.0));
         assert_eq!(state.speed(), PlaybackRate::new(2.0));
 
-        // The range is still enforced — but by the type, at construction, so the
-        // in-memory tier gets it too. `RtState` used to be the only place it
-        // happened, which is why the two tiers disagreed.
+        // The range is enforced by the TYPE, at construction, so the in-memory
+        // tier gets it too. Clamping only inside `RtState` is what makes the two
+        // tiers disagree about what 10.0x means.
         state.set_speed(PlaybackRate::new_clamped(0.1));
         assert_eq!(state.speed(), PlaybackRate::MIN);
 
@@ -1597,12 +1646,11 @@ mod tests {
 
     /// Outside its transport window a voice must silence EVERY channel.
     ///
-    /// At width 1 the old guard was `if output.len() >= 2 { .. }`, so a mono
-    /// streaming voice outside its window silenced nothing at all and simply
-    /// leaked whatever the caller's buffer already held. At width 6 the same
-    /// site wrote only channels 0 and 1, leaving 2..6 holding the previous
-    /// block. Both are invisible at width 2, which is what every other
-    /// streaming fixture uses.
+    /// An `if output.len() >= 2 { .. }` guard silences nothing at all at width
+    /// 1, so a mono streaming voice outside its window leaks whatever the
+    /// caller's buffer already held; at width 6 the same site writes only
+    /// channels 0 and 1, leaving 2..6 holding the previous block. Both are
+    /// invisible at width 2, which is what every other streaming fixture uses.
     #[test]
     fn outside_the_window_silences_every_channel() {
         for width in [1usize, 6] {

@@ -6,10 +6,10 @@ use tracing::debug;
 
 /// The one extension → format table: the single source of truth for which
 /// file extensions name a plugin. [`super::record::PluginRecord::EXTENSIONS`]
-/// is derived from this, so the two lists cannot drift apart (they used to:
-/// `EXTENSIONS` advertised `dll`/`so` while `format_from_path` rejected both,
-/// which made **no** VST2 plugin discoverable on Windows or Linux, where VST2
-/// ships as a bare shared library).
+/// is derived from this, so the two lists cannot drift apart. Drift is a
+/// whole-platform outage: an extension advertised but rejected here makes
+/// **no** VST2 plugin discoverable on Windows or Linux, where VST2 ships as a
+/// bare shared library.
 ///
 /// Entries are lowercase; candidates are lowercased before comparison.
 pub(super) const FORMAT_BY_EXTENSION: &[(&str, PluginFormat)] = &[

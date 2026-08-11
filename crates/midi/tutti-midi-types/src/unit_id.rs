@@ -36,6 +36,10 @@ impl MidiUnitId {
         Self(id)
     }
 
+    /// The underlying integer, for storage or FFI.
+    ///
+    /// Prefer passing the `MidiUnitId` itself — unwrapping here gives up the
+    /// distinction from every other `u64` in scope.
     #[inline]
     pub const fn as_u64(self) -> u64 {
         self.0

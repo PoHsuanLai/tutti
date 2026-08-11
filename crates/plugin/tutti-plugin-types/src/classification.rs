@@ -25,10 +25,10 @@ use serde::{Deserialize, Serialize};
 ///   number is carried so a caller can still see it;
 /// - [`Unasked`](Self::Unasked) — nobody called `effGetPlugCategory`.
 ///
-/// The last two used to be one bare `Unknown` that was also `#[default]`, so a
-/// scan that never queried and a plugin that answered `kPlugCategUnknown` were
-/// the same value. `kPlugCategUnknown` is itself a real answer (0), and it maps
-/// to `Unrecognized(0)` rather than to `Unasked` — the plugin did reply.
+/// The last two must stay apart: fused into one `Unknown`, a scan that never
+/// queried and a plugin that answered `kPlugCategUnknown` become the same
+/// value. `kPlugCategUnknown` is itself a real answer (0), so it maps to
+/// `Unrecognized(0)` rather than to `Unasked` — the plugin did reply.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum Vst2Category {
@@ -40,16 +40,29 @@ pub enum Vst2Category {
     /// verbatim. Includes `kPlugCategUnknown` (0), which is a plugin saying it
     /// has no category — an answer, not a silence.
     Unrecognized(i32),
+    /// `kPlugCategEffect` — an audio insert.
     Effect,
+    /// `kPlugCategSynth` — note-driven, and what sets `effFlagsIsSynth`.
     Synth,
+    /// `kPlugCategAnalysis` — measures rather than alters.
     Analysis,
+    /// `kPlugCategMastering` — a mastering-chain processor.
     Mastering,
+    /// `kPlugCategSpacializer` — spelled with the SDK's typo, not `Spatializer`,
+    /// so the mapping stays a literal mirror of the header.
     Spacializer,
+    /// `kPlugCategRoomFx` — reverb and room simulation.
     RoomFx,
+    /// `kPlugSurroundFx` — a surround-specific processor.
     SurroundFx,
+    /// `kPlugCategRestoration` — noise reduction, de-click and similar repair.
     Restoration,
+    /// `kPlugCategOfflineProcess` — cannot render in realtime.
     OfflineProcess,
+    /// `kPlugCategShell` — a container exposing several plugins behind one
+    /// binary, not a processor itself.
     Shell,
+    /// `kPlugCategGenerator` — produces audio without notes.
     Generator,
 }
 
@@ -80,47 +93,90 @@ impl Vst2Category {
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum Vst3PlugType {
     // Top-level roles.
+    /// `"Fx"` — an audio effect.
     Fx,
+    /// `"Instrument"` — note-driven.
     Instrument,
+    /// `"Generator"` — produces audio without notes.
     Generator,
+    /// `"Analyzer"` — measures rather than alters.
     Analyzer,
+    /// `"Spatial"` — positions sound in space.
     Spatial,
+    /// `"Mastering"` — a mastering-chain processor.
     Mastering,
     // Instrument families.
+    /// `"Synth"` — synthesized rather than sample-based.
     Synth,
+    /// `"Sampler"` — sample playback.
     Sampler,
+    /// `"Drum"` — from `kInstrumentDrum`. Distinct from [`Drums`](Self::Drums),
+    /// which is the effect-side facet.
     Drum,
+    /// `"Piano"` — keyboard instrument.
     Piano,
+    /// `"External"` — fronts outboard hardware rather than generating audio
+    /// itself.
     External,
     // Effect families.
+    /// `"Delay"` — time-domain repeats.
     Delay,
+    /// `"Reverb"` — room and space simulation.
     Reverb,
+    /// `"Distortion"` — saturation and waveshaping.
     Distortion,
+    /// `"Dynamics"` — compression, limiting, gating.
     Dynamics,
+    /// `"EQ"` — note the SDK spelling is uppercase, which
+    /// [`as_sdk_str`](Self::as_sdk_str) preserves.
     Eq,
+    /// `"Filter"` — a filter that is not a full EQ.
     Filter,
+    /// `"Modulation"` — chorus, flanger, phaser.
     Modulation,
+    /// `"Pitch Shift"` — spelled with a space in the SDK.
     PitchShift,
+    /// `"Restoration"` — noise reduction, de-click and similar repair.
     Restoration,
+    /// `"Tools"` — utility processing.
     Tools,
+    /// `"Network"` — audio over a network transport.
     Network,
+    /// `"Channel Strip"` — spelled with a space in the SDK.
     ChannelStrip,
+    /// `"Drums"` — from `kFxDrums`, the effect-side facet. Distinct from
+    /// [`Drum`](Self::Drum); folding the two apart from the SDK breaks the
+    /// round-trip.
     Drums,
     // Source hints.
+    /// `"Guitar"` — intended for guitar.
     Guitar,
+    /// `"Vocals"` — intended for voice.
     Vocals,
+    /// `"Bass"` — intended for bass.
     Bass,
+    /// `"Microphone"` — intended for a mic signal.
     Microphone,
     // Channel hints.
+    /// `"Mono"` — intended for mono material.
     Mono,
+    /// `"Stereo"` — intended for stereo material.
     Stereo,
+    /// `"Surround"` — intended for surround material.
     Surround,
+    /// `"Ambisonics"` — intended for ambisonic material.
     Ambisonics,
+    /// `"Up-Downmix"` — changes channel count; spelled with a hyphen in the SDK.
     UpDownmix,
     // Processing constraints.
+    /// `"OnlyRT"` — realtime only; an offline bounce must not use it.
     OnlyRt,
+    /// `"OnlyOfflineProcess"` — cannot render in realtime.
     OnlyOfflineProcess,
+    /// `"NoOfflineProcess"` — declines to participate in offline rendering.
     NoOfflineProcess,
+    /// `"OnlyARA"` — usable only through the ARA extension, which this host does
+    /// not bind.
     OnlyAra,
     /// A facet the SDK does not name, carried verbatim.
     Other(String),
@@ -318,47 +374,87 @@ impl Vst3SubCategories {
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum ClapFeature {
     // Primary roles.
+    /// `"instrument"` — notes in, audio out.
     Instrument,
+    /// `"audio-effect"` — audio in, audio out.
     AudioEffect,
+    /// `"note-effect"` — notes in, notes out; produces no audio.
     NoteEffect,
+    /// `"note-detector"` — audio in, notes out.
     NoteDetector,
+    /// `"analyzer"` — measures rather than alters.
     Analyzer,
     // Instrument families.
+    /// `"synthesizer"` — synthesized rather than sample-based.
     Synthesizer,
+    /// `"sampler"` — sample playback.
     Sampler,
+    /// `"drum"` — a single drum voice.
     Drum,
+    /// `"drum-machine"` — a multi-voice drum instrument.
     DrumMachine,
     // Effect families.
+    /// `"filter"`
     Filter,
+    /// `"phaser"`
     Phaser,
+    /// `"equalizer"`
     Equalizer,
+    /// `"de-esser"`
     DeEsser,
+    /// `"phase-vocoder"`
     PhaseVocoder,
+    /// `"granular"`
     Granular,
+    /// `"frequency-shifter"` — linear frequency shift, not pitch shift.
     FrequencyShifter,
+    /// `"pitch-shifter"` — preserves harmonic ratios, unlike
+    /// [`FrequencyShifter`](Self::FrequencyShifter).
     PitchShifter,
+    /// `"distortion"`
     Distortion,
+    /// `"transient-shaper"`
     TransientShaper,
+    /// `"compressor"`
     Compressor,
+    /// `"expander"`
     Expander,
+    /// `"gate"`
     Gate,
+    /// `"limiter"`
     Limiter,
+    /// `"flanger"`
     Flanger,
+    /// `"chorus"`
     Chorus,
+    /// `"delay"`
     Delay,
+    /// `"reverb"`
     Reverb,
+    /// `"tremolo"`
     Tremolo,
+    /// `"glitch"`
     Glitch,
+    /// `"utility"` — gain, pan and similar plumbing.
     Utility,
+    /// `"pitch-correction"`
     PitchCorrection,
+    /// `"restoration"` — noise reduction and repair.
     Restoration,
+    /// `"multi-effects"` — several effects in one plugin.
     MultiEffects,
+    /// `"mixing"` — intended for the mix stage.
     Mixing,
+    /// `"mastering"` — intended for the mastering stage.
     Mastering,
     // Channel hints.
+    /// `"mono"`
     Mono,
+    /// `"stereo"`
     Stereo,
+    /// `"surround"`
     Surround,
+    /// `"ambisonic"`
     Ambisonic,
     /// A tag the CLAP header does not name, carried verbatim.
     Other(String),
@@ -578,7 +674,7 @@ mod tests {
     use super::*;
 
     /// "Nobody asked" and "the plugin said it has no category" are different
-    /// answers, and both used to be a single bare `Unknown`.
+    /// answers, and a single bare `Unknown` would spell both.
     #[test]
     fn an_unasked_category_is_not_an_unrecognized_one() {
         assert_ne!(Vst2Category::Unasked, Vst2Category::Unrecognized(0));
@@ -685,8 +781,8 @@ mod tests {
         assert_eq!(c.raw(), "Fx|AcmeSpecial");
     }
 
-    /// Facet membership is not a substring test. `raw.contains("Instrument")`
-    /// — what the browser used to do — is also true of this vendor facet.
+    /// Facet membership is not a substring test: `raw.contains("Instrument")`,
+    /// the obvious shortcut, is also true of this vendor facet.
     #[test]
     fn a_facet_test_does_not_match_a_longer_name_containing_it() {
         let c = Vst3SubCategories::parse("Fx|DeInstrumenter");

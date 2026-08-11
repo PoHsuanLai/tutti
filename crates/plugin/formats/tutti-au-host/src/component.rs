@@ -115,15 +115,16 @@ pub struct AuComponentInfo {
     /// High-level type classification.
     pub component_type: AuType,
     /// `"major.minor.dot"` from `AudioComponentGetVersion`, or empty if the
-    /// component refused. See [`component_version`].
+    /// component refused the call.
     pub version: String,
     /// Raw `componentFlags` from the component's description.
     ///
     /// Carried rather than dropped because one bit decides whether the
     /// component can be loaded at all: `RequiresAsyncInstantiation` means
     /// `AudioComponentInstanceNew` will refuse it. Read it through
-    /// [`requires_async_instantiation`](Self::requires_async_instantiation)
-    /// rather than by masking at a call site.
+    /// `requires_async_instantiation` rather than by masking at a call site.
+    /// That accessor is macOS-only; this field is not, so a scanner's types
+    /// still compile off macOS.
     pub flags: u32,
     /// Opaque factory handle used to instantiate the AU.
     #[cfg(target_os = "macos")]

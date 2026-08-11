@@ -8,12 +8,12 @@
 //! `clap_host_latency.changed`, AU a `kAudioUnitProperty_Latency` property
 //! change), and the engine carries all three to `PluginClient`'s latency atomic.
 //!
-//! Then it stopped. Updating what `AudioUnit::latency()` reports does not re-run
-//! PDC on its own, so every compensation delay in the graph kept the figure it
-//! was planned against. The result is a plugin whose own latency is right and
-//! whose *alignment against every other path* is wrong — audible as a track
-//! drifting out of time with the rest of the mix, and self-correcting the next
-//! time an unrelated graph edit happens to occur.
+//! It stops there. Updating what `AudioUnit::latency()` reports does not re-run
+//! PDC on its own, so without this system every compensation delay in the graph
+//! keeps the figure it was planned against. The result is a plugin whose own
+//! latency is right and whose *alignment against every other path* is wrong —
+//! audible as a track drifting out of time with the rest of the mix, and
+//! self-correcting the next time an unrelated graph edit happens to occur.
 //!
 //! # Why polling rather than the invalidation callback
 //!
@@ -66,7 +66,11 @@ use crate::graph::{AudioGraphRes, GraphDirty};
 /// compensated for", which is why the first poll marks the graph dirty: the
 /// load-time figure was published before any compensation ran.
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
-pub struct CompensatedLatency(pub Samples);
+pub struct CompensatedLatency(
+    /// In [`Samples`], as the plugin's node reports it — *not* the plugin's
+    /// current latency, which lives on `PluginClient`.
+    pub Samples,
+);
 
 /// Marks the graph dirty when a plugin's reported latency no longer matches
 /// what compensation was planned against.

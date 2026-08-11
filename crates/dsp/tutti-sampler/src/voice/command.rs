@@ -26,29 +26,43 @@ use tutti_core::{
 /// it pays one grow on the next add and is then stable again.
 pub(super) const MAX_RESIDENT_VOICES: usize = 64;
 
+/// Commands a reader's channel holds before a send starts failing with
+/// [`SendError::Full`]. The drain empties it every block, so a full queue means
+/// the control thread outran a whole audio block.
 pub(super) const COMMAND_CAPACITY: usize = 64;
 
 // ---------------------------------------------------------------------------
 // Commands sent from ECS → audio thread.
 // ---------------------------------------------------------------------------
 
+/// One control-plane message from the host to a reader's audio-thread unit.
+///
+/// Drained inside the audio callback, so every variant must be built and
+/// allocated **control-side**: that is why the two stretch-carrying variants
+/// have the filter handed to them rather than constructing one. Which variants
+/// take effect depends on the receiver — a [`VoicePool`](super::pool::VoicePool)
+/// honours all of them, a [`VoiceNode`](super::node::VoiceNode) only
+/// [`UpdatePlacement`](Self::UpdatePlacement) and silently discards the rest.
+///
+/// `#[non_exhaustive]`: the drain is a `match` inside the callback, and a new
+/// control must be addable without breaking a host's own `match`.
 #[non_exhaustive]
 pub enum VoiceCommand {
     /// Add a voice by handing the reader a fully-formed [`Voice`]: a
-    /// [`VoiceSource`] (in-memory `MemorySource` or streaming `DiskVoice`)
-    /// plus its [`Playback`] control-intent record. The drain builds the
-    /// [`VoiceSlot`] and applies the full `Playback` per-tier by reusing the same
-    /// cold-path appliers the update commands use (`VoiceSource::apply_*` +
-    /// `apply_loop`) — no allocation or I/O on the hot path, since the
-    /// source (memory `MemorySource` or butler-registered `DiskVoice`) is
+    /// [`VoiceSource`](super::types::VoiceSource) (in-memory `MemorySource` or
+    /// streaming `DiskVoice`) plus its
+    /// [`Playback`](super::types::Playback) control-intent record. The drain
+    /// builds the slot and applies the full `Playback` per-tier by reusing the
+    /// same cold-path appliers the update commands use (`VoiceSource::apply_*` +
+    /// `apply_loop`) — no allocation or I/O on the hot path, since the source is
     /// built entirely on the ECS/butler side before the send.
     ///
-    /// This one command replaces the former split `Add` (in-memory) /
-    /// `AddStreaming` (disk) pair: the tier now rides inside `source` and the
-    /// butler channel inside `Playback`-adjacent `Voice::channel_index` (carried
-    /// on the `Disk` construction), so dawai speaks ONE add command for both
-    /// tiers.
+    /// **One add command for both tiers.** The tier rides inside `source` and
+    /// the butler channel inside `Voice::channel_index`, so a host does not fork
+    /// on in-memory versus streaming to spawn a voice.
     AddVoice {
+        /// Identifies the slot for every later command aimed at this voice. An
+        /// add at an id already resident replaces that slot.
         id: SlotId,
         /// Boxed: a [`Voice`] carries a whole `MemorySource`/`DiskVoice`,
         /// far larger than the other command variants — boxing keeps the bounded
@@ -67,39 +81,107 @@ pub enum VoiceCommand {
         /// costs nothing.
         stretch: Option<Box<stretch::Unit>>,
     },
+    /// Retire the slot with this id, filter and all.
+    ///
+    /// The drain does not drop the slot in the callback — it hands it to the
+    /// control thread through the retirement channel, because freeing a
+    /// [`stretch::Unit`] frees its vocoder bank. See
+    /// [`VoicePoolHandle::collect_retired`].
     Remove(SlotId),
+    /// Point an **in-memory** slot at a different wave, keeping its placement,
+    /// gain and loop.
+    ///
+    /// Ignored (with a warning) for a streaming slot: swapping a disk source
+    /// means re-registering the butler stream on a different file, which is a
+    /// control-thread operation issued as a fresh [`AddVoice`](Self::AddVoice).
     ReplaceWave {
+        /// The slot to re-point.
         id: SlotId,
+        /// The new wave. Shared rather than copied — several voices may read one.
         wave: Arc<Wave>,
     },
+    /// Move the voice's timeline window. The one control that cannot ride
+    /// `AudioUnit::set`, whose `Setting` is a single `f32`; see
+    /// [`VoiceNodeHandle::set_placement`].
     UpdatePlacement {
+        /// The slot to move. `SlotId(0)` for a [`VoiceNode`](super::node::VoiceNode),
+        /// whose drain ignores the field.
         id: SlotId,
+        /// Where the voice starts on the timeline, in [`Beat`]s.
         start_beat: Beat,
+        /// How long it plays, in [`BeatDuration`]. `None` plays to the end of
+        /// the source.
         duration_beats: Option<BeatDuration>,
     },
+    /// Set the voice's playback gain.
     UpdateGain {
+        /// The slot to set.
         id: SlotId,
+        /// Linear [`Amplitude`], not [`Db`](tutti_core::Db) — the conversion is
+        /// the host's.
         gain: Amplitude,
     },
+    /// Set the voice's varispeed. Both tiers carry speed in-unit: in-memory
+    /// stores it on the `MemorySource`, streaming forwards it to the shared
+    /// state the butler ring also reads, so one command reaches both.
     UpdateSpeed {
+        /// The slot to set.
         id: SlotId,
+        /// [`PlaybackRate`] relative to the source's own rate; `1.0` is unity.
+        /// Pitch moves with it — this is varispeed, not time-stretch.
         speed: PlaybackRate,
     },
+    /// Set or clear the voice's loop region.
+    ///
+    /// Routed by tier: in-memory primes the range on the `MemorySource`,
+    /// streaming forwards to the butler, which owns the loop-start fadein head
+    /// the reader cannot reach. A streaming voice with no butler channel drops
+    /// the command **and does not record the intent** — a `Playback` claiming a
+    /// loop the stream never set would be replayed as real on the next insert.
     UpdateLoop {
+        /// The slot to set.
         id: SlotId,
+        /// `false` clears the loop, ignoring the three fields below.
         looping: bool,
+        /// Loop start, in FRAMES from the head of the source
+        /// ([`SamplePosition`], f64 so a long file keeps sub-frame precision).
         loop_start: SamplePosition,
+        /// Loop end, in FRAMES from the head of the source.
         loop_end: SamplePosition,
+        /// Crossfade length in FRAMES (not samples) — the same denomination as
+        /// the two positions above. `0` butt-splices.
         crossfade_frames: usize,
     },
+    /// Clear the voice's loop. Equivalent to [`UpdateLoop`](Self::UpdateLoop)
+    /// with `looping: false`, and spelled separately so a host clearing a loop
+    /// need not invent positions it is about to discard.
     ClearLoop(SlotId),
+    /// Play the voice forwards or backwards.
+    ///
+    /// One command reaches both tiers, which is why it is not folded into
+    /// [`UpdateSpeed`](Self::UpdateSpeed): in-memory drives a reversed index in
+    /// the hot read, streaming forwards to the shared state the butler ring
+    /// reads.
     UpdateReverse {
+        /// The slot to set.
         id: SlotId,
+        /// [`Direction::Forward`] or [`Direction::Reverse`].
         direction: Direction,
     },
+    /// Set the voice's time-stretch factor and pitch shift — the two controls
+    /// that change duration and pitch **independently**, unlike
+    /// [`UpdateSpeed`](Self::UpdateSpeed).
+    ///
+    /// Pool-only in practice: a [`VoiceNode`](super::node::VoiceNode)'s drain
+    /// discards it, so a node's pitch is fixed at construction and a host that
+    /// wants to change it respawns the voice.
     UpdateStretch {
+        /// The slot to set.
         id: SlotId,
+        /// Duration multiplier ([`StretchFactor`]); `1.0` is unity. Pitch is
+        /// unchanged.
         stretch_factor: StretchFactor,
+        /// Pitch shift in [`Cents`]; `0.0` is unity. Duration is unchanged.
         pitch_cents: Cents,
         /// A pre-built processor for the case where the slot has none yet, same
         /// contract as [`AddVoice::stretch`](Self::AddVoice::stretch):
@@ -109,7 +191,7 @@ pub enum VoiceCommand {
         /// This field is why turning stretch ON mid-flight works at all. A voice
         /// spawned at unity/zero gets `stretch: None` from `AddVoice` (correctly
         /// — it did not need one), so without a filter arriving here,
-        /// [`VoiceSlot::set_stretch`] would flip the gate fields on a slot that
+        /// `VoiceSlot::set_stretch` would flip the gate fields on a slot that
         /// has nothing to flip and the voice would read dry forever. It cannot
         /// be built in the drain: that is the audio thread, and construction
         /// allocates an FFT setup plus per-channel scratch.
@@ -222,9 +304,9 @@ pub enum SendError {
     /// The [`VoicePool`](super::pool::VoicePool) has been dropped, so nothing
     /// will ever drain the queue again.
     ///
-    /// **Permanent** — every subsequent send fails the same way. This is the
-    /// case that used to be entirely silent, which made a dead pool
-    /// indistinguishable from a working one.
+    /// **Permanent** — every subsequent send fails the same way, so a caller
+    /// that sees this should stop rather than retry. Reporting it is what makes
+    /// a dead pool distinguishable from a working one.
     Disconnected(VoiceCommand),
 }
 
@@ -276,6 +358,9 @@ impl std::error::Error for SendError {}
 /// here without gaining a second definition.
 #[derive(Clone, Debug)]
 pub struct VoiceNodeHandle {
+    /// Sends into the node's bounded command queue. No retirement receiver
+    /// beside it: a node's single voice lives as long as the node does, so
+    /// nothing is ever handed back to be freed.
     pub(crate) tx: Sender<VoiceCommand>,
 }
 
@@ -341,8 +426,17 @@ impl VoiceNodeHandle {
     }
 }
 
+/// The control-thread end of a [`VoicePool`](super::pool::VoicePool)'s command
+/// channel, and the collection point for what the audio thread retires.
+///
+/// Held by the host (an ECS system, typically) and cloned freely — the sender is
+/// multi-producer. It mirrors the reader's width and sample rate so
+/// [`send`](Self::send) can build a stretch filter that matches, on **this**
+/// thread; both are fixed for the reader's lifetime, so the copies cannot go
+/// stale.
 #[derive(Clone, Debug)]
 pub struct VoicePoolHandle {
+    /// Sends into the reader's bounded command queue.
     pub(crate) tx: Sender<VoiceCommand>,
     /// Slots the audio thread has removed and handed back to be freed here.
     ///
@@ -361,7 +455,7 @@ pub struct VoicePoolHandle {
 
 impl VoicePoolHandle {
     /// Free everything the audio thread has retired since the last call — removed
-    /// slots and surplus stretch filters alike (see [`Retired`]).
+    /// slots and surplus stretch filters alike.
     ///
     /// Call this periodically from the control thread — once a frame is ample.
     /// Skipping it is safe but forfeits the point: the retirement channel fills,
@@ -382,18 +476,19 @@ impl VoicePoolHandle {
     /// This is the one chokepoint every command passes through, which makes it the
     /// right place to keep the audio thread clean: `drain_commands` runs from
     /// `tick`/`process`, so anything expensive left for the drain is an allocation
-    /// in the callback. Today that means materialising the stretch filter for an
+    /// in the callback. That means materialising the stretch filter for an
     /// `AddVoice` **or an `UpdateStretch`** that needs one.
     ///
     /// `Ok` means only that the command was *queued* — the pool applies it on the
     /// audio thread, and that outcome is not available synchronously.
     ///
+    /// # Errors
+    ///
     /// `Err` means the command is **gone**: a dropped `AddVoice` is a note that
     /// never sounds, a dropped `Remove` a voice that never stops. That is a
-    /// failure a caller can act on, so it is `#[must_use]`. It previously
-    /// returned `()` — queue-full went to `tracing::warn!` (which reaches an
-    /// operator reading logs, not code that could back off) and disconnected was
-    /// silent, so a dead pool looked exactly like a working one.
+    /// failure a caller can act on rather than log, which is why it is
+    /// `#[must_use]` — see [`SendError::is_disconnected`] for which of the two
+    /// is worth retrying.
     #[must_use = "a dropped command is a note that never sounds or a voice that never stops"]
     pub fn send(&self, cmd: VoiceCommand) -> Result<(), SendError> {
         let cmd = self.prepare(cmd);
@@ -420,10 +515,10 @@ impl VoicePoolHandle {
                     stretch: Some(Box::new(unit)),
                 }
             }
-            // Same materialisation for an update that turns stretching ON. We
-            // cannot check whether the slot already has a processor — that lives
-            // on the audio thread — so build unconditionally when the new values
-            // ask for stretch and let the drain drop a redundant one. Paying an
+            // Same materialisation for an update that turns stretching ON.
+            // Whether the slot already has a processor is audio-thread state and
+            // unreadable from here, so build unconditionally when the new values
+            // ask for stretch and let the drain retire a redundant one. Paying an
             // occasional wasted control-thread allocation is the right trade
             // against the alternatives: querying the slot needs a round-trip, and
             // building in the drain allocates in the callback.
@@ -453,11 +548,11 @@ mod tests {
     use super::*;
     use crate::voice::pool::VoicePool;
 
-    /// A full queue is reported, not logged and forgotten.
+    /// A full queue is reported to the caller, not logged and forgotten.
     ///
-    /// `send` used to return `()`, routing this case to `tracing::warn!` — which
-    /// reaches an operator reading logs, never the code that could back off or
-    /// retry. A dropped `AddVoice` is a note that never sounds.
+    /// A `tracing::warn!` reaches an operator reading logs, never the code that
+    /// could back off or retry — and a dropped `AddVoice` is a note that never
+    /// sounds.
     #[test]
     fn a_full_queue_is_reported_to_the_caller() {
         // Build the pool but never drain it, so the queue fills.
@@ -479,9 +574,8 @@ mod tests {
         assert!(matches!(err, SendError::Full(_)));
     }
 
-    /// A dropped pool is reported — the case that used to be **completely
-    /// silent**, so every later send was a permanent no-op with nothing to
-    /// notice it by.
+    /// A dropped pool is reported as permanent. Without it every later send is a
+    /// no-op with nothing to notice it by.
     #[test]
     fn a_dropped_pool_is_reported_as_disconnected() {
         let (pool, handle) = VoicePool::new();

@@ -3,7 +3,7 @@
 //!
 //! Feed the relevant inbound System Real-Time events (Timing Clock 0xF8, Start
 //! 0xFA, Continue 0xFB, Stop 0xFC) via [`MidiClockDecoder::feed`] — the
-//! [`MidiEvent`](crate::MidiEvent)-taking entry that mirrors
+//! [`MidiEvent`]-taking entry that mirrors
 //! [`MtcDecoder::feed`](crate::sync::MtcDecoder::feed) — or, if you've already
 //! demultiplexed the stream, call [`tick`](MidiClockDecoder::tick) /
 //! [`start_msg`](MidiClockDecoder::start_msg) etc. directly.
@@ -14,9 +14,17 @@ use tutti_types::Bpm;
 const PPQN: u32 = 24;
 const TEMPO_WINDOW: usize = 24;
 
+/// Whether the decoded transport is running.
+///
+/// Only two states: MIDI Beat Clock has no "paused" — a Stop followed by a
+/// Continue is how a sender expresses one, and the position is held in the tick
+/// count rather than in this enum.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClockTransportState {
+    /// Not advancing. Incoming clocks still refine the tempo estimate but do not
+    /// move the beat position.
     Stopped,
+    /// Advancing, with the beat position tracking incoming clocks.
     Playing,
 }
 
@@ -33,6 +41,10 @@ pub struct MidiClockDecoder {
 }
 
 impl MidiClockDecoder {
+    /// Builds a stopped decoder at beat 0 with no tempo estimate.
+    ///
+    /// [`tempo_bpm`](Self::tempo_bpm) stays `None` until two timing clocks have
+    /// arrived to measure an interval between.
     pub fn new() -> Self {
         Self {
             tick_count: 0,
@@ -116,10 +128,16 @@ impl MidiClockDecoder {
         self.tick_count as f64 / f64::from(PPQN)
     }
 
+    /// Whether the decoded transport is currently running.
     pub fn transport_state(&self) -> ClockTransportState {
         self.transport
     }
 
+    /// Returns the decoder to its constructed state: stopped, beat 0, no tempo.
+    ///
+    /// Discards the tempo estimate as well as the position, so the next two
+    /// clocks must re-establish it. Call on a source change, not on a stop —
+    /// [`stop_msg`](Self::stop_msg) already keeps the position for a Continue.
     pub fn reset(&mut self) {
         self.tick_count = 0;
         self.transport = ClockTransportState::Stopped;

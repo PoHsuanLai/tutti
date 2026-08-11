@@ -67,16 +67,16 @@ pub(crate) fn from_midi(event: &MidiEvent) -> Option<vst::api::MidiEvent> {
     // VST2's `midi_data` is a fixed `[u8; 3]`. `to_midi1_bytes` already
     // zero-pads shorter messages into that fixed array, so `midi_data` is
     // wire-ready as-is and `len` is redundant here. The assert guards the
-    // invariant that we never route a >3-byte MIDI-1 message down the VST2
+    // invariant that a >3-byte MIDI-1 message never reaches the VST2
     // fixed-array path (SysEx and other long-form messages are dropped by
     // `to_midi1_bytes` returning `None` above, never reaching here).
     debug_assert!(len <= 3, "VST2 midi_data is [u8; 3]; got len {len}");
 
     // `frame_offset` is `u32`; VST2's `delta_frames` is `i32`. A value past
     // `i32::MAX` wraps negative, and the plugin offsets into its own buffers
-    // with it — an out-of-bounds access inside the plugin, not in our code.
-    // Saturating keeps it in range; the inbound mirror (`to_midi`) already
-    // guards with `.max(0)` and this direction was left unguarded.
+    // with it — an out-of-bounds access inside the plugin, out of reach of any
+    // check on this side. Saturating keeps it in range; the inbound mirror
+    // (`to_midi`) guards the same hazard with `.max(0)`.
     let delta_frames = i32::try_from(event.frame_offset).unwrap_or(i32::MAX);
 
     Some(api::MidiEvent {
@@ -123,15 +123,15 @@ pub(crate) struct MidiSendBuffer {
     header: Vec<u64>,
 }
 
-// SAFETY: the raw pointers inside `event_ptrs` point into our own
-// `api_events` Vec; both are never shared between threads. Same
-// justification as `RenderScratch` — callers serialize externally.
+// SAFETY: the raw pointers inside `event_ptrs` point into this struct's own
+// `api_events` Vec; both are never shared between threads. Same justification
+// as `RenderScratch` — callers serialize externally.
 unsafe impl Send for MidiSendBuffer {}
 unsafe impl Sync for MidiSendBuffer {}
 
 /// Default per-block event capacity. Most blocks carry 0–8 events; the
-/// hot path doesn't touch the allocator at all unless a block exceeds
-/// this, in which case we grow once and the new capacity sticks.
+/// hot path does not touch the allocator at all unless a block exceeds this,
+/// in which case it grows once and the new capacity sticks.
 const DEFAULT_EVENT_CAPACITY: usize = 64;
 
 impl MidiSendBuffer {
@@ -146,7 +146,7 @@ impl MidiSendBuffer {
             header: Vec::with_capacity(header_words(events)),
         };
         // Pre-size the header Vec so its first `header_words(events)`
-        // elements exist (we index them as raw bytes below).
+        // elements exist (they are indexed as raw bytes below).
         buf.header.resize(header_words(events), 0);
         buf
     }
@@ -191,14 +191,14 @@ impl MidiSendBuffer {
                 .push(ev as *mut api::MidiEvent as *mut api::Event);
         }
 
-        // Grow the header buffer if the event count exceeds what we
-        // previously sized for. `resize` keeps prior capacity when
-        // shrinking is implied, so steady-state is allocation-free.
+        // Grow the header buffer if the event count exceeds the size it was
+        // last given. `resize` keeps prior capacity when shrinking is implied,
+        // so steady-state is allocation-free.
         let words = header_words(num_events);
         if self.header.len() < words {
             self.header.resize(words, 0);
         }
-        // Zero just the bytes we'll touch — keeps Drop semantics clean.
+        // Zero only the bytes that will be touched — keeps Drop semantics clean.
         // (Header carries 2 i32s + a pointer table; the rest doesn't
         // matter because the plugin reads `num_events` first.)
         for slot in self.header.iter_mut().take(words) {

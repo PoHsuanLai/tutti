@@ -89,9 +89,10 @@ impl<U: core::fmt::Debug> core::fmt::Debug for LayeredCurve<U> {
 impl<U: Into<f32> + From<f32> + Copy> LayeredCurve<U> {
     /// A layered curve seeded with an authored `base`, **clamped into `[min,
     /// max]`**. Starts with no layers — `value_at` is just the base until a
-    /// source is added. Clamping the base at the boundary keeps `base()` in range
-    /// for consumers that offset against it (an automation lane's `value - base`,
-    /// the app-side driver) — the invariant the old scalar accumulator held.
+    /// source is added. Clamping at the boundary is what keeps `base()` in range
+    /// for consumers that offset against it (an automation lane's
+    /// `value - base`, the app-side driver): an unclamped base lets a downward
+    /// offset bite into out-of-range headroom instead of the clamped ceiling.
     pub fn new(base: U, min: U, max: U) -> Self {
         Self {
             base: Self::clamp_base(base, min, max),
@@ -216,10 +217,9 @@ mod tests {
     #[test]
     fn base_is_clamped_into_range() {
         // An out-of-range authored base is clamped at the boundary, so base()
-        // stays in range for consumers that offset against it (automation's
-        // `value - base`, the app driver). Regression: an unclamped base let a
-        // downward mod offset bite into out-of-range headroom instead of the
-        // clamped ceiling.
+        // stays in range for consumers that offset against it. The third
+        // assertion is the one that bites: an unclamped base lets a downward
+        // offset spend out-of-range headroom instead of moving the value.
         let mut lc = LayeredCurve::new(Mix(1.5), Mix::DRY, Mix::WET);
         assert_eq!(lc.base(), 1.0, "over-range base clamped at construction");
         lc.set_base(Mix(-0.3));

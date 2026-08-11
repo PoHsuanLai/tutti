@@ -39,11 +39,11 @@ pub struct BeatWindow {
 /// caller can react to a seek without re-reading the beat itself.
 ///
 /// The two discontinuity variants stay distinct rather than collapsing into one
-/// `Discontinuous`, because the two callers that predate them react differently.
-/// A cursor into a sorted event list (`MidiClipSource`, `HarmonySource`) must
-/// *rewind* on a backward jump, but a forward jump is self-correcting for it —
-/// the cursor walks past stale events on its own. Merging them would force a
-/// needless backward rescan on every forward scrub.
+/// `Discontinuous`, because callers react to them differently. A cursor into a
+/// sorted event list (`MidiClipSource`, `HarmonySource`) must *rewind* on a
+/// backward jump, but a forward jump is self-correcting for it — the cursor
+/// walks past stale events on its own. Merging them would force a needless
+/// backward rescan on every forward scrub.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BeatWindowSync {
     /// Transport is rolling and the window advances forward from the last block.
@@ -58,7 +58,7 @@ pub enum BeatWindowSync {
     /// a phase vocoder's FIFO, an overlap-add tail, an interpolator's history.
     /// Those are not self-correcting — after a forward jump the buffer drains the
     /// old region's material over the new one — so they must flush, exactly as
-    /// they would on [`Rewound`].
+    /// they would on [`Rewound`](Self::Rewound).
     Jumped,
 }
 
@@ -92,8 +92,8 @@ impl BeatWindow {
         last_beat: &mut Beat,
     ) -> Option<(Self, BeatWindowSync)> {
         if !timeline.is_rolling() {
-            // Track the beat anyway so a seek-while-paused doesn't surprise us
-            // when playback resumes.
+            // Track the beat anyway so a seek-while-paused does not read as a
+            // discontinuity when playback resumes.
             *last_beat = timeline.beat();
             return None;
         }
@@ -136,11 +136,11 @@ impl BeatWindow {
     /// [`max_offset`](Self::max_offset). Beats at or before the window start
     /// map to 0.
     ///
-    /// The one home for beat→in-block-offset. Three callers hand-rolled
-    /// `(beat - origin) / beats_per_sample` with three different zero-guards:
-    /// this one had none, so a zero rate divided to infinity and slammed every
-    /// event to the *end* of the block, while the snapshot path left the event's
-    /// offset alone. A non-positive rate now means offset 0 everywhere.
+    /// The one home for beat→in-block-offset, so every caller gets the same
+    /// zero-guard. A non-positive rate yields offset 0 rather than dividing to
+    /// infinity, which the `max_offset` clamp would otherwise turn into "the
+    /// last sample of the block" — every event in a stalled block bunched at
+    /// its tail.
     #[inline]
     pub fn offset_of(&self, beat: Beat) -> u32 {
         if self.beats_per_sample <= BeatDuration(0.0) {
@@ -184,13 +184,11 @@ fn forward_slack(beats_per_sample: BeatDuration, block_size: usize) -> BeatDurat
 /// A beat-scheduled source's transport reading plus its persisted last-block
 /// beat.
 ///
-/// Every such source needs exactly this triple, and each one used to hold it
-/// separately: an `Arc<dyn Timeline>`, a sample rate, and an `Arc<AtomicF64>`
-/// cursor that it hand-lowered to a `&mut f64` for [`BeatWindow::from_timeline`]
-/// and hand-raised afterwards. That dance had a trap in it — the paused path
-/// still advances the cursor, so the store had to happen *before* the `?`, and
-/// writing the call as one line silently broke seek-while-paused. Both existing
-/// callers carried a comment warning about it.
+/// Every such source needs exactly this triple, and holding it loose has a trap
+/// in it: [`BeatWindow::from_timeline`] advances the cursor on the **paused**
+/// path too, so a caller lowering its own `Arc<AtomicF64>` to a `&mut Beat` must
+/// store the result *before* any `?` on the returned `Option`. Written as one
+/// line, that silently breaks seek-while-paused.
 ///
 /// Owning the cursor here removes the trap rather than documenting it: there is
 /// no local to forget, and `?` cannot skip a write that happens inside
@@ -211,6 +209,11 @@ pub struct BeatCursor {
 }
 
 impl BeatCursor {
+    /// A cursor over `transport` with no previous block.
+    ///
+    /// The first [`advance`](Self::advance) has nothing to compare against, so
+    /// it always reports [`BeatWindowSync::Rolling`] however far into a session
+    /// the playhead already is.
     pub fn new(transport: Arc<dyn Timeline>, sample_rate: impl Into<SampleRate>) -> Self {
         Self {
             transport,
@@ -235,8 +238,9 @@ impl BeatCursor {
             block_size,
             &mut last,
         );
-        // Written even on the paused path, so it is stored unconditionally —
-        // this is the ordering the old call sites had to remember by hand.
+        // Stored unconditionally: `from_timeline` writes `last` on the paused
+        // path too, so an early return here would drop that update and make the
+        // resume look like a jump.
         self.last_beat.store(last.get(), crate::Ordering::Release);
         out
     }
@@ -246,6 +250,7 @@ impl BeatCursor {
         &self.transport
     }
 
+    /// The rate this cursor converts beats against, as last set.
     pub fn sample_rate(&self) -> SampleRate {
         SampleRate::from(self.sample_rate.load(crate::Ordering::Acquire))
     }
@@ -256,6 +261,7 @@ impl BeatCursor {
     /// threshold, which is derived from it. A cursor left at a stale rate would
     /// mis-scale that slack: too small and ordinary playback reads as a seek, too
     /// large and a real seek goes unnoticed.
+    ///
     /// `&self`, not `&mut`: the rate is a shared atomic, so this reaches every
     /// clone including the one fundsp is running.
     pub fn set_sample_rate(&self, sample_rate: impl Into<SampleRate>) {
@@ -343,10 +349,9 @@ mod tests {
         assert!(sync.is_discontinuous());
     }
 
-    /// The variant this commit adds. Before it, a forward seek was
-    /// indistinguishable from normal advance — so buffered state never flushed
-    /// and the fix built on `Rewound` alone would have covered only half the
-    /// gesture.
+    /// A forward seek must be distinguishable from a normal advance. Without
+    /// `Jumped` the two read alike, buffered state never flushes, and anything
+    /// keyed on `Rewound` alone covers only half the gesture.
     #[test]
     fn forward_jump_is_jumped() {
         let t = Mock::new(0.0, 120.0);
@@ -480,11 +485,10 @@ mod tests {
 
     /// A zero rate places events at the *start* of the block, not the end.
     ///
-    /// `offset_of` had no zero-guard: the division went to infinity and the
-    /// `min(max_offset)` clamp turned that into "last sample of the block", so
-    /// every event in a stalled block bunched at its tail. The snapshot path
-    /// guarded and left offsets alone. Two conversions, two answers, opposite
-    /// ends of the buffer.
+    /// Without the zero-guard the division goes to infinity and the
+    /// `min(max_offset)` clamp turns that into "last sample of the block", so
+    /// every event in a stalled block bunches at its tail — the opposite end of
+    /// the buffer from where a guarded conversion puts them.
     ///
     /// A window this degenerate only arises if one is built by hand —
     /// `from_timeline` rejects a non-positive tempo before constructing one —
@@ -506,9 +510,8 @@ mod tests {
 
     /// The three window fields are two positions and a span, so transposing a
     /// position and the rate is a type error rather than a silent misplacement.
-    ///
-    /// `beats_per_sample` sat between `start_beat` and `end_beat` as a third
-    /// `f64`, and the struct is constructed by hand outside this crate.
+    /// The fields are `pub` and the struct is built by hand outside this crate,
+    /// so the types are the only thing standing between them.
     #[test]
     fn the_rate_and_the_bounds_are_not_the_same_type() {
         let w = BeatWindow {

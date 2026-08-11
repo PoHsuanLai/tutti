@@ -421,12 +421,11 @@ mod tests {
 
     /// The negotiated rate is stored once and read live.
     ///
-    /// This is what remains of a whole module of wait-budget tests, deleted with
-    /// the synchronous path: the audio thread no longer waits, so it no longer
-    /// sizes anything from the period. The *bridge* thread still does — its
-    /// reply timeout in `dispatch` reads exactly this cell — so the storage has
-    /// to keep working, and the test goes through the real `Channels` rather
-    /// than a local atomic so it would fail if that plumbing were disconnected.
+    /// The audio thread never waits, so it sizes nothing from the period. The
+    /// *bridge* thread does — its reply timeout in `dispatch` reads exactly this
+    /// cell — so the storage has to keep working. The test goes through the real
+    /// `Channels` rather than a local atomic, so it fails if that plumbing is
+    /// disconnected.
     #[test]
     fn the_sample_rate_is_stored_and_updated_live() {
         let channels = Channels::new(48_000.0);

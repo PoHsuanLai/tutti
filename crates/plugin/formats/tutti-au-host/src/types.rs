@@ -1,11 +1,11 @@
 //! AudioToolbox types, constants, and FFI — sourced from `coreaudio-sys`.
 //!
-//! The raw `extern "C"` declarations, `#[repr(C)]` structs, and four-char-code
-//! constants that this module used to hand-declare now come straight from
-//! `coreaudio-sys` (bindgen output over Apple's real `AudioToolbox.h` /
-//! `AudioUnit.h`). This module re-exports the subset the rest of the crate
-//! uses and adds a handful of thin, hand-rolled aliases/helpers where the
-//! generated names would otherwise ripple through every call site:
+//! The raw `extern "C"` declarations, `#[repr(C)]` structs and four-char-code
+//! constants come from `coreaudio-sys` — bindgen output over Apple's real
+//! `AudioToolbox.h` / `AudioUnit.h`, so nothing here is hand-transcribed unless
+//! it says so. This module re-exports the subset the rest of the crate uses and
+//! adds a handful of thin aliases/helpers where the generated names would
+//! otherwise ripple through every call site:
 //!
 //! * `SCREAMING_CASE` constant aliases onto the bindgen `kAudioUnit*` /
 //!   `kAudioFormat*` names, so scope/property/error/type/param constants read
@@ -346,9 +346,8 @@ pub const K_AUDIO_UNIT_PARAMETER_UNIT_HERTZ: u32 = sys::kAudioUnitParameterUnit_
 pub const K_AUDIO_UNIT_PARAMETER_UNIT_DECIBELS: u32 = sys::kAudioUnitParameterUnit_Decibels;
 pub const K_AUDIO_UNIT_PARAMETER_UNIT_LINEAR_GAIN: u32 = sys::kAudioUnitParameterUnit_LinearGain;
 /// A parameter whose value **is** a MIDI controller number, `0..=127` — not a
-/// quantity in a physical unit. Decoded as `Unknown(12)` before
-/// [`crate::midi_map`] existed, which is why it is aliased here: a
-/// mapping-aware host formats it as "CC 74", never as a bare `74`.
+/// quantity in a physical unit. Aliased so a mapping-aware host can format it as
+/// "CC 74" rather than as a bare `74`; see [`crate::midi_map`].
 pub const K_AUDIO_UNIT_PARAMETER_UNIT_MIDI_CONTROLLER: u32 =
     sys::kAudioUnitParameterUnit_MIDIController;
 
@@ -464,7 +463,10 @@ pub trait AsbdExt {
     /// (one channel's worth), *not* `channels * 4`.
     fn float32(sample_rate: f64, channels: u32) -> Self;
 
-    /// The crate's historical `Default`: 44.1 kHz stereo float32.
+    /// The crate's fallback stream format: 44.1 kHz stereo float32.
+    ///
+    /// A starting point for a probe, not a claim about the AU — every real
+    /// configuration re-reads the rate and channel count the unit accepted.
     fn daw_default() -> Self;
 }
 
@@ -645,9 +647,9 @@ mod tests {
         // Genuine CFStrings round-trip. BOTH lengths are checked on purpose: on
         // arm64 a short string comes back as a *tagged pointer* (misaligned, the
         // payload inside the pointer word) while a long one is a real address.
-        // An earlier version of the guard rejected anything not pointer-aligned
-        // and so silently dropped every short preset name — exactly the names
-        // real AUs use ("Clean", "Bright").
+        // A guard that rejects anything not pointer-aligned silently drops
+        // every short preset name — exactly the names real AUs use ("Clean",
+        // "Bright"), so the short cases here are the load-bearing ones.
         for name in ["a", "Clean", "preset name", &"long name ".repeat(6)] {
             let s = CFString::new(name);
             let got =
@@ -662,7 +664,7 @@ mod tests {
         }
 
         // Null is rejected rather than turned into an empty string, so a caller
-        // can tell "no name" from "the AU gave us nothing".
+        // can tell "no name" from "the AU returned nothing".
         assert!(unsafe { cfstring_to_string_checked(std::ptr::null()) }.is_none());
 
         // A live CF object of the wrong type: valid, retained memory that is not

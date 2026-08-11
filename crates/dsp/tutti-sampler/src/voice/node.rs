@@ -2,7 +2,8 @@
 //!
 //! Zero inputs, N outputs, and — via [`VoiceNode::with_commands`] — a command
 //! channel for the one control `AudioUnit::set` cannot carry. For resynth,
-//! preview and a single timeline clip, where a whole pool would be ceremony. It shares [`VoiceSlot`] with the pool, so the
+//! preview and a single timeline clip, where a whole pool would be ceremony. It
+//! shares `VoiceSlot` with [`VoicePool`](super::pool::VoicePool), so the
 //! per-voice read is the same code in both — a fix in one is a fix in both.
 
 use std::sync::Arc;
@@ -19,40 +20,42 @@ use tutti_core::{
     AudioUnit, BufferMut, BufferRef, ChannelLayout, SampleRate, SignalFrame, Timeline,
 };
 
-// ---------------------------------------------------------------------------
-// VoiceNode — a standalone single-`Voice` graph node (0 inputs, 2 outputs).
-//
-// The mixer (`VoicePool`) holds a *list* of voices and sums them; a
-// `VoiceNode` holds exactly ONE and plays it — a degenerate single-voice
-// mixdown. Its `tick`/`process` are the SAME per-voice read the mixer does for
-// one slot, shared through [`VoiceSlot::tick_frame`] / [`VoiceSlot::process_into`]
-// (no duplication, no per-sample dyn).
-//
-// This is the standalone-graph-node case: `dawai-spectral`'s resynth adds a bare
-// voice node to its net, and `tutti-export`'s region render downcasts these
-// nodes to rebind their transport offline. Both rely on a `Voice` being an
-// `AudioUnit` in its own right — not only reachable through the mixer — so this
-// node keeps that path alive (guarded by a test).
-// ---------------------------------------------------------------------------
-
+/// One [`Voice`] as a graph node in its own right: zero inputs, `channels`
+/// outputs.
+///
+/// Where [`VoicePool`](super::pool::VoicePool) holds a *list* of voices and sums
+/// them, this holds exactly ONE and plays it — a degenerate single-voice
+/// mixdown. Its `tick` / `process` are the same per-voice read the pool does for
+/// one slot, shared through the slot itself, so there is no duplication and no
+/// per-sample dynamic dispatch.
+///
+/// Two consumers depend on a voice being an `AudioUnit` on its own rather than
+/// only reachable through the pool: `dawai-spectral`'s resynth adds a bare voice
+/// node to its net, and `tutti-export`'s region render downcasts these nodes to
+/// rebind their transport offline.
 pub struct VoiceNode {
+    /// The single voice plus its resident stretch filter and the per-sample
+    /// read, shared with the pool's slots.
     pub(crate) slot: VoiceSlot,
-    /// Output width — see [`VoicePool`]'s field of the same name.
+    /// Output width — this node's `outputs()`, fixed at construction. Declared
+    /// rather than inferred from the voice, so a `Net` edge wired against
+    /// `outputs()` cannot be re-arityed under a live graph.
     pub(crate) channels: ChannelLayout,
     /// Detects transport discontinuities so buffered audio can be flushed on a
-    /// seek — the standalone twin of [`VoicePool`]'s cursor, and needed for the
-    /// same reason: a stretch filter's FIFOs keep draining pre-jump material
-    /// until something clears them.
+    /// seek — the standalone twin of the pool's cursor, and needed for the same
+    /// reason: a stretch filter's FIFOs keep draining pre-jump material until
+    /// something clears them.
     ///
     /// `None` when the voice has no clock to watch (free-running / unplaced).
     pub(crate) cursor: Option<BeatCursor>,
     /// Commands from the control thread, drained at the top of every block.
     ///
     /// **A dead channel when the node was built without one**, not an `Option`:
-    /// every constructor that predates this one keeps its signature and gets a
-    /// `bounded(0)` receiver, so the drain is one `try_recv` that immediately
-    /// answers `Empty` rather than a branch on every block. `VoicePool` makes the
-    /// same choice for [`detached`](super::pool::VoicePool::detached).
+    /// a node built through [`new`](VoiceNode::new) or
+    /// [`with_channels`](VoiceNode::with_channels) gets a `bounded(0)` receiver,
+    /// so the drain is one `try_recv` that immediately answers `Empty` rather
+    /// than a branch on every block. `VoicePool` makes the same choice for
+    /// [`detached`](super::pool::VoicePool::detached).
     pub(crate) rx: Receiver<VoiceCommand>,
 }
 
@@ -65,16 +68,15 @@ impl VoiceNode {
 
     /// Wrap a single [`Voice`] as a `channels`-wide graph node.
     ///
-    /// Builds the stretch filter here when the voice asks for one. This is a
-    /// control-thread constructor, so the allocation is free; the audio-thread
-    /// drain in [`VoicePool`] cannot do the same and takes a pre-built filter
-    /// from the sender instead.
+    /// **Builds the stretch filter here** when `voice.play` asks for one. This
+    /// is a control-thread constructor, so the allocation is free; the
+    /// audio-thread drain in [`VoicePool`](super::pool::VoicePool) cannot do the
+    /// same and takes a pre-built filter from the sender instead.
     ///
-    /// It did not used to build one — `VoiceSlot::with_channels` always sets
-    /// `stretch: None`, and the doc here claimed a filter was built "once, like a
-    /// mixer slot" while nothing ever built it. A standalone stretched voice
-    /// therefore read DRY forever: no stretch, no pitch shift, and no error. Both
-    /// doc comments pointed at a `materialize_stretch` that does not exist.
+    /// Skipping that step is how a standalone stretched voice reads DRY forever
+    /// — no stretch, no pitch shift, and no error — because
+    /// `VoiceSlot::with_channels` always leaves the field `None` and nothing
+    /// else on this path fills it in.
     pub fn with_channels(voice: Voice, channels: impl Into<ChannelLayout>) -> Self {
         let channels = nonempty(channels.into());
         let sample_rate = SampleRate::SR_44K1;
@@ -105,10 +107,11 @@ impl VoiceNode {
     /// As [`with_channels`](Self::with_channels), plus a command channel.
     ///
     /// Returns the node **and** its control-thread handle, the same
-    /// `(unit, handle)` shape [`VoicePool::with_transport`] uses — because the
-    /// receiver has to live inside the unit (the audio thread drains it) while
-    /// the sender has to live outside it (the control thread fills it), and a
-    /// constructor is the only place both ends exist at once.
+    /// `(unit, handle)` shape
+    /// [`VoicePool::with_transport`](super::pool::VoicePool::with_transport)
+    /// uses — because the receiver has to live inside the unit (the audio thread
+    /// drains it) while the sender has to live outside it (the control thread
+    /// fills it), and a constructor is the only place both ends exist at once.
     ///
     /// # What the channel is for, and what it is not
     ///
@@ -118,8 +121,8 @@ impl VoiceNode {
     /// `Beat` (f64) plus an optional duration — so it takes the tier the crate
     /// reserves for multi-field state, which is this queue.
     ///
-    /// A node built with [`with_channels`] instead keeps working exactly as
-    /// before; it simply has no way to be told to move.
+    /// A node built with [`with_channels`](Self::with_channels) instead plays
+    /// identically; it simply has no way to be told to move.
     pub fn with_commands(
         voice: Voice,
         channels: impl Into<ChannelLayout>,
@@ -341,8 +344,12 @@ impl AudioUnit for VoiceNode {
         std::mem::size_of::<Self>()
     }
 
-    /// Size the resident stretch filter's block scratch — see
-    /// [`VoicePool::allocate`], which this mirrors for the single-voice node.
+    /// Size the resident stretch filter's block scratch.
+    ///
+    /// **Required, not an optimization**, for the reason
+    /// [`VoicePool`](super::pool::VoicePool)'s own `allocate` gives: a cloned
+    /// node reaches the audio thread with unsized scratch, and `process` then
+    /// has to allocate in the callback to avoid rendering silence.
     fn allocate(&mut self) {
         if let Some(s) = self.slot.stretch.as_mut() {
             s.allocate();
@@ -357,13 +364,13 @@ impl AudioUnit for VoiceNode {
     /// clone that still shares state with the live node is a data race, not
     /// merely an interleave.
     ///
-    /// [`VoicePool::isolate`] gets this for free by clearing its voices, which
-    /// drops their stretch filters with them. `VoiceNode` keeps its single slot,
-    /// so it has to sever explicitly — and until it did, it inherited the
-    /// `AudioUnit` no-op default and shipped the render a filter still pointing
-    /// at the live [`stretch::Unit`]'s shared vocoder bank.
+    /// [`VoicePool`](super::pool::VoicePool)'s `isolate` gets this for free by
+    /// clearing its voices, which drops their stretch filters with them.
+    /// `VoiceNode` keeps its single slot, so it has to sever explicitly:
+    /// inheriting the `AudioUnit` no-op default ships the render a filter still
+    /// pointing at the live [`stretch::Unit`]'s shared vocoder bank.
     ///
-    /// Latent rather than firing only because the sole producer of these nodes
+    /// The hazard is latent only because the sole producer of these nodes
     /// (`dawai-spectral`'s resynth) builds them at unity, where
     /// `stretch_wanted` leaves the slot's filter `None`. A resynth voice with
     /// any non-unity stretch or pitch arms it, with no change in this crate.
@@ -429,8 +436,9 @@ impl AudioUnit for VoiceNode {
     /// # Which is why both are written
     ///
     /// `play.gain` is what this node renders. `apply_gain` is what a
-    /// [`VoicePool`] slot and the offline render read, and what survives a
-    /// rebind. Writing one and not the other leaves two copies disagreeing —
+    /// [`VoicePool`](super::pool::VoicePool) slot and the offline render read,
+    /// and what survives a rebind. Writing one and not the other leaves two
+    /// copies disagreeing —
     /// the hazard `Playback.placement` was deleted for. Sabotaging the
     /// `play.gain` half fails two tests; that is the half this node's audio
     /// depends on.

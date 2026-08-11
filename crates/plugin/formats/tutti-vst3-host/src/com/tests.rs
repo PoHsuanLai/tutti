@@ -1,6 +1,6 @@
 //! Behavior tests for VST3 COM implementations.
 //!
-//! These drive our handler objects through the `vst3` crate's safe
+//! These drive the handler objects through the `vst3` crate's safe
 //! `ComPtr` / `IFooTrait` surface, exactly how a plugin would reach them.
 
 use std::ffi::c_void;

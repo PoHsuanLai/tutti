@@ -50,8 +50,8 @@ use tutti_sampler::DiskStreamer;
 /// engine-dependent systems, so the app proceeds without audio.
 pub fn build_into(plugin: &crate::TuttiPlugin, app: &mut App) -> Result<()> {
     // OS MIDI ports are opened iff the `midi-hardware` feature is compiled.
-    // Built first so we can hand the port manager to the processor's MIDI input.
-    // (Software MIDI fan-out via `MidiBus` is always present under `midi`.)
+    // Built first so the port manager can be handed to the processor's MIDI
+    // input. (Software fan-out via `MidiBus` is always present under `midi`.)
     #[cfg(feature = "midi-hardware")]
     let midi_io = {
         let port_manager = Arc::new(tutti_midi_hardware::HardwareMidiInputs::new(256));
@@ -99,12 +99,11 @@ pub fn build_into(plugin: &crate::TuttiPlugin, app: &mut App) -> Result<()> {
     // Metronome. It only READS the transport (beat + rolling/recording), so it
     // takes a read view, not a control handle.
     //
-    // It is NOT wired to the output here. `net.pipe_output(click_id)` used to
-    // be, which reads like "mix the click into master" and is not what that
-    // call does: `pipe_output` overwrites every global output edge, so the
-    // first soundfont to load silently disconnected the metronome. What the
-    // click feeds is now the host's declaration, like every other node — see
-    // `graph::wire`.
+    // It is NOT wired to the output here, and must not be. `pipe_output` reads
+    // like "mix the click into master" and is not what it does — it overwrites
+    // every global output edge, so the first soundfont to load silently
+    // disconnects the metronome. What the click feeds is the host's
+    // declaration, like every other node; see `graph::wire`.
     let click = ClickNode::with_transport(transport.clone(), click_settings.clone(), sample_rate);
     let click_id = net.push(Box::new(An(click)));
 
@@ -178,13 +177,12 @@ pub fn build_into(plugin: &crate::TuttiPlugin, app: &mut App) -> Result<()> {
     // graph emitted (a hosted plugin's MIDI-out) into the same unit inboxes
     // inbound events reach.
     //
-    // `tutti-cpal` has always held an `Option<MidiPostBlock>` and called `run()`
-    // in the callback, but nothing ever *built* one — so plugin MIDI-out reached
-    // nothing at all. Assembly needs the routing table and the bus, which are
-    // this adapter's to own, which is why it belongs here rather than in the
-    // device layer. The engine-side path itself needs no adapter:
-    // `tutti-midi-runtime`'s `outbound_block_path` test assembles the whole
-    // round trip with no Bevy in scope, and exists to keep that true.
+    // `tutti-cpal` holds an `Option<MidiPostBlock>` and calls `run()` in the
+    // callback; assembling one needs the routing table and the bus, which are
+    // this adapter's to own, so it belongs here rather than in the device layer.
+    // The engine-side path itself needs no adapter — `tutti-midi-runtime`'s
+    // `outbound_block_path` test assembles the whole round trip with no Bevy in
+    // scope, and exists to keep that true.
     //
     // `midi_route.snapshot_arc()` is deliberately the *same* handle the pre-block
     // took: a node's MIDI-out is routed by exactly the rules a hardware input is,
@@ -309,8 +307,8 @@ pub fn build_into(plugin: &crate::TuttiPlugin, app: &mut App) -> Result<()> {
 /// than upmixing, deliberately, so nothing downstream can recover them.
 ///
 /// A device *narrower* than the root needs nothing done here — that is the case
-/// the engine already handles, and the whole point of the root fold. "Should we
-/// clamp to the device?" is the obvious wrong instinct.
+/// the engine already handles, and the whole point of the root fold. "Clamp to
+/// the device" is the obvious wrong instinct.
 ///
 /// The [`MAX_ROOT_CHANNELS`] clamp is applied **here, at construction**, rather
 /// than left to `process_segment`'s runtime clamp: without it `Net::outputs()`

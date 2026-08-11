@@ -1,8 +1,8 @@
 //! Real HRTF binaural rendering backed by the `hrtf` crate.
 //!
-//! FFT convolution against a measured HRIR sphere: real spectral cues,
-//! front/back and elevation disambiguation. This replaced the earlier crude
-//! Woodworth ITD/ILD panner.
+//! FFT convolution against a measured HRIR sphere: real spectral cues, with
+//! front/back and elevation disambiguation a bare Woodworth ITD/ILD
+//! approximation cannot give.
 //!
 //! ## The block-size bridge
 //!
@@ -43,6 +43,9 @@ pub(crate) const FRAME_LEN: usize = INTERPOLATION_STEPS * BLOCK_LEN;
 /// Errors constructing an HRTF renderer (bad or wrong-rate HRIR data).
 #[derive(Debug, thiserror::Error)]
 pub enum HrtfBinauralError {
+    /// The HRIR bytes could not be parsed as a sphere, or the dataset could not
+    /// be resampled to the requested rate. Carries the underlying crate's
+    /// message, which is not a structured error.
     #[error("failed to load HRIR sphere: {0}")]
     Sphere(String),
 }

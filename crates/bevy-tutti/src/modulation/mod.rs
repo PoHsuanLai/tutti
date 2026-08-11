@@ -5,21 +5,53 @@
 //! matrix when that declaration changes, the other advances every source once a
 //! frame.
 //!
-//! ```rust,ignore
-//! let lfo = commands.spawn((
+//! ```rust
+//! use bevy_app::prelude::*;
+//! use bevy_ecs::prelude::*;
+//! use bevy_tutti::graph::{AudioGraphRes, GraphReconcilePlugin, TransportRes};
+//! use bevy_tutti::modulation::*;
+//! use bevy_tutti::AudioEngineState;
+//! use tutti_core::dsp::{AudioUnit as _, Net};
+//! use tutti_core::transport::Transport;
+//! use tutti_core::{AudioNode, SampleRate};
+//! use tutti_types::{BeatDuration, Depth, ParamAddr, UnitParam};
+//! use tutti_units::{DistortionNode, ShapeKind};
+//!
+//! let mut net = Net::new(0, 1);
+//! let node = net.push(Box::new(DistortionNode::new(ShapeKind::Tanh, 5.0)));
+//! net.set_sample_rate(SampleRate(48_000.0));
+//!
+//! let mut app = App::new();
+//! app.insert_resource(AudioGraphRes(net));
+//! app.insert_resource(TransportRes(Transport::new(48_000.0)));
+//! app.insert_resource(AudioEngineState::Running);
+//! app.add_plugins((GraphReconcilePlugin, TuttiModulationPlugin));
+//! // The host supplies the downcast — see the last section.
+//! app.world_mut()
+//!     .resource_mut::<ModTargetRegistry>()
+//!     .register::<DistortionNode>();
+//!
+//! let lfo = app.world_mut().spawn((
 //!     ModSource::new(LfoShape::Sine),
 //!     ModRate::beat_synced(BeatDuration(1.0)),
 //! )).id();
 //!
 //! // The target declares what is modulatable and over what range; the engine
-//! // does not invent a cutoff's sensible bounds.
-//! commands.entity(filter).insert(
-//!     ModParamRange::default().with(ParamAddr::Unit(UnitParam::Cutoff), 1000.0, 20.0, 20000.0),
-//! );
+//! // does not invent a param's sensible bounds.
+//! let drive = app.world_mut().spawn((
+//!     AudioNode(node),
+//!     ModParamRange::default().with(ParamAddr::Unit(UnitParam::Drive), 5.0, 0.0, 10.0),
+//! )).id();
 //!
-//! commands.spawn(
-//!     ModRoute::new(lfo, filter, ParamAddr::Unit(UnitParam::Cutoff)).with_depth(Depth(0.5)),
+//! app.world_mut().spawn(
+//!     ModRoute::new(lfo, drive, ParamAddr::Unit(UnitParam::Drive)).with_depth(Depth(0.5)),
 //! );
+//! app.update();
+//!
+//! // The route bound to a live accumulator. Had `register::<DistortionNode>`
+//! // been forgotten, the route would still be well-formed and bind to nothing.
+//! let matrix = app.world().resource::<ModulationMatrix>();
+//! assert!(matrix.is_modulated(drive, ParamAddr::Unit(UnitParam::Drive)));
 //! ```
 //!
 //! # The single-writer rule
@@ -28,7 +60,7 @@
 //! Both writing means whichever runs last wins, which is a scheduling accident
 //! rather than a decision. [`ModulationMatrix::is_modulated`] settles it: a
 //! reconciler asks before writing, and routes an authored change through
-//! [`set_base`](ModulationMatrix::set_base) when the answer is yes, so the value
+//! `set_base` when the answer is yes, so the value
 //! lands *under* the modulation instead of fighting it.
 //!
 //! # Cascading — modulating a source's own rate
@@ -37,14 +69,39 @@
 //! [`UnitParam::Rate`](tutti_types::UnitParam::Rate) modulatable and route to
 //! it like any other param:
 //!
-//! ```rust,ignore
-//! let carrier = commands.spawn((
+//! ```rust
+//! use bevy_app::prelude::*;
+//! use bevy_ecs::prelude::*;
+//! use bevy_tutti::graph::{AudioGraphRes, GraphReconcilePlugin, TransportRes};
+//! use bevy_tutti::modulation::*;
+//! use bevy_tutti::AudioEngineState;
+//! use tutti_core::dsp::Net;
+//! use tutti_core::transport::Transport;
+//! use tutti_types::{Hz, ParamAddr, UnitParam};
+//!
+//! let mut app = App::new();
+//! app.insert_resource(AudioGraphRes(Net::new(0, 1)));
+//! app.insert_resource(TransportRes(Transport::new(48_000.0)));
+//! app.insert_resource(AudioEngineState::Running);
+//! app.add_plugins((GraphReconcilePlugin, TuttiModulationPlugin));
+//!
+//! let slow_lfo = app.world_mut().spawn((
+//!     ModSource::new(LfoShape::Sine),
+//!     ModRate::free_running(Hz(0.2)),
+//! )).id();
+//!
+//! let carrier = app.world_mut().spawn((
 //!     ModSource::new(LfoShape::Sine),
 //!     ModRate::free_running(Hz(2.0)),
 //!     ModParamRange::default().with(ParamAddr::Unit(UnitParam::Rate), 2.0, 2.0, 10.0),
 //! )).id();
 //!
-//! commands.spawn(ModRoute::new(slow_lfo, carrier, ParamAddr::Unit(UnitParam::Rate)));
+//! app.world_mut().spawn(ModRoute::new(slow_lfo, carrier, ParamAddr::Unit(UnitParam::Rate)));
+//! app.update();
+//!
+//! // No `register` was needed: a source carries no `AudioNode`, so the resolver
+//! // tries its rate first and adds the `ModRateCell` the modulator reads from.
+//! assert!(app.world().get::<ModRateCell>(carrier).is_some());
 //! ```
 //!
 //! A source carries no `AudioNode`, so the registry's downcast path cannot
@@ -61,11 +118,22 @@
 //! # Delivery: per-frame scalar, or beat-evaluated curve
 //!
 //! By default the driver samples each source once a frame and writes a scalar.
-//! A route can instead ask for its source to be installed as a [`Curve`] the
+//! A route can instead ask for its source to be installed as a `Curve` the
 //! *sink* evaluates:
 //!
-//! ```rust,ignore
-//! commands.spawn(ModRoute::new(lfo, plugin_param, addr).per_block());
+//! ```rust
+//! use bevy_ecs::prelude::*;
+//! use bevy_tutti::modulation::{ModDelivery, ModRoute};
+//! use tutti_types::{ParamAddr, UnitParam};
+//!
+//! # let mut world = World::new();
+//! # let lfo = world.spawn_empty().id();
+//! # let plugin_param = world.spawn_empty().id();
+//! # let addr = ParamAddr::Unit(UnitParam::Cutoff);
+//! let route = ModRoute::new(lfo, plugin_param, addr).per_block();
+//! // A **request**, not a guarantee: honoured only if the source kind has a
+//! // curve form and the sink accepts one, else it falls back to a scalar.
+//! assert_eq!(route.delivery, ModDelivery::PerBlock);
 //! ```
 //!
 //! Worth asking for only when the sink reads faster than the frame rate — a
@@ -89,12 +157,49 @@
 //! [`BEAT_PORTS`](tutti_core::transport::BEAT_PORTS) inputs to the transport
 //! clock, whose entity is [`EngineNodes::clock`](crate::graph::EngineNodes):
 //!
-//! ```rust,ignore
-//! commands.spawn_audio_node(LfoNode::new().with_beat_sync(BeatDuration(1.0)))
-//!     .insert(AudioSources(vec![
-//!         AudioSource::Node { entity: nodes.clock, port: 0 },
-//!         AudioSource::Node { entity: nodes.clock, port: 1 },
-//!     ]));
+//! ```rust
+//! use bevy_app::prelude::*;
+//! use bevy_ecs::prelude::*;
+//! use bevy_tutti::prelude::*;
+//! use tutti_core::dsp::{Net, Source};
+//! use tutti_core::transport::{TransportClock, BEAT_PORTS};
+//! use tutti_types::BeatDuration;
+//! use tutti_units::{LfoNode, LfoShape};
+//!
+//! fn wire_lfo_to_clock(mut commands: Commands, nodes: Res<EngineNodes>) {
+//!     commands
+//!         .spawn_audio_node(LfoNode::new(LfoShape::Sine).with_beat_sync(BeatDuration(1.0)))
+//!         .insert(AudioSources(vec![
+//!             AudioSource::Node { entity: nodes.clock, port: 0 },
+//!             AudioSource::Node { entity: nodes.clock, port: 1 },
+//!         ]));
+//! }
+//!
+//! let transport = Transport::new(48_000.0);
+//! let mut net = Net::with_backend(2);
+//! let clock_id = net.add(TransportClock::new(transport.clock_links(), 48_000.0));
+//!
+//! let mut app = App::new();
+//! app.insert_resource(AudioGraphRes(net));
+//! app.insert_resource(AudioEngineState::Running);
+//! app.add_plugins(GraphReconcilePlugin);
+//! let clock = app.world_mut().spawn(AudioNode(clock_id)).id();
+//! app.insert_resource(EngineNodes { clock, click: clock });
+//! app.insert_resource(TransportRes(transport));
+//! app.add_systems(Startup, wire_lfo_to_clock);
+//! app.update();
+//!
+//! let lfo = app
+//!     .world_mut()
+//!     .query::<&AudioNode>()
+//!     .iter(app.world())
+//!     .map(|n| n.0)
+//!     .find(|id| *id != clock_id)
+//!     .unwrap();
+//! let graph = app.world().resource::<AudioGraphRes>();
+//! for port in 0..BEAT_PORTS {
+//!     assert_eq!(graph.0.source(lfo, port), Source::Local(clock_id, port));
+//! }
 //! ```
 //!
 //! That is the same `tutti_mod::Lfo` this matrix drives, under an audio-rate
@@ -109,7 +214,12 @@
 //! Resolving a param to an accumulator needs a downcast to a concrete node type
 //! (see [`target`]), so an app registers the node types it modulates:
 //!
-//! ```rust,ignore
+//! ```rust
+//! use bevy_app::prelude::*;
+//! use bevy_tutti::modulation::{ModTargetRegistry, TuttiModulationPlugin};
+//!
+//! let mut app = App::new();
+//! app.add_plugins(TuttiModulationPlugin);
 //! app.world_mut()
 //!     .resource_mut::<ModTargetRegistry>()
 //!     .register::<tutti_units::Compressor>();

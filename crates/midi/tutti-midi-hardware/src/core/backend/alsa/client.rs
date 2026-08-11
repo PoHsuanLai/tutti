@@ -78,6 +78,10 @@ impl SeqClient {
         Ok(client)
     }
 
+    /// The raw `snd_seq_t` for an FFI call.
+    ///
+    /// Valid for as long as `&self` is; this hands out a pointer, not ownership
+    /// — the handle is closed by `Drop` and must not be closed through this.
     pub fn raw(&self) -> *mut sys::snd_seq_t {
         self.seq
     }
@@ -122,7 +126,8 @@ pub(super) fn cstr(ptr: *const std::os::raw::c_char) -> Option<String> {
         return None;
     }
     // SAFETY: non-NULL, and alsa-lib's info getters return NUL-terminated
-    // strings valid until the owning info struct is freed — we copy immediately.
+    // strings valid until the owning info struct is freed — copied immediately,
+    // so nothing borrows past that point.
     Some(
         unsafe { CStr::from_ptr(ptr) }
             .to_string_lossy()

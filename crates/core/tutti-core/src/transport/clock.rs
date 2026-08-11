@@ -1,4 +1,9 @@
-//! Sample-accurate transport clock.
+//! Sample-accurate transport clock — the graph node that turns the transport's
+//! atomics into a per-sample beat signal.
+//!
+//! Emits the beat across [`BEAT_PORTS`](super::state::BEAT_PORTS) output ports
+//! (whole, then fraction) so precision does not decay as a session runs long,
+//! and writes the playhead back to the transport once per buffer.
 
 use super::state::{ClockLinks, LoopSpan};
 use crate::params::{Beat, BeatDuration, Bpm};
@@ -20,6 +25,13 @@ fn split_beat(beat: Beat) -> (f32, f32) {
     (beat.floor().get() as f32, beat.fract().get() as f32)
 }
 
+/// The beat generator: a zero-input, two-output [`AudioUnit`] emitting the
+/// playhead as `(whole, fraction)`.
+///
+/// Emit-then-advance. Sample 0 of a block carries the block's start beat, and
+/// only then does the beat increment — anything that advances a second clock
+/// alongside this one must match that order or sit permanently one
+/// `beats_per_sample` out of step.
 #[derive(Clone)]
 pub struct TransportClock {
     /// Everything shared with the live transport. `isolate()` replaces this
@@ -38,12 +50,11 @@ pub struct TransportClock {
 }
 
 impl TransportClock {
-    /// Build a clock over `links`.
+    /// Build a clock over `links`, starting at beat 0.
     ///
-    /// One constructor rather than three: the old `new` / `from_inputs` /
-    /// `with_position_writeback` trio built a clock and then patched shared
-    /// fields into it one at a time, so the two halves of the position
-    /// handshake were assembled by convention at every call site.
+    /// The one constructor: `links` carries both halves of the position
+    /// handshake, so a clock cannot be assembled with its inputs wired and its
+    /// writeback forgotten.
     pub fn new(links: ClockLinks, sample_rate: impl Into<crate::SampleRate>) -> Self {
         let sample_rate = sample_rate.into();
         let initial_tempo = Bpm(links.tempo.load(Ordering::Acquire));
@@ -67,9 +78,8 @@ impl TransportClock {
     // configuration and shares nothing with the live transport, so ticking it
     // on a worker thread cannot disturb playback. The live transport stays
     // authoritative for the timeline, because its loop/tempo atomics are the
-    // audio-thread mirror of persisted document state (the Loro projection
-    // reconciles them every frame) — they are not incidental state a stream
-    // transform could absorb.
+    // audio-thread mirror of persisted document state that the host reconciles
+    // every frame — not incidental state a stream transform could absorb.
 
     /// Derive an independent stream starting at `beat`.
     ///
@@ -102,6 +112,8 @@ impl TransportClock {
         self.last_tempo = bpm;
     }
 
+    /// The beat this clock will emit next. Its own position, not the live
+    /// transport's — an isolated clone reports its private playhead here.
     pub fn current_beat(&self) -> Beat {
         self.current_beat
     }
@@ -162,35 +174,33 @@ impl AudioUnit for TransportClock {
     }
 
     /// Sever every shared link to the *live* transport so this clone can be
-    /// ticked on a worker thread (an offline region render) without disturbing
-    /// live playback.
+    /// ticked on a worker thread — an offline region render — without
+    /// disturbing live playback.
     ///
-    /// `Clone` shares all of `tempo`/`paused`/`seek_*`/loop/`position_writeback`
-    /// by `Arc` (correct for the commit-clone, where only the original is
-    /// ticked). But an offline render ticks this clone for seconds while the
-    /// live graph plays, and the clock **writes** `position_writeback` and reads
-    /// `paused`/`seek_*` every buffer — so the worker would stomp the live
-    /// playhead (the writeback the live playback reads as "current beat") and
-    /// consume live seeks, jerking the live samplers to garbage positions →
-    /// continuous noise for the whole render.
+    /// # Why a clone is not already safe
     ///
-    /// Snapshot the live tempo into a fresh private atomic, force unpaused with
-    /// no pending seek (the render advances its own linear window), and — most
-    /// importantly — drop `position_writeback` and the loop atomics so this
-    /// clock writes to nothing live and reads no live loop/seek state. The
-    /// render's actual length/start is governed by the offline transport and
-    /// region bounds, not by this clock's loop fields.
+    /// `Clone` shares `tempo`, `paused`, `seek`, the loop span and
+    /// `position_writeback` by `Arc`. That is correct for the commit-clone,
+    /// where only the original is ticked. An offline render is not that: it
+    /// ticks the clone for seconds while the live graph plays, and this clock
+    /// **writes** `position_writeback` and consumes `seek` every buffer. A
+    /// shared clone therefore stomps the live playhead and swallows live seeks,
+    /// jerking the live samplers to garbage positions — continuous noise for
+    /// the whole render.
+    ///
+    /// The cut itself is [`ClockLinks::severed`](super::ClockLinks::severed).
+    /// Dropping the loop costs nothing: a render's length and start come from
+    /// the offline transport and the region bounds, never from this clock's
+    /// loop fields.
     fn isolate(&mut self) {
         self.links = self.links.severed();
     }
 
     /// Re-seat the clock on the render's start beat and tempo.
     ///
-    /// `isolate()` severs the live links, but the clock keeps whatever beat the
-    /// LIVE playhead happened to be at when it was cloned. Left there, every
-    /// beat-driven node downstream (LFO, automation lane) renders from that
-    /// arbitrary position — the output would depend on *when* the render was
-    /// started, which is both wrong and non-reproducible.
+    /// `isolate()` severs the live links but leaves the clock at whatever beat
+    /// the *live* playhead held when it was cloned, which would make the render
+    /// depend on when it was started. See [`OfflineTransport`](super::OfflineTransport).
     fn rebind_offline(&mut self, ctx: &dyn core::any::Any) {
         let Some(transport) = ctx.downcast_ref::<super::OfflineTransport>() else {
             return;
@@ -374,12 +384,10 @@ mod tests {
         assert!((reconstruct_beat(&output) - 2.0).abs() < 0.01);
     }
 
-    /// Regression: an offline region render clones the live net and ticks the
-    /// clone on a worker thread. `Clone` shares the live `position_writeback`
-    /// (and `paused`/`seek_*`) by `Arc`, and `tick` *writes* the writeback every
-    /// sample — so the worker would stomp the live playhead the rest of the app
-    /// reads as "current beat", jerking live samplers to garbage positions →
-    /// continuous noise for the whole render. `isolate()` must sever these.
+    /// An offline region render clones the live net and ticks the clone on a
+    /// worker thread, and `tick` *writes* `position_writeback` every sample.
+    /// `isolate()` must sever it, or the worker stomps the live playhead the
+    /// rest of the app reads as "current beat".
     #[test]
     fn isolate_severs_live_position_writeback() {
         let (tempo, paused) = create_test_atomics();
@@ -737,7 +745,7 @@ mod tests {
         derived.tick(&[], &mut output);
         assert!((reconstruct_beat(&output) - 8.0).abs() < 1e-4);
 
-        // Still at the derived tempo: one second later we are 4 beats on.
+        // Still at the derived tempo: one second later is 4 beats on.
         for _ in 0..44100 {
             derived.tick(&[], &mut output);
         }

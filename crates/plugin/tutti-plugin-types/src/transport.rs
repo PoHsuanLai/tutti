@@ -19,10 +19,16 @@ use tutti_types::meter::{BarNumber, TimeSignature};
 #[derive(Debug, Clone, Copy)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct TransportInfo {
+    /// Playing / recording / cycling.
     pub state: TransportFlags,
+    /// Tempo and time signature at the playhead.
     pub timing: MusicalTiming,
+    /// Playhead position, in whichever coordinate systems the host fills.
     pub position: TransportPosition,
+    /// Cycle boundaries. Meaningful only when
+    /// [`TransportFlags::cycle_active`] is set.
     pub loop_region: LoopRegion,
+    /// Where the current bar starts, and its number.
     pub bar: BarInfo,
     /// Sample rate in Hz (vst3 `ProcessContext::sampleRate`).
     pub sample_rate: f64,
@@ -37,9 +43,9 @@ pub struct TransportInfo {
 /// plugin fall back to its own defaults, which is always recoverable.
 ///
 /// Lives here rather than in one format host because every format needs the
-/// same gate and they had drifted: the VST2 path checked values, while the VST3
-/// path set `kTempoValid` from the plugin's requirement mask alone — so a NaN
-/// or zero tempo reached VST3 plugins flagged valid.
+/// same gate, and per-host copies drift: a path that sets `kTempoValid` from the
+/// plugin's requirement mask alone, without checking the value, sends a NaN or
+/// zero tempo flagged valid.
 ///
 /// This is the finiteness half only. A field with an additional domain rule
 /// (tempo must also be positive) applies that at the call site, since the rule
@@ -57,8 +63,14 @@ pub fn is_usable(value: f64) -> bool {
 #[derive(Debug, Clone, Copy, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct TransportFlags {
+    /// `true` while the transport is rolling.
     pub playing: bool,
+    /// `true` while the host is capturing. Independent of
+    /// [`playing`](Self::playing) — a punch-in armed but not yet rolling is
+    /// recording without playing.
     pub recording: bool,
+    /// `true` when cycle/loop mode is on, which is what makes
+    /// [`LoopRegion`] meaningful.
     pub cycle_active: bool,
 }
 
@@ -66,14 +78,18 @@ pub struct TransportFlags {
 #[derive(Debug, Clone, Copy)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct MusicalTiming {
+    /// Tempo in BPM at the playhead. A raw `f64` rather than `Bpm` because it
+    /// is handed straight to a C ABI, which is where the unit types stop. Must
+    /// be finite *and* positive before a format flags it valid — see
+    /// [`is_usable`], which covers only the finiteness half.
     pub tempo: f64,
     /// The signature in force at the playhead.
     ///
     /// A [`TimeSignature`] rather than a loose `(i32, i32)` pair: each format
     /// wants a different width (CLAP `u16`, VST2/VST3 `i32`), and casting at
-    /// three separate boundaries is how the CLAP bridge ended up doing
-    /// `as u16` on a signed value — a negative numerator became 65535. The
-    /// conversions now live on the type and validate on the way through.
+    /// three separate boundaries invites `as u16` on a signed value, where a
+    /// negative numerator becomes 65535. The conversions live on the type and
+    /// validate on the way through.
     pub signature: TimeSignature,
 }
 
@@ -102,10 +118,9 @@ pub struct TransportPosition {
     /// project-time samples from beats and tempo is wrong the moment tempo
     /// moves — see `tutti-plugin`'s `TransportSource`. Neither the VST2 nor the
     /// VST3 ABI has a validity bit for their sample-position field, so a plain
-    /// `0` was forwarded as fact and every plugin doing sample-accurate math
-    /// saw the project frozen at sample 0 forever. The `Option` forces each
-    /// format host to decide what to send instead of silently forwarding a
-    /// placeholder.
+    /// `0` travels as fact and every plugin doing sample-accurate math sees the
+    /// project frozen at sample 0 forever. The `Option` forces each format host
+    /// to decide what to send instead of silently forwarding a placeholder.
     pub samples: Option<i64>,
     /// Monotonic sample counter that does **not** reset on loop/cycle (vst3
     /// `continousTimeSamples`; clap `steady_time`). Free-running plugins (LFOs,
@@ -172,26 +187,31 @@ impl TransportInfo {
         Self::default()
     }
 
+    /// Sets tempo in BPM (builder). Not validated here — see [`is_usable`].
     pub fn with_tempo(mut self, tempo: f64) -> Self {
         self.timing.tempo = tempo;
         self
     }
 
+    /// Sets the playing flag (builder).
     pub fn with_playing(mut self, playing: bool) -> Self {
         self.state.playing = playing;
         self
     }
 
+    /// Sets the recording flag (builder). Independent of the playing flag.
     pub fn with_recording(mut self, recording: bool) -> Self {
         self.state.recording = recording;
         self
     }
 
+    /// Sets the time signature at the playhead (builder).
     pub fn with_time_signature(mut self, signature: TimeSignature) -> Self {
         self.timing.signature = signature;
         self
     }
 
+    /// Sets the render rate in Hz (builder).
     pub fn with_sample_rate(mut self, sample_rate: f64) -> Self {
         self.sample_rate = sample_rate;
         self
@@ -274,9 +294,9 @@ impl TransportInfo {
 mod tests {
     use super::*;
 
-    /// `with_loop` used to fill only the `_beats` pair, so CLAP saw the loop and
-    /// VST2/VST3 — which read `_quarters` — saw 0..0 while their cycle-valid bit
-    /// was set anyway. Both pairs must be populated, exactly as `with_bar` does.
+    /// `with_loop` must fill both pairs, exactly as `with_bar` does. Filling
+    /// only `_beats` leaves VST2/VST3 — which read `_quarters` — seeing 0..0
+    /// while their cycle-valid bit is set anyway, and only CLAP sees the loop.
     #[test]
     fn with_loop_fills_quarters_as_well_as_beats() {
         let t = TransportInfo::new().with_loop(true, 4.0, 16.0);

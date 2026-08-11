@@ -1,6 +1,6 @@
 //! What the engine wants from a plugin, as one capability flag set.
 //!
-//! Modeled on wgpu's `Features`: a single [`bitflags`] set, read in both
+//! Modeled on wgpu's `Features`: a single `bitflags` set, read in both
 //! directions. The host checks the negotiated flags to adapt (does this plugin
 //! take MIDI? does it have an editor?); the engine checks the [`Features::CONSUMES`]
 //! mask to gate per-block side-band sends (transport, automation, note
@@ -16,8 +16,9 @@
 //! The `Serialize`/`Deserialize` derives are gated behind the `serde` feature
 //! (the IPC wire path enables it), and serialize as the underlying bits.
 //!
-//! This is a fixed list of the functionality we support — not a superset of
-//! what the formats emit. The three kinds (Required / Negotiated / Best-effort)
+//! This is a fixed list of the functionality the engine supports — not a
+//! superset of what the formats emit. The three kinds
+//! (Required / Negotiated / Best-effort)
 //! and the per-format capability table live in the `tutti-plugin` crate README
 //! (`## Capability model`). Keep that table in sync with the per-format loaders
 //! in `tutti-plugin-server/src/loaders/`, which are the source of truth for what
@@ -149,7 +150,7 @@ impl Features {
 /// Which capabilities a loader actually probed, paired with [`Features`].
 ///
 /// A clear bit in `Features` answers three different questions the same way:
-/// the plugin said no, our loader never asked, or the format has no way to ask.
+/// the plugin said no, the loader never asked, or the format has no way to ask.
 /// The send-gate does not care — an unsent block is an unsent block — but a UI
 /// badge and a "why is this greyed out?" answer do, and so does anyone auditing
 /// what a loader covers.
@@ -159,7 +160,8 @@ impl Features {
 /// capability: the gate path reads `Features` on every block and must stay a
 /// single mask-and-compare.
 ///
-/// The distinction between "we didn't implement it" and "the format can't" is
+/// The distinction between "the host has not implemented it" and "the format
+/// cannot" is
 /// the `○` / `✕` split in the per-format capability table in the `tutti-plugin`
 /// README. Both are absent from `probed`, because both mean the same thing to a
 /// consumer: no plugin answered. Which of the two it is belongs in that table,
@@ -215,24 +217,30 @@ impl FeatureReport {
     }
 }
 
-/// What each format's loader probes — the `probed` half of
-/// [`LoadedPlugin`](crate::LoadedPlugin).
-///
-/// Named constants rather than expressions inside the load paths, which sit
-/// behind per-format `cfg`s and need a real plugin to reach. A claim about what
-/// a loader probes should be readable, diffable, and testable without one.
-///
-/// They live here, beside [`Features`], because two crates build the same
-/// format's report: `tutti-plugin-server` loads VST2 out of process and
-/// `tutti-plugin` loads it in process. Those answer the same five questions, and
-/// a second copy of the list is the drift this module exists to prevent.
-///
-/// A bit absent here means the loader did not ask. *Why* it did not — the format
-/// has no query, or we have not implemented the path — is the `✕` / `○` split in
-/// the `tutti-plugin` README capability table. That distinction is
-/// documentation, not a runtime bit: it describes this codebase, not the plugin,
-/// and would go stale the moment a loader grows the missing path.
+// Rule: no `///` on a `pub mod` — it shadows the module's own `//!` and
+// re-resolves every intra-doc link in the parent's scope. The header lives
+// inside, below.
 pub mod probed {
+    //! What each format's loader probes — the `probed` half of
+    //! [`LoadedPlugin`](crate::LoadedPlugin).
+    //!
+    //! Named constants rather than expressions inside the load paths, which sit
+    //! behind per-format `cfg`s and need a real plugin to reach. A claim about
+    //! what a loader probes should be readable, diffable, and testable without
+    //! one.
+    //!
+    //! They live here, beside [`Features`], because two crates build the same
+    //! format's report: `tutti-plugin-server` loads VST2 out of process and
+    //! `tutti-plugin` loads it in process. Those answer the same five questions,
+    //! and a second copy of the list is the drift this module exists to prevent.
+    //!
+    //! A bit absent here means the loader did not ask. *Why* it did not — the
+    //! format has no query, or this codebase has not implemented the path — is
+    //! the `✕` / `○` split in the `tutti-plugin` README capability table. That
+    //! distinction is documentation, not a runtime bit: it describes the host,
+    //! not the plugin, and would go stale the moment a loader grows the missing
+    //! path.
+
     use super::Features;
 
     /// VST3 probes everything except `AUTOMATION_STATE`, which no loader sets.
@@ -247,8 +255,8 @@ pub mod probed {
     ///
     /// `EDITOR_FLOATING` is **unprobed**, not declined. VST3 embeds
     /// unconditionally — `IPlugView::attached` takes a parent — so there is no
-    /// floating question to ask, and a clear-but-probed bit would spell "we
-    /// asked and it said no" for a query that does not exist.
+    /// floating question to ask, and a clear-but-probed bit would spell "asked,
+    /// and it said no" for a query that does not exist.
     pub const VST3: Features = Features::all()
         .difference(Features::AUTOMATION_STATE)
         .difference(Features::EDITOR_FLOATING);
@@ -329,8 +337,9 @@ mod tests {
     /// "The plugin said no" and "nobody asked" are different answers.
     ///
     /// The AU loader determines exactly one capability (`EDITOR`); the other
-    /// nine are unimplemented host-side. Before this, its `Features::empty()`
-    /// was indistinguishable from a plugin that was asked all ten and declined.
+    /// nine are unimplemented host-side. Without the `probed` mask its
+    /// `Features::empty()` is indistinguishable from a plugin that was asked
+    /// all ten and declined.
     #[test]
     fn an_unprobed_capability_is_not_a_declined_one() {
         let au = FeatureReport::new(Features::EDITOR, Features::EDITOR);
@@ -407,7 +416,8 @@ mod tests {
         assert_eq!(back.get(Features::MIDI_IN), None);
     }
 
-    /// Each loader's claim, pinned. These are assertions about our own coverage,
+    /// Each loader's claim, pinned. These are assertions about this codebase's
+    /// own coverage,
     /// so they change only when a loader grows or loses a probe — at which point
     /// the README capability table needs the same edit.
     #[test]

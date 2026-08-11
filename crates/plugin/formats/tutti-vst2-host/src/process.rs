@@ -131,11 +131,10 @@ impl Vst2Instance {
 
     fn dispatch_midi(&mut self, midi: &[MidiEvent]) {
         if let Some(events_ptr) = self.midi.send.stage(midi) {
-            // SAFETY: `stage` returns a pointer valid until the next
-            // `stage` call or `drop`. We use it immediately and don't
-            // retain it. The plugin is required by the VST2 spec to
-            // copy any event data it needs before `process_events`
-            // returns.
+            // SAFETY: `stage` returns a pointer valid until the next `stage`
+            // call or `drop`. It is used immediately and never retained. The
+            // VST2 spec requires the plugin to copy any event data it needs
+            // before `process_events` returns.
             unsafe {
                 self.handle.instance.process_events(&*events_ptr);
             }

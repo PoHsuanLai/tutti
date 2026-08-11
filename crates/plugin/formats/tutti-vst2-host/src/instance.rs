@@ -5,11 +5,14 @@
 //! sequence so the returned instance is immediately usable for
 //! [`process_f32`](Self::process_f32) / [`process_f64`](Self::process_f64).
 //!
-//! Unlike `au-host`'s two-stage `Loaded → Ready` split, VST2's lifecycle
-//! is short and atomic — `init → set_sample_rate → set_block_size →
-//! resume` all happen at construction. There's no useful state between
-//! "ready to load editor / params" and "ready to process audio", so we
-//! collapse them.
+//! The lifecycle is short and atomic — `init → set_sample_rate →
+//! set_block_size → resume` all happen at construction — so there is no useful
+//! state between "ready to load editor / params" and "ready to process audio",
+//! and the type carries no lifecycle stage. Suspend and resume are a
+//! reconfiguration bracket around a rate or block-size change, not a stage a
+//! host parks in; the reasoning for both, and how it differs from the other
+//! three formats, is in the crate docs under *The lifecycle, and why one type
+//! carries all of it*.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -76,30 +79,28 @@ pub struct Vst2Instance {
     /// the only place that value is observable.
     ///
     /// Hence the ordering invariant on [`Vst2Instance::load`]: this snapshot is
-    /// taken immediately after `get_parameter_object`, before any preset load
-    /// or session restore. Sampling later — which is what
-    /// [`parameter_list`](Self::parameter_list) used to do, reporting the live
-    /// value as the default — makes "default" follow the user's last knob move.
+    /// taken immediately after `get_parameter_object`, before any preset load or
+    /// session restore. Sampling later reports the *live* value as the default,
+    /// which makes "default" follow the user's last knob move.
     pub(crate) initial_values: Vec<f32>,
     /// Host-callback channel endpoints + the shared transport snapshot.
     pub(crate) host_link: HostLink,
     /// Per-block MIDI plumbing (host→plugin staging, plugin→host drain).
     pub(crate) midi: MidiIo,
     metadata: PluginInfo,
-    /// Whether the last `effMainsChanged` we dispatched carried `value=1`.
+    /// Whether the last `effMainsChanged` dispatched carried `value=1`.
     ///
-    /// Tracked because `effMainsChanged` is not documented as idempotent and
-    /// real plugins reallocate rate-dependent buffers on every `resume(1)`:
-    /// [`suspend_for_reconfigure`](Self::suspend_for_reconfigure) and
-    /// [`restore_after_reconfigure`](Self::restore_after_reconfigure) use it to
-    /// make both transitions edge-triggered, where the setters previously ran
-    /// an unconditional `suspend(); set(); resume()`.
+    /// Tracked because `effMainsChanged` is not documented as idempotent and real
+    /// plugins reallocate rate-dependent buffers on every `resume(1)`. The
+    /// reconfigure pair reads this to make both transitions edge-triggered; an
+    /// unconditional `suspend(); set(); resume()` would churn those buffers on
+    /// every setter call.
     resumed: bool,
 }
 
 // SAFETY: every field is either `Send` or its non-`Send`-ness has been
 // addressed via a wrapper (`SendEditor`, `SendParams`). The raw pointers
-// inside `vst::host::PluginInstance` point at heap memory we own;
+// inside `vst::host::PluginInstance` point at heap memory this crate owns;
 // callers serialize access externally (subprocess server is single-
 // threaded; in-process backend uses `parking_lot::Mutex`). `Sync` is
 // needed by the in-process callers — fundsp's `dyn AudioUnit` requires
@@ -238,7 +239,7 @@ impl Vst2Instance {
             category: map_category(info.category, info.category_code),
             receives_midi,
             emits_midi,
-            has_editor: false, // overwritten below once we ask the handle
+            has_editor: false, // overwritten below, once the handle is asked
             // Read live, not from `info`. `get_info()` returns a snapshot taken
             // in `PluginInstance::new` — before `effOpen`, `effSetSampleRate`
             // and `effMainsChanged` — and a plugin sets its latency during
@@ -371,15 +372,15 @@ impl Vst2Instance {
 
     /// Notify the plugin of a sample-rate change.
     ///
-    /// The VST2 SDK requires the plugin be suspended around a rate change —
-    /// many plugins reallocate rate-dependent buffers in `effSetSampleRate`
-    /// and assume they are not concurrently processing. We bracket the call so
-    /// callers don't have to. The bracket is edge-triggered (see
-    /// [`suspend_for_reconfigure`](Self::suspend_for_reconfigure)), so a plugin
-    /// suspended on entry stays suspended on exit.
+    /// The VST2 SDK requires the plugin be suspended around a rate change — many
+    /// plugins reallocate rate-dependent buffers in `effSetSampleRate` and assume
+    /// they are not concurrently processing. This brackets the call so a caller
+    /// need not. The bracket is edge-triggered, so a plugin suspended on entry
+    /// stays suspended on exit.
     ///
-    /// `as f32` is not a unit-type regression: `effSetSampleRate` passes the
-    /// rate in the dispatcher's `opt` field, a C `float` — an FFI boundary.
+    /// `sample_rate` is in Hz. The narrowing `as f32` inside is not a unit-type
+    /// regression: `effSetSampleRate` passes the rate in the dispatcher's `opt`
+    /// field, a C `float` — an FFI boundary, which is where the unit types stop.
     ///
     /// # Threading
     /// Main thread only, asserted. The bracket's `effMainsChanged` is where

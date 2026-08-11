@@ -25,17 +25,19 @@
 #[derive(Debug, Clone, Copy, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct PitchResult {
-    /// The detected pitch; [`Hz(0.0)`](Hz) if unvoiced.
+    /// The detected pitch in [`Hz`]; `Hz(0.0)` if unvoiced.
     ///
-    /// Typed because `PitchDetector` already holds `min_freq`/`max_freq` as
-    /// `Hz` and `threshold` as `Confidence` — only the *result* was bare, so
-    /// `yin.rs` had to re-wrap this crate's own output field by field.
+    /// Typed to match `PitchDetector`'s own `min_freq`/`max_freq`, so a caller
+    /// never re-wraps this crate's output field by field.
     pub frequency: Hz,
-    /// Detection strength, `0.0..=1.0`.
+    /// Detection strength as a [`Confidence`] reading, `0.0..=1.0`. A
+    /// measurement, not a blend — deliberately not `Mix`.
     pub confidence: Confidence,
 }
 
 impl PitchResult {
+    /// Whether this reading is a real pitch: both a positive frequency and a
+    /// non-zero [`Confidence`]. A default (unvoiced) result is neither.
     pub fn is_voiced(&self) -> bool {
         self.frequency > Hz(0.0) && self.confidence > Confidence(0.0)
     }
@@ -123,14 +125,15 @@ impl PitchDetector {
         }
     }
 
-    /// YIN step 1-2: d(τ) = r_x(0,W) + r_x(τ,W) - 2*autocorr(τ)
-    /// Uses FFT-based autocorrelation via Wiener-Khinchin: r(τ) = IFFT(|FFT(x)|²)
+    /// YIN steps 1-2: `d(τ) = r_x(0,W) + r_x(τ,W) - 2*autocorr(τ)`, with the
+    /// autocorrelation taken by FFT via Wiener-Khinchin:
+    /// `r(τ) = IFFT(|FFT(x)|²)`.
     ///
-    /// We need r(τ) = Σ_{j=0}^{W-1} x[j]*x[j+τ] which is a cross-correlation
-    /// of x[0..W] with x[0..W+max_period]. We compute this by:
-    /// 1. FFT of x[0..W] zero-padded to fft_size
-    /// 2. FFT of x[0..W+max_period] zero-padded to fft_size
-    /// 3. r = IFFT(conj(FFT_a) * FFT_b)
+    /// `r(τ) = Σ_{j=0}^{W-1} x[j]*x[j+τ]` is the cross-correlation of `x[0..W]`
+    /// with `x[0..W+max_period]`, computed in three steps:
+    /// 1. FFT of `x[0..W]` zero-padded to `fft_size`
+    /// 2. FFT of `x[0..W+max_period]` zero-padded to `fft_size`
+    /// 3. `r = IFFT(conj(FFT_a) * FFT_b)`
     fn compute_difference(&mut self, samples: &[f32], max_period: usize) {
         let window = max_period;
         let fft_size = self.fft_buffer.len();

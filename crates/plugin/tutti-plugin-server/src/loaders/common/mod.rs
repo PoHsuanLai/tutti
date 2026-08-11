@@ -8,7 +8,11 @@ use tutti_plugin::server::{BusChannels, ChannelLayout, LoadedPlugin, PluginDescr
 /// these and forwards the `descriptor()` / `loaded()` trait methods to it.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct Meta {
+    /// Catalog identity — name, vendor, unique id, native class. Fixed at load.
     pub descriptor: PluginDescriptor,
+    /// Runtime shape — per-bus channel widths, latency in `Samples`, tail, and
+    /// the declared feature flags. A loader refreshes fields here when the
+    /// plugin reports a change, so this is not read-only after load.
     pub loaded: LoadedPlugin,
 }
 

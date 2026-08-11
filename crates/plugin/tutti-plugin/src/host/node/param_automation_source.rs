@@ -8,10 +8,10 @@
 //! sample-accurate offsets across the block window.
 //!
 //! Unlike chord/scale (stepwise *context* emitted only at change boundaries) an
-//! automation envelope is a *continuous* signal, so we densely sample it: one
+//! automation envelope is a *continuous* signal, so it is densely sampled: one
 //! point per `stride` samples, matching how `AutomationLane::process` fills an
-//! audio block. Plugins receive real per-block parameter ramps instead of the
-//! single frame-rate `set_parameter` value the old `PluginParam` ECS path sent.
+//! audio block. Plugins receive real per-block parameter ramps rather than a
+//! single frame-rate `set_parameter` value.
 //!
 //! This is deliberately the *only* automation path for hosted plugins — the
 //! frame-rate `set_parameter` route was never wired for hosted-plugin params
@@ -40,10 +40,11 @@ pub struct TimedParam {
     /// A [`ParamAddress`](crate::protocol::ParamAddress) because this is where
     /// the automation is *authored*: the caller knows which plugin it is
     /// targeting, so it can say whether the number is an opaque handle or a
-    /// VST2 index. It used to be a bare `u32`, which pushed that question down
-    /// to the loaders — each of which answered it from its own identity rather
-    /// than from anything the value carried.
+    /// VST2 index. A bare `u32` would push that question down to the loaders,
+    /// each answering from its own identity rather than from anything the value
+    /// carries.
     pub param_id: ParamAddress,
+    /// The envelope sampled to produce this parameter's value per block.
     pub curve: Arc<dyn Curve>,
 }
 
@@ -109,10 +110,10 @@ impl LfoCurve {
     /// The raw modulator value in `[-1, 1]` at a given beat.
     ///
     /// Delegates to [`BeatLfo`](tutti_units::BeatLfo), the shared beat-clocked
-    /// formulation in `tutti-mod`. This crate used to hash the cycle index
-    /// itself for the random shapes; that handled `Random` correctly but gave
-    /// `RandomSmooth` one value per cycle too — a stair under a name that
-    /// promises a ramp, which defeats the point of sub-block delivery.
+    /// formulation in `tutti-mod`, rather than hashing the cycle index here.
+    /// Hashing per cycle is right for `Random` but gives `RandomSmooth` one
+    /// value per cycle too — a stair under a name that promises a ramp, which
+    /// defeats the point of sub-block delivery.
     #[inline]
     fn raw_value(&self, beat: Beat) -> f32 {
         use tutti_units::CurveModulator;
@@ -137,7 +138,7 @@ impl Curve for LfoCurve {
 /// The offset is `raw · depth · span`, `raw ∈ [-1, 1]`, where `span` is the
 /// **target param's** range width — matching the native control-rate contract
 /// (`raw · depth · (max − min)` against the *target's* range, tutti-mod's
-/// `driver::run`). A layer's value swings around 0; the owning [`LayeredCurve`]
+/// `driver::run`). A layer's value swings around 0; the owning [`LayeredCurve`](tutti_units::LayeredCurve)
 /// adds the base and applies the param's clamp, so this must NOT clamp to its own
 /// `[-1, 1]` (that was the double-scaling bug: `LfoCurve` used its internal span
 /// of 2, doubling the depth). Clamped symmetrically to `±span` so a full-depth
@@ -179,7 +180,7 @@ impl Curve for LfoOffset {
 
 /// Turns an **absolute**-valued [`Curve`] (an automation envelope) into an
 /// **offset** layer by subtracting a fixed reference — the target's base — so it
-/// sums correctly in a [`LayeredCurve`] (`final = base + Σ offset`). Mirrors the
+/// sums correctly in a [`LayeredCurve`](tutti_units::LayeredCurve) (`final = base + Σ offset`). Mirrors the
 /// native path's `accumulate(AUTOMATION, value − base())`.
 #[derive(Clone)]
 pub struct OffsetCurve {
@@ -198,6 +199,7 @@ impl std::fmt::Debug for OffsetCurve {
 }
 
 impl OffsetCurve {
+    /// Wraps `inner` so every sampled value has `subtract` taken off it.
     pub fn new(inner: std::sync::Arc<dyn Curve>, subtract: f32) -> Self {
         Self { inner, subtract }
     }
@@ -223,7 +225,7 @@ impl Curve for OffsetCurve {
 /// accumulator, finer rate.
 ///
 /// Two ways contributions arrive:
-/// - the [`ModTarget`] scalar API ([`accumulate`](tutti_units::ModTarget::accumulate))
+/// - the [`ModTarget`](tutti_units::ModTarget) scalar API ([`accumulate`](tutti_units::ModTarget::accumulate))
 ///   installs a scalar layer (a frame-rate value, e.g. a native modulator the
 ///   driver already collapsed);
 /// - [`set_curve_layer`](Self::set_curve_layer) installs a **beat-varying**
@@ -237,7 +239,7 @@ impl Curve for OffsetCurve {
 /// Plugin params are normalized `0..1` (the format-boundary convention), so the
 /// caller passes that range; the `LayeredCurve` clamps to it.
 ///
-/// **Lock-free reads.** The layers live in an [`RtPublish`] rather than a `Mutex`:
+/// **Lock-free reads.** The layers live in an [`RtPublish`](tutti_core::RtPublish) rather than a `Mutex`:
 /// the per-block producer runs on the **audio thread** and calls `value_at`
 /// several times per block, so it must never block. Reads `load()` the current
 /// snapshot lock-free. Writes (control-rate, from the single ECS driver system)
@@ -250,6 +252,8 @@ pub struct PluginParamTarget {
 }
 
 impl PluginParamTarget {
+    /// Creates a target resting at `base`, with modulation clamped to
+    /// `min..=max`. All three are in the parameter's own units.
     pub fn new(base: f32, min: f32, max: f32) -> Self {
         Self {
             layered: tutti_core::RtPublish::new(tutti_units::LayeredCurve::new(base, min, max)),
@@ -387,6 +391,8 @@ impl ParamAutomationSource {
         SampleRate::from(self.sample_rate.load(Ordering::Acquire))
     }
 
+    /// Whether this source drives no parameters, in which case every block
+    /// emits an empty queue.
     pub fn is_empty(&self) -> bool {
         self.params.is_empty()
     }
@@ -830,11 +836,10 @@ mod tests {
 
     /// `RandomSmooth` must ramp between its steps, not hold them.
     ///
-    /// This crate used to hash the cycle index for *both* random shapes, which
-    /// is right for `Random` and wrong here — it produced one value per cycle
-    /// under a name that promises interpolation, i.e. `Random`'s behaviour with
-    /// the wrong label. The bug survived because the only random test covered
-    /// `Random`, whose correct behaviour is precisely "holds within a cycle".
+    /// Hashing the cycle index is right for `Random` and wrong here: it yields
+    /// one value per cycle under a name that promises interpolation, i.e.
+    /// `Random`'s behaviour with the wrong label. Covering only `Random` cannot
+    /// catch that — its correct behaviour is precisely "holds within a cycle".
     #[test]
     fn lfo_curve_random_smooth_ramps_within_a_cycle() {
         use tutti_core::Beat;

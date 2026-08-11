@@ -124,24 +124,28 @@ impl OnsetConfig {
 
     /// Minimum spacing between accepted onsets.
     ///
-    /// Takes [`Seconds`], like every other time-valued setter in the engine.
-    /// The old pair took milliseconds on one method and seconds on another of
-    /// the same type — the only ms-valued input anywhere in the engine.
+    /// Takes [`Seconds`], like every other time-valued setter in the engine —
+    /// milliseconds on one setter and seconds on another of the same type is
+    /// how a gap ends up a thousand times off.
     pub fn with_min_gap(mut self, gap: impl Into<Seconds>) -> Self {
         self.min_gap = gap.into().to_samples(self.geometry.sample_rate().get());
         self
     }
 
+    /// The window, hop and sample rate onsets are detected on.
     #[inline]
     pub fn geometry(&self) -> StftGeometry {
         self.geometry
     }
 
+    /// Which detection function measures novelty between frames.
     #[inline]
     pub fn function(&self) -> DetectionFunction {
         self.function
     }
 
+    /// Minimum spacing between accepted onsets, in [`Samples`] — resolved from
+    /// the [`Seconds`] the setter takes, against this config's sample rate.
     #[inline]
     pub fn min_gap(&self) -> Samples {
         self.min_gap
@@ -150,16 +154,23 @@ impl OnsetConfig {
 
 /// One detected onset.
 ///
-/// Position only: the time is derived from it, where the old shape stored both
-/// and computed them against two different sample rates, so they could describe
-/// different instants in the same struct.
+/// Position only, with the time derived from it on demand. Storing both invites
+/// computing them against two different sample rates, so one struct describes
+/// two different instants.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Onset {
+    /// Where the onset sits in the analyzed buffer, in [`Samples`].
     pub position: Samples,
+    /// Novelty at that frame as an [`Amplitude`] — how far the detection
+    /// function rose above its adaptive threshold.
     pub strength: Amplitude,
 }
 
 impl Onset {
+    /// The onset's position in [`Seconds`], resolved against `sample_rate`.
+    ///
+    /// Derived rather than stored, so it cannot disagree with
+    /// [`position`](Self::position).
     #[inline]
     pub fn time(&self, sample_rate: impl Into<SampleRate>) -> Seconds {
         Seconds((self.position.get() as f64 / sample_rate.into().get()) as f32)
@@ -168,8 +179,9 @@ impl Onset {
 
 /// What the detector carries between frames.
 ///
-/// Explicit, so a batch run cannot inherit a streaming run's history. This is
-/// the `prev_magnitudes` that `&mut self` used to hide.
+/// Explicit, so a batch run cannot inherit a streaming run's history — the
+/// previous frame's magnitudes are a value the caller holds, not state hidden
+/// behind `&mut self`.
 #[derive(Debug, Clone, Default)]
 pub struct OnsetState {
     /// The config this carry belongs to.
@@ -187,6 +199,7 @@ pub struct OnsetState {
 }
 
 impl OnsetState {
+    /// An empty carry: no previous frame, no accumulated novelty.
     pub fn new() -> Self {
         Self::default()
     }
@@ -424,7 +437,7 @@ mod tests {
     }
 
     /// A reused state must be reset; a fresh one needs nothing. Both paths are
-    /// now visible at the call site rather than hidden in a method.
+    /// visible at the call site rather than hidden in a method.
     #[test]
     fn a_reset_state_matches_a_fresh_one() {
         let cfg = OnsetConfig::new(geometry(), DetectionFunction::SpectralFlux);

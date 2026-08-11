@@ -4,12 +4,10 @@
 //! what `bevy_tutti::plugin_host::render_mode` calls, because `into_parts`
 //! consumes the `Plugin` at load and only the handle survives into the ECS.
 //!
-//! For the in-process VST2 path that route did not exist: `from_backend` left
-//! the `render_mode` slot `None`, so `handle.set_render_mode` returned `false`
-//! and did nothing, and the mode was reachable only through
-//! `Plugin::set_render_mode` — an object the host no longer holds. An
-//! offline bounce therefore rendered every in-process VST2 plugin at
-//! live quality while telling the other three formats otherwise.
+//! The in-process VST2 path must populate that route. With the `render_mode`
+//! slot left `None`, `handle.set_render_mode` returns `false` and does nothing,
+//! and an offline bounce renders every in-process VST2 plugin at live quality
+//! while telling the other three formats otherwise.
 //!
 //! # What makes this observable
 //!

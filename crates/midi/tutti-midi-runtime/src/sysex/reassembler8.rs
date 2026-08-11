@@ -52,9 +52,23 @@ struct InFlight {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Sysex8Event {
     /// A message completed: its stream id and reassembled 8-bit payload.
-    Message { stream_id: u8, payload: Vec<u8> },
+    Message {
+        /// The 8-bit stream id the run was keyed by, from its packets' Stream
+        /// ID field. Distinct runs may interleave on one group; this is what
+        /// tells them apart.
+        stream_id: u8,
+        /// The reassembled payload, full 8-bit bytes with no 7-bit encoding —
+        /// that is the whole point of SysEx8 over SysEx7.
+        payload: Vec<u8>,
+    },
     /// A message ended without a payload. The buffer is already discarded.
-    Aborted { stream_id: u8, reason: Sysex8Abort },
+    Aborted {
+        /// The stream id of the run that was abandoned.
+        stream_id: u8,
+        /// Why it ended — a new Start on a stream already in flight, an
+        /// out-of-order Continue/End, or a run exceeding the byte cap.
+        reason: Sysex8Abort,
+    },
 }
 
 /// Reassembles multi-packet SysEx8 runs, one buffer per `(group, stream_id)`.

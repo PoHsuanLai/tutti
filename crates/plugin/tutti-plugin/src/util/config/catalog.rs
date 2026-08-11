@@ -9,9 +9,8 @@
 //!   IPC timeout. Read per `load`, and lowered into a [`BridgeConfig`] for each
 //!   plugin subprocess.
 //!
-//! They used to be one struct, which made the module doc's claim of a
-//! two-layer split untrue: a caller adjusting the audio block size had to
-//! restate the database path, and `PluginsConfig` appeared in discovery
+//! Two structs rather than one: fused, a caller adjusting the audio block size
+//! must restate the database path, and the combined type appears in discovery
 //! signatures that never read a single audio field.
 //!
 //! The caller supplies `db_path` and `scan_dirs` — this library has no opinion
@@ -44,11 +43,13 @@ impl CatalogConfig {
 
     // --- chainable setters ---
 
+    /// Sets where the plugin database JSON is read from and written to.
     pub fn db_path(mut self, path: impl Into<PathBuf>) -> Self {
         self.db_path = path.into();
         self
     }
 
+    /// Sets the directories a scan walks, replacing any already configured.
     pub fn scan_dirs<I, P>(mut self, dirs: I) -> Self
     where
         I: IntoIterator<Item = P>,
@@ -76,11 +77,12 @@ pub struct AudioConfig {
     /// Preferred audio sample format.
     pub format: SampleFormat,
 
-    /// Audio block size (in samples). Same buffer is used for every
-    /// process call.
+    /// Largest block, in **frames** per channel, that will cross the bridge.
+    /// Becomes `BridgeConfig::max_buffer_size` and sizes the shared slab, so a
+    /// later block may not exceed it.
     pub buffer_size: usize,
 
-    /// IPC request timeout.
+    /// How long to wait on a subprocess reply before erroring.
     pub timeout: Duration,
 }
 
@@ -102,16 +104,19 @@ impl AudioConfig {
 
     // --- chainable setters ---
 
+    /// Sets the sample format to request from each plugin.
     pub fn format(mut self, format: SampleFormat) -> Self {
         self.format = format;
         self
     }
 
+    /// Sets the maximum block size, in **frames** per channel.
     pub fn buffer_size(mut self, n: usize) -> Self {
         self.buffer_size = n;
         self
     }
 
+    /// Sets how long to wait on a subprocess reply before erroring.
     pub fn timeout(mut self, d: Duration) -> Self {
         self.timeout = d;
         self

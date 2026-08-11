@@ -5,14 +5,52 @@
 //! preset/channel. A host that wants asset-managed loading wires it in its own
 //! adapter layer; this crate only needs the decoded `SoundFont`.
 //!
-//! Split out of the old `tutti-synth` (renamed [`tutti-polysynth`]) because a
-//! `.sf2` player and a subtractive voice engine share no code: this unit
-//! reaches for none of that crate's voice allocation, tuning, portamento or
-//! unison. What they share is the *shape* — both are `AudioUnit`s with a
-//! [`MidiInPort`] — and that comes from `tutti-core` and `tutti-midi-runtime`,
-//! not from each other.
+//! Zero inputs, two outputs — the unit *is* the source, so it enters a `Net`
+//! with only its output piped.
 //!
-//! [`tutti-polysynth`]: https://docs.rs/tutti-polysynth
+//! `no_run`: every path here needs a real `.sf2` on disk, and the crate ships
+//! no fixture. It is still type-checked.
+//!
+//! ```no_run
+//! use std::fs::File;
+//! use tutti_core::dsp::{AudioUnit, Net};
+//! use tutti_core::Arc;
+//! use tutti_soundfont::{SoundFont, SoundFontUnit, SynthesizerSettings};
+//!
+//! let mut file = File::open("piano.sf2")?;
+//! let soundfont = Arc::new(SoundFont::new(&mut file)?);
+//!
+//! // The rate is fixed here: `set_sample_rate` is a no-op on this unit, so a
+//! // graph at another rate needs a new one rather than a reconfigured one.
+//! let settings = SynthesizerSettings::new(44_100);
+//! let mut unit = SoundFontUnit::new(soundfont, &settings)?;
+//! unit.program_change(0, 0); // channel 0 → preset 0
+//!
+//! let mut net = Net::new(0, 2);
+//! let node = net.push(Box::new(unit));
+//! net.pipe_output(node);
+//! net.check();
+//!
+//! let mut out = [0.0f32; 2];
+//! net.tick(&[], &mut out);
+//! # Ok::<(), Box<dyn std::error::Error>>(())
+//! ```
+//!
+//! # A peer of `tutti-polysynth`, not a feature of it
+//!
+//! This is its own crate rather than a flag on the subtractive synth because a
+//! `.sf2` player and a subtractive voice engine share no code: this unit reaches
+//! for none of that crate's voice allocation, tuning, portamento or unison —
+//! RustySynth owns all of it. What the two share is the *shape*, both being
+//! `AudioUnit`s with a [`MidiInPort`], and that comes from `tutti-core` and
+//! `tutti-midi-runtime`, not from each other.
+//!
+//! # MIDI resolution stops at 7 bits
+//!
+//! The inbox speaks MIDI 2.0 (UMP) and RustySynth speaks MIDI 1.0 wire format,
+//! so every value downscales through the spec's Min-Center-Max converters.
+//! Anything MIDI 2.0 expresses that MIDI 1.0 cannot — per-note pitch bend,
+//! per-note controllers, 16-bit velocity — is dropped rather than approximated.
 
 pub mod error;
 pub use error::{Error, Result};
@@ -34,6 +72,24 @@ use tutti_midi_types::{MidiUnitId, MidiUnitIn};
 /// buffer must be fully initialised (not just allocated with `with_capacity`).
 const MIDI_BUFFER_CAPACITY: usize = 256;
 
+/// A stereo `AudioUnit` that renders MIDI through a decoded SoundFont.
+///
+/// Zero inputs, two outputs. Events arrive through the [`MidiInPort`] returned
+/// by [`Self::midi_port`] and are applied sample-accurately within a block.
+///
+/// # The sample rate is fixed for the unit's lifetime
+///
+/// The rate is set once from `SynthesizerSettings::sample_rate` in
+/// [`new`](Self::new) and cannot change afterwards: RustySynth builds its voice
+/// tables against a rate at construction and offers no way to re-rate them, so
+/// [`AudioUnit::set_sample_rate`] is a deliberate no-op here rather than a
+/// missing implementation.
+///
+/// This is the one trap the type carries, because the graph will not complain.
+/// A unit built at 44.1 kHz and run in a 48 kHz graph keeps rendering — every
+/// note simply plays at the wrong pitch and tempo, with no error at any layer.
+/// A rate change means constructing a new unit and swapping it into the graph,
+/// not reconfiguring this one.
 pub struct SoundFontUnit {
     synthesizer: Synthesizer,
     sample_rate: SampleRate,
@@ -48,6 +104,17 @@ pub struct SoundFontUnit {
 }
 
 impl SoundFontUnit {
+    /// Builds a unit over a decoded `SoundFont`.
+    ///
+    /// The sample rate is fixed here from `settings.sample_rate`: RustySynth
+    /// cannot be re-rated afterwards, so [`AudioUnit::set_sample_rate`] is a
+    /// no-op on this unit. A graph running at a different rate needs a new unit,
+    /// not a reconfigured one.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::SoundFont`] if RustySynth refuses the `SoundFont` +
+    /// [`SynthesizerSettings`] pair.
     pub fn new(soundfont: Arc<SoundFont>, settings: &SynthesizerSettings) -> Result<Self> {
         let synthesizer =
             Synthesizer::new(&soundfont, settings).map_err(|e| Error::SoundFont(e.to_string()))?;
@@ -56,9 +123,9 @@ impl SoundFontUnit {
 
         Ok(Self {
             synthesizer,
-            // `SynthesizerSettings::sample_rate` is rustysynth's `i32`. We are
-            // the library, so the conversion into the engine's vocabulary
-            // happens here rather than being pushed onto callers.
+            // `SynthesizerSettings::sample_rate` is rustysynth's `i32`. The
+            // conversion into the engine's vocabulary happens here rather than
+            // being pushed onto callers.
             sample_rate: SampleRate::from(settings.sample_rate.max(0) as u32),
             buffer_size,
             left_buffer: vec![0.0; buffer_size],
@@ -99,22 +166,39 @@ impl SoundFontUnit {
         self.midi.install(source);
     }
 
+    /// Removes any layered MIDI source, leaving the live inbox as the only feed.
+    ///
+    /// Detaches the source; it does not flush events already in the inbox.
     pub fn clear_midi_source(&mut self) {
         self.midi.clear();
     }
 
+    /// The rate this unit renders at, fixed at construction from
+    /// [`SynthesizerSettings`].
     pub fn sample_rate(&self) -> SampleRate {
         self.sample_rate
     }
 
+    /// Starts a note directly, bypassing the MIDI inbox.
+    ///
+    /// These are RustySynth's MIDI 1.0 integers, not the engine's MIDI 2.0
+    /// vocabulary: `channel` is 0..16, `key` and `velocity` are 7-bit (0..128).
+    /// A `velocity` of 0 reads as a note-off to RustySynth.
     pub fn note_on(&mut self, channel: i32, key: i32, velocity: i32) {
         self.synthesizer.note_on(channel, key, velocity);
     }
 
+    /// Releases a note directly, bypassing the MIDI inbox.
+    ///
+    /// `channel` is 0..16 and `key` is 7-bit (0..128), per MIDI 1.0.
     pub fn note_off(&mut self, channel: i32, key: i32) {
         self.synthesizer.note_off(channel, key);
     }
 
+    /// Selects the preset a channel plays, bypassing the MIDI inbox.
+    ///
+    /// `channel` is 0..16 and `preset` is the 7-bit program number (0..128)
+    /// within the SoundFont's current bank.
     pub fn program_change(&mut self, channel: i32, preset: i32) {
         self.synthesizer
             .process_midi_message(channel, 0xC0, preset, 0);
@@ -140,10 +224,8 @@ impl SoundFontUnit {
         count
     }
 
-    /// Apply one polled event to the synthesizer. RustySynth speaks MIDI 1.0
-    /// wire format. `normalize` gives us a single MIDI-2 vocabulary; `dispatch`
-    /// downscales to 7-bit via the spec Min-Center-Max converters (a documented
-    /// 1.0 boundary: per-note messages have no rustysynth analogue, dropped).
+    /// Normalize one polled event into MIDI 2.0 vocabulary, then hand it to
+    /// [`Self::dispatch`], which is where the downscale to 7-bit happens.
     fn apply_event(&mut self, event: &MidiEvent) {
         self.dispatch(&tutti_midi_types::normalize(event));
     }
@@ -163,14 +245,23 @@ impl SoundFontUnit {
         s
     }
 
-    /// MIDI 1.0 boundary. Values downscale via spec Min-Center-Max (convert.rs).
-    /// Translated: NoteOn/Off, CC, channel pitch bend, program change.
-    /// (Channel pressure / key pressure arrive as CC/poly-pressure UMP but
-    /// rustysynth exposes no dedicated setter, so they fall through the `_`
-    /// arm — see Dropped.)
-    /// Dropped (no rustysynth MIDI-1 analogue): per-note pitch bend, per-note
-    /// controllers, per-note management (Detach/Reset), channel/poly pressure,
-    /// RPN/NRPN, and any 16-bit velocity / 32-bit CC precision beyond 7 bits.
+    /// Apply one MIDI 2.0 event to the synthesizer, downscaling to MIDI 1.0.
+    ///
+    /// This is the crate's resolution boundary: values narrow through the spec's
+    /// Min-Center-Max converters in `tutti_midi_types::convert`.
+    ///
+    /// # Translated
+    ///
+    /// NoteOn / NoteOff, control change, channel pitch bend, program change.
+    ///
+    /// # Dropped
+    ///
+    /// Anything with no RustySynth MIDI 1.0 analogue falls through the `_` arm:
+    /// per-note pitch bend, per-note controllers, per-note management
+    /// (Detach / Reset), channel and poly pressure, RPN/NRPN, and any 16-bit
+    /// velocity or 32-bit CC precision beyond 7 bits. Channel and key pressure
+    /// arrive as well-formed UMP but RustySynth exposes no setter for them, so
+    /// they are dropped rather than approximated.
     fn dispatch(&mut self, event: &MidiEvent) {
         use tutti_midi_types::convert::{
             midi2_cc_to_midi1, midi2_pitch_bend_to_midi1, midi2_velocity_to_midi1,
@@ -237,11 +328,12 @@ impl AudioUnit for SoundFontUnit {
 
     /// Sever the live MIDI input this clone shares with the original synth.
     ///
-    /// Same rationale as [`crate::PolySynth::isolate`]: an offline render ticks
-    /// this clone on a worker thread while the live synth plays, so a shared inbox
-    /// would let the worker *steal* the live synth's events and a shared source
-    /// cell would let clearing here sever the live clip. [`MidiInPort::isolate`]
-    /// mints a fresh private mailbox + source cell so this clone reads nothing.
+    /// Same rationale as `tutti_polysynth::PolySynth::isolate`: an offline render
+    /// ticks this clone on a worker thread while the live synth plays, so a shared
+    /// inbox would let the worker *steal* the live synth's events and a shared
+    /// source cell would let clearing here sever the live clip.
+    /// [`MidiInPort::isolate`] mints a fresh private mailbox + source cell so this
+    /// clone reads nothing.
     fn isolate(&mut self) {
         self.midi.isolate();
     }

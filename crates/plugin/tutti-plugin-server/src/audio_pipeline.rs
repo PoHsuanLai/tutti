@@ -23,9 +23,17 @@ use tutti_plugin::Result;
 const MAX_CHANNELS: usize = 16;
 
 /// Sample-rate + negotiated sample format; travel together.
+///
+/// Both are fixed at plugin load and change only on an explicit host request,
+/// so the audio path reads them without synchronisation.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Clock {
+    /// Frames per second, as the plugin was configured. `f64` rather than `Hz`:
+    /// this value crosses into the hosted formats' C ABIs, where the unit types
+    /// stop.
     pub sample_rate: f64,
+    /// The format negotiated at load — `Float64` only when the host asked for it
+    /// *and* the plugin advertised `F64_AUDIO`. Selects the scratch variant.
     pub format: SampleFormat,
 }
 
@@ -39,18 +47,30 @@ impl Default for Clock {
 }
 
 /// Per-channel scratch, exactly one sample format at a time.
+///
+/// An enum rather than both buffers side by side: a session runs at one
+/// negotiated format for the life of a plugin, so holding the unused width would
+/// double the resident scratch for no reachable case.
 enum AudioBuffers {
+    /// `f32` scratch, one `Vec` per channel in each direction.
     F32 {
+        /// Input scratch, in flat bus order as the plugin's `process` expects.
         input: Vec<Vec<f32>>,
+        /// Output scratch, zeroed before each block.
         output: Vec<Vec<f32>>,
     },
+    /// `f64` scratch, used only when the plugin advertised `F64_AUDIO` and the
+    /// host asked for it.
     F64 {
+        /// Input scratch, in flat bus order as the plugin's `process` expects.
         input: Vec<Vec<f64>>,
+        /// Output scratch, zeroed before each block.
         output: Vec<Vec<f64>>,
     },
 }
 
 impl AudioBuffers {
+    /// Empty scratch in `format`. Allocates nothing; `resize` shapes it.
     fn new(format: SampleFormat) -> Self {
         match format {
             SampleFormat::Float32 => Self::F32 {
@@ -64,6 +84,7 @@ impl AudioBuffers {
         }
     }
 
+    /// Which format this scratch is currently allocated for.
     fn format(&self) -> SampleFormat {
         match self {
             Self::F32 { .. } => SampleFormat::Float32,
@@ -94,36 +115,61 @@ impl AudioBuffers {
 }
 
 /// Per-block ancillary data that only the full-fidelity path carries.
+///
+/// Every field but `param_changes` is forwarded to the plugin **only if it
+/// advertised the matching `Features` flag** — the engine hands a plugin what it
+/// asked to consume. `param_changes` is the exception and goes through
+/// unconditionally; see `AudioPipeline::process` for why.
 #[derive(Debug)]
 pub(crate) struct ProcessExtras<'a> {
+    /// Sample-accurate parameter automation for this block. Forwarded
+    /// unconditionally, not gated on `PARAM_AUTOMATION`.
     pub param_changes: &'a ParameterChanges,
+    /// Per-note expression (pressure, timbre, pitch bend). Gated on
+    /// `Features::NOTE_EXPRESSION`.
     pub note_expression: &'a NoteExpressionChanges,
+    /// Chord context for this block. Gated on `Features::SEQUENCER_CONTEXT`.
     pub chords: &'a ChordChanges,
+    /// Scale context for this block. Gated on `Features::SEQUENCER_CONTEXT`.
     pub scales: &'a ScaleChanges,
+    /// Text-valued note expression. Gated on `Features::SEQUENCER_CONTEXT`.
     pub expr_texts: &'a NoteExpressionTextChanges,
+    /// Integer-valued note expression. Gated on `Features::SEQUENCER_CONTEXT`.
     pub expr_ints: &'a NoteExpressionIntChanges,
+    /// Tempo, time signature, playhead and loop region. Gated on
+    /// `Features::TRANSPORT`.
     pub transport: &'a TransportInfo,
 }
 
 /// One inbound block: which block it is, how many samples, MIDI, and (optional)
 /// extras.
 pub(crate) struct AudioBlock<'a> {
-    /// Which block this is. **No longer opaque to the server**: it selects the
-    /// slab ring slot to read the inputs from and to publish the outputs into,
-    /// so the server both interprets it and checks it. Echoed in the
-    /// `AudioProcessed` reply as well.
+    /// Which block this is. **Not opaque to the server**: it selects the slab
+    /// ring slot to read the inputs from and to publish the outputs into, so the
+    /// server both interprets it and checks it. Echoed in the `AudioProcessed`
+    /// reply as well.
     pub seq: u64,
+    /// Frames in this block, per channel — never a sample count. The scratch
+    /// buffers and every slab read/write below are sized from it.
     pub num_samples: usize,
+    /// MIDI arriving with this block, already in the host's event order.
     pub midi: &'a [MidiEvent],
+    /// The full-fidelity extras, or `None` when the host sent the compact
+    /// audio-only message shape.
     pub extras: Option<ProcessExtras<'a>>,
 }
 
 /// One processed block's result. The plugin's audio output is written back into
 /// the shared slab in place; the measured latency and the plugin's emitted MIDI
-/// travel onward to the host. (Parameter output is still dropped.)
+/// travel onward to the host. (Parameter output is dropped — no host consumer.)
 #[derive(Default)]
 pub(crate) struct AudioOutput {
+    /// Wall-clock microseconds this block spent inside the plugin, measured by
+    /// the server. A *diagnostic*, not the plugin's reported PDC latency —
+    /// that arrives as an `AsyncEvent::LatencyChanged` in `Samples`.
     pub latency_us: u64,
+    /// MIDI the plugin emitted during this block, forwarded so the host can
+    /// re-enter it into routing.
     pub midi_out: MidiEventVec,
 }
 
@@ -134,22 +180,54 @@ pub(crate) struct AudioPipeline {
 }
 
 impl AudioPipeline {
+    /// An empty pipeline for `format`. The scratch buffers start zero-sized and
+    /// are shaped by the first block, so construction allocates nothing.
     pub(crate) fn new(format: SampleFormat) -> Self {
         Self {
             buffers: AudioBuffers::new(format),
         }
     }
 
-    /// Reseat the scratch variant when the session's negotiated format
-    /// changes (called by `Session` on plugin load).
+    /// Reseat the scratch variant when the session's negotiated format changes.
+    ///
+    /// Called by `Session` on plugin load, and **not on the audio thread**: a
+    /// real change drops the old scratch and the next block re-allocates.
+    /// A no-op when the format already matches.
     pub(crate) fn set_format(&mut self, format: SampleFormat) {
         if self.buffers.format() != format {
             self.buffers = AudioBuffers::new(format);
         }
     }
 
-    /// Read input from `shm`, run `plugin`, write output back. Returns
-    /// plugin output + measured processing latency.
+    /// Read input from `shm`, run `plugin`, write output back. Returns the
+    /// plugin's MIDI output plus the measured processing latency.
+    ///
+    /// # Real-time
+    ///
+    /// Runs on the realtime audio thread and does not allocate after warm-up:
+    /// the scratch is reshaped only when the block geometry changes, and the
+    /// slice tables handed to the plugin are fixed stack arrays. Denormals are
+    /// flushed for the duration of the block. Pinned by
+    /// `tests::process_is_alloc_free`.
+    ///
+    /// # Failure is silence, never wrong audio
+    ///
+    /// Three separate checks all resolve the same way — the output slot goes
+    /// unpublished, the host's sequence check fails, and it substitutes silence:
+    ///
+    /// - the input slot no longer holds this block (the host recycled it), so
+    ///   inputs are zeroed rather than read from a foreign block;
+    /// - any channel's write into the slab failed, leaving the slot part-filled;
+    /// - the block returned early.
+    ///
+    /// Non-finite samples are a fourth case, handled differently: they are
+    /// zeroed per sample rather than dropping the block, because a plugin
+    /// emitting one NaN would otherwise poison the whole downstream graph.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error only if the plugin's own `process` fails. A slab read or
+    /// write failure is absorbed into the silence path above.
     pub(crate) fn process(
         &mut self,
         plugin: &mut dyn PluginInstance,
@@ -159,9 +237,8 @@ impl AudioPipeline {
     ) -> Result<AudioOutput> {
         let num_samples = block.num_samples;
         let seq = block.seq;
-        // Per-direction widths. The two directions have their own regions, so
-        // there is no base to compute and no branch on bus count — the shape
-        // that used to collapse both directions onto offset 0 no longer exists.
+        // Per-direction widths. Each direction has its own slab region, so there
+        // is no base to compute and no branch on bus count.
         // Borrow (don't clone) the layout: the bus list is heap-backed and this
         // is the RT path. Copy the widths out before the scratch loop so the
         // slab is free to be borrowed for read/write.
@@ -195,10 +272,10 @@ impl AudioPipeline {
         //
         // Parameter automation is the exception: the host sends it *universally*
         // (`InputSlot::new(Features::empty())` — every plugin has automatable
-        // params, regardless of whether it advertises `PARAM_AUTOMATION`), so we
-        // forward it unconditionally to match. Gating it on `PARAM_AUTOMATION`
-        // here silently dropped automation for any plugin that didn't set that
-        // (optional) flag — host said send, server threw it away.
+        // params, regardless of whether it advertises `PARAM_AUTOMATION`), so it
+        // is forwarded unconditionally to match. Gating it on `PARAM_AUTOMATION`
+        // here would silently drop automation for any plugin that leaves that
+        // optional flag unset — host says send, server throws it away.
         let features = plugin.loaded().features;
         let mut ctx = ProcessContext::new().midi(block.midi);
         if let Some(ref ex) = block.extras {
@@ -321,7 +398,7 @@ impl AudioPipeline {
         // that belongs to someone else*:
         //
         // - `inputs_ready` false means the host recycled this block's slot
-        //   before we got here, so it has moved on and this reply is for a block
+        //   before this point, so it has moved on and this reply is for a block
         //   nobody is waiting for. `MAX_BEHIND` in the host's `dispatch` should
         //   already have dropped the command, but that is the host's bound on
         //   *sending*; this is the server's own check on *writing*, and the two
@@ -347,13 +424,13 @@ impl AudioPipeline {
 /// Build a stack-allocated [`AudioBufferMut::F32`] from owned channel vecs
 /// and hand it to the FnOnce `f`. Allocation-free — the `&[&[f32]]` and
 /// `&mut [&mut [f32]]` slice tables live in fixed `MAX_CHANNELS`-wide stack
-/// arrays.
+/// arrays, which is what makes this callable on the audio thread.
 ///
-/// The output table is filled by a plain `for … zip` loop rather than the old
-/// `split_first_mut` recursion: [`AudioBuffer`]'s split lifetimes (`'t` table,
-/// `'d` data) let the borrow checker see the `out_refs` array's borrow ending
-/// at the `f(...)` call, so it no longer collides with the per-channel data
-/// borrows the way a single coincident lifetime did.
+/// The output table is filled by a plain `for … zip` loop, which is possible
+/// only because `AudioBuffer` splits its lifetimes (`'t` table, `'d` data): the
+/// borrow checker sees the `out_refs` array's borrow end at the `f(...)` call,
+/// so it does not collide with the per-channel data borrows. A single
+/// coincident lifetime forces a `split_first_mut` recursion instead.
 fn with_audio_buffer_f32<R>(
     inputs: &[Vec<f32>],
     outputs: &mut [Vec<f32>],
@@ -629,11 +706,9 @@ mod tests {
 
     /// A slab layout with real bus lists in both directions.
     ///
-    /// Every test now names its buses explicitly. The old helpers passed empty
-    /// lists, which used to mean "one flat range shared in place" — so those
-    /// tests ran entirely at offset 0, where an output write landing on the
-    /// input region was indistinguishable from correct behaviour. Empty is now
-    /// rejected by the slab, which is why this helper exists.
+    /// Every test names its buses explicitly, and the slab rejects an empty
+    /// list. Empty would put both directions at offset 0, where an output write
+    /// landing on the input region is indistinguishable from correct behaviour.
     fn test_layout(
         samples: usize,
         format: SF,

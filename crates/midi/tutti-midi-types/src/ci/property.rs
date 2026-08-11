@@ -77,7 +77,7 @@ impl PropertyCapabilities {
         out.push(self.simultaneous_requests & 0x7F);
         // §8.4 Table 30 marks the two version bytes "added in MIDI-CI Message
         // Version 2". We declare CI_VERSION 0x02, so they are always written —
-        // omitting them would contradict the version in our own header.
+        // omitting them would contradict the version in this crate's own header.
         out.push(self.major_version & 0x7F);
         out.push(self.minor_version & 0x7F);
     }
@@ -85,9 +85,9 @@ impl PropertyCapabilities {
     pub(super) fn decode_body(b: &[u8]) -> Option<PropertyCapabilities> {
         Some(PropertyCapabilities {
             simultaneous_requests: *b.first()?,
-            // A version-1 peer sends neither byte. §5.4 requires we keep
-            // decoding it, and Table 31 makes 0x00/0x00 the correct reading of
-            // an absent version, not a guess.
+            // A version-1 peer sends neither byte. §5.4 requires decoding it
+            // anyway, and Table 31 makes 0x00/0x00 the correct reading of an
+            // absent version, not a guess.
             major_version: b.get(1).copied().unwrap_or(0),
             minor_version: b.get(2).copied().unwrap_or(0),
         })
@@ -97,9 +97,13 @@ impl PropertyCapabilities {
 /// Which Property Exchange message this is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PropertyKind {
+    /// Request the value of a property (sub-ID#2 `0x34`).
     GetData,
+    /// The requested value (`0x35`).
     GetDataReply,
+    /// Write a property's value (`0x36`).
     SetData,
+    /// Acknowledgement of a write (`0x37`), carrying status rather than a value.
     SetDataReply,
     /// Subscription (M2-101 §8.11) — establishes, updates, or ends a
     /// subscription. Which of those it does lives in the header's `command`
@@ -127,6 +131,8 @@ pub enum PropertyKind {
 /// across several messages (both `1` for a single-message exchange).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PropertyData {
+    /// Which Property Exchange operation this body belongs to. Determines the
+    /// sub-ID#2 on encode and is recovered from it on decode.
     pub kind: PropertyKind,
     /// Request id tying a reply to its request (M2-101 §7.1.1).
     pub request_id: u8,
@@ -373,7 +379,7 @@ mod tests {
     #[test]
     fn a_version_1_capabilities_body_still_decodes() {
         // §8.4 Table 30 marks the two version bytes "added in MIDI-CI Message
-        // Version 2", so a v1.1 peer sends only the request count. §5.4 says we
+        // Version 2", so a v1.1 peer sends only the request count. §5.4 says a receiver
         // keep decoding it; Table 31 makes 0x00/0x00 the right reading of an
         // absent version rather than a guess.
         let mut bytes = CiMessage::PropertyCapabilities {
@@ -432,7 +438,7 @@ mod tests {
         // §8.11 / §8.12 fix these at 0x38 and 0x39. The wire body is identical
         // to Get/Set Property Data, so the sub-ID is the *only* thing that
         // distinguishes a subscription from an ordinary property exchange —
-        // assert the byte rather than trusting a round-trip through our own
+        // assert the byte rather than trusting a round-trip through this crate's own
         // encoder, which would agree with itself either way.
         let sub = PropertyData {
             kind: PropertyKind::Subscription,

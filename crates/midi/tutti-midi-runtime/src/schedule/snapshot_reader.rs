@@ -41,6 +41,11 @@ impl std::fmt::Debug for MidiSnapshotReader {
 }
 
 impl MidiSnapshotReader {
+    /// A reader over `snapshot`, watermarked at `timeline`'s current beat.
+    ///
+    /// Events *before* that beat are never emitted — construct the reader at
+    /// the export's start position, not after seeking past it. The snapshot is
+    /// taken by value because its per-unit cursors advance as this reader polls.
     pub fn new(snapshot: MidiSnapshot, timeline: Arc<OfflineTimeline>) -> Self {
         let start_beat = timeline.beat().get();
         Self {
@@ -93,7 +98,7 @@ impl tutti_midi_types::MidiUnitIn for MidiSnapshotReader {
 
         // Only advance the watermark once the caller's buffer could hold
         // everything in this range. If `buffer` filled up, the snapshot's
-        // cursor moved forward only for the events we wrote — the rest will
+        // cursor moved forward only for the events actually written — the rest
         // come out on the next call at the same `current_beat`.
         if count < buffer.len() {
             self.last_poll_beat

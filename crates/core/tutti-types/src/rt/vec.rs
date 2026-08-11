@@ -28,9 +28,9 @@ use super::capped::Capped;
 /// - `PolySynth`'s finished-voice list spilled and was then *freed* on the
 ///   audio thread every block by a `mem::take` drain.
 ///
-/// Each was found separately and fixed differently. Sites that used to
-/// hand-roll a `.take(N)` guard, a pooled `Vec`, or a `reserve` performed
-/// off-RT and then trusted, express the same intent here in the type.
+/// Each of those was found separately and fixed differently. A hand-rolled
+/// `.take(N)` guard, a pooled `Vec`, or a `reserve` performed off-RT and then
+/// trusted all express the same intent; this type states it once.
 ///
 /// # Overflow is visible, not silent
 ///
@@ -96,11 +96,13 @@ impl<T, const N: usize> RtVec<T, N> {
         self.inner.overflowed()
     }
 
+    /// How many items are in the filled run. Never exceeds the capacity `N`.
     #[inline]
     pub fn len(&self) -> usize {
         self.inner.len()
     }
 
+    /// Whether nothing has been pushed since the last [`clear`](Self::clear).
     #[inline]
     pub fn is_empty(&self) -> bool {
         self.inner.is_empty()

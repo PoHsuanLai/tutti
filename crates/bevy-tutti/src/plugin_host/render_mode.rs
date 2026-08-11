@@ -9,10 +9,10 @@
 //! `audioMasterGetCurrentProcessLevel`), and `tutti-plugin` carries it all the
 //! way to `PluginHandle::set_render_mode`.
 //!
-//! Then it stopped: **nothing in the repo called it.** `tutti-export` renders a
-//! `Net` and has never heard of a plugin; [`crate::export`] queries entities by
-//! the generic `AudioNode`. So a bounce rendered every hosted plugin in its
-//! live-quality mode and wrote that into the file the user asked to be exact —
+//! Nothing below this module calls it. `tutti-export` renders a `Net` and has
+//! never heard of a plugin; [`crate::export`] queries entities by the generic
+//! `AudioNode`. Without this system a bounce renders every hosted plugin in its
+//! live-quality mode and writes that into the file the user asked to be exact —
 //! silently, because a plugin that is never told simply keeps doing what it was
 //! doing.
 //!
@@ -55,7 +55,11 @@ use crate::plugin_host::editor::PluginEmitter;
 /// needed. A plugin that declines the mode (`set_render_mode` returning `false`)
 /// does not change what was announced, so it is not re-told every frame.
 #[derive(Resource, Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct PluginRenderMode(pub RenderMode);
+pub struct PluginRenderMode(
+    /// The mode last announced to hosted plugins. Written only by
+    /// [`plugin_render_mode_drive`]; defaults to [`RenderMode::Realtime`].
+    pub RenderMode,
+);
 
 /// Announce [`RenderMode::Offline`] while an export is in flight, and
 /// [`RenderMode::Realtime`] whenever none is.
@@ -126,22 +130,25 @@ pub struct RenderModeAnnounced;
 
 #[cfg(test)]
 mod tests {
+    //! A `PluginEmitter` needs a `PluginHandle`, which needs a launched
+    //! subprocess, so no test here can put a plugin in the world. These cover
+    //! the two halves that do not need one: which mode a frame resolves to, and
+    //! `needs_announcement`'s rule about who gets told.
+    //!
+    //! **Not covered here:** a `set_render_mode` call actually reaching a
+    //! plugin. Deleting the call in the loop body leaves all seven of these
+    //! green — they observe the decision, not the delivery. That half is covered
+    //! one crate down, in `tutti-plugin`'s
+    //! `tests/vst2_in_process_render_mode.rs`, which loads the reference probe
+    //! and reads back the process level the plugin actually saw. Stated rather
+    //! than implied, because a reader counting seven passing tests would
+    //! otherwise assume this file covers the wire.
+
     use super::*;
     use bevy_app::prelude::*;
 
-    /// A `PluginEmitter` needs a `PluginHandle`, which needs a launched
-    /// subprocess, so no test here can put a plugin in the world. These cover
-    /// the two halves that do not need one: which mode a frame resolves to, and
-    /// [`needs_announcement`]'s rule about who gets told.
-    ///
-    /// **Not covered here:** a `set_render_mode` call actually reaching a
-    /// plugin. Deleting the call in the loop body leaves all seven of these
-    /// green — they observe the decision, not the delivery. That half is
-    /// covered one crate down, in `tutti-plugin`'s
-    /// `tests/vst2_in_process_render_mode.rs`, which loads the reference probe
-    /// and reads back the process level the plugin actually saw. Stated rather
-    /// than implied, because a reader counting seven passing tests would
-    /// otherwise assume this file covers the wire.
+    /// An app running only [`plugin_render_mode_drive`], with the mode resource
+    /// at its `Realtime` default.
     fn test_app() -> App {
         let mut app = App::new();
         app.init_resource::<PluginRenderMode>();

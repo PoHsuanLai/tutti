@@ -1,4 +1,15 @@
-//! Polyphonic synthesizer implementing [`AudioUnit`].
+//! The synth itself: an [`AudioUnit`] that owns a MIDI inbox, an allocator and
+//! a fixed set of voices, and renders their sum.
+//!
+//! This is where MIDI becomes sound. Everything else in the crate is a piece
+//! this module drives — allocation (`crate::voice`), per-note DSP
+//! (`crate::synth_voice`), glide, unison and tuning — and the MIDI 2.0 decoding
+//! that routes a per-note message to exactly one voice lives here because only
+//! this module holds both the note-id map and the voices.
+//!
+//! Both render paths are real-time: `tick` for one sample, `process` for a
+//! block split at MIDI event boundaries so events land on the right frame.
+//! Neither allocates.
 
 use crate::synth_voice::SynthVoice;
 use crate::SynthConfig;
@@ -59,7 +70,7 @@ pub struct PolySynth {
     /// This synth's MIDI input endpoint: routing address, push mailbox, and the
     /// current pull source (the live receiver by default; an override installs a
     /// `MidiClipSource`/`MidiSnapshotReader`). See [`MidiInPort`] for the fundsp
-    /// clone/isolate sharing semantics that used to be open-coded here.
+    /// clone/isolate sharing semantics all three obey.
     midi: MidiInPort,
     midi_buffer: Vec<MidiEvent>,
     mix_buffer: [f32; 2],
@@ -71,9 +82,16 @@ impl PolySynth {
     /// Bevy way — `Default` plus struct-update — e.g.
     /// `SynthConfig { oscillator: OscillatorType::Saw, max_voices: 8, ..default() }`.
     ///
-    /// Returns [`Err`] if `max_voices` is 0, or exceeds
-    /// [`FINISHED_NOTES_CAPACITY`] — see that constant for why the ceiling is
-    /// enforced here rather than absorbed by a heap spill on the audio thread.
+    /// Every voice — and every unison sub-voice within it — is built here, so
+    /// this allocates in proportion to `max_voices * unison.voice_count` and
+    /// belongs off the audio thread.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidConfig`](crate::Error::InvalidConfig) if
+    /// `max_voices` is 0, or exceeds 16. The upper bound is the inline capacity
+    /// of the per-block finished-voice list: rejecting the config here is what
+    /// keeps that list from spilling to the heap inside the audio callback.
     pub fn new(config: SynthConfig) -> crate::Result<Self> {
         if config.max_voices == 0 {
             return Err(crate::Error::InvalidConfig(
@@ -192,9 +210,8 @@ impl PolySynth {
     /// unconditionally, and the per-note pitch-bend *sensitivity* RPN applies
     /// whether or not this is on. So an MPE host could send an MCM, observe
     /// sensitivity take effect, and reasonably infer MPE was enabled when it was
-    /// not — with every per-note bend, pressure, slide and gain being dropped in
-    /// [`SynthVoice::apply_mpe_modulation`]. This is the accessor that
-    /// distinguishes the two.
+    /// not — with every per-note bend, pressure, slide and gain being dropped at
+    /// render time. This is the accessor that distinguishes the two.
     pub fn mpe_enabled(&self) -> bool {
         self.config.mpe_enabled
     }
@@ -202,11 +219,11 @@ impl PolySynth {
     /// Turn per-note (MPE) expression on or off, affecting sounding notes as
     /// well as future ones.
     ///
-    /// Previously construction-only, which is what made the state above
-    /// unobservable *and* unfixable at runtime. Disabling resets each voice's
-    /// per-note state rather than merely ignoring it, so expression received
-    /// while disabled cannot snap into effect on re-enable — see
-    /// [`SynthVoice::set_mpe_enabled`].
+    /// Disabling **resets** each voice's per-note state rather than merely
+    /// ignoring it. The per-note setters store unconditionally, so expression
+    /// received while disabled would otherwise sit latent and snap into effect
+    /// the instant MPE is re-enabled — a sounding note jumping in pitch or gain
+    /// from bends it received minutes earlier.
     pub fn set_mpe_enabled(&mut self, enabled: bool) {
         self.config.mpe_enabled = enabled;
         for voice in &mut self.voices {
@@ -214,20 +231,28 @@ impl PolySynth {
         }
     }
 
+    /// Set the master output gain as a linear [`Amplitude`]: `1.0` is unity,
+    /// `0.0` silence, and values above unity boost.
+    ///
+    /// Only the lower bound is enforced. A ceiling here would constrain nothing
+    /// — `volume_atomic()` writes the same cell on the modulation path with no
+    /// cap — and a boost above unity is legal for an `Amplitude`.
+    ///
+    /// Applied once per block to the summed mix, not per voice.
     pub fn set_volume(&mut self, volume: f32) {
-        // Only the lower bound is enforced. The old `.clamp(0.0, 1.0)` capped this
-        // setter at unity while `volume_atomic()` (the live modulation path) wrote
-        // the same cell with no cap at all — so the ceiling constrained nothing and
-        // contradicted `Amplitude`, where a boost above unity is legal.
         self.master_volume.store(Amplitude(volume.max(0.0)));
     }
 
+    /// The current master gain as a linear amplitude. Reflects modulation
+    /// written through [`volume_atomic`](Self::volume_atomic) as well as
+    /// [`set_volume`](Self::set_volume) — they share one cell.
     pub fn volume(&self) -> f32 {
         self.master_volume.load().get()
     }
 
     /// The shared master-volume atomic, for control-rate modulation
-    /// ([`ModParams`](crate::ModParams)). Clones the `Arc`; not for the audio path.
+    /// (`tutti_mod::ModParams`). Clones the `Arc`; call it during setup, not
+    /// from the audio path.
     pub fn volume_atomic(&self) -> Arc<tutti_core::AtomicF32> {
         self.master_volume.as_atomic()
     }
@@ -244,30 +269,54 @@ impl PolySynth {
         self.unison.as_ref().map(|u| u.spread_atomic())
     }
 
+    /// How many voices are currently sounding, counting those in their release
+    /// stage. A voice stays counted until its envelope reaches silence, which is
+    /// why this can exceed the number of keys held.
     pub fn active_voice_count(&self) -> usize {
         self.voices.iter().filter(|v| v.is_active()).count()
     }
 
+    /// This synth's unison settings, or `None` when it was built without a
+    /// [`UnisonConfig`](crate::UnisonConfig). A synth built without one cannot
+    /// gain unison later —
+    /// every unison setter below is a no-op on it.
     pub fn unison_config(&self) -> Option<&crate::UnisonConfig> {
         self.unison.as_ref().map(|u| u.config())
     }
 
+    /// Sub-voices stacked per note, clamped to 1..=16. Returns `1` when this
+    /// synth has no unison engine, so the total oscillator count is always
+    /// `max_voices * this`.
     pub fn unison_voice_count(&self) -> usize {
         self.unison.as_ref().map_or(1, |u| u.voice_count())
     }
 
+    /// Set the unison detune in [`Cents`](tutti_core::Cents), applied
+    /// symmetrically either side of the written pitch. Negative values clamp to
+    /// zero. Recomputes the per-sub-voice pitch ratios immediately, so it
+    /// affects sounding notes as well as future ones. No-op without unison.
     pub fn set_unison_detune(&mut self, cents: impl Into<tutti_core::Cents>) {
         if let Some(unison) = &mut self.unison {
             unison.set_detune(cents);
         }
     }
 
+    /// Set how wide the sub-voices are panned, 0.0 (all centre) to 1.0
+    /// (outermost pair hard left and right); out-of-range values are clamped.
+    /// Takes effect on sounding notes. No-op without unison.
     pub fn set_unison_stereo_spread(&mut self, spread: f32) {
         if let Some(unison) = &mut self.unison {
             unison.set_stereo_spread(spread);
         }
     }
 
+    /// Set the number of stacked sub-voices per note, clamped to 1..=16.
+    ///
+    /// **Allocates** when the count grows: each voice builds the extra DSP
+    /// chains, and each new chain is run for 100 warm-up ticks. Call it from
+    /// the control thread, never the audio thread.
+    ///
+    /// No-op without unison.
     pub fn set_unison_voice_count(&mut self, count: u8) {
         if let Some(unison) = &mut self.unison {
             unison.set_voice_count(count);
@@ -278,6 +327,9 @@ impl PolySynth {
         }
     }
 
+    /// Replace all unison settings at once. Carries the same allocation warning
+    /// as [`set_unison_voice_count`](Self::set_unison_voice_count) when the
+    /// count grows. No-op without unison.
     pub fn set_unison_config(&mut self, config: crate::UnisonConfig) {
         if let Some(unison) = &mut self.unison {
             unison.set_config(config);
@@ -288,12 +340,19 @@ impl PolySynth {
         }
     }
 
+    /// Seed the phase-randomisation generator, making a render with
+    /// `phase_randomize` reproducible. A seed of `0` is remapped to `1`, since
+    /// the xorshift generator cannot leave that state. No-op without unison.
     pub fn seed_unison_rng(&mut self, seed: u32) {
         if let Some(unison) = &mut self.unison {
             unison.seed_rng(seed);
         }
     }
 
+    /// The computed per-sub-voice pitch ratio, pan, phase offset and amplitude
+    /// — one entry per active sub-voice. Derived state, recomputed on every
+    /// unison setter; for inspection, not for driving the audio path.
+    /// `None` without unison.
     pub fn unison_params(&self) -> Option<&[crate::UnisonVoiceParams]> {
         self.unison.as_ref().map(|u| u.all_params())
     }
@@ -304,7 +363,7 @@ impl PolySynth {
         use tutti_midi_types::midi2::{Channeled, UmpMessage};
 
         // `normalize` folds velocity-0 NoteOn→NoteOff and promotes any inbound
-        // MIDI 1.0 channel voice to MIDI 2.0, so we match a single vocabulary.
+        // MIDI 1.0 channel voice to MIDI 2.0, leaving a single vocabulary to match.
         let normalized = tutti_midi_types::normalize(event);
         let Ok(UmpMessage::ChannelVoice2(cv2)) = UmpMessage::try_from(normalized.data_words())
         else {
@@ -352,8 +411,9 @@ impl PolySynth {
                 let id = NoteId::from_channel_note(channel, u8::from(m.note_number()));
                 self.set_voice_mpe_pressure(id, u32_to_unit_f32(m.key_pressure_data()));
             }
-            // Assignable per-note controllers carry a raw index. We honor the dims
-            // the synth voice can apply: CC74 → slide, CC7 → per-note gain.
+            // Assignable per-note controllers carry a raw index. Only the dims
+            // a synth voice can apply are honored: CC74 → slide, CC7 → per-note
+            // gain.
             Cv2::AssignablePerNoteController(m) => {
                 let id = NoteId::from_channel_note(channel, u8::from(m.note_number()));
                 let data = u32_to_unit_f32(m.controller_data());
@@ -366,9 +426,9 @@ impl PolySynth {
                 }
             }
             // Registered per-note controllers carry a *semantic* controller enum
-            // (index resolved to Volume/Pan/Brightness/…). We honor the dims the
-            // synth voice can apply: Volume → per-note gain, Brightness (CC74 /
-            // SoundController index 5) → slide. Pan stays recognized-but-unwired
+            // (index resolved to Volume/Pan/Brightness/…). Only the dims a synth
+            // voice can apply are honored: Volume → per-note gain, Brightness
+            // (CC74 / SoundController index 5) → slide. Pan stays recognized-but-unwired
             // (no per-note pan DSP on `SynthVoice` yet — don't invent it).
             Cv2::RegisteredPerNoteController(m) => {
                 use tutti_midi_types::midi2::channel_voice2::Controller;
@@ -469,7 +529,7 @@ impl PolySynth {
 
     fn handle_note_off(&mut self, note: u8, channel: u8) {
         let id = NoteId::from_channel_note(channel, note);
-        // `release` resolves the exact voice by id and tells us whether it truly
+        // `release` resolves the exact voice by id and reports whether it truly
         // stopped (vs. held by a pedal). Gate that voice by index — never by a
         // (note, channel) scan, which would alias two same-pitch voices.
         if let Some(slot_index) = self.allocator.release(id, channel) {
@@ -625,21 +685,19 @@ impl PolySynth {
             }
         }
 
-        // Multiplicative, matching every other bend site.
+        // Multiplicative, matching every other bend site. All four must agree,
+        // and the ratio is the only derivation all four *can* share:
+        // `handle_note_on` bends `porta.current()` and both glide sites bend
+        // `porta.tick()` — interpolated frequencies with no note number to look
+        // up in the tuning table.
         //
-        // This used to add the bend to the *note number* and re-enter
-        // `fractional_note_to_freq`, which interpolates between table entries.
-        // On an equal-tempered table that is the same number; on any unequal
-        // one it is not, so the same wheel position moved a held note and a
-        // newly-struck note to different pitches (measured 3.9 cents apart on
-        // just intonation).
-        //
-        // The three other sites cannot use the table even if this one did:
-        // `handle_note_on` bends `porta.current()`, and both glide sites bend
-        // `porta.tick()` — interpolated frequencies with no note number to
-        // look up. So the ratio is the derivation all four can share, and
-        // agreeing everywhere is worth more than the table's shape applying to
-        // the bend interval itself.
+        // Adding the bend to the note number and re-entering
+        // `fractional_note_to_freq` is the tempting alternative and is wrong
+        // here. On an equal-tempered table it gives the same number; on any
+        // unequal one it does not, so the same wheel position moves a held note
+        // and a newly-struck note to different pitches — 3.9 cents apart on
+        // just intonation. Agreeing everywhere is worth more than the table's
+        // shape applying to the bend interval itself.
         let bend_multiplier = (self.config.pitch_bend_range * self.pitch_bend).to_pitch_ratio();
         let tuning = &self.config.tuning;
         let unison = self.unison.as_ref();
@@ -699,7 +757,7 @@ impl AudioUnit for PolySynth {
     ///    mints a fresh private mailbox + source cell (nothing holds this new
     ///    sender, so the port stays permanently empty).
     ///
-    /// 2. **Per-voice `Shared` params** — every [`SynthVoice`] (and its
+    /// 2. **Per-voice `Shared` params** — every voice (and its
     ///    sub-voices) holds `gate`/`pitch`/`filter_cutoff`/`filter_resonance` as
     ///    `Shared` (`Arc<AtomicU32>`), which `#[derive(Clone)]` aliases. The
     ///    voice's `tick` *writes* these every sample (envelope→filter, pitch
@@ -997,11 +1055,19 @@ impl PolySynth {
 }
 
 impl tutti_mod::ModParams for PolySynth {
-    /// The synth's control-rate-modulatable params. `Volume` mirrors the master
-    /// atomic directly; `Detune`/`StereoSpread` mirror the unison atomics that
-    /// [`UnisonEngine::sync_from_atomics`](crate::UnisonEngine::sync_from_atomics)
-    /// folds in once per block. Discrete params (voice count) are deliberately
-    /// not modulatable; a foreign [`ParamAddr::Id`] is not the synth's vocabulary.
+    /// The synth's control-rate-modulatable params: `Volume`, and — only when
+    /// this synth has a unison engine — `Detune` and `StereoSpread`.
+    ///
+    /// `Volume` mirrors the master atomic, which the mix is scaled by once per
+    /// block. `Detune`/`StereoSpread` mirror the unison atomics, folded back
+    /// into the per-sub-voice params once per block; they change pitch ratios
+    /// and pans, never anything per-sample, so block-rate folding is exact
+    /// rather than an approximation.
+    ///
+    /// Everything else returns `None`. Discrete params (voice count) are
+    /// deliberately not modulatable, and a foreign `ParamAddr::Id` is not this
+    /// synth's vocabulary — a WASM node's param names are, which is why that
+    /// arm belongs to the extension host and not here.
     fn mod_target(
         &self,
         param: tutti_core::ParamAddr,
@@ -1247,8 +1313,8 @@ mod tests {
     /// The regression guard for [[plugin-source-install-shared-cell]] on the synth
     /// side: installing a clip source on ONE clone must be visible to ANOTHER
     /// clone, because fundsp runs a different clone than the one the install call
-    /// mutates. With the old per-clone `Option<Arc<…>>` this failed silently, so
-    /// synth clip playback never reached the audio thread.
+    /// mutates. A per-clone `Option<Arc<…>>` fails this silently — the install
+    /// succeeds and synth clip playback never reaches the audio thread.
     #[test]
     fn midi_source_install_propagates_across_clones() {
         let live = synth(SynthConfig {
@@ -1481,7 +1547,7 @@ mod tests {
 
         // Process samples and accumulate max output
         // Note: FunDSP EnvelopeIn samples at 2ms intervals (~88 samples at 44100Hz)
-        // so we need several hundred samples to see envelope output
+        // so several hundred samples are needed to see envelope output
         let mut output = [0.0f32; 2];
         let mut max_left = 0.0f32;
         let mut max_right = 0.0f32;
@@ -1492,7 +1558,7 @@ mod tests {
             max_right = max_right.max(output[1].abs());
         }
 
-        // With full stereo spread, we should get output on both channels
+        // With full stereo spread, both channels should carry output
         // (the left/right sub-voices should be panned to opposite sides)
         assert!(
             max_left > 0.0,
@@ -1551,7 +1617,7 @@ mod tests {
         gate.set(1.0);
 
         // EnvelopeIn samples at 2ms intervals (about 88 samples at 44100Hz)
-        // So we need to process more samples to see the envelope respond
+        // So more samples must be processed to see the envelope respond
         let mut max_out = 0.0f32;
         for _ in 0..500 {
             chain.tick(&[], &mut out2);

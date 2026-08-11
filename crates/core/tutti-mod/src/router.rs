@@ -39,6 +39,8 @@ pub struct ModBus {
 }
 
 impl ModBus {
+    /// An empty bus — no targets registered. Every dispatch is a silent drop
+    /// until [`insert`](Self::insert) is called.
     pub fn new() -> Self {
         Self::default()
     }
@@ -65,6 +67,7 @@ impl ModBus {
         self.targets.len()
     }
 
+    /// Whether no targets are registered.
     pub fn is_empty(&self) -> bool {
         self.targets.is_empty()
     }

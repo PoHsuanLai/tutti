@@ -1,4 +1,9 @@
-//! Plugin server binary. Spawned by DAW to host plugins in isolation.
+//! The `plugin-server` binary — one process per hosted plugin.
+//!
+//! Spawned by the host (`tutti-plugin`), never run by hand: it takes the
+//! host-chosen socket path as its sole argument and serves exactly one host,
+//! then exits. Isolation is the point — a plugin that crashes takes this process
+//! down and not the DAW.
 
 use std::env;
 use tutti_plugin_server::{BridgeConfig, PluginServer, Result};

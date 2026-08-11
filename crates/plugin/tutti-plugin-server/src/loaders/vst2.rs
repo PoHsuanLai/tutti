@@ -185,10 +185,10 @@ impl PluginAudio for Vst2Instance {
                 for queue in &changes.queues {
                     if let Some(point) = queue.points.last() {
                         // VST2 is the one format addressed by position, so an
-                        // opaque handle addresses nothing here. This used to
-                        // narrow the wire's bare `u32` with `i32::try_from`,
-                        // rebuilding an index the producer already knew it was
-                        // sending — the queue now says so.
+                        // opaque handle addresses nothing here. Take the index
+                        // the queue carries rather than narrowing a bare `u32`
+                        // back into one the producer already knew it was
+                        // sending.
                         let Some(index) = queue.param_id.index() else {
                             continue;
                         };

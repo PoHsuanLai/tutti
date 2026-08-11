@@ -1,17 +1,14 @@
-//! One mock [`Timeline`] for the crate's tests.
+//! The single mock [`Timeline`] the crate's tests share.
 //!
-//! There were three, in `memory_source`, `disk_voice`, and
-//! `voice_pool` — identical state (playing / beat / tempo, all
-//! interior-mutable) with the methods split arbitrarily between them, so a test
-//! could only move the playhead the way its own module's copy happened to allow.
-//! `voice_pool`'s had no setter at all, which is why a
-//! seek-while-stretched test could not be written there.
+//! One mock, not one per module: a per-module copy exposes only the setters its
+//! own tests happened to need, which is how a seek-while-stretched test becomes
+//! unwritable in the module that needs it most.
 //!
-//! Worse than the duplication: the two constructors disagreed on argument order
-//! — `new(beat, tempo)` in `memory_source` against `new(tempo, beat, playing)` in
-//! the other two. Both take `f64`, so transposing them compiles and yields a
-//! transport at the wrong tempo *and* the wrong position. This version takes
-//! [`Bpm`] and [`Beat`], so the compiler refuses the swap.
+//! Constructed from [`Beat`] and [`Bpm`] rather than two bare `f64`s. Position
+//! and tempo have the same primitive representation, so an argument-order slip
+//! compiles clean and yields a transport at the wrong tempo *and* the wrong
+//! position — a test that then fails for a reason nowhere near the code under
+//! test. Unit types make the swap a compile error.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
@@ -32,9 +29,6 @@ pub struct MockTransport {
 
 impl MockTransport {
     /// Rolling, at `beat` and `tempo`.
-    ///
-    /// Unit-typed rather than two bare `f64`s precisely because the old
-    /// signatures disagreed on their order.
     pub fn rolling(beat: Beat, tempo: Bpm) -> Arc<Self> {
         Arc::new(Self {
             playing: AtomicBool::new(true),

@@ -226,12 +226,12 @@ fn a_lied_about_latency_does_not_destabilise_the_host() {
 
 /// A refused latency property is an error, not a zero.
 ///
-/// `get_latency` used to swallow the refusal with `unwrap_or(0.0)` *inside*
-/// itself, so its `Result` could never be `Err` and every caller's error arm —
-/// including the AU loader's `unwrap_or(0)` — was unreachable code that read as
-/// if it had considered the case. A host cannot then tell "this plugin delays
-/// nothing" from "this plugin would not say", and the two want different
-/// answers: the first needs no PDC, the second is a plugin worth warning about.
+/// Swallowing the refusal with `unwrap_or(0.0)` *inside* `get_latency` makes its
+/// `Result` unable to ever be `Err`, so every caller's error arm — including the
+/// AU loader's `unwrap_or(0)` — becomes unreachable code that reads as if it had
+/// considered the case. A host then cannot tell "this plugin delays nothing"
+/// from "this plugin would not say", and the two want different answers: the
+/// first needs no PDC, the second is a plugin worth warning about.
 ///
 /// Nothing in the real corpus reaches this path — measured on macOS 15.6, all
 /// 29 registered units answer and none refuses — which is precisely why the
@@ -298,10 +298,10 @@ fn a_negative_latency_saturates_instead_of_wrapping() {
 /// This is the load-path twin of `set_block_size`'s verification, and the gap it
 /// closes. `StreamConfig::apply` writes `MaximumFramesPerSlice` and `?`s on the
 /// *set* alone; a clamping AU returns `noErr` from that write while keeping a
-/// smaller figure. The constructor used to store the requested number
-/// regardless, so `block_size()` reported a width the AU had not allocated for
-/// and `process` — which admits any `num_frames` up to that recorded number —
-/// would wave through a render the AU writes past its own buffers on.
+/// smaller figure. A constructor that stores the requested number regardless
+/// makes `block_size()` report a width the AU has not allocated for, and
+/// `process` — which admits any `num_frames` up to that recorded number — then
+/// waves through a render the AU writes past its own buffers on.
 ///
 /// Every path into an AU goes through this constructor, so verifying only on the
 /// resize path left the hazard unguarded exactly where a host cannot avoid it.

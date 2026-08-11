@@ -111,6 +111,12 @@ pub struct DistortionNode {
 }
 
 impl DistortionNode {
+    /// Builds a stereo waveshaper of `kind` at `drive`.
+    ///
+    /// [`Drive`] is input gain into the shaping curve, floored at 0: higher
+    /// pushes further into the nonlinearity and distorts harder. The curve
+    /// itself is stateless, so drive is the only thing that changes its
+    /// character.
     pub fn new(kind: ShapeKind, drive: impl Into<Drive>) -> Self {
         Self::with_channels(2, kind, drive)
     }
@@ -138,10 +144,10 @@ impl DistortionNode {
     ///
     /// Width and modulation are **independent axes**: `channels` says how wide
     /// the shaper is, `mod_drive` says whether it reads drive at audio rate.
-    /// They were not independent — this constructor hardcoded width 2 — so
-    /// asking for a modulated 5.1 shaper silently returned a *stereo* one, and
-    /// the only symptom was a `set_source` on a param port that resolved and
-    /// carried the wrong signal.
+    /// Collapsing them — hardcoding width 2 in the modulated form — turns a
+    /// request for a modulated 5.1 shaper into a *stereo* one, and the only
+    /// symptom is a `set_source` on a param port that resolves and carries the
+    /// wrong signal.
     ///
     /// The drive port follows the audio inputs, so its index **moves with the
     /// width**. Ask [`ParamPorts::param_port`](crate::ParamPorts::param_port);
@@ -169,6 +175,10 @@ impl DistortionNode {
         self.drive.as_atomic()
     }
 
+    /// Sets the [`Drive`] into the shaping curve, floored at 0.
+    ///
+    /// Read once per block; the shaper is rebuilt only when drive moves
+    /// meaningfully, which is cheap because it carries no state.
     pub fn set_drive(&self, drive: impl Into<Drive>) {
         self.drive.store(Drive(drive.into().get().max(0.0)));
     }

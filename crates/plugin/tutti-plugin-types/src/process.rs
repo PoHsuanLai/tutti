@@ -21,9 +21,16 @@ use crate::{
 /// flag.)
 #[derive(Default)]
 pub struct ExpressiveContext<'a> {
+    /// Chord events in effect this block. `None` when the host sends no chord
+    /// track — not "no chord".
     pub chords: Option<&'a ChordChanges>,
+    /// Scale/key events in effect this block. `None` when the host sends no
+    /// key lane.
     pub scales: Option<&'a ScaleChanges>,
+    /// Per-note text annotations for this block.
     pub expr_texts: Option<&'a NoteExpressionTextChanges>,
+    /// Per-note stepped expression for this block, for the dimensions a `0..=1`
+    /// scale cannot carry.
     pub expr_ints: Option<&'a crate::NoteExpressionIntChanges>,
 }
 
@@ -35,6 +42,9 @@ pub struct ExpressiveContext<'a> {
 /// send on the flag, never on the plugin's format.
 #[derive(Default)]
 pub struct ProcessContext<'a> {
+    /// MIDI for this block, in ascending time order. An empty slice rather than
+    /// an `Option` — every format takes MIDI, so there is no "did not send"
+    /// state to distinguish from "sent nothing".
     pub midi_events: &'a [MidiEvent],
     /// Sent only when the plugin advertised [`Features::PARAM_AUTOMATION`](crate::Features).
     pub param_changes: Option<&'a ParameterChanges>,
@@ -47,30 +57,40 @@ pub struct ProcessContext<'a> {
 }
 
 impl<'a> ProcessContext<'a> {
+    /// Builds a context with no MIDI and every best-effort input absent.
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Attaches this block's MIDI (builder).
     pub fn midi(mut self, events: &'a [MidiEvent]) -> Self {
         self.midi_events = events;
         self
     }
 
+    /// Attaches parameter automation (builder). Call only when the plugin
+    /// advertised [`Features::PARAM_AUTOMATION`](crate::Features).
     pub fn params(mut self, changes: &'a ParameterChanges) -> Self {
         self.param_changes = Some(changes);
         self
     }
 
+    /// Attaches note expression (builder). Call only when the plugin advertised
+    /// [`Features::NOTE_EXPRESSION`](crate::Features).
     pub fn note_expression(mut self, changes: &'a NoteExpressionChanges) -> Self {
         self.note_expression = Some(changes);
         self
     }
 
+    /// Attaches transport state (builder). Call only when the plugin advertised
+    /// [`Features::TRANSPORT`](crate::Features).
     pub fn transport(mut self, info: &'a TransportInfo) -> Self {
         self.transport = Some(info);
         self
     }
 
+    /// Attaches sequencer context (builder). Call only when the plugin
+    /// advertised [`Features::SEQUENCER_CONTEXT`](crate::Features).
     pub fn expressive(mut self, ctx: ExpressiveContext<'a>) -> Self {
         self.expressive = Some(ctx);
         self
@@ -82,7 +102,12 @@ impl<'a> ProcessContext<'a> {
 /// audio buffer.
 #[derive(Default)]
 pub struct ProcessOutput {
+    /// MIDI the plugin emitted this block — a note effect's output, or an
+    /// instrument echoing what it consumed.
     pub midi_events: MidiEventVec,
+    /// Parameter changes the plugin made itself, so the host can follow a knob
+    /// the user turned in the plugin's own editor.
     pub param_changes: ParameterChanges,
+    /// Note expression the plugin emitted this block.
     pub note_expression: NoteExpressionChanges,
 }

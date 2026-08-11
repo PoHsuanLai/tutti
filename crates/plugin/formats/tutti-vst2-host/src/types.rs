@@ -15,10 +15,18 @@ pub use tutti_plugin_types::{
 pub struct PluginInfo {
     /// Stable identifier built from the plugin's `unique_id`.
     pub id: String,
+    /// Display name from `effGetEffectName`, or the file stem if the plugin
+    /// declares none.
     pub name: String,
+    /// Vendor string from `effGetVendorString`; empty if the plugin declines.
     pub vendor: String,
+    /// Version as the plugin reports it, rendered as a string. VST2 carries a
+    /// bare `i32` with no encoding agreed across vendors, so this is for display
+    /// rather than for comparison.
     pub version: String,
+    /// Declared audio input width. Zero for an instrument.
     pub num_inputs: ChannelLayout,
+    /// Declared audio output width.
     pub num_outputs: ChannelLayout,
     /// The plugin's declared VST2 category, carried verbatim. Callers classify
     /// it themselves rather than relying on the derived `receives_midi` flag.
@@ -28,6 +36,8 @@ pub struct PluginInfo {
     /// `true` if the plugin declares at least one MIDI **output** bus
     /// (`get_info().midi_outputs > 0`) — it emits MIDI the host reads back.
     pub emits_midi: bool,
+    /// `true` if the plugin declared `effFlagsHasEditor`. A `false` here means
+    /// [`crate::Vst2Instance`]'s editor calls have nothing to open.
     pub has_editor: bool,
     /// Reported initial latency, in samples.
     ///
@@ -56,9 +66,16 @@ pub struct ParameterInfo {
     /// Dense index in `[0, numParams)` — VST2 addresses parameters by
     /// position, and the ABI's own `i32` is carried rather than re-signed.
     pub id: i32,
+    /// Display name from `effGetParamName`.
     pub name: String,
+    /// The plugin's own unit label from `effGetParamLabel` — typically `"Hz"`,
+    /// `"dB"`, `"%"`, or empty. A free-form string, not a parsed unit type: VST2
+    /// makes no promise about its contents, so it cannot be mapped onto the
+    /// engine's `Hz` / `Db` vocabulary without guessing.
     pub unit: String,
-    /// Current normalized value in `[0.0, 1.0]`.
+    /// Current normalized value in `[0.0, 1.0]`. Reads `0.0` for a plugin
+    /// exposing no `getParameter` — see [`crate::Vst2Instance::parameter`],
+    /// which distinguishes the two.
     pub current: f32,
 }
 
@@ -71,12 +88,24 @@ pub type MidiEventVec = smallvec::SmallVec<[MidiEvent; 256]>;
 /// the audio buffer.
 #[derive(Default)]
 pub struct ProcessContext<'a> {
+    /// Events to deliver before the block renders, each carrying its own frame
+    /// offset within the block. Empty is normal for an effect.
     pub midi: &'a [MidiEvent],
+    /// Transport state for this block. `None` leaves the plugin's `VstTimeInfo`
+    /// reporting a stopped transport, which is what a plugin syncing to host
+    /// tempo will see.
     pub transport: Option<&'a TransportInfo>,
+    /// Sample rate in Hz.
+    ///
+    /// A bare `f64`, not the engine's `SampleRate`: this value reaches
+    /// `effSetSampleRate`, a C ABI taking a float. The unit types stop at that
+    /// boundary by design.
     pub sample_rate: f64,
 }
 
 impl<'a> ProcessContext<'a> {
+    /// A context with no MIDI and no transport, carrying only `sample_rate` in
+    /// Hz. Layer the rest on with [`Self::midi`] and [`Self::transport`].
     pub fn new(sample_rate: f64) -> Self {
         Self {
             midi: &[],
@@ -85,11 +114,13 @@ impl<'a> ProcessContext<'a> {
         }
     }
 
+    /// Attaches this block's MIDI events, replacing any already set.
     pub fn midi(mut self, midi: &'a [MidiEvent]) -> Self {
         self.midi = midi;
         self
     }
 
+    /// Attaches this block's transport state, replacing any already set.
     pub fn transport(mut self, transport: &'a TransportInfo) -> Self {
         self.transport = Some(transport);
         self

@@ -2,16 +2,16 @@
 //!
 //! The `vst` crate's `Host` trait gets invoked whenever the plugin does
 //! something asynchronous — parameter automation, outbound MIDI, or a
-//! query for transport state. We funnel those back to the rest of the
-//! crate via crossbeam channels and an atomic `time_info` snapshot so
-//! the audio-thread side never blocks on the main thread.
+//! query for transport state. Those are funnelled back to the rest of the crate
+//! through crossbeam channels and an atomic `time_info` snapshot, so the
+//! audio-thread side never blocks on the main thread.
 //!
 //! # audioMaster query callbacks
 //!
-//! We host on the `vst-tutti` fork, whose `host_dispatch` wires the
-//! query opcodes upstream vst-rs swallowed in its `_ =>` arm. Those
-//! callbacks are now *answerable*: the plugin gets a real response
-//! instead of a silent 0. Of them:
+//! Hosting is on the `vst-tutti` fork, whose `host_dispatch` wires the query
+//! opcodes that upstream vst-rs swallows in its `_ =>` arm. That makes these
+//! callbacks *answerable*: the plugin gets a real response rather than a silent
+//! 0. Of them:
 //!
 //! - `get_sample_rate` and `get_process_level` return **real data**
 //!   (the live transport rate, and realtime for the live audio path).
@@ -178,8 +178,8 @@ impl Host for HostState {
 
     /// Host identification, in vst-rs's `(version, vendor, product)` form.
     /// vst-rs's default returns placeholder strings ("vendor string" /
-    /// "product string"); we report Tutti's real identity so plugins that
-    /// key behaviour off the host name see the truth.
+    /// "product string"); this reports Tutti's real identity so a plugin that
+    /// keys behaviour off the host name sees the truth.
     fn get_info(&self) -> (isize, String, String) {
         (1, "Tutti".to_string(), "Tutti VST2 Host".to_string())
     }
@@ -228,9 +228,9 @@ impl Host for HostState {
 
     /// Neutral default: the plugin's editor-resize request. `HostState`
     /// has no handle to the editor window or a resize channel (the editor
-    /// lives on `Vst2Instance`, a separate object), so we cannot honor the
-    /// resize without a structural change. Returning `false` tells the
-    /// plugin the host declined — honest, and better than the swallowed 0.
+    /// lives on `Vst2Instance`, a separate object), so the resize cannot be
+    /// honoured without a structural change. Returning `false` tells the plugin
+    /// the host declined — honest, and better than the swallowed 0.
     fn size_window(&self, _index: i32, _value: isize) -> bool {
         false
     }

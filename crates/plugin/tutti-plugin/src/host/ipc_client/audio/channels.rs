@@ -41,11 +41,9 @@ pub(super) struct Channels {
     /// only on `AudioBridge` because *both* threads size a timeout from the
     /// block period — the bridge thread its reply timeout, and the staleness
     /// bound its notion of how far behind a block may be. One shared source
-    /// keeps the two from drifting apart, which is what let a 500 ms constant
-    /// sit ~750x above the audio thread's old 667 µs wait budget and starve
-    /// the command queue. That budget is gone — the audio thread no longer
-    /// waits at all — but the drift hazard it illustrates is why this lives
-    /// here.
+    /// keeps the two from drifting apart: two independently-derived periods let
+    /// a constant sit orders of magnitude off the real block period, which
+    /// starves the command queue.
     sample_rate_bits: Arc<AtomicU64>,
 }
 
@@ -98,10 +96,9 @@ impl Channels {
     /// Pushes, then wakes the bridge thread. `Thread::unpark` is a non-blocking
     /// futex/semaphore post — no allocation, no waiting — so it is safe from
     /// the audio thread, and it starts the socket round-trip immediately rather
-    /// than after a poll interval. That latency used to sit inside the audio
-    /// thread's wait budget; the audio thread no longer waits, but the unpark
-    /// still matters — it is what keeps a block's reply arriving in time to be
-    /// collected on the *next* block rather than the one after.
+    /// than after a poll interval. The audio thread never waits on the reply,
+    /// but the unpark still matters — it is what keeps a block's reply arriving
+    /// in time to be collected on the *next* block rather than the one after.
     ///
     /// `try_lock` on the worker slot keeps that promise absolute: the slot is
     /// written exactly once at spawn, so contention is effectively impossible,

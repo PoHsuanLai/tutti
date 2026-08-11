@@ -3,7 +3,7 @@
 //! pool, rendered through a slot, summed — and because many of them reach
 //! private state (`slot.stretch`, `voices`) that a sibling module could not see.
 //!
-//! The implementation now lives one file per duty: [`types`](super::types),
+//! The implementation is one file per duty: [`types`](super::types),
 //! [`slot`](super::slot), [`command`](super::command), [`pool`](super::pool),
 //! [`node`](super::node).
 
@@ -66,34 +66,14 @@ mod tests {
             .expect("the command queue has room in a test");
     }
 
-    /// A transport seek must flush the stretch filter's buffered audio.
-    ///
-    /// **This is the gate for the seek bug and it FAILS before the fix.**
-    ///
-    /// `Timeline` is poll-only — `beat()` / `tempo()` / `is_rolling()`, no seek
-    /// event — and nothing on any transport-driven path calls
-    /// `AudioUnit::reset()`. So when the playhead jumps, the placement gate
-    /// re-derives the new position correctly and immediately, while
-    /// `stretch::Unit` keeps draining a FIFO primed from *before* the jump: up
-    /// to `window * 4` samples per channel, plus per-bin phase accumulators
-    /// still tracking the old material.
-    ///
-    /// The wave is loud in its first half and **exactly silent** in its second,
-    /// which is what makes the assertion about the bug rather than about
-    /// liveness. Every other stretch test on this path asserts only `!= 0.0` or
-    /// `> 1e-6` (`clips_sum_together`, `six_channel_clip_with_stretch_...`), and
-    /// a leak at signal level passes all of them — the same blind spot that let
-    /// a 60 dB gain error live in the vocoder. Here, parking the playhead in the
-    /// silent half means any output above the floor is provably material the
-    /// filter should no longer be holding.
     /// Resetting a still-shared clone must not reach the live voice.
     ///
-    /// The export path is `clone_isolated` -> `isolate` -> `reset`. It used to
-    /// be `clone_isolated` -> `reset` -> `isolate`, and in that order `reset`
-    /// cleared the FIFOs and phase accumulators of the *live* unit through the
-    /// shared bank — measured as live output dropping to exactly 0.0 for one
-    /// window. This pins the order-independent property: whatever the render
-    /// does to its own clone after isolating, the live voice keeps its state.
+    /// The export path is `clone_isolated` -> `isolate` -> `reset`. In the
+    /// opposite order `reset` clears the FIFOs and phase accumulators of the
+    /// *live* unit through the shared bank — measurable as live output dropping
+    /// to exactly 0.0 for one window. This pins the order-independent property:
+    /// whatever the render does to its own clone after isolating, the live voice
+    /// keeps its state.
     #[test]
     fn resetting_an_isolated_clone_leaves_the_live_voice_playing() {
         // Matches `make_wave`, so the source needs no rate conversion.
@@ -210,6 +190,24 @@ mod tests {
         );
     }
 
+    /// A transport seek must flush the stretch filter's buffered audio.
+    ///
+    /// `Timeline` is poll-only — `beat()` / `tempo()` / `is_rolling()`, no seek
+    /// event — and nothing on any transport-driven path calls
+    /// `AudioUnit::reset()`. So when the playhead jumps, the placement gate
+    /// re-derives the new position correctly and immediately, while
+    /// `stretch::Unit` keeps draining a FIFO primed from *before* the jump: up
+    /// to `window * 4` FRAMES per channel, plus per-bin phase accumulators
+    /// still tracking the old material.
+    ///
+    /// The wave is loud in its first half and **exactly silent** in its second,
+    /// which is what makes the assertion about the leak rather than about
+    /// liveness. Every other stretch test on this path asserts only `!= 0.0` or
+    /// `> 1e-6` (`clips_sum_together`, `six_channel_clip_with_stretch_...`), and
+    /// a leak at signal level passes all of them — the same blind spot that let
+    /// a 60 dB gain error live in the vocoder. Here, parking the playhead in the
+    /// silent half means any output above the floor is provably material the
+    /// filter should not still be holding.
     #[test]
     fn a_transport_seek_flushes_stretch_state() {
         const SR: f64 = 44_100.0;
@@ -547,8 +545,8 @@ mod tests {
             let transport = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
 
             // Enough ring that the unstretched (fastest) case cannot underrun,
-            // so a short read means the rate applied rather than that we ran dry
-            // — the control assertion below checks the other direction.
+            // so a short read means the rate applied rather than that the ring
+            // ran dry — the control assertion below checks the other direction.
             let flat: Vec<f32> = (0..8192)
                 .flat_map(|i| {
                     let s = (std::f32::consts::TAU * 440.0 * i as f32 / 44_100.0).sin();
@@ -952,12 +950,11 @@ mod tests {
     /// Turning stretch on for a voice that spawned at unity/zero must be audible.
     ///
     /// The regression this pins: `AddVoice` correctly attaches no filter to a
-    /// voice at unity, and `set_stretch` used to only flip atomics on a *resident*
-    /// filter. So `UpdateStretch` mirrored the values into `voice.play`,
-    /// `needs_stretch()` went true, `stretch.is_some()` stayed false, and
-    /// `tick_frame_into` took the dry branch — silently, forever. `set_stretch`'s
-    /// own doc claimed the sender materialised one "before queueing", pointing at
-    /// code that did not exist.
+    /// voice at unity, so if `set_stretch` only flipped atomics on a *resident*
+    /// filter, `UpdateStretch` would mirror the values into `voice.play`,
+    /// `needs_stretch()` would go true, `stretch.is_some()` would stay false, and
+    /// `tick_frame_into` would take the dry branch — silently, forever. The
+    /// filter has to arrive on the command.
     ///
     /// Asserted on the *output*, not on `stretch.is_some()`: the point is that the
     /// signal changes, and a future refactor that keeps the field but stops routing
@@ -979,7 +976,7 @@ mod tests {
             dry.push(out[0]);
         }
 
-        // Pitch-shift by an octave. `stretch_wanted` is false before this
+        // Pitch-shift by an octave. `stretch_wanted` is false up to this point
         // (unity factor, zero cents), so no filter is resident.
         handle
             .send(VoiceCommand::UpdateStretch {
@@ -1146,12 +1143,11 @@ mod tests {
     /// `Voice::replace_transport` rebinds the clock the source actually READS,
     /// preserving start/duration — the offline render's rebind path.
     ///
-    /// This test used to assert on `play.placement`, the record that was rebound
-    /// but never read. It therefore passed whether or not the real read clock
-    /// moved, which is the precise failure it was written to catch. With that
-    /// field deleted there is only one clock, and the assertion is behavioural:
-    /// the swapped-in transport is STOPPED, so the source must report no position
-    /// and render silence.
+    /// Asserted **behaviourally**, on the clock the source reads, not on a
+    /// mirrored placement record: an assertion against a rebound-but-unread copy
+    /// passes whether or not the real read clock moved, which is the precise
+    /// failure this is written to catch. The swapped-in transport is STOPPED, so
+    /// the source must report no position and render silence.
     #[test]
     fn voice_replace_transport_rebinds_the_clock_the_source_reads() {
         let wave = make_wave(100);
@@ -1197,10 +1193,11 @@ mod tests {
     // --- 0e: dropped commands must not be recorded as applied ---
 
     /// A streaming voice with no butler channel cannot have its loop applied —
-    /// the butler owns streaming loop state. The drain used to send nothing and
-    /// still write `play.loop_`, so the intent record claimed a loop that was
-    /// never set; `insert_voice` would then replay that lie. Reachable on every
-    /// offline path: `new()`, `detached()`, and `isolate()` all have no butler.
+    /// the butler owns streaming loop state — so the drain must not record the
+    /// intent either. Writing `play.loop_` with nothing sent leaves the record
+    /// claiming a loop that was never set, and `insert_voice` replays that lie
+    /// as if it were real. Reachable on every offline path: `new()`,
+    /// `detached()` and `isolate()` all have no butler.
     #[test]
     fn loop_on_a_butlerless_streaming_voice_is_not_recorded() {
         use crate::butler::{share_reader, RegionBuffer, RegionId, RtState};

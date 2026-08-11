@@ -366,10 +366,10 @@ fn a_one_to_one_feed_stays_bounded_and_audible_at_every_stretch() {
 /// `set_pitch_cents` clamping on store: a raw `Cents::new(12_000.0)` would
 /// otherwise ask for a thousand iterations.
 ///
-/// This test used to guard `input_rate` for the same reason, back when that
-/// method paced the loop. It is asserted against `intake_rate` now because
-/// that is what the loop actually reads — guarding the other one would pass
-/// while the real bound went unchecked.
+/// The assertion must name `intake_rate` and not `input_rate`, even though both
+/// are "samples consumed per output sample" and both are clamped. Only
+/// `intake_rate` is what the loop reads; guarding the other passes while the
+/// real bound goes unchecked.
 #[test]
 fn the_intake_loop_is_bounded_by_the_pitch_clamp() {
     let u = Unit::with_channels(44_100.0, 1usize);
@@ -482,9 +482,9 @@ fn cloning_shares_the_bank_and_isolate_severs_it() {
         "isolate must preserve the unit's width"
     );
 
-    // Isolated state is clean, matching what a clone used to produce: a
-    // render starts its filter fresh rather than mid-frame on audio it will
-    // never emit.
+    // Isolated state is clean, not a copy of the running stream: a render
+    // starts its filter fresh rather than mid-frame on audio it will never
+    // emit.
     assert_eq!(isolated.channels.channels.borrow()[0].input.available(), 0);
     assert_eq!(isolated.channels.channels.borrow()[0].output.available(), 0);
 
@@ -820,12 +820,11 @@ fn render_440_placed(u: &Unit, sample_rate: f32, out_len: usize) -> Vec<f32> {
 
 /// **Pitch shift transposes, and stretch does not.**
 ///
-/// The assertion this crate lacked. Every pre-existing pitch test checked
-/// only that the atomic round-tripped and clamped, so a unit that ignored
-/// pitch entirely passed all of them — and one did, for the whole life of the
-/// feature. Measured before this fix: +1200 cents moved 440 Hz to 411 and
-/// -1200 moved it to 408. The *same* wrong answer in both directions, which
-/// is why it could never have been a wrong-ratio bug.
+/// The assertion that has to be about **frequency**. A pitch test checking only
+/// that the atomic round-trips and clamps is passed in full by a unit that
+/// ignores pitch entirely — which is a shape this code reached: +1200 cents
+/// moving 440 Hz to 411 and -1200 moving it to 408, the *same* wrong answer in
+/// both directions, so not even a wrong-ratio bug.
 ///
 /// Asserting frequency rather than liveness is the same lesson the 60 dB gain
 /// bug taught here: `!= 0.0` is satisfied by almost any defect.
@@ -1423,9 +1422,10 @@ fn vocoder_reconstructs_its_input_at_unity() {
     let len = size * 8;
     let input: Vec<f32> = (0..len)
         .map(|i| {
-            // Accumulate the time base in f64 and narrow once: `sample_rate`
-            // used to infer as f32 here, so the reference tone this test
-            // compares against was itself built at f32 precision.
+            // Accumulate the time base in f64 and narrow once. Letting
+            // `sample_rate` infer as f32 builds the reference tone itself at
+            // f32 precision, so the test would compare the vocoder against an
+            // already-drifted target.
             let t = (i as f64 / sample_rate) as f32;
             0.4 * (Radians::TAU.get() * 440.0 * t).sin()
                 + 0.2 * (Radians::TAU.get() * 3000.0 * t).sin()

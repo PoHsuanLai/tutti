@@ -7,37 +7,37 @@
 //!
 //! # Quick start
 //!
-//! With the `json` feature for ready-made persistence (see [Features](#features)
-//! — nothing is on by default):
+//! Load a plugin and put its node into a tutti graph. `no_run`: the load spawns
+//! a subprocess against a real `.vst3` / `.clap` on disk.
 //!
 //! ```no_run
-//! # #[cfg(feature = "json")]
-//! # fn ex(window: &impl raw_window_handle::HasWindowHandle)
-//! # -> tutti_plugin::Result<()> {
-//! use std::path::PathBuf;
-//! use tutti_plugin::catalog::{CatalogConfig, Plugin, Plugins};
+//! use tutti_core::{dsp::Net, SampleRate};
+//! use tutti_plugin::catalog::Plugin;
 //!
-//! let plugins = Plugins::with_json_catalog(CatalogConfig::new(
-//!     PathBuf::from("/my/app/plugin-db.json"),
-//!     vec![PathBuf::from("/Library/Audio/Plug-Ins/VST3")],
-//! ))
-//! .with_fresh_scan();
-//! // The catalog discovers; `Plugin::open` loads. A host that already knows
-//! // the path can skip the catalog entirely.
-//! let id = plugins.find("TAL-NoiseMaker").expect("scanned");
-//! let plugin = Plugin::open(id.path(), 48000.0)?;
+//! // `sample_rate` takes anything convertible to `SampleRate` — the engine's
+//! // unit type, not a bare rate that could be a block size.
+//! let plugin = Plugin::open("/usr/lib/vst3/MyPlugin.vst3", SampleRate::new(48_000.0))?;
+//! println!("{} by {}", plugin.descriptor().name, plugin.descriptor().vendor);
 //!
-//! // The main-thread control surface. Clone it before taking the node below —
-//! // `into_unit` consumes the `Plugin`.
-//! let handle = plugin.handle().clone();
-//! let size = handle.open_editor(window)
-//!     .map_err(|e| tutti_plugin::BridgeError::EditorError(e.to_string()))?;
-//! println!("editor opened at {}x{}", size.width, size.height);
+//! // Two handles, one subprocess. `into_parts` hands back both, because
+//! // `into_unit` alone consumes the `Plugin` and the control surface is still
+//! // wanted afterwards — the plugin dies when the last of either drops.
+//! let (unit, handle) = plugin.into_parts();
+//! println!("reported latency: {:?}", handle.loaded().latency());
 //!
-//! // Then hand the audio node to your fundsp graph.
-//! let unit = plugin.into_unit();
-//! # Ok(()) }
+//! // The node is a fundsp `AudioUnit`, so it enters `Net` like any other.
+//! let mut net = Net::new(0, 2);
+//! let id = net.push(unit);
+//! net.pipe_output(id);
+//! net.commit();
+//! # Ok::<(), tutti_plugin::BridgeError>(())
 //! ```
+//!
+//! A host that does not already know the path discovers one first — see
+//! [`catalog`], whose two pure functions ([`discover`](catalog::discover) and
+//! [`PluginRecord::probe`](catalog::PluginRecord::probe)) need no feature flag,
+//! and whose [`Plugins`](catalog::Plugins) adds incremental rescan and crash
+//! recovery on top.
 //!
 //! # Architecture
 //!
@@ -70,8 +70,8 @@
 //! them. Fuller rationale + the per-format capability table are in the crate
 //! README.
 //!
-//! 1. **Define the functionality we support, then score each format against
-//!    it.** [`Features`] is a fixed list of the capabilities we handle; each
+//! 1. **Define the functionality the host supports, then score each format
+//!    against it.** [`Features`] is a fixed list of those capabilities; each
 //!    format either supports a row or doesn't (see the capability table in the
 //!    README). Don't instead collect everything the formats emit into a neutral
 //!    superset — that leaks format names into shared types and grows a special
@@ -89,8 +89,99 @@
 //!    code (the per-block producers became one `InputSlot`); keep systems that
 //!    react to different `Changed<T>` triggers separate — merging them would
 //!    couple unrelated edits.
+//! 5. **The plugin lifecycle stays inside the format crate.** Each format's
+//!    state machine is modelled in that format's own vocabulary and never
+//!    crosses the IPC boundary — see [the section below](#the-plugin-state-machine).
 //!
 //! [`Features`]: crate::protocol::Features
+//!
+//! # The plugin state machine
+//!
+//! The shared vocabulary describes a plugin as a set of *capabilities* —
+//! `PluginMeta`, `PluginAudio`, `PluginParams` and their siblings in
+//! `tutti_plugin_types::format_host` — and deliberately says nothing about what
+//! state a plugin is in. That crate's docs argue the case; the consequence for
+//! this one is that a lifecycle never reaches it. A plugin arrives already
+//! loaded and activated, driven inside the subprocess by whichever format crate
+//! owns it, and `BridgeMessage::PluginLoaded` reports only the outcome. A probe
+//! never activates at all.
+//!
+//! What that buys is room. No format crate has to meet another in the middle, so
+//! each one models its own lifecycle as tightly as its own contract allows — and
+//! left to do that, the four land on three different answers. They are worth
+//! reading together, because the differences are not stylistic: each is the
+//! format's own rule showing through, and the same reasoning decides the shape
+//! of any format added later.
+//!
+//! All four start from the same two states. A plugin is *loaded* — library
+//! mapped, instance created, parameters and editor reachable — and later
+//! *activated*, which allocates buffers at a fixed sample rate and block size
+//! and makes `process` legal. Everything below is disagreement about what to do
+//! with that shape.
+//!
+//! ## Which model each format gets, and why
+//!
+//! Three modelling strategies are in use, and the choice is forced by the
+//! format's own contract rather than picked for consistency.
+//!
+//! **Consuming type-state — VST3 and CLAP.** `Vst3Loaded → Vst3Instance<T>` and
+//! `ClapLoaded → ClapActive<T>`. Both formats define a large, fully legal
+//! pre-activation surface: the parameter tree, units and program lists, note
+//! expression, state save/restore and the editor are all reachable before any
+//! audio buffer exists, and a host is *expected* to read them there. "Loaded but
+//! not processing" is a state a user spends real time in, so it earns a type of
+//! its own. The transitions take `self` by value and hand back the other type
+//! (`activate(self) -> Result<Active>`, `deactivate(self) -> Loaded`), which is
+//! what makes a stale handle to a deactivated plugin unrepresentable rather than
+//! merely discouraged — the compiler rejects it, and no runtime `is_active`
+//! check is needed on the process path. The `T` parameter fixes the sample width
+//! at the same moment, because both formats commit to a sample format in the
+//! same call that allocates the buffers.
+//!
+//! Two details differ, and each is the format's rule showing through. VST3
+//! chooses its `ProcessMode` on the transition rather than on the instance,
+//! because `setupProcessing` delivers it exactly once per activation. CLAP's
+//! `activate` returns `Err((Self, ClapError))` — the *unconsumed* `ClapLoaded`
+//! comes back on refusal, so a plugin that declines 64-bit audio can be retried
+//! at `f32` without being reloaded.
+//!
+//! **One fused type — VST2.** `Vst2Instance` has no split, because VST2 has no
+//! meaningful state to split off: `effOpen`, `effSetSampleRate`,
+//! `effSetBlockSize` and the first `effMainsChanged(1)` all run during
+//! construction, and the instance is ready to process the moment it exists. A
+//! `Vst2Loaded` type would carry no operations the fused type does not, so the
+//! split would buy a type boundary that guards nothing. Suspend and resume
+//! remain as ordinary `&mut self` methods with a `resumed: bool`, because in
+//! VST2 they are a *reconfiguration bracket* — the thing you do around a sample
+//! rate change — and not a lifecycle stage a host parks in.
+//!
+//! **Internal state enum — AU.** `AuInstance` holds a private `State` of
+//! `Loaded` / `Ready`, and `initialize` / `uninitialize` take `&mut self` and
+//! return `Result<()>`. The consuming type-state is unavailable here because
+//! both AU transitions are fallible in *both* directions: `AudioUnitInitialize`
+//! can fail, and so can the uninitialize that would undo it. A consuming
+//! transition must produce one of the two types, and a failed transition belongs
+//! to neither — the unit is left in a state that is not the one it started in
+//! and not the one it was going to. The enum can name that (its `Empty` variant
+//! is the transient a `mem::replace` passes through); a pair of consuming
+//! functions cannot without handing back a third type nobody wants. The price is
+//! that misuse is a runtime `Uninitialized` error rather than a compile error.
+//!
+//! ## Choosing a shape for a fifth format
+//!
+//! Read together, the three answers reduce to one question asked twice. Do the
+//! two states have genuinely different operations, and can the transition
+//! between them fail in a way that belongs to neither? Two distinct surfaces and
+//! a transition that always lands somewhere is the case a consuming type-state
+//! was made for. A pre-activation state with nothing of its own to do should be
+//! fused, because the extra type guards nothing. A transition that can fail in
+//! both directions has to carry its state as data and pay for the check at
+//! runtime, because there is no third type to return.
+//!
+//! The failure worth naming is the first one: reaching for a compile-time
+//! guarantee the underlying contract cannot honour. That is how a type ends up
+//! confidently describing a state the plugin is not actually in, which is worse
+//! than the runtime check it replaced.
 //!
 //! # Module map
 //!
@@ -109,7 +200,7 @@
 //! support are the embedding app's choices, so you wire up exactly what you
 //! use and the default build pulls no `serde_json` and no format FFI.
 //!
-//! - `json` — JSON-file-backed [`catalog::JsonCatalog`]. One ready-made
+//! - `json` — JSON-file-backed `catalog::JsonCatalog`. One ready-made
 //!   [`catalog::PluginCatalog`] impl, not the shape of the API: implement the
 //!   trait over your own store instead, or skip it entirely and use the pure
 //!   [`catalog::discover`] / [`PluginRecord::probe`][catalog::PluginRecord::probe]
@@ -214,7 +305,7 @@ pub use format::vst2_in_process::{load_client as in_process_vst2_client, InProce
 /// multi-minute startup and an instant one) and crash recovery (a plugin that
 /// hard-crashes the scanner is auto-blacklisted on the next run).
 ///
-/// [`JsonCatalog`](catalog::JsonCatalog) is one such store, behind the opt-in
+/// `JsonCatalog` is one such store, behind the opt-in
 /// `json` feature. Implement [`PluginCatalog`](catalog::PluginCatalog) yourself
 /// for SQLite, a CRDT, or an in-memory map.
 pub mod catalog {

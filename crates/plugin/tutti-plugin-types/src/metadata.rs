@@ -66,10 +66,10 @@ pub struct LoadedPlugin {
     /// half — the `Features::latency` presence bit is derived from this
     /// (`latency()`), not stored separately.
     ///
-    /// [`Samples`] rather than a bare `usize`: AU already reports latency as
-    /// one (its ABI gives seconds, so `tutti-au-host` converts and returns the
-    /// unit type), and this field used to flatten it back with `.get()` at the
-    /// loader. `Samples` is `#[serde(transparent)]`, so this is `512` on the
+    /// [`Samples`] rather than a bare `usize`: AU already reports latency as one
+    /// (its ABI gives seconds, so `tutti-au-host` converts and returns the unit
+    /// type), so a bare `usize` here would only force a `.get()` flattening at
+    /// the loader. `Samples` is `#[serde(transparent)]`, so this is `512` on the
     /// wire either way and host and subprocess upgrade independently.
     pub latency_samples: Samples,
     /// How long the plugin keeps sounding after its input stops — see
@@ -88,8 +88,8 @@ pub struct LoadedPlugin {
     pub tail: PluginTail,
     /// Capability flag set the plugin reported at load. The on/off half;
     /// numeric wiring stays in `inputs`/`outputs`/`latency_samples` above.
-    /// (`f64` support was formerly the standalone `supports_f64` bool — it is
-    /// now `Features::F64_AUDIO`.)
+    /// `f64` bus support is one of these bits (`Features::F64_AUDIO`), not a
+    /// field of its own.
     ///
     /// Read through [`capability`](Self::capability) when the answer feeds a
     /// person — a clear bit here is also what an unprobed capability looks like,

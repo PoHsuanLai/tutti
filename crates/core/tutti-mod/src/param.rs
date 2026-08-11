@@ -12,7 +12,12 @@
 //! so its value is beat-independent and collapsing at any beat is exact. A sink
 //! that wants *sub-block* evaluation (a plugin's per-block param producer) holds
 //! the [`LayeredCurve`] directly and samples it at each block beat instead — same
-//! accumulator, finer rate. (The audio-rate / per-sample sink is Router Phase 3.)
+//! accumulator, finer rate.
+//!
+//! No audio-rate sink exists yet. A native param that wants per-sample
+//! modulation has nowhere to receive a curve, because `AtomicTarget` is the only
+//! sink native nodes use and it collapses at a fixed beat. That gap is
+//! deliberate and tracked, not an oversight to route around.
 
 use tutti_types::Beat;
 
@@ -26,7 +31,7 @@ use crate::target::ModTarget;
 const FRAME_BEAT: Beat = Beat(0.0);
 
 /// The concrete [`ModTarget`]: a keyed accumulator whose final value is
-/// **mirrored into a shared [`AtomicF32`]** on every write, so the consumer
+/// **mirrored into a shared `AtomicF32`** on every write, so the consumer
 /// reads it lock-free — no per-frame readback step.
 ///
 /// The layers live in a `Mutex<LayeredCurve<f32>>` (an `AtomicF32` holds only the

@@ -55,7 +55,7 @@ impl Vst2Handle {
     pub(crate) fn new(mut instance: PluginInstance) -> Self {
         // get_editor() can only be called once per PluginInstance — the
         // vst crate sets `is_editor_active = true` on first call, returning
-        // None on subsequent calls. We probe it here so callers can ask
+        // None on subsequent calls. Probed once here so callers can ask
         // `has_editor()` later without re-entering the plugin.
         let editor = instance.get_editor().map(SendEditor);
         Self { instance, editor }
@@ -75,7 +75,7 @@ impl Drop for Vst2Handle {
         }
 
         // Suspend audio processing so the plugin releases any RT-allocated
-        // resources before we close it.
+        // resources before it is closed.
         self.instance.suspend();
 
         // `self.instance` is then dropped normally, which dispatches

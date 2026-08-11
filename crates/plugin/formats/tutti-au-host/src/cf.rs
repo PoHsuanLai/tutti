@@ -8,9 +8,9 @@
 //! `CFString` / `CFURL` / `CFPropertyList` / `CFArray` (which release on drop)
 //! rather than hand-rolled here.
 //!
-//! AudioToolbox APIs hand us `coreaudio-sys` `CF*Ref` pointers. Those are
-//! ABI-identical to `core-foundation-sys`'s opaque pointers, so we cast across
-//! at the boundary before wrapping.
+//! AudioToolbox APIs return `coreaudio-sys` `CF*Ref` pointers. Those are
+//! ABI-identical to `core-foundation-sys`'s opaque pointers, so the cast
+//! happens at the boundary, before wrapping.
 
 #![cfg(target_os = "macos")]
 
@@ -204,7 +204,7 @@ impl CfPlist {
             propertylist::create_with_data(data, propertylist::kCFPropertyListImmutable)
                 .map_err(|_| AuError::InvalidBuffer("failed to decode plist".into()))?;
         // `create_with_data` returns the property list under the Create rule
-        // (a +1 reference we now own).
+        // (a +1 reference this wrapper now owns).
         unsafe {
             CfPlist::from_copied(plist_ref as core_foundation_sys::propertylist::CFPropertyListRef)
                 .ok_or_else(|| AuError::InvalidBuffer("decoded plist was null".into()))

@@ -1,5 +1,34 @@
 //! DSP nodes for the Tutti audio engine.
 //!
+//! Every node here is an `AudioUnit`: it goes into a [`Net`](tutti_core::dsp::Net),
+//! gets wired, and renders. Nothing in this crate is fallible — there is no
+//! `Error` type — so a node is ready to run the moment it is built.
+//!
+//! ```
+//! use tutti_core::dsp::{AudioUnit, Net};
+//! use tutti_core::{Hz, Q};
+//! use tutti_units::{SvfFilterNode, SvfType};
+//!
+//! // A stereo net whose single node is a lowpass, fed by the net's input.
+//! let mut net = Net::new(2, 2);
+//! let filter = SvfFilterNode::<f32>::new(SvfType::LowPass, Hz(800.0), Q(0.707));
+//! let cutoff = filter.frequency(); // the shared cell, before the node is moved
+//! let node = net.push(Box::new(filter));
+//! net.pipe_input(node);
+//! net.pipe_output(node);
+//! net.check();
+//!
+//! // The backend is what actually renders; `commit` only hands it a new net.
+//! let mut backend = Box::new(net.backend()) as Box<dyn AudioUnit>;
+//! let mut out = [0.0f32; 2];
+//! backend.tick(&[1.0, 1.0], &mut out);
+//!
+//! // Sweeping the cutoff on a *live* node: the write goes through the shared
+//! // `Param` cell, so it reaches the copy the backend is rendering.
+//! cutoff.store(Hz(2_000.0).get(), std::sync::atomic::Ordering::Release);
+//! backend.tick(&[1.0, 1.0], &mut out);
+//! ```
+//!
 //! # Live control values must live in shared storage (MANDATORY)
 //!
 //! > A value a user can change **while the node is rendering** lives behind an
@@ -45,23 +74,24 @@
 //! setting; a unit that does implement it ignores params it does not own (which
 //! is deliberate — it is what lets a host push without dispatching on node
 //! type); and `from_setting` answers `None` for an unknown id. Those three are
-//! still silent.
+//! silent.
 //!
-//! The fourth used to be: `Net::set` discarded a misaddressed setting with no
-//! `else`, while `Net::take_dropped_settings` counted queue-full alone — so the
-//! counter read zero as parameter writes vanished. `Net::take_unaddressed_settings`
-//! now counts them, and the two are deliberately separate: a *dropped* setting is
-//! backpressure that clears itself, an *unaddressed* one is a wiring bug that
-//! will lose every future write to the same target.
+//! The fourth is counted. `Net::take_unaddressed_settings` reports settings
+//! aimed at a node id the graph does not hold, kept deliberately separate from
+//! `Net::take_dropped_settings`: a *dropped* setting is backpressure that clears
+//! itself, an *unaddressed* one is a wiring bug that will lose every future
+//! write to the same target.
 //!
 //! Neither counter reaches the first three layers, and no counter can — a unit
 //! that ignores a param it does not own is indistinguishable, from `Net`, from
 //! one that owns it and does nothing. That is what the audible end-to-end tests
 //! in `dawai-model` are for.
+//!
+//! [`AudioUnit::set`]: tutti_core::AudioUnit::set
 
-// NOTE: this crate has no fallible operation and therefore no `Error` type. The
-// only one it ever had was VBAP speaker-layout construction, which left with the
-// panners for `tutti-spatial`.
+// NOTE: this crate has no fallible operation and therefore no `Error` type.
+// Speaker-layout construction was the only fallible thing here, and it lives in
+// `tutti-spatial` with the panners.
 
 mod node_id;
 
@@ -71,14 +101,10 @@ pub use tutti_core::{
     StereoWidth, Unit, Q,
 };
 
-// NOTE: the shared DSP param pool (`Frequency`/`FilterQ`/`WetMix`/…), the node
-// authoring markers (`FilterNode`/`ReverbNode`/…), the generic marker spawner
-// (`spawn_dsp_node`/`TuttiDspPlugin`), the param reconcilers
-// (`reconcile_unit_params`/`reconcile_reverb_params`/`reconcile_convolver_params`),
-// and the deferred convolver load moved OUT of this crate to
-// `dawai_model::engine_bind` — they are DAW-param ECS policy, not DSP. This
-// crate keeps only the pure DSP unit types + the `set(UnitParam)` surface the
-// app drives them through. (Engine Bevy = Net pump only.)
+// The boundary this crate holds: pure DSP unit types plus the `set(UnitParam)`
+// surface the app drives them through. DAW-param ECS policy — the shared param
+// pool, node authoring markers, spawners, reconcilers, deferred convolver load —
+// is app-side, in `dawai_model::audio_graph`. Engine Bevy is the Net pump only.
 
 pub mod buffer;
 
@@ -160,9 +186,9 @@ pub use convolution::{
     ConvolverNode, IrChannelConfig, StereoConvolverNode, WetDry,
 };
 
-/// Transport-driven envelope automation — the playback-side `AutomationLane`
-/// `AudioUnit`, the [`Curve`](automation::Curve) trait it evaluates, and the
-/// capture-side `Recorder`. See the module docs.
+// No `///` here on purpose: a doc comment on a `pub mod` line shadows the
+// module's own `//!` and re-resolves its intra-doc links in this scope, which
+// breaks every link the module makes to its own items. See `automation/mod.rs`.
 pub mod automation;
 
 // NOTE: the spatial-panner graph binding (`spatial_graph`) and the automation

@@ -5,22 +5,41 @@
 //!
 //! # Quick Start
 //!
-//! ```rust,ignore
-//! use bevy::prelude::*;
-//! use bevy_tutti::*;
+//! Add [`TuttiPlugin`], spawn a node, and declare what reaches the speakers.
+//! `disabled: true` opens no device, which is what makes this run in CI — a real
+//! host drops that field and everything else stays the same.
 //!
-//! fn main() {
-//!     App::new()
-//!         .add_plugins(DefaultPlugins)
-//!         .add_plugins(TuttiPlugin::default())
-//!         .add_systems(Startup, setup)
-//!         .run();
+//! ```rust
+//! use bevy_app::prelude::*;
+//! use bevy_ecs::prelude::*;
+//! use bevy_tutti::prelude::*;
+//! use tutti_core::dsp::{sine_hz, Net};
+//!
+//! fn build_chain(mut commands: Commands) {
+//!     let osc = commands.spawn_audio_node(sine_hz::<f32>(440.0)).id();
+//!     // Wiring is *declared*, never called: the resource names what feeds each
+//!     // global output channel, so two nodes cannot both claim the master.
+//!     commands.insert_resource(MasterSources::mono_from(osc));
 //! }
 //!
-//! fn setup(mut commands: Commands, assets: Res<AssetServer>) {
-//!     // Clip playback runs through tutti-sampler's VoicePool;
-//!     // see its docs for building and sending a `Voice`.
-//! }
+//! let mut app = App::new();
+//! // Ordinary Bevy prerequisites, not tutti's: a subsystem that registers an
+//! // asset loader needs an `AssetServer`, and one that runs IO off the main
+//! // thread needs the task pools. A real host has both from `DefaultPlugins`.
+//! app.add_plugins((bevy_app::TaskPoolPlugin::default(), bevy_asset::AssetPlugin::default()));
+//! app.add_plugins(TuttiPlugin { disabled: true, ..Default::default() });
+//! // The device is off, so stand the graph up by hand — these are the two
+//! // resources `build_into` would have inserted. The reconcile schedule is
+//! // already there: `TuttiPlugin` adds it either way.
+//! app.insert_resource(AudioGraphRes(Net::with_backend(2)));
+//! app.insert_resource(AudioEngineState::Running);
+//! app.add_systems(Startup, build_chain);
+//! app.update();
+//!
+//! let node = app.world_mut().query::<&AudioNode>().single(app.world()).unwrap().0;
+//! let graph = app.world().resource::<AudioGraphRes>();
+//! // Read the edge back off the engine, not off the component.
+//! assert_eq!(graph.0.output_source(0), tutti_core::dsp::Source::Local(node, 0));
 //! ```
 //!
 //! # Sub-plugins
@@ -31,8 +50,12 @@
 //! is its own `pub Plugin`, so apps that want fine-grained control can opt
 //! in à la carte:
 //!
-//! ```rust,ignore
-//! App::new().add_plugins((bevy_tutti::TuttiPlaybackPlugin, bevy_tutti::MidiPlugin));
+//! ```rust
+//! # use bevy_app::prelude::*;
+//! // `GraphReconcilePlugin` is the always-present one; the feature-gated
+//! // subsystems (`TuttiPlaybackPlugin`, `TuttiMidiPlugin`, …) join it the same
+//! // way when their feature is built.
+//! App::new().add_plugins(bevy_tutti::graph::GraphReconcilePlugin);
 //! ```
 //!
 //! # Direct API Access
@@ -61,29 +84,23 @@
 
 mod plugin;
 
-/// Binding the DSP graph to an ECS world: resources, the reconcile pipeline,
-/// and the transport / metering wrappers.
 pub mod graph;
 
-/// MIDI routing, sequencing, device management and MIDI-CI negotiation.
+// Each `pub mod` below carries its own `//!` header. A `///` here would shadow
+// it *and* be resolved in this module's scope, so every intra-doc link in the
+// module's header would break.
 #[cfg(feature = "midi")]
 pub mod midi;
 
-/// Control-rate modulation: LFO sources and mod-matrix edges as ECS entities.
 #[cfg(feature = "modulation")]
 pub mod modulation;
 
-/// The live audio I/O edge: mic in, WAV out, and the pump between them.
 #[cfg(feature = "audio-io")]
 pub mod io;
 
-/// Clip playback and sample assets: the `.wav` loader, the `DiskStreamer`
-/// handle and voice spawning. Adapts `tutti-sampler`.
 #[cfg(feature = "sampler")]
 pub mod sampler;
 
-/// SoundFont assets and their playback systems. Named for `tutti-soundfont`,
-/// the engine crate it adapts — every module here matches its crate.
 #[cfg(feature = "soundfont")]
 pub mod soundfont;
 
@@ -100,16 +117,12 @@ pub use tutti_polysynth as polysynth;
 #[cfg(feature = "spatial")]
 pub use tutti_spatial as spatial;
 
-/// Plugin (VST2/VST3/CLAP/AU) editor lifecycle, crash detection and catalog
-/// scanning.
 #[cfg(feature = "plugin")]
 pub mod plugin_host;
 
-/// Offline export: runs `tutti-export`'s synchronous renders on the task pool.
 #[cfg(feature = "export")]
 pub mod export;
 
-/// The Tutti audio engine: CPAL callback, DSP graph, device driver, bootstrap.
 pub mod engine;
 
 pub use plugin::TuttiPlugin;

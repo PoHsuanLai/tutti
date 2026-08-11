@@ -1,13 +1,13 @@
 //! MIDI clock-master output: drain the engine's [`ClockMaster`] ring to
 //! hardware MIDI-out.
 //!
-//! The [`ClockMaster`](tutti_midi_runtime::ClockMaster) runs on the audio
+//! The [`ClockMaster`] runs on the audio
 //! thread (installed on the RT processor by bevy-tutti) and pushes outbound
-//! MIDI Beat Clock / MTC into a lock-free [`MidiMailbox`] mailbox. This module
+//! MIDI Beat Clock / MTC into a lock-free `MidiMailbox` mailbox. This module
 //! owns the *off-RT* half: [`ClockMasterRes`] holds the master handle (for
 //! enable/config from the UI) plus the mailbox's [`MidiReceiver`], and
 //! [`pump_clock_out_system`] drains it each frame to the OS MIDI output via
-//! [`MidiIo::send`](tutti_midi_hardware::MidiIo).
+//! `MidiIo::send`.
 //!
 //! Modeled on the hardware-input drain: engine produces on the audio thread, a
 //! per-frame Bevy system forwards the results. The drain cadence doesn't affect
@@ -38,11 +38,21 @@ use super::hardware_out::{drain_receiver_through, JrStamperRes, MidiOutRouter, U
 /// only reader.
 #[derive(Resource)]
 pub struct ClockMasterRes {
+    /// The generator itself, shared with the audio thread that ticks it. Use it
+    /// to toggle enable / MTC / frame rate; it starts disabled, so nothing
+    /// reaches the wire until a host turns it on.
     pub master: Arc<ClockMaster>,
+    /// The off-RT drain half. Read only by [`pump_clock_out_system`] — a second
+    /// reader would take events that one would then never see.
     pub receiver: MidiReceiver,
 }
 
 impl ClockMasterRes {
+    /// Pair a clock master with the receiver of the mailbox it pushes into.
+    ///
+    /// Both halves must come from the same `MidiMailbox`(tutti_midi_runtime::MidiMailbox)
+    /// pair, which is why [`build_into`](crate::engine::build_into) builds them
+    /// together.
     pub fn new(master: Arc<ClockMaster>, receiver: MidiReceiver) -> Self {
         Self { master, receiver }
     }

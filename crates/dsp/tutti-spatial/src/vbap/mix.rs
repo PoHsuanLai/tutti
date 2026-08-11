@@ -29,8 +29,13 @@ const LFE_Q: Q = Q(0.707);
 /// what keeps them from being passed in the wrong order.
 #[derive(Debug, Clone, Copy)]
 pub struct VbapSource {
+    /// The node whose output ports 0 and 1 feed this source's panner. A mono
+    /// source should present the same sample on both.
     pub node: NodeId,
+    /// Bearing to place the source at: 0 is front, 90 left, -90 right. Wraps.
     pub azimuth: Azimuth,
+    /// Height to place the source at: 0 is ear level, positive up. Saturates
+    /// at the poles.
     pub elevation: Elevation,
 }
 
@@ -83,9 +88,9 @@ pub fn build_vbap_mix(
 
     // Bass management: layouts with an LFE (.1) channel get a dedicated
     // low-passed send, because LFE is NOT a spatialized speaker — the panners
-    // leave that channel silent (see `speaker_channel_map`). We sum every
-    // source to mono, low-pass it (~120 Hz), and route it into the LFE channel
-    // as one extra input group on the main sum. Without this, a 5.1/7.1 export's
+    // leave that channel silent (see `speaker_channel_map`). Every source is
+    // summed to mono, low-passed (~120 Hz), and routed into the LFE channel as
+    // one extra input group on the main sum. Without this, a 5.1/7.1 export's
     // LFE channel would be empty.
     let lfe_group = crate::layout::lfe_channel(layout).map(|lfe_ch| {
         // Mono-sum the sources' first channel, then low-pass.
@@ -359,8 +364,8 @@ mod tests {
         use tutti_core::dsp::dc;
 
         // One DC source, dead center. (No high frequencies, so the LFE low-pass
-        // passes the DC send — we assert center DOMINATES and LFE is a smaller
-        // (bass-managed) share, not that LFE is zero.)
+        // passes the DC send — the assertion is that center DOMINATES and LFE
+        // is a smaller (bass-managed) share, not that LFE is zero.)
         let energy = render_5_1_energy(&[(0.0, 0.0)], |_| {
             let mut n = tutti_core::dsp::Net::new(0, 2);
             let id = n.push(Box::new(dc((1.0, 1.0))));
@@ -386,7 +391,7 @@ mod tests {
     /// The LFE channel (3) is fed by a dedicated low-passed send, not by the
     /// panner. A source with strong high-frequency content should still light
     /// LFE (the bass component passes) but the panner must never write LFE — so
-    /// LFE energy comes only through the ~120 Hz low-pass. Here we assert LFE is
+    /// LFE energy comes only through the ~120 Hz low-pass. Asserted as LFE being
     /// non-silent (bass management is wired) for a broadband source.
     #[test]
     fn lfe_channel_receives_bass_managed_send() {

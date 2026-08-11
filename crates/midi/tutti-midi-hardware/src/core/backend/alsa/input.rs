@@ -46,6 +46,16 @@ impl Drop for AlsaInput {
 }
 
 /// Open `id` for input and start pumping its events into `producer`.
+///
+/// The pump runs on its own thread and stops when the returned connection is
+/// dropped, which is also when the port unsubscribes.
+///
+/// # Errors
+///
+/// [`Error::Alsa`](crate::Error::Alsa) if the sequencer cannot be opened, the
+/// port created, or the subscription made, and
+/// [`Error::MidiDevice`](crate::Error::MidiDevice) if the pump thread cannot be
+/// spawned.
 pub fn open(id: EndpointId, producer: InputProducerHandle) -> Result<Box<dyn InputConnection>> {
     let (src_client, src_port) = unpack_id(id);
 
@@ -58,7 +68,7 @@ pub fn open(id: EndpointId, producer: InputProducerHandle) -> Result<Box<dyn Inp
         sys::SND_SEQ_PORT_TYPE_MIDI_GENERIC | sys::SND_SEQ_PORT_TYPE_APPLICATION,
     )?;
 
-    // SAFETY: `seq` is open; the address is one enumeration handed us.
+    // SAFETY: `seq` is open; the address came from enumeration.
     sys::check(
         unsafe { sys::snd_seq_connect_from(seq.raw(), port, src_client, src_port) },
         "snd_seq_connect_from",
@@ -103,7 +113,7 @@ fn pump(seq: SeqClient, running: Arc<AtomicBool>, producer: InputProducerHandle)
         }
 
         // SAFETY: `rc >= 0` and `ev` non-NULL means alsa-lib wrote a complete
-        // event; copying by value ends our use of its buffer.
+        // event; copying by value ends this function's use of its buffer.
         let words = unsafe { (*ev).ump };
         let now = Instant::now();
 

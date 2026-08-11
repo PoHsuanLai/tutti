@@ -5,7 +5,7 @@
 //! intended path — rather than reacting to raw CC `Data` events. Without this
 //! query those controllers silently do nothing.
 //!
-//! At load (UI thread) we walk every channel × controller-number slot and ask
+//! At load (UI thread) the host walks every channel × controller-number slot and asks
 //! the controller which parameter, if any, that controller drives. The result
 //! is a flat `[16 channels][kCountCtrlNumber]` table of `ParamID`s, sentinel
 //! [`NO_PARAM_ID`] where unmapped. At process time the audio path looks each

@@ -90,9 +90,16 @@ impl StftGeometry {
     /// a different shape, whose required overlap may be stricter — Blackman
     /// needs 8x where Hann needs 4x.
     ///
-    /// The forward magnitude transform never checked this, which is how a hop
-    /// five times wider than its window reached the inverse and produced a
-    /// comb of islands separated by silence.
+    /// Checked here rather than left to the forward transform: a hop five times
+    /// wider than its window otherwise reaches the inverse and produces a comb
+    /// of islands separated by silence.
+    ///
+    /// # Errors
+    /// Returns [`AnalysisError::HopExceedsWindow`] if frames do not overlap, or
+    /// [`AnalysisError::NotColaCompliant`] if the hop does not divide the
+    /// window at 4x overlap — this constructor fixes the shape as Hann, which
+    /// is where that figure comes from. Use
+    /// [`cola_with`](Self::cola_with) for another window.
     pub fn cola(
         sample_rate: impl Into<SampleRate>,
         window: impl Into<Samples>,
@@ -130,16 +137,21 @@ impl StftGeometry {
         Ok(geometry)
     }
 
+    /// The analysis window in [`Samples`] — also the FFT size.
     #[inline]
     pub const fn window(self) -> Samples {
         self.window
     }
 
+    /// How far frames advance, in [`Samples`]. Smaller than the window whenever
+    /// frames overlap.
     #[inline]
     pub const fn hop(self) -> Samples {
         self.hop
     }
 
+    /// The rate the analyzed buffer is denominated at, which sets what each bin
+    /// is worth in [`Hz`].
     #[inline]
     pub const fn sample_rate(self) -> SampleRate {
         self.sample_rate

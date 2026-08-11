@@ -338,7 +338,7 @@ impl Drop for Queue {
             // dispatch handle type, one member of which (`_dq`) is exactly
             // `*mut dispatch_queue_s`; constructing through that member is the
             // type-correct spelling — an `as` cast does not compile and a
-            // transmute would assert a layout the union already gives us.
+            // transmute would assert a layout the union already provides.
             unsafe { dispatch_release(dispatch_object_t { _dq: self.0 }) };
         }
     }
@@ -774,7 +774,7 @@ mod tests {
 
     /// `AudioUnitEvent` must match the C layout exactly.
     ///
-    /// A mismatch would hand AudioToolbox a struct it reads differently than we
+    /// A mismatch would hand AudioToolbox a struct it reads differently than this crate
     /// wrote it, and the failure would surface as events arriving with nonsense
     /// ids — not as anything that looks like a layout bug.
     ///
@@ -793,8 +793,8 @@ mod tests {
     /// Note `mArgument` sits at **8**, not 4: the union contains an `AudioUnit`
     /// pointer, so it is 8-byte aligned and the `UInt32` tag is followed by 4
     /// bytes of padding. `4 + 24 = 28` is the tempting arithmetic and it is
-    /// wrong — an earlier version of this test asserted exactly that and failed
-    /// against a *correct* struct, which is how the real numbers got measured.
+    /// wrong: asserting it fails against a *correct* struct. The figures below
+    /// are what C reports, not what the field widths suggest.
     #[test]
     fn the_event_struct_matches_the_c_layout() {
         assert_eq!(

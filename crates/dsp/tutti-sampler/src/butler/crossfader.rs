@@ -14,13 +14,10 @@ use tutti_core::ChannelLayout;
 
 use crate::nonempty;
 
-/// Two fade buffers + progress counters. Producer side (butler) calls `start`
-/// with allocated `Vec`s; audio thread drains one sample per call via
-/// `next_sample` with no locks or allocations.
-#[repr(align(64))]
 /// One installed crossfade: both buffers, their shared stride, and their frame
 /// count. Immutable once published — see [`StreamingCrossfader::start`] for why
 /// these four cannot be separate atomics.
+#[repr(align(64))]
 struct Fade {
     /// Flat interleaved at `channels` samples per frame.
     fadeout: Vec<f32>,
@@ -51,11 +48,20 @@ impl Fade {
     }
 }
 
+/// A one-shot equal-length crossfade published by the butler and drained by the
+/// audio thread.
+///
+/// The butler allocates both fade buffers and installs them with
+/// [`start`](Self::start); the audio thread blends one frame per call through
+/// [`next_frame_into`](Self::next_frame_into), touching only atomics and one
+/// `ArcSwap` read. Arming is idempotent in the sense that a fresh `start`
+/// replaces whatever was installed and restarts from frame zero.
 pub struct StreamingCrossfader {
     /// The installed fade, swapped as one unit.
     fade: ArcSwap<Fade>,
+    /// Frames blended so far, advanced by the audio thread.
     pos: AtomicU32,
-    /// 0 = not active. Counts **frames**, not samples.
+    /// Armed length in **frames**, not samples; 0 means not active.
     len: AtomicU32,
 }
 
@@ -66,6 +72,8 @@ impl Default for StreamingCrossfader {
 }
 
 impl StreamingCrossfader {
+    /// A disarmed crossfader holding empty buffers. Blending returns `false`
+    /// until a [`start`](Self::start) installs a fade.
     pub fn new() -> Self {
         Self {
             fade: ArcSwap::from_pointee(Fade {
@@ -82,9 +90,13 @@ impl StreamingCrossfader {
 
     /// Install fade buffers and arm the crossfader.
     ///
-    /// Allocation is OK — called from butler thread (non-RT).
+    /// Butler thread, so the allocation the caller did to build these `Vec`s is
+    /// fine — handing the audio side a finished buffer is the entire design.
     ///
-    /// `fadeout` / `fadein` are flat interleaved at `channels` samples per frame.
+    /// `fadeout` / `fadein` are flat interleaved at `channels` samples per
+    /// frame. The fade runs for the **frames** the shorter of the two holds; a
+    /// pair that yields zero whole frames leaves the crossfader disarmed rather
+    /// than arming an empty fade.
     ///
     /// # Why one `ArcSwap`, not four atomics
     ///
@@ -139,6 +151,7 @@ impl StreamingCrossfader {
         self.fade.load().channels
     }
 
+    /// Whether a fade is armed and has frames left to blend.
     #[inline]
     pub fn is_active(&self) -> bool {
         let pos = self.pos.load(Ordering::Acquire);
@@ -184,6 +197,10 @@ impl StreamingCrossfader {
         true
     }
 
+    /// Disarm and drop the installed buffers, abandoning a fade in progress.
+    ///
+    /// Frees the `Vec`s, so this is control-thread work — it must not run on the
+    /// audio thread.
     pub fn clear(&self) {
         // Disarm first: once `len == 0` no reader will touch the fade, so
         // dropping the buffers afterwards cannot race a blend in progress.

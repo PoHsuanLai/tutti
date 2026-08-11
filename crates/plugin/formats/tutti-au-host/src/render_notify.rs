@@ -107,10 +107,10 @@
 //! `AudioUnitRemoveRenderNotify` must run **before** the boxed state the
 //! `ref_con` points at is freed. This is the same ordering invariant
 //! [`AuReady::uninitialize`](crate::instance::AuReady::uninitialize) documents
-//! as FIX 2 for the input render callback, and it fails the same way: while the
-//! notify is installed the AU holds a raw pointer into the box, and it
-//! dereferences that pointer on its render thread on every single render. Free
-//! the box first and the next block calls a closure that no longer exists.
+//! for the input render callback, and it fails the same way: while the notify is
+//! installed the AU holds a raw pointer into the box, and it dereferences that
+//! pointer on its render thread on every single render. Free the box first and
+//! the next block calls a closure that is gone.
 //!
 //! [`RenderNotify`]'s [`Drop`] removes then frees, in that order, and the
 //! `(proc, ref_con)` tuple it removes with is the same one it registered —
@@ -471,9 +471,8 @@ struct NotifyState {
     /// Counts deliveries, so a test can **observe** the notify stopping rather
     /// than infer it from a non-null pointer.
     ///
-    /// This exists because of a review finding on this branch: an over-release
-    /// passed the whole GUI suite because the tests only checked for null. A
-    /// balance assertion has to watch the count.
+    /// A null check is not enough: an over-release leaves the pointer null and
+    /// the suite green either way. A balance assertion has to watch the count.
     #[cfg(test)]
     deliveries: std::sync::atomic::AtomicU32,
 }
@@ -623,8 +622,8 @@ impl RenderNotify {
     /// A counter, not a boolean, because "the notify stopped" must be
     /// **observed**, not inferred from a pointer's nullness. This is the
     /// crate-internal view — it counts dispatches even if the host closure
-    /// panics or ignores them, distinguishing "the AU stopped calling us" from
-    /// "our callback stopped recording". The integration suite counts the same
+    /// panics or ignores them, distinguishing "the AU stopped calling" from
+    /// "the callback stopped recording". The integration suite counts the same
     /// thing from the closure side; together they separate those two failures.
     #[cfg(test)]
     fn deliveries(&self) -> u32 {
@@ -641,7 +640,7 @@ impl Drop for RenderNotify {
         // and dereferences it on its render thread every block; releasing the
         // last strong count first would leave the next render calling a freed
         // closure. Same shape as the "uninitialize before freeing the scratch"
-        // rule `AuReady::uninitialize` documents as FIX 2.
+        // rule `AuReady::uninitialize` documents.
         //
         // The `(proc, ref_con)` tuple must match what was registered — Apple's
         // header requires both halves — so this reconstructs the pointer from
@@ -760,7 +759,7 @@ mod tests {
     }
 
     /// `AudioUnitParameterEvent` must match the C layout exactly, or the AU
-    /// reads the fields we wrote at different offsets — and every field is a
+    /// reads the written fields at different offsets — and every field is a
     /// plain integer or float, so any bit pattern is a legal (wrong) answer
     /// rather than a detectable fault.
     ///

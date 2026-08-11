@@ -51,11 +51,14 @@ impl Samples {
     /// No frames at all.
     pub const ZERO: Samples = Samples(0);
 
+    /// Wraps a raw count already denominated in **frames**.
     #[inline]
     pub const fn new(v: usize) -> Self {
         Self(v)
     }
 
+    /// Returns the raw **frame** count. Multiply by the channel width to reach
+    /// a sample index into an interleaved buffer.
     #[inline]
     pub const fn get(self) -> usize {
         self.0
@@ -97,6 +100,7 @@ impl Samples {
         }
     }
 
+    /// Whether this is an empty span — no frames at all.
     #[inline]
     pub const fn is_zero(self) -> bool {
         self.0 == 0

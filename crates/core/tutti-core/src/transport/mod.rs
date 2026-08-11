@@ -1,3 +1,15 @@
+//! Musical time: where the playhead is, how fast it moves, and what moves it.
+//!
+//! Split by *who decides*. [`TransportSettings`] holds the plain values (tempo,
+//! loop region, recording) that anyone may store into; [`MotionFsm`] holds the
+//! state machine that may reject or defer a play/stop/locate. [`Transport`] is
+//! the two halves as one handle, and [`TransportClock`] is the graph node that
+//! turns them into a per-sample beat signal.
+//!
+//! The traits below are the read side: [`Timeline`] is what a node consults,
+//! [`RenderClock`] is what a renderer drives, and [`TransportState`] adds the
+//! live-session facts (record, loop) a hosted plugin asks for.
+
 mod beat_window;
 mod click;
 mod clock;
@@ -20,10 +32,10 @@ pub use state::{
     BEAT_PORTS,
 };
 
-// The Bevy wrappers (`TransportRes` / `MetronomeRes`) live in
-// `crate::ecs::transport` — import them from `tutti_core::ecs`.
+// The Bevy resource wrappers (`TransportRes` / `MetronomeRes`) belong to the
+// host adapter, `bevy_tutti::graph`, not to this crate.
 
-/// A musical timeline: where we are, how fast, and whether it is moving.
+/// A musical timeline: the position, the tempo, and whether it is moving.
 ///
 /// Implemented by the live [`Transport`] and by [`OfflineTimeline`], so a
 /// beat-driven source can be handed either one and not care which.
@@ -52,9 +64,10 @@ pub use state::{
 /// [`TransportState`] supertrait (record + loop) and on [`TransportSettings`]
 /// (preroll), read only where a genuinely live transport is required.
 pub trait Timeline: Send + Sync {
-    /// Current position on the timeline.
+    /// The playhead, as a [`Beat`](crate::params::Beat) position. May be
+    /// negative during a count-in.
     fn beat(&self) -> crate::params::Beat;
-    /// Current tempo.
+    /// The tempo in force, in [`Bpm`](crate::params::Bpm).
     fn tempo(&self) -> crate::params::Bpm;
     /// Whether time is advancing. An offline render is always rolling.
     fn is_rolling(&self) -> bool;
@@ -80,7 +93,10 @@ pub trait Timeline: Send + Sync {
 /// clock for the entire render — a desync that reads as "the samplers are
 /// slightly late" and nothing else.
 pub trait RenderClock: Send + Sync {
-    /// Advance by `frames`.
+    /// Advance the playhead by `frames` — a **frame** count, not a sample
+    /// count, so it is independent of the render's channel width.
+    ///
+    /// Call after the block has been processed, never before.
     fn advance(&self, frames: tutti_types::Samples);
 }
 

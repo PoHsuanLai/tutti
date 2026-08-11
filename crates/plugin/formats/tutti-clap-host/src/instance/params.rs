@@ -1,4 +1,8 @@
-//! Parameter-query and parameter-update methods for [`ClapInstance`].
+//! Parameter-query and parameter-update methods for [`ClapLoaded`].
+//!
+//! Values here are **plain**, in each parameter's own declared range — CLAP has
+//! no normalized parameter interface. Denormalization against `param_ranges`
+//! happens on the `process` path, not here.
 
 use super::ext;
 use super::ClapLoaded;
@@ -21,10 +25,16 @@ use std::ptr;
 #[cfg(feature = "clap-extras")]
 #[derive(Debug, Clone)]
 pub struct ParamMapping {
+    /// The parameter being bound, by its stable id.
     pub param_id: u32,
+    /// Whether a control is bound at all. `false` tells the plugin the
+    /// parameter is no longer mapped to any physical control.
     pub has_mapping: bool,
+    /// Colour hint for the control's LED or ring; `None` sends no hint.
     pub color: Option<Color>,
+    /// Short label for the control, e.g. the hardware knob's printed name.
     pub label: Option<String>,
+    /// Longer description of what the control is bound to.
     pub description: Option<String>,
 }
 
@@ -160,8 +170,8 @@ impl ClapLoaded {
     /// `None` means "no range to convert against", which the caller must treat
     /// as pass-through rather than substituting bounds. Inventing a `0..=1`
     /// default here would silently rescale a parameter the plugin never
-    /// described — the same class of quiet wrongness [`parameters`](Self::parameters)
-    /// truncates to avoid.
+    /// described — the same class of quiet wrongness the internal
+    /// `parameters` enumeration truncates to avoid.
     pub fn parameter_range(&self, id: u32) -> Option<(f64, f64)> {
         let count = self.parameter_count() as u32;
         for i in 0..count {
@@ -312,7 +322,7 @@ impl ClapLoaded {
     /// `CLAP_PARAM_REQUIRES_PROCESS`, the change is **not** flushed: the CLAP
     /// spec requires such params be delivered in-order through `process()`, and
     /// this host cannot yet enqueue into the next block from here (see
-    /// [`param_requires_process`](Self::param_requires_process) /
+    /// the internal `param_requires_process` check /
     /// [`flush_params`](Self::flush_params)). Delivering it out-of-band via
     /// flush would violate the plugin's ordering contract, so it is skipped;
     /// routing REQUIRES_PROCESS params through `ProcessContext::params` is

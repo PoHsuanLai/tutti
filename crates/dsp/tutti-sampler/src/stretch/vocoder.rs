@@ -64,6 +64,11 @@ pub(super) struct Vocoder {
 }
 
 impl Vocoder {
+    /// Allocate every buffer this vocoder will ever need, on `geometry`'s grid.
+    ///
+    /// The only allocating entry point besides [`clone_fresh`](Self::clone_fresh)
+    /// — `process` and `process_frame` run on the audio thread and touch nothing
+    /// but what is sized here.
     pub(super) fn new(geometry: StftGeometry) -> Self {
         let size = geometry.window().get();
         let bins = geometry.bins_per_frame().get();
@@ -71,9 +76,10 @@ impl Vocoder {
         // No sample-rate term: it is a ratio of sample counts, which is why
         // changing the rate does not invalidate it.
         //
-        // Stored per-sample rather than per-hop because the analysis hop is no
-        // longer fixed — see `process_frame`. Multiplying by the frame's actual
-        // hop is one multiply on a table read that already happens.
+        // Stored per-sample rather than per-hop because the analysis hop varies
+        // with the stretch factor (see `process_frame`). Multiplying by the
+        // frame's actual hop is one multiply on a table read that already
+        // happens.
         let phase_per_sample = (0..bins)
             .map(|k| Radians(Radians::TAU.get() * k as f32 / size as f32))
             .collect();
@@ -96,62 +102,43 @@ impl Vocoder {
 
     /// A fresh vocoder on the same grid, sharing everything immutable.
     ///
-    /// A clone starts with clean phase history (see [`Unit::clone`]), so no state
-    /// is copied — only the *shapes* carry. The Hann window and the per-bin phase
-    /// table are both functions of the geometry alone, so they are shared rather
-    /// than rebuilt; rebuilding cost `size` `cos()` calls per vocoder per commit.
+    /// A clone starts with clean phase history (see [`Unit::clone`]), so no
+    /// state is copied — only the *shapes* carry. The Hann window and the
+    /// per-bin phase table are both functions of the geometry alone, so they are
+    /// shared by `Arc` rather than rebuilt; rebuilding costs `size` `cos()`
+    /// calls per vocoder.
     ///
-    /// # What this costs on a graph commit
+    /// # Not on the commit path
     ///
-    /// This runs from `Net::commit`, once per channel per node, and the clone is
-    /// **kept** — `commit_inner` clones the net, `core::mem::swap`s the vertex
-    /// vectors so the ORIGINALS ship to the backend ("necessary if the nodes
-    /// contain any backends, which cannot be cloned effectively"), and the
-    /// freshly-built clones stay on the frontend as the next generation's source.
-    /// So the allocation is not waste; it is the price of double-buffering, paid
-    /// once per commit per vocoder: ~100 KB of mutable state, 64% of it the two
-    /// `size * 4` rings.
+    /// `Unit::clone` shares the whole vocoder bank by refcount (see [`Bank`]),
+    /// so a graph commit does not reach here. This runs only from
+    /// [`AudioUnit::isolate`], where an offline render needs private state, and
+    /// it allocates ~100 KB per vocoder — 64% of it the two `size * 4` rings.
+    /// Control thread only.
     ///
-    /// Profiled (`examples/profile_stretch_clone.rs`, run under `samply`), the
-    /// cost splits **~42% allocator, ~37% `memset`** — allocating the buffers and
-    /// zeroing them, in nearly equal measure. Kernel time is 1.3%, so this is
-    /// real work rather than the paging artifact an earlier wall-clock benchmark
-    /// suggested. That benchmark's figures (18.5 ms / 628 ms, quoted in earlier
-    /// revisions of this comment) also measured two live generations at once,
-    /// which is 5-14x more expensive than the one-at-a-time shape `commit_inner`
-    /// actually produces — so they overstated a commit by about an order of
-    /// magnitude.
+    /// # Why the deep clone was worth removing
+    ///
+    /// Profiled under `samply` (`examples/profile_stretch_clone.rs`), this
+    /// function's cost splits **~42% allocator, ~37% `memset`** — allocating the
+    /// buffers and zeroing them in nearly equal measure. Kernel time is 1.3%, so
+    /// it is real work rather than a paging artifact.
     ///
     /// **That 37% is why a buffer pool was built here and then removed.** A pool
-    /// recycles the allocation but a recycled buffer still has to be cleared, and
-    /// the clear is the same `memset` as a fresh `vec![0.0; n]` — so pooling can
-    /// only address the allocator's 42%, and only when the pool is non-empty.
-    /// Here it never is: `commit_inner` clones *before* it retires the previous
-    /// generation, so nothing has been returned at the moment the clone asks.
-    /// Measured, `Buffers::new` and a pooled hit came out identical within noise.
+    /// recycles the allocation but a recycled buffer still has to be cleared,
+    /// and the clear is the same `memset` as a fresh `vec![0.0; n]` — so pooling
+    /// can only address the allocator's 42%, and only when the pool is
+    /// non-empty. On this path it never is: `commit_inner` clones *before* it
+    /// retires the previous generation, so nothing has been returned at the
+    /// moment the clone asks. Measured, a fresh build and a pooled hit came out
+    /// identical within noise.
     ///
-    /// **What did work: not cloning what carries nothing.** The block scratch
-    /// (`scratch_in`/`scratch_out`, 64 KB per channel — 40% of a unit's bytes)
-    /// is overwritten every block before it is read, so a clone leaves it empty
-    /// and [`AudioUnit::allocate`] sizes it. That removes both halves of the
-    /// cost for those bytes, because a buffer never allocated is also never
-    /// zeroed. Re-profiled, the clone phase fell 461 → 215 samples (-53%) while
-    /// `fresh_construction`, which still allocates eagerly, held at 180 → 179 —
-    /// the control that says the drop is this change and not the machine.
-    ///
-    /// # This is no longer on the commit path
-    ///
-    /// `Unit::clone` shares the vocoder bank by refcount (see [`Bank`]), so a
-    /// graph commit does not reach this function at all. It runs only from
-    /// [`AudioUnit::isolate`], where an offline render needs private state.
-    ///
-    /// The history is worth keeping, because it is what the design was measured
-    /// against. When a commit *did* deep-clone: 201.8 MB per commit at stereo and
-    /// 604.6 MB at six channels, median 70-135 ms and 393-488 ms against a 2 ms
-    /// budget. Sharing the bank took that to 81.5 / 243.8 MB, and moving the
-    /// block scratch onto the bank as well took it to **1.3 / 3.3 MB** — a ~180x
-    /// reduction, with both widths committing in ~0.2 ms. What remains is
-    /// fundsp's own per-`Vertex` bookkeeping, not this state.
+    /// What worked instead was not cloning what carries nothing. Against a 2 ms
+    /// commit budget, a deep-cloning commit moved 201.8 MB at stereo and 604.6
+    /// MB at six channels. Sharing the bank took that to 81.5 / 243.8 MB;
+    /// moving the block scratch onto the bank as well — it is overwritten every
+    /// block before it is read, so it need never be copied — took it to **1.3 /
+    /// 3.3 MB**, a ~180x reduction with both widths committing in ~0.2 ms. What
+    /// remains is fundsp's own per-`Vertex` bookkeeping, not this state.
     pub(super) fn clone_fresh(&self) -> Self {
         let size = self.geometry.window().get();
         let bins = self.geometry.bins_per_frame().get();
@@ -169,6 +156,8 @@ impl Vocoder {
         }
     }
 
+    /// Clear every buffer and the phase history, keeping the grid and the shared
+    /// tables. Allocation-free, so it is safe from the audio thread.
     pub(super) fn reset(&mut self) {
         self.fft_buffer.fill(0.0);
         self.spectrum.fill(Complex32::new(0.0, 0.0));
@@ -197,16 +186,16 @@ impl Vocoder {
     ///
     /// A phase vocoder cannot transpose. A partial's output frequency is set by
     /// **which bin holds its magnitude**, and this loop never moves magnitude
-    /// between bins — line for line, bin `k` in is bin `k` out. Scaling the phase
-    /// advance by a pitch ratio, which this function used to do, therefore
-    /// transposes nothing; it only decorrelates each bin's phase from its
-    /// magnitude.
+    /// between bins — line for line, bin `k` in is bin `k` out. Scaling the
+    /// phase advance by a pitch ratio therefore transposes nothing; it only
+    /// decorrelates each bin's phase from its magnitude.
     ///
-    /// That was measurably *worse than omitting it*. Feeding 440 Hz and asking
-    /// for ±1200 cents, the scaling produced 411 Hz and 408 Hz — the same wrong
-    /// answer in both directions, so not even a wrong-ratio bug — at 6 dB down.
-    /// Held alongside the correct read-rate fix it still cost 8.7 dB at +1200 and
-    /// 12.5 dB at +700, pulling exact pitch off by up to 47 Hz.
+    /// That is measurably *worse than omitting it*, which is why the temptation
+    /// is worth naming. Feeding 440 Hz and asking for ±1200 cents, the scaling
+    /// produces 411 Hz and 408 Hz — the same wrong answer in both directions, so
+    /// not even a wrong-ratio bug — at 6 dB down. Held alongside a correct
+    /// read-rate resample it still costs 8.7 dB at +1200 and 12.5 dB at +700,
+    /// pulling exact pitch off by up to 47 Hz.
     ///
     /// Transposition is a *resampling* operation and lives at the call site: the
     /// caller reads the source at [`Unit::input_rate`], which folds in the pitch
@@ -272,11 +261,11 @@ impl Vocoder {
         //
         // No `1 / size` here: microfft's inverse already normalizes, so a
         // forward-then-inverse pair is the identity (pinned by
-        // `fft_roundtrip_is_the_identity`). The original code divided anyway,
-        // attenuating the stretched signal by the FFT size — 60 dB at 1024, 66
-        // at 2048. It read as "stretching mutes the voice" rather than as a
-        // gain bug, which is why it survived: every test asserted only that
-        // output was non-zero, and 0.0004 is non-zero.
+        // `fft_roundtrip_is_the_identity`). Dividing again attenuates the
+        // stretched signal by the FFT size — 60 dB at 1024, 66 at 2048 — and
+        // presents as "stretching mutes the voice" rather than as a gain bug.
+        // That is the shape a non-zero-output assertion cannot catch: 0.0004 is
+        // non-zero.
         inverse_fft(&mut self.spectrum);
         for i in 0..size {
             let w = self.window[i];
@@ -296,15 +285,17 @@ impl Vocoder {
     }
 }
 
-/// Wrap a phase into [-π, π).
+/// Wrap a phase into `[-π, π)`.
 ///
-/// Delegates to [`Radians::wrapped_signed`], which now owns the arithmetic. It
-/// was hand-rolled here in raw `f32` only because the unit offered no wrap —
-/// the escape the omission ledger exists to catch.
+/// A thin alias over [`Radians::wrapped_signed`], which owns the arithmetic.
+/// Hand-rolling the wrap in raw `f32` here instead is exactly the escape the
+/// unit-type omission ledger exists to catch: an operator [`Radians`] declines
+/// to offer means "call the named method", not "drop to the primitive".
 ///
-/// The interval was documented as `(-π, π]` while the arithmetic produced the
-/// half-open opposite; both ends are the same point on the circle, so nothing
-/// downstream depended on the wrong half.
+/// The half-open end is `-π`, not `+π`. They are the same point on the circle,
+/// so nothing downstream distinguishes them — the interval is stated precisely
+/// only so a reader comparing against a textbook's `(-π, π]` does not go looking
+/// for a bug.
 #[inline]
 pub(super) fn wrap_phase(phase: Radians) -> Radians {
     phase.wrapped_signed()

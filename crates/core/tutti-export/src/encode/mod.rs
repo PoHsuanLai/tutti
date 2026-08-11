@@ -2,24 +2,19 @@
 //!
 //! # Why the encoder pulls
 //!
-//! The obvious shape is push — a `write(block)` sink the renderer feeds. That is
-//! what this crate used to do, wrapped in three decorators, and it is why every
-//! non-WAV format was buffered whole in memory (and, latterly, broken outright).
-//!
-//! flacenc is **pull**-based: `encode_with_fixed_block_size` calls
-//! `Source::read_samples` until the source is dry. Our render is also a pull
-//! ([`NetSource`](crate::render::NetSource) is a
-//! [`FrameSource`](crate::render::FrameSource)). Making the encoder
-//! the driver lets FLAC hand our source straight to its library, and costs the
-//! push formats only a small loop they run internally. Everything streams, no
-//! format holds the signal, and there is no buffered-vs-streaming decision for a
-//! caller to get wrong.
+//! The obvious shape is push — a `write(block)` sink the renderer feeds. It is
+//! the wrong one here, because flacenc is **pull**-based:
+//! `encode_with_fixed_block_size` calls `Source::read_samples` until the source
+//! is dry. The render is also a pull ([`NetSource`](crate::render::NetSource) is
+//! a [`FrameSource`](crate::render::FrameSource)), so making the encoder the
+//! driver lets FLAC hand that source straight to its library, and costs the push
+//! formats only a small loop they run internally. Everything streams, and there
+//! is no buffered-vs-streaming decision for a caller to get wrong.
 //!
 //! Every encoder is width-agnostic: the width comes from the caller's
 //! [`ChannelLayout`](tutti_types::ChannelLayout) at runtime, the render folds the
-//! graph onto it once, and the file header is simply that width. Nothing here
-//! is generic over the width — [`Frames`] carries it, so *any* width encodes
-//! rather than the six the old const-generic dispatch enumerated.
+//! graph onto it once, and the file header is simply that width. Nothing here is
+//! generic over the width — [`Frames`] carries it — so *any* width encodes.
 
 #[cfg(feature = "aiff")]
 pub(crate) mod aiff;
@@ -63,17 +58,18 @@ pub(crate) fn encoder_rate(config: &ExportConfig) -> u32 {
 /// error.
 pub(crate) trait Encoder {
     /// `source_rate` is the rate the incoming frames are **at**, which is not
-    /// always `config.render.sample_rate` — `write_buffers` feeds frames that
-    /// were rendered elsewhere. Every implementation must resample from this,
-    /// and every implementation must go through [`pump_blocks`], which is where
-    /// the resample lives. An encoder that pulls from [`drive`] directly still
-    /// gets its header from [`encoder_rate`] and so writes un-resampled audio
-    /// under a header claiming the target — that was a real bug in both FLAC
-    /// and Ogg.
+    /// always `config.render.sample_rate` — `write_buffers` feeds frames
+    /// rendered elsewhere, carrying their own rate.
+    ///
+    /// **Every implementation must go through [`pump_blocks`]**, which is where
+    /// the gate, the resample and the dither live. An encoder that pulls from
+    /// [`drive`] directly still takes its header rate from [`encoder_rate`], so
+    /// it writes un-resampled audio under a header claiming the target — a file
+    /// that plays back at the wrong speed and reports no error.
     ///
     /// The frame width is `config.encode.channels`, read at runtime; an
-    /// implementation that needs it says so once at entry rather than being
-    /// generic over it.
+    /// implementation that needs it derives the stride once at entry rather than
+    /// being generic over it.
     fn encode(
         self,
         src: &mut dyn FrameSource,
@@ -85,10 +81,10 @@ pub(crate) trait Encoder {
 
 /// Render `src` to `path` in the format `config` names.
 ///
-/// The one dispatch. A format whose feature is off is a clean
-/// [`Error::UnsupportedFormat`](crate::Error::UnsupportedFormat); there is no arm
-/// that silently degrades, and — unlike the streaming-encoder opener this
-/// replaced — no arm that rejects a format the crate can actually write.
+/// The one dispatch. A format whose cargo feature is off is a clean
+/// [`Error::UnsupportedFormat`](crate::Error::UnsupportedFormat): no arm
+/// silently degrades, and no arm rejects a format this build can actually
+/// write.
 pub(crate) fn encode_to_file(
     src: &mut dyn FrameSource,
     source_rate: tutti_core::SampleRate,
@@ -139,7 +135,10 @@ pub(crate) fn encode_to_file(
     })
 }
 
-/// Pull every frame of the render through resample → dither, into `write`.
+/// Pull every FRAME of the render through resample → dither, into `write`.
+///
+/// `write` receives [`Frames`], which carries its own width, so the frame/sample
+/// distinction never has to be tracked by the caller.
 ///
 /// Every encoder goes through this — including FLAC, whose library owns its own
 /// pull loop but whose frames are collected through here first. That is the
@@ -170,26 +169,25 @@ where
     // Interleaved, so it is a flat sample buffer with `ch` samples per frame.
     let mut staging: Vec<f32> = Vec::new();
 
-    // Compare as the integer rate the codecs speak, via [`encoder_rate`] — the
-    // crate's single narrowing point, which documents why this comparison must
-    // not be a float one: the rates decide *whether to resample at all*, and an
-    // ULP apart would flip that coin. Two rates that write the same header are
-    // the same rate.
+    // Compare as the integer rate the codecs speak, via `encoder_rate` — the
+    // crate's single narrowing point. The comparison must not be a float one:
+    // these rates decide *whether to resample at all*, and an ULP apart would
+    // flip that coin. Two rates that write the same header are the same rate.
     //
     // `source_rate` is the PARAMETER, not `config.render.sample_rate`. Frames
     // handed to `write_buffers` already exist and carry their own rate, which
     // may not be the one the config was rendered at; reading it from the config
-    // made such a call resample from a rate the samples were never at.
+    // resamples from a rate the samples were never at.
     let mut resampler = match config.resample {
         Some(r) if encoder_rate(config) != source_rate.get().round() as u32 => Some((
             // The rates themselves stay `SampleRate`: only the *comparison*
-            // needs to be integral, and `Resampler::new` derives its ratio from
-            // values that never narrowed.
+            // narrows, and `Resampler::new` derives its ratio from values that
+            // never did.
             crate::process::Resampler::new(ch, source_rate, r.target_rate, r.chunk)?,
             vec![Vec::<f32>::new(); ch],
             vec![Vec::<f32>::new(); ch],
         )),
-        // A resample to the rate we are already at is not a resample.
+        // A resample to the rate the frames are already at is not a resample.
         _ => None,
     };
 
@@ -244,9 +242,8 @@ where
 ///
 /// Feeds the same encoders from a [`PlaneSource`] instead of a graph, so a
 /// normalized export (render → measure → apply → write) shares every codec path
-/// with a streamed one. Growing a second writer per format is exactly how the
-/// crate previously ended up with a whole-signal encoder that worked and a
-/// streaming one that did not.
+/// with a streamed one. A second writer per format is how a crate ends up with a
+/// whole-signal encoder that works and a streaming one that does not.
 pub(crate) fn encode_planes(
     rendered: &crate::Rendered,
     config: &ExportConfig,
@@ -259,7 +256,7 @@ pub(crate) fn encode_planes(
         output_length: frames,
         latency: tutti_types::Samples(0),
     };
-    // The frames' OWN rate. Reading `config.render.sample_rate` here made a
-    // `write_buffers` call resample from a rate the samples were never at.
+    // The frames' OWN rate, never `config.render.sample_rate`: these planes may
+    // have been rendered under a different config entirely.
     encode_to_file(&mut src, rendered.sample_rate, &plan, config, path)
 }

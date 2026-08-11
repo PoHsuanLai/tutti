@@ -342,8 +342,8 @@ pub enum Misbehaviour {
     ///
     /// No AU registered on macOS 15.6 does this — all 29 answer — so the
     /// refusal path is unreachable from the real corpus and only a probe can
-    /// reach it. That is exactly why it is here: `get_latency` used to swallow
-    /// the refusal internally, and nothing on this machine could tell.
+    /// reach it. That is exactly why it is here: a `get_latency` that swallows
+    /// the refusal internally is invisible to every real unit on this machine.
     RefusesLatency,
     /// Claims [`LYING_ELEMENT_COUNT`] elements on every scope while owning one.
     OverReportsElementCount,
@@ -547,9 +547,9 @@ struct Probe {
     /// Stored rather than answered from a constant so the property behaves the
     /// way the AU contract describes: a write updates it and a read reports what
     /// the write left. Only [`Misbehaviour::ClampsBlockSize`] deviates, by
-    /// clamping on the way in. It previously read back a fixed 4096 no matter
-    /// what was written, which made *every* probe a clamping AU by accident and
-    /// would have masked the one that clamps on purpose.
+    /// clamping on the way in. Reading back a fixed figure regardless of the
+    /// write would make *every* probe a clamping AU by accident, masking the one
+    /// that clamps on purpose.
     max_frames_per_slice: u32,
     /// The `mSampleTime` of the most recent render, readable through
     /// [`PROBE_PROPERTY_LAST_RENDER_TIME`].
@@ -861,7 +861,7 @@ unsafe extern "C" fn probe_get_property(
             x if x == sys::kAudioUnitProperty_MaximumFramesPerSlice => {
                 // Report what the last write left, which for every probe but
                 // `ClampsBlockSize` is exactly what the host asked for. See the
-                // field's docs for what a fixed answer here used to hide.
+                // field's docs for what a fixed answer here would hide.
                 write_property(data, io_size, p.max_frames_per_slice)
             }
             x if x == sys::kAudioUnitProperty_LastRenderError => {
@@ -1193,11 +1193,11 @@ type PropertyListenerProc =
 
 /// Record a property listener so the probe can fire it later.
 ///
-/// This used to discard the proc and return `noErr`, which registered nothing
-/// and delivered nothing. That made every property-notification assertion
-/// against a probe vacuous by construction: registration always succeeded, no
-/// callback ever arrived, and a host watching the *wrong* property was
-/// indistinguishable from one watching the right one.
+/// Discarding the proc and returning `noErr` registers nothing and delivers
+/// nothing, which makes every property-notification assertion against a probe
+/// vacuous by construction: registration always succeeds, no callback ever
+/// arrives, and a host watching the *wrong* property is indistinguishable from
+/// one watching the right one.
 ///
 /// # Safety
 /// `proc_` must be a valid `AudioUnitPropertyListenerProc`; `ud` is opaque and

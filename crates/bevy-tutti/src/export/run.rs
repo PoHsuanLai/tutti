@@ -16,7 +16,7 @@ use bevy_ecs::prelude::*;
 use bevy_tasks::AsyncComputeTaskPool;
 
 use tutti_core::transport::{OfflineTimeline, OfflineTimelineConfig, OfflineTransport};
-use tutti_core::{AudioUnit, SampleRate};
+use tutti_core::AudioUnit;
 use tutti_export::{render_normalized_to_file, render_to_buffers, render_to_file};
 
 use crate::export::request::{

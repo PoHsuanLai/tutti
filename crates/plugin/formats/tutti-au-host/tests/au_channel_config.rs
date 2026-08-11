@@ -1,17 +1,16 @@
 //! Channel-layout and block-size configuration.
 //!
-//! Two host capabilities a DAW cannot do without, neither of which was reachable
-//! before:
+//! Two host capabilities a DAW cannot do without:
 //!
-//! - **A requested channel layout.** Both `AuLoaded::new` and
-//!   `StreamConfig::apply` used to force `outputs >= 2`, and `apply` is
-//!   `pub(crate)`, so mono was unreachable from outside the crate — a mono track
-//!   paid for a doubled channel through every AU in its chain. Worse, the floor
-//!   inside `apply` made the failure *invisible*: the effective layout handed
-//!   back was an accurate `Stereo`, indistinguishable from a genuine refusal.
+//! - **A requested channel layout.** A stereo floor in `AuLoaded::new` or
+//!   `StreamConfig::apply` puts mono out of reach — `apply` is `pub(crate)`, so
+//!   there is no way around it from outside the crate, and a mono track pays for
+//!   a doubled channel through every AU in its chain. Worse, a floor inside
+//!   `apply` makes the failure *invisible*: the effective layout handed back is
+//!   an accurate `Stereo`, indistinguishable from a genuine refusal.
 //!
-//! - **A block-size change.** There was no `set_block_size`, so changing the
-//!   buffer size in a DAW's preferences meant destroying and rebuilding every
+//! - **A block-size change.** Without `set_block_size`, changing the buffer size
+//!   in a DAW's preferences means destroying and rebuilding every
 //!   plugin instance.
 //!
 //! ## What "accepted" means here, and why the asymmetry is deliberate

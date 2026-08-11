@@ -38,11 +38,19 @@
 //! discarded — no error, no counter, and a monitor that looks connected. The
 //! fix is to declare it, exactly like any node:
 //!
-//! ```rust,ignore
-//! let (mic, monitor) = MicIn::open_with_monitor(None)?;
-//! let id = graph.0.add(monitor);
-//! let node = commands.spawn(AudioNode(id)).id();
-//! commands.insert_resource(MasterSources::from(node));
+//! ```rust,no_run
+//! // `no_run`: `MicIn::open_with_monitor` opens a real capture device.
+//! use bevy_ecs::prelude::*;
+//! use bevy_tutti::prelude::*;
+//!
+//! fn monitor_mic(mut graph: ResMut<AudioGraphRes>, mut commands: Commands) {
+//!     let (_mic, monitor) = MicIn::open_with_monitor(None).expect("a capture device");
+//!     let id = graph.0.add(monitor);
+//!     let node = commands.spawn(AudioNode(id)).id();
+//!     // Without this the ring fills and every later frame is discarded, with
+//!     // no error and no counter.
+//!     commands.insert_resource(MasterSources::from(node));
+//! }
 //! ```
 //!
 //! That this composes at all — the monitor reconciling like any other node,
@@ -60,10 +68,18 @@
 //! For a mic, use [`MicIn::matching_sink`], which pairs them at the one place
 //! both halves are in scope:
 //!
-//! ```rust,ignore
-//! let mic = MicIn::open(None)?;
-//! let wav = mic.matching_sink(&path, BitDepth::Float32).expect("sink opens");
-//! commands.spawn(AudioPump::start(mic, wav, 1024));
+//! ```rust,no_run
+//! // `no_run`: `MicIn::open` opens a real capture device.
+//! use bevy_ecs::prelude::*;
+//! use bevy_tutti::prelude::*;
+//!
+//! fn record_mic(path: std::path::PathBuf, mut commands: Commands) {
+//!     let mic = MicIn::open(None).expect("a capture device");
+//!     // Paired at the one place both halves are in scope, so the sink cannot
+//!     // declare a rate the source does not produce.
+//!     let wav = mic.matching_sink(&path, BitDepth::Float32).expect("sink opens");
+//!     commands.spawn(AudioPump::start(mic, wav, 1024));
+//! }
 //! ```
 //!
 //! For any other source the obligation stays the caller's;
@@ -76,10 +92,43 @@
 //! that output, and [`TapIn`] adapts its consumer end into an [`AudioIn`] so the
 //! same pump records either:
 //!
-//! ```rust,ignore
-//! let src = TapIn::new(tap.open().expect("tap is free"));
-//! let wav = WavOut::create(&path, config.sample_rate, ChannelLayout::STEREO, BitDepth::Float32)?;
-//! commands.spawn(AudioPump::start(src, wav, 1024));
+//! ```rust
+//! use bevy_app::prelude::*;
+//! use bevy_ecs::prelude::*;
+//! use bevy_tutti::graph::AudioConfig;
+//! use bevy_tutti::prelude::*;
+//!
+//! /// Where the take lands. A real host reads this off its project settings.
+//! #[derive(Resource)]
+//! struct TakePath(std::path::PathBuf);
+//!
+//! fn record_master(
+//!     tap: Res<AudioTapRes>,
+//!     config: Res<AudioConfig>,
+//!     path: Res<TakePath>,
+//!     mut commands: Commands,
+//! ) {
+//!     let src = TapIn::new(tap.open().expect("tap is free"));
+//!     // The rate is `AudioConfig`'s: a tap has no device to ask.
+//!     let wav = WavOut::create(&path.0, config.sample_rate, ChannelLayout::STEREO, BitDepth::Float32)
+//!         .expect("a writable path");
+//!     commands.spawn(AudioPump::start(src, wav, 1024));
+//! }
+//!
+//! let dir = tempfile::tempdir().expect("a temp dir");
+//! let mut app = App::new();
+//! app.add_audio_pump::<f32>();
+//! app.insert_resource(AudioTapRes::default());
+//! app.insert_resource(AudioConfig {
+//!     sample_rate: tutti_core::SampleRate(48_000.0),
+//!     channels: ChannelLayout::STEREO,
+//! });
+//! app.insert_resource(TakePath(dir.path().join("master.wav")));
+//! app.add_systems(Startup, record_master);
+//! app.update();
+//!
+//! assert!(app.world().resource::<AudioTapRes>().is_open());
+//! assert_eq!(app.world_mut().query::<&AudioPump<f32>>().iter(app.world()).count(), 1);
 //! ```
 //!
 //! Two things this cannot do for you. The tap is **opt-in** — until `open()` is

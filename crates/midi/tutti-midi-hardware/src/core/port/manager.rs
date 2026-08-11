@@ -1,3 +1,11 @@
+//! [`HardwareMidiInputs`] — every open input port, and the per-block drain the
+//! audio thread calls.
+//!
+//! One manager holds N input rings. `cycle_start_read_all_inputs` fans them all
+//! in for one block, converting each event's arrival `Instant` into a
+//! `frame_offset` within that block. Everything on that path is RT-safe: bounded
+//! work, no locks, no allocation.
+
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -7,9 +15,17 @@ use tutti_core::{AudioThreadCell, RtEventBuf, SampleRate};
 use super::async_port::HardwareMidiInput;
 use tutti_midi_types::ump::MidiEvent;
 
+/// Which direction a port carries.
+///
+/// Only [`Input`](PortType::Input) is backed by anything here — see
+/// [`HardwareMidiInputs::get_port_info`] for what `Output` does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PortType {
+    /// A hardware source feeding this engine, backed by a ring.
     Input,
+    /// A hardware destination. Not a port-manager concern: outbound MIDI rides
+    /// the engine mailbox to a [`MidiOut`](tutti_midi_types::MidiOut) sink, so
+    /// no ring exists and every query answers empty.
     Output,
 }
 
@@ -19,9 +35,18 @@ pub enum PortType {
 /// listing. `active` is a point-in-time value, not a live handle.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PortInfo {
+    /// Position in the manager's port list, and the key every other method on
+    /// [`HardwareMidiInputs`] takes. Stable for the life of the manager: ports
+    /// are only appended, never removed or reordered.
     pub index: usize,
+    /// The endpoint name the port was created with — for an open connection,
+    /// the name the OS reported for that device.
     pub name: String,
+    /// Which direction this port carries. Always
+    /// [`Input`](PortType::Input) in practice, since only inputs are backed.
     pub port_type: PortType,
+    /// Whether the drain reads this port. An inactive port keeps accepting
+    /// pushes into its ring; they are simply never taken.
     pub active: bool,
 }
 
@@ -119,6 +144,19 @@ impl CycleScratch {
     }
 }
 
+/// Every open hardware MIDI input, and the per-block drain over them.
+///
+/// A backend creates one port per connection and pushes into its
+/// [`InputProducerHandle`](super::InputProducerHandle) from the driver's own
+/// thread; the audio thread calls [`cycle_start_read_all_inputs`] once per block
+/// to take what arrived. Ports are appended and never removed, so an index stays
+/// valid for the life of the manager — a departed device is deactivated, not
+/// deleted.
+///
+/// Cheap to share: hold it in an `Arc` and hand clones to the session and the
+/// audio graph.
+///
+/// [`cycle_start_read_all_inputs`]: HardwareMidiInputs::cycle_start_read_all_inputs
 pub struct HardwareMidiInputs {
     input_ports: ArcSwap<Vec<Arc<HardwareMidiInput>>>,
     fifo_size: usize,
@@ -128,6 +166,11 @@ pub struct HardwareMidiInputs {
 }
 
 impl HardwareMidiInputs {
+    /// A manager with no ports, whose rings will each hold `fifo_size` events.
+    ///
+    /// `fifo_size` is per port, in events: a driver pushing past it drops the
+    /// overflow (`push` returns `false`) rather than blocking its callback.
+    /// [`Default`] uses 2048.
     pub fn new(fifo_size: usize) -> Self {
         Self {
             input_ports: ArcSwap::from_pointee(Vec::new()),
@@ -136,7 +179,12 @@ impl HardwareMidiInputs {
         }
     }
 
-    /// Set sample rate. Call before starting the audio stream.
+    /// Set the [`SampleRate`] the arrival-timestamp → `frame_offset` conversion
+    /// divides by.
+    ///
+    /// Call before starting the audio stream. A stale rate does not drop events;
+    /// it places them at the wrong offset within the block, which reads as
+    /// timing jitter rather than as an error.
     pub fn set_sample_rate(&self, sample_rate: impl Into<SampleRate>) {
         self.scratch.set_sample_rate(sample_rate);
     }
@@ -155,15 +203,19 @@ impl HardwareMidiInputs {
         port_index
     }
 
+    /// Create an input port named `name` and return its index.
+    ///
+    /// The port starts **active**. Control-thread only: this clones the port vec
+    /// to append, so it allocates and must not be called from the audio thread.
     pub fn create_input_port(&self, name: impl Into<String>) -> usize {
         let port = Arc::new(HardwareMidiInput::new(name.into(), self.fifo_size));
         Self::push_port(&self.input_ports, port)
     }
 
     /// The port vec for `port_type`. Only [`PortType::Input`] is backed by an
-    /// `HardwareMidiInput` ring — outbound MIDI rides the engine mailbox →
-    /// [`OutputThread`](crate) sink, not a port ring — so `Output` returns
-    /// `None` (lists as empty / no-op).
+    /// `HardwareMidiInput` ring — outbound MIDI rides the engine mailbox to a
+    /// `MidiOut` sink, not a port ring — so `Output` returns `None` (lists as
+    /// empty / no-op).
     fn ports_of(&self, port_type: PortType) -> Option<&ArcSwap<Vec<Arc<HardwareMidiInput>>>> {
         match port_type {
             PortType::Input => Some(&self.input_ports),
@@ -171,6 +223,9 @@ impl HardwareMidiInputs {
         }
     }
 
+    /// A snapshot of one port, or `None` when `port_index` names no port.
+    ///
+    /// Always `None` for [`PortType::Output`]: outputs are not backed here.
     pub fn get_port_info(&self, port_type: PortType, port_index: usize) -> Option<PortInfo> {
         self.ports_of(port_type)?
             .load()
@@ -178,6 +233,7 @@ impl HardwareMidiInputs {
             .map(|port| PortInfo::of(port, port_index, port_type))
     }
 
+    /// Every input port, in index order. Allocates — control thread only.
     pub fn list_input_ports(&self) -> Vec<PortInfo> {
         self.list_ports(PortType::Input)
     }
@@ -194,6 +250,12 @@ impl HardwareMidiInputs {
             .collect()
     }
 
+    /// Set whether the drain reads this port. Returns `false` when
+    /// `port_index` names no port (always so for [`PortType::Output`]).
+    ///
+    /// Deactivating does not drain or clear the ring: a driver keeps pushing and
+    /// the events sit there until the port is active again, so a long pause is
+    /// followed by a burst rather than by silence.
     pub fn set_port_active(&self, port_type: PortType, port_index: usize, active: bool) -> bool {
         match self
             .ports_of(port_type)
@@ -207,6 +269,8 @@ impl HardwareMidiInputs {
         }
     }
 
+    /// Whether the drain currently reads this port. `false` for an unknown
+    /// index and for every [`PortType::Output`] query.
     pub fn is_port_active(&self, port_type: PortType, port_index: usize) -> bool {
         self.ports_of(port_type)
             .and_then(|p| p.load().get(port_index).map(|port| port.is_active()))
@@ -240,6 +304,13 @@ impl HardwareMidiInputs {
         n
     }
 
+    /// The producer end of `port_index`'s ring, for a driver callback to push
+    /// into. `None` when no such port exists.
+    ///
+    /// Take **one** handle per port and keep it on the one thread that pushes:
+    /// every handle for a port aliases the same producer, and two threads
+    /// pushing through them breaks the single-producer invariant the ring's
+    /// soundness rests on.
     pub fn get_input_producer_handle(
         &self,
         port_index: usize,
@@ -249,7 +320,16 @@ impl HardwareMidiInputs {
             .get(port_index)
             .map(|port| port.input_producer_handle())
     }
-    /// RT-safe (lock-free). Uses `Instant::now()` as the timestamp.
+
+    /// Push one event into `port_index`'s ring, timestamped `Instant::now()`.
+    ///
+    /// Returns `false` when the ring is full (the event is dropped) or when
+    /// `port_index` names no port — a caller wanting to tell those apart should
+    /// hold an [`InputProducerHandle`](super::InputProducerHandle) instead.
+    ///
+    /// RT-safe (lock-free). Convenience for tests and for a producer that has
+    /// the manager but no handle; a real backend takes a handle once at connect
+    /// rather than re-resolving the port per event.
     pub fn push_input_event(&self, port_index: usize, event: MidiEvent) -> bool {
         let input_ports = self.input_ports.load();
         if let Some(port) = input_ports.get(port_index) {
@@ -304,8 +384,8 @@ mod tests {
     use super::*;
     use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
 
-    /// Test helper: drain a cycle into a `Vec`, reproducing the shape the
-    /// public API used to return so these assertions stay unchanged.
+    /// Test helper: collect one cycle's visits into a `Vec`, so the assertions
+    /// below can index and count without threading a closure through each.
     fn drain_cycle(manager: &HardwareMidiInputs, nframes: usize) -> Vec<(usize, MidiEvent)> {
         let mut out = Vec::new();
         manager.cycle_start_read_all_inputs(nframes, |port, event| out.push((port, event)));

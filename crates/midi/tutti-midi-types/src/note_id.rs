@@ -87,6 +87,10 @@ impl<T: Copy + Default, const N: usize> Default for PerNoteMap<T, N> {
 }
 
 impl<T: Copy + Default, const N: usize> PerNoteMap<T, N> {
+    /// Builds an empty map with capacity for `N` simultaneous notes.
+    ///
+    /// Allocation-free — the storage is inline arrays, which is what makes this
+    /// usable on the audio thread.
     #[inline]
     pub fn new() -> Self {
         Self {
@@ -111,6 +115,10 @@ impl<T: Copy + Default, const N: usize> PerNoteMap<T, N> {
         Some(&mut self.vals[slot])
     }
 
+    /// The value stored for `id`, or `None` if the note has no entry.
+    ///
+    /// A linear scan of at most `N` slots — cheap for the small `N` a voice map
+    /// uses, and the reason this is not a hash map.
     #[inline]
     pub fn get(&self, id: NoteId) -> Option<&T> {
         self.slot(id).map(|s| &self.vals[s])

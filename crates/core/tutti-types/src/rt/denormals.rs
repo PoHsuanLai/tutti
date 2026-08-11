@@ -1,7 +1,14 @@
 //! RAII guard that flushes denormalized floats to zero.
 //!
-//! On x86_64: sets FTZ+DAZ in MXCSR. On aarch64: sets FZ in FPCR.
-//! Previous state is restored on drop.
+//! Denormals cost tens of cycles per operation on some CPUs, so a decaying
+//! reverb tail or a filter settling toward zero can blow an audio block's
+//! budget long after it stopped being audible. Flushing them to zero for the
+//! duration of a block removes that cliff.
+//!
+//! On x86_64 this sets FTZ+DAZ in MXCSR; on aarch64, FZ in FPCR. The previous
+//! register state is restored on drop, so the mode never escapes the block —
+//! leaving it set would silently change the arithmetic of every other thread
+//! that ran afterwards on the same core.
 //!
 //! ```
 //! use tutti_types::ScopedNoDenormals;
@@ -11,6 +18,12 @@
 //! }
 //! ```
 
+/// RAII guard that flushes denormals to zero while it is alive, restoring the
+/// previous FPU mode on drop.
+///
+/// Hold one for the span of an audio block — construct it at the top of the
+/// callback and let it drop at the end. On an architecture with no such mode it
+/// is an empty struct and every operation compiles away.
 pub struct ScopedNoDenormals {
     #[cfg(target_arch = "x86_64")]
     prev_mxcsr: u32,
@@ -19,6 +32,10 @@ pub struct ScopedNoDenormals {
 }
 
 impl ScopedNoDenormals {
+    /// Sets flush-to-zero and captures the previous FPU mode for the drop.
+    ///
+    /// Cheap enough for the audio thread: two register accesses, no allocation
+    /// and no syscall.
     #[inline]
     pub fn new() -> Self {
         #[cfg(target_arch = "x86_64")]

@@ -13,26 +13,26 @@
 //! nodes with edges: there, a source **is** a node, with its own placement, its
 //! own gain, and its own outgoing connection.
 //!
-//! The pool's *retirement channel* looks like a hazard we are ignoring, so:
-//! it exists because `VoiceCommand::Remove` is handled inside `drain_commands`,
-//! which runs from the audio callback, and dropping a slot frees its vocoder
-//! bank. **That cannot happen here.** `Net::remove` *returns* the
-//! `Box<dyn AudioUnit>` rather than dropping it, and
+//! The pool's *retirement channel* looks like a hazard being ignored here. It
+//! is not: that channel exists because `VoiceCommand::Remove` is handled inside
+//! `drain_commands`, which runs from the audio callback, and dropping a slot
+//! frees its vocoder bank. **That cannot happen here.** `Net::remove` *returns*
+//! the `Box<dyn AudioUnit>` rather than dropping it, and
 //! [`reconcile_node_despawn`](crate::graph::reconcile_node_despawn) discards it
 //! inside an observer — main thread. No channel needed.
 //!
-//! We do inherit one [`BeatCursor`](tutti_core::transport::BeatCursor) per voice
-//! rather than one shared. The pool's doc argues against N cursors, but that risk
-//! is about N slots sharing one timeline position; here each source carries its
-//! own placement. Merging adjacent voices into a shared node is an optimization
-//! available later, not a correctness debt.
+//! One [`BeatCursor`](tutti_core::transport::BeatCursor) per voice is inherited
+//! rather than one shared. The pool's doc argues against N cursors, but that
+//! risk is about N slots sharing one timeline position; here each source
+//! carries its own placement. Merging adjacent voices into a shared node is an
+//! optimization available later, not a correctness debt.
 //!
 //! # The two tiers arrive differently and converge here
 //!
 //! [`Source::Memory`](tutti_sampler::Source) needs an `Arc<Wave>` — resident
 //! before the voice exists. [`Source::Disk`](tutti_sampler::Source) needs a
 //! butler channel and a `Command::Stream` first. Both end as a
-//! [`Voice`](tutti_sampler::Voice), and [`SpawnVoice`] takes either.
+//! [`Voice`], and [`SpawnVoice`] takes either.
 
 use bevy_ecs::prelude::*;
 use std::sync::Arc;
@@ -71,11 +71,15 @@ pub struct SamplerVoice;
 /// so the handle has to be kept from there.
 ///
 /// Present **iff** the voice was built through [`InsertVoice`]/[`SpawnVoice`],
-/// which is every voice this crate builds. A `VoiceNode` constructed directly by
-/// a host (resynth does this) has no channel and no handle, and renders exactly
-/// as it always did.
+/// which is every voice this crate builds. A `VoiceNode` a host constructs
+/// directly (resynth does this) has no command channel and so no handle; it
+/// renders normally, it just cannot be moved.
 #[derive(Component, Debug, Clone)]
-pub struct VoiceCommands(pub VoiceNodeHandle);
+pub struct VoiceCommands(
+    /// The sender minted alongside the node's receiver at construction. See
+    /// above for why it cannot be recovered later.
+    pub VoiceNodeHandle,
+);
 
 /// Spawn a [`VoiceNode`] on an entity, wired to the transport.
 ///
@@ -147,18 +151,19 @@ impl InsertVoice for EntityCommands<'_> {
 /// a host writes one line rather than assembling a `Voice` by hand. The disk
 /// half needs a butler round-trip and so is not a pure function — see
 /// [`DiskStreamerRes`](super::DiskStreamerRes).
-/// `window` is the clip's authored placement on the timeline.
 ///
-/// **Not optional, and not defaulted.** `MemorySource::with_channels` builds at
-/// `VoiceWindow::default()`, so a caller that omitted this got a resident clip
-/// playing at the default position regardless of what the document authored —
-/// silently, from the first frame. The streaming tier never had that gap
-/// (`take_disk_voice` takes the placement), so the bug was invisible to anyone
-/// testing with a long file.
+/// # `window` is required, not defaulted
+///
+/// It is the clip's authored placement on the timeline.
+/// `MemorySource::with_channels` builds at `VoiceWindow::default()`, so a
+/// caller allowed to omit this gets a resident clip playing at the default
+/// position regardless of what the document authored — silently, from the first
+/// frame, and only for short files, since the streaming tier takes the
+/// placement in `take_disk_voice`.
 ///
 /// Taking it as a parameter rather than letting a host patch it afterwards is
-/// what makes the omission impossible: `apply_placement` is `pub(crate)` in the
-/// sampler, so there is no after-the-fact fix available outside that crate.
+/// what makes that omission impossible: `apply_placement` is `pub(crate)` in
+/// the sampler, so there is no after-the-fact fix available outside that crate.
 pub fn memory_voice(
     wave: Arc<tutti_core::Wave>,
     width: ChannelLayout,

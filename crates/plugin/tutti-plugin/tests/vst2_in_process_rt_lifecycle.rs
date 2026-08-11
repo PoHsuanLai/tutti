@@ -1,11 +1,11 @@
 //! What the in-process VST2 node dispatches from the audio thread.
 //!
-//! `AudioUnit::reset` and `AudioUnit::set_sample_rate` are audio-thread calls.
-//! Both used to reach `Vst2Instance::set_sample_rate`, which brackets
+//! `AudioUnit::reset` and `AudioUnit::set_sample_rate` are audio-thread calls,
+//! so neither may reach `Vst2Instance::set_sample_rate`: that brackets
 //! `effSetSampleRate`(10) in `effMainsChanged`(12) — the opcode plugins
-//! allocate and free their rate-dependent buffers in. Two main-thread-only
-//! opcodes, plus `effStopProcess`(71) / `effStartProcess`(72), dispatched from
-//! the audio thread on every graph reset.
+//! allocate and free their rate-dependent buffers in. Routing there dispatches
+//! two main-thread-only opcodes, plus `effStopProcess`(71) /
+//! `effStartProcess`(72), from the audio thread on every graph reset.
 //!
 //! Asserting a *negative* — that no opcode was dispatched — needs the plugin's
 //! own view, not the host's. The reference probe counts `effMainsChanged`
@@ -218,8 +218,8 @@ fn set_sample_rate_parks_the_rate_instead_of_dispatching_it() {
 ///
 /// This is the positive half of the test above. Without it, "nothing was
 /// dispatched" is satisfied by a node that discards the rate entirely, which
-/// would be a worse bug than the one being fixed — the plugin would keep
-/// rendering at the old rate forever with no diagnostic anywhere.
+/// would be the worse bug — the plugin keeps rendering at its previous rate
+/// forever, with no diagnostic anywhere.
 #[test]
 fn the_parked_rate_reaches_the_plugin_on_the_main_thread_drain() {
     let _guard = lock_probe();

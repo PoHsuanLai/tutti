@@ -159,6 +159,7 @@ impl Recorder {
         }
     }
 
+    /// The capture discipline currently in force.
     pub fn mode(&self) -> RecordMode {
         self.mode
     }
@@ -173,10 +174,16 @@ impl Recorder {
         }
     }
 
+    /// The capture tuning currently in force — thinning tolerance and the like.
     pub fn config(&self) -> &RecordingConfig {
         &self.config
     }
 
+    /// Replaces the capture tuning.
+    ///
+    /// Unlike [`set_mode`](Self::set_mode) this does **not** end a take in
+    /// progress: the new settings apply to points captured from here on, and
+    /// what is already recorded stays as it was.
     pub fn set_config(&mut self, config: RecordingConfig) {
         self.config = config;
     }

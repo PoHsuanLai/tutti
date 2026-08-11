@@ -41,7 +41,7 @@ impl ThresholdParams {
 
     /// Both stay typed: every consumer feeds them to `Db`-taking converters
     /// (`compute_compressor_gain_reduction`) or compares them against a `Db`.
-    /// Unwrapping here is what let an audio-rate threshold port arrive as a
+    /// Unwrapping here is what lets an audio-rate threshold port arrive as a
     /// bare `f32` and merge with the atomic unnoticed.
     #[inline]
     pub fn load(&self) -> (Db, Db) {

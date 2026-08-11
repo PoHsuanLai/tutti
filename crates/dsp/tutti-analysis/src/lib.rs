@@ -5,7 +5,7 @@
 //!
 //! - [`stft`] / [`istft_transform`] — the short-time Fourier transform, in
 //!   three result types so invertibility is a compile-time question
-//! - [`yin`] — monophonic pitch estimation (de Cheveigné & Kawahara, 2002)
+//! - [`yin()`] — monophonic pitch estimation (de Cheveigné & Kawahara, 2002)
 //! - [`detect_onsets`] — onset detection over four selectable detection
 //!   functions
 //! - [`correlate`] — inter-channel phase correlation and stereo image
@@ -26,7 +26,7 @@
 //! *fold that same step*, so the two paths cannot drift. Tests pin the
 //! equality across chunk sizes and channel layouts.
 //!
-//! The rest are stateless: [`yin`] and [`correlate`] are pure functions of
+//! The rest are stateless: [`yin()`] and [`correlate`] are pure functions of
 //! their input, and [`stft`] is batch-only — there is no incremental
 //! transform. Meter ballistics ([`step_ballistics`]) carries a smoothed
 //! reading, but that is a filter over results rather than a step of the
@@ -75,6 +75,38 @@
 //! let reading = correlate(planes);
 //! # Ok::<(), tutti_analysis::AnalysisError>(())
 //! ```
+//!
+//! ## Reading from a running graph
+//!
+//! Nothing here knows about the graph, so the seam is an
+//! [`AudioTap`](tutti_core::metering::AudioTap): the audio thread pushes each
+//! block into it and a control thread drains it. What arrives on this side is
+//! an ordinary `&[f32]`, which is the whole reason these algorithms need no
+//! engine vocabulary.
+//!
+//! ```
+//! use tutti_analysis::correlate;
+//! use tutti_core::metering::AudioTap;
+//! use tutti_types::StereoPlanes;
+//!
+//! let tap = AudioTap::new();
+//! let _consumer = tap.open().expect("a fresh tap has no consumer");
+//!
+//! // The audio-callback side. `frames` is a FRAME count, so an interleaved
+//! // stereo block of 2 frames is 4 samples.
+//! let block = [0.5f32, -0.5, 0.5, -0.5];
+//! tap.push(&block, 2);
+//!
+//! // The analysis side, once the drained frames are deinterleaved. Draining
+//! // the ring itself needs `ringbuf`'s `Consumer` trait, which is the
+//! // consumer's dependency rather than this crate's.
+//! let (left, right) = ([0.5f32, 0.5], [-0.5f32, -0.5]);
+//! let planes = StereoPlanes::new(&left, &right).expect("drained in lockstep");
+//!
+//! // `Correlation` is a MEASUREMENT type, deliberately distinct from the
+//! // control types (`Mix`, `Depth`) despite the coinciding range.
+//! let reading = correlate(planes);
+//! ```
 
 pub mod error;
 pub mod fft;
@@ -83,8 +115,8 @@ pub mod grid;
 pub mod loudness;
 pub mod onset;
 pub mod peaks;
-/// The YIN numerics `yin` drives. Private engine, not public surface:
-/// `PitchEstimate` and `YinConfig` are the API.
+// No `///` here: a doc comment on a `mod` line shadows the module's own `//!`.
+// The module header carries the description.
 mod pitch;
 pub mod stereo;
 pub mod transform;

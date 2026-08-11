@@ -3,7 +3,7 @@
 //!
 //! `au_conformance.rs` covers `send_midi`, which pushes MIDI *into* an instrument.
 //! This suite covers the other direction — the one an arpeggiator or step
-//! sequencer needs, and which the host previously could not do at all.
+//! sequencer needs.
 //!
 //! ## What is and is not exercised here, stated plainly
 //!
@@ -358,8 +358,8 @@ fn install_then_withdraw_leaves_the_au_renderable() {
 /// would call it anyway (none emits MIDI), so what this actually pins is the
 /// counter *observability* and that the removal path runs to completion on a
 /// rendering unit. The count is checked rather than mere absence of a crash,
-/// because a review on this branch was paid for by exactly that shortcut: an
-/// over-release passed 7/7 GUI tests that only checked pointer nullness.
+/// because an over-release does not crash: it passes any suite that only checks
+/// a pointer for nullness.
 ///
 /// The pre-removal count is recorded and asserted equal to the post-removal one.
 /// That is a real assertion even at zero: a host that somehow invoked the sink
@@ -930,12 +930,10 @@ fn system_common_clears_running_status() {
 /// fragmenting into 6-byte packets, which allocates, and this runs on the
 /// CoreMIDI read thread where that is forbidden.
 ///
-/// This used to be justified as *symmetry* — "`send_midi` skips SysEx in the
-/// other direction too". That is no longer true and was never the reason: the
-/// outbound path now reassembles SysEx7 and sends it through
-/// `MusicDeviceSysEx`, because nothing there is allocation-constrained. The two
-/// directions differ because their constraints differ, not because dropping was
-/// the intended behaviour.
+/// Do **not** read this as symmetry with `send_midi`. The outbound path
+/// reassembles SysEx7 and sends it through `MusicDeviceSysEx`, because nothing
+/// there is allocation-constrained. The two directions differ because their
+/// constraints differ, not because dropping is intended behaviour.
 #[test]
 fn sysex_is_dropped_without_derailing_the_rest() {
     let list =

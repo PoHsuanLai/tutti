@@ -2,7 +2,7 @@
 //!
 //! The [`MidiBus`](tutti_midi_runtime::MidiBus) fans MIDI *inward* to synths; it
 //! has no tap for sending to external gear. This module adds the outbound
-//! mailbox: a [`MidiMailbox`](tutti_midi_runtime::MidiMailbox) whose
+//! mailbox: a [`MidiMailbox`] whose
 //! [`MidiSender`] anyone off-RT (a track system, the UI) — or a clip source on
 //! the audio thread — can push into lock-free, drained each frame and routed to
 //! hardware through the *same* [`MidiOutRouter`](super::clock_out) the
@@ -10,13 +10,12 @@
 //! MIDI-1 treatment (JR Timestamps reach the wire iff a native-UMP source +
 //! enabled stamper are present).
 //!
-//! **One primitive, both roles.** The [`MidiSender`] is the [`MidiOut`] push
+//! **One primitive, both roles.** The [`MidiSender`] is the `MidiOut` push
 //! half (lock-free `&self`, audio-thread-safe); the [`MidiReceiver`] is the pull
 //! half the pump drains through its inherent `poll_into`, which needs no unit id
-//! because a mailbox *is* one unit's stream. It replaced a separate
-//! `ringbuf`-backed output ring — there is now
-//! one output-mailbox type across the clock master, the track path, and the RT
-//! clip tap, and no mutex anywhere on the push side.
+//! because a mailbox *is* one unit's stream. One output-mailbox type covers the
+//! clock master, the track path and the RT clip tap alike, with no mutex
+//! anywhere on the push side.
 //!
 //! Two ways to push:
 //! - [`SendMidiOut`] — a fire-and-forget ECS message, for systems that already
@@ -64,7 +63,7 @@ impl MidiOutRes {
     }
 
     /// The [`MidiUnitId`] this mailbox routes on — a caller pushing through the
-    /// [`MidiOut`] trait must address this id (a [`MidiSender`] clone already
+    /// `MidiOut` trait must address this id (a [`MidiSender`] clone already
     /// carries it).
     pub fn unit_id(&self) -> MidiUnitId {
         self.sender.unit_id()
@@ -106,7 +105,11 @@ impl MidiOutRes {
 /// Routed like the clock master's output — JR-stamped to a native-UMP source if
 /// one is present and stamping is enabled, else to the MIDI-1 port.
 #[derive(Message, Debug, Clone)]
-pub struct SendMidiOut(pub Vec<MidiEvent>);
+pub struct SendMidiOut(
+    /// Queued in order, as one batch. A hot producer should clone the
+    /// [`MidiOutRes::sender`] instead of paying the message round-trip.
+    pub Vec<MidiEvent>,
+);
 
 /// Forward each [`SendMidiOut`] request into the outbound mailbox.
 pub fn midi_out_send_system(out: Res<MidiOutRes>, mut requests: MessageReader<SendMidiOut>) {

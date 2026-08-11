@@ -1,7 +1,7 @@
 //! `kAudioUnitProperty_PresentationLatency` (40) and `_DependentParameters` (45).
 //!
-//! Two AU properties the host previously had no surface for: one the host
-//! **writes** to tell a plugin how far downstream the listener is, one it
+//! Two AU properties on opposite sides of the host/plugin boundary: one the
+//! host **writes** to tell a plugin how far downstream the listener is, one it
 //! **reads** to learn which parameters a meta-parameter silently moves.
 //!
 //! # The corpus cannot witness either, and that is the headline measurement

@@ -1,15 +1,14 @@
 //! FLAC (flacenc). Streams the render **in** through flacenc's pull API.
 //!
 //! `flacenc::Source` is a trait, not a buffer: `encode_with_fixed_block_size`
-//! calls `read_samples` until it returns 0. So the render feeds it block by
-//! block and no PCM is ever held whole — the `MemSource::from_samples` this
-//! replaced took the entire signal up front, which is why FLAC used to be the
-//! format that forced whole-signal buffering.
+//! calls `read_samples` until it returns 0, so the render feeds it a block at a
+//! time rather than handing over the whole signal up front.
 //!
-//! **What still accumulates:** flacenc collects the *compressed* frames in a
-//! `Stream` and writes at the end (`coding.rs:636`). That is roughly half the
-//! size of the PCM it came from, and far smaller than the planes the old path
-//! held. `flacenc::coding::encode_fixed_size_frame` is public if fully
+//! **What does accumulate:** the PCM is collected through
+//! [`pump_blocks`](crate::encode::pump_blocks) before flacenc sees it, and
+//! flacenc then collects the *compressed* frames in a `Stream` and writes at the
+//! end (`coding.rs:636`). FLAC is therefore the one format here that holds the
+//! signal. `flacenc::coding::encode_fixed_size_frame` is public if fully
 //! incremental output is ever wanted.
 
 use crate::config::ExportConfig;
@@ -57,23 +56,28 @@ impl FlacEncoder {
 /// Interleaved `i32` frames flacenc pulls from.
 ///
 /// FLAC inverts control — `encode_with_fixed_block_size` calls `read_samples`
-/// until dry — so it cannot sit inside `pump_blocks`'s push loop. It used to
-/// resolve that by re-implementing the gate by hand and pulling from the render
-/// directly, which meant it **never applied `config.resample`** while still
-/// taking its header from `encoder_rate`: a file whose STREAMINFO claimed
-/// 48 kHz holding 44.1 kHz audio, playing back 8.8% fast.
+/// until dry — so it cannot sit inside `pump_blocks`'s push loop. The rule that
+/// resolves that: the frames still come from
+/// [`pump_blocks`](crate::encode::pump_blocks), gate, resample and dither
+/// included, and this type only hands the collected result over. An encoder that
+/// re-implements the gate and pulls from the render directly skips
+/// `config.resample` while still taking its header from `encoder_rate` — a
+/// STREAMINFO claiming 48 kHz over 44.1 kHz audio, playing back 8.8% fast.
 ///
-/// Now the frames come from the same `pump_blocks` every other format uses —
-/// gate, resample and dither included — and this only hands them over. The
-/// PCM is collected first, so FLAC is the one format that holds the signal;
-/// see the module note. Trading that for correctness is the right way round,
-/// and `encode_fixed_size_frame` is public if incremental output is wanted.
+/// Collecting first is what makes FLAC the one format that holds the signal; see
+/// the module note. Correctness is worth that trade.
 struct PulledFrames {
+    /// Interleave stride, from `config.encode.channels` — a runtime value.
     channels: usize,
+    /// Bits per sample in the written stream: 16 or 24.
     bits: usize,
+    /// The header rate, already narrowed through `encoder_rate`.
     sample_rate: usize,
-    /// Interleaved, already at the output rate and depth.
+    /// Interleaved, already at the output rate and depth. Holds
+    /// `frames * channels` samples.
     samples: Vec<i32>,
+    /// Read cursor, in SAMPLES — `read_samples` divides by `channels` to report
+    /// the frame count flacenc expects back.
     pos: usize,
 }
 
@@ -135,10 +139,10 @@ impl Encoder for FlacEncoder {
         };
 
         // `compression_level` is the app-facing knob; flacenc expresses effort
-        // through its own preset, which `Encoder::default()` already sets to a
-        // balanced point. Mapping the 0–8 scale onto flacenc's coding options is
-        // a separate change — the level is accepted and currently unmapped
-        // rather than silently reinterpreted.
+        // through its own preset, which `Encoder::default()` sets to a balanced
+        // point. Mapping the 0-8 scale onto flacenc's coding options is a
+        // separate change: the level is accepted and unmapped rather than
+        // silently reinterpreted as something else.
         let _ = self.compression_level;
         let flac_config = EncoderConfig::default()
             .into_verified()
@@ -169,14 +173,13 @@ fn bits_for(bit_depth: BitDepth) -> usize {
 /// Quantize to the integer sample flacenc takes, via the engine's canonical
 /// converters.
 ///
-/// This used to scale and cast here — `(clamped * 32767.0) as i32` — which
-/// **truncates** where [`tutti_core::pcm`] rounds. Same magnitudes, so the two
-/// agreed on 0.0 and ±1.0 (the only values the tests below covered) and diverged
-/// by one LSB everywhere else: 0.7 encoded as 22936 in a FLAC and 22937 in a WAV
-/// from the same render. `pcm.rs` exists precisely so that "a recorded and an
-/// exported file quantize a given sample identically", and its docs call bare
+/// **Delegation is the whole point.** A local `(clamped * 32767.0) as i32`
+/// **truncates** where [`tutti_core::pcm`] rounds: the two agree on 0.0 and ±1.0
+/// and diverge by one LSB everywhere else, so 0.7 encodes as 22936 in a FLAC and
+/// 22937 in a WAV from the same render. `pcm` exists so a recorded and an
+/// exported file quantize a given sample identically, and its docs call bare
 /// truncation biased toward zero — a consistent negative DC error on the
-/// negative half. Delegating is what keeps that promise true for FLAC too.
+/// negative half.
 #[inline]
 fn f32_to_i32(sample: f32, bit_depth: BitDepth) -> i32 {
     match bit_depth {
@@ -207,10 +210,10 @@ mod tests {
     /// FLAC must quantize exactly as the rest of the engine does.
     ///
     /// The two tests above pass under truncation *and* under rounding, because
-    /// 0.0 and ±1.0 land on exact integers either way — which is how this
-    /// encoder carried a private truncating converter unnoticed. These levels
-    /// have a fractional part above 0.5, so the two disagree: 0.7 × 32767 =
-    /// 22936.9, which truncates to 22936 and rounds to 22937.
+    /// 0.0 and ±1.0 land on exact integers either way — which is how a private
+    /// truncating converter survives unnoticed. These levels have a fractional
+    /// part above 0.5, so the two disagree: 0.7 × 32767 = 22936.9, which
+    /// truncates to 22936 and rounds to 22937.
     #[test]
     fn quantization_matches_the_engines_canonical_converter() {
         for level in [0.7f32, -0.7, 0.3, -0.3, 0.123_45, 0.999] {

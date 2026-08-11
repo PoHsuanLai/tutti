@@ -1,15 +1,13 @@
 //! The graph-node handle — plain data, always compiled.
 //!
-//! [`AudioNode`] wraps a fundsp [`NodeId`] and IS the Net-pump's entity binding:
-//! it's not DAW vocabulary, it's the graph handle. Under the `bevy` feature it
-//! gains `#[derive(Component)]` and becomes the ECS component the reconcile hub
-//! reads; without it it stays a plain newtype a non-Bevy host can carry.
+//! [`AudioNode`] wraps a fundsp [`NodeId`] and is the Net pump's entity
+//! binding: not DAW vocabulary, just the graph handle. Under the `bevy` feature
+//! it gains `#[derive(Component)]` and becomes the ECS component the reconcile
+//! hub reads; without it it stays a plain newtype a non-Bevy host can carry.
 //!
-//! This is the whole of what used to be the `graph` module: the DAW param
-//! components (`Volume`/`Pan`/`Mute`/`ModParam`/`LayerKey`/`PluginParam`) moved
-//! OUT of the engine to `dawai_model::engine_bind::foundational`, leaving only
-//! this one node handle — so the two-file `graph/` wrapper collapsed into this
-//! single file. ("Engine Bevy = Net pump only.")
+//! It is the *only* thing this crate puts behind that feature. DAW param
+//! components (`Volume`, `Pan`, `Mute`, …) belong to the host adapter, not the
+//! engine — engine-side Bevy is the Net pump and nothing more.
 
 #[cfg(feature = "bevy")]
 use bevy_ecs::prelude::Component;
@@ -34,7 +32,7 @@ use crate::dsp::NodeId;
 pub struct AudioNode(pub NodeId);
 
 impl AudioNode {
-    /// Convenience: returns the wrapped [`NodeId`].
+    /// Returns the wrapped fundsp [`NodeId`], for calling `Net` directly.
     #[inline]
     pub fn id(self) -> NodeId {
         self.0

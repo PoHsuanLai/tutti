@@ -5,8 +5,8 @@
 //!
 //! Named `preroll`, not `pdc`, to keep the split with `tutti_types::latency`
 //! visible: that computes *how much* compensation each channel needs; this
-//! consumes the answer and moves read heads. This file was also filed under
-//! `io/`, which it is not — it repositions streams, it does not read them.
+//! consumes the answer and moves read heads. Not `io/` either — it repositions
+//! streams, it does not read them.
 
 use super::cache::LruCache;
 use super::config::BufferConfig;
@@ -19,8 +19,18 @@ use std::sync::Arc;
 use tutti_core::RtPublish;
 use tutti_core::Samples;
 
-/// Called each refill cycle. Detects compensation changes and adjusts stream
-/// positions with smooth crossfades.
+/// Reconcile every streaming channel's read head against the published
+/// compensation table, once per refill cycle.
+///
+/// A channel whose entry has changed is repositioned by the delta through
+/// [`reposition_click_free`]; a larger preroll seeks backward, a smaller one
+/// forward. Channels whose compensation is unchanged, that are not streaming, or
+/// that fall beyond the end of the table are left alone — a missing entry reads
+/// as zero compensation, which is the same answer as "none needed".
+///
+/// A no-op when nothing is subscribed. Butler thread: it takes an
+/// [`RtPublish::read`] snapshot for the pass rather than per channel, and it
+/// must never run on the audio thread.
 pub(crate) fn apply_pdc_updates(
     pdc: &Option<Arc<RtPublish<Vec<Samples>>>>,
     plans: &DashMap<usize, ChannelPlan>,
@@ -143,8 +153,8 @@ mod tests {
     /// compensation table — one `ChannelPlan`, one region, one file — which is
     /// why every ring below is built stereo regardless of `tracks`. This
     /// deliberately does **not** take a [`ChannelLayout`](tutti_core::ChannelLayout):
-    /// it used to, and that made three-track fixtures read as a 3-channel audio
-    /// format, which is exactly the confusion the layout type exists to end.
+    /// typing it as one would make a three-track fixture read as a 3-channel
+    /// audio format, exactly the confusion the layout type exists to end.
     /// The genuine audio-channel use in this file is `writer.channels()`.
     fn create_test_fixtures(
         tracks: usize,

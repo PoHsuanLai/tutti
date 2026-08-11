@@ -1,10 +1,10 @@
 //! [`MidiInPort`] — a MIDI-receiving audio unit's complete input endpoint.
 //!
-//! Every internal synth needs the same three things to receive MIDI, and used to
-//! open-code them as three fields plus a pairing ritual: a routing address
-//! ([`MidiUnitId`]), a push mailbox other code routes to (the [`MidiSender`] /
-//! [`MidiReceiver`] pair), and an optional pull override (a clip player, an
-//! export snapshot). This bundles them into one owned endpoint.
+//! Every internal synth needs the same three things to receive MIDI: a routing
+//! address ([`MidiUnitId`]), a push mailbox other code routes to (the
+//! [`MidiSender`] / [`MidiReceiver`] pair), and an optional pull override (a
+//! clip player, an export snapshot). This bundles them into one owned endpoint,
+//! so a unit holds one field rather than three plus a pairing ritual.
 //!
 //! The key simplification: the push half is already a [`tutti_midi_types`]
 //! trait — [`MidiSender`] *is* a [`MidiOut`](tutti_midi_types::MidiOut). The
@@ -19,14 +19,12 @@
 //! preview, musical typing and a scheduled sequence coexist, which is what a
 //! player expects when they touch the keys during playback.
 //!
-//! It used to replace instead — one `Arc<dyn MidiUnitIn>` cell defaulting to the
-//! receiver, swapped by `install`. That silenced preview for as long as a clip
-//! was installed, and worse, the mailbox kept accepting pushes the whole time:
-//! the events did not vanish, they *queued*, and popped out stale on the next
-//! [`clear`](MidiInPort::clear). Layering is what the source-installing callers
-//! wanted in the first place — all three of them (`SoundFontUnit`, `PolySynth`,
-//! the plugin MIDI node) install clip/export sources onto ports that also have
-//! a live inbox.
+//! Replacing rather than layering is the trap: it silences preview for as long as
+//! a clip is installed, and the mailbox keeps accepting pushes the whole time —
+//! the events do not vanish, they *queue*, and pop out stale on the next
+//! [`clear`](MidiInPort::clear). Every source-installing caller (`SoundFontUnit`,
+//! `PolySynth`, the plugin MIDI node) installs onto a port that also has a live
+//! inbox, so layering is the only behaviour that serves all three.
 //!
 //! ## fundsp clone semantics (why the cells are shared)
 //!
@@ -34,15 +32,15 @@
 //! *different* clone than the one app code holds. So both the sender and the
 //! installed-source pointer live behind shared cells:
 //!
-//! - **Clone** shares the mailbox and the source cell, so a `MidiSender` handed
-//!   out earlier keeps reaching the running box, and an [`install`](Self::install)
-//!   on any clone is seen by the box the audio thread runs (the
-//!   `[[plugin-source-install-shared-cell]]` bug: a per-clone `Option` made
-//!   installs invisible to the audio thread — clip playback silently died).
-//! - **[`isolate`](Self::isolate)** deliberately does the opposite: a fresh
-//!   private mailbox *and* source cell, severing both the shared inbox (so an
-//!   offline-export clone can't *steal* the live synth's events) and the shared
-//!   source (so clearing on the export clone can't sever the live clip).
+//! - **Clone** shares the mailbox and the source cell, so a [`MidiSender`]
+//!   handed out earlier keeps reaching the running box, and an
+//!   [`install`](MidiInPort::install) on any clone is seen by the box the audio
+//!   thread runs. A per-clone `Option` here makes installs invisible to the
+//!   audio thread, and clip playback dies silently.
+//! - **[`isolate`](MidiInPort::isolate)** deliberately does the opposite: a
+//!   fresh private mailbox *and* source cell, severing both the shared inbox (so
+//!   an offline-export clone cannot *steal* the live synth's events) and the
+//!   shared source (so clearing on the export clone cannot sever the live clip).
 
 use std::sync::Arc;
 
@@ -66,9 +64,9 @@ pub struct MidiInPort {
     receiver: MidiReceiver,
     /// An additional source layered *over* the mailbox, shared across clones.
     /// `None` until an [`install`](Self::install); [`clear`](Self::clear) puts
-    /// it back. Optional rather than defaulting to the receiver because the
-    /// receiver is now polled unconditionally — a default of "the receiver"
-    /// would drain the mailbox twice.
+    /// it back. Optional rather than defaulting to the receiver: the receiver is
+    /// polled unconditionally, so a default of "the receiver" would drain the
+    /// mailbox twice.
     source: Arc<ArcSwapOption<Arc<dyn MidiUnitIn>>>,
 }
 
@@ -255,8 +253,9 @@ mod tests {
 
     /// The point of layering: a clip plays and the keyboard still sounds.
     ///
-    /// Under the old replacing `install` the pushed note was not polled at all —
-    /// it sat in the mailbox and popped out stale on the next `clear()`.
+    /// An `install` that *replaced* rather than layered would leave the pushed
+    /// note unpolled — sitting in the mailbox, popping out stale on the next
+    /// `clear()`.
     #[test]
     fn the_mailbox_still_sounds_under_an_installed_source() {
         let port = MidiInPort::new();
@@ -289,12 +288,11 @@ mod tests {
 
     /// The port polls an installed source with **its own** unit id.
     ///
-    /// This is the positive form of the guard that used to be missing. The
-    /// pre-block polled its hardware source with a `MidiUnitId::new(0)`
-    /// sentinel, and `0` is a real id — so a per-unit source installed at that
-    /// seam would have been handed the whole hardware stream instead of its own
-    /// events. The type system now separates the two seams; this pins the half
-    /// that still passes an id.
+    /// The hazard this guards: a `MidiUnitId::new(0)` sentinel is not a
+    /// distinguishable "no unit" — `0` is a real id, so a per-unit source polled
+    /// with a sentinel is handed the whole hardware stream instead of its own
+    /// events. The type system separates the port seam from the pre-block's
+    /// hardware seam; this pins the half that passes an id.
     #[test]
     fn the_port_supplies_the_unit_id_the_source_is_polled_with() {
         let port = MidiInPort::new();

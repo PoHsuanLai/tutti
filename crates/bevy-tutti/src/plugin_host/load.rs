@@ -15,10 +15,8 @@
 //! closure has no frame-to-frame residency, so it cannot retry — **the component
 //! is the retry state**. This mirrors [`PlaySoundFont`], for the same reason.
 //!
-//! There is deliberately no second entry point. When this crate last had two
-//! ways to name one thing (`MidiTargetRegistry::insert_target` beside `port`)
-//! the two lookups drifted and the redundant one was deleted rather than
-//! reconciled.
+//! There is deliberately no second entry point: two ways to name one thing
+//! drift, and reconciling them costs more than the convenience is worth.
 //!
 //! # Shape
 //!
@@ -79,12 +77,35 @@ const MAX_CONCURRENT_LOADS: usize = 2;
 /// idiomatic Bevy way — `Default` plus struct-update syntax — rather than
 /// builder methods.
 ///
-/// ```ignore
-/// commands.spawn(PluginRequest {
-///     id: PluginId::from_path("/path/to/Foo.vst3"),
-///     sample_rate: config.sample_rate,
-///     ..Default::default()
+/// ```rust
+/// use bevy_app::prelude::*;
+/// use bevy_ecs::prelude::*;
+/// use bevy_tutti::graph::AudioConfig;
+/// use bevy_tutti::plugin_host::PluginRequest;
+/// use tutti_plugin::catalog::PluginId;
+///
+/// fn load_plugin(config: Res<AudioConfig>, mut commands: Commands) {
+///     commands.spawn(PluginRequest {
+///         id: PluginId::from_path("/path/to/Foo.vst3"),
+///         // Read the rate off `AudioConfig` rather than assuming 44.1k — the
+///         // plugin is instantiated at it, and a mismatch is audible.
+///         sample_rate: config.sample_rate,
+///         ..Default::default()
+///     });
+/// }
+///
+/// let mut app = App::new();
+/// app.insert_resource(AudioConfig {
+///     sample_rate: tutti_types::SampleRate(48_000.0),
+///     channels: tutti_types::ChannelLayout::STEREO,
 /// });
+/// app.add_systems(Startup, load_plugin);
+/// app.update();
+///
+/// // The request is a component; the load systems pick it up from here. It
+/// // stays in place afterwards, so a host can see what an entity *is*.
+/// let request = app.world_mut().query::<&PluginRequest>().single(app.world()).unwrap();
+/// assert_eq!(request.sample_rate, app.world().resource::<AudioConfig>().sample_rate);
 /// ```
 ///
 /// The component is left in place after the load so the request stays inspectable
@@ -98,10 +119,6 @@ pub struct PluginRequest {
     /// Rate to instantiate at. Read this off
     /// [`AudioConfig`](crate::graph::AudioConfig) rather than assuming 44.1k —
     /// the plugin is built for this rate and a mismatch is audible.
-    ///
-    /// `SampleRate`, which is what `AudioConfig::sample_rate` already is: the
-    /// doc above and the example below both said to copy it from there, and
-    /// the field then untyped it on arrival.
     pub sample_rate: SampleRate,
     /// Optional preset chunk to restore once loaded, as returned by
     /// `PluginHandle::save_state`.
@@ -152,18 +169,40 @@ pub struct PluginLoadTerminated;
 /// Observe it at the spawn site, where the surrounding context is still in
 /// scope:
 ///
-/// ```ignore
-/// commands
-///     .spawn(PluginRequest { id, sample_rate, ..Default::default() })
-///     .observe(|done: On<PluginLoadDone>| {
-///         if let Err(e) = &done.result {
-///             warn!("plugin failed to load: {e}");
-///         }
-///     });
+/// ```rust
+/// use bevy_app::prelude::*;
+/// use bevy_ecs::prelude::*;
+/// use bevy_log::warn;
+/// use bevy_tutti::plugin_host::{PluginLoadDone, PluginRequest};
+/// use tutti_plugin::catalog::PluginId;
+/// use tutti_types::SampleRate;
+///
+/// fn load_plugin(In((id, sample_rate)): In<(PluginId, SampleRate)>, mut commands: Commands) {
+///     commands
+///         .spawn(PluginRequest { id, sample_rate, ..Default::default() })
+///         .observe(|done: On<PluginLoadDone>| {
+///             if let Err(e) = &done.result {
+///                 warn!("plugin failed to load: {e}");
+///             }
+///         });
+/// }
+///
+/// let mut app = App::new();
+/// let args = (PluginId::from_path("/path/to/Foo.vst3"), SampleRate::SR_48K);
+/// app.world_mut().run_system_cached_with(load_plugin, args).unwrap();
+///
+/// // One request, carrying its observer. Actually loading it needs a real
+/// // plugin binary on disk, which is `TuttiHostingPlugin`'s job to drive.
+/// assert_eq!(app.world_mut().query::<&PluginRequest>().iter(app.world()).count(), 1);
 /// ```
 #[derive(EntityEvent, Debug)]
 pub struct PluginLoadDone {
+    /// The request entity, which by now carries [`PluginLoadTerminated`] and —
+    /// on success — `AudioNode` plus [`PluginEmitter`].
     pub entity: Entity,
+    /// `Ok` once the plugin is in the graph. `Err` carries why the subprocess
+    /// launch or handshake failed; a refused *preset* is only warned about and
+    /// still reports `Ok`.
     pub result: Result<(), BridgeError>,
 }
 
@@ -251,9 +290,8 @@ pub fn plugin_load_promote(
                     // A refusal does **not** abort the load: a plugin sitting at
                     // its defaults is better than no plugin, and the user can
                     // still re-dial it. But it must not be silent — this is a
-                    // project load, and before `load_state` returned a result
-                    // the DAW showed a restored plugin that had restored
-                    // nothing.
+                    // project load, and a swallowed refusal shows the user a
+                    // restored plugin that restored nothing.
                     if let Err(e) = handle.state().load_state(blob) {
                         warn!(
                             "{}: saved state was not restored ({e}); the plugin is \

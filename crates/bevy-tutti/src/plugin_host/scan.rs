@@ -27,14 +27,13 @@
 //! completion: "the catalog is away being scanned" becomes a state you observe
 //! by its absence, not a flag that can disagree with reality.
 //!
-//! The previous version left `PluginsRes` in place and built a *fresh*
-//! `Plugins::with_json_catalog(..)` inside a task, swapping the whole resource
-//! when it finished. That discarded every unflushed in-memory edit — a user's
-//! `blacklist`, `unblacklist` or `register_path` since the last `flush` — on
-//! every rescan, and hardcoded the JSON impl over whatever catalog the host had
-//! installed. Both engine scan paths are shaped specifically to prevent the
-//! first (`rescan_sync` moves the live catalog through the scanner;
-//! [`Plugins::rescan`] returns it via the ticket), and rebuilding opted out.
+//! Rebuilding a *fresh* catalog inside a task and swapping the resource when it
+//! finished would be the obvious alternative, and it is wrong twice: it
+//! discards every unflushed in-memory edit — a user's `blacklist`,
+//! `unblacklist` or `register_path` since the last `flush` — and it hardcodes
+//! one catalog impl over whatever the host installed. Both engine scan paths
+//! are shaped to prevent the first (`rescan_sync` moves the live catalog
+//! through the scanner; [`Plugins::rescan`] returns it via the ticket).
 //!
 //! [`Plugins::rescan`]: tutti_plugin::catalog::Plugins::rescan
 
@@ -57,7 +56,10 @@ pub struct RescanPlugins;
 /// One plugin examined, or a phase change. Forwarded verbatim from the
 /// scanner's progress stream so a UI can render "scanning 41/230 — Foo.vst3".
 #[derive(Message, Debug, Clone)]
-pub struct ScanProgressed(pub ScanProgress);
+pub struct ScanProgressed(
+    /// The scanner's own progress record, unmodified.
+    pub ScanProgress,
+);
 
 /// Emitted once a rescan finishes and the fresh catalog is back in
 /// [`PluginsRes`]. Carries the tally.
@@ -69,7 +71,10 @@ pub struct ScanProgressed(pub ScanProgress);
 /// means a hidden plugin is invisible with no explanation unless the host says
 /// something — see [`catalog`](super::catalog) for the un-blacklist path.
 #[derive(Message)]
-pub struct PluginsScanned(pub ScanResult);
+pub struct PluginsScanned(
+    /// The scan tally: scanned, new, failed, blacklisted, newly blacklisted.
+    pub ScanResult,
+);
 
 /// What the catalog is doing, for a host that wants to render it.
 ///
@@ -86,9 +91,13 @@ pub enum PluginCatalogState {
     /// `total` stays 0 until the scanner leaves [`ScanPhase::Discovery`] — it
     /// cannot know how many plugins exist until it has walked the directories.
     Scanning {
+        /// How many plugins have been examined so far.
         current: usize,
+        /// How many there are in total, or 0 during [`ScanPhase::Discovery`].
         total: usize,
+        /// The plugin being examined right now.
         path: std::path::PathBuf,
+        /// Which stage of the scan this is.
         phase: ScanPhase,
     },
 }
@@ -161,7 +170,7 @@ pub fn poll_scan(world: &mut World) {
     {
         let mut in_flight = world.resource_mut::<InFlightScan>();
         // Unbounded channel: nothing is dropped when a frame is slow, and the
-        // scanner never blocks waiting for us to read.
+        // scanner never blocks waiting for this tick to read.
         while let Ok(progress) = in_flight.handle.progress_rx.try_recv() {
             progressed.push(progress);
         }

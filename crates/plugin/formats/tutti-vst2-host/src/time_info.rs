@@ -5,7 +5,7 @@
 //! `audioMasterGetTime` callback in [`crate::host::HostState`].
 //!
 //! Flag bits come straight from `vst::api::TimeInfoFlags` (the vst-rs
-//! transcription of the VST2.4 SDK). We never hand-roll the bit positions:
+//! transcription of the VST2.4 SDK); the bit positions are never hand-rolled.
 //! VST2.4 clusters four `*_VALID` bits at non-adjacent positions
 //! (`PPQ=9, TEMPO=10, BARS=11, CYCLE=12, TIME_SIG=13`) and
 //! `TRANSPORT_RECORDING` sits at bit 3 — mistranscribing any of them
@@ -37,7 +37,7 @@ use tutti_plugin_types::is_usable;
 /// The transport bits whose transition defines `TRANSPORT_CHANGED`.
 ///
 /// Ardour compares playing/recording/cycle; JUCE compares playing/recording.
-/// We take the wider set — a cycle being switched on or off is a transport
+/// The wider set wins here — a cycle being switched on or off is a transport
 /// state change by any reading of the SDK, and a plugin that resets on it is
 /// resetting for a real reason.
 fn transport_bits(flags: vst::api::TimeInfoFlags) -> i32 {

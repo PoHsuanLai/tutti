@@ -83,19 +83,25 @@ impl From<Param<Hz>> for Rate {
 
 /// How a source derives its position — the two clocks a modulator can run on.
 ///
-/// This was a `Rate` plus a `beat_synced: bool`, where the same [`Hz`] meant
-/// cycles-per-second under one flag and beats-per-cycle under the other. The
-/// two readings coincide at `1.0` and are reciprocal everywhere else, so the
-/// confusion was silent: it shipped once as a backwards doc comment and once as
-/// a literal reciprocal in the curve builder. Each arm now carries its own unit,
-/// so the pairing cannot be got wrong and there is nothing to keep in sync.
+/// **Each arm carries its own unit, and that is the point.** A free-running
+/// source is denominated in [`Hz`] (cycles per second, larger is faster); a
+/// synced one in [`BeatDuration`] (beats per cycle, larger is *slower*). The two
+/// are reciprocals that coincide at `1.0`, so a single shared number under a
+/// mode flag makes every mispairing silent — correct at `1.0`, and wrong by
+/// exactly the reciprocal everywhere else. Splitting the unit across the arms
+/// makes that unrepresentable rather than merely documented.
 #[derive(Debug, Clone)]
 pub enum SourceClock {
     /// Integrates elapsed time: `phase += hz * dt`. Independent of the
     /// transport, so it keeps running when the timeline is parked.
     ///
     /// Takes a [`Rate`], so a free-running rate can itself be modulated.
-    Free { rate: Rate },
+    Free {
+        /// Cycles per second — an [`Hz`], or a [`Param<Hz>`] read fresh each
+        /// frame. Larger is *faster*, the opposite of
+        /// [`Synced`](Self::Synced)'s span.
+        rate: Rate,
+    },
     /// Re-derives from transport position: `beat / beats_per_cycle`.
     ///
     /// A **span**, so `BeatDuration(2.0)` is a half-note sweep — one cycle every
@@ -105,7 +111,13 @@ pub enum SourceClock {
     /// Not a [`Rate`]: [`Param`] is f32-only and a beat position needs f64, and
     /// continuously modulating the divisor would smear the transport lock this
     /// arm exists to provide. Add it when something actually wants it.
-    Synced { beats_per_cycle: BeatDuration },
+    Synced {
+        /// Beats per full cycle — a [`BeatDuration`] **span**, so larger is
+        /// *slower*. This is the reciprocal of an [`Hz`] reading, not a
+        /// synonym for one: the two coincide at `1.0` and diverge everywhere
+        /// else, so substituting one for the other is silent.
+        beats_per_cycle: BeatDuration,
+    },
 }
 
 /// A source's own rate — how its phase is generated from the transport, so each

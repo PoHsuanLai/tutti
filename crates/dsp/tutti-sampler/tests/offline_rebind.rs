@@ -1,15 +1,14 @@
 //! An offline render must not hear the live playhead — nor steal from it.
 //!
-//! These two properties were guarded in `tutti-export`'s deleted
-//! `ecs::render_region` module, against a `rebind_net_transport` free function
-//! that walked the net downcasting to each type it knew. That function is gone;
-//! the behaviour now lives on each node as `AudioUnit::rebind_offline`, so the
-//! guards move here, next to the implementations.
+//! Rebinding is a per-node duty (`AudioUnit::rebind_offline`), which is why the
+//! guards live here beside the implementations rather than in the exporter.
 //!
-//! The shape matters as much as the assertions: the predecessor's ladder knew
-//! `VoicePool` and `VoiceNode` only, so `MemorySource` and `DiskVoice` — both
-//! `AudioUnit` graph nodes holding a transport — were silently skipped. The
-//! third test pins that gap closed.
+//! The shape matters as much as the assertions. The alternative — one free
+//! function walking the net and downcasting to each type it knows — silently
+//! skips any node the ladder forgot, and `MemorySource` and `DiskVoice` are
+//! exactly that shape: `AudioUnit` graph nodes holding a transport, easy to miss
+//! because the obvious two are `VoicePool` and `VoiceNode`. The third test pins
+//! that gap closed.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;

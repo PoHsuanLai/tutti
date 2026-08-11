@@ -13,9 +13,8 @@
 //!   Flex metadata describes the session to downstream gear, and only the
 //!   outbound mailbox is drained to the wire.
 //!
-//! The JR stamper and the native-UMP transport used to live here too. They are
-//! not metadata — they are the wire — and now live in
-//! [`hardware_out`](super::hardware_out).
+//! The JR stamper and the native-UMP transport are not metadata — they are the
+//! wire — and live in [`hardware_out`](super::hardware_out).
 
 use bevy_app::{App, Plugin, Update};
 use bevy_ecs::message::{Message, MessageReader};
@@ -55,7 +54,10 @@ pub enum BroadcastFlexMetadata {
     ChordName(ChordName),
     /// Set Key Signature (M2-104 §7.5.9).
     KeySignature {
+        /// The tonic (root pitch class) of the key.
         tonic: Tonic,
+        /// The accidental count as `Sharps(n)` / `Flats(n)` / `NonStandard` —
+        /// the key-signature flavour, not the chord-name one.
         sharps_flats: KeySharpsFlats,
     },
     /// Set Tempo (M2-104 §7.5.7), in beats per minute.
@@ -81,7 +83,14 @@ pub enum BroadcastFlexMetadata {
     },
     /// One of the ~19 text/metadata messages (project / composition / clip name,
     /// lyrics, copyright, composer/performer names, …).
-    Text { kind: FlexTextKind, text: String },
+    Text {
+        /// Which of the text messages this is — the kind is the only thing
+        /// distinguishing a lyric from a copyright notice on the wire.
+        kind: FlexTextKind,
+        /// UTF-8, any length: the encoder splits it across as many 128-bit
+        /// packets as it needs.
+        text: String,
+    },
 }
 
 /// Send each requested Flex metadata value to external MIDI out as one or more

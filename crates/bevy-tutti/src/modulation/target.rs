@@ -1,7 +1,7 @@
 //! Turning an entity + a param address into a live accumulator.
 //!
 //! This is the one step the adapter cannot do generically, and the reason is
-//! worth stating: [`ModParams`](tutti_mod::ModParams) is implemented on concrete
+//! worth stating: [`ModParams`] is implemented on concrete
 //! node types (`Compressor`, `ChorusNode`, `PolySynth`, …), and reaching one
 //! through the graph needs [`node_as::<T>`](tutti_core::dsp::Net::node_as) —
 //! which takes a concrete `T`. There is no `&dyn ModParams` to recover from a
@@ -13,7 +13,14 @@
 //! node type in the engine — is the DAW vocabulary this crate exists to stay out
 //! of.
 //!
-//! ```rust,ignore
+//! ```rust
+//! use bevy_app::prelude::*;
+//! use bevy_tutti::modulation::{ModTargetRegistry, TuttiModulationPlugin};
+//!
+//! let mut app = App::new();
+//! app.add_plugins(TuttiModulationPlugin);
+//! // One line per node type this app modulates. Forgetting one is silent: the
+//! // route stays well-formed, the inspector shows the knob, nothing moves.
 //! app.world_mut()
 //!     .resource_mut::<ModTargetRegistry>()
 //!     .register::<tutti_units::Compressor>()
@@ -224,6 +231,10 @@ impl ModTargetResolver<'_, '_> {
         )))
     }
 
+    /// The shared [`ModBus`] a resolved target is registered on.
+    ///
+    /// The one bus [`ModBusRes`] holds — see it for why a second would leave the
+    /// driver dispatching into accumulators nothing reads.
     pub fn bus(&self) -> Arc<ModBus> {
         Arc::clone(&self.bus.0)
     }

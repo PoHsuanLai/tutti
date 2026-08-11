@@ -50,6 +50,8 @@ pub struct AudioTap {
 }
 
 impl AudioTap {
+    /// A **closed** tap. No ring is allocated until [`open`](Self::open), and
+    /// [`push`](Self::push) is one atomic load until then.
     pub fn new() -> Self {
         Self::default()
     }
@@ -109,10 +111,14 @@ impl AudioTap {
         self.on.load(Ordering::Acquire)
     }
 
-    /// Push interleaved stereo samples into the ring (RT-safe).
+    /// Push interleaved stereo samples into the ring.
     ///
-    /// Called from the audio callback. Never blocks: drops samples if the ring
-    /// is full or the producer is mid-swap. No-op while the tap is closed.
+    /// `frames` is a **frame** count, so `output` must hold at least
+    /// `frames * 2` samples.
+    ///
+    /// Called from the audio callback. RT-safe and never blocking: it
+    /// `try_lock`s, and drops frames if the ring is full or the producer is
+    /// mid-swap. No-op while the tap is closed.
     #[inline]
     pub fn push(&self, output: &[f32], frames: usize) {
         if !self.on.load(Ordering::Acquire) {

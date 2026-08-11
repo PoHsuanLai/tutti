@@ -1,8 +1,9 @@
 //! [`VoicePool`] — one graph node that plays every voice on a track.
 //!
-//! Replaces the old "one graph node per voice plus a dynamic summing unit"
-//! model: the pool owns its slots, drains [`VoiceCommand`]s each buffer, and
-//! sums the results itself.
+//! The pool owns its slots, drains [`VoiceCommand`]s each buffer, and sums the
+//! results itself. One node per track rather than one per voice plus a dynamic
+//! summing unit: adding or removing a voice then costs a queued command instead
+//! of a graph edit, which is what keeps voice churn off the commit path.
 
 use std::sync::Arc;
 
@@ -28,10 +29,21 @@ const VOICE_POOL_ID: u64 = 0x_0000_0000_0000_DA03;
 // ECS components — live on the track entity.
 // ---------------------------------------------------------------------------
 
+/// The control-thread handle to a track's pool, parked on the track entity so a
+/// system that has the entity can queue commands without a side registry.
+///
+/// Not `Clone` as a component even though the handle is: one owner per track,
+/// and a system that needs a second sender clones the inner
+/// [`VoicePoolHandle`].
 #[cfg(feature = "bevy")]
 #[derive(Component, Debug)]
 pub struct VoicePoolRef(pub VoicePoolHandle);
 
+/// The graph vertex the track's pool occupies, so a wiring system can name it as
+/// a source without searching the `Net`.
+///
+/// The id, not the unit: the unit belongs to the audio thread, and holding one
+/// here would be a second owner of state the graph already owns.
 #[cfg(feature = "bevy")]
 #[derive(Component, Debug, Clone, Copy)]
 pub struct VoicePoolNode(pub tutti_core::NodeId);
@@ -88,8 +100,25 @@ pub(crate) enum Retired {
 // VoicePool — the AudioUnit.
 // ---------------------------------------------------------------------------
 
+/// Every voice on one track, played and summed by a single graph node.
+///
+/// Zero inputs, [`channels`](Self::channels) outputs. Each block it drains the
+/// command queue, checks the transport for a discontinuity, then reads and sums
+/// its slots — all of it on the audio thread, and all of it allocation-free
+/// provided the control side did its share: [`VoicePoolHandle::send`] builds any
+/// stretch filter a command implies, and [`VoicePoolHandle::collect_retired`]
+/// frees what the drain hands back.
+///
+/// Both source tiers live here side by side, as the `Memory` / `Disk` arms of
+/// [`VoiceSource`]; the slot's read forks on that enum rather than on a trait,
+/// which is what keeps a per-tier difference visible at the call site.
 pub struct VoicePool {
+    /// The resident slots, one per voice, summed in order. Reserved to
+    /// `MAX_RESIDENT_VOICES` at construction so the audio-thread `AddVoice`
+    /// drain does not reallocate.
     pub(crate) voices: Vec<VoiceSlot>,
+    /// Commands from the control thread, drained at the top of every block.
+    /// Shared with every clone of this unit — see this type's `Clone`.
     pub(crate) rx: Receiver<VoiceCommand>,
 
     /// Where removed slots go to be freed, off the audio thread.
@@ -104,9 +133,14 @@ pub struct VoicePool {
     /// Pushing to a bounded channel instead is lock-free and allocation-free.
     /// The control thread drains it via [`VoicePoolHandle::collect_retired`];
     /// if nobody ever does, the channel fills and the slot is dropped in the
-    /// callback as before — degrading to today's behaviour rather than leaking.
+    /// callback — a degraded free, never a leak.
     pub(crate) retired: Sender<Retired>,
+    /// The engine rate every slot and its stretch filter is tuned to. Written by
+    /// `set_sample_rate` and forwarded to each of them, so a device-rate change
+    /// cannot leave a filter tuned to the old one.
     pub(crate) sample_rate: SampleRate,
+    /// The clock a placed voice derives its window position from. `None` for a
+    /// free-running pool, where every voice plays from its own head.
     pub(crate) transport: Option<Arc<dyn Timeline>>,
     /// Typed butler write handle. `Some` on the live path (threaded in from the
     /// [`DiskStreamer`](crate::DiskStreamer)); `None` for tests / detached / offline
@@ -197,11 +231,19 @@ impl VoicePool {
         }
     }
 
-    /// Output width — this node's `outputs()`.
+    /// Output width — this node's `outputs()`, as a [`ChannelLayout`] rather
+    /// than a bare count. Fixed for the pool's lifetime.
     pub fn channels(&self) -> ChannelLayout {
         self.channels
     }
 
+    /// Build a free-running stereo pool and its control handle.
+    ///
+    /// No transport and no butler: voices play from their own heads, and a
+    /// streaming voice's loop command is dropped with a warning because loop is
+    /// butler-owned. For a pool on the timeline use
+    /// [`with_transport`](Self::with_transport); for one at a non-stereo width,
+    /// [`with_channels`](Self::with_channels).
     pub fn new() -> (Self, VoicePoolHandle) {
         let (tx, rx) = bounded(COMMAND_CAPACITY);
         let (retired_tx, retired) = bounded(MAX_RESIDENT_VOICES);
@@ -216,6 +258,12 @@ impl VoicePool {
         (unit, handle)
     }
 
+    /// Build a stereo pool on `transport` and its control handle.
+    ///
+    /// `butler` is the typed write handle streaming voices need: without it a
+    /// disk-backed voice still plays, but its loop commands are dropped with a
+    /// warning, because the loop-start fadein head lives on the butler side and
+    /// the reader cannot reach it.
     pub fn with_transport(
         transport: Arc<dyn Timeline>,
         butler: Option<Commands>,
@@ -332,8 +380,9 @@ impl VoicePool {
     /// this after [`isolate`](AudioUnit::isolate) has emptied the reader, so it
     /// only needs to seat the render's transport; any voices inserted afterward
     /// (via [`insert_voice`](Self::insert_voice)) are built against it. Mirrors
-    /// [`VoiceNode::replace_transport`] so both transport-aware nodes rebind the
-    /// same way in the render's isolation pass.
+    /// [`VoiceNode::replace_transport`](super::node::VoiceNode::replace_transport)
+    /// so both transport-aware nodes rebind the same way in the render's
+    /// isolation pass.
     pub fn replace_transport(&mut self, transport: Arc<dyn Timeline>) {
         for slot in &mut self.voices {
             slot.voice.replace_transport(transport.clone());
@@ -362,9 +411,9 @@ impl VoicePool {
     ///   fadein head off disk and mutates `plan.link.loop_config`, neither
     ///   reachable from the reader — so the reader FORWARDS to the butler via the
     ///   typed [`Commands`] handle (`Command::Loop`, which maps `On`→
-    ///   `SetStreamLoop` / `Off`→`ClearStreamLoop`). This is the same command
-    ///   dawai-model used to send itself; it now originates here so dawai speaks
-    ///   one unified `VoiceCommand` for both tiers.
+    ///   `SetStreamLoop` / `Off`→`ClearStreamLoop`). Originating the forward here
+    ///   is what lets a host speak one `VoiceCommand` for both tiers instead of
+    ///   forking on the tier itself.
     ///
     /// RT-safe: this runs on the COLD command drain (top of `tick`/`process`,
     /// before the per-sample loop), so the channel send is fine — it never
@@ -412,30 +461,13 @@ impl VoicePool {
         }
     }
 
-    /// Insert a fully-built [`Voice`] as a new slot and REALISE its full
-    /// `Playback` intent per-tier — the single path the [`AddVoice`] command
-    /// funnels through. Public so a voice-aware caller (the offline region
-    /// render's `Populate` step) can hand the reader a `Voice` it built from
-    /// ECS DATA — gain / loop / direction / stretch / pitch carried on
-    /// `voice.play` — instead of pre-poking a `MemorySource` before send.
-    ///
-    /// The `Playback` is control-INTENT; each tier applies it its own way. Rather
-    /// than duplicate the tier fork, we replay the exact cold-path appliers the
-    /// `Update*` commands use: `VoiceSource::apply_*` (per-tier match — in-memory
-    /// stores on the `MemorySource`, streaming forwards to the shared `RtState`)
-    /// for gain / speed / direction, and `apply_loop` for loop (in-memory
-    /// primes the range in-unit, streaming forwards `Command::Loop` to the
-    /// butler). Stretch/pitch are primed by `VoiceSlot::new` from `play`. Runs on
-    /// the COLD command drain, so the loop's butler send is RT-safe.
-    ///
-    /// [`AddVoice`]: VoiceCommand::AddVoice
     /// As [`insert_voice`](Self::insert_voice), taking a stretch filter the
     /// caller already built.
     ///
-    /// This is the audio-thread-safe form: the drain uses it so the callback
-    /// only MOVES a filter rather than constructing one. `None` leaves the slot
+    /// **The audio-thread-safe form**: the drain uses it so the callback only
+    /// MOVES a filter rather than constructing one. `None` leaves the slot
     /// without a filter, which is correct both for a voice that does not stretch
-    /// and (transiently) for one whose filter has not arrived yet: the hot paths
+    /// and (transiently) for one whose filter has not arrived yet — the hot paths
     /// then read the source dry rather than silencing it.
     pub fn insert_voice_with_stretch(
         &mut self,
@@ -446,11 +478,35 @@ impl VoicePool {
         self.insert_voice_inner(id, voice, stretch);
     }
 
-    /// Insert a voice, building the stretch filter here if one is needed.
+    /// Insert a fully-built [`Voice`] as a new slot and REALISE its full
+    /// `Playback` intent per-tier, building the stretch filter here if the voice
+    /// needs one.
     ///
-    /// **Allocates when the voice stretches** — control-thread callers only.
-    /// The audio-thread drain goes through
-    /// [`insert_voice_with_stretch`](Self::insert_voice_with_stretch) instead.
+    /// The single path [`VoiceCommand::AddVoice`] funnels through. Public so a
+    /// voice-aware caller (the offline region render's `Populate` step) can hand
+    /// the reader a `Voice` it built from ECS data — gain / loop / direction /
+    /// stretch / pitch carried on `voice.play` — instead of pre-poking a
+    /// `MemorySource` before the send.
+    ///
+    /// # How the intent is realised
+    ///
+    /// The `Playback` is control-INTENT, and each tier applies it its own way.
+    /// Rather than duplicate the tier fork, this replays the exact cold-path
+    /// appliers the `Update*` commands use: `VoiceSource::apply_*` (per-tier
+    /// match — in-memory stores on the `MemorySource`, streaming forwards to the
+    /// shared state the butler ring reads) for gain / speed / direction, and
+    /// `apply_loop` for loop (in-memory primes the range in-unit, streaming
+    /// forwards `Command::Loop` to the butler). Stretch and pitch are primed
+    /// from `play` when the slot is built.
+    ///
+    /// # Thread
+    ///
+    /// **Allocates when the voice stretches** — control-thread callers only. The
+    /// audio-thread drain goes through
+    /// [`insert_voice_with_stretch`](Self::insert_voice_with_stretch) instead,
+    /// where the filter arrives pre-built. Either way the work sits on the COLD
+    /// command drain, above the per-sample loop, so the loop's butler send never
+    /// touches the hot path.
     pub fn insert_voice(&mut self, id: SlotId, voice: Voice) {
         let stretch = stretch_wanted(&voice.play).then(|| {
             let unit = stretch::Unit::with_channels(self.sample_rate, self.channels);
@@ -507,21 +563,21 @@ impl VoicePool {
                     // instead — a lock-free push, no free.
                     if let Some(i) = self.voices.iter().position(|s| s.id == id) {
                         let slot = self.voices.swap_remove(i);
-                        // A full or disconnected channel drops here, which is
-                        // exactly the old behaviour: correctness is unaffected,
-                        // only the thread that pays for the free.
+                        // A full or disconnected channel drops the slot right
+                        // here instead: correctness is unaffected, only the
+                        // thread that pays for the free.
                         let _ = self.retired.try_send(Retired::Slot(slot));
                     }
                 }
                 VoiceCommand::ReplaceWave { id, wave } => {
                     if let Some(slot) = self.slot_mut(id) {
                         // Match the tier explicitly rather than calling through
-                        // a shared setter whose streaming half was a silent
-                        // no-op: a `ReplaceWave` aimed at a disk voice did
-                        // nothing and said nothing. Swapping a streaming
-                        // source means re-registering the butler stream on a
-                        // different file, which is a control-thread op issued
-                        // from dawai-model as a fresh `AddVoice`.
+                        // a shared setter: the streaming half has nothing to
+                        // do, and a shared setter would make a `ReplaceWave`
+                        // aimed at a disk voice do nothing and say nothing.
+                        // Swapping a streaming source means re-registering the
+                        // butler stream on a different file, which is a
+                        // control-thread op issued as a fresh `AddVoice`.
                         match &mut slot.voice.source {
                             VoiceSource::Memory(sampler) => sampler.set_wave(wave),
                             VoiceSource::Disk(_) => {
@@ -556,11 +612,11 @@ impl VoicePool {
                 VoiceCommand::UpdateSpeed { id, speed } => {
                     if let Some(slot) = self.slot_mut(id) {
                         // Unified across tiers: both backends carry speed in-unit.
-                        // In-memory stores it on the `MemorySource`; streaming forwards
-                        // to the shared `RtState` (the exact speed effect of the
-                        // butler's `SetVarispeed`, reachable from the reader). The
-                        // `apply_speed` covers both — dawai no longer
-                        // forks streaming speed onto a separate butler command.
+                        // In-memory stores it on the `MemorySource`; streaming
+                        // forwards to the shared `RtState` (the exact speed
+                        // effect of the butler's `SetVarispeed`, reachable from
+                        // the reader). `apply_speed` covers both, so a host
+                        // never forks streaming speed onto a butler command.
                         slot.voice.source.apply_speed(speed);
                         slot.voice.play.speed = speed;
                     }
@@ -594,8 +650,8 @@ impl VoicePool {
                         // forwards to the shared `RtState` (the direction leg of the
                         // butler's `SetVarispeed`) — `voice.play.direction` is
                         // unused by the ring pull. One command reaches both, so
-                        // dawai sends reverse ONCE, no longer folding it into a
-                        // separate butler speed command.
+                        // a host sends reverse ONCE rather than folding it into
+                        // a separate butler speed command.
                         slot.voice.play.direction = direction;
                         slot.voice.source.apply_direction(direction);
                     }
@@ -632,8 +688,8 @@ impl Clone for VoicePool {
         // `AudioUnit: DynClone`, so the graph (fundsp `Net`) clones this unit on
         // commit (frontend↔backend mem-swap) and may clone it on realloc. The
         // clone therefore MUST keep receiving the commands the ECS handle's
-        // `Sender` still feeds — so we share the *same* `Receiver` rather than
-        // minting a fresh, dead channel. `crossbeam` delivers each message to
+        // `Sender` still feeds — hence the *same* `Receiver` rather than a
+        // fresh, dead channel. `crossbeam` delivers each message to
         // exactly one receiver, and the live graph only ever ticks one instance
         // at a time, so there is no double-drain.
         //

@@ -36,12 +36,25 @@ fn raise_to_realtime() {
     }
 }
 
+/// The subprocess-side server: one hosted plugin, one host connection.
+///
+/// Construct with [`PluginServer::new`] and hand control to
+/// [`PluginServer::run`], which does not return until the host disconnects or
+/// asks for shutdown. Dropping it closes any open editor window and unlinks the
+/// socket.
 pub struct PluginServer {
     config: BridgeConfig,
     session: Session,
 }
 
 impl PluginServer {
+    /// Bind nothing yet — record the spawning host's PID and prepare an empty
+    /// session. The socket is not created until [`PluginServer::run`].
+    ///
+    /// # Errors
+    ///
+    /// Currently infallible; the `Result` is part of the constructor's contract
+    /// so setup that can fail may be added without a breaking change.
     pub fn new(config: BridgeConfig) -> Result<Self> {
         // Before anything can block: the orphan check compares against the PID
         // recorded here, and recording it later would sample a reaper instead
@@ -53,6 +66,28 @@ impl PluginServer {
         })
     }
 
+    /// Serve one host, then return. Blocks for the lifetime of the session.
+    ///
+    /// # The two-phase connection dance
+    ///
+    /// The host connects twice, and the split is what lets the second phase run
+    /// at realtime priority without the load-time work behind it:
+    ///
+    /// 1. **Handshake** — plugin load, format negotiation, shared-memory setup.
+    ///    Returns early if the host asks for shutdown before any audio flows.
+    /// 2. **Audio** — per-block traffic for the rest of the session. The thread
+    ///    is raised to realtime priority on entry, and async plugin events are
+    ///    drained to the host after each block.
+    ///
+    /// Each phase opens with a [`BridgeMessage::Ready`] carrying
+    /// `PROTOCOL_VERSION`; the host refuses a version it does not know.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the socket cannot be bound, or if the audio phase's
+    /// transport fails. A transport failure during the *handshake* is treated as
+    /// the host having gone away and returns `Ok(())` — there is no session to
+    /// report an error to.
     pub fn run(mut self) -> Result<()> {
         let listener = TransportListener::bind(&self.config.socket_path)?;
 

@@ -23,6 +23,30 @@ type MaxRootChannels = U8;
 
 /// The audio engine: ticks the DSP graph + transport and renders one output
 /// buffer per block from the audio callback.
+///
+/// # What it owns, and what it deliberately does not
+///
+/// `Engine` is the *audio-thread half* of the runtime and holds only what a
+/// render needs: the transport's [`MotionFsm`], the committed
+/// [`NetBackend`], and a cached [`Declick`]. It owns no graph topology, no
+/// parameter storage and no device configuration — the control thread keeps
+/// fundsp's `Net` frontend and hands changes over by committing, so nothing
+/// here allocates, locks, or edits a graph.
+///
+/// That split is the reason this is a distinct type rather than a method on the
+/// transport or the graph. Both of those are edited from the control thread;
+/// this is touched only from the callback. Fusing it into either would put a
+/// control-thread API and an RT-only API on one object, where the compiler can
+/// no longer say which methods are safe to call from where — and the failure is
+/// silent, because a lock or an allocation on the audio thread produces a
+/// dropout rather than an error.
+///
+/// [`process`](Self::process) is the per-block entry point the callback calls:
+/// it drains pending motion, renders through
+/// [`process_segment`](Self::process_segment), then applies any declick fade.
+/// The latter is public separately because it is the pure render — useful to
+/// drive directly in a test or an offline pass, where transport motion and
+/// declicking are not in play.
 pub struct Engine {
     motion: MotionFsm,
     net_backend: AudioThreadCell<Option<NetBackend>>,
@@ -31,6 +55,11 @@ pub struct Engine {
 }
 
 impl Engine {
+    /// Build an engine over a transport's motion FSM and a committed graph
+    /// backend.
+    ///
+    /// `net_backend` is the audio-thread half of fundsp's `Net`; the control
+    /// thread keeps the frontend and hands changes over by committing.
     pub fn new(motion: MotionFsm, net_backend: NetBackend) -> Self {
         let declick = motion.declick.clone();
         Self {
@@ -55,15 +84,13 @@ impl Engine {
     ///
     /// # Three widths are live here; only one is the buffer's
     ///
-    /// This function juggles the output width (`out_ch`, from `output`'s own
-    /// layout) and the graph root's width (`root_channels`, from
-    /// `backend.outputs()`, clamped to what the scratch holds). They are
-    /// different numbers with different sources, and confusing them writes past
-    /// the end of one buffer or reads garbage from the other. The output width
-    /// now arrives welded to the buffer it strides, which removes one of the
-    /// three places that confusion could enter — the frame count and the width
-    /// used to be two loose arguments the caller had to keep consistent with the
-    /// slice, and nothing checked that they were.
+    /// The output width (`out_ch`) comes from `output`'s own layout; the root's
+    /// (`root_channels`) from `backend.outputs()`, clamped to the scratch. They are
+    /// different numbers from different sources, and confusing them writes past the
+    /// end of one buffer or reads garbage from the other. The output width arrives
+    /// welded to the buffer it strides, which is what makes the third confusion —
+    /// a width disagreeing with its slice — unrepresentable rather than merely
+    /// unlikely.
     ///
     /// The scratch is a stack-allocated [`BufferArray`] sized to
     /// [`MAX_ROOT_CHANNELS`], **sliced to the root's actual output count** before
@@ -90,7 +117,7 @@ impl Engine {
         // just-committed width change (e.g. the master going surround via
         // `commit_output_arity_change`) is reflected in `outputs()` and the
         // scratch is sliced to the new width this same block. `process` below
-        // also drains, but it reads the width from the buffer we slice here — so
+        // also drains, but it reads the width from the buffer sliced here — so
         // the pump must happen first. Cheap and RT-safe: it only swaps in an
         // already-allocated net from the commit queue (no allocation).
         backend.pump();
@@ -156,9 +183,8 @@ impl Engine {
         let channels = output.stride();
         let frames = output.len();
         let output = output.samples_mut();
-        // Both operands are frame counts in one type now. They used to be a
-        // `u32` fade length and a `usize` block length, comparable only because
-        // both had been stripped to bare integers.
+        // Both operands are frame counts in one type, so the fade length and
+        // the block length cannot be compared as bare integers by accident.
         let frames_to_process = remaining.min(frames);
 
         for i in 0..frames_to_process {
@@ -202,7 +228,12 @@ impl Engine {
         }
     }
 
-    /// Reset `AudioThreadCell` owners for device switching.
+    /// Reset the audio-thread ownership assertions on both cells.
+    ///
+    /// Call when the device switches and a different thread takes over the
+    /// callback: `AudioThreadCell` pins the first thread that borrows it and
+    /// panics in debug builds on any other, so a new callback thread must be
+    /// announced rather than discovered.
     pub fn reset_owners(&self) {
         self.net_backend.reset_owner();
         self.motion.reset_owner();

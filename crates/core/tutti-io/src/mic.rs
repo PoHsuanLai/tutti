@@ -1,13 +1,12 @@
 //! Live-input monitoring node — the mic twin of the disk-streaming unit.
 //!
-//! `DiskSource`
-//! drains a ring the *butler* fills off disk; [`MicMonitorNode`] drains a ring
-//! a *capture device* fills. Both are `AudioUnit`s with 0 inputs / 2 outputs
-//! whose whole job is "pop the next frame the producer pushed, or emit silence
-//! on underrun." The producer end lives in the device layer (`tutti-cpal`'s
-//! `MicIn`); this node is device-free so it can sit anywhere in the graph —
-//! `pipe` it through effects and you hear the mic live, effected, while
-//! recording the same ring to a `WavOut`.
+//! `DiskSource` (tutti-sampler) drains a ring the *butler* fills off disk;
+//! [`MicMonitorNode`] drains a ring a *capture device* fills. Both are
+//! `AudioUnit`s with 0 inputs / 2 outputs whose whole job is "pop the next frame
+//! the producer pushed, or emit silence on underrun." The producer end lives in
+//! the device layer (`tutti-cpal`'s `MicIn`); this node is device-free so it can
+//! sit anywhere in the graph — `pipe` it through effects and the mic is heard
+//! live and effected while the same ring records to a [`WavOut`](crate::WavOut).
 //!
 //! # The ring handle
 //!
@@ -20,8 +19,8 @@
 //!   single-consumer discipline below keeps that sound.
 //! - **Lock-free on the hot path.** [`AudioThreadCell`] hands `&mut` access
 //!   through `&self` with no `Mutex` (a debug-only in-use flag catches genuine
-//!   concurrent borrows). This mirrors why the streaming reader dropped its old
-//!   `Arc<Mutex<_>>` — the ring is single-consumer, so no lock is required.
+//!   concurrent borrows). The ring is single-consumer, so no lock is required —
+//!   the same reasoning the streaming reader runs on.
 //!
 //! # Single-consumer invariant
 //!
@@ -73,8 +72,8 @@ impl MicRing {
 
 impl std::fmt::Debug for MicRing {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // The inner `HeapCons` isn't `Debug` and its occupancy is a hot-path
-        // read we shouldn't take here; a shared-count summary is enough.
+        // The inner `HeapCons` isn't `Debug`, and its occupancy is a hot-path
+        // read this must not take; a shared-count summary is enough.
         f.debug_struct("MicRing")
             .field("shared", &Arc::strong_count(&self.0))
             .finish_non_exhaustive()

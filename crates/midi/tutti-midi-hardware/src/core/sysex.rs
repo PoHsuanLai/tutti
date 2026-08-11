@@ -1,9 +1,9 @@
 //! MIDI 1.0 SysEx reassembly, and its promotion to UMP SysEx7.
 //!
-//! A driver hands us SysEx in whatever chunks the transport happened to produce:
+//! A driver delivers SysEx in whatever chunks the transport happened to produce:
 //! a long dump spans several callbacks, a middle chunk arrives with no leading
-//! `0xF0`, and two short dumps can share one buffer. [`Sysex7ByteAssembler`] absorbs
-//! that and yields complete payloads as UMP SysEx7 packets.
+//! `0xF0`, and two short dumps can share one buffer. [`Sysex7ByteAssembler`]
+//! absorbs that and yields complete payloads as UMP SysEx7 packets.
 //!
 //! # Why this survives the move to native UMP
 //!
@@ -20,9 +20,9 @@
 //! # OS-free on purpose
 //!
 //! Nothing here touches a driver, so every branch is unit-testable without a
-//! device. In its previous home — inside the midir input callback — the
-//! completion, overflow, and multi-run paths had no test surface at all, which
-//! is how the three bugs below survived.
+//! device. Keep it that way: inside a driver callback the completion, overflow
+//! and multi-run paths have no test surface at all, which is how the three bugs
+//! the tests below pin survived for as long as they did.
 //!
 //! The allocation gate lives in `tests/rt_no_alloc_sysex.rs` rather than here:
 //! `assert_no_alloc` is inert without a `#[global_allocator]`, which only a test
@@ -90,10 +90,10 @@ impl Sysex7ByteAssembler {
     ///
     /// **Completing** a run still allocates, and not here:
     /// [`MidiEvent::sysex7_fragments`] builds a `Sysex7::<Vec<u32>>` internally
-    /// on every call (`tutti-midi-types/src/ump/sysex.rs:33`). Fixing that needs
-    /// an array-backed or reusable-builder API in `tutti-midi-types`; it cannot
-    /// be done from this crate. `tests/rt_no_alloc_sysex.rs` gates the part that
-    /// is reachable and documents the part that is not.
+    /// on every call. Fixing that needs an array-backed or reusable-builder API
+    /// in `tutti-midi-types`; it cannot be done from this crate.
+    /// `tests/rt_no_alloc_sysex.rs` gates the part that is reachable and
+    /// documents the part that is not.
     pub fn push(&mut self, message: &[u8], out: &mut Vec<MidiEvent>) -> usize {
         let mut completed = 0;
         let mut rest = message;
@@ -256,7 +256,7 @@ mod tests {
         // More of the same dump keeps being discarded, not buffered.
         assert_eq!(asm.push(&[0x7F; 64], &mut out), 0);
 
-        // Its terminator resyncs us without emitting the garbage...
+        // Its terminator resyncs the assembler without emitting the garbage...
         assert_eq!(asm.push(&[0xF7], &mut out), 0, "the bad run is not emitted");
         assert!(out.is_empty());
         assert!(!asm.in_flight(), "and the assembler is clean again");

@@ -55,13 +55,14 @@ impl Encoder for OggEncoder {
     ) -> Result<()> {
         // Through `pump_blocks`, not `drive` — that is what applies the
         // resample. Calling `drive` directly while still taking the header rate
-        // from `encoder_rate` wrote un-resampled audio under a header claiming
-        // the target rate: a 1 s render played back 8.8% fast.
+        // from `encoder_rate` writes un-resampled audio under a header claiming
+        // the target rate, playing back 8.8% fast at 44.1->48 k.
         //
         // Vorbis is lossy and float internally, so `pump_blocks`'s dither stage
-        // is a no-op here by construction — `DitherState::for_config` only
-        // arms for an integer bit depth.
-        // Once, at entry — not re-derived per block.
+        // is a no-op here by construction — `DitherState::for_config` arms only
+        // for an integer bit depth.
+
+        // The stride, derived once at entry — not re-derived per block.
         let ch = config.encode.channels.count() as usize;
         let mut planes: Vec<Vec<f32>> = vec![Vec::new(); ch];
         pump_blocks(src, source_rate, plan, config, |frames| {
@@ -74,11 +75,11 @@ impl Encoder for OggEncoder {
                     p.push(s);
                 }
             }
-            // An EMPTY block is vorbis's end-of-stream signal. `pump_blocks`
-            // legitimately emits one (the resampler flushes after its last
-            // real block), and passing it through here closed the stream early
-            // and left the encoder writing garbage pages — a 1 s render came
-            // out 178 KB instead of 7.8 KB.
+            // An EMPTY block is vorbis's end-of-stream signal, and `pump_blocks`
+            // legitimately emits one (the resampler flushes after its last real
+            // block). Passing it through closes the stream early and leaves the
+            // encoder writing garbage pages — a 1 s render comes out 178 KB
+            // instead of 7.8 KB. Dropping it here is load-bearing.
             if frames.is_empty() {
                 return Ok(());
             }

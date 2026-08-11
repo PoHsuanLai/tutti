@@ -1,6 +1,16 @@
 //! Lifecycle transitions and queries: `ClapLoaded`'s metadata accessors and
 //! `activate`, the active-side `ClapActive` methods (`process` lives in
 //! [`super::audio`]), the `Deref` bridge, and the `Drop` teardown for both.
+//!
+//! Both transitions consume `self`, which is what makes a handle to a
+//! deactivated plugin unrepresentable; the `Deref` bridge is what stops that
+//! from costing the caller the pre-activation surface. Rationale for both is in
+//! the crate root. What this file owns is the part neither the type system nor
+//! `Deref` can express: the FFI ordering. `activate_plugin` / `deactivate_plugin`
+//! are `&mut self` on `ClapLoaded` because the transitions are not their only
+//! caller — `reconfigure` drives the same pair in place, since CLAP fixes the
+//! sample rate and `max_frames` at `activate()` and a change to either must be
+//! bracketed by a deactivation the host never surfaces as a state change.
 
 use super::config::AudioScratch;
 use super::{ClapActive, ClapLoaded};
@@ -22,18 +32,26 @@ const EVENT_SCRATCH_CAPACITY: usize = 256;
 const PARAM_QUEUE_CAPACITY: usize = 16;
 
 impl ClapLoaded {
+    /// Whether any of the plugin's audio ports advertises 64-bit support.
+    /// Activating as `ClapActive<f64>` requires this.
     pub fn supports_f64(&self) -> bool {
         self.audio.supports_f64
     }
 
+    /// Metadata read from the plugin's descriptor at load time.
     pub fn info(&self) -> &PluginInfo {
         &self.info
     }
 
+    /// Sample rate in Hz the plugin was initialized with. A bare `f64`
+    /// because it crosses to C as one; unit types stop at this boundary.
     pub fn sample_rate(&self) -> f64 {
         self.audio.sample_rate
     }
 
+    /// Largest block, in **frames**, the plugin was activated for. A `process`
+    /// call asking for more is refused with
+    /// [`crate::ClapError::BlockTooLarge`].
     pub fn block_size(&self) -> u32 {
         self.audio.max_frames
     }
@@ -60,9 +78,19 @@ impl ClapLoaded {
     /// `T` fixes the processing sample format. `ClapActive<f64>` requires the
     /// plugin to advertise 64-bit support; otherwise this returns
     /// [`ClapError::NotSupported`].
+    ///
+    /// # Errors
+    /// The `Err` carries the **unconsumed** `ClapLoaded` beside the error, so a
+    /// refusal costs the configuration and not the instance: a plugin that
+    /// declines 64-bit audio is retried at `f32` against the same mapped
+    /// library, the same instance and the same already-read parameter tree,
+    /// with no reload. Both failure paths preserve it — the `f64` check returns
+    /// before any FFI runs, and a plugin-side refusal leaves the instance
+    /// untouched and not active.
     // The `Err` variant deliberately hands `self` (a large `ClapLoaded`) back so
     // the caller can retry or fall back; boxing it would defeat that ownership
-    // return and add a heap alloc on the (rare) failure path.
+    // return and add a heap alloc on the (rare) failure path. That is the whole
+    // reason the lint is suppressed rather than obeyed: the size IS the feature.
     #[allow(clippy::result_large_err)]
     pub fn activate<T: super::ClapSample>(
         mut self,
@@ -181,6 +209,9 @@ impl ClapLoaded {
 }
 
 impl<T: super::ClapSample> ClapActive<T> {
+    /// Whether `start_processing` has succeeded and no `stop_processing` has
+    /// followed. Distinct from *active*: an activated instance is not
+    /// processing until the first `process` call self-starts it.
     pub fn is_processing(&self) -> bool {
         self.loaded.flags.processing
     }
@@ -314,7 +345,7 @@ impl<T: super::ClapSample> ClapActive<T> {
     /// [`ClapError::NotSupported`] if the plugin refuses `activate` at the new
     /// ceiling; the instance is **rolled back** to the previous `max_frames`
     /// and left active there. [`ClapError::LoadFailed`] if the rollback also
-    /// fails. See [`Self::reconfigure`].
+    /// fails.
     pub fn set_max_block_size(&mut self, max_frames: u32) -> Result<()> {
         if max_frames <= self.loaded.audio.max_frames {
             return Ok(());
@@ -339,8 +370,8 @@ impl<T: super::ClapSample> ClapActive<T> {
     /// Deactivate → re-activate at `(sample_rate, max_frames)`, restoring the
     /// previous configuration if the plugin refuses the new one.
     ///
-    /// A failed `activate` must not be discarded (both setters used to write
-    /// `let _ =`): `activate_plugin` returns early without setting
+    /// A failed `activate` must not be discarded — no `let _ =` here:
+    /// `activate_plugin` returns early without setting
     /// `flags.active`, leaving a `ClapActive` whose plugin is deactivated —
     /// exactly the state the type exists to rule out. `process` would then
     /// `start_processing` on a deactivated plugin, and
@@ -412,6 +443,19 @@ impl<T: super::ClapSample> ClapActive<T> {
     }
 }
 
+// The bridge that keeps the pre-activation surface reachable after activation.
+// Sound because CLAP does not revoke the loaded-state operations on activation
+// — it re-tags the threading contract of some of them. The partition runs one
+// way only: `process` requires active, and nothing on `ClapLoaded` requires
+// inactive. Where a contract does vary, the method reads `flags.active` at the
+// call (`flush_params`) rather than inferring it from the type, which works
+// because the flag lives on the `ClapLoaded` handed out here — so a method
+// reached through this impl sees the instance's real state, not a stale one.
+//
+// Adding a method to `ClapLoaded` that is illegal while active would break that
+// invariant silently: it would become callable on a `ClapActive` with nothing to
+// stop it. Such a method belongs on `ClapLoaded` only if it can gate itself on
+// `flags.active`; otherwise it belongs on `ClapActive`.
 impl<T: super::ClapSample> Deref for ClapActive<T> {
     type Target = ClapLoaded;
     fn deref(&self) -> &ClapLoaded {

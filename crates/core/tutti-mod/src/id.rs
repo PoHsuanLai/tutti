@@ -44,6 +44,9 @@ impl ModTargetId {
         Self(id)
     }
 
+    /// The raw id, for serialization or a stable sort key. Carries no meaning
+    /// beyond identity — the numbers are allocation order, not an ordering the
+    /// router respects.
     #[inline]
     pub const fn as_u64(self) -> u64 {
         self.0

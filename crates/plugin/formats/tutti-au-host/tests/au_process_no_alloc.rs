@@ -13,19 +13,19 @@
 //!
 //! ## What is covered, and why each one is here
 //!
-//! A single effect rendering silence — which is all this file used to be —
-//! exercises exactly one path. The operations below are the ones a DAW actually
-//! performs from its render thread, and each was *measured* rather than assumed:
+//! A single effect rendering silence exercises exactly one path, which is not
+//! enough. The operations below are the ones a DAW actually performs from its
+//! render thread, and each was *measured* rather than assumed:
 //!
 //! - **instrument render driven by MIDI**, because `AuInstance::send_midi`
 //!   decodes every event through `MidiEvent::message()` (a UMP `normalize()`
 //!   plus a `MidiMessage` construction) on what a host calls from the RT path.
-//!   That decode was the suspicious part, and it is the reason this file no
-//!   longer stops at effects.
+//!   That decode is the suspicious part, and it is why this file does not stop
+//!   at effects.
 //! - **render after a preset load**, **bypass toggling**, **per-element
-//!   parameter writes**, and **render after a sample-rate change** — the host
-//!   APIs this branch added, each of which reaches the AU through a property or
-//!   parameter write rather than through `AudioUnitRender`.
+//!   parameter writes**, and **render after a sample-rate change** — host APIs
+//!   that reach the AU through a property or parameter write rather than through
+//!   `AudioUnitRender`, so `AudioUnitRender` alone does not cover them.
 //!
 //! Every one measured allocation-free on macOS 15.6 (Apple silicon), with a
 //! scratch probe run while calibrating this file. So these are **regression

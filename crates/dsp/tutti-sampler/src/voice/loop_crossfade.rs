@@ -77,6 +77,10 @@ impl LoopCrossfade {
         self.active = false;
     }
 
+    /// Fade length in **frames**, not samples — a 4-frame fade at 6 channels
+    /// runs for 4 calls to [`process_in_place`](Self::process_in_place) and
+    /// stores `4 * 6` floats. Clamped to [`MAX_CROSSFADE_FRAMES`] at
+    /// construction and at [`retune`](Self::retune).
     pub fn len(&self) -> usize {
         self.crossfade_frames
     }
@@ -131,16 +135,23 @@ impl LoopCrossfade {
         }
     }
 
+    /// Arm the fade from frame 0. The next `len()` calls to
+    /// [`process_in_place`](Self::process_in_place) blend the stored tail in.
     pub fn start(&mut self) {
         self.position = 0;
         self.active = true;
     }
 
+    /// Disarm and rewind to frame 0, keeping the stored tail. Called at a loop
+    /// wrap so the next pass through the loop point arms a fresh fade rather
+    /// than resuming a half-finished one.
     pub fn reset(&mut self) {
         self.position = 0;
         self.active = false;
     }
 
+    /// Whether a fade is in flight. False once the fade has run its `len()`
+    /// frames, which is what tells the caller not to arm it again mid-fade.
     pub fn is_active(&self) -> bool {
         self.active
     }
@@ -206,9 +217,9 @@ mod tests {
     /// runs for exactly 4 calls. Counting samples would run it 6x too long and
     /// read past the pre-loop buffer.
     ///
-    /// The sibling `StreamingCrossfader` already pins this. This half of the
-    /// pair spelled the field `crossfade_samples` while every line of its body
-    /// multiplied by the stride — the naming that makes the width bug easy to
+    /// The sibling `StreamingCrossfader` pins the same property. Both halves
+    /// must name the quantity `frames`: a field spelled `samples` whose body
+    /// multiplies by the stride is the naming that makes this width bug easy to
     /// write and hard to see in review.
     #[test]
     fn the_fade_length_counts_frames_not_samples_at_six_channels() {

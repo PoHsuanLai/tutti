@@ -11,10 +11,9 @@
 //! its own 4-tap history. Same interpolation, different fetch.
 //!
 //! `read_frame` also owns the crate's **channel policy** (see its docs); the
-//! butler's planar unpack in [`wave_io`](crate::butler::io::wave_io) follows the
-//! same rule. Two implementations of a channel policy is how the two tiers drift
-//! apart — the same failure mode this module already exists to prevent for
-//! interpolation.
+//! butler's planar unpack in `wave_io` follows the same rule. Two
+//! implementations of a channel policy is how the two tiers drift apart — the
+//! same failure mode this module exists to prevent for interpolation.
 //!
 //! Everything here is pure per-sample arithmetic — no allocation, no locks —
 //! so it is safe to call from `process`/`tick` hot paths.
@@ -50,21 +49,20 @@ use crate::MAX_SAMPLER_CHANNELS;
 ///
 /// # Why both rate arguments are typed
 ///
-/// `source_rate` and `rate` used to be two bare `f64`s, and the two tiers split
-/// the sample-rate-conversion factor between them *differently*: memory passed
-/// `(wave.sample_rate(), speed × src_ratio)` while disk passed
-/// `(session_rate × src_ratio, speed)`. Those are algebraically equal — both are
-/// `seconds × file_rate × speed` — so both tiers were correct, but nothing in the
-/// signature said which split a caller was using. A third caller combining them
-/// the obvious way applies `src_ratio` twice; that already happened once, and the
-/// disk tier's own comment records it costing real time (on a 48 kHz file in a
-/// 44.1 kHz session the gate outran the ring by ~4.2k samples/second, tripping a
-/// seek about once a second, forever).
+/// The two tiers split the sample-rate-conversion factor between these two
+/// arguments *differently*: memory passes `(wave.sample_rate(), speed)` while
+/// disk passes `(session_rate × src_ratio, speed)`. Those are algebraically
+/// equal — both are `seconds × file_rate × speed` — so both are correct, but a
+/// caller cannot read which split it is using off the values alone. A third
+/// caller combining them the obvious way applies `src_ratio` twice, and the cost
+/// is concrete: on a 48 kHz file in a 44.1 kHz session the gate outruns the ring
+/// by ~4.2k source samples per second, tripping a seek about once a second,
+/// forever.
 ///
 /// [`ReadRate`] is the product's own type, so `rate` can only be built through
 /// [`PlaybackRate::read_rate`](tutti_core::PlaybackRate::read_rate) — the one
-/// place the two factors compose. A caller holding a bare varispeed can no longer
-/// pass it here by accident.
+/// place the two factors compose. A caller holding a bare varispeed cannot pass
+/// it here by accident.
 ///
 /// Returns `None` when the transport is stopped, the playhead is before
 /// `start_beat`, past `duration`, or the tempo is non-positive.
@@ -162,11 +160,11 @@ pub fn read_frame(wave: &Arc<Wave>, position: f64, out: &mut [f32]) {
     let frac = position.fract() as f32;
 
     let last = len - 1;
-    // All four taps clamp to `last`. `im1` needs it as much as the others:
-    // `saturating_sub` only guards the LOW end, so a `position` past
-    // `len` leaves it past the end too, and `Wave::at` is an unchecked
-    // index — that is a panic, not a bad sample. The one in-tree caller happens
-    // to gate on `position >= len` first, which is why it never fired.
+    // All four taps clamp to `last`, `im1` included: `saturating_sub` guards
+    // only the LOW end, so a `position` past `len` leaves `im1` past the end
+    // too, and `Wave::at` is an unchecked index — that is a panic, not a bad
+    // sample. The in-tree caller gates on `position >= len` first, but this is
+    // a `pub` function and must not depend on that.
     let im1 = idx.saturating_sub(1).min(last);
     let i0 = idx.min(last);
     let i1 = (idx + 1).min(last);
@@ -218,7 +216,9 @@ pub fn read_frame(wave: &Arc<Wave>, position: f64, out: &mut [f32]) {
     fold_frame(&src[..n], out);
 }
 
-/// Stereo shim over [`read_frame`], preserving the original 2-channel signature.
+/// Stereo shim over [`read_frame`]: returns the interpolated `(left, right)`
+/// pair for a fixed 2-channel read. Same channel policy — a mono wave fans to
+/// both sides, a wider one folds through the ITU-R BS.775 matrix.
 #[inline]
 pub fn read_stereo_frame(wave: &Arc<Wave>, position: f64) -> (f32, f32) {
     let mut out = [0.0f32; 2];
@@ -235,18 +235,17 @@ mod tests {
     /// **Gate parity.** Both tiers must derive the SAME source position from the
     /// same transport reading — asserted on the value, not on liveness.
     ///
-    /// This test found a live bug on its first run. Both tiers reach the gate with
-    /// a rate argument that is already the *file* rate — memory from
-    /// `wave.sample_rate()`, disk from `session_rate × src_ratio` — so the
-    /// beat→sample conversion is complete and the rate argument must carry
-    /// varispeed ALONE. The disk tier did that and said so in a comment; the
-    /// memory tier passed its full `read_rate`, applying `src_ratio` a second
-    /// time and landing 8.8% deep on a 48 kHz file in a 44.1 kHz session.
+    /// Both tiers reach the gate with a rate argument that is already the *file*
+    /// rate — memory from `wave.sample_rate()`, disk from `session_rate ×
+    /// src_ratio` — so the beat→sample conversion is complete and the rate
+    /// argument must carry varispeed ALONE. Passing a full `read_rate` here
+    /// applies `src_ratio` a second time and lands 8.8% deep on a 48 kHz file in
+    /// a 44.1 kHz session.
     ///
-    /// It stayed invisible because every other test on this path uses matched
-    /// rates, where `src_ratio` is `UNITY` and the extra factor is exactly 1.0.
-    /// Hence the table below: the mismatched rows are the whole point, and the
-    /// matched row is there to show it is not what distinguishes them.
+    /// A doubled factor is invisible at matched rates, where `src_ratio` is
+    /// `UNITY` and the extra multiply is exactly 1.0. Hence the table below: the
+    /// mismatched rows are the whole point, and the matched row is there to show
+    /// it is not what distinguishes them.
     ///
     /// Driven at the kernel rather than through the two units, because that is
     /// where the splits meet — the units differ in how they *fetch*, which is a
@@ -459,8 +458,9 @@ mod tests {
     }
 
     /// A 6-channel wave must deliver **all six** channels, each to its own slot —
-    /// not channel 0 fanned, not the front pair with four zeros. This is the
-    /// truncation the old `Stereo | Quad | Multi(_) => (at(0), at(1))` arm caused.
+    /// not channel 0 fanned, not the front pair with four zeros. A width match
+    /// arm collapsing to `(at(0), at(1))` truncates exactly that way, and every
+    /// stereo fixture in the crate passes over it.
     #[test]
     fn six_channel_wave_reaches_all_six_outputs() {
         let w = indexed_wave(6);
@@ -509,8 +509,8 @@ mod tests {
 
     /// Narrowing goes through the engine's ITU-R BS.775 matrix, not a front-pair
     /// truncation: a centre-only 5.1 source must reach **both** stereo outputs at
-    /// −3 dB. Cross-checked against `fold_frame` directly so this asserts "we used
-    /// the engine's matrix", not a number I chose.
+    /// −3 dB. Cross-checked against `fold_frame` directly so the assertion is
+    /// "the engine's matrix was used", not a hand-picked constant.
     #[test]
     fn six_channel_wave_on_a_stereo_frame_folds_through_the_itu_matrix() {
         // 5.1 order: L R C LFE Ls Rs — centre only.
@@ -560,8 +560,9 @@ mod tests {
     /// wave rather than relying on its caller to gate first.
     ///
     /// `Wave::at` is an unchecked `self.vec[c][i]`, so an unclamped tap panics
-    /// instead of returning a wrong sample. `im1` used `saturating_sub(1)`,
-    /// which guards only the LOW end — every other tap was `.min(last)`.
+    /// instead of returning a wrong sample. The trap is `im1`: `saturating_sub(1)`
+    /// guards only the LOW end, so it needs `.min(last)` exactly as the other
+    /// three taps do.
     #[test]
     fn position_past_the_end_does_not_panic() {
         let w = stereo_ramp();

@@ -14,8 +14,8 @@ use bevy_ecs::prelude::*;
 /// a second one and every registered sender lands somewhere the audio thread
 /// never reads: MIDI silently stops, with no error and nothing in the log.
 ///
-/// Hence no `Default` and a private field — `init_resource::<MidiBusRes>()` used
-/// to compile and do exactly that. The only way in is [`new`](Self::new), which
+/// Hence no `Default` and a private field, so `init_resource::<MidiBusRes>()`
+/// does not compile. The only way in is `new`, which
 /// [`build_into`](crate::engine::build_into) calls with the pre-block's own bus.
 /// `MidiRoutingRes` guards the same hazard the same way.
 ///

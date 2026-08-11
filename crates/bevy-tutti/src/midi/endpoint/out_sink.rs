@@ -46,9 +46,31 @@ impl MidiOutSinkRes {
     /// `Arc::clone`, not a new buffer — the point is that every emitter and the
     /// post-block share one collection point.
     ///
-    /// ```ignore
-    /// // A host routes a hosted plugin's MIDI-out back into the graph:
-    /// plugin.set_midi_out(sink.handle());
+    /// ```rust
+    /// use std::sync::Arc;
+    ///
+    /// use bevy_ecs::prelude::*;
+    /// use bevy_tutti::midi::MidiOutSinkRes;
+    /// use tutti_midi_runtime::MidiOutSink;
+    ///
+    /// /// Stands in for an emitting node — a hosted plugin takes the same
+    /// /// `Arc` through `Plugin::set_midi_out(sink.handle())`.
+    /// struct Emitter(Arc<MidiOutSink>);
+    ///
+    /// /// A host routes an emitter's MIDI-out back into the graph. Only
+    /// /// installed on request: a sink is a **routing decision**, not an
+    /// /// address, so nothing hands one out unasked.
+    /// fn install(sink: Res<MidiOutSinkRes>) -> Emitter {
+    ///     Emitter(sink.handle())
+    /// }
+    ///
+    /// // `MidiOutSinkRes` itself is `engine::build_into`'s, so this shows the
+    /// // sharing claim on a bare sink: `handle` is an `Arc::clone`, not a new
+    /// // buffer, and every emitter plus the post-block collect into that one.
+    /// let shared = Arc::new(MidiOutSink::new());
+    /// let emitter = Emitter(Arc::clone(&shared));
+    /// assert!(Arc::ptr_eq(&emitter.0, &shared));
+    /// # let _ = install;
     /// ```
     pub fn handle(&self) -> Arc<tutti_midi_runtime::MidiOutSink> {
         Arc::clone(&self.0)

@@ -116,20 +116,21 @@ fn render(stretch: f32, cents: f32, seek_at: Option<usize>) -> Vec<f32> {
     // `offset_in_block` so each sample reads the right place; `tick` has no such
     // offset, so calling it 64 times against one transport reading emits the
     // SAME sample 64 times — a staircase that resamples the source downward and
-    // makes every case fail, including an unprocessed one.
+    // fails every case, including an unprocessed one.
     //
-    // That is what the first draft of this example did, and the `dry` control is
-    // what caught it: 440 Hz came out as 308 Hz with no processing engaged.
-    // Keeping the note because the mistake is invisible in any single case —
-    // only the control says "the harness is wrong, not the engine".
+    // The `dry` control is what distinguishes that from a real defect: driven
+    // wrongly it renders 440 Hz as 308 Hz with no processing engaged. The
+    // mistake is invisible in any single case, so only the control can say "the
+    // harness is wrong, not the engine".
     let ib = BufferArray::<U2>::new();
     let mut ob = BufferArray::<U2>::new();
     let mut out = Vec::with_capacity(FRAMES * 2);
     let mut rendered = 0usize;
     while rendered < FRAMES {
         if let Some(at) = seek_at {
-            // Jump the playhead forward at the block containing `at`, the case
-            // that used to smear pre-jump audio over the new region for ~48 ms.
+            // Jump the playhead forward at the block containing `at`. Without a
+            // flush the vocoder smears pre-jump audio over the new region for
+            // ~48 ms, which is what these two seek cases exist to catch.
             if rendered <= at && at < rendered + BLOCK {
                 // Beat 5 of an 8-beat wave (FRAMES*4 samples at 120 BPM). A
                 // seek past the material renders correct silence and proves

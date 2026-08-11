@@ -30,18 +30,24 @@ use tutti_plugin_types::transport::is_usable;
 /// [`ProcessOutputRef`] borrowing the instance's pooled buffers instead.
 #[derive(Debug, Clone, Default)]
 pub struct ProcessOutput {
+    /// MIDI the plugin emitted during the block, in event order.
     pub midi_events: Vec<MidiEvent>,
+    /// Parameter values the plugin changed itself, e.g. from its own GUI.
     pub param_changes: ParameterChanges,
+    /// Note expressions the plugin emitted.
     pub note_expressions: Vec<ClapNoteExpression>,
 }
 
 /// Borrowing view of the plugin's per-block output. Points into the
-/// `ClapInstance`'s pooled return-value buffers — valid until the next
+/// [`ClapActive`]'s pooled return-value buffers — valid until the next
 /// `process` call, which clears them in place. RT-safe.
 #[derive(Debug, Clone, Copy)]
 pub struct ProcessOutputRef<'a> {
+    /// MIDI the plugin emitted during the block, in event order.
     pub midi_events: &'a [MidiEvent],
+    /// Parameter values the plugin changed itself, e.g. from its own GUI.
     pub param_changes: &'a ParameterChanges,
+    /// Note expressions the plugin emitted.
     pub note_expressions: &'a [ClapNoteExpression],
 }
 
@@ -59,18 +65,33 @@ impl<'a> ProcessOutputRef<'a> {
 /// All inputs for a single process call. Use `..Default::default()` to fill
 /// fields you don't need — compiles to zero-cost empty slices and None.
 ///
-/// ```ignore
-/// plugin.process(&mut buffer, &ProcessContext {
-///     midi: &[MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 16384)],
+/// ```no_run
+/// # use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
+/// # use tutti_clap_host::{AudioBuffer32, ClapActive, MidiEvent, ProcessContext, TransportInfo};
+/// # fn ex(plugin: &mut ClapActive<f32>, buffer: &mut AudioBuffer32<'_, '_>)
+/// # -> tutti_clap_host::Result<()> {
+/// let transport = TransportInfo::default().with_tempo(120.0);
+/// let midi = [MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 16384)];
+/// plugin.process(buffer, &ProcessContext {
+///     midi: &midi,
 ///     transport: Some(&transport),
 ///     ..Default::default()
 /// })?;
+/// # Ok(()) }
 /// ```
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ProcessContext<'a> {
+    /// MIDI to deliver during this block. Sorted by time before being handed
+    /// to the plugin, so the caller need not pre-sort.
     pub midi: &'a [MidiEvent],
+    /// Parameter changes to apply during this block. Values are denormalized
+    /// against the plugin's declared ranges on the way in; a parameter with no
+    /// cached range passes through untouched.
     pub params: Option<&'a ParameterChanges>,
+    /// Per-voice note expressions to deliver during this block.
     pub expressions: &'a [ClapNoteExpression],
+    /// Transport snapshot for the block. `None` sends no transport event, so
+    /// the plugin sees a host with no timeline rather than a stopped one.
     pub transport: Option<&'a TransportInfo>,
 }
 
@@ -79,6 +100,8 @@ pub struct ProcessContext<'a> {
 /// CLAP's `clap_audio_buffer` has separate `data32` and `data64` fields.
 /// Each implementation populates the correct field and nulls the other.
 pub trait ClapSample: tutti_plugin_types::Sample {
+    /// Whether this sample type needs the plugin to advertise 64-bit support.
+    /// `activate` refuses when it does and the plugin does not.
     fn requires_f64() -> bool;
 
     /// Construct a `clap_audio_buffer` from a base pointer into a channel-
@@ -235,12 +258,19 @@ impl<T: ClapSample> ClapActive<T> {
     /// `AudioBuffer32`, `ClapActive<f64>` an `AudioBuffer64`. (The 64-bit
     /// support check happened once in [`ClapLoaded::activate`](super::ClapLoaded::activate).)
     ///
-    /// ```ignore
-    /// active.process(&mut buffer, &ProcessContext {
-    ///     midi: &[Midi1Event::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 100)],
+    /// ```no_run
+    /// # use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
+    /// # use tutti_clap_host::{AudioBuffer32, ClapActive, MidiEvent, ProcessContext, TransportInfo};
+    /// # fn ex(active: &mut ClapActive<f32>, buffer: &mut AudioBuffer32<'_, '_>)
+    /// # -> tutti_clap_host::Result<()> {
+    /// let transport = TransportInfo::default().with_tempo(120.0);
+    /// let midi = [MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 16384)];
+    /// active.process(buffer, &ProcessContext {
+    ///     midi: &midi,
     ///     transport: Some(&transport),
     ///     ..Default::default()
     /// })?;
+    /// # Ok(()) }
     /// ```
     pub fn process(
         &mut self,
@@ -591,7 +621,7 @@ mod tests {
     use super::*;
 
     /// A `HAS_*` flag is a claim that the matching field is usable, so it must
-    /// not be set for a field we did not fill.
+    /// not be set for a field the host did not fill.
     ///
     /// VST2 shipped `tempo = 0, kVstTempoValid` for exactly this reason and the
     /// fix there gates on finiteness plus positivity; CLAP set all four flags

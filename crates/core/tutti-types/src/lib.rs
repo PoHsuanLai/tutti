@@ -20,7 +20,7 @@
 //!
 //! **[`io`]** — the I/O edge vocabulary: [`AudioIn`] / [`AudioOut`] — the two
 //! traits every audio source and sink in the engine speaks (mic, file, disk,
-//! plugin boundary), plus [`pump`](io::pump). Homed here, at the root leaf, so
+//! plugin boundary), plus [`pump`]. Homed here, at the root leaf, so
 //! every subsystem can implement them without an absurd dependency edge.
 //!
 //! **[`latency`]** — latency compensation: the [`LatencyGraph`] trait and the
@@ -35,6 +35,41 @@
 //!
 //! Everything is re-exported at the crate root, so `tutti_types::AudioThreadCell`,
 //! `tutti_types::Bpm`, `tutti_types::Samples`, etc. resolve directly.
+//!
+//! # Example — the measurement vocabulary
+//!
+//! Nothing above this crate in the stack, so there is nothing to integrate
+//! with: what a consumer meets first is the units. Cross a family boundary with
+//! the **named converter**, never with arithmetic on the inner float.
+//!
+//! ```
+//! use tutti_types::{Cents, Db, SampleRate, Samples, Seconds, Semitones};
+//!
+//! // dB → linear gain. `Db` is logarithmic, so this is a conversion, not a cast.
+//! let trim = Db(-6.0);
+//! assert!((trim.to_amplitude().get() - 0.501_187).abs() < 1e-5);
+//!
+//! // Cascaded gain stages ADD in dB — that operator is opted in because it
+//! // means something. Multiplication is NOT, and this is why: scaling the dB
+//! // value squares the amplitude, so `trim * 2.0` would be a quarter of the
+//! // signal, not half of it. The omission ledger withholds `Mul` and points at
+//! // the amplitude domain, which is where a factor of two actually lives.
+//! assert_eq!(trim + trim, Db(-12.0));
+//! let quartered = Db(-12.0).to_amplitude().get();
+//! let squared = trim.to_amplitude().get() * trim.to_amplitude().get();
+//! assert!((quartered - squared).abs() < 1e-6);
+//!
+//! // Seconds → frames. The rounding is IN THE NAME because allocating a delay
+//! // line and counting elapsed frames want different answers from one span.
+//! let rate = SampleRate(48_000.0);
+//! let block = Seconds(0.010_5);
+//! assert_eq!(block.to_samples(rate), Samples(504));
+//! assert_eq!(block.to_samples_ceil(rate), Samples(504));
+//!
+//! // Pitch offsets convert too — `cents.get() / 100.0` would compile and return
+//! // `Cents`, a value wrong by 100x whose type claims it is fine.
+//! assert_eq!(Cents(1200.0).to_semitones(), Semitones(12.0));
+//! ```
 
 // `value` is declared first and `#[macro_use]`d so the `unit_*` operator macros
 // it defines are in scope for the modules below — `macro_rules!` are textually

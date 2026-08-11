@@ -1,3 +1,14 @@
+//! The `extern "C"` host callbacks a plugin calls back into, plus the static
+//! extension vtables that expose them.
+//!
+//! Every function here is an FFI entry point invoked by the plugin on a thread
+//! of its choosing, so each one recovers its [`HostState`] via
+//! [`get_host_state`] and then does the smallest possible thing: set a latch,
+//! push onto a queue, or read a published value. The host's own reaction
+//! happens later, on the main thread, when a `poll_*` drains what was set. No
+//! callback here calls back into the plugin, which is what keeps a plugin that
+//! notifies the host from inside its own `process` from re-entering itself.
+
 #[cfg(unix)]
 use super::state::PosixFdEntry;
 use super::state::{HostState, TimerEntry};
@@ -54,6 +65,24 @@ use std::ptr;
 use std::sync::atomic::Ordering;
 use std::time::Instant;
 
+/// Recover the [`HostState`] a plugin's callback is addressing, from the
+/// `host_data` slot of the vtable it was handed.
+///
+/// Null-tolerant in both steps: a plugin may pass a null `host`, and a vtable
+/// built but not yet wired carries a null `host_data`. Both answer `None`
+/// rather than dereferencing, which is what lets every callback body be a
+/// single `if let Some(state)`.
+///
+/// # Safety
+/// `host` must be null or point to a `clap_host` vtable this crate built via
+/// [`ClapHost::new`](crate::ClapHost::new) — its `host_data` is then an
+/// `Arc::as_ptr` borrow of that host's `HostState`. A vtable from any other
+/// source has an unrelated `host_data`, and casting it here is undefined.
+///
+/// The returned lifetime `'a` is unconstrained by the argument, so the caller
+/// picks it. It must not outlive the `ClapHost` owning the `Arc` — callbacks
+/// satisfy this because the plugin cannot outlive the `ClapLoaded` that owns
+/// both the plugin handle and the boxed host.
 pub(super) unsafe fn get_host_state<'a>(host: *const ClapHostVtable) -> Option<&'a HostState> {
     if host.is_null() {
         return None;

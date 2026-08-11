@@ -46,7 +46,7 @@ impl ModulationMatrix {
     ///
     /// A param reconciler must consult this before writing: if it returns true,
     /// the authored value belongs on the accumulator's *base*
-    /// ([`set_base`](Self::set_base)), not written straight to the node atomic,
+    /// (`set_base`), not written straight to the node atomic,
     /// or the next frame's modulation flush will overwrite it.
     pub fn is_modulated(&self, entity: Entity, param: ParamAddr) -> bool {
         self.targets.contains_key(&(entity, param))
@@ -85,6 +85,8 @@ impl ModulationMatrix {
         self.targets.len()
     }
 
+    /// Whether the driver owns no params — so a `drive` pass would write
+    /// nothing.
     pub fn is_empty(&self) -> bool {
         self.targets.is_empty()
     }

@@ -135,7 +135,7 @@ impl Vst3Library {
                 // `IPluginBase::initialize`; both borrow, and retain for
                 // themselves if they keep the context (see the contract note on
                 // `Vst3Loaded::host_context_ptr`). So hand over a borrowed
-                // pointer and keep our own reference alive in `_host_context`
+                // pointer and keep this host's own reference alive in `_host_context`
                 // for as long as the factory can call back into it.
                 let raw = app.upcast::<FUnknown>().as_ptr();
                 unsafe { f3.setHostContext(raw) };

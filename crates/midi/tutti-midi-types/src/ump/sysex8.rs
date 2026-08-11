@@ -1,7 +1,7 @@
 //! SysEx 8-bit (UMP Message Type 0x5): 128-bit packets carrying 8-bit-clean
 //! System Exclusive / Mixed Data payloads (M2-104 §7.8).
 //!
-//! Unlike SysEx7 (MT 0x3), which we hand-pack in [`super::sysex`], SysEx8 leans
+//! Unlike SysEx7 (MT 0x3), which [`super::sysex`] hand-packs, SysEx8 leans
 //! on midi2's [`midi2::sysex8::Sysex8`]: each packet holds up to 13 payload
 //! bytes plus a `stream_id` that ties a multi-packet message together, and midi2
 //! owns the Start/Continue/End fragmentation internally. So the emit side builds
@@ -132,7 +132,8 @@ pub fn sysex8_message(events: &[MidiEvent]) -> Option<(u8, Vec<u8>)> {
     let payload: Vec<u8> = m.payload().collect();
     // Stream id is octet 2 (bits 8..15) of the first packet — the octet
     // `sysex8_fragments` writes and midi2's own reader reads (its *writer* is the
-    // buggy half, which is why we patch on emit rather than call set_stream_id).
+    // buggy half, which is why the emit path patches the word rather than
+    // calling set_stream_id).
     let stream_id = ((words[0] >> 8) & 0xFF) as u8;
     Some((stream_id, payload))
 }

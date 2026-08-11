@@ -23,7 +23,14 @@ use crate::load_stage::LoadStage;
 pub enum PluginError {
     /// A plugin failed to load at a specific phase. `reason` carries the
     /// format-native error text.
-    Load { stage: LoadStage, reason: String },
+    Load {
+        /// Which phase of loading failed — the load path's own progress marker,
+        /// so a caller can tell "the file was not found" from "the plugin
+        /// refused to instantiate".
+        stage: LoadStage,
+        /// The format-native error text, verbatim.
+        reason: String,
+    },
     /// Saving or restoring plugin state failed.
     State(String),
     /// Processing an audio block failed.

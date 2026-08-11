@@ -1,4 +1,8 @@
 //! Asynchronous disk I/O for audio file streaming.
+//!
+//! A background "butler" thread decodes from disk into one SPSC ring per
+//! channel; the audio thread only ever pops. Nothing here blocks or allocates on
+//! the audio thread — the split is what makes the streaming tier real-time safe.
 
 mod cache;
 mod command;
@@ -32,7 +36,7 @@ pub use streamer::{DiskStreamer, DiskStreamerConfig};
 
 // Test-only re-exports for unit tests outside the butler module tree (e.g.
 // `units::disk_voice`) that build readers directly. Gated so they
-// don't count as dead code in normal builds.
+// do not count as dead code in normal builds.
 #[cfg(test)]
 pub(crate) use command::RegionId;
 #[cfg(test)]

@@ -24,7 +24,7 @@
 //! `LfoNode` lives on the `ModSource` entity ([`ModSourceNode`]), spawned once
 //! by [`ensure_source_nodes`] and skipped forever after. So a shaper can be
 //! swapped without touching a modulator's phase, which is what
-//! [`reshape_chain`] does for an edit no setter can carry.
+//! `reshape_chain` does for an edit no setter can carry.
 //!
 //! So the two are deliberately separate systems over the same declaration. A
 //! route asks for audio rate with [`ModDelivery::PerSample`]; anything else
@@ -37,7 +37,7 @@
 //! so a port with nothing feeding it delivers the param as literal `0.0`, not
 //! as its authored value: a distortion at drive 0 is silence, not a passthrough.
 //!
-//! That is why [`spawn_chain`] wires base → sum → port in the same call that
+//! That is why `spawn_chain` wires base → sum → port in the same call that
 //! claims the port. "Ports on now, base later" is not a cheap idle state, it is
 //! a broken node. (`tutti-units`' `born_with_ports` test pins this.)
 
@@ -45,7 +45,7 @@ use bevy_ecs::prelude::*;
 use std::collections::HashMap;
 
 use tutti_types::{ParamAddr, UnitParam};
-// The three units are no longer named here: `build_param_mod` owns their
+// The three chain units are not imported here: `build_param_mod` owns their
 // construction, which is what keeps the base cell reachable.
 
 use crate::graph::{AudioGraphRes, AudioSource, AudioSources, GraphDirty};
@@ -138,6 +138,7 @@ impl ParamChain {
 pub struct AudioRateChains(pub HashMap<ParamKey, ParamChain>);
 
 impl AudioRateChains {
+    /// The chain driving `param` on `target`, if one is built.
     pub fn get(&self, target: Entity, param: ParamAddr) -> Option<&ParamChain> {
         self.0.get(&(target, param))
     }
@@ -393,17 +394,17 @@ pub fn ensure_source_nodes(
 ///
 /// # Why `AudioNode` is in here
 ///
-/// [`spawn_chain`] needs the sink's graph node in order to resolve its param
+/// `spawn_chain` needs the sink's graph node in order to resolve its param
 /// port, and returns `None` when the sink has none yet. That is the right answer
-/// at the time — but it is not a *permanent* one, and without this arm nothing
-/// ever asked again.
+/// at the time, but not a *permanent* one — so `Changed<AudioNode>` is in the
+/// gate to ask again when the node lands.
 ///
-/// The order it breaks on is the ordinary one. A host that compiles a document
+/// The order it covers is the ordinary one. A host that compiles a document
 /// declares routes and spawns nodes in the same frame, and a node inserted
 /// through `insert_audio_node` lands as a *deferred* command — so the route is
-/// visible one frame before the `AudioNode` is. The route was therefore
-/// evaluated exactly once, against a sink that had no node, and fell back to
-/// per-frame permanently. Nothing reported it, because falling back is a legal
+/// visible one frame before the `AudioNode` is. Without this arm the route is
+/// evaluated exactly once, against a sink that has no node, and falls back to
+/// per-frame permanently. Nothing reports it, because falling back is a legal
 /// outcome meaning "this sink exposes no port".
 ///
 /// `Changed` rather than `Added`: replacing a node's unit (a crossfade, a
@@ -472,14 +473,14 @@ pub fn reconcile_audio_rate(
         // But "left alone" must not mean "left stale". The base is authored
         // state that changes without the chain's *shape* changing — a fader
         // move, a document edit — and `ModParamRange` is in this system's dirty
-        // gate precisely so those arrive here. Before this refresh the base was
-        // read once at spawn and never again, so an authored edit to an
-        // audio-rate param was silently discarded for the chain's whole life.
+        // gate precisely so those arrive here. Without this refresh the base is
+        // read once at spawn and never again, and an authored edit to an
+        // audio-rate param is silently discarded for the chain's whole life.
         //
         // Cheap and in-place: guarded atomic stores, no respawn. The bounds
         // ride along for the same reason the base does — a range is authored
-        // state that moves without the graph moving, and `ParamSumUnit` now
-        // holds them in a shared cell rather than baking them at construction.
+        // state that moves without the graph moving, and `ParamSumUnit` holds
+        // both in a shared cell rather than baking them at construction.
         //
         // Shaping is handled just below, and needs more than a store because
         // `ParamShaperUnit` has no setter either.

@@ -6,6 +6,8 @@
 //! discarding C/LFE/surrounds loses the dialogue (center) and the ambience
 //! (surrounds) entirely.
 //!
+//! # The coefficients
+//!
 //! These are the ITU-R BS.775 / Dolby consumer downmix coefficients, the same
 //! ones a receiver applies when playing surround content on two speakers:
 //!
@@ -18,6 +20,8 @@
 //! stereo/mono downmix (it carries no program-critical content and its
 //! reproduction on small speakers is undefined). 7.1 folds the rear pair into
 //! the side surrounds first. Mono sums the stereo downmix with a further −3 dB.
+//!
+//! # Channel order and RT safety
 //!
 //! Channel order is the file/SMPTE order these signals speak:
 //! `FL FR C LFE SL SR [BL BR]`.

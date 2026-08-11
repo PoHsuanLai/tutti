@@ -9,8 +9,24 @@ use super::panner::VbapPanner;
 use crate::layout::speaker_channel_map;
 use crate::SpatialTarget;
 
-/// VBAP multichannel panner (stereo/quad/5.1/7.1/Atmos).
-/// Position controlled via lock-free atomics for RT-safe automation.
+/// VBAP multichannel panner over a fixed speaker layout, with position driven
+/// by lock-free atomics so automation is RT-safe.
+///
+/// # The layouts are a closed set
+///
+/// Five widths are supported — stereo, quad, 5.1, 7.1 and 7.1.4 Atmos — each
+/// built from a named preset of the underlying `vbap` crate's builder, which is
+/// what supplies the speaker *positions*. VBAP pans across the two or three
+/// speakers surrounding a direction, so it needs that arrangement and not
+/// merely a channel count; a bare width does not determine one.
+///
+/// [`for_layout`](Self::for_layout) therefore refuses an unrecognized width with
+/// [`VbapError::UnsupportedSpeakerLayout`] rather than substituting a nearby
+/// layout, so a caller picks a real arrangement instead of silently rendering
+/// for a different one. That refusal is also what keeps this type's `Clone`
+/// correct — see the note on the impl.
+///
+/// [`VbapError::UnsupportedSpeakerLayout`]: crate::vbap::VbapError::UnsupportedSpeakerLayout
 pub struct VbapPannerNode {
     panner: VbapPanner,
     layout: ChannelLayout,
@@ -31,6 +47,13 @@ pub struct VbapPannerNode {
 
 impl Clone for VbapPannerNode {
     fn clone(&self) -> Self {
+        // The arms below must stay in lockstep with `for_layout`, which is what
+        // keeps the `_` arm unreachable: every public constructor routes through
+        // one of the five presets, and any other width is refused there as
+        // `UnsupportedSpeakerLayout`. That gating is the only thing standing
+        // between the fallback and a silent bug — a sixth layout added to
+        // `for_layout` and not here would clone a 16-channel node into a stereo
+        // one, changing its output width with no error anywhere.
         let mut new_panner = match self.layout.count() {
             2 => VbapPanner::stereo().expect("stereo preset"),
             4 => VbapPanner::quad().expect("quad preset"),

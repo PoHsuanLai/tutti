@@ -5,11 +5,14 @@
 //! sequence so the returned instance is immediately usable for
 //! [`process_f32`](Self::process_f32) / [`process_f64`](Self::process_f64).
 //!
-//! Unlike `au-host`'s two-stage `Loaded → Ready` split, VST2's lifecycle
-//! is short and atomic — `init → set_sample_rate → set_block_size →
-//! resume` all happen at construction. There is no useful state between
-//! "ready to load editor / params" and "ready to process audio", so the two are
-//! collapsed into one.
+//! The lifecycle is short and atomic — `init → set_sample_rate →
+//! set_block_size → resume` all happen at construction — so there is no useful
+//! state between "ready to load editor / params" and "ready to process audio",
+//! and the type carries no lifecycle stage. Suspend and resume are a
+//! reconfiguration bracket around a rate or block-size change, not a stage a
+//! host parks in; the reasoning for both, and how it differs from the other
+//! three formats, is in the crate docs under *The lifecycle, and why one type
+//! carries all of it*.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

@@ -8,6 +8,27 @@
 //! To create one: `Vst3Instance::load(path, rate, block)` or
 //! `Vst3Loaded::load(path)?.activate(rate, block)?`. To drop back to
 //! non-processing state: [`Vst3Instance::deactivate`].
+//!
+//! What this type adds over [`Vst3Loaded`] is exactly the state that only
+//! exists between `setActive(1)` and `setActive(0)`: the scratch buffers sized
+//! to the negotiated arrangements, the input/output staging, and the sample
+//! width `T`. [`deactivate`](Vst3Instance::deactivate) takes `self` by value
+//! and returns the embedded [`Vst3Loaded`], which is what makes a handle to a
+//! deactivated plugin unrepresentable — the caller cannot keep the old value to
+//! call `process` on, because it was moved. A `&mut self` deactivation would
+//! leave one behind, and `process` would then have to answer it with a runtime
+//! error on the audio path.
+//!
+//! The reverse edge is total, which is the precondition a consuming type-state
+//! needs. `deactivate` returns a [`Vst3Loaded`] rather than a `Result`: a
+//! refusal from `setActive(0)` is dropped, because it leaves no state this host
+//! could act on — the COM interfaces are still valid and every loaded-state
+//! method is still legal, so the value handed back describes the plugin either
+//! way. (That is the asymmetry with `setActive(1)`, where a refusal is a real
+//! failure and is reported: a plugin that declined to activate must not be
+//! processed.) Contrast `tutti-au-host`, whose transitions can fail in *both*
+//! directions and therefore cannot use a consuming pair — a failed transition
+//! belongs to neither type, so it carries an internal state enum instead.
 
 use std::mem::ManuallyDrop;
 use std::ops::{Deref, DerefMut};

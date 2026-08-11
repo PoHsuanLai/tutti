@@ -5,6 +5,108 @@
 //! without writing `unsafe` yourself. MIDI uses the workspace-wide
 //! [`tutti_midi_types::MidiEvent`] UMP type (re-exported as [`MidiEvent`]).
 //!
+//! # The lifecycle, and why it is shaped this way
+//!
+//! Hosting CLAP is a two-state problem: a plugin is first *loaded* — library
+//! mapped, instance created, parameters and editor reachable — and only later
+//! *activated*, which allocates buffers against a fixed sample rate and block
+//! size and makes `process` legal. This crate spends a type on each:
+//! [`ClapLoaded`] and [`ClapActive<T>`], with transitions that take `self` by
+//! value.
+//!
+//! Every plugin format has that same underlying shape and they agree on almost
+//! nothing else, which is why the four format crates deliberately share no
+//! lifecycle type — the comparative account, and the rule for choosing between
+//! the three modelling strategies in use, is in `tutti-plugin`'s crate docs
+//! under *The plugin state machine*. What follows is why CLAP lands on this one.
+//!
+//! ## Why two types rather than one with an `is_active` flag
+//!
+//! Because "loaded but not processing" is a state a host spends real time in,
+//! not a transient on the way to processing. CLAP's legal pre-activation
+//! surface is large and this crate exposes all of it on [`ClapLoaded`]: the
+//! parameter tree ([`parameter_list`](ClapLoaded::parameter_list),
+//! [`set_parameter`](ClapLoaded::set_parameter),
+//! [`value_to_text`](ClapLoaded::value_to_text)), port and note-port topology,
+//! state save/restore and preset loading, the editor, and the whole
+//! host-callback polling surface. A plugin browser that opens a GUI to audition
+//! presets, or a project load that restores state before the transport rolls,
+//! is a `ClapLoaded` doing its entire job without a buffer ever being
+//! allocated. A state that has its own operations and its own duration earns a
+//! type.
+//!
+//! Making the transitions consume `self` is what turns the guarantee from a
+//! convention into a compile-time fact. [`activate`](ClapLoaded::activate) takes
+//! the `ClapLoaded` and [`deactivate`](ClapActive::deactivate) takes the
+//! `ClapActive` back, so a handle to a deactivated plugin is unrepresentable
+//! rather than merely discouraged: there is no `process` on [`ClapLoaded`] to
+//! call, and no surviving `ClapActive` to call it on. The audio path therefore
+//! carries no `is_active` check at all — the branch a fused type would have to
+//! run on every block does not exist, because the type system already ran it.
+//! The `T` parameter is fixed at the same moment for the same reason: CLAP
+//! commits to a sample width in the call that allocates the buffers, so
+//! `ClapActive<f32>` and `ClapActive<f64>` are different types rather than one
+//! type with a width field.
+//!
+//! ## Why `activate` returns `Err((Self, ClapError))`
+//!
+//! A refusal is not the end of the plugin, only of that configuration. CLAP
+//! plugins routinely decline 64-bit audio, and a host that discovers this the
+//! ordinary way — by asking — should not have to pay for a reload to fall back.
+//! So the error variant carries the **unconsumed** [`ClapLoaded`] back beside
+//! the [`ClapError`], and the caller retries at `f32` against the same mapped
+//! library, the same instance, and the same already-read parameter tree.
+//!
+//! This is the cost of the consuming transition, paid back. A `Result<_,
+//! ClapError>` would have destroyed the `ClapLoaded` on the one path where it is
+//! still perfectly good, making "ask, and fall back" strictly more expensive
+//! than "guess from [`supports_f64`](ClapLoaded::supports_f64) and hope". Both
+//! failure paths preserve it: the `f64`-unsupported check returns before any FFI
+//! runs, and a plugin-side `activate` refusal leaves the instance untouched and
+//! not active. The `Err` is large, which is why the `clippy::result_large_err`
+//! lint is suppressed at the function rather than obeyed — boxing would add a
+//! heap allocation on the failure path in order to hide the exact ownership
+//! return that is the point.
+//!
+//! ## Why `Deref` from `ClapActive` to `ClapLoaded` is sound
+//!
+//! A naive type-state split would strand the entire pre-activation surface:
+//! params, ports, state, editor and polling are all `impl ClapLoaded`, so
+//! activating would take them away — and a host needs every one of them *most*
+//! while audio is running. [`ClapActive<T>`] therefore embeds its `ClapLoaded`
+//! and reaches those methods through [`Deref`](std::ops::Deref), adding only
+//! [`process`](ClapActive::process) and the reconfiguration methods on top.
+//! Activation is additive rather than exclusive.
+//!
+//! That is sound because CLAP does not *revoke* the loaded-state operations on
+//! activation; it re-tags some of their **threading** contracts. The two states
+//! partition what is legal only in one direction — `process` requires active —
+//! and never in the other. Where a contract does change with activation, the
+//! condition is read at the call rather than assumed from the type, which works
+//! precisely because the flag lives on the *inner* `ClapLoaded`:
+//! [`flush_params`](ClapLoaded::flush_params) is tagged
+//! `[active ? audio-thread : main-thread]`, and it branches on that live flag,
+//! so the same code reached through `Deref` from a `ClapActive` takes an
+//! [`AudioThreadClaim`](host::AudioThreadClaim) where a bare `ClapLoaded` would
+//! assert the main thread. A method inherited from the loaded state is thus
+//! never operating on a stale idea of which state it is in.
+//!
+//! The distinction that gates it is *active* versus *processing*, and they are
+//! not the same fact. They disagree for the whole window between
+//! [`activate`](ClapLoaded::activate) and the first
+//! [`process`](ClapActive::process) — which is exactly when a host pushes
+//! initial parameter values. Reading `processing` there takes the main-thread
+//! branch against a plugin that considers itself active, and a plugin with a
+//! validation layer reports the host for calling on the wrong thread while the
+//! values are dropped in silence.
+//!
+//! [`DerefMut`](std::ops::DerefMut) is implemented alongside it, so the
+//! `&mut self` half of the loaded surface — [`set_state`](ClapLoaded::set_state),
+//! [`open_editor`](ClapLoaded::open_editor) — is reachable too. What `Deref`
+//! does not expose is the transition itself: [`deactivate`](ClapActive::deactivate)
+//! consumes the `ClapActive`, and no `&mut ClapLoaded` borrowed out of one can
+//! reach a method that would move the instance between states.
+//!
 //! ## Example
 //!
 //! Load, activate, render one block. `no_run`: the load needs a real `.clap`

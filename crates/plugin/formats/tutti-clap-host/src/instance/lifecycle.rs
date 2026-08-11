@@ -1,6 +1,16 @@
 //! Lifecycle transitions and queries: `ClapLoaded`'s metadata accessors and
 //! `activate`, the active-side `ClapActive` methods (`process` lives in
 //! [`super::audio`]), the `Deref` bridge, and the `Drop` teardown for both.
+//!
+//! Both transitions consume `self`, which is what makes a handle to a
+//! deactivated plugin unrepresentable; the `Deref` bridge is what stops that
+//! from costing the caller the pre-activation surface. Rationale for both is in
+//! the crate root. What this file owns is the part neither the type system nor
+//! `Deref` can express: the FFI ordering. `activate_plugin` / `deactivate_plugin`
+//! are `&mut self` on `ClapLoaded` because the transitions are not their only
+//! caller — `reconfigure` drives the same pair in place, since CLAP fixes the
+//! sample rate and `max_frames` at `activate()` and a change to either must be
+//! bracketed by a deactivation the host never surfaces as a state change.
 
 use super::config::AudioScratch;
 use super::{ClapActive, ClapLoaded};
@@ -68,9 +78,19 @@ impl ClapLoaded {
     /// `T` fixes the processing sample format. `ClapActive<f64>` requires the
     /// plugin to advertise 64-bit support; otherwise this returns
     /// [`ClapError::NotSupported`].
+    ///
+    /// # Errors
+    /// The `Err` carries the **unconsumed** `ClapLoaded` beside the error, so a
+    /// refusal costs the configuration and not the instance: a plugin that
+    /// declines 64-bit audio is retried at `f32` against the same mapped
+    /// library, the same instance and the same already-read parameter tree,
+    /// with no reload. Both failure paths preserve it — the `f64` check returns
+    /// before any FFI runs, and a plugin-side refusal leaves the instance
+    /// untouched and not active.
     // The `Err` variant deliberately hands `self` (a large `ClapLoaded`) back so
     // the caller can retry or fall back; boxing it would defeat that ownership
-    // return and add a heap alloc on the (rare) failure path.
+    // return and add a heap alloc on the (rare) failure path. That is the whole
+    // reason the lint is suppressed rather than obeyed: the size IS the feature.
     #[allow(clippy::result_large_err)]
     pub fn activate<T: super::ClapSample>(
         mut self,
@@ -423,6 +443,19 @@ impl<T: super::ClapSample> ClapActive<T> {
     }
 }
 
+// The bridge that keeps the pre-activation surface reachable after activation.
+// Sound because CLAP does not revoke the loaded-state operations on activation
+// — it re-tags the threading contract of some of them. The partition runs one
+// way only: `process` requires active, and nothing on `ClapLoaded` requires
+// inactive. Where a contract does vary, the method reads `flags.active` at the
+// call (`flush_params`) rather than inferring it from the type, which works
+// because the flag lives on the `ClapLoaded` handed out here — so a method
+// reached through this impl sees the instance's real state, not a stale one.
+//
+// Adding a method to `ClapLoaded` that is illegal while active would break that
+// invariant silently: it would become callable on a `ClapActive` with nothing to
+// stop it. Such a method belongs on `ClapLoaded` only if it can gate itself on
+// `flags.active`; otherwise it belongs on `ClapActive`.
 impl<T: super::ClapSample> Deref for ClapActive<T> {
     type Target = ClapLoaded;
     fn deref(&self) -> &ClapLoaded {

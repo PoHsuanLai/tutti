@@ -4,6 +4,20 @@
 //! `Vst3Loaded` is what you want for GUI-only hosting, offline parameter
 //! inspection, and state save/restore. `process()` lives exclusively on
 //! [`Vst3Instance`]; the type system enforces that you can't call it here.
+//!
+//! The size of this file is the argument for the type existing. Nearly forty
+//! public methods are legal in this state and need no audio buffer: the
+//! parameter tree with its plain/normalized conversions, units and program
+//! lists, note expression and keyswitch tables, `IMidiLearn`, physical UI
+//! mapping, XML representations, the compatibility JSON, state save/restore,
+//! and the entire editor surface. A host that only browses metadata, or only
+//! shows a GUI, calls `initialize()` and stops — activation is a cost it never
+//! pays. That is what distinguishes a state worth a type from a construction
+//! step, and it is why this file, not `instance`, holds the bulk of the module.
+//!
+//! Everything here stays reachable after activation: [`Vst3Instance`] embeds a
+//! `Vst3Loaded` and `Deref`s to it, so the split subtracts `process` from this
+//! state without subtracting anything from the active one.
 
 use std::path::Path;
 use std::sync::Arc;

@@ -21,6 +21,60 @@
 //! responsibility (e.g., the `tutti-plugin-server` subprocess wraps this
 //! crate to keep a crashing VST2 from killing the host).
 //!
+//! # The lifecycle, and why one type carries all of it
+//!
+//! Every plugin format has the same underlying shape — a plugin is *loaded*
+//! (library mapped, instance created, parameters and editor reachable) and then
+//! *activated* (buffers allocated at a fixed rate and block size, processing
+//! legal). VST3 and CLAP model that as two types with ownership-consuming
+//! transitions; AU carries the stage in an internal enum. VST2 has neither:
+//! [`Vst2Instance`] is one fused type, and that is the format's own contract
+//! showing through rather than a shortcut.
+//!
+//! `effOpen`, `effSetSampleRate`, `effSetBlockSize` and the first
+//! `effMainsChanged(1)` all run inside [`Vst2Instance::load`], so the instance
+//! is ready to process the moment it exists. A `Vst2Loaded` type would sit over
+//! a window no caller can observe and would carry no operations the fused type
+//! does not — the split would buy a type boundary that guards nothing.
+//!
+//! The general rule, of which this crate is the negative case: **a type-state
+//! split earns its keep only when the earlier state has genuinely distinct
+//! operations.** VST3 and CLAP clear that bar — their parameter trees, program
+//! lists and state save/restore are legal before any buffer exists, and "loaded
+//! but not processing" is a state a host spends real time in, so a stale handle
+//! to a deactivated plugin is worth making unrepresentable. VST2's pre-resume
+//! window has no such surface: it exists only for the length of a constructor.
+//! Splitting it would name a distinction the format does not make.
+//!
+//! ## Suspend and resume are a bracket, not a stage
+//!
+//! [`suspend`](Vst2Instance::suspend) and [`resume`](Vst2Instance::resume) are
+//! ordinary `&mut self` methods over a `resumed` flag, and the flag is not a
+//! demoted lifecycle stage. In VST2 the suspended state is a *reconfiguration
+//! bracket* — the thing a host does around a sample-rate or block-size change,
+//! because plugins reallocate rate-dependent buffers in `effMainsChanged` and
+//! assume they are not concurrently processing. It is not a state a host parks
+//! in and does other work from; there is no VST2 operation that is legal only
+//! while suspended and interesting to a host, which is exactly what a stage
+//! would need in order to be worth naming.
+//!
+//! That is why the bracket is spelled as a private
+//! `suspend_for_reconfigure` / `restore_after_reconfigure` pair rather than as
+//! two public transitions, and why it is **edge-triggered**: the suspend half
+//! reports whether it actually dispatched, and the restore half takes that
+//! answer, so a plugin already suspended on entry stays suspended on exit.
+//! [`set_sample_rate`](Vst2Instance::set_sample_rate),
+//! [`set_block_size`](Vst2Instance::set_block_size) and
+//! [`reset_processing_state`](Vst2Instance::reset_processing_state) all share
+//! it. An unconditional `suspend(); set(); resume()` would instead resume a
+//! plugin the caller had deliberately stopped, and — since `effMainsChanged` is
+//! not documented as idempotent — churn a full buffer teardown and reallocation
+//! on every setter call.
+//!
+//! The comparative treatment across all four formats, and the rule for when
+//! each modelling strategy applies, is in `tutti-plugin`'s crate docs under
+//! *The plugin state machine*.
+//!
 //! # Example
 //!
 //! ```no_run

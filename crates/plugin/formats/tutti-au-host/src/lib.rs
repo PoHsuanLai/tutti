@@ -8,6 +8,53 @@
 //! macOS-only. On other platforms the crate compiles but exposes no public
 //! functionality.
 //!
+//! # The lifecycle, and why it is shaped this way
+//!
+//! (Every type named here lives in the `instance` module, which exists only on
+//! macOS. They are written unlinked because a docs.rs build on any other target
+//! has no such module for a link to resolve against.)
+//!
+//! An AU has two states: *loaded* (instantiated, its parameters, state and
+//! editor all reachable) and *ready* (`AudioUnitInitialize` has run and render
+//! buffers exist, which is the only state in which `AuInstance::process`
+//! succeeds). The sibling format crates encode that pair as two public types
+//! whose transitions consume `self`, so the compiler rejects a call that is
+//! illegal in the current state. This crate does not, and the difference is the
+//! format's, not an oversight.
+//!
+//! **The transitions are fallible in both directions.** `AuInstance::initialize`
+//! and `AuInstance::uninitialize` take `&mut self` and
+//! return `Result<()>`, because `AudioUnitInitialize` can fail and so can the
+//! uninitialize that would undo it. A consuming transition has to produce one of
+//! the two types, and a failed transition belongs to neither — the unit is
+//! neither in the state it started in nor the one it was headed for. Worse, an
+//! AU can refuse *both* the callback install and the compensating uninitialize,
+//! after which no valid state exists at all. A private `State` enum names that
+//! honestly (its `Empty` variant is what a failed recovery leaves behind, and
+//! every accessor then reports the instance as dead); a pair of consuming
+//! functions could only do so by handing back a third type nobody wants.
+//!
+//! **Most operations do not care which state they are in.** Parameters, state
+//! save/restore, the editor, bus layouts and the raw `AudioUnit` pointer all
+//! work loaded or ready. Splitting the public type would force a caller to
+//! re-thread ownership through transitions for the sake of operations that were
+//! never state-dependent, which is a real cost paid for a guarantee that covers
+//! only `process`.
+//!
+//! So the split lives one layer down, where it is free: `AuLoaded` and
+//! `AuReady` *are* distinct types with consuming transitions
+//! (`AuReady::uninitialize(self) -> Result<AuLoaded, (Self, AuError)>`), and
+//! `AuInstance` is the façade holding one or the other. The type system
+//! enforces the ordering internally — notably the invariant that
+//! `AudioUnitUninitialize` runs before the heap-pinned render scratch is freed,
+//! since that call is what proves the AU's `ref_con` is dead — while the public
+//! API stays a single type. The price is that calling `process` too early is a
+//! runtime error rather than a compile error — and it is the AU's own refusal
+//! that reports it, arriving as [`AuError::OsStatus`] carrying
+//! `kAudioUnitErr_Uninitialized`.
+//!
+//! [`AuError::OsStatus`]: error::AuError::OsStatus
+//!
 //! # Example
 //!
 //! `no_run`: instantiating an AU needs a real `.component` registered with the

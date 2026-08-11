@@ -89,8 +89,90 @@
 //!    code (the per-block producers became one `InputSlot`); keep systems that
 //!    react to different `Changed<T>` triggers separate — merging them would
 //!    couple unrelated edits.
+//! 5. **The plugin lifecycle stays inside the format crate.** Each format's
+//!    state machine is modelled in that format's own vocabulary and never
+//!    crosses the IPC boundary — see [the section below](#the-plugin-state-machine).
 //!
 //! [`Features`]: crate::protocol::Features
+//!
+//! # The plugin state machine
+//!
+//! Every one of the four formats has the same underlying shape: a plugin is
+//! first *loaded* (its library mapped, its instance created, its parameters and
+//! editor reachable) and only later *activated* (buffers allocated at a fixed
+//! sample rate and block size, `process` legal). The formats disagree about
+//! almost everything else — what the two states are called, which calls are
+//! legal in which, whether a transition can fail, and whether reactivation is
+//! permitted at all.
+//!
+//! The four host crates therefore do **not** share a lifecycle type. There is no
+//! `PluginState` enum here and no `activate` on any trait in this crate, and
+//! that absence is deliberate: a shared abstraction would have to be the
+//! intersection of four incompatible contracts, and the useful guarantees each
+//! format offers live precisely in what makes it different. Instead each crate
+//! models its own format as closely as the type system allows, and this crate
+//! sees only the *result* — a plugin that is already loaded and activated, with
+//! its lifecycle driven inside the subprocess by whichever format crate owns
+//! it. `BridgeMessage::PluginLoaded` reports that outcome; a probe never
+//! activates at all.
+//!
+//! ## Which model each format gets, and why
+//!
+//! Three modelling strategies are in use, and the choice is forced by the
+//! format's own contract rather than picked for consistency.
+//!
+//! **Consuming type-state — VST3 and CLAP.** `Vst3Loaded → Vst3Instance<T>` and
+//! `ClapLoaded → ClapActive<T>`. Both formats define a large, fully legal
+//! pre-activation surface: the parameter tree, units and program lists, note
+//! expression, state save/restore and the editor are all reachable before any
+//! audio buffer exists, and a host is *expected* to read them there. "Loaded but
+//! not processing" is a state a user spends real time in, so it earns a type of
+//! its own. The transitions take `self` by value and hand back the other type
+//! (`activate(self) -> Result<Active>`, `deactivate(self) -> Loaded`), which is
+//! what makes a stale handle to a deactivated plugin unrepresentable rather than
+//! merely discouraged — the compiler rejects it, and no runtime `is_active`
+//! check is needed on the process path. The `T` parameter fixes the sample width
+//! at the same moment, because both formats commit to a sample format in the
+//! same call that allocates the buffers.
+//!
+//! Two details differ, and each is the format's rule showing through. VST3
+//! chooses its `ProcessMode` on the transition rather than on the instance,
+//! because `setupProcessing` delivers it exactly once per activation. CLAP's
+//! `activate` returns `Err((Self, ClapError))` — the *unconsumed* `ClapLoaded`
+//! comes back on refusal, so a plugin that declines 64-bit audio can be retried
+//! at `f32` without being reloaded.
+//!
+//! **One fused type — VST2.** `Vst2Instance` has no split, because VST2 has no
+//! meaningful state to split off: `effOpen`, `effSetSampleRate`,
+//! `effSetBlockSize` and the first `effMainsChanged(1)` all run during
+//! construction, and the instance is ready to process the moment it exists. A
+//! `Vst2Loaded` type would carry no operations the fused type does not, so the
+//! split would buy a type boundary that guards nothing. Suspend and resume
+//! remain as ordinary `&mut self` methods with a `resumed: bool`, because in
+//! VST2 they are a *reconfiguration bracket* — the thing you do around a sample
+//! rate change — and not a lifecycle stage a host parks in.
+//!
+//! **Internal state enum — AU.** `AuInstance` holds a private `State` of
+//! `Loaded` / `Ready`, and `initialize` / `uninitialize` take `&mut self` and
+//! return `Result<()>`. The consuming type-state is unavailable here because
+//! both AU transitions are fallible in *both* directions: `AudioUnitInitialize`
+//! can fail, and so can the uninitialize that would undo it. A consuming
+//! transition must produce one of the two types, and a failed transition belongs
+//! to neither — the unit is left in a state that is not the one it started in
+//! and not the one it was going to. The enum can name that (its `Empty` variant
+//! is the transient a `mem::replace` passes through); a pair of consuming
+//! functions cannot without handing back a third type nobody wants. The price is
+//! that misuse is a runtime `Uninitialized` error rather than a compile error.
+//!
+//! ## The rule this leaves behind
+//!
+//! Use a consuming type-state when the two states have genuinely different
+//! operations **and** the transition between them cannot fail in a way that
+//! belongs to neither state. When the pre-activation state has no distinct
+//! operations, fuse it; when the transition is fallible in both directions,
+//! carry the state as data and pay for it at runtime. Reaching for a
+//! compile-time guarantee that the underlying contract cannot honour is how a
+//! type ends up describing a state the plugin is not actually in.
 //!
 //! # Module map
 //!

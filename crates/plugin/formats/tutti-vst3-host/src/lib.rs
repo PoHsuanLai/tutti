@@ -50,6 +50,69 @@
 //! # Ok::<(), tutti_vst3_host::Vst3Error>(())
 //! ```
 //!
+//! # The lifecycle, and why it is shaped this way
+//!
+//! The three stages above are not a convenience wrapper over a single object
+//! with a mode flag. Each stage is a distinct type, and every transition moves
+//! ownership: [`Vst3Loaded::activate`] takes `self` and hands back a
+//! [`Vst3Instance<T>`], and [`Vst3Instance::deactivate`] takes `self` and hands
+//! back a [`Vst3Loaded`]. The alternative — one `Vst3Plugin` with an
+//! `is_active: bool` — is what the design rejects, for two reasons.
+//!
+//! **The pre-activation state is a real place to work, not a construction
+//! step.** VST3 makes almost its entire control surface legal after
+//! `initialize()` and before any buffer exists: the parameter tree and its
+//! plain/normalized conversions, units and program lists, note expression and
+//! keyswitch tables, `IMidiLearn`, physical UI mapping, XML representations,
+//! the compatibility JSON, state save/restore, and the whole editor. That is
+//! roughly forty methods on [`Vst3Loaded`], and a host is *expected* to call
+//! them there — a plugin browser reading parameter metadata, or a GUI-only
+//! session, never activates at all. A state a host genuinely spends time in,
+//! with its own operations, earns a type. (The contrast is VST2, whose
+//! `effOpen`/`effSetSampleRate`/`effSetBlockSize`/`effMainsChanged(1)` all run
+//! during construction; a `Vst2Loaded` would carry no operations the fused type
+//! lacks, so `tutti-vst2-host` does not have one.)
+//!
+//! **Consuming transitions make a stale handle unrepresentable.** After
+//! `deactivate`, the old [`Vst3Instance`] no longer exists to be called: it was
+//! moved. A flag-carrying design can only make that misuse *discouraged* — it
+//! has to answer `process()` on a deactivated plugin with a runtime error, and
+//! every call on the process path pays a check for a condition the compiler
+//! could have settled. Here `process` exists only on [`Vst3Instance`], so the
+//! ordering rule needs no runtime enforcement at all.
+//!
+//! The split costs nothing in reachable surface, which is what makes it
+//! affordable: [`Vst3Instance`] `Deref`s to [`Vst3Loaded`], so the forty
+//! pre-activation methods stay callable while active. That is sound because
+//! VST3 keeps them legal in the active state — the type-state boundary removes
+//! `process` from the loaded state and adds nothing to the active one.
+//!
+//! [`Vst3Library`] is the third stage for a different reason: one bundle
+//! commonly exposes several plugin classes, so the loaded DSO plus its factory
+//! outlives any one instance and is shared by [`Arc`](std::sync::Arc).
+//!
+//! ## What rides on the transition, and what does not
+//!
+//! Two things are fixed at activation because VST3 fixes them there. `T`
+//! commits the sample width, since `setupProcessing` names the sample size in
+//! the same call that sizes the buffers. [`ProcessMode`] is chosen on
+//! [`activate_with_mode`](Vst3Loaded::activate_with_mode) rather than on the
+//! instance, because `setupProcessing` delivers it exactly once per activation
+//! — that method's own documentation carries the reasoning, including the one
+//! exception (the realtime↔prefetch pair, switchable via
+//! [`Vst3Instance::set_prefetch`]).
+//!
+//! Sample rate and block size are *not* frozen the same way.
+//! [`Vst3Instance::set_sample_rate`] exists, and it works by running a full
+//! deactivate/reactivate cycle internally, because `setupProcessing` is spec'd
+//! for the disabled state. That is the shape to keep in mind: a reconfiguration
+//! is a bracket around the active state, not a fourth stage a host parks in.
+//!
+//! The three other format crates model the same underlying two-state shape and
+//! reach different answers, each forced by its own format's contract. The
+//! comparison lives in `tutti-plugin`'s crate documentation under
+//! *The plugin state machine*.
+//!
 //! VST3 addresses parameters by an opaque, plugin-chosen `ParamID` — see
 //! `tutti_plugin_types::ParamAddress`, whose other arm exists for VST2's
 //! positional index.

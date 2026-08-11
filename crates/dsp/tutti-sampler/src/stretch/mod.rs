@@ -58,7 +58,11 @@ const MAX_BUFFER_SIZE: usize = 8192;
 use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
 
-use tutti_core::{AudioThreadCell, AudioUnit, Ordering, RtScratch, SampleRate, Samples, Seconds};
+use tutti_core::{AudioThreadCell, Ordering, RtScratch, SampleRate, Samples, Seconds};
+// Referenced by the intra-doc links on this module and on `Unit::isolate`, not
+// by any code here.
+#[allow(unused_imports)]
+use tutti_core::AudioUnit;
 
 /// The vocoder bank, shared by refcount across graph generations.
 ///

@@ -14,7 +14,10 @@ use crate::{nonempty, MAX_SAMPLER_CHANNELS};
 use super::command::{VoiceCommand, VoicePoolHandle, COMMAND_CAPACITY, MAX_RESIDENT_VOICES};
 use super::memory_source::LoopSetting;
 use super::slot::{stretch_wanted, VoiceSlot};
-use super::types::{Playback, SlotId, Voice, VoiceSource};
+use super::types::{SlotId, Voice, VoiceSource};
+// Only `playback_of` names it, and that is a `#[cfg(test)]` helper.
+#[cfg(test)]
+use super::types::Playback;
 #[cfg(feature = "bevy")]
 use bevy_ecs::prelude::*;
 use crossbeam_channel::{bounded, Receiver, Sender};

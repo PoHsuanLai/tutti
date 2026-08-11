@@ -7,31 +7,30 @@
 //! [`slot`](super::slot), [`command`](super::command), [`pool`](super::pool),
 //! [`node`](super::node).
 
-#[allow(unused_imports)]
+// Every import below feeds `mod tests`'s `use super::*`: this file is the
+// pool's test module and carries no implementation of its own (see the header).
+// Gated rather than `#[allow(unused_imports)]` per line — there were eight of
+// those and one had been missed, which is the warning this replaces.
+#[cfg(test)]
 use super::command::*;
-#[allow(unused_imports)]
-use super::disk_voice::{DiskSource, DiskVoice, DiskVoiceConfig};
-#[allow(unused_imports)]
+#[cfg(test)]
 use super::memory_source::{LoopSetting, MemorySource, VoiceWindow};
-#[allow(unused_imports)]
+#[cfg(test)]
 use super::node::*;
-#[allow(unused_imports)]
+#[cfg(test)]
 use super::pool::*;
-#[allow(unused_imports)]
-use super::slot::*;
-#[allow(unused_imports)]
+#[cfg(test)]
 use super::types::*;
-#[allow(unused_imports)]
-use crate::stretch;
-#[allow(unused_imports)]
+#[cfg(test)]
 use crossbeam_channel::bounded;
-#[allow(unused_imports)]
+#[cfg(test)]
 use std::sync::Arc;
-#[allow(unused_imports)]
+#[cfg(test)]
 use tutti_core::SampleRate;
+#[cfg(test)]
 use tutti_core::{
-    Amplitude, AudioUnit, Beat, BeatDuration, BufferMut, BufferRef, Cents, ChannelLayout,
-    PlaybackRate, ReadRate, SamplePosition, Samples, SignalFrame, StretchFactor, Timeline, Wave,
+    Amplitude, AudioUnit, Beat, Cents, ChannelLayout, SamplePosition, SignalFrame, StretchFactor,
+    Wave,
 };
 
 #[cfg(test)]

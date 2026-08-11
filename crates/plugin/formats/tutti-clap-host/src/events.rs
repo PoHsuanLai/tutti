@@ -38,7 +38,10 @@ use tutti_plugin_types::{
 };
 
 use crate::types::RtNoteExpressions;
-use tutti_midi_types::tutti_types::{CCNumber, MidiChannel, MidiGroup};
+use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
+// Only the tests name it; the conversion code works in raw CC numbers.
+#[cfg(test)]
+use tutti_midi_types::tutti_types::CCNumber;
 
 /// A single CLAP event, wrapping the underlying `#[repr(C)]` `clap_sys`
 /// struct so a pointer to its `header` field can be cast back by the plugin.

@@ -200,7 +200,6 @@ impl AudioTap {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ringbuf::traits::Consumer;
 
     /// A fresh tap opens, and says so.
     #[test]

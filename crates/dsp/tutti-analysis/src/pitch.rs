@@ -1,10 +1,11 @@
-//! Pitch Detection using the YIN algorithm
+//! The YIN pitch-detection engine — **crate-internal**.
 //!
-//! Implements monophonic pitch tracking suitable for:
-//! - Instrument tuners
-//! - Vocal pitch analysis
-//! - Auto-tune preprocessing
-//! - Melodic transcription
+//! The public pitch surface is [`yin`](crate::yin)'s: `yin`, `yin_track`,
+//! `Pitch`, `PitchEstimate`, `YinConfig`. This module is what that one is built
+//! from, and it is deliberately not exported — two parallel pitch APIs on one
+//! crate would be a choice a caller has no basis to make. `PitchDetector` holds
+//! the reusable difference/autocorrelation buffers; `yin.rs` builds one per
+//! call in `detector()` and drives it through `estimate()`.
 //!
 //! ## Algorithm
 //!
@@ -24,7 +25,7 @@
 
 #[derive(Debug, Clone, Copy, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct PitchResult {
+pub(crate) struct PitchResult {
     /// The detected pitch in [`Hz`]; `Hz(0.0)` if unvoiced.
     ///
     /// Typed to match `PitchDetector`'s own `min_freq`/`max_freq`, so a caller
@@ -49,7 +50,7 @@ use tutti_types::{Confidence, Hz};
 /// YIN pitch detector (de Cheveigné & Kawahara, 2002).
 ///
 /// Uses FFT-based autocorrelation for O(n log n) performance.
-pub struct PitchDetector {
+pub(crate) struct PitchDetector {
     sample_rate: tutti_core::SampleRate,
     min_freq: Hz,
     max_freq: Hz,

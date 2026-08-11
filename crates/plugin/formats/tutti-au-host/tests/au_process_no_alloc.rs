@@ -133,6 +133,38 @@ impl Bufs {
     }
 }
 
+/// [`Bufs`] at f64, for the `process_f64` path.
+///
+/// A separate struct rather than a generic one: the arrays must be owned at a
+/// concrete width to exist before the guard opens, which is the whole point of
+/// [`Bufs`].
+struct Bufs64 {
+    in_l: [f64; BLOCK as usize],
+    in_r: [f64; BLOCK as usize],
+    out_l: [f64; BLOCK as usize],
+    out_r: [f64; BLOCK as usize],
+}
+
+impl Bufs64 {
+    fn new() -> Self {
+        Self {
+            in_l: [0.0; BLOCK as usize],
+            in_r: [0.0; BLOCK as usize],
+            out_l: [0.0; BLOCK as usize],
+            out_r: [0.0; BLOCK as usize],
+        }
+    }
+
+    /// Render one f64 block, asserting success for the same reason
+    /// [`Bufs::render`] does.
+    fn render(&mut self, au: &mut AuInstance) {
+        let ins: &[&[f64]] = &[&self.in_l, &self.in_r];
+        let outs: &mut [&mut [f64]] = &mut [&mut self.out_l[..], &mut self.out_r[..]];
+        au.process_f64(ins, outs, BLOCK)
+            .expect("steady-state f64 render");
+    }
+}
+
 /// Steady-state effect render must not allocate.
 ///
 /// The original coverage, kept as the baseline. If `process` grows a per-block
@@ -145,6 +177,42 @@ fn effect_render_does_not_allocate() {
     let _lock = lock();
     let mut au = corpus::DELAY.open(48_000.0, BLOCK);
     let mut b = Bufs::new();
+
+    for _ in 0..WARMUP {
+        b.render(&mut au);
+    }
+    assert_no_alloc::assert_no_alloc(|| {
+        for _ in 0..GUARDED {
+            b.render(&mut au);
+        }
+    });
+}
+
+/// Steady-state **f64** effect render must not allocate — the regression #266
+/// reported.
+///
+/// AUv2 renders only in f32, so an f64 host pays a narrowing round trip on every
+/// block. The conversion is unavoidable; the *allocation* was not. Until this
+/// was fixed, the server loader built that conversion scratch inline — two
+/// `Vec<Vec<f32>>` buffer sets plus two `Vec` pointer tables, four heap
+/// allocations per block on the audio thread.
+///
+/// This test is the reason the bug survived: every other case in this file
+/// drives `process`, and none of them touch f64. The sibling fixes in #262 were
+/// gated behind a plugin feature bit, but nothing gates this one — sample width
+/// is the host pipeline's choice, so an AU on a `Float64` pipeline paid it on
+/// every block unconditionally.
+///
+/// Guards the host-side conversion specifically. The four `Vec`s that motivated
+/// the issue lived one layer up, in `tutti-plugin-server`'s AU loader; moving
+/// the conversion here is what let it reuse the render scratch that already
+/// existed, so this is where the property is now enforceable.
+#[test]
+#[ignore]
+fn f64_effect_render_does_not_allocate() {
+    let _lock = lock();
+    let mut au = corpus::DELAY.open(48_000.0, BLOCK);
+    let mut b = Bufs64::new();
 
     for _ in 0..WARMUP {
         b.render(&mut au);

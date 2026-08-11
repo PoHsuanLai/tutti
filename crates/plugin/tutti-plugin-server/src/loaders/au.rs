@@ -734,55 +734,15 @@ impl PluginAudio for AuInstance {
                     .map_err(|e| BridgeError::ProcessError(format!("[au] {e}")))?;
             }
             tutti_plugin::server::AudioBufferMut::F64(buf) => {
-                // AUv2 doesn't support f64 natively. Convert f32 -> process -> convert back.
-                //
-                // TODO(rt-alloc): this branch allocates four `Vec`s per block on
-                // the audio thread — two buffer sets and two pointer tables.
-                // Unlike the sibling loaders' conversions it is ungated: any AU
-                // running on the f64 path pays it every block.
-                //
-                // The fix is the one VST2 already uses — a resident
-                // `RenderScratch` on the instance, sized at `load` (which
-                // already receives `block_size`) and cleared per block, plus a
-                // `Vec<&[f32]>` / `Vec<&mut [f32]>` pair reused the same way.
-                // See `tutti-vst2-host/src/scratch.rs`, whose doc states the
-                // rule: "Call once at load time, never on the audio thread —
-                // this is the crate's only render-path allocation."
-                //
-                // Left undone deliberately: this module is
-                // `#[cfg(all(target_os = "macos", feature = "au"))]`, and the
-                // change was authored on Linux where it cannot be compiled,
-                // borrow-checked, or tested. Writing it blind would put
-                // unverified code on an audio path. Whoever picks this up needs
-                // a macOS box and an AU that negotiates f64.
-                let input_f32: Vec<Vec<f32>> = buf
-                    .inputs
-                    .iter()
-                    .map(|ch| ch.iter().map(|&s| s as f32).collect())
-                    .collect();
-                let mut output_f32: Vec<Vec<f32>> = buf
-                    .outputs
-                    .iter()
-                    .map(|ch| vec![0.0f32; ch.len()])
-                    .collect();
-
-                let in_slices: Vec<&[f32]> = input_f32.iter().map(|v| v.as_slice()).collect();
-                let mut out_slices: Vec<&mut [f32]> =
-                    output_f32.iter_mut().map(|v| v.as_mut_slice()).collect();
-
+                // AUv2 has no native f64 render entry point, so an f64 pipeline
+                // always costs a narrowing round trip through this AU. It is
+                // `tutti-au-host`'s to make: converting there reuses the render
+                // scratch it already owns, so the round trip costs no
+                // allocation. Doing it here would need conversion buffers per
+                // block, on the audio thread.
                 self.inner
-                    .process(&in_slices, &mut out_slices, buf.num_samples as u32)
+                    .process_f64(buf.inputs, buf.outputs, buf.num_samples as u32)
                     .map_err(|e| BridgeError::ProcessError(format!("[au] {e}")))?;
-
-                for (ch, out_ch) in buf.outputs.iter_mut().enumerate() {
-                    if ch < output_f32.len() {
-                        for (i, s) in out_ch.iter_mut().enumerate() {
-                            if i < output_f32[ch].len() {
-                                *s = output_f32[ch][i] as f64;
-                            }
-                        }
-                    }
-                }
             }
         }
 

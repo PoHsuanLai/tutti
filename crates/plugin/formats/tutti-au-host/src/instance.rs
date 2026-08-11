@@ -51,6 +51,21 @@ pub struct AuLoaded {
     transport: Option<Box<TransportState>>,
 }
 
+/// Whether the AU raised `OutputIsSilence` for the block just rendered.
+///
+/// A bool would do, but the flag's meaning is the opposite of what a bare
+/// `true` reads as at the call site: it says the output buffers hold *nothing
+/// trustworthy*, not that they hold zeros. Naming the states keeps a caller
+/// from emitting the scratch on the strength of "it rendered fine".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Silence {
+    /// The AU declared the block silent; the scratch contents are stale and the
+    /// destination must be zeroed instead of copied into.
+    Declared,
+    /// A normal block — emit the scratch.
+    No,
+}
+
 /// An AU that has completed `AudioUnitInitialize` and has render buffers
 /// allocated. This is the only state in which [`AuInstance::process`] will
 /// succeed.
@@ -1793,6 +1808,38 @@ impl AuInstance {
         }
     }
 
+    /// [`process`](Self::process) for a host running an f64 signal path,
+    /// converting to and from the f32 the AU renders in.
+    ///
+    /// **The conversion is not optional and not a shortcut.** AUv2 has no f64
+    /// render entry point at all: `AudioUnitRender` consumes an
+    /// `AudioBufferList` of `Float32`, with no `…F64` counterpart of the kind
+    /// VST 2.4 provides via `processReplacingF64`. An f64 host therefore always
+    /// pays a narrowing round trip through an AU, and offering this here rather
+    /// than leaving each caller to hand-roll it is what keeps that round trip
+    /// allocation-free: it reuses the render scratch that already exists for the
+    /// f32 path instead of building conversion buffers per block.
+    ///
+    /// Precision beyond f32 does not survive the call, by construction.
+    ///
+    /// # Errors
+    /// As [`process`](Self::process).
+    pub fn process_f64(
+        &mut self,
+        input: &[&[f64]],
+        output: &mut [&mut [f64]],
+        num_frames: u32,
+    ) -> Result<()> {
+        match &mut self.state {
+            State::Ready(r) => r.process_f64(input, output, num_frames),
+            State::Loaded(_) => Err(AuError::OsStatus {
+                function: "AuInstance::process_f64",
+                code: K_AUDIO_UNIT_ERR_UNINITIALIZED,
+            }),
+            State::Empty => unreachable!(),
+        }
+    }
+
     /// Change the sample rate. If the AU was initialized, it is uninitialized
     /// for reconfiguration and then re-initialized to preserve the state.
     ///
@@ -2163,14 +2210,61 @@ impl AuReady {
         output: &mut [&mut [f32]],
         num_frames: u32,
     ) -> Result<()> {
+        self.scratch.stage_input(input, num_frames);
+        if self.render(num_frames)? == Silence::Declared {
+            let n = num_frames as usize;
+            for dst in output.iter_mut() {
+                let len = n.min(dst.len());
+                dst[..len].fill(0.0);
+            }
+        } else {
+            self.scratch.emit_output(output, num_frames);
+        }
+        Ok(())
+    }
+
+    /// [`process`](Self::process) for an f64 caller. See
+    /// [`AuInstance::process_f64`] for why the conversion exists.
+    ///
+    /// Identical to the f32 path but for the staging pair: the AU renders in
+    /// f32 either way, so this shares the same `render` body and the same
+    /// scratch rather than carrying a second set of buffers.
+    pub fn process_f64(
+        &mut self,
+        input: &[&[f64]],
+        output: &mut [&mut [f64]],
+        num_frames: u32,
+    ) -> Result<()> {
+        self.scratch.stage_input_f64(input, num_frames);
+        if self.render(num_frames)? == Silence::Declared {
+            let n = num_frames as usize;
+            for dst in output.iter_mut() {
+                let len = n.min(dst.len());
+                dst[..len].fill(0.0);
+            }
+        } else {
+            self.scratch.emit_output_f64(output, num_frames);
+        }
+        Ok(())
+    }
+
+    /// The width-agnostic half of a render: bounds-check, `AudioUnitRender`,
+    /// and the silence-flag read.
+    ///
+    /// Split out so the f32 and f64 entry points cannot drift on any of it —
+    /// notably the `LastRenderError` enrichment and the `OutputIsSilence`
+    /// handling, which an f64 path written as a separate copy would be free to
+    /// omit. The two callers differ only in how they stage in and emit out.
+    ///
+    /// Allocation-free on the success path, which is what keeps both entry
+    /// points usable from the audio thread.
+    fn render(&mut self, num_frames: u32) -> Result<Silence> {
         if num_frames > self.loaded.config.block_size {
             return Err(AuError::InvalidBuffer(format!(
                 "num_frames ({num_frames}) > block_size ({})",
                 self.loaded.config.block_size
             )));
         }
-
-        self.scratch.stage_input(input, num_frames);
 
         // NOTE: the render callback is installed ONCE at initialize time off the
         // scratch's stable heap address — deliberately NOT here. Re-installing
@@ -2214,19 +2308,17 @@ impl AuReady {
         // A-1: honor the AU's OutputIsSilence signal. When the AU declares the
         // block silent, its output buffers are not guaranteed to be zeroed
         // (the flag is precisely how an AU says "I produced nothing, don't
-        // trust the buffer contents"). Force the destination to silence rather
-        // than emitting stale scratch. `fill` writes in place — no allocation,
-        // preserving the RT no-alloc guarantee.
-        if flags & K_AUDIO_UNIT_RENDER_ACTION_OUTPUT_IS_SILENCE != 0 {
-            let n = num_frames as usize;
-            for dst in output.iter_mut() {
-                let len = n.min(dst.len());
-                dst[..len].fill(0.0);
-            }
-        } else {
-            self.scratch.emit_output(output, num_frames);
-        }
-        Ok(())
+        // trust the buffer contents"), so the caller must force the destination
+        // to silence rather than emit stale scratch. Both callers do, with a
+        // `fill` that writes in place — no allocation, preserving the RT
+        // no-alloc guarantee.
+        Ok(
+            if flags & K_AUDIO_UNIT_RENDER_ACTION_OUTPUT_IS_SILENCE != 0 {
+                Silence::Declared
+            } else {
+                Silence::No
+            },
+        )
     }
 
     /// Install the input render callback exactly once, wiring `ref_con` to the

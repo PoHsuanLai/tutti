@@ -127,7 +127,11 @@ impl Default for MidiRoute {
 #[derive(Clone, Debug)]
 pub struct MidiRoutingSnapshot {
     /// All routing rules
-    routes: Vec<MidiRoute>,
+    /// Shared with the staging table rather than copied: `commit` can fire per
+    /// frame while a user drags routing UI, and each `MidiRoute` owns a
+    /// `targets` Vec, so copying cost 1 + N allocations every time. Read-only
+    /// once published, which is what makes sharing safe.
+    routes: Arc<Vec<MidiRoute>>,
     /// Precomputed channel→targets lookup (17 entries: 0-15 + "any channel")
     /// Index 16 is for routes that match any channel.
     channel_lookup: [Vec<MidiUnitId>; 17],
@@ -139,7 +143,7 @@ impl MidiRoutingSnapshot {
     /// Builds a snapshot with no routes and no fallback — every event is dropped.
     pub fn empty() -> Self {
         Self {
-            routes: Vec::new(),
+            routes: Arc::new(Vec::new()),
             channel_lookup: Default::default(),
             fallback_target: None,
         }
@@ -152,7 +156,14 @@ impl MidiRoutingSnapshot {
     /// makes the snapshot safe to hand to the audio thread through `RtPublish`.
     ///
     /// `fallback` receives events no enabled route claims; `None` drops them.
-    pub fn from_routes(routes: Vec<MidiRoute>, fallback: Option<MidiUnitId>) -> Self {
+    /// Takes `impl Into<Arc<Vec<MidiRoute>>>` so a caller that already holds the
+    /// shared list (the staging table, on every commit) passes it without a
+    /// copy, while one building a list fresh still passes a plain `Vec`.
+    pub fn from_routes(
+        routes: impl Into<Arc<Vec<MidiRoute>>>,
+        fallback: Option<MidiUnitId>,
+    ) -> Self {
+        let routes = routes.into();
         let mut snapshot = Self {
             routes,
             channel_lookup: Default::default(),
@@ -167,7 +178,7 @@ impl MidiRoutingSnapshot {
             lookup.clear();
         }
 
-        for route in &self.routes {
+        for route in self.routes.iter() {
             if !route.enabled {
                 continue;
             }
@@ -231,7 +242,7 @@ impl MidiRoutingSnapshot {
             return Some(target);
         }
 
-        for route in &self.routes {
+        for route in self.routes.iter() {
             if route.matches(event) {
                 if let Some(&target) = route.targets.first() {
                     return Some(target);
@@ -248,7 +259,7 @@ impl MidiRoutingSnapshot {
     /// show in a UI), not something to call per event.
     pub fn all_targets(&self) -> Vec<MidiUnitId> {
         let mut targets = Vec::new();
-        for route in &self.routes {
+        for route in self.routes.iter() {
             if !route.enabled {
                 continue;
             }
@@ -412,7 +423,7 @@ impl Iterator for RouteIterator<'_> {
 /// the `Arc<RtPublish<MidiRoutingSnapshot>>` returned by
 /// [`snapshot_arc`](MidiRoutingTable::snapshot_arc).
 pub struct MidiRoutingTable {
-    routes: Vec<MidiRoute>,
+    routes: Arc<Vec<MidiRoute>>,
     fallback_target: Option<MidiUnitId>,
     snapshot: Arc<RtPublish<MidiRoutingSnapshot>>,
     dirty: bool,
@@ -426,7 +437,7 @@ impl MidiRoutingTable {
     pub fn new() -> Self {
         let snapshot = MidiRoutingSnapshot::empty();
         Self {
-            routes: Vec::new(),
+            routes: Arc::new(Vec::new()),
             fallback_target: None,
             snapshot: Arc::new(RtPublish::new(snapshot)),
             dirty: false,
@@ -465,7 +476,7 @@ impl MidiRoutingTable {
         routes: impl IntoIterator<Item = MidiRoute>,
         fallback: Option<MidiUnitId>,
     ) {
-        self.routes = routes.into_iter().collect();
+        self.routes = Arc::new(routes.into_iter().collect());
         self.fallback_target = fallback;
         self.dirty = true;
     }
@@ -489,7 +500,8 @@ impl MidiRoutingTable {
             return;
         }
 
-        let snapshot = MidiRoutingSnapshot::from_routes(self.routes.clone(), self.fallback_target);
+        let snapshot =
+            MidiRoutingSnapshot::from_routes(Arc::clone(&self.routes), self.fallback_target);
         self.snapshot.publish(Arc::new(snapshot));
         self.dirty = false;
     }
@@ -512,6 +524,30 @@ mod tests {
 
     fn note_on(channel: u8, note: u8) -> MidiEvent {
         MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::new(channel), note, 0x8000)
+    }
+
+    /// A commit publishes the staged routes without copying them.
+    ///
+    /// `commit` can fire per frame while a user drags routing UI, and each
+    /// `MidiRoute` owns a `targets` Vec — so copying was 1 + N allocations
+    /// every time. Asserted with `Arc::ptr_eq` against the table's own list,
+    /// the only observable that separates sharing from an equal copy.
+    #[test]
+    fn a_commit_publishes_the_staged_routes_without_copying_them() {
+        let mut table = MidiRoutingTable::new();
+        table.set_routes([MidiRoute::new().with_targets(&[id(1)])], Some(id(9)));
+        table.commit();
+
+        let published = table.snapshot_arc();
+        let guard = published.read();
+        assert!(
+            Arc::ptr_eq(&guard.routes, &table.routes),
+            "the published snapshot must share the staged list, not copy it"
+        );
+
+        // And it still routes: sharing must not have skipped the lookup build.
+        let targets: Vec<_> = guard.route(&note_on(0, 60)).collect();
+        assert_eq!(targets, vec![id(1)]);
     }
 
     #[test]

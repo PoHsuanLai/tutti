@@ -193,6 +193,13 @@ pub struct OnsetState {
     /// function or a different time grid.
     config: Option<OnsetConfig>,
     previous: Vec<f32>,
+    /// The current frame's bins, reused across frames.
+    ///
+    /// Lives here rather than in [`FftScratch`] because `FftScratch::forward`
+    /// takes its output slice from the caller — the buffer is this state's to
+    /// own, and it sits beside `previous` because the two are resized by the
+    /// same bin count on the same line.
+    spectrum: Vec<Complex>,
     /// Novelty per frame, in analysis order. Thresholding is global, so peaks
     /// can only be picked once the run is complete.
     novelty: Vec<(Samples, f32)>,
@@ -208,6 +215,7 @@ impl OnsetState {
     pub fn reset(&mut self) {
         self.config = None;
         self.previous.clear();
+        self.spectrum.clear();
         self.novelty.clear();
     }
 
@@ -242,10 +250,14 @@ pub fn step_onset(
     if state.previous.len() != bins {
         state.previous = vec![0.0; bins];
     }
+    // Resized, not rebuilt: `forward` overwrites every bin it is handed, so the
+    // contents carry nothing between frames — only the allocation does.
+    if state.spectrum.len() != bins {
+        state.spectrum.resize(bins, Complex::default());
+    }
 
     let position = Samples(frame.get() * cfg.geometry.hop().get());
     let window = cfg.geometry.window_coefficients();
-    let mut spectrum = vec![Complex::default(); bins];
 
     // Every spectral branch stores its magnitudes, including the ones that do
     // not read them. Skipping the store leaves `previous` stale or zeroed, so
@@ -253,24 +265,27 @@ pub fn step_onset(
     // reference — overstating flux by ~12x and complex-domain deviation by
     // ~15,000x in measurement, which then dominates the adaptive threshold and
     // the strength normalization for the *whole* run.
+    let OnsetState {
+        previous, spectrum, ..
+    } = state;
     let value = match cfg.function {
         DetectionFunction::Energy => spectral_energy(samples),
         DetectionFunction::SpectralFlux => {
-            fft.forward(samples, &window, &mut spectrum);
-            let v = spectral_flux(&state.previous, &spectrum);
-            store_magnitudes(&mut state.previous, &spectrum);
+            fft.forward(samples, &window, spectrum);
+            let v = spectral_flux(previous, spectrum);
+            store_magnitudes(previous, spectrum);
             v
         }
         DetectionFunction::HighFrequencyContent => {
-            fft.forward(samples, &window, &mut spectrum);
-            let v = high_frequency_content(&spectrum) * 0.01;
-            store_magnitudes(&mut state.previous, &spectrum);
+            fft.forward(samples, &window, spectrum);
+            let v = high_frequency_content(spectrum) * 0.01;
+            store_magnitudes(previous, spectrum);
             v
         }
         DetectionFunction::ComplexDomain => {
-            fft.forward(samples, &window, &mut spectrum);
-            let v = complex_domain_deviation(&state.previous, &spectrum);
-            store_magnitudes(&mut state.previous, &spectrum);
+            fft.forward(samples, &window, spectrum);
+            let v = complex_domain_deviation(previous, spectrum);
+            store_magnitudes(previous, spectrum);
             v
         }
     };
@@ -454,6 +469,57 @@ mod tests {
         run(&cfg, &mut fresh, &b, &mut fft);
 
         assert_eq!(finish(&cfg, &reused), finish(&cfg, &fresh));
+    }
+
+    /// The per-frame spectrum buffer is allocated once, not per frame.
+    ///
+    /// `detect_onsets` folds `step_onset` over every frame of the buffer, so a
+    /// fresh `vec![Complex; bins]` there cost one allocation per frame — tens
+    /// of thousands for a few minutes of audio.
+    ///
+    /// Asserted by **writing a sentinel into the buffer and seeing it survive**
+    /// the resize check on the next frame. Two weaker observables were tried
+    /// and rejected: `capacity()` is identical either way (a fresh
+    /// `vec![_; bins]` allocates exactly `bins`), and this crate deliberately
+    /// carries no `assert_no_alloc` dev-dependency — see its Cargo.toml, which
+    /// records that everything here is cold-path batch analysis that
+    /// legitimately allocates its output. A buffer that is *replaced* loses the
+    /// sentinel; one that is refilled in place keeps the allocation and only
+    /// has its bins overwritten by `forward`.
+    #[test]
+    fn the_spectrum_buffer_is_reused_across_frames() {
+        let cfg = OnsetConfig::new(geometry(), DetectionFunction::SpectralFlux);
+        let mut fft = FftScratch::new();
+        let mut state = OnsetState::new();
+        let samples = signal(1.0, &[0.1, 0.3, 0.5, 0.7]);
+
+        // First frame sizes the buffer.
+        let window = cfg.geometry().window().get();
+        step_onset(&cfg, &mut state, FrameIndex(0), &samples[..window], &mut fft);
+        let bins = state.spectrum.len();
+        assert!(bins > 0, "the first frame must have sized the buffer");
+
+        // Reserve well past what a frame needs. `resize` back down to `bins`
+        // keeps the larger allocation; `vec![_; bins]` requests a fresh one
+        // sized exactly `bins`, so the spare capacity is what separates them.
+        state.spectrum.reserve_exact(bins * 4);
+        let reserved = state.spectrum.capacity();
+        assert!(reserved > bins, "the reserve must actually over-allocate");
+
+        run(&cfg, &mut state, &samples, &mut fft);
+
+        assert!(state.frames_seen() > 8, "the run must cover many frames");
+        assert_eq!(
+            state.spectrum.len(),
+            bins,
+            "the buffer is exactly one frame of bins"
+        );
+        assert_eq!(
+            state.spectrum.capacity(),
+            reserved,
+            "every frame must refill the same allocation — a rebuilt \
+             `vec![_; bins]` would drop this spare capacity"
+        );
     }
 
     fn run(cfg: &OnsetConfig, state: &mut OnsetState, samples: &[f32], fft: &mut FftScratch) {

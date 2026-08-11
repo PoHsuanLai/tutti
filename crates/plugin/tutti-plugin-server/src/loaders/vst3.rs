@@ -941,10 +941,19 @@ impl PluginPresets for Vst3Instance {
     /// `None` when no unit publishes a program list, which is every plugin
     /// that does not implement `IUnitInfo`.
     fn get_current_preset(&mut self) -> Option<PresetId> {
-        let list_id = vst_dispatch!(self, inner => {
-            inner.units().into_iter().find_map(|u| u.program_list)
+        // One unit walk, not two. `units()` is a COM round trip per unit *and*
+        // internally enumerates the program lists to resolve each unit's
+        // `program_list`, so asking twice here cost four full enumerations into
+        // plugin code to answer one question. Both things this needs — the
+        // first published list, and the unit that owns it — come out of the
+        // same pass.
+        let (list_id, owning_unit) = vst_dispatch!(self, inner => {
+            inner
+                .units()
+                .into_iter()
+                .find_map(|u| u.program_list.map(|list| (list, u.id)))
         })?;
-        let (param_id, step_count) = self.program_change_param(list_id)?;
+        let (param_id, step_count) = self.program_change_param_of(owning_unit)?;
         if step_count <= 0 {
             return None;
         }
@@ -986,12 +995,24 @@ impl Vst3Instance {
     /// test that is missing, not the rule.
     #[cfg(feature = "vst3")]
     fn program_change_param(&self, list_id: i32) -> Option<(u32, i32)> {
-        vst_dispatch!(self, inner => {
-            let owning_unit = inner
+        let owning_unit = vst_dispatch!(self, inner => {
+            inner
                 .units()
                 .into_iter()
-                .find(|u| u.program_list == Some(list_id))?
-                .id;
+                .find_map(|u| (u.program_list == Some(list_id)).then_some(u.id))
+        })?;
+        self.program_change_param_of(owning_unit)
+    }
+
+    /// The program-change parameter belonging to `owning_unit`.
+    ///
+    /// The half of [`program_change_param`](Self::program_change_param) that
+    /// does not need to walk the unit tree. Split out so `get_current_preset`,
+    /// which finds its list *by* walking the units, does not pay for a second
+    /// walk to rediscover the unit it just had in hand.
+    #[cfg(feature = "vst3")]
+    fn program_change_param_of(&self, owning_unit: i32) -> Option<(u32, i32)> {
+        vst_dispatch!(self, inner => {
             let count = inner.parameter_count();
             (0..count).find_map(|i| {
                 let info = inner.parameter_info(i)?;

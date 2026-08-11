@@ -541,7 +541,7 @@ mod tests {
         mem.upsert(record);
         Plugins::with_catalog(
             Box::new(mem),
-            CatalogConfig::new(PathBuf::from("/nonexistent/db.json"), vec![]),
+            CatalogConfig::new("/nonexistent/db.json", crate::catalog::NO_SCAN_DIRS),
         )
     }
 

@@ -23,6 +23,16 @@ pub enum Error {
     /// The LUFS meter is held by another reader, or was never initialized.
     #[error("LUFS measurement not available (already in use or not initialized)")]
     LufsNotReady,
+
+    /// [`AudioTap::open`](crate::AudioTap::open) was refused — the tap already
+    /// has a consumer.
+    ///
+    /// Transparent, so [`TapBusy`](crate::TapBusy) stays the precise type for a
+    /// caller that wants to match on it while `?` still composes into this
+    /// crate's `Result`. Without this variant, opening a tap inside a function
+    /// that already returns `tutti_core::Result` needed a manual `map_err`.
+    #[error(transparent)]
+    TapBusy(#[from] crate::TapBusy),
 }
 
 /// `Result` with this crate's [`Error`](enum@Error) as the error type.

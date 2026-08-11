@@ -318,7 +318,7 @@ pub mod catalog {
     };
     pub use crate::host::plugin::Plugin;
     pub use crate::host::plugins::{PluginId, Plugins, ScanTicket};
-    pub use crate::util::config::{AudioConfig, CatalogConfig};
+    pub use crate::util::config::{AudioConfig, CatalogConfig, NO_SCAN_DIRS};
 }
 
 /// Per-plugin handles — [`PluginClient`](handles::PluginClient) (audio graph

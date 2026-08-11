@@ -11,6 +11,8 @@ use super::metrics::Metrics;
 use super::plan::{ChannelPlan, LoopStatus};
 use super::region_map::RegionMap;
 use dashmap::DashMap;
+use std::path::Path;
+#[cfg(test)]
 use std::path::PathBuf;
 use tutti_core::{ChannelLayout, SampleRate, Wave};
 
@@ -145,7 +147,7 @@ pub(crate) fn fadeout_samples(
     stream_state: &ChannelPlan,
     cache: &LruCache,
     metrics: &Metrics,
-    file_path: &PathBuf,
+    file_path: &Path,
     count: usize,
     channels: impl Into<ChannelLayout>,
 ) -> Vec<f32> {
@@ -178,7 +180,7 @@ pub(crate) fn fadeout_samples(
 pub(crate) fn fadein_samples(
     cache: &LruCache,
     metrics: &Metrics,
-    file_path: &PathBuf,
+    file_path: &Path,
     position_samples: u64,
     count: usize,
     channels: impl Into<ChannelLayout>,

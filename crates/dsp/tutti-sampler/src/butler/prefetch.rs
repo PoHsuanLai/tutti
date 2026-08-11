@@ -18,7 +18,7 @@ use ringbuf::{
     HeapCons, HeapProd, HeapRb,
 };
 use std::cell::UnsafeCell;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
@@ -226,7 +226,7 @@ impl RegionOut {
 
     /// The file this region streams. The butler uses it to reach the whole-file
     /// [`Wave`](tutti_core::Wave) when capturing crossfade buffers.
-    pub fn file_path(&self) -> &PathBuf {
+    pub fn file_path(&self) -> &Path {
         &self.meta.file_path
     }
 

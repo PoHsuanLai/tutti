@@ -32,7 +32,7 @@ fn split_beat(beat: Beat) -> (f32, f32) {
 /// only then does the beat increment — anything that advances a second clock
 /// alongside this one must match that order or sit permanently one
 /// `beats_per_sample` out of step.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct TransportClock {
     /// Everything shared with the live transport. `isolate()` replaces this
     /// wholesale; every other field is this clock's own.

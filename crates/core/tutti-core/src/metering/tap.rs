@@ -99,6 +99,18 @@ pub struct AudioTap {
     producer: TapProducer,
 }
 
+impl std::fmt::Debug for AudioTap {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Hand-rolled: the ring producer is not `Debug`. Reports whether the
+        // tap is open, which is the whole of its observable state, and does not
+        // touch the producer lock -- a `Debug` print must not contend with the
+        // audio callback.
+        f.debug_struct("AudioTap")
+            .field("open", &self.on.load(Ordering::Acquire))
+            .finish_non_exhaustive()
+    }
+}
+
 impl AudioTap {
     /// A **closed** tap. No ring is allocated until [`open`](Self::open), and
     /// [`push`](Self::push) is one atomic load until then.

@@ -45,7 +45,10 @@ pub(crate) enum LoopMode {
 /// Mirrors how the streaming/timeline loop speaks in
 /// `(start, end, crossfade_frames)` via `VoiceCommand::UpdateLoop`, so the same
 /// intent crosses both tiers unchanged.
-#[derive(Clone, Debug, Default, PartialEq)]
+// `Copy`: every field is (`SamplePosition`, `usize`), and the RT command drain
+// passes this by value twice per loop update. Without `Copy` those are `.clone()`
+// calls that read as heap traffic on the audio thread when they are memcpys.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub enum LoopSetting {
     /// Play through once, then stop.
     #[default]

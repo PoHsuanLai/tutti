@@ -32,12 +32,26 @@ pub struct CatalogConfig {
     pub scan_dirs: Vec<PathBuf>,
 }
 
+/// An empty `scan_dirs` list, for [`CatalogConfig::new`].
+///
+/// `scan_dirs` is generic over `Into<PathBuf>`, so a bare `vec![]` or
+/// `Vec::new()` has no element type to infer. This names it once instead of
+/// making every "no directories yet" call site spell out a turbofish.
+pub const NO_SCAN_DIRS: [PathBuf; 0] = [];
+
 impl CatalogConfig {
     /// Start a config with the required paths.
-    pub fn new(db_path: impl Into<PathBuf>, scan_dirs: Vec<PathBuf>) -> Self {
+    ///
+    /// `scan_dirs` takes the same bound as the [`scan_dirs`](Self::scan_dirs)
+    /// setter below, so the two agree about the one field they both write —
+    /// they disagreed before, and the constructor was the stricter of the pair.
+    pub fn new(
+        db_path: impl Into<PathBuf>,
+        scan_dirs: impl IntoIterator<Item = impl Into<PathBuf>>,
+    ) -> Self {
         Self {
             db_path: db_path.into(),
-            scan_dirs,
+            scan_dirs: scan_dirs.into_iter().map(Into::into).collect(),
         }
     }
 
@@ -131,5 +145,36 @@ impl AudioConfig {
             timeout_ms: self.timeout.as_millis() as u64,
             ..BridgeConfig::default()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The constructor accepts what the setter accepts.
+    ///
+    /// The two write the same field, and before this they disagreed: `new` took
+    /// `Vec<PathBuf>` while `scan_dirs` took any `IntoIterator` of anything
+    /// `Into<PathBuf>`. The `&str` array below is the case that would not
+    /// compile.
+    #[test]
+    fn new_takes_the_same_dirs_the_setter_does() {
+        let from_new = CatalogConfig::new("/tmp/db.json", ["/usr/lib/vst3", "/usr/lib/clap"]);
+        let from_setter = CatalogConfig::new("/tmp/db.json", Vec::<PathBuf>::new())
+            .scan_dirs(["/usr/lib/vst3", "/usr/lib/clap"]);
+
+        assert_eq!(from_new.scan_dirs, from_setter.scan_dirs);
+        assert_eq!(from_new.scan_dirs.len(), 2);
+        assert_eq!(from_new.db_path, PathBuf::from("/tmp/db.json"));
+    }
+
+    /// An empty literal still infers. `Vec::new()` and `vec![]` are what the
+    /// in-repo callers pass, and a bare `IntoIterator` bound can leave the
+    /// element type unconstrained.
+    #[test]
+    fn an_empty_dir_list_still_infers() {
+        let cfg = CatalogConfig::new("/tmp/db.json", Vec::<PathBuf>::new());
+        assert!(cfg.scan_dirs.is_empty());
     }
 }

@@ -170,6 +170,33 @@ impl<T> Drop for BorrowRef<'_, T> {
     }
 }
 
+impl<T> core::fmt::Debug for AudioThreadCell<T> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        // Deliberately does NOT print the value. Reading it needs the very
+        // borrow this type exists to hand out one at a time, so a `Debug` impl
+        // that dereferenced would either take that borrow behind the caller's
+        // back or trip the in-use flag it is meant to police. The `T: Debug`
+        // bound is likewise omitted: requiring it would make a cell over a
+        // non-Debug payload un-printable for no gain, since the payload is not
+        // printed either way.
+        f.debug_struct("AudioThreadCell").finish_non_exhaustive()
+    }
+}
+
+// The guards DO print their value: holding one is proof the borrow is live, so
+// the deref below is the borrow the caller already took, not a second one.
+impl<T: core::fmt::Debug> core::fmt::Debug for BorrowGuard<'_, T> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        core::fmt::Debug::fmt(&**self, f)
+    }
+}
+
+impl<T: core::fmt::Debug> core::fmt::Debug for BorrowRef<'_, T> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        core::fmt::Debug::fmt(&**self, f)
+    }
+}
+
 // SAFETY: AudioThreadCell<T> is Send if T is Send — moving it to another thread
 // is safe as long as access still happens from one borrow at a time.
 unsafe impl<T: Send> Send for AudioThreadCell<T> {}

@@ -424,7 +424,7 @@ impl VoicePool {
         };
         match &mut slot.voice.source {
             VoiceSource::Memory(sampler) => {
-                sampler.set_loop_setting(setting.clone());
+                sampler.set_loop_setting(setting);
                 slot.voice.play.loop_ = setting;
             }
             VoiceSource::Disk(_) => {
@@ -451,7 +451,7 @@ impl VoicePool {
                 // `insert_voice` replays that as if it were real.
                 if let Err(e) = butler.send(Command::Loop {
                     channel_index,
-                    setting: setting.clone(),
+                    setting,
                 }) {
                     tracing::warn!("loop command dropped for slot {id:?}: {e}");
                     return;

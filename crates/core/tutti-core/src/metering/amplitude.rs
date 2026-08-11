@@ -27,6 +27,7 @@ pub struct MeterReading {
 /// want a meter on: the master output owns one (see [`MasterMeter`]), and each
 /// channel strip owns its own (see `dawai-model`'s `channel::strip`).
 #[repr(align(64))]
+#[derive(Debug)]
 pub struct AtomicAmplitude {
     peak_left: AtomicF32,
     peak_right: AtomicF32,
@@ -122,7 +123,7 @@ impl AtomicAmplitude {
 /// The switch matters because measuring means deinterleaving the callback
 /// buffer; when nothing is watching a meter, that work is skipped entirely.
 /// Cheap to clone — both halves are shared.
-#[derive(Clone, Default)]
+#[derive(Clone, Default, Debug)]
 pub struct MasterMeter {
     amplitude: std::sync::Arc<AtomicAmplitude>,
     enabled: std::sync::Arc<AtomicBool>,

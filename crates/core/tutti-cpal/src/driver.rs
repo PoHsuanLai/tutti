@@ -36,6 +36,16 @@ pub struct TuttiDriver {
     callback_state: Arc<AudioCallbackState>,
 }
 
+// Hand-rolled: `AudioCallbackState` holds the RT-side graph handles and is not
+// `Debug`. Forwards the engine, which carries the configuration a host logs.
+impl std::fmt::Debug for TuttiDriver {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TuttiDriver")
+            .field("audio_engine", &self.audio_engine)
+            .finish_non_exhaustive()
+    }
+}
+
 impl TuttiDriver {
     /// Construct from an opened device and the state its callback will read.
     pub fn from_parts(audio_engine: AudioEngine, callback_state: Arc<AudioCallbackState>) -> Self {

@@ -28,6 +28,9 @@ pub mod types;
 // private state a sibling module could not see.
 mod voice_pool;
 
+/// The control-plane protocol and the two handles that send it — one per owner
+/// ([`VoicePool`] and [`VoiceNode`]). Documented on [`command`].
+pub use command::{VoiceCommand, VoiceNodeHandle, VoicePoolHandle};
 /// Disk-streaming playback: the reader, its source and its configuration.
 ///
 /// See [`disk_voice`] for the full docs on each; they are re-exported flat so a
@@ -37,9 +40,6 @@ pub use disk_voice::{DiskSource, DiskVoice, DiskVoiceConfig};
 /// In-memory playback: the reader, its loop and window vocabulary, and its
 /// configuration. Documented on [`memory_source`].
 pub use memory_source::{LoopSetting, MemorySource, MemorySourceConfig, VoiceWindow};
-/// The control-plane protocol and the two handles that send it — one per owner
-/// ([`VoicePool`] and [`VoiceNode`]). Documented on [`command`].
-pub use command::{VoiceCommand, VoiceNodeHandle, VoicePoolHandle};
 /// One voice as a standalone graph node. Documented on [`node`].
 pub use node::VoiceNode;
 /// The per-track multi-voice mixer. Documented on [`pool`].

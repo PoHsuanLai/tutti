@@ -147,6 +147,20 @@ pub struct AudioEngine {
     _stream: Option<StreamHandle>,
 }
 
+// Hand-rolled: `StreamHandle` wraps a CPAL stream, which is not `Debug`.
+// Reports the configuration a host would want in a log line; whether a stream
+// object exists is covered by `is_running`.
+impl std::fmt::Debug for AudioEngine {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AudioEngine")
+            .field("sample_rate", &self.sample_rate)
+            .field("channels", &self.channels)
+            .field("is_running", &self.is_running)
+            .field("device_index", &self.device_index)
+            .finish_non_exhaustive()
+    }
+}
+
 impl AudioEngine {
     /// Open a device and read its default output config, without starting a
     /// stream. `None` selects the host's default device.

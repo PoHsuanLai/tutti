@@ -85,6 +85,7 @@ impl core::fmt::Display for MetronomeMode {
 /// `set_meter` from the UI thread visible to whichever clone the audio thread is
 /// running.
 #[repr(align(64))]
+#[derive(Debug)]
 pub struct ClickSettings {
     volume: AtomicF32,
     /// The project meter, driving both the click rate and the downbeat accent.

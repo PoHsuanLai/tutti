@@ -197,7 +197,10 @@ impl Plugin for TuttiHostingPlugin {
         // onto the scan thread and back), so overriding it is the whole
         // configuration story. There is no second config to keep in sync.
         let default_db_path = std::path::PathBuf::from(".dawai-plugins.json");
-        let config = tutti_plugin::catalog::CatalogConfig::new(default_db_path, Vec::new());
+        let config = tutti_plugin::catalog::CatalogConfig::new(
+            default_db_path,
+            tutti_plugin::catalog::NO_SCAN_DIRS,
+        );
         app.insert_resource(PluginsRes::new(tutti_plugin::catalog::Plugins::empty(
             config,
         )));

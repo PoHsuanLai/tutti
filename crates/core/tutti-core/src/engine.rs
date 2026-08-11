@@ -23,6 +23,30 @@ type MaxRootChannels = U8;
 
 /// The audio engine: ticks the DSP graph + transport and renders one output
 /// buffer per block from the audio callback.
+///
+/// # What it owns, and what it deliberately does not
+///
+/// `Engine` is the *audio-thread half* of the runtime and holds only what a
+/// render needs: the transport's [`MotionFsm`], the committed
+/// [`NetBackend`], and a cached [`Declick`]. It owns no graph topology, no
+/// parameter storage and no device configuration — the control thread keeps
+/// fundsp's `Net` frontend and hands changes over by committing, so nothing
+/// here allocates, locks, or edits a graph.
+///
+/// That split is the reason this is a distinct type rather than a method on the
+/// transport or the graph. Both of those are edited from the control thread;
+/// this is touched only from the callback. Fusing it into either would put a
+/// control-thread API and an RT-only API on one object, where the compiler can
+/// no longer say which methods are safe to call from where — and the failure is
+/// silent, because a lock or an allocation on the audio thread produces a
+/// dropout rather than an error.
+///
+/// [`process`](Self::process) is the per-block entry point the callback calls:
+/// it drains pending motion, renders through
+/// [`process_segment`](Self::process_segment), then applies any declick fade.
+/// The latter is public separately because it is the pure render — useful to
+/// drive directly in a test or an offline pass, where transport motion and
+/// declicking are not in play.
 pub struct Engine {
     motion: MotionFsm,
     net_backend: AudioThreadCell<Option<NetBackend>>,

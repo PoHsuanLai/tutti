@@ -76,6 +76,20 @@ const MIDI_BUFFER_CAPACITY: usize = 256;
 ///
 /// Zero inputs, two outputs. Events arrive through the [`MidiInPort`] returned
 /// by [`Self::midi_port`] and are applied sample-accurately within a block.
+///
+/// # The sample rate is fixed for the unit's lifetime
+///
+/// The rate is set once from `SynthesizerSettings::sample_rate` in
+/// [`new`](Self::new) and cannot change afterwards: RustySynth builds its voice
+/// tables against a rate at construction and offers no way to re-rate them, so
+/// [`AudioUnit::set_sample_rate`] is a deliberate no-op here rather than a
+/// missing implementation.
+///
+/// This is the one trap the type carries, because the graph will not complain.
+/// A unit built at 44.1 kHz and run in a 48 kHz graph keeps rendering — every
+/// note simply plays at the wrong pitch and tempo, with no error at any layer.
+/// A rate change means constructing a new unit and swapping it into the graph,
+/// not reconfiguring this one.
 pub struct SoundFontUnit {
     synthesizer: Synthesizer,
     sample_rate: SampleRate,

@@ -41,15 +41,29 @@ pub(crate) fn sidechain_level_buffer(input: &BufferRef, ch: usize, i: usize) -> 
 
 /// Amplitude as decibels, for the dynamics detectors.
 ///
-/// Delegates to the shared converter, so every detector pins silence at one
-/// floor: `Db::FLOOR` is `-144`, roughly the 24-bit noise floor. Per-site
-/// floors are what let this diverge — a detector at `-96` against
-/// `tutti-export`'s `-144` against a third site with none. The exact value is
-/// inaudible in a compressor, since anything near either floor is far below any
-/// usable threshold; the agreement is the point.
+/// **This is where the dynamics floor is applied.** `Db::from_amplitude` gives
+/// silence `-inf`, because what to substitute for it is the consumer's choice;
+/// this is the consumer that chooses, so every detector pins at one floor:
+/// `Db::FLOOR` is `-144`, roughly the 24-bit noise floor. Per-site floors are
+/// what let this diverge — a detector at `-96` against `tutti-export`'s `-144`
+/// against a third site with none. The exact value is inaudible in a
+/// compressor, since anything near either floor is far below any usable
+/// threshold; the agreement is the point.
+///
+/// The guard is about *agreement*, not about containing a `NaN`. The gain
+/// curves happen to survive `-inf` — `compute_compressor_gain_reduction` sends
+/// it down the `input_db <= below` branch and returns `Db(0.0)` — so the
+/// argument for pinning here is the one above: one floor across every detector,
+/// and a level a caller can compare, clamp and display without special-casing
+/// infinity at each site.
 #[inline]
 pub(crate) fn amplitude_to_db(amp: impl Into<Amplitude>) -> Db {
-    Db::from_amplitude(amp.into())
+    let amp = amp.into();
+    if amp.get() <= 0.0 {
+        Db::FLOOR
+    } else {
+        Db::from_amplitude(amp)
+    }
 }
 
 #[inline]
@@ -143,6 +157,45 @@ mod tests {
         assert!((amplitude_to_db(0.5).get() - (-6.02)).abs() < 0.1);
         assert!((db_to_amplitude(0.0).get() - 1.0).abs() < 0.001);
         assert!((db_to_amplitude(-6.0).get() - 0.501).abs() < 0.01);
+    }
+
+    /// The floor lives here, not in `Db::from_amplitude`. The shared converter
+    /// hands back `-inf` for silence; this is the boundary that pins it, and
+    /// every dynamics detector inherits that choice by going through here.
+    #[test]
+    fn the_dynamics_floor_is_applied_at_this_boundary() {
+        // The conversion this delegates to does NOT floor — proving the guard
+        // above is doing the work rather than duplicating something upstream.
+        assert!(Db::from_amplitude(Amplitude::SILENT).get().is_infinite());
+
+        assert_eq!(amplitude_to_db(0.0), Db::FLOOR);
+        assert!(amplitude_to_db(0.0).get().is_finite());
+        // Negative amplitude is not physical, but a detector fed one must not
+        // produce NaN either.
+        assert_eq!(amplitude_to_db(-1.0), Db::FLOOR);
+    }
+
+    /// What the floor actually buys, stated as the thing that breaks without
+    /// it: a *level* stays comparable and finite.
+    ///
+    /// It is deliberately not "silence would produce NaN". It would not — the
+    /// gain curves send `-inf` down their below-threshold branch and return a
+    /// finite reduction, so a test asserting `is_finite()` on the gain passes
+    /// with the guard removed and proves nothing. The property the guard owns
+    /// is that the detector's own output is a usable number.
+    #[test]
+    fn the_floor_keeps_a_detected_level_usable() {
+        let level = amplitude_to_db(0.0);
+
+        // Arithmetic a detector does on its own level. `-inf - -inf` is NaN,
+        // which is what an unfloored level turns a difference into.
+        assert!((level - Db::FLOOR).get().is_finite());
+        assert!(level.get().is_finite());
+
+        // And it stays ordered against a real threshold, so envelope
+        // comparisons behave.
+        assert!(level < Db(-60.0));
+        assert_eq!(level.clamp(Db(-90.0), Db(0.0)), Db(-90.0));
     }
 
     #[test]

@@ -157,6 +157,44 @@ impl RenderScratch {
         }
     }
 
+    /// [`stage_input`](Self::stage_input) for an f64 caller, narrowing to the
+    /// f32 the AU renders in.
+    ///
+    /// AUv2 has no f64 render entry point — `AudioUnitRender` takes an
+    /// `AudioBufferList` of `Float32` and there is no `…F64` twin the way VST 2.4
+    /// has `processReplacingF64`. The conversion is therefore unavoidable for an
+    /// f64 caller, and the narrowing is the AU's own precision ceiling rather
+    /// than a loss this layer chose. Converting *here*, against the scratch that
+    /// already exists, is what keeps it free of per-block allocation.
+    ///
+    /// Writes into the same `inputs` buffers as the f32 path, so a caller cannot
+    /// mix widths within one block — nor does anything ask to: the width is
+    /// picked per block by the pipeline's `SampleFormat` and applies to both
+    /// directions.
+    pub fn stage_input_f64(&mut self, input: &[&[f64]], frames: u32) {
+        for (ch, src) in input.iter().enumerate() {
+            if let Some(dst) = self.inputs.get_mut(ch) {
+                let len = (frames as usize).min(src.len()).min(dst.len());
+                for (d, &s) in dst[..len].iter_mut().zip(&src[..len]) {
+                    *d = s as f32;
+                }
+            }
+        }
+    }
+
+    /// [`emit_output`](Self::emit_output) for an f64 caller, widening back from
+    /// the f32 the AU rendered. Bounded on both sides for the same reason.
+    pub fn emit_output_f64(&self, output: &mut [&mut [f64]], frames: u32) {
+        for (ch, dst) in output.iter_mut().enumerate() {
+            if let Some(src) = self.outputs.get(ch) {
+                let len = (frames as usize).min(dst.len()).min(src.len());
+                for (d, &s) in dst[..len].iter_mut().zip(&src[..len]) {
+                    *d = s as f64;
+                }
+            }
+        }
+    }
+
     /// Return the pre-advance sample position and move the cursor forward by
     /// `frames`. The pre-advance value is what AudioToolbox expects for the
     /// current block's timestamp.
@@ -306,6 +344,143 @@ mod tests {
         // (zeroing on every block) would pass the line above and fail here.
         assert_eq!(scratch.advance(64), 0.0);
         assert_eq!(scratch.advance(64), 64.0);
+    }
+
+    /// A stereo scratch with `block` frames per channel.
+    fn stereo_scratch(block: u32) -> RenderScratch {
+        RenderScratch::new(
+            AuBusLayout {
+                inputs: ChannelLayout::STEREO,
+                outputs: ChannelLayout::STEREO,
+                has_input: true,
+            },
+            block,
+        )
+    }
+
+    /// The f64 staging pair must carry a block through unchanged apart from the
+    /// f32 narrowing the AU forces.
+    ///
+    /// Round-tripping through `outputs` directly (rather than through a real
+    /// `AudioUnitRender`) is what makes this a pure test of the conversion: an AU
+    /// in the loop would make a failure ambiguous between the staging and the
+    /// plugin.
+    #[test]
+    fn f64_staging_round_trips_through_the_f32_scratch() {
+        let mut scratch = stereo_scratch(4);
+
+        let l: [f64; 4] = [0.25, -0.5, 0.75, -1.0];
+        let r: [f64; 4] = [1.0, 0.5, -0.25, 0.125];
+        scratch.stage_input_f64(&[&l[..], &r[..]], 4);
+
+        // Every value above is exactly representable in f32, so the staging must
+        // be bit-exact — no epsilon needed, and a comparison that needed one
+        // would be reporting a bug rather than float noise.
+        assert_eq!(scratch.inputs[0][..4], [0.25f32, -0.5, 0.75, -1.0]);
+        assert_eq!(scratch.inputs[1][..4], [1.0f32, 0.5, -0.25, 0.125]);
+
+        // Stand in for the AU's render: whatever lands in `outputs` is what
+        // `emit_output_f64` must widen back out.
+        scratch.outputs[0][..4].copy_from_slice(&[0.25, -0.5, 0.75, -1.0]);
+        scratch.outputs[1][..4].copy_from_slice(&[1.0, 0.5, -0.25, 0.125]);
+
+        let (mut out_l, mut out_r) = ([0.0f64; 4], [0.0f64; 4]);
+        let mut outs: Vec<&mut [f64]> = vec![&mut out_l, &mut out_r];
+        scratch.emit_output_f64(&mut outs, 4);
+
+        assert_eq!(out_l, [0.25, -0.5, 0.75, -1.0]);
+        assert_eq!(out_r, [1.0, 0.5, -0.25, 0.125]);
+    }
+
+    /// Precision past f32 does not survive, and that is the documented contract
+    /// rather than a defect — AUv2 renders in f32 and has no f64 entry point.
+    ///
+    /// Pinned so the loss is a stated property with a test behind it. If AUv3 or
+    /// a future path ever renders natively at f64, this test failing is the
+    /// correct alarm: the doc on `process_f64` would then be wrong.
+    #[test]
+    fn f64_staging_narrows_to_the_aus_own_precision() {
+        // Needs 53 bits of mantissa: exact in f64, rounds in f32.
+        const EXACT: f64 = 1.0 + f64::EPSILON;
+        assert_ne!(
+            EXACT as f32 as f64, EXACT,
+            "the fixture is vacuous unless this value actually rounds in f32"
+        );
+
+        let mut scratch = stereo_scratch(4);
+        let src = [EXACT; 4];
+        scratch.stage_input_f64(&[&src[..]], 4);
+
+        assert_eq!(
+            scratch.inputs[0][0], EXACT as f32,
+            "staged at the AU's precision, not the caller's"
+        );
+    }
+
+    /// Both f64 halves are bounded on the caller's side and the scratch's, so a
+    /// caller slice shorter OR longer than the block cannot panic.
+    ///
+    /// The f32 pair already clamps with a three-way `min`; these were written to
+    /// match rather than to fix a live crash, and this pins that they do. A
+    /// staging pair that indexed `[..frames]` on the caller directly would panic
+    /// on the short case, which is the mirror of a fault fixed in VST2's scratch.
+    #[test]
+    fn f64_staging_is_bounded_on_both_sides() {
+        let mut scratch = stereo_scratch(8);
+
+        // Caller supplies fewer frames than the block asks for.
+        let short = [1.0f64; 3];
+        scratch.stage_input_f64(&[&short[..]], 8);
+        assert_eq!(&scratch.inputs[0][..3], &[1.0f32; 3]);
+
+        // Caller supplies more than the scratch holds.
+        let long = [2.0f64; 32];
+        scratch.stage_input_f64(&[&long[..]], 8);
+        assert_eq!(&scratch.inputs[0][..8], &[2.0f32; 8]);
+
+        // And the emit half, both directions.
+        for ch in scratch.outputs.iter_mut() {
+            ch.fill(0.5);
+        }
+
+        let mut out_short = [0.0f64; 3];
+        let mut outs: Vec<&mut [f64]> = vec![&mut out_short];
+        scratch.emit_output_f64(&mut outs, 8);
+        assert_eq!(out_short, [0.5f64; 3], "filled as far as the caller goes");
+
+        let mut out_long = [-1.0f64; 12];
+        let mut outs: Vec<&mut [f64]> = vec![&mut out_long];
+        scratch.emit_output_f64(&mut outs, 8);
+        assert_eq!(&out_long[..8], &[0.5f64; 8]);
+        assert!(
+            out_long[8..].iter().all(|&v| v == -1.0),
+            "past the block stays untouched"
+        );
+    }
+
+    /// More caller channels than the scratch holds are skipped, not indexed into.
+    #[test]
+    fn f64_staging_ignores_channels_the_scratch_lacks() {
+        let mut scratch = RenderScratch::new(
+            AuBusLayout {
+                inputs: ChannelLayout::MONO,
+                outputs: ChannelLayout::MONO,
+                has_input: true,
+            },
+            4,
+        );
+
+        let (a, b) = ([1.0f64; 4], [2.0f64; 4]);
+        scratch.stage_input_f64(&[&a[..], &b[..]], 4);
+        assert_eq!(&scratch.inputs[0][..4], &[1.0f32; 4]);
+
+        scratch.outputs[0][..4].fill(0.25);
+        let (mut out_a, mut out_b) = ([0.0f64; 4], [-1.0f64; 4]);
+        let mut outs: Vec<&mut [f64]> = vec![&mut out_a, &mut out_b];
+        scratch.emit_output_f64(&mut outs, 4);
+
+        assert_eq!(out_a, [0.25f64; 4]);
+        assert_eq!(out_b, [-1.0f64; 4], "channel 1 has no scratch behind it");
     }
 
     /// Every `mData` the bind loop writes must land inside the slab — the exact

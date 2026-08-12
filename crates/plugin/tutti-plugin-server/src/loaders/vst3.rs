@@ -1236,15 +1236,16 @@ mod tests {
         assert_eq!(groups.get(&1), None);
     }
 
-    /// The SDK's `multiple-program-changes` sample, when the corpus is built.
+    /// The SDK's `multiple_programchanges` sample, built from the in-repo SDK
+    /// submodule by `tutti-vst3-host`'s build script during this same
+    /// `cargo test`.
     ///
-    /// Looked up at *runtime* rather than through `env!`, so a checkout without
-    /// the corpus skips instead of failing to compile. Set
-    /// `VST3_SAMPLE_PLUGIN_DIR` to the directory holding the built samples.
-    fn multi_program_sample() -> Option<std::path::PathBuf> {
-        let dir = std::env::var("VST3_SAMPLE_PLUGIN_DIR").ok()?;
-        let path = Path::new(&dir).join("multiple-program-changes.vst3");
-        path.exists().then_some(path)
+    /// This used to read `VST3_SAMPLE_PLUGIN_DIR` and hand back an `Option`, so
+    /// the three tests below skipped unless someone had hand-built the SDK's
+    /// samples and pointed at them — which was every machine. It is a build
+    /// artifact now, so absence is a build failure and the tests assert.
+    fn multi_program_sample() -> &'static str {
+        crate::test_utils::vst3_program_sample_path()
     }
 
     /// A VST3 program keeps both coordinates, and its list's name.
@@ -1261,18 +1262,10 @@ mod tests {
     /// report `None`.
     #[test]
     fn a_vst3_program_keeps_its_list_id_and_bank() {
-        let Some(path) = multi_program_sample() else {
-            eprintln!("VST3_SAMPLE_PLUGIN_DIR unset or sample absent; skipping");
-            return;
-        };
         let _lock = crate::test_utils::plugin_load_lock();
-        let mut instance = match Vst3Instance::load(&path, 44_100.0, 512, false) {
-            Ok(i) => i,
-            Err(e) => {
-                eprintln!("sample failed to load ({e:?}); skipping");
-                return;
-            }
-        };
+        let mut instance =
+            Vst3Instance::load(Path::new(multi_program_sample()), 44_100.0, 512, false)
+                .expect("the multiple-program-changes sample loads");
 
         let presets = instance.get_presets();
         assert!(
@@ -1293,6 +1286,16 @@ mod tests {
         assert!(
             lists.len() > 1,
             "the sample publishes several program lists; saw {lists:?}"
+        );
+        // The load-bearing half, and the one a distinctness check misses: the
+        // sample's ids are `kProgramStartId + i` = 1..=16, so a host that
+        // substituted the *position* would report 0..=15 — still 16 distinct
+        // values, still one bank each, still one index-0 per list. Every other
+        // assertion here passes under that bug; only this one sees it.
+        assert!(
+            !lists.contains(&0),
+            "list ids are `kProgramStartId + i` (1..=16), so a 0 means the host \
+             reported a position where the plugin gave an id: {lists:?}"
         );
         assert_eq!(
             lists.len(),
@@ -1331,18 +1334,10 @@ mod tests {
     /// `i / N` — which lands on a neighbour rather than failing.
     #[test]
     fn a_vst3_program_loads_and_reads_back() {
-        let Some(path) = multi_program_sample() else {
-            eprintln!("VST3_SAMPLE_PLUGIN_DIR unset or sample absent; skipping");
-            return;
-        };
         let _lock = crate::test_utils::plugin_load_lock();
-        let mut instance = match Vst3Instance::load(&path, 44_100.0, 512, false) {
-            Ok(i) => i,
-            Err(e) => {
-                eprintln!("sample failed to load ({e:?}); skipping");
-                return;
-            }
-        };
+        let mut instance =
+            Vst3Instance::load(Path::new(multi_program_sample()), 44_100.0, 512, false)
+                .expect("the multiple-program-changes sample loads");
 
         let presets = instance.get_presets();
         assert!(presets.len() > 2, "the sample publishes many programs");
@@ -1389,18 +1384,10 @@ mod tests {
     /// happened to be found first.
     #[test]
     fn a_vst3_load_refuses_an_id_from_another_format() {
-        let Some(path) = multi_program_sample() else {
-            eprintln!("VST3_SAMPLE_PLUGIN_DIR unset or sample absent; skipping");
-            return;
-        };
         let _lock = crate::test_utils::plugin_load_lock();
-        let mut instance = match Vst3Instance::load(&path, 44_100.0, 512, false) {
-            Ok(i) => i,
-            Err(e) => {
-                eprintln!("sample failed to load ({e:?}); skipping");
-                return;
-            }
-        };
+        let mut instance =
+            Vst3Instance::load(Path::new(multi_program_sample()), 44_100.0, 512, false)
+                .expect("the multiple-program-changes sample loads");
 
         let before = instance.get_current_preset();
         assert!(

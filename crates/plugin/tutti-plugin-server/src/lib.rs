@@ -139,36 +139,77 @@ pub(crate) mod test_utils {
                      or did not build the probe."
                 );
 
-                // The bundle layout is the plugin format's, not cargo's: one of
-                // these arch dirs holds the binary. Probe all of them rather
-                // than deriving one from `cfg!`, so a cross-build lands in the
-                // slower branch instead of a wrong answer.
                 let bundle = Path::new(VST3_PROBE_DIR).join("audio-probe.vst3");
-                for sub in [
-                    "Contents/x86_64-linux",
-                    "Contents/aarch64-linux",
-                    "Contents/MacOS",
-                    "Contents/x86_64-win",
-                ] {
-                    let Ok(entries) = std::fs::read_dir(bundle.join(sub)) else {
-                        continue;
-                    };
-                    for e in entries.flatten() {
-                        let path = e.path();
-                        if path.is_file() {
-                            return path.to_string_lossy().into_owned();
-                        }
-                    }
-                }
-                panic!(
-                    "audio-probe not found under {}. `tutti-vst3-host`'s build \
-                     script builds it from the in-repo SDK submodules, so this is \
-                     a build failure. If the SDK submodules are empty, run: \
-                     git submodule update --init --recursive",
-                    bundle.display()
-                )
+                binary_in_bundle(&bundle).unwrap_or_else(|| {
+                    panic!(
+                        "audio-probe not found under {}. `tutti-vst3-host`'s build \
+                         script builds it from the in-repo SDK submodules, so this is \
+                         a build failure. If the SDK submodules are empty, run: \
+                         git submodule update --init --recursive",
+                        bundle.display()
+                    )
+                })
             })
             .as_str()
+    }
+
+    /// Absolute path to the SDK's `multiple_programchanges` sample, built beside
+    /// the probe.
+    ///
+    /// The one fixture that can witness a VST3 **program list id**: it declares
+    /// 16 lists whose ids are `kProgramStartId + i`, so an id is provably not a
+    /// position. `audio-probe` publishes no program lists, so it cannot stand in.
+    ///
+    /// # Panics
+    ///
+    /// If absent. It is built from the in-repo SDK submodule by the same
+    /// `cargo test`, so that is a build failure. The three tests using it used
+    /// to skip on a missing `VST3_SAMPLE_PLUGIN_DIR`, which was every machine.
+    pub fn vst3_program_sample_path() -> &'static str {
+        static RESOLVED: OnceLock<String> = OnceLock::new();
+        RESOLVED
+            .get_or_init(|| {
+                assert!(
+                    !VST3_PROBE_DIR.is_empty(),
+                    "no VST3 probe directory: `tutti-vst3-host` did not export one."
+                );
+                let bundle = Path::new(VST3_PROBE_DIR).join("multiple-program-changes.vst3");
+                binary_in_bundle(&bundle).unwrap_or_else(|| {
+                    panic!(
+                        "the multiple-program-changes sample was not found under {}. \
+                         `tutti-vst3-host`'s build script builds it from the in-repo \
+                         SDK submodule, so this is a build failure. If the submodules \
+                         are empty, run: git submodule update --init --recursive",
+                        bundle.display()
+                    )
+                })
+            })
+            .as_str()
+    }
+
+    /// The single binary inside a `.vst3` bundle.
+    ///
+    /// The layout is the plugin format's, not cargo's: one of these arch dirs
+    /// holds it. All are probed rather than deriving one from `cfg!`, so a
+    /// cross-build lands in the slower branch instead of a wrong answer.
+    fn binary_in_bundle(bundle: &Path) -> Option<String> {
+        for sub in [
+            "Contents/x86_64-linux",
+            "Contents/aarch64-linux",
+            "Contents/MacOS",
+            "Contents/x86_64-win",
+        ] {
+            let Ok(entries) = std::fs::read_dir(bundle.join(sub)) else {
+                continue;
+            };
+            for e in entries.flatten() {
+                let path = e.path();
+                if path.is_file() {
+                    return Some(path.to_string_lossy().into_owned());
+                }
+            }
+        }
+        None
     }
 
     /// The reference plugin under a `.clap` extension.

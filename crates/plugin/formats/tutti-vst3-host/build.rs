@@ -265,38 +265,21 @@ fn build_audio_probe(sdk: &Path) {
     for f in PROBE_SOURCES {
         build.file(probe_src.join(f));
     }
-    for f in SDK_SOURCES.iter().chain(platform_sources()) {
-        let path = sdk.join(f);
-        assert!(
-            path.is_file(),
-            "VST3 SDK source missing: {} — the in-repo submodule is incomplete. \
-             Run: git submodule update --init --recursive",
-            path.display()
-        );
-        build.file(path);
-    }
+
+    // The SDK's translation units are compiled by their own `cc::Build` so a
+    // second plugin can reuse the objects. Keeping them separate is not just
+    // tidiness: every VST3 plugin supplies its *own* `GetPluginFactory`, so
+    // handing another plugin this build's full object list — probe factory
+    // included — is a duplicate-symbol link error.
+    let sdk_objects = compile_sdk_objects(sdk, &gen);
 
     let objects = build.compile_intermediates();
-
-    // Link the bundle. `get_compiler()` carries the same toolchain and target
-    // flags `cc` just used, so cross-compiles and CC overrides are honoured.
-    let bundle = out_dir
-        .join("probe-bundle")
-        .join("audio-probe.vst3")
-        .join("Contents")
-        .join(bundle_arch_dir());
-    std::fs::create_dir_all(&bundle).expect("create bundle dir");
-    let so = bundle.join(format!("audio-probe.{}", dylib_ext()));
-
-    let compiler = build.get_compiler();
-    let mut cmd = compiler.to_command();
-    cmd.arg("-shared").arg("-fPIC").arg("-o").arg(&so);
-    cmd.args(&objects);
-    cmd.args(probe_link_args());
-
-    let status = cmd.status().expect("failed to invoke the linker");
-    assert!(status.success(), "linking audio-probe failed: {status}");
-    assert!(so.is_file(), "linker reported success but {so:?} is absent");
+    link_bundle(
+        &build,
+        objects.iter().chain(&sdk_objects),
+        &out_dir.join("probe-bundle"),
+        "audio-probe",
+    );
 
     // The directory *containing* the bundle — the tests take a dir and join the
     // bundle name onto it, matching how an external plugin dir is passed.
@@ -312,6 +295,128 @@ fn build_audio_probe(sdk: &Path) {
     // exactly one. Cargo builds that name from the `links` value
     // (`tutti_vst3_probe`) plus this key, so the key is deliberately just `dir`.
     println!("cargo:dir={}", dir.display());
+
+    build_program_changes_sample(sdk, &gen, &dir, &sdk_objects);
+}
+
+/// Compile the SDK's own translation units and return the objects.
+///
+/// Separate from any one plugin's build so more than one bundle can link them.
+/// This is the expensive half — ~43 files — and compiling it per plugin would
+/// double the build for nothing.
+fn compile_sdk_objects(sdk: &Path, gen: &Path) -> Vec<PathBuf> {
+    let mut build = cc::Build::new();
+    build
+        .cpp(true)
+        .std("c++17")
+        .include(sdk)
+        .include(gen)
+        .define("RELEASE", "1")
+        .define("NDEBUG", "1")
+        // Steinberg's own sources; their warnings are not ours to fix.
+        .warnings(false)
+        .flag_if_supported("-Wno-multichar");
+
+    for f in SDK_SOURCES.iter().chain(platform_sources()) {
+        let path = sdk.join(f);
+        assert!(
+            path.is_file(),
+            "VST3 SDK source missing: {} — the in-repo submodule is incomplete. \
+             Run: git submodule update --init --recursive",
+            path.display()
+        );
+        build.file(path);
+    }
+    build.compile_intermediates()
+}
+
+/// Link `objects` into a real `.vst3` bundle named `plugin` under `dir`.
+///
+/// The bundle layout is the one the host's loader walks
+/// (`<plugin>.vst3/Contents/<arch-os>/<plugin>.so`), not a bare dylib — the
+/// point of building here is to exercise the same path a shipped plugin takes.
+///
+/// `cc` can only emit a static lib, and that is the wrong shape: the linker
+/// drops archive members nothing references, and a plugin's entry points are
+/// referenced only by the host at `dlopen` time. So this invokes the compiler
+/// directly with `-shared`. Failures are hard errors — a plugin that silently
+/// fails to build turns every test that loads it into a skip.
+fn link_bundle<'a>(
+    build: &cc::Build,
+    objects: impl Iterator<Item = &'a PathBuf>,
+    dir: &Path,
+    plugin: &str,
+) {
+    let contents = dir
+        .join(format!("{plugin}.vst3"))
+        .join("Contents")
+        .join(bundle_arch_dir());
+    std::fs::create_dir_all(&contents).expect("create bundle dir");
+    let so = contents.join(format!("{plugin}.{}", dylib_ext()));
+
+    // `get_compiler()` carries the same toolchain and target flags `cc` used,
+    // so cross-compiles and CC overrides are honoured.
+    let mut cmd = build.get_compiler().to_command();
+    cmd.arg("-shared").arg("-fPIC").arg("-o").arg(&so);
+    cmd.args(objects);
+    cmd.args(probe_link_args());
+
+    let status = cmd.status().expect("failed to invoke the linker");
+    assert!(status.success(), "linking {plugin} failed: {status}");
+    assert!(so.is_file(), "linker reported success but {so:?} is absent");
+}
+
+/// Build the SDK's `multiple_programchanges` sample beside the probe.
+///
+/// One fixture, one purpose: it declares **16 program lists** whose ids are
+/// `kProgramStartId + i`, so a list id is provably not a position in
+/// `program_lists()`. A host that dropped `list_id` and kept `index` would
+/// collapse all 16 onto one another, and three tests in `tutti-plugin-server`
+/// exist to catch exactly that. `audio-probe` publishes no program lists at all,
+/// so it cannot stand in.
+///
+/// Those tests used to read `VST3_SAMPLE_PLUGIN_DIR` and skip when it was
+/// unset — which was every machine, since it meant a hand-built SDK checkout.
+/// The sample ships inside the `public.sdk` submodule, so it is simply here now.
+fn build_program_changes_sample(sdk: &Path, gen: &Path, dir: &Path, sdk_objects: &[PathBuf]) {
+    const SOURCES: &[&str] = &["plug.cpp", "plugcontroller.cpp", "plugentry.cpp"];
+
+    let src = sdk.join("public.sdk/samples/vst/multiple_programchanges/source");
+    assert!(
+        src.is_dir(),
+        "the `multiple_programchanges` sample is missing from {} — the SDK \
+         submodule is incomplete. Run: git submodule update --init --recursive",
+        src.display()
+    );
+
+    let mut build = cc::Build::new();
+    build
+        .cpp(true)
+        .std("c++17")
+        .include(sdk)
+        .include(&src)
+        .include(gen)
+        .define("RELEASE", "1")
+        .define("NDEBUG", "1")
+        .warnings(false)
+        .flag_if_supported("-Wno-multichar");
+
+    for f in SOURCES {
+        let path = src.join(f);
+        assert!(path.is_file(), "sample source missing: {}", path.display());
+        println!("cargo:rerun-if-changed={}", path.display());
+        build.file(path);
+    }
+
+    // Only this plugin's objects plus the shared SDK ones — it brings its own
+    // `GetPluginFactory`, so the probe's must not be in the list.
+    let objects = build.compile_intermediates();
+    link_bundle(
+        &build,
+        objects.iter().chain(sdk_objects),
+        dir,
+        "multiple-program-changes",
+    );
 }
 
 /// System libraries the probe's platform sources need at link time.

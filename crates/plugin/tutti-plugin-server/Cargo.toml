@@ -101,7 +101,14 @@ windows-sys = { version = "0.59", features = [
   "Win32_System_Threading",
 ] }
 
+[build-dependencies]
+# Shared with the other three crates that locate a reference plugin
+# cdylib; see that crate's docs for the newest-wins and never-skip rules.
+tutti-fixture-resolve = { path = "../vendor/tutti-fixture-resolve" }
+
 [dev-dependencies]
+# The shared resolver; see its docs for the newest-wins rule.
+tutti-fixture-resolve = { path = "../vendor/tutti-fixture-resolve" }
 # RT-safety regression: prove the per-block audio path never allocates.
 assert_no_alloc = { version = "1", default-features = false }
 # The reference CLAP plugin the loader tests drive. A dev-dependency rather
@@ -110,3 +117,13 @@ assert_no_alloc = { version = "1", default-features = false }
 # only resolves where it landed. This is what lets the CLAP suite run on any
 # machine instead of naming an absolute macOS path.
 tutti-clap-test-plugin = { path = "../../vendor/tutti-clap-test-plugin" }
+# The same `tutti-vst3-host` the `vst3` feature pulls in, but with `conformance`
+# on so its build script compiles `audio-probe` — the reference VST3 plugin the
+# loader tests drive, the counterpart to `tutti-clap-test-plugin` above. As a
+# *dev*-dependency the feature does not reach production builds: `conformance`
+# also exposes a `pub mod` observation seam that should stay off there.
+#
+# Cargo unifies this with the optional dependency, so the probe is built
+# whenever tests run with `--features vst3`, and its location arrives as
+# `DEP_TUTTI_VST3_PROBE_DIR` (see build.rs).
+tutti-vst3-host = { path = "../formats/tutti-vst3-host", features = ["conformance"] }

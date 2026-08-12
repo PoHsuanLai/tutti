@@ -19,7 +19,14 @@ tutti-plugin-types = { path = "../../tutti-plugin-types" }
 # automation_state) that upstream vst-rs's host_dispatch swallowed.
 vst-tutti = { path = "../../vendor/vst-tutti" }
 
+[build-dependencies]
+# Shared with the other three crates that locate a reference plugin
+# cdylib; see that crate's docs for the newest-wins and never-skip rules.
+tutti-fixture-resolve = { path = "../../vendor/tutti-fixture-resolve" }
+
 [dev-dependencies]
+# The shared resolver; see its docs for the newest-wins rule.
+tutti-fixture-resolve = { path = "../../vendor/tutti-fixture-resolve" }
 assert_no_alloc = { version = "1", default-features = false }
 # Used by the conformance harness to re-open the reference plugin and read
 # its capture. The test cannot use the linked rlib's globals for this: the

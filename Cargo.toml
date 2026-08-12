@@ -38,6 +38,7 @@ members = [
     "crates/plugin/formats/tutti-vst2-host",
     "crates/plugin/vendor/vst-tutti",
     "crates/plugin/vendor/tutti-vst2-test-plugin",
+    "crates/plugin/vendor/tutti-fixture-resolve",
     "crates/vendor/fundsp-tutti",
     "crates/vendor/rustysynth-tutti/rustysynth",
     "crates/vendor/tutti-clap-test-plugin",

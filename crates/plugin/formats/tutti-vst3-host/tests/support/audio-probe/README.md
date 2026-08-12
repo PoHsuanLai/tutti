@@ -25,17 +25,35 @@ output buses `[2, 1]` — because a host that assumes "one stereo bus in, one
 stereo bus out" (the shape of every other sample plugin) would otherwise be
 accidentally correct.
 
+It also declares one parameter, `DelayMs`, as a `RangeParameter` over 5..750 ms.
+Every other parameter here uses the SDK's base `Parameter`, whose `toPlain` is
+the identity — so a host that never calls `normalizedParamToPlain` and simply
+reports `0..1` for everything looks correct against all of them.
+`plain_range_probe_recovers_real_ranges` needs one parameter that disagrees, and
+this is it. (Steinberg's `adelay` sample is *not* a substitute: it labels its
+Delay "sec" but still uses base `Parameter`, so its plain range really is
+`0..1`.)
+
 ## How it is built
 
-`build.rs` compiles these sources plus the ~40 SDK translation units they need
+`build.rs` compiles these sources plus the ~43 SDK translation units they need
 and links a real `.vst3` bundle into `OUT_DIR`, as part of the same `cargo test`
-invocation. No CMake. The only requirement is `VST3_SDK_DIR` pointing at a full
-SDK checkout, and the `conformance` feature:
+invocation. No CMake, and nothing to set up:
 
 ```bash
-VST3_SDK_DIR=/path/to/vst3sdk \
-cargo test -p tutti-vst3-host --features conformance
+cargo test -p tutti-vst3-host
 ```
+
+The SDK is in-tree at `crates/tutti/crates/plugin/vendor/vst3-sdk/` (three git
+submodules), and this crate dev-depends on itself with `conformance` on, so its
+own tests always have a probe. Both used to be the caller's problem —
+`VST3_SDK_DIR` had to name an external checkout and `--features conformance` had
+to be passed, so on a machine without an SDK this suite did not skip, it
+*panicked*. `VST3_SDK_DIR` still overrides, for testing against another SDK
+revision.
+
+If the submodules are empty (a `git clone` without `--recursive`), the build
+script says so and names `git submodule update --init --recursive`.
 
 `cc` can only emit static libraries, and a static library is the wrong shape for
 a plugin — the linker drops archive members nothing references, and a plugin's
@@ -49,7 +67,9 @@ writes a minimal one into `OUT_DIR`.
 
 The tests **panic** rather than skip when the probe cannot be found. The probe is
 built from this tree, so its absence is a build failure, not a property of the
-machine.
+machine. That is now true of the suites in `tutti-plugin-server` too: they
+briefly carried skip macros, because the probe needed an SDK checkout that most
+machines lacked, and those are gone.
 
 This is not hypothetical. The bundle previously lived at a machine-specific path
 outside the repo, and the test resolved it by a hardcoded filename. Building it

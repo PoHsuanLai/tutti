@@ -2,9 +2,10 @@
 //! `vst3_conformance` test links against, build the in-repo `audio-probe`
 //! reference plugin, and locate any external sample plugins.
 //!
-//! Only runs when the `conformance` feature is on. The VST3 SDK checkout is
-//! located via `VST3_SDK_DIR`; if it is unset or missing, nothing is built and
-//! the tests skip themselves at runtime.
+//! Only runs when the `conformance` feature is on — which this crate turns on
+//! for its own tests via a dev-dependency on itself, so `cargo test` needs no
+//! flags. The SDK comes from the in-repo submodules; `VST3_SDK_DIR` overrides
+//! for testing against another revision. See [`resolve_sdk`].
 //!
 //! Why the checker rather than hand-written assertions: HostChecker's six
 //! check modules encode ~185 spec rules Steinberg accumulated over a decade of
@@ -13,18 +14,23 @@
 //!
 //! ## The `audio-probe` bundle
 //!
-//! `audio-probe` is *ours*, not Steinberg's — 693 lines under
+//! `audio-probe` is *ours*, not Steinberg's — ~1400 lines under
 //! `tests/support/audio-probe/`. It used to live inside a VST3 SDK checkout at
 //! a machine-specific path and be built by CMake, which made every test that
 //! loads it unrunnable anywhere but one developer's box. It is built here
-//! instead, so `cargo test --features conformance` is the whole story.
+//! instead, so `cargo test` is the whole story.
 //!
-//! No CMake: the plugin plus the 40 SDK translation units it needs are compiled
-//! straight through `cc` and linked into a `.so` by hand. `cc` only produces
-//! static libs, so the link step invokes the configured compiler directly with
-//! `-shared` (see [`build_audio_probe`]).
+//! No CMake: the plugin plus the ~43 SDK translation units it needs are
+//! compiled straight through `cc` and linked into a `.so` by hand. `cc` only
+//! produces static libs, so the link step invokes the configured compiler
+//! directly with `-shared` (see [`build_audio_probe`]).
 
 use std::path::{Path, PathBuf};
+
+/// The in-repo SDK, relative to this crate's manifest dir. Three git submodules
+/// (`pluginterfaces`, `base`, `public.sdk`) pinned at `v3.8.0_build_66` — see
+/// that directory's README for why the SDK superproject is not used directly.
+const VENDORED_SDK: &str = "../../vendor/vst3-sdk";
 
 const CHECK_MODULES: &[&str] = &[
     "hostcheck",
@@ -130,16 +136,7 @@ fn main() {
     let plugin_dir = std::env::var("VST3_SAMPLE_PLUGIN_DIR").unwrap_or_default();
     println!("cargo:rustc-env=VST3_SAMPLE_PLUGIN_DIR={plugin_dir}");
 
-    // Every `rustc-env` the tests read via `env!` must be emitted on *every*
-    // path out of this function, failure paths included: `env!` resolves at
-    // compile time, so an unset one fails the build instead of letting the test
-    // skip. That is what made a checkout without the SDK unbuildable.
-    let Some(sdk) = std::env::var_os("VST3_SDK_DIR").map(PathBuf::from) else {
-        println!("cargo:warning=VST3_SDK_DIR unset; conformance test will skip");
-        println!("cargo:rustc-env=VST3_HOSTCHECK_AVAILABLE=0");
-        println!("cargo:rustc-env=VST3_PROBE_DIR=");
-        return;
-    };
+    let sdk = resolve_sdk();
 
     // Independent of the hostchecker: the probe needs only the SDK's own
     // sources, so it is built even in a checkout whose samples are absent.
@@ -147,13 +144,61 @@ fn main() {
 
     let src = sdk.join("public.sdk/samples/vst/hostchecker/source");
     if !src.is_dir() {
-        println!("cargo:warning=hostchecker sources not found under VST3_SDK_DIR; test will skip");
+        println!(
+            "cargo:warning=hostchecker sources not found under {}; conformance test will skip",
+            src.display()
+        );
         println!("cargo:rustc-env=VST3_HOSTCHECK_AVAILABLE=0");
         return;
     }
 
     build_hostcheck(&sdk, &src);
     println!("cargo:rustc-env=VST3_HOSTCHECK_AVAILABLE=1");
+}
+
+/// The VST3 SDK to build against: the in-repo submodules by default,
+/// `VST3_SDK_DIR` when someone wants a different SDK version.
+///
+/// ## Why this no longer degrades into a skip
+///
+/// It used to. `VST3_SDK_DIR` unset meant an empty `VST3_PROBE_DIR`, and the
+/// suites that read it via `env!` then *panicked* — so `--features conformance`
+/// on a machine without an SDK checkout was a hard failure dressed up as a
+/// skip, and the tests that did skip cleanly were skipping for a reason nobody
+/// could act on. The SDK is a submodule now, so it is present in any correctly
+/// cloned tree and its absence has exactly one cause and one fix.
+fn resolve_sdk() -> PathBuf {
+    if let Some(dir) = std::env::var_os("VST3_SDK_DIR") {
+        let dir = PathBuf::from(dir);
+        assert!(
+            dir.join("pluginterfaces/base/funknown.h").is_file(),
+            "VST3_SDK_DIR={} does not look like a VST3 SDK checkout \
+             (no pluginterfaces/ inside). Unset it to use the in-repo \
+             submodule at {VENDORED_SDK}.",
+            dir.display(),
+        );
+        return dir;
+    }
+
+    let vendored = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(VENDORED_SDK);
+
+    // An uninitialised submodule is an *empty directory*, not a missing one —
+    // git creates the mount point either way — so this checks for a file
+    // inside rather than for the directory. `is_dir()` here passes on a bare
+    // clone and defers the failure to the per-source assert in
+    // `build_audio_probe`, which reports a confusing "SDK source missing" for
+    // one arbitrary `.cpp` instead of naming the actual cause.
+    //
+    // Naming the exact command matters more than it looks: this is the repo's
+    // only submodule, so a contributor hitting it has no muscle memory for it.
+    assert!(
+        vendored.join("pluginterfaces/base/funknown.h").is_file(),
+        "the vendored VST3 SDK at {} is empty — the submodules are not checked out.\n\
+         Run:  git submodule update --init --recursive\n\
+         (or set VST3_SDK_DIR to an external SDK checkout.)",
+        vendored.display(),
+    );
+    vendored
 }
 
 /// Build `tests/support/audio-probe` into a loadable `.vst3` bundle under
@@ -224,7 +269,8 @@ fn build_audio_probe(sdk: &Path) {
         let path = sdk.join(f);
         assert!(
             path.is_file(),
-            "VST3 SDK source missing: {} — is VST3_SDK_DIR pointing at a full checkout?",
+            "VST3 SDK source missing: {} — the in-repo submodule is incomplete. \
+             Run: git submodule update --init --recursive",
             path.display()
         );
         build.file(path);
@@ -256,6 +302,16 @@ fn build_audio_probe(sdk: &Path) {
     // bundle name onto it, matching how an external plugin dir is passed.
     let dir = out_dir.join("probe-bundle");
     println!("cargo:rustc-env=VST3_PROBE_DIR={}", dir.display());
+
+    // Same path, for *dependents*. `rustc-env` applies only to the crate whose
+    // build script emitted it, so a dependent's tests cannot see the line
+    // above; the `links` key in Cargo.toml turns this one into
+    // `DEP_TUTTI_VST3_PROBE_DIR` in their build scripts. That is what lets
+    // `tutti-plugin-server` find this bundle instead of rebuilding a second
+    // copy of it — the probe is 90 lines of C++ compilation and there should be
+    // exactly one. Cargo builds that name from the `links` value
+    // (`tutti_vst3_probe`) plus this key, so the key is deliberately just `dir`.
+    println!("cargo:dir={}", dir.display());
 }
 
 /// System libraries the probe's platform sources need at link time.

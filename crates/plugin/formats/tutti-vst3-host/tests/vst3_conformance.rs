@@ -824,7 +824,7 @@ fn decode_hostchecker_warnings(out: &ParameterChanges) -> Vec<i32> {
             continue;
         };
         // The plugin sends `bits / 2^24`; undo that to recover the bitfield.
-        let bits = (point.value * f64::from(1u32 << K_PARAM_WARN_BIT_COUNT)).round() as u32;
+        let bits = (point.value.get() * f64::from(1u32 << K_PARAM_WARN_BIT_COUNT)).round() as u32;
         for bit in 0..K_PARAM_WARN_BIT_COUNT {
             if bits & (1 << bit) != 0 {
                 ids.push((i * K_PARAM_WARN_BIT_COUNT + bit) as i32);
@@ -1999,7 +1999,7 @@ fn plugin_observes_the_offline_mode_we_requested() {
             .get_queue(param_address(K_PARAM_PROCESS_MODE_TAG))
         {
             if let Some(point) = queue.points.last() {
-                reported = Some(point.value);
+                reported = Some(point.value.get());
             }
         }
     }

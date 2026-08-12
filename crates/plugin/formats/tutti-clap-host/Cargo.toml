@@ -32,7 +32,14 @@ tutti-midi-types = { path = "../../../midi/tutti-midi-types" }
 tutti-plugin-types = { path = "../../tutti-plugin-types" }
 tutti-types = { path = "../../../core/tutti-types" }
 
+[build-dependencies]
+# Shared with the other three crates that locate a reference plugin
+# cdylib; see that crate's docs for the newest-wins and never-skip rules.
+tutti-fixture-resolve = { path = "../../vendor/tutti-fixture-resolve" }
+
 [dev-dependencies]
+# The shared resolver; see its docs for the newest-wins rule.
+tutti-fixture-resolve = { path = "../../vendor/tutti-fixture-resolve" }
 assert_no_alloc = { version = "1", default-features = false }
 tempfile = "3"
 # The reference plugin used by the clap_conformance harness. As a

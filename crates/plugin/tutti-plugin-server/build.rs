@@ -2,13 +2,13 @@
 //! (`tutti-clap-test-plugin`) and hand it to this crate's unit tests via the
 //! `TUTTI_CLAP_TEST_PLUGIN_CANDIDATES` env var.
 //!
-//! ## Why this is duplicated from `tutti-clap-host`
+//! ## Why the crate next door emits the same variable
 //!
-//! `tutti-clap-host/build.rs` emits the same variable, but `cargo:rustc-env`
-//! applies only to the crate whose build script emitted it — it does not
-//! propagate to dependents. This crate compiles its own tests, so it needs its
-//! own emission. The resolution rules below are deliberately identical; keep
-//! them in sync.
+//! `cargo:rustc-env` applies only to the crate whose build script emitted it —
+//! it does not propagate to dependents — and this crate compiles its own tests.
+//! The rules used to be copy-pasted between the two with a "keep them in sync"
+//! note; they are `tutti-fixture-resolve`'s now, so there is nothing left to
+//! keep in sync.
 //!
 //! ## Why we don't *build* the plugin here
 //!
@@ -17,79 +17,37 @@
 //! nested `cargo build` **deadlocks** against the outer `cargo test`'s
 //! target-directory lock. Instead this crate takes `tutti-clap-test-plugin` as
 //! a dev-dependency, so cargo builds the cdylib as part of the same `cargo
-//! test` invocation and drops it under the profile directory. This script only
-//! names the places it can land.
+//! test` invocation and drops it under the profile directory.
 //!
-//! ## Absence is a hard failure, not a skip
-//!
-//! The resolver panics when no candidate exists. The plugin is a dev-dependency
-//! built by the same `cargo test` run, so its absence is a build failure, not a
-//! property of the machine. The tests this replaced were the other failure mode
-//! — they named an absolute macOS path and failed everywhere else.
-
-use std::env;
-use std::path::{Path, PathBuf};
-
-const PLUGIN_LIB: &str = "tutti_clap_test_plugin";
+//! The VST3 side is the exception: its reference plugin is C++ compiled by
+//! `tutti-vst3-host`, so rather than rebuild it, that crate's `links` metadata
+//! carries the location here. See [`forward_vst3_probe_dir`].
 
 fn main() {
-    println!("cargo:rerun-if-changed=build.rs");
-    println!("cargo:rerun-if-env-changed=CARGO_TARGET_DIR");
-
-    let profile = env::var("PROFILE").unwrap_or_else(|_| "debug".to_string());
-    let profile_dir = resolve_target_dir().join(&profile);
-    let name = lib_filename();
-
-    // Cargo does not promise *where* under the profile dir a dev-dependency's
-    // cdylib lands. With the default layout it is `<profile>/<name>`, but under
-    // an explicit `CARGO_TARGET_DIR` (or `--target <triple>`) it has been
-    // observed only in `<profile>/deps/<name>`. Emit both candidates so a
-    // layout shift degrades into a slower lookup rather than a silently skipped
-    // suite.
-    //
-    // `deps/` is listed first deliberately: cargo builds into `deps/` and
-    // hardlinks the result up to `<profile>/`, but it does not always refresh
-    // the copy, so `<profile>/` can be an *older build of the same plugin*.
-    // The resolver takes the newest of the candidates that exist rather than
-    // the first, because a stale-but-present artifact is the nastier failure —
-    // the suite runs green against a plugin whose behaviour no longer matches
-    // what the test expects.
-    let candidates = [
-        profile_dir.join("deps").join(&name),
-        profile_dir.join(&name),
-    ];
-    let joined = candidates
-        .iter()
-        .map(|p| p.display().to_string())
-        .collect::<Vec<_>>()
-        .join(";");
-    println!("cargo:rustc-env=TUTTI_CLAP_TEST_PLUGIN_CANDIDATES={joined}");
+    tutti_fixture_resolve::emit_candidates(
+        "TUTTI_CLAP_TEST_PLUGIN_CANDIDATES",
+        "tutti_clap_test_plugin",
+    );
+    forward_vst3_probe_dir();
 }
 
-/// The cdylib filename for the current platform.
-fn lib_filename() -> String {
-    if cfg!(target_os = "windows") {
-        format!("{PLUGIN_LIB}.dll")
-    } else if cfg!(target_os = "macos") {
-        format!("lib{PLUGIN_LIB}.dylib")
-    } else {
-        format!("lib{PLUGIN_LIB}.so")
-    }
-}
-
-/// Resolve `<target-dir>` (the dir holding `debug/`, `release/`).
+/// Re-export `tutti-vst3-host`'s reference-plugin directory so *this* crate's
+/// tests can `env!` it.
 ///
-/// Honors `CARGO_TARGET_DIR` if set (this workspace points it at an external
-/// SSD). Otherwise derives it from `OUT_DIR`, which is
-/// `<target>/<profile>/build/<pkg>-<hash>/out` — the 5th ancestor.
-fn resolve_target_dir() -> PathBuf {
-    if let Some(dir) = env::var_os("CARGO_TARGET_DIR") {
-        return PathBuf::from(dir);
-    }
-    let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR set by cargo"));
-    out_dir
-        .ancestors()
-        .nth(4)
-        .map(Path::to_path_buf)
-        .unwrap_or(out_dir)
+/// `tutti-vst3-host` builds `audio-probe` (its own C++ reference plugin) and
+/// emits `cargo:dir`. Because that crate declares `links`, cargo hands the
+/// value to dependents' build scripts as `DEP_TUTTI_VST3_PROBE_DIR` — the only
+/// supported way to cross a package boundary, since `rustc-env` does not
+/// propagate. Rebuilding the probe here instead would mean a second copy of 90
+/// lines of C++ compilation, and two bundles that could disagree.
+///
+/// Emits an empty string when absent, which happens on two legitimate paths: the
+/// `vst3` feature is off (no dependency at all), or `tutti-vst3-host` was built
+/// without `conformance` (no probe). `env!` resolves at compile time, so the
+/// variable must exist on every path or the *build* fails rather than the test
+/// reporting anything useful.
+fn forward_vst3_probe_dir() {
+    println!("cargo:rerun-if-env-changed=DEP_TUTTI_VST3_PROBE_DIR");
+    let dir = std::env::var("DEP_TUTTI_VST3_PROBE_DIR").unwrap_or_default();
+    println!("cargo:rustc-env=TUTTI_VST3_PROBE_DIR={dir}");
 }

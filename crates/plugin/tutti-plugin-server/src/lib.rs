@@ -94,82 +94,81 @@ pub(crate) mod test_utils {
     /// `build.rs`.
     const CLAP_PROBE_CANDIDATES: &str = env!("TUTTI_CLAP_TEST_PLUGIN_CANDIDATES");
 
-    /// Absolute path to `tutti-clap-test-plugin`, the reference CLAP cdylib the
-    /// loader tests drive.
+    /// The reference VST3 bundle's parent directory, forwarded from
+    /// `tutti-vst3-host` by `build.rs`. Empty when that crate built no probe.
+    const VST3_PROBE_DIR: &str = env!("TUTTI_VST3_PROBE_DIR");
+
+    /// Absolute path to `audio-probe`, the reference VST3 binary the loader
+    /// tests drive.
     ///
-    /// This replaced a hard-coded `/Library/Audio/Plug-Ins/CLAP/…` path, which
-    /// made the whole CLAP suite macOS-only *and* dependent on a third-party
-    /// plugin being installed. The reference plugin is a dev-dependency built
-    /// by the same `cargo test` run, so the suite works on any machine.
+    /// The counterpart to [`clap_probe_path`], and it panics for the same
+    /// reason. `audio-probe` is built by `tutti-vst3-host`'s build script
+    /// against the in-repo SDK submodules, as a dev-dependency of this crate,
+    /// during this same `cargo test` — so its absence is a build failure, not a
+    /// property of the machine.
     ///
-    /// Picks the **newest** existing candidate, not the first. Cargo builds
-    /// into `<profile>/deps/` and hardlinks up to `<profile>/` without always
-    /// refreshing it, so the two can hold different builds of the same plugin.
-    /// Loading the older one is worse than loading none: the suite runs green
-    /// against a plugin whose behaviour no longer matches what the test sets.
+    /// This used to return `Option` and let callers skip, because the probe
+    /// needed an external `VST3_SDK_DIR` checkout that most machines lacked.
+    /// The SDK is a submodule now, so the skip has nothing left to describe.
+    ///
+    /// `TUTTI_TEST_VST3_PLUGIN` still overrides, for running these tests
+    /// against a real third-party plugin.
     ///
     /// # Panics
     ///
-    /// If no candidate exists. Deliberate: the plugin is built by this same
-    /// `cargo test` invocation, so its absence is a build failure, not a
-    /// property of the machine. A skip here would be indistinguishable from a
-    /// pass — the exact shape that once let 55 integration tests report `ok`
-    /// having executed nothing.
-    /// A loadable VST3 binary, or `None` when this machine has none.
-    ///
-    /// Unlike CLAP, there is no VST3 plugin this workspace can build from its
-    /// own sources: `tutti-vst3-host`'s `audio-probe` needs a **Steinberg SDK
-    /// checkout** (`VST3_SDK_DIR` plus the `conformance` feature) to compile,
-    /// so it cannot be a plain dev-dependency the way the CLAP probe is. Until
-    /// that changes, VST3 coverage here is opt-in:
-    ///
-    /// - `TUTTI_TEST_VST3_PLUGIN` — an explicit path to any VST3 binary.
-    /// - `VST3_PROBE_DIR` — the directory `tutti-vst3-host`'s `build.rs`
-    ///   exports when built with `--features conformance` and `VST3_SDK_DIR`
-    ///   set; the probe bundle is found inside it.
-    ///
-    /// Returning `None` is what lets a caller **skip** rather than fail. That
-    /// is a deliberate exception to this workspace's "absence is a hard
-    /// failure" rule, and it is narrow: the CLAP probe is built by the same
-    /// `cargo test` run, so its absence really is a build failure, whereas a
-    /// VST3 binary is a property of the machine. The rule's actual hazard — a
-    /// silent skip reading as a pass — is handled by making every caller print
-    /// why it skipped.
-    pub fn vst3_plugin_path() -> Option<&'static str> {
-        static RESOLVED: OnceLock<Option<String>> = OnceLock::new();
+    /// If the probe is absent — see above. The message names the likely cause.
+    pub fn vst3_probe_path() -> &'static str {
+        static RESOLVED: OnceLock<String> = OnceLock::new();
         RESOLVED
             .get_or_init(|| {
                 if let Some(p) = std::env::var_os("TUTTI_TEST_VST3_PLUGIN") {
                     let p = PathBuf::from(p);
-                    if p.exists() {
-                        return Some(p.to_string_lossy().into_owned());
-                    }
+                    assert!(
+                        p.exists(),
+                        "TUTTI_TEST_VST3_PLUGIN={} does not exist",
+                        p.display()
+                    );
+                    return p.to_string_lossy().into_owned();
                 }
-                let dir = std::env::var("VST3_PROBE_DIR").ok()?;
-                if dir.is_empty() {
-                    return None;
-                }
-                let bundle = Path::new(&dir).join("audio-probe.vst3");
+
+                assert!(
+                    !VST3_PROBE_DIR.is_empty(),
+                    "no VST3 probe directory: `tutti-vst3-host` did not export one. \
+                     It is a dev-dependency of this crate with `features = \
+                     [\"conformance\"]`, so this means its build script did not run \
+                     or did not build the probe."
+                );
+
+                // The bundle layout is the plugin format's, not cargo's: one of
+                // these arch dirs holds the binary. Probe all of them rather
+                // than deriving one from `cfg!`, so a cross-build lands in the
+                // slower branch instead of a wrong answer.
+                let bundle = Path::new(VST3_PROBE_DIR).join("audio-probe.vst3");
                 for sub in [
                     "Contents/x86_64-linux",
                     "Contents/aarch64-linux",
                     "Contents/MacOS",
                     "Contents/x86_64-win",
                 ] {
-                    let dir = bundle.join(sub);
-                    let Ok(entries) = std::fs::read_dir(&dir) else {
+                    let Ok(entries) = std::fs::read_dir(bundle.join(sub)) else {
                         continue;
                     };
                     for e in entries.flatten() {
                         let path = e.path();
                         if path.is_file() {
-                            return Some(path.to_string_lossy().into_owned());
+                            return path.to_string_lossy().into_owned();
                         }
                     }
                 }
-                None
+                panic!(
+                    "audio-probe not found under {}. `tutti-vst3-host`'s build \
+                     script builds it from the in-repo SDK submodules, so this is \
+                     a build failure. If the SDK submodules are empty, run: \
+                     git submodule update --init --recursive",
+                    bundle.display()
+                )
             })
-            .as_deref()
+            .as_str()
     }
 
     /// The reference plugin under a `.clap` extension.
@@ -239,29 +238,24 @@ pub(crate) mod test_utils {
         }
     }
 
+    /// Absolute path to `tutti-clap-test-plugin`, the reference CLAP cdylib the
+    /// loader tests drive.
+    ///
+    /// This replaced a hard-coded `/Library/Audio/Plug-Ins/CLAP/…` path, which
+    /// made the whole CLAP suite macOS-only *and* dependent on a third-party
+    /// plugin being installed. The reference plugin is a dev-dependency built
+    /// by the same `cargo test` run, so the suite works on any machine.
+    ///
+    /// Resolution (newest candidate wins) and the panic-on-absence rule are
+    /// `tutti_fixture_resolve`'s; see that crate for why each matters.
     pub fn clap_probe_path() -> &'static str {
         static RESOLVED: OnceLock<String> = OnceLock::new();
         RESOLVED
             .get_or_init(|| {
-                let newest = CLAP_PROBE_CANDIDATES
-                    .split(';')
-                    .filter(|s| !s.is_empty())
-                    .filter(|c| Path::new(c).is_file())
-                    .filter_map(|c| {
-                        let mtime = std::fs::metadata(c).and_then(|m| m.modified()).ok()?;
-                        Some((mtime, c))
-                    })
-                    .max_by_key(|(mtime, _)| *mtime);
-                match newest {
-                    Some((_, path)) => path.to_string(),
-                    None => panic!(
-                        "reference plugin `tutti-clap-test-plugin` not found.\n\
-                         Searched: {CLAP_PROBE_CANDIDATES}\n\
-                         It is a dev-dependency of this crate, so `cargo test` \
-                         should have built it. If this fires, the cdylib landed \
-                         somewhere build.rs does not name."
-                    ),
-                }
+                tutti_fixture_resolve::resolve_or_panic(
+                    CLAP_PROBE_CANDIDATES,
+                    "tutti-clap-test-plugin",
+                )
             })
             .as_str()
     }

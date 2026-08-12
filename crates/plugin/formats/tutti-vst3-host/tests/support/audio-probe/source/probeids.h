@@ -178,7 +178,30 @@ enum ProbeParams : ParamID
     /// so the round trip below is the one test that can tell the two streams
     /// apart.
     kParamUiState = 104,
+
+    /// A parameter whose **plain** range is not `0..1`: declared as a
+    /// `RangeParameter` over [`kDelayMsMin`, `kDelayMsMax`] milliseconds.
+    ///
+    /// Every other parameter here uses the SDK's base `Parameter`, whose
+    /// `toPlain` is the identity — so a host that never calls
+    /// `normalizedParamToPlain` at all, and simply reports `0..1` for
+    /// everything, looks correct against all of them. This one does not: it is
+    /// the only observable that can tell a real conversion from the hardcoded
+    /// range it replaced.
+    ///
+    /// A unit *string* is not enough, which is the trap this was written to
+    /// avoid — Steinberg's own `adelay` sample labels its Delay "sec" while
+    /// still using base `Parameter`, so its plain range really is `0..1` and it
+    /// proves nothing here.
+    kParamDelayMs = 105,
 };
+
+/// Plain-value bounds for [`kParamDelayMs`], in milliseconds.
+///
+/// Deliberately neither bound is `0` or `1`, so a host that skips the
+/// conversion cannot coincide with the right answer at either end.
+static const double kDelayMsMin = 5.0;
+static const double kDelayMsMax = 750.0;
 
 /// Latency the plugin reports and applies in `kModeLatency`. A prime number so
 /// an accidentally-correct result is unlikely.

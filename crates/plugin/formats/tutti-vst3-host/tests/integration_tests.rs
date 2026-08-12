@@ -63,23 +63,24 @@ const DEXED: &str = "/Library/Audio/Plug-Ins/VST3/Dexed.vst3";
 /// mostly do not.
 const SDK_SAMPLES: &[&str] = &["adelay.vst3", "mda-vst3.vst3", "note-expression-synth.vst3"];
 
-/// Every VST3 bundle this machine has, user domain first.
+/// Every VST3 bundle available here — the in-repo probe first, then whatever
+/// this machine happens to have installed.
 ///
-/// The absolute paths below are macOS-only and name third-party installs, so
-/// on any other machine this used to come back empty — and the corpus tests
-/// that assert `loaded > 0` failed rather than skipped. Two portable sources
-/// come first:
+/// The absolute paths below are macOS-only and name third-party installs, so on
+/// any other machine this used to come back empty, and the corpus tests that
+/// assert `loaded > 0` failed rather than skipped. The in-repo `audio-probe` is
+/// what makes it non-empty everywhere; the rest only widen coverage:
 ///
-/// - `TUTTI_TEST_VST3_PLUGIN` — an explicit path to any VST3 binary.
-/// - `VST3_PROBE_DIR` — exported by this crate's `build.rs` when built with
-///   `--features conformance` and `VST3_SDK_DIR` set; holds the in-repo
-///   `audio-probe` bundle.
+/// - `built_binaries()` — `audio-probe`, compiled by this crate's build script
+///   from the SDK submodules. Always present.
+/// - `TUTTI_TEST_VST3_PLUGIN` — an explicit path to any VST3 binary, for
+///   running these against a real third-party plugin.
 fn corpus() -> Vec<PathBuf> {
     let mut out: Vec<PathBuf> = Vec::new();
     if let Some(p) = std::env::var_os("TUTTI_TEST_VST3_PLUGIN") {
         out.push(PathBuf::from(p));
     }
-    out.extend(probe_binary());
+    out.extend(built_binaries());
     let user = dirs_home().join("Library/Audio/Plug-Ins/VST3");
     out.extend(SDK_SAMPLES.iter().map(|n| user.join(n)));
     out.extend([TAL_NOISEMAKER, SURGE_XT, VITAL, DEXED].map(PathBuf::from));
@@ -87,36 +88,47 @@ fn corpus() -> Vec<PathBuf> {
     out
 }
 
-/// The corpus, or a printed skip when this machine has no VST3 plugin at all.
+/// The corpus, which is never empty.
 ///
-/// The corpus tests assert `loaded > 0` — a real property (a host that loads
-/// nothing is broken) that is unprovable with no plugin to load. Skipping keeps
-/// that assertion meaningful where a corpus exists instead of weakening it
-/// everywhere. The skip prints so "did not run" stays distinguishable from
-/// "passed" in the output.
-macro_rules! corpus_or_skip {
-    () => {{
-        let c = corpus();
-        if c.is_empty() {
-            eprintln!(
-                "SKIP {}: no VST3 plugin on this machine. Set TUTTI_TEST_VST3_PLUGIN=<path>, \
-                 or build with --features conformance and VST3_SDK_DIR set to export \
-                 VST3_PROBE_DIR.",
-                module_path!()
-            );
-            return;
-        }
-        c
-    }};
+/// `audio-probe` is built by this crate's own build script — `conformance` is
+/// on for tests via a dev-dependency on itself — so there is always at least one
+/// plugin to load. This used to be a `corpus_or_skip!` macro that returned early
+/// on an empty corpus, because the probe needed an external SDK checkout most
+/// machines lacked; the SDK is a submodule now, so an empty corpus means the
+/// build is broken rather than the machine being bare.
+///
+/// # Panics
+///
+/// If no plugin resolves — see above.
+fn corpus_or_fail() -> Vec<PathBuf> {
+    let c = corpus();
+    assert!(
+        !c.is_empty(),
+        "the corpus is empty: `audio-probe` should have been built by this \
+         crate's build script into VST3_PROBE_DIR. If the SDK submodules are \
+         empty, run: git submodule update --init --recursive"
+    );
+    c
 }
 
-/// The `audio-probe` binary inside `VST3_PROBE_DIR`, when that was exported.
-fn probe_binary() -> Option<PathBuf> {
-    let dir = std::env::var("VST3_PROBE_DIR").ok()?;
+/// The `audio-probe` bundle `build.rs` builds into `VST3_PROBE_DIR`.
+///
+/// Built from the in-repo SDK submodules during this same `cargo test`, so on a
+/// correctly cloned tree this is never empty.
+fn built_binaries() -> Vec<PathBuf> {
+    let Ok(dir) = std::env::var("VST3_PROBE_DIR") else {
+        return Vec::new();
+    };
     if dir.is_empty() {
-        return None;
+        return Vec::new();
     }
-    let bundle = Path::new(&dir).join("audio-probe.vst3");
+    binary_in_bundle(&Path::new(&dir).join("audio-probe.vst3"))
+        .into_iter()
+        .collect()
+}
+
+/// The single binary inside a `.vst3` bundle, whichever arch dir holds it.
+fn binary_in_bundle(bundle: &Path) -> Option<PathBuf> {
     for sub in [
         "Contents/x86_64-linux",
         "Contents/aarch64-linux",
@@ -208,7 +220,7 @@ fn test_load_any_available_plugin() {
 fn a_plugins_flat_channel_counts_match_its_bus_zero() {
     let _plugins = plugin_guard();
     let mut checked = 0;
-    for path in corpus_or_skip!() {
+    for path in corpus_or_fail() {
         let library = resolve_bundle(&path);
         let Ok(plugin) = Vst3Instance::<f32>::load(&library, 48_000.0, 64) else {
             eprintln!("skipping {} (failed to load)", path.display());
@@ -272,7 +284,7 @@ fn a_plugins_version_is_read_from_it_rather_than_assumed() {
     let mut loaded = 0;
     let mut non_placeholder = 0;
 
-    for path in corpus_or_skip!() {
+    for path in corpus_or_fail() {
         let library = resolve_bundle(&path);
         let Ok(plugin) = Vst3Instance::<f32>::load(&library, 48_000.0, 64) else {
             continue;
@@ -324,7 +336,7 @@ fn a_plugins_subcategories_are_read_from_it_rather_than_left_blank() {
     let mut loaded = 0;
     let mut declared = 0;
 
-    for path in corpus_or_skip!() {
+    for path in corpus_or_fail() {
         let library = resolve_bundle(&path);
         let Ok(plugin) = Vst3Instance::<f32>::load(&library, 48_000.0, 64) else {
             continue;
@@ -366,7 +378,7 @@ fn corpus_subcategories_parse_into_named_facets() {
     let _plugins = plugin_guard();
     let mut parsed = 0;
 
-    for path in corpus_or_skip!() {
+    for path in corpus_or_fail() {
         let library = resolve_bundle(&path);
         let Ok(plugin) = Vst3Instance::<f32>::load(&library, 48_000.0, 64) else {
             continue;
@@ -741,7 +753,7 @@ fn test_rapid_process_calls() {
 #[test]
 fn plain_range_probe_recovers_real_ranges() {
     let _plugins = plugin_guard();
-    let corpus = corpus_or_skip!();
+    let corpus = corpus_or_fail();
 
     let mut total_probed = 0usize;
     let mut total_non_unit = 0usize;
@@ -798,20 +810,19 @@ fn plain_range_probe_recovers_real_ranges() {
         "no plugin in the corpus produced a plain range, so this test cannot \
          tell a working probe from one that always returns None"
     );
-    if total_non_unit == 0 {
-        // Every plugin present reports identity ranges, so the probe and the
-        // hardcoded `0..1` it replaced are indistinguishable here — there is
-        // nothing this test could assert. Skip rather than fail: the corpus is
-        // a property of the machine, and the in-repo `audio-probe` reports
-        // plain 0..1 for all five of its parameters. Steinberg's `adelay` (in
-        // seconds) or `mda-vst3` are what make this test able to do its job.
-        eprintln!(
-            "SKIP {}: all {total_probed} probed ranges across {} plugin(s) were \
-             exactly 0..1, so a working probe is indistinguishable from the \
-             hardcoded range it replaced. Needs a plugin with non-unit \
-             parameter ranges (e.g. Steinberg's adelay or mda-vst3).",
-            module_path!(),
-            corpus.len()
-        );
-    }
+    // The load-bearing half. Without a single non-unit range, a working probe
+    // and the hardcoded `0..1` it replaced produce identical output and this
+    // test proves nothing. `audio-probe` guarantees one: `kParamDelayMs` is a
+    // `RangeParameter` over 5..750 ms, added for exactly this reason, so the
+    // assertion holds on a bare checkout rather than depending on which
+    // third-party plugins a machine happens to have.
+    assert!(
+        total_non_unit > 0,
+        "all {total_probed} probed ranges across {} plugin(s) were exactly \
+         0..1, so a working probe is indistinguishable from the hardcoded \
+         range it replaced. audio-probe's `DelayMs` should have reported \
+         5..750 — either the probe is stale or normalizedParamToPlain is not \
+         being consulted.",
+        corpus.len()
+    );
 }

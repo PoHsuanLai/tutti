@@ -51,6 +51,14 @@ tresult PLUGIN_API AudioProbeController::initialize (FUnknown* context)
 	parameters.addParameter (STR16 ("UiState"), nullptr, 0, 0.0, ParameterInfo::kCanAutomate,
 	                         kParamUiState);
 
+	// The one parameter with a plain range that is not 0..1. Everything above
+	// uses the base `Parameter`, whose `toPlain` is the identity, so a host that
+	// never calls `normalizedParamToPlain` looks correct against all of them.
+	// See `kParamDelayMs`.
+	parameters.addParameter (new RangeParameter (
+	    STR16 ("DelayMs"), kParamDelayMs, STR16 ("ms"), kDelayMsMin, kDelayMsMax,
+	    kDelayMsMin, 0, ParameterInfo::kCanAutomate));
+
 	return kResultOk;
 }
 

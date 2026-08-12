@@ -1,23 +1,31 @@
-//! The VST3 editor-lifecycle tests and their helpers, shared verbatim by two
-//! targets:
-//!
-//! - `tests/vst3_gui_lifecycle.rs` — the default cargo harness. Works wherever
-//!   winit can build an event loop off the main thread (X11, Wayland, Windows);
-//!   on macOS every test skips, because Cocoa will not allow it.
-//! - `tests/gui_lifecycle_main.rs` — a `harness = false` binary that owns
-//!   `main()`, and so runs these on the main thread. That is the only
-//!   configuration macOS accepts, and it matches how a real host drives an
-//!   editor.
-//!
-//! It lives under `tests/support/` because cargo compiles every top-level file
-//! in `tests/` as its own target; a shared module must sit in a subdirectory or
-//! it would be built a third time on its own.
-//!
-//! Each test below is wrapped in `gui_test!`, which the two roots define
-//! differently: the harness one attaches `#[test]`/`#[ignore]`, the main-thread
-//! one emits a plain function. The attributes cannot be written here directly —
-//! rustc strips an `#[ignore]` function out of a `harness = false` binary, so
-//! the runner would have nothing left to call.
+// NOTE: `//`, not `//!`, and that is load-bearing. This file is `include!`d at
+// the *end* of both targets below, which splices it in after items have already
+// appeared — and an inner doc comment (`//!`) is only legal before any item, so
+// `//!` here is E0753 ×20 rather than documentation. It compiled only because
+// nothing in a plain workspace test run enabled `--features conformance`, which
+// is what gates the two targets. `tutti-au-host`'s copy of this file already
+// uses `//` for the same reason.
+//
+// The VST3 editor-lifecycle tests and their helpers, shared verbatim by two
+// targets:
+//
+// - `tests/vst3_gui_lifecycle.rs` — the default cargo harness. Works wherever
+//   winit can build an event loop off the main thread (X11, Wayland, Windows);
+//   on macOS every test skips, because Cocoa will not allow it.
+// - `tests/gui_lifecycle_main.rs` — a `harness = false` binary that owns
+//   `main()`, and so runs these on the main thread. That is the only
+//   configuration macOS accepts, and it matches how a real host drives an
+//   editor.
+//
+// It lives under `tests/support/` because cargo compiles every top-level file
+// in `tests/` as its own target; a shared module must sit in a subdirectory or
+// it would be built a third time on its own.
+//
+// Each test below is wrapped in `gui_test!`, which the two roots define
+// differently: the harness one attaches `#[test]`/`#[ignore]`, the main-thread
+// one emits a plain function. The attributes cannot be written here directly —
+// rustc strips an `#[ignore]` function out of a `harness = false` binary, so
+// the runner would have nothing left to call.
 
 use std::ffi::c_void;
 use std::path::{Path, PathBuf};

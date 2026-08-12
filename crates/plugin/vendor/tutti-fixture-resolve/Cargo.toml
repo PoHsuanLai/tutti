@@ -1,0 +1,14 @@
+[package]
+name = "tutti-fixture-resolve"
+version = "0.0.1"
+edition = "2021"
+description = "Locating the reference plugin cdylibs the host test suites load"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/PoHsuanLai/Tutti"
+publish = false
+
+# Used from both sides of the build: as a `[build-dependencies]` entry, where
+# it names the paths cargo can drop a dev-dependency cdylib at, and as a
+# `[dev-dependencies]` entry, where the tests resolve one of those paths. It has
+# no runtime dependencies and is never linked into a shipped binary.
+[dependencies]

@@ -107,7 +107,14 @@ windows = { version = "0.52", features = [
 version = "1"
 optional = true
 
+[build-dependencies]
+# Shared with the other three crates that locate a reference plugin
+# cdylib; see that crate's docs for the newest-wins and never-skip rules.
+tutti-fixture-resolve = { path = "../vendor/tutti-fixture-resolve" }
+
 [dev-dependencies]
+# The shared resolver; see its docs for the newest-wins rule.
+tutti-fixture-resolve = { path = "../vendor/tutti-fixture-resolve" }
 tempfile = "3"
 assert_no_alloc = { version = "1", default-features = false }
 tutti-midi-types = { path = "../../midi/tutti-midi-types" }

@@ -33,7 +33,13 @@
 //! attaching it to a window hierarchy. A missing AU is a hard failure, not a
 //! skip — see `support/corpus.rs`.
 
-#![cfg(target_os = "macos")]
+// NOTE: the macOS gate is `#[cfg]` on the *items* below and on the body of
+// `main`, deliberately not `#![cfg]` on the file. This target is
+// `harness = false`, so cargo links it as a plain binary and requires a `main`
+// on **every** platform — a file-level cfg deletes `main` along with everything
+// else, and the target then fails to *compile* on Linux with a bare
+// "`main` function not found", which reads like a broken test rather than a
+// skipped one. Keeping `main` unconditional makes the skip explicit at runtime.
 
 /// The main-thread build of each shared test: a plain function, so `main` can
 /// call it. `au_gui_lifecycle.rs` defines the same macro with `#[test]`.
@@ -41,6 +47,7 @@
 /// The macro has to wrap the *whole* function rather than emit attributes
 /// beside it: rustc strips `#[test]`/`#[ignore]` out of a `harness = false`
 /// binary, so a function defined with them would not exist for `main` to call.
+#[cfg(target_os = "macos")]
 macro_rules! gui_test {
     ($(#[$doc:meta])* fn $name:ident() $body:block) => {
         $(#[$doc])*
@@ -48,10 +55,12 @@ macro_rules! gui_test {
     };
 }
 
+#[cfg(target_os = "macos")]
 mod support;
 
 // The tests themselves, plus their helpers — the same file the default-harness
 // target includes, so the two can never drift.
+#[cfg(target_os = "macos")]
 include!("support/gui_lifecycle.rs");
 
 /// Run one test, catching a panic so the remaining tests still run.
@@ -59,6 +68,7 @@ include!("support/gui_lifecycle.rs");
 /// Without this the first failure would hide every later one, and these tests
 /// each cover a different `AuEditor` promise — knowing which subset broke is
 /// most of the diagnostic.
+#[cfg(target_os = "macos")]
 fn run(name: &str, f: impl FnOnce() + std::panic::UnwindSafe) -> bool {
     eprintln!("\n── {name} ──");
     match std::panic::catch_unwind(f) {
@@ -73,6 +83,15 @@ fn run(name: &str, f: impl FnOnce() + std::panic::UnwindSafe) -> bool {
     }
 }
 
+/// On every non-macOS target this suite has nothing to drive: `AuEditor` is
+/// Cocoa, and the AU corpus ships with the OS. The target still has to link,
+/// so `main` stays and says why it did nothing.
+#[cfg(not(target_os = "macos"))]
+fn main() {
+    eprintln!("au_gui_lifecycle_main: skipped — AU editors are macOS-only");
+}
+
+#[cfg(target_os = "macos")]
 fn main() {
     // Arm the main-thread affinity guard, on the thread that actually is the
     // main one. `AuEditor::open`/`close` call `assert_main_thread()`, which is

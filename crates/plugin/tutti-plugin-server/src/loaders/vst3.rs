@@ -736,17 +736,15 @@ impl PluginAudio for Vst3Instance {
                 &mut self.seq,
             )
             .map_err(Into::into),
-            (VstInner::F64(inner), AudioBufferMut::F64(buf)) => {
-                process_block(
-                    inner,
-                    buf.inputs,
-                    buf.outputs,
-                    buf.sample_rate,
-                    ctx,
-                    &mut self.seq,
-                )
-                    .map_err(Into::into)
-            }
+            (VstInner::F64(inner), AudioBufferMut::F64(buf)) => process_block(
+                inner,
+                buf.inputs,
+                buf.outputs,
+                buf.sample_rate,
+                ctx,
+                &mut self.seq,
+            )
+            .map_err(Into::into),
             _ => Err(PluginError::Process(
                 "Buffer format mismatch: plugin was activated with a different sample format"
                     .to_string(),
@@ -1162,7 +1160,35 @@ mod tests {
     use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
     use tutti_plugin::server::{AudioBuffer, AudioBuffer64, AudioBufferMut, MidiEvent};
 
-    const VST3_PLUGIN: &str = "/Library/Audio/Plug-Ins/VST3/TAL-NoiseMaker.vst3";
+    /// A loadable VST3 binary, or a printed skip.
+    ///
+    /// This replaced a hard-coded `/Library/Audio/Plug-Ins/VST3/…` path, which
+    /// made every test below fail on any machine without that exact
+    /// third-party plugin installed. There is no VST3 equivalent of the CLAP
+    /// reference plugin yet — `audio-probe` needs a Steinberg SDK checkout to
+    /// build — so these skip unless one is pointed at via
+    /// `TUTTI_TEST_VST3_PLUGIN` or `VST3_PROBE_DIR`.
+    ///
+    /// The skip prints. A silent skip is the failure mode this workspace has
+    /// been bitten by (55 integration tests once reported `ok` having run
+    /// nothing); an eprintln keeps "did not run" distinguishable from "passed"
+    /// in the output.
+    macro_rules! vst3_plugin_or_skip {
+        () => {
+            match crate::test_utils::vst3_plugin_path() {
+                Some(p) => p,
+                None => {
+                    eprintln!(
+                        "SKIP {}: no VST3 plugin available. Set TUTTI_TEST_VST3_PLUGIN=<path>, \
+                         or build tutti-vst3-host with --features conformance and VST3_SDK_DIR \
+                         set to export VST3_PROBE_DIR.",
+                        module_path!()
+                    );
+                    return;
+                }
+            }
+        };
+    }
 
     /// Build a unit as the plugin would report it, with no program list.
     fn unit(id: i32, name: &str) -> tutti_vst3_host::Vst3UnitInfo {
@@ -1414,7 +1440,7 @@ mod tests {
     #[test]
     fn test_vst3_load() {
         let _lock = crate::test_utils::plugin_load_lock();
-        let path = Path::new(VST3_PLUGIN);
+        let path = Path::new(vst3_plugin_or_skip!());
         let instance = Vst3Instance::load(path, 44100.0, 512, false);
         assert!(
             instance.is_ok(),
@@ -1431,7 +1457,7 @@ mod tests {
     #[test]
     fn test_vst3_metadata() {
         let _lock = crate::test_utils::plugin_load_lock();
-        let path = Path::new(VST3_PLUGIN);
+        let path = Path::new(vst3_plugin_or_skip!());
         let instance =
             Vst3Instance::load(path, 44100.0, 512, false).expect("Failed to load VST3 plugin");
         let outputs = instance.loaded().total_outputs();
@@ -1442,7 +1468,7 @@ mod tests {
     #[test]
     fn test_vst3_parameter_count() {
         let _lock = crate::test_utils::plugin_load_lock();
-        let path = Path::new(VST3_PLUGIN);
+        let path = Path::new(vst3_plugin_or_skip!());
         let instance =
             Vst3Instance::load(path, 44100.0, 512, false).expect("Failed to load VST3 plugin");
 
@@ -1457,7 +1483,7 @@ mod tests {
     #[test]
     fn test_vst3_parameter_list() {
         let _lock = crate::test_utils::plugin_load_lock();
-        let path = Path::new(VST3_PLUGIN);
+        let path = Path::new(vst3_plugin_or_skip!());
         let instance =
             Vst3Instance::load(path, 44100.0, 512, false).expect("Failed to load VST3 plugin");
 
@@ -1479,7 +1505,7 @@ mod tests {
     #[test]
     fn test_vst3_get_parameter() {
         let _lock = crate::test_utils::plugin_load_lock();
-        let path = Path::new(VST3_PLUGIN);
+        let path = Path::new(vst3_plugin_or_skip!());
         let instance =
             Vst3Instance::load(path, 44100.0, 512, false).expect("Failed to load VST3 plugin");
 
@@ -1498,7 +1524,7 @@ mod tests {
     #[test]
     fn test_vst3_process_f32_silence() {
         let _lock = crate::test_utils::plugin_load_lock();
-        let path = Path::new(VST3_PLUGIN);
+        let path = Path::new(vst3_plugin_or_skip!());
         let mut instance =
             Vst3Instance::load(path, 44100.0, 512, false).expect("Failed to load VST3 plugin");
 
@@ -1525,7 +1551,7 @@ mod tests {
     #[test]
     fn test_vst3_process_f32_with_note() {
         let _lock = crate::test_utils::plugin_load_lock();
-        let path = Path::new(VST3_PLUGIN);
+        let path = Path::new(vst3_plugin_or_skip!());
         let mut instance =
             Vst3Instance::load(path, 44100.0, 512, false).expect("Failed to load VST3 plugin");
 

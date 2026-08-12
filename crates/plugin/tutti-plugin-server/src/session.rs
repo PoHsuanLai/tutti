@@ -668,7 +668,18 @@ mod tests {
     // --------------------------------------------------------------------
 
     #[cfg(feature = "clap")]
-    const CLAP_PLUGIN: &str = "/Library/Audio/Plug-Ins/CLAP/TAL-NoiseMaker.clap";
+    /// The reference CLAP plugin, built as a dev-dependency by this same
+    /// `cargo test` run. Resolved rather than hard-coded so these tests run on
+    /// any machine — this used to name an absolute macOS path to a third-party
+    /// plugin, which failed everywhere else.
+    ///
+    /// Uses the `.clap`-suffixed link: these tests load through
+    /// `HostMessage::LoadPlugin`, which picks the format from the file
+    /// extension, and the raw cdylib is a `.so` — which that table reads as
+    /// VST2.
+    fn clap_plugin() -> &'static str {
+        crate::test_utils::clap_probe_path_dot_clap()
+    }
 
     /// Load the real CLAP plugin into a Session and attach shared memory.
     /// Returns (session, shm_guard). The guard keeps the creator-side mmap
@@ -677,7 +688,7 @@ mod tests {
     fn load_clap(name: &str, preferred_format: SampleFormat) -> (Session, AudioSlab) {
         let mut s = Session::new();
         s.handle(HostMessage::LoadPlugin {
-            path: std::path::PathBuf::from(CLAP_PLUGIN),
+            path: std::path::PathBuf::from(clap_plugin()),
             sample_rate: 44100.0,
             block_size: 512,
             preferred_format,

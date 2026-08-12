@@ -601,12 +601,20 @@ mod tests {
 
         // 40 offsets arriving high-to-low, each carrying a two-point jump.
         // `value` encodes arrival order so any transposition is visible.
+        //
+        // The encoding has to stay inside `0..=1`: a point's value is a
+        // `Normalized`, which *clamps* rather than rejecting, so a raw counter
+        // would land every point on 1.0 and compare equal no matter how the
+        // sort transposed them — the assertion would hold against a sort that
+        // shuffled ties freely. Dividing by the point count keeps all 80 values
+        // distinct and ordered, which is the property being pinned.
         const OFFSETS: i32 = 40;
+        const POINTS: f64 = (OFFSETS * 2) as f64;
         let mut expected = Vec::new();
         for i in 0..OFFSETS {
             let offset = (OFFSETS - i) * 4;
-            let old = f64::from(i * 2);
-            let new = f64::from(i * 2 + 1);
+            let old = f64::from(i * 2) / POINTS;
+            let new = f64::from(i * 2 + 1) / POINTS;
             params.add_change(param, offset, old);
             params.add_change(param, offset, new);
             expected.push((offset, old, new));

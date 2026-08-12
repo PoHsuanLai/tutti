@@ -453,7 +453,7 @@ impl Wave {
     /// ```
     /// use fundsp_tutti::prelude64::*;
     /// let wave = Wave::render(44100.0, 10.0, &mut (brown() | brown()));
-    /// assert!(wave.sample_rate() == 44100.0 && wave.channels() == 2 && wave.duration() == 10.0);
+    /// assert!(wave.sample_rate() == SampleRate(44100.0) && wave.channels() == 2 && wave.duration() == 10.0);
     /// ```
     pub fn render(
         sample_rate: impl Into<SampleRate>,
@@ -524,7 +524,7 @@ impl Wave {
     /// ```
     /// use fundsp_tutti::prelude32::*;
     /// let wave = Wave::render_latency(44100.0, 10.0, &mut (lfo(|t| (440.0, exp(-t))) >> dsf_square() >> limiter(0.5, 0.5)));
-    /// assert!(wave.amplitude() <= 1.0 && wave.duration() == 10.0 && wave.sample_rate() == 44100.0);
+    /// assert!(wave.amplitude() <= 1.0 && wave.duration() == 10.0 && wave.sample_rate() == SampleRate(44100.0));
     /// ```
     pub fn render_latency(
         sample_rate: impl Into<SampleRate>,

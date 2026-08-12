@@ -104,3 +104,9 @@ windows-sys = { version = "0.59", features = [
 [dev-dependencies]
 # RT-safety regression: prove the per-block audio path never allocates.
 assert_no_alloc = { version = "1", default-features = false }
+# The reference CLAP plugin the loader tests drive. A dev-dependency rather
+# than a build-time artifact so cargo builds the cdylib as part of the same
+# `cargo test` invocation (one target-dir lock, no nested cargo); build.rs
+# only resolves where it landed. This is what lets the CLAP suite run on any
+# machine instead of naming an absolute macOS path.
+tutti-clap-test-plugin = { path = "../../vendor/tutti-clap-test-plugin" }

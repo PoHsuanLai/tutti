@@ -450,8 +450,14 @@ mod tests {
         use crate::loaders::clap::ClapInstance;
 
         let _lock = crate::test_utils::plugin_load_lock();
-        const CLAP_PLUGIN: &str = "/Library/Audio/Plug-Ins/CLAP/TAL-NoiseMaker.clap";
-        let instance = ClapInstance::load(Path::new(CLAP_PLUGIN), 44100.0, 512)
+        /// The reference CLAP plugin, built as a dev-dependency by this same
+        /// `cargo test` run. Resolved rather than hard-coded so these tests run on
+        /// any machine — this used to name an absolute macOS path to a third-party
+        /// plugin, which failed everywhere else.
+        fn clap_plugin() -> &'static str {
+            crate::test_utils::clap_probe_path()
+        }
+        let instance = ClapInstance::load(Path::new(clap_plugin()), 44100.0, 512)
             .expect("failed to load the CLAP test plugin");
         let mut plugin = Plugin::Clap(instance);
 

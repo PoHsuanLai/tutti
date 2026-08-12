@@ -1344,7 +1344,7 @@ mod embed_sequence_tests {
         let outcome = embed_editor_sequence(
             &gui,
             &plugin as *const clap_plugin,
-            api.as_ptr() as *const i8,
+            api.as_ptr(),
             handle,
             2.0,
         )

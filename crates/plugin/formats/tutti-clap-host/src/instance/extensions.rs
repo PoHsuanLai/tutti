@@ -330,7 +330,7 @@ mod tests {
 
     /// A non-null pointer to hand back for a recognised id. Never dereferenced —
     /// the cache only stores it and checks it against null.
-    const SENTINEL: *const c_void = 1 as *const c_void;
+    const SENTINEL: *const c_void = std::ptr::dangling::<c_void>();
 
     unsafe extern "C" fn fake_get_extension(
         plugin: *const clap_plugin,

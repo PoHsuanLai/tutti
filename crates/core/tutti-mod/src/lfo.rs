@@ -42,6 +42,12 @@ impl Default for RandomState {
 
 impl RandomState {
     /// Advance the xorshift generator, yielding a fresh value in `[-1, 1]`.
+    ///
+    /// Not an `Iterator`: this is an infinite generator with no `Option` to
+    /// return, and `should_implement_trait` is silenced rather than obeyed
+    /// because renaming a public method to satisfy a naming lint would break
+    /// callers for no gain.
+    #[allow(clippy::should_implement_trait)]
     #[inline]
     pub fn next(&mut self) -> f32 {
         self.seed ^= self.seed << 13;

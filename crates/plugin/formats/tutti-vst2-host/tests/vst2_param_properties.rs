@@ -184,7 +184,7 @@ fn an_answering_plugin_round_trips_every_property_field() {
     set_answer_param_properties(&path, true);
 
     let props = instance
-        .parameter_properties(PROBE_INT_STEP_PARAM as i32)
+        .parameter_properties(PROBE_INT_STEP_PARAM)
         .expect("probe answers once the switch is on");
 
     let (min, max, step, large_step) = PROBE_INT_RANGE;

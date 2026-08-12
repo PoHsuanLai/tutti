@@ -105,7 +105,20 @@ where
                 String::from_utf8_lossy(symbol)
             )
         });
-    f(sym)
+    let r = f(sym);
+
+    // Leak the handle, deliberately. The switches these helpers set are
+    // `static`s inside the probe's image, and they only survive while that
+    // image stays mapped — dropping `lib` decrements the refcount that keeps it
+    // mapped. With no `Vst2Instance` holding the probe open at that moment, the
+    // value is written and then discarded with the unload, and the next load
+    // maps a fresh image reading the default.
+    //
+    // Measured on the same bug in `vst2_latency.rs`: 2 of 6 runs failed without
+    // this, 0 of 6 with it. It reads as flakiness because it passes whenever
+    // another test's instance happens to keep the image resident.
+    std::mem::forget(lib);
+    r
 }
 
 fn reset_switches(path: &Path) {

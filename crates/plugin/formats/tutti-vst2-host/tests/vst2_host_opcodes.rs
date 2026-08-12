@@ -65,6 +65,19 @@ fn set_fire_update_display(enable: bool) {
             .expect("probe missing symbol tutti_vst2_probe_set_fire_update_display");
     let f: extern "C" fn(bool) = unsafe { std::mem::transmute(*sym) };
     f(enable);
+
+    // Leak the handle, deliberately. The switch this just set is a `static` in
+    // the probe's image, and it only survives while that image stays mapped —
+    // dropping `lib` decrements the refcount that keeps it mapped. With no
+    // `Vst2Instance` holding the probe open at that moment, the value is
+    // written and then discarded with the unload, and the next load maps a
+    // fresh image reading the default.
+    //
+    // Measured on the same bug in `vst2_latency.rs`: 2 of 6 runs failed without
+    // this, 0 of 6 with it. It reads as flakiness because it passes whenever
+    // another test's instance happens to keep the image resident — which is why
+    // `update_display_reaches_the_host` here had also been written off as flaky.
+    std::mem::forget(lib);
 }
 
 /// Holds the lock and clears the switch on drop, so a failing assertion cannot

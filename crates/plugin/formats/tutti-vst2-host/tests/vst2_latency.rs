@@ -54,6 +54,23 @@ fn set_late_latency(samples: i32) {
             .expect("probe missing symbol tutti_vst2_probe_set_late_latency");
     let f: extern "C" fn(i32) = unsafe { std::mem::transmute(*sym) };
     f(samples);
+
+    // Leak the handle, deliberately. The switch this just set is a `static` in
+    // the probe's image, so it only survives while that image stays mapped —
+    // and dropping `lib` decrements the refcount that keeps it mapped. When no
+    // `Vst2Instance` happens to hold the probe open at the same moment, the
+    // value is written and then discarded with the unload, and the next load
+    // starts a fresh image reading zero.
+    //
+    // That is what made this file look flaky: `a_sample_rate_change_can_be_
+    // followed_by_a_fresh_read` failed with `Samples(0)` vs `Samples(1537)` in
+    // roughly a third of runs, passed single-threaded, and passed whenever
+    // another test's instance kept the image resident. Measured on this bug:
+    // 2 of 6 runs failed without the leak, 0 of 6 with it.
+    //
+    // `PROBE_LOCK` cannot help — it serializes callers, but the hazard is the
+    // *refcount*, not concurrent access.
+    std::mem::forget(lib);
 }
 
 /// Holds the lock and clears the switch on drop, so a failing assertion cannot

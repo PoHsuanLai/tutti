@@ -178,12 +178,35 @@ impl Ballistics {
         Self::new(Seconds(0.01), Seconds(0.1))
     }
 
-    fn coefficient(&self, rising: bool, dt: Seconds) -> f32 {
+    /// How far to move toward a new value over `dt`, in `[0, 1]`.
+    ///
+    /// Public because ballistics are not stereo-specific: a level meter smooths
+    /// [`MeterReading`](tutti_core::metering::MeterReading)'s four amplitudes
+    /// with the same attack and release, and the alternative is a second copy
+    /// of `1 - exp(-dt/t)` that can drift from this one. [`step_ballistics`]
+    /// stays the convenience for the stereo case.
+    ///
+    /// A zero or negative time means "no smoothing" and returns 1.0, so a
+    /// caller that has not configured a rise or fall gets the instantaneous
+    /// value rather than a division by zero.
+    #[inline]
+    pub fn coefficient(&self, rising: bool, dt: Seconds) -> f32 {
         let time = if rising { self.attack } else { self.release };
         if time.get() <= 0.0 {
             return 1.0;
         }
         1.0 - (-dt.get() / time.get()).exp()
+    }
+
+    /// Move `old` toward `new` by one step of `dt`.
+    ///
+    /// The rise/fall decision is made from the two values rather than passed
+    /// in, which is what stops a caller smoothing a falling level with the
+    /// attack coefficient — the transposition that makes a meter instant to
+    /// release and sluggish to peaks, under-reporting what it exists to show.
+    #[inline]
+    pub fn step(&self, old: f32, new: f32, dt: Seconds) -> f32 {
+        old + (new - old) * self.coefficient(new > old, dt)
     }
 }
 
@@ -226,10 +249,7 @@ pub fn step_ballistics(
     instant: StereoReading,
     dt: Seconds,
 ) -> StereoReading {
-    let smooth = |old: f32, new: f32| {
-        let coefficient = cfg.coefficient(new > old, dt);
-        old + (new - old) * coefficient
-    };
+    let smooth = |old: f32, new: f32| cfg.step(old, new, dt);
 
     let correlation = Correlation::new_clamped(smooth(
         state.current.correlation.get(),

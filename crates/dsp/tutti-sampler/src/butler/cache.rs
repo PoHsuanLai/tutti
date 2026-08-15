@@ -1,6 +1,24 @@
 //! LRU disk cache for audio files.
 //!
 //! Bounded cache with least-recently-used eviction.
+//!
+//! The *read* half (`get`, `pin`) is unconditional, but the sole writer is the
+//! decode arm of `io::refill::load_wave`, which needs `Wave::load` and so is
+//! gated on the codec features. A build with none of them on therefore reaches
+//! `insert` from nowhere, and `over_budget` / `evict_lru` / the budget fields
+//! die with it — a feature-matrix artifact, not rot. CI builds that config, so
+//! the allow is scoped to it rather than blanket, keeping real dead-code
+//! detection live everywhere a codec is on.
+#![cfg_attr(
+    not(any(
+        feature = "wav",
+        feature = "flac",
+        feature = "mp3",
+        feature = "ogg",
+        test
+    )),
+    allow(dead_code)
+)]
 
 use dashmap::DashMap;
 use std::path::{Path, PathBuf};

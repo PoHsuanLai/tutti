@@ -458,8 +458,12 @@ impl Session {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // `Features` is named only by `load_clap_plugin_f64`, which carries the
+    // same gate.
+    #[cfg(feature = "clap")]
+    use tutti_plugin::server::Features;
     use tutti_plugin::server::{
-        Features, IpcMidiEventVec, NoteExpressionChanges, ParamAddress, ParamId, ParameterChanges,
+        IpcMidiEventVec, NoteExpressionChanges, ParamAddress, ParamId, ParameterChanges,
         TransportInfo,
     };
     use tutti_plugin::{BridgeError, LoadStage};
@@ -580,7 +584,6 @@ mod tests {
         }
     }
 
-    #[test]
     /// A `LoadState` with no plugin loaded answers, and answers with a refusal.
     ///
     /// Answering `Reaction::None` — silence — is the failure this pins. The host

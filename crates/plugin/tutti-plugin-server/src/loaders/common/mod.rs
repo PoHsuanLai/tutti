@@ -24,6 +24,18 @@ pub(crate) struct Meta {
 /// rebuild. Callers holding only a count still pass it — the `Into` accepts
 /// `u8`/`u16`/`u32`/`usize`. Note there is deliberately no `From<i32>`, so a
 /// bare integer literal must be named (`ChannelLayout::STEREO`) or suffixed.
+// The module is reachable in a loaderless *test* build, because
+// `audio_pipeline`'s tests build a `Meta`. They do not build a `BusChannels`
+// through this, so it alone needs the narrower "a loader exists" gate.
+#[cfg_attr(
+    not(any(
+        all(feature = "au", target_os = "macos"),
+        feature = "clap",
+        feature = "vst2",
+        feature = "vst3"
+    )),
+    allow(dead_code)
+)]
 pub(crate) fn single_bus(layout: impl Into<ChannelLayout>) -> BusChannels {
     let mut v = BusChannels::new();
     v.push(layout.into());

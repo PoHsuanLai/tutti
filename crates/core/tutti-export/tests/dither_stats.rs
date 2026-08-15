@@ -21,6 +21,12 @@
 //! one integer and the file is perfectly flat — so anything non-flat in the
 //! output *is* the dither, and the noise can be measured directly by subtracting
 //! the level rather than modelled.
+//!
+//! Gated on `wav`, matching `surround_export.rs`: every case writes a WAV and
+//! reads it back through `hound`, which this crate only links under that
+//! feature.
+
+#![cfg(feature = "wav")]
 
 use fundsp::prelude32::*;
 use tutti_export::{

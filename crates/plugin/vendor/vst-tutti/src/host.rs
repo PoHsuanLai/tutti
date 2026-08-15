@@ -2203,8 +2203,9 @@ mod tests {
 
         // A real pointer still reads as present — the guard rejects null, not
         // everything.
-        let present: Option<ProcessProc> =
-            unsafe { std::mem::transmute(crate::interfaces::process_replacing as usize) };
+        let present: Option<ProcessProc> = unsafe {
+            std::mem::transmute(crate::interfaces::process_replacing as *const () as usize)
+        };
         assert!(present.is_some());
 
         // ABI unchanged: null pointer optimization keeps `Option<fn>` one pointer

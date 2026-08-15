@@ -84,18 +84,53 @@ static RT_NO_ALLOC_HARNESS: assert_no_alloc::AllocDisabler = assert_no_alloc::Al
 /// VST2's `vst` crate uses a global `LOAD_POINTER` static during plugin
 /// loading that is not thread-safe. All plugin-loading tests across the
 /// crate must serialize on this lock.
-#[cfg(test)]
+///
+/// Gated on a loader feature as well as `test`, for the same reason
+/// `loaders::common` is: every consumer lives in `loaders::{clap,vst3}` or
+/// `plugin`, all of which are feature-gated, so a test build with no loader on
+/// compiles this module with nothing to serialize.
+///
+/// The lock is the only member shared by every loader. Everything else is
+/// gated to the *specific* loader it serves — a `vst2`-only build has no CLAP
+/// probe and no VST3 bundle — and the `env!` constants especially, since those
+/// read build-script variables that only exist once that loader has built its
+/// reference plugin.
+#[cfg(all(
+    test,
+    any(
+        all(feature = "au", target_os = "macos"),
+        feature = "clap",
+        feature = "vst2",
+        feature = "vst3"
+    )
+))]
 pub(crate) mod test_utils {
-    use std::path::{Path, PathBuf};
-    use std::sync::{Mutex, MutexGuard, OnceLock};
+    // Every import here belongs to the probe-path helpers, which are gated to
+    // the loader whose reference plugin they find.
+    #[cfg(any(feature = "clap", feature = "vst3"))]
+    use std::path::Path;
+    #[cfg(feature = "vst3")]
+    use std::path::PathBuf;
+    #[cfg(any(feature = "clap", feature = "vst3"))]
+    use std::sync::OnceLock;
+    #[cfg(any(feature = "clap", feature = "vst3"))]
+    use std::sync::{Mutex, MutexGuard};
+
+    /// Taken by the CLAP and VST3 loader tests — the only ones that `dlopen` a
+    /// plugin today. `loaders::vst2` has no tests of its own yet, so a
+    /// `vst2`-only build never takes it, despite VST2 being the reason the lock
+    /// exists.
+    #[cfg(any(feature = "clap", feature = "vst3"))]
     pub static PLUGIN_LOAD_LOCK: Mutex<()> = Mutex::new(());
 
     /// `;`-separated candidate paths for the reference CLAP plugin, emitted by
     /// `build.rs`.
+    #[cfg(feature = "clap")]
     const CLAP_PROBE_CANDIDATES: &str = env!("TUTTI_CLAP_TEST_PLUGIN_CANDIDATES");
 
     /// The reference VST3 bundle's parent directory, forwarded from
     /// `tutti-vst3-host` by `build.rs`. Empty when that crate built no probe.
+    #[cfg(feature = "vst3")]
     const VST3_PROBE_DIR: &str = env!("TUTTI_VST3_PROBE_DIR");
 
     /// Absolute path to `audio-probe`, the reference VST3 binary the loader
@@ -117,6 +152,7 @@ pub(crate) mod test_utils {
     /// # Panics
     ///
     /// If the probe is absent — see above. The message names the likely cause.
+    #[cfg(feature = "vst3")]
     pub fn vst3_probe_path() -> &'static str {
         static RESOLVED: OnceLock<String> = OnceLock::new();
         RESOLVED
@@ -165,6 +201,7 @@ pub(crate) mod test_utils {
     /// If absent. It is built from the in-repo SDK submodule by the same
     /// `cargo test`, so that is a build failure. The three tests using it used
     /// to skip on a missing `VST3_SAMPLE_PLUGIN_DIR`, which was every machine.
+    #[cfg(feature = "vst3")]
     pub fn vst3_program_sample_path() -> &'static str {
         static RESOLVED: OnceLock<String> = OnceLock::new();
         RESOLVED
@@ -192,6 +229,7 @@ pub(crate) mod test_utils {
     /// The layout is the plugin format's, not cargo's: one of these arch dirs
     /// holds it. All are probed rather than deriving one from `cfg!`, so a
     /// cross-build lands in the slower branch instead of a wrong answer.
+    #[cfg(feature = "vst3")]
     fn binary_in_bundle(bundle: &Path) -> Option<String> {
         for sub in [
             "Contents/x86_64-linux",
@@ -225,6 +263,7 @@ pub(crate) mod test_utils {
     /// than a copy so it cannot go stale against a rebuilt plugin — the
     /// staleness hazard `clap_probe_path` already guards against by taking the
     /// newest candidate.
+    #[cfg(feature = "clap")]
     pub fn clap_probe_path_dot_clap() -> &'static str {
         static LINKED: OnceLock<String> = OnceLock::new();
         LINKED
@@ -248,6 +287,7 @@ pub(crate) mod test_utils {
     ///
     /// Mirrors `tutti_clap_test_plugin::RenderMode`; kept as a bare constant
     /// because the value crosses a `dlopen` boundary as a `u32`.
+    #[cfg(feature = "clap")]
     pub const CLAP_PROBE_RENDER_TAG_ONLY: u32 = 2;
 
     /// Set the reference plugin's render mode.
@@ -261,6 +301,7 @@ pub(crate) mod test_utils {
     /// than the `rlib`: the running instance's `RENDER_MODE` static is the one
     /// in the *dynamic library*, and a value stored through the rlib's copy
     /// would be a different static that `process` never reads.
+    #[cfg(feature = "clap")]
     pub fn set_clap_probe_render_mode(mode: u32) {
         // SAFETY: the symbol is `#[no_mangle] extern "C" fn(u32)` in
         // `tutti-clap-test-plugin`, and the library is already resident (the
@@ -289,6 +330,7 @@ pub(crate) mod test_utils {
     ///
     /// Resolution (newest candidate wins) and the panic-on-absence rule are
     /// `tutti_fixture_resolve`'s; see that crate for why each matters.
+    #[cfg(feature = "clap")]
     pub fn clap_probe_path() -> &'static str {
         static RESOLVED: OnceLock<String> = OnceLock::new();
         RESOLVED
@@ -310,6 +352,7 @@ pub(crate) mod test_utils {
     /// turning one real failure into dozens of misleading cascade failures.
     /// The guarded data is `()`, so there's no invariant a poisoned lock
     /// could violate; recovering is safe and keeps failures isolated.
+    #[cfg(any(feature = "clap", feature = "vst3"))]
     pub fn plugin_load_lock() -> MutexGuard<'static, ()> {
         PLUGIN_LOAD_LOCK
             .lock()

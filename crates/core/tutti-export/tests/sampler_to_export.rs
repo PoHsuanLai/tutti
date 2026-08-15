@@ -26,9 +26,17 @@
 //! wrong clock rate) leaves the output emphatically non-zero, so `!= 0.0` cannot
 //! see any of them.
 //!
-//! Requires `--features sampler`.
+//! Gated on `wav`, because the assertions decode the exported file through
+//! `hound` — which this crate only links when that feature is on. `wav` is in
+//! `default`, so these run by default.
+//!
+//! This file previously read `#![cfg(feature = "sampler")]`, a feature that has
+//! never existed in this crate's manifest. The gate was therefore always false
+//! and all five tests below were silently compiled out from the day they
+//! landed; the `start_beat` type error they had accumulated in the meantime is
+//! what a never-compiled file collects.
 
-#![cfg(feature = "sampler")]
+#![cfg(feature = "wav")]
 
 use std::f32::consts::TAU;
 use std::sync::Arc;
@@ -70,7 +78,7 @@ fn tone(frames: usize) -> Arc<Wave> {
 /// rather than by two configs that happen to match.
 fn voice_net(stretch: f32, cents: f32) -> (tutti_core::dsp::Net, Arc<OfflineTimeline>) {
     let transport = Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
-        start_beat: 0.0,
+        start_beat: Beat(0.0),
         tempo: Bpm(TEMPO),
         sample_rate: SampleRate(SR),
         loop_range: None,

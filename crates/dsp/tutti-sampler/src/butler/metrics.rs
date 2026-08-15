@@ -3,6 +3,19 @@
 //! Deliberately just the one measurement. A counter nothing loads is not
 //! instrumentation, it is cost on every read — so the only figure kept here is
 //! the one varifill actually consults.
+//!
+//! `read_rate` is consulted unconditionally, but `record_read` — the only thing
+//! that feeds it — is called from the codec-gated decode arm of
+//! `io::refill::load_wave`. With no codec feature on, the meter is read and
+//! never written, so its internals read as dead. Scoped to that build rather
+//! than allowed outright.
+//! (No `test` arm on the gate below, unlike `cache.rs`: this module has no
+//! tests of its own, so a codec-free `--all-targets` build still finds no
+//! caller.)
+#![cfg_attr(
+    not(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg")),
+    allow(dead_code)
+)]
 
 use parking_lot::Mutex;
 use std::time::Instant;

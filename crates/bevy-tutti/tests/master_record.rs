@@ -17,7 +17,6 @@ use std::path::PathBuf;
 use bevy_app::prelude::*;
 use bevy_tutti::graph::{AudioPump, AudioPumpAppExt, AudioTapRes};
 use bevy_tutti::io::{BitDepth, ChannelLayout, TapIn, WavOut};
-use tutti_midi_runtime::tutti_midi_types::tutti_types::MidiGroup;
 
 const SAMPLE_RATE: f64 = 48_000.0;
 

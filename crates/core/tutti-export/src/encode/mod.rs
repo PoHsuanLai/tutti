@@ -27,11 +27,21 @@ pub(crate) mod wav;
 
 use crate::config::ExportConfig;
 use crate::error::Result;
-use crate::render::{drive, FrameSource, Frames, PlaneSource, RenderPlan};
+// `drive` and `Frames` are `pump_blocks`'s, and it carries the same codec gate.
+#[cfg(any(feature = "wav", feature = "flac", feature = "aiff", feature = "ogg"))]
+use crate::render::{drive, Frames};
+use crate::render::{FrameSource, PlaneSource, RenderPlan};
 use crate::Written;
 use std::path::Path;
 
 /// The rate the file is written at: the resample target, else the render rate.
+///
+/// Along with [`encoder_rate`] and the [`Encoder`] trait, this serves the
+/// per-format arms only, so a build with no format feature has no caller.
+#[cfg_attr(
+    not(any(feature = "wav", feature = "flac", feature = "aiff", feature = "ogg")),
+    allow(dead_code)
+)]
 pub(crate) fn output_rate(config: &ExportConfig) -> tutti_core::SampleRate {
     config
         .resample
@@ -47,6 +57,10 @@ pub(crate) fn output_rate(config: &ExportConfig) -> tutti_core::SampleRate {
 /// The boundary is real; it just belongs in one named place rather than at five
 /// call sites, and it lives beside the encoders that need it rather than hanging
 /// off the config as behaviour.
+#[cfg_attr(
+    not(any(feature = "wav", feature = "flac", feature = "aiff", feature = "ogg")),
+    allow(dead_code)
+)]
 pub(crate) fn encoder_rate(config: &ExportConfig) -> u32 {
     output_rate(config).get().round() as u32
 }
@@ -56,6 +70,10 @@ pub(crate) fn encoder_rate(config: &ExportConfig) -> u32 {
 /// `self` by value: an encoder finalizes exactly once, and taking ownership is
 /// what makes "finalize, then write more" unrepresentable rather than a runtime
 /// error.
+#[cfg_attr(
+    not(any(feature = "wav", feature = "flac", feature = "aiff", feature = "ogg")),
+    allow(dead_code)
+)]
 pub(crate) trait Encoder {
     /// `source_rate` is the rate the incoming frames are **at**, which is not
     /// always `config.render.sample_rate` — `write_buffers` feeds frames
@@ -85,6 +103,14 @@ pub(crate) trait Encoder {
 /// [`Error::UnsupportedFormat`](crate::Error::UnsupportedFormat): no arm
 /// silently degrades, and no arm rejects a format this build can actually
 /// write.
+// With no codec feature on, every arm of the match below is an early
+// `UnsupportedFormat` return — so the parameters go unread and the trailing
+// `Written` construction is unreachable. That is the intended behaviour of a
+// build that can write no formats, not dead code to prune.
+#[cfg_attr(
+    not(any(feature = "wav", feature = "flac", feature = "aiff", feature = "ogg")),
+    allow(unused_variables, unreachable_code)
+)]
 pub(crate) fn encode_to_file(
     src: &mut dyn FrameSource,
     source_rate: tutti_core::SampleRate,
@@ -124,7 +150,7 @@ pub(crate) fn encode_to_file(
         }
         #[cfg(not(feature = "ogg"))]
         AudioFormat::OggVorbis(_) => {
-            return Err(Error::UnsupportedFormat("OGG not enabled".into()))
+            return Err(Error::UnsupportedFormat("OGG not enabled".into()));
         }
     }
 

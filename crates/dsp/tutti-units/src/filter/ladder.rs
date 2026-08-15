@@ -816,10 +816,11 @@ mod tests {
         let sig = generate_sine(300.0, 44100.0, 2048);
         let len = sig.len();
         let mut out = vec![vec![0.0f32; len]; 6];
-        let mut inbuf = [0.0f32; 6];
         let mut outbuf = [0.0f32; 6];
         for i in 0..len {
-            inbuf = [0.0; 6];
+            // Rebuilt per sample, not cleared in place: only channel 4 is
+            // driven, so every other channel must re-enter `tick` at zero.
+            let mut inbuf = [0.0f32; 6];
             inbuf[4] = sig[i];
             wide.tick(&inbuf, &mut outbuf);
             for c in 0..6 {

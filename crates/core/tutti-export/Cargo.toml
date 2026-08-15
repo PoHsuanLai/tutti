@@ -43,3 +43,7 @@ tutti-units = { path = "../../dsp/tutti-units", default-features = false, featur
 # Surround producer nodes (SpatialPannerNode + build_surround_mix) for the
 # end-to-end multichannel-export integration test. Also acyclic.
 tutti-spatial = { path = "../../dsp/tutti-spatial", default-features = false }
+# Voice/VoicePool producers for `sampler_to_export.rs`, which renders a sampler
+# voice through the offline clock and asserts on the exported pitch. Also
+# acyclic: tutti-sampler does NOT depend on tutti-export.
+tutti-sampler = { path = "../../dsp/tutti-sampler", default-features = false }

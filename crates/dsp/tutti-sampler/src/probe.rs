@@ -141,9 +141,14 @@ fn streamable(path: &Path, meta: &tutti_core::WaveMetadata) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "wav")]
     use std::io::Write;
 
     /// A minimal real PCM wav. `frames` frames of stereo silence.
+    ///
+    /// Gated to match its two callers, which are both `#[cfg(feature = "wav")]`
+    /// — a build with a different codec on has no use for a hand-rolled WAV.
+    #[cfg(feature = "wav")]
     fn write_wav(name: &str, frames: usize) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join("tutti_sampler_probe_tests");
         std::fs::create_dir_all(&dir).expect("temp dir");

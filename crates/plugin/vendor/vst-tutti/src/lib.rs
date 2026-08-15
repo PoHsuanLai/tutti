@@ -296,6 +296,8 @@ mod tests {
         plugin::{HostCallback, Info, Plugin},
     };
 
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
     struct TestPlugin;
 
     /// Minimal editor, so `effEditGetRect` reaches its dispatch arm.
@@ -399,17 +401,25 @@ mod tests {
         assert!(!aeffect.is_null());
     }
 
+    /// Set by `TestPlugin::drop`, and read by `plugin_drop`.
+    ///
+    /// A counter rather than a flag, and module-level rather than nested inside
+    /// the one test that reads it: an `impl` is never scoped, so writing
+    /// `impl Drop for TestPlugin` inside `plugin_drop` still applied it
+    /// crate-wide — `plugin_no_drop` drops a `TestPlugin` too, and a shared
+    /// `bool` made the pair order-dependent. Comparing a before/after count
+    /// keeps each test reading only its own drop.
+    static DROPS: AtomicUsize = AtomicUsize::new(0);
+
+    impl Drop for TestPlugin {
+        fn drop(&mut self) {
+            DROPS.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
     #[test]
     fn plugin_drop() {
-        static mut DROP_TEST: bool = false;
-
-        impl Drop for TestPlugin {
-            fn drop(&mut self) {
-                unsafe {
-                    DROP_TEST = true;
-                }
-            }
-        }
+        let before = DROPS.load(Ordering::SeqCst);
 
         let aeffect = VSTPluginMain(pass_callback);
         assert!(!aeffect.is_null());
@@ -417,7 +427,11 @@ mod tests {
         unsafe { (*aeffect).drop_plugin() };
 
         // Assert that the VST is shut down and dropped.
-        assert!(unsafe { DROP_TEST });
+        assert_eq!(
+            DROPS.load(Ordering::SeqCst),
+            before + 1,
+            "drop_plugin must run the plugin's destructor exactly once"
+        );
     }
 
     #[test]
@@ -445,11 +459,14 @@ mod tests {
         // unwrapping before the address comparison — and asserting `Some` is
         // itself part of the contract: we must install these, whatever a
         // third-party plugin does.
+        // Both sides go through `as *const ()` before `as usize`: casting a
+        // function *item* straight to an integer is what `function_casts_as_integer`
+        // flags, and the pointer step is what the comparison already meant.
         macro_rules! assert_opt_fn_eq {
             ($a:expr, $b:expr) => {
                 assert_eq!(
-                    $a.expect("this crate must install the entry point") as usize,
-                    $b as usize
+                    $a.expect("this crate must install the entry point") as *const () as usize,
+                    $b as *const () as usize
                 );
             };
         }
@@ -498,32 +515,30 @@ mod tests {
         let mut first: *mut c_void = ptr::null_mut();
         let mut second: *mut c_void = ptr::null_mut();
 
-        let ok = unsafe {
-            dispatch(
-                aeffect,
-                OpCode::EditorGetRect.into(),
-                0,
-                0,
-                &mut first as *mut _ as *mut c_void,
-                0.0,
-            )
-        };
+        // No `unsafe` around the `dispatch` calls below: `DispatcherProc` is a
+        // *safe* `extern "C" fn`, so only the `&mut *` deref above needs one.
+        let ok = dispatch(
+            aeffect,
+            OpCode::EditorGetRect.into(),
+            0,
+            0,
+            &mut first as *mut _ as *mut c_void,
+            0.0,
+        );
         assert_eq!(ok, 1, "the test plugin has an editor, so this must succeed");
         assert!(
             !first.is_null(),
             "a successful get-rect must write a pointer"
         );
 
-        unsafe {
-            dispatch(
-                aeffect,
-                OpCode::EditorGetRect.into(),
-                0,
-                0,
-                &mut second as *mut _ as *mut c_void,
-                0.0,
-            );
-        }
+        dispatch(
+            aeffect,
+            OpCode::EditorGetRect.into(),
+            0,
+            0,
+            &mut second as *mut _ as *mut c_void,
+            0.0,
+        );
 
         assert_eq!(
             first, second,
@@ -548,16 +563,14 @@ mod tests {
         let dispatch = aeffect.dispatcher.expect("dispatcher must be installed");
 
         let mut out: *mut Rect = ptr::null_mut();
-        unsafe {
-            dispatch(
-                aeffect,
-                OpCode::EditorGetRect.into(),
-                0,
-                0,
-                &mut out as *mut _ as *mut c_void,
-                0.0,
-            );
-        }
+        dispatch(
+            aeffect,
+            OpCode::EditorGetRect.into(),
+            0,
+            0,
+            &mut out as *mut _ as *mut c_void,
+            0.0,
+        );
         assert!(!out.is_null());
 
         let rect = unsafe { *out };

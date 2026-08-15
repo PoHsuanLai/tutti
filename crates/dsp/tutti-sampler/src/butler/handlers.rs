@@ -224,6 +224,13 @@ fn handle_stream_file(
     // The ring carries the file at its OWN width: the streaming tier reads it
     // back through the same channel policy the in-memory tier uses, so folding
     // here would discard channels before that policy ever sees them.
+    // `mut` is used by the `set_decoder` call below, which every codec feature
+    // gates — so a build with none of them on sees an unused `mut` rather than
+    // a dead binding.
+    #[cfg_attr(
+        not(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg")),
+        allow(unused_mut)
+    )]
     let (mut producer, consumer) =
         RegionBuffer::with_capacity(region_id, file_path.clone(), buffer_capacity, file_channels);
 

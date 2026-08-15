@@ -5,6 +5,19 @@
 //! a build without any loader feature still compiles but has no formats
 //! to load.
 
+// Gated on "some consumer exists", which is not the same as "some loader
+// feature is on": the AU loader below is `all(feature, target_os)`, so a Linux
+// build with only `au` enabled compiles no loader at all — and `au` is in
+// `default`, so that is a configuration a user reaches by subtracting features
+// rather than an exotic one. `test` is in the list because `audio_pipeline`'s
+// unit tests build a `Meta` for their stand-in plugin, independent of format.
+#[cfg(any(
+    all(feature = "au", target_os = "macos"),
+    feature = "clap",
+    feature = "vst2",
+    feature = "vst3",
+    test
+))]
 pub(crate) mod common;
 
 // `all(feature, target_os)`, not `feature` alone — the pattern every AU site in

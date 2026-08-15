@@ -149,7 +149,10 @@ fn handle_state_roundtrip() {
     let mut modified = original.clone();
     modified.extend_from_slice(b"tutti-roundtrip-marker");
 
-    handle.state().load_state(&modified);
+    handle
+        .state()
+        .load_state(&modified)
+        .expect("the probe accepts a chunk it just produced");
     let after = handle
         .state()
         .save_state()

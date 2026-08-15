@@ -13,6 +13,10 @@ pub(crate) mod driver;
 pub(crate) mod plan;
 pub(crate) mod sink;
 
-pub(crate) use driver::{drive, FrameSource, Frames, NetSource, PlaneSource};
+// `Frames` is only named by the codec-gated encode arms; the rest are used by
+// the render path, which is available whether or not a format can be written.
+#[cfg(any(feature = "wav", feature = "flac", feature = "aiff", feature = "ogg"))]
+pub(crate) use driver::Frames;
+pub(crate) use driver::{drive, FrameSource, NetSource, PlaneSource};
 pub(crate) use plan::RenderPlan;
 pub(crate) use sink::BlockCursor;

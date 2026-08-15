@@ -4,6 +4,13 @@
 //! encoder end to end, which is how three of four output formats came to be
 //! broken and an upmix export came to panic, both with a green suite. Every test
 //! here fails against the code as it was.
+//!
+//! Gated on all four format features, not just `wav`: the cases below write
+//! FLAC, Ogg and AIFF unconditionally, and an encoder whose feature is off
+//! returns `UnsupportedFormat` rather than a file. `hound` — which decodes the
+//! results back — is likewise only linked under `wav`.
+
+#![cfg(all(feature = "wav", feature = "flac", feature = "aiff", feature = "ogg"))]
 
 use fundsp::prelude32::*;
 use tutti_export::{

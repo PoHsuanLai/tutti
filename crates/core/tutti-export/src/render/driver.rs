@@ -13,6 +13,13 @@
 //! `NetSource` **folds** the net's real output width onto the requested one (see
 //! [`fold_net_frame`]), so a graph wider than the file is downmixed rather than
 //! truncated, and a narrower one is zero-filled rather than duplicated.
+//! Reached only through the codec-gated encode arms, so a build with no format
+//! feature on compiles this with no consumers. Scoped to that configuration
+//! rather than allowed outright, so real dead code is still caught elsewhere.
+#![cfg_attr(
+    not(any(feature = "wav", feature = "flac", feature = "aiff", feature = "ogg")),
+    allow(dead_code)
+)]
 
 use crate::render::BlockCursor;
 use tutti_core::transport::RenderClock;
@@ -59,6 +66,10 @@ impl<'a> Frames<'a> {
         self.data.len() / self.ch
     }
 
+    /// Kept even where nothing calls it: it is `len`'s conventional companion
+    /// (clippy's `len_without_is_empty`), and Ogg is currently its only caller
+    /// — so any build without that feature sees no consumer.
+    #[cfg_attr(not(feature = "ogg"), allow(dead_code))]
     pub(crate) fn is_empty(&self) -> bool {
         self.data.is_empty()
     }

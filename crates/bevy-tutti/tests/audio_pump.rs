@@ -21,7 +21,6 @@ use bevy_tutti::graph::{AudioPump, AudioPumpAppExt, PumpFinished};
 // Through `bevy_tutti::io`, not the engine crates directly: a host should not
 // need to name `tutti-core` or `tutti-io` to write a pump, and this pins that.
 use bevy_tutti::io::{AudioIn, BitDepth, ChannelLayout, OnEmpty, WavOut};
-use tutti_midi_runtime::tutti_midi_types::tutti_types::MidiGroup;
 
 const SAMPLE_RATE: f64 = 48_000.0;
 

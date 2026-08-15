@@ -156,6 +156,14 @@ pub(crate) fn from_arrangement(arr: SpeakerArrangement) -> ChannelTopology {
 /// `None` is a real answer for a caller to act on: `setBusArrangements` is a
 /// proposal, so the honest move is to propose nothing and take what the plugin
 /// reports back.
+/// Callerless in production today, and deliberately so: `negotiate_bus_arrangements`
+/// only has channel *counts* to work from, so it uses `instance::default_arrangement_for`
+/// — the width-only fallback whose own docs name this function as its successor
+/// "once a caller has a real [`ChannelTopology`] to offer". Not deleted, because
+/// `SPEAKER_BITS` must stay a bijection and `every_named_speaker_round_trips` is
+/// the only thing that checks it — and that test exercises the decode direction
+/// production *does* use. See docs/design/007-channel-topology.md.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn to_arrangement(topology: &ChannelTopology) -> Option<SpeakerArrangement> {
     // The inverse of the mono case in `from_arrangement`: a single-channel bus
     // is `kMono`, not `kSpeakerC`. See [`MONO_BIT`].

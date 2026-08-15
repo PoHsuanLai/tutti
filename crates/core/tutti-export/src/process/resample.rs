@@ -107,10 +107,8 @@ impl Default for ChunkSize {
     }
 }
 
-#[cfg(any(feature = "wav", feature = "flac", feature = "aiff", feature = "ogg"))]
 pub(crate) use streaming::Resampler;
 
-#[cfg(any(feature = "wav", feature = "flac", feature = "aiff", feature = "ogg"))]
 mod streaming {
     use super::*;
     use rubato::{FftFixedIn, Resampler as _};
@@ -262,7 +260,6 @@ mod streaming {
 }
 
 #[cfg(test)]
-#[cfg(any(feature = "wav", feature = "flac", feature = "aiff", feature = "ogg"))]
 mod tests {
     use super::*;
 
@@ -393,7 +390,10 @@ mod tests {
 /// the signal whole and must convert it *before* measuring — sample-rate
 /// conversion moves the true peak, so a gain measured at the render rate would
 /// miss its target once the file is written at another.
-#[cfg(any(feature = "wav", feature = "flac", feature = "aiff", feature = "ogg"))]
+// Not codec-gated: this converts buffers through `rubato`, an unconditional
+// dependency, and its caller `render_normalized_to_file` is ungated too. The
+// gate that used to be here made a no-codec build fail to compile rather than
+// merely fail to encode.
 pub(crate) fn resample_rendered(
     rendered: &crate::Rendered,
     opts: crate::config::Resample,

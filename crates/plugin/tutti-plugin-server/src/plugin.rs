@@ -468,7 +468,19 @@ mod tests {
             "a freshly loaded plugin reported an async event nobody raised"
         );
 
-        let Plugin::Clap(clap) = &mut plugin else {
+        // The `else` is unreachable when `clap` is the *only* loader feature
+        // on, because `Plugin` then has a single variant — but it is a real arm
+        // in any multi-loader build, which is the configuration this guards.
+        #[cfg_attr(
+            not(any(
+                feature = "vst2",
+                feature = "vst3",
+                all(feature = "au", target_os = "macos")
+            )),
+            allow(irrefutable_let_patterns)
+        )]
+        let Plugin::Clap(clap) = &mut plugin
+        else {
             unreachable!("constructed as Clap immediately above")
         };
         let state = clap.clap_loaded().host_state();

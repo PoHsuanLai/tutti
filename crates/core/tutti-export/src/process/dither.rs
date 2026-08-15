@@ -5,6 +5,13 @@
 //! block-based (rubato), and normalization is the caller's two-pass composition
 //! (see `tutti_analysis::loudness`), so this is the whole of what a "mastering"
 //! stage would otherwise hold.
+//! Reached only through the codec-gated encode arms, so a build with no format
+//! feature on compiles this with no consumers. Scoped to that configuration
+//! rather than allowed outright, so real dead code is still caught elsewhere.
+#![cfg_attr(
+    not(any(feature = "wav", feature = "flac", feature = "aiff", feature = "ogg")),
+    allow(dead_code)
+)]
 
 use crate::config::ExportConfig;
 use crate::options::{BitDepth, Dither};

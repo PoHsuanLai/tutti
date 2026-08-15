@@ -1423,7 +1423,7 @@ mod tests {
     #[test]
     fn mod_params_volume_moves_the_master_atomic() {
         use tutti_core::{ParamAddr, UnitParam};
-        use tutti_mod::{LayerKey, ModParams, ModTarget};
+        use tutti_mod::{LayerKey, ModParams};
 
         let synth = synth(SynthConfig {
             sample_rate: tutti_core::SampleRate::SR_44K1,

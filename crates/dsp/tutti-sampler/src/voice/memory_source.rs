@@ -2157,7 +2157,7 @@ mod tests {
     #[test]
     fn a_gain_change_reaches_a_cloned_source() {
         let wave = ramp_wave(64, 44_100.0);
-        let mut unit = MemorySource::new(wave);
+        let unit = MemorySource::new(wave);
         unit.play();
 
         // The clone stands in for the copy the audio thread renders; the
@@ -2194,7 +2194,7 @@ mod tests {
     #[test]
     fn an_isolated_source_stops_sharing_gain() {
         let wave = ramp_wave(64, 44_100.0);
-        let mut live = MemorySource::new(wave);
+        let live = MemorySource::new(wave);
         live.play();
 
         let mut render_copy = live.clone();

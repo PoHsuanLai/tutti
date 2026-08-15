@@ -182,6 +182,13 @@ pub struct PresetMismatch {
 /// Convenience alias for `Result<T, AuError>`.
 pub type Result<T> = std::result::Result<T, AuError>;
 
+// These constructors have 19 call sites between them, and every one is in a
+// module `lib.rs` gates on `target_os = "macos"` (`instance`, `offline`,
+// `aupreset`) — while `error` itself is declared unconditionally. So off macOS
+// they compile with no consumers and read as dead. Scoped to `not(macos)`
+// rather than a bare `allow` so the lint still catches real rot where the
+// callers exist.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 impl AuError {
     /// Construct a [`AuError::RenderFailed`] from a failed `AudioUnitRender`
     /// call, optionally enriched with the AU's last-render-error.
@@ -229,7 +236,7 @@ impl AuError {
                 AuError::RenderFailed { code, .. } => *code,
                 AuError::NullComponent => return "null component",
                 AuError::RequiresAsyncInstantiation => {
-                    return "component requires asynchronous instantiation (AUv3 with a view)"
+                    return "component requires asynchronous instantiation (AUv3 with a view)";
                 }
                 AuError::CfStringAlloc => return "CoreFoundation string allocation failed",
                 AuError::InvalidBuffer(_) => return "invalid buffer",
@@ -238,7 +245,7 @@ impl AuError {
                 AuError::PresetIo(_) => return "preset file I/O failed",
                 AuError::InvalidPreset(_) => return "not a valid .aupreset",
                 AuError::PresetIdentityMismatch(_) => {
-                    return "preset belongs to a different Audio Unit"
+                    return "preset belongs to a different Audio Unit";
                 }
             };
             match code {

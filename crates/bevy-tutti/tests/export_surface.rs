@@ -375,6 +375,11 @@ fn the_callers_timeline_is_the_one_nodes_are_rebound_onto() {
     // The hook sees the very context the nodes were rebound with.
     .with_prepare(|prepared, _world| {
         if let Some(transport) = prepared.ctx {
+            // Required for `tempo()`/`beat()` in a default build. Some
+            // feature-gated import already brings the trait into scope under
+            // `--all-features`, where it then reads as redundant — so it is
+            // allowed rather than removed; deleting it breaks the default build.
+            #[allow(unused_imports)]
             use tutti_core::Timeline;
             SEEN_TEMPO.store(transport.tempo().get().round() as usize, Ordering::SeqCst);
             SEEN_BEAT.store(transport.beat().get().round() as usize, Ordering::SeqCst);

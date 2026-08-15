@@ -22,6 +22,11 @@
 //! `dither_stats.rs`; it just makes bit-accuracy untestable, so the round-trip
 //! cases turn it off explicitly. A config literal that forgets to is the most
 //! likely way to make these tests mysteriously flaky.
+//!
+//! Gated on `wav` + `flac`: the cases write both formats unconditionally, and
+//! `hound` (which reads the WAVs back) is only linked under `wav`.
+
+#![cfg(all(feature = "wav", feature = "flac"))]
 
 use fundsp::prelude32::*;
 use tutti_export::{
@@ -73,7 +78,9 @@ fn lsb(bit_depth: BitDepth) -> f32 {
         BitDepth::Int16 => 1.0 / 32_767.0,
         BitDepth::Int24 => 1.0 / 8_388_607.0,
         BitDepth::Float32 => 1.0 / 8_388_607.0, // exact in practice; kept for the table
-        _ => unreachable!("BitDepth is non_exhaustive but has exactly three variants"),
+                                                // No `_` arm: `BitDepth` is deliberately not `#[non_exhaustive]`, so a
+                                                // fourth depth must fail to compile here rather than pick up a silent
+                                                // default. See the enum's docs in tutti-types::pcm.
     }
 }
 

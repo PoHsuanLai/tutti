@@ -48,7 +48,7 @@ use bevy_tutti::AudioEngineState;
 use tutti_core::dsp::Net;
 use tutti_core::transport::{ClickState, Transport};
 use tutti_core::AudioNode;
-use tutti_plugin::catalog::{CatalogConfig, PluginId, Plugins};
+use tutti_plugin::catalog::{CatalogConfig, PluginId, Plugins, NO_SCAN_DIRS};
 
 #[cfg(feature = "modulation")]
 use bevy_tutti::modulation::{ModParamRange, TuttiModulationPlugin};
@@ -154,9 +154,11 @@ fn main() {
     // A catalog with no scan dirs: this example never scans, it registers the
     // one path it was given. `TuttiHostingPlugin` inserts an equivalent default,
     // so this only demonstrates that overriding it is the whole config story.
+    // `NO_SCAN_DIRS`, not `vec![]`: the element type of an empty vec is
+    // unconstrained here, so `impl Into<PathBuf>` has nothing to infer from.
     let config = CatalogConfig::new(
         std::env::temp_dir().join("plugin-host-example.json"),
-        vec![],
+        NO_SCAN_DIRS,
     );
     app.insert_resource(PluginsRes::new(Plugins::empty(config)));
 

@@ -524,7 +524,7 @@ impl VoicePool {
         self.voices.retain(|s| s.id != id);
         // Split the loop out: `apply_loop` needs the slot present to look it up,
         // and `Playback` moves into the `Voice`. Take the rest by copy first.
-        let loop_ = voice.play.loop_.clone();
+        let loop_ = voice.play.loop_;
         let gain = voice.play.gain;
         let speed = voice.play.speed;
         let direction = voice.play.direction;

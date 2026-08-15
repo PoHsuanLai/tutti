@@ -107,26 +107,33 @@ static RT_NO_ALLOC_HARNESS: assert_no_alloc::AllocDisabler = assert_no_alloc::Al
 pub(crate) mod test_utils {
     // Every import here belongs to the probe-path helpers, which are gated to
     // the loader whose reference plugin they find.
+    // `Path`/`PathBuf` belong to the VST3 bundle walk; VST2 and CLAP only
+    // resolve a candidate string.
     #[cfg(any(feature = "clap", feature = "vst3"))]
     use std::path::Path;
     #[cfg(feature = "vst3")]
     use std::path::PathBuf;
-    #[cfg(any(feature = "clap", feature = "vst3"))]
+    #[cfg(any(feature = "clap", feature = "vst3", feature = "vst2"))]
     use std::sync::OnceLock;
-    #[cfg(any(feature = "clap", feature = "vst3"))]
+    #[cfg(any(feature = "clap", feature = "vst3", feature = "vst2"))]
     use std::sync::{Mutex, MutexGuard};
 
-    /// Taken by the CLAP and VST3 loader tests — the only ones that `dlopen` a
-    /// plugin today. `loaders::vst2` has no tests of its own yet, so a
-    /// `vst2`-only build never takes it, despite VST2 being the reason the lock
-    /// exists.
-    #[cfg(any(feature = "clap", feature = "vst3"))]
+    /// Taken by every loader test that `dlopen`s a plugin — CLAP, VST3 and now
+    /// VST2. VST2 is the reason the lock exists (the `vst` crate keeps a global
+    /// `LOAD_POINTER` during load), and until `loaders::vst2` grew tests it was
+    /// the one loader that never took it.
+    #[cfg(any(feature = "clap", feature = "vst3", feature = "vst2"))]
     pub static PLUGIN_LOAD_LOCK: Mutex<()> = Mutex::new(());
 
     /// `;`-separated candidate paths for the reference CLAP plugin, emitted by
     /// `build.rs`.
     #[cfg(feature = "clap")]
     const CLAP_PROBE_CANDIDATES: &str = env!("TUTTI_CLAP_TEST_PLUGIN_CANDIDATES");
+
+    /// `;`-separated candidate paths for the reference VST2 plugin, emitted by
+    /// `build.rs`.
+    #[cfg(feature = "vst2")]
+    const VST2_PROBE_CANDIDATES: &str = env!("TUTTI_VST2_TEST_PLUGIN_CANDIDATES");
 
     /// The reference VST3 bundle's parent directory, forwarded from
     /// `tutti-vst3-host` by `build.rs`. Empty when that crate built no probe.
@@ -330,6 +337,31 @@ pub(crate) mod test_utils {
     ///
     /// Resolution (newest candidate wins) and the panic-on-absence rule are
     /// `tutti_fixture_resolve`'s; see that crate for why each matters.
+    /// Absolute path to the reference VST2 cdylib the loader tests drive.
+    ///
+    /// The VST2 counterpart to [`clap_probe_path`], resolved the same way:
+    /// `tutti-vst2-test-plugin` is a dev-dependency, so cargo builds the
+    /// cdylib during this same `cargo test` and `build.rs` only reports where
+    /// it landed. Its behaviour is steered per-test with the
+    /// `TUTTI_VST2_PROBE_*` env vars rather than by building variants.
+    ///
+    /// # Panics
+    ///
+    /// If no candidate exists — that is a build failure, not a property of the
+    /// machine, since the cdylib is a dev-dependency of this crate.
+    #[cfg(feature = "vst2")]
+    pub fn vst2_probe_path() -> &'static str {
+        static RESOLVED: OnceLock<String> = OnceLock::new();
+        RESOLVED
+            .get_or_init(|| {
+                tutti_fixture_resolve::resolve_or_panic(
+                    VST2_PROBE_CANDIDATES,
+                    "tutti-vst2-test-plugin",
+                )
+            })
+            .as_str()
+    }
+
     #[cfg(feature = "clap")]
     pub fn clap_probe_path() -> &'static str {
         static RESOLVED: OnceLock<String> = OnceLock::new();
@@ -352,7 +384,7 @@ pub(crate) mod test_utils {
     /// turning one real failure into dozens of misleading cascade failures.
     /// The guarded data is `()`, so there's no invariant a poisoned lock
     /// could violate; recovering is safe and keeps failures isolated.
-    #[cfg(any(feature = "clap", feature = "vst3"))]
+    #[cfg(any(feature = "clap", feature = "vst3", feature = "vst2"))]
     pub fn plugin_load_lock() -> MutexGuard<'static, ()> {
         PLUGIN_LOAD_LOCK
             .lock()

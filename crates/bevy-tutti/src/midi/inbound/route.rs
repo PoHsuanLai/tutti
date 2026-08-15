@@ -71,8 +71,8 @@ use tutti_midi_types::routing::MAX_TARGETS_PER_ROUTE;
 use tutti_midi_types::{MidiRoute, MidiUnitId};
 
 use super::routing_table::MidiRoutingRes;
-use crate::midi::endpoint::target::MidiTargetResolver;
 use crate::graph::{engine_ready, GraphReconcileSystems};
+use crate::midi::endpoint::target::MidiTargetResolver;
 
 /// One inbound routing rule: which channel reaches which entities.
 ///

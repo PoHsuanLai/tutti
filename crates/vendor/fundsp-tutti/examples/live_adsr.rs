@@ -6,7 +6,7 @@
 //! * `volume`: Controls the current volume. Altered by MIDI `NoteOn` and `NoteOff` messages as they arrive.
 //! * `pitch_bend`: Scales the current pitch according to MIDI `PitchBend` messages as they arrive.
 //! * `control`: Signals when to start the attack, stop the sustain, and start the release.
-//!    Altered by MIDI `NoteOn` and `NoteOff` messages as they arrive.
+//!   Altered by MIDI `NoteOn` and `NoteOff` messages as they arrive.
 //!
 //! This program's design is structured around these two threads:
 //! * The `main()` thread listens for MIDI inputs and alters the `shared()` objects as described above.
@@ -154,15 +154,9 @@ fn run_output(pitch: Shared, volume: Shared, pitch_bend: Shared, control: Shared
     config.buffer_size = BufferSize::Fixed(256);
 
     match supported_config.sample_format() {
-        SampleFormat::F32 => {
-            run_synth::<f32>(pitch, volume, pitch_bend, control, device, config.into())
-        }
-        SampleFormat::I16 => {
-            run_synth::<i16>(pitch, volume, pitch_bend, control, device, config.into())
-        }
-        SampleFormat::U16 => {
-            run_synth::<u16>(pitch, volume, pitch_bend, control, device, config.into())
-        }
+        SampleFormat::F32 => run_synth::<f32>(pitch, volume, pitch_bend, control, device, config),
+        SampleFormat::I16 => run_synth::<i16>(pitch, volume, pitch_bend, control, device, config),
+        SampleFormat::U16 => run_synth::<u16>(pitch, volume, pitch_bend, control, device, config),
         _ => panic!("Unsupported format"),
     }
 }

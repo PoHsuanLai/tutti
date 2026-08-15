@@ -1079,7 +1079,11 @@ trait Dispatch {
         let Some(dispatcher) = (unsafe { (*self.get_effect()).dispatcher }) else {
             panic!("Plugin was not loaded correctly.");
         };
-        dispatcher(self.get_effect(), opcode.into(), index, value, ptr, opt)
+        // SAFETY: `dispatcher` came out of the `AEffect` this instance owns, so
+        // the effect pointer it is handed is the one it belongs to and is live
+        // for the call. `ptr`/`value` are the caller's to get right — that is
+        // the obligation `DispatcherProc` being `unsafe` now states out loud.
+        unsafe { dispatcher(self.get_effect(), opcode.into(), index, value, ptr, opt) }
     }
 
     /// Send a lone opcode with no parameters.
@@ -1324,8 +1328,8 @@ impl Plugin for PluginInstance {
             if let Some(replacing) = (*effect).processReplacing.filter(|_| self.can_replacing) {
                 replacing(
                     effect,
-                    buffer.raw_inputs().as_ptr() as *const *const _,
-                    buffer.raw_outputs().as_mut_ptr() as *mut *mut _,
+                    buffer.raw_inputs().as_ptr(),
+                    buffer.raw_outputs().as_mut_ptr(),
                     samples,
                 );
                 return;
@@ -1350,8 +1354,8 @@ impl Plugin for PluginInstance {
             zero_outputs(buffer);
             accumulating(
                 effect,
-                buffer.raw_inputs().as_ptr() as *const *const _,
-                buffer.raw_outputs().as_mut_ptr() as *mut *mut _,
+                buffer.raw_inputs().as_ptr(),
+                buffer.raw_outputs().as_mut_ptr(),
                 samples,
             );
         }
@@ -1387,8 +1391,8 @@ impl Plugin for PluginInstance {
             };
             replacing(
                 effect,
-                buffer.raw_inputs().as_ptr() as *const *const _,
-                buffer.raw_outputs().as_mut_ptr() as *mut *mut _,
+                buffer.raw_inputs().as_ptr(),
+                buffer.raw_outputs().as_mut_ptr(),
                 buffer.samples() as i32,
             );
         }
@@ -1729,7 +1733,7 @@ impl<T: Float> HostBuffer<T> {
 /// this is a rare situation as you normally won't have 2 separate host instances loading at once.
 ///
 /// [reserved field]: ../api/struct.AEffect.html#structfield.reserved1
-static mut LOAD_POINTER: *mut c_void = 0 as *mut c_void;
+static mut LOAD_POINTER: *mut c_void = std::ptr::null_mut::<c_void>();
 
 /// Function passed to plugin to handle dispatching host opcodes.
 ///

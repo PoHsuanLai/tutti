@@ -860,7 +860,10 @@ extern "C" fn probe_dispatch(
     }
 
     match unsafe { INNER_DISPATCHER } {
-        Some(inner) => inner(effect, opcode, index, value, ptr, opt),
+        // SAFETY: forwarding the host's own call through to the dispatcher this
+        // shim wrapped — every argument is passed on untouched, so the
+        // obligations are the host's and were already met on the way in.
+        Some(inner) => unsafe { inner(effect, opcode, index, value, ptr, opt) },
         None => 0,
     }
 }

@@ -219,7 +219,7 @@ impl<T> Grid<T> {
     #[inline]
     pub fn rows(&self) -> Box<dyn Iterator<Item = &[T]> + '_> {
         if self.bins.get() == 0 {
-            Box::new(core::iter::repeat(&[][..]).take(self.frames.get()))
+            Box::new(std::iter::repeat_n(&[][..], self.frames.get()))
         } else {
             Box::new(self.data.chunks_exact(self.bins.get()))
         }
@@ -326,7 +326,7 @@ mod tests {
         assert_eq!(*g.at(FrameIndex(2), BinIndex(3)), 23);
         assert_eq!(g.row(FrameIndex(1)), &[10, 11, 12, 13]);
         // Flat layout is part of the contract: consumers index it directly.
-        assert_eq!(g.as_slice()[1 * 4 + 2], 12);
+        assert_eq!(g.as_slice()[4 + 2], 12);
     }
 
     #[test]

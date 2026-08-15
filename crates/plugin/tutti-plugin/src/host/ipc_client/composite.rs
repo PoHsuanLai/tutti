@@ -528,47 +528,6 @@ fn automation_push_outcome(delivered: Delivered) -> std::result::Result<(), Edit
     }
 }
 
-#[cfg(test)]
-mod automation_outcome_tests {
-    use super::*;
-
-    /// A dropped push and a dead plugin must not produce the same error.
-    ///
-    /// This is the property the `bool` could not express, and the only reason
-    /// [`Delivered`] exists rather than a two-state answer: one is transient and
-    /// worth retrying, the other is permanent. Asserting they *differ* is what
-    /// fails if someone later folds the two arms back together — an assertion
-    /// on either arm alone would survive that.
-    #[test]
-    fn a_dropped_push_and_a_dead_plugin_report_differently() {
-        let dropped = automation_push_outcome(Delivered::Dropped)
-            .expect_err("a dropped push is not a success");
-        let dead = automation_push_outcome(Delivered::PluginDead)
-            .expect_err("a dead plugin is not a success");
-
-        assert!(
-            matches!(dropped, EditorError::PluginError(_)),
-            "a full queue is the plugin declining to be reached, not a crash: {dropped:?}"
-        );
-        assert!(
-            matches!(dead, EditorError::PluginCrashed),
-            "a dead plugin must report as crashed: {dead:?}"
-        );
-        assert_ne!(
-            dropped.to_string(),
-            dead.to_string(),
-            "the two failures must be distinguishable by a user reading the message"
-        );
-    }
-
-    /// The negative half: a delivered push is not reported as a failure. Without
-    /// this, folding every arm to `Err` would still pass the test above.
-    #[test]
-    fn a_delivered_push_is_not_an_error() {
-        assert!(automation_push_outcome(Delivered::Yes).is_ok());
-    }
-}
-
 impl crate::host::handles::capabilities::HostPresets for SubprocessBackend {
     fn presets(&self) -> Vec<Preset> {
         // A crashed subprocess yields `None`; flattened to an empty list
@@ -615,5 +574,46 @@ impl Drop for PluginBridge {
                 std::mem::forget(gui);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod automation_outcome_tests {
+    use super::*;
+
+    /// A dropped push and a dead plugin must not produce the same error.
+    ///
+    /// This is the property the `bool` could not express, and the only reason
+    /// [`Delivered`] exists rather than a two-state answer: one is transient and
+    /// worth retrying, the other is permanent. Asserting they *differ* is what
+    /// fails if someone later folds the two arms back together — an assertion
+    /// on either arm alone would survive that.
+    #[test]
+    fn a_dropped_push_and_a_dead_plugin_report_differently() {
+        let dropped = automation_push_outcome(Delivered::Dropped)
+            .expect_err("a dropped push is not a success");
+        let dead = automation_push_outcome(Delivered::PluginDead)
+            .expect_err("a dead plugin is not a success");
+
+        assert!(
+            matches!(dropped, EditorError::PluginError(_)),
+            "a full queue is the plugin declining to be reached, not a crash: {dropped:?}"
+        );
+        assert!(
+            matches!(dead, EditorError::PluginCrashed),
+            "a dead plugin must report as crashed: {dead:?}"
+        );
+        assert_ne!(
+            dropped.to_string(),
+            dead.to_string(),
+            "the two failures must be distinguishable by a user reading the message"
+        );
+    }
+
+    /// The negative half: a delivered push is not reported as a failure. Without
+    /// this, folding every arm to `Err` would still pass the test above.
+    #[test]
+    fn a_delivered_push_is_not_an_error() {
+        assert!(automation_push_outcome(Delivered::Yes).is_ok());
     }
 }

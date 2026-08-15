@@ -118,7 +118,7 @@ impl PitchDetector {
         let frequency = Hz((self.sample_rate.get() / refined_period) as f32);
         // Clamped rather than wrapped raw: `Confidence` is a 0..=1 reading, and
         // this is the one place the aperiodicity inversion could leave the range.
-        let confidence = Confidence::new_clamped(1.0 - aperiodicity as f32);
+        let confidence = Confidence::new_clamped(1.0 - aperiodicity);
 
         PitchResult {
             frequency,

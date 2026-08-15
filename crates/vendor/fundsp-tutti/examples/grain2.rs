@@ -18,9 +18,9 @@ fn main() {
     config.buffer_size = BufferSize::Fixed(256);
 
     match supported_config.sample_format() {
-        cpal::SampleFormat::F32 => run::<f32>(&device, &config.into()).unwrap(),
-        cpal::SampleFormat::I16 => run::<i16>(&device, &config.into()).unwrap(),
-        cpal::SampleFormat::U16 => run::<u16>(&device, &config.into()).unwrap(),
+        cpal::SampleFormat::F32 => run::<f32>(&device, &config).unwrap(),
+        cpal::SampleFormat::I16 => run::<i16>(&device, &config).unwrap(),
+        cpal::SampleFormat::U16 => run::<u16>(&device, &config).unwrap(),
         _ => panic!("Unsupported format"),
     }
 }

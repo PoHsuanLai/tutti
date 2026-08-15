@@ -56,6 +56,11 @@ impl StftGeometry {
         if hop.is_zero() {
             return Err(AnalysisError::ZeroHop);
         }
+        // `!(x > 0.0)`, not `x <= 0.0`: the negation is what rejects NaN. Every
+        // comparison against NaN is false, so `x <= 0.0` *accepts* a NaN rate
+        // and lets it reach the FFT geometry. clippy's `neg_cmp_op_on_partial_ord`
+        // reads this as awkward style; it is the guard.
+        #[allow(clippy::neg_cmp_op_on_partial_ord)]
         if !(sample_rate.get() > 0.0) {
             return Err(AnalysisError::NonPositiveSampleRate);
         }

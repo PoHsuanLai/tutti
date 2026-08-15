@@ -28,6 +28,10 @@ fn main() {
         "TUTTI_CLAP_TEST_PLUGIN_CANDIDATES",
         "tutti_clap_test_plugin",
     );
+    tutti_fixture_resolve::emit_candidates(
+        "TUTTI_VST2_TEST_PLUGIN_CANDIDATES",
+        "tutti_vst2_test_plugin",
+    );
     forward_vst3_probe_dir();
 }
 

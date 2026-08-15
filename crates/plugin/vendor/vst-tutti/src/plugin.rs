@@ -449,11 +449,11 @@ impl CanDo {
     }
 }
 
-impl Into<String> for CanDo {
-    fn into(self) -> String {
+impl From<CanDo> for String {
+    fn from(val: CanDo) -> Self {
         use self::CanDo::*;
 
-        match self {
+        match val {
             SendEvents => "sendVstEvents".to_string(),
             SendMidiEvent => "sendVstMidiEvent".to_string(),
             ReceiveEvents => "receiveVstEvents".to_string(),
@@ -975,7 +975,7 @@ impl HostCallback {
     #[doc(hidden)]
     fn is_effect_valid(&self) -> bool {
         // Check whether `effect` points to a valid AEffect struct
-        unsafe { (*self.effect).magic as i32 == VST_MAGIC }
+        unsafe { (*self.effect).magic == VST_MAGIC }
     }
 
     /// Create a new Host structure wrapping a host callback.
@@ -1314,13 +1314,17 @@ mod tests {
     fn host_callbacks() {
         let aeffect = instance();
         let dispatcher = unsafe { (*aeffect).dispatcher }.expect("this crate installs dispatcher");
-        dispatcher(
-            aeffect,
-            plugin::OpCode::Initialize.into(),
-            0,
-            0,
-            ptr::null_mut(),
-            0.0,
-        );
+        // SAFETY: `aeffect` is this crate's own instance and `dispatcher` the
+        // entry point it installs; `Initialize` reads none of the pointer args.
+        unsafe {
+            dispatcher(
+                aeffect,
+                plugin::OpCode::Initialize.into(),
+                0,
+                0,
+                ptr::null_mut(),
+                0.0,
+            );
+        }
     }
 }

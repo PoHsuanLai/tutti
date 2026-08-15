@@ -470,8 +470,10 @@ mod tests {
 
             let source =
                 MemorySource::with_transport(wave, transport.clone(), Beat::new(0.0), None);
-            let mut play = Playback::default();
-            play.stretch = StretchFactor::new(factor);
+            let play = Playback {
+                stretch: StretchFactor::new(factor),
+                ..Default::default()
+            };
             handle
                 .send(VoiceCommand::AddVoice {
                     id: SlotId(1),
@@ -574,8 +576,10 @@ mod tests {
                 },
             );
 
-            let mut play = Playback::default();
-            play.stretch = StretchFactor::new(factor);
+            let play = Playback {
+                stretch: StretchFactor::new(factor),
+                ..Default::default()
+            };
             handle
                 .send(VoiceCommand::AddVoice {
                     id: SlotId(1),

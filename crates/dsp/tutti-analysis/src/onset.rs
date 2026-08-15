@@ -495,7 +495,13 @@ mod tests {
 
         // First frame sizes the buffer.
         let window = cfg.geometry().window().get();
-        step_onset(&cfg, &mut state, FrameIndex(0), &samples[..window], &mut fft);
+        step_onset(
+            &cfg,
+            &mut state,
+            FrameIndex(0),
+            &samples[..window],
+            &mut fft,
+        );
         let bins = state.spectrum.len();
         assert!(bins > 0, "the first frame must have sized the buffer");
 

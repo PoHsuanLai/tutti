@@ -160,30 +160,30 @@ impl PluginClient {
     /// The MIDI-out routing target, or `None` if the plugin declared no MIDI
     /// output.
     pub fn midi_out(&self) -> Option<MidiOutView<'_>> {
-        (!declined(self, Features::MIDI_OUT)).then(|| MidiOutView(self))
+        (!declined(self, Features::MIDI_OUT)).then_some(MidiOutView(self))
     }
 
     /// The MIDI input installer, or `None` if the plugin declared no MIDI input.
     pub fn midi_in(&mut self) -> Option<MidiInView<'_>> {
-        (!declined(self, Features::MIDI_IN)).then(move || MidiInView(self))
+        (!declined(self, Features::MIDI_IN)).then_some(MidiInView(self))
     }
 
     /// The chord/scale installer, or `None` if the plugin declared no sequencer
     /// context.
     pub fn harmony(&mut self) -> Option<HarmonyView<'_>> {
-        (!declined(self, Features::SEQUENCER_CONTEXT)).then(move || HarmonyView(self))
+        (!declined(self, Features::SEQUENCER_CONTEXT)).then_some(HarmonyView(self))
     }
 
     /// The note-expression installer, or `None` if the plugin declared no
     /// note-expression support.
     pub fn note_expression(&mut self) -> Option<NoteExpressionView<'_>> {
-        (!declined(self, Features::NOTE_EXPRESSION)).then(move || NoteExpressionView(self))
+        (!declined(self, Features::NOTE_EXPRESSION)).then_some(NoteExpressionView(self))
     }
 
     /// The transport installer, or `None` if the plugin declared it does not
     /// want a transport snapshot.
     pub fn transport(&mut self) -> Option<TransportView<'_>> {
-        (!declined(self, Features::TRANSPORT)).then(move || TransportView(self))
+        (!declined(self, Features::TRANSPORT)).then_some(TransportView(self))
     }
 }
 

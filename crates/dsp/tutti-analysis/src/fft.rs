@@ -78,6 +78,10 @@ impl FftScratch {
         // Rebuild the full spectrum: the upper half mirrors the lower one,
         // conjugated. Callers only ever hold DC..=Nyquist.
         self.buffer[..bins.len()].copy_from_slice(bins);
+        // Indexed rather than iterated: the two sides run in opposite
+        // directions (`buffer[size - i]` against `bins[i]`), so `i` is the
+        // mirror axis and not a cursor into either slice.
+        #[allow(clippy::needless_range_loop)]
         for i in 1..size.div_ceil(2) {
             self.buffer[size - i] = bins[i].conj();
         }

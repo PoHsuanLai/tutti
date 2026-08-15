@@ -117,6 +117,11 @@ assert_no_alloc = { version = "1", default-features = false }
 # only resolves where it landed. This is what lets the CLAP suite run on any
 # machine instead of naming an absolute macOS path.
 tutti-clap-test-plugin = { path = "../../vendor/tutti-clap-test-plugin" }
+# The reference VST2 plugin, on the same terms as the CLAP one above: a
+# dev-dependency so the cdylib is built inside this `cargo test`, with build.rs
+# only resolving where it landed. Its behaviour is steered per-test through
+# `TUTTI_VST2_PROBE_*` env vars rather than by building variants.
+tutti-vst2-test-plugin = { path = "../vendor/tutti-vst2-test-plugin" }
 # The same `tutti-vst3-host` the `vst3` feature pulls in, but with `conformance`
 # on so its build script compiles `audio-probe` — the reference VST3 plugin the
 # loader tests drive, the counterpart to `tutti-clap-test-plugin` above. As a

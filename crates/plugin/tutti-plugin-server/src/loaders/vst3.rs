@@ -358,30 +358,28 @@ impl Vst3Instance {
         // stale one. The re-read below happens inside the cycle, after
         // reactivation, which is the order the header specifies.
         if restart.io_changed || restart.latency_changed {
-            match vst_dispatch_mut!(self, inner => inner.restart_bus_configuration()) {
-                Ok(()) => {
-                    let samples = Samples(
-                        vst_dispatch_mut!(self, inner => inner.read_latency_samples()) as usize,
-                    );
-                    self.meta.loaded.latency_samples = samples;
-                    changes.latency = Some(samples);
+            // `if let Ok(..)`, and the `else` is deliberately absent: a refused
+            // reactivation leaves the plugin inactive, and saying nothing would
+            // let the client keep processing it. Surfacing no change is the
+            // honest answer — the cached layout and latency still describe the
+            // last configuration that worked.
+            if vst_dispatch_mut!(self, inner => inner.restart_bus_configuration()).is_ok() {
+                let samples = Samples(
+                    vst_dispatch_mut!(self, inner => inner.read_latency_samples()) as usize,
+                );
+                self.meta.loaded.latency_samples = samples;
+                changes.latency = Some(samples);
 
-                    if restart.io_changed {
-                        // Refresh the cached per-bus layout so `loaded()`
-                        // reflects the post-cycle geometry for the client rewire.
-                        let info = vst_dispatch!(self, inner => inner.info().clone());
-                        self.meta.loaded.inputs =
-                            bus_channels(&info.input_bus_channels, info.num_inputs);
-                        self.meta.loaded.outputs =
-                            bus_channels(&info.output_bus_channels, info.num_outputs);
-                        changes.io_changed = true;
-                    }
+                if restart.io_changed {
+                    // Refresh the cached per-bus layout so `loaded()` reflects
+                    // the post-cycle geometry for the client rewire.
+                    let info = vst_dispatch!(self, inner => inner.info().clone());
+                    self.meta.loaded.inputs =
+                        bus_channels(&info.input_bus_channels, info.num_inputs);
+                    self.meta.loaded.outputs =
+                        bus_channels(&info.output_bus_channels, info.num_outputs);
+                    changes.io_changed = true;
                 }
-                // A refused reactivation leaves the plugin inactive, and saying
-                // nothing would let the client keep processing it. Surfacing no
-                // change is the honest answer: the cached layout and latency
-                // still describe the last configuration that worked.
-                Err(_) => {}
             }
         }
 

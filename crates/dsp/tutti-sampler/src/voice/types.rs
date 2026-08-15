@@ -235,7 +235,7 @@ impl Clone for Playback {
             gain: self.gain,
             speed: self.speed,
             direction: self.direction,
-            loop_: self.loop_.clone(),
+            loop_: self.loop_,
             stretch: self.stretch,
             pitch: self.pitch,
         }

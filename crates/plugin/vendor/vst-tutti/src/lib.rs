@@ -515,30 +515,36 @@ mod tests {
         let mut first: *mut c_void = ptr::null_mut();
         let mut second: *mut c_void = ptr::null_mut();
 
-        // No `unsafe` around the `dispatch` calls below: `DispatcherProc` is a
-        // *safe* `extern "C" fn`, so only the `&mut *` deref above needs one.
-        let ok = dispatch(
-            aeffect,
-            OpCode::EditorGetRect.into(),
-            0,
-            0,
-            &mut first as *mut _ as *mut c_void,
-            0.0,
-        );
+        // SAFETY: `dispatch` is this crate's own `interfaces::dispatch`, and
+        // `aeffect` is the instance it was installed on. The out-param is a
+        // live `*mut *mut c_void` matching what `EditorGetRect` writes.
+        let ok = unsafe {
+            dispatch(
+                aeffect,
+                OpCode::EditorGetRect.into(),
+                0,
+                0,
+                &mut first as *mut _ as *mut c_void,
+                0.0,
+            )
+        };
         assert_eq!(ok, 1, "the test plugin has an editor, so this must succeed");
         assert!(
             !first.is_null(),
             "a successful get-rect must write a pointer"
         );
 
-        dispatch(
-            aeffect,
-            OpCode::EditorGetRect.into(),
-            0,
-            0,
-            &mut second as *mut _ as *mut c_void,
-            0.0,
-        );
+        // SAFETY: as above — same effect, same opcode, second out-param.
+        unsafe {
+            dispatch(
+                aeffect,
+                OpCode::EditorGetRect.into(),
+                0,
+                0,
+                &mut second as *mut _ as *mut c_void,
+                0.0,
+            );
+        }
 
         assert_eq!(
             first, second,
@@ -563,14 +569,17 @@ mod tests {
         let dispatch = aeffect.dispatcher.expect("dispatcher must be installed");
 
         let mut out: *mut Rect = ptr::null_mut();
-        dispatch(
-            aeffect,
-            OpCode::EditorGetRect.into(),
-            0,
-            0,
-            &mut out as *mut _ as *mut c_void,
-            0.0,
-        );
+        // SAFETY: as above; `out` receives the plugin's own `Rect`.
+        unsafe {
+            dispatch(
+                aeffect,
+                OpCode::EditorGetRect.into(),
+                0,
+                0,
+                &mut out as *mut _ as *mut c_void,
+                0.0,
+            );
+        }
         assert!(!out.is_null());
 
         let rect = unsafe { *out };

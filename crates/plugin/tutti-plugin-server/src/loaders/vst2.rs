@@ -475,3 +475,214 @@ impl PluginState for Vst2Instance {
         }
     }
 }
+
+#[cfg(all(test, feature = "vst2"))]
+mod tests {
+    use super::*;
+    use tutti_plugin::server::PluginTail;
+
+    /// Every `TUTTI_VST2_PROBE_*` key the reference plugin reads at
+    /// construction, so one test's configuration cannot leak into the next.
+    /// Listed rather than derived: the probe owns the set, and a key added
+    /// there without being added here would leak silently.
+    const PROBE_ENV_KEYS: &[&str] = &[
+        "TUTTI_VST2_PROBE_EDITOR",
+        "TUTTI_VST2_PROBE_EFFECT_NAME",
+        "TUTTI_VST2_PROBE_INPUTS",
+        "TUTTI_VST2_PROBE_IS_SYNTH",
+        "TUTTI_VST2_PROBE_LATENCY",
+        "TUTTI_VST2_PROBE_MIDI_INPUTS",
+        "TUTTI_VST2_PROBE_MIDI_OUTPUTS",
+        "TUTTI_VST2_PROBE_NO_CAN_REPLACING",
+        "TUTTI_VST2_PROBE_NO_CHUNKS",
+        "TUTTI_VST2_PROBE_OUTPUTS",
+        "TUTTI_VST2_PROBE_PARAMS",
+        "TUTTI_VST2_PROBE_PROGRAMS",
+        "TUTTI_VST2_PROBE_SERVICED_PARAMS",
+        "TUTTI_VST2_PROBE_SERVICED_PROGRAMS",
+        "TUTTI_VST2_PROBE_TAIL_SIZE",
+    ];
+
+    fn clear_probe_env() {
+        for key in PROBE_ENV_KEYS {
+            // SAFETY: every caller holds the plugin-load lock, so no other test
+            // thread is reading or writing the environment concurrently.
+            unsafe { std::env::remove_var(key) };
+        }
+    }
+
+    /// Load the reference plugin with `env` applied at construction.
+    ///
+    /// The probe reads its metadata once, while the `AEffect` is being built,
+    /// so the variables must be set before `load` and are cleared immediately
+    /// after — leaving them set would configure whichever test ran next.
+    ///
+    /// Returns the guard alongside the instance: VST2 loading is serialized on
+    /// a global in the `vst` crate, and dropping the guard early would let a
+    /// second load race this one.
+    fn load_probe(env: &[(&str, &str)]) -> (Vst2Instance, std::sync::MutexGuard<'static, ()>) {
+        let lock = crate::test_utils::plugin_load_lock();
+        clear_probe_env();
+        for (k, v) in env {
+            // SAFETY: as in `clear_probe_env` — the lock is held.
+            unsafe { std::env::set_var(k, v) };
+        }
+        let path = crate::test_utils::vst2_probe_path();
+        let loaded = Vst2Instance::load(Path::new(path), 48_000.0, 512);
+        clear_probe_env();
+        (
+            loaded.unwrap_or_else(|e| panic!("loading the VST2 probe at {path} failed: {e:?}")),
+            lock,
+        )
+    }
+
+    /// The declared channel counts reach `LoadedPlugin` as one bus per side.
+    ///
+    /// The loader's own comment calls VST2 "single-bus", and this is what that
+    /// claim means downstream: a host sizing buffers reads one width per side.
+    /// Asserting the *width* as well as the bus count is what fails if
+    /// `single_bus` is ever handed a count where a layout was meant — the two
+    /// are both integers, so a swap compiles.
+    #[test]
+    fn declared_channel_counts_arrive_as_one_bus_per_side() {
+        let (p, _lock) = load_probe(&[
+            ("TUTTI_VST2_PROBE_INPUTS", "2"),
+            ("TUTTI_VST2_PROBE_OUTPUTS", "2"),
+        ]);
+        let loaded = p.loaded();
+
+        assert_eq!(loaded.inputs.len(), 1, "VST2 has exactly one input bus");
+        assert_eq!(loaded.outputs.len(), 1, "VST2 has exactly one output bus");
+        assert_eq!(loaded.inputs[0].count(), 2, "input width");
+        assert_eq!(loaded.outputs[0].count(), 2, "output width");
+    }
+
+    /// A width other than stereo survives the mapping.
+    ///
+    /// The stereo case above would pass against a loader that hard-coded 2, so
+    /// it cannot see a mapping that ignores what the plugin declared.
+    #[test]
+    fn a_non_stereo_width_is_carried_rather_than_assumed() {
+        let (p, _lock) = load_probe(&[
+            ("TUTTI_VST2_PROBE_INPUTS", "1"),
+            ("TUTTI_VST2_PROBE_OUTPUTS", "4"),
+        ]);
+        let loaded = p.loaded();
+
+        assert_eq!(loaded.inputs[0].count(), 1, "mono in");
+        assert_eq!(loaded.outputs[0].count(), 4, "quad out");
+    }
+
+    /// Both MIDI directions reach `Features` from the host's own resolution.
+    ///
+    /// Deliberately *not* asserted from the pin counts: `tutti-vst2-host`
+    /// resolves each direction as "the plugin's `can_do` answer, falling back
+    /// to pin counts only on `Maybe`", and this probe answers `Yes`. So a
+    /// `MIDI_OUTPUTS=0` build still reports `MIDI_OUT`, correctly — an explicit
+    /// yes outranks an inference. (An earlier draft of this test asserted the
+    /// opposite and failed; the resolution order is the reason, and it is
+    /// deliberate.)
+    ///
+    /// What this pins is the seam the loader owns: two independent host fields
+    /// reaching two independent bits. The `Maybe`-inference path underneath is
+    /// driven through `dlopen`-set switches, so it belongs to
+    /// `tutti-vst2-host`'s integration suite rather than here.
+    #[test]
+    fn both_midi_directions_reach_features() {
+        let (p, _lock) = load_probe(&[
+            ("TUTTI_VST2_PROBE_MIDI_INPUTS", "16"),
+            ("TUTTI_VST2_PROBE_MIDI_OUTPUTS", "16"),
+        ]);
+        let f = p.loaded().features;
+
+        assert!(f.contains(Features::MIDI_IN), "declared MIDI inputs");
+        assert!(f.contains(Features::MIDI_OUT), "declared MIDI outputs");
+    }
+
+    /// Transport is set unconditionally, editor only when the plugin has one.
+    ///
+    /// Paired deliberately: `TRANSPORT` is `insert`ed with no condition (every
+    /// VST2 gets `get_time_info`), while `EDITOR` is measured. Asserting both
+    /// against one plugin that has no editor is what catches the two being
+    /// wired to the same source.
+    #[test]
+    fn transport_is_unconditional_but_editor_is_measured() {
+        let (p, _lock) = load_probe(&[("TUTTI_VST2_PROBE_EDITOR", "0")]);
+        let f = p.loaded().features;
+
+        assert!(
+            f.contains(Features::TRANSPORT),
+            "every VST2 is handed a transport snapshot"
+        );
+        assert!(
+            !f.contains(Features::EDITOR),
+            "this probe declares no editor"
+        );
+    }
+
+    /// An editor-bearing probe sets the bit, so the assertion above is real.
+    #[test]
+    fn an_editor_bearing_plugin_reports_one() {
+        let (p, _lock) = load_probe(&[("TUTTI_VST2_PROBE_EDITOR", "1")]);
+        assert!(p.loaded().features.contains(Features::EDITOR));
+    }
+
+    /// Tail is `Unknown`, not `None`.
+    ///
+    /// The distinction is the loader's longest comment and it is audible: a
+    /// bounce reading `None` adds no decay tail, which truncates every VST2
+    /// reverb. The dispatch exists but is not re-exported, and VST2 encodes
+    /// tail inversely to every other format — so until that is untangled,
+    /// `Unknown` is the honest answer and this pins it against someone
+    /// "simplifying" it to `None`.
+    #[test]
+    fn tail_is_unknown_rather_than_none() {
+        let (p, _lock) = load_probe(&[("TUTTI_VST2_PROBE_TAIL_SIZE", "48000")]);
+        assert!(
+            matches!(p.loaded().tail, PluginTail::Unknown),
+            "VST2 tail is not plumbed; claiming None would truncate reverbs"
+        );
+    }
+
+    /// Speaker topology is empty for both sides.
+    ///
+    /// VST2 cannot be asked — the `VstSpeakerArrangement` struct is not in the
+    /// vendored bindings — so empty lists claim nothing rather than asserting
+    /// a placement the format never reported.
+    #[test]
+    fn no_speaker_topology_is_claimed() {
+        let (p, _lock) = load_probe(&[("TUTTI_VST2_PROBE_OUTPUTS", "6")]);
+        let loaded = p.loaded();
+
+        assert!(
+            loaded.input_topology.is_empty() && loaded.output_topology.is_empty(),
+            "VST2 reports no speaker placement, so neither side may claim one"
+        );
+    }
+
+    /// The descriptor carries the plugin's own name, not the file's.
+    #[test]
+    fn the_descriptor_reports_the_plugins_declared_name() {
+        let (p, _lock) = load_probe(&[("TUTTI_VST2_PROBE_EFFECT_NAME", "tutti-probe-named")]);
+        assert_eq!(p.descriptor().name, "tutti-probe-named");
+    }
+
+    /// A missing file fails at `Opening` rather than panicking.
+    ///
+    /// The error path has no probe involved, so it is the one case that would
+    /// still run if the reference cdylib were missing.
+    #[test]
+    fn a_missing_file_reports_a_load_failure() {
+        let _lock = crate::test_utils::plugin_load_lock();
+        // `match` rather than `expect_err`: the `Ok` type is not `Debug`.
+        match Vst2Instance::load(
+            Path::new("/nonexistent/tutti-not-a-plugin.so"),
+            48_000.0,
+            512,
+        ) {
+            Err(BridgeError::LoadFailed { .. }) => {}
+            Err(other) => panic!("expected LoadFailed, got {other:?}"),
+            Ok(_) => panic!("loading a path that does not exist must fail"),
+        }
+    }
+}

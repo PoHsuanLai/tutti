@@ -259,6 +259,33 @@ mod streaming {
     }
 }
 
+/// Convert a whole [`Rendered`](crate::Rendered) to `opts.target_rate`.
+///
+/// The streaming [`Resampler`] is the right shape for an encode, which pulls the
+/// graph a block at a time. This is for the two-pass path, which already holds
+/// the signal whole and must convert it *before* measuring — sample-rate
+/// conversion moves the true peak, so a gain measured at the render rate would
+/// miss its target once the file is written at another.
+// Not codec-gated: this converts buffers through `rubato`, an unconditional
+// dependency, and its caller `render_normalized_to_file` is ungated too. The
+// gate that used to be here made a no-codec build fail to compile rather than
+// merely fail to encode.
+pub(crate) fn resample_rendered(
+    rendered: &crate::Rendered,
+    opts: crate::config::Resample,
+) -> crate::Result<crate::Rendered> {
+    let channels = rendered.channels();
+    let mut rs = Resampler::new(channels, rendered.sample_rate, opts.target_rate, opts.chunk)?;
+    let mut out: Vec<Vec<f32>> = vec![Vec::new(); channels];
+    rs.push(&rendered.planes, &mut out)?;
+    rs.finish(&mut out)?;
+
+    Ok(crate::Rendered {
+        planes: out,
+        sample_rate: opts.target_rate,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -381,31 +408,4 @@ mod tests {
         let len = out[0].len();
         assert!(out.iter().all(|p| p.len() == len));
     }
-}
-
-/// Convert a whole [`Rendered`](crate::Rendered) to `opts.target_rate`.
-///
-/// The streaming [`Resampler`] is the right shape for an encode, which pulls the
-/// graph a block at a time. This is for the two-pass path, which already holds
-/// the signal whole and must convert it *before* measuring — sample-rate
-/// conversion moves the true peak, so a gain measured at the render rate would
-/// miss its target once the file is written at another.
-// Not codec-gated: this converts buffers through `rubato`, an unconditional
-// dependency, and its caller `render_normalized_to_file` is ungated too. The
-// gate that used to be here made a no-codec build fail to compile rather than
-// merely fail to encode.
-pub(crate) fn resample_rendered(
-    rendered: &crate::Rendered,
-    opts: crate::config::Resample,
-) -> crate::Result<crate::Rendered> {
-    let channels = rendered.channels();
-    let mut rs = Resampler::new(channels, rendered.sample_rate, opts.target_rate, opts.chunk)?;
-    let mut out: Vec<Vec<f32>> = vec![Vec::new(); channels];
-    rs.push(&rendered.planes, &mut out)?;
-    rs.finish(&mut out)?;
-
-    Ok(crate::Rendered {
-        planes: out,
-        sample_rate: opts.target_rate,
-    })
 }

@@ -93,9 +93,11 @@ fn render(stretch: f32, cents: f32, seek_at: Option<usize>) -> Vec<f32> {
     let wave = tone(440.0, FRAMES * 4);
 
     let source = MemorySource::with_transport(wave, transport.clone(), Beat::new(0.0), None);
-    let mut play = Playback::default();
-    play.stretch = StretchFactor::new(stretch);
-    play.pitch = Cents::new(cents);
+    let play = Playback {
+        stretch: StretchFactor::new(stretch),
+        pitch: Cents::new(cents),
+        ..Default::default()
+    };
 
     handle
         .send(VoiceCommand::AddVoice {

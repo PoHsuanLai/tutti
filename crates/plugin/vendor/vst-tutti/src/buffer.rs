@@ -64,7 +64,7 @@ impl<'a, T: 'a + Float> AudioBuffer<'a, T> {
     /// The raw outputs to pass to processReplacing
     #[inline]
     pub(crate) fn raw_outputs(&mut self) -> &mut [*mut T] {
-        &mut self.outputs
+        self.outputs
     }
 
     /// Split this buffer into separate inputs and outputs.
@@ -322,7 +322,7 @@ pub trait WriteIntoPlaceholder {
     fn write_into(&self, out: &mut PlaceholderEvent);
 }
 
-impl<'a, T: WriteIntoPlaceholder> WriteIntoPlaceholder for &'a T {
+impl<T: WriteIntoPlaceholder> WriteIntoPlaceholder for &T {
     fn write_into(&self, out: &mut PlaceholderEvent) {
         (*self).write_into(out);
     }
@@ -361,7 +361,10 @@ impl<'a> WriteIntoPlaceholder for SysExEvent<'a> {
             _flags: 0,
             data_size: self.payload.len() as i32,
             _reserved1: 0,
-            system_data: self.payload.as_ptr() as *const u8 as *mut u8,
+            // `as_ptr()` is already `*const u8`; only the const→mut step is
+            // real. VST 2.4 declares `system_data` mutable although the host
+            // must not write it.
+            system_data: self.payload.as_ptr() as *mut u8,
             _reserved2: 0,
         };
     }
@@ -522,7 +525,7 @@ mod tests {
         let mut out1 = vec![0.0; SIZE];
         let mut out2 = out1.clone();
 
-        let inputs = vec![in1.as_ptr(), in2.as_ptr()];
+        let inputs = [in1.as_ptr(), in2.as_ptr()];
         let mut outputs = vec![out1.as_mut_ptr(), out2.as_mut_ptr()];
         let mut buffer =
             unsafe { AudioBuffer::from_raw(2, 2, inputs.as_ptr(), outputs.as_mut_ptr(), SIZE) };
@@ -550,7 +553,7 @@ mod tests {
         let mut out2 = vec![4.0; SIZE];
         let mut out3 = vec![5.0; SIZE];
 
-        let inputs = vec![in1.as_ptr(), in2.as_ptr()];
+        let inputs = [in1.as_ptr(), in2.as_ptr()];
         let mut outputs = vec![out1.as_mut_ptr(), out2.as_mut_ptr(), out3.as_mut_ptr()];
         let mut buffer =
             unsafe { AudioBuffer::from_raw(2, 3, inputs.as_ptr(), outputs.as_mut_ptr(), SIZE) };
@@ -584,7 +587,7 @@ mod tests {
         let mut out1 = vec![4.0; SIZE];
         let mut out2 = vec![5.0; SIZE];
 
-        let inputs = vec![in1.as_ptr(), in2.as_ptr(), in3.as_ptr()];
+        let inputs = [in1.as_ptr(), in2.as_ptr(), in3.as_ptr()];
         let mut outputs = vec![out1.as_mut_ptr(), out2.as_mut_ptr()];
         let mut buffer =
             unsafe { AudioBuffer::from_raw(3, 2, inputs.as_ptr(), outputs.as_mut_ptr(), SIZE) };
@@ -617,7 +620,7 @@ mod tests {
         let mut out1 = vec![0.0; SIZE];
         let mut out2 = out1.clone();
 
-        let inputs = vec![in1.as_ptr(), in2.as_ptr()];
+        let inputs = [in1.as_ptr(), in2.as_ptr()];
         let mut outputs = vec![out1.as_mut_ptr(), out2.as_mut_ptr()];
         let mut buffer =
             unsafe { AudioBuffer::from_raw(2, 2, inputs.as_ptr(), outputs.as_mut_ptr(), SIZE) };

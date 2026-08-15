@@ -45,6 +45,9 @@ impl YinConfig {
         let sample_rate = sample_rate.into();
         let (min_freq, max_freq) = (min_freq.into(), max_freq.into());
 
+        // `!(x > 0.0)` rather than `x <= 0.0` — see `geometry.rs`: the negation
+        // is what rejects NaN, which `<=` would silently admit.
+        #[allow(clippy::neg_cmp_op_on_partial_ord)]
         if !(sample_rate.get() > 0.0) {
             return Err(AnalysisError::NonPositiveSampleRate);
         }

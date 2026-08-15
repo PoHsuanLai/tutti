@@ -327,8 +327,14 @@ mod tests {
 
         // Drain the original completely.
         let mut out = buf16();
-        assert_eq!(snapshot.poll_range(unit, Beat(0.0), Beat(10.0), &mut out), 2);
-        assert_eq!(snapshot.poll_range(unit, Beat(0.0), Beat(10.0), &mut out), 0);
+        assert_eq!(
+            snapshot.poll_range(unit, Beat(0.0), Beat(10.0), &mut out),
+            2
+        );
+        assert_eq!(
+            snapshot.poll_range(unit, Beat(0.0), Beat(10.0), &mut out),
+            0
+        );
 
         // The clone's cursor is its own, so it still sees both events.
         let mut out2 = buf16();

@@ -81,7 +81,7 @@ pub type HostCallbackProc = extern "C" fn(
 ) -> isize;
 
 /// Dispatcher function used to process opcodes. Called by host.
-pub type DispatcherProc = extern "C" fn(
+pub type DispatcherProc = unsafe extern "C" fn(
     effect: *mut AEffect,
     opcode: i32,
     index: i32,
@@ -403,7 +403,7 @@ pub struct MidiKeyName {
 #[repr(C)]
 pub struct ChannelProperties {
     /// Channel name.
-    pub name: [u8; MAX_LABEL as usize],
+    pub name: [u8; MAX_LABEL],
 
     /// Flags found in `ChannelFlags`.
     pub flags: i32,
@@ -412,7 +412,7 @@ pub struct ChannelProperties {
     pub arrangement_type: SpeakerArrangementType,
 
     /// Name of channel (recommended: 6 characters + delimiter).
-    pub short_name: [u8; MAX_SHORT_LABEL as usize],
+    pub short_name: [u8; MAX_SHORT_LABEL],
 
     /// Reserved for future use.
     pub future: [u8; 48],
@@ -535,12 +535,12 @@ impl Supported {
     }
 }
 
-impl Into<isize> for Supported {
+impl From<Supported> for isize {
     /// Convert to integer ordinal for interop with VST api.
-    fn into(self) -> isize {
+    fn from(val: Supported) -> Self {
         use self::Supported::*;
 
-        match self {
+        match val {
             Yes => 1,
             Maybe => 0,
             No => -1,
@@ -946,8 +946,10 @@ pub struct TimeInfo {
 #[repr(i32)]
 #[derive(Copy, Clone, Debug)]
 /// SMPTE Frame Rates.
+#[derive(Default)]
 pub enum SmpteFrameRate {
     /// 24 fps
+    #[default]
     Smpte24fps = 0,
     /// 25 fps
     Smpte25fps = 1,
@@ -974,11 +976,6 @@ pub enum SmpteFrameRate {
     Smpte599fps = 12,
     /// HDTV: 60 fps
     Smpte60fps = 13,
-}
-impl Default for SmpteFrameRate {
-    fn default() -> Self {
-        SmpteFrameRate::Smpte24fps
-    }
 }
 
 bitflags! {

@@ -176,7 +176,7 @@ pub fn render_normalized_to_file(
             // is `resample.target_rate` *or* `render.sample_rate`, so clearing
             // one without setting the other writes converted samples under the
             // pre-conversion rate: right audio, wrong speed.
-            let mut cfg = config.clone();
+            let mut cfg = *config;
             cfg.resample = None;
             cfg.render.sample_rate = converted.sample_rate;
             (converted, std::borrow::Cow::Owned(cfg))

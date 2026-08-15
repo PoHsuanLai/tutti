@@ -123,9 +123,9 @@ fn main() {
     config.buffer_size = BufferSize::Fixed(256);
 
     match supported_config.sample_format() {
-        cpal::SampleFormat::F32 => run::<f32>(&device, &config.into()).unwrap(),
-        cpal::SampleFormat::I16 => run::<i16>(&device, &config.into()).unwrap(),
-        cpal::SampleFormat::U16 => run::<u16>(&device, &config.into()).unwrap(),
+        cpal::SampleFormat::F32 => run::<f32>(&device, &config).unwrap(),
+        cpal::SampleFormat::I16 => run::<i16>(&device, &config).unwrap(),
+        cpal::SampleFormat::U16 => run::<u16>(&device, &config).unwrap(),
         _ => panic!("Unsupported format"),
     }
 }
@@ -462,12 +462,12 @@ impl eframe::App for State {
 
             #[allow(clippy::needless_range_loop)]
             for i in 0..KEYS.len() {
-                if ctx.input(|c| !c.key_down(KEYS[i])) {
-                    if let Some(id) = self.id[i] {
-                        // Start fading out existing note.
-                        self.sequencer.edit_relative(id, 0.2, 0.2);
-                        self.id[i] = None;
-                    }
+                if ctx.input(|c| !c.key_down(KEYS[i]))
+                    && let Some(id) = self.id[i]
+                {
+                    // Start fading out existing note.
+                    self.sequencer.edit_relative(id, 0.2, 0.2);
+                    self.id[i] = None;
                 }
                 if ctx.input(|c| c.key_down(KEYS[i])) && self.id[i].is_none() {
                     let pitch_hz = midi_hz(40.0 + i as f64 + self.octave * 12.0);

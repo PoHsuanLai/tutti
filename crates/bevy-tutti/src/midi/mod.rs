@@ -144,6 +144,12 @@ pub use inbound::route::{
 pub use inbound::routing_table::MidiRoutingRes;
 
 pub use hardware::clock_out::{pump_clock_out_system, ClockMasterRes, ClockOutPlugin};
+#[cfg(feature = "midi-hardware")]
+pub use hardware::device::{
+    midi_device_connect_system, midi_device_poll_system, ConnectMidiDevice, ConnectMidiOutput,
+    DisconnectMidiDevice, DisconnectMidiOutput, MidiDeviceEvent, MidiDevicePlugin, MidiDeviceState,
+    MidiDirection, MidiIoRes,
+};
 #[cfg(all(target_os = "macos", feature = "midi-hardware"))]
 pub use hardware::hardware_out::UmpOutRes;
 pub use hardware::hardware_out::{
@@ -159,12 +165,6 @@ pub use hardware::negotiation::{
 };
 pub use hardware::track_out::{
     midi_out_send_system, pump_midi_out_system, MidiOutPlugin, MidiOutRes, SendMidiOut,
-};
-#[cfg(feature = "midi-hardware")]
-pub use hardware::device::{
-    midi_device_connect_system, midi_device_poll_system, ConnectMidiDevice, ConnectMidiOutput,
-    DisconnectMidiDevice, DisconnectMidiOutput, MidiDeviceEvent, MidiDevicePlugin, MidiDeviceState,
-    MidiDirection, MidiIoRes,
 };
 
 pub use file::{

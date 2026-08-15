@@ -1,7 +1,6 @@
-use std::mem::size_of;
 use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 
-const USIZE_BITS: usize = size_of::<usize>() * 8;
+const USIZE_BITS: usize = usize::BITS as usize;
 
 fn word_and_bit(index: usize) -> (usize, usize) {
     (index / USIZE_BITS, 1usize << (index & (USIZE_BITS - 1)))
@@ -19,7 +18,7 @@ pub struct ParameterTransfer {
 impl ParameterTransfer {
     /// Create a new parameter set with `parameter_count` parameters.
     pub fn new(parameter_count: usize) -> Self {
-        let bit_words = (parameter_count + USIZE_BITS - 1) / USIZE_BITS;
+        let bit_words = parameter_count.div_ceil(USIZE_BITS);
         ParameterTransfer {
             values: (0..parameter_count).map(|_| AtomicU32::new(0)).collect(),
             changed: (0..bit_words).map(|_| AtomicUsize::new(0)).collect(),

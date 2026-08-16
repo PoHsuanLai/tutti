@@ -26,7 +26,7 @@ use crate::host::{HostLink, HostState};
 use crate::midi::MidiIo;
 use crate::parameters::SendParams;
 use crate::transport_cell::TransportCell;
-use crate::types::{ChannelLayout, PluginInfo, Samples, Vst2Category};
+use crate::types::{ChannelLayout, PluginInfo, PluginTail, Samples, Vst2Category};
 
 /// Map the `vst` crate's `Category` to the shared [`Vst2Category`] mirror.
 /// A free fn rather than a `From` impl: both `Category` (from `vst`) and
@@ -41,6 +41,34 @@ use crate::types::{ChannelLayout, PluginInfo, Samples, Vst2Category};
 /// This function is never reached without a plugin having answered, so it never
 /// produces [`Vst2Category::Unasked`] — that variant belongs to paths that did
 /// not query at all.
+/// Decode `effGetTailSize` into the shared [`PluginTail`] vocabulary.
+///
+/// **VST2 is the one format whose zero does not mean "no tail".** The 2.4 spec
+/// reads the wire value as:
+///
+/// | raw | meaning                              | decoded            |
+/// |-----|--------------------------------------|--------------------|
+/// | `0` | no tail *information*; host decides  | `Unknown`          |
+/// | `1` | no tail at all                       | `None`             |
+/// | `n` | `n` samples of ring-out              | `Finite(n)`        |
+///
+/// which is why this cannot go through [`PluginTail::from_samples`]: that maps
+/// `0 => None` for CLAP and VST3, so a VST2 answer fed through it reports
+/// "unknown" as "silent". A bounce sizing its render from that adds no decay
+/// and truncates the reverb — the failure this decode exists to prevent.
+///
+/// A negative is not a length. VST2 gives no meaning to one, so it is read as
+/// "the plugin said nothing intelligible" rather than clamped to zero, which
+/// would be indistinguishable from a declared silence.
+fn decode_tail(raw: isize) -> PluginTail {
+    match raw {
+        0 => PluginTail::Unknown,
+        1 => PluginTail::None,
+        n if n > 1 => PluginTail::Finite(Samples(n as usize)),
+        _ => PluginTail::Unknown,
+    }
+}
+
 fn map_category(c: Category, raw: i32) -> Vst2Category {
     match c {
         Category::Unknown => Vst2Category::Unrecognized(raw),
@@ -248,6 +276,10 @@ impl Vst2Instance {
             // exactly the plugins that have latency, and PDC silently
             // compensated nothing for them.
             latency_samples: Samples(instance.read_initial_delay().max(0) as usize),
+            // Read live for the same reason as the latency above, and decoded
+            // here rather than through `PluginTail::from_samples` because VST2
+            // inverts the convention — see `decode_tail`.
+            tail: decode_tail(instance.read_tail_size()),
             supports_f64: info.f64_precision,
         };
 

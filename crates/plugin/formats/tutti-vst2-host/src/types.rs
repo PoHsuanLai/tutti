@@ -7,7 +7,7 @@
 pub use tutti_plugin_types::Samples;
 
 pub use tutti_plugin_types::{
-    ChannelLayout, EditorSize, MidiEvent, TimeSignature, TransportInfo, WindowHandle,
+    ChannelLayout, EditorSize, MidiEvent, PluginTail, TimeSignature, TransportInfo, WindowHandle,
 };
 
 /// Plugin metadata gathered at load time.
@@ -49,6 +49,15 @@ pub struct PluginInfo {
     /// Load-bearing, not informational: `process_f64` reads it to choose
     /// between `processReplacingF64` and the narrowing f32 fallback.
     pub supports_f64: bool,
+    /// Ring-out after input stops, decoded from `effGetTailSize`.
+    ///
+    /// **VST2 encodes this inversely to every other format**, which is why the
+    /// decode lives here rather than in [`PluginTail::from_samples`]: on the
+    /// wire `0` means "no tail *information*, host decides" and `1` means "no
+    /// tail at all". `from_samples` maps `0 => None`, so feeding it a VST2
+    /// answer reads "unknown" as "silent" — and a bounce sizing its render from
+    /// that adds no decay, truncating every reverb.
+    pub tail: PluginTail,
 }
 
 /// The plugin's declared VST2 category. Canonical definition lives in

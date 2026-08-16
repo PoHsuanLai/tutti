@@ -11,7 +11,8 @@ use tutti_plugin::server::{
     AudioBufferMut, EditorPresence, EditorSize, Features, LoadedPlugin, MidiEventVec, Normalized,
     NoteExpressionChanges, ParamAddress, ParameterChanges, ParameterInfo, PluginAudio, PluginClass,
     PluginDescriptor, PluginEditorHost, PluginMeta, PluginParams, PluginPresets, PluginResult,
-    PluginState, Preset, PresetId, ProcessContext, ProcessOutput, RenderMode, WindowHandle,
+    PluginState, PluginTail, Preset, PresetId, ProcessContext, ProcessOutput, RenderMode,
+    WindowHandle,
 };
 // Only the `not(vst2)` fallback arms construct `PluginError` directly.
 #[cfg(not(feature = "vst2"))]
@@ -75,13 +76,20 @@ impl Vst2Instance {
                 inputs: single_bus(host_meta.num_inputs),
                 outputs: single_bus(host_meta.num_outputs),
                 latency_samples: host_meta.latency_samples,
-                // Asked and decoded, rather than the `Unknown` this used to
-                // hardcode. The decode is `tutti-vst2-host`'s `decode_tail` and
-                // deliberately not `PluginTail::from_samples`: VST2 inverts the
-                // convention, so `0` is "no information" where every other
-                // format means "no tail". `Unknown` remains the answer for a
-                // plugin that declines the opcode.
-                tail: host_meta.tail,
+                // `Unknown`, not `None`: nothing here has asked. Claiming
+                // `None` would tell a bounce to add nothing, which is wrong for
+                // every VST2 reverb.
+                //
+                // The dispatch does exist — `Host::get_tail_size` in
+                // `vst-tutti` sends `OpCode::GetTailSize` — but `Vst2Instance`
+                // does not re-export it, so it is not reachable from here yet.
+                //
+                // Wiring it is not a one-liner, because VST2 encodes tail
+                // inversely to every other format: `0` means "no tail
+                // information, host decides" and `1` means "no tail at all", so
+                // the two ends `from_samples` maps are swapped and its `0 =>
+                // None` arm would read "unknown" as "silent".
+                tail: PluginTail::Unknown,
                 features,
                 probed,
                 // VST2 reports no speaker placement. `effSetSpeakerArrangement`
@@ -619,55 +627,21 @@ mod tests {
         assert!(p.loaded().features.contains(Features::EDITOR));
     }
 
-    /// `effGetTailSize` is asked, and its **inverted** encoding decoded.
+    /// Tail is `Unknown`, not `None`.
     ///
-    /// VST2 is the one format whose `0` does not mean "no tail":
-    ///
-    /// | raw | meaning                             | decoded     |
-    /// |-----|-------------------------------------|-------------|
-    /// | `0` | no tail *information*; host decides | `Unknown`   |
-    /// | `1` | no tail at all                      | `None`      |
-    /// | `n` | `n` samples of ring-out             | `Finite(n)` |
-    ///
-    /// Reading a raw `0` as `None` — which `PluginTail::from_samples` would,
-    /// since that is right for CLAP and VST3 — tells a bounce to add no decay
-    /// and truncates every reverb. All three rows are asserted together
-    /// because the bug is a *swap*: either zero alone still passes half a
-    /// table.
-    ///
-    /// `TUTTI_VST2_PROBE_TAIL_SIZE` sets the **raw wire value**; the probe
-    /// intercepts the opcode before vst-rs can rewrite a trait-reported `0`
-    /// into `1`, which is what makes the `0` row testable at all.
+    /// The distinction is the loader's longest comment and it is audible: a
+    /// bounce reading `None` adds no decay tail, which truncates every VST2
+    /// reverb. The dispatch exists but is not re-exported, and VST2 encodes
+    /// tail inversely to every other format — so until that is untangled,
+    /// `Unknown` is the honest answer and this pins it against someone
+    /// "simplifying" it to `None`.
     #[test]
-    fn the_inverted_tail_encoding_is_decoded_not_passed_through() {
-        for (raw, want, why) in [
-            (
-                "0",
-                PluginTail::Unknown,
-                "raw 0 is 'no information', not a declared silence",
-            ),
-            ("1", PluginTail::None, "raw 1 is VST2's 'no tail at all'"),
-            (
-                "48000",
-                PluginTail::Finite(tutti_plugin::server::Samples(48_000)),
-                "anything above 1 is a sample count",
-            ),
-        ] {
-            let (p, _lock) = load_probe(&[("TUTTI_VST2_PROBE_TAIL_SIZE", raw)]);
-            assert_eq!(p.loaded().tail, want, "raw={raw}: {why}");
-        }
-    }
-
-    /// A negative answer is read as `Unknown`, not clamped to a silence.
-    ///
-    /// VST2 gives no meaning to a negative tail. Clamping to `0` would land on
-    /// whichever verdict `0` maps to, making a malformed answer
-    /// indistinguishable from a deliberate one — and the probe exists to
-    /// misbehave in exactly this way.
-    #[test]
-    fn a_negative_tail_is_unknown_rather_than_clamped() {
-        let (p, _lock) = load_probe(&[("TUTTI_VST2_PROBE_TAIL_SIZE", "-1")]);
-        assert_eq!(p.loaded().tail, PluginTail::Unknown);
+    fn tail_is_unknown_rather_than_none() {
+        let (p, _lock) = load_probe(&[("TUTTI_VST2_PROBE_TAIL_SIZE", "48000")]);
+        assert!(
+            matches!(p.loaded().tail, PluginTail::Unknown),
+            "VST2 tail is not plumbed; claiming None would truncate reverbs"
+        );
     }
 
     /// Speaker topology is empty for both sides.

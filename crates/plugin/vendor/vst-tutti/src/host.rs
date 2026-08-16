@@ -682,6 +682,22 @@ impl PluginInstance {
         unsafe { (*self.params.get_effect()).initialDelay }
     }
 
+    /// Ask the plugin for its ring-out, via `effGetTailSize`.
+    ///
+    /// **The raw answer, undecoded**, because VST 2.4 inverts the convention
+    /// every other format uses: `0` means "no tail *information*, host
+    /// decides", `1` means "no tail at all", and anything larger is a sample
+    /// count. Returning the wire value keeps that decision with the caller —
+    /// mapping it here would have to pick a vocabulary, and the two candidate
+    /// zeros mean opposite things.
+    ///
+    /// Read live rather than from the `get_info` snapshot, for the same reason
+    /// [`read_initial_delay`](Self::read_initial_delay) is: a plugin may not
+    /// know its tail until it knows its sample rate.
+    pub fn read_tail_size(&self) -> isize {
+        self.dispatch(plugin::OpCode::GetTailSize, 0, 0, std::ptr::null_mut(), 0.0)
+    }
+
     /// Ask the plugin how many MIDI channels it uses, via
     /// `effGetNumMidiInputChannels` / `effGetNumMidiOutputChannels`.
     ///
@@ -1520,7 +1536,11 @@ impl PluginParameters for PluginParametersInstance {
         let effect = self.get_effect();
         // SAFETY: `get_effect` returns the live `AEffect` this instance wraps.
         let get = unsafe { (*effect).getParameter }?;
-        Some(get(effect, index))
+        // SAFETY: `get` came out of that same `AEffect`, so it is the effect's
+        // own accessor being handed the effect it belongs to. `index` is the
+        // caller's to bound — VST 2.4 gives the callee no way to report a bad
+        // one, which is the obligation `GetParameterProc` being `unsafe` states.
+        Some(unsafe { get(effect, index) })
     }
 
     /// `false` when the plugin left `AEffect::setParameter` null — the value
@@ -1531,7 +1551,9 @@ impl PluginParameters for PluginParametersInstance {
         let Some(set) = (unsafe { (*effect).setParameter }) else {
             return false;
         };
-        set(effect, index, value);
+        // SAFETY: as in `get_parameter` — the setter belongs to this effect,
+        // and `index` is the caller's obligation.
+        unsafe { set(effect, index, value) };
         true
     }
 

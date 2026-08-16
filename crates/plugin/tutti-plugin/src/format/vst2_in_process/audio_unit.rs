@@ -452,15 +452,14 @@ impl AudioUnit for InProcessVst2Client {
         )
     }
 
-    /// VST2 has no tail query the vendored bindings surface as a host call, so
-    /// this node has nothing to report.
+    /// The tail `tutti-vst2-host` decoded at load, from `effGetTailSize`.
     ///
-    /// Stated rather than inherited from the trait default: this type shares
-    /// `PLUGIN_CLIENT_ID` with the out-of-process client, and a reader comparing
-    /// the two should see that the silence here is the format's, not an
-    /// oversight.
+    /// Read off the metadata rather than dispatched here: this runs on the
+    /// audio thread, and the figure cannot change without a reload. `Unknown`
+    /// stays the answer for a plugin that declines the opcode — VST2's raw `0`
+    /// means "no information", not "no tail".
     fn tail(&mut self) -> tutti_plugin_types::PluginTail {
-        tutti_plugin_types::PluginTail::Unknown
+        self.metadata.tail
     }
 
     fn footprint(&self) -> usize {
@@ -591,15 +590,14 @@ impl AudioUnit<F64> for InProcessVst2Client {
         )
     }
 
-    /// VST2 has no tail query the vendored bindings surface as a host call, so
-    /// this node has nothing to report.
+    /// The tail `tutti-vst2-host` decoded at load, from `effGetTailSize`.
     ///
-    /// Stated rather than inherited from the trait default: this type shares
-    /// `PLUGIN_CLIENT_ID` with the out-of-process client, and a reader comparing
-    /// the two should see that the silence here is the format's, not an
-    /// oversight.
+    /// Read off the metadata rather than dispatched here: this runs on the
+    /// audio thread, and the figure cannot change without a reload. `Unknown`
+    /// stays the answer for a plugin that declines the opcode — VST2's raw `0`
+    /// means "no information", not "no tail".
     fn tail(&mut self) -> tutti_plugin_types::PluginTail {
-        tutti_plugin_types::PluginTail::Unknown
+        self.metadata.tail
     }
 
     fn footprint(&self) -> usize {

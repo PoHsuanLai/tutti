@@ -50,6 +50,7 @@ const PROBE_ENV_KEYS: &[&str] = &[
     "TUTTI_VST2_PROBE_OUTPUTS",
     "TUTTI_VST2_PROBE_MIDI_INPUTS",
     "TUTTI_VST2_PROBE_MIDI_OUTPUTS",
+    "TUTTI_VST2_PROBE_TAIL_SIZE",
 ];
 
 fn clear_probe_env() {
@@ -389,4 +390,45 @@ fn the_facade_can_unroute_midi_out() {
 
     drop(plugin);
     let _ = std::fs::remove_file(&staged);
+}
+
+/// The in-process node reports the tail the host decoded, not a blanket
+/// `Unknown`.
+///
+/// Both `AudioUnit` impls on this type (f32 and f64) used to hard-code
+/// `Unknown` with a comment claiming VST2 has no tail query. It has one —
+/// `effGetTailSize` — and `tutti-vst2-host` now asks it at load. This is the
+/// audio-thread-side consumer of that answer, so it gets its own coverage: the
+/// out-of-process loader's tests cannot see this code path at all.
+///
+/// The raw `1` case is the one worth pinning. VST2 inverts the convention every
+/// other format uses, so a plugin declaring "no tail at all" sends `1`, and a
+/// node reporting that as `Unknown` makes PDC treat a genuinely dry plugin as
+/// an unmeasured one.
+#[test]
+fn the_node_reports_the_decoded_tail_rather_than_unknown() {
+    use tutti_core::{AudioUnit, F32};
+    use tutti_plugin_types::{PluginTail, Samples};
+
+    for (raw, want) in [
+        ("0", PluginTail::Unknown),
+        ("1", PluginTail::None),
+        ("48000", PluginTail::Finite(Samples(48_000))),
+    ] {
+        let _lock = lock_probe();
+        let path: PathBuf = probe_path::probe_path().clone();
+        clear_probe_env();
+        // SAFETY: the probe lock is held, so no other test thread is touching
+        // the environment.
+        unsafe { std::env::set_var("TUTTI_VST2_PROBE_TAIL_SIZE", raw) };
+        let (mut unit, _handle) = tutti_plugin::in_process_vst2_client(&path, SAMPLE_RATE)
+            .unwrap_or_else(|e| panic!("in-process VST2 load failed: {e:?}"));
+        clear_probe_env();
+
+        assert_eq!(
+            AudioUnit::<F32>::tail(&mut unit),
+            want,
+            "raw tail {raw} must decode to {want:?}"
+        );
+    }
 }

@@ -968,7 +968,11 @@ impl HostCallback {
         let callback = self
             .callback
             .unwrap_or_else(|| panic!("Host not yet initialized."));
-        callback(effect, opcode.into(), index, value, ptr, opt)
+        // SAFETY: `callback` is the `audioMaster` the host handed this plugin
+        // at load, and `effect` is the plugin's own `AEffect`. `ptr`/`value`
+        // must suit `opcode` — the obligation `HostCallbackProc` being `unsafe`
+        // now states rather than leaving to each caller to know.
+        unsafe { callback(effect, opcode.into(), index, value, ptr, opt) }
     }
 
     /// Check whether the plugin has been initialized.

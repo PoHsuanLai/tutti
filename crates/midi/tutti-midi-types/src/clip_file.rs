@@ -168,7 +168,7 @@ fn write_clip(ticks_per_quarter: u16, header: Option<ClipHeader>, events: &[Clip
 ///
 /// ```
 /// # use tutti_midi_types::{write_clip_file_from_beats, read_clip_file, MidiEvent};
-/// # use tutti_midi_types::tutti_types::{Beat, MidiChannel, MidiGroup};
+/// # use tutti_midi_types::{Beat, MidiChannel, MidiGroup};
 /// let bytes = write_clip_file_from_beats(96, [
 ///     (Beat(0.0), MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000)),
 ///     (Beat(2.0), MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0)),

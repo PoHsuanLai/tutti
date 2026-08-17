@@ -22,7 +22,7 @@
 
 use std::sync::Arc;
 
-use tutti_midi_types::tutti_types::RtPublish;
+use tutti_midi_types::RtPublish;
 
 use tutti_core::{AudioThreadCell, RtEventBuf};
 use tutti_midi_types::ump::MidiEvent;
@@ -424,7 +424,7 @@ mod tests {
     use tutti_midi_types::midi2::channel_voice2::ChannelVoice2;
     use tutti_midi_types::midi2::UmpMessage;
     use tutti_midi_types::mpe::{MpeMode, MpeZoneConfig};
-    use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
+    use tutti_midi_types::{MidiChannel, MidiGroup};
     use tutti_midi_types::{MidiRoutingTable, MidiUnitId};
 
     /// A one-shot [`MidiIn`] that returns a fixed event list on its first

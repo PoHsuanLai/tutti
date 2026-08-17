@@ -11,6 +11,9 @@ edition = "2021"
 description = "Bevy plugin for Tutti - Minimal Bevy integration for real-time audio"
 license = "MIT OR Apache-2.0"
 
+[lints]
+workspace = true
+
 [dependencies]
 # Minimal Bevy (just ECS + App, no rendering)
 bevy_app.workspace = true

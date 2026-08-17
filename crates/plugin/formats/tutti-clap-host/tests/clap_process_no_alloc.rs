@@ -58,7 +58,7 @@ const MAX_FRAMES: u32 = 512;
 // convention.
 use tutti_clap_test_plugin::rt_probe::status;
 use tutti_clap_test_plugin::{StatusMode, WideLayout};
-use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
+use tutti_midi_types::{MidiChannel, MidiGroup};
 
 /// The plugin image, opened once and **never closed**.
 ///

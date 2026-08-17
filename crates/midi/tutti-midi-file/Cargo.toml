@@ -7,6 +7,9 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/PoHsuanLai/Tutti"
 readme = "README.md"
 
+[lints]
+workspace = true
+
 [dependencies]
 thiserror = "2"
 tracing = "0.1"

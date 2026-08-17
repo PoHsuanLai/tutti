@@ -8,6 +8,9 @@ repository = "https://github.com/PoHsuanLai/Tutti"
 keywords = ["audio", "modulation", "lfo"]
 categories = ["multimedia::audio"]
 
+[lints]
+workspace = true
+
 [features]
 # The PURE FLOOR — the `Modulator` source trait, `Lfo`/combinators, and the
 # `shape`/`fold` math — needs no features at all.

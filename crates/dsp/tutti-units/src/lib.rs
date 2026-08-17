@@ -96,9 +96,9 @@
 mod node_id;
 
 pub use tutti_core::{
-    params, Amplitude, ArcDegrees, Azimuth, Bpm, Cents, CompressionRatio, Db, Depth, Drive,
-    Elevation, Feedback, Hz, Mix, Param, Resonance, SampleRate, Seconds, Semitones, Spread,
-    StereoWidth, Unit, Q,
+    Amplitude, ArcDegrees, Azimuth, Bpm, Cents, CompressionRatio, Db, Depth, Drive, Elevation,
+    Feedback, Hz, Mix, Param, Resonance, SampleRate, Seconds, Semitones, Spread, StereoWidth, Unit,
+    Q,
 };
 
 // The boundary this crate holds: pure DSP unit types plus the `set(UnitParam)`

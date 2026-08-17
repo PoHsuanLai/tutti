@@ -218,7 +218,7 @@ mod tests {
     use super::*;
     use atomic_float::AtomicF64;
     use std::sync::atomic::AtomicBool;
-    use tutti_core::params::Bpm;
+    use tutti_core::Bpm;
 
     struct TestTransport {
         beat: AtomicF64,

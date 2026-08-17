@@ -26,10 +26,7 @@ use std::f64::consts::TAU;
 use std::fmt::Write as _;
 use std::path::Path;
 
-use tutti_analysis::{
-    loudness::{measure_loudness, LoudnessConfig},
-    yin, ChannelLayout, YinConfig,
-};
+use tutti_analysis::{measure_loudness, yin, yin_track, ChannelLayout, LoudnessConfig, YinConfig};
 use tutti_core::SampleRate;
 use tutti_types::Interleaved;
 
@@ -180,7 +177,7 @@ fn main() {
             s as f32
         })
         .collect();
-    let tracked = yin::yin_track(&cfg, &sweep, tutti_types::Samples(frame)).expect("track");
+    let tracked = yin_track(&cfg, &sweep, tutti_types::Samples(frame)).expect("track");
     for (i, est) in tracked.iter().enumerate() {
         // The expectation is the mean frequency over the part of the frame YIN
         // actually analyses, which is **not** the whole frame.

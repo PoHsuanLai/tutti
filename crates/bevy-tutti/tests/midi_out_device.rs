@@ -12,8 +12,8 @@
 #![cfg(feature = "midi-hardware")]
 
 use bevy_tutti::midi::{MidiOutDrops, MidiOutRouter};
-use tutti_midi_runtime::tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
 use tutti_midi_types::ump::MidiEvent;
+use tutti_midi_types::{MidiChannel, MidiGroup};
 
 /// A router with no transport at all — the state an app is in before it selects
 /// an output device.

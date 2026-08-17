@@ -1155,7 +1155,7 @@ mod seq_scratch_tests {
 mod tests {
     use super::*;
     use std::path::Path;
-    use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
+    use tutti_midi_types::{MidiChannel, MidiGroup};
     use tutti_plugin::server::{AudioBuffer, AudioBuffer64, AudioBufferMut, MidiEvent};
 
     /// The reference VST3 plugin, built by `tutti-vst3-host`'s build script

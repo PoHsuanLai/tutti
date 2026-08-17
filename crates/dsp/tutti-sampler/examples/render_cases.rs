@@ -21,9 +21,7 @@ use std::sync::Arc;
 
 use tutti_core::dsp::{BufferArray, U2};
 use tutti_core::{AudioUnit, Beat, Bpm, Cents, StretchFactor, Timeline, Wave};
-use tutti_sampler::voice::{
-    MemorySource, Playback, SlotId, Voice, VoiceCommand, VoicePool, VoiceSource,
-};
+use tutti_sampler::{MemorySource, Playback, SlotId, Voice, VoiceCommand, VoicePool, VoiceSource};
 
 /// A rolling transport whose beat this example advances by hand.
 ///

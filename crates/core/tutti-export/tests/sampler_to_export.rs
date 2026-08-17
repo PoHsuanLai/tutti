@@ -48,7 +48,7 @@ use tutti_export::{
     render_to_file, AudioFormat, BitDepth, ChannelLayout, Dither, EncodeConfig, ExportConfig,
     RenderConfig,
 };
-use tutti_sampler::voice::{MemorySource, Playback, SlotId, Voice, VoicePool, VoiceSource};
+use tutti_sampler::{MemorySource, Playback, SlotId, Voice, VoicePool, VoiceSource};
 
 const SR: f64 = 48_000.0;
 const BASE_HZ: f32 = 440.0;

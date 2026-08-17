@@ -215,3 +215,61 @@ fn the_capture_paths_the_docs_demonstrate_are_writable_from_the_prelude() {
     let _ = record_mic;
     let _ = wire_monitor;
 }
+
+/// The names app code was importing through `bevy_tutti::<module>::` paths.
+///
+/// Thirty distinct names reach into `graph`, `midi`, `modulation`, `sampler` and
+/// `soundfont` from the app side; sixteen of them had no prelude entry, so
+/// `use bevy_tutti::prelude::*` was not enough to write a host and every caller
+/// went to the module path instead. Naming each in a signature here is the
+/// assertion: if one leaves the prelude, this file stops compiling.
+#[test]
+fn the_names_app_code_imports_are_all_reachable_from_the_prelude() {
+    // Scalar params: the component and the registration that makes it reconcile.
+    // `AudioParam` is generic over unit and port, so it is spelled with both.
+    #[cfg(feature = "modulation")]
+    fn declare_param(app: &mut bevy_app::App) {
+        app.add_audio_param::<tutti_core::Db, 0>();
+    }
+    #[cfg(feature = "modulation")]
+    fn param_component() -> AudioParam<tutti_core::Db, 0> {
+        AudioParam::new(tutti_core::Db(-6.0))
+    }
+
+    // A mod route is only completable with `ModDelivery` — it picks the rate.
+    #[cfg(feature = "modulation")]
+    fn route_rate() -> ModDelivery {
+        ModDelivery::PerFrame
+    }
+
+    // Sampler: build a voice, and clamp a file width to what it will play.
+    // Every type in this signature comes from the prelude — `Playback`,
+    // `VoiceWindow` and `Voice` are memory_voice's arguments and return, so a
+    // prelude carrying only the function would be an incomplete forward.
+    #[cfg(feature = "sampler")]
+    fn build_voice(wave: std::sync::Arc<tutti_core::Wave>, width: ChannelLayout) -> Voice {
+        memory_voice(
+            wave,
+            voice_width(width),
+            Playback::default(),
+            VoiceWindow::default(),
+        )
+    }
+
+    // SoundFont: the module re-exported nothing anywhere before this.
+    #[cfg(feature = "soundfont")]
+    fn soundfont_plugin() -> TuttiSoundFontPlugin {
+        TuttiSoundFontPlugin
+    }
+
+    #[cfg(feature = "modulation")]
+    {
+        let _ = declare_param;
+        let _ = param_component;
+        let _ = route_rate;
+    }
+    #[cfg(feature = "sampler")]
+    let _ = build_voice;
+    #[cfg(feature = "soundfont")]
+    let _ = soundfont_plugin;
+}

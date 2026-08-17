@@ -6,6 +6,9 @@ description = "Plugin server process for tutti-plugin - hosts VST2, VST3, CLAP p
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/PoHsuanLai/Tutti"
 
+[lints]
+workspace = true
+
 [[bin]]
 name = "plugin-server"
 path = "src/main.rs"

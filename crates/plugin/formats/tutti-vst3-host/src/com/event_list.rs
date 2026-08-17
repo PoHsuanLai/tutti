@@ -205,7 +205,7 @@ mod tests {
         ChordValue, EventHeader, NoteExpressionIntValue, NoteExpressionText, NoteExpressionValue,
         NoteOnEvent, ScaleValue, K_NOTE_ON_EVENT,
     };
-    use tutti_midi_types::tutti_types::{CCNumber, MidiChannel, MidiGroup};
+    use tutti_midi_types::{CCNumber, MidiChannel, MidiGroup};
 
     fn make_note_on() -> NoteOnEvent {
         NoteOnEvent {

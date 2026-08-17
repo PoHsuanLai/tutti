@@ -8,6 +8,9 @@ repository = "https://github.com/PoHsuanLai/Tutti"
 keywords = ["midi", "audio", "real-time"]
 categories = ["multimedia::audio"]
 
+[lints]
+workspace = true
+
 [features]
 default = []
 # Serialization for the **authored-configuration** types only — MPE zone setup

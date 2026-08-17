@@ -6,8 +6,8 @@
 //! and writes the playhead back to the transport once per buffer.
 
 use super::state::{ClockLinks, LoopSpan};
-use crate::params::{Beat, BeatDuration, Bpm};
 use crate::Ordering;
+use crate::{Beat, BeatDuration, Bpm};
 use fundsp::prelude::*;
 use std::any;
 
@@ -212,7 +212,7 @@ impl AudioUnit for TransportClock {
             .starting_at(transport.beat());
     }
 
-    fn set_sample_rate(&mut self, sample_rate: crate::params::SampleRate) {
+    fn set_sample_rate(&mut self, sample_rate: crate::SampleRate) {
         self.sample_rate = sample_rate;
         self.beat_per_sample =
             super::state::beats_per_sample(self.links.tempo.load(Ordering::Acquire), sample_rate);

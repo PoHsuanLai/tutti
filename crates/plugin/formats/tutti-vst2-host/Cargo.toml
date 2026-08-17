@@ -6,6 +6,9 @@ description = "VST2 plugin hosting (audio + native editor) via the vst-tutti cra
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/PoHsuanLai/Tutti"
 
+[lints]
+workspace = true
+
 [dependencies]
 arc-swap = "1"
 crossbeam-channel = "0.5"

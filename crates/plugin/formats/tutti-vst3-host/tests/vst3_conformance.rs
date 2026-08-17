@@ -33,7 +33,7 @@ use std::os::raw::{c_char, c_double, c_int, c_longlong, c_uint, c_void};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use tutti_midi_types::tutti_types::{CCNumber, MidiChannel, MidiGroup};
+use tutti_midi_types::{CCNumber, MidiChannel, MidiGroup};
 use tutti_plugin_types::{ParamAddress, ParamId};
 use tutti_types::meter::{BarNumber, TimeSignature};
 use tutti_vst3_host::{

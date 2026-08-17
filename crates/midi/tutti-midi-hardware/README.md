@@ -37,7 +37,7 @@ the stub, so a distro with an older alsa-lib still builds.
 use std::sync::Arc;
 use tutti_midi_hardware::{HardwareMidiInputs, MidiSession};
 use tutti_midi_types::ump::MidiEvent;
-use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
+use tutti_midi_types::{MidiChannel, MidiGroup};
 
 // The ring the audio thread drains, and the session that fills it.
 let ports = Arc::new(HardwareMidiInputs::new(256));

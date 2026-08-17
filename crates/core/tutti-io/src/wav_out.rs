@@ -40,11 +40,11 @@ use tutti_core::SampleRate;
 
 /// Widest frame [`WavOut::write_folding`] folds *into* without allocating.
 ///
-/// Aliases `tutti_core::engine::MAX_ROOT_CHANNELS` (8, mono through 7.1) so the
+/// Aliases `tutti_core::MAX_ROOT_CHANNELS` (8, mono through 7.1) so the
 /// fold ceiling on the capture edge matches the render root's. A sink declared
 /// wider still writes whole frames — the channels past this are silence — so
 /// this bounds fidelity, never alignment.
-pub const MAX_WAV_FOLD_CHANNELS: usize = tutti_core::engine::MAX_ROOT_CHANNELS;
+pub const MAX_WAV_FOLD_CHANNELS: usize = tutti_core::MAX_ROOT_CHANNELS;
 
 /// Live WAV [`AudioOut`]. Owns the `hound` writer plus the channel layout and
 /// depth needed to encode each frame.

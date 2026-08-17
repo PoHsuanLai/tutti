@@ -17,7 +17,7 @@ use std::sync::Arc;
 use tutti_core::transport::{BeatCursor, BeatWindow, BeatWindowSync, Timeline};
 use tutti_core::{Beat, SampleRate};
 use tutti_midi_types::ump::MidiEvent;
-use tutti_midi_types::unit_id::MidiUnitId;
+use tutti_midi_types::MidiUnitId;
 use tutti_midi_types::{MidiOut, MidiUnitIn};
 
 /// One MIDI event scheduled at an absolute beat — the clip player's name for the
@@ -200,9 +200,9 @@ mod tests {
     use super::*;
     use atomic_float::AtomicF64;
     use std::sync::atomic::AtomicBool;
-    use tutti_core::params::Bpm;
     use tutti_core::BeatDuration;
-    use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
+    use tutti_core::Bpm;
+    use tutti_midi_types::{MidiChannel, MidiGroup};
 
     /// Minimal `Timeline` for tests: tempo + beat under a switch.
     struct TestTransport {

@@ -39,8 +39,8 @@ use tutti_midi_types::midi2::{Channeled, UmpMessage};
 use tutti_midi_types::mpe::{
     MpeChannelVoiceMap, MpeMode, MpeZoneConfig, NoteRotationAllocator, ZoneInfo,
 };
-use tutti_midi_types::tutti_types::{CCNumber, MidiChannel, MidiGroup};
 use tutti_midi_types::ump::MidiEvent;
+use tutti_midi_types::{CCNumber, MidiChannel, MidiGroup};
 
 /// Rewrites classic-MPE channel-spread into native MIDI-2 per-note messages.
 ///

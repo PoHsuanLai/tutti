@@ -75,8 +75,8 @@
 
 use crate::{
     AudioBufferMut, EditorSize, LoadedPlugin, Normalized, ParamAddress, ParameterInfo,
-    PluginDescriptor, Preset, PresetId, ProcessContext, ProcessOutput, RenderMode, Result,
-    WindowHandle,
+    PluginDescriptor, PluginResult as Result, Preset, PresetId, ProcessContext, ProcessOutput,
+    RenderMode, WindowHandle,
 };
 
 /// Catalog identity + load-time engine-wiring snapshot.

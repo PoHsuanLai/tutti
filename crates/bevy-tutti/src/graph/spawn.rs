@@ -10,7 +10,7 @@ use bevy_ecs::prelude::*;
 use bevy_ecs::system::EntityCommands;
 
 use tutti_core::dsp::AudioUnit;
-use tutti_core::node::AudioNode;
+use tutti_core::AudioNode;
 
 use crate::graph::{AudioGraphRes, GraphDirty};
 

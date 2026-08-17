@@ -25,9 +25,9 @@ use tutti_core::dsp::{AudioUnit, Net};
 use tutti_core::transport::Transport;
 use tutti_core::AudioNode;
 use tutti_core::{Beat, BeatDuration, SampleRate};
-use tutti_midi_runtime::tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
 use tutti_midi_runtime::TimedMidiEvent;
 use tutti_midi_types::ump::MidiEvent;
+use tutti_midi_types::{MidiChannel, MidiGroup};
 use tutti_soundfont::{SoundFont, SoundFontUnit, SynthesizerSettings};
 
 const SAMPLE_RATE: f64 = 48_000.0;

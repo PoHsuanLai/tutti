@@ -20,7 +20,7 @@ use std::thread;
 use std::time::Duration;
 
 use tutti_midi_hardware::{HardwareMidiInputs, MidiEvent, MidiSession};
-use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
+use tutti_midi_types::{MidiChannel, MidiGroup};
 
 /// Pick the loopback endpoint. See the module doc for why this is not VirMIDI.
 fn pick(list: &[tutti_midi_hardware::EndpointInfo]) -> Option<&tutti_midi_hardware::EndpointInfo> {

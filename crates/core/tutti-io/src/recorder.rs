@@ -108,7 +108,7 @@ impl Recorder {
     /// recording is live.
     ///
     /// **Errors if `src` and `sink` disagree on channel width** — see the
-    /// [module docs](self) for why this check is here and what it replaces.
+    /// This module header explains why this check is here and what it replaces.
     ///
     /// The **sample rate** is still the caller's to match: `AudioIn` carries no
     /// rate at all (the trait deliberately has none — a caller that needs one

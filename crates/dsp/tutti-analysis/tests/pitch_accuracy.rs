@@ -18,7 +18,7 @@
 //! (integer periods instead of interpolated ones; the global minimum instead of
 //! the first local one below threshold) before being committed.
 
-use tutti_analysis::{yin, YinConfig};
+use tutti_analysis::{yin, yin_track, YinConfig};
 use tutti_types::{Hz, Samples};
 
 const SR: f64 = 48_000.0;
@@ -194,7 +194,7 @@ fn a_rising_sweep_reads_as_rising() {
         })
         .collect();
 
-    let tracked = yin::yin_track(&cfg, &sweep, Samples(frame)).expect("track");
+    let tracked = yin_track(&cfg, &sweep, Samples(frame)).expect("track");
     let freqs: Vec<f32> = tracked
         .iter()
         .map(|e| e.pitch().map(|p| p.frequency.get()).unwrap_or(0.0))

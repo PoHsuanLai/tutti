@@ -125,7 +125,7 @@ use support::corpus::{
 use tutti_au_host::component::AuComponentInfo;
 use tutti_au_host::instance::AuInstance;
 use tutti_au_host::{AuError, BusDirection, MidiEvent};
-use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
+use tutti_midi_types::{MidiChannel, MidiGroup};
 
 /// AudioToolbox tolerates concurrent use of *distinct* units, but component
 /// discovery walks a process-global registry and these plugins load shared

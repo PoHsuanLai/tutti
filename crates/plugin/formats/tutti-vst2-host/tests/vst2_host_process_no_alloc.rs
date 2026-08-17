@@ -19,7 +19,7 @@ use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard};
 
 use assert_no_alloc::AllocDisabler;
-use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
+use tutti_midi_types::{MidiChannel, MidiGroup};
 use tutti_vst2_host::{
     MidiEvent, ProcessContext, RenderScratch, TimeSignature, TransportInfo, Vst2Instance,
 };

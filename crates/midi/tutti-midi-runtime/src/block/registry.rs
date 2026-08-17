@@ -18,7 +18,7 @@
 //! the wire.
 
 use std::sync::Arc;
-use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
+use tutti_midi_types::{MidiChannel, MidiGroup};
 
 use crossbeam_queue::ArrayQueue;
 use dashmap::DashMap;

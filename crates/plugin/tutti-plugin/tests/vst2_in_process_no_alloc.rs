@@ -16,8 +16,8 @@ use std::sync::Mutex;
 
 use tutti_core::BufferVec;
 use tutti_midi_types::convert::midi1_velocity_to_midi2;
-use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
 use tutti_midi_types::ump::MidiEvent;
+use tutti_midi_types::{MidiChannel, MidiGroup};
 
 #[global_allocator]
 static A: AllocDisabler = AllocDisabler;

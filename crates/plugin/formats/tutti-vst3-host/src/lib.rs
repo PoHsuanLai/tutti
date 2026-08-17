@@ -15,7 +15,7 @@
 //!
 //! ```no_run
 //! use std::path::Path;
-//! use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
+//! use tutti_midi_types::{MidiChannel, MidiGroup};
 //! use tutti_vst3_host::{
 //!     AudioBuffer, MidiEvent, TransportInfo, Vst3InputEvents, Vst3Loaded,
 //! };
@@ -118,7 +118,7 @@
 //! positional index.
 
 pub(crate) mod com;
-pub mod error;
+mod error;
 pub(crate) mod helpers;
 pub mod host;
 pub mod types;

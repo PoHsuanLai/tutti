@@ -56,8 +56,8 @@ use support::corpus::{every_component, DELAY, DLS_SYNTH, LOWPASS, SAMPLER};
 use tutti_au_host::midi_out::{decode_packet_list_for_test, split_packet_list_for_test};
 use tutti_au_host::types::MIDIPacketList;
 use tutti_au_host::AuType;
-use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
 use tutti_midi_types::MidiMessage;
+use tutti_midi_types::{MidiChannel, MidiGroup};
 
 /// Same rationale as `au_conformance.rs`'s `AU_LOCK`.
 static AU_LOCK: Mutex<()> = Mutex::new(());

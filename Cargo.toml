@@ -47,6 +47,26 @@ members = [
     "../bevy-tutti",
 ]
 
+# Lints every member inherits with `[lints] workspace = true`.
+#
+# `broken_intra_doc_links` is deny, not the default warn: a doc link into a
+# module is exactly what rots when that module goes private, and a warning in a
+# 30-crate build scrolls past unread. Was zero-warning across both workspaces
+# when set, so nothing is grandfathered in. Vendored members deliberately do not
+# inherit this — they carry pre-existing broken links we do not restyle.
+[workspace.lints.rustdoc]
+broken_intra_doc_links = "deny"
+# The other half of the same failure: a link that still *resolves* but points at
+# something the reader cannot reach. Privatizing a module turns every link to it
+# into one of these, and rustdoc renders it as plain text with no clue why.
+private_intra_doc_links = "deny"
+
+# Matches the app workspace's pins (root Cargo.toml): a system's argument list
+# IS its dependency declaration, and a query filter is the query specification.
+[workspace.lints.clippy]
+too_many_arguments = "allow"
+type_complexity = "allow"
+
 # Shared-dep pins the members inherit via `workspace = true`. Kept identical to
 # the dawai app workspace's pins (root Cargo.toml) so both workspaces resolve the
 # same bevy 0.19 / midi crate versions.

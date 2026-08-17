@@ -1,12 +1,12 @@
 //! Tutti's live audio I/O edge: what comes in from a device, and what goes out
 //! to a file.
 //!
-//! [`mic`] is the read side — a monitoring node over a device-filled ring.
-//! [`wav_out`] is the write side, an [`AudioOut`]
+//! [`MicMonitorNode`] is the read side — a monitoring node over a device-filled ring.
+//! [`WavOut`] is the write side, an [`AudioOut`]
 //! sink. Recording is a [`pump`] from one to the other,
 //! which is all [`Recorder`] is.
 //!
-//! [`tap_in`] is the *other* read side: the analysis tap's consumer end as an
+//! [`TapIn`] is the *other* read side: the analysis tap's consumer end as an
 //! [`AudioIn`], so what the graph is playing can be recorded by the same pump
 //! that records a microphone. `AudioTap` itself belongs to `tutti-core` (the
 //! audio callback pushes into it); this is only the adapter that lets it meet
@@ -74,15 +74,17 @@
 
 mod node_id;
 
-pub mod mic;
-pub mod recorder;
-pub mod tap_in;
-pub mod wav_out;
+mod mic;
+mod recorder;
+mod tap_in;
+mod wav_out;
 
 pub use mic::{share_mic_ring, MicMonitorNode, MicRing};
 pub use recorder::Recorder;
 pub use tap_in::TapIn;
-pub use wav_out::WavOut;
+// `MAX_WAV_FOLD_CHANNELS` is the widest input `WavOut` will fold, so a caller
+// sizing a buffer for it has to name the same ceiling.
+pub use wav_out::{WavOut, MAX_WAV_FOLD_CHANNELS};
 
 // The traits this crate implements, re-exported so a consumer reaches the
 // vocabulary and its live impls from one place.

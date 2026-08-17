@@ -41,7 +41,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
+use tutti_midi_types::{MidiChannel, MidiGroup};
 use tutti_plugin_types::{ParamAddress, ParamId};
 use tutti_vst3_host::{
     AudioBuffer, MidiEvent, NoteExpressionType, NoteExpressionValue, ParameterChanges,

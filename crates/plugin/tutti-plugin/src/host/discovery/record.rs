@@ -120,9 +120,9 @@ const EXTENSION_NAMES: [&str; 6] = extension_names::<6>();
 
 impl PluginRecord {
     /// Plugin file extensions a scanner / asset path recognises. Derived from
-    /// the one `FORMAT_BY_EXTENSION` table that
-    /// [`super::fs::format_from_path`] matches against, so the advertised list
-    /// and the accepted list are the same list.
+    /// the one `FORMAT_BY_EXTENSION` table that `super::fs::format_from_path`
+    /// matches against, so the advertised list and the accepted list are the
+    /// same list.
     pub const EXTENSIONS: &'static [&'static str] = &EXTENSION_NAMES;
 
     /// What this plugin is, normalized across the formats — the browser-facing

@@ -325,11 +325,6 @@ pub mod catalog {
 /// node) and [`PluginHandle`](handles::PluginHandle) (main-thread control).
 pub use host::handles;
 
-/// Internal module exposed publicly for submodule lookup. Use the
-/// [`catalog`] namespace instead — this is here for rustdoc linking only.
-#[doc(hidden)]
-pub use host::discovery;
-
 /// Wire-contract types for `tutti-plugin-server`.
 ///
 /// **Not for general use.** This re-export exists so the server crate

@@ -338,8 +338,8 @@ mod tests {
     // `SoundFontUnit`'s `tick` / `process` / `reset` come from `AudioUnit`,
     // which must be in scope to call them.
     use tutti_core::dsp::AudioUnit;
-    use tutti_midi_runtime::tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
     use tutti_midi_types::ump::MidiEvent;
+    use tutti_midi_types::{MidiChannel, MidiGroup};
 
     /// Get path to test SoundFont (if available)
     fn test_soundfont_path() -> Option<PathBuf> {

@@ -6,6 +6,9 @@ description = "CPAL device layer for Tutti — output stream, mic capture, and t
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/PoHsuanLai/Tutti"
 
+[lints]
+workspace = true
+
 [features]
 default = []
 # Mic capture (`MicIn`). Gated because it needs the capture ring and the

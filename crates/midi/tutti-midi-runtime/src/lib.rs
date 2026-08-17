@@ -30,7 +30,7 @@
 //!
 //! ```
 //! use tutti_midi_runtime::{MidiBus, MidiMailbox};
-//! use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
+//! use tutti_midi_types::{MidiChannel, MidiGroup};
 //! use tutti_midi_types::{MidiEvent, MidiUnitId};
 //!
 //! let synth = MidiUnitId::new(7);
@@ -61,7 +61,7 @@
 //! use tutti_core::transport::{OfflineTimeline, OfflineTimelineConfig};
 //! use tutti_core::{Beat, Bpm, SampleRate};
 //! use tutti_midi_runtime::{MidiSnapshot, MidiSnapshotReader};
-//! use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
+//! use tutti_midi_types::{MidiChannel, MidiGroup};
 //! use tutti_midi_types::{MidiEvent, MidiUnitId, MidiUnitIn};
 //!
 //! let synth = MidiUnitId::new(7);
@@ -97,7 +97,7 @@
 //! ```
 //! use tutti_midi_runtime::MpeIngest;
 //! use tutti_midi_types::mpe::{MpeMode, MpeZoneConfig};
-//! use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
+//! use tutti_midi_types::{MidiChannel, MidiGroup};
 //! use tutti_midi_types::MidiEvent;
 //!
 //! let mut ingest = MpeIngest::new(MpeMode::LowerZone(MpeZoneConfig::lower(7)));
@@ -120,13 +120,11 @@
 //! channel with no mapping and passes through *unfolded*. Silence the sounding
 //! voices separately — reconfiguring is not a panic.
 
-pub use tutti_midi_types;
-
-pub mod block;
-pub mod negotiate;
-pub mod outbound;
-pub mod schedule;
-pub mod sysex;
+mod block;
+mod negotiate;
+mod outbound;
+mod schedule;
+mod sysex;
 
 pub use block::{
     BlockClock, MidiBus, MidiInPort, MidiMailbox, MidiOutSink, MidiPostBlock, MidiPreBlock,
@@ -143,7 +141,12 @@ pub use outbound::{
 pub use schedule::{
     MidiClipSource, MidiSnapshot, MidiSnapshotReader, TimedClipEvent, TimedMidiEvent,
 };
-pub use sysex::{Sysex7PacketReassembler, Sysex8Abort, Sysex8Event, Sysex8PacketReassembler};
+// The two capacity ceilings come along: a caller sizing its own SysEx buffer, or
+// choosing a non-default limit, has to name the same bound.
+pub use sysex::{
+    Sysex7PacketReassembler, Sysex8Abort, Sysex8Event, Sysex8PacketReassembler,
+    DEFAULT_MAX_SYSEX8_BYTES, DEFAULT_MAX_SYSEX_BYTES,
+};
 
 // Value types that live one crate down, re-exported so a consumer of the runtime
 // needs one import rather than two.

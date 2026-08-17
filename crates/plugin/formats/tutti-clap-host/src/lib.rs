@@ -113,7 +113,7 @@
 //! bundle on disk.
 //!
 //! ```no_run
-//! use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
+//! use tutti_midi_types::{MidiChannel, MidiGroup};
 //! use tutti_clap_host::{AudioBuffer32, ClapLoaded, MidiEvent, ProcessContext, TransportInfo};
 //!
 //! // `ClapLoaded` is the GUI / parameter / state stage; sample rate and the
@@ -147,8 +147,8 @@
 //! `tutti_plugin_types::ParameterInfo`, so a consumer never learns which format
 //! it is reading.
 
-pub mod error;
-pub mod events;
+mod error;
+mod events;
 pub mod host;
 pub mod instance;
 pub mod topology;

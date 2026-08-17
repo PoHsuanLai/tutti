@@ -14,9 +14,9 @@
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
-use crate::params::{Beat, BeatDuration};
 use crate::Samples;
 use crate::{AtomicBool, AtomicF64, AtomicI64, AtomicU32};
+use crate::{Beat, BeatDuration};
 
 /// Number of ports a beat signal occupies: whole beats, then fraction.
 ///

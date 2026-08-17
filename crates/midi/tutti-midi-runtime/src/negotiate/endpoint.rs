@@ -13,8 +13,8 @@
 
 use tutti_midi_types::midi2::ump_stream::{Direction, UmpStream};
 use tutti_midi_types::midi2::UmpMessage;
-use tutti_midi_types::tutti_types::MidiGroup;
 use tutti_midi_types::ump::{endpoint_name, function_block_name, product_instance_id};
+use tutti_midi_types::MidiGroup;
 use tutti_midi_types::{
     EndpointCapabilities, EndpointDiscoveryRequest, FunctionBlockDirection,
     FunctionBlockDiscoveryRequest, FunctionBlocks, JrTimestamps, MidiEvent, Protocol, UmpVersion,
@@ -499,7 +499,7 @@ fn decode_product_instance_id(words: &[u32]) -> Option<String> {
 mod tests {
     use super::*;
     use tutti_midi_types::midi2::flex_data::FlexData;
-    use tutti_midi_types::tutti_types::MidiChannel;
+    use tutti_midi_types::MidiChannel;
 
     fn negotiator() -> EndpointNegotiator {
         EndpointNegotiator::new(

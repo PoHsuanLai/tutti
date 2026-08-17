@@ -77,7 +77,7 @@ use tutti_au_host::types::{
     K_AUDIO_UNIT_SCOPE_INPUT, K_AUDIO_UNIT_SCOPE_OUTPUT,
 };
 use tutti_au_host::{AuError, AuMidiMapping, MidiEvent, MidiTrigger};
-use tutti_midi_types::tutti_types::{CCNumber, MidiChannel, MidiGroup};
+use tutti_midi_types::{CCNumber, MidiChannel, MidiGroup};
 
 /// Serializes instantiate/dispose against component enumeration, for the reason
 /// `au_conformance.rs`'s `AU_LOCK` does. Recovered from poisoning so one real

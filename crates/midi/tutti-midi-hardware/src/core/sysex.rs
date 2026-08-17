@@ -29,8 +29,8 @@
 //! binary can install.
 
 use tracing::warn;
-use tutti_midi_types::tutti_types::MidiGroup;
 use tutti_midi_types::ump::MidiEvent;
+use tutti_midi_types::MidiGroup;
 
 /// Ceiling on one in-flight SysEx payload, in bytes.
 ///

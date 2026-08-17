@@ -32,7 +32,7 @@ pub(crate) const CHANNEL_SUM_ID: u64 = 0x_0000_0000_0000_5501;
 pub(crate) const DOWNMIX_ID: u64 = 0x_444F_574E_4D49_5831; // "DOWNMIX1"
 
 // Compile-time intra-crate uniqueness guard (duplicate => cargo build error).
-const _: () = tutti_core::node_id::assert_unique(&[
+const _: () = tutti_core::assert_unique(&[
     AUTOMATION_LANE_ID,
     SVF_FILTER_ID,
     LADDER_FILTER_ID,

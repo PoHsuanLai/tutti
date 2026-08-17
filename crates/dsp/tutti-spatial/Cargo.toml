@@ -6,6 +6,9 @@ description = "Spatial audio for the Tutti engine — VBAP speaker panning, bina
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/PoHsuanLai/Tutti"
 
+[lints]
+workspace = true
+
 [features]
 default = []
 # Real HRTF (head-related transfer function) binaural rendering via FFT

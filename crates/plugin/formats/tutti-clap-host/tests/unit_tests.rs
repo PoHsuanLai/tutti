@@ -14,7 +14,7 @@ use tutti_clap_host::{
     NoteExpressionType, NoteName, OutputEventList, OutputStream, ParameterChanges, ParameterQueue,
     VoiceInfo,
 };
-use tutti_midi_types::tutti_types::{CCNumber, MidiChannel, MidiGroup};
+use tutti_midi_types::{CCNumber, MidiChannel, MidiGroup};
 
 // ── MIDI conversion via tutti_midi_types::MidiEvent ──
 //

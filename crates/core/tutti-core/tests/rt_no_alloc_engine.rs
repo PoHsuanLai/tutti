@@ -24,7 +24,7 @@ use assert_no_alloc::AllocDisabler;
 use parking_lot::Mutex;
 use std::sync::Arc;
 use tutti_core::dsp::{bell_hz, limiter_stereo, pan, sine_hz, An, AudioUnit};
-use tutti_core::engine::Engine;
+use tutti_core::Engine;
 use tutti_core::{
     dsp::Net, ChannelLayout, ClickNode, ClickSettings, InterleavedMut, MetronomeMode, SampleRate,
     Transport, TransportClock,

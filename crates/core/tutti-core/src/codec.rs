@@ -40,7 +40,7 @@
 /// ```
 /// // On a build with no codec features this is empty; with `wav` it contains
 /// // "wav". Either way it never contains a leading dot or an uppercase letter.
-/// for ext in tutti_core::codec::decodable_extensions() {
+/// for ext in tutti_core::decodable_extensions() {
 ///     assert!(!ext.starts_with('.'));
 ///     assert_eq!(*ext, ext.to_ascii_lowercase());
 /// }
@@ -131,7 +131,7 @@ static EXTENSIONS: std::sync::LazyLock<Vec<&'static str>> = std::sync::LazyLock:
 /// old browser.
 ///
 /// ```
-/// # use tutti_core::codec::can_decode;
+/// # use tutti_core::can_decode;
 /// // Whatever this build enables, these three agree with each other.
 /// assert_eq!(can_decode("wav"), can_decode(".WAV"));
 /// assert_eq!(can_decode("wav"), can_decode("Wav"));

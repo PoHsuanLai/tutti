@@ -6,6 +6,9 @@ description = "Shared value vocabulary for tutti's plugin host crates (VST2/VST3
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/PoHsuanLai/Tutti"
 
+[lints]
+workspace = true
+
 [features]
 default = []
 # Enables Serialize/Deserialize on the wire-eligible types (TransportInfo,

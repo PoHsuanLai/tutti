@@ -9,4 +9,4 @@ pub(crate) const VBAP_PANNER_BASE_ID: u64 = 0x_0000_0000_5041_4E00; // "PAN\0"
 pub(crate) const HRTF_BINAURAL_ID: u64 = 0x_0000_0000_4852_5446; // "HRTF"
 
 // Compile-time intra-crate uniqueness guard (duplicate => cargo build error).
-const _: () = tutti_core::node_id::assert_unique(&[VBAP_PANNER_BASE_ID, HRTF_BINAURAL_ID]);
+const _: () = tutti_core::assert_unique(&[VBAP_PANNER_BASE_ID, HRTF_BINAURAL_ID]);

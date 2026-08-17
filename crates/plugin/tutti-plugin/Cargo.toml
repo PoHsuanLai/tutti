@@ -6,6 +6,9 @@ description = "Multi-process plugin hosting client for Tutti - loads VST2, VST3,
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/PoHsuanLai/Tutti"
 
+[lints]
+workspace = true
+
 [features]
 # Nothing on by default. This is a library: persistence and format support are
 # the embedding app's choices, so every one of them is opt-in and the default

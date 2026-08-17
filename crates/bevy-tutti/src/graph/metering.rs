@@ -6,7 +6,7 @@
 //! # Enabled is a default, not a decision
 //!
 //! Measuring is on from the start because consumers read
-//! [`MasterMeter::get`](tutti_core::metering::MasterMeter::get) through the
+//! [`MasterMeter::get`](tutti_core::MasterMeter::get) through the
 //! `Deref` below, and handing four zeros to a host that never opted in is a
 //! silent failure. It is reversible — a host that is not watching turns it off
 //! the same way:
@@ -43,7 +43,7 @@
 
 use bevy_ecs::prelude::*;
 
-use tutti_core::metering::MasterMeter;
+use tutti_core::MasterMeter;
 
 /// The master output's lock-free peak/RMS meter.
 #[derive(Resource, Clone, Default)]

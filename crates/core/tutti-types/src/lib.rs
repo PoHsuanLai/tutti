@@ -8,13 +8,13 @@
 //! marker trait + the measurement newtypes ([`Bpm`], [`Hz`], [`Db`], …), the
 //! [`Param`] atomic cell that holds one, and the integer [`Samples`] count.
 //!
-//! **[`rt`]** — the RT-callback primitives the audio thread touches:
+//! **RT primitives** — what the audio thread touches:
 //! [`AudioThreadCell`] (one-borrow-at-a-time interior mutability), the capped
 //! collections [`RtEventBuf`] (reached through `&self`) and [`RtVec`] (through
 //! `&mut self`), the fixed-capacity [`RtScratch`] (own-and-slice, no push), and
 //! the [`ScopedNoDenormals`] guard.
 //!
-//! **[`channels`]** — [`ChannelLayout`] (`Mono`/`Stereo`/`Multi(n)`): the one
+//! **Channels** — [`ChannelLayout`] (`Mono`/`Stereo`/`Multi(n)`): the one
 //! answer to "mono, stereo, or how many?" that every subsystem shares instead of
 //! a private enum or a bare channel-count integer.
 //!
@@ -34,7 +34,10 @@
 //! rather than living inside one.
 //!
 //! Everything is re-exported at the crate root, so `tutti_types::AudioThreadCell`,
-//! `tutti_types::Bpm`, `tutti_types::Samples`, etc. resolve directly.
+//! `tutti_types::Bpm`, `tutti_types::Samples`, etc. resolve directly. **The root
+//! is the API** — import from it, or from [`prelude`] for the common subset, and
+//! not through a module path. Most modules here are private for that reason; the
+//! ones that stay public do so because `tutti-core` re-exports them as modules.
 //!
 //! # Example — the measurement vocabulary
 //!
@@ -85,16 +88,22 @@
 #[macro_use]
 pub mod value;
 
-pub mod channels;
-pub mod downmix;
-pub mod interleaved;
+// Private: everything public in these is re-exported at the root below, so the
+// module path would be a second name for a type that already has one.
+mod channels;
+mod downmix;
+mod interleaved;
+mod rt;
+mod topology;
+
+// Public: `tutti-core` re-exports each of these AS A MODULE
+// (`pub use tutti_types::io::{self, ...}`), so consumers spell
+// `tutti_core::io::AudioIn`. Privatizing one here breaks that path.
 pub mod io;
 pub mod latency;
 pub mod meter;
 pub mod pcm;
-pub mod rt;
 pub mod tail;
-pub mod topology;
 
 // RT-callback primitives.
 pub use rt::{
@@ -119,9 +128,12 @@ pub use channels::ChannelLayout;
 // above, and additive to it: a width-only caller keeps using `ChannelLayout`.
 pub use topology::{ChannelTopology, Speaker};
 
-// Surround → stereo / mono downmix matrices (ITU-R BS.775 / Dolby).
+// Surround → stereo / mono downmix matrices (ITU-R BS.775 / Dolby). `M3DB` is
+// the −3 dB centre/surround coefficient those matrices apply, and it comes along
+// because a caller checking a fold's output has to name the same constant.
 pub use downmix::{
     fold_buffer_to_mono, fold_frame, fold_frame_to_mono, fold_frame_to_stereo, fold_planar_to_mono,
+    M3DB,
 };
 
 // A flat buffer that carries its own frame width, so a frame index and a sample
@@ -140,6 +152,44 @@ pub use meter::{
     BarCount, BarNumber, BarPosition, BeatsPerBar, Meter, MeterChange, MeterMap, NoteValue,
     TimeSignature,
 };
+
+/// The names a consumer of this crate actually reaches for, in one import.
+///
+/// A curated subset of the crate root — it introduces no name the root lacks and
+/// defines nothing, so `tutti_types::Beat` and `tutti_types::prelude::Beat` are
+/// one path plus a shorthand rather than two paths. Membership was taken from
+/// the callsites in this repo: everything imported from at least three places.
+///
+/// Deliberately absent: `Unit` (the marker trait — collides with unrelated
+/// `Unit` types in DSP crates), the `latency`/`tail` graph traits (a consumer
+/// implements those rarely and deliberately), and the error types
+/// (`NotOnMidiScale`, `UnitParamOutOfRange`), which are named at the one call
+/// that can fail rather than blanket-imported.
+pub mod prelude {
+    // Measurement vocabulary. `Beat`/`BeatDuration` lead because position and
+    // span are the two most-imported names in the engine, and the pair is what
+    // makes a musical signature spellable at all.
+    pub use crate::value::{
+        Amplitude, Beat, BeatDuration, Bpm, CCNumber, Cents, Db, Depth, Hz, MidiChannel, MidiGroup,
+        Note, Param, ParamAddr, Phase, PhaseIncrement, PitchClass, SamplePosition, SampleRate,
+        Samples, Seconds, Semitones, Tail, UnitParam, Velocity, Q,
+    };
+
+    // How many channels, which speaker each one feeds, and the flat buffer that
+    // carries its own width. A signature naming any one of these usually names
+    // the others.
+    pub use crate::channels::ChannelLayout;
+    pub use crate::interleaved::{Interleaved, InterleavedMut, StereoPlanes};
+    pub use crate::topology::{ChannelTopology, Speaker};
+
+    // The I/O edge. `OnEmpty` rides along because it is an associated const on
+    // `AudioIn`: an implementor cannot write the impl without naming it.
+    pub use crate::io::{pump, AudioIn, AudioOut, OnEmpty};
+
+    // Musical meter, and the RT publish pair for non-scalar state.
+    pub use crate::meter::{MeterMap, NoteValue, TimeSignature};
+    pub use crate::rt::{RtPublish, RtRef};
+}
 
 // PCM quantization.
 pub use pcm::{f32_to_i16, f32_to_i24};

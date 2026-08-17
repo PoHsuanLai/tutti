@@ -56,7 +56,7 @@ use support::corpus::{
 use tutti_au_host::parameters::{self, ParamAddress};
 use tutti_au_host::types::K_AUDIO_UNIT_ERR_INVALID_ELEMENT;
 use tutti_au_host::{AuChannelConfig, AuChannelCount, AuError, BusDirection};
-use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
+use tutti_midi_types::{MidiChannel, MidiGroup};
 
 /// Same rationale as `au_conformance.rs`'s `AU_LOCK`: AudioToolbox tolerates
 /// concurrent use of distinct units, but component discovery walks a

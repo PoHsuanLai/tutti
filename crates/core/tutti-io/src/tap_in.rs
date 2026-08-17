@@ -12,7 +12,7 @@
 //!
 //! ```no_run
 //! # use tutti_io::{TapIn, WavOut, BitDepth, Recorder};
-//! # fn go(tap: &tutti_core::metering::AudioTap) -> std::io::Result<()> {
+//! # fn go(tap: &tutti_core::AudioTap) -> std::io::Result<()> {
 //! let src = TapIn::new(tap.open().expect("tap is free"));
 //! let wav = WavOut::create("master.wav", 48_000.0, 2u16, BitDepth::Float32)
 //!     .expect("sink opens");

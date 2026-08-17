@@ -79,14 +79,14 @@
 //! ## Reading from a running graph
 //!
 //! Nothing here knows about the graph, so the seam is an
-//! [`AudioTap`](tutti_core::metering::AudioTap): the audio thread pushes each
+//! [`AudioTap`](tutti_core::AudioTap): the audio thread pushes each
 //! block into it and a control thread drains it. What arrives on this side is
 //! an ordinary `&[f32]`, which is the whole reason these algorithms need no
 //! engine vocabulary.
 //!
 //! ```
 //! use tutti_analysis::correlate;
-//! use tutti_core::metering::AudioTap;
+//! use tutti_core::AudioTap;
 //! use tutti_types::StereoPlanes;
 //!
 //! let tap = AudioTap::new();
@@ -108,20 +108,20 @@
 //! let reading = correlate(planes);
 //! ```
 
-pub mod error;
-pub mod fft;
-pub mod geometry;
-pub mod grid;
-pub mod loudness;
-pub mod onset;
-pub mod peaks;
+mod error;
+mod fft;
+mod geometry;
+mod grid;
+mod loudness;
+mod onset;
+mod peaks;
 // No `///` here: a doc comment on a `mod` line shadows the module's own `//!`.
 // The module header carries the description.
 mod pitch;
-pub mod stereo;
-pub mod transform;
-pub mod window;
-pub mod yin;
+mod stereo;
+mod transform;
+mod window;
+mod yin;
 
 pub use tutti_core::ChannelLayout;
 
@@ -133,10 +133,13 @@ pub use loudness::{
     finish as finish_loudness, measure_loudness, step_loudness, Loudness, LoudnessConfig,
     LoudnessState,
 };
+// `finish` is renamed on the way out, matching `finish_peaks` /
+// `finish_loudness` above: three modules each have a `finish`, and the bare name
+// says nothing about which accumulator it drains.
 pub use onset::{
-    complex_domain_deviation, detect_onsets, high_frequency_content, spectral_energy,
-    spectral_flux, step_onset, suppress_close_onsets, DetectionFunction, Onset, OnsetConfig,
-    OnsetState,
+    complex_domain_deviation, detect_onsets, finish as finish_onset, high_frequency_content,
+    spectral_energy, spectral_flux, step_onset, suppress_close_onsets, DetectionFunction, Onset,
+    OnsetConfig, OnsetState,
 };
 pub use peaks::{
     finish as finish_peaks, step_peaks, summarize, summarize_block, PeakAccum, PeakBlock,

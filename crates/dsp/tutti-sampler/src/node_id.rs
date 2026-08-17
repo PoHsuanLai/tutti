@@ -7,7 +7,7 @@
 //! per-instance id would make seeded noise and oscillator phase differ between
 //! runs.
 //!
-//! [`assert_unique`](tutti_core::node_id::assert_unique) makes a duplicate
+//! [`assert_unique`](tutti_core::assert_unique) makes a duplicate
 //! within this crate a `cargo build` failure rather than a silent aliasing of
 //! two node types.
 //!
@@ -17,7 +17,7 @@ pub(crate) const SAMPLER_NODE_ID: u64 = 0x_5341_4D50_4C52_4E44; // "SAMPLRND"
 pub(crate) const STREAMING_SAMPLER_ID: u64 = 0x_5354_5253_4D50_4C52; // "STRSMPLR"
 pub(crate) const TIME_STRETCH_ID: u64 = 0x_5453_5452_4348_4E54; // "TSTRCHNT"
 pub(crate) const VOICE_NODE_ID: u64 = 0x_564F_4943_454E_4F44; // "VOICENOD"
-const _: () = tutti_core::node_id::assert_unique(&[
+const _: () = tutti_core::assert_unique(&[
     SAMPLER_NODE_ID,
     STREAMING_SAMPLER_ID,
     TIME_STRETCH_ID,

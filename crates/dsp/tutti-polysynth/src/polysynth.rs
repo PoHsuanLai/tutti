@@ -20,8 +20,8 @@ use tutti_core::{
     MAX_BUFFER_SIZE,
 };
 use tutti_midi_runtime::{MidiInPort, MidiSender};
-use tutti_midi_types::tutti_types::CCNumber;
 use tutti_midi_types::ump::MidiEvent;
+use tutti_midi_types::CCNumber;
 use tutti_midi_types::{cc, MidiUnitId, MidiUnitIn, NoteId};
 
 use std::sync::Arc;
@@ -1120,7 +1120,7 @@ mod tests {
     use tutti_midi_types::convert::{
         midi1_cc_to_midi2, midi1_pitch_bend_to_midi2, midi1_velocity_to_midi2,
     };
-    use tutti_midi_types::tutti_types::{CCNumber, MidiChannel, MidiGroup};
+    use tutti_midi_types::{CCNumber, MidiChannel, MidiGroup};
 
     /// Build a `PolySynth` from a config, unwrapping the result.
     fn synth(config: SynthConfig) -> PolySynth {

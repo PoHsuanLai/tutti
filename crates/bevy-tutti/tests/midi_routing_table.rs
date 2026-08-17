@@ -19,7 +19,7 @@
 #![cfg(feature = "midi")]
 
 use bevy_tutti::midi::test_support::routing_table_for_test;
-use tutti_midi_runtime::tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
+use tutti_midi_types::{MidiChannel, MidiGroup};
 use tutti_midi_types::{MidiRoute, MidiUnitId};
 
 /// A publish through the resource reaches the snapshot the RT reads.

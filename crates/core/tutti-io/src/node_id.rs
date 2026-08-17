@@ -11,4 +11,4 @@
 /// `MICMONIT` — [`MicMonitorNode`](crate::MicMonitorNode).
 pub(crate) const MIC_MONITOR_ID: u64 = 0x_4D49_434D_4F4E_4954;
 
-const _: () = tutti_core::node_id::assert_unique(&[MIC_MONITOR_ID]);
+const _: () = tutti_core::assert_unique(&[MIC_MONITOR_ID]);

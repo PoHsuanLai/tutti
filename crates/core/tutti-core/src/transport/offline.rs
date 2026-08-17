@@ -8,8 +8,8 @@
 use std::sync::Arc;
 
 use super::state::LoopRange;
-use crate::params::{Beat, BeatDuration, Bpm, SampleRate};
 use crate::{AtomicF64, Ordering};
+use crate::{Beat, BeatDuration, Bpm, SampleRate};
 
 /// The timeline an offline render advances, one block at a time.
 ///

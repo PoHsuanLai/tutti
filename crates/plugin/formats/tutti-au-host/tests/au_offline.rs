@@ -61,7 +61,7 @@ use support::corpus::{
 use tutti_au_host::offline::{self, PushScratch, RENDER_QUALITY_MAX};
 use tutti_au_host::types::K_AUDIO_UNIT_ERR_INVALID_PROPERTY;
 use tutti_au_host::AuError;
-use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
+use tutti_midi_types::{MidiChannel, MidiGroup};
 use tutti_plugin_types::ChannelLayout;
 
 // Serializes AU instantiation, as `au_conformance.rs`'s `AU_LOCK` does and for

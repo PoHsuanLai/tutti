@@ -16,11 +16,11 @@ use bevy_app::App;
 
 use crate::engine::Result;
 use tutti_core::dsp::An;
-use tutti_core::engine::{Engine, MAX_ROOT_CHANNELS};
 use tutti_core::Arc;
 use tutti_core::{
     dsp::Net, AudioTap, ClickNode, ClickSettings, MasterMeter, Transport, TransportClock,
 };
+use tutti_core::{Engine, MAX_ROOT_CHANNELS};
 use tutti_cpal::{AudioCallbackState, AudioEngine, TuttiDriver};
 
 use crate::graph::{
@@ -127,9 +127,8 @@ pub fn build_into(plugin: &crate::TuttiPlugin, app: &mut App) -> Result<()> {
     // Starts disabled — no output until the UI connects a device + enables it.
     #[cfg(feature = "midi")]
     let (clock_master, clock_out_consumer) = {
-        let (sender, receiver) = tutti_midi_runtime::MidiMailbox::pair(
-            tutti_midi_runtime::tutti_midi_types::MidiUnitId::next(),
-        );
+        let (sender, receiver) =
+            tutti_midi_runtime::MidiMailbox::pair(tutti_midi_types::MidiUnitId::next());
         let master = Arc::new(tutti_midi_runtime::ClockMaster::new(
             Arc::new(transport.clone()),
             sample_rate,
@@ -151,8 +150,7 @@ pub fn build_into(plugin: &crate::TuttiPlugin, app: &mut App) -> Result<()> {
         // channel-spread into native per-note messages, so downstream synths see
         // only native MIDI-2. MPE mode comes from the app's `MpeModeConfig`
         // (inserted before the engine builds); default `Disabled` = passthrough.
-        pre_block
-            .set_translator(tutti_midi_runtime::tutti_midi_types::Midi1ToMidi2Translator::new());
+        pre_block.set_translator(tutti_midi_types::Midi1ToMidi2Translator::new());
         let mpe_mode = app
             .world()
             .get_resource::<crate::midi::MpeModeConfig>()
@@ -325,8 +323,8 @@ fn root_width(plugin_outputs: usize, device: tutti_core::ChannelLayout) -> usize
 #[cfg(test)]
 mod tests {
     use super::root_width;
-    use tutti_core::engine::MAX_ROOT_CHANNELS;
     use tutti_core::ChannelLayout;
+    use tutti_core::MAX_ROOT_CHANNELS;
 
     #[test]
     fn a_wider_device_widens_the_root() {

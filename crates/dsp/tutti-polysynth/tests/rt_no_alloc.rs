@@ -21,8 +21,8 @@
 use assert_no_alloc::AllocDisabler;
 use tutti_core::{AudioUnit, BufferVec, Hz, SampleRate, Q};
 use tutti_midi_types::convert::midi1_velocity_to_midi2;
-use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
 use tutti_midi_types::ump::MidiEvent;
+use tutti_midi_types::{MidiChannel, MidiGroup};
 use tutti_polysynth::{FilterType, OscillatorType, PolySynth, SynthConfig};
 
 #[global_allocator]

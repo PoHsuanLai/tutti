@@ -8,6 +8,9 @@ repository = "https://github.com/PoHsuanLai/Tutti"
 keywords = ["audio", "midi", "real-time", "daw"]
 categories = ["multimedia::audio"]
 
+[lints]
+workspace = true
+
 [features]
 default = []
 

@@ -8,6 +8,9 @@ repository = "https://github.com/PoHsuanLai/Tutti"
 keywords = ["audio", "real-time"]
 categories = ["multimedia::audio"]
 
+[lints]
+workspace = true
+
 [features]
 # Enables `Serialize`/`Deserialize` on wire-carried value types: `ChannelLayout`
 # (which rides the plugin-load IPC reply via `BusChannels`), `ChannelTopology`

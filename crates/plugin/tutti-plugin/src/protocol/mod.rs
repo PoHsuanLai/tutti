@@ -181,7 +181,7 @@ pub use tutti_plugin_types::{
 mod tests {
     use super::*;
     use std::path::PathBuf;
-    use tutti_midi_types::tutti_types::{CCNumber, MidiChannel, MidiGroup};
+    use tutti_midi_types::{CCNumber, MidiChannel, MidiGroup};
 
     #[test]
     fn test_message_serialization() {

@@ -201,7 +201,7 @@ impl Drop for UmpVirtualSource {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
+    use tutti_midi_types::{MidiChannel, MidiGroup};
 
     #[test]
     fn create_ump_source() {

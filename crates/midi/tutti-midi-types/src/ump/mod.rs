@@ -14,7 +14,7 @@
 //! ```
 //! use tutti_midi_types::midi2::{channel_voice2::ChannelVoice2, UmpMessage};
 //! use tutti_midi_types::MidiEvent;
-//! use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
+//! use tutti_midi_types::{MidiChannel, MidiGroup};
 //!
 //! let ev = MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000);
 //! match UmpMessage::try_from(ev.data_words()) {

@@ -69,7 +69,7 @@ pub enum ControllerNamespace {
 pub type NoteAttribute = midi2::channel_voice2::NoteAttribute;
 
 /// A decoded MIDI 2.0 message — tutti's application-facing view of a
-/// [`MidiEvent`]. See the [module docs](self). `#[non_exhaustive]` so added
+/// [`MidiEvent`]. See this module header. `#[non_exhaustive]` so added
 /// message families never break an existing `match`.
 ///
 /// Every variant carries `frame_offset` (the source event's sample-accurate

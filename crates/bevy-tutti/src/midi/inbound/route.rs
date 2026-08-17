@@ -67,7 +67,7 @@
 use bevy_app::{App, Plugin, Update};
 use bevy_ecs::prelude::*;
 
-use tutti_midi_types::routing::MAX_TARGETS_PER_ROUTE;
+use tutti_midi_types::MAX_TARGETS_PER_ROUTE;
 use tutti_midi_types::{MidiRoute, MidiUnitId};
 
 use super::routing_table::MidiRoutingRes;

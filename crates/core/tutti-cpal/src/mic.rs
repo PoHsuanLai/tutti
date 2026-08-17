@@ -33,11 +33,11 @@ use ringbuf::{
     HeapCons, HeapProd, HeapRb,
 };
 
-use tutti_core::engine::MAX_ROOT_CHANNELS;
 use tutti_core::io::{AudioIn, OnEmpty};
 use tutti_core::pcm::BitDepth;
 use tutti_core::ChannelLayout;
 use tutti_core::SampleRate;
+use tutti_core::MAX_ROOT_CHANNELS;
 use tutti_io::{share_mic_ring, MicMonitorNode, MicRing, WavOut};
 
 use crate::error::{Error, Result};

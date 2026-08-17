@@ -6,8 +6,8 @@
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use std::sync::Arc;
-use tutti_core::engine::Engine;
-use tutti_core::metering::{meter_output, AudioTap, MasterMeter, MeteringContext};
+use tutti_core::Engine;
+use tutti_core::{meter_output, AudioTap, MasterMeter, MeteringContext};
 use tutti_core::{ChannelLayout, InterleavedMut, SampleRate, ScopedNoDenormals};
 
 #[cfg(feature = "midi")]
@@ -419,7 +419,7 @@ mod tests {
     use super::*;
     use parking_lot::Mutex;
     use tutti_core::dsp::{lowpass_hz, sine_hz, Net};
-    use tutti_core::engine::Engine;
+    use tutti_core::Engine;
     use tutti_core::{Beat, BeatDuration, MotionEvent, Transport, TransportClock};
 
     /// Build an engine + transport pair whose graph actually renders.

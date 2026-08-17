@@ -5,7 +5,7 @@
 //! back for [`MotionFsm`](super::MotionFsm) to publish.
 
 use super::motion::{FadeOut, MotionEvent, Then};
-use crate::params::Beat;
+use crate::Beat;
 use crate::Samples;
 
 /// What the transport is doing.

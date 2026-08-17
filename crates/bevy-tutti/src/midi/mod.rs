@@ -91,11 +91,9 @@ pub mod test_support {
     /// exists to protect.
     pub fn routing_table_for_test() -> (
         super::MidiRoutingRes,
-        std::sync::Arc<
-            tutti_core::RtPublish<tutti_midi_runtime::tutti_midi_types::MidiRoutingSnapshot>,
-        >,
+        std::sync::Arc<tutti_core::RtPublish<tutti_midi_types::MidiRoutingSnapshot>>,
     ) {
-        let table = tutti_midi_runtime::tutti_midi_types::MidiRoutingTable::new();
+        let table = tutti_midi_types::MidiRoutingTable::new();
         let rt_view = table.snapshot_arc();
         (super::MidiRoutingRes::new(table), rt_view)
     }
@@ -109,7 +107,7 @@ pub mod test_support {
     /// integration test cannot reach `MidiOutRes`'s crate-private receiver.
     pub fn drain_midi_out(
         out: &super::hardware::track_out::MidiOutRes,
-    ) -> Vec<tutti_midi_runtime::tutti_midi_types::ump::MidiEvent> {
+    ) -> Vec<tutti_midi_types::ump::MidiEvent> {
         out.drain_for_test()
     }
 
@@ -119,9 +117,8 @@ pub mod test_support {
     /// engine block always inserts it — so a test that claims the engine is
     /// running has to supply it or those systems panic on a missing resource.
     pub fn clock_master_for_test(sample_rate: f64) -> super::ClockMasterRes {
-        let (sender, receiver) = tutti_midi_runtime::MidiMailbox::pair(
-            tutti_midi_runtime::tutti_midi_types::MidiUnitId::next(),
-        );
+        let (sender, receiver) =
+            tutti_midi_runtime::MidiMailbox::pair(tutti_midi_types::MidiUnitId::next());
         let master = std::sync::Arc::new(tutti_midi_runtime::ClockMaster::new(
             std::sync::Arc::new(tutti_core::transport::Transport::new(sample_rate)),
             sample_rate,

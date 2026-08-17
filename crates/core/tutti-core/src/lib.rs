@@ -95,7 +95,7 @@
 //! non-Bevy host wires nodes through `Net`'s `set_source` / `connect` API
 //! directly.
 
-pub mod error;
+mod error;
 pub use error::{Error, Result};
 
 // Parameter vocabulary: the measurement newtypes (Bpm/Hz/Db…), the atomic
@@ -113,21 +113,11 @@ pub use tutti_types::value::{
     Semitones, Spread, SrcRatio, StereoWidth, StretchFactor, Unit, UnitParam, Q,
 };
 
-/// Compatibility path for the unit newtypes (`tutti_core::params::Bpm`, …).
-///
-/// The vocabulary is [`tutti_types::value`]'s; this module keeps
-/// `tutti_core::params::*` imports resolving. Prefer the crate-root re-exports
-/// in new code.
-pub mod params {
-    pub use tutti_types::value::*;
-    // `SampleRate` is fundsp's rather than part of tutti-types' value
-    // vocabulary, but callers reach for it through this path, so it is carried
-    // here too.
-    pub use fundsp::params::SampleRate;
-}
-
-pub mod engine;
-pub use engine::Engine;
+mod engine;
+// `MAX_ROOT_CHANNELS` comes to the root with `Engine`: it is the ceiling on the
+// root's own output width, so a host sizing a scratch buffer for `process` has
+// to name it — seven callsites did, all through the module path.
+pub use engine::{Engine, MAX_ROOT_CHANNELS};
 
 pub mod transport;
 pub use transport::{
@@ -146,7 +136,7 @@ pub use tutti_types::meter::{
 };
 pub use tutti_types::{RtPublish, RtRef};
 
-pub mod metering;
+mod metering;
 pub use metering::{
     meter_output, AtomicAmplitude, AudioTap, MasterMeter, MeterReading, MeteringContext, TapBusy,
     TapCons,
@@ -251,18 +241,22 @@ pub use fundsp::{Sample, F32, F64};
 /// features terminate: the sampler's `wav = ["tutti-core/wav"]` forwards, and
 /// this crate's `wav = ["fundsp/wav"]` is the line that pulls a decoder in. An
 /// answer computed anywhere else is a copy that goes stale.
-pub mod codec;
+mod codec;
+pub use codec::{can_decode, decodable_extensions};
 
-pub mod node_id;
+mod node_id;
+// The node-id helpers. `assert_unique` is the one every DSP crate calls from its
+// own `node_id` module to prove its ids do not collide; the other three are the
+// vocabulary that call sites build ids out of.
+pub use node_id::{assert_unique, mnemonic, PDC_DELAY_ID, TRANSPORT_CLOCK_ID};
 
 // MIDI vocabulary types (MidiUnitId, MidiIn, MidiOut, …) live in the
 // `tutti-midi-types` crate; consumers import them from there directly rather
 // than through a tutti-core pass-through.
 
-// The graph-node handle, reachable via the crate root
-// (`tutti_core::AudioNode`) or `tutti_core::node::AudioNode`. The DAW param
+// The graph-node handle, reachable as `tutti_core::AudioNode`. The DAW param
 // components are app-side, not here, which is why this module holds one type.
-pub mod node;
+mod node;
 pub use node::AudioNode;
 
 // This crate is the engine: fundsp's `Net`, transport, metering, PDC. Wiring it
@@ -270,3 +264,40 @@ pub use node::AudioNode;
 // wrappers — is the host adapter's business, and lives in `bevy_tutti::graph`.
 // `AudioNode` above carries a gated `Component` derive because it is the one
 // handle a host addresses by name.
+
+/// What a host driving the engine names, in one import.
+///
+/// A curated subset of the crate root — no name here is absent from the root, so
+/// this is a shorthand rather than a second path. Membership came from the
+/// callsites in this repo, filtered by the rule that a type spelled in a
+/// signature reachable from the prelude belongs in it too: `Engine::process`
+/// takes an [`InterleavedMut`], `Timeline::tempo` returns a [`Bpm`], and
+/// [`MotionEvent`] is what a caller sends to move the transport.
+///
+/// Deliberately absent: `Result` (it would shadow `std::result::Result` on a
+/// glob import — spell `tutti_core::Result` when you want it), `Sample` and
+/// `Unit` (both collide with DSP-crate types), and the whole `dsp` namespace,
+/// which is fundsp's prelude and stays a module you name.
+pub mod prelude {
+    // The value vocabulary, straight from tutti-types' own curated set.
+    pub use tutti_types::prelude::*;
+
+    // The unit trait every node implements, plus the buffer types its methods
+    // are spelled in — an implementor needs all of them together.
+    //
+    // `Net` is NOT here: it lives only in `dsp` (fundsp's prelude), not at this
+    // crate's root, and a prelude may not introduce a name the root lacks. Spell
+    // `tutti_core::dsp::Net`, as all 33 callsites already do.
+    pub use crate::{AudioNode, AudioUnit, BufferMut, BufferRef, NodeId, SignalFrame};
+
+    // The engine and its error. `Error` but not `Result`, per above.
+    pub use crate::{Engine, Error, MAX_ROOT_CHANNELS};
+
+    // Transport: the handle, the clock it reads, the state it reports, and the
+    // command enum a host sends. `Timeline` is what `Transport::timeline()`
+    // gives back, so it comes along.
+    pub use crate::{MotionEvent, Timeline, Transport, TransportState};
+
+    // Metering: the tap a host opens and what it reads back.
+    pub use crate::{AudioTap, MasterMeter, MeterReading, TapBusy};
+}

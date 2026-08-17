@@ -5,9 +5,9 @@
 
 use assert_no_alloc::AllocDisabler;
 use tutti_midi_runtime::{MidiBus, MidiMailbox};
-use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
 use tutti_midi_types::ump::MidiEvent;
 use tutti_midi_types::MidiUnitId;
+use tutti_midi_types::{MidiChannel, MidiGroup};
 
 #[global_allocator]
 static A: AllocDisabler = AllocDisabler;

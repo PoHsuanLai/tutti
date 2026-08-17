@@ -20,7 +20,7 @@ use super::{
     UnitEvent, UnitHandler,
 };
 use crate::types::{ParameterChanges, ParameterQueue};
-use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
+use tutti_midi_types::{MidiChannel, MidiGroup};
 use tutti_plugin_types::ParamAddress;
 
 #[test]

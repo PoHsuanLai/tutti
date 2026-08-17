@@ -54,7 +54,7 @@
 
 use std::sync::Arc;
 
-use tutti_midi_types::tutti_types::RtPublish;
+use tutti_midi_types::RtPublish;
 
 use tutti_core::RtEventBuf;
 use tutti_midi_types::ump::MidiEvent;
@@ -274,7 +274,7 @@ mod tests {
     use super::*;
     use std::sync::Mutex;
     use tutti_midi_types::convert::midi1_velocity_to_midi2;
-    use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
+    use tutti_midi_types::{MidiChannel, MidiGroup};
     use tutti_midi_types::{MidiRoutingTable, MidiUnitId};
 
     /// Captures every routed event so a test can assert what reached the router.

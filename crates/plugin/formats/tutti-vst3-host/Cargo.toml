@@ -22,6 +22,9 @@ links = "tutti_vst3_probe"
 # a workspace test run used to enable. Every real target is declared below.
 autotests = false
 
+[lints]
+workspace = true
+
 [features]
 # Off by default. Exposes `host::conformance`, a test-only observation seam
 # that hands the fully-built `ProcessData` to an installed observer just

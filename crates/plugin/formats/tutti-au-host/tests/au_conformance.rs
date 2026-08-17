@@ -42,7 +42,7 @@ use support::corpus::{
 use tutti_au_host::component::AuType;
 use tutti_au_host::types::K_AUDIO_UNIT_ERR_UNINITIALIZED;
 use tutti_au_host::AuError;
-use tutti_midi_types::tutti_types::{CCNumber, MidiChannel, MidiGroup};
+use tutti_midi_types::{CCNumber, MidiChannel, MidiGroup};
 use tutti_types::Samples;
 
 /// AudioToolbox tolerates concurrent use of *distinct* units, but component

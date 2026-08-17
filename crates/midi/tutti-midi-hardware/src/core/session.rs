@@ -23,7 +23,7 @@
 //! read from the audio thread, and `CLAUDE.md` names device enumeration in this
 //! crate as a deliberate exception to the publish rule.
 //!
-//! [`RtPublish`]: tutti_midi_types::tutti_types::RtPublish
+//! [`RtPublish`]: tutti_midi_types::RtPublish
 //! [`HardwareMidiInputs`]: crate::core::HardwareMidiInputs
 
 use std::collections::HashMap;
@@ -489,7 +489,7 @@ mod tests {
     }
 
     fn note() -> MidiEvent {
-        use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
+        use tutti_midi_types::{MidiChannel, MidiGroup};
         MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000)
     }
 

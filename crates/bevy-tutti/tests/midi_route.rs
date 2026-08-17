@@ -21,8 +21,8 @@ use bevy_tutti::midi::{
 use bevy_tutti::AudioEngineState;
 use tutti_core::dsp::Net;
 use tutti_core::{AudioNode, RtPublish};
-use tutti_midi_runtime::tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
 use tutti_midi_types::ump::MidiEvent;
+use tutti_midi_types::{MidiChannel, MidiGroup};
 use tutti_midi_types::{MidiRoutingSnapshot, MidiUnitId};
 use tutti_polysynth::{PolySynth, SynthConfig};
 

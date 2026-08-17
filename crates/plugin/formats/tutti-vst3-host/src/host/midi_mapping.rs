@@ -335,7 +335,7 @@ impl CcRoute {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tutti_midi_types::tutti_types::{CCNumber, MidiChannel, MidiGroup};
+    use tutti_midi_types::{CCNumber, MidiChannel, MidiGroup};
 
     #[test]
     fn empty_mapping_returns_none() {

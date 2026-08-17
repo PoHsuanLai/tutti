@@ -163,8 +163,8 @@ impl Plugin for MidiOutPlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tutti_midi_runtime::tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
     use tutti_midi_types::MidiOut;
+    use tutti_midi_types::{MidiChannel, MidiGroup};
 
     /// Drain the resource's receiver fully into a `Vec`.
     fn drain(out: &MidiOutRes) -> Vec<MidiEvent> {

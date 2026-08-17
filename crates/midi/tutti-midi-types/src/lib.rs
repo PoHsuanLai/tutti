@@ -6,9 +6,9 @@
 //! constructors ([`MidiEvent::note_on`], [`MidiEvent::cc`], ...). Decoding
 //! goes through `midi2::UmpMessage::try_from(ev.data_words())`.
 //!
-//! Tutti-domain logic lives in dedicated modules: [`routing`] (DAW routing
-//! table), [`mpe`] (MIDI Polyphonic Expression, RP-053), [`sync`] (clock and
-//! MTC decoders), [`cc`] (CC→DAW-target mapping).
+//! Tutti-domain logic: the DAW routing table ([`MidiRoutingTable`]), [`mpe`]
+//! (MIDI Polyphonic Expression, RP-053), [`sync`] (clock and MTC decoders), and
+//! [`cc`] (CC→DAW-target mapping).
 //!
 //! SMF file parsing and MIDI-1 wire codec are provided by the re-exported
 //! `midly` crate. Typed UMP messages are provided by re-exported `midi2`.
@@ -75,25 +75,43 @@
 //! velocity for any other purpose goes through [`MidiEvent::velocity_u16`],
 //! which is lossless from either protocol.
 
+// Third-party, re-exported whole so a consumer matching our version needs no
+// dependency entry of its own.
 pub use midi2;
 pub use midly;
-pub use tutti_types;
+
+// The tutti-types vocabulary this crate's own API is spelled in: every UMP
+// constructor takes a `MidiGroup` and a `MidiChannel`, the clip API positions in
+// `Beat`/`BeatDuration`, a CC message needs `CCNumber`, and a routing table
+// reaches the audio thread through `RtPublish`.
+pub use tutti_types::{Beat, BeatDuration, CCNumber, MidiChannel, MidiGroup, RtPublish};
 
 // No `///` on a `pub mod` line: it would shadow the module's own `//!` header
 // and re-resolve that text's intra-doc links in this scope rather than the
 // module's, breaking every link to a sibling item.
+// Private: everything public in these is re-exported at the root below, so the
+// module path would be a second name for a type that already has one.
+mod clip_file;
+mod message;
+mod note_id;
+mod routing;
+mod traits;
+mod unit_id;
+
+// Public, each for a stated reason:
+//
+// - `cc` / `ci` / `ump` are large const-and-function namespaces (cc alone is
+//   ~28 CCNumber consts). Flattened into the root they would drown it, and the
+//   prefix is what makes `cc::MOD_WHEEL` readable.
+// - `cc`, `mpe`, `sync`, `translation` and `ci` all have `pub mod` children that
+//   callers reach (`cc::mapping`, `sync::clock`, `translation::scaling`), and a
+//   used two-level path is evidence the namespace is doing real work.
 pub mod cc;
 pub mod ci;
-pub mod clip_file;
-pub mod message;
 pub mod mpe;
-pub mod note_id;
-pub mod routing;
 pub mod sync;
-pub mod traits;
 pub mod translation;
 pub mod ump;
-pub mod unit_id;
 
 /// Bit Scaling and Resolution (M2-104 §1.7 — MIDI 1.0 ↔ 2.0 widths + DSP-edge
 /// f32). Kept reachable at the crate root as `tutti_midi_types::convert::*`, the
@@ -110,10 +128,14 @@ pub use message::{
 };
 pub use mpe::{
     MpeChannelVoiceMap, MpeMode, MpeZone, MpeZoneConfig, NoteRotationAllocator,
-    PitchBendSensitivity,
+    PitchBendSensitivity, ZoneInfo,
 };
 pub use note_id::{NoteId, PerNoteMap};
-pub use routing::{MidiRoute, MidiRoutingSnapshot, MidiRoutingTable, RouteIterator};
+// `MAX_TARGETS_PER_ROUTE` is the fan-out ceiling a `MidiRoute` is built against,
+// so a caller sizing its own target list names the same bound.
+pub use routing::{
+    MidiRoute, MidiRoutingSnapshot, MidiRoutingTable, RouteIterator, MAX_TARGETS_PER_ROUTE,
+};
 pub use traits::{MidiIn, MidiOut, MidiRouter, MidiUnitIn};
 pub use translation::{normalize, Midi1ToMidi2Translator, MidiParseError};
 pub use ump::{
@@ -169,7 +191,7 @@ pub use unit_id::MidiUnitId;
 ///     read_clip_file, write_clip_file_with_header, ClipEvent, ClipHeader, MidiEvent,
 ///     CLIP_FILE_MAGIC,
 /// };
-/// use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
+/// use tutti_midi_types::{MidiChannel, MidiGroup};
 ///
 /// let bytes = write_clip_file_with_header(
 ///     480,
@@ -191,7 +213,7 @@ pub use unit_id::MidiUnitId;
 ///
 /// ```
 /// use tutti_midi_types::{read_clip_file, write_clip_file_from_beats, MidiEvent};
-/// use tutti_midi_types::tutti_types::{Beat, BeatDuration, MidiChannel, MidiGroup};
+/// use tutti_midi_types::{Beat, BeatDuration, MidiChannel, MidiGroup};
 ///
 /// let bytes = write_clip_file_from_beats(96, [
 ///     (Beat(0.0), MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xABCD)),
@@ -220,5 +242,9 @@ pub mod prelude {
     // strongly: every UMP constructor takes them, so without these two names a
     // caller cannot build a single event. They are the crate's addressing
     // vocabulary even though they are defined one crate down.
-    pub use tutti_types::{Beat, BeatDuration, MidiChannel, MidiGroup};
+    //
+    // `CCNumber` and `RtPublish` join them for the same reason one level out:
+    // a CC message cannot be built without the first, and a routing table is
+    // handed to the audio thread through the second.
+    pub use tutti_types::{Beat, BeatDuration, CCNumber, MidiChannel, MidiGroup, RtPublish};
 }

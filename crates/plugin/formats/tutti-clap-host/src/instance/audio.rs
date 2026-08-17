@@ -22,7 +22,7 @@ use clap_sys::process::{
 use std::ptr;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
-use tutti_plugin_types::transport::is_usable;
+use tutti_plugin_types::is_usable;
 
 /// Owned snapshot of the plugin's per-block output. Returned for
 /// non-RT consumers (tests, offline render) via
@@ -66,7 +66,7 @@ impl<'a> ProcessOutputRef<'a> {
 /// fields you don't need — compiles to zero-cost empty slices and None.
 ///
 /// ```no_run
-/// # use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
+/// # use tutti_midi_types::{MidiChannel, MidiGroup};
 /// # use tutti_clap_host::{AudioBuffer32, ClapActive, MidiEvent, ProcessContext, TransportInfo};
 /// # fn ex(plugin: &mut ClapActive<f32>, buffer: &mut AudioBuffer32<'_, '_>)
 /// # -> tutti_clap_host::Result<()> {
@@ -259,7 +259,7 @@ impl<T: ClapSample> ClapActive<T> {
     /// support check happened once in [`ClapLoaded::activate`](super::ClapLoaded::activate).)
     ///
     /// ```no_run
-    /// # use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
+    /// # use tutti_midi_types::{MidiChannel, MidiGroup};
     /// # use tutti_clap_host::{AudioBuffer32, ClapActive, MidiEvent, ProcessContext, TransportInfo};
     /// # fn ex(active: &mut ClapActive<f32>, buffer: &mut AudioBuffer32<'_, '_>)
     /// # -> tutti_clap_host::Result<()> {

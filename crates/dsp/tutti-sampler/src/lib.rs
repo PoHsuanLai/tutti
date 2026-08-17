@@ -79,12 +79,12 @@
 //! Streaming from disk is the other tier and cannot run here — it needs a real
 //! file, so [`DiskStreamer`]'s own example is `no_run`.
 
-pub mod error;
+mod error;
 pub use error::{Error, Result};
 
 /// Widest frame the sampler reads, interpolates, or emits.
 ///
-/// Deliberately equal to [`tutti_core::engine::MAX_ROOT_CHANNELS`] — the graph root's
+/// Deliberately equal to [`tutti_core::MAX_ROOT_CHANNELS`] — the graph root's
 /// own ceiling. **The two move together:** a voice wider than the root can render
 /// is a voice nobody can hear, so there is no value in the sampler exceeding it,
 /// and letting it do so would mean the truncation happened silently downstream
@@ -94,7 +94,7 @@ pub use error::{Error, Result};
 /// *not* interchangeable: export folds at 12 (`MAX_NET_CHANNELS`) because an
 /// offline render is not bound by the live stack scratch, and the plugin hosts
 /// use 16 because a plugin's own bus width is its business.
-pub const MAX_SAMPLER_CHANNELS: usize = tutti_core::engine::MAX_ROOT_CHANNELS;
+pub const MAX_SAMPLER_CHANNELS: usize = tutti_core::MAX_ROOT_CHANNELS;
 
 /// Reject the empty layout for anything that is a **graph node**.
 ///
@@ -146,10 +146,14 @@ pub mod stretch;
 // FunDSP-graph integration without the ECS layer. The butler's `LruCache` /
 // `StreamPin` are internal machinery a consumer never constructs, so they stay
 // `pub(crate)`.
-// `DiskVoiceConfig` and `DiskSource` are not re-exported: nothing
+// `DiskVoiceConfig` and `DiskSource` are deliberately NOT re-exported: nothing
 // outside this crate constructs them. `DiskSource` in particular is
-// `DiskVoice`'s `inner` — one capability, and only the outer type is
-// a doorway.
+// `DiskVoice`'s `inner` — one capability, and only the outer type is a doorway.
+//
+// `voice` itself stays PUBLIC, unlike most modules in the engine: its submodules
+// (`interp`, `types`, `command`, `pool`, `node`, `memory_source`) cross-link
+// heavily in their own docs, and privatizing it turns 31 of those into dangling
+// references. It is a real internal namespace, not a redundant path.
 pub use voice::{
     Direction, DiskVoice, LoopSetting, MemorySource, MemorySourceConfig, Playback, SlotId, Voice,
     VoiceCommand, VoiceNode, VoiceNodeHandle, VoicePool, VoicePoolHandle, VoiceSource, VoiceWindow,

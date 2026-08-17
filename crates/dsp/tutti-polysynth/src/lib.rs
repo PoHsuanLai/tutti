@@ -11,7 +11,7 @@
 //! use tutti_core::dsp::{AudioUnit, Net};
 //! use tutti_core::{Amplitude, Hz, Resonance, Seconds};
 //! use tutti_midi_types::translation::scaling::midi1_velocity_to_midi2;
-//! use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
+//! use tutti_midi_types::{MidiChannel, MidiGroup};
 //! use tutti_midi_types::ump::MidiEvent;
 //!
 //! // `Moog` takes `Resonance`; the `Svf` variant takes `Q` instead. The two
@@ -69,7 +69,7 @@
 //!
 //! [`tutti-soundfont`]: https://docs.rs/tutti-soundfont
 
-pub mod error;
+mod error;
 
 mod node_id;
 pub use error::{Error, Result};

@@ -33,7 +33,7 @@ use std::sync::Arc;
 
 use tutti_core::dsp::{BufferArray, U2};
 use tutti_core::{Amplitude, AudioUnit, Beat, Bpm, ChannelLayout, SamplePosition, Timeline, Wave};
-use tutti_sampler::voice::{
+use tutti_sampler::{
     MemorySource, MemorySourceConfig, Playback, SlotId, Voice, VoicePool, VoiceSource,
 };
 

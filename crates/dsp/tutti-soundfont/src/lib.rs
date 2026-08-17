@@ -52,7 +52,7 @@
 //! Anything MIDI 2.0 expresses that MIDI 1.0 cannot — per-note pitch bend,
 //! per-note controllers, 16-bit velocity — is dropped rather than approximated.
 
-pub mod error;
+mod error;
 pub use error::{Error, Result};
 
 mod node_id;

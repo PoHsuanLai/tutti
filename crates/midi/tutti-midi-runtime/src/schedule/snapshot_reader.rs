@@ -122,8 +122,8 @@ impl Clone for MidiSnapshotReader {
 mod tests {
     use super::*;
     use tutti_core::transport::OfflineTimelineConfig;
-    use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
     use tutti_midi_types::MidiUnitIn;
+    use tutti_midi_types::{MidiChannel, MidiGroup};
 
     fn note_on(note: u8, vel: u8) -> MidiEvent {
         MidiEvent::note_on(

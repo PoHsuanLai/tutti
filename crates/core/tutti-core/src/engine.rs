@@ -78,7 +78,7 @@ impl Engine {
     /// empty. The root is rendered at its **own** output width (up to
     /// [`MAX_ROOT_CHANNELS`]) into the stack scratch, then each frame is folded
     /// to the *output's* width — the device / target width — via the ITU/Dolby
-    /// matrices ([`tutti_types::downmix`]): a surround root plays folded to a
+    /// matrices ([`tutti_types::fold_frame`]): a surround root plays folded to a
     /// stereo device, or straight through to a matching-width surround device; a
     /// mono root duplicates into every target channel of a wider output.
     ///

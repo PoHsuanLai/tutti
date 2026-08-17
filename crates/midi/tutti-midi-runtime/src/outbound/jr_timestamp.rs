@@ -372,7 +372,7 @@ fn ticks_to_duration(ticks: u16) -> Duration {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
+    use tutti_midi_types::{MidiChannel, MidiGroup};
 
     #[test]
     fn clock_maps_samples_to_ticks_monotonically() {

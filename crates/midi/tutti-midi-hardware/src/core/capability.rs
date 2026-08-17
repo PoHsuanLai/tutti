@@ -144,8 +144,8 @@ pub struct EndpointInfo {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tutti_midi_types::tutti_types::MidiGroup;
     use tutti_midi_types::FunctionBlockDirection;
+    use tutti_midi_types::MidiGroup;
 
     #[test]
     fn a_midi1_endpoint_does_not_carry_midi2_only_messages() {

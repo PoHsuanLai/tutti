@@ -123,7 +123,7 @@ impl core::fmt::Debug for HardwareMidiInput {
 mod tests {
     use super::*;
     use tutti_midi_types::convert::midi1_velocity_to_midi2;
-    use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
+    use tutti_midi_types::{MidiChannel, MidiGroup};
 
     fn note_on(note: u8, vel: u8) -> MidiEvent {
         MidiEvent::note_on(

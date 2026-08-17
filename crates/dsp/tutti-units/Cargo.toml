@@ -6,6 +6,9 @@ description = "Built-in AudioUnit implementations for the Tutti audio engine —
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/PoHsuanLai/Tutti"
 
+[lints]
+workspace = true
+
 [features]
 default = []
 # NOTE: tutti-units is now fully Bevy-free — the entire ECS binding layer

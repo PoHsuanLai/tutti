@@ -3,7 +3,7 @@
 //! — both the peak/RMS measure and the analysis-tap push.
 
 use assert_no_alloc::AllocDisabler;
-use tutti_core::metering::{meter_output, AudioTap, MasterMeter, MeterReading, MeteringContext};
+use tutti_core::{meter_output, AudioTap, MasterMeter, MeterReading, MeteringContext};
 
 #[global_allocator]
 static A: AllocDisabler = AllocDisabler;

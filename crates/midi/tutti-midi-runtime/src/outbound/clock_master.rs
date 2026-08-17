@@ -32,7 +32,7 @@
 
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::Arc;
-use tutti_midi_types::tutti_types::MidiGroup;
+use tutti_midi_types::MidiGroup;
 
 use atomic_float::AtomicF64;
 use tutti_core::transport::Timeline;
@@ -373,7 +373,7 @@ fn mtc_nibble(tc: &(u8, u8, u8, u8), piece: u8, fps: SmpteFrameRate) -> u8 {
 mod tests {
     use super::*;
     use std::sync::atomic::AtomicBool as StdAtomicBool;
-    use tutti_core::params::Bpm;
+    use tutti_core::Bpm;
     use tutti_midi_types::sync::{ClockTransportState, MidiClockDecoder, MtcDecoder};
 
     /// Minimal `Timeline` for tests: tempo + beat + playing under a

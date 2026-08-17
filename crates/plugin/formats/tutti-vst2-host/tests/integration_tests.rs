@@ -14,7 +14,7 @@
 use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
 
-use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
+use tutti_midi_types::{MidiChannel, MidiGroup};
 use tutti_vst2_host::{
     ChannelLayout, MidiEvent, ProcessContext, RenderScratch, TimeSignature, TransportInfo,
     Vst2Instance,

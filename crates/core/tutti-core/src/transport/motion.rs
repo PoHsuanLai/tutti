@@ -26,7 +26,7 @@ use crossbeam_queue::ArrayQueue;
 use super::fsm::{DeclickOutcome, TransitionResult, TransportFsm};
 use super::settings::TransportSettings;
 use super::state::{Declick, SeekSlot};
-use crate::params::Beat;
+use crate::Beat;
 use crate::{AtomicU8, AudioThreadCell};
 
 pub use super::fsm::MotionState;
@@ -366,7 +366,7 @@ fn is_declicking(motion: MotionState) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::params::Beat;
+    use crate::Beat;
 
     fn fsm() -> MotionFsm {
         MotionFsm::new(TransportSettings::new())

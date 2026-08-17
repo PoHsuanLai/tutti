@@ -19,6 +19,9 @@ repository = "https://github.com/PoHsuanLai/Tutti"
 # `soundfont` — SoundFont synthesis moved to `tutti-soundfont`. It shared none
 # of this crate's voice engine, so the flag was a dependency edge wearing a
 # feature's clothes. Depend on that crate directly.
+[lints]
+workspace = true
+
 [features]
 default = []
 std = []

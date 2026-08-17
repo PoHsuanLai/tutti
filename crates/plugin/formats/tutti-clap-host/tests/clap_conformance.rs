@@ -38,7 +38,7 @@ use tutti_clap_test_plugin::ProcessCapture;
 const CLAP_EVENT_NOTE_ON: u16 = 0;
 const CLAP_EVENT_PARAM_VALUE: u16 = 5;
 
-use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
+use tutti_midi_types::{MidiChannel, MidiGroup};
 /// A parameter id the reference plugin actually declares (`params_state.rs`).
 ///
 /// The tests below are about event *offsets*, not parameter identity, so the id

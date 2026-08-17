@@ -31,7 +31,7 @@ pub use tutti_midi_types::MidiEvent;
 
 use tutti_plugin_types::{is_usable, note_id_for, NoteExpressionType, NoteExpressionValue};
 
-use tutti_midi_types::tutti_types::{CCNumber, MidiChannel, MidiGroup};
+use tutti_midi_types::{CCNumber, MidiChannel, MidiGroup};
 use vst3::Steinberg::Vst::Event_::EventTypes_;
 
 /// Borrowed bundle of every input event stream staged into a VST3 plugin's

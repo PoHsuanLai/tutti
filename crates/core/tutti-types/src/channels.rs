@@ -60,11 +60,11 @@
 ///
 /// The shared "mono vs stereo vs N" vocabulary across the whole engine. Use the
 /// named constants for the widths that have names and [`From`]/[`Into`] for
-/// anything else (see [module docs](self)); read the count back with
+/// anything else (see this module header); read the count back with
 /// [`count`](Self::count).
 ///
 /// The inner count is private: every value is canonical, so two layouts of the
-/// same width are always the same value (see [module docs](self)).
+/// same width are always the same value (see this module header).
 ///
 /// Ordering is by channel count, so `a > b` reads as "a is wider than b".
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]

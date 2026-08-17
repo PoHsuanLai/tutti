@@ -74,27 +74,27 @@
 //! assert!(ranks[0] < ranks[1] && ranks[1] < ranks[2]);
 //! ```
 
-pub mod automation;
-pub mod automation_mode;
-pub mod channels;
-pub mod classification;
-pub mod descriptor;
-pub mod editor;
-pub mod error;
+mod automation;
+mod automation_mode;
+mod channels;
+mod classification;
+mod descriptor;
+mod editor;
+mod error;
 pub mod features;
-pub mod format_host;
-pub mod harmony;
-pub mod load_stage;
-pub mod main_thread;
-pub mod metadata;
-pub mod midi;
-pub mod note_expression;
-pub mod note_id;
-pub mod parameters;
-pub mod presets;
-pub mod process;
-pub mod render_mode;
-pub mod transport;
+mod format_host;
+mod harmony;
+mod load_stage;
+mod main_thread;
+mod metadata;
+mod midi;
+mod note_expression;
+mod note_id;
+mod parameters;
+mod presets;
+mod process;
+mod render_mode;
+mod transport;
 
 /// Re-exported so every format crate spells a sample count the same way
 /// without each taking its own `tutti-types` dependency — `ChannelLayout`
@@ -102,7 +102,7 @@ pub mod transport;
 pub use tutti_types::Samples;
 pub use tutti_types::{ChannelLayout, ChannelTopology, Speaker};
 
-pub mod layout_support;
+mod layout_support;
 pub use layout_support::LayoutSupport;
 // Musical vocabulary carried on `TransportInfo`. Re-exported for the same reason
 // as `ChannelLayout`: format hosts speak these at their ABI boundary and should
@@ -119,7 +119,11 @@ pub use descriptor::{AuComponentType, EditorPresence, PluginClass, PluginDescrip
 pub use editor::{
     AspectRatio, EditorCapabilities, EditorError, EditorSize, ResizeHints, WindowHandle,
 };
-pub use error::{Delivered, PluginError, Result, Result as PluginResult, StateError};
+// Exported as `PluginResult` only. It used to be re-exported under both names
+// at this same scope; every one of the 31 call sites took `PluginResult`, and
+// the bare `Result` had none — while being exactly the name that shadows std's
+// on a glob import.
+pub use error::{Delivered, PluginError, Result as PluginResult, StateError};
 pub use features::{FeatureReport, Features};
 pub use format_host::{
     PluginAudio, PluginEditorHost, PluginInstance, PluginMeta, PluginParams, PluginPresets,
@@ -133,7 +137,11 @@ pub use load_stage::LoadStage;
 pub use main_thread::{assert_main_thread, mark_main_thread};
 pub use metadata::{BusChannels, BusTopologies, LoadedPlugin, PluginTail};
 pub use midi::{MidiEventVec, RtMidiEvents, MIDI_STACK_CAPACITY, RT_MIDI_CAPACITY};
-pub use note_expression::{NoteExpressionChanges, NoteExpressionType, NoteExpressionValue};
+// `NoteExpressionVec` is the SmallVec alias the change list is built from, so
+// a caller assembling one has to name it.
+pub use note_expression::{
+    NoteExpressionChanges, NoteExpressionType, NoteExpressionValue, NoteExpressionVec,
+};
 pub use note_id::{note_id_for, note_id_to_channel_note, MAX_HOST_NOTE_ID};
 pub use parameters::{
     Normalized, ParamAddress, ParamFlags, ParamId, ParamRange, ParamSteps, ParameterInfo,

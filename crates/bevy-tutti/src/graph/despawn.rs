@@ -2,7 +2,7 @@
 
 use bevy_ecs::prelude::*;
 
-use tutti_core::node::AudioNode;
+use tutti_core::AudioNode;
 
 use crate::graph::{AudioGraphRes, GraphDirty};
 

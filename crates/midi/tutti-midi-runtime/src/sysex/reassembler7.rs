@@ -196,7 +196,7 @@ mod tests {
     use super::*;
     use tutti_midi_types::ci::{ci_to_sysex7, sysex7_to_ci, CiHeader, CiMessage, DiscoveryData};
     use tutti_midi_types::ci::{CiCategories, Muid, CI_DEVICE_ID_FUNCTION_BLOCK, CI_VERSION};
-    use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
+    use tutti_midi_types::{MidiChannel, MidiGroup};
 
     fn discovery(mfr: [u8; 3]) -> CiMessage {
         CiMessage::Discovery {

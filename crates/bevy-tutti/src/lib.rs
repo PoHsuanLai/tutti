@@ -147,11 +147,15 @@ pub use engine::AudioEngineState;
 
 /// Everything a typical host needs, in one import.
 pub mod prelude {
+    // `AudioParam` and `AudioParamAppExt` are the scalar-param pair: the
+    // component a host attaches and the `add_audio_param::<U, P>()` registration
+    // that makes it reconcile. Naming one without the other is not usable, and
+    // both were being imported through `graph::` for want of being here.
     pub use crate::graph::{
-        commit_graph, crossfade_audio_node, engine_ready, AudioConfig, AudioGraphRes, AudioPump,
-        AudioPumpAppExt, AudioSource, AudioSources, AudioTapRes, EngineNodes, GraphDirty,
-        GraphReconcilePlugin, GraphReconcileSystems, InsertAudioNode, MasterSources, MeteringRes,
-        MetronomeRes, PumpFinished, SpawnAudioNode, TransportRes,
+        commit_graph, crossfade_audio_node, engine_ready, AudioConfig, AudioGraphRes, AudioParam,
+        AudioParamAppExt, AudioPump, AudioPumpAppExt, AudioSource, AudioSources, AudioTapRes,
+        EngineNodes, GraphDirty, GraphReconcilePlugin, GraphReconcileSystems, InsertAudioNode,
+        MasterSources, MeteringRes, MetronomeRes, PumpFinished, SpawnAudioNode, TransportRes,
     };
     pub use crate::{
         AudioDeviceState, AudioEngineState, ChannelCompensation, DeviceInfo, GraphLatency,
@@ -168,17 +172,40 @@ pub mod prelude {
     // naming it, so leaving it out would send every caller to `tutti-core`.
     #[cfg(feature = "audio-io")]
     pub use crate::io::{BitDepth, ChannelLayout, MicIn, MicMonitorNode, Recorder, TapIn, WavOut};
+    // The device edge (`MidiIoRes` + the `MidiDeviceEvent` a host reacts to),
+    // MPE mode, and the sequence-source installer all sat outside the prelude
+    // while being what app code actually imports from `midi::`.
     #[cfg(feature = "midi")]
-    pub use crate::midi::{MidiBusRes, MidiRoutingRes, TuttiMidiPlugin};
+    pub use crate::midi::{
+        MidiBusRes, MidiDeviceEvent, MidiIoRes, MidiRoutingRes, MidiSourceInstall, MpeModeHandle,
+        TuttiMidiPlugin,
+    };
+    // `ModDelivery` picks a route's rate (per-frame scalar vs audio-rate chain),
+    // so a host building a `ModRoute` cannot finish one without it.
     #[cfg(feature = "modulation")]
     pub use crate::modulation::{
-        ModClock, ModParamRange, ModRate, ModRoute, ModSource, ModTargetRegistry, ModulationMatrix,
-        TuttiModulationPlugin,
+        ModClock, ModDelivery, ModParamRange, ModRate, ModRoute, ModSource, ModTargetRegistry,
+        ModulationMatrix, TuttiModulationPlugin,
     };
     #[cfg(feature = "plugin")]
     pub use crate::plugin_host::{PluginsRes, SetEditorVisible, TuttiHostingPlugin};
+    // `memory_voice` is how a host makes a voice at all; `InsertVoice` is how it
+    // reaches the graph, and `voice_width` clamps a file width to what the
+    // sampler will play. `Playback`, `VoiceWindow` and `Voice` come along
+    // because they are `memory_voice`'s own two arguments and its return —
+    // without them a host can call it but cannot write a function around it.
     #[cfg(feature = "sampler")]
-    pub use crate::sampler::{DiskStreamerRes, TuttiPlaybackPlugin};
+    pub use crate::sampler::{
+        memory_voice, voice_width, DiskStreamerRes, InsertVoice, TuttiPlaybackPlugin,
+    };
+    #[cfg(feature = "sampler")]
+    pub use tutti_sampler::{Playback, Voice, VoiceWindow};
+    // The soundfont module re-exported NOTHING at the root or here, so every one
+    // of its types could only be reached by naming the module.
+    #[cfg(feature = "soundfont")]
+    pub use crate::soundfont::{
+        PlaySoundFont, SoundFontAsset, SoundFontAssetLoader, TuttiSoundFontPlugin,
+    };
 
     // The engine vocabulary a host writes graph edits in.
     pub use tutti_core::{AudioNode, NodeId};
@@ -200,8 +227,8 @@ pub mod prelude {
     //   because `AudioTapRes` is: a host can reach the method without
     //   `audio-io`, so it must be able to name what the method gives back.
     pub use tutti_core::dsp::AudioUnit;
-    pub use tutti_core::metering::TapBusy;
     pub use tutti_core::transport::{ClickState, Timeline, Transport};
+    pub use tutti_core::TapBusy;
     pub use tutti_core::{Beat, Bpm, Fade, Samples};
 
     // Transport vocabulary. These are `tutti-core`'s and are re-exported, not

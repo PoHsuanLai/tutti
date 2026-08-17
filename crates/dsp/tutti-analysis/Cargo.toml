@@ -8,6 +8,9 @@ repository = "https://github.com/PoHsuanLai/Tutti"
 keywords = ["audio", "analysis", "waveform", "pitch", "dsp"]
 categories = ["multimedia::audio"]
 
+[lints]
+workspace = true
+
 [dependencies]
 # default-features = false so tutti-core's default `bevy` doesn't leak in; this
 # crate's own `bevy` feature re-adds `tutti-core/bevy` when wanted.

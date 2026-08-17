@@ -63,7 +63,7 @@ mod target;
 pub mod vbap;
 
 #[cfg(feature = "hrtf")]
-pub mod hrtf;
+mod hrtf;
 
 pub(crate) use target::AngleSmoother;
 pub use target::SpatialTarget;

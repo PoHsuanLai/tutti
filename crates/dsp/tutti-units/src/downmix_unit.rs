@@ -30,12 +30,12 @@
 //! costs a gather/scatter per sample. A channel-major form would be faster
 //! (SIMD-friendly, no scratch) but would have to re-derive the ITU matrix in
 //! planar form — exactly the duplication this module refuses. If profiling ever
-//! shows this hot, the right move is a `fold_planar` entry point *inside*
-//! `tutti_types::downmix`, so this node and the root fold share it and the
-//! coefficients stay singular.
+//! shows this hot, the right move is a `fold_planar` entry point beside the
+//! other folds in `tutti-types`, so this node and the root fold share it and
+//! the coefficients stay singular.
 
 use tutti_core::{AudioUnit, BufferMut, BufferRef, ChannelLayout, Signal, SignalFrame, Tail};
-use tutti_types::downmix::fold_frame;
+use tutti_types::fold_frame;
 
 /// Folds an `src`-wide signal into a `dst`-wide one through the shared ITU /
 /// Dolby matrices.
@@ -168,7 +168,7 @@ impl AudioUnit for DownmixUnit {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tutti_types::downmix::{fold_frame_to_mono, fold_frame_to_stereo, M3DB};
+    use tutti_types::{fold_frame_to_mono, fold_frame_to_stereo, M3DB};
 
     #[test]
     fn arity_comes_from_the_two_layouts() {

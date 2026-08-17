@@ -1,5 +1,5 @@
 //! MIDI 2.0 **Clip File** (M2-116) file I/O — the path-level half of the codec
-//! whose byte-level half lives in [`tutti_midi_types::clip_file`].
+//! whose byte-level half lives in [`tutti_midi_types`].
 //!
 //! This is to clip files what [`crate::smf`] is to Standard MIDI Files:
 //! `read_clip_file_from_path` / `write_clip_file_to_path`, plus [`MidiFileKind`]
@@ -100,8 +100,8 @@ pub fn write_clip_file_to_path(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
     use tutti_midi_types::MidiEvent;
+    use tutti_midi_types::{MidiChannel, MidiGroup};
 
     fn temp_path(name: &str) -> std::path::PathBuf {
         let mut p = std::env::temp_dir();

@@ -49,7 +49,7 @@ use core::ops::Range;
 
 /// A borrowed run of interleaved frames that knows its own width.
 ///
-/// See the [module docs](self) for why the width lives here rather than beside
+/// See this module header for why the width lives here rather than beside
 /// the buffer, and for the rule about inner loops.
 #[derive(Clone, Copy, Debug)]
 pub struct Interleaved<'a> {

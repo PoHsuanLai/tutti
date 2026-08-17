@@ -8,6 +8,9 @@ repository = "https://github.com/PoHsuanLai/Tutti"
 keywords = ["audio", "export", "render", "wav", "flac", "aiff", "ogg"]
 categories = ["multimedia::audio"]
 
+[lints]
+workspace = true
+
 [features]
 default = ["wav", "flac", "aiff", "ogg"]
 wav = ["hound"]

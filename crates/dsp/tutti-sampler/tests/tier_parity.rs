@@ -41,8 +41,8 @@ use tutti_core::dsp::{BufferArray, U2};
 use tutti_core::{
     AudioUnit, Beat, Bpm, ChannelLayout, PlaybackRate, SamplePosition, SampleRate, Timeline, Wave,
 };
-use tutti_sampler::voice::{DiskVoice, MemorySource, VoiceWindow};
 use tutti_sampler::{Command, DiskStreamer, DiskStreamerConfig};
+use tutti_sampler::{DiskVoice, MemorySource, VoiceWindow};
 
 const SR: f64 = 48_000.0;
 const BLOCK: usize = 64;
@@ -340,7 +340,7 @@ fn the_disk_and_memory_tiers_render_the_same_material() {
     let wave = load_wave(&path);
     let mut mem = MemorySource::with_config(
         wave,
-        tutti_sampler::voice::MemorySourceConfig {
+        tutti_sampler::MemorySourceConfig {
             timeline: Some(mem_clock.clone() as Arc<dyn Timeline>),
             window: VoiceWindow {
                 start: Beat::new(0.0),
@@ -845,7 +845,7 @@ fn the_tiers_agree_under_varispeed() {
         let mem_clock = Clock::new(120.0);
         let mut mem = MemorySource::with_config(
             load_wave(&path),
-            tutti_sampler::voice::MemorySourceConfig {
+            tutti_sampler::MemorySourceConfig {
                 timeline: Some(mem_clock.clone() as Arc<dyn Timeline>),
                 window: VoiceWindow {
                     start: Beat::new(0.0),

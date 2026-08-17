@@ -497,8 +497,8 @@ mod tests {
     use atomic_float::AtomicF64;
     use audio_automation::{AutomationEnvelope, AutomationPoint};
     use std::sync::atomic::{AtomicBool, Ordering};
-    use tutti_core::params::Bpm;
     use tutti_core::transport::Timeline;
+    use tutti_core::Bpm;
 
     // ── PluginParamTarget: a ModTarget whose value reaches the Curve path ──
 

@@ -139,7 +139,7 @@
 // crate root so every `vst::` path in the submodules resolves unchanged.
 extern crate vst_tutti as vst;
 
-pub mod error;
+mod error;
 pub mod types;
 
 mod editor;

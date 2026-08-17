@@ -18,8 +18,8 @@
 use tutti_core::dsp::{BufferArray, U2};
 use tutti_core::{Amplitude, AudioUnit, Seconds};
 use tutti_midi_types::translation::scaling::midi1_velocity_to_midi2;
-use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
 use tutti_midi_types::ump::MidiEvent;
+use tutti_midi_types::{MidiChannel, MidiGroup};
 use tutti_polysynth::{
     AllocationStrategy, EnvelopeConfig, OscillatorType, PolySynth, SynthConfig, VoiceMode,
 };

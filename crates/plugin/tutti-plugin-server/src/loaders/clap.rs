@@ -756,7 +756,7 @@ mod tests {
     use super::*;
     use std::path::Path;
     use std::sync::atomic::Ordering;
-    use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
+    use tutti_midi_types::{MidiChannel, MidiGroup};
     use tutti_plugin::server::{
         NoteExpressionChanges, NoteExpressionType, NoteExpressionValue, ParameterChanges,
         ParameterQueue, TransportInfo,

@@ -13,8 +13,8 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use super::state::LoopSpan;
-use crate::params::{Beat, Bpm};
 use crate::{AtomicBool, AtomicF64, AtomicI64};
+use crate::{Beat, Bpm};
 
 /// Transport values shared between threads.
 ///

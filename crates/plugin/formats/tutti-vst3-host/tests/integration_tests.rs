@@ -10,7 +10,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
+use tutti_midi_types::{MidiChannel, MidiGroup};
 use tutti_vst3_host::{AudioBuffer, MidiEvent, TransportInfo, Vst3InputEvents, Vst3Instance};
 
 /// VST3 module lifecycle is not thread-safe here: loading and unloading the

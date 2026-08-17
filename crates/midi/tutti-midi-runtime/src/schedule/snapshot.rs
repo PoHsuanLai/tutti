@@ -36,7 +36,7 @@ impl TimedMidiEvent {
 }
 
 impl From<(f64, MidiEvent)> for TimedMidiEvent {
-    /// `(beat, event)` — matches the tuples [`crate::tutti_midi_types::ParsedClipFile::timed`]
+    /// `(beat, event)` — matches the tuples [`tutti_midi_types::ParsedClipFile::timed`]
     /// yields, so a parsed clip file drops straight into the player/snapshot.
     ///
     /// The bare `f64` is the SMF edge: `ParsedClipFile` divides absolute ticks by
@@ -138,7 +138,7 @@ impl MidiSnapshot {
     /// O(n log n) path for building a clip, versus [`add_event`](Self::add_event)'s
     /// per-call re-sort. Accepts anything that converts into a [`TimedMidiEvent`],
     /// including `(beat, event)` tuples and the output of
-    /// [`ParsedClipFile::timed`](crate::tutti_midi_types::ParsedClipFile::timed).
+    /// [`ParsedClipFile::timed`](tutti_midi_types::ParsedClipFile::timed).
     pub fn add_events(
         &mut self,
         unit_id: MidiUnitId,
@@ -278,7 +278,7 @@ fn sort_by_beat(events: &mut [TimedMidiEvent]) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
+    use tutti_midi_types::{MidiChannel, MidiGroup};
 
     fn note_on(note: u8, vel: u8) -> MidiEvent {
         MidiEvent::note_on(

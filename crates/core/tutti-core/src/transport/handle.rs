@@ -6,7 +6,7 @@ use super::motion::MotionFsm;
 use super::settings::TransportSettings;
 use super::state::ClockLinks;
 use super::state::LoopRange;
-use crate::params::{Beat, BeatDuration, Bpm, SampleRate, Samples};
+use crate::{Beat, BeatDuration, Bpm, SampleRate, Samples};
 
 /// The two halves of a transport, held together.
 ///

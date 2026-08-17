@@ -10,7 +10,7 @@ use std::sync::{Mutex, MutexGuard};
 use tutti_vst2_host::{MidiEvent, ProcessContext, RenderScratch, Samples, Vst2Instance};
 // From the probe's rlib, not a hand-written mirror that can drift out of
 // layout agreement with the cdylib the host loads.
-use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
+use tutti_midi_types::{MidiChannel, MidiGroup};
 use tutti_vst2_test_plugin::{channel_tag, ProcessCapture, ProcessEntry, PROBE_UNIQUE_ID};
 
 #[path = "support/probe_path.rs"]

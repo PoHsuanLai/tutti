@@ -15,8 +15,8 @@ use std::sync::Arc;
 
 use assert_no_alloc::AllocDisabler;
 use tutti_midi_runtime::MidiPreBlock;
-use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup, RtPublish};
 use tutti_midi_types::ump::MidiEvent;
+use tutti_midi_types::{MidiChannel, MidiGroup, RtPublish};
 use tutti_midi_types::{MidiIn, MidiRoute, MidiRouter, MidiRoutingSnapshot, MidiUnitId};
 
 #[global_allocator]

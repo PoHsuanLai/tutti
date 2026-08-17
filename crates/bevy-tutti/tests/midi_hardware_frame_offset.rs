@@ -20,8 +20,8 @@
 use std::time::{Duration, Instant};
 
 use tutti_midi_hardware::HardwareMidiInputs;
-use tutti_midi_runtime::tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
 use tutti_midi_types::ump::MidiEvent;
+use tutti_midi_types::{MidiChannel, MidiGroup};
 
 /// A block long enough that a 1 ms offset is a large, unambiguous fraction of
 /// it, and short enough to stay a plausible audio block.

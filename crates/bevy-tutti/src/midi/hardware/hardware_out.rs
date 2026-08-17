@@ -301,7 +301,7 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
-    use tutti_midi_runtime::tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
+    use tutti_midi_types::{MidiChannel, MidiGroup};
 
     /// Counts what reached the wire.
     ///

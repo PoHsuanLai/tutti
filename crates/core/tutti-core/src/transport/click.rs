@@ -445,7 +445,7 @@ impl AudioNode for ClickNode {
         self.go_silent();
     }
 
-    fn set_sample_rate(&mut self, sample_rate: crate::params::SampleRate) {
+    fn set_sample_rate(&mut self, sample_rate: crate::SampleRate) {
         if (self.sample_rate.get() - sample_rate.get()).abs() > 0.1 {
             self.sample_rate = sample_rate;
             self.click_normal = Self::generate_click(sample_rate, false);

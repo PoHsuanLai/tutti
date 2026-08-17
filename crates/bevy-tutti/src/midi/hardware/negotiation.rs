@@ -47,11 +47,11 @@ use bevy_app::{App, Plugin, Update};
 use bevy_ecs::message::{Message, MessageReader, MessageWriter};
 use bevy_ecs::prelude::*;
 
-use tutti_midi_runtime::tutti_midi_types::ci::{CiMessage, DiscoveryData, Muid};
-use tutti_midi_runtime::tutti_midi_types::tutti_types::MidiGroup;
-use tutti_midi_runtime::tutti_midi_types::EndpointDiscoveryRequest;
 use tutti_midi_runtime::{CiInitiator, CiResponder, DiscoveredCiDevice};
 use tutti_midi_runtime::{DiscoveredEndpoint, EndpointInquiry};
+use tutti_midi_types::ci::{CiMessage, DiscoveryData, Muid};
+use tutti_midi_types::EndpointDiscoveryRequest;
+use tutti_midi_types::MidiGroup;
 
 /// The default group MIDI-CI negotiation runs on (function-block-wide).
 const CI_GROUP: MidiGroup = MidiGroup::FIRST;
@@ -129,7 +129,7 @@ pub fn ci_discovery_system(
 /// hardware-out mailbox.
 fn send_ci(sender: &tutti_midi_runtime::MidiSender, message: &CiMessage) {
     let mut packets = Vec::new();
-    tutti_midi_runtime::tutti_midi_types::ci::ci_to_sysex7(CI_GROUP, message, &mut packets);
+    tutti_midi_types::ci::ci_to_sysex7(CI_GROUP, message, &mut packets);
     sender.queue(&packets);
 }
 
@@ -192,7 +192,7 @@ pub struct StartEndpointDiscovery;
 #[derive(Message, Debug, Clone)]
 pub struct InboundEndpointReply(
     /// One UMP-Stream reply packet; an endpoint takes several to assemble.
-    pub tutti_midi_runtime::tutti_midi_types::ump::MidiEvent,
+    pub tutti_midi_types::ump::MidiEvent,
 );
 
 /// Raised once the discoverer assembles a peer endpoint (Endpoint Info seen).
@@ -215,13 +215,11 @@ pub fn endpoint_discovery_system(
     };
     let sender = out.sender();
     for _ in requests.read() {
-        sender.queue(&[
-            tutti_midi_runtime::tutti_midi_types::ump::MidiEvent::endpoint_discovery(
-                1,
-                1,
-                EndpointDiscoveryRequest::all(),
-            ),
-        ]);
+        sender.queue(&[tutti_midi_types::ump::MidiEvent::endpoint_discovery(
+            1,
+            1,
+            EndpointDiscoveryRequest::all(),
+        )]);
     }
 }
 
@@ -288,7 +286,7 @@ impl Plugin for MidiNegotiationPlugin {
 mod tests {
     use super::super::track_out::MidiOutRes;
     use super::*;
-    use tutti_midi_runtime::tutti_midi_types::ci::CiCategories;
+    use tutti_midi_types::ci::CiCategories;
 
     fn identity(mfr: [u8; 3]) -> DiscoveryData {
         DiscoveryData {
@@ -303,7 +301,7 @@ mod tests {
             // single output path, so these are the defaults rather than values
             // the test cares about.
             output_path_id: 0,
-            function_block: tutti_midi_runtime::tutti_midi_types::ci::discovery::NO_FUNCTION_BLOCK,
+            function_block: tutti_midi_types::ci::discovery::NO_FUNCTION_BLOCK,
         }
     }
 
@@ -364,7 +362,7 @@ mod tests {
         // Drain the outbound mailbox the way `pump_midi_out_system` does.
         let out = world.resource::<MidiOutRes>();
         let (_, receiver) = (out.sender(), out.receiver_for_test());
-        let mut buf = [tutti_midi_runtime::tutti_midi_types::ump::MidiEvent::noop(); 64];
+        let mut buf = [tutti_midi_types::ump::MidiEvent::noop(); 64];
         let n = receiver.poll_into(&mut buf);
         assert!(
             n > 0,

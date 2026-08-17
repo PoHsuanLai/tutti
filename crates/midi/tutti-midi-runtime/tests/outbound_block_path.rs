@@ -16,8 +16,8 @@
 use std::sync::Arc;
 
 use tutti_midi_runtime::{MidiBus, MidiInPort, MidiPostBlock, MidiPreBlock};
-use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
 use tutti_midi_types::ump::MidiEvent;
+use tutti_midi_types::{MidiChannel, MidiGroup};
 use tutti_midi_types::{MidiMessage, MidiRoute, MidiRoutingTable};
 
 const BLOCK: usize = 64;

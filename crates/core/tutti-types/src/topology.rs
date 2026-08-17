@@ -42,7 +42,7 @@ use smallvec::SmallVec;
 use crate::ChannelLayout;
 
 /// Inline capacity for [`ChannelTopology`]. Eight covers every layout that can
-/// reach the graph: `tutti_core::engine::MAX_ROOT_CHANNELS` is 8, and the
+/// reach the graph: `tutti_core::MAX_ROOT_CHANNELS` is 8, and the
 /// offline renderer's own ceiling is 12 — a 12-channel bed spills to the heap
 /// rather than being rejected, which is the right trade for a control-thread
 /// type.
@@ -121,8 +121,8 @@ impl Speaker {
     ///
     /// Worth a predicate rather than an `==` at each call site because the LFE
     /// is the one position with different *handling* rather than a different
-    /// place: it is excluded from a consumer downmix (see
-    /// [`crate::downmix`]), and it is not a VBAP-panned speaker.
+    /// place: it is excluded from a consumer downmix (see [`crate::fold_frame`]), and
+    /// it is not a VBAP-panned speaker.
     pub const fn is_lfe(self) -> bool {
         matches!(self, Self::LowFrequency)
     }
@@ -209,7 +209,7 @@ impl ChannelTopology {
     /// no defined one.
     ///
     /// This is the SMPTE / WAV `WAVEFORMATEXTENSIBLE` order that
-    /// [`crate::downmix`] already folds by and that the spatial panner already
+    /// [`crate::fold_frame`] already folds by and that the spatial panner already
     /// maps to — `FL FR C LFE SL SR [BL BR]`. Written down here rather than
     /// left implicit in a `match` on channel count at each site, which is a
     /// convention nothing can state or check.

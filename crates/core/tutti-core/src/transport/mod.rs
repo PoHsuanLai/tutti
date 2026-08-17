@@ -64,11 +64,11 @@ pub use state::{
 /// [`TransportState`] supertrait (record + loop) and on [`TransportSettings`]
 /// (preroll), read only where a genuinely live transport is required.
 pub trait Timeline: Send + Sync {
-    /// The playhead, as a [`Beat`](crate::params::Beat) position. May be
+    /// The playhead, as a [`Beat`](crate::Beat) position. May be
     /// negative during a count-in.
-    fn beat(&self) -> crate::params::Beat;
-    /// The tempo in force, in [`Bpm`](crate::params::Bpm).
-    fn tempo(&self) -> crate::params::Bpm;
+    fn beat(&self) -> crate::Beat;
+    /// The tempo in force, in [`Bpm`](crate::Bpm).
+    fn tempo(&self) -> crate::Bpm;
     /// Whether time is advancing. An offline render is always rolling.
     fn is_rolling(&self) -> bool;
 }

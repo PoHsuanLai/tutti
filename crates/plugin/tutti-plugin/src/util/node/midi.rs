@@ -201,7 +201,7 @@ impl Midi {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
+    use tutti_midi_types::{MidiChannel, MidiGroup};
 
     /// A source that reports it wrote `n` no-op events — enough to prove it was
     /// the thing polled (vs. the empty live receiver, which writes 0).

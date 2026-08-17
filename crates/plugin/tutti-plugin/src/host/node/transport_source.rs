@@ -140,8 +140,8 @@ mod tests {
     use super::*;
     use crate::host::node::input_slot::BlockCtx;
     use tutti_core::meter::{BarNumber, BeatsPerBar, MeterChange, NoteValue, TimeSignature};
-    use tutti_core::params::Beat;
     use tutti_core::transport::Transport;
+    use tutti_core::Beat;
 
     /// Drive the real `Transport` — TransportSource is a live-only ABI
     /// bridge, so a mock would only restate its fields.

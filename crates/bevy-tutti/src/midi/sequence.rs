@@ -48,8 +48,8 @@ use tutti_midi_types::ump::MidiEvent;
 
 use super::endpoint::target::MidiTargetResolver;
 use crate::graph::{engine_ready, AudioConfig, GraphReconcileSystems, TransportRes};
-use tutti_midi_runtime::tutti_midi_types::cc;
-use tutti_midi_runtime::tutti_midi_types::tutti_types::{MidiChannel, MidiGroup};
+use tutti_midi_types::cc;
+use tutti_midi_types::{MidiChannel, MidiGroup};
 
 /// "Play these events at that entity's synth."
 ///

@@ -8,6 +8,9 @@ repository = "https://github.com/PoHsuanLai/Tutti"
 keywords = ["audio", "recording", "capture", "wav"]
 categories = ["multimedia::audio"]
 
+[lints]
+workspace = true
+
 [dependencies]
 # The `AudioIn`/`AudioOut` traits this crate implements, plus `AudioUnit`,
 # `ChannelLayout` and the PCM quantizers. `default-features = false` matches

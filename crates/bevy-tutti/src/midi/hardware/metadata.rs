@@ -20,11 +20,9 @@ use bevy_app::{App, Plugin, Update};
 use bevy_ecs::message::{Message, MessageReader};
 use bevy_ecs::prelude::*;
 
-use tutti_midi_runtime::tutti_midi_types::tutti_types::MidiGroup;
-use tutti_midi_runtime::tutti_midi_types::ump::MidiEvent;
-use tutti_midi_runtime::tutti_midi_types::ump::{
-    BarAccents, ChordName, FlexTextKind, KeySharpsFlats, Tonic,
-};
+use tutti_midi_types::ump::MidiEvent;
+use tutti_midi_types::ump::{BarAccents, ChordName, FlexTextKind, KeySharpsFlats, Tonic};
+use tutti_midi_types::MidiGroup;
 
 /// The group Flex Data metadata is broadcast on (function-block-wide).
 const FLEX_GROUP: MidiGroup = MidiGroup::FIRST;
@@ -151,12 +149,7 @@ pub fn flex_metadata_broadcast_system(
                 ));
             }
             BroadcastFlexMetadata::Text { kind, text } => {
-                tutti_midi_runtime::tutti_midi_types::ump::push_flex_text(
-                    *kind,
-                    text,
-                    FLEX_GROUP,
-                    &mut packets,
-                );
+                tutti_midi_types::ump::push_flex_text(*kind, text, FLEX_GROUP, &mut packets);
             }
         }
         sender.queue(&packets);

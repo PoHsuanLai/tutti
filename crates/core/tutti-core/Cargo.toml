@@ -8,6 +8,9 @@ repository = "https://github.com/PoHsuanLai/Tutti"
 keywords = ["audio", "dsp", "real-time", "daw", "fundsp"]
 categories = ["multimedia::audio"]
 
+[lints]
+workspace = true
+
 [features]
 # The DSP graph runtime (Net, transport, metering, PDC) is framework-free.
 # `bevy` adds only the `Component` derive on `AudioNode`, so that an entity can

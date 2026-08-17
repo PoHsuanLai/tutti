@@ -13,10 +13,7 @@
 //! Confirmed to fail against a meter with the sample rate hardcoded to 48 kHz —
 //! the defect `LoudnessConfig` was introduced to make unrepresentable.
 
-use tutti_analysis::{
-    loudness::{measure_loudness, LoudnessConfig},
-    ChannelLayout,
-};
+use tutti_analysis::{measure_loudness, ChannelLayout, LoudnessConfig};
 use tutti_core::SampleRate;
 use tutti_types::{Db, Interleaved};
 
@@ -31,7 +28,7 @@ fn stereo_sine(rate: f64, freq: f64, secs: f64, amp: f64) -> Vec<f32> {
         .collect()
 }
 
-fn measure(rate: f64, amp: f64) -> tutti_analysis::loudness::Loudness {
+fn measure(rate: f64, amp: f64) -> tutti_analysis::Loudness {
     let cfg = LoudnessConfig::new(SampleRate(rate), ChannelLayout::STEREO);
     let buf = stereo_sine(rate, 1000.0, 3.0, amp);
     measure_loudness(&cfg, Interleaved::new(&buf, ChannelLayout::STEREO)).expect("stereo meters")

@@ -13,6 +13,9 @@ repository = "https://github.com/PoHsuanLai/Tutti"
 # subtractive voice engine: the old `soundfont` feature reached for none of that
 # crate's voice allocation, tuning, portamento or unison.
 
+[lints]
+workspace = true
+
 [dependencies]
 tutti-core = { path = "../../core/tutti-core", default-features = false, features = ["midi"] }
 tutti-midi-types = { path = "../../midi/tutti-midi-types", default-features = false }

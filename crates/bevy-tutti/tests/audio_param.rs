@@ -16,7 +16,8 @@ use bevy_tutti::graph::{
 };
 #[cfg(feature = "modulation")]
 use bevy_tutti::modulation::{
-    LfoShape, ModParamRange, ModRate, ModRoute, ModSource, ModTargetRegistry, TuttiModulationPlugin,
+    LfoShape, ModParamRange, ModRoute, ModSource, ModSourceRate, ModTargetRegistry,
+    TuttiModulationPlugin,
 };
 use bevy_tutti::AudioEngineState;
 use tutti_core::dsp::Net;
@@ -200,7 +201,7 @@ fn an_authored_write_to_a_modulated_param_moves_the_base() {
         .world_mut()
         .spawn((
             ModSource::new(LfoShape::Square),
-            ModRate::free_running(Hz(0.0)),
+            ModSourceRate::free_running(Hz(0.0)),
         ))
         .id();
     app.world_mut().spawn(

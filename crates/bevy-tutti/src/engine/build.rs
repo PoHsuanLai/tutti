@@ -245,7 +245,7 @@ pub fn build_into(plugin: &crate::TuttiPlugin, app: &mut App) -> Result<()> {
     // The two engine-built nodes get entities like everything else in the graph,
     // and `EngineNodes` publishes them. Spawned here, before any host system
     // runs, they are otherwise unreachable: both carry `AudioNode` and nothing
-    // else, so a query cannot tell them apart — and `AudioSources` names sources
+    // else, so a query cannot tell them apart — and `PortSources` names sources
     // by `Entity`, so an unnameable node is an unwirable one. The clock exists
     // precisely to be wired to, and the click is left unwired *so that* the host
     // declares where it lands.

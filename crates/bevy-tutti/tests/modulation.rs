@@ -12,8 +12,8 @@ use bevy_ecs::prelude::*;
 
 use bevy_tutti::graph::{AudioGraphRes, GraphReconcilePlugin, TransportRes};
 use bevy_tutti::modulation::{
-    LfoShape, ModParamRange, ModRate, ModRoute, ModSource, ModTargetRegistry, ModulationMatrix,
-    TuttiModulationPlugin,
+    LfoShape, ModParamRange, ModRoute, ModSource, ModSourceRate, ModTargetRegistry,
+    ModulationMatrix, TuttiModulationPlugin,
 };
 use bevy_tutti::AudioEngineState;
 use tutti_core::dsp::Net;
@@ -92,7 +92,7 @@ fn a_route_moves_the_target_nodes_own_atomic() {
         .world_mut()
         .spawn((
             ModSource::new(LfoShape::Sine),
-            ModRate::free_running(Hz(2.0)),
+            ModSourceRate::free_running(Hz(2.0)),
         ))
         .id();
     app.world_mut().spawn(
@@ -139,7 +139,7 @@ fn an_unregistered_node_type_resolves_to_nothing() {
         .world_mut()
         .spawn((
             ModSource::new(LfoShape::Sine),
-            ModRate::free_running(Hz(2.0)),
+            ModSourceRate::free_running(Hz(2.0)),
         ))
         .id();
     app.world_mut().spawn(ModRoute::new(
@@ -167,7 +167,7 @@ fn a_param_without_a_declared_range_is_not_modulated() {
         .world_mut()
         .spawn((
             ModSource::new(LfoShape::Sine),
-            ModRate::free_running(Hz(2.0)),
+            ModSourceRate::free_running(Hz(2.0)),
         ))
         .id();
     app.world_mut().spawn(ModRoute::new(
@@ -189,7 +189,7 @@ fn the_claim_set_reports_which_params_are_modulated() {
         .world_mut()
         .spawn((
             ModSource::new(LfoShape::Sine),
-            ModRate::free_running(Hz(2.0)),
+            ModSourceRate::free_running(Hz(2.0)),
         ))
         .id();
     app.world_mut().spawn(ModRoute::new(
@@ -223,7 +223,7 @@ fn removing_a_route_returns_the_param_to_its_base() {
         .world_mut()
         .spawn((
             ModSource::new(LfoShape::Square),
-            ModRate::free_running(Hz(0.0)),
+            ModSourceRate::free_running(Hz(0.0)),
         ))
         .id();
     let route = app
@@ -262,7 +262,7 @@ fn two_routes_onto_one_param_sum_instead_of_overwriting() {
         app.world_mut()
             .spawn((
                 ModSource::new(LfoShape::Square),
-                ModRate::free_running(Hz(0.0)),
+                ModSourceRate::free_running(Hz(0.0)),
             ))
             .id()
     };
@@ -286,7 +286,7 @@ fn two_routes_onto_one_param_sum_instead_of_overwriting() {
         .world_mut()
         .spawn((
             ModSource::new(LfoShape::Square),
-            ModRate::free_running(Hz(0.0)),
+            ModSourceRate::free_running(Hz(0.0)),
         ))
         .id();
     app.world_mut().spawn(
@@ -311,7 +311,7 @@ fn a_disabled_route_contributes_nothing() {
         .world_mut()
         .spawn((
             ModSource::new(LfoShape::Square),
-            ModRate::free_running(Hz(0.0)),
+            ModSourceRate::free_running(Hz(0.0)),
         ))
         .id();
     let mut route =
@@ -338,7 +338,7 @@ fn a_steady_transport_does_not_rebuild_the_matrix() {
         .world_mut()
         .spawn((
             ModSource::new(LfoShape::Sine),
-            ModRate::free_running(Hz(2.0)),
+            ModSourceRate::free_running(Hz(2.0)),
         ))
         .id();
     app.world_mut().spawn(ModRoute::new(
@@ -417,7 +417,7 @@ fn the_components_are_registered_for_reflection() {
 
     for name in [
         std::any::type_name::<ModSource>(),
-        std::any::type_name::<ModRate>(),
+        std::any::type_name::<ModSourceRate>(),
         std::any::type_name::<ModRoute>(),
         std::any::type_name::<ModParamRange>(),
     ] {

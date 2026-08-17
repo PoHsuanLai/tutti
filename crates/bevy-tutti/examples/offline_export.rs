@@ -70,23 +70,23 @@ fn build_chain(mut commands: Commands) {
 
     let filter = commands
         .spawn_audio_node(lowpass_hz(800.0, 1.0))
-        .insert(AudioSources::from(osc))
+        .insert(PortSources::from(osc))
         .id();
 
     let out = commands
         .spawn_audio_node(pass() | pass())
         .insert(
-            AudioSources::silent()
+            PortSources::silent()
                 .with(
                     0,
-                    AudioSource::Node {
+                    PortSource::Node {
                         entity: filter,
                         port: 0,
                     },
                 )
                 .with(
                     1,
-                    AudioSource::Node {
+                    PortSource::Node {
                         entity: filter,
                         port: 0,
                     },

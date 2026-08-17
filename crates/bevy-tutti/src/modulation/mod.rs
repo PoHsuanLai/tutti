@@ -33,7 +33,7 @@
 //!
 //! let lfo = app.world_mut().spawn((
 //!     ModSource::new(LfoShape::Sine),
-//!     ModRate::beat_synced(BeatDuration(1.0)),
+//!     ModSourceRate::beat_synced(BeatDuration(1.0)),
 //! )).id();
 //!
 //! // The target declares what is modulatable and over what range; the engine
@@ -87,12 +87,12 @@
 //!
 //! let slow_lfo = app.world_mut().spawn((
 //!     ModSource::new(LfoShape::Sine),
-//!     ModRate::free_running(Hz(0.2)),
+//!     ModSourceRate::free_running(Hz(0.2)),
 //! )).id();
 //!
 //! let carrier = app.world_mut().spawn((
 //!     ModSource::new(LfoShape::Sine),
-//!     ModRate::free_running(Hz(2.0)),
+//!     ModSourceRate::free_running(Hz(2.0)),
 //!     ModParamRange::default().with(ParamAddr::Unit(UnitParam::Rate), 2.0, 2.0, 10.0),
 //! )).id();
 //!
@@ -111,7 +111,7 @@
 //! automatically when a route asks for one, and is a *component* precisely so it
 //! outlives the rebuilds that reconstruct every source.
 //!
-//! Read the live rate with [`ModRateCell::frequency`]; [`ModRate`]'s own clock
+//! Read the live rate with [`ModRateCell::frequency`]; [`ModSourceRate`]'s own clock
 //! stays what the user authored. Only [`ModClock::Free`] gets a cell — the cell
 //! is a `Param<Hz>`, and a synced span is neither an `Hz` nor an f32.
 //!
@@ -169,9 +169,9 @@
 //! fn wire_lfo_to_clock(mut commands: Commands, nodes: Res<EngineNodes>) {
 //!     commands
 //!         .spawn_audio_node(LfoNode::new(LfoShape::Sine).with_beat_sync(BeatDuration(1.0)))
-//!         .insert(AudioSources(vec![
-//!             AudioSource::Node { entity: nodes.clock, port: 0 },
-//!             AudioSource::Node { entity: nodes.clock, port: 1 },
+//!         .insert(PortSources(vec![
+//!             PortSource::Node { entity: nodes.clock, port: 0 },
+//!             PortSource::Node { entity: nodes.clock, port: 1 },
 //!         ]));
 //! }
 //!
@@ -232,7 +232,7 @@ pub mod source;
 pub mod target;
 
 pub use components::{
-    CurveType, LfoShape, ModClock, ModDelivery, ModParamRange, ModRate, ModRoute, ModSource,
+    CurveType, LfoShape, ModClock, ModDelivery, ModParamRange, ModRoute, ModSource, ModSourceRate,
     ParamRange, Polarity,
 };
 pub use driver::{drive, rebuild, ModulationMatrix, ParamKey};
@@ -265,7 +265,7 @@ impl Plugin for TuttiModulationPlugin {
             .init_resource::<ModBusRes>();
 
         app.register_type::<ModSource>()
-            .register_type::<ModRate>()
+            .register_type::<ModSourceRate>()
             .register_type::<ModClock>()
             .register_type::<ModRoute>()
             .register_type::<ModDelivery>()

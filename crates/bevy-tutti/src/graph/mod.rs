@@ -48,4 +48,4 @@ pub use schedule::{engine_ready, GraphDirty, GraphReconcileSystems};
 pub use spawn::{crossfade_audio_node, InsertAudioNode, SpawnAudioNode};
 pub use tap::AudioTapRes;
 pub use transport::{EngineNodes, MetronomeRes, TransportRes};
-pub use wire::{AudioSource, AudioSources, GraphWirePlugin, MasterSources};
+pub use wire::{GraphWirePlugin, MasterSources, PortSource, PortSources};

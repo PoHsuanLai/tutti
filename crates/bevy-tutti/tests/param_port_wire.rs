@@ -1,4 +1,4 @@
-//! Spike: declaring an audio-rate **param** port through `AudioSources`.
+//! Spike: declaring an audio-rate **param** port through `PortSources`.
 //!
 //! The imperative form of this edge is fragile — `Net::pipe_input` walks every
 //! input port of a node, so a later "wire the audio in" call silently
@@ -10,7 +10,7 @@ use bevy_app::prelude::*;
 use bevy_ecs::prelude::*;
 
 use bevy_tutti::graph::{
-    AudioGraphRes, AudioSource, AudioSources, GraphReconcilePlugin, MasterSources,
+    AudioGraphRes, GraphReconcilePlugin, MasterSources, PortSource, PortSources,
 };
 use bevy_tutti::AudioEngineState;
 use tutti_core::dsp::{sine_hz, Net, Source};
@@ -61,26 +61,26 @@ fn audio_and_param_ports_are_declared_together() {
     // ONE declaration covering both kinds of port.
     app.world_mut()
         .entity_mut(sum)
-        .insert(AudioSources::from(base));
+        .insert(PortSources::from(base));
     app.world_mut().entity_mut(target).insert(
-        AudioSources::silent()
+        PortSources::silent()
             .with(
                 0,
-                AudioSource::Node {
+                PortSource::Node {
                     entity: osc,
                     port: 0,
                 },
             )
             .with(
                 1,
-                AudioSource::Node {
+                PortSource::Node {
                     entity: osc,
                     port: 0,
                 },
             )
             .with(
                 drive_port,
-                AudioSource::Node {
+                PortSource::Node {
                     entity: sum,
                     port: 0,
                 },
@@ -108,7 +108,7 @@ fn audio_and_param_ports_are_declared_together() {
 
 /// The clobber the imperative form suffers cannot be expressed here.
 ///
-/// `AudioSources` is one component per entity (the ECS enforces that), and
+/// `PortSources` is one component per entity (the ECS enforces that), and
 /// `rebuild` writes the whole declared port range from that one `Vec`. So
 /// "something else overwrote the param port" has no representation: re-declaring
 /// the audio ports means editing the same `Vec` that holds the param port, and
@@ -126,17 +126,17 @@ fn redeclaring_audio_does_not_disturb_the_param_port() {
     let sum = spawn_node(&mut app, ParamSumUnit::new(0, 0.0, 10.0));
 
     app.world_mut().entity_mut(target).insert(
-        AudioSources::silent()
+        PortSources::silent()
             .with(
                 0,
-                AudioSource::Node {
+                PortSource::Node {
                     entity: osc,
                     port: 0,
                 },
             )
             .with(
                 drive_port,
-                AudioSource::Node {
+                PortSource::Node {
                     entity: sum,
                     port: 0,
                 },
@@ -155,8 +155,8 @@ fn redeclaring_audio_does_not_disturb_the_param_port() {
 
     // Now re-point the AUDIO input — the operation that, imperatively, would
     // have been `pipe_input` and would have taken the param edge with it.
-    let mut decl = app.world_mut().get_mut::<AudioSources>(target).unwrap();
-    decl.0[0] = AudioSource::Node {
+    let mut decl = app.world_mut().get_mut::<PortSources>(target).unwrap();
+    decl.0[0] = PortSource::Node {
         entity: other,
         port: 0,
     };
@@ -201,7 +201,7 @@ fn an_undeclared_param_port_is_untouched() {
     // Declare ONLY the audio ports. The Vec stops before the param index.
     app.world_mut()
         .entity_mut(target)
-        .insert(AudioSources::from(osc));
+        .insert(PortSources::from(osc));
     app.update();
 
     let graph = app.world().resource::<AudioGraphRes>();
@@ -234,26 +234,26 @@ fn the_whole_declared_chain_reaches_the_graph() {
 
     app.world_mut()
         .entity_mut(sum)
-        .insert(AudioSources::from(base));
+        .insert(PortSources::from(base));
     app.world_mut().entity_mut(target).insert(
-        AudioSources::silent()
+        PortSources::silent()
             .with(
                 0,
-                AudioSource::Node {
+                PortSource::Node {
                     entity: osc,
                     port: 0,
                 },
             )
             .with(
                 1,
-                AudioSource::Node {
+                PortSource::Node {
                     entity: osc,
                     port: 0,
                 },
             )
             .with(
                 drive_port,
-                AudioSource::Node {
+                PortSource::Node {
                     entity: sum,
                     port: 0,
                 },

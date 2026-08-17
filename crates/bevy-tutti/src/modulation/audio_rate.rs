@@ -48,7 +48,7 @@ use tutti_types::{ParamAddr, UnitParam};
 // The three chain units are not imported here: `build_param_mod` owns their
 // construction, which is what keeps the base cell reachable.
 
-use crate::graph::{AudioGraphRes, AudioSource, AudioSources, GraphDirty};
+use crate::graph::{AudioGraphRes, GraphDirty, PortSource, PortSources};
 use crate::modulation::components::{ModClock, ModDelivery, ModParamRange, ModRoute};
 use crate::modulation::driver::ParamKey;
 
@@ -229,7 +229,7 @@ fn spawn_chain(
 
     // Through the engine's own assembler, which is what keeps the base cell.
     // `build_param_mod`, not `wire_param_mod`: this crate declares its edges as
-    // `AudioSources` and diffs them against `Net` each frame, so an edge
+    // `PortSources` and diffs them against `Net` each frame, so an edge
     // connected here would be reverted on the next wire pass. The builder makes
     // the nodes; the declarations below make the edges.
     let shaping: Vec<tutti_units::ParamModShaping> = routes
@@ -252,28 +252,28 @@ fn spawn_chain(
     let sum = commands.spawn(tutti_core::AudioNode(built.sum)).id();
 
     let mut shapers = Vec::with_capacity(routes.len());
-    let mut sum_sources = AudioSources::silent().with(0, AudioSource::node(base));
+    let mut sum_sources = PortSources::silent().with(0, PortSource::node(base));
     for (i, (&shaper_id, &feed)) in built.shapers.iter().zip(feeds.iter()).enumerate() {
         let shaper = commands.spawn(tutti_core::AudioNode(shaper_id)).id();
-        commands.entity(shaper).insert(AudioSources::from(feed));
+        commands.entity(shaper).insert(PortSources::from(feed));
         // Offsets occupy ports 1..=N, in group order.
-        sum_sources = sum_sources.with(i + 1, AudioSource::node(shaper));
+        sum_sources = sum_sources.with(i + 1, PortSource::node(shaper));
         shapers.push(shaper);
     }
 
     commands.entity(sum).insert(sum_sources);
     // The param port joins the sink's existing declaration rather than
     // replacing it — a param port is an ordinary input port, and one
-    // `AudioSources` owns the whole port space (see `graph::wire`). Reading the
+    // `PortSources` owns the whole port space (see `graph::wire`). Reading the
     // current declaration and extending it is what keeps the audio ports the
     // host declared intact.
     commands.queue(move |world: &mut World| {
         let existing = world
-            .get::<AudioSources>(sink)
+            .get::<PortSources>(sink)
             .cloned()
-            .unwrap_or_else(AudioSources::silent);
+            .unwrap_or_else(PortSources::silent);
         if let Ok(mut e) = world.get_entity_mut(sink) {
-            e.insert(existing.with(port, AudioSource::node(sum)));
+            e.insert(existing.with(port, PortSource::node(sum)));
         }
     });
 
@@ -353,7 +353,10 @@ pub fn ensure_source_nodes(
     graph: Option<ResMut<AudioGraphRes>>,
     dirty: Option<ResMut<GraphDirty>>,
     routes: Query<&ModRoute>,
-    sources: Query<(&crate::modulation::ModSource, &crate::modulation::ModRate)>,
+    sources: Query<(
+        &crate::modulation::ModSource,
+        &crate::modulation::ModSourceRate,
+    )>,
     existing: Query<&ModSourceNode>,
 ) {
     let (Some(mut graph), Some(mut dirty)) = (graph, dirty) else {
@@ -566,7 +569,7 @@ fn reshape_chain(
         return;
     };
 
-    let mut sum_sources: Option<AudioSources> = None;
+    let mut sum_sources: Option<PortSources> = None;
     for (i, route) in routes.iter().enumerate() {
         let want = tutti_units::ParamModShaping {
             depth: route.depth,
@@ -592,9 +595,7 @@ fn reshape_chain(
             commands.entity(replacement).despawn();
             continue;
         };
-        commands
-            .entity(replacement)
-            .insert(AudioSources::from(feed));
+        commands.entity(replacement).insert(PortSources::from(feed));
 
         let old = std::mem::replace(&mut chain.shapers[i], replacement);
         commands.entity(old).despawn();
@@ -604,13 +605,13 @@ fn reshape_chain(
         // re-declared with the replacement. Built once and inserted after the
         // loop so N moved routes cost one component write, not N.
         let sources = sum_sources.get_or_insert_with(|| {
-            let mut s = AudioSources::silent().with(0, AudioSource::node(chain.base));
+            let mut s = PortSources::silent().with(0, PortSource::node(chain.base));
             for (j, &sh) in chain.shapers.iter().enumerate() {
-                s = s.with(j + 1, AudioSource::node(sh));
+                s = s.with(j + 1, PortSource::node(sh));
             }
             s
         });
-        sources.set(i + 1, AudioSource::node(replacement));
+        sources.set(i + 1, PortSource::node(replacement));
         dirty.0 = true;
     }
 
@@ -624,8 +625,8 @@ fn reshape_chain(
 ///
 /// # The sink's declaration goes too
 ///
-/// `spawn_chain` extended the sink's `AudioSources` with
-/// `port -> AudioSource::node(sum)`. Leaving that behind points the declaration
+/// `spawn_chain` extended the sink's `PortSources` with
+/// `port -> PortSource::node(sum)`. Leaving that behind points the declaration
 /// at a despawned entity, and the wire rebuild then resolves it to nothing — so
 /// the param port ends up **unfed**, which this module's own docs note reads as
 /// a literal `0.0` rather than as the authored value. A distortion at drive 0
@@ -647,16 +648,16 @@ fn despawn_chain(
         commands.entity(e).despawn();
     }
 
-    // Deferred for the same reason the insert was: one `AudioSources` owns the
+    // Deferred for the same reason the insert was: one `PortSources` owns the
     // sink's whole port space, so this reads the current declaration and edits
     // one port of it rather than replacing the component.
     let port = chain.port;
     commands.queue(move |world: &mut World| {
-        let Some(existing) = world.get::<AudioSources>(sink).cloned() else {
+        let Some(existing) = world.get::<PortSources>(sink).cloned() else {
             return; // sink already gone — nothing to retire
         };
         if let Ok(mut e) = world.get_entity_mut(sink) {
-            e.insert(existing.with(port, AudioSource::Silence));
+            e.insert(existing.with(port, PortSource::Silence));
         }
     });
 

@@ -76,11 +76,11 @@ fn build_chain(mut commands: Commands) {
         .insert(Label("osc"))
         .id();
 
-    // `AudioSources` on the *sink* says what feeds each of its input ports.
+    // `PortSources` on the *sink* says what feeds each of its input ports.
     // Index 0 is input port 0. The filter takes the oscillator.
     let filter = commands
         .spawn_audio_node(lowpass_hz(800.0, 1.0))
-        .insert((Label("filter"), AudioSources::from(osc)))
+        .insert((Label("filter"), PortSources::from(osc)))
         .id();
 
     // A stereo pair fed from the same mono filter — `with` sets one port at a
@@ -89,17 +89,17 @@ fn build_chain(mut commands: Commands) {
         .spawn_audio_node(pass() | pass())
         .insert((
             Label("out"),
-            AudioSources::silent()
+            PortSources::silent()
                 .with(
                     0,
-                    AudioSource::Node {
+                    PortSource::Node {
                         entity: filter,
                         port: 0,
                     },
                 )
                 .with(
                     1,
-                    AudioSource::Node {
+                    PortSource::Node {
                         entity: filter,
                         port: 0,
                     },

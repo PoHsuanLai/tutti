@@ -1,7 +1,7 @@
 //! Declaring what feeds what.
 //!
 //! A node added to the graph is unwired and renders nothing. What reaches its
-//! input ports is declared with [`AudioSources`] on the sink entity; what
+//! input ports is declared with [`PortSources`] on the sink entity; what
 //! reaches the speakers is declared with the [`MasterSources`] resource.
 //!
 //! ```rust
@@ -15,7 +15,7 @@
 //!     // Stereo out, so `MasterSources::from` has two output ports to take.
 //!     let filt = commands
 //!         .spawn_audio_node(lowpass_hz(1000.0f32, 1.0) >> split::<U2>())
-//!         .insert(AudioSources::from(osc))
+//!         .insert(PortSources::from(osc))
 //!         .id();
 //!     commands.insert_resource(MasterSources::from(filt));
 //! }
@@ -41,7 +41,7 @@
 //! exactly one [`Source`], defaulting to `Zero`. There is no fan-in and no
 //! partial state.
 //!
-//! So the declaration is keyed the way the engine is keyed. [`AudioSources`] is
+//! So the declaration is keyed the way the engine is keyed. [`PortSources`] is
 //! a component (one per entity, enforced by the ECS) whose index *i* is input
 //! port *i* (one slot, enforced by the type). **Two sources into one port cannot
 //! be expressed.** An edge-entity model could express it, and would resolve it
@@ -58,7 +58,7 @@
 //!
 //! # One writer per declared port
 //!
-//! A port named by an [`AudioSources`] belongs to that declaration. Writing it
+//! A port named by an [`PortSources`] belongs to that declaration. Writing it
 //! imperatively through `AudioGraphRes.0` as well is a bug in the host, and one
 //! this layer **cannot detect**: [`rebuild`]'s dirty gate watches ECS change
 //! ticks, so an engine-side write nothing in the ECS touched does not re-enter
@@ -88,7 +88,7 @@ use super::{engine_ready, AudioGraphRes, GraphDirty, GraphReconcileSystems};
 /// the declaration names the entity and [`rebuild`] re-derives the id every
 /// time. It also means a host never handles an engine id.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum AudioSource {
+pub enum PortSource {
     /// Output `port` of the node bound to `entity`. Mirrors [`Source::Local`].
     Node {
         /// The entity carrying the source node. Resolved to a `NodeId` on every
@@ -109,7 +109,7 @@ pub enum AudioSource {
     Silence,
 }
 
-impl AudioSource {
+impl PortSource {
     /// Output port 0 of `entity` — the common case.
     pub fn node(entity: Entity) -> Self {
         Self::Node { entity, port: 0 }
@@ -121,11 +121,11 @@ impl AudioSource {
 /// A `Vec` shorter than the node's input count leaves the trailing ports
 /// **undeclared** — this layer does not touch them, so whatever wired them keeps
 /// them. To say "silent" and mean it, name the port with
-/// [`AudioSource::Silence`].
+/// [`PortSource::Silence`].
 #[derive(Component, Debug, Clone, Default, PartialEq)]
-pub struct AudioSources(pub Vec<AudioSource>);
+pub struct PortSources(pub Vec<PortSource>);
 
-impl AudioSources {
+impl PortSources {
     /// Declares nothing. Add ports with [`with`](Self::with).
     pub fn silent() -> Self {
         Self(Vec::new())
@@ -133,14 +133,14 @@ impl AudioSources {
 
     /// Port 0 from `entity`'s port 0.
     pub fn from(entity: Entity) -> Self {
-        Self(vec![AudioSource::node(entity)])
+        Self(vec![PortSource::node(entity)])
     }
 
     /// Ports 0 and 1 from `entity`'s ports 0 and 1.
     pub fn stereo_from(entity: Entity) -> Self {
         Self(vec![
-            AudioSource::Node { entity, port: 0 },
-            AudioSource::Node { entity, port: 1 },
+            PortSource::Node { entity, port: 0 },
+            PortSource::Node { entity, port: 1 },
         ])
     }
 
@@ -161,12 +161,12 @@ impl AudioSources {
     pub fn from_node_at_width(entity: Entity, layout: impl Into<ChannelLayout>) -> Self {
         Self(
             (0..layout.into().count() as usize)
-                .map(|port| AudioSource::Node { entity, port })
+                .map(|port| PortSource::Node { entity, port })
                 .collect(),
         )
     }
 
-    /// Set one port, growing with [`AudioSource::Silence`] to reach it.
+    /// Set one port, growing with [`PortSource::Silence`] to reach it.
     ///
     /// # Audio-rate param ports belong here too
     ///
@@ -183,13 +183,13 @@ impl AudioSources {
     /// overwrites a param edge with a global input — no error, no warning, the
     /// modulation just stops arriving.
     ///
-    /// One `AudioSources` per entity (the ECS enforces that) and one index per
+    /// One `PortSources` per entity (the ECS enforces that) and one index per
     /// port makes that clobber unrepresentable: [`rebuild`] writes the whole
     /// declared range from a single `Vec`. A sibling `ParamSources` component
     /// would put two writers back in one port space and let archetype iteration
     /// order pick the winner — the silent last-write-wins this module refuses
     /// for audio fan-in.
-    pub fn with(mut self, port: usize, source: AudioSource) -> Self {
+    pub fn with(mut self, port: usize, source: PortSource) -> Self {
         self.set(port, source);
         self
     }
@@ -203,9 +203,9 @@ impl AudioSources {
     /// per amendment, which turns a loop over N changed routes into N clones of
     /// an N-element vector. `modulation::audio_rate` re-points shaper entities
     /// exactly that way.
-    pub fn set(&mut self, port: usize, source: AudioSource) {
+    pub fn set(&mut self, port: usize, source: PortSource) {
         if self.0.len() <= port {
-            self.0.resize(port + 1, AudioSource::Silence);
+            self.0.resize(port + 1, PortSource::Silence);
         }
         self.0[port] = source;
     }
@@ -218,7 +218,7 @@ impl AudioSources {
 /// the single declaration of what reaches the speakers, which is what makes "two
 /// nodes both own the master" unrepresentable rather than a race.
 #[derive(Resource, Debug, Clone, Default, PartialEq)]
-pub struct MasterSources(pub Vec<AudioSource>);
+pub struct MasterSources(pub Vec<PortSource>);
 
 impl MasterSources {
     /// A **stereo** source on both output channels: port 0 to channel 0, port 1
@@ -234,16 +234,16 @@ impl MasterSources {
     /// held before.
     pub fn from(entity: Entity) -> Self {
         Self(vec![
-            AudioSource::Node { entity, port: 0 },
-            AudioSource::Node { entity, port: 1 },
+            PortSource::Node { entity, port: 0 },
+            PortSource::Node { entity, port: 1 },
         ])
     }
 
     /// A **mono** source on both output channels, from its port 0.
     pub fn mono_from(entity: Entity) -> Self {
         Self(vec![
-            AudioSource::Node { entity, port: 0 },
-            AudioSource::Node { entity, port: 0 },
+            PortSource::Node { entity, port: 0 },
+            PortSource::Node { entity, port: 0 },
         ])
     }
 
@@ -261,15 +261,15 @@ impl MasterSources {
     pub fn from_node_at_width(entity: Entity, layout: impl Into<ChannelLayout>) -> Self {
         Self(
             (0..layout.into().count() as usize)
-                .map(|port| AudioSource::Node { entity, port })
+                .map(|port| PortSource::Node { entity, port })
                 .collect(),
         )
     }
 
     /// One channel from one of `entity`'s ports.
-    pub fn with(mut self, channel: usize, source: AudioSource) -> Self {
+    pub fn with(mut self, channel: usize, source: PortSource) -> Self {
         if self.0.len() <= channel {
-            self.0.resize(channel + 1, AudioSource::Silence);
+            self.0.resize(channel + 1, PortSource::Silence);
         }
         self.0[channel] = source;
         self
@@ -285,7 +285,7 @@ impl MasterSources {
 /// routinely names an entity whose node arrives a frame later, and nothing about
 /// the declaration changes when it does. And an entity can be *re-bound* to a
 /// different node, which must re-derive every wire naming it — that is the whole
-/// reason [`AudioSource::Node`] holds an `Entity` rather than a `NodeId`.
+/// reason [`PortSource::Node`] holds an `Entity` rather than a `NodeId`.
 ///
 /// The gate is `Changed<AudioNode>`, not `Added`: a replacement `insert` on an
 /// entity that already has the component fires `Changed` but **not** `Added`, so
@@ -309,11 +309,11 @@ pub fn rebuild(
     graph: Option<ResMut<AudioGraphRes>>,
     dirty: Option<ResMut<GraphDirty>>,
     nodes: Query<&AudioNode>,
-    sinks: Query<(Entity, &AudioSources)>,
+    sinks: Query<(Entity, &PortSources)>,
     master: Res<MasterSources>,
-    changed: Query<(), Changed<AudioSources>>,
+    changed: Query<(), Changed<PortSources>>,
     rebound: Query<(), Changed<AudioNode>>,
-    mut removed: RemovedComponents<AudioSources>,
+    mut removed: RemovedComponents<PortSources>,
 ) {
     let is_dirty =
         !changed.is_empty() || !removed.is_empty() || !rebound.is_empty() || master.is_changed();
@@ -388,7 +388,7 @@ pub fn rebuild(
     // *undeclared*, not "declared silent": a host that has not written
     // `MasterSources` has said nothing about the bus, and a layer that answered
     // that silence by zeroing every channel would tear down whatever the host
-    // wired itself. Declaring silence explicitly is `AudioSource::Silence`.
+    // wired itself. Declaring silence explicitly is `PortSource::Silence`.
     //
     // The `.min` is redundant for a declaration the widening above satisfied,
     // but it is what makes an out-of-range channel unrepresentable when the
@@ -414,21 +414,21 @@ pub fn rebuild(
 /// indistinguishable from "declared silent", and a port would be driven to zero
 /// on the frame before its source appears, then never revisited.
 fn resolve(
-    source: AudioSource,
+    source: PortSource,
     sink: tutti_core::NodeId,
     nodes: &Query<&AudioNode>,
     graph: &AudioGraphRes,
 ) -> Option<Source> {
     match source {
-        AudioSource::Silence => Some(Source::Zero),
-        AudioSource::Input { port } => (port < graph.0.inputs()).then_some(Source::Global(port)),
-        AudioSource::Node { entity, port } => {
+        PortSource::Silence => Some(Source::Zero),
+        PortSource::Input { port } => (port < graph.0.inputs()).then_some(Source::Global(port)),
+        PortSource::Node { entity, port } => {
             let node = nodes.get(entity).ok()?;
             if node.0 == sink {
                 // `Net::set_source` asserts on this. A self-loop is a caller
                 // mistake, not an engine failure — say so and skip.
                 bevy_log::warn!(
-                    "AudioSources on {entity:?} names itself as a source; skipping (a node \
+                    "PortSources on {entity:?} names itself as a source; skipping (a node \
                      cannot feed its own input)"
                 );
                 return None;
@@ -466,14 +466,14 @@ fn warn_if_port_out_of_range(
 /// [`resolve`] for the global output bus, which has no sink node to compare
 /// against — the master cannot feed itself.
 fn resolve_master(
-    source: AudioSource,
+    source: PortSource,
     nodes: &Query<&AudioNode>,
     graph: &AudioGraphRes,
 ) -> Option<Source> {
     match source {
-        AudioSource::Silence => Some(Source::Zero),
-        AudioSource::Input { port } => (port < graph.0.inputs()).then_some(Source::Global(port)),
-        AudioSource::Node { entity, port } => {
+        PortSource::Silence => Some(Source::Zero),
+        PortSource::Input { port } => (port < graph.0.inputs()).then_some(Source::Global(port)),
+        PortSource::Node { entity, port } => {
             let node = nodes.get(entity).ok()?;
             if !graph.0.contains(node.0) {
                 return None;
@@ -486,22 +486,22 @@ fn resolve_master(
 
 /// Silence the ports a removed declaration was claiming.
 ///
-/// `On<Remove, AudioSources>` fires at command-flush with the component value
+/// `On<Remove, PortSources>` fires at command-flush with the component value
 /// still readable, mirroring
 /// [`reconcile_node_despawn`](super::reconcile_node_despawn). Without this the
 /// ports would keep their last-written sources forever: the entity leaves
 /// [`rebuild`]'s query, so the diff never visits it again. This is the case that
 /// is unsolvable imperatively without every call site remembering what it wired.
 ///
-/// **Only the declared ports.** It reads the outgoing `AudioSources` and clamps
+/// **Only the declared ports.** It reads the outgoing `PortSources` and clamps
 /// to its length, exactly as [`rebuild`] does when writing. Zeroing every input
 /// port instead would break the same contract the write path keeps — that a port
 /// this layer never declared belongs to whoever did wire it, and is not ours to
 /// silence on the way out.
 pub fn unwire_removed_sources(
-    remove: On<Remove, AudioSources>,
+    remove: On<Remove, PortSources>,
     nodes: Query<&AudioNode>,
-    declarations: Query<&AudioSources>,
+    declarations: Query<&PortSources>,
     graph: Option<ResMut<AudioGraphRes>>,
     // `Option` to match `graph`: this observer is registered by `GraphWirePlugin`
     // while `GraphDirty` is inserted by `GraphReconcilePlugin`, and both are

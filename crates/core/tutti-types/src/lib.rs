@@ -155,38 +155,22 @@ pub use meter::{
 
 /// The names a consumer of this crate actually reaches for, in one import.
 ///
-/// A curated subset of the crate root — it introduces no name the root lacks and
-/// defines nothing, so `tutti_types::Beat` and `tutti_types::prelude::Beat` are
-/// one path plus a shorthand rather than two paths. Membership was taken from
-/// the callsites in this repo: everything imported from at least three places.
-///
-/// Deliberately absent: `Unit` (the marker trait — collides with unrelated
-/// `Unit` types in DSP crates), the `latency`/`tail` graph traits (a consumer
-/// implements those rarely and deliberately), and the error types
-/// (`NotOnMidiScale`, `UnitParamOutOfRange`), which are named at the one call
-/// that can fail rather than blanket-imported.
+/// Not here, and spelled in full instead: `Unit` (it collides with unrelated
+/// `Unit` types in DSP crates), the `latency`/`tail` graph traits, and the error
+/// types `NotOnMidiScale` / `UnitParamOutOfRange`.
 pub mod prelude {
-    // Measurement vocabulary. `Beat`/`BeatDuration` lead because position and
-    // span are the two most-imported names in the engine, and the pair is what
-    // makes a musical signature spellable at all.
     pub use crate::value::{
         Amplitude, Beat, BeatDuration, Bpm, CCNumber, Cents, Db, Depth, Hz, MidiChannel, MidiGroup,
         Note, Param, ParamAddr, Phase, PhaseIncrement, PitchClass, SamplePosition, SampleRate,
         Samples, Seconds, Semitones, Tail, UnitParam, Velocity, Q,
     };
 
-    // How many channels, which speaker each one feeds, and the flat buffer that
-    // carries its own width. A signature naming any one of these usually names
-    // the others.
     pub use crate::channels::ChannelLayout;
     pub use crate::interleaved::{Interleaved, InterleavedMut, StereoPlanes};
     pub use crate::topology::{ChannelTopology, Speaker};
 
-    // The I/O edge. `OnEmpty` rides along because it is an associated const on
-    // `AudioIn`: an implementor cannot write the impl without naming it.
     pub use crate::io::{pump, AudioIn, AudioOut, OnEmpty};
 
-    // Musical meter, and the RT publish pair for non-scalar state.
     pub use crate::meter::{MeterMap, NoteValue, TimeSignature};
     pub use crate::rt::{RtPublish, RtRef};
 }

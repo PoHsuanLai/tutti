@@ -28,7 +28,7 @@ pub enum ExportSource {
     /// does this point in the graph actually sound like".
     ///
     /// Names the **entity**, not its `NodeId`, for the same reason every other
-    /// edge in this crate does (`AudioSources`, `MasterSources`): the id is
+    /// edge in this crate does (`PortSources`, `MasterSources`): the id is
     /// resolved when the render starts, so a node replaced between spawning the
     /// request and starting it — a crossfade, a rebuilt chain — is followed
     /// rather than rendered from a stale id.

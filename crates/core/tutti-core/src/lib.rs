@@ -267,37 +267,14 @@ pub use node::AudioNode;
 
 /// What a host driving the engine names, in one import.
 ///
-/// A curated subset of the crate root — no name here is absent from the root, so
-/// this is a shorthand rather than a second path. Membership came from the
-/// callsites in this repo, filtered by the rule that a type spelled in a
-/// signature reachable from the prelude belongs in it too: `Engine::process`
-/// takes an [`InterleavedMut`], `Timeline::tempo` returns a [`Bpm`], and
-/// [`MotionEvent`] is what a caller sends to move the transport.
-///
-/// Deliberately absent: `Result` (it would shadow `std::result::Result` on a
-/// glob import — spell `tutti_core::Result` when you want it), `Sample` and
-/// `Unit` (both collide with DSP-crate types), and the whole `dsp` namespace,
-/// which is fundsp's prelude and stays a module you name.
+/// Not here, and spelled in full instead: `Result`, `Sample` and `Unit` (each
+/// would shadow a name a consumer already has), and `dsp` — fundsp's prelude,
+/// which stays a module you name, so `Net` is `tutti_core::dsp::Net`.
 pub mod prelude {
-    // The value vocabulary, straight from tutti-types' own curated set.
     pub use tutti_types::prelude::*;
 
-    // The unit trait every node implements, plus the buffer types its methods
-    // are spelled in — an implementor needs all of them together.
-    //
-    // `Net` is NOT here: it lives only in `dsp` (fundsp's prelude), not at this
-    // crate's root, and a prelude may not introduce a name the root lacks. Spell
-    // `tutti_core::dsp::Net`, as all 33 callsites already do.
     pub use crate::{AudioNode, AudioUnit, BufferMut, BufferRef, NodeId, SignalFrame};
-
-    // The engine and its error. `Error` but not `Result`, per above.
-    pub use crate::{Engine, Error, MAX_ROOT_CHANNELS};
-
-    // Transport: the handle, the clock it reads, the state it reports, and the
-    // command enum a host sends. `Timeline` is what `Transport::timeline()`
-    // gives back, so it comes along.
-    pub use crate::{MotionEvent, Timeline, Transport, TransportState};
-
-    // Metering: the tap a host opens and what it reads back.
     pub use crate::{AudioTap, MasterMeter, MeterReading, TapBusy};
+    pub use crate::{Engine, Error, MAX_ROOT_CHANNELS};
+    pub use crate::{MotionEvent, Timeline, Transport, TransportState};
 }

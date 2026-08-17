@@ -15,7 +15,7 @@ use bevy_app::prelude::*;
 use bevy_ecs::prelude::*;
 
 use bevy_tutti::graph::{
-    AudioGraphRes, AudioSource, AudioSources, GraphReconcilePlugin, SpawnAudioNode,
+    AudioGraphRes, GraphReconcilePlugin, PortSource, PortSources, SpawnAudioNode,
 };
 use bevy_tutti::modulation::{ModRoute, ModSource};
 use bevy_tutti::AudioEngineState;
@@ -133,15 +133,15 @@ fn the_chain_a_reconciler_would_emit() {
 
     app.world_mut()
         .entity_mut(shaper)
-        .insert(AudioSources::from(source_node));
+        .insert(PortSources::from(source_node));
     app.world_mut().entity_mut(sum).insert(
-        AudioSources::silent()
-            .with(0, AudioSource::node(base))
-            .with(1, AudioSource::node(shaper)),
+        PortSources::silent()
+            .with(0, PortSource::node(base))
+            .with(1, PortSource::node(shaper)),
     );
     app.world_mut()
         .entity_mut(target)
-        .insert(AudioSources::silent().with(drive_port, AudioSource::node(sum)));
+        .insert(PortSources::silent().with(drive_port, PortSource::node(sum)));
     app.update();
 
     // --- the graph the engine actually holds ---
@@ -219,14 +219,14 @@ fn two_routes_onto_one_param_share_one_sum() {
     app.world_mut().flush();
 
     app.world_mut().entity_mut(sum).insert(
-        AudioSources::silent()
-            .with(0, AudioSource::node(base))
-            .with(1, AudioSource::node(a))
-            .with(2, AudioSource::node(b)),
+        PortSources::silent()
+            .with(0, PortSource::node(base))
+            .with(1, PortSource::node(a))
+            .with(2, PortSource::node(b)),
     );
     app.world_mut()
         .entity_mut(target)
-        .insert(AudioSources::silent().with(drive_port, AudioSource::node(sum)));
+        .insert(PortSources::silent().with(drive_port, PortSource::node(sum)));
     app.update();
 
     let (s, sa, sb) = (node_id(&app, sum), node_id(&app, a), node_id(&app, b));

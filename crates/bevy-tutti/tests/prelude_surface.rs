@@ -273,3 +273,44 @@ fn the_names_app_code_imports_are_all_reachable_from_the_prelude() {
     #[cfg(feature = "soundfont")]
     let _ = soundfont_plugin;
 }
+
+/// The engine's measurement vocabulary arrives whole, not as a hand-picked subset.
+///
+/// The names are what app code imports from `tutti-core` / `tutti-types`
+/// alongside this prelude, most-used first. Asserted as *values* rather than
+/// `use ... as _`, so this also pins that each is the unit newtype it claims.
+#[test]
+fn the_engine_measurement_vocabulary_is_nameable_from_the_prelude() {
+    // Musical position and span — the pair a placement is spelled in.
+    assert_eq!(Beat(1.0) + BeatDuration(3.0), Beat(4.0));
+    assert_eq!(Bpm(120.0).get(), 120.0);
+
+    // Frequency, time, and the conversion between them. `SampleRate` is the
+    // argument that conversion takes, so it has to come across with them.
+    assert_eq!(
+        Seconds(0.5).to_samples(SampleRate(48_000.0)),
+        Samples(24_000)
+    );
+    assert_eq!(Hz(440.0).get(), 440.0);
+
+    // Level: the log and linear halves, plus the named converter between them.
+    assert_eq!(Db(0.0).to_amplitude(), Amplitude(1.0));
+
+    // Pitch offsets and their converter.
+    assert_eq!(Cents(1200.0).to_semitones(), Semitones(12.0));
+
+    // Modulation depth and phase.
+    assert_eq!(Depth(0.5).get(), 0.5);
+    assert_eq!(PhaseIncrement(0.25).get(), 0.25);
+
+    // Channel width, ungated: the I/O traits report it at runtime, so a host
+    // reads a source's layout without enabling `audio-io`.
+    assert_eq!(ChannelLayout::STEREO.count(), 2);
+
+    // Param addressing — how a modulation target names the scalar it moves.
+    let _: ParamAddr = ParamAddr::Unit(UnitParam::GainDb);
+
+    // MIDI addressing, for a host installing a sequence source.
+    assert_eq!(MidiChannel::FIRST.get(), 0);
+    assert_eq!(MidiGroup::FIRST.get(), 0);
+}

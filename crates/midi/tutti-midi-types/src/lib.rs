@@ -234,17 +234,5 @@ pub mod prelude {
         ClipFileError, ControllerNamespace, MidiEvent, MidiMessage, MidiUnitId, MidiUnitIn,
         NoteAttribute, NoteId, ParsedClipFile, PerNoteController, Protocol,
     };
-    // The clip API positions events in `Beat` and measures them in
-    // `BeatDuration`, so a caller of `write_clip_file_from_beats` needs both
-    // names to say anything at all.
-    //
-    // `MidiGroup` and `MidiChannel` are here for the same reason, and more
-    // strongly: every UMP constructor takes them, so without these two names a
-    // caller cannot build a single event. They are the crate's addressing
-    // vocabulary even though they are defined one crate down.
-    //
-    // `CCNumber` and `RtPublish` join them for the same reason one level out:
-    // a CC message cannot be built without the first, and a routing table is
-    // handed to the audio thread through the second.
     pub use tutti_types::{Beat, BeatDuration, CCNumber, MidiChannel, MidiGroup, RtPublish};
 }

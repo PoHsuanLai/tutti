@@ -147,15 +147,11 @@ pub use engine::AudioEngineState;
 
 /// Everything a typical host needs, in one import.
 pub mod prelude {
-    // `AudioParam` and `AudioParamAppExt` are the scalar-param pair: the
-    // component a host attaches and the `add_audio_param::<U, P>()` registration
-    // that makes it reconcile. Naming one without the other is not usable, and
-    // both were being imported through `graph::` for want of being here.
     pub use crate::graph::{
         commit_graph, crossfade_audio_node, engine_ready, AudioConfig, AudioGraphRes, AudioParam,
-        AudioParamAppExt, AudioPump, AudioPumpAppExt, AudioSource, AudioSources, AudioTapRes,
-        EngineNodes, GraphDirty, GraphReconcilePlugin, GraphReconcileSystems, InsertAudioNode,
-        MasterSources, MeteringRes, MetronomeRes, PumpFinished, SpawnAudioNode, TransportRes,
+        AudioParamAppExt, AudioPump, AudioPumpAppExt, AudioTapRes, EngineNodes, GraphDirty,
+        GraphReconcilePlugin, GraphReconcileSystems, InsertAudioNode, MasterSources, MeteringRes,
+        MetronomeRes, PortSource, PortSources, PumpFinished, SpawnAudioNode, TransportRes,
     };
     pub use crate::{
         AudioDeviceState, AudioEngineState, ChannelCompensation, DeviceInfo, GraphLatency,
@@ -167,85 +163,38 @@ pub mod prelude {
         ExportDone, ExportInFlight, ExportOutput, ExportPlugin, ExportRequest, ExportSource,
         ExportTarget,
     };
-    // `ChannelLayout` rides along because the I/O traits carry the channel width
-    // at runtime: a host cannot open a `WavOut` or read a source's width without
-    // naming it, so leaving it out would send every caller to `tutti-core`.
     #[cfg(feature = "audio-io")]
-    pub use crate::io::{BitDepth, ChannelLayout, MicIn, MicMonitorNode, Recorder, TapIn, WavOut};
-    // The device edge (`MidiIoRes` + the `MidiDeviceEvent` a host reacts to),
-    // MPE mode, and the sequence-source installer all sat outside the prelude
-    // while being what app code actually imports from `midi::`.
+    pub use crate::io::{BitDepth, MicIn, MicMonitorNode, Recorder, TapIn, WavOut};
     #[cfg(feature = "midi")]
     pub use crate::midi::{
         MidiBusRes, MidiRoutingRes, MidiSourceInstall, MpeModeHandle, TuttiMidiPlugin,
     };
-    // The device edge is `midi-hardware`, not plain `midi`: an OS port list needs
-    // the backend, and gating these with their siblings above breaks any build
-    // that takes the software bus without the hardware one.
+    // `midi-hardware`, not `midi`: gating these with their siblings above breaks
+    // a build that takes the software bus without the hardware one.
     #[cfg(feature = "midi-hardware")]
     pub use crate::midi::{MidiDeviceEvent, MidiIoRes};
-    // `ModDelivery` picks a route's rate (per-frame scalar vs audio-rate chain),
-    // so a host building a `ModRoute` cannot finish one without it.
     #[cfg(feature = "modulation")]
     pub use crate::modulation::{
-        ModClock, ModDelivery, ModParamRange, ModRate, ModRoute, ModSource, ModTargetRegistry,
-        ModulationMatrix, TuttiModulationPlugin,
+        ModClock, ModDelivery, ModParamRange, ModRoute, ModSource, ModSourceRate,
+        ModTargetRegistry, ModulationMatrix, TuttiModulationPlugin,
     };
     #[cfg(feature = "plugin")]
     pub use crate::plugin_host::{PluginsRes, SetEditorVisible, TuttiHostingPlugin};
-    // `memory_voice` is how a host makes a voice at all; `InsertVoice` is how it
-    // reaches the graph, and `voice_width` clamps a file width to what the
-    // sampler will play. `Playback`, `VoiceWindow` and `Voice` come along
-    // because they are `memory_voice`'s own two arguments and its return —
-    // without them a host can call it but cannot write a function around it.
     #[cfg(feature = "sampler")]
     pub use crate::sampler::{
         memory_voice, voice_width, DiskStreamerRes, InsertVoice, TuttiPlaybackPlugin,
     };
-    #[cfg(feature = "sampler")]
-    pub use tutti_sampler::{Playback, Voice, VoiceWindow};
-    // The soundfont module re-exported NOTHING at the root or here, so every one
-    // of its types could only be reached by naming the module.
     #[cfg(feature = "soundfont")]
     pub use crate::soundfont::{
         PlaySoundFont, SoundFontAsset, SoundFontAssetLoader, TuttiSoundFontPlugin,
     };
+    #[cfg(feature = "sampler")]
+    pub use tutti_sampler::{Playback, Voice, VoiceWindow};
 
-    // The engine vocabulary a host writes graph edits in.
-    pub use tutti_core::{AudioNode, NodeId};
+    pub use tutti_core::prelude::*;
+    pub use tutti_core::transport::ClickState;
+    pub use tutti_core::Fade;
 
-    // Types the surface above is *spelled in*. Each is load-bearing on a
-    // signature reachable from this prelude, so omitting it means a host can
-    // call the method but not write a function around it:
-    //
-    // - `AudioUnit` bounds `spawn_audio_node<U>` and is the `Box<dyn _>` of
-    //   `crossfade_audio_node` — without it a host cannot write its own generic
-    //   spawn helper at all.
-    // - `Timeline` is what `TransportRes::timeline()` returns.
-    // - `Transport` / `ClickState` are the `Deref` targets of `TransportRes` and
-    //   `MetronomeRes`.
-    // - `Samples` is `GraphLatency`'s payload; `Beat` / `Bpm` are what
-    //   `Timeline::beat()` and `tempo()` give back.
-    // - `Fade` is the curve `crossfade_audio_node` applies.
-    // - `TapBusy` is what `AudioTapRes::open` returns on failure. Ungated,
-    //   because `AudioTapRes` is: a host can reach the method without
-    //   `audio-io`, so it must be able to name what the method gives back.
-    pub use tutti_core::dsp::AudioUnit;
-    pub use tutti_core::transport::{ClickState, Timeline, Transport};
-    pub use tutti_core::TapBusy;
-    pub use tutti_core::{Beat, Bpm, Fade, Samples};
-
-    // Transport vocabulary. These are `tutti-core`'s and are re-exported, not
-    // wrapped: a host cannot call `transport.motion.try_send(..)` or
-    // `metronome.set_mode(..)` without naming the argument types, and this
-    // crate's own docs demonstrate both. Handing out a method whose parameter
-    // type you will not let the caller spell is an incomplete forward.
-    //
-    // The same rule reaches one level further than it first appeared:
-    // `MotionEvent::{Stop, Locate}` carry `FadeOut` and `Then`, `motion()`
-    // returns `MotionState`, and `loop_span.range()` returns `LoopRange`. A host
-    // that could name `MotionEvent` but not `FadeOut` could still only write the
-    // convenience constructors.
     pub use tutti_core::transport::{
         beat_from_ports, FadeOut, LoopRange, LoopSpan, MetronomeMode, MotionEvent, MotionState,
         Then, BEAT_PORTS,

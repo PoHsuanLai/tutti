@@ -11,7 +11,7 @@ use bevy_reflect::prelude::*;
 
 use tutti_types::{BeatDuration, Depth, Hz, ParamAddr, PhaseIncrement};
 
-/// A modulation source: one LFO shape, running at one [`ModRate`].
+/// A modulation source: one LFO shape, running at one [`ModSourceRate`].
 ///
 /// The shape is `tutti_mod`'s, so this component names the engine's waveform
 /// vocabulary directly rather than mirroring it — a `From`-bridged copy is what
@@ -22,10 +22,10 @@ use tutti_types::{BeatDuration, Depth, Hz, ParamAddr, PhaseIncrement};
 /// [`ModSourceKind`](super::ModSourceKind)); it is the built-in one, and the
 /// only kind [`TuttiModulationPlugin`](super::TuttiModulationPlugin) registers
 /// on its own. A source entity carries exactly one kind component plus a
-/// [`ModRate`].
+/// [`ModSourceRate`].
 #[derive(Component, Reflect, Debug, Clone, Copy, Default, PartialEq)]
 #[reflect(Component, Debug, Default)]
-#[require(ModRate)]
+#[require(ModSourceRate)]
 pub struct ModSource {
     /// The waveform this source traces over one cycle. `tutti_mod`'s vocabulary,
     /// named directly rather than mirrored.
@@ -33,7 +33,7 @@ pub struct ModSource {
 }
 
 impl ModSource {
-    /// A source tracing `shape`, at [`ModRate`]'s default rate.
+    /// A source tracing `shape`, at [`ModSourceRate`]'s default rate.
     pub fn new(shape: LfoShape) -> Self {
         Self { shape }
     }
@@ -104,7 +104,7 @@ impl Default for ModClock {
 /// half a UI moves continuously.
 #[derive(Component, Reflect, Debug, Clone, Copy, PartialEq, Default)]
 #[reflect(Component, Debug, Default)]
-pub struct ModRate {
+pub struct ModSourceRate {
     /// The clock this source runs on, carrying its rate.
     pub clock: ModClock,
     /// A displacement applied after phase generation — negative is meaningful,
@@ -112,7 +112,7 @@ pub struct ModRate {
     pub phase_offset: PhaseIncrement,
 }
 
-impl ModRate {
+impl ModSourceRate {
     /// Locked to the transport, one cycle per `beats_per_cycle`.
     pub fn beat_synced(beats_per_cycle: impl Into<BeatDuration>) -> Self {
         Self {

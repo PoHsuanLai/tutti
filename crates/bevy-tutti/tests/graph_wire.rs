@@ -10,8 +10,8 @@ use bevy_app::prelude::*;
 use bevy_ecs::prelude::*;
 
 use bevy_tutti::graph::{
-    AudioGraphRes, AudioSource, AudioSources, GraphDirty, GraphReconcilePlugin,
-    GraphReconcileSystems, MasterSources,
+    AudioGraphRes, GraphDirty, GraphReconcilePlugin, GraphReconcileSystems, MasterSources,
+    PortSource, PortSources,
 };
 use bevy_tutti::AudioEngineState;
 // `outputs()` on `Net` is an `AudioUnit` method — the graph's own arity.
@@ -49,7 +49,7 @@ fn a_declared_source_reaches_the_graph() {
 
     app.world_mut()
         .entity_mut(filt)
-        .insert(AudioSources::from(osc));
+        .insert(PortSources::from(osc));
     app.update();
 
     let (osc_id, filt_id) = (node_id(&app, osc), node_id(&app, filt));
@@ -74,7 +74,7 @@ fn the_master_bus_has_one_declaration_not_a_race() {
 
     // Both nodes exist and both want the master. Only a declaration decides.
     app.world_mut()
-        .insert_resource(MasterSources::from(a).with(1, AudioSource::node(b)));
+        .insert_resource(MasterSources::from(a).with(1, PortSource::node(b)));
     app.update();
 
     let graph = app.world().resource::<AudioGraphRes>();
@@ -96,14 +96,14 @@ fn removing_the_declaration_silences_the_ports() {
 
     app.world_mut()
         .entity_mut(filt)
-        .insert(AudioSources::from(osc));
+        .insert(PortSources::from(osc));
     app.update();
     assert_ne!(
         app.world().resource::<AudioGraphRes>().0.source(filt_id, 0),
         Source::Zero
     );
 
-    app.world_mut().entity_mut(filt).remove::<AudioSources>();
+    app.world_mut().entity_mut(filt).remove::<PortSources>();
     app.update();
 
     assert_eq!(
@@ -117,7 +117,7 @@ fn removing_the_declaration_silences_the_ports() {
 /// picked up — without anything about the declaration changing.
 ///
 /// This is what `Added<AudioNode>` in the rebuild's dirty gate is for. Gating on
-/// `Changed<AudioSources>` alone would leave the wire unformed forever.
+/// `Changed<PortSources>` alone would leave the wire unformed forever.
 #[test]
 fn an_unresolvable_source_is_skipped_then_picked_up() {
     let mut app = app();
@@ -128,7 +128,7 @@ fn an_unresolvable_source_is_skipped_then_picked_up() {
     let pending = app.world_mut().spawn_empty().id();
     app.world_mut()
         .entity_mut(filt)
-        .insert(AudioSources::from(pending));
+        .insert(PortSources::from(pending));
     app.update();
     assert_eq!(
         app.world().resource::<AudioGraphRes>().0.source(filt_id, 0),
@@ -148,7 +148,7 @@ fn an_unresolvable_source_is_skipped_then_picked_up() {
         app.world().resource::<AudioGraphRes>().0.source(filt_id, 0),
         Source::Local(id, 0),
         "the wire forms once the node exists — nothing about the declaration \
-         changed, so a gate on `Changed<AudioSources>` alone would miss it"
+         changed, so a gate on `Changed<PortSources>` alone would miss it"
     );
 }
 
@@ -163,7 +163,7 @@ fn a_self_connection_is_skipped_not_panicked_on() {
 
     app.world_mut()
         .entity_mut(filt)
-        .insert(AudioSources::from(filt));
+        .insert(PortSources::from(filt));
     app.update();
 
     assert_eq!(
@@ -184,9 +184,9 @@ fn an_out_of_range_source_port_is_skipped() {
 
     app.world_mut()
         .entity_mut(filt)
-        .insert(AudioSources::silent().with(
+        .insert(PortSources::silent().with(
             0,
-            AudioSource::Node {
+            PortSource::Node {
                 entity: mono,
                 port: 7,
             },
@@ -204,7 +204,7 @@ fn an_out_of_range_source_port_is_skipped() {
 
 /// Re-binding an entity to a different node re-derives every wire naming it.
 ///
-/// This is the whole reason `AudioSource::Node` holds an `Entity` rather than a
+/// This is the whole reason `PortSource::Node` holds an `Entity` rather than a
 /// `NodeId` — and it did not work: the dirty gate was `Added<AudioNode>`, but a
 /// replacement `insert` on an entity that already has the component fires
 /// `Changed` without `Added`. Wires kept pointing at the retired node forever.
@@ -217,7 +217,7 @@ fn re_binding_an_entity_to_a_new_node_re_derives_the_wire() {
 
     app.world_mut()
         .entity_mut(filt)
-        .insert(AudioSources::from(osc));
+        .insert(PortSources::from(osc));
     app.update();
     let first = node_id(&app, osc);
     assert_eq!(
@@ -256,7 +256,7 @@ fn removing_a_declaration_leaves_undeclared_ports_alone() {
 
     app.world_mut()
         .entity_mut(sink)
-        .insert(AudioSources::from(declared_src));
+        .insert(PortSources::from(declared_src));
     // Port 1 wired by hand — undeclared, so this layer must not own it.
     {
         let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
@@ -264,7 +264,7 @@ fn removing_a_declaration_leaves_undeclared_ports_alone() {
     }
     app.update();
 
-    app.world_mut().entity_mut(sink).remove::<AudioSources>();
+    app.world_mut().entity_mut(sink).remove::<PortSources>();
     app.update();
 
     let graph = app.world().resource::<AudioGraphRes>();
@@ -365,7 +365,7 @@ fn a_rebuild_that_changes_nothing_writes_nothing() {
     let filt = spawn_node(&mut app, pass());
     app.world_mut()
         .entity_mut(filt)
-        .insert(AudioSources::from(osc));
+        .insert(PortSources::from(osc));
     app.update();
 
     // Sample GraphDirty after the rebuild and before the commit clears it.
@@ -502,7 +502,7 @@ fn a_master_declaration_cannot_exceed_the_render_scratch() {
 
     let mut sources = MasterSources::default();
     for channel in 0..32 {
-        sources = sources.with(channel, AudioSource::node(node));
+        sources = sources.with(channel, PortSource::node(node));
     }
     app.insert_resource(sources);
     app.update();
@@ -533,7 +533,7 @@ fn from_node_at_width_maps_every_channel_straight_through() {
 
     app.world_mut()
         .entity_mut(sink)
-        .insert(AudioSources::from_node_at_width(
+        .insert(PortSources::from_node_at_width(
             src,
             tutti_core::ChannelLayout::from(6u16),
         ));
@@ -559,7 +559,7 @@ fn from_node_at_width_at_stereo_is_stereo_from() {
     let e = spawn_node(&mut app, pass());
 
     assert_eq!(
-        AudioSources::from_node_at_width(e, tutti_core::ChannelLayout::STEREO),
-        AudioSources::stereo_from(e)
+        PortSources::from_node_at_width(e, tutti_core::ChannelLayout::STEREO),
+        PortSources::stereo_from(e)
     );
 }

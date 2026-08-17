@@ -23,7 +23,7 @@
 //! fundsp's `Panner` is unreachable from the declared path for a second reason:
 //! it answers only `Parameter::Pan`, while `node_setting` emits
 //! `Setting::value(..).index(..)`. And `Panner<U2>` takes its pan as an *audio
-//! input port*, which would sit in the same index space `AudioSources` declares
+//! input port*, which would sit in the same index space `PortSources` declares
 //! into — where `Net::pipe_input` silently overwrites it.
 //!
 //! # The balance law is this crate's own

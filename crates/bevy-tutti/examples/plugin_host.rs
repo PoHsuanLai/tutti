@@ -37,7 +37,7 @@ use bevy_app::prelude::*;
 use bevy_ecs::prelude::*;
 
 use bevy_tutti::graph::{
-    AudioConfig, AudioGraphRes, AudioSources, GraphReconcilePlugin, MasterSources, MetronomeRes,
+    AudioConfig, AudioGraphRes, GraphReconcilePlugin, MasterSources, MetronomeRes, PortSources,
     SpawnAudioNode, TransportRes,
 };
 use bevy_tutti::plugin_host::{
@@ -237,7 +237,7 @@ fn narrate_load(
         .id();
     commands
         .entity(entity)
-        .insert(AudioSources::stereo_from(source));
+        .insert(PortSources::stereo_from(source));
     commands.insert_resource(MasterSources::from(entity));
     println!("  fed {INPUT_LEVEL} DC in, wired to master out");
 

@@ -148,7 +148,7 @@ impl std::ops::Deref for MetronomeRes {
 /// [`AudioNode`](tutti_core::AudioNode) and nothing else, and a query cannot
 /// tell them apart from each other.
 ///
-/// That matters because [`AudioSources`](crate::graph::AudioSources) names
+/// That matters because [`PortSources`](crate::graph::PortSources) names
 /// sources by `Entity`. An unreachable entity is an unwirable node.
 ///
 /// It holds `Entity`, not `NodeId`, for the reason the whole wiring layer does:
@@ -184,9 +184,9 @@ pub struct EngineNodes {
     /// fn wire_to_clock(mut commands: Commands, nodes: Res<EngineNodes>) {
     ///     commands
     ///         .spawn_audio_node(beat_driven_node())
-    ///         .insert(AudioSources(vec![
-    ///             AudioSource::Node { entity: nodes.clock, port: 0 },
-    ///             AudioSource::Node { entity: nodes.clock, port: 1 },
+    ///         .insert(PortSources(vec![
+    ///             PortSource::Node { entity: nodes.clock, port: 0 },
+    ///             PortSource::Node { entity: nodes.clock, port: 1 },
     ///         ]));
     /// }
     ///
@@ -237,7 +237,7 @@ pub struct EngineNodes {
     /// so the first soundfont to load would silently disconnect the metronome.
     ///
     /// Declare it with [`MasterSources`](crate::graph::MasterSources), or feed
-    /// it into a mixer with [`AudioSources`](crate::graph::AudioSources).
+    /// it into a mixer with [`PortSources`](crate::graph::PortSources).
     ///
     /// Volume, mode and meter are separate — those are atomics on
     /// [`MetronomeRes`], not graph edges.

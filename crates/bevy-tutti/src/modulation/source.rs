@@ -25,9 +25,9 @@
 //! config and leave most fields meaningless for any given one. A component per
 //! kind keeps each modulator's parameters typed, individually
 //! change-detectable, and reflectable — the same reasoning that already keeps
-//! [`ModRate`] off `ModSource`.
+//! [`ModSourceRate`] off `ModSource`.
 //!
-//! [`ModRate`] stays shared: *how a source derives phase from the transport* is
+//! [`ModSourceRate`] stays shared: *how a source derives phase from the transport* is
 //! a property of being a source at all, not of which kind it is.
 
 use bevy_app::App;
@@ -39,7 +39,7 @@ use std::sync::Arc;
 use tutti_mod::{Curve, EdgeShape, ErasedModulator, Modulator, SourceRate};
 use tutti_types::{BeatDuration, Hz, Param, ParamAddr, UnitParam};
 
-use crate::modulation::components::{ModClock, ModRate, ModRoute};
+use crate::modulation::components::{ModClock, ModRoute, ModSourceRate};
 
 /// A component that describes how to build one kind of modulator.
 ///
@@ -56,7 +56,7 @@ pub trait ModSourceKind: Component + Clone + Send + Sync + Sized + 'static {
 
     /// Construct the modulator from the authored parameters.
     ///
-    /// Rate is deliberately absent: it arrives from the entity's [`ModRate`]
+    /// Rate is deliberately absent: it arrives from the entity's [`ModSourceRate`]
     /// and is applied by the caller, so a kind cannot accidentally own two
     /// notions of frequency.
     fn build(&self) -> Self::Source;
@@ -69,7 +69,7 @@ pub trait ModSourceKind: Component + Clone + Send + Sync + Sized + 'static {
     /// scalar path would otherwise apply per frame, so both deliveries agree on
     /// the value.
     ///
-    /// `beats_per_cycle` comes from the entity's [`ModRate`], converted by the
+    /// `beats_per_cycle` comes from the entity's [`ModSourceRate`], converted by the
     /// caller — the same reasoning that keeps rate off [`build`](Self::build).
     ///
     /// `None` by default, which is the honest answer for any modulator needing
@@ -168,7 +168,7 @@ pub(crate) fn clear_collected(mut collected: ResMut<CollectedModSources>) {
 pub(crate) fn ensure_rate_cells(
     mut commands: Commands,
     routes: Query<&ModRoute>,
-    sources: Query<(&ModRate, Option<&ModRateCell>)>,
+    sources: Query<(&ModSourceRate, Option<&ModRateCell>)>,
 ) {
     for route in &routes {
         // Only a route onto a *rate* needs one. Every other param on a source
@@ -210,7 +210,7 @@ pub(crate) fn ensure_rate_cells(
 )]
 fn mark_dirty<K: ModSourceKind>(
     mut collected: ResMut<CollectedModSources>,
-    changed: Query<Entity, Or<(Changed<K>, Changed<ModRate>)>>,
+    changed: Query<Entity, Or<(Changed<K>, Changed<ModSourceRate>)>>,
     mut removed: RemovedComponents<K>,
 ) {
     // Draining the reader marks this frame's removals as seen either way.
@@ -228,7 +228,7 @@ fn mark_dirty<K: ModSourceKind>(
 /// how `rebuild` stays free of every modulator type.
 fn collect<K: ModSourceKind>(
     mut collected: ResMut<CollectedModSources>,
-    sources: Query<(Entity, &K, &ModRate, Option<&ModRateCell>)>,
+    sources: Query<(Entity, &K, &ModSourceRate, Option<&ModRateCell>)>,
 ) {
     if !collected.dirty {
         return;
@@ -352,7 +352,7 @@ struct RegisteredModSources(std::collections::HashSet<core::any::TypeId>);
 /// Present only on a source entity something routes *to* — added by
 /// [`rebuild`](super::rebuild) when it resolves such a route, not by the user.
 /// Its absence is the ordinary case and means the rate is the constant in
-/// [`ModRate`].
+/// [`ModSourceRate`].
 ///
 /// It is a **component, not a build-time value**, and that is load-bearing:
 /// `collect` reconstructs every [`Sourced`](tutti_mod::Sourced) on each
@@ -384,20 +384,20 @@ impl ModRateCell {
     /// The frequency the source is running at *now* — the authored rate until
     /// modulation moves it, and the modulated value thereafter.
     ///
-    /// This is the live read a UI wants: `ModRate::frequency` is what the user
+    /// This is the live read a UI wants: `ModSourceRate::frequency` is what the user
     /// authored and does not move.
     pub fn frequency(&self) -> Hz {
         self.0.load()
     }
 }
 
-/// Turn a [`ModRate`] component into the engine's [`SourceRate`].
+/// Turn a [`ModSourceRate`] component into the engine's [`SourceRate`].
 ///
 /// `cell` is `Some` only when this source's own rate is modulated, in which
 /// case the frequency is read from it each frame and the authored `Hz` serves
 /// only as the value it was seeded with. Only the free-running arm has one —
 /// see [`ensure_rate_cells`].
-pub(crate) fn source_rate(rate: &ModRate, cell: Option<&ModRateCell>) -> SourceRate {
+pub(crate) fn source_rate(rate: &ModSourceRate, cell: Option<&ModRateCell>) -> SourceRate {
     match rate.clock {
         ModClock::Free { hz } => {
             let frequency: tutti_mod::Rate = match cell {

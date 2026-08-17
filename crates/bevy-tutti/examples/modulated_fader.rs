@@ -21,8 +21,8 @@ use bevy_tutti::graph::{
     AudioGraphRes, AudioParam, AudioParamAppExt, GraphReconcilePlugin, TransportRes,
 };
 use bevy_tutti::modulation::{
-    LfoShape, ModParamRange, ModRate, ModRoute, ModSource, ModTargetRegistry, ModulationMatrix,
-    TuttiModulationPlugin,
+    LfoShape, ModParamRange, ModRoute, ModSource, ModSourceRate, ModTargetRegistry,
+    ModulationMatrix, TuttiModulationPlugin,
 };
 use bevy_tutti::AudioEngineState;
 use tutti_core::dsp::{AudioUnit as _, Net};
@@ -152,7 +152,7 @@ fn main() {
         .world_mut()
         .spawn((
             ModSource::new(LfoShape::Sine),
-            ModRate::free_running(Hz(2.0)),
+            ModSourceRate::free_running(Hz(2.0)),
         ))
         .id();
     // Depth scales the raw [-1, 1] LFO by the target's *span*, so 0.2 over a

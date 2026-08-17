@@ -1,7 +1,7 @@
 //! Spawning a sampler voice as an ECS-owned graph node.
 //!
 //! One [`VoiceNode`] per entity, wired like any other node — `spawn_audio_node`
-//! adds it, [`AudioSources`](crate::graph::AudioSources) on a sink names it as a
+//! adds it, [`PortSources`](crate::graph::PortSources) on a sink names it as a
 //! source, and the `On<Remove, AudioNode>` observer takes it back out.
 //!
 //! # Why not `VoicePool`

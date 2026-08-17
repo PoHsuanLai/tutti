@@ -470,7 +470,7 @@ pub struct ParamModShaping {
 /// Create an audio-rate param edge's nodes, **unwired**.
 ///
 /// For a host that owns its own wiring. `bevy-tutti` is one: it declares edges
-/// as `AudioSources` components and diffs them against `Net` each frame, so an
+/// as `PortSources` components and diffs them against `Net` each frame, so an
 /// edge `connect`ed behind the reconciler's back is reverted on the next pass.
 /// Such a host wants the nodes and the base cell, and makes the connections
 /// itself.

@@ -232,7 +232,7 @@ pub fn soundfont_playback_system(
 ///   then the previous soundfont, silently, in query order. Whether a soundfont
 ///   is audible is declared with
 ///   [`MasterSources`](crate::graph::MasterSources) or an
-///   [`AudioSources`](crate::graph::AudioSources) on a mixer.
+///   [`PortSources`](crate::graph::PortSources) on a mixer.
 pub fn promote_pending_soundfonts(
     mut commands: Commands,
     graph: Option<ResMut<AudioGraphRes>>,

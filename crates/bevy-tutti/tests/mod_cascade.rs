@@ -17,7 +17,7 @@ use bevy_ecs::prelude::*;
 
 use bevy_tutti::graph::{AudioGraphRes, GraphReconcilePlugin, TransportRes};
 use bevy_tutti::modulation::{
-    LfoShape, ModParamRange, ModRate, ModRateCell, ModRoute, ModSource, ModTargetRegistry,
+    LfoShape, ModParamRange, ModRateCell, ModRoute, ModSource, ModSourceRate, ModTargetRegistry,
     ModulationMatrix, TuttiModulationPlugin,
 };
 use bevy_tutti::AudioEngineState;
@@ -71,7 +71,7 @@ fn spawn_cascade(app: &mut App) -> (Entity, Entity) {
         .world_mut()
         .spawn((
             ModSource::new(LfoShape::Sine),
-            ModRate::free_running(Hz(CARRIER_RATE)),
+            ModSourceRate::free_running(Hz(CARRIER_RATE)),
             ModParamRange::default().with(
                 ParamAddr::Unit(UnitParam::Rate),
                 CARRIER_RATE,
@@ -85,7 +85,7 @@ fn spawn_cascade(app: &mut App) -> (Entity, Entity) {
         .world_mut()
         .spawn((
             ModSource::new(LfoShape::Sine),
-            ModRate::free_running(Hz(1.0)),
+            ModSourceRate::free_running(Hz(1.0)),
         ))
         .id();
 
@@ -199,7 +199,7 @@ fn a_driven_rate_changes_the_carriers_own_output() {
             .world_mut()
             .spawn((
                 ModSource::new(LfoShape::Sine),
-                ModRate::free_running(Hz(CARRIER_RATE)),
+                ModSourceRate::free_running(Hz(CARRIER_RATE)),
                 ModParamRange::default().with(
                     ParamAddr::Unit(UnitParam::Rate),
                     CARRIER_RATE,
@@ -228,7 +228,7 @@ fn a_driven_rate_changes_the_carriers_own_output() {
                 .world_mut()
                 .spawn((
                     ModSource::new(LfoShape::Sine),
-                    ModRate::free_running(Hz(1.0)),
+                    ModSourceRate::free_running(Hz(1.0)),
                 ))
                 .id();
             app.world_mut().spawn(
@@ -307,7 +307,7 @@ fn the_cascade_survives_a_rebuild() {
         .world_mut()
         .spawn((
             ModSource::new(LfoShape::Triangle),
-            ModRate::free_running(Hz(3.0)),
+            ModSourceRate::free_running(Hz(3.0)),
         ))
         .id();
     app.world_mut().spawn(

@@ -13,8 +13,8 @@ use bevy_ecs::prelude::*;
 
 use bevy_tutti::graph::{AudioGraphRes, GraphReconcilePlugin, TransportRes};
 use bevy_tutti::modulation::{
-    ModParamRange, ModRate, ModRoute, ModSource, ModSourceAppExt, ModSourceKind, ModTargetRegistry,
-    ModulationMatrix, TuttiModulationPlugin,
+    ModParamRange, ModRoute, ModSource, ModSourceAppExt, ModSourceKind, ModSourceRate,
+    ModTargetRegistry, ModulationMatrix, TuttiModulationPlugin,
 };
 use bevy_tutti::AudioEngineState;
 use tutti_core::dsp::Net;
@@ -128,7 +128,10 @@ fn a_custom_kind_drives_a_param() {
 
     let source = app
         .world_mut()
-        .spawn((StairSource { amount: 1.0 }, ModRate::free_running(Hz(10.0))))
+        .spawn((
+            StairSource { amount: 1.0 },
+            ModSourceRate::free_running(Hz(10.0)),
+        ))
         .id();
     app.world_mut().spawn(
         ModRoute::new(source, target, ParamAddr::Unit(UnitParam::Drive)).with_depth(Depth(0.2)),
@@ -175,7 +178,10 @@ fn the_kinds_own_config_reaches_the_modulator() {
 
         let source = app
             .world_mut()
-            .spawn((StairSource { amount }, ModRate::free_running(Hz(10.0))))
+            .spawn((
+                StairSource { amount },
+                ModSourceRate::free_running(Hz(10.0)),
+            ))
             .id();
         app.world_mut().spawn(
             ModRoute::new(source, target, ParamAddr::Unit(UnitParam::Drive)).with_depth(Depth(0.2)),
@@ -211,12 +217,15 @@ fn a_built_in_and_a_custom_kind_coexist() {
         .world_mut()
         .spawn((
             ModSource::new(bevy_tutti::modulation::LfoShape::Sine),
-            ModRate::free_running(Hz(10.0)),
+            ModSourceRate::free_running(Hz(10.0)),
         ))
         .id();
     let stair = app
         .world_mut()
-        .spawn((StairSource { amount: 1.0 }, ModRate::free_running(Hz(10.0))))
+        .spawn((
+            StairSource { amount: 1.0 },
+            ModSourceRate::free_running(Hz(10.0)),
+        ))
         .id();
 
     app.world_mut().spawn(
@@ -260,7 +269,10 @@ fn registering_a_kind_twice_is_idempotent() {
 
     let source = app
         .world_mut()
-        .spawn((StairSource { amount: 1.0 }, ModRate::free_running(Hz(10.0))))
+        .spawn((
+            StairSource { amount: 1.0 },
+            ModSourceRate::free_running(Hz(10.0)),
+        ))
         .id();
     app.world_mut().spawn(
         ModRoute::new(source, target, ParamAddr::Unit(UnitParam::Drive)).with_depth(Depth(0.2)),

@@ -327,7 +327,7 @@ mod tests {
 
     use crate::graph::{AudioGraphRes, GraphReconcilePlugin, TransportRes};
     use crate::modulation::{
-        LfoShape, ModParamRange, ModRate, ModRoute, ModSource, ModTargetRegistry,
+        LfoShape, ModParamRange, ModRoute, ModSource, ModSourceRate, ModTargetRegistry,
         TuttiModulationPlugin,
     };
     use crate::AudioEngineState;
@@ -404,7 +404,7 @@ mod tests {
             // sweeping — the base shift stays legible against it.
             .spawn((
                 ModSource::new(LfoShape::Square),
-                ModRate::free_running(Hz(0.0)),
+                ModSourceRate::free_running(Hz(0.0)),
             ))
             .id();
         app.world_mut().spawn(
@@ -462,7 +462,7 @@ mod tests {
             // legible against it rather than sweeping.
             .spawn((
                 ModSource::new(LfoShape::Square),
-                ModRate::free_running(Hz(0.0)),
+                ModSourceRate::free_running(Hz(0.0)),
             ))
             .id();
         app.world_mut().spawn(
@@ -515,7 +515,7 @@ mod tests {
             .world_mut()
             .spawn((
                 ModSource::new(LfoShape::Square),
-                ModRate::free_running(Hz(0.0)),
+                ModSourceRate::free_running(Hz(0.0)),
             ))
             .id();
         app.world_mut().spawn(

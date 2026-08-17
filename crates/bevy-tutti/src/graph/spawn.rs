@@ -24,7 +24,7 @@ use crate::graph::{AudioGraphRes, GraphDirty};
 /// # The node arrives unwired
 ///
 /// A fresh node has no edges and renders nothing. Declare what feeds it with
-/// [`AudioSources`](crate::graph::AudioSources) on this entity, and declare what
+/// [`PortSources`](crate::graph::PortSources) on this entity, and declare what
 /// reaches the speakers with [`MasterSources`](crate::graph::MasterSources):
 ///
 /// ```rust
@@ -41,7 +41,7 @@ use crate::graph::{AudioGraphRes, GraphDirty};
 ///     let osc = commands.spawn_audio_node(sine_hz::<f32>(440.0)).id();
 ///     let filt = commands
 ///         .spawn_audio_node(lowpass_hz(1000.0, 1.0))
-///         .insert((Filter, AudioSources::from(osc)))
+///         .insert((Filter, PortSources::from(osc)))
 ///         .id();
 ///     commands.insert_resource(MasterSources::mono_from(filt));
 /// }
@@ -61,7 +61,7 @@ use crate::graph::{AudioGraphRes, GraphDirty};
 ///     .0;
 /// let graph = app.world().resource::<AudioGraphRes>();
 /// // Port 0 of the filter is fed by the oscillator — the declaration reached
-/// // the engine. Without the `AudioSources`, this would still read `Zero`.
+/// // the engine. Without the `PortSources`, this would still read `Zero`.
 /// assert!(matches!(graph.0.source(filt, 0), Source::Local(_, 0)));
 /// ```
 ///
@@ -163,7 +163,7 @@ impl<'w, 's> SpawnAudioNode for Commands<'w, 's> {
 ///    [`commit_graph`](crate::graph::commit_graph) flushes.
 ///
 /// The same `NodeId` survives the crossfade — connections to/from this node
-/// stay valid, and any [`AudioSources`](crate::graph::AudioSources) naming this
+/// stay valid, and any [`PortSources`](crate::graph::PortSources) naming this
 /// entity keeps resolving. Callers don't need to update any other components.
 ///
 /// Use this for parameter changes that aren't safe to mutate live (e.g. a

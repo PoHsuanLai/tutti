@@ -98,7 +98,7 @@ Every component is a thin wrapper over a tutti capability that already exists.
 |-----------|---------|---------------|
 | `AudioNode(NodeId)` | always | Identity for "this entity owns a graph node." |
 | `AudioParam<U, P>` | always | One scalar param: unit `U`, address `P`. Registered with `App::add_audio_param`. |
-| `AudioSources` | always | What feeds this entity's input ports. Index *i* is port *i*. |
+| `PortSources` | always | What feeds this entity's input ports. Index *i* is port *i*. |
 | `AudioPump<S, CH>` | always | A running `AudioIn` → `AudioOut` transfer. Registered with `App::add_audio_pump`. |
 | `ModParamRange` | `modulation` | Depth/range for a modulated param. |
 | `PendingSoundFontUnit` | `synth` | "Build a SoundFont unit off-thread, then bind it." |
@@ -265,7 +265,7 @@ The node is a plain `AudioUnit`; add it and declare what it feeds, like any node
 ```rust
 let (mic, monitor) = MicIn::open_with_monitor(None)?;
 let id = graph.0.add(Box::new(monitor));
-commands.spawn(AudioNode(id));   // then name it in MasterSources or an AudioSources
+commands.spawn(AudioNode(id));   // then name it in MasterSources or an PortSources
 ```
 
 A monitor node that is never wired fills its ~10 ms ring and then silently drops

@@ -19,7 +19,7 @@
 //!
 //! The rest is already the right shape to hold directly: [`WavOut`] is handed
 //! to a pump, and [`MicMonitorNode`] is an `AudioUnit` declared through
-//! [`AudioSources`](crate::graph::AudioSources) like any other node.
+//! [`PortSources`](crate::graph::PortSources) like any other node.
 //!
 //! # [`Recorder`] or [`AudioPump`](crate::graph::AudioPump)?
 //!

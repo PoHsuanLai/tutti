@@ -3,7 +3,7 @@
 //! `crate::io` re-exports engine types without wrapping them, on the claim that
 //! they are already the right shape for a host to hold directly. That claim is
 //! only worth anything if a `MicMonitorNode` really does reconcile like any
-//! other node — declared through `AudioSources`/`MasterSources`, reached by
+//! other node — declared through `PortSources`/`MasterSources`, reached by
 //! `Net::output_source`, and carrying audio once wired.
 //!
 //! These read the engine back rather than trusting the component, for the same
@@ -17,7 +17,7 @@ use bevy_app::prelude::*;
 use bevy_ecs::prelude::*;
 use ringbuf::traits::{Producer as _, Split as _};
 
-use bevy_tutti::graph::{AudioGraphRes, AudioSources, GraphReconcilePlugin, MasterSources};
+use bevy_tutti::graph::{AudioGraphRes, GraphReconcilePlugin, MasterSources, PortSources};
 use bevy_tutti::io::{MicMonitorNode, MicRing};
 use bevy_tutti::AudioEngineState;
 use tutti_core::dsp::{pass, AudioUnit as _, Net, Source};
@@ -109,7 +109,7 @@ fn a_monitor_node_can_feed_an_effect_chain() {
 
     app.world_mut()
         .entity_mut(fx)
-        .insert(AudioSources::from(mon));
+        .insert(PortSources::from(mon));
     app.insert_resource(MasterSources::from(fx));
     app.update();
 

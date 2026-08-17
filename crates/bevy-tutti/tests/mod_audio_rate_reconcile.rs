@@ -13,7 +13,7 @@ use bevy_ecs::prelude::*;
 use bevy_tutti::graph::{AudioGraphRes, GraphReconcilePlugin};
 use bevy_tutti::modulation::audio_rate::{AudioRateChains, ModSourceNode};
 use bevy_tutti::modulation::{
-    ModParamRange, ModRate, ModRoute, ModSource, ModTargetRegistry, TuttiModulationPlugin,
+    ModParamRange, ModRoute, ModSource, ModSourceRate, ModTargetRegistry, TuttiModulationPlugin,
 };
 use bevy_tutti::AudioEngineState;
 use tutti_core::dsp::{Net, Source};
@@ -52,7 +52,7 @@ fn spawn_lfo(app: &mut App) -> Entity {
     app.world_mut()
         .spawn((
             ModSource::new(LfoShape::Sine),
-            ModRate::free_running(Hz(2.0)),
+            ModSourceRate::free_running(Hz(2.0)),
         ))
         .id()
 }

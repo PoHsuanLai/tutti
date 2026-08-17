@@ -177,9 +177,13 @@ pub mod prelude {
     // while being what app code actually imports from `midi::`.
     #[cfg(feature = "midi")]
     pub use crate::midi::{
-        MidiBusRes, MidiDeviceEvent, MidiIoRes, MidiRoutingRes, MidiSourceInstall, MpeModeHandle,
-        TuttiMidiPlugin,
+        MidiBusRes, MidiRoutingRes, MidiSourceInstall, MpeModeHandle, TuttiMidiPlugin,
     };
+    // The device edge is `midi-hardware`, not plain `midi`: an OS port list needs
+    // the backend, and gating these with their siblings above breaks any build
+    // that takes the software bus without the hardware one.
+    #[cfg(feature = "midi-hardware")]
+    pub use crate::midi::{MidiDeviceEvent, MidiIoRes};
     // `ModDelivery` picks a route's rate (per-frame scalar vs audio-rate chain),
     // so a host building a `ModRoute` cannot finish one without it.
     #[cfg(feature = "modulation")]

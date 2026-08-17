@@ -29,6 +29,10 @@ pub mod scanner;
 pub use catalog::{CatalogExt, PluginCatalog};
 #[cfg(feature = "json")]
 pub use database::JsonCatalog;
+// `file_modification_time` is reached as `crate::host::discovery::…` from
+// `plugins.rs`, but only under `cfg(test)` — so a lib-only build sees this
+// re-export as unused while removing it breaks `cargo test`.
+#[allow(unused_imports)]
 pub use fs::{discover, file_modification_time, format_from_path};
 pub use record::{
     AuComponentType, Blacklist, ClapFeature, PluginClass, PluginDescriptor, PluginFormat,

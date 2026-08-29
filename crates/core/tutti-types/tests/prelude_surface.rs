@@ -10,14 +10,14 @@
 //! aliases keep the two from colliding.
 
 // Measurement vocabulary.
-#[allow(unused_imports)]
+#[allow(unused_imports, reason = "resolution IS the assertion — nothing uses these")]
 use tutti_types::prelude::{
     Amplitude as _, Beat as _, BeatDuration as _, Bpm as _, CCNumber as _, Cents as _, Db as _,
     Depth as _, Hz as _, MidiChannel as _, MidiGroup as _, Note as _, Param as _, ParamAddr as _,
     Phase as _, PhaseIncrement as _, PitchClass as _, SamplePosition as _, SampleRate as _,
     Samples as _, Seconds as _, Semitones as _, Tail as _, UnitParam as _, Velocity as _, Q as _,
 };
-#[allow(unused_imports)]
+#[allow(unused_imports, reason = "resolution IS the assertion — nothing uses these")]
 use tutti_types::{
     Amplitude as _, Beat as _, BeatDuration as _, Bpm as _, CCNumber as _, Cents as _, Db as _,
     Depth as _, Hz as _, MidiChannel as _, MidiGroup as _, Note as _, Param as _, ParamAddr as _,
@@ -26,13 +26,13 @@ use tutti_types::{
 };
 
 // Channels, topology, buffers, I/O edge, meter, RT.
-#[allow(unused_imports)]
+#[allow(unused_imports, reason = "resolution IS the assertion — nothing uses these")]
 use tutti_types::prelude::{
     AudioIn as _, AudioOut as _, ChannelLayout as _, ChannelTopology as _, Interleaved as _,
     InterleavedMut as _, MeterMap as _, NoteValue as _, RtPublish as _, RtRef as _, Speaker as _,
     StereoPlanes as _, TimeSignature as _,
 };
-#[allow(unused_imports)]
+#[allow(unused_imports, reason = "resolution IS the assertion — nothing uses these")]
 use tutti_types::{
     AudioIn as _, AudioOut as _, ChannelLayout as _, ChannelTopology as _, Interleaved as _,
     InterleavedMut as _, MeterMap as _, NoteValue as _, RtPublish as _, RtRef as _, Speaker as _,

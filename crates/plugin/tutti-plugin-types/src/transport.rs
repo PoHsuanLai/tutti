@@ -30,7 +30,10 @@ pub struct TransportInfo {
     pub loop_region: LoopRegion,
     /// Where the current bar starts, and its number.
     pub bar: BarInfo,
-    /// Sample rate in Hz (vst3 `ProcessContext::sampleRate`).
+    /// Sample rate in Hz (vst3 `ProcessContext::sampleRate`). A raw `f64`
+    /// rather than `Hz` because it is handed straight to a C ABI, which is
+    /// where the unit types stop — and `Hz` is `f32`-backed, so it could not
+    /// carry the ABI's value verbatim anyway.
     pub sample_rate: f64,
 }
 
@@ -135,7 +138,10 @@ pub struct TransportPosition {
     /// matches `quarters`; in other time signatures the host is
     /// responsible for the conversion.
     pub beats: f64,
-    /// Seconds from song start (clap `song_pos_seconds`).
+    /// Seconds from song start (clap `song_pos_seconds`). A raw `f64` rather
+    /// than `Seconds` because it is handed straight to a C ABI, which is where
+    /// the unit types stop — and `Seconds` is `f32`-backed, so it cannot carry
+    /// an hour-long song position at full precision.
     pub seconds: f64,
 }
 
@@ -158,7 +164,8 @@ pub struct LoopRegion {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct BarInfo {
     /// Position of the current bar in quarter notes (vst2/vst3
-    /// `barPositionMusic`).
+    /// `barPositionMusic`). A raw `f64` rather than `Beat` because it is
+    /// handed straight to a C ABI, which is where the unit types stop.
     pub position_quarters: f64,
     /// Position of the current bar in beats (clap `bar_start`).
     pub start_beats: f64,

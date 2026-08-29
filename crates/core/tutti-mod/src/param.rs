@@ -41,6 +41,15 @@ const FRAME_BEAT: Beat = Beat(0.0);
 /// collapsed value into the atomic (`Release`-ordered), so a consumer's
 /// `Acquire` load always sees a consistent value.
 ///
+/// # Why bare `f32`, not a unit newtype
+///
+/// Deliberately unit-erased. This is the generic sink half of the mod matrix:
+/// one type receives a cutoff's `Hz`, a level's amplitude, and a plugin's
+/// foreign param alike, so no single unit can appear in its signature. The
+/// unit lives with the param that owns the mirror — a contribution is already
+/// denominated in the target's own units when it arrives (the route's depth
+/// scaling did that), and `base`/`min`/`max` here merely bound it.
+///
 /// Two ways to build it:
 /// - [`AtomicTarget::new`] owns a fresh atomic — call [`mirror`](Self::mirror)
 ///   to hand a read handle to the consumer. Use for UI values, tests, or a new

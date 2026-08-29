@@ -194,16 +194,16 @@ impl OverlapTails {
 /// vector: one-pole smoothers on each angle, stepped once per rendered frame.
 struct PositionSmoother {
     smoother: AngleSmoother,
-    target_azimuth: f32,
-    target_elevation: f32,
+    target_azimuth: Azimuth,
+    target_elevation: Elevation,
 }
 
 impl PositionSmoother {
     fn new(sample_rate: SampleRate) -> Self {
         Self {
             smoother: AngleSmoother::new(sample_rate),
-            target_azimuth: 0.0,
-            target_elevation: 0.0,
+            target_azimuth: Azimuth(0.0),
+            target_elevation: Elevation(0.0),
         }
     }
 
@@ -211,10 +211,8 @@ impl PositionSmoother {
     fn aim_at(&mut self, azimuth: Azimuth, elevation: Elevation) {
         // Normalize on the way in, each coordinate by its own rule: the
         // bearing wraps onto the circle, the height saturates at the poles.
-        // Stored unwrapped: the smoothers re-wrap per frame, and these are
-        // private scratch feeding `sin`/`cos`.
-        self.target_azimuth = azimuth.wrap().get();
-        self.target_elevation = Elevation::new_clamped(elevation.get()).get();
+        self.target_azimuth = azimuth.wrap();
+        self.target_elevation = Elevation::new_clamped(elevation.get());
     }
 
     fn retune(&mut self, sample_rate: SampleRate) {
@@ -224,10 +222,9 @@ impl PositionSmoother {
     /// Advance both smoothers one frame and return the smoothed direction.
     #[inline]
     fn step(&mut self) -> Vec3 {
-        let (az, el) = self.smoother.step(
-            Azimuth(self.target_azimuth),
-            Elevation(self.target_elevation),
-        );
+        let (az, el) = self
+            .smoother
+            .step(self.target_azimuth, self.target_elevation);
         direction_from_degrees(az, el)
     }
 }

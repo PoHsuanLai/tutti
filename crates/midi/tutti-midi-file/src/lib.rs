@@ -1,3 +1,27 @@
+//! MIDI **file** codecs: Standard MIDI File ([`smf`]) and MIDI 2.0 Clip File
+//! ([`clip`], M2-116).
+//!
+//! Reading a `.mid` and talking to a MIDI port are different jobs, and this
+//! crate is the boundary that keeps them apart: nothing here touches an OS MIDI
+//! API, so a consumer that only reads files never links CoreMIDI or the ALSA
+//! sequencer. That is a dependency edge rather than a feature flag — it cannot
+//! be got wrong by forgetting `default-features = false`. Ports are
+//! `tutti-midi-hardware`'s, which deliberately does not re-export these codecs.
+//!
+//! # What the two codecs cover
+//!
+//! - [`smf`] — SMF 1.0 (`.mid`): parse to beat-positioned events
+//!   ([`ParsedMidiFile`]) or per-track paired notes ([`smf::tracks`]), and write
+//!   ([`encode_midi_file`] / [`write_midi_file`]). Metrical timing only; the
+//!   tempo map is reported, not applied.
+//! - [`clip`] — MIDI 2.0 Clip File (`.midi2`): the *file-level* (path) half.
+//!   The byte-level codec is `tutti-midi-types`' and is re-exported below, so a
+//!   clip written there round-trips through a path here with one import.
+//!
+//! [`MidiFileKind::sniff`] tells the two apart by magic bytes, not extension.
+//!
+//! Quick start, the tempo-quantisation caveat, and the two constraints worth
+//! knowing are in the crate README, included below.
 #![doc = include_str!("../README.md")]
 
 pub mod clip;

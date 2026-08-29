@@ -116,7 +116,10 @@ pub mod test_support {
     /// Systems gated on `engine_ready` take this as a plain `Res`, because the
     /// engine block always inserts it — so a test that claims the engine is
     /// running has to supply it or those systems panic on a missing resource.
-    pub fn clock_master_for_test(sample_rate: f64) -> super::ClockMasterRes {
+    pub fn clock_master_for_test(
+        sample_rate: impl Into<tutti_core::SampleRate>,
+    ) -> super::ClockMasterRes {
+        let sample_rate = sample_rate.into();
         let (sender, receiver) =
             tutti_midi_runtime::MidiMailbox::pair(tutti_midi_types::MidiUnitId::next());
         let master = std::sync::Arc::new(tutti_midi_runtime::ClockMaster::new(

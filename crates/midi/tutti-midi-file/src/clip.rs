@@ -101,7 +101,7 @@ pub fn write_clip_file_to_path(
 mod tests {
     use super::*;
     use tutti_midi_types::MidiEvent;
-    use tutti_midi_types::{MidiChannel, MidiGroup};
+    use tutti_midi_types::{Bpm, MidiChannel, MidiGroup};
 
     fn temp_path(name: &str) -> std::path::PathBuf {
         let mut p = std::env::temp_dir();
@@ -126,7 +126,7 @@ mod tests {
             &path,
             96,
             Some(ClipHeader {
-                tempo_bpm: 128.0,
+                tempo_bpm: Bpm(128.0),
                 time_signature: (5, 4),
             }),
             &events,
@@ -135,7 +135,7 @@ mod tests {
 
         let clip = read_clip_file_from_path(&path).unwrap();
         assert_eq!(clip.time_signature(), Some((5, 4)));
-        assert!((clip.tempo_bpm().unwrap() - 128.0).abs() < 0.05);
+        assert!(!clip.tempo_bpm().unwrap().differs_from(Bpm(128.0), 0.05));
 
         // The header's Set Tempo / Set Time Signature are real events in the
         // stream, so `events` carries them ahead of the notes — compare the

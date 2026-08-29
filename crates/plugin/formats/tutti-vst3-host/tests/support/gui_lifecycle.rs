@@ -199,6 +199,10 @@ impl TestWindow {
 
     fn build() -> Option<Self> {
         let event_loop = build_event_loop()?;
+        // winit deprecates `EventLoop::create_window` in favor of creating
+        // windows inside an `ApplicationHandler`; this harness owns no app
+        // lifecycle — it builds one hidden window up front, which only the
+        // deprecated entry point can do.
         #[allow(deprecated)]
         let window = event_loop
             .create_window(

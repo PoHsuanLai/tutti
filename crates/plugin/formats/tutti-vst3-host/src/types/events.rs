@@ -571,7 +571,11 @@ const MAX_EVENT_TEXT_LEN: usize = 256;
 /// # Safety
 ///
 /// `event.type_` must accurately label the variant stored in `__field0`.
-#[allow(clippy::unnecessary_cast)]
+#[allow(
+    clippy::unnecessary_cast,
+    reason = "the SDK event ordinals are u32 on unix and c_int on Windows; each \
+              cast is a no-op on one target and load-bearing on the other"
+)]
 pub(crate) unsafe fn from_c_event(
     event: &vst3::Steinberg::Vst::Event,
     text_arena: &mut smallvec::SmallVec<[u16; 256]>,
@@ -1166,7 +1170,11 @@ fn legacy_cc_to_midi(e: &LegacyMidiCcOutEvent, frame: u32) -> Option<MidiEvent> 
 /// dimension.
 pub fn note_expression_type_to_id(ty: NoteExpressionType) -> Option<u32> {
     use vst3::Steinberg::Vst::NoteExpressionTypeIDs_ as Ids;
-    #[allow(clippy::unnecessary_cast)]
+    #[allow(
+        clippy::unnecessary_cast,
+        reason = "`NoteExpressionTypeIDs_` is u32 on unix and c_int on Windows; \
+                  each cast is a no-op on one target and load-bearing on the other"
+    )]
     match ty {
         NoteExpressionType::Volume => Some(Ids::kVolumeTypeID as u32),
         NoteExpressionType::Pan => Some(Ids::kPanTypeID as u32),
@@ -1191,7 +1199,11 @@ pub fn note_expression_type_to_id(ty: NoteExpressionType) -> Option<u32> {
 /// direction.
 fn is_text_type_id(id: u32) -> bool {
     use vst3::Steinberg::Vst::NoteExpressionTypeIDs_ as Ids;
-    #[allow(clippy::unnecessary_cast)]
+    #[allow(
+        clippy::unnecessary_cast,
+        reason = "`NoteExpressionTypeIDs_` is u32 on unix and c_int on Windows; \
+                  each cast is a no-op on one target and load-bearing on the other"
+    )]
     {
         id == Ids::kTextTypeID as u32 || id == Ids::kPhonemeTypeID as u32
     }
@@ -1212,7 +1224,11 @@ fn is_text_type_id(id: u32) -> bool {
 /// `Pressure` is never produced — VST3 has no id for it.
 pub fn note_expression_type_from_id(id: u32) -> Option<NoteExpressionType> {
     use vst3::Steinberg::Vst::NoteExpressionTypeIDs_ as Ids;
-    #[allow(clippy::unnecessary_cast)]
+    #[allow(
+        clippy::unnecessary_cast,
+        reason = "`NoteExpressionTypeIDs_` is u32 on unix and c_int on Windows; \
+                  each cast is a no-op on one target and load-bearing on the other"
+    )]
     match id {
         i if i == Ids::kVolumeTypeID as u32 => Some(NoteExpressionType::Volume),
         i if i == Ids::kPanTypeID as u32 => Some(NoteExpressionType::Pan),

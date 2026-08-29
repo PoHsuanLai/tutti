@@ -81,7 +81,11 @@ pub struct VoicePoolNode(pub tutti_core::NodeId);
 /// allocation on one side and a free on the other — the exact cost being avoided.
 /// The channel is `bounded(MAX_RESIDENT_VOICES)`, so the waste is one slot-sized
 /// element per queue entry, bounded and never in the callback's path.
-#[allow(dead_code, clippy::large_enum_variant)]
+#[allow(
+    dead_code,
+    clippy::large_enum_variant,
+    reason = "the payloads exist to be received and dropped on the control thread, never read; boxing the large variant would re-add the audio-thread free this type exists to avoid"
+)]
 pub(crate) enum Retired {
     /// A slot removed by `VoiceCommand::Remove`, filter and all.
     Slot(VoiceSlot),

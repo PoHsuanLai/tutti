@@ -239,7 +239,6 @@ mod tests {
         impl<T> NotSend for Wrap<T> {}
 
         impl<T: Send> Wrap<T> {
-            #[allow(dead_code)]
             const IS_SEND: bool = true;
         }
 

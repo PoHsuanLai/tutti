@@ -82,9 +82,9 @@ pub use midly;
 
 // The tutti-types vocabulary this crate's own API is spelled in: every UMP
 // constructor takes a `MidiGroup` and a `MidiChannel`, the clip API positions in
-// `Beat`/`BeatDuration`, a CC message needs `CCNumber`, and a routing table
-// reaches the audio thread through `RtPublish`.
-pub use tutti_types::{Beat, BeatDuration, CCNumber, MidiChannel, MidiGroup, RtPublish};
+// `Beat`/`BeatDuration` and declares its tempo in `Bpm`, a CC message needs
+// `CCNumber`, and a routing table reaches the audio thread through `RtPublish`.
+pub use tutti_types::{Beat, BeatDuration, Bpm, CCNumber, MidiChannel, MidiGroup, RtPublish};
 
 // No `///` on a `pub mod` line: it would shadow the module's own `//!` header
 // and re-resolve that text's intra-doc links in this scope rather than the
@@ -191,11 +191,11 @@ pub use unit_id::MidiUnitId;
 ///     read_clip_file, write_clip_file_with_header, ClipEvent, ClipHeader, MidiEvent,
 ///     CLIP_FILE_MAGIC,
 /// };
-/// use tutti_midi_types::{MidiChannel, MidiGroup};
+/// use tutti_midi_types::{Bpm, MidiChannel, MidiGroup};
 ///
 /// let bytes = write_clip_file_with_header(
 ///     480,
-///     ClipHeader { tempo_bpm: 174.0, time_signature: (7, 8) },
+///     ClipHeader { tempo_bpm: Bpm(174.0), time_signature: (7, 8) },
 ///     &[ClipEvent::new(0, MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000))],
 /// );
 ///
@@ -204,7 +204,7 @@ pub use unit_id::MidiUnitId;
 ///
 /// let clip = read_clip_file(&bytes).unwrap();
 /// assert_eq!(clip.time_signature(), Some((7, 8)));
-/// assert!((clip.tempo_bpm().unwrap() - 174.0).abs() < 0.05);
+/// assert!(!clip.tempo_bpm().unwrap().differs_from(Bpm(174.0), 0.05));
 /// ```
 ///
 /// [`ParsedClipFile::notes`] pairs the event stream into whole notes, so an
@@ -234,5 +234,5 @@ pub mod prelude {
         ClipFileError, ControllerNamespace, MidiEvent, MidiMessage, MidiUnitId, MidiUnitIn,
         NoteAttribute, NoteId, ParsedClipFile, PerNoteController, Protocol,
     };
-    pub use tutti_types::{Beat, BeatDuration, CCNumber, MidiChannel, MidiGroup, RtPublish};
+    pub use tutti_types::{Beat, BeatDuration, Bpm, CCNumber, MidiChannel, MidiGroup, RtPublish};
 }

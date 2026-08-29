@@ -157,7 +157,6 @@ fn handshake(config: &BridgeConfig, process: &mut Child) -> Result<ControlStream
     }
 }
 
-#[allow(clippy::type_complexity)]
 fn load_plugin(
     stream: &mut ControlStream,
     config: &BridgeConfig,

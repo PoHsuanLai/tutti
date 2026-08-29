@@ -62,7 +62,11 @@ impl MmapCell {
     }
 
     #[inline]
-    #[allow(clippy::mut_from_ref)]
+    #[allow(
+        clippy::mut_from_ref,
+        reason = "handing out `&mut` from `&self` is the point of the UnsafeCell; \
+                  aliasing is argued at the `unsafe impl Sync` above"
+    )]
     pub(super) fn as_mut_slice(&self) -> &mut [u8] {
         unsafe { &mut *self.0.get() }
     }

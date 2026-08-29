@@ -120,6 +120,12 @@
 //! channel with no mapping and passes through *unfolded*. Silence the sounding
 //! voices separately — reconfiguring is not a panic.
 
+// NOTE: this crate has no fallible operation and therefore no `Error` type.
+// Everything here runs on or feeds the audio thread, where refusal is shaped as
+// a value, not an error: a full mailbox drops and reports a count, and
+// `MpeIngest::translate` returns `Option`. The MIDI parse errors live one crate
+// down (`tutti_midi_types::ClipFileError`, `MidiParseError`).
+
 mod block;
 mod negotiate;
 mod outbound;

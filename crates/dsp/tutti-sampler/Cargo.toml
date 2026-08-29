@@ -27,9 +27,10 @@ ogg = ["tutti-core/ogg"]
 files = ["wav", "flac", "mp3", "ogg"]
 
 [dependencies]
-# Base dependency - format features added above. default-features = false so
-# tutti-core's default `bevy` doesn't leak in; this crate's `bevy` feature
-# re-adds `tutti-core/bevy` + `tutti-core/bevy_asset`.
+# Base dependency - format features added above. `default-features = false`
+# matches every sibling and keeps this crate immune if tutti-core ever grows a
+# default — it has none today (`default = []`), so the flag currently
+# suppresses nothing.
 tutti-core = { path = "../../core/tutti-core", default-features = false }
 
 # The STFT analysis grid + the one periodic Hann. The time-stretch vocoder is an

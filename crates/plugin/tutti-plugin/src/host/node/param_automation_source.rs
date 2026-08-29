@@ -84,7 +84,6 @@ impl LfoCurve {
     /// Build an LFO curve. `base` is the param's un-modulated value; `depth`
     /// scales the oscillation; `[min, max]` is the param's range (the offset is
     /// `value·depth·(max-min)`, matching the control-rate path).
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         shape: tutti_units::LfoShape,
         beats_per_cycle: impl Into<BeatDuration>,

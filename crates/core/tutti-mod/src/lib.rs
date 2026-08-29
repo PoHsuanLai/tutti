@@ -175,6 +175,11 @@
 //!   (feature-gated).
 //! - `matrix` — `ModMatrix`, the fluent builder over all of the above.
 
+// NOTE: this crate exports no `Error` type on purpose — modulation is
+// infallible by design. Every operation is arithmetic over values validated at
+// construction; absence (an unresolved target, an empty curve) is an `Option`,
+// never a failure.
+
 #![forbid(unsafe_code)]
 
 mod id;

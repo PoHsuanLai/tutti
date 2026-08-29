@@ -6,10 +6,9 @@ use super::buffers::*;
 use super::unit::*;
 use super::vocoder::*;
 use super::*;
-#[allow(unused_imports)]
 use tutti_core::{
-    inverse_fft, real_fft, AudioUnit, BufferMut, BufferRef, Cents, ChannelLayout, Complex32,
-    Radians, ReadRate, SampleRate, Samples, SignalFrame, StretchFactor,
+    inverse_fft, real_fft, AudioUnit, Cents, ChannelLayout, Complex32, Radians, ReadRate, Samples,
+    SignalFrame, StretchFactor,
 };
 
 use std::f32::consts::PI;

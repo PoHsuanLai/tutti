@@ -130,7 +130,9 @@ pub fn process_audio(state: &AudioCallbackState, output: &mut InterleavedMut<'_>
 /// Holds a [`cpal::Stream`] to keep it alive. CPAL runs the audio callback
 /// on a background thread for as long as this value exists; dropping it stops
 /// the stream. The inner field is never read — ownership *is* the API.
-struct StreamHandle(#[allow(dead_code)] cpal::Stream);
+struct StreamHandle(
+    #[allow(dead_code, reason = "ownership is the API — held for Drop, never read")] cpal::Stream,
+);
 
 unsafe impl Send for StreamHandle {}
 

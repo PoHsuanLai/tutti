@@ -20,7 +20,7 @@ midi = ["dep:tutti-midi-runtime"]
 
 [dependencies]
 cpal = "0.15"
-thiserror = "2"
+thiserror.workspace = true
 
 tutti-core = { path = "../tutti-core", default-features = false }
 

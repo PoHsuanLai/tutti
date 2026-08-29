@@ -32,12 +32,21 @@ pub(crate) struct SynthVoice {
     velocity: f32,
     gate: Shared,
     filter_cutoff: Shared,
-    base_filter_cutoff: f32,
+    /// The authored corner frequency; every modulation source multiplies it.
+    base_filter_cutoff: Hz,
     filter_resonance: Shared,
+    /// Bare `f32` on purpose: holds the Moog `Resonance` or the SVF `Q`,
+    /// whichever filter is configured — see the merge note in `from_config`.
     base_filter_resonance: f32,
     mod_wheel_value: f32,
     velocity_mod_value: f32,
+    /// Normalized CC74 (Brightness) position, `0..1` centered at `0.5` — a
+    /// controller value, not a frequency. Mapped onto `base_filter_cutoff` as
+    /// a `4^(v - 0.5)` factor in `update_modulated_filter`.
     cc_cutoff_value: f32,
+    /// Normalized CC71 (Resonance) position, `0..1` with `0.0` inactive — a
+    /// controller value, not a `Resonance`. Blends `base_filter_resonance`
+    /// toward the 0.95 ceiling in `update_modulated_filter`.
     cc_resonance_value: f32,
     filter_mod: FilterModConfig,
     lfo_phase: Phase,
@@ -92,11 +101,11 @@ impl SynthVoice {
     pub(crate) fn from_config(config: &SynthConfig, unison_count: usize) -> Self {
         let gate = tutti_core::shared(0.0);
         let base_filter_cutoff = match &config.filter {
-            FilterType::Moog { cutoff, .. } => cutoff.get(),
-            FilterType::Svf { cutoff, .. } => cutoff.get(),
-            FilterType::None => 20000.0,
+            FilterType::Moog { cutoff, .. } => *cutoff,
+            FilterType::Svf { cutoff, .. } => *cutoff,
+            FilterType::None => Hz(20000.0),
         };
-        let filter_cutoff = tutti_core::shared(base_filter_cutoff);
+        let filter_cutoff = tutti_core::shared(base_filter_cutoff.get());
 
         // The one place `Resonance` and `Q` deliberately merge: both feed a
         // single `Shared` so the modulation path has one resonance handle
@@ -217,7 +226,7 @@ impl SynthVoice {
         self.lfo_phase = Phase::START;
         self.mpe.reset();
         self.base_note_freq = Hz(440.0);
-        self.filter_cutoff.set(self.base_filter_cutoff);
+        self.filter_cutoff.set(self.base_filter_cutoff.get());
         self.filter_resonance.set(self.base_filter_resonance);
         for sub in &mut self.sub_voices {
             sub.dsp.reset();
@@ -286,7 +295,7 @@ impl SynthVoice {
         }
 
         let (pressure_gain, note_gain) = if self.mpe_enabled {
-            (1.0 + self.mpe.pressure * 0.5, self.mpe.gain)
+            (1.0 + self.mpe.pressure * 0.5, self.mpe.gain.get())
         } else {
             (1.0, 1.0)
         };
@@ -308,7 +317,7 @@ impl SynthVoice {
         }
 
         if has_filter_mod || has_cc_cutoff {
-            let mut cutoff = self.base_filter_cutoff;
+            let mut cutoff = self.base_filter_cutoff.get();
 
             // `cutoff` is a bare `f32` multiplier chain feeding a fundsp shared
             // cell, so each depth comes off its type at the multiply rather
@@ -405,7 +414,9 @@ impl SynthVoice {
         if self.mpe.detached {
             return;
         }
-        self.mpe.gain = gain.clamp(0.0, 1.0);
+        // The clamp is per-note Volume's `0..1` range, narrower than
+        // `Amplitude`'s own floor-at-zero bound.
+        self.mpe.gain = Amplitude(gain.clamp(0.0, 1.0));
     }
 
     /// Reset this voice's per-note expression (pitch bend, pressure, slide) to
@@ -495,7 +506,7 @@ impl SynthVoice {
         // slide is at center (no timbre shift), leaving the base cutoff intact.
         if (self.mpe.slide - crate::voice::SLIDE_CENTER).abs() > 0.001 {
             let factor = (4.0_f32).powf(self.mpe.slide - crate::voice::SLIDE_CENTER);
-            self.filter_cutoff.set(self.base_filter_cutoff * factor);
+            self.filter_cutoff.set(self.base_filter_cutoff.get() * factor);
         }
     }
 

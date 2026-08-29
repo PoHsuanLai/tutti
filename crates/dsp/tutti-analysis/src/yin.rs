@@ -16,7 +16,7 @@
 use tutti_core::SampleRate;
 use tutti_types::{Cents, Confidence, Hz, Note, Samples};
 
-use crate::error::{AnalysisError, Result};
+use crate::error::{Error, Result};
 use crate::grid::FrameCount;
 use crate::pitch::PitchDetector;
 
@@ -45,14 +45,15 @@ impl YinConfig {
         let sample_rate = sample_rate.into();
         let (min_freq, max_freq) = (min_freq.into(), max_freq.into());
 
-        // `!(x > 0.0)` rather than `x <= 0.0` — see `geometry.rs`: the negation
-        // is what rejects NaN, which `<=` would silently admit.
-        #[allow(clippy::neg_cmp_op_on_partial_ord)]
+        #[allow(
+            clippy::neg_cmp_op_on_partial_ord,
+            reason = "the negation is the NaN guard (see `geometry.rs`): `x <= 0.0` would silently admit a NaN rate"
+        )]
         if !(sample_rate.get() > 0.0) {
-            return Err(AnalysisError::NonPositiveSampleRate);
+            return Err(Error::NonPositiveSampleRate);
         }
         if min_freq.get() <= 0.0 || max_freq.get() <= 0.0 || min_freq >= max_freq {
-            return Err(AnalysisError::EmptyFrequencyRange {
+            return Err(Error::EmptyFrequencyRange {
                 min: min_freq,
                 max: max_freq,
             });
@@ -60,7 +61,7 @@ impl YinConfig {
 
         let nyquist = Hz((sample_rate.get() / 2.0) as f32);
         if max_freq > nyquist {
-            return Err(AnalysisError::AboveNyquist {
+            return Err(Error::AboveNyquist {
                 freq: max_freq,
                 nyquist,
             });
@@ -126,7 +127,7 @@ impl YinConfig {
     }
 
     /// Minimum input length. Below this, [`yin`] returns
-    /// [`AnalysisError::InsufficientInput`] rather than a silent "unvoiced".
+    /// [`Error::InsufficientInput`] rather than a silent "unvoiced".
     #[inline]
     pub fn buffer_size(&self) -> Samples {
         Samples(self.max_period().get() * 2)
@@ -225,13 +226,13 @@ impl Pitch {
 /// Stateless: the same input always yields the same estimate.
 ///
 /// # Errors
-/// Returns [`AnalysisError::InsufficientInput`] if `samples` is shorter than
+/// Returns [`Error::InsufficientInput`] if `samples` is shorter than
 /// [`YinConfig::buffer_size`] — an explicit refusal rather than a silent
 /// "unvoiced".
 pub fn yin(cfg: &YinConfig, samples: &[f32]) -> Result<PitchEstimate> {
     let needed = cfg.buffer_size();
     if samples.len() < needed.get() {
-        return Err(AnalysisError::InsufficientInput {
+        return Err(Error::InsufficientInput {
             needed,
             got: Samples(samples.len()),
         });
@@ -247,12 +248,12 @@ pub fn yin_track(
 ) -> Result<Vec<PitchEstimate>> {
     let hop = hop.into();
     if hop.is_zero() {
-        return Err(AnalysisError::ZeroHop);
+        return Err(Error::ZeroHop);
     }
 
     let frame = cfg.buffer_size();
     if samples.len() < frame.get() {
-        return Err(AnalysisError::InsufficientInput {
+        return Err(Error::InsufficientInput {
             needed: frame,
             got: Samples(samples.len()),
         });
@@ -394,18 +395,18 @@ mod tests {
     fn an_inverted_range_is_refused_at_construction() {
         assert_eq!(
             YinConfig::new(44100.0, Hz(2000.0), Hz(50.0)),
-            Err(AnalysisError::EmptyFrequencyRange {
+            Err(Error::EmptyFrequencyRange {
                 min: Hz(2000.0),
                 max: Hz(50.0),
             })
         );
         assert!(matches!(
             YinConfig::new(44100.0, Hz(50.0), Hz(50.0)),
-            Err(AnalysisError::EmptyFrequencyRange { .. })
+            Err(Error::EmptyFrequencyRange { .. })
         ));
         assert!(matches!(
             YinConfig::new(44100.0, Hz(-10.0), Hz(2000.0)),
-            Err(AnalysisError::EmptyFrequencyRange { .. })
+            Err(Error::EmptyFrequencyRange { .. })
         ));
     }
 
@@ -413,7 +414,7 @@ mod tests {
     fn a_maximum_above_nyquist_is_refused() {
         assert_eq!(
             YinConfig::new(8000.0, Hz(50.0), Hz(5000.0)),
-            Err(AnalysisError::AboveNyquist {
+            Err(Error::AboveNyquist {
                 freq: Hz(5000.0),
                 nyquist: Hz(4000.0),
             })
@@ -428,7 +429,7 @@ mod tests {
 
         assert_eq!(
             yin(&cfg, &samples),
-            Err(AnalysisError::InsufficientInput {
+            Err(Error::InsufficientInput {
                 needed: cfg.buffer_size(),
                 got: Samples(64),
             })
@@ -505,7 +506,7 @@ mod tests {
 
         assert_eq!(
             yin_track(&cfg, &samples, Samples(0)),
-            Err(AnalysisError::ZeroHop)
+            Err(Error::ZeroHop)
         );
     }
 

@@ -35,6 +35,7 @@ bitflags = "2"
 # `RtPublish` — atomic snapshot publishing for MidiRoutingTable.
 tutti-types = { path = "../../core/tutti-types", default-features = false }
 serde = { version = "1", optional = true, features = ["derive"] }
+thiserror.workspace = true
 
 # midi2's feature set is fully specified at the workspace level (this is its
 # only consumer). midly's alloc feature gives it owned event buffers.

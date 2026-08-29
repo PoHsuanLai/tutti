@@ -5,6 +5,8 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, Weak};
 
+use crate::error::{ClapError, LoadStage};
+
 /// Global registry for CLAP entry init/deinit lifecycle.
 ///
 /// The CLAP spec requires `clap_entry.init()` to be called once when a library
@@ -56,7 +58,7 @@ pub(crate) fn entry_registry_acquire(
     path: &Path,
     init_fn: unsafe extern "C" fn(*const i8) -> bool,
     path_cstr: &std::ffi::CString,
-) -> std::result::Result<EntryGuard, String> {
+) -> std::result::Result<EntryGuard, ClapError> {
     let mut registry = ENTRY_REGISTRY.lock().unwrap_or_else(|e| e.into_inner());
     let map = registry.get_or_insert_with(HashMap::new);
 
@@ -68,7 +70,11 @@ pub(crate) fn entry_registry_acquire(
     }
 
     if !unsafe { init_fn(path_cstr.as_ptr()) } {
-        return Err("Entry init failed".to_string());
+        return Err(ClapError::LoadFailed {
+            path: path.to_path_buf(),
+            stage: LoadStage::Opening,
+            reason: "Entry init failed".to_string(),
+        });
     }
 
     let live = Arc::new(LiveEntry {

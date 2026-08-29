@@ -12,7 +12,7 @@
 use tutti_core::SampleRate;
 use tutti_types::{Hz, Samples, Seconds};
 
-use crate::error::{AnalysisError, Result};
+use crate::error::{Error, Result};
 use crate::grid::{BinCount, BinIndex, FrameCount};
 use crate::window::{CosineWindow, Window};
 
@@ -51,18 +51,17 @@ impl StftGeometry {
         let (sample_rate, window, hop) = (sample_rate.into(), window.into(), hop.into());
 
         if window.is_zero() {
-            return Err(AnalysisError::ZeroWindow);
+            return Err(Error::ZeroWindow);
         }
         if hop.is_zero() {
-            return Err(AnalysisError::ZeroHop);
+            return Err(Error::ZeroHop);
         }
-        // `!(x > 0.0)`, not `x <= 0.0`: the negation is what rejects NaN. Every
-        // comparison against NaN is false, so `x <= 0.0` *accepts* a NaN rate
-        // and lets it reach the FFT geometry. clippy's `neg_cmp_op_on_partial_ord`
-        // reads this as awkward style; it is the guard.
-        #[allow(clippy::neg_cmp_op_on_partial_ord)]
+        #[allow(
+            clippy::neg_cmp_op_on_partial_ord,
+            reason = "the negation is the NaN guard: every comparison against NaN is false, so `x <= 0.0` would accept a NaN rate and let it reach the FFT geometry"
+        )]
         if !(sample_rate.get() > 0.0) {
-            return Err(AnalysisError::NonPositiveSampleRate);
+            return Err(Error::NonPositiveSampleRate);
         }
 
         Ok(Self {
@@ -100,8 +99,8 @@ impl StftGeometry {
     /// of islands separated by silence.
     ///
     /// # Errors
-    /// Returns [`AnalysisError::HopExceedsWindow`] if frames do not overlap, or
-    /// [`AnalysisError::NotColaCompliant`] if the hop does not divide the
+    /// Returns [`Error::HopExceedsWindow`] if frames do not overlap, or
+    /// [`Error::NotColaCompliant`] if the hop does not divide the
     /// window at 4x overlap — this constructor fixes the shape as Hann, which
     /// is where that figure comes from. Use
     /// [`cola_with`](Self::cola_with) for another window.
@@ -127,13 +126,13 @@ impl StftGeometry {
     ) -> Result<Self> {
         let geometry = Self::new(sample_rate, window, hop)?.with_window_fn(window_fn);
         if !geometry.frames_overlap() {
-            return Err(AnalysisError::HopExceedsWindow {
+            return Err(Error::HopExceedsWindow {
                 window: geometry.window,
                 hop: geometry.hop,
             });
         }
         if !geometry.is_cola() {
-            return Err(AnalysisError::NotColaCompliant {
+            return Err(Error::NotColaCompliant {
                 window: geometry.window,
                 hop: geometry.hop,
                 window_fn,
@@ -287,15 +286,15 @@ mod tests {
     fn rejects_every_invalid_instance_the_old_structs_admitted() {
         assert_eq!(
             StftGeometry::new(44100.0, Samples(0), Samples(512)),
-            Err(AnalysisError::ZeroWindow)
+            Err(Error::ZeroWindow)
         );
         assert_eq!(
             StftGeometry::new(44100.0, Samples(2048), Samples(0)),
-            Err(AnalysisError::ZeroHop)
+            Err(Error::ZeroHop)
         );
         assert_eq!(
             StftGeometry::new(0.0, Samples(2048), Samples(512)),
-            Err(AnalysisError::NonPositiveSampleRate)
+            Err(Error::NonPositiveSampleRate)
         );
     }
 
@@ -308,7 +307,7 @@ mod tests {
 
         assert_eq!(
             StftGeometry::cola(44100.0, Samples(2048), Samples(8192)),
-            Err(AnalysisError::HopExceedsWindow {
+            Err(Error::HopExceedsWindow {
                 window: Samples(2048),
                 hop: Samples(8192),
             })
@@ -326,7 +325,7 @@ mod tests {
         assert!(StftGeometry::new(44100.0, Samples(2048), Samples(1024)).is_ok());
         assert_eq!(
             StftGeometry::cola(44100.0, Samples(2048), Samples(1024)),
-            Err(AnalysisError::NotColaCompliant {
+            Err(Error::NotColaCompliant {
                 window: Samples(2048),
                 hop: Samples(1024),
                 window_fn: CosineWindow::HANN,
@@ -355,7 +354,7 @@ mod tests {
 
         assert_eq!(
             StftGeometry::cola_with(44100.0, Samples(2048), hop, CosineWindow::BLACKMAN),
-            Err(AnalysisError::NotColaCompliant {
+            Err(Error::NotColaCompliant {
                 window: Samples(2048),
                 hop,
                 window_fn: CosineWindow::BLACKMAN,

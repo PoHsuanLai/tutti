@@ -47,7 +47,10 @@ impl RandomState {
     /// return, and `should_implement_trait` is silenced rather than obeyed
     /// because renaming a public method to satisfy a naming lint would break
     /// callers for no gain.
-    #[allow(clippy::should_implement_trait)]
+    #[allow(
+        clippy::should_implement_trait,
+        reason = "an infinite generator has no `Option` for `Iterator::next` to return"
+    )]
     #[inline]
     pub fn next(&mut self) -> f32 {
         self.seed ^= self.seed << 13;

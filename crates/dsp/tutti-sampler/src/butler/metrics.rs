@@ -14,11 +14,15 @@
 //! caller.)
 #![cfg_attr(
     not(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg")),
-    allow(dead_code)
+    allow(
+        dead_code,
+        reason = "read-only without a codec feature: `record_read`'s sole caller is the codec-gated decode arm"
+    )
 )]
 
 use parking_lot::Mutex;
 use std::time::Instant;
+use tutti_core::Seconds;
 
 /// Disk read throughput over a sliding window, the sole input varifill takes
 /// from measurement rather than from the ring's own fill level.
@@ -42,7 +46,7 @@ impl Default for Metrics {
 /// Sliding window throughput tracker (1-second window).
 struct ThroughputTracker {
     recent_reads: Vec<(u64, Instant)>,
-    window_secs: f64,
+    window: Seconds,
     cached_read_rate: f64,
 }
 
@@ -50,7 +54,7 @@ impl ThroughputTracker {
     fn new() -> Self {
         Self {
             recent_reads: Vec::with_capacity(64),
-            window_secs: 1.0,
+            window: Seconds(1.0),
             cached_read_rate: 0.0,
         }
     }
@@ -63,7 +67,7 @@ impl ThroughputTracker {
     }
 
     fn update_rate(&mut self, now: Instant) {
-        let cutoff = now - std::time::Duration::from_secs_f64(self.window_secs);
+        let cutoff = now - std::time::Duration::from_secs_f32(self.window.get());
         self.recent_reads.retain(|(_, ts)| *ts > cutoff);
 
         let Some((first, last)) = self.recent_reads.first().zip(self.recent_reads.last()) else {
@@ -76,7 +80,7 @@ impl ThroughputTracker {
         let denom = if duration > 0.01 {
             duration
         } else {
-            self.window_secs
+            f64::from(self.window.get())
         };
         self.cached_read_rate = total_bytes as f64 / denom;
     }

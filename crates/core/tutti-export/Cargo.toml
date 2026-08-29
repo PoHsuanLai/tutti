@@ -19,7 +19,7 @@ aiff = ["aifc"]
 ogg = ["vorbis_rs"]
 
 [dependencies]
-thiserror = "1.0"
+thiserror.workspace = true
 tutti-core = { path = "../tutti-core", default-features = false }
 tutti-types = { path = "../tutti-types", default-features = false }
 # EBU R128 loudness measurement lives in tutti-analysis (the crate's

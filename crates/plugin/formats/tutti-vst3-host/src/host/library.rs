@@ -90,12 +90,7 @@ impl Vst3Library {
         // licences). Skipping it produces plugins that load without error and
         // are quietly missing half their data. The paired exit runs on drop —
         // see the field-order note on `Vst3Library`.
-        let entry =
-            ModuleEntry::enter(&library, lib_path).map_err(|reason| Vst3Error::LoadFailed {
-                path: lib_path.to_path_buf(),
-                stage: LoadStage::Opening,
-                reason,
-            })?;
+        let entry = ModuleEntry::enter(&library, lib_path)?;
 
         let get_factory: libloading::Symbol<GetPluginFactoryFn> = unsafe {
             library

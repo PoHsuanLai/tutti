@@ -24,7 +24,7 @@ use midi2::ux::u20;
 use midi2::Data;
 
 use crate::ump::MidiEvent;
-use tutti_types::{Beat, BeatDuration, MidiGroup};
+use tutti_types::{Beat, BeatDuration, Bpm, MidiGroup};
 
 /// The 8-byte file header: ASCII "SMF2CLIP" (M2-116 §5).
 pub const CLIP_FILE_MAGIC: [u8; 8] = *b"SMF2CLIP";
@@ -72,7 +72,7 @@ impl From<(u32, MidiEvent)> for ClipEvent {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ClipHeader {
     /// Quarter-notes per minute.
-    pub tempo_bpm: f64,
+    pub tempo_bpm: Bpm,
     /// Beats per bar and the beat unit, e.g. `(4, 4)`.
     pub time_signature: (u8, u8),
 }
@@ -81,7 +81,7 @@ impl Default for ClipHeader {
     /// 120 BPM, 4/4 — the conventional default when a caller has no better idea.
     fn default() -> Self {
         Self {
-            tempo_bpm: 120.0,
+            tempo_bpm: Bpm(120.0),
             time_signature: (4, 4),
         }
     }
@@ -131,7 +131,7 @@ fn write_clip(ticks_per_quarter: u16, header: Option<ClipHeader>, events: &[Clip
         push_words(&mut out, delta_clockstamp(0).data_words());
         push_words(
             &mut out,
-            MidiEvent::flex_set_tempo(MidiGroup::FIRST, h.tempo_bpm).data_words(),
+            MidiEvent::flex_set_tempo(MidiGroup::FIRST, h.tempo_bpm.get()).data_words(),
         );
         push_words(&mut out, delta_clockstamp(0).data_words());
         push_words(
@@ -231,10 +231,11 @@ impl ParsedClipFile {
     /// importer that ignores this places every note at the wrong wall-clock
     /// time, silently. Read it and decide explicitly whether to adopt it or
     /// keep the project tempo — do not let it default by omission.
-    pub fn tempo_bpm(&self) -> Option<f64> {
+    pub fn tempo_bpm(&self) -> Option<Bpm> {
         self.events
             .iter()
             .find_map(|ce| crate::ump::flex_tempo_bpm(&ce.event))
+            .map(Bpm)
     }
 
     /// The clip's first Flex Data **Set Time Signature** as
@@ -337,15 +338,19 @@ pub struct ClipNote {
 /// Why a byte stream failed to parse as a MIDI Clip File (M2-116). Distinguishes
 /// "this isn't a clip file" from "this clip file is malformed" so a caller can
 /// react differently (e.g. try another importer vs. report corruption).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum ClipFileError {
     /// Fewer than 8 bytes, or the leading 8 bytes are not [`CLIP_FILE_MAGIC`].
+    #[error("not a MIDI Clip File (bad or missing SMF2CLIP magic)")]
     BadMagic,
     /// The body length is not a whole number of 32-bit UMP words.
+    #[error("clip body is not 32-bit-word aligned")]
     Unaligned,
     /// A UMP claims more words than remain in the stream.
+    #[error("clip file is truncated mid-message")]
     Truncated,
     /// No DCTPQ (tick-unit declaration) was seen before the events.
+    #[error("clip file has no DCTPQ tick-unit declaration")]
     MissingDctpq,
     /// The DCTPQ declared zero ticks per quarter note.
     ///
@@ -354,36 +359,22 @@ pub enum ClipFileError {
     /// corruption wants to say which. Every beat in the file is that tick count
     /// divided by this, so a zero yields infinities rather than a parse error
     /// unless it is caught here.
+    #[error("clip file declares zero ticks per quarter note")]
     ZeroDctpq,
     /// No Start of Clip message. M2-116 §7: "A Clip Sequence Data shall include
     /// one Start of Clip message … as the first UMP message."
+    #[error("clip file has no Start of Clip message")]
     MissingStartOfClip,
     /// No End of Clip message. §7: "A Clip Sequence Data shall include one End
     /// of Clip message as the last UMP message."
+    #[error("clip file has no End of Clip message")]
     MissingEndOfClip,
     /// Bytes follow the End of Clip. §7.3: "A MIDI Clip File shall not have any
     /// data following the End of Clip message." There is no multi-clip clip
     /// file — that is what the MIDI Container File is for.
+    #[error("clip file has data following the End of Clip message")]
     TrailingData,
 }
-
-impl core::fmt::Display for ClipFileError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        let msg = match self {
-            Self::BadMagic => "not a MIDI Clip File (bad or missing SMF2CLIP magic)",
-            Self::Unaligned => "clip body is not 32-bit-word aligned",
-            Self::Truncated => "clip file is truncated mid-message",
-            Self::MissingDctpq => "clip file has no DCTPQ tick-unit declaration",
-            Self::ZeroDctpq => "clip file declares zero ticks per quarter note",
-            Self::MissingStartOfClip => "clip file has no Start of Clip message",
-            Self::MissingEndOfClip => "clip file has no End of Clip message",
-            Self::TrailingData => "clip file has data following the End of Clip message",
-        };
-        f.write_str(msg)
-    }
-}
-
-impl std::error::Error for ClipFileError {}
 
 /// Parse a MIDI Clip File (M2-116). Delta Clockstamps set the delta of the
 /// following UMP; Start/End-of-Clip and the DCTPQ are structural and not
@@ -829,7 +820,7 @@ mod tests {
         // Signature. A clip carries its own tempo map; an importer that can't
         // read it back places every note at the wrong wall-clock time.
         let header = ClipHeader {
-            tempo_bpm: 174.0,
+            tempo_bpm: Bpm(174.0),
             time_signature: (7, 8),
         };
         let bytes = write_clip_file_with_header(
@@ -843,7 +834,10 @@ mod tests {
 
         let clip = read_clip_file(&bytes).expect("parses");
         assert!(
-            (clip.tempo_bpm().expect("tempo present") - 174.0).abs() < 0.05,
+            !clip
+                .tempo_bpm()
+                .expect("tempo present")
+                .differs_from(Bpm(174.0), 0.05),
             "tempo survives the round trip"
         );
         assert_eq!(clip.time_signature(), Some((7, 8)));

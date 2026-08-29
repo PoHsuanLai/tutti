@@ -12,6 +12,9 @@ categories = ["multimedia::audio"]
 workspace = true
 
 [features]
+# The vocabulary crate every other engine crate names, so the engine-wide rule
+# — Bevy is opt-in, never a default — is stated here rather than inherited.
+default = []
 # Enables `Serialize`/`Deserialize` on wire-carried value types: `ChannelLayout`
 # (which rides the plugin-load IPC reply via `BusChannels`), `ChannelTopology`
 # (which rides the same reply once the format hosts report placement), the meter

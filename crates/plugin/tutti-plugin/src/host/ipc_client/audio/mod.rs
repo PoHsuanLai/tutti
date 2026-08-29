@@ -201,7 +201,6 @@ impl AudioBridge {
     ///
     /// Those events' frame offsets are relative to the *earlier* block that
     /// produced them. The caller shifts them; see `PluginClient::drain_midi_out`.
-    #[allow(clippy::too_many_arguments)]
     pub fn submit(
         &self,
         seq: u64,

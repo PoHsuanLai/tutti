@@ -74,11 +74,13 @@
 
 mod node_id;
 
+mod error;
 mod mic;
 mod recorder;
 mod tap_in;
 mod wav_out;
 
+pub use error::{Error, Result};
 pub use mic::{share_mic_ring, MicMonitorNode, MicRing};
 pub use recorder::Recorder;
 pub use tap_in::TapIn;

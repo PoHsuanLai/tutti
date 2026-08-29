@@ -1,15 +1,19 @@
 //! Error types for Audio Unit hosting.
 
-use std::fmt;
+use thiserror::Error;
 
 #[cfg(target_os = "macos")]
 use crate::types::*;
 
 /// Errors returned by Audio Unit host operations.
-#[derive(Debug, Clone)]
+#[derive(Error, Debug, Clone)]
 pub enum AuError {
     /// An AudioToolbox call returned a non-zero `OSStatus`. `function` names
     /// the failing call (for diagnostics), and `code` is the raw status.
+    #[error(
+        "AudioUnit error in {function}: OSStatus {code} ({})",
+        os_status_message(*.code)
+    )]
     OsStatus {
         /// Name of the AudioToolbox function that failed.
         function: &'static str,
@@ -17,6 +21,7 @@ pub enum AuError {
         code: i32,
     },
     /// A null `AudioComponent` handle was passed where a valid one was required.
+    #[error("null AudioComponent handle")]
     NullComponent,
     /// The component sets `kAudioComponentFlag_RequiresAsyncInstantiation`, so
     /// `AudioComponentInstanceNew` cannot create it.
@@ -33,6 +38,11 @@ pub enum AuError {
     /// rather than a component this entry point can never create. Measured on
     /// macOS 15.6: of 138 installed components, 5 set the flag and all 5 return
     /// -10863 here, every time.
+    #[error(
+        "this component requires AudioComponentInstantiate (asynchronous); \
+         it is a v3 Audio Unit with a view, which \
+         AudioComponentInstanceNew cannot create"
+    )]
     RequiresAsyncInstantiation,
     /// CoreFoundation declined to allocate a string the host needed to hand to
     /// the AU.
@@ -41,9 +51,11 @@ pub enum AuError {
     /// `identity::set_nick_name` persists that name: reporting success for a
     /// write that never happened would lose it from the session with nothing to
     /// show the user.
+    #[error("CoreFoundation string allocation failed")]
     CfStringAlloc,
     /// A buffer supplied to `process` was malformed or inconsistent with the
     /// configured stream (wrong frame count, mismatched channels, etc.).
+    #[error("invalid buffer: {0}")]
     InvalidBuffer(String),
     /// The AU declined the requested sample rate: after the stream-format /
     /// `kAudioUnitProperty_SampleRate` writes, its ASBD still reports a
@@ -59,6 +71,10 @@ pub enum AuError {
     /// read out of / written into the AudioToolbox `AudioStreamBasicDescription`
     /// at the C ABI boundary, and the diagnostic's whole job is to report what
     /// crossed that boundary verbatim.
+    #[error(
+        "AU rejected the {scope} sample rate: requested {requested} Hz, \
+         AU reports {accepted} Hz"
+    )]
     SampleRateRejected {
         /// Which bus disagreed — `"input"` or `"output"`.
         scope: &'static str,
@@ -80,6 +96,10 @@ pub enum AuError {
     ///
     /// Frame counts are raw `u32`, matching the property's C type — this is the
     /// value that crossed the AudioToolbox ABI, reported verbatim.
+    #[error(
+        "AU rejected the block size: requested {requested} frames, \
+         AU reports {accepted} frames"
+    )]
     BlockSizeRejected {
         /// The maximum block size this host asked for, in frames.
         requested: u32,
@@ -91,6 +111,12 @@ pub enum AuError {
     /// `kAudioUnitProperty_LastRenderError` at failure time, when it could be
     /// read and was itself non-`noErr` — diagnostics only, enriching the render
     /// status with the underlying error the AU recorded internally.
+    #[error(
+        "AudioUnit error in {function}: OSStatus {code} ({}){}",
+        os_status_message(*.code),
+        .last_render_error
+            .map_or_else(String::new, |last| format!("; last render error {last}"))
+    )]
     RenderFailed {
         /// The failing call — always `"AudioUnitRender"`.
         function: &'static str,
@@ -107,6 +133,7 @@ pub enum AuError {
     /// widened the enum enough to push `AuReady::uninitialize`'s
     /// `(AuReady, AuError)` past clippy's `result_large_err` threshold. A preset
     /// diagnostic must not tax the render path's result size.
+    #[error("preset file I/O failed for {}: {}", .0.path, .0.message)]
     PresetIo(Box<PresetFileError>),
     /// A `.aupreset` file is not a usable preset: not a property list at all, a
     /// plist whose root is not a dictionary, a truncated file, or a dictionary
@@ -117,6 +144,7 @@ pub enum AuError {
     /// means the file is broken, that one means the user picked the wrong file.
     ///
     /// Boxed for the same size reason as [`AuError::PresetIo`].
+    #[error("{} is not a valid .aupreset: {}", .0.path, .0.message)]
     InvalidPreset(Box<PresetFileError>),
     /// A `.aupreset` file is well-formed but belongs to a **different** AU.
     ///
@@ -136,6 +164,17 @@ pub enum AuError {
     /// including `process`'s. Inlining it grew every one of those results by ~144
     /// bytes for a diagnostic that only materialises on a rejected file
     /// (`clippy::result_large_err`).
+    #[error(
+        "{} is a preset for {}/{}/{}, but this AU is {}/{}/{}; refusing to apply \
+         another plugin's state",
+        .0.path,
+        .0.file_type,
+        .0.file_sub_type,
+        .0.file_manufacturer,
+        .0.au_type,
+        .0.au_sub_type,
+        .0.au_manufacturer
+    )]
     PresetIdentityMismatch(Box<PresetMismatch>),
 }
 
@@ -248,28 +287,7 @@ impl AuError {
                     return "preset belongs to a different Audio Unit";
                 }
             };
-            match code {
-                K_AUDIO_UNIT_ERR_INVALID_PROPERTY => "invalid property",
-                K_AUDIO_UNIT_ERR_INVALID_PARAMETER => "invalid parameter",
-                K_AUDIO_UNIT_ERR_INVALID_ELEMENT => "invalid element",
-                K_AUDIO_UNIT_ERR_NO_CONNECTION => "no connection",
-                K_AUDIO_UNIT_ERR_FAILED_INITIALIZATION => "failed initialization",
-                K_AUDIO_UNIT_ERR_TOO_MANY_FRAMES_TO_PROCESS => "too many frames to process",
-                K_AUDIO_UNIT_ERR_INVALID_FILE => "invalid file",
-                K_AUDIO_UNIT_ERR_UNKNOWN_FILE_TYPE => "unknown file type",
-                K_AUDIO_UNIT_ERR_FILE_NOT_SPECIFIED => "file not specified",
-                K_AUDIO_UNIT_ERR_FORMAT_NOT_SUPPORTED => "format not supported",
-                K_AUDIO_UNIT_ERR_UNINITIALIZED => "uninitialized",
-                K_AUDIO_UNIT_ERR_INVALID_SCOPE => "invalid scope",
-                K_AUDIO_UNIT_ERR_PROPERTY_NOT_WRITABLE => "property not writable",
-                K_AUDIO_UNIT_ERR_CANNOT_DO_IN_CURRENT_CONTEXT => "cannot do in current context",
-                K_AUDIO_UNIT_ERR_INVALID_PROPERTY_VALUE => "invalid property value",
-                K_AUDIO_UNIT_ERR_PROPERTY_NOT_IN_USE => "property not in use",
-                K_AUDIO_UNIT_ERR_INITIALIZED => "already initialized",
-                K_AUDIO_UNIT_ERR_INVALID_OFFLINE_RENDER => "invalid offline render",
-                K_AUDIO_UNIT_ERR_UNAUTHORIZED => "unauthorized",
-                _ => "unknown error",
-            }
+            os_status_message(code)
         }
         #[cfg(not(target_os = "macos"))]
         {
@@ -287,89 +305,40 @@ impl AuError {
     }
 }
 
-impl fmt::Display for AuError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            AuError::OsStatus { function, code } => write!(
-                f,
-                "AudioUnit error in {}: OSStatus {} ({})",
-                function,
-                code,
-                self.message()
-            ),
-            AuError::RenderFailed {
-                function,
-                code,
-                last_render_error,
-            } => match last_render_error {
-                Some(last) => write!(
-                    f,
-                    "AudioUnit error in {}: OSStatus {} ({}); last render error {}",
-                    function,
-                    code,
-                    self.message(),
-                    last
-                ),
-                None => write!(
-                    f,
-                    "AudioUnit error in {}: OSStatus {} ({})",
-                    function,
-                    code,
-                    self.message()
-                ),
-            },
-            AuError::NullComponent => write!(f, "null AudioComponent handle"),
-            AuError::RequiresAsyncInstantiation => write!(
-                f,
-                "this component requires AudioComponentInstantiate (asynchronous); \
-                 it is a v3 Audio Unit with a view, which \
-                 AudioComponentInstanceNew cannot create"
-            ),
-            AuError::CfStringAlloc => write!(f, "CoreFoundation string allocation failed"),
-            AuError::InvalidBuffer(msg) => write!(f, "invalid buffer: {msg}"),
-            AuError::SampleRateRejected {
-                scope,
-                requested,
-                accepted,
-            } => write!(
-                f,
-                "AU rejected the {scope} sample rate: requested {requested} Hz, \
-                 AU reports {accepted} Hz"
-            ),
-            AuError::BlockSizeRejected {
-                requested,
-                accepted,
-            } => write!(
-                f,
-                "AU rejected the block size: requested {requested} frames, \
-                 AU reports {accepted} frames"
-            ),
-            AuError::PresetIo(e) => {
-                write!(f, "preset file I/O failed for {}: {}", e.path, e.message)
-            }
-            AuError::InvalidPreset(e) => {
-                write!(f, "{} is not a valid .aupreset: {}", e.path, e.message)
-            }
-            AuError::PresetIdentityMismatch(m) => {
-                let PresetMismatch {
-                    path,
-                    file_type,
-                    file_sub_type,
-                    file_manufacturer,
-                    au_type,
-                    au_sub_type,
-                    au_manufacturer,
-                } = &**m;
-                write!(
-                    f,
-                    "{path} is a preset for \
-                     {file_type}/{file_sub_type}/{file_manufacturer}, but this AU is \
-                     {au_type}/{au_sub_type}/{au_manufacturer}; refusing to apply \
-                     another plugin's state"
-                )
-            }
-        }
+/// Decode a well-known AudioUnit `OSStatus` into a short description, falling
+/// back to `"unknown error"`. Shared by [`AuError::message`] and the `Display`
+/// text of [`AuError::OsStatus`] / [`AuError::RenderFailed`] so the two cannot
+/// drift.
+#[cfg(target_os = "macos")]
+fn os_status_message(code: i32) -> &'static str {
+    match code {
+        K_AUDIO_UNIT_ERR_INVALID_PROPERTY => "invalid property",
+        K_AUDIO_UNIT_ERR_INVALID_PARAMETER => "invalid parameter",
+        K_AUDIO_UNIT_ERR_INVALID_ELEMENT => "invalid element",
+        K_AUDIO_UNIT_ERR_NO_CONNECTION => "no connection",
+        K_AUDIO_UNIT_ERR_FAILED_INITIALIZATION => "failed initialization",
+        K_AUDIO_UNIT_ERR_TOO_MANY_FRAMES_TO_PROCESS => "too many frames to process",
+        K_AUDIO_UNIT_ERR_INVALID_FILE => "invalid file",
+        K_AUDIO_UNIT_ERR_UNKNOWN_FILE_TYPE => "unknown file type",
+        K_AUDIO_UNIT_ERR_FILE_NOT_SPECIFIED => "file not specified",
+        K_AUDIO_UNIT_ERR_FORMAT_NOT_SUPPORTED => "format not supported",
+        K_AUDIO_UNIT_ERR_UNINITIALIZED => "uninitialized",
+        K_AUDIO_UNIT_ERR_INVALID_SCOPE => "invalid scope",
+        K_AUDIO_UNIT_ERR_PROPERTY_NOT_WRITABLE => "property not writable",
+        K_AUDIO_UNIT_ERR_CANNOT_DO_IN_CURRENT_CONTEXT => "cannot do in current context",
+        K_AUDIO_UNIT_ERR_INVALID_PROPERTY_VALUE => "invalid property value",
+        K_AUDIO_UNIT_ERR_PROPERTY_NOT_IN_USE => "property not in use",
+        K_AUDIO_UNIT_ERR_INITIALIZED => "already initialized",
+        K_AUDIO_UNIT_ERR_INVALID_OFFLINE_RENDER => "invalid offline render",
+        K_AUDIO_UNIT_ERR_UNAUTHORIZED => "unauthorized",
+        _ => "unknown error",
     }
 }
 
-impl std::error::Error for AuError {}
+/// Off macOS the status constants are not compiled in (they live in the
+/// macOS-gated `types` module), so every code reads as unknown — matching what
+/// [`AuError::message`] reported before the table was shared.
+#[cfg(not(target_os = "macos"))]
+fn os_status_message(_code: i32) -> &'static str {
+    "unknown error"
+}

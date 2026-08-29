@@ -11,6 +11,8 @@ workspace = true
 
 [dependencies]
 tutti-plugin-types = { path = "../../tutti-plugin-types" }
+# Structured errors (`AuError`), matching the sibling format hosts.
+thiserror.workspace = true
 # UMP MidiEvent decode (message view + MIDI 2.0→1.0 value scaling) for
 # MusicDeviceMIDIEvent delivery to instrument / music-effect AUs.
 tutti-midi-types = { path = "../../../midi/tutti-midi-types", default-features = false }

@@ -73,7 +73,7 @@
 //! // refused here rather than silently truncated inside the measurement.
 //! let planes = StereoPlanes::new(&samples, &samples).expect("equal lengths");
 //! let reading = correlate(planes);
-//! # Ok::<(), tutti_analysis::AnalysisError>(())
+//! # Ok::<(), tutti_analysis::Error>(())
 //! ```
 //!
 //! ## Reading from a running graph
@@ -125,7 +125,7 @@ mod yin;
 
 pub use tutti_core::ChannelLayout;
 
-pub use error::{AnalysisError, Result};
+pub use error::{Error, Result};
 pub use fft::FftScratch;
 pub use geometry::StftGeometry;
 pub use grid::{BinCount, BinIndex, FrameCount, FrameIndex, Grid};

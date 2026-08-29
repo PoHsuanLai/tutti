@@ -103,7 +103,10 @@ impl DelayLine {
     ///
     /// `delay_samples` is a **fractional frame count**, not [`Seconds`] — the
     /// caller converts, because keeping the fraction is the whole point of an
-    /// interpolated read. `0.0` is the sample just pushed.
+    /// interpolated read. `0.0` is the sample just pushed. Where the unit types
+    /// stop: `Samples` is an integer count and cannot carry the fraction, and
+    /// `SamplePosition` is an absolute f64 offset into a wave, where this is a
+    /// per-sample f32 span back from the write head.
     ///
     /// The delay is clamped to `0.0..=max_delay_samples`, so an over-long
     /// request shortens silently rather than panicking. Does not allocate.

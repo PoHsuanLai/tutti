@@ -26,7 +26,7 @@ a note, read it back as a paired note positioned in `Beat` and measured in
 what lets an imported clip be placed without a conversion step:
 
 ```rust
-use tutti_core::{Beat, BeatDuration};
+use tutti_core::{Beat, BeatDuration, Bpm};
 use tutti_midi_file::{
     encode_midi_file, smf, MidiFileKind, MidiWriteOptions, SmfMessage, SmfTimedEvent,
 };
@@ -39,7 +39,7 @@ let track = vec![
 
 let bytes = encode_midi_file(
     &[track],
-    &MidiWriteOptions { ticks_per_beat: 480, tempo_bpm: Some(174.0), ..Default::default() },
+    &MidiWriteOptions { ticks_per_beat: 480, tempo_bpm: Some(Bpm(174.0)), ..Default::default() },
 )?;
 
 // Recognised by magic bytes rather than by extension.
@@ -57,13 +57,14 @@ assert_eq!(tracks[0].notes[0].duration_beats, BeatDuration(1.5));
 
 SMF stores tempo as **microseconds per quarter note**, an integer. `174.0` BPM
 is not representable, so it comes back as `174.0002958…` — a wire quantisation,
-not a precision bug. It is read back as `f64` for the same reason SMPTE timecode
-is: `Seconds` is `f32`, which cannot carry a long render duration or a timecode
-position, so this crate's time-of-day quantities deliberately stay `f64`.
+not a precision bug. Tempo is read back as `Bpm` (f64-backed, so nothing is
+lost after the wire); it is the *timecode* quantities that stay bare `f64` here,
+because `Seconds` is `f32` and cannot carry a long render duration or a SMPTE
+position.
 
 ```rust
 # use tutti_midi_file::{encode_midi_file, MidiWriteOptions, ParsedMidiFile, SmfMessage, SmfTimedEvent};
-# use tutti_core::Beat;
+# use tutti_core::{Beat, Bpm};
 # let track = vec![SmfTimedEvent {
 #     time_beats: Beat(0.0),
 #     channel: 0,
@@ -71,12 +72,12 @@ position, so this crate's time-of-day quantities deliberately stay `f64`.
 # }];
 let bytes = encode_midi_file(
     &[track],
-    &MidiWriteOptions { tempo_bpm: Some(174.0), ..Default::default() },
+    &MidiWriteOptions { tempo_bpm: Some(Bpm(174.0)), ..Default::default() },
 )?;
-// `tempo_bpm` is a plain `f64` — a file with no tempo event reads back as 120.
+// A file with no tempo event reads back as the SMF default, `Bpm(120.0)`.
 let parsed = ParsedMidiFile::parse(&bytes)?;
-assert_ne!(parsed.tempo_bpm, 174.0);
-assert!((parsed.tempo_bpm - 174.0).abs() < 0.001);
+assert_ne!(parsed.tempo_bpm, Bpm(174.0));
+assert!(!parsed.tempo_bpm.differs_from(Bpm(174.0), 0.001));
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 

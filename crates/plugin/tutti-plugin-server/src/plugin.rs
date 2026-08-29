@@ -36,7 +36,7 @@ use crate::loaders::au::AuInstance;
 ///
 /// Reach for [`Plugin::instance_mut`] rather than matching: the point of the
 /// enum is that callers above it see only `&mut dyn PluginInstance`.
-#[allow(clippy::large_enum_variant)]
+#[allow(clippy::large_enum_variant)] // One Plugin per subprocess; boxing the big variants buys nothing.
 pub(crate) enum Plugin {
     /// A VST2 plugin (`.vst`, `.dll`, `.so`).
     #[cfg(feature = "vst2")]
@@ -115,7 +115,7 @@ impl Plugin {
     /// Returns `BridgeError::LoadFailed` with `LoadStage::Scanning` if the path
     /// does not exist, or `LoadStage::Opening` if the extension names no format
     /// this build supports.
-    #[allow(unreachable_code, unused_variables)]
+    #[allow(unreachable_code, unused_variables)] // With no format features, every match arm is cfg'd out.
     pub(crate) fn probe(path: &Path) -> Result<PluginDescriptor> {
         if !path.exists() {
             return Err(BridgeError::LoadFailed {
@@ -160,7 +160,7 @@ impl Plugin {
     /// Returns `BridgeError::LoadFailed` with `LoadStage::Scanning` if the path
     /// does not exist, `LoadStage::Opening` for an unsupported extension, or the
     /// format loader's own error if instantiation fails.
-    #[allow(unreachable_code, unused_variables)]
+    #[allow(unreachable_code, unused_variables)] // With no format features, every match arm is cfg'd out.
     pub(crate) fn load(
         path: &Path,
         sample_rate: f64,
@@ -319,7 +319,6 @@ impl Plugin {
                 }
             }
             #[cfg(feature = "clap")]
-            #[allow(clippy::collapsible_match)]
             Plugin::Clap(clap) => {
                 if clap.poll_latency_changed() {
                     out.push(AsyncEvent::LatencyChanged {
@@ -355,7 +354,7 @@ impl Plugin {
                     out.push(AsyncEvent::ParamTitlesChanged);
                 }
             }
-            #[allow(unreachable_patterns)]
+            #[allow(unreachable_patterns)] // Unreachable only when every format feature is on; partial builds need it.
             _ => {}
         }
         out

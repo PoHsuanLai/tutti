@@ -29,7 +29,10 @@
 //! - **1.2.13** — [`snd_seq_create_ump_endpoint`] and
 //!   [`snd_seq_create_ump_block`] (`alsa_ump_create` cfg).
 
-#![allow(non_camel_case_types)]
+#![allow(
+    non_camel_case_types,
+    reason = "FFI type names mirror alsa-lib's C spelling, so a reader can grep the header"
+)]
 
 use std::os::raw::{c_char, c_int, c_uint, c_void};
 

@@ -18,7 +18,7 @@ use parking_lot::Mutex;
 use tutti_core::{AudioUnit, BufferMut, BufferRef, SignalFrame, F64};
 use tutti_midi_runtime::MidiSender;
 use tutti_midi_types::MidiUnitId;
-use tutti_vst2_host::{PluginInfo, ProcessContext, RenderScratch, Vst2Instance};
+use tutti_vst2_host::{PluginInfo, RenderScratch, Vst2Instance, Vst2ProcessContext};
 
 use crate::host::node::input_slot::{BlockCtx, InputSlot};
 use crate::host::node::transport_source::TransportSource;
@@ -628,8 +628,8 @@ fn block_context<'a>(
     sample_rate: f64,
     midi_events: &'a [tutti_vst2_host::MidiEvent],
     transport: &'a TransportInfo,
-) -> ProcessContext<'a> {
-    ProcessContext::new(sample_rate)
+) -> Vst2ProcessContext<'a> {
+    Vst2ProcessContext::new(sample_rate)
         .midi(midi_events)
         .transport(transport)
 }
@@ -837,7 +837,6 @@ fn run_with_mut_channels_f64<F: FnOnce(&mut [&mut [f64]])>(
     recurse(channels, size, &mut acc[..n], 0, f);
 }
 
-
 #[cfg(test)]
 mod transport_tests {
     use super::*;
@@ -975,7 +974,7 @@ mod transport_tests {
     }
 
     /// With no source installed the node still drains a usable default, so the
-    /// `ProcessContext` is filled on every block rather than only once a host
+    /// `Vst2ProcessContext` is filled on every block rather than only once a host
     /// has wired a transport.
     #[test]
     fn an_uninstalled_slot_drains_the_default_snapshot() {

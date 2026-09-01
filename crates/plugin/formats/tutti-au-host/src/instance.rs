@@ -25,7 +25,7 @@ use crate::stream::{AuBusLayout, StreamConfig};
 use crate::transport::{self, TransportState};
 use crate::types::*;
 use tutti_midi_types::MidiEvent;
-use tutti_plugin_types::{ChannelLayout, TransportInfo};
+use tutti_plugin_types::{ChannelLayout, EditorSize, TransportInfo, WindowHandle};
 use tutti_types::value::units::Seconds;
 use tutti_types::Samples;
 
@@ -93,6 +93,11 @@ pub struct AuReady {
 /// and will return `Uninitialized` otherwise.
 pub struct AuInstance {
     state: State,
+    /// The open editor, when one is. Owned here so
+    /// [`has_editor`](Self::has_editor) / [`open_editor`](Self::open_editor) /
+    /// [`close_editor`](Self::close_editor) read like their VST3 and CLAP
+    /// counterparts, with the Cocoa specifics staying inside [`AuEditor`].
+    editor: Option<crate::editor::AuEditor>,
 }
 
 enum State {
@@ -121,6 +126,7 @@ impl AuInstance {
     ) -> Result<Self> {
         Ok(AuInstance {
             state: State::Loaded(AuLoaded::new(component, sample_rate, block_size)?),
+            editor: None,
         })
     }
 
@@ -138,7 +144,58 @@ impl AuInstance {
     pub unsafe fn new_with_config(component: AudioComponent, config: StreamConfig) -> Result<Self> {
         Ok(AuInstance {
             state: State::Loaded(AuLoaded::new_with_config(component, config)?),
+            editor: None,
         })
+    }
+
+    /// Whether the AU publishes a Cocoa editor view.
+    ///
+    /// Asks the live unit — `kAudioUnitProperty_CocoaUI` is a property of the
+    /// instance, not of the registry entry — so this needs an instantiated AU
+    /// rather than answering from the component description.
+    pub fn has_editor(&self) -> bool {
+        crate::editor::AuEditor::has_editor(self.raw_unit())
+    }
+
+    /// Embed the AU's editor into `parent`, returning the size it made.
+    ///
+    /// `preferred` is a *hint* passed to the view factory as `inPreferredSize`
+    /// (`AUCocoaUIView.h:47-48`); the plugin may return any size, which is why
+    /// the returned figure is read back from the view rather than echoed. Pass
+    /// the host's real window size — a fixed figure tells every AU the host
+    /// wants that size whatever window the editor is about to live in.
+    ///
+    /// Re-opening closes the previous view first, so the AU is never asked to
+    /// hold two.
+    ///
+    /// # Safety
+    /// `parent`'s underlying pointer must be a valid `NSView*` owned by the
+    /// caller. Must be called on the macOS main thread.
+    ///
+    /// # Errors
+    /// [`AuError::InvalidBuffer`] if the AU advertises no Cocoa view bundle or
+    /// the view factory fails to load.
+    pub unsafe fn open_editor(
+        &mut self,
+        parent: WindowHandle,
+        preferred: EditorSize,
+    ) -> Result<EditorSize> {
+        self.close_editor();
+        let editor = crate::editor::AuEditor::open(self.raw_unit(), Some(parent), preferred)?;
+        let size = editor.editor_size();
+        self.editor = Some(editor);
+        Ok(size)
+    }
+
+    /// Detach and release the editor view. Safe to call when none is open.
+    ///
+    /// Must be called on the macOS main thread — the teardown is AppKit's
+    /// `removeFromSuperview` / `release`, and touching AppKit off the main
+    /// thread is undefined behavior.
+    pub fn close_editor(&mut self) {
+        if let Some(mut editor) = self.editor.take() {
+            editor.close();
+        }
     }
 
     /// Transition Loaded → Ready. No-op if already Ready.
@@ -1602,7 +1659,7 @@ impl AuInstance {
 
     /// Serialize the AU's current state (all parameters + internal state) to
     /// a binary plist blob suitable for persistence.
-    pub fn save_state(&self) -> Result<Vec<u8>> {
+    pub fn get_state(&self) -> Result<Vec<u8>> {
         tutti_plugin_types::assert_main_thread();
         let raw: core_foundation_sys::propertylist::CFPropertyListRef = unsafe {
             get_property(
@@ -1618,7 +1675,7 @@ impl AuInstance {
         }
     }
 
-    /// Restore state previously produced by [`Self::save_state`]. Empty input is a no-op.
+    /// Restore state previously produced by [`Self::get_state`]. Empty input is a no-op.
     ///
     /// A successful restore is followed by
     /// [`notify_all_parameters`](crate::listener::notify_all_parameters), which
@@ -1632,7 +1689,7 @@ impl AuInstance {
     /// # Errors
     /// Returns [`AuError::OsStatus`] if the AU rejects the state blob. A failure
     /// of the *notify* is deliberately not propagated — see the inline comment.
-    pub fn load_state(&mut self, data: &[u8]) -> Result<()> {
+    pub fn set_state(&mut self, data: &[u8]) -> Result<()> {
         tutti_plugin_types::assert_main_thread();
         if data.is_empty() {
             return Ok(());
@@ -1704,12 +1761,12 @@ impl AuInstance {
             )
         };
         if from_document.is_err() {
-            // The documented fallback. `load_state` re-decodes the blob, which is
+            // The documented fallback. `set_state` re-decodes the blob, which is
             // a plist parse rather than anything the AU sees — cheap enough not to
             // warrant duplicating the notify logic it owns.
-            return self.load_state(data);
+            return self.set_state(data);
         }
-        // Same reasoning as `load_state`: the state IS loaded, so a failed
+        // Same reasoning as `set_state`: the state IS loaded, so a failed
         // parameter notify must not be reported as a failed restore.
         //
         // SAFETY: `raw_unit` is live for the lifetime of this instance.
@@ -1756,7 +1813,7 @@ impl AuInstance {
     ///
     /// A successful load is followed by
     /// [`notify_all_parameters`](crate::listener::notify_all_parameters), for the
-    /// reason [`load_state`](Self::load_state) documents: setting `ClassInfo`
+    /// reason [`set_state`](Self::set_state) documents: setting `ClassInfo`
     /// rewrites every parameter inside the AU without notifying a single listener,
     /// so an open editor would keep displaying the pre-load values.
     ///
@@ -1775,7 +1832,7 @@ impl AuInstance {
         let identity = unsafe {
             crate::aupreset::load_preset_file(self.raw_unit(), self.handle().component(), path)?
         };
-        // As in `load_state`: the state is loaded, so a failed notify is a stale
+        // As in `set_state`: the state is loaded, so a failed notify is a stale
         // editor rather than a failed load.
         //
         // SAFETY: `raw_unit` is live for the lifetime of this instance.
@@ -2636,9 +2693,9 @@ mod tests {
         let mut inst = unsafe { AuInstance::new(comp, 44100.0, 512) }.unwrap();
         inst.initialize().unwrap();
 
-        let state = inst.save_state().unwrap();
+        let state = inst.get_state().unwrap();
         assert!(!state.is_empty());
-        inst.load_state(&state).unwrap();
+        inst.set_state(&state).unwrap();
     }
 
     /// Presets and bypass must work in the `Loaded` state, before

@@ -82,7 +82,7 @@ use support::corpus;
 
 use std::sync::Mutex;
 
-use tutti_au_host::bus::BusDirection;
+use tutti_au_host::BusDirection;
 use tutti_au_host::offline::PushScratch;
 use tutti_au_host::AuError;
 use tutti_plugin_types::ChannelLayout;
@@ -199,7 +199,7 @@ fn push_refuses_a_scratch_with_no_input_bus() {
 #[test]
 fn the_two_has_input_inferences_are_indistinguishable_on_this_machine() {
     use tutti_au_host::component::{enumerate_components_of_type, AuType};
-    use tutti_au_host::instance::AuInstance;
+    use tutti_au_host::AuInstance;
 
     let _g = lock();
     let mut checked = 0;

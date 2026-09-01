@@ -115,7 +115,7 @@ if let Some(info) = plugin.parameter_info(0) {
 
 // State save/restore is legal before any buffer exists — a project load
 // restores state before the transport rolls.
-let saved = plugin.state()?;
+let saved = plugin.get_state()?;
 plugin.set_state(&saved)?;
 
 // One drain, four kinds of news — not a poller per kind. `RestartComponent`

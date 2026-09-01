@@ -30,7 +30,7 @@ use std::sync::{Mutex, MutexGuard};
 mod support;
 use support::probe_path::probe_path;
 
-use tutti_clap_host::{AudioBuffer32, AudioPortFlags, ClapActive, ClapLoaded, ProcessContext};
+use tutti_clap_host::{AudioBuffer32, AudioPortFlags, ClapActive, ClapLoaded, ClapProcessContext};
 use tutti_clap_test_plugin::{
     probe_tag, PREFERRED_DIALECT_DEFAULT, REPORTED_LATENCY_SAMPLES, REPORTED_TAIL_SAMPLES,
 };
@@ -200,7 +200,7 @@ fn drive_block(
             num_samples: frames,
             sample_rate: SAMPLE_RATE,
         };
-        inst.process(&mut buffer, &ProcessContext::default())
+        inst.process(&mut buffer, &ClapProcessContext::default())
             .expect("process succeeds");
     }
     outs
@@ -455,7 +455,7 @@ fn host_handles_in_place_style_buffers() {
             num_samples: FRAMES,
             sample_rate: SAMPLE_RATE,
         };
-        inst.process(&mut buffer, &ProcessContext::default())
+        inst.process(&mut buffer, &ClapProcessContext::default())
             .expect("process succeeds");
     }
 

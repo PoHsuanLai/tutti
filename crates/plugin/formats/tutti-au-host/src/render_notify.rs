@@ -493,7 +493,7 @@ struct NotifyState {
 /// use tutti_au_host::render_notify::{
 ///     schedule, ParamEvent, RenderPhase, ScheduleAddress,
 /// };
-/// # use tutti_au_host::instance::AuInstance;
+/// # use tutti_au_host::AuInstance;
 /// # fn demo(au: &mut AuInstance, param_id: u32) -> tutti_au_host::Result<()> {
 /// let blocks = Arc::new(AtomicU32::new(0));
 /// let counter = Arc::clone(&blocks);

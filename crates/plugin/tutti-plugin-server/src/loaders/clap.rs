@@ -384,7 +384,7 @@ impl ClapInstance {
             .unwrap_or_default();
         let transport = ctx.transport.map(|t| convert_transport(t, sample_rate));
 
-        let clap_ctx = tutti_clap_host::ProcessContext {
+        let clap_ctx = tutti_clap_host::ClapProcessContext {
             midi: ctx.midi_events,
             // An empty list means "no automation this block"; the plugin reads
             // `None` and `Some(empty)` differently, so the mapping is kept.
@@ -506,7 +506,7 @@ impl PluginParams for ClapInstance {
     fn get_parameter(&self, id: ParamAddress) -> f64 {
         // A VST2 index addresses nothing here; `clap_id` is opaque.
         let Some(id) = id.opaque() else { return 0.0 };
-        let Some(plain) = clap_dispatch!(self, i => i.parameter(id.get())) else {
+        let Some(plain) = clap_dispatch!(self, i => i.get_parameter(id.get())) else {
             return 0.0;
         };
         match clap_dispatch!(self, i => i.parameter_range(id.get())) {
@@ -581,7 +581,7 @@ impl PluginParams for ClapInstance {
     fn get_parameter_list(&self) -> Vec<ParameterInfo> {
         // The host crate projects CLAP-native param info onto the shared
         // `ParameterInfo` at its own boundary, so the loader maps no flags here.
-        clap_dispatch!(self, i => i.parameter_list())
+        clap_dispatch!(self, i => i.get_parameter_list())
     }
 }
 
@@ -656,7 +656,7 @@ impl PluginPresets for ClapInstance {
 
 impl PluginState for ClapInstance {
     fn get_state(&mut self) -> PluginResult<Vec<u8>> {
-        clap_dispatch_mut!(self, i => i.state()).map_err(|e| PluginError::State(e.to_string()))
+        clap_dispatch_mut!(self, i => i.get_state()).map_err(|e| PluginError::State(e.to_string()))
     }
 
     fn set_state(&mut self, data: &[u8]) -> PluginResult<()> {

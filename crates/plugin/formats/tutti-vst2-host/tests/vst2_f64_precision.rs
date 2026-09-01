@@ -20,7 +20,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 
-use tutti_vst2_host::{ProcessContext, RenderScratch, Vst2Instance};
+use tutti_vst2_host::{Vst2ProcessContext, RenderScratch, Vst2Instance};
 use tutti_vst2_test_plugin::{ProcessCapture, ProcessEntry};
 
 #[path = "support/probe_path.rs"]
@@ -155,7 +155,7 @@ fn render_f64(
     let mut output_slices: Vec<&mut [f64]> =
         output_data.iter_mut().map(|v| v.as_mut_slice()).collect();
 
-    let ctx = ProcessContext::new(SAMPLE_RATE);
+    let ctx = Vst2ProcessContext::new(SAMPLE_RATE);
     instance.process_f64(&input_slices, &mut output_slices, BLOCK, &ctx, scratch);
 
     output_data

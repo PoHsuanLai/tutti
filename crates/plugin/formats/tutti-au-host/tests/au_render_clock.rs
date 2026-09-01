@@ -9,7 +9,7 @@
 //! block-to-block delta from it is using it as documented.
 //!
 //! That makes the timestamp part of what
-//! [`AuInstance::reset`](tutti_au_host::instance::AuInstance::reset) has to
+//! [`AuInstance::reset`](tutti_au_host::AuInstance::reset) has to
 //! answer for. `AudioUnitReset` flushes the AU's signal history; the clock those
 //! flushed samples were measured against lives in *this* crate, where
 //! AudioToolbox cannot see it. Left running, it tells the AU the block after a
@@ -53,7 +53,7 @@
 
 #![cfg(target_os = "macos")]
 
-use tutti_au_host::instance::AuInstance;
+use tutti_au_host::AuInstance;
 use tutti_plugin_types::ChannelLayout;
 
 mod support;

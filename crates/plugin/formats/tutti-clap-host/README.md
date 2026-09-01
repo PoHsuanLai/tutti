@@ -46,7 +46,7 @@ on disk.
 
 ```rust,no_run
 use tutti_midi_types::{MidiChannel, MidiGroup};
-use tutti_clap_host::{AudioBuffer32, ClapLoaded, MidiEvent, ProcessContext, TransportInfo};
+use tutti_clap_host::{AudioBuffer32, ClapLoaded, MidiEvent, ClapProcessContext, TransportInfo};
 
 // `ClapLoaded` is the GUI / parameter / state stage; sample rate and the
 // max block length are fixed here, so `activate` takes no arguments.
@@ -66,7 +66,7 @@ let mut buffer = AudioBuffer32::new(&inputs, &mut outputs, 48_000.0);
 
 let transport = TransportInfo::default().with_tempo(120.0).with_playing(true);
 let midi = [MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 16384)];
-active.process(&mut buffer, &ProcessContext {
+active.process(&mut buffer, &ClapProcessContext {
     midi: &midi,
     transport: Some(&transport),
     ..Default::default()
@@ -87,7 +87,7 @@ let mut plugin = ClapLoaded::load("/usr/lib/clap/MyPlugin.clap", 48_000.0, 512)?
 // CLAP addresses parameters by an opaque, plugin-chosen `clap_id`, never by
 // position. `parameter_list` projects them into the shared `ParameterInfo`, so
 // a consumer never learns which format it is reading.
-for info in plugin.parameter_list() {
+for info in plugin.get_parameter_list() {
     println!("{} {:?}", info.qualified_name(), info.bounds());
 }
 
@@ -95,7 +95,7 @@ for info in plugin.parameter_list() {
 plugin.set_parameter(0, 0.75).set_parameter(1, 0.5);
 
 // State save/restore is legal before any buffer exists.
-let saved = plugin.state()?;
+let saved = plugin.get_state()?;
 plugin.set_state(&saved)?;
 
 // A plugin that implements the context-aware extension can be asked for a

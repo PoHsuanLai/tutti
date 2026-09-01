@@ -23,7 +23,7 @@
 #![cfg(target_os = "macos")]
 
 use tutti_au_host::component::{enumerate_components, AuComponentInfo};
-use tutti_au_host::handle::AuHandle;
+use tutti_au_host::AuHandle;
 use tutti_au_host::AuError;
 
 /// Every component the system advertises.

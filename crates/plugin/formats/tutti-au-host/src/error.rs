@@ -5,9 +5,40 @@ use thiserror::Error;
 #[cfg(target_os = "macos")]
 use crate::types::*;
 
+/// Plugin-load phase label. The shared superset lives in `tutti-plugin-types`;
+/// AU uses the Opening/Instantiation/Setup/Initialization subset — it has no
+/// distinct Scanning phase (the OS registry answers that, not this crate) and
+/// no Factory one (`AudioComponentInstanceNew` takes the component directly).
+/// Re-exported so `AuError` and callers keep referring to
+/// `crate::error::LoadStage`.
+pub use tutti_plugin_types::LoadStage;
+
 /// Errors returned by Audio Unit host operations.
 #[derive(Error, Debug, Clone)]
 pub enum AuError {
+    /// The AU could not be loaded. `stage` says how far the load got, which
+    /// separates "this component cannot be instantiated at all" from "it
+    /// instantiated and then refused its configuration".
+    ///
+    /// The same shape the other three host crates report a load failure in,
+    /// with one substitution forced by the ABI: AU is constructed from an
+    /// **OS-registered `AudioComponent`**, not a file
+    /// (`AudioComponentInstanceNew` takes the component handle), so there is no
+    /// path to carry. `component` names it the way a user can match it against
+    /// a plugin list — `"aufx/dely/appl"`, the type/subtype/manufacturer triple
+    /// the registry itself is keyed on.
+    #[error("Failed to load AudioUnit {component}: {stage} - {reason}")]
+    LoadFailed {
+        /// The component the load was attempted against, as its decoded
+        /// `type/subtype/manufacturer` four-char triple.
+        component: String,
+        /// The phase that failed — Opening, Instantiation, Setup or
+        /// Initialization for AU.
+        stage: LoadStage,
+        /// Human-readable cause, for logs rather than for matching on.
+        reason: String,
+    },
+
     /// An AudioToolbox call returned a non-zero `OSStatus`. `function` names
     /// the failing call (for diagnostics), and `code` is the raw status.
     #[error(

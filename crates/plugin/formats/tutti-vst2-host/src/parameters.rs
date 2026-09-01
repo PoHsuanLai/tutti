@@ -1,4 +1,4 @@
-//! Parameter read / write + `ParameterInfo` exposure.
+//! Parameter read / write + shared-`ParameterInfo` exposure.
 //!
 //! VST2 parameters are identified by a dense `i32` index in
 //! `[0, get_info().parameters)` and the value is a normalized `f32` in
@@ -21,7 +21,6 @@ use tutti_plugin_types::{
 
 use crate::host::ParameterChange;
 use crate::instance::Vst2Instance;
-use crate::types::ParameterInfo;
 
 /// Wrapper to make `Arc<dyn PluginParameters>` `Send`.
 ///
@@ -66,7 +65,7 @@ impl Vst2Instance {
     /// declaring no parameters. That is not the same as a parameter sitting at
     /// zero, so it is not flattened to `0.0` here; a caller that genuinely does
     /// not care can say `unwrap_or(0.0)` and be seen to have decided.
-    pub fn parameter(&self, id: i32) -> Option<f32> {
+    pub fn get_parameter(&self, id: i32) -> Option<f32> {
         self.params.get_parameter(self.param_index(id)?)
     }
 
@@ -142,21 +141,6 @@ impl Vst2Instance {
         self.params.get_parameter(index)
     }
 
-    /// List every parameter the plugin advertises, with current value.
-    pub fn parameters(&self) -> Vec<ParameterInfo> {
-        let count = self.handle.instance.get_info().parameters;
-        (0..count)
-            .map(|i| ParameterInfo {
-                id: i,
-                name: self.params.get_parameter_name(i),
-                unit: self.params.get_parameter_label(i),
-                // A listing is a display surface; a plugin with no accessor
-                // has nothing to show, and 0.0 is the neutral rendering.
-                current: self.params.get_parameter(i).unwrap_or(0.0),
-            })
-            .collect()
-    }
-
     /// List every parameter as the SHARED [`tutti_plugin_types::ParameterInfo`],
     /// the boundary vocabulary both consumers speak.
     ///
@@ -187,103 +171,103 @@ impl Vst2Instance {
     /// `default_value` comes from the load-time snapshot, not the live value.
     /// VST2 has no default-value opcode, so a plugin's initial state is the only
     /// place its defaults are observable.
-    pub fn parameter_list(&self) -> Vec<SharedParameterInfo> {
-        self.parameters()
-            .into_iter()
-            .map(|p| {
-                // Falls back to the live value only if the snapshot has no entry
-                // for this id, which means the parameter count grew after load —
-                // a shell plugin swapping its effect. Better than 0.0: the live
-                // value is at least one this parameter has held.
-                // `p.id` is an enumeration counter bounded by `numParams`, so
-                // it is never negative and the widening cannot wrap.
-                let default = self
-                    .initial_values
-                    .get(p.id as usize)
-                    .copied()
-                    .unwrap_or(p.current) as f64;
-
-                let props = self.parameter_properties(p.id);
-                let int_range = props.as_ref().and_then(|q| q.integer_range);
-
-                // The declared default is normalized, so it maps through the
-                // range rather than being written into it verbatim.
-                let range = match int_range {
-                    Some(r) => {
-                        let (min, max) = (r.min as f64, r.max as f64);
-                        let plain = ParamRange::Plain {
-                            min,
-                            max,
-                            default: 0.0,
-                        };
-                        ParamRange::Plain {
-                            min,
-                            max,
-                            default: plain.to_plain(default),
-                        }
-                    }
-                    None => ParamRange::Normalized { default },
-                };
-
-                // `step_count` is `None` for a range the plugin declared but
-                // that cannot be stepped through (non-positive step, inverted
-                // bounds); that is unreported, not continuous.
-                let steps = match int_range.and_then(|r| r.step_count()) {
-                    Some(0) | None => ParamSteps::Unknown,
-                    Some(1) => ParamSteps::Toggle,
-                    Some(n) => ParamSteps::Enumerated(n.saturating_add(1)),
-                };
-
-                SharedParameterInfo {
-                    // The one format that addresses by position. `p.id` is the
-                    // enumeration counter from `parameters()`, already bounded
-                    // by `get_info().parameters`, so it is an index by
-                    // construction — see `param_index`.
-                    id: ParamAddress::Index(p.id),
-                    name: p.name,
-                    unit: p.unit,
-                    range,
-                    steps,
-                    // Asked per parameter: `effCanBeAutomated` takes the index,
-                    // so there is no whole-plugin answer to cache.
-                    flags: if self.params.can_be_automated(p.id) {
-                        ParamFlags::AUTOMATABLE
-                    } else {
-                        ParamFlags::empty()
-                    },
-                    known: ParamFlags::AUTOMATABLE,
-                    // `effGetParameterProperties` carries the category under
-                    // `USES_CATEGORY`. The "numbered from 1, so 0 means
-                    // uncategorised" rule is already applied in the decoder —
-                    // `category` is `None` for a zero index — so there is no
-                    // sentinel left to check here. A category with an empty
-                    // label yields no group, which is the same flat list by a
-                    // shorter route.
-                    group: props
-                        .as_ref()
-                        .and_then(|q| q.category.as_ref())
-                        .map(|c| c.label.clone())
-                        .unwrap_or_default(),
-                }
-            })
+    pub fn get_parameter_list(&self) -> Vec<SharedParameterInfo> {
+        (0..self.parameter_count())
+            .map(|id| self.build_parameter_info(id))
             .collect()
     }
 
-    /// Look up a single parameter by ID. `None` if it addresses no declared
-    /// parameter.
-    pub fn parameter_info(&self, id: i32) -> Option<ParameterInfo> {
+    /// The shared descriptor for one parameter index, the single
+    /// `narrow -> shared` map both [`get_parameter_list`](Self::get_parameter_list)
+    /// and [`get_parameter_info`](Self::get_parameter_info) go through.
+    fn build_parameter_info(&self, id: i32) -> SharedParameterInfo {
+        // Falls back to the live value only if the snapshot has no entry for
+        // this id, which means the parameter count grew after load — a shell
+        // plugin swapping its effect. Better than 0.0: the live value is at
+        // least one this parameter has held. A plugin exposing no
+        // `getParameter` reads 0.0, which is the neutral rendering for a value
+        // that cannot be observed at all.
+        // `id` is bounded by `numParams`, so it is never negative and the
+        // widening cannot wrap.
+        let default =
+            self.initial_values
+                .get(id as usize)
+                .copied()
+                .unwrap_or_else(|| self.params.get_parameter(id).unwrap_or(0.0)) as f64;
+
+        let props = self.parameter_properties(id);
+        let int_range = props.as_ref().and_then(|q| q.integer_range);
+
+        // The declared default is normalized, so it maps through the range
+        // rather than being written into it verbatim.
+        let range = match int_range {
+            Some(r) => {
+                let (min, max) = (r.min as f64, r.max as f64);
+                let plain = ParamRange::Plain {
+                    min,
+                    max,
+                    default: 0.0,
+                };
+                ParamRange::Plain {
+                    min,
+                    max,
+                    default: plain.to_plain(default),
+                }
+            }
+            None => ParamRange::Normalized { default },
+        };
+
+        // `step_count` is `None` for a range the plugin declared but that
+        // cannot be stepped through (non-positive step, inverted bounds); that
+        // is unreported, not continuous.
+        let steps = match int_range.and_then(|r| r.step_count()) {
+            Some(0) | None => ParamSteps::Unknown,
+            Some(1) => ParamSteps::Toggle,
+            Some(n) => ParamSteps::Enumerated(n.saturating_add(1)),
+        };
+
+        SharedParameterInfo {
+            // The one format that addresses by position. `id` is bounded by
+            // `get_info().parameters`, so it is an index by construction — see
+            // `param_index`.
+            id: ParamAddress::Index(id),
+            name: self.params.get_parameter_name(id),
+            unit: self.params.get_parameter_label(id),
+            range,
+            steps,
+            // Asked per parameter: `effCanBeAutomated` takes the index, so
+            // there is no whole-plugin answer to cache.
+            flags: if self.params.can_be_automated(id) {
+                ParamFlags::AUTOMATABLE
+            } else {
+                ParamFlags::empty()
+            },
+            known: ParamFlags::AUTOMATABLE,
+            // `effGetParameterProperties` carries the category under
+            // `USES_CATEGORY`. The "numbered from 1, so 0 means uncategorised"
+            // rule is already applied in the decoder — `category` is `None` for
+            // a zero index — so there is no sentinel left to check here. A
+            // category with an empty label yields no group, which is the same
+            // flat list by a shorter route.
+            group: props
+                .as_ref()
+                .and_then(|q| q.category.as_ref())
+                .map(|c| c.label.clone())
+                .unwrap_or_default(),
+        }
+    }
+
+    /// Look up a single parameter by ID, as the shared
+    /// [`tutti_plugin_types::ParameterInfo`]. `None` if it addresses no
+    /// declared parameter.
+    ///
+    /// The descriptor is a *catalog* entry — name, unit, range, steps, flags —
+    /// and carries no live value. Read that with
+    /// [`get_parameter`](Self::get_parameter), which returns an `Option` and so
+    /// can say "this plugin has no accessor" rather than reporting zero.
+    pub fn get_parameter_info(&self, id: i32) -> Option<SharedParameterInfo> {
         let index = self.param_index(id)?;
-        Some(ParameterInfo {
-            id,
-            name: self.params.get_parameter_name(index),
-            unit: self.params.get_parameter_label(index),
-            // This one is a lookup, not a listing: the caller asked about a
-            // specific parameter, so a plugin with no accessor is worth
-            // reporting as zero only because `ParameterInfo.current` is a bare
-            // `f32` with no way to say "not readable". See `parameter`, which
-            // does return the `Option`.
-            current: self.params.get_parameter(index).unwrap_or(0.0),
-        })
+        Some(self.build_parameter_info(index))
     }
 
     /// Drain any plugin-internal parameter changes (knobs moved on the

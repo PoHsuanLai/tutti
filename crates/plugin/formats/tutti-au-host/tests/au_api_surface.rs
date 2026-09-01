@@ -53,8 +53,8 @@
 //! Those latencies track [`AuParameterListener`]'s 200 ms notification interval,
 //! so [`SETTLE`] is set well above them.
 //!
-//! Two host calls that do **not** post an event, also measured: `save_state` +
-//! `load_state` (no `kAudioUnitProperty_ClassInfo` event in 1.5 s), and
+//! Two host calls that do **not** post an event, also measured: `get_state` +
+//! `set_state` (no `kAudioUnitProperty_ClassInfo` event in 1.5 s), and
 //! `set_render_quality`. Neither is asserted as a *negative* below, because
 //! "AudioToolbox chose not to post" is not a contract of this crate.
 //!
@@ -134,7 +134,7 @@ mod support;
 use support::corpus::{DELAY, DISTORTION, MULTI_CHANNEL_MIXER, N_BAND_EQ};
 
 use tutti_au_host::component::{self, AuType};
-use tutti_au_host::listener::{AuEvent, AuParameterListener, EventAddress};
+use tutti_au_host::{AuEvent, AuParameterListener, EventAddress};
 use tutti_au_host::midi_out::MidiOutputInfo;
 use tutti_au_host::parameters::{self, ParamAddress};
 use tutti_au_host::types::{

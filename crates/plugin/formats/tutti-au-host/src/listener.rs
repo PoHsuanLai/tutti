@@ -357,8 +357,8 @@ impl Drop for Queue {
 /// # #[cfg(target_os = "macos")]
 /// # {
 /// use std::sync::{Arc, Mutex};
-/// use tutti_au_host::listener::{AuEvent, AuParameterListener, EventAddress};
-/// # use tutti_au_host::instance::AuInstance;
+/// use tutti_au_host::{AuEvent, AuParameterListener, EventAddress};
+/// # use tutti_au_host::AuInstance;
 /// # fn demo(au: &mut AuInstance, param_id: u32) -> tutti_au_host::Result<()> {
 /// let seen = Arc::new(Mutex::new(Vec::new()));
 /// let sink = Arc::clone(&seen);

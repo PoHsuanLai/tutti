@@ -35,8 +35,8 @@ pub(crate) enum StateHeader<'a> {
 /// Validate the framing of a state blob and split off its payload.
 ///
 /// Pure: performs only the header/length/count checks that don't need a live
-/// plugin (the plugin-parameter-count cross-check stays in `load_state`).
-/// Errors mirror the `load_state` early-returns exactly.
+/// plugin (the plugin-parameter-count cross-check stays in `set_state`).
+/// Errors mirror the `set_state` early-returns exactly.
 pub(crate) fn parse_state_header(data: &[u8]) -> Result<StateHeader<'_>> {
     if data.len() < 4 {
         return Err(Vst2Error::StateRestoreError(
@@ -94,7 +94,7 @@ impl Vst2Instance {
     ///
     /// Prefers the plugin's own chunk format if it advertises one;
     /// otherwise falls back to a parameter snapshot.
-    pub fn save_state(&self) -> Result<Vec<u8>> {
+    pub fn get_state(&self) -> Result<Vec<u8>> {
         let info = self.handle.instance.get_info();
 
         if info.preset_chunks {
@@ -145,8 +145,8 @@ impl Vst2Instance {
         Ok(state)
     }
 
-    /// Restore a state blob previously produced by [`save_state`](Self::save_state).
-    pub fn load_state(&self, data: &[u8]) -> Result<()> {
+    /// Restore a state blob previously produced by [`get_state`](Self::get_state).
+    pub fn set_state(&self, data: &[u8]) -> Result<()> {
         match parse_state_header(data)? {
             StateHeader::Chunk(payload) => {
                 // `effSetChunk` reports whether the plugin took the blob. This
@@ -164,10 +164,10 @@ impl Vst2Instance {
                 Ok(())
             }
             StateHeader::Params { count, values } => {
-                // `.max(0)` as in `save_state`: `numParams` is raw from the
+                // `.max(0)` as in `get_state`: `numParams` is raw from the
                 // `AEffect`. Unclamped, a plugin declaring `-1` makes this
                 // comparison `0 > -1` and rejects the empty snapshot
-                // `save_state` just wrote for that same plugin.
+                // `get_state` just wrote for that same plugin.
                 let actual_count = self.handle.instance.get_info().parameters.max(0);
                 if count > actual_count {
                     return Err(Vst2Error::StateRestoreError(format!(

@@ -587,7 +587,7 @@ fn test_state_save_load() {
     let mut plugin =
         Vst3Instance::<f32>::load(Path::new(path), 44100.0, 512).expect("Failed to load plugin");
 
-    let state = plugin.state();
+    let state = plugin.get_state();
     match state {
         Ok(data) => {
             println!("Saved state: {} bytes", data.len());
@@ -633,7 +633,7 @@ fn test_get_parameters() {
             .expect("resolved index has a value");
         assert_eq!(
             value,
-            plugin.parameter(id),
+            plugin.get_parameter(id),
             "by-index and by-ParamID reads must agree for index {i} (id {id})"
         );
         println!("  [{i}] id {id} value: {value}");
@@ -667,7 +667,7 @@ fn test_set_parameter() {
         let value = plugin
             .parameter_by_index(0)
             .expect("index 0 resolves for reads too");
-        assert_eq!(value, plugin.parameter(id));
+        assert_eq!(value, plugin.get_parameter(id));
         println!("Read back value: {value}");
 
         // An out-of-range index must be reported, not silently written to a

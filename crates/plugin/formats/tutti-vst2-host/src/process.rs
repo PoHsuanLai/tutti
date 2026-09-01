@@ -14,7 +14,7 @@ use vst::plugin::Plugin as _;
 use crate::instance::Vst2Instance;
 use crate::scratch::RenderScratch;
 use crate::time_info::build_vst2_time_info;
-use crate::types::{MidiEvent, MidiEventVec, ProcessContext};
+use crate::types::{MidiEvent, MidiEventVec, Vst2ProcessContext};
 
 impl Vst2Instance {
     /// Render one f32 block. Returns a borrowed view into the
@@ -32,7 +32,7 @@ impl Vst2Instance {
         inputs: &[&[f32]],
         outputs: &mut [&mut [f32]],
         num_samples: usize,
-        ctx: &ProcessContext,
+        ctx: &Vst2ProcessContext,
         scratch: &mut RenderScratch,
     ) -> &MidiEventVec {
         self.midi.out.clear();
@@ -70,7 +70,7 @@ impl Vst2Instance {
         inputs: &[&[f64]],
         outputs: &mut [&mut [f64]],
         num_samples: usize,
-        ctx: &ProcessContext,
+        ctx: &Vst2ProcessContext,
         scratch: &mut RenderScratch,
     ) -> &MidiEventVec {
         self.midi.out.clear();
@@ -121,7 +121,7 @@ impl Vst2Instance {
     /// `audioMasterGetTime` re-entrantly from inside `process`, and a seqlock
     /// reader cannot make progress against a write in flight on its own thread.
     /// The cell debug-asserts that order.
-    fn update_transport(&self, ctx: &ProcessContext) {
+    fn update_transport(&self, ctx: &Vst2ProcessContext) {
         if let Some(t) = ctx.transport {
             let previous = self.host_link.time_info.read();
             let next = build_vst2_time_info(t, ctx.sample_rate, previous.as_ref());

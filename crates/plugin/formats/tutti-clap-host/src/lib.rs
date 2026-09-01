@@ -23,7 +23,7 @@ pub(crate) unsafe fn cstr_to_string(ptr: *const std::ffi::c_char) -> String {
 pub use error::{ClapError, LoadStage, Result};
 pub use events::{ClapEvent, EventList, InputEventList, OutputEventList};
 pub use host::{ClapHost, HostState, InputStream, OutputStream};
-pub use instance::{ClapActive, ClapLoaded, ClapSample, ProcessContext};
+pub use instance::{ClapActive, ClapLoaded, ClapSample, ClapProcessContext};
 // `ParamMapping` (param-indication) is part of the speculative surface — gated.
 #[cfg(feature = "clap-extras")]
 pub use instance::ParamMapping;

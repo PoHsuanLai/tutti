@@ -81,7 +81,7 @@ pub fn load_client(
     // Unconditional because the snapshot is the host's to give, not the
     // plugin's to request: VST2 exposes no query for it, and every plugin can
     // poll `audioMasterGetTime` whenever it likes. The node honours the claim by
-    // draining its transport slot into each `ProcessContext`, which is what
+    // draining its transport slot into each `Vst2ProcessContext`, which is what
     // fills the `TimeInfo` that callback serves.
     features.insert(Features::TRANSPORT);
     // Both preset bits come from one number: VST2 has no separate "can you

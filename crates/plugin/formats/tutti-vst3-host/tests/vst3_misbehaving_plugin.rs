@@ -570,7 +570,7 @@ fn a_failing_state_roundtrip_does_not_break_the_plugin() {
         let _m = Misbehaviour::behaving();
         let loaded = Vst3Loaded::load(&path).expect("load");
         loaded
-            .state()
+            .get_state()
             .expect("the behaving probe must be able to save state")
             .len()
     };
@@ -587,7 +587,7 @@ fn a_failing_state_roundtrip_does_not_break_the_plugin() {
     // host must not hand back a blob as though the save had worked. Empty (or a
     // surfaced error) is right; `behaving_len` bytes of content would mean the
     // host ignored the failure and shipped whatever was in its buffer.
-    let saved = loaded.state();
+    let saved = loaded.get_state();
     match &saved {
         Ok(blob) => assert!(
             blob.is_empty(),
@@ -731,7 +731,7 @@ fn a_stateless_plugin_does_not_fail_the_state_roundtrip() {
     let mut loaded =
         Vst3Loaded::load(&path).expect("a plugin that does not implement state must still load");
 
-    let saved = loaded.state();
+    let saved = loaded.get_state();
     assert!(
         saved.is_ok(),
         "getState returned kNotImplemented — what the SDK's own Component base \

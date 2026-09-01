@@ -982,7 +982,7 @@ fn report_host_capability_score() {
     let mut inst = inst.deactivate();
     let _ = inst.poll_plugin_notifications();
 
-    let score = inst.parameter(K_SCORE_TAG);
+    let score = inst.get_parameter(K_SCORE_TAG);
     eprintln!(
         "host capability score: {:.1}% of HostChecker's 75 weighted features",
         score * 100.0
@@ -1324,7 +1324,7 @@ fn plugin_state_round_trips() {
             }
         };
 
-        let Ok(first) = inst.state() else {
+        let Ok(first) = inst.get_state() else {
             // A plugin with no state at all is legal; nothing to round-trip.
             continue;
         };
@@ -1337,7 +1337,7 @@ fn plugin_state_round_trips() {
             failures.push(format!("{name}: set_state rejected its own state: {e:?}"));
             continue;
         }
-        match inst.state() {
+        match inst.get_state() {
             Ok(second) => {
                 if first != second {
                     failures.push(format!(

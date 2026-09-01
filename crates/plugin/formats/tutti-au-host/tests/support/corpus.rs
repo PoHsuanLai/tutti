@@ -31,7 +31,7 @@
 #![cfg(target_os = "macos")]
 
 use tutti_au_host::component::{enumerate_components_of_type, AuComponentInfo, AuType};
-use tutti_au_host::instance::AuInstance;
+use tutti_au_host::AuInstance;
 use tutti_au_host::{AuLayoutTag, BusDirection};
 use tutti_types::Samples;
 
@@ -1017,7 +1017,7 @@ pub fn direction(is_output: bool) -> BusDirection {
 /// a layout needs to know which it got. `has_input` is taken from the AU's own
 /// probe by way of `AuInstance`, so an instrument is not handed a phantom input.
 pub fn open_at_output_width(unit: &AuRef, rate: f64, block: u32, width: u16) -> (AuInstance, u16) {
-    use tutti_au_host::stream::{AuBusLayout, StreamConfig};
+    use tutti_au_host::{AuBusLayout, StreamConfig};
     use tutti_types::ChannelLayout;
 
     let info = unit.require();

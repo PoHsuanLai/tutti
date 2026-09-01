@@ -26,7 +26,7 @@ mod support;
 use support::probe_path::probe_path;
 
 use tutti_clap_host::{
-    AudioBuffer32, ClapActive, ClapLoaded, MidiEvent, ParameterChanges, ProcessContext,
+    AudioBuffer32, ClapActive, ClapLoaded, MidiEvent, ParameterChanges, ClapProcessContext,
     TransportInfo,
 };
 // The reference plugin is a dev-dependency (cdylib + rlib), so we share its
@@ -108,7 +108,7 @@ fn read_capture() -> ProcessCapture {
 fn drive_once(
     inst: &mut ClapActive<f32>,
     frames: usize,
-    ctx: &ProcessContext<'_>,
+    ctx: &ClapProcessContext<'_>,
 ) -> ProcessCapture {
     let _lock = CAPTURE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let mut out_l = vec![0.0f32; frames];
@@ -141,7 +141,7 @@ fn reference_plugin_loads_and_identifies() {
 #[test]
 fn host_presents_correct_buffer_geometry() {
     let mut inst = load_plugin();
-    let ctx = ProcessContext::default();
+    let ctx = ClapProcessContext::default();
     let cap = drive_once(&mut inst, 128, &ctx);
 
     assert_eq!(cap.frames_count, 128, "host passes the block frame count");
@@ -168,7 +168,7 @@ fn host_sorts_events_by_sample_offset() {
         MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 64, 0x5000).with_frame_offset(50),
         MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 67, 0x7000).with_frame_offset(100),
     ];
-    let ctx = ProcessContext {
+    let ctx = ClapProcessContext {
         midi: &midi,
         ..Default::default()
     };
@@ -194,7 +194,7 @@ fn host_delivers_param_points_with_offsets() {
     // value/offset survive the trip across the FFI.
     params.add_change(REAL_PARAM_ID, 192, 0.75);
     params.add_change(REAL_PARAM_ID, 64, 0.25);
-    let ctx = ProcessContext {
+    let ctx = ClapProcessContext {
         params: Some(&params),
         ..Default::default()
     };
@@ -243,7 +243,7 @@ fn host_never_delivers_an_event_time_outside_the_block() {
         MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000)
             .with_frame_offset(9_999),
     ];
-    let ctx = ProcessContext {
+    let ctx = ClapProcessContext {
         midi: &midi,
         params: Some(&params),
         ..Default::default()
@@ -278,7 +278,7 @@ fn host_supplies_transport_when_present() {
     let transport = TransportInfo::default()
         .with_tempo(140.0)
         .with_playing(true);
-    let ctx = ProcessContext {
+    let ctx = ClapProcessContext {
         transport: Some(&transport),
         ..Default::default()
     };
@@ -299,7 +299,7 @@ fn host_supplies_transport_when_present() {
 fn host_callback_round_trips() {
     let mut inst = load_plugin();
     // The reference plugin calls host.request_callback() during process.
-    let ctx = ProcessContext::default();
+    let ctx = ClapProcessContext::default();
     let _ = drive_once(&mut inst, 64, &ctx);
 
     assert!(

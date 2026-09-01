@@ -16,8 +16,8 @@ use std::sync::{Mutex, MutexGuard};
 
 use tutti_midi_types::{MidiChannel, MidiGroup};
 use tutti_vst2_host::{
-    ChannelLayout, MidiEvent, ProcessContext, RenderScratch, TimeSignature, TransportInfo,
-    Vst2Instance,
+    ChannelLayout, MidiEvent, ParamAddress, Vst2ProcessContext, RenderScratch, TimeSignature,
+    TransportInfo, Vst2Instance,
 };
 
 #[path = "support/probe_path.rs"]
@@ -197,7 +197,7 @@ fn render_block(
     let mut output_slices: Vec<&mut [f32]> =
         output_data.iter_mut().map(|v| v.as_mut_slice()).collect();
 
-    let ctx = ProcessContext::new(SAMPLE_RATE).midi(midi);
+    let ctx = Vst2ProcessContext::new(SAMPLE_RATE).midi(midi);
     instance.process_f32(&input_slices, &mut output_slices, BLOCK, &ctx, scratch);
 
     output_data
@@ -582,10 +582,10 @@ fn chunk_state_round_trips() {
     let mut seeded = b"CHK\0".to_vec();
     seeded.extend_from_slice(b"probe-state-v1");
     instance
-        .load_state(&seeded)
+        .set_state(&seeded)
         .expect("probe accepts any chunk");
 
-    let saved = instance.save_state().expect("save_state should succeed");
+    let saved = instance.get_state().expect("get_state should succeed");
     assert_eq!(
         &saved[..4],
         b"CHK\0",
@@ -594,7 +594,7 @@ fn chunk_state_round_trips() {
     );
     assert_eq!(&saved[4..], b"probe-state-v1");
 
-    instance.load_state(&saved).expect("restore should succeed");
+    instance.set_state(&saved).expect("restore should succeed");
 }
 
 /// The benign half of the `copy_chunk` split: "nothing saved" must still fall
@@ -604,7 +604,7 @@ fn chunk_state_round_trips() {
 /// `vst-tutti`'s `failed_chunk_save_is_distinguishable_from_an_empty_one`.)
 ///
 /// Reached via `NO_CHUNKS` rather than an emptied chunk: the probe seeds its
-/// chunk non-empty and `load_state` rejects an empty `CHK\0` payload as
+/// chunk non-empty and `set_state` rejects an empty `CHK\0` payload as
 /// malformed, so there is no route to an empty chunk on a chunk-capable
 /// plugin. Both land on the same host branch.
 #[test]
@@ -613,7 +613,7 @@ fn a_chunkless_plugin_falls_back_to_a_parameter_snapshot() {
     let instance = load_probe_with(&[("TUTTI_VST2_PROBE_NO_CHUNKS", "1")]);
 
     let saved = instance
-        .save_state()
+        .get_state()
         .expect("no chunk support is not a failure — fall back, don't error");
     assert_eq!(
         &saved[..4],
@@ -624,7 +624,7 @@ fn a_chunkless_plugin_falls_back_to_a_parameter_snapshot() {
 }
 
 // The refusal direction — that a chunk *refusal* is representable, so
-// `load_state` can report it — is pinned in `vst-tutti`'s
+// `set_state` can report it — is pinned in `vst-tutti`'s
 // `a_chunk_refusal_is_representable`; the shared probe deliberately accepts
 // every chunk, so it cannot be built here. These cover the host-side half:
 // framing, fallback, and the acceptance path.
@@ -642,7 +642,7 @@ fn restoring_a_chunk_into_a_chunkless_plugin_reports_the_plugin_answer() {
     // The probe's `load_preset_data` is unconditional, so it accepts; what is
     // asserted is that the host relayed that answer rather than inventing one.
     instance
-        .load_state(&chunk)
+        .set_state(&chunk)
         .expect("the probe accepts chunks, so the host must report success");
 }
 
@@ -655,18 +655,18 @@ fn parameter_state_round_trips() {
     assert!(instance.set_parameter(0, 0.25));
     assert!(instance.set_parameter(1, 0.75));
 
-    let state = instance.save_state().expect("save_state should succeed");
+    let state = instance.get_state().expect("get_state should succeed");
     assert_eq!(&state[..4], b"PRM\0");
 
     assert!(instance.set_parameter(0, 0.9));
     assert!(instance.set_parameter(1, 0.1));
 
     instance
-        .load_state(&state)
-        .expect("load_state should succeed");
+        .set_state(&state)
+        .expect("set_state should succeed");
 
-    assert!((instance.parameter(0).unwrap() - 0.25).abs() < 0.02);
-    assert!((instance.parameter(1).unwrap() - 0.75).abs() < 0.02);
+    assert!((instance.get_parameter(0).unwrap() - 0.25).abs() < 0.02);
+    assert!((instance.get_parameter(1).unwrap() - 0.75).abs() < 0.02);
 }
 
 /// Malformed state blobs are rejected rather than half-applied.
@@ -675,28 +675,25 @@ fn state_restore_rejects_malformed_blobs() {
     let _guard = lock_probe();
     let instance = load_probe();
 
-    assert!(instance.load_state(&[]).is_err(), "empty blob");
-    assert!(instance.load_state(&[0, 1, 2]).is_err(), "short header");
-    assert!(instance.load_state(&[0xFF; 4]).is_err(), "unknown header");
-    assert!(
-        instance.load_state(b"CHK\0").is_err(),
-        "empty chunk payload"
-    );
+    assert!(instance.set_state(&[]).is_err(), "empty blob");
+    assert!(instance.set_state(&[0, 1, 2]).is_err(), "short header");
+    assert!(instance.set_state(&[0xFF; 4]).is_err(), "unknown header");
+    assert!(instance.set_state(b"CHK\0").is_err(), "empty chunk payload");
 
     let mut bad = b"PRM\0".to_vec();
     bad.extend_from_slice(&2i32.to_le_bytes()); // claims 2 params
     bad.extend_from_slice(&0.5f32.to_le_bytes()); // only 1 value follows
-    assert!(instance.load_state(&bad).is_err(), "count/length mismatch");
+    assert!(instance.set_state(&bad).is_err(), "count/length mismatch");
 }
 
 /// A plugin declaring a negative `numParams` must not take the host down.
 ///
-/// `numParams` is read raw off the `AEffect`, and `save_state` fed
+/// `numParams` is read raw off the `AEffect`, and `get_state` fed
 /// `(param_count as usize) * 4` to `Vec::with_capacity` — a negative `i32`
 /// became a ~16 EiB request and aborted the process.
 ///
 /// `NO_CHUNKS` is required to reach that line: the probe seeds a non-empty
-/// chunk, and a chunk-capable plugin returns from `save_state` before the
+/// chunk, and a chunk-capable plugin returns from `get_state` before the
 /// parameter path. Without it this test passes while executing nothing.
 #[test]
 fn a_negative_parameter_count_does_not_abort_the_save() {
@@ -707,7 +704,7 @@ fn a_negative_parameter_count_does_not_abort_the_save() {
     ]);
 
     let state = instance
-        .save_state()
+        .get_state()
         .expect("a negative numParams should produce an empty snapshot, not an abort");
 
     assert_eq!(&state[..4], b"PRM\0");
@@ -726,7 +723,7 @@ fn a_negative_parameter_count_does_not_abort_the_save() {
 
     // The blob must survive the round trip it just claimed to be.
     instance
-        .load_state(&state)
+        .set_state(&state)
         .expect("a state blob this host wrote must be one it can read");
 }
 
@@ -1013,7 +1010,7 @@ fn default_value_is_the_load_time_state_not_the_live_value() {
     let _guard = lock_probe();
     let instance = load_probe();
 
-    let before = instance.parameter_list();
+    let before = instance.get_parameter_list();
     let defaults: Vec<f64> = before.iter().map(|p| p.range.default_value()).collect();
     assert!(
         defaults.iter().any(|&d| d != 0.0),
@@ -1027,7 +1024,7 @@ fn default_value_is_the_load_time_state_not_the_live_value() {
         assert!(instance.set_parameter(index, 0.9));
     }
 
-    let after = instance.parameter_list();
+    let after = instance.get_parameter_list();
     for (i, p) in after.iter().enumerate() {
         assert_eq!(
             p.range.default_value(),
@@ -1041,7 +1038,7 @@ fn default_value_is_the_load_time_state_not_the_live_value() {
     // And the live value really did move, so the assertion above is not
     // passing because the writes were dropped.
     assert!(
-        (instance.parameter(0).unwrap() - 0.9).abs() < 0.02,
+        (instance.get_parameter(0).unwrap() - 0.9).abs() < 0.02,
         "the set_parameter writes did not land, so nothing was proven"
     );
 }
@@ -1050,10 +1047,14 @@ fn default_value_is_the_load_time_state_not_the_live_value() {
 fn parameter_count_and_names() {
     let _guard = lock_probe();
     let instance = load_probe();
-    let params = instance.parameters();
+    let params = instance.get_parameter_list();
     assert_eq!(params.len(), 4, "the probe declares four parameters");
     for param in &params {
-        assert!(!param.name.is_empty(), "param {} has empty name", param.id);
+        assert!(
+            !param.name.is_empty(),
+            "param {:?} has empty name",
+            param.id
+        );
     }
 }
 
@@ -1064,7 +1065,7 @@ fn parameter_set_get_roundtrip() {
 
     let read = |i| {
         instance
-            .parameter(i)
+            .get_parameter(i)
             .expect("the probe must expose getParameter")
     };
     let write = |i, v| {
@@ -1086,11 +1087,13 @@ fn parameter_set_get_roundtrip() {
 fn parameter_info_lookup() {
     let _guard = lock_probe();
     let instance = load_probe();
-    let info = instance.parameter_info(0).expect("param 0 should exist");
-    assert_eq!(info.id, 0);
+    let info = instance
+        .get_parameter_info(0)
+        .expect("param 0 should exist");
+    assert_eq!(info.id, ParamAddress::Index(0));
     assert!(!info.name.is_empty());
     assert!(
-        instance.parameter_info(99_999).is_none(),
+        instance.get_parameter_info(99_999).is_none(),
         "an out-of-range index must not be serviced"
     );
 }
@@ -1165,7 +1168,7 @@ fn process_with_transport() {
     let mut output_slices: Vec<&mut [f32]> =
         output_data.iter_mut().map(|v| v.as_mut_slice()).collect();
 
-    let ctx = ProcessContext::new(SAMPLE_RATE).transport(&transport);
+    let ctx = Vst2ProcessContext::new(SAMPLE_RATE).transport(&transport);
     instance.process_f32(&input_slices, &mut output_slices, BLOCK, &ctx, &mut scratch);
 }
 
@@ -1177,7 +1180,7 @@ fn process_empty_buffer() {
         RenderScratch::new(ChannelLayout::from(0u16), ChannelLayout::from(0u16), BLOCK);
     let input_slices: Vec<&[f32]> = vec![];
     let mut output_slices: Vec<&mut [f32]> = vec![];
-    let ctx = ProcessContext::new(SAMPLE_RATE);
+    let ctx = Vst2ProcessContext::new(SAMPLE_RATE);
     instance.process_f32(&input_slices, &mut output_slices, 0, &ctx, &mut scratch);
 }
 

@@ -333,7 +333,7 @@ fn instance_still_processes_after_a_refused_reconfiguration() {
         sample_rate: BASE_RATE,
     };
 
-    let ctx = tutti_clap_host::ProcessContext::default();
+    let ctx = tutti_clap_host::ClapProcessContext::default();
     active
         .process(&mut buffer, &ctx)
         .expect("a rolled-back instance is still active and must process");
@@ -449,7 +449,7 @@ fn refused_context_load_is_not_retried_context_free() {
     // taken — succeeds and returns `Ok`. A payload that failed both ways would
     // let a buggy host pass this test for the wrong reason.
     let blob = loaded
-        .state()
+        .get_state()
         .expect("the probe's plain save works while nothing is armed");
     param_reset();
 

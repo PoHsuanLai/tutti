@@ -39,7 +39,7 @@ use std::sync::{Mutex, MutexGuard};
 mod support;
 use support::probe_path::probe_path;
 
-use tutti_clap_host::{AudioBuffer32, ClapActive, ClapLoaded, ParameterChanges, ProcessContext};
+use tutti_clap_host::{AudioBuffer32, ClapActive, ClapLoaded, ParameterChanges, ClapProcessContext};
 use tutti_clap_test_plugin::params_state::probe_params;
 use tutti_clap_test_plugin::{ProcessCapture, HOLE_NONE};
 use tutti_plugin_types::ParamAddress;
@@ -180,7 +180,7 @@ fn drive_block(
     inst: &mut ClapActive<f32>,
     frames: usize,
     channels: usize,
-    ctx: &ProcessContext<'_>,
+    ctx: &ClapProcessContext<'_>,
 ) {
     let mut outs_owned: Vec<Vec<f32>> = (0..channels).map(|_| vec![0.0f32; frames]).collect();
     let ins_owned: Vec<Vec<f32>> = (0..channels).map(|_| vec![0.0f32; frames]).collect();
@@ -236,7 +236,7 @@ fn hole_in_params_still_denormalizes_surviving_params() {
         &mut inst,
         64,
         2,
-        &ProcessContext {
+        &ClapProcessContext {
             params: Some(&changes),
             ..Default::default()
         },
@@ -309,7 +309,7 @@ fn hole_in_params_does_not_deliver_undenormalized_automation() {
         &mut inst,
         64,
         2,
-        &ProcessContext {
+        &ClapProcessContext {
             params: Some(&changes),
             ..Default::default()
         },
@@ -347,7 +347,7 @@ fn hole_in_params_never_misattributes_a_range() {
     probe.param_hole(1);
 
     let loaded = probe.load();
-    let listed = loaded.parameter_list();
+    let listed = loaded.get_parameter_list();
 
     for info in &listed {
         let declared = probe_params()
@@ -379,7 +379,7 @@ fn hole_in_params_truncates_rather_than_closing_the_gap() {
     probe.param_hole(0);
 
     let loaded = probe.load();
-    let listed = loaded.parameter_list();
+    let listed = loaded.get_parameter_list();
 
     assert!(
         listed.is_empty(),
@@ -402,7 +402,7 @@ fn hole_in_params_does_not_promote_later_params() {
     probe.param_hole(1);
 
     let loaded = probe.load();
-    let ids: Vec<ParamAddress> = loaded.parameter_list().iter().map(|p| p.id).collect();
+    let ids: Vec<ParamAddress> = loaded.get_parameter_list().iter().map(|p| p.id).collect();
     let expected_prefix = ParamAddress::Opaque(probe_params()[0].id.into());
 
     assert!(
@@ -437,7 +437,7 @@ fn hole_in_audio_ports_does_not_shift_later_ports() {
         .map_err(|(_, e)| e)
         .expect("plugin activates");
 
-    drive_block(&mut inst, 64, 2, &ProcessContext::default());
+    drive_block(&mut inst, 64, 2, &ClapProcessContext::default());
     let cap = probe.read_capture();
 
     // The plugin's real port 0 is stereo and its port 1 is mono. If the host
@@ -472,7 +472,7 @@ fn hole_in_audio_ports_presents_at_most_the_prefix() {
         .map_err(|(_, e)| e)
         .expect("plugin activates");
 
-    drive_block(&mut inst, 64, 2, &ProcessContext::default());
+    drive_block(&mut inst, 64, 2, &ClapProcessContext::default());
     let cap = probe.read_capture();
 
     assert!(
@@ -535,7 +535,7 @@ fn no_hole_enumerates_everything() {
 
     let loaded = probe.load();
 
-    let ids: Vec<ParamAddress> = loaded.parameter_list().iter().map(|p| p.id).collect();
+    let ids: Vec<ParamAddress> = loaded.get_parameter_list().iter().map(|p| p.id).collect();
     let expected: Vec<ParamAddress> = probe_params()
         .iter()
         .map(|p| ParamAddress::Opaque(p.id.into()))

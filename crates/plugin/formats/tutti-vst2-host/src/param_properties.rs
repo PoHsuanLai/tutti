@@ -406,7 +406,10 @@ impl Vst2Instance {
     /// `AEffect::numParams` is a signed `i32` and a malformed plugin can report
     /// a negative one; that must become "no parameters", not an empty range that
     /// happens to iterate zero times by accident. Clamping states it.
-    fn parameter_count(&self) -> i32 {
+    ///
+    /// The count is the addressing bound too: VST2 addresses by position, so
+    /// every valid id is in `[0, count)`.
+    pub fn parameter_count(&self) -> i32 {
         self.handle.instance.get_info().parameters.max(0)
     }
 

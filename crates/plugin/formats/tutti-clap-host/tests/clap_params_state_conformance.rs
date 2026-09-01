@@ -28,7 +28,7 @@ mod support;
 use support::probe_path::probe_path;
 
 use tutti_clap_host::types::StateContext;
-use tutti_clap_host::{AudioBuffer32, ClapActive, ClapLoaded, ParameterChanges, ProcessContext};
+use tutti_clap_host::{AudioBuffer32, ClapActive, ClapLoaded, ParameterChanges, ClapProcessContext};
 use tutti_clap_test_plugin::params_state::{probe_params, ProbeParam};
 use tutti_clap_test_plugin::{
     ParamStateCapture, ProcessCapture, PARAM_CMD_REQUEST_FLUSH, PARAM_CMD_RESCAN_ALL,
@@ -124,7 +124,7 @@ fn param(index: usize) -> &'static ProbeParam {
 }
 
 /// Drive one silent stereo block through the host with the given context.
-fn drive_block(inst: &mut ClapActive<f32>, frames: usize, ctx: &ProcessContext<'_>) {
+fn drive_block(inst: &mut ClapActive<f32>, frames: usize, ctx: &ClapProcessContext<'_>) {
     let mut out_l = vec![0.0f32; frames];
     let mut out_r = vec![0.0f32; frames];
     let in_l = vec![0.0f32; frames];
@@ -238,7 +238,7 @@ fn host_enumerates_parameters_with_plugin_ids_in_index_order() {
         "host must report the plugin's parameter count"
     );
 
-    let listed = loaded.parameter_list();
+    let listed = loaded.get_parameter_list();
     let got_ids: Vec<ParamAddress> = listed.iter().map(|p| p.id).collect();
     let want_ids: Vec<ParamAddress> = probe_params()
         .iter()
@@ -257,7 +257,7 @@ fn host_enumerates_parameters_with_plugin_ids_in_index_order() {
 fn host_projects_parameter_metadata_exactly() {
     let probe = Probe::acquire();
     let loaded = probe.load();
-    let listed = loaded.parameter_list();
+    let listed = loaded.get_parameter_list();
 
     for (i, want) in probe_params().iter().enumerate() {
         let got = &listed[i];
@@ -302,7 +302,7 @@ fn host_projects_parameter_metadata_exactly() {
 fn host_derives_step_count_from_the_stepped_flag() {
     let probe = Probe::acquire();
     let loaded = probe.load();
-    let listed = loaded.parameter_list();
+    let listed = loaded.get_parameter_list();
 
     // `CLAP_PARAM_IS_STEPPED` is bit 0.
     const STEPPED: u32 = 1 << 0;
@@ -352,7 +352,7 @@ fn host_projects_parameter_flags() {
     let probe = Probe::acquire();
     let loaded = probe.load();
 
-    for p in loaded.parameter_list() {
+    for p in loaded.get_parameter_list() {
         assert_eq!(
             p.flag(ParamFlags::AUTOMATABLE),
             Some(true),
@@ -402,7 +402,7 @@ fn host_reads_parameter_values_by_id_not_index() {
 
     for want in probe_params() {
         assert_eq!(
-            loaded.parameter(want.id),
+            loaded.get_parameter(want.id),
             Some(want.default),
             "host must read param id {} by its id",
             want.id
@@ -413,7 +413,7 @@ fn host_reads_parameter_values_by_id_not_index() {
     // rejected — that is what makes the assertion above load-bearing.
     for index in 0..probe_params().len() as u32 {
         assert_eq!(
-            loaded.parameter(index),
+            loaded.get_parameter(index),
             None,
             "index {index} is not a param id in this plugin; a host that reads \
              it as one is confusing index with id"
@@ -476,7 +476,7 @@ fn host_sets_parameter_through_flush_on_an_inactive_instance() {
         "the change must land in the plugin's value table"
     );
     assert_eq!(
-        loaded.parameter(p.id),
+        loaded.get_parameter(p.id),
         Some(new_value),
         "the host must read back what it set"
     );
@@ -497,7 +497,7 @@ fn host_sets_parameter_through_flush_on_an_inactive_instance() {
 /// The `PARAM_VALUE` event the host synthesises for `set_parameter` must carry
 /// the id it was asked for and the value verbatim.
 ///
-/// `set_parameter` takes a *plain* value, so unlike the `ProcessContext::params`
+/// `set_parameter` takes a *plain* value, so unlike the `ClapProcessContext::params`
 /// path there is no range scaling to apply.
 #[test]
 fn set_parameter_emits_one_param_value_event_with_id_and_value_intact() {
@@ -523,7 +523,7 @@ fn set_parameter_emits_one_param_value_event_with_id_and_value_intact() {
 // Automation through `process`
 // ---------------------------------------------------------------------------
 
-/// Automation points routed through `ProcessContext::params` arrive as
+/// Automation points routed through `ClapProcessContext::params` arrive as
 /// `PARAM_VALUE` events, sorted by sample offset, carrying the plugin's id, and
 /// **denormalized against that parameter's plain range**.
 ///
@@ -545,7 +545,7 @@ fn host_denormalizes_automation_against_the_parameter_range() {
     // Deliberately out of offset order, so the sort is exercised too.
     params.add_change(ParamAddress::Opaque(p.id.into()), 192, 0.75);
     params.add_change(ParamAddress::Opaque(p.id.into()), 64, 0.25);
-    let ctx = ProcessContext {
+    let ctx = ClapProcessContext {
         params: Some(&params),
         ..Default::default()
     };
@@ -581,7 +581,7 @@ fn host_denormalizes_each_parameter_against_its_own_range() {
     let mut params = ParameterChanges::new();
     params.add_change(ParamAddress::Opaque(a.id.into()), 0, 0.5);
     params.add_change(ParamAddress::Opaque(b.id.into()), 0, 0.5);
-    let ctx = ProcessContext {
+    let ctx = ClapProcessContext {
         params: Some(&params),
         ..Default::default()
     };
@@ -795,7 +795,7 @@ fn host_round_trips_plugin_state_through_its_streams() {
     let p = param(0);
 
     loaded.set_parameter(p.id, 999.0);
-    let saved = loaded.state().expect("state save should succeed");
+    let saved = loaded.get_state().expect("state save should succeed");
 
     // The payload must be the plugin's, not an empty or truncated stand-in.
     assert!(
@@ -846,7 +846,7 @@ fn state_load_restores_every_parameter_to_its_own_value() {
     for &(id, v) in &marks {
         loaded.set_parameter(id, v);
     }
-    let saved = loaded.state().expect("save");
+    let saved = loaded.get_state().expect("save");
 
     // Scramble them all, then restore.
     for &(id, _) in &marks {
@@ -870,7 +870,7 @@ fn state_load_restores_every_parameter_to_its_own_value() {
 fn host_input_stream_delivers_the_whole_payload_then_clean_eof() {
     let probe = Probe::acquire();
     let mut loaded = probe.load();
-    let saved = loaded.state().expect("save");
+    let saved = loaded.get_state().expect("save");
 
     loaded.set_state(&saved).expect("load");
 
@@ -901,7 +901,7 @@ fn host_input_stream_delivers_the_whole_payload_then_clean_eof() {
 fn host_reports_a_load_failure_when_the_payload_is_corrupt() {
     let probe = Probe::acquire();
     let mut loaded = probe.load();
-    let mut saved = loaded.state().expect("save");
+    let mut saved = loaded.get_state().expect("save");
 
     // Flip one byte of the magic.
     saved[0] ^= 0xFF;

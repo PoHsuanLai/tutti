@@ -38,7 +38,7 @@ impl HostParams for InProcessVst2Backend {
         // Reuse the host crate's single narrow→shared map (the same one the
         // server loader's `get_parameter_list` calls) rather than re-mapping
         // `types::ParameterInfo` here. One mapping, two callers.
-        Some(self.inner.lock().parameter_list())
+        Some(self.inner.lock().get_parameter_list())
     }
 
     fn parameter_value(&self, id: ParamAddress) -> Option<f32> {
@@ -47,7 +47,7 @@ impl HostParams for InProcessVst2Backend {
         // trait's "unavailable". Wrapping it in `Some` would report a missing
         // accessor as a present value. An opaque id addresses nothing in VST2
         // and takes the same `None`.
-        self.inner.lock().parameter(id.index()?)
+        self.inner.lock().get_parameter(id.index()?)
     }
 
     fn set_parameter_value(&self, id: ParamAddress, value: Normalized) {
@@ -82,7 +82,7 @@ impl HostParams for InProcessVst2Backend {
     fn parameter_text(&self, id: ParamAddress, value: Normalized) -> Option<String> {
         let index = id.index()?;
         let instance = self.inner.try_lock()?;
-        let current = instance.parameter(index)?;
+        let current = instance.get_parameter(index)?;
         (f64::from(current) == value.get())
             .then(|| instance.parameter_display(index))
             .flatten()
@@ -109,7 +109,7 @@ impl HostParams for InProcessVst2Backend {
 
 impl HostState for InProcessVst2Backend {
     fn save_state(&self) -> Option<Vec<u8>> {
-        self.inner.lock().save_state().ok()
+        self.inner.lock().get_state().ok()
     }
 
     /// The plugin's own refusal, forwarded rather than dropped.
@@ -119,7 +119,7 @@ impl HostState for InProcessVst2Backend {
     fn load_state(&self, data: &[u8]) -> Result<(), StateError> {
         self.inner
             .lock()
-            .load_state(data)
+            .set_state(data)
             .map_err(|e| StateError::Rejected(e.to_string()))
     }
 }

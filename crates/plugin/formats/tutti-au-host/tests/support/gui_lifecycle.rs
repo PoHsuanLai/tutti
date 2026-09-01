@@ -22,8 +22,8 @@
 
 use std::sync::Mutex;
 
-use tutti_au_host::editor::AuEditor;
-use tutti_au_host::instance::AuInstance;
+use tutti_au_host::AuEditor;
+use tutti_au_host::AuInstance;
 use tutti_au_host::types::K_AUDIO_UNIT_ERR_INVALID_PROPERTY;
 use tutti_au_host::AuError;
 

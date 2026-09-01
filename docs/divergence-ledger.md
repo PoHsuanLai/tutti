@@ -31,10 +31,10 @@ signature of bottom-up construction in the codebase.
 
 | # | Finding | Site | Status |
 |---|---|---|---|
-| SR-1 | 14 constructors build at a placeholder rate and rely on a later `set_sample_rate`; not one documents that `process()` before it yields silently wrong-rate audio (8.8% error at 48 kHz). `bevy-tutti` documents the identical hazard in five lines. **Minimum fix:** document all 14. **Real fix:** make the rate a constructor argument (SR-2). | `tutti-nodes`: `delay.rs`, `svf.rs`, `ladder.rs`, `phaser.rs`, `limiter.rs`, `lfo.rs`, `convolution/node.rs`, `modulated_delay.rs`, `compressor.rs`, `gate.rs` | open |
-| SR-2 | Five idioms for one need: mandatory validated Config field (`tutti-analysis`, with its reasoning written out), mandatory ctor arg (`tutti-spatial`, `tutti-sampler`), Config field + setter (`tutti-polysynth`), placeholder + setter (`tutti-nodes`), context resource (`bevy-tutti`). Target: constructor argument. | workspace-wide | open |
-| SR-3 | Nothing documents what happens when a constructor argument and a later setter disagree; two crates silently differ — one preserves phase history, the other rebuilds and resamples an HRIR sphere (allocating). | `tutti-sampler/src/stretch/unit.rs:524-531`; `tutti-spatial/src/hrtf/panner.rs:275-285` | open |
-| SR-4 | `DEFAULT_SR` (raw `f64`) and `DEFAULT_SAMPLE_RATE` (newtype) are used interchangeably in sibling files. | `tutti-nodes/src/compressor.rs:5`, `src/gate.rs:5` | open |
+| SR-1 | **DONE (f54b65a7).** All 18 placeholder-rate constructors now state the contract and their own audible failure. Two docs that were actively wrong are corrected. The convolvers turned out not to be rate-dependent at all — their `sample_rate` is write-only; documented as such. | `tutti-nodes` | done |
+| SR-2 | **DEFERRED with reasons — not attempted.** Making the rate a mandatory constructor argument is the better fix, blocked on: three public `Default` impls (`ChorusNode`, `FlangerNode`, `BusStripNode` — `Default::default` takes no args); `dawai_model::ProcessorSpawn`, a **dyn-safe registry trait** in the APP workspace with no rate in scope, feeding 7 sites (`processor.rs:832,932`, `bus.rs:66,71,151`, `conform.rs:98,130`) this workspace cannot compile; public `tutti_spatial::build_vbap_mix` (`mix.rs:97,104,120`) with the same problem; and `conform.rs:130`, which builds a node only to call `.narrows()` and discards it. ~250 engine call sites + 5 unverifiable app ones. `bevy-tutti/src/modulation/audio_rate.rs:379` is the cheapest first step if revisited — `AudioConfig` is a resource and could be a system param. A half-migration is worse than either end state. | `tutti-nodes` + app workspace | deferred |
+| SR-3 | **DONE (f54b65a7).** Both sites now state what they do to state, what they cost, and cross-reference each other and the fundsp contract: `tutti-sampler/src/stretch/unit.rs:524` preserves phase history allocation-free; `tutti-spatial/src/hrtf/panner.rs:275` rebuilds and resamples the HRIR sphere, allocating. Nothing documents what happens when a constructor argument and a later setter disagree; two crates silently differ — one preserves phase history, the other rebuilds and resamples an HRIR sphere (allocating). | `tutti-sampler/src/stretch/unit.rs:524-531`; `tutti-spatial/src/hrtf/panner.rs:275-285` | done |
+| SR-4 | **DONE (f54b65a7).** `DEFAULT_SR` removed in favour of the `DEFAULT_SAMPLE_RATE` newtype; only 2 sites, both in-crate. `DEFAULT_SR` (raw `f64`) and `DEFAULT_SAMPLE_RATE` (newtype) are used interchangeably in sibling files. | `tutti-nodes/src/compressor.rs:5`, `src/gate.rs:5` | done |
 
 ## 3. Documentation
 
@@ -112,11 +112,11 @@ vs `VoiceAllocator` are genuinely different things: one sums audio, one is pure 
 
 | # | Finding | Site | Status |
 |---|---|---|---|
-| L-1 | `bevy-tutti`'s crate `Error` lives at `src/engine/error.rs` while re-exported at the crate root — public position and file position disagree. | `bevy-tutti/src/engine/error.rs`, `src/lib.rs:139` | open |
-| L-2 | `tutti-midi-hardware` has a `src/core/` level containing everything, naming nothing. | `tutti-midi-hardware/src/core/` | open |
+| L-1 | **DONE (7e59e56c).** `bevy-tutti`'s crate `Error` lives at `src/engine/error.rs` while re-exported at the crate root — public position and file position disagree. | `bevy-tutti/src/engine/error.rs`, `src/lib.rs:139` | done |
+| L-2 | **DONE (7e59e56c).** `tutti-midi-hardware` has a `src/core/` level containing everything, naming nothing. | `tutti-midi-hardware/src/core/` | done |
 | L-3 | The split rule is inverted: `tutti-vst3-host` splits `types/` into a directory while `tutti-clap-host`'s single `types.rs` is 1207 lines — larger than the whole of vst3's directory. | `tutti-vst3-host/src/types/`; `tutti-clap-host/src/types.rs` | open |
 | L-4 | ~~`node_id.rs` in 8 crates~~ — **resolved: not duplication.** Verified an intentional convention; each crate cites `tutti_core::node_id` as the ledger. | 8 crates | wontfix |
-| L-5 | Three crates use an `# H1` matching the crate name, which rustdoc renders as a redundant second title. | `tutti-export/src/lib.rs:1`, `tutti-analysis/src/lib.rs:1` | open |
+| L-5 | ~~Redundant H1 headings~~ — **obsolete.** After the include_str conversion all 20 crates lead with an H1 naming the crate, including the two reference crates that never drifted. It is the house convention now, not a deviation. | — | wontfix |
 
 ## 7. Forced — recorded so they are not "fixed"
 

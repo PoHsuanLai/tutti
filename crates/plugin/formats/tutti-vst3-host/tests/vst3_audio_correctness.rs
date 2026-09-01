@@ -1007,19 +1007,19 @@ fn controller_only_ui_state_survives_a_save_and_restore() {
         };
         inst.set_parameter(PARAM_UI_STATE, UI_VALUE);
         assert_eq!(
-            inst.parameter(PARAM_UI_STATE),
+            inst.get_parameter(PARAM_UI_STATE),
             UI_VALUE,
             "the probe did not accept the UI-state write, so the rest of this \
              test would be vacuous"
         );
-        inst.state().expect("probe should expose state")
+        inst.get_state().expect("probe should expose state")
     };
 
     let Some(mut restored) = load_probe(512) else {
         return;
     };
     assert_eq!(
-        restored.parameter(PARAM_UI_STATE),
+        restored.get_parameter(PARAM_UI_STATE),
         0.0,
         "a freshly loaded probe should start at the UI-state default; if it \
          does not, the restore below proves nothing"
@@ -1028,7 +1028,7 @@ fn controller_only_ui_state_survives_a_save_and_restore() {
     restored.set_state(&saved).expect("restore should succeed");
 
     assert_eq!(
-        restored.parameter(PARAM_UI_STATE),
+        restored.get_parameter(PARAM_UI_STATE),
         UI_VALUE,
         "controller-only UI state was lost across save/restore — the host is \
          persisting IComponent's stream but not IEditController's, so a \

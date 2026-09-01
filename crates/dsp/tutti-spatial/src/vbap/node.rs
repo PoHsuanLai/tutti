@@ -465,19 +465,88 @@ mod tests {
         );
     }
 
+    /// **Every** separately shared cell survives a clone as a shared handle,
+    /// not as a snapshot.
+    ///
+    /// `Clone` rebuilds the panner geometry but hands on `target`, `spread` and
+    /// `width` by handle (`.clone()` / `.handle()`), so all three are asserted
+    /// -- one per shared field. Covering only `target` leaves a hole the
+    /// compiler cannot see: swapping `spread: self.spread.handle()` for
+    /// `Param::new(spread)` is a snapshotting clone that still passes a
+    /// position-only test, and `width` had no cover at all.
+    ///
+    /// Why sharing is the required behaviour rather than an implementation
+    /// detail: the offline exporter clones the live net to render it, so a
+    /// snapshotting clone would freeze the render at whatever spread or width
+    /// happened to be set at clone time and silently ignore every later
+    /// automation move. It is also the premise of
+    /// `reset_on_a_clone_does_not_move_the_original` -- `reset` must not write
+    /// these cells precisely because the write would reach back through every
+    /// handle.
+    ///
+    /// Asserted in both directions per field: a handle is shared, not merely
+    /// copied forward, so a write through either side must be visible from the
+    /// other.
     #[test]
     fn vbap_clone_shares_atomics() {
         let panner = VbapPannerNode::stereo().unwrap();
         let cloned = panner.clone();
 
-        // Setting position on original should be visible from clone
+        // -- target: azimuth + elevation, set on the original.
         panner.set_position(90.0, 45.0);
-        assert!((cloned.azimuth().get() - 90.0).abs() < 0.001);
-        assert!((cloned.elevation().get() - 45.0).abs() < 0.001);
+        assert!(
+            (cloned.azimuth().get() - 90.0).abs() < 0.001,
+            "the clone did not see the original's bearing: {}",
+            cloned.azimuth().get()
+        );
+        assert!(
+            (cloned.elevation().get() - 45.0).abs() < 0.001,
+            "the clone did not see the original's height: {}",
+            cloned.elevation().get()
+        );
 
-        // And vice versa
+        // And vice versa.
         cloned.set_position(-60.0, 10.0);
-        assert!((panner.azimuth().get() - (-60.0)).abs() < 0.001);
-        assert!((panner.elevation().get() - 10.0).abs() < 0.001);
+        assert!(
+            (panner.azimuth().get() - (-60.0)).abs() < 0.001,
+            "the original did not see the clone's bearing: {}",
+            panner.azimuth().get()
+        );
+        assert!(
+            (panner.elevation().get() - 10.0).abs() < 0.001,
+            "the original did not see the clone's height: {}",
+            panner.elevation().get()
+        );
+
+        // -- spread: its own cell, and the one the deleted `vbap_panner_clone`
+        //    used to be the only cover for.
+        panner.set_spread(Spread(0.3));
+        assert!(
+            (cloned.spread().get() - 0.3).abs() < 0.001,
+            "the clone did not see the original's spread: {} -- a snapshotting \
+             clone would freeze an offline render at the clone-time value",
+            cloned.spread().get()
+        );
+        cloned.set_spread(Spread(0.8));
+        assert!(
+            (panner.spread().get() - 0.8).abs() < 0.001,
+            "the original did not see the clone's spread: {}",
+            panner.spread().get()
+        );
+
+        // -- width: its own cell too, and previously uncovered in either
+        //    direction.
+        panner.set_width(StereoWidth(1.5));
+        assert!(
+            (cloned.width().get() - 1.5).abs() < 0.001,
+            "the clone did not see the original's width: {}",
+            cloned.width().get()
+        );
+        cloned.set_width(StereoWidth(0.4));
+        assert!(
+            (panner.width().get() - 0.4).abs() < 0.001,
+            "the original did not see the clone's width: {}",
+            panner.width().get()
+        );
     }
 }

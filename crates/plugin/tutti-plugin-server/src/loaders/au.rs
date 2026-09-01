@@ -690,7 +690,8 @@ impl PluginAudio for AuInstance {
         &mut self,
         buffer: tutti_plugin::server::AudioBufferMut<'_, '_>,
         ctx: &ProcessContext,
-    ) -> PluginResult<ProcessOutput> {
+        out: &mut ProcessOutput,
+    ) -> PluginResult<()> {
         // Automation arrives normalized `0..=1` (the host's authoring
         // convention, shared with VST2/VST3), but `AudioUnitSetParameter` takes
         // NATIVE PLAIN UNITS — AU has no normalization concept at all. Writing
@@ -746,7 +747,12 @@ impl PluginAudio for AuInstance {
             }
         }
 
-        Ok(ProcessOutput::default())
+        // AUv2 reports no per-block MIDI, parameter or note-expression output
+        // through this path — `AuInstance::install_midi_output` exists but
+        // nothing routes it yet — so `out` is left as the caller cleared it,
+        // which is an empty block rather than a stale one.
+        let _ = out;
+        Ok(())
     }
 
     fn set_sample_rate(&mut self, rate: f64) {

@@ -885,15 +885,26 @@ impl ClapLoaded {
         }
     }
 
-    /// Drain all pending [`TransportRequest`]s the plugin has emitted.
-    /// Speculative — gated behind `clap-extras`.
+    /// Drain all pending [`TransportRequest`]s the plugin has emitted, in
+    /// arrival order. Speculative — gated behind `clap-extras`.
+    ///
+    /// Main-thread only: this takes the lock that the plugin-side push
+    /// deliberately only *tries*, so calling it from the audio thread
+    /// reintroduces the inversion that push avoids.
+    ///
+    /// A short result is not proof the plugin was quiet — the queue drops when
+    /// full or contended. Read
+    /// [`TransportState::dropped`](crate::host::state::TransportState::dropped)
+    /// when that matters.
     #[cfg(feature = "clap-extras")]
     pub fn drain_transport_requests(&self) -> Vec<TransportRequest> {
-        if let Ok(mut reqs) = self.host_state.transport.requests.lock() {
-            std::mem::take(&mut *reqs)
-        } else {
-            Vec::new()
-        }
+        let Ok(mut reqs) = self.host_state.transport.requests.lock() else {
+            return Vec::new();
+        };
+        // `drain`, not `mem::take`: taking the `VecDeque` leaves an empty one
+        // with no capacity behind, so the plugin's next push would allocate —
+        // on the audio thread, which is the whole thing this queue avoids.
+        reqs.drain(..).collect()
     }
 
     /// Consume and return the `notes.names_changed` flag.

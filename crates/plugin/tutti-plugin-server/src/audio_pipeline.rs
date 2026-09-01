@@ -13,7 +13,7 @@
 use tutti_plugin::server::{
     AudioBufferMut, AudioSlab, ChordChanges, ExpressiveContext, Features, MidiEvent, MidiEventVec,
     NoteExpressionChanges, NoteExpressionIntChanges, NoteExpressionTextChanges, ParameterChanges,
-    PluginInstance, ProcessContext, SampleFormat, ScaleChanges, TransportInfo,
+    PluginInstance, ProcessContext, ProcessOutput, SampleFormat, ScaleChanges, TransportInfo,
 };
 use tutti_plugin::Result;
 
@@ -160,23 +160,37 @@ pub(crate) struct AudioBlock<'a> {
 }
 
 /// One processed block's result. The plugin's audio output is written back into
-/// the shared slab in place; the measured latency and the plugin's emitted MIDI
-/// travel onward to the host. (Parameter output is dropped — no host consumer.)
+/// the shared slab in place; the measured latency travels onward to the host,
+/// and the plugin's emitted MIDI is read from
+/// [`AudioPipeline::midi_out`]. (Parameter output is dropped — no host
+/// consumer.)
+///
+/// The MIDI is **not** carried here. It lives in the pipeline's own reusable
+/// [`ProcessOutput`], and moving it into this struct each block would drop that
+/// buffer's capacity — reintroducing the per-block allocation on the audio
+/// thread that owning it cost in the first place.
 #[derive(Default)]
 pub(crate) struct AudioOutput {
     /// Wall-clock microseconds this block spent inside the plugin, measured by
     /// the server. A *diagnostic*, not the plugin's reported PDC latency —
     /// that arrives as an `AsyncEvent::LatencyChanged` in `Samples`.
     pub latency_us: u64,
-    /// MIDI the plugin emitted during this block, forwarded so the host can
-    /// re-enter it into routing.
-    pub midi_out: MidiEventVec,
 }
 
 /// Driver for one audio block. Holds scratch across calls so the audio
 /// thread never allocates after warm-up.
 pub(crate) struct AudioPipeline {
     buffers: AudioBuffers,
+    /// The plugin's non-audio outputs for the current block.
+    ///
+    /// Owned here, and handed to `PluginAudio::process` as an out-parameter,
+    /// so its `SmallVec` storage persists across blocks. A loader that copies
+    /// out of a borrowing `ProcessOutputRef` copies into *this*, which is what
+    /// makes the copy allocation-free once warm.
+    ///
+    /// Read back through [`midi_out`](Self::midi_out) after each
+    /// [`process`](Self::process); it is cleared at the top of the next one.
+    plugin_output: ProcessOutput,
 }
 
 impl AudioPipeline {
@@ -185,7 +199,17 @@ impl AudioPipeline {
     pub(crate) fn new(format: SampleFormat) -> Self {
         Self {
             buffers: AudioBuffers::new(format),
+            plugin_output: ProcessOutput::default(),
         }
+    }
+
+    /// The MIDI the plugin emitted during the most recent
+    /// [`process`](Self::process).
+    ///
+    /// Borrowed, not moved: see [`AudioOutput`]. Valid until the next
+    /// `process`, which clears it.
+    pub(crate) fn midi_out(&self) -> &MidiEventVec {
+        &self.plugin_output.midi_events
     }
 
     /// Reseat the scratch variant when the session's negotiated format changes.
@@ -307,7 +331,16 @@ impl AudioPipeline {
         // previous occupant's samples in those channels — half this block
         // spliced onto half another, which sounds almost right.
         let mut all_channels_written = true;
-        let plugin_output = match &mut self.buffers {
+        // Split the two fields apart so the render arms can hold `buffers`
+        // mutably while also handing `plugin_output` to the plugin. Cleared
+        // once, here: `process` fills it and every early return below leaves it
+        // empty rather than carrying the previous block's events.
+        let Self {
+            buffers,
+            plugin_output,
+        } = self;
+        plugin_output.clear();
+        match &mut *buffers {
             AudioBuffers::F32 { input, output } => {
                 // Read every input bus's channels from this block's input slot.
                 // The flat order IS bus order — the host crate splits it back
@@ -325,12 +358,12 @@ impl AudioPipeline {
                 // Stack-allocated slice tables — no per-block Vec::collect.
                 // The helper builds the `AudioBuffer` internally so its
                 // four field lifetimes unify in a single inner scope.
-                let result = with_audio_buffer_f32(
+                with_audio_buffer_f32(
                     &input[..in_n],
                     &mut output[..out_n],
                     num_samples,
                     sample_rate,
-                    |buf| plugin.process(buf, &ctx),
+                    |buf| plugin.process(buf, &ctx, plugin_output),
                 )?;
                 // Sanitize before it leaves the subprocess: a misbehaving
                 // plugin can emit NaN/Inf that would otherwise poison the
@@ -350,7 +383,6 @@ impl AudioPipeline {
                         all_channels_written = false;
                     }
                 }
-                result
             }
             AudioBuffers::F64 { input, output } => {
                 for (ch, chan) in input.iter_mut().enumerate().take(in_n) {
@@ -363,12 +395,12 @@ impl AudioPipeline {
                 for chan in output.iter_mut().take(out_n) {
                     chan[..num_samples].fill(0.0);
                 }
-                let result = with_audio_buffer_f64(
+                with_audio_buffer_f64(
                     &input[..in_n],
                     &mut output[..out_n],
                     num_samples,
                     sample_rate,
-                    |buf| plugin.process(buf, &ctx),
+                    |buf| plugin.process(buf, &ctx, plugin_output),
                 )?;
                 // Sanitize NaN/Inf — see the F32 arm above.
                 for (ch, chan) in output.iter_mut().enumerate().take(out_n) {
@@ -384,9 +416,8 @@ impl AudioPipeline {
                         all_channels_written = false;
                     }
                 }
-                result
             }
-        };
+        }
 
         // Publish exactly once, after every output channel is in place. Until
         // this store the host's sequence check fails and it emits silence — so a
@@ -412,11 +443,12 @@ impl AudioPipeline {
         }
 
         // The plugin's MIDI-out travels back to the host so it can re-enter
-        // routing. `param_changes` / `note_expression` are still dropped (no
+        // routing, but it is *left in* `plugin_output` and read through
+        // `midi_out()` — moving it out here would take the buffer's capacity
+        // with it. `param_changes` / `note_expression` are still dropped (no
         // host consumer yet). Audio was written back into the slab above.
         Ok(AudioOutput {
             latency_us: start.elapsed().as_micros() as u64,
-            midi_out: plugin_output.midi_events,
         })
     }
 }
@@ -584,13 +616,14 @@ mod tests {
             &mut self,
             buffer: AudioBufferMut<'_, '_>,
             _ctx: &ProcessContext,
-        ) -> PluginResult<ProcessOutput> {
+            _out: &mut ProcessOutput,
+        ) -> PluginResult<()> {
             if let AudioBufferMut::F32(b) = buffer {
                 for chan in b.outputs.iter_mut() {
                     chan.fill(self.fill);
                 }
             }
-            Ok(ProcessOutput::default())
+            Ok(())
         }
         fn set_sample_rate(&mut self, _rate: f64) {}
     }
@@ -648,7 +681,8 @@ mod tests {
             &mut self,
             buffer: AudioBufferMut<'_, '_>,
             _ctx: &ProcessContext,
-        ) -> PluginResult<ProcessOutput> {
+            _out: &mut ProcessOutput,
+        ) -> PluginResult<()> {
             if let AudioBufferMut::F32(b) = buffer {
                 let mut seen = self.seen_inputs.borrow_mut();
                 seen.clear();
@@ -667,7 +701,7 @@ mod tests {
                     out.fill(v);
                 }
             }
-            Ok(ProcessOutput::default())
+            Ok(())
         }
         fn set_sample_rate(&mut self, _rate: f64) {}
     }
@@ -961,8 +995,15 @@ mod tests {
     /// RT-safety regression: the per-block path — including the denormal
     /// guard and the NaN/Inf sanitize sweep — must not allocate in steady
     /// state. Warms up once (the first `process` sizes the scratch buffers),
-    /// then asserts a run of blocks is allocation-free. Hermetic: uses the
-    /// `NanPlugin` fake, so it runs in CI without an installed plugin.
+    /// then asserts a run of blocks is allocation-free.
+    ///
+    /// **This one uses the `NanPlugin` fake, and that is its limit.** A fake
+    /// exercises the pipeline's own scratch handling and *no loader at all*, so
+    /// it proved nothing about the per-block owning conversion the VST3 loader
+    /// used to perform. See
+    /// [`process_through_the_real_vst3_loader_is_alloc_free`], which drives the
+    /// same gate through a real plugin and is the one that would have caught
+    /// it.
     #[test]
     fn process_is_alloc_free() {
         const CH: usize = 2;
@@ -1079,6 +1120,173 @@ mod tests {
                         },
                     )
                     .unwrap();
+            }
+        });
+    }
+
+    /// **The gate that covers a real loader.** The same per-block path, driven
+    /// through the actual VST3 reference plugin rather than a fake.
+    ///
+    /// `process_is_alloc_free` above drives `NanPlugin`, which returns without
+    /// touching a loader at all, so nothing in it can observe what a loader does
+    /// with the plugin's output. This one covers the whole chain: slab read,
+    /// COM-boundary crossing, `Vst3Instance::process`, the loader's copy into
+    /// the pipeline's reusable `ProcessOutput`, sanitize, and slab write.
+    ///
+    /// Hermetic: the probe is the vendored `audio-probe`, built by this crate's
+    /// build script, so this needs no installed plugin. Gated on the `vst3`
+    /// feature rather than on the plugin's presence — a missing probe must fail
+    /// loudly, not skip.
+    ///
+    /// # What this does NOT cover, and why
+    ///
+    /// **The emitted-event copy path is not exercised here**, because
+    /// `audio-probe` declares an event *input* and emits nothing at all
+    /// (`probeprocessor.cpp` calls `addEventInput` and never touches
+    /// `outputEvents` or `outputParameterChanges`). So the plugin's output lists
+    /// arrive empty every block, and an owning conversion over an empty
+    /// `SmallVec` allocates nothing — mutation-testing confirms that restoring
+    /// `ProcessOutputRef::to_owned()` in `loaders::vst3::process_block` leaves
+    /// this test green. Saying so is the point: a gate that names a property it
+    /// cannot observe is the failure this whole class of test exists to avoid.
+    ///
+    /// The copy itself is covered directly by
+    /// [`copying_emitted_events_into_a_warm_output_does_not_allocate`], which
+    /// feeds it non-empty lists. Closing the gap *here* needs an emitting
+    /// reference plugin — a `outputEvents`-writing variant of `audio-probe`,
+    /// which is a shared C++ fixture and a change of its own.
+    ///
+    /// Mutation check: any unconditional allocation inside `process_block`
+    /// aborts this (verified with a `Vec::with_capacity(32)`).
+    #[cfg(feature = "vst3")]
+    #[test]
+    fn process_through_the_real_vst3_loader_is_alloc_free() {
+        use crate::loaders::vst3::Vst3Instance;
+
+        const N: usize = 128;
+        const SR: f64 = 48_000.0;
+
+        let _lock = crate::test_utils::plugin_load_lock();
+        let mut plugin = Vst3Instance::load(
+            std::path::Path::new(crate::test_utils::vst3_probe_path()),
+            SR,
+            N,
+            false,
+        )
+        .expect("the vendored VST3 probe must load");
+
+        // Shape the slab to what the plugin actually declared, so no channel is
+        // silently dropped and the widths the pipeline reads are the real ones.
+        let loaded = PluginMeta::loaded(&plugin);
+        let layout = test_layout(
+            N,
+            SampleFormat::Float32,
+            &loaded.inputs.clone(),
+            &loaded.outputs.clone(),
+        );
+
+        let name = format!("tutti_noalloc_vst3_{}", std::process::id());
+        let _guard = AudioSlab::create(name.clone(), layout.clone()).unwrap();
+        let mut shm = AudioSlab::open(name, layout).unwrap();
+
+        let mut pipeline = AudioPipeline::new(SampleFormat::Float32);
+        let clock = Clock {
+            sample_rate: SR,
+            format: SampleFormat::Float32,
+        };
+        let block = || AudioBlock {
+            seq: SEQ,
+            num_samples: N,
+            midi: &[],
+            extras: None,
+        };
+
+        // Warm up outside the gate: the first block sizes the pipeline scratch,
+        // and the plugin's own pooled buffers reach their steady capacity.
+        for _ in 0..4 {
+            pipeline
+                .process(&mut plugin, &mut shm, &clock, block())
+                .unwrap();
+        }
+
+        assert_no_alloc::assert_no_alloc(|| {
+            for _ in 0..256 {
+                pipeline
+                    .process(&mut plugin, &mut shm, &clock, block())
+                    .unwrap();
+            }
+        });
+    }
+
+    /// The emitted-event copy path itself, with **non-empty** lists — the half
+    /// [`process_through_the_real_vst3_loader_is_alloc_free`] cannot reach,
+    /// because the reference plugin emits nothing.
+    ///
+    /// This models exactly what a loader does per block: clear the caller's
+    /// reusable `ProcessOutput`, then copy a borrowed view's MIDI and parameter
+    /// points into it. Once warm that must allocate nothing — which is only
+    /// true because `clear` empties the lists in place and, critically, clears
+    /// each queue's `points` **before** dropping the queue list.
+    ///
+    /// Two mutation checks, both verified:
+    /// - build a fresh `ProcessOutput` inside the loop instead of reusing one
+    ///   (what `ProcessOutputRef::to_owned` did) and this aborts;
+    /// - drop the inner `queue.points.clear()` from `ProcessOutput::clear` and
+    ///   this aborts, because each block then reallocates every points buffer.
+    #[test]
+    fn copying_emitted_events_into_a_warm_output_does_not_allocate() {
+        use tutti_plugin::server::ParamAddress;
+
+        // Well past both inline capacities, so the buffers are genuinely on the
+        // heap and a lost capacity is a real reallocation rather than a no-op.
+        const EVENTS: usize = 400;
+        const PARAMS: usize = 32;
+        const POINTS: usize = 40;
+
+        // The event *values* are irrelevant here — only how many there are, and
+        // that `MidiEvent` is `Copy` so the extend is a memcpy.
+        let emitted_midi: Vec<MidiEvent> = (0..EVENTS)
+            .map(|i| MidiEvent::from_ump(i as u32, &[0x2090_3C40]))
+            .collect();
+        let mut emitted_params = ParameterChanges::new();
+        for p in 0..PARAMS {
+            for pt in 0..POINTS {
+                emitted_params.add_change(
+                    ParamAddress::Opaque((p as u32).into()),
+                    pt as i32,
+                    pt as f64 / POINTS as f64,
+                );
+            }
+        }
+
+        // The copy a loader performs, factored so warm-up and gate run the same
+        // code rather than two hand-kept-in-sync versions.
+        let copy = |out: &mut ProcessOutput| {
+            out.clear();
+            out.midi_events.extend(emitted_midi.iter().copied());
+            for queue in &emitted_params.queues {
+                for point in &queue.points {
+                    out.emit_param_point(queue.param_id, point.sample_offset, point.value.get());
+                }
+            }
+        };
+
+        let mut out = ProcessOutput::default();
+        // Warm up outside the gate: this is where the buffers reach their
+        // steady capacity, exactly as the first few real blocks do.
+        for _ in 0..4 {
+            copy(&mut out);
+        }
+        assert_eq!(
+            out.midi_events.len(),
+            EVENTS,
+            "the fixture must actually fill the buffers"
+        );
+        assert_eq!(out.param_changes.queues.len(), PARAMS);
+
+        assert_no_alloc::assert_no_alloc(|| {
+            for _ in 0..64 {
+                copy(&mut out);
             }
         });
     }

@@ -8,10 +8,10 @@
 use std::path::Path;
 
 use tutti_plugin::server::{
-    AudioBufferMut, EditorPresence, EditorSize, Features, LoadedPlugin, MidiEventVec, Normalized,
-    NoteExpressionChanges, ParamAddress, ParameterChanges, ParameterInfo, PluginAudio, PluginClass,
-    PluginDescriptor, PluginEditorHost, PluginMeta, PluginParams, PluginPresets, PluginResult,
-    PluginState, Preset, PresetId, ProcessContext, ProcessOutput, RenderMode, WindowHandle,
+    AudioBufferMut, EditorPresence, EditorSize, Features, LoadedPlugin, Normalized, ParamAddress,
+    ParameterInfo, PluginAudio, PluginClass, PluginDescriptor, PluginEditorHost, PluginMeta,
+    PluginParams, PluginPresets, PluginResult, PluginState, Preset, PresetId, ProcessContext,
+    ProcessOutput, RenderMode, WindowHandle,
 };
 // Only the `not(vst2)` fallback arms construct `PluginError` directly.
 #[cfg(not(feature = "vst2"))]
@@ -166,7 +166,8 @@ impl PluginAudio for Vst2Instance {
         &mut self,
         buffer: AudioBufferMut<'_, '_>,
         ctx: &ProcessContext,
-    ) -> PluginResult<ProcessOutput> {
+        out: &mut ProcessOutput,
+    ) -> PluginResult<()> {
         #[cfg(feature = "vst2")]
         {
             // VST3/CLAP-style param change events become direct writes for VST2.
@@ -197,24 +198,25 @@ impl PluginAudio for Vst2Instance {
 
             let transport = ctx.transport.cloned();
 
-            let midi_out: MidiEventVec = match buffer {
+            // `process_f32` / `process_f64` return a borrow into the instance's
+            // own pooled MIDI-out buffer. Extending `out` — which the caller
+            // cleared and whose capacity survives the block — copies out of it
+            // without a fresh `SmallVec`, which is what `.collect()` built here
+            // every block and heap-spilled past its inline capacity.
+            let emitted = match buffer {
                 AudioBufferMut::F32(buf) => {
                     let host_ctx = Vst2ProcessContext {
                         midi: ctx.midi_events,
                         transport: transport.as_ref(),
                         sample_rate: buf.sample_rate,
                     };
-                    self.inner
-                        .process_f32(
-                            buf.inputs,
-                            buf.outputs,
-                            buf.num_samples,
-                            &host_ctx,
-                            &mut self.scratch,
-                        )
-                        .iter()
-                        .copied()
-                        .collect()
+                    self.inner.process_f32(
+                        buf.inputs,
+                        buf.outputs,
+                        buf.num_samples,
+                        &host_ctx,
+                        &mut self.scratch,
+                    )
                 }
                 AudioBufferMut::F64(buf) => {
                     let host_ctx = Vst2ProcessContext {
@@ -222,30 +224,27 @@ impl PluginAudio for Vst2Instance {
                         transport: transport.as_ref(),
                         sample_rate: buf.sample_rate,
                     };
-                    self.inner
-                        .process_f64(
-                            buf.inputs,
-                            buf.outputs,
-                            buf.num_samples,
-                            &host_ctx,
-                            &mut self.scratch,
-                        )
-                        .iter()
-                        .copied()
-                        .collect()
+                    self.inner.process_f64(
+                        buf.inputs,
+                        buf.outputs,
+                        buf.num_samples,
+                        &host_ctx,
+                        &mut self.scratch,
+                    )
                 }
             };
+            out.midi_events.extend(emitted.iter().copied());
 
-            Ok(ProcessOutput {
-                midi_events: midi_out,
-                param_changes: ParameterChanges::new(),
-                note_expression: NoteExpressionChanges::new(),
-            })
+            // VST2 reports parameter automation through the `audioMasterAutomate`
+            // callback, not through a per-block output list, so there is nothing
+            // to fill `param_changes` from here. It reaches the host by the
+            // separate `drain_param_changes` path.
+            Ok(())
         }
 
         #[cfg(not(feature = "vst2"))]
         {
-            let _ = (buffer, ctx);
+            let _ = (buffer, ctx, out);
             Err(PluginError::Process("VST2 support not compiled".into()))
         }
     }

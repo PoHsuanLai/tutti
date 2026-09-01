@@ -287,8 +287,43 @@ impl Vst2Instance {
     }
 
     /// Drain any plugin-internal parameter changes (knobs moved on the
-    /// editor surface). Cheap: a `try_iter` over a crossbeam channel.
+    /// editor surface).
+    ///
+    /// Control-thread only — it allocates the returned `Vec`. The queue it
+    /// drains is filled from the audio thread, which is why that side is
+    /// bounded and this side is not.
+    ///
+    /// The queue drops rather than growing when a caller stops draining, so a
+    /// short result is not proof that the plugin was quiet; pair it with
+    /// [`dropped_param_changes`](Self::dropped_param_changes) when that
+    /// distinction matters.
     pub fn drain_param_changes(&self) -> Vec<ParameterChange> {
-        self.host_link.param_rx.try_iter().collect()
+        let mut out = Vec::with_capacity(self.host_link.param_rx.len());
+        while let Some(change) = self.host_link.param_rx.pop() {
+            out.push(change);
+        }
+        out
+    }
+
+    /// How many `audioMasterAutomate` reports the plugin made that were
+    /// **dropped** because the queue was full, since load. Monotonic.
+    ///
+    /// Non-zero means automation was lost, which is otherwise invisible: a
+    /// dropped knob move and a knob that never moved produce the same empty
+    /// [`drain_param_changes`](Self::drain_param_changes). In practice it
+    /// indicates a host that has stopped draining, not a busy plugin — the
+    /// capacity is sized for a whole-preset burst.
+    pub fn dropped_param_changes(&self) -> u64 {
+        self.host_link.state.dropped_param_changes()
+    }
+
+    /// How many plugin-emitted MIDI events were **dropped** because the
+    /// MIDI-out queue was full, since load. Monotonic.
+    ///
+    /// Counted apart from [`dropped_param_changes`](Self::dropped_param_changes)
+    /// because the consequence differs: a dropped note-off whose note-on landed
+    /// is a stuck note.
+    pub fn dropped_midi_out(&self) -> u64 {
+        self.host_link.state.dropped_midi_out()
     }
 }

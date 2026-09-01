@@ -391,7 +391,11 @@ impl Session {
         Ok(BridgeMessage::AudioProcessed {
             latency_us: output.latency_us,
             seq,
-            midi_out: encode_midi_out(&output.midi_out),
+            // Borrowed from the pipeline's reusable buffer rather than moved
+            // out of the result: moving it would take the buffer's heap
+            // capacity with it and put the reallocation back on the audio
+            // thread. See [`AudioOutput`](crate::audio_pipeline::AudioOutput).
+            midi_out: encode_midi_out(self.pipeline.midi_out()),
         }
         .into())
     }

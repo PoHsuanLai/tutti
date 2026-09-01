@@ -334,8 +334,8 @@ mod tests {
     use tutti_core::dsp::Net;
     use tutti_core::transport::Transport;
     use tutti_core::AudioNode;
-    use tutti_types::{Depth, Hz, UnitParam};
     use tutti_nodes::DistortionNode;
+    use tutti_types::{Depth, Hz, UnitParam};
 
     const BASE_DRIVE: f32 = 5.0;
 

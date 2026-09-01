@@ -24,8 +24,8 @@ use bevy_tutti::AudioEngineState;
 use tutti_core::dsp::Net;
 use tutti_core::transport::Transport;
 use tutti_core::AudioNode;
-use tutti_types::{Depth, Hz, ParamAddr, UnitParam};
 use tutti_nodes::DistortionNode;
+use tutti_types::{Depth, Hz, ParamAddr, UnitParam};
 
 /// The rate the modulated LFO is authored at, and the floor of its range.
 const CARRIER_RATE: f32 = 2.0;

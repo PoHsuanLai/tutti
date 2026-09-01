@@ -106,11 +106,34 @@ pub trait PluginAudio: Send {
     /// format (f32 or f64) as a tagged enum, so the trait stays
     /// dyn-compatible while implementations branch once and delegate into a
     /// single generic inner body.
+    ///
+    /// # `out` is the caller's, and is reused
+    ///
+    /// The block's non-audio outputs — emitted MIDI, parameter changes, note
+    /// expression — are written into `out` rather than returned. **An
+    /// implementation must clear it before filling**, since the caller hands
+    /// back the same value every block precisely so its heap capacity survives.
+    ///
+    /// Returning `ProcessOutput` by value looks equivalent and is not: this
+    /// runs on the realtime audio thread, and a fresh return value has no
+    /// capacity to reuse, so every block that emits more than the inline
+    /// `SmallVec` capacity allocates inside the audio callback. Worse, the two
+    /// hosts that already avoid this — `tutti-vst3-host` and `tutti-clap-host`
+    /// both return a borrowing `ProcessOutputRef` into their own pooled
+    /// buffers — had that borrow discarded by an owning conversion at exactly
+    /// this boundary. The out-parameter is what lets a loader copy into
+    /// storage that persists instead.
+    ///
+    /// A borrowed return would express the same thing, but not through a
+    /// `dyn`-safe trait: the returned lifetime would come from `&mut self` and
+    /// so hold the plugin borrowed across everything the caller does with the
+    /// block.
     fn process(
         &mut self,
         buffer: AudioBufferMut<'_, '_>,
         ctx: &ProcessContext,
-    ) -> Result<ProcessOutput>;
+        out: &mut ProcessOutput,
+    ) -> Result<()>;
 
     /// Sets the render sample rate in Hz.
     ///

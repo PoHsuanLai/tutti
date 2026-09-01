@@ -25,9 +25,9 @@ use tutti_core::transport::Transport;
 use tutti_core::AudioNode;
 use tutti_types::{Drive, Hz, UnitParam};
 // Only the modulation tests below use these.
+use tutti_nodes::DistortionNode;
 #[cfg(feature = "modulation")]
 use tutti_types::{Depth, ParamAddr};
-use tutti_nodes::DistortionNode;
 
 /// The drive a freshly built node carries.
 const INITIAL_DRIVE: f32 = 1.0;

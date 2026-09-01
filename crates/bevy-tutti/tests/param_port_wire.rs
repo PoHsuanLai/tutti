@@ -15,8 +15,8 @@ use bevy_tutti::graph::{
 use bevy_tutti::AudioEngineState;
 use tutti_core::dsp::{sine_hz, Net, Source};
 use tutti_core::AudioNode;
-use tutti_types::UnitParam;
 use tutti_nodes::{AtomicSourceNode, DistortionNode, ParamPorts, ParamSumNode, ShapeKind};
+use tutti_types::UnitParam;
 
 fn app() -> App {
     let mut app = App::new();

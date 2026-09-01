@@ -19,8 +19,8 @@ use bevy_tutti::AudioEngineState;
 use tutti_core::dsp::{Net, Source};
 use tutti_core::AudioNode;
 use tutti_mod::LfoShape;
-use tutti_types::{Depth, Hz, ParamAddr, UnitParam};
 use tutti_nodes::{DistortionNode, ParamPorts, ShapeKind};
+use tutti_types::{Depth, Hz, ParamAddr, UnitParam};
 
 /// An app with the engine's plugins and one ported distortion, ready to modulate.
 fn app_with_target() -> (App, Entity, usize) {

@@ -22,10 +22,10 @@ use bevy_tutti::AudioEngineState;
 use tutti_core::dsp::{AudioUnit as _, Net, Source};
 use tutti_core::AudioNode;
 use tutti_mod::{shape, CurveType, LfoShape, Polarity};
-use tutti_types::{Depth, ParamAddr, UnitParam};
 use tutti_nodes::{
     AtomicSourceNode, DistortionNode, ParamPorts, ParamShaperNode, ParamSumNode, ShapeKind,
 };
+use tutti_types::{Depth, ParamAddr, UnitParam};
 
 fn app() -> App {
     let mut app = App::new();

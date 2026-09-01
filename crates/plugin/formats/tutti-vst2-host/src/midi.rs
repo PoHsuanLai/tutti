@@ -11,6 +11,8 @@
 //! thread never allocates after warmup.
 
 use crate::types::{MidiEvent, MidiEventVec};
+use crossbeam_queue::ArrayQueue;
+use std::sync::Arc;
 
 /// Per-block MIDI plumbing for one [`crate::Vst2Instance`]: the host→plugin
 /// staging buffer, the plugin→host inbox, and the pooled out-drain returned
@@ -19,17 +21,25 @@ pub(crate) struct MidiIo {
     /// Host→plugin staging: rebuilt in place each `process` call.
     pub(crate) send: MidiSendBuffer,
     /// Plugin→host inbox, fed by the `process_events` callback.
-    pub(crate) out_rx: crossbeam_channel::Receiver<MidiEvent>,
+    ///
+    /// Bounded: the callback runs on the audio thread, so the push must
+    /// neither allocate nor grow. See `host.rs`'s *Why the queues are
+    /// bounded* for the drop policy and the counter that reports it.
+    pub(crate) out_rx: Arc<ArrayQueue<MidiEvent>>,
     /// Pooled drain of `out_rx`, refilled and borrowed back each block.
     pub(crate) out: MidiEventVec,
 }
 
 impl MidiIo {
-    /// Construct with the inbox receiver; pre-sizes both reusable buffers so
+    /// Construct with the inbox queue; pre-sizes both reusable buffers so
     /// the audio thread never allocates after warm-up.
-    pub(crate) fn new(out_rx: crossbeam_channel::Receiver<MidiEvent>) -> Self {
+    pub(crate) fn new(out_rx: Arc<ArrayQueue<MidiEvent>>) -> Self {
         let mut out = MidiEventVec::new();
-        out.reserve(256);
+        // Reserved from the queue's own capacity, not a constant that happens
+        // to match it: `drain_midi_out` empties the queue into this buffer in
+        // one pass, so anything smaller reallocates on the audio thread the
+        // first time a full queue is drained.
+        out.reserve(out_rx.capacity());
         Self {
             send: MidiSendBuffer::new(),
             out_rx,

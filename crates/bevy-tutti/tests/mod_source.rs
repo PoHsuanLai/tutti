@@ -21,8 +21,8 @@ use tutti_core::dsp::Net;
 use tutti_core::transport::Transport;
 use tutti_core::AudioNode;
 use tutti_mod::Modulator;
-use tutti_types::{Depth, Hz, ParamAddr, Phase, UnitParam};
 use tutti_nodes::DistortionNode;
+use tutti_types::{Depth, Hz, ParamAddr, Phase, UnitParam};
 
 /// A modulator with no analogue in `tutti-mod`: a two-step stair, held for
 /// half a cycle each. Stateless, so its `State` is `()` — the simplest thing

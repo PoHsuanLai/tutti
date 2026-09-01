@@ -844,13 +844,23 @@ mod tests {
     /// `parameters::ParamAddress::GLOBAL` does. The two types are deliberately
     /// separate, so nothing but a test keeps them agreeing — and a listener
     /// registered on a different scope than the writes go to would simply never
-    /// fire.
+    /// fire. AudioToolbox accepts any address without validating it, so the
+    /// registration would succeed and nothing would ever arrive.
     #[test]
     fn the_global_address_agrees_with_the_parameter_modules() {
         use crate::parameters::ParamAddress;
         assert_eq!(EventAddress::GLOBAL.scope, ParamAddress::GLOBAL.scope);
         assert_eq!(EventAddress::GLOBAL.element, ParamAddress::GLOBAL.element);
         assert_eq!(EventAddress::default(), EventAddress::GLOBAL);
+
+        // And that shared place is the global scope at element 0 — pinned here
+        // rather than in a second copy of this test, since agreeing on the
+        // wrong constant would satisfy the assertions above.
+        assert_eq!(
+            EventAddress::GLOBAL.scope,
+            crate::types::K_AUDIO_UNIT_SCOPE_GLOBAL
+        );
+        assert_eq!(EventAddress::GLOBAL.element, 0);
     }
 
     /// Every event type must decode into the variant its tag names, carrying the

@@ -20,9 +20,7 @@ use crate::loaders::common::{single_bus, Meta};
 use tutti_plugin::{BridgeError, LoadStage, Result};
 
 #[cfg(all(target_os = "macos", feature = "au"))]
-use tutti_au_host::{
-    component, editor::AuEditor, instance::AuInstance as AuHostInstance, parameters, Samples,
-};
+use tutti_au_host::{component, parameters, AuInstance as AuHostInstance, Samples};
 
 /// Map the AU host's native component type to the wire `AuComponentType` mirror.
 #[cfg(all(target_os = "macos", feature = "au"))]
@@ -54,8 +52,6 @@ pub struct AuInstance {
     watch: Option<PropertyWatch>,
     #[cfg(all(target_os = "macos", feature = "au"))]
     inner: AuHostInstance,
-    #[cfg(all(target_os = "macos", feature = "au"))]
-    editor: Option<AuEditor>,
     /// Declared `[min, max]` per parameter id, captured once at load.
     ///
     /// `ProcessContext::param_changes` carries **normalized** `0..=1` values (the
@@ -343,8 +339,9 @@ impl PropertyWatch {
 //   documented thread-agnostic) plus an `Arc<PropertyFlags>` of atomics. The
 //   GCD worker that fires the callback touches only those atomics, never
 //   `inner`, so moving the instance between threads does not race the listener.
-// - `editor` is an `AuEditor`, `Send` but not `Sync`, which is the tighter of
-//   the two bounds and therefore the one that decides this impl's shape.
+// - `inner`'s editor is `Send` but not `Sync`, which is the tighter of the
+//   two bounds and therefore the one that decides this impl's shape. The
+//   editor lives on the host `AuInstance`, not as a sibling field here.
 // - `param_ranges` and `meta` are plain data.
 //
 // The field-order invariant on `watch` is what makes the listener argument hold
@@ -391,7 +388,7 @@ impl AuInstance {
                     component_type: map_au_type(component_info.component_type),
                 },
                 // A probe reads the registry entry without instantiating, and
-                // `AuEditor::has_editor` needs a live unit. The load path asks.
+                // `AuInstance::has_editor` needs a live unit. The load path asks.
                 editor: EditorPresence::Unknown,
             })
         }
@@ -471,7 +468,7 @@ impl AuInstance {
             })?;
 
             let name = inner.get_name().unwrap_or_else(|_| bundle_name.clone());
-            let has_editor = AuEditor::has_editor(inner.raw_unit());
+            let has_editor = inner.has_editor();
             // A refusal is compensated as zero rather than failing the load: an
             // AU that will not say how far it delays audio is still a usable
             // plugin, and under-compensating it costs alignment, not audio.
@@ -573,7 +570,6 @@ impl AuInstance {
             Ok(Self {
                 watch,
                 inner,
-                editor: None,
                 param_ranges,
                 meta: Meta { descriptor, loaded },
             })
@@ -946,16 +942,13 @@ impl PluginEditorHost for AuInstance {
         // No size to offer: `PluginEditorHost::open_editor` carries only a
         // parent handle, so the host has not told this layer how big the
         // window is. 800×600 is the request; the plugin is free to ignore it,
-        // and `editor_size()` below reads back what it actually made.
+        // and `AuInstance::open_editor` returns the size the view actually made.
         let preferred = EditorSize {
             width: 800,
             height: 600,
         };
-        let editor =
-            unsafe { AuEditor::open(self.inner.raw_unit(), Some(parent_handle), preferred) }
-                .map_err(|e| BridgeError::EditorError(e.to_string()))?;
-        let size = editor.editor_size();
-        self.editor = Some(editor);
+        let size = unsafe { self.inner.open_editor(parent_handle, preferred) }
+            .map_err(|e| BridgeError::EditorError(e.to_string()))?;
         Ok(EditorSize {
             width: size.width,
             height: size.height,
@@ -963,9 +956,7 @@ impl PluginEditorHost for AuInstance {
     }
 
     fn close_editor(&mut self) {
-        if let Some(mut ed) = self.editor.take() {
-            ed.close();
-        }
+        self.inner.close_editor();
     }
 }
 
@@ -1373,7 +1364,6 @@ mod tests {
         let au = AuInstance {
             watch: None,
             inner,
-            editor: None,
             param_ranges,
             meta: Meta::default(),
         };
@@ -1409,7 +1399,6 @@ mod tests {
         let mut au = AuInstance {
             watch: None,
             inner,
-            editor: None,
             param_ranges,
             meta: Meta::default(),
         };
@@ -1430,7 +1419,8 @@ mod tests {
         };
 
         let ctx = ProcessContext::new();
-        let _output = au.process(AudioBufferMut::F32(buffer), &ctx);
+        let mut out = tutti_plugin::server::ProcessOutput::default();
+        let _output = au.process(AudioBufferMut::F32(buffer), &ctx, &mut out);
         // No crash is the assertion
     }
 
@@ -1470,7 +1460,6 @@ mod tests {
         let mut au = AuInstance {
             watch: None,
             inner,
-            editor: None,
             param_ranges,
             meta: Meta::default(),
         };
@@ -1517,7 +1506,6 @@ mod tests {
         let mut au = AuInstance {
             watch: None,
             inner,
-            editor: None,
             param_ranges,
             meta: Meta::default(),
         };
@@ -1657,7 +1645,6 @@ mod tests {
         let mut au = AuInstance {
             watch: None,
             inner,
-            editor: None,
             param_ranges,
             meta: Meta::default(),
         };
@@ -1703,7 +1690,8 @@ mod tests {
             };
             let mut ctx = ProcessContext::new();
             ctx.param_changes = Some(&changes);
-            au.process(AudioBufferMut::F32(buffer), &ctx)
+            let mut out = tutti_plugin::server::ProcessOutput::default();
+            au.process(AudioBufferMut::F32(buffer), &ctx, &mut out)
                 .expect("process should succeed");
 
             // Tolerance scales with the range: AU stores parameters as f32, so
@@ -1780,7 +1768,6 @@ mod tests {
         let mut au = AuInstance {
             watch: None,
             inner,
-            editor: None,
             param_ranges,
             meta: Meta::default(),
         };

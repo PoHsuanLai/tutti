@@ -51,11 +51,7 @@ impl AuHandle {
             "AudioComponentGetDescription",
             AudioComponentGetDescription(component, &mut desc),
         )
-        .map_err(|e| AuError::LoadFailed {
-            component: String::from("<undescribed>"),
-            stage: LoadStage::Opening,
-            reason: e.to_string(),
-        })?;
+        .map_err(|e| AuError::load_failed("<undescribed>", LoadStage::Opening, e.to_string()))?;
 
         // `AudioComponent.h:498-502`: `AudioComponentInstantiate` "must be used
         // to instantiate any component with
@@ -76,10 +72,12 @@ impl AuHandle {
             "AudioComponentInstanceNew",
             AudioComponentInstanceNew(component, &mut instance),
         )
-        .map_err(|e| AuError::LoadFailed {
-            component: component_triple(&desc),
-            stage: LoadStage::Instantiation,
-            reason: e.to_string(),
+        .map_err(|e| {
+            AuError::load_failed(
+                component_triple(&desc),
+                LoadStage::Instantiation,
+                e.to_string(),
+            )
         })?;
         let au_type = AuType::from_raw(desc.componentType);
 

@@ -62,7 +62,7 @@ They are additionally `no_run`, because instantiating an AU needs a real
 # #[cfg(target_os = "macos")]
 # {
 use tutti_au_host::component::{enumerate_components_of_type, AuType};
-use tutti_au_host::instance::AuInstance;
+use tutti_au_host::AuInstance;
 
 let effects = enumerate_components_of_type(AuType::Effect);
 if let Some(info) = effects.first() {
@@ -84,7 +84,7 @@ if let Some(info) = effects.first() {
 # #[cfg(target_os = "macos")]
 # {
 use tutti_au_host::component::{enumerate_components_of_type, AuType};
-use tutti_au_host::instance::AuInstance;
+use tutti_au_host::AuInstance;
 
 # let effects = enumerate_components_of_type(AuType::Effect);
 # if let Some(info) = effects.first() {

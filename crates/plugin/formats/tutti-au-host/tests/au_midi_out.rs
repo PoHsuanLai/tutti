@@ -548,7 +548,7 @@ fn a_framework_built_packet_list_decodes_to_its_events() {
         events[0].message(),
         MidiMessage::NoteOn {
             note: 60,
-            channel: 0,
+            channel: MidiChannel::FIRST,
             ..
         }
     ));
@@ -558,7 +558,7 @@ fn a_framework_built_packet_list_decodes_to_its_events() {
         events[1].message(),
         MidiMessage::NoteOff {
             note: 60,
-            channel: 0,
+            channel: MidiChannel::FIRST,
             ..
         }
     ));
@@ -568,7 +568,7 @@ fn a_framework_built_packet_list_decodes_to_its_events() {
         events[2].message(),
         MidiMessage::ControlChange {
             index: 7,
-            channel: 0,
+            channel: MidiChannel::FIRST,
             ..
         }
     ));
@@ -580,7 +580,7 @@ fn a_framework_built_packet_list_decodes_to_its_events() {
         events[3].message(),
         MidiMessage::ProgramChange {
             program: 5,
-            channel: 0,
+            channel: MidiChannel::FIRST,
             ..
         }
     ));
@@ -588,7 +588,10 @@ fn a_framework_built_packet_list_decodes_to_its_events() {
 
     assert!(matches!(
         events[4].message(),
-        MidiMessage::PitchBend { channel: 0, .. }
+        MidiMessage::PitchBend {
+            channel: MidiChannel::FIRST,
+            ..
+        }
     ));
     assert_eq!(events[4].frame_offset, 256);
 }
@@ -621,7 +624,7 @@ fn the_decode_covers_exactly_what_send_midi_encodes() {
         );
         // The channel must survive: it is in the low nibble of the status byte, and
         // a decoder that masked it off would still produce the right message *type*.
-        let expected_channel = bytes[0] & 0x0F;
+        let expected_channel = MidiChannel::new(bytes[0] & 0x0F);
         assert_eq!(
             events[0].channel(),
             Some(expected_channel),

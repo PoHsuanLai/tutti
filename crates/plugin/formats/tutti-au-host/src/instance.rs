@@ -604,7 +604,7 @@ impl AuInstance {
                     let vel = tutti_midi_types::convert::midi2_velocity_to_midi1(velocity);
                     // A zero-velocity note-on is a note-off; keep it as note-on
                     // 0x90 with velocity 0 (a legal legacy note-off encoding).
-                    (0x90 | (channel & 0x0F), note & 0x7F, vel & 0x7F)
+                    (0x90 | channel.get(), note & 0x7F, vel & 0x7F)
                 }
                 MidiMessage::NoteOff {
                     channel,
@@ -613,7 +613,7 @@ impl AuInstance {
                     ..
                 } => {
                     let vel = tutti_midi_types::convert::midi2_velocity_to_midi1(velocity);
-                    (0x80 | (channel & 0x0F), note & 0x7F, vel & 0x7F)
+                    (0x80 | channel.get(), note & 0x7F, vel & 0x7F)
                 }
                 MidiMessage::ControlChange {
                     channel,
@@ -621,24 +621,20 @@ impl AuInstance {
                     value,
                     ..
                 } => (
-                    0xB0 | (channel & 0x0F),
+                    0xB0 | channel.get(),
                     index & 0x7F,
                     midi2_cc_to_midi1(value) & 0x7F,
                 ),
                 MidiMessage::ProgramChange {
                     channel, program, ..
-                } => (0xC0 | (channel & 0x0F), program & 0x7F, 0),
+                } => (0xC0 | channel.get(), program & 0x7F, 0),
                 MidiMessage::ChannelPressure {
                     channel, pressure, ..
-                } => (
-                    0xD0 | (channel & 0x0F),
-                    midi2_cc_to_midi1(pressure) & 0x7F,
-                    0,
-                ),
+                } => (0xD0 | channel.get(), midi2_cc_to_midi1(pressure) & 0x7F, 0),
                 MidiMessage::PitchBend { channel, value, .. } => {
                     let bend14 = midi2_pitch_bend_to_midi1(value);
                     (
-                        0xE0 | (channel & 0x0F),
+                        0xE0 | channel.get(),
                         (bend14 & 0x7F) as u8,
                         (bend14 >> 7) as u8 & 0x7F,
                     )
@@ -666,13 +662,11 @@ impl AuInstance {
                                     sysex_buf.extend_from_slice(&bytes[..n]);
                                 }
                             }
-                            SYSEX7_STATUS_END => {
-                                if sysex_active {
-                                    sysex_buf.extend_from_slice(&bytes[..n]);
-                                    send_sysex(unit, &sysex_buf);
-                                    sysex_buf.clear();
-                                    sysex_active = false;
-                                }
+                            SYSEX7_STATUS_END if sysex_active => {
+                                sysex_buf.extend_from_slice(&bytes[..n]);
+                                send_sysex(unit, &sysex_buf);
+                                sysex_buf.clear();
+                                sysex_active = false;
                             }
                             _ => {}
                         }
@@ -1088,6 +1082,16 @@ impl AuInstance {
     pub fn hot_mapped_parameter(&self) -> Option<AuMidiMapping> {
         // SAFETY: `raw_unit` is live for the lifetime of this instance.
         unsafe { midi_map::hot_map(self.raw_unit()) }
+    }
+
+    /// Whether a completed hot map is waiting to be read.
+    ///
+    /// Named form of [`hot_mapped_parameter`](Self::hot_mapped_parameter)
+    /// returning `is_some()`, so a learn UI can poll without reconstructing the
+    /// `mStatus == 0` rule.
+    pub fn hot_map_pending(&self) -> bool {
+        // SAFETY: `raw_unit` is live for the lifetime of this instance.
+        unsafe { midi_map::hot_map_pending(self.raw_unit()) }
     }
 
     /// Borrow a [`ParamView`] for scoped parameter access.

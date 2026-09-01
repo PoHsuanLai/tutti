@@ -30,7 +30,10 @@ fn the_routing_table_publishes_where_the_rt_reads() {
     let (mut res, rt_view) = routing_table_for_test();
 
     let unit = MidiUnitId::new(7);
-    res.publish(vec![MidiRoute::for_channel(MidiChannel::new(3)).with_target(unit)], None);
+    res.publish(
+        vec![MidiRoute::for_channel(MidiChannel::new(3)).with_target(unit)],
+        None,
+    );
 
     let snapshot = rt_view.read();
     let targets: Vec<MidiUnitId> = snapshot

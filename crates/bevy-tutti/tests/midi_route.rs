@@ -118,8 +118,11 @@ fn a_rule_can_feed_several_synths() {
     let (lead, lead_id) = spawn_synth(&mut app);
     let (pad, pad_id) = spawn_synth(&mut app);
 
-    app.world_mut()
-        .spawn(MidiRouteRule::for_channel(MidiChannel::new(0)).to(lead).to(pad));
+    app.world_mut().spawn(
+        MidiRouteRule::for_channel(MidiChannel::new(0))
+            .to(lead)
+            .to(pad),
+    );
     app.update();
 
     let targets = targets_on(&rt_view, 0);

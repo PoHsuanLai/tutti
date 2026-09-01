@@ -5,73 +5,73 @@
 //! before these were re-exported a host had to add a direct `tutti-core`
 //! dependency to spell an argument this crate's own examples pass. Handing out a
 //! method whose parameter type the caller cannot name is an incomplete forward.
+//!
+//! # Why most of this file is one `fn`, not a suite of `#[test]`s
+//!
+//! Re-export coverage is a **compile-time** property: a name that left the
+//! prelude is a compile error, and this file then does not build at all. A
+//! `#[test]` wrapper around that adds nothing — it cannot fail at runtime, and
+//! a green count of eight such tests claims eight checks where there is really
+//! one link step. So the nameability half lives in [`_surface_compiles`], which
+//! is never called and is the assertion by existing.
+//!
+//! What stays a real test is what has real behaviour: the timeline handle being
+//! live rather than a snapshot, the loop region's validation, and the unit
+//! vocabulary's *conversions*. Those can fail with everything still compiling,
+//! which is exactly the line between the two halves.
 
 use bevy_tutti::prelude::*;
 
-/// The metronome's mode enum, reachable without naming tutti-core.
-#[test]
-fn the_metronome_mode_a_host_must_pass_is_nameable_from_the_prelude() {
-    let mode: MetronomeMode = MetronomeMode::Always;
-    assert_ne!(mode, MetronomeMode::Off);
-}
-
-/// The transport command enum, likewise.
-#[test]
-fn the_motion_event_a_host_must_send_is_nameable_from_the_prelude() {
-    // `Locate` carries the richest payload of the variants, so it is the one
-    // that proves the whole enum came across rather than a stub.
-    let event = MotionEvent::locate(Beat(4.0));
-    assert_ne!(event, MotionEvent::Play);
-}
-
-/// The beat-port convention a host needs to wire anything to the transport clock.
+/// Names every type the prelude must forward, in a position where a missing
+/// re-export is a compile error.
 ///
-/// The clock emits whole beats on port 0 and the fraction on port 1;
-/// `beat_from_ports` is the inverse. A host reading those ports needs both names,
-/// and the constant is what says how many there are.
-#[test]
-fn the_clocks_beat_port_convention_is_nameable_from_the_prelude() {
-    assert_eq!(BEAT_PORTS, 2);
-    assert_eq!(beat_from_ports(4.0, 0.25), Beat(4.25));
-}
+/// Never called. Each block below was a separate `#[test]` whose body only
+/// mentioned types; they are merged here because they were all one assertion —
+/// "this file links" — split eight ways.
+#[allow(dead_code)]
+fn _surface_compiles() {
+    use bevy_ecs::prelude::Commands;
+    use std::sync::Arc;
 
-/// `MotionEvent`'s own payload types, and what `motion()` gives back.
-///
-/// Re-exporting `MotionEvent` alone left a host able to call the convenience
-/// constructors but unable to write `MotionEvent::Stop { fade }` or to name the
-/// state it read — the incomplete forward one level down.
-#[test]
-fn a_motion_events_payload_types_are_nameable_from_the_prelude() {
-    let immediate = MotionEvent::Stop {
+    // --- The enums a host must pass to a method it can already call. ---
+    //
+    // `MetronomeRes::set_mode` and `transport.motion.try_send` both take a type
+    // that arrives through a `Deref` to tutti-core.
+    let _: MetronomeMode = MetronomeMode::Always;
+    let _: MetronomeMode = MetronomeMode::Off;
+    // `Locate` carries the richest payload of the variants, so naming it proves
+    // the whole enum came across rather than a stub.
+    let _: MotionEvent = MotionEvent::locate(Beat(4.0));
+    let _: MotionEvent = MotionEvent::Play;
+
+    // `MotionEvent`'s own payload types, and what `motion()` gives back.
+    // Re-exporting `MotionEvent` alone left a host able to call the convenience
+    // constructors but unable to write `MotionEvent::Stop { fade }` — the
+    // incomplete forward one level down.
+    let _: MotionEvent = MotionEvent::Stop {
         fade: FadeOut::Immediate,
     };
-    assert_ne!(immediate, MotionEvent::stop());
-
-    let locate = MotionEvent::Locate {
+    let _: MotionEvent = MotionEvent::Locate {
         beat: Beat(8.0),
         fade: FadeOut::Declick,
         then: Then::Roll,
     };
-    assert_ne!(locate, MotionEvent::locate(Beat(8.0)));
+    let _: MotionState = MotionState::Stopped;
+    let _: MotionState = MotionState::Rolling;
 
-    let state: MotionState = MotionState::Stopped;
-    assert_ne!(state, MotionState::Rolling);
-}
+    // The beat-port convention a host needs to wire anything to the transport
+    // clock: the clock emits whole beats on port 0 and the fraction on port 1,
+    // and `beat_from_ports` is the inverse. (The *arithmetic* of that inverse is
+    // asserted for real in `the_clock_beat_port_inverse_recombines_the_halves`.)
+    let _: usize = BEAT_PORTS;
 
-/// Every type the prelude's own signatures are spelled in is nameable from it.
-///
-/// This is the incomplete-forward rule applied to itself, and it is a *compile*
-/// test — the bodies do nothing, the point is that the annotations resolve. A
-/// previous pass added `TransportRes::timeline()` returning `Arc<dyn Timeline>`
-/// without re-exporting `Timeline`, so a host could call the method but not
-/// write a function whose signature mentions it. `AudioUnit` was worse: without
-/// it a host cannot write a generic spawn helper at all.
-#[test]
-fn the_types_the_prelude_is_spelled_in_are_nameable_from_it() {
-    use bevy_ecs::prelude::Commands;
-    use std::sync::Arc;
-
-    // Return of `TransportRes::timeline()`.
+    // --- The types the prelude's own signatures are spelled in. ---
+    //
+    // The incomplete-forward rule applied to itself. A previous pass added
+    // `TransportRes::timeline()` returning `Arc<dyn Timeline>` without
+    // re-exporting `Timeline`, so a host could call the method but not write a
+    // function whose signature mentions it. `AudioUnit` was worse: without it a
+    // host cannot write a generic spawn helper at all.
     fn _timeline(t: &TransportRes) -> Arc<dyn Timeline> {
         t.timeline()
     }
@@ -92,6 +92,115 @@ fn the_types_the_prelude_is_spelled_in_are_nameable_from_it() {
     }
     // The crossfade curve.
     let _: Fade = Fade::Smooth;
+
+    // --- The disk-streaming handle. ---
+    //
+    // It used to be `SamplerRes` — a name with no referent, since `tutti-sampler`
+    // has no `Sampler` type. Every sibling resource (`AudioGraphRes(Net)`,
+    // `MeteringRes(MasterMeter)`, `TransportRes(Transport)`) is named for what it
+    // holds, and a host that cannot guess the name cannot ask for the resource.
+    // A `DiskStreamer` needs a butler thread, so constructing one here would be
+    // an engine test; naming it in a signature is the whole point.
+    #[cfg(feature = "sampler")]
+    fn _takes_the_streamer(_: &DiskStreamerRes) {}
+    // The plugin that registers the `.wav` loader travels with it.
+    #[cfg(feature = "sampler")]
+    let _ = TuttiPlaybackPlugin;
+
+    // --- The whole capture surface, writable from the prelude alone. ---
+    //
+    // Each of these three is a path this crate's own docs demonstrate, and each
+    // was reachable only by naming an engine crate directly until the types
+    // below were forwarded.
+
+    // Recording the master output: `io/mod.rs`'s "Recording what the graph is
+    // playing". Needs `TapIn` *and* `TapBusy` — the second because `open`
+    // returns it, and a host that cannot name it cannot write this signature at
+    // all, only call the method inside someone else's.
+    #[cfg(feature = "audio-io")]
+    fn _record_master(tap: &AudioTapRes, path: std::path::PathBuf) -> Result<AudioPump, TapBusy> {
+        // The sink's width must match the source's — `TapIn` is stereo, so this
+        // is `ChannelLayout::STEREO` and not a bare `2`. Naming the layout is
+        // what makes the pairing legible; `Recorder::start` rejects a mismatch
+        // outright, and `pump` debug-asserts it.
+        let wav = WavOut::create(&path, 48_000.0, ChannelLayout::STEREO, BitDepth::Float32)
+            .expect("sink opens");
+        Ok(AudioPump::start(TapIn::new(tap.open()?), wav, 1024))
+    }
+
+    // Recording a mic: `io/mod.rs`'s `matching_sink` example.
+    //
+    // `io::Result` rather than `Option`: `matching_sink` reports *why* the sink
+    // would not open, and a host writing this signature should be able to pass
+    // that on. The path goes in bare — it is `impl AsRef<Path>`.
+    #[cfg(feature = "audio-io")]
+    fn _record_mic(path: std::path::PathBuf) -> std::io::Result<AudioPump> {
+        let mic = MicIn::open(None).map_err(std::io::Error::other)?;
+        let wav = mic.matching_sink(path, BitDepth::Float32)?;
+        Ok(AudioPump::start(mic, wav, 1024))
+    }
+
+    // Live monitoring: `io/mod.rs`'s graph-wiring example.
+    #[cfg(feature = "audio-io")]
+    fn _wire_monitor(graph: &mut AudioGraphRes) -> Option<()> {
+        let (_mic, monitor) = MicIn::open_with_monitor(None).ok()?;
+        let _id = graph.0.add(monitor);
+        Some(())
+    }
+
+    // --- The names app code was importing through `bevy_tutti::<module>::`. ---
+    //
+    // Thirty distinct names reach into `graph`, `midi`, `modulation`, `sampler`
+    // and `soundfont` from the app side; sixteen of them had no prelude entry,
+    // so `use bevy_tutti::prelude::*` was not enough to write a host and every
+    // caller went to the module path instead.
+
+    // Scalar params: the component and the registration that makes it reconcile.
+    // `AudioParam` is generic over unit and port, so it is spelled with both.
+    #[cfg(feature = "modulation")]
+    fn _declare_param(app: &mut bevy_app::App) {
+        app.add_audio_param::<tutti_core::Db, 0>();
+    }
+    #[cfg(feature = "modulation")]
+    fn _param_component() -> AudioParam<tutti_core::Db, 0> {
+        AudioParam::new(tutti_core::Db(-6.0))
+    }
+
+    // A mod route is only completable with `ModDelivery` — it picks the rate.
+    #[cfg(feature = "modulation")]
+    let _: ModDelivery = ModDelivery::PerFrame;
+
+    // Sampler: build a voice, and clamp a file width to what it will play.
+    // Every type in this signature comes from the prelude — `Playback`,
+    // `VoiceWindow` and `Voice` are memory_voice's arguments and return, so a
+    // prelude carrying only the function would be an incomplete forward.
+    #[cfg(feature = "sampler")]
+    fn _build_voice(wave: std::sync::Arc<tutti_core::Wave>, width: ChannelLayout) -> Voice {
+        memory_voice(
+            wave,
+            voice_width(width),
+            Playback::default(),
+            VoiceWindow::default(),
+        )
+    }
+
+    // SoundFont: the module re-exported nothing anywhere before this.
+    #[cfg(feature = "soundfont")]
+    let _: TuttiSoundFontPlugin = TuttiSoundFontPlugin;
+
+    // Param addressing — how a modulation target names the scalar it moves.
+    let _: ParamAddr = ParamAddr::Unit(UnitParam::GainDb);
+}
+
+/// `beat_from_ports` recombines the clock's two output ports into one `Beat`.
+///
+/// A real assertion rather than a nameability check: the clock emits whole beats
+/// on port 0 and the fraction on port 1, and this is the inverse a host writes
+/// when reading them. Getting the addition backwards compiles fine.
+#[test]
+fn the_clock_beat_port_inverse_recombines_the_halves() {
+    assert_eq!(BEAT_PORTS, 2, "whole beats and fraction, one port each");
+    assert_eq!(beat_from_ports(4.0, 0.25), Beat(4.25));
 }
 
 /// `TransportRes::timeline()` hands over a live handle, not a snapshot.
@@ -149,138 +258,16 @@ fn the_loop_region_round_trips_through_the_prelude() {
     assert!(span.range().is_none(), "but it is not a loop");
 }
 
-/// The disk-streaming handle, nameable through the prelude and named after the
-/// engine type it wraps.
-///
-/// It used to be `SamplerRes` — a name with no referent, since `tutti-sampler`
-/// has no `Sampler` type. Every sibling resource (`AudioGraphRes(Net)`,
-/// `MeteringRes(MasterMeter)`, `TransportRes(Transport)`) is named for what it
-/// holds, and a host that cannot guess the name cannot ask for the resource.
-#[cfg(feature = "sampler")]
-#[test]
-fn the_disk_streamer_resource_is_nameable_from_the_prelude() {
-    // Naming the type in a signature is the whole assertion: a `DiskStreamer`
-    // needs a butler thread, so constructing one here would be an engine test.
-    fn takes_the_resource(_: &DiskStreamerRes) {}
-    let _ = takes_the_resource;
-
-    // The plugin that registers the `.wav` loader travels with it.
-    let _ = TuttiPlaybackPlugin;
-}
-
-/// The whole capture surface is writable from the prelude alone.
-///
-/// Each of these three is a path this crate's own docs demonstrate, and each
-/// was reachable only by naming an engine crate directly until the types below
-/// were forwarded. The assertion is that they *compile* — every one is a
-/// signature a host would write, and a missing re-export is a compile error
-/// rather than a runtime surprise.
-#[cfg(feature = "audio-io")]
-#[test]
-fn the_capture_paths_the_docs_demonstrate_are_writable_from_the_prelude() {
-    // Recording the master output: `io/mod.rs`'s "Recording what the graph is
-    // playing". Needs `TapIn` *and* `TapBusy` — the second because `open`
-    // returns it, and a host that cannot name it cannot write this signature at
-    // all, only call the method inside someone else's.
-    fn record_master(tap: &AudioTapRes, path: std::path::PathBuf) -> Result<AudioPump, TapBusy> {
-        // The sink's width must match the source's — `TapIn` is stereo, so this
-        // is `ChannelLayout::STEREO` and not a bare `2`. Naming the layout is
-        // what makes the pairing legible; `Recorder::start` rejects a mismatch
-        // outright, and `pump` debug-asserts it.
-        let wav = WavOut::create(&path, 48_000.0, ChannelLayout::STEREO, BitDepth::Float32)
-            .expect("sink opens");
-        Ok(AudioPump::start(TapIn::new(tap.open()?), wav, 1024))
-    }
-
-    // Recording a mic: `io/mod.rs`'s `matching_sink` example.
-    //
-    // `io::Result` rather than `Option`: `matching_sink` reports *why* the sink
-    // would not open, and a host writing this signature should be able to pass
-    // that on. The path goes in bare — it is `impl AsRef<Path>`.
-    fn record_mic(path: std::path::PathBuf) -> std::io::Result<AudioPump> {
-        let mic = MicIn::open(None).map_err(std::io::Error::other)?;
-        let wav = mic.matching_sink(path, BitDepth::Float32)?;
-        Ok(AudioPump::start(mic, wav, 1024))
-    }
-
-    // Live monitoring: `io/mod.rs`'s graph-wiring example.
-    fn wire_monitor(graph: &mut AudioGraphRes) -> Option<()> {
-        let (_mic, monitor) = MicIn::open_with_monitor(None).ok()?;
-        let _id = graph.0.add(monitor);
-        Some(())
-    }
-
-    // Naming them is the assertion — calling them would open a real device.
-    let _ = record_master;
-    let _ = record_mic;
-    let _ = wire_monitor;
-}
-
-/// The names app code was importing through `bevy_tutti::<module>::` paths.
-///
-/// Thirty distinct names reach into `graph`, `midi`, `modulation`, `sampler` and
-/// `soundfont` from the app side; sixteen of them had no prelude entry, so
-/// `use bevy_tutti::prelude::*` was not enough to write a host and every caller
-/// went to the module path instead. Naming each in a signature here is the
-/// assertion: if one leaves the prelude, this file stops compiling.
-#[test]
-fn the_names_app_code_imports_are_all_reachable_from_the_prelude() {
-    // Scalar params: the component and the registration that makes it reconcile.
-    // `AudioParam` is generic over unit and port, so it is spelled with both.
-    #[cfg(feature = "modulation")]
-    fn declare_param(app: &mut bevy_app::App) {
-        app.add_audio_param::<tutti_core::Db, 0>();
-    }
-    #[cfg(feature = "modulation")]
-    fn param_component() -> AudioParam<tutti_core::Db, 0> {
-        AudioParam::new(tutti_core::Db(-6.0))
-    }
-
-    // A mod route is only completable with `ModDelivery` — it picks the rate.
-    #[cfg(feature = "modulation")]
-    fn route_rate() -> ModDelivery {
-        ModDelivery::PerFrame
-    }
-
-    // Sampler: build a voice, and clamp a file width to what it will play.
-    // Every type in this signature comes from the prelude — `Playback`,
-    // `VoiceWindow` and `Voice` are memory_voice's arguments and return, so a
-    // prelude carrying only the function would be an incomplete forward.
-    #[cfg(feature = "sampler")]
-    fn build_voice(wave: std::sync::Arc<tutti_core::Wave>, width: ChannelLayout) -> Voice {
-        memory_voice(
-            wave,
-            voice_width(width),
-            Playback::default(),
-            VoiceWindow::default(),
-        )
-    }
-
-    // SoundFont: the module re-exported nothing anywhere before this.
-    #[cfg(feature = "soundfont")]
-    fn soundfont_plugin() -> TuttiSoundFontPlugin {
-        TuttiSoundFontPlugin
-    }
-
-    #[cfg(feature = "modulation")]
-    {
-        let _ = declare_param;
-        let _ = param_component;
-        let _ = route_rate;
-    }
-    #[cfg(feature = "sampler")]
-    let _ = build_voice;
-    #[cfg(feature = "soundfont")]
-    let _ = soundfont_plugin;
-}
-
 /// The engine's measurement vocabulary arrives whole, not as a hand-picked subset.
 ///
 /// The names are what app code imports from `tutti-core` / `tutti-types`
-/// alongside this prelude, most-used first. Asserted as *values* rather than
-/// `use ... as _`, so this also pins that each is the unit newtype it claims.
+/// alongside this prelude, most-used first. This stays a `#[test]` rather than
+/// moving into [`_surface_compiles`] because it asserts the *conversions*, not
+/// just the names: `to_samples`, `to_amplitude` and `to_semitones` are the
+/// converters the units rule says never to hand-roll, and each can be wrong
+/// while still compiling.
 #[test]
-fn the_engine_measurement_vocabulary_is_nameable_from_the_prelude() {
+fn the_engine_measurement_vocabulary_converts_as_documented() {
     // Musical position and span — the pair a placement is spelled in.
     assert_eq!(Beat(1.0) + BeatDuration(3.0), Beat(4.0));
     assert_eq!(Bpm(120.0).get(), 120.0);
@@ -306,9 +293,6 @@ fn the_engine_measurement_vocabulary_is_nameable_from_the_prelude() {
     // Channel width, ungated: the I/O traits report it at runtime, so a host
     // reads a source's layout without enabling `audio-io`.
     assert_eq!(ChannelLayout::STEREO.count(), 2);
-
-    // Param addressing — how a modulation target names the scalar it moves.
-    let _: ParamAddr = ParamAddr::Unit(UnitParam::GainDb);
 
     // MIDI addressing, for a host installing a sequence source.
     assert_eq!(MidiChannel::FIRST.get(), 0);

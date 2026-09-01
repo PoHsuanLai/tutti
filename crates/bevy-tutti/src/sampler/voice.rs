@@ -208,22 +208,35 @@ mod tests {
     use super::*;
     use tutti_core::Wave;
 
+    /// `voice_width` is the file's own width clamped to `1..=MAX_SAMPLER_CHANNELS`
+    /// — the device is deliberately not consulted, or a voice would be narrowed
+    /// twice on a wider project.
     #[test]
     fn voice_width_clamps_to_what_the_graph_can_carry() {
-        // A stereo file stays stereo.
-        assert_eq!(voice_width(ChannelLayout::STEREO).count(), 2);
-        // Wider than the sampler's ceiling comes back at the ceiling, not
-        // truncated silently downstream at the root's fold.
-        let absurd = ChannelLayout::from(64usize);
-        assert_eq!(
-            voice_width(absurd).count() as usize,
-            tutti_sampler::MAX_SAMPLER_CHANNELS
-        );
-    }
+        let ceiling = tutti_sampler::MAX_SAMPLER_CHANNELS;
+        let cases: &[(ChannelLayout, usize, &str)] = &[
+            (ChannelLayout::STEREO, 2, "a stereo file stays stereo"),
+            (
+                ChannelLayout::from(64usize),
+                ceiling,
+                "wider than the sampler's ceiling comes back at the ceiling, not \
+                 truncated silently downstream at the root's fold",
+            ),
+            (
+                ChannelLayout::from(0usize),
+                1,
+                "a zero-width file becomes mono, not a node nobody can wire",
+            ),
+        ];
 
-    #[test]
-    fn a_zero_width_file_becomes_mono_not_a_node_nobody_can_wire() {
-        assert_eq!(voice_width(ChannelLayout::from(0usize)).count(), 1);
+        for &(file, expected, why) in cases {
+            assert_eq!(
+                voice_width(file).count() as usize,
+                expected,
+                "voice_width({} channels): {why}",
+                file.count()
+            );
+        }
     }
 
     #[test]

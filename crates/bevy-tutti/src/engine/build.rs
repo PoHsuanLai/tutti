@@ -326,46 +326,64 @@ mod tests {
     use tutti_core::ChannelLayout;
     use tutti_core::MAX_ROOT_CHANNELS;
 
+    /// `root_width` is `max(project, device)` clamped to `1..=MAX_ROOT_CHANNELS`,
+    /// and each row below is one of the four ways that rule is load-bearing.
+    ///
+    /// One table rather than five functions: every case is the same two-argument
+    /// call against one expected width, so the only thing five names bought was
+    /// five stack traces for the same assertion.
     #[test]
-    fn a_wider_device_widens_the_root() {
-        assert_eq!(
-            root_width(2, ChannelLayout::from(6u16)),
-            6,
-            "a stereo project on a 5.1 device must render all six, or the top \
-             four are permanently silent"
-        );
-    }
+    fn root_width_takes_the_wider_side_within_the_scratch_bounds() {
+        let cases: &[(usize, ChannelLayout, usize, &str)] = &[
+            (
+                2,
+                ChannelLayout::from(6u16),
+                6,
+                "a wider device widens the root: a stereo project on a 5.1 device \
+                 must render all six, or the top four are permanently silent",
+            ),
+            (
+                6,
+                ChannelLayout::STEREO,
+                6,
+                "a wider project is kept and folded, not clamped: a 5.1 project on \
+                 a stereo device keeps its width; the root fold narrows it at the \
+                 device edge, and clamping here would hide the loss",
+            ),
+            (
+                0,
+                ChannelLayout::from(6u16),
+                6,
+                "an unset project width falls through to the device",
+            ),
+            (
+                0,
+                ChannelLayout::STEREO,
+                2,
+                "an unset project width falls through to the device",
+            ),
+            (
+                64,
+                ChannelLayout::from(32u16),
+                MAX_ROOT_CHANNELS,
+                "nothing exceeds the render scratch",
+            ),
+            (
+                0,
+                ChannelLayout::EMPTY,
+                1,
+                "the root is never zero wide: a zero-output root would render \
+                 nothing at all",
+            ),
+        ];
 
-    #[test]
-    fn a_wider_project_is_kept_and_folded_not_clamped() {
-        assert_eq!(
-            root_width(6, ChannelLayout::STEREO),
-            6,
-            "a 5.1 project on a stereo device keeps its width; the root fold \
-             narrows it at the device edge, and clamping here would hide the loss"
-        );
-    }
-
-    #[test]
-    fn an_unset_project_width_falls_through_to_the_device() {
-        assert_eq!(root_width(0, ChannelLayout::from(6u16)), 6);
-        assert_eq!(root_width(0, ChannelLayout::STEREO), 2);
-    }
-
-    #[test]
-    fn nothing_exceeds_the_render_scratch() {
-        assert_eq!(
-            root_width(64, ChannelLayout::from(32u16)),
-            MAX_ROOT_CHANNELS
-        );
-    }
-
-    #[test]
-    fn the_root_is_never_zero_wide() {
-        assert_eq!(
-            root_width(0, ChannelLayout::EMPTY),
-            1,
-            "a zero-output root would render nothing at all"
-        );
+        for &(project, device, expected, why) in cases {
+            assert_eq!(
+                root_width(project, device),
+                expected,
+                "root_width({project}, {} channels): {why}",
+                device.count()
+            );
+        }
     }
 }

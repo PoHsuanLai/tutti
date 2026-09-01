@@ -336,4 +336,24 @@ mod tests {
             "dropping the ComPtr must give the reference back"
         );
     }
+
+    /// `String128` is a fixed 128-slot buffer that the plugin reads as a
+    /// NUL-terminated string, so a longer host name must be cut at 127 and
+    /// still terminated — writing 128 characters would leave the plugin
+    /// scanning past the buffer for a NUL that is not there.
+    #[test]
+    fn an_over_long_host_name_is_truncated_and_stays_nul_terminated() {
+        let host = HostApplication::new_for_test(&"A".repeat(200));
+        let ptr = host.to_com_ptr::<IHostApplication>().unwrap();
+
+        let mut name: String128 = [0; 128];
+        unsafe {
+            assert_eq!(ptr.getName(&mut name), kResultOk);
+        }
+
+        assert_eq!(name[127], 0, "the last slot must stay a NUL terminator");
+        let len = name.iter().position(|&c| c == 0).unwrap();
+        assert_eq!(len, 127, "127 characters should survive, the rest cut");
+        assert!(name[..len].iter().all(|&c| c == u16::from(b'A')));
+    }
 }

@@ -31,21 +31,6 @@ impl Class for ParameterChangesImpl {
 }
 
 impl ParameterChangesImpl {
-    /// Build a changes list from an existing [`ParameterChanges`]. Each
-    /// call allocates a fresh `ComWrapper<ParamValueQueueImpl>` per
-    /// queue; **not RT-safe** — the live path uses [`new_empty`] +
-    /// [`refill_from_changes`]. Test-harness helper.
-    #[cfg(test)]
-    pub fn from_changes(changes: &ParameterChanges) -> ComWrapper<Self> {
-        let mut queues: Vec<_> = Vec::with_capacity(changes.queues.len().max(32));
-        for q in &changes.queues {
-            queues.push(ParamValueQueueImpl::from_queue(q));
-        }
-        ComWrapper::new(Self {
-            queues: AudioThreadCell::new(queues),
-        })
-    }
-
     pub fn new_empty() -> ComWrapper<Self> {
         ComWrapper::new(Self {
             queues: AudioThreadCell::new(Vec::with_capacity(32)),
@@ -227,5 +212,34 @@ mod tests {
             }
         });
         assert!(wrapper.is_empty());
+    }
+
+    /// A plugin that wants to write automation back calls `addParameterData`
+    /// on the host's list and then writes into the queue it is handed. The
+    /// vtable must therefore hand back a live queue *and* the index it was
+    /// filed under — a null pointer or a stale index is a plugin crash, not a
+    /// missed value.
+    #[test]
+    fn add_parameter_data_hands_the_plugin_a_live_queue_and_its_index() {
+        use vst3::Steinberg::Vst::{IParameterChanges, IParameterChangesTrait};
+
+        let changes = ParameterChangesImpl::new_empty();
+        let ptr = changes.to_com_ptr::<IParameterChanges>().unwrap();
+
+        unsafe {
+            assert_eq!(ptr.getParameterCount(), 0);
+
+            let param_id: u32 = 42;
+            let mut index: i32 = -1;
+            let queue_ptr = ptr.addParameterData(&param_id, &mut index);
+            assert!(!queue_ptr.is_null(), "plugin must get a writable queue");
+            assert_eq!(index, 0);
+            assert_eq!(ptr.getParameterCount(), 1);
+
+            assert!(
+                !ptr.getParameterData(0).is_null(),
+                "the queue must be retrievable at the index we reported"
+            );
+        }
     }
 }

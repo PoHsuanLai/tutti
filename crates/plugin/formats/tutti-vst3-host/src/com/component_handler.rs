@@ -19,10 +19,63 @@ use vst3::Steinberg::{
 };
 use vst3::{Class, ComWrapper};
 
-use crate::helpers::utf16_to_string;
+/// Long-running progress notifications emitted by plugins (sample loading,
+/// offline rendering, etc.). Delivered via
+/// [`Vst3Loaded::poll_plugin_notifications`](crate::Vst3Loaded::poll_plugin_notifications).
+#[derive(Debug, Clone)]
+pub enum ProgressEvent {
+    /// A new progress operation has begun. `id` uniquely identifies this
+    /// operation across its lifetime; `progress_type` is the raw VST3
+    /// `ProgressType` value; `description` is a human-readable label.
+    Started {
+        /// Identifies this operation across its lifetime; matches the `id` of
+        /// the later `Updated` and `Finished` events.
+        id: u64,
+        /// The raw VST3 `ProgressType` value.
+        progress_type: u32,
+        /// Human-readable label supplied by the plugin.
+        description: String,
+    },
+    /// Progress update, normalized to `0.0..=1.0`.
+    Updated {
+        /// The operation this update belongs to.
+        id: u64,
+        /// Completion fraction, `0.0..=1.0`.
+        progress: f64,
+    },
+    /// The operation with this id has finished.
+    Finished {
+        /// The operation that ended. No further events carry this id.
+        id: u64,
+    },
+}
 
-pub use super::progress::ProgressEvent;
-pub use super::unit_handler::UnitEvent;
+/// Unit / program-list change notifications from the plugin. Delivered via
+/// [`Vst3Loaded::poll_plugin_notifications`](crate::Vst3Loaded::poll_plugin_notifications).
+#[derive(Debug, Clone)]
+pub enum UnitEvent {
+    /// Plugin has selected a different unit (preset category / voice).
+    UnitSelected(i32),
+    /// Program *information* in a list went stale — a rename, a preset load, or
+    /// a PitchName change (`ivstunits.h:88-92`). Not a selection change: the
+    /// plugin is saying what it holds is no longer what the host cached, so the
+    /// response is to re-read the list, not to move a cursor.
+    ///
+    /// `program_index` is `-1` (`kAllProgramInvalid`) when *every* program in
+    /// the list is invalid, and only otherwise names a single one. That is a
+    /// sentinel, not an index — spending it as one reads before the start of
+    /// whatever array holds the list.
+    ProgramListChanged {
+        /// The program list to re-read.
+        list_id: i32,
+        /// A single stale program, or `-1` for "all of them" — see above.
+        program_index: i32,
+    },
+    /// The unit ↔ bus mapping has changed (IUnitHandler2).
+    UnitByBusChanged,
+}
+
+use crate::helpers::utf16_to_string;
 
 use vst3::Steinberg::Vst::RestartFlags_;
 
@@ -336,5 +389,213 @@ impl IUnitHandler2Trait for ComponentHandler {
     unsafe fn notifyUnitByBusChange(&self) -> tresult {
         let _ = self.unit_sender.send(UnitEvent::UnitByBusChanged);
         kResultOk
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::*;
+    use vst3::Steinberg::Vst::RestartFlags_;
+
+    /// The plugin's edit gestures must reach the host in order and carry their
+    /// operands: a DAW writes automation from `PerformEdit` and opens/closes an
+    /// undo transaction on the surrounding `Begin`/`EndEdit`.
+    #[test]
+    fn edit_gestures_forward_in_order_with_their_operands() {
+        let (handler, rx, _prx, _urx) = ComponentHandler::new();
+        let ptr = handler.to_com_ptr::<IComponentHandler>().unwrap();
+
+        unsafe {
+            assert_eq!(ptr.beginEdit(42), kResultOk);
+            assert_eq!(ptr.performEdit(42, 0.75), kResultOk);
+            assert_eq!(ptr.endEdit(42), kResultOk);
+        }
+
+        let recv = || rx.recv_timeout(Duration::from_millis(100)).unwrap();
+        assert!(matches!(recv(), ParameterEditEvent::BeginEdit(42)));
+        assert!(matches!(
+            recv(),
+            ParameterEditEvent::PerformEdit { param_id: 42, value } if (value - 0.75).abs() < 1e-3
+        ));
+        assert!(matches!(recv(), ParameterEditEvent::EndEdit(42)));
+    }
+
+    /// `restartComponent` carries the raw flag word through unchanged — the
+    /// host decodes it with [`RestartFlags::from_bits`], so swallowing or
+    /// masking bits here would silently drop a latency or I/O change.
+    #[test]
+    fn restart_component_forwards_the_raw_flag_word() {
+        let (handler, rx, _prx, _urx) = ComponentHandler::new();
+        let ptr = handler.to_com_ptr::<IComponentHandler>().unwrap();
+
+        unsafe {
+            assert_eq!(ptr.restartComponent(0b1010), kResultOk);
+        }
+
+        let event = rx.recv_timeout(Duration::from_millis(100)).unwrap();
+        assert!(matches!(
+            event,
+            ParameterEditEvent::RestartComponent(0b1010)
+        ));
+    }
+
+    #[test]
+    fn restart_flags_decode_individual_bits() {
+        let latency = RestartFlags::from_bits(RestartFlags_::kLatencyChanged);
+        assert!(latency.latency_changed);
+        assert!(!latency.io_changed);
+        assert!(!latency.param_values_changed);
+
+        let io = RestartFlags::from_bits(RestartFlags_::kIoChanged);
+        assert!(io.io_changed);
+        assert!(!io.latency_changed);
+
+        assert!(
+            RestartFlags::from_bits(RestartFlags_::kMidiCCAssignmentChanged)
+                .midi_cc_assignment_changed
+        );
+        assert!(RestartFlags::from_bits(RestartFlags_::kReloadComponent).reload_component);
+        assert!(RestartFlags::from_bits(RestartFlags_::kParamTitlesChanged).param_titles_changed);
+        assert!(RestartFlags::from_bits(RestartFlags_::kParamValuesChanged).param_values_changed);
+    }
+
+    #[test]
+    fn restart_flags_decode_combined_bits() {
+        let flags = RestartFlags::from_bits(
+            RestartFlags_::kLatencyChanged
+                | RestartFlags_::kIoChanged
+                | RestartFlags_::kParamValuesChanged,
+        );
+        assert!(flags.latency_changed);
+        assert!(flags.io_changed);
+        assert!(flags.param_values_changed);
+        assert!(!flags.param_titles_changed);
+        assert!(!flags.reload_component);
+    }
+
+    #[test]
+    fn restart_flags_decode_zero_is_empty() {
+        assert_eq!(RestartFlags::from_bits(0), RestartFlags::default());
+    }
+
+    /// `IProgress::start` mints the id the plugin then quotes back on
+    /// `update`/`finish`, so the id must be returned through the out-param
+    /// *and* carried on the event — a host that loses it cannot match a
+    /// progress bar to its completion.
+    #[test]
+    fn progress_start_mints_an_id_that_update_and_finish_quote_back() {
+        let (handler, _rx, prx, _urx) = ComponentHandler::new();
+        let ptr = handler.to_com_ptr::<IProgress>().unwrap();
+
+        let out_id = unsafe {
+            let mut out_id: ID = 0;
+            let desc: [u16; 5] = [b'T' as u16, b'e' as u16, b's' as u16, b't' as u16, 0];
+            assert_eq!(ptr.start(1, desc.as_ptr(), &mut out_id), kResultOk);
+            assert_ne!(out_id, 0, "start must mint a non-zero id");
+
+            assert_eq!(ptr.update(out_id, 0.5), kResultOk);
+            assert_eq!(ptr.finish(out_id), kResultOk);
+            out_id
+        };
+
+        let recv = || prx.recv_timeout(Duration::from_millis(100)).unwrap();
+        match recv() {
+            ProgressEvent::Started {
+                id,
+                progress_type,
+                description,
+            } => {
+                assert_eq!(id, out_id);
+                assert_eq!(progress_type, 1);
+                assert_eq!(description, "Test");
+            }
+            other => panic!("expected Started, got {other:?}"),
+        }
+        match recv() {
+            ProgressEvent::Updated { id, progress } => {
+                assert_eq!(id, out_id);
+                assert!((progress - 0.5).abs() < 1e-3);
+            }
+            other => panic!("expected Updated, got {other:?}"),
+        }
+        assert!(matches!(recv(), ProgressEvent::Finished { id } if id == out_id));
+    }
+
+    /// A null description is legal per the interface (`optionalDescription`);
+    /// the handler must read it as empty rather than dereferencing it.
+    #[test]
+    fn progress_start_accepts_a_null_description() {
+        let (handler, _rx, prx, _urx) = ComponentHandler::new();
+        let ptr = handler.to_com_ptr::<IProgress>().unwrap();
+
+        unsafe {
+            let mut out_id: ID = 0;
+            assert_eq!(ptr.start(0, std::ptr::null(), &mut out_id), kResultOk);
+        }
+
+        match prx.recv_timeout(Duration::from_millis(100)).unwrap() {
+            ProgressEvent::Started { description, .. } => assert_eq!(description, ""),
+            other => panic!("expected Started, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn unit_selection_and_program_list_changes_forward_their_ids() {
+        let (handler, _rx, _prx, urx) = ComponentHandler::new();
+        let ptr = handler.to_com_ptr::<IUnitHandler>().unwrap();
+
+        unsafe {
+            assert_eq!(ptr.notifyUnitSelection(5), kResultOk);
+            assert_eq!(ptr.notifyProgramListChange(10, 3), kResultOk);
+        }
+
+        let recv = || urx.recv_timeout(Duration::from_millis(100)).unwrap();
+        assert!(matches!(recv(), UnitEvent::UnitSelected(5)));
+        match recv() {
+            UnitEvent::ProgramListChanged {
+                list_id,
+                program_index,
+            } => {
+                assert_eq!(list_id, 10);
+                assert_eq!(program_index, 3);
+            }
+            other => panic!("expected ProgramListChanged, got {other:?}"),
+        }
+    }
+
+    /// The handler is shared with the plugin's GUI thread as a bare COM
+    /// pointer, so concurrent `performEdit` calls must all land: an event
+    /// dropped under contention is an automation write the DAW never sees.
+    #[test]
+    fn concurrent_edits_all_reach_the_host() {
+        let (handler, rx, _prx, _urx) = ComponentHandler::new();
+        let ptr = handler.to_com_ptr::<IComponentHandler>().unwrap();
+        let ptr_addr = ptr.as_ptr() as usize;
+
+        let handles: Vec<_> = (0..4)
+            .map(|i| {
+                std::thread::spawn(move || unsafe {
+                    let r =
+                        vst3::ComRef::<IComponentHandler>::from_raw_unchecked(ptr_addr as *mut _);
+                    for j in 0..10 {
+                        r.performEdit(i as u32, j as f64 * 0.1);
+                    }
+                })
+            })
+            .collect();
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        let mut count = 0;
+        while rx.recv_timeout(Duration::from_millis(100)).is_ok() {
+            count += 1;
+        }
+        assert_eq!(count, 40);
+
+        drop(ptr);
+        drop(handler);
     }
 }

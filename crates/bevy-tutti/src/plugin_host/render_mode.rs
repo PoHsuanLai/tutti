@@ -238,38 +238,43 @@ mod tests {
         );
     }
 
-    /// A plugin already told the current mode is not told again.
+    /// The complete truth table of `needs_announcement(mode_changed, told)`.
     ///
-    /// The case that keeps this from re-announcing every frame: three of the
-    /// four formats can only take the mode while deactivated, so a system
-    /// without this check would run a deactivate/reactivate cycle per plugin per
-    /// frame for the life of the session.
-    #[test]
-    fn an_unchanged_mode_is_not_re_announced() {
-        assert!(!needs_announcement(false, true));
-    }
-
-    /// A plugin that has never been told is told, even on a frame when the mode
-    /// did not move.
+    /// A two-argument predicate has exactly four inputs, so one table covers it
+    /// exhaustively where separate functions covered it by hand. Each row
+    /// carries the reason it matters:
     ///
-    /// This is the mid-render load: a plugin finishing its subprocess launch
-    /// during a bounce arrives when `mode_changed` is already `false`. Keyed on
-    /// the change alone, it would render the rest of the file in the wrong mode
-    /// — and nothing downstream would report it, because a plugin that is never
-    /// told simply keeps doing what it was doing.
+    /// - `(false, true)` is the only `false`, and it is what keeps this from
+    ///   re-announcing every frame: three of the four formats can only take the
+    ///   mode while deactivated, so without this check every plugin would run a
+    ///   deactivate/reactivate cycle per frame for the life of the session.
+    /// - `(false, false)` is the mid-render load — a plugin finishing its
+    ///   subprocess launch during a bounce arrives when `mode_changed` is
+    ///   already `false`. Keyed on the change alone it would render the rest of
+    ///   the file in the wrong mode, and nothing downstream would report it.
+    /// - the two `mode_changed` rows are the ordinary case: a change reaches
+    ///   every plugin, told or not.
     #[test]
-    fn a_plugin_never_told_is_announced_to_even_without_a_change() {
-        assert!(
-            needs_announcement(false, false),
-            "a plugin loaded mid-render must still be told the current mode"
-        );
-    }
+    fn needs_announcement_tells_everyone_on_a_change_and_the_untold_always() {
+        let cases = [
+            (false, true, false, "already told, mode did not move"),
+            (
+                false,
+                false,
+                true,
+                "a plugin loaded mid-render must still be told the current mode",
+            ),
+            (true, true, true, "already told, mode moved"),
+            (true, false, true, "never told, mode moved"),
+        ];
 
-    /// A mode change reaches every plugin, told or not.
-    #[test]
-    fn a_changed_mode_reaches_every_plugin() {
-        assert!(needs_announcement(true, true), "already told, mode moved");
-        assert!(needs_announcement(true, false), "never told, mode moved");
+        for (mode_changed, told, expected, why) in cases {
+            assert_eq!(
+                needs_announcement(mode_changed, told),
+                expected,
+                "needs_announcement(mode_changed={mode_changed}, told={told}): {why}"
+            );
+        }
     }
 
     /// An `ExportInFlight` carrying a task that is already finished still counts.

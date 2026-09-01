@@ -170,48 +170,51 @@ mod tests {
         );
     }
 
-    /// A plugin whose latency is unchanged since the last pass needs no new one.
+    /// The decision table for `needs_recompensation(compensated, current)`.
     ///
-    /// This is the case that keeps the system from marking the graph dirty every
-    /// frame: with no comparison at all, compensation would re-run forever and
-    /// `commit_graph` would republish to the audio thread on every tick.
+    /// One table rather than three functions: every row is the same two-argument
+    /// call against a bool, and the interesting content was always the *reasons*,
+    /// which the rows now carry directly.
+    ///
+    /// - The two `false` rows are what keep the system from marking the graph
+    ///   dirty every frame: with no comparison, compensation would re-run
+    ///   forever and `commit_graph` would republish to the audio thread on every
+    ///   tick.
+    /// - Both change directions are pinned, because a plugin leaving an
+    ///   oversampling mode *shortens* its latency, and a compensation planned
+    ///   against the longer figure is as misaligned as one against a shorter.
+    /// - The `None` rows are the first pass. The load-time figure is published
+    ///   before any compensation runs, so absence cannot be read as "already
+    ///   aligned" — and `None` vs `Some(Samples(0))` is exactly the conflation
+    ///   that would skip the first pass for plugins reporting latency late.
     #[test]
-    fn an_unchanged_latency_needs_no_recompensation() {
-        assert!(!needs_recompensation(Some(Samples(512)), Samples(512)));
-        assert!(!needs_recompensation(Some(Samples(0)), Samples(0)));
-    }
+    fn needs_recompensation_fires_on_any_difference_and_on_the_first_pass() {
+        let cases = [
+            (
+                Some(Samples(512)),
+                Samples(512),
+                false,
+                "unchanged: re-running would dirty the graph every frame",
+            ),
+            (Some(Samples(0)), Samples(0), false, "unchanged at zero"),
+            (Some(Samples(512)), Samples(1024), true, "latency grew"),
+            (Some(Samples(1024)), Samples(512), true, "latency shrank"),
+            (None, Samples(512), true, "never compensated for"),
+            (
+                None,
+                Samples(0),
+                true,
+                "absence is not the same as a recorded zero",
+            ),
+        ];
 
-    /// A changed latency needs a pass — in either direction.
-    ///
-    /// Both directions, because a plugin leaving an oversampling mode shortens
-    /// its latency, and a compensation planned against the longer figure is just
-    /// as misaligned as one planned against a shorter.
-    #[test]
-    fn a_changed_latency_needs_recompensation_in_either_direction() {
-        assert!(
-            needs_recompensation(Some(Samples(512)), Samples(1024)),
-            "latency grew"
-        );
-        assert!(
-            needs_recompensation(Some(Samples(1024)), Samples(512)),
-            "latency shrank"
-        );
-    }
-
-    /// A plugin not yet compensated for needs a pass, even at zero.
-    ///
-    /// The load-time figure is published before any compensation runs, so
-    /// absence cannot be read as "already aligned". Zero is the case worth
-    /// pinning: `None` and `Some(Samples(0))` are easy to conflate, and doing so
-    /// would skip the first pass for exactly the plugins whose latency is
-    /// reported late.
-    #[test]
-    fn a_plugin_never_compensated_for_needs_a_pass() {
-        assert!(needs_recompensation(None, Samples(512)));
-        assert!(
-            needs_recompensation(None, Samples(0)),
-            "absence is not the same as a recorded zero"
-        );
+        for (compensated, current, expected, why) in cases {
+            assert_eq!(
+                needs_recompensation(compensated, current),
+                expected,
+                "needs_recompensation({compensated:?}, {current:?}): {why}"
+            );
+        }
     }
 
     /// With no graph resource the system is inert rather than panicking.

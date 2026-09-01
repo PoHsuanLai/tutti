@@ -12,7 +12,7 @@
 //! The answers are process-global switches because the interesting `has_editor`
 //! cases are *plugin shapes*, not runtime states. A vtable is a `static` and the
 //! host caches the extension pointer once at load, so the test selects the shape
-//! with [`tutti_test_plugin_set_gui_mode`] before loading.
+//! with [`crate::gui::tutti_test_plugin_set_gui_mode`] before loading.
 
 use std::ffi::{c_void, CStr};
 use std::ptr;
@@ -31,7 +31,7 @@ use clap_sys::plugin::clap_plugin;
 /// Which `clap.gui` shape the probe presents to the host.
 ///
 /// The host reads the vtable **once at load time** and caches the pointer, so a
-/// test picks the shape via [`tutti_test_plugin_set_gui_mode`] before calling
+/// test picks the shape via [`crate::gui::tutti_test_plugin_set_gui_mode`] before calling
 /// `ClapLoaded::load`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GuiMode {

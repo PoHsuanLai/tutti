@@ -107,6 +107,14 @@ with no drift between the two surfaces.
 is the single most useful paragraph for a reader deciding where to look next, and the
 strongest existing convention in the tree.
 
+**Every check runs under `--all-features`.** A `cfg`-gated item is invisible to
+a default-features run, and this workspace gates a great deal. Running the gate
+both ways found, in one pass: two doctests that survived a workspace-wide
+rename because nothing compiled them (386 doctests by default, 408 with every
+feature), a 15 KiB enum variant, an item declared after a test module, and
+fourteen broken intra-doc links in code nobody had built with docs on. None of
+these was visible in a green default run.
+
 **Every documented example compiles.** A doctest is the only documentation the
 compiler checks; prose examples rot silently.
 

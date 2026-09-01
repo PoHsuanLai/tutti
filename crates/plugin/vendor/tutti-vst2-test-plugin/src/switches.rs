@@ -27,7 +27,7 @@ pub enum CanDoAnswer {
     Maybe = 1,
     /// `-1` — explicitly unsupported.
     No = 2,
-    /// Answer with [`can_do_custom_value`] verbatim.
+    /// Answer with `can_do_custom_value` verbatim.
     Custom = 3,
 }
 
@@ -293,7 +293,7 @@ pub extern "C" fn tutti_vst2_probe_reset_switches() {
     PRESET_TRACE_LEN.store(0, Ordering::SeqCst);
 }
 
-/// One preset opcode, as recorded in [`PRESET_TRACE`]. Mirrored in
+/// One preset opcode, as recorded in `PRESET_TRACE`. Mirrored in
 /// `tutti-vst2-host`'s tests.
 pub mod preset_event {
     /// `effBeginSetProgram` (67).

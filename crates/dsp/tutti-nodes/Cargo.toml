@@ -17,9 +17,9 @@ default = []
 # ("engine Bevy = Net pump only"). This crate is pure DSP + the `set(UnitParam)`
 # surface the app drives it through, so there is no longer a `bevy` feature.
 # NOTE: the `spatial` and `hrtf` features are GONE — the VBAP/binaural panners,
-# `build_surround_mix` and the `Error`/`Result` pair they were the only users of
+# `build_vbap_mix` and the `Error`/`Result` pair they were the only users of
 # all moved to the `tutti-spatial` crate. That crate depends on this one (it
-# builds its mixes out of `ChannelSumUnit` + `SvfFilterNode`), not the reverse.
+# builds its mixes out of `ChannelSumNode` + `SvfFilterNode`), not the reverse.
 # Consequence worth knowing: this crate now has **no fallible operation at all**,
 # which is why there is no longer an `Error` type here.
 # FFT convolution reverb (partitioned IR). The convolver DSP unit is Bevy-free;
@@ -46,7 +46,7 @@ tutti-mod = { path = "../../core/tutti-mod", default-features = false, features 
 # Partitioned FFT convolver (optional, gated by `convolution` feature)
 fft-convolver = { version = "0.3", optional = true }
 
-# Envelope primitives consumed by `AutomationLane` + `Recorder`, re-exported via
+# Envelope primitives consumed by `AutomationLaneNode` + `Recorder`, re-exported via
 # `tutti_nodes::automation`.
 audio-automation = { workspace = true }
 

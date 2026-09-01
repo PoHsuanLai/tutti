@@ -1,56 +1,24 @@
 //! SoundFont (.sf2) synthesis via RustySynth.
 //!
 //! Build a [`SoundFontUnit`] with [`SoundFontUnit::new`] from a decoded
-//! `SoundFont` and a [`SynthesizerSettings`], then `program_change` to pick the
-//! preset/channel. A host that wants asset-managed loading wires it in its own
-//! adapter layer; this crate only needs the decoded `SoundFont`.
+//! `SoundFont` and a [`SynthesizerSettings`], then
+//! [`program_change`](SoundFontUnit::program_change) to pick the preset and
+//! channel. A host that wants asset-managed loading wires it in its own adapter
+//! layer; this crate only needs the decoded `SoundFont`.
 //!
 //! Zero inputs, two outputs — the unit *is* the source, so it enters a `Net`
 //! with only its output piped.
 //!
-//! `no_run`: every path here needs a real `.sf2` on disk, and the crate ships
-//! no fixture. It is still type-checked.
+//! Notes arrive through the unit's [`MidiInPort`], reached via
+//! [`midi_sender`](SoundFontUnit::midi_sender) or
+//! [`midi_port`](SoundFontUnit::midi_port), and are applied sample-accurately
+//! within a block. [`note_on`](SoundFontUnit::note_on) /
+//! [`note_off`](SoundFontUnit::note_off) bypass that inbox and are **not** the
+//! intended path — see their own docs and the README.
 //!
-//! ```no_run
-//! use std::fs::File;
-//! use tutti_core::dsp::{AudioUnit, Net};
-//! use tutti_core::Arc;
-//! use tutti_soundfont::{SoundFont, SoundFontUnit, SynthesizerSettings};
-//!
-//! let mut file = File::open("piano.sf2")?;
-//! let soundfont = Arc::new(SoundFont::new(&mut file)?);
-//!
-//! // The rate is fixed here: `set_sample_rate` is a no-op on this unit, so a
-//! // graph at another rate needs a new one rather than a reconfigured one.
-//! let settings = SynthesizerSettings::new(44_100);
-//! let mut unit = SoundFontUnit::new(soundfont, &settings)?;
-//! unit.program_change(0, 0); // channel 0 → preset 0
-//!
-//! let mut net = Net::new(0, 2);
-//! let node = net.push(Box::new(unit));
-//! net.pipe_output(node);
-//! net.check();
-//!
-//! let mut out = [0.0f32; 2];
-//! net.tick(&[], &mut out);
-//! # Ok::<(), Box<dyn std::error::Error>>(())
-//! ```
-//!
-//! # A peer of `tutti-polysynth`, not a feature of it
-//!
-//! This is its own crate rather than a flag on the subtractive synth because a
-//! `.sf2` player and a subtractive voice engine share no code: this unit reaches
-//! for none of that crate's voice allocation, tuning, portamento or unison —
-//! RustySynth owns all of it. What the two share is the *shape*, both being
-//! `AudioUnit`s with a [`MidiInPort`], and that comes from `tutti-core` and
-//! `tutti-midi-runtime`, not from each other.
-//!
-//! # MIDI resolution stops at 7 bits
-//!
-//! The inbox speaks MIDI 2.0 (UMP) and RustySynth speaks MIDI 1.0 wire format,
-//! so every value downscales through the spec's Min-Center-Max converters.
-//! Anything MIDI 2.0 expresses that MIDI 1.0 cannot — per-note pitch bend,
-//! per-note controllers, 16-bit velocity — is dropped rather than approximated.
+//! The quick start, the fixed-rate trap and the 7-bit resolution boundary are in
+//! the crate README, included below.
+#![doc = include_str!("../README.md")]
 
 mod error;
 pub use error::{Error, Result};
@@ -181,6 +149,13 @@ impl SoundFontUnit {
 
     /// Starts a note directly, bypassing the MIDI inbox.
     ///
+    /// **Not the intended path.** Notes should reach this unit through
+    /// [`midi_sender`](Self::midi_sender); this pair has none of the inbox's
+    /// properties. There is no `frame_offset`, so a note lands at the start of
+    /// whatever block follows rather than sample-accurately; a `MidiBus` cannot
+    /// address it; and `&mut self` puts it out of reach once the unit is in a
+    /// `Net`. The peer crate `tutti-polysynth` exposes no such pair.
+    ///
     /// These are RustySynth's MIDI 1.0 integers, not the engine's MIDI 2.0
     /// vocabulary: `channel` is 0..16, `key` and `velocity` are 7-bit (0..128).
     /// A `velocity` of 0 reads as a note-off to RustySynth.
@@ -189,6 +164,8 @@ impl SoundFontUnit {
     }
 
     /// Releases a note directly, bypassing the MIDI inbox.
+    ///
+    /// **Not the intended path** — see [`note_on`](Self::note_on) for why.
     ///
     /// `channel` is 0..16 and `key` is 7-bit (0..128), per MIDI 1.0.
     pub fn note_off(&mut self, channel: i32, key: i32) {

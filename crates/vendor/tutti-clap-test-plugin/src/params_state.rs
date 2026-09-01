@@ -8,7 +8,7 @@
 //! - **Parameter ids are not indices.** `PARAMS[i].id` is non-contiguous,
 //!   nonzero, and not ascending with `i` (101, 4242, 9), so a host passing
 //!   `index` where the spec says `param_id` reads the wrong parameter or is
-//!   rejected by [`params_get_value`] — a confusion a `0..n` id space hides.
+//!   rejected by `params_get_value` — a confusion a `0..n` id space hides.
 //! - **Ranges are not `0..1`.** Two of the three have a plain range well away
 //!   from the unit interval, so denormalization has an exact arithmetic oracle
 //!   rather than an identity one.
@@ -17,7 +17,7 @@
 //!   has no range cached for it.
 //!
 //! Observations land in a process-global guarded by a mutex and are copied out
-//! through [`tutti_test_plugin_param_capture`], which the test reaches across a
+//! through [`crate::params_state::tutti_test_plugin_param_capture`], which the test reaches across a
 //! second `dlopen` of this same image.
 
 use std::ffi::{c_char, CStr};

@@ -110,7 +110,7 @@ impl NetBackend {
     /// width tracks [`outputs`](AudioUnit::outputs) must `pump` first, read the
     /// (possibly changed) arity, size its buffer, then `process`. This is the RT
     /// primitive that makes a runtime output-arity change
-    /// ([`Net::commit_output_arity_change`](crate::Net::commit_output_arity_change))
+    /// (`Net::commit_output_arity_change`)
     /// observable to the caller before the render.
     pub fn pump(&mut self) {
         self.handle_messages();

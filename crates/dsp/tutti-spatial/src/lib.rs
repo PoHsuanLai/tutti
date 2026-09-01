@@ -1,59 +1,29 @@
 //! Spatial audio: VBAP speaker panning and HRTF binaural rendering.
 //!
-//! Two independent renderers, each named for its algorithm:
-//!
-//! | | [`vbap`] | `hrtf` |
-//! |---|---|---|
-//! | renders to | loudspeakers | headphones |
-//! | outputs | `layout.count()` | always 2 |
-//! | needs | a speaker layout | an HRIR dataset |
-//! | fails with | [`vbap::VbapError`] | `hrtf::HrtfBinauralError` |
-//!
-//! Each owns its own error type; there is no crate-level `Error`.
+//! Two independent renderers, each named for its algorithm rather than the
+//! category it falls in: [`vbap`] (loudspeakers, `layout.count()` outputs,
+//! failing with [`vbap::VbapError`]) and `hrtf` (headphones, always 2, failing
+//! with `hrtf::HrtfBinauralError`). Each owns its own error type; there is no
+//! crate-level `Error`.
 //!
 //! The `hrtf` module is behind the `hrtf` feature, which is off by default —
-//! that column is absent from a default build, which is why its links are plain
-//! backticks.
+//! that renderer is absent from a default build, which is why its links here are
+//! plain backticks.
 //!
-//! A panner is a mono-in, N-out node: it takes one source and distributes it
-//! across the layout's speakers by bearing. Moving the source is a lock-free
-//! write, so it may happen while the node renders.
+//! Shared between them: [`SpatialTarget`] (bearing and height as lock-free
+//! params), the position de-zipper in `smoothing`/`target`, and `layout` (SMPTE
+//! /WAV channel order — a property of the destination buffer, not of either
+//! panner).
 //!
-//! ```
-//! use tutti_core::dsp::{AudioUnit, Net};
-//! use tutti_core::{Azimuth, Elevation};
-//! use tutti_spatial::VbapPannerNode;
+//! A [`VbapPannerNode`] is **stereo-in**, N-out: it distributes a source across
+//! the layout's speakers by bearing, and a mono source presents the same sample
+//! on both input ports. Moving the source is a lock-free write, so it may happen
+//! while the node renders — but see the `reset` deviation below before reaching
+//! for that method to clear a tail.
 //!
-//! // 5.1: one input, six outputs. Only 2/4/6/8/12 have presets.
-//! let panner = VbapPannerNode::surround_5_1().expect("5.1 is a defined preset");
-//! assert_eq!(panner.num_channels(), 6);
-//!
-//! // 45° to the right, level with the listener. `store` normalizes: the
-//! // bearing wraps, the height clamps.
-//! panner.set_position(Azimuth(45.0), Elevation(0.0));
-//!
-//! let mut net = Net::new(1, 6);
-//! let node = net.push(Box::new(panner));
-//! net.pipe_input(node);
-//! net.pipe_output(node);
-//! net.check();
-//!
-//! let mut out = [0.0f32; 6];
-//! net.tick(&[1.0], &mut out);
-//! ```
-//!
-//! Shared between them: [`SpatialTarget`] (bearing/height as lock-free params),
-//! the position de-zipper in `smoothing`/`target`, and `layout` (SMPTE/WAV
-//! channel order — a property of the destination buffer, not of either panner).
-//!
-//! # Angles do not compare or add
-//!
-//! [`Azimuth`](tutti_core::Azimuth) and [`Elevation`](tutti_core::Elevation)
-//! carry no `Ord` and no `Add`: a circle has no ends, so "greater" is undefined
-//! and a sum has no origin. Aiming at -170° from 170° is a 20° move across the
-//! seam, not a 340° sweep back through zero — take differences in the scalar
-//! space via `.get()`, and let [`SpatialTarget::store`] normalize (the bearing
-//! wraps, the height clamps).
+//! The renderer table, both quick starts, the angle-algebra constraint and the
+//! `reset` deviation are in the crate README, included below.
+#![doc = include_str!("../README.md")]
 
 mod layout;
 mod node_id;

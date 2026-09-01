@@ -23,7 +23,7 @@
 //! // route stays well-formed, the inspector shows the knob, nothing moves.
 //! app.world_mut()
 //!     .resource_mut::<ModTargetRegistry>()
-//!     .register::<tutti_nodes::Compressor>()
+//!     .register::<tutti_nodes::CompressorNode>()
 //!     .register::<tutti_nodes::ChorusNode>();
 //! ```
 

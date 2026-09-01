@@ -222,7 +222,7 @@
 //! app.add_plugins(TuttiModulationPlugin);
 //! app.world_mut()
 //!     .resource_mut::<ModTargetRegistry>()
-//!     .register::<tutti_nodes::Compressor>();
+//!     .register::<tutti_nodes::CompressorNode>();
 //! ```
 
 pub mod audio_rate;

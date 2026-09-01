@@ -59,7 +59,7 @@ pub struct ProcessScratch<T> {
 }
 
 // The raw pointers live inside our own `channels` vec; the whole struct is
-// fine to move across threads together with `ClapInstance` (which is
+// fine to move across threads together with `ClapActive` (which is
 // already `Send`). Pointers are re-derived on each `process` call.
 unsafe impl<T: Send> Send for ProcessScratch<T> {}
 

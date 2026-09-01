@@ -71,7 +71,7 @@ impl TailGraph for Net {
 }
 
 impl DelayInsertion for Net {
-    /// Delays are found by their [`get_id`](crate::AudioUnit::get_id) marker
+    /// Delays are found by their `AudioUnit::get_id` marker
     /// rather than tracked between runs, so a graph edited by any route still
     /// analyses as authored.
     ///

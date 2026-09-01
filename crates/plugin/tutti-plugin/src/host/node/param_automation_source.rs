@@ -353,7 +353,7 @@ pub struct ParamAutomationSource {
     /// `Arc` and fundsp commits a *different clone* than a setter would touch,
     /// so there is no `&mut` to update and no path to the running copy.
     ///
-    /// `fill` divides by this every block, so a stale value mistimes every
+    /// `refill` divides by this every block, so a stale value mistimes every
     /// automation point after a rate switch.
     sample_rate: Arc<AtomicF64>,
 }
@@ -362,7 +362,7 @@ impl ParamAutomationSource {
     /// Build a parameter-automation source from one envelope per parameter id.
     ///
     /// Takes a [`TransportState`], not a bare [`Timeline`](tutti_core::transport::Timeline):
-    /// `fill` reads `loop_range()` to wrap the beat inside the active cycle, and
+    /// `refill` reads `loop_range()` to wrap the beat inside the active cycle, and
     /// looping lives on the live supertrait. An offline render never drives this
     /// source.
     pub fn new(
@@ -385,7 +385,7 @@ impl ParamAutomationSource {
             .store(sample_rate.into().get(), Ordering::Release);
     }
 
-    /// The rate `fill` is currently dividing by.
+    /// The rate `refill` is currently dividing by.
     fn rate(&self) -> SampleRate {
         SampleRate::from(self.sample_rate.load(Ordering::Acquire))
     }
@@ -408,7 +408,7 @@ impl ParamAutomationSource {
     /// without spilling (see `ParameterQueue`).
     ///
     /// [`ParameterQueue`]: crate::protocol::ParameterQueue
-    pub fn fill(&self, block_size: usize, out: &mut ParameterChanges) {
+    pub fn refill(&self, block_size: usize, out: &mut ParameterChanges) {
         // Retain `out.queues`' capacity across blocks; reset each queue's points
         // in place below rather than dropping and reallocating the queue.
         for q in out.queues.iter_mut() {
@@ -476,10 +476,10 @@ impl ParamAutomationSource {
 
 impl BlockInput for ParamAutomationSource {
     type Out = ParameterChanges;
-    fn fill(&self, ctx: BlockCtx, out: &mut ParameterChanges) {
-        // Inherent `fill` self-clears, so it satisfies the "fully overwrite
+    fn refill(&self, ctx: BlockCtx, out: &mut ParameterChanges) {
+        // Inherent `refill` self-clears, so it satisfies the "fully overwrite
         // `out`" contract.
-        ParamAutomationSource::fill(self, ctx.block_size, out);
+        ParamAutomationSource::refill(self, ctx.block_size, out);
     }
 }
 
@@ -697,7 +697,7 @@ mod tests {
             44100.0,
         );
         let mut out = ParameterChanges::new();
-        src.fill(64, &mut out);
+        src.refill(64, &mut out);
 
         let points = &out.queues[0].points;
         assert!(
@@ -727,7 +727,7 @@ mod tests {
             44100.0,
         );
         let mut out = ParameterChanges::new();
-        src.fill(64, &mut out);
+        src.refill(64, &mut out);
         assert_eq!(out.queues.len(), 1);
         let q = &out.queues[0];
         assert_eq!(q.param_id, ParamAddress::Opaque(ParamId::new(7)));
@@ -752,7 +752,7 @@ mod tests {
             44100.0,
         );
         let mut out = ParameterChanges::new();
-        src.fill(64, &mut out);
+        src.refill(64, &mut out);
         assert!(out.is_empty());
     }
 
@@ -765,11 +765,11 @@ mod tests {
             44100.0,
         );
         let mut out = ParameterChanges::new();
-        src.fill(64, &mut out);
+        src.refill(64, &mut out);
         let start_v = out.queues[0].points[0].value.get();
         // Jump to beat 4 (envelope top) — the first point should now read ~1.0.
         transport.set_beat(4.0);
-        src.fill(64, &mut out);
+        src.refill(64, &mut out);
         let later_v = out.queues[0].points[0].value.get();
         assert!(later_v > start_v);
         assert!((later_v - 1.0).abs() < 1e-3);
@@ -903,7 +903,7 @@ mod tests {
             44100.0,
         );
         let mut out = ParameterChanges::new();
-        src.fill(64, &mut out);
+        src.refill(64, &mut out);
         let q = &out.queues[0];
         assert_eq!(q.points.len(), 9, "stride-8 over 64 samples = 9 points");
         assert!(
@@ -924,11 +924,11 @@ mod tests {
             44100.0,
         );
         let mut out = ParameterChanges::new();
-        src.fill(64, &mut out);
+        src.refill(64, &mut out);
         assert_eq!(out.queues.len(), 1);
         let ptr_before = out.queues[0].points.as_ptr();
         transport.set_beat(1.0);
-        src.fill(64, &mut out);
+        src.refill(64, &mut out);
         assert_eq!(out.queues.len(), 1, "no extra queue pushed on refill");
         assert_eq!(
             out.queues[0].points.as_ptr(),
@@ -942,7 +942,7 @@ mod tests {
         let transport = Arc::new(TestTransport::new(120.0)) as Arc<dyn TransportState>;
         let empty_src = ParamAutomationSource::new(Vec::new(), Arc::clone(&transport), 44100.0);
         let mut out = ParameterChanges::new();
-        empty_src.fill(64, &mut out);
+        empty_src.refill(64, &mut out);
         assert!(out.is_empty());
 
         let empty_env: AutomationEnvelope<f32> = AutomationEnvelope::new(0.0f32);
@@ -954,7 +954,7 @@ mod tests {
             transport,
             44100.0,
         );
-        src.fill(64, &mut out);
+        src.refill(64, &mut out);
         assert!(out.is_empty());
     }
 
@@ -1072,7 +1072,7 @@ mod tests {
     /// The rate is a shared atomic rather than a plain field because the source
     /// lives behind an `Arc` and fundsp commits a *different clone* than a
     /// setter would touch — a plain field is unreachable, not merely stale.
-    /// `fill` divides by this every block, so a stale value mistimes every
+    /// `refill` divides by this every block, so a stale value mistimes every
     /// automation point after a device switch.
     #[test]
     fn a_rate_change_reaches_the_clone_fundsp_runs() {

@@ -403,11 +403,11 @@ mod tests {
         // MIDI 2.0 channel voice (UMP type 0x4).
         assert_eq!(
             MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::new(5), 60, 0x8000).channel(),
-            Some(5)
+            Some(MidiChannel::new(5))
         );
         // MIDI 1.0 channel voice (UMP type 0x2), built via the wire bridge.
         let cv1 = MidiEvent::from_midi1_bytes(0, &[0x93, 0x3C, 0x64]).unwrap();
-        assert_eq!(cv1.channel(), Some(3));
+        assert_eq!(cv1.channel(), Some(MidiChannel::new(3)));
         // System messages carry no channel.
         assert_eq!(MidiEvent::timing_clock(MidiGroup::FIRST).channel(), None);
         assert_eq!(MidiEvent::noop().channel(), None);

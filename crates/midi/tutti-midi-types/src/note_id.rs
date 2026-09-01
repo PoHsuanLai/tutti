@@ -153,15 +153,15 @@ mod tests {
 
     #[test]
     fn channel_note_roundtrip() {
-        let id = NoteId::from_channel_note(9, 60);
-        assert_eq!(id.channel(), 9);
+        let id = NoteId::from_channel_note(MidiChannel::new(9), 60);
+        assert_eq!(id.channel(), MidiChannel::new(9));
         assert_eq!(id.note_number(), 60);
     }
 
     #[test]
     fn same_note_number_distinct_ids_do_not_collide() {
         // The whole point: two live notes on note 60 must stay independent.
-        let a = NoteId::from_channel_note(0, 60);
+        let a = NoteId::from_channel_note(MidiChannel::new(0), 60);
         let b = NoteId::from_raw(0xDEAD_0000); // rotation-minted, same sounding pitch
         assert_ne!(a, b);
 
@@ -197,8 +197,8 @@ mod tests {
     fn ord_makes_it_a_btree_key() {
         use std::collections::BTreeMap;
         let mut m = BTreeMap::new();
-        m.insert(NoteId::from_channel_note(0, 64), "b");
-        m.insert(NoteId::from_channel_note(0, 60), "a");
+        m.insert(NoteId::from_channel_note(MidiChannel::new(0), 64), "b");
+        m.insert(NoteId::from_channel_note(MidiChannel::new(0), 60), "a");
         // BTreeMap requires Ord; keys come back sorted.
         let notes: Vec<u8> = m.keys().map(|k| k.note_number()).collect();
         assert_eq!(notes, [60, 64]);

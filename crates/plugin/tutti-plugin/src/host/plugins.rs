@@ -366,7 +366,7 @@ impl Plugins {
     /// steps, so the two paths cannot disagree about what registering means.
     ///
     /// In-memory only, like every other catalog mutation; call
-    /// [`flush`](Self::flush) to persist.
+    /// [`save`](Self::save) to persist.
     pub fn register_record(&mut self, record: PluginRecord) -> PluginId {
         let id = PluginId(record.path.clone());
         self.catalog.upsert(record);

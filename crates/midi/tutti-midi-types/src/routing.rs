@@ -569,8 +569,8 @@ mod tests {
     #[test]
     fn test_channel_routing() {
         let routes = vec![
-            MidiRoute::for_channel(0).with_target(id(100)),
-            MidiRoute::for_channel(1).with_target(id(200)),
+            MidiRoute::for_channel(MidiChannel::new(0)).with_target(id(100)),
+            MidiRoute::for_channel(MidiChannel::new(1)).with_target(id(200)),
         ];
         let snapshot = MidiRoutingSnapshot::from_routes(routes, None);
 
@@ -592,7 +592,7 @@ mod tests {
 
     #[test]
     fn test_channel_layering() {
-        let routes = vec![MidiRoute::for_channel(0).with_targets(&[id(100), id(200), id(300)])];
+        let routes = vec![MidiRoute::for_channel(MidiChannel::new(0)).with_targets(&[id(100), id(200), id(300)])];
         let snapshot = MidiRoutingSnapshot::from_routes(routes, None);
 
         let event = note_on(0, 60);
@@ -613,7 +613,7 @@ mod tests {
 
     #[test]
     fn test_route_single() {
-        let routes = vec![MidiRoute::for_channel(0).with_target(id(100))];
+        let routes = vec![MidiRoute::for_channel(MidiChannel::new(0)).with_target(id(100))];
         let snapshot = MidiRoutingSnapshot::from_routes(routes, Some(id(999)));
 
         // Channel 0 → 100 (via route)
@@ -628,7 +628,7 @@ mod tests {
     #[test]
     fn test_no_duplicate_targets() {
         let routes = vec![
-            MidiRoute::for_channel(0).with_target(id(100)),
+            MidiRoute::for_channel(MidiChannel::new(0)).with_target(id(100)),
             MidiRoute::new().with_targets(&[id(100), id(200)]),
         ];
         let snapshot = MidiRoutingSnapshot::from_routes(routes, None);
@@ -645,8 +645,8 @@ mod tests {
     #[test]
     fn test_all_targets_for_system_messages() {
         let routes = vec![
-            MidiRoute::for_channel(0).with_target(id(100)),
-            MidiRoute::for_channel(1).with_target(id(200)),
+            MidiRoute::for_channel(MidiChannel::new(0)).with_target(id(100)),
+            MidiRoute::for_channel(MidiChannel::new(1)).with_target(id(200)),
             MidiRoute::new().with_target(id(300)),
         ];
         let snapshot = MidiRoutingSnapshot::from_routes(routes, Some(id(999)));
@@ -666,8 +666,8 @@ mod tests {
         // per-channel route must still receive them — otherwise a clip's Set
         // Tempo never reaches a channel-scoped consumer.
         let routes = vec![
-            MidiRoute::for_channel(0).with_target(id(100)),
-            MidiRoute::for_channel(1).with_target(id(200)),
+            MidiRoute::for_channel(MidiChannel::new(0)).with_target(id(100)),
+            MidiRoute::for_channel(MidiChannel::new(1)).with_target(id(200)),
         ];
         let snapshot = MidiRoutingSnapshot::from_routes(routes, None);
 
@@ -693,7 +693,7 @@ mod tests {
     #[test]
     fn test_all_targets_no_duplicates() {
         let routes = vec![
-            MidiRoute::for_channel(0).with_target(id(100)),
+            MidiRoute::for_channel(MidiChannel::new(0)).with_target(id(100)),
             MidiRoute::new().with_targets(&[id(100), id(200)]),
         ];
         let snapshot = MidiRoutingSnapshot::from_routes(routes, Some(id(100)));
@@ -720,8 +720,8 @@ mod tests {
         let mut table = MidiRoutingTable::new();
         table.set_routes(
             [
-                MidiRoute::for_channel(0).with_target(id(100)),
-                MidiRoute::for_channel(1).with_target(id(200)),
+                MidiRoute::for_channel(MidiChannel::new(0)).with_target(id(100)),
+                MidiRoute::for_channel(MidiChannel::new(1)).with_target(id(200)),
             ],
             None,
         );
@@ -737,13 +737,13 @@ mod tests {
     fn test_set_routes_replaces_wholesale() {
         let mut table = MidiRoutingTable::new();
         table.set_routes(
-            [MidiRoute::for_channel(0).with_targets(&[id(100), id(200)])],
+            [MidiRoute::for_channel(MidiChannel::new(0)).with_targets(&[id(100), id(200)])],
             Some(id(100)),
         );
         table.commit();
 
         // A second set_routes fully replaces the prior rules — no merge.
-        table.set_routes([MidiRoute::for_channel(0).with_target(id(200))], None);
+        table.set_routes([MidiRoute::for_channel(MidiChannel::new(0)).with_target(id(200))], None);
         table.commit();
 
         let snapshot = table.load();
@@ -758,7 +758,7 @@ mod tests {
         let mut table = MidiRoutingTable::new();
         assert!(!table.is_dirty());
 
-        table.set_routes([MidiRoute::for_channel(0).with_target(id(100))], None);
+        table.set_routes([MidiRoute::for_channel(MidiChannel::new(0)).with_target(id(100))], None);
         assert!(table.is_dirty());
 
         table.commit();
@@ -783,7 +783,7 @@ mod tests {
         // The mistake: a fresh table rather than the one the pre-block shares.
         let mut orphan = MidiRoutingTable::new();
         let unit = id(9);
-        orphan.set_routes(vec![MidiRoute::for_channel(3).with_target(unit)], None);
+        orphan.set_routes(vec![MidiRoute::for_channel(MidiChannel::new(3)).with_target(unit)], None);
         orphan.commit();
 
         let snapshot = rt_view.read();

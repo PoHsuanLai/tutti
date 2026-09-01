@@ -415,20 +415,36 @@ mod tests {
         );
     }
 
-    /// The other half of the contract: the ramp *is* cleared, so the block
+    /// The other half of the contract: the ramp *is* cleared, so the frame
     /// after a reset renders at the commanded position rather than sweeping in
     /// from wherever the smoother had got to.
+    ///
+    /// Asserted against a *settled* reference panner rather than against a
+    /// channel inequality: the de-zipper starts at front-centre, so a few frames
+    /// into a hard-left move both channels are still near-equal and either one
+    /// may lead by a hair. "Equals the settled answer" is the property a seated
+    /// smoother actually has, and it is the one that fails when the ramp is
+    /// left in flight.
     #[test]
     fn reset_seats_the_smoother_on_the_commanded_position() {
-        let mut panner = VbapPannerNode::stereo().unwrap();
-        // Hard left, reached the slow way: the smoother is mid-ramp here.
-        panner.set_position(Azimuth(90.0), Elevation::LEVEL);
         let input = [1.0f32, 1.0f32];
+
+        // Where the panner ends up once the 50 ms ramp has run out: hard left,
+        // so the right channel is silent.
+        let mut settled = VbapPannerNode::stereo().unwrap();
+        settled.set_position(Azimuth(90.0), Elevation::LEVEL);
+        let mut reference = [0.0f32; 2];
+        for _ in 0..48_000 {
+            settled.tick(&input, &mut reference);
+        }
+
+        let mut panner = VbapPannerNode::stereo().unwrap();
+        panner.set_position(Azimuth(90.0), Elevation::LEVEL);
         let mut mid_ramp = [0.0f32; 2];
         panner.tick(&input, &mut mid_ramp);
         assert!(
-            mid_ramp[1] > mid_ramp[0],
-            "expected the ramp to still favour the right channel, got {mid_ramp:?}"
+            (mid_ramp[1] - reference[1]).abs() > 0.1,
+            "the ramp should still be far from settled, got {mid_ramp:?} vs {reference:?}"
         );
 
         panner.reset();
@@ -436,8 +452,9 @@ mod tests {
         let mut after = [0.0f32; 2];
         panner.tick(&input, &mut after);
         assert!(
-            after[0] > after[1],
-            "after reset the first block should already be hard left, got {after:?}"
+            (after[0] - reference[0]).abs() < 0.01 && (after[1] - reference[1]).abs() < 0.01,
+            "after reset the first frame should already render at the commanded \
+             position: got {after:?}, settled is {reference:?}"
         );
     }
 
@@ -479,4 +496,5 @@ mod tests {
         assert!((panner.azimuth().get() - (-60.0)).abs() < 0.001);
         assert!((panner.elevation().get() - 10.0).abs() < 0.001);
     }
+
 }

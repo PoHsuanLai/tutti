@@ -304,6 +304,36 @@ mod tests {
         );
     }
 
+    /// The other half of the contract: the streaming state *is* dropped, so a
+    /// reset between takes does not bleed the previous take's convolution tail
+    /// into the next one — which is the whole reason a host calls `reset`.
+    #[test]
+    fn reset_drops_the_convolution_tail() {
+        let mut node = make_node();
+        node.set_position(Azimuth(90.0), Elevation::LEVEL);
+
+        // Fill the bridge and the overlap tails with a loud take.
+        let mut out = [0.0f32; 2];
+        for n in 0..(crate::hrtf::panner::FRAME_LEN * 3) {
+            let s = ((n as f32) * 0.05).sin();
+            node.tick(&[s, s], &mut out);
+        }
+
+        node.reset();
+
+        // Silence in. With the tail dropped the frames that follow are silent
+        // too; a retained tail would ring out through them.
+        let mut peak = 0.0f32;
+        for _ in 0..(crate::hrtf::panner::FRAME_LEN * 2) {
+            node.tick(&[0.0, 0.0], &mut out);
+            peak = peak.max(out[0].abs()).max(out[1].abs());
+        }
+        assert!(
+            peak < 1e-6,
+            "reset left {peak} of the previous take's tail in the buffers"
+        );
+    }
+
     #[test]
     fn clone_is_independent() {
         let node = make_node();

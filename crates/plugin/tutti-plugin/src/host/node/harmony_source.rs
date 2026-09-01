@@ -25,7 +25,7 @@ use crate::host::node::input_slot::{BlockCtx, BlockInput, BlockReset};
 use crate::protocol::{ChordValue, ScaleValue};
 
 /// A chord change scheduled at an absolute beat. The `value`'s `sample_offset`
-/// is filled per block by [`HarmonySource::fill`].
+/// is filled per block by [`HarmonySource::refill`].
 #[derive(Clone, Debug)]
 pub struct TimedChord {
     /// Absolute timeline position of the change.
@@ -135,7 +135,7 @@ impl HarmonySource {
     /// in this block's window. Returns the number of (chord + scale) changes
     /// written. RT-safe: no allocation beyond the `SmallVec` push, which only
     /// grows past inline capacity if many changes land in one block.
-    pub fn fill(&self, block_size: usize, out: &mut HarmonyInputs) {
+    pub fn refill(&self, block_size: usize, out: &mut HarmonyInputs) {
         out.chords.changes.clear();
         out.scales.changes.clear();
         if block_size == 0 {
@@ -182,10 +182,10 @@ impl HarmonySource {
 
 impl BlockInput for HarmonySource {
     type Out = HarmonyInputs;
-    fn fill(&self, ctx: BlockCtx, out: &mut HarmonyInputs) {
-        // Inherent `fill` self-clears chords/scales, so it satisfies the
+    fn refill(&self, ctx: BlockCtx, out: &mut HarmonyInputs) {
+        // Inherent `refill` self-clears chords/scales, so it satisfies the
         // "fully overwrite `out`" contract.
-        HarmonySource::fill(self, ctx.block_size, out);
+        HarmonySource::refill(self, ctx.block_size, out);
     }
 }
 
@@ -284,7 +284,7 @@ mod tests {
         );
         let mut out = HarmonyInputs::default();
         // Block covering [0.0, 1.0) beats = [0, 22050) samples → both chords.
-        src.fill(22050, &mut out);
+        src.refill(22050, &mut out);
         assert_eq!(out.chords.changes.len(), 2);
         assert_eq!(out.scales.changes.len(), 1);
         assert_eq!(out.chords.changes[0].sample_offset, 0); // beat 0.0
@@ -302,11 +302,11 @@ mod tests {
             44100.0,
         );
         let mut out = HarmonyInputs::default();
-        src.fill(22050, &mut out);
+        src.refill(22050, &mut out);
         assert_eq!(out.chords.changes.len(), 1);
         // Advance the transport past the only change — nothing more.
         transport.set_beat(2.0);
-        src.fill(22050, &mut out);
+        src.refill(22050, &mut out);
         assert_eq!(out.chords.changes.len(), 0);
     }
 
@@ -321,7 +321,7 @@ mod tests {
             44100.0,
         );
         let mut out = HarmonyInputs::default();
-        src.fill(512, &mut out);
+        src.refill(512, &mut out);
         assert!(out.chords.changes.is_empty());
     }
 
@@ -335,13 +335,13 @@ mod tests {
             44100.0,
         );
         let mut out = HarmonyInputs::default();
-        src.fill(22050, &mut out); // both
+        src.refill(22050, &mut out); // both
         assert_eq!(out.chords.changes.len(), 2);
         transport.set_beat(2.0);
-        src.fill(22050, &mut out); // none
+        src.refill(22050, &mut out); // none
         assert_eq!(out.chords.changes.len(), 0);
         transport.set_beat(0.0); // seek back
-        src.fill(22050, &mut out);
+        src.refill(22050, &mut out);
         assert_eq!(out.chords.changes.len(), 2);
     }
 }

@@ -12,8 +12,8 @@
 //! transport / harmony / param-automation, closing the gap where the
 //! `note_expression` payload field was hard-coded empty with no producer behind
 //! it. The concrete *source of the data* — a note-expression lane reader — is not
-//! built yet (no expression-lane storage exists), so `fill` currently emits
-//! nothing. When lane storage lands, only [`NoteExpressionSource::fill`] changes;
+//! built yet (no expression-lane storage exists), so `refill` currently emits
+//! nothing. When lane storage lands, only [`NoteExpressionSource::refill`] changes;
 //! the wiring is already in place.
 
 use std::sync::Arc;
@@ -56,15 +56,15 @@ impl NoteExpressionSource {
     /// `out` and returns — the plugin receives an empty batch, identical to the
     /// prior hard-coded-empty behaviour, but now through the uniform slot so the
     /// data source can be dropped in without touching the wiring.
-    pub fn fill(&self, _block_size: usize, out: &mut NoteExpressionChanges) {
+    pub fn refill(&self, _block_size: usize, out: &mut NoteExpressionChanges) {
         out.changes.clear();
     }
 }
 
 impl BlockInput for NoteExpressionSource {
     type Out = NoteExpressionChanges;
-    fn fill(&self, ctx: BlockCtx, out: &mut NoteExpressionChanges) {
-        NoteExpressionSource::fill(self, ctx.block_size, out);
+    fn refill(&self, ctx: BlockCtx, out: &mut NoteExpressionChanges) {
+        NoteExpressionSource::refill(self, ctx.block_size, out);
     }
 }
 

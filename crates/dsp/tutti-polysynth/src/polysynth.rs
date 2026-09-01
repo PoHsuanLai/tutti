@@ -239,7 +239,13 @@ impl PolySynth {
     /// cap — and a boost above unity is legal for an `Amplitude`.
     ///
     /// Applied once per block to the summed mix, not per voice.
-    pub fn set_volume(&mut self, volume: f32) {
+    ///
+    /// `&self`, matching every other atomic-backed volume setter in the engine
+    /// (`BusStripNode`, `ClickSettings`): the write lands in a shared cell, and
+    /// [`volume_atomic`](Self::volume_atomic) hands that same cell to the
+    /// modulation path — so `&mut` would advertise an exclusivity this type
+    /// does not have.
+    pub fn set_volume(&self, volume: f32) {
         self.master_volume.store(Amplitude(volume.max(0.0)));
     }
 

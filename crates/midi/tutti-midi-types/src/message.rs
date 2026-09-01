@@ -904,7 +904,7 @@ mod tests {
         let msg = MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::new(3), 60, 0xC000).message();
         assert!(msg.is_note_on());
         assert_eq!(msg.note(), Some(60));
-        assert_eq!(msg.channel(), Some(3));
+        assert_eq!(msg.channel(), Some(MidiChannel::new(3)));
         assert_eq!(msg.velocity(), Some(0xC000)); // full 16-bit, not narrowed
     }
 
@@ -914,7 +914,7 @@ mod tests {
         let ev = MidiEvent::from_midi1_bytes(0, &[0x93, 60, 100]).unwrap();
         let msg = ev.message();
         assert!(msg.is_note_on());
-        assert_eq!(msg.channel(), Some(3));
+        assert_eq!(msg.channel(), Some(MidiChannel::new(3)));
         assert_eq!(msg.note(), Some(60));
     }
 
@@ -942,7 +942,7 @@ mod tests {
                 value,
                 ..
             } => {
-                assert_eq!(channel, 5);
+                assert_eq!(channel, MidiChannel::new(5));
                 assert_eq!(index, 74);
                 assert_eq!(value, 0xDEAD_BEEF);
             }
@@ -1043,7 +1043,7 @@ mod tests {
             rpn.message(),
             MidiMessage::RegisteredController {
                 frame_offset: 0,
-                channel: 3,
+                channel: MidiChannel::new(3),
                 namespace: ControllerNamespace::Registered,
                 bank: 0x12,
                 index: 0x34,
@@ -1062,7 +1062,7 @@ mod tests {
             nrpn.message(),
             MidiMessage::RegisteredController {
                 frame_offset: 0,
-                channel: 9,
+                channel: MidiChannel::new(9),
                 namespace: ControllerNamespace::Assignable,
                 bank: 0x01,
                 index: 0x02,
@@ -1084,7 +1084,7 @@ mod tests {
             rpn.message(),
             MidiMessage::RelativeController {
                 frame_offset: 0,
-                channel: 5,
+                channel: MidiChannel::new(5),
                 namespace: ControllerNamespace::Registered,
                 bank: 0x40,
                 index: 0x07,
@@ -1103,7 +1103,7 @@ mod tests {
             nrpn.message(),
             MidiMessage::RelativeController {
                 frame_offset: 0,
-                channel: 0,
+                channel: MidiChannel::new(0),
                 namespace: ControllerNamespace::Assignable,
                 bank: 0x7F,
                 index: 0x7E,
@@ -1219,7 +1219,7 @@ mod tests {
             MidiEvent::registered_controller(MidiGroup::FIRST, MidiChannel::new(11), 0, 6, 0)
                 .message()
                 .channel(),
-            Some(11)
+            Some(MidiChannel::new(11))
         );
         assert_eq!(
             MidiEvent::relative_assignable_controller(
@@ -1231,7 +1231,7 @@ mod tests {
             )
             .message()
             .channel(),
-            Some(4)
+            Some(MidiChannel::new(4))
         );
     }
 

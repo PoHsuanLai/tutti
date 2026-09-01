@@ -1040,7 +1040,11 @@ mod tests {
                 .iter()
                 .map(|n| (n.group, n.channel))
                 .collect::<Vec<_>>(),
-            [(0, 0), (0, 1), (1, 0)]
+            [
+                (MidiGroup::new(0), MidiChannel::new(0)),
+                (MidiGroup::new(0), MidiChannel::new(1)),
+                (MidiGroup::new(1), MidiChannel::new(0)),
+            ]
         );
         // Each closed against its own Note Off, not the nearest one.
         assert_eq!(notes[0].duration_beats, BeatDuration(3.0));

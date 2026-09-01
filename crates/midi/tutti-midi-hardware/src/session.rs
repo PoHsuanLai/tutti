@@ -24,16 +24,16 @@
 //! crate as a deliberate exception to the publish rule.
 //!
 //! [`RtPublish`]: tutti_midi_types::RtPublish
-//! [`HardwareMidiInputs`]: crate::core::HardwareMidiInputs
+//! [`HardwareMidiInputs`]: crate::HardwareMidiInputs
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use crate::core::backend;
-use crate::core::capability::{EndpointId, EndpointInfo};
-use crate::core::endpoints::{InputConnection, MidiEndpoints};
-use crate::core::error::{Error, Result};
-use crate::core::{HardwareMidiInputs, InputProducerHandle};
+use crate::backend;
+use crate::capability::{EndpointId, EndpointInfo};
+use crate::endpoints::{InputConnection, MidiEndpoints};
+use crate::error::{Error, Result};
+use crate::{HardwareMidiInputs, InputProducerHandle};
 use tutti_midi_types::ump::MidiEvent;
 use tutti_midi_types::MidiOut;
 
@@ -384,7 +384,7 @@ impl MidiOut for MidiSession {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::capability::UmpCapability;
+    use crate::capability::UmpCapability;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     /// A backend with a fixed device list and no OS behind it.

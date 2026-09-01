@@ -35,11 +35,11 @@
 //! wires its callback to it, rather than handing back a source nobody would
 //! poll.
 //!
-//! [`HardwareMidiInputs`]: crate::core::HardwareMidiInputs
+//! [`HardwareMidiInputs`]: crate::HardwareMidiInputs
 
-use crate::core::capability::{EndpointId, EndpointInfo};
-use crate::core::error::Result;
-use crate::core::InputProducerHandle;
+use crate::capability::{EndpointId, EndpointInfo};
+use crate::error::Result;
+use crate::InputProducerHandle;
 use tutti_midi_types::MidiOut;
 
 /// An open input connection: a live subscription to one endpoint.

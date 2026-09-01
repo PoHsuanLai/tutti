@@ -24,7 +24,7 @@ use coremidi_sys::{
 use std::mem::MaybeUninit;
 use tracing::debug;
 
-use crate::core::error::{Error, Result};
+use crate::error::{Error, Result};
 
 /// Send this timestamp to mean "now" (CoreMIDI treats 0 as immediate delivery).
 const MIDI_TIMESTAMP_NOW: MIDITimeStamp = 0;

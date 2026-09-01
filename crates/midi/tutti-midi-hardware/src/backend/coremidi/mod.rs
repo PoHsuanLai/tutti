@@ -27,10 +27,10 @@ use coremidi::{
     PropertyGetter, Protocol as CmProtocol, Source, Sources,
 };
 
-use crate::core::capability::{EndpointId, EndpointInfo, UmpCapability};
-use crate::core::endpoints::{InputConnection, MidiEndpoints};
-use crate::core::error::{Error, Result};
-use crate::core::InputProducerHandle;
+use crate::capability::{EndpointId, EndpointInfo, UmpCapability};
+use crate::endpoints::{InputConnection, MidiEndpoints};
+use crate::error::{Error, Result};
+use crate::InputProducerHandle;
 use tutti_midi_types::ump::{split_ump_stream, MidiEvent};
 use tutti_midi_types::{MidiOut, Protocol};
 

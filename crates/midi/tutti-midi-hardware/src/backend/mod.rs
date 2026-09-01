@@ -23,9 +23,9 @@
 //! - **Everything else** — [`stub`]. Windows has no usable UMP API in any
 //!   `windows` crate version (WinRT `Devices.Midi` is MIDI-1.0 message types;
 //!   Windows MIDI Services is not bound), so it enumerates nothing and returns
-//!   [`Error::Unsupported`](crate::core::error::Error::Unsupported).
+//!   [`Error::Unsupported`](crate::error::Error::Unsupported).
 
-use crate::core::endpoints::MidiEndpoints;
+use crate::endpoints::MidiEndpoints;
 
 #[cfg(target_os = "macos")]
 pub mod coremidi;

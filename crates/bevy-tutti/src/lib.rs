@@ -136,7 +136,12 @@ pub use graph::latency::{ChannelCompensation, GraphLatency, LatencyCompensationP
 pub use plugin_host::{PluginEmitter, PluginsRes, SetEditorVisible, TuttiHostingPlugin};
 
 // Engine types. The audio graph itself is `Net` (fundsp) — no wrapper.
-pub use engine::{DeviceInfo, Error, Net, Result, TuttiDriver};
+pub use engine::{DeviceInfo, Net, TuttiDriver};
+
+/// The crate error, at the crate root: its public position and its file
+/// position agree, which is the workspace convention.
+mod error;
+pub use error::{Error, Result};
 
 /// The audio device's UI-facing mirror. Its CPAL driver is this crate's, so the
 /// mirror lives here too — in [`engine`], with the rest of the device lifecycle.

@@ -4,7 +4,7 @@ use std::os::raw::c_int;
 
 use super::client::{cstr, SeqClient};
 use super::sys;
-use crate::core::capability::{EndpointId, EndpointInfo, UmpCapability};
+use crate::capability::{EndpointId, EndpointInfo, UmpCapability};
 
 /// Which direction an endpoint is being listed for.
 #[derive(Clone, Copy, PartialEq, Eq)]

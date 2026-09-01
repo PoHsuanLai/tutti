@@ -88,23 +88,25 @@
 
 // --- Framework-free hardware I/O core ---
 
-// No `///` here: a doc comment on a `pub mod` shadows the module's own `//!`
-// and re-resolves its intra-doc links in this scope. See `core/mod.rs`.
-pub mod core;
-pub use core::error;
-pub use core::Sysex7ByteAssembler;
-pub use core::{
-    EndpointId, EndpointInfo, InputConnection, MidiEndpoints, MidiSession, UmpCapability,
-};
-pub use core::{Error, Result};
-pub use core::{HardwareMidiInputs, InputProducerHandle, PortInfo, PortType};
+// No `///` on these: a doc comment on a `pub mod` shadows the module's own
+// `//!` and re-resolves its intra-doc links in this scope.
+pub mod backend;
+pub mod capability;
+pub mod endpoints;
+pub mod error;
+pub mod port;
+pub mod session;
+pub mod sysex;
 
-/// The port vocabulary as a group, so a consumer can write
-/// `tutti_midi_hardware::port::*` without knowing it sits under [`crate::core`].
-pub use core::port;
+pub use capability::{EndpointId, EndpointInfo, UmpCapability};
+pub use endpoints::{InputConnection, MidiEndpoints};
+pub use error::{Error, Result};
+pub use port::{HardwareMidiInputs, InputProducerHandle, PortInfo, PortType};
+pub use session::MidiSession;
+pub use sysex::Sysex7ByteAssembler;
 
 #[cfg(target_os = "macos")]
-pub use core::{UmpVirtualDestination, UmpVirtualSource};
+pub use backend::coremidi::{UmpVirtualDestination, UmpVirtualSource};
 
 // --- Re-exports from tutti-midi-types (the pure MIDI vocabulary) ---
 

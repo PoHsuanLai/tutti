@@ -5,8 +5,8 @@ use std::sync::Mutex;
 use super::client::SeqClient;
 use super::enumerate::unpack_id;
 use super::sys;
-use crate::core::capability::EndpointId;
-use crate::core::error::Result;
+use crate::capability::EndpointId;
+use crate::error::Result;
 use tutti_midi_types::ump::MidiEvent;
 use tutti_midi_types::MidiOut;
 

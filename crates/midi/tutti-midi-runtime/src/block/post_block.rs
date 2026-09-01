@@ -396,19 +396,10 @@ mod tests {
         );
     }
 
-    /// With no router wired there is nowhere to deliver, but the sink must still
-    /// be drained — otherwise events accumulate and fan out against a later
-    /// block once one appears.
-    #[test]
-    fn no_queue_still_drains() {
-        let table = MidiRoutingTable::new();
-        let post = MidiPostBlock::new(table.snapshot_arc());
-        assert!(post.sink().push(note(60)));
-
-        post.run();
-
-        assert!(post.sink.is_empty());
-    }
+    // NOTE: "with no router wired the sink is still drained" is covered by
+    // `tests/outbound_block_path.rs::an_unrouted_post_block_drains_rather_than_accumulates`,
+    // which builds the same rig and asserts the same emptiness through the
+    // public `sink()` handle rather than reaching into the private field.
 
     /// Overflow is reported rather than silent: a dropped note-off whose note-on
     /// landed is a stuck note.

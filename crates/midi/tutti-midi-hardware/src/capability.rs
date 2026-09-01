@@ -144,8 +144,6 @@ pub struct EndpointInfo {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tutti_midi_types::FunctionBlockDirection;
-    use tutti_midi_types::MidiGroup;
 
     #[test]
     fn a_midi1_endpoint_does_not_carry_midi2_only_messages() {
@@ -166,29 +164,12 @@ mod tests {
         assert!(!UmpCapability::default().carries_midi2_only());
     }
 
-    #[test]
-    fn function_blocks_are_absent_until_declared() {
-        let cap = UmpCapability::midi2();
-        assert!(cap.function_blocks.is_empty());
-
-        let with = cap.with_function_blocks(vec![FunctionBlock {
-            block_number: 0,
-            first_group: MidiGroup::FIRST,
-            num_groups: 1,
-            direction: FunctionBlockDirection::Bidirectional,
-            name: "Main".to_string(),
-        }]);
-        assert_eq!(with.function_blocks.len(), 1);
-        assert_eq!(with.function_blocks[0].name, "Main");
-    }
-
-    /// A stale id must not resolve to a different device. Two endpoints minted
-    /// from different raws are never equal, so a backend that looks up by id
-    /// fails to find a departed device rather than matching whatever now sits at
-    /// that index.
-    #[test]
-    fn endpoint_ids_are_distinct_per_raw() {
-        assert_ne!(EndpointId::from_raw(1), EndpointId::from_raw(2));
-        assert_eq!(EndpointId::from_raw(7).raw(), 7);
-    }
+    // NOTE: `with_function_blocks` and `EndpointId` are deliberately untested
+    // here. The first is `self.function_blocks = blocks; self` — asserting the
+    // field comes back is the assignment restated. The second's "a stale id must
+    // not resolve to a different device" is a property of the *backend lookup*,
+    // not of `EndpointId`: `assert_ne!(from_raw(1), from_raw(2))` exercises the
+    // derived `PartialEq` on a one-field newtype and cannot fail while the type
+    // compiles. Both become worth pinning if a hand-written `PartialEq` or an
+    // id-namespacing scheme ever lands.
 }

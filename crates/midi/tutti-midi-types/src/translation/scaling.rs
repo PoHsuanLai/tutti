@@ -265,24 +265,6 @@ mod tests {
         }
     }
 
-    /// The endpoints and the center land exactly.
-    ///
-    /// `0.5 * 65535.0` is `32767.5` — it does *not* give `0x8000`, which is why
-    /// the conversion routes through the spec scaler rather than multiplying.
-    #[test]
-    fn velocity_endpoints_and_center_are_exact() {
-        use tutti_types::Velocity;
-        assert_eq!(velocity_to_midi2(Velocity::SILENT), 0);
-        assert_eq!(velocity_to_midi2(Velocity::MAX), 0xffff);
-        assert_eq!(velocity_to_midi2(Velocity::CENTER), 0x8000);
-        // And `note_on_7bit`'s path agrees with the widened one, so the two
-        // constructors cannot disagree about the same note.
-        assert_eq!(
-            velocity_to_midi2(Velocity::CENTER),
-            midi1_velocity_to_midi2(velocity_to_midi1(Velocity::CENTER))
-        );
-    }
-
     /// Out-of-range input is clamped, not wrapped.
     ///
     /// `as u8` on a value above 255 wraps, which would turn the loudest
@@ -306,24 +288,27 @@ mod tests {
         assert_eq!(midi1_cc_to_midi2(0), 0);
     }
 
+    /// Promoting a MIDI 1.0 value and narrowing it back reproduces the original
+    /// for *every* code in the source range — the MCM widening in Appendix D.1.3
+    /// is exactly invertible, and a 1.0 device round-tripped through a 2.0 graph
+    /// must not drift.
     #[test]
-    fn velocity_roundtrip() {
+    fn every_midi1_code_survives_promotion_and_narrowing() {
         for v in 0..=127u8 {
-            assert_eq!(midi2_velocity_to_midi1(midi1_velocity_to_midi2(v)), v);
+            assert_eq!(
+                midi2_velocity_to_midi1(midi1_velocity_to_midi2(v)),
+                v,
+                "velocity {v}"
+            );
+            assert_eq!(midi2_cc_to_midi1(midi1_cc_to_midi2(v)), v, "cc {v}");
         }
-    }
-
-    #[test]
-    fn cc_roundtrip() {
-        for v in 0..=127u8 {
-            assert_eq!(midi2_cc_to_midi1(midi1_cc_to_midi2(v)), v);
-        }
-    }
-
-    #[test]
-    fn pitch_bend_roundtrip() {
+        // Pitch bend is 14-bit, so it gets its own full sweep.
         for v in 0..=16383u16 {
-            assert_eq!(midi2_pitch_bend_to_midi1(midi1_pitch_bend_to_midi2(v)), v);
+            assert_eq!(
+                midi2_pitch_bend_to_midi1(midi1_pitch_bend_to_midi2(v)),
+                v,
+                "bend {v}"
+            );
         }
     }
 
@@ -375,7 +360,8 @@ mod tests {
     }
 
     /// The three fixed points stay exact — the property the 7-bit rung existed
-    /// to protect, and the reason a plain `* 65535.0` is wrong.
+    /// to protect, and the reason a plain `* 65535.0` is wrong (`0.5 * 65535.0`
+    /// is `32767.5`, which is not `0x8000`).
     #[test]
     fn velocity_endpoints_and_centre_are_exact() {
         use tutti_types::Velocity;
@@ -386,6 +372,12 @@ mod tests {
             "centre must be mezzo-forte"
         );
         assert_eq!(velocity_to_midi2(Velocity::MAX), u16::MAX);
+        // And `note_on_7bit`'s path agrees with the widened one, so the two
+        // constructors cannot disagree about the same note.
+        assert_eq!(
+            velocity_to_midi2(Velocity::CENTER),
+            midi1_velocity_to_midi2(velocity_to_midi1(Velocity::CENTER))
+        );
     }
 
     /// A `Velocity` survives a round trip far better than the 7-bit grid allows.
@@ -401,18 +393,6 @@ mod tests {
         }
     }
 
-    /// Promoting a real MIDI 1.0 velocity is untouched: it widens by exact MCM,
-    /// because there the 7-bit value *is* the original and must be reproduced.
-    #[test]
-    fn a_seven_bit_wire_velocity_still_widens_by_exact_mcm() {
-        assert_eq!(midi1_velocity_to_midi2(0), 0x0000);
-        assert_eq!(midi1_velocity_to_midi2(64), 0x8000);
-        assert_eq!(midi1_velocity_to_midi2(127), 0xffff);
-        // And the inverse is exact for every code.
-        for c in 0u8..=127 {
-            assert_eq!(midi2_velocity_to_midi1(midi1_velocity_to_midi2(c)), c);
-        }
-    }
     /// The two directions are inverses at the center, not merely near it.
     ///
     /// `velocity_from_midi2` was a plain `v / 0xffff`, which maps `0x8000` to

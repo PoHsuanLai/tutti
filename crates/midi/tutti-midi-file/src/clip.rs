@@ -103,15 +103,10 @@ mod tests {
     use tutti_midi_types::MidiEvent;
     use tutti_midi_types::{Bpm, MidiChannel, MidiGroup};
 
-    fn temp_path(name: &str) -> std::path::PathBuf {
-        let mut p = std::env::temp_dir();
-        p.push(format!("tutti_clip_io_{name}"));
-        p
-    }
-
     #[test]
     fn round_trips_a_clip_through_a_file() {
-        let path = temp_path("round_trip.midi2");
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("round_trip.midi2");
         let events = [
             ClipEvent::new(
                 0,
@@ -148,7 +143,6 @@ mod tests {
         );
         // The whole point of the format: velocity survives at 16 bits.
         assert_eq!(notes[0].velocity, 0xABCD);
-        std::fs::remove_file(&path).ok();
     }
 
     #[test]
@@ -169,52 +163,33 @@ mod tests {
         assert_eq!(MidiFileKind::sniff(b""), None);
     }
 
+    /// `sniff_path` answers from the file's magic, and distinguishes the three
+    /// outcomes a caller must tell apart: recognised, readable-but-unrecognised,
+    /// and unreadable.
+    ///
+    /// The extension case is the trap this closes — a clip file named `.mid`.
+    /// The extension says SMF; the magic says otherwise, and the magic wins.
     #[test]
-    fn sniff_path_reads_only_the_header() {
-        let path = temp_path("sniff.midi2");
-        // A clip long enough that reading it whole would be wasteful.
-        let events: Vec<ClipEvent> = (0..500)
-            .map(|i| {
-                ClipEvent::new(
-                    i,
-                    MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
-                )
-            })
-            .collect();
-        write_clip_file_to_path(&path, 96, None, &events).unwrap();
+    fn sniff_path_reads_the_magic_not_the_extension() {
+        let dir = tempfile::tempdir().unwrap();
 
+        // A clip file under an SMF extension still sniffs as a clip file, and
+        // the SMF reader rejects it rather than mis-parsing it.
+        let misnamed = dir.path().join("misnamed.mid");
+        write_clip_file_to_path(&misnamed, 96, None, &[]).unwrap();
         assert_eq!(
-            MidiFileKind::sniff_path(&path).unwrap(),
+            MidiFileKind::sniff_path(&misnamed).unwrap(),
             Some(MidiFileKind::ClipFile)
         );
-        std::fs::remove_file(&path).ok();
-    }
+        assert!(crate::smf::tracks_from_path(&misnamed).is_err());
+        assert!(read_clip_file_from_path(&misnamed).is_ok());
 
-    #[test]
-    fn sniff_path_separates_unreadable_from_unrecognised() {
-        let path = temp_path("not_midi.bin");
-        std::fs::write(&path, b"just some bytes").unwrap();
         // Readable but unrecognised — `Ok(None)`, not an error.
-        assert_eq!(MidiFileKind::sniff_path(&path).unwrap(), None);
-        std::fs::remove_file(&path).ok();
+        let junk = dir.path().join("not_midi.bin");
+        std::fs::write(&junk, b"just some bytes").unwrap();
+        assert_eq!(MidiFileKind::sniff_path(&junk).unwrap(), None);
 
         // Missing file — an error, not `Ok(None)`.
-        assert!(MidiFileKind::sniff_path(temp_path("does_not_exist.midi2")).is_err());
-    }
-
-    #[test]
-    fn a_clip_file_is_not_mistaken_for_an_smf_by_extension() {
-        // The trap this exists to close: a clip file named `.mid`. Extension
-        // says SMF; the magic says otherwise, and the magic is right.
-        let path = temp_path("misnamed.mid");
-        write_clip_file_to_path(&path, 96, None, &[]).unwrap();
-
-        assert_eq!(
-            MidiFileKind::sniff_path(&path).unwrap(),
-            Some(MidiFileKind::ClipFile)
-        );
-        assert!(crate::smf::tracks_from_path(&path).is_err());
-        assert!(read_clip_file_from_path(&path).is_ok());
-        std::fs::remove_file(&path).ok();
+        assert!(MidiFileKind::sniff_path(dir.path().join("absent.midi2")).is_err());
     }
 }

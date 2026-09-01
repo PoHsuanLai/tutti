@@ -20,3 +20,9 @@ tutti-core = { path = "../../core/tutti-core", default-features = false, feature
 # midly's workspace base is no_std; re-add the `std` + `parallel` features this
 # crate's SMF I/O relies on (midly's own default).
 midly = { workspace = true, features = ["std", "parallel"] }
+
+[dev-dependencies]
+# The path-based clip tests need a private directory. nextest runs each test in
+# its own process, so a fixed name under `std::env::temp_dir()` is a shared
+# mutable path that two concurrent runs of the same binary race on.
+tempfile = "3.8"

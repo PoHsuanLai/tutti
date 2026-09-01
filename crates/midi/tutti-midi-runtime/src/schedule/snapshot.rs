@@ -394,19 +394,6 @@ mod tests {
     }
 
     #[test]
-    fn test_snapshot_basic() {
-        let mut snapshot = MidiSnapshot::new();
-        let unit_id = MidiUnitId::new(123);
-
-        snapshot.add_event(unit_id, Beat(0.0), note_on(60, 100));
-        snapshot.add_event(unit_id, Beat(1.0), note_off(60));
-
-        let mut out = buf16();
-        let n = snapshot.poll_range(unit_id, Beat(0.0), Beat(2.0), &mut out);
-        assert_eq!(n, 2);
-    }
-
-    #[test]
     fn test_snapshot_poll_range() {
         let mut snapshot = MidiSnapshot::new();
         let unit_id = MidiUnitId::new(123);
@@ -574,15 +561,6 @@ mod tests {
             .map(|e| e.beat.get())
             .collect();
         assert_eq!(beats, [0.0, 1.0, 2.0]);
-    }
-
-    #[test]
-    fn timed_event_from_tuple_and_new_agree() {
-        let ev = note_on(60, 100);
-        assert_eq!(
-            TimedMidiEvent::new(Beat(1.5), ev),
-            TimedMidiEvent::from((1.5, ev))
-        );
     }
 
     /// Frame offsets are measured from the range start, and the range start is

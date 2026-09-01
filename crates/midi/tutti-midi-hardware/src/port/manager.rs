@@ -472,8 +472,14 @@ mod tests {
         assert!(manager.is_port_active(PortType::Input, port_id));
     }
 
+    /// A drained event is tagged with the port it came from.
+    ///
+    /// Named for the seam rather than "input flow": `async_port` has a test of
+    /// the same shape one layer down, and two tests sharing a name make
+    /// `-E 'test(name)'` ambiguous. What is unique here is `events[0].0` — the
+    /// port attribution the single-port drain cannot assert.
     #[test]
-    fn test_input_flow() {
+    fn manager_tags_drained_events_with_their_port_index() {
         let manager = HardwareMidiInputs::new(256);
 
         let input_id = manager.create_input_port("Input");

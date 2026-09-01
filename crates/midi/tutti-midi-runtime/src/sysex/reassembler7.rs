@@ -280,18 +280,10 @@ mod tests {
         assert_eq!(sysex7_to_ci(&got_b.expect("b completes")), Some(b));
     }
 
-    #[test]
-    fn non_sysex7_event_is_ignored() {
-        let mut r = Sysex7PacketReassembler::new();
-        assert!(r
-            .push(&MidiEvent::note_on(
-                MidiGroup::FIRST,
-                MidiChannel::FIRST,
-                60,
-                0x8000
-            ))
-            .is_none());
-    }
+    // NOTE: "a non-SysEx7 event yields nothing" is the weaker half of
+    // `same_group_traffic_terminates_the_run` below, which pushes the identical
+    // note-on and asserts both the `None` *and* that the run in flight was
+    // dropped — the consequence that actually matters.
 
     /// A multi-packet run on `group`, for termination tests.
     fn multi_packet_run(group: MidiGroup) -> Vec<MidiEvent> {

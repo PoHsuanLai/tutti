@@ -288,15 +288,10 @@ pub(crate) fn check(code: c_int, operation: &'static str) -> crate::error::Resul
 mod tests {
     use super::*;
 
-    /// The layout asserts above are `const`, so they fire at compile time. This
-    /// re-states them at runtime so a reader sees the numbers, and so
-    /// `cargo test` output records which layout was verified.
-    #[test]
-    fn the_ump_event_layout_matches_the_c_struct() {
-        assert_eq!(std::mem::size_of::<snd_seq_ump_event_t>(), 32);
-        assert_eq!(std::mem::align_of::<snd_seq_ump_event_t>(), 4);
-        assert_eq!(std::mem::offset_of!(snd_seq_ump_event_t, ump), 16);
-    }
+    // NOTE: the struct layout (size 32, align 4, and every field offset) is
+    // pinned by the `const _: () = assert!(...)` block above, which fails the
+    // *build* rather than a test run. A runtime test restating a subset of those
+    // numbers cannot fail on its own, so it is not written here.
 
     /// A zeroed event is the "nothing set" starting point the send path fills
     /// in; if `Default` ever stopped being all-zero, a stale `dest` would send

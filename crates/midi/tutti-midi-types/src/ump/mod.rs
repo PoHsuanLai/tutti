@@ -342,13 +342,10 @@ mod tests {
         assert_eq!(core::mem::size_of::<MidiEvent>(), 20);
     }
 
-    #[test]
-    fn with_frame_offset_preserves_payload() {
-        let ev = MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000);
-        let shifted = ev.with_frame_offset(128);
-        assert_eq!(shifted.frame_offset, 128);
-        assert_eq!(shifted.data, ev.data);
-    }
+    // NOTE: that `with_frame_offset` sets the offset without disturbing the
+    // payload is pinned by `message::tests::channel_controllers_round_trip_to_identical_wire_bytes`,
+    // which stamps offset 91 onto four events and then asserts the data words
+    // come back byte-identical through decode → re-encode.
 
     #[test]
     fn velocity_u16_is_lossless_where_u7_is_not() {

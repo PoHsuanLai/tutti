@@ -486,30 +486,10 @@ mod tests {
         assert!(source.sync_to_transport(512).is_none());
     }
 
-    #[test]
-    fn emit_window_is_pure_and_offsets_correctly() {
-        // emit_window touches no transport — feed it a hand-built window.
-        let transport = Arc::new(TestTransport::new(Bpm(120.0)));
-        let source = one_note_source(&transport);
-
-        // 120 BPM @ 44.1kHz → 22050 samples/beat. Window [0.0, 1.0) covers both.
-        let beats_per_sample = BeatDuration(120.0 / 60.0 / 44100.0);
-        let window = BeatWindow {
-            start_beat: Beat(0.0),
-            end_beat: Beat(1.0),
-            beats_per_sample,
-            max_offset: 22049,
-        };
-        let mut buf = [MidiEvent::noop(); 8];
-        let n = source.emit_window(&window, &mut buf);
-        assert_eq!(n, 2);
-        assert_eq!(buf[0].frame_offset, 0); // beat 0.0
-        assert!(
-            (buf[1].frame_offset as i64 - 11025).abs() < 4, // beat 0.5
-            "got {}",
-            buf[1].frame_offset
-        );
-    }
+    // NOTE: `emit_window`'s beat→frame mapping is pinned publicly by
+    // `emits_event_at_correct_frame_offset`, which drives the same two events
+    // through `poll_unit` (whose whole body is `sync_to_transport` + this) and
+    // asserts the same two offsets — 0 and ~11025.
 
     #[test]
     fn emit_window_respects_out_buffer_capacity() {

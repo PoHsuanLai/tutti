@@ -377,21 +377,11 @@ mod tests {
         assert_ne!(Muid::from_seed(0x0FFF_FFFF), Muid::BROADCAST);
     }
 
-    #[test]
-    fn header_round_trips() {
-        let h = CiHeader {
-            device_id: CI_DEVICE_ID_FUNCTION_BLOCK,
-            ci_version: CI_VERSION,
-            source: Muid(0x0123_4567),
-            destination: Muid::BROADCAST,
-        };
-        let mut bytes = Vec::new();
-        h.encode(discovery::SUB_ID2_DISCOVERY, &mut bytes);
-        let (back, sub_id2, at) = CiHeader::decode(&bytes).expect("decodes");
-        assert_eq!(at, CiHeader::LEN);
-        assert_eq!(sub_id2, discovery::SUB_ID2_DISCOVERY);
-        assert_eq!(back, h);
-    }
+    // NOTE: `CiHeader::encode` / `decode` are private, and every `CiMessage`
+    // round-trip in this module and in `profile` / `property` / `discovery`
+    // carries a header through both — `invalidate_muid_round_trips_over_sysex7`
+    // below compares whole messages, header included. A separate header-only
+    // round-trip asserts nothing those do not.
 
     #[test]
     fn invalidate_muid_round_trips_over_sysex7() {

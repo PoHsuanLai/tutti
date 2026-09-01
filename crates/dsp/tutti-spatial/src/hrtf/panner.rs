@@ -272,6 +272,20 @@ impl HrtfBinaural {
         self.aim.aim_at(azimuth, elevation);
     }
 
+    /// Rebuilds the HRIR sphere at the new rate and **discards** the streaming
+    /// state: the frame bridge and the overlap tails are zeroed, so a change
+    /// mid-stream drops the convolution tail in flight. It resamples and
+    /// reallocates the whole dataset, which is why it is guarded by the
+    /// unchanged-rate early return above and must never be called on the audio
+    /// path.
+    ///
+    /// The fundsp contract allows either answer (`AudioUnit::set_sample_rate`:
+    /// "the unit is allowed to reset itself here... if the sample rate stays
+    /// unchanged, the goal is to maintain current state"), and tutti's two
+    /// implementors sit at opposite ends of that latitude. The other is
+    /// `tutti_sampler`'s stretch unit, which retunes its grid geometry and keeps
+    /// its phase history, allocation-free. A caller that treats the two as
+    /// interchangeable is the thing that breaks.
     pub(crate) fn set_sample_rate(&mut self, sample_rate: impl Into<SampleRate>) {
         // Resolve to the sphere's own integral vocabulary and compare *before*
         // building a candidate: `HrirSource::new` copies the HRIR bytes, so

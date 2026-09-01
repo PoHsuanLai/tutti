@@ -11,11 +11,11 @@
 
 use tutti_core::dsp::{AudioUnit as _, Net};
 use tutti_core::Ordering;
-use tutti_types::{Hz, UnitParam, Q};
 use tutti_nodes::{
     AtomicSourceNode, DistortionNode, ParamPorts, ParamSumNode, ShapeKind, StereoSvfFilterNode,
     SvfType,
 };
+use tutti_types::{Hz, UnitParam, Q};
 
 /// Signal to push through every node under test.
 fn signal(n: usize) -> Vec<f32> {

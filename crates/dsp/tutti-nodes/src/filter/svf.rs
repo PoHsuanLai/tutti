@@ -233,7 +233,17 @@ impl<F: Real> SvfFilterNode<F> {
     ///
     /// `q` around `0.707` is the flattest (Butterworth) response; higher values
     /// resonate at the cutoff, and a band-pass or notch narrows as it rises.
-    /// Coefficients are computed here, so the node is ready to run.
+    ///
+    /// Coefficients are computed here, but **against the placeholder
+    /// [`DEFAULT_SAMPLE_RATE`]** — a cutoff only means anything relative to
+    /// Nyquist, and the device rate is not known yet. Call
+    /// [`AudioUnit::set_sample_rate`] before the first `process`; it recomputes
+    /// them. Skip it at 48 kHz and the corner sits 8.8% high (a 1 kHz low-pass
+    /// cuts at 1088 Hz) — a filter that still filters, just not where it was
+    /// asked to. See the crate-level "born at a placeholder rate" section.
+    ///
+    /// [`DEFAULT_SAMPLE_RATE`]: tutti_core::dsp::DEFAULT_SAMPLE_RATE
+    /// [`AudioUnit::set_sample_rate`]: tutti_core::AudioUnit::set_sample_rate
     pub fn new(filter_type: SvfType, frequency: impl Into<Hz>, q: impl Into<Q>) -> Self {
         let frequency = frequency.into();
         let q = q.into();
@@ -485,6 +495,16 @@ impl<F: Real> StereoSvfFilterNode<F> {
     ///
     /// Speaker placement is the upstream panner's job: this is a per-channel
     /// filter, not a spatial process.
+    ///
+    /// **Starts at the placeholder [`DEFAULT_SAMPLE_RATE`]**; call
+    /// [`AudioUnit::set_sample_rate`] before the first `process` or every
+    /// channel's corner sits 8.8% high at 48 kHz. The coefficients are shared,
+    /// so the skew is identical across the width — wrong everywhere rather than
+    /// unbalanced, which is why widening does not make it any easier to hear.
+    /// See the crate-level "born at a placeholder rate" section.
+    ///
+    /// [`DEFAULT_SAMPLE_RATE`]: tutti_core::dsp::DEFAULT_SAMPLE_RATE
+    /// [`AudioUnit::set_sample_rate`]: tutti_core::AudioUnit::set_sample_rate
     pub fn with_channels(
         channels: usize,
         filter_type: SvfType,

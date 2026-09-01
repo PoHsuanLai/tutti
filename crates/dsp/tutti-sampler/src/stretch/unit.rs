@@ -521,6 +521,18 @@ impl AudioUnit for Unit {
         self.intake_debt = 0.0;
     }
 
+    /// Retunes the geometry and **preserves** all running state — the phase
+    /// history, the intake debt, the channel claim. Allocation-free, so a device
+    /// change mid-stream costs a per-channel geometry rebuild and nothing else.
+    ///
+    /// The fundsp contract allows either answer (`AudioUnit::set_sample_rate`:
+    /// "the unit is allowed to reset itself here... if the sample rate stays
+    /// unchanged, the goal is to maintain current state"), and tutti's two
+    /// implementors sit at opposite ends of that latitude. The other is
+    /// `tutti_spatial`'s `HrtfBinaural::set_sample_rate`, which resamples and
+    /// rebuilds its whole HRIR sphere and zeroes the streaming buffers —
+    /// allocating, and far from free. A caller that treats the two as
+    /// interchangeable is the thing that breaks.
     fn set_sample_rate(&mut self, sample_rate: SampleRate) {
         // The grid's window and hop are sample counts and its phase table is
         // their ratio, so none of the vocoder state depends on the rate. Only

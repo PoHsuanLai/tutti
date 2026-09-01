@@ -106,6 +106,17 @@ impl<F: Real> LadderFilterNode<F> {
     ///
     /// `resonance` is clamped to `0.0..=1.0`; `0.0` gives no emphasis at the
     /// cutoff and values near `1.0` approach self-oscillation.
+    ///
+    /// **Starts at the placeholder [`DEFAULT_SAMPLE_RATE`]**: the coefficients
+    /// computed here are relative to Nyquist, which is not known until the
+    /// device is open. Call [`AudioUnit::set_sample_rate`] before the first
+    /// `process`; it recomputes them. Skip it at 48 kHz and the corner sits
+    /// 8.8% high, and the resonance peak moves with it — on a ladder that is
+    /// the audible half, since the emphasis is what the ear tracks. See the
+    /// crate-level "born at a placeholder rate" section.
+    ///
+    /// [`DEFAULT_SAMPLE_RATE`]: tutti_core::dsp::DEFAULT_SAMPLE_RATE
+    /// [`AudioUnit::set_sample_rate`]: tutti_core::AudioUnit::set_sample_rate
     pub fn new(
         ladder_type: LadderType,
         frequency: impl Into<Hz>,

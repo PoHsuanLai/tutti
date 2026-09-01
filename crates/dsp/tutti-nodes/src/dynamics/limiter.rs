@@ -128,6 +128,22 @@ pub struct LimiterNode {
     release: Param<Seconds>,
 
     ring: LookaheadRing,
+    /// The lookahead window **as requested**, which is the only form a rate
+    /// change can be re-derived from.
+    ///
+    /// The ring's frame count is a lossy view of this: it is `_ceil`ed, so
+    /// recovering seconds by dividing the count by the rate returns a slightly
+    /// *longer* window than was asked for. Re-ceiling that at a new rate ratchets
+    /// the lookahead up a little on every `set_sample_rate`, and the drift
+    /// accumulates rather than cancelling — 5.000 ms becomes 5.011, then 5.021,
+    /// then 5.034 across a few device changes. Keeping the request means every
+    /// derivation starts from the same number, so the count is a pure function
+    /// of (`lookahead`, `sample_rate`) and rate changes commute.
+    ///
+    /// Same reason `release` stays a `Param<Seconds>` and the compressor and gate
+    /// keep their `AttackRelease` in [`Seconds`]: the derived coefficient is
+    /// never the recoverable form.
+    lookahead: Seconds,
     /// Audio channel width. Gain reduction is linked across all channels (peak
     /// = max-abs over the frame), matching the stereo-linked design.
     layout: ChannelLayout,
@@ -169,6 +185,14 @@ impl LimiterNode {
     /// headroom. Adjust the window with
     /// [`with_lookahead`](Self::with_lookahead) and the recovery with
     /// [`with_release`](Self::with_release).
+    ///
+    /// **Starts at the placeholder [`DEFAULT_SAMPLE_RATE`]**; see
+    /// [`with_channels`](Self::with_channels), which this delegates to, for what
+    /// goes wrong if [`AudioUnit::set_sample_rate`] is not called before the
+    /// first `process`.
+    ///
+    /// [`DEFAULT_SAMPLE_RATE`]: tutti_core::dsp::DEFAULT_SAMPLE_RATE
+    /// [`AudioUnit::set_sample_rate`]: tutti_core::AudioUnit::set_sample_rate
     pub fn new(threshold_db: impl Into<Db>, ceiling_db: impl Into<Db>) -> Self {
         Self::with_channels(ChannelLayout::STEREO, threshold_db, ceiling_db)
     }
@@ -180,6 +204,22 @@ impl LimiterNode {
     /// every channel, so a loud peak in one channel ducks them all together and
     /// the image does not shift — the surround generalization of the stereo
     /// design. Parameters are as [`new`](Self::new).
+    ///
+    /// **Starts at the placeholder [`DEFAULT_SAMPLE_RATE`]**, and here that
+    /// governs an *allocation*: the lookahead ring is sized in samples from the
+    /// 5 ms window, and the envelope follower's attack/release coefficients are
+    /// derived the same way. Call [`AudioUnit::set_sample_rate`] before the
+    /// first `process`; it resizes the ring and recomputes the coefficients.
+    ///
+    /// Skipping it at 48 kHz gives a ring holding 4.6 ms where 5 ms was asked
+    /// for, so the limiter sees a peak later than its own reported latency
+    /// promises and lets the front edge through — a limiter that mostly limits,
+    /// with occasional overs above the ceiling it guarantees. The release skews
+    /// by the same 8.8%. See the crate-level "born at a placeholder rate"
+    /// section.
+    ///
+    /// [`DEFAULT_SAMPLE_RATE`]: tutti_core::dsp::DEFAULT_SAMPLE_RATE
+    /// [`AudioUnit::set_sample_rate`]: tutti_core::AudioUnit::set_sample_rate
     pub fn with_channels(
         channels: impl Into<ChannelLayout>,
         threshold_db: impl Into<Db>,
@@ -202,6 +242,7 @@ impl LimiterNode {
             ceiling_db: Param::new(ceiling_db.into()),
             release: Param::new(Seconds(0.1)),
             ring: LookaheadRing::new(n, lookahead_samples),
+            lookahead: lookahead_secs,
             layout,
             channels: n,
             in_frame: vec![0.0; n],
@@ -288,8 +329,12 @@ impl LimiterNode {
     /// Allocates and clears the rings, so call it during setup — never on a
     /// live node.
     pub fn with_lookahead(mut self, lookahead: impl Into<Seconds>) -> Self {
+        // Keep the request, not just the count it derives: `set_sample_rate`
+        // re-derives from this, and a count is `_ceil`ed and so cannot round-trip
+        // back to the seconds that produced it.
+        self.lookahead = lookahead.into();
         // Ceil: a lookahead ring must hold at least the requested window.
-        let samples = lookahead.into().to_samples_ceil(self.sample_rate);
+        let samples = self.lookahead.to_samples_ceil(self.sample_rate);
         self.ring.resize(samples.get().max(1));
         self
     }
@@ -439,15 +484,14 @@ impl AudioUnit for LimiterNode {
     }
 
     fn set_sample_rate(&mut self, sample_rate: tutti_core::SampleRate) {
-        // Recover the lookahead as a duration at the *old* rate, then re-derive
-        // the frame count at the new one, so the wall-clock lookahead survives
-        // a rate change.
-        let lookahead_secs =
-            Seconds(self.ring.lookahead_samples as f32 / self.sample_rate.get() as f32);
+        // Re-derive the frame count from the *requested* window, so the
+        // wall-clock lookahead survives a rate change. Deriving it from the
+        // ring's current count instead would re-ceil an already-ceiled value and
+        // ratchet the window up on every call — see the `lookahead` field.
         self.sample_rate = sample_rate;
         self.follower
             .set_sample_rate(sample_rate, Seconds(0.0), self.release.load());
-        let new_samples = lookahead_secs.to_samples_ceil(sample_rate).get();
+        let new_samples = self.lookahead.to_samples_ceil(sample_rate).get();
         self.ring.resize(new_samples.max(1));
     }
 
@@ -563,6 +607,10 @@ impl Clone for LimiterNode {
             ceiling_db: self.ceiling_db.handle(),
             release: self.release.handle(),
             ring: self.ring.clone(),
+            // Carried, not re-derived: `Net` clones a unit to probe it and the
+            // clone may be handed a different rate, so a clone that lost the
+            // request would re-derive its lookahead from the ceiled count.
+            lookahead: self.lookahead,
             layout: self.layout,
             channels: self.channels,
             in_frame: self.in_frame.clone(),
@@ -697,6 +745,12 @@ impl AudioUnit for BrickwallLimiterNode {
 
     fn reset(&mut self) {}
 
+    /// Deliberately empty, and the only node in this crate that can honestly
+    /// leave it so: a brickwall is a memoryless `clamp` with no lookahead, no
+    /// envelope and therefore no time constant to re-derive. It is exempt from
+    /// the crate-level "born at a placeholder rate" rule for that reason, not by
+    /// oversight — unlike [`LimiterNode`], whose ring and follower both need
+    /// the real rate.
     fn set_sample_rate(&mut self, _sample_rate: tutti_core::SampleRate) {}
 
     #[inline]
@@ -802,6 +856,91 @@ impl Clone for BrickwallLimiterNode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A limiter is **born at the placeholder rate**, and `set_sample_rate` is
+    /// what makes its lookahead a wall-clock 5 ms rather than a frame count.
+    ///
+    /// This is the invariant the constructor docs promise, asserted as the
+    /// *duration* the ring holds rather than as a frame count, because the
+    /// count is supposed to change with the rate and only the duration is
+    /// supposed to survive. Both halves matter and neither implies the other:
+    ///
+    /// - Uncorrected, the ring holds 221 frames — which is 5 ms at 44100 and
+    ///   only 4.6 ms at 48000. That is the documented failure: a limiter that
+    ///   sees a peak later than its reported latency promises.
+    /// - Corrected, the count grows to 240 so the duration stays 5 ms.
+    ///
+    /// Asserted through `AudioUnit::latency`, the same figure PDC compensates
+    /// against, so a regression here is a regression in what the graph is told —
+    /// not merely in a private field.
+    #[test]
+    fn lookahead_is_a_duration_and_set_sample_rate_is_what_preserves_it() {
+        const LOOKAHEAD: Seconds = Seconds(0.005);
+        let device = tutti_core::SampleRate(48_000.0);
+
+        let mut lim = LimiterNode::new(-6.0, -0.3);
+
+        // Born at the placeholder: the count is right for 44100 and wrong for
+        // the device the node is about to run on.
+        let born = lim.ring.lookahead_samples;
+        assert_eq!(
+            born,
+            LOOKAHEAD.to_samples_ceil(DEFAULT_SAMPLE_RATE).get(),
+            "construction must size the ring at the placeholder rate"
+        );
+        let born_secs = born as f32 / device.get() as f32;
+        assert!(
+            born_secs < LOOKAHEAD.get() * 0.95,
+            "an uncorrected ring must be audibly short at {device:?} — that is \
+             the hazard the constructor documents; got {born_secs:.5}s of the \
+             {:.5}s asked for",
+            LOOKAHEAD.get()
+        );
+
+        // The correction: same wall-clock window, more frames.
+        lim.set_sample_rate(device);
+        let fixed = lim.ring.lookahead_samples;
+        assert_eq!(
+            fixed,
+            LOOKAHEAD.to_samples_ceil(device).get(),
+            "set_sample_rate must re-derive the frame count at the new rate"
+        );
+        assert!(
+            fixed > born,
+            "a higher rate needs more frames for the same duration ({born} -> {fixed})"
+        );
+        let fixed_secs = fixed as f32 / device.get() as f32;
+        assert!(
+            (fixed_secs - LOOKAHEAD.get()).abs() < 1e-4,
+            "the wall-clock lookahead must survive the rate change; got {fixed_secs:.5}s"
+        );
+
+        // And the graph is told the corrected figure, not the placeholder one.
+        assert_eq!(
+            lim.latency(),
+            Some(fixed as f64),
+            "reported latency must track the resized ring"
+        );
+
+        // Repeated rate changes must land on the same count each time. The
+        // window is `_ceil`ed, so re-deriving it from the ring's *count* rather
+        // than from the stored request re-rounds an already-rounded value and
+        // ratchets the lookahead up a little on every call — a drift that
+        // accumulates instead of cancelling. Going back and forth pins that the
+        // derivation is a pure function of (request, rate).
+        for _ in 0..4 {
+            lim.set_sample_rate(DEFAULT_SAMPLE_RATE);
+            assert_eq!(
+                lim.ring.lookahead_samples, born,
+                "returning to the original rate must return the original count"
+            );
+            lim.set_sample_rate(device);
+            assert_eq!(
+                lim.ring.lookahead_samples, fixed,
+                "a rate change must not accumulate rounding across calls"
+            );
+        }
+    }
 
     #[test]
     fn test_limiter_reduces_loud_signal() {

@@ -158,10 +158,26 @@ mod tests {
             assert_eq!(result, kResultOk);
             assert_eq!(written, data.len() as i32);
 
+            // `tell` must report the cursor the write left behind. A plugin
+            // saving state writes a chunk and then asks where it landed to
+            // size the next one, so a `tell` stuck at a constant silently
+            // corrupts every multi-chunk save. Nothing else in the crate
+            // calls it, so this is its only cover.
+            let mut pos = -1i64;
+            let result = unsafe { ptr.tell(&mut pos) };
+            assert_eq!(result, kResultOk);
+            assert_eq!(pos, data.len() as i64, "tell must follow the write");
+
             let mut new_pos = 0i64;
             let result = unsafe { ptr.seek(0, kIBSeekSet as i32, &mut new_pos) };
             assert_eq!(result, kResultOk);
             assert_eq!(new_pos, 0);
+
+            // ...and follow a seek back to the start, so a `tell` that merely
+            // returned the stream length would fail here.
+            let mut pos = -1i64;
+            assert_eq!(unsafe { ptr.tell(&mut pos) }, kResultOk);
+            assert_eq!(pos, 0, "tell must follow the seek");
 
             let mut buffer = [0u8; 32];
             let mut bytes_read = 0i32;
@@ -175,6 +191,12 @@ mod tests {
             assert_eq!(result, kResultOk);
             assert_eq!(bytes_read, data.len() as i32);
             assert_eq!(&buffer[..data.len()], data);
+
+            // The read advanced the cursor to the end, not past it: the buffer
+            // was 32 bytes and only 12 were there to read.
+            let mut pos = -1i64;
+            assert_eq!(unsafe { ptr.tell(&mut pos) }, kResultOk);
+            assert_eq!(pos, data.len() as i64, "tell must follow the read");
         });
     }
 

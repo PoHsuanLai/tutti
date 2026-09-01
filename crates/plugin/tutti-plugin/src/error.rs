@@ -272,6 +272,29 @@ mod tests {
             BridgeError::from(PluginError::State("truncated".into())),
             BridgeError::StateSaveError(m) if m == "truncated"
         ));
+
+        // The editor arm is the lossy one going out: `BridgeError` has no
+        // structured editor error, so the typed variant is flattened with
+        // `to_string()` and only its Display text crosses. Assert against the
+        // variant's own Display rather than a copied literal, so rewording the
+        // `#[error(...)]` cannot leave this passing on a stale string.
+        let crashed = EditorError::PluginCrashed;
+        match BridgeError::from(PluginError::Editor(crashed)) {
+            BridgeError::EditorError(msg) => {
+                assert_eq!(msg, EditorError::PluginCrashed.to_string())
+            }
+            other => panic!("expected EditorError, got {other:?}"),
+        }
+        // A variant carrying a field must keep that field's text in the message.
+        match BridgeError::from(PluginError::Editor(EditorError::GuiNotSupported {
+            format: "vst3".into(),
+        })) {
+            BridgeError::EditorError(msg) => assert!(
+                msg.contains("vst3"),
+                "the flattened message dropped the format: {msg:?}"
+            ),
+            other => panic!("expected EditorError, got {other:?}"),
+        }
     }
 
     /// Narrowing back is deliberately lossy in two places, and both are the
@@ -318,5 +341,19 @@ mod tests {
             PluginError::from(BridgeError::ServerNotFound),
             PluginError::Other(_)
         ));
+
+        // Coming back, every editor failure re-enters as
+        // `EditorError::PluginError` regardless of what it was on the way out —
+        // the round trip is not idempotent, and this is where that is visible.
+        // `PluginCrashed` in, `PluginError(<its text>)` out.
+        let there_and_back = PluginError::from(BridgeError::from(PluginError::Editor(
+            EditorError::PluginCrashed,
+        )));
+        match there_and_back {
+            PluginError::Editor(EditorError::PluginError(msg)) => {
+                assert_eq!(msg, EditorError::PluginCrashed.to_string());
+            }
+            other => panic!("expected Editor(PluginError), got {other:?}"),
+        }
     }
 }

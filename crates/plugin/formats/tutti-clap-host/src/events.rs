@@ -2152,7 +2152,9 @@ mod tests {
         let sysex = clap_event_midi_sysex {
             header: clap_event_header {
                 size: header_size::<clap_event_midi_sysex>(),
-                time: 0,
+                // Deliberately non-zero: a `time` that never got copied would
+                // read back as 0 and pass a `time: 0` fixture either way.
+                time: 25,
                 space_id: CLAP_CORE_EVENT_SPACE_ID,
                 type_: CLAP_EVENT_MIDI_SYSEX,
                 flags: 0,
@@ -2173,6 +2175,7 @@ mod tests {
         assert_eq!(output.events().len(), 1);
         match &output.events()[0] {
             ClapEvent::MidiSysex { inner, _data } => {
+                assert_eq!(inner.header.time, 25);
                 assert_eq!(inner.port_index, 0);
                 assert_eq!(_data, &sysex_data);
             }

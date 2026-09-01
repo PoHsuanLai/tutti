@@ -50,6 +50,11 @@ pub fn note_id_to_channel_note(note_id: i32) -> Option<(u8, u8)> {
 mod tests {
     use super::*;
 
+    /// The whole host range is a bijection: every `(channel, note)` mints a
+    /// distinct id and every id decodes back to the pair that made it. An
+    /// exhaustive sweep is cheap here (2048 pairs) and is what makes the
+    /// distinctness and the endpoint claims below unnecessary to state
+    /// separately.
     #[test]
     fn round_trips_within_host_range() {
         for channel in 0..16u8 {
@@ -58,18 +63,9 @@ mod tests {
                 assert_eq!(note_id_to_channel_note(id), Some((channel, note)));
             }
         }
-    }
-
-    #[test]
-    fn ids_are_distinct_per_channel_and_note() {
-        assert_ne!(note_id_for(5, 67), note_id_for(5, 68));
-        assert_ne!(note_id_for(5, 67), note_id_for(6, 67));
-    }
-
-    #[test]
-    fn max_id_is_channel_15_note_127() {
+        // The top of the range is the constant the out-of-range guard is
+        // written against, so pin the two together.
         assert_eq!(note_id_for(15, 127), MAX_HOST_NOTE_ID);
-        assert_eq!(note_id_to_channel_note(MAX_HOST_NOTE_ID), Some((15, 127)));
     }
 
     #[test]

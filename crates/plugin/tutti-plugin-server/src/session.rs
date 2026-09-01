@@ -494,55 +494,51 @@ mod tests {
         assert!(!s.editor.is_open());
     }
 
+    /// Every request a host can send before a plugin is loaded must be
+    /// *answered* — with an absent value, an empty list, or a refusal, but
+    /// never with silence. The host blocks on a reply frame for each of the
+    /// query-shaped ones, so a missing answer is a hang rather than an error.
+    ///
+    /// The table is the point: adding a `HostMessage` variant without adding a
+    /// row leaves its no-plugin path uncovered, and the panic messages name the
+    /// variant so a failure says which one.
     #[test]
-    fn get_parameter_no_plugin() {
-        let mut s = Session::new();
-        let reply = s
-            .handle(HostMessage::GetParameter {
-                param_id: ParamAddress::Opaque(ParamId::new(0)),
-            })
-            .unwrap()
-            .into_reply();
-        match reply {
-            BridgeMessage::ParameterValue { value } => assert!(value.is_none()),
-            other => panic!("expected ParameterValue, got {other:?}"),
+    fn every_request_is_answered_with_no_plugin_loaded() {
+        /// What a no-plugin reply is allowed to be.
+        enum Expect {
+            /// Nothing to say, and nothing waiting on it.
+            Silent,
+            /// A refusal whose message carries this substring.
+            Refusal(&'static str),
+            /// A reply frame whose payload must be absent or empty.
+            EmptyPayload,
         }
-    }
+        use Expect::*;
 
-    #[test]
-    fn get_parameter_list_no_plugin() {
-        let mut s = Session::new();
-        let reply = s
-            .handle(HostMessage::GetParameterList)
-            .unwrap()
-            .into_reply();
-        match reply {
-            BridgeMessage::ParameterList { parameters } => assert!(parameters.is_empty()),
-            other => panic!("expected ParameterList, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn get_parameter_info_no_plugin() {
-        let mut s = Session::new();
-        let reply = s
-            .handle(HostMessage::GetParameterInfo {
-                param_id: ParamAddress::Opaque(ParamId::new(0)),
-            })
-            .unwrap()
-            .into_reply();
-        match reply {
-            BridgeMessage::ParameterInfoResponse { info } => assert!(info.is_none()),
-            other => panic!("expected ParameterInfoResponse, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn process_audio_no_plugin() {
-        let mut s = Session::new();
-        let r = s
-            .handle(HostMessage::ProcessAudio(Box::new(
-                tutti_plugin::server::ProcessAudioData {
+        let cases: Vec<(&str, HostMessage, Expect)> = vec![
+            (
+                "GetParameter",
+                HostMessage::GetParameter {
+                    param_id: ParamAddress::Opaque(ParamId::new(0)),
+                },
+                EmptyPayload,
+            ),
+            (
+                "GetParameterList",
+                HostMessage::GetParameterList,
+                EmptyPayload,
+            ),
+            (
+                "GetParameterInfo",
+                HostMessage::GetParameterInfo {
+                    param_id: ParamAddress::Opaque(ParamId::new(0)),
+                },
+                EmptyPayload,
+            ),
+            ("SaveState", HostMessage::SaveState, EmptyPayload),
+            (
+                "ProcessAudio",
+                HostMessage::ProcessAudio(Box::new(tutti_plugin::server::ProcessAudioData {
                     seq: 0,
                     num_samples: 256,
                     midi_events: IpcMidiEventVec::new(),
@@ -550,22 +546,52 @@ mod tests {
                     note_expression: NoteExpressionChanges::new(),
                     transport: TransportInfo::default(),
                     ..Default::default()
+                })),
+                Refusal("No plugin loaded"),
+            ),
+            (
+                "OpenEditor",
+                HostMessage::OpenEditor { parent_handle: 0 },
+                Refusal("No plugin loaded"),
+            ),
+            (
+                "SetParameter",
+                HostMessage::SetParameter {
+                    param_id: ParamAddress::Opaque(ParamId::new(0)),
+                    value: 0.5,
                 },
-            )))
-            .unwrap();
-        assert_error_contains(r, "No plugin loaded");
-    }
+                Silent,
+            ),
+            ("CloseEditor", HostMessage::CloseEditor, Silent),
+            ("Reset", HostMessage::Reset, Silent),
+        ];
 
-    #[test]
-    fn set_parameter_no_plugin() {
-        let mut s = Session::new();
-        let r = s
-            .handle(HostMessage::SetParameter {
-                param_id: ParamAddress::Opaque(ParamId::new(0)),
-                value: 0.5,
-            })
-            .unwrap();
-        assert_none(r);
+        for (name, msg, expect) in cases {
+            let mut s = Session::new();
+            let r = s
+                .handle(msg)
+                .unwrap_or_else(|e| panic!("{name} errored with no plugin: {e:?}"));
+
+            match expect {
+                Silent => assert!(matches!(r, Reaction::None), "{name}: got {r:?}"),
+                Refusal(needle) => assert_error_contains(r, needle),
+                EmptyPayload => match r.into_reply() {
+                    BridgeMessage::ParameterValue { value } => {
+                        assert!(value.is_none(), "{name}: got a value with no plugin")
+                    }
+                    BridgeMessage::ParameterList { parameters } => {
+                        assert!(parameters.is_empty(), "{name}: got parameters")
+                    }
+                    BridgeMessage::ParameterInfoResponse { info } => {
+                        assert!(info.is_none(), "{name}: got param info")
+                    }
+                    BridgeMessage::StateData { data } => {
+                        assert!(data.is_empty(), "{name}: got state bytes")
+                    }
+                    other => panic!("{name}: unexpected reply {other:?}"),
+                },
+            }
+        }
     }
 
     #[test]
@@ -576,16 +602,6 @@ mod tests {
             .unwrap();
         assert_none(r);
         assert_eq!(s.clock.sample_rate, 96000.0);
-    }
-
-    #[test]
-    fn save_state_no_plugin() {
-        let mut s = Session::new();
-        let reply = s.handle(HostMessage::SaveState).unwrap().into_reply();
-        match reply {
-            BridgeMessage::StateData { data } => assert!(data.is_empty()),
-            other => panic!("expected StateData, got {other:?}"),
-        }
     }
 
     /// A `LoadState` with no plugin loaded answers, and answers with a refusal.
@@ -612,34 +628,12 @@ mod tests {
     }
 
     #[test]
-    fn open_editor_no_plugin() {
-        let mut s = Session::new();
-        let r = s
-            .handle(HostMessage::OpenEditor { parent_handle: 0 })
-            .unwrap();
-        assert_error_contains(r, "No plugin loaded");
-    }
-
-    #[test]
-    fn close_editor_no_plugin() {
-        let mut s = Session::new();
-        let r = s.handle(HostMessage::CloseEditor).unwrap();
-        assert_none(r);
-    }
-
-    #[test]
     fn unload_plugin_clears_shm() {
         let mut s = Session::new();
         let r = s.handle(HostMessage::UnloadPlugin).unwrap();
         assert_none(r);
         assert!(s.plugin.is_none());
         assert!(s.shm.is_none());
-    }
-
-    #[test]
-    fn reset_no_plugin() {
-        let mut s = Session::new();
-        assert_none(s.handle(HostMessage::Reset).unwrap());
     }
 
     #[test]
@@ -714,14 +708,6 @@ mod tests {
         let shm_guard = AudioSlab::create(buffer_name.clone(), layout.clone()).unwrap();
         s.shm = Some(AudioSlab::open(buffer_name, layout).unwrap());
         (s, shm_guard)
-    }
-
-    #[test]
-    #[cfg(feature = "clap")]
-    fn load_clap_plugin() {
-        let _lock = crate::test_utils::plugin_load_lock();
-        let (s, _shm) = load_clap("load_clap", SampleFormat::Float32);
-        assert!(s.plugin.is_some());
     }
 
     #[test]
@@ -930,14 +916,5 @@ mod tests {
             matches!(reply, BridgeMessage::AudioProcessed { .. }),
             "unexpected reply: {reply:?}"
         );
-    }
-
-    #[test]
-    #[cfg(feature = "clap")]
-    fn editor_check_with_plugin() {
-        let _lock = crate::test_utils::plugin_load_lock();
-        let (mut s, _shm) = load_clap("editor_check_clap", SampleFormat::Float32);
-        let plugin = s.plugin.as_mut().expect("plugin loaded");
-        let _editor = plugin.instance().descriptor().editor;
     }
 }

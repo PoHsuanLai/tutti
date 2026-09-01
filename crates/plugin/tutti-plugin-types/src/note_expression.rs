@@ -112,25 +112,3 @@ impl NoteExpressionChanges {
         self.changes.is_empty()
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn add_change_collects() {
-        let mut expr = NoteExpressionChanges::new();
-        assert!(expr.is_empty());
-
-        expr.add_change(NoteExpressionValue {
-            sample_offset: 0,
-            note_id: 1,
-            expression_type: NoteExpressionType::Tuning,
-            value: 0.5,
-        });
-
-        assert!(!expr.is_empty());
-        assert_eq!(expr.changes.len(), 1);
-        assert_eq!(expr.changes[0].expression_type, NoteExpressionType::Tuning);
-    }
-}

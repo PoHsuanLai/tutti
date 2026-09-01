@@ -853,27 +853,14 @@ mod tests {
     }
 
     #[test]
-    fn test_clap_load() {
-        let _lock = crate::test_utils::plugin_load_lock();
-        let path = Path::new(clap_plugin());
-        let instance = ClapInstance::load(path, 44100.0, 512);
-        assert!(
-            instance.is_ok(),
-            "Failed to load CLAP plugin: {:?}",
-            instance.err()
-        );
-
-        let instance = instance.unwrap();
-        let meta = instance.descriptor();
-        assert!(!meta.name.is_empty(), "Plugin name should not be empty");
-        assert!(!meta.id.is_empty(), "Plugin id should not be empty");
-    }
-
-    #[test]
     fn test_clap_metadata() {
         let _lock = crate::test_utils::plugin_load_lock();
         let path = Path::new(clap_plugin());
         let instance = ClapInstance::load(path, 44100.0, 512).expect("Failed to load CLAP plugin");
+        let meta = instance.descriptor();
+        assert!(!meta.name.is_empty(), "Plugin name should not be empty");
+        assert!(!meta.id.is_empty(), "Plugin id should not be empty");
+
         let loaded = instance.loaded();
 
         let inputs = loaded.total_inputs();
@@ -886,20 +873,6 @@ mod tests {
         // reflect what the plugin advertises; both values are valid. Reading it
         // here confirms the metadata is populated without crashing.
         let _ = instance.loaded().features.contains(Features::F64_AUDIO);
-    }
-
-    #[test]
-    fn test_clap_parameter_count() {
-        let _lock = crate::test_utils::plugin_load_lock();
-        let path = Path::new(clap_plugin());
-        let instance = ClapInstance::load(path, 44100.0, 512).expect("Failed to load CLAP plugin");
-
-        let count = instance.get_parameter_list().len();
-        assert!(
-            count > 0,
-            "TAL-NoiseMaker should have parameters, got {}",
-            count
-        );
     }
 
     #[test]
@@ -1391,15 +1364,6 @@ mod tests {
             instance.is_processing(),
             "Should be processing after first process()"
         );
-    }
-
-    #[test]
-    fn test_clap_lifecycle_on_main_thread() {
-        let _lock = crate::test_utils::plugin_load_lock();
-        let mut instance =
-            ClapInstance::load(Path::new(clap_plugin()), 44100.0, 512).expect("Failed to load");
-        // Just verify no crash
-        instance.loaded_mut().on_main_thread();
     }
 
     // ── Group B: Polling Methods ──

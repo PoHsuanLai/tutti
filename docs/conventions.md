@@ -107,6 +107,14 @@ with no drift between the two surfaces.
 is the single most useful paragraph for a reader deciding where to look next, and the
 strongest existing convention in the tree.
 
+**The gate is BOTH workspaces.** The app (`dawai-*`) is a separate cargo
+workspace, and no engine command builds it — `--manifest-path
+crates/bevy-tutti/Cargo.toml --workspace` stops at the engine boundary. An
+engine change that alters a public type must be verified from the repo root as
+well, or it lands green and breaks the app's tests. A newtype migration did
+exactly that: three assertions and two imports in `dawai-model`, invisible to
+every engine gate.
+
 **Every check runs under `--all-features`.** A `cfg`-gated item is invisible to
 a default-features run, and this workspace gates a great deal. Running the gate
 both ways found, in one pass: two doctests that survived a workspace-wide

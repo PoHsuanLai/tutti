@@ -6,9 +6,11 @@
 //! a moving speaker cone fails it. It replaces the "run the example and listen"
 //! step, which no example implemented.
 //!
-//! Skipped when the soundfont is absent, following the pattern in
-//! `synth/soundfont.rs`'s own tests — the asset is in the repo but a consumer
-//! checking out this crate alone may not have it.
+//! The `.sf2` these need is **committed** at
+//! `crates/tutti/assets/soundfonts/TimGM6mb.sf2`, so a missing one is a broken
+//! checkout and fails loudly with the resolved path. These used to skip on the
+//! `None` arm instead — the pattern the copies in `src/soundfont.rs` followed,
+//! where a wrong path meant every one of them silently passed without running.
 
 #![cfg(all(feature = "midi", feature = "soundfont"))]
 
@@ -51,14 +53,25 @@ fn note(number: u8, start: Beat, duration: BeatDuration) -> Vec<TimedMidiEvent> 
     ]
 }
 
-/// The repo's test soundfont, or `None` on a checkout without it.
-fn soundfont() -> Option<Arc<SoundFont>> {
+/// The repo's test soundfont.
+///
+/// Panics with the resolved path rather than returning `None`: `TimGM6mb.sf2` is
+/// **committed**, so a checkout without it is broken, not a configuration this
+/// suite should quietly pass on. The tests here used to `return` on the `None`
+/// arm, which meant a wrong path — the exact bug the copies of this helper in
+/// `src/soundfont.rs` carried — reported success while asserting nothing.
+fn soundfont() -> Arc<SoundFont> {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()? // crates/
-        .parent()? // repo root
+        .parent() // crates/
+        .and_then(|p| p.parent()) // repo root
+        .expect("bevy-tutti lives two levels below the repo root")
         .join("crates/tutti/assets/soundfonts/TimGM6mb.sf2");
-    let mut file = std::fs::File::open(&path).ok()?;
-    SoundFont::new(&mut file).ok().map(Arc::new)
+    let mut file = std::fs::File::open(&path)
+        .unwrap_or_else(|e| panic!("committed test soundfont missing at {}: {e}", path.display()));
+    Arc::new(
+        SoundFont::new(&mut file)
+            .unwrap_or_else(|e| panic!("test soundfont at {} is malformed: {e}", path.display())),
+    )
 }
 
 /// RMS of a rendered stereo block — how loud it actually is.
@@ -87,11 +100,11 @@ fn render(app: &mut App, frames: usize) -> Vec<(f32, f32)> {
 }
 
 /// Set up an app with a real soundfont synth wired to output.
-fn app_with_soundfont() -> Option<(App, Entity)> {
-    let sf = soundfont()?;
+fn app_with_soundfont() -> (App, Entity) {
+    let sf = soundfont();
     let mut settings = SynthesizerSettings::new(SAMPLE_RATE as i32);
     settings.enable_reverb_and_chorus = false;
-    let unit = SoundFontUnit::new(sf, &settings).ok()?;
+    let unit = SoundFontUnit::new(sf, &settings).expect("build the SoundFontUnit");
 
     let mut app = App::new();
     let mut net = Net::new(0, 2);
@@ -129,7 +142,7 @@ fn app_with_soundfont() -> Option<(App, Entity)> {
         .register::<SoundFontUnit>();
 
     let synth = app.world_mut().spawn(AudioNode(node)).id();
-    Some((app, synth))
+    (app, synth)
 }
 
 fn roll(app: &App) {
@@ -147,10 +160,7 @@ fn roll(app: &App) {
 /// means a break anywhere along it.
 #[test]
 fn a_declared_note_produces_audio() {
-    let Some((mut app, synth)) = app_with_soundfont() else {
-        eprintln!("skipping: TimGM6mb.sf2 not present");
-        return;
-    };
+    let (mut app, synth) = app_with_soundfont();
     roll(&app);
 
     app.world_mut().spawn(MidiSourceInstall::new(
@@ -179,10 +189,7 @@ fn a_declared_note_produces_audio() {
 /// only the synth. Setting it is what the audio thread would have done.
 #[test]
 fn the_note_waits_for_its_beat() {
-    let Some((mut app, synth)) = app_with_soundfont() else {
-        eprintln!("skipping: TimGM6mb.sf2 not present");
-        return;
-    };
+    let (mut app, synth) = app_with_soundfont();
     roll(&app);
 
     app.world_mut().spawn(MidiSourceInstall::new(
@@ -217,10 +224,7 @@ fn the_note_waits_for_its_beat() {
 /// the mailbox and popped out stale on the next `clear()`.
 #[test]
 fn preview_still_sounds_under_an_installed_clip() {
-    let Some((mut app, synth)) = app_with_soundfont() else {
-        eprintln!("skipping: TimGM6mb.sf2 not present");
-        return;
-    };
+    let (mut app, synth) = app_with_soundfont();
     roll(&app);
 
     // A clip whose first note is far in the future, so anything audible in the

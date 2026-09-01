@@ -6,9 +6,11 @@
 //! it, and covers a spawner that had no test at all — the soundfont audio tests
 //! next door build their node by hand and never reach this path.
 //!
-//! Skipped when the soundfont is absent, following `synth/soundfont.rs`'s own
-//! tests: the asset is in the repo, but a consumer checking out this crate
-//! alone may not have it.
+//! The `.sf2` these need is **committed** at
+//! `crates/tutti/assets/soundfonts/TimGM6mb.sf2`, so a missing one is a broken
+//! checkout and fails loudly with the resolved path. These used to skip on the
+//! `None` arm instead — the pattern the copies in `src/soundfont.rs` followed,
+//! where a wrong path meant every one of them silently passed without running.
 
 #![cfg(all(feature = "soundfont", feature = "midi"))]
 
@@ -26,14 +28,21 @@ use tutti_core::AudioNode;
 
 const SAMPLE_RATE: f64 = 48_000.0;
 
-/// The repo's test soundfont, decoded, or `None` on a checkout without it.
-fn soundfont_asset() -> Option<SoundFontAsset> {
+/// The repo's test soundfont, decoded.
+///
+/// Panics with the resolved path rather than returning `None`: the asset is
+/// committed, so its absence is a broken checkout and not a configuration this
+/// suite should quietly pass on.
+fn soundfont_asset() -> SoundFontAsset {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()? // crates/
-        .parent()? // repo root
+        .parent() // crates/
+        .and_then(|p| p.parent()) // repo root
+        .expect("bevy-tutti lives two levels below the repo root")
         .join("crates/tutti/assets/soundfonts/TimGM6mb.sf2");
-    let bytes = std::fs::read(path).ok()?;
-    SoundFontAsset::from_bytes(&bytes).ok()
+    let bytes = std::fs::read(&path)
+        .unwrap_or_else(|e| panic!("committed test soundfont missing at {}: {e}", path.display()));
+    SoundFontAsset::from_bytes(&bytes)
+        .unwrap_or_else(|e| panic!("test soundfont at {} is malformed: {e}", path.display()))
 }
 
 /// An app with the soundfont plugin and the engine resources its systems gate on.
@@ -82,10 +91,7 @@ fn run_until_promoted(app: &mut App, entity: bevy_ecs::entity::Entity) -> bool {
 /// node it names is really there.
 #[test]
 fn a_triggered_soundfont_is_bound_to_the_graph_by_its_node_handle() {
-    let Some(asset) = soundfont_asset() else {
-        eprintln!("skipping: TimGM6mb.sf2 not present");
-        return;
-    };
+    let asset = soundfont_asset();
     let mut app = app();
     let handle = insert_asset(&mut app, asset);
 
@@ -129,10 +135,7 @@ fn a_triggered_soundfont_is_bound_to_the_graph_by_its_node_handle() {
 /// node on a later frame, whatever the cause.
 #[test]
 fn a_promoted_soundfont_is_not_rebuilt_every_frame() {
-    let Some(asset) = soundfont_asset() else {
-        eprintln!("skipping: TimGM6mb.sf2 not present");
-        return;
-    };
+    let asset = soundfont_asset();
     let mut app = app();
     let handle = insert_asset(&mut app, asset);
 

@@ -7,6 +7,8 @@
 //! of (channel, note), so behaviour is identical to keying on the raw pair; under
 //! Note Number Rotation an allocator mints distinct ids via [`NoteId::from_raw`].
 
+use tutti_types::MidiChannel;
+
 /// Stable per-note identity.
 ///
 /// The default (MIDI-1) encoding packs `channel` and `note` so
@@ -34,10 +36,10 @@ impl From<NoteId> for u32 {
 impl NoteId {
     /// MIDI-1 / classic-MPE identity: `(channel, note)`.
     ///
-    /// `channel` and `note` are masked to their valid MIDI widths (4 / 7 bits)
-    /// so the packed value is self-consistent with [`channel`](Self::channel) and
-    /// [`note_number`](Self::note_number) — a `note` ≥ 128 or `channel` ≥ 16 can
-    /// never alias a different pair or read back changed.
+    /// `note` is masked to its 7-bit MIDI width so the packed value is
+    /// self-consistent with [`note_number`](Self::note_number) — a `note`
+    /// ≥ 128 can never alias a different pair or read back changed.
+    /// [`MidiChannel`] already carries the 4-bit guarantee for its half.
     #[inline]
     pub const fn from_channel_note(channel: MidiChannel, note: u8) -> Self {
         Self(((channel.get() as u32) << 8) | (note & 0x7f) as u32)

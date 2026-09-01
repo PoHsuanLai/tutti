@@ -114,7 +114,7 @@ vs `VoiceAllocator` are genuinely different things: one sums audio, one is pure 
 |---|---|---|---|
 | L-1 | **DONE (7e59e56c).** `bevy-tutti`'s crate `Error` lives at `src/engine/error.rs` while re-exported at the crate root — public position and file position disagree. | `bevy-tutti/src/engine/error.rs`, `src/lib.rs:139` | done |
 | L-2 | **DONE (7e59e56c).** `tutti-midi-hardware` has a `src/core/` level containing everything, naming nothing. | `tutti-midi-hardware/src/core/` | done |
-| L-3 | The split rule is inverted: `tutti-vst3-host` splits `types/` into a directory while `tutti-clap-host`'s single `types.rs` is 1207 lines — larger than the whole of vst3's directory. | `tutti-vst3-host/src/types/`; `tutti-clap-host/src/types.rs` | open |
+| L-3 | ~~The `types/` split rule is inverted~~ — **MISDIAGNOSED; do not "fix".** The audit claimed `tutti-clap-host`'s single 1207-line `types.rs` is larger than the whole of `tutti-vst3-host`'s `types/` directory. Measured: vst3's directory is **4201 lines** across five files (`events.rs` alone is 2373), three and a half times clap's file. The rule is not inverted — vst3 split because it is genuinely much bigger, and clap (1207), au (760) and vst2 (115) are each a reasonable single file. No action. | — | wontfix |
 | L-4 | ~~`node_id.rs` in 8 crates~~ — **resolved: not duplication.** Verified an intentional convention; each crate cites `tutti_core::node_id` as the ledger. | 8 crates | wontfix |
 | L-5 | ~~Redundant H1 headings~~ — **obsolete.** After the include_str conversion all 20 crates lead with an H1 naming the crate, including the two reference crates that never drifted. It is the house convention now, not a deviation. | — | wontfix |
 

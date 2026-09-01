@@ -373,8 +373,12 @@ impl Plugins {
         id
     }
 
-    /// Commit the in-memory catalog to its backing store.
-    pub fn flush(&mut self) -> std::io::Result<()> {
+    /// Persist the in-memory catalog to its backing store.
+    ///
+    /// Named `save` rather than `flush`: the other three `flush`es in this
+    /// workspace drain a buffer onward (a sampler ring, a CLAP parameter
+    /// queue, a writer), and this one writes a file that outlives the process.
+    pub fn save(&mut self) -> std::io::Result<()> {
         self.catalog.flush()
     }
 

@@ -238,12 +238,17 @@ impl AudioUnit for VbapPannerNode {
         self.layout.count() as usize
     }
 
+    /// Clears the de-zipper ramp only. Position, spread and width are
+    /// caller-set configuration and survive.
+    ///
+    /// `AudioUnit::reset` resets *time*, not settings — an offline render
+    /// (`bevy_tutti::export`) calls it on a freshly-cloned net to drop inherited
+    /// filter memory and tails, and a host calls it between clips to clear a
+    /// tail. Re-aiming here would silently move every spatialised source to
+    /// front-centre in both cases, and `Clone` shares these atomics
+    /// ([`Param::handle`]), so it would move the *live* node's source too.
     fn reset(&mut self) {
-        self.target.reset_origin();
-        self.spread.store(Spread::POINT);
-        self.width.store(StereoWidth::NATURAL);
-        self.panner.set_position(Azimuth::FRONT, Elevation::LEVEL);
-        self.panner.set_spread(Spread::POINT);
+        self.panner.reset_state();
     }
 
     fn set_sample_rate(&mut self, sample_rate: tutti_core::SampleRate) {

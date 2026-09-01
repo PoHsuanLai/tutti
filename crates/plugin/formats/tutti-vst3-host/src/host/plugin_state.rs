@@ -75,6 +75,24 @@ pub(super) struct PluginInterfaces {
     pub audio_presentation_latency: Option<ComPtr<IAudioPresentationLatency>>,
 }
 
+// SAFETY: every field is a `ComPtr` into the plugin DSO, and COM gives the
+// compiler nothing to infer from — `ComPtr` is a raw pointer, so it is neither
+// `Send` nor `Sync` by default regardless of what the object behind it
+// promises. What makes the move sound is that the pointers are only ever
+// dereferenced through `&Vst3Loaded` / `&mut Vst3Loaded`, which the owner holds
+// exclusively: the two consumers (`tutti_plugin`'s GUI bridge and
+// `tutti-plugin-server`) each embed the instance by value, so the whole set
+// moves between threads together and is never aliased across them.
+//
+// `Sync` is the weaker of the two claims, because the `&self` accessors here
+// are not read-only underneath — `getParamNormalized`, `getState` and friends
+// re-enter the plugin, and the VST3 spec marks most of them `[UI-thread]`.
+// Calling two of them concurrently through a shared `&` would be a data race
+// inside the plugin, which no signature on this side would catch. The
+// `tutti_plugin_types::assert_main_thread()` guard at the top of each such
+// method is what enforces the single-threaded discipline the spec requires;
+// `Sync` only exists so `Vst3Loaded` can satisfy the `Send + Sync` bound that
+// fundsp's `dyn AudioUnit` imposes on the audio path.
 unsafe impl Send for PluginInterfaces {}
 unsafe impl Sync for PluginInterfaces {}
 
@@ -123,5 +141,25 @@ pub(super) enum EditorState {
     },
 }
 
+// SAFETY: the strongest thread affinity in the crate, and the narrowest
+// argument. `IPlugView` is UI-thread-only by spec — `iplugview.h` marks
+// `attached`, `removed`, `onSize` and the key/mouse forwarders `[UI-thread]`,
+// and a toolkit behind the view may hold thread-local X11 or Cocoa state that
+// makes a call from elsewhere undefined rather than merely racy. Neither
+// `Send` nor `Sync` licenses such a call; both exist so `EditorState` can sit
+// in a `Vst3Loaded` that moves, and every method that touches `view` asserts
+// the main thread first.
+//
+// `Open` is reachable only through `open_editor`, which asserts the main
+// thread, so the view is *created* there and every subsequent use is gated the
+// same way. The one deliberate exception is `Drop`: the fundsp graph can
+// release the instance on the audio thread, so `close_editor_unchecked` runs
+// `detach_view` without the assert rather than panicking off it. That is a
+// known, accepted deviation from the spec's UI-thread rule and is documented
+// at both `close_editor_unchecked` and `Vst3Loaded::drop` — it is not
+// something this impl makes safe.
+//
+// The two non-COM fields are ordinary: `ComWrapper<HostPlugFrame>` wraps a
+// host-implemented object, and `Receiver<EditorSize>` is `Send` on its own.
 unsafe impl Send for EditorState {}
 unsafe impl Sync for EditorState {}

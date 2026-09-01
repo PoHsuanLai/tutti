@@ -113,9 +113,11 @@ impl AudioUnit for HrtfBinauralNode {
         2
     }
 
+    /// Clears the frame bridge, the convolution tails and the de-zipper ramp.
+    /// Position and blend are caller-set configuration and survive — see
+    /// [`VbapPannerNode::reset`](crate::VbapPannerNode) for why a reset that
+    /// re-aims is a silent bug rather than a tidy default.
     fn reset(&mut self) {
-        self.target.reset_origin();
-        self.width.store(Mix::WET);
         self.panner.reset_state();
     }
 

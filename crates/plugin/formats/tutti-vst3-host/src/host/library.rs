@@ -54,6 +54,29 @@ pub struct Vst3Library {
 /// factory level (`setHostContext`) and per instance.
 pub(crate) const HOST_NAME: &str = "vst3-host";
 
+// SAFETY: unlike the per-instance state in `plugin_state.rs`, this one is
+// genuinely shared: `load` returns `Arc<Self>` because one bundle commonly
+// backs several `Vst3Loaded` instances, so `Sync` is exercised rather than
+// merely required by a bound. Two properties make that sound.
+//
+// The factory is the format's own concurrency guarantee. `IPluginFactory` is
+// stateless with respect to the host — `countClasses`, `getClassInfo` and
+// `createInstance` read the module's static class table, and the SDK's own
+// hosts scan from worker threads. `setHostContext` is the one mutating call
+// and it happens once, in `load`, before the `Arc` exists and therefore before
+// any other thread can observe the factory at all.
+//
+// The remaining fields never move under a shared reference. `_host_context`
+// and `_entry` are held purely for lifetime and drop order (see the field-order
+// note on the struct); `_library` is only unloaded by `Drop`, which `Arc`
+// already serialises to the last handle. `run_loop` is the exception that
+// carries its own reasoning: it is `Arc<RunLoop>`, whose interior state is
+// `Mutex`-guarded and whose raw handler pointers are documented as UI-thread
+// only — see the `unsafe impl Send for State` in `com/run_loop.rs`.
+//
+// The impls are still needed despite all that, because `ComPtr` is a raw
+// pointer and infers neither trait no matter how thread-safe the object behind
+// it is.
 unsafe impl Send for Vst3Library {}
 unsafe impl Sync for Vst3Library {}
 

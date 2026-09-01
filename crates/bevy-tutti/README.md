@@ -22,12 +22,10 @@ fn main() {
         .run();
 }
 
-fn setup(mut commands: Commands, assets: Res<AssetServer>) {
-    // Spawn a synth voice and play a note.
-    commands.spawn((
-        SynthNode::default(),
-        MidiUnit::default(),
-    ));
+fn setup(mut commands: Commands) {
+    // A node is spawned unwired; the resource declares what feeds the master.
+    let osc = commands.spawn_audio_node(sine_hz::<f32>(440.0)).id();
+    commands.insert_resource(MasterSources::mono_from(osc));
 }
 ```
 
@@ -38,15 +36,15 @@ fn setup(mut commands: Commands, assets: Res<AssetServer>) {
 TuttiPlugin::default()
 
 // Custom I/O
-TuttiPlugin::with_io(2, 2)          // 2 inputs, 2 outputs
-    .with_output_device(1)           // select device by index
-    .with_midi()                     // enable MIDI subsystem
+TuttiPlugin { inputs: 2, outputs: 2, ..Default::default() }
+               // select device by index
+                         // enable MIDI subsystem
 
 // MPE (requires `mpe` feature, automatically enables MIDI)
-TuttiPlugin::default().with_mpe(MpeMode::Zone1)
+TuttiPlugin::default()
 
 // Resource-only mode (no ECS systems, just TuttiEngineResource)
-TuttiPlugin::default().without_ecs()
+TuttiPlugin::default()
 ```
 
 ## Direct engine access
@@ -171,11 +169,10 @@ commands.spawn(PlaySoundFont { source: sf2, preset: 0, channel: 0 });
 Requires `plugin` feature. Format is auto-detected from file extension.
 
 ```rust
-commands.spawn(LoadPlugin::new("path/to/Reverb.vst3"));
-commands.spawn(LoadPlugin::new("path/to/Synth.clap").param("cutoff", 0.7));
+commands.spawn(PluginRequest::new("path/to/Reverb.vst3"));
 ```
 
-After processing: `LoadPlugin` is removed, `AudioNode` + `PluginEmitter { handle }` are inserted. Use the `PluginHandle` for parameter control, editor management, and state save/load.
+After processing: `PluginRequest` becomes a private `PendingPlugin`, and on completion `AudioNode` + `PluginEmitter` are inserted. Use the `PluginHandle` for parameter control, editor management, and state save/load.
 
 ### MIDI
 
@@ -274,16 +271,17 @@ exactly like a working one.
 
 ### Export
 
-Requires `export` feature, which adds the `tutti-export` dependency and its
-error variant — there is **no ECS surface for export**. Offline rendering is a
-plain engine call a host makes directly:
+Requires the `export` feature. An export is an **entity**: spawn an
+[`ExportRequest`] and `ExportPlugin` drives it to completion off the main
+thread.
 
-```rust
-tutti_export::render_to_file(&mut graph.0, &config, &path)?;
+The underlying engine call is also available directly:
+
+```rust,ignore
+// `net` by value, and the clock is mandatory — forgetting the transport is a
+// compile error rather than a silently silent render.
+let written = tutti_export::render_to_file(net, &config, &clock, &path)?;
 ```
-
-Wrapping it would be a rename: it needs no ECS state, only the `Net` the host
-already has.
 
 ### DSP nodes
 
@@ -292,9 +290,12 @@ with their defaults, and you override only the ones you care about via
 struct-update.
 
 ```rust
-// LFO — required: Frequency, ModDepth, LfoShapeKind, BeatSynced
-commands.spawn((LfoNodeMarker, Frequency(2.0), ModDepth(0.5), LfoShapeKind::Sine));
-commands.spawn((LfoNodeMarker, Frequency(4.0), ModDepth(0.8), LfoShapeKind::Triangle, BeatSynced(true)));
+// DSP nodes are plain `AudioUnit`s from `tutti-nodes`, spawned like any
+// other node. There are no marker components and no per-node ECS wrappers.
+use tutti_nodes::{CompressorNode, LfoNode};
+
+commands.spawn_audio_node(LfoNode::new(Hz(2.0)));
+commands.spawn_audio_node(CompressorNode::default());
 
 // Compressor — required: ThresholdDb, CompressorRatio, Attack, Release, GainDb
 commands.spawn((
@@ -312,15 +313,12 @@ commands.spawn((GateNode, ThresholdDb(-25.0), Attack(0.002), Release(0.2)));
 Requires `spatial` feature.
 
 ```rust
-// Mark one entity as the listener
-commands.spawn((AudioListener, Transform::default()));
+// `tutti-spatial` is re-exported whole; there is no adapter code. The VBAP
+// and binaural panners are plain `AudioUnit`s, spawned like any other node,
+// and `build_vbap_mix` assembles a subgraph the host spawns the same way.
+use bevy_tutti::spatial::vbap::VbapPannerNode;
 
-// Spatial emitter: add SpatialAudio + Transform to any entity carrying an
-// AudioNode (i.e. a node already in the graph).
-commands.spawn((
-    SpatialAudio::default(),
-    Transform::from_xyz(5.0, 0.0, -3.0),
-));
+commands.spawn_audio_node(VbapPannerNode::new(layout, sample_rate)?);
 ```
 
 ## Features
@@ -359,7 +357,7 @@ was compiling the butler streaming thread to get it.
 
 | bevy-tutti | Bevy |
 |------------|------|
-| 0.1 | 0.17 |
+| 0.1 | 0.19 |
 
 ## License
 

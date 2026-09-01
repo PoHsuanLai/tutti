@@ -39,8 +39,8 @@ impl NoteId {
     /// [`note_number`](Self::note_number) — a `note` ≥ 128 or `channel` ≥ 16 can
     /// never alias a different pair or read back changed.
     #[inline]
-    pub const fn from_channel_note(channel: u8, note: u8) -> Self {
-        Self((((channel & 0x0f) as u32) << 8) | (note & 0x7f) as u32)
+    pub const fn from_channel_note(channel: MidiChannel, note: u8) -> Self {
+        Self(((channel.get() as u32) << 8) | (note & 0x7f) as u32)
     }
 
     /// Note-Number-Rotation identity: an allocator-minted distinct value.
@@ -57,8 +57,8 @@ impl NoteId {
 
     /// The MIDI channel, for the [`from_channel_note`](Self::from_channel_note) encoding.
     #[inline]
-    pub const fn channel(self) -> u8 {
-        ((self.0 >> 8) & 0x0f) as u8
+    pub const fn channel(self) -> MidiChannel {
+        MidiChannel::new(((self.0 >> 8) & 0x0f) as u8)
     }
 
     /// The opaque backing value.

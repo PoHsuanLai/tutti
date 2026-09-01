@@ -283,6 +283,27 @@ mod tests {
         );
     }
 
+    /// Same contract as the VBAP panner's: `reset` clears the streaming
+    /// buffers and the de-zipper ramp, never the caller's placement. The
+    /// exporter resets a cloned net before rendering, and `Clone` shares these
+    /// atomics, so a reset that re-aimed would move the live source too.
+    #[test]
+    fn reset_keeps_the_authored_placement() {
+        let mut node = make_node();
+        node.set_position(Azimuth(45.0), Elevation(10.0));
+        node.set_blend(Mix(0.4));
+
+        node.reset();
+
+        assert_eq!(node.azimuth(), Azimuth(45.0));
+        assert_eq!(node.elevation(), Elevation(10.0));
+        assert!(
+            (node.blend().get() - 0.4).abs() < 0.001,
+            "reset changed the blend to {}",
+            node.blend().get()
+        );
+    }
+
     #[test]
     fn clone_is_independent() {
         let node = make_node();

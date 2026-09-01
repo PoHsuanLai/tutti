@@ -166,11 +166,14 @@ impl OfflineTimeline {
         self.sample_rate
     }
 
-    /// Re-seat the playhead at `start_beat`, for reusing one timeline across
-    /// several renders.
-    pub fn reset(&self, start_beat: impl Into<Beat>) {
-        self.current_beat
-            .store(start_beat.into().get(), Ordering::Release);
+    /// Move the playhead to `beat`, for reusing one timeline across several
+    /// renders.
+    ///
+    /// Named for the seek, not for a reset: it clears nothing, and `beat` is a
+    /// destination rather than a default. Everything else on this timeline —
+    /// tempo, sample rate, loop region — is fixed at construction.
+    pub fn seek_to(&self, beat: impl Into<Beat>) {
+        self.current_beat.store(beat.into().get(), Ordering::Release);
     }
 
     /// Musical time one frame covers, precomputed at construction.
@@ -432,7 +435,7 @@ mod tests {
     }
 
     #[test]
-    fn test_timeline_reset() {
+    fn test_timeline_seek_to() {
         let timeline = OfflineTimeline::new(&OfflineTimelineConfig {
             start_beat: Beat(0.0),
             tempo: Bpm(120.0),
@@ -444,8 +447,8 @@ mod tests {
         timeline.advance((5.0 * samples_per_beat) as usize);
         assert!((timeline.beat().get() - 5.0).abs() < 0.01);
 
-        // Reset to beat 2
-        timeline.reset(2.0);
+        // Seek back to beat 2
+        timeline.seek_to(2.0);
         assert!((timeline.beat().get() - 2.0).abs() < 0.001);
     }
 

@@ -156,6 +156,13 @@ impl SoundFontUnit {
     /// address it; and `&mut self` puts it out of reach once the unit is in a
     /// `Net`. The peer crate `tutti-polysynth` exposes no such pair.
     ///
+    /// **Public only because `bevy-tutti` still tests through it.** Roughly ten
+    /// call sites in `bevy_tutti::soundfont`'s test module drive notes this way
+    /// rather than through the inbox, so narrowing this to `pub(crate)` would
+    /// break them. Those tests are what the narrowing waits on: port them to
+    /// `midi_sender` first, and the pair can go crate-private in the same change
+    /// — nothing else outside this crate calls it.
+    ///
     /// These are RustySynth's MIDI 1.0 integers, not the engine's MIDI 2.0
     /// vocabulary: `channel` is 0..16, `key` and `velocity` are 7-bit (0..128).
     /// A `velocity` of 0 reads as a note-off to RustySynth.

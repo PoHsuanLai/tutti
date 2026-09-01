@@ -98,7 +98,7 @@ fn a_declared_route_reaches_the_rt_snapshot() {
     let (synth, unit_id) = spawn_synth(&mut app);
 
     app.world_mut()
-        .spawn(MidiRouteRule::for_channel(3).to(synth));
+        .spawn(MidiRouteRule::for_channel(MidiChannel::new(3)).to(synth));
     app.update();
 
     assert!(
@@ -118,8 +118,11 @@ fn a_rule_can_feed_several_synths() {
     let (lead, lead_id) = spawn_synth(&mut app);
     let (pad, pad_id) = spawn_synth(&mut app);
 
-    app.world_mut()
-        .spawn(MidiRouteRule::for_channel(0).to(lead).to(pad));
+    app.world_mut().spawn(
+        MidiRouteRule::for_channel(MidiChannel::new(0))
+            .to(lead)
+            .to(pad),
+    );
     app.update();
 
     let targets = targets_on(&rt_view, 0);
@@ -138,7 +141,7 @@ fn a_removed_rule_stops_routing() {
 
     let rule = app
         .world_mut()
-        .spawn(MidiRouteRule::for_channel(3).to(synth))
+        .spawn(MidiRouteRule::for_channel(MidiChannel::new(3)).to(synth))
         .id();
     app.update();
     assert!(targets_on(&rt_view, 3).contains(&unit_id));
@@ -160,7 +163,7 @@ fn a_disabled_rule_routes_nothing() {
 
     let rule = app
         .world_mut()
-        .spawn(MidiRouteRule::for_channel(3).to(synth))
+        .spawn(MidiRouteRule::for_channel(MidiChannel::new(3)).to(synth))
         .id();
     app.update();
     assert!(targets_on(&rt_view, 3).contains(&unit_id));
@@ -213,7 +216,7 @@ fn an_unresolvable_target_is_skipped_then_picked_up() {
     // An entity with no `AudioNode` at all.
     let pending = app.world_mut().spawn_empty().id();
     app.world_mut()
-        .spawn(MidiRouteRule::for_channel(1).to(pending));
+        .spawn(MidiRouteRule::for_channel(MidiChannel::new(1)).to(pending));
     app.update();
     assert!(
         targets_on(&rt_view, 1).is_empty(),
@@ -246,7 +249,7 @@ fn the_rebuild_publishes_into_the_shared_cell() {
     let (synth, _) = spawn_synth(&mut app);
 
     app.world_mut()
-        .spawn(MidiRouteRule::for_channel(2).to(synth));
+        .spawn(MidiRouteRule::for_channel(MidiChannel::new(2)).to(synth));
     app.update();
 
     assert_eq!(

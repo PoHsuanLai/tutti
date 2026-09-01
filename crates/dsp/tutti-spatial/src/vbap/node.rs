@@ -238,12 +238,17 @@ impl AudioUnit for VbapPannerNode {
         self.layout.count() as usize
     }
 
+    /// Clears the de-zipper ramp only. Position, spread and width are
+    /// caller-set configuration and survive.
+    ///
+    /// `AudioUnit::reset` resets *time*, not settings — an offline render
+    /// (`bevy_tutti::export`) calls it on a freshly-cloned net to drop inherited
+    /// filter memory and tails, and a host calls it between clips to clear a
+    /// tail. Re-aiming here would silently move every spatialised source to
+    /// front-centre in both cases, and `Clone` shares these atomics
+    /// ([`Param::handle`]), so it would move the *live* node's source too.
     fn reset(&mut self) {
-        self.target.reset_origin();
-        self.spread.store(Spread::POINT);
-        self.width.store(StereoWidth::NATURAL);
-        self.panner.set_position(Azimuth::FRONT, Elevation::LEVEL);
-        self.panner.set_spread(Spread::POINT);
+        self.panner.reset_state();
     }
 
     fn set_sample_rate(&mut self, sample_rate: tutti_core::SampleRate) {
@@ -372,6 +377,110 @@ mod tests {
         assert!((cloned.spread().get() - panner.spread().get()).abs() < 0.001);
     }
 
+    /// `AudioUnit::reset` resets time, not settings.
+    ///
+    /// The offline exporter clones the live net and calls `reset()` on it to
+    /// drop inherited filter memory and tails; a host calls it between clips for
+    /// the same reason. A reset that re-aimed would move every spatialised
+    /// source to front-centre in both cases, with nothing to compare and no
+    /// error raised.
+    #[test]
+    fn reset_keeps_the_authored_placement() {
+        let mut panner = VbapPannerNode::surround_5_1().unwrap();
+        panner.set_position(Azimuth(45.0), Elevation(15.0));
+        panner.set_spread(Spread(0.3));
+        panner.set_width(StereoWidth(1.5));
+
+        panner.reset();
+
+        assert!(
+            (panner.azimuth().get() - 45.0).abs() < 0.001,
+            "reset moved the bearing to {}",
+            panner.azimuth().get()
+        );
+        assert!(
+            (panner.elevation().get() - 15.0).abs() < 0.001,
+            "reset moved the height to {}",
+            panner.elevation().get()
+        );
+        assert!(
+            (panner.spread().get() - 0.3).abs() < 0.001,
+            "reset changed the spread to {}",
+            panner.spread().get()
+        );
+        assert!(
+            (panner.width().get() - 1.5).abs() < 0.001,
+            "reset changed the width to {}",
+            panner.width().get()
+        );
+    }
+
+    /// The other half of the contract: the ramp *is* cleared, so the frame
+    /// after a reset renders at the commanded position rather than sweeping in
+    /// from wherever the smoother had got to.
+    ///
+    /// Asserted against a *settled* reference panner rather than against a
+    /// channel inequality: the de-zipper starts at front-centre, so a few frames
+    /// into a hard-left move both channels are still near-equal and either one
+    /// may lead by a hair. "Equals the settled answer" is the property a seated
+    /// smoother actually has, and it is the one that fails when the ramp is
+    /// left in flight.
+    #[test]
+    fn reset_seats_the_smoother_on_the_commanded_position() {
+        let input = [1.0f32, 1.0f32];
+
+        // Where the panner ends up once the 50 ms ramp has run out: hard left,
+        // so the right channel is silent.
+        let mut settled = VbapPannerNode::stereo().unwrap();
+        settled.set_position(Azimuth(90.0), Elevation::LEVEL);
+        let mut reference = [0.0f32; 2];
+        for _ in 0..48_000 {
+            settled.tick(&input, &mut reference);
+        }
+
+        let mut panner = VbapPannerNode::stereo().unwrap();
+        panner.set_position(Azimuth(90.0), Elevation::LEVEL);
+        let mut mid_ramp = [0.0f32; 2];
+        panner.tick(&input, &mut mid_ramp);
+        assert!(
+            (mid_ramp[1] - reference[1]).abs() > 0.1,
+            "the ramp should still be far from settled, got {mid_ramp:?} vs {reference:?}"
+        );
+
+        panner.reset();
+
+        let mut after = [0.0f32; 2];
+        panner.tick(&input, &mut after);
+        assert!(
+            (after[0] - reference[0]).abs() < 0.01 && (after[1] - reference[1]).abs() < 0.01,
+            "after reset the first frame should already render at the commanded \
+             position: got {after:?}, settled is {reference:?}"
+        );
+    }
+
+    /// `Clone` shares the position atomics, so a reset that wrote them would
+    /// reach back through every handle — including the live node an offline
+    /// render was cloned from.
+    #[test]
+    fn reset_on_a_clone_does_not_move_the_original() {
+        let panner = VbapPannerNode::stereo().unwrap();
+        panner.set_position(Azimuth(-60.0), Elevation(20.0));
+
+        let mut cloned = panner.clone();
+        cloned.reset();
+
+        assert!(
+            (panner.azimuth().get() - (-60.0)).abs() < 0.001,
+            "resetting the clone moved the original to {}",
+            panner.azimuth().get()
+        );
+        assert!(
+            (panner.elevation().get() - 20.0).abs() < 0.001,
+            "resetting the clone moved the original to {}",
+            panner.elevation().get()
+        );
+    }
+
     #[test]
     fn vbap_clone_shares_atomics() {
         let panner = VbapPannerNode::stereo().unwrap();
@@ -387,4 +496,5 @@ mod tests {
         assert!((panner.azimuth().get() - (-60.0)).abs() < 0.001);
         assert!((panner.elevation().get() - 10.0).abs() < 0.001);
     }
+
 }

@@ -11,7 +11,7 @@
 //! use bevy_ecs::prelude::*;
 //! use bevy_tutti::midi::{MidiFilePlugin, MidiFileWrite, MidiFileWritten};
 //! use tutti_core::Beat;
-//! use tutti_midi_file::{encode_midi_file, MidiWriteOptions, SmfMessage, SmfTimedEvent};
+//! use tutti_midi_file::{encode_midi_file, MidiWriteConfig, SmfMessage, SmfTimedEvent};
 //!
 //! let bytes = encode_midi_file(
 //!     &[vec![SmfTimedEvent {
@@ -19,7 +19,7 @@
 //!         channel: 0,
 //!         msg: SmfMessage::NoteOn { key: 60.into(), vel: 100.into() },
 //!     }]],
-//!     &MidiWriteOptions::default(),
+//!     &MidiWriteConfig::default(),
 //! )
 //! .expect("one track encodes");
 //!

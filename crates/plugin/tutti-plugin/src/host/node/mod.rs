@@ -651,7 +651,7 @@ impl PluginClient {
     /// `restamp_source_rates` on a device change.
     ///
     /// `transport` is a [`TransportState`](tutti_core::transport::TransportState),
-    /// not a bare `Timeline` like harmony's: `fill` reads `loop_range()` to wrap
+    /// not a bare `Timeline` like harmony's: `refill` reads `loop_range()` to wrap
     /// the beat inside the active cycle, and looping lives on the live
     /// supertrait. An offline render never drives this source.
     pub fn set_param_automation_source(

@@ -77,13 +77,13 @@ fn main() {
         // Velocity is the full 16-bit MIDI 2.0 value; `u16::MAX` ~= velocity 127.
         MidiMessage::NoteOn {
             frame_offset: 0,
-            id: note_id(0, 60),
-            channel: 0,
+            id: note_id(MidiChannel::FIRST, 60),
+            channel: MidiChannel::FIRST,
             note: 60,
             velocity: 0xC800,
             attribute: None,
         },
-        &|m| m.is_note_on() && m.note() == Some(60) && m.channel() == Some(0),
+        &|m| m.is_note_on() && m.note() == Some(60) && m.channel() == Some(MidiChannel::FIRST),
     );
 
     println!("\n=== Test 2: Note Off ===");
@@ -91,8 +91,8 @@ fn main() {
         "note-off",
         MidiMessage::NoteOff {
             frame_offset: 0,
-            id: note_id(0, 60),
-            channel: 0,
+            id: note_id(MidiChannel::FIRST, 60),
+            channel: MidiChannel::FIRST,
             note: 60,
             velocity: 0x4000,
             attribute: None,
@@ -105,7 +105,7 @@ fn main() {
         "cc74",
         MidiMessage::ControlChange {
             frame_offset: 0,
-            channel: 0,
+            channel: MidiChannel::FIRST,
             index: 74,
             value: 0xFFFF_FFFF,
         },
@@ -117,7 +117,7 @@ fn main() {
         "pitch-bend",
         MidiMessage::PitchBend {
             frame_offset: 0,
-            channel: 0,
+            channel: MidiChannel::FIRST,
             value: 0x8000_0000, // bipolar center
         },
         &|m| matches!(m, MidiMessage::PitchBend { .. }),
@@ -156,6 +156,6 @@ fn main() {
 
 /// The per-note identity for a `(channel, note)` on the MIDI-1 path — what the
 /// decoder reconstructs on the way back in, so the sent and received ids match.
-fn note_id(channel: u8, note: u8) -> NoteId {
+fn note_id(channel: MidiChannel, note: u8) -> NoteId {
     NoteId::from_channel_note(channel, note)
 }

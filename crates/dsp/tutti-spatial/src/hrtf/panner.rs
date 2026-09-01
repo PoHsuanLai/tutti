@@ -219,6 +219,13 @@ impl PositionSmoother {
         self.smoother.set_sample_rate(sample_rate);
     }
 
+    /// Drop the in-flight ramp onto the current target, leaving the target —
+    /// which is caller-set — where it is.
+    fn reset_state(&mut self) {
+        self.smoother
+            .reset_to_target(self.target_azimuth, self.target_elevation);
+    }
+
     /// Advance both smoothers one frame and return the smoothed direction.
     #[inline]
     fn step(&mut self) -> Vec3 {
@@ -306,10 +313,12 @@ impl HrtfBinaural {
         }
     }
 
-    /// Zero the streaming buffers without rebuilding the processor.
+    /// Zero the streaming buffers and drop the de-zipper ramp, without
+    /// rebuilding the processor or moving the commanded direction.
     pub(crate) fn reset_state(&mut self) {
         self.bridge.reset();
         self.tails.reset();
+        self.aim.reset_state();
     }
 
     /// Push one mono input sample, return the current delayed stereo output.

@@ -50,14 +50,14 @@ pub(crate) trait BlockReset {
 
 /// Something the host produces once per audio block and feeds to the plugin.
 /// The producer reads the live transport itself (it holds its own
-/// `Arc<dyn Timeline>`), so `fill` needs only the block size via `ctx`.
+/// `Arc<dyn Timeline>`), so `refill` needs only the block size via `ctx`.
 pub(crate) trait BlockInput: Send + Sync {
     /// The per-block payload this input fills. Reused across blocks as scratch.
     type Out: Default + BlockReset;
 
     /// Fill `out` for this block. Implementations must first `out.reset()` (or
     /// otherwise fully overwrite it) so no stale data from a prior block leaks.
-    fn fill(&self, ctx: BlockCtx, out: &mut Self::Out);
+    fn refill(&self, ctx: BlockCtx, out: &mut Self::Out);
 }
 
 /// One installed [`BlockInput`], shared across fundsp graph-commit clones.
@@ -104,15 +104,15 @@ impl<B: BlockInput> InputSlot<B> {
     ///
     /// Returns the reset (empty) payload when the plugin lacks the gated feature
     /// or no source is installed — the RT-common path, allocation-free via
-    /// [`BlockReset::reset`]. Otherwise delegates to the source's `fill`.
+    /// [`BlockReset::reset`]. Otherwise delegates to the source's `refill`.
     pub(crate) fn drain(&mut self, ctx: BlockCtx, plugin_features: Features) -> &B::Out {
         if !self.gate.is_empty() && !plugin_features.contains(self.gate) {
             self.drain.reset();
             return &self.drain;
         }
-        // `load()` is lock-free; the guard holds the current source for the fill.
+        // `load()` is lock-free; the guard holds the current source for the refill.
         match self.source.load().as_ref() {
-            Some(src) => src.fill(ctx, &mut self.drain),
+            Some(src) => src.refill(ctx, &mut self.drain),
             None => self.drain.reset(),
         }
         &self.drain
@@ -147,15 +147,15 @@ mod tests {
     }
 
     /// A dummy input that writes a fixed value into its `Count`, and records how
-    /// many times `fill` ran (to prove the gate suppresses it).
+    /// many times `refill` ran (to prove the gate suppresses it).
     struct Dummy {
         value: usize,
-        fills: AtomicUsize,
+        refills: AtomicUsize,
     }
     impl BlockInput for Dummy {
         type Out = Count;
-        fn fill(&self, _ctx: BlockCtx, out: &mut Count) {
-            self.fills.fetch_add(1, Ordering::Relaxed);
+        fn refill(&self, _ctx: BlockCtx, out: &mut Count) {
+            self.refills.fetch_add(1, Ordering::Relaxed);
             out.0 = self.value;
         }
     }
@@ -172,7 +172,7 @@ mod tests {
 
         clone_a.install(Arc::new(Dummy {
             value: 7,
-            fills: AtomicUsize::new(0),
+            refills: AtomicUsize::new(0),
         }));
 
         assert_eq!(
@@ -194,28 +194,28 @@ mod tests {
         );
     }
 
-    /// An empty gate always sends; a non-empty gate suppresses the fill entirely
-    /// (no allocation, `fill` never runs) when the plugin lacks the feature.
+    /// An empty gate always sends; a non-empty gate suppresses the refill entirely
+    /// (no allocation, `refill` never runs) when the plugin lacks the feature.
     #[test]
-    fn gate_suppresses_fill_when_feature_absent() {
+    fn gate_suppresses_refill_when_feature_absent() {
         let mut slot: InputSlot<Dummy> = InputSlot::new(Features::TRANSPORT);
         let src = Arc::new(Dummy {
             value: 5,
-            fills: AtomicUsize::new(0),
+            refills: AtomicUsize::new(0),
         });
         slot.install(Arc::clone(&src));
 
-        // Plugin lacks TRANSPORT → gated off, fill never runs, output stays reset.
+        // Plugin lacks TRANSPORT → gated off, refill never runs, output stays reset.
         assert_eq!(slot.drain(CTX, Features::empty()).0, 0);
         assert_eq!(
-            src.fills.load(Ordering::Relaxed),
+            src.refills.load(Ordering::Relaxed),
             0,
-            "fill suppressed by gate"
+            "refill suppressed by gate"
         );
 
-        // Plugin has TRANSPORT → fills.
+        // Plugin has TRANSPORT → refills.
         assert_eq!(slot.drain(CTX, Features::TRANSPORT).0, 5);
-        assert_eq!(src.fills.load(Ordering::Relaxed), 1);
+        assert_eq!(src.refills.load(Ordering::Relaxed), 1);
     }
 
     /// Empty gate = universal: sends regardless of plugin features.
@@ -224,7 +224,7 @@ mod tests {
         let mut slot: InputSlot<Dummy> = InputSlot::new(Features::empty());
         slot.install(Arc::new(Dummy {
             value: 9,
-            fills: AtomicUsize::new(0),
+            refills: AtomicUsize::new(0),
         }));
         assert_eq!(slot.drain(CTX, Features::empty()).0, 9);
         assert_eq!(slot.drain(CTX, Features::TRANSPORT).0, 9);

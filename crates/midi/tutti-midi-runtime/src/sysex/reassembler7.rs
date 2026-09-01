@@ -15,6 +15,7 @@
 //! SysEx7. It keeps one in-flight buffer per UMP group, so interleaved streams
 //! on different groups don't corrupt each other.
 
+use tutti_midi_types::MidiGroup;
 use tutti_midi_types::ump::{
     MidiEvent, UmpMessageType, SYSEX7_STATUS_CONTINUE, SYSEX7_STATUS_END, SYSEX7_STATUS_SINGLE,
     SYSEX7_STATUS_START,
@@ -47,7 +48,7 @@ fn is_sysex_transparent(event: &MidiEvent) -> bool {
 /// One in-flight SysEx7 message being reassembled on a single UMP group.
 #[derive(Clone, Debug)]
 struct InFlight {
-    group: u8,
+    group: MidiGroup,
     packets: Vec<MidiEvent>,
 }
 
@@ -175,7 +176,7 @@ impl Sysex7PacketReassembler {
         }
     }
 
-    fn find_group(&mut self, group: u8) -> Option<&mut InFlight> {
+    fn find_group(&mut self, group: MidiGroup) -> Option<&mut InFlight> {
         self.in_flight.iter_mut().find(|e| e.group == group)
     }
 
@@ -185,7 +186,7 @@ impl Sysex7PacketReassembler {
     }
 
     /// Remove and return the in-flight packet run for `group`, if any.
-    fn take_group(&mut self, group: u8) -> Option<Vec<MidiEvent>> {
+    fn take_group(&mut self, group: MidiGroup) -> Option<Vec<MidiEvent>> {
         let idx = self.in_flight.iter().position(|e| e.group == group)?;
         Some(self.in_flight.swap_remove(idx).packets)
     }

@@ -7,6 +7,8 @@
 //! of (channel, note), so behaviour is identical to keying on the raw pair; under
 //! Note Number Rotation an allocator mints distinct ids via [`NoteId::from_raw`].
 
+use tutti_types::MidiChannel;
+
 /// Stable per-note identity.
 ///
 /// The default (MIDI-1) encoding packs `channel` and `note` so
@@ -34,13 +36,13 @@ impl From<NoteId> for u32 {
 impl NoteId {
     /// MIDI-1 / classic-MPE identity: `(channel, note)`.
     ///
-    /// `channel` and `note` are masked to their valid MIDI widths (4 / 7 bits)
-    /// so the packed value is self-consistent with [`channel`](Self::channel) and
-    /// [`note_number`](Self::note_number) — a `note` ≥ 128 or `channel` ≥ 16 can
-    /// never alias a different pair or read back changed.
+    /// `note` is masked to its 7-bit MIDI width so the packed value is
+    /// self-consistent with [`note_number`](Self::note_number) — a `note`
+    /// ≥ 128 can never alias a different pair or read back changed.
+    /// [`MidiChannel`] already carries the 4-bit guarantee for its half.
     #[inline]
-    pub const fn from_channel_note(channel: u8, note: u8) -> Self {
-        Self((((channel & 0x0f) as u32) << 8) | (note & 0x7f) as u32)
+    pub const fn from_channel_note(channel: MidiChannel, note: u8) -> Self {
+        Self(((channel.get() as u32) << 8) | (note & 0x7f) as u32)
     }
 
     /// Note-Number-Rotation identity: an allocator-minted distinct value.
@@ -57,8 +59,8 @@ impl NoteId {
 
     /// The MIDI channel, for the [`from_channel_note`](Self::from_channel_note) encoding.
     #[inline]
-    pub const fn channel(self) -> u8 {
-        ((self.0 >> 8) & 0x0f) as u8
+    pub const fn channel(self) -> MidiChannel {
+        MidiChannel::new(((self.0 >> 8) & 0x0f) as u8)
     }
 
     /// The opaque backing value.
@@ -151,15 +153,15 @@ mod tests {
 
     #[test]
     fn channel_note_roundtrip() {
-        let id = NoteId::from_channel_note(9, 60);
-        assert_eq!(id.channel(), 9);
+        let id = NoteId::from_channel_note(MidiChannel::new(9), 60);
+        assert_eq!(id.channel(), MidiChannel::new(9));
         assert_eq!(id.note_number(), 60);
     }
 
     #[test]
     fn same_note_number_distinct_ids_do_not_collide() {
         // The whole point: two live notes on note 60 must stay independent.
-        let a = NoteId::from_channel_note(0, 60);
+        let a = NoteId::from_channel_note(MidiChannel::new(0), 60);
         let b = NoteId::from_raw(0xDEAD_0000); // rotation-minted, same sounding pitch
         assert_ne!(a, b);
 
@@ -195,8 +197,8 @@ mod tests {
     fn ord_makes_it_a_btree_key() {
         use std::collections::BTreeMap;
         let mut m = BTreeMap::new();
-        m.insert(NoteId::from_channel_note(0, 64), "b");
-        m.insert(NoteId::from_channel_note(0, 60), "a");
+        m.insert(NoteId::from_channel_note(MidiChannel::new(0), 64), "b");
+        m.insert(NoteId::from_channel_note(MidiChannel::new(0), 60), "a");
         // BTreeMap requires Ord; keys come back sorted.
         let notes: Vec<u8> = m.keys().map(|k| k.note_number()).collect();
         assert_eq!(notes, [60, 64]);

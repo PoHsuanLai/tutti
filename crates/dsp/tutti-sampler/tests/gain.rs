@@ -6,7 +6,7 @@
 //! fields and two entry points, and the failure mode is applying gain twice.
 //!
 //! - [`MemorySource`] owns a `gain`, applied by `get_sample_into`.
-//! - [`Playback`] owns a `gain`, applied by `VoiceSlot::read_clip_sample_into`.
+//! - [`Playback`] owns a `gain`, applied by `PlaybackSlot::read_clip_sample_into`.
 //!
 //! A voice played through a pool must take the second and **not** the first:
 //! the slot deliberately calls `get_sample_raw_into` (ungained) so gain lands
@@ -44,7 +44,7 @@ const LEVEL: f32 = 0.5;
 
 /// A rolling transport advanced by hand, once per block.
 ///
-/// Gain reaches the memory tier through `VoiceSlot`, which only reads a
+/// Gain reaches the memory tier through `PlaybackSlot`, which only reads a
 /// **placed** voice — `window_position()` is `None` without a timeline and the
 /// slot emits silence. Same reason `reverse_and_loop.rs` needs one.
 struct Clock {
@@ -162,7 +162,7 @@ fn voice_gain_scales_the_output_by_exactly_its_value() {
 /// Gain is applied exactly **once**.
 ///
 /// The specific hazard this file exists for. `MemorySource` carries its own
-/// `gain` and `VoiceSlot` carries `Playback::gain`; the slot reads through
+/// `gain` and `PlaybackSlot` carries `Playback::gain`; the slot reads through
 /// `get_sample_raw_into` precisely so the source's copy is skipped. If a rewrite
 /// ever routed the slot through `get_sample_into` instead, both would apply and
 /// the output would be the gain *squared*.

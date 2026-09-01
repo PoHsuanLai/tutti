@@ -101,6 +101,18 @@ impl VbapPanner {
         self.smoother.set_sample_rate(sample_rate);
     }
 
+    /// Drop the in-flight de-zipper ramp, leaving the commanded position and
+    /// spread untouched.
+    ///
+    /// The smoother is this panner's only per-block history; the two target
+    /// atomics and `spread` are caller-set configuration, which is why nothing
+    /// here writes them.
+    pub(crate) fn reset_state(&mut self) {
+        let azimuth = Azimuth(self.azimuth_target.load(Ordering::Acquire));
+        let elevation = Elevation(self.elevation_target.load(Ordering::Acquire));
+        self.smoother.reset_to_target(azimuth, elevation);
+    }
+
     /// Apply spread to `gains[..count]` in place. Normalises the result
     /// so the sum of squares stays 1.0.
     #[inline]

@@ -366,15 +366,19 @@ impl Plugins {
     /// steps, so the two paths cannot disagree about what registering means.
     ///
     /// In-memory only, like every other catalog mutation; call
-    /// [`flush`](Self::flush) to persist.
+    /// [`save`](Self::save) to persist.
     pub fn register_record(&mut self, record: PluginRecord) -> PluginId {
         let id = PluginId(record.path.clone());
         self.catalog.upsert(record);
         id
     }
 
-    /// Commit the in-memory catalog to its backing store.
-    pub fn flush(&mut self) -> std::io::Result<()> {
+    /// Persist the in-memory catalog to its backing store.
+    ///
+    /// Named `save` rather than `flush`: the other three `flush`es in this
+    /// workspace drain a buffer onward (a sampler ring, a CLAP parameter
+    /// queue, a writer), and this one writes a file that outlives the process.
+    pub fn save(&mut self) -> std::io::Result<()> {
         self.catalog.flush()
     }
 

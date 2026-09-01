@@ -67,15 +67,19 @@ impl ExponentialSmoother {
         next
     }
 
-    /// Seed the running value directly. Test-only: a production smoother
-    /// starts at zero and converges.
+    /// Seed the running value directly, discarding whatever ramp was in
+    /// flight.
+    ///
+    /// This is the whole of a smoother's runtime state, so seeding it at the
+    /// current target is what "has not processed any data" means here — see
+    /// [`AngleSmoother::reset_to_target`]. Seeding at `0.0` instead would leave
+    /// the next block ramping in from front-centre.
     ///
     /// Bare `f32` on purpose: `value` is the state *both* entry points share —
     /// degrees of bearing under [`process_angle`](Self::process_angle), degrees
     /// of height under [`process`](Self::process) — so no single unit describes
     /// it. Callers seed it in whichever space they then step in.
-    #[cfg(test)]
-    pub fn reset(&mut self, value: f32) {
+    pub fn seed_at(&mut self, value: f32) {
         self.value = value;
     }
 }
@@ -95,7 +99,7 @@ mod tests {
     #[test]
     fn angular_smoothing_crosses_the_seam_instead_of_going_around() {
         let mut s = instant();
-        s.reset(170.0);
+        s.seed_at(170.0);
         // 170 -> -170 is +20 degrees. The linear form would travel -340.
         assert_eq!(s.process_angle(Azimuth(-170.0)), Azimuth(-170.0));
     }
@@ -104,7 +108,7 @@ mod tests {
     fn angular_smoothing_takes_the_short_arc_at_partial_coefficient() {
         let mut s = ExponentialSmoother::new(Seconds(0.05), SampleRate(48_000.0));
         s.coeff = 0.5;
-        s.reset(170.0);
+        s.seed_at(170.0);
         // Half of the +20 degree arc lands at 180, not back down near 0.
         let next = s.process_angle(Azimuth(-170.0));
         assert_eq!(next, Azimuth(-180.0));
@@ -112,7 +116,7 @@ mod tests {
         // The linear smoother, for contrast, heads the wrong way entirely.
         let mut linear = ExponentialSmoother::new(Seconds(0.05), SampleRate(48_000.0));
         linear.coeff = 0.5;
-        linear.reset(170.0);
+        linear.seed_at(170.0);
         assert_eq!(linear.process(Elevation(-170.0)), Elevation(0.0));
     }
 
@@ -120,7 +124,7 @@ mod tests {
     fn angular_smoothing_stays_on_the_circle_over_a_long_sweep() {
         let mut s = ExponentialSmoother::new(Seconds(0.05), SampleRate(48_000.0));
         s.coeff = 0.3;
-        s.reset(0.0);
+        s.seed_at(0.0);
         for _ in 0..2_000 {
             let v = s.process_angle(Azimuth(179.0));
             assert!(
@@ -135,7 +139,7 @@ mod tests {
         // Elevation has no seam, so the plain form remains correct there.
         let mut s = ExponentialSmoother::new(Seconds(0.05), SampleRate(48_000.0));
         s.coeff = 0.5;
-        s.reset(0.0);
+        s.seed_at(0.0);
         assert_eq!(s.process(Elevation(90.0)), Elevation(45.0));
         assert_eq!(s.process(Elevation(90.0)), Elevation(67.5));
     }

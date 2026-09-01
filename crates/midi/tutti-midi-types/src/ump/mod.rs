@@ -25,6 +25,8 @@
 //! }
 //! ```
 
+use tutti_types::{MidiChannel, MidiGroup};
+
 /// Packed UMP event with sample-accurate timing.
 ///
 /// The `data` field is a midi2-compatible `[u32; 4]` buffer — callers with a
@@ -77,12 +79,12 @@ impl MidiEvent {
         UmpMessageType::from_nibble((self.data[0] >> 28) as u8)
     }
 
-    /// The UMP group (0–15) — bits 24–27 of word 0. Meaningful for the
-    /// group-scoped message types (channel voice, SysEx, Flex Data); the
-    /// group-less types (Utility, UMP Stream) ignore it.
+    /// The UMP group — bits 24–27 of word 0. Meaningful for the group-scoped
+    /// message types (channel voice, SysEx, Flex Data); the group-less types
+    /// (Utility, UMP Stream) ignore it.
     #[inline]
-    pub fn group(&self) -> u8 {
-        ((self.data[0] >> 24) & 0x0F) as u8
+    pub fn group(&self) -> MidiGroup {
+        MidiGroup::new(((self.data[0] >> 24) & 0x0F) as u8)
     }
 }
 
@@ -227,18 +229,18 @@ impl MidiEvent {
         }
     }
 
-    /// Channel nibble (0-15) for a channel-voice event, read directly from the
-    /// UMP word without a full decode. `None` for system, SysEx, and utility
+    /// Channel nibble for a channel-voice event, read directly from the UMP
+    /// word without a full decode. `None` for system, SysEx, and utility
     /// messages, which carry no channel. Covers both MIDI 1.0 (UMP type 0x2)
     /// and MIDI 2.0 (type 0x4) channel voice — the channel sits in the same
     /// bit position in both, so the hot path (e.g. MIDI routing by channel)
     /// avoids paying for a `midi2::UmpMessage::try_from` dispatch.
     #[inline]
-    pub fn channel(&self) -> Option<u8> {
+    pub fn channel(&self) -> Option<MidiChannel> {
         let type_nibble = (self.data[0] >> 28) & 0x0F;
         // UMP type 0x2 = MIDI 1.0 channel voice, 0x4 = MIDI 2.0 channel voice.
         if type_nibble == 0x2 || type_nibble == 0x4 {
-            Some(((self.data[0] >> 16) & 0x0F) as u8)
+            Some(MidiChannel::new(((self.data[0] >> 16) & 0x0F) as u8))
         } else {
             None
         }
@@ -401,11 +403,11 @@ mod tests {
         // MIDI 2.0 channel voice (UMP type 0x4).
         assert_eq!(
             MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::new(5), 60, 0x8000).channel(),
-            Some(5)
+            Some(MidiChannel::new(5))
         );
         // MIDI 1.0 channel voice (UMP type 0x2), built via the wire bridge.
         let cv1 = MidiEvent::from_midi1_bytes(0, &[0x93, 0x3C, 0x64]).unwrap();
-        assert_eq!(cv1.channel(), Some(3));
+        assert_eq!(cv1.channel(), Some(MidiChannel::new(3)));
         // System messages carry no channel.
         assert_eq!(MidiEvent::timing_clock(MidiGroup::FIRST).channel(), None);
         assert_eq!(MidiEvent::noop().channel(), None);

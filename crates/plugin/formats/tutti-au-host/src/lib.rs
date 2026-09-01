@@ -66,7 +66,7 @@ pub mod render_notify;
 mod editor;
 
 pub use component::{AuComponentInfo, AuType};
-pub use error::{AuError, LoadStage, PresetFileError, PresetMismatch, Result};
+pub use error::{AuError, LoadFailedError, LoadStage, PresetFileError, PresetMismatch, Result};
 
 // Shared host vocabulary re-exported so consumers can stay format-agnostic.
 // `WindowHandle` is consumed by the GUI bridge; `MidiEvent` is the input type of
@@ -155,7 +155,9 @@ pub use aupreset::{read_preset_metadata, AuPresetIdentity};
 // three are unavoidable at the call site, and there is no shared
 // `tutti_plugin_types` notification vocabulary to translate into.
 #[cfg(target_os = "macos")]
-pub use listener::{AuEvent, AuParameterListener, EventAddress};
+pub use listener::{
+    emit_gesture, notify_all_parameters, AuEvent, AuParameterListener, EventAddress,
+};
 // Flat-re-exported for the reason `AuParameterListener` is: `RenderNotify` is
 // the handle a host holds, `RenderNotification`/`RenderPhase` are what its
 // callback receives, and `ParamEvent`/`ScheduleAddress` are the arguments to

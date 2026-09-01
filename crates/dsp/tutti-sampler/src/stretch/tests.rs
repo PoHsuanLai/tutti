@@ -1162,7 +1162,7 @@ fn latency_is_zero_while_bypassing_and_a_window_while_processing() {
     u.set_stretch_factor(StretchFactor::new(2.0));
     assert_eq!(u.latency_samples(), window);
 
-    // Reachable through ordinary use: `VoiceSlot::set_stretch` keeps the
+    // Reachable through ordinary use: `PlaybackSlot::set_stretch` keeps the
     // resident filter and writes its atomics, so a voice returned to 1.0 is a
     // built filter sitting at unity — it must stop claiming latency.
     u.set_stretch_factor(StretchFactor::UNITY);

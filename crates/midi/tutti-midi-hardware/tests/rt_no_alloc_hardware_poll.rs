@@ -41,7 +41,7 @@ impl MidiRouter for CountingQueue {
 
 /// One route on channel 0 to a target unit, so polled events have somewhere to go.
 fn routing() -> Arc<RtPublish<MidiRoutingSnapshot>> {
-    let route = MidiRoute::for_channel(0).with_target(MidiUnitId::new(42));
+    let route = MidiRoute::for_channel(MidiChannel::FIRST).with_target(MidiUnitId::new(42));
     Arc::new(RtPublish::from_arc(Arc::new(
         MidiRoutingSnapshot::from_routes(vec![route], None),
     )))

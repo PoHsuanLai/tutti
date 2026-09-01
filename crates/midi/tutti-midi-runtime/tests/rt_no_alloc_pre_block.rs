@@ -85,7 +85,7 @@ fn pre_block_run_empty_events_is_allocation_free() {
 fn pre_block_run_with_routed_events_is_allocation_free() {
     // Real routing snapshot: one route on channel 0 to target unit 42.
     let target = MidiUnitId::new(42);
-    let route = MidiRoute::for_channel(0).with_target(target);
+    let route = MidiRoute::for_channel(MidiChannel::FIRST).with_target(target);
     let snapshot = MidiRoutingSnapshot::from_routes(vec![route], None);
     let routing = Arc::new(RtPublish::from_arc(Arc::new(snapshot)));
 

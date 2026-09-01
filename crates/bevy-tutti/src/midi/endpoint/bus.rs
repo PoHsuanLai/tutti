@@ -75,4 +75,4 @@ impl Default for MpeModeConfig {
 /// mode already matches, which covers a caller that writes the same value twice
 /// — but not one that alternates.
 #[derive(Resource, Clone)]
-pub struct MpeModeHandle(pub tutti_midi_runtime::MpeModeRequest);
+pub struct MpeModeRes(pub tutti_midi_runtime::MpeModeRequest);

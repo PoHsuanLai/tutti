@@ -24,7 +24,7 @@ use midi2::ux::u20;
 use midi2::Data;
 
 use crate::ump::MidiEvent;
-use tutti_types::{Beat, BeatDuration, Bpm, MidiGroup};
+use tutti_types::{Beat, BeatDuration, Bpm, MidiChannel, MidiGroup};
 
 /// The 8-byte file header: ASCII "SMF2CLIP" (M2-116 §5).
 pub const CLIP_FILE_MAGIC: [u8; 8] = *b"SMF2CLIP";
@@ -270,7 +270,7 @@ impl ParsedClipFile {
         use std::collections::BTreeMap;
 
         // `Beat`, so `beat - start` below is a `BeatDuration` by construction.
-        let mut held: BTreeMap<(u8, u8, u8), Vec<(Beat, u16)>> = BTreeMap::new();
+        let mut held: BTreeMap<(MidiGroup, MidiChannel, u8), Vec<(Beat, u16)>> = BTreeMap::new();
         let mut out: Vec<ClipNote> = Vec::new();
 
         for (beat, event) in self.timed() {
@@ -314,11 +314,11 @@ impl ParsedClipFile {
 /// same shape, but velocity keeps all 16 bits and the UMP group is carried.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ClipNote {
-    /// UMP group, 0..=15. Part of the pairing key: groups are independent
-    /// 16-channel spaces, so the same channel+note in two groups is two notes.
-    pub group: u8,
-    /// MIDI channel, 0..=15.
-    pub channel: u8,
+    /// UMP group. Part of the pairing key: groups are independent 16-channel
+    /// spaces, so the same channel+note in two groups is two notes.
+    pub group: MidiGroup,
+    /// MIDI channel.
+    pub channel: MidiChannel,
     /// Note number, 0..=127.
     pub note: u8,
     /// Note On velocity at full MIDI 2.0 width. A MIDI 1.0 note in the clip is
@@ -1040,7 +1040,11 @@ mod tests {
                 .iter()
                 .map(|n| (n.group, n.channel))
                 .collect::<Vec<_>>(),
-            [(0, 0), (0, 1), (1, 0)]
+            [
+                (MidiGroup::new(0), MidiChannel::new(0)),
+                (MidiGroup::new(0), MidiChannel::new(1)),
+                (MidiGroup::new(1), MidiChannel::new(0)),
+            ]
         );
         // Each closed against its own Note Off, not the nearest one.
         assert_eq!(notes[0].duration_beats, BeatDuration(3.0));

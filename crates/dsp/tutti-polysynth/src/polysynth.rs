@@ -21,7 +21,7 @@ use tutti_core::{
 };
 use tutti_midi_runtime::{MidiInPort, MidiSender};
 use tutti_midi_types::ump::MidiEvent;
-use tutti_midi_types::CCNumber;
+use tutti_midi_types::{CCNumber, MidiChannel};
 use tutti_midi_types::{cc, MidiUnitId, MidiUnitIn, NoteId};
 
 use std::sync::Arc;
@@ -239,7 +239,13 @@ impl PolySynth {
     /// cap — and a boost above unity is legal for an `Amplitude`.
     ///
     /// Applied once per block to the summed mix, not per voice.
-    pub fn set_volume(&mut self, volume: f32) {
+    ///
+    /// `&self`, matching every other atomic-backed volume setter in the engine
+    /// (`BusStripNode`, `ClickSettings`): the write lands in a shared cell, and
+    /// [`volume_atomic`](Self::volume_atomic) hands that same cell to the
+    /// modulation path — so `&mut` would advertise an exclusivity this type
+    /// does not have.
+    pub fn set_volume(&self, volume: f32) {
         self.master_volume.store(Amplitude(volume.max(0.0)));
     }
 
@@ -378,7 +384,7 @@ impl PolySynth {
                 // per-note tuning override delivered at note start. Applied after
                 // allocation so it lands on the voice this note just claimed.
                 if let Some(NoteAttribute::Pitch7_9(p)) = m.attribute() {
-                    let id = NoteId::from_channel_note(channel, note);
+                    let id = NoteId::from_channel_note(MidiChannel::new(channel), note);
                     self.set_voice_tuning(id, q7_9_to_fractional_note(p.to_bits()));
                 }
             }
@@ -404,18 +410,18 @@ impl PolySynth {
             // MIDI 2.0 native per-note messages address one voice by note-id —
             // two same-pitch notes stay independent even on one channel.
             Cv2::PerNotePitchBend(m) => {
-                let id = NoteId::from_channel_note(channel, u8::from(m.note_number()));
+                let id = NoteId::from_channel_note(MidiChannel::new(channel), u8::from(m.note_number()));
                 self.set_voice_mpe_pitch_bend(id, bend_u32_to_signed_f32(m.pitch_bend_data()));
             }
             Cv2::KeyPressure(m) => {
-                let id = NoteId::from_channel_note(channel, u8::from(m.note_number()));
+                let id = NoteId::from_channel_note(MidiChannel::new(channel), u8::from(m.note_number()));
                 self.set_voice_mpe_pressure(id, u32_to_unit_f32(m.key_pressure_data()));
             }
             // Assignable per-note controllers carry a raw index. Only the dims
             // a synth voice can apply are honored: CC74 → slide, CC7 → per-note
             // gain.
             Cv2::AssignablePerNoteController(m) => {
-                let id = NoteId::from_channel_note(channel, u8::from(m.note_number()));
+                let id = NoteId::from_channel_note(MidiChannel::new(channel), u8::from(m.note_number()));
                 let data = u32_to_unit_f32(m.controller_data());
                 // `m.index()` is the raw per-note controller index off the
                 // wire (a `u8`, not a `u7`), so it is masked into range here.
@@ -432,7 +438,7 @@ impl PolySynth {
             // (no per-note pan DSP on `SynthVoice` yet — don't invent it).
             Cv2::RegisteredPerNoteController(m) => {
                 use tutti_midi_types::midi2::channel_voice2::Controller;
-                let id = NoteId::from_channel_note(channel, u8::from(m.note_number()));
+                let id = NoteId::from_channel_note(MidiChannel::new(channel), u8::from(m.note_number()));
                 match m.controller() {
                     Controller::Volume(data) => {
                         self.set_voice_mpe_gain(id, u32_to_unit_f32(data));
@@ -468,7 +474,7 @@ impl PolySynth {
             // future-notes reset needs no state — the live voice is simply detached.
             // Hence: detach wins for the live voice when both bits are set.
             Cv2::PerNoteManagement(m) => {
-                let id = NoteId::from_channel_note(channel, u8::from(m.note_number()));
+                let id = NoteId::from_channel_note(MidiChannel::new(channel), u8::from(m.note_number()));
                 if m.detach() {
                     self.detach_voice_mpe(id);
                 } else if m.reset() {
@@ -494,7 +500,7 @@ impl PolySynth {
     }
 
     fn handle_note_on(&mut self, note: u8, vel_norm: f32, channel: u8) {
-        let id = NoteId::from_channel_note(channel, note);
+        let id = NoteId::from_channel_note(MidiChannel::new(channel), note);
         let result = self.allocator.allocate(id, note, channel, vel_norm);
 
         let slot_index = match result {
@@ -528,7 +534,7 @@ impl PolySynth {
     }
 
     fn handle_note_off(&mut self, note: u8, channel: u8) {
-        let id = NoteId::from_channel_note(channel, note);
+        let id = NoteId::from_channel_note(MidiChannel::new(channel), note);
         // `release` resolves the exact voice by id and reports whether it truly
         // stopped (vs. held by a pedal). Gate that voice by index — never by a
         // (note, channel) scan, which would alias two same-pitch voices.

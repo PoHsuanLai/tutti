@@ -53,3 +53,7 @@ serde = ["dep:serde"]
 # does is cold-path batch analysis that legitimately allocates its output. The
 # one thread-adjacent path (`live.rs`) is being removed rather than gated.
 rand = "0.8"
+# An independent YIN, as a second opinion on ours, for `tests/oracle_pitch.rs`.
+# Unmaintained (last release 2022) — see that file's header for why it is still
+# a usable oracle and what is deliberately not compared against it.
+pitch-detection = "0.3"

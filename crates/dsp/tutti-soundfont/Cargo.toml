@@ -27,3 +27,7 @@ thiserror = "2"
 
 [dev-dependencies]
 assert_no_alloc = { version = "1", default-features = false }
+# Upstream rustysynth beside the vendored fork, for `tests/oracle_rustysynth.rs`.
+# The production dep is already aliased to `rustysynth`, so upstream joins under
+# its own name with no collision. Adds no transitive crates.
+rustysynth_upstream = { package = "rustysynth", version = "1.3.6" }

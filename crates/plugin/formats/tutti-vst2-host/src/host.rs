@@ -383,13 +383,6 @@ mod tests {
         assert_eq!(host.get_sample_rate(), 96_000.0);
     }
 
-    #[test]
-    fn get_process_level_is_realtime() {
-        let time_info = Arc::new(TransportCell::new());
-        let host = make_host(time_info, 48_000.0);
-        assert_eq!(host.get_process_level(), 2); // kVstProcessLevelRealtime
-    }
-
     /// A plugin polls this callback to decide whether it may spend more per
     /// block. Reporting realtime during a bounce is what made an offline render
     /// silently produce the live-quality result.

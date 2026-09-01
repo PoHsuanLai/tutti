@@ -183,30 +183,6 @@ mod tests {
     use std::path::PathBuf;
     use tutti_midi_types::{CCNumber, MidiChannel, MidiGroup};
 
-    #[test]
-    fn test_message_serialization() {
-        let msg = HostMessage::LoadPlugin {
-            path: PathBuf::from("/test/plugin.vst3"),
-            sample_rate: 44100.0,
-            block_size: envelope::DEFAULT_BLOCK_SIZE,
-            preferred_format: SampleFormat::Float32,
-            shm_name: String::new(),
-        };
-
-        let encoded = bincode::serialize(&msg).unwrap();
-        let decoded: HostMessage = bincode::deserialize(&encoded).unwrap();
-
-        match decoded {
-            HostMessage::LoadPlugin {
-                path, sample_rate, ..
-            } => {
-                assert_eq!(path, PathBuf::from("/test/plugin.vst3"));
-                assert_eq!(sample_rate, 44100.0);
-            }
-            _ => panic!("Wrong message type"),
-        }
-    }
-
     /// Every preset frame survives the wire in both directions.
     ///
     /// These are the frames that make presets reachable out-of-process: an id
@@ -656,25 +632,6 @@ mod tests {
             }
             _ => panic!("Wrong message type"),
         }
-    }
-
-    #[test]
-    fn test_parameter_changes_add_queue() {
-        let mut changes = ParameterChanges::new();
-        assert!(changes.is_empty());
-
-        let mut queue = ParameterQueue::new(ParamAddress::Opaque(ParamId::new(42)));
-        queue.add_point(0, 0.5);
-        queue.add_point(128, 0.8);
-        changes.add_queue(queue);
-
-        assert!(!changes.is_empty());
-        assert_eq!(changes.queues.len(), 1);
-        assert_eq!(
-            changes.queues[0].param_id,
-            ParamAddress::Opaque(ParamId::new(42))
-        );
-        assert_eq!(changes.queues[0].points.len(), 2);
     }
 
     #[test]

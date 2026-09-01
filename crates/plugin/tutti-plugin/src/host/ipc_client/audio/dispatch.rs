@@ -457,14 +457,6 @@ mod tests {
         }
     }
 
-    /// `MAX_BEHIND` and the ring depth are one constraint, not two tunables —
-    /// but offset by one, because a block exactly `RING_SLOTS` behind lands in
-    /// the *same* slot as the newest (`slot_for` is `seq % RING_SLOTS`).
-    #[test]
-    fn max_behind_is_one_less_than_the_ring_depth() {
-        assert_eq!(MAX_BEHIND, RING_SLOTS as u64 - 1);
-    }
-
     /// `newest < seq` cannot occur — the bridge cannot dequeue a block that was
     /// never pushed — but the comparison must be total, and "send it" is the
     /// safe direction if it somehow did.

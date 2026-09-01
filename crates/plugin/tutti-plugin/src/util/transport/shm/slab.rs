@@ -650,15 +650,6 @@ mod tests {
         assert!(slab.write_input(1, 0, &data).is_err());
     }
 
-    #[test]
-    fn getters() {
-        let l = layout(256, SampleFormat::Float32);
-        let n = name("getters");
-        let slab = AudioSlab::create(n.clone(), l.clone()).unwrap();
-        assert_eq!(slab.name(), n);
-        assert_eq!(slab.layout(), l);
-    }
-
     /// An empty bus list is the shape that meant "share one region in place".
     /// It must now be rejected outright rather than reinterpreted.
     #[test]

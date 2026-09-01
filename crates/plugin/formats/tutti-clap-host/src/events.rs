@@ -2172,11 +2172,15 @@ mod tests {
         }
         assert_eq!(output.events().len(), 1);
         match &output.events()[0] {
-            ClapEvent::MidiSysex { _data, .. } => {
+            ClapEvent::MidiSysex { inner, _data } => {
+                assert_eq!(inner.port_index, 0);
                 assert_eq!(_data, &sysex_data);
             }
             _ => panic!("Expected MidiSysex event"),
         }
+        // Sysex is its own event kind, not a generic MIDI byte triple: a
+        // consumer draining `to_midi_events` must not see it a second time.
+        assert!(output.to_midi_events().is_empty());
     }
 
     #[test]

@@ -560,7 +560,13 @@ mod tests {
         // The `Arc` is cloned rather than borrowed so the flag writes and the
         // drain below do not overlap a borrow of `plugin`.
         let flags = {
-            let Plugin::Au(au) = &mut plugin else {
+            // `Plugin`'s variants are each feature-gated, so an `au`-only build
+            // leaves one and clippy can prove the `else` dead. It is not dead in
+            // any multi-format build, and deleting it would make this test stop
+            // checking that `load` returned the variant it was asked for.
+            #[allow(irrefutable_let_patterns, unreachable_patterns)]
+            let Plugin::Au(au) = &mut plugin
+            else {
                 unreachable!("constructed as Au immediately above")
             };
             std::sync::Arc::clone(au.property_flags().expect(

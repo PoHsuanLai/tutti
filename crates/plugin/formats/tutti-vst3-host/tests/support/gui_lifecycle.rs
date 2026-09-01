@@ -35,6 +35,10 @@ use tutti_vst3_host::{EditorSize, Vst3Active, WindowHandle};
 /// Compile-time default, baked in by `build.rs`.
 const SAMPLE_PLUGIN_DIR_BUILT: &str = env!("VST3_SAMPLE_PLUGIN_DIR");
 
+/// The bundle `build.rs` builds from the vendored SDK, which always exists on a
+/// recursive checkout. `audio-probe` lives here.
+const PROBE_DIR_BUILT: &str = env!("VST3_PROBE_DIR");
+
 /// Where to look for sample plugins, **runtime env first**.
 ///
 /// `build.rs` bakes the path in at compile time, which means exporting
@@ -42,11 +46,21 @@ const SAMPLE_PLUGIN_DIR_BUILT: &str = env!("VST3_SAMPLE_PLUGIN_DIR");
 /// happens to rebuild — so pointing this at a debug-symbol build to diagnose a
 /// crash silently kept loading the stripped release plugin instead. Reading the
 /// variable at runtime makes that switch actually work.
+///
+/// Falling back to `VST3_PROBE_DIR` is what keeps the tests in this file from
+/// passing vacuously. `VST3_SAMPLE_PLUGIN_DIR` names a hand-built SDK checkout
+/// and is unset on essentially every machine, so without this every plugin
+/// lookup missed, and a test whose only plugin is absent skips and still
+/// reports `ok` — `editorless_plugin_is_refused_cleanly` printed
+/// "audio-probe.vst3 not found; skipping" while passing, even though `build.rs`
+/// had built that exact bundle. The probe dir is a real directory on any
+/// recursive checkout, so preferring it over nothing makes those tests run.
 fn sample_plugin_dir() -> String {
     std::env::var("VST3_SAMPLE_PLUGIN_DIR")
         .ok()
         .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| SAMPLE_PLUGIN_DIR_BUILT.to_string())
+        .or_else(|| Some(SAMPLE_PLUGIN_DIR_BUILT.to_string()).filter(|s| !s.is_empty()))
+        .unwrap_or_else(|| PROBE_DIR_BUILT.to_string())
 }
 
 /// Resolve a `.vst3` bundle to the loadable binary inside it.

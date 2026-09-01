@@ -77,12 +77,12 @@ impl MidiEvent {
         UmpMessageType::from_nibble((self.data[0] >> 28) as u8)
     }
 
-    /// The UMP group (0–15) — bits 24–27 of word 0. Meaningful for the
-    /// group-scoped message types (channel voice, SysEx, Flex Data); the
-    /// group-less types (Utility, UMP Stream) ignore it.
+    /// The UMP group — bits 24–27 of word 0. Meaningful for the group-scoped
+    /// message types (channel voice, SysEx, Flex Data); the group-less types
+    /// (Utility, UMP Stream) ignore it.
     #[inline]
-    pub fn group(&self) -> u8 {
-        ((self.data[0] >> 24) & 0x0F) as u8
+    pub fn group(&self) -> MidiGroup {
+        MidiGroup::new(((self.data[0] >> 24) & 0x0F) as u8)
     }
 }
 

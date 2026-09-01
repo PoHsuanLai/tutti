@@ -22,7 +22,6 @@ use std::path::Path;
 
 pub(crate) struct AuGuiInstance {
     inner: tutti_au_host::AuInstance,
-    editor: Option<tutti_au_host::AuEditor>,
     /// Declared plain-unit bounds per parameter id, sorted, captured at load.
     ///
     /// AU takes plain units where this host speaks normalized, so a mirrored
@@ -82,7 +81,6 @@ impl AuGuiInstance {
 
         Ok(Self {
             inner,
-            editor: None,
             param_ranges,
         })
     }
@@ -91,23 +89,19 @@ impl AuGuiInstance {
 impl PluginEditor for AuGuiInstance {
     fn open_editor(&mut self, parent: WindowHandle) -> Result<EditorSize> {
         let parent_handle = unsafe { tutti_au_host::WindowHandle::from_raw(parent.as_ptr()) };
-        let editor =
-            // No size to offer here either: this entry point receives a
-            // parent handle and nothing else. See the sibling in
-            // `tutti-plugin-server`.
-            unsafe {
-                tutti_au_host::AuEditor::open(
-                    self.inner.raw_unit(),
-                    Some(parent_handle),
-                    tutti_plugin_types::EditorSize {
-                        width: 800,
-                        height: 600,
-                    },
-                )
-            }
-                .map_err(|e| BridgeError::ProtocolError(format!("AU open_editor failed: {e}")))?;
-        let size = editor.editor_size();
-        self.editor = Some(editor);
+        // No size to offer here either: this entry point receives a
+        // parent handle and nothing else. See the sibling in
+        // `tutti-plugin-server`.
+        let size = unsafe {
+            self.inner.open_editor(
+                parent_handle,
+                tutti_plugin_types::EditorSize {
+                    width: 800,
+                    height: 600,
+                },
+            )
+        }
+        .map_err(|e| BridgeError::ProtocolError(format!("AU open_editor failed: {e}")))?;
         Ok(EditorSize {
             width: size.width,
             height: size.height,
@@ -115,9 +109,7 @@ impl PluginEditor for AuGuiInstance {
     }
 
     fn close_editor(&mut self) {
-        if let Some(mut ed) = self.editor.take() {
-            ed.close();
-        }
+        self.inner.close_editor();
     }
 
     fn editor_idle(&mut self) {
@@ -152,7 +144,7 @@ impl PluginEditor for AuGuiInstance {
 
     fn set_state(&mut self, data: &[u8]) -> Result<()> {
         self.inner
-            .load_state(data)
+            .set_state(data)
             .map_err(|e| BridgeError::ProtocolError(format!("AU set_state failed: {e}")))
     }
 

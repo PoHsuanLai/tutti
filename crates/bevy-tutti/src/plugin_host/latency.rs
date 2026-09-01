@@ -45,7 +45,7 @@
 //!
 //! `PluginClient::new` launches a plugin-server subprocess, so no unit test can
 //! put a real plugin in a graph. The tests below cover the decision rule
-//! ([`needs_recompensation`]) and the two guards that must *not* fire — a
+//! (`needs_recompensation`) and the two guards that must *not* fire — a
 //! non-plugin node and a missing graph. Nothing here observes the flag actually
 //! being raised for a live plugin whose latency changed; that needs an
 //! integration test loading a real binary, and no such harness exists in this

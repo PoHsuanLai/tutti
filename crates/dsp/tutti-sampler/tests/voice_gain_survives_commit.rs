@@ -1,6 +1,6 @@
 //! **A voice's gain is addressable by `Net::set`, and survives a commit.**
 //!
-//! `tutti-units`' `live_value_survives_commit` pins the *rule* — a live control
+//! `tutti-nodes`' `live_value_survives_commit` pins the *rule* — a live control
 //! value lives in shared storage or the next commit discards the write. This
 //! pins the sampler's compliance with it, through the door a host actually uses.
 //!
@@ -22,7 +22,7 @@
 //!
 //! Reverting `MemorySource::gain` to an unshared clone leaves **every test in
 //! this file passing** — measured, not assumed. A `VoiceNode` renders through
-//! `slot.voice.play.gain` (see `VoiceSlot::tick_frame_into`), a plain `Copy`
+//! `slot.voice.play.gain` (see `PlaybackSlot::tick_frame_into`), a plain `Copy`
 //! field on the `Playback` record, and never consults the source's own cell
 //! here. And `Net::set` with a backend attached *enqueues* to the audio thread
 //! rather than mutating the frontend, so the frontend-clone hazard the
@@ -30,7 +30,7 @@
 //!
 //! The shared cell still matters — for `node_as_mut` writes, for a `VoicePool`
 //! slot, and for the offline render — it is simply not what these tests
-//! discriminate. `tutti-units`' `live_value_survives_commit` and this crate's
+//! discriminate. `tutti-nodes`' `live_value_survives_commit` and this crate's
 //! `a_gain_change_reaches_a_cloned_source` are where that property is pinned.
 //!
 //! Sabotages that DO fail this file: deleting the `UnitParam::Volume` arm, and

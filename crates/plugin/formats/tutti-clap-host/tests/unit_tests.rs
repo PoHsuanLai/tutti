@@ -230,7 +230,7 @@ fn a_wildcard_note_off_resolves_by_note_id_not_by_masking() {
     );
     assert_eq!(
         event.channel(),
-        Some(CHANNEL),
+        Some(MidiChannel::new(CHANNEL)),
         "a wildcard channel must resolve through note_id, not mask to 15"
     );
 }

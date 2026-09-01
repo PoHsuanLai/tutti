@@ -1,66 +1,4 @@
-//! Subprocess-side of the plugin bridge.
-//!
-//! `tutti-plugin-server` is the implementation behind the `plugin-server`
-//! binary that [`tutti_plugin`] spawns once per loaded plugin. This crate
-//! hosts the plugin in isolation, speaks the [`tutti_plugin::server`]
-//! wire protocol over a Unix-socket / named-pipe, and drives audio via a
-//! shared-memory slab.
-//!
-//! # Using the library
-//!
-//! Most callers want the `plugin-server` binary, not this library. Library
-//! users have exactly one entry point. `no_run`: `run` binds a socket and
-//! blocks for the lifetime of the session.
-//!
-//! ```no_run
-//! use tutti_plugin_server::{BridgeConfig, PluginServer};
-//!
-//! // The host chooses the rendezvous path and passes it in — a subprocess
-//! // deriving its own could not meet the host that spawned it. Everything else
-//! // defaults; `max_buffer_size` is denominated in FRAMES and sizes the slab,
-//! // so a later block may not exceed it.
-//! let config = BridgeConfig {
-//!     socket_path: std::env::args().nth(1).expect("socket path").into(),
-//!     ..Default::default()
-//! };
-//!
-//! // One server serves one host, then returns. A crash here takes the plugin
-//! // down and leaves the host running — which is the point of the split.
-//! PluginServer::new(config)
-//!     .expect("record parent pid")
-//!     .run()
-//!     .expect("session");
-//! ```
-//!
-//! The `socket_path` above is the one field with no safe default:
-//! [`BridgeConfig::default`] derives a *unique* path per call precisely so a
-//! `..Default::default()` cannot become a latent collision, in which the second
-//! bridge to bind unlinks the first's live socket.
-//!
-//! # The wire
-//!
-//! Framing is a u32 big-endian length prefix plus a bincode payload. The message
-//! shapes and the version constant are [`tutti_plugin`]'s — this crate imports
-//! `PROTOCOL_VERSION` and never restates its history. Both phases open by
-//! sending it, and a host that does not recognise the version refuses.
-//!
-//! This is an **IPC boundary, so the unit newtypes stop here**, as they do at
-//! the C ABIs of the hosted plugin formats. A raw `f64` sample rate crossing the
-//! wire or entering `AudioUnitSetParameter` is correct, not an omission.
-//!
-//! # Internal layout
-//!
-//! - `server` — outer shell ([`PluginServer`]); orchestrates the two-phase
-//!   connection dance and drives a `Session` over a `Transport`.
-//! - `session` — pure message-to-reaction dispatch. Owns plugin + shm +
-//!   pipeline + editor state. Unit-testable without sockets.
-//! - `audio_pipeline` — per-block audio machinery (scratch buffers,
-//!   shared-memory I/O, plugin invocation).
-//! - `plugin` — format-polymorphic plugin wrapper; hides VST2/VST3/CLAP/AU
-//!   cfg-gating behind a single `Plugin` enum.
-//! - `editor` — editor window state.
-//! - `transport` — IPC framing; trait seam for testability.
-//! - `loaders::{vst2, vst3, clap, au}` — per-format `PluginInstance` adapters.
+#![doc = include_str!("../README.md")]
 
 mod audio_pipeline;
 mod editor;
@@ -149,11 +87,7 @@ pub(crate) mod test_utils {
     /// during this same `cargo test` — so its absence is a build failure, not a
     /// property of the machine.
     ///
-    /// This used to return `Option` and let callers skip, because the probe
-    /// needed an external `VST3_SDK_DIR` checkout that most machines lacked.
-    /// The SDK is a submodule now, so the skip has nothing left to describe.
-    ///
-    /// `TUTTI_TEST_VST3_PLUGIN` still overrides, for running these tests
+    /// `TUTTI_TEST_VST3_PLUGIN` overrides, for running these tests
     /// against a real third-party plugin.
     ///
     /// # Panics
@@ -259,7 +193,7 @@ pub(crate) mod test_utils {
 
     /// The reference plugin under a `.clap` extension.
     ///
-    /// [`PluginHost::load`](crate::plugin) dispatches on the file extension,
+    /// `Plugin::load` (the `crate::plugin` enum) dispatches on the file extension,
     /// and the cdylib cargo builds is `libtutti_clap_test_plugin.so` — which
     /// that table maps to **VST2**, so loading it through the format-detecting
     /// path fails with `NotAPlugin`. Tests that go through `HostMessage::

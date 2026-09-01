@@ -2,12 +2,13 @@
 //!
 //! Shared value types come from `tutti_plugin_types`; this module owns the
 //! VST2-specific shapes (`PluginInfo` with `unique_id`-derived id,
-//! `ParameterInfo` with normalized-only values, `ProcessContext`).
+//! `Vst2ProcessContext`).
 
 pub use tutti_plugin_types::Samples;
 
 pub use tutti_plugin_types::{
-    ChannelLayout, EditorSize, MidiEvent, PluginTail, TimeSignature, TransportInfo, WindowHandle,
+    ChannelLayout, EditorSize, MidiEvent, ParamAddress, ParameterInfo, PluginTail, TimeSignature,
+    TransportInfo, WindowHandle,
 };
 
 /// Plugin metadata gathered at load time.
@@ -65,29 +66,6 @@ pub struct PluginInfo {
 /// the native `vst::Category` into it via `From` (see `instance.rs`).
 pub use tutti_plugin_types::Vst2Category;
 
-/// Single VST2 parameter descriptor.
-///
-/// VST2 doesn't expose min/max/step metadata, so values are always
-/// normalized in `[0.0, 1.0]`. The `unit` string is whatever the plugin
-/// returns from `getParameterLabel` (typically "Hz", "dB", "%", or empty).
-#[derive(Debug, Clone)]
-pub struct ParameterInfo {
-    /// Dense index in `[0, numParams)` — VST2 addresses parameters by
-    /// position, and the ABI's own `i32` is carried rather than re-signed.
-    pub id: i32,
-    /// Display name from `effGetParamName`.
-    pub name: String,
-    /// The plugin's own unit label from `effGetParamLabel` — typically `"Hz"`,
-    /// `"dB"`, `"%"`, or empty. A free-form string, not a parsed unit type: VST2
-    /// makes no promise about its contents, so it cannot be mapped onto the
-    /// engine's `Hz` / `Db` vocabulary without guessing.
-    pub unit: String,
-    /// Current normalized value in `[0.0, 1.0]`. Reads `0.0` for a plugin
-    /// exposing no `getParameter` — see [`crate::Vst2Instance::parameter`],
-    /// which distinguishes the two.
-    pub current: f32,
-}
-
 /// Stack-allocated event collection. Inline storage matches
 /// `tutti-plugin`'s `MidiEventVec` so shim layers can pass the value
 /// straight through without re-allocating.
@@ -96,7 +74,7 @@ pub type MidiEventVec = smallvec::SmallVec<[MidiEvent; 256]>;
 /// Per-block inputs to `Vst2Instance::process_f32`/`process_f64` beyond
 /// the audio buffer.
 #[derive(Default)]
-pub struct ProcessContext<'a> {
+pub struct Vst2ProcessContext<'a> {
     /// Events to deliver before the block renders, each carrying its own frame
     /// offset within the block. Empty is normal for an effect.
     pub midi: &'a [MidiEvent],
@@ -112,7 +90,7 @@ pub struct ProcessContext<'a> {
     pub sample_rate: f64,
 }
 
-impl<'a> ProcessContext<'a> {
+impl<'a> Vst2ProcessContext<'a> {
     /// A context with no MIDI and no transport, carrying only `sample_rate` in
     /// Hz. Layer the rest on with [`Self::midi`] and [`Self::transport`].
     pub fn new(sample_rate: f64) -> Self {

@@ -182,7 +182,7 @@ fn parked_units_are_freed_once_the_frontend_drains() {
 /// A setting addressed to a node the network does not contain is **counted**,
 /// not silently discarded.
 ///
-/// This is the top of the silent-no-op stack `tutti-units`' module docs
+/// This is the top of the silent-no-op stack `tutti-nodes`' module docs
 /// describe, and it was the one layer with no counter at all: `Net::set` had an
 /// `if`/`else if` with no `else`, so a wrong `NodeId` vanished with
 /// `dropped_settings` still reading zero. A parameter wired to nothing then

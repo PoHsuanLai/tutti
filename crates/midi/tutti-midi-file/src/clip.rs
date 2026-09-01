@@ -156,7 +156,7 @@ mod tests {
         let clip = tutti_midi_types::write_clip_file(96, &[]);
         assert_eq!(MidiFileKind::sniff(&clip), Some(MidiFileKind::ClipFile));
 
-        let smf = crate::smf::encode_midi_file(&[vec![]], &crate::smf::MidiWriteOptions::default())
+        let smf = crate::smf::encode_midi_file(&[vec![]], &crate::smf::MidiWriteConfig::default())
             .unwrap();
         assert_eq!(
             MidiFileKind::sniff(&smf),

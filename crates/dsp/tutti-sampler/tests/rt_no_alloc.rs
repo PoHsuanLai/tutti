@@ -367,7 +367,7 @@ fn voice_pool_tick_steady_state_is_allocation_free() {
 
 /// The `VoiceCommand::UpdateStretch` drain is allocation-free.
 ///
-/// Draining an `UpdateStretch` calls `VoiceSlot::set_stretch`, which flips the
+/// Draining an `UpdateStretch` calls `PlaybackSlot::set_stretch`, which flips the
 /// processor's lock-free `stretch_factor` / `pitch_cents` atomics, mirrors them
 /// into the routing-gate fields, and — when the slot has no processor yet — moves
 /// in the one the sender built. Every one of those is a store or a move; nothing
@@ -573,7 +573,7 @@ fn memory_source_process_is_allocation_free_when_folding_six_to_two() {
 ///
 /// The per-unit tests each cover one hop; this is the only one that exercises
 /// the whole in-memory chain at width 6 — `read_frame` -> `MemorySource` ->
-/// `VoiceSlot` -> `VoicePool` -> a planar `BufferMut` — and so the only
+/// `PlaybackSlot` -> `VoicePool` -> a planar `BufferMut` — and so the only
 /// one that would catch a width being dropped at a seam rather than inside a
 /// node.
 #[test]

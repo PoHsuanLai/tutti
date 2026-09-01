@@ -78,7 +78,7 @@
 //! | `wide_parameter_lists_are_read_whole` | drop the last entry of `parameters::list` (74 vs 75) |
 //! | `reported_latency_matches_…` | hardcode 48 kHz in the latency conversion |
 //! | `push_render_is_refused_…` | absorb the push-render `unimpErr` into `Ok` |
-//! | `state_round_trips_…` | make `load_state` a silent no-op |
+//! | `state_round_trips_…` | make `set_state` a silent no-op |
 //! | `an_instrument_that_reports_inputs_…` | make `send_midi` drop every event |
 //! | `bypass_round_trips_…` | make `set_bypass(true)` a no-op |
 //! | `plugin_named_buses_…` | clamp an out-of-range element index to the last valid bus |
@@ -123,7 +123,7 @@ use support::corpus::{
 };
 
 use tutti_au_host::component::AuComponentInfo;
-use tutti_au_host::instance::AuInstance;
+use tutti_au_host::AuInstance;
 use tutti_au_host::{AuError, BusDirection, MidiEvent};
 use tutti_midi_types::{MidiChannel, MidiGroup};
 
@@ -615,7 +615,7 @@ fn wide_parameter_lists_are_read_whole() {
     eprintln!("wide_parameter_lists_are_read_whole: exercised {found} unit(s)");
 }
 
-/// `save_state`/`load_state` must restore the parameter values that were saved.
+/// `get_state`/`set_state` must restore the parameter values that were saved.
 ///
 /// If it regresses, reopening a project silently loses every plugin setting —
 /// the single most damaging class of host bug, because it is invisible until the
@@ -664,11 +664,11 @@ fn state_round_trips_through_the_plugins_own_blob() {
             .collect();
 
         let blob = au
-            .save_state()
-            .unwrap_or_else(|e| panic!("{}: save_state failed: {e:?}", unit.label));
+            .get_state()
+            .unwrap_or_else(|e| panic!("{}: get_state failed: {e:?}", unit.label));
         assert!(
             !blob.is_empty(),
-            "{}: save_state returned an empty blob, so nothing was saved",
+            "{}: get_state returned an empty blob, so nothing was saved",
             unit.label
         );
 
@@ -684,12 +684,12 @@ fn state_round_trips_through_the_plugins_own_blob() {
         assert!(
             moved,
             "{}: perturbing the parameters changed nothing, so the restore below \
-             would pass even if load_state did nothing at all",
+             would pass even if set_state did nothing at all",
             unit.label
         );
 
-        au.load_state(&blob)
-            .unwrap_or_else(|e| panic!("{}: load_state failed: {e:?}", unit.label));
+        au.set_state(&blob)
+            .unwrap_or_else(|e| panic!("{}: set_state failed: {e:?}", unit.label));
 
         for (id, saved) in &saved_values {
             let restored = au.get_parameter(*id).unwrap();
@@ -706,7 +706,7 @@ fn state_round_trips_through_the_plugins_own_blob() {
 
         // The AU must still render after a state load: a blob that half-applies
         // can leave a plugin in a state where it produces NaN.
-        assert_renders_finite(&mut au, unit.label, "after load_state");
+        assert_renders_finite(&mut au, unit.label, "after set_state");
     });
     eprintln!("state_round_trips_through_the_plugins_own_blob: exercised {found} unit(s)");
 }
@@ -739,12 +739,12 @@ fn a_foreign_state_blob_is_refused_and_leaves_the_unit_usable() {
     };
 
     let nm_blob = open(&nm, TAL_NOISEMAKER.label)
-        .save_state()
-        .expect("NoiseMaker save_state");
+        .get_state()
+        .expect("NoiseMaker get_state");
     let mut nova_au = open(&nova, TDR_NOVA.label);
 
     let err = nova_au
-        .load_state(&nm_blob)
+        .set_state(&nm_blob)
         .expect_err("TDR Nova must not accept TAL-NoiseMaker's ClassInfo blob");
     // The status is the plugin's, not one the host invented — measured -10851.
     assert!(

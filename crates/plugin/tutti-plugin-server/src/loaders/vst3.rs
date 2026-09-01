@@ -1,16 +1,15 @@
 //! VST3 plugin loader using the `vst3-host` crate.
 
-use std::collections::HashMap;
 use std::path::Path;
 
 use tutti_plugin::server::{
     AudioBufferMut, AutomationMode, BusChannels, ChannelLayout, ChordChanges, EditorPresence,
-    EditorSize, Features, LoadedPlugin, Normalized, NoteExpressionChanges,
-    NoteExpressionIntChanges, NoteExpressionTextChanges, ParamAddress, ParamFlags, ParamRange,
-    ParamSteps, ParameterInfo, PluginAudio, PluginClass, PluginDescriptor, PluginEditorHost,
-    PluginError, PluginMeta, PluginParams, PluginPresets, PluginResult, PluginState, PluginTail,
-    Preset, PresetId, ProcessContext, ProcessOutput, RenderMode, Samples, ScaleChanges,
-    Vst3SubCategories, WindowHandle,
+    EditorSize, Features, LoadedPlugin, Normalized, NoteExpressionIntChanges,
+    NoteExpressionTextChanges, ParamAddress, ParameterInfo,
+    PluginAudio, PluginClass, PluginDescriptor, PluginEditorHost, PluginError, PluginMeta,
+    PluginParams, PluginPresets, PluginResult, PluginState, PluginTail, Preset, PresetId,
+    ProcessContext, ProcessOutput, RenderMode, Samples, ScaleChanges, Vst3SubCategories,
+    WindowHandle,
 };
 use tutti_plugin::{BridgeError, LoadStage, Result};
 
@@ -22,8 +21,8 @@ pub use tutti_vst3_host;
 /// Typed inner holds either a f32 or f64 instance, selected at activation time
 /// based on plugin capabilities and the caller's preferred format.
 enum VstInner {
-    F32(tutti_vst3_host::Vst3Instance<f32>),
-    F64(tutti_vst3_host::Vst3Instance<f64>),
+    F32(tutti_vst3_host::Vst3Active<f32>),
+    F64(tutti_vst3_host::Vst3Active<f64>),
 }
 
 /// Dispatch a shared expression over both inner variants (immutable).
@@ -264,7 +263,7 @@ impl Vst3Instance {
     /// Lightweight probe: load library and read factory metadata without activation.
     pub fn probe(path: &Path) -> Result<PluginDescriptor> {
         let resolved = tutti_plugin::server::resolve_bundle(path)?;
-        let info = tutti_vst3_host::Vst3Instance::<f32>::probe(&resolved).map_err(|e| {
+        let info = tutti_vst3_host::Vst3Active::<f32>::probe(&resolved).map_err(|e| {
             BridgeError::LoadFailed {
                 path: path.to_path_buf(),
                 stage: LoadStage::Scanning,
@@ -312,7 +311,7 @@ impl Vst3Instance {
     fn reload(&mut self) -> Result<()> {
         // Capture state from the old instance so the rebuilt one resumes where
         // it left off; tolerate plugins that refuse getState.
-        let saved_state = vst_dispatch_mut!(self, inner => inner.state()).ok();
+        let saved_state = vst_dispatch_mut!(self, inner => inner.get_state()).ok();
 
         let (inner, meta) = build_inner(&self.reload)?;
         self.inner = inner;
@@ -404,21 +403,10 @@ impl Vst3Instance {
     }
 
     pub fn get_parameter_list(&self) -> Vec<ParameterInfo> {
-        // Read the unit tree once, not once per parameter: `units()` is a
-        // round trip into the plugin per unit, and a parameter list is the one
-        // place that cost would multiply. The root unit is excluded — see
-        // `unit_names`.
-        let units = vst_dispatch!(self, inner => inner.units());
-        let groups = unit_names(&units);
-
-        let count = vst_dispatch!(self, inner => inner.parameter_count());
-        (0..count)
-            .filter_map(|i| {
-                let info = vst_dispatch!(self, inner => inner.parameter_info(i))?;
-                let plain = vst_dispatch!(self, inner => inner.parameter_plain_range(info.id));
-                Some(build_param_info(info, plain, &groups))
-            })
-            .collect()
+        // The narrow→shared mapping lives on the host crate's
+        // `Vst3Loaded::get_parameter_list`, beside VST2's and CLAP's, so there
+        // is one VST3 param map rather than one per consumer.
+        vst_dispatch!(self, inner => inner.get_parameter_list())
     }
 
     pub fn open_editor(&mut self, parent: WindowHandle) -> Result<EditorSize> {
@@ -434,14 +422,22 @@ impl Vst3Instance {
 }
 
 /// Process one audio block through a typed `Vst3Instance<T>`.
+///
+/// The plugin's emitted events land in `out`, which the caller owns and
+/// reuses. `Vst3Instance::process` returns a **borrowing** `ProcessOutputRef`
+/// into its own pooled buffers precisely so this path need not allocate; the
+/// copy below is into storage that already has capacity, not into a fresh
+/// value. Calling `ProcessOutputRef::to_owned` here instead — as this did —
+/// is what its doc means by "Allocates; off-RT only".
 fn process_block<'t, 'd: 't, T: tutti_vst3_host::Vst3Sample>(
-    inner: &mut tutti_vst3_host::Vst3Instance<T>,
+    inner: &mut tutti_vst3_host::Vst3Active<T>,
     inputs: &'t [&'d [T]],
     outputs: &'t mut [&'d mut [T]],
     sample_rate: f64,
     ctx: &tutti_plugin::server::ProcessContext,
     seq: &mut SeqScratch,
-) -> Result<tutti_plugin::server::ProcessOutput> {
+    out: &mut tutti_plugin::server::ProcessOutput,
+) -> Result<()> {
     let mut vst3_buffer = tutti_vst3_host::AudioBuffer::new(inputs, outputs, sample_rate);
     let vst3_transport = ctx.transport.cloned().unwrap_or_default();
     // The protocol and vst3-host share the note-expression value type
@@ -487,116 +483,25 @@ fn process_block<'t, 'd: 't, T: tutti_vst3_host::Vst3Sample>(
         ctx.param_changes,
         &vst3_transport,
     );
-    let midi_events = output.midi_events.iter().copied().collect();
-    let param_changes = output.parameter_changes.clone();
-    Ok(tutti_plugin::server::ProcessOutput {
-        midi_events,
-        param_changes,
-        note_expression: NoteExpressionChanges::new(),
-    })
-}
-
-/// Build a Tutti [`ParameterInfo`] from a VST3 parameter descriptor and the
-/// plain range probed from the plugin's controller. Both the
-/// `get_parameter_list` and the cache-warming paths go through here so they
-/// agree on the flag and range mapping.
-///
-/// `plain` is [`None`] when the plugin has no edit controller to ask, or when
-/// its `normalizedParamToPlain` is incoherent — see
-/// [`Vst3Loaded::parameter_plain_range`](tutti_vst3_host::Vst3Loaded::parameter_plain_range).
-/// The parameter is then `Normalized`, which is what the ABI alone reports.
-/// Index a plugin's unit list by id, keeping only units that can name a group.
-///
-/// Two exclusions, both deliberate:
-///
-/// - **The root unit** (`unit_ids::ROOT`, id 0) is every plugin's implicit
-///   top-level unit, and its name is the plugin's own. Every parameter that
-///   declares no unit reports 0, so mapping it would label the entire flat
-///   majority with the plugin name — noise on exactly the parameters that have
-///   no group.
-/// - **Unnamed units.** A unit with an empty name resolves to no group rather
-///   than to an empty label, which is the same answer by a shorter route.
-fn unit_names(units: &[tutti_vst3_host::Vst3UnitInfo]) -> HashMap<i32, &str> {
-    units
-        .iter()
-        .filter(|u| u.id != tutti_vst3_host::unit_ids::ROOT && !u.name.is_empty())
-        .map(|u| (u.id, u.name.as_str()))
-        .collect()
-}
-
-fn build_param_info(
-    info: tutti_vst3_host::Vst3ParameterInfo,
-    plain: Option<(f64, f64)>,
-    groups: &HashMap<i32, &str>,
-) -> ParameterInfo {
-    // VST3 reports every one of these, so all six are known.
-    const KNOWN: ParamFlags = ParamFlags::AUTOMATABLE
-        .union(ParamFlags::READ_ONLY)
-        .union(ParamFlags::WRAP)
-        .union(ParamFlags::BYPASS)
-        .union(ParamFlags::HIDDEN)
-        .union(ParamFlags::PROGRAM_CHANGE);
-
-    let mut reported = ParamFlags::empty();
-    reported.set(ParamFlags::AUTOMATABLE, info.can_automate());
-    reported.set(ParamFlags::READ_ONLY, info.is_read_only());
-    reported.set(ParamFlags::WRAP, info.is_wrap());
-    reported.set(ParamFlags::BYPASS, info.is_bypass());
-    reported.set(ParamFlags::HIDDEN, info.is_hidden());
-    reported.set(ParamFlags::PROGRAM_CHANGE, info.is_program_change());
-
-    // `defaultNormalizedValue` is normalized even when the range is plain, so
-    // it goes through the same map as any other incoming value.
-    let range = match plain {
-        Some((min, max)) => {
-            let r = ParamRange::Plain {
-                min,
-                max,
-                default: 0.0,
-            };
-            ParamRange::Plain {
-                min,
-                max,
-                default: r.to_plain(info.default_normalized_value),
-            }
+    // `out` was cleared by the caller, so both of these extend into storage
+    // that already has capacity — no `to_owned`, no `clone`, and in particular
+    // no fresh `SmallVec` per block for the MIDI, which is what the discarded
+    // borrow used to cost.
+    out.midi_events.extend(output.midi_events.iter().copied());
+    for queue in &output.parameter_changes.queues {
+        for point in &queue.points {
+            // `emit_param_point`, not `ParameterChanges::add_change`: the
+            // former draws its queues from `out`'s own pool, so a warm block
+            // reuses the `points` buffers rather than allocating one per
+            // automated parameter.
+            out.emit_param_point(queue.param_id, point.sample_offset, point.value.get());
         }
-        None => ParamRange::Normalized {
-            default: info.default_normalized_value,
-        },
-    };
-
-    // The SDK spells out the encoding at `ivsteditcontroller.h:53`:
-    // 0 continuous, 1 toggle, otherwise `max - min` so the position count is
-    // one more than the step count.
-    let steps = match info.step_count {
-        0 => ParamSteps::Continuous,
-        1 => ParamSteps::Toggle,
-        n if n > 1 => ParamSteps::Enumerated(n as u32 + 1),
-        // Negative is out of contract; report it as unsaid rather than guessing.
-        _ => ParamSteps::Unknown,
-    };
-
-    ParameterInfo {
-        // VST3 `ParamID` — opaque and plugin-chosen, not a list position; see
-        // the ParamID-vs-index note in `tutti-vst3-host`'s `loaded.rs`.
-        id: ParamAddress::Opaque(info.id.into()),
-        name: info.title_string(),
-        unit: info.units_string(),
-        range,
-        steps,
-        flags: reported & KNOWN,
-        known: KNOWN,
-        // A `unitId` naming a unit the plugin never published resolves to no
-        // group. Several plugins carry dangling ids — the same class of bug
-        // `Vst3UnitInfo::program_list` already absorbs for program lists — and
-        // the alternatives are worse: a lookup that panicked would take down a
-        // parameter list over a display label, and one that fell back to a
-        // neighbour would mislabel silently.
-        group: groups
-            .get(&info.unit_id)
-            .map(|n| n.to_string())
-            .unwrap_or_default(),
     }
+    // VST3 note-expression *output* is not read back — `Vst3InputEvents`
+    // carries it inbound only, and `ProcessOutputRef` has no counterpart
+    // field. Left empty rather than absent because `out` is shared across
+    // formats; the CLAP loader fills it.
+    Ok(())
 }
 
 /// Refill `out` from `chords`, reusing both the outer buffer and each entry's
@@ -723,7 +628,8 @@ impl PluginAudio for Vst3Instance {
         &mut self,
         buffer: AudioBufferMut<'_, '_>,
         ctx: &ProcessContext,
-    ) -> PluginResult<ProcessOutput> {
+        out: &mut ProcessOutput,
+    ) -> PluginResult<()> {
         match (&mut self.inner, buffer) {
             (VstInner::F32(inner), AudioBufferMut::F32(buf)) => process_block(
                 inner,
@@ -732,6 +638,7 @@ impl PluginAudio for Vst3Instance {
                 buf.sample_rate,
                 ctx,
                 &mut self.seq,
+                out,
             )
             .map_err(Into::into),
             (VstInner::F64(inner), AudioBufferMut::F64(buf)) => process_block(
@@ -741,8 +648,18 @@ impl PluginAudio for Vst3Instance {
                 buf.sample_rate,
                 ctx,
                 &mut self.seq,
+                out,
             )
             .map_err(Into::into),
+            // The `.to_string()` allocates, and deliberately stays. This arm is
+            // not steady state: the buffer format and the activation format are
+            // both fixed at load, so either they match for every block of the
+            // session or they match for none. Reaching here means the session is
+            // already over, and the allocation costs one `String` at the point
+            // of failure rather than one per block. Removing it would mean
+            // making `PluginError::Process` carry a `&'static str` or a code —
+            // a change to the shared error vocabulary, paid for a path that
+            // cannot recur.
             _ => Err(PluginError::Process(
                 "Buffer format mismatch: plugin was activated with a different sample format"
                     .to_string(),
@@ -807,7 +724,7 @@ impl PluginParams for Vst3Instance {
     fn get_parameter(&self, id: ParamAddress) -> f64 {
         // A VST2 index addresses nothing here; `ParamID` is opaque.
         let Some(id) = id.opaque() else { return 0.0 };
-        vst_dispatch!(self, inner => inner.parameter(id.get()))
+        vst_dispatch!(self, inner => inner.get_parameter(id.get()))
     }
 
     fn set_parameter(&mut self, id: ParamAddress, value: Normalized) {
@@ -953,7 +870,7 @@ impl PluginPresets for Vst3Instance {
         if step_count <= 0 {
             return None;
         }
-        let normalized = vst_dispatch!(self, inner => inner.parameter(param_id));
+        let normalized = vst_dispatch!(self, inner => inner.get_parameter(param_id));
         // Inverse of the write: `FromNormalized` is `value * stepCount`, then
         // rounded — the parameter is a discrete list, so a value between two
         // steps belongs to the nearer one.
@@ -1021,7 +938,7 @@ impl Vst3Instance {
 
 impl PluginState for Vst3Instance {
     fn get_state(&mut self) -> PluginResult<Vec<u8>> {
-        vst_dispatch_mut!(self, inner => inner.state())
+        vst_dispatch_mut!(self, inner => inner.get_state())
             .map_err(|e| PluginError::State(e.to_string()))
     }
 
@@ -1169,71 +1086,6 @@ mod tests {
         crate::test_utils::vst3_probe_path()
     }
 
-    /// Build a unit as the plugin would report it, with no program list.
-    fn unit(id: i32, name: &str) -> tutti_vst3_host::Vst3UnitInfo {
-        tutti_vst3_host::Vst3UnitInfo {
-            id,
-            parent: Some(tutti_vst3_host::unit_ids::ROOT),
-            name: name.to_string(),
-            program_list: None,
-            program_list_id_raw: tutti_vst3_host::unit_ids::NO_PROGRAM_LIST,
-        }
-    }
-
-    /// A parameter naming a published unit is labelled with that unit's name.
-    #[test]
-    fn a_parameter_takes_the_name_of_the_unit_it_declares() {
-        let units = [unit(1, "Filter"), unit(2, "Amp")];
-        let groups = unit_names(&units);
-        assert_eq!(groups.get(&1).copied(), Some("Filter"));
-        assert_eq!(groups.get(&2).copied(), Some("Amp"));
-    }
-
-    /// The root unit names no group.
-    ///
-    /// This is the case that decides whether grouping is useful or noise:
-    /// every parameter that declares no unit reports id 0, so if the root were
-    /// mapped, the flat majority of parameters on every plugin would be
-    /// labelled with the plugin's own name.
-    #[test]
-    fn the_root_unit_is_not_a_group() {
-        let units = [
-            unit(tutti_vst3_host::unit_ids::ROOT, "TAL-NoiseMaker"),
-            unit(1, "Filter"),
-        ];
-        let groups = unit_names(&units);
-        assert_eq!(
-            groups.get(&tutti_vst3_host::unit_ids::ROOT),
-            None,
-            "the root unit's name is the plugin's, not a group's"
-        );
-        assert_eq!(groups.get(&1).copied(), Some("Filter"));
-    }
-
-    /// A `unitId` naming a unit the plugin never published resolves to no
-    /// group, rather than to a neighbour's label.
-    ///
-    /// Dangling ids are a real plugin bug — the same class
-    /// `Vst3UnitInfo::program_list` already absorbs — and the failure mode
-    /// worth refusing is a *plausible* wrong answer: a lookup that fell back to
-    /// the first unit would silently file the parameter under someone else's
-    /// heading.
-    #[test]
-    fn a_unit_id_that_names_nothing_yields_no_group() {
-        let units = [unit(1, "Filter")];
-        let groups = unit_names(&units);
-        assert_eq!(groups.get(&7), None);
-    }
-
-    /// A unit the plugin published without a name yields no group, rather than
-    /// an empty heading a UI would render as a blank section.
-    #[test]
-    fn an_unnamed_unit_is_not_a_group() {
-        let units = [unit(1, "")];
-        let groups = unit_names(&units);
-        assert_eq!(groups.get(&1), None);
-    }
-
     /// The SDK's `multiple_programchanges` sample, built from the in-repo SDK
     /// submodule by `tutti-vst3-host`'s build script during this same
     /// `cargo test`.
@@ -1365,7 +1217,7 @@ mod tests {
             .program_change_param(*list_id)
             .expect("the list has a program-change parameter");
         assert_eq!(step_count, 127, "128 programs report 127 steps, not 128");
-        let raw = vst_dispatch!(instance, inner => inner.parameter(param_id));
+        let raw = vst_dispatch!(instance, inner => inner.get_parameter(param_id));
         let expected = f64::from(*index) / f64::from(step_count);
         assert!(
             (raw - expected).abs() < 1e-9,
@@ -1511,7 +1363,8 @@ mod tests {
 
         let ctx = tutti_plugin::server::ProcessContext::new();
         // Should not panic
-        let _output = instance.process(AudioBufferMut::F32(buffer), &ctx);
+        let mut out = tutti_plugin::server::ProcessOutput::default();
+        let _output = instance.process(AudioBufferMut::F32(buffer), &ctx, &mut out);
     }
 
     #[test]
@@ -1548,7 +1401,8 @@ mod tests {
             };
 
             let ctx = tutti_plugin::server::ProcessContext::new().midi(&note_on);
-            let _output = instance.process(AudioBufferMut::F32(buffer), &ctx);
+            let mut out = tutti_plugin::server::ProcessOutput::default();
+            let _output = instance.process(AudioBufferMut::F32(buffer), &ctx, &mut out);
 
             for ch in output_data.iter() {
                 for &sample in ch.iter() {
@@ -1576,7 +1430,9 @@ mod tests {
                 sample_rate: 44100.0,
             };
 
-            let _output = instance.process(AudioBufferMut::F32(buffer), &empty_ctx);
+            let mut out = tutti_plugin::server::ProcessOutput::default();
+
+            let _output = instance.process(AudioBufferMut::F32(buffer), &empty_ctx, &mut out);
 
             for ch in output_data.iter() {
                 for &sample in ch.iter() {
@@ -1698,7 +1554,8 @@ mod tests {
         };
 
         let ctx = tutti_plugin::server::ProcessContext::new();
-        let _output = instance.process(AudioBufferMut::F64(buffer), &ctx);
+        let mut out = tutti_plugin::server::ProcessOutput::default();
+        let _output = instance.process(AudioBufferMut::F64(buffer), &ctx, &mut out);
 
         // SPAN is an analyzer — it should pass audio through unchanged
         let mut all_zero = true;
@@ -1756,7 +1613,8 @@ mod tests {
         };
 
         let ctx = tutti_plugin::server::ProcessContext::new();
-        let _output = instance.process(AudioBufferMut::F64(buffer), &ctx);
+        let mut out = tutti_plugin::server::ProcessOutput::default();
+        let _output = instance.process(AudioBufferMut::F64(buffer), &ctx, &mut out);
 
         let mut has_nonzero = false;
         for ch in &output_data {

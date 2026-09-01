@@ -1,9 +1,9 @@
 //! Post-`initialize()` VST3 state. Audio processing is **not** active here —
-//! [`Vst3Loaded::activate`] transitions to [`Vst3Instance`] for that.
+//! [`Vst3Loaded::activate`] transitions to [`Vst3Active`] for that.
 //!
 //! `Vst3Loaded` is what you want for GUI-only hosting, offline parameter
 //! inspection, and state save/restore. `process()` lives exclusively on
-//! [`Vst3Instance`]; the type system enforces that you can't call it here.
+//! [`Vst3Active`]; the type system enforces that you can't call it here.
 //!
 //! The size of this file is the argument for the type existing. Nearly forty
 //! public methods are legal in this state and need no audio buffer: the
@@ -15,10 +15,11 @@
 //! pays. That is what distinguishes a state worth a type from a construction
 //! step, and it is why this file, not `instance`, holds the bulk of the module.
 //!
-//! Everything here stays reachable after activation: [`Vst3Instance`] embeds a
+//! Everything here stays reachable after activation: [`Vst3Active`] embeds a
 //! `Vst3Loaded` and `Deref`s to it, so the split subtracts `process` from this
 //! state without subtracting anything from the active one.
 
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -52,16 +53,19 @@ use crate::com::{
     BStream, ComponentHandler, HostApplication, HostPlugFrame, ParameterEditEvent, ProgressEvent,
     RestartFlags, UnitEvent,
 };
+use tutti_plugin_types::{ParamAddress, ParamFlags, ParamRange, ParamSteps, ParameterInfo};
+
 use crate::error::{LoadStage, Result, Vst3Error};
 use crate::helpers::cid_to_string;
 use crate::helpers::utf16_to_string;
+use crate::types::unit_ids;
 use crate::types::{
     EditorCapabilities, EditorSize, PluginInfo, ProcessMode, Vst3KeyswitchInfo,
     Vst3NoteExpressionInfo, Vst3ParameterInfo, Vst3ProgramListInfo, Vst3Sample, Vst3UnitInfo,
     WindowHandle,
 };
 
-use super::instance::Vst3Instance;
+use super::instance::Vst3Active;
 use super::library::Vst3Library;
 use super::midi_learn::MidiLearnConsumer;
 use super::plugin_state::{Controller, EditorState, HostContext, PluginInterfaces};
@@ -72,7 +76,7 @@ const DEFAULT_EDITOR_SIZE: (u32, u32) = (800, 600);
 /// Plugin instance that has been `initialize()`'d and has usable parameter,
 /// editor, and state surfaces, but is **not** processing audio.
 ///
-/// Transition to [`Vst3Instance`] via [`Vst3Loaded::activate`] to enable
+/// Transition to [`Vst3Active`] via [`Vst3Loaded::activate`] to enable
 /// `process()`. For GUI-only hosting (no audio ever), stay here — skip the
 /// `setActive(1) + setProcessing(1)` cost entirely.
 pub struct Vst3Loaded {
@@ -115,7 +119,7 @@ pub struct RestartOutcome {
     /// caller should re-pull the parameter list / info.
     pub param_titles_changed: bool,
     /// `kIoChanged` fired — the plugin wants a different bus configuration.
-    /// The caller must run `Vst3Instance::restart_bus_configuration` (a
+    /// The caller must run `Vst3Active::restart_bus_configuration` (a
     /// deactivate/reactivate cycle) and then rewire.
     pub io_changed: bool,
     /// `kMidiCCAssignmentChanged` fired — the `IMidiMapping` CC→param table is
@@ -369,7 +373,7 @@ impl Vst3Loaded {
 
     /// Transition to the processing state. Runs `setupProcessing`, activates
     /// buses, calls `setActive(1)` and `setProcessing(1)`. Returns a
-    /// [`Vst3Instance<T>`] that exposes `process()`.
+    /// [`Vst3Active<T>`] that exposes `process()`.
     ///
     /// `T` fixes the sample format: `f32` (the default) uses `kSample32`;
     /// `f64` uses `kSample64` and returns [`Vst3Error::NotSupported`] if the
@@ -378,7 +382,7 @@ impl Vst3Loaded {
         self,
         sample_rate: f64,
         block_size: usize,
-    ) -> Result<Vst3Instance<T>> {
+    ) -> Result<Vst3Active<T>> {
         self.activate_with_mode(sample_rate, block_size, ProcessMode::Realtime)
     }
 
@@ -392,7 +396,7 @@ impl Vst3Loaded {
     /// rule forbids doing silently — so the type-state boundary and the spec
     /// boundary are made to coincide. (The realtime↔prefetch pair *is*
     /// switchable on a live instance; that is
-    /// [`Vst3Instance::set_prefetch`](crate::Vst3Instance::set_prefetch), and
+    /// [`Vst3Active::set_prefetch`](crate::Vst3Active::set_prefetch), and
     /// it is the one exception the rule names.)
     ///
     /// Query [`prefetchable_support`](Self::prefetchable_support) beforehand if
@@ -407,8 +411,8 @@ impl Vst3Loaded {
         sample_rate: f64,
         block_size: usize,
         mode: ProcessMode,
-    ) -> Result<Vst3Instance<T>> {
-        Vst3Instance::from_loaded(self, sample_rate, block_size, mode)
+    ) -> Result<Vst3Active<T>> {
+        Vst3Active::from_loaded(self, sample_rate, block_size, mode)
     }
 
     /// Metadata snapshot (id, name, vendor, bus counts, MIDI and f64 support).
@@ -470,7 +474,7 @@ impl Vst3Loaded {
     /// `param_id` — *not* an index (see the note above; use
     /// [`parameter_by_index`](Self::parameter_by_index) to address by index).
     /// Returns `0.0` if the plugin has no controller.
-    pub fn parameter(&self, param_id: u32) -> f64 {
+    pub fn get_parameter(&self, param_id: u32) -> f64 {
         match self.interfaces.controller.as_ref() {
             Some(c) => unsafe { c.getParamNormalized(param_id) },
             None => 0.0,
@@ -555,7 +559,7 @@ impl Vst3Loaded {
     /// This is the bridge between the two address spaces: anything iterating
     /// `0..parameter_count()` must go through it (or
     /// [`parameter_info`](Self::parameter_info)) before calling
-    /// [`parameter`](Self::parameter) / [`set_parameter`](Self::set_parameter).
+    /// [`get_parameter`](Self::get_parameter) / [`set_parameter`](Self::set_parameter).
     pub fn parameter_id_at(&self, index: u32) -> Option<u32> {
         self.parameter_info(index).map(|info| info.id)
     }
@@ -564,7 +568,7 @@ impl Vst3Loaded {
     /// index to its ParamID first. `None` if the index is out of range or the
     /// plugin has no controller.
     pub fn parameter_by_index(&self, index: u32) -> Option<f64> {
-        self.parameter_id_at(index).map(|id| self.parameter(id))
+        self.parameter_id_at(index).map(|id| self.get_parameter(id))
     }
 
     /// Write a normalized `value` to the parameter at **index**, resolving the
@@ -589,6 +593,36 @@ impl Vst3Loaded {
         let mut raw: vst3::Steinberg::Vst::ParameterInfo = unsafe { std::mem::zeroed() };
         let result = unsafe { controller.getParameterInfo(index as i32, &mut raw) };
         (result == kResultOk).then(|| Vst3ParameterInfo::from_c(&raw))
+    }
+
+    /// Every parameter the plugin advertises, as the SHARED
+    /// [`tutti_plugin_types::ParameterInfo`] — the boundary vocabulary every
+    /// host crate speaks.
+    ///
+    /// This is the single VST3 `narrow -> shared` mapping. VST3 addresses
+    /// parameters by an opaque `ParamID` but *enumerates* them by index, so
+    /// this walks `0 .. parameter_count()` and carries each descriptor's own
+    /// `id` into [`ParamAddress::Opaque`] — index `n` is not id `n`, and a
+    /// caller must address through the entry rather than its position.
+    ///
+    /// The unit tree is read **once**, not once per parameter: `units()` is a
+    /// round trip into the plugin per unit, and a parameter list is the one
+    /// place that cost would multiply.
+    ///
+    /// A parameter whose descriptor the plugin declines to hand over is
+    /// skipped rather than substituted, so the list is short instead of
+    /// carrying an invented entry.
+    pub fn get_parameter_list(&self) -> Vec<ParameterInfo> {
+        let units = self.units();
+        let groups = unit_names(&units);
+
+        (0..self.parameter_count())
+            .filter_map(|i| {
+                let info = self.parameter_info(i)?;
+                let plain = self.parameter_plain_range(info.id);
+                Some(build_param_info(info, plain, &groups))
+            })
+            .collect()
     }
 
     /// The plugin's own `[min, max]` for a parameter, recovered by asking its
@@ -1057,7 +1091,7 @@ impl Vst3Loaded {
     ///   changes the user made inside the plugin's own UI.
     ///
     /// Must be called on the main thread; not while inside
-    /// [`process`](Vst3Instance::process).
+    /// [`process`](Vst3Active::process).
     pub fn poll_plugin_notifications(&mut self) -> PluginNotifications {
         tutti_plugin_types::assert_main_thread();
         let mut notifications = PluginNotifications::default();
@@ -1072,10 +1106,10 @@ impl Vst3Loaded {
                     // same constraint `reload_requested` is surfaced for.
                     //
                     // Do not call `reconcile_bus_counts()` from here. It reads
-                    // fine until you notice `Vst3Instance` `DerefMut`s to this
+                    // fine until you notice `Vst3Active` `DerefMut`s to this
                     // type: the production caller polls on a live active
                     // instance, so the re-enumeration would run mid-activation.
-                    // The owner calls `Vst3Instance::restart_bus_configuration`.
+                    // The owner calls `Vst3Active::restart_bus_configuration`.
                     notifications.restart.merge_flags(flags);
                 }
                 other => notifications.param_edits.push(other),
@@ -1163,7 +1197,7 @@ impl Vst3Loaded {
     /// component half is the one a project cannot be restored without, and
     /// plenty of controllers have no UI state to give. That half degrades to
     /// empty and the component half is still returned.
-    pub fn state(&self) -> Result<Vec<u8>> {
+    pub fn get_state(&self) -> Result<Vec<u8>> {
         tutti_plugin_types::assert_main_thread();
         let component = self.read_component_state()?;
         let controller = self.read_controller_state();
@@ -1174,7 +1208,7 @@ impl Vst3Loaded {
     /// controller, it does not implement the call, or it fails.
     ///
     /// Failure is folded into `None` rather than surfaced: see
-    /// [`state`](Self::state) for why a controller's UI state is best-effort
+    /// [`get_state`](Self::get_state) for why a controller's UI state is best-effort
     /// while the component's is not.
     fn read_controller_state(&self) -> Option<Vec<u8>> {
         let ctrl = self.interfaces.controller.as_ref()?;
@@ -1191,7 +1225,7 @@ impl Vst3Loaded {
     }
 
     /// Write the component's `getState` blob into a fresh `IBStream` and return
-    /// the bytes. Shared by [`state`](Self::state) and the load-time
+    /// the bytes. Shared by [`get_state`](Self::get_state) and the load-time
     /// controller state-sync in [`initialize`](Self::initialize).
     ///
     /// A `kResultFalse` return (plugin has no state) yields an empty blob;
@@ -1236,7 +1270,7 @@ impl Vst3Loaded {
         }
     }
 
-    /// Restore plugin state from a blob produced by [`state`](Self::state).
+    /// Restore plugin state from a blob produced by [`get_state`](Self::get_state).
     ///
     /// Three things happen, in the order the spec requires. The component gets
     /// its own stream via `IComponent::setState`. The controller is then shown
@@ -1253,7 +1287,7 @@ impl Vst3Loaded {
     /// `IBStream` wrapper cannot be created, or
     /// [`Vst3Error::PluginError`](crate::Vst3Error::PluginError) if the plugin
     /// rejects the component blob via `setState`. A controller that rejects its
-    /// own stream is tolerated, matching [`state`](Self::state).
+    /// own stream is tolerated, matching [`get_state`](Self::get_state).
     pub fn set_state(&mut self, data: &[u8]) -> Result<()> {
         tutti_plugin_types::assert_main_thread();
         if data.is_empty() {
@@ -1351,7 +1385,7 @@ impl Vst3Loaded {
     ///
     /// # Errors
     ///
-    /// Returns [`Vst3Error::NotSupported`](crate::Vst3Error::NotSupported) if
+    /// Returns [`Vst3Error::EditorError`](crate::Vst3Error::EditorError) if
     /// the plugin has no controller, refuses to create a view, or the view
     /// rejects this platform's window type, and
     /// [`Vst3Error::PluginError`](crate::Vst3Error::PluginError) if
@@ -1362,12 +1396,12 @@ impl Vst3Loaded {
             .interfaces
             .controller
             .as_ref()
-            .ok_or(Vst3Error::NotSupported(
+            .ok_or(Vst3Error::EditorError(
                 "Plugin has no editor controller".to_string(),
             ))?;
 
         let view_raw = unsafe { ctrl.createView(c"editor".as_ptr()) };
-        let view = unsafe { ComPtr::from_raw(view_raw) }.ok_or(Vst3Error::NotSupported(
+        let view = unsafe { ComPtr::from_raw(view_raw) }.ok_or(Vst3Error::EditorError(
             "Failed to create plugin view".to_string(),
         ))?;
 
@@ -1385,7 +1419,7 @@ impl Vst3Loaded {
         // cleanly.
         let supported = unsafe { view.isPlatformTypeSupported(platform_type) };
         if platform_type_refused(supported) {
-            return Err(Vst3Error::NotSupported(format!(
+            return Err(Vst3Error::EditorError(format!(
                 "Plugin view does not support platform type {}",
                 platform_type_name(platform_type)
             )));
@@ -1662,7 +1696,7 @@ impl Vst3Loaded {
     /// Returns the snapped size the plugin applied.
     pub fn resize_editor(&mut self, requested: EditorSize) -> Result<EditorSize> {
         let EditorState::Open { view, .. } = &self.editor else {
-            return Err(Vst3Error::NotSupported("editor not open".to_string()));
+            return Err(Vst3Error::EditorError("editor not open".to_string()));
         };
         let requested_rect = ViewRect {
             left: 0,
@@ -1894,7 +1928,7 @@ impl Vst3Loaded {
     /// Re-query bus counts from the component — `initialize` may have changed
     /// them (some plugins don't declare bus counts until after init).
     ///
-    /// `pub(crate)` only so `Vst3Instance::restart_bus_configuration` can call
+    /// `pub(crate)` only so `Vst3Active::restart_bus_configuration` can call
     /// it from inside the deactivate/reactivate cycle. Deliberately not public:
     /// on a live instance this must never be reached on its own, or the
     /// re-enumeration runs mid-activation.
@@ -2682,5 +2716,173 @@ mod restart_outcome_tests {
             "these restart flags are decoded but never forwarded, so no \
              consumer can act on them: {dropped:?}"
         );
+    }
+}
+
+/// Index a plugin's unit list by id, keeping only units that can name a group.
+///
+/// Two exclusions, both deliberate:
+///
+/// - **The root unit** (`unit_ids::ROOT`, id 0) is every plugin's implicit
+///   top-level unit, and its name is the plugin's own. Every parameter that
+///   declares no unit reports 0, so mapping it would label the entire flat
+///   majority with the plugin name — noise on exactly the parameters that have
+///   no group.
+/// - **Unnamed units.** A unit with an empty name resolves to no group rather
+///   than to an empty label, which is the same answer by a shorter route.
+fn unit_names(units: &[Vst3UnitInfo]) -> HashMap<i32, &str> {
+    units
+        .iter()
+        .filter(|u| u.id != unit_ids::ROOT && !u.name.is_empty())
+        .map(|u| (u.id, u.name.as_str()))
+        .collect()
+}
+
+/// Build a shared [`ParameterInfo`] from a VST3 parameter descriptor and the
+/// plain range probed from the plugin's controller.
+///
+/// `plain` is [`None`] when the plugin has no edit controller to ask, or when
+/// its `normalizedParamToPlain` is incoherent — see
+/// [`Vst3Loaded::parameter_plain_range`]. The parameter is then `Normalized`,
+/// which is what the ABI alone reports.
+fn build_param_info(
+    info: Vst3ParameterInfo,
+    plain: Option<(f64, f64)>,
+    groups: &HashMap<i32, &str>,
+) -> ParameterInfo {
+    // VST3 reports every one of these, so all six are known.
+    const KNOWN: ParamFlags = ParamFlags::AUTOMATABLE
+        .union(ParamFlags::READ_ONLY)
+        .union(ParamFlags::WRAP)
+        .union(ParamFlags::BYPASS)
+        .union(ParamFlags::HIDDEN)
+        .union(ParamFlags::PROGRAM_CHANGE);
+
+    let mut reported = ParamFlags::empty();
+    reported.set(ParamFlags::AUTOMATABLE, info.can_automate());
+    reported.set(ParamFlags::READ_ONLY, info.is_read_only());
+    reported.set(ParamFlags::WRAP, info.is_wrap());
+    reported.set(ParamFlags::BYPASS, info.is_bypass());
+    reported.set(ParamFlags::HIDDEN, info.is_hidden());
+    reported.set(ParamFlags::PROGRAM_CHANGE, info.is_program_change());
+
+    // `defaultNormalizedValue` is normalized even when the range is plain, so
+    // it goes through the same map as any other incoming value.
+    let range = match plain {
+        Some((min, max)) => {
+            let r = ParamRange::Plain {
+                min,
+                max,
+                default: 0.0,
+            };
+            ParamRange::Plain {
+                min,
+                max,
+                default: r.to_plain(info.default_normalized_value),
+            }
+        }
+        None => ParamRange::Normalized {
+            default: info.default_normalized_value,
+        },
+    };
+
+    // The SDK spells out the encoding at `ivsteditcontroller.h:53`:
+    // 0 continuous, 1 toggle, otherwise `max - min` so the position count is
+    // one more than the step count.
+    let steps = match info.step_count {
+        0 => ParamSteps::Continuous,
+        1 => ParamSteps::Toggle,
+        n if n > 1 => ParamSteps::Enumerated(n as u32 + 1),
+        // Negative is out of contract; report it as unsaid rather than guessing.
+        _ => ParamSteps::Unknown,
+    };
+
+    ParameterInfo {
+        // VST3 `ParamID` — opaque and plugin-chosen, not a list position; see
+        // the ParamID-vs-index note above.
+        id: ParamAddress::Opaque(info.id.into()),
+        name: info.title_string(),
+        unit: info.units_string(),
+        range,
+        steps,
+        flags: reported & KNOWN,
+        known: KNOWN,
+        // A `unitId` naming a unit the plugin never published resolves to no
+        // group. Several plugins carry dangling ids — the same class of bug
+        // `Vst3UnitInfo::program_list` already absorbs for program lists — and
+        // the alternatives are worse: a lookup that panicked would take down a
+        // parameter list over a display label, and one that fell back to a
+        // neighbour would mislabel silently.
+        group: groups
+            .get(&info.unit_id)
+            .map(|n| n.to_string())
+            .unwrap_or_default(),
+    }
+}
+
+#[cfg(test)]
+mod unit_group_tests {
+    use super::*;
+
+    /// Build a unit as the plugin would report it, with no program list.
+    fn unit(id: i32, name: &str) -> Vst3UnitInfo {
+        Vst3UnitInfo {
+            id,
+            parent: Some(unit_ids::ROOT),
+            name: name.to_string(),
+            program_list: None,
+            program_list_id_raw: unit_ids::NO_PROGRAM_LIST,
+        }
+    }
+
+    /// A parameter naming a published unit is labelled with that unit's name.
+    #[test]
+    fn a_parameter_takes_the_name_of_the_unit_it_declares() {
+        let units = [unit(1, "Filter"), unit(2, "Amp")];
+        let groups = unit_names(&units);
+        assert_eq!(groups.get(&1).copied(), Some("Filter"));
+        assert_eq!(groups.get(&2).copied(), Some("Amp"));
+    }
+
+    /// The root unit names no group.
+    ///
+    /// This is the case that decides whether grouping is useful or noise:
+    /// every parameter that declares no unit reports id 0, so if the root were
+    /// mapped, the flat majority of parameters on every plugin would be
+    /// labelled with the plugin's own name.
+    #[test]
+    fn the_root_unit_is_not_a_group() {
+        let units = [unit(unit_ids::ROOT, "TAL-NoiseMaker"), unit(1, "Filter")];
+        let groups = unit_names(&units);
+        assert_eq!(
+            groups.get(&unit_ids::ROOT),
+            None,
+            "the root unit's name is the plugin's, not a group's"
+        );
+        assert_eq!(groups.get(&1).copied(), Some("Filter"));
+    }
+
+    /// A `unitId` naming a unit the plugin never published resolves to no
+    /// group, rather than to a neighbour's label.
+    ///
+    /// Dangling ids are a real plugin bug — the same class
+    /// `Vst3UnitInfo::program_list` already absorbs — and the failure mode
+    /// worth refusing is a *plausible* wrong answer: a lookup that fell back to
+    /// the first unit would silently file the parameter under someone else's
+    /// heading.
+    #[test]
+    fn a_unit_id_that_names_nothing_yields_no_group() {
+        let units = [unit(1, "Filter")];
+        let groups = unit_names(&units);
+        assert_eq!(groups.get(&7), None);
+    }
+
+    /// A unit the plugin published without a name yields no group, rather than
+    /// an empty heading a UI would render as a blank section.
+    #[test]
+    fn an_unnamed_unit_is_not_a_group() {
+        let units = [unit(1, "")];
+        let groups = unit_names(&units);
+        assert_eq!(groups.get(&1), None);
     }
 }

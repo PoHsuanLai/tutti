@@ -1,145 +1,216 @@
-# clap-host
+# tutti-clap-host
 
-[![CI](https://github.com/PoHsuanLai/clap-host/actions/workflows/ci.yml/badge.svg)](https://github.com/PoHsuanLai/clap-host/actions/workflows/ci.yml)
-[![Crates.io](https://img.shields.io/crates/v/clap-host.svg)](https://crates.io/crates/clap-host)
-[![docs.rs](https://docs.rs/clap-host/badge.svg)](https://docs.rs/clap-host)
-[![License](https://img.shields.io/crates/l/clap-host.svg)](LICENSE)
+Safe hosting for [CLAP](https://cleveraudio.org/) audio plugins — the FFI is
+wrapped so a caller writes no `unsafe` of its own.
 
-A safe Rust library for hosting [CLAP](https://cleveraudio.org/) audio plugins.
+## What this is
 
-## Features
+The CLAP one of tutti's four format hosts. It loads a `.clap` bundle, drives
+audio and MIDI processing, exposes the parameter tree, audio- and note-port
+topology, state save/restore with CLAP's save contexts, the plugin's editor, and
+the host-callback polling surface.
 
-- **Cross-platform** — macOS, Linux, Windows
-- **f32 and f64** audio processing
-- **MIDI** — note on/off, CC, pitch bend, program change, poly pressure, sysex
-- **Note expression** — MPE-style per-note volume, pan, tuning, vibrato, brightness
-- **Parameters** — enumerate, get/set, sample-accurate automation
-- **Transport** — tempo, time signature, play/record state, loop points, bar position
-- **State** — save/load plugin state with optional context (preset, project, duplicate)
-- **GUI** — open/close plugin editor windows via `WindowHandle` + `EditorSize`
-- **30+ extensions** — audio ports, note ports, ambisonic, surround, voice info, undo, triggers, tuning, remote controls, context menus, and more
+Two types carry the lifecycle: [`ClapLoaded`] is the mapped, instantiated plugin,
+and [`ClapActive<T>`][`ClapActive`] is the same plugin with buffers allocated and
+[`process`][`ClapActive::process`] legal. Both transitions take `self` by value.
 
-## Quick Start
+## What it does not own
 
-```rust
-use clap_host::{ClapInstance, MidiEvent, ProcessContext, TransportInfo};
+**The shared vocabulary.** [`ParameterChanges`], [`TransportInfo`],
+[`WindowHandle`], [`EditorSize`] and the `ParameterInfo` that
+[`parameter_list`][`ClapLoaded::get_parameter_list`] hands back are
+[`tutti-plugin-types`](../../tutti-plugin-types)' — re-exported here so a caller
+can stay format-agnostic, not defined here. MIDI is the workspace-wide UMP
+[`tutti_midi_types::MidiEvent`], re-exported as [`MidiEvent`]; there is **no
+CLAP-specific MIDI event trait to implement**. What *is* CLAP-native is
+[`ClapNoteExpression`], the per-voice expression type, which keeps its own name
+precisely so it does not shadow the shared one.
 
-let mut plugin = ClapInstance::load("/path/to/plugin.clap", 44100.0, 512)?;
-println!("{} by {}", plugin.info().name, plugin.info().vendor);
+**`ClapInstance`.** That name belongs to
+[`tutti-plugin-server`](../../tutti-plugin-server), which wraps this crate's
+types as its per-format loader adapter. Nothing in this crate is called that.
 
-let midi = [MidiEvent::note_on(0, 0, 60, 100)];
-let transport = TransportInfo::new().with_tempo(128.0).with_playing(true);
-let output = plugin.process(&mut buffer, &ProcessContext {
+**Subprocess isolation.** This crate hosts in-process; `tutti-plugin-server` puts
+it in a subprocess and [`tutti-plugin`](../../tutti-plugin) is the host side.
+
+**The comparison against the other three formats.** VST3, CLAP, AU and VST2 model
+the same two-state shape and reach three different answers. The comparative
+account, and the rule for choosing among the strategies, is in `tutti-plugin`'s
+crate documentation under *The plugin state machine*. Only CLAP's own half is
+below.
+
+## Quick start
+
+Load, activate, render one block. `no_run`: the load needs a real `.clap` bundle
+on disk.
+
+```rust,no_run
+use tutti_midi_types::{MidiChannel, MidiGroup};
+use tutti_clap_host::{AudioBuffer32, ClapLoaded, MidiEvent, ClapProcessContext, TransportInfo};
+
+// `ClapLoaded` is the GUI / parameter / state stage; sample rate and the
+// max block length are fixed here, so `activate` takes no arguments.
+let loaded = ClapLoaded::load("/usr/lib/clap/MyPlugin.clap", 48_000.0, 512)?;
+println!("{} by {}", loaded.info().name, loaded.info().vendor);
+
+// `activate` hands `self` back on refusal — a plugin that declines f64 can
+// be retried at f32 without reloading.
+let mut active = loaded.activate::<f32>().map_err(|(_, e)| e)?;
+
+// 512 is the block length in FRAMES; each channel slice holds that many.
+let silence = vec![0.0f32; 512];
+let inputs: [&[f32]; 2] = [&silence, &silence];
+let (mut left, mut right) = (vec![0.0f32; 512], vec![0.0f32; 512]);
+let mut outputs: [&mut [f32]; 2] = [&mut left, &mut right];
+let mut buffer = AudioBuffer32::new(&inputs, &mut outputs, 48_000.0);
+
+let transport = TransportInfo::default().with_tempo(120.0).with_playing(true);
+let midi = [MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 16384)];
+active.process(&mut buffer, &ClapProcessContext {
     midi: &midi,
     transport: Some(&transport),
     ..Default::default()
 })?;
-// output.midi_events       — MIDI events from the plugin
-// output.param_changes     — output parameter changes
+# Ok::<(), tutti_clap_host::ClapError>(())
 ```
 
-## Usage
+### Parameters and state
 
-### Parameters
+[`ClapActive`] derefs to [`ClapLoaded`], so all of this is reachable while audio
+is running as well as before activation. `no_run` for the same reason as above.
 
-```rust
-// Query
-let params = plugin.parameters();
-for p in &params {
-    println!("{}: {} [{}, {}]", p.id, p.name, p.min_value, p.max_value);
+```rust,no_run
+# use tutti_clap_host::{ClapLoaded, StateContext};
+# fn ex() -> tutti_clap_host::Result<()> {
+let mut plugin = ClapLoaded::load("/usr/lib/clap/MyPlugin.clap", 48_000.0, 512)?;
+
+// CLAP addresses parameters by an opaque, plugin-chosen `clap_id`, never by
+// position. `get_parameter_list` projects them into the shared `ParameterInfo`,
+// so a consumer never learns which format it is reading.
+for info in plugin.get_parameter_list() {
+    println!("{} {:?}", info.qualified_name(), info.bounds());
 }
 
-// Set (chainable)
-plugin
-    .set_parameter(0, 0.75)
-    .set_parameter(1, 0.5);
-```
+// The write takes the id and a plain value in the parameter's own range, and
+// reports whether it was flushed — `false` means a `REQUIRES_PROCESS` param was
+// skipped while processing, not that the plugin refused the value.
+plugin.set_parameter(0, 0.75);
+plugin.set_parameter(1, 0.5);
 
-### Transport
+// State save/restore is legal before any buffer exists.
+let saved = plugin.get_state()?;
+plugin.set_state(&saved)?;
 
-```rust
-let transport = TransportInfo::new()
-    .with_tempo(140.0)
-    .with_playing(true)
-    .with_time_signature(3, 4)
-    .with_position(8.0, 3.43)
-    .with_loop(true, 4.0, 16.0);
-```
-
-### State
-
-```rust
-// Save
-let state = plugin.state()?;
-
-// Load
-plugin.set_state(&state)?;
-
-// With context
-use clap_host::StateContext;
+// A plugin that implements the context-aware extension can be asked for a
+// blob meant specifically for a preset file. This does NOT fall back to the
+// plain save on refusal — the two legitimately differ, and answering a preset
+// request with a project-context blob writes the wrong bytes into a `.preset`
+// and surfaces only when someone loads it.
 let preset = plugin.state_with_context(StateContext::ForPreset)?;
+println!("{} bytes of preset state", preset.len());
+# Ok(()) }
 ```
 
-### Note Expression
+### Editor
 
-```rust
-use clap_host::{NoteExpressionValue, NoteExpressionType};
-
-let expr = NoteExpressionValue::new(NoteExpressionType::Tuning, /*note_id*/ 0, 0.5)
-    .at(128)        // sample offset
-    .on_channel(0);
-```
-
-### Event Lists
-
-```rust
-use clap_host::InputEventList;
-
-let mut events = InputEventList::new();
-events
-    .add_midi_events(&midi)
-    .add_param_changes(&param_changes)
-    .add_note_expressions(&expressions)
-    .sort_by_time();
-```
-
-## Plugin Editor
-
-```rust
-use clap_host::WindowHandle;
-
+```rust,no_run
+# use tutti_clap_host::{ClapLoaded, WindowHandle};
+# fn ex(native_view_ptr: *mut std::ffi::c_void) -> tutti_clap_host::Result<()> {
+# let mut plugin = ClapLoaded::load("/usr/lib/clap/MyPlugin.clap", 48_000.0, 512)?;
 if plugin.has_editor() {
-    // This is the only unsafe boundary in the public API.
+    // The only unsafe boundary in the public API.
     let handle = unsafe { WindowHandle::from_raw(native_view_ptr) };
     let size = plugin.open_editor(handle)?;
-    println!("Editor size: {}x{}", size.width, size.height);
+    println!("editor is {}x{}", size.width, size.height);
 }
-
 plugin.close_editor();
+# Ok(()) }
 ```
 
-## Custom MIDI Types
+## Why `activate` returns `Err((Self, ClapError))`
 
-Implement `ClapMidiEvent` to pass your own event types directly to `process()`:
+CLAP's own forced constraint, and the one shape here no other format crate
+shares.
 
-```rust
-use clap_host::{ClapMidiEvent, ClapNoteEvent};
+A refusal is not the end of the plugin, only of that configuration. CLAP plugins
+routinely decline 64-bit audio, and a host that discovers this the ordinary way —
+by asking — should not have to pay for a reload to fall back. So the error variant
+carries the **unconsumed** [`ClapLoaded`] back beside the [`ClapError`], and the
+caller retries at `f32` against the same mapped library, the same instance, and
+the same already-read parameter tree.
 
-struct MyEvent { offset: i32, note: u8, velocity: f64 }
+A plain `Result<_, ClapError>` would have destroyed the `ClapLoaded` on the one
+path where it is still perfectly good, making "ask, and fall back" strictly more
+expensive than "guess from [`supports_f64`][`ClapLoaded::supports_f64`] and hope".
+Both failure paths preserve it: the `f64`-unsupported check returns before any
+FFI runs, and a plugin-side `activate` refusal leaves the instance untouched and
+not active.
 
-impl ClapMidiEvent for MyEvent {
-    fn to_clap_events(&self) -> Vec<ClapNoteEvent> { /* ... */ }
-}
-```
+The `Err` is large, which is why `clippy::result_large_err` is suppressed at that
+function rather than obeyed — boxing would add a heap allocation on the failure
+path in order to hide the exact ownership return that is the point.
 
-## Platform Support
+### Why `Deref` from `ClapActive` to `ClapLoaded` is sound
 
-| Platform | Status |
-|----------|--------|
-| macOS (aarch64, x86_64) | Tested |
-| Linux (x86_64) | Supported |
-| Windows (x86_64) | Supported |
+CLAP does not *revoke* the loaded-state operations on activation; it re-tags some
+of their **threading** contracts. The two states partition what is legal in one
+direction only — `process` requires active — and never in the other, so
+activation is additive and the pre-activation surface stays reachable.
+
+Where a contract does change with activation, the condition is read at the call
+rather than assumed from the type, which works precisely because the flag lives
+on the *inner* `ClapLoaded`: [`flush_params`][`ClapLoaded::flush_params`] is
+tagged `[active ? audio-thread : main-thread]` and branches on that live flag, so
+the same code reached through `Deref` from a `ClapActive` takes an
+[`AudioThreadClaim`][`host::AudioThreadClaim`] where a bare `ClapLoaded` would
+assert the main thread.
+
+The distinction that gates it is *active* versus *processing*, and they are not
+the same fact. They disagree for the whole window between
+[`activate`][`ClapLoaded::activate`] and the first
+[`process`][`ClapActive::process`] — exactly when a host pushes initial parameter
+values. Reading `processing` there takes the main-thread branch against a plugin
+that considers itself active, and a plugin with a validation layer reports the
+host for calling on the wrong thread while the values are dropped in silence.
+
+## Features
+
+`default = []`.
+
+- `clap-extras` — the speculative part of the CLAP surface that no consumer (the
+  `tutti-plugin-server` loader, the in-process GUI host) currently calls:
+  param-indication, remote controls, context menus, triggers, tuning, audio-port
+  reconfiguration, POSIX-fd polling, preset load, and the plugin undo/redo and
+  resource-directory extensions. The code and its tests stay compiled either way
+  — the feature gates the public re-exports, so the default API surface stays
+  lean. The consumed extensions (audio and note ports, params, state, gui,
+  latency, voice-info, render mode, note names) are always on.
+
+## Testing
+
+`tutti-clap-test-plugin` is a dev-dependency, so `cargo test` builds a real
+reference plugin's cdylib in the same invocation and the conformance suites load
+it — no third-party plugin need be installed, and the suite is not macOS-only.
+RT-safety regressions run under a disabled global allocator, the same wiring the
+VST2 and VST3 hosts use.
 
 ## License
 
 MIT OR Apache-2.0
+
+[`ClapLoaded`]: crate::ClapLoaded
+[`ClapLoaded::activate`]: crate::ClapLoaded::activate
+[`ClapLoaded::get_parameter_list`]: crate::ClapLoaded::get_parameter_list
+[`ClapLoaded::supports_f64`]: crate::ClapLoaded::supports_f64
+[`ClapLoaded::flush_params`]: crate::ClapLoaded::flush_params
+[`ClapActive`]: crate::ClapActive
+[`ClapActive::process`]: crate::ClapActive::process
+[`ClapError`]: crate::ClapError
+[`ClapNoteExpression`]: crate::ClapNoteExpression
+[`ParameterChanges`]: crate::ParameterChanges
+[`TransportInfo`]: crate::TransportInfo
+[`WindowHandle`]: crate::WindowHandle
+[`EditorSize`]: crate::EditorSize
+[`MidiEvent`]: crate::MidiEvent
+[`host::AudioThreadClaim`]: crate::host::AudioThreadClaim
+[`tutti_midi_types::MidiEvent`]: tutti_midi_types::MidiEvent

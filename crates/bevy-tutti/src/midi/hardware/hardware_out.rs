@@ -235,7 +235,7 @@ impl MidiOutDrops {
 /// rather than a per-platform ladder. A ladder would make *which messages
 /// survive* a property of where the binary was built. The remaining platform
 /// choice happens once, at construction, inside
-/// `tutti_midi_hardware::core::backend::active()`.
+/// `tutti_midi_hardware::backend::active()`.
 pub struct MidiOutRouter<'a> {
     /// The open output, JR-stamping as it sends. `None` when nothing is
     /// connected — which is *why* it is an `Option`: a sink that is present but

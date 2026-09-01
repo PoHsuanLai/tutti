@@ -23,7 +23,7 @@
 //! visible from the happy path.
 //!
 //! [`ExportInFlight::cancel`] drops the task, and despawning the request entity
-//! does the same implicitly. Neither fires [`ExportDone`], and neither is seen
+//! does the same implicitly. Neither fires `ExportDone`, and neither is seen
 //! by `poll_exports`. A guard component living on that entity would be
 //! destroyed along with it, leaving every plugin in the session stuck in
 //! `Offline` with nothing left to restore it.
@@ -71,7 +71,7 @@ pub struct PluginRenderMode(
 ///
 /// A plugin loaded *during* a render is told on the frame it appears: the
 /// per-plugin [`RenderModeAnnounced`] marker is consulted alongside the mode
-/// change rather than instead of it — see [`needs_announcement`]. Without that,
+/// change rather than instead of it — see `needs_announcement`. Without that,
 /// a plugin that finished loading mid-bounce would render the rest of the file
 /// in the wrong mode.
 pub fn plugin_render_mode_drive(

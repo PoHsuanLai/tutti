@@ -1,124 +1,111 @@
 # tutti-export
 
-Offline rendering and audio export for the Tutti audio engine.
+**The OFFLINE edge**: render a Tutti graph to a file, or to buffers, faster (or
+slower) than real time.
 
 ## What this is
 
-Render a Tutti audio graph to a file or to in-memory buffers, with a full
-mastering chain in between:
+The graph is *pulled* to a known frame count that `RenderConfig` fixes up front,
+then resampled, dithered and encoded on the way out. Three entry points, and the
+names say which path a caller is on:
 
-1. **Render** — drive the graph block-by-block into stereo `f32` buffers
-   (buffered) or pipe them directly through an encoder (streaming, constant
-   memory).
-2. **Process** — resample, normalize (peak or EBU R128), dither, and
-   optionally downmix to mono.
-3. **Encode** — write WAV, FLAC, AIFF, or OGG Vorbis.
+- `render_to_file` — render straight to disk. Streams: the encoder pulls the
+  graph one block at a time and no PCM is held whole.
+- `render_to_buffers` — render into memory, as planar `Vec<f32>` planes.
+- `write_buffers` — encode planes a caller already holds.
 
-Uses [hound](https://crates.io/crates/hound) for WAV,
-[flacenc](https://crates.io/crates/flacenc) for FLAC,
-[vorbis_rs](https://crates.io/crates/vorbis_rs) for OGG,
-[rubato](https://crates.io/crates/rubato) for resampling, and
-[ebur128](https://crates.io/crates/ebur128) for loudness metering.
+`render_normalized_to_file` is the fourth, and it is separate on purpose — see
+below. Encoding is WAV, FLAC, AIFF or OGG Vorbis, each behind its own feature.
 
-## Quick start
+## What this crate does not own
 
-```rust,ignore
-use tutti_export::{Export, Normalize, BitDepth};
+- **Live capture.** Its peer is `tutti-io`, the **LIVE** edge — a microphone, a
+  tap, a `Recorder` pushing blocks into a WAV as they arrive. The distinction is
+  structural rather than stylistic: a live capture has no total frame count (it
+  ends when someone stops it), so it cannot be expressed as an export, and an
+  export needs a total (to size a plan, trim latency, cap output), so it cannot
+  be expressed as a live pump. Reach here to bounce a mix; reach for `tutti-io`
+  to record one.
+- **Loudness measurement.** EBU R128 lives in `tutti-analysis`, which is where
+  the engine's `Config`/`State`/step analysis vocabulary is;
+  `render_normalized_to_file` measures with it. The edge is acyclic —
+  `tutti-analysis` does not depend on this crate.
+- **Threads.** Both entry points are synchronous and `Send`. A host that wants a
+  render off the main thread already owns a task pool that is better at it than
+  a raw `std::thread` would be.
+- **A buffering strategy.** Every format streams, because every codec library
+  used here supports incremental encoding. There is no buffered-versus-streaming
+  mode to pick.
 
-// From a Tutti graph:
-Export::graph(net, 44100.0)
-    .duration_seconds(10.0)
-    .bit_depth(BitDepth::Int24)
-    .normalize(Normalize::lufs(-14.0))
-    .to_file("master.flac")   // format inferred from extension
-    .run()?;
+## Example — bounce a graph
 
-// From already-rendered buffers:
-Export::buffers(left, right, 44100.0)
-    .to_file("clip.wav")
-    .run()?;
+A config is a struct literal, so a caller states what it means and lets
+`..Default::default()` cover the rest. The clock is not optional:
+`FrozenClock` is how a caller *says* "this graph has no time-dependent nodes",
+so forgetting a transport is a compile error rather than a silently silent
+render.
+
+```rust
+use tutti_core::dsp::{sine_hz, Net};
+use tutti_core::{FrozenClock, SampleRate};
+use tutti_export::{
+    render_to_buffers, render_to_file, AudioFormat, EncodeConfig, ExportConfig, Flac,
+    RenderConfig,
+};
+
+let mut net = Net::new(0, 2);
+let tone = net.push(Box::new(sine_hz::<f32>(440.0)));
+net.pipe_output(tone);
+
+let config = ExportConfig {
+    render: RenderConfig {
+        sample_rate: SampleRate(48_000.0),
+        // `f64`, not `Seconds`: an f32 cannot carry an hour-long render.
+        duration_seconds: 0.5,
+        ..Default::default()
+    },
+    encode: EncodeConfig {
+        format: AudioFormat::Flac(Flac::default()),
+        ..Default::default()
+    },
+    ..Default::default()
+};
+
+// To buffers: planar, one `Vec` per channel, and `frames()` is FRAMES per
+// plane rather than the total sample count.
+let rendered = render_to_buffers(net.clone(), &config, &FrozenClock)
+    .expect("a 0.5 s stereo render");
+assert_eq!(rendered.channels(), 2);
+assert_eq!(rendered.frames().get(), 24_000);
+
+// Or straight to a file, which streams — no PCM is held whole.
+let dir = tempfile::tempdir().expect("temp dir");
+let written = render_to_file(net, &config, &FrozenClock, &dir.path().join("master.flac"))
+    .expect("flac encodes");
+assert!(written.bytes > 0, "a finalized export reports its size on disk");
 ```
 
-## Execution modes
+## Normalization is a separate entry point, not a config field
 
-Every terminal returns a `Run<T>`. Pick one:
+Choosing a gain means measuring the whole signal first, which is two passes. So
+normalization is not a field on `ExportConfig` that quietly changes what
+`render_to_file` costs — it is `render_normalized_to_file`, whose name says
+which path the caller is on. Hiding the two passes inside one export is what
+forces the whole signal into memory.
 
-```rust,ignore
-// Block this thread.
-Export::graph(net, 44100.0)
-    .duration_seconds(3.0)
-    .to_file("out.wav")
-    .run()?;
+For a gain that is logged, gated, or derived some other way, compose the steps
+directly: measure with `tutti_analysis::loudness` (a streaming meter, so it can
+run *while* rendering), take `Loudness::gain_to`, apply it with
+`Rendered::apply_gain`, and write with `write_buffers`.
 
-// Block with a progress callback.
-Export::graph(net, 44100.0)
-    .duration_seconds(600.0)
-    .to_file("long.flac")
-    .run_with(|phase, progress| {
-        eprintln!("{:?} {:.0}%", phase, progress * 100.0);
-    })?;
+## Features
 
-// Spawn a worker thread; poll from your UI loop.
-let mut handle = Export::graph(net, 44100.0)
-    .duration_seconds(3600.0)
-    .to_file("podcast.wav")
-    .spawn();
+- `wav` (default) — WAV encoding, via hound.
+- `flac` (default) — FLAC encoding, via flacenc.
+- `aiff` (default) — AIFF / AIFF-C encoding, via aifc.
+- `ogg` (default) — OGG Vorbis encoding, via vorbis_rs.
 
-loop {
-    match handle.poll() {
-        tutti_export::State::Running { phase, progress } => { /* update UI */ },
-        tutti_export::State::Done(file)                  => break file,
-        tutti_export::State::Failed(e)                   => return Err(e.into()),
-        tutti_export::State::Pending                     => {},
-    }
-}
-```
-
-## Streaming (constant-memory) exports
-
-```rust,ignore
-Export::graph(net, 44100.0)
-    .duration_seconds(28_800.0)   // 8 hours
-    .stream_to_file("longform.wav")
-    .run()?;
-```
-
-Streaming currently supports WAV only. Normalization and resampling require
-the full signal and return an error when combined with `.stream_to_file(...)`.
-
-## Render to buffers
-
-```rust,ignore
-let rendered = Export::graph(net, 44100.0)
-    .duration_seconds(1.0)
-    .to_buffers()
-    .run()?;
-println!("{} samples @ {} Hz", rendered.left.len(), rendered.sample_rate);
-```
-
-## MIDI-driven offline render (`midi` feature)
-
-```rust,ignore
-use tutti_export::{Export, MidiTrack};
-
-let mut midi = MidiTrack::new();
-midi.note_on(0.0, synth_uid, 60, 0x8000)
-    .note_off(1.0, synth_uid, 60);
-
-Export::graph(net, 44100.0)
-    .duration_beats(4.0, 120.0)
-    .with_midi(midi)
-    .to_file("rendered.wav")
-    .run()?;
-```
-
-## Feature flags
-
-- `wav` (default) — WAV encoding via hound (and BWAV, streaming).
-- `flac` (default) — FLAC encoding via flacenc.
-- `aiff` (default) — AIFF encoding (pure Rust, no external dependency).
-- `ogg` (default) — OGG Vorbis encoding via vorbis_rs.
-- `midi` — `MidiTrack` + `with_midi` for MIDI-driven exports.
+Resampling (rubato) is unconditional — it is not a codec, so it is not gated.
 
 ## License
 

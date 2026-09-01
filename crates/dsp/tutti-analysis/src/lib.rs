@@ -1,5 +1,3 @@
-//! # Tutti Analysis
-//!
 //! Audio analysis algorithms over `&[f32]`. No framework dependencies, and no
 //! opinion about where the results go.
 //!
@@ -9,104 +7,21 @@
 //! - [`detect_onsets`] — onset detection over four selectable detection
 //!   functions
 //! - [`correlate`] — inter-channel phase correlation and stereo image
+//! - [`measure_loudness`] — integrated loudness
 //! - [`summarize`] — min/max/RMS waveform blocks for a timeline, **per
 //!   channel**; folding to one series is [`PeakBlocks::to_mono`], a caller's
 //!   choice rather than this crate's default
 //!
-//! ## Configs, and carries where they are needed
+//! Every algorithm takes an immutable, validated [`Error`]-returning config, so
+//! an invalid combination fails at construction rather than silently producing
+//! nothing. Two of them ([`detect_onsets`], [`summarize`]) additionally carry
+//! state between frames and expose it as an explicit value plus a `step`
+//! function, which their batch entry points fold — so the incremental and batch
+//! paths cannot drift.
 //!
-//! Every algorithm takes a **config**: immutable, validated once, so an
-//! invalid combination fails at construction rather than silently producing
-//! nothing.
-//!
-//! Two of them additionally need a **carry** between frames — onset detection
-//! diffs against the previous spectrum, and waveform blocking holds a partial
-//! block. Those two expose the carry as an explicit value and a `step`
-//! function, and their batch entry points ([`detect_onsets`], [`summarize`])
-//! *fold that same step*, so the two paths cannot drift. Tests pin the
-//! equality across chunk sizes and channel layouts.
-//!
-//! The rest are stateless: [`yin()`] and [`correlate`] are pure functions of
-//! their input, and [`stft`] is batch-only — there is no incremental
-//! transform. Meter ballistics ([`step_ballistics`]) carries a smoothed
-//! reading, but that is a filter over results rather than a step of the
-//! correlation itself.
-//!
-//! "Live" is a property of a call site, never of an algorithm, so nothing here
-//! is named for it. A host that wants these results on a background thread or
-//! in an ECS owns that plumbing itself.
-//!
-//! ## Example
-//!
-//! ```rust
-//! use tutti_analysis::{
-//!     correlate, detect_onsets, summarize, yin, DetectionFunction, FftScratch,
-//!     OnsetConfig, PeakConfig, StftGeometry, YinConfig,
-//! };
-//! use tutti_types::{ChannelLayout, Interleaved, Samples, StereoPlanes};
-//!
-//! let sample_rate = 44100.0;
-//! let samples: Vec<f32> = vec![0.0; 44100];
-//! let mut fft = FftScratch::new();
-//!
-//! // Waveform blocks for display — one series per channel.
-//! let blocks = summarize(
-//!     &PeakConfig::new(Samples(512), ChannelLayout::STEREO),
-//!     Interleaved::new(&samples, ChannelLayout::STEREO),
-//! );
-//! let left = blocks.channel(0).expect("stereo has a channel 0");
-//! // A meter wants one number per block; a waveform draws both channels.
-//! let merged = blocks.to_mono();
-//!
-//! // Onsets, via spectral flux.
-//! let geometry = StftGeometry::new(sample_rate, Samples(2048), Samples(512))?;
-//! let onsets = detect_onsets(
-//!     &OnsetConfig::new(geometry, DetectionFunction::SpectralFlux),
-//!     &samples,
-//!     &mut fft,
-//! )?;
-//!
-//! // Pitch. An inverted range is refused here, not silently unvoiced later.
-//! let pitch = yin(&YinConfig::standard(sample_rate)?, &samples)?;
-//!
-//! // Stereo correlation. The planes are paired once — a length mismatch is
-//! // refused here rather than silently truncated inside the measurement.
-//! let planes = StereoPlanes::new(&samples, &samples).expect("equal lengths");
-//! let reading = correlate(planes);
-//! # Ok::<(), tutti_analysis::Error>(())
-//! ```
-//!
-//! ## Reading from a running graph
-//!
-//! Nothing here knows about the graph, so the seam is an
-//! [`AudioTap`](tutti_core::AudioTap): the audio thread pushes each
-//! block into it and a control thread drains it. What arrives on this side is
-//! an ordinary `&[f32]`, which is the whole reason these algorithms need no
-//! engine vocabulary.
-//!
-//! ```
-//! use tutti_analysis::correlate;
-//! use tutti_core::AudioTap;
-//! use tutti_types::StereoPlanes;
-//!
-//! let tap = AudioTap::new();
-//! let _consumer = tap.open().expect("a fresh tap has no consumer");
-//!
-//! // The audio-callback side. `frames` is a FRAME count, so an interleaved
-//! // stereo block of 2 frames is 4 samples.
-//! let block = [0.5f32, -0.5, 0.5, -0.5];
-//! tap.push(&block, 2);
-//!
-//! // The analysis side, once the drained frames are deinterleaved. Draining
-//! // the ring itself needs `ringbuf`'s `Consumer` trait, which is the
-//! // consumer's dependency rather than this crate's.
-//! let (left, right) = ([0.5f32, 0.5], [-0.5f32, -0.5]);
-//! let planes = StereoPlanes::new(&left, &right).expect("drained in lockstep");
-//!
-//! // `Correlation` is a MEASUREMENT type, deliberately distinct from the
-//! // control types (`Mix`, `Depth`) despite the coinciding range.
-//! let reading = correlate(planes);
-//! ```
+//! The quick start, the graph-tap seam, the fallibility rule and the features
+//! are in the crate README, included below.
+#![doc = include_str!("../README.md")]
 
 mod error;
 mod fft;

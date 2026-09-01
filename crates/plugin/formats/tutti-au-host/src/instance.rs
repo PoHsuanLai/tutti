@@ -25,7 +25,7 @@ use crate::stream::{AuBusLayout, StreamConfig};
 use crate::transport::{self, TransportState};
 use crate::types::*;
 use tutti_midi_types::MidiEvent;
-use tutti_plugin_types::{ChannelLayout, TransportInfo};
+use tutti_plugin_types::{ChannelLayout, EditorSize, TransportInfo, WindowHandle};
 use tutti_types::value::units::Seconds;
 use tutti_types::Samples;
 
@@ -39,7 +39,7 @@ pub struct AuLoaded {
     /// Host transport, installed on demand by
     /// [`AuInstance::install_host_callbacks`].
     ///
-    /// Heap-pinned for the same reason [`AuReady::scratch`] is: the AU retains
+    /// Heap-pinned for the same reason [`AuActive::scratch`] is: the AU retains
     /// the `hostUserData` pointer derived from `&*transport`, and this struct is
     /// `mem::replace`d between the `Loaded` and `Ready` states on every
     /// initialize/uninitialize. Moving the `Box` moves only its 8-byte pointer,
@@ -69,7 +69,7 @@ enum Silence {
 /// An AU that has completed `AudioUnitInitialize` and has render buffers
 /// allocated. This is the only state in which [`AuInstance::process`] will
 /// succeed.
-pub struct AuReady {
+pub struct AuActive {
     loaded: AuLoaded,
     /// Heap-pinned so its address is stable across the `State`/`mem::replace`
     /// moves in [`AuInstance::initialize`]/[`AuInstance::uninitialize`]. The
@@ -86,18 +86,23 @@ pub struct AuReady {
     callback_installs: std::sync::atomic::AtomicU32,
 }
 
-/// Public façade wrapping either an [`AuLoaded`] or [`AuReady`] state.
+/// Public façade wrapping either an [`AuLoaded`] or [`AuActive`] state.
 ///
 /// Most host operations (parameters, state save/load, editor) work regardless
 /// of initialization status. [`AuInstance::process`] requires the Ready state
 /// and will return `Uninitialized` otherwise.
 pub struct AuInstance {
     state: State,
+    /// The open editor, when one is. Owned here so
+    /// [`has_editor`](Self::has_editor) / [`open_editor`](Self::open_editor) /
+    /// [`close_editor`](Self::close_editor) read like their VST3 and CLAP
+    /// counterparts, with the Cocoa specifics staying inside [`AuEditor`].
+    editor: Option<crate::editor::AuEditor>,
 }
 
 enum State {
     Loaded(AuLoaded),
-    Ready(AuReady),
+    Active(AuActive),
     /// Transient marker only seen while a `mem::replace` is mid-transition.
     Empty,
 }
@@ -121,6 +126,7 @@ impl AuInstance {
     ) -> Result<Self> {
         Ok(AuInstance {
             state: State::Loaded(AuLoaded::new(component, sample_rate, block_size)?),
+            editor: None,
         })
     }
 
@@ -138,7 +144,58 @@ impl AuInstance {
     pub unsafe fn new_with_config(component: AudioComponent, config: StreamConfig) -> Result<Self> {
         Ok(AuInstance {
             state: State::Loaded(AuLoaded::new_with_config(component, config)?),
+            editor: None,
         })
+    }
+
+    /// Whether the AU publishes a Cocoa editor view.
+    ///
+    /// Asks the live unit — `kAudioUnitProperty_CocoaUI` is a property of the
+    /// instance, not of the registry entry — so this needs an instantiated AU
+    /// rather than answering from the component description.
+    pub fn has_editor(&self) -> bool {
+        crate::editor::AuEditor::has_editor(self.raw_unit())
+    }
+
+    /// Embed the AU's editor into `parent`, returning the size it made.
+    ///
+    /// `preferred` is a *hint* passed to the view factory as `inPreferredSize`
+    /// (`AUCocoaUIView.h:47-48`); the plugin may return any size, which is why
+    /// the returned figure is read back from the view rather than echoed. Pass
+    /// the host's real window size — a fixed figure tells every AU the host
+    /// wants that size whatever window the editor is about to live in.
+    ///
+    /// Re-opening closes the previous view first, so the AU is never asked to
+    /// hold two.
+    ///
+    /// # Safety
+    /// `parent`'s underlying pointer must be a valid `NSView*` owned by the
+    /// caller. Must be called on the macOS main thread.
+    ///
+    /// # Errors
+    /// [`AuError::InvalidBuffer`] if the AU advertises no Cocoa view bundle or
+    /// the view factory fails to load.
+    pub unsafe fn open_editor(
+        &mut self,
+        parent: WindowHandle,
+        preferred: EditorSize,
+    ) -> Result<EditorSize> {
+        self.close_editor();
+        let editor = crate::editor::AuEditor::open(self.raw_unit(), Some(parent), preferred)?;
+        let size = editor.editor_size();
+        self.editor = Some(editor);
+        Ok(size)
+    }
+
+    /// Detach and release the editor view. Safe to call when none is open.
+    ///
+    /// Must be called on the macOS main thread — the teardown is AppKit's
+    /// `removeFromSuperview` / `release`, and touching AppKit off the main
+    /// thread is undefined behavior.
+    pub fn close_editor(&mut self) {
+        if let Some(mut editor) = self.editor.take() {
+            editor.close();
+        }
     }
 
     /// Transition Loaded → Ready. No-op if already Ready.
@@ -155,7 +212,7 @@ impl AuInstance {
         match std::mem::replace(&mut self.state, State::Empty) {
             State::Loaded(l) => match l.initialize() {
                 Ok(r) => {
-                    self.state = State::Ready(r);
+                    self.state = State::Active(r);
                     Ok(())
                 }
                 // `None` only when the AU refused both the callback install and
@@ -169,7 +226,7 @@ impl AuInstance {
                     Err(e)
                 }
             },
-            other @ State::Ready(_) => {
+            other @ State::Active(_) => {
                 self.state = other;
                 Ok(())
             }
@@ -183,13 +240,13 @@ impl AuInstance {
     /// the call started in rather than leaving the instance unusable.
     pub fn uninitialize(&mut self) -> Result<()> {
         match std::mem::replace(&mut self.state, State::Empty) {
-            State::Ready(r) => match r.uninitialize() {
+            State::Active(r) => match r.uninitialize() {
                 Ok(l) => {
                     self.state = State::Loaded(l);
                     Ok(())
                 }
                 Err((r, e)) => {
-                    self.state = State::Ready(r);
+                    self.state = State::Active(r);
                     Err(e)
                 }
             },
@@ -204,7 +261,7 @@ impl AuInstance {
     fn handle(&self) -> &AuHandle {
         match &self.state {
             State::Loaded(l) => &l.handle,
-            State::Ready(r) => &r.loaded.handle,
+            State::Active(r) => &r.loaded.handle,
             State::Empty => unreachable!("AuInstance accessed while empty"),
         }
     }
@@ -212,7 +269,7 @@ impl AuInstance {
     fn config(&self) -> &StreamConfig {
         match &self.state {
             State::Loaded(l) => &l.config,
-            State::Ready(r) => &r.loaded.config,
+            State::Active(r) => &r.loaded.config,
             State::Empty => unreachable!(),
         }
     }
@@ -251,7 +308,7 @@ impl AuInstance {
 
     /// Whether the AU is currently in the `Ready` state.
     pub fn is_initialized(&self) -> bool {
-        matches!(self.state, State::Ready(_))
+        matches!(self.state, State::Active(_))
     }
 
     /// Test-only: how many times the input render callback has been installed
@@ -259,7 +316,7 @@ impl AuInstance {
     #[cfg(test)]
     fn callback_install_count(&self) -> u32 {
         match &self.state {
-            State::Ready(r) => r
+            State::Active(r) => r
                 .callback_installs
                 .load(std::sync::atomic::Ordering::SeqCst),
             _ => 0,
@@ -363,7 +420,7 @@ impl AuInstance {
         })?;
         // Pre-`initialize` there is no scratch: the cursor is created at zero by
         // `initialize` and has nothing to carry over, so there is nothing to do.
-        if let State::Ready(r) = &mut self.state {
+        if let State::Active(r) = &mut self.state {
             r.scratch.reset_position();
         }
         Ok(())
@@ -547,7 +604,7 @@ impl AuInstance {
                     let vel = tutti_midi_types::convert::midi2_velocity_to_midi1(velocity);
                     // A zero-velocity note-on is a note-off; keep it as note-on
                     // 0x90 with velocity 0 (a legal legacy note-off encoding).
-                    (0x90 | (channel & 0x0F), note & 0x7F, vel & 0x7F)
+                    (0x90 | channel.get(), note & 0x7F, vel & 0x7F)
                 }
                 MidiMessage::NoteOff {
                     channel,
@@ -556,7 +613,7 @@ impl AuInstance {
                     ..
                 } => {
                     let vel = tutti_midi_types::convert::midi2_velocity_to_midi1(velocity);
-                    (0x80 | (channel & 0x0F), note & 0x7F, vel & 0x7F)
+                    (0x80 | channel.get(), note & 0x7F, vel & 0x7F)
                 }
                 MidiMessage::ControlChange {
                     channel,
@@ -564,24 +621,20 @@ impl AuInstance {
                     value,
                     ..
                 } => (
-                    0xB0 | (channel & 0x0F),
+                    0xB0 | channel.get(),
                     index & 0x7F,
                     midi2_cc_to_midi1(value) & 0x7F,
                 ),
                 MidiMessage::ProgramChange {
                     channel, program, ..
-                } => (0xC0 | (channel & 0x0F), program & 0x7F, 0),
+                } => (0xC0 | channel.get(), program & 0x7F, 0),
                 MidiMessage::ChannelPressure {
                     channel, pressure, ..
-                } => (
-                    0xD0 | (channel & 0x0F),
-                    midi2_cc_to_midi1(pressure) & 0x7F,
-                    0,
-                ),
+                } => (0xD0 | channel.get(), midi2_cc_to_midi1(pressure) & 0x7F, 0),
                 MidiMessage::PitchBend { channel, value, .. } => {
                     let bend14 = midi2_pitch_bend_to_midi1(value);
                     (
-                        0xE0 | (channel & 0x0F),
+                        0xE0 | channel.get(),
                         (bend14 & 0x7F) as u8,
                         (bend14 >> 7) as u8 & 0x7F,
                     )
@@ -609,13 +662,11 @@ impl AuInstance {
                                     sysex_buf.extend_from_slice(&bytes[..n]);
                                 }
                             }
-                            SYSEX7_STATUS_END => {
-                                if sysex_active {
-                                    sysex_buf.extend_from_slice(&bytes[..n]);
-                                    send_sysex(unit, &sysex_buf);
-                                    sysex_buf.clear();
-                                    sysex_active = false;
-                                }
+                            SYSEX7_STATUS_END if sysex_active => {
+                                sysex_buf.extend_from_slice(&bytes[..n]);
+                                send_sysex(unit, &sysex_buf);
+                                sysex_buf.clear();
+                                sysex_active = false;
                             }
                             _ => {}
                         }
@@ -1033,6 +1084,16 @@ impl AuInstance {
         unsafe { midi_map::hot_map(self.raw_unit()) }
     }
 
+    /// Whether a completed hot map is waiting to be read.
+    ///
+    /// Named form of [`hot_mapped_parameter`](Self::hot_mapped_parameter)
+    /// returning `is_some()`, so a learn UI can poll without reconstructing the
+    /// `mStatus == 0` rule.
+    pub fn hot_map_pending(&self) -> bool {
+        // SAFETY: `raw_unit` is live for the lifetime of this instance.
+        unsafe { midi_map::hot_map_pending(self.raw_unit()) }
+    }
+
     /// Borrow a [`ParamView`] for scoped parameter access.
     pub fn parameters(&self) -> ParamView<'_> {
         unsafe { ParamView::new(self.raw_unit()) }
@@ -1164,7 +1225,7 @@ impl AuInstance {
     pub fn install_host_callbacks(&mut self) -> Result<&TransportState> {
         let loaded = match &mut self.state {
             State::Loaded(l) => l,
-            State::Ready(r) => &mut r.loaded,
+            State::Active(r) => &mut r.loaded,
             State::Empty => unreachable!("AuInstance accessed while empty"),
         };
         let unit = loaded.handle.raw_unit();
@@ -1203,7 +1264,7 @@ impl AuInstance {
     pub fn transport(&self) -> Option<&TransportState> {
         match &self.state {
             State::Loaded(l) => l.transport.as_deref(),
-            State::Ready(r) => r.loaded.transport.as_deref(),
+            State::Active(r) => r.loaded.transport.as_deref(),
             State::Empty => unreachable!("AuInstance accessed while empty"),
         }
     }
@@ -1541,7 +1602,7 @@ impl AuInstance {
     /// callback is involved. The two render paths are genuinely distinct
     /// contracts, not two spellings of one — see the
     /// [`offline`](crate::offline) module docs — which is why this does not try
-    /// to share `AuReady`'s scratch.
+    /// to share `AuActive`'s scratch.
     ///
     /// Requires the `Ready` state for the same reason
     /// [`process`](Self::process) does: `AudioUnitProcess` renders through
@@ -1602,7 +1663,7 @@ impl AuInstance {
 
     /// Serialize the AU's current state (all parameters + internal state) to
     /// a binary plist blob suitable for persistence.
-    pub fn save_state(&self) -> Result<Vec<u8>> {
+    pub fn get_state(&self) -> Result<Vec<u8>> {
         tutti_plugin_types::assert_main_thread();
         let raw: core_foundation_sys::propertylist::CFPropertyListRef = unsafe {
             get_property(
@@ -1618,7 +1679,7 @@ impl AuInstance {
         }
     }
 
-    /// Restore state previously produced by [`Self::save_state`]. Empty input is a no-op.
+    /// Restore state previously produced by [`Self::get_state`]. Empty input is a no-op.
     ///
     /// A successful restore is followed by
     /// [`notify_all_parameters`](crate::listener::notify_all_parameters), which
@@ -1632,7 +1693,7 @@ impl AuInstance {
     /// # Errors
     /// Returns [`AuError::OsStatus`] if the AU rejects the state blob. A failure
     /// of the *notify* is deliberately not propagated — see the inline comment.
-    pub fn load_state(&mut self, data: &[u8]) -> Result<()> {
+    pub fn set_state(&mut self, data: &[u8]) -> Result<()> {
         tutti_plugin_types::assert_main_thread();
         if data.is_empty() {
             return Ok(());
@@ -1704,12 +1765,12 @@ impl AuInstance {
             )
         };
         if from_document.is_err() {
-            // The documented fallback. `load_state` re-decodes the blob, which is
+            // The documented fallback. `set_state` re-decodes the blob, which is
             // a plist parse rather than anything the AU sees — cheap enough not to
             // warrant duplicating the notify logic it owns.
-            return self.load_state(data);
+            return self.set_state(data);
         }
-        // Same reasoning as `load_state`: the state IS loaded, so a failed
+        // Same reasoning as `set_state`: the state IS loaded, so a failed
         // parameter notify must not be reported as a failed restore.
         //
         // SAFETY: `raw_unit` is live for the lifetime of this instance.
@@ -1756,7 +1817,7 @@ impl AuInstance {
     ///
     /// A successful load is followed by
     /// [`notify_all_parameters`](crate::listener::notify_all_parameters), for the
-    /// reason [`load_state`](Self::load_state) documents: setting `ClassInfo`
+    /// reason [`set_state`](Self::set_state) documents: setting `ClassInfo`
     /// rewrites every parameter inside the AU without notifying a single listener,
     /// so an open editor would keep displaying the pre-load values.
     ///
@@ -1775,7 +1836,7 @@ impl AuInstance {
         let identity = unsafe {
             crate::aupreset::load_preset_file(self.raw_unit(), self.handle().component(), path)?
         };
-        // As in `load_state`: the state is loaded, so a failed notify is a stale
+        // As in `set_state`: the state is loaded, so a failed notify is a stale
         // editor rather than a failed load.
         //
         // SAFETY: `raw_unit` is live for the lifetime of this instance.
@@ -1799,7 +1860,7 @@ impl AuInstance {
         num_frames: u32,
     ) -> Result<()> {
         match &mut self.state {
-            State::Ready(r) => r.process(input, output, num_frames),
+            State::Active(r) => r.process(input, output, num_frames),
             State::Loaded(_) => Err(AuError::OsStatus {
                 function: "AuInstance::process",
                 code: K_AUDIO_UNIT_ERR_UNINITIALIZED,
@@ -1831,7 +1892,7 @@ impl AuInstance {
         num_frames: u32,
     ) -> Result<()> {
         match &mut self.state {
-            State::Ready(r) => r.process_f64(input, output, num_frames),
+            State::Active(r) => r.process_f64(input, output, num_frames),
             State::Loaded(_) => Err(AuError::OsStatus {
                 function: "AuInstance::process_f64",
                 code: K_AUDIO_UNIT_ERR_UNINITIALIZED,
@@ -2075,13 +2136,13 @@ impl AuLoaded {
         })
     }
 
-    /// Consume self and return an [`AuReady`] after a successful
+    /// Consume self and return an [`AuActive`] after a successful
     /// `AudioUnitInitialize`.
     ///
     /// The input render callback is installed exactly ONCE here, off the
     /// heap-pinned scratch's stable address — never per render block on the RT
     /// thread. The `ref_con` is `&*scratch`; because `scratch` lives behind a
-    /// `Box`, its body never moves even as the enclosing [`AuReady`]/`State` is
+    /// `Box`, its body never moves even as the enclosing [`AuActive`]/`State` is
     /// `mem::replace`d, so the pointer the AU retains stays valid.
     ///
     /// # Errors
@@ -2093,23 +2154,23 @@ impl AuLoaded {
     /// The recovered state is an `Option` for the one case that cannot produce
     /// a `Loaded` AU: the callback install failed *and* the compensating
     /// `AudioUnitUninitialize` failed too, leaving a unit that is still
-    /// initialized. Its `AuReady` is dropped here so the unit is still disposed
+    /// initialized. Its `AuActive` is dropped here so the unit is still disposed
     /// — there is simply no honest `AuLoaded` to return.
-    pub fn initialize(self) -> std::result::Result<AuReady, (Option<Self>, AuError)> {
+    pub fn initialize(self) -> std::result::Result<AuActive, (Option<Self>, AuError)> {
         if let Err(e) = check("AudioUnitInitialize", unsafe {
             AudioUnitInitialize(self.handle.raw_unit())
         }) {
             return Err((Some(self), e));
         }
 
-        // Allocate the heap-pinned scratch, then move it into `AuReady`. The
+        // Allocate the heap-pinned scratch, then move it into `AuActive`. The
         // Box body does not move on that transfer (only the 8-byte pointer
         // does), so the ref_con derived from `&*ready.scratch` below is stable.
         let scratch = Box::new(RenderScratch::new(
             self.config.channels,
             self.config.block_size,
         ));
-        let ready = AuReady {
+        let ready = AuActive {
             loaded: self,
             scratch,
             #[cfg(test)]
@@ -2133,7 +2194,7 @@ impl AuLoaded {
         if ready.loaded.config.channels.has_input {
             if let Err(e) = unsafe { ready.install_input_callback(scratch_ptr) } {
                 // The AU *is* initialized at this point, so backing out has to
-                // undo that too — not merely drop the half-built `AuReady`.
+                // undo that too — not merely drop the half-built `AuActive`.
                 // Route through `uninitialize`, which owns the ordering
                 // invariant (uninitialize before the boxed scratch is freed)
                 // rather than duplicating it here.
@@ -2142,7 +2203,7 @@ impl AuLoaded {
                 // what actually went wrong, and a follow-on
                 // `AudioUnitUninitialize` complaint would only describe the
                 // cleanup. If that cleanup also failed there is no `Loaded` AU
-                // to hand back — dropping the `AuReady` still disposes the unit.
+                // to hand back — dropping the `AuActive` still disposes the unit.
                 return Err(match ready.uninitialize() {
                     Ok(loaded) => (Some(loaded), e),
                     Err((_ready, _unwind_err)) => (None, e),
@@ -2163,7 +2224,7 @@ impl AuLoaded {
     }
 }
 
-impl AuReady {
+impl AuActive {
     /// Tear down the render session and return to the [`AuLoaded`] state.
     ///
     /// # Errors
@@ -2185,9 +2246,9 @@ impl AuReady {
         if let Err(e) = check("AudioUnitUninitialize", status) {
             // The AU refused to uninitialize, so it is still initialized and
             // the render callback may still fire against `*scratch`. Rebuild
-            // the `AuReady` intact — its `Drop` retries the uninitialize before
+            // the `AuActive` intact — its `Drop` retries the uninitialize before
             // freeing anything — rather than leaking it inside `ManuallyDrop`.
-            // SAFETY: `me` is a live, fully-initialized `AuReady` that nothing
+            // SAFETY: `me` is a live, fully-initialized `AuActive` that nothing
             // has moved out of; `ManuallyDrop::take` is the documented way to
             // reclaim ownership, and `me` is not used again.
             let ready = unsafe { std::mem::ManuallyDrop::take(&mut me) };
@@ -2325,7 +2386,7 @@ impl AuReady {
     /// heap-pinned scratch's stable address.
     ///
     /// # Safety
-    /// `scratch_ptr` must point at this `AuReady`'s boxed `RenderScratch` and
+    /// `scratch_ptr` must point at this `AuActive`'s boxed `RenderScratch` and
     /// must outlive every `AudioUnitRender` call and remain valid until
     /// `AudioUnitUninitialize` runs. The `Box` indirection guarantees the
     /// address is stable across `State`/`mem::replace` moves.
@@ -2357,7 +2418,7 @@ impl AuReady {
     }
 }
 
-impl Drop for AuReady {
+impl Drop for AuActive {
     fn drop(&mut self) {
         unsafe {
             let _ = AudioUnitUninitialize(self.loaded.handle.raw_unit());
@@ -2369,7 +2430,7 @@ impl Drop for AuLoaded {
     /// Unhook the host callbacks before the state they point at is freed.
     ///
     /// ORDERING INVARIANT, the transport twin of the one
-    /// [`AuReady::uninitialize`] documents: while the callbacks are installed
+    /// [`AuActive::uninitialize`] documents: while the callbacks are installed
     /// the AU holds a `hostUserData` raw pointer into `*transport`. Dropping
     /// this struct frees that box, so the property must be cleared first or the
     /// AU is left holding a dangling pointer it may dereference on its render
@@ -2420,8 +2481,8 @@ impl Drop for AuLoaded {
 ///
 /// # Safety
 /// Called by AudioToolbox with the `(proc, ref_con)` pair registered by
-/// `AuReady::install_input_callback`. `in_ref_con` must be null or point at a
-/// live `RenderScratch` — the heap-pinned box owned by the [`AuReady`] whose
+/// `AuActive::install_input_callback`. `in_ref_con` must be null or point at a
+/// live `RenderScratch` — the heap-pinned box owned by the [`AuActive`] whose
 /// unit is rendering, which stays alive because `AudioUnitUninitialize` runs
 /// before that box is freed. `io_data` must be null or a well-formed
 /// `AudioBufferList` whose `mDataByteSize` honestly bounds each `mData`; the
@@ -2636,9 +2697,9 @@ mod tests {
         let mut inst = unsafe { AuInstance::new(comp, 44100.0, 512) }.unwrap();
         inst.initialize().unwrap();
 
-        let state = inst.save_state().unwrap();
+        let state = inst.get_state().unwrap();
         assert!(!state.is_empty());
-        inst.load_state(&state).unwrap();
+        inst.set_state(&state).unwrap();
     }
 
     /// Presets and bypass must work in the `Loaded` state, before

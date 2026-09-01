@@ -1,5 +1,5 @@
-//! `VoiceSlot` — a [`Voice`] plus its resident time-stretch processor, and the
-//! per-sample read that turns the pair into audio.
+//! `PlaybackSlot` — a [`Voice`] plus its resident time-stretch processor, and
+//! the per-sample read that turns the pair into audio.
 //!
 //! This is where the two source tiers and the two stretch states meet: four
 //! combinations, each of which has to agree with the others about how much
@@ -27,7 +27,17 @@ use tutti_core::{
 /// Shared verbatim by [`VoicePool`](super::pool::VoicePool)'s slot vector and by
 /// [`VoiceNode`], which holds exactly one — so the per-voice read has one
 /// definition and a fix in it is a fix in both.
-pub(crate) struct VoiceSlot {
+///
+/// # Not a `VoiceSlot`
+///
+/// `tutti-polysynth` has a `VoiceSlot`, and it is a different kind of thing: an
+/// *allocator* slot carrying note identity plus an Idle/Active/Releasing/Stolen
+/// lifecycle, which is what its stealing policy scores over. This type carries
+/// no identity and no such state — it is a playback descriptor, and everything
+/// about which slot is live is decided by the owner. Sharing the name across the
+/// two crates invited reading one crate's stealing rules into the other's, so
+/// the name says which job this is.
+pub(crate) struct PlaybackSlot {
     /// Addresses this slot for every command after the add. `SlotId(0)` on a
     /// `VoiceNode`, whose single voice has nothing to disambiguate.
     pub(crate) id: SlotId,
@@ -57,7 +67,7 @@ pub(crate) struct VoiceSlot {
     ///
     /// Structural invariant: `voice.play.stretch` / `voice.play.pitch` cannot
     /// drift from the processor's atomics — every mutation goes through
-    /// [`VoiceSlot::set_stretch`], which writes both in one step.
+    /// [`PlaybackSlot::set_stretch`], which writes both in one step.
     pub(crate) stretch: Option<stretch::Unit>,
     /// Width the stretch unit must be built at, remembered so a later
     /// materialisation matches the reader rather than defaulting.
@@ -68,7 +78,7 @@ pub(crate) struct VoiceSlot {
     pub(crate) sample_rate: SampleRate,
 }
 
-impl VoiceSlot {
+impl PlaybackSlot {
     /// Build a slot at an explicit width.
     ///
     /// # Width is explicit at every call site
@@ -478,7 +488,7 @@ fn read_source_frame_into(
 }
 
 /// Whether a [`Playback`] record asks for stretching. Shared by the sender (to
-/// decide whether to build a filter) and [`VoiceSlot::needs_stretch`] (to decide
+/// decide whether to build a filter) and [`PlaybackSlot::needs_stretch`] (to decide
 /// whether to route through one), so the two cannot disagree about what
 /// "stretching" means.
 #[inline]

@@ -5,9 +5,34 @@ use thiserror::Error;
 #[cfg(target_os = "macos")]
 use crate::types::*;
 
+/// Plugin-load phase label. The shared superset lives in `tutti-plugin-types`;
+/// AU uses the Opening/Instantiation/Setup/Initialization subset — it has no
+/// distinct Scanning phase (the OS registry answers that, not this crate) and
+/// no Factory one (`AudioComponentInstanceNew` takes the component directly).
+/// Re-exported so `AuError` and callers keep referring to
+/// `crate::error::LoadStage`.
+pub use tutti_plugin_types::LoadStage;
+
 /// Errors returned by Audio Unit host operations.
 #[derive(Error, Debug, Clone)]
 pub enum AuError {
+    /// The AU could not be loaded. `stage` says how far the load got, which
+    /// separates "this component cannot be instantiated at all" from "it
+    /// instantiated and then refused its configuration".
+    ///
+    /// The same shape the other three host crates report a load failure in,
+    /// with one substitution forced by the ABI: AU is constructed from an
+    /// **OS-registered `AudioComponent`**, not a file
+    /// (`AudioComponentInstanceNew` takes the component handle), so there is no
+    /// path to carry. `component` names it the way a user can match it against
+    /// a plugin list — `"aufx/dely/appl"`, the type/subtype/manufacturer triple
+    /// the registry itself is keyed on.
+    /// Boxed for the reason [`AuError::PresetIo`] is: two inline `String`s
+    /// re-open the `result_large_err` hole on `AuActive::uninitialize`'s
+    /// `(AuActive, AuError)`.
+    #[error("Failed to load AudioUnit {}: {} - {}", .0.component, .0.stage, .0.reason)]
+    LoadFailed(Box<LoadFailedError>),
+
     /// An AudioToolbox call returned a non-zero `OSStatus`. `function` names
     /// the failing call (for diagnostics), and `code` is the raw status.
     #[error(
@@ -130,8 +155,8 @@ pub enum AuError {
     ///
     /// Boxed for the reason [`AuError::PresetIdentityMismatch`] is: `AuError` is
     /// the `Err` of every `Result` in this crate, and two inline `String`s here
-    /// widened the enum enough to push `AuReady::uninitialize`'s
-    /// `(AuReady, AuError)` past clippy's `result_large_err` threshold. A preset
+    /// widened the enum enough to push `AuActive::uninitialize`'s
+    /// `(AuActive, AuError)` past clippy's `result_large_err` threshold. A preset
     /// diagnostic must not tax the render path's result size.
     #[error("preset file I/O failed for {}: {}", .0.path, .0.message)]
     PresetIo(Box<PresetFileError>),
@@ -176,6 +201,21 @@ pub enum AuError {
         .0.au_manufacturer
     )]
     PresetIdentityMismatch(Box<PresetMismatch>),
+}
+
+/// The component, phase and cause a [`AuError::LoadFailed`] reports.
+///
+/// Boxed into the variant for the same size reason [`PresetFileError`] is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LoadFailedError {
+    /// The component the load was attempted against, as its decoded
+    /// `type/subtype/manufacturer` four-char triple.
+    pub component: String,
+    /// The phase that failed — Opening, Instantiation, Setup or
+    /// Initialization for AU.
+    pub stage: LoadStage,
+    /// Human-readable cause, for logs rather than for matching on.
+    pub reason: String,
 }
 
 /// A path plus what went wrong with it, shared by [`AuError::PresetIo`] and
@@ -243,6 +283,19 @@ impl AuError {
         }
     }
 
+    /// Construct an [`AuError::LoadFailed`] for `component`.
+    pub(crate) fn load_failed(
+        component: impl Into<String>,
+        stage: LoadStage,
+        reason: impl Into<String>,
+    ) -> Self {
+        AuError::LoadFailed(Box::new(LoadFailedError {
+            component: component.into(),
+            stage,
+            reason: reason.into(),
+        }))
+    }
+
     /// Construct an [`AuError::InvalidPreset`] for `path`.
     ///
     /// A helper rather than an inline `Box::new(PresetFileError { .. })` at each of
@@ -286,6 +339,7 @@ impl AuError {
                 AuError::PresetIdentityMismatch(_) => {
                     return "preset belongs to a different Audio Unit";
                 }
+                AuError::LoadFailed(_) => return "failed to load AudioUnit",
             };
             os_status_message(code)
         }
@@ -299,6 +353,7 @@ impl AuError {
                 AuError::PresetIo(_) => "preset file I/O failed",
                 AuError::InvalidPreset(_) => "not a valid .aupreset",
                 AuError::PresetIdentityMismatch(_) => "preset belongs to a different Audio Unit",
+                AuError::LoadFailed(_) => "failed to load AudioUnit",
                 _ => "unknown error",
             }
         }

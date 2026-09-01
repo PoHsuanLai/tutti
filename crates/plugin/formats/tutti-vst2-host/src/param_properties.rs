@@ -393,7 +393,7 @@ impl Vst2Instance {
     /// Query `effGetParameterProperties` for every declared parameter.
     ///
     /// Entries are `None` where the plugin declined, so the result stays index-
-    /// aligned with [`Vst2Instance::parameters`]. Compacting to only the
+    /// aligned with [`Vst2Instance::get_parameter_list`]. Compacting to only the
     /// answered ones would silently renumber every parameter after a gap.
     pub fn all_parameter_properties(&self) -> Vec<Option<ParameterProperties>> {
         (0..self.parameter_count())
@@ -406,7 +406,10 @@ impl Vst2Instance {
     /// `AEffect::numParams` is a signed `i32` and a malformed plugin can report
     /// a negative one; that must become "no parameters", not an empty range that
     /// happens to iterate zero times by accident. Clamping states it.
-    fn parameter_count(&self) -> i32 {
+    ///
+    /// The count is the addressing bound too: VST2 addresses by position, so
+    /// every valid id is in `[0, count)`.
+    pub fn parameter_count(&self) -> i32 {
         self.handle.instance.get_info().parameters.max(0)
     }
 

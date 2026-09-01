@@ -9,8 +9,8 @@
 //! |--------------------------------|-----------------------------------------------|
 //! | [`StatusMode`]                 | `eprintln!` on a process-status *transition*  |
 //! | [`StatusMode::Error`]          | `format!`/`to_string` building a `ClapError`  |
-//! | [`tutti_test_plugin_set_sysex_output_bytes`] | per-event `to_vec()` in `output_events_try_push` |
-//! | [`tutti_test_plugin_set_audio_thread_log_lines`] | `String` + stderr lock + `Mutex` in `clap.log` |
+//! | [`crate::rt_probe::tutti_test_plugin_set_sysex_output_bytes`] | per-event `to_vec()` in `output_events_try_push` |
+//! | [`crate::rt_probe::tutti_test_plugin_set_audio_thread_log_lines`] | `String` + stderr lock + `Mutex` in `clap.log` |
 //! | [`WideLayout`]                 | `SmallVec<[*mut T; 16]>` spilling past its inline capacity |
 //!
 //! These are process-global switches because a `clap_process_status` is a

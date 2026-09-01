@@ -199,7 +199,7 @@ impl FrameSource for NetSource<'_> {
         // the block's start beat, and only then does the beat increment. The
         // caller's clock must follow the same convention, because a region
         // render drives BOTH: the net's clock feeds beat-input nodes (LFO,
-        // AutomationLane) while this one feeds clip readers and samplers. A
+        // AutomationLaneNode) while this one feeds clip readers and samplers. A
         // priming advance puts those two exactly one `beats_per_sample` apart
         // for the whole render.
         self.clock.advance(Samples(block_size));
@@ -385,7 +385,7 @@ mod tests {
     /// `NetSource` must NOT prime the clock: the net's own clock is
     /// emit-then-advance, so the first rendered frame carries the start beat. A
     /// priming `advance` desyncs the caller's clock (clip readers, samplers)
-    /// from the net's (LFO, AutomationLane) for the whole render.
+    /// from the net's (LFO, AutomationLaneNode) for the whole render.
     #[test]
     fn the_clock_advances_exactly_once_per_frame_and_never_ahead() {
         let sample_rate = 48_000.0;

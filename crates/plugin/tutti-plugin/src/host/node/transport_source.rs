@@ -5,7 +5,7 @@
 //! counterpart of [`super::harmony_source::HarmonySource`] /
 //! [`super::param_automation_source::ParamAutomationSource`]. Unlike those two,
 //! it computes a fresh value rather than accumulating into scratch, so its
-//! `fill` overwrites `out` wholesale.
+//! `refill` overwrites `out` wholesale.
 //!
 //! The `sample_rate` stamped onto the snapshot (CLAP reads it) can change after
 //! the source is installed (device / rate switch), so it lives in an
@@ -77,7 +77,7 @@ impl TransportSource {
         let tempo = reader.tempo().get();
         let beat = reader.beat();
 
-        // One meter read per block — this runs in `fill`, not per sample.
+        // One meter read per block — this runs in `refill`, not per sample.
         let meter = self.meter.read();
         let position = meter.bar_at(beat);
 
@@ -122,7 +122,7 @@ impl TransportSource {
 
 impl BlockInput for TransportSource {
     type Out = TransportInfo;
-    fn fill(&self, _ctx: BlockCtx, out: &mut TransportInfo) {
+    fn refill(&self, _ctx: BlockCtx, out: &mut TransportInfo) {
         self.snapshot_into(out);
     }
 }
@@ -176,7 +176,7 @@ mod tests {
         let (t, src) = source(120.0, 44100.0);
         t.settings.set_beat(2.0);
         let mut out = TransportInfo::default();
-        src.fill(CTX, &mut out);
+        src.refill(CTX, &mut out);
         assert!((out.timing.tempo - 120.0).abs() < 1e-9);
         assert!(out.state.playing);
         assert!((out.sample_rate - 44100.0).abs() < 1e-9);
@@ -188,11 +188,11 @@ mod tests {
     fn sample_rate_change_is_live() {
         let (_t, src) = source(120.0, 44100.0);
         let mut out = TransportInfo::default();
-        src.fill(CTX, &mut out);
+        src.refill(CTX, &mut out);
         assert!((out.sample_rate - 44100.0).abs() < 1e-9);
-        // Change the rate after "install" — the shared atomic reaches fill().
+        // Change the rate after "install" — the shared atomic reaches refill().
         src.set_sample_rate(48000.0);
-        src.fill(CTX, &mut out);
+        src.refill(CTX, &mut out);
         assert!((out.sample_rate - 48000.0).abs() < 1e-9);
     }
 
@@ -210,7 +210,7 @@ mod tests {
         // Bar 2 of 7/8 starts at 3.5 quarter notes, not 7.
         t.settings.set_beat(3.5);
         let mut out = TransportInfo::default();
-        src.fill(CTX, &mut out);
+        src.refill(CTX, &mut out);
 
         assert_eq!(out.timing.signature, seven_eight);
         assert_eq!(out.bar.number, BarNumber(2));
@@ -230,7 +230,7 @@ mod tests {
         t.settings.set_beat(0.0);
 
         let mut out = TransportInfo::default();
-        src.fill(CTX, &mut out);
+        src.refill(CTX, &mut out);
         assert_eq!(out.timing.signature, TimeSignature::default());
 
         let three_four = TimeSignature::new(BeatsPerBar::new(3), NoteValue::QUARTER);
@@ -238,7 +238,7 @@ mod tests {
             Beat(0.0),
             three_four,
         )])));
-        src.fill(CTX, &mut out);
+        src.refill(CTX, &mut out);
         assert_eq!(out.timing.signature, three_four);
     }
 }

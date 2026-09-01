@@ -875,7 +875,7 @@ extern "C" fn probe_dispatch(
 ///   can only be cleared after the AEffect is built. Asks whether the host
 ///   falls back to the deprecated accumulating `process` or calls
 ///   `processReplacing` anyway, through a slot the plugin never promised.
-/// - `effGetTailSize`: see [`probe_dispatch`].
+/// - `effGetTailSize`: see `probe_dispatch`.
 ///
 /// Both edits land before the host receives the AEffect, so the intermediate
 /// state is unobservable.

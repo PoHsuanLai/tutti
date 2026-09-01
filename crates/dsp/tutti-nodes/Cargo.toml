@@ -1,0 +1,61 @@
+[package]
+name = "tutti-nodes"
+version = "0.0.1"
+edition = "2021"
+description = "Built-in AudioUnit implementations for the Tutti audio engine — LFOs, filters, delays, dynamics, modulation, spatial audio"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/PoHsuanLai/Tutti"
+
+[lints]
+workspace = true
+
+[features]
+default = []
+# NOTE: tutti-nodes is now fully Bevy-free — the entire ECS binding layer
+# (param/marker components, reconcile/spawn systems, spatial + automation graph
+# glue, deferred convolver load) moved app-side to `dawai_model::engine_bind`
+# ("engine Bevy = Net pump only"). This crate is pure DSP + the `set(UnitParam)`
+# surface the app drives it through, so there is no longer a `bevy` feature.
+# NOTE: the `spatial` and `hrtf` features are GONE — the VBAP/binaural panners,
+# `build_vbap_mix` and the `Error`/`Result` pair they were the only users of
+# all moved to the `tutti-spatial` crate. That crate depends on this one (it
+# builds its mixes out of `ChannelSumNode` + `SvfFilterNode`), not the reverse.
+# Consequence worth knowing: this crate now has **no fallible operation at all**,
+# which is why there is no longer an `Error` type here.
+# FFT convolution reverb (partitioned IR). The convolver DSP unit is Bevy-free;
+# its deferred-load ECS glue lives app-side now.
+convolution = ["dep:fft-convolver"]
+
+[dependencies]
+# AudioUnit trait + DSP primitives from tutti-core. default-features = false:
+# tutti-nodes is pure DSP and needs none of tutti-core's Bevy layer.
+tutti-core = { path = "../../core/tutti-core", default-features = false }
+
+# Value vocabulary (the `Curve` trait), for `impl Curve for AutomationEnvelope`.
+# tutti-core re-exports these too, but the impl needs to name `Curve` directly.
+# default-features = false so bevy does not re-leak.
+tutti-types = { path = "../../core/tutti-types", default-features = false }
+
+# Pure, audio-free modulation math: the `Modulator` trait + `Lfo`/`LfoShape`,
+# plus the `routing` feature's `ModTarget`/`AtomicTarget` (for `ModParams`, the
+# node-side control-rate-modulation trait). `default-features = false` keeps
+# tutti-mod's default-on `bevy` feature (Component/Reflect) from re-leaking into
+# this deliberately bevy-free crate; `routing` is std-only, no bevy.
+tutti-mod = { path = "../../core/tutti-mod", default-features = false, features = ["routing"] }
+
+# Partitioned FFT convolver (optional, gated by `convolution` feature)
+fft-convolver = { version = "0.3", optional = true }
+
+# Envelope primitives consumed by `AutomationLaneNode` + `Recorder`, re-exported via
+# `tutti_nodes::automation`.
+audio-automation = { workspace = true }
+
+[dev-dependencies]
+approx = "0.5"
+assert_no_alloc = { version = "1", default-features = false }
+
+# docs.rs renders with every feature on. `default = []` keeps the engine
+# Bevy-free for consumers, but it would otherwise publish a page with the
+# feature-gated half of the public API missing.
+[package.metadata.docs.rs]
+all-features = true

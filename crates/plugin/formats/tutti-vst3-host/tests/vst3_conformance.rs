@@ -38,7 +38,7 @@ use tutti_plugin_types::{ParamAddress, ParamId};
 use tutti_types::meter::{BarNumber, TimeSignature};
 use tutti_vst3_host::{
     host::conformance, AudioBuffer, MidiEvent, ParameterChanges, ProcessMode, TransportInfo,
-    Vst3InputEvents, Vst3Instance, Vst3Library, Vst3Loaded, Vst3Sample,
+    Vst3Active, Vst3InputEvents, Vst3Library, Vst3Loaded, Vst3Sample,
 };
 
 // ── HostCheck C ABI (tests/support/hostcheck_shim.cpp) ───────────────────────
@@ -75,7 +75,7 @@ extern "C" {
 ///   sequence must not interleave with another test's.
 /// - VST3 module lifecycle is not thread-safe here: loading and unloading the
 ///   same DSO concurrently races module init/exit and segfaults. Every test
-///   that constructs a `Vst3Instance`/`Vst3Loaded` must hold this, not just the
+///   that constructs a `Vst3Active`/`Vst3Loaded` must hold this, not just the
 ///   ones that touch `HostCheck`.
 ///
 /// Held for the whole of each test rather than per-call, since instances are
@@ -219,14 +219,14 @@ fn sample_plugins() -> Vec<(String, PathBuf)> {
 /// Whether the plugin declares at least one event input bus, i.e. whether it
 /// is legal for a host to send it MIDI at all.
 fn accepts_midi(path: &Path) -> bool {
-    Vst3Instance::<f32>::load(path, 48_000.0, 512)
+    Vst3Active::<f32>::load(path, 48_000.0, 512)
         .map(|i| i.info().has_midi_input)
         .unwrap_or(false)
 }
 
 /// The plugin's first declared ParamID, if it has any parameters.
 fn first_parameter_id(path: &Path) -> Option<u32> {
-    let inst = Vst3Instance::<f32>::load(path, 48_000.0, 512).ok()?;
+    let inst = Vst3Active::<f32>::load(path, 48_000.0, 512).ok()?;
     (inst.parameter_count() > 0).then(|| inst.parameter_id_at(0))?
 }
 
@@ -333,7 +333,7 @@ fn drive_blocks_in_mode<T: Vst3Sample + Default + Copy>(
     // NOTE: the caller must already hold `PLUGIN_LOCK` — see its docs. Taking
     // it here instead would deadlock against the helpers (`accepts_midi`,
     // `first_parameter_id`, ...) that load plugins around this call.
-    let mut inst = Vst3Instance::<T>::load_with_mode(path, sample_rate, block_size, mode)
+    let mut inst = Vst3Active::<T>::load_with_mode(path, sample_rate, block_size, mode)
         .map_err(|e| format!("load failed: {e:?}"))?;
 
     let info = inst.info().clone();
@@ -571,7 +571,7 @@ fn every_audio_class_survives_a_block() {
         drop(library);
 
         for name in names {
-            match Vst3Instance::<f32>::load_class(&path, &name, 48_000.0, 512) {
+            match Vst3Active::<f32>::load_class(&path, &name, 48_000.0, 512) {
                 Ok(mut inst) => {
                     let info = inst.info().clone();
                     // The class actually instantiated must be the one asked
@@ -648,7 +648,7 @@ fn every_audio_class_survives_a_block() {
 /// A plugin's sidechain inputs must be staged, not dropped.
 ///
 /// `host-checker` declares a stereo main input plus several `kAux` inputs
-/// (`hostcheckerprocessor.cpp:76-88`). `Vst3Instance::activate_buses` loops
+/// (`hostcheckerprocessor.cpp:76-88`). `Vst3Active::activate_buses` loops
 /// over `getBusCount` and activates every one, which is correct VST3: the
 /// plugin's own `activateBus` scores `index > 0` as the informational feature
 /// "IComponent::activateBus for SideChain supported!" rather than an error
@@ -671,7 +671,7 @@ fn sidechain_input_buses_are_staged() {
         eprintln!("host-checker reference plugin not built; skipping");
         return;
     };
-    let Ok(inst) = Vst3Instance::<f32>::load(&path, 48_000.0, 512) else {
+    let Ok(inst) = Vst3Active::<f32>::load(&path, 48_000.0, 512) else {
         eprintln!("host-checker load failed; skipping");
         return;
     };
@@ -859,7 +859,7 @@ fn host_checker_path() -> Option<PathBuf> {
 
 /// Whether the plugin advertises `kSample64` processing.
 fn supports_f64(path: &Path) -> bool {
-    Vst3Instance::<f32>::load(path, 48_000.0, 512)
+    Vst3Active::<f32>::load(path, 48_000.0, 512)
         .map(|i| i.info().supports_f64)
         .unwrap_or(false)
 }
@@ -926,7 +926,7 @@ fn report_host_capability_score() {
         eprintln!("host-checker reference plugin not built; skipping");
         return;
     };
-    let Ok(mut inst) = Vst3Instance::<f32>::load(&path, 48_000.0, 512) else {
+    let Ok(mut inst) = Vst3Active::<f32>::load(&path, 48_000.0, 512) else {
         eprintln!("host-checker load failed; skipping");
         return;
     };
@@ -982,7 +982,7 @@ fn report_host_capability_score() {
     let mut inst = inst.deactivate();
     let _ = inst.poll_plugin_notifications();
 
-    let score = inst.parameter(K_SCORE_TAG);
+    let score = inst.get_parameter(K_SCORE_TAG);
     eprintln!(
         "host capability score: {:.1}% of HostChecker's 75 weighted features",
         score * 100.0
@@ -1015,7 +1015,7 @@ fn restart_component_requests_reach_the_host() {
         eprintln!("host-checker reference plugin not built; skipping");
         return;
     };
-    let Ok(mut inst) = Vst3Instance::<f32>::load(&path, 48_000.0, 512) else {
+    let Ok(mut inst) = Vst3Active::<f32>::load(&path, 48_000.0, 512) else {
         eprintln!("host-checker load failed; skipping");
         return;
     };
@@ -1055,7 +1055,7 @@ fn progress_reports_are_accepted() {
         eprintln!("host-checker reference plugin not built; skipping");
         return;
     };
-    let Ok(mut inst) = Vst3Instance::<f32>::load(&path, 48_000.0, 512) else {
+    let Ok(mut inst) = Vst3Active::<f32>::load(&path, 48_000.0, 512) else {
         eprintln!("host-checker load failed; skipping");
         return;
     };
@@ -1088,7 +1088,7 @@ fn prefetchable_support_is_queryable() {
         eprintln!("host-checker reference plugin not built; skipping");
         return;
     };
-    let Ok(inst) = Vst3Instance::<f32>::load(&path, 48_000.0, 512) else {
+    let Ok(inst) = Vst3Active::<f32>::load(&path, 48_000.0, 512) else {
         eprintln!("host-checker load failed; skipping");
         return;
     };
@@ -1118,7 +1118,7 @@ fn midi_learn_forwards_from_the_main_thread() {
         eprintln!("host-checker reference plugin not built; skipping");
         return;
     };
-    let Ok(mut inst) = Vst3Instance::<f32>::load(&path, 48_000.0, 512) else {
+    let Ok(mut inst) = Vst3Active::<f32>::load(&path, 48_000.0, 512) else {
         eprintln!("host-checker load failed; skipping");
         return;
     };
@@ -1194,7 +1194,7 @@ fn warn_tag_block_is_isolated() {
         eprintln!("host-checker reference plugin not built; skipping");
         return;
     };
-    let Ok(inst) = Vst3Instance::<f32>::load(&path, 48_000.0, 512) else {
+    let Ok(inst) = Vst3Active::<f32>::load(&path, 48_000.0, 512) else {
         eprintln!("host-checker load failed; skipping");
         return;
     };
@@ -1243,7 +1243,7 @@ fn host_checker_reports_no_errors_through_output_params() {
         return;
     };
 
-    let mut inst = match Vst3Instance::<f32>::load(&path, 48_000.0, 512) {
+    let mut inst = match Vst3Active::<f32>::load(&path, 48_000.0, 512) {
         Ok(i) => i,
         Err(e) => {
             eprintln!("host-checker load failed ({e:?}); skipping");
@@ -1316,7 +1316,7 @@ fn plugin_state_round_trips() {
     let mut exercised = 0usize;
 
     for (name, path) in sample_plugins() {
-        let mut inst = match Vst3Instance::<f32>::load(&path, 48_000.0, 512) {
+        let mut inst = match Vst3Active::<f32>::load(&path, 48_000.0, 512) {
             Ok(i) => i,
             Err(e) => {
                 eprintln!("  {name}: skipped (load failed {e:?})");
@@ -1324,7 +1324,7 @@ fn plugin_state_round_trips() {
             }
         };
 
-        let Ok(first) = inst.state() else {
+        let Ok(first) = inst.get_state() else {
             // A plugin with no state at all is legal; nothing to round-trip.
             continue;
         };
@@ -1337,7 +1337,7 @@ fn plugin_state_round_trips() {
             failures.push(format!("{name}: set_state rejected its own state: {e:?}"));
             continue;
         }
-        match inst.state() {
+        match inst.get_state() {
             Ok(second) => {
                 if first != second {
                     failures.push(format!(
@@ -1776,7 +1776,7 @@ fn live_realtime_prefetch_toggle_is_spec_clean() {
     };
 
     let n = unsafe { hc_num_log_events() } as usize;
-    let mut inst = match Vst3Instance::<f32>::load(&path, 48_000.0, 512) {
+    let mut inst = match Vst3Active::<f32>::load(&path, 48_000.0, 512) {
         Ok(i) => i,
         Err(e) => {
             eprintln!("host-checker load failed ({e:?}); skipping");
@@ -1923,7 +1923,7 @@ fn offline_instance_refuses_the_live_toggle() {
         return;
     };
     let Ok(mut inst) =
-        Vst3Instance::<f32>::load_with_mode(&path, 48_000.0, 512, ProcessMode::Offline)
+        Vst3Active::<f32>::load_with_mode(&path, 48_000.0, 512, ProcessMode::Offline)
     else {
         eprintln!("host-checker offline load failed; skipping");
         return;
@@ -1965,7 +1965,7 @@ fn plugin_observes_the_offline_mode_we_requested() {
         return;
     };
     let Ok(mut inst) =
-        Vst3Instance::<f32>::load_with_mode(&path, 48_000.0, 512, ProcessMode::Offline)
+        Vst3Active::<f32>::load_with_mode(&path, 48_000.0, 512, ProcessMode::Offline)
     else {
         eprintln!("host-checker offline load failed; skipping");
         return;

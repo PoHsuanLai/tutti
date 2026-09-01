@@ -22,7 +22,7 @@ use vst::plugin::{Category, Plugin as _};
 
 use crate::error::{LoadStage, Result, Vst2Error};
 use crate::handle::Vst2Handle;
-use crate::host::{HostLink, HostState};
+use crate::host::{HostLink, HostState, MIDI_OUT_QUEUE_CAPACITY, PARAM_QUEUE_CAPACITY};
 use crate::midi::MidiIo;
 use crate::parameters::SendParams;
 use crate::transport_cell::TransportCell;
@@ -154,18 +154,23 @@ impl Vst2Instance {
 
         let resolved = resolve_bundle(path);
 
-        let (param_tx, param_rx) = crossbeam_channel::unbounded();
-        let (midi_out_tx, midi_out_rx) = crossbeam_channel::unbounded();
+        // Bounded, allocated once here. `automate` and `process_events` push
+        // into these from inside the plugin's `processReplacing`, so neither
+        // may allocate or grow — see `host.rs`'s *Why the queues are bounded*.
+        // MPMC, so each queue is one `Arc` shared by both ends rather than a
+        // sender/receiver pair.
+        let param_q = Arc::new(crossbeam_queue::ArrayQueue::new(PARAM_QUEUE_CAPACITY));
+        let midi_out_q = Arc::new(crossbeam_queue::ArrayQueue::new(MIDI_OUT_QUEUE_CAPACITY));
         let time_info = Arc::new(TransportCell::new());
         // A bare `Arc`, not `Arc<Mutex<_>>`: the plugin calls
         // `audioMasterGetTime` from inside `processReplacing` on the audio
         // thread and `audioMasterSizeWindow` / `audioMasterUpdateDisplay` from
         // the GUI thread, so a shared lock here is a priority inversion.
-        // `HostState`'s fields are already lock-free (a seqlock + crossbeam
-        // senders), so the lock bought nothing.
+        // `HostState`'s fields are already lock-free (a seqlock + two
+        // `ArrayQueue`s), so the lock bought nothing.
         let host = Arc::new(HostState::new(
-            param_tx,
-            midi_out_tx,
+            Arc::clone(&param_q),
+            Arc::clone(&midi_out_q),
             Arc::clone(&time_info),
             block_size,
             sample_rate,
@@ -303,9 +308,9 @@ impl Vst2Instance {
             host_link: HostLink {
                 state: host,
                 time_info,
-                param_rx,
+                param_rx: param_q,
             },
-            midi: MidiIo::new(midi_out_rx),
+            midi: MidiIo::new(midi_out_q),
             metadata,
             // `load` dispatched `resume()` above.
             resumed: true,
@@ -464,13 +469,13 @@ impl Vst2Instance {
     ///
     /// Raised by `audioMasterUpdateDisplay`, which a plugin fires after
     /// changing preset or program from its own editor. VST 2.4 carries no
-    /// detail with it, so the answer is to re-read: [`parameter_list`] and the
+    /// detail with it, so the answer is to re-read: [`get_parameter_list`] and the
     /// current values may all have moved.
     ///
     /// Consuming, so a caller polling each frame acts once per request rather
     /// than re-reading forever after the first one.
     ///
-    /// [`parameter_list`]: Self::parameter_list
+    /// [`get_parameter_list`]: Self::get_parameter_list
     pub fn take_display_stale(&self) -> bool {
         self.host_link.state.take_display_stale()
     }

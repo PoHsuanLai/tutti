@@ -651,7 +651,7 @@ fn host_callback_info_matches_apples_layout() {
 #[ignore = "requires the third-party TAL-NoiseMaker AU; no Apple unit calls host callbacks"]
 fn a_real_au_pulls_and_consumes_the_transport() {
     use tutti_au_host::component::{enumerate_components_of_type, AuType};
-    use tutti_au_host::instance::AuInstance;
+    use tutti_au_host::AuInstance;
 
     let _g = lock();
     let Some(info) = enumerate_components_of_type(AuType::Instrument)

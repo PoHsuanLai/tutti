@@ -316,15 +316,97 @@ impl TimerState {
 
 /// Transport requests the plugin issued via `CLAP_EXT_TRANSPORT_CONTROL`,
 /// queued in arrival order for the host to drain and act on (or ignore).
+///
+/// # Audio-thread reachable
+///
+/// `CLAP_EXT_TRANSPORT_CONTROL` carries no thread annotation, and a plugin is
+/// permitted to request a transport change from `process` — a step sequencer
+/// asking to roll on the bar it just reached does exactly that. So the push
+/// path is treated as RT: it neither blocks nor grows.
+///
+/// Both of those needed fixing, and neither was the poison handling, which was
+/// already correct:
+///
+/// - **Bounded.** The backing `Vec` grew without limit. Nothing obliges a host
+///   to drain — `drain_transport_requests` sits behind the speculative
+///   `clap-extras` feature, and these requests are explicitly the host's to
+///   *ignore* — so an undrained queue leaked for as long as the session ran.
+/// - **Non-blocking.** `lock()` blocks, and what it would block on is the
+///   host's main thread holding this guard across a `mem::take`. That is a
+///   priority inversion inside the audio callback, paid for a request the host
+///   may discard anyway.
+///
+/// The shape is [`LogState`]'s, for the same reason: a bounded ring plus a
+/// counter, so "the host dropped requests" stays distinguishable from "the
+/// plugin made none".
 pub struct TransportState {
-    pub(crate) requests: Mutex<Vec<TransportRequest>>,
+    pub(crate) requests: Mutex<std::collections::VecDeque<TransportRequest>>,
+    pub(crate) dropped: AtomicU32,
 }
+
+/// How many transport requests the host queues before evicting the oldest.
+///
+/// A transport request is a discrete sequencer- or user-scale intent — roll,
+/// stop, jump — not a per-block stream, so this is already far past what a
+/// well-behaved plugin emits between two host polls. The capacity exists to
+/// bound a plugin that is misbehaving, or a host that never drains at all.
+///
+/// 64, matching the engine's own UI→audio transport queue
+/// (`tutti_core`'s `COMMAND_QUEUE_CAPACITY`) — same kind of traffic, same
+/// conclusion. Deliberately not [`LOG_CAPACITY`], which is sized for a
+/// diagnostic stream whose recent history has value in bulk.
+pub const TRANSPORT_REQUEST_CAPACITY: usize = 64;
 
 impl TransportState {
     fn new() -> Self {
         Self {
-            requests: Mutex::new(Vec::new()),
+            // Sized to capacity here, on the control thread, so a push from the
+            // audio thread never grows it. `drain` on the read side preserves
+            // this storage; `mem::take` would not.
+            requests: Mutex::new(std::collections::VecDeque::with_capacity(
+                TRANSPORT_REQUEST_CAPACITY,
+            )),
+            dropped: AtomicU32::new(0),
         }
+    }
+
+    /// Queue one request, or drop it and count that.
+    ///
+    /// **Audio-thread safe.** `try_lock`, never `lock`: a contended lock means
+    /// the host is mid-drain, and losing one transport request beats stalling
+    /// the audio callback until that finishes. The `VecDeque` reaches its
+    /// capacity once and reuses it, so a steady-state push does not allocate.
+    ///
+    /// **The oldest is evicted, not the newest.** Arrival order holds either
+    /// way, but a transport request is an *intent* and the newest is the
+    /// plugin's current one — refusing that to preserve a stale `Stop` inverts
+    /// what the queue is for.
+    ///
+    /// A poisoned lock is recovered rather than propagated: this is called
+    /// through a C ABI boundary, across which a panic is undefined behaviour.
+    pub(crate) fn push(&self, req: TransportRequest) {
+        let mut reqs = match self.requests.try_lock() {
+            Ok(reqs) => reqs,
+            Err(std::sync::TryLockError::Poisoned(p)) => p.into_inner(),
+            Err(std::sync::TryLockError::WouldBlock) => {
+                self.dropped.fetch_add(1, Ordering::Relaxed);
+                return;
+            }
+        };
+        if reqs.len() == TRANSPORT_REQUEST_CAPACITY {
+            reqs.pop_front();
+            self.dropped.fetch_add(1, Ordering::Relaxed);
+        }
+        reqs.push_back(req);
+    }
+
+    /// How many transport requests the host will never see — refused for a
+    /// contended lock, or evicted at capacity. Monotonic.
+    ///
+    /// One counter for both causes because no caller can act differently on
+    /// them: either way the plugin asked for something that did not arrive.
+    pub fn dropped(&self) -> u32 {
+        self.dropped.load(Ordering::Relaxed)
     }
 }
 
@@ -636,5 +718,106 @@ impl HostState {
 impl Default for HostState {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod transport_queue_tests {
+    use super::*;
+
+    /// The queue is bounded, and the bound is what the constant says.
+    ///
+    /// This is the leak half of the fix. Nothing obliges a host to drain — the
+    /// drain is behind `clap-extras` while the push path is always compiled —
+    /// so an unbounded `Vec` here grew for the lifetime of the session.
+    ///
+    /// Mutation check: drop the `len() == TRANSPORT_REQUEST_CAPACITY` arm and
+    /// the length assertion fails.
+    #[test]
+    fn the_queue_stops_growing_at_capacity() {
+        let state = TransportState::new();
+
+        for _ in 0..TRANSPORT_REQUEST_CAPACITY {
+            state.push(TransportRequest::Start);
+        }
+        assert_eq!(
+            state.dropped(),
+            0,
+            "filling exactly to capacity must not drop anything — otherwise \
+             the overflow assertion below would pass vacuously"
+        );
+
+        for _ in 0..1_000 {
+            state.push(TransportRequest::Stop);
+        }
+        let reqs = state.requests.lock().unwrap();
+        assert_eq!(reqs.len(), TRANSPORT_REQUEST_CAPACITY);
+        assert_eq!(state.dropped(), 1_000);
+    }
+
+    /// Overflow evicts the **oldest**, so the queue always holds the plugin's
+    /// most recent intent.
+    ///
+    /// A transport request is an intent, not a log line: keeping a stale
+    /// `Start` and refusing the `Stop` that followed it would leave the host
+    /// acting on the opposite of what the plugin last asked for.
+    #[test]
+    fn overflow_keeps_the_newest_intent_in_arrival_order() {
+        let state = TransportState::new();
+
+        // Fill with a marker the eviction should remove...
+        for _ in 0..TRANSPORT_REQUEST_CAPACITY {
+            state.push(TransportRequest::Start);
+        }
+        // ...then push one past, twice.
+        state.push(TransportRequest::Pause);
+        state.push(TransportRequest::Stop);
+
+        let reqs = state.requests.lock().unwrap();
+        assert_eq!(reqs.len(), TRANSPORT_REQUEST_CAPACITY);
+        assert_eq!(
+            reqs.back(),
+            Some(&TransportRequest::Stop),
+            "the newest request must survive"
+        );
+        assert_eq!(
+            reqs[TRANSPORT_REQUEST_CAPACITY - 2],
+            TransportRequest::Pause,
+            "arrival order must hold across an eviction"
+        );
+        assert_eq!(
+            reqs.front(),
+            Some(&TransportRequest::Start),
+            "eviction takes from the front, so the remaining Starts stay ahead \
+             of the two later requests"
+        );
+    }
+
+    /// A contended lock drops rather than blocking, and says so.
+    ///
+    /// This is the priority-inversion half. `push` is reachable from a
+    /// plugin's `process`; the guard it would have blocked on is held by the
+    /// host's main thread across a whole drain.
+    ///
+    /// Mutation check: change `try_lock` back to `lock` and this deadlocks
+    /// rather than failing — which is itself the bug, so nextest's timeout is
+    /// the signal.
+    #[test]
+    fn a_contended_push_drops_instead_of_blocking() {
+        let state = TransportState::new();
+        let held = state.requests.lock().unwrap();
+
+        state.push(TransportRequest::Start);
+
+        assert_eq!(
+            state.dropped(),
+            1,
+            "a push that could not take the lock must be counted, not silently \
+             lost and not blocked on"
+        );
+        assert!(
+            held.is_empty(),
+            "nothing was queued while the lock was held"
+        );
     }
 }

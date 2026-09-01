@@ -173,7 +173,7 @@ impl PortSources {
     /// A node's audio-rate *param* port (a filter's cutoff, a distortion's
     /// drive) is an ordinary input port that happens to sit after the audio
     /// inputs — get its index from the unit's
-    /// [`ParamPorts::param_port`](tutti_units::ParamPorts) before boxing it into
+    /// [`ParamPorts::param_port`](tutti_nodes::ParamPorts) before boxing it into
     /// the graph, then name it here like any other port.
     ///
     /// Declaring it here is not a stylistic preference. Wiring a param port

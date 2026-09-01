@@ -4,7 +4,7 @@
 
 use crate::cf::CfString;
 use crate::component::AuType;
-use crate::error::{AuError, Result};
+use crate::error::{AuError, LoadStage, Result};
 use crate::ffi::check;
 use crate::types::*;
 
@@ -50,7 +50,8 @@ impl AuHandle {
         check(
             "AudioComponentGetDescription",
             AudioComponentGetDescription(component, &mut desc),
-        )?;
+        )
+        .map_err(|e| AuError::load_failed("<undescribed>", LoadStage::Opening, e.to_string()))?;
 
         // `AudioComponent.h:498-502`: `AudioComponentInstantiate` "must be used
         // to instantiate any component with
@@ -70,7 +71,14 @@ impl AuHandle {
         check(
             "AudioComponentInstanceNew",
             AudioComponentInstanceNew(component, &mut instance),
-        )?;
+        )
+        .map_err(|e| {
+            AuError::load_failed(
+                component_triple(&desc),
+                LoadStage::Instantiation,
+                e.to_string(),
+            )
+        })?;
         let au_type = AuType::from_raw(desc.componentType);
 
         Ok(Self {
@@ -116,4 +124,21 @@ impl Drop for AuHandle {
             AudioComponentInstanceDispose(self.instance);
         }
     }
+}
+
+/// A component's identity as its decoded `type/subtype/manufacturer` triple —
+/// `"aufx/dely/appl"`.
+///
+/// This is what [`AuError::LoadFailed`] carries in place of the path the other
+/// three host crates report, because an AU is addressed by an OS-registered
+/// component rather than by a file. Four-char codes are decoded because that is
+/// the form a user can match against a plugin list; the registry's own
+/// comparisons stay on the raw codes.
+fn component_triple(desc: &AudioComponentDescription) -> String {
+    format!(
+        "{}/{}/{}",
+        fourcc_to_string(desc.componentType),
+        fourcc_to_string(desc.componentSubType),
+        fourcc_to_string(desc.componentManufacturer)
+    )
 }

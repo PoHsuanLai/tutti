@@ -191,7 +191,7 @@ pub enum VoiceCommand {
         /// This field is why turning stretch ON mid-flight works at all. A voice
         /// spawned at unity/zero gets `stretch: None` from `AddVoice` (correctly
         /// — it did not need one), so without a filter arriving here,
-        /// `VoiceSlot::set_stretch` would flip the gate fields on a slot that
+        /// `PlaybackSlot::set_stretch` would flip the gate fields on a slot that
         /// has nothing to flip and the voice would read dry forever. It cannot
         /// be built in the drain: that is the audio thread, and construction
         /// allocates an FFT setup plus per-channel scratch.
@@ -200,7 +200,7 @@ pub enum VoiceCommand {
         /// pure atomics) or when the update turns stretching off.
         ///
         /// **Unboxed, unlike [`AddVoice::stretch`](Self::AddVoice::stretch).**
-        /// `VoiceSlot::stretch` is an `Option<stretch::Unit>`, so a `Box` here
+        /// `PlaybackSlot::stretch` is an `Option<stretch::Unit>`, so a `Box` here
         /// would have to be unboxed to install it — and moving out of a `Box`
         /// frees the box, in the drain, on the audio thread. That is a 56-byte
         /// free the no-alloc guard catches. `AddVoice` gets away with a `Box`

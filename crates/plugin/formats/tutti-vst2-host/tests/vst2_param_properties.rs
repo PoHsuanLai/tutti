@@ -151,13 +151,13 @@ fn real_world_plugins_decline_these_opcodes() {
     let _guard = lock_probe();
     let (instance, _path) = load_probe();
 
-    let count = instance.parameters().len();
+    let count = instance.parameter_count();
     assert!(
         count > 0,
         "probe must declare parameters for this test to mean anything"
     );
 
-    for id in 0..count as i32 {
+    for id in 0..count {
         assert_eq!(
             instance.parameter_properties(id),
             None,
@@ -167,7 +167,7 @@ fn real_world_plugins_decline_these_opcodes() {
 
     // Index-aligned listing: every entry present, every one None.
     let all = instance.all_parameter_properties();
-    assert_eq!(all.len(), count);
+    assert_eq!(all.len(), count as usize);
     assert!(all.iter().all(Option::is_none));
 
     // The whole MIDI family declines too.
@@ -281,7 +281,7 @@ fn an_out_of_range_parameter_index_is_refused_before_dispatch() {
     let (instance, path) = load_probe();
     set_answer_param_properties(&path, true);
 
-    let count = instance.parameters().len() as i32;
+    let count = instance.parameter_count();
     assert!(instance.parameter_properties(count - 1).is_some());
     assert_eq!(instance.parameter_properties(count), None);
     assert_eq!(instance.parameter_properties(count + 100), None);
@@ -591,7 +591,7 @@ fn a_declared_integer_range_reaches_the_shared_parameter_info() {
     let (instance, path) = load_probe();
     set_answer_param_properties(&path, true);
 
-    let listed = instance.parameter_list();
+    let listed = instance.get_parameter_list();
     assert!(
         listed.len() > PROBE_INT_STEP_PARAM as usize,
         "the probe exposes {} parameters, too few to reach the one that \
@@ -652,7 +652,7 @@ fn a_declining_plugin_reports_no_range_and_no_steps() {
     let _guard = lock_probe();
     let (instance, _path) = load_probe();
 
-    let listed = instance.parameter_list();
+    let listed = instance.get_parameter_list();
     assert!(!listed.is_empty(), "the probe exposes no parameters");
     for info in &listed {
         assert_eq!(
@@ -687,7 +687,7 @@ fn the_automatable_flag_is_probed_rather_than_left_unasked() {
     let _guard = lock_probe();
     let (instance, _path) = load_probe();
 
-    let listed = instance.parameter_list();
+    let listed = instance.get_parameter_list();
     assert!(!listed.is_empty(), "the probe exposes no parameters");
     for info in &listed {
         assert!(
@@ -735,7 +735,7 @@ fn an_out_of_range_id_never_reaches_the_plugin() {
     let _guard = lock_probe();
     let (instance, _path) = load_probe();
 
-    let count = instance.parameters().len() as i32;
+    let count = instance.parameter_count();
     assert!(count > 0, "the probe exposes no parameters");
 
     for id in [
@@ -747,7 +747,7 @@ fn an_out_of_range_id_never_reaches_the_plugin() {
         i32::MIN + 3,  // negative, near a plausible index
     ] {
         assert_eq!(
-            instance.parameter(id),
+            instance.get_parameter(id),
             None,
             "reading out-of-range id {id} must not dispatch"
         );
@@ -756,7 +756,7 @@ fn an_out_of_range_id_never_reaches_the_plugin() {
             "writing out-of-range id {id} must not dispatch"
         );
         assert!(
-            instance.parameter_info(id).is_none(),
+            instance.get_parameter_info(id).is_none(),
             "describing out-of-range id {id} must not dispatch"
         );
     }
@@ -764,10 +764,10 @@ fn an_out_of_range_id_never_reaches_the_plugin() {
     // The guard did not cost the legal range.
     for id in 0..count {
         assert!(
-            instance.parameter(id).is_some(),
+            instance.get_parameter(id).is_some(),
             "in-range id {id} must still read"
         );
-        assert!(instance.parameter_info(id).is_some());
+        assert!(instance.get_parameter_info(id).is_some());
     }
 }
 
@@ -792,7 +792,7 @@ fn a_parameter_display_carries_the_current_value_and_its_unit() {
     let _guard = lock_probe();
     let (instance, _path) = load_probe();
 
-    let count = instance.parameters().len() as i32;
+    let count = instance.parameter_count();
     assert!(
         count >= 4,
         "the probe must declare enough params to cycle its labels"
@@ -869,14 +869,14 @@ fn a_refused_string_parse_reports_none_and_writes_nothing() {
         );
     }
 
-    let after = instance.parameter(0).expect("param 0 is readable");
+    let after = instance.get_parameter(0).expect("param 0 is readable");
     assert!(
         (after - 0.5).abs() < 1e-6,
         "a refused parse must leave the parameter alone, got {after}"
     );
 
     // Out-of-range indices do not dispatch either.
-    let count = instance.parameters().len() as i32;
+    let count = instance.parameter_count();
     assert_eq!(instance.set_parameter_from_string(count, "0.5"), None);
     assert_eq!(instance.set_parameter_from_string(-1, "0.5"), None);
 }

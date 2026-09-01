@@ -42,8 +42,8 @@
 
 #![cfg(target_os = "macos")]
 
-use tutti_au_host::bus::BusDirection;
-use tutti_au_host::instance::AuInstance;
+use tutti_au_host::AuInstance;
+use tutti_au_host::BusDirection;
 use tutti_types::Samples;
 
 mod support;
@@ -552,14 +552,14 @@ fn a_partial_render_leaves_a_bounded_tail() {
 
 /// A failing `ClassInfo` must be reported as an error, not as empty state.
 ///
-/// `save_state` is what a DAW calls to persist a plugin into a project file. If
+/// `get_state` is what a DAW calls to persist a plugin into a project file. If
 /// a refusal is absorbed into `Ok(vec![])`, the project saves *successfully*
 /// with the plugin's state silently missing, and the loss is only discovered
 /// when the user reopens the session. An error here lets the host warn instead.
 #[test]
 fn a_failing_class_info_save_is_an_error() {
     let au = Misbehaviour::FailsClassInfo.open_initialized(RATE, BLOCK);
-    let result = au.save_state();
+    let result = au.get_state();
     assert!(
         result.is_err(),
         "an AU refusing kAudioUnitProperty_ClassInfo must produce an error, not \
@@ -581,14 +581,14 @@ fn a_failing_class_info_restore_is_an_error_and_the_au_survives() {
     // A non-empty, well-formed binary plist, so the failure comes from the AU
     // rejecting `ClassInfo` rather than from the host declining to parse input.
     let good = Misbehaviour::None.open_initialized(RATE, BLOCK);
-    let blob = good.save_state().expect("well-behaved probe saves state");
+    let blob = good.get_state().expect("well-behaved probe saves state");
     assert!(
         !blob.is_empty(),
         "the control probe produced an empty state blob, so this test would \
-         exercise load_state's empty-input short circuit instead of the AU's refusal"
+         exercise set_state's empty-input short circuit instead of the AU's refusal"
     );
 
-    let result = au.load_state(&blob);
+    let result = au.set_state(&blob);
     assert!(
         result.is_err(),
         "an AU refusing a ClassInfo write must produce an error: {result:?}"

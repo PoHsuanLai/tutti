@@ -8,10 +8,10 @@
 use std::path::Path;
 
 use tutti_plugin::server::{
-    AudioBufferMut, EditorPresence, EditorSize, Features, LoadedPlugin, MidiEventVec, Normalized,
-    NoteExpressionChanges, ParamAddress, ParameterChanges, ParameterInfo, PluginAudio, PluginClass,
-    PluginDescriptor, PluginEditorHost, PluginMeta, PluginParams, PluginPresets, PluginResult,
-    PluginState, Preset, PresetId, ProcessContext, ProcessOutput, RenderMode, WindowHandle,
+    AudioBufferMut, EditorPresence, EditorSize, Features, LoadedPlugin, Normalized, ParamAddress,
+    ParameterInfo, PluginAudio, PluginClass, PluginDescriptor, PluginEditorHost, PluginMeta,
+    PluginParams, PluginPresets, PluginResult, PluginState, Preset, PresetId, ProcessContext,
+    ProcessOutput, RenderMode, WindowHandle,
 };
 // Only the `not(vst2)` fallback arms construct `PluginError` directly.
 #[cfg(not(feature = "vst2"))]
@@ -19,9 +19,7 @@ use tutti_plugin::server::PluginError;
 use tutti_plugin::{BridgeError, Result};
 
 #[cfg(feature = "vst2")]
-use tutti_vst2_host::{
-    ProcessContext as Vst2ProcessContext, RenderScratch, Vst2Error, Vst2Instance as Vst2Host,
-};
+use tutti_vst2_host::{RenderScratch, Vst2Error, Vst2Instance as Vst2Host, Vst2ProcessContext};
 
 use crate::loaders::common::{single_bus, Meta};
 
@@ -147,7 +145,7 @@ fn translate_error(err: Vst2Error, _path: &Path) -> BridgeError {
             reason,
         },
         Vst2Error::EditorError(s) => BridgeError::EditorError(s),
-        Vst2Error::StateRestoreError(s) => BridgeError::StateRestoreError(s),
+        Vst2Error::StateError(s) => BridgeError::StateRestoreError(s),
     }
 }
 
@@ -166,7 +164,8 @@ impl PluginAudio for Vst2Instance {
         &mut self,
         buffer: AudioBufferMut<'_, '_>,
         ctx: &ProcessContext,
-    ) -> PluginResult<ProcessOutput> {
+        out: &mut ProcessOutput,
+    ) -> PluginResult<()> {
         #[cfg(feature = "vst2")]
         {
             // VST3/CLAP-style param change events become direct writes for VST2.
@@ -197,24 +196,25 @@ impl PluginAudio for Vst2Instance {
 
             let transport = ctx.transport.cloned();
 
-            let midi_out: MidiEventVec = match buffer {
+            // `process_f32` / `process_f64` return a borrow into the instance's
+            // own pooled MIDI-out buffer. Extending `out` — which the caller
+            // cleared and whose capacity survives the block — copies out of it
+            // without a fresh `SmallVec`, which is what `.collect()` built here
+            // every block and heap-spilled past its inline capacity.
+            let emitted = match buffer {
                 AudioBufferMut::F32(buf) => {
                     let host_ctx = Vst2ProcessContext {
                         midi: ctx.midi_events,
                         transport: transport.as_ref(),
                         sample_rate: buf.sample_rate,
                     };
-                    self.inner
-                        .process_f32(
-                            buf.inputs,
-                            buf.outputs,
-                            buf.num_samples,
-                            &host_ctx,
-                            &mut self.scratch,
-                        )
-                        .iter()
-                        .copied()
-                        .collect()
+                    self.inner.process_f32(
+                        buf.inputs,
+                        buf.outputs,
+                        buf.num_samples,
+                        &host_ctx,
+                        &mut self.scratch,
+                    )
                 }
                 AudioBufferMut::F64(buf) => {
                     let host_ctx = Vst2ProcessContext {
@@ -222,30 +222,27 @@ impl PluginAudio for Vst2Instance {
                         transport: transport.as_ref(),
                         sample_rate: buf.sample_rate,
                     };
-                    self.inner
-                        .process_f64(
-                            buf.inputs,
-                            buf.outputs,
-                            buf.num_samples,
-                            &host_ctx,
-                            &mut self.scratch,
-                        )
-                        .iter()
-                        .copied()
-                        .collect()
+                    self.inner.process_f64(
+                        buf.inputs,
+                        buf.outputs,
+                        buf.num_samples,
+                        &host_ctx,
+                        &mut self.scratch,
+                    )
                 }
             };
+            out.midi_events.extend(emitted.iter().copied());
 
-            Ok(ProcessOutput {
-                midi_events: midi_out,
-                param_changes: ParameterChanges::new(),
-                note_expression: NoteExpressionChanges::new(),
-            })
+            // VST2 reports parameter automation through the `audioMasterAutomate`
+            // callback, not through a per-block output list, so there is nothing
+            // to fill `param_changes` from here. It reaches the host by the
+            // separate `drain_param_changes` path.
+            Ok(())
         }
 
         #[cfg(not(feature = "vst2"))]
         {
-            let _ = (buffer, ctx);
+            let _ = (buffer, ctx, out);
             Err(PluginError::Process("VST2 support not compiled".into()))
         }
     }
@@ -282,10 +279,10 @@ impl PluginParams for Vst2Instance {
             // matches what the other format loaders return for an unreadable
             // parameter; the distinction stays available on `Vst2Instance`.
             // VST2 is the one format addressed by position, so an opaque
-            // handle addresses nothing here. `Vst2Instance::parameter` bounds-
+            // handle addresses nothing here. `Vst2Instance::get_parameter` bounds-
             // checks the index it is given; see `param_index` there.
             id.index()
-                .and_then(|i| self.inner.parameter(i))
+                .and_then(|i| self.inner.get_parameter(i))
                 .unwrap_or(0.0) as f64
         }
         #[cfg(not(feature = "vst2"))]
@@ -331,7 +328,7 @@ impl PluginParams for Vst2Instance {
         #[cfg(feature = "vst2")]
         {
             let index = id.index()?;
-            let current = self.inner.parameter(index)?;
+            let current = self.inner.get_parameter(index)?;
             (f64::from(current) == value.get())
                 .then(|| self.inner.parameter_display(index))
                 .flatten()
@@ -372,9 +369,9 @@ impl PluginParams for Vst2Instance {
         #[cfg(feature = "vst2")]
         {
             // The narrow→shared mapping lives on the host crate's
-            // `Vst2Instance::parameter_list`; the in-process VST2 backend's
+            // `Vst2Instance::get_parameter_list`; the in-process VST2 backend's
             // `HostParams` impl calls the same helper, so there is one VST2 param map.
-            self.inner.parameter_list()
+            self.inner.get_parameter_list()
         }
         #[cfg(not(feature = "vst2"))]
         Vec::new()
@@ -446,7 +443,7 @@ impl PluginState for Vst2Instance {
         #[cfg(feature = "vst2")]
         {
             self.inner
-                .save_state()
+                .get_state()
                 .map_err(|e| translate_error(e, Path::new("")).into())
         }
         #[cfg(not(feature = "vst2"))]
@@ -457,7 +454,7 @@ impl PluginState for Vst2Instance {
         #[cfg(feature = "vst2")]
         {
             self.inner
-                .load_state(data)
+                .set_state(data)
                 .map_err(|e| translate_error(e, Path::new("")).into())
         }
         #[cfg(not(feature = "vst2"))]

@@ -45,11 +45,6 @@ impl SpatialTarget {
         self.elevation
             .store(Elevation::new_clamped(elevation.into().get()));
     }
-
-    /// Re-aim straight ahead at ear level, discarding the current position.
-    pub fn reset_origin(&self) {
-        self.store(Azimuth::FRONT, Elevation::LEVEL);
-    }
 }
 
 impl Default for SpatialTarget {
@@ -83,6 +78,21 @@ impl AngleSmoother {
         let sample_rate = sample_rate.into();
         self.azimuth.set_sample_rate(sample_rate);
         self.elevation.set_sample_rate(sample_rate);
+    }
+
+    /// Discard the in-flight ramp, seating both coordinates *on* the commanded
+    /// position.
+    ///
+    /// This is what an [`AudioUnit::reset`] clears here: the interpolation
+    /// position is the smoother's only runtime state, and the commanded bearing
+    /// and height are caller-set configuration a reset must leave alone. Seating
+    /// on the target rather than at zero is the difference between resuming
+    /// silently and sweeping the source in from front-centre over the ramp.
+    ///
+    /// [`AudioUnit::reset`]: tutti_core::AudioUnit::reset
+    pub(crate) fn reset_to_target(&mut self, azimuth: Azimuth, elevation: Elevation) {
+        self.azimuth.seed_at(azimuth.wrap().get());
+        self.elevation.seed_at(Elevation::new_clamped(elevation.get()).get());
     }
 
     /// Advance one step toward the target and return the smoothed pair.

@@ -54,7 +54,7 @@ fn index_of(value: f32, len: usize) -> f64 {
 /// A rolling transport advanced by hand, once per block.
 ///
 /// Needed because reverse only reaches its code path on a **placed** voice:
-/// `VoiceSlot` derives the read position from `window_position()`, which returns
+/// `PlaybackSlot` derives the read position from `window_position()`, which returns
 /// `None` without a timeline, and the slot then emits silence. A free-running
 /// voice never reaches `read_clip_sample_into` at all — which is how the first
 /// draft of this file measured index 0 for every reversed read and looked like
@@ -112,13 +112,13 @@ fn render(unit: &mut dyn AudioUnit, blocks: usize) -> Vec<f32> {
 
 /// Build a free-running voice in a pool, at `direction`.
 ///
-/// Reverse lives on `VoiceSlot` (`read_clip_sample_into`), not on
+/// Reverse lives on `PlaybackSlot` (`read_clip_sample_into`), not on
 /// `MemorySource` — the source has no direction verb, and `apply_direction` is
 /// a deliberate no-op on the memory tier. So exercising it means going through a
 /// pool, which is also the assembly a real render uses.
 fn reversed_pool(wave: Arc<Wave>, direction: Direction) -> (VoicePool, Arc<Clock>) {
     let clock = Clock::new();
-    // **Placed**, not free-running. `VoiceSlot` reads `window_position()`, which
+    // **Placed**, not free-running. `PlaybackSlot` reads `window_position()`, which
     // needs a timeline; without one the slot returns early and emits silence, so
     // the reverse arm is never reached.
     let source = MemorySource::with_config(
@@ -416,7 +416,7 @@ fn a_zero_length_crossfade_is_a_hard_loop() {
 
 /// Looping and reverse compose without reading outside the source.
 ///
-/// The two features touch different code — `VoiceSlot` reverses the read,
+/// The two features touch different code — `PlaybackSlot` reverses the read,
 /// `MemorySource` wraps the position — and nothing exercised them together.
 ///
 /// # Placed, and therefore not looping in the usual sense

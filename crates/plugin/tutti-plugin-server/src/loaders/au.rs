@@ -20,9 +20,7 @@ use crate::loaders::common::{single_bus, Meta};
 use tutti_plugin::{BridgeError, LoadStage, Result};
 
 #[cfg(all(target_os = "macos", feature = "au"))]
-use tutti_au_host::{
-    component, editor::AuEditor, instance::AuInstance as AuHostInstance, parameters, Samples,
-};
+use tutti_au_host::{component, parameters, AuInstance as AuHostInstance, Samples};
 
 /// Map the AU host's native component type to the wire `AuComponentType` mirror.
 #[cfg(all(target_os = "macos", feature = "au"))]
@@ -54,8 +52,6 @@ pub struct AuInstance {
     watch: Option<PropertyWatch>,
     #[cfg(all(target_os = "macos", feature = "au"))]
     inner: AuHostInstance,
-    #[cfg(all(target_os = "macos", feature = "au"))]
-    editor: Option<AuEditor>,
     /// Declared `[min, max]` per parameter id, captured once at load.
     ///
     /// `ProcessContext::param_changes` carries **normalized** `0..=1` values (the
@@ -253,7 +249,7 @@ impl PropertyFlags {
 struct PropertyWatch {
     /// Never read after construction. Dropping it runs `AUListenerDispose`,
     /// which is the only thing that stops further deliveries.
-    _listener: tutti_au_host::listener::AuParameterListener,
+    _listener: tutti_au_host::AuParameterListener,
     flags: std::sync::Arc<PropertyFlags>,
 }
 
@@ -281,11 +277,11 @@ impl PropertyWatch {
     unsafe fn install(unit: tutti_au_host::types::AudioUnit) -> Option<Self> {
         use std::sync::atomic::Ordering;
 
-        use tutti_au_host::listener::{AuEvent, AuParameterListener, EventAddress};
         use tutti_au_host::types::{
             K_AUDIO_UNIT_PROPERTY_LATENCY, K_AUDIO_UNIT_PROPERTY_PARAMETER_LIST,
             K_AUDIO_UNIT_PROPERTY_TAIL_TIME,
         };
+        use tutti_au_host::{AuEvent, AuParameterListener, EventAddress};
 
         let flags = std::sync::Arc::new(PropertyFlags::default());
         let sink = std::sync::Arc::clone(&flags);
@@ -328,6 +324,30 @@ impl PropertyWatch {
     }
 }
 
+// SAFETY: every field is already `Send` on its own terms, and this impl exists
+// because the raw AudioToolbox pointers buried in them cannot say so to the
+// compiler. Field by field:
+//
+// - `inner` (`tutti_au_host::AuInstance`) bottoms out in `AuHandle`, whose own
+//   `unsafe impl Send` records the AudioToolbox rule this whole file rests on:
+//   an `AudioComponentInstance` is a plain pointer usable from any thread *as
+//   long as access is externally synchronised*. `&mut self` on every method
+//   that touches the unit is that synchronisation — there is no `Sync` here,
+//   which is what keeps two threads from calling into one AU at once.
+// - `watch` holds an `AuParameterListener` (`Send + Sync`, argued at its own
+//   impl: an opaque listener handle, a GCD queue and a heap block, all
+//   documented thread-agnostic) plus an `Arc<PropertyFlags>` of atomics. The
+//   GCD worker that fires the callback touches only those atomics, never
+//   `inner`, so moving the instance between threads does not race the listener.
+// - `inner`'s editor is `Send` but not `Sync`, which is the tighter of the
+//   two bounds and therefore the one that decides this impl's shape. The
+//   editor lives on the host `AuInstance`, not as a sibling field here.
+// - `param_ranges` and `meta` are plain data.
+//
+// The field-order invariant on `watch` is what makes the listener argument hold
+// through teardown: the registration is disposed before the unit it points at.
+// Sending the instance elsewhere moves all of that together, so no thread is
+// left holding half of the pair.
 unsafe impl Send for AuInstance {}
 
 impl AuInstance {
@@ -368,7 +388,7 @@ impl AuInstance {
                     component_type: map_au_type(component_info.component_type),
                 },
                 // A probe reads the registry entry without instantiating, and
-                // `AuEditor::has_editor` needs a live unit. The load path asks.
+                // `AuInstance::has_editor` needs a live unit. The load path asks.
                 editor: EditorPresence::Unknown,
             })
         }
@@ -448,7 +468,7 @@ impl AuInstance {
             })?;
 
             let name = inner.get_name().unwrap_or_else(|_| bundle_name.clone());
-            let has_editor = AuEditor::has_editor(inner.raw_unit());
+            let has_editor = inner.has_editor();
             // A refusal is compensated as zero rather than failing the load: an
             // AU that will not say how far it delays audio is still a usable
             // plugin, and under-compensating it costs alignment, not audio.
@@ -550,7 +570,6 @@ impl AuInstance {
             Ok(Self {
                 watch,
                 inner,
-                editor: None,
                 param_ranges,
                 meta: Meta { descriptor, loaded },
             })
@@ -690,7 +709,8 @@ impl PluginAudio for AuInstance {
         &mut self,
         buffer: tutti_plugin::server::AudioBufferMut<'_, '_>,
         ctx: &ProcessContext,
-    ) -> PluginResult<ProcessOutput> {
+        out: &mut ProcessOutput,
+    ) -> PluginResult<()> {
         // Automation arrives normalized `0..=1` (the host's authoring
         // convention, shared with VST2/VST3), but `AudioUnitSetParameter` takes
         // NATIVE PLAIN UNITS — AU has no normalization concept at all. Writing
@@ -746,7 +766,12 @@ impl PluginAudio for AuInstance {
             }
         }
 
-        Ok(ProcessOutput::default())
+        // AUv2 reports no per-block MIDI, parameter or note-expression output
+        // through this path — `AuInstance::install_midi_output` exists but
+        // nothing routes it yet — so `out` is left as the caller cleared it,
+        // which is an empty block rather than a stale one.
+        let _ = out;
+        Ok(())
     }
 
     fn set_sample_rate(&mut self, rate: f64) {
@@ -917,16 +942,13 @@ impl PluginEditorHost for AuInstance {
         // No size to offer: `PluginEditorHost::open_editor` carries only a
         // parent handle, so the host has not told this layer how big the
         // window is. 800×600 is the request; the plugin is free to ignore it,
-        // and `editor_size()` below reads back what it actually made.
+        // and `AuInstance::open_editor` returns the size the view actually made.
         let preferred = EditorSize {
             width: 800,
             height: 600,
         };
-        let editor =
-            unsafe { AuEditor::open(self.inner.raw_unit(), Some(parent_handle), preferred) }
-                .map_err(|e| BridgeError::EditorError(e.to_string()))?;
-        let size = editor.editor_size();
-        self.editor = Some(editor);
+        let size = unsafe { self.inner.open_editor(parent_handle, preferred) }
+            .map_err(|e| BridgeError::EditorError(e.to_string()))?;
         Ok(EditorSize {
             width: size.width,
             height: size.height,
@@ -934,9 +956,7 @@ impl PluginEditorHost for AuInstance {
     }
 
     fn close_editor(&mut self) {
-        if let Some(mut ed) = self.editor.take() {
-            ed.close();
-        }
+        self.inner.close_editor();
     }
 }
 
@@ -944,13 +964,13 @@ impl PluginEditorHost for AuInstance {
 impl PluginState for AuInstance {
     fn get_state(&mut self) -> PluginResult<Vec<u8>> {
         self.inner
-            .save_state()
+            .get_state()
             .map_err(|e| BridgeError::StateSaveError(e.to_string()).into())
     }
 
     fn set_state(&mut self, data: &[u8]) -> PluginResult<()> {
         self.inner
-            .load_state(data)
+            .set_state(data)
             .map_err(|e| BridgeError::StateRestoreError(e.to_string()).into())
     }
 }
@@ -1344,7 +1364,6 @@ mod tests {
         let au = AuInstance {
             watch: None,
             inner,
-            editor: None,
             param_ranges,
             meta: Meta::default(),
         };
@@ -1380,7 +1399,6 @@ mod tests {
         let mut au = AuInstance {
             watch: None,
             inner,
-            editor: None,
             param_ranges,
             meta: Meta::default(),
         };
@@ -1401,7 +1419,8 @@ mod tests {
         };
 
         let ctx = ProcessContext::new();
-        let _output = au.process(AudioBufferMut::F32(buffer), &ctx);
+        let mut out = tutti_plugin::server::ProcessOutput::default();
+        let _output = au.process(AudioBufferMut::F32(buffer), &ctx, &mut out);
         // No crash is the assertion
     }
 
@@ -1441,7 +1460,6 @@ mod tests {
         let mut au = AuInstance {
             watch: None,
             inner,
-            editor: None,
             param_ranges,
             meta: Meta::default(),
         };
@@ -1488,7 +1506,6 @@ mod tests {
         let mut au = AuInstance {
             watch: None,
             inner,
-            editor: None,
             param_ranges,
             meta: Meta::default(),
         };
@@ -1628,7 +1645,6 @@ mod tests {
         let mut au = AuInstance {
             watch: None,
             inner,
-            editor: None,
             param_ranges,
             meta: Meta::default(),
         };
@@ -1674,7 +1690,8 @@ mod tests {
             };
             let mut ctx = ProcessContext::new();
             ctx.param_changes = Some(&changes);
-            au.process(AudioBufferMut::F32(buffer), &ctx)
+            let mut out = tutti_plugin::server::ProcessOutput::default();
+            au.process(AudioBufferMut::F32(buffer), &ctx, &mut out)
                 .expect("process should succeed");
 
             // Tolerance scales with the range: AU stores parameters as f32, so
@@ -1751,7 +1768,6 @@ mod tests {
         let mut au = AuInstance {
             watch: None,
             inner,
-            editor: None,
             param_ranges,
             meta: Meta::default(),
         };

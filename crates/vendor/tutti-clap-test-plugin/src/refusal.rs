@@ -14,8 +14,8 @@
 //!
 //! **Activation.** A plugin may reject a sample rate or block size it cannot
 //! run. Counters alone would only show the host *stopped*; the question is
-//! whether it **recovered**. [`tutti_test_plugin_last_accepted_activation`] plus
-//! [`tutti_test_plugin_activate_accepts`] tell those apart — one accept with
+//! whether it **recovered**. [`crate::refusal::tutti_test_plugin_last_accepted_activation`] plus
+//! [`crate::refusal::tutti_test_plugin_activate_accepts`] tell those apart — one accept with
 //! stale values means the host abandoned the instance, two accepts landing on
 //! the previous configuration mean it rolled back and re-activated.
 //!

@@ -129,7 +129,7 @@ fn embed_editor_sequence(
     //    the existing create-fails handling already covers.
     if let Some(is_api_supported_fn) = gui.is_api_supported {
         if !unsafe { is_api_supported_fn(plugin, api, false) } {
-            return Err(ClapError::GuiError(
+            return Err(ClapError::EditorError(
                 "GUI embedded window API not supported".to_string(),
             ));
         }
@@ -138,7 +138,7 @@ fn embed_editor_sequence(
     // 2. create (embedded, is_floating = false).
     let did_create = if let Some(create_fn) = gui.create {
         if !unsafe { create_fn(plugin, api, false) } {
-            return Err(ClapError::GuiError("GUI create failed".to_string()));
+            return Err(ClapError::EditorError("GUI create failed".to_string()));
         }
         true
     } else {
@@ -189,7 +189,7 @@ fn embed_editor_sequence(
             specific: window_handle,
         };
         if !unsafe { set_parent_fn(plugin, &window) } {
-            return Err(ClapError::GuiError("Set parent failed".to_string()));
+            return Err(ClapError::EditorError("Set parent failed".to_string()));
         }
     }
 
@@ -240,7 +240,7 @@ unsafe fn floating_editor_sequence(
     //    reported no editor at all.
     if let Some(is_api_supported_fn) = gui.is_api_supported {
         if !is_api_supported_fn(plugin, api, true) {
-            return Err(ClapError::GuiError(
+            return Err(ClapError::EditorError(
                 "GUI floating window API not supported".to_string(),
             ));
         }
@@ -249,7 +249,7 @@ unsafe fn floating_editor_sequence(
     // 2. create(floating = true).
     let did_create = if let Some(create_fn) = gui.create {
         if !create_fn(plugin, api, true) {
-            return Err(ClapError::GuiError(
+            return Err(ClapError::EditorError(
                 "GUI create (floating) failed".to_string(),
             ));
         }
@@ -382,12 +382,12 @@ impl ClapLoaded {
     /// window apis take the `set_scale` step.
     ///
     /// # Errors
-    /// [`ClapError::GuiError`] if the plugin does not expose a GUI, if the
+    /// [`ClapError::EditorError`] if the plugin does not expose a GUI, if the
     /// embedded window API is unsupported, or if `create`/`set_parent` fails.
     pub fn open_editor(&mut self, parent: WindowHandle) -> Result<EditorSize> {
         self.assert_main_thread();
         if self.extensions.gui.gui.is_null() {
-            return Err(ClapError::GuiError("No GUI extension".to_string()));
+            return Err(ClapError::EditorError("No GUI extension".to_string()));
         }
         let gui = unsafe { &*self.extensions.gui.gui };
 
@@ -435,7 +435,7 @@ impl ClapLoaded {
     /// skips the hint. `title` is advisory — the plugin owns its title bar.
     ///
     /// # Errors
-    /// [`ClapError::GuiError`] if the plugin exposes no GUI, if it does not
+    /// [`ClapError::EditorError`] if the plugin exposes no GUI, if it does not
     /// support a floating window, or if `create` fails.
     pub fn open_floating_editor(
         &mut self,
@@ -444,7 +444,7 @@ impl ClapLoaded {
     ) -> Result<()> {
         self.assert_main_thread();
         if self.extensions.gui.gui.is_null() {
-            return Err(ClapError::GuiError("No GUI extension".to_string()));
+            return Err(ClapError::EditorError("No GUI extension".to_string()));
         }
         // SAFETY: non-null checked above; the cache holds the pointer the plugin
         // returned from `get_extension`, valid for the plugin's life.
@@ -576,23 +576,23 @@ impl ClapLoaded {
     /// `set_size` in exactly the case the plugin had declined it.
     pub fn resize_editor(&mut self, requested: EditorSize) -> Result<EditorSize> {
         if self.extensions.gui.gui.is_null() {
-            return Err(ClapError::GuiError("No GUI extension".to_string()));
+            return Err(ClapError::EditorError("No GUI extension".to_string()));
         }
         let gui = unsafe { &*self.extensions.gui.gui };
         let mut w = requested.width;
         let mut h = requested.height;
         if let Some(adjust) = gui.adjust_size {
             if !unsafe { adjust(self.plugin.as_ptr(), &mut w, &mut h) } {
-                return Err(ClapError::GuiError(
+                return Err(ClapError::EditorError(
                     "adjust_size: no usable size fits the request".to_string(),
                 ));
             }
         }
         let set_size = gui
             .set_size
-            .ok_or_else(|| ClapError::GuiError("set_size unsupported".to_string()))?;
+            .ok_or_else(|| ClapError::EditorError("set_size unsupported".to_string()))?;
         if !unsafe { set_size(self.plugin.as_ptr(), w, h) } {
-            return Err(ClapError::GuiError("set_size refused".to_string()));
+            return Err(ClapError::EditorError("set_size refused".to_string()));
         }
         Ok(EditorSize {
             width: w,
@@ -885,15 +885,26 @@ impl ClapLoaded {
         }
     }
 
-    /// Drain all pending [`TransportRequest`]s the plugin has emitted.
-    /// Speculative — gated behind `clap-extras`.
+    /// Drain all pending [`TransportRequest`]s the plugin has emitted, in
+    /// arrival order. Speculative — gated behind `clap-extras`.
+    ///
+    /// Main-thread only: this takes the lock that the plugin-side push
+    /// deliberately only *tries*, so calling it from the audio thread
+    /// reintroduces the inversion that push avoids.
+    ///
+    /// A short result is not proof the plugin was quiet — the queue drops when
+    /// full or contended. Read
+    /// [`TransportState::dropped`](crate::host::state::TransportState::dropped)
+    /// when that matters.
     #[cfg(feature = "clap-extras")]
     pub fn drain_transport_requests(&self) -> Vec<TransportRequest> {
-        if let Ok(mut reqs) = self.host_state.transport.requests.lock() {
-            std::mem::take(&mut *reqs)
-        } else {
-            Vec::new()
-        }
+        let Ok(mut reqs) = self.host_state.transport.requests.lock() else {
+            return Vec::new();
+        };
+        // `drain`, not `mem::take`: taking the `VecDeque` leaves an empty one
+        // with no capacity behind, so the plugin's next push would allocate —
+        // on the audio thread, which is the whole thing this queue avoids.
+        reqs.drain(..).collect()
     }
 
     /// Consume and return the `notes.names_changed` flag.

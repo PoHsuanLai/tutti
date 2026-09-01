@@ -2,9 +2,9 @@
 //!
 //! The rate-agnostic `beat -> value` interface shared by automation and
 //! modulation: an automation envelope, an LFO, a constant, and the summing
-//! [`crate::LayeredCurve`] are all `Curve`s. Homed here (not in tutti-units)
-//! because modulation depends on it and tutti-units already depends on tutti-mod
-//! — so tutti-units re-exports it rather than owning it. The one foreign impl,
+//! [`crate::LayeredCurve`] are all `Curve`s. Homed here (not in tutti-nodes)
+//! because modulation depends on it and tutti-nodes already depends on tutti-mod
+//! — so tutti-nodes re-exports it rather than owning it. The one foreign impl,
 //! [`AutomationEnvelope`], is orphan-legal here since `audio_automation` is a
 //! direct dependency.
 

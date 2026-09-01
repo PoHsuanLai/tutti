@@ -19,8 +19,8 @@ use bevy_tutti::AudioEngineState;
 use tutti_core::dsp::Net;
 use tutti_core::transport::Transport;
 use tutti_core::AudioNode;
+use tutti_nodes::DistortionNode;
 use tutti_types::{Depth, Hz, ParamAddr, UnitParam};
-use tutti_units::DistortionNode;
 
 /// The drive an unmodulated node holds — its constructor argument, and what the
 /// atomic must still read when nothing routes to it.
@@ -28,7 +28,7 @@ const UNMODULATED_DRIVE: f32 = 1.0;
 
 /// A `Drive`-modulatable node whose param atomic we can read back.
 fn drive_node() -> DistortionNode {
-    DistortionNode::new(tutti_units::ShapeKind::Tanh, UNMODULATED_DRIVE)
+    DistortionNode::new(tutti_nodes::ShapeKind::Tanh, UNMODULATED_DRIVE)
 }
 
 /// An app with the reconcile pipeline, a live graph, and modulation — the same

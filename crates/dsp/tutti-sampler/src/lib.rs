@@ -1,32 +1,10 @@
 //! Sample playback, disk streaming, and time-stretching for the Tutti audio
 //! engine.
 //!
-//! # Two playback tiers, one vocabulary
-//!
-//! A voice plays either from memory ([`MemorySource`]) or streamed from disk
-//! ([`DiskVoice`], fed by the butler thread). The tier is the
-//! caller's choice — the sampler never picks one on its own — and
-//! [`VoicePool`] mixes both behind one command surface; where a verb
-//! only makes sense on one tier, the `VoiceSource` match says so at the call
-//! site instead of silently no-opping.
-//!
-//! Rates are typed to keep the tiers honest:
-//! [`PlaybackRate`](tutti_core::PlaybackRate) is varispeed (couples pitch),
-//! [`SrcRatio`](tutti_core::SrcRatio) is sample-rate conversion (derived, never
-//! user intent), and [`StretchFactor`](tutti_core::StretchFactor) drives the
-//! phase vocoder (pitch-independent). They compose only through
-//! `PlaybackRate::read_rate`, and the varispeed range lives in one shared
-//! bounded constructor that every user-input path goes through — a bound that
-//! sits in one tier's setter is a bound the other tier silently ignores.
-//!
-//! A voice bound to a transport derives its read position from the playhead
-//! every frame rather than carrying a cursor, matching `tutti_core`'s transport:
-//! one clock advances, everything else reads.
-//!
-//! The [`DiskStreamer`] handle owns the streaming engine. Build it once with
-//! [`DiskStreamer::new`], then drive streaming through the
-//! [`commands()`](DiskStreamer::commands) WRITE port and the
-//! [`status()`](DiskStreamer::status) READ port.
+//! The entry points are the voices themselves — [`MemorySource`] in memory,
+//! [`DiskVoice`] streamed from disk — plus [`VoicePool`] over them and
+//! [`DiskStreamer`], the handle that owns the streaming engine. There is no
+//! `Sampler` façade type.
 //!
 //! # Crate layout
 //!
@@ -36,48 +14,20 @@
 //! - [`AudioIn`] / [`AudioOut`] / [`pump`] — the engine's I/O edge vocabulary,
 //!   re-exported from `tutti_types::io`.
 //!
-//! # Bevy-free use (`--no-default-features`)
+//! Rates are typed to keep the two tiers honest:
+//! [`PlaybackRate`](tutti_core::PlaybackRate) is varispeed (couples pitch),
+//! [`SrcRatio`](tutti_core::SrcRatio) is sample-rate conversion (derived, never
+//! user intent), and [`StretchFactor`](tutti_core::StretchFactor) drives the
+//! phase vocoder (pitch-independent).
 //!
-//! The engine is Bevy-free; only the ECS drivers are behind the `bevy` feature.
-//! A non-Bevy host builds a [`DiskStreamer`] and drives it through plain methods:
+//! Streaming is driven through [`DiskStreamer::new`], the
+//! [`commands()`](DiskStreamer::commands) WRITE port and the
+//! [`status()`](DiskStreamer::status) READ port; that half needs a real file, so
+//! its example lives on [`DiskStreamer`] itself as `no_run`.
 //!
-//! - In-memory playback: construct a [`MemorySource`] / [`VoicePool`]
-//!   and add it to a fundsp `Net`.
-//! - **Disk streaming**: [`DiskStreamer::new`] spawns the butler thread;
-//!   [`commands()`](DiskStreamer::commands) issues stream/seek/loop ops and
-//!   [`status()`](DiskStreamer::status) constructs a [`DiskVoice`] to wire
-//!   into your graph.
-//!
-//! An in-memory voice needs no butler and no file, so it is a plain node: build
-//! the [`Wave`](tutti_core::Wave), wrap it, push it into a `Net` and render.
-//!
-//! ```
-//! use std::sync::Arc;
-//! use tutti_core::dsp::{AudioUnit, Net};
-//! use tutti_core::Wave;
-//! use tutti_sampler::MemorySource;
-//!
-//! // 100 stereo FRAMES — `push` takes one frame, not one sample.
-//! let mut wave = Wave::new(2, 44_100.0);
-//! for _ in 0..100 {
-//!     wave.push((0.5, 0.5));
-//! }
-//!
-//! let source = MemorySource::new(Arc::new(wave));
-//! source.play();
-//!
-//! // No audio input: the voice *is* the source. Stereo out.
-//! let mut net = Net::new(0, 2);
-//! let voice = net.push(Box::new(source));
-//! net.pipe_output(voice);
-//! net.check();
-//!
-//! let mut out = [0.0f32; 2];
-//! net.tick(&[], &mut out);
-//! ```
-//!
-//! Streaming from disk is the other tier and cannot run here — it needs a real
-//! file, so [`DiskStreamer`]'s own example is `no_run`.
+//! The two-tier rule, the in-memory quick start, the channel ceiling and the
+//! features are in the crate README, included below.
+#![doc = include_str!("../README.md")]
 
 mod error;
 pub use error::{Error, Result};

@@ -232,7 +232,7 @@ pub struct MemorySource {
     /// control field here.
     ///
     /// `Param<Amplitude>` rather than a plain `Amplitude` for the reason
-    /// `tutti_units`' crate docs give: `Net`'s frontend holds clones, so a
+    /// `tutti_nodes`' crate docs give: `Net`'s frontend holds clones, so a
     /// control stored by value is written on one copy and rendered from
     /// another. A clip's fader did nothing once its voice existed.
     ///
@@ -2145,7 +2145,7 @@ mod tests {
 
     /// **A gain change must reach a voice that is already rendering.**
     ///
-    /// The memory tier's half of the live-value rule (`tutti_units`' crate docs
+    /// The memory tier's half of the live-value rule (`tutti_nodes`' crate docs
     /// state it). `Net`'s frontend holds clones, so a gain stored **by value**
     /// is written on one copy and rendered from another — a clip's fader stops
     /// having any effect once its voice exists, silently.

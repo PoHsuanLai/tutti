@@ -1,4 +1,4 @@
-//! RT-safety regression: `Vst3Instance::process` must not allocate on the
+//! RT-safety regression: `Vst3Active::process` must not allocate on the
 //! audio thread in steady state.
 //!
 //! Requires a real VST3 plugin. `#[ignore]`'d because the global allocator is
@@ -34,7 +34,7 @@ use assert_no_alloc::AllocDisabler;
 use tutti_midi_types::{MidiChannel, MidiGroup};
 use tutti_plugin_types::ParamAddress;
 use tutti_vst3_host::{
-    AudioBuffer, MidiEvent, ParameterChanges, TransportInfo, Vst3InputEvents, Vst3Instance,
+    AudioBuffer, MidiEvent, ParameterChanges, TransportInfo, Vst3Active, Vst3InputEvents,
 };
 
 #[global_allocator]
@@ -97,7 +97,7 @@ fn find_plugin() -> Option<PathBuf> {
     bundle.exists().then(|| resolve_bundle(bundle))
 }
 
-fn load_or_skip() -> Option<Vst3Instance> {
+fn load_or_skip() -> Option<Vst3Active> {
     let Some(library) = find_plugin() else {
         eprintln!(
             "no VST3 plugin found (set VST3_SAMPLE_PLUGIN_DIR, or install \
@@ -105,13 +105,13 @@ fn load_or_skip() -> Option<Vst3Instance> {
         );
         return None;
     };
-    let inst = Vst3Instance::load(&library, 48_000.0, 64).expect("VST3 load failed");
+    let inst = Vst3Active::load(&library, 48_000.0, 64).expect("VST3 load failed");
     Some(inst)
 }
 
 /// Run the plugin `iters` times with silent input. Buffer setup is done
 /// per-iteration but uses only stack arrays — no heap allocs.
-fn drive_silent(inst: &mut Vst3Instance, iters: usize, transport: &TransportInfo) {
+fn drive_silent(inst: &mut Vst3Active, iters: usize, transport: &TransportInfo) {
     let mut out_l = [0.0f32; 64];
     let mut out_r = [0.0f32; 64];
     let midi: [MidiEvent; 0] = [];
@@ -169,7 +169,7 @@ fn process_with_automation_does_not_allocate() {
     let mut out_r = [0.0f32; 64];
     let midi: [MidiEvent; 0] = [];
 
-    let mut drive = |inst: &mut Vst3Instance, iters: usize| {
+    let mut drive = |inst: &mut Vst3Active, iters: usize| {
         for _ in 0..iters {
             let outs: &mut [&mut [f32]] = &mut [&mut out_l[..], &mut out_r[..]];
             let ins: &[&[f32]] = &[];

@@ -23,8 +23,8 @@
 //! // route stays well-formed, the inspector shows the knob, nothing moves.
 //! app.world_mut()
 //!     .resource_mut::<ModTargetRegistry>()
-//!     .register::<tutti_units::Compressor>()
-//!     .register::<tutti_units::ChorusNode>();
+//!     .register::<tutti_nodes::CompressorNode>()
+//!     .register::<tutti_nodes::ChorusNode>();
 //! ```
 
 use bevy_ecs::prelude::*;

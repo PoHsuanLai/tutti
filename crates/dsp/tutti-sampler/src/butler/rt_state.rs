@@ -44,7 +44,7 @@ pub struct PlaybackParams {
     src_ratio: AtomicF32,
     /// Linear output gain, an [`Amplitude`] in the cell.
     ///
-    /// Here rather than on `DiskSource` for the reason `tutti_units`' crate docs
+    /// Here rather than on `DiskSource` for the reason `tutti_nodes`' crate docs
     /// give: a control stored **by value** in a unit cannot be changed on a live
     /// node, because `Net`'s frontend holds clones and `Net::migrate` discards
     /// edits to them. A plain `Amplitude` field would make a clip's fader do
@@ -54,7 +54,7 @@ pub struct PlaybackParams {
     /// `1 / stretch`. 1.0 when the voice does not stretch.
     ///
     /// Held here rather than in `DiskSource` because the stretch filter and the
-    /// ring reader never meet: the filter lives in the `VoiceSlot`, the reader
+    /// ring reader never meet: the filter lives in the `PlaybackSlot`, the reader
     /// behind the butler's `SharedReader`. `RtState` is the cell both already
     /// share, and it is where the other two rate factors compose.
     ///

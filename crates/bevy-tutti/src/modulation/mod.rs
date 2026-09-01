@@ -15,7 +15,7 @@
 //! use tutti_core::transport::Transport;
 //! use tutti_core::{AudioNode, SampleRate};
 //! use tutti_types::{BeatDuration, Depth, ParamAddr, UnitParam};
-//! use tutti_units::{DistortionNode, ShapeKind};
+//! use tutti_nodes::{DistortionNode, ShapeKind};
 //!
 //! let mut net = Net::new(0, 1);
 //! let node = net.push(Box::new(DistortionNode::new(ShapeKind::Tanh, 5.0)));
@@ -153,7 +153,7 @@
 //! Both deliveries above are this matrix's, and neither is sample-accurate: the
 //! scalar is written once a frame, and a curve is only as fine as the sink that
 //! samples it. For a genuinely per-sample modulator, don't route at all — spawn
-//! `tutti_units::LfoNode` in beat-synced mode and wire its
+//! `tutti_nodes::LfoNode` in beat-synced mode and wire its
 //! [`BEAT_PORTS`](tutti_core::transport::BEAT_PORTS) inputs to the transport
 //! clock, whose entity is [`EngineNodes::clock`](crate::graph::EngineNodes):
 //!
@@ -164,7 +164,7 @@
 //! use tutti_core::dsp::{Net, Source};
 //! use tutti_core::transport::{TransportClock, BEAT_PORTS};
 //! use tutti_types::BeatDuration;
-//! use tutti_units::{LfoNode, LfoShape};
+//! use tutti_nodes::{LfoNode, LfoShape};
 //!
 //! fn wire_lfo_to_clock(mut commands: Commands, nodes: Res<EngineNodes>) {
 //!     commands
@@ -222,7 +222,7 @@
 //! app.add_plugins(TuttiModulationPlugin);
 //! app.world_mut()
 //!     .resource_mut::<ModTargetRegistry>()
-//!     .register::<tutti_units::Compressor>();
+//!     .register::<tutti_nodes::CompressorNode>();
 //! ```
 
 pub mod audio_rate;

@@ -13,12 +13,11 @@
 
 mod build;
 pub(crate) mod device_state;
-mod error;
 mod state;
 
+pub use crate::error::{Error, Result};
 pub use build::build_into;
 pub use device_state::AudioDeviceState;
-pub use error::{Error, Result};
 pub use state::AudioEngineState;
 
 pub use tutti_cpal::{DeviceInfo, TuttiDriver};

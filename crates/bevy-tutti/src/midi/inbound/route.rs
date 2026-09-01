@@ -11,6 +11,7 @@
 //! use bevy_app::prelude::*;
 //! use bevy_ecs::prelude::*;
 //! use bevy_tutti::midi::{MidiRouteFallback, MidiRouteRule};
+//! use tutti_midi_types::MidiChannel;
 //!
 //! /// The three synth entities a host already has. Real ones carry `AudioNode`;
 //! /// a rule names the entity either way, and `rebuild` resolves it.
@@ -19,7 +20,7 @@
 //!
 //! fn declare_routes(synths: Res<Synths>, mut commands: Commands) {
 //!     // Channel 1 plays the lead synth and the pad at once.
-//!     commands.spawn(MidiRouteRule::for_channel(0).to(synths.lead).to(synths.pad));
+//!     commands.spawn(MidiRouteRule::for_channel(MidiChannel::FIRST).to(synths.lead).to(synths.pad));
 //!
 //!     // Anything unmatched falls through to the sampler.
 //!     commands.insert_resource(MidiRouteFallback(Some(synths.sampler)));
@@ -38,7 +39,7 @@
 //! // A rule is an entity, and it names entities rather than engine ids — which
 //! // is what keeps a `crossfade` from stranding it.
 //! let rule = app.world_mut().query::<&MidiRouteRule>().single(app.world()).unwrap();
-//! assert_eq!(rule.channel, Some(0));
+//! assert_eq!(rule.channel, Some(MidiChannel::FIRST));
 //! assert_eq!(rule.targets, vec![synths.lead, synths.pad]);
 //! assert_eq!(app.world().resource::<MidiRouteFallback>().0, Some(synths.sampler));
 //! ```
@@ -68,7 +69,7 @@ use bevy_app::{App, Plugin, Update};
 use bevy_ecs::prelude::*;
 
 use tutti_midi_types::MAX_TARGETS_PER_ROUTE;
-use tutti_midi_types::{MidiRoute, MidiUnitId};
+use tutti_midi_types::{MidiChannel, MidiRoute, MidiUnitId};
 
 use super::routing_table::MidiRoutingRes;
 use crate::graph::{engine_ready, GraphReconcileSystems};
@@ -82,7 +83,7 @@ use crate::midi::endpoint::target::MidiTargetResolver;
 pub struct MidiRouteRule {
     /// Channel filter: `None` matches any channel, `Some(n)` only channel `n`
     /// (0-15).
-    pub channel: Option<u8>,
+    pub channel: Option<MidiChannel>,
     /// The entities this rule feeds.
     ///
     /// The engine caps a single rule at
@@ -104,8 +105,8 @@ impl MidiRouteRule {
         }
     }
 
-    /// A rule matching one channel (0-15).
-    pub fn for_channel(channel: u8) -> Self {
+    /// A rule matching one channel.
+    pub fn for_channel(channel: MidiChannel) -> Self {
         Self {
             channel: Some(channel),
             targets: Vec::new(),

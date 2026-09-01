@@ -244,7 +244,7 @@ pub(crate) fn sort_param_points(params: &mut ParameterChanges) {
 
 /// The `IMidiMapping` CC→param routing concern as a per-block unit: the
 /// controller-queried mapping table plus the pooled scratch the routing pass
-/// needs. Held by `Vst3Instance`'s `AudioIO`.
+/// needs. Held by `Vst3Active`'s `AudioIO`.
 ///
 /// When `mapping` is non-empty, mapped CC/aftertouch/pitch-bend events are
 /// pulled out of the input MIDI into `filtered_midi` (the events that still
@@ -252,7 +252,7 @@ pub(crate) fn sort_param_points(params: &mut ParameterChanges) {
 /// `param_changes` alongside the host's automation. The scratch buffers are
 /// reused across blocks to keep the routing pass allocation-free; `mapping` is
 /// rebuilt only when the plugin signals `kMidiCCAssignmentChanged` (see
-/// [`Vst3Instance::rebuild_midi_cc_mapping`](crate::Vst3Instance)).
+/// [`Vst3Active::rebuild_midi_cc_mapping`](crate::Vst3Active)).
 pub(crate) struct CcRoute {
     pub(crate) mapping: MidiCcMapping,
     filtered_midi: RtMidiEvents,

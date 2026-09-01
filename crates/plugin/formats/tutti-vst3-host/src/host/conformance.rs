@@ -2,7 +2,7 @@
 //! plugin.
 //!
 //! Behind the off-by-default `conformance` feature. When enabled, `process`
-//! calls [`observe`] with the fully-built `ProcessData` immediately before
+//! calls `observe` with the fully-built `ProcessData` immediately before
 //! `IAudioProcessor::process`, plus the `ProcessSetup` that was negotiated
 //! at activation. A test installs an observer, drives the *real* host path,
 //! and inspects exactly what the plugin would have received.
@@ -42,7 +42,7 @@ pub fn clear_observer() {
 }
 
 /// Hand the built `ProcessData` to the installed observer. Called by
-/// `Vst3Instance::process` just before the plugin sees it.
+/// `Vst3Active::process` just before the plugin sees it.
 ///
 /// Borrow-safe against re-entrancy: an observer that somehow drove `process`
 /// again would find the slot borrowed and be skipped rather than panicking.

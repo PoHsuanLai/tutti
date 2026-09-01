@@ -113,9 +113,11 @@ impl AudioUnit for HrtfBinauralNode {
         2
     }
 
+    /// Clears the frame bridge, the convolution tails and the de-zipper ramp.
+    /// Position and blend are caller-set configuration and survive — see
+    /// [`VbapPannerNode::reset`](crate::VbapPannerNode) for why a reset that
+    /// re-aims is a silent bug rather than a tidy default.
     fn reset(&mut self) {
-        self.target.reset_origin();
-        self.width.store(Mix::WET);
         self.panner.reset_state();
     }
 
@@ -278,6 +280,57 @@ mod tests {
         assert!(
             produced_nonzero,
             "HRTF node should emit audio after warm-up"
+        );
+    }
+
+    /// Same contract as the VBAP panner's: `reset` clears the streaming
+    /// buffers and the de-zipper ramp, never the caller's placement. The
+    /// exporter resets a cloned net before rendering, and `Clone` shares these
+    /// atomics, so a reset that re-aimed would move the live source too.
+    #[test]
+    fn reset_keeps_the_authored_placement() {
+        let mut node = make_node();
+        node.set_position(Azimuth(45.0), Elevation(10.0));
+        node.set_blend(Mix(0.4));
+
+        node.reset();
+
+        assert_eq!(node.azimuth(), Azimuth(45.0));
+        assert_eq!(node.elevation(), Elevation(10.0));
+        assert!(
+            (node.blend().get() - 0.4).abs() < 0.001,
+            "reset changed the blend to {}",
+            node.blend().get()
+        );
+    }
+
+    /// The other half of the contract: the streaming state *is* dropped, so a
+    /// reset between takes does not bleed the previous take's convolution tail
+    /// into the next one — which is the whole reason a host calls `reset`.
+    #[test]
+    fn reset_drops_the_convolution_tail() {
+        let mut node = make_node();
+        node.set_position(Azimuth(90.0), Elevation::LEVEL);
+
+        // Fill the bridge and the overlap tails with a loud take.
+        let mut out = [0.0f32; 2];
+        for n in 0..(crate::hrtf::panner::FRAME_LEN * 3) {
+            let s = ((n as f32) * 0.05).sin();
+            node.tick(&[s, s], &mut out);
+        }
+
+        node.reset();
+
+        // Silence in. With the tail dropped the frames that follow are silent
+        // too; a retained tail would ring out through them.
+        let mut peak = 0.0f32;
+        for _ in 0..(crate::hrtf::panner::FRAME_LEN * 2) {
+            node.tick(&[0.0, 0.0], &mut out);
+            peak = peak.max(out[0].abs()).max(out[1].abs());
+        }
+        assert!(
+            peak < 1e-6,
+            "reset left {peak} of the previous take's tail in the buffers"
         );
     }
 

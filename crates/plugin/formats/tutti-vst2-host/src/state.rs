@@ -35,11 +35,11 @@ pub(crate) enum StateHeader<'a> {
 /// Validate the framing of a state blob and split off its payload.
 ///
 /// Pure: performs only the header/length/count checks that don't need a live
-/// plugin (the plugin-parameter-count cross-check stays in `load_state`).
-/// Errors mirror the `load_state` early-returns exactly.
+/// plugin (the plugin-parameter-count cross-check stays in `set_state`).
+/// Errors mirror the `set_state` early-returns exactly.
 pub(crate) fn parse_state_header(data: &[u8]) -> Result<StateHeader<'_>> {
     if data.len() < 4 {
-        return Err(Vst2Error::StateRestoreError(
+        return Err(Vst2Error::StateError(
             "State data too short (missing header)".into(),
         ));
     }
@@ -49,19 +49,19 @@ pub(crate) fn parse_state_header(data: &[u8]) -> Result<StateHeader<'_>> {
 
     if header == STATE_HEADER_CHUNK {
         if payload.is_empty() {
-            return Err(Vst2Error::StateRestoreError("Empty chunk data".into()));
+            return Err(Vst2Error::StateError("Empty chunk data".into()));
         }
         Ok(StateHeader::Chunk(payload))
     } else if header == STATE_HEADER_PARAMS {
         if payload.len() < 4 {
-            return Err(Vst2Error::StateRestoreError(
+            return Err(Vst2Error::StateError(
                 "Invalid parameter state (missing count)".into(),
             ));
         }
 
         let count = i32::from_le_bytes([payload[0], payload[1], payload[2], payload[3]]);
         if count < 0 {
-            return Err(Vst2Error::StateRestoreError(format!(
+            return Err(Vst2Error::StateError(format!(
                 "Invalid parameter count: {}",
                 count
             )));
@@ -69,7 +69,7 @@ pub(crate) fn parse_state_header(data: &[u8]) -> Result<StateHeader<'_>> {
 
         let expected_payload = 4 + (count as usize) * 4;
         if payload.len() != expected_payload {
-            return Err(Vst2Error::StateRestoreError(format!(
+            return Err(Vst2Error::StateError(format!(
                 "Parameter state size mismatch: expected {} bytes, got {}",
                 expected_payload,
                 payload.len()
@@ -82,7 +82,7 @@ pub(crate) fn parse_state_header(data: &[u8]) -> Result<StateHeader<'_>> {
             values: &payload[4..],
         })
     } else {
-        Err(Vst2Error::StateRestoreError(format!(
+        Err(Vst2Error::StateError(format!(
             "Unknown state header: {:?}",
             header
         )))
@@ -94,7 +94,7 @@ impl Vst2Instance {
     ///
     /// Prefers the plugin's own chunk format if it advertises one;
     /// otherwise falls back to a parameter snapshot.
-    pub fn save_state(&self) -> Result<Vec<u8>> {
+    pub fn get_state(&self) -> Result<Vec<u8>> {
         let info = self.handle.instance.get_info();
 
         if info.preset_chunks {
@@ -105,7 +105,7 @@ impl Vst2Instance {
             // A failure is now an error; an *empty* chunk still falls through
             // to the parameter snapshot, keeping a fresh plugin saveable.
             let chunk = self.params.try_get_preset_data().map_err(|e| {
-                Vst2Error::StateRestoreError(format!(
+                Vst2Error::StateError(format!(
                     "plugin advertises effFlagsProgramChunks but its preset \
                      chunk save failed: {e}"
                 ))
@@ -134,7 +134,7 @@ impl Vst2Instance {
             // cannot be serialized: writing 0.0 would produce a blob that
             // restores silently and wrongly, which is worse than refusing.
             let Some(value) = self.params.get_parameter(i) else {
-                return Err(Vst2Error::StateRestoreError(format!(
+                return Err(Vst2Error::StateError(format!(
                     "plugin reports {param_count} parameters but exposes no \
                      getParameter, so parameter {i} cannot be saved"
                 )));
@@ -145,8 +145,8 @@ impl Vst2Instance {
         Ok(state)
     }
 
-    /// Restore a state blob previously produced by [`save_state`](Self::save_state).
-    pub fn load_state(&self, data: &[u8]) -> Result<()> {
+    /// Restore a state blob previously produced by [`get_state`](Self::get_state).
+    pub fn set_state(&self, data: &[u8]) -> Result<()> {
         match parse_state_header(data)? {
             StateHeader::Chunk(payload) => {
                 // `effSetChunk` reports whether the plugin took the blob. This
@@ -155,7 +155,7 @@ impl Vst2Instance {
                 // version it no longer reads) reported a successful restore
                 // while sitting at its defaults.
                 if !self.params.load_preset_data(payload) {
-                    return Err(Vst2Error::StateRestoreError(format!(
+                    return Err(Vst2Error::StateError(format!(
                         "plugin rejected the {} byte preset chunk (effSetChunk \
                          did not report success)",
                         payload.len()
@@ -164,13 +164,13 @@ impl Vst2Instance {
                 Ok(())
             }
             StateHeader::Params { count, values } => {
-                // `.max(0)` as in `save_state`: `numParams` is raw from the
+                // `.max(0)` as in `get_state`: `numParams` is raw from the
                 // `AEffect`. Unclamped, a plugin declaring `-1` makes this
                 // comparison `0 > -1` and rejects the empty snapshot
-                // `save_state` just wrote for that same plugin.
+                // `get_state` just wrote for that same plugin.
                 let actual_count = self.handle.instance.get_info().parameters.max(0);
                 if count > actual_count {
-                    return Err(Vst2Error::StateRestoreError(format!(
+                    return Err(Vst2Error::StateError(format!(
                         "State has {} parameters but plugin only has {}",
                         count, actual_count
                     )));
@@ -188,7 +188,7 @@ impl Vst2Instance {
                     if !self.params.set_parameter(i, value) {
                         // Reporting success here would claim a preset was
                         // restored while every value went nowhere.
-                        return Err(Vst2Error::StateRestoreError(format!(
+                        return Err(Vst2Error::StateError(format!(
                             "plugin exposes no setParameter, so parameter {i} \
                              could not be restored"
                         )));
@@ -208,7 +208,7 @@ mod tests {
     #[test]
     fn header_too_short() {
         let err = parse_state_header(&[0x43, 0x48]).unwrap_err();
-        assert!(matches!(err, Vst2Error::StateRestoreError(_)));
+        assert!(matches!(err, Vst2Error::StateError(_)));
         assert!(err.to_string().contains("too short"));
     }
 

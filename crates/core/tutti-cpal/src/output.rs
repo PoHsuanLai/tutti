@@ -416,6 +416,20 @@ fn write_output<T: cpal::SizedSample + cpal::FromSample<f32>>(
     }
 }
 
+/// # The `*_is_allocation_free` tests here are INERT
+///
+/// `assert_no_alloc` observes nothing unless `#[global_allocator] =
+/// AllocDisabler` is installed, and that can only be declared at the root of a
+/// test *binary*. This crate's unit-test binary declares none, so the three
+/// gates below pass whether or not `process_audio` allocates — verified by
+/// mutation-testing: a `Vec::with_capacity` at the top of `process_audio`
+/// leaves all three green.
+///
+/// **The live gate is `tests/rt_no_alloc.rs`**, which installs the allocator
+/// and aborts on that same mutation. These are kept because they run the same
+/// fixture through the block-size sweep and the `MAX_FRAMES` ceiling, and they
+/// become real the moment this binary gains an allocator — but do not read a
+/// pass here as coverage. Add new allocation gates to the integration test.
 #[cfg(test)]
 mod tests {
     use super::*;

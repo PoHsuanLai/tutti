@@ -5,7 +5,7 @@
 //! renders:
 //!
 //! ```text
-//! ModulatorNode ─► ParamShaperUnit ─► ParamSumUnit ─► node's param port
+//! ModulatorNode ─► ParamShaperNode ─► ParamSumNode ─► node's param port
 //!  (the source)     (depth·polarity     (base + Σ offsets,
 //!                    ·curve, LUT)        one clamp)
 //! ```
@@ -39,7 +39,7 @@
 //!
 //! That is why `spawn_chain` wires base → sum → port in the same call that
 //! claims the port. "Ports on now, base later" is not a cheap idle state, it is
-//! a broken node. (`tutti-units`' `born_with_ports` test pins this.)
+//! a broken node. (`tutti-nodes`' `born_with_ports` test pins this.)
 
 use bevy_ecs::prelude::*;
 use std::collections::HashMap;
@@ -56,7 +56,7 @@ use crate::modulation::driver::ParamKey;
 ///
 /// Keyed by `(target entity, param)` — the same key the value matrix groups by,
 /// because the constraint is the same: however many routes drive one param, they
-/// must sum into *one* value. Here that is literal, as `ParamSumUnit`'s arity.
+/// must sum into *one* value. Here that is literal, as `ParamSumNode`'s arity.
 #[derive(Debug, Clone)]
 pub struct ParamChain {
     /// Feeds the sum's base port — the authored value, riding under the
@@ -70,12 +70,12 @@ pub struct ParamChain {
     pub shapers: Vec<Entity>,
     /// The shaping each live shaper was **built with**.
     ///
-    /// `ParamShaperUnit` bakes depth, polarity and curve into a LUT at
+    /// `ParamShaperNode` bakes depth, polarity and curve into a LUT at
     /// construction and exposes no setter, so the only way to know a route's
     /// shaping has moved is to remember what the node was made from. Without
     /// this the reconciler's sole identity test is the group's *arity*, and a
     /// depth slider — which changes no count — is invisible to it.
-    shaping: Vec<tutti_units::ParamModShaping>,
+    shaping: Vec<tutti_nodes::ParamModShaping>,
     /// The sink's param-port index, resolved from `ParamPorts` at spawn.
     pub port: usize,
     /// The atomic the base unit reads — **the chain's single base owner**.
@@ -91,10 +91,10 @@ pub struct ParamChain {
     ///
     /// Held for the same reason as [`base_cell`](Self::base_cell), and against
     /// the same failure: a range is authored state that moves without the graph
-    /// moving, and it is baked into `ParamSumUnit` at construction. Without a
+    /// moving, and it is baked into `ParamSumNode` at construction. Without a
     /// handle the only way to apply a new range is to rebuild the sum — which
     /// rebuilds the chain, which loses the base.
-    bounds: std::sync::Arc<tutti_units::ClampBounds>,
+    bounds: std::sync::Arc<tutti_nodes::ClampBounds>,
 }
 
 impl ParamChain {
@@ -120,7 +120,7 @@ impl ParamChain {
     ///
     /// Guarded like [`refresh_base`](Self::refresh_base), and for the same
     /// reason — but here the guard also narrows the window in which a reader can
-    /// observe the two stores half-applied. It cannot close it; `ParamSumUnit`
+    /// observe the two stores half-applied. It cannot close it; `ParamSumNode`
     /// orders the pair at the read for that.
     fn refresh_bounds(&self, min: f32, max: f32) {
         if self.bounds.get() != (min, max) {
@@ -170,7 +170,7 @@ impl AudioRateChains {
 
 /// The routes wanting audio rate, grouped by the param they drive.
 ///
-/// Grouping is forced, not stylistic: `ParamSumUnit`'s arity is the *group's*
+/// Grouping is forced, not stylistic: `ParamSumNode`'s arity is the *group's*
 /// size, so nothing can be spawned until the whole group is known.
 fn group_routes<'a>(
     routes: impl Iterator<Item = &'a ModRoute>,
@@ -232,16 +232,16 @@ fn spawn_chain(
     // `PortSources` and diffs them against `Net` each frame, so an edge
     // connected here would be reverted on the next wire pass. The builder makes
     // the nodes; the declarations below make the edges.
-    let shaping: Vec<tutti_units::ParamModShaping> = routes
+    let shaping: Vec<tutti_nodes::ParamModShaping> = routes
         .iter()
-        .map(|r| tutti_units::ParamModShaping {
+        .map(|r| tutti_nodes::ParamModShaping {
             depth: r.depth,
             polarity: r.polarity,
             curve: r.curve,
         })
         .collect();
     let built =
-        tutti_units::build_param_mod(&mut graph.0, range.base, range.min, range.max, &shaping);
+        tutti_nodes::build_param_mod(&mut graph.0, range.base, range.min, range.max, &shaping);
     // **The handle, not a copy.** A node whose param port is wired never reads
     // its own atomic, so this cell is the only address an authored write has —
     // see `ParamModChain::base_cell` and `write_param`'s audio-rate branch.
@@ -296,7 +296,7 @@ fn spawn_chain(
 /// downcast. That asymmetry with `AudioParam` (which is uniform because
 /// `Net::set` addresses a param by name) is inherent, not incidental.
 fn param_port(graph: &AudioGraphRes, node: tutti_core::NodeId, param: UnitParam) -> Option<usize> {
-    use tutti_units::ParamPorts;
+    use tutti_nodes::ParamPorts;
     macro_rules! try_kinds {
         ($($ty:ty),+ $(,)?) => {
             $(
@@ -318,15 +318,15 @@ fn param_port(graph: &AudioGraphRes, node: tutti_core::NodeId, param: UnitParam)
     // case `ModDelivery::PerSample`'s own docs name for it ("a fast LFO on a
     // filter cutoff"). So the tier's headline use was the one it could not serve.
     try_kinds!(
-        tutti_units::StereoSvfFilterNode<f32>,
-        tutti_units::StereoSvfFilterNode<f64>,
-        tutti_units::StereoLadderFilterNode<f32>,
-        tutti_units::StereoLadderFilterNode<f64>,
-        tutti_units::DistortionNode,
-        tutti_units::Compressor,
-        tutti_units::Gate,
-        tutti_units::LimiterNode,
-        tutti_units::StereoDelayLineNode,
+        tutti_nodes::StereoSvfFilterNode<f32>,
+        tutti_nodes::StereoSvfFilterNode<f64>,
+        tutti_nodes::StereoLadderFilterNode<f32>,
+        tutti_nodes::StereoLadderFilterNode<f64>,
+        tutti_nodes::DistortionNode,
+        tutti_nodes::CompressorNode,
+        tutti_nodes::GateNode,
+        tutti_nodes::LimiterNode,
+        tutti_nodes::StereoDelayLineNode,
     );
     None
 }
@@ -336,7 +336,7 @@ fn param_port(graph: &AudioGraphRes, node: tutti_core::NodeId, param: UnitParam)
 /// The value path builds a `tutti_mod::Modulator` — a pure `phase -> value`
 /// function with no ports — because the driver samples it directly. Audio rate
 /// needs something a graph edge can *connect to*, which is
-/// [`ModulatorNode`](tutti_units::ModulatorNode) wrapping that same modulator.
+/// [`ModulatorNode`](tutti_nodes::ModulatorNode) wrapping that same modulator.
 ///
 /// One modulator, two adapters: the marker records which entity's node is which
 /// so a source driving both tiers is still one authored source.
@@ -376,7 +376,7 @@ pub fn ensure_source_nodes(
 
         // The same shape and rate the value path would build, under the audio
         // adapter instead of the driver.
-        let mut node = tutti_units::LfoNode::new(source.shape);
+        let mut node = tutti_nodes::LfoNode::new(source.shape);
         node = match rate.clock {
             ModClock::Synced { beats_per_cycle } => node.with_beat_sync(beats_per_cycle),
             ModClock::Free { hz } => node.with_frequency(hz),
@@ -482,11 +482,11 @@ pub fn reconcile_audio_rate(
         //
         // Cheap and in-place: guarded atomic stores, no respawn. The bounds
         // ride along for the same reason the base does — a range is authored
-        // state that moves without the graph moving, and `ParamSumUnit` holds
+        // state that moves without the graph moving, and `ParamSumNode` holds
         // both in a shared cell rather than baking them at construction.
         //
         // Shaping is handled just below, and needs more than a store because
-        // `ParamShaperUnit` has no setter either.
+        // `ParamShaperNode` has no setter either.
         if chains
             .0
             .get(&key)
@@ -542,7 +542,7 @@ pub fn reconcile_audio_rate(
 ///
 /// # Why a targeted respawn rather than a setter or a whole-chain rebuild
 ///
-/// [`ParamShaperUnit`](tutti_units::ParamShaperUnit) bakes depth, polarity and
+/// [`ParamShaperNode`](tutti_nodes::ParamShaperNode) bakes depth, polarity and
 /// curve into a LUT at construction and exposes no setter, so a moved slider
 /// cannot be written into the live node — something has to be rebuilt.
 ///
@@ -571,7 +571,7 @@ fn reshape_chain(
 
     let mut sum_sources: Option<PortSources> = None;
     for (i, route) in routes.iter().enumerate() {
-        let want = tutti_units::ParamModShaping {
+        let want = tutti_nodes::ParamModShaping {
             depth: route.depth,
             polarity: route.polarity,
             curve: route.curve,
@@ -580,7 +580,7 @@ fn reshape_chain(
             continue;
         }
 
-        let unit = tutti_units::ParamShaperUnit::new(want.depth, want.polarity, want.curve);
+        let unit = tutti_nodes::ParamShaperNode::new(want.depth, want.polarity, want.curve);
         let id = graph.0.add(unit);
         let replacement = commands.spawn(tutti_core::AudioNode(id)).id();
 
@@ -695,9 +695,9 @@ mod param_port_tests {
         let mut net = Net::new(0, 0);
         let cases: Vec<(tutti_core::NodeId, UnitParam, &str)> = vec![
             (
-                net.add(tutti_units::StereoSvfFilterNode::<f32>::with_param_inputs(
+                net.add(tutti_nodes::StereoSvfFilterNode::<f32>::with_param_inputs(
                     2,
-                    tutti_units::SvfType::LowPass,
+                    tutti_nodes::SvfType::LowPass,
                     tutti_types::Hz(1000.0),
                     tutti_types::Q(0.707),
                     true,
@@ -708,9 +708,9 @@ mod param_port_tests {
             ),
             (
                 net.add(
-                    tutti_units::StereoLadderFilterNode::<f32>::with_param_inputs(
+                    tutti_nodes::StereoLadderFilterNode::<f32>::with_param_inputs(
                         2,
-                        tutti_units::LadderType::LP24,
+                        tutti_nodes::LadderType::LP24,
                         tutti_types::Hz(1000.0),
                         tutti_types::Resonance(0.5),
                         true,

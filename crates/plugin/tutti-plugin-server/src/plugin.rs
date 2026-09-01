@@ -354,7 +354,8 @@ impl Plugin {
                     out.push(AsyncEvent::ParamTitlesChanged);
                 }
             }
-            #[allow(unreachable_patterns)] // Unreachable only when every format feature is on; partial builds need it.
+            #[allow(unreachable_patterns)]
+            // Unreachable only when every format feature is on; partial builds need it.
             _ => {}
         }
         out

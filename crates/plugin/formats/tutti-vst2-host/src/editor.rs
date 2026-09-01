@@ -9,6 +9,20 @@ use crate::instance::Vst2Instance;
 use crate::types::{EditorSize, WindowHandle};
 
 impl Vst2Instance {
+    /// Whether the plugin publishes an editor.
+    ///
+    /// Probed once at load — `get_editor()` may only be called once per
+    /// `PluginInstance`, so asking again would re-enter the plugin and get
+    /// `None` whatever the truth is. `false` here means
+    /// [`open_editor`](Self::open_editor) has nothing to open.
+    ///
+    /// The same answer [`PluginInfo::has_editor`](crate::PluginInfo) carries;
+    /// this is the method form, so the three editor calls read alike across the
+    /// host crates.
+    pub fn has_editor(&self) -> bool {
+        self.handle.has_editor()
+    }
+
     /// Embed the plugin's editor into `parent`.
     ///
     /// Returns the editor's reported size on success.

@@ -31,7 +31,7 @@
 //!
 //! Behaviours that only exist if the plugin *initiates* them — registering a
 //! timer, emitting a log line, `request_restart` — are latched via
-//! [`tutti_test_plugin_thread_command`] and consumed at the next call site legal
+//! [`crate::threading::tutti_test_plugin_thread_command`] and consumed at the next call site legal
 //! for that command, so the test never reaches into the plugin from a thread
 //! the CLAP spec does not allow.
 
@@ -171,7 +171,7 @@ struct ThreadGlobals {
     timer_ext_present: AtomicBool,
     log_ext_present: AtomicBool,
     log_emitted: AtomicU32,
-    /// Latched command word; see [`tutti_test_plugin_thread_command`].
+    /// Latched command word; see [`crate::threading::tutti_test_plugin_thread_command`].
     command: AtomicU32,
 }
 

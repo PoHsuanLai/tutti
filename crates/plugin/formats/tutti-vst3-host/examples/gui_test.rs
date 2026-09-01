@@ -16,14 +16,14 @@ use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{Window, WindowId};
 
-use tutti_vst3_host::{Vst3Instance, WindowHandle};
+use tutti_vst3_host::{Vst3Active, WindowHandle};
 
 const PLUGIN_PATH: &str =
     "/Library/Audio/Plug-Ins/VST3/TAL-NoiseMaker.vst3/Contents/MacOS/TAL-NoiseMaker";
 
 struct App {
     window: Option<Window>,
-    plugin: Option<Vst3Instance>,
+    plugin: Option<Vst3Active>,
     editor_open: bool,
 }
 
@@ -45,7 +45,7 @@ impl ApplicationHandler for App {
 
         // Load plugin first to get editor size
         println!("Loading plugin: {}", PLUGIN_PATH);
-        let plugin = match Vst3Instance::load(Path::new(PLUGIN_PATH), 44100.0, 512) {
+        let plugin = match Vst3Active::load(Path::new(PLUGIN_PATH), 44100.0, 512) {
             Ok(p) => {
                 println!("Loaded: {} by {}", p.info().name, p.info().vendor);
                 p

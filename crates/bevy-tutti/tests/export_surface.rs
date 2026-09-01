@@ -356,7 +356,7 @@ fn the_callers_timeline_is_the_one_nodes_are_rebound_onto() {
     // A deliberately un-default transport: neither 120 BPM nor beat 0.
     let timeline = Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
         start_beat: tutti_core::Beat(16.0),
-        tempo: tutti_core::Bpm(90.0).into(),
+        tempo: tutti_core::Bpm(90.0),
         sample_rate: tutti_core::SampleRate(44_100.0),
         loop_range: None,
     }));

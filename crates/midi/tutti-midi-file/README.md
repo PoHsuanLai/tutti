@@ -28,7 +28,7 @@ what lets an imported clip be placed without a conversion step:
 ```rust
 use tutti_core::{Beat, BeatDuration, Bpm};
 use tutti_midi_file::{
-    encode_midi_file, smf, MidiFileKind, MidiWriteOptions, SmfMessage, SmfTimedEvent,
+    encode_midi_file, smf, MidiFileKind, MidiWriteConfig, SmfMessage, SmfTimedEvent,
 };
 
 let note = |beat, msg| SmfTimedEvent { time_beats: Beat(beat), channel: 0, msg };
@@ -39,7 +39,7 @@ let track = vec![
 
 let bytes = encode_midi_file(
     &[track],
-    &MidiWriteOptions { ticks_per_beat: 480, tempo_bpm: Some(Bpm(174.0)), ..Default::default() },
+    &MidiWriteConfig { ticks_per_beat: 480, tempo_bpm: Some(Bpm(174.0)), ..Default::default() },
 )?;
 
 // Recognised by magic bytes rather than by extension.
@@ -63,7 +63,7 @@ because `Seconds` is `f32` and cannot carry a long render duration or a SMPTE
 position.
 
 ```rust
-# use tutti_midi_file::{encode_midi_file, MidiWriteOptions, ParsedMidiFile, SmfMessage, SmfTimedEvent};
+# use tutti_midi_file::{encode_midi_file, MidiWriteConfig, ParsedMidiFile, SmfMessage, SmfTimedEvent};
 # use tutti_core::{Beat, Bpm};
 # let track = vec![SmfTimedEvent {
 #     time_beats: Beat(0.0),
@@ -72,7 +72,7 @@ position.
 # }];
 let bytes = encode_midi_file(
     &[track],
-    &MidiWriteOptions { tempo_bpm: Some(Bpm(174.0)), ..Default::default() },
+    &MidiWriteConfig { tempo_bpm: Some(Bpm(174.0)), ..Default::default() },
 )?;
 // A file with no tempo event reads back as the SMF default, `Bpm(120.0)`.
 let parsed = ParsedMidiFile::parse(&bytes)?;

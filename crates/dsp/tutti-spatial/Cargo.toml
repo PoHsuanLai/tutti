@@ -22,14 +22,14 @@ hrtf = ["dep:hrtf"]
 # DSP and needs none of tutti-core's Bevy layer.
 tutti-core = { path = "../../core/tutti-core", default-features = false }
 
-# `ChannelLayout`, named directly by `build_surround_mix`'s signature.
+# `ChannelLayout`, named directly by `build_vbap_mix`'s signature.
 tutti-types = { path = "../../core/tutti-types", default-features = false }
 
-# `build_surround_mix` assembles its graph out of general-purpose units:
-# `ChannelSumUnit` folds the panners, `SvfFilterNode` low-passes the LFE send.
+# `build_vbap_mix` assembles its graph out of general-purpose units:
+# `ChannelSumNode` folds the panners, `SvfFilterNode` low-passes the LFE send.
 # This is a plain consumer edge — geometry depends on signal processing, not the
 # reverse, and neither unit has anything spatial in it.
-tutti-units = { path = "../tutti-units", default-features = false }
+tutti-nodes = { path = "../tutti-nodes", default-features = false }
 
 # Vector Base Amplitude Panning: the speaker-field placement math.
 vbap = "0.1"

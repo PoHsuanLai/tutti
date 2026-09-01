@@ -30,7 +30,7 @@ use std::sync::{Mutex, MutexGuard};
 mod support;
 use support::probe_path::probe_path;
 
-use tutti_clap_host::{AudioBuffer32, ClapActive, ClapLoaded, ProcessContext};
+use tutti_clap_host::{AudioBuffer32, ClapActive, ClapLoaded, ClapProcessContext};
 use tutti_clap_test_plugin::{
     Site, ThreadCapture, CMD_LOG_ALL_SEVERITIES, CMD_REGISTER_TIMER, CMD_REQUEST_PROCESS,
     CMD_REQUEST_RESTART, CMD_UNREGISTER_TIMER,
@@ -112,7 +112,7 @@ fn drive_block(inst: &mut ClapActive<f32>, frames: usize) {
         num_samples: frames,
         sample_rate: 48_000.0,
     };
-    inst.process(&mut buffer, &ProcessContext::default())
+    inst.process(&mut buffer, &ClapProcessContext::default())
         .expect("process succeeds");
 }
 

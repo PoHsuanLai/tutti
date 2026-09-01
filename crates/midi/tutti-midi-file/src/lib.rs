@@ -29,7 +29,7 @@ pub mod smf;
 
 pub use clip::{read_clip_file_from_path, write_clip_file_to_path, MidiFileKind};
 pub use smf::{
-    encode_midi_file, write_midi_file, MidiWriteOptions, ParsedMidiFile, SmfMessage, SmfNote,
+    encode_midi_file, write_midi_file, MidiWriteConfig, ParsedMidiFile, SmfMessage, SmfNote,
     SmfTimedEvent, SmfTrack,
 };
 

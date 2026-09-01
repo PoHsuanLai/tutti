@@ -64,7 +64,7 @@ use std::time::{Duration, Instant};
 mod support;
 use support::corpus::{all_finite, peak, render, silence, DELAY, MATRIX_REVERB, REVERB2};
 
-use tutti_au_host::listener::{
+use tutti_au_host::{
     emit_gesture, notify_all_parameters, AuEvent, AuParameterListener, EventAddress,
 };
 
@@ -337,7 +337,7 @@ fn a_dropped_listener_stops_delivering() {
 /// internally without issuing a single `AUParameterSet`, so no listener hears
 /// about any of it. Apple's `ClassInfo` documentation mandates the compensating
 /// `AUParameterListenerNotify(kAUParameterListener_AnyParameter)` call for
-/// exactly this reason, and `AuInstance::load_state` makes it.
+/// exactly this reason, and `AuInstance::set_state` makes it.
 ///
 /// Measured: AUDelay's 183-byte state blob produces notifications for all **4**
 /// of its parameters, first arriving at ~201 ms.
@@ -351,7 +351,7 @@ fn load_state_notifies_listeners() {
     // Capture state at one value, then move the parameter somewhere else, so the
     // restore has something real to put back.
     au.set_parameter(p.id, p.range.min).expect("set to min");
-    let state = au.save_state().expect("save_state");
+    let state = au.get_state().expect("get_state");
     assert!(!state.is_empty(), "AUDelay produces a non-empty state blob");
     au.set_parameter(p.id, p.range.max).expect("set to max");
 
@@ -369,11 +369,11 @@ fn load_state_notifies_listeners() {
     // Discard anything the two writes above generated; only the restore counts.
     log.clear();
 
-    au.load_state(&state).expect("load_state");
+    au.set_state(&state).expect("set_state");
 
     assert!(
         log.wait_for_at_least(1),
-        "load_state produced no notification within {SETTLE:?} — open plugin \
+        "set_state produced no notification within {SETTLE:?} — open plugin \
          editors would still be showing the pre-load values"
     );
 
@@ -397,14 +397,14 @@ fn load_state_notifies_listeners() {
     let after = au.get_parameter(p.id).expect("read after restore");
     assert!(
         (after - p.range.min).abs() < 0.01,
-        "load_state notified but the value is {after}, not the saved {}",
+        "set_state notified but the value is {after}, not the saved {}",
         p.range.min
     );
 }
 
 /// The wildcard notify must be accepted even with no listener registered.
 ///
-/// `load_state` calls it unconditionally, and the overwhelmingly common case is
+/// `set_state` calls it unconditionally, and the overwhelmingly common case is
 /// a host with no editor open and therefore no listener. If AudioToolbox
 /// rejected the call in that state, every project load would be doing something
 /// that errors — currently ignored, but it would be masking a real refusal.

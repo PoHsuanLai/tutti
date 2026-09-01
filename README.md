@@ -1,297 +1,123 @@
-<div align="center">
-  <img src="logo/logo.png" alt="Tutti Logo" width="200"/>
-</div>
-
 # Tutti
 
-[![Crates.io](https://img.shields.io/crates/v/tutti.svg)](https://crates.io/crates/tutti)
-[![Documentation](https://docs.rs/tutti/badge.svg)](https://docs.rs/tutti)
-[![License](https://img.shields.io/crates/l/tutti.svg)](https://github.com/PoHsuanLai/Tutti#license)
-[![CI](https://github.com/PoHsuanLai/Tutti/workflows/CI/badge.svg)](https://github.com/PoHsuanLai/Tutti/actions)
+A real-time audio engine for DAW applications in Rust: an audio graph runtime,
+MIDI 2.0 processing, sample playback, spatial audio, offline rendering, and
+plugin hosting for VST2, VST3, CLAP and Audio Units.
 
-A real-time audio engine for DAW applications in Rust. Tutti provides an audio graph runtime, MIDI processing, sample playback, and plugin hosting.
+The engine is a set of focused crates rather than one package. Depend on the
+ones you need, or take [`bevy-tutti`](../bevy-tutti), the Bevy adapter, which
+re-exports the whole engine behind one dependency.
 
-For audio UI components, see [Armas](https://github.com/PoHsuanLai/Armas).
+> **Status: pre-release.** Nothing here is published to crates.io yet, so every
+> dependency is a path dependency. Names and signatures still move between
+> commits.
 
-## Design
+## The layering
 
-- **Audio graph**: Uses FunDSP's `Net` with macros (`chain!`, `mix!`, `stack!`)
-- **Lock-free audio**: No allocations or mutexes in audio callback
-- **Feature gates**: Only compile what you need (core ~500KB)
-- **Flat handle bundle**: Engine returns owned fields you destructure — no god-object
+Every crate sits in one of four tiers, and the arrows only ever point down.
 
-## Overview
-
-Umbrella crate that coordinates multiple audio subsystems:
-
-- **[tutti-core]** - Audio graph runtime (Net, Transport, Metering, PDC, MIDI routing)
-- **[tutti-midi-hardware]** - MIDI I/O subsystem (Hardware I/O, ports, MPE, MIDI 2.0, CC mapping)
-- **[tutti-sampler]** - Sample playback (Butler, streaming, recording, time-stretch)
-- **[tutti-units]** - Built-in AudioUnits (LFO, filters, delays, dynamics, modulation, spatial)
-- **[tutti-plugin]** - Plugin hosting (VST2, VST3, CLAP)
-- **[tutti-analysis]** - Audio analysis (waveform, transient, pitch, correlation)
-- **[tutti-export]** - Offline rendering and export
-
-## Quick Start
-
-`TuttiEngine` is a flat bundle of owned subsystems returned from the
-builder. Destructure it (or address fields directly) and edit `&mut TuttiGraph`
-explicitly — no god-object surface.
-
-```rust
-use tutti::prelude::*;
-
-// Sample rate is dictated by the audio device.
-let mut engine = TuttiEngine::builder().build()?;
-
-// Stage graph edits, then `commit()` once to publish to the audio thread.
-let osc    = engine.graph.add(sine_hz::<f32>(440.0));
-let filter = engine.graph.add(lowpass_hz::<f32>(2000.0, 1.0));
-engine.graph.pipe_all(osc, filter);
-engine.graph.pipe_output(filter);
-engine.graph.commit();
-
-// Handles are cheap to clone and lock-free.
-engine.transport.play();
+```
+                       bevy-tutti          the Bevy adapter (ECS, assets, systems)
+                            │
+   ┌──────────┬─────────────┼──────────────┬─────────────┐
+  dsp/       midi/        plugin/         io            export
+   │          │             │              │              │
+   └──────────┴──────┬──────┴──────────────┴──────────────┘
+                 tutti-core                the graph runtime
+                     │
+                 tutti-types               the shared vocabulary
 ```
 
-For full builder examples (sf2, wav, vst3), see the crate-level
-documentation on [docs.rs/tutti](https://docs.rs/tutti).
+**The floor.** `tutti-types` is the vocabulary every other crate speaks — the
+unit newtypes (`Hz`, `Db`, `Beat`, `Samples`, `SampleRate`), the channel
+layouts, the `AudioIn`/`AudioOut` edge traits, and `RtPublish`, the one
+sanctioned way to hand non-scalar state to the audio thread. `tutti-core` builds
+the runtime on it: the graph (FunDSP's `Net`), `Transport`, metering, and
+latency compensation.
 
-## Features
+**The edges.** `tutti-cpal` is the only path to a sound card. `tutti-io` is the
+live edge — a microphone monitor, a WAV sink, `Recorder`. `tutti-export` is its
+deliberate opposite number: the *offline* edge, rendering a graph faster than
+real time.
 
-- `default` - Core audio engine only
-- `full` - Everything enabled
-- `midi` - MIDI subsystem
-- `sampler` - Sample playback and recording
-- `soundfont` - SoundFont support (requires `sampler`)
-- `plugin` - Plugin hosting (VST2/VST3/CLAP)
-- `analysis` - Audio analysis tools
-- `export` - Offline rendering
-- `spatial-audio` - VBAP and binaural panning
+**The subsystems.**
 
-## Architecture
+| Crate | What it owns |
+|---|---|
+| [`tutti-nodes`](crates/dsp/tutti-nodes) | The DSP node library: filters, delays, dynamics, distortion, chorus, convolution, mix bus, automation |
+| [`tutti-sampler`](crates/dsp/tutti-sampler) | Clip playback — in-memory and disk-streamed voices, time-stretch, the prefetch butler |
+| [`tutti-polysynth`](crates/dsp/tutti-polysynth) | A polyphonic subtractive/wavetable synth with MPE |
+| [`tutti-soundfont`](crates/dsp/tutti-soundfont) | SoundFont (`.sf2`) playback |
+| [`tutti-spatial`](crates/dsp/tutti-spatial) | The engine's only geometry: VBAP for speakers, HRTF for headphones |
+| [`tutti-analysis`](crates/dsp/tutti-analysis) | Waveform summaries, onset detection, pitch, correlation, loudness |
+| [`tutti-mod`](crates/core/tutti-mod) | The modulation matrix — audio-free and Bevy-free |
+| [`tutti-midi-types`](crates/midi/tutti-midi-types) | MIDI 2.0 / UMP value types, the vocabulary the MIDI stack shares |
+| [`tutti-midi-runtime`](crates/midi/tutti-midi-runtime) | Routing, voice allocation, MPE, clock |
+| [`tutti-midi-file`](crates/midi/tutti-midi-file) | SMF and MIDI 2.0 clip codecs — OS-free, so reading a `.mid` links no CoreMIDI |
+| [`tutti-midi-hardware`](crates/midi/tutti-midi-hardware) | The OS MIDI edge: CoreMIDI and ALSA seq-UMP |
+| [`tutti-plugin`](crates/plugin/tutti-plugin) | Plugin hosting, **out of process** — a crashing plugin does not take the host with it |
 
-Each subsystem is an independent crate. TuttiEngine provides fluent handles to coordinate them.
+The four format hosts ([VST2](crates/plugin/formats/tutti-vst2-host),
+[VST3](crates/plugin/formats/tutti-vst3-host),
+[CLAP](crates/plugin/formats/tutti-clap-host),
+[AU](crates/plugin/formats/tutti-au-host)) sit under `tutti-plugin`, which is
+what you use; each speaks one plugin ABI.
 
+## Quick start
 
-## Examples
+The engine is Bevy-free at its core, but the shortest path to audible output is
+the adapter. This spawns an oscillator and wires it to the master out:
 
-### Loading and Instantiating Nodes
+```rust,ignore
+use bevy_app::prelude::*;
+use bevy_ecs::prelude::*;
+use bevy_tutti::prelude::*;
+use tutti_core::dsp::{sine_hz, Net};
 
-```rust
-use tutti::prelude::*;
-
-// Build engine - subsystems enabled via Cargo features
-let engine = TuttiEngine::builder()
-    .sample_rate(44100.0)
-    .build()?;
-
-// Load nodes once (explicit format methods = compile-time type safety)
-engine.load_vst3("reverb", "plugin.vst3")?;     // VST3 plugin
-engine.load_wav("kick", "kick.wav")?;           // WAV sample
-
-// Add custom DSP nodes programmatically
-engine.add_node("my_filter", |params| {
-    let cutoff: f32 = get_param_or(params, "cutoff", 1000.0);
-    Ok(Box::new(lowpass_hz(cutoff)))
-});
-
-// Instantiate nodes (create instances and add to graph)
-let synth = engine.create("my_synth", &params! {})?;
-let reverb = engine.create("reverb", &params! { "room_size" => 0.9 })?;
-let filter = engine.create("my_filter", &params! { "cutoff" => 2000.0 })?;
-
-// Build graph with node IDs
-engine.graph_mut(|net| {
-    chain!(net, synth, filter, reverb => output);
-});
-```
-
-### Transport Control (Fluent API)
-
-```rust
-use tutti::prelude::*;
-
-let engine = TuttiEngine::builder().build()?;
-
-// Fluent transport API - chainable methods
-engine.transport()
-    .tempo(128.0)
-    .loop_range(0.0, 16.0)
-    .enable_loop()
-    .play();
-
-// Metronome control
-engine.transport()
-    .metronome()
-    .volume(0.7)
-    .accent_every(4)
-    .always();
-
-// State queries
-let transport = engine.transport();
-if transport.is_playing() {
-    let beat = transport.current_beat();
-    println!("Currently at beat: {}", beat);
+fn build_chain(mut commands: Commands) {
+    let osc = commands.spawn_audio_node(sine_hz::<f32>(440.0)).id();
+    // Wiring is *declared*, never called: the resource names what feeds each
+    // global output channel, so two nodes cannot both claim the master.
+    commands.insert_resource(MasterSources::mono_from(osc));
 }
 
-// Seek and play
-transport.seek_and_play(8.0);
-
-// Transport modes
-transport.fast_forward();
-transport.rewind();
-transport.stop();
+App::new()
+    .add_plugins(DefaultPlugins)
+    .add_plugins(TuttiPlugin::default())
+    .add_systems(Startup, build_chain)
+    .run();
 ```
 
-### Streaming and Recording (Butler Thread)
+Every crate's own documentation carries a runnable example for that subsystem;
+those are doctests, so they are checked on every build.
 
-```rust
-use tutti::prelude::*;
+## Two rules worth knowing before you read further
 
-// Sampler subsystem automatically enabled when 'sampler' feature is compiled
-let engine = TuttiEngine::builder().build()?;
+**Wiring is declared, not called.** A node is spawned unwired; a resource names
+what feeds each input port. `Net` holds exactly one source per input, and so
+does the declaration — which is what makes accidental fan-in unrepresentable.
+Summing is a node's job.
 
-let sampler = engine.sampler();
+**Quantities carry their units.** `Hz`, `Db`, `Beat`, `Samples` and the rest are
+newtypes, not `f32` aliases, and the conversions between them are named methods
+(`Db::to_amplitude`, `Seconds::to_samples`). The types stop at C ABI boundaries,
+and where they stop, a comment says why.
 
-// Stream large files from disk (no memory loading)
-sampler.stream("huge_audio_file.wav")
-    .channel(0)
-    .gain(0.8)
-    .speed(1.5)
-    .start_sample(44100)  // Start at 1 second
-    .start();
-
-// Record audio with ring buffer
-let session = sampler.record("recording.wav")
-    .channels(2)
-    .buffer_seconds(5.0)
-    .start();
-
-// Audio callback writes to session.producer
-
-// Stop and flush to disk
-sampler.stop_capture(session.id);
-sampler.flush_capture(session.id, "final.wav");
-```
-
-### Loading and Exporting
-
-```rust
-use tutti::prelude::*;
-
-let engine = TuttiEngine::builder().build()?;
-
-// Load audio files
-engine.load_wav("kick", "kick.wav")?;
-engine.load_flac("snare", "snare.flac")?;
-
-// Instantiate and use in graph
-let kick = engine.create("kick", &params! {})?;
-let snare = engine.create("snare", &params! {})?;
-
-engine.graph_mut(|net| {
-    let mix = mix!(net, kick, snare);
-    net.pipe_output(mix);
-});
-
-// Export to file
-engine.export()
-    .duration_seconds(10.0)
-    .format(AudioFormat::Flac)
-    .normalize(NormalizationMode::lufs(-14.0))
-    .to_file("output.flac")?;
-```
-
-### MIDI I/O (Fluent API)
-
-```rust
-use tutti::prelude::*;
-
-// MIDI subsystem automatically enabled when 'midi' feature is compiled
-// Enable it in Cargo.toml: tutti = { version = "...", features = ["midi"] }
-let engine = TuttiEngine::builder()
-    .midi()  // Opt-in to connect MIDI hardware
-    .build()?;
-
-let midi = engine.midi();
-
-// Connect to hardware
-midi.connect_device_by_name("Keyboard")?;
-
-// Fluent MIDI output (chainable)
-midi.send()
-    .note_on(0, 60, 100)
-    .cc(0, 74, 64)
-    .pitch_bend(0, 0);
-
-// Or single messages
-midi.send().note_on(0, 60, 100);
-```
-
-### With Multiple Subsystems
-
-```rust
-use tutti::prelude::*;
-
-// Enable features in Cargo.toml:
-// tutti = { version = "...", features = ["midi", "sampler"] }
-
-let engine = TuttiEngine::builder()
-    .midi()  // Opt-in to connect MIDI hardware
-    .build()?;
-
-engine.midi().send().note_on(0, 60, 100);
-
-let sampler = engine.sampler();
-sampler.stream("file.wav").start();
-```
-
-### Using Individual Crates
-
-You can use vocabulary types from the sub-crates directly when building a
-custom audio stack:
-
-```rust
-// Build a DSP graph with the core vocabulary — bring your own callback.
-use tutti_core::{TuttiNet, TransportManager};
-use std::sync::Arc;
-
-let mut net = TuttiNet::new(0, 2);
-let transport = Arc::new(TransportManager::new(48_000.0));
-// ... push nodes, wire outputs, then `net.backend()` for a live backend ...
-```
-
-```rust
-// Just MIDI
-use tutti_midi_types::MidiSystem;
-
-let midi = MidiSystem::new().build()?;
-```
-
-## Testing
-
-See [TESTING.md](TESTING.md) for setup instructions.
-
-Quick examples:
+## Building
 
 ```bash
-# Plugin loading (see example docs for setup)
-cargo run --example plugin_loading --features plugin
-
-# MIDI synthesizer
-cargo run --example midi_synth --features "midi,synth"
+cargo check --workspace
+cargo nextest run --workspace     # nextest does NOT run doctests
+cargo test --workspace --doc      # so run these separately
 ```
+
+Cloning needs `--recursive`: `tutti-vst3-host` compiles a reference plugin
+against the vendored VST3 SDK, which is a submodule. Without it the build stops
+with instructions.
+
+`bevy` is an optional, off-by-default feature on every engine crate that has
+one, so the engine compiles without Bevy unless a consumer asks for it.
 
 ## License
 
-MIT OR Apache-2.0
-
-[tutti-core]: https://crates.io/crates/tutti-core
-[tutti-midi-hardware]: https://crates.io/crates/tutti-midi-hardware
-[tutti-sampler]: https://crates.io/crates/tutti-sampler
-[tutti-units]: https://crates.io/crates/tutti-units
-[tutti-plugin]: https://crates.io/crates/tutti-plugin
-[tutti-analysis]: https://crates.io/crates/tutti-analysis
-[tutti-export]: https://crates.io/crates/tutti-export
+MIT OR Apache-2.0.

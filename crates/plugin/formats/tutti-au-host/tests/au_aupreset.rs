@@ -774,8 +774,8 @@ fn document_state_restores_through_the_documented_fallback() {
     let target = params.iter().find(|p| p.name == "Delay Time").unwrap();
 
     au.set_parameter(target.id, 0.8).unwrap();
-    let blob = au.save_state().unwrap();
-    assert!(!blob.is_empty(), "save_state produced nothing to restore");
+    let blob = au.get_state().unwrap();
+    assert!(!blob.is_empty(), "get_state produced nothing to restore");
 
     au.set_parameter(target.id, 0.1).unwrap();
     assert!((au.get_parameter(target.id).unwrap() - 0.1).abs() < 1e-4);

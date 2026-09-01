@@ -42,8 +42,8 @@
 
 #![cfg(target_os = "macos")]
 
-use tutti_au_host::BusDirection;
 use tutti_au_host::AuInstance;
+use tutti_au_host::BusDirection;
 use tutti_types::Samples;
 
 mod support;

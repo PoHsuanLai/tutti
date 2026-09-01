@@ -18,7 +18,7 @@ and [`ClapActive<T>`][`ClapActive`] is the same plugin with buffers allocated an
 
 **The shared vocabulary.** [`ParameterChanges`], [`TransportInfo`],
 [`WindowHandle`], [`EditorSize`] and the `ParameterInfo` that
-[`parameter_list`][`ClapLoaded::parameter_list`] hands back are
+[`parameter_list`][`ClapLoaded::get_parameter_list`] hands back are
 [`tutti-plugin-types`](../../tutti-plugin-types)' — re-exported here so a caller
 can stay format-agnostic, not defined here. MIDI is the workspace-wide UMP
 [`tutti_midi_types::MidiEvent`], re-exported as [`MidiEvent`]; there is **no
@@ -85,14 +85,17 @@ is running as well as before activation. `no_run` for the same reason as above.
 let mut plugin = ClapLoaded::load("/usr/lib/clap/MyPlugin.clap", 48_000.0, 512)?;
 
 // CLAP addresses parameters by an opaque, plugin-chosen `clap_id`, never by
-// position. `parameter_list` projects them into the shared `ParameterInfo`, so
-// a consumer never learns which format it is reading.
+// position. `get_parameter_list` projects them into the shared `ParameterInfo`,
+// so a consumer never learns which format it is reading.
 for info in plugin.get_parameter_list() {
     println!("{} {:?}", info.qualified_name(), info.bounds());
 }
 
-// The write takes the id and a normalized `0..=1` value, and chains.
-plugin.set_parameter(0, 0.75).set_parameter(1, 0.5);
+// The write takes the id and a plain value in the parameter's own range, and
+// reports whether it was flushed — `false` means a `REQUIRES_PROCESS` param was
+// skipped while processing, not that the plugin refused the value.
+plugin.set_parameter(0, 0.75);
+plugin.set_parameter(1, 0.5);
 
 // State save/restore is legal before any buffer exists.
 let saved = plugin.get_state()?;
@@ -197,7 +200,7 @@ MIT OR Apache-2.0
 
 [`ClapLoaded`]: crate::ClapLoaded
 [`ClapLoaded::activate`]: crate::ClapLoaded::activate
-[`ClapLoaded::parameter_list`]: crate::ClapLoaded::parameter_list
+[`ClapLoaded::get_parameter_list`]: crate::ClapLoaded::get_parameter_list
 [`ClapLoaded::supports_f64`]: crate::ClapLoaded::supports_f64
 [`ClapLoaded::flush_params`]: crate::ClapLoaded::flush_params
 [`ClapActive`]: crate::ClapActive

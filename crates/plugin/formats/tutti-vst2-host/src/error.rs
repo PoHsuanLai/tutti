@@ -34,8 +34,9 @@ pub enum Vst2Error {
     #[error("Editor error: {0}")]
     EditorError(String),
 
-    /// The plugin rejected a state chunk handed to `effSetChunk`, or the chunk
-    /// was malformed for this plugin.
-    #[error("State restore error: {0}")]
-    StateRestoreError(String),
+    /// Saving or restoring plugin state failed — the plugin rejected a chunk
+    /// handed to `effSetChunk`, `effGetChunk` refused, or the chunk was
+    /// malformed for this plugin.
+    #[error("State error: {0}")]
+    StateError(String),
 }

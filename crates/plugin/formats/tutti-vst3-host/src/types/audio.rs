@@ -32,7 +32,7 @@ pub(crate) const K_SAMPLE_64_INT: i32 = SymbolicSampleSizes_::kSample64 as i32;
 /// ([`Vst3Loaded::activate_with_mode`](crate::Vst3Loaded::activate_with_mode)),
 /// because reaching it from any other mode needs a fresh `setupProcessing`,
 /// while the realtime/prefetch pair is switchable on a live instance
-/// ([`Vst3Instance::set_prefetch`](crate::Vst3Instance::set_prefetch)).
+/// ([`Vst3Active::set_prefetch`](crate::Vst3Active::set_prefetch)).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ProcessMode {
     /// `kRealtime` — live playback under a deadline. The default.

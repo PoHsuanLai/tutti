@@ -82,9 +82,9 @@ use support::corpus;
 
 use std::sync::Mutex;
 
-use tutti_au_host::BusDirection;
 use tutti_au_host::offline::PushScratch;
 use tutti_au_host::AuError;
+use tutti_au_host::BusDirection;
 use tutti_plugin_types::ChannelLayout;
 
 /// Serializes AU instantiation, as the other suites' `AU_LOCK`s do and for the

@@ -393,7 +393,7 @@ impl Vst2Instance {
     /// Query `effGetParameterProperties` for every declared parameter.
     ///
     /// Entries are `None` where the plugin declined, so the result stays index-
-    /// aligned with [`Vst2Instance::parameters`]. Compacting to only the
+    /// aligned with [`Vst2Instance::get_parameter_list`]. Compacting to only the
     /// answered ones would silently renumber every parameter after a gap.
     pub fn all_parameter_properties(&self) -> Vec<Option<ParameterProperties>> {
         (0..self.parameter_count())

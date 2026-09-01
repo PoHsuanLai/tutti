@@ -1,9 +1,9 @@
 //! Post-`initialize()` VST3 state. Audio processing is **not** active here —
-//! [`Vst3Loaded::activate`] transitions to [`Vst3Instance`] for that.
+//! [`Vst3Loaded::activate`] transitions to [`Vst3Active`] for that.
 //!
 //! `Vst3Loaded` is what you want for GUI-only hosting, offline parameter
 //! inspection, and state save/restore. `process()` lives exclusively on
-//! [`Vst3Instance`]; the type system enforces that you can't call it here.
+//! [`Vst3Active`]; the type system enforces that you can't call it here.
 //!
 //! The size of this file is the argument for the type existing. Nearly forty
 //! public methods are legal in this state and need no audio buffer: the
@@ -15,7 +15,7 @@
 //! pays. That is what distinguishes a state worth a type from a construction
 //! step, and it is why this file, not `instance`, holds the bulk of the module.
 //!
-//! Everything here stays reachable after activation: [`Vst3Instance`] embeds a
+//! Everything here stays reachable after activation: [`Vst3Active`] embeds a
 //! `Vst3Loaded` and `Deref`s to it, so the split subtracts `process` from this
 //! state without subtracting anything from the active one.
 
@@ -65,7 +65,7 @@ use crate::types::{
     WindowHandle,
 };
 
-use super::instance::Vst3Instance;
+use super::instance::Vst3Active;
 use super::library::Vst3Library;
 use super::midi_learn::MidiLearnConsumer;
 use super::plugin_state::{Controller, EditorState, HostContext, PluginInterfaces};
@@ -76,7 +76,7 @@ const DEFAULT_EDITOR_SIZE: (u32, u32) = (800, 600);
 /// Plugin instance that has been `initialize()`'d and has usable parameter,
 /// editor, and state surfaces, but is **not** processing audio.
 ///
-/// Transition to [`Vst3Instance`] via [`Vst3Loaded::activate`] to enable
+/// Transition to [`Vst3Active`] via [`Vst3Loaded::activate`] to enable
 /// `process()`. For GUI-only hosting (no audio ever), stay here — skip the
 /// `setActive(1) + setProcessing(1)` cost entirely.
 pub struct Vst3Loaded {
@@ -119,7 +119,7 @@ pub struct RestartOutcome {
     /// caller should re-pull the parameter list / info.
     pub param_titles_changed: bool,
     /// `kIoChanged` fired — the plugin wants a different bus configuration.
-    /// The caller must run `Vst3Instance::restart_bus_configuration` (a
+    /// The caller must run `Vst3Active::restart_bus_configuration` (a
     /// deactivate/reactivate cycle) and then rewire.
     pub io_changed: bool,
     /// `kMidiCCAssignmentChanged` fired — the `IMidiMapping` CC→param table is
@@ -373,7 +373,7 @@ impl Vst3Loaded {
 
     /// Transition to the processing state. Runs `setupProcessing`, activates
     /// buses, calls `setActive(1)` and `setProcessing(1)`. Returns a
-    /// [`Vst3Instance<T>`] that exposes `process()`.
+    /// [`Vst3Active<T>`] that exposes `process()`.
     ///
     /// `T` fixes the sample format: `f32` (the default) uses `kSample32`;
     /// `f64` uses `kSample64` and returns [`Vst3Error::NotSupported`] if the
@@ -382,7 +382,7 @@ impl Vst3Loaded {
         self,
         sample_rate: f64,
         block_size: usize,
-    ) -> Result<Vst3Instance<T>> {
+    ) -> Result<Vst3Active<T>> {
         self.activate_with_mode(sample_rate, block_size, ProcessMode::Realtime)
     }
 
@@ -396,7 +396,7 @@ impl Vst3Loaded {
     /// rule forbids doing silently — so the type-state boundary and the spec
     /// boundary are made to coincide. (The realtime↔prefetch pair *is*
     /// switchable on a live instance; that is
-    /// [`Vst3Instance::set_prefetch`](crate::Vst3Instance::set_prefetch), and
+    /// [`Vst3Active::set_prefetch`](crate::Vst3Active::set_prefetch), and
     /// it is the one exception the rule names.)
     ///
     /// Query [`prefetchable_support`](Self::prefetchable_support) beforehand if
@@ -411,8 +411,8 @@ impl Vst3Loaded {
         sample_rate: f64,
         block_size: usize,
         mode: ProcessMode,
-    ) -> Result<Vst3Instance<T>> {
-        Vst3Instance::from_loaded(self, sample_rate, block_size, mode)
+    ) -> Result<Vst3Active<T>> {
+        Vst3Active::from_loaded(self, sample_rate, block_size, mode)
     }
 
     /// Metadata snapshot (id, name, vendor, bus counts, MIDI and f64 support).
@@ -1091,7 +1091,7 @@ impl Vst3Loaded {
     ///   changes the user made inside the plugin's own UI.
     ///
     /// Must be called on the main thread; not while inside
-    /// [`process`](Vst3Instance::process).
+    /// [`process`](Vst3Active::process).
     pub fn poll_plugin_notifications(&mut self) -> PluginNotifications {
         tutti_plugin_types::assert_main_thread();
         let mut notifications = PluginNotifications::default();
@@ -1106,10 +1106,10 @@ impl Vst3Loaded {
                     // same constraint `reload_requested` is surfaced for.
                     //
                     // Do not call `reconcile_bus_counts()` from here. It reads
-                    // fine until you notice `Vst3Instance` `DerefMut`s to this
+                    // fine until you notice `Vst3Active` `DerefMut`s to this
                     // type: the production caller polls on a live active
                     // instance, so the re-enumeration would run mid-activation.
-                    // The owner calls `Vst3Instance::restart_bus_configuration`.
+                    // The owner calls `Vst3Active::restart_bus_configuration`.
                     notifications.restart.merge_flags(flags);
                 }
                 other => notifications.param_edits.push(other),
@@ -1385,7 +1385,7 @@ impl Vst3Loaded {
     ///
     /// # Errors
     ///
-    /// Returns [`Vst3Error::NotSupported`](crate::Vst3Error::NotSupported) if
+    /// Returns [`Vst3Error::EditorError`](crate::Vst3Error::EditorError) if
     /// the plugin has no controller, refuses to create a view, or the view
     /// rejects this platform's window type, and
     /// [`Vst3Error::PluginError`](crate::Vst3Error::PluginError) if
@@ -1396,12 +1396,12 @@ impl Vst3Loaded {
             .interfaces
             .controller
             .as_ref()
-            .ok_or(Vst3Error::NotSupported(
+            .ok_or(Vst3Error::EditorError(
                 "Plugin has no editor controller".to_string(),
             ))?;
 
         let view_raw = unsafe { ctrl.createView(c"editor".as_ptr()) };
-        let view = unsafe { ComPtr::from_raw(view_raw) }.ok_or(Vst3Error::NotSupported(
+        let view = unsafe { ComPtr::from_raw(view_raw) }.ok_or(Vst3Error::EditorError(
             "Failed to create plugin view".to_string(),
         ))?;
 
@@ -1419,7 +1419,7 @@ impl Vst3Loaded {
         // cleanly.
         let supported = unsafe { view.isPlatformTypeSupported(platform_type) };
         if platform_type_refused(supported) {
-            return Err(Vst3Error::NotSupported(format!(
+            return Err(Vst3Error::EditorError(format!(
                 "Plugin view does not support platform type {}",
                 platform_type_name(platform_type)
             )));
@@ -1696,7 +1696,7 @@ impl Vst3Loaded {
     /// Returns the snapped size the plugin applied.
     pub fn resize_editor(&mut self, requested: EditorSize) -> Result<EditorSize> {
         let EditorState::Open { view, .. } = &self.editor else {
-            return Err(Vst3Error::NotSupported("editor not open".to_string()));
+            return Err(Vst3Error::EditorError("editor not open".to_string()));
         };
         let requested_rect = ViewRect {
             left: 0,
@@ -1928,7 +1928,7 @@ impl Vst3Loaded {
     /// Re-query bus counts from the component — `initialize` may have changed
     /// them (some plugins don't declare bus counts until after init).
     ///
-    /// `pub(crate)` only so `Vst3Instance::restart_bus_configuration` can call
+    /// `pub(crate)` only so `Vst3Active::restart_bus_configuration` can call
     /// it from inside the deactivate/reactivate cycle. Deliberately not public:
     /// on a live instance this must never be reached on its own, or the
     /// re-enumeration runs mid-activation.

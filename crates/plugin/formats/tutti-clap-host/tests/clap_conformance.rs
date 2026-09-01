@@ -26,7 +26,7 @@ mod support;
 use support::probe_path::probe_path;
 
 use tutti_clap_host::{
-    AudioBuffer32, ClapActive, ClapLoaded, MidiEvent, ParameterChanges, ClapProcessContext,
+    AudioBuffer32, ClapActive, ClapLoaded, ClapProcessContext, MidiEvent, ParameterChanges,
     TransportInfo,
 };
 // The reference plugin is a dev-dependency (cdylib + rlib), so we share its

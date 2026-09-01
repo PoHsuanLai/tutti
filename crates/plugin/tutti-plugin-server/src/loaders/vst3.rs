@@ -1,12 +1,11 @@
 //! VST3 plugin loader using the `vst3-host` crate.
 
-use std::collections::HashMap;
 use std::path::Path;
 
 use tutti_plugin::server::{
     AudioBufferMut, AutomationMode, BusChannels, ChannelLayout, ChordChanges, EditorPresence,
     EditorSize, Features, LoadedPlugin, Normalized, NoteExpressionIntChanges,
-    NoteExpressionTextChanges, ParamAddress, ParamFlags, ParamRange, ParamSteps, ParameterInfo,
+    NoteExpressionTextChanges, ParamAddress, ParameterInfo,
     PluginAudio, PluginClass, PluginDescriptor, PluginEditorHost, PluginError, PluginMeta,
     PluginParams, PluginPresets, PluginResult, PluginState, PluginTail, Preset, PresetId,
     ProcessContext, ProcessOutput, RenderMode, Samples, ScaleChanges, Vst3SubCategories,
@@ -22,8 +21,8 @@ pub use tutti_vst3_host;
 /// Typed inner holds either a f32 or f64 instance, selected at activation time
 /// based on plugin capabilities and the caller's preferred format.
 enum VstInner {
-    F32(tutti_vst3_host::Vst3Instance<f32>),
-    F64(tutti_vst3_host::Vst3Instance<f64>),
+    F32(tutti_vst3_host::Vst3Active<f32>),
+    F64(tutti_vst3_host::Vst3Active<f64>),
 }
 
 /// Dispatch a shared expression over both inner variants (immutable).
@@ -264,7 +263,7 @@ impl Vst3Instance {
     /// Lightweight probe: load library and read factory metadata without activation.
     pub fn probe(path: &Path) -> Result<PluginDescriptor> {
         let resolved = tutti_plugin::server::resolve_bundle(path)?;
-        let info = tutti_vst3_host::Vst3Instance::<f32>::probe(&resolved).map_err(|e| {
+        let info = tutti_vst3_host::Vst3Active::<f32>::probe(&resolved).map_err(|e| {
             BridgeError::LoadFailed {
                 path: path.to_path_buf(),
                 stage: LoadStage::Scanning,
@@ -431,7 +430,7 @@ impl Vst3Instance {
 /// value. Calling `ProcessOutputRef::to_owned` here instead — as this did —
 /// is what its doc means by "Allocates; off-RT only".
 fn process_block<'t, 'd: 't, T: tutti_vst3_host::Vst3Sample>(
-    inner: &mut tutti_vst3_host::Vst3Instance<T>,
+    inner: &mut tutti_vst3_host::Vst3Active<T>,
     inputs: &'t [&'d [T]],
     outputs: &'t mut [&'d mut [T]],
     sample_rate: f64,

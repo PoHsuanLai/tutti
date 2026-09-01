@@ -48,11 +48,11 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use tutti_au_host::{AuEvent, AuParameterListener, EventAddress};
 use tutti_au_host::types::{
     K_AUDIO_UNIT_PROPERTY_LATENCY, K_AUDIO_UNIT_PROPERTY_PARAMETER_LIST,
     K_AUDIO_UNIT_PROPERTY_TAIL_TIME,
 };
+use tutti_au_host::{AuEvent, AuParameterListener, EventAddress};
 use tutti_types::Samples;
 
 mod support;

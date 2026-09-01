@@ -21,7 +21,7 @@ use std::sync::{Mutex, MutexGuard};
 use assert_no_alloc::AllocDisabler;
 use tutti_midi_types::{MidiChannel, MidiGroup};
 use tutti_vst2_host::{
-    MidiEvent, Vst2ProcessContext, RenderScratch, TimeSignature, TransportInfo, Vst2Instance,
+    MidiEvent, RenderScratch, TimeSignature, TransportInfo, Vst2Instance, Vst2ProcessContext,
 };
 use tutti_vst2_test_plugin::ProcessCapture;
 

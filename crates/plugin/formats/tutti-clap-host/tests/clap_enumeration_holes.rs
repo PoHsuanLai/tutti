@@ -39,7 +39,9 @@ use std::sync::{Mutex, MutexGuard};
 mod support;
 use support::probe_path::probe_path;
 
-use tutti_clap_host::{AudioBuffer32, ClapActive, ClapLoaded, ParameterChanges, ClapProcessContext};
+use tutti_clap_host::{
+    AudioBuffer32, ClapActive, ClapLoaded, ClapProcessContext, ParameterChanges,
+};
 use tutti_clap_test_plugin::params_state::probe_params;
 use tutti_clap_test_plugin::{ProcessCapture, HOLE_NONE};
 use tutti_plugin_types::ParamAddress;

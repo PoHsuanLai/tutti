@@ -19,9 +19,7 @@ use tutti_plugin::server::PluginError;
 use tutti_plugin::{BridgeError, Result};
 
 #[cfg(feature = "vst2")]
-use tutti_vst2_host::{
-    RenderScratch, Vst2Error, Vst2Instance as Vst2Host, Vst2ProcessContext,
-};
+use tutti_vst2_host::{RenderScratch, Vst2Error, Vst2Instance as Vst2Host, Vst2ProcessContext};
 
 use crate::loaders::common::{single_bus, Meta};
 
@@ -147,7 +145,7 @@ fn translate_error(err: Vst2Error, _path: &Path) -> BridgeError {
             reason,
         },
         Vst2Error::EditorError(s) => BridgeError::EditorError(s),
-        Vst2Error::StateRestoreError(s) => BridgeError::StateRestoreError(s),
+        Vst2Error::StateError(s) => BridgeError::StateRestoreError(s),
     }
 }
 

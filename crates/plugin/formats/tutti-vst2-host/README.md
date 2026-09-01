@@ -107,10 +107,10 @@ plugin.set_parameter(0, 0.5);
 # fn ex(native_view_ptr: *mut std::ffi::c_void) -> tutti_vst2_host::Result<()> {
 # let mut plugin = Vst2Instance::load(Path::new("/usr/lib/vst/MyPlugin.so"), 48_000.0, 512)?;
 // Chunk-based if the plugin declares `preset_chunks`, else the per-parameter
-// fallback; `load_state` reads the header back and reports a refusal rather
+// fallback; `set_state` reads the header back and reports a refusal rather
 // than swallowing it.
-let saved = plugin.save_state()?;
-plugin.load_state(&saved)?;
+let saved = plugin.get_state()?;
+plugin.set_state(&saved)?;
 
 // The editor is the same `AEffect` the audio path drives — hence in-process.
 let size = plugin.open_editor(unsafe { WindowHandle::from_raw(native_view_ptr) })?;

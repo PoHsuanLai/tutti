@@ -29,7 +29,7 @@
 //!
 //! ## Why the push path is a separate module and not a `process` variant
 //!
-//! [`AuReady::process`](crate::instance::AuReady::process) is a *pull* render:
+//! [`AuActive::process`](crate::instance::AuActive::process) is a *pull* render:
 //! it stages input into the heap-pinned `RenderScratch`, then `AudioUnitRender`
 //! calls back into that scratch to fetch it. The push path never installs a
 //! callback — with `AudioUnitProcess` the `ioData` buffer list carries the
@@ -380,7 +380,7 @@ impl PushScratch {
         };
         // Fill the pointer arrays once. The slabs are boxed, so their addresses
         // stay stable across a move of `PushScratch` itself — same property
-        // `AuReady::scratch` relies on. Recomputing per block would be correct
+        // `AuActive::scratch` relies on. Recomputing per block would be correct
         // but pointless work on the RT path.
         for (i, slab) in me.input_slabs.iter_mut().enumerate() {
             me.input_ptrs[i] = slab.as_mut_ptr() as *const AudioBufferList;
@@ -619,7 +619,7 @@ pub unsafe fn process_push(
         ));
     }
 
-    // `OutputIsSilence` is honoured for the reason `AuReady::process` documents:
+    // `OutputIsSilence` is honoured for the reason `AuActive::process` documents:
     // when the AU sets it, the buffer contents are explicitly *not* guaranteed
     // zeroed — the flag is how an AU says "I produced nothing, don't trust what
     // is in there" — so trusting them emits whatever the last block left.
@@ -767,7 +767,7 @@ pub unsafe fn process_push_multiple(
 /// non-`noErr`.
 ///
 /// Only called on a *failed* render, exactly as the equivalent read in
-/// `AuReady::process` is, so the property read it performs cannot affect the
+/// `AuActive::process` is, so the property read it performs cannot affect the
 /// no-alloc guarantee on the steady-state path.
 ///
 /// # Safety

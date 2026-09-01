@@ -14,8 +14,8 @@ editor, and implements the host-side COM interfaces a plugin discovers through
 The public surface is a three-stage lifecycle encoded in the type system:
 [`Vst3Library`] holds the loaded DSO and its factory, [`Vst3Loaded`] is an
 `initialize()`'d plugin suitable for GUI and parameter work, and
-[`Vst3Instance<T>`][`Vst3Instance`] adds the activation state
-[`Vst3Instance::process`] requires. Transitions move ownership, so the compiler
+[`Vst3Active<T>`][`Vst3Active`] adds the activation state
+[`Vst3Active::process`] requires. Transitions move ownership, so the compiler
 rejects a call that is illegal in the current state.
 
 ## What it does not own
@@ -83,7 +83,7 @@ println!("plugin emitted {} MIDI events", out.midi_events.len());
 
 ### Parameters, state, and what the plugin's own GUI did
 
-[`Vst3Instance`] derefs to [`Vst3Loaded`], so all of this is reachable while audio
+[`Vst3Active`] derefs to [`Vst3Loaded`], so all of this is reachable while audio
 is running as well as before activation. `no_run` for the same reason as above.
 
 ```rust,no_run
@@ -163,7 +163,7 @@ all. A state a host genuinely spends time in, with its own operations, earns a
 type.
 
 The split costs nothing in reachable surface, which is what makes it affordable:
-[`Vst3Instance`] `Deref`s to [`Vst3Loaded`], so that whole surface stays callable
+[`Vst3Active`] `Deref`s to [`Vst3Loaded`], so that whole surface stays callable
 while active. That is sound because VST3 keeps it legal in the active state — the
 type-state boundary removes `process` from the loaded state and adds nothing to
 the active one.
@@ -181,10 +181,10 @@ sizes the buffers. [`ProcessMode`] is chosen on
 instance, because `setupProcessing` delivers it exactly once per activation —
 that method's own documentation carries the reasoning, including the one
 exception (the realtime↔prefetch pair, switchable via
-[`Vst3Instance::set_prefetch`]).
+[`Vst3Active::set_prefetch`]).
 
 Sample rate and block size are *not* frozen the same way.
-[`Vst3Instance::set_sample_rate`] exists, and it works by running a full
+[`Vst3Active::set_sample_rate`] exists, and it works by running a full
 deactivate/reactivate cycle internally, because `setupProcessing` is spec'd for
 the disabled state. A reconfiguration is a bracket around the active state, not a
 fourth stage a host parks in.
@@ -237,10 +237,10 @@ MIT OR Apache-2.0
 [`Vst3Loaded`]: crate::Vst3Loaded
 [`Vst3Loaded::activate_with_mode`]: crate::Vst3Loaded::activate_with_mode
 [`Vst3Loaded::poll_plugin_notifications`]: crate::Vst3Loaded::poll_plugin_notifications
-[`Vst3Instance`]: crate::Vst3Instance
-[`Vst3Instance::process`]: crate::Vst3Instance::process
-[`Vst3Instance::set_prefetch`]: crate::Vst3Instance::set_prefetch
-[`Vst3Instance::set_sample_rate`]: crate::Vst3Instance::set_sample_rate
+[`Vst3Active`]: crate::Vst3Active
+[`Vst3Active::process`]: crate::Vst3Active::process
+[`Vst3Active::set_prefetch`]: crate::Vst3Active::set_prefetch
+[`Vst3Active::set_sample_rate`]: crate::Vst3Active::set_sample_rate
 [`ProcessMode`]: crate::ProcessMode
 [`ParameterChanges`]: crate::ParameterChanges
 [`TransportInfo`]: crate::TransportInfo

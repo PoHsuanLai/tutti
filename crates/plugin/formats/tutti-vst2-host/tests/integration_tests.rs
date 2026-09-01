@@ -16,8 +16,8 @@ use std::sync::{Mutex, MutexGuard};
 
 use tutti_midi_types::{MidiChannel, MidiGroup};
 use tutti_vst2_host::{
-    ChannelLayout, MidiEvent, ParamAddress, Vst2ProcessContext, RenderScratch, TimeSignature,
-    TransportInfo, Vst2Instance,
+    ChannelLayout, MidiEvent, ParamAddress, RenderScratch, TimeSignature, TransportInfo,
+    Vst2Instance, Vst2ProcessContext,
 };
 
 #[path = "support/probe_path.rs"]

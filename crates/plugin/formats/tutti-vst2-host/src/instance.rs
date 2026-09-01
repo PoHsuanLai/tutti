@@ -469,13 +469,13 @@ impl Vst2Instance {
     ///
     /// Raised by `audioMasterUpdateDisplay`, which a plugin fires after
     /// changing preset or program from its own editor. VST 2.4 carries no
-    /// detail with it, so the answer is to re-read: [`parameter_list`] and the
+    /// detail with it, so the answer is to re-read: [`get_parameter_list`] and the
     /// current values may all have moved.
     ///
     /// Consuming, so a caller polling each frame acts once per request rather
     /// than re-reading forever after the first one.
     ///
-    /// [`parameter_list`]: Self::parameter_list
+    /// [`get_parameter_list`]: Self::get_parameter_list
     pub fn take_display_stale(&self) -> bool {
         self.host_link.state.take_display_stale()
     }

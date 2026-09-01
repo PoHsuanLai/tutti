@@ -1,7 +1,7 @@
 //! Pre-allocated per-bus FFI scratch that marshals the host's flat,
 //! deinterleaved channel pointers into VST3's `AudioBusBuffers` array shape.
 //!
-//! [`Vst3Instance`](super::instance::Vst3Instance) holds one [`BusBuffers`] per
+//! [`Vst3Active`](super::instance::Vst3Active) holds one [`BusBuffers`] per
 //! process direction and refreshes it each block via [`BusBuffers::prepare`];
 //! the realtime `process` path stays allocation-free because every table here
 //! is sized once at construction.
@@ -99,7 +99,7 @@ fn make_audio_bus(num_channels: ChannelLayout) -> vst3::Steinberg::Vst::AudioBus
 /// so one zeroed block reads as silence whichever format the plugin uses.
 ///
 /// Allocated once in
-/// [`Vst3Instance::from_loaded`](super::instance::Vst3Instance) and reused so
+/// [`Vst3Active::from_loaded`](super::instance::Vst3Active) and reused so
 /// the realtime `process` path is allocation-free. The flat caller buffer
 /// (bus 0) is mapped onto bus 0; every other bus is backed by `aux`.
 pub(super) struct BusBuffers<T: Vst3Sample> {

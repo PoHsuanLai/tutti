@@ -28,7 +28,9 @@ mod support;
 use support::probe_path::probe_path;
 
 use tutti_clap_host::types::StateContext;
-use tutti_clap_host::{AudioBuffer32, ClapActive, ClapLoaded, ParameterChanges, ClapProcessContext};
+use tutti_clap_host::{
+    AudioBuffer32, ClapActive, ClapLoaded, ClapProcessContext, ParameterChanges,
+};
 use tutti_clap_test_plugin::params_state::{probe_params, ProbeParam};
 use tutti_clap_test_plugin::{
     ParamStateCapture, ProcessCapture, PARAM_CMD_REQUEST_FLUSH, PARAM_CMD_RESCAN_ALL,

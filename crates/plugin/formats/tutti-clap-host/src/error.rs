@@ -77,7 +77,7 @@ pub enum ClapError {
     /// An operation that requires an active plugin was called on an
     /// inactive instance.
     #[error("Plugin not activated")]
-    NotActivated,
+    NotActive,
 
     /// A requested capability is not advertised by the plugin (e.g. activating
     /// as `ClapActive<f64>` when the plugin is 32-bit only).
@@ -90,7 +90,7 @@ pub enum ClapError {
 
     /// Editor/GUI creation, resize, or teardown failed.
     #[error("GUI error: {0}")]
-    GuiError(String),
+    EditorError(String),
 
     /// Underlying IO failure (file system, stream).
     #[error("IO error: {0}")]

@@ -41,7 +41,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use tutti_vst3_host::{AudioBuffer, TransportInfo, Vst3InputEvents, Vst3Instance, Vst3Loaded};
+use tutti_vst3_host::{AudioBuffer, TransportInfo, Vst3Active, Vst3InputEvents, Vst3Loaded};
 
 /// The in-repo probe bundle, built by `build.rs`.
 const PROBE_DIR_BUILT: &str = env!("VST3_PROBE_DIR");
@@ -171,7 +171,7 @@ const INPUT_LEVEL: f32 = 0.25;
 /// plugin that writes nothing would look identical to one that echoed — the very
 /// distinction `a_plugin_that_writes_nothing_does_not_leak_previous_audio`
 /// depends on.
-fn drive_block_with(inst: &mut Vst3Instance, input: f32) -> Vec<Vec<f32>> {
+fn drive_block_with(inst: &mut Vst3Active, input: f32) -> Vec<Vec<f32>> {
     let info = inst.info().clone();
     let in_layout: Vec<usize> = if info.input_bus_channels.is_empty() {
         vec![info.num_inputs.max(1)]
@@ -209,7 +209,7 @@ fn drive_block_with(inst: &mut Vst3Instance, input: f32) -> Vec<Vec<f32>> {
 }
 
 /// Drive one block of silence and return the flat output channels.
-fn drive_block(inst: &mut Vst3Instance) -> Vec<Vec<f32>> {
+fn drive_block(inst: &mut Vst3Active) -> Vec<Vec<f32>> {
     drive_block_with(inst, 0.0)
 }
 
@@ -799,7 +799,7 @@ fn a_refused_connection_does_not_fail_the_load() {
          IConnectionPoint at all does"
     );
 
-    let mut inst = match Vst3Instance::load(&path, 48_000.0, 512) {
+    let mut inst = match Vst3Active::load(&path, 48_000.0, 512) {
         Ok(inst) => inst,
         Err(e) => panic!("instance load failed after a refused connect: {e:?}"),
     };

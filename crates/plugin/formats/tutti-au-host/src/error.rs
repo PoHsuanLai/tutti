@@ -161,8 +161,8 @@ pub enum AuError {
     ///
     /// Boxed for the reason [`AuError::PresetIdentityMismatch`] is: `AuError` is
     /// the `Err` of every `Result` in this crate, and two inline `String`s here
-    /// widened the enum enough to push `AuReady::uninitialize`'s
-    /// `(AuReady, AuError)` past clippy's `result_large_err` threshold. A preset
+    /// widened the enum enough to push `AuActive::uninitialize`'s
+    /// `(AuActive, AuError)` past clippy's `result_large_err` threshold. A preset
     /// diagnostic must not tax the render path's result size.
     #[error("preset file I/O failed for {}: {}", .0.path, .0.message)]
     PresetIo(Box<PresetFileError>),

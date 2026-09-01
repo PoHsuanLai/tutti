@@ -23,7 +23,7 @@ use std::sync::Mutex;
 
 use assert_no_alloc::AllocDisabler;
 use tutti_clap_host::{
-    AudioBuffer32, ClapActive, ClapLoaded, MidiEvent, ClapProcessContext, TransportInfo,
+    AudioBuffer32, ClapActive, ClapLoaded, ClapProcessContext, MidiEvent, TransportInfo,
 };
 
 mod support;

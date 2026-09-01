@@ -60,7 +60,7 @@ impl ClapLoaded {
     /// Save state, telling the plugin whether it is being saved for a
     /// preset, project, or duplicate.
     ///
-    /// Falls back to [`Self::state`] **only** when the plugin does not
+    /// Falls back to [`Self::get_state`] **only** when the plugin does not
     /// implement `CLAP_EXT_STATE_CONTEXT` (or implements it without a `save`
     /// entry point). A plugin that implements it and returns `false` has
     /// *refused* the save, and that refusal is reported.

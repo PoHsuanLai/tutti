@@ -39,7 +39,7 @@ pub struct AuLoaded {
     /// Host transport, installed on demand by
     /// [`AuInstance::install_host_callbacks`].
     ///
-    /// Heap-pinned for the same reason [`AuReady::scratch`] is: the AU retains
+    /// Heap-pinned for the same reason [`AuActive::scratch`] is: the AU retains
     /// the `hostUserData` pointer derived from `&*transport`, and this struct is
     /// `mem::replace`d between the `Loaded` and `Ready` states on every
     /// initialize/uninitialize. Moving the `Box` moves only its 8-byte pointer,
@@ -69,7 +69,7 @@ enum Silence {
 /// An AU that has completed `AudioUnitInitialize` and has render buffers
 /// allocated. This is the only state in which [`AuInstance::process`] will
 /// succeed.
-pub struct AuReady {
+pub struct AuActive {
     loaded: AuLoaded,
     /// Heap-pinned so its address is stable across the `State`/`mem::replace`
     /// moves in [`AuInstance::initialize`]/[`AuInstance::uninitialize`]. The
@@ -86,7 +86,7 @@ pub struct AuReady {
     callback_installs: std::sync::atomic::AtomicU32,
 }
 
-/// Public façade wrapping either an [`AuLoaded`] or [`AuReady`] state.
+/// Public façade wrapping either an [`AuLoaded`] or [`AuActive`] state.
 ///
 /// Most host operations (parameters, state save/load, editor) work regardless
 /// of initialization status. [`AuInstance::process`] requires the Ready state
@@ -102,7 +102,7 @@ pub struct AuInstance {
 
 enum State {
     Loaded(AuLoaded),
-    Ready(AuReady),
+    Active(AuActive),
     /// Transient marker only seen while a `mem::replace` is mid-transition.
     Empty,
 }
@@ -212,7 +212,7 @@ impl AuInstance {
         match std::mem::replace(&mut self.state, State::Empty) {
             State::Loaded(l) => match l.initialize() {
                 Ok(r) => {
-                    self.state = State::Ready(r);
+                    self.state = State::Active(r);
                     Ok(())
                 }
                 // `None` only when the AU refused both the callback install and
@@ -226,7 +226,7 @@ impl AuInstance {
                     Err(e)
                 }
             },
-            other @ State::Ready(_) => {
+            other @ State::Active(_) => {
                 self.state = other;
                 Ok(())
             }
@@ -240,13 +240,13 @@ impl AuInstance {
     /// the call started in rather than leaving the instance unusable.
     pub fn uninitialize(&mut self) -> Result<()> {
         match std::mem::replace(&mut self.state, State::Empty) {
-            State::Ready(r) => match r.uninitialize() {
+            State::Active(r) => match r.uninitialize() {
                 Ok(l) => {
                     self.state = State::Loaded(l);
                     Ok(())
                 }
                 Err((r, e)) => {
-                    self.state = State::Ready(r);
+                    self.state = State::Active(r);
                     Err(e)
                 }
             },
@@ -261,7 +261,7 @@ impl AuInstance {
     fn handle(&self) -> &AuHandle {
         match &self.state {
             State::Loaded(l) => &l.handle,
-            State::Ready(r) => &r.loaded.handle,
+            State::Active(r) => &r.loaded.handle,
             State::Empty => unreachable!("AuInstance accessed while empty"),
         }
     }
@@ -269,7 +269,7 @@ impl AuInstance {
     fn config(&self) -> &StreamConfig {
         match &self.state {
             State::Loaded(l) => &l.config,
-            State::Ready(r) => &r.loaded.config,
+            State::Active(r) => &r.loaded.config,
             State::Empty => unreachable!(),
         }
     }
@@ -308,7 +308,7 @@ impl AuInstance {
 
     /// Whether the AU is currently in the `Ready` state.
     pub fn is_initialized(&self) -> bool {
-        matches!(self.state, State::Ready(_))
+        matches!(self.state, State::Active(_))
     }
 
     /// Test-only: how many times the input render callback has been installed
@@ -316,7 +316,7 @@ impl AuInstance {
     #[cfg(test)]
     fn callback_install_count(&self) -> u32 {
         match &self.state {
-            State::Ready(r) => r
+            State::Active(r) => r
                 .callback_installs
                 .load(std::sync::atomic::Ordering::SeqCst),
             _ => 0,
@@ -420,7 +420,7 @@ impl AuInstance {
         })?;
         // Pre-`initialize` there is no scratch: the cursor is created at zero by
         // `initialize` and has nothing to carry over, so there is nothing to do.
-        if let State::Ready(r) = &mut self.state {
+        if let State::Active(r) = &mut self.state {
             r.scratch.reset_position();
         }
         Ok(())
@@ -1221,7 +1221,7 @@ impl AuInstance {
     pub fn install_host_callbacks(&mut self) -> Result<&TransportState> {
         let loaded = match &mut self.state {
             State::Loaded(l) => l,
-            State::Ready(r) => &mut r.loaded,
+            State::Active(r) => &mut r.loaded,
             State::Empty => unreachable!("AuInstance accessed while empty"),
         };
         let unit = loaded.handle.raw_unit();
@@ -1260,7 +1260,7 @@ impl AuInstance {
     pub fn transport(&self) -> Option<&TransportState> {
         match &self.state {
             State::Loaded(l) => l.transport.as_deref(),
-            State::Ready(r) => r.loaded.transport.as_deref(),
+            State::Active(r) => r.loaded.transport.as_deref(),
             State::Empty => unreachable!("AuInstance accessed while empty"),
         }
     }
@@ -1598,7 +1598,7 @@ impl AuInstance {
     /// callback is involved. The two render paths are genuinely distinct
     /// contracts, not two spellings of one — see the
     /// [`offline`](crate::offline) module docs — which is why this does not try
-    /// to share `AuReady`'s scratch.
+    /// to share `AuActive`'s scratch.
     ///
     /// Requires the `Ready` state for the same reason
     /// [`process`](Self::process) does: `AudioUnitProcess` renders through
@@ -1856,7 +1856,7 @@ impl AuInstance {
         num_frames: u32,
     ) -> Result<()> {
         match &mut self.state {
-            State::Ready(r) => r.process(input, output, num_frames),
+            State::Active(r) => r.process(input, output, num_frames),
             State::Loaded(_) => Err(AuError::OsStatus {
                 function: "AuInstance::process",
                 code: K_AUDIO_UNIT_ERR_UNINITIALIZED,
@@ -1888,7 +1888,7 @@ impl AuInstance {
         num_frames: u32,
     ) -> Result<()> {
         match &mut self.state {
-            State::Ready(r) => r.process_f64(input, output, num_frames),
+            State::Active(r) => r.process_f64(input, output, num_frames),
             State::Loaded(_) => Err(AuError::OsStatus {
                 function: "AuInstance::process_f64",
                 code: K_AUDIO_UNIT_ERR_UNINITIALIZED,
@@ -2132,13 +2132,13 @@ impl AuLoaded {
         })
     }
 
-    /// Consume self and return an [`AuReady`] after a successful
+    /// Consume self and return an [`AuActive`] after a successful
     /// `AudioUnitInitialize`.
     ///
     /// The input render callback is installed exactly ONCE here, off the
     /// heap-pinned scratch's stable address — never per render block on the RT
     /// thread. The `ref_con` is `&*scratch`; because `scratch` lives behind a
-    /// `Box`, its body never moves even as the enclosing [`AuReady`]/`State` is
+    /// `Box`, its body never moves even as the enclosing [`AuActive`]/`State` is
     /// `mem::replace`d, so the pointer the AU retains stays valid.
     ///
     /// # Errors
@@ -2150,23 +2150,23 @@ impl AuLoaded {
     /// The recovered state is an `Option` for the one case that cannot produce
     /// a `Loaded` AU: the callback install failed *and* the compensating
     /// `AudioUnitUninitialize` failed too, leaving a unit that is still
-    /// initialized. Its `AuReady` is dropped here so the unit is still disposed
+    /// initialized. Its `AuActive` is dropped here so the unit is still disposed
     /// — there is simply no honest `AuLoaded` to return.
-    pub fn initialize(self) -> std::result::Result<AuReady, (Option<Self>, AuError)> {
+    pub fn initialize(self) -> std::result::Result<AuActive, (Option<Self>, AuError)> {
         if let Err(e) = check("AudioUnitInitialize", unsafe {
             AudioUnitInitialize(self.handle.raw_unit())
         }) {
             return Err((Some(self), e));
         }
 
-        // Allocate the heap-pinned scratch, then move it into `AuReady`. The
+        // Allocate the heap-pinned scratch, then move it into `AuActive`. The
         // Box body does not move on that transfer (only the 8-byte pointer
         // does), so the ref_con derived from `&*ready.scratch` below is stable.
         let scratch = Box::new(RenderScratch::new(
             self.config.channels,
             self.config.block_size,
         ));
-        let ready = AuReady {
+        let ready = AuActive {
             loaded: self,
             scratch,
             #[cfg(test)]
@@ -2190,7 +2190,7 @@ impl AuLoaded {
         if ready.loaded.config.channels.has_input {
             if let Err(e) = unsafe { ready.install_input_callback(scratch_ptr) } {
                 // The AU *is* initialized at this point, so backing out has to
-                // undo that too — not merely drop the half-built `AuReady`.
+                // undo that too — not merely drop the half-built `AuActive`.
                 // Route through `uninitialize`, which owns the ordering
                 // invariant (uninitialize before the boxed scratch is freed)
                 // rather than duplicating it here.
@@ -2199,7 +2199,7 @@ impl AuLoaded {
                 // what actually went wrong, and a follow-on
                 // `AudioUnitUninitialize` complaint would only describe the
                 // cleanup. If that cleanup also failed there is no `Loaded` AU
-                // to hand back — dropping the `AuReady` still disposes the unit.
+                // to hand back — dropping the `AuActive` still disposes the unit.
                 return Err(match ready.uninitialize() {
                     Ok(loaded) => (Some(loaded), e),
                     Err((_ready, _unwind_err)) => (None, e),
@@ -2220,7 +2220,7 @@ impl AuLoaded {
     }
 }
 
-impl AuReady {
+impl AuActive {
     /// Tear down the render session and return to the [`AuLoaded`] state.
     ///
     /// # Errors
@@ -2242,9 +2242,9 @@ impl AuReady {
         if let Err(e) = check("AudioUnitUninitialize", status) {
             // The AU refused to uninitialize, so it is still initialized and
             // the render callback may still fire against `*scratch`. Rebuild
-            // the `AuReady` intact — its `Drop` retries the uninitialize before
+            // the `AuActive` intact — its `Drop` retries the uninitialize before
             // freeing anything — rather than leaking it inside `ManuallyDrop`.
-            // SAFETY: `me` is a live, fully-initialized `AuReady` that nothing
+            // SAFETY: `me` is a live, fully-initialized `AuActive` that nothing
             // has moved out of; `ManuallyDrop::take` is the documented way to
             // reclaim ownership, and `me` is not used again.
             let ready = unsafe { std::mem::ManuallyDrop::take(&mut me) };
@@ -2382,7 +2382,7 @@ impl AuReady {
     /// heap-pinned scratch's stable address.
     ///
     /// # Safety
-    /// `scratch_ptr` must point at this `AuReady`'s boxed `RenderScratch` and
+    /// `scratch_ptr` must point at this `AuActive`'s boxed `RenderScratch` and
     /// must outlive every `AudioUnitRender` call and remain valid until
     /// `AudioUnitUninitialize` runs. The `Box` indirection guarantees the
     /// address is stable across `State`/`mem::replace` moves.
@@ -2414,7 +2414,7 @@ impl AuReady {
     }
 }
 
-impl Drop for AuReady {
+impl Drop for AuActive {
     fn drop(&mut self) {
         unsafe {
             let _ = AudioUnitUninitialize(self.loaded.handle.raw_unit());
@@ -2426,7 +2426,7 @@ impl Drop for AuLoaded {
     /// Unhook the host callbacks before the state they point at is freed.
     ///
     /// ORDERING INVARIANT, the transport twin of the one
-    /// [`AuReady::uninitialize`] documents: while the callbacks are installed
+    /// [`AuActive::uninitialize`] documents: while the callbacks are installed
     /// the AU holds a `hostUserData` raw pointer into `*transport`. Dropping
     /// this struct frees that box, so the property must be cleared first or the
     /// AU is left holding a dangling pointer it may dereference on its render
@@ -2477,8 +2477,8 @@ impl Drop for AuLoaded {
 ///
 /// # Safety
 /// Called by AudioToolbox with the `(proc, ref_con)` pair registered by
-/// `AuReady::install_input_callback`. `in_ref_con` must be null or point at a
-/// live `RenderScratch` — the heap-pinned box owned by the [`AuReady`] whose
+/// `AuActive::install_input_callback`. `in_ref_con` must be null or point at a
+/// live `RenderScratch` — the heap-pinned box owned by the [`AuActive`] whose
 /// unit is rendering, which stays alive because `AudioUnitUninitialize` runs
 /// before that box is freed. `io_data` must be null or a well-formed
 /// `AudioBufferList` whose `mDataByteSize` honestly bounds each `mData`; the

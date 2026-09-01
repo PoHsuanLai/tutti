@@ -7,7 +7,7 @@
 use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard};
 
-use tutti_vst2_host::{MidiEvent, Vst2ProcessContext, RenderScratch, Samples, Vst2Instance};
+use tutti_vst2_host::{MidiEvent, RenderScratch, Samples, Vst2Instance, Vst2ProcessContext};
 // From the probe's rlib, not a hand-written mirror that can drift out of
 // layout agreement with the cdylib the host loads.
 use tutti_midi_types::{MidiChannel, MidiGroup};

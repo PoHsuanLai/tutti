@@ -133,9 +133,9 @@ loaded or ready. Splitting the public type would force a caller to re-thread
 ownership through transitions for the sake of operations that were never
 state-dependent — a real cost paid for a guarantee that covers only `process`.
 
-So the split lives one layer down, where it is free: `AuLoaded` and `AuReady`
+So the split lives one layer down, where it is free: `AuLoaded` and `AuActive`
 *are* distinct types with consuming transitions
-(`AuReady::uninitialize(self) -> Result<AuLoaded, (Self, AuError)>`), and
+(`AuActive::uninitialize(self) -> Result<AuLoaded, (Self, AuError)>`), and
 `AuInstance` is the façade holding one or the other. The type system enforces the
 ordering internally — notably the invariant that `AudioUnitUninitialize` runs
 before the heap-pinned render scratch is freed, since that call is what proves

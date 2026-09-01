@@ -20,7 +20,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 
-use tutti_vst2_host::{Vst2ProcessContext, RenderScratch, Vst2Instance};
+use tutti_vst2_host::{RenderScratch, Vst2Instance, Vst2ProcessContext};
 use tutti_vst2_test_plugin::{ProcessCapture, ProcessEntry};
 
 #[path = "support/probe_path.rs"]

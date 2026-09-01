@@ -462,7 +462,7 @@ impl Num for F32x {
     }
     #[inline(always)]
     fn pow(self, other: Self) -> Self {
-        self.powf_simd(other)
+        self.pow_f32x8(other)
     }
     #[inline(always)]
     fn floor(self) -> Self {
@@ -519,7 +519,7 @@ impl Num for f64x4 {
     }
     #[inline(always)]
     fn pow(self, other: Self) -> Self {
-        self.powf_simd(other)
+        self.pow_f64x4(other)
     }
     #[inline(always)]
     fn floor(self) -> Self {

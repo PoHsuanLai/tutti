@@ -223,48 +223,39 @@ mod tests {
         }
     }
 
+    /// Eight quarter-frames assemble into the timecode they spell, at each of
+    /// the four SMPTE rates.
+    ///
+    /// One table rather than a test per rate: the assembly is the same property
+    /// in every row, and the rate bits are the column. Written out this way the
+    /// rate-bits → [`SmpteFrameRate`] mapping is readable as a mapping — the
+    /// thing most likely to be transposed — instead of being spread over four
+    /// functions where a swapped pair reads as two independent tests.
     #[test]
-    fn test_assemble_full_timecode() {
-        let mut decoder = MtcDecoder::new();
-        // 01:02:03:04 at 30fps (rate bits = 3)
-        feed_timecode(&mut decoder, 1, 2, 3, 4, 3);
+    fn eight_quarter_frames_assemble_into_a_timecode_at_every_rate() {
+        // (h, m, s, f, rate bits, expected rate)
+        let cases = [
+            (1u8, 2u8, 3u8, 4u8, 0u8, SmpteFrameRate::Fps24),
+            (10, 30, 0, 0, 1, SmpteFrameRate::Fps25),
+            (0, 0, 0, 0, 2, SmpteFrameRate::Fps2997Df),
+            (1, 2, 3, 4, 3, SmpteFrameRate::Fps30),
+            // A frame number needing both nibbles, so the high-nibble piece is
+            // not silently dropped.
+            (0, 0, 1, 23, 0, SmpteFrameRate::Fps24),
+        ];
 
-        let tc = decoder.timecode().unwrap();
-        assert_eq!(tc.hours, 1);
-        assert_eq!(tc.minutes, 2);
-        assert_eq!(tc.seconds, 3);
-        assert_eq!(tc.frames, 4);
-        assert_eq!(tc.frame_rate, SmpteFrameRate::Fps30);
-    }
+        for (h, m, s, f, rate_bits, expected_rate) in cases {
+            let mut decoder = MtcDecoder::new();
+            feed_timecode(&mut decoder, h, m, s, f, rate_bits);
 
-    #[test]
-    fn test_24fps() {
-        let mut decoder = MtcDecoder::new();
-        feed_timecode(&mut decoder, 0, 0, 1, 23, 0);
-
-        let tc = decoder.timecode().unwrap();
-        assert_eq!(tc.frames, 23);
-        assert_eq!(tc.frame_rate, SmpteFrameRate::Fps24);
-    }
-
-    #[test]
-    fn test_25fps() {
-        let mut decoder = MtcDecoder::new();
-        feed_timecode(&mut decoder, 10, 30, 0, 0, 1);
-
-        let tc = decoder.timecode().unwrap();
-        assert_eq!(tc.hours, 10);
-        assert_eq!(tc.minutes, 30);
-        assert_eq!(tc.frame_rate, SmpteFrameRate::Fps25);
-    }
-
-    #[test]
-    fn test_2997_drop_frame() {
-        let mut decoder = MtcDecoder::new();
-        feed_timecode(&mut decoder, 0, 0, 0, 0, 2);
-
-        let tc = decoder.timecode().unwrap();
-        assert_eq!(tc.frame_rate, SmpteFrameRate::Fps2997Df);
+            let tc = decoder.timecode().expect("eight pieces is a full timecode");
+            assert_eq!(
+                (tc.hours, tc.minutes, tc.seconds, tc.frames),
+                (h, m, s, f),
+                "rate bits {rate_bits}"
+            );
+            assert_eq!(tc.frame_rate, expected_rate, "rate bits {rate_bits}");
+        }
     }
 
     #[test]

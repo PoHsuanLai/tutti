@@ -277,23 +277,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn mcm_round_trips_lower_zone() {
-        // MpeZoneConfig → MCM RPN → (master_channel, member_count) identity.
-        let cfg = MpeZoneConfig::lower(10);
-        let (master, members) = MpeZoneConfig::from_mcm(&cfg.to_mcm()).expect("is an MCM");
-        assert_eq!(master, 0); // lower zone master = Ch1 (0-indexed)
-        assert_eq!(members, 10);
-    }
-
-    #[test]
-    fn mcm_round_trips_upper_zone() {
-        let cfg = MpeZoneConfig::upper(7);
-        let (master, members) = MpeZoneConfig::from_mcm(&cfg.to_mcm()).expect("is an MCM");
-        assert_eq!(master, 15); // upper zone master = Ch16
-        assert_eq!(members, 7);
-    }
-
-    #[test]
     fn from_mcm_rejects_non_mcm() {
         // A plain note-on is not an MCM.
         assert!(MpeZoneConfig::from_mcm(&crate::ump::MidiEvent::note_on(
@@ -314,31 +297,56 @@ mod tests {
         assert!(MpeZoneConfig::from_mcm(&other_rpn).is_none());
     }
 
+    /// RP-053's channel layout for every zone shape: which channel is the
+    /// master, which span the members occupy, and that the two roles never
+    /// overlap.
+    ///
+    /// One table rather than a test per constructor: the property is the same
+    /// sentence in each row, and the rows are what differ. `member_channel_range`
+    /// is checked against the same span `is_member_channel` reports, so the
+    /// accessor and the predicate cannot drift apart.
     #[test]
-    fn test_zone_config_lower() {
-        let config = MpeZoneConfig::lower(10);
-        assert_eq!(config.master_channel, 0);
-        assert_eq!(config.member_count, 10);
-        assert!(config.is_master_channel(0));
-        assert!(!config.is_master_channel(1));
-        assert!(config.is_member_channel(1));
-        assert!(config.is_member_channel(10));
-        assert!(!config.is_member_channel(11));
-        assert!(!config.is_member_channel(0));
-    }
+    fn zone_layout_places_master_and_members_per_rp053() {
+        // (config, master channel, inclusive member span)
+        let cases = [
+            (MpeZoneConfig::lower(10), 0u8, (1u8, 10u8)),
+            (MpeZoneConfig::upper(5), 15, (10, 14)),
+            // The maximum zone: 15 members leave exactly the master channel out.
+            (MpeZoneConfig::lower(15), 0, (1, 15)),
+            (MpeZoneConfig::upper(15), 15, (0, 14)),
+            // A single-channel (non-MPE) zone has no member channels at all, so
+            // the range degenerates to the master's own channel.
+            (MpeZoneConfig::single_channel(7), 7, (7, 7)),
+        ];
 
-    #[test]
-    fn test_zone_config_upper() {
-        let config = MpeZoneConfig::upper(5);
-        assert_eq!(config.master_channel, 15);
-        assert_eq!(config.member_count, 5);
-        assert!(config.is_master_channel(15));
-        assert!(!config.is_master_channel(14));
-        // Upper zone: members are 15-member_count to 14 (i.e., 10 to 14)
-        assert!(config.is_member_channel(14));
-        assert!(config.is_member_channel(10));
-        assert!(!config.is_member_channel(9));
-        assert!(!config.is_member_channel(15));
+        for (config, master, (first, last)) in cases {
+            let label = format!("{:?}", config.zone);
+            assert_eq!(config.master_channel, master, "master of {label}");
+            assert!(config.is_master_channel(master), "{label} claims its master");
+
+            let range = config.member_channel_range();
+            assert_eq!((*range.start(), *range.end()), (first, last), "span of {label}");
+
+            if config.member_count == 0 {
+                // A single-channel zone's master is not also a member — the
+                // range collapsing onto it must not make it one.
+                assert!(!config.is_member_channel(master), "{label} has no members");
+                continue;
+            }
+
+            assert!(config.is_member_channel(first), "{label} first member");
+            assert!(config.is_member_channel(last), "{label} last member");
+            // The master is never a member, and neither is a channel just
+            // outside either end of the span.
+            assert!(!config.is_member_channel(master), "{label} master is not a member");
+            assert!(!config.is_master_channel(first), "{label} first member is not master");
+            if let Some(before) = first.checked_sub(1) {
+                assert!(!config.is_member_channel(before), "{label} below the span");
+            }
+            if last < 15 {
+                assert!(!config.is_member_channel(last + 1), "{label} above the span");
+            }
+        }
     }
 
     #[test]
@@ -471,32 +479,6 @@ mod tests {
     }
 
     #[test]
-    fn test_member_channel_range_lower() {
-        let config = MpeZoneConfig::lower(5);
-        let range = config.member_channel_range();
-        assert_eq!(*range.start(), 1);
-        assert_eq!(*range.end(), 5);
-    }
-
-    #[test]
-    fn test_member_channel_range_upper() {
-        let config = MpeZoneConfig::upper(5);
-        let range = config.member_channel_range();
-        // Upper zone: 15-5=10 to 14
-        assert_eq!(*range.start(), 10);
-        assert_eq!(*range.end(), 14);
-    }
-
-    #[test]
-    fn test_member_channel_range_single() {
-        let config = MpeZoneConfig::single_channel(7);
-        let range = config.member_channel_range();
-        // Single channel range is just ch..=ch
-        assert_eq!(*range.start(), 7);
-        assert_eq!(*range.end(), 7);
-    }
-
-    #[test]
     fn test_member_count_clamped() {
         // Lower zone: member_count clamped to 1..=15
         let config = MpeZoneConfig::lower(0);
@@ -511,23 +493,6 @@ mod tests {
         assert_eq!(config.member_count, 15);
     }
 
-    #[test]
-    fn test_lower_zone_max_members() {
-        // 15 members: master=0, members=1-15
-        let config = MpeZoneConfig::lower(15);
-        assert!(config.is_member_channel(1));
-        assert!(config.is_member_channel(15));
-        assert!(!config.is_member_channel(0)); // Master, not member
-    }
-
-    #[test]
-    fn test_upper_zone_max_members() {
-        // 15 members: master=15, members=0-14
-        let config = MpeZoneConfig::upper(15);
-        assert!(config.is_member_channel(0));
-        assert!(config.is_member_channel(14));
-        assert!(!config.is_member_channel(15)); // Master, not member
-    }
 }
 
 #[cfg(all(test, feature = "serde"))]

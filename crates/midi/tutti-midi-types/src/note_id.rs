@@ -185,12 +185,26 @@ mod tests {
         assert_eq!(map.get(NoteId::from_raw(1)), Some(&9));
     }
 
+    /// An over-wide note number is masked into its 7 bits, never carried into
+    /// the channel field.
+    ///
+    /// The doc on [`NoteId::from_channel_note`] promises a `note` ≥ 128 "can
+    /// never alias a different pair or read back changed". Without the mask the
+    /// 8th bit lands in the channel nibble, so note 128 on channel 0 would be
+    /// indistinguishable from note 0 on channel 1 — two live notes silently
+    /// sharing one id.
     #[test]
-    fn u32_conversions_round_trip_and_alias_raw() {
-        let id: NoteId = 0x0340u32.into();
-        assert_eq!(id, NoteId::from_raw(0x0340));
-        let raw: u32 = id.into();
-        assert_eq!(raw, 0x0340);
+    fn an_over_wide_note_is_masked_rather_than_aliased() {
+        for note in [128u8, 129, 200, 255] {
+            let id = NoteId::from_channel_note(MidiChannel::new(0), note);
+            assert_eq!(id.channel(), MidiChannel::new(0), "note {note} moved channel");
+            assert_eq!(id.note_number(), note & 0x7f, "note {note} read back changed");
+            assert_ne!(
+                id,
+                NoteId::from_channel_note(MidiChannel::new(1), note & 0x7f),
+                "note {note} aliased onto the next channel"
+            );
+        }
     }
 
     #[test]

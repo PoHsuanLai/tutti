@@ -296,30 +296,62 @@ mod tests {
         }
     }
 
+    /// Every `ProfileState` survives `encode` → `decode` unchanged.
+    ///
+    /// One table over the variants rather than a test each: the property is
+    /// identical in every row, so a per-variant test adds a function name and no
+    /// assertion. A row per variant also makes an *unlisted* variant visible as
+    /// a gap in the table, which four separate tests do not.
+    ///
+    /// Structural round-tripping is the floor, not the ceiling — it only proves
+    /// the codec agrees with itself. The tests below this one pin what it cannot:
+    /// spec sub-IDs, byte positions and field ranges, where agreeing with
+    /// ourselves is exactly the failure.
     #[test]
-    fn inquiry_round_trips() {
-        let m = msg(ProfileState::Inquiry);
-        assert_eq!(CiMessage::decode(&m.encode()).unwrap(), m);
-    }
+    fn every_profile_state_round_trips_through_encode_decode() {
+        let id = ProfileId([0x7E, 1, 2, 3, 4]);
+        let states = [
+            ProfileState::Inquiry,
+            ProfileState::InquiryReply {
+                enabled: vec![id, ProfileId([0x7E, 5, 6, 7, 8])],
+                disabled: vec![ProfileId([0x00, 9, 10, 11, 12])],
+            },
+            // An empty list is a distinct shape from a populated one: a length
+            // written as "at least one" would still round-trip the case above.
+            ProfileState::InquiryReply {
+                enabled: Vec::new(),
+                disabled: Vec::new(),
+            },
+            ProfileState::Added(id),
+            ProfileState::Removed(id),
+            ProfileState::Enabled(id),
+            ProfileState::Disabled(id),
+            ProfileState::SetOn(id),
+            ProfileState::SetOff(id),
+            ProfileState::DetailsInquiry {
+                profile: ProfileId([0x7E, 9, 8, 7, 6]),
+                target: 0x01,
+            },
+            ProfileState::DetailsReply {
+                profile: ProfileId([0x7E, 9, 8, 7, 6]),
+                target: 0x01,
+                data: vec![4, 0, 16],
+            },
+            // 200 bytes needs the second length byte, which a 1-byte length or a
+            // careless mask would drop.
+            ProfileState::SpecificData {
+                profile: ProfileId([1, 2, 3, 4, 5]),
+                data: (0..200u8).map(|b| b & 0x7F).collect(),
+            },
+        ];
 
-    #[test]
-    fn inquiry_reply_lists_round_trip() {
-        let m = msg(ProfileState::InquiryReply {
-            enabled: vec![ProfileId([0x7E, 1, 2, 3, 4]), ProfileId([0x7E, 5, 6, 7, 8])],
-            disabled: vec![ProfileId([0x00, 9, 10, 11, 12])],
-        });
-        let back = CiMessage::decode(&m.encode()).expect("decodes");
-        assert_eq!(back, m);
-    }
-
-    #[test]
-    fn added_and_removed_reports_round_trip() {
-        for state in [
-            ProfileState::Added(ProfileId([0x7E, 1, 2, 3, 4])),
-            ProfileState::Removed(ProfileId([0x7E, 1, 2, 3, 4])),
-        ] {
+        for state in states {
             let m = msg(state);
-            assert_eq!(CiMessage::decode(&m.encode()).unwrap(), m);
+            assert_eq!(
+                CiMessage::decode(&m.encode()).expect("decodes"),
+                m,
+                "round trip of {m:?}"
+            );
         }
     }
 
@@ -334,23 +366,6 @@ mod tests {
         assert_eq!(sub_id(ProfileState::Removed(id)), 0x27);
         assert_eq!(sub_id(ProfileState::Enabled(id)), 0x24);
         assert_eq!(sub_id(ProfileState::Disabled(id)), 0x25);
-    }
-
-    #[test]
-    fn details_inquiry_and_reply_round_trip() {
-        let profile = ProfileId([0x7E, 9, 8, 7, 6]);
-        let inquiry = msg(ProfileState::DetailsInquiry {
-            profile,
-            target: 0x01,
-        });
-        assert_eq!(CiMessage::decode(&inquiry.encode()).unwrap(), inquiry);
-
-        let reply = msg(ProfileState::DetailsReply {
-            profile,
-            target: 0x01,
-            data: vec![4, 0, 16],
-        });
-        assert_eq!(CiMessage::decode(&reply.encode()).unwrap(), reply);
     }
 
     #[test]
@@ -393,17 +408,6 @@ mod tests {
             "length is four LSB-first 7-bit bytes"
         );
         assert_eq!(CiMessage::decode(&bytes).unwrap(), m);
-    }
-
-    #[test]
-    fn specific_data_round_trips_a_payload_past_the_7bit_boundary() {
-        // 200 bytes needs the second length byte, which a 1-byte length or a
-        // careless mask would drop.
-        let m = msg(ProfileState::SpecificData {
-            profile: ProfileId([1, 2, 3, 4, 5]),
-            data: (0..200u8).map(|b| b & 0x7F).collect(),
-        });
-        assert_eq!(CiMessage::decode(&m.encode()).unwrap(), m);
     }
 
     #[test]

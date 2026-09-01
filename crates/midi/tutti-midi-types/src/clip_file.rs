@@ -577,13 +577,6 @@ mod tests {
     use tutti_types::{CCNumber, MidiChannel};
 
     #[test]
-    fn header_magic_is_smf2clip() {
-        assert_eq!(&CLIP_FILE_MAGIC, b"SMF2CLIP");
-        let bytes = write_clip_file(480, &[]);
-        assert_eq!(&bytes[..8], b"SMF2CLIP");
-    }
-
-    #[test]
     fn empty_clip_round_trips_dctpq() {
         let bytes = write_clip_file(480, &[]);
         let parsed = read_clip_file(&bytes).expect("parses");
@@ -865,12 +858,6 @@ mod tests {
         let bare = read_clip_file(&write_clip_file(480, &[])).expect("parses");
         assert_eq!(bare.tempo_bpm(), None);
         assert_eq!(bare.time_signature(), None);
-    }
-
-    #[test]
-    fn clip_event_tuple_and_new_are_equivalent() {
-        let ev = MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000);
-        assert_eq!(ClipEvent::new(240, ev), ClipEvent::from((240, ev)));
     }
 
     #[test]

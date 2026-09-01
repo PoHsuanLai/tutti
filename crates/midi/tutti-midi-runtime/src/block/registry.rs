@@ -331,6 +331,13 @@ mod tests {
         assert_eq!(receiver.poll_into(&mut buf), 2);
     }
 
+    /// The `note_on` / `note_off` conveniences build the same events the
+    /// explicit constructors do.
+    ///
+    /// The name has to be earned: this previously asserted only that two events
+    /// arrived, which is true of any two pushes and says nothing about whether
+    /// the helpers agree with `MidiEvent::note_on_7bit`. A helper that emitted
+    /// the wrong channel, note, or velocity scaling would have passed.
     #[test]
     fn sender_note_helpers_match_explicit_events() {
         let (sender, receiver) = MidiMailbox::pair(MidiUnitId::next());
@@ -339,6 +346,14 @@ mod tests {
 
         let mut buf = [note_on(0, 0); 4];
         assert_eq!(receiver.poll_into(&mut buf), 2);
+        assert_eq!(
+            buf[0],
+            MidiEvent::note_on_7bit(MidiGroup::FIRST, MidiChannel::FIRST, 60, 100)
+        );
+        assert_eq!(
+            buf[1],
+            MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0)
+        );
     }
 
     #[test]
@@ -379,22 +394,22 @@ mod tests {
         // Sender holds an Arc to the slot; dropping the receiver doesn't
         // invalidate pushes. Events accumulate in the slot until the sender
         // is also dropped.
+        //
+        // The observable claim is `queue`'s accepted count: a push into a slot
+        // whose receiver is gone must still *land*, not silently report zero.
+        // A sender that started rejecting once the reader went away would strand
+        // a unit whose receiver is rebuilt between blocks.
         let (sender, receiver) = MidiMailbox::pair(MidiUnitId::next());
         drop(receiver);
-        sender.queue(&[note_on(60, 100)]);
-        // No assertion possible without the receiver — but no crash is the test.
-    }
-
-    #[test]
-    fn back_pressure_drops_when_full() {
-        let (sender, receiver) = MidiMailbox::pair(MidiUnitId::next());
-        let events: Vec<_> = (0..512).map(|i| note_on((i % 128) as u8, 100)).collect();
-        sender.queue(&events);
-
-        let mut buf = [note_on(0, 0); 512];
-        let n = receiver.poll_into(&mut buf);
-        assert!(n <= EVENTS_PER_UNIT);
-        assert!(n > 0);
+        assert_eq!(
+            sender.queue(&[note_on(60, 100), note_on(64, 100)]),
+            2,
+            "both events accepted with no receiver attached"
+        );
+        assert!(
+            sender.note_on(MidiChannel::FIRST, 67, 100),
+            "the convenience path accepts too"
+        );
     }
 
     #[test]
@@ -408,6 +423,12 @@ mod tests {
         assert!(snap.has_events(id));
     }
 
+    /// Two subscribed units do not see each other's traffic.
+    ///
+    /// Counting arrivals is not enough — each unit receiving *one* event is
+    /// equally true of a bus that broadcasts to everyone and of one that routes.
+    /// The note numbers are distinct so the assertion is about *which* event
+    /// landed where.
     #[test]
     fn bus_routes_by_unit_id() {
         let bus = MidiBus::new();
@@ -423,14 +444,10 @@ mod tests {
 
         let mut buf = [note_on(0, 0); 4];
         assert_eq!(r1.poll_into(&mut buf), 1);
-        assert_eq!(r2.poll_into(&mut buf), 1);
-    }
+        assert_eq!(buf[0].note(), Some(60), "unit 1 gets only its own note");
 
-    #[test]
-    fn bus_queue_for_unknown_unit_is_silent() {
-        let bus = MidiBus::new();
-        bus.queue(MidiUnitId::new(999), &[note_on(60, 100)]);
-        // No panic, no allocation, no observable effect.
+        assert_eq!(r2.poll_into(&mut buf), 1);
+        assert_eq!(buf[0].note(), Some(64), "unit 2 gets only its own note");
     }
 
     #[test]

@@ -183,6 +183,7 @@ mod tests {
         (60_000_000.0 / (bpm * PPQN as f64)) as u64
     }
 
+    /// 24 ticks is one beat, and the count keeps accumulating across beats.
     #[test]
     fn test_basic_beat_counting() {
         let mut clock = MidiClockDecoder::new();
@@ -197,6 +198,18 @@ mod tests {
             ts += interval;
         }
         assert!((clock.beat_position() - 1.0).abs() < 0.001);
+
+        // Three more beats' worth: the position accumulates rather than
+        // wrapping or resetting at the beat boundary.
+        for _ in 0..72 {
+            clock.tick(ts);
+            ts += interval;
+        }
+        assert!(
+            (clock.beat_position() - 4.0).abs() < 0.001,
+            "96 ticks / 24 PPQN = 4 beats, got {}",
+            clock.beat_position()
+        );
     }
 
     #[test]
@@ -224,43 +237,31 @@ mod tests {
         ));
     }
 
+    /// The decoder recovers the sender's tempo from the tick spacing alone.
+    ///
+    /// A table over several rates rather than one test per rate: a decoder that
+    /// returned a hardcoded 120 would pass a single-rate test, so the rates
+    /// have to vary within one property for the assertion to mean anything.
     #[test]
-    fn test_tempo_derivation_120bpm() {
-        let mut clock = MidiClockDecoder::new();
-        clock.start_msg();
+    fn tempo_is_derived_from_the_tick_interval() {
+        for bpm in [60.0f64, 120.0, 140.0, 200.0] {
+            let mut clock = MidiClockDecoder::new();
+            clock.start_msg();
 
-        let interval = us_per_tick(120.0);
-        let mut ts = 0u64;
-        // Feed enough ticks for tempo stabilization
-        for _ in 0..48 {
-            clock.tick(ts);
-            ts += interval;
+            let interval = us_per_tick(bpm);
+            let mut ts = 0u64;
+            // Two beats' worth — enough for the estimate to stabilize.
+            for _ in 0..48 {
+                clock.tick(ts);
+                ts += interval;
+            }
+
+            let tempo = clock.tempo_bpm().expect("48 ticks is enough to derive a tempo");
+            assert!(
+                !tempo.differs_from(Bpm(bpm), 1.0),
+                "expected ~{bpm} BPM, got {tempo:?}"
+            );
         }
-
-        let tempo = clock.tempo_bpm().unwrap();
-        assert!(
-            !tempo.differs_from(Bpm(120.0), 1.0),
-            "Expected ~120 BPM, got {tempo:?}"
-        );
-    }
-
-    #[test]
-    fn test_tempo_derivation_140bpm() {
-        let mut clock = MidiClockDecoder::new();
-        clock.start_msg();
-
-        let interval = us_per_tick(140.0);
-        let mut ts = 0u64;
-        for _ in 0..48 {
-            clock.tick(ts);
-            ts += interval;
-        }
-
-        let tempo = clock.tempo_bpm().unwrap();
-        assert!(
-            !tempo.differs_from(Bpm(140.0), 1.0),
-            "Expected ~140 BPM, got {tempo:?}"
-        );
     }
 
     #[test]
@@ -359,20 +360,5 @@ mod tests {
         assert!(clock.tempo_bpm().is_none());
         assert!((clock.beat_position() - 0.0).abs() < 0.001);
         assert_eq!(clock.transport_state(), ClockTransportState::Stopped);
-    }
-
-    #[test]
-    fn test_beat_position_at_4_beats() {
-        let mut clock = MidiClockDecoder::new();
-        clock.start_msg();
-
-        let interval = us_per_tick(120.0);
-        let mut ts = 0u64;
-        for _ in 0..96 {
-            clock.tick(ts);
-            ts += interval;
-        }
-        // 96 ticks / 24 PPQN = 4 beats
-        assert!((clock.beat_position() - 4.0).abs() < 0.001);
     }
 }

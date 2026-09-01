@@ -310,29 +310,6 @@ mod tests {
     }
 
     #[test]
-    fn test_channel_voice_map() {
-        let config = MpeZoneConfig::lower(3);
-        let mut map = MpeChannelVoiceMap::new(config);
-
-        // Assign note 60
-        let ch1 = map.assign_note(60);
-        assert!(ch1.is_some());
-        assert!(map.get_channel_for_note(60).is_some());
-
-        // Assign note 62
-        let ch2 = map.assign_note(62);
-        assert!(ch2.is_some());
-        assert_ne!(ch1, ch2);
-
-        // Release note 60
-        map.release_note(60);
-        assert!(map.get_channel_for_note(60).is_none());
-
-        // Note 62 should still be assigned
-        assert!(map.get_channel_for_note(62).is_some());
-    }
-
-    #[test]
     fn test_voice_stealing_cleans_up_old_mapping() {
         // 2 member channels (1, 2) for lower zone
         let config = MpeZoneConfig::lower(2);
@@ -435,33 +412,9 @@ mod tests {
         assert!(ch.is_some());
     }
 
-    #[test]
-    fn test_handles_channel_lower_zone() {
-        let config = MpeZoneConfig::lower(3);
-        let map = MpeChannelVoiceMap::new(config);
-
-        // Master (0) and members (1-3)
-        assert!(map.handles_channel(0));
-        assert!(map.handles_channel(1));
-        assert!(map.handles_channel(2));
-        assert!(map.handles_channel(3));
-        assert!(!map.handles_channel(4));
-        assert!(!map.handles_channel(15));
-    }
-
-    #[test]
-    fn test_handles_channel_upper_zone() {
-        let config = MpeZoneConfig::upper(3);
-        let map = MpeChannelVoiceMap::new(config);
-
-        // Master (15) and members (12-14)
-        assert!(map.handles_channel(15));
-        assert!(map.handles_channel(14));
-        assert!(map.handles_channel(13));
-        assert!(map.handles_channel(12));
-        assert!(!map.handles_channel(11));
-        assert!(!map.handles_channel(0));
-    }
+    // NOTE: `MpeChannelVoiceMap::handles_channel` is a one-line forward to
+    // `MpeZoneConfig::handles_channel`, whose master/member layout is pinned per
+    // zone shape by `zone::tests::zone_layout_places_master_and_members_per_rp053`.
 
     #[test]
     fn test_assign_note_out_of_range() {

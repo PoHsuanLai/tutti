@@ -95,13 +95,10 @@ impl MidiEvent {
 mod tests {
     use super::*;
 
-    #[test]
-    fn sysex7_single_packet() {
-        let mut out = Vec::new();
-        MidiEvent::sysex7_fragments(MidiGroup::FIRST, &[0x7E, 0x7F, 0x06, 0x01], &mut out);
-        assert_eq!(out.len(), 1);
-        assert_eq!(out[0].data_words().len(), 2);
-    }
+    // NOTE: the single-packet case of `sysex7_fragments` is covered twice over —
+    // `sysex7_multi_packet` below pins the same two-words-per-packet shape (and
+    // the packet count), and `sysex7_single_payload_round_trips` recovers the
+    // identical `[0x7E, 0x7F, 0x06, 0x01]` payload byte for byte.
 
     #[test]
     fn sysex7_multi_packet() {

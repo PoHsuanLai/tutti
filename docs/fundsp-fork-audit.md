@@ -23,7 +23,7 @@ not reachable from a used path → archive candidate).
 | Module | Class | Evidence (consumer `file:line` / dependent / "none") |
 |---|---|---|
 | `audionode` | USED-DIRECTLY | `tutti-core/src/transport/click.rs` (`AudioNode`, `Frame`, typenum) |
-| `audiounit` | USED-DIRECTLY | `tutti-core/src/processor.rs`; 27 `impl AudioUnit` in `tutti-units` |
+| `audiounit` | USED-DIRECTLY | `tutti-core/src/processor.rs`; 27 `impl AudioUnit` in `tutti-nodes` |
 | `net` | USED-DIRECTLY | `tutti-core/src/graph.rs` (`Net`, `NodeId`, `Source`); re-export `lib.rs:90` |
 | `realnet` | USED-DIRECTLY | `tutti-core/src/graph.rs`/`processor.rs` (`NetBackend`); re-export `lib.rs:100` |
 | `buffer` | USED-DIRECTLY | `BufferVec` re-export `lib.rs:87`; `BufferRef`/`BufferMut` in every unit |
@@ -89,7 +89,7 @@ These re-export names had **zero downstream consumers** (verified across all pat
 - `WaveAsset` (`lib.rs`) — used by `dawai-model/src/clip/audio.rs`, `bevy-tutti`.
 
 Note: the mono `SvfFilterNode` is **not** dead (an earlier note speculated it might be) — it backs
-`EqBandNode` (`tutti-units/src/filter/eq_band.rs`) and has RT-no-alloc tests. Kept.
+`EqBandNode` (`tutti-nodes/src/filter/eq_band.rs`) and has RT-no-alloc tests. Kept.
 
 ---
 

@@ -2,14 +2,14 @@
 //! with a panner, then fold the panners into one N-wide master.
 //!
 //! [`VbapPannerNode`](crate::vbap::VbapPannerNode) does the placing. The folding
-//! is [`ChannelSumUnit`](tutti_units::ChannelSumUnit)'s — which lives in
-//! `tutti-units` rather than here, because summing `K` sources of `N` channels
+//! is [`ChannelSumNode`](tutti_nodes::ChannelSumNode)'s — which lives in
+//! `tutti-nodes` rather than here, because summing `K` sources of `N` channels
 //! is arity arithmetic with no geometry in it, and mixers that never touch VBAP
 //! need it too.
 
 use tutti_core::dsp::Net;
 use tutti_core::{Azimuth, ChannelLayout, Elevation, Hz, NodeId, Q};
-use tutti_units::{ChannelSumUnit, SvfFilterNode, SvfType};
+use tutti_nodes::{ChannelSumNode, SvfFilterNode, SvfType};
 
 use super::error::Result;
 use super::node::VbapPannerNode;
@@ -53,12 +53,12 @@ impl VbapSource {
 /// Assemble a VBAP surround producer into `net` and return the summed mix node.
 ///
 /// Each source gets a [`VbapPannerNode::for_layout`] placed at its position;
-/// every panner's `CH` outputs are summed by a [`ChannelSumUnit`] into one
+/// every panner's `CH` outputs are summed by a [`ChannelSumNode`] into one
 /// `layout`-wide node, whose id is returned. The caller decides what to do with
 /// it — `net.pipe_output(mix)` for a direct surround render, or feed it into a
 /// master strip. Pure graph surgery, no ECS.
 ///
-/// This is the one-call form of the `sources → panners → ChannelSumUnit` graph
+/// This is the one-call form of the `sources → panners → ChannelSumNode` graph
 /// (the shape proven by the surround tests). It builds the whole mix at once, so
 /// it suits offline assembly and tests; an incremental reconciler that adds and
 /// removes sources over time borrows the *structure* rather than calling this.
@@ -94,7 +94,7 @@ pub fn build_vbap_mix(
     // LFE channel would be empty.
     let lfe_group = crate::layout::lfe_channel(layout).map(|lfe_ch| {
         // Mono-sum the sources' first channel, then low-pass.
-        let mono_sum = net.push(Box::new(ChannelSumUnit::new(
+        let mono_sum = net.push(Box::new(ChannelSumNode::new(
             sources.len().max(1),
             ChannelLayout::MONO,
         )));
@@ -111,13 +111,13 @@ pub fn build_vbap_mix(
     });
 
     // The main sum folds every panner (each an N-wide group) plus, when present,
-    // one extra group carrying only the LFE send. `ChannelSumUnit::new` clamps a
+    // one extra group carrying only the LFE send. `ChannelSumNode::new` clamps a
     // zero source count to 1, so an empty mix is a valid silent N-wide node.
     let groups = panner_ids.len() + usize::from(lfe_group.is_some());
     // `layout`, not the degraded `channels` count: the width is already in hand
     // here, so hand the bus the declaration rather than a number it has to
     // re-interpret.
-    let sum = net.push(Box::new(ChannelSumUnit::new(groups, layout)));
+    let sum = net.push(Box::new(ChannelSumNode::new(groups, layout)));
     for (s, &pid) in panner_ids.iter().enumerate() {
         for c in 0..channels {
             net.connect(pid, c, sum, s * channels + c);
@@ -280,7 +280,7 @@ mod tests {
         let mut net = Net::new(0, 4);
         let mix =
             build_vbap_mix(&mut net, ChannelLayout::QUAD, &[]).expect("empty mix still builds");
-        // ChannelSumUnit clamps 0 sources to 1 input group, so it's a valid
+        // ChannelSumNode clamps 0 sources to 1 input group, so it's a valid
         // 4-out node reading zeros.
         assert_eq!(net.outputs_in(mix), 4);
     }

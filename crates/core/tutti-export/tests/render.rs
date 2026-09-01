@@ -195,7 +195,7 @@ fn a_convolver_reports_its_ir_ring_out() {
     let ir = vec![0.5f32; 4096];
     let mut n = tutti_core::dsp::Net::new(0, 1);
     let src = n.push(Box::new(dc(0.5)));
-    let conv = n.push(Box::new(tutti_units::ConvolverNode::with_ir(&ir)));
+    let conv = n.push(Box::new(tutti_nodes::ConvolverNode::with_ir(&ir)));
     n.connect(src, 0, conv, 0);
     n.pipe_output(conv);
 
@@ -214,8 +214,8 @@ fn cascaded_convolvers_sum_their_tails() {
     let b = vec![0.5f32; 2048];
     let mut n = tutti_core::dsp::Net::new(0, 1);
     let src = n.push(Box::new(dc(0.5)));
-    let first = n.push(Box::new(tutti_units::ConvolverNode::with_ir(&a)));
-    let second = n.push(Box::new(tutti_units::ConvolverNode::with_ir(&b)));
+    let first = n.push(Box::new(tutti_nodes::ConvolverNode::with_ir(&a)));
+    let second = n.push(Box::new(tutti_nodes::ConvolverNode::with_ir(&b)));
     n.connect(src, 0, first, 0);
     n.connect(first, 0, second, 0);
     n.pipe_output(second);
@@ -282,7 +282,7 @@ fn one_silent_node_makes_the_figure_partial_without_losing_it() {
     let mut n = tutti_core::dsp::Net::new(0, 1);
     let src = n.push(Box::new(dc(0.5)));
     let quiet = n.push(Box::new(Unreporting));
-    let conv = n.push(Box::new(tutti_units::ConvolverNode::with_ir(&ir)));
+    let conv = n.push(Box::new(tutti_nodes::ConvolverNode::with_ir(&ir)));
     n.connect(src, 0, quiet, 0);
     n.connect(quiet, 0, conv, 0);
     n.pipe_output(conv);
@@ -344,7 +344,7 @@ fn resolving_a_reported_graph_keeps_its_own_figure() {
     let ir = vec![0.5f32; 4096];
     let mut n = tutti_core::dsp::Net::new(0, 1);
     let src = n.push(Box::new(dc(0.5)));
-    let conv = n.push(Box::new(tutti_units::ConvolverNode::with_ir(&ir)));
+    let conv = n.push(Box::new(tutti_nodes::ConvolverNode::with_ir(&ir)));
     n.connect(src, 0, conv, 0);
     n.pipe_output(conv);
 
@@ -366,7 +366,7 @@ fn resolving_a_reported_graph_keeps_its_own_figure() {
 fn a_stateless_node_reports_no_tail_rather_than_an_unknown_one() {
     use tutti_core::AudioUnit;
 
-    let mut dist = tutti_units::DistortionNode::new(tutti_units::ShapeKind::Tanh, 1.0);
+    let mut dist = tutti_nodes::DistortionNode::new(tutti_nodes::ShapeKind::Tanh, 1.0);
     assert_eq!(dist.tail(), tutti_types::Tail::None);
 }
 

@@ -82,7 +82,7 @@ mod wav_out;
 
 pub use error::{Error, Result};
 pub use mic::{share_mic_ring, MicMonitorNode, MicRing};
-pub use recorder::Recorder;
+pub use recorder::{FinalizeStatus, Recorder};
 pub use tap_in::TapIn;
 // `MAX_WAV_FOLD_CHANNELS` is the widest input `WavOut` will fold, so a caller
 // sizing a buffer for it has to name the same ceiling.

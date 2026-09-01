@@ -3,9 +3,9 @@
 use std::path::Path;
 use tutti_plugin::server::{
     BusChannels, ClapFeature, EditorPresence, EditorSize, Features, LoadedPlugin, Normalized,
-    NoteExpressionChanges, ParamAddress, ParamRange, ParameterChanges, ParameterInfo, PluginAudio,
-    PluginClass, PluginDescriptor, PluginEditorHost, PluginError, PluginMeta, PluginParams,
-    PluginPresets, PluginResult, PluginState, PluginTail, PresetId, Samples, WindowHandle,
+    NoteExpressionChanges, ParamAddress, ParamRange, ParameterInfo, PluginAudio, PluginClass,
+    PluginDescriptor, PluginEditorHost, PluginError, PluginMeta, PluginParams, PluginPresets,
+    PluginResult, PluginState, PluginTail, PresetId, Samples, WindowHandle,
 };
 use tutti_plugin::server::{ProcessContext, ProcessOutput, RenderMode};
 
@@ -415,7 +415,8 @@ impl PluginAudio for ClapInstance {
         &mut self,
         buffer: tutti_plugin::server::AudioBufferMut<'_, '_>,
         ctx: &ProcessContext,
-    ) -> PluginResult<ProcessOutput> {
+        out: &mut ProcessOutput,
+    ) -> PluginResult<()> {
         use tutti_plugin::server::AudioBufferMut;
         // The buffer format must match the format the instance was activated
         // with (the `ClapInner` arm). A mismatch is a negotiation bug upstream;
@@ -429,12 +430,11 @@ impl PluginAudio for ClapInstance {
                     num_samples: buf.num_samples,
                     sample_rate: sr,
                 };
-                Ok(convert_process_output(Self::process_active(
-                    active,
-                    &mut clap_buffer,
-                    ctx,
-                    sr,
-                )?))
+                copy_process_output(
+                    Self::process_active(active, &mut clap_buffer, ctx, sr)?,
+                    out,
+                );
+                Ok(())
             }
             (AudioBufferMut::F64(buf), ClapInner::F64(active)) => {
                 let sr = buf.sample_rate;
@@ -444,13 +444,14 @@ impl PluginAudio for ClapInstance {
                     num_samples: buf.num_samples,
                     sample_rate: sr,
                 };
-                Ok(convert_process_output(Self::process_active(
-                    active,
-                    &mut clap_buffer,
-                    ctx,
-                    sr,
-                )?))
+                copy_process_output(
+                    Self::process_active(active, &mut clap_buffer, ctx, sr)?,
+                    out,
+                );
+                Ok(())
             }
+            // The `.to_string()` here is not steady state and stays — see the
+            // matching arm in the vst3 loader for the argument.
             (AudioBufferMut::F32(_), ClapInner::F64(_))
             | (AudioBufferMut::F64(_), ClapInner::F32(_)) => Err(PluginError::Process(
                 "audio buffer sample format does not match the format the CLAP \
@@ -714,39 +715,41 @@ fn convert_transport(
         .with_bar(transport.bar.position_quarters, transport.bar.number)
 }
 
+/// Copy one block's emitted events out of the CLAP host's pooled buffers into
+/// the caller's reusable [`ProcessOutput`].
+///
+/// `out` arrives cleared, with its heap capacity intact, so every `extend` and
+/// `add_change` below writes into storage that already exists. This is the
+/// point of taking `out` by reference: `ClapInstance::process` returns a
+/// **borrowing** `ProcessOutputRef` into its own pools, and building a fresh
+/// owned `ProcessOutput` here — as this did — threw that away and allocated
+/// three collections per block on the audio thread.
 #[cfg(feature = "clap")]
-fn convert_process_output(
+fn copy_process_output(
     output: tutti_clap_host::instance::ProcessOutputRef<'_>,
-) -> ProcessOutput {
-    let midi_events: tutti_plugin::server::MidiEventVec =
-        output.midi_events.iter().copied().collect();
+    out: &mut ProcessOutput,
+) {
+    out.midi_events.extend(output.midi_events.iter().copied());
 
-    let mut param_changes = ParameterChanges::new();
     for queue in &output.param_changes.queues {
-        let mut tutti_queue = tutti_plugin::server::ParameterQueue::new(queue.param_id);
         for point in &queue.points {
-            tutti_queue.add_point(point.sample_offset, point.value.get());
+            // Pooled queues — see the vst3 loader's `process_block` for why
+            // this is not `ParameterChanges::add_change`.
+            out.emit_param_point(queue.param_id, point.sample_offset, point.value.get());
         }
-        param_changes.add_queue(tutti_queue);
     }
 
     // CLAP's note expression uses the shared `NoteExpressionType` (Pressure /
     // Expression included), so this narrows CLAP's voice-addressed value down
     // to the protocol shape without losing the dimension.
-    let mut note_expression = NoteExpressionChanges::new();
     for expr in output.note_expressions {
-        note_expression.add_change(tutti_plugin::server::NoteExpressionValue {
-            sample_offset: expr.sample_offset,
-            note_id: expr.note_id,
-            expression_type: expr.expression_type,
-            value: expr.value,
-        });
-    }
-
-    ProcessOutput {
-        midi_events,
-        param_changes,
-        note_expression,
+        out.note_expression
+            .add_change(tutti_plugin::server::NoteExpressionValue {
+                sample_offset: expr.sample_offset,
+                note_id: expr.note_id,
+                expression_type: expr.expression_type,
+                value: expr.value,
+            });
     }
 }
 
@@ -1081,7 +1084,12 @@ mod tests {
 
         let ctx = ProcessContext::new();
         // Should not panic
-        let _output = instance.process(tutti_plugin::server::AudioBufferMut::F32(buffer), &ctx);
+        let mut out = tutti_plugin::server::ProcessOutput::default();
+        let _output = instance.process(
+            tutti_plugin::server::AudioBufferMut::F32(buffer),
+            &ctx,
+            &mut out,
+        );
     }
 
     // Note: f64 processing test removed — TAL-NoiseMaker's CLAP plugin crashes
@@ -1133,7 +1141,12 @@ mod tests {
             };
 
             let ctx = ProcessContext::new().midi(&note_on);
-            let _output = instance.process(tutti_plugin::server::AudioBufferMut::F32(buffer), &ctx);
+            let mut out = tutti_plugin::server::ProcessOutput::default();
+            let _output = instance.process(
+                tutti_plugin::server::AudioBufferMut::F32(buffer),
+                &ctx,
+                &mut out,
+            );
 
             // Check output for non-zero samples
             for ch in output_data.iter() {
@@ -1162,9 +1175,11 @@ mod tests {
                 sample_rate: 44100.0,
             };
 
+            let mut out = tutti_plugin::server::ProcessOutput::default();
             let _output = instance.process(
                 tutti_plugin::server::AudioBufferMut::F32(buffer),
                 &empty_ctx,
+                &mut out,
             );
 
             for ch in output_data.iter() {
@@ -1252,7 +1267,12 @@ mod tests {
         };
 
         let ctx = ProcessContext::new();
-        let _output = instance.process(tutti_plugin::server::AudioBufferMut::F32(buffer), &ctx);
+        let mut out = tutti_plugin::server::ProcessOutput::default();
+        let _output = instance.process(
+            tutti_plugin::server::AudioBufferMut::F32(buffer),
+            &ctx,
+            &mut out,
+        );
     }
 
     #[test]
@@ -1294,7 +1314,12 @@ mod tests {
                 ProcessContext::new()
             };
 
-            let _output = instance.process(tutti_plugin::server::AudioBufferMut::F32(buffer), &ctx);
+            let mut out = tutti_plugin::server::ProcessOutput::default();
+            let _output = instance.process(
+                tutti_plugin::server::AudioBufferMut::F32(buffer),
+                &ctx,
+                &mut out,
+            );
         }
     }
 
@@ -1353,10 +1378,12 @@ mod tests {
             num_samples,
             sample_rate: 44100.0,
         };
+        let mut out = tutti_plugin::server::ProcessOutput::default();
         instance
             .process(
                 tutti_plugin::server::AudioBufferMut::F32(buffer),
                 &ProcessContext::new(),
+                &mut out,
             )
             .expect("process should succeed");
 
@@ -1655,7 +1682,12 @@ mod tests {
         };
 
         let ctx = ProcessContext::new().params(&changes);
-        let _output = instance.process(tutti_plugin::server::AudioBufferMut::F32(buffer), &ctx);
+        let mut out = tutti_plugin::server::ProcessOutput::default();
+        let _output = instance.process(
+            tutti_plugin::server::AudioBufferMut::F32(buffer),
+            &ctx,
+            &mut out,
+        );
     }
 
     #[test]
@@ -1696,7 +1728,12 @@ mod tests {
         let ctx = ProcessContext::new()
             .midi(&note_on)
             .note_expression(&expr_changes);
-        let _output = instance.process(tutti_plugin::server::AudioBufferMut::F32(buffer), &ctx);
+        let mut out = tutti_plugin::server::ProcessOutput::default();
+        let _output = instance.process(
+            tutti_plugin::server::AudioBufferMut::F32(buffer),
+            &ctx,
+            &mut out,
+        );
     }
 
     #[test]
@@ -1725,7 +1762,12 @@ mod tests {
         };
 
         let ctx = ProcessContext::new().transport(&transport);
-        let _output = instance.process(tutti_plugin::server::AudioBufferMut::F32(buffer), &ctx);
+        let mut out = tutti_plugin::server::ProcessOutput::default();
+        let _output = instance.process(
+            tutti_plugin::server::AudioBufferMut::F32(buffer),
+            &ctx,
+            &mut out,
+        );
     }
 
     // ── Group I: Surge XT Additional Coverage ──
@@ -1984,7 +2026,12 @@ mod tests {
         };
 
         let ctx = ProcessContext::new();
-        let _output = instance.process(tutti_plugin::server::AudioBufferMut::F32(buffer), &ctx);
+        let mut out = tutti_plugin::server::ProcessOutput::default();
+        let _output = instance.process(
+            tutti_plugin::server::AudioBufferMut::F32(buffer),
+            &ctx,
+            &mut out,
+        );
     }
 
     #[test]
@@ -2012,7 +2059,12 @@ mod tests {
             };
 
             let ctx = ProcessContext::new();
-            let _output = instance.process(tutti_plugin::server::AudioBufferMut::F32(buffer), &ctx);
+            let mut out = tutti_plugin::server::ProcessOutput::default();
+            let _output = instance.process(
+                tutti_plugin::server::AudioBufferMut::F32(buffer),
+                &ctx,
+                &mut out,
+            );
         }
     }
 

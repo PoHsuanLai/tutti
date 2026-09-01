@@ -18,7 +18,7 @@
 //!
 //! This module holds ONLY the ids for tutti-core's own infrastructure nodes
 //! (PDC delays + transport/automation). Higher crates own the ids for the node
-//! types they define, in their own `node_id` module: tutti-units (filters,
+//! types they define, in their own `node_id` module: tutti-nodes (filters,
 //! delay, modulation, dynamics, spatial, automation-lane), tutti-polysynth
 //! (`POLYSYNT`), tutti-soundfont (`\0RUSTYSY`), tutti-plugin (`PLUGINCL`), tutti-sampler
 //! (`SAMPLRND`, `STRSMPLR`, `TSTRCHNT`, `VOICENOD`), tutti-io (`MICMONIT`).

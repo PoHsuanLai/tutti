@@ -630,11 +630,15 @@ pub(super) static HOST_TRANSPORT_CONTROL: clap_host_transport_control =
         request_toggle_record: Some(host_transport_request_toggle_record),
     };
 
+/// Queue one `CLAP_EXT_TRANSPORT_CONTROL` request.
+///
+/// Reachable from the audio thread: CLAP puts no thread annotation on that
+/// extension, so a plugin may call it from inside `process`. The bounded,
+/// non-blocking queue behind this is `TransportState::push`, which carries the
+/// capacity and the drop policy.
 unsafe fn push_transport_request(host: *const ClapHostVtable, req: TransportRequest) {
     if let Some(state) = get_host_state(host) {
-        if let Ok(mut reqs) = state.transport.requests.lock() {
-            reqs.push(req);
-        }
+        state.transport.push(req);
     }
 }
 

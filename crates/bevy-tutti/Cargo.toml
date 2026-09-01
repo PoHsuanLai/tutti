@@ -37,9 +37,9 @@ tutti-core = { path = "../tutti/crates/core/tutti-core", default-features = fals
 # surround device config to Stereo on scene load.
 tutti-types = { path = "../tutti/crates/core/tutti-types", default-features = false, features = ["bevy"] }
 tutti-midi-types = { path = "../tutti/crates/midi/tutti-midi-types", default-features = false }
-# tutti-units is pure DSP now (its ECS binding moved to dawai_model::engine_bind).
+# tutti-nodes is pure DSP now (its ECS binding moved to dawai_model::engine_bind).
 # The optional features below add convolution / automation DSP on top.
-tutti-units = { path = "../tutti/crates/dsp/tutti-units", default-features = false }
+tutti-nodes = { path = "../tutti/crates/dsp/tutti-nodes", default-features = false }
 
 # Spatial audio (VBAP + binaural panners), gated by our `spatial` feature.
 tutti-spatial = { path = "../tutti/crates/dsp/tutti-spatial", default-features = false, optional = true }
@@ -121,8 +121,8 @@ full = [
 # Names exactly one thing — the dependency on `tutti-spatial`.
 spatial = ["dep:tutti-spatial"]
 
-# FFT convolution reverb (partitioned IR) in tutti-units.
-convolution = ["tutti-units/convolution"]
+# FFT convolution reverb (partitioned IR) in tutti-nodes.
+convolution = ["tutti-nodes/convolution"]
 
 # Control-rate modulation: LFO sources and mod-matrix edges as ECS entities.
 # `tutti-mod/bevy` is what makes the components reflectable — it carries the

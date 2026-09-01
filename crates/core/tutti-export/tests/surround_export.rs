@@ -1,7 +1,7 @@
 //! End-to-end surround export, in pure tutti — no ECS, no Bevy.
 //!
 //! Builds a surround producer graph entirely from engine primitives
-//! (`VbapPannerNode` places each source, `ChannelSumUnit` folds them into an
+//! (`VbapPannerNode` places each source, `ChannelSumNode` folds them into an
 //! N-wide master), renders it through the offline export pipeline, and asserts
 //! the resulting file is a genuine multi-channel WAV whose channels carry the
 //! placed energy — i.e. the surround producer and the multi-channel export path

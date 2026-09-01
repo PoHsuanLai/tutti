@@ -295,7 +295,7 @@ mod tests {
     }
 
     /// A region render drives BOTH clocks over the same net: the in-net
-    /// `TransportClock` feeds beat-input nodes (LFO, AutomationLane) while this
+    /// `TransportClock` feeds beat-input nodes (LFO, AutomationLaneNode) while this
     /// `OfflineTimeline` feeds clip readers and samplers. Started at the same
     /// beat, they must report the same beat for the same sample.
     ///

@@ -1,6 +1,6 @@
 //! **A voice's gain is addressable by `Net::set`, and survives a commit.**
 //!
-//! `tutti-units`' `live_value_survives_commit` pins the *rule* — a live control
+//! `tutti-nodes`' `live_value_survives_commit` pins the *rule* — a live control
 //! value lives in shared storage or the next commit discards the write. This
 //! pins the sampler's compliance with it, through the door a host actually uses.
 //!
@@ -30,7 +30,7 @@
 //!
 //! The shared cell still matters — for `node_as_mut` writes, for a `VoicePool`
 //! slot, and for the offline render — it is simply not what these tests
-//! discriminate. `tutti-units`' `live_value_survives_commit` and this crate's
+//! discriminate. `tutti-nodes`' `live_value_survives_commit` and this crate's
 //! `a_gain_change_reaches_a_cloned_source` are where that property is pinned.
 //!
 //! Sabotages that DO fail this file: deleting the `UnitParam::Volume` arm, and

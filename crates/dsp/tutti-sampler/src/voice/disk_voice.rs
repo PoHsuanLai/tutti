@@ -215,7 +215,7 @@ impl DiskSource {
     /// `&self` and stored in the shared `RtState`, not in a field: a value
     /// stored by value here is written on a frontend clone and discarded by
     /// `Net::migrate`, so a clip's fader would do nothing once its voice
-    /// existed. See `tutti_units`' crate docs for the rule.
+    /// existed. See `tutti_nodes`' crate docs for the rule.
     pub fn set_gain(&self, gain: Amplitude) {
         if let Some(ref state) = self.shared_state {
             state.set_gain(gain);
@@ -1833,7 +1833,7 @@ mod tests {
     /// frontend holds clones of its vertices, so a gain stored **by value** in
     /// `DiskSource` is written on one copy and rendered from another — the
     /// authored value silently stops having any effect once the voice exists.
-    /// `tutti_units`' crate docs state the rule; this pins it for the tier that
+    /// `tutti_nodes`' crate docs state the rule; this pins it for the tier that
     /// broke it.
     ///
     /// Asserted through a **clone**, not through the original, because that is

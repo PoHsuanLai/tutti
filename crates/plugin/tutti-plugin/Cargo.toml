@@ -45,7 +45,7 @@ audio-automation = { workspace = true }
 # The `Curve` trait (+ its `AutomationEnvelope` impl), which the plugin
 # parameter-automation source evaluates. default-features = false so bevy does
 # not re-leak.
-tutti-units = { path = "../../dsp/tutti-units", default-features = false }
+tutti-nodes = { path = "../../dsp/tutti-nodes", default-features = false }
 
 # Lock-free f64 cursor for the harmony source
 atomic_float = "1.1"

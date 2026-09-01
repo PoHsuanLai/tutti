@@ -30,8 +30,8 @@ pub use crate::host::node::{
     HarmonyView, MidiInView, MidiOutView, NoteExpressionView, TransportView,
 };
 // The LFO shape vocabulary + the modulation-target surface (from `tutti-mod`,
-// via `tutti-units`), so the app can build an [`LfoCurve`] / route to a
-// [`PluginParamTarget`] without naming `tutti-units` directly.
+// via `tutti-nodes`), so the app can build an [`LfoCurve`] / route to a
+// [`PluginParamTarget`] without naming `tutti-nodes` directly.
 // `ParamAddress` alongside them because `TimedParam::param_id` is one: a
 // caller that can construct a `TimedParam` through this module must be able to
 // name its field's type without reaching into the private `protocol` module.
@@ -46,7 +46,7 @@ pub use crate::protocol::{
 };
 pub use crate::util::window::{EditorCapabilities, EditorSize};
 pub use control_handle::{OptionalCapabilities, PluginHandle, PluginStatus};
-pub use tutti_units::{LfoShape, ModParams, ModTarget};
+pub use tutti_nodes::{LfoShape, ModParams, ModTarget};
 
 /// In-process VST2 audio-graph node. Used when a host loads VST2 plugins
 /// directly in the host process (via `in_process_vst2`). Hosts that dispatch

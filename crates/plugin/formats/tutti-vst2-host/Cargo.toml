@@ -11,7 +11,12 @@ workspace = true
 
 [dependencies]
 arc-swap = "1"
-crossbeam-channel = "0.5"
+# The two plugin→host callback queues. `ArrayQueue`, not `crossbeam-channel`:
+# `automate` and `process_events` are invoked from inside the plugin's
+# `processReplacing`, so their push runs on the audio thread. An unbounded
+# channel allocates a list node there per event and can never report
+# back-pressure; a bounded lock-free queue does neither.
+crossbeam-queue = { version = "0.3", default-features = false, features = ["alloc"] }
 parking_lot = "0.12"
 smallvec = "1"
 thiserror = "2"

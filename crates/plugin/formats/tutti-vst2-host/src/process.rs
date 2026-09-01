@@ -95,11 +95,11 @@ impl Vst2Instance {
         &self.midi.out
     }
 
-    /// Drain the plugin's MIDI-out channel into the pooled `midi_out`
-    /// SmallVec. Steady-state allocation-free once the SmallVec has been
-    /// grown past its inline capacity.
+    /// Drain the plugin's MIDI-out queue into the pooled `midi_out`
+    /// SmallVec. Steady-state allocation-free: the `SmallVec` is pre-reserved
+    /// past the queue's own capacity, so a full drain cannot grow it.
     fn drain_midi_out(&mut self) {
-        for ev in self.midi.out_rx.try_iter() {
+        while let Some(ev) = self.midi.out_rx.pop() {
             self.midi.out.push(ev);
         }
     }

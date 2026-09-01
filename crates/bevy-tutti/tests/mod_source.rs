@@ -21,8 +21,8 @@ use tutti_core::dsp::Net;
 use tutti_core::transport::Transport;
 use tutti_core::AudioNode;
 use tutti_mod::Modulator;
+use tutti_nodes::DistortionNode;
 use tutti_types::{Depth, Hz, ParamAddr, Phase, UnitParam};
-use tutti_units::DistortionNode;
 
 /// A modulator with no analogue in `tutti-mod`: a two-step stair, held for
 /// half a cycle each. Stateless, so its `State` is `()` — the simplest thing
@@ -76,7 +76,7 @@ fn app_with_node() -> (App, Entity) {
 
     let mut net = Net::new(0, 1);
     let node = net.push(Box::new(DistortionNode::new(
-        tutti_units::ShapeKind::Tanh,
+        tutti_nodes::ShapeKind::Tanh,
         1.0,
     )));
     net.pipe_output(node);

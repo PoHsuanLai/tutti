@@ -5,12 +5,12 @@ use std::path::Path;
 
 use tutti_plugin::server::{
     AudioBufferMut, AutomationMode, BusChannels, ChannelLayout, ChordChanges, EditorPresence,
-    EditorSize, Features, LoadedPlugin, Normalized, NoteExpressionChanges,
-    NoteExpressionIntChanges, NoteExpressionTextChanges, ParamAddress, ParamFlags, ParamRange,
-    ParamSteps, ParameterInfo, PluginAudio, PluginClass, PluginDescriptor, PluginEditorHost,
-    PluginError, PluginMeta, PluginParams, PluginPresets, PluginResult, PluginState, PluginTail,
-    Preset, PresetId, ProcessContext, ProcessOutput, RenderMode, Samples, ScaleChanges,
-    Vst3SubCategories, WindowHandle,
+    EditorSize, Features, LoadedPlugin, Normalized, NoteExpressionIntChanges,
+    NoteExpressionTextChanges, ParamAddress, ParamFlags, ParamRange, ParamSteps, ParameterInfo,
+    PluginAudio, PluginClass, PluginDescriptor, PluginEditorHost, PluginError, PluginMeta,
+    PluginParams, PluginPresets, PluginResult, PluginState, PluginTail, Preset, PresetId,
+    ProcessContext, ProcessOutput, RenderMode, Samples, ScaleChanges, Vst3SubCategories,
+    WindowHandle,
 };
 use tutti_plugin::{BridgeError, LoadStage, Result};
 
@@ -434,6 +434,13 @@ impl Vst3Instance {
 }
 
 /// Process one audio block through a typed `Vst3Instance<T>`.
+///
+/// The plugin's emitted events land in `out`, which the caller owns and
+/// reuses. `Vst3Instance::process` returns a **borrowing** `ProcessOutputRef`
+/// into its own pooled buffers precisely so this path need not allocate; the
+/// copy below is into storage that already has capacity, not into a fresh
+/// value. Calling `ProcessOutputRef::to_owned` here instead — as this did —
+/// is what its doc means by "Allocates; off-RT only".
 fn process_block<'t, 'd: 't, T: tutti_vst3_host::Vst3Sample>(
     inner: &mut tutti_vst3_host::Vst3Instance<T>,
     inputs: &'t [&'d [T]],
@@ -441,7 +448,8 @@ fn process_block<'t, 'd: 't, T: tutti_vst3_host::Vst3Sample>(
     sample_rate: f64,
     ctx: &tutti_plugin::server::ProcessContext,
     seq: &mut SeqScratch,
-) -> Result<tutti_plugin::server::ProcessOutput> {
+    out: &mut tutti_plugin::server::ProcessOutput,
+) -> Result<()> {
     let mut vst3_buffer = tutti_vst3_host::AudioBuffer::new(inputs, outputs, sample_rate);
     let vst3_transport = ctx.transport.cloned().unwrap_or_default();
     // The protocol and vst3-host share the note-expression value type
@@ -487,13 +495,25 @@ fn process_block<'t, 'd: 't, T: tutti_vst3_host::Vst3Sample>(
         ctx.param_changes,
         &vst3_transport,
     );
-    let midi_events = output.midi_events.iter().copied().collect();
-    let param_changes = output.parameter_changes.clone();
-    Ok(tutti_plugin::server::ProcessOutput {
-        midi_events,
-        param_changes,
-        note_expression: NoteExpressionChanges::new(),
-    })
+    // `out` was cleared by the caller, so both of these extend into storage
+    // that already has capacity — no `to_owned`, no `clone`, and in particular
+    // no fresh `SmallVec` per block for the MIDI, which is what the discarded
+    // borrow used to cost.
+    out.midi_events.extend(output.midi_events.iter().copied());
+    for queue in &output.parameter_changes.queues {
+        for point in &queue.points {
+            // `emit_param_point`, not `ParameterChanges::add_change`: the
+            // former draws its queues from `out`'s own pool, so a warm block
+            // reuses the `points` buffers rather than allocating one per
+            // automated parameter.
+            out.emit_param_point(queue.param_id, point.sample_offset, point.value.get());
+        }
+    }
+    // VST3 note-expression *output* is not read back — `Vst3InputEvents`
+    // carries it inbound only, and `ProcessOutputRef` has no counterpart
+    // field. Left empty rather than absent because `out` is shared across
+    // formats; the CLAP loader fills it.
+    Ok(())
 }
 
 /// Build a Tutti [`ParameterInfo`] from a VST3 parameter descriptor and the
@@ -723,7 +743,8 @@ impl PluginAudio for Vst3Instance {
         &mut self,
         buffer: AudioBufferMut<'_, '_>,
         ctx: &ProcessContext,
-    ) -> PluginResult<ProcessOutput> {
+        out: &mut ProcessOutput,
+    ) -> PluginResult<()> {
         match (&mut self.inner, buffer) {
             (VstInner::F32(inner), AudioBufferMut::F32(buf)) => process_block(
                 inner,
@@ -732,6 +753,7 @@ impl PluginAudio for Vst3Instance {
                 buf.sample_rate,
                 ctx,
                 &mut self.seq,
+                out,
             )
             .map_err(Into::into),
             (VstInner::F64(inner), AudioBufferMut::F64(buf)) => process_block(
@@ -741,8 +763,18 @@ impl PluginAudio for Vst3Instance {
                 buf.sample_rate,
                 ctx,
                 &mut self.seq,
+                out,
             )
             .map_err(Into::into),
+            // The `.to_string()` allocates, and deliberately stays. This arm is
+            // not steady state: the buffer format and the activation format are
+            // both fixed at load, so either they match for every block of the
+            // session or they match for none. Reaching here means the session is
+            // already over, and the allocation costs one `String` at the point
+            // of failure rather than one per block. Removing it would mean
+            // making `PluginError::Process` carry a `&'static str` or a code —
+            // a change to the shared error vocabulary, paid for a path that
+            // cannot recur.
             _ => Err(PluginError::Process(
                 "Buffer format mismatch: plugin was activated with a different sample format"
                     .to_string(),
@@ -1511,7 +1543,8 @@ mod tests {
 
         let ctx = tutti_plugin::server::ProcessContext::new();
         // Should not panic
-        let _output = instance.process(AudioBufferMut::F32(buffer), &ctx);
+        let mut out = tutti_plugin::server::ProcessOutput::default();
+        let _output = instance.process(AudioBufferMut::F32(buffer), &ctx, &mut out);
     }
 
     #[test]
@@ -1548,7 +1581,8 @@ mod tests {
             };
 
             let ctx = tutti_plugin::server::ProcessContext::new().midi(&note_on);
-            let _output = instance.process(AudioBufferMut::F32(buffer), &ctx);
+            let mut out = tutti_plugin::server::ProcessOutput::default();
+            let _output = instance.process(AudioBufferMut::F32(buffer), &ctx, &mut out);
 
             for ch in output_data.iter() {
                 for &sample in ch.iter() {
@@ -1576,7 +1610,9 @@ mod tests {
                 sample_rate: 44100.0,
             };
 
-            let _output = instance.process(AudioBufferMut::F32(buffer), &empty_ctx);
+            let mut out = tutti_plugin::server::ProcessOutput::default();
+
+            let _output = instance.process(AudioBufferMut::F32(buffer), &empty_ctx, &mut out);
 
             for ch in output_data.iter() {
                 for &sample in ch.iter() {
@@ -1698,7 +1734,8 @@ mod tests {
         };
 
         let ctx = tutti_plugin::server::ProcessContext::new();
-        let _output = instance.process(AudioBufferMut::F64(buffer), &ctx);
+        let mut out = tutti_plugin::server::ProcessOutput::default();
+        let _output = instance.process(AudioBufferMut::F64(buffer), &ctx, &mut out);
 
         // SPAN is an analyzer — it should pass audio through unchanged
         let mut all_zero = true;
@@ -1756,7 +1793,8 @@ mod tests {
         };
 
         let ctx = tutti_plugin::server::ProcessContext::new();
-        let _output = instance.process(AudioBufferMut::F64(buffer), &ctx);
+        let mut out = tutti_plugin::server::ProcessOutput::default();
+        let _output = instance.process(AudioBufferMut::F64(buffer), &ctx, &mut out);
 
         let mut has_nonzero = false;
         for ch in &output_data {

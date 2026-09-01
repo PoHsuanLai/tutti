@@ -19,8 +19,8 @@ use bevy_tutti::AudioEngineState;
 use tutti_core::dsp::{Net, Source};
 use tutti_core::AudioNode;
 use tutti_mod::LfoShape;
+use tutti_nodes::{DistortionNode, ParamPorts, ShapeKind};
 use tutti_types::{Depth, Hz, ParamAddr, UnitParam};
-use tutti_units::{DistortionNode, ParamPorts, ShapeKind};
 
 /// An app with the engine's plugins and one ported distortion, ready to modulate.
 fn app_with_target() -> (App, Entity, usize) {
@@ -423,7 +423,7 @@ fn editing_a_range_does_not_drop_the_routes() {
 ///
 /// Because the node's atomic is a decoy once a param port is wired: it holds
 /// whatever was last written there while the DSP reads the port.
-/// `tutti-units`' `a_wired_param_port_makes_the_node_ignore_its_atomic` pins
+/// `tutti-nodes`' `a_wired_param_port_makes_the_node_ignore_its_atomic` pins
 /// that. Asserting on the atomic would pass with the branch removed — the write
 /// lands there, it just does not sound.
 #[test]
@@ -547,7 +547,7 @@ fn a_range_edit_reaches_a_live_chain_without_respawning_it() {
 
 /// **A depth edit on a live route reaches its shaper.**
 ///
-/// `ParamShaperUnit` bakes depth, polarity and curve into a LUT at construction
+/// `ParamShaperNode` bakes depth, polarity and curve into a LUT at construction
 /// and has no setter, and the reconciler's shape test is the group's *arity* —
 /// so before this was fixed, a depth slider changed the declaration and nothing
 /// else. The chain kept rendering with the depth it was born with, for its
@@ -587,8 +587,8 @@ fn a_depth_edit_reaches_a_live_shaper() {
         let graph = app.world().resource::<AudioGraphRes>();
         let unit = graph
             .0
-            .node_as::<tutti_units::ParamShaperUnit>(node)
-            .expect("the shaper is a ParamShaperUnit");
+            .node_as::<tutti_nodes::ParamShaperNode>(node)
+            .expect("the shaper is a ParamShaperNode");
         let mut out = [0.0f32; 1];
         tutti_core::dsp::AudioUnit::tick(&mut unit.clone(), &[1.0], &mut out);
         out[0]
@@ -645,7 +645,7 @@ fn a_depth_edit_reaches_a_live_shaper() {
 /// **A range edit reaches a live chain's clamp.**
 ///
 /// The third and last of the frozen-at-construction bugs on this path, after
-/// the base and the shaper. `ParamSumUnit` held `min`/`max` as plain fields, so
+/// the base and the shaper. `ParamSumNode` held `min`/`max` as plain fields, so
 /// narrowing a param's range moved the declaration and nothing else — the sum
 /// went on clamping to the range it was born with.
 ///
@@ -675,8 +675,8 @@ fn a_range_edit_reaches_a_live_clamp() {
         let graph = app.world().resource::<AudioGraphRes>();
         let unit = graph
             .0
-            .node_as::<tutti_units::ParamSumUnit>(node)
-            .expect("the sum is a ParamSumUnit");
+            .node_as::<tutti_nodes::ParamSumNode>(node)
+            .expect("the sum is a ParamSumNode");
         let mut out = [0.0f32; 1];
         tutti_core::dsp::AudioUnit::tick(&mut unit.clone(), &[base, 0.0], &mut out);
         out[0]

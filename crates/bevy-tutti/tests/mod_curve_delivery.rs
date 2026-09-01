@@ -81,8 +81,8 @@ const BASE: f32 = 5.0;
 fn app() -> App {
     let mut app = App::new();
     let mut net = Net::new(0, 1);
-    let out = net.push(Box::new(tutti_units::DistortionNode::new(
-        tutti_units::ShapeKind::Tanh,
+    let out = net.push(Box::new(tutti_nodes::DistortionNode::new(
+        tutti_nodes::ShapeKind::Tanh,
         1.0,
     )));
     net.pipe_output(out);
@@ -198,14 +198,14 @@ fn a_curve_request_falls_back_when_the_sink_declines() {
     // A real graph node, whose `ModParams` hands back an `AtomicTarget`.
     let node = {
         let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
-        graph.0.push(Box::new(tutti_units::DistortionNode::new(
-            tutti_units::ShapeKind::Tanh,
+        graph.0.push(Box::new(tutti_nodes::DistortionNode::new(
+            tutti_nodes::ShapeKind::Tanh,
             BASE,
         )))
     };
     app.world_mut()
         .resource_mut::<ModTargetRegistry>()
-        .register::<tutti_units::DistortionNode>();
+        .register::<tutti_nodes::DistortionNode>();
 
     let target = app
         .world_mut()
@@ -229,7 +229,7 @@ fn a_curve_request_falls_back_when_the_sink_declines() {
         app.world()
             .resource::<AudioGraphRes>()
             .0
-            .node_as::<tutti_units::DistortionNode>(node)
+            .node_as::<tutti_nodes::DistortionNode>(node)
             .unwrap()
             .drive()
             .load(std::sync::atomic::Ordering::Acquire)

@@ -3,7 +3,7 @@
 //!
 //! There is no `build_binaural_mix` counterpart to
 //! [`build_vbap_mix`](crate::vbap::build_vbap_mix): summing binaural
-//! renders is plain stereo addition, which `tutti_units::ChannelSumUnit`
+//! renders is plain stereo addition, which `tutti_nodes::ChannelSumNode`
 //! already does.
 
 mod node;

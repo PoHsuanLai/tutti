@@ -26,7 +26,7 @@ members = [
     "crates/dsp/tutti-sampler",
     "crates/dsp/tutti-polysynth",
     "crates/dsp/tutti-soundfont",
-    "crates/dsp/tutti-units",
+    "crates/dsp/tutti-nodes",
     "crates/dsp/tutti-spatial",
     "crates/dsp/tutti-analysis",
     "crates/plugin/tutti-plugin",
@@ -136,7 +136,7 @@ strip = "none"
 
 # NOTE: no `[patch.crates-io]` here any more. `audio-automation` is a direct
 # git dep in this workspace's `[workspace.dependencies]`, inherited by the four
-# members that use it (tutti-mod, tutti-units, tutti-plugin,
+# members that use it (tutti-mod, tutti-nodes, tutti-plugin,
 # tutti-plugin-types), so no crates.io reference survives to redirect.
 #
 # The rev must stay identical to the app workspace's pin. The two workspaces

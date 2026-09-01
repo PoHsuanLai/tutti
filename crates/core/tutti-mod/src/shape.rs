@@ -28,7 +28,7 @@ pub enum Polarity {
 }
 
 /// LFO waveform. Owned here (the single source of truth); the app-side and
-/// `tutti_units` `LfoShape`s are `From`-bridged mirrors.
+/// `tutti_nodes` `LfoShape`s are `From`-bridged mirrors.
 ///
 /// The first five are pure functions of [`Phase`] and evaluate through
 /// [`LfoShape::evaluate_periodic`]. The last two are *stepped* — their value
@@ -201,7 +201,7 @@ pub fn fold(base: f32, offsets: impl Iterator<Item = f32>, min: f32, max: f32) -
 mod tests {
     use super::*;
 
-    // ── LfoShape waveform math (ported from tutti_units::lfo tests) ──
+    // ── LfoShape waveform math (ported from tutti_nodes::lfo tests) ──
 
     #[test]
     fn test_lfo_shapes() {
@@ -280,7 +280,7 @@ mod tests {
         assert!(scv < lin);
     }
 
-    // ── fold() (ported from param_mod ParamSumUnit tests) ──
+    // ── fold() (ported from param_mod ParamSumNode tests) ──
 
     #[test]
     fn fold_no_mods_passes_base_clamped() {

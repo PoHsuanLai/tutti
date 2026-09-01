@@ -41,8 +41,8 @@ tempfile = "3.10"
 approx = "0.5"
 fundsp = { package = "fundsp-tutti", path = "../../vendor/fundsp-tutti", default-features = false, features = ["std"] }
 # Convolution nodes for the end-to-end export integration tests. Acyclic:
-# tutti-units does NOT depend on tutti-export.
-tutti-units = { path = "../../dsp/tutti-units", default-features = false, features = ["convolution"] }
+# tutti-nodes does NOT depend on tutti-export.
+tutti-nodes = { path = "../../dsp/tutti-nodes", default-features = false, features = ["convolution"] }
 # Surround producer nodes (SpatialPannerNode + build_surround_mix) for the
 # end-to-end multichannel-export integration test. Also acyclic.
 tutti-spatial = { path = "../../dsp/tutti-spatial", default-features = false }

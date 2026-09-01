@@ -1,6 +1,6 @@
 # Tutti custom DSP vs FunDSP opcodes — implementation comparison
 
-**Purpose.** Document, with code-level evidence, why Tutti hand-rolls `impl AudioUnit` DSP in `tutti-units`
+**Purpose.** Document, with code-level evidence, why Tutti hand-rolls `impl AudioUnit` DSP in `tutti-nodes`
 instead of using the equivalent FunDSP opcodes. This is the reference that justifies *keeping* the custom
 units (rather than "migrating" to FunDSP) and identifies the few genuine gaps worth *adding* from FunDSP.
 
@@ -30,7 +30,7 @@ offerings that Tutti lacks — reverb (already adopted) and **waveshaping/distor
 
 ## 1. SVF filter — EQUAL algorithm, Tutti better integration
 
-| | FunDSP (`fundsp-tutti/src/svf.rs`) | Tutti (`tutti-units/src/filter/svf.rs`) |
+| | FunDSP (`fundsp-tutti/src/svf.rs`) | Tutti (`tutti-nodes/src/filter/svf.rs`) |
 |---|---|---|
 | Topology | Simper/Cytomic SVF, `SvfCoefs<F: Real>` (`svf.rs:17`) | Same Cytomic SVF, `compute_svf_coeffs` (`svf.rs:34`); identical `g = tan(π·fc/sr)`, `k = 1/Q` |
 | State precision | Generic `F: Real` (f32/f64) | Generic `F: Real`, defaults to **f64** (`SvfFilterNode<F = f64>`, `svf.rs:177`) for low-cutoff accuracy |
@@ -46,7 +46,7 @@ modulation rebuild. Migrating to FunDSP's `Svf` would lose all of that and gain 
 
 ## 2. Ladder / Moog — CUSTOM BETTER
 
-| | FunDSP `Moog` (`fundsp-tutti/src/moog.rs`) | Tutti `LadderFilterNode` (`tutti-units/src/filter/ladder.rs`) |
+| | FunDSP `Moog` (`fundsp-tutti/src/moog.rs`) | Tutti `LadderFilterNode` (`tutti-nodes/src/filter/ladder.rs`) |
 |---|---|---|
 | Modes | **LP only** (`Moog<F, N>`, `moog.rs:17`) | **LP12 / LP24 / HP12 / HP24** (`LadderType`, `ladder.rs:11`) |
 | Saturation | tanh on the **final stage only** (`moog.rs:93`) | zero-delay-feedback ladder with explicit **`drive` pre-saturation** (`ladder.rs:71`, atomic handle `:104`) |
@@ -57,7 +57,7 @@ four slopes/modes and a dedicated drive stage — features dawai's `LadderFilter
 
 ## 3. Delay — CUSTOM BETTER
 
-| | FunDSP (`fundsp-tutti/src/delay.rs`) | Tutti (`tutti-units/src/delay.rs`) |
+| | FunDSP (`fundsp-tutti/src/delay.rs`) | Tutti (`tutti-nodes/src/delay.rs`) |
 |---|---|---|
 | Feedback | **None** — `Delay` (`delay.rs:73`) is a plain line; `Tap`/`TapLinear` (`:150`/`:390`) are read-only multitaps | **Feedback** + wet/dry (`DelayLineNode`, `delay.rs:105`; `feedback` atomic `:108/:144`) |
 | Interpolation | fixed per type (`Tap` cubic, `TapLinear` linear) | selectable None / Linear / **CubicHermite** (`InterpolationMode`, `delay.rs:10`) |
@@ -69,12 +69,12 @@ delay lines. Tutti is a complete delay effect (feedback, wet/dry, cubic interp, 
 
 ## 4. Limiter — CUSTOM BETTER
 
-| | FunDSP `Limiter` (`fundsp-tutti/src/dynamics.rs`) | Tutti `LimiterNode` (`tutti-units/src/dynamics/limiter.rs`) |
+| | FunDSP `Limiter` (`fundsp-tutti/src/dynamics.rs`) | Tutti `LimiterNode` (`tutti-nodes/src/dynamics/limiter.rs`) |
 |---|---|---|
 | Lookahead | yes — hierarchic `ReduceBuffer<f32, Maximum>` on **amplitude** (`dynamics.rs:59,125,133`) | yes — `MonotonicMinDeque` on **gain** (`limiter.rs:7,16`); returns window-min gain (`:66`) |
 | Stereo | per-construction | **stereo-linked** gain reduction (`LookaheadRing`, `limiter.rs:14,82`) |
 | `set()` | **none** — attack/release/lookahead baked at construction | `UnitParam::Threshold`/`Ceiling`/`Release`, all settable |
-| Extra | — | zero-latency `BrickwallLimiter` companion |
+| Extra | — | zero-latency `BrickwallLimiterNode` companion |
 
 **Verdict: CUSTOM BETTER, keep.** Both do lookahead, but FunDSP's is unparameterizable (no `set()`) and
 amplitude-domain; Tutti's is gain-domain, stereo-linked, fully settable, and ships a zero-latency brickwall
@@ -85,9 +85,9 @@ variant alongside.
 FunDSP has **no compressor and no gate** anywhere (`dynamics.rs` contains only `Limiter`, `ReduceBuffer`,
 `Declick`, metering; no `compressor()`/`gate()` opcode in the prelude). Tutti provides both:
 
-- `Compressor` (`tutti-units/src/dynamics/compressor.rs`) — soft knee, makeup, **external sidechain**,
+- `Compressor` (`tutti-nodes/src/dynamics/compressor.rs`) — soft knee, makeup, **external sidechain**,
   runtime-configurable channel count with a single linked gain from max-abs of the sidechain (`compressor.rs:79–116`).
-- `Gate` (`tutti-units/src/dynamics/gate.rs`) — threshold + **hold** (`gate.rs:15`) + range, sidechain.
+- `Gate` (`tutti-nodes/src/dynamics/gate.rs`) — threshold + **hold** (`gate.rs:15`) + range, sidechain.
 
 **Verdict: NO FUNDSP EQUIVALENT, keep.**
 
@@ -95,7 +95,7 @@ FunDSP has **no compressor and no gate** anywhere (`dynamics.rs` contains only `
 
 FunDSP's `chorus()`/`flanger()`/`phaser()` (`prelude.rs:2717/2767/2791`) bake their LFO/feedback into a
 closure **at construction** — no live parameters. Tutti's `ChorusNode`/`FlangerNode`/`PhaserNode`
-(`tutti-units/src/modulation/*`) expose live atomic rate/depth/feedback/mix, and the phaser adds a
+(`tutti-nodes/src/modulation/*`) expose live atomic rate/depth/feedback/mix, and the phaser adds a
 configurable stage count (`phaser.rs:56,66`).
 
 **Verdict: CUSTOM BETTER, keep** — automatable params are mandatory for a DAW; FunDSP's are fixed at build.

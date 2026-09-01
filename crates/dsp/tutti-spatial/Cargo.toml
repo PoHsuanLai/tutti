@@ -29,7 +29,7 @@ tutti-types = { path = "../../core/tutti-types", default-features = false }
 # `ChannelSumUnit` folds the panners, `SvfFilterNode` low-passes the LFE send.
 # This is a plain consumer edge — geometry depends on signal processing, not the
 # reverse, and neither unit has anything spatial in it.
-tutti-units = { path = "../tutti-units", default-features = false }
+tutti-nodes = { path = "../tutti-nodes", default-features = false }
 
 # Vector Base Amplitude Panning: the speaker-field placement math.
 vbap = "0.1"

@@ -25,6 +25,8 @@
 //! }
 //! ```
 
+use tutti_types::{MidiChannel, MidiGroup};
+
 /// Packed UMP event with sample-accurate timing.
 ///
 /// The `data` field is a midi2-compatible `[u32; 4]` buffer — callers with a
@@ -227,18 +229,18 @@ impl MidiEvent {
         }
     }
 
-    /// Channel nibble (0-15) for a channel-voice event, read directly from the
-    /// UMP word without a full decode. `None` for system, SysEx, and utility
+    /// Channel nibble for a channel-voice event, read directly from the UMP
+    /// word without a full decode. `None` for system, SysEx, and utility
     /// messages, which carry no channel. Covers both MIDI 1.0 (UMP type 0x2)
     /// and MIDI 2.0 (type 0x4) channel voice — the channel sits in the same
     /// bit position in both, so the hot path (e.g. MIDI routing by channel)
     /// avoids paying for a `midi2::UmpMessage::try_from` dispatch.
     #[inline]
-    pub fn channel(&self) -> Option<u8> {
+    pub fn channel(&self) -> Option<MidiChannel> {
         let type_nibble = (self.data[0] >> 28) & 0x0F;
         // UMP type 0x2 = MIDI 1.0 channel voice, 0x4 = MIDI 2.0 channel voice.
         if type_nibble == 0x2 || type_nibble == 0x4 {
-            Some(((self.data[0] >> 16) & 0x0F) as u8)
+            Some(MidiChannel::new(((self.data[0] >> 16) & 0x0F) as u8))
         } else {
             None
         }

@@ -377,6 +377,93 @@ mod tests {
         assert!((cloned.spread().get() - panner.spread().get()).abs() < 0.001);
     }
 
+    /// `AudioUnit::reset` resets time, not settings.
+    ///
+    /// The offline exporter clones the live net and calls `reset()` on it to
+    /// drop inherited filter memory and tails; a host calls it between clips for
+    /// the same reason. A reset that re-aimed would move every spatialised
+    /// source to front-centre in both cases, with nothing to compare and no
+    /// error raised.
+    #[test]
+    fn reset_keeps_the_authored_placement() {
+        let mut panner = VbapPannerNode::surround_5_1().unwrap();
+        panner.set_position(Azimuth(45.0), Elevation(15.0));
+        panner.set_spread(Spread(0.3));
+        panner.set_width(StereoWidth(1.5));
+
+        panner.reset();
+
+        assert!(
+            (panner.azimuth().get() - 45.0).abs() < 0.001,
+            "reset moved the bearing to {}",
+            panner.azimuth().get()
+        );
+        assert!(
+            (panner.elevation().get() - 15.0).abs() < 0.001,
+            "reset moved the height to {}",
+            panner.elevation().get()
+        );
+        assert!(
+            (panner.spread().get() - 0.3).abs() < 0.001,
+            "reset changed the spread to {}",
+            panner.spread().get()
+        );
+        assert!(
+            (panner.width().get() - 1.5).abs() < 0.001,
+            "reset changed the width to {}",
+            panner.width().get()
+        );
+    }
+
+    /// The other half of the contract: the ramp *is* cleared, so the block
+    /// after a reset renders at the commanded position rather than sweeping in
+    /// from wherever the smoother had got to.
+    #[test]
+    fn reset_seats_the_smoother_on_the_commanded_position() {
+        let mut panner = VbapPannerNode::stereo().unwrap();
+        // Hard left, reached the slow way: the smoother is mid-ramp here.
+        panner.set_position(Azimuth(90.0), Elevation::LEVEL);
+        let input = [1.0f32, 1.0f32];
+        let mut mid_ramp = [0.0f32; 2];
+        panner.tick(&input, &mut mid_ramp);
+        assert!(
+            mid_ramp[1] > mid_ramp[0],
+            "expected the ramp to still favour the right channel, got {mid_ramp:?}"
+        );
+
+        panner.reset();
+
+        let mut after = [0.0f32; 2];
+        panner.tick(&input, &mut after);
+        assert!(
+            after[0] > after[1],
+            "after reset the first block should already be hard left, got {after:?}"
+        );
+    }
+
+    /// `Clone` shares the position atomics, so a reset that wrote them would
+    /// reach back through every handle — including the live node an offline
+    /// render was cloned from.
+    #[test]
+    fn reset_on_a_clone_does_not_move_the_original() {
+        let panner = VbapPannerNode::stereo().unwrap();
+        panner.set_position(Azimuth(-60.0), Elevation(20.0));
+
+        let mut cloned = panner.clone();
+        cloned.reset();
+
+        assert!(
+            (panner.azimuth().get() - (-60.0)).abs() < 0.001,
+            "resetting the clone moved the original to {}",
+            panner.azimuth().get()
+        );
+        assert!(
+            (panner.elevation().get() - 20.0).abs() < 0.001,
+            "resetting the clone moved the original to {}",
+            panner.elevation().get()
+        );
+    }
+
     #[test]
     fn vbap_clone_shares_atomics() {
         let panner = VbapPannerNode::stereo().unwrap();

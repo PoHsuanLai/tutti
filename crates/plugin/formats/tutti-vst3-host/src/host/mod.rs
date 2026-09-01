@@ -1,5 +1,5 @@
 //! Plugin lifecycle types: [`Vst3Library`] (loaded DSO + factory),
-//! [`Vst3Loaded`] (initialized plugin, no audio), and [`Vst3Instance`] (active,
+//! [`Vst3Loaded`] (initialized plugin, no audio), and [`Vst3Active`] (active,
 //! ready to `process`). Stages are encoded as distinct types — transitions
 //! consume `self` so the compiler enforces the ordering.
 //!
@@ -8,12 +8,12 @@
 //! factory, `loaded` owns the pre-activation surface and the `activate` edge,
 //! `instance` owns the audio path and the `deactivate` edge back. Each edge is
 //! written in the file for the state it *produces*, which is why
-//! `Vst3Instance::from_loaded` — the activation sequence itself — lives in
+//! `Vst3Active::from_loaded` — the activation sequence itself — lives in
 //! `instance` rather than beside `activate`.
 //!
 //! [`Vst3Loaded`] is the state most of this module's code is about: it holds
 //! the COM interfaces, the host context and the editor, and it survives an
-//! activate/deactivate round trip intact ([`Vst3Instance`] embeds it and
+//! activate/deactivate round trip intact ([`Vst3Active`] embeds it and
 //! `Deref`s to it). Only the scratch buffers and the process staging are
 //! created and destroyed by the transitions. Why the lifecycle is types rather
 //! than a flag on one type is argued at the crate root under *The lifecycle,
@@ -31,7 +31,7 @@ mod module_entry;
 mod plugin_state;
 mod speakers;
 
-pub use instance::Vst3Instance;
+pub use instance::Vst3Active;
 pub use library::{factory_flags, ClassInfo, FactoryInfo, Vst3Library};
 pub use loaded::{PluginNotifications, RestartOutcome, Vst3Loaded};
 

@@ -23,7 +23,7 @@ use coremidi::{Client, EventList, Protocol, VirtualDestination};
 use tracing::debug;
 use tutti_midi_types::ump::{split_ump_stream, MidiEvent};
 
-use crate::core::error::{Error, Result};
+use crate::error::{Error, Result};
 
 /// A CoreMIDI virtual destination that speaks the **MIDI 2.0 (UMP) protocol**.
 ///
@@ -101,10 +101,10 @@ impl UmpVirtualDestination {
     /// into an input ring, exactly like a hardware input port does.
     ///
     /// This is the wiring an app wants: the events land in the same
-    /// [`HardwareMidiInputs`](crate::core::HardwareMidiInputs) rings a physical
+    /// [`HardwareMidiInputs`](crate::HardwareMidiInputs) rings a physical
     /// endpoint feeds, so downstream consumers see one merged stream regardless
     /// of which transport a message arrived on.
-    pub fn with_producer(name: &str, producer: crate::core::InputProducerHandle) -> Result<Self> {
+    pub fn with_producer(name: &str, producer: crate::InputProducerHandle) -> Result<Self> {
         Self::new(name, move |event| {
             if !producer.push(event, std::time::Instant::now()) {
                 debug!("UMP input ring full, dropping event");

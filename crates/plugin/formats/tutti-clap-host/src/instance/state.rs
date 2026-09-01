@@ -15,7 +15,7 @@ impl ClapLoaded {
     /// # Errors
     /// [`ClapError::StateError`] if the plugin does not implement state or
     /// its `save` callback returns failure.
-    pub fn state(&self) -> Result<Vec<u8>> {
+    pub fn get_state(&self) -> Result<Vec<u8>> {
         self.assert_main_thread();
         let state_ext = unsafe { ext::opt(self.extensions.state.state) }
             .ok_or_else(|| ClapError::StateError("No state extension".to_string()))?;
@@ -31,7 +31,7 @@ impl ClapLoaded {
         Ok(stream.into_data())
     }
 
-    /// Restore plugin state from bytes previously returned by [`Self::state`].
+    /// Restore plugin state from bytes previously returned by [`Self::get_state`].
     /// Empty slices are treated as a no-op.
     ///
     /// # Errors
@@ -60,7 +60,7 @@ impl ClapLoaded {
     /// Save state, telling the plugin whether it is being saved for a
     /// preset, project, or duplicate.
     ///
-    /// Falls back to [`Self::state`] **only** when the plugin does not
+    /// Falls back to [`Self::get_state`] **only** when the plugin does not
     /// implement `CLAP_EXT_STATE_CONTEXT` (or implements it without a `save`
     /// entry point). A plugin that implements it and returns `false` has
     /// *refused* the save, and that refusal is reported.
@@ -89,7 +89,7 @@ impl ClapLoaded {
                 return Ok(stream.into_data());
             }
         }
-        self.state()
+        self.get_state()
     }
 
     /// Load state with a specific [`StateContext`].

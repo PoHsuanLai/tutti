@@ -4,7 +4,7 @@ use std::ffi::{CStr, CString};
 use std::os::raw::c_int;
 
 use super::sys;
-use crate::core::error::Result;
+use crate::error::Result;
 
 /// An open sequencer client that speaks UMP.
 ///

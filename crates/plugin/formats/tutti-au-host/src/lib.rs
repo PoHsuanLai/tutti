@@ -14,23 +14,23 @@ mod ffi;
 pub mod component;
 
 #[cfg(target_os = "macos")]
-pub mod handle;
+mod handle;
 
 #[cfg(target_os = "macos")]
-pub mod bus;
+mod bus;
 
 #[cfg(target_os = "macos")]
-pub mod stream;
+mod stream;
 
 #[cfg(target_os = "macos")]
-pub mod channel_layout;
-pub mod topology;
+mod channel_layout;
+mod topology;
 
 #[cfg(target_os = "macos")]
-pub mod identity;
+mod identity;
 
 #[cfg(target_os = "macos")]
-pub mod midi_map;
+mod midi_map;
 
 #[cfg(target_os = "macos")]
 pub mod midi_out;
@@ -39,34 +39,34 @@ pub mod midi_out;
 mod buffer;
 
 #[cfg(target_os = "macos")]
-pub mod instance;
+mod instance;
 
 #[cfg(target_os = "macos")]
 pub mod offline;
 
 #[cfg(target_os = "macos")]
-pub mod transport;
+mod transport;
 
 #[cfg(target_os = "macos")]
 pub mod parameters;
 
 #[cfg(target_os = "macos")]
-pub mod preset;
+mod preset;
 
 #[cfg(target_os = "macos")]
-pub mod aupreset;
+mod aupreset;
 
 #[cfg(target_os = "macos")]
-pub mod listener;
+mod listener;
 
 #[cfg(target_os = "macos")]
 pub mod render_notify;
 
 #[cfg(target_os = "macos")]
-pub mod editor;
+mod editor;
 
 pub use component::{AuComponentInfo, AuType};
-pub use error::{AuError, PresetFileError, PresetMismatch, Result};
+pub use error::{AuError, LoadStage, PresetFileError, PresetMismatch, Result};
 
 // Shared host vocabulary re-exported so consumers can stay format-agnostic.
 // `WindowHandle` is consumed by the GUI bridge; `MidiEvent` is the input type of
@@ -112,7 +112,7 @@ pub use editor::AuEditor;
 #[cfg(target_os = "macos")]
 pub use handle::AuHandle;
 #[cfg(target_os = "macos")]
-pub use instance::{AuInstance, AuLoaded, AuReady};
+pub use instance::{AuActive, AuInstance, AuLoaded};
 // Flat-re-exported for the same reason `TransportState` below is: `PushScratch`
 // is the argument type of `offline::process_push`, so a host cannot drive the
 // push render path without being able to name it, and there is no shared

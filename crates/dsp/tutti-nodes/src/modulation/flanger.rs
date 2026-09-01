@@ -30,6 +30,22 @@ impl FlangerNode {
     /// 50/50 [`Mix`].
     ///
     /// Allocates its delay lines, so build before the node goes live.
+    ///
+    /// **Starts at the placeholder [`DEFAULT_SAMPLE_RATE`]**; call
+    /// [`AudioUnit::set_sample_rate`] before the first `process`, which rebuilds
+    /// the lines (and so reallocates). Skip it at 48 kHz and the 2 ms sweep
+    /// covers 8.8% less delay at 8.8% below the configured 0.5 Hz. A flanger is
+    /// the least forgiving of the three: its notches are comb peaks set by the
+    /// delay in *samples*, so shortening the sweep moves every notch up in
+    /// frequency — the effect keeps working and simply sits somewhere else.
+    ///
+    /// This constructor takes no rate, and [`Default`] could not take one at
+    /// all — which is the concrete reason this type carries a placeholder rather
+    /// than a mandatory argument. See the crate-level "born at a placeholder
+    /// rate" section.
+    ///
+    /// [`DEFAULT_SAMPLE_RATE`]: tutti_core::dsp::DEFAULT_SAMPLE_RATE
+    /// [`AudioUnit::set_sample_rate`]: tutti_core::AudioUnit::set_sample_rate
     pub fn new() -> Self {
         Self {
             core: ModulatedDelay::new(ModulatedDelayConfig::FLANGER, 0.5, 0.002, 0.7, 0.5),

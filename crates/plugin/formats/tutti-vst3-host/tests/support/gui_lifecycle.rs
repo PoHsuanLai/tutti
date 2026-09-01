@@ -30,7 +30,7 @@
 use std::ffi::c_void;
 use std::path::{Path, PathBuf};
 
-use tutti_vst3_host::{EditorSize, Vst3Instance, WindowHandle};
+use tutti_vst3_host::{EditorSize, Vst3Active, WindowHandle};
 
 /// Compile-time default, baked in by `build.rs`.
 const SAMPLE_PLUGIN_DIR_BUILT: &str = env!("VST3_SAMPLE_PLUGIN_DIR");
@@ -236,13 +236,13 @@ impl TestWindow {
 }
 
 /// Load `host-checker`, or skip. Returns `None` with a printed reason.
-fn load_host_checker() -> Option<Vst3Instance> {
+fn load_host_checker() -> Option<Vst3Active> {
     if !has_display() {
         eprintln!("no DISPLAY/WAYLAND_DISPLAY; run under `xvfb-run -a`. Skipping.");
         return None;
     }
     let path = host_checker_path()?;
-    match Vst3Instance::<f32>::load(&path, 48_000.0, 512) {
+    match Vst3Active::<f32>::load(&path, 48_000.0, 512) {
         Ok(i) => Some(i),
         Err(e) => {
             eprintln!("host-checker load failed ({e:?}); skipping");
@@ -403,7 +403,7 @@ gui_test! {
 ///
 /// `audio-probe` returns nullptr from `createView`, so `open_editor` never
 /// reaches the platform-type check or `attached`. This pins the earliest
-/// rejection point: the host must report `NotSupported` rather than
+/// rejection point: the host must report `EditorError` rather than
 /// dereferencing the null view.
 ///
 /// Uses a real window rather than a null handle: `WindowHandle::from_raw`
@@ -418,7 +418,7 @@ fn editorless_plugin_is_refused_cleanly() {
         eprintln!("audio-probe.vst3 not found; skipping");
         return;
     };
-    let Ok(mut inst) = Vst3Instance::<f32>::load(&path, 48_000.0, 512) else {
+    let Ok(mut inst) = Vst3Active::<f32>::load(&path, 48_000.0, 512) else {
         eprintln!("audio-probe load failed; skipping");
         return;
     };
@@ -629,7 +629,7 @@ fn has_editor_agrees_with_opening_one() {
         let Some(path) = sample_plugin_path(name) else {
             continue;
         };
-        let Ok(mut inst) = Vst3Instance::<f32>::load(&path, 48_000.0, 512) else {
+        let Ok(mut inst) = Vst3Active::<f32>::load(&path, 48_000.0, 512) else {
             continue;
         };
 

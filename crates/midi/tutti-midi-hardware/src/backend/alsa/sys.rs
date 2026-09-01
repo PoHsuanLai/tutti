@@ -276,9 +276,9 @@ extern "C" {
 ///
 /// ALSA reports failure as a negative `errno`, so the sign carries the meaning
 /// and the magnitude is the code. Centralised so no call site re-derives it.
-pub(crate) fn check(code: c_int, operation: &'static str) -> crate::core::error::Result<c_int> {
+pub(crate) fn check(code: c_int, operation: &'static str) -> crate::error::Result<c_int> {
     if code < 0 {
-        Err(crate::core::error::Error::Alsa { operation, code })
+        Err(crate::error::Error::Alsa { operation, code })
     } else {
         Ok(code)
     }

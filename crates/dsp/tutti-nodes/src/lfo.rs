@@ -127,6 +127,14 @@ impl ModulatorNode<Lfo> {
     ///
     /// Chain `.with_frequency(hz)` or `.with_beat_sync(beats)` to configure
     /// further.
+    ///
+    /// **Starts at the placeholder [`DEFAULT_SAMPLE_RATE`]**, as
+    /// [`with_modulator`](Self::with_modulator) explains — call
+    /// [`AudioUnit::set_sample_rate`] before the first `process` or the LFO
+    /// cycles 8.8% slow at 48 kHz.
+    ///
+    /// [`DEFAULT_SAMPLE_RATE`]: tutti_core::dsp::DEFAULT_SAMPLE_RATE
+    /// [`AudioUnit::set_sample_rate`]: tutti_core::AudioUnit::set_sample_rate
     pub fn new(shape: LfoShape) -> Self {
         Self::with_modulator(Lfo::new(shape))
     }
@@ -137,10 +145,24 @@ impl<M: Modulator> ModulatorNode<M> {
     /// at 1 Hz. The generic entry point behind [`LfoNode::new`]; also the seam
     /// any future modulator (envelope, sample & hold, …) wires through.
     ///
-    /// Takes no rate: the shared frequency cell reads as Hz or as beats
-    /// depending on the mode, so the rate is set by the builder that also
-    /// selects the clock — [`with_frequency`](Self::with_frequency) or
+    /// Takes no *modulation* rate: the shared frequency cell reads as Hz or as
+    /// beats depending on the mode, so that rate is set by the builder which
+    /// also selects the clock — [`with_frequency`](Self::with_frequency) or
     /// [`with_beat_sync`](Self::with_beat_sync).
+    ///
+    /// It takes no *sample* rate either, and that one is not a choice: the node
+    /// **starts at the placeholder [`DEFAULT_SAMPLE_RATE`]** and must be given
+    /// the device rate through [`AudioUnit::set_sample_rate`] before the first
+    /// `process`. The two are separate quantities that meet in one place — the
+    /// per-sample phase increment is the modulation rate divided by the sample
+    /// rate — so a wrong sample rate misreports the modulation rate by the same
+    /// ratio. At 48 kHz an uncorrected node runs 8.8% slow: a 2 Hz LFO cycles at
+    /// 1.84 Hz, and a beat-synced one drifts against the transport it is
+    /// supposed to lock to. See the crate-level "born at a placeholder rate"
+    /// section.
+    ///
+    /// [`DEFAULT_SAMPLE_RATE`]: tutti_core::dsp::DEFAULT_SAMPLE_RATE
+    /// [`AudioUnit::set_sample_rate`]: tutti_core::AudioUnit::set_sample_rate
     pub fn with_modulator(modulator: M) -> Self {
         Self {
             modulator,

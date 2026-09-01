@@ -97,7 +97,7 @@ impl ClapLoaded {
 
     /// Current value of a parameter, or `None` if the plugin does not
     /// support the extension or rejects the ID.
-    pub fn parameter(&self, id: u32) -> Option<f64> {
+    pub fn get_parameter(&self, id: u32) -> Option<f64> {
         let ext = unsafe { ext::opt(self.extensions.params.params) }?;
         let get_value_fn = ext.get_value?;
         let mut value: f64 = 0.0;
@@ -188,7 +188,7 @@ impl ClapLoaded {
     /// crosses the crate boundary. CLAP has no unit string, so `unit` is empty;
     /// `step_count` comes from the `STEPPED` flag plus the declared span, since
     /// CLAP reports steppedness as a flag and the count only via `min`/`max`.
-    pub fn parameter_list(&self) -> Vec<tutti_plugin_types::ParameterInfo> {
+    pub fn get_parameter_list(&self) -> Vec<tutti_plugin_types::ParameterInfo> {
         self.parameters()
             .into_iter()
             .map(project_param_info)
@@ -280,7 +280,7 @@ impl ClapLoaded {
     /// before playing it.
     ///
     /// Callers driving an active instance should still prefer routing param
-    /// changes through the next `process` block (via `ProcessContext::params`)
+    /// changes through the next `process` block (via `ClapProcessContext::params`)
     /// — that is in-order delivery rather than an out-of-band poke — but doing
     /// it here is now safe rather than merely unasserted.
     pub fn flush_params(&mut self, input_events: Vec<ClapEvent>) -> Vec<ClapEvent> {
@@ -317,6 +317,9 @@ impl ClapLoaded {
 
     /// Convenience wrapper that flushes a single `PARAM_VALUE` event.
     ///
+    /// Returns whether the value was flushed. `false` means the write was
+    /// **skipped**, not that the plugin refused it — see the gate below.
+    ///
     /// # REQUIRES_PROCESS gating (H1)
     /// If the instance is *processing* and `id` is flagged
     /// `CLAP_PARAM_REQUIRES_PROCESS`, the change is **not** flushed: the CLAP
@@ -325,7 +328,7 @@ impl ClapLoaded {
     /// the internal `param_requires_process` check /
     /// [`flush_params`](Self::flush_params)). Delivering it out-of-band via
     /// flush would violate the plugin's ordering contract, so it is skipped;
-    /// routing REQUIRES_PROCESS params through `ProcessContext::params` is
+    /// routing REQUIRES_PROCESS params through `ClapProcessContext::params` is
     /// deferred follow-up.
     ///
     /// `processing` is the right condition here, unlike in
@@ -333,12 +336,12 @@ impl ClapLoaded {
     /// is only meaningful once blocks are actually flowing. Before the first
     /// `process()` there is no order to preserve, so the flush is legal even for a
     /// REQUIRES_PROCESS param.
-    pub fn set_parameter(&mut self, id: u32, value: f64) -> &mut Self {
+    pub fn set_parameter(&mut self, id: u32, value: f64) -> bool {
         if self.flags.processing && self.param_requires_process(id) {
-            return self;
+            return false;
         }
         self.flush_params(vec![ClapEvent::param_value(0, id, value)]);
-        self
+        true
     }
 
     /// Inform the plugin about a host-surface → parameter mapping. No-op if

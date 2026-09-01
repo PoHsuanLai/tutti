@@ -41,8 +41,8 @@ use support::corpus::{
     MATRIX_REVERB, REFUSES_MONO,
 };
 
-use tutti_au_host::bus::BusDirection;
-use tutti_au_host::stream::{AuBusLayout, StreamConfig};
+use tutti_au_host::BusDirection;
+use tutti_au_host::{AuBusLayout, StreamConfig};
 use tutti_au_host::{AuError, AuInstance};
 use tutti_plugin_types::ChannelLayout;
 

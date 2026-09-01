@@ -44,7 +44,7 @@ below.
 
 ```rust,no_run
 use std::path::Path;
-use tutti_vst2_host::{ProcessContext, RenderScratch, Vst2Instance};
+use tutti_vst2_host::{Vst2ProcessContext, RenderScratch, Vst2Instance};
 
 let mut plugin = Vst2Instance::load(
     Path::new("/Library/Audio/Plug-Ins/VST/TAL-NoiseMaker.vst"),
@@ -64,7 +64,7 @@ let in_refs: Vec<&[f32]> = inputs.iter().map(|v| v.as_slice()).collect();
 let mut out_refs: Vec<&mut [f32]> =
     outputs.iter_mut().map(|v| v.as_mut_slice()).collect();
 
-let ctx = ProcessContext::new(48_000.0);
+let ctx = Vst2ProcessContext::new(48_000.0);
 let _midi_out: &tutti_vst2_host::MidiEventVec =
     plugin.process_f32(&in_refs, &mut out_refs, 512, &ctx, &mut scratch);
 # Ok::<(), tutti_vst2_host::Vst2Error>(())
@@ -84,7 +84,7 @@ out an opaque, plugin-chosen handle on which arithmetic means nothing.
 # fn ex() -> tutti_vst2_host::Result<()> {
 let plugin = Vst2Instance::load(Path::new("/usr/lib/vst/MyPlugin.so"), 48_000.0, 512)?;
 
-for info in plugin.parameter_list() {
+for info in plugin.get_parameter_list() {
     // Always the `Index` arm here. A VST2 host may iterate positions; a
     // VST3/CLAP/AU host may not, which is what the enum keeps apart.
     let ParamAddress::Index(index) = info.id else {
@@ -107,10 +107,10 @@ plugin.set_parameter(0, 0.5);
 # fn ex(native_view_ptr: *mut std::ffi::c_void) -> tutti_vst2_host::Result<()> {
 # let mut plugin = Vst2Instance::load(Path::new("/usr/lib/vst/MyPlugin.so"), 48_000.0, 512)?;
 // Chunk-based if the plugin declares `preset_chunks`, else the per-parameter
-// fallback; `load_state` reads the header back and reports a refusal rather
+// fallback; `set_state` reads the header back and reports a refusal rather
 // than swallowing it.
-let saved = plugin.save_state()?;
-plugin.load_state(&saved)?;
+let saved = plugin.get_state()?;
+plugin.set_state(&saved)?;
 
 // The editor is the same `AEffect` the audio path drives — hence in-process.
 let size = plugin.open_editor(unsafe { WindowHandle::from_raw(native_view_ptr) })?;

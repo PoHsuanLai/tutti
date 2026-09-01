@@ -20,8 +20,8 @@ use tutti_core::dsp::Real;
 use tutti_core::UnitParam;
 
 use crate::{
-    CompressorNode, DistortionNode, GateNode, LimiterNode, StereoDelayLineNode, StereoLadderFilterNode,
-    StereoSvfFilterNode,
+    CompressorNode, DistortionNode, GateNode, LimiterNode, StereoDelayLineNode,
+    StereoLadderFilterNode, StereoSvfFilterNode,
 };
 
 /// A node that may expose audio-rate input ports for its scalar parameters.

@@ -41,10 +41,21 @@ pub enum Vst3Error {
     #[error("Plugin is not active")]
     NotActive,
 
-    /// Feature requested by the host is not supported by this plugin (e.g.
-    /// 64-bit processing, an editor view).
+    /// Feature requested by the host is not supported by this plugin — 64-bit
+    /// processing, a prefetch mode, a bus arrangement.
+    ///
+    /// Editor failures are [`Vst3Error::EditorError`], not this: "the plugin
+    /// publishes no view" and "the view refused this platform's window type"
+    /// are both editor outcomes a caller handles at the editor call site, and
+    /// folding them in here made a missing GUI indistinguishable from a
+    /// refused sample format.
     #[error("Feature not supported: {0}")]
     NotSupported(String),
+
+    /// Opening, embedding, resizing or closing the plugin's native editor
+    /// failed — including a plugin that publishes no view at all.
+    #[error("Editor error: {0}")]
+    EditorError(String),
 
     /// Parameter index, id, or value fell outside the plugin's allowed range.
     #[error("Invalid parameter: {0}")]

@@ -301,7 +301,7 @@ fn accepting_the_callback_write_does_not_mean_the_au_emits_midi() {
 /// The reason this is worth a test even with no emitting AU present: the install
 /// hands the AU a raw pointer into a heap box and the withdrawal frees that box.
 /// Getting the order wrong is a use-after-free on the render thread — the hazard
-/// `AuReady::uninitialize` documents as FIX 2. A unit that still renders correct
+/// `AuActive::uninitialize` documents as FIX 2. A unit that still renders correct
 /// audio after a full install/render/withdraw/render cycle is the observable that
 /// the ordering held.
 #[test]

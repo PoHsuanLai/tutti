@@ -306,7 +306,7 @@ fn unknown_parameter_id_is_an_error() {
 // -------------------------------------------------------------------- state
 
 /// `ClassInfo` save/restore is what a project file stores. The test mutates
-/// *away* from the saved value before restoring, so a no-op `load_state` — the
+/// *away* from the saved value before restoring, so a no-op `set_state` — the
 /// failure mode where the blob is accepted and ignored — cannot pass.
 #[test]
 fn state_save_restore_round_trips() {
@@ -332,11 +332,11 @@ fn state_save_restore_round_trips() {
 
         let original = au.get_parameter(param.id).expect("read original");
         let blob = au
-            .save_state()
-            .unwrap_or_else(|e| panic!("{}: save_state failed {e:?}", unit.label));
+            .get_state()
+            .unwrap_or_else(|e| panic!("{}: get_state failed {e:?}", unit.label));
         assert!(
             !blob.is_empty(),
-            "{}: save_state produced an empty blob",
+            "{}: get_state produced an empty blob",
             unit.label
         );
 
@@ -356,8 +356,8 @@ fn state_save_restore_round_trips() {
             param.id
         );
 
-        au.load_state(&blob)
-            .unwrap_or_else(|e| panic!("{}: load_state failed {e:?}", unit.label));
+        au.set_state(&blob)
+            .unwrap_or_else(|e| panic!("{}: set_state failed {e:?}", unit.label));
         let restored = au.get_parameter(param.id).expect("read restored");
         let tolerance = ((param.range.max - param.range.min).abs() * 1e-4).max(1e-4);
         assert!(
@@ -384,7 +384,7 @@ fn loading_empty_state_is_a_noop() {
 
     au.set_parameter(param.id, param.range.mid()).expect("set");
     let before = au.get_parameter(param.id).expect("read");
-    au.load_state(&[]).expect("empty state must be accepted");
+    au.set_state(&[]).expect("empty state must be accepted");
     let after = au.get_parameter(param.id).expect("read");
     assert_eq!(before, after, "an empty state blob must not disturb the AU");
 }
@@ -399,7 +399,7 @@ fn corrupt_state_is_rejected() {
     // Not a binary plist: no `bplist00` magic, no XML prologue.
     let garbage = vec![0xDEu8, 0xAD, 0xBE, 0xEF, 0x00, 0x01, 0x02, 0x03];
     assert!(
-        au.load_state(&garbage).is_err(),
+        au.set_state(&garbage).is_err(),
         "a blob that is not a property list must be rejected"
     );
     // And the AU is still usable afterwards.

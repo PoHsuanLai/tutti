@@ -29,6 +29,21 @@ impl ChorusNode {
     /// [`Mix`].
     ///
     /// Allocates its delay lines, so build before the node goes live.
+    ///
+    /// **Starts at the placeholder [`DEFAULT_SAMPLE_RATE`]**; call
+    /// [`AudioUnit::set_sample_rate`] before the first `process`, which rebuilds
+    /// the lines (and so reallocates). Skip it at 48 kHz and the sweep covers
+    /// 8.8% less delay at 8.8% below the configured 1 Hz — shallower and lazier
+    /// than asked for, and still unmistakably a chorus, which is why nothing
+    /// downstream flags it.
+    ///
+    /// This constructor takes no rate, and [`Default`] could not take one at
+    /// all — which is the concrete reason this type carries a placeholder rather
+    /// than a mandatory argument. See the crate-level "born at a placeholder
+    /// rate" section.
+    ///
+    /// [`DEFAULT_SAMPLE_RATE`]: tutti_core::dsp::DEFAULT_SAMPLE_RATE
+    /// [`AudioUnit::set_sample_rate`]: tutti_core::AudioUnit::set_sample_rate
     pub fn new() -> Self {
         Self {
             core: ModulatedDelay::new(ModulatedDelayConfig::CHORUS, 1.0, 0.005, 0.3, 0.5),

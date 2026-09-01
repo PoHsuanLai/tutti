@@ -60,12 +60,31 @@ pub enum IrChannelConfig {
 pub struct ConvolverNode {
     convolver: Convolver,
     params: WetDry,
+    /// The rate the host last announced. Seeded at [`DEFAULT_SAMPLE_RATE`] and
+    /// updated by `set_sample_rate`, but **never read** — no coefficient here
+    /// derives from it, because an FIR convolution's only time constant is the
+    /// IR itself. Kept so the node can answer for its rate if a future
+    /// resampling path needs to know what it was built against; see the
+    /// constructors for why resampling is deliberately not done.
+    ///
+    /// [`DEFAULT_SAMPLE_RATE`]: tutti_core::dsp::DEFAULT_SAMPLE_RATE
     sample_rate: SampleRate,
     latency_samples: usize,
 }
 
 impl ConvolverNode {
     /// Build from an impulse response with an explicit block size.
+    ///
+    /// **Unlike the other rate-dependent nodes in this crate, calling
+    /// `AudioUnit::set_sample_rate` fixes nothing here** — it stores the rate
+    /// and nothing else. `ir` is taken as a bare `&[f32]` with no rate attached,
+    /// so the node cannot tell what rate it was measured at and has nothing to
+    /// resample from or to.
+    ///
+    /// The consequence is the caller's to avoid: an IR captured at 44.1 kHz and
+    /// convolved at 48 kHz plays back 8.8% short and correspondingly bright —
+    /// a reverb tail that decays too fast, which reads as a different room
+    /// rather than as an error. Supply an IR already at the graph's rate.
     pub fn new(ir: &[f32], block_size: usize) -> Self {
         let convolver = Convolver::new(ir, block_size);
         let latency_samples = convolver.latency();
@@ -78,6 +97,10 @@ impl ConvolverNode {
     }
 
     /// Build from an impulse response using the default block size.
+    ///
+    /// The rate caveat on [`new`](Self::new) applies unchanged: the IR carries
+    /// no rate, `set_sample_rate` resamples nothing, and supplying an IR at a
+    /// rate other than the graph's skews the whole tail.
     pub fn with_ir(ir: &[f32]) -> Self {
         let convolver = Convolver::with_ir(ir);
         let latency_samples = convolver.latency();
@@ -210,11 +233,20 @@ pub struct StereoConvolverNode {
     channels: StereoPair<Convolver>,
     config: IrChannelConfig,
     params: WetDry,
+    /// As [`ConvolverNode::sample_rate`]: stored, never read.
     sample_rate: SampleRate,
     latency_samples: usize,
 }
 
 impl StereoConvolverNode {
+    /// The shared body behind [`mono`](Self::mono), [`stereo`](Self::stereo) and
+    /// [`mono_to_stereo`](Self::mono_to_stereo).
+    ///
+    /// Seeds the placeholder [`DEFAULT_SAMPLE_RATE`], which `set_sample_rate`
+    /// overwrites without resampling anything — the rate caveat on
+    /// [`ConvolverNode::new`] applies to every public constructor here.
+    ///
+    /// [`DEFAULT_SAMPLE_RATE`]: tutti_core::dsp::DEFAULT_SAMPLE_RATE
     fn build(l: Convolver, r: Convolver, config: IrChannelConfig) -> Self {
         let latency_samples = l.latency();
         Self {

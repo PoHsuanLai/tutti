@@ -8,11 +8,11 @@ use std::sync::Arc;
 use tutti_core::dsp::{AudioUnit, Net};
 use tutti_core::{AtomicF32, Ordering};
 use tutti_mod::{CurveType, Polarity};
-use tutti_types::{Depth, UnitParam};
 use tutti_nodes::{
     AtomicSourceNode, DistortionNode, ParamModShaping, ParamPorts, ParamShaperNode, ParamSumNode,
     ShapeKind,
 };
+use tutti_types::{Depth, UnitParam};
 
 /// Wire `base + shaped(source) → node.param_port(param)`.
 ///

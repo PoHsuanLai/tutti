@@ -67,12 +67,12 @@ impl<'a> ProcessOutputRef<'a> {
 ///
 /// ```no_run
 /// # use tutti_midi_types::{MidiChannel, MidiGroup};
-/// # use tutti_clap_host::{AudioBuffer32, ClapActive, MidiEvent, ProcessContext, TransportInfo};
+/// # use tutti_clap_host::{AudioBuffer32, ClapActive, MidiEvent, ClapProcessContext, TransportInfo};
 /// # fn ex(plugin: &mut ClapActive<f32>, buffer: &mut AudioBuffer32<'_, '_>)
 /// # -> tutti_clap_host::Result<()> {
 /// let transport = TransportInfo::default().with_tempo(120.0);
 /// let midi = [MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 16384)];
-/// plugin.process(buffer, &ProcessContext {
+/// plugin.process(buffer, &ClapProcessContext {
 ///     midi: &midi,
 ///     transport: Some(&transport),
 ///     ..Default::default()
@@ -80,7 +80,7 @@ impl<'a> ProcessOutputRef<'a> {
 /// # Ok(()) }
 /// ```
 #[derive(Debug, Clone, Copy, Default)]
-pub struct ProcessContext<'a> {
+pub struct ClapProcessContext<'a> {
     /// MIDI to deliver during this block. Sorted by time before being handed
     /// to the plugin, so the caller need not pre-sort.
     pub midi: &'a [MidiEvent],
@@ -260,12 +260,12 @@ impl<T: ClapSample> ClapActive<T> {
     ///
     /// ```no_run
     /// # use tutti_midi_types::{MidiChannel, MidiGroup};
-    /// # use tutti_clap_host::{AudioBuffer32, ClapActive, MidiEvent, ProcessContext, TransportInfo};
+    /// # use tutti_clap_host::{AudioBuffer32, ClapActive, MidiEvent, ClapProcessContext, TransportInfo};
     /// # fn ex(active: &mut ClapActive<f32>, buffer: &mut AudioBuffer32<'_, '_>)
     /// # -> tutti_clap_host::Result<()> {
     /// let transport = TransportInfo::default().with_tempo(120.0);
     /// let midi = [MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 16384)];
-    /// active.process(buffer, &ProcessContext {
+    /// active.process(buffer, &ClapProcessContext {
     ///     midi: &midi,
     ///     transport: Some(&transport),
     ///     ..Default::default()
@@ -275,7 +275,7 @@ impl<T: ClapSample> ClapActive<T> {
     pub fn process(
         &mut self,
         buffer: &mut AudioBuffer<T>,
-        ctx: &ProcessContext<'_>,
+        ctx: &ClapProcessContext<'_>,
     ) -> Result<ProcessOutputRef<'_>> {
         let empty_params = ParameterChanges::new();
         let params = ctx.params.unwrap_or(&empty_params);

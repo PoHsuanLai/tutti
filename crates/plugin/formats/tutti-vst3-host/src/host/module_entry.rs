@@ -55,10 +55,7 @@ impl ModuleEntry {
     /// Returns [`Vst3Error::LoadFailed`] only when the module exports an entry
     /// point and that entry point *refused* (returned false). A module with no
     /// entry point is a normal, supported case and yields `Ok`.
-    pub(crate) fn enter(
-        library: &libloading::Library,
-        lib_path: &Path,
-    ) -> Result<Self, Vst3Error> {
+    pub(crate) fn enter(library: &libloading::Library, lib_path: &Path) -> Result<Self, Vst3Error> {
         platform::enter(library, lib_path).map(|inner| Self { inner })
     }
 }

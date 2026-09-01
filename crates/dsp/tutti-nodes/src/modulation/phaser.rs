@@ -93,6 +93,17 @@ impl PhaserNode {
     /// classic two-notch phaser and higher counts thicken the effect. Defaults:
     /// 0.3 Hz rate, half depth, 0.5 feedback, 50/50 [`Mix`], sweeping
     /// 200–4000 Hz.
+    ///
+    /// **Starts at the placeholder [`DEFAULT_SAMPLE_RATE`]**; call
+    /// [`AudioUnit::set_sample_rate`] before the first `process`. Two things
+    /// skew together if it is missed at 48 kHz: the all-pass corner frequencies
+    /// (so the notches sit 8.8% high) and the LFO's per-sample phase increment
+    /// (so a 0.3 Hz sweep actually runs at 0.276 Hz). Both stay musical-sounding,
+    /// which is why nothing catches it. See the crate-level "born at a
+    /// placeholder rate" section.
+    ///
+    /// [`DEFAULT_SAMPLE_RATE`]: tutti_core::dsp::DEFAULT_SAMPLE_RATE
+    /// [`AudioUnit::set_sample_rate`]: tutti_core::AudioUnit::set_sample_rate
     pub fn new(stages: usize) -> Self {
         let n = stages.clamp(2, MAX_STAGES);
         Self {

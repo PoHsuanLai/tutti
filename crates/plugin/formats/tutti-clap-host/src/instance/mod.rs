@@ -52,7 +52,7 @@ mod state;
 #[cfg(feature = "clap-extras")]
 mod undo;
 
-pub use audio::{ClapSample, ProcessContext, ProcessOutput, ProcessOutputRef};
+pub use audio::{ClapProcessContext, ClapSample, ProcessOutput, ProcessOutputRef};
 #[cfg(feature = "clap-extras")]
 pub use params::ParamMapping;
 

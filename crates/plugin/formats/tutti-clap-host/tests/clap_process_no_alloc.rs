@@ -23,7 +23,7 @@ use std::sync::Mutex;
 
 use assert_no_alloc::AllocDisabler;
 use tutti_clap_host::{
-    AudioBuffer32, ClapActive, ClapLoaded, MidiEvent, ProcessContext, TransportInfo,
+    AudioBuffer32, ClapActive, ClapLoaded, ClapProcessContext, MidiEvent, TransportInfo,
 };
 
 mod support;
@@ -177,7 +177,7 @@ fn drive(
     inst: &mut ClapActive<f32>,
     bufs: &mut StereoBufs,
     iters: usize,
-    ctx: &ProcessContext<'_>,
+    ctx: &ClapProcessContext<'_>,
 ) -> Result<(), tutti_clap_host::ClapError> {
     let mut last = Ok(());
     for _ in 0..iters {
@@ -209,7 +209,7 @@ fn process_steady_state_does_not_allocate() {
     let mut inst = load_probe();
     let mut bufs = StereoBufs::new();
     let transport = TransportInfo::default();
-    let ctx = ProcessContext {
+    let ctx = ClapProcessContext {
         transport: Some(&transport),
         ..Default::default()
     };
@@ -254,14 +254,14 @@ fn process_with_midi_does_not_allocate() {
     // allocation on the event path is flushed before the gate.
     {
         let warm = [on_event[0], off_event[0]];
-        let ctx = ProcessContext {
+        let ctx = ClapProcessContext {
             midi: &warm,
             transport: Some(&transport),
             ..Default::default()
         };
         drive(&mut inst, &mut bufs, 1, &ctx).expect("warm-up block should succeed");
     }
-    let silent = ProcessContext {
+    let silent = ClapProcessContext {
         transport: Some(&transport),
         ..Default::default()
     };
@@ -274,7 +274,7 @@ fn process_with_midi_does_not_allocate() {
                 16 => &off_event,
                 _ => &[],
             };
-            let ctx = ProcessContext {
+            let ctx = ClapProcessContext {
                 midi: events,
                 transport: Some(&transport),
                 ..Default::default()
@@ -314,7 +314,7 @@ fn alternating_continue_tail_does_not_allocate() {
     let mut inst = load_probe();
     let mut bufs = StereoBufs::new();
     let transport = TransportInfo::default();
-    let ctx = ProcessContext {
+    let ctx = ClapProcessContext {
         transport: Some(&transport),
         ..Default::default()
     };
@@ -352,7 +352,7 @@ fn alternating_unknown_status_does_not_allocate() {
     let mut inst = load_probe();
     let mut bufs = StereoBufs::new();
     let transport = TransportInfo::default();
-    let ctx = ProcessContext {
+    let ctx = ClapProcessContext {
         transport: Some(&transport),
         ..Default::default()
     };
@@ -381,7 +381,7 @@ fn alternating_continue_sleep_does_not_allocate() {
     let mut inst = load_probe();
     let mut bufs = StereoBufs::new();
     let transport = TransportInfo::default();
-    let ctx = ProcessContext {
+    let ctx = ClapProcessContext {
         transport: Some(&transport),
         ..Default::default()
     };
@@ -413,7 +413,7 @@ fn tail_and_sleep_are_observable_by_a_caller() {
     let mut inst = load_probe();
     let mut bufs = StereoBufs::new();
     let transport = TransportInfo::default();
-    let ctx = ProcessContext {
+    let ctx = ClapProcessContext {
         transport: Some(&transport),
         ..Default::default()
     };
@@ -464,7 +464,7 @@ fn plugin_error_status_does_not_allocate() {
     let mut inst = load_probe();
     let mut bufs = StereoBufs::new();
     let transport = TransportInfo::default();
-    let ctx = ProcessContext {
+    let ctx = ClapProcessContext {
         transport: Some(&transport),
         ..Default::default()
     };
@@ -521,7 +521,7 @@ fn oversized_block_rejection_does_not_allocate() {
     reset_probe();
     let mut inst = load_probe();
     let transport = TransportInfo::default();
-    let ctx = ProcessContext {
+    let ctx = ClapProcessContext {
         transport: Some(&transport),
         ..Default::default()
     };
@@ -599,7 +599,7 @@ fn sysex_output_events_do_not_allocate() {
     let mut inst = load_probe();
     let mut bufs = StereoBufs::new();
     let transport = TransportInfo::default();
-    let ctx = ProcessContext {
+    let ctx = ClapProcessContext {
         transport: Some(&transport),
         ..Default::default()
     };
@@ -661,7 +661,7 @@ fn audio_thread_logging_does_not_allocate() {
     let mut inst = load_probe();
     let mut bufs = StereoBufs::new();
     let transport = TransportInfo::default();
-    let ctx = ProcessContext {
+    let ctx = ClapProcessContext {
         transport: Some(&transport),
         ..Default::default()
     };
@@ -702,7 +702,7 @@ fn varying_sysex_payload_sizes_do_not_allocate() {
     let mut inst = load_probe();
     let mut bufs = StereoBufs::new();
     let transport = TransportInfo::default();
-    let ctx = ProcessContext {
+    let ctx = ClapProcessContext {
         transport: Some(&transport),
         ..Default::default()
     };
@@ -769,7 +769,7 @@ fn set_sysex_output_no_alloc(count: u32, bytes: u32) {
 /// being tested not to do.
 fn drive_wide(inst: &mut ClapActive<f32>, channels: usize, iters: usize) {
     let transport = TransportInfo::default();
-    let ctx = ProcessContext {
+    let ctx = ClapProcessContext {
         transport: Some(&transport),
         ..Default::default()
     };

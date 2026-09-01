@@ -106,7 +106,7 @@
 //!
 //! `AudioUnitRemoveRenderNotify` must run **before** the boxed state the
 //! `ref_con` points at is freed. This is the same ordering invariant
-//! [`AuReady::uninitialize`](crate::instance::AuReady::uninitialize) documents
+//! [`AuActive::uninitialize`](crate::instance::AuActive::uninitialize) documents
 //! for the input render callback, and it fails the same way: while the notify is
 //! installed the AU holds a raw pointer into the box, and it dereferences that
 //! pointer on its render thread on every single render. Free the box first and
@@ -465,7 +465,7 @@ type NotifyFn = dyn Fn(RenderNotification) + Send + Sync + 'static;
 /// Heap-pinned behind an [`Arc`] inside [`RenderNotify`] so its address is
 /// stable: the AU retains the pointer and dereferences it on every render, so
 /// the body must not move even if the owning handle does. This is the same
-/// discipline `AuReady::scratch` uses for the input render callback.
+/// discipline `AuActive::scratch` uses for the input render callback.
 struct NotifyState {
     callback: Box<NotifyFn>,
     /// Counts deliveries, so a test can **observe** the notify stopping rather
@@ -493,7 +493,7 @@ struct NotifyState {
 /// use tutti_au_host::render_notify::{
 ///     schedule, ParamEvent, RenderPhase, ScheduleAddress,
 /// };
-/// # use tutti_au_host::instance::AuInstance;
+/// # use tutti_au_host::AuInstance;
 /// # fn demo(au: &mut AuInstance, param_id: u32) -> tutti_au_host::Result<()> {
 /// let blocks = Arc::new(AtomicU32::new(0));
 /// let counter = Arc::clone(&blocks);
@@ -640,7 +640,7 @@ impl Drop for RenderNotify {
         // and dereferences it on its render thread every block; releasing the
         // last strong count first would leave the next render calling a freed
         // closure. Same shape as the "uninitialize before freeing the scratch"
-        // rule `AuReady::uninitialize` documents.
+        // rule `AuActive::uninitialize` documents.
         //
         // The `(proc, ref_con)` tuple must match what was registered — Apple's
         // header requires both halves — so this reconstructs the pointer from

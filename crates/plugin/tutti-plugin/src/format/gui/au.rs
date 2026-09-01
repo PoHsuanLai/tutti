@@ -152,7 +152,7 @@ impl PluginEditor for AuGuiInstance {
 
     fn set_state(&mut self, data: &[u8]) -> Result<()> {
         self.inner
-            .load_state(data)
+            .set_state(data)
             .map_err(|e| BridgeError::ProtocolError(format!("AU set_state failed: {e}")))
     }
 

@@ -54,9 +54,9 @@
 use std::sync::Mutex;
 
 use assert_no_alloc::AllocDisabler;
-use tutti_au_host::bus::BusDirection;
-use tutti_au_host::instance::AuInstance;
 use tutti_au_host::parameters::{self, ParamAddress};
+use tutti_au_host::AuInstance;
+use tutti_au_host::BusDirection;
 use tutti_au_host::MidiEvent;
 
 mod support;

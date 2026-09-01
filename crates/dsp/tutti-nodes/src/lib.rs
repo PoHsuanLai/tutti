@@ -26,10 +26,51 @@
 //! three silent layers the README lists; the counted fourth is
 //! `Net::take_unaddressed_settings`.
 //!
+//! # Rate-dependent nodes are born at a placeholder rate (MANDATORY)
+//!
+//! > A node whose constructor doc says it **starts at [`DEFAULT_SAMPLE_RATE`]**
+//! > is *not* ready to run. Call [`AudioUnit::set_sample_rate`] with the real
+//! > device rate before the first `process`, or the node renders **silently
+//! > wrong-rate audio**.
+//!
+//! Every time constant in this crate is derived from a sample rate: delay taps
+//! and ring lengths from [`Seconds`], filter coefficients from a cutoff in
+//! [`Hz`] against Nyquist, envelope attack/release coefficients, LFO phase
+//! increments. None can be computed until the rate is known, and the rate is a
+//! property of the *device*, not of the code — so these constructors seed
+//! [`DEFAULT_SAMPLE_RATE`] and are corrected afterwards.
+//!
+//! **The failure is neither a panic nor silence.** At 48 kHz an uncorrected
+//! node is off by the 44100/48000 ratio — every delay time and filter cutoff
+//! lands ~8.8% away from what was asked for. A 500 ms echo returns at 459 ms; a
+//! 1 kHz cutoff sits at 1088 Hz. It sounds like plausible audio, which is why
+//! nothing downstream catches it. Same hazard and same ratio that
+//! `bevy_tutti`'s engine builder documents on the MIDI port manager.
+//!
+//! In practice the correction arrives through the graph:
+//! [`Net`](tutti_core::dsp::Net)'s own [`AudioUnit::set_sample_rate`] forwards
+//! to every unit it holds, and the engine calls it once the device is open. A
+//! node driven directly — a test, a bench, an offline render assembled by hand
+//! — has no such host and must make the call itself.
+//!
+//! Three of these constructors **allocate** against the placeholder rate (the
+//! delay lines, and the limiter's lookahead ring), so the corrective
+//! `set_sample_rate` reallocates. That is why the RT no-alloc suites call it
+//! outside their no-alloc gate rather than inside it.
+//!
+//! Nodes carrying no rate-dependent quantity — [`BusStripNode`],
+//! [`ChannelSumNode`], [`DownmixNode`], [`DistortionNode`] — are exempt and say
+//! nothing, because a wrong rate has nothing to skew. That is also why
+//! [`ChorusNode`] and [`FlangerNode`] can still implement [`Default`] while
+//! being rate-dependent: the placeholder is what makes a no-argument
+//! constructor representable at all.
+//!
 //! The quick start, the mechanism table, the full silent-failure ladder and the
 //! features are in the crate README, included below.
 //!
 //! [`AudioUnit::set`]: tutti_core::AudioUnit::set
+//! [`AudioUnit::set_sample_rate`]: tutti_core::AudioUnit::set_sample_rate
+//! [`DEFAULT_SAMPLE_RATE`]: tutti_core::dsp::DEFAULT_SAMPLE_RATE
 #![doc = include_str!("../README.md")]
 
 // NOTE: this crate has no fallible operation and therefore no `Error` type.

@@ -7,7 +7,7 @@
 use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard};
 
-use tutti_vst2_host::{MidiEvent, ProcessContext, RenderScratch, Samples, Vst2Instance};
+use tutti_vst2_host::{MidiEvent, RenderScratch, Samples, Vst2Instance, Vst2ProcessContext};
 // From the probe's rlib, not a hand-written mirror that can drift out of
 // layout agreement with the cdylib the host loads.
 use tutti_midi_types::{MidiChannel, MidiGroup};
@@ -113,7 +113,7 @@ fn host_loads_probe_and_reports_declared_metadata() {
     // The probe's defaults: stereo in, stereo out, four parameters.
     assert_eq!(meta.num_inputs.count(), 2);
     assert_eq!(meta.num_outputs.count(), 2);
-    assert_eq!(instance.parameters().len(), 4);
+    assert_eq!(instance.parameter_count(), 4);
     assert_eq!(meta.latency_samples, Samples::ZERO);
 }
 
@@ -138,7 +138,7 @@ fn capture_round_trips_what_the_host_sent() {
         MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0).with_frame_offset(64),
     ];
 
-    let ctx = ProcessContext::new(SAMPLE_RATE).midi(&midi);
+    let ctx = Vst2ProcessContext::new(SAMPLE_RATE).midi(&midi);
     instance.process_f32(&in_refs, &mut out_refs, BLOCK, &ctx, &mut scratch);
 
     let cap = read_capture(&path);
@@ -194,7 +194,7 @@ fn tag_passthrough_oracle_produces_exact_samples() {
     let in_refs: Vec<&[f32]> = inputs.iter().map(|v| v.as_slice()).collect();
     let mut out_refs: Vec<&mut [f32]> = outputs.iter_mut().map(|v| v.as_mut_slice()).collect();
 
-    let ctx = ProcessContext::new(SAMPLE_RATE);
+    let ctx = Vst2ProcessContext::new(SAMPLE_RATE);
     instance.process_f32(&in_refs, &mut out_refs, BLOCK, &ctx, &mut scratch);
 
     // Confirm the render happened before asserting on its output, or a host

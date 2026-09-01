@@ -5,14 +5,14 @@
 //! inherited from [`Vst3Loaded`] via [`Deref`] / [`DerefMut`] — see
 //! [`crate::host::loaded`] for that surface.
 //!
-//! To create one: `Vst3Instance::load(path, rate, block)` or
+//! To create one: `Vst3Active::load(path, rate, block)` or
 //! `Vst3Loaded::load(path)?.activate(rate, block)?`. To drop back to
-//! non-processing state: [`Vst3Instance::deactivate`].
+//! non-processing state: [`Vst3Active::deactivate`].
 //!
 //! What this type adds over [`Vst3Loaded`] is exactly the state that only
 //! exists between `setActive(1)` and `setActive(0)`: the scratch buffers sized
 //! to the negotiated arrangements, the input/output staging, and the sample
-//! width `T`. [`deactivate`](Vst3Instance::deactivate) takes `self` by value
+//! width `T`. [`deactivate`](Vst3Active::deactivate) takes `self` by value
 //! and returns the embedded [`Vst3Loaded`], which is what makes a handle to a
 //! deactivated plugin unrepresentable — the caller cannot keep the old value to
 //! call `process` on, because it was moved. A `&mut self` deactivation would
@@ -228,29 +228,29 @@ struct AudioIO<T: Vst3Sample> {
 /// Fully-active VST3 plugin ready to process audio.
 ///
 /// The type parameter `T` fixes the sample format at activation time:
-/// `Vst3Instance<f32>` (the default) always calls `setupProcessing` with
-/// `kSample32`; `Vst3Instance<f64>` uses `kSample64` and returns an error from
+/// `Vst3Active<f32>` (the default) always calls `setupProcessing` with
+/// `kSample32`; `Vst3Active<f64>` uses `kSample64` and returns an error from
 /// [`Vst3Loaded::activate`] if the plugin does not advertise 64-bit support.
 ///
 /// Embeds a [`Vst3Loaded`]; all parameter, editor, state, and metadata methods
-/// are inherited via [`Deref`]. Obtain via [`Vst3Instance::load`] or
+/// are inherited via [`Deref`]. Obtain via [`Vst3Active::load`] or
 /// [`Vst3Loaded::activate`], and drop back to a non-processing
-/// [`Vst3Loaded`] with [`Vst3Instance::deactivate`].
-pub struct Vst3Instance<T: Vst3Sample = f32> {
+/// [`Vst3Loaded`] with [`Vst3Active::deactivate`].
+pub struct Vst3Active<T: Vst3Sample = f32> {
     /// The embedded loaded state. Wrapped in [`ManuallyDrop`] so
-    /// [`deactivate`](Vst3Instance::deactivate) can move it out by value
+    /// [`deactivate`](Vst3Active::deactivate) can move it out by value
     /// without triggering this type's `Drop` (which would deactivate a second
     /// time). `deactivated` records whether that move happened, so `Drop` knows
     /// whether the field is still live and must be dropped.
     loaded: ManuallyDrop<Vst3Loaded>,
     audio: AudioIO<T>,
-    /// Set by [`deactivate`](Vst3Instance::deactivate) once it has taken
+    /// Set by [`deactivate`](Vst3Active::deactivate) once it has taken
     /// `loaded` out. When true, `Drop` neither re-runs the deactivation
     /// sequence nor drops `loaded` (already moved out).
     deactivated: bool,
 }
 
-impl<T: Vst3Sample> Vst3Instance<T> {
+impl<T: Vst3Sample> Vst3Active<T> {
     /// Lightweight metadata read: load the library, read factory and bus info,
     /// return without calling `initialize()` or `setActive()`. Safe for plugins
     /// that would otherwise pop license dialogs or hit the network during full
@@ -1008,7 +1008,7 @@ impl<T: Vst3Sample> Vst3Instance<T> {
     /// plug-in."* `kLatencyChanged` (`:137-138`) states the same cycle and adds
     /// that `getLatencySamples` should be read *after* `setActive(true)`.
     ///
-    /// This lives on `Vst3Instance` rather than `Vst3Loaded` because only this
+    /// This lives on `Vst3Active` rather than `Vst3Loaded` because only this
     /// type knows whether the plugin is active. Reaching the re-enumeration
     /// through `DerefMut` on a live instance skips the cycle entirely — the bus
     /// layout is re-read while the plugin is still active, which is the one
@@ -1074,20 +1074,20 @@ impl<T: Vst3Sample> Vst3Instance<T> {
     }
 }
 
-impl<T: Vst3Sample> Deref for Vst3Instance<T> {
+impl<T: Vst3Sample> Deref for Vst3Active<T> {
     type Target = Vst3Loaded;
     fn deref(&self) -> &Vst3Loaded {
         &self.loaded
     }
 }
 
-impl<T: Vst3Sample> DerefMut for Vst3Instance<T> {
+impl<T: Vst3Sample> DerefMut for Vst3Active<T> {
     fn deref_mut(&mut self) -> &mut Vst3Loaded {
         &mut self.loaded
     }
 }
 
-impl<T: Vst3Sample> Drop for Vst3Instance<T> {
+impl<T: Vst3Sample> Drop for Vst3Active<T> {
     fn drop(&mut self) {
         // If `deactivate` already ran, `loaded` was moved out and the plugin
         // was deactivated there — nothing to do, and dropping the (empty)

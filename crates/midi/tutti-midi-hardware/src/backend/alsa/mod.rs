@@ -29,10 +29,10 @@ mod input;
 mod output;
 pub mod sys;
 
-use crate::core::capability::{EndpointId, EndpointInfo};
-use crate::core::endpoints::{InputConnection, MidiEndpoints};
-use crate::core::error::Result;
-use crate::core::InputProducerHandle;
+use crate::capability::{EndpointId, EndpointInfo};
+use crate::endpoints::{InputConnection, MidiEndpoints};
+use crate::error::Result;
+use crate::InputProducerHandle;
 use client::SeqClient;
 use enumerate::Direction;
 use tutti_midi_types::MidiOut;

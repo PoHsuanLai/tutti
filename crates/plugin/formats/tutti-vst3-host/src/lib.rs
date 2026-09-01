@@ -8,7 +8,7 @@ pub mod types;
 
 pub use error::{LoadStage, Result, Vst3Error};
 pub use host::{
-    factory_flags, FactoryInfo, PluginNotifications, RestartOutcome, Vst3Instance, Vst3Library,
+    factory_flags, FactoryInfo, PluginNotifications, RestartOutcome, Vst3Active, Vst3Library,
     Vst3Loaded,
 };
 pub use types::{

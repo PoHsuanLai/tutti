@@ -16,8 +16,8 @@
 use std::time::Instant;
 
 use tutti_core::dsp::{AudioUnit as _, Net};
-use tutti_types::UnitParam;
 use tutti_nodes::{AtomicSourceNode, DistortionNode, ParamPorts, ParamSumNode, ShapeKind};
+use tutti_types::UnitParam;
 
 const BLOCK: usize = 128;
 const BLOCKS: usize = 20_000;

@@ -7,10 +7,10 @@ use std::time::Instant;
 use super::client::SeqClient;
 use super::enumerate::unpack_id;
 use super::sys;
-use crate::core::capability::EndpointId;
-use crate::core::endpoints::InputConnection;
-use crate::core::error::Result;
-use crate::core::InputProducerHandle;
+use crate::capability::EndpointId;
+use crate::endpoints::InputConnection;
+use crate::error::Result;
+use crate::InputProducerHandle;
 use tutti_midi_types::ump::split_ump_stream;
 
 /// How long the pump sleeps when the queue is empty.
@@ -79,7 +79,7 @@ pub fn open(id: EndpointId, producer: InputProducerHandle) -> Result<Box<dyn Inp
     let thread = std::thread::Builder::new()
         .name("tutti-midi-in".to_string())
         .spawn(move || pump(seq, flag, producer))
-        .map_err(|e| crate::core::error::Error::MidiDevice(format!("spawn MIDI pump: {e}")))?;
+        .map_err(|e| crate::error::Error::MidiDevice(format!("spawn MIDI pump: {e}")))?;
 
     Ok(Box::new(AlsaInput {
         running,

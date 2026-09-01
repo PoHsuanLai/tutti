@@ -115,9 +115,9 @@ impl ClapLoaded {
         let mut scratch = AudioScratch::<T>::new();
         // Cache each param's native range for denormalizing incoming automation
         // (host authors normalized 0..1; CLAP wants plain). Done once here, off
-        // the audio thread — `parameter_list()` queries the plugin.
+        // the audio thread — `get_parameter_list()` queries the plugin.
         scratch.param_ranges = self
-            .parameter_list()
+            .get_parameter_list()
             .into_iter()
             // A parameter with no declared bounds has nothing to denormalize
             // against; dropping it leaves its automation to pass through
@@ -175,7 +175,7 @@ impl ClapLoaded {
     /// in-place re-activation path after `set_sample_rate`.
     pub(crate) fn activate_plugin(&mut self) -> Result<()> {
         let plugin_ref = unsafe { self.plugin.as_ref() };
-        let activate_fn = plugin_ref.activate.ok_or(ClapError::NotActivated)?;
+        let activate_fn = plugin_ref.activate.ok_or(ClapError::NotActive)?;
         if !unsafe {
             activate_fn(
                 self.plugin.as_ptr(),

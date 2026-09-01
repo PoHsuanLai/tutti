@@ -45,7 +45,7 @@ use tutti_midi_types::{MidiChannel, MidiGroup};
 use tutti_plugin_types::{ParamAddress, ParamId};
 use tutti_vst3_host::{
     AudioBuffer, MidiEvent, NoteExpressionType, NoteExpressionValue, ParameterChanges,
-    TransportInfo, Vst3InputEvents, Vst3Instance, Vst3Loaded,
+    TransportInfo, Vst3Active, Vst3InputEvents, Vst3Loaded,
 };
 
 /// A VST3 `ParamID` as the automation vocabulary's address.
@@ -197,9 +197,9 @@ fn probe_path() -> PathBuf {
 ///
 /// Returns `Option` only so call sites keep their existing shape; a load
 /// failure is a hard error, because the probe is ours and built from this tree.
-fn load_probe(block_size: usize) -> Option<Vst3Instance> {
+fn load_probe(block_size: usize) -> Option<Vst3Active> {
     let path = probe_path();
-    match Vst3Instance::<f32>::load(&path, 48_000.0, block_size) {
+    match Vst3Active::<f32>::load(&path, 48_000.0, block_size) {
         Ok(i) => Some(i),
         Err(e) => panic!("audio-probe failed to load from {path:?}: {e:?}"),
     }
@@ -214,7 +214,7 @@ fn load_probe(block_size: usize) -> Option<Vst3Instance> {
 /// write. (Getting this wrong is what made three of these tests fail on their
 /// first run: the probe stayed in mode 0 and every assertion saw the constant
 /// `probe_tag(0, 0) == 1.0`.)
-fn set_mode(inst: &mut Vst3Instance, mode: f64) {
+fn set_mode(inst: &mut Vst3Active, mode: f64) {
     inst.set_parameter(PARAM_MODE, mode);
 
     let mut params = ParameterChanges::new();
@@ -235,7 +235,7 @@ struct Rendered {
 /// Input for bus `b`, channel `c`, sample `i` is `input_at(b, c, i)`, which
 /// lets a test make every slot uniquely identifiable.
 fn render(
-    inst: &mut Vst3Instance,
+    inst: &mut Vst3Active,
     frames: usize,
     midi: &[MidiEvent],
     params: Option<&ParameterChanges>,
@@ -501,7 +501,7 @@ fn consecutive_blocks_are_delivered_in_order() {
 /// reactivated at all, so `kModeActivationCount` reports its own
 /// `setActive(true)` count.
 ///
-/// Driven through `Vst3Instance` rather than the server: this is the layer that
+/// Driven through `Vst3Active` rather than the server: this is the layer that
 /// owns activation, and the restart method lives here.
 #[test]
 fn an_io_change_reactivates_the_plugin_rather_than_re_reading_it_live() {
@@ -553,7 +553,7 @@ fn an_io_change_reactivates_the_plugin_rather_than_re_reading_it_live() {
 ///
 /// `ivstaudioprocessor.h:328-330`: *"Called in disable state (setActive not
 /// called with true) before setProcessing is called and processing will
-/// begin."* `Vst3Instance` is active by construction — `load` ends with
+/// begin."* `Vst3Active` is active by construction — `load` ends with
 /// `setActive(true)` — so `set_sample_rate` cannot deliver the new setup in
 /// place; it has to bracket the call.
 ///
@@ -771,7 +771,7 @@ fn f64_path_carries_the_same_audio() {
     // The probe declares f64 support, so a failure here is a real one — either
     // in the probe or in the host's f64 activation path. Skipping would hide
     // exactly the regression this test exists to catch.
-    let mut inst = match Vst3Instance::<f64>::load(&path, 48_000.0, 512) {
+    let mut inst = match Vst3Active::<f64>::load(&path, 48_000.0, 512) {
         Ok(i) => i,
         Err(e) => panic!("audio-probe f64 activation failed: {e:?}"),
     };
@@ -1007,19 +1007,19 @@ fn controller_only_ui_state_survives_a_save_and_restore() {
         };
         inst.set_parameter(PARAM_UI_STATE, UI_VALUE);
         assert_eq!(
-            inst.parameter(PARAM_UI_STATE),
+            inst.get_parameter(PARAM_UI_STATE),
             UI_VALUE,
             "the probe did not accept the UI-state write, so the rest of this \
              test would be vacuous"
         );
-        inst.state().expect("probe should expose state")
+        inst.get_state().expect("probe should expose state")
     };
 
     let Some(mut restored) = load_probe(512) else {
         return;
     };
     assert_eq!(
-        restored.parameter(PARAM_UI_STATE),
+        restored.get_parameter(PARAM_UI_STATE),
         0.0,
         "a freshly loaded probe should start at the UI-state default; if it \
          does not, the restore below proves nothing"
@@ -1028,7 +1028,7 @@ fn controller_only_ui_state_survives_a_save_and_restore() {
     restored.set_state(&saved).expect("restore should succeed");
 
     assert_eq!(
-        restored.parameter(PARAM_UI_STATE),
+        restored.get_parameter(PARAM_UI_STATE),
         UI_VALUE,
         "controller-only UI state was lost across save/restore — the host is \
          persisting IComponent's stream but not IEditController's, so a \
@@ -1215,7 +1215,7 @@ fn midi_emitted_by_the_plugin_reaches_the_host() {
         eprintln!("legacy-midicc-out not built; skipping MIDI-output test");
         return;
     };
-    let Ok(mut inst) = Vst3Instance::<f32>::load(&path, 48_000.0, 512) else {
+    let Ok(mut inst) = Vst3Active::<f32>::load(&path, 48_000.0, 512) else {
         eprintln!("legacy-midicc-out load failed; skipping");
         return;
     };

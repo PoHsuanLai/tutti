@@ -92,7 +92,7 @@ impl ClapGuiInstance {
         // readable on an unactivated instance, which is what this GUI-only
         // load is.
         let mut param_ranges: Vec<(u32, (f64, f64))> = inner
-            .parameter_list()
+            .get_parameter_list()
             .into_iter()
             .filter_map(|p| {
                 let id = p.id.opaque()?.get();

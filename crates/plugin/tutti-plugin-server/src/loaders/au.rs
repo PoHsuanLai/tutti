@@ -253,7 +253,7 @@ impl PropertyFlags {
 struct PropertyWatch {
     /// Never read after construction. Dropping it runs `AUListenerDispose`,
     /// which is the only thing that stops further deliveries.
-    _listener: tutti_au_host::listener::AuParameterListener,
+    _listener: tutti_au_host::AuParameterListener,
     flags: std::sync::Arc<PropertyFlags>,
 }
 
@@ -281,11 +281,11 @@ impl PropertyWatch {
     unsafe fn install(unit: tutti_au_host::types::AudioUnit) -> Option<Self> {
         use std::sync::atomic::Ordering;
 
-        use tutti_au_host::listener::{AuEvent, AuParameterListener, EventAddress};
         use tutti_au_host::types::{
             K_AUDIO_UNIT_PROPERTY_LATENCY, K_AUDIO_UNIT_PROPERTY_PARAMETER_LIST,
             K_AUDIO_UNIT_PROPERTY_TAIL_TIME,
         };
+        use tutti_au_host::{AuEvent, AuParameterListener, EventAddress};
 
         let flags = std::sync::Arc::new(PropertyFlags::default());
         let sink = std::sync::Arc::clone(&flags);
@@ -950,13 +950,13 @@ impl PluginEditorHost for AuInstance {
 impl PluginState for AuInstance {
     fn get_state(&mut self) -> PluginResult<Vec<u8>> {
         self.inner
-            .save_state()
+            .get_state()
             .map_err(|e| BridgeError::StateSaveError(e.to_string()).into())
     }
 
     fn set_state(&mut self, data: &[u8]) -> PluginResult<()> {
         self.inner
-            .load_state(data)
+            .set_state(data)
             .map_err(|e| BridgeError::StateRestoreError(e.to_string()).into())
     }
 }

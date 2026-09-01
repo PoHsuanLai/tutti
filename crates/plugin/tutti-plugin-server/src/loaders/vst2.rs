@@ -19,9 +19,7 @@ use tutti_plugin::server::PluginError;
 use tutti_plugin::{BridgeError, Result};
 
 #[cfg(feature = "vst2")]
-use tutti_vst2_host::{
-    ProcessContext as Vst2ProcessContext, RenderScratch, Vst2Error, Vst2Instance as Vst2Host,
-};
+use tutti_vst2_host::{RenderScratch, Vst2Error, Vst2Instance as Vst2Host, Vst2ProcessContext};
 
 use crate::loaders::common::{single_bus, Meta};
 
@@ -147,7 +145,7 @@ fn translate_error(err: Vst2Error, _path: &Path) -> BridgeError {
             reason,
         },
         Vst2Error::EditorError(s) => BridgeError::EditorError(s),
-        Vst2Error::StateRestoreError(s) => BridgeError::StateRestoreError(s),
+        Vst2Error::StateError(s) => BridgeError::StateRestoreError(s),
     }
 }
 
@@ -281,10 +279,10 @@ impl PluginParams for Vst2Instance {
             // matches what the other format loaders return for an unreadable
             // parameter; the distinction stays available on `Vst2Instance`.
             // VST2 is the one format addressed by position, so an opaque
-            // handle addresses nothing here. `Vst2Instance::parameter` bounds-
+            // handle addresses nothing here. `Vst2Instance::get_parameter` bounds-
             // checks the index it is given; see `param_index` there.
             id.index()
-                .and_then(|i| self.inner.parameter(i))
+                .and_then(|i| self.inner.get_parameter(i))
                 .unwrap_or(0.0) as f64
         }
         #[cfg(not(feature = "vst2"))]
@@ -330,7 +328,7 @@ impl PluginParams for Vst2Instance {
         #[cfg(feature = "vst2")]
         {
             let index = id.index()?;
-            let current = self.inner.parameter(index)?;
+            let current = self.inner.get_parameter(index)?;
             (f64::from(current) == value.get())
                 .then(|| self.inner.parameter_display(index))
                 .flatten()
@@ -371,9 +369,9 @@ impl PluginParams for Vst2Instance {
         #[cfg(feature = "vst2")]
         {
             // The narrow→shared mapping lives on the host crate's
-            // `Vst2Instance::parameter_list`; the in-process VST2 backend's
+            // `Vst2Instance::get_parameter_list`; the in-process VST2 backend's
             // `HostParams` impl calls the same helper, so there is one VST2 param map.
-            self.inner.parameter_list()
+            self.inner.get_parameter_list()
         }
         #[cfg(not(feature = "vst2"))]
         Vec::new()
@@ -445,7 +443,7 @@ impl PluginState for Vst2Instance {
         #[cfg(feature = "vst2")]
         {
             self.inner
-                .save_state()
+                .get_state()
                 .map_err(|e| translate_error(e, Path::new("")).into())
         }
         #[cfg(not(feature = "vst2"))]
@@ -456,7 +454,7 @@ impl PluginState for Vst2Instance {
         #[cfg(feature = "vst2")]
         {
             self.inner
-                .load_state(data)
+                .set_state(data)
                 .map_err(|e| translate_error(e, Path::new("")).into())
         }
         #[cfg(not(feature = "vst2"))]

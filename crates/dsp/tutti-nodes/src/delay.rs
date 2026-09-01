@@ -203,11 +203,16 @@ impl DelayLineNode {
     /// self-oscillates and grows without bound. `mix` starts fully wet
     /// ([`Mix::WET`]); set it for a parallel send.
     ///
-    /// The line is sized at [`DEFAULT_SAMPLE_RATE`] and rebuilt by
-    /// `AudioUnit::set_sample_rate`, so `max_delay_secs` holds regardless of the
-    /// rate the graph ends up running at. Allocates.
+    /// **Starts at the placeholder [`DEFAULT_SAMPLE_RATE`]**: the line is sized
+    /// there and rebuilt by [`AudioUnit::set_sample_rate`], which is what makes
+    /// `max_delay_secs` hold at whatever rate the graph ends up running at. Call
+    /// that setter before the first `process` — skip it at 48 kHz and every tap
+    /// lands 8.8% short (a 500 ms echo returns at 459 ms), audibly wrong but not
+    /// detectably so. See the crate-level "born at a placeholder rate" section.
+    /// Allocates, and `set_sample_rate` reallocates.
     ///
     /// [`DEFAULT_SAMPLE_RATE`]: tutti_core::dsp::DEFAULT_SAMPLE_RATE
+    /// [`AudioUnit::set_sample_rate`]: tutti_core::AudioUnit::set_sample_rate
     pub fn new(
         max_delay_secs: impl Into<Seconds>,
         delay_secs: impl Into<Seconds>,
@@ -459,7 +464,14 @@ impl StereoDelayLineNode {
     /// Cross-feedback starts at [`Feedback::NONE`] — set it with
     /// [`set_cross_feedback`](Self::set_cross_feedback) — and `mix` fully wet.
     ///
-    /// Allocates.
+    /// **Starts at the placeholder [`DEFAULT_SAMPLE_RATE`]**; call
+    /// [`AudioUnit::set_sample_rate`] before the first `process` or both taps
+    /// land 8.8% short at 48 kHz — plausible-sounding, wrong audio rather than
+    /// an error. See the crate-level "born at a placeholder rate" section.
+    /// Allocates, and `set_sample_rate` reallocates.
+    ///
+    /// [`DEFAULT_SAMPLE_RATE`]: tutti_core::dsp::DEFAULT_SAMPLE_RATE
+    /// [`AudioUnit::set_sample_rate`]: tutti_core::AudioUnit::set_sample_rate
     pub fn new(
         max_delay_secs: impl Into<Seconds>,
         delay_l_secs: impl Into<Seconds>,
@@ -492,6 +504,15 @@ impl StereoDelayLineNode {
     /// a stereo-only notion and is inert above width 2. `with_channels(2, …)`
     /// with equal L/R times matches [`Self::new`]; the `mix`/`feedback` surface
     /// is shared across all channels (one linked control).
+    ///
+    /// **Starts at the placeholder [`DEFAULT_SAMPLE_RATE`]** like
+    /// [`Self::new`]: every line is sized there, so call
+    /// [`AudioUnit::set_sample_rate`] before the first `process` or all `n`
+    /// taps land 8.8% short at 48 kHz. See the crate-level "born at a
+    /// placeholder rate" section. Allocates, and `set_sample_rate` reallocates.
+    ///
+    /// [`DEFAULT_SAMPLE_RATE`]: tutti_core::dsp::DEFAULT_SAMPLE_RATE
+    /// [`AudioUnit::set_sample_rate`]: tutti_core::AudioUnit::set_sample_rate
     pub fn with_channels(
         channels: usize,
         max_delay_secs: impl Into<Seconds>,

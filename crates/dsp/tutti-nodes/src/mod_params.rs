@@ -22,8 +22,8 @@ use tutti_mod::{AtomicTarget, ModParams, ModTarget};
 #[cfg(feature = "convolution")]
 use crate::StereoConvolverNode;
 use crate::{
-    BrickwallLimiterNode, ChorusNode, CompressorNode, DistortionNode, EqBandNode, FlangerNode, GateNode,
-    LimiterNode, StereoDelayLineNode, StereoLadderFilterNode, StereoPhaserNode,
+    BrickwallLimiterNode, ChorusNode, CompressorNode, DistortionNode, EqBandNode, FlangerNode,
+    GateNode, LimiterNode, StereoDelayLineNode, StereoLadderFilterNode, StereoPhaserNode,
     StereoSvfFilterNode,
 };
 

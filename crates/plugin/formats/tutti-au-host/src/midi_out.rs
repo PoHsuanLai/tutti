@@ -135,7 +135,7 @@ pub struct AuMidiOutput {
     /// Heap-pinned so its address is stable: the AU retains a `userData` derived
     /// from `&*state`, and this struct may be moved by its owner. Moving the
     /// `Box` moves only its 8-byte pointer, so the address the AU holds stays
-    /// valid — the same reasoning `AuReady::scratch` and `AuLoaded::transport`
+    /// valid — the same reasoning `AuActive::scratch` and `AuLoaded::transport`
     /// are documented with.
     ///
     /// `Option` so [`Self::remove`] can take the box out *after* the property has
@@ -342,7 +342,7 @@ impl AuMidiOutput {
     ///
     /// The property write **MUST** complete before the boxed state is freed. This
     /// is the MIDI-output twin of the invariant
-    /// [`crate::instance::AuReady::uninitialize`] documents (there:
+    /// [`crate::instance::AuActive::uninitialize`] documents (there:
     /// `AudioUnitUninitialize` before the boxed `RenderScratch` is dropped) and of
     /// the one `Drop for AuLoaded` documents for `HostCallbackInfo`. All three are
     /// the same hazard: while the property holds the live `userData` the AU may

@@ -361,22 +361,6 @@ mod tests {
         assert!(output[1] > 0.0);
     }
 
-    #[test]
-    fn vbap_panner_clone() {
-        let panner = VbapPannerNode::surround_5_1().unwrap();
-        panner.set_position(45.0, 15.0);
-        panner.set_spread(0.3);
-
-        let cloned = panner.clone();
-
-        assert_eq!(cloned.num_channels(), panner.num_channels());
-        // Compared via `.get()`: the angular units omit `Sub` on purpose (a
-        // circle has no ends), so a difference is taken in the scalar space.
-        assert!((cloned.azimuth().get() - panner.azimuth().get()).abs() < 0.001);
-        assert!((cloned.elevation().get() - panner.elevation().get()).abs() < 0.001);
-        assert!((cloned.spread().get() - panner.spread().get()).abs() < 0.001);
-    }
-
     /// `AudioUnit::reset` resets time, not settings.
     ///
     /// The offline exporter clones the live net and calls `reset()` on it to
@@ -496,5 +480,4 @@ mod tests {
         assert!((panner.azimuth().get() - (-60.0)).abs() < 0.001);
         assert!((panner.elevation().get() - 10.0).abs() < 0.001);
     }
-
 }

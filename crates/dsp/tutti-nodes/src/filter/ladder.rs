@@ -790,16 +790,6 @@ mod tests {
     }
 
     #[test]
-    fn stereo_ladder_default_is_two_in_no_param_ports() {
-        let u = StereoLadderFilterNode::<f64>::new(LadderType::LP24, 1000.0, 0.3);
-        assert_eq!(u.inputs(), 2);
-        assert_eq!(u.outputs(), 2);
-        assert_eq!(u.cutoff_port(), None);
-        assert_eq!(u.q_port(), None);
-        assert_eq!(u.drive_port(), None);
-    }
-
-    #[test]
     fn ladder_with_channels_2_is_bit_identical_to_new() {
         let mut a = StereoLadderFilterNode::<f64>::new(LadderType::LP24, 900.0, 0.4);
         a.set_sample_rate(tutti_core::SampleRate(44100.0));
@@ -848,6 +838,13 @@ mod tests {
 
     #[test]
     fn stereo_ladder_param_port_arity_and_indices() {
+        // Plain constructor: no ports, audio arity untouched.
+        let d = StereoLadderFilterNode::<f64>::new(LadderType::LP24, 1000.0, 0.3);
+        assert_eq!(d.inputs(), 2);
+        assert_eq!(d.outputs(), 2);
+        assert_eq!(d.cutoff_port(), None);
+        assert_eq!(d.q_port(), None);
+        assert_eq!(d.drive_port(), None);
         // cutoff + drive (no Q) → cutoff at 2, drive at 3 (Q absent).
         let u = StereoLadderFilterNode::<f64>::with_param_inputs(
             2,

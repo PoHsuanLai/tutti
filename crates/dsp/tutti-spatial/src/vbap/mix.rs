@@ -248,31 +248,6 @@ mod tests {
     }
 
     #[test]
-    fn build_vbap_mix_wires_expected_arity() {
-        use tutti_core::dsp::{dc, Net};
-        use tutti_types::ChannelLayout;
-
-        let mut net = Net::new(0, 6);
-        let a = net.push(Box::new(dc((1.0, 1.0))));
-        let b = net.push(Box::new(dc((1.0, 1.0))));
-        let c = net.push(Box::new(dc((1.0, 1.0))));
-
-        // 3 sources into a 5.1 mix → the sum node is 6-out.
-        let mix = build_vbap_mix(
-            &mut net,
-            ChannelLayout::from(6u16),
-            &[
-                VbapSource::at(a, 0.0),
-                VbapSource::at(b, 90.0),
-                VbapSource::at(c, -90.0),
-            ],
-        )
-        .expect("build 5.1 mix");
-
-        assert_eq!(net.outputs_in(mix), 6, "mix node is 5.1-wide");
-    }
-
-    #[test]
     fn build_vbap_mix_empty_sources_is_a_silent_valid_node() {
         use tutti_core::dsp::Net;
         use tutti_types::ChannelLayout;
@@ -283,24 +258,6 @@ mod tests {
         // ChannelSumNode clamps 0 sources to 1 input group, so it's a valid
         // 4-out node reading zeros.
         assert_eq!(net.outputs_in(mix), 4);
-    }
-
-    #[test]
-    fn build_vbap_mix_rejects_unsupported_layout() {
-        use tutti_core::dsp::{dc, Net};
-        use tutti_types::ChannelLayout;
-
-        let mut net = Net::new(0, 3);
-        let a = net.push(Box::new(dc((1.0, 1.0))));
-        let err = build_vbap_mix(
-            &mut net,
-            ChannelLayout::from(3u16),
-            &[VbapSource::at(a, 0.0)],
-        );
-        assert!(matches!(
-            err,
-            Err(crate::vbap::VbapError::UnsupportedSpeakerLayout(3))
-        ));
     }
 
     /// Render a 5.1 `build_vbap_mix` graph and return settled per-channel

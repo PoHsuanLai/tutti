@@ -425,17 +425,57 @@ mod tests {
         assert_eq!(tuning.scale_size(), 5);
     }
 
+    /// The MIDI range's ends, and one step past each of them.
+    ///
+    /// The mapping is exponential in the note number, so an off-by-one in the
+    /// octave arithmetic shows up here first: note 0 → 127 must span exactly
+    /// 127 semitones. Past either end the fractional lookup *clamps* rather
+    /// than extrapolating, which is what keeps a wild note number from walking
+    /// off the table on the audio thread.
+    ///
+    /// (Previously this test asserted nothing at all — it bound the results to
+    /// `_`-prefixed locals and only checked that the calls did not panic.)
     #[test]
     fn test_boundary_notes() {
         let tuning = Tuning::equal_temperament();
 
-        // Should not panic at boundaries
-        let _low = tuning.note_to_freq(0).get();
-        let _high = tuning.note_to_freq(127).get();
+        let low = tuning.note_to_freq(0).get();
+        let high = tuning.note_to_freq(127).get();
+        assert!(low.is_finite() && low > 0.0, "note 0 gave {low} Hz");
+        assert!(high.is_finite(), "note 127 gave {high} Hz");
+        assert!(
+            high > low,
+            "note 127 ({high} Hz) must be above note 0 ({low} Hz)"
+        );
 
-        // Fractional boundaries
-        let _low_frac = tuning.fractional_note_to_freq(-1.0).get();
-        let _high_frac = tuning.fractional_note_to_freq(128.0).get();
+        // 12-TET spans 127 semitones from note 0 to note 127.
+        let want = 2.0f32.powf(127.0 / 12.0);
+        assert!(
+            (high / low - want).abs() / want < 1e-3,
+            "note 0 -> 127 spans {}x, expected {want}x",
+            high / low
+        );
+
+        // Out of range CLAMPS to the end entries rather than extrapolating —
+        // the documented contract, because this runs on the audio thread and a
+        // wild note number must not walk off the table.
+        assert_eq!(
+            tuning.fractional_note_to_freq(-1.0).get(),
+            low,
+            "a note below 0 must clamp to note 0, not extrapolate downward"
+        );
+        assert_eq!(
+            tuning.fractional_note_to_freq(128.0).get(),
+            high,
+            "a note above 127 must clamp to note 127, not extrapolate upward"
+        );
+
+        // And the fractional path agrees with the integer one at a whole note.
+        let a440 = tuning.fractional_note_to_freq(69.0).get();
+        assert!(
+            (a440 - tuning.note_to_freq(69).get()).abs() < 1e-3,
+            "fractional and integer lookups disagree at note 69"
+        );
     }
 
     #[test]
@@ -483,23 +523,6 @@ mod tests {
 
         // C5 should be 512 Hz
         assert!((tuning.note_to_freq(72).get() - 512.0).abs() < 0.1);
-    }
-
-    #[test]
-    fn test_scale_size() {
-        // Standard 12-TET
-        let tuning_12 = Tuning::equal_temperament();
-        assert_eq!(tuning_12.scale_size(), 12);
-
-        // Quarter-tone (24 notes per octave)
-        let cents: Vec<f32> = (0..24).map(|i| i as f32 * 50.0).collect();
-        let tuning_24 = Tuning::from_cents(&cents);
-        assert_eq!(tuning_24.scale_size(), 24);
-
-        // Pentatonic (5 notes per octave)
-        let ratios = [1.0, 9.0 / 8.0, 5.0 / 4.0, 3.0 / 2.0, 5.0 / 3.0];
-        let tuning_5 = Tuning::from_ratios(&ratios);
-        assert_eq!(tuning_5.scale_size(), 5);
     }
 
     #[test]

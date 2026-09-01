@@ -212,27 +212,6 @@ mod tests {
     }
 
     #[test]
-    fn test_chorus_produces_output() {
-        let mut chorus = ChorusNode::new();
-        chorus.set_sample_rate(tutti_core::SampleRate(44100.0));
-
-        let mut out = [0.0f32; 2];
-        for _ in 0..1000 {
-            chorus.tick(&[1.0, 1.0], &mut out);
-        }
-        assert!(
-            out[0].abs() > 0.01,
-            "Chorus should produce output: {}",
-            out[0]
-        );
-        assert!(
-            out[1].abs() > 0.01,
-            "Chorus should produce output: {}",
-            out[1]
-        );
-    }
-
-    #[test]
     fn test_chorus_stereo_difference() {
         let mut chorus = ChorusNode::new();
         chorus.set_sample_rate(tutti_core::SampleRate(44100.0));

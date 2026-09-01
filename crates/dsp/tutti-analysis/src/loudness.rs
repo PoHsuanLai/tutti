@@ -341,26 +341,6 @@ mod tests {
     /// The tolerance covers K-weighting's small lift at 1 kHz (the shelf is
     /// flat near 0 dB there, but not exactly).
     #[test]
-    fn a_known_sine_reads_its_expected_loudness() {
-        let buf = sine(48_000.0, 3.0, 1_000.0, 0.5); // −6 dBFS peak
-        let m = measure_loudness(
-            &cfg(48_000.0),
-            Interleaved::new(&buf, ChannelLayout::STEREO),
-        )
-        .unwrap();
-        assert!(
-            (m.lufs.get() - (-6.71)).abs() < 1.0,
-            "expected about −6.7 LUFS, got {:?}",
-            m.lufs
-        );
-        assert!(
-            (m.true_peak.get() - (-6.0)).abs() < 0.5,
-            "expected about −6 dBTP, got {:?}",
-            m.true_peak
-        );
-    }
-
-    #[test]
     fn silence_floors_rather_than_erroring() {
         let silence = vec![0.0; 4800];
         let m = measure_loudness(

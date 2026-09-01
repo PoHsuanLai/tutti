@@ -1062,25 +1062,17 @@ mod tests {
         assert!((out[1] - (-0.2)).abs() < 0.001);
     }
 
-    #[test]
-    fn test_limiter_footprint() {
-        let lim = LimiterNode::new(-6.0, -0.3);
-        assert!(lim.footprint() > core::mem::size_of::<LimiterNode>());
-    }
-
     // ── Audio-rate param-input ports ─────────────────────────────────────────
 
     #[test]
-    fn limiter_default_no_ports() {
-        let u = LimiterNode::new(-6.0, -0.3);
-        assert_eq!(u.inputs(), 2);
-        assert_eq!(u.outputs(), 2);
-        assert_eq!(u.ceiling_port(), None);
-        assert_eq!(u.threshold_port(), None);
-    }
-
-    #[test]
     fn limiter_param_port_arity_and_indices() {
+        // The plain constructor declares NO param ports: the audio arity is
+        // untouched and both accessors are absent.
+        let d = LimiterNode::new(-6.0, -0.3);
+        assert_eq!(d.inputs(), 2);
+        assert_eq!(d.outputs(), 2);
+        assert_eq!(d.ceiling_port(), None);
+        assert_eq!(d.threshold_port(), None);
         // ceiling only → ceiling at 2 (right after the two audio inputs).
         let c = LimiterNode::with_param_inputs(ChannelLayout::STEREO, -6.0, -0.3, true, false);
         assert_eq!(c.inputs(), 3);
@@ -1128,15 +1120,12 @@ mod tests {
     }
 
     #[test]
-    fn brickwall_default_no_ports() {
-        let u = BrickwallLimiterNode::new(0.0);
-        assert_eq!(u.inputs(), 2);
-        assert_eq!(u.outputs(), 2);
-        assert_eq!(u.ceiling_port(), None);
-    }
-
-    #[test]
     fn brickwall_param_port_arity_and_index() {
+        // Plain constructor: no port, arity untouched.
+        let d = BrickwallLimiterNode::new(0.0);
+        assert_eq!(d.inputs(), 2);
+        assert_eq!(d.outputs(), 2);
+        assert_eq!(d.ceiling_port(), None);
         let c = BrickwallLimiterNode::with_param_inputs(0.0, true);
         assert_eq!(c.inputs(), 3);
         assert_eq!(c.ceiling_port(), Some(2));

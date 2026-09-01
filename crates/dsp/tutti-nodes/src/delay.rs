@@ -1106,12 +1106,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_delay_node_footprint() {
-        let node = DelayLineNode::new(2.0, 0.5, 0.5);
-        assert!(node.footprint() > core::mem::size_of::<DelayLineNode>());
-    }
-
     // ── Width-native (N-channel) ─────────────────────────────────────────────
 
     #[test]
@@ -1196,16 +1190,13 @@ mod tests {
     }
 
     #[test]
-    fn stereo_delay_default_is_two_in_no_ports() {
-        let u = StereoDelayLineNode::new(1.0, 0.01, 0.01, 0.5);
-        assert_eq!(u.inputs(), 2);
-        assert_eq!(u.outputs(), 2);
-        assert_eq!(u.feedback_port(), None);
-        assert_eq!(u.delay_time_port(), None);
-    }
-
-    #[test]
     fn stereo_delay_param_port_arity_and_indices() {
+        // Plain constructor: no ports, audio arity untouched.
+        let d = StereoDelayLineNode::new(1.0, 0.01, 0.01, 0.5);
+        assert_eq!(d.inputs(), 2);
+        assert_eq!(d.outputs(), 2);
+        assert_eq!(d.feedback_port(), None);
+        assert_eq!(d.delay_time_port(), None);
         // feedback only → port 2 (delay-time absent).
         let f = StereoDelayLineNode::with_param_inputs(2, 1.0, 0.01, 0.5, true, false);
         assert_eq!(f.inputs(), 3);

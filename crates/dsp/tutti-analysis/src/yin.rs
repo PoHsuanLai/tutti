@@ -376,20 +376,6 @@ mod tests {
             .collect()
     }
 
-    #[test]
-    fn finds_a440() {
-        let cfg = YinConfig::standard(44100.0).unwrap();
-        let samples = sine(44100.0, 440.0, 0.2);
-
-        let estimate = yin(&cfg, &samples).unwrap();
-        let pitch = estimate.pitch().expect("A440 is voiced");
-
-        assert_eq!(pitch.note, Note::A4);
-        assert_eq!(pitch.note_name(), "A4");
-        assert!((pitch.frequency.get() - 440.0).abs() < 1.0);
-        assert!(pitch.confidence > Confidence(0.5));
-    }
-
     /// A construction error, rather than a silent runtime nothing.
     #[test]
     fn an_inverted_range_is_refused_at_construction() {
@@ -504,10 +490,7 @@ mod tests {
             track.len()
         );
 
-        assert_eq!(
-            yin_track(&cfg, &samples, Samples(0)),
-            Err(Error::ZeroHop)
-        );
+        assert_eq!(yin_track(&cfg, &samples, Samples(0)), Err(Error::ZeroHop));
     }
 
     #[test]

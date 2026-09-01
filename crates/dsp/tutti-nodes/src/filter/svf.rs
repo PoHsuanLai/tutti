@@ -1203,16 +1203,13 @@ mod tests {
     // ── Audio-rate param-input ports ─────────────────────────────────────────
 
     #[test]
-    fn stereo_svf_default_is_two_in_no_param_ports() {
-        let u = StereoSvfFilterNode::<f64>::new(SvfType::LowPass, 1000.0, 0.707);
-        assert_eq!(u.inputs(), 2);
-        assert_eq!(u.outputs(), 2);
-        assert_eq!(u.cutoff_port(), None);
-        assert_eq!(u.q_port(), None);
-    }
-
-    #[test]
     fn stereo_svf_param_port_arity_and_indices() {
+        // Plain constructor: no ports, audio arity untouched.
+        let d = StereoSvfFilterNode::<f64>::new(SvfType::LowPass, 1000.0, 0.707);
+        assert_eq!(d.inputs(), 2);
+        assert_eq!(d.outputs(), 2);
+        assert_eq!(d.cutoff_port(), None);
+        assert_eq!(d.q_port(), None);
         // cutoff only → port 2.
         let c = StereoSvfFilterNode::<f64>::with_param_inputs(
             2,

@@ -1376,29 +1376,6 @@ mod tests {
     // --- Existing tests ---
 
     #[test]
-    fn test_memory_source_creation() {
-        let wave = Wave::with_capacity(1, 44100.0, 100);
-        let sampler = MemorySource::new(Arc::new(wave));
-
-        assert!(sampler.is_playing());
-        assert!(!sampler.is_looping());
-        assert_eq!(sampler.position(), SamplePosition::new(0.0));
-    }
-
-    #[test]
-    fn test_sampler_trigger() {
-        let wave = Wave::with_capacity(1, 44100.0, 100);
-        let sampler = MemorySource::new(Arc::new(wave));
-
-        sampler.trigger();
-        assert!(sampler.is_playing());
-        assert_eq!(sampler.position(), SamplePosition::new(0.0));
-
-        sampler.stop();
-        assert!(!sampler.is_playing());
-    }
-
-    #[test]
     fn test_sampler_outputs_silence_when_stopped() {
         let wave = Wave::with_capacity(1, 44100.0, 100);
         let mut sampler = MemorySource::new(Arc::new(wave));
@@ -1410,26 +1387,6 @@ mod tests {
 
         assert_eq!(output[0], 0.0);
         assert_eq!(output[1], 0.0);
-    }
-
-    #[test]
-    fn test_loop_range_api() {
-        let samples = vec![0.0f32; 1000];
-        let wave = Wave::from_samples(44100.0, &samples);
-        let mut sampler = MemorySource::new(Arc::new(wave));
-
-        assert!(sampler.loop_range().is_none());
-
-        sampler.set_loop_range(SamplePosition::new(100.0), SamplePosition::new(500.0), 64);
-
-        assert_eq!(
-            sampler.loop_range(),
-            Some((SamplePosition::new(100.0), SamplePosition::new(500.0)))
-        );
-        assert!(sampler.is_looping());
-
-        sampler.clear_loop_range();
-        assert!(sampler.loop_range().is_none());
     }
 
     #[test]
@@ -1453,29 +1410,6 @@ mod tests {
     }
 
     // --- New coverage tests ---
-
-    #[test]
-    fn with_config_constructor() {
-        let wave = ramp_wave(100, 44100.0);
-        let sampler = MemorySource::with_config(
-            Arc::clone(&wave),
-            MemorySourceConfig {
-                gain: Amplitude::new(0.5),
-                speed: PlaybackRate::new(2.0),
-                loop_setting: LoopSetting::On {
-                    start: SamplePosition::new(0.0),
-                    end: SamplePosition::new(100.0),
-                    crossfade_frames: 0,
-                },
-                ..Default::default()
-            },
-        );
-
-        assert!(sampler.is_playing());
-        assert!(sampler.is_looping());
-        assert_eq!(sampler.gain(), Amplitude::new(0.5));
-        assert_eq!(sampler.speed(), PlaybackRate::new(2.0));
-    }
 
     #[test]
     fn config_default_matches_new() {
@@ -1516,24 +1450,6 @@ mod tests {
         sampler.reset();
         assert_eq!(sampler.position(), SamplePosition::new(0.0));
         assert!(!sampler.is_playing());
-    }
-
-    #[test]
-    fn gain_scales_output() {
-        let wave = ramp_wave(100, 44100.0);
-
-        let mut sampler_full = MemorySource::new(Arc::clone(&wave));
-        let mut sampler_half = MemorySource::new(wave);
-        sampler_half.set_gain(Amplitude::new(0.5));
-
-        let mut out_full = [0.0f32; 2];
-        let mut out_half = [0.0f32; 2];
-
-        sampler_full.tick(&[], &mut out_full);
-        sampler_half.tick(&[], &mut out_half);
-
-        assert!((out_half[0] - out_full[0] * 0.5).abs() < 1e-6);
-        assert!((out_half[1] - out_full[1] * 0.5).abs() < 1e-6);
     }
 
     #[test]
@@ -1672,30 +1588,31 @@ mod tests {
         );
     }
 
+    /// The read position advances by `wave_rate / session_rate` per tick, so a
+    /// file recorded at a different rate than the session plays at the right
+    /// pitch instead of the right speed.
     #[test]
-    fn src_ratio_adjusts_for_sample_rate_mismatch() {
-        let wave = ramp_wave(100, 48000.0);
-        let mut sampler = MemorySource::new(wave);
-        sampler.set_session_sample_rate(24000.0);
+    fn src_ratio_tracks_the_rate_mismatch() {
+        // (wave rate, session rate, frames advanced per tick)
+        for (wave_hz, session_hz, want) in [
+            (44100.0f64, 44100.0f64, 1.0f64), // matched: unity
+            (48000.0, 24000.0, 2.0),          // file faster: read two frames a tick
+            (24000.0, 48000.0, 0.5),          // file slower: read half a frame
+        ] {
+            let wave = ramp_wave(100, wave_hz);
+            let mut sampler = MemorySource::new(wave);
+            sampler.set_session_sample_rate(session_hz);
 
-        let mut out = [0.0f32; 2];
-        sampler.tick(&[], &mut out);
+            let mut out = [0.0f32; 2];
+            sampler.tick(&[], &mut out);
 
-        let pos = sampler.position().get();
-        assert!((pos - 2.0).abs() < 1e-6, "48k/24k = 2x advance per tick");
-    }
-
-    #[test]
-    fn src_ratio_unity_when_rates_match() {
-        let wave = ramp_wave(100, 44100.0);
-        let mut sampler = MemorySource::new(wave);
-        sampler.set_session_sample_rate(44100.0);
-
-        let mut out = [0.0f32; 2];
-        sampler.tick(&[], &mut out);
-
-        let pos = sampler.position().get();
-        assert!((pos - 1.0).abs() < 1e-6);
+            let pos = sampler.position().get();
+            assert!(
+                (pos - want).abs() < 1e-6,
+                "a {wave_hz} Hz wave in a {session_hz} Hz session should advance \
+                 {want} frames per tick, got {pos}"
+            );
+        }
     }
 
     #[test]

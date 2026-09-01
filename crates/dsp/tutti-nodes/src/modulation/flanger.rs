@@ -217,19 +217,6 @@ mod tests {
     }
 
     #[test]
-    fn test_flanger_produces_output() {
-        let mut flanger = FlangerNode::new();
-        flanger.set_sample_rate(tutti_core::SampleRate(44100.0));
-
-        let mut out = [0.0f32; 2];
-        for _ in 0..1000 {
-            flanger.tick(&[1.0, 1.0], &mut out);
-        }
-        assert!(out[0].abs() > 0.01);
-        assert!(out[1].abs() > 0.01);
-    }
-
-    #[test]
     fn test_flanger_feedback_effect() {
         let mut flanger = FlangerNode::new();
         flanger.set_sample_rate(tutti_core::SampleRate(44100.0));

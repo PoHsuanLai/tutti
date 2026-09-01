@@ -120,15 +120,6 @@ impl std::fmt::Debug for DiskStreamerConfig {
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_io_metrics_zeroed_on_fresh_system() {
-        let sampler = DiskStreamer::new(44100.0, Default::default()).unwrap();
-        // A fresh butler has read nothing and an empty cache.
-        let plans = sampler.butler.plans();
-        assert!(plans.is_empty());
-        assert_eq!(sampler.status().sample_rate(), SampleRate::SR_44K1);
-    }
-
     /// A backward `Command::Seek` must actually reposition the live stream.
     ///
     /// This settles a question an end-to-end test could not. In

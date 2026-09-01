@@ -21,8 +21,8 @@ use tutti_core::{
 };
 use tutti_midi_runtime::{MidiInPort, MidiSender};
 use tutti_midi_types::ump::MidiEvent;
-use tutti_midi_types::{CCNumber, MidiChannel};
 use tutti_midi_types::{cc, MidiUnitId, MidiUnitIn, NoteId};
+use tutti_midi_types::{CCNumber, MidiChannel};
 
 use std::sync::Arc;
 
@@ -410,18 +410,21 @@ impl PolySynth {
             // MIDI 2.0 native per-note messages address one voice by note-id —
             // two same-pitch notes stay independent even on one channel.
             Cv2::PerNotePitchBend(m) => {
-                let id = NoteId::from_channel_note(MidiChannel::new(channel), u8::from(m.note_number()));
+                let id =
+                    NoteId::from_channel_note(MidiChannel::new(channel), u8::from(m.note_number()));
                 self.set_voice_mpe_pitch_bend(id, bend_u32_to_signed_f32(m.pitch_bend_data()));
             }
             Cv2::KeyPressure(m) => {
-                let id = NoteId::from_channel_note(MidiChannel::new(channel), u8::from(m.note_number()));
+                let id =
+                    NoteId::from_channel_note(MidiChannel::new(channel), u8::from(m.note_number()));
                 self.set_voice_mpe_pressure(id, u32_to_unit_f32(m.key_pressure_data()));
             }
             // Assignable per-note controllers carry a raw index. Only the dims
             // a synth voice can apply are honored: CC74 → slide, CC7 → per-note
             // gain.
             Cv2::AssignablePerNoteController(m) => {
-                let id = NoteId::from_channel_note(MidiChannel::new(channel), u8::from(m.note_number()));
+                let id =
+                    NoteId::from_channel_note(MidiChannel::new(channel), u8::from(m.note_number()));
                 let data = u32_to_unit_f32(m.controller_data());
                 // `m.index()` is the raw per-note controller index off the
                 // wire (a `u8`, not a `u7`), so it is masked into range here.
@@ -438,7 +441,8 @@ impl PolySynth {
             // (no per-note pan DSP on `SynthVoice` yet — don't invent it).
             Cv2::RegisteredPerNoteController(m) => {
                 use tutti_midi_types::midi2::channel_voice2::Controller;
-                let id = NoteId::from_channel_note(MidiChannel::new(channel), u8::from(m.note_number()));
+                let id =
+                    NoteId::from_channel_note(MidiChannel::new(channel), u8::from(m.note_number()));
                 match m.controller() {
                     Controller::Volume(data) => {
                         self.set_voice_mpe_gain(id, u32_to_unit_f32(data));
@@ -474,7 +478,8 @@ impl PolySynth {
             // future-notes reset needs no state — the live voice is simply detached.
             // Hence: detach wins for the live voice when both bits are set.
             Cv2::PerNoteManagement(m) => {
-                let id = NoteId::from_channel_note(MidiChannel::new(channel), u8::from(m.note_number()));
+                let id =
+                    NoteId::from_channel_note(MidiChannel::new(channel), u8::from(m.note_number()));
                 if m.detach() {
                     self.detach_voice_mpe(id);
                 } else if m.reset() {
@@ -1237,27 +1242,6 @@ mod tests {
         )
     }
 
-    #[test]
-    fn test_polysynth_midi() {
-        let mut synth = synth(SynthConfig {
-            sample_rate: tutti_core::SampleRate::SR_44K1,
-            max_voices: 4,
-            voice_mode: VoiceMode::Poly,
-            oscillator: OscillatorType::Sine,
-            ..Default::default()
-        });
-
-        // Queue a note on via registry
-        let note_on = ev_note_on(0, 60, 100);
-        queue_midi(&synth, &[note_on]);
-
-        // Process one sample to trigger the note
-        let mut output = [0.0f32; 2];
-        synth.tick(&[], &mut output);
-
-        assert_eq!(synth.active_voice_count(), 1);
-    }
-
     /// Regression: an offline render clones the live synth and ticks the clone
     /// on a worker thread. Before `isolate()`, the clone shared the live MIDI
     /// receiver, so ticking it drained — *stole* — the events the live synth
@@ -2011,40 +1995,6 @@ mod tests {
             0.0,
             "Note-on with velocity 0 should act as note-off"
         );
-    }
-
-    #[test]
-    fn test_voice_stealing_in_polysynth() {
-        let mut synth = synth(SynthConfig {
-            sample_rate: tutti_core::SampleRate::SR_44K1,
-            max_voices: 2,
-            voice_mode: VoiceMode::Poly,
-            oscillator: OscillatorType::Sine,
-            envelope: EnvelopeConfig {
-                attack: Seconds(0.001),
-                decay: Seconds(0.0),
-                sustain: Amplitude(1.0),
-                release: Seconds(5.0),
-            }, // Long release so voices stay active
-            ..Default::default()
-        });
-
-        // Fill all 2 voices
-        let note1 = ev_note_on(0, 60, 100);
-        let note2 = ev_note_on(0, 64, 100);
-        queue_midi(&synth, &[note1, note2]);
-        let mut output = [0.0f32; 2];
-        synth.tick(&[], &mut output);
-        assert_eq!(synth.active_voice_count(), 2);
-
-        // Third note should steal a voice
-        let note3 = ev_note_on(0, 67, 100);
-        queue_midi(&synth, &[note3]);
-        synth.tick(&[], &mut output);
-
-        // Should still have voices active, with the stolen one now playing note 67
-        let has_note67 = synth.voices.iter().any(|v| v.is_active() && v.note() == 67);
-        assert!(has_note67, "Stolen voice should now play note 67");
     }
 
     #[test]

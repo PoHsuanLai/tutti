@@ -165,20 +165,35 @@ mod tests {
     use super::*;
     use tutti_core::AudioUnit;
 
+    /// Input arity is `sources * channels` -- the fan-in is flattened, so a
+    /// miscounted product silently reads a neighbouring source's channel.
+    /// A degenerate argument clamps to 1 rather than producing a 0-input node,
+    /// which `build_vbap_mix` relies on for an empty mix.
     #[test]
-    fn arity_and_width() {
-        let u = ChannelSumNode::new(3, ChannelLayout::from(6u16));
-        assert_eq!(u.inputs(), 18); // 3 sources × 6 channels
-        assert_eq!(u.outputs(), 6);
-        assert_eq!(u.channels(), 6);
-        assert_eq!(u.sources(), 3);
-    }
-
-    #[test]
-    fn clamps_degenerate_args() {
-        let u = ChannelSumNode::new(0, ChannelLayout::EMPTY);
-        assert_eq!(u.sources(), 1);
-        assert_eq!(u.channels(), 1);
+    fn arity_is_the_product_of_sources_and_width() {
+        // (sources, layout) -> (inputs, outputs/channels, clamped sources)
+        let cases = [
+            (3usize, ChannelLayout::from(6u16), 18usize, 6usize, 3usize),
+            (2, ChannelLayout::QUAD, 8, 4, 2),
+            (1, ChannelLayout::MONO, 1, 1, 1),
+            // Degenerate: both arguments clamp up to 1.
+            (0, ChannelLayout::EMPTY, 1, 1, 1),
+        ];
+        for (sources, layout, inputs, channels, clamped_sources) in cases {
+            let u = ChannelSumNode::new(sources, layout);
+            assert_eq!(u.inputs(), inputs, "inputs for {sources} x {layout:?}");
+            assert_eq!(u.outputs(), channels, "outputs for {sources} x {layout:?}");
+            assert_eq!(
+                u.channels(),
+                channels,
+                "channels for {sources} x {layout:?}"
+            );
+            assert_eq!(
+                u.sources(),
+                clamped_sources,
+                "sources for {sources} x {layout:?}"
+            );
+        }
     }
 
     #[test]

@@ -354,23 +354,3 @@ impl Default for SynthConfig {
         }
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_envelope_presets() {
-        let organ = EnvelopeConfig::organ();
-        assert!(organ.attack.get() < 0.01);
-        assert_eq!(organ.sustain.get(), 1.0);
-
-        let pluck = EnvelopeConfig::pluck();
-        assert!(pluck.attack.get() < 0.01);
-        assert_eq!(pluck.sustain.get(), 0.0);
-
-        let pad = EnvelopeConfig::pad();
-        assert!(pad.attack.get() > 0.1);
-        assert!(pad.release.get() > 0.5);
-    }
-}

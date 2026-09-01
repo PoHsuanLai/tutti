@@ -528,186 +528,159 @@ pub(in crate::butler) fn load_wave(
 mod tests {
     use super::*;
 
+    /// The whole `varifill_chunk` surface as one table, each row a `(fill,
+    /// base, bytes/sec, speed)` input and the exact frame count it must return.
+    ///
+    /// It is a pure function of four scalars with a closed form, so a table is
+    /// the honest shape: sixteen one-point tests said nothing a row does not,
+    /// and hid that some of them only asserted an inequality against a
+    /// neighbouring call. Every expectation below is computed by hand from the
+    /// documented formula
+    ///
+    /// ```text
+    /// multiplier = (0.5 + (1 - fill) * 1.5) * bandwidth * max(speed, 1)
+    /// chunk      = max(base * clamp(multiplier, 0.25, 4.0), 1024)
+    /// bandwidth  = if rate > 0 { clamp(sqrt(rate / 10 MB/s), 0.5, 2.0) } else { 1.0 }
+    /// ```
+    ///
+    /// so a formula change fails here rather than being absorbed by a
+    /// comparison against another call to the same changed function.
     #[test]
-    fn test_varifill_empty_buffer_increases_chunk() {
-        // Empty buffer (fill=0) should have high urgency -> larger chunk
-        let base = 4096;
-        let chunk = varifill_chunk(0.0, base, 10_000_000.0, 1.0);
+    fn varifill_chunk_follows_its_documented_formula() {
+        const BASE: usize = 4096;
+        const BASELINE: f64 = 10_000_000.0;
 
-        // urgency=1.0, multiplier = (0.5 + 1.0*1.5) * 1.0 * 1.0 = 2.0
-        assert!(chunk > base, "Empty buffer should increase chunk size");
-        assert_eq!(chunk, base * 2);
-    }
+        // (label, fill, base, bytes/sec, speed, expected frames)
+        let cases: &[(&str, f32, usize, f64, f32, usize)] = &[
+            // -- urgency: an emptier ring pulls harder, linearly.
+            ("empty ring doubles", 0.0, BASE, BASELINE, 1.0, BASE * 2),
+            ("half-full is 1.25x", 0.5, BASE, BASELINE, 1.0, BASE * 5 / 4),
+            ("full ring halves", 1.0, BASE, BASELINE, 1.0, BASE / 2),
+            // -- speed: faster drains the ring faster; slower is no reason to
+            //    read in smaller pieces, so the factor floors at 1.0.
+            ("2x speed doubles", 0.5, BASE, BASELINE, 2.0, BASE * 5 / 2),
+            (
+                "0.5x speed does not shrink",
+                0.5,
+                BASE,
+                BASELINE,
+                0.5,
+                BASE * 5 / 4,
+            ),
+            // -- bandwidth: sqrt of the ratio against the 10 MB/s baseline.
+            (
+                "4x bandwidth doubles",
+                0.5,
+                BASE,
+                BASELINE * 4.0,
+                1.0,
+                BASE * 5 / 2,
+            ),
+            (
+                "0.25x bandwidth halves",
+                0.5,
+                BASE,
+                BASELINE / 4.0,
+                1.0,
+                BASE * 5 / 8,
+            ),
+            // -- bandwidth clamps to 0.5..=2.0 either side.
+            (
+                "100x bandwidth clamps to 2x",
+                0.5,
+                BASE,
+                BASELINE * 100.0,
+                1.0,
+                BASE * 5 / 2,
+            ),
+            (
+                "0.01x bandwidth clamps to 0.5x",
+                0.5,
+                BASE,
+                BASELINE / 100.0,
+                1.0,
+                BASE * 5 / 8,
+            ),
+            // -- the multiplier itself clamps to 0.25..=4.0.
+            (
+                "empty + fast disk + 4x speed clamps to 4x",
+                0.0,
+                BASE,
+                BASELINE * 100.0,
+                4.0,
+                BASE * 4,
+            ),
+            // -- the 1024-frame floor wins over a small base.
+            (
+                "a small base floors at 1024",
+                1.0,
+                100,
+                1_000_000.0,
+                1.0,
+                1024,
+            ),
+            // -- unmeasured / nonsensical bandwidth contributes a neutral 1.0.
+            (
+                "zero bandwidth is neutral",
+                0.5,
+                BASE,
+                0.0,
+                1.0,
+                BASE * 5 / 4,
+            ),
+            (
+                "negative bandwidth is neutral",
+                0.5,
+                BASE,
+                -1000.0,
+                1.0,
+                BASE * 5 / 4,
+            ),
+            (
+                "infinite bandwidth clamps to 2x",
+                0.5,
+                BASE,
+                f64::INFINITY,
+                1.0,
+                BASE * 5 / 2,
+            ),
+            // -- a nonsensical fill is bounded by the clamp and the floor.
+            //    fill > 1 gives a negative urgency, clamped up to 0.25.
+            (
+                "fill above one clamps to 0.25x",
+                1.5,
+                BASE,
+                BASELINE,
+                1.0,
+                BASE / 4,
+            ),
+            //    fill < 0 gives urgency 1.5, so 2.75x -- under the 4.0 ceiling.
+            (
+                "negative fill is 2.75x",
+                -0.5,
+                BASE,
+                BASELINE,
+                1.0,
+                BASE * 11 / 4,
+            ),
+        ];
 
-    #[test]
-    fn test_varifill_full_buffer_decreases_chunk() {
-        // Full buffer (fill=1) should have low urgency -> smaller chunk
-        let base = 4096;
-        let chunk = varifill_chunk(1.0, base, 10_000_000.0, 1.0);
+        for &(label, fill, base, rate, speed, want) in cases {
+            let got = varifill_chunk(fill, base, rate, speed);
+            assert_eq!(
+                got, want,
+                "{label}: varifill_chunk returned {got}, want {want}"
+            );
+        }
 
-        // urgency=0.0, multiplier = (0.5 + 0.0*1.5) * 1.0 * 1.0 = 0.5
-        assert!(chunk < base, "Full buffer should decrease chunk size");
-        assert_eq!(chunk, base / 2);
-    }
-
-    #[test]
-    fn test_varifill_half_buffer_near_base() {
-        // Half-full buffer should be close to base chunk
-        let base = 4096;
-        let chunk = varifill_chunk(0.5, base, 10_000_000.0, 1.0);
-
-        // urgency=0.5, multiplier = (0.5 + 0.5*1.5) * 1.0 * 1.0 = 1.25
-        assert_eq!(chunk, (base as f64 * 1.25) as usize);
-    }
-
-    #[test]
-    fn test_varifill_high_speed_increases_chunk() {
-        // High playback speed should increase chunk to keep up
-        let base = 4096;
-        let normal = varifill_chunk(0.5, base, 10_000_000.0, 1.0);
-        let fast = varifill_chunk(0.5, base, 10_000_000.0, 2.0);
-
-        assert!(fast > normal, "Higher speed should increase chunk");
-        assert_eq!(fast, normal * 2);
-    }
-
-    #[test]
-    fn test_varifill_slow_speed_no_decrease() {
-        // Slow speed (<1.0) should NOT decrease chunk (use max(1.0))
-        let base = 4096;
-        let normal = varifill_chunk(0.5, base, 10_000_000.0, 1.0);
-        let slow = varifill_chunk(0.5, base, 10_000_000.0, 0.5);
-
-        assert_eq!(
-            slow, normal,
-            "Slow speed should not decrease chunk below normal"
-        );
-    }
-
-    #[test]
-    fn test_varifill_high_bandwidth_increases_chunk() {
-        // High disk throughput allows larger chunks
-        let base = 4096;
-        let normal = varifill_chunk(0.5, base, 10_000_000.0, 1.0);
-        let fast_disk = varifill_chunk(0.5, base, 40_000_000.0, 1.0); // 4x bandwidth
-
-        // bandwidth_factor = sqrt(4) = 2.0
+        // NaN has no arithmetic expectation -- `f64::clamp` propagates it and
+        // the `as usize` cast saturates to 0 -- so it is asserted against the
+        // floor, which is the only guarantee the function can make here.
+        let nan = varifill_chunk(f32::NAN, BASE, BASELINE, 1.0);
         assert!(
-            fast_disk > normal,
-            "Higher bandwidth should allow larger chunks"
+            nan >= 1024,
+            "a NaN fill must still respect the 1024 floor, got {nan}"
         );
-    }
-
-    #[test]
-    fn test_varifill_low_bandwidth_decreases_chunk() {
-        // Low disk throughput should use smaller chunks
-        let base = 4096;
-        let normal = varifill_chunk(0.5, base, 10_000_000.0, 1.0);
-        let slow_disk = varifill_chunk(0.5, base, 2_500_000.0, 1.0); // 0.25x bandwidth
-
-        // bandwidth_factor = sqrt(0.25) = 0.5
-        assert!(
-            slow_disk < normal,
-            "Lower bandwidth should use smaller chunks"
-        );
-    }
-
-    #[test]
-    fn test_varifill_zero_bandwidth_uses_default() {
-        // Zero bandwidth should use factor of 1.0
-        let base = 4096;
-        let normal = varifill_chunk(0.5, base, 10_000_000.0, 1.0);
-        let zero_bw = varifill_chunk(0.5, base, 0.0, 1.0);
-
-        assert_eq!(zero_bw, normal, "Zero bandwidth should use default factor");
-    }
-
-    #[test]
-    fn test_varifill_minimum_chunk_size() {
-        // Even with everything minimal, chunk should be at least 1024
-        let chunk = varifill_chunk(1.0, 100, 1_000_000.0, 1.0);
-
-        assert!(chunk >= 1024, "Minimum chunk size should be 1024");
-    }
-
-    #[test]
-    fn test_varifill_clamps_multiplier() {
-        // Extreme values should be clamped
-        let base = 4096;
-
-        // Very empty buffer + fast disk + high speed
-        let extreme_high = varifill_chunk(0.0, base, 100_000_000.0, 4.0);
-        // Multiplier would be (0.5 + 1.5) * 2.0 * 4.0 = 16.0, clamped to 4.0
-        assert_eq!(extreme_high, base * 4, "Should clamp to 4x base");
-
-        // Very full buffer + slow disk
-        let extreme_low = varifill_chunk(1.0, base, 1_000_000.0, 1.0);
-        // Multiplier would be 0.5 * 0.316 * 1.0 = 0.158, clamped to 0.25
-        // But then max(1024) kicks in
-        assert!(extreme_low >= 1024, "Should respect minimum chunk size");
-    }
-
-    #[test]
-    fn test_varifill_bandwidth_factor_clamped() {
-        // Bandwidth factor should be clamped between 0.5 and 2.0
-        let base = 4096;
-
-        // Very high bandwidth (100x baseline)
-        let very_high = varifill_chunk(0.5, base, 1_000_000_000.0, 1.0);
-        // sqrt(100) = 10, but clamped to 2.0
-        let expected_high = (base as f64 * 1.25 * 2.0) as usize;
-        assert_eq!(very_high, expected_high);
-
-        // Very low bandwidth (0.01x baseline)
-        let very_low = varifill_chunk(0.5, base, 100_000.0, 1.0);
-        // sqrt(0.01) = 0.1, but clamped to 0.5
-        let expected_low = (base as f64 * 1.25 * 0.5) as usize;
-        assert_eq!(very_low, expected_low);
-    }
-
-    #[test]
-    fn test_varifill_buffer_fill_over_one() {
-        // Buffer fill > 1.0 (shouldn't happen, but test robustness)
-        let chunk = varifill_chunk(1.5, 4096, 10_000_000.0, 1.0);
-
-        // urgency = 1.0 - 1.5 = -0.5
-        // multiplier = (0.5 + (-0.5)*1.5) * 1.0 * 1.0 = -0.25, clamped to 0.25
-        assert!(chunk >= 1024, "Should still respect minimum");
-    }
-
-    #[test]
-    fn test_varifill_buffer_fill_negative() {
-        // Buffer fill < 0 (shouldn't happen, but test robustness)
-        let chunk = varifill_chunk(-0.5, 4096, 10_000_000.0, 1.0);
-
-        // urgency = 1.0 - (-0.5) = 1.5
-        // multiplier = (0.5 + 1.5*1.5) * 1.0 * 1.0 = 2.75
-        assert!(chunk > 4096, "Should increase chunk for negative fill");
-    }
-
-    #[test]
-    fn test_varifill_nan_buffer_fill() {
-        // NaN buffer_fill - should not crash, clamp handles it
-        let chunk = varifill_chunk(f32::NAN, 4096, 10_000_000.0, 1.0);
-        assert!(chunk >= 1024, "Should respect minimum even with NaN");
-    }
-
-    #[test]
-    fn test_varifill_infinity_bandwidth() {
-        // Infinite bandwidth - should be clamped
-        let chunk = varifill_chunk(0.5, 4096, f64::INFINITY, 1.0);
-        // sqrt(inf) = inf, but clamped to 2.0
-        let expected = (4096.0 * 1.25 * 2.0) as usize;
-        assert_eq!(chunk, expected);
-    }
-
-    #[test]
-    fn test_varifill_negative_bandwidth() {
-        // Negative bandwidth (invalid) - should use default factor 1.0
-        let chunk = varifill_chunk(0.5, 4096, -1000.0, 1.0);
-        let normal = varifill_chunk(0.5, 4096, 10_000_000.0, 1.0);
-        // Negative is not > 0, so uses factor 1.0
-        assert_eq!(chunk, normal);
     }
 
     fn make_test_wave(samples: &[(f32, f32)]) -> Wave {

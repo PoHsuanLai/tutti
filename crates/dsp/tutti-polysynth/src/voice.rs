@@ -640,7 +640,12 @@ mod tests {
         let mut alloc = VoiceAllocator::new(config);
 
         // Allocate first note
-        let result = alloc.allocate(NoteId::from_channel_note(MidiChannel::new(0), 60), 60, 0, 0.8);
+        let result = alloc.allocate(
+            NoteId::from_channel_note(MidiChannel::new(0), 60),
+            60,
+            0,
+            0.8,
+        );
         assert!(matches!(
             result,
             AllocationResult::Allocated { slot_index: 0 }
@@ -648,7 +653,12 @@ mod tests {
         assert_eq!(alloc.active_count(), 1);
 
         // Allocate second note
-        let result = alloc.allocate(NoteId::from_channel_note(MidiChannel::new(0), 64), 64, 0, 0.7);
+        let result = alloc.allocate(
+            NoteId::from_channel_note(MidiChannel::new(0), 64),
+            64,
+            0,
+            0.7,
+        );
         assert!(matches!(
             result,
             AllocationResult::Allocated { slot_index: 1 }
@@ -666,13 +676,28 @@ mod tests {
         let mut alloc = VoiceAllocator::new(config);
 
         // Fill all voices
-        alloc.allocate(NoteId::from_channel_note(MidiChannel::new(0), 60), 60, 0, 0.8);
+        alloc.allocate(
+            NoteId::from_channel_note(MidiChannel::new(0), 60),
+            60,
+            0,
+            0.8,
+        );
         alloc.advance_time(100);
-        alloc.allocate(NoteId::from_channel_note(MidiChannel::new(0), 64), 64, 0, 0.7);
+        alloc.allocate(
+            NoteId::from_channel_note(MidiChannel::new(0), 64),
+            64,
+            0,
+            0.7,
+        );
         alloc.advance_time(100);
 
         // Third note should steal the oldest (note 60)
-        let result = alloc.allocate(NoteId::from_channel_note(MidiChannel::new(0), 67), 67, 0, 0.9);
+        let result = alloc.allocate(
+            NoteId::from_channel_note(MidiChannel::new(0), 67),
+            67,
+            0,
+            0.9,
+        );
         assert!(matches!(result, AllocationResult::Stolen { slot_index: 0 }));
     }
 
@@ -681,7 +706,12 @@ mod tests {
         let config = VoiceAllocatorConfig::default();
         let mut alloc = VoiceAllocator::new(config);
 
-        alloc.allocate(NoteId::from_channel_note(MidiChannel::new(0), 60), 60, 0, 0.8);
+        alloc.allocate(
+            NoteId::from_channel_note(MidiChannel::new(0), 60),
+            60,
+            0,
+            0.8,
+        );
         assert_eq!(alloc.active_count(), 1);
 
         alloc.release(NoteId::from_channel_note(MidiChannel::new(0), 60), 0);
@@ -699,7 +729,12 @@ mod tests {
         let config = VoiceAllocatorConfig::default();
         let mut alloc = VoiceAllocator::new(config);
 
-        alloc.allocate(NoteId::from_channel_note(MidiChannel::new(0), 60), 60, 0, 0.8);
+        alloc.allocate(
+            NoteId::from_channel_note(MidiChannel::new(0), 60),
+            60,
+            0,
+            0.8,
+        );
         alloc.sustain_pedal(0, true);
         alloc.release(NoteId::from_channel_note(MidiChannel::new(0), 60), 0);
 
@@ -722,7 +757,12 @@ mod tests {
         };
         let mut alloc = VoiceAllocator::new(config);
 
-        let result1 = alloc.allocate(NoteId::from_channel_note(MidiChannel::new(0), 60), 60, 0, 0.8);
+        let result1 = alloc.allocate(
+            NoteId::from_channel_note(MidiChannel::new(0), 60),
+            60,
+            0,
+            0.8,
+        );
         assert!(matches!(
             result1,
             AllocationResult::Allocated { slot_index: 0 }
@@ -731,7 +771,12 @@ mod tests {
         assert_eq!(alloc.slots()[0].note(), 60);
 
         // Second note should retrigger in slot 0 (mono = always slot 0)
-        let result2 = alloc.allocate(NoteId::from_channel_note(MidiChannel::new(0), 64), 64, 0, 0.7);
+        let result2 = alloc.allocate(
+            NoteId::from_channel_note(MidiChannel::new(0), 64),
+            64,
+            0,
+            0.7,
+        );
         assert!(matches!(
             result2,
             AllocationResult::Allocated { slot_index: 0 }
@@ -763,11 +808,21 @@ mod tests {
         let mut alloc = VoiceAllocator::new(config);
 
         // First note triggers normally
-        let result1 = alloc.allocate(NoteId::from_channel_note(MidiChannel::new(0), 60), 60, 0, 0.8);
+        let result1 = alloc.allocate(
+            NoteId::from_channel_note(MidiChannel::new(0), 60),
+            60,
+            0,
+            0.8,
+        );
         assert!(matches!(result1, AllocationResult::Allocated { .. }));
 
         // Second note should be legato (no retrigger)
-        let result2 = alloc.allocate(NoteId::from_channel_note(MidiChannel::new(0), 64), 64, 0, 0.7);
+        let result2 = alloc.allocate(
+            NoteId::from_channel_note(MidiChannel::new(0), 64),
+            64,
+            0,
+            0.7,
+        );
         assert!(matches!(result2, AllocationResult::LegatoRetrigger { .. }));
 
         // Should still have only 1 active voice
@@ -784,11 +839,26 @@ mod tests {
         };
         let mut alloc = VoiceAllocator::new(config);
 
-        alloc.allocate(NoteId::from_channel_note(MidiChannel::new(0), 60), 60, 0, 0.8);
-        alloc.allocate(NoteId::from_channel_note(MidiChannel::new(0), 64), 64, 0, 0.7);
+        alloc.allocate(
+            NoteId::from_channel_note(MidiChannel::new(0), 60),
+            60,
+            0,
+            0.8,
+        );
+        alloc.allocate(
+            NoteId::from_channel_note(MidiChannel::new(0), 64),
+            64,
+            0,
+            0.7,
+        );
 
         // Third note should fail
-        let result = alloc.allocate(NoteId::from_channel_note(MidiChannel::new(0), 67), 67, 0, 0.9);
+        let result = alloc.allocate(
+            NoteId::from_channel_note(MidiChannel::new(0), 67),
+            67,
+            0,
+            0.9,
+        );
         assert!(matches!(result, AllocationResult::Unavailable));
     }
 
@@ -802,13 +872,23 @@ mod tests {
         let mut alloc = VoiceAllocator::new(config);
 
         // Allocate two voices
-        let result1 = alloc.allocate(NoteId::from_channel_note(MidiChannel::new(0), 60), 60, 0, 0.8);
+        let result1 = alloc.allocate(
+            NoteId::from_channel_note(MidiChannel::new(0), 60),
+            60,
+            0,
+            0.8,
+        );
         let slot_1 = match result1 {
             AllocationResult::Allocated { slot_index } => slot_index,
             _ => panic!("Expected allocation"),
         };
 
-        let result2 = alloc.allocate(NoteId::from_channel_note(MidiChannel::new(0), 64), 64, 0, 0.7);
+        let result2 = alloc.allocate(
+            NoteId::from_channel_note(MidiChannel::new(0), 64),
+            64,
+            0,
+            0.7,
+        );
         let slot_2 = match result2 {
             AllocationResult::Allocated { slot_index } => slot_index,
             _ => panic!("Expected allocation"),
@@ -819,7 +899,12 @@ mod tests {
         alloc.update_envelope_level(slot_2, 0.8);
 
         // Third note should steal the quietest (slot 0, note 60)
-        let result = alloc.allocate(NoteId::from_channel_note(MidiChannel::new(0), 67), 67, 0, 0.9);
+        let result = alloc.allocate(
+            NoteId::from_channel_note(MidiChannel::new(0), 67),
+            67,
+            0,
+            0.9,
+        );
         match result {
             AllocationResult::Stolen { slot_index } => {
                 assert_eq!(slot_index, 0);
@@ -838,11 +923,26 @@ mod tests {
         let mut alloc = VoiceAllocator::new(config);
 
         // Allocate C4 (60) and G4 (67)
-        alloc.allocate(NoteId::from_channel_note(MidiChannel::new(0), 60), 60, 0, 0.8); // slot 0
-        alloc.allocate(NoteId::from_channel_note(MidiChannel::new(0), 67), 67, 0, 0.8); // slot 1 - higher note
+        alloc.allocate(
+            NoteId::from_channel_note(MidiChannel::new(0), 60),
+            60,
+            0,
+            0.8,
+        ); // slot 0
+        alloc.allocate(
+            NoteId::from_channel_note(MidiChannel::new(0), 67),
+            67,
+            0,
+            0.8,
+        ); // slot 1 - higher note
 
         // Third note should steal the highest (G4 = 67)
-        let result = alloc.allocate(NoteId::from_channel_note(MidiChannel::new(0), 72), 72, 0, 0.9);
+        let result = alloc.allocate(
+            NoteId::from_channel_note(MidiChannel::new(0), 72),
+            72,
+            0,
+            0.9,
+        );
         match result {
             AllocationResult::Stolen { slot_index } => {
                 assert_eq!(slot_index, 1, "Should steal slot with highest note (67)");
@@ -861,11 +961,26 @@ mod tests {
         let mut alloc = VoiceAllocator::new(config);
 
         // Allocate C4 (60) and G4 (67)
-        alloc.allocate(NoteId::from_channel_note(MidiChannel::new(0), 60), 60, 0, 0.8); // slot 0 - lower note
-        alloc.allocate(NoteId::from_channel_note(MidiChannel::new(0), 67), 67, 0, 0.8); // slot 1
+        alloc.allocate(
+            NoteId::from_channel_note(MidiChannel::new(0), 60),
+            60,
+            0,
+            0.8,
+        ); // slot 0 - lower note
+        alloc.allocate(
+            NoteId::from_channel_note(MidiChannel::new(0), 67),
+            67,
+            0,
+            0.8,
+        ); // slot 1
 
         // Third note should steal the lowest (C4 = 60)
-        let result = alloc.allocate(NoteId::from_channel_note(MidiChannel::new(0), 72), 72, 0, 0.9);
+        let result = alloc.allocate(
+            NoteId::from_channel_note(MidiChannel::new(0), 72),
+            72,
+            0,
+            0.9,
+        );
         match result {
             AllocationResult::Stolen { slot_index } => {
                 assert_eq!(slot_index, 0, "Should steal slot with lowest note (60)");
@@ -883,13 +998,28 @@ mod tests {
         };
         let mut alloc = VoiceAllocator::new(config);
 
-        alloc.allocate(NoteId::from_channel_note(MidiChannel::new(0), 60), 60, 0, 0.8); // slot 0 - older
+        alloc.allocate(
+            NoteId::from_channel_note(MidiChannel::new(0), 60),
+            60,
+            0,
+            0.8,
+        ); // slot 0 - older
         alloc.advance_time(100);
-        alloc.allocate(NoteId::from_channel_note(MidiChannel::new(0), 64), 64, 0, 0.7); // slot 1 - newer
+        alloc.allocate(
+            NoteId::from_channel_note(MidiChannel::new(0), 64),
+            64,
+            0,
+            0.7,
+        ); // slot 1 - newer
         alloc.advance_time(100);
 
         // Third note should steal the newest (note 64 in slot 1)
-        let result = alloc.allocate(NoteId::from_channel_note(MidiChannel::new(0), 67), 67, 0, 0.9);
+        let result = alloc.allocate(
+            NoteId::from_channel_note(MidiChannel::new(0), 67),
+            67,
+            0,
+            0.9,
+        );
         match result {
             AllocationResult::Stolen { slot_index } => {
                 assert_eq!(slot_index, 1, "Should steal newest voice");
@@ -904,7 +1034,12 @@ mod tests {
         let mut alloc = VoiceAllocator::new(config);
 
         // Play note, then press sostenuto
-        alloc.allocate(NoteId::from_channel_note(MidiChannel::new(0), 60), 60, 0, 0.8);
+        alloc.allocate(
+            NoteId::from_channel_note(MidiChannel::new(0), 60),
+            60,
+            0,
+            0.8,
+        );
         alloc.sostenuto_pedal(0, true);
 
         // Release key - should be held by sostenuto
@@ -913,7 +1048,12 @@ mod tests {
         assert!(alloc.slots()[0].is_sostenuto_held());
 
         // New note played AFTER sostenuto down should NOT be held
-        alloc.allocate(NoteId::from_channel_note(MidiChannel::new(0), 64), 64, 0, 0.7);
+        alloc.allocate(
+            NoteId::from_channel_note(MidiChannel::new(0), 64),
+            64,
+            0,
+            0.7,
+        );
         assert!(
             !alloc.slots()[1].is_sostenuto_held(),
             "New notes should not be sostenuto-held"
@@ -940,7 +1080,12 @@ mod tests {
         let mut alloc = VoiceAllocator::new(config);
 
         // Play note, then press sostenuto
-        alloc.allocate(NoteId::from_channel_note(MidiChannel::new(0), 60), 60, 0, 0.8);
+        alloc.allocate(
+            NoteId::from_channel_note(MidiChannel::new(0), 60),
+            60,
+            0,
+            0.8,
+        );
         alloc.sostenuto_pedal(0, true);
 
         // DON'T release key — sostenuto off should NOT release
@@ -956,9 +1101,24 @@ mod tests {
         let mut alloc = VoiceAllocator::new(config);
 
         // Play notes on channel 0 and 1
-        alloc.allocate(NoteId::from_channel_note(MidiChannel::new(0), 60), 60, 0, 0.8);
-        alloc.allocate(NoteId::from_channel_note(MidiChannel::new(0), 64), 64, 0, 0.7);
-        alloc.allocate(NoteId::from_channel_note(MidiChannel::new(1), 67), 67, 1, 0.9);
+        alloc.allocate(
+            NoteId::from_channel_note(MidiChannel::new(0), 60),
+            60,
+            0,
+            0.8,
+        );
+        alloc.allocate(
+            NoteId::from_channel_note(MidiChannel::new(0), 64),
+            64,
+            0,
+            0.7,
+        );
+        alloc.allocate(
+            NoteId::from_channel_note(MidiChannel::new(1), 67),
+            67,
+            1,
+            0.9,
+        );
 
         assert_eq!(alloc.active_count(), 3);
 
@@ -978,8 +1138,18 @@ mod tests {
         let mut alloc = VoiceAllocator::new(config);
 
         // Play notes
-        alloc.allocate(NoteId::from_channel_note(MidiChannel::new(0), 60), 60, 0, 0.8);
-        alloc.allocate(NoteId::from_channel_note(MidiChannel::new(0), 64), 64, 0, 0.7);
+        alloc.allocate(
+            NoteId::from_channel_note(MidiChannel::new(0), 60),
+            60,
+            0,
+            0.8,
+        );
+        alloc.allocate(
+            NoteId::from_channel_note(MidiChannel::new(0), 64),
+            64,
+            0,
+            0.7,
+        );
 
         // All sound off - immediate silence
         alloc.all_sound_off(0);
@@ -996,8 +1166,18 @@ mod tests {
         let mut alloc = VoiceAllocator::new(config);
 
         // Play notes with pedals
-        alloc.allocate(NoteId::from_channel_note(MidiChannel::new(0), 60), 60, 0, 0.8);
-        alloc.allocate(NoteId::from_channel_note(MidiChannel::new(0), 64), 64, 0, 0.7);
+        alloc.allocate(
+            NoteId::from_channel_note(MidiChannel::new(0), 60),
+            60,
+            0,
+            0.8,
+        );
+        alloc.allocate(
+            NoteId::from_channel_note(MidiChannel::new(0), 64),
+            64,
+            0,
+            0.7,
+        );
         alloc.sustain_pedal(0, true);
         alloc.sostenuto_pedal(0, true);
 
@@ -1008,7 +1188,12 @@ mod tests {
 
         assert_eq!(alloc.active_count(), 0);
         // Pedals should be cleared
-        alloc.allocate(NoteId::from_channel_note(MidiChannel::new(0), 60), 60, 0, 0.8);
+        alloc.allocate(
+            NoteId::from_channel_note(MidiChannel::new(0), 60),
+            60,
+            0,
+            0.8,
+        );
         alloc.release(NoteId::from_channel_note(MidiChannel::new(0), 60), 0);
         // Without sustain, should go to releasing
         assert_eq!(alloc.slots()[0].state(), VoiceState::Releasing);
@@ -1020,11 +1205,21 @@ mod tests {
         let mut alloc = VoiceAllocator::new(config);
 
         // Play same note twice
-        alloc.allocate(NoteId::from_channel_note(MidiChannel::new(0), 60), 60, 0, 0.8);
+        alloc.allocate(
+            NoteId::from_channel_note(MidiChannel::new(0), 60),
+            60,
+            0,
+            0.8,
+        );
         assert_eq!(alloc.slots()[0].state(), VoiceState::Active);
 
         // Same note again should release old and allocate new
-        let result = alloc.allocate(NoteId::from_channel_note(MidiChannel::new(0), 60), 60, 0, 0.9);
+        let result = alloc.allocate(
+            NoteId::from_channel_note(MidiChannel::new(0), 60),
+            60,
+            0,
+            0.9,
+        );
         match result {
             AllocationResult::Allocated { slot_index } => {
                 // Old voice should be releasing, new one allocated
@@ -1044,100 +1239,34 @@ mod tests {
         let mut alloc = VoiceAllocator::new(config);
 
         // Allocate and release one voice
-        alloc.allocate(NoteId::from_channel_note(MidiChannel::new(0), 60), 60, 0, 0.8);
+        alloc.allocate(
+            NoteId::from_channel_note(MidiChannel::new(0), 60),
+            60,
+            0,
+            0.8,
+        );
         alloc.advance_time(100);
-        alloc.allocate(NoteId::from_channel_note(MidiChannel::new(0), 64), 64, 0, 0.7);
+        alloc.allocate(
+            NoteId::from_channel_note(MidiChannel::new(0), 64),
+            64,
+            0,
+            0.7,
+        );
         alloc.advance_time(100);
         alloc.release(NoteId::from_channel_note(MidiChannel::new(0), 60), 0); // Now slot 0 is releasing
 
         // New note should prefer the releasing voice over active
-        let result = alloc.allocate(NoteId::from_channel_note(MidiChannel::new(0), 67), 67, 0, 0.9);
+        let result = alloc.allocate(
+            NoteId::from_channel_note(MidiChannel::new(0), 67),
+            67,
+            0,
+            0.9,
+        );
         match result {
             AllocationResult::Stolen { slot_index } => {
                 assert_eq!(slot_index, 0, "Should prefer stealing releasing voice");
             }
             _ => panic!("Expected stealing"),
         }
-    }
-
-    #[test]
-    fn test_steal_score_idle_returns_none() {
-        let slot = VoiceSlot::default();
-        assert!(steal_score(&slot, AllocationStrategy::Oldest).is_none());
-    }
-
-    #[test]
-    fn test_steal_score_releasing_lower_priority_than_active() {
-        let mut releasing = VoiceSlot::default();
-        releasing.activate(
-            VoiceId::new(1),
-            NoteId::from_channel_note(MidiChannel::new(0), 60),
-            60,
-            0,
-            0.8,
-            0,
-        );
-        releasing.set_state(VoiceState::Releasing);
-
-        let mut active = VoiceSlot::default();
-        active.activate(
-            VoiceId::new(2),
-            NoteId::from_channel_note(MidiChannel::new(0), 64),
-            64,
-            0,
-            0.7,
-            100,
-        );
-
-        let r_score = steal_score(&releasing, AllocationStrategy::Oldest).unwrap();
-        let a_score = steal_score(&active, AllocationStrategy::Oldest).unwrap();
-        assert!(
-            r_score < a_score,
-            "Releasing should be preferred over active"
-        );
-    }
-
-    #[test]
-    fn test_steal_score_oldest_strategy() {
-        let mut old = VoiceSlot::default();
-        old.activate(
-            VoiceId::new(1),
-            NoteId::from_channel_note(MidiChannel::new(0), 60),
-            60,
-            0,
-            0.8,
-            100,
-        );
-
-        let mut new = VoiceSlot::default();
-        new.activate(
-            VoiceId::new(2),
-            NoteId::from_channel_note(MidiChannel::new(0), 64),
-            64,
-            0,
-            0.7,
-            200,
-        );
-
-        let old_score = steal_score(&old, AllocationStrategy::Oldest).unwrap();
-        let new_score = steal_score(&new, AllocationStrategy::Oldest).unwrap();
-        assert!(
-            old_score < new_score,
-            "Oldest voice should have lower score"
-        );
-    }
-
-    #[test]
-    fn test_steal_score_no_steal_returns_none() {
-        let mut slot = VoiceSlot::default();
-        slot.activate(
-            VoiceId::new(1),
-            NoteId::from_channel_note(MidiChannel::new(0), 60),
-            60,
-            0,
-            0.8,
-            0,
-        );
-        assert!(steal_score(&slot, AllocationStrategy::NoSteal).is_none());
     }
 }

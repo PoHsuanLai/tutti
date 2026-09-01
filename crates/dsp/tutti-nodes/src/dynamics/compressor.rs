@@ -637,18 +637,14 @@ mod tests {
     // ── Audio-rate threshold param-input port ────────────────────────────────
 
     #[test]
-    fn compressor_default_no_ports() {
-        let mono = CompressorNode::mono(-20.0, 4.0, 0.001, 0.1);
-        assert_eq!(mono.inputs(), 2);
-        assert_eq!(mono.threshold_port(), None);
-
-        let stereo = CompressorNode::stereo(-20.0, 4.0, 0.001, 0.1);
-        assert_eq!(stereo.inputs(), 4);
-        assert_eq!(stereo.threshold_port(), None);
-    }
-
-    #[test]
     fn compressor_param_port_arity_and_indices() {
+        // Plain constructors declare no port at either width.
+        let dm = CompressorNode::mono(-20.0, 4.0, 0.001, 0.1);
+        assert_eq!(dm.inputs(), 2);
+        assert_eq!(dm.threshold_port(), None);
+        let ds = CompressorNode::stereo(-20.0, 4.0, 0.001, 0.1);
+        assert_eq!(ds.inputs(), 4);
+        assert_eq!(ds.threshold_port(), None);
         // Mono: audio(1) + sidechain(1) = 2, threshold port at index 2.
         let mono = CompressorNode::with_param_inputs(-20.0, 4.0, 0.001, 0.1, 1, true);
         assert_eq!(mono.inputs(), 3);

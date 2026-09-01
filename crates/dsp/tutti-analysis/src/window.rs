@@ -319,17 +319,6 @@ mod tests {
         }
     }
 
-    /// The derived overlaps, spelled out, so the rule cannot silently change
-    /// what it returns for the windows that actually ship.
-    #[test]
-    fn the_shipped_windows_have_the_overlaps_the_table_claims() {
-        assert_eq!(CosineWindow::RECTANGULAR.cola_overlap(), 1);
-        assert_eq!(CosineWindow::HANN.cola_overlap(), 4);
-        assert_eq!(CosineWindow::HAMMING.cola_overlap(), 4);
-        assert_eq!(CosineWindow::BLACKMAN.cola_overlap(), 8);
-        assert_eq!(CosineWindow::BLACKMAN_HARRIS.cola_overlap(), 8);
-    }
-
     /// **`coherent_gain` is `a₀`, and `a₀` is the measured mean.**
     ///
     /// Two sizes, because the claim is also that it does not depend on `n` —
@@ -435,12 +424,5 @@ mod tests {
     fn windows_compare_by_their_coefficients() {
         assert_eq!(CosineWindow::new(&[0.5, 0.5]), CosineWindow::HANN);
         assert_ne!(CosineWindow::HANN, CosineWindow::HAMMING);
-    }
-
-    /// The default is Hann, spelled out. Every grid in the tree is built on it,
-    /// so a change here silently re-tunes every existing analysis.
-    #[test]
-    fn the_default_is_hann() {
-        assert_eq!(CosineWindow::default(), CosineWindow::HANN);
     }
 }

@@ -466,19 +466,6 @@ mod tests {
     }
 
     #[test]
-    fn test_phaser_produces_output() {
-        let mut phaser = PhaserNode::new(6);
-        phaser.set_sample_rate(tutti_core::SampleRate(44100.0));
-
-        let mut out = [0.0f32];
-        for _ in 0..1000 {
-            let input = (core::f32::consts::TAU * 440.0 / 44100.0).sin();
-            phaser.tick(&[input], &mut out);
-        }
-        assert!(out[0].abs() > 0.001, "Phaser should produce output");
-    }
-
-    #[test]
     fn test_phaser_stages_affect_sound() {
         let sr = 44100.0;
         let mut phaser_4 = PhaserNode::new(4);

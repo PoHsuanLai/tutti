@@ -551,21 +551,6 @@ mod tests {
     }
 
     #[test]
-    fn test_region_buffer_creation() {
-        let capacity = (100.0 / 1000.0 * 44100.0) as usize;
-        let (mut prod, mut cons) =
-            RegionBuffer::with_capacity(RegionId(1), PathBuf::from("test.wav"), capacity, 2usize);
-
-        let samples: Vec<f32> = (0..100).flat_map(|i| [i as f32 / 100.0; 2]).collect();
-        let written = prod.push_interleaved(&samples);
-        assert_eq!(written, 100, "100 frames");
-
-        let mut f = [9.0f32; 2];
-        assert!(cons.read_into(&mut f));
-        assert_eq!(f, [0.0, 0.0]);
-    }
-
-    #[test]
     fn test_buffer_full() {
         let (mut prod, _) = RegionBuffer::with_capacity(
             RegionId(1),

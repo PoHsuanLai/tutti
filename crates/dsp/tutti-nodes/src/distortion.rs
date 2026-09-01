@@ -440,15 +440,12 @@ mod tests {
     // ── Audio-rate drive param-input port ────────────────────────────────────
 
     #[test]
-    fn distortion_default_is_two_in_no_port() {
-        let n = DistortionNode::new(ShapeKind::Tanh, 1.0);
-        assert_eq!(n.inputs(), 2);
-        assert_eq!(n.outputs(), 2);
-        assert_eq!(n.drive_port(), None);
-    }
-
-    #[test]
     fn distortion_drive_port_arity() {
+        // Plain constructor: no port, audio arity untouched.
+        let d = DistortionNode::new(ShapeKind::Tanh, 1.0);
+        assert_eq!(d.inputs(), 2);
+        assert_eq!(d.outputs(), 2);
+        assert_eq!(d.drive_port(), None);
         let n = DistortionNode::with_param_inputs(2, ShapeKind::Tanh, 1.0, true);
         assert_eq!(n.inputs(), 3);
         assert_eq!(n.outputs(), 2);

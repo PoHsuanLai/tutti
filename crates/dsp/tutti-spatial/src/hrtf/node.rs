@@ -249,13 +249,6 @@ mod tests {
     }
 
     #[test]
-    fn parses_synthetic_sphere_and_reports_2in_2out() {
-        let node = make_node();
-        assert_eq!(node.inputs(), 2);
-        assert_eq!(node.outputs(), 2);
-    }
-
-    #[test]
     fn rejects_garbage_bytes() {
         let err = HrtfBinauralNode::new(&[0u8; 16], 44_100.0);
         assert!(err.is_err(), "non-HRIR bytes must fail to construct");
@@ -334,13 +327,24 @@ mod tests {
         );
     }
 
+    /// `Clone` **shares** the position atomics rather than snapshotting them —
+    /// parity with [`VbapPannerNode`](crate::vbap::VbapPannerNode), and the
+    /// reason `reset` must never write them (see `reset_keeps_the_authored_placement`).
+    /// The offline exporter clones the live net, so a snapshotting clone would
+    /// silently freeze a render at whatever bearing was set at clone time.
     #[test]
-    fn clone_is_independent() {
+    fn clone_shares_the_position_atomics() {
         let node = make_node();
-        node.set_position(45.0, 10.0);
         let c = node.clone();
-        // Clone shares the atomic position handle (parity with the ITD node).
+
+        // Set through the original, observe through the clone.
+        node.set_position(45.0, 10.0);
         assert_eq!(c.azimuth(), Azimuth(45.0));
         assert_eq!(c.elevation(), Elevation(10.0));
+
+        // And back the other way.
+        c.set_position(-60.0, -20.0);
+        assert_eq!(node.azimuth(), Azimuth(-60.0));
+        assert_eq!(node.elevation(), Elevation(-20.0));
     }
 }

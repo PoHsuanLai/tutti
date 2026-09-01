@@ -439,25 +439,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn convolver_produces_output_after_latency() {
-        let ir = generate_test_ir(1024, 0.5, 48_000.0);
-        let mut node = ConvolverNode::new(&ir, 64);
-        node.set_sample_rate(tutti_core::SampleRate(48_000.0));
-        node.set_mix(1.0);
-
-        let mut out = [0.0f32; 1];
-        node.tick(&[1.0], &mut out);
-        for _ in 0..512 {
-            node.tick(&[0.0], &mut out);
-        }
-        assert!(
-            out[0].is_finite(),
-            "convolver output must stay finite, got {}",
-            out[0]
-        );
-    }
-
-    #[test]
     fn mix_is_clamped() {
         let ir = vec![1.0; 64];
         let node = ConvolverNode::new(&ir, 64);

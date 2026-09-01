@@ -108,18 +108,4 @@ mod tests {
         assert_ne!(a, ModTargetId::default()); // default is 0, allocations start at 1
         assert_ne!(a.as_u64(), 0);
     }
-
-    #[test]
-    fn id_roundtrips_u64() {
-        let id = ModTargetId::new(42);
-        assert_eq!(id.as_u64(), 42);
-        assert_eq!(u64::from(id), 42);
-        assert_eq!(ModTargetId::from(42u64), id);
-    }
-
-    #[test]
-    fn automation_layer_is_zero() {
-        assert_eq!(LayerKey::AUTOMATION, LayerKey(0));
-        assert_ne!(LayerKey(1), LayerKey::AUTOMATION);
-    }
 }

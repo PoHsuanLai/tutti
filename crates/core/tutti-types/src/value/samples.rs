@@ -287,6 +287,11 @@ mod tests {
     /// - `Samples * Samples` — frames squared is not a quantity.
     /// - `Samples + usize` — the bare operand could be a count, an index, or a
     ///   channel number; make the caller say `Samples(n)`.
+    ///
+    /// The body is empty and this test cannot fail. It exists as documentation:
+    /// the omission ledger above is the contract, and a `#[test]` is what keeps
+    /// it beside the operators rather than drifting into a README. Adding an
+    /// omitted operator means deleting its entry here, not making this pass.
     #[test]
     fn omitted_operators_are_documented() {}
 

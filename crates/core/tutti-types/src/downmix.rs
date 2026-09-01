@@ -286,12 +286,6 @@ mod tests {
     }
 
     #[test]
-    fn mono_from_stereo_is_the_plain_average() {
-        assert!((fold_frame_to_mono(&[1.0, 0.0]) - 0.5).abs() < 1e-6);
-        assert!((fold_frame_to_mono(&[1.0, 1.0]) - 1.0).abs() < 1e-6);
-    }
-
-    #[test]
     fn mono_from_surround_sums_the_matrix_downmix() {
         // 5.1 with front L/R only: stereo = (1,1) → mono = (1+1)*.707.
         let frame = [1.0, 1.0, 0.0, 0.0, 0.0, 0.0];

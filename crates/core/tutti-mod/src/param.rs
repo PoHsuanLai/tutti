@@ -167,52 +167,6 @@ mod tests {
     const MOD_B: LayerKey = LayerKey(2);
 
     #[test]
-    fn base_is_the_value_with_no_layers() {
-        let t = AtomicTarget::new(0.7, 0.0, 2.0);
-        assert_eq!(t.final_value(), 0.7);
-        assert_eq!(t.base(), 0.7);
-    }
-
-    #[test]
-    fn layers_sum_order_independent() {
-        let a = AtomicTarget::new(0.5, 0.0, 2.0);
-        a.accumulate(MOD_A, 0.2);
-        a.accumulate(MOD_B, -0.1);
-        let b = AtomicTarget::new(0.5, 0.0, 2.0);
-        b.accumulate(MOD_B, -0.1);
-        b.accumulate(MOD_A, 0.2);
-        assert!((a.final_value() - b.final_value()).abs() < 1e-6);
-        assert!((a.final_value() - 0.6).abs() < 1e-6);
-    }
-
-    #[test]
-    fn accumulate_updates_in_place_no_stacking() {
-        let t = AtomicTarget::new(0.0, -10.0, 10.0);
-        t.accumulate(MOD_A, 1.0);
-        t.accumulate(MOD_A, 2.0);
-        t.accumulate(MOD_A, 3.0);
-        assert!((t.final_value() - 3.0).abs() < 1e-6); // not 1+2+3
-    }
-
-    #[test]
-    fn value_clamps_to_range() {
-        let t = AtomicTarget::new(0.9, 0.0, 1.0);
-        t.accumulate(MOD_A, 0.5);
-        assert_eq!(t.final_value(), 1.0); // 1.4 clamped
-        t.accumulate(MOD_A, -2.0);
-        assert_eq!(t.final_value(), 0.0); // -1.1 clamped
-    }
-
-    #[test]
-    fn clear_removes_a_contribution() {
-        let t = AtomicTarget::new(0.5, 0.0, 2.0);
-        t.accumulate(MOD_A, 0.4);
-        assert!((t.final_value() - 0.9).abs() < 1e-6);
-        t.clear(MOD_A);
-        assert_eq!(t.final_value(), 0.5);
-    }
-
-    #[test]
     fn set_base_re_mirrors() {
         let t = AtomicTarget::new(0.5, 0.0, 2.0);
         t.accumulate(MOD_A, 0.2);

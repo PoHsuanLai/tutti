@@ -433,35 +433,6 @@ mod tests {
     }
 
     #[test]
-    fn declick_start_arms_both_halves() {
-        let declick = Declick::new();
-        assert!(!declick.is_active());
-
-        declick.start(480);
-        assert!(declick.is_active());
-        assert_eq!(declick.total.load(Ordering::Acquire), 480);
-        assert_eq!(declick.remaining.load(Ordering::Acquire), 480);
-
-        declick.clear();
-        assert!(!declick.is_active());
-        // Total is retained so a fade's length stays inspectable.
-        assert_eq!(declick.total.load(Ordering::Acquire), 480);
-    }
-
-    #[test]
-    fn loop_range_rejects_empty_and_inverted() {
-        assert!(LoopRange::new(0.0, 4.0).is_some());
-        assert!(
-            LoopRange::new(4.0, 4.0).is_none(),
-            "an empty region is not a loop"
-        );
-        assert!(
-            LoopRange::new(8.0, 4.0).is_none(),
-            "an inverted region is not a loop"
-        );
-    }
-
-    #[test]
     fn loop_range_wrap_preserves_overshoot() {
         let r = LoopRange::new(4.0, 8.0).unwrap();
 

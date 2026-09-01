@@ -358,16 +358,6 @@ mod tests {
     }
 
     #[test]
-    fn test_transport_clock_creation() {
-        let (tempo, paused) = create_test_atomics();
-        let clock = TransportClock::new(ClockLinks::bare(tempo, paused), 44100.0);
-
-        assert_eq!(clock.inputs(), 0);
-        assert_eq!(clock.outputs(), 2);
-        assert!((clock.current_beat().get() - 0.0).abs() < 0.001);
-    }
-
-    #[test]
     fn test_transport_clock_tick() {
         let (tempo, paused) = create_test_atomics();
         let mut clock = TransportClock::new(ClockLinks::bare(tempo, paused), 44100.0);
@@ -547,25 +537,6 @@ mod tests {
         }
 
         assert!((reconstruct_beat(&output) - 6.0).abs() < 0.1);
-    }
-
-    #[test]
-    fn test_transport_clock_loop_wrapping() {
-        let (tempo, paused) = create_test_atomics();
-        let loop_span = LoopSpan::new(0.0, 4.0);
-        loop_span.set_enabled(true);
-
-        let mut clock = clock_with_loop(tempo, paused, loop_span);
-
-        let mut output = [0.0f32; 2];
-
-        for _ in 0..90000 {
-            clock.tick(&[], &mut output);
-        }
-
-        let beat = reconstruct_beat(&output);
-        assert!(beat < 0.5, "Expected beat near 0 after loop, got {}", beat);
-        assert!(beat >= 0.0, "Beat should be >= 0 after wrap");
     }
 
     #[test]

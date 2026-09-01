@@ -416,20 +416,6 @@ fn write_output<T: cpal::SizedSample + cpal::FromSample<f32>>(
     }
 }
 
-/// # The `*_is_allocation_free` tests here are INERT
-///
-/// `assert_no_alloc` observes nothing unless `#[global_allocator] =
-/// AllocDisabler` is installed, and that can only be declared at the root of a
-/// test *binary*. This crate's unit-test binary declares none, so the three
-/// gates below pass whether or not `process_audio` allocates — verified by
-/// mutation-testing: a `Vec::with_capacity` at the top of `process_audio`
-/// leaves all three green.
-///
-/// **The live gate is `tests/rt_no_alloc.rs`**, which installs the allocator
-/// and aborts on that same mutation. These are kept because they run the same
-/// fixture through the block-size sweep and the `MAX_FRAMES` ceiling, and they
-/// become real the moment this binary gains an allocator — but do not read a
-/// pass here as coverage. Add new allocation gates to the integration test.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -441,10 +427,15 @@ mod tests {
     /// Build an engine + transport pair whose graph actually renders.
     ///
     /// The clock alone leaves every output edge on `Port::Zero`, so
-    /// `process_audio` folds silence and never walks a vertex — which would make
-    /// an allocation gate around it prove nothing. A sine through a filter into
-    /// the output gives the render path real vertices to evaluate, per-vertex
-    /// buffers to gather, and a fold to the device width.
+    /// `process_audio` folds silence and never walks a vertex — which would
+    /// leave the transport assertions below reading a playhead nothing drove.
+    /// A sine through a filter into the output gives the render path real
+    /// vertices to evaluate, per-vertex buffers to gather, and a fold to the
+    /// device width.
+    ///
+    /// `tests/rt_no_alloc.rs` mirrors this fixture, because the allocation
+    /// gates need a `#[global_allocator]` that only a test binary root can
+    /// declare.
     fn build_callback_state(sample_rate: f64) -> (Transport, AudioCallbackState) {
         let transport = Transport::new(sample_rate);
 
@@ -520,126 +511,5 @@ mod tests {
             beat < Beat(4.0),
             "expected beat wrapped below 4.0, got {beat:?}"
         );
-    }
-
-    /// The graph the RT tests render through must actually produce signal.
-    ///
-    /// An unwired graph folds silence without walking a single vertex, which
-    /// would leave the allocation gates below measuring an empty loop. This
-    /// pins the fixture so that failure mode cannot return unnoticed.
-    #[test]
-    fn test_fixture_graph_renders_signal() {
-        let (transport, state) = build_callback_state(48_000.0);
-        let _ = transport.motion.try_send(MotionEvent::Play);
-        transport.motion.drain();
-
-        let mut output = vec![0.0f32; 512 * 2];
-        // The filter needs a few blocks before its output is clearly non-zero.
-        for _ in 0..4 {
-            process_audio(
-                &state,
-                &mut InterleavedMut::new(&mut output, ChannelLayout::STEREO),
-            );
-        }
-
-        assert!(
-            output.iter().any(|s| s.abs() > 1e-6),
-            "fixture graph rendered silence — the RT gates would prove nothing"
-        );
-    }
-
-    /// RT-safety regression: `process_audio` must not allocate on the
-    /// audio thread. Backs the umbrella step of the RT-safety audit —
-    /// the pre-allocated `MAX_FRAMES * 2` buffer and the clamped/silenced
-    /// tail on over-sized callbacks should keep this allocation-free.
-    #[test]
-    fn process_audio_is_allocation_free() {
-        let sample_rate = 48_000.0;
-        let (transport, state) = build_callback_state(sample_rate);
-        transport.settings.set_tempo(120.0);
-        let _ = transport.motion.try_send(MotionEvent::Play);
-        transport.motion.drain();
-
-        // Warm up outside the no-alloc scope — first call primes any
-        // internal state on the transport / clock.
-        let mut output = vec![0.0f32; 1024 * 2];
-        process_audio(
-            &state,
-            &mut InterleavedMut::new(&mut output, ChannelLayout::STEREO),
-        );
-
-        assert_no_alloc::assert_no_alloc(|| {
-            for _ in 0..1_000 {
-                process_audio(
-                    &state,
-                    &mut InterleavedMut::new(&mut output, ChannelLayout::STEREO),
-                );
-            }
-        });
-    }
-
-    /// A callback buffer at the `MAX_FRAMES` ceiling must render without
-    /// allocating.
-    ///
-    /// The stream's mix buffer is sized to `MAX_FRAMES` once and never resized,
-    /// so this is the largest block the render path can ever be handed. The
-    /// steady-state test above uses 1024 frames and would not notice a size
-    /// dependency in the buffers the graph gathers per vertex.
-    #[test]
-    fn process_audio_at_max_frames_is_allocation_free() {
-        let (transport, state) = build_callback_state(48_000.0);
-        transport.settings.set_tempo(120.0);
-        let _ = transport.motion.try_send(MotionEvent::Play);
-        transport.motion.drain();
-
-        let mut output = vec![0.0f32; MAX_FRAMES * 2];
-        process_audio(
-            &state,
-            &mut InterleavedMut::new(&mut output, ChannelLayout::STEREO),
-        );
-
-        assert_no_alloc::assert_no_alloc(|| {
-            for _ in 0..64 {
-                process_audio(
-                    &state,
-                    &mut InterleavedMut::new(&mut output, ChannelLayout::STEREO),
-                );
-            }
-        });
-    }
-
-    /// Rendering must stay alloc-free across changing block sizes.
-    ///
-    /// A device can change its buffer size, and the graph's per-vertex buffers
-    /// are sized from the block. Sweeping sizes in one gate catches a buffer
-    /// that grows on a larger block, which a fixed-size loop cannot.
-    #[test]
-    fn process_audio_across_block_sizes_is_allocation_free() {
-        let (transport, state) = build_callback_state(48_000.0);
-        transport.settings.set_tempo(120.0);
-        let _ = transport.motion.try_send(MotionEvent::Play);
-        transport.motion.drain();
-
-        let mut output = vec![0.0f32; MAX_FRAMES * 2];
-        // Warm every size outside the gate: the first render at a given block
-        // size is where any one-time sizing happens, and that is the engine's
-        // business, not the audio thread's.
-        for frames in [64usize, 128, 256, 512, 1024, 2048] {
-            process_audio(
-                &state,
-                &mut InterleavedMut::new(&mut output[..frames * 2], ChannelLayout::STEREO),
-            );
-        }
-
-        assert_no_alloc::assert_no_alloc(|| {
-            for _ in 0..16 {
-                for frames in [64usize, 128, 256, 512, 1024, 2048] {
-                    process_audio(
-                        &state,
-                        &mut InterleavedMut::new(&mut output[..frames * 2], ChannelLayout::STEREO),
-                    );
-                }
-            }
-        });
     }
 }

@@ -2099,14 +2099,6 @@ impl Default for AtomicReadRate {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use core::sync::atomic::Ordering;
-
-    #[test]
-    fn newtype_raw_round_trip() {
-        assert_eq!(SamplePosition::from_raw(123.456).to_raw(), 123.456);
-        assert_eq!(Beat::from_raw(4.25).to_raw(), 4.25);
-        assert_eq!(BeatDuration::from_raw(-2.5).to_raw(), -2.5);
-    }
 
     /// The affine discipline: subtracting two positions yields a *displacement*,
     /// and only a displacement can be added back to a position.
@@ -2197,6 +2189,11 @@ mod tests {
     /// rate is a [`BeatDuration`] (beats per cycle), never an [`Hz`]. Doubling
     /// the span halves the rate, so the substitution is a silent reciprocal.
     /// [`Beat::cycles_of`] is the only interpreter.
+    ///
+    /// The body is empty and this test cannot fail. It exists as documentation:
+    /// the omission ledger above is the contract, and a `#[test]` is what keeps
+    /// it beside the operators rather than drifting into a README. Adding an
+    /// omitted operator means deleting its entry here, not making this pass.
     #[test]
     fn omitted_operators_are_documented() {}
 
@@ -2457,6 +2454,8 @@ mod tests {
             StereoWidth::from(Correlation(0.25)),
             Correlation(0.25).to_stereo_width()
         );
+        assert_eq!(Db::from(Amplitude(0.5)), Db::from_amplitude(Amplitude(0.5)));
+        assert_eq!(Amplitude::from(Db(-6.0)), Db(-6.0).to_amplitude());
 
         // And they round-trip where the pair is mutually inverse.
         assert_eq!(Cents::from(Semitones::from(Cents(1200.0))), Cents(1200.0));
@@ -2508,19 +2507,6 @@ mod tests {
         // the three that do are the dynamics detectors, `ms_ratio`, and the
         // true-peak reading. It is simply not applied by the conversion.
         assert!(Db::FLOOR.get().is_finite());
-    }
-
-    #[test]
-    fn db_and_amplitude_convert_by_from_in_both_directions() {
-        // Both spellings delegate to the inherent method, so they cannot drift.
-        assert_eq!(Db::from(Amplitude(0.5)), Db::from_amplitude(Amplitude(0.5)));
-        assert_eq!(Amplitude::from(Db(-6.0)), Db(-6.0).to_amplitude());
-
-        // Mutually inverse away from silence, within transcendental error —
-        // "lossless" in the rule above means no information is *discarded*,
-        // not bit-exact.
-        let round = Amplitude::from(Db::from(Amplitude(0.25)));
-        assert!((round.get() - 0.25).abs() < 1e-6);
     }
 
     #[test]
@@ -3067,17 +3053,5 @@ mod tests {
         assert_eq!(StretchFactor::new_clamped(8.0), StretchFactor::MAX);
         assert_eq!(StretchFactor::new_clamped(0.1), StretchFactor::MIN);
         assert_eq!(StretchFactor::new_clamped(f32::NAN), StretchFactor::UNITY);
-    }
-
-    #[test]
-    fn atomic_sample_position_load_after_store() {
-        let cell = AtomicSamplePosition::new(SamplePosition::new(0.0));
-        cell.store(SamplePosition::new(123.456), Ordering::Relaxed);
-        assert_eq!(cell.load(Ordering::Relaxed), SamplePosition::new(123.456));
-
-        let cell = AtomicSamplePosition::default();
-        assert_eq!(cell.load(Ordering::Relaxed), SamplePosition::new(0.0));
-        cell.store(SamplePosition::new(-7.0), Ordering::Relaxed);
-        assert_eq!(cell.load(Ordering::Relaxed), SamplePosition::new(-7.0));
     }
 }

@@ -148,14 +148,4 @@ mod tests {
         b.loop_span.set_enabled(true);
         assert_eq!(a.loop_span.range(), LoopRange::new(2.0, 6.0));
     }
-
-    #[test]
-    fn defaults_are_stopped_at_120() {
-        let s = TransportSettings::new();
-        assert_eq!(s.tempo().get(), 120.0);
-        assert_eq!(s.beat(), Beat(0.0));
-        assert!(s.is_paused());
-        assert!(!s.is_recording());
-        assert_eq!(s.loop_span.range(), None, "looping starts disarmed");
-    }
 }

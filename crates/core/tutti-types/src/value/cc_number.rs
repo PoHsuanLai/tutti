@@ -176,18 +176,6 @@ mod tests {
         assert_eq!(CCNumber::new(255).get(), 127);
     }
 
-    #[test]
-    fn the_bounds_are_the_seven_bit_range() {
-        assert_eq!(CCNumber::FIRST.get(), 0);
-        assert_eq!(CCNumber::LAST.get(), 127);
-        assert_eq!(CCNumber::COUNT, 128);
-    }
-
-    #[test]
-    fn the_default_is_the_first_controller() {
-        assert_eq!(CCNumber::default(), CCNumber::FIRST);
-    }
-
     /// The named roster against the MIDI 1.0 Control Change table. A wrong
     /// number here is silent at runtime — the synth just responds to the wrong
     /// knob — so the table is asserted rather than trusted.

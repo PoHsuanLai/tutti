@@ -1,6 +1,7 @@
 //! One-time lookup cache of every CLAP extension the plugin implements.
 //!
-//! Built during `ClapInstance::load` so runtime methods can check a pointer
+//! Built during [`ClapLoaded::load`](crate::ClapLoaded::load) so runtime methods can
+//! check a pointer
 //! instead of calling `get_extension` on every invocation. Fields are
 //! grouped by subsystem purely to keep the struct readable.
 

@@ -107,8 +107,11 @@ with no drift between the two surfaces.
 is the single most useful paragraph for a reader deciding where to look next, and the
 strongest existing convention in the tree.
 
-**Every documented example compiles.** A doctest is the only documentation the
-compiler checks; prose examples rot silently.
+**Every documented example compiles, under every feature that gates it.** A
+doctest is the only documentation the compiler checks — but a `cfg`-gated
+example is invisible to a default-features run, so the doctest gate is
+`--all-features`. Two examples in `bevy-tutti` survived a workspace-wide rename
+for exactly this reason: nothing compiled them.
 
 **A comment states a constraint the code cannot show.** Not what the next line does,
 not what the code used to be, not how many call sites a past refactor touched — those

@@ -48,7 +48,8 @@ use std::sync::Arc;
 ///
 /// The `inner` FFI struct stores an `Arc::as_ptr` borrow of `state` in its
 /// `host_data` slot, so [`ClapHost`] must not be moved independently of
-/// its [`HostState`]; in practice it lives boxed inside a `ClapInstance`.
+/// its [`HostState`]; in practice it lives boxed inside a
+/// [`ClapLoaded`](crate::ClapLoaded).
 pub struct ClapHost {
     inner: ClapHostVtable,
     state: Arc<HostState>,

@@ -119,10 +119,8 @@ pub use descriptor::{AuComponentType, EditorPresence, PluginClass, PluginDescrip
 pub use editor::{
     AspectRatio, EditorCapabilities, EditorError, EditorSize, ResizeHints, WindowHandle,
 };
-// Exported as `PluginResult` only. It used to be re-exported under both names
-// at this same scope; every one of the 31 call sites took `PluginResult`, and
-// the bare `Result` had none — while being exactly the name that shadows std's
-// on a glob import.
+// Exported as `PluginResult` only: the bare name `Result` shadows std's under a
+// glob import.
 pub use error::{Delivered, PluginError, Result as PluginResult, StateError};
 pub use features::{FeatureReport, Features};
 pub use format_host::{

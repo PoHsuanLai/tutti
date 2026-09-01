@@ -40,7 +40,7 @@ use std::ffi::c_void;
 /// Plugin-compatible sample width (`f32` or `f64`), used as a compile-time
 /// switch by generic process code.
 ///
-/// Generic process code such as `Vst3Instance::process` / `ClapInstance::process`
+/// Generic process code such as `Vst3Instance::process` / `ClapActive::process`
 /// is written `<T: Sample>`, so the compiler monomorphizes one specialization
 /// per concrete width. This is the element type `S` of the engine's
 /// [`AudioIn`](tutti_types::io::AudioIn) / [`AudioOut`](tutti_types::io::AudioOut)

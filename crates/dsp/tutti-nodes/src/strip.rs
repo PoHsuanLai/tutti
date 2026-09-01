@@ -133,7 +133,7 @@ impl BusStripNode {
     /// param port that resolved and carried the wrong signal.
     ///
     /// There is deliberately no audio-rate mute port: a per-sample boolean is a
-    /// gate, not a mute, and gating is [`crate::Gate`]'s job.
+    /// gate, not a mute, and gating is [`crate::GateNode`]'s job.
     pub fn with_param_inputs(
         channels: impl Into<ChannelLayout>,
         mod_volume: bool,

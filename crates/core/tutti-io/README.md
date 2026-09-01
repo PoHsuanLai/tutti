@@ -11,30 +11,37 @@ Four pieces, and recording is just a pump between two of them:
   a live input can sit anywhere in the graph.
 - `TapIn` — the *other* read side: the analysis tap's consumer end adapted to
   `AudioIn`, so what the graph is playing records through the same pump that
-  records a microphone.
+  records a microphone. `AudioTap` itself is `tutti-core`'s (the audio callback
+  pushes into it); this is only the adapter that lets it meet the I/O
+  vocabulary.
 - `WavOut` — the write side, an `AudioOut` sink.
 - `Recorder` — `pump(src, sink)` on its own thread, plus the stop policy and the
   finalize-exactly-once guarantee that `pump` itself deliberately leaves out.
 
-## Why it is its own crate
+The traits this crate implements are re-exported from its root (`pump`,
+`AudioIn`, `AudioOut`, `OnEmpty`, `BitDepth`), so a consumer reaches the
+vocabulary and its live impls from one place.
 
-**It is device-free, and that is what puts it *below* `tutti-cpal` rather than
-inside it.** `Recorder::start` is generic over `AudioIn`, so a microphone is one
-option among several — a socket, a decoded file, or a generated signal record
-identically; the caller opens its own device and hands the source over. Folding
-this into `tutti-cpal` would make a headless render pull in CPAL just to write a
-WAV.
+## What this crate does not own
 
-It is also the **live** edge, as distinct from `tutti-export`'s **offline** one.
-The two are peers: one moves frames in real time between endpoints a host owns,
-the other renders a graph faster than real time to a file.
+- **The device.** It is device-free, and that is what puts it *below*
+  `tutti-cpal` rather than inside it. `Recorder::start` is generic over
+  `AudioIn`, so a microphone is one option among several — a socket, a decoded
+  file, or a generated signal record identically; the caller opens its own device
+  and hands the source over. Folding this into `tutti-cpal` would make a headless
+  render pull in CPAL just to write a WAV. Note the arrow: the mic ring's
+  *producer* half lives one layer **up**, in CPAL's input callback.
+- **Offline rendering.** That is `tutti-export`'s. The two are peers: one moves
+  frames in real time between endpoints a host owns, the other renders a graph
+  faster than real time to a file.
+- **The I/O vocabulary itself.** `AudioIn`/`AudioOut`/`pump`, `ChannelLayout` and
+  the PCM quantizers are all `tutti-types`', re-exported through `tutti-core`.
+  This crate supplies the live *impls*, not the traits.
 
-## Where it sits
-
-```
+```text
 tutti-types    AudioIn/AudioOut, ChannelLayout, the PCM quantizers
     ↑
-tutti-core     Wave, AudioUnit; re-exports io
+tutti-core     Wave, AudioUnit, AudioTap; re-exports io
     ↑
 tutti-io       MicMonitorNode, WavOut, TapIn, Recorder   (device-free)
     ↑
@@ -42,17 +49,46 @@ tutti-cpal     MicIn, the output stream, the driver      (owns CPAL)
 ```
 
 `tutti-cpal` depends on this crate (behind its `capture` feature) for the ring
-and the monitor node; `tutti-sampler` and `bevy-tutti` depend on it too. Note
-the arrow: the mic ring's *producer* half lives one layer up, in CPAL's input
-callback.
+and the monitor node; `tutti-sampler` and `bevy-tutti` depend on it too.
 
-The traits this crate implements are re-exported from its root
-(`pump`, `AudioIn`, `AudioOut`, `OnEmpty`, `BitDepth`), so a consumer reaches
-the vocabulary and its live impls from one place.
+## Example — recording what the graph is playing
 
-## Features
+The tap path end to end, and it needs no device: `tutti-core`'s `AudioTap` is
+pushed by the audio callback, `TapIn` is its consumer end as an `AudioIn`, and
+`pump` moves one block into a `WavOut`. Swap `TapIn` for `tutti_cpal::MicIn` and
+the same three lines record a microphone — that interchangeability is the reason
+the traits exist.
 
-None. The crate is the live I/O edge; there is nothing here to gate.
+```rust
+use tutti_core::AudioTap;
+use tutti_io::{pump, AudioIn, AudioOut, BitDepth, TapIn, WavOut};
+
+let tap = AudioTap::new();
+let mut src = TapIn::new(tap.open().expect("a fresh tap has no other reader"));
+
+// The callback's push is denominated in FRAMES; the slice it reads from is
+// interleaved, so it must hold `frames * 2` samples.
+let block = [0.25f32, -0.25, 0.5, -0.5, 0.75, -0.75];
+tap.push(&block, 3);
+
+let dir = tempfile::tempdir().expect("temp dir");
+let path = dir.path().join("take.wav");
+let mut wav = WavOut::create(&path, 48_000.0, 2u16, BitDepth::Float32)
+    .expect("sink opens");
+assert_eq!(src.layout(), AudioOut::layout(&wav), "pump requires equal widths");
+
+// The scratch is sized in SAMPLES (`frames * channels`) because a flat
+// interleaved slice has no other unit — but `pump` returns FRAMES. Conflating
+// the two is this boundary's most repeated defect: a stereo take compared
+// against a sample count runs half as long as it should.
+let channels = src.layout().count() as usize;
+let mut scratch = vec![0.0f32; 1024 * channels];
+assert_eq!(pump(&mut src, &mut wav, &mut scratch), 3);
+
+// `finalize` takes `self`, so the header back-patch happens exactly once and
+// writing after it is a compile error rather than a corrupt file.
+wav.finalize().expect("header back-patches");
+```
 
 ## Two things worth knowing
 
@@ -63,6 +99,10 @@ None. The crate is the live I/O edge; there is nothing here to gate.
 - **`Recorder::start` checks the layouts.** It is the one place both endpoints
   are in scope before a frame moves, so a width mismatch is an error there
   rather than a file whose channels rotate every frame.
+
+## Features
+
+None. The crate is the live I/O edge; there is nothing here to gate.
 
 ## License
 

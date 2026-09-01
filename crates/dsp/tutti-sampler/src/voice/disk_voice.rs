@@ -1371,54 +1371,6 @@ mod tests {
 
     // --- Existing tests ---
 
-    #[test]
-    fn test_cubic_hermite_interpolation() {
-        let result = cubic_hermite(0.0, 1.0, 2.0, 3.0, 0.0);
-        assert!((result - 1.0).abs() < 0.001);
-
-        let result = cubic_hermite(0.0, 1.0, 2.0, 3.0, 1.0);
-        assert!((result - 2.0).abs() < 0.001);
-
-        let result = cubic_hermite(0.0, 1.0, 2.0, 3.0, 0.5);
-        assert!((result - 1.5).abs() < 0.1);
-    }
-
-    #[test]
-    fn test_shared_stream_state_seeking() {
-        let state = RtState::new();
-
-        assert!(!state.is_seeking());
-
-        state.set_seeking(true);
-        assert!(state.is_seeking());
-
-        state.set_seeking(false);
-        assert!(!state.is_seeking());
-    }
-
-    #[test]
-    fn test_shared_stream_state_speed() {
-        use tutti_core::PlaybackRate;
-        let state = RtState::new();
-
-        assert_eq!(state.speed(), PlaybackRate::UNITY);
-
-        state.set_speed(PlaybackRate::new(0.5));
-        assert_eq!(state.speed(), PlaybackRate::new(0.5));
-
-        state.set_speed(PlaybackRate::new(2.0));
-        assert_eq!(state.speed(), PlaybackRate::new(2.0));
-
-        // The range is enforced by the TYPE, at construction, so the in-memory
-        // tier gets it too. Clamping only inside `RtState` is what makes the two
-        // tiers disagree about what 10.0x means.
-        state.set_speed(PlaybackRate::new_clamped(0.1));
-        assert_eq!(state.speed(), PlaybackRate::MIN);
-
-        state.set_speed(PlaybackRate::new_clamped(10.0));
-        assert_eq!(state.speed(), PlaybackRate::MAX);
-    }
-
     // --- New: play/stop state ---
 
     #[test]

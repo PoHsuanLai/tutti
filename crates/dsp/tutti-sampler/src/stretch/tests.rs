@@ -50,24 +50,32 @@ fn non_positive_sample_rate_does_not_panic() {
     }
 }
 
+/// Every input lands in a single turn, and differs from the input by a whole
+/// number of turns -- the two halves of what wrapping means.
+///
+/// The 1e6 row is the one that is about time rather than range: the `while`
+/// loop this replaced iterated once per 2π, so a large accumulated phase cost
+/// unbounded time on the audio thread. Arithmetic wrapping is O(1), and a
+/// regression to the loop shows up as a hang here rather than as a failure.
 #[test]
 fn wrap_phase_maps_into_a_single_turn() {
     let tau = Radians::TAU.get();
-    for &p in &[0.0, PI, -PI, 3.0 * PI, -3.0 * PI, 100.0 * tau + 1.0] {
+    for &(p, eps) in &[
+        (0.0, 1e-4),
+        (PI, 1e-4),
+        (-PI, 1e-4),
+        (3.0 * PI, 1e-4),
+        (-3.0 * PI, 1e-4),
+        (100.0 * tau + 1.0, 1e-4),
+        // A phase large enough that the old per-turn loop would not return.
+        (1.0e6, 1e-2),
+    ] {
         let w = wrap_phase(Radians(p)).get();
-        assert!(w > -PI - 1e-4 && w <= PI + 1e-4, "{p} wrapped to {w}");
+        assert!(w > -PI - eps && w <= PI + eps, "{p} wrapped to {w}");
         // Wrapping differs from the input by a whole number of turns.
         let turns = (p - w) / tau;
         assert!((turns - turns.round()).abs() < 1e-3, "{p} -> {w}");
     }
-}
-
-/// The `while` loop this replaced iterated once per 2π, so a large phase
-/// cost unbounded time on the audio thread. Arithmetic wrapping is O(1).
-#[test]
-fn wrap_phase_handles_a_large_accumulated_phase() {
-    let w = wrap_phase(Radians(1.0e6)).get();
-    assert!(w > -PI - 1e-2 && w <= PI + 1e-2, "wrapped to {w}");
 }
 
 /// The fact `COLA_GAIN` depends on: microfft's inverse transform already

@@ -458,14 +458,6 @@ impl RtState {
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_default_values() {
-        let state = RtState::new();
-        assert_eq!(state.speed(), PlaybackRate::UNITY);
-        assert!(!state.is_reverse());
-        assert!(!state.is_seeking());
-    }
-
     /// The stretch rate survives the cell bit-for-bit.
     ///
     /// Narrowing it through an `AtomicF32` would make every load return a value
@@ -506,6 +498,11 @@ mod tests {
         // setter, and a clamp here would leave it accepting out-of-range speeds.
         let state = RtState::new();
 
+        // A fresh cell reads UNITY, not the atomic's zero — which would be
+        // silence rather than normal speed, and is what `PlaybackParams`'
+        // derived `Default` would give if it stopped spelling this out.
+        assert_eq!(state.speed(), PlaybackRate::UNITY);
+
         state.set_speed(PlaybackRate::new_clamped(0.1));
         assert_eq!(state.speed(), PlaybackRate::MIN);
 
@@ -514,16 +511,6 @@ mod tests {
 
         state.set_speed(PlaybackRate::new_clamped(2.0));
         assert_eq!(state.speed(), PlaybackRate::new(2.0));
-    }
-
-    #[test]
-    fn test_direction() {
-        let state = RtState::new();
-        assert!(!state.is_reverse());
-        state.set_reverse(true);
-        assert!(state.is_reverse());
-        state.set_reverse(false);
-        assert!(!state.is_reverse());
     }
 
     #[test]

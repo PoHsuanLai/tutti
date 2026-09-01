@@ -156,6 +156,16 @@ Real constraints, not drift. Each is a documented decision.
 Every change lands with both workspaces green, and app-workspace fallout is fixed in the
 same commit.
 
+## 8a. macOS-gated work, statically verified
+
+`tutti-au-host` cannot be type-checked on the Linux box this campaign runs on.
+The Wave 5 changes there were re-checked by reading rather than compiling, and
+all are present as reported: `has_editor` / `open_editor` (an `unsafe fn`) /
+`close_editor` on `AuInstance`, the `LoadFailed` variant in `error.rs`, and the
+`get_state` / `set_state` renames with no `save_state` / `load_state` callers
+left in `tutti-plugin-server`'s AU loader. **Static verification only — a macOS
+build is still required before trusting them.**
+
 ## 9. Forced, discovered during Wave 5
 
 Recorded so a later pass does not "fix" them:

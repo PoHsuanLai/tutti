@@ -287,7 +287,7 @@ impl Unit {
     /// window there while the audio passes straight through makes every other
     /// branch of the graph get delayed to compensate for a delay that does not
     /// exist — 46 ms at the default 2048 window. It is reachable through ordinary
-    /// use, not only at construction: `VoiceSlot::set_stretch` keeps the resident
+    /// use, not only at construction: `PlaybackSlot::set_stretch` keeps the resident
     /// filter and writes its atomics, so returning a stretched voice to 1.0 leaves
     /// a filter sitting at unity.
     ///

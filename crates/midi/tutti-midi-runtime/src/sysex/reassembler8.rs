@@ -16,6 +16,7 @@
 //! flight on the same group at once, and only the Stream ID tells them apart.
 //! Buffering per group alone would concatenate them into one corrupt payload.
 
+use tutti_midi_types::MidiGroup;
 use tutti_midi_types::ump::{
     sysex8_message, MidiEvent, UmpMessageType, SYSEX8_STATUS_CONTINUE, SYSEX8_STATUS_END,
     SYSEX8_STATUS_SINGLE, SYSEX8_STATUS_START,
@@ -43,7 +44,7 @@ pub enum Sysex8Abort {
 /// One in-flight SysEx8 message, identified by its group *and* stream id.
 #[derive(Clone, Debug)]
 struct InFlight {
-    group: u8,
+    group: MidiGroup,
     stream_id: u8,
     packets: Vec<MidiEvent>,
 }
@@ -185,13 +186,13 @@ impl Sysex8PacketReassembler {
         self.in_flight.len()
     }
 
-    fn find(&mut self, group: u8, stream_id: u8) -> Option<&mut InFlight> {
+    fn find(&mut self, group: MidiGroup, stream_id: u8) -> Option<&mut InFlight> {
         self.in_flight
             .iter_mut()
             .find(|e| e.group == group && e.stream_id == stream_id)
     }
 
-    fn take(&mut self, group: u8, stream_id: u8) -> Option<Vec<MidiEvent>> {
+    fn take(&mut self, group: MidiGroup, stream_id: u8) -> Option<Vec<MidiEvent>> {
         let idx = self
             .in_flight
             .iter()

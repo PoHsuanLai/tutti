@@ -54,7 +54,7 @@ pub struct PlaybackParams {
     /// `1 / stretch`. 1.0 when the voice does not stretch.
     ///
     /// Held here rather than in `DiskSource` because the stretch filter and the
-    /// ring reader never meet: the filter lives in the `VoiceSlot`, the reader
+    /// ring reader never meet: the filter lives in the `PlaybackSlot`, the reader
     /// behind the butler's `SharedReader`. `RtState` is the cell both already
     /// share, and it is where the other two rate factors compose.
     ///

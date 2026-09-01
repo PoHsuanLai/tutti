@@ -361,7 +361,7 @@ fn track_name(track: &Track) -> Option<String> {
 
 /// How to encode an SMF: division, plus the optional meta events for track 0.
 #[derive(Debug, Clone)]
-pub struct MidiWriteOptions {
+pub struct MidiWriteConfig {
     /// The header's division — SMF ticks per quarter note. Defaults to 480. Sets
     /// the write resolution: an event's tick is `beat * ticks_per_beat`
     /// truncated, so a coarse value quantises onsets.
@@ -377,7 +377,7 @@ pub struct MidiWriteOptions {
     pub time_signature: Option<(u8, u8)>,
 }
 
-impl Default for MidiWriteOptions {
+impl Default for MidiWriteConfig {
     fn default() -> Self {
         Self {
             ticks_per_beat: 480,
@@ -399,9 +399,9 @@ impl Default for MidiWriteOptions {
 pub fn write_midi_file(
     path: impl AsRef<Path>,
     tracks: &[Vec<SmfTimedEvent>],
-    options: &MidiWriteOptions,
+    config: &MidiWriteConfig,
 ) -> Result<()> {
-    let data = encode_midi_file(tracks, options)?;
+    let data = encode_midi_file(tracks, config)?;
     std::fs::write(path, data)?;
     Ok(())
 }
@@ -415,7 +415,7 @@ pub fn write_midi_file(
 /// track chunk. [`Error::MidiFileParse`] if `midly` refuses to serialise.
 pub fn encode_midi_file(
     tracks: &[Vec<SmfTimedEvent>],
-    options: &MidiWriteOptions,
+    config: &MidiWriteConfig,
 ) -> Result<Vec<u8>> {
     if tracks.is_empty() {
         return Err(Error::InvalidConfig("No tracks provided".into()));
@@ -426,11 +426,11 @@ pub fn encode_midi_file(
     } else {
         Format::Parallel
     };
-    let header = Header::new(format, Timing::Metrical(options.ticks_per_beat.into()));
+    let header = Header::new(format, Timing::Metrical(config.ticks_per_beat.into()));
     let mut smf = Smf::new(header);
 
     for (i, track_events) in tracks.iter().enumerate() {
-        smf.tracks.push(build_track(track_events, options, i == 0));
+        smf.tracks.push(build_track(track_events, config, i == 0));
     }
 
     let mut buf = Vec::new();
@@ -441,14 +441,14 @@ pub fn encode_midi_file(
 
 fn build_track<'a>(
     events: &[SmfTimedEvent],
-    options: &MidiWriteOptions,
+    config: &MidiWriteConfig,
     include_meta: bool,
 ) -> Vec<TrackEvent<'a>> {
-    let tpb = f64::from(options.ticks_per_beat);
+    let tpb = f64::from(config.ticks_per_beat);
     let mut track: Vec<TrackEvent<'a>> = Vec::new();
 
     if include_meta {
-        if let Some(bpm) = options.tempo_bpm {
+        if let Some(bpm) = config.tempo_bpm {
             // Guarded like its MIDI-2 twin `bpm_to_ten_ns_per_quarter`: a
             // non-positive BPM divided to `inf`, and the saturating cast wrote
             // `u32::MAX` microseconds per quarter — about 71 minutes a beat —
@@ -460,7 +460,7 @@ fn build_track<'a>(
             };
             track.push(meta_event(MetaMessage::Tempo(us.into())));
         }
-        if let Some((num, denom_pow)) = options.time_signature {
+        if let Some((num, denom_pow)) = config.time_signature {
             track.push(meta_event(MetaMessage::TimeSignature(
                 num, denom_pow, 24, 8,
             )));
@@ -541,7 +541,7 @@ mod tests {
 
         // And the write direction: a non-positive BPM writes the wire's own
         // "no tempo" zero rather than a saturated u32.
-        let opts = MidiWriteOptions {
+        let config = MidiWriteConfig {
             ticks_per_beat: 480,
             tempo_bpm: Some(Bpm(0.0)),
             time_signature: None,
@@ -554,7 +554,7 @@ mod tests {
                 vel: 100.into(),
             },
         }]];
-        let bytes = encode_midi_file(&track, &opts).expect("encodes");
+        let bytes = encode_midi_file(&track, &config).expect("encodes");
         let reparsed = ParsedMidiFile::parse(&bytes).expect("round-trips");
         assert!(reparsed.tempo_bpm.get().is_finite());
     }
@@ -606,13 +606,13 @@ mod tests {
             },
         ];
 
-        let options = MidiWriteOptions {
+        let config = MidiWriteConfig {
             ticks_per_beat: 480,
             tempo_bpm: Some(Bpm(120.0)),
             time_signature: Some((4, 2)),
         };
 
-        let data = encode_midi_file(&[events], &options).unwrap();
+        let data = encode_midi_file(&[events], &config).unwrap();
         let parsed = ParsedMidiFile::parse(&data).unwrap();
 
         assert_eq!(parsed.ticks_per_beat, 480);
@@ -624,7 +624,7 @@ mod tests {
 
     #[test]
     fn test_write_empty_tracks_error() {
-        let result = encode_midi_file(&[], &MidiWriteOptions::default());
+        let result = encode_midi_file(&[], &MidiWriteConfig::default());
         assert!(result.is_err());
     }
 
@@ -651,7 +651,7 @@ mod tests {
         ];
         let data = encode_midi_file(
             &[events],
-            &MidiWriteOptions {
+            &MidiWriteConfig {
                 ticks_per_beat: 480,
                 ..Default::default()
             },
@@ -698,7 +698,7 @@ mod tests {
         ];
         let data = encode_midi_file(
             &[events],
-            &MidiWriteOptions {
+            &MidiWriteConfig {
                 ticks_per_beat: 480,
                 ..Default::default()
             },
@@ -754,7 +754,7 @@ mod tests {
         ];
         let data = encode_midi_file(
             &[events],
-            &MidiWriteOptions {
+            &MidiWriteConfig {
                 ticks_per_beat: 480,
                 ..Default::default()
             },

@@ -13,7 +13,7 @@ use crate::{nonempty, MAX_SAMPLER_CHANNELS};
 
 use super::command::{VoiceCommand, VoicePoolHandle, COMMAND_CAPACITY, MAX_RESIDENT_VOICES};
 use super::memory_source::LoopSetting;
-use super::slot::{stretch_wanted, VoiceSlot};
+use super::slot::{stretch_wanted, PlaybackSlot};
 use super::types::{SlotId, Voice, VoiceSource};
 // Only `playback_of` names it, and that is a `#[cfg(test)]` helper.
 #[cfg(test)]
@@ -63,7 +63,7 @@ pub struct VoicePoolNode(pub tutti_core::NodeId);
 /// evasions, everything the drain needs to shed goes down one channel and is
 /// freed by [`VoicePoolHandle::collect_retired`] on the control thread.
 ///
-/// `pub(crate)`, not `pub`: [`VoiceSlot`] is crate-private, and the retirement
+/// `pub(crate)`, not `pub`: [`PlaybackSlot`] is crate-private, and the retirement
 /// channel is an internal thread-handoff detail. Callers only ever see the count
 /// from [`VoicePoolHandle::collect_retired`], never the values.
 ///
@@ -75,7 +75,7 @@ pub struct VoicePoolNode(pub tutti_core::NodeId);
 /// correct that nothing reads them, and wrong that they are dead — deleting
 /// either field would move the deallocation back into the audio callback.
 ///
-/// The variants are also very different sizes (a `VoiceSlot` dwarfs a bare
+/// The variants are also very different sizes (a `PlaybackSlot` dwarfs a bare
 /// filter), which normally argues for boxing the large one. Not here: this value
 /// exists to cross a thread boundary and be dropped, so a `Box` would add an
 /// allocation on one side and a free on the other — the exact cost being avoided.
@@ -88,7 +88,7 @@ pub struct VoicePoolNode(pub tutti_core::NodeId);
 )]
 pub(crate) enum Retired {
     /// A slot removed by `VoiceCommand::Remove`, filter and all.
-    Slot(VoiceSlot),
+    Slot(PlaybackSlot),
     /// A stretch filter the sender built for an `UpdateStretch` that turned out
     /// not to need it, because the slot already had one.
     ///
@@ -123,7 +123,7 @@ pub struct VoicePool {
     /// The resident slots, one per voice, summed in order. Reserved to
     /// `MAX_RESIDENT_VOICES` at construction so the audio-thread `AddVoice`
     /// drain does not reallocate.
-    pub(crate) voices: Vec<VoiceSlot>,
+    pub(crate) voices: Vec<PlaybackSlot>,
     /// Commands from the control thread, drained at the top of every block.
     /// Shared with every clone of this unit — see this type's `Clone`.
     pub(crate) rx: Receiver<VoiceCommand>,
@@ -182,7 +182,7 @@ pub struct VoicePool {
     pub(crate) cursor: Option<BeatCursor>,
 }
 
-// Hand-rolled: `voices` holds non-`Debug` `VoiceSlot`s (each wraps a sampler +
+// Hand-rolled: `voices` holds non-`Debug` `PlaybackSlot`s (each wraps a sampler +
 // stretch DSP) and `transport` is an `Arc<dyn Timeline>`. Print the slot
 // count + scalars rather than the slot internals.
 impl std::fmt::Debug for VoicePool {
@@ -406,7 +406,7 @@ impl VoicePool {
         self.voices.clear();
     }
 
-    fn slot_mut(&mut self, id: SlotId) -> Option<&mut VoiceSlot> {
+    fn slot_mut(&mut self, id: SlotId) -> Option<&mut PlaybackSlot> {
         self.voices.iter_mut().find(|s| s.id == id)
     }
 
@@ -532,12 +532,12 @@ impl VoicePool {
         let gain = voice.play.gain;
         let speed = voice.play.speed;
         let direction = voice.play.direction;
-        // `VoiceSlot::with_channels` primes the resident stretch unit from
+        // `PlaybackSlot::with_channels` primes the resident stretch unit from
         // `voice.play` (stretch/pitch) — the one heavy step, done here off the
         // hot path. It is built at THIS READER's width: a slot narrower than the
         // reader would truncate on the stretch path only, which no stereo test
         // can observe.
-        let mut slot = VoiceSlot::with_channels(id, voice, self.sample_rate, self.channels);
+        let mut slot = PlaybackSlot::with_channels(id, voice, self.sample_rate, self.channels);
         slot.stretch = stretch;
         self.voices.push(slot);
 
@@ -713,7 +713,7 @@ impl Clone for VoicePool {
             voices: self
                 .voices
                 .iter()
-                .map(|s| VoiceSlot {
+                .map(|s| PlaybackSlot {
                     id: s.id,
                     voice: s.voice.clone(),
                     stretch: s.stretch.clone(),
@@ -810,7 +810,7 @@ impl AudioUnit for VoicePool {
         output[..n].fill(0.0);
 
         // Each slot reads its ONE voice via the shared
-        // `VoiceSlot::tick_frame_into` (the same per-variant `VoiceSource` match
+        // `PlaybackSlot::tick_frame_into` (the same per-variant `VoiceSource` match
         // a standalone `VoiceNode` uses — factored, not duplicated, and no
         // per-sample dyn), summed channel-wise into the caller's frame.
         let mut frame = [0.0f32; MAX_SAMPLER_CHANNELS];
@@ -837,7 +837,7 @@ impl AudioUnit for VoicePool {
         }
 
         // Each slot accumulates its ONE voice via the shared
-        // `VoiceSlot::process_into` (the same per-variant `VoiceSource` match a
+        // `PlaybackSlot::process_into` (the same per-variant `VoiceSource` match a
         // standalone `VoiceNode` uses).
         for slot in &mut self.voices {
             slot.process_into(size, n, output);
@@ -853,7 +853,7 @@ impl AudioUnit for VoicePool {
     }
 
     fn footprint(&self) -> usize {
-        std::mem::size_of::<Self>() + self.voices.len() * std::mem::size_of::<VoiceSlot>()
+        std::mem::size_of::<Self>() + self.voices.len() * std::mem::size_of::<PlaybackSlot>()
     }
 
     /// Size each resident stretch filter's block scratch.

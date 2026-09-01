@@ -22,7 +22,7 @@
 //!
 //! Reverting `MemorySource::gain` to an unshared clone leaves **every test in
 //! this file passing** — measured, not assumed. A `VoiceNode` renders through
-//! `slot.voice.play.gain` (see `VoiceSlot::tick_frame_into`), a plain `Copy`
+//! `slot.voice.play.gain` (see `PlaybackSlot::tick_frame_into`), a plain `Copy`
 //! field on the `Playback` record, and never consults the source's own cell
 //! here. And `Net::set` with a backend attached *enqueues* to the audio thread
 //! rather than mutating the frontend, so the frontend-clone hazard the

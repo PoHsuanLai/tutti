@@ -3,7 +3,7 @@
 //! Zero inputs, N outputs, and — via [`VoiceNode::with_commands`] — a command
 //! channel for the one control `AudioUnit::set` cannot carry. For resynth,
 //! preview and a single timeline clip, where a whole pool would be ceremony. It
-//! shares `VoiceSlot` with [`VoicePool`](super::pool::VoicePool), so the
+//! shares `PlaybackSlot` with [`VoicePool`](super::pool::VoicePool), so the
 //! per-voice read is the same code in both — a fix in one is a fix in both.
 
 use std::sync::Arc;
@@ -12,7 +12,7 @@ use crate::stretch;
 use crate::{nonempty, MAX_SAMPLER_CHANNELS};
 
 use super::command::{VoiceCommand, VoiceNodeHandle, COMMAND_CAPACITY};
-use super::slot::{stretch_wanted, VoiceSlot};
+use super::slot::{stretch_wanted, PlaybackSlot};
 use super::types::{SlotId, Voice};
 use crossbeam_channel::{bounded, Receiver};
 use tutti_core::transport::BeatCursor;
@@ -36,7 +36,7 @@ use tutti_core::{
 pub struct VoiceNode {
     /// The single voice plus its resident stretch filter and the per-sample
     /// read, shared with the pool's slots.
-    pub(crate) slot: VoiceSlot,
+    pub(crate) slot: PlaybackSlot,
     /// Output width — this node's `outputs()`, fixed at construction. Declared
     /// rather than inferred from the voice, so a `Net` edge wired against
     /// `outputs()` cannot be re-arityed under a live graph.
@@ -75,7 +75,7 @@ impl VoiceNode {
     ///
     /// Skipping that step is how a standalone stretched voice reads DRY forever
     /// — no stretch, no pitch shift, and no error — because
-    /// `VoiceSlot::with_channels` always leaves the field `None` and nothing
+    /// `PlaybackSlot::with_channels` always leaves the field `None` and nothing
     /// else on this path fills it in.
     pub fn with_channels(voice: Voice, channels: impl Into<ChannelLayout>) -> Self {
         let channels = nonempty(channels.into());
@@ -86,7 +86,7 @@ impl VoiceNode {
             unit.set_pitch_cents(voice.play.pitch);
             unit
         });
-        let mut slot = VoiceSlot::with_channels(SlotId(0), voice, sample_rate, channels);
+        let mut slot = PlaybackSlot::with_channels(SlotId(0), voice, sample_rate, channels);
         slot.stretch = stretch;
         let cursor = slot
             .voice
@@ -209,7 +209,7 @@ impl VoiceNode {
     }
 }
 
-// Hand-rolled: wraps a non-`Debug` `VoiceSlot`. Print the wrapped `Voice`
+// Hand-rolled: wraps a non-`Debug` `PlaybackSlot`. Print the wrapped `Voice`
 // (which is `Debug`) and leave the resident stretch DSP out.
 impl std::fmt::Debug for VoiceNode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -228,7 +228,7 @@ impl From<Voice> for VoiceNode {
 impl Clone for VoiceNode {
     fn clone(&self) -> Self {
         Self {
-            slot: VoiceSlot {
+            slot: PlaybackSlot {
                 id: self.slot.id,
                 voice: self.slot.voice.clone(),
                 stretch: self.slot.stretch.clone(),
@@ -280,7 +280,7 @@ impl AudioUnit for VoiceNode {
 
     fn reset(&mut self) {
         // One definition shared with the per-block seek check, so a seek can
-        // never flush less than a reset does — see `VoiceSlot::flush_playhead_state`.
+        // never flush less than a reset does — see `PlaybackSlot::flush_playhead_state`.
         self.slot.flush_playhead_state();
     }
 
@@ -430,7 +430,7 @@ impl AudioUnit for VoiceNode {
     /// That distinction is measurable and was measured: reverting
     /// `MemorySource::gain` to an unshared clone leaves every test in
     /// `tests/voice_gain_survives_commit.rs` **passing**, because a `VoiceNode`
-    /// renders through `slot.voice.play.gain` (see `VoiceSlot::tick_frame_into`)
+    /// renders through `slot.voice.play.gain` (see `PlaybackSlot::tick_frame_into`)
     /// and never consults the source's own cell on this path.
     ///
     /// # Which is why both are written

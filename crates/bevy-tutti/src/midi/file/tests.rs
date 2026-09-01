@@ -8,7 +8,7 @@
 
 use super::*;
 use bevy_ecs::system::RunSystemOnce;
-use tutti_midi_file::smf::{encode_midi_file, MidiWriteOptions, SmfMessage, SmfTimedEvent};
+use tutti_midi_file::smf::{encode_midi_file, MidiWriteConfig, SmfMessage, SmfTimedEvent};
 use tutti_types::Beat;
 
 /// An app with the plugin and the pools it needs.
@@ -48,7 +48,7 @@ fn smf_bytes() -> Vec<u8> {
                 },
             },
         ]],
-        &MidiWriteOptions::default(),
+        &MidiWriteConfig::default(),
     )
     .expect("encodes")
 }

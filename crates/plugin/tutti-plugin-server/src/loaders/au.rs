@@ -328,6 +328,29 @@ impl PropertyWatch {
     }
 }
 
+// SAFETY: every field is already `Send` on its own terms, and this impl exists
+// because the raw AudioToolbox pointers buried in them cannot say so to the
+// compiler. Field by field:
+//
+// - `inner` (`tutti_au_host::AuInstance`) bottoms out in `AuHandle`, whose own
+//   `unsafe impl Send` records the AudioToolbox rule this whole file rests on:
+//   an `AudioComponentInstance` is a plain pointer usable from any thread *as
+//   long as access is externally synchronised*. `&mut self` on every method
+//   that touches the unit is that synchronisation — there is no `Sync` here,
+//   which is what keeps two threads from calling into one AU at once.
+// - `watch` holds an `AuParameterListener` (`Send + Sync`, argued at its own
+//   impl: an opaque listener handle, a GCD queue and a heap block, all
+//   documented thread-agnostic) plus an `Arc<PropertyFlags>` of atomics. The
+//   GCD worker that fires the callback touches only those atomics, never
+//   `inner`, so moving the instance between threads does not race the listener.
+// - `editor` is an `AuEditor`, `Send` but not `Sync`, which is the tighter of
+//   the two bounds and therefore the one that decides this impl's shape.
+// - `param_ranges` and `meta` are plain data.
+//
+// The field-order invariant on `watch` is what makes the listener argument hold
+// through teardown: the registration is disposed before the unit it points at.
+// Sending the instance elsewhere moves all of that together, so no thread is
+// left holding half of the pair.
 unsafe impl Send for AuInstance {}
 
 impl AuInstance {

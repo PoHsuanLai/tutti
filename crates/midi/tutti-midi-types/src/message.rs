@@ -87,8 +87,8 @@ pub enum MidiMessage {
         /// Host-internal voice identity, distinct even between two live notes of
         /// the same number. Minted on decode; not carried on the wire.
         id: NoteId,
-        /// Channel, 0-indexed (0..=15).
-        channel: u8,
+        /// Channel, 0-indexed.
+        channel: MidiChannel,
         /// Note number, 0..=127.
         note: u8,
         /// **16-bit** velocity. A promoted MIDI 1.0 note upscales its 7 bits by
@@ -107,8 +107,8 @@ pub enum MidiMessage {
         frame_offset: u32,
         /// Voice identity of the note being released.
         id: NoteId,
-        /// Channel, 0-indexed (0..=15).
-        channel: u8,
+        /// Channel, 0-indexed.
+        channel: MidiChannel,
         /// Note number, 0..=127.
         note: u8,
         /// **16-bit** release velocity. Zero for a folded MIDI 1.0 note-off.
@@ -122,8 +122,8 @@ pub enum MidiMessage {
         frame_offset: u32,
         /// Voice identity the pressure applies to.
         id: NoteId,
-        /// Channel, 0-indexed (0..=15).
-        channel: u8,
+        /// Channel, 0-indexed.
+        channel: MidiChannel,
         /// Note number the pressure addresses, 0..=127.
         note: u8,
         /// **32-bit** unipolar pressure, full scale `u32::MAX`. A promoted MIDI
@@ -134,8 +134,8 @@ pub enum MidiMessage {
     ControlChange {
         /// Sample offset within the block this event lands on.
         frame_offset: u32,
-        /// Channel, 0-indexed (0..=15).
-        channel: u8,
+        /// Channel, 0-indexed.
+        channel: MidiChannel,
         /// Controller number, 0..=127. See [`crate::cc`] for the named roster.
         index: u8,
         /// **32-bit** unipolar value, full scale `u32::MAX`. This is where the
@@ -148,8 +148,8 @@ pub enum MidiMessage {
     ProgramChange {
         /// Sample offset within the block this event lands on.
         frame_offset: u32,
-        /// Channel, 0-indexed (0..=15).
-        channel: u8,
+        /// Channel, 0-indexed.
+        channel: MidiChannel,
         /// Program number, 0..=127.
         program: u8,
         /// 14-bit bank as `MSB << 7 | LSB`, or `None` when the message's bank
@@ -160,8 +160,8 @@ pub enum MidiMessage {
     ChannelPressure {
         /// Sample offset within the block this event lands on.
         frame_offset: u32,
-        /// Channel, 0-indexed (0..=15).
-        channel: u8,
+        /// Channel, 0-indexed.
+        channel: MidiChannel,
         /// **32-bit** unipolar pressure applying to every note on the channel.
         pressure: u32,
     },
@@ -169,8 +169,8 @@ pub enum MidiMessage {
     PitchBend {
         /// Sample offset within the block this event lands on.
         frame_offset: u32,
-        /// Channel, 0-indexed (0..=15).
-        channel: u8,
+        /// Channel, 0-indexed.
+        channel: MidiChannel,
         /// **32-bit** bend, centre `0x8000_0000` — *not* zero. Treating this as
         /// unipolar puts a centred wheel at full positive bend. The semitone span
         /// it maps to is set out of band by RPN 0; see
@@ -183,8 +183,8 @@ pub enum MidiMessage {
         frame_offset: u32,
         /// Voice identity the bend applies to.
         id: NoteId,
-        /// Channel, 0-indexed (0..=15).
-        channel: u8,
+        /// Channel, 0-indexed.
+        channel: MidiChannel,
         /// Note number the bend addresses, 0..=127.
         note: u8,
         /// **32-bit** bend, centre `0x8000_0000`, scoped to this one note.
@@ -196,8 +196,8 @@ pub enum MidiMessage {
         frame_offset: u32,
         /// Voice identity the controller applies to.
         id: NoteId,
-        /// Channel, 0-indexed (0..=15).
-        channel: u8,
+        /// Channel, 0-indexed.
+        channel: MidiChannel,
         /// Note number the controller addresses, 0..=127.
         note: u8,
         /// Which controller, and in which of the two namespaces.
@@ -216,8 +216,8 @@ pub enum MidiMessage {
     RegisteredController {
         /// Sample offset within the block this event lands on.
         frame_offset: u32,
-        /// Channel, 0-indexed (0..=15).
-        channel: u8,
+        /// Channel, 0-indexed.
+        channel: MidiChannel,
         /// Whether `bank`/`index` address the registered or assignable space.
         namespace: ControllerNamespace,
         /// High 7 bits of the 14-bit parameter address.
@@ -243,8 +243,8 @@ pub enum MidiMessage {
     RelativeController {
         /// Sample offset within the block this event lands on.
         frame_offset: u32,
-        /// Channel, 0-indexed (0..=15).
-        channel: u8,
+        /// Channel, 0-indexed.
+        channel: MidiChannel,
         /// Whether `bank`/`index` address the registered or assignable space.
         namespace: ControllerNamespace,
         /// High 7 bits of the 14-bit parameter address.
@@ -264,8 +264,8 @@ pub enum MidiMessage {
         frame_offset: u32,
         /// Voice identity being managed.
         id: NoteId,
-        /// Channel, 0-indexed (0..=15).
-        channel: u8,
+        /// Channel, 0-indexed.
+        channel: MidiChannel,
         /// Note number being managed, 0..=127.
         note: u8,
         /// Detach this note from its channel's controllers, so subsequent
@@ -370,11 +370,11 @@ impl MidiMessage {
         }
     }
 
-    /// Channel (0-15) for any channel-voice message. `None` for [`Other`].
+    /// Channel for any channel-voice message. `None` for [`Other`].
     ///
     /// [`Other`]: Self::Other
     #[inline]
-    pub fn channel(&self) -> Option<u8> {
+    pub fn channel(&self) -> Option<MidiChannel> {
         match self {
             Self::NoteOn { channel, .. }
             | Self::NoteOff { channel, .. }
@@ -461,7 +461,7 @@ impl MidiEvent {
             // Preserve the *original* event verbatim so a re-encode is exact.
             _ => return MidiMessage::Other(*self),
         };
-        let channel = u8::from(cv2.channel());
+        let channel = MidiChannel::new(u8::from(cv2.channel()));
         let note_id = |note: u8| NoteId::from_channel_note(channel, note);
 
         match cv2 {
@@ -645,14 +645,14 @@ impl TryFrom<MidiMessage> for MidiEvent {
                 velocity,
                 attribute,
                 ..
-            } => note_with_attribute(true, MidiChannel::new(channel), note, velocity, attribute),
+            } => note_with_attribute(true, channel, note, velocity, attribute),
             MidiMessage::NoteOff {
                 channel,
                 note,
                 velocity,
                 attribute,
                 ..
-            } => note_with_attribute(false, MidiChannel::new(channel), note, velocity, attribute),
+            } => note_with_attribute(false, channel, note, velocity, attribute),
             MidiMessage::PolyPressure {
                 channel,
                 note,
@@ -660,7 +660,7 @@ impl TryFrom<MidiMessage> for MidiEvent {
                 ..
             } => MidiEvent::poly_pressure(
                 MidiGroup::FIRST,
-                MidiChannel::new(channel),
+                channel,
                 note,
                 pressure,
             ),
@@ -671,7 +671,7 @@ impl TryFrom<MidiMessage> for MidiEvent {
                 ..
             } => MidiEvent::cc(
                 MidiGroup::FIRST,
-                MidiChannel::new(channel),
+                channel,
                 CCNumber::new(index),
                 value,
             ),
@@ -682,15 +682,15 @@ impl TryFrom<MidiMessage> for MidiEvent {
                 ..
             } => MidiEvent::program_change(
                 MidiGroup::FIRST,
-                MidiChannel::new(channel),
+                channel,
                 program,
                 bank,
             ),
             MidiMessage::ChannelPressure {
                 channel, pressure, ..
-            } => MidiEvent::channel_pressure(MidiGroup::FIRST, MidiChannel::new(channel), pressure),
+            } => MidiEvent::channel_pressure(MidiGroup::FIRST, channel, pressure),
             MidiMessage::PitchBend { channel, value, .. } => {
-                MidiEvent::pitch_bend(MidiGroup::FIRST, MidiChannel::new(channel), value)
+                MidiEvent::pitch_bend(MidiGroup::FIRST, channel, value)
             }
             MidiMessage::PerNotePitchBend {
                 channel,
@@ -699,7 +699,7 @@ impl TryFrom<MidiMessage> for MidiEvent {
                 ..
             } => MidiEvent::per_note_pitch_bend(
                 MidiGroup::FIRST,
-                MidiChannel::new(channel),
+                channel,
                 note,
                 value,
             ),
@@ -716,7 +716,7 @@ impl TryFrom<MidiMessage> for MidiEvent {
                 };
                 MidiEvent::per_note_controller(
                     MidiGroup::FIRST,
-                    MidiChannel::new(channel),
+                    channel,
                     note,
                     index,
                     value,
@@ -739,7 +739,7 @@ impl TryFrom<MidiMessage> for MidiEvent {
                 };
                 build(
                     MidiGroup::FIRST,
-                    MidiChannel::new(channel),
+                    channel,
                     bank,
                     index,
                     data,
@@ -759,7 +759,7 @@ impl TryFrom<MidiMessage> for MidiEvent {
                 };
                 build(
                     MidiGroup::FIRST,
-                    MidiChannel::new(channel),
+                    channel,
                     bank,
                     index,
                     delta,
@@ -773,7 +773,7 @@ impl TryFrom<MidiMessage> for MidiEvent {
                 ..
             } => MidiEvent::per_note_management(
                 MidiGroup::FIRST,
-                MidiChannel::new(channel),
+                channel,
                 note,
                 detach,
                 reset,

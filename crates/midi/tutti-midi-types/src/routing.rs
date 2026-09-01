@@ -15,7 +15,7 @@ use crate::unit_id::MidiUnitId;
 use std::sync::Arc;
 
 use std::vec::Vec;
-use tutti_types::RtPublish;
+use tutti_types::{MidiChannel, RtPublish};
 
 /// Maximum number of targets per routing rule.
 /// Supports layering up to 8 synths on a single channel.
@@ -28,11 +28,11 @@ pub const MAX_TARGETS_PER_ROUTE: usize = 8;
 /// picking a winner, so layering is additive.
 #[derive(Clone, Debug)]
 pub struct MidiRoute {
-    /// Channel filter: `None` = any channel, `Some(n)` = channel n only (0-15).
+    /// Channel filter: `None` = any channel, `Some(n)` = channel n only.
     ///
     /// Only constrains messages that *carry* a channel — see
     /// [`matches`](Self::matches).
-    pub channel: Option<u8>,
+    pub channel: Option<MidiChannel>,
     /// Units that receive matching events. Silently capped at
     /// [`MAX_TARGETS_PER_ROUTE`] by the builders.
     pub targets: Vec<MidiUnitId>,
@@ -52,8 +52,8 @@ impl MidiRoute {
         }
     }
 
-    /// Builds an enabled route filtered to one channel, 0-indexed.
-    pub fn for_channel(channel: u8) -> Self {
+    /// Builds an enabled route filtered to one channel.
+    pub fn for_channel(channel: MidiChannel) -> Self {
         Self {
             channel: Some(channel),
             targets: Vec::new(),
@@ -183,7 +183,7 @@ impl MidiRoutingSnapshot {
                 continue;
             }
 
-            let channel_idx = route.channel.map_or(16, |c| c as usize);
+            let channel_idx = route.channel.map_or(16, |c| c.get() as usize);
             for &target in &route.targets {
                 if !self.channel_lookup[channel_idx].contains(&target) {
                     self.channel_lookup[channel_idx].push(target);
@@ -227,7 +227,7 @@ impl MidiRoutingSnapshot {
         // per-channel target rather than skipping the buckets entirely.
         match event.channel() {
             Some(channel) => {
-                if let Some(&target) = self.channel_lookup[channel as usize].first() {
+                if let Some(&target) = self.channel_lookup[channel.get() as usize].first() {
                     return Some(target);
                 }
             }
@@ -354,7 +354,7 @@ impl Iterator for RouteIterator<'_> {
                     // a channel-scoped consumer.
                     match self.event.channel() {
                         Some(channel) => {
-                            let targets = &self.snapshot.channel_lookup[channel as usize];
+                            let targets = &self.snapshot.channel_lookup[channel.get() as usize];
                             while self.target_idx < targets.len() {
                                 let target = targets[self.target_idx];
                                 self.target_idx += 1;

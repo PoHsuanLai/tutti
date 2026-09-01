@@ -67,13 +67,13 @@ withheld), `tutti-io/src/lib.rs:61-65` (frames vs samples), `tutti-midi-types/sr
 
 | # | Finding | Site | Status |
 |---|---|---|---|
-| P-1 | `tutti-au-host` exposes 20 `pub mod` against siblings' 1–4 — and already re-exports those types properly, so the `pub mod` lines are pure leak. Flagged independently by three auditors across three vendors. | `tutti-au-host/src/lib.rs:86-149` vs `:151-258` | open |
-| P-2 | The four format hosts do not use the shared vocabulary that already exists one layer up (`LoadStage`, the capability traits, `ParameterInfo`), and the shared trait already picked the names. Diverging: `save_state`/`load_state` vs `state`/`set_state`; `parameter_list` vs `get_parameter_list` vs none; `parameter` vs `get_parameter` returning `bool`/`()`/`&mut Self`/`Result`; `EditorError` vs `GuiError` vs `NotSupported`; `StateRestoreError` vs `StateError`; `NotActive` vs `NotActivated`. | `tutti-plugin-types/src/format_host.rs:271-363`, `load_stage.rs:14-38`, `parameters.rs:537`; the four format crates | open |
-| P-3 | `tutti-vst2-host` defines a local `ParameterInfo` beside the shared one; `tutti-clap-host` already projects only the shared type. | `tutti-vst2-host/src/types.rs:74-89` vs `tutti-plugin-types/src/parameters.rs:190` | open |
-| P-4 | AU alone has no `LoadFailed`/`LoadStage`; the other three wrap ABI failures identically. Keep `OsStatus` for live calls. | `tutti-au-host/src/error.rs:10-178` | open |
-| P-5 | AU's editor is a separate type with `has_editor` as an associated function; the other three put `has_editor`/`open_editor`/`close_editor` on the instance. VST2 has `has_editor` only as a metadata field, not a method. | `tutti-au-host/src/editor/mod.rs:30-63,81`; `tutti-vst2-host/src/types.rs:41` | open |
-| P-6 | Three different local `ProcessContext` types. The **name** collision is drift — rename the locals. **Merging the structs would be a false alignment**: VST3's chord/scale/expression fields and VST2's `sample_rate` are ABI-forced. | `tutti-plugin-types/src/process.rs:44`; `tutti-vst2-host/src/types.rs:99`; `tutti-clap-host/src/instance/audio.rs:83` | open |
-| P-7 | `Instance` names two different stages: `Vst2Instance` is the whole life, `Vst3Instance` is the active stage while CLAP's equivalent is `ClapActive`. **Decision made — see V-8: `*Active` wins.** | the format crates | open |
+| P-1 | **DONE (5a3c3b28).** 20 `pub mod` → 7. Every item was already root-re-exported, so the surface is unchanged. Three stay public because they export free `unsafe fn`s over raw AudioUnit pointers with no receiver. `tutti-au-host` exposes 20 `pub mod` against siblings' 1–4 — and already re-exports those types properly, so the `pub mod` lines are pure leak. Flagged independently by three auditors across three vendors. | `tutti-au-host/src/lib.rs:86-149` vs `:151-258` | done |
+| P-2 | **DONE (5a3c3b28).** `get_state`/`set_state` and `get_parameter`/`get_parameter_list` across all four; error variants unified. The four format hosts do not use the shared vocabulary that already exists one layer up (`LoadStage`, the capability traits, `ParameterInfo`), and the shared trait already picked the names. Diverging: `save_state`/`load_state` vs `state`/`set_state`; `parameter_list` vs `get_parameter_list` vs none; `parameter` vs `get_parameter` returning `bool`/`()`/`&mut Self`/`Result`; `EditorError` vs `GuiError` vs `NotSupported`; `StateRestoreError` vs `StateError`; `NotActive` vs `NotActivated`. | `tutti-plugin-types/src/format_host.rs:271-363`, `load_stage.rs:14-38`, `parameters.rs:537`; the four format crates | done |
+| P-3 | **DONE (5a3c3b28).** Local type deleted; its one extra field (`current`, the live value) had a single internal use and its own accessor, so nothing was lost. `tutti-vst2-host` defines a local `ParameterInfo` beside the shared one; `tutti-clap-host` already projects only the shared type. | `tutti-vst2-host/src/types.rs:74-89` vs `tutti-plugin-types/src/parameters.rs:190` | done |
+| P-4 | **DONE (5a3c3b28).** `LoadFailed { component, stage, reason }` — `component` not `path`, since an AU is an OS-registered component. `OsStatus` retained for live calls. AU alone has no `LoadFailed`/`LoadStage`; the other three wrap ABI failures identically. Keep `OsStatus` for live calls. | `tutti-au-host/src/error.rs:10-178` | done |
+| P-5 | **DONE (5a3c3b28).** All four now expose `has_editor`/`open_editor`/`close_editor` on the instance. AU's editor is a separate type with `has_editor` as an associated function; the other three put `has_editor`/`open_editor`/`close_editor` on the instance. VST2 has `has_editor` only as a metadata field, not a method. | `tutti-au-host/src/editor/mod.rs:30-63,81`; `tutti-vst2-host/src/types.rs:41` | done |
+| P-6 | **DONE (5a3c3b28).** Renamed to `Vst2ProcessContext`/`ClapProcessContext`; structs untouched, as merging them would be a false alignment. The collision was already being worked around by an import alias. Three different local `ProcessContext` types. The **name** collision is drift — rename the locals. **Merging the structs would be a false alignment**: VST3's chord/scale/expression fields and VST2's `sample_rate` are ABI-forced. | `tutti-plugin-types/src/process.rs:44`; `tutti-vst2-host/src/types.rs:99`; `tutti-clap-host/src/instance/audio.rs:83` | done |
+| P-7 | **DONE (5a3c3b28).** `Vst3Active`/`ClapActive`/`AuActive`; `Vst2Instance` kept, since VST2's fused lifecycle means it genuinely names the whole life. `Instance` names two different stages: `Vst2Instance` is the whole life, `Vst3Instance` is the active stage while CLAP's equivalent is `ClapActive`. **Decision made — see V-8: `*Active` wins.** | the format crates | done |
 | P-8 | `tutti-soundfont` offers two ways to start a note — the shared MIDI inbox and public MIDI-1 scalars — where `tutti-polysynth` offers one. Hide the rustysynth-shaped scalars. | `tutti-soundfont/src/lib.rs:152,187-195` | open |
 | P-9 | `VoiceSlot` names two different jobs: an allocator slot carrying identity and state, and a playback slot. Opportunistic rename of the sampler's (`pub(crate)`, no API impact). | `tutti-polysynth/src/voice.rs:136-149`; `tutti-sampler/src/voice/slot.rs:30` | open |
 
@@ -155,3 +155,19 @@ Real constraints, not drift. Each is a documented decision.
 
 Every change lands with both workspaces green, and app-workspace fallout is fixed in the
 same commit.
+
+## 9. Forced, discovered during Wave 5
+
+Recorded so a later pass does not "fix" them:
+
+- **AU has no host-synthesised editor or state error.** Its editor and state calls
+  return AudioToolbox status directly, so there is no failure for the host to name;
+  empty variants would be alignment theatre.
+- **VST2 has no `NotActive`** — the lifecycle is fused, so that state cannot exist.
+- **VST3 keeps index-addressed `parameter_info`** beside the new shared-type list: it
+  genuinely enumerates by index and addresses by opaque `ParamID`.
+- **`tutti-plugin`'s `save_state`/`load_state` are the host-side IPC seam**, not the
+  format-host layer. Renaming them would merge two deliberately separate layers.
+- **The convolvers are not rate-dependent.** Their `sample_rate` is written and never
+  read; the real coupling is that an impulse response carries no rate and is never
+  resampled.

@@ -6,21 +6,20 @@
 //!
 //! # Why it is here and not in `src/`
 //!
-//! `src/output.rs` already carries three `assert_no_alloc` gates, and until
-//! this file existed **all three were inert**: `assert_no_alloc` observes
-//! nothing unless `#[global_allocator] = AllocDisabler` is installed, and that
-//! can only be declared at the root of a *binary*. The crate's unit-test
-//! binary declares none, so those gates passed whether or not the callback
+//! `assert_no_alloc` observes nothing unless `#[global_allocator] =
+//! AllocDisabler` is installed, and that can only be declared at the root of a
+//! *binary*. The crate's unit-test binary declares none, so an
+//! `assert_no_alloc` gate written in `src/` passes whether or not the callback
 //! allocated — the exact failure
 //! `tutti-midi-hardware/tests/rt_no_alloc_sysex.rs` documents having been
-//! caught by mutation-testing. A test that cannot fail is worse than no test,
-//! and the doc comments pointing at a file that did not exist made it worse
-//! still: the guarantee read as gated and was not.
+//! caught by mutation-testing.
 //!
-//! The `src/` gates are left in place — they exercise block-size sweeps and
-//! the `MAX_FRAMES` ceiling, and they become live the moment that binary gains
-//! an allocator. What could not stay in `src/` is the claim that they gate
-//! anything today, which is what this file makes true.
+//! `src/output.rs` did carry three such gates plus a fixture assertion, and
+//! all four were inert for that reason. They have since been deleted, so this
+//! file is now the *only* allocation gate on `process_audio` — a test that
+//! cannot fail is worse than no test, and keeping an inert copy beside a live
+//! one invites reading a green `src/` run as coverage. **Add new allocation
+//! gates here, never in `src/`.**
 //!
 //! # The fixture has to render
 //!

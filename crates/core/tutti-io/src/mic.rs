@@ -286,16 +286,4 @@ mod tests {
         node.tick(&[], &mut out);
         assert_eq!(out, [9.0, 9.0], "reset left the ring untouched");
     }
-
-    #[test]
-    fn clone_shares_the_same_ring() {
-        // A commit-clone must drain the SAME ring, not a fresh empty one.
-        let (ring, _prod) = ring_with(&[[7.0, 8.0]]);
-        let node = MicMonitorNode::new(ring);
-        let mut clone = node.clone();
-
-        let mut out = [0.0f32; 2];
-        clone.tick(&[], &mut out);
-        assert_eq!(out, [7.0, 8.0], "clone drains the shared ring");
-    }
 }

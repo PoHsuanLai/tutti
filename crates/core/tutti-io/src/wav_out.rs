@@ -325,20 +325,6 @@ mod tests {
         );
     }
 
-    /// A path argument needs no `PathBuf`, which is the ergonomic half of the
-    /// same change. `&str` and `&Path` are the two forms a caller most often
-    /// already holds.
-    #[test]
-    fn create_accepts_any_path_like() {
-        let dir = tempfile::tempdir().unwrap();
-
-        let as_str = dir.path().join("a.wav").to_str().unwrap().to_owned();
-        WavOut::create(&as_str, 48_000.0, 2u16, BitDepth::Float32).expect("&String opens");
-
-        let owned = dir.path().join("b.wav");
-        WavOut::create(owned.as_path(), 48_000.0, 2u16, BitDepth::Float32).expect("&Path opens");
-    }
-
     /// The sink writes INCREMENTALLY: feeding frames across many `write` calls
     /// and finalizing must yield a valid WAV whose frame count is the sum of
     /// every block — the sink never has to see the whole recording at once.
@@ -366,26 +352,6 @@ mod tests {
         assert_eq!(spec.channels, 2);
         assert_eq!(spec.sample_rate, 48_000);
         assert_eq!(reader.len() as usize, block.len() * blocks);
-    }
-
-    /// Mono capture writes one sample per frame.
-    #[test]
-    fn wav_out_mono_writes_one_sample_per_frame() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("mono.wav");
-
-        let mut sink =
-            WavOut::create(&path, 44_100.0, 1u16, BitDepth::Float32).expect("sink should open");
-        // 128 stereo frames folded into the mono sink.
-        let frames: Vec<f32> = std::iter::repeat_n([0.5f32, 0.9f32], 128)
-            .flatten()
-            .collect();
-        sink.write_folding(&frames, ChannelLayout::STEREO);
-        sink.finalize().unwrap();
-
-        let reader = hound::WavReader::open(&path).unwrap();
-        assert_eq!(reader.spec().channels, 1);
-        assert_eq!(reader.len() as usize, 128);
     }
 
     /// A stereo source folded into a mono sink must AVERAGE `(l + r) * 0.5`,

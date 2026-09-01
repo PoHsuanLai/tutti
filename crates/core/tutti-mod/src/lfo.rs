@@ -194,23 +194,28 @@ mod tests {
         lfo.value(RandomState::default(), Phase(phase)).1
     }
 
+    /// The deterministic shapes reach `Modulator::value` unaltered.
+    ///
+    /// The waveform maths itself is `shape.rs`'s
+    /// (`LfoShape::evaluate_periodic`, asserted there over all six shapes).
+    /// What this pins is the delegation: every non-random shape falls through
+    /// the same `_ =>` arm, so one table over three of them proves the arm
+    /// forwards the phase and does not, say, swap in the random stepper.
     #[test]
-    fn sine_at_quarter_phase() {
-        let lfo = Lfo::new(LfoShape::Sine);
-        assert!((sample(&lfo, 0.25) - 1.0).abs() < 0.01);
-    }
-
-    #[test]
-    fn square_bipolar() {
-        let lfo = Lfo::new(LfoShape::Square);
-        assert_eq!(sample(&lfo, 0.1), 1.0);
-        assert_eq!(sample(&lfo, 0.9), -1.0);
-    }
-
-    #[test]
-    fn sawtooth_midpoint() {
-        let lfo = Lfo::new(LfoShape::Sawtooth);
-        assert!((sample(&lfo, 0.5) - 0.0).abs() < 0.01);
+    fn deterministic_shapes_delegate_to_the_waveform() {
+        for (shape, phase, expected) in [
+            (LfoShape::Sine, 0.25, 1.0),
+            (LfoShape::Square, 0.1, 1.0),
+            (LfoShape::Square, 0.9, -1.0),
+            (LfoShape::Sawtooth, 0.5, 0.0),
+        ] {
+            let lfo = Lfo::new(shape);
+            let got = sample(&lfo, phase);
+            assert!(
+                (got - expected).abs() < 0.01,
+                "{shape:?} at phase {phase}: expected {expected}, got {got}"
+            );
+        }
     }
 
     #[test]

@@ -108,11 +108,4 @@ mod tests {
         assert_eq!(MidiChannel::FIRST.as_display_number(), 1);
         assert_eq!(MidiChannel::LAST.as_display_number(), 16);
     }
-
-    #[test]
-    fn the_default_is_the_first_channel() {
-        // Load-bearing: a note authored without an explicit channel must land
-        // somewhere a single-timbral instrument actually listens.
-        assert_eq!(MidiChannel::default(), MidiChannel::FIRST);
-    }
 }

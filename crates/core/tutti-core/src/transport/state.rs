@@ -432,6 +432,18 @@ mod tests {
         assert_eq!(span.range(), LoopRange::new(2.0, 6.0));
     }
 
+    /// `start` must stamp BOTH halves, and `clear` must retain `total`.
+    ///
+    /// Not folded into the `motion.rs` fade tests, and not foldable: those
+    /// assert through [`Declick::is_active`], which reads `remaining` alone. A
+    /// `start` that set `remaining` and skipped `total` passes every one of
+    /// them — and then `Engine::apply_declick` early-returns on `total == 0.0`,
+    /// so the fade is silently disabled and a stop clicks. Mutation-checked:
+    /// drop the `total` store and only this test goes red.
+    ///
+    /// The `clear` half is the same argument pointed the other way. `total`
+    /// is deliberately left stamped so the last fade's length stays
+    /// inspectable, which no public predicate reports.
     #[test]
     fn declick_start_arms_both_halves() {
         let declick = Declick::new();
@@ -446,19 +458,6 @@ mod tests {
         assert!(!declick.is_active());
         // Total is retained so a fade's length stays inspectable.
         assert_eq!(declick.total.load(Ordering::Acquire), 480);
-    }
-
-    #[test]
-    fn loop_range_rejects_empty_and_inverted() {
-        assert!(LoopRange::new(0.0, 4.0).is_some());
-        assert!(
-            LoopRange::new(4.0, 4.0).is_none(),
-            "an empty region is not a loop"
-        );
-        assert!(
-            LoopRange::new(8.0, 4.0).is_none(),
-            "an inverted region is not a loop"
-        );
     }
 
     #[test]

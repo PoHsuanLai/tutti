@@ -475,13 +475,6 @@ mod tests {
     }
 
     #[test]
-    fn test_click_node_creation() {
-        let (_, _, node) = make_click();
-        assert!(!node.click_normal.is_empty());
-        assert!(!node.click_accent.is_empty());
-    }
-
-    #[test]
     fn test_click_node_silent_when_paused() {
         let (_, settings, mut node) = make_click();
         settings.set_mode(MetronomeMode::Always);

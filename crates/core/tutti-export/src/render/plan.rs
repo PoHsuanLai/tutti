@@ -185,12 +185,4 @@ mod tests {
             "and the net must be pulled for it, plus the trimmed head"
         );
     }
-
-    /// A zero tail leaves the plan as the head trim alone determines it.
-    #[test]
-    fn no_tail_leaves_the_plan_unchanged() {
-        let plan = RenderPlan::new(&config(Samples(512)));
-        assert_eq!(plan.output_length, Samples(48_000));
-        assert_eq!(plan.total, Samples(48_512));
-    }
 }

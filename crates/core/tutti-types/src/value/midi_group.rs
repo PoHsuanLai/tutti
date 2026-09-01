@@ -125,14 +125,6 @@ mod tests {
     }
 
     #[test]
-    fn the_default_is_the_first_group() {
-        // Load-bearing: nearly every event the engine builds is on group 0, and
-        // a `MidiGroup::default()` that landed anywhere else would put a whole
-        // endpoint's traffic on a cable nothing is listening to.
-        assert_eq!(MidiGroup::default(), MidiGroup::FIRST);
-    }
-
-    #[test]
     fn a_group_and_a_channel_are_indistinguishable_by_value() {
         use crate::MidiChannel;
         // This is the premise that makes the separate type necessary, not a

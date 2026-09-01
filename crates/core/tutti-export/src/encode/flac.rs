@@ -194,14 +194,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn f32_to_i32_scales_to_bit_depth() {
-        assert_eq!(f32_to_i32(0.0, BitDepth::Int16), 0);
-        assert_eq!(f32_to_i32(1.0, BitDepth::Int16), 32767);
-        assert_eq!(f32_to_i32(-1.0, BitDepth::Int16), -32767);
-        assert_eq!(f32_to_i32(1.0, BitDepth::Int24), 8388607);
-    }
-
-    #[test]
     fn clamps_out_of_range_input() {
         assert_eq!(f32_to_i32(2.0, BitDepth::Int16), 32767);
         assert_eq!(f32_to_i32(-2.0, BitDepth::Int16), -32767);

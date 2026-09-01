@@ -58,9 +58,13 @@ use tutti_core::SampleRate;
 /// Private: which arm a plugin landed in is exactly the detail this type exists
 /// to stop leaking.
 enum Backend {
-    Subprocess(PluginClient),
+    /// Both arms are boxed. An enum is as large as its largest variant, and
+    /// these differ by ~9 KiB (a subprocess client is ~15 KiB, an in-process
+    /// one ~6 KiB), so an unboxed enum would make every `Plugin` — and every
+    /// `Result` carrying one — pay the larger figure.
+    Subprocess(Box<PluginClient>),
     #[cfg(feature = "vst2")]
-    InProcessVst2(crate::format::vst2_in_process::InProcessVst2Client),
+    InProcessVst2(Box<crate::format::vst2_in_process::InProcessVst2Client>),
 }
 
 /// A loaded plugin: its audio node, its control surface, and the per-block
@@ -161,7 +165,7 @@ impl Plugin {
     /// Wrap a subprocess client.
     fn from_subprocess(client: PluginClient, handle: PluginHandle) -> Self {
         Self {
-            backend: Backend::Subprocess(client),
+            backend: Backend::Subprocess(Box::new(client)),
             handle,
         }
     }
@@ -173,7 +177,7 @@ impl Plugin {
         handle: PluginHandle,
     ) -> Self {
         Self {
-            backend: Backend::InProcessVst2(client),
+            backend: Backend::InProcessVst2(Box::new(client)),
             handle,
         }
     }
@@ -411,9 +415,9 @@ impl Plugin {
     /// the node moves into the graph.
     pub fn into_unit(self) -> Box<dyn tutti_core::AudioUnit> {
         match self.backend {
-            Backend::Subprocess(c) => Box::new(c),
+            Backend::Subprocess(c) => c,
             #[cfg(feature = "vst2")]
-            Backend::InProcessVst2(c) => Box::new(c),
+            Backend::InProcessVst2(c) => c,
         }
     }
 

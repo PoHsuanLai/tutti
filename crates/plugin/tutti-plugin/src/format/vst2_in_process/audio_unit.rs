@@ -189,7 +189,7 @@ impl InProcessVst2Client {
     /// [`TransportInfo`] (tempo, playhead, meter, bar, loop), which the VST2
     /// host turns into the `audioMasterGetTime` snapshot the plugin polls.
     ///
-    /// Wrapped in a [`TransportSource`] stamped with the current sample rate
+    /// Wrapped in a `TransportSource` stamped with the current sample rate
     /// (updated live on a device change). The snapshot only reaches plugins
     /// advertising [`Features::TRANSPORT`]; others always drain a default.
     ///
@@ -793,6 +793,51 @@ fn run_with_mut_channels_f32<F: FnOnce(&mut [&mut [f32]])>(
     recurse(channels, size, &mut acc[..n], 0, f);
 }
 
+fn run_with_mut_channels_f64<F: FnOnce(&mut [&mut [f64]])>(
+    channels: &mut [Vec<f64>],
+    size: usize,
+    f: F,
+) {
+    fn recurse<'a, F: FnOnce(&mut [&mut [f64]])>(
+        rest: &'a mut [Vec<f64>],
+        size: usize,
+        acc: &mut [&'a mut [f64]],
+        depth: usize,
+        f: F,
+    ) {
+        if depth == acc.len() {
+            f(acc);
+            return;
+        }
+        let (head, tail) = rest
+            .split_first_mut()
+            .expect("channel count mismatch (f64)");
+        acc[depth] = &mut head[..size];
+        recurse(tail, size, acc, depth + 1, f);
+    }
+    let mut acc: [&mut [f64]; 16] = [
+        &mut [],
+        &mut [],
+        &mut [],
+        &mut [],
+        &mut [],
+        &mut [],
+        &mut [],
+        &mut [],
+        &mut [],
+        &mut [],
+        &mut [],
+        &mut [],
+        &mut [],
+        &mut [],
+        &mut [],
+        &mut [],
+    ];
+    let n = channels.len().min(16);
+    recurse(channels, size, &mut acc[..n], 0, f);
+}
+
+
 #[cfg(test)]
 mod transport_tests {
     use super::*;
@@ -991,48 +1036,4 @@ mod transport_tests {
             "a declared transport capability must be a delivered one"
         );
     }
-}
-
-fn run_with_mut_channels_f64<F: FnOnce(&mut [&mut [f64]])>(
-    channels: &mut [Vec<f64>],
-    size: usize,
-    f: F,
-) {
-    fn recurse<'a, F: FnOnce(&mut [&mut [f64]])>(
-        rest: &'a mut [Vec<f64>],
-        size: usize,
-        acc: &mut [&'a mut [f64]],
-        depth: usize,
-        f: F,
-    ) {
-        if depth == acc.len() {
-            f(acc);
-            return;
-        }
-        let (head, tail) = rest
-            .split_first_mut()
-            .expect("channel count mismatch (f64)");
-        acc[depth] = &mut head[..size];
-        recurse(tail, size, acc, depth + 1, f);
-    }
-    let mut acc: [&mut [f64]; 16] = [
-        &mut [],
-        &mut [],
-        &mut [],
-        &mut [],
-        &mut [],
-        &mut [],
-        &mut [],
-        &mut [],
-        &mut [],
-        &mut [],
-        &mut [],
-        &mut [],
-        &mut [],
-        &mut [],
-        &mut [],
-        &mut [],
-    ];
-    let n = channels.len().min(16);
-    recurse(channels, size, &mut acc[..n], 0, f);
 }

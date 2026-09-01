@@ -602,7 +602,7 @@ impl PluginInstance {
     /// Read `AEffect::numPrograms` as it stands *now*.
     ///
     /// [`get_info`](Plugin::get_info) returns the snapshot taken in
-    /// [`new`](Self::new), before `effOpen`. A **shell** plugin — one bundle
+    /// `new`, before `effOpen`. A **shell** plugin — one bundle
     /// exposing many effects — picks which effect it is during init, and its
     /// program count is that effect's, not the shell's. Reading the snapshot
     /// gives the count from before the choice.
@@ -666,7 +666,7 @@ impl PluginInstance {
     /// Read `AEffect::initialDelay` as it stands *now*.
     ///
     /// [`get_info`](Plugin::get_info) returns a clone of the snapshot taken in
-    /// [`new`](Self::new), which runs before `effOpen`, `effSetSampleRate` and
+    /// `new`, which runs before `effOpen`, `effSetSampleRate` and
     /// `effMainsChanged`. Plugins routinely set their latency during those —
     /// a linear-phase EQ does not know its filter length until it knows the
     /// sample rate — so the snapshot's `initial_delay` is a pre-init value and
@@ -709,8 +709,8 @@ impl PluginInstance {
     /// separable at all: anything outside that range is an absent answer, not a
     /// count. A host must therefore treat `None` as "unknown", never as zero.
     ///
-    /// Not folded into [`Info`](plugin::Info) because that snapshot is taken in
-    /// [`new`](Self::new), before `effOpen`, and a plugin may not know its MIDI
+    /// Not folded into [`plugin::Info`] because that snapshot is taken in
+    /// `new`, before `effOpen`, and a plugin may not know its MIDI
     /// configuration until it is initialised — the same trap
     /// [`read_initial_delay`](Self::read_initial_delay) documents for latency.
     pub fn read_midi_channels(&self) -> MidiChannelCounts {

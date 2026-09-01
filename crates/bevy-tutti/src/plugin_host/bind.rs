@@ -179,9 +179,9 @@ type ParamsNeedRebind = (
 /// Give every param a plugin declares modulatable a per-block accumulator, and
 /// feed those accumulators to the plugin as its automation source.
 ///
-/// A host declares which params are modulatable with [`ModParamRange`], the same
+/// A host declares which params are modulatable with [`ModParamRange`](crate::modulation::ModParamRange), the same
 /// component a native node uses — the difference is only that a plugin's entries
-/// carry [`ParamAddr::Id`] (its own numeric id) where a native node's carry
+/// carry [`ParamAddr::Id`](tutti_types::ParamAddr::Id) (its own numeric id) where a native node's carry
 /// `ParamAddr::Unit`. Ranges come from the host because reading them from the
 /// plugin means `PluginHandle::parameters()`, a blocking IPC call with a
 /// five-second timeout that has no business on the frame thread.

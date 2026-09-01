@@ -2,7 +2,7 @@
 //! plugin.
 //!
 //! Behind the off-by-default `conformance` feature. When enabled, `process`
-//! calls [`observe`] with the fully-built `ProcessData` immediately before
+//! calls `observe` with the fully-built `ProcessData` immediately before
 //! `IAudioProcessor::process`, plus the `ProcessSetup` that was negotiated
 //! at activation. A test installs an observer, drives the *real* host path,
 //! and inspects exactly what the plugin would have received.

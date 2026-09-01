@@ -4,12 +4,12 @@
 //! Three small `AudioUnit`s that materialize an audio-rate modulation edge:
 //!
 //! ```text
-//! source ─► ParamShaperUnit ─► ParamSumUnit ─► (param-input port on target)
+//! source ─► ParamShaperNode ─► ParamSumNode ─► (param-input port on target)
 //!           (depth·polarity·    (base + Σ mods,
 //!            curve via LUT)      one clamp)
 //! ```
 //!
-//! The base port is fed by an [`AtomicSourceUnit`] holding the authored value,
+//! The base port is fed by an [`AtomicSourceNode`] holding the authored value,
 //! so the UI/automation handle path is unchanged: the same atomic a control-rate
 //! [`AtomicTarget`](tutti_mod::AtomicTarget) mirrors into becomes this chain's
 //! base. That is what makes the two tiers compose rather than compete — one
@@ -31,7 +31,7 @@ use tutti_core::dsp::{Net, Signal};
 use tutti_core::{AtomicF32, AudioUnit, BufferMut, BufferRef, NodeId, Ordering, SignalFrame, Tail};
 use tutti_mod::{shape, CurveType, Polarity};
 
-/// LUT resolution for [`ParamShaperUnit`]. 256 points + linear interpolation is
+/// LUT resolution for [`ParamShaperNode`]. 256 points + linear interpolation is
 /// inaudibly smooth for a control-shaping curve and keeps the table in L1.
 const LUT_N: usize = 256;
 
@@ -40,18 +40,18 @@ const LUT_N: usize = 256;
 /// branch-light (normalize → table lookup → lerp).
 ///
 /// Input domain is `[-1, 1]` (bipolar CV or a normalized audio signal). The
-/// output is the additive offset [`ParamSumUnit`] adds onto the base.
+/// output is the additive offset [`ParamSumNode`] adds onto the base.
 ///
 /// The shaping is [`tutti_mod::shape`] — the *same* function the control-rate
 /// path applies in `ModPreFrame::run`. Baking it into a LUT here is a
 /// performance decision, not a second implementation: both tiers agree on
 /// values because they call one function.
 #[derive(Clone)]
-pub struct ParamShaperUnit {
+pub struct ParamShaperNode {
     lut: Arc<[f32; LUT_N]>,
 }
 
-impl ParamShaperUnit {
+impl ParamShaperNode {
     /// Bakes `depth`, `polarity` and `curve` into a lookup table over the
     /// modulator's `[-1, 1]` output range.
     ///
@@ -86,7 +86,7 @@ impl ParamShaperUnit {
     }
 }
 
-impl AudioUnit for ParamShaperUnit {
+impl AudioUnit for ParamShaperNode {
     fn inputs(&self) -> usize {
         1
     }
@@ -158,12 +158,12 @@ impl AudioUnit for ParamShaperUnit {
 /// which this node is deliberately erased over (the same erasure `LayeredCurve`
 /// makes on the control-rate side). There is no single `U` to name.
 #[derive(Clone)]
-pub struct ParamSumUnit {
+pub struct ParamSumNode {
     mods: usize,
     bounds: Arc<ClampBounds>,
 }
 
-/// A [`ParamSumUnit`]'s live clamp range.
+/// A [`ParamSumNode`]'s live clamp range.
 ///
 /// One allocation holding both halves, so a host that moves a range moves it
 /// atomically-enough: the two stores are still independent, but they share a
@@ -192,7 +192,7 @@ impl ClampBounds {
     }
 }
 
-impl ParamSumUnit {
+impl ParamSumNode {
     /// A summing node folding a base value plus `mods` modulation inputs,
     /// clamped to `min..=max`.
     ///
@@ -238,7 +238,7 @@ impl ParamSumUnit {
     }
 }
 
-impl AudioUnit for ParamSumUnit {
+impl AudioUnit for ParamSumNode {
     fn inputs(&self) -> usize {
         1 + self.mods
     }
@@ -255,7 +255,7 @@ impl AudioUnit for ParamSumUnit {
     }
 
     fn process(&mut self, size: usize, input: &BufferRef, output: &mut BufferMut) {
-        // Read the bounds **once per block**, like `AtomicSourceUnit` reads its
+        // Read the bounds **once per block**, like `AtomicSourceNode` reads its
         // value: a range cannot meaningfully change mid-block, and two atomic
         // loads per sample is pure cost on the hottest loop in the chain.
         let bounds = self.ordered_bounds();
@@ -294,16 +294,16 @@ impl AudioUnit for ParamSumUnit {
 /// A settable constant source: 0 inputs, 1 output, value held in a shared
 /// atomic.
 ///
-/// Feeds [`ParamSumUnit`]'s base port so the existing UI/automation handle path
+/// Feeds [`ParamSumNode`]'s base port so the existing UI/automation handle path
 /// keeps working — it reads the same atomic a control-rate `AtomicTarget`
 /// already mirrors into. (fundsp's `dc()` covers a *fixed* constant; this is the
 /// settable equivalent.)
 #[derive(Clone)]
-pub struct AtomicSourceUnit {
+pub struct AtomicSourceNode {
     value: Arc<AtomicF32>,
 }
 
-impl AtomicSourceUnit {
+impl AtomicSourceNode {
     /// A source over a **private** cell, reachable only through
     /// [`shared`](Self::shared) on this value.
     ///
@@ -334,7 +334,7 @@ impl AtomicSourceUnit {
     }
 }
 
-impl AudioUnit for AtomicSourceUnit {
+impl AudioUnit for AtomicSourceNode {
     fn inputs(&self) -> usize {
         0
     }
@@ -390,11 +390,11 @@ impl AudioUnit for AtomicSourceUnit {
 /// a host that needs to wire or retire them; [`base_cell`](Self::base_cell) is
 /// the part that is easy to lose and expensive to lose.
 pub struct ParamModChain {
-    /// The [`AtomicSourceUnit`] feeding the sum's base port.
+    /// The [`AtomicSourceNode`] feeding the sum's base port.
     pub base: NodeId,
-    /// The [`ParamSumUnit`]: `base + Σ offsets`, clamped once.
+    /// The [`ParamSumNode`]: `base + Σ offsets`, clamped once.
     pub sum: NodeId,
-    /// One [`ParamShaperUnit`] per edge, in the order their offsets occupy the
+    /// One [`ParamShaperNode`] per edge, in the order their offsets occupy the
     /// sum's ports (`1..=N`).
     pub shapers: Vec<NodeId>,
     base_cell: Arc<AtomicF32>,
@@ -415,7 +415,7 @@ impl ParamModChain {
     /// Because dropping it is silent. A node whose param port is wired **never
     /// reads its own atomic** — `param_writer_ownership`'s
     /// `a_wired_param_port_makes_the_node_ignore_its_atomic` pins that — so a
-    /// caller that mints a private cell instead ([`AtomicSourceUnit::new`])
+    /// caller that mints a private cell instead ([`AtomicSourceNode::new`])
     /// gets code that compiles, runs, renders, and freezes the authored value
     /// at whatever it was when the chain was built. Every later write lands
     /// somewhere nothing reads.
@@ -449,7 +449,7 @@ impl ParamModChain {
 /// `NodeId` here would force that host to invent one.
 ///
 /// `PartialEq` is load-bearing rather than a convenience derive.
-/// [`ParamShaperUnit`] bakes these three into a LUT at construction and exposes
+/// [`ParamShaperNode`] bakes these three into a LUT at construction and exposes
 /// no setter, so the only way a reconciler can notice a route's shaping has
 /// moved is to compare what the declaration says against what the node was
 /// built from. Without that comparison a depth slider — which changes no node
@@ -480,7 +480,7 @@ pub struct ParamModShaping {
 ///
 /// `base`, `min` and `max` are the param's authored value and bounds in its own
 /// units. They stay bare `f32`: the sum is unit-erased by construction (see
-/// [`ParamSumUnit`]), matching `LayeredCurve`'s own erasure on the control-rate
+/// [`ParamSumNode`]), matching `LayeredCurve`'s own erasure on the control-rate
 /// side.
 pub fn build_param_mod(
     net: &mut Net,
@@ -489,19 +489,19 @@ pub fn build_param_mod(
     max: f32,
     edges: &[ParamModShaping],
 ) -> ParamModChain {
-    let base_unit = AtomicSourceUnit::new(base);
+    let base_unit = AtomicSourceNode::new(base);
     // Taken *before* the unit is moved into the net — this handle is the whole
     // point of the return value.
     let base_cell = base_unit.shared();
 
     let base_id = net.push(Box::new(base_unit));
-    let sum_unit = ParamSumUnit::new(edges.len(), min, max);
+    let sum_unit = ParamSumNode::new(edges.len(), min, max);
     // Taken before the unit moves into the net, same as the base cell.
     let bounds = sum_unit.bounds();
     let sum_id = net.push(Box::new(sum_unit));
     let shapers = edges
         .iter()
-        .map(|e| net.push(Box::new(ParamShaperUnit::new(e.depth, e.polarity, e.curve))))
+        .map(|e| net.push(Box::new(ParamShaperNode::new(e.depth, e.polarity, e.curve))))
         .collect();
 
     ParamModChain {

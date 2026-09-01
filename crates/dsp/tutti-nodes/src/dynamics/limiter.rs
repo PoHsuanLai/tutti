@@ -1,5 +1,5 @@
 //! Two limiters: the lookahead [`LimiterNode`] and the hard-clipping
-//! [`BrickwallLimiter`].
+//! [`BrickwallLimiterNode`].
 //!
 //! They are not interchangeable. The lookahead limiter delays its audio so the
 //! gain decision runs ahead of a peak, which costs latency and sounds
@@ -586,10 +586,10 @@ impl Clone for LimiterNode {
 /// The default node is 2-in / 2-out (audio L/R on ports 0/1). For audio-rate
 /// ceiling modulation it can grow **one optional ceiling param-input port (dB)
 /// after the audio inputs** at index 2 (see
-/// [`BrickwallLimiter::with_param_inputs`]); present → overrides the ceiling
+/// [`BrickwallLimiterNode::with_param_inputs`]); present → overrides the ceiling
 /// atomic per sample, absent → a plain 2-in/2-out node, bit-identical to the
 /// unmodulated path.
-pub struct BrickwallLimiter {
+pub struct BrickwallLimiterNode {
     ceiling_db: Param<Db>,
     ceiling_linear: f32,
     /// Audio channel width (`inputs()` audio ports == `outputs()`). The clip is
@@ -603,7 +603,7 @@ pub struct BrickwallLimiter {
     mod_ceiling: bool,
 }
 
-impl BrickwallLimiter {
+impl BrickwallLimiterNode {
     /// Builds a stereo brickwall limiter clamping at `ceiling_db`.
     ///
     /// **This is a hard clipper, not [`LimiterNode`].** It has no lookahead, no
@@ -686,7 +686,7 @@ impl BrickwallLimiter {
     }
 }
 
-impl AudioUnit for BrickwallLimiter {
+impl AudioUnit for BrickwallLimiterNode {
     fn inputs(&self) -> usize {
         self.channels + self.mod_ceiling as usize
     }
@@ -787,7 +787,7 @@ impl AudioUnit for BrickwallLimiter {
     }
 }
 
-impl Clone for BrickwallLimiter {
+impl Clone for BrickwallLimiterNode {
     fn clone(&self) -> Self {
         Self {
             ceiling_db: self.ceiling_db.handle(),
@@ -880,7 +880,7 @@ mod tests {
 
     #[test]
     fn test_brickwall_clips_at_ceiling() {
-        let mut bw = BrickwallLimiter::new(0.0);
+        let mut bw = BrickwallLimiterNode::new(0.0);
 
         let mut out = [0.0f32; 2];
         bw.tick(&[2.0, -3.0], &mut out);
@@ -899,7 +899,7 @@ mod tests {
 
     #[test]
     fn test_brickwall_adjustable_ceiling() {
-        let mut bw = BrickwallLimiter::new(-6.0);
+        let mut bw = BrickwallLimiterNode::new(-6.0);
         let ceiling_lin = db_to_amplitude(-6.0).get();
 
         let mut out = [0.0f32; 2];
@@ -914,7 +914,7 @@ mod tests {
 
     #[test]
     fn test_brickwall_passes_quiet_signal() {
-        let mut bw = BrickwallLimiter::new(0.0);
+        let mut bw = BrickwallLimiterNode::new(0.0);
 
         let mut out = [0.0f32; 2];
         bw.tick(&[0.3, -0.2], &mut out);
@@ -990,7 +990,7 @@ mod tests {
 
     #[test]
     fn brickwall_default_no_ports() {
-        let u = BrickwallLimiter::new(0.0);
+        let u = BrickwallLimiterNode::new(0.0);
         assert_eq!(u.inputs(), 2);
         assert_eq!(u.outputs(), 2);
         assert_eq!(u.ceiling_port(), None);
@@ -998,10 +998,10 @@ mod tests {
 
     #[test]
     fn brickwall_param_port_arity_and_index() {
-        let c = BrickwallLimiter::with_param_inputs(0.0, true);
+        let c = BrickwallLimiterNode::with_param_inputs(0.0, true);
         assert_eq!(c.inputs(), 3);
         assert_eq!(c.ceiling_port(), Some(2));
-        let off = BrickwallLimiter::with_param_inputs(0.0, false);
+        let off = BrickwallLimiterNode::with_param_inputs(0.0, false);
         assert_eq!(off.inputs(), 2);
         assert_eq!(off.ceiling_port(), None);
     }
@@ -1010,8 +1010,8 @@ mod tests {
     fn brickwall_unmodulated_matches_held_constant() {
         // A modulated brickwall whose ceiling port is held at the atomic value
         // must clip identically to a plain brickwall.
-        let mut plain = BrickwallLimiter::new(-6.0);
-        let mut modn = BrickwallLimiter::with_param_inputs(-6.0, true);
+        let mut plain = BrickwallLimiterNode::new(-6.0);
+        let mut modn = BrickwallLimiterNode::with_param_inputs(-6.0, true);
 
         let mut plain_out = [0.0f32; 2];
         let mut mod_out = [0.0f32; 2];
@@ -1032,7 +1032,7 @@ mod tests {
     #[test]
     fn brickwall_ceiling_port_modulates_clip() {
         // Holding the ceiling port low clips harder than holding it high.
-        let mut bw = BrickwallLimiter::with_param_inputs(0.0, true);
+        let mut bw = BrickwallLimiterNode::with_param_inputs(0.0, true);
         let mut out = [0.0f32; 2];
         // Ceiling -12 dB ≈ 0.251 linear: 1.0 clips to ~0.251.
         bw.tick(&[1.0, 1.0, -12.0], &mut out);
@@ -1119,7 +1119,7 @@ mod tests {
 
     #[test]
     fn brickwall_with_channels_reports_arity_and_clips_all() {
-        let mut bw = BrickwallLimiter::with_channels(ChannelLayout::from(6u16), 0.0);
+        let mut bw = BrickwallLimiterNode::with_channels(ChannelLayout::from(6u16), 0.0);
         assert_eq!(bw.inputs(), 6);
         assert_eq!(bw.outputs(), 6);
         let mut out = [0.0f32; 6];

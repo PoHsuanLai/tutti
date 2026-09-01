@@ -9,14 +9,14 @@ use tutti_core::dsp::{AudioUnit, Net};
 use tutti_core::{AtomicF32, Ordering};
 use tutti_mod::{CurveType, Polarity};
 use tutti_types::{Depth, UnitParam};
-use tutti_units::{
-    AtomicSourceUnit, DistortionNode, ParamModShaping, ParamPorts, ParamShaperUnit, ParamSumUnit,
+use tutti_nodes::{
+    AtomicSourceNode, DistortionNode, ParamModShaping, ParamPorts, ParamShaperNode, ParamSumNode,
     ShapeKind,
 };
 
 /// Wire `base + shaped(source) → node.param_port(param)`.
 ///
-/// A single-edge shim over the crate's own [`tutti_units::wire_param_mod`],
+/// A single-edge shim over the crate's own [`tutti_nodes::wire_param_mod`],
 /// kept so these tests read as they did when this was a local helper. That the
 /// six tests below pass **unmodified** against the promoted version is the
 /// proof the extraction preserved behaviour.
@@ -29,7 +29,7 @@ fn wire_param_mod(
     range: (f32, f32),
     depth: Depth,
 ) -> Arc<AtomicF32> {
-    tutti_units::wire_param_mod(
+    tutti_nodes::wire_param_mod(
         net,
         target,
         port,
@@ -51,7 +51,7 @@ fn wire_param_mod(
 /// A constant source standing in for an LFO, so the test asserts on arithmetic
 /// rather than on a waveform's phase.
 fn constant(net: &mut Net, v: f32) -> tutti_core::NodeId {
-    let unit = AtomicSourceUnit::new(v);
+    let unit = AtomicSourceNode::new(v);
     net.push(Box::new(unit))
 }
 
@@ -94,7 +94,7 @@ fn control_rate_and_audio_rate_share_one_base_cell() {
 
     // The control-rate tier owns this cell (an AtomicTarget mirrors into it).
     // The audio-rate tier reads the same cell as its base.
-    let base_unit = AtomicSourceUnit::over(Arc::clone(&shared));
+    let base_unit = AtomicSourceNode::over(Arc::clone(&shared));
     let mut net = Net::new(0, 1);
     let base = net.push(Box::new(base_unit));
     net.pipe_output(base);
@@ -109,11 +109,11 @@ fn control_rate_and_audio_rate_share_one_base_cell() {
     assert_eq!(out[0], 8.0, "the audio-rate base is the control-rate cell");
 }
 
-/// `ParamSumUnit` is what makes fan-in representable: `Net` holds one source
+/// `ParamSumNode` is what makes fan-in representable: `Net` holds one source
 /// per input port, so summing N modulation edges has to be a node.
 #[test]
 fn sum_folds_base_plus_n_offsets_and_clamps() {
-    let mut sum = ParamSumUnit::new(2, 0.0, 10.0);
+    let mut sum = ParamSumNode::new(2, 0.0, 10.0);
 
     let mut out = [0.0f32; 1];
     sum.tick(&[5.0, 1.5, 2.0], &mut out);
@@ -133,7 +133,7 @@ fn sum_folds_base_plus_n_offsets_and_clamps() {
 #[test]
 fn shaper_agrees_with_the_control_rate_shaping_function() {
     let depth = Depth(0.5);
-    let shaper = ParamShaperUnit::new(depth, Polarity::Bipolar, CurveType::Linear);
+    let shaper = ParamShaperNode::new(depth, Polarity::Bipolar, CurveType::Linear);
 
     for x in [-1.0f32, -0.5, -0.25, 0.0, 0.25, 0.5, 1.0] {
         let mut out = [0.0f32; 1];
@@ -166,8 +166,8 @@ fn param_port_is_clobbered_by_pipe_input() {
     let port = dist.param_port(UnitParam::Drive).unwrap();
     let target = net.push(Box::new(dist));
 
-    let base = net.push(Box::new(AtomicSourceUnit::new(9.0)));
-    let sum = net.push(Box::new(ParamSumUnit::new(0, 0.0, 10.0)));
+    let base = net.push(Box::new(AtomicSourceNode::new(9.0)));
+    let sum = net.push(Box::new(ParamSumNode::new(0, 0.0, 10.0)));
     net.connect(base, 0, sum, 0);
     net.connect(sum, 0, target, port);
 
@@ -200,8 +200,8 @@ fn the_edge_changes_what_the_node_produces() {
         let target = net.push(Box::new(dist));
 
         let drive = if with_modulation { 9.0 } else { 1.0 };
-        let base = net.push(Box::new(AtomicSourceUnit::new(drive)));
-        let sum = net.push(Box::new(ParamSumUnit::new(0, 0.0, 10.0)));
+        let base = net.push(Box::new(AtomicSourceNode::new(drive)));
+        let sum = net.push(Box::new(ParamSumNode::new(0, 0.0, 10.0)));
         net.connect(base, 0, sum, 0);
         net.connect(sum, 0, target, port);
 
@@ -251,7 +251,7 @@ fn the_builder_returns_the_cell_the_sum_actually_reads() {
 
     // No modulation at all: the base is the entire signal, so any movement in
     // the output is unambiguously the base moving.
-    let chain = tutti_units::wire_param_mod(&mut net, target, port, 1.0, 0.0, 10.0, &[]);
+    let chain = tutti_nodes::wire_param_mod(&mut net, target, port, 1.0, 0.0, 10.0, &[]);
     net.connect_input(0, target, 0);
     net.connect_input(1, target, 1);
     net.pipe_output(target);
@@ -290,7 +290,7 @@ fn the_builders_cell_is_the_cell_a_control_rate_target_mirrors_into() {
     let port = dist.param_port(UnitParam::Drive).expect("drive port");
     let target = net.push(Box::new(dist));
 
-    let chain = tutti_units::wire_param_mod(&mut net, target, port, 1.0, 0.0, 10.0, &[]);
+    let chain = tutti_nodes::wire_param_mod(&mut net, target, port, 1.0, 0.0, 10.0, &[]);
     net.connect_input(0, target, 0);
     net.connect_input(1, target, 1);
     net.pipe_output(target);
@@ -340,7 +340,7 @@ fn n_edges_land_on_ports_one_through_n() {
         )
     };
     let chain =
-        tutti_units::wire_param_mod(&mut net, target, port, 1.0, 0.0, 10.0, &[edge(a), edge(b)]);
+        tutti_nodes::wire_param_mod(&mut net, target, port, 1.0, 0.0, 10.0, &[edge(a), edge(b)]);
 
     assert_eq!(chain.shapers.len(), 2, "one shaper per edge");
     assert_eq!(
@@ -365,7 +365,7 @@ fn n_edges_land_on_ports_one_through_n() {
 /// rebuilding would take the base cell with it.
 #[test]
 fn the_sums_clamp_can_be_moved_after_construction() {
-    let mut sum = ParamSumUnit::new(0, 0.0, 10.0);
+    let mut sum = ParamSumNode::new(0, 0.0, 10.0);
     let bounds = sum.bounds();
 
     let mut out = [0.0f32; 1];
@@ -385,7 +385,7 @@ fn the_sums_clamp_can_be_moved_after_construction() {
 /// audio thread is not a diagnostic — it is a dead stream.
 #[test]
 fn a_crossed_range_is_survivable() {
-    let mut sum = ParamSumUnit::new(0, 0.0, 10.0);
+    let mut sum = ParamSumNode::new(0, 0.0, 10.0);
     let bounds = sum.bounds();
 
     // The transient state a mid-`set` reader can observe: min above max.

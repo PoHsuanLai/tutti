@@ -12,7 +12,7 @@ static A: AllocDisabler = AllocDisabler;
 #[cfg(feature = "convolution")]
 #[test]
 fn convolver_process_is_allocation_free() {
-    use tutti_units::{generate_test_ir, ConvolverNode};
+    use tutti_nodes::{generate_test_ir, ConvolverNode};
 
     let ir = generate_test_ir(2048, 0.3, 48_000.0);
     let mut node = ConvolverNode::new(&ir, 512);
@@ -40,7 +40,7 @@ fn convolver_process_is_allocation_free() {
 #[cfg(feature = "convolution")]
 #[test]
 fn stereo_convolver_process_is_allocation_free() {
-    use tutti_units::{generate_test_ir, StereoConvolverNode};
+    use tutti_nodes::{generate_test_ir, StereoConvolverNode};
 
     let ir_l = generate_test_ir(2048, 0.3, 48_000.0);
     let ir_r = generate_test_ir(2048, 0.4, 48_000.0);
@@ -65,7 +65,7 @@ fn stereo_convolver_process_is_allocation_free() {
     });
 }
 
-/// `DownmixUnit::process` gathers an interleaved frame per sample and folds it.
+/// `DownmixNode::process` gathers an interleaved frame per sample and folds it.
 /// Both scratch buffers are sized at construction and taken with `mem::take`
 /// precisely so that path never allocates — this is the test that makes those
 /// two fields load-bearing rather than incidental.
@@ -78,9 +78,9 @@ fn downmix_process_is_allocation_free() {
     // Imported here rather than at file scope: the module-level imports are
     // gated on `convolution`, and this node needs it not.
     use tutti_core::{AudioUnit, BufferVec, ChannelLayout};
-    use tutti_units::DownmixUnit;
+    use tutti_nodes::DownmixNode;
 
-    let mut node = DownmixUnit::new(ChannelLayout::from(6u16), ChannelLayout::STEREO);
+    let mut node = DownmixNode::new(ChannelLayout::from(6u16), ChannelLayout::STEREO);
 
     let input_vec = BufferVec::new(6);
     let mut output_vec = BufferVec::new(2);

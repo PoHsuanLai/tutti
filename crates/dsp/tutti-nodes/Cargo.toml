@@ -1,5 +1,5 @@
 [package]
-name = "tutti-units"
+name = "tutti-nodes"
 version = "0.0.1"
 edition = "2021"
 description = "Built-in AudioUnit implementations for the Tutti audio engine — LFOs, filters, delays, dynamics, modulation, spatial audio"
@@ -11,7 +11,7 @@ workspace = true
 
 [features]
 default = []
-# NOTE: tutti-units is now fully Bevy-free — the entire ECS binding layer
+# NOTE: tutti-nodes is now fully Bevy-free — the entire ECS binding layer
 # (param/marker components, reconcile/spawn systems, spatial + automation graph
 # glue, deferred convolver load) moved app-side to `dawai_model::engine_bind`
 # ("engine Bevy = Net pump only"). This crate is pure DSP + the `set(UnitParam)`
@@ -28,7 +28,7 @@ convolution = ["dep:fft-convolver"]
 
 [dependencies]
 # AudioUnit trait + DSP primitives from tutti-core. default-features = false:
-# tutti-units is pure DSP and needs none of tutti-core's Bevy layer.
+# tutti-nodes is pure DSP and needs none of tutti-core's Bevy layer.
 tutti-core = { path = "../../core/tutti-core", default-features = false }
 
 # Value vocabulary (the `Curve` trait), for `impl Curve for AutomationEnvelope`.
@@ -47,7 +47,7 @@ tutti-mod = { path = "../../core/tutti-mod", default-features = false, features 
 fft-convolver = { version = "0.3", optional = true }
 
 # Envelope primitives consumed by `AutomationLane` + `Recorder`, re-exported via
-# `tutti_units::automation`.
+# `tutti_nodes::automation`.
 audio-automation = { workspace = true }
 
 [dev-dependencies]

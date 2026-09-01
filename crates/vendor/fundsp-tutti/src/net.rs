@@ -1383,7 +1383,7 @@ impl Net {
     /// a plain field rather than through an `Arc` — has produced exactly such a
     /// vertex, so its edit is thrown away rather than merely deferred.
     ///
-    /// The rule that avoids it lives in `tutti_units`' crate docs: a live
+    /// The rule that avoids it lives in `tutti_nodes`' crate docs: a live
     /// control value belongs behind an `Arc` (`Param<U>`, `Arc<AtomicBool>`),
     /// where both copies see one cell and this swap is harmless.
     pub(crate) fn migrate(&mut self, new: &mut Net) {
@@ -1771,7 +1771,7 @@ impl AudioUnit for Net {
     /// not contain was discarded in silence, and `dropped_settings` counted only
     /// the queue-full case — so the counter read zero while parameter writes
     /// disappeared. That is the top of the silent-no-op stack that
-    /// `tutti-units`' module docs describe, and it made a wrong `NodeId` present
+    /// `tutti-nodes`' module docs describe, and it made a wrong `NodeId` present
     /// as "the fader moves on screen and not in the sound", indistinguishable
     /// from a unit that ignores the param.
     ///

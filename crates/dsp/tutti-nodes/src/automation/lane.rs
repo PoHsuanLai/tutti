@@ -1,4 +1,4 @@
-//! AutomationLane AudioUnit node.
+//! AutomationLaneNode AudioUnit node.
 
 use std::sync::Arc;
 
@@ -31,7 +31,7 @@ use super::Curve;
 ///
 /// ```
 /// use tutti_core::dsp::{AudioUnit, Net};
-/// use tutti_units::automation::{AutomationEnvelope, AutomationLane, AutomationPoint};
+/// use tutti_nodes::automation::{AutomationEnvelope, AutomationLaneNode, AutomationPoint};
 ///
 /// let mut envelope: AutomationEnvelope<f32> = AutomationEnvelope::new(0.0);
 /// envelope.add_point(AutomationPoint::new(0.0, 0.0));
@@ -39,7 +39,7 @@ use super::Curve;
 ///
 /// // Two in (whole beats, fraction), one out (the curve's value).
 /// let mut net = Net::new(2, 1);
-/// let lane = net.push(Box::new(AutomationLane::new(envelope)));
+/// let lane = net.push(Box::new(AutomationLaneNode::new(envelope)));
 /// net.pipe_input(lane);
 /// net.pipe_output(lane);
 /// net.check();
@@ -51,16 +51,16 @@ use super::Curve;
 /// ```
 ///
 /// [`Net`]: tutti_core::dsp::Net
-pub struct AutomationLane {
+pub struct AutomationLaneNode {
     curve: Arc<dyn Curve>,
     last_value: f32,
 }
 
 /// Alias for the `graph.node_as::<LiveAutomationLane>(..)` lookups in
 /// consumers. The lane is not generic over the envelope's label.
-pub type LiveAutomationLane = AutomationLane;
+pub type LiveAutomationLane = AutomationLaneNode;
 
-impl AutomationLane {
+impl AutomationLaneNode {
     /// Builds a lane that evaluates `curve` at the transport beat.
     ///
     /// The curve is held behind an `Arc` and read on the audio thread, so it
@@ -107,7 +107,7 @@ impl AutomationLane {
     }
 }
 
-impl AudioUnit for AutomationLane {
+impl AudioUnit for AutomationLaneNode {
     fn inputs(&self) -> usize {
         BEAT_PORTS
     }
@@ -160,7 +160,7 @@ impl AudioUnit for AutomationLane {
     }
 }
 
-impl Clone for AutomationLane {
+impl Clone for AutomationLaneNode {
     fn clone(&self) -> Self {
         Self {
             curve: Arc::clone(&self.curve),
@@ -191,14 +191,14 @@ mod tests {
 
     #[test]
     fn declares_two_beat_inputs() {
-        let lane = AutomationLane::new(ramp_envelope());
+        let lane = AutomationLaneNode::new(ramp_envelope());
         assert_eq!(lane.inputs(), BEAT_PORTS);
         assert_eq!(lane.outputs(), 1);
     }
 
     #[test]
     fn test_update_tracks_beat_position() {
-        let mut lane = AutomationLane::new(ramp_envelope());
+        let mut lane = AutomationLaneNode::new(ramp_envelope());
 
         assert!((lane.update_to(Beat(0.0)) - 0.0).abs() < 0.01);
         assert!((lane.update_to(Beat(2.0)) - 0.5).abs() < 0.01);
@@ -211,7 +211,7 @@ mod tests {
     /// `get_value_looped` tests, which duplicated the clock's wrap.
     #[test]
     fn wrapped_beat_needs_no_loop_handling_in_the_lane() {
-        let mut lane = AutomationLane::new(ramp_envelope());
+        let mut lane = AutomationLaneNode::new(ramp_envelope());
         // A 4..8 loop wraps beat 10 to beat 6 in the clock.
         let wrapped = lane.update_to(Beat(6.0));
         assert!(
@@ -222,7 +222,7 @@ mod tests {
 
     #[test]
     fn test_tick_outputs_current_value() {
-        let mut lane = AutomationLane::new(ramp_envelope());
+        let mut lane = AutomationLaneNode::new(ramp_envelope());
         let mut output = [0.0f32; 1];
 
         lane.tick(&ports(4.0), &mut output);
@@ -234,7 +234,7 @@ mod tests {
 
     #[test]
     fn tick_reads_the_fractional_port() {
-        let mut lane = AutomationLane::new(ramp_envelope());
+        let mut lane = AutomationLaneNode::new(ramp_envelope());
         let mut split = [0.0f32; 1];
         let mut whole = [0.0f32; 1];
 
@@ -246,7 +246,7 @@ mod tests {
 
     #[test]
     fn test_tick_updates_last_value() {
-        let mut lane = AutomationLane::new(ramp_envelope());
+        let mut lane = AutomationLaneNode::new(ramp_envelope());
         assert_eq!(lane.last_value(), 0.0);
 
         let mut output = [0.0f32; 1];
@@ -256,7 +256,7 @@ mod tests {
 
     #[test]
     fn test_set_curve_changes_output() {
-        let mut lane = AutomationLane::new(ramp_envelope());
+        let mut lane = AutomationLaneNode::new(ramp_envelope());
         assert!((lane.update_to(Beat(2.0)) - 0.5).abs() < 0.01);
 
         let mut flat: AutomationEnvelope<&str> = AutomationEnvelope::new("flat");
@@ -269,7 +269,7 @@ mod tests {
 
     #[test]
     fn test_reset_clears_last_value() {
-        let mut lane = AutomationLane::new(ramp_envelope());
+        let mut lane = AutomationLaneNode::new(ramp_envelope());
         lane.update_to(Beat(4.0));
         assert!((lane.last_value() - 1.0).abs() < 0.01);
 
@@ -280,7 +280,7 @@ mod tests {
     #[test]
     fn test_empty_envelope_returns_zero() {
         let empty: AutomationEnvelope<&str> = AutomationEnvelope::new("empty");
-        let mut lane = AutomationLane::new(empty);
+        let mut lane = AutomationLaneNode::new(empty);
         assert_eq!(lane.update_to(Beat(5.0)), 0.0);
 
         let mut output = [0.0f32; 1];
@@ -309,7 +309,7 @@ mod tests {
     fn test_process_fills_block_from_beat_input() {
         use tutti_core::dsp::F32x;
 
-        let mut lane = AutomationLane::new(ramp_envelope());
+        let mut lane = AutomationLaneNode::new(ramp_envelope());
         let block_size = 32;
 
         // Hold the beat at 4.0 for the whole block -> constant 1.0 output.
@@ -333,7 +333,7 @@ mod tests {
     fn test_process_updates_last_value() {
         use tutti_core::dsp::F32x;
 
-        let mut lane = AutomationLane::new(ramp_envelope());
+        let mut lane = AutomationLaneNode::new(ramp_envelope());
         assert_eq!(lane.last_value(), 0.0);
 
         let input_buf = beat_ramp(64, 2.0, 0.0);
@@ -356,7 +356,7 @@ mod tests {
     fn test_process_per_sample_varies() {
         use tutti_core::dsp::F32x;
 
-        let mut lane = AutomationLane::new(ramp_envelope());
+        let mut lane = AutomationLaneNode::new(ramp_envelope());
         // 120 BPM at 44.1 kHz.
         let per_sample = (120.0 / 60.0) / 44100.0;
         let input_buf = beat_ramp(32, 0.0, per_sample);

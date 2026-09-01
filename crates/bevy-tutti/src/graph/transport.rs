@@ -165,7 +165,7 @@ pub struct EngineNodes {
     /// beat 16384 without audible stair-stepping.
     ///
     /// Wire both ports, in that order, to a node that takes the beat as a
-    /// signal — `tutti_units::Lfo` in beat-synced mode, or an `AutomationLane`:
+    /// signal — `tutti_nodes::Lfo` in beat-synced mode, or an `AutomationLaneNode`:
     ///
     /// ```rust
     /// use bevy_app::prelude::*;
@@ -174,7 +174,7 @@ pub struct EngineNodes {
     /// use tutti_core::dsp::{pass, Net, Source};
     /// use tutti_core::transport::{TransportClock, BEAT_PORTS};
     ///
-    /// /// Stands in for a beat-driven node — `tutti_units::Lfo` in beat-synced
+    /// /// Stands in for a beat-driven node — `tutti_nodes::Lfo` in beat-synced
     /// /// mode, or an automation lane. What matters is that it takes the beat on
     /// /// two input ports, in port order.
     /// fn beat_driven_node() -> impl tutti_core::dsp::AudioUnit {

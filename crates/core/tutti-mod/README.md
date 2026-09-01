@@ -24,7 +24,7 @@ foundation and stands alone without it.
 
 The second payoff is that the value tiers agree by construction. One `Curve`
 (`beat -> Option<f32>`) is read at three rates — per frame (`AtomicTarget`), per
-block (a plugin's param producer), per sample (`tutti_units::ModulatorNode`) —
+block (a plugin's param producer), per sample (`tutti_nodes::ModulatorNode`) —
 and both the scalar and curve paths apply the identical
 `shape(raw, depth, polarity, curve)` expression, so switching delivery does not
 change what you hear.
@@ -32,8 +32,8 @@ change what you hear.
 ## Where it sits
 
 Depends only on `tutti-types` (for `Phase`, `PhaseIncrement`, `Depth`,
-`ParamAddr`) and `audio-automation` (for `CurveType`). `tutti-units` and
-`tutti-polysynth` depend on it — `tutti-units` re-exports `ModParams`,
+`ParamAddr`) and `audio-automation` (for `CurveType`). `tutti-nodes` and
+`tutti-polysynth` depend on it — `tutti-nodes` re-exports `ModParams`,
 `ModTarget` and `AtomicTarget` so a downstream node reaches them without a
 second dependency. `bevy-tutti` layers the ECS reconciliation on top.
 

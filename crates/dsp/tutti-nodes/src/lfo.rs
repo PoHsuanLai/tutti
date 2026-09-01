@@ -14,7 +14,7 @@
 //! The waveform math (`LfoShape::evaluate_periodic`), the random stepper
 //! (`RandomState`), and the `Lfo` modulator live in `tutti-mod`; this file is
 //! purely the adapter. `LfoShape` is re-exported so `use
-//! tutti_units::LfoShape` resolves here.
+//! tutti_nodes::LfoShape` resolves here.
 
 use tutti_core::Arc;
 use tutti_core::AtomicF32;
@@ -26,7 +26,7 @@ use tutti_core::{
 use tutti_core::{BeatDuration, Depth, Hz, Param, Phase, PhaseIncrement, SampleRate};
 
 // The waveform vocabulary + the pure LFO modulator live in tutti-mod now. Re-
-// exported so existing `use tutti_units::LfoShape` / `Lfo` sites are untouched.
+// exported so existing `use tutti_nodes::LfoShape` / `Lfo` sites are untouched.
 pub use tutti_mod::{Lfo, LfoShape, Modulator};
 
 /// Where `beat` falls within a cycle `beats_per_cycle` beats long.

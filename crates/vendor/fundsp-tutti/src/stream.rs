@@ -336,7 +336,7 @@ impl FileIn {
 ///
 /// **Folding is not lost, it moved to the caller**, which is where every other
 /// engine edge already puts it: `mic.rs`, `wav_out.rs`, `engine.rs` and
-/// `tutti-units`' `DownmixUnit` all narrow through [`tutti_types::fold_frame`]
+/// `tutti-nodes`' `DownmixNode` all narrow through [`tutti_types::fold_frame`]
 /// themselves. A caller wanting stereo does the same, and now *chooses* to.
 impl AudioIn for FileIn {
     /// A file has an end, and this impl folds a decode error into it (see the

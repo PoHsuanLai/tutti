@@ -20,7 +20,7 @@ use tutti_core::dsp::Real;
 use tutti_core::UnitParam;
 
 use crate::{
-    Compressor, DistortionNode, Gate, LimiterNode, StereoDelayLineNode, StereoLadderFilterNode,
+    CompressorNode, DistortionNode, GateNode, LimiterNode, StereoDelayLineNode, StereoLadderFilterNode,
     StereoSvfFilterNode,
 };
 
@@ -89,7 +89,7 @@ impl ParamPorts for DistortionNode {
     }
 }
 
-impl ParamPorts for Compressor {
+impl ParamPorts for CompressorNode {
     fn param_port(&self, param: UnitParam) -> Option<usize> {
         match param {
             UnitParam::Threshold => self.threshold_port(),
@@ -98,7 +98,7 @@ impl ParamPorts for Compressor {
     }
 }
 
-impl ParamPorts for Gate {
+impl ParamPorts for GateNode {
     fn param_port(&self, param: UnitParam) -> Option<usize> {
         match param {
             UnitParam::Threshold => self.threshold_port(),

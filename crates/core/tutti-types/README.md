@@ -43,7 +43,7 @@ load-bearing:
 
 ## Where it sits
 
-Under everything. `tutti-core`, `tutti-mod`, `tutti-units`, `tutti-spatial`,
+Under everything. `tutti-core`, `tutti-mod`, `tutti-nodes`, `tutti-spatial`,
 `tutti-analysis`, `tutti-export`, `tutti-midi-types`, `tutti-plugin-types`, the
 format hosts and `fundsp-tutti` all depend on it; it depends on no Tutti crate.
 `tutti-core` re-exports most of it, so a consumer already on the engine root

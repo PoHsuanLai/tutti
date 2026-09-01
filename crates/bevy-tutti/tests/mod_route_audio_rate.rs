@@ -2,7 +2,7 @@
 //!
 //! The matrix currently delivers every native-param route at frame rate (an
 //! `AtomicTarget` mirroring into the node's atomic). The per-sample tier exists
-//! — `ParamShaperUnit → ParamSumUnit → node.param_port` — but nothing connects a
+//! — `ParamShaperNode → ParamSumNode → node.param_port` — but nothing connects a
 //! `ModRoute` to it.
 //!
 //! These tests pin the translation, so the eventual reconciler has a spec rather
@@ -23,8 +23,8 @@ use tutti_core::dsp::{AudioUnit as _, Net, Source};
 use tutti_core::AudioNode;
 use tutti_mod::{shape, CurveType, LfoShape, Polarity};
 use tutti_types::{Depth, ParamAddr, UnitParam};
-use tutti_units::{
-    AtomicSourceUnit, DistortionNode, ParamPorts, ParamShaperUnit, ParamSumUnit, ShapeKind,
+use tutti_nodes::{
+    AtomicSourceNode, DistortionNode, ParamPorts, ParamShaperNode, ParamSumNode, ShapeKind,
 };
 
 fn app() -> App {
@@ -39,7 +39,7 @@ fn node_id(app: &App, entity: Entity) -> tutti_core::NodeId {
     app.world().get::<AudioNode>(entity).expect("AudioNode").0
 }
 
-/// **The translation is total.** Every input `ParamShaperUnit::new` needs is a
+/// **The translation is total.** Every input `ParamShaperNode::new` needs is a
 /// field already on `ModRoute` — no new authoring vocabulary, no new component.
 ///
 /// This is the thing that makes the reconciler mechanical rather than a design:
@@ -56,7 +56,7 @@ fn a_mod_route_carries_everything_the_chain_needs() {
         .with_curve(CurveType::Exponential);
 
     // The shaper is built straight from the route's fields.
-    let shaper = ParamShaperUnit::new(route.depth, route.polarity, route.curve);
+    let shaper = ParamShaperNode::new(route.depth, route.polarity, route.curve);
 
     // ...and it agrees with the control-rate shaping of the same route, which is
     // what keeps a route's sound stable if delivery ever switches tiers.
@@ -78,7 +78,7 @@ fn a_mod_route_carries_everything_the_chain_needs() {
 ///
 /// Written by hand here because no reconciler exists yet — this *is* the spec
 /// for one. Note what it needs that the matrix does not currently track: the
-/// target's param-port index, and one `ParamSumUnit` sized to the number of
+/// target's param-port index, and one `ParamSumNode` sized to the number of
 /// routes landing on that param.
 #[test]
 fn the_chain_a_reconciler_would_emit() {
@@ -106,12 +106,12 @@ fn the_chain_a_reconciler_would_emit() {
     // one shaper per route.
     let (base, sum, shaper) = {
         let mut commands = app.world_mut().commands();
-        let base = commands.spawn_audio_node(AtomicSourceUnit::new(5.0)).id();
+        let base = commands.spawn_audio_node(AtomicSourceNode::new(5.0)).id();
         let sum = commands
-            .spawn_audio_node(ParamSumUnit::new(1, 0.0, 10.0))
+            .spawn_audio_node(ParamSumNode::new(1, 0.0, 10.0))
             .id();
         let shaper = commands
-            .spawn_audio_node(ParamShaperUnit::new(
+            .spawn_audio_node(ParamShaperNode::new(
                 route.depth,
                 route.polarity,
                 route.curve,
@@ -127,7 +127,7 @@ fn the_chain_a_reconciler_would_emit() {
     // constant so the wiring is still assertable.
     let source_node = {
         let mut commands = app.world_mut().commands();
-        commands.spawn_audio_node(AtomicSourceUnit::new(1.0)).id()
+        commands.spawn_audio_node(AtomicSourceNode::new(1.0)).id()
     };
     app.world_mut().flush();
 
@@ -198,17 +198,17 @@ fn two_routes_onto_one_param_share_one_sum() {
     // Two routes → a sum with 2 offset ports (1 + 2 inputs total).
     let (base, sum, a, b) = {
         let mut c = app.world_mut().commands();
-        let base = c.spawn_audio_node(AtomicSourceUnit::new(5.0)).id();
-        let sum = c.spawn_audio_node(ParamSumUnit::new(2, 0.0, 10.0)).id();
+        let base = c.spawn_audio_node(AtomicSourceNode::new(5.0)).id();
+        let sum = c.spawn_audio_node(ParamSumNode::new(2, 0.0, 10.0)).id();
         let a = c
-            .spawn_audio_node(ParamShaperUnit::new(
+            .spawn_audio_node(ParamShaperNode::new(
                 Depth(0.25),
                 Polarity::Bipolar,
                 CurveType::Linear,
             ))
             .id();
         let b = c
-            .spawn_audio_node(ParamShaperUnit::new(
+            .spawn_audio_node(ParamShaperNode::new(
                 Depth(0.25),
                 Polarity::Bipolar,
                 CurveType::Linear,
@@ -249,7 +249,7 @@ fn the_chain_sums_to_what_the_frame_rate_path_would() {
     let (base, min, max) = (5.0f32, 0.0f32, 10.0f32);
 
     // Audio-rate: two shapers into a sum.
-    let mut sum = ParamSumUnit::new(2, min, max);
+    let mut sum = ParamSumNode::new(2, min, max);
     let shaped = shape(1.0, depth, Polarity::Bipolar, CurveType::Linear);
     let mut out = [0.0f32; 1];
     sum.tick(&[base, shaped, shaped], &mut out);

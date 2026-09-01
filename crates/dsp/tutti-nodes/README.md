@@ -1,4 +1,4 @@
-# tutti-units
+# tutti-nodes
 
 The engine's built-in DSP nodes: filters, delays, dynamics, modulation effects,
 mixing and automation.
@@ -11,13 +11,13 @@ them through. Roughly:
 - **Filters** — `SvfFilterNode`, `LadderFilterNode`, `EqBandNode`, and their
   stereo pairs.
 - **Delay** — `DelayLine`, `DelayLineNode`, `StereoDelayLineNode`.
-- **Dynamics** — `Compressor`, `Gate`, `BrickwallLimiter`, `LimiterNode`.
+- **Dynamics** — `Compressor`, `Gate`, `BrickwallLimiterNode`, `LimiterNode`.
 - **Modulation effects** — `ChorusNode`, `FlangerNode`, `PhaserNode`.
 - **Distortion** — `DistortionNode` and its `ShapeKind` waveshapers.
 - **Modulation sources** — `ModulatorNode<M>` (aliased `LfoNode`), the
   per-sample adapter over a pure `tutti_mod::Modulator`.
-- **Mixing** — `ChannelSumUnit` (K sources × N channels → one N-wide output),
-  `DownmixUnit`, `BusStripUnit` (volume / balance / mute).
+- **Mixing** — `ChannelSumNode` (K sources × N channels → one N-wide output),
+  `DownmixNode`, `BusStripNode` (volume / balance / mute).
 - **Param modulation** — `ParamPorts` plus the `param_mod` chain builders, for a
   node that declares its own audio-rate control inputs.
 - **Automation / convolution** — the `automation` lane and recording units, and
@@ -33,7 +33,7 @@ Two neighbours it is deliberately not:
 
 - **No geometry.** The VBAP and binaural panners moved to
   [`tutti-spatial`](../tutti-spatial), which depends on *this* crate (its mix
-  builder is assembled from `ChannelSumUnit` + `SvfFilterNode`). The arrow runs
+  builder is assembled from `ChannelSumNode` + `SvfFilterNode`). The arrow runs
   geometry → DSP and never back.
 - **No Bevy, and no feature to add it.** The entire ECS binding layer — param
   and marker components, reconcile/spawn systems, deferred convolver load —

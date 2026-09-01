@@ -25,7 +25,7 @@ use tutti_core::dsp::Net;
 use tutti_core::transport::Transport;
 use tutti_core::AudioNode;
 use tutti_types::{Depth, Hz, ParamAddr, UnitParam};
-use tutti_units::DistortionNode;
+use tutti_nodes::DistortionNode;
 
 /// The rate the modulated LFO is authored at, and the floor of its range.
 const CARRIER_RATE: f32 = 2.0;
@@ -35,7 +35,7 @@ fn app_with_graph() -> (App, Entity) {
 
     let mut net = Net::new(0, 1);
     let node = net.push(Box::new(DistortionNode::new(
-        tutti_units::ShapeKind::Tanh,
+        tutti_nodes::ShapeKind::Tanh,
         1.0,
     )));
     net.pipe_output(node);

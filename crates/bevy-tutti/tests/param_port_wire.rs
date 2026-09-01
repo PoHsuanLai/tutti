@@ -2,7 +2,7 @@
 //!
 //! The imperative form of this edge is fragile — `Net::pipe_input` walks every
 //! input port of a node, so a later "wire the audio in" call silently
-//! overwrites a param edge (see tutti-units' `audio_rate_param_mod` test). This
+//! overwrites a param edge (see tutti-nodes' `audio_rate_param_mod` test). This
 //! file asks whether routing the same edge through the declarative layer makes
 //! that clobber unrepresentable.
 
@@ -16,7 +16,7 @@ use bevy_tutti::AudioEngineState;
 use tutti_core::dsp::{sine_hz, Net, Source};
 use tutti_core::AudioNode;
 use tutti_types::UnitParam;
-use tutti_units::{AtomicSourceUnit, DistortionNode, ParamPorts, ParamSumUnit, ShapeKind};
+use tutti_nodes::{AtomicSourceNode, DistortionNode, ParamPorts, ParamSumNode, ShapeKind};
 
 fn app() -> App {
     let mut app = App::new();
@@ -55,8 +55,8 @@ fn audio_and_param_ports_are_declared_together() {
     let target = spawn_node(&mut app, dist);
     let osc = spawn_node(&mut app, sine_hz::<f32>(440.0));
     // The base-sum chain feeding the param port.
-    let base = spawn_node(&mut app, AtomicSourceUnit::new(9.0));
-    let sum = spawn_node(&mut app, ParamSumUnit::new(0, 0.0, 10.0));
+    let base = spawn_node(&mut app, AtomicSourceNode::new(9.0));
+    let sum = spawn_node(&mut app, ParamSumNode::new(0, 0.0, 10.0));
 
     // ONE declaration covering both kinds of port.
     app.world_mut()
@@ -123,7 +123,7 @@ fn redeclaring_audio_does_not_disturb_the_param_port() {
     let target = spawn_node(&mut app, dist);
     let osc = spawn_node(&mut app, sine_hz::<f32>(440.0));
     let other = spawn_node(&mut app, sine_hz::<f32>(220.0));
-    let sum = spawn_node(&mut app, ParamSumUnit::new(0, 0.0, 10.0));
+    let sum = spawn_node(&mut app, ParamSumNode::new(0, 0.0, 10.0));
 
     app.world_mut().entity_mut(target).insert(
         PortSources::silent()
@@ -186,7 +186,7 @@ fn an_undeclared_param_port_is_untouched() {
     let drive_port = dist.param_port(UnitParam::Drive).unwrap();
     let target = spawn_node(&mut app, dist);
     let osc = spawn_node(&mut app, sine_hz::<f32>(440.0));
-    let sum = spawn_node(&mut app, ParamSumUnit::new(0, 0.0, 10.0));
+    let sum = spawn_node(&mut app, ParamSumNode::new(0, 0.0, 10.0));
 
     // Wire the param port imperatively first — a host that has not adopted the
     // declaration for it yet.
@@ -217,7 +217,7 @@ fn an_undeclared_param_port_is_untouched() {
 ///
 /// Structure only, matching this crate's other wiring tests — that the chain
 /// *renders* (drive 9.0 saturating where 1.0 does not) is asserted in
-/// tutti-units' `audio_rate_param_mod`, where a backend-free `Net` can be ticked
+/// tutti-nodes' `audio_rate_param_mod`, where a backend-free `Net` can be ticked
 /// directly. A net with a backend defers to `commit`, so ticking the frontend
 /// here would prove nothing about what the engine runs.
 #[test]
@@ -229,8 +229,8 @@ fn the_whole_declared_chain_reaches_the_graph() {
     let drive_port = dist.param_port(UnitParam::Drive).unwrap();
     let target = spawn_node(&mut app, dist);
     let osc = spawn_node(&mut app, sine_hz::<f32>(440.0));
-    let base = spawn_node(&mut app, AtomicSourceUnit::new(9.0));
-    let sum = spawn_node(&mut app, ParamSumUnit::new(0, 0.0, 10.0));
+    let base = spawn_node(&mut app, AtomicSourceNode::new(9.0));
+    let sum = spawn_node(&mut app, ParamSumNode::new(0, 0.0, 10.0));
 
     app.world_mut()
         .entity_mut(sum)

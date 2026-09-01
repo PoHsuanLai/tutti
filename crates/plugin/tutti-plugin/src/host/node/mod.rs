@@ -676,12 +676,12 @@ impl PluginClient {
     }
 
     /// Build a [`PluginParamTarget`] for one of this plugin's params — a
-    /// [`ModTarget`](tutti_units::ModTarget) a modulation router accumulates
+    /// [`ModTarget`](tutti_nodes::ModTarget) a modulation router accumulates
     /// into, whose value the plugin receives over the per-block
     /// [`ParameterChanges`] path.
     ///
     /// The returned `Arc` is usable as BOTH a `ModTarget` (route to it) and a
-    /// [`Curve`](tutti_units::automation::Curve) (install it in a `TimedParam`
+    /// [`Curve`](tutti_nodes::automation::Curve) (install it in a `TimedParam`
     /// via [`set_param_automation_source`](Self::set_param_automation_source));
     /// keep the same `Arc` for both so accumulation is visible to the per-block
     /// read. This mirrors how a native node's `ModParams::mod_target` returns an
@@ -723,14 +723,14 @@ impl PluginClient {
 /// value the plugin receives over the per-block `ParameterChanges` path (vs a
 /// native node's target, which mirrors into an atomic). The caller installs it
 /// (as a `TimedParam` via `set_param_automation_source`) after routing.
-impl tutti_units::ModParams for PluginClient {
+impl tutti_nodes::ModParams for PluginClient {
     fn mod_target(
         &self,
         param: tutti_core::ParamAddr,
         base: f32,
         min: f32,
         max: f32,
-    ) -> Option<Arc<dyn tutti_units::ModTarget>> {
+    ) -> Option<Arc<dyn tutti_nodes::ModTarget>> {
         match param {
             tutti_core::ParamAddr::Id(param_id) => {
                 Some(self.param_target(param_id, base, min, max))

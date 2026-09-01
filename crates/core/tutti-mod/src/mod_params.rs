@@ -1,7 +1,7 @@
 //! [`ModParams`] — a node/plugin declares its own **control-rate**-modulatable
 //! params, returning a ready-made [`ModTarget`] a router accumulates into.
 //!
-//! The control-rate sibling of `tutti_units::ParamPorts` (which declares
+//! The control-rate sibling of `tutti_nodes::ParamPorts` (which declares
 //! audio-rate *ports*). A thing is control-rate-modulatable **iff** it implements
 //! this trait — the enforced opt-in. It keys on [`ParamAddr`]
 //! ([`UnitParam`](tutti_types::UnitParam) for native params, an opaque id for
@@ -11,9 +11,9 @@
 //!
 //! The trait lives here, in `tutti-mod`, because it is node-agnostic — it names
 //! only [`ParamAddr`] (from `tutti-types`) and [`ModTarget`] (this crate). The
-//! *impls* live in each node's own crate (`tutti-units`, `tutti-polysynth`,
-//! `tutti-plugin`), which is why no single node crate owns the trait. `tutti-units`
-//! re-exports it so existing `tutti_units::ModParams` users are unaffected.
+//! *impls* live in each node's own crate (`tutti-nodes`, `tutti-polysynth`,
+//! `tutti-plugin`), which is why no single node crate owns the trait. `tutti-nodes`
+//! re-exports it so existing `tutti_nodes::ModParams` users are unaffected.
 //!
 //! The node does **not** know its own `(base, min, max)` — that is DAW vocabulary
 //! (a per-effect-kind table, app-side). The caller supplies it; the node/plugin

@@ -1,7 +1,7 @@
 //! The mixer strip — volume, stereo balance, mute — as one addressable unit.
 //!
 //! A mixer bus applies three things to a summed signal: a fader, a balance, and
-//! a mute. [`BusStripUnit`] is all three in one node, driven through the ordinary
+//! a mute. [`BusStripNode`] is all three in one node, driven through the ordinary
 //! [`UnitParam`] setting path, so a host reconciles it with the same generic
 //! machinery it uses for a filter cutoff and needs no downcast.
 //!
@@ -32,7 +32,7 @@
 //! speakers. A mixer strip is stereo-to-stereo — it *rebalances* a signal that is
 //! already stereo, and must leave it untouched at centre. Those are different
 //! functions, and nothing in tutti or fundsp implemented the second one. See
-//! [`BusStripUnit::balance_gains`].
+//! [`BusStripNode::balance_gains`].
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -52,7 +52,7 @@ use crate::ParamPorts;
 /// Params: [`UnitParam::Volume`] (linear amplitude), [`UnitParam::Pan`] (`-1..1`)
 /// and [`UnitParam::Mute`] (`>= 0.5` is muted). Settings for anything else are
 /// ignored, which is what lets a host push params without knowing the node type.
-pub struct BusStripUnit {
+pub struct BusStripNode {
     volume: Param<Amplitude>,
     pan: Param<Pan>,
     /// Not a [`Param`]: that requires `Unit<Raw = f32>` and a mute is a boolean.
@@ -79,7 +79,7 @@ pub struct BusStripUnit {
     mod_pan: bool,
 }
 
-impl BusStripUnit {
+impl BusStripNode {
     /// A stereo strip at unity volume, centred, unmuted.
     pub fn new() -> Self {
         Self::with_channels(ChannelLayout::STEREO)
@@ -90,7 +90,7 @@ impl BusStripUnit {
     ///
     /// A zero-wide strip is meaningless — there would be nothing to fade — so an
     /// empty layout is clamped to mono, matching
-    /// [`ChannelSumUnit::new`](crate::ChannelSumUnit::new).
+    /// [`ChannelSumNode::new`](crate::ChannelSumNode::new).
     pub fn with_channels(channels: impl Into<ChannelLayout>) -> Self {
         let layout = channels.into();
         Self {
@@ -304,7 +304,7 @@ impl BusStripUnit {
     }
 }
 
-impl Default for BusStripUnit {
+impl Default for BusStripNode {
     fn default() -> Self {
         Self::new()
     }
@@ -312,7 +312,7 @@ impl Default for BusStripUnit {
 
 /// Clones share the atomics rather than forking them — a cloned strip is another
 /// handle on the same fader, which is what `Net`'s node cloning needs.
-impl Clone for BusStripUnit {
+impl Clone for BusStripNode {
     fn clone(&self) -> Self {
         Self {
             volume: self.volume.handle(),
@@ -325,7 +325,7 @@ impl Clone for BusStripUnit {
     }
 }
 
-impl AudioUnit for BusStripUnit {
+impl AudioUnit for BusStripNode {
     fn inputs(&self) -> usize {
         self.channels() + self.mod_volume as usize + self.mod_pan as usize
     }
@@ -416,7 +416,7 @@ impl AudioUnit for BusStripUnit {
     }
 }
 
-impl ParamPorts for BusStripUnit {
+impl ParamPorts for BusStripNode {
     fn param_port(&self, param: UnitParam) -> Option<usize> {
         match param {
             UnitParam::Volume => self.volume_port(),
@@ -426,7 +426,7 @@ impl ParamPorts for BusStripUnit {
     }
 }
 
-impl ModParams for BusStripUnit {
+impl ModParams for BusStripNode {
     fn mod_target(
         &self,
         p: ParamAddr,
@@ -450,12 +450,12 @@ mod tests {
 
     /// Drive a param the way a host does — through a `Setting` — rather than by
     /// calling the setter, so the test covers the path `AudioParam<U, P>` uses.
-    fn set_param(strip: &mut BusStripUnit, param: UnitParam, value: f32) {
+    fn set_param(strip: &mut BusStripNode, param: UnitParam, value: f32) {
         let node = tutti_core::dsp::NodeId::new();
         strip.set(node_setting(node, param, value).peel());
     }
 
-    fn tick2(strip: &mut BusStripUnit, l: f32, r: f32) -> (f32, f32) {
+    fn tick2(strip: &mut BusStripNode, l: f32, r: f32) -> (f32, f32) {
         let mut out = [0.0f32; 2];
         strip.tick(&[l, r], &mut out);
         (out[0], out[1])
@@ -466,20 +466,20 @@ mod tests {
     /// a centred signal by 3 dB.
     #[test]
     fn unity_at_defaults() {
-        let mut s = BusStripUnit::new();
+        let mut s = BusStripNode::new();
         assert_eq!(tick2(&mut s, 0.5, -0.25), (0.5, -0.25));
     }
 
     #[test]
     fn volume_scales_both_channels() {
-        let mut s = BusStripUnit::new();
+        let mut s = BusStripNode::new();
         s.set_volume(Amplitude(0.5));
         assert_eq!(tick2(&mut s, 1.0, 1.0), (0.5, 0.5));
     }
 
     #[test]
     fn balance_attenuates_the_far_channel_only() {
-        let mut s = BusStripUnit::new();
+        let mut s = BusStripNode::new();
         s.set_pan(Pan(-1.0)); // hard left
         assert_eq!(tick2(&mut s, 1.0, 1.0), (1.0, 0.0));
         s.set_pan(Pan(1.0)); // hard right
@@ -495,7 +495,7 @@ mod tests {
     /// `pan = -2` would give the left channel a gain of 3.
     #[test]
     fn balance_saturates_out_of_range() {
-        let mut s = BusStripUnit::new();
+        let mut s = BusStripNode::new();
         s.set_pan(Pan(-2.0));
         assert_eq!(tick2(&mut s, 1.0, 1.0), (1.0, 0.0));
         s.set_pan(Pan(2.0));
@@ -507,7 +507,7 @@ mod tests {
     /// come back at the wrong level.
     #[test]
     fn mute_silences_and_is_reversible() {
-        let mut s = BusStripUnit::new();
+        let mut s = BusStripNode::new();
         s.set_volume(Amplitude(0.75));
         s.set_muted(true);
         assert_eq!(tick2(&mut s, 1.0, 1.0), (0.0, 0.0));
@@ -517,7 +517,7 @@ mod tests {
 
     #[test]
     fn set_dispatches_each_unit_param() {
-        let mut s = BusStripUnit::new();
+        let mut s = BusStripNode::new();
 
         set_param(&mut s, UnitParam::Volume, 0.25);
         assert_eq!(s.volume_value(), Amplitude(0.25));
@@ -535,7 +535,7 @@ mod tests {
     /// reconciler push any param without dispatching on node type.
     #[test]
     fn ignores_params_it_does_not_own() {
-        let mut s = BusStripUnit::new();
+        let mut s = BusStripNode::new();
         set_param(&mut s, UnitParam::Cutoff, 8000.0);
         set_param(&mut s, UnitParam::Drive, 4.0);
         assert_eq!(tick2(&mut s, 1.0, 1.0), (1.0, 1.0));
@@ -543,20 +543,20 @@ mod tests {
 
     #[test]
     fn param_ports_are_absent_unless_built_with_them() {
-        let plain = BusStripUnit::new();
+        let plain = BusStripNode::new();
         assert_eq!(plain.inputs(), 2);
         assert_eq!(plain.param_port(UnitParam::Volume), None);
         assert_eq!(plain.param_port(UnitParam::Pan), None);
 
         // Volume then pan, after the two audio inputs.
-        let both = BusStripUnit::with_param_inputs(ChannelLayout::STEREO, true, true);
+        let both = BusStripNode::with_param_inputs(ChannelLayout::STEREO, true, true);
         assert_eq!(both.inputs(), 4);
         assert_eq!(both.param_port(UnitParam::Volume), Some(2));
         assert_eq!(both.param_port(UnitParam::Pan), Some(3));
 
         // Pan alone still lands directly after the audio inputs — the index is
         // derived, not a fixed slot.
-        let pan_only = BusStripUnit::with_param_inputs(ChannelLayout::STEREO, false, true);
+        let pan_only = BusStripNode::with_param_inputs(ChannelLayout::STEREO, false, true);
         assert_eq!(pan_only.inputs(), 3);
         assert_eq!(pan_only.param_port(UnitParam::Volume), None);
         assert_eq!(pan_only.param_port(UnitParam::Pan), Some(2));
@@ -565,7 +565,7 @@ mod tests {
     /// A present port overrides the atomic per sample.
     #[test]
     fn param_port_overrides_the_atomic() {
-        let mut s = BusStripUnit::with_param_inputs(ChannelLayout::STEREO, true, false);
+        let mut s = BusStripNode::with_param_inputs(ChannelLayout::STEREO, true, false);
         s.set_volume(Amplitude(1.0));
         let mut out = [0.0f32; 2];
         // Ports: [L, R, volume]
@@ -575,7 +575,7 @@ mod tests {
 
     #[test]
     fn clone_shares_atomics() {
-        let original = BusStripUnit::new();
+        let original = BusStripNode::new();
         let clone = original.clone();
         clone.set_volume(Amplitude(0.1));
         clone.set_muted(true);
@@ -587,7 +587,7 @@ mod tests {
     /// a surround channel has no left/right axis to sit on.
     #[test]
     fn extra_channels_are_faded_but_not_balanced() {
-        let mut s = BusStripUnit::with_channels(ChannelLayout::from(3u16));
+        let mut s = BusStripNode::with_channels(ChannelLayout::from(3u16));
         s.set_volume(Amplitude(0.5));
         s.set_pan(Pan(-1.0));
         let mut out = [0.0f32; 3];
@@ -610,7 +610,7 @@ mod tests {
     fn route_reports_mute_on_every_channel() {
         use tutti_core::dsp::Signal;
 
-        let mut s = BusStripUnit::with_channels(ChannelLayout::from(3u16));
+        let mut s = BusStripNode::with_channels(ChannelLayout::from(3u16));
         s.set_muted(true);
         let mut input = SignalFrame::new(3);
         for c in 0..3 {
@@ -634,7 +634,7 @@ mod tests {
     fn process_matches_tick() {
         use tutti_core::BufferVec;
 
-        let mut strip = BusStripUnit::new();
+        let mut strip = BusStripNode::new();
         strip.set_volume(Amplitude(0.6));
         strip.set_pan(Pan(0.25));
 
@@ -683,7 +683,7 @@ mod tests {
     /// *stereo*. The arity assertion fails against that version.
     #[test]
     fn a_modulated_strip_is_as_wide_as_it_was_asked_for() {
-        let s = BusStripUnit::with_param_inputs(ChannelLayout::from(6u16), true, true);
+        let s = BusStripNode::with_param_inputs(ChannelLayout::from(6u16), true, true);
         assert_eq!(s.outputs(), 6, "the width is what was asked for");
         assert_eq!(s.inputs(), 8, "six audio inputs, then volume and pan");
         assert_eq!(

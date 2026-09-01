@@ -12,7 +12,7 @@ use std::sync::Arc;
 use tutti_core::dsp::{AudioUnit as _, Net};
 use tutti_core::{AtomicF32, Ordering};
 use tutti_types::UnitParam;
-use tutti_units::{AtomicSourceUnit, DistortionNode, ParamPorts, ParamSumUnit, ShapeKind};
+use tutti_nodes::{AtomicSourceNode, DistortionNode, ParamPorts, ParamSumNode, ShapeKind};
 
 /// Render one sample of `dist` fed a constant, reporting the output.
 /// Saturation is monotonic in drive, so the output is a proxy for "what drive
@@ -43,8 +43,8 @@ fn a_wired_param_port_makes_the_node_ignore_its_atomic() {
     let target = net.push(Box::new(dist));
 
     // Port carries a high drive; the atomic says something else entirely.
-    let base = net.push(Box::new(AtomicSourceUnit::new(9.0)));
-    let sum = net.push(Box::new(ParamSumUnit::new(0, 0.0, 10.0)));
+    let base = net.push(Box::new(AtomicSourceNode::new(9.0)));
+    let sum = net.push(Box::new(ParamSumNode::new(0, 0.0, 10.0)));
     net.connect(base, 0, sum, 0);
     net.connect(sum, 0, target, port);
     net.connect_input(0, target, 0);
@@ -83,10 +83,10 @@ fn the_authored_value_must_land_on_the_sums_base_cell() {
     let port = dist.param_port(UnitParam::Drive).unwrap();
     let target = net.push(Box::new(dist));
 
-    let base_unit = AtomicSourceUnit::new(1.0);
+    let base_unit = AtomicSourceNode::new(1.0);
     let base_cell = base_unit.shared();
     let base = net.push(Box::new(base_unit));
-    let sum = net.push(Box::new(ParamSumUnit::new(0, 0.0, 10.0)));
+    let sum = net.push(Box::new(ParamSumNode::new(0, 0.0, 10.0)));
     net.connect(base, 0, sum, 0);
     net.connect(sum, 0, target, port);
     net.connect_input(0, target, 0);
@@ -123,8 +123,8 @@ fn sharing_one_cell_makes_control_rate_and_audio_rate_compose() {
     let target = net.push(Box::new(dist));
 
     // The audio-rate base reads that very cell.
-    let base = net.push(Box::new(AtomicSourceUnit::over(Arc::clone(&shared))));
-    let sum = net.push(Box::new(ParamSumUnit::new(0, 0.0, 10.0)));
+    let base = net.push(Box::new(AtomicSourceNode::over(Arc::clone(&shared))));
+    let sum = net.push(Box::new(ParamSumNode::new(0, 0.0, 10.0)));
     net.connect(base, 0, sum, 0);
     net.connect(sum, 0, target, port);
     net.connect_input(0, target, 0);
@@ -148,7 +148,7 @@ fn sharing_one_cell_makes_control_rate_and_audio_rate_compose() {
 /// **A private base cell cannot be moved by a control-rate write.**
 ///
 /// The negative of `sharing_one_cell_makes_control_rate_and_audio_rate_compose`
-/// above, and the reason [`AtomicSourceUnit::over`] exists. Build the chain's
+/// above, and the reason [`AtomicSourceNode::over`] exists. Build the chain's
 /// base with `new()` — a cell only the chain can see — and a control-rate
 /// accumulator mirroring into *its own* cell has nowhere to land.
 ///
@@ -166,8 +166,8 @@ fn a_private_base_cell_cannot_be_moved_by_a_control_rate_write() {
     let target = net.push(Box::new(dist));
 
     // The chain's base is a private cell: `new`, and the handle is dropped.
-    let base = net.push(Box::new(AtomicSourceUnit::new(1.0)));
-    let sum = net.push(Box::new(ParamSumUnit::new(0, 0.0, 10.0)));
+    let base = net.push(Box::new(AtomicSourceNode::new(1.0)));
+    let sum = net.push(Box::new(ParamSumNode::new(0, 0.0, 10.0)));
     net.connect(base, 0, sum, 0);
     net.connect(sum, 0, target, port);
     net.connect_input(0, target, 0);

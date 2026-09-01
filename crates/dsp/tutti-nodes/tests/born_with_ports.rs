@@ -1,7 +1,7 @@
 //! Does born-with-ports actually cost nothing when nothing is modulating?
 //!
 //! Born-with-ports means every modulatable node is spawned with its param ports
-//! on and an `AtomicSourceUnit → ParamSumUnit → port` chain wired at creation,
+//! on and an `AtomicSourceNode → ParamSumNode → port` chain wired at creation,
 //! whether or not a route ever lands on it. It is the simpler policy — routing
 //! becomes pure wiring, with no node rebuild and no arity change — but "simpler"
 //! is only worth having if the idle case is genuinely free.
@@ -12,8 +12,8 @@
 use tutti_core::dsp::{AudioUnit as _, Net};
 use tutti_core::Ordering;
 use tutti_types::{Hz, UnitParam, Q};
-use tutti_units::{
-    AtomicSourceUnit, DistortionNode, ParamPorts, ParamSumUnit, ShapeKind, StereoSvfFilterNode,
+use tutti_nodes::{
+    AtomicSourceNode, DistortionNode, ParamPorts, ParamSumNode, ShapeKind, StereoSvfFilterNode,
     SvfType,
 };
 
@@ -75,7 +75,7 @@ fn a_ported_node_with_an_unfed_port_reads_the_param_as_zero() {
 /// cost of an always-on port is zero *given* an always-on base feeding it the
 /// authored value. The node's own `distortion_unmodulated_matches_held_constant`
 /// tests the same property by holding the port at the authored value by hand;
-/// this one routes it through the real `AtomicSourceUnit → ParamSumUnit` chain,
+/// this one routes it through the real `AtomicSourceNode → ParamSumNode` chain,
 /// so it covers the chain's arithmetic too.
 #[test]
 fn ported_plus_base_chain_is_bit_identical_to_plain() {
@@ -88,8 +88,8 @@ fn ported_plus_base_chain_is_bit_identical_to_plain() {
     let drive_port = dist.param_port(UnitParam::Drive).unwrap();
     let target = net.push(Box::new(dist));
     // The always-on base chain, carrying the authored 5.0.
-    let base = net.push(Box::new(AtomicSourceUnit::new(5.0)));
-    let sum = net.push(Box::new(ParamSumUnit::new(0, 0.0, 10.0)));
+    let base = net.push(Box::new(AtomicSourceNode::new(5.0)));
+    let sum = net.push(Box::new(ParamSumNode::new(0, 0.0, 10.0)));
     net.connect(base, 0, sum, 0);
     net.connect(sum, 0, target, drive_port);
     net.connect_input(0, target, 0);
@@ -115,7 +115,7 @@ fn ported_plus_base_chain_is_bit_identical_to_plain() {
 /// modulatable param, paid whether or not anything modulates.
 ///
 /// A distortion has 1 modulatable param, an SVF filter has 2. The chain is
-/// `AtomicSourceUnit + ParamSumUnit` per param, so the cost scales with params,
+/// `AtomicSourceNode + ParamSumNode` per param, so the cost scales with params,
 /// not with nodes — which is the number worth knowing before committing.
 #[test]
 fn the_idle_cost_is_two_nodes_and_two_edges_per_param() {
@@ -128,8 +128,8 @@ fn the_idle_cost_is_two_nodes_and_two_edges_per_param() {
     let before = net.size();
 
     // The always-on base chain for ONE param.
-    let base = net.push(Box::new(AtomicSourceUnit::new(5.0)));
-    let sum = net.push(Box::new(ParamSumUnit::new(0, 0.0, 10.0)));
+    let base = net.push(Box::new(AtomicSourceNode::new(5.0)));
+    let sum = net.push(Box::new(ParamSumNode::new(0, 0.0, 10.0)));
     net.connect(base, 0, sum, 0);
     net.connect(sum, 0, target, drive_port);
 
@@ -171,11 +171,11 @@ fn routing_a_modulation_is_pure_wiring() {
     let drive_port = dist.param_port(UnitParam::Drive).unwrap();
     let target = net.push(Box::new(dist));
 
-    let base_unit = AtomicSourceUnit::new(1.0);
+    let base_unit = AtomicSourceNode::new(1.0);
     let base_cell = base_unit.shared();
     let base = net.push(Box::new(base_unit));
     // Sized for one route up front — the born-with-ports bet.
-    let sum = net.push(Box::new(ParamSumUnit::new(1, 0.0, 10.0)));
+    let sum = net.push(Box::new(ParamSumNode::new(1, 0.0, 10.0)));
     net.connect(base, 0, sum, 0);
     net.connect(sum, 0, target, drive_port);
     net.connect_input(0, target, 0);
@@ -189,7 +189,7 @@ fn routing_a_modulation_is_pure_wiring() {
 
     // "Route a modulation": push a source and connect it. That is the whole
     // operation — no rebuild, no replace, no crossfade.
-    let source = net.push(Box::new(AtomicSourceUnit::new(4.0)));
+    let source = net.push(Box::new(AtomicSourceNode::new(4.0)));
     net.connect(source, 0, sum, 1);
     net.check();
 
@@ -239,8 +239,8 @@ fn a_wide_node_is_born_with_its_ports_after_its_audio_inputs() {
     // with nothing width-aware about it beyond asking for the port.
     let mut net = Net::new(6, 6);
     let target = net.push(Box::new(dist));
-    let base = net.push(Box::new(AtomicSourceUnit::new(5.0)));
-    let sum = net.push(Box::new(ParamSumUnit::new(0, 0.0, 10.0)));
+    let base = net.push(Box::new(AtomicSourceNode::new(5.0)));
+    let sum = net.push(Box::new(ParamSumNode::new(0, 0.0, 10.0)));
     net.connect(base, 0, sum, 0);
     net.connect(sum, 0, target, drive_port);
     for c in 0..6 {

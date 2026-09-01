@@ -42,7 +42,7 @@ use tutti_core::{ChannelLayout, Tail};
 /// re-wires (`Net::crossfade` keeps the `NodeId`, so declarations naming it stay
 /// valid).
 #[derive(Clone, Debug)]
-pub struct ChannelSumUnit {
+pub struct ChannelSumNode {
     sources: usize,
     /// The width this bus sums at — its declared output layout.
     ///
@@ -55,7 +55,7 @@ pub struct ChannelSumUnit {
     layout: ChannelLayout,
 }
 
-impl ChannelSumUnit {
+impl ChannelSumNode {
     /// A bus summing `sources` inputs, each `channels` wide. Both are clamped to
     /// at least 1 (a zero-wide or zero-source bus is meaningless — the graph
     /// would have nothing to sum).
@@ -84,7 +84,7 @@ impl ChannelSumUnit {
     }
 }
 
-impl tutti_core::AudioUnit for ChannelSumUnit {
+impl tutti_core::AudioUnit for ChannelSumNode {
     fn inputs(&self) -> usize {
         self.sources * self.channels()
     }
@@ -167,7 +167,7 @@ mod tests {
 
     #[test]
     fn arity_and_width() {
-        let u = ChannelSumUnit::new(3, ChannelLayout::from(6u16));
+        let u = ChannelSumNode::new(3, ChannelLayout::from(6u16));
         assert_eq!(u.inputs(), 18); // 3 sources × 6 channels
         assert_eq!(u.outputs(), 6);
         assert_eq!(u.channels(), 6);
@@ -176,7 +176,7 @@ mod tests {
 
     #[test]
     fn clamps_degenerate_args() {
-        let u = ChannelSumUnit::new(0, ChannelLayout::EMPTY);
+        let u = ChannelSumNode::new(0, ChannelLayout::EMPTY);
         assert_eq!(u.sources(), 1);
         assert_eq!(u.channels(), 1);
     }
@@ -184,7 +184,7 @@ mod tests {
     #[test]
     fn tick_sums_per_channel() {
         // Two quad sources: source A = [1,2,3,4], source B = [10,20,30,40].
-        let mut u = ChannelSumUnit::new(2, ChannelLayout::QUAD);
+        let mut u = ChannelSumNode::new(2, ChannelLayout::QUAD);
         let input = [1.0, 2.0, 3.0, 4.0, 10.0, 20.0, 30.0, 40.0];
         let mut out = [0.0f32; 4];
         u.tick(&input, &mut out);
@@ -194,7 +194,7 @@ mod tests {
     #[test]
     fn stereo_case_matches_a_plain_stereo_sum() {
         // channels == 2 degenerates to the classic stereo fan-in.
-        let mut u = ChannelSumUnit::new(3, ChannelLayout::STEREO);
+        let mut u = ChannelSumNode::new(3, ChannelLayout::STEREO);
         // 3 stereo sources interleaved per source: (L,R),(L,R),(L,R).
         let input = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6];
         let mut out = [0.0f32; 2];
@@ -212,7 +212,7 @@ mod tests {
     /// feels wrong" long before anyone suspects the sum node.
     #[test]
     fn sums_rather_than_averages() {
-        let mut u = ChannelSumUnit::new(4, ChannelLayout::MONO);
+        let mut u = ChannelSumNode::new(4, ChannelLayout::MONO);
         let mut out = [0.0f32; 1];
         u.tick(&[1.0, 1.0, 1.0, 1.0], &mut out);
         assert_eq!(out[0], 4.0, "must sum; averaging would give 1.0");

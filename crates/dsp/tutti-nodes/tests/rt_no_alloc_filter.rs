@@ -1,15 +1,17 @@
-//! Regression gate: modulation + delay nodes must not allocate per-buffer.
+//! Regression gate: filter / EQ nodes must not allocate per-buffer.
 //!
-//! Covers `LfoNode`, `DelayLineNode`, `StereoDelayLineNode`, and the three
-//! modulation effects `ChorusNode`, `FlangerNode`, `PhaserNode`. The big
-//! shared risk is the delay-line allocation in `set_sample_rate` — that
-//! call rebuilds the underlying `DelayLine` and must be invoked outside
-//! the no-alloc gate.
+//! Covers `LadderFilterNode`, `EqBandNode`, `SvfFilterNode`, and
+//! `StereoSvfFilterNode`. The shared risk is the coefficient cache: the
+//! `maybe_update` hot path conditionally recomputes coeffs when params
+//! change. A regression that recomputes every sample is still alloc-free
+//! today, but a regression that *materialises* a coeff history (e.g. for
+//! parameter smoothing) would land here.
 
 use assert_no_alloc::AllocDisabler;
 use tutti_core::{AudioUnit, BufferVec, SampleRate};
-use tutti_units::{
-    ChorusNode, DelayLineNode, FlangerNode, LfoNode, LfoShape, PhaserNode, StereoDelayLineNode,
+use tutti_nodes::{
+    EqBandNode, LadderFilterNode, LadderType, StereoLadderFilterNode, StereoSvfFilterNode,
+    SvfFilterNode, SvfType,
 };
 
 #[global_allocator]
@@ -27,57 +29,8 @@ fn fill_with_signal(vec: &mut BufferVec, amplitude: f32) {
 }
 
 #[test]
-fn lfo_node_process_is_allocation_free() {
-    let mut node = LfoNode::new(LfoShape::Sine).with_frequency(2.0_f32);
-    node.set_sample_rate(SampleRate(48_000.0));
-
-    // 0 inputs, 1 output.
-    let input_vec = BufferVec::new(0);
-    let mut output_vec = BufferVec::new(1);
-
-    for _ in 0..16 {
-        let input = input_vec.buffer_ref();
-        let mut output = output_vec.buffer_mut();
-        node.process(64, &input, &mut output);
-    }
-
-    assert_no_alloc::assert_no_alloc(|| {
-        for _ in 0..5_000 {
-            let input = input_vec.buffer_ref();
-            let mut output = output_vec.buffer_mut();
-            node.process(64, &input, &mut output);
-        }
-    });
-}
-
-#[test]
-fn lfo_random_shape_process_is_allocation_free() {
-    // RandomSmooth path has its own per-instance state machine.
-    let mut node = LfoNode::new(LfoShape::RandomSmooth).with_frequency(4.0_f32);
-    node.set_sample_rate(SampleRate(48_000.0));
-
-    let input_vec = BufferVec::new(0);
-    let mut output_vec = BufferVec::new(1);
-
-    for _ in 0..16 {
-        let input = input_vec.buffer_ref();
-        let mut output = output_vec.buffer_mut();
-        node.process(64, &input, &mut output);
-    }
-
-    assert_no_alloc::assert_no_alloc(|| {
-        for _ in 0..5_000 {
-            let input = input_vec.buffer_ref();
-            let mut output = output_vec.buffer_mut();
-            node.process(64, &input, &mut output);
-        }
-    });
-}
-
-#[test]
-fn delay_line_node_process_is_allocation_free() {
-    let mut node = DelayLineNode::new(2.0_f32, 0.25_f32, 0.4_f32);
-    // set_sample_rate rebuilds the delay line — must run outside the gate.
+fn ladder_filter_process_is_allocation_free() {
+    let mut node = LadderFilterNode::<f64>::new(LadderType::LP24, 1_000.0, 0.6);
     node.set_sample_rate(SampleRate(48_000.0));
 
     let mut input_vec = BufferVec::new(1);
@@ -100,8 +53,56 @@ fn delay_line_node_process_is_allocation_free() {
 }
 
 #[test]
-fn stereo_delay_line_node_process_is_allocation_free() {
-    let mut node = StereoDelayLineNode::new(2.0_f32, 0.30_f32, 0.31_f32, 0.4_f32);
+fn eq_band_process_is_allocation_free() {
+    let mut node = EqBandNode::<f64>::new(SvfType::Bell, 1_000.0, 1.0, 6.0);
+    node.set_sample_rate(SampleRate(48_000.0));
+
+    let mut input_vec = BufferVec::new(1);
+    let mut output_vec = BufferVec::new(1);
+    fill_with_signal(&mut input_vec, 0.5);
+
+    for _ in 0..16 {
+        let input = input_vec.buffer_ref();
+        let mut output = output_vec.buffer_mut();
+        node.process(64, &input, &mut output);
+    }
+
+    assert_no_alloc::assert_no_alloc(|| {
+        for _ in 0..2_000 {
+            let input = input_vec.buffer_ref();
+            let mut output = output_vec.buffer_mut();
+            node.process(64, &input, &mut output);
+        }
+    });
+}
+
+#[test]
+fn svf_filter_mono_process_is_allocation_free() {
+    let mut node = SvfFilterNode::<f64>::new(SvfType::LowPass, 800.0, 0.707);
+    node.set_sample_rate(SampleRate(48_000.0));
+
+    let mut input_vec = BufferVec::new(1);
+    let mut output_vec = BufferVec::new(1);
+    fill_with_signal(&mut input_vec, 0.5);
+
+    for _ in 0..16 {
+        let input = input_vec.buffer_ref();
+        let mut output = output_vec.buffer_mut();
+        node.process(64, &input, &mut output);
+    }
+
+    assert_no_alloc::assert_no_alloc(|| {
+        for _ in 0..2_000 {
+            let input = input_vec.buffer_ref();
+            let mut output = output_vec.buffer_mut();
+            node.process(64, &input, &mut output);
+        }
+    });
+}
+
+#[test]
+fn svf_filter_stereo_process_is_allocation_free() {
+    let mut node = StereoSvfFilterNode::<f64>::new(SvfType::HighPass, 200.0, 0.707);
     node.set_sample_rate(SampleRate(48_000.0));
 
     let mut input_vec = BufferVec::new(2);
@@ -124,10 +125,11 @@ fn stereo_delay_line_node_process_is_allocation_free() {
 }
 
 #[test]
-fn stereo_delay_line_node_wide_6ch_process_is_allocation_free() {
-    // The per-channel delay-line Vec must be built at construction; the wide
-    // path must not allocate per buffer.
-    let mut node = StereoDelayLineNode::with_channels(6, 2.0_f32, 0.30_f32, 0.4_f32);
+fn svf_filter_wide_6ch_process_is_allocation_free() {
+    // The per-channel integrator Vec must be built at construction — a
+    // regression that (re)allocated it per buffer, or per-channel scratch in
+    // `process`, would trip here.
+    let mut node = StereoSvfFilterNode::<f64>::with_channels(6, SvfType::LowPass, 800.0, 0.707);
     node.set_sample_rate(SampleRate(48_000.0));
 
     let mut input_vec = BufferVec::new(6);
@@ -150,16 +152,15 @@ fn stereo_delay_line_node_wide_6ch_process_is_allocation_free() {
 }
 
 #[test]
-fn chorus_node_process_is_allocation_free() {
-    let mut node = ChorusNode::new();
+fn ladder_filter_wide_6ch_process_is_allocation_free() {
+    let mut node = StereoLadderFilterNode::<f64>::with_channels(6, LadderType::LP24, 1_000.0, 0.6);
     node.set_sample_rate(SampleRate(48_000.0));
 
-    // Chorus is stereo in/out.
-    let mut input_vec = BufferVec::new(2);
-    let mut output_vec = BufferVec::new(2);
-    fill_with_signal(&mut input_vec, 0.4);
+    let mut input_vec = BufferVec::new(6);
+    let mut output_vec = BufferVec::new(6);
+    fill_with_signal(&mut input_vec, 0.5);
 
-    for _ in 0..32 {
+    for _ in 0..16 {
         let input = input_vec.buffer_ref();
         let mut output = output_vec.buffer_mut();
         node.process(64, &input, &mut output);
@@ -175,48 +176,29 @@ fn chorus_node_process_is_allocation_free() {
 }
 
 #[test]
-fn flanger_node_process_is_allocation_free() {
-    let mut node = FlangerNode::new();
+fn svf_filter_with_parameter_changes_is_allocation_free() {
+    // Exercises the `maybe_update` branch: every iteration nudges the
+    // frequency atomic, forcing a coefficient recomputation.
+    let mut node = SvfFilterNode::<f64>::new(SvfType::Bell, 1_000.0, 1.0);
     node.set_sample_rate(SampleRate(48_000.0));
-
-    let mut input_vec = BufferVec::new(2);
-    let mut output_vec = BufferVec::new(2);
-    fill_with_signal(&mut input_vec, 0.4);
-
-    for _ in 0..32 {
-        let input = input_vec.buffer_ref();
-        let mut output = output_vec.buffer_mut();
-        node.process(64, &input, &mut output);
-    }
-
-    assert_no_alloc::assert_no_alloc(|| {
-        for _ in 0..2_000 {
-            let input = input_vec.buffer_ref();
-            let mut output = output_vec.buffer_mut();
-            node.process(64, &input, &mut output);
-        }
-    });
-}
-
-#[test]
-fn phaser_node_process_is_allocation_free() {
-    // 4-stage phaser. Construction allocates the all-pass Vec, but `process`
-    // must reuse it.
-    let mut node = PhaserNode::new(4);
-    node.set_sample_rate(SampleRate(48_000.0));
+    let freq = node.frequency();
 
     let mut input_vec = BufferVec::new(1);
     let mut output_vec = BufferVec::new(1);
-    fill_with_signal(&mut input_vec, 0.4);
+    fill_with_signal(&mut input_vec, 0.5);
 
-    for _ in 0..32 {
+    for _ in 0..16 {
         let input = input_vec.buffer_ref();
         let mut output = output_vec.buffer_mut();
         node.process(64, &input, &mut output);
     }
 
     assert_no_alloc::assert_no_alloc(|| {
+        let mut hz = 500.0f32;
         for _ in 0..2_000 {
+            hz = if hz > 4_000.0 { 500.0 } else { hz + 1.0 };
+            freq.store(hz, core::sync::atomic::Ordering::Release);
+
             let input = input_vec.buffer_ref();
             let mut output = output_vec.buffer_mut();
             node.process(64, &input, &mut output);

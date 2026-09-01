@@ -1,4 +1,4 @@
-//! Compressor with external sidechain, soft knee and makeup gain.
+//! CompressorNode with external sidechain, soft knee and makeup gain.
 
 use tutti_core::Arc;
 use tutti_core::AtomicF32;
@@ -89,7 +89,7 @@ impl CompressorCore {
     /// Compute compressor gain (linear) for the given sidechain level, with an
     /// optional per-sample threshold override (dB). `None` reads the atomic
     /// (the fast path); `Some(db)` overrides it (the audio-rate modulation
-    /// path). The override is clamped the same way [`Compressor::set_threshold`]
+    /// path). The override is clamped the same way [`CompressorNode::set_threshold`]
     /// would store it (no extra clamp — threshold has no min/max in the setter).
     #[inline]
     pub fn compute_gain_with_threshold(
@@ -108,27 +108,27 @@ impl CompressorCore {
     }
 }
 
-/// Compressor with external sidechain. Channel-count is runtime-configurable:
+/// CompressorNode with external sidechain. Channel-count is runtime-configurable:
 /// `channels = N` means N audio inputs + N sidechain inputs + N outputs, with
 /// a single linked gain computed from the max-abs of the sidechain channels.
 ///
-/// - `Compressor::mono(..)` — 2 inputs (audio + sidechain), 1 output.
-/// - `Compressor::stereo(..)` — 4 inputs (L, R, SC-L, SC-R), 2 outputs, linked gain.
-/// - `Compressor::with_channels(.., n)` — arbitrary N (1..=8 in practice).
+/// - `CompressorNode::mono(..)` — 2 inputs (audio + sidechain), 1 output.
+/// - `CompressorNode::stereo(..)` — 4 inputs (L, R, SC-L, SC-R), 2 outputs, linked gain.
+/// - `CompressorNode::with_channels(.., n)` — arbitrary N (1..=8 in practice).
 ///
 /// # Port layout & audio-rate modulation
 ///
 /// The audio inputs (`0..ch`) come first, then the sidechain inputs
 /// (`ch..2*ch`). For audio-rate threshold modulation the node can grow **one
 /// optional param-input port after all audio+sidechain inputs** (see
-/// [`Compressor::with_param_inputs`]): the threshold port sits at index `2*ch`
+/// [`CompressorNode::with_param_inputs`]): the threshold port sits at index `2*ch`
 /// — index 4 for a stereo compressor — and overrides the threshold atomic per
 /// sample, in [`Db`]. Absent, the node is a plain `2*ch`-in node with zero
 /// added cost, which is the common case.
 ///
 /// Ask [`threshold_port`](Self::threshold_port) rather than computing the
 /// index: it moves with the width.
-pub struct Compressor {
+pub struct CompressorNode {
     core: CompressorCore,
     channels: ChannelLayout,
     /// When true, a threshold param-input port (dB) follows all audio +
@@ -137,7 +137,7 @@ pub struct Compressor {
     mod_threshold: bool,
 }
 
-impl Compressor {
+impl CompressorNode {
     /// Mono + mono sidechain: 2 inputs (audio, sidechain), 1 output.
     ///
     /// `threshold_db` is the level in [`Db`] above which reduction begins —
@@ -351,14 +351,14 @@ impl Compressor {
     /// **measurement**, for driving an input meter.
     ///
     /// This is the level *fed to* the detector, before any gain decision.
-    /// Distinct from `Gate`'s similarly-shaped reading, which is an open
+    /// Distinct from `GateNode`'s similarly-shaped reading, which is an open
     /// fraction rather than a level; the unit types are what keep them apart.
     pub fn envelope_level(&self) -> Amplitude {
         self.core.envelope_level()
     }
 }
 
-impl AudioUnit for Compressor {
+impl AudioUnit for CompressorNode {
     fn inputs(&self) -> usize {
         2 * self.channels.count() as usize + self.mod_threshold as usize
     }
@@ -459,7 +459,7 @@ impl AudioUnit for Compressor {
     }
 }
 
-impl Clone for Compressor {
+impl Clone for CompressorNode {
     fn clone(&self) -> Self {
         Self {
             core: self.core.clone(),
@@ -476,7 +476,7 @@ mod tests {
 
     #[test]
     fn test_compressor_mono_reduces_gain_on_loud_sidechain() {
-        let mut comp = Compressor::mono(-20.0, 4.0, 0.0001, 0.1);
+        let mut comp = CompressorNode::mono(-20.0, 4.0, 0.0001, 0.1);
         comp.set_sample_rate(tutti_core::SampleRate(44100.0));
 
         let mut output = [0.0f32];
@@ -491,7 +491,7 @@ mod tests {
 
     #[test]
     fn test_compressor_mono_no_reduction_below_threshold() {
-        let mut comp = Compressor::mono(-10.0, 4.0, 0.001, 0.1);
+        let mut comp = CompressorNode::mono(-10.0, 4.0, 0.001, 0.1);
         comp.set_sample_rate(tutti_core::SampleRate(44100.0));
 
         let mut output = [0.0f32];
@@ -505,10 +505,10 @@ mod tests {
 
     #[test]
     fn test_compressor_soft_knee_differs_from_hard_knee() {
-        let mut hard = Compressor::mono(-20.0, 4.0, 0.0001, 0.1);
+        let mut hard = CompressorNode::mono(-20.0, 4.0, 0.0001, 0.1);
         hard.set_sample_rate(tutti_core::SampleRate(44100.0));
 
-        let mut soft = Compressor::mono(-20.0, 4.0, 0.0001, 0.1).with_soft_knee(12.0);
+        let mut soft = CompressorNode::mono(-20.0, 4.0, 0.0001, 0.1).with_soft_knee(12.0);
         soft.set_sample_rate(tutti_core::SampleRate(44100.0));
 
         let mut hard_out = [0.0f32];
@@ -529,10 +529,10 @@ mod tests {
 
     #[test]
     fn test_compressor_makeup_gain() {
-        let mut comp = Compressor::mono(-20.0, 4.0, 0.0001, 0.1).with_makeup(6.0);
+        let mut comp = CompressorNode::mono(-20.0, 4.0, 0.0001, 0.1).with_makeup(6.0);
         comp.set_sample_rate(tutti_core::SampleRate(44100.0));
 
-        let mut comp_no_makeup = Compressor::mono(-20.0, 4.0, 0.0001, 0.1);
+        let mut comp_no_makeup = CompressorNode::mono(-20.0, 4.0, 0.0001, 0.1);
         comp_no_makeup.set_sample_rate(tutti_core::SampleRate(44100.0));
 
         let mut output = [0.0f32];
@@ -548,7 +548,7 @@ mod tests {
 
     #[test]
     fn test_compressor_reset() {
-        let mut comp = Compressor::mono(-20.0, 4.0, 0.0001, 0.1);
+        let mut comp = CompressorNode::mono(-20.0, 4.0, 0.0001, 0.1);
         comp.set_sample_rate(tutti_core::SampleRate(44100.0));
 
         let mut output = [0.0f32];
@@ -564,14 +564,14 @@ mod tests {
 
     #[test]
     fn test_compressor_ratio_clamps_to_minimum() {
-        let comp = Compressor::mono(-20.0, 4.0, 0.001, 0.1);
+        let comp = CompressorNode::mono(-20.0, 4.0, 0.001, 0.1);
         comp.set_ratio(0.5);
         assert_eq!(comp.ratio().load(Ordering::Acquire), 1.0);
     }
 
     #[test]
     fn test_compressor_stereo_reduces_on_loud_sidechain() {
-        let mut comp = Compressor::stereo(-20.0, 4.0, 0.0001, 0.1);
+        let mut comp = CompressorNode::stereo(-20.0, 4.0, 0.0001, 0.1);
         comp.set_sample_rate(tutti_core::SampleRate(44100.0));
 
         let mut output = [0.0f32; 2];
@@ -586,17 +586,17 @@ mod tests {
 
     #[test]
     fn test_compressor_stereo_channel_count() {
-        let mono = Compressor::mono(-20.0, 4.0, 0.001, 0.1);
+        let mono = CompressorNode::mono(-20.0, 4.0, 0.001, 0.1);
         assert_eq!(mono.channels(), 1);
         assert_eq!(mono.inputs(), 2);
         assert_eq!(mono.outputs(), 1);
 
-        let stereo = Compressor::stereo(-20.0, 4.0, 0.001, 0.1);
+        let stereo = CompressorNode::stereo(-20.0, 4.0, 0.001, 0.1);
         assert_eq!(stereo.channels(), 2);
         assert_eq!(stereo.inputs(), 4);
         assert_eq!(stereo.outputs(), 2);
 
-        let quad = Compressor::with_channels(-20.0, 4.0, 0.001, 0.1, 4);
+        let quad = CompressorNode::with_channels(-20.0, 4.0, 0.001, 0.1, 4);
         assert_eq!(quad.channels(), 4);
         assert_eq!(quad.inputs(), 8);
         assert_eq!(quad.outputs(), 4);
@@ -604,8 +604,8 @@ mod tests {
 
     #[test]
     fn test_compressor_get_id_distinguishes_mono_and_stereo() {
-        let mono = Compressor::mono(-20.0, 4.0, 0.001, 0.1);
-        let stereo = Compressor::stereo(-20.0, 4.0, 0.001, 0.1);
+        let mono = CompressorNode::mono(-20.0, 4.0, 0.001, 0.1);
+        let stereo = CompressorNode::stereo(-20.0, 4.0, 0.001, 0.1);
         assert_eq!(mono.get_id(), crate::node_id::COMPRESSOR_ID);
         assert_eq!(stereo.get_id(), crate::node_id::STEREO_COMPRESSOR_ID);
     }
@@ -614,11 +614,11 @@ mod tests {
 
     #[test]
     fn compressor_default_no_ports() {
-        let mono = Compressor::mono(-20.0, 4.0, 0.001, 0.1);
+        let mono = CompressorNode::mono(-20.0, 4.0, 0.001, 0.1);
         assert_eq!(mono.inputs(), 2);
         assert_eq!(mono.threshold_port(), None);
 
-        let stereo = Compressor::stereo(-20.0, 4.0, 0.001, 0.1);
+        let stereo = CompressorNode::stereo(-20.0, 4.0, 0.001, 0.1);
         assert_eq!(stereo.inputs(), 4);
         assert_eq!(stereo.threshold_port(), None);
     }
@@ -626,16 +626,16 @@ mod tests {
     #[test]
     fn compressor_param_port_arity_and_indices() {
         // Mono: audio(1) + sidechain(1) = 2, threshold port at index 2.
-        let mono = Compressor::with_param_inputs(-20.0, 4.0, 0.001, 0.1, 1, true);
+        let mono = CompressorNode::with_param_inputs(-20.0, 4.0, 0.001, 0.1, 1, true);
         assert_eq!(mono.inputs(), 3);
         assert_eq!(mono.threshold_port(), Some(2));
         // Stereo: audio(2) + sidechain(2) = 4, threshold port at index 4
         // (strictly AFTER the audio+sidechain inputs).
-        let stereo = Compressor::with_param_inputs(-20.0, 4.0, 0.001, 0.1, 2, true);
+        let stereo = CompressorNode::with_param_inputs(-20.0, 4.0, 0.001, 0.1, 2, true);
         assert_eq!(stereo.inputs(), 5);
         assert_eq!(stereo.threshold_port(), Some(4));
         // Flag false → no port, arity unchanged.
-        let off = Compressor::with_param_inputs(-20.0, 4.0, 0.001, 0.1, 2, false);
+        let off = CompressorNode::with_param_inputs(-20.0, 4.0, 0.001, 0.1, 2, false);
         assert_eq!(off.inputs(), 4);
         assert_eq!(off.threshold_port(), None);
     }
@@ -644,10 +644,10 @@ mod tests {
     fn compressor_unmodulated_matches_held_constant() {
         // A modulated mono compressor whose threshold port is held at the same
         // value as a plain compressor's atomic must produce identical output.
-        let mut plain = Compressor::mono(-20.0, 4.0, 0.0001, 0.1);
+        let mut plain = CompressorNode::mono(-20.0, 4.0, 0.0001, 0.1);
         plain.set_sample_rate(tutti_core::SampleRate(44100.0));
 
-        let mut modn = Compressor::with_param_inputs(-20.0, 4.0, 0.0001, 0.1, 1, true);
+        let mut modn = CompressorNode::with_param_inputs(-20.0, 4.0, 0.0001, 0.1, 1, true);
         modn.set_sample_rate(tutti_core::SampleRate(44100.0));
 
         let mut plain_out = [0.0f32];

@@ -7,7 +7,7 @@
 //! ```
 //! use tutti_core::dsp::{AudioUnit, Net};
 //! use tutti_core::{Hz, Q};
-//! use tutti_units::{SvfFilterNode, SvfType};
+//! use tutti_nodes::{SvfFilterNode, SvfType};
 //!
 //! // A stereo net whose single node is a lowpass, fed by the net's input.
 //! let mut net = Net::new(2, 2);
@@ -111,7 +111,7 @@ pub mod buffer;
 mod lfo;
 // `LfoNode` is now `ModulatorNode<Lfo>` — the fundsp adapter over a pure
 // `tutti_mod::Modulator`. `LfoShape`/`Lfo`/`Modulator` are re-exported from
-// `tutti-mod` through `lfo` so existing `use tutti_units::LfoShape` sites are
+// `tutti-mod` through `lfo` so existing `use tutti_nodes::LfoShape` sites are
 // untouched.
 pub use lfo::{Lfo, LfoMode, LfoNode, LfoShape, Modulator, ModulatorNode};
 
@@ -128,7 +128,7 @@ pub use filter::{
 };
 
 mod dynamics;
-pub use dynamics::{BrickwallLimiter, Compressor, Gate, LimiterNode};
+pub use dynamics::{BrickwallLimiterNode, CompressorNode, GateNode, LimiterNode};
 
 // A node declares its own audio-rate param-input ports (cutoff, drive, …). No
 // Bevy dependency — pure node capability.
@@ -137,8 +137,8 @@ pub use param_ports::ParamPorts;
 
 pub mod param_mod;
 pub use param_mod::{
-    build_param_mod, wire_param_mod, AtomicSourceUnit, ClampBounds, ParamModChain, ParamModShaping,
-    ParamShaperUnit, ParamSumUnit,
+    build_param_mod, wire_param_mod, AtomicSourceNode, ClampBounds, ParamModChain, ParamModShaping,
+    ParamShaperNode, ParamSumNode,
 };
 
 // The native `ModParams` impls (the trait itself lives in tutti-mod).
@@ -147,7 +147,7 @@ mod mod_params;
 // Re-export the `ModParams` trait + modulation *target* surface from tutti-mod so
 // downstream crates (e.g. tutti-plugin implementing `ModParams`) reach it here
 // alongside `Lfo`, without a separate tutti-mod dep. The routing feature is on
-// (tutti-units deps tutti-mod with `features = ["routing"]`).
+// (tutti-nodes deps tutti-mod with `features = ["routing"]`).
 pub use tutti_mod::{
     AtomicTarget, BeatLfo, CurveModulator, LayerKey, LayeredCurve, ModParams, ModTarget,
 };
@@ -158,21 +158,21 @@ pub use tutti_mod::{
 // stereo signals. `spatial`'s `build_vbap_mix` is one consumer, not the only
 // one.
 mod mix_bus;
-pub use mix_bus::ChannelSumUnit;
+pub use mix_bus::ChannelSumNode;
 
 mod downmix_unit;
-pub use downmix_unit::DownmixUnit;
+pub use downmix_unit::DownmixNode;
 
 // The mixer strip: volume, stereo balance, mute. Ungated for the same reason as
 // `mix_bus` — a fader is not a spatial concept.
 mod strip;
-pub use strip::BusStripUnit;
+pub use strip::BusStripNode;
 
 // NOTE: the spatial panners (`VbapPannerNode`, the HRTF binaural pair) and
 // `build_vbap_mix` moved to the `tutti-spatial` crate. They were the crate's
 // only *geometry* — azimuth, elevation, speaker layouts — where everything left
 // here is per-channel signal processing. `tutti-spatial` depends on this crate
-// (its mix builder is assembled from `ChannelSumUnit` + `SvfFilterNode`), so the
+// (its mix builder is assembled from `ChannelSumNode` + `SvfFilterNode`), so the
 // arrow points geometry → DSP and nothing here names it.
 
 mod modulation;

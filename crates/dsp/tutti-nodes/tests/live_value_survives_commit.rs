@@ -39,7 +39,7 @@ use std::sync::atomic::Ordering;
 
 use tutti_core::dsp::{AudioUnit, Net};
 use tutti_types::{Db, Hz, Q};
-use tutti_units::{EqBandNode, SvfType};
+use tutti_nodes::{EqBandNode, SvfType};
 
 /// Build a net with a backend, so `commit`/`migrate` actually run.
 ///

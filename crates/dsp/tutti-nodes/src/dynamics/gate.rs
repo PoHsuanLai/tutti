@@ -96,27 +96,27 @@ impl GateCore {
     }
 }
 
-/// Gate with external sidechain. Channel-count is runtime-configurable:
+/// GateNode with external sidechain. Channel-count is runtime-configurable:
 /// `channels = N` means N audio inputs + N sidechain inputs + N outputs, with
 /// a single linked gate level computed from the max-abs of the sidechain channels.
 ///
-/// - `Gate::mono(..)` — 2 inputs (audio + sidechain), 1 output.
-/// - `Gate::stereo(..)` — 4 inputs (L, R, SC-L, SC-R), 2 outputs, linked gate.
-/// - `Gate::with_channels(.., n)` — arbitrary N.
+/// - `GateNode::mono(..)` — 2 inputs (audio + sidechain), 1 output.
+/// - `GateNode::stereo(..)` — 4 inputs (L, R, SC-L, SC-R), 2 outputs, linked gate.
+/// - `GateNode::with_channels(.., n)` — arbitrary N.
 ///
 /// # Port layout & audio-rate modulation
 ///
 /// The audio inputs (`0..ch`) come first, then the sidechain inputs
 /// (`ch..2*ch`). For audio-rate threshold modulation the node can grow **one
 /// optional param-input port after all audio+sidechain inputs** (see
-/// [`Gate::with_param_inputs`]): the threshold port sits at index `2*ch` —
+/// [`GateNode::with_param_inputs`]): the threshold port sits at index `2*ch` —
 /// index 4 for a stereo gate — and overrides the threshold atomic per sample,
 /// in [`Db`]. Absent, the node is a plain `2*ch`-in node, which is the common
 /// case.
 ///
 /// Ask [`threshold_port`](Self::threshold_port) rather than computing the
 /// index: it moves with the width.
-pub struct Gate {
+pub struct GateNode {
     core: GateCore,
     channels: ChannelLayout,
     /// When true, a threshold param-input port (dB) follows all audio +
@@ -125,7 +125,7 @@ pub struct Gate {
     mod_threshold: bool,
 }
 
-impl Gate {
+impl GateNode {
     /// Mono + mono sidechain: 2 inputs (audio, sidechain), 1 output.
     ///
     /// `threshold_db` is the sidechain level in [`Db`] at or above which the
@@ -315,7 +315,7 @@ impl Gate {
     }
 }
 
-impl AudioUnit for Gate {
+impl AudioUnit for GateNode {
     fn inputs(&self) -> usize {
         2 * self.channels.count() as usize + self.mod_threshold as usize
     }
@@ -413,7 +413,7 @@ impl AudioUnit for Gate {
     }
 }
 
-impl Clone for Gate {
+impl Clone for GateNode {
     fn clone(&self) -> Self {
         Self {
             core: self.core.clone(),
@@ -430,14 +430,14 @@ mod tests {
 
     #[test]
     fn test_gate_starts_closed() {
-        let gate = Gate::mono(-30.0, 0.001, 0.01, 0.1);
+        let gate = GateNode::mono(-30.0, 0.001, 0.01, 0.1);
         assert!(!gate.is_open());
         assert_eq!(gate.gate_level(), 0.0);
     }
 
     #[test]
     fn test_gate_opens_on_loud_sidechain() {
-        let mut gate = Gate::mono(-20.0, 0.0001, 0.01, 0.1);
+        let mut gate = GateNode::mono(-20.0, 0.0001, 0.01, 0.1);
         gate.set_sample_rate(tutti_core::SampleRate(44100.0));
 
         let mut output = [0.0f32];
@@ -452,7 +452,7 @@ mod tests {
 
     #[test]
     fn test_gate_closes_on_quiet_sidechain() {
-        let mut gate = Gate::mono(-20.0, 0.001, 0.001, 0.001).with_range(-60.0);
+        let mut gate = GateNode::mono(-20.0, 0.001, 0.001, 0.001).with_range(-60.0);
         gate.set_sample_rate(tutti_core::SampleRate(44100.0));
 
         let mut output = [0.0f32];
@@ -472,13 +472,13 @@ mod tests {
 
     #[test]
     fn test_gate_range_clamps_to_non_positive() {
-        let gate = Gate::mono(-20.0, 0.001, 0.01, 0.1).with_range(10.0);
+        let gate = GateNode::mono(-20.0, 0.001, 0.01, 0.1).with_range(10.0);
         assert_eq!(gate.range().load(Ordering::Acquire), 0.0);
     }
 
     #[test]
     fn test_gate_range_attenuates_rather_than_mutes() {
-        let mut gate = Gate::mono(-20.0, 0.001, 0.001, 0.001).with_range(-12.0);
+        let mut gate = GateNode::mono(-20.0, 0.001, 0.001, 0.001).with_range(-12.0);
         gate.set_sample_rate(tutti_core::SampleRate(44100.0));
 
         let mut output = [0.0f32];
@@ -498,7 +498,7 @@ mod tests {
 
     #[test]
     fn test_gate_reset() {
-        let mut gate = Gate::mono(-20.0, 0.0001, 0.01, 0.1);
+        let mut gate = GateNode::mono(-20.0, 0.0001, 0.01, 0.1);
         gate.set_sample_rate(tutti_core::SampleRate(44100.0));
 
         let mut output = [0.0f32];
@@ -514,7 +514,7 @@ mod tests {
 
     #[test]
     fn test_gate_stereo_opens_on_loud_sidechain() {
-        let mut gate = Gate::stereo(-20.0, 0.0001, 0.01, 0.1);
+        let mut gate = GateNode::stereo(-20.0, 0.0001, 0.01, 0.1);
         gate.set_sample_rate(tutti_core::SampleRate(44100.0));
 
         let mut output = [0.0f32; 2];
@@ -530,12 +530,12 @@ mod tests {
 
     #[test]
     fn test_gate_stereo_channel_count() {
-        let mono = Gate::mono(-20.0, 0.001, 0.01, 0.1);
+        let mono = GateNode::mono(-20.0, 0.001, 0.01, 0.1);
         assert_eq!(mono.channels(), 1);
         assert_eq!(mono.inputs(), 2);
         assert_eq!(mono.outputs(), 1);
 
-        let stereo = Gate::stereo(-20.0, 0.001, 0.01, 0.1);
+        let stereo = GateNode::stereo(-20.0, 0.001, 0.01, 0.1);
         assert_eq!(stereo.channels(), 2);
         assert_eq!(stereo.inputs(), 4);
         assert_eq!(stereo.outputs(), 2);
@@ -543,7 +543,7 @@ mod tests {
 
     #[test]
     fn test_gate_stereo_linking() {
-        let mut gate = Gate::stereo(-20.0, 0.0001, 0.01, 0.1);
+        let mut gate = GateNode::stereo(-20.0, 0.0001, 0.01, 0.1);
         gate.set_sample_rate(tutti_core::SampleRate(44100.0));
 
         let mut output = [0.0f32; 2];
@@ -562,8 +562,8 @@ mod tests {
 
     #[test]
     fn test_gate_get_id_distinguishes_mono_and_stereo() {
-        let mono = Gate::mono(-20.0, 0.001, 0.01, 0.1);
-        let stereo = Gate::stereo(-20.0, 0.001, 0.01, 0.1);
+        let mono = GateNode::mono(-20.0, 0.001, 0.01, 0.1);
+        let stereo = GateNode::stereo(-20.0, 0.001, 0.01, 0.1);
         assert_eq!(mono.get_id(), crate::node_id::GATE_ID);
         assert_eq!(stereo.get_id(), crate::node_id::STEREO_GATE_ID);
     }
@@ -572,11 +572,11 @@ mod tests {
 
     #[test]
     fn gate_default_no_ports() {
-        let mono = Gate::mono(-20.0, 0.001, 0.01, 0.1);
+        let mono = GateNode::mono(-20.0, 0.001, 0.01, 0.1);
         assert_eq!(mono.inputs(), 2);
         assert_eq!(mono.threshold_port(), None);
 
-        let stereo = Gate::stereo(-20.0, 0.001, 0.01, 0.1);
+        let stereo = GateNode::stereo(-20.0, 0.001, 0.01, 0.1);
         assert_eq!(stereo.inputs(), 4);
         assert_eq!(stereo.threshold_port(), None);
     }
@@ -584,16 +584,16 @@ mod tests {
     #[test]
     fn gate_param_port_arity_and_indices() {
         // Mono: audio(1) + sidechain(1) = 2, threshold port at index 2.
-        let mono = Gate::with_param_inputs(-20.0, 0.001, 0.01, 0.1, 1, true);
+        let mono = GateNode::with_param_inputs(-20.0, 0.001, 0.01, 0.1, 1, true);
         assert_eq!(mono.inputs(), 3);
         assert_eq!(mono.threshold_port(), Some(2));
         // Stereo: audio(2) + sidechain(2) = 4, threshold port at index 4
         // (strictly AFTER the audio+sidechain inputs).
-        let stereo = Gate::with_param_inputs(-20.0, 0.001, 0.01, 0.1, 2, true);
+        let stereo = GateNode::with_param_inputs(-20.0, 0.001, 0.01, 0.1, 2, true);
         assert_eq!(stereo.inputs(), 5);
         assert_eq!(stereo.threshold_port(), Some(4));
         // Flag false → no port, arity unchanged.
-        let off = Gate::with_param_inputs(-20.0, 0.001, 0.01, 0.1, 2, false);
+        let off = GateNode::with_param_inputs(-20.0, 0.001, 0.01, 0.1, 2, false);
         assert_eq!(off.inputs(), 4);
         assert_eq!(off.threshold_port(), None);
     }
@@ -602,10 +602,10 @@ mod tests {
     fn gate_unmodulated_matches_held_constant() {
         // A modulated mono gate whose threshold port is held at the same value
         // as a plain gate's atomic must produce identical output.
-        let mut plain = Gate::mono(-20.0, 0.0001, 0.01, 0.1);
+        let mut plain = GateNode::mono(-20.0, 0.0001, 0.01, 0.1);
         plain.set_sample_rate(tutti_core::SampleRate(44100.0));
 
-        let mut modn = Gate::with_param_inputs(-20.0, 0.0001, 0.01, 0.1, 1, true);
+        let mut modn = GateNode::with_param_inputs(-20.0, 0.0001, 0.01, 0.1, 1, true);
         modn.set_sample_rate(tutti_core::SampleRate(44100.0));
 
         let mut plain_out = [0.0f32];

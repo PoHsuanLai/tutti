@@ -1,7 +1,7 @@
 //! Regression gate for RT-safety: the panner nodes must not allocate on the
 //! process path.
 //!
-//! This gate moved here with the panners. It was `tutti-units`' until that
+//! This gate moved here with the panners. It was `tutti-nodes`' until that
 //! crate lost its `spatial` feature, at which point the `#[cfg(feature =
 //! "spatial")]` on each test became permanently false and both stopped
 //! running — silently, since a test that is never compiled cannot fail.

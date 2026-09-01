@@ -6,7 +6,7 @@
 //! differs is only the gain decision, which is why each keeps its own file and
 //! nothing here is a trait.
 //!
-//! [`Compressor`] and [`Gate`] take an **external sidechain**: their level
+//! [`CompressorNode`] and [`GateNode`] take an **external sidechain**: their level
 //! detector reads separate inputs, so the signal being measured need not be the
 //! signal being shaped.
 
@@ -19,6 +19,6 @@ mod limiter;
 
 mod params;
 
-pub use compressor::Compressor;
-pub use gate::Gate;
-pub use limiter::{BrickwallLimiter, LimiterNode};
+pub use compressor::CompressorNode;
+pub use gate::GateNode;
+pub use limiter::{BrickwallLimiterNode, LimiterNode};

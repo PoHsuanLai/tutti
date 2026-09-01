@@ -1,4 +1,4 @@
-//! Native `ModParams` impls — each tutti-units DSP node declares its own
+//! Native `ModParams` impls — each tutti-nodes DSP node declares its own
 //! **control-rate**-modulatable params.
 //!
 //! The [`ModParams`] trait itself lives in `tutti-mod` (it is node-agnostic —
@@ -22,7 +22,7 @@ use tutti_mod::{AtomicTarget, ModParams, ModTarget};
 #[cfg(feature = "convolution")]
 use crate::StereoConvolverNode;
 use crate::{
-    BrickwallLimiter, ChorusNode, Compressor, DistortionNode, EqBandNode, FlangerNode, Gate,
+    BrickwallLimiterNode, ChorusNode, CompressorNode, DistortionNode, EqBandNode, FlangerNode, GateNode,
     LimiterNode, StereoDelayLineNode, StereoLadderFilterNode, StereoPhaserNode,
     StereoSvfFilterNode,
 };
@@ -120,7 +120,7 @@ impl ModParams for DistortionNode {
     }
 }
 
-impl ModParams for Compressor {
+impl ModParams for CompressorNode {
     fn mod_target(
         &self,
         p: ParamAddr,
@@ -140,7 +140,7 @@ impl ModParams for Compressor {
     }
 }
 
-impl ModParams for Gate {
+impl ModParams for GateNode {
     fn mod_target(
         &self,
         p: ParamAddr,
@@ -176,7 +176,7 @@ impl ModParams for LimiterNode {
     }
 }
 
-impl ModParams for BrickwallLimiter {
+impl ModParams for BrickwallLimiterNode {
     fn mod_target(
         &self,
         p: ParamAddr,

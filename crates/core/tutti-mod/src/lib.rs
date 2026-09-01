@@ -104,7 +104,7 @@
 //! |---|---|---|
 //! | per **frame** | `AtomicTarget` | the driver is handed the beat; it collapses to a scalar and mirrors it into an `AtomicF32` |
 //! | per **block** | a plugin's param producer | holds the `LayeredCurve` and samples it at each block's real beats |
-//! | per **sample** | `AutomationLane`, `ModulatorNode` (`tutti-units`) | the beat arrives as a *signal* on the node's `BEAT_PORTS` inputs |
+//! | per **sample** | `AutomationLaneNode`, `ModulatorNode` (`tutti-nodes`) | the beat arrives as a *signal* on the node's `BEAT_PORTS` inputs |
 //!
 //! **Which rate to reach for.** The frame rate is the default and is always
 //! correct — ask for more only when the sink reads faster than the frame rate,
@@ -123,7 +123,7 @@
 //! **Where the tiers are reached from.** A [`Modulator`] is rate-agnostic — the
 //! *adapter* around it picks the tier. `tutti_mod::Lfo` sampled by
 //! `ModPreFrame` is frame-rate; the same `Lfo` inside
-//! `tutti_units::ModulatorNode` (aliased `LfoNode`) is per-sample. One
+//! `tutti_nodes::ModulatorNode` (aliased `LfoNode`) is per-sample. One
 //! modulator, two adapters — not two LFOs.
 //!
 //! One gap is known and deliberate: the routing subsystem cannot deliver a curve

@@ -3,9 +3,25 @@
 //! The `vst` crate's `Host` trait gets invoked whenever the plugin does
 //! something asynchronous — parameter automation, outbound MIDI, or a
 //! query for transport state. Those are funnelled back to the rest of the crate
-//! through crossbeam channels and an atomic `time_info` snapshot, so the
+//! through bounded lock-free queues and an atomic `time_info` snapshot, so the
 //! audio-thread side never blocks on the main thread.
 //!
+//! # Why the queues are bounded
+//!
+//! `automate` and `process_events` are not host-scheduled: the plugin calls
+//! them, and it calls them from inside `processReplacing` — the audio thread.
+//! Anything they touch is therefore on the RT path, which rules out both halves
+//! of an unbounded channel. The allocation is the immediate hazard (a list node
+//! per event, at the plugin's discretion, inside the audio callback), and the
+//! unboundedness is the slower one: a host that stops draining — an editor
+//! open with no `drain_param_changes` caller, a plugin emitting MIDI into a
+//! session with no consumer — grows the queue for the lifetime of the instance.
+//!
+//! [`ArrayQueue`] answers both: fixed storage allocated once at load, and a
+//! `push` that refuses rather than growing. Refusing loses events, so each
+//! queue pairs with a counter ([`HostState::dropped_param_changes`],
+//! [`HostState::dropped_midi_out`]) — a lost knob move and a plugin that never
+//! moved one must not look the same.
 //! # audioMaster query callbacks
 //!
 //! Hosting is on the `vst-tutti` fork, whose `host_dispatch` wires the query
@@ -24,6 +40,8 @@
 use crate::midi::to_midi;
 use crate::transport_cell::TransportCell;
 use crate::types::MidiEvent;
+use crossbeam_queue::ArrayQueue;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use vst::host::Host;
 
@@ -31,7 +49,35 @@ use vst::host::Host;
 /// `audioMasterAutomate` callback.
 pub type ParameterChange = (i32, f32);
 
-/// The endpoints of the plugin→host callback channels, plus the shared
+/// Capacity of the plugin→host parameter-automation queue.
+///
+/// `audioMasterAutomate` fires once per parameter the plugin moves itself —
+/// a knob dragged on its editor surface, or a preset switch touching every
+/// parameter at once. The second case is what sizes this: a plugin with a few
+/// hundred parameters reloading a preset emits one call each, in a burst, and
+/// the host drains once per block. 512 covers that burst outright while
+/// staying a fixed 4 KiB of storage.
+///
+/// Overflowing means a host that has stopped draining, not a plugin that is
+/// unusually busy — see [`HostState::dropped_param_changes`].
+const PARAM_QUEUE_CAPACITY: usize = 512;
+
+/// Capacity of the plugin→host MIDI-out queue.
+///
+/// Sized in *blocks*, not events: [`crate::Vst2Instance::process_f32`] drains
+/// this at the end of every block, so the steady-state occupancy is one
+/// block's emission. `tutti_plugin_types::RT_MIDI_CAPACITY` puts a per-block
+/// plugin emission ceiling at 64 events on the same reasoning ("already far
+/// above what a plugin emits in normal use"); 256 is four such blocks, so the
+/// queue absorbs a burst that spans several blocks and only refuses when
+/// nothing is draining it at all.
+///
+/// Deliberately not matched to `MidiEventVec`'s 256-element inline capacity —
+/// that number bounds a *wire message*, and the two would drift apart for
+/// unrelated reasons.
+const MIDI_OUT_QUEUE_CAPACITY: usize = 256;
+
+/// The endpoints of the plugin→host callback queues, plus the shared
 /// transport snapshot the plugin reads back. All three are created together
 /// from one [`HostState`] at load and live for the instance's lifetime.
 pub(crate) struct HostLink {
@@ -49,14 +95,33 @@ pub(crate) struct HostLink {
     /// and freed the old one there. See [`TransportCell`].
     pub(crate) time_info: Arc<TransportCell>,
     /// Inbox for `audioMasterAutomate` parameter changes (editor knob moves).
-    pub(crate) param_rx: crossbeam_channel::Receiver<ParameterChange>,
+    ///
+    /// The same queue [`HostState`] pushes into — an `ArrayQueue` is MPMC, so
+    /// both ends share one `Arc` rather than splitting into sender/receiver
+    /// halves.
+    pub(crate) param_rx: Arc<ArrayQueue<ParameterChange>>,
 }
 
-/// Implements `vst::host::Host`. Owns the channel ends the plugin writes
-/// into.
+/// Implements `vst::host::Host`. Owns the producer end of the queues the
+/// plugin writes into.
 pub(crate) struct HostState {
-    param_tx: crossbeam_channel::Sender<ParameterChange>,
-    midi_out_tx: crossbeam_channel::Sender<MidiEvent>,
+    param_tx: Arc<ArrayQueue<ParameterChange>>,
+    midi_out_tx: Arc<ArrayQueue<MidiEvent>>,
+    /// Parameter changes refused because [`param_tx`](Self::param_tx) was
+    /// full. Monotonic for the instance's life.
+    ///
+    /// A counter, not a flag: the question a caller asks is "did I lose
+    /// automation, and how much", and a boolean answers only the first. Read
+    /// through [`Vst2Instance::dropped_param_changes`](crate::Vst2Instance::dropped_param_changes).
+    dropped_param_changes: AtomicU64,
+    /// MIDI events refused because [`midi_out_tx`](Self::midi_out_tx) was
+    /// full. Monotonic for the instance's life.
+    ///
+    /// Worth counting separately from the parameter drops because the
+    /// consequence differs in kind: a dropped note-off whose note-on landed is
+    /// a stuck note, which is audible, whereas a dropped automation point is
+    /// merely a stale readout.
+    dropped_midi_out: AtomicU64,
     time_info: Arc<TransportCell>,
     /// Maximum block size the host will render, in samples. Served back
     /// through `audioMasterGetBlockSize` for plugins that poll it rather

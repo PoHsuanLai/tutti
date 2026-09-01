@@ -4,7 +4,7 @@ Spatial audio: VBAP speaker panning, binaural HRTF rendering, surround mix assem
 
 ## What this is
 
-The engine's only **geometry** — azimuth, elevation, speaker layouts, HRIR spheres. Everything that processes a signal per channel lives in [`tutti-units`](../tutti-units); everything that needs to know *where a sound is* lives here.
+The engine's only **geometry** — azimuth, elevation, speaker layouts, HRIR spheres. Everything that processes a signal per channel lives in [`tutti-nodes`](../tutti-nodes); everything that needs to know *where a sound is* lives here.
 
 Two independent renderers, each named for its algorithm rather than the category: `vbap` (loudspeakers, `layout.count()` outputs) and `hrtf` (headphones, always 2). Each owns its own error type; there is no crate-level `Error`. Shared between them: `SpatialTarget`, the position de-zipper, and the SMPTE/WAV channel-order conventions in `layout`.
 
@@ -34,9 +34,9 @@ net.pipe_output(mix);
 
 - `hrtf` — real HRTF binaural rendering (`HrtfBinauralNode`). Off by default; pulls the `hrtf` crate.
 
-## Why it depends on tutti-units
+## Why it depends on tutti-nodes
 
-`build_vbap_mix` builds its graph out of general-purpose units: `ChannelSumUnit` folds the panners into one N-wide node, and `SvfFilterNode` low-passes the LFE send at ~120 Hz. That is a plain consumer edge — geometry depends on signal processing, never the reverse, and neither of those units has anything spatial in it.
+`build_vbap_mix` builds its graph out of general-purpose units: `ChannelSumNode` folds the panners into one N-wide node, and `SvfFilterNode` low-passes the LFE send at ~120 Hz. That is a plain consumer edge — geometry depends on signal processing, never the reverse, and neither of those units has anything spatial in it.
 
 ## Node ids
 

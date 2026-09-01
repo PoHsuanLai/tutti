@@ -3,11 +3,11 @@
 //! Ignored by default — this is a measurement, not an assertion. Run with:
 //!
 //! ```text
-//! cargo test -p tutti-units --test idle_chain_cost -- --ignored --nocapture
+//! cargo test -p tutti-nodes --test idle_chain_cost -- --ignored --nocapture
 //! ```
 //!
-//! The question is whether an always-on base chain (`AtomicSourceUnit →
-//! ParamSumUnit → port`) per modulatable param is a real RT burden or just a
+//! The question is whether an always-on base chain (`AtomicSourceNode →
+//! ParamSumNode → port`) per modulatable param is a real RT burden or just a
 //! bigger number in `Net::size()`. A node in `Net` is not free — every one is a
 //! virtual `process` call plus an input gather per block — but "not free" and
 //! "matters" are different claims, and only one of them should drive a design
@@ -17,7 +17,7 @@ use std::time::Instant;
 
 use tutti_core::dsp::{AudioUnit as _, Net};
 use tutti_types::UnitParam;
-use tutti_units::{AtomicSourceUnit, DistortionNode, ParamPorts, ParamSumUnit, ShapeKind};
+use tutti_nodes::{AtomicSourceNode, DistortionNode, ParamPorts, ParamSumNode, ShapeKind};
 
 const BLOCK: usize = 128;
 const BLOCKS: usize = 20_000;
@@ -33,8 +33,8 @@ fn build(n: usize, with_chains: bool) -> Net {
             let port = dist.param_port(UnitParam::Drive).unwrap();
             let target = net.push(Box::new(dist));
             // The always-on idle chain: two extra nodes, two extra edges.
-            let base = net.push(Box::new(AtomicSourceUnit::new(5.0)));
-            let sum = net.push(Box::new(ParamSumUnit::new(0, 0.0, 10.0)));
+            let base = net.push(Box::new(AtomicSourceNode::new(5.0)));
+            let sum = net.push(Box::new(ParamSumNode::new(0, 0.0, 10.0)));
             net.connect(base, 0, sum, 0);
             net.connect(sum, 0, target, port);
             target

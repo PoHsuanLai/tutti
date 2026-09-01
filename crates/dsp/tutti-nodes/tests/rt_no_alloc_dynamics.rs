@@ -1,8 +1,8 @@
 //! Regression gate: dynamics processors must not allocate per-buffer.
 //!
-//! Covers the four `tutti-units` dynamics nodes: `Compressor` (mono +
-//! stereo), `Gate` (mono + stereo), `LimiterNode` (lookahead), and
-//! `BrickwallLimiter` (zero-latency clipper).
+//! Covers the four `tutti-nodes` dynamics nodes: `CompressorNode` (mono +
+//! stereo), `GateNode` (mono + stereo), `LimiterNode` (lookahead), and
+//! `BrickwallLimiterNode` (zero-latency clipper).
 //!
 //! Lookahead limiter is the most failure-prone of the group — it carries
 //! a monotonic deque + a ring buffer, both of which would historically
@@ -11,7 +11,7 @@
 
 use assert_no_alloc::AllocDisabler;
 use tutti_core::{AudioUnit, BufferVec, ChannelLayout, SampleRate};
-use tutti_units::{BrickwallLimiter, Compressor, Gate, LimiterNode};
+use tutti_nodes::{BrickwallLimiterNode, CompressorNode, GateNode, LimiterNode};
 
 #[global_allocator]
 static A: AllocDisabler = AllocDisabler;
@@ -30,7 +30,7 @@ fn fill_with_signal(vec: &mut BufferVec, amplitude: f32) {
 
 #[test]
 fn compressor_mono_process_is_allocation_free() {
-    let mut node = Compressor::mono(-20.0, 4.0, 0.005, 0.050);
+    let mut node = CompressorNode::mono(-20.0, 4.0, 0.005, 0.050);
     node.set_sample_rate(SampleRate(48_000.0));
 
     // 2 inputs (audio + sidechain), 1 output.
@@ -55,7 +55,7 @@ fn compressor_mono_process_is_allocation_free() {
 
 #[test]
 fn compressor_stereo_process_is_allocation_free() {
-    let mut node = Compressor::stereo(-18.0, 3.0, 0.003, 0.080).with_soft_knee(6.0);
+    let mut node = CompressorNode::stereo(-18.0, 3.0, 0.003, 0.080).with_soft_knee(6.0);
     node.set_sample_rate(SampleRate(48_000.0));
 
     // 4 inputs (L, R, SC-L, SC-R), 2 outputs, linked gain.
@@ -133,7 +133,7 @@ fn limiter_node_wide_6ch_process_is_allocation_free() {
 
 #[test]
 fn brickwall_limiter_wide_6ch_process_is_allocation_free() {
-    let mut node = BrickwallLimiter::with_channels(ChannelLayout::from(6u16), -0.3);
+    let mut node = BrickwallLimiterNode::with_channels(ChannelLayout::from(6u16), -0.3);
     node.set_sample_rate(SampleRate(48_000.0));
 
     let mut input_vec = BufferVec::new(6);
@@ -157,7 +157,7 @@ fn brickwall_limiter_wide_6ch_process_is_allocation_free() {
 
 #[test]
 fn brickwall_limiter_process_is_allocation_free() {
-    let mut node = BrickwallLimiter::new(-0.3);
+    let mut node = BrickwallLimiterNode::new(-0.3);
     node.set_sample_rate(SampleRate(48_000.0));
 
     let mut input_vec = BufferVec::new(2);
@@ -183,7 +183,7 @@ fn brickwall_limiter_process_is_allocation_free() {
 
 #[test]
 fn gate_mono_process_is_allocation_free() {
-    let mut node = Gate::mono(-40.0, 0.001, 0.010, 0.100).with_range(-60.0);
+    let mut node = GateNode::mono(-40.0, 0.001, 0.010, 0.100).with_range(-60.0);
     node.set_sample_rate(SampleRate(48_000.0));
 
     // 2 inputs (audio + sidechain), 1 output.
@@ -208,7 +208,7 @@ fn gate_mono_process_is_allocation_free() {
 
 #[test]
 fn gate_stereo_process_is_allocation_free() {
-    let mut node = Gate::stereo(-40.0, 0.001, 0.010, 0.100);
+    let mut node = GateNode::stereo(-40.0, 0.001, 0.010, 0.100);
     node.set_sample_rate(SampleRate(48_000.0));
 
     let mut input_vec = BufferVec::new(4);

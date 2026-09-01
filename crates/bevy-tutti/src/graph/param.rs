@@ -15,7 +15,7 @@
 //! use tutti_core::dsp::{AudioUnit as _, Net};
 //! use tutti_core::{AudioNode, SampleRate};
 //! use tutti_types::{Drive, UnitParam};
-//! use tutti_units::{DistortionNode, ShapeKind};
+//! use tutti_nodes::{DistortionNode, ShapeKind};
 //!
 //! /// One line per param — the unit and the address, both load-bearing.
 //! type DriveParam = AudioParam<Drive, { UnitParam::Drive as u16 }>;
@@ -118,7 +118,7 @@ impl<U: Unit<Raw = f32> + Default, const P: u16> Default for AudioParam<U, P> {
 /// **The single home for "an authored value reaches the graph".** A param write
 /// is three branches, not one, and the order is fixed:
 ///
-/// 1. an **audio-rate** param's port is fed by a `ParamSumUnit`, and a node with
+/// 1. an **audio-rate** param's port is fed by a `ParamSumNode`, and a node with
 ///    a wired param port never reads its own atomic — so the value goes to the
 ///    sum's *base cell*;
 /// 2. a **control-rate modulated** param has a second writer, so the value goes
@@ -134,7 +134,7 @@ impl<U: Unit<Raw = f32> + Default, const P: u16> Default for AudioParam<U, P> {
 /// the quietest of the three failures: the write lands on the node's atomic,
 /// which is a real cell that a debugger and a `node_as` read both show holding
 /// the new value — while the DSP reads the port and hears the old one.
-/// `tutti-units`' `a_wired_param_port_makes_the_node_ignore_its_atomic` is the
+/// `tutti-nodes`' `a_wired_param_port_makes_the_node_ignore_its_atomic` is the
 /// engine-level statement of it.
 ///
 /// Taking only the first silently drops every write to an unmodulated param —

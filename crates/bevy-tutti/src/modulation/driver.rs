@@ -335,7 +335,7 @@ mod tests {
     use tutti_core::transport::Transport;
     use tutti_core::AudioNode;
     use tutti_types::{Depth, Hz, UnitParam};
-    use tutti_units::DistortionNode;
+    use tutti_nodes::DistortionNode;
 
     const BASE_DRIVE: f32 = 5.0;
 
@@ -347,7 +347,7 @@ mod tests {
         // worked only while nothing in the pipeline dirtied the graph.
         let mut net = Net::with_backend(1);
         let node = net.push(Box::new(DistortionNode::new(
-            tutti_units::ShapeKind::Tanh,
+            tutti_nodes::ShapeKind::Tanh,
             1.0,
         )));
         net.pipe_output(node);

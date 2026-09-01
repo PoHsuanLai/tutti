@@ -1,11 +1,11 @@
-# `tutti-units` vs. fundsp — duplication audit
+# `tutti-nodes` vs. fundsp — duplication audit
 
 **Context.** tutti vendors a fork of fundsp at `crates/tutti/crates/fundsp-tutti/`
-(repo `github.com/PoHsuanLai/fundsp`). Several `tutti-units` DSP nodes are
+(repo `github.com/PoHsuanLai/fundsp`). Several `tutti-nodes` DSP nodes are
 hand-rolled reimplementations of primitives the fork already provides — in
 some cases with *more* capability than our versions (notably audio-rate
 parameter inputs). This audit catalogs each hand-rolled `*Node` in
-`tutti-units`, whether fundsp already provides an equivalent, the fundsp
+`tutti-nodes`, whether fundsp already provides an equivalent, the fundsp
 variant's audio-rate status, and a migration recommendation.
 
 The motivating finding: the hand-rolled `StereoSvfFilterNode` reads cutoff/Q
@@ -39,7 +39,7 @@ a `Constant`/input-port for the audio-rate path), and keeps the
 
 ## Catalog
 
-| tutti-units node | fundsp equivalent | fundsp audio-rate? | recommendation |
+| tutti-nodes node | fundsp equivalent | fundsp audio-rate? | recommendation |
 |---|---|---|---|
 | `SvfFilterNode` / `StereoSvfFilterNode` (`filter/svf.rs`) | `Svf<F,M>` (varying, `U3`/`U4` inputs) + `FixedSvf<F,M>` (fixed, `U1`) for every mode: lowpass/highpass/bandpass/notch/peak/allpass/bell/lowshelf/highshelf | **YES** — cutoff/Q (and gain for bell/shelf) are per-sample input ports | **MIGRATE.** This is the whole point. Wrap `Svf`/`FixedSvf`; the fork even shares our exact coeff math (`SvfCoefs::lowpass` etc. is identical to our `compute_svf_coeffs`). The hand-rolled SVF is a near-verbatim copy. |
 | `LadderFilterNode` / `StereoLadderFilterNode` (`filter/ladder.rs`) | `moog()` → `Moog<F,U3>` (cutoff+Q inputs), `moog_hz()` → `Moog<F,U1>` (fixed) | **YES** — `Moog<F,U3>` takes cutoff+Q as audio inputs | **MIGRATE** (with a caveat). fundsp `Moog` is a Moog ladder; verify it matches our LP12/LP24/HP12/HP24 + `drive` behavior. fundsp `moog` is LP-only resonant — our HP modes + `drive` (tanh saturation) may have **no** direct fundsp equivalent and would need a wrapper or stay custom. Check before committing. |
@@ -68,7 +68,7 @@ a `Constant`/input-port for the audio-rate path), and keeps the
   are acceptable to drop/wrap.
 
 ## Recommended migration shape (for the SVF win)
-A `tutti-units` node that:
+A `tutti-nodes` node that:
 - owns `frequency`/`q`/`gain` as `Param<...>` (keeps the UI handle API + the
   `node_mut` setter path other code relies on),
 - holds **two** fundsp sub-nodes or one switchable: a `FixedSvf` for the

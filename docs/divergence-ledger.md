@@ -173,6 +173,13 @@ Recorded so a later pass does not "fix" them:
 - **AU has no host-synthesised editor or state error.** Its editor and state calls
   return AudioToolbox status directly, so there is no failure for the host to name;
   empty variants would be alignment theatre.
+- **AU's `LoadFailed` is boxed; the other three hosts' are inline struct variants.**
+  Discovered on macOS (issue #328): AU alone returns `(Self, AuError)` from
+  `AuActive::uninitialize`, so two inline `String`s push that `Result` past
+  `clippy::result_large_err`. The payload moved to a `LoadFailedError` struct behind a
+  `Box`, matching what `PresetIo` / `PresetIdentityMismatch` already do in this crate.
+  The `#[error]` message is unchanged. Do not "align" this back to a struct variant —
+  the size pressure is real and specific to AU's two-value uninitialize.
 - **VST2 has no `NotActive`** — the lifecycle is fused, so that state cannot exist.
 - **VST3 keeps index-addressed `parameter_info`** beside the new shared-type list: it
   genuinely enumerates by index and addresses by opaque `ParamID`.

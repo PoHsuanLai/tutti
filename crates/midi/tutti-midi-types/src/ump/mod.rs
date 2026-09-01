@@ -343,7 +343,7 @@ mod tests {
     }
 
     // NOTE: that `with_frame_offset` sets the offset without disturbing the
-    // payload is pinned by `message::tests::channel_controllers_round_trip_to_identical_wire_bytes`,
+    // payload is pinned by `crate::message::tests::channel_controllers_round_trip_to_identical_wire_bytes`,
     // which stamps offset 91 onto four events and then asserts the data words
     // come back byte-identical through decode → re-encode.
 

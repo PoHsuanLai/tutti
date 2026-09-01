@@ -128,20 +128,25 @@ impl ModulatorNode<Lfo> {
     /// Chain `.with_frequency(hz)` or `.with_beat_sync(beats)` to configure
     /// further.
     pub fn new(shape: LfoShape) -> Self {
-        Self::with_modulator(Lfo::new(shape), LfoMode::FreeRunning, 1.0)
+        Self::with_modulator(Lfo::new(shape))
     }
 }
 
 impl<M: Modulator> ModulatorNode<M> {
-    /// Build a modulation node over an arbitrary pure modulator. The generic
-    /// entry point behind [`LfoNode::new`]; also the seam any future modulator
-    /// (envelope, sample & hold, …) wires through.
-    pub fn with_modulator(modulator: M, mode: LfoMode, freq_or_beats: f32) -> Self {
+    /// Build a modulation node over an arbitrary pure modulator, free-running
+    /// at 1 Hz. The generic entry point behind [`LfoNode::new`]; also the seam
+    /// any future modulator (envelope, sample & hold, …) wires through.
+    ///
+    /// Takes no rate: the shared frequency cell reads as Hz or as beats
+    /// depending on the mode, so the rate is set by the builder that also
+    /// selects the clock — [`with_frequency`](Self::with_frequency) or
+    /// [`with_beat_sync`](Self::with_beat_sync).
+    pub fn with_modulator(modulator: M) -> Self {
         Self {
             modulator,
             mod_state: M::State::default(),
-            mode,
-            frequency: Param::new(Hz(freq_or_beats)),
+            mode: LfoMode::FreeRunning,
+            frequency: Param::new(Hz(1.0)),
             depth: Param::new(Depth::FULL),
             phase_offset: Param::new(PhaseIncrement(0.0)),
             phase: Phase::START,

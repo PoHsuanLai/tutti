@@ -16,7 +16,7 @@
 use tutti_core::SampleRate;
 use tutti_types::{Amplitude, Samples};
 
-use crate::error::{AnalysisError, Result};
+use crate::error::{Error, Result};
 use crate::fft::FftScratch;
 use crate::geometry::StftGeometry;
 use crate::grid::{BinIndex, FrameCount, FrameIndex, Grid};
@@ -192,7 +192,7 @@ impl Stft {
     /// multiply; the spectral view currently pools masked magnitudes itself.
     ///
     /// # Errors
-    /// Returns [`AnalysisError::GridShapeDisagreement`] if `mask` does not
+    /// Returns [`Error::GridShapeDisagreement`] if `mask` does not
     /// match this transform's `frames x bins` shape.
     pub fn masked_magnitude_at(
         &self,
@@ -201,7 +201,7 @@ impl Stft {
         bin: BinIndex,
     ) -> Result<Amplitude> {
         if !self.bins.same_shape_as(mask) {
-            return Err(AnalysisError::GridShapeDisagreement);
+            return Err(Error::GridShapeDisagreement);
         }
         Ok(Amplitude(
             (self.bins.at(frame, bin) * mask.at(frame, bin)).norm(),
@@ -249,7 +249,7 @@ impl Stft {
     /// in one call, so no caller hand-writes the zip plus the inverse.
     ///
     /// # Errors
-    /// Returns [`AnalysisError::GridShapeDisagreement`] if `mask` does not
+    /// Returns [`Error::GridShapeDisagreement`] if `mask` does not
     /// match this transform's `frames x bins` shape.
     pub fn resynthesize_masked(
         &self,
@@ -257,7 +257,7 @@ impl Stft {
         fft: &mut FftScratch,
     ) -> Result<Vec<f32>> {
         if !self.bins.same_shape_as(mask) {
-            return Err(AnalysisError::GridShapeDisagreement);
+            return Err(Error::GridShapeDisagreement);
         }
         let masked: Vec<Complex> = self
             .bins
@@ -479,7 +479,7 @@ impl StftRequest {
     /// when the result must invert.
     ///
     /// # Errors
-    /// Returns an [`AnalysisError`] for a zero window or hop, a hop wider than
+    /// Returns an [`Error`] for a zero window or hop, a hop wider than
     /// the window, or a non-positive sample rate.
     pub fn resolve(&self, len: Samples) -> Result<StftGeometry> {
         let hop = self.effective_hop(len.get());
@@ -490,7 +490,7 @@ impl StftRequest {
     ///
     /// # Errors
     /// Everything [`resolve`](Self::resolve) rejects, plus
-    /// [`AnalysisError::NotColaCompliant`] when the hop does not divide the
+    /// [`Error::NotColaCompliant`] when the hop does not divide the
     /// window at the overlap this geometry's window shape requires — 4x for
     /// Hann and Hamming, 8x for Blackman.
     pub fn resolve_cola(&self, len: Samples) -> Result<StftGeometry> {
@@ -702,8 +702,8 @@ mod tests {
         // The hop this resolves to is far wider than the window.
         assert!(matches!(
             stft(&samples, request, &mut fft),
-            Err(AnalysisError::HopExceedsWindow { .. })
-                | Err(AnalysisError::NotColaCompliant { .. })
+            Err(Error::HopExceedsWindow { .. })
+                | Err(Error::NotColaCompliant { .. })
         ));
 
         // The display path accepts it and yields a type with no inverse.
@@ -747,7 +747,7 @@ mod tests {
 
         assert!(matches!(
             stft(&samples, request, &mut fft),
-            Err(AnalysisError::NotColaCompliant {
+            Err(Error::NotColaCompliant {
                 window_fn: CosineWindow::BLACKMAN,
                 ..
             })
@@ -829,7 +829,7 @@ mod tests {
         let wrong = Grid::filled(Complex::default(), FrameCount(2), crate::grid::BinCount(3));
         assert_eq!(
             transform.resynthesize_masked(&wrong, &mut fft),
-            Err(AnalysisError::GridShapeDisagreement)
+            Err(Error::GridShapeDisagreement)
         );
 
         // A neutral mask is the identity.

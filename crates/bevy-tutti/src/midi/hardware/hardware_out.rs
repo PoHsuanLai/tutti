@@ -118,7 +118,11 @@ impl UmpOutRes {
     /// `sink` is erased rather than a concrete backend type, which is what makes
     /// JR-stamped output portable: an ALSA seq-UMP output stamps exactly as a
     /// CoreMIDI one does.
-    pub fn new(sink: Box<dyn tutti_midi_types::MidiOut>, sample_rate: f64) -> Self {
+    pub fn new(
+        sink: Box<dyn tutti_midi_types::MidiOut>,
+        sample_rate: impl Into<tutti_core::SampleRate>,
+    ) -> Self {
+        let sample_rate = sample_rate.into();
         Self {
             sink,
             stream: tutti_midi_runtime::JrStream::new(sample_rate).with_clock(sample_rate),

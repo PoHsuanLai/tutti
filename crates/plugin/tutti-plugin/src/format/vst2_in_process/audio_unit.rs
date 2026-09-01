@@ -637,7 +637,6 @@ fn block_context<'a>(
 /// Reborrow the staging arrays as slice-of-slices and call into
 /// `vst2-host`. A free function so it can take disjoint borrows of the
 /// fields on the caller side without a self-borrow conflict.
-#[allow(clippy::too_many_arguments)]
 fn drive_f32(
     inner: &Arc<Mutex<Vst2Instance>>,
     contention: &AtomicU64,
@@ -662,7 +661,11 @@ fn drive_f32(
             debug_assert!(num_outputs <= MAX_CHANNELS, "VST2 output ch > 16");
 
             let mut in_refs: [&[f32]; MAX_CHANNELS] = [&[]; MAX_CHANNELS];
-            #[allow(clippy::needless_range_loop)]
+            #[allow(
+                clippy::needless_range_loop,
+                reason = "`ch` indexes two parallel arrays; a zip would hide the \
+                          MAX_CHANNELS bound the debug_asserts above pin"
+            )]
             for ch in 0..num_inputs.min(MAX_CHANNELS) {
                 in_refs[ch] = &process_scratch.f32_in[ch][..size];
             }
@@ -692,7 +695,6 @@ fn drive_f32(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn drive_f64(
     inner: &Arc<Mutex<Vst2Instance>>,
     contention: &AtomicU64,
@@ -713,7 +715,11 @@ fn drive_f64(
             debug_assert!(num_outputs <= MAX_CHANNELS, "VST2 output ch > 16");
 
             let mut in_refs: [&[f64]; MAX_CHANNELS] = [&[]; MAX_CHANNELS];
-            #[allow(clippy::needless_range_loop)]
+            #[allow(
+                clippy::needless_range_loop,
+                reason = "`ch` indexes two parallel arrays; a zip would hide the \
+                          MAX_CHANNELS bound the debug_asserts above pin"
+            )]
             for ch in 0..num_inputs.min(MAX_CHANNELS) {
                 in_refs[ch] = &process_scratch.f64_in[ch][..size];
             }

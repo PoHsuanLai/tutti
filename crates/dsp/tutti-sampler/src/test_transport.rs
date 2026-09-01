@@ -13,7 +13,7 @@
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
-use tutti_core::{Beat, Bpm, Timeline};
+use tutti_core::{Beat, Bpm, SampleRate, Timeline};
 
 /// A transport a test can move between blocks, as a real one moves.
 ///
@@ -53,10 +53,13 @@ impl MockTransport {
 
     /// Move by `samples` at `sample_rate`, the way a block-driven transport does
     /// after `process` returns. Negative `samples` rewinds, so a test can replay
-    /// a span twice.
-    pub fn advance(&self, samples: i64, sample_rate: f64) {
+    /// a span twice — which is why it is a signed `i64` and not [`Samples`]
+    /// (an unsigned count that cannot carry the rewind).
+    ///
+    /// [`Samples`]: tutti_core::Samples
+    pub fn advance(&self, samples: i64, sample_rate: impl Into<SampleRate>) {
         let tempo = f64::from_bits(self.tempo.load(Ordering::Relaxed));
-        let beats = samples as f64 * tempo / 60.0 / sample_rate;
+        let beats = samples as f64 * tempo / 60.0 / sample_rate.into().get();
         let now = f64::from_bits(self.beat.load(Ordering::Relaxed));
         self.beat.store((now + beats).to_bits(), Ordering::Relaxed);
     }

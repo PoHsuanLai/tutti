@@ -207,12 +207,12 @@ mod tests {
     /// Minimal `Timeline` for tests: tempo + beat under a switch.
     struct TestTransport {
         beat: AtomicF64,
-        tempo: f64,
+        tempo: Bpm,
         playing: AtomicBool,
     }
 
     impl TestTransport {
-        fn new(tempo: f64) -> Self {
+        fn new(tempo: Bpm) -> Self {
             Self {
                 beat: AtomicF64::new(0.0),
                 tempo,
@@ -232,7 +232,7 @@ mod tests {
             self.playing.load(Ordering::Acquire)
         }
         fn tempo(&self) -> Bpm {
-            Bpm(self.tempo)
+            self.tempo
         }
     }
 
@@ -248,7 +248,7 @@ mod tests {
     #[test]
     fn emits_event_at_correct_frame_offset() {
         let unit = MidiUnitId::new(1);
-        let transport = Arc::new(TestTransport::new(120.0));
+        let transport = Arc::new(TestTransport::new(Bpm(120.0)));
         // 120 BPM @ 44.1kHz → 22050 samples/beat → ~22.05 samples per 0.001 beat.
         let sample_rate = SampleRate::from(44100.0);
 
@@ -290,7 +290,7 @@ mod tests {
     fn ignores_other_unit_ids() {
         let unit = MidiUnitId::new(1);
         let other = MidiUnitId::new(2);
-        let transport = Arc::new(TestTransport::new(120.0));
+        let transport = Arc::new(TestTransport::new(Bpm(120.0)));
         let source = MidiClipSource::new(
             unit,
             vec![TimedClipEvent {
@@ -307,7 +307,7 @@ mod tests {
     #[test]
     fn paused_transport_emits_nothing() {
         let unit = MidiUnitId::new(1);
-        let transport = Arc::new(TestTransport::new(120.0));
+        let transport = Arc::new(TestTransport::new(Bpm(120.0)));
         transport.playing.store(false, Ordering::Release);
         let source = MidiClipSource::new(
             unit,
@@ -325,7 +325,7 @@ mod tests {
     #[test]
     fn seek_backwards_replays_events() {
         let unit = MidiUnitId::new(1);
-        let transport = Arc::new(TestTransport::new(120.0));
+        let transport = Arc::new(TestTransport::new(Bpm(120.0)));
         let source = MidiClipSource::new(
             unit,
             vec![
@@ -359,7 +359,7 @@ mod tests {
         use crate::block::registry::MidiMailbox;
 
         let unit = MidiUnitId::new(3);
-        let transport = Arc::new(TestTransport::new(120.0));
+        let transport = Arc::new(TestTransport::new(Bpm(120.0)));
         // The tap is a plain MidiOut → mailbox (the real wiring): the clip
         // pushes into the sender, an off-RT drain reads the receiver. The sender is
         // a terminal sink — the tee pushes at it with no id.
@@ -406,7 +406,7 @@ mod tests {
     fn no_tap_emits_only_to_synth() {
         // Without a tap, behavior is unchanged (regression guard).
         let unit = MidiUnitId::new(4);
-        let transport = Arc::new(TestTransport::new(120.0));
+        let transport = Arc::new(TestTransport::new(Bpm(120.0)));
         let source = MidiClipSource::new(
             unit,
             vec![TimedClipEvent {
@@ -442,7 +442,7 @@ mod tests {
 
     #[test]
     fn sync_to_transport_gates_and_rewinds() {
-        let transport = Arc::new(TestTransport::new(120.0));
+        let transport = Arc::new(TestTransport::new(Bpm(120.0)));
         let source = one_note_source(&transport);
 
         // Paused → no window, but the beat watermark is still tracked so a
@@ -481,7 +481,7 @@ mod tests {
 
     #[test]
     fn sync_to_transport_rejects_bad_tempo() {
-        let transport = Arc::new(TestTransport::new(0.0)); // zero tempo
+        let transport = Arc::new(TestTransport::new(Bpm(0.0))); // zero tempo
         let source = one_note_source(&transport);
         assert!(source.sync_to_transport(512).is_none());
     }
@@ -489,7 +489,7 @@ mod tests {
     #[test]
     fn emit_window_is_pure_and_offsets_correctly() {
         // emit_window touches no transport — feed it a hand-built window.
-        let transport = Arc::new(TestTransport::new(120.0));
+        let transport = Arc::new(TestTransport::new(Bpm(120.0)));
         let source = one_note_source(&transport);
 
         // 120 BPM @ 44.1kHz → 22050 samples/beat. Window [0.0, 1.0) covers both.
@@ -513,7 +513,7 @@ mod tests {
 
     #[test]
     fn emit_window_respects_out_buffer_capacity() {
-        let transport = Arc::new(TestTransport::new(120.0));
+        let transport = Arc::new(TestTransport::new(Bpm(120.0)));
         let source = one_note_source(&transport);
         let beats_per_sample = BeatDuration(120.0 / 60.0 / 44100.0);
         let window = BeatWindow {

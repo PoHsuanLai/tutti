@@ -65,6 +65,7 @@ use std::time::Duration;
 
 use tutti_core::io::{pump, AudioIn, AudioOut, OnEmpty};
 
+use crate::error::{Error, Result};
 use crate::wav_out::WavOut;
 
 /// Frames moved per pump pass. One bufferful, allocated once before the loop so
@@ -87,7 +88,7 @@ const IDLE_PARK: Duration = Duration::from_millis(5);
 ///
 /// ```no_run
 /// # use tutti_io::{Recorder, WavOut, BitDepth};
-/// # fn go<I: tutti_core::io::AudioIn + Send + 'static>(src: I) -> std::io::Result<()> {
+/// # fn go<I: tutti_core::io::AudioIn + Send + 'static>(src: I) -> tutti_io::Result<()> {
 /// let wav = WavOut::create("take.wav", 48_000.0, 2u16, BitDepth::Float32)
 ///     .expect("sink opens");
 /// let rec = Recorder::start(src, wav)?;   // errors if the widths disagree
@@ -107,8 +108,9 @@ impl Recorder {
     /// Spawn a background thread pumping `src` into `sink`. Returns once
     /// recording is live.
     ///
-    /// **Errors if `src` and `sink` disagree on channel width** — see the
-    /// This module header explains why this check is here and what it replaces.
+    /// **Errors if `src` and `sink` disagree on channel width**
+    /// ([`Error::ChannelWidthMismatch`], carrying both layouts) — the module
+    /// header explains why this check is here and what it replaces.
     ///
     /// The **sample rate** is still the caller's to match: `AudioIn` carries no
     /// rate at all (the trait deliberately has none — a caller that needs one
@@ -116,21 +118,16 @@ impl Recorder {
     /// opening a mic reads `MicIn::sample_rate()` and builds the `WavOut` from
     /// it, or uses `MicIn::matching_sink`, which pairs both halves at the one
     /// place they are both in scope.
-    pub fn start<I>(mut src: I, mut sink: WavOut) -> std::io::Result<Self>
+    pub fn start<I>(mut src: I, mut sink: WavOut) -> Result<Self>
     where
         I: AudioIn + Send + 'static,
     {
         let layout = src.layout();
         if layout != AudioOut::layout(&sink) {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                format!(
-                    "recorder source is {:?} but the sink is {:?}; \
-                     recording a mismatched pair rotates the file's channels every frame",
-                    layout,
-                    AudioOut::layout(&sink),
-                ),
-            ));
+            return Err(Error::ChannelWidthMismatch {
+                src: layout,
+                sink: AudioOut::layout(&sink),
+            });
         }
         // Sized once, here, from the width both endpoints agreed on above.
         let scratch_samples = SCRATCH_FRAMES * layout.count().max(1) as usize;
@@ -165,13 +162,14 @@ impl Recorder {
     /// Signal the pump thread to stop, join it, and finalize the WAV. Returns
     /// [`finalize`](tutti_core::io::AudioOut::finalize)'s result — an error here
     /// means the WAV header was left unpatched and the file is unreadable.
-    pub fn stop(mut self) -> std::io::Result<()> {
+    pub fn stop(mut self) -> Result<()> {
         self.running.store(false, Ordering::Release);
         match self.handle.take() {
-            // The thread finalizes the sink and returns that io::Result.
-            Some(handle) => handle
+            // The thread finalizes the sink and returns that io::Result, which
+            // rides into [`Error::Io`] here.
+            Some(handle) => Ok(handle
                 .join()
-                .unwrap_or_else(|_| Err(std::io::Error::other("recording thread panicked"))),
+                .unwrap_or_else(|_| Err(std::io::Error::other("recording thread panicked")))?),
             // Unreachable in practice: `handle` is only taken here, and `stop`
             // consumes `self`. Kept total rather than unwrapping.
             None => Ok(()),
@@ -277,7 +275,16 @@ mod tests {
         let err = Recorder::start(stereo_src(), wide)
             .err()
             .expect("a width mismatch must be refused, not recorded");
-        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+        // The typed variant carries both layouts as values, so a caller can
+        // branch on the widths without parsing the message.
+        assert!(
+            matches!(
+                err,
+                Error::ChannelWidthMismatch { src, sink }
+                    if src == ChannelLayout::STEREO && sink == ChannelLayout::from(6u16)
+            ),
+            "expected ChannelWidthMismatch carrying both layouts, got: {err:?}"
+        );
         assert!(
             err.to_string().contains("Stereo") && err.to_string().contains("6"),
             "the error must name both widths, got: {err}"

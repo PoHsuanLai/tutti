@@ -318,7 +318,10 @@ pub trait HostPresets: Send + Sync {
 /// `PluginHandle` stores each as `Arc<dyn …>`, so a regression that breaks
 /// dyn-compatibility (e.g. adding a generic method) must fail here, not at a
 /// distant call site.
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "exists only to be type-checked — a call site would add nothing"
+)]
 fn _assert_object_safe(
     _p: &dyn HostParams,
     _s: &dyn HostState,

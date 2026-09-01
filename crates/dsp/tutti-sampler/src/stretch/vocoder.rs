@@ -7,10 +7,10 @@
 use std::sync::Arc;
 
 use super::buffers::{OverlapAdd, SampleFifo};
-// `Bank` is referenced only by the intra-doc link on `Unit::clone` below;
-// rustdoc needs the name in scope to resolve it. `FftSize` and
-// `MAX_BUFFER_SIZE` were dead and are gone.
-#[allow(unused_imports)]
+#[allow(
+    unused_imports,
+    reason = "`Bank` is referenced only by the intra-doc link on `Unit::clone` below; rustdoc needs the name in scope to resolve it"
+)]
 use super::Bank;
 use tutti_analysis::StftGeometry;
 use tutti_core::{inverse_fft, real_fft, Complex32, Radians};

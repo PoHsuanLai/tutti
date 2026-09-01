@@ -59,7 +59,9 @@ const MONITOR_RING_FRAMES: usize = 480;
 /// Keeps the `cpal` input [`Stream`](cpal::Stream) alive. The callback runs for
 /// as long as this value exists; dropping it stops capture. The field is never
 /// read — ownership *is* the API, mirroring `audio_io::StreamHandle`.
-struct StreamHandle(#[allow(dead_code)] cpal::Stream);
+struct StreamHandle(
+    #[allow(dead_code, reason = "ownership is the API — held for Drop, never read")] cpal::Stream,
+);
 
 // SAFETY: `cpal::Stream` is not `Send` on every platform, but we only ever hold
 // it (never touch it across threads) and stop it by dropping on the owning

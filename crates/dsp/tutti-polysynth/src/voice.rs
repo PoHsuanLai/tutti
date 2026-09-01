@@ -37,8 +37,9 @@ pub struct MpeVoiceState {
     pub pressure: f32,
     /// Per-note slide/timbre (0.0..1.0), from CC74. Centered at [`SLIDE_CENTER`].
     pub slide: f32,
-    /// Per-note gain (0.0..1.0), from per-note Volume (CC7). `1.0` is unity.
-    pub gain: f32,
+    /// Per-note gain (0.0..1.0), from per-note Volume (CC7).
+    /// [`Amplitude::UNITY`](tutti_core::Amplitude::UNITY) is unity.
+    pub gain: tutti_core::Amplitude,
     /// Detached (M2-104 §7.4.5, Per-Note Management D=1): once set, this voice
     /// keeps its current per-note controller values but stops responding to any
     /// further per-note controllers — the note plays out frozen. Distinct from
@@ -52,7 +53,7 @@ impl Default for MpeVoiceState {
             pitch_bend_semitones: tutti_core::Semitones(0.0),
             pressure: 0.0,
             slide: SLIDE_CENTER,
-            gain: 1.0,
+            gain: tutti_core::Amplitude::UNITY,
             detached: false,
         }
     }

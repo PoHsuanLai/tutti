@@ -67,13 +67,14 @@ impl ExponentialSmoother {
         next
     }
 
-    /// Seed the running value directly.
+    /// Seed the running value directly. Test-only: a production smoother
+    /// starts at zero and converges.
     ///
     /// Bare `f32` on purpose: `value` is the state *both* entry points share —
     /// degrees of bearing under [`process_angle`](Self::process_angle), degrees
     /// of height under [`process`](Self::process) — so no single unit describes
     /// it. Callers seed it in whichever space they then step in.
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn reset(&mut self, value: f32) {
         self.value = value;
     }

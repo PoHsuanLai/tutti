@@ -12,8 +12,9 @@ categories = ["multimedia::audio"]
 workspace = true
 
 [dependencies]
-# default-features = false so tutti-core's default `bevy` doesn't leak in; this
-# crate's own `bevy` feature re-adds `tutti-core/bevy` when wanted.
+# `default-features = false` matches every sibling and keeps this crate immune
+# if tutti-core ever grows a default — it has none today (`default = []`), so
+# the flag currently suppresses nothing.
 tutti-core = { path = "../../core/tutti-core", default-features = false }
 # The unit vocabulary (Hz / Seconds / Samples / Amplitude / Confidence / …) and
 # the downmix matrices. Direct rather than through tutti-core's re-exports so
@@ -26,6 +27,9 @@ rustfft = "6"
 # EBU R128 loudness metering (`loudness`). An online meter, which is why the
 # streaming Config/State/step shape fits it without buffering the signal.
 ebur128 = "0.1"
+
+# The `Error` enum's Display/Error impls.
+thiserror.workspace = true
 
 # Serialization (optional)
 serde = { version = "1", features = ["derive"], optional = true }

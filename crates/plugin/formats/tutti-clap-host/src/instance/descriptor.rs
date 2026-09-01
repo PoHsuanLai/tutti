@@ -158,7 +158,6 @@ fn init_entry(entry: &clap_plugin_entry, bundle_path: &Path) -> Result<EntryGuar
     })?;
 
     entry_registry_acquire(bundle_path, init_fn, &path_cstr)
-        .map_err(|reason| fail(bundle_path, LoadStage::Opening, reason))
 }
 
 fn plugin_factory<'lib>(

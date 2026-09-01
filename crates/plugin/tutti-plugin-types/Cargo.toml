@@ -28,7 +28,7 @@ tutti-midi-types = { path = "../../midi/tutti-midi-types", default-features = fa
 tutti-types = { path = "../../core/tutti-types" }
 serde = { version = "1", features = ["derive"], optional = true }
 # Structured editor-open errors (`EditorError`).
-thiserror = "1"
+thiserror.workspace = true
 
 [dev-dependencies]
 # Wire-format round-trip tests for the serde-gated metadata types.

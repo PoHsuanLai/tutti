@@ -358,7 +358,6 @@ impl TransportState {
     /// `pub(crate)` — its layout is an ABI contract with AudioToolbox, not
     /// something a caller should be able to construct.
     #[doc(hidden)]
-    #[allow(clippy::type_complexity)]
     pub fn test_callback_info(
         &self,
     ) -> (
@@ -541,7 +540,6 @@ unsafe extern "C" fn transport_state_proc(
 ///
 /// # Safety
 /// As [`beat_and_tempo_proc`].
-#[allow(clippy::too_many_arguments)]
 unsafe extern "C" fn transport_state2_proc(
     user_data: *mut c_void,
     out_is_playing: *mut Boolean,

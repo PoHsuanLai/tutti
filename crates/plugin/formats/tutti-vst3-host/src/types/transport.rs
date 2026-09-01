@@ -371,7 +371,6 @@ mod tests {
         let t = populated_transport();
 
         // (requirement bit, valid bit, "is the field non-zero?" probe)
-        #[allow(clippy::type_complexity)]
         let cases: &[(
             &str,
             u32,

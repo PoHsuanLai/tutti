@@ -49,6 +49,8 @@ use crossbeam::utils::CachePadded;
 use std::mem::{align_of, offset_of, size_of};
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
+use crate::error::BridgeError;
+
 /// Identifies a tutti audio slab. Checked by the opening side before it trusts
 /// a single byte of the mapping.
 pub(super) const SLAB_MAGIC: u64 = u64::from_le_bytes(*b"TTI_SLAB");
@@ -178,24 +180,24 @@ impl SlabHeader {
     /// correct precisely *because* of that pairing — the acquire already
     /// establishes happens-before with everything the creator wrote first, so
     /// re-synchronizing on each field would be redundant.
-    pub(super) fn validate(&self) -> Result<(), String> {
+    pub(super) fn validate(&self) -> Result<(), BridgeError> {
         let magic = self.control.magic.load(Ordering::Acquire);
         if magic != SLAB_MAGIC {
-            return Err(format!(
+            return Err(BridgeError::SharedMemoryError(format!(
                 "not a tutti audio slab: magic {magic:#x}, expected {SLAB_MAGIC:#x}"
-            ));
+            )));
         }
         let version = self.control.header_version.load(Ordering::Relaxed);
         if version != HEADER_VERSION {
-            return Err(format!(
+            return Err(BridgeError::SharedMemoryError(format!(
                 "slab header version {version}, this build speaks {HEADER_VERSION}"
-            ));
+            )));
         }
         let slots = self.control.slots.load(Ordering::Relaxed);
         if slots as usize != RING_SLOTS {
-            return Err(format!(
+            return Err(BridgeError::SharedMemoryError(format!(
                 "slab has {slots} ring slots, this build expects {RING_SLOTS}"
-            ));
+            )));
         }
         Ok(())
     }
@@ -289,7 +291,7 @@ mod tests {
         let h = header();
         h.initialize();
         h.control.magic.store(0xDEAD_BEEF, Ordering::Release);
-        let err = h.validate().unwrap_err();
+        let err = h.validate().unwrap_err().to_string();
         assert!(err.contains("not a tutti audio slab"), "{err}");
     }
 
@@ -300,7 +302,7 @@ mod tests {
         h.control
             .header_version
             .store(HEADER_VERSION + 1, Ordering::Relaxed);
-        let err = h.validate().unwrap_err();
+        let err = h.validate().unwrap_err().to_string();
         assert!(err.contains("header version"), "{err}");
     }
 
@@ -313,7 +315,7 @@ mod tests {
         h.control
             .slots
             .store(RING_SLOTS as u32 + 2, Ordering::Relaxed);
-        let err = h.validate().unwrap_err();
+        let err = h.validate().unwrap_err().to_string();
         assert!(err.contains("ring slots"), "{err}");
     }
 

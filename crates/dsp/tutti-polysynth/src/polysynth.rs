@@ -2824,6 +2824,7 @@ mod tests {
                 .unwrap()
                 .mpe_state()
                 .gain
+                .get()
         };
         // Fresh voices are at unity gain.
         assert!((gain(&synth, 60) - 1.0).abs() < 0.01);

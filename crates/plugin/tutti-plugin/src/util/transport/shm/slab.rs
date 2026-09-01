@@ -132,10 +132,7 @@ impl AudioSlab {
             layout,
             ownership: Ownership::View,
         };
-        slab.mmap
-            .header()
-            .validate()
-            .map_err(BridgeError::SharedMemoryError)?;
+        slab.mmap.header().validate()?;
         Ok(slab)
     }
 

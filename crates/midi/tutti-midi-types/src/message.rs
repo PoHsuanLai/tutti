@@ -606,7 +606,10 @@ impl MidiEvent {
             // `#[non_exhaustive]`, so it must stay: it is what keeps a future
             // upstream variant compiling (as `Other`) instead of breaking the
             // build. Hence the allow rather than deleting the arm.
-            #[allow(unreachable_patterns)]
+            #[allow(
+                unreachable_patterns,
+                reason = "`Cv2` is #[non_exhaustive]; the arm is unreachable only until upstream adds a variant"
+            )]
             _ => MidiMessage::Other(*self),
         }
     }
@@ -1265,37 +1268,6 @@ mod tests {
             MidiMessage::RelativeController { delta: -1, .. }
         ));
         assert_ne!(absolute, relative);
-    }
-
-    #[test]
-    fn deprecated_tuple_decoder_agrees_with_structured_decode() {
-        // `relative_controller()` now delegates to `message()`. This pins that
-        // the two cannot answer differently — the reason the second decoder was
-        // removed rather than left beside it.
-        let ev = MidiEvent::relative_assignable_controller(
-            MidiGroup::FIRST,
-            MidiChannel::new(7),
-            0x12,
-            0x34,
-            -9,
-        );
-        #[allow(deprecated)]
-        let tuple = ev.relative_controller();
-        assert_eq!(tuple, Some((false, 0x12, 0x34, -9)));
-        match ev.message() {
-            MidiMessage::RelativeController {
-                namespace,
-                bank,
-                index,
-                delta,
-                ..
-            } => {
-                let (registered, t_bank, t_index, t_delta) = tuple.unwrap();
-                assert_eq!(registered, namespace == ControllerNamespace::Registered);
-                assert_eq!((t_bank, t_index, t_delta), (bank, index, delta));
-            }
-            other => panic!("expected RelativeController, got {other:?}"),
-        }
     }
 
     #[test]

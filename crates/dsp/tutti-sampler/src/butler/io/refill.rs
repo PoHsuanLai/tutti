@@ -75,7 +75,6 @@ fn varifill_chunk(
 /// `interleave_buffer` is the butler's reusable scratch, passed in so a refill
 /// does not allocate per cycle. Butler thread throughout — this both blocks on
 /// disk and may grow that buffer, so it must never run on the audio thread.
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn refill_all(
     plans: &DashMap<usize, ChannelPlan>,
     regions: &mut RegionMap,
@@ -275,7 +274,6 @@ pub(crate) fn refill_all_parallel(
 /// Takes the writer as a direct `&mut` straight from `par_iter_mut` — the
 /// exclusivity that makes the parallel pass sound is the borrow itself, so this
 /// never looks a region up by id. `buffer` is the worker's thread-local scratch.
-#[allow(clippy::too_many_arguments)]
 fn refill_one(
     writer: &mut RegionOut,
     cache: &LruCache,

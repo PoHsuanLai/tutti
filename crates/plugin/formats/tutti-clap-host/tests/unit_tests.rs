@@ -756,6 +756,8 @@ fn test_transport_flags_are_distinct_bits() {
 }
 
 #[test]
+// Constant by construction: the assertions are change detectors on clap-sys's
+// fixed-point factors, which is exactly the shape clippy flags as a mistake.
 #[allow(clippy::assertions_on_constants)]
 fn test_fixedpoint_factors_nonzero() {
     use clap_sys::fixedpoint::{CLAP_BEATTIME_FACTOR, CLAP_SECTIME_FACTOR};

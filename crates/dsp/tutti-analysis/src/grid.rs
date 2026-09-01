@@ -19,7 +19,7 @@
 //! for `[Vec<f32>; CH]` — one deinterleaved audio channel per plane, a 1-D
 //! time series per channel rather than a 2-D matrix.
 
-use crate::error::{AnalysisError, Result};
+use crate::error::{Error, Result};
 
 macro_rules! grid_newtype {
     ($(#[$m:meta])* $name:ident) => {
@@ -115,12 +115,12 @@ impl<T> Grid<T> {
     /// Wrap `data` as a `frames × bins` grid.
     ///
     /// # Errors
-    /// Returns [`AnalysisError::GridShapeMismatch`] unless
+    /// Returns [`Error::GridShapeMismatch`] unless
     /// `data.len() == frames * bins`.
     pub fn new(data: Vec<T>, frames: FrameCount, bins: BinCount) -> Result<Self> {
         let expected = frames.get() * bins.get();
         if data.len() != expected {
-            return Err(AnalysisError::GridShapeMismatch {
+            return Err(Error::GridShapeMismatch {
                 len: data.len(),
                 rows: frames.get(),
                 cols: bins.get(),
@@ -309,7 +309,7 @@ mod tests {
     fn a_length_that_disagrees_with_the_shape_is_rejected() {
         assert_eq!(
             Grid::new(vec![0u8; 10], FrameCount(3), BinCount(4)),
-            Err(AnalysisError::GridShapeMismatch {
+            Err(Error::GridShapeMismatch {
                 len: 10,
                 rows: 3,
                 cols: 4,

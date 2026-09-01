@@ -59,9 +59,10 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
 
 use tutti_core::{AudioThreadCell, Ordering, RtScratch, SampleRate, Samples, Seconds};
-// Referenced by the intra-doc links on this module and on `Unit::isolate`, not
-// by any code here.
-#[allow(unused_imports)]
+#[allow(
+    unused_imports,
+    reason = "referenced by the intra-doc links on this module and on `Unit::isolate`, not by any code here"
+)]
 use tutti_core::AudioUnit;
 
 /// The vocoder bank, shared by refcount across graph generations.

@@ -10,13 +10,16 @@ use tutti_types::{Hz, Samples};
 use crate::window::{CosineWindow, Window};
 
 /// Everything that can go wrong constructing or feeding an analysis.
-#[derive(Debug, Clone, PartialEq)]
-pub enum AnalysisError {
+#[derive(Debug, Clone, PartialEq, thiserror::Error)]
+pub enum Error {
     /// A zero-length analysis window.
+    #[error("analysis window is zero-length")]
     ZeroWindow,
     /// A zero hop: frames would never advance.
+    #[error("hop size is zero: frames would not advance")]
     ZeroHop,
     /// Frames would not overlap, so the transform cannot reconstruct.
+    #[error("hop {hop} exceeds window {window}: frames would not overlap")]
     HopExceedsWindow {
         /// The analysis window, in [`Samples`].
         window: Samples,
@@ -31,6 +34,11 @@ pub enum AnalysisError {
     /// Carries the window shape because the required overlap depends on it —
     /// 4x for Hann and Hamming, 8x for Blackman — so an error naming only the
     /// pair could not say what it needed.
+    #[error(
+        "window {window} / hop {hop} is not {window_fn:?}-COLA: needs the hop to \
+         divide the window with at least {}x overlap",
+        window_fn.cola_overlap()
+    )]
     NotColaCompliant {
         /// The analysis window, in [`Samples`].
         window: Samples,
@@ -41,9 +49,11 @@ pub enum AnalysisError {
         window_fn: CosineWindow,
     },
     /// A sample rate of zero or below.
+    #[error("sample rate must be positive")]
     NonPositiveSampleRate,
     /// `min >= max`, or either bound at or below zero. Refused at construction
     /// because a detector that accepts it reports "unvoiced" forever instead.
+    #[error("empty frequency range: min {min} is not below max {max}")]
     EmptyFrequencyRange {
         /// The lower bound in [`Hz`]; not below `max`.
         min: Hz,
@@ -51,6 +61,7 @@ pub enum AnalysisError {
         max: Hz,
     },
     /// A frequency bound above Nyquist for the given rate.
+    #[error("frequency {freq} is above Nyquist {nyquist}")]
     AboveNyquist {
         /// The offending bound, in [`Hz`].
         freq: Hz,
@@ -58,6 +69,7 @@ pub enum AnalysisError {
         nyquist: Hz,
     },
     /// A grid's data length disagrees with `frames * bins`.
+    #[error("grid has {len} values but its shape is {rows}x{cols} = {}", rows * cols)]
     GridShapeMismatch {
         /// Values actually present.
         len: usize,
@@ -67,8 +79,10 @@ pub enum AnalysisError {
         cols: usize,
     },
     /// Two grids that must share a shape do not.
+    #[error("grids that must share a shape have different shapes")]
     GridShapeDisagreement,
     /// Input shorter than the algorithm's minimum.
+    #[error("need at least {needed} samples, got {got}")]
     InsufficientInput {
         /// The algorithm's minimum, in [`Samples`].
         needed: Samples,
@@ -77,48 +91,5 @@ pub enum AnalysisError {
     },
 }
 
-impl core::fmt::Display for AnalysisError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            Self::ZeroWindow => write!(f, "analysis window is zero-length"),
-            Self::ZeroHop => write!(f, "hop size is zero: frames would not advance"),
-            Self::HopExceedsWindow { window, hop } => write!(
-                f,
-                "hop {hop} exceeds window {window}: frames would not overlap"
-            ),
-            Self::NotColaCompliant {
-                window,
-                hop,
-                window_fn,
-            } => write!(
-                f,
-                "window {window} / hop {hop} is not {window_fn:?}-COLA: needs the hop to \
-                 divide the window with at least {}x overlap",
-                window_fn.cola_overlap()
-            ),
-            Self::NonPositiveSampleRate => write!(f, "sample rate must be positive"),
-            Self::EmptyFrequencyRange { min, max } => {
-                write!(f, "empty frequency range: min {min} is not below max {max}")
-            }
-            Self::AboveNyquist { freq, nyquist } => {
-                write!(f, "frequency {freq} is above Nyquist {nyquist}")
-            }
-            Self::GridShapeMismatch { len, rows, cols } => write!(
-                f,
-                "grid has {len} values but its shape is {rows}x{cols} = {}",
-                rows * cols
-            ),
-            Self::GridShapeDisagreement => {
-                write!(f, "grids that must share a shape have different shapes")
-            }
-            Self::InsufficientInput { needed, got } => {
-                write!(f, "need at least {needed} samples, got {got}")
-            }
-        }
-    }
-}
-
-impl core::error::Error for AnalysisError {}
-
-/// Result of an analysis call, defaulting the error to [`AnalysisError`].
-pub type Result<T> = core::result::Result<T, AnalysisError>;
+/// Result of an analysis call, defaulting the error to [`Error`].
+pub type Result<T> = core::result::Result<T, Error>;

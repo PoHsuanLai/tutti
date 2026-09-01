@@ -119,7 +119,10 @@ pub(crate) fn encode_to_file(
     path: &Path,
 ) -> Result<Written> {
     use crate::options::AudioFormat;
-    #[allow(unused_imports)]
+    #[allow(
+        unused_imports,
+        reason = "named only by the `cfg(not(feature))` fallback arms; unused when every format feature is on"
+    )]
     use crate::Error;
 
     match config.encode.format {

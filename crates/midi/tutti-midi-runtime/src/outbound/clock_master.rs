@@ -380,12 +380,12 @@ mod tests {
     /// switch (mirrors the one in `clip_player.rs`).
     struct TestTransport {
         beat: AtomicF64,
-        tempo: f64,
+        tempo: Bpm,
         playing: StdAtomicBool,
     }
 
     impl TestTransport {
-        fn new(tempo: f64) -> Self {
+        fn new(tempo: Bpm) -> Self {
             Self {
                 beat: AtomicF64::new(0.0),
                 tempo,
@@ -408,12 +408,12 @@ mod tests {
             self.playing.load(Ordering::Acquire)
         }
         fn tempo(&self) -> Bpm {
-            Bpm(self.tempo)
+            self.tempo
         }
     }
 
     fn master(
-        tempo: f64,
+        tempo: Bpm,
         sample_rate: impl Into<SampleRate>,
     ) -> (ClockMaster, Arc<TestTransport>, crate::MidiReceiver) {
         use tutti_midi_types::MidiUnitId;
@@ -451,7 +451,7 @@ mod tests {
     #[test]
     fn emits_24_ticks_per_beat_at_120bpm() {
         let sr = 48_000.0;
-        let (cm, transport, cons) = master(120.0, sr);
+        let (cm, transport, cons) = master(Bpm(120.0), sr);
         transport.set_playing(true);
         // 120 BPM → 0.5s/beat → 24000 samples/beat. Process one beat's worth of
         // audio in blocks of 512 and count 0xF8 ticks.
@@ -482,7 +482,7 @@ mod tests {
 
     #[test]
     fn play_at_zero_emits_start_not_continue() {
-        let (cm, transport, cons) = master(120.0, 48_000.0);
+        let (cm, transport, cons) = master(Bpm(120.0), 48_000.0);
         transport.set_beat(0.0);
         transport.set_playing(true);
         cm.tick(512);
@@ -499,7 +499,7 @@ mod tests {
 
     #[test]
     fn play_mid_song_emits_continue_and_song_position() {
-        let (cm, transport, cons) = master(120.0, 48_000.0);
+        let (cm, transport, cons) = master(Bpm(120.0), 48_000.0);
         transport.set_beat(8.0); // 2 bars in
         transport.set_playing(true);
         cm.tick(512);
@@ -520,7 +520,7 @@ mod tests {
 
     #[test]
     fn stop_emits_stop_message() {
-        let (cm, transport, cons) = master(120.0, 48_000.0);
+        let (cm, transport, cons) = master(Bpm(120.0), 48_000.0);
         transport.set_playing(true);
         cm.tick(512);
         let _ = drain_all(&cons);
@@ -535,7 +535,7 @@ mod tests {
 
     #[test]
     fn disabled_master_emits_nothing() {
-        let (cm, transport, cons) = master(120.0, 48_000.0);
+        let (cm, transport, cons) = master(Bpm(120.0), 48_000.0);
         cm.set_enabled(false);
         transport.set_playing(true);
         cm.tick(512);
@@ -550,7 +550,7 @@ mod tests {
         // A block that spans exactly two clock ticks should place them at
         // distinct, ordered frame offsets inside the block.
         let sr = 48_000.0;
-        let (cm, transport, cons) = master(120.0, sr);
+        let (cm, transport, cons) = master(Bpm(120.0), sr);
         transport.set_playing(true);
         transport.set_beat(0.0);
         // One beat = 24000 samples; 1/24 beat = 1000 samples. A 2500-sample
@@ -574,7 +574,7 @@ mod tests {
         // The strongest check: feed this master's own output into the decoder and confirm
         // it recovers the tempo and beat — the in-repo loopback from the plan.
         let sr = 48_000.0;
-        let (cm, transport, cons) = master(120.0, sr);
+        let (cm, transport, cons) = master(Bpm(120.0), sr);
         transport.set_playing(true);
 
         let block = 256usize;
@@ -607,7 +607,7 @@ mod tests {
     #[test]
     fn mtc_quarter_frames_round_trip_to_a_timecode() {
         let sr = 48_000.0;
-        let (cm, transport, cons) = master(120.0, sr);
+        let (cm, transport, cons) = master(Bpm(120.0), sr);
         cm.set_send_mtc(true);
         cm.set_mtc_fps(SmpteFrameRate::Fps25);
         transport.set_playing(true);

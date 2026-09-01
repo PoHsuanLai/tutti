@@ -18,6 +18,8 @@ workspace = true
 # it has none today (`default = []`), so the flag currently suppresses nothing.
 tutti-core = { path = "../tutti-core", default-features = false }
 
+thiserror.workspace = true
+
 # The capture ring `MicMonitorNode` drains. The producer half lives in the
 # device layer (`tutti-cpal`), which sits *above* this crate.
 ringbuf = "0.4"

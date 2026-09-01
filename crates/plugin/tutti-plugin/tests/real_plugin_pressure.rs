@@ -122,7 +122,6 @@ fn available_effects() -> Vec<&'static str> {
 /// from. The delay-compensation tests do not go through here — they load one named
 /// plugin via [`load_passthrough`], which is why `au` alone is a valid build.
 #[cfg(any(feature = "clap", feature = "vst3"))]
-#[allow(clippy::type_complexity)]
 fn load_n(
     count: usize,
 ) -> Option<(
@@ -638,7 +637,6 @@ fn au_output_nulls_against_the_input_delayed_by_the_declared_latency() {
 /// `Plugin::open` picks the host from the path itself, so this does not
 /// dispatch on the extension.
 #[cfg(any(feature = "vst3", feature = "au"))]
-#[allow(clippy::type_complexity)]
 fn load_passthrough(
     path: &str,
 ) -> Option<(Box<dyn AudioUnit>, tutti_plugin::handles::PluginHandle)> {

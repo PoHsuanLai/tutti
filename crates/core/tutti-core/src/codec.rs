@@ -73,7 +73,10 @@ static EXTENSIONS: std::sync::LazyLock<Vec<&'static str>> = std::sync::LazyLock:
     #[cfg(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg"))]
     use fundsp::symphonia::core::probe::QueryDescriptor;
 
-    #[allow(unused_mut)]
+    #[allow(
+        unused_mut,
+        reason = "mutated only by the feature-gated `add!` expansions; with every codec feature off the list stays empty"
+    )]
     let mut exts: Vec<&'static str> = Vec::new();
 
     // Append every extension a reader declares, skipping repeats. Two containers

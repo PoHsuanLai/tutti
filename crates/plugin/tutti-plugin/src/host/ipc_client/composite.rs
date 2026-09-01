@@ -54,7 +54,6 @@ impl PluginBridge {
     /// Hand block `seq` to the bridge without waiting. See
     /// [`AudioBridge::submit`] — returning `true` means the block was accepted,
     /// never that its output is ready.
-    #[allow(clippy::too_many_arguments)]
     pub fn submit(
         &self,
         seq: u64,

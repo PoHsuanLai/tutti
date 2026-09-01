@@ -230,10 +230,10 @@ mod tests {
 
         let mut in_buf = tutti_core::BufferVec::new(6);
         let mut out_buf = tutti_core::BufferVec::new(2);
-        // `c` and `i` are a (channel, frame) coordinate that `set_f32` takes as
-        // two arguments, so the indices are the payload rather than a way of
-        // walking `input`.
-        #[allow(clippy::needless_range_loop)]
+        #[allow(
+            clippy::needless_range_loop,
+            reason = "`c` and `i` are a (channel, frame) coordinate that `set_f32` takes as two arguments — the payload, not a cursor over `input`"
+        )]
         for c in 0..6 {
             for i in 0..N {
                 in_buf.buffer_mut().set_f32(c, i, input[c][i]);
@@ -241,9 +241,10 @@ mod tests {
         }
         processed.process(N, &in_buf.buffer_ref(), &mut out_buf.buffer_mut());
 
-        // Again a coordinate, not a cursor: `i` gathers one frame *across* all
-        // six channel planes and then indexes the output buffer.
-        #[allow(clippy::needless_range_loop)]
+        #[allow(
+            clippy::needless_range_loop,
+            reason = "a coordinate, not a cursor: `i` gathers one frame across all six channel planes and then indexes the output buffer"
+        )]
         for i in 0..N {
             let frame: Vec<f32> = (0..6).map(|c| input[c][i]).collect();
             let mut expect = [0.0f32; 2];

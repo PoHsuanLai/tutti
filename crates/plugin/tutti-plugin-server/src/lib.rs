@@ -53,14 +53,28 @@ pub(crate) mod test_utils {
     use std::path::PathBuf;
     #[cfg(any(feature = "clap", feature = "vst3", feature = "vst2"))]
     use std::sync::OnceLock;
-    #[cfg(any(feature = "clap", feature = "vst3", feature = "vst2"))]
+    #[cfg(any(
+        all(feature = "au", target_os = "macos"),
+        feature = "clap",
+        feature = "vst3",
+        feature = "vst2"
+    ))]
     use std::sync::{Mutex, MutexGuard};
 
-    /// Taken by every loader test that `dlopen`s a plugin — CLAP, VST3 and now
-    /// VST2. VST2 is the reason the lock exists (the `vst` crate keeps a global
-    /// `LOAD_POINTER` during load), and until `loaders::vst2` grew tests it was
-    /// the one loader that never took it.
-    #[cfg(any(feature = "clap", feature = "vst3", feature = "vst2"))]
+    /// Taken by every loader test that loads a real plugin — CLAP, VST3, VST2
+    /// and, on macOS, AU. VST2 is the reason the lock exists (the `vst` crate
+    /// keeps a global `LOAD_POINTER` during load), and until `loaders::vst2`
+    /// grew tests it was the one loader that never took it.
+    ///
+    /// AU is gated on the target as well as the feature, matching the module's
+    /// own `cfg`: the AU tests are `all(feature = "au", target_os = "macos")`,
+    /// so an `au`-only build on macOS must still find this lock.
+    #[cfg(any(
+        all(feature = "au", target_os = "macos"),
+        feature = "clap",
+        feature = "vst3",
+        feature = "vst2"
+    ))]
     pub static PLUGIN_LOAD_LOCK: Mutex<()> = Mutex::new(());
 
     /// `;`-separated candidate paths for the reference CLAP plugin, emitted by
@@ -349,7 +363,12 @@ pub(crate) mod test_utils {
     /// turning one real failure into dozens of misleading cascade failures.
     /// The guarded data is `()`, so there's no invariant a poisoned lock
     /// could violate; recovering is safe and keeps failures isolated.
-    #[cfg(any(feature = "clap", feature = "vst3", feature = "vst2"))]
+    #[cfg(any(
+        all(feature = "au", target_os = "macos"),
+        feature = "clap",
+        feature = "vst3",
+        feature = "vst2"
+    ))]
     pub fn plugin_load_lock() -> MutexGuard<'static, ()> {
         PLUGIN_LOAD_LOCK
             .lock()

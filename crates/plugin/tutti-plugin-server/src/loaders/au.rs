@@ -1748,6 +1748,7 @@ mod tests {
     ///   Pinned below by driving the identical conversion the impl uses and
     ///   checking it lands where `set_parameter` puts the same input — so if the
     ///   two ever diverge, this fails even while the AU keeps answering `None`.
+    ///
     /// **Not covered here, deliberately:** that an address of the wrong model
     /// (a VST2 `Index`) addresses nothing. It cannot be — since every AU answers
     /// `None`, no input distinguishes "refused the address" from "the AU

@@ -22,9 +22,17 @@
 //! cargo test -p tutti-vst3-host --features conformance --test vst3_conformance
 //! ```
 //!
-//! Both env vars are baked in at build time. Unset either and every test
-//! skips with a printed message rather than failing, so a default `cargo test`
-//! stays green without the SDK.
+//! Neither env var is required. The SDK is an in-repo submodule and `build.rs`
+//! compiles the `audio-probe` reference plugin from in-repo sources, so a
+//! recursive checkout has everything this suite needs; `VST3_SDK_DIR` and
+//! `VST3_SAMPLE_PLUGIN_DIR` only substitute an external SDK or an external
+//! plugin tree.
+//!
+//! **A missing harness fails rather than skips.** These tests used to print
+//! "skipping" and report `ok`, which on a correct checkout was the outcome for
+//! every one of them — the suite was claiming coverage it did not have. Both
+//! requirements have exactly one cause when absent (uninitialised submodules)
+//! and one fix, so the panic names it.
 
 #![cfg(feature = "conformance")]
 
@@ -90,6 +98,18 @@ fn plugin_guard() -> std::sync::MutexGuard<'static, ()> {
 
 const AVAILABLE: &str = env!("VST3_HOSTCHECK_AVAILABLE");
 const SAMPLE_PLUGIN_DIR: &str = env!("VST3_SAMPLE_PLUGIN_DIR");
+
+/// The bundles `build.rs` builds from the vendored SDK — `audio-probe` and
+/// `multiple-program-changes`. Present on any recursive checkout, because they
+/// are compiled by this very `cargo test` invocation.
+///
+/// Without this, [`sample_plugins`] saw only `VST3_SAMPLE_PLUGIN_DIR`, which
+/// names a hand-built external SDK tree and is unset on essentially every
+/// machine — so every test in this file took the skip and still printed `ok`.
+/// The sibling suites (`vst3_audio_correctness.rs`, `support/gui_lifecycle.rs`)
+/// already fall back here for exactly that reason; this file was simply never
+/// updated when the probe stopped being external.
+const PROBE_DIR_BUILT: &str = env!("VST3_PROBE_DIR");
 
 /// `ProcessModes_::kOffline`. Used to assert the plugin observed the mode we
 /// asked for, independent of the enum's Rust-side representation.
@@ -194,25 +214,36 @@ fn resolve_bundle(path: &Path) -> PathBuf {
 }
 
 /// Every sample plugin we can find, as (name, resolved binary path).
+///
+/// Searches the external `VST3_SAMPLE_PLUGIN_DIR` first, then the in-repo
+/// [`PROBE_DIR_BUILT`], so an externally built SDK tree still wins when one is
+/// configured and the in-repo bundles are used otherwise. Both are read, not
+/// just the first non-empty one: a machine with an external tree should get its
+/// plugins *and* the probe, since several checks below want more than one
+/// plugin to be meaningful.
 fn sample_plugins() -> Vec<(String, PathBuf)> {
-    if SAMPLE_PLUGIN_DIR.is_empty() {
-        return Vec::new();
+    let mut out: Vec<(String, PathBuf)> = Vec::new();
+    for dir in [SAMPLE_PLUGIN_DIR, PROBE_DIR_BUILT] {
+        if dir.is_empty() {
+            continue;
+        }
+        let Ok(entries) = std::fs::read_dir(Path::new(dir)) else {
+            continue;
+        };
+        out.extend(
+            entries
+                .filter_map(|e| e.ok())
+                .map(|e| e.path())
+                .filter(|p| p.extension().is_some_and(|x| x == "vst3"))
+                .filter_map(|p| {
+                    let name = p.file_stem()?.to_str()?.to_string();
+                    let bin = resolve_bundle(&p);
+                    bin.is_file().then_some((name, bin))
+                }),
+        );
     }
-    let dir = Path::new(SAMPLE_PLUGIN_DIR);
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return Vec::new();
-    };
-    let mut out: Vec<(String, PathBuf)> = entries
-        .filter_map(|e| e.ok())
-        .map(|e| e.path())
-        .filter(|p| p.extension().is_some_and(|x| x == "vst3"))
-        .filter_map(|p| {
-            let name = p.file_stem()?.to_str()?.to_string();
-            let bin = resolve_bundle(&p);
-            bin.is_file().then_some((name, bin))
-        })
-        .collect();
     out.sort();
+    out.dedup_by(|a, b| a.1 == b.1);
     out
 }
 
@@ -230,18 +261,48 @@ fn first_parameter_id(path: &Path) -> Option<u32> {
     (inst.parameter_count() > 0).then(|| inst.parameter_id_at(0))?
 }
 
-/// Skip guard: prints why and returns false when the harness isn't available.
+/// Assert the harness is usable, **panicking with the reason when it is not**.
+///
+/// # Why this is not a skip any more
+///
+/// It used to return `false` and print "skipping", and the twenty-four call
+/// sites below turned that into an early `return` — a passing test that
+/// executed nothing. On this repo's own CI and on any correct checkout that was
+/// *always* the outcome, because [`sample_plugins`] only looked at
+/// `VST3_SAMPLE_PLUGIN_DIR`. So the suite reported roughly two dozen green
+/// tests while running zero assertions, which is worse than having no suite:
+/// it claimed coverage of the `ProcessData` this host builds, and a regression
+/// in that would have shipped silently.
+///
+/// Both requirements are satisfied by a recursive checkout and nothing else:
+/// the hostchecker sources live in the `public.sdk` submodule, and `build.rs`
+/// compiles `audio-probe` into [`PROBE_DIR_BUILT`] from in-repo sources. Neither
+/// absence is environmental, so neither should be tolerated — an unusable
+/// harness has exactly one cause and one fix, and the panic names both.
+///
+/// The one genuinely conditional case is the `conformance` feature itself,
+/// which the `#![cfg(feature = "conformance")]` at the top of this file already
+/// handles: without it, the file does not compile in and nothing claims to
+/// have run.
+#[track_caller]
 fn harness_ready() -> bool {
-    if AVAILABLE != "1" {
-        eprintln!("VST3_SDK_DIR unset or hostchecker sources missing; skipping");
-        return false;
-    }
-    if sample_plugins().is_empty() {
-        eprintln!(
-            "no sample plugins under VST3_SAMPLE_PLUGIN_DIR ({SAMPLE_PLUGIN_DIR:?}); skipping"
-        );
-        return false;
-    }
+    assert_eq!(
+        AVAILABLE, "1",
+        "the HostChecker sources are missing, so this suite cannot validate \
+         anything. They ship inside the `public.sdk` VST3 submodule, so this \
+         means the submodules are not checked out.\n\
+         Run:  git submodule update --init --recursive\n\
+         (or set VST3_SDK_DIR to an external SDK checkout.)"
+    );
+    assert!(
+        !sample_plugins().is_empty(),
+        "no VST3 plugin to drive. `build.rs` builds `audio-probe` from \
+         tests/support/audio-probe into {PROBE_DIR_BUILT:?} whenever the \
+         `conformance` feature is on, so an empty list means the build did not \
+         produce it — not that this machine lacks plugins. \
+         (VST3_SAMPLE_PLUGIN_DIR={SAMPLE_PLUGIN_DIR:?} is the optional external \
+         override and may legitimately be unset.)"
+    );
     true
 }
 
@@ -636,12 +697,26 @@ fn every_audio_class_survives_a_block() {
         driven + failures.len(),
         failures.join("\n")
     );
-    // Guard the premise: if class enumeration regressed to one-per-bundle this
-    // would still pass while covering a third of what it claims.
+    // Guard the premise: a sweep that drove nothing must not report success.
+    //
+    // This was `driven > 40`, a figure taken from one developer's external SDK
+    // build (~55 audio classes across ~18 bundles). That number is a property of
+    // `VST3_SAMPLE_PLUGIN_DIR`, not of this host, and it is unset on essentially
+    // every machine — so the moment these tests stopped skipping vacuously, the
+    // literal failed on the in-repo corpus of two bundles. A premise guard that
+    // only holds on one machine guards nothing on the others.
+    //
+    // The regression it was aimed at — class enumeration collapsing to
+    // one-per-bundle — is now caught relative to the corpus actually present.
+    // The *other* half of that concern, `load_class` ignoring which class it was
+    // asked for, is caught by the `info.name != name` check above, which is a
+    // per-class assertion and needs no corpus size at all.
+    let bundles = sample_plugins().len();
     assert!(
-        driven > 40,
-        "expected the corpus to yield ~55 audio classes, drove only {driven} — \
-         class enumeration or the corpus regressed"
+        driven >= bundles && bundles > 0,
+        "drove {driven} audio classes across {bundles} bundles — every bundle in \
+         the corpus publishes at least one audio class, so a lower count means \
+         class enumeration regressed"
     );
 }
 
@@ -2039,12 +2114,15 @@ fn plugin_observes_the_offline_mode_we_requested() {
 /// Needs only a sample plugin, not the HostChecker sources.
 #[test]
 fn host_context_is_borrowed_not_consumed() {
-    if sample_plugins().is_empty() {
-        eprintln!(
-            "no sample plugins under VST3_SAMPLE_PLUGIN_DIR ({SAMPLE_PLUGIN_DIR:?}); skipping"
-        );
-        return;
-    }
+    // Hand-rolled the same vacuous skip `harness_ready` did, for the same
+    // reason and with the same consequence. It needs only a plugin, not the
+    // HostChecker sources — but a plugin is not optional either, so the
+    // requirement is asserted rather than shrugged at.
+    assert!(
+        !sample_plugins().is_empty(),
+        "no VST3 plugin to drive; `build.rs` builds `audio-probe` into \
+         {PROBE_DIR_BUILT:?} on every conformance build"
+    );
     let _plugins = plugin_guard();
     let mut failures = Vec::new();
     let mut exercised = 0usize;

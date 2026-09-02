@@ -104,6 +104,17 @@ pub(crate) fn configure() {
     if let Some(n) = u32_var("TUTTI_CLAP_PROBE_APPLY_GAIN") {
         APPLY_GAIN.store(n != 0, Ordering::SeqCst);
     }
+    // The render mode has an `extern "C"` switch too, and this is the same
+    // static — not a second copy. An out-of-process test cannot call that
+    // switch (the plugin is in another process), and the mode is what decides
+    // whether the plugin emits anything at all, so without an environment path
+    // every out-of-process audio assertion would be made against the `Inert`
+    // default and read as "the host collected nothing".
+    if let Some(n) = u32_var("TUTTI_CLAP_PROBE_RENDER_MODE") {
+        // SAFETY: the switch is a plain atomic store; `unsafe` is on the
+        // signature only because it is an `extern "C"` export.
+        unsafe { crate::tutti_test_plugin_set_render_mode(n) };
+    }
 }
 
 /// The current switch state.

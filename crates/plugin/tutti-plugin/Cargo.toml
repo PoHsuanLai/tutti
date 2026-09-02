@@ -129,6 +129,17 @@ tutti-midi-types = { path = "../../midi/tutti-midi-types" }
 # *node* dispatched rather than what the instance API does.
 libloading = "0.8"
 tutti-vst2-test-plugin = { path = "../vendor/tutti-vst2-test-plugin" }
+# The reference CLAP plugin the OUT-OF-PROCESS correctness suites drive. A
+# dev-dependency for the artifact, not the API: cargo builds its cdylib in this
+# same `cargo test` (no nested cargo, no target-dir-lock deadlock) and
+# `build.rs` names where it landed. Unlike the VST2 probe, nothing here links
+# its rlib — the plugin is loaded by a `plugin-server` subprocess, so the only
+# thing this crate needs is the file on disk.
+tutti-clap-test-plugin = { path = "../../vendor/tutti-clap-test-plugin" }
+# `dyn_clone::clone_box`, to probe a node's latency the way `LatencyGraph for
+# Net` does. Reached through the same re-export fundsp uses, so the test clones
+# exactly as the planner will.
+dyn-clone = "1"
 
 # docs.rs renders with every feature on. `default = []` keeps the engine
 # Bevy-free for consumers, but it would otherwise publish a page with the

@@ -734,8 +734,11 @@ mod tests {
             }
         }
         impl HostState for Inert {
-            fn save_state(&self) -> Option<Vec<u8>> {
-                None
+            /// `NoStateRoute`, matching `load_state` below: this backend hosts
+            /// no plugin, so it has no state to give and must not answer with
+            /// an empty one, which a caller would save as the real thing.
+            fn save_state(&self) -> std::result::Result<Vec<u8>, crate::error::StateError> {
+                Err(crate::error::StateError::NoStateRoute)
             }
             /// `NoStateRoute`, not a silent success: this backend carries no
             /// plugin at all, so a caller must not read "state loaded" from it.

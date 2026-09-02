@@ -16,6 +16,14 @@
 //! this module re-exports them at the historical `tutti_plugin::server::*`
 //! import point.
 
+/// Splitting and reassembling plugin state across frames.
+///
+/// Re-exported here rather than left crate-private because both ends of the
+/// wire must chunk *identically* — a server that split differently from the
+/// host would produce sequences the host refuses. One implementation, shared,
+/// is the only way that stays true.
+pub use crate::util::transport::state_chunk;
+
 pub use crate::host::subprocess::resolve_bundle;
 pub use crate::protocol::audio::{
     AudioBuffer, AudioBuffer32, AudioBuffer64, AudioBufferMut, Sample,
@@ -30,7 +38,9 @@ pub use crate::protocol::{
     ParamId, ParamRange, ParamSteps, ParameterChanges, ParameterInfo, ParameterPoint,
     ParameterQueue, PluginClass, PluginDescriptor, PluginTail, Preset, PresetId, ProcessAudioData,
     SampleFormat, Samples, ScaleChanges, ScaleValue, SlabLayout, TimeSignature, TransportInfo,
-    Vst2Category, Vst3PlugType, Vst3SubCategories, MIDI_STACK_CAPACITY, PROTOCOL_VERSION,
+    Vst2Category, Vst3PlugType, Vst3SubCategories, MAX_FRAME_BYTES, MAX_STATE_BYTES,
+    MIDI_STACK_CAPACITY, STATE_CHUNK_BYTES,
+    PROTOCOL_VERSION,
 };
 pub use crate::util::config::BridgeConfig;
 pub use crate::util::transport::shm::{AudioSlab, RING_SLOTS};

@@ -23,6 +23,7 @@
 
 use super::PluginBridge;
 use crate::host::ipc_client::audio::BridgeThread;
+use crate::error::StateError;
 use crate::protocol::{
     BridgeMessage, ChannelLayout, HostMessage, ParamAddress, ParamId, SampleFormat, SlabLayout,
     PROTOCOL_VERSION,
@@ -118,6 +119,23 @@ enum Action {
     Die,
     /// Send a raw, deliberately malformed frame: `(advertised_len, body)`.
     Raw(u32, Vec<u8>),
+    /// Answer with a sequence of frames, in order.
+    ///
+    /// Needed for plugin state, which is chunked: a single-`Reply` mock cannot
+    /// produce a multi-frame answer, so without this the chunked path could
+    /// only be tested one chunk long — the length at which it is
+    /// indistinguishable from the single-frame shape it replaced.
+    ReplyMany(Vec<BridgeMessage>),
+    /// Advertise `len`, then dribble one byte every `gap` — forever.
+    ///
+    /// The peer a per-syscall receive timeout cannot bound. `SO_RCVTIMEO`
+    /// restarts on every `recv` and `read_exact` loops until the buffer is
+    /// full, so any peer that makes *some* progress before each expiry keeps
+    /// the reader inside one call indefinitely. Neither the socket timeout nor
+    /// the caller's own can end it: the caller gives up and answers `None`,
+    /// while the bridge thread stays parked in the read and never reaches the
+    /// error that would mark the bridge crashed.
+    Dribble { len: u32, gap: Duration },
 }
 
 struct MockServer {
@@ -173,10 +191,30 @@ impl MockServer {
                             return;
                         }
                     }
+                    Action::ReplyMany(ms) => {
+                        if ms.iter().any(|m| send_bridge_msg(&stream, m).is_err()) {
+                            return;
+                        }
+                    }
                     Action::Silent => {}
                     Action::Raw(len, body) => {
                         if send_raw_frame(&stream, len, &body).is_err() {
                             return;
+                        }
+                    }
+                    Action::Dribble { len, gap } => {
+                        let mut s = &stream;
+                        if s.write_all(&len.to_be_bytes()).is_err() {
+                            return;
+                        }
+                        // Forever, or until the host hangs up. A bounded loop
+                        // would let the test pass by the peer running out of
+                        // bytes rather than by the host refusing the frame.
+                        loop {
+                            std::thread::sleep(gap);
+                            if s.write_all(&[0u8]).is_err() {
+                                return;
+                            }
                         }
                     }
                     // Dropping `stream` closes the socket, so the host's next
@@ -493,7 +531,7 @@ fn a_crash_during_save_state_does_not_block_the_caller_forever() {
         )
     });
     assert!(
-        saved.is_none(),
+        saved.is_err(),
         "save_state returned {saved:?} from a server that never answered \
          (after {elapsed:?})"
     );
@@ -503,14 +541,22 @@ fn a_crash_during_save_state_does_not_block_the_caller_forever() {
 
 /// A wildly oversized length prefix must not be honoured as an allocation.
 ///
-/// `recv` reads a 4-byte big-endian length and then does `vec![0u8; len]`. The
-/// length comes off the wire, so `0xFFFFFFFF` asks the host to allocate 4 GiB
-/// before a single byte of body has been validated. On a machine with
-/// overcommit that is a large mapping and a long stall; without it, an abort.
+/// `recv` reads a 4-byte big-endian length. The length comes off the wire, so
+/// `0xFFFFFFFF` asks the host to allocate 4 GiB before a single byte of body
+/// has been validated. `MAX_FRAME_BYTES` is what stops it: the length is
+/// checked *before* the `vec![0u8; len]`, so nothing is allocated at all.
 ///
 /// The body deliberately does not follow: a server that advertises 4 GiB and
 /// sends 4 bytes is exactly the corrupt-framing case. The host must fail the
 /// read rather than sit on the allocation.
+///
+/// **This test used to pass for a weak reason.** Before the bound, the 4 GiB
+/// `vec![0u8; len]` lowered to `calloc`, which `mmap`s lazily — measured at
+/// 60 ns on Linux with `overcommit_memory=0`, so the allocation the test names
+/// as the hazard was in practice free, and what the test actually observed was
+/// the socket read timing out 5 s later. The assertion below is now about the
+/// *bound*: with `MAX_FRAME_BYTES` the rejection happens in the four bytes it
+/// takes to read the prefix, which is why the elapsed check is here.
 #[test]
 fn an_absurd_length_prefix_does_not_hang_or_exhaust_memory() {
     let mock = MockServer::start("huge-len", |msg| match msg {
@@ -532,9 +578,129 @@ fn an_absurd_length_prefix_does_not_hang_or_exhaust_memory() {
         "the host returned a parameter value from a frame it could not have \
          read (after {elapsed:?})"
     );
+    // The rejection is a length comparison, so it must not cost a socket
+    // timeout. `PARAM_TIMEOUT` is 5 s; anything near it means the host read the
+    // prefix, allocated, and then sat waiting for a body — the pre-bound
+    // behaviour this test's second paragraph describes.
+    assert!(
+        elapsed < Duration::from_secs(1),
+        "an over-cap length prefix took {elapsed:?} to reject — the bound is \
+         not being checked before the read, so the host is waiting out its \
+         receive timeout on a body that will never arrive"
+    );
     assert!(
         mock.wait_for_crash(),
         "an unreadable frame left the bridge believing the connection was healthy"
+    );
+}
+
+/// A frame one byte over the cap is refused; one byte under it is not.
+///
+/// The pair is the point. `an_absurd_length_prefix…` uses `u32::MAX`, which any
+/// plausible bound rejects — it cannot tell a real limit from a stray sanity
+/// check, and would still pass if the constant were off by orders of magnitude.
+/// Straddling `MAX_FRAME_BYTES` pins the constant the transport actually reads.
+///
+/// The under-cap half deliberately advertises a length it never fills. What is
+/// being asserted is *which branch was taken*, and the two branches are
+/// distinguishable by timing alone: an accepted length allocates and blocks
+/// until the receive timeout, a rejected one returns immediately. So a slow
+/// answer here means the bound is too tight and honest frames are being
+/// refused — the regression a too-eager cap would cause.
+#[test]
+fn the_frame_cap_is_the_boundary_it_claims_to_be() {
+    use crate::protocol::MAX_FRAME_BYTES;
+
+    let over = MockServer::start("cap-over", |msg| match msg {
+        HostMessage::GetParameter { .. } => Action::Raw(MAX_FRAME_BYTES as u32 + 1, Vec::new()),
+        _ => Action::Silent,
+    });
+    let bridge = Arc::clone(&over.bridge);
+    let (_, over_elapsed) =
+        call_within(move || bridge.parameter(ParamAddress::Opaque(ParamId::new(1))))
+            .unwrap_or_else(|w| panic!("an over-cap frame blocked the caller for {w:?}"));
+    assert!(
+        over_elapsed < Duration::from_secs(1),
+        "MAX_FRAME_BYTES + 1 took {over_elapsed:?} to reject — the transport is \
+         not comparing against the constant this test names"
+    );
+
+    let under = MockServer::start("cap-under", |msg| match msg {
+        HostMessage::GetParameter { .. } => Action::Raw(MAX_FRAME_BYTES as u32, Vec::new()),
+        _ => Action::Silent,
+    });
+    let bridge = Arc::clone(&under.bridge);
+    let (_, under_elapsed) =
+        call_within(move || bridge.parameter(ParamAddress::Opaque(ParamId::new(1))))
+            .unwrap_or_else(|w| panic!("an at-cap frame blocked the caller for {w:?}"));
+    assert!(
+        under_elapsed >= Duration::from_secs(1),
+        "a frame of exactly MAX_FRAME_BYTES was refused in {under_elapsed:?} \
+         rather than accepted and waited on — the bound is off by one in the \
+         direction that rejects legitimate traffic"
+    );
+}
+
+/// A peer that dribbles bytes must not hold the bridge thread forever.
+///
+/// **The hazard a receive timeout does not cover.** `recv_within` sets
+/// `SO_RCVTIMEO` and calls `read_exact`, but the timeout bounds a single
+/// `recv` syscall and `read_exact` loops until its buffer is full — and the
+/// timer restarts on every syscall. So a peer that delivers one byte per
+/// interval never lets the timeout fire, and the host stays inside one
+/// `read_exact` for as long as the peer keeps dribbling. Measured directly on
+/// a `UnixStream` pair: a 300 ms `SO_RCVTIMEO` survived 2.3 s of
+/// one-byte-per-200 ms.
+///
+/// What makes it worse than a slow request is *who* is stuck. The caller has
+/// its own `PARAM_TIMEOUT` and returns `None` on schedule, so the symptom is
+/// invisible from the audio thread — but the bridge thread never returns from
+/// `handle`, so `pump` never runs `crash()`, `is_crashed()` stays false, and
+/// every later request is queued behind a thread that is never coming back.
+/// The bridge looks healthy and answers nothing, forever.
+///
+/// **Two mechanisms close this, and this test covers the first.** Here the
+/// advertised length is over `MAX_FRAME_BYTES`, so it is rejected before any
+/// read starts and there is no multi-syscall read for the dribble to extend.
+/// An *under*-cap dribble reaches the read and is stopped by the total-elapsed
+/// deadline instead — see
+/// [`an_under_cap_dribble_is_stopped_by_the_total_deadline`], which is the case
+/// the size bound alone leaves open.
+///
+/// The gap is deliberately shorter than every timeout in the bridge, so a host
+/// that *did* enter the read unbounded would never escape and this test would
+/// fail on its deadline rather than its assertion.
+#[test]
+fn a_dribbling_peer_cannot_hold_the_bridge_thread_open() {
+    let mock = MockServer::start("dribble", |msg| match msg {
+        HostMessage::GetParameter { .. } => Action::Dribble {
+            len: u32::MAX,
+            gap: Duration::from_millis(50),
+        },
+        _ => Action::Silent,
+    });
+
+    let bridge = Arc::clone(&mock.bridge);
+    let (value, elapsed) =
+        call_within(move || bridge.parameter(ParamAddress::Opaque(ParamId::new(1))))
+            .unwrap_or_else(|waited| {
+                panic!(
+                    "a dribbling peer left the caller blocked after {waited:?} — the \
+                     host entered a multi-syscall read on an unvalidated length"
+                )
+            });
+    assert_eq!(value, None, "a dribbled frame produced a value");
+
+    // The assertion that matters. The caller returning is not evidence: it has
+    // its own timeout and would return `None` on schedule even with the bridge
+    // thread wedged forever. Only the crash flag distinguishes "the host
+    // rejected the frame" from "the host is still inside `read_exact` and the
+    // caller gave up without it".
+    assert!(
+        mock.wait_for_crash(),
+        "the bridge never reported a crash after {elapsed:?} — its thread is \
+         still parked in `read_exact`, extended one byte at a time, so `pump` \
+         has not reached the error that marks the connection dead"
     );
 }
 
@@ -607,8 +773,10 @@ fn a_truncated_body_is_not_mistaken_for_a_complete_message() {
 fn a_valid_but_wrong_reply_type_does_not_satisfy_the_request() {
     let mock = MockServer::start("wrong-type", |msg| match msg {
         // Asked for a parameter value; answer with state data instead.
-        HostMessage::GetParameter { .. } => Action::Reply(Box::new(BridgeMessage::StateData {
-            data: vec![1, 2, 3, 4],
+        HostMessage::GetParameter { .. } => Action::Reply(Box::new(BridgeMessage::StateChunk {
+            seq: 0,
+            last: true,
+            bytes: vec![1, 2, 3, 4],
         })),
         _ => Action::Silent,
     });
@@ -642,5 +810,175 @@ fn a_silent_server_is_bounded_by_the_timeout() {
     assert_eq!(
         value, None,
         "a silent server produced a value (after {elapsed:?})"
+    );
+}
+
+/// A dribble **under** the size cap must still end, on the clock.
+///
+/// This is the hazard `MAX_FRAME_BYTES` does not touch, and the reason the
+/// deadline exists as a separate mechanism. The advertised length here is a
+/// perfectly ordinary one — the size of a real reply — so the size check passes
+/// it and the host enters `read_exact`. Every real preset frame is in this
+/// range, so "the cap makes dribbling safe" was never true; it only moved the
+/// ceiling from `u32::MAX` to 64 MiB, and both are unbounded in practice.
+///
+/// The assertion is on the **crash flag**, not on the caller's return: the
+/// caller has its own `PARAM_TIMEOUT` and answers `None` on schedule whether or
+/// not the bridge thread is wedged, so only `is_crashed` distinguishes "the
+/// read gave up" from "the read is still running and the caller left".
+///
+/// The gap is far shorter than `PARAM_TIMEOUT`, so a per-syscall bound would
+/// never fire and this test would fail on `wait_for_crash` — which is exactly
+/// how it fails when the deadline is removed.
+#[test]
+fn an_under_cap_dribble_is_stopped_by_the_total_deadline() {
+    let mock = MockServer::start("dribble-under", |msg| match msg {
+        HostMessage::GetParameter { .. } => Action::Dribble {
+            // Comfortably under MAX_FRAME_BYTES: the size check must let this
+            // through, or the test proves nothing about the deadline.
+            len: 4096,
+            gap: Duration::from_millis(50),
+        },
+        _ => Action::Silent,
+    });
+
+    let bridge = Arc::clone(&mock.bridge);
+    let (value, elapsed) =
+        call_within(move || bridge.parameter(ParamAddress::Opaque(ParamId::new(1))))
+            .unwrap_or_else(|waited| {
+                panic!(
+                    "an under-cap dribbled frame left the caller blocked after {waited:?}"
+                )
+            });
+    assert_eq!(value, None, "a dribbled frame produced a value");
+    assert!(
+        mock.wait_for_crash(),
+        "the bridge never reported a crash after {elapsed:?} — an under-cap \
+         frame dribbled one byte per 50 ms is still holding the bridge thread \
+         inside `read_exact`, because the receive timeout restarts on every \
+         syscall and nothing bounds the call as a whole"
+    );
+}
+
+/// A large state survives the round trip, in both directions.
+///
+/// The regression this guards is the one the frame cap introduced: a state over
+/// `MAX_FRAME_BYTES` used to fail as a *crash* — `save_state` answering with a
+/// cause reading "Bridge process crashed" — which is indistinguishable from a
+/// segfault and loses the user's preset under a wrong explanation. It must now
+/// simply work, by travelling as chunks.
+///
+/// **Sized by `STATE_CHUNK_BYTES`, not by `MAX_FRAME_BYTES`.** What this test
+/// has to prove is that a state spanning *several* chunks reassembles in order
+/// and intact, and the chunk size is what decides that — a 68 MiB fixture
+/// proved the same property while moving 68 MiB through a socket, which under
+/// parallel load overran the harness's 10 s deadline and failed as a timeout
+/// rather than a defect. Three chunks and a remainder exercises every boundary
+/// the reassembler has: first, middle, last, and a partial final chunk.
+#[test]
+fn a_state_larger_than_one_frame_round_trips() {
+    use crate::protocol::STATE_CHUNK_BYTES;
+
+    // A byte pattern, not zeros: a chunking bug that drops or reorders a piece
+    // leaves the length right and the contents wrong, which zeros would hide.
+    let big: Vec<u8> = (0..STATE_CHUNK_BYTES * 3 + 4096)
+        .map(|i| (i % 251) as u8)
+        .collect();
+    let expected = big.clone();
+
+    let mock = MockServer::start("big-state", move |msg| match msg {
+        HostMessage::SaveState => Action::ReplyMany(
+            crate::util::transport::state_chunk::split(&big)
+                .map(|(seq, last, bytes)| BridgeMessage::StateChunk {
+                    seq,
+                    last,
+                    bytes: bytes.to_vec(),
+                })
+                .collect(),
+        ),
+        _ => Action::Silent,
+    });
+
+    let bridge = Arc::clone(&mock.bridge);
+    let (got, elapsed) = call_within(move || bridge.save_state())
+        .unwrap_or_else(|w| panic!("save_state on a multi-chunk state blocked for {w:?}"));
+    let got = got.unwrap_or_else(|e| {
+        panic!(
+            "a {}-byte state failed with {e} — a state larger than one frame \
+             must be carried, not refused",
+            expected.len()
+        )
+    });
+    assert_eq!(
+        got.len(),
+        expected.len(),
+        "reassembled state has the wrong length (after {elapsed:?})"
+    );
+    assert!(got == expected, "reassembled state does not match what was sent");
+
+    // Sanity: the fixture really did span several chunks. Without this the
+    // test would still pass if `STATE_CHUNK_BYTES` were raised past the
+    // fixture size, silently reverting to the single-frame shape it exists to
+    // distinguish itself from.
+    assert!(
+        crate::util::transport::state_chunk::split(&expected).count() >= 4,
+        "the fixture no longer spans multiple chunks, so this test would pass \
+         without chunking existing"
+    );
+}
+
+/// An over-limit `load_state` is a typed refusal, not a crash, and is instant.
+///
+/// Three separate regressions, which is why the assertions are three:
+///
+/// - **Typed.** It used to surface as
+///   `Rejected("the plugin did not answer within the state timeout")`, which
+///   says the plugin refused or hung. It did neither — the host declined to
+///   send. `TooLarge` names the real reason and carries both numbers.
+/// - **Instant.** The refusal is a length comparison, but the error propagated
+///   out of `handle` *before* `reply.send`, dropping the `Reply` and leaving
+///   the caller to wait out `STATE_TIMEOUT` for an answer the host already had.
+/// - **Non-fatal.** `pump` treats any `handle` error as connection-level, so
+///   one oversized preset called `crash()` on a healthy session. Nothing was
+///   written, so the socket is still synchronised and there is nothing to crash
+///   about — which is what separates this from an over-cap *receive*.
+#[test]
+fn an_oversized_load_state_is_refused_without_killing_the_bridge() {
+    use crate::protocol::MAX_STATE_BYTES;
+
+    let mock = MockServer::start("load-too-big", |_| Action::Silent);
+
+    // Not actually allocated at full size: `load_state` refuses on the length,
+    // so a `Vec` of the right length is what the check sees. Allocating a
+    // gigabyte to prove a comparison would make this test unrunnable.
+    let oversized = vec![0u8; MAX_STATE_BYTES + 1];
+    let start = Instant::now();
+    let err = mock
+        .bridge
+        .load_state(&oversized)
+        .expect_err("an over-limit state was accepted");
+    let elapsed = start.elapsed();
+
+    assert!(
+        matches!(err, StateError::TooLarge { .. }),
+        "an over-limit state reported {err:?}; the caller cannot tell a host \
+         limit from a plugin that refused or a subprocess that died"
+    );
+    assert!(
+        elapsed < Duration::from_secs(1),
+        "the refusal took {elapsed:?} — the caller is waiting out STATE_TIMEOUT \
+         for a length comparison the host made before sending anything"
+    );
+    assert!(
+        !mock.bridge.is_crashed(),
+        "an over-limit state killed the bridge; nothing was written, so the \
+         socket is still synchronised and the session was healthy"
+    );
+    // And the session must still work afterwards, which is the property
+    // `is_crashed` only implies.
+    assert!(
+        mock.bridge.load_state(b"small").is_err(),
+        "a later call should still reach the (silent) server and time out, \
+         rather than short-circuit on a latched crash"
     );
 }

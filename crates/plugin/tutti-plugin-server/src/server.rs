@@ -123,6 +123,13 @@ impl PluginServer {
                         return Ok(false);
                     }
                 }
+                Reaction::ReplyMany(ms) => {
+                    for m in &ms {
+                        if transport.send(m).is_err() {
+                            return Ok(false);
+                        }
+                    }
+                }
                 Reaction::None => {}
             }
         }
@@ -134,6 +141,11 @@ impl PluginServer {
             match self.session.handle(msg)? {
                 Reaction::Shutdown => break,
                 Reaction::Reply(m) => transport.send(&m)?,
+                Reaction::ReplyMany(ms) => {
+                    for m in &ms {
+                        transport.send(m)?;
+                    }
+                }
                 Reaction::None => {}
             }
             for event in self.session.drain_async_events() {

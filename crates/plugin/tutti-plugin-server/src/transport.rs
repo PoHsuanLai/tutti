@@ -13,8 +13,8 @@ use interprocess::local_socket::{
     traits::Listener as _, GenericFilePath, ListenerOptions, ToFsName as _,
 };
 use std::io::{Read, Write};
-use tutti_plugin::server::{BridgeMessage, HostMessage};
-use tutti_plugin::Result;
+use tutti_plugin::server::{BridgeMessage, HostMessage, MAX_FRAME_BYTES};
+use tutti_plugin::{BridgeError, Result};
 
 /// The platform's concrete listener/stream pair, not the crate's dispatch enum.
 ///
@@ -39,9 +39,10 @@ pub(crate) trait Transport: Send {
     ///
     /// # Errors
     ///
-    /// Returns an error on EOF (the host disconnected), a short read, or a
-    /// payload bincode cannot decode — the last meaning a protocol-version
-    /// mismatch the `Ready` handshake failed to catch.
+    /// Returns an error on EOF (the host disconnected), a short read, a length
+    /// prefix over `MAX_FRAME_BYTES` (a peer that cannot frame), or a payload
+    /// bincode cannot decode — the last meaning a protocol-version mismatch the
+    /// `Ready` handshake failed to catch.
     fn recv(&mut self) -> Result<HostMessage>;
 
     /// Write one length-prefixed message. Returns once it is handed to the OS,
@@ -73,6 +74,17 @@ impl Transport for SocketTransport {
         let mut len_buf = [0u8; 4];
         self.stream.read_exact(&mut len_buf)?;
         let len = u32::from_be_bytes(len_buf) as usize;
+        // Bound before allocating — the same check the host makes on its own
+        // side of this wire, for the same reason. See [`MAX_FRAME_BYTES`].
+        //
+        // The server is the *more* exposed end of the two: it is the process
+        // that loads untrusted plugin binaries, so a plugin that corrupts the
+        // server's own memory can drive this loop. Trusting the length here
+        // would let it turn a corrupted write into a 4 GiB allocation, or park
+        // the session thread in `read_exact` forever.
+        if len > MAX_FRAME_BYTES {
+            return Err(BridgeError::ProcessCrashed);
+        }
         let mut data = vec![0u8; len];
         self.stream.read_exact(&mut data)?;
         Ok(bincode::deserialize(&data)?)
@@ -80,6 +92,16 @@ impl Transport for SocketTransport {
 
     fn send(&mut self, msg: &BridgeMessage) -> Result<()> {
         let data = bincode::serialize(msg)?;
+        // As on the host's `send`: refuse rather than let `as u32` truncate the
+        // prefix, which would desync the stream instead of failing. Reachable
+        // here through `StateData`, whose chunk is whatever the plugin hands
+        // back from `get_state` — a number this process does not choose.
+        if data.len() > MAX_FRAME_BYTES {
+            return Err(BridgeError::ConnectionFailed(format!(
+                "outgoing frame is {} bytes, over the {MAX_FRAME_BYTES}-byte protocol limit",
+                data.len()
+            )));
+        }
         self.stream.write_all(&(data.len() as u32).to_be_bytes())?;
         self.stream.write_all(&data)?;
         Ok(())

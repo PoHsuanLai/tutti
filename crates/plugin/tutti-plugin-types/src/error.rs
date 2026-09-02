@@ -137,4 +137,26 @@ pub enum StateError {
     /// asked and said no.
     #[error("this backend has no state route")]
     NoStateRoute,
+
+    /// The state exceeded what the transport will carry, in either direction.
+    ///
+    /// A distinct variant rather than a [`Rejected`](Self::Rejected) string
+    /// because the plugin did **not** reject anything: on save it produced a
+    /// blob the host would not accept, and on load the host refused before the
+    /// plugin was asked. Reporting either as a rejection blames the plugin for
+    /// a limit the host imposes, and reporting it as
+    /// [`PluginCrashed`](Self::PluginCrashed) — which is what an unbounded
+    /// transport error degraded into — tells a DAW its plugin died when the
+    /// session is fine.
+    ///
+    /// Both numbers are carried because only their *ratio* tells a user what to
+    /// do: a blob a little over is a plugin to report upstream, one many times
+    /// over is a corrupt file.
+    #[error("plugin state is {bytes} bytes, over the {limit}-byte limit")]
+    TooLarge {
+        /// Size of the state that was refused.
+        bytes: usize,
+        /// The limit it exceeded.
+        limit: usize,
+    },
 }

@@ -128,7 +128,7 @@ pub struct PluginHealth {
     /// task per interval against a peer that is not answering.
     ///
     /// [`PendingPlugin`]: super::load::PendingPlugin
-    pending_snapshot: Option<Task<Option<Vec<u8>>>>,
+    pending_snapshot: Option<Task<Result<Vec<u8>, tutti_plugin::error::StateError>>>,
 }
 
 impl PluginHealth {
@@ -255,8 +255,16 @@ pub fn plugin_state_snapshot(mut plugins: Query<(&PluginEmitter, &mut PluginHeal
                 // overwriting a good one with nothing.
                 Some(result) => {
                     health.pending_snapshot = None;
-                    if let Some(state) = result {
-                        health.last_snapshot = Some(state);
+                    match result {
+                        Ok(state) => health.last_snapshot = Some(state),
+                        // Keep the previous snapshot rather than overwriting a
+                        // good one with nothing — but say why, which the old
+                        // `Option` could not. A snapshot that keeps failing is
+                        // how a recoverable plugin quietly becomes one whose
+                        // state is stale by hours.
+                        Err(e) => {
+                            tracing::warn!("periodic plugin state snapshot failed: {e}");
+                        }
                     }
                 }
                 // Still fetching. Do not start another — see the field docs.
@@ -327,10 +335,16 @@ mod tests {
     }
 
     impl tutti_plugin::backend::HostState for FakeBackend {
-        fn save_state(&self) -> Option<Vec<u8>> {
+        fn save_state(&self) -> Result<Vec<u8>, tutti_plugin::error::StateError> {
             self.saves
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            self.state.clone()
+            // The fixture still says "has state / has none" as an `Option`,
+            // which is all these tests need; `NoStateRoute` is the honest
+            // rendering of the second, and keeps every call site below
+            // unchanged.
+            self.state
+                .clone()
+                .ok_or(tutti_plugin::error::StateError::NoStateRoute)
         }
         fn load_state(&self, _data: &[u8]) -> Result<(), tutti_plugin::error::StateError> {
             Ok(())

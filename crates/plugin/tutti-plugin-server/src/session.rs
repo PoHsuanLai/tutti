@@ -9,9 +9,10 @@
 use crate::audio_pipeline::{AudioBlock, AudioPipeline, Clock, ProcessExtras};
 use crate::editor::EditorState;
 use crate::plugin::{AsyncEvent, Plugin};
+use tutti_plugin::server::state_chunk::{self, ChunkError, Reassembler};
 use tutti_plugin::server::{
     AudioSlab, BridgeMessage, HostMessage, IpcMidiEvent, IpcMidiEventVec, MidiEventVec, Normalized,
-    SampleFormat, WindowHandle, MIDI_STACK_CAPACITY,
+    SampleFormat, WindowHandle, MAX_STATE_BYTES, MIDI_STACK_CAPACITY,
 };
 use tutti_plugin::Result;
 
@@ -42,6 +43,15 @@ fn encode_midi_out(events: &MidiEventVec) -> IpcMidiEventVec {
 pub(crate) enum Reaction {
     /// Send this reply back to the host.
     Reply(BridgeMessage),
+    /// Send these replies back, in order, as one logical answer.
+    ///
+    /// Exists for plugin state, which does not fit a single frame and so is
+    /// answered as a `StateChunk` sequence. Modelled as one `Reaction` rather
+    /// than letting the handler write to the transport itself, so dispatch
+    /// stays a pure function of the request — the property the whole `Reaction`
+    /// enum exists to preserve, and what makes `handle` testable without a
+    /// socket.
+    ReplyMany(Vec<BridgeMessage>),
     /// No reply; keep looping.
     None,
     /// The host asked for shutdown; leave the loop.
@@ -59,7 +69,20 @@ impl Reaction {
     fn into_reply(self) -> BridgeMessage {
         match self {
             Reaction::Reply(m) => m,
-            other => panic!("expected Reply(_), got {other:?}"),
+            // A single-frame `ReplyMany` is the same answer wearing the
+            // sequence shape state now uses; unwrapping it here keeps every
+            // one-reply assertion in this file reading the same way.
+            Reaction::ReplyMany(mut ms) if ms.len() == 1 => ms.remove(0),
+            other => panic!("expected one reply, got {other:?}"),
+        }
+    }
+
+    /// Every frame of a multi-frame answer, in order.
+    fn into_replies(self) -> Vec<BridgeMessage> {
+        match self {
+            Reaction::Reply(m) => vec![m],
+            Reaction::ReplyMany(ms) => ms,
+            other => panic!("expected replies, got {other:?}"),
         }
     }
 }
@@ -83,6 +106,13 @@ pub(crate) struct Session {
     /// Sample rate + negotiated format. Written on load and on an explicit
     /// `SetSampleRate`; read by every block.
     pub(crate) clock: Clock,
+    /// Partially-received `LoadStateChunk` sequence, or `None` between loads.
+    ///
+    /// On the session rather than threaded through `handle` because a chunk
+    /// sequence spans several messages and `handle` sees one at a time. Cleared
+    /// on completion *and* on any failure, so a malformed sequence cannot leave
+    /// bytes behind that would corrupt the next load.
+    pub(crate) state_in: Option<Reassembler>,
 }
 
 impl Session {
@@ -96,6 +126,7 @@ impl Session {
             pipeline: AudioPipeline::new(clock.format),
             editor: EditorState::Closed,
             clock,
+            state_in: None,
         }
     }
 
@@ -271,8 +302,10 @@ impl Session {
             // that could disagree with the first.
             M::Reset => Ok(Reaction::None),
 
-            M::SaveState => Ok(self.handle_save_state().into()),
-            M::LoadState { data } => Ok(self.handle_load_state(&data)),
+            M::SaveState => Ok(self.handle_save_state()),
+            M::LoadStateChunk { seq, last, bytes } => {
+                Ok(self.handle_load_state_chunk(seq, last, &bytes))
+            }
 
             M::SetupSharedMemory { shm_name, layout } => {
                 self.shm = Some(AudioSlab::open(shm_name, layout)?);
@@ -423,16 +456,48 @@ impl Session {
         }
     }
 
-    fn handle_save_state(&mut self) -> BridgeMessage {
-        match self.plugin.as_mut() {
+    /// Answer `SaveState` as a `StateChunk` sequence.
+    ///
+    /// Chunked because a plugin's state is the one payload whose size the
+    /// plugin picks, and a sample-embedding instrument's exceeds what a single
+    /// frame carries. The empty cases still emit one terminating chunk — a host
+    /// waits for `last`, so answering nothing would hang it rather than tell it
+    /// there is no state.
+    fn handle_save_state(&mut self) -> Reaction {
+        let data = match self.plugin.as_mut() {
             Some(p) => match p.instance_mut().get_state() {
-                Ok(data) => BridgeMessage::StateData { data },
-                Err(e) => BridgeMessage::Error {
-                    message: format!("Failed to save state: {e}"),
-                },
+                Ok(data) => data,
+                // A plugin that fails to serialise is not a transport problem:
+                // one `Error` frame, and the host reports it as a rejection.
+                Err(e) => {
+                    return BridgeMessage::Error {
+                        message: format!("Failed to save state: {e}"),
+                    }
+                    .into()
+                }
             },
-            None => BridgeMessage::StateData { data: vec![] },
+            None => Vec::new(),
+        };
+        // Refuse an over-limit state here rather than streaming a gigabyte the
+        // host is only going to reject on reassembly.
+        if data.len() > MAX_STATE_BYTES {
+            return BridgeMessage::Error {
+                message: format!(
+                    "plugin state is {} bytes, over the {MAX_STATE_BYTES}-byte limit",
+                    data.len()
+                ),
+            }
+            .into();
         }
+        Reaction::ReplyMany(
+            state_chunk::split(&data)
+                .map(|(seq, last, bytes)| BridgeMessage::StateChunk {
+                    seq,
+                    last,
+                    bytes: bytes.to_vec(),
+                })
+                .collect(),
+        )
     }
 
     /// Always answers, so the host's waiting caller is never left guessing.
@@ -442,14 +507,46 @@ impl Session {
     /// while the host's dispatcher fabricated its own `true`. Now every path
     /// produces a `StateLoaded`, including "no plugin loaded", which is a
     /// refusal rather than a silence.
-    fn handle_load_state(&mut self, data: &[u8]) -> Reaction {
+    /// Accumulate one `LoadStateChunk`, applying the state once `last` lands.
+    ///
+    /// Answers **only** on the final chunk (or on a failure): a `StateLoaded`
+    /// per chunk would leave the host's single waiting caller matched against
+    /// the first of many replies, with the rest arriving as unsolicited traffic
+    /// that desynchronises the next request's reply.
+    ///
+    /// A malformed or over-limit sequence resets the accumulator and answers
+    /// with the reason. Resetting matters: leaving the partial buffer in place
+    /// would make the *next*, well-formed load fail too, turning one bad
+    /// project file into a permanently broken session.
+    fn handle_load_state_chunk(&mut self, seq: u32, last: bool, bytes: &[u8]) -> Reaction {
+        let acc = self.state_in.get_or_insert_with(Reassembler::default);
+        let complete = match acc.push(seq, last, bytes) {
+            Ok(done) => done,
+            Err(e) => {
+                self.state_in = None;
+                let error = match e {
+                    ChunkError::TooLarge { bytes, limit } => {
+                        format!("state is {bytes} bytes, over the {limit}-byte limit")
+                    }
+                    ChunkError::OutOfOrder { got, expected } => {
+                        format!("state chunk {got} arrived where {expected} was expected")
+                    }
+                };
+                return BridgeMessage::StateLoaded { error: Some(error) }.into();
+            }
+        };
+        if !complete {
+            return Reaction::None;
+        }
+        let data = self.state_in.take().expect("just inserted").into_inner();
+
         let Some(plugin) = self.plugin.as_mut() else {
             return BridgeMessage::StateLoaded {
                 error: Some("no plugin is loaded".to_string()),
             }
             .into();
         };
-        let error = match plugin.instance_mut().set_state(data) {
+        let error = match plugin.instance_mut().set_state(&data) {
             Ok(()) => None,
             Err(e) => Some(format!("Failed to load state: {e}")),
         };
@@ -585,8 +682,9 @@ mod tests {
                     BridgeMessage::ParameterInfoResponse { info } => {
                         assert!(info.is_none(), "{name}: got param info")
                     }
-                    BridgeMessage::StateData { data } => {
-                        assert!(data.is_empty(), "{name}: got state bytes")
+                    BridgeMessage::StateChunk { bytes, last, .. } => {
+                        assert!(bytes.is_empty(), "{name}: got state bytes");
+                        assert!(last, "{name}: an empty state must terminate its sequence");
                     }
                     other => panic!("{name}: unexpected reply {other:?}"),
                 },
@@ -614,8 +712,10 @@ mod tests {
     fn load_state_no_plugin_refuses_rather_than_going_silent() {
         let mut s = Session::new();
         let reply = s
-            .handle(HostMessage::LoadState {
-                data: vec![1, 2, 3],
+            .handle(HostMessage::LoadStateChunk {
+                seq: 0,
+                last: true,
+                bytes: vec![1, 2, 3],
             })
             .unwrap()
             .into_reply();
@@ -817,16 +917,49 @@ mod tests {
         }
     }
 
-    /// Pull a SaveState blob out of a session, asserting it's non-empty.
+    /// Pull a SaveState blob out of a session, asserting it is non-empty.
+    ///
+    /// Reassembles the `StateChunk` sequence exactly as the host does, so these
+    /// tests exercise the chunked path rather than a shape that only happens to
+    /// be one frame. The sequence must terminate, and `Reassembler` rejects a
+    /// gap — so a server that mis-numbers its chunks fails here rather than
+    /// producing a silently short blob.
     #[cfg(feature = "clap")]
     fn save_state_bytes(s: &mut Session) -> Vec<u8> {
-        match s.handle(HostMessage::SaveState).unwrap().into_reply() {
-            BridgeMessage::StateData { data } => {
-                assert!(!data.is_empty(), "state should be non-empty");
-                data
+        let mut acc = Reassembler::default();
+        let mut done = false;
+        for m in s.handle(HostMessage::SaveState).unwrap().into_replies() {
+            match m {
+                BridgeMessage::StateChunk { seq, last, bytes } => {
+                    assert!(!done, "chunks continued after `last`");
+                    done = acc.push(seq, last, &bytes).expect("well-formed chunk sequence");
+                }
+                other => panic!("expected StateChunk, got {other:?}"),
             }
-            other => panic!("expected StateData, got {other:?}"),
         }
+        assert!(done, "the state sequence never set `last`");
+        let data = acc.into_inner();
+        assert!(!data.is_empty(), "state should be non-empty");
+        data
+    }
+
+    /// Feed a whole blob in as a chunk sequence and return the final reaction.
+    ///
+    /// Mirrors `save_state_bytes`: the host splits, so a test that pushed one
+    /// frame would leave the multi-chunk accumulation path untested.
+    #[cfg(feature = "clap")]
+    fn load_state_bytes(s: &mut Session, data: &[u8]) -> Reaction {
+        let mut last_reaction = Reaction::None;
+        for (seq, last, bytes) in state_chunk::split(data) {
+            last_reaction = s
+                .handle(HostMessage::LoadStateChunk {
+                    seq,
+                    last,
+                    bytes: bytes.to_vec(),
+                })
+                .unwrap();
+        }
+        last_reaction
     }
 
     #[test]
@@ -835,7 +968,7 @@ mod tests {
         let _lock = crate::test_utils::plugin_load_lock();
         let (mut s, _shm) = load_clap("save_load_state_clap", SampleFormat::Float32);
         let data = save_state_bytes(&mut s);
-        let r = s.handle(HostMessage::LoadState { data }).unwrap();
+        let r = load_state_bytes(&mut s, &data);
         assert_state_loaded(r);
     }
 
@@ -850,12 +983,7 @@ mod tests {
         let (mut s, _shm) = load_clap("rt_state_clap", SampleFormat::Float32);
 
         let first = save_state_bytes(&mut s);
-        assert_state_loaded(
-            s.handle(HostMessage::LoadState {
-                data: first.clone(),
-            })
-            .unwrap(),
-        );
+        assert_state_loaded(load_state_bytes(&mut s, &first));
         let second = save_state_bytes(&mut s);
 
         assert_eq!(

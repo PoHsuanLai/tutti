@@ -6,6 +6,7 @@ use super::payload_pool::PayloadPool;
 use crate::error::{Result, StateError};
 use crate::protocol::{BridgeMessage, HostMessage, IpcMidiEvent, MidiEvent, ProcessAudioData};
 use crate::util::transport::control::{self as ipc, ControlStream};
+use crate::util::transport::state_chunk::{self, ChunkError, Reassembler};
 use crate::util::transport::shm::RING_SLOTS;
 use std::time::Duration;
 
@@ -185,14 +186,38 @@ pub(super) fn handle(
         }
         Command::SaveState { reply } => {
             ipc::send(stream, &HostMessage::SaveState)?;
-            let value = match recv_reply(stream, channels, STATE_TIMEOUT)? {
-                BridgeMessage::StateData { data } => Some(data),
-                _ => None,
-            };
-            reply.send(value);
+            reply.send(recv_state(stream, channels)?);
         }
         Command::LoadState { data, reply } => {
-            ipc::send(stream, &HostMessage::LoadState { data })?;
+            // Refuse over-limit state *here*, before a byte is written, and
+            // answer the caller rather than propagating.
+            //
+            // Propagating would be wrong twice over: `?` returns before
+            // `reply.send`, so the `Reply` drops and the caller waits out
+            // `STATE_TIMEOUT` to learn a length comparison the host made
+            // instantly; and `pump` treats every `handle` error as
+            // connection-level, so one oversized preset would `crash()` a
+            // healthy session. Nothing was sent, so the stream is still
+            // synchronised and there is nothing to crash about. Contrast
+            // `recv_by`, where an over-cap length genuinely *has*
+            // desynchronised the stream.
+            if data.len() > crate::protocol::MAX_STATE_BYTES {
+                reply.send(Err(StateError::TooLarge {
+                    bytes: data.len(),
+                    limit: crate::protocol::MAX_STATE_BYTES,
+                }));
+                return Ok(());
+            }
+            for (seq, last, bytes) in state_chunk::split(&data) {
+                ipc::send(
+                    stream,
+                    &HostMessage::LoadStateChunk {
+                        seq,
+                        last,
+                        bytes: bytes.to_vec(),
+                    },
+                )?;
+            }
             // Wait for the answer, as `SaveState` above does. Answering the
             // caller straight after the write would report that the request had
             // been *sent*, never whether the plugin accepted it.
@@ -275,6 +300,51 @@ pub(super) fn handle(
         }
     }
     Ok(())
+}
+
+/// Collect a chunked `StateChunk` sequence into one state.
+///
+/// Returns the caller's `Result` rather than propagating, because none of the
+/// ways this fails is a connection failure: an over-limit state and a
+/// misordered sequence are both *this plugin's* problem, and crashing the
+/// bridge for either would take down a session whose socket is fine. Only a
+/// genuine transport error (`?`) still propagates, and that is the one case
+/// where the stream really is unusable.
+///
+/// Each chunk gets the full [`STATE_TIMEOUT`], not a share of it: the budget is
+/// per reply, and a plugin serialising a large state can legitimately pause
+/// between chunks. The overall wait is still bounded, because a sequence that
+/// stops arriving fails on the next chunk's own deadline.
+fn recv_state(
+    stream: &mut ControlStream,
+    channels: &Channels,
+) -> Result<std::result::Result<Vec<u8>, StateError>> {
+    let mut acc = Reassembler::default();
+    loop {
+        match recv_reply(stream, channels, STATE_TIMEOUT)? {
+            BridgeMessage::StateChunk { seq, last, bytes } => {
+                match acc.push(seq, last, &bytes) {
+                    Ok(true) => return Ok(Ok(acc.into_inner())),
+                    Ok(false) => {}
+                    Err(ChunkError::TooLarge { bytes, limit }) => {
+                        return Ok(Err(StateError::TooLarge { bytes, limit }))
+                    }
+                    Err(ChunkError::OutOfOrder { got, expected }) => {
+                        return Ok(Err(StateError::Rejected(format!(
+                            "plugin sent state chunk {got} where {expected} was expected"
+                        ))))
+                    }
+                }
+            }
+            // A reply of the wrong type mid-sequence is the server answering
+            // something else entirely; the state is not coming.
+            other => {
+                return Ok(Err(StateError::Rejected(format!(
+                    "unexpected reply while reading plugin state: {other:?}"
+                ))))
+            }
+        }
+    }
 }
 
 /// Drain unsolicited events, returning the next reply-type message.

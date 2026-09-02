@@ -98,10 +98,28 @@ pub enum HostMessage {
     /// Ask the plugin to serialize its state, answered by
     /// [`BridgeMessage::StateData`].
     SaveState,
-    /// Restore plugin state from a chunk a previous `SaveState` produced.
-    LoadState {
-        /// Opaque, format-defined state chunk. Never interpret it host-side.
-        data: Vec<u8>,
+    /// One slice of a plugin state being restored, in order.
+    ///
+    /// State is the only message whose size a plugin chooses, and it routinely
+    /// exceeds what a single frame may carry — see [`MAX_STATE_BYTES`]. So it
+    /// travels as a sequence rather than one `LoadState`, and the receiver
+    /// reassembles. Every frame stays under [`MAX_FRAME_BYTES`], so the
+    /// allocation and deadline bounds on the wire are untouched by a large
+    /// state.
+    ///
+    /// `seq` is checked, not trusted: a gap or a repeat means the sequence is
+    /// not what the sender thinks it is, and silently reassembling it would
+    /// hand the plugin a corrupt blob it would then try to parse.
+    ///
+    /// [`MAX_STATE_BYTES`]: crate::protocol::MAX_STATE_BYTES
+    /// [`MAX_FRAME_BYTES`]: crate::protocol::MAX_FRAME_BYTES
+    LoadStateChunk {
+        /// Position in the sequence, starting at 0 and incrementing by one.
+        seq: u32,
+        /// Whether this is the final chunk. A one-chunk state sets it on `seq` 0.
+        last: bool,
+        /// Opaque, format-defined bytes. Never interpret them host-side.
+        bytes: Vec<u8>,
     },
     /// Open the plugin's editor window.
     OpenEditor {
@@ -231,11 +249,25 @@ pub enum BridgeMessage {
         /// The declaration, if the plugin recognized the address.
         info: Option<ParameterInfo>,
     },
-    /// The plugin's serialized state, answering
-    /// [`HostMessage::SaveState`].
-    StateData {
-        /// Opaque, format-defined state chunk. Never interpret it host-side.
-        data: Vec<u8>,
+    /// One slice of the plugin's serialized state, answering
+    /// [`HostMessage::SaveState`], in order.
+    ///
+    /// The mirror of [`HostMessage::LoadStateChunk`] and chunked for the same
+    /// reason: a sample-embedding instrument's state does not fit one frame.
+    /// The host reassembles against [`MAX_STATE_BYTES`].
+    ///
+    /// An **empty** state — a plugin that declines, or no plugin loaded — is
+    /// one chunk with `last: true` and no bytes, not an absent reply. A caller
+    /// waiting on a sequence must always see it terminate.
+    ///
+    /// [`MAX_STATE_BYTES`]: crate::protocol::MAX_STATE_BYTES
+    StateChunk {
+        /// Position in the sequence, starting at 0 and incrementing by one.
+        seq: u32,
+        /// Whether this is the final chunk.
+        last: bool,
+        /// Opaque, format-defined bytes. Never interpret them host-side.
+        bytes: Vec<u8>,
     },
     /// The editor window opened, at the size the plugin asked for.
     EditorOpened {

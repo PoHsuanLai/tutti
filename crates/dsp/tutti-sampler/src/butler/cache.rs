@@ -32,10 +32,32 @@ pub struct LruCache {
     max_entries: usize,
     max_bytes: u64,
     current_bytes: AtomicU64,
+    /// Monotonic access counter — the source of every `last_access` stamp.
+    ///
+    /// "Least recently used" is a statement about access *order*, so the stamp
+    /// is a sequence number rather than a reading of a clock. This replaced
+    /// `SystemTime::now()` in milliseconds, which got the order wrong two ways:
+    ///
+    /// - **Resolution.** Cache accesses are memory-speed; several land in the
+    ///   same millisecond routinely, and every one of those was a *tie*.
+    ///   `min_by_key` breaks a tie by iteration order, which for a `DashMap` is
+    ///   shard order — so the victim was effectively arbitrary, and it changed
+    ///   between runs. A tick increments per touch, so no two accesses can tie.
+    /// - **Monotonicity.** `SystemTime` is a wall clock: NTP correction, a
+    ///   manual set, or a DST-adjacent jump moves it *backwards*, which makes a
+    ///   just-touched entry look like the oldest one in the cache and evicts it
+    ///   next. A counter has no such failure mode.
+    ///
+    /// `u64` cannot realistically wrap: at one touch per nanosecond it takes
+    /// ~584 years.
+    access_tick: AtomicU64,
 }
 
 struct CacheEntry {
     wave: Arc<Wave>,
+    /// The value of [`LruCache::access_tick`] at this entry's last touch.
+    /// Ordering-only — the number has no meaning beyond comparing against
+    /// another entry's.
     last_access: AtomicU64,
     size_bytes: u64,
     /// Active stream count. Non-zero while a stream is reading this wave; the
@@ -73,7 +95,18 @@ impl LruCache {
             max_entries,
             max_bytes,
             current_bytes: AtomicU64::new(0),
+            access_tick: AtomicU64::new(0),
         }
+    }
+
+    /// The next access stamp, consuming a tick.
+    ///
+    /// `Relaxed` is enough: the counter is only ever compared against other
+    /// stamps from this same counter, and `fetch_add` is atomic regardless of
+    /// ordering, so two concurrent touches get two distinct values. Nothing
+    /// reads a tick to synchronize access to other memory.
+    fn next_tick(&self) -> u64 {
+        self.access_tick.fetch_add(1, Ordering::Relaxed)
     }
 
     /// The resident wave for `path`, if any, marking it most-recently-used.
@@ -82,7 +115,7 @@ impl LruCache {
     /// never as an error.
     pub fn get(&self, path: &Path) -> Option<Arc<Wave>> {
         self.cache.get(path).map(|entry| {
-            entry.last_access.store(now_ms(), Ordering::Relaxed);
+            entry.last_access.store(self.next_tick(), Ordering::Relaxed);
             entry.wave.clone()
         })
     }
@@ -99,7 +132,7 @@ impl LruCache {
         let size = wave.len() as u64 * wave.channels() as u64 * 4;
 
         if let Some(existing) = self.cache.get(&path) {
-            existing.last_access.store(now_ms(), Ordering::Relaxed);
+            existing.last_access.store(self.next_tick(), Ordering::Relaxed);
             return;
         }
 
@@ -113,7 +146,7 @@ impl LruCache {
             path,
             CacheEntry {
                 wave,
-                last_access: AtomicU64::new(now_ms()),
+                last_access: AtomicU64::new(self.next_tick()),
                 size_bytes: size,
                 pins: AtomicU32::new(0),
             },
@@ -182,13 +215,6 @@ impl LruCache {
     }
 }
 
-fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -209,6 +235,90 @@ mod tests {
 
         let retrieved = cache.get(&path).expect("just inserted");
         assert_eq!(retrieved.len(), 100);
+    }
+
+    /// Two accesses with no delay between them still order — the property a
+    /// wall clock could not give.
+    ///
+    /// Both inserts land in the same millisecond (they are memory writes), so
+    /// under `SystemTime::now().as_millis()` they carried the *identical*
+    /// stamp. `min_by_key` then broke the tie by `DashMap` iteration order,
+    /// i.e. shard order, so which entry got evicted was arbitrary and could
+    /// differ run to run. No sleep here on purpose: a sleep would paper over
+    /// exactly the defect being asserted.
+    #[test]
+    fn same_instant_accesses_still_order_deterministically() {
+        // Budget for two of three waves, forcing one eviction on the third.
+        let cache = LruCache::new(2, u64::MAX);
+        let a = PathBuf::from("/test/a.wav");
+        let b = PathBuf::from("/test/b.wav");
+        let c = PathBuf::from("/test/c.wav");
+
+        cache.insert(a.clone(), make_wave(10));
+        cache.insert(b.clone(), make_wave(10));
+        cache.insert(c.clone(), make_wave(10));
+
+        // `a` was touched first, so `a` is the victim — every time.
+        assert!(cache.get(&a).is_none(), "first-touched entry is evicted");
+        assert!(cache.get(&b).is_some());
+        assert!(cache.get(&c).is_some());
+        assert_eq!(cache.len(), 2);
+
+        // And it is not luck: the same sequence gives the same verdict on
+        // every repetition. A tie broken by shard order would vary across
+        // these, since each cache is a fresh `DashMap`.
+        for _ in 0..64 {
+            let cache = LruCache::new(2, u64::MAX);
+            cache.insert(a.clone(), make_wave(10));
+            cache.insert(b.clone(), make_wave(10));
+            cache.insert(c.clone(), make_wave(10));
+            assert!(
+                cache.get(&a).is_none() && cache.get(&b).is_some() && cache.get(&c).is_some(),
+                "the victim must be a on every run, not an arbitrary entry"
+            );
+        }
+    }
+
+    /// Eviction follows *access* order, not insertion order: a `get` on the
+    /// oldest entry promotes it, and the next-oldest becomes the victim.
+    #[test]
+    fn eviction_follows_access_order_not_insertion_order() {
+        let cache = LruCache::new(2, u64::MAX);
+        let a = PathBuf::from("/test/a.wav");
+        let b = PathBuf::from("/test/b.wav");
+        let c = PathBuf::from("/test/c.wav");
+
+        cache.insert(a.clone(), make_wave(10));
+        cache.insert(b.clone(), make_wave(10));
+
+        // Touch `a`. It was inserted first, but it is now the most recently
+        // *used*, so `b` inherits the victim slot.
+        assert!(cache.get(&a).is_some(), "touch promotes a");
+
+        cache.insert(c.clone(), make_wave(10));
+
+        assert!(cache.get(&a).is_some(), "promoted by the get, so it survives");
+        assert!(cache.get(&b).is_none(), "least recently used is evicted");
+        assert!(cache.get(&c).is_some());
+    }
+
+    /// Re-inserting a resident path promotes it too — `insert`'s early-return
+    /// arm refreshes the stamp rather than leaving it stale.
+    #[test]
+    fn reinsert_of_a_resident_path_promotes_it() {
+        let cache = LruCache::new(2, u64::MAX);
+        let a = PathBuf::from("/test/a.wav");
+        let b = PathBuf::from("/test/b.wav");
+        let c = PathBuf::from("/test/c.wav");
+
+        cache.insert(a.clone(), make_wave(10));
+        cache.insert(b.clone(), make_wave(10));
+        cache.insert(a.clone(), make_wave(10));
+
+        cache.insert(c.clone(), make_wave(10));
+
+        assert!(cache.get(&a).is_some(), "re-insert refreshed a's stamp");
+        assert!(cache.get(&b).is_none(), "b is now least recently used");
     }
 
     #[test]

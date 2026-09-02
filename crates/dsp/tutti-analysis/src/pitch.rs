@@ -270,3 +270,217 @@ impl PitchDetector {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tutti_core::SampleRate;
+
+    const SR: SampleRate = SampleRate::SR_48K;
+    const N: usize = 4096;
+
+    fn sine(freq: Hz, amp: f32) -> Vec<f32> {
+        let f = f64::from(freq.get());
+        (0..N)
+            .map(|i| {
+                (f64::from(amp) * (std::f64::consts::TAU * f * i as f64 / SR.get()).sin()) as f32
+            })
+            .collect()
+    }
+
+    fn saw(freq: Hz, amp: f32) -> Vec<f32> {
+        let f = f64::from(freq.get());
+        (0..N)
+            .map(|i| {
+                let phase = (f * i as f64 / SR.get()).fract();
+                ((2.0 * phase - 1.0) * f64::from(amp)) as f32
+            })
+            .collect()
+    }
+
+    fn white_noise() -> Vec<f32> {
+        let mut state = 0x2545_F491_4F6C_DD1Du64;
+        (0..N)
+            .map(|_| {
+                state = state
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                (((state >> 33) as f64 / (1u64 << 31) as f64) - 1.0) as f32 * 0.5
+            })
+            .collect()
+    }
+
+    fn detector() -> PitchDetector {
+        PitchDetector::with_range(SR, Hz(50.0), Hz(2000.0))
+    }
+
+    fn period_samples(freq: Hz) -> f64 {
+        SR.get() / f64::from(freq.get())
+    }
+
+    fn fill_cmndf(det: &mut PitchDetector, samples: &[f32]) -> (usize, usize) {
+        let min_period = (det.sample_rate.get() / f64::from(det.max_freq.get())) as usize;
+        let max_period = (det.sample_rate.get() / f64::from(det.min_freq.get())) as usize;
+        let max_period = max_period
+            .min(samples.len() / 2)
+            .min(det.difference.len() - 1);
+        det.compute_difference(samples, max_period);
+        det.compute_cumulative_mean(max_period);
+        (min_period, max_period)
+    }
+
+    /// d'(0) is 1 by definition, for any signal the difference function can see.
+    ///
+    /// Mutation: write `0.0` at lag 0 instead of `1.0` → fails, "d'(0) must be 1 by definition, got 0".
+    #[test]
+    fn cmndf_equals_one_at_lag_zero() {
+        let mut det = detector();
+        fill_cmndf(&mut det, &sine(Hz(440.0), 1.0));
+        assert!(
+            (det.cumulative_mean[0] - 1.0).abs() < f32::EPSILON,
+            "d'(0) must be 1 by definition, got {}",
+            det.cumulative_mean[0]
+        );
+    }
+
+    /// A pure sine's CMNDF dips below the YIN threshold at the true period.
+    ///
+    /// Mutation: store `1.0` at every lag instead of `d(τ)·τ / Σ d(j)` → fails, "d'(109) = 1 was not below threshold 0.1".
+    #[test]
+    fn cmndf_dips_below_threshold_at_the_true_period() {
+        let freq = Hz(440.0);
+        let tau = period_samples(freq).round() as usize;
+        let mut det = detector();
+        fill_cmndf(&mut det, &sine(freq, 1.0));
+        assert!(
+            det.cumulative_mean[tau] < det.threshold.get(),
+            "d'({tau}) = {} was not below threshold {}",
+            det.cumulative_mean[tau],
+            det.threshold.get()
+        );
+    }
+
+    /// The first dip below threshold wins, even when a later (octave-down) dip
+    /// is deeper. A 110 Hz saw is periodic at T *and* 2T; 2T is the global
+    /// minimum — the second-harmonic dip of the period — but the first
+    /// below-threshold dip is the fundamental.
+    ///
+    /// Mutation: return the global minimum instead of the first below-threshold local min → fails, "first-local-minimum should return ~436.4 (fundamental), got 873".
+    #[test]
+    fn first_local_minimum_beats_a_deeper_later_dip() {
+        let freq = Hz(110.0);
+        let true_period = period_samples(freq);
+        let tau = true_period.round() as usize;
+        let tau_2t = (true_period * 2.0).round() as usize;
+
+        let mut det = detector();
+        let (min_period, max_period) = fill_cmndf(&mut det, &saw(freq, 0.5));
+
+        let dip_t = det.cumulative_mean[tau];
+        let dip_2t = det.cumulative_mean[tau_2t];
+        assert!(
+            dip_2t < dip_t,
+            "precondition: the 2T dip ({dip_2t}) must be deeper than the T dip ({dip_t})"
+        );
+        assert!(
+            dip_t < det.threshold.get(),
+            "precondition: the fundamental dip {dip_t} must be below threshold"
+        );
+
+        let (picked, _) = det.find_best_period_full(min_period, max_period);
+        assert!(
+            (picked as f64 - true_period).abs() < 2.0,
+            "first-local-minimum should return ~{true_period:.1} (fundamental), got {picked}"
+        );
+        assert!(
+            (picked as f64 - tau_2t as f64).abs() > 10.0,
+            "picked the deeper 2T dip at {picked}, an octave down"
+        );
+    }
+
+    /// Parabolic interpolation recovers a half-sample period; the integer lag
+    /// alone is off by half a sample.
+    ///
+    /// Mutation: return `tau as f64` and skip the parabolic adjustment → fails, "interpolated period 100 should be within 0.05 of 100.5".
+    #[test]
+    fn parabolic_interpolation_recovers_a_half_sample_period() {
+        let true_period = 100.5;
+        let freq = Hz((SR.get() / true_period) as f32);
+        let mut det = detector();
+        let (min_period, max_period) = fill_cmndf(&mut det, &sine(freq, 1.0));
+        let (tau, _) = det.find_best_period_full(min_period, max_period);
+        let interpolated = det.parabolic_interpolation(tau, max_period);
+
+        assert!(
+            (tau as f64 - true_period).abs() > 0.4,
+            "un-interpolated integer lag {tau} should be ~0.5 samples off {true_period}"
+        );
+        assert!(
+            (interpolated - true_period).abs() < 0.05,
+            "interpolated period {interpolated} should be within 0.05 of {true_period}"
+        );
+    }
+
+    /// All-zero, DC, and white-noise buffers are unvoiced: no lag falls below
+    /// threshold, so the detector must not invent a pitch.
+    ///
+    /// Mutation: fallback returns `(best_tau, best_val)` even when `best_val >= 0.5` → fails, "zeros: a lag of 24 (aperiodicity 1) fell out of an aperiodic buffer".
+    #[test]
+    fn aperiodic_buffers_are_unvoiced() {
+        for (label, samples) in [
+            ("zeros", vec![0.0f32; N]),
+            ("dc", vec![0.5f32; N]),
+            ("noise", white_noise()),
+        ] {
+            let mut det = detector();
+            let (min_period, max_period) = fill_cmndf(&mut det, &samples);
+            let (period, aperiodicity) = det.find_best_period_full(min_period, max_period);
+            assert_eq!(
+                period, 0,
+                "{label}: a lag of {period} (aperiodicity {aperiodicity}) fell out of an aperiodic buffer"
+            );
+
+            let mut det = detector();
+            let result = det.detect(&samples);
+            assert!(
+                !result.is_voiced(),
+                "{label} reported as {} Hz at confidence {}",
+                result.frequency.get(),
+                result.confidence.get()
+            );
+            assert_eq!(result.frequency, Hz(0.0), "{label} invented a frequency");
+        }
+    }
+
+    /// YIN's CMNDF is a ratio, so a 40 dB amplitude change must not move the
+    /// frequency.
+    ///
+    /// Mutation: multiply the reported frequency by mean-abs amplitude → fails, "440 Hz read as 2.7983882 at amp 0.01 but 279.83868 at amp 1.0".
+    #[test]
+    fn the_estimate_is_invariant_to_amplitude_scaling() {
+        let freq = Hz(440.0);
+        let quiet = {
+            let mut det = detector();
+            det.detect(&sine(freq, 0.01))
+        };
+        let loud = {
+            let mut det = detector();
+            det.detect(&sine(freq, 1.0))
+        };
+
+        assert!(quiet.is_voiced(), "0.01-amp 440 Hz was unvoiced");
+        assert!(loud.is_voiced(), "1.0-amp 440 Hz was unvoiced");
+        assert!(
+            (quiet.frequency.get() - loud.frequency.get()).abs() < 0.05,
+            "440 Hz read as {} at amp 0.01 but {} at amp 1.0",
+            quiet.frequency.get(),
+            loud.frequency.get()
+        );
+        assert!(
+            (loud.frequency.get() - freq.get()).abs() < 0.1,
+            "loud reading {} drifted from {}",
+            loud.frequency.get(),
+            freq.get()
+        );
+    }
+}

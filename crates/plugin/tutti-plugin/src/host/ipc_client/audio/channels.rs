@@ -45,6 +45,17 @@ pub(super) struct Channels {
     /// a constant sit orders of magnitude off the real block period, which
     /// starves the command queue.
     sample_rate_bits: Arc<AtomicU64>,
+    /// How many owed replies the drain has taken back off the socket, ever.
+    ///
+    /// Pure instrumentation, and the only externally visible evidence that the
+    /// drain ran at all. Everything else it does is invisible by construction:
+    /// the audio it recovers is already stale and rejected by the slab's
+    /// sequence check, and the MIDI it forwards is indistinguishable from MIDI
+    /// that arrived on time. Without this counter a test can only observe the
+    /// drain's *absence* statistically — as a backlog that grows over a long
+    /// enough run — which is a load-dependent assertion of exactly the kind this
+    /// work exists to remove.
+    settled: Arc<AtomicU64>,
 }
 
 impl Channels {
@@ -56,6 +67,7 @@ impl Channels {
             newest_seq: Arc::new(AtomicU64::new(0)),
             worker: Arc::new(Mutex::new(None)),
             sample_rate_bits: Arc::new(AtomicU64::new(sample_rate.to_bits())),
+            settled: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -91,6 +103,20 @@ impl Channels {
     /// reading a value one block stale costs at most one extra dead block.
     pub(super) fn newest_submitted(&self) -> u64 {
         self.newest_seq.load(Ordering::Relaxed)
+    }
+
+    /// Record that the drain took `n` owed replies off the socket. Called by the
+    /// bridge thread only; `Relaxed` because nothing branches on it.
+    pub(super) fn note_settled(&self, n: u32) {
+        if n > 0 {
+            self.settled.fetch_add(n as u64, Ordering::Relaxed);
+        }
+    }
+
+    /// How many owed replies the drain has taken, over the life of the bridge.
+    #[cfg(test)]
+    pub(super) fn settled(&self) -> u64 {
+        self.settled.load(Ordering::Relaxed)
     }
 
     /// Pushes, then wakes the bridge thread. `Thread::unpark` is a non-blocking

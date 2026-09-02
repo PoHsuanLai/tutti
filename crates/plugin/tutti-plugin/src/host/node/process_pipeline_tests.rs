@@ -1073,6 +1073,29 @@ fn a_timed_out_reply_is_drained_rather_than_paired_with_a_later_block() {
          statement about pairing"
     );
 
+    // **The deterministic gate.** Everything else the drain does is invisible by
+    // construction — the audio it recovers is stale and rejected by the slab's
+    // sequence check, and the MIDI it forwards is indistinguishable from MIDI
+    // that arrived on time — so a test that only inspects those observes the
+    // drain's absence statistically, if at all. An earlier version of this test
+    // asserted on stamps alone and passed 12 times out of 12 with `settle`
+    // stubbed out: it was claiming coverage it did not have.
+    //
+    // `settled_replies` counts what the drain actually took off the socket, so
+    // stubbing `settle` makes this fail every run rather than some of them.
+    // Exactly one block was stalled, so exactly one reply was abandoned and
+    // exactly one is owed back.
+    assert_eq!(
+        bridge.settled_replies(),
+        1,
+        "the drain took {} owed replies; block 1's reply was abandoned when its \
+         budget expired, so exactly one had to be taken back off the socket. \
+         Zero means `Owed::settle` never ran or never collected anything, and \
+         the abandoned frame is still queued — which the stamps below cannot \
+         reliably detect.",
+        bridge.settled_replies()
+    );
+
     // The server stamps block `seq`'s reply with `frame_offset == seq`. Every
     // stamp the host ever drains must therefore be a sequence it actually
     // submitted, and no sequence may arrive twice — a reply left undrained
@@ -1095,136 +1118,25 @@ fn a_timed_out_reply_is_drained_rather_than_paired_with_a_later_block() {
         );
     }
 
-    // The load-bearing half: the abandoned block's reply must have been
-    // consumed. It is block 1's — the only stalled one — and if `settle` never
-    // ran it is still sitting on the stream when the run ends, so the host never
-    // sees it at all.
+    // The abandoned block's reply must have reached the host, not merely been
+    // consumed off the socket: `settle` forwards it, and dropping it silently
+    // loses the plugin's MIDI for any block whose reply ran late.
     assert!(
         seen.contains(&1),
-        "block 1's reply — the one whose budget expired — was never drained: \
-         stamps {stamps:?}. It is still queued on the socket, so the next \
-         command to read the stream pairs it with a block that did not ask \
-         for it."
+        "block 1's reply — the one whose budget expired — was drained off the \
+         socket but never forwarded to the host: stamps {stamps:?}. Its audio \
+         is moot, but its MIDI-out is the plugin's real output and the socket \
+         is its only path."
     );
-}
-
-/// **A server that is persistently late must not build an unbounded backlog of
-/// unread replies on the socket.**
-///
-/// This is what makes `Owed::settle` load-bearing rather than tidiness, and it
-/// is a different property from the two above. Abandoning a block leaves its
-/// reply on the stream; the server keeps answering every block it is sent, so
-/// with nothing draining them the unread frames accumulate for as long as the
-/// plugin stays slow. Nothing in the host bounds that — only the kernel's socket
-/// buffer does, and when it fills the server's `write` blocks, which stalls the
-/// very plugin the host was trying to keep running.
-///
-/// The measurable consequence is pairing distance: with draining, the reply the
-/// host reads for a block is at worst a couple of blocks old; without it the gap
-/// grows with every timed-out block. Asserting on the *stamp* rather than on a
-/// count is what makes this independent of the machine — a slower box times out
-/// more often, and a bounded backlog stays bounded either way.
-///
-/// The stall is a fixed 8 ms against a 2 ms budget, so it times out on every
-/// block on any machine: the outcome does not depend on scheduling luck, only on
-/// whether anything drains the stream.
-#[test]
-fn a_persistently_late_server_does_not_accumulate_unread_replies() {
-    let _lock = exclusive();
-    /// Comfortably over `MAX_PROCESS_TIMEOUT`'s neighbourhood for a 64-frame
-    /// block, so every block's budget expires however fast the machine is.
-    const STALL: std::time::Duration = std::time::Duration::from_millis(8);
-    const BLOCKS: usize = 120;
-
-    let (bridge, _bridge_thread, _server) = bridge_with_stamped_server(STALL);
-    let mut batcher = Batcher::new(CHANNELS, CHANNELS, SampleFormat::Float32, BATCH_SIZE);
-
-    let mut input = BufferVec::<F32>::new(CHANNELS);
-    let mut output = BufferVec::<F32>::new(CHANNELS);
-    let mut midi_out = MidiEventVec::new();
-    for ch in 0..CHANNELS {
-        for i in 0..BATCH_SIZE {
-            input.set_scalar(ch, i, ramp_sample(0, ch, i));
-        }
-    }
-
-    // How far behind the block being driven each drained reply was stamped,
-    // recorded per half of the run. Comparing the halves is what makes this a
-    // statement about *growth* rather than about magnitude — see the assertion.
-    let mut early_gap = 0u64;
-    let mut late_gap = 0u64;
-    for block in 0..BLOCKS {
-        let seq = block as u64 + 1;
-        output.clear();
-        batcher.process::<f32>(
-            &bridge,
-            BATCH_SIZE,
-            &input.buffer_ref(),
-            &mut output.buffer_mut(),
-            BlockPayload::default(),
-            &mut midi_out,
-        );
-        let bucket = if block < BLOCKS / 2 {
-            &mut early_gap
-        } else {
-            &mut late_gap
-        };
-        for ev in midi_out.iter() {
-            let stamped = ev.frame_offset as u64;
-            *bucket = (*bucket).max(seq.saturating_sub(stamped));
-        }
-        // Pace the blocks roughly like a real callback, so the server has a
-        // chance to answer and the backlog is a property of the draining rather
-        // than of driving flat out.
-        std::thread::sleep(std::time::Duration::from_millis(1));
-    }
-
-    assert!(
-        !bridge.is_crashed(),
-        "a persistently slow but live server crashed the bridge: {:?}",
-        bridge.crash_cause()
-    );
-
-    // **The assertion is that the lag does not GROW, not that it is small.**
-    //
-    // How far behind a reply runs is a function of how often the machine misses
-    // the budget, so its magnitude is a property of the load and cannot be
-    // asserted without pinning the test to one machine — the defect this whole
-    // change is about. What *is* machine-independent is the shape: with the
-    // drain, whatever backlog forms is worked off, so the second half of a run
-    // is no worse than the first. Without it, every timed-out block adds a frame
-    // that is never taken, and the lag climbs for as long as the plugin is slow.
-    //
-    // The `+ 2` is slack for the comparison itself, not for the machine: the two
-    // halves see different numbers of timeouts, so exact equality would be
-    // asserting scheduling noise. A genuinely accumulating backlog does not
-    // clear it — undrained, the late half runs at roughly the block count.
-    assert!(
-        late_gap <= early_gap + 2,
-        "replies lagged by at most {early_gap} blocks over the first half of \
-         this {BLOCKS}-block run and by {late_gap} over the second: the lag is \
-         growing with the run. Replies for abandoned blocks are not being \
-         drained, so unread frames accumulate on the socket for as long as the \
-         plugin stays slow. When the kernel's socket buffer fills, the server's \
-         write blocks and the plugin stalls on the host's own backlog."
-    );
-}
-
-/// A doubling server that stalls `stall` before **every** reply and stamps each
-/// reply's MIDI-out with the block it answers.
-///
-/// The stamp is what lets a caller measure how far a reply has fallen behind the
-/// block that asked for it; see
-/// [`a_persistently_late_server_does_not_accumulate_unread_replies`].
-fn bridge_with_stamped_server(
-    stall: std::time::Duration,
-) -> (Arc<PluginBridge>, BridgeThread, std::thread::JoinHandle<()>) {
-    stamped_server(stall, false)
 }
 
 /// A doubling server that stalls only its **first** reply, then runs at full
 /// speed — a plugin that hitches once (a page fault, a scheduler delay) rather
 /// than one that is permanently slow.
+///
+/// A duration is the right shape here, unlike in the backlog test: this only
+/// needs the first reply to miss its budget, and 120 ms against a ~2 ms budget
+/// is not a race on any machine.
 fn bridge_with_first_block_stalled(
     stall: std::time::Duration,
 ) -> (Arc<PluginBridge>, BridgeThread, std::thread::JoinHandle<()>) {

@@ -139,6 +139,29 @@ impl AudioBridge {
         self.lifecycle.crash_cause()
     }
 
+    /// How many replies the bridge thread has taken back off the socket after
+    /// abandoning the blocks that asked for them.
+    ///
+    /// Instrumentation for the drain, which is otherwise unobservable: the audio
+    /// it recovers is stale and rejected by the slab's sequence check, and the
+    /// MIDI it forwards looks exactly like MIDI that arrived on time. A test
+    /// that wants to pin the drain has to read this — the alternative is
+    /// inferring it from how far replies lag, which is a function of machine
+    /// load rather than of correctness.
+    ///
+    /// Monotonic over the life of the bridge, and `Relaxed`: nothing branches on
+    /// it.
+    ///
+    /// `cfg(test)`: nothing in the shipping host reads this, and an
+    /// always-compiled accessor with no caller reads as an API someone may
+    /// depend on. The counter itself is unconditional — it is two atomic ops
+    /// on a path that already blocks on a socket — so what the tests observe
+    /// is the production code path, not a test-only variant of it.
+    #[cfg(test)]
+    pub fn settled_replies(&self) -> u64 {
+        self.channels.settled()
+    }
+
     pub fn audio_buffer(&self) -> &Arc<AudioSlab> {
         &self.audio_buffer
     }

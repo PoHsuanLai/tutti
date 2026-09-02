@@ -170,6 +170,14 @@ impl PluginBridge {
         self.audio.is_crashed()
     }
 
+    /// How many abandoned replies the bridge thread has taken back off the
+    /// socket. See
+    /// [`AudioBridge::settled_replies`](super::audio::AudioBridge::settled_replies).
+    #[cfg(test)]
+    pub fn settled_replies(&self) -> u64 {
+        self.audio.settled_replies()
+    }
+
     /// Why the bridge died, or `None` while it is alive. See
     /// [`AudioBridge::crash_cause`](super::audio::AudioBridge::crash_cause).
     pub fn crash_cause(&self) -> Option<String> {

@@ -40,23 +40,6 @@ impl Class for ParamValueQueueImpl {
 }
 
 impl ParamValueQueueImpl {
-    /// Build a queue from an existing [`ParameterQueue`]. Test-harness helper;
-    /// the RT path uses [`new_empty`] + [`refill_from_queue`] to reuse the
-    /// ComWrapper across buffers.
-    #[cfg(test)]
-    pub fn from_queue(queue: &ParameterQueue) -> ComWrapper<Self> {
-        let mut points = SmallVec::with_capacity(queue.points.len().max(INLINE_POINTS));
-        points.extend_from_slice(&queue.points);
-        ComWrapper::new(Self {
-            // The COM cell holds the bare `ParamID` the VST3 ABI passes; the
-            // address model is resolved here, at the boundary. VST3 ids are
-            // opaque, so a positional index addresses nothing and is dropped
-            // to id 0 rather than reinterpreted as a handle.
-            param_id: AudioThreadCell::new(queue.param_id.opaque().map(|id| id.get()).unwrap_or(0)),
-            points: AudioThreadCell::new(points),
-        })
-    }
-
     pub fn new_empty(param_id: u32) -> ComWrapper<Self> {
         ComWrapper::new(Self {
             param_id: AudioThreadCell::new(param_id),
@@ -106,15 +89,6 @@ impl ParamValueQueueImpl {
         }
     }
 
-    #[cfg(test)]
-    pub fn to_queue(&self) -> ParameterQueue {
-        let mut queue = ParameterQueue::new(ParamAddress::Opaque(self.param_id().into()));
-        self.for_each_point(|p| {
-            queue.add_point(p.sample_offset, p.value.get());
-        });
-        queue
-    }
-
     /// Iterate over each `ParameterPoint` in this queue without exposing
     /// the underlying `AudioThreadCell`. RT-safe.
     pub fn for_each_point(&self, mut f: impl FnMut(&ParameterPoint)) {
@@ -130,11 +104,6 @@ impl ParamValueQueueImpl {
     #[cfg(test)]
     pub fn len(&self) -> usize {
         self.points.borrow().len()
-    }
-
-    #[cfg(test)]
-    pub fn is_empty(&self) -> bool {
-        self.points.borrow().is_empty()
     }
 }
 

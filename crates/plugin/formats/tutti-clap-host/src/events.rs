@@ -2152,7 +2152,9 @@ mod tests {
         let sysex = clap_event_midi_sysex {
             header: clap_event_header {
                 size: header_size::<clap_event_midi_sysex>(),
-                time: 0,
+                // Deliberately non-zero: a `time` that never got copied would
+                // read back as 0 and pass a `time: 0` fixture either way.
+                time: 25,
                 space_id: CLAP_CORE_EVENT_SPACE_ID,
                 type_: CLAP_EVENT_MIDI_SYSEX,
                 flags: 0,
@@ -2172,11 +2174,16 @@ mod tests {
         }
         assert_eq!(output.events().len(), 1);
         match &output.events()[0] {
-            ClapEvent::MidiSysex { _data, .. } => {
+            ClapEvent::MidiSysex { inner, _data } => {
+                assert_eq!(inner.header.time, 25);
+                assert_eq!(inner.port_index, 0);
                 assert_eq!(_data, &sysex_data);
             }
             _ => panic!("Expected MidiSysex event"),
         }
+        // Sysex is its own event kind, not a generic MIDI byte triple: a
+        // consumer draining `to_midi_events` must not see it a second time.
+        assert!(output.to_midi_events().is_empty());
     }
 
     #[test]

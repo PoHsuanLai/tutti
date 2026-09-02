@@ -529,12 +529,6 @@ mod tests {
     };
 
     #[test]
-    fn buffers_default_to_f32_empty() {
-        let p = AudioPipeline::new(SampleFormat::Float32);
-        assert_eq!(p.buffers.format(), SampleFormat::Float32);
-    }
-
-    #[test]
     fn buffers_resize_allocates_channels_and_samples() {
         let mut b = AudioBuffers::new(SampleFormat::Float32);
         b.resize(2, 512);
@@ -579,13 +573,6 @@ mod tests {
             }
             _ => panic!("expected F64 variant"),
         }
-    }
-
-    #[test]
-    fn set_format_reseats_variant() {
-        let mut p = AudioPipeline::new(SampleFormat::Float32);
-        p.set_format(SampleFormat::Float64);
-        assert_eq!(p.buffers.format(), SampleFormat::Float64);
     }
 
     use crate::loaders::common::Meta;

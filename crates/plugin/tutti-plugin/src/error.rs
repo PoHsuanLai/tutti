@@ -246,48 +246,114 @@ impl BridgeError {
 mod tests {
     use super::*;
 
+    /// Every `PluginError` a trait method can return must survive the widening
+    /// into `BridgeError` with its payload intact. The load stage matters most:
+    /// it is what the host reports to the user, and the conversion rebuilds the
+    /// variant field by field rather than forwarding it.
     #[test]
-    fn test_load_stage_display() {
-        assert_eq!(LoadStage::Scanning.to_string(), "scanning");
-        assert_eq!(LoadStage::Opening.to_string(), "opening library");
-        assert_eq!(LoadStage::Factory.to_string(), "getting factory");
-        assert_eq!(LoadStage::Instantiation.to_string(), "creating instance");
-        assert_eq!(
-            LoadStage::Initialization.to_string(),
-            "initializing processor"
-        );
-        assert_eq!(LoadStage::Setup.to_string(), "setting up audio");
-        assert_eq!(LoadStage::Activation.to_string(), "activating");
+    fn widening_a_plugin_error_keeps_its_payload() {
+        let widened = BridgeError::from(PluginError::Load {
+            stage: LoadStage::Factory,
+            reason: "no factory entry point".into(),
+        });
+        match widened {
+            BridgeError::LoadFailed { stage, reason, .. } => {
+                assert_eq!(stage, LoadStage::Factory);
+                assert_eq!(reason, "no factory entry point");
+            }
+            other => panic!("expected LoadFailed, got {other:?}"),
+        }
+
+        assert!(matches!(
+            BridgeError::from(PluginError::Process("underrun".into())),
+            BridgeError::ProcessError(m) if m == "underrun"
+        ));
+        assert!(matches!(
+            BridgeError::from(PluginError::State("truncated".into())),
+            BridgeError::StateSaveError(m) if m == "truncated"
+        ));
+
+        // The editor arm is the lossy one going out: `BridgeError` has no
+        // structured editor error, so the typed variant is flattened with
+        // `to_string()` and only its Display text crosses. Assert against the
+        // variant's own Display rather than a copied literal, so rewording the
+        // `#[error(...)]` cannot leave this passing on a stale string.
+        let crashed = EditorError::PluginCrashed;
+        match BridgeError::from(PluginError::Editor(crashed)) {
+            BridgeError::EditorError(msg) => {
+                assert_eq!(msg, EditorError::PluginCrashed.to_string())
+            }
+            other => panic!("expected EditorError, got {other:?}"),
+        }
+        // A variant carrying a field must keep that field's text in the message.
+        match BridgeError::from(PluginError::Editor(EditorError::GuiNotSupported {
+            format: "vst3".into(),
+        })) {
+            BridgeError::EditorError(msg) => assert!(
+                msg.contains("vst3"),
+                "the flattened message dropped the format: {msg:?}"
+            ),
+            other => panic!("expected EditorError, got {other:?}"),
+        }
     }
 
+    /// Narrowing back is deliberately lossy in two places, and both are the
+    /// point of the test rather than an accident to be tolerated.
     #[test]
-    fn test_bridge_error_display() {
-        let err = BridgeError::ConnectionFailed("timeout".to_string());
-        assert!(err.to_string().contains("timeout"));
+    fn narrowing_a_bridge_error_collapses_only_where_it_must() {
+        // A load error round-trips: stage and reason are the two fields the
+        // lean type also carries.
+        let narrowed = PluginError::from(BridgeError::LoadFailed {
+            path: PathBuf::from("/x.vst3"),
+            stage: LoadStage::Activation,
+            reason: "refused".into(),
+        });
+        match narrowed {
+            PluginError::Load { stage, reason } => {
+                assert_eq!(stage, LoadStage::Activation);
+                assert_eq!(reason, "refused");
+            }
+            other => panic!("expected Load, got {other:?}"),
+        }
 
-        let err = BridgeError::Timeout {
-            operation: "load".to_string(),
-            duration_ms: 5000,
-        };
-        assert!(err.to_string().contains("5000ms"));
-        assert!(err.to_string().contains("load"));
+        // Save and restore are two BridgeError variants but one PluginError
+        // variant, so the direction of a state failure is not recoverable from
+        // the narrowed value — only its message is.
+        for e in [
+            BridgeError::StateSaveError("boom".into()),
+            BridgeError::StateRestoreError("boom".into()),
+        ] {
+            assert!(
+                matches!(PluginError::from(e), PluginError::State(m) if m == "boom"),
+                "both state directions must narrow to PluginError::State"
+            );
+        }
 
-        let err = BridgeError::ProcessCrashed;
-        assert_eq!(err.to_string(), "Bridge process crashed");
-    }
+        // The IPC-only variants have no lean counterpart at all and collapse
+        // into `Other` — carrying their Display text, which is the only thing
+        // that survives and so the only thing worth asserting.
+        let crashed = PluginError::from(BridgeError::ProcessCrashed);
+        match crashed {
+            PluginError::Other(msg) => assert_eq!(msg, BridgeError::ProcessCrashed.to_string()),
+            other => panic!("expected Other, got {other:?}"),
+        }
+        assert!(matches!(
+            PluginError::from(BridgeError::ServerNotFound),
+            PluginError::Other(_)
+        ));
 
-    #[test]
-    fn test_state_and_editor_errors() {
-        let err = BridgeError::StateSaveError("failed to serialize".into());
-        assert!(err.to_string().contains("save"));
-        assert!(err.to_string().contains("failed to serialize"));
-
-        let err = BridgeError::StateRestoreError("corrupt data".into());
-        assert!(err.to_string().contains("restore"));
-        assert!(err.to_string().contains("corrupt data"));
-
-        let err = BridgeError::EditorError("no window handle".into());
-        assert!(err.to_string().contains("editor"));
-        assert!(err.to_string().contains("no window handle"));
+        // Coming back, every editor failure re-enters as
+        // `EditorError::PluginError` regardless of what it was on the way out —
+        // the round trip is not idempotent, and this is where that is visible.
+        // `PluginCrashed` in, `PluginError(<its text>)` out.
+        let there_and_back = PluginError::from(BridgeError::from(PluginError::Editor(
+            EditorError::PluginCrashed,
+        )));
+        match there_and_back {
+            PluginError::Editor(EditorError::PluginError(msg)) => {
+                assert_eq!(msg, EditorError::PluginCrashed.to_string());
+            }
+            other => panic!("expected Editor(PluginError), got {other:?}"),
+        }
     }
 }

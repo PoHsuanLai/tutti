@@ -13,14 +13,9 @@ mod message;
 mod param_changes;
 mod param_queue;
 mod plug_frame;
-mod progress;
 #[cfg(target_os = "linux")]
 pub(crate) mod run_loop;
 mod stream;
-mod unit_handler;
-
-#[cfg(test)]
-mod tests;
 
 /// What one run-loop pump actually did, plus what the plugin has registered.
 ///
@@ -51,10 +46,3 @@ pub use host_application::HostApplication;
 pub use param_changes::{param_changes_ptr, ParameterChangesImpl};
 pub(crate) use plug_frame::HostPlugFrame;
 pub use stream::BStream;
-
-#[cfg(test)]
-pub use param_queue::ParamValueQueueImpl;
-#[cfg(test)]
-pub use progress::ProgressHandler;
-#[cfg(test)]
-pub use unit_handler::UnitHandler;

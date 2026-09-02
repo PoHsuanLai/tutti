@@ -2661,6 +2661,16 @@ mod tests {
         let mut out_slices: Vec<&mut [f32]> = output.iter_mut().map(|v| v.as_mut_slice()).collect();
 
         inst.process(&in_slices, &mut out_slices, 512).unwrap();
+
+        // A delay adds nothing to silence, so every output frame must still be
+        // zero. Without this the test passed on a `process` that never touched
+        // the output buffers at all.
+        for (ch, buf) in output.iter().enumerate() {
+            assert!(
+                buf.iter().all(|s| *s == 0.0),
+                "channel {ch} is not silent after processing silence"
+            );
+        }
     }
 
     #[test]
@@ -2681,6 +2691,22 @@ mod tests {
         let mut out_slices: Vec<&mut [f32]> = output.iter_mut().map(|v| v.as_mut_slice()).collect();
 
         inst.process(&in_slices, &mut out_slices, 512).unwrap();
+
+        // The exact waveform depends on AUDelay's default mix, so assert only
+        // what holds for any setting: the buffers were actually written, and
+        // written with real numbers. A `process` that left them untouched, or
+        // one that wrote NaN through an uninitialised union, both passed the
+        // bare `unwrap` this replaces.
+        for (ch, buf) in output.iter().enumerate() {
+            assert!(
+                buf.iter().all(|s| s.is_finite()),
+                "channel {ch} carries a non-finite sample"
+            );
+            assert!(
+                buf.iter().any(|s| *s != 0.0),
+                "channel {ch} is silent after processing a 440 Hz tone"
+            );
+        }
     }
 
     #[test]

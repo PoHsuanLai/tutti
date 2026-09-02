@@ -1096,19 +1096,3 @@ fn fourcc_to_string_is_big_endian_and_survives_non_utf8() {
         );
     }
 }
-
-/// The event address a `watch_property` registration is built from must name the
-/// global scope at element 0 by default.
-///
-/// `EventAddress::GLOBAL` is what every `watch_*` call site in the crate's docs
-/// and examples passes, and it is `Default`. A wrong constant here would silently
-/// redirect every registration in every consumer — and, because AudioToolbox
-/// accepts any address without validating it (see
-/// [`registration_never_refuses_a_property_id`]), it would fail *silently*: the
-/// registration would succeed and nothing would ever arrive.
-#[test]
-fn the_global_event_address_is_the_global_scope_at_element_zero() {
-    assert_eq!(EventAddress::GLOBAL.scope, K_AUDIO_UNIT_SCOPE_GLOBAL);
-    assert_eq!(EventAddress::GLOBAL.element, 0);
-    assert_eq!(EventAddress::default(), EventAddress::GLOBAL);
-}

@@ -12,6 +12,29 @@ use super::*;
 use core::ops::{Add, BitAnd, BitOr, BitXor, Mul, Neg, Shr, Sub};
 use numeric_array::typenum::*;
 
+/// The [`Float`] types a *scalar* constant may be, restated locally so the
+/// blanket impls below stay coherent.
+///
+/// [`Float`] is `tutti-node`'s. A blanket `impl<T: Float> ConstantFrame for T`
+/// therefore overlaps `impl<T, N> ConstantFrame for Frame<T, N>` as far as the
+/// overlap check is concerned: it cannot rule out an upstream
+/// `impl Float for NumericArray<..>`, nor `impl Float for (T, T)`, and both
+/// tuples and `NumericArray` are foreign types. While `Float` lived in this
+/// crate the check knew the whole impl set and could prove neither overlap
+/// happens; moving the tower down is what took that knowledge away.
+///
+/// Naming the four here restores exactly that reasoning — the trait is local,
+/// so its impl set is closed and the check can see it. The impl *set* is
+/// unchanged: these are the only four `Float` types there are, and adding a
+/// fifth means adding it here too, which is the point. The bound narrows only
+/// the blanket impls; every `ConstantFrame` consumer is bounded on
+/// `ConstantFrame` itself and is untouched.
+pub trait ScalarFloat: Float {}
+impl ScalarFloat for f32 {}
+impl ScalarFloat for f64 {}
+impl ScalarFloat for F32x {}
+impl ScalarFloat for f64x4 {}
+
 /// Trait for multi-channel constants.
 pub trait ConstantFrame: Clone + Sync + Send {
     type Sample: Float;
@@ -27,7 +50,7 @@ impl<T: Float, N: Size<T>> ConstantFrame for Frame<T, N> {
     }
 }
 
-impl<T: Float> ConstantFrame for T {
+impl<T: ScalarFloat> ConstantFrame for T {
     type Sample = T;
     type Size = U1;
     fn frame(self) -> Frame<Self::Sample, Self::Size> {
@@ -133,7 +156,7 @@ pub trait ScalarOrPair: Clone + Default + Send + Sync {
     ) -> Self::Sample;
 }
 
-impl<T: Float> ScalarOrPair for T {
+impl<T: ScalarFloat> ScalarOrPair for T {
     type Sample = T;
     fn construct(x: Self::Sample, _y: Self::Sample) -> Self {
         x

@@ -27,6 +27,12 @@ symphonia = { version = "0.5.5", optional = true, default-features = false }
 # The AudioIn/AudioOut vocabulary the FileIn speaks, and the latency-graph
 # traits `Net` implements (see `net::latency`). Std-only.
 tutti-types = { version = "0.0.1", path = "../../core/tutti-types" }
+# The node contract: `AudioUnit`, the planar block buffers, the numeric tower
+# and the `Signal` routing vocabulary. It sits BELOW this crate so that a
+# consumer can implement a node without depending on the fork; this crate
+# re-exports every name at the spelling it had when it defined them, so the
+# preludes and every module here are unchanged by the move.
+tutti-node = { version = "0.0.1", path = "../../core/tutti-node" }
 resampler = { version = "0.4.0", features = ["no_std"] }
 fft-convolver = { version = "0.3.0", optional = true }
 lfqueue = { version = "0.8.1", default-features = false }

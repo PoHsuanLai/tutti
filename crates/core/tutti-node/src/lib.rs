@@ -34,3 +34,26 @@
 )]
 
 extern crate alloc;
+
+pub mod num;
+
+// Re-exported at the root, because the fork's `lib.rs` defined them there and
+// `use fundsp_tutti::*` (which every prelude does) put them in scope
+// unqualified. Keeping the root spelling is what makes the relocation a no-op
+// for the ~200 sites that name `Float`, `Frame` or `MAX_BUFFER_SIZE`.
+pub use num::{
+    convert, full_simd_items, full_simd_items_s, simd_items, simd_items_s, Float, Frame, Int, Num,
+    Real, Sample, Size, DEFAULT_SR, F32, F32x, F64, F64x, I32x, I64x, MAX_BUFFER_LOG,
+    MAX_BUFFER_SIZE, SIMD_C, SIMD_LEN, SIMD_M, SIMD_N, SIMD_S, U32x,
+};
+
+// The type-level integers arities are written with (`U1`, `U2`, …) plus the
+// `Frame` sequence traits. Re-exported for the same reason the tower is: the
+// fork exposed them at its root, and every arity in the engine is spelled
+// unqualified.
+pub use numeric_array::{
+    self,
+    generic_array::sequence::{Concat, GenericSequence},
+    typenum,
+};
+pub use wide;

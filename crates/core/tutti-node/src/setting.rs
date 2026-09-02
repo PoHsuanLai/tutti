@@ -322,6 +322,9 @@ mod tests {
     #[test]
     fn an_unaddressed_setting_has_a_null_direction() {
         assert!(matches!(Setting::center(440.0).direction(), Address::Null));
-        assert!(matches!(Setting::center(440.0).peel().direction(), Address::Null));
+        assert!(matches!(
+            Setting::center(440.0).peel().direction(),
+            Address::Null
+        ));
     }
 }

@@ -15,7 +15,7 @@ pub use num_complex::Complex64;
 // them — `midi_hz`, the noise generators, the easing curves, the
 // `SegmentInterpolator` family. None of that is part of what it means to be a
 // node, so none of it moved.
-pub use tutti_node::math::{abs, amp_db, ceil, floor, log10, max, min, round, AttoHash};
+pub use tutti_node::math::{AttoHash, abs, amp_db, ceil, floor, log10, max, min, round};
 
 /// The sign function.
 #[inline]

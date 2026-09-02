@@ -16,8 +16,8 @@
 //! `SampleRate` re-export stayed behind, because that type is `tutti-types`'
 //! and this crate names no other `tutti` crate.
 
-use numeric_array::{ArrayLength, NumericArray};
 use numeric_array::typenum::{U1, U4, U8};
+use numeric_array::{ArrayLength, NumericArray};
 
 use core::cmp::PartialEq;
 use core::marker::{Send, Sync};
@@ -37,7 +37,6 @@ pub type Frame<T, Size> = NumericArray<T, Size>;
 
 /// Default sample rate is 44.1 kHz, in raw `f64` for math sites.
 pub const DEFAULT_SR: f64 = 44_100.0;
-
 
 /// Binary logarithm of maximum buffer size.
 pub const MAX_BUFFER_LOG: usize = 6;

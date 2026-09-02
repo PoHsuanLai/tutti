@@ -24,8 +24,9 @@
 //
 // The numeric tower (`Sample`/`F32`/`F64`, `Num`/`Int`/`Float`/`Real`, the SIMD
 // geometry constants and `MAX_BUFFER_SIZE`), the planar block buffers, the
-// `Signal` routing vocabulary and the `AudioUnit` trait itself were relocated
-// **down** into `tutti-node`, a `no_std` leaf that names no other `tutti` crate.
+// `Signal` routing vocabulary, `Setting`, and the `AudioUnit` trait itself were
+// relocated **down** into `tutti-node`, which sits below this crate so that a
+// node can be written without depending on the fork.
 //
 // They are re-exported here at the same spellings they had when they were
 // defined here, so this crate's own modules — and `prelude` / `prelude32` /
@@ -33,9 +34,9 @@
 // the contract without the fork now has a crate to name; a consumer that does
 // not care keeps `fundsp_tutti::Float` working.
 pub use tutti_node::{
-    convert, full_simd_items, full_simd_items_s, simd_items, simd_items_s, Float, Frame, Int, Num,
-    Real, Sample, Size, DEFAULT_SR, F32, F32x, F64, F64x, I32x, I64x, MAX_BUFFER_LOG,
-    MAX_BUFFER_SIZE, SIMD_C, SIMD_LEN, SIMD_M, SIMD_N, SIMD_S, U32x,
+    DEFAULT_SR, F32, F32x, F64, F64x, Float, Frame, I32x, I64x, Int, MAX_BUFFER_LOG,
+    MAX_BUFFER_SIZE, Num, Real, SIMD_C, SIMD_LEN, SIMD_M, SIMD_N, SIMD_S, Sample, Size, U32x,
+    convert, full_simd_items, full_simd_items_s, simd_items, simd_items_s,
 };
 
 // The tower's own `use` list, kept here because every module in this crate
@@ -53,7 +54,6 @@ pub use params::SampleRate;
 
 /// Default sample rate as a typed [`SampleRate`].
 pub const DEFAULT_SAMPLE_RATE: SampleRate = SampleRate(DEFAULT_SR);
-
 
 pub mod adsr;
 pub mod audionode;

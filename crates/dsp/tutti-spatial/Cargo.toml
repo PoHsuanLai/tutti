@@ -45,3 +45,9 @@ approx = "0.5"
 # The RT no-alloc gate. Must be a dev-dep of the crate that OWNS the nodes:
 # `assert_no_alloc` installs a global allocator, which only a test binary may do.
 assert_no_alloc = { version = "1", default-features = false }
+
+# A dev-dependency on self is how a feature reaches `tests/` unconditionally.
+# `required-features` would skip the HRTF tests when the feature is off, so a
+# plain `cargo nextest run -p tutti-spatial` would report green without having
+# exercised the panner. Same pattern as `tutti-sampler`.
+tutti-spatial = { path = ".", features = ["hrtf"] }

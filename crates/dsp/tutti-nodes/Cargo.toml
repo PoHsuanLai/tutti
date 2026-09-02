@@ -52,6 +52,10 @@ audio-automation = { workspace = true }
 
 [dev-dependencies]
 approx = "0.5"
+# An independent RBJ-cookbook biquad, as a second opinion on the SVF's magnitude
+# response in `tests/oracle_biquad.rs`. Adds no transitive crates — `num-traits`
+# is already in the tree.
+biquad = "0.5"
 assert_no_alloc = { version = "1", default-features = false }
 
 # docs.rs renders with every feature on. `default = []` keeps the engine

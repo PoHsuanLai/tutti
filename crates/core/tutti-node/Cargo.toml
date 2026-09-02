@@ -2,11 +2,13 @@
 name = "tutti-node"
 version = "0.0.1"
 edition = "2021"
-description = "The node contract for the Tutti audio engine — the `AudioUnit` trait, its planar block buffers, the numeric tower they are generic over, and the signal-routing vocabulary `route` speaks"
+description = "The node contract for the Tutti audio engine — the `AudioUnit` trait, its planar block buffers, the numeric tower they are generic over, the signal-routing vocabulary `route` speaks, and the `Setting` its `set` takes"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/PoHsuanLai/Tutti"
-keywords = ["audio", "dsp", "no-std"]
-categories = ["multimedia::audio", "no-std"]
+# No `no-std` keyword or category: this crate's own code would qualify, but the
+# `tutti-types` edge links `std`. See `src/value.rs`.
+keywords = ["audio", "dsp"]
+categories = ["multimedia::audio"]
 
 [lints]
 workspace = true
@@ -19,9 +21,9 @@ workspace = true
 default = []
 
 [dependencies]
-# The numeric tower, and only the numeric tower. Anything that is not
-# arithmetic, SIMD, or a type-level integer does not belong in this manifest —
-# that is what makes this crate a leaf the fork can sit on.
+# Numeric crates, plus the one `tutti-types` edge at the bottom of this list.
+# Nothing else belongs here: the fork sits on top of this crate, so anything
+# added would be something every node in the engine has to link.
 numeric-array = { version = "0.6.1", default-features = false }
 wide = { version = "1.6", default-features = false }
 libm = "0.2.15"

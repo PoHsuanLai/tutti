@@ -18,7 +18,7 @@
 //!
 //! Run: `cargo run --release -p tutti-export --example render_export_cases -- <outdir>`
 
-use fundsp::prelude32::*;
+use tutti_core::dsp::*;
 use tutti_export::{
     render_to_file, AudioFormat, BitDepth, ChannelLayout, Dither, EncodeConfig, ExportConfig,
     RenderConfig, Resample,
@@ -37,7 +37,7 @@ const TONE_HZ: f32 = 1_000.0;
 /// clipping at the rail would mask that as a flat top rather than reporting it.
 fn tone_net() -> tutti_core::dsp::Net {
     let mut n = tutti_core::dsp::Net::new(0, 2);
-    let id = n.push(Box::new((sine_hz(TONE_HZ) | sine_hz(TONE_HZ)) * 0.5));
+    let id = n.push(Box::new((sine_hz::<f32>(TONE_HZ) | sine_hz::<f32>(TONE_HZ)) * 0.5));
     n.pipe_output(id);
     n
 }
@@ -53,7 +53,7 @@ fn dc_net(level: f32) -> tutti_core::dsp::Net {
 /// A mono graph, for the upmix/fold cases.
 fn mono_net() -> tutti_core::dsp::Net {
     let mut n = tutti_core::dsp::Net::new(0, 1);
-    let id = n.push(Box::new(sine_hz(TONE_HZ) * 0.5));
+    let id = n.push(Box::new(sine_hz::<f32>(TONE_HZ) * 0.5));
     n.pipe_output(id);
     n
 }
@@ -66,7 +66,7 @@ fn mono_net() -> tutti_core::dsp::Net {
 /// difference is unmissable in a spectrum and invisible to a frame count.
 fn near_nyquist_net() -> tutti_core::dsp::Net {
     let mut n = tutti_core::dsp::Net::new(0, 2);
-    let id = n.push(Box::new((sine_hz(18_000.0) | sine_hz(18_000.0)) * 0.5));
+    let id = n.push(Box::new((sine_hz::<f32>(18_000.0) | sine_hz::<f32>(18_000.0)) * 0.5));
     n.pipe_output(id);
     n
 }

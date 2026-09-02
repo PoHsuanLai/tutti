@@ -28,7 +28,7 @@
 
 #![cfg(all(feature = "wav", feature = "flac"))]
 
-use fundsp::prelude32::*;
+use tutti_core::dsp::*;
 use tutti_export::{
     render_to_file, AudioFormat, BitDepth, ChannelLayout, Dither, EncodeConfig, ExportConfig,
     FrozenClock, RenderConfig,
@@ -341,7 +341,7 @@ fn a_resampled_export_preserves_the_signal_not_just_the_frame_count() {
 
         // Skip the filter's edges: an FFT resampler's first and last frames are
         // the window ramping, which is expected and not what this asserts.
-        // `Ord::max` explicitly: the `fundsp::prelude32` glob also brings a
+        // `Ord::max` explicitly: the `tutti_core::dsp` glob also brings a
         // `Num::max` into scope, and a bare `.max` is ambiguous between them.
         let skip = std::cmp::Ord::max(spec.sample_rate as usize / 20, 1);
         assert!(

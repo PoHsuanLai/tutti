@@ -10,9 +10,7 @@
 //! Run: `cargo run --example export -- <outdir>`
 
 use tutti_analysis::{measure_loudness, LoudnessConfig};
-use tutti_core::dsp::Net;
-// `prelude32` pins fundsp's float type to f32, the width the engine runs at.
-use fundsp::prelude32::{dc, sine_hz};
+use tutti_core::dsp::{dc, sine_hz, Net};
 use tutti_core::{FrozenClock, SampleRate};
 use tutti_export::{
     render_to_buffers, render_to_file, AudioFormat, BitDepth, ChannelLayout, EncodeConfig,
@@ -23,7 +21,7 @@ use tutti_types::{Db, Interleaved};
 /// A 440 Hz tone at −12 dBFS, in stereo.
 fn tone() -> Net {
     let mut net = Net::new(0, 2);
-    let id = net.push(Box::new((sine_hz(440.0) | sine_hz(440.0)) * 0.25));
+    let id = net.push(Box::new((sine_hz::<f32>(440.0) | sine_hz::<f32>(440.0)) * 0.25));
     net.pipe_output(id);
     net
 }

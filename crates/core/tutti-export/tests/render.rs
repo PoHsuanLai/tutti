@@ -12,7 +12,7 @@
 
 #![cfg(all(feature = "wav", feature = "flac", feature = "aiff", feature = "ogg"))]
 
-use fundsp::prelude32::*;
+use tutti_core::dsp::*;
 use tutti_export::{
     render_to_buffers, render_to_file, AudioFormat, BitDepth, ChannelLayout, EncodeConfig,
     ExportConfig, FrozenClock, RenderClock, RenderConfig, Resample,

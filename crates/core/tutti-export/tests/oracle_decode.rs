@@ -42,7 +42,7 @@
 
 #![cfg(all(feature = "wav", feature = "flac", feature = "aiff", feature = "ogg"))]
 
-use fundsp::prelude32::*;
+use tutti_core::dsp::*;
 use symphonia::core::audio::SampleBuffer;
 use symphonia::core::codecs::DecoderOptions;
 use symphonia::core::formats::FormatOptions;
@@ -68,7 +68,7 @@ fn dc_net(level: f32) -> tutti_core::dsp::Net {
 /// A graph emitting a `freq` Hz sine on both channels.
 fn sine_net(freq: f32) -> tutti_core::dsp::Net {
     let mut n = tutti_core::dsp::Net::new(0, 2);
-    let id = n.push(Box::new((sine_hz(freq) * 0.5) >> split::<U2>()));
+    let id = n.push(Box::new((sine_hz::<f32>(freq) * 0.5) >> split::<U2>()));
     n.pipe_output(id);
     n
 }

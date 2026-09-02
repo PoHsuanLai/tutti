@@ -111,6 +111,71 @@ pub use tutti_types::{Interleaved, InterleavedMut};
 
 pub mod dsp {
     //! Re-export of fundsp::prelude for DSP building blocks.
+    //!
+    //! # This is the wall, and it is deliberately the only one
+    //!
+    //! `fundsp-tutti` is a dependency of `tutti-core` and of nothing else
+    //! outside `crates/vendor/**`. Every other crate — engine and adapter alike
+    //! — reaches the node contract through this module or through the named
+    //! re-exports below it. Adding a `fundsp` dependency to another manifest
+    //! puts the fork back into a second crate's public surface and should be
+    //! rejected in review; route the need through here instead.
+    //!
+    //! Note that this is a *glob*. It re-exports fundsp's whole prelude, so the
+    //! wall is one of dependency direction, not of surface area: a consumer
+    //! cannot name `fundsp`, but it can reach anything the prelude exports.
+    //! Narrowing this to an explicit list is worth doing and has not been done.
+    //!
+    //! # Why the node trait is fundsp's and not tutti's
+    //!
+    //! The obvious next step — define `AudioUnit` here and let the fork
+    //! implement it — does not typecheck, and the reason is worth writing down
+    //! so it is not rediscovered:
+    //!
+    //! - `tutti-core` depends on `fundsp-tutti`, which depends on
+    //!   `tutti-types`. Defining the trait in `tutti-core` and having the fork
+    //!   consume it is a dependency **cycle**.
+    //! - `tutti-types` is the one crate below the fork, and `Tail` and
+    //!   [`SampleRate`] already live there for exactly this reason. But
+    //!   `AudioUnit<S: Sample>` sits on the fork's `Num`/`Float`/`Real` tower
+    //!   (~700 lines, plus `wide`, `libm`, `numeric_array`, `typenum`), and the
+    //!   generic is load-bearing — the plugin hosts really do implement
+    //!   `AudioUnit<F64>`. `Setting` also carries `Address::Node(NodeId)`, a
+    //!   back-edge from the vocabulary into the graph runtime. And
+    //!   `tutti-types` is std-only while the fork is `no_std`-capable.
+    //! - A separate trait with a blanket impl over the fork's does not work
+    //!   either: `Net` stores `Box<dyn AudioUnit>` and *is* an `AudioUnit`, so
+    //!   every node would need a wrapper allocation, and `Net::node_as::<T>`
+    //!   downcasts (27 sites, including the plugin-host bind path) would see
+    //!   the wrapper rather than `T`.
+    //!
+    //! So lifting the trait is not a re-home; it is gated on two separate
+    //! changes to the fork — a `no_std` retrofit of `tutti-types`, and moving
+    //! or generifying `Setting`'s `NodeId`.
+    //!
+    //! # Per-block param delivery (`Env`) — designed, not implemented
+    //!
+    //! The open question this module inherits: a node currently learns a param
+    //! change through [`Setting`], a queued message drained by
+    //! `NetBackend::handle_messages` at the top of each `process`. Measurement
+    //! (graph plan PR 3) settled two things about it — the 256-slot queue does
+    //! *not* overflow under a pumped backend (~750 drains/s against ~60
+    //! writes/s), and the "~4 s overflow" is a stalled backend rather than an
+    //! automation rate. So the queue is not the problem it was thought to be.
+    //!
+    //! What it still cannot express is a value that is *read* per block rather
+    //! than *pushed* per change: transport frame, sample rate, and the resolved
+    //! param set for this block. Delivering those as messages means one queue
+    //! entry per param per block, which is the shape that does overflow.
+    //!
+    //! The design, for when the trait is tutti's own: one `Env { rate, frame,
+    //! params }` published whole through [`tutti_types::RtPublish`], with a
+    //! trait method taking `&Env` alongside the buffers — the audio thread
+    //! takes a single `RtRef` per block and every node reads from it, rather
+    //! than each node draining its own mailbox. It cannot be added to the fork's
+    //! trait from here: `NetBackend` keeps its `Net` private and exposes no
+    //! `set`, so there is no seam through which a host hands one in. That is the
+    //! same stop condition PR 3 hit, and it is why this stays a comment.
     pub use fundsp::prelude::*;
 }
 

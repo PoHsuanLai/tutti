@@ -469,7 +469,7 @@ impl AudioUnit for ClickNode {
         self
     }
 
-    /// Both outputs [`Signal::Unknown`] — a generator whose samples fundsp
+    /// Both outputs [`Signal::Unknown`](crate::Signal::Unknown) — a generator whose samples fundsp
     /// cannot trace back to an input.
     ///
     /// Written out rather than left to a default, because there is no longer a

@@ -124,7 +124,7 @@ pub mod dsp {
     //! This used to be `pub use fundsp::prelude::*`, which made the wall one of
     //! *dependency direction* and not of surface area: a consumer could not name
     //! `fundsp`, but it could reach anything the prelude exports. It is now an
-    //! explicit list of **43** symbols, every one of which had a caller when it
+    //! explicit list of **44** symbols, every one of which had a caller when it
     //! was written. Anything not named below is unreachable outside this crate,
     //! and adding a symbol is a decision someone makes rather than a side effect
     //! of the prelude growing. The groups are the argument for why each is here.
@@ -132,8 +132,8 @@ pub mod dsp {
     //! **Prefer a Tutti name where one exists.** The node contract is
     //! `tutti-node`'s and is re-exported at the crate root, so a node writes
     //! [`tutti_core::AudioUnit`](crate::AudioUnit), not `dsp::AudioUnit`; a
-    //! measurement is `tutti-types`', so a rate is [`SampleRate`] and a frame
-    //! count is [`Samples`]. This module is what is left after those.
+    //! measurement is `tutti-types`', so a rate is [`SampleRate`](crate::SampleRate) and a frame
+    //! count is [`Samples`](crate::Samples). This module is what is left after those.
     //!
     //! # The node contract is no longer here
     //!
@@ -160,7 +160,7 @@ pub mod dsp {
     //! # Per-block param delivery (`Env`) — designed, not implemented
     //!
     //! The open question this module inherits: a node currently learns a param
-    //! change through [`Setting`], a queued message drained by
+    //! change through [`Setting`](crate::Setting), a queued message drained by
     //! `NetBackend::handle_messages` at the top of each `process`. Measurement
     //! (graph plan PR 3) settled two things about it — the 256-slot queue does
     //! *not* overflow under a pumped backend (~750 drains/s against ~60
@@ -220,7 +220,12 @@ pub mod dsp {
     //
     // The remaining users are tests and examples building a stimulus graph in
     // one line — a legitimate use, and the reason `sine_hz`/`dc`/`pass` have the
-    // counts they do.
+    // counts they do. `sum` is the one that is *structural* rather than a
+    // generator or filter: `Net` holds one source per input port, so a fan-in
+    // has to be an explicit adder, and `sum(a, b)` is that. It is deliberately
+    // not `join`, which AVERAGES — a PDC test summing two aligned arrivals of
+    // the same impulse would then read the same as either arriving alone, which
+    // is the thing it exists to rule out.
     //
     // `An<X>` — the `AudioNode`→`AudioUnit` bridge — is deliberately NOT
     // exported. Nothing outside the fork implements `AudioNode` any more, so the
@@ -230,7 +235,7 @@ pub mod dsp {
     pub use fundsp::prelude::{
         adsr_live, bandpass_q, bell_hz, dc, delay, highpass_q, limiter, limiter_stereo, lowpass_hz,
         lowpass_q, moog, multipass, notch_q, pan, pass, pink, poly_pulse, reverb_stereo, saw,
-        saw_hz, sine, sine_hz, sink, split, square_hz, triangle, var,
+        saw_hz, sine, sine_hz, sink, split, square_hz, sum, triangle, var,
     };
     // The waveshaping curves. `tutti-nodes`' distortion node holds one per
     // `ShapeKind` and calls [`Shape::shape`] on it per sample — it does *not*

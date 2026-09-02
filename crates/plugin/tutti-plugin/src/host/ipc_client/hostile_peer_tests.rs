@@ -56,6 +56,28 @@ const PRODUCTION_STATE_PROGRESS_TIMEOUT: Duration = Duration::from_secs(10);
 /// scheduling hiccup does not read as a stall.
 const STATE_PROGRESS_TIMEOUT: Duration = Duration::from_millis(400);
 
+/// Poll `cond` until it holds, or [`NOTICE_TIMEOUT`] passes.
+///
+/// The one polling primitive in this file, so that "wait for the thing you are
+/// about to assert on" is a single call rather than a habit. Every state this
+/// file waits for is produced by the bridge thread and observed from the test
+/// thread, so a bare read races the producer; the fix for that is always to
+/// wait on the *observed value itself*, never to wait on a proxy and then read
+/// something else. `wait_for_crash` waits on the flag and is correct for
+/// assertions about the flag; a test asserting on the crash *event* has to wait
+/// on the event, because the two are published in that order with no barrier
+/// tying them together.
+fn wait_until(mut cond: impl FnMut() -> bool) -> bool {
+    let deadline = Instant::now() + NOTICE_TIMEOUT;
+    while Instant::now() < deadline {
+        if cond() {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    false
+}
+
 fn unique_socket_path(label: &str) -> std::path::PathBuf {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     std::env::temp_dir().join(format!(
@@ -293,15 +315,14 @@ impl MockServer {
     /// Polling rather than a single read because `mark_crashed` happens on the
     /// bridge thread and is published with `Release`/`Acquire` — a single read
     /// races it and would make this flaky rather than wrong.
+    ///
+    /// It settles the **flag and the latched cause**, and nothing else. In
+    /// particular it is not a handshake for the crash *notification*: `crash`
+    /// stores the flag before it takes the listener lock, so this can return
+    /// while the callback has not run. A test about the event must wait on the
+    /// event — see `a_listener_hears_the_crash_with_its_cause`.
     fn wait_for_crash(&self) -> bool {
-        let deadline = Instant::now() + NOTICE_TIMEOUT;
-        while Instant::now() < deadline {
-            if self.bridge.is_crashed() {
-                return true;
-            }
-            std::thread::sleep(Duration::from_millis(2));
-        }
-        false
+        wait_until(|| self.bridge.is_crashed())
     }
 }
 
@@ -468,6 +489,19 @@ fn a_crash_latches_a_cause_that_outlives_the_call() {
 ///
 /// The notification is the half that makes a crash *prompt*: without it a host
 /// has to poll every frame to discover something that already happened.
+///
+/// **Waits on the notification, not on `is_crashed`.** The two are published in
+/// that order deliberately — `crash` latches the cause first, so that
+/// `crash_cause` stays authoritative for a death nobody was subscribed to, and
+/// only then takes the listener lock. So `wait_for_crash` returning true is
+/// *not* a happens-before for the event: the bridge thread can be preempted
+/// between the `Release` store and the `listener.lock()`, and a reader that
+/// polls the flag and then reads the sink finds it empty. That window is real
+/// rather than theoretical — a 60 ms sleep inserted at exactly that point fails
+/// this assertion on every run with `got []`, which is the shape of the one
+/// unreproducible failure this test produced under parallel load. Waiting on
+/// the sink itself is the handshake; widening a timeout would only have made
+/// the window rarer.
 #[test]
 fn a_listener_hears_the_crash_with_its_cause() {
     use parking_lot::Mutex as PlMutex;
@@ -484,10 +518,18 @@ fn a_listener_hears_the_crash_with_its_cause() {
 
     let _ = mock.bridge.parameter(ParamAddress::Opaque(ParamId::new(1)));
     assert!(
-        mock.wait_for_crash(),
-        "the peer died but the bridge did not notice"
+        wait_until(|| !heard.lock().is_empty()),
+        "the peer died but no crash notification arrived within {NOTICE_TIMEOUT:?} \
+         (crashed={}, cause={:?}) — a latched cause with no event means the \
+         notification half of `crash` never fired",
+        mock.bridge.is_crashed(),
+        mock.bridge.crash_cause()
     );
 
+    // Read once, straight after the wait, rather than sleeping to see whether
+    // more arrive. A duplicate could only come from a second `crash` call, and
+    // `pump` returns immediately after the first, so there is no later event to
+    // wait for — a sleep here would be a deadline pretending to be a proof.
     let seen = heard.lock().clone();
     assert_eq!(
         seen.len(),

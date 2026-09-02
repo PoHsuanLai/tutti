@@ -14,8 +14,9 @@ control thread pushes to; `midi_port()` is that endpoint as a whole borrow
 (routing address, mailbox, and the source-install slot), so a host resolves all
 three through one downcast rather than caching one of them — which is how an id
 goes stale across a `crossfade` that keeps the graph node but mints a new port.
-Events polled from the inbox are applied **sample-accurately** within a block,
-each at its own `frame_offset`.
+Events polled from the inbox are applied **at their own `frame_offset`** within
+a block, to a resolution of **8 frames** — see the timing-resolution section
+below for what that floor is and where it comes from.
 
 The unit also exposes `note_on(channel, key, velocity)` / `note_off(channel, key)`
 as bare MIDI-1 integers, bypassing the inbox and calling RustySynth directly.
@@ -96,6 +97,33 @@ rather than a missing implementation.
 graph keeps rendering — every note simply plays at the wrong pitch and tempo,
 with no error at any layer. A rate change means constructing a new unit and
 swapping it into the graph.
+
+## Constraint: MIDI timing resolution stops at 8 frames
+
+`process` splits its block at every pending event's `frame_offset` — render the
+frames before the offset, apply the event, carry on — so an event affects the
+sample at its offset and no sample before it. What it cannot do is resolve two
+offsets that fall inside the same 8-frame window.
+
+The floor is RustySynth's. `Synthesizer::render` accepts a buffer of any length,
+but serves those frames out of an internal `block_size` chunk that `render_block`
+fills *whole*: voices render a chunk at a time and mix gains ramp across it, so
+a note applied part-way into an already-rendered chunk cannot affect it.
+`block_size` is therefore the resolution floor, and 8 is the smallest RustySynth
+accepts — `SynthesizerSettings::check_block_size` rejects anything outside
+`8..=1024`. This crate builds every unit at 8 and **overrides whatever
+`block_size` a caller passes**; every other field of `SynthesizerSettings` is
+honoured.
+
+At 44.1 kHz that is 0.18 ms. Offsets 0, 8, 16, … resolve distinctly, and an
+event at offset N produces exactly the offset-0 render shifted by N frames.
+Offsets 16 and 20 do not resolve apart. Finer than that needs a change inside
+the vendored synthesizer.
+
+It costs about 5 µs per 64-frame block (measured, release, 8 sustained voices:
+5.8 µs at `block_size` 64 against 10.7 µs at 8 — 0.40% to 0.74% of the real-time
+budget), and changes the rendered audio by at most ~5% of signal RMS, from finer
+gain-ramp granularity rather than any algorithm change.
 
 ## Constraint: MIDI resolution stops at 7 bits
 

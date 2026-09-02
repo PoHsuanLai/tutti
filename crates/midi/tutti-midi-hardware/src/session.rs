@@ -384,108 +384,28 @@ impl MidiOut for MidiSession {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::capability::UmpCapability;
+    use crate::test_support::FakeBackend;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    /// A backend with a fixed device list and no OS behind it.
+    // The fake backend used to live here. It moved to `crate::test_support` so
+    // `bevy-tutti` can test its own session wiring against it — a headless CI box
+    // has no MIDI port, and the fixture is the only thing standing between such a
+    // test and a real device. Nothing about these tests changed with the move;
+    // the fixture's behaviour, counters and device list are the same.
+
+    /// A session over the shared fake backend, plus its two counters.
     ///
-    /// This is what makes every path below deterministic and platform-free —
-    /// without it these tests could assert only "does not panic".
-    struct FakeBackend {
-        inputs: Vec<EndpointInfo>,
-        outputs: Vec<EndpointInfo>,
-        sent: Arc<AtomicUsize>,
-        opens: Arc<AtomicUsize>,
-        /// How many events per batch the sink it hands out will accept.
-        accepts: usize,
-    }
-
-    struct FakeConn;
-    impl InputConnection for FakeConn {}
-
-    /// A sink that counts what it was handed and accepts `accepts` of each
-    /// batch.
-    ///
-    /// `accepts` is what lets a test express a device that refuses. A
-    /// `MidiOut::queue` returning `()` would make that shape unrepresentable,
-    /// and therefore make `send`'s accepted count untestable.
-    struct FakeSink {
-        sent: Arc<AtomicUsize>,
-        accepts: usize,
-    }
-    impl MidiOut for FakeSink {
-        fn queue(&self, events: &[MidiEvent]) -> usize {
-            self.sent.fetch_add(events.len(), Ordering::SeqCst);
-            self.accepts.min(events.len())
-        }
-    }
-
-    fn endpoint(raw: u64, name: &str) -> EndpointInfo {
-        EndpointInfo {
-            id: EndpointId::from_raw(raw),
-            name: name.to_string(),
-            capability: UmpCapability::midi2(),
-        }
-    }
-
-    impl FakeBackend {
-        /// The backend plus the two counters its fakes bump: events sent, and
-        /// ports opened. Its sink accepts everything.
-        fn build() -> (Box<dyn MidiEndpoints>, Arc<AtomicUsize>, Arc<AtomicUsize>) {
-            Self::build_accepting(usize::MAX)
-        }
-
-        /// As [`build`](Self::build), but the sink accepts at most `accepts`
-        /// events per batch — `0` models a device refusing everything.
-        fn build_accepting(
-            accepts: usize,
-        ) -> (Box<dyn MidiEndpoints>, Arc<AtomicUsize>, Arc<AtomicUsize>) {
-            let sent = Arc::new(AtomicUsize::new(0));
-            let opens = Arc::new(AtomicUsize::new(0));
-            let b = FakeBackend {
-                inputs: vec![endpoint(1, "Keystep Pro"), endpoint(2, "IAC Bus 1")],
-                outputs: vec![endpoint(10, "Synth A"), endpoint(11, "IAC Bus 1")],
-                sent: sent.clone(),
-                opens: opens.clone(),
-                accepts,
-            };
-            (Box::new(b), sent, opens)
-        }
-    }
-
-    impl MidiEndpoints for FakeBackend {
-        fn inputs(&self) -> Vec<EndpointInfo> {
-            self.inputs.clone()
-        }
-        fn outputs(&self) -> Vec<EndpointInfo> {
-            self.outputs.clone()
-        }
-        fn open_input(
-            &self,
-            id: EndpointId,
-            _producer: InputProducerHandle,
-        ) -> Result<Box<dyn InputConnection>> {
-            if !self.inputs.iter().any(|e| e.id == id) {
-                return Err(Error::MidiDevice("no such input".into()));
-            }
-            self.opens.fetch_add(1, Ordering::SeqCst);
-            Ok(Box::new(FakeConn))
-        }
-        fn open_output(&self, id: EndpointId) -> Result<Box<dyn MidiOut>> {
-            if !self.outputs.iter().any(|e| e.id == id) {
-                return Err(Error::MidiDevice("no such output".into()));
-            }
-            Ok(Box::new(FakeSink {
-                sent: self.sent.clone(),
-                accepts: self.accepts,
-            }))
-        }
-    }
-
+    /// Returned as a tuple rather than the `FakeCounters` struct so each test
+    /// names only the counter it uses — `(s, _, opens)` says at a glance that
+    /// this one is about opens.
     fn session() -> (MidiSession, Arc<AtomicUsize>, Arc<AtomicUsize>) {
-        let (backend, sent, opens) = FakeBackend::build();
+        let (backend, counters) = FakeBackend::build();
         let ports = Arc::new(HardwareMidiInputs::new(64));
-        (MidiSession::with_backend(backend, ports), sent, opens)
+        (
+            MidiSession::with_backend(backend, ports),
+            counters.sent,
+            counters.opens,
+        )
     }
 
     fn note() -> MidiEvent {
@@ -581,7 +501,8 @@ mod tests {
     /// different bug wearing the same number.
     #[test]
     fn a_refusing_output_reports_zero_accepted() {
-        let (backend, sent, _) = FakeBackend::build_accepting(0);
+        let (backend, counters) = FakeBackend::build_accepting(0);
+        let sent = counters.sent;
         let ports = Arc::new(HardwareMidiInputs::new(64));
         let s = MidiSession::with_backend(backend, ports);
         s.connect_output_by_name("synth a").unwrap();
@@ -598,7 +519,7 @@ mod tests {
     /// A partial accept reports the prefix that landed, not the batch size.
     #[test]
     fn a_partial_accept_reports_what_landed() {
-        let (backend, _, _) = FakeBackend::build_accepting(1);
+        let (backend, _counters) = FakeBackend::build_accepting(1);
         let ports = Arc::new(HardwareMidiInputs::new(64));
         let s = MidiSession::with_backend(backend, ports);
         s.connect_output_by_name("synth a").unwrap();

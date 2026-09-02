@@ -7,13 +7,25 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/PoHsuanLai/Tutti"
 readme = "README.md"
 
-# No features. This crate IS the OS MIDI edge — with the file codecs in
-# `tutti-midi-file`, there is nothing here that is not a port. The old
-# `midi-hardware` flag left the whole session/port/capability surface compiled
-# with no backend to drive it, which is not a configuration anyone wants.
+# One feature, and it adds no capability. This crate IS the OS MIDI edge — with
+# the file codecs in `tutti-midi-file`, there is nothing here that is not a port.
+# The old `midi-hardware` flag left the whole session/port/capability surface
+# compiled with no backend to drive it, which is not a configuration anyone
+# wants.
 #
 # The per-platform deps below are gated by `cfg(target_os)` alone, which is what
 # actually decides whether CoreMIDI exists.
+
+[features]
+# Export `test_support::FakeBackend` — a device list with no OS behind it, for
+# `MidiSession::with_backend`. Off by default: a host has no use for a fake
+# device list, and shipping one invites it into production wiring by accident.
+#
+# It exists because the fixture is the only thing standing between a session
+# test and a real MIDI port, and a headless CI box has none. `bevy-tutti` wires a
+# session into the ECS and could otherwise test that wiring only against "no
+# device found".
+test-support = []
 
 [lints]
 workspace = true
@@ -47,6 +59,12 @@ coremidi-sys = { workspace = true }
 core-foundation = { workspace = true }
 
 [dev-dependencies]
+# The crate's own `test-support` surface. A dev-dependency on self is how a
+# feature reaches the crate's `#[cfg(test)]` code and its `tests/` unconditionally
+# — `required-features` would instead *skip* the tests when the feature is off,
+# reporting green for a run that did not execute them.
+tutti-midi-hardware = { path = ".", features = ["test-support"] }
+
 tracing-subscriber = "0.3"
 # The RT gate in tests/rt_no_alloc_hardware_poll.rs drives the real
 # `HardwareMidiInputs` through `MidiPreBlock` under a disabled allocator.

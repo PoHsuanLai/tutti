@@ -281,11 +281,30 @@ pub fn record_parent_pid() {
 fn parent_is_alive() -> bool {
     // SAFETY: `getppid` takes no arguments, touches no memory, and cannot fail.
     let current = unsafe { libc::getppid() };
+    parent_is_alive_given(ORIGINAL_PPID.get().copied(), current)
+}
+
+/// The watchdog's whole decision, as a pure function of the two PIDs.
+///
+/// Split out from [`parent_is_alive`] so it can be tested at all: the live
+/// version reads a process-global `OnceLock` and a syscall whose answer a test
+/// cannot choose, and a `OnceLock` is settable exactly once per process — so a
+/// suite exercising both the recorded and the unrecorded arm could not exist
+/// in one process. Everything platform-dependent stays on the caller's side;
+/// this is arithmetic.
+///
+/// `original` is `None` for a library embedder that never called
+/// [`record_parent_pid`]; `current` is a fresh `getppid()`.
+///
+/// See [`parent_is_alive`] for why the recorded arm compares against the
+/// *recorded* PID rather than against 1.
+#[cfg(unix)]
+fn parent_is_alive_given(original: Option<i32>, current: i32) -> bool {
     // `> 1` still catches the plain-init case even if nothing recorded a PID
     // (a library embedder that never called `record_parent_pid`), which keeps
     // this no worse than the check it replaces in that configuration.
-    match ORIGINAL_PPID.get() {
-        Some(&original) => current == original && current > 1,
+    match original {
+        Some(original) => current == original && current > 1,
         None => current > 1,
     }
 }
@@ -381,3 +400,4 @@ fn parent_is_alive() -> bool {
         found
     }
 }
+

@@ -32,6 +32,11 @@ The common definitions every other Tutti crate shares rather than duplicating �
 - **`latency`** / **`tail`** — PDC planning (`LatencyGraph`, `plan`,
   `compensate`) and how long a graph rings after its input stops (`TailGraph`,
   `graph_tail`), as pure graph math over any graph representation.
+- **`graph`** — the audio graph *as a value*: `Topology` (nodes, edges, outputs),
+  `validate` → `Valid`, `topo_order`. `Clone + Eq + Hash`, so two graphs compare
+  and one hashes; it implements both traits above, so latency and tail are folds
+  over it. Compiling one into a runtime is `tutti_core::topology::compile` —
+  that half names `Net` and so cannot live here.
 - **`meter`** — musical meter: `TimeSignature`, the `MeterMap` timeline of
   changes, and the `Meter` trait that turns a `Beat` into a bar and beat. Pure
   musical math, so it layers *over* a transport rather than living inside one.

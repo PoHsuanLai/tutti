@@ -24,6 +24,12 @@ mod engine;
 // to name it — seven callsites did, all through the module path.
 pub use engine::{Engine, MAX_ROOT_CHANNELS};
 
+// The value → runtime seam: `Topology` in, `Net` out. A module rather than root
+// re-exports, because `compile` and `Catalog` are words that only read right
+// next to the thing they compile — `topology::compile`, not a bare `compile`
+// beside `compensate` and `graph_tail`.
+pub mod topology;
+
 pub mod transport;
 pub use transport::{
     beat_from_ports, ClickNode, ClickSettings, ClickState, FadeOut, FrozenClock, LoopRange,
@@ -59,6 +65,11 @@ pub use tutti_types::value::Samples;
 // fundsp beside `AudioUnit::tail`.
 pub use tutti_types::tail::{self, graph_tail, GraphTail, TailGraph};
 pub use tutti_types::value::Tail;
+
+// The audio graph as a value. Same split again: the value and its folds are
+// graph-agnostic and live in `tutti-types`; `topology::compile` below is the
+// half that names `Net`.
+pub use tutti_types::graph::{self, NodeKey, Topology, Valid};
 
 pub use atomic_float::{AtomicF32, AtomicF64};
 // Convenience re-exports of the std primitives the RT/DSP vocabulary leans on,

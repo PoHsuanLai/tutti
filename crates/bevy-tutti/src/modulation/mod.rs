@@ -11,7 +11,8 @@
 //! use bevy_tutti::graph::{AudioGraphRes, GraphReconcilePlugin, TransportRes};
 //! use bevy_tutti::modulation::*;
 //! use bevy_tutti::AudioEngineState;
-//! use tutti_core::dsp::{AudioUnit as _, Net};
+//! use tutti_core::dsp::Net;
+//! use tutti_core::AudioUnit as _;
 //! use tutti_core::transport::Transport;
 //! use tutti_core::{AudioNode, SampleRate};
 //! use tutti_types::{BeatDuration, Depth, ParamAddr, UnitParam};

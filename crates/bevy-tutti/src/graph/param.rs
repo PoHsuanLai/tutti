@@ -12,7 +12,8 @@
 //! use bevy_ecs::prelude::*;
 //! use bevy_tutti::graph::{AudioGraphRes, AudioParam, AudioParamAppExt, GraphReconcilePlugin};
 //! use bevy_tutti::AudioEngineState;
-//! use tutti_core::dsp::{AudioUnit as _, Net};
+//! use tutti_core::dsp::Net;
+//! use tutti_core::AudioUnit as _;
 //! use tutti_core::{AudioNode, SampleRate};
 //! use tutti_types::{Drive, UnitParam};
 //! use tutti_nodes::{DistortionNode, ShapeKind};

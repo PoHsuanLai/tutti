@@ -30,7 +30,8 @@ use super::Curve;
 /// inputs are the [`BEAT_PORTS`] pair a `TransportClock` drives.
 ///
 /// ```
-/// use tutti_core::dsp::{AudioUnit, Net};
+/// use tutti_core::dsp::Net;
+/// use tutti_core::AudioUnit;
 /// use tutti_nodes::automation::{AutomationEnvelope, AutomationLaneNode, AutomationPoint};
 ///
 /// let mut envelope: AutomationEnvelope<f32> = AutomationEnvelope::new(0.0);

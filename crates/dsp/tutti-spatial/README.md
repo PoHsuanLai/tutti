@@ -51,7 +51,8 @@ not click.
 A panner alone: stereo in, one output per speaker.
 
 ```rust
-use tutti_core::dsp::{AudioUnit, Net};
+use tutti_core::dsp::Net;
+use tutti_core::AudioUnit;
 use tutti_core::{Azimuth, Elevation};
 use tutti_spatial::VbapPannerNode;
 
@@ -78,7 +79,8 @@ A whole mix: `build_vbap_mix` places several sources and returns the summed
 N-wide node.
 
 ```rust
-use tutti_core::dsp::{dc, AudioUnit, Net};
+use tutti_core::dsp::{dc, Net};
+use tutti_core::AudioUnit;
 use tutti_spatial::{build_vbap_mix, VbapSource};
 use tutti_types::ChannelLayout;
 

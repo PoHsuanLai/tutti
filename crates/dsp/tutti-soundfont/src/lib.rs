@@ -11,13 +11,16 @@
 //!
 //! Notes arrive through the unit's [`MidiInPort`], reached via
 //! [`midi_sender`](SoundFontUnit::midi_sender) or
-//! [`midi_port`](SoundFontUnit::midi_port), and are applied sample-accurately
-//! within a block. [`note_on`](SoundFontUnit::note_on) /
-//! [`note_off`](SoundFontUnit::note_off) bypass that inbox and are **not** the
-//! intended path — see their own docs and the README.
+//! [`midi_port`](SoundFontUnit::midi_port), and are applied at their own
+//! `frame_offset` within a block — to an 8-frame resolution, which is
+//! RustySynth's floor rather than this crate's choice; see
+//! [`SoundFontUnit::process`] and [`SYNTH_BLOCK_FRAMES`].
+//! [`note_on`](SoundFontUnit::note_on) / [`note_off`](SoundFontUnit::note_off)
+//! bypass that inbox and are **not** the intended path — see their own docs and
+//! the README.
 //!
-//! The quick start, the fixed-rate trap and the 7-bit resolution boundary are in
-//! the crate README, included below.
+//! The quick start, the fixed-rate trap, the timing-resolution floor and the
+//! 7-bit resolution boundary are in the crate README, included below.
 #![doc = include_str!("../README.md")]
 
 mod error;
@@ -40,10 +43,50 @@ use tutti_midi_types::{MidiUnitId, MidiUnitIn};
 /// buffer must be fully initialised (not just allocated with `with_capacity`).
 const MIDI_BUFFER_CAPACITY: usize = 256;
 
+/// Frames of de-interleaved render scratch held per channel.
+///
+/// `AudioUnit::process` is contractually capped at [`tutti_core::MAX_BUFFER_SIZE`]
+/// — a `BufferMut` holds exactly one SIMD block per channel — so this is the
+/// largest block that can arrive. Allocated once in [`SoundFontUnit::new`] and
+/// never resized, which is what keeps `process` allocation-free; a `size` past
+/// it is clamped rather than growing the buffer on the audio thread.
+const RENDER_SCRATCH_FRAMES: usize = tutti_core::MAX_BUFFER_SIZE;
+
+/// The rustysynth `block_size` this unit builds its `Synthesizer` at, in frames.
+///
+/// **This is half of the frame-offset fix, and the half that is not obvious.**
+/// Splitting the block at each event offset (see [`SoundFontUnit::process`]) is
+/// necessary but not sufficient: `Synthesizer::render` accepts any length, but
+/// it serves those frames out of an internal `block_size` chunk that
+/// `render_block` fills *whole*. Voices render a full chunk at a time and mix
+/// gains ramp across it, so a note applied part-way into an already-rendered
+/// chunk cannot affect it. `block_size` is therefore the floor on this unit's
+/// MIDI timing resolution, and it was rustysynth's default of **64** — one
+/// whole `MAX_BUFFER_SIZE` block, which is why offsets 16, 32 and 48 inside a
+/// 64-frame block used to produce byte-identical output.
+///
+/// 8 is the finest rustysynth accepts (`SynthesizerSettings::check_block_size`
+/// rejects anything outside `8..=1024`), so **timing resolution is 8 frames,
+/// not 1** — 0.18 ms at 44.1 kHz, against the 1.45 ms it was. See
+/// [`SoundFontUnit::process`] for what that means for a caller.
+///
+/// # What it costs, measured
+///
+/// `block_size` is a resolution knob rather than a correctness one: rendering
+/// the same note at 8 vs 64 differs by at most 6.8e-4 against a signal RMS of
+/// 1.3e-2 (~5%), from finer gain-ramp granularity and the chorus/reverb line
+/// sizing — no algorithm changes, and only `voice.block` is sized from it.
+///
+/// CPU, release build, 8 sustained voices, per 64-frame block: 5.8 µs at
+/// `block_size` 64, 10.7 µs at 8. That is 0.40% → 0.74% of the real-time
+/// budget for those frames — around 5 µs bought for correct MIDI timing.
+const SYNTH_BLOCK_FRAMES: usize = 8;
+
 /// A stereo `AudioUnit` that renders MIDI through a decoded SoundFont.
 ///
 /// Zero inputs, two outputs. Events arrive through the [`MidiInPort`] returned
-/// by [`Self::midi_port`] and are applied sample-accurately within a block.
+/// by [`Self::midi_port`] and are applied at their own `frame_offset` within a
+/// block, to the 8-frame resolution [`SYNTH_BLOCK_FRAMES`] explains.
 ///
 /// # The sample rate is fixed for the unit's lifetime
 ///
@@ -61,10 +104,12 @@ const MIDI_BUFFER_CAPACITY: usize = 256;
 pub struct SoundFontUnit {
     synthesizer: Synthesizer,
     sample_rate: SampleRate,
-    buffer_size: usize,
+    /// De-interleaved scratch for one `process` block. Sized once at
+    /// construction to [`RENDER_SCRATCH_FRAMES`] and never resized, so the
+    /// audio thread never allocates. `process` renders into `[..size]` in
+    /// segments split at each pending event's offset.
     left_buffer: Vec<f32>,
     right_buffer: Vec<f32>,
-    buffer_pos: usize,
     /// This unit's MIDI input endpoint (routing address + mailbox + current pull
     /// source). See [`MidiInPort`] for the fundsp clone/isolate sharing semantics.
     midi: MidiInPort,
@@ -79,15 +124,26 @@ impl SoundFontUnit {
     /// no-op on this unit. A graph running at a different rate needs a new unit,
     /// not a reconfigured one.
     ///
+    /// # `settings.block_size` is overridden
+    ///
+    /// Whatever the caller passes, the synthesizer is built at
+    /// [`SYNTH_BLOCK_FRAMES`] — see that constant for why. Every other field of
+    /// `settings` (sample rate, polyphony, reverb/chorus) is honoured as given.
+    ///
     /// # Errors
     ///
     /// Returns [`Error::SoundFont`] if RustySynth refuses the `SoundFont` +
     /// [`SynthesizerSettings`] pair.
     pub fn new(soundfont: Arc<SoundFont>, settings: &SynthesizerSettings) -> Result<Self> {
-        let synthesizer =
-            Synthesizer::new(&soundfont, settings).map_err(|e| Error::SoundFont(e.to_string()))?;
+        // `SynthesizerSettings` is `#[non_exhaustive]`, so it is rebuilt from
+        // `new` rather than struct-updated from the caller's copy.
+        let mut settings_owned = SynthesizerSettings::new(settings.sample_rate);
+        settings_owned.maximum_polyphony = settings.maximum_polyphony;
+        settings_owned.enable_reverb_and_chorus = settings.enable_reverb_and_chorus;
+        settings_owned.block_size = SYNTH_BLOCK_FRAMES;
 
-        let buffer_size = 64;
+        let synthesizer = Synthesizer::new(&soundfont, &settings_owned)
+            .map_err(|e| Error::SoundFont(e.to_string()))?;
 
         Ok(Self {
             synthesizer,
@@ -95,10 +151,8 @@ impl SoundFontUnit {
             // conversion into the engine's vocabulary happens here rather than
             // being pushed onto callers.
             sample_rate: SampleRate::from(settings.sample_rate.max(0) as u32),
-            buffer_size,
-            left_buffer: vec![0.0; buffer_size],
-            right_buffer: vec![0.0; buffer_size],
-            buffer_pos: buffer_size,
+            left_buffer: vec![0.0; RENDER_SCRATCH_FRAMES],
+            right_buffer: vec![0.0; RENDER_SCRATCH_FRAMES],
             midi: MidiInPort::new(),
             midi_buffer: vec![MidiEvent::noop(); MIDI_BUFFER_CAPACITY],
         })
@@ -152,7 +206,7 @@ impl SoundFontUnit {
     /// **Not the intended path.** Notes should reach this unit through
     /// [`midi_sender`](Self::midi_sender); this pair has none of the inbox's
     /// properties. There is no `frame_offset`, so a note lands at the start of
-    /// whatever block follows rather than sample-accurately; a `MidiBus` cannot
+    /// whatever block follows rather than where it was placed; a `MidiBus` cannot
     /// address it; and `&mut self` puts it out of reach once the unit is in a
     /// `Net`. The peer crate `tutti-polysynth` exposes no such pair.
     ///
@@ -188,18 +242,36 @@ impl SoundFontUnit {
             .process_midi_message(channel, 0xC0, preset, 0);
     }
 
-    fn refill_buffers(&mut self) {
-        self.left_buffer[..self.buffer_size].fill(0.0);
-        self.right_buffer[..self.buffer_size].fill(0.0);
-        self.synthesizer
-            .render(&mut self.left_buffer, &mut self.right_buffer);
-        self.buffer_pos = 0;
+    /// Render exactly `range` of this block's scratch buffers, advancing the
+    /// synthesizer by `range.len()` frames.
+    ///
+    /// This is the whole of the frame-offset fix. `Synthesizer::render` accepts
+    /// a buffer of **any** length and owns its own 64-frame chunk cursor
+    /// (`block_read`), refilling only when that cursor runs out — so rendering
+    /// `[0, 16)` then `[16, 64)` is sample-for-sample identical to rendering
+    /// `[0, 64)` in one call *given the same synthesizer state*, and any state
+    /// change made between the two segments takes effect at frame 16 exactly.
+    ///
+    /// The previous shape kept a second 64-frame buffer here and refilled it
+    /// whole, which is what made offsets 16, 32 and 48 within a 64-frame block
+    /// byte-identical: the chunk carrying those frames had already been rendered
+    /// before the event was applied, so the note could only sound from the next
+    /// chunk. There is no such buffer any more; the only chunking left is
+    /// rustysynth's own, and it is invisible because it survives across calls.
+    fn render_range(&mut self, range: core::ops::Range<usize>) {
+        if range.is_empty() {
+            return;
+        }
+        self.synthesizer.render(
+            &mut self.left_buffer[range.clone()],
+            &mut self.right_buffer[range],
+        );
     }
 
     /// Poll this block's events into `midi_buffer`, sorted by `frame_offset`,
     /// and return the count. Does **not** dispatch — the caller applies each
-    /// event at its offset (see [`Self::process`]) so timing stays
-    /// sample-accurate rather than collapsing every event to the block start.
+    /// event at its offset (see [`Self::process`]) rather than collapsing every
+    /// event to the block start.
     fn poll_midi_events_sorted(&mut self, block_size: usize) -> usize {
         let count = self.midi.poll(block_size, &mut self.midi_buffer);
         if count > 1 {
@@ -212,21 +284,6 @@ impl SoundFontUnit {
     /// [`Self::dispatch`], which is where the downscale to 7-bit happens.
     fn apply_event(&mut self, event: &MidiEvent) {
         self.dispatch(&tutti_midi_types::normalize(event));
-    }
-
-    /// Pull one output sample from the rustysynth render buffer, refilling the
-    /// 64-sample chunk on demand.
-    #[inline]
-    fn next_output_sample(&mut self) -> (f32, f32) {
-        if self.buffer_pos >= self.buffer_size {
-            self.refill_buffers();
-        }
-        let s = (
-            self.left_buffer[self.buffer_pos],
-            self.right_buffer[self.buffer_pos],
-        );
-        self.buffer_pos += 1;
-        s
     }
 
     /// Apply one MIDI 2.0 event to the synthesizer, downscaling to MIDI 1.0.
@@ -301,13 +358,20 @@ impl SoundFontUnit {
 }
 
 impl AudioUnit for SoundFontUnit {
+    /// Release every key on every channel.
+    ///
+    /// Note-off rather than `Synthesizer::reset`: voices are released into their
+    /// envelopes rather than cut, which is what
+    /// `test_reset_silences_all_notes` measures (silence *after* the decay, not
+    /// immediately). There is no buffer state to discard alongside it — the
+    /// scratch buffers are fully rewritten by every `process`, and rustysynth
+    /// owns the only surviving chunk cursor.
     fn reset(&mut self) {
         (0..16).for_each(|channel| {
             (0..128).for_each(|key| {
                 self.synthesizer.note_off(channel, key);
             });
         });
-        self.buffer_pos = self.buffer_size;
     }
 
     /// Sever the live MIDI input this clone shares with the original synth.
@@ -335,35 +399,100 @@ impl AudioUnit for SoundFontUnit {
             self.apply_event(&event);
         }
 
-        let (l, r) = self.next_output_sample();
-        output[0] = l;
-        output[1] = r;
+        // One frame, rendered directly. rustysynth's own 64-frame chunk cursor
+        // survives across calls, so a one-frame render is not a one-frame chunk
+        // — it consumes one frame of the current chunk and refills only when
+        // that runs out.
+        self.render_range(0..1);
+        output[0] = self.left_buffer[0];
+        output[1] = self.right_buffer[0];
     }
 
+    /// Render `size` frames, applying each polled MIDI event at its own
+    /// `frame_offset`.
+    ///
+    /// # How the offset is honoured
+    ///
+    /// The block is **split at every distinct pending event offset**. For events
+    /// at offsets `o1 < o2 < …`, the sequence is: render `[0, o1)`, apply every
+    /// event at `o1`, render `[o1, o2)`, apply every event at `o2`, … , render
+    /// the tail to `size`. An event at offset `o` therefore affects the sample
+    /// at `o` and every sample after it, and no sample before it.
+    ///
+    /// # The resolution this actually achieves
+    ///
+    /// **8 frames, not 1.** The split above is exact, but rustysynth serves
+    /// frames out of a [`SYNTH_BLOCK_FRAMES`]-frame internal chunk it fills
+    /// whole, so two offsets inside one such chunk still collapse together.
+    /// Offsets 0, 8, 16, … resolve distinctly and each shifts the output by
+    /// exactly its own delta; offsets 16 and 20 do not. That is a floor
+    /// rustysynth imposes — 8 is the smallest `block_size` it accepts — and the
+    /// improvement over the 64-frame chunk this unit used to have is 8×.
+    ///
+    /// Callers that need finer than 0.18 ms (at 44.1 kHz) cannot get it from
+    /// this unit without a change inside the vendored synthesizer.
+    ///
+    /// # Ordering
+    ///
+    /// Two rules, and both are load-bearing:
+    ///
+    /// 1. **Apply before rendering the frames the event governs, never after.**
+    ///    `Synthesizer::render` advances state; a note applied after the frames
+    ///    it should sound in is one segment late, which is exactly the defect
+    ///    this shape replaces. Every `render_range` call below is preceded by
+    ///    the application of every event whose offset is `<=` that segment's
+    ///    first frame.
+    /// 2. **Events at the same offset apply in inbox order.**
+    ///    [`Self::poll_midi_events_sorted`] sorts with `sort_unstable_by_key`,
+    ///    which is not stable, so equal offsets could be reordered against each
+    ///    other. That is tolerable here and nowhere else: the loop applies the
+    ///    whole equal-offset run before rendering a single frame, so no ordering
+    ///    within the run is observable in the output unless the two events
+    ///    contradict each other at the same sample (a note-on and note-off of
+    ///    one key at one offset), which is already an ill-formed stream.
+    ///
+    /// An offset at or past `size` is clamped to the last frame rather than
+    /// dropped, so a stray late offset still fires within this block.
     fn process(&mut self, size: usize, _input: &BufferRef, output: &mut BufferMut) {
-        // Poll the whole block's events (sorted by offset) and interleave their
-        // application with rendering: apply every event due at `pos`, emit one
-        // sample, advance. Events are sample-accurate — the MIDI subsystem
-        // delivers them to our inbox once per block, each carrying its
-        // `frame_offset`.
+        // The scratch is sized for `MAX_BUFFER_SIZE`, which is the contractual
+        // ceiling on `size`. Clamp rather than grow: growing here would allocate
+        // on the audio thread, and a caller past the ceiling is already outside
+        // the `BufferMut` contract.
+        let size = size.min(RENDER_SCRATCH_FRAMES);
+        if size == 0 {
+            return;
+        }
+
         let count = self.poll_midi_events_sorted(size);
         let mut event_idx = 0;
-
-        for pos in 0..size {
-            // Apply every event whose offset is at or before this sample. Events
-            // past `size` are clamped in so a stray late offset still fires.
+        let mut pos = 0usize;
+        while pos < size {
+            // Apply every event due at or before `pos` — the equal-offset run
+            // lands in full before any of the frames it governs is rendered.
             while event_idx < count
-                && (self.midi_buffer[event_idx].frame_offset as usize).min(size.saturating_sub(1))
-                    <= pos
+                && (self.midi_buffer[event_idx].frame_offset as usize).min(size - 1) <= pos
             {
                 let event = self.midi_buffer[event_idx];
                 self.apply_event(&event);
                 event_idx += 1;
             }
 
-            let (l, r) = self.next_output_sample();
-            output.set_f32(0, pos, l);
-            output.set_f32(1, pos, r);
+            // Render up to the next event's offset, so the segment [pos, next)
+            // carries exactly the state the events at `pos` established.
+            let next = if event_idx < count {
+                (self.midi_buffer[event_idx].frame_offset as usize)
+                    .min(size - 1)
+                    .max(pos + 1)
+            } else {
+                size
+            };
+            self.render_range(pos..next);
+            pos = next;
+        }
+
+        for i in 0..size {
+            output.set_f32(0, i, self.left_buffer[i]);
+            output.set_f32(1, i, self.right_buffer[i]);
         }
     }
 
@@ -407,10 +536,10 @@ impl Clone for SoundFontUnit {
         Self {
             synthesizer: self.synthesizer.clone(),
             sample_rate: self.sample_rate,
-            buffer_size: self.buffer_size,
-            left_buffer: self.left_buffer.clone(),
-            right_buffer: self.right_buffer.clone(),
-            buffer_pos: self.buffer_pos,
+            // Scratch, not state: sized fresh rather than copied, since every
+            // `process` overwrites the frames it reads back.
+            left_buffer: vec![0.0; RENDER_SCRATCH_FRAMES],
+            right_buffer: vec![0.0; RENDER_SCRATCH_FRAMES],
             // Shares the mailbox + source cell (fundsp clone-on-commit); see
             // [`MidiInPort`]. `isolate()` severs it for an offline render.
             midi: self.midi.clone(),

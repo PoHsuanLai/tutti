@@ -90,78 +90,313 @@ fn render_process_blocks(
     out
 }
 
-/// A note-on's `frame_offset` delays when it sounds — but only to the
-/// resolution rustysynth's internal render chunk allows, which is **64
-/// samples**, not one.
+/// A note-on's `frame_offset` shifts the render by exactly that many frames.
 ///
-/// # The resolution this pins, and why it is not sample-accurate
+/// # The exact assertion, and why it is this one
 ///
-/// `process` does interleave event application with rendering correctly: it
-/// applies each event at its own `pos`. But `next_output_sample` pulls from a
-/// 64-sample buffer that `refill_buffers` fills in one `Synthesizer::render`
-/// call, so a note applied at `pos` inside an already-rendered chunk cannot
-/// affect that chunk. Its first audible sample is the start of the *next* one.
+/// For offsets 16, 32 and 48 within a 64-frame block, the rendered output from
+/// frame `offset` onward is **byte-identical** to the offset-0 render from
+/// frame 0 onward. Not "similar", not "within epsilon": the same note played
+/// `N` frames later through a deterministic synthesizer produces the same
+/// samples `N` frames later, so equality is the honest assertion and anything
+/// weaker would pass on a unit that merely delayed by a chunk.
 ///
-/// Measured on this fixture, offsets 16, 32 and 48 within a 64-frame block all
-/// produce byte-identical output, delayed exactly one chunk against offset 0.
-/// So the honest property is a **two-valued** one — offset 0 sounds in the
-/// first chunk, any non-zero offset within the block does not — and asserting
-/// finer would be asserting something the unit does not do.
+/// The three offsets are chosen at multiples of 8 deliberately — that is the
+/// resolution `SoundFontUnit` actually achieves. `process` splits the block at
+/// each event offset exactly, but rustysynth serves frames from an internal
+/// `block_size` chunk it fills whole, and 8 is the smallest `block_size` it
+/// accepts. Offsets 16 and 20 would still collide; 16 and 24 do not.
 ///
-/// The rest of the block is deliberately measured over several blocks: a piano
-/// attack's first 64 samples is 1.5 ms and lands around RMS 1.6e-4, far too
-/// close to the noise floor to carry a threshold. That near-zero level is what
-/// let the previous version of this test pass while proving nothing.
+/// # What this used to assert
 ///
-/// Sub-chunk accuracy would need `refill_buffers` to render in shorter
-/// segments split at each pending event's offset. That is a real change to
-/// `SoundFontUnit`, not a test fix, so the limitation is pinned here rather
-/// than papered over.
+/// The previous version of this test pinned the **defect**: it asserted that
+/// offsets 16, 32 and 48 were byte-identical to each other and each equal to
+/// the offset-0 render delayed by exactly one 64-frame chunk, because
+/// `refill_buffers` rendered rustysynth's whole chunk in one call before any
+/// mid-block event could reach it. Measured on this fixture, the offset-0 note
+/// first sounded at frame 0 and every non-zero offset first sounded at frame
+/// 64 regardless of its value. After the fix the same four renders first sound
+/// at frames 41, 57, 73 and 89 — each exactly `offset + 41`, the 41 being the
+/// fixture's own attack ramp.
+///
+/// # Mutation
+///
+/// Both halves of the fix were reverted independently and this test caught each:
+///
+/// - Render the whole block ignoring offsets (apply every event, then one
+///   `render_range(0..size)`) → fails.
+/// - Keep the split but restore rustysynth's default `block_size` of 64 → also
+///   fails, which is the half that is easy to miss: the split alone does not
+///   fix the defect, because the internal chunk is still filled whole.
 #[test]
-fn process_honors_frame_offset_to_chunk_resolution() {
+fn process_honors_frame_offset_within_block() {
     let sf = load_test_soundfont();
     let settings = SynthesizerSettings::new(44100);
     const BLOCK: usize = 64;
     const BLOCKS: usize = 6;
-    const OFFSET: u32 = 48;
+    const TOTAL: usize = BLOCK * BLOCKS;
+    /// Multiples of the 8-frame resolution `SoundFontUnit` resolves.
+    const OFFSETS: [usize; 3] = [16, 32, 48];
 
     let note = |offset: u32| {
         MidiEvent::note_on_7bit(MidiGroup::FIRST, MidiChannel::FIRST, 60, 100)
             .with_frame_offset(offset)
     };
 
-    // Note at offset 0 — sounds from the first chunk.
-    let mut early = SoundFontUnit::new(Arc::clone(&sf), &settings).expect("create SoundFontUnit");
-    let s_early = render_process_blocks(&mut early, BLOCK, BLOCKS, &[note(0)]);
+    let render_at = |offset: u32| {
+        let mut unit =
+            SoundFontUnit::new(Arc::clone(&sf), &settings).expect("create SoundFontUnit");
+        render_process_blocks(&mut unit, BLOCK, BLOCKS, &[note(offset)])
+    };
 
-    // Same note delayed to OFFSET — the first chunk must be untouched.
-    let mut late = SoundFontUnit::new(sf, &settings).expect("create SoundFontUnit");
-    let s_late = render_process_blocks(&mut late, BLOCK, BLOCKS, &[note(OFFSET)]);
-
-    // The offset-0 note is audible in the first block; the delayed one is not
-    // merely quieter there but *exactly* silent, because its chunk was rendered
-    // before the event was applied.
+    let base = render_at(0);
     assert!(
-        rms(&s_early[..BLOCK]) > 0.0,
-        "an offset-0 note must sound in the first chunk"
+        rms(&base) > 0.001,
+        "the offset-0 note must sound at all, else every comparison below is vacuous"
     );
+
+    let shifted: Vec<Vec<(f32, f32)>> =
+        OFFSETS.iter().map(|&o| render_at(o as u32)).collect();
+
+    for (i, &offset) in OFFSETS.iter().enumerate() {
+        // The whole property: offset N is offset 0, N frames later, exactly.
+        assert_eq!(
+            shifted[i][offset..],
+            base[..TOTAL - offset],
+            "offset {offset} must be the offset-0 render shifted by exactly {offset} frames"
+        );
+        // And it is silent before its own offset — the event cannot reach back.
+        assert_eq!(
+            rms(&shifted[i][..offset]),
+            0.0,
+            "nothing may sound before frame {offset}"
+        );
+    }
+
+    // The offsets must differ from one another. This is what the old
+    // chunk-resolution behaviour failed: 16, 32 and 48 were byte-identical.
+    for i in 1..OFFSETS.len() {
+        assert_ne!(
+            shifted[i], shifted[i - 1],
+            "offsets {} and {} must not render identically",
+            OFFSETS[i - 1],
+            OFFSETS[i]
+        );
+    }
+}
+
+/// Two events at different offsets in one block are each applied at their own
+/// offset, not both at the first (or both at the block start).
+///
+/// Rendering key 60 at offset 0 together with key 67 at offset 32 must equal
+/// the sample-wise sum of two **independently constructed** references: key 60
+/// rendered at offset 0, and key 67 rendered at offset 0 then *shifted in the
+/// test* by 32 frames. Voices mix additively ahead of the master gain, so if
+/// either event landed at the wrong frame the sum would not match.
+///
+/// # Why the reference is shifted here rather than rendered at the offset
+///
+/// The obvious version renders the second note alone *at offset 32* and sums.
+/// That version passes even when `process` ignores offsets entirely, because
+/// the solo reference then suffers exactly the same collapse as the combined
+/// render and the two errors cancel. It was written that way first and survived
+/// the mutation below, which is what forced this shape: the reference must not
+/// depend on the behaviour under test. Shifting a known-good offset-0 render in
+/// the test harness is that independent reference.
+///
+/// This is also strictly stronger than "louder than one note" — a unit that
+/// collapsed both events to offset 0 would still be louder.
+///
+/// Mutation: render whole block ignoring offsets → fails (the second note lands
+/// at frame 0 instead of 32, so it diverges from the shifted reference).
+#[test]
+fn two_events_in_one_block_apply_at_their_own_offsets() {
+    let sf = load_test_soundfont();
+    // Reverb and chorus off: both are shared, stateful sends fed by *all*
+    // voices, so with them on the render of two notes together is genuinely not
+    // the sum of each alone — the additivity this test rests on is a property
+    // of the dry voice mix. Every other setting is the default.
+    let mut settings = SynthesizerSettings::new(44100);
+    settings.enable_reverb_and_chorus = false;
+    const BLOCK: usize = 64;
+    // Long enough for a piano attack to clear the noise floor: the fixture's
+    // envelope takes ~41 frames to leave zero and several hundred more to reach
+    // an RMS a threshold can see. Six blocks (384 frames) is not enough, and a
+    // precondition that fails is what caught it.
+    const BLOCKS: usize = 48;
+    const SECOND_OFFSET: u32 = 32;
+
+    let note = |key: u8, offset: u32| {
+        MidiEvent::note_on_7bit(MidiGroup::FIRST, MidiChannel::FIRST, key, 100)
+            .with_frame_offset(offset)
+    };
+
+    let render = |events: &[MidiEvent]| {
+        let mut unit =
+            SoundFontUnit::new(Arc::clone(&sf), &settings).expect("create SoundFontUnit");
+        render_process_blocks(&mut unit, BLOCK, BLOCKS, events)
+    };
+
+    // Distinct keys so the synthesizer allocates two voices rather than
+    // retriggering one slot — a retrigger would not sum.
+    let both = render(&[note(60, 0), note(67, SECOND_OFFSET)]);
+    let first_alone = render(&[note(60, 0)]);
+
+    // The independent reference: key 67 at offset 0, delayed by SECOND_OFFSET
+    // frames *here*, not by the unit. Padding the head with silence is what the
+    // unit is supposed to produce before the event fires.
+    let shift = SECOND_OFFSET as usize;
+    let second_at_zero = render(&[note(67, 0)]);
+    let second_shifted: Vec<(f32, f32)> = core::iter::repeat_n((0.0, 0.0), shift)
+        .chain(second_at_zero.iter().copied())
+        .take(both.len())
+        .collect();
+
+    assert!(
+        rms(&first_alone) > 0.001 && rms(&second_at_zero) > 0.001,
+        "both notes must sound alone, else the sum below proves nothing"
+    );
+
+    // Voices mix additively ahead of the shared master gain, so the sum is
+    // exact up to f32 rounding of a different summation order. The tolerance is
+    // relative to the signal's own scale rather than an absolute epsilon: an
+    // absolute one either trips on rounding at peak amplitude or is so loose it
+    // stops discriminating in the quiet attack.
+    let peak = both
+        .iter()
+        .flat_map(|&(l, r)| [l.abs(), r.abs()])
+        .fold(0.0f32, f32::max);
+    let tolerance = peak * 1e-3;
+    for i in 0..both.len() {
+        let expected = (
+            first_alone[i].0 + second_shifted[i].0,
+            first_alone[i].1 + second_shifted[i].1,
+        );
+        assert!(
+            (both[i].0 - expected.0).abs() <= tolerance
+                && (both[i].1 - expected.1).abs() <= tolerance,
+            "frame {i}: two events in one block must render as the sum of each alone \
+             at its own offset — got {:?}, expected {expected:?} (tolerance {tolerance:e})",
+            both[i]
+        );
+    }
+
+    // And the second note genuinely arrives late: before its offset, the
+    // combined render must equal the first note alone.
     assert_eq!(
-        rms(&s_late[..BLOCK]),
+        both[..SECOND_OFFSET as usize],
+        first_alone[..SECOND_OFFSET as usize],
+        "before frame {SECOND_OFFSET} only the offset-0 note may be audible"
+    );
+}
+
+/// An event at the last frame of a block is applied within that block, not
+/// dropped and not deferred to the next one.
+///
+/// The boundary case for the split loop: the final segment is `[63, 64)`, one
+/// frame long. A regression that rendered `[pos, next)` with `next <= pos`, or
+/// that clamped the offset to `size` rather than `size - 1`, would either
+/// panic on an inverted range or silently lose the event.
+///
+/// Mutation: render the whole block ignoring offsets → fails (the note lands at
+/// frame 0, so the "silent before frame 63" assertion trips).
+///
+/// Note what this one does **not** catch: restoring rustysynth's default
+/// `block_size` of 64 while keeping the split leaves it green, because at that
+/// resolution offset 63 and offset 0 both round into the same chunk and the
+/// remaining assertions are inequalities rather than equalities. That half of
+/// the fix is pinned by `process_honors_frame_offset_within_block`; this test
+/// is about the split loop's boundary arithmetic, not the resolution.
+#[test]
+fn event_at_last_frame_of_block_still_applies() {
+    let sf = load_test_soundfont();
+    let settings = SynthesizerSettings::new(44100);
+    const BLOCK: usize = 64;
+    const BLOCKS: usize = 6;
+    const LAST: u32 = BLOCK as u32 - 1;
+
+    let note = |offset: u32| {
+        MidiEvent::note_on_7bit(MidiGroup::FIRST, MidiChannel::FIRST, 60, 100)
+            .with_frame_offset(offset)
+    };
+
+    let mut unit = SoundFontUnit::new(Arc::clone(&sf), &settings).expect("create SoundFontUnit");
+    let late = render_process_blocks(&mut unit, BLOCK, BLOCKS, &[note(LAST)]);
+
+    let mut unit0 = SoundFontUnit::new(sf, &settings).expect("create SoundFontUnit");
+    let base = render_process_blocks(&mut unit0, BLOCK, BLOCKS, &[note(0)]);
+
+    // Applied, not dropped: the note sounds inside the render.
+    assert!(
+        rms(&late) > 0.001,
+        "an event at the last frame of a block must still fire"
+    );
+    // Applied at frame 63 and not earlier.
+    assert_eq!(
+        rms(&late[..LAST as usize]),
         0.0,
-        "a note offset into the block cannot affect the chunk already rendered"
+        "an event at frame {LAST} may not sound before frame {LAST}"
     );
-
-    // Both eventually sound, and the delayed one lags by exactly one chunk —
-    // this is the equality that shows the offset is honored at chunk resolution
-    // rather than dropped entirely.
+    // The 8-frame chunk floor rounds 63 down to 56, so this is not a
+    // frame-exact shift — assert the weaker, true property: it is strictly
+    // later than offset 0 and strictly earlier than a whole block late.
+    let first_late = late.iter().position(|&(l, r)| l != 0.0 || r != 0.0);
+    let first_base = base.iter().position(|&(l, r)| l != 0.0 || r != 0.0);
+    let (first_late, first_base) = (
+        first_late.expect("late note sounds"),
+        first_base.expect("base note sounds"),
+    );
     assert!(
-        rms(&s_early[BLOCK..]) > 0.001,
-        "the offset-0 note must go on sounding past the first chunk"
+        first_late > first_base,
+        "offset {LAST} must sound later than offset 0 ({first_late} vs {first_base})"
     );
+    assert!(
+        first_late <= first_base + BLOCK,
+        "offset {LAST} must land within this block, not a whole block late \
+         ({first_late} vs {first_base})"
+    );
+}
+
+/// A `set_sample_rate` call mid-stream is a documented no-op, and must not
+/// disturb rendering — the unit keeps producing the same audio it would have.
+///
+/// The rate is fixed at construction (rustysynth cannot be re-rated), so the
+/// property is *continuity*: rendering, calling `set_sample_rate`, then
+/// rendering on must equal rendering straight through. The fix removed the
+/// unit's own buffer-position state, and this pins that no stale-cursor bug
+/// took its place.
+///
+/// Mutation: make `set_sample_rate` touch render state (a single
+/// `render_range(0..1)` in the body) → fails, since the second half is then one
+/// frame out of step with the straight-through render.
+#[test]
+fn set_sample_rate_mid_stream_does_not_disturb_rendering() {
+    let sf = load_test_soundfont();
+    let settings = SynthesizerSettings::new(44100);
+    const BLOCK: usize = 64;
+    const BLOCKS: usize = 6;
+
+    let note =
+        || MidiEvent::note_on_7bit(MidiGroup::FIRST, MidiChannel::FIRST, 60, 100);
+
+    let mut straight = SoundFontUnit::new(Arc::clone(&sf), &settings).expect("create unit");
+    let expected = render_process_blocks(&mut straight, BLOCK, BLOCKS, &[note()]);
+
+    let mut interrupted = SoundFontUnit::new(sf, &settings).expect("create unit");
+    let mut got = render_process_blocks(&mut interrupted, BLOCK, BLOCKS / 2, &[note()]);
+    // The documented no-op, called between blocks.
+    interrupted.set_sample_rate(tutti_core::SampleRate::from(48_000.0));
+    got.extend(render_process_blocks(
+        &mut interrupted,
+        BLOCK,
+        BLOCKS / 2,
+        &[],
+    ));
+
+    assert!(rms(&expected) > 0.001, "the note must sound at all");
     assert_eq!(
-        s_late[BLOCK..],
-        s_early[..BLOCK * (BLOCKS - 1)],
-        "the delayed note must be the offset-0 render shifted by one chunk"
+        got, expected,
+        "set_sample_rate is a no-op and must not perturb the render"
     );
 }
 

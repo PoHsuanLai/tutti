@@ -40,6 +40,19 @@ use core::fmt::Write;
 /// Generic over sample format `S`. The default `S = F32` means existing code
 /// using `AudioUnit` or `Box<dyn AudioUnit>` continues to work unchanged as f32.
 /// Use `AudioUnit<F64>` for native f64 processing.
+///
+/// # The examples below are `ignore`d here and executed in the fork
+///
+/// Every example on the derived methods (`get_mono`, `filter_stereo`,
+/// `response`, `latency`, …) builds its subject with a `fundsp_tutti::prelude64`
+/// constructor — `dc`, `add`, `pass`, `tick`, `sink`, `limiter`. Those are the
+/// fork's, and the fork depends on THIS crate, so a doctest here that named one
+/// would be a dev-dependency cycle.
+///
+/// They are not lost. `fundsp_tutti::audiounit`'s test module runs the identical
+/// assertions, where the constructors actually live, so the coverage stays and
+/// only its address changes. The examples stay written out here because this is
+/// where a reader of the method looks for them.
 pub trait AudioUnit<S: Sample = F32>: Send + Sync + DynClone {
     /// Reset the input state of the unit to an initial state where it has not processed any data.
     /// In other words, reset time to zero.
@@ -189,7 +202,7 @@ pub trait AudioUnit<S: Sample = F32>: Send + Sync + DynClone {
     /// If there are two outputs, average them.
     ///
     /// ### Example
-    /// ```
+    /// ```ignore
     /// use fundsp_tutti::prelude64::*;
     /// assert_eq!(dc(2.0).get_mono(), 2.0);
     /// assert_eq!(dc((3.0, 4.0)).get_mono(), 3.5);
@@ -217,7 +230,7 @@ pub trait AudioUnit<S: Sample = F32>: Send + Sync + DynClone {
     /// If there is just one output, duplicate it.
     ///
     /// ### Example
-    /// ```
+    /// ```ignore
     /// use fundsp_tutti::prelude64::*;
     /// assert_eq!(dc((5.0, 6.0)).get_stereo(), (5.0, 6.0));
     /// assert_eq!(dc(7.0).get_stereo(), (7.0, 7.0));
@@ -244,7 +257,7 @@ pub trait AudioUnit<S: Sample = F32>: Send + Sync + DynClone {
     /// The node must have exactly 1 input and 1 output.
     ///
     /// ### Example
-    /// ```
+    /// ```ignore
     /// use fundsp_tutti::prelude64::*;
     /// assert_eq!(add(4.0).filter_mono(5.0), 9.0);
     /// ```
@@ -260,7 +273,7 @@ pub trait AudioUnit<S: Sample = F32>: Send + Sync + DynClone {
     /// The node must have exactly 2 inputs and 2 outputs.
     ///
     /// ### Example
-    /// ```
+    /// ```ignore
     /// use fundsp_tutti::prelude64::*;
     /// assert_eq!(add((2.0, 3.0)).filter_stereo(4.0, 5.0), (6.0, 8.0));
     /// ```
@@ -277,7 +290,7 @@ pub trait AudioUnit<S: Sample = F32>: Send + Sync + DynClone {
     /// Return `None` if there is no response or it could not be calculated.
     ///
     /// ### Example
-    /// ```
+    /// ```ignore
     /// use fundsp_tutti::prelude64::*;
     /// assert_eq!(pass().response(0, 440.0), Some(Complex64::new(1.0, 0.0)));
     /// ```
@@ -299,7 +312,7 @@ pub trait AudioUnit<S: Sample = F32>: Send + Sync + DynClone {
     /// Return `None` if there is no response or it could not be calculated.
     ///
     /// ### Example
-    /// ```
+    /// ```ignore
     /// use fundsp_tutti::prelude64::*;
     /// let db = pass().response_db(0, 440.0).unwrap();
     /// assert!(db < 1.0e-7 && db > -1.0e-7);
@@ -314,7 +327,7 @@ pub trait AudioUnit<S: Sample = F32>: Send + Sync + DynClone {
     /// The latency may depend on the sample rate.
     ///
     /// ### Example
-    /// ```
+    /// ```ignore
     /// use fundsp_tutti::prelude64::*;
     /// assert_eq!(pass().latency(), Some(0.0));
     /// assert_eq!(tick().latency(), Some(0.0));

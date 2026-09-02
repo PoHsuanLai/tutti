@@ -425,3 +425,76 @@ impl AudioUnit for DummyUnit {
         core::mem::size_of::<Self>()
     }
 }
+
+/// The seven derived-method examples from [`AudioUnit`]'s own docs, executed.
+///
+/// Each was a doctest on the method it documents. The trait moved down into
+/// `tutti-node`, and every one of these builds its subject with a
+/// `prelude64` constructor — `dc`, `add`, `pass`, `tick`, `sink`, `limiter` —
+/// which is this crate's. A doctest in `tutti-node` naming them would be a
+/// dev-dependency cycle, so the examples stayed there as `ignore` (that is
+/// where a reader of `get_mono` looks) and the assertions moved here, where
+/// the constructors are. The coverage is the same set of facts; only its
+/// address changed.
+///
+/// Mutation-tested against the trait, not the constructors: making `get_mono`
+/// return `output[0]` for the 2-output case fails `get_mono_averages_a_stereo_generator`;
+/// making `filter_stereo` broadcast channel 0 fails its test; dropping
+/// `limiter`'s lookahead from `latency` fails `latency_is_the_minimum_over_outputs`.
+#[cfg(test)]
+mod trait_examples {
+    use crate::prelude64::*;
+
+    /// A 1-output generator yields its value; a 2-output generator yields the
+    /// mean of the two, which is what makes `get_mono` mono rather than "left".
+    #[test]
+    fn get_mono_averages_a_stereo_generator() {
+        assert_eq!(dc(2.0).get_mono(), 2.0);
+        assert_eq!(dc((3.0, 4.0)).get_mono(), 3.5);
+    }
+
+    /// The mirror rule: a 1-output generator is duplicated rather than paired
+    /// with silence.
+    #[test]
+    fn get_stereo_duplicates_a_mono_generator() {
+        assert_eq!(dc((5.0, 6.0)).get_stereo(), (5.0, 6.0));
+        assert_eq!(dc(7.0).get_stereo(), (7.0, 7.0));
+    }
+
+    #[test]
+    fn filter_mono_passes_one_sample_through() {
+        assert_eq!(add(4.0).filter_mono(5.0), 9.0);
+    }
+
+    /// Each channel gets its own addend — a broadcast of channel 0 would give
+    /// `(6.0, 7.0)` here.
+    #[test]
+    fn filter_stereo_keeps_the_channels_apart() {
+        assert_eq!(add((2.0, 3.0)).filter_stereo(4.0, 5.0), (6.0, 8.0));
+    }
+
+    /// A pass-through has unity response at every frequency.
+    #[test]
+    fn response_of_a_passthrough_is_unity() {
+        assert_eq!(pass().response(0, 440.0), Some(Complex64::new(1.0, 0.0)));
+    }
+
+    /// The same fact in dB, which is 0 rather than 1.
+    #[test]
+    fn response_db_of_a_passthrough_is_zero() {
+        let db = pass().response_db(0, 440.0).unwrap();
+        assert!(db < 1.0e-7 && db > -1.0e-7);
+    }
+
+    /// `latency` is derived from `route`, so it answers for each shape the
+    /// `Signal` walk can distinguish: zero for a pass-through and a unit delay
+    /// (a `tick` reports its delay as latency-free by convention), `None` for a
+    /// unit with no outputs at all, and a real figure for a lookahead limiter.
+    #[test]
+    fn latency_is_the_minimum_over_outputs() {
+        assert_eq!(pass().latency(), Some(0.0));
+        assert_eq!(tick().latency(), Some(0.0));
+        assert_eq!(sink().latency(), None);
+        assert_eq!(limiter(0.01, 0.01).latency(), Some(441.0));
+    }
+}

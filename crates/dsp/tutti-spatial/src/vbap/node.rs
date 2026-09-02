@@ -26,6 +26,40 @@ use crate::SpatialTarget;
 /// for a different one. That refusal is also what keeps this type's `Clone`
 /// correct — see the note on the impl.
 ///
+/// # The energy law
+///
+/// **The speaker gains always sum to unit energy** — `Σ gain² == 1.0` — for
+/// every bearing, every height, every spread and every supported layout. A
+/// source panned in a full circle holds a constant perceived level; it never
+/// fades out and never has a hole in it.
+///
+/// That is stronger than textbook VBAP, deliberately. VBAP places a source
+/// inside the two or three speakers surrounding it, and a direction that no
+/// speaker tuple surrounds has no solution: an array with a gap fades a source
+/// out as it crosses the gap. Two such gaps exist here — the rear arc of a
+/// stereo pair, which has no speaker behind the listener at all, and everything
+/// below an Atmos bed. This node **collapses** a source in either onto the
+/// nearest direction the array can render, at full energy, rather than fading
+/// it:
+///
+/// - A **front-only** layout (stereo) has no front/back axis, so a rear bearing
+///   is mirrored about the lateral axis — 135° renders as 45°, 180° as
+///   front-centre. Anything still outside the ±30° pair hard-pans.
+/// - Any layout, at a **height it has no speakers for**, renders at the nearest
+///   height it does: a source under an Atmos bed comes from the bed.
+///
+/// The alternative was measured and rejected. Left to the upstream `vbap`
+/// crate, which normalizes the tuple solution before clamping negative gains
+/// away, a stereo pair lost energy from 45° outward and was *completely silent*
+/// from 150° through 210° — a caller automating a pan through 180° heard the
+/// source disappear. Details and the full before/after table:
+/// [`VbapPanner::solve_gains`](super::panner) and
+/// `tests/vbap_energy_sweep.rs`.
+///
+/// Note that LFE is not one of the gains: the panner never feeds it
+/// ([`build_vbap_mix`](super::build_vbap_mix) sends it a separate low-passed
+/// feed), so it reads zero and is outside the law above.
+///
 /// [`VbapError::UnsupportedSpeakerLayout`]: crate::vbap::VbapError::UnsupportedSpeakerLayout
 pub struct VbapPannerNode {
     panner: VbapPanner,
@@ -247,7 +281,24 @@ impl AudioUnit for VbapPannerNode {
     /// tail. Re-aiming here would silently move every spatialised source to
     /// front-centre in both cases, and `Clone` shares these atomics
     /// ([`Param::handle`]), so it would move the *live* node's source too.
+    ///
+    /// # The `sync_position` first is load-bearing
+    ///
+    /// The commanded position lives in **two** places: this node's
+    /// [`SpatialTarget`], which [`set_position`](Self::set_position) writes, and
+    /// the inner panner's own atomics, which the smoother is seeded from. The
+    /// two are joined only by [`sync_position`](Self::sync_position) — and that
+    /// used to run exclusively inside `tick`/`process`.
+    ///
+    /// So `set_position` → `reset` seeded the ramp at the panner's *stale*
+    /// bearing: on a fresh node, front-centre. The first block after the reset
+    /// then rendered `[0.707, 0.707]` at every azimuth and glided to the
+    /// commanded bearing over the following 50 ms — a plausible-looking unity
+    /// that pans nowhere, with no error raised. Pushing the target into the
+    /// panner before seeding is what makes the first block after a reset
+    /// already correct, which is the whole point of seating the smoother.
     fn reset(&mut self) {
+        self.sync_position();
         self.panner.reset_state();
     }
 
@@ -409,12 +460,70 @@ mod tests {
     /// may lead by a hair. "Equals the settled answer" is the property a seated
     /// smoother actually has, and it is the one that fails when the ramp is
     /// left in flight.
+    ///
+    /// # The setup deliberately does not tick before the reset
+    ///
+    /// The commanded position lives in the node's [`SpatialTarget`], which
+    /// `set_position` writes, and in the inner panner's own atomics, which the
+    /// smoother is seeded from. `sync_position` is the only join, and it used to
+    /// run exclusively inside `tick`. So a `set_position` → `tick` → `reset`
+    /// sequence passed even with the bug present: the leading `tick` had already
+    /// pushed the bearing into the panner, so the reset seeded at the right
+    /// place by accident.
+    ///
+    /// This test therefore resets with **no intervening tick**, which is the
+    /// sequence a caller writes and the one that was broken. The `-90°` half is
+    /// the mutation guard: at `+90°` a bug that seeds front-centre still leaves
+    /// the left channel leading, so a one-sided assertion could pass for the
+    /// wrong reason.
+    ///
+    /// Mutation: drop `sync_position()` from `VbapPannerNode::reset` → both
+    /// halves fail, reading `[0.707, 0.707]` (front-centre) instead of a hard
+    /// pan.
     #[test]
     fn reset_seats_the_smoother_on_the_commanded_position() {
         let input = [1.0f32, 1.0f32];
 
-        // Where the panner ends up once the 50 ms ramp has run out: hard left,
-        // so the right channel is silent.
+        for (bearing, lead, silent) in [(90.0f32, 0usize, 1usize), (-90.0, 1, 0)] {
+            // Where the panner ends up once the 50 ms ramp has run out: a hard
+            // pan, so the opposite channel is silent.
+            let mut settled = VbapPannerNode::stereo().unwrap();
+            settled.set_position(Azimuth(bearing), Elevation::LEVEL);
+            let mut reference = [0.0f32; 2];
+            for _ in 0..48_000 {
+                settled.tick(&input, &mut reference);
+            }
+            assert!(
+                reference[lead] > 0.9 && reference[silent] < 0.1,
+                "the settled reference at {bearing} should be a hard pan, got {reference:?}"
+            );
+
+            // No tick between `set_position` and `reset`: the reset must find
+            // the commanded bearing on its own.
+            let mut panner = VbapPannerNode::stereo().unwrap();
+            panner.set_position(Azimuth(bearing), Elevation::LEVEL);
+            panner.reset();
+
+            let mut after = [0.0f32; 2];
+            panner.tick(&input, &mut after);
+            assert!(
+                (after[0] - reference[0]).abs() < 0.01 && (after[1] - reference[1]).abs() < 0.01,
+                "at {bearing}deg, the first frame after a reset should already render \
+                 at the commanded position: got {after:?}, settled is {reference:?}"
+            );
+        }
+    }
+
+    /// The ramp is genuinely in flight before a reset — otherwise
+    /// [`reset_seats_the_smoother_on_the_commanded_position`] would hold
+    /// trivially and prove nothing about the reset.
+    ///
+    /// Mutation: make `AngleSmoother::step` jump straight to the target (coeff
+    /// 1.0) → fails, because the first frame would already be settled.
+    #[test]
+    fn the_de_zipper_ramp_is_in_flight_without_a_reset() {
+        let input = [1.0f32, 1.0f32];
+
         let mut settled = VbapPannerNode::stereo().unwrap();
         settled.set_position(Azimuth(90.0), Elevation::LEVEL);
         let mut reference = [0.0f32; 2];
@@ -428,17 +537,8 @@ mod tests {
         panner.tick(&input, &mut mid_ramp);
         assert!(
             (mid_ramp[1] - reference[1]).abs() > 0.1,
-            "the ramp should still be far from settled, got {mid_ramp:?} vs {reference:?}"
-        );
-
-        panner.reset();
-
-        let mut after = [0.0f32; 2];
-        panner.tick(&input, &mut after);
-        assert!(
-            (after[0] - reference[0]).abs() < 0.01 && (after[1] - reference[1]).abs() < 0.01,
-            "after reset the first frame should already render at the commanded \
-             position: got {after:?}, settled is {reference:?}"
+            "one frame in, the ramp should still be far from settled, \
+             got {mid_ramp:?} vs {reference:?}"
         );
     }
 

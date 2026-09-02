@@ -33,6 +33,24 @@
 //! [`StateProgress::wait`], which returns only when the reply arrives or when
 //! the counter has stood still for the deadline.
 //!
+//! It carries the **deadline** as well as the counter, so both halves of a
+//! transfer run on one figure. They did not, briefly, and the gap was not
+//! cosmetic: the caller's wait was injectable while the bridge thread's reads
+//! stayed on the constant, so a shortened test deadline exercised a timing
+//! relationship production never has — and the bridge thread's own expiry, the
+//! one that actually fires first, went untested.
+//!
+//! # A stall is not a disconnection
+//!
+//! `pump` treats every error out of `dispatch::handle` as connection-level and
+//! calls `crash()`. A state deadline expiring is not that: the socket is
+//! synchronised, nothing is malformed, and the peer has merely not spoken yet.
+//! So the bridge thread reports a stall *to the caller* and stays alive, the way
+//! the over-limit `LoadState` branch already does. Getting this wrong produced a
+//! self-contradiction a caller could not defend against — [`StateError::Stalled`]
+//! promises a healthy session and a reasonable retry, while the crash it rode in
+//! on had already destroyed the session it would retry against.
+//!
 //! [`MAX_STATE_BYTES`]: crate::protocol::MAX_STATE_BYTES
 
 use super::ask::Ask;
@@ -47,6 +65,14 @@ use std::time::Duration;
 /// large state can legitimately pause between chunks — hitting disk, or
 /// allocating — so this is generous relative to a socket write, and still far
 /// short of a human's patience for a wedged UI.
+///
+/// **The production default, and the only place it is read.** Every wait takes
+/// its deadline from the [`StateProgress`] it is serving, which
+/// [`AudioBridge::new`](super::AudioBridge::new) seeds from here. Reading the
+/// constant at a wait site instead would recreate the two-configuration bug
+/// this shape exists to prevent: a test could shorten one half while the other
+/// stayed on ten seconds, and the untouched half is the one carrying the
+/// behaviour under test.
 pub(super) const PROGRESS_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// How often [`StateProgress::wait`] rechecks the counter.
@@ -64,14 +90,30 @@ const POLL_INTERVAL: Duration = Duration::from_millis(20);
 /// can advance it while the caller watches. One counter per transfer, created at
 /// the call and dropped with it, so a previous transfer's progress can never be
 /// mistaken for this one's.
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub(super) struct StateProgress {
     bytes: Arc<AtomicUsize>,
+    /// The progress deadline for *this* transfer.
+    ///
+    /// Carried on the transfer rather than read from a constant at each wait
+    /// site, so the caller's wait and the bridge thread's per-chunk reads are
+    /// one configuration. They were two, and a test that shortened only the
+    /// caller's half left the bridge thread on the 10 s constant — so the test
+    /// exercised a timing relationship production never has.
+    deadline: Duration,
 }
 
 impl StateProgress {
-    pub(super) fn new() -> Self {
-        Self::default()
+    pub(super) fn new(deadline: Duration) -> Self {
+        Self {
+            bytes: Arc::new(AtomicUsize::new(0)),
+            deadline,
+        }
+    }
+
+    /// The deadline this transfer runs under; see the field.
+    pub(super) fn deadline(&self) -> Duration {
+        self.deadline
     }
 
     /// Record that `bytes` more have moved.
@@ -88,6 +130,17 @@ impl StateProgress {
         self.bytes.load(Ordering::Relaxed)
     }
 
+    /// The stall error for this transfer, as far as it got.
+    ///
+    /// One constructor rather than three literals, so the bridge thread's two
+    /// stall sites and the caller's cannot describe the same event differently.
+    pub(super) fn stalled(&self) -> StateError {
+        StateError::Stalled {
+            bytes: self.bytes(),
+            after: self.deadline,
+        }
+    }
+
     /// Wait for `ask`'s reply, giving up only once progress has stalled.
     ///
     /// Returns the transfer's own answer when one arrives. Otherwise the counter
@@ -101,8 +154,8 @@ impl StateProgress {
     pub(super) fn wait<T>(
         &self,
         ask: Ask<std::result::Result<T, StateError>>,
-        deadline: Duration,
     ) -> std::result::Result<T, StateError> {
+        let deadline = self.deadline;
         let mut seen = self.bytes();
         let mut idle = Duration::ZERO;
         loop {
@@ -117,10 +170,7 @@ impl StateProgress {
             if now == seen {
                 idle += POLL_INTERVAL;
                 if idle >= deadline {
-                    return Err(StateError::Stalled {
-                        bytes: now,
-                        after: deadline,
-                    });
+                    return Err(self.stalled());
                 }
             } else {
                 // Progress: the transfer is alive, so the idle clock restarts.

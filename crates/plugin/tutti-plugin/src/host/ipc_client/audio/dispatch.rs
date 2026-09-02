@@ -3,8 +3,8 @@
 use super::channels::Channels;
 use super::messages::{AudioResponse, BridgeEvent, Command, ResyncKind};
 use super::payload_pool::PayloadPool;
-use super::progress::{StateProgress, PROGRESS_TIMEOUT};
-use crate::error::{Result, StateError};
+use super::progress::StateProgress;
+use crate::error::{BridgeError, Result, StateError};
 use crate::protocol::{BridgeMessage, HostMessage, IpcMidiEvent, MidiEvent, ProcessAudioData};
 use crate::util::transport::control::{self as ipc, ControlStream};
 use crate::util::transport::shm::RING_SLOTS;
@@ -232,13 +232,21 @@ pub(super) fn handle(
             // Wait for the answer, as `SaveState` above does. Answering the
             // caller straight after the write would report that the request had
             // been *sent*, never whether the plugin accepted it.
-            let value = match recv_reply(stream, channels, PROGRESS_TIMEOUT)? {
-                BridgeMessage::StateLoaded { error } => {
+            //
+            // A timeout here is **not** connection-level, for the same reason
+            // the over-limit branch above is not: the socket is synchronised and
+            // the session is healthy — the plugin simply has not answered yet.
+            // Propagating would `crash()` it, and the caller would receive
+            // `Stalled` (which says "the session is fine, retrying is
+            // reasonable") against a session that had just been torn down.
+            let value = match recv_state_reply(stream, channels, &progress)? {
+                Some(BridgeMessage::StateLoaded { error }) => {
                     error.map(StateError::Rejected).map_or(Ok(()), Err)
                 }
-                other => Err(StateError::Rejected(format!(
+                Some(other) => Err(StateError::Rejected(format!(
                     "unexpected reply to LoadState: {other:?}"
                 ))),
+                None => Err(progress.stalled()),
             };
             reply.send(value);
         }
@@ -322,15 +330,19 @@ pub(super) fn handle(
 /// genuine transport error (`?`) still propagates, and that is the one case
 /// where the stream really is unusable.
 ///
-/// Each chunk gets the full [`PROGRESS_TIMEOUT`], not a share of it: the budget
-/// is per reply, and a plugin serialising a large state can legitimately pause
+/// Each chunk gets the full progress deadline, not a share of it: the budget is
+/// per reply, and a plugin serialising a large state can legitimately pause
 /// between chunks. The overall wait is still bounded, because a sequence that
 /// stops arriving fails on the next chunk's own deadline.
 ///
-/// `progress` is advanced per chunk so the *caller's* wait is bounded the same
-/// way. Both are needed and neither subsumes the other: this one bounds the
-/// bridge thread's read, that one bounds the main thread's block on the reply,
-/// and a fix to only one leaves the other as the effective ceiling.
+/// The deadline comes from `progress` rather than a constant, so it is the same
+/// figure the waiting caller uses — one configuration, and a test that shortens
+/// it shortens both halves of the production path.
+///
+/// `progress` is also advanced per chunk so the *caller's* wait is bounded the
+/// same way. Both are needed and neither subsumes the other: this one bounds
+/// the bridge thread's read, that one bounds the main thread's block on the
+/// reply, and a fix to only one leaves the other as the effective ceiling.
 fn recv_state(
     stream: &mut ControlStream,
     channels: &Channels,
@@ -338,7 +350,12 @@ fn recv_state(
 ) -> Result<std::result::Result<Vec<u8>, StateError>> {
     let mut acc = Reassembler::default();
     loop {
-        match recv_reply(stream, channels, PROGRESS_TIMEOUT)? {
+        let Some(msg) = recv_state_reply(stream, channels, progress)? else {
+            // Stalled, not disconnected. Answering the caller keeps the session
+            // alive; see `recv_state_reply`.
+            return Ok(Err(progress.stalled()));
+        };
+        match msg {
             BridgeMessage::StateChunk { seq, last, bytes } => {
                 progress.advance(bytes.len());
                 match acc.push(seq, last, &bytes) {
@@ -362,6 +379,43 @@ fn recv_state(
                 ))))
             }
         }
+    }
+}
+
+/// [`recv_reply`] on the transfer's progress deadline, with a timeout reported
+/// as `Ok(None)` rather than as an error.
+///
+/// **This is the difference between a stalled transfer and a dead session.**
+/// `pump` treats every `Err` out of `handle` as connection-level: it calls
+/// `crash()`, latches a cause, fails every queued block and returns. That is
+/// right for a broken socket and wrong for a slow plugin — the stream is
+/// synchronised, nothing is malformed, and the peer has simply not spoken yet.
+///
+/// Reporting a stall as fatal was self-contradictory in a way a caller could
+/// not defend against: [`StateError::Stalled`] tells the caller the session is
+/// healthy and a retry is reasonable, while the crash it rode in on had already
+/// destroyed the session it would retry against.
+///
+/// The precedent is the over-limit `LoadState` branch in [`handle`], which
+/// answers its caller and returns `Ok(())` for exactly this reason. This does
+/// the same for the timeout: `None` means "no reply within the deadline", the
+/// caller is told, and the bridge thread goes back to the queue.
+///
+/// Only a *genuine* transport error still propagates — a closed socket, a
+/// malformed frame — which is the one case where the stream really is unusable.
+fn recv_state_reply(
+    stream: &mut ControlStream,
+    channels: &Channels,
+    progress: &StateProgress,
+) -> Result<Option<BridgeMessage>> {
+    match recv_reply(stream, channels, progress.deadline()) {
+        Ok(msg) => Ok(Some(msg)),
+        // Matched on the variant, not on a string or an `io::ErrorKind`:
+        // `recv_within` already normalises the socket's `TimedOut`/`WouldBlock`
+        // into this, so this is the only shape a deadline expiry takes, and
+        // nothing else produces it.
+        Err(BridgeError::Timeout { .. }) => Ok(None),
+        Err(e) => Err(e),
     }
 }
 

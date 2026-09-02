@@ -283,7 +283,7 @@ impl AudioBridge {
             return Err(StateError::PluginCrashed);
         }
         let (ask_resp, reply) = ask::<std::result::Result<Vec<u8>, StateError>>();
-        let progress = StateProgress::new();
+        let progress = StateProgress::new(self.state_progress_timeout);
         if !self.channels.push_command(Command::SaveState {
             progress: progress.clone(),
             reply,
@@ -300,7 +300,7 @@ impl AudioBridge {
         // A fixed total here was the effective ceiling on state size — it
         // expired mid-stream on a large-but-legal state and reported it as a
         // plugin that never answered.
-        progress.wait(ask_resp, self.state_progress_timeout)
+        progress.wait(ask_resp)
     }
 
     pub fn load_state(&self, data: &[u8]) -> std::result::Result<(), StateError> {
@@ -318,7 +318,7 @@ impl AudioBridge {
             });
         }
         let (ask_resp, reply) = ask::<std::result::Result<(), StateError>>();
-        let progress = StateProgress::new();
+        let progress = StateProgress::new(self.state_progress_timeout);
         if !self.channels.push_command(Command::LoadState {
             data: data.to_vec(),
             progress: progress.clone(),
@@ -334,7 +334,7 @@ impl AudioBridge {
         // Same progress deadline as `save_state`, for the same reason: the write
         // direction is chunked too, so a total budget capped how large a state
         // could be *sent* just as it capped how large one could be received.
-        progress.wait(ask_resp, self.state_progress_timeout)
+        progress.wait(ask_resp)
     }
 
     pub fn parameters(&self) -> Option<Vec<ParameterInfo>> {

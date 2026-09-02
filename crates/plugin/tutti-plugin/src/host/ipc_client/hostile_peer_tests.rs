@@ -1128,11 +1128,11 @@ fn a_slow_but_progressing_state_transfer_completes() {
     );
 }
 
-/// A transfer that *stops* must fail as a typed stall, promptly, and leave the
-/// session usable.
+/// A `save_state` that *stops* must fail as a typed stall, promptly, and leave
+/// a session that still works.
 ///
 /// The complement of the test above: tolerating a slow transfer is only correct
-/// if a stalled one is still caught. Three properties, three assertions:
+/// if a stalled one is still caught. Four properties:
 ///
 /// - **Typed.** [`StateError::Stalled`] and not `Rejected`. The plugin refused
 ///   nothing — it went quiet mid-stream — and the old string
@@ -1140,42 +1140,75 @@ fn a_slow_but_progressing_state_transfer_completes() {
 ///   judgement the host made. Also distinct from `TooLarge`: nothing here is
 ///   over any limit, and a caller that cannot tell the two apart cannot decide
 ///   whether retrying is worth anything.
-/// - **Prompt.** One deadline after progress stops, not one deadline after the
-///   call began — so partial progress must not buy extra total time beyond the
-///   grace it is due.
-/// - **Non-fatal.** The socket is intact and the bridge is not crashed. A stall
-///   is not a segfault, and reporting it as one would tell a DAW to tear down a
-///   healthy plugin.
+/// - **Prompt.** One deadline after progress stops, not one after the call
+///   began, so partial progress buys no extra total time.
+/// - **Not crashed**, and held past the *production* deadline. The bridge
+///   thread's own read expires first, and if that expiry were connection-level
+///   the crash would land while the caller was still waiting.
+/// - **Actually usable**, which `is_crashed()` only implies.
+///
+/// **The health probe is a live round trip, deliberately.** It read
+/// `parameters().is_none()`, which proved nothing: `parameters` answers `None`
+/// both when the bridge is crashed *and* when a healthy bridge times out
+/// against a silent peer, so that assertion could not fail either way. Here the
+/// peer answers `GetParameterList` with a real list, so `Some` is reachable only
+/// by a command reaching a live bridge thread and a reply coming back —
+/// impossible on a crashed bridge, which short-circuits on `is_crashed` before
+/// it sends anything.
 ///
 /// **Mutation note.** Verified to fail, not merely pass:
-/// - Returning `StateError::Rejected` from the stall path in
-///   `StateProgress::wait` fails the typed assertion.
-/// - Removing the `idle >= deadline` check (waiting forever on a stalled
-///   transfer) fails via `call_within`'s `NOTICE_TIMEOUT` rather than hanging
-///   the run, which is why the call is made off-thread.
-/// - Marking the bridge crashed on a stall fails the final two assertions.
+/// - Propagating the bridge thread's timeout instead of reporting it (i.e.
+///   dropping `recv_state_reply`'s `BridgeError::Timeout` arm) fails this test.
+///   Worth recording precisely, because it is *not* the health assertions that
+///   catch it: now that one deadline drives both waits, the bridge thread
+///   crashes before the caller's own wait expires, so the caller is answered
+///   `PluginCrashed` and the **typed** assertion fires first. The health
+///   assertions are the backstop for the ordering going the other way — a
+///   deferred crash landing after the caller has been told `Stalled`, which is
+///   the shape the reviewer probed and measured (`crashed_after_11s = true`).
+///   Both are kept: which one fires depends on a race this test should not
+///   depend on.
+/// - Returning `StateError::Rejected` from the stall path fails the typed
+///   assertion.
+/// - Removing the `idle >= deadline` check (waiting forever) fails via
+///   `call_within`'s `NOTICE_TIMEOUT` rather than hanging the run, which is why
+///   the call is made off-thread.
+/// - Reporting `bytes: 0` rather than the running count fails the byte
+///   assertion.
+/// - Making `StateProgress::deadline` return the `PROGRESS_TIMEOUT` constant
+///   instead of the transfer's own figure — i.e. putting the bridge thread back
+///   on a second, hardcoded configuration — fails the health assertions here
+///   (and in the load test) after ~6 s. That is the check that keeps this test
+///   on the production path: with two configurations, the injected deadline
+///   shortens only the caller's wait, and the bridge thread's real behaviour
+///   goes untested.
 #[test]
-fn a_stalled_state_transfer_fails_typed_and_leaves_the_bridge_healthy() {
+fn a_stalled_save_state_fails_typed_and_leaves_the_bridge_healthy() {
     // Two chunks, then silence with `last` never sent: the transfer starts,
     // makes real progress, and then stops. Progress-then-stop is the case a
     // naive implementation gets wrong — it is neither "never answered" nor a
     // completed transfer.
-    let msgs: Vec<BridgeMessage> = (0..2)
-        .map(|i| BridgeMessage::StateChunk {
-            seq: i,
-            last: false,
-            bytes: vec![7u8; 32],
-        })
-        .collect();
-
     let mock = MockServer::start_with_state_progress_timeout(
-        "stalled-state",
+        "stalled-save",
         STATE_PROGRESS_TIMEOUT,
         move |msg| match msg {
             HostMessage::SaveState => Action::ReplyManySlowly {
-                msgs: msgs.clone(),
+                msgs: (0..2)
+                    .map(|i| BridgeMessage::StateChunk {
+                        seq: i,
+                        last: false,
+                        bytes: vec![7u8; 32],
+                    })
+                    .collect(),
                 gap: Duration::from_millis(10),
             },
+            // Answered, so the health probe below is a real round trip rather
+            // than another timeout.
+            HostMessage::GetParameterList => {
+                Action::Reply(Box::new(BridgeMessage::ParameterList {
+                    parameters: Vec::new(),
+                }))
+            }
             _ => Action::Silent,
         },
     );
@@ -1206,15 +1239,90 @@ fn a_stalled_state_transfer_fails_typed_and_leaves_the_bridge_healthy() {
          deadline — the wait is accumulating time across chunks instead of \
          restarting on each"
     );
+    assert_healthy_after_stall(&mock, "save_state");
+}
+
+/// The same, for `load_state`.
+///
+/// A separate test rather than a parameter on the one above, because the two
+/// directions stall through *different code*: `save_state` gives up waiting for
+/// a chunk to arrive, `load_state` writes every chunk successfully and then
+/// waits on the single `StateLoaded` acknowledgement that never comes. Only the
+/// receive path was covered, so the load path's timeout — a distinct
+/// `recv_state_reply` call site — was crashing the bridge with no test to say
+/// so.
+///
+/// **Mutation note.** Verified to fail:
+/// - Propagating the timeout at the `LoadState` reply site (the second
+///   `recv_state_reply` call) fails the health assertions here while leaving
+///   the `save_state` test above green — which is precisely why this test has
+///   to exist separately.
+/// - Answering `Ok(())` on a missing acknowledgement fails the typed assertion:
+///   a write that was never acknowledged is not a load that succeeded.
+#[test]
+fn a_stalled_load_state_fails_typed_and_leaves_the_bridge_healthy() {
+    let mock = MockServer::start_with_state_progress_timeout(
+        "stalled-load",
+        STATE_PROGRESS_TIMEOUT,
+        move |msg| match msg {
+            // Chunks are accepted and never acknowledged: the transfer makes
+            // full progress and then hangs on the answer.
+            HostMessage::LoadStateChunk { .. } => Action::Silent,
+            HostMessage::GetParameterList => {
+                Action::Reply(Box::new(BridgeMessage::ParameterList {
+                    parameters: Vec::new(),
+                }))
+            }
+            _ => Action::Silent,
+        },
+    );
+
+    let bridge = Arc::clone(&mock.bridge);
+    let (got, elapsed) = call_within(move || bridge.load_state(&[3u8; 128]))
+        .unwrap_or_else(|w| panic!("a stalled load_state never returned; blocked for {w:?}"));
+    let err = got.expect_err("an unacknowledged load reported success");
+
+    assert!(
+        matches!(err, StateError::Stalled { .. }),
+        "an unacknowledged load reported {err:?}; the bytes went out but the \
+         plugin never confirmed it took them, which is a stall and not a \
+         rejection, a size refusal or a crash"
+    );
+    assert!(
+        elapsed < STATE_PROGRESS_TIMEOUT * 4,
+        "the stall took {elapsed:?} against a {STATE_PROGRESS_TIMEOUT:?} deadline"
+    );
+    assert_healthy_after_stall(&mock, "load_state");
+}
+
+/// Assert that a stall left the session genuinely usable, not merely unflagged.
+///
+/// Shared by both stall tests so they cannot drift into proving different
+/// things. Two steps, and the order matters:
+///
+/// 1. **Wait past the production deadline.** The bridge thread's own read
+///    expires before the caller's wait does, so a crash caused by that expiry
+///    lands *after* the caller has already been answered. Returning as soon as
+///    the caller sees `Stalled` would miss it — which is how the original
+///    version of this passed while the session was dying a beat later. The wall
+///    clock stays small because injection has moved *both* deadlines, so
+///    "past the deadline" is a few hundred milliseconds and not ten seconds.
+/// 2. **Probe with a call that cannot answer the same way when crashed.** A
+///    round trip returning `Some` is reachable only on a live bridge.
+fn assert_healthy_after_stall(mock: &MockServer, direction: &str) {
+    // Comfortably past the injected deadline, so any deferred crash has landed.
+    std::thread::sleep(STATE_PROGRESS_TIMEOUT * 2);
+
     assert!(
         !mock.bridge.is_crashed(),
-        "a stalled state transfer crashed the bridge; the socket is intact and \
-         a stall is not a segfault"
+        "a stalled {direction} crashed the bridge; the socket is intact and \
+         synchronised, so a stall must not be treated as connection-level — \
+         otherwise `Stalled` tells the caller to retry against a session that \
+         has just been torn down"
     );
-    // Healthy afterwards: a later request must still be attempted against the
-    // peer rather than short-circuit on a latched crash.
     assert!(
-        mock.bridge.parameters().is_none(),
-        "a later request should still be attempted against the (silent) peer"
+        mock.bridge.parameters().is_some(),
+        "after a stalled {direction} the bridge no longer completes a round \
+         trip, so the session is dead in practice however `is_crashed` reads"
     );
 }

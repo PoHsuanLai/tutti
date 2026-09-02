@@ -184,6 +184,14 @@ pub enum StateError {
     /// the string "the plugin did not answer within the state timeout", which
     /// reads as a plugin that refused.
     ///
+    /// **Whoever produces this must leave the session alive.** The variant
+    /// promises a healthy socket and a worthwhile retry, so a transport that
+    /// reports a stall *and* tears the connection down is telling the caller two
+    /// incompatible things — and the caller acts on the error it can see, not on
+    /// the teardown it cannot. This is not hypothetical: the host's bridge thread
+    /// treats any dispatch error as connection-level, so an early version
+    /// answered `Stalled` and killed the session a beat later.
+    ///
     /// `bytes` is what had arrived when progress stopped, which is what
     /// separates "never started" (0) from "died four fifths of the way in".
     #[error(

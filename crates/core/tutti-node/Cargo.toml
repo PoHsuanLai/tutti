@@ -12,12 +12,11 @@ categories = ["multimedia::audio", "no-std"]
 workspace = true
 
 [features]
-# `no_std` by default. This crate is the floor of the engine: everything below
-# the trait is arithmetic over `core` plus `alloc`, so nothing here needs an
-# operating system. `std` exists only so a consumer that already links it can
-# say so; it enables no code of its own.
+# No features. Everything this crate defines is arithmetic over `core` plus
+# `alloc` and would be `no_std` on its own; what links `std` is the one
+# `tutti-types` edge (see `src/value.rs`). A `std` feature that could not be
+# turned off would be decoration, so there is none until that edge is gone.
 default = []
-std = []
 
 [dependencies]
 # The numeric tower, and only the numeric tower. Anything that is not
@@ -38,3 +37,9 @@ funutd = { version = "0.16.0", default-features = false }
 # `dyn_clone::clone_trait_object!` — `Net` probes a unit's latency by cloning
 # it, so cloning is part of the contract, not a convenience.
 dyn-clone = "1.0.20"
+# The two measured values the trait's own signatures name: `SampleRate` (taken
+# by `set_sample_rate`) and `Tail` (returned by `tail`). This is the crate's one
+# non-numeric dependency and the one place it is not self-contained; the reason
+# it could not be avoided, and what it costs, is written out on `src/value.rs`.
+# `tutti-types` names no other `tutti` crate, so the graph stays acyclic.
+tutti-types = { version = "0.0.1", path = "../tutti-types" }

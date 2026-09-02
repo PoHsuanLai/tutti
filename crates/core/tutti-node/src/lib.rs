@@ -1,10 +1,10 @@
 //! The node contract: what it means to be a node in the Tutti audio graph.
 //!
 //! This crate owns [`AudioUnit`], the planar block buffers it processes into,
-//! the numeric tower those are generic over, and the [`Signal`] vocabulary
-//! [`AudioUnit::route`] speaks. It is the **floor** of the engine — it names no
-//! other `tutti` crate, so everything above it (`fundsp-tutti` included) can
-//! depend on it without a cycle.
+//! the numeric tower those are generic over, the [`Signal`] vocabulary
+//! [`AudioUnit::route`] speaks, and the [`Setting`](setting::Setting) its `set`
+//! takes. It sits **below** `fundsp-tutti`, so a crate can implement a node
+//! without depending on the fork.
 //!
 //! # Why this is a crate and not a module of the fork
 //!
@@ -19,8 +19,16 @@
 //! [`Sample`] stays a type parameter with `F32` as its default: the plugin
 //! hosts implement `AudioUnit<F64>`, so specializing the trait to `f32` to shed
 //! the tower is not available.
+//!
+//! # What it depends on
+//!
+//! Numeric crates, and `tutti-types` for exactly two types — [`SampleRate`] and
+//! [`Tail`], which the trait's own signatures name. That single edge is the one
+//! place this crate is not self-contained; [`value`] states in full why neither
+//! could move down with the rest, and what the exception costs. `tutti-types`
+//! names no other `tutti` crate, so the dependency graph stays acyclic and
+//! `fundsp-tutti` sits on top of both.
 
-#![cfg_attr(not(feature = "std"), no_std)]
 #![allow(
     clippy::precedence,
     clippy::type_complexity,
@@ -35,14 +43,19 @@
 
 extern crate alloc;
 
+pub mod audiounit;
 pub mod buffer;
 pub mod math;
 pub mod num;
 pub mod setting;
 pub mod signal;
+pub mod value;
 
+pub use audiounit::AudioUnit;
 pub use math::AttoHash;
+pub use setting::{Address, NodeAddr, Parameter, Setting};
 pub use signal::{Routing, Signal, SignalFrame};
+pub use value::{SampleRate, Samples, Tail};
 
 // Re-exported at the root, because the fork's `lib.rs` defined them there and
 // `use fundsp_tutti::*` (which every prelude does) put them in scope

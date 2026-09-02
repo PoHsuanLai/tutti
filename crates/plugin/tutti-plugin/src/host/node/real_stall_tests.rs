@@ -141,8 +141,26 @@ impl Drop for ProbeEnv {
     }
 }
 
+/// The exact command that builds the missing binary, printed by the panic below.
+///
+/// Spelled with `--manifest-path` on purpose. A bare `cargo build -p
+/// tutti-plugin-server` fails from the repository root, because tutti is a
+/// **separate workspace** from the app and the app root `exclude`s it — so the
+/// obvious shortening of this string is also the version that does not work, and
+/// the reader would have to know the workspace layout to repair it.
+const BUILD_COMMAND: &str =
+    "cargo build --manifest-path crates/bevy-tutti/Cargo.toml -p tutti-plugin-server";
+
 /// The `plugin-server` binary these tests spawn, resolved from `build.rs`'s
 /// candidates.
+///
+/// # Panics
+///
+/// If it has not been built. It is **not** a dev-dependency — `tutti-plugin-server`
+/// depends on `tutti-plugin`, so the edge would be a cycle — so cargo does not
+/// build it as a side effect of running these tests. The message prints
+/// [`BUILD_COMMAND`] verbatim so the fix is a copy-paste rather than a thing to
+/// look up.
 fn plugin_server_path() -> &'static str {
     static RESOLVED: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     RESOLVED
@@ -150,11 +168,14 @@ fn plugin_server_path() -> &'static str {
             tutti_fixture_resolve::newest_existing(
                 env!("TUTTI_PLUGIN_SERVER_CANDIDATES").split(';'),
             )
-            .expect(
-                "`plugin-server` not built. It is not a dev-dependency of this crate \
-                 (that would be a dependency cycle), so `cargo test -p tutti-plugin` \
-                 does not build it: run `cargo build -p tutti-plugin-server` first.",
-            )
+            .unwrap_or_else(|| {
+                panic!(
+                    "`plugin-server` not built. It is NOT a dev-dependency of this \
+                     crate (that would be a dependency cycle: `tutti-plugin-server` \
+                     depends on `tutti-plugin`), so running these tests does not \
+                     build it. Build it first, then re-run:\n\n  {BUILD_COMMAND}\n"
+                )
+            })
             .to_string()
         })
         .as_str()

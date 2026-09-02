@@ -41,6 +41,16 @@ const CLAP_PROBE_CANDIDATES: &str = env!("TUTTI_CLAP_TEST_PLUGIN_CANDIDATES");
 /// `;`-separated candidate paths for the `plugin-server` binary, from `build.rs`.
 const PLUGIN_SERVER_CANDIDATES: &str = env!("TUTTI_PLUGIN_SERVER_CANDIDATES");
 
+/// The exact command that builds the missing binary, printed by the panic below.
+///
+/// Spelled with `--manifest-path` on purpose. A bare `cargo build -p
+/// tutti-plugin-server` fails from the repository root, because tutti is a
+/// **separate workspace** from the app and the app root `exclude`s it — so the
+/// obvious shortening of this string is also the version that does not work, and
+/// the reader would have to know the workspace layout to repair it.
+pub const BUILD_COMMAND: &str =
+    "cargo build --manifest-path crates/bevy-tutti/Cargo.toml -p tutti-plugin-server";
+
 /// These tests must not run concurrently, and a `Mutex` cannot enforce it.
 ///
 /// Two things need serializing, and they need it at different scopes:
@@ -191,6 +201,9 @@ pub fn clap_probe_path() -> &'static Path {
 /// dev-dependency — `tutti-plugin-server` depends on `tutti-plugin`, so the edge
 /// would be a cycle — so cargo does not build it as a side effect of running
 /// these tests, and the message says so rather than blaming the machine.
+///
+/// The panic prints [`BUILD_COMMAND`] verbatim so the fix is a copy-paste rather
+/// than a thing to look up.
 pub fn plugin_server_path() -> &'static str {
     static RESOLVED: OnceLock<String> = OnceLock::new();
     RESOLVED
@@ -205,9 +218,9 @@ pub fn plugin_server_path() -> &'static str {
                     panic!(
                         "`plugin-server` not found.\nSearched:{searched}\n\
                          It is NOT a dev-dependency of this crate (that would be a \
-                         dependency cycle), so `cargo test -p tutti-plugin` does not \
-                         build it. Build it first:\n  \
-                         cargo build -p tutti-plugin-server"
+                         dependency cycle: `tutti-plugin-server` depends on \
+                         `tutti-plugin`), so running these tests does not build it. \
+                         Build it first, then re-run:\n\n  {BUILD_COMMAND}\n"
                     )
                 })
                 .to_string()

@@ -1,0 +1,40 @@
+[package]
+name = "tutti-node"
+version = "0.0.1"
+edition = "2021"
+description = "The node contract for the Tutti audio engine — the `AudioUnit` trait, its planar block buffers, the numeric tower they are generic over, and the signal-routing vocabulary `route` speaks"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/PoHsuanLai/Tutti"
+keywords = ["audio", "dsp", "no-std"]
+categories = ["multimedia::audio", "no-std"]
+
+[lints]
+workspace = true
+
+[features]
+# `no_std` by default. This crate is the floor of the engine: everything below
+# the trait is arithmetic over `core` plus `alloc`, so nothing here needs an
+# operating system. `std` exists only so a consumer that already links it can
+# say so; it enables no code of its own.
+default = []
+std = []
+
+[dependencies]
+# The numeric tower, and only the numeric tower. Anything that is not
+# arithmetic, SIMD, or a type-level integer does not belong in this manifest —
+# that is what makes this crate a leaf the fork can sit on.
+numeric-array = { version = "0.6.1", default-features = false }
+wide = { version = "1.6", default-features = false }
+libm = "0.2.15"
+num-complex = { version = "0.4.6", default-features = false, features = ["libm"] }
+# `SignalFrame` keeps up to 16 channels inline and `Setting` up to 4 address
+# levels. Both are built on the control thread and read on the audio thread, so
+# neither may allocate for the common case.
+tinyvec = { version = "1.10.0", features = ["alloc"] }
+# `AttoHash::hash01` / `hash11` draw from the same generator the fork's
+# pseudorandom phase hashing uses. Splitting them would change every node's
+# starting phase, which is audible.
+funutd = { version = "0.16.0", default-features = false }
+# `dyn_clone::clone_trait_object!` — `Net` probes a unit's latency by cloning
+# it, so cloning is part of the contract, not a convenience.
+dyn-clone = "1.0.20"

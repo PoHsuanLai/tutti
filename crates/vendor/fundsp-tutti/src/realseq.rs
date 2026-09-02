@@ -8,9 +8,6 @@ use super::signal::*;
 use super::*;
 use tinyvec::TinyVec;
 
-#[cfg(not(feature = "std"))]
-use alloc::{boxed::Box, vec::Vec};
-#[cfg(feature = "std")]
 use std::{boxed::Box, vec::Vec};
 
 #[derive(Default, Clone)]

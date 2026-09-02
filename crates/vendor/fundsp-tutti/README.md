@@ -71,19 +71,17 @@ The `fft` feature is also enabled by default.
 It adds support for efficient FFT convolutions via the
 [fft_convolver](https://github.com/neodsp/fft-convolver) crate.
 
-### no_std Support
+### no_std Support — removed in this fork
 
-FunDSP supports `no_std` environments. To enable `no_std`, disable
-the feature `std`, which is enabled by default. The `alloc` crate
-is still needed for components that allocate memory.
+Upstream FunDSP supports `no_std` behind a default-on `std` feature. **This
+fork does not**, and the feature is gone rather than left advertised: the
+`no_std` build had been broken for some time (five errors in `latency/`, a
+Tutti addition that uses `Vec` and `std::array::from_fn` unguarded), and
+nothing in Tutti ever selected it. `no_std` is not a goal for Tutti (decided
+2026-09-02).
 
-Audio file reading and writing is not available in `no_std`.
-The convolution engine is also missing in action, as it depends on `rustfft`.
-
-```rust
-[dependencies]
-fundsp = { version = "0.23.0", default-features = false }
-```
+Restoring it means fixing `latency/` first, then re-adding the feature and a CI
+job that actually builds it. See the note at the top of `src/lib.rs`.
 
 ## Graph Notation
 

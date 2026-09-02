@@ -712,7 +712,7 @@ impl Sequencer {
                     // If we're at capacity, skip the event to avoid allocation
                     if self.active.len() >= self.active.capacity() {
                         // Event dropped - no allocation in audio thread!
-                        #[cfg(all(debug_assertions, feature = "std"))]
+                        #[cfg(debug_assertions)]
                         eprintln!(
                             "[FunDSP Sequencer] WARNING: Active event capacity ({}) exceeded, dropping event ID {:?}",
                             self.active.capacity(),

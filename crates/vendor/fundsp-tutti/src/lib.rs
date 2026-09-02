@@ -6,7 +6,24 @@
 //!
 //! The central abstractions are located in the `audionode` and `audiounit` modules.
 //! The `combinator` module defines the graph operators.
-#![cfg_attr(all(not(feature = "std"), not(test)), no_std)]
+// ── This crate links `std`, unconditionally ─────────────────────────────────
+//
+// Upstream FunDSP is `no_std`-capable and this file used to carry
+// `#![cfg_attr(all(not(feature = "std"), not(test)), no_std)]` with a `std`
+// feature to match. That claim was **false in this fork** and had been for some
+// time: `cargo check -p fundsp-tutti --no-default-features` failed with five
+// errors in `latency/`, a Tutti addition that uses `Vec` and
+// `std::array::from_fn` unguarded. So the configuration was advertised, was
+// unbuildable, and nothing in the tree ever selected it — `tutti-core`, the one
+// consumer, passes `features = ["std"]`.
+//
+// `no_std` is not a goal for Tutti (decided 2026-09-02), so the gate is gone
+// rather than repaired: a feature that cannot be turned off is decoration, and
+// one that can be turned off into a build that does not compile is worse. The
+// engine's own leaf crates make the same call — see `tutti-node`'s `Cargo.toml`.
+//
+// Restoring it means fixing `latency/` first, then re-adding the feature and a
+// CI job that actually builds it.
 #![allow(
     clippy::precedence,
     clippy::type_complexity,
@@ -139,30 +156,23 @@ extern crate alloc;
 pub use alloc::sync::Arc;
 pub type Queue<T, const N: usize> = lfqueue::ConstBoundedQueue<T, N>;
 
-#[cfg(feature = "std")]
 pub mod write;
 
-#[cfg(all(
-    feature = "std",
-    any(
-        feature = "wav",
-        feature = "flac",
-        feature = "mp3",
-        feature = "ogg",
-        feature = "files"
-    )
+#[cfg(any(
+    feature = "wav",
+    feature = "flac",
+    feature = "mp3",
+    feature = "ogg",
+    feature = "files"
 ))]
 pub mod read;
 
-#[cfg(all(
-    feature = "std",
-    any(
-        feature = "wav",
-        feature = "flac",
-        feature = "mp3",
-        feature = "ogg",
-        feature = "files"
-    )
+#[cfg(any(
+    feature = "wav",
+    feature = "flac",
+    feature = "mp3",
+    feature = "ogg",
+    feature = "files"
 ))]
 pub mod stream;
 
@@ -177,19 +187,16 @@ pub mod stream;
 ///
 /// Gated exactly as [`read`]/[`stream`] are: with no codec feature there is no
 /// symphonia to re-export, and this is absent rather than empty.
-#[cfg(all(
-    feature = "std",
-    any(
-        feature = "wav",
-        feature = "flac",
-        feature = "mp3",
-        feature = "ogg",
-        feature = "files"
-    )
+#[cfg(any(
+    feature = "wav",
+    feature = "flac",
+    feature = "mp3",
+    feature = "ogg",
+    feature = "files"
 ))]
 pub use symphonia;
 
-#[cfg(all(feature = "std", feature = "fft"))]
+#[cfg(feature = "fft")]
 pub mod convolve;
 
 #[cfg(test)]

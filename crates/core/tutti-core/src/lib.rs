@@ -204,27 +204,33 @@ pub mod dsp {
     // exactly that reason.
     pub use fundsp::DEFAULT_SAMPLE_RATE;
 
-    // ── Combinators, for the two sanctioned sub-graph builders ──────────────
+    // ── Combinators, for the one sanctioned sub-graph builder ───────────────
     //
-    // fundsp's operator DSL (`>>` serial, `|` stack, `*` product) over `An<X>`,
-    // plus the generators and filters those expressions are built out of. This
-    // is the group to be suspicious of: it is a *second* way to describe a
-    // graph, parallel to `Topology`, and one that produces an opaque
+    // fundsp's operator DSL (`>>` serial, `|` stack, `*` product), plus the
+    // generators and filters those expressions are built out of. This is the
+    // group to be suspicious of: it is a *second* way to describe a graph,
+    // parallel to `Topology`, and one that produces an opaque
     // `Box<dyn AudioUnit>` the value layer cannot see inside.
     //
-    // Two sites are sanctioned to use it, and both say why in their own docs:
-    // `tutti_polysynth::synth_voice::build_sub_voice_dsp` (a per-voice chain
-    // whose shape is chosen by a `SynthConfig` match, rebuilt per note-on) and
-    // `tutti_core::transport::click`. A third would need an argument; the
-    // default answer for new work is a `Topology`, or an `impl AudioUnit`.
+    // **One production site is sanctioned**, and it says why in its own docs:
+    // `tutti_polysynth::synth_voice::build_sub_voice_dsp`, whose chain shape is
+    // chosen by a `SynthConfig` match and rebuilt per note-on. A second would
+    // need an argument; the default answer for new work is a `Topology`, or an
+    // `impl AudioUnit`.
     //
     // The remaining users are tests and examples building a stimulus graph in
     // one line — a legitimate use, and the reason `sine_hz`/`dc`/`pass` have the
     // counts they do.
+    //
+    // `An<X>` — the `AudioNode`→`AudioUnit` bridge — is deliberately NOT
+    // exported. Nothing outside the fork implements `AudioNode` any more, so the
+    // only way to reach `An` is through these constructors' return types, where
+    // it never has to be named. Re-adding it would re-open the door to writing a
+    // node against the typenum-arity trait; write `impl AudioUnit` instead.
     pub use fundsp::prelude::{
         adsr_live, bandpass_q, bell_hz, dc, highpass_q, limiter, limiter_stereo, lowpass_hz,
         lowpass_q, moog, multipass, notch_q, pan, pass, pink, poly_pulse, reverb_stereo, saw,
-        saw_hz, sine, sine_hz, sink, split, square_hz, triangle, var, An,
+        saw_hz, sine, sine_hz, sink, split, square_hz, triangle, var,
     };
     // The waveshaping curves. `tutti-nodes`' distortion node holds one per
     // `ShapeKind` and calls [`Shape::shape`] on it per sample — it does *not*

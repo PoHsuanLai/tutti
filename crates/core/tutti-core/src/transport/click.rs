@@ -1,4 +1,4 @@
-//! Metronome click AudioNode — click sounds synced to the transport.
+//! Metronome click node — click sounds synced to the transport.
 //!
 //! The click node reads position and live-session flags off the concrete
 //! [`Transport`]'s shared atomics, and its own settings (volume, meter, mode)
@@ -12,9 +12,7 @@
 //! the graph know nothing about bars.
 
 use super::Transport;
-use crate::{AtomicF32, AtomicU8, Ordering};
-use fundsp::audionode::AudioNode;
-use fundsp::prelude::*;
+use crate::{AtomicF32, AtomicU8, AudioUnit, BufferMut, BufferRef, Ordering, SignalFrame};
 use std::sync::Arc;
 use tutti_types::meter::{Meter, MeterMap};
 use tutti_types::value::{Amplitude, Beat, Hz, Phase, PhaseIncrement, Samples, Seconds};
@@ -171,7 +169,7 @@ impl Default for ClickSettings {
 /// cell as state rather than settings.
 pub type ClickState = ClickSettings;
 
-/// Click generator AudioNode.
+/// The metronome, as a graph node.
 ///
 /// Outputs stereo click sounds synced to the transport beat.
 ///
@@ -369,17 +367,22 @@ impl ClickNode {
     }
 }
 
-impl AudioNode for ClickNode {
-    const ID: u64 = 0x436c69636b_u64; // "Click"
+impl AudioUnit for ClickNode {
+    fn inputs(&self) -> usize {
+        0
+    }
 
-    type Inputs = U0;
-    type Outputs = U2;
+    fn outputs(&self) -> usize {
+        2
+    }
 
     #[inline]
-    fn tick(&mut self, _input: &Frame<f32, Self::Inputs>) -> Frame<f32, Self::Outputs> {
+    fn tick(&mut self, _input: &[f32], output: &mut [f32]) {
         if !self.should_play() {
             self.go_silent();
-            return [0.0, 0.0].into();
+            output[0] = 0.0;
+            output[1] = 0.0;
+            return;
         }
 
         let beat = self.transport.settings.beat();
@@ -392,12 +395,13 @@ impl AudioNode for ClickNode {
         );
 
         let sample = self.next_sample(self.settings.volume());
-        [sample, sample].into()
+        output[0] = sample;
+        output[1] = sample;
     }
 
     /// Per-block render, overriding the default per-sample `tick` loop.
     ///
-    /// The default `AudioNode::process` calls `tick` once per sample, which would
+    /// The default `AudioUnit::process` calls `tick` once per sample, which would
     /// put an `RtPublish::read` — a guard acquire, not a plain atomic read — on
     /// every one of ~2.8M samples per second. Hoisting the mode, transport flags,
     /// volume, and meter to once per buffer is the same shape `TransportClock`
@@ -452,11 +456,40 @@ impl AudioNode for ClickNode {
             self.click_accent = Self::generate_click(sample_rate, true);
         }
     }
+
+    fn get_id(&self) -> u64 {
+        crate::node_id::CLICK_NODE_ID
+    }
+
+    fn as_any(&self) -> &dyn core::any::Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn core::any::Any {
+        self
+    }
+
+    /// Both outputs [`Signal::Unknown`] — a generator whose samples fundsp
+    /// cannot trace back to an input.
+    ///
+    /// Written out rather than left to a default, because there is no longer a
+    /// default to leave it to: this is byte-for-byte what `AudioNode::route`
+    /// supplied while this was `An<ClickNode>`, and `latency()` is *derived*
+    /// from `route`, so an `Unknown` here is what keeps the click out of PDC's
+    /// arithmetic exactly as before.
+    fn route(&mut self, _input: &SignalFrame, _frequency: f64) -> SignalFrame {
+        SignalFrame::new(self.outputs())
+    }
+
+    fn footprint(&self) -> usize {
+        core::mem::size_of::<Self>()
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dsp::{BufferArray, U2};
     use tutti_types::meter::{BeatsPerBar, MeterChange, NoteValue, TimeSignature};
 
     /// Drive the real `Transport` rather than a mock: the click node needs
@@ -465,6 +498,18 @@ mod tests {
     fn playing(t: &Transport) {
         let _ = t.motion.try_send(super::super::MotionEvent::Play);
         t.motion.drain();
+    }
+
+    /// One `tick`, as a `[left, right]` pair.
+    ///
+    /// [`AudioUnit::tick`] writes through an out-slice rather than returning a
+    /// `Frame` the way [`AudioNode::tick`] did. The tests below assert on
+    /// `output[0]` / `output[1]` and read better that way, so the shape is
+    /// restored here instead of at eighteen call sites.
+    fn tick(node: &mut ClickNode) -> [f32; 2] {
+        let mut out = [0.0f32; 2];
+        AudioUnit::tick(node, &[], &mut out);
+        out
     }
 
     fn make_click() -> (Transport, Arc<ClickSettings>, ClickNode) {
@@ -480,7 +525,7 @@ mod tests {
         settings.set_mode(MetronomeMode::Always);
 
         // transport.playing is false by default
-        let output = node.tick(&Frame::default());
+        let output = tick(&mut node);
         assert_eq!(output[0], 0.0);
         assert_eq!(output[1], 0.0);
     }
@@ -494,7 +539,7 @@ mod tests {
 
         let mut found_nonzero = false;
         for _ in 0..100 {
-            let output = node.tick(&Frame::default());
+            let output = tick(&mut node);
             if output[0] != 0.0 || output[1] != 0.0 {
                 found_nonzero = true;
                 break;
@@ -506,7 +551,7 @@ mod tests {
         transport.settings.set_beat(1.0);
         found_nonzero = false;
         for _ in 0..100 {
-            let output = node.tick(&Frame::default());
+            let output = tick(&mut node);
             if output[0] != 0.0 || output[1] != 0.0 {
                 found_nonzero = true;
                 break;
@@ -527,14 +572,14 @@ mod tests {
 
         // Advance to beat 7
         transport.settings.set_beat(7.0);
-        let _ = node.tick(&Frame::default());
+        let _ = tick(&mut node);
         assert_eq!(node.last_click_onset, Some(Beat(7.0)));
 
         // Simulate loop wrap: beat jumps backward from 7 to 4
         transport.settings.set_beat(4.0);
         let mut found_nonzero = false;
         for _ in 0..100 {
-            let output = node.tick(&Frame::default());
+            let output = tick(&mut node);
             if output[0] != 0.0 {
                 found_nonzero = true;
                 break;
@@ -559,7 +604,7 @@ mod tests {
         let accents_at = |node: &mut ClickNode, beat: f64| {
             transport.settings.set_beat(beat);
             node.reset();
-            let _ = node.tick(&Frame::default());
+            let _ = tick(node);
             node.is_accent
         };
 
@@ -594,12 +639,12 @@ mod tests {
         // Half a quarter note apart is a full notated beat in 7/8, so these are
         // distinct clicks.
         transport.settings.set_beat(0.0);
-        let _ = node.tick(&Frame::default());
+        let _ = tick(&mut node);
         assert_eq!(node.last_click_onset, Some(Beat(0.0)));
         assert!(node.is_accent, "beat 0 is the downbeat of bar 1");
 
         transport.settings.set_beat(0.5);
-        let _ = node.tick(&Frame::default());
+        let _ = tick(&mut node);
         assert_eq!(
             node.last_click_onset,
             Some(Beat(0.5)),
@@ -609,7 +654,7 @@ mod tests {
 
         // The next bar starts at 3.5 quarters, not 7.
         transport.settings.set_beat(3.5);
-        let _ = node.tick(&Frame::default());
+        let _ = tick(&mut node);
         assert!(node.is_accent, "3.5 quarters is the downbeat of bar 2");
     }
 
@@ -640,7 +685,7 @@ mod tests {
         let mut beat = 0.0;
         while beat < 14.5 {
             transport.settings.set_beat(beat);
-            let _ = node.tick(&Frame::default());
+            let _ = tick(&mut node);
             if let Some(onset) = node.last_click_onset {
                 if onsets.last() != Some(&onset) {
                     onsets.push(onset);
@@ -680,11 +725,11 @@ mod tests {
 
         // One bar before the start: a downbeat, and no panic or wrap.
         transport.settings.set_beat(-4.0);
-        let _ = node.tick(&Frame::default());
+        let _ = tick(&mut node);
         assert!(node.is_accent, "-4.0 in 4/4 is the downbeat of bar 0");
 
         transport.settings.set_beat(-3.0);
-        let _ = node.tick(&Frame::default());
+        let _ = tick(&mut node);
         assert!(!node.is_accent, "-3.0 is beat 2 of bar 0");
     }
 
@@ -705,7 +750,7 @@ mod tests {
         block_node.process(N, &BufferRef::new(&[]), &mut buffer.buffer_mut());
 
         for i in 0..N {
-            let expected = tick_node.tick(&Frame::default());
+            let expected = tick(&mut tick_node);
             assert_eq!(
                 buffer.at_f32(0, i),
                 expected[0],
@@ -719,6 +764,100 @@ mod tests {
         }
     }
 
+    /// Eight blocks of the metronome, hashed bit-for-bit against the render the
+    /// node produced while it was an `An<ClickNode>`.
+    ///
+    /// # What this pins, and why a hash
+    ///
+    /// The `impl AudioNode` → `impl AudioUnit` rewrite (graph plan PR 4b) had to
+    /// be an *identity*: the same samples, not merely samples that still pass
+    /// the behavioural tests above. Those tests check onsets, accents and mode
+    /// gating — every one of them would pass a click whose envelope had drifted
+    /// by an LSB, and none of them would name it.
+    ///
+    /// The reference figure was captured by running this exact loop against
+    /// `An(ClickNode)` on the commit before the rewrite: FNV-1a over the raw
+    /// `f32` bits of all 1,024 samples, `0xE011_43CA_E6D4_ECD5` both before and
+    /// after. A hash rather than a 1,024-entry array because the array would be
+    /// unreadable and unmaintained, while any single-bit difference moves it.
+    ///
+    /// # Mutation-tested
+    ///
+    /// Verified to fail, not merely to pass: scaling one sample by `1.0 + f32::EPSILON`
+    /// changes the digest. It also fails if `process`'s per-block hoisting is
+    /// undone, if `generate_click`'s envelope changes, or if the beat schedule
+    /// below is edited — all of which is the point. Recompute the constant ONLY
+    /// with a deliberate, argued DSP change.
+    ///
+    /// [`get_id`](AudioUnit::get_id) is pinned separately by
+    /// [`click_node_id_survived_the_audionode_rewrite`], because it feeds `ping`
+    /// and so seeds phase for the whole graph — a change there is inaudible in
+    /// this fixed-seed render and audible everywhere else.
+    #[test]
+    fn render_is_bit_identical_to_the_audionode_era() {
+        /// FNV-1a over the little-endian `f32` bits, in emission order.
+        fn digest(samples: &[f32]) -> u64 {
+            let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+            for s in samples {
+                for byte in s.to_le_bytes() {
+                    h ^= u64::from(byte);
+                    h = h.wrapping_mul(0x0000_0100_0000_01b3);
+                }
+            }
+            h
+        }
+
+        let transport = Transport::new(48_000.0);
+        playing(&transport);
+        let settings = Arc::new(ClickSettings::new());
+        settings.set_mode(MetronomeMode::Always);
+        settings.set_volume(1.0);
+        let mut node =
+            ClickNode::with_transport(transport.clone(), Arc::clone(&settings), 48_000.0);
+
+        // Eight 64-frame blocks, the beat advancing an eighth note per block, so
+        // onsets fire, the accent alternates, and a whole click envelope plays
+        // out across block boundaries.
+        let mut rendered = Vec::with_capacity(8 * 64 * 2);
+        for block in 0..8 {
+            transport.settings.set_beat(f64::from(block) * 0.5);
+            let mut buffer = BufferArray::<U2>::new();
+            node.process(64, &BufferRef::new(&[]), &mut buffer.buffer_mut());
+            for i in 0..64 {
+                rendered.push(buffer.at_f32(0, i));
+                rendered.push(buffer.at_f32(1, i));
+            }
+        }
+
+        assert_eq!(rendered.len(), 1_024);
+        assert!(
+            rendered.iter().any(|s| *s != 0.0),
+            "a render of pure silence would hash stably and prove nothing"
+        );
+        assert_eq!(
+            digest(&rendered),
+            0xE011_43CA_E6D4_ECD5,
+            "the metronome no longer renders what `An<ClickNode>` rendered"
+        );
+    }
+
+    /// `get_id` still returns what `AudioNode::ID` did.
+    ///
+    /// Not cosmetic: `get_id` is what [`AudioUnit::ping`] mixes into the graph
+    /// hash, which seeds every pseudorandom phase in the net. Repacking the
+    /// five-byte `"Click"` literal into the crate's usual eight-byte mnemonic
+    /// convention would be a silent, audible change, and the render test above
+    /// cannot see it — its own output has no seeded randomness.
+    #[test]
+    fn click_node_id_survived_the_audionode_rewrite() {
+        let (_, _, node) = make_click();
+        assert_eq!(
+            node.get_id(),
+            0x436c_6963_6b,
+            "`\"Click\"` was `AudioNode::ID`; changing it reseeds the graph hash"
+        );
+    }
+
     #[test]
     fn test_preroll_only_mode() {
         let (transport, settings, mut node) = make_click();
@@ -727,7 +866,7 @@ mod tests {
         settings.set_volume(1.0);
 
         // Should be silent when not in preroll
-        let output = node.tick(&Frame::default());
+        let output = tick(&mut node);
         assert_eq!(output[0], 0.0);
 
         // Enable preroll - should play
@@ -735,7 +874,7 @@ mod tests {
         node.reset();
         let mut found_nonzero = false;
         for _ in 0..100 {
-            let output = node.tick(&Frame::default());
+            let output = tick(&mut node);
             if output[0] != 0.0 {
                 found_nonzero = true;
                 break;
@@ -752,7 +891,7 @@ mod tests {
         settings.set_volume(1.0);
 
         // Should be silent when not recording
-        let output = node.tick(&Frame::default());
+        let output = tick(&mut node);
         assert_eq!(output[0], 0.0);
 
         // Enable recording - should play
@@ -760,7 +899,7 @@ mod tests {
         node.reset();
         let mut found_nonzero = false;
         for _ in 0..100 {
-            let output = node.tick(&Frame::default());
+            let output = tick(&mut node);
             if output[0] != 0.0 {
                 found_nonzero = true;
                 break;
@@ -771,7 +910,7 @@ mod tests {
         // In preroll while recording - should NOT play
         transport.settings.set_in_preroll(true);
         node.reset();
-        let output = node.tick(&Frame::default());
+        let output = tick(&mut node);
         assert_eq!(
             output[0], 0.0,
             "Click should not play during preroll in RecordingOnly mode"

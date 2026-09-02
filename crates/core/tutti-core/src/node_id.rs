@@ -35,7 +35,7 @@
 //! adding an id in any crate):
 //!
 //! ```text
-//! core:    PDCDE   MPDC    TRNSCLK\0  AUTOINPT
+//! core:    PDCDE   MPDC    TRNSCLK\0  AUTOINPT  Click (5 bytes — see CLICK_NODE_ID)
 //! units:   AUTOMATE SVFFILT1 LADDERF1 EQBANDN1 DLYNODE1 DLYNODE2 LFO_NODE
 //!          PHASERN1 CHORUSN1 FLANGER1 DISTORT1 CONVNOD1 CONVNOD2 SCGATE
 //!          SCCOMP  SSCGAT  SSCCOM  LIMITER1 BRKWLLMT PAN\0  BIN\0
@@ -102,5 +102,17 @@ pub use fundsp::latency::PDC_DELAY_ID;
 /// `"TRNSCLK\0"`.
 pub const TRANSPORT_CLOCK_ID: u64 = 0x_5452_4E53_434C_4B00;
 
+/// [`ClickNode`](crate::ClickNode)'s type fingerprint — the five ASCII bytes
+/// `"Click"`, right-aligned.
+///
+/// **Not `mnemonic(b"CLICKND1")`, and it must not become one.** This is the
+/// literal that `AudioNode::ID` carried while the metronome was an
+/// `An<ClickNode>`, and `get_id` feeds `ping`, which seeds every node's
+/// pseudorandom phase. Repacking it to this module's usual 8-byte convention
+/// would change the graph hash — a silent, audible change with no test that
+/// could name it — for the sake of a tidier spelling. It is pinned by
+/// `click_node_id_survived_the_audionode_rewrite`.
+pub const CLICK_NODE_ID: u64 = 0x_0000_0043_6c69_636b;
+
 // Compile-time intra-crate uniqueness guard for core's own ids.
-const _: () = assert_unique(&[PDC_DELAY_ID, TRANSPORT_CLOCK_ID]);
+const _: () = assert_unique(&[PDC_DELAY_ID, TRANSPORT_CLOCK_ID, CLICK_NODE_ID]);

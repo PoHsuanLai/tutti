@@ -23,7 +23,7 @@
 use assert_no_alloc::AllocDisabler;
 use parking_lot::Mutex;
 use std::sync::Arc;
-use tutti_core::dsp::{bell_hz, limiter_stereo, pan, sine_hz, An};
+use tutti_core::dsp::{bell_hz, limiter_stereo, pan, sine_hz};
 use tutti_core::AudioUnit;
 use tutti_core::Engine;
 use tutti_core::{
@@ -124,7 +124,7 @@ fn engine_process_with_metronome_is_allocation_free() {
     settings.set_mode(MetronomeMode::Always);
     settings.set_volume(1.0);
     let click = ClickNode::with_transport(transport.clone(), Arc::clone(&settings), sample_rate);
-    let click_id = net.push(Box::new(An(click)));
+    let click_id = net.push(Box::new(click));
     net.pipe_output(click_id);
 
     net.set_sample_rate(SampleRate(sample_rate));

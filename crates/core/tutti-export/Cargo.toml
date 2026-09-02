@@ -39,7 +39,6 @@ aifc = { version = "0.7", optional = true }
 [dev-dependencies]
 tempfile = "3.10"
 approx = "0.5"
-fundsp = { package = "fundsp-tutti", path = "../../vendor/fundsp-tutti", default-features = false, features = ["std"] }
 # Convolution nodes for the end-to-end export integration tests. Acyclic:
 # tutti-nodes does NOT depend on tutti-export.
 tutti-nodes = { path = "../../dsp/tutti-nodes", default-features = false, features = ["convolution"] }

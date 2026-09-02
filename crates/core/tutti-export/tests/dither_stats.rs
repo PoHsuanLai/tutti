@@ -28,7 +28,7 @@
 
 #![cfg(feature = "wav")]
 
-use fundsp::prelude32::*;
+use tutti_core::dsp::*;
 use tutti_export::{
     render_to_file, AudioFormat, BitDepth, ChannelLayout, Dither, EncodeConfig, ExportConfig,
     FrozenClock, RenderConfig,

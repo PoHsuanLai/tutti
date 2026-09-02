@@ -41,7 +41,9 @@
 //! suites set them, and adding an environment path for a switch nothing reads
 //! that way would be a second spelling of the same control.
 
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::Mutex;
 
 /// Abort the process on this `process()` call (1-based). `0` = never.
 static CRASH_ON_BLOCK: AtomicU32 = AtomicU32::new(0);
@@ -49,8 +51,15 @@ static CRASH_ON_BLOCK: AtomicU32 = AtomicU32::new(0);
 /// Park `process()` from this call (1-based) onward. `0` = never.
 static BLOCK_FROM: AtomicU32 = AtomicU32::new(0);
 
-/// Cleared by [`release`] to let a parked `process()` proceed.
+/// Cleared by `tutti_test_plugin_release_block` to let a parked `process()`
+/// proceed. Reachable only by a host in *this* process.
 static BLOCKED: AtomicBool = AtomicBool::new(false);
+
+/// A path whose existence also releases a parked `process()`.
+///
+/// The out-of-process channel. See the park loop for why the symbol alone
+/// cannot serve a host in another process.
+static RELEASE_FILE: Mutex<Option<PathBuf>> = Mutex::new(None);
 
 /// Whether `render_output` scales its result by [`gain`].
 static APPLY_GAIN: AtomicBool = AtomicBool::new(false);
@@ -92,6 +101,10 @@ pub(crate) fn configure() {
 
     if let Some(n) = u32_var("TUTTI_CLAP_PROBE_CRASH_ON_BLOCK") {
         CRASH_ON_BLOCK.store(n, Ordering::SeqCst);
+    }
+    if let Ok(path) = std::env::var("TUTTI_CLAP_PROBE_RELEASE_FILE") {
+        let mut slot = RELEASE_FILE.lock().unwrap_or_else(|e| e.into_inner());
+        *slot = Some(std::path::PathBuf::from(path));
     }
     if let Some(n) = u32_var("TUTTI_CLAP_PROBE_BLOCK_FROM") {
         BLOCK_FROM.store(n, Ordering::SeqCst);
@@ -156,7 +169,24 @@ pub(crate) fn on_process_entry() {
         // thread does while parked is irrelevant to what is under test; a spin
         // keeps the plugin free of any synchronisation primitive whose own
         // timing could be mistaken for the host's.
+        //
+        // Two release channels, and the second is the one that works across a
+        // process boundary. `BLOCKED` serves a host in *this* process; an
+        // out-of-process host cannot reach it, because calling the release
+        // symbol there would `dlopen` a second image with its own statics and
+        // flip a flag nothing here reads. So a release **file** is polled too:
+        // the host creates it, and `exists()` neither blocks nor allocates,
+        // which is what lets this stay on the audio thread.
+        let release_file = RELEASE_FILE
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
         while BLOCKED.load(Ordering::SeqCst) {
+            if let Some(path) = release_file.as_deref() {
+                if path.exists() {
+                    break;
+                }
+            }
             parked = true;
             std::hint::spin_loop();
         }

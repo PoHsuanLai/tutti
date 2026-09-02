@@ -29,6 +29,7 @@ pub mod despawn;
 pub mod latency;
 pub mod metering;
 pub mod param;
+pub mod param_ports;
 pub mod plugin;
 pub mod pump;
 pub mod resources;
@@ -43,6 +44,7 @@ pub use commit::commit_graph;
 pub use despawn::reconcile_node_despawn;
 pub use metering::MeteringRes;
 pub use param::{reconcile_audio_param, write_param, AudioParam, AudioParamAppExt};
+pub use param_ports::{DeclareParamPorts, ParamPortMap};
 pub use plugin::GraphReconcilePlugin;
 pub use pump::{
     drain_audio_pumps, finalize_removed_pumps, AudioPump, AudioPumpAppExt, PumpFinished, IDLE_PARK,

@@ -357,6 +357,7 @@ pub fn rebuild(
     rebound: Query<(), Changed<AudioNode>>,
     mut removed: RemovedComponents<PortSources>,
     mut unbound: RemovedComponents<AudioNode>,
+    #[cfg(feature = "modulation")] shaping: Query<&crate::modulation::audio_rate::ShaperShaping>,
 ) {
     let is_dirty = !changed.is_empty()
         || !removed.is_empty()
@@ -380,7 +381,14 @@ pub fn rebuild(
     // What the ECS says the graph should be, built before anything is written.
     // From here on this value is the truth for edges and outputs; the engine is
     // what gets brought into line with it.
-    let want = topology::build(&graph, &nodes, &sinks, &master);
+    let want = topology::build(
+        &graph,
+        &nodes,
+        &sinks,
+        &master,
+        #[cfg(feature = "modulation")]
+        &shaping,
+    );
 
     // **The change detection, as one comparison.** The dirty gate above only
     // decides whether it is worth asking; this decides whether anything actually
@@ -458,7 +466,14 @@ pub fn rebuild(
     // applied — and stored as `live` — describes the graph that now exists,
     // rather than the one that did a moment ago.
     let want = if master.is_changed() {
-        topology::build(&graph, &nodes, &sinks, &master)
+        topology::build(
+            &graph,
+            &nodes,
+            &sinks,
+            &master,
+            #[cfg(feature = "modulation")]
+            &shaping,
+        )
     } else {
         want
     };

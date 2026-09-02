@@ -45,11 +45,16 @@ fn app_with_target() -> (App, Entity) {
         .register::<DistortionNode>();
 
     let dist = DistortionNode::with_param_inputs(2, ShapeKind::Tanh, 5.0, true);
+    // The port map is declared from the unit before it is boxed into the graph:
+    // this is a direct `Net::add` site, so nothing else would record it and the
+    // audio-rate route would fall back to per-frame.
+    let ports = bevy_tutti::graph::ParamPortMap::of(&dist);
     let node = app.world_mut().resource_mut::<AudioGraphRes>().0.add(dist);
     let target = app
         .world_mut()
         .spawn((
             AudioNode(node),
+            ports,
             ModParamRange::default().with(ParamAddr::Unit(UnitParam::Drive), 5.0, 0.0, 10.0),
         ))
         .id();
@@ -225,5 +230,223 @@ fn despawning_a_mod_source_leaves_no_stale_edge_in_the_value() {
             .nodes
             .contains_key(&tutti_types::graph::NodeKey(source_node.to_bits())),
         "and so did its node"
+    );
+}
+
+/// **The shaping a shaper was built with is carried by the value.**
+///
+/// This is the property that used to live in `AudioRateChains::shaping` — a
+/// `Vec<ParamModShaping>` index-aligned with `ParamChain::shapers`, held in a
+/// resource beside the entities it described. The shaper's own entity now holds
+/// a `ShaperShaping`, and `topology::build` lifts it into that node's
+/// `NodeSpec::params`.
+///
+/// # Why this asserts the spec and not whole-topology inequality
+///
+/// Measured, not assumed. A first version compared `live(&app)` before and
+/// after a depth edit, and it **passed with the shaping encoding deleted** — a
+/// rebuild respawns the shaper, so its `NodeKey` changes and the two topologies
+/// differ whether or not any shaping was recorded. The comparison was true by
+/// coincidence. Reading the shaper's own spec is what actually asks whether the
+/// value carries the shaping.
+///
+/// # Mutation
+///
+/// Making `put_shaping` a no-op fails this at the first assertion (the spec
+/// carries no `shaper.depth`), where the whole-topology comparison did not.
+#[test]
+fn the_value_carries_the_shaping_a_shaper_was_built_with() {
+    use tutti_types::graph::ParamValue;
+
+    let (mut app, target) = app_with_target();
+    let lfo = spawn_lfo(&mut app);
+    app.world_mut().spawn(
+        ModRoute::new(lfo, target, ParamAddr::Unit(UnitParam::Drive))
+            .with_depth(Depth(0.1))
+            .per_sample(),
+    );
+    app.update();
+    app.update();
+
+    let shaper = app
+        .world()
+        .resource::<AudioRateChains>()
+        .get(target, ParamAddr::Unit(UnitParam::Drive))
+        .expect("the chain must exist")
+        .shapers[0];
+
+    let topology = live(&app);
+    let spec = topology
+        .nodes
+        .get(&key_of(shaper))
+        .expect("the shaper is a node in the value");
+
+    assert_eq!(
+        spec.params.get("shaper.depth"),
+        Some(&ParamValue::Scalar(0.1)),
+        "the value must carry the depth the shaper was built with; without it \
+         nothing can tell two shapers apart, which is what the deleted \
+         `shaping` sidecar existed to do"
+    );
+    assert_eq!(
+        spec.params.get("shaper.polarity"),
+        Some(&ParamValue::Index(0)),
+        "and its polarity"
+    );
+    assert_eq!(
+        spec.params.get("shaper.curve"),
+        Some(&ParamValue::Index(0)),
+        "and its curve (Linear)"
+    );
+}
+
+/// Two shapings that differ **only** in curve produce different specs.
+///
+/// A depth edit moves a scalar, which almost any encoding would catch. A curve
+/// edit moves a discriminant, and encoding it as a hash — or dropping the
+/// `Bezier` payload — would let two different shapings compare equal, so the
+/// rebuild would be skipped and a curve change would be inaudible.
+///
+/// Mutation: collapsing `curve_key` to a constant fails this while leaving the
+/// depth assertions above green, which is why the two are separate tests.
+#[test]
+fn a_curve_only_difference_is_visible_in_the_spec() {
+    use tutti_types::graph::ParamValue;
+
+    let curve_index = |curve: tutti_mod::CurveType| {
+        let (mut app, target) = app_with_target();
+        let lfo = spawn_lfo(&mut app);
+        let mut route = ModRoute::new(lfo, target, ParamAddr::Unit(UnitParam::Drive))
+            .with_depth(Depth(0.5))
+            .per_sample();
+        route.curve = curve;
+        app.world_mut().spawn(route);
+        app.update();
+        app.update();
+
+        let shaper = app
+            .world()
+            .resource::<AudioRateChains>()
+            .get(target, ParamAddr::Unit(UnitParam::Drive))
+            .expect("the chain must exist")
+            .shapers[0];
+        live(&app)
+            .nodes
+            .get(&key_of(shaper))
+            .expect("the shaper is in the value")
+            .params
+            .get("shaper.curve")
+            .copied()
+    };
+
+    let linear = curve_index(tutti_mod::CurveType::Linear);
+    let exponential = curve_index(tutti_mod::CurveType::Exponential);
+    assert_eq!(linear, Some(ParamValue::Index(0)));
+    assert_ne!(
+        linear, exponential,
+        "two curves must not share an encoding; a collision would make a curve \
+         edit invisible to the value and the rebuild would be skipped"
+    );
+}
+
+/// **An unchanged route is not rebuilt.**
+///
+/// The other half of "did shaping move". A reconciler that respawns every frame
+/// churns a node per route per frame and — worse — loses the chain's base cell,
+/// so the authored value silently reverts to `ModParamRange`'s. Nothing about
+/// the audible output says so, which is why this is asserted on entity identity
+/// rather than on sound.
+///
+/// Mutation: making `reshape_chain`'s comparison always report "moved" fails
+/// this, by respawning a shaper that did not need it.
+#[test]
+fn an_unchanged_route_keeps_its_shaper() {
+    let (mut app, target) = app_with_target();
+    let lfo = spawn_lfo(&mut app);
+    app.world_mut().spawn(
+        ModRoute::new(lfo, target, ParamAddr::Unit(UnitParam::Drive))
+            .with_depth(Depth(0.1))
+            .per_sample(),
+    );
+    app.update();
+    app.update();
+
+    let shaper_of = |app: &App| {
+        app.world()
+            .resource::<AudioRateChains>()
+            .get(target, ParamAddr::Unit(UnitParam::Drive))
+            .expect("the chain must exist")
+            .shapers[0]
+    };
+    let before = shaper_of(&app);
+    let value_before = live(&app);
+
+    app.update();
+
+    assert_eq!(
+        shaper_of(&app),
+        before,
+        "an unchanged route must not be rebuilt — a respawn would lose the \
+         chain's base cell and silently revert the authored value"
+    );
+    assert_eq!(
+        live(&app),
+        value_before,
+        "and the value must be unchanged with it"
+    );
+}
+
+/// **A changed shaping rebuilds the shaper.**
+///
+/// `ParamShaperNode` bakes depth, polarity and curve into a LUT at construction
+/// and exposes no setter, so a missed change is a slider that moves on screen
+/// and not in the sound.
+///
+/// Mutation: making `reshape_chain`'s comparison always report "unchanged"
+/// fails this.
+#[test]
+fn a_changed_shaping_rebuilds_the_shaper() {
+    let (mut app, target) = app_with_target();
+    let lfo = spawn_lfo(&mut app);
+    let route = app
+        .world_mut()
+        .spawn(
+            ModRoute::new(lfo, target, ParamAddr::Unit(UnitParam::Drive))
+                .with_depth(Depth(0.1))
+                .per_sample(),
+        )
+        .id();
+    app.update();
+    app.update();
+
+    let shaper_of = |app: &App| {
+        app.world()
+            .resource::<AudioRateChains>()
+            .get(target, ParamAddr::Unit(UnitParam::Drive))
+            .expect("the chain must exist")
+            .shapers[0]
+    };
+    let before = shaper_of(&app);
+
+    app.world_mut().get_mut::<ModRoute>(route).unwrap().depth = Depth(0.8);
+    app.update();
+
+    assert_ne!(
+        shaper_of(&app),
+        before,
+        "a changed shaping must rebuild the shaper"
+    );
+
+    // And the value's record moved with it, rather than describing the old node.
+    let topology = live(&app);
+    let spec = topology
+        .nodes
+        .get(&key_of(shaper_of(&app)))
+        .expect("the replacement is in the value");
+    assert_eq!(
+        spec.params.get("shaper.depth"),
+        Some(&tutti_types::graph::ParamValue::Scalar(0.8)),
+        "the value must describe the shaper that now exists, not the one it \
+         replaced — a sidecar patched by index is exactly what could disagree here"
     );
 }

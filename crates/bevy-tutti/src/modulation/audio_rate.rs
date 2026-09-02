@@ -68,14 +68,6 @@ pub struct ParamChain {
     pub sum: Entity,
     /// One shaper per route, in the order their offsets occupy the sum's ports.
     pub shapers: Vec<Entity>,
-    /// The shaping each live shaper was **built with**.
-    ///
-    /// `ParamShaperNode` bakes depth, polarity and curve into a LUT at
-    /// construction and exposes no setter, so the only way to know a route's
-    /// shaping has moved is to remember what the node was made from. Without
-    /// this the reconciler's sole identity test is the group's *arity*, and a
-    /// depth slider — which changes no count — is invisible to it.
-    shaping: Vec<tutti_nodes::ParamModShaping>,
     /// The sink's param-port index, resolved from `ParamPorts` at spawn.
     pub port: usize,
     /// The atomic the base unit reads — **the chain's single base owner**.
@@ -128,6 +120,31 @@ impl ParamChain {
         }
     }
 }
+
+/// The shaping a live [`ParamShaperNode`](tutti_nodes::ParamShaperNode) was
+/// **built with**, carried by the shaper's own entity.
+///
+/// `ParamShaperNode` bakes depth, polarity and curve into a LUT at construction
+/// and exposes no setter, so a reconciler can only tell that a depth slider
+/// moved by comparing the declaration against what the node was made from.
+///
+/// # Why this is a component and not a field on the chain
+///
+/// It used to be `AudioRateChains::shaping: Vec<ParamModShaping>` — a parallel
+/// vector, index-aligned with `ParamChain::shapers`, living in a resource. That
+/// is a second owner of a fact the shaper entity already embodies, and the two
+/// could disagree: the vector was written at spawn and patched in place on every
+/// reshape, so any path that replaced a shaper without updating its slot left
+/// the reconciler comparing against a node that no longer existed.
+///
+/// Keyed to the entity instead, the shaping cannot drift from the node it
+/// describes — despawning the shaper takes its shaping with it, and the index
+/// alignment that made a stale slot possible is gone. "Did this route's shaping
+/// move" becomes a comparison against the value on the entity, which is the same
+/// question the [`Topology`](tutti_types::graph::Topology) asks of everything
+/// else.
+#[derive(Component, Debug, Clone, Copy, PartialEq)]
+pub struct ShaperShaping(pub tutti_nodes::ParamModShaping);
 
 /// Every audio-rate chain currently materialised, by the param it drives.
 ///
@@ -196,26 +213,26 @@ fn group_routes<'a>(
 /// back to the value path, which is always correct.
 #[allow(
     clippy::too_many_arguments,
-    reason = "the chain needs its sink entity, its sink node, the param, its \
-              range and the route group; bundling them would only move the list"
+    reason = "the chain needs its sink entity, the param, its range, the route \
+              group and the port declarations; bundling them would only move the list"
 )]
 fn spawn_chain(
     commands: &mut Commands<'_, '_>,
     graph: &mut AudioGraphRes,
     dirty: &mut GraphDirty,
     sink: Entity,
-    target_node: tutti_core::NodeId,
     param: ParamAddr,
     range: &crate::modulation::components::ParamRange,
     routes: &[&ModRoute],
     source_nodes: &HashMap<Entity, Entity>,
+    ports: &Query<&crate::graph::ParamPortMap>,
 ) -> Option<ParamChain> {
     // Only a `UnitParam` can name a native port; a foreign `ParamAddr::Id`
     // belongs to a plugin, which has its own parameter path.
     let ParamAddr::Unit(unit) = param else {
         return None;
     };
-    let port = param_port(graph, target_node, unit)?;
+    let port = param_port(ports, sink, unit)?;
 
     // A `ModSource` entity carries a *modulator*, not a graph node — the value
     // path never needed one. `ensure_source_nodes` spawns the `LfoNode` that
@@ -254,7 +271,14 @@ fn spawn_chain(
     let mut shapers = Vec::with_capacity(routes.len());
     let mut sum_sources = PortSources::silent().with(0, PortSource::node(base));
     for (i, (&shaper_id, &feed)) in built.shapers.iter().zip(feeds.iter()).enumerate() {
-        let shaper = commands.spawn(tutti_core::AudioNode(shaper_id)).id();
+        let shaper = commands
+            .spawn((
+                tutti_core::AudioNode(shaper_id),
+                // The shaping rides the entity that carries the node it built,
+                // so the two cannot drift apart.
+                ShaperShaping(shaping[i]),
+            ))
+            .id();
         commands.entity(shaper).insert(PortSources::from(feed));
         // Offsets occupy ports 1..=N, in group order.
         sum_sources = sum_sources.with(i + 1, PortSource::node(shaper));
@@ -282,7 +306,6 @@ fn spawn_chain(
         base,
         sum,
         shapers,
-        shaping,
         port,
         base_cell,
         bounds,
@@ -291,44 +314,40 @@ fn spawn_chain(
 
 /// The sink's param-port index, or `None` if it exposes none for this param.
 ///
-/// Dispatches on the concrete node type, exactly as resolving a control-rate
-/// target does — `ParamPorts` is a trait on the unit, so answering needs a
-/// downcast. That asymmetry with `AudioParam` (which is uniform because
-/// `Net::set` addresses a param by name) is inherent, not incidental.
-fn param_port(graph: &AudioGraphRes, node: tutti_core::NodeId, param: UnitParam) -> Option<usize> {
-    use tutti_nodes::ParamPorts;
-    macro_rules! try_kinds {
-        ($($ty:ty),+ $(,)?) => {
-            $(
-                if let Some(unit) = graph.0.node_as::<$ty>(node) {
-                    return unit.param_port(param);
-                }
-            )+
-        };
+/// Read off the sink's [`ParamPortMap`](crate::graph::ParamPortMap) — the
+/// component the spawn site recorded from the node's own
+/// [`ParamPorts`](tutti_nodes::ParamPorts) impl.
+///
+/// # What this replaced, and why the replacement is not just tidier
+///
+/// This used to downcast through a hand-maintained list of nine concrete node
+/// types. A `ParamPorts` impl missing from that list answered `None`, which is
+/// indistinguishable from the legitimate "this node exposes no port", so the
+/// route was silently downgraded to per-frame. **Both filters were missing**,
+/// and `Cutoff`/`Q` are the only params either offers — so the tier's headline
+/// use case (a fast LFO on a filter cutoff) was the one it could not serve.
+///
+/// The two failures are now distinguishable, which is the whole gain:
+///
+/// - a map that is **present and has no entry** for `param` is the node saying
+///   no, and the fallback to per-frame is correct;
+/// - a map that is **absent** means nobody declared this node's ports, and that
+///   is reported by name rather than acted on in silence.
+fn param_port(
+    ports: &Query<&crate::graph::ParamPortMap>,
+    sink: Entity,
+    param: UnitParam,
+) -> Option<usize> {
+    match ports.get(sink) {
+        Ok(map) => map.port(param),
+        Err(_) => {
+            bevy_log::warn!(
+                "{}",
+                crate::graph::ParamPortMap::missing_declaration_warning(sink, param)
+            );
+            None
+        }
     }
-    // **Every `ParamPorts` impl must be listed here.** A type that implements the
-    // trait but is missing from this list answers `None`, so `PerSample` falls
-    // back to per-frame — silently, because falling back is a legal outcome that
-    // means "this sink has no port". There is nothing to distinguish "no port"
-    // from "not dispatched", which is why the list is checked by a test rather
-    // than left to review.
-    //
-    // The two filters were the omission that made this comment necessary: they
-    // are the only units exposing `Cutoff` and `Q`, and a filter cutoff is the
-    // case `ModDelivery::PerSample`'s own docs name for it ("a fast LFO on a
-    // filter cutoff"). So the tier's headline use was the one it could not serve.
-    try_kinds!(
-        tutti_nodes::StereoSvfFilterNode<f32>,
-        tutti_nodes::StereoSvfFilterNode<f64>,
-        tutti_nodes::StereoLadderFilterNode<f32>,
-        tutti_nodes::StereoLadderFilterNode<f64>,
-        tutti_nodes::DistortionNode,
-        tutti_nodes::CompressorNode,
-        tutti_nodes::GateNode,
-        tutti_nodes::LimiterNode,
-        tutti_nodes::StereoDelayLineNode,
-    );
-    None
 }
 
 /// The graph node standing in for a `ModSource` on the audio-rate path.
@@ -437,8 +456,9 @@ pub fn reconcile_audio_rate(
     dirty: Option<ResMut<GraphDirty>>,
     routes: Query<&ModRoute>,
     ranges: Query<&ModParamRange>,
-    nodes: Query<&tutti_core::AudioNode>,
     source_nodes: Query<(Entity, &ModSourceNode)>,
+    ports: Query<&crate::graph::ParamPortMap>,
+    shaping: Query<&ShaperShaping>,
     changed: RouteChanged,
     mut removed: RemovedComponents<ModRoute>,
 ) {
@@ -506,6 +526,7 @@ pub fn reconcile_audio_rate(
                 key,
                 &group,
                 &source_nodes,
+                &shaping,
             );
             continue;
         }
@@ -513,9 +534,6 @@ pub fn reconcile_audio_rate(
             despawn_chain(&mut commands, &mut graph, &mut dirty, key.0, &old);
         }
         let (target, param) = key;
-        let Ok(node) = nodes.get(target) else {
-            continue;
-        };
         let Ok(range) = ranges.get(target) else {
             continue;
         };
@@ -527,11 +545,11 @@ pub fn reconcile_audio_rate(
             &mut graph,
             &mut dirty,
             target,
-            node.0,
             param,
             range,
             &group,
             &source_nodes,
+            &ports,
         ) {
             chains.0.insert(key, chain);
         }
@@ -564,6 +582,7 @@ fn reshape_chain(
     key: ParamKey,
     routes: &[&ModRoute],
     source_nodes: &HashMap<Entity, Entity>,
+    shaping: &Query<&ShaperShaping>,
 ) {
     let Some(chain) = chains.0.get_mut(&key) else {
         return;
@@ -576,13 +595,23 @@ fn reshape_chain(
             polarity: route.polarity,
             curve: route.curve,
         };
-        if chain.shaping.get(i) == Some(&want) {
+        // The comparison is against the value on the shaper's own entity, so a
+        // shaper replaced by any path carries its own answer — there is no
+        // index-aligned sidecar left to go stale.
+        if chain
+            .shapers
+            .get(i)
+            .and_then(|&e| shaping.get(e).ok())
+            .is_some_and(|live| live.0 == want)
+        {
             continue;
         }
 
         let unit = tutti_nodes::ParamShaperNode::new(want.depth, want.polarity, want.curve);
         let id = graph.0.add(unit);
-        let replacement = commands.spawn(tutti_core::AudioNode(id)).id();
+        let replacement = commands
+            .spawn((tutti_core::AudioNode(id), ShaperShaping(want)))
+            .id();
 
         // The new shaper needs the same feed the old one had. Re-declared from
         // the route rather than copied off the old entity, because the route is
@@ -599,7 +628,6 @@ fn reshape_chain(
 
         let old = std::mem::replace(&mut chain.shapers[i], replacement);
         commands.entity(old).despawn();
-        chain.shaping[i] = want;
 
         // The sum's declaration names the shaper *entity*, so it has to be
         // re-declared with the replacement. Built once and inserted after the
@@ -667,70 +695,119 @@ fn despawn_chain(
 #[cfg(test)]
 mod param_port_tests {
     use super::*;
-    use tutti_core::dsp::Net;
+    use crate::graph::ParamPortMap;
+    use bevy_ecs::world::World;
 
-    /// Every unit that declares a port for `param` must be *dispatched* by
-    /// [`param_port`].
+    /// Build a world holding one entity with `map`, and resolve `param` on it.
     ///
-    /// The list inside that function is a hand-maintained downcast chain, and a
-    /// `ParamPorts` impl missing from it fails **silently**: the lookup answers
-    /// `None`, which is indistinguishable from the legitimate "this sink exposes
-    /// no port", so `ModDelivery::PerSample` quietly falls back to per-frame.
-    ///
-    /// This is not hypothetical. Both filters were absent while every other impl
-    /// was present, so `Cutoff` and `Q` — the only params either of them offers,
-    /// and the case `PerSample`'s own docs name ("a fast LFO on a filter
-    /// cutoff") — could never reach audio rate.
-    ///
-    /// Asserted through the real `Net` + downcast path rather than by calling
-    /// `ParamPorts` directly, because the downcast *is* what was broken: a
-    /// direct call would have passed throughout the bug.
-    ///
-    /// Note every unit is built with its `with_param_inputs` constructor. A port
-    /// exists only when the node was built to have one — `cutoff_port()` is
-    /// `mod_cutoff.then_some(..)` — so a plain `new()` would make this test
-    /// vacuous by reporting `None` for a correctly-dispatched type.
-    #[test]
-    fn every_ported_unit_is_dispatched() {
-        let mut net = Net::new(0, 0);
-        let cases: Vec<(tutti_core::NodeId, UnitParam, &str)> = vec![
-            (
-                net.add(tutti_nodes::StereoSvfFilterNode::<f32>::with_param_inputs(
-                    2,
-                    tutti_nodes::SvfType::LowPass,
-                    tutti_types::Hz(1000.0),
-                    tutti_types::Q(0.707),
-                    true,
-                    true,
-                )),
-                UnitParam::Cutoff,
-                "StereoSvfFilterNode<f32>",
-            ),
-            (
-                net.add(
-                    tutti_nodes::StereoLadderFilterNode::<f32>::with_param_inputs(
-                        2,
-                        tutti_nodes::LadderType::LP24,
-                        tutti_types::Hz(1000.0),
-                        tutti_types::Resonance(0.5),
-                        true,
-                        false,
-                        false,
-                    ),
-                ),
-                UnitParam::Cutoff,
-                "StereoLadderFilterNode<f32>",
-            ),
-        ];
-
-        let graph = AudioGraphRes(net);
-        for (node, param, name) in cases {
-            assert!(
-                param_port(&graph, node, param).is_some(),
-                "`{name}` declares a port for {param:?} but `param_port` does not \
-                 dispatch it — audio-rate modulation onto that param falls back \
-                 to per-frame, silently"
-            );
+    /// Goes through the real `Query` the reconciler uses rather than calling
+    /// `ParamPortMap::port` directly — the lookup path *is* what was broken, so
+    /// a direct call would have passed throughout the bug.
+    fn resolve(map: Option<ParamPortMap>, param: UnitParam) -> (Option<usize>, Entity) {
+        let mut world = World::new();
+        let mut e = world.spawn_empty();
+        if let Some(map) = map {
+            e.insert(map);
         }
+        let entity = e.id();
+        let mut q = world.query::<&ParamPortMap>();
+        let got = {
+            let query = q.query(&world);
+            match query.get(entity) {
+                Ok(m) => m.port(param),
+                Err(_) => None,
+            }
+        };
+        (got, entity)
+    }
+
+    /// **The shipped bug, as a test.** A filter built with audio-rate param
+    /// inputs must resolve a port for `Cutoff`.
+    ///
+    /// This is the regression the whole slice exists for. `param_port` used to
+    /// downcast through a hand-maintained list of nine concrete types, and both
+    /// filter types were absent from it. A type missing from that list answered
+    /// `None` — indistinguishable from "this node exposes no port" — so
+    /// `ModDelivery::PerSample` fell back to per-frame in silence. `Cutoff` and
+    /// `Q` are the only params either filter offers, so the tier's headline use
+    /// case was the one it could not serve.
+    ///
+    /// # Mutation
+    ///
+    /// Deleting the two `StereoSvfFilterNode` arms from the old `try_kinds!`
+    /// list is what the bug *was*, and this test fails under it: the map is
+    /// built from the node's own `ParamPorts` impl, so there is no list left to
+    /// omit a type from. Making `ParamPortMap::of` return `Self::default()`
+    /// fails it the same way — that is the same defect expressed in the new
+    /// code's terms.
+    #[test]
+    fn a_filters_cutoff_resolves_to_an_audio_rate_port() {
+        let unit = tutti_nodes::StereoSvfFilterNode::<f32>::with_param_inputs(
+            2,
+            tutti_nodes::SvfType::LowPass,
+            tutti_types::Hz(1000.0),
+            tutti_types::Q(0.707),
+            true,
+            true,
+        );
+        let (port, _) = resolve(Some(ParamPortMap::of(&unit)), UnitParam::Cutoff);
+        assert!(
+            port.is_some(),
+            "a filter built with param inputs must resolve a Cutoff port; \
+             answering None here is the silent downgrade to per-frame that shipped"
+        );
+    }
+
+    /// A node that genuinely has no port for a param resolves `None` — and that
+    /// is a *correct* answer, not the bug above.
+    ///
+    /// Mutation: making `param_port` return `Some(0)` whenever a map exists
+    /// fails this, which is what keeps the test above from being satisfiable by
+    /// a blanket "yes".
+    #[test]
+    fn a_param_the_node_does_not_port_resolves_to_none() {
+        let unit = tutti_nodes::StereoSvfFilterNode::<f32>::with_param_inputs(
+            2,
+            tutti_nodes::SvfType::LowPass,
+            tutti_types::Hz(1000.0),
+            tutti_types::Q(0.707),
+            true,
+            true,
+        );
+        let (port, _) = resolve(Some(ParamPortMap::of(&unit)), UnitParam::Drive);
+        assert_eq!(port, None, "an SVF exposes no Drive port");
+    }
+
+    /// The two failures the old list could not tell apart are now distinct.
+    ///
+    /// "No entry in a present map" is the node saying no; "no map at all" is a
+    /// missing declaration. The old code produced `None` for both and acted on
+    /// it identically, which is why the filter omission was invisible.
+    ///
+    /// Mutation: making the `Err` arm of `param_port` fall back to some default
+    /// port collapses the two again and fails this.
+    #[test]
+    fn a_missing_declaration_is_distinguishable_from_a_declared_absence() {
+        let unit = tutti_nodes::StereoSvfFilterNode::<f32>::with_param_inputs(
+            2,
+            tutti_nodes::SvfType::LowPass,
+            tutti_types::Hz(1000.0),
+            tutti_types::Q(0.707),
+            true,
+            true,
+        );
+        // Declared, and the node says no to Drive.
+        let declared = ParamPortMap::of(&unit);
+        assert_eq!(resolve(Some(declared.clone()), UnitParam::Drive).0, None);
+        // Not declared at all.
+        let (undeclared, entity) = resolve(None, UnitParam::Cutoff);
+        assert_eq!(undeclared, None, "no map still resolves to no port");
+        // The states differ in what can be *said* about them, which is the
+        // whole point: only one of them names the entity and the param.
+        let warning = ParamPortMap::missing_declaration_warning(entity, UnitParam::Cutoff);
+        assert!(
+            warning.contains("Cutoff") && warning.contains("ParamPortMap"),
+            "a missing declaration must name the param and the component; got {warning}"
+        );
     }
 }

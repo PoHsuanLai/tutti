@@ -47,12 +47,16 @@ mod mod_audio_rate_reconcile {
         // Born with its drive port on — the trigger policy this crate settled on.
         let dist = DistortionNode::with_param_inputs(2, ShapeKind::Tanh, 5.0, true);
         let drive_port = dist.param_port(UnitParam::Drive).unwrap();
+        // Declared from the unit, at the direct `Net::add` site — see
+        // `bevy_tutti::graph::param_ports`.
+        let ports = bevy_tutti::graph::ParamPortMap::of(&dist);
         let node = app.world_mut().resource_mut::<AudioGraphRes>().0.add(dist);
 
         let target = app
             .world_mut()
             .spawn((
                 AudioNode(node),
+                ports,
                 ModParamRange::default().with(ParamAddr::Unit(UnitParam::Drive), 5.0, 0.0, 10.0),
             ))
             .id();
@@ -75,6 +79,108 @@ mod mod_audio_rate_reconcile {
 
     /// The headline: an `at_audio_rate` route materialises
     /// `source → shaper → sum → param port`, entirely from the declaration.
+    /// **The third silent victim: a bus strip's Volume and Pan.**
+    ///
+    /// `BusStripNode` implements `ParamPorts` and exposes audio-rate ports for
+    /// `Volume` and `Pan`, and it was **missing from the old nine-arm downcast
+    /// list** exactly as both filters were. The failure is the same and just as
+    /// quiet: a type absent from that list answered `None`, which is
+    /// indistinguishable from "this node exposes no port", so a `PerSample`
+    /// route onto a fader or a panner was downgraded to per-frame with nothing
+    /// logged.
+    ///
+    /// This asserts the whole lowering rather than the port lookup, because
+    /// "fell back to per-frame" is precisely the outcome a port-only assertion
+    /// cannot see: the route stays well-formed and the value path still moves
+    /// the param, so the only observable difference is whether a **graph chain
+    /// exists**.
+    ///
+    /// # Mutation
+    ///
+    /// Deleting `BusStripNode`'s arm from the old `try_kinds!` list is what the
+    /// bug *was*, and there is no list left to delete from — so both analogues
+    /// were run against this test and both fail it:
+    ///
+    /// - dropping the `ParamPortMap` from the strip's spawn reproduces the old
+    ///   list's behaviour for a type missing from it, and fails on the "must
+    ///   lower to a graph chain" panic below;
+    /// - removing `UnitParam::Volume` from `impl ParamPorts for BusStripNode`
+    ///   is the closer analogue of the original omission (the type answering
+    ///   `None` for a param it really ports), and fails on the `expect` above
+    ///   it, where the node is asked what port it declares.
+    #[test]
+    fn a_bus_strips_volume_and_pan_reach_audio_rate() {
+        for (param, label) in [(UnitParam::Volume, "Volume"), (UnitParam::Pan, "Pan")] {
+            let mut app = App::new();
+            app.insert_resource(AudioGraphRes(Net::with_backend(2)));
+            app.insert_resource(AudioEngineState::Running);
+            app.add_plugins((GraphReconcilePlugin, TuttiModulationPlugin));
+            app.world_mut()
+                .resource_mut::<ModTargetRegistry>()
+                .register::<tutti_nodes::BusStripNode>();
+
+            // Both ports on: a port exists only when the node is *built* with
+            // one, so `with_channels` would make this vacuous by reporting
+            // `None` for a correctly-declared type.
+            let strip = tutti_nodes::BusStripNode::with_param_inputs(
+                tutti_types::ChannelLayout::STEREO,
+                true,
+                true,
+            );
+            let want_port = strip
+                .param_port(param)
+                .expect("the strip declares this port");
+            let ports = bevy_tutti::graph::ParamPortMap::of(&strip);
+            let node = app.world_mut().resource_mut::<AudioGraphRes>().0.add(strip);
+            let target = app
+                .world_mut()
+                .spawn((
+                    AudioNode(node),
+                    ports,
+                    ModParamRange::default().with(ParamAddr::Unit(param), 0.5, 0.0, 1.0),
+                ))
+                .id();
+
+            let lfo = spawn_lfo(&mut app);
+            app.world_mut().spawn(
+                ModRoute::new(lfo, target, ParamAddr::Unit(param))
+                    .with_depth(Depth(0.5))
+                    .per_sample(),
+            );
+            app.update();
+            app.update();
+
+            let chain = app
+                .world()
+                .resource::<AudioRateChains>()
+                .get(target, ParamAddr::Unit(param))
+                .unwrap_or_else(|| {
+                    panic!(
+                        "a PerSample route onto a bus strip's {label} must lower to a \
+                         graph chain; no chain means it silently fell back to \
+                         per-frame, which is the bug the downcast list shipped"
+                    )
+                })
+                .clone();
+
+            assert_eq!(
+                chain.port, want_port,
+                "{label}: the chain must feed the port the node declares, not \
+                 some other input"
+            );
+
+            // And the sink's param port is actually fed by the chain's sum —
+            // a chain that exists but is not connected is the same silence.
+            let sum = node_id(&app, chain.sum);
+            let graph = app.world().resource::<AudioGraphRes>();
+            assert_eq!(
+                graph.0.source(node, chain.port),
+                Source::Local(sum, 0),
+                "{label}: the strip's param port must read the chain's sum"
+            );
+        }
+    }
+
     #[test]
     fn an_audio_rate_route_builds_the_whole_chain() {
         let (mut app, target, drive_port) = app_with_target();
@@ -355,8 +461,11 @@ mod mod_audio_rate_reconcile {
         // The node arrives a frame later, as a deferred insert would.
         let dist = DistortionNode::with_param_inputs(2, ShapeKind::Tanh, 5.0, true);
         let drive_port = dist.param_port(UnitParam::Drive).unwrap();
+        let ports = bevy_tutti::graph::ParamPortMap::of(&dist);
         let node = app.world_mut().resource_mut::<AudioGraphRes>().0.add(dist);
-        app.world_mut().entity_mut(target).insert(AudioNode(node));
+        app.world_mut()
+            .entity_mut(target)
+            .insert((AudioNode(node), ports));
 
         app.update();
         app.update();

@@ -44,7 +44,7 @@ pub use tutti_node::{
 // being defined in this file — but ~190 sites (arity arithmetic like
 // `M: Size<f32> + Mul<N>`, and every `impl Add for An<X>`) depend on it, so
 // dropping them here would be a churn this relocation is not for.
-use core::ops::{Add, BitXor, Mul, Not};
+use core::ops::{Add, Mul, Not};
 use numeric_array::typenum::U1;
 use wide::{f32x8, f64x4};
 
@@ -105,7 +105,15 @@ pub mod sequencer;
 pub mod setting;
 pub mod shape;
 pub mod shared;
-pub mod signal;
+/// Signal-flow analysis, re-exported from [`tutti_node`].
+///
+/// `AudioUnit::route` takes and returns a `SignalFrame`, so the vocabulary
+/// moved down with the trait. A module (not a flat re-export) because the
+/// preludes say `pub use super::signal::*` and consumers spell
+/// `fundsp::signal::Signal`.
+pub mod signal {
+    pub use tutti_node::signal::*;
+}
 pub mod slot;
 pub mod snoop;
 pub mod sound;

@@ -5,11 +5,17 @@ use super::*;
 pub use num_complex::Complex32;
 pub use num_complex::Complex64;
 
-/// The absolute function.
-#[inline]
-pub fn abs<T: Num>(x: T) -> T {
-    x.abs()
-}
+// The arithmetic the NODE CONTRACT itself needs moved down into `tutti-node`
+// with the trait that calls it: `Signal` reaches `min`, `AudioUnit::display`
+// reaches `amp_db`/`ceil`/`floor`/`round`, and `AudioUnit::ping` takes an
+// `AttoHash` in its signature outright.
+//
+// Re-exported here so `fundsp_tutti::math::{min, AttoHash, …}` keeps resolving,
+// and so this module stays the single home for the DSP toolbox built around
+// them — `midi_hz`, the noise generators, the easing curves, the
+// `SegmentInterpolator` family. None of that is part of what it means to be a
+// node, so none of it moved.
+pub use tutti_node::math::{abs, amp_db, ceil, floor, log10, max, min, round, AttoHash};
 
 /// The sign function.
 #[inline]
@@ -17,40 +23,10 @@ pub fn signum<T: Num>(x: T) -> T {
     x.signum()
 }
 
-/// Minimum function.
-#[inline]
-pub fn min<T: Num>(x: T, y: T) -> T {
-    x.min(y)
-}
-
-/// Maximum function.
-#[inline]
-pub fn max<T: Num>(x: T, y: T) -> T {
-    x.max(y)
-}
-
 /// Power function.
 #[inline]
 pub fn pow<T: Num>(x: T, y: T) -> T {
     x.pow(y)
-}
-
-/// Floor function.
-#[inline]
-pub fn floor<T: Num>(x: T) -> T {
-    x.floor()
-}
-
-/// Ceiling function.
-#[inline]
-pub fn ceil<T: Num>(x: T) -> T {
-    x.ceil()
-}
-
-/// Rounds `x`.
-#[inline]
-pub fn round<T: Num>(x: T) -> T {
-    x.round()
 }
 
 /// Square root function.
@@ -87,12 +63,6 @@ pub fn log<T: Real>(x: T) -> T {
 #[inline]
 pub fn log2<T: Real>(x: T) -> T {
     x.log2()
-}
-
-/// Base 10 logarithm.
-#[inline]
-pub fn log10<T: Real>(x: T) -> T {
-    x.log10()
 }
 
 /// Sine function.
@@ -292,12 +262,6 @@ pub fn dissonance_max<T: Num>(f: T) -> T {
 #[inline]
 pub fn db_amp<T: Real>(db: T) -> T {
     exp10(db / T::new(20))
-}
-
-/// Convert amplitude `gain` (`gain` > 0) to decibels. Gain 1.0 = 0 dB (unity gain).
-#[inline]
-pub fn amp_db<T: Real>(gain: T) -> T {
-    log10(gain) * T::new(20)
 }
 
 /// A-weighted response function.
@@ -582,50 +546,6 @@ pub fn midi_hz<T: Real>(x: T) -> T {
 #[inline]
 pub fn bpm_hz<T: Num>(bpm: T) -> T {
     bpm * (T::one() / T::new(60))
-}
-
-/// Pico sized hasher.
-/// It is used in computing deterministic pseudorandom phase hashes.
-#[derive(Default, Clone)]
-pub struct AttoHash {
-    state: u64,
-}
-
-impl AttoHash {
-    /// Create new hasher from seed.
-    #[inline]
-    pub fn new(seed: u64) -> AttoHash {
-        AttoHash { state: seed }
-    }
-    /// Generator state.
-    #[inline]
-    pub fn state(&self) -> u64 {
-        self.state
-    }
-    /// Hash `data`. Consumes self and returns a new `AttoHash`.
-    #[inline]
-    pub fn hash(self, data: u64) -> Self {
-        // Hash taken from FxHasher.
-        AttoHash {
-            state: self
-                .state
-                .rotate_left(5)
-                .bitxor(data)
-                .wrapping_mul(0x517cc1b727220a95),
-        }
-    }
-    /// Get current hash in 0...1.
-    #[inline]
-    pub fn hash01<T: Float>(self) -> T {
-        let x = funutd::hash::hash64a(self.state);
-        T::from_f64((x >> 11) as f64 / (1u64 << 53) as f64)
-    }
-    /// Get current hash in -1...1.
-    #[inline]
-    pub fn hash11<T: Float>(self) -> T {
-        let x = funutd::hash::hash64a(self.state);
-        T::from_f64((x >> 10) as f64 / (1u64 << 53) as f64 - 1.0)
-    }
 }
 
 /// Trait for symmetric/asymmetric interpolation in `ease_noise`.

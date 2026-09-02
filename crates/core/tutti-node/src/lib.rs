@@ -36,7 +36,12 @@
 extern crate alloc;
 
 pub mod buffer;
+pub mod math;
 pub mod num;
+pub mod signal;
+
+pub use math::AttoHash;
+pub use signal::{Routing, Signal, SignalFrame};
 
 // Re-exported at the root, because the fork's `lib.rs` defined them there and
 // `use fundsp_tutti::*` (which every prelude does) put them in scope

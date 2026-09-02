@@ -43,7 +43,7 @@
 
 #![cfg(feature = "wav")]
 
-use tutti_core::dsp::*;
+use tutti_core::dsp::{sine_hz, split, U2};
 use tutti_export::{
     render_to_file, AudioFormat, BitDepth, ChannelLayout, Dither, EncodeConfig, ExportConfig,
     FrozenClock, RenderConfig, Resample,

@@ -12,7 +12,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use tutti_core::dsp::AudioUnit;
+use tutti_core::AudioUnit;
 use tutti_midi_types::ump::MidiEvent;
 use tutti_midi_types::{MidiChannel, MidiGroup};
 use tutti_soundfont::{SoundFont, SoundFontUnit, SynthesizerSettings};

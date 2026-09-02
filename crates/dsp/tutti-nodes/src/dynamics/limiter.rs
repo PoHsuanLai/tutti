@@ -551,7 +551,7 @@ impl AudioUnit for LimiterNode {
         self.out_frame = out_frame;
     }
 
-    fn set(&mut self, setting: tutti_core::dsp::Setting) {
+    fn set(&mut self, setting: tutti_core::Setting) {
         if let Some((param, value)) = tutti_core::unit_param::from_setting(&setting) {
             match param {
                 tutti_core::UnitParam::Threshold => self.set_threshold(value),
@@ -803,7 +803,7 @@ impl AudioUnit for BrickwallLimiterNode {
         }
     }
 
-    fn set(&mut self, setting: tutti_core::dsp::Setting) {
+    fn set(&mut self, setting: tutti_core::Setting) {
         if let Some((tutti_core::UnitParam::Ceiling, value)) =
             tutti_core::unit_param::from_setting(&setting)
         {

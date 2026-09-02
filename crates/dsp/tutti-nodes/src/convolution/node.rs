@@ -190,7 +190,7 @@ impl AudioUnit for ConvolverNode {
         }
     }
 
-    fn set(&mut self, setting: tutti_core::dsp::Setting) {
+    fn set(&mut self, setting: tutti_core::Setting) {
         if let Some((tutti_core::UnitParam::Wet, value)) =
             tutti_core::unit_param::from_setting(&setting)
         {
@@ -392,7 +392,7 @@ impl AudioUnit for StereoConvolverNode {
         }
     }
 
-    fn set(&mut self, setting: tutti_core::dsp::Setting) {
+    fn set(&mut self, setting: tutti_core::Setting) {
         if let Some((tutti_core::UnitParam::Wet, value)) =
             tutti_core::unit_param::from_setting(&setting)
         {

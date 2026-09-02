@@ -265,7 +265,7 @@ impl AudioUnit for DistortionNode {
         }
     }
 
-    fn set(&mut self, setting: tutti_core::dsp::Setting) {
+    fn set(&mut self, setting: tutti_core::Setting) {
         if let Some((param, value)) = tutti_core::unit_param::from_setting(&setting) {
             if matches!(param, tutti_core::UnitParam::Drive) {
                 self.set_drive(value);

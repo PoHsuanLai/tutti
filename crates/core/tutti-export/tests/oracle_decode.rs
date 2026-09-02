@@ -42,7 +42,7 @@
 
 #![cfg(all(feature = "wav", feature = "flac", feature = "aiff", feature = "ogg"))]
 
-use tutti_core::dsp::*;
+use tutti_core::dsp::{dc, sine_hz, split, U2};
 use symphonia::core::audio::SampleBuffer;
 use symphonia::core::codecs::DecoderOptions;
 use symphonia::core::formats::FormatOptions;

@@ -426,7 +426,7 @@ fn report(world: &mut World) {
     // one block later than `process` (frame 127 vs 63), which is why the
     // format-level suites in `tutti-vst3-host` see a shorter dead zone.
     {
-        use tutti_core::dsp::AudioUnit as _;
+        use tutti_core::AudioUnit as _;
         let mut graph = world.resource_mut::<AudioGraphRes>();
         let mut frame = [0.0f32; 2];
         // Per channel, not one peak: the whole point of a bus/channel tag is

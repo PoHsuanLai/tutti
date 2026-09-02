@@ -18,7 +18,7 @@
 //!
 //! Run: `cargo run --release -p tutti-export --example render_export_cases -- <outdir>`
 
-use tutti_core::dsp::*;
+use tutti_core::dsp::{dc, sine_hz};
 use tutti_export::{
     render_to_file, AudioFormat, BitDepth, ChannelLayout, Dither, EncodeConfig, ExportConfig,
     RenderConfig, Resample,

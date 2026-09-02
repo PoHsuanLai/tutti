@@ -18,7 +18,7 @@
 //! also permits `&self` and is still lost, because `Clone` copies the atomic
 //! rather than sharing it. The property that matters is **shared across clones**.
 //!
-//! [`Param<U>`] stops where [`Setting`](tutti_core::dsp::Setting) stops: its
+//! [`Param<U>`] stops where [`Setting`](tutti_core::Setting) stops: its
 //! payload is one `f32`, so anything wider leaves the `set()` path entirely.
 //! That is a property of the transport, not a limitation of `Param`.
 //!

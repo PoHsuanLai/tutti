@@ -111,21 +111,29 @@ pub use tutti_types::{fold_frame, fold_frame_to_mono, fold_frame_to_stereo};
 pub use tutti_types::{Interleaved, InterleavedMut};
 
 pub mod dsp {
-    //! Re-export of fundsp::prelude for DSP building blocks.
+    //! The graph runtime and the DSP node library, from `fundsp-tutti`.
     //!
-    //! # This is the wall, and it is deliberately the only one
+    //! # This is the wall, and it is a named list
     //!
     //! `fundsp-tutti` is a dependency of `tutti-core` and of nothing else
     //! outside `crates/vendor/**`. Every other crate — engine and adapter alike
-    //! — reaches the node contract through this module or through the named
-    //! re-exports below it. Adding a `fundsp` dependency to another manifest
-    //! puts the fork back into a second crate's public surface and should be
-    //! rejected in review; route the need through here instead.
+    //! — reaches the fork through this module. Adding a `fundsp` dependency to
+    //! another manifest puts the fork back into a second crate's public surface
+    //! and should be rejected in review; route the need through here instead.
     //!
-    //! Note that this is a *glob*. It re-exports fundsp's whole prelude, so the
-    //! wall is one of dependency direction, not of surface area: a consumer
-    //! cannot name `fundsp`, but it can reach anything the prelude exports.
-    //! Narrowing this to an explicit list is worth doing and has not been done.
+    //! This used to be `pub use fundsp::prelude::*`, which made the wall one of
+    //! *dependency direction* and not of surface area: a consumer could not name
+    //! `fundsp`, but it could reach anything the prelude exports — some 1,500
+    //! symbols, of which 48 were ever used. It is now an explicit list, so
+    //! anything not named below is unreachable outside this crate and adding a
+    //! symbol is a decision someone makes rather than a side effect of the
+    //! prelude growing. The groups are the argument for why each is here.
+    //!
+    //! **Prefer a Tutti name where one exists.** The node contract is
+    //! `tutti-node`'s and is re-exported at the crate root, so a node writes
+    //! [`tutti_core::AudioUnit`](crate::AudioUnit), not `dsp::AudioUnit`; a
+    //! measurement is `tutti-types`', so a rate is [`SampleRate`] and a frame
+    //! count is [`Samples`]. This module is what is left after those.
     //!
     //! # The node contract is no longer here
     //!
@@ -173,7 +181,74 @@ pub mod dsp {
     //! way: `NetBackend` keeps its `Net` private and exposes no `set`, so there
     //! is no seam through which a host hands an `Env` in. That is the same stop
     //! condition graph plan PR 3 hit, and it is why this stays a comment.
-    pub use fundsp::prelude::*;
+    // ── The graph runtime ───────────────────────────────────────────────────
+    //
+    // What the fork is actually for. `Net` is the runtime graph the value layer
+    // compiles into (`tutti_core::topology::compile`) and the adapter drives
+    // (`bevy_tutti::graph`); `NodeId` and `Source` are how a wiring declaration
+    // names an endpoint; `NetBackend` is the audio-thread half of the RT commit
+    // split. Nothing here has a Tutti equivalent — this *is* the backend.
+    //
+    // `NetBackend` is deliberately NOT here: it is at the crate root as
+    // [`tutti_core::NetBackend`](crate::NetBackend), because a host reaches it
+    // to drive the engine rather than to build a graph with it.
+    pub use fundsp::net::{Net, NodeId, Source};
+
+    // ── The default rate a node starts life at ──────────────────────────────
+    //
+    // A `SampleRate` (the `tutti-types` unit), so it is a value and not a
+    // vocabulary. It is here because a node that has not yet been handed a rate
+    // by `set_sample_rate` still has to have coefficients, and every such node
+    // must start from the *same* placeholder or a graph built before the device
+    // opens is inconsistent with itself. `tutti-nodes` names it at 14 sites for
+    // exactly that reason.
+    pub use fundsp::DEFAULT_SAMPLE_RATE;
+
+    // ── Combinators, for the two sanctioned sub-graph builders ──────────────
+    //
+    // fundsp's operator DSL (`>>` serial, `|` stack, `*` product) over `An<X>`,
+    // plus the generators and filters those expressions are built out of. This
+    // is the group to be suspicious of: it is a *second* way to describe a
+    // graph, parallel to `Topology`, and one that produces an opaque
+    // `Box<dyn AudioUnit>` the value layer cannot see inside.
+    //
+    // Two sites are sanctioned to use it, and both say why in their own docs:
+    // `tutti_polysynth::synth_voice::build_sub_voice_dsp` (a per-voice chain
+    // whose shape is chosen by a `SynthConfig` match, rebuilt per note-on) and
+    // `tutti_core::transport::click`. A third would need an argument; the
+    // default answer for new work is a `Topology`, or an `impl AudioUnit`.
+    //
+    // The remaining users are tests and examples building a stimulus graph in
+    // one line — a legitimate use, and the reason `sine_hz`/`dc`/`pass` have the
+    // counts they do.
+    pub use fundsp::prelude::{
+        adsr_live, bandpass_q, bell_hz, dc, highpass_q, limiter, limiter_stereo, lowpass_hz,
+        lowpass_q, moog, multipass, notch_q, pan, pass, pink, poly_pulse, reverb_stereo, saw,
+        saw_hz, sine, sine_hz, sink, split, square_hz, triangle, var, An,
+    };
+    // The waveshaping curves. `tutti-nodes`' distortion node holds one per
+    // `ShapeKind` and calls [`Shape::shape`] on it per sample — it does *not*
+    // build a `shape(..)` node, because that opcode bakes its drive in at
+    // construction and the drive is a live parameter. So the curve types are
+    // here and the constructor is not.
+    pub use fundsp::shape::{Atan, Clip, Crush, Shape, SoftCrush, Softsign, Tanh};
+
+    // ── Block-buffer scratch, and the type-level arities that size it ───────
+    //
+    // `BufferArray<N>` is the stack-allocated planar block a caller renders a
+    // node into — `BufferRef`/`BufferMut` (the contract's, at the crate root)
+    // are *views*, and something has to own the storage. `U1`/`U2`/`U6` are its
+    // width. They are `typenum`'s and reach here through the fork's re-export;
+    // a runtime width is `ChannelLayout`, so these appear only where the width
+    // is a property of the code, which is a test rendering a known-width node.
+    pub use fundsp::buffer::BufferArray;
+    pub use fundsp::prelude::{U1, U2, U6};
+
+    // ── SIMD ────────────────────────────────────────────────────────────────
+    //
+    // `F32x` is the fork's SIMD lane type. `tutti-nodes`' automation lane is the
+    // only consumer: it evaluates a curve eight samples at a time.
+    pub use fundsp::F32x;
 }
 
 // ── The node contract, from the crate that defines it ───────────────────────
@@ -193,11 +268,16 @@ pub use tutti_node::buffer::{BufferMut, BufferRef, BufferVec};
 pub use tutti_node::setting::Setting;
 pub use tutti_node::signal::{Signal, SignalFrame};
 pub use tutti_node::{AudioUnit, MAX_BUFFER_SIZE};
-// The numeric tower the contract is generic over. `Sample`/`F32`/`F64` are the
-// trait's own type parameter and its two instantiations (the plugin hosts
-// really do implement `AudioUnit<F64>`); `Num`/`Float`/`Real` are the bounds a
-// node writes when its arithmetic is generic rather than fixed at f32.
-pub use tutti_node::{Float, Num, Real, Sample, F32, F64};
+// The numeric tower the contract is generic over — the part of it consumers
+// actually name. `Sample` is the trait's own type parameter and `F32`/`F64` its
+// two instantiations (the plugin hosts really do implement `AudioUnit<F64>`);
+// `Real` is the bound a filter writes when its coefficient arithmetic is
+// generic rather than fixed at f32.
+//
+// `Num`, `Int` and `Float` are the rest of the tower and are NOT here: nothing
+// outside the fork writes those bounds, and every symbol on this list is one
+// that had a caller. They are `tutti_node`'s to add back if one appears.
+pub use tutti_node::{Real, Sample, F32, F64};
 
 pub use fundsp::fft::{inverse_fft, real_fft};
 pub use fundsp::math::Complex32;

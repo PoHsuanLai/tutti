@@ -12,7 +12,8 @@
 
 #![cfg(all(feature = "wav", feature = "flac", feature = "aiff", feature = "ogg"))]
 
-use tutti_core::dsp::*;
+use tutti_core::dsp::{dc, reverb_stereo, split, square_hz, U2};
+use tutti_core::{AudioUnit, SampleRate};
 use tutti_export::{
     render_to_buffers, render_to_file, AudioFormat, BitDepth, ChannelLayout, EncodeConfig,
     ExportConfig, FrozenClock, RenderClock, RenderConfig, Resample,

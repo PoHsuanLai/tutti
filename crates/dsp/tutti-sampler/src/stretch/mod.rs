@@ -12,7 +12,7 @@
 //! # Example
 //!
 //! ```
-//! use tutti_core::dsp::AudioUnit;
+//! use tutti_core::AudioUnit;
 //! use tutti_core::{Cents, StretchFactor};
 //! use tutti_sampler::stretch;
 //!
@@ -47,7 +47,7 @@
 
 /// Per-channel RT scratch capacity, in samples.
 ///
-/// **Deliberately not `tutti_core::dsp::MAX_BUFFER_SIZE`**, which is 64 (fundsp's
+/// **Deliberately not `tutti_core::MAX_BUFFER_SIZE`**, which is 64 (fundsp's
 /// per-block cap). This is the *scratch* the vocoder pre-reserves so `process`
 /// never reallocates, and it is sized for the FFT window rather than the block:
 /// at 8192 it covers the largest `FftSize` with headroom. Importing the core

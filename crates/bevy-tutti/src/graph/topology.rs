@@ -79,8 +79,8 @@ use std::collections::BTreeMap;
 
 use bevy_ecs::prelude::*;
 
-use tutti_core::dsp::AudioUnit as _;
 use tutti_core::AudioNode;
+use tutti_core::AudioUnit as _;
 use tutti_types::graph::{Edge, InPort, NodeKey, NodeSpec, OutPort, Source, Topology};
 use tutti_types::ChannelLayout;
 

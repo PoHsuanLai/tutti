@@ -35,7 +35,7 @@ fn app() -> App {
 }
 
 /// Add a node to the graph and bind an entity to it.
-fn spawn_node<U: tutti_core::dsp::AudioUnit + 'static>(app: &mut App, unit: U) -> Entity {
+fn spawn_node<U: tutti_core::AudioUnit + 'static>(app: &mut App, unit: U) -> Entity {
     let id = {
         let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
         graph.0.add(unit)

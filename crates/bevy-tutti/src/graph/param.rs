@@ -196,7 +196,7 @@ pub fn write_param(
 ) {
     // `Net::set` is an `AudioUnit` method; the trait must be in scope to call
     // it, and nothing else here needs it.
-    use tutti_core::dsp::AudioUnit as _;
+    use tutti_core::AudioUnit as _;
 
     // 1. Audio rate: the node reads its port, not its atomic.
     #[cfg(feature = "modulation")]

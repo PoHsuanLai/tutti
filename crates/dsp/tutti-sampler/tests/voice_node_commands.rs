@@ -32,7 +32,8 @@
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
-use tutti_core::dsp::{AudioUnit, Net};
+use tutti_core::dsp::Net;
+use tutti_core::AudioUnit;
 use tutti_core::{Beat, BeatDuration, Bpm, Timeline, Wave};
 use tutti_sampler::{MemorySource, Playback, Voice, VoiceNode, VoiceSource};
 

@@ -15,7 +15,7 @@
 
 use std::sync::Arc;
 
-use tutti_core::dsp::Real;
+use tutti_core::Real;
 use tutti_core::{ParamAddr, UnitParam};
 use tutti_mod::{AtomicTarget, ModParams, ModTarget};
 

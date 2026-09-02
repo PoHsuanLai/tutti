@@ -17,9 +17,7 @@ use std::any::Any;
 use std::sync::Arc;
 
 use parking_lot::Mutex;
-use tutti_core::dsp::{
-    AudioUnit, BufferMut, BufferRef, Net, Setting, Signal, SignalFrame, Source as NetSource,
-};
+use tutti_core::dsp::{Net, Source as NetSource};
 use tutti_core::topology::{compile, Catalog, CompileError, Compiled};
 use tutti_core::{
     graph::{
@@ -28,6 +26,7 @@ use tutti_core::{
     latency, tail, ChannelLayout, Engine, InterleavedMut, MotionEvent, SampleRate, Samples, Tail,
     Transport, TransportClock,
 };
+use tutti_core::{AudioUnit, BufferMut, BufferRef, Setting, Signal, SignalFrame};
 
 const RATE: SampleRate = SampleRate(48_000.0);
 

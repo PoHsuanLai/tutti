@@ -429,7 +429,7 @@ impl AudioUnit for CompressorNode {
         }
     }
 
-    fn set(&mut self, setting: tutti_core::dsp::Setting) {
+    fn set(&mut self, setting: tutti_core::Setting) {
         if let Some((param, value)) = tutti_core::unit_param::from_setting(&setting) {
             match param {
                 tutti_core::UnitParam::Threshold => self.set_threshold(value),

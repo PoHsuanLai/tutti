@@ -204,9 +204,10 @@ mod midi_soundfont_audio {
     use bevy_tutti::graph::{AudioConfig, AudioGraphRes, GraphReconcilePlugin, TransportRes};
     use bevy_tutti::midi::{MidiSourceInstall, MidiTargetRegistry, TuttiMidiPlugin};
     use bevy_tutti::AudioEngineState;
-    use tutti_core::dsp::{AudioUnit, Net};
+    use tutti_core::dsp::Net;
     use tutti_core::transport::Transport;
     use tutti_core::AudioNode;
+    use tutti_core::AudioUnit;
     use tutti_core::{Beat, BeatDuration, SampleRate};
     use tutti_midi_runtime::TimedMidiEvent;
     use tutti_midi_types::ump::MidiEvent;

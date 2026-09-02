@@ -15,7 +15,8 @@
 
 use std::time::Instant;
 
-use tutti_core::dsp::{AudioUnit as _, Net};
+use tutti_core::dsp::Net;
+use tutti_core::AudioUnit as _;
 use tutti_nodes::{AtomicSourceNode, DistortionNode, ParamPorts, ParamSumNode, ShapeKind};
 use tutti_types::UnitParam;
 

@@ -25,7 +25,7 @@
 //! feature would make a VBAP dependency the price of summing two stereo
 //! signals.
 
-use tutti_core::dsp::Signal;
+use tutti_core::Signal;
 use tutti_core::{ChannelLayout, Tail};
 
 /// A dynamic-arity, dynamic-width summing bus: `sources * channels` inputs →

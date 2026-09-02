@@ -37,7 +37,8 @@
 
 use std::sync::atomic::Ordering;
 
-use tutti_core::dsp::{AudioUnit, Net};
+use tutti_core::dsp::Net;
+use tutti_core::AudioUnit;
 use tutti_nodes::{EqBandNode, SvfType};
 use tutti_types::{Db, Hz, Q};
 

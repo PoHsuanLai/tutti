@@ -1,8 +1,10 @@
 //! Butler thread body: the async main loop.
 //!
-//! Runs on the butler thread inside `smol::block_on`. Owns `Local`, borrows
-//! `Handles` and config from its caller. The actual command logic lives in
-//! `handlers`.
+//! Runs on the butler thread inside `smol::block_on`. The *work* of a cycle is
+//! [`ButlerCycle::step`](super::step::ButlerCycle::step) — synchronous, and
+//! shared with the test driver. What lives here is the half that genuinely needs
+//! an executor: the pacing, i.e. racing the command channel against a timer so a
+//! max-priority thread with nothing to do does not spin a core.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -13,27 +15,23 @@ use smol::Timer;
 
 use super::command::ButlerCommand;
 use super::config::BufferConfig;
-use super::handlers::{handle_command, handle_seek_stream, Handles, Local};
-use super::io::refill::{refill_all, refill_all_parallel};
-use super::loops::handle_loops;
-use super::preroll::apply_pdc_updates;
+use super::handlers::Handles;
+use super::step::{ButlerCycle, StepOutcome};
 use tutti_core::SampleRate;
 
 /// The butler thread's main loop; returns only on shutdown.
 ///
-/// Each cycle drains pending commands, then — when any channel is streaming —
-/// applies PDC preroll changes, applies audio-thread seek requests, advances
-/// loop state, and refills the rings. Seeks are applied *before* refill so the
-/// ring refills from the new offset in the same cycle.
+/// Each cycle runs one [`ButlerCycle::step`] and then parks according to its
+/// [`StepOutcome`].
 ///
 /// # Pacing
 ///
 /// This thread runs at maximum priority, so it must not spin. With no streams it
 /// parks on the command channel against a 1 ms timer; with every ring above its
-/// refill threshold it does the same against
-/// [`HEALTHY_SLEEP_MS`]. A genuine refill need keeps a ring below threshold,
-/// which drops it straight back to yield-and-loop — so the parking adds no
-/// latency to refills that actually matter.
+/// refill threshold it does the same against [`HEALTHY_SLEEP_MS`]. A genuine
+/// refill need keeps a ring below threshold, which drops it straight back to
+/// yield-and-loop — so the parking adds no latency to refills that actually
+/// matter.
 pub(super) async fn butler_loop_async(
     rx: Receiver<ButlerCommand>,
     shared: Handles,
@@ -41,121 +39,56 @@ pub(super) async fn butler_loop_async(
     sample_rate: SampleRate,
     shutdown: Arc<AtomicBool>,
 ) {
-    let base_chunk_size = config.chunk_size;
-    let parallel_io = config.parallel_io;
-
-    let mut local = Local::new(base_chunk_size);
+    let mut cycle = ButlerCycle::new(config, sample_rate);
 
     loop {
-        // Check shutdown
         if shutdown.load(Ordering::SeqCst) {
             break;
         }
 
-        // Drain all immediately available commands (non-blocking)
-        while let Ok(cmd) = rx.try_recv() {
-            handle_command(cmd, &shared, &config, sample_rate, &mut local);
-        }
+        match cycle.step(&shared, || rx.try_recv().ok()) {
+            StepOutcome::Shutdown => break,
 
-        // Idle: race command recv against 1ms timer
-        if shared.plans.is_empty() {
-            let timeout = async {
-                Timer::after(Duration::from_millis(1)).await;
-                Err(smol::channel::RecvError)
-            };
-            if let Ok(cmd) = futures_lite::future::or(rx.recv(), timeout).await {
-                handle_command(cmd, &shared, &config, sample_rate, &mut local);
+            // Nothing streaming, nothing urgent, or nothing this loop can do
+            // about it: race the command channel against a short timer instead
+            // of spinning.
+            //
+            // `Stalled` belongs here rather than with `Busy`. A ring whose
+            // capacity is sized from the whole file can never reach its refill
+            // threshold once the stream nears the end, so treating "below
+            // threshold" as "come straight back" spun this max-priority thread
+            // flat out for the tail of every clip.
+            outcome @ (StepOutcome::Idle | StepOutcome::Healthy | StepOutcome::Stalled) => {
+                let park_ms = if outcome == StepOutcome::Idle {
+                    1
+                } else {
+                    HEALTHY_SLEEP_MS
+                };
+                let timeout = async {
+                    Timer::after(Duration::from_millis(park_ms)).await;
+                    Err(smol::channel::RecvError)
+                };
+                // The received command is dropped rather than handled here: the
+                // recv exists to *wake* the loop, and the next cycle's drain is
+                // the one place a command is applied. Pushing it back would
+                // reorder it behind commands queued after it.
+                if let Ok(cmd) = futures_lite::future::or(rx.recv(), timeout).await {
+                    if matches!(cmd, ButlerCommand::Shutdown) {
+                        break;
+                    }
+                    // Apply immediately — this command was taken off the queue
+                    // by the wake-up recv, so nothing else will see it.
+                    cycle.step(&shared, {
+                        let mut once = Some(cmd);
+                        move || once.take()
+                    });
+                }
             }
-            continue;
+
+            // A ring is below threshold. Yield so any spawned async tasks can
+            // progress, then come straight back.
+            StepOutcome::Busy => futures_lite::future::yield_now().await,
         }
-
-        // Active: synchronous CPU-bound work.
-        apply_pdc_updates(
-            &shared.pdc,
-            &shared.plans,
-            &mut local.regions,
-            &shared.cache,
-            &shared.metrics,
-            &config,
-        );
-
-        // Audio-thread-requested timeline seeks: apply BEFORE refill so the
-        // ring refills from the new disk offset this cycle.
-        apply_seek_requests(&shared, &config, &mut local);
-
-        handle_loops(
-            &shared.plans,
-            &mut local.regions,
-            &shared.cache,
-            &shared.metrics,
-        );
-
-        if parallel_io && shared.plans.len() >= 3 {
-            refill_all_parallel(
-                &shared.plans,
-                &mut local.regions,
-                &shared.cache,
-                &shared.metrics,
-                base_chunk_size,
-                local.buffer_margin,
-            );
-        } else {
-            refill_all(
-                &shared.plans,
-                &mut local.regions,
-                &shared.cache,
-                &shared.metrics,
-                base_chunk_size,
-                local.buffer_margin,
-                &mut local.interleave_buffer,
-            );
-        }
-
-        // Adaptive pacing: if every active ring buffer is above its refill
-        // threshold, nothing is urgent — race the command channel against a
-        // short timer (like the idle branch) instead of spinning this
-        // max-priority thread. A genuine refill need keeps a buffer below
-        // threshold, which drops us straight back to yield-and-loop, so this
-        // adds no latency to refills.
-        if buffers_healthy(&shared.plans, local.buffer_margin) {
-            let timeout = async {
-                Timer::after(Duration::from_millis(HEALTHY_SLEEP_MS)).await;
-                Err(smol::channel::RecvError)
-            };
-            if let Ok(cmd) = futures_lite::future::or(rx.recv(), timeout).await {
-                handle_command(cmd, &shared, &config, sample_rate, &mut local);
-            }
-            continue;
-        }
-
-        // Yield so any spawned async tasks can progress
-        futures_lite::future::yield_now().await;
-    }
-}
-
-/// Apply any audio-thread-requested timeline seeks. For each streaming channel
-/// whose [`RtState`](super::rt_state::RtState) has a fresh seek request (epoch
-/// changed vs. the butler's last-applied), reposition the live stream to the
-/// requested absolute file offset via the same click-free path as PDC/loop
-/// reposition. Coalesces rapid seeks (only the latest target survives) — the
-/// desired behavior for scrubbing.
-///
-/// Channel indices + targets are collected first so the plan refs are released
-/// before [`handle_seek_stream`] re-acquires them (avoids DashMap re-entrancy).
-fn apply_seek_requests(shared: &Handles, config: &BufferConfig, local: &mut Local) {
-    let mut pending: Vec<(usize, u64)> = Vec::new();
-    for entry in shared.plans.iter() {
-        let plan = entry.value();
-        if plan.link.is_none() {
-            continue;
-        }
-        if let Some(target) = plan.rt_state.take_seek_request() {
-            pending.push((*entry.key(), target));
-        }
-    }
-
-    for (channel_index, file_position) in pending {
-        handle_seek_stream(channel_index, file_position, shared, config, local);
     }
 }
 
@@ -163,22 +96,3 @@ fn apply_seek_requests(shared: &Handles, config: &BufferConfig, local: &mut Loca
 /// stop the thread from busy-spinning, short enough to stay well inside the
 /// smallest ring buffer's drain time so refills never fall behind.
 const HEALTHY_SLEEP_MS: u64 = 3;
-
-/// True when no stream needs a refill — i.e. the loop can safely park on a
-/// short timer instead of spinning.
-fn buffers_healthy(
-    plans: &dashmap::DashMap<usize, super::plan::ChannelPlan>,
-    buffer_margin: f64,
-) -> bool {
-    let fill_threshold = (0.75 / buffer_margin) as f32;
-
-    // Every streaming channel must be at or above its refill threshold. A
-    // channel with no active link imposes no refill work.
-    plans.iter().all(|entry| {
-        let plan = entry.value();
-        if plan.link.is_none() {
-            return true;
-        }
-        plan.rt_state.buffer_fill() >= fill_threshold
-    })
-}

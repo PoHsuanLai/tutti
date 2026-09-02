@@ -146,7 +146,10 @@ ogg = ["tutti-core/ogg", "tutti-sampler?/ogg"]
 midi = ["dep:tutti-midi-file", "dep:tutti-midi-runtime", "tutti-core/midi", "tutti-cpal/midi"]
 # The OS MIDI layer. Note the feature and the crate share the name `midi-hardware`
 # — deliberately, since the feature does nothing but pull the crate in.
-# `tutti-midi-hardware` has no features of its own; it IS the OS edge.
+# `tutti-midi-hardware` ships one feature, `test-support`, and it adds no
+# capability — only its fake device list. That is a dev concern, enabled in the
+# dev-dependency below rather than cascaded from here: a host enabling
+# `midi-hardware` must not thereby link a fake backend.
 midi-hardware = ["midi", "dep:tutti-midi-hardware"]
 
 # Synth & sampling. bevy-tutti registers these with the AssetServer, so it
@@ -195,6 +198,13 @@ au = ["plugin", "tutti-plugin-server/au", "tutti-plugin/au"]
 export = ["dep:tutti-export"]
 
 [dev-dependencies]
+# The fake MIDI backend, for the session-layer tests. A headless CI box has no
+# MIDI port, so without it every path through `MidiSession` is testable only
+# against "no device found". Dev-only: `midi-hardware` deliberately does not
+# cascade it.
+tutti-midi-hardware = { path = "../tutti/crates/midi/tutti-midi-hardware", features = [
+    "test-support",
+] }
 # RT-safety regression tests (relocated engine audio_io/graph tests) use the
 # allocation-disabling global allocator via the harness in lib.rs.
 assert_no_alloc = { version = "1", default-features = false }

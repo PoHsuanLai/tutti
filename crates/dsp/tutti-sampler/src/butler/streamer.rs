@@ -72,6 +72,85 @@ impl DiskStreamer {
         })
     }
 
+    /// Build the system **without** spawning the butler thread; cycles are then
+    /// run by hand with [`step_once`](Self::step_once).
+    ///
+    /// The step is the same one the thread runs, so this is the shipped path
+    /// with its pacing removed rather than a parallel implementation. What it
+    /// buys is a butler whose progress is *counted* instead of waited for: a
+    /// test can say "after this many cycles the ring holds audio", where the
+    /// threaded streamer only lets it say "after this long it probably does".
+    ///
+    /// ```
+    /// use tutti_sampler::{DiskStreamer, DiskStreamerConfig};
+    ///
+    /// # fn main() -> tutti_sampler::Result<()> {
+    /// let mut sampler = DiskStreamer::manual(48_000.0, DiskStreamerConfig::default())?;
+    /// sampler.step_once();   // nothing queued: an idle cycle
+    /// # Ok(())
+    /// # }
+    /// ```
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn manual(sample_rate: impl Into<SampleRate>, config: DiskStreamerConfig) -> Result<Self> {
+        let sample_rate = sample_rate.into();
+        let mut butler = ButlerThread::with_config(256, sample_rate, config.buffer_config);
+
+        if let Some(ref pdc) = config.pdc {
+            butler = butler.with_pdc(Arc::clone(pdc));
+        }
+
+        let butler_tx = butler.command_sender();
+
+        Ok(DiskStreamer {
+            butler_tx,
+            butler,
+            sample_rate,
+        })
+    }
+
+    /// Run one butler cycle on the calling thread, reporting whether the
+    /// butler still has urgent work ([`StepOutcome::Busy`]) or has caught up
+    /// ([`StepOutcome::Healthy`] / [`StepOutcome::Idle`]).
+    ///
+    /// That verdict is what makes a step-driven test terminate on a *condition*
+    /// rather than on a step budget: stepping until `Healthy` primes every ring
+    /// exactly as far as the threaded butler would before it parks.
+    ///
+    /// # Panics
+    ///
+    /// If this streamer owns a running butler thread — i.e. it came from
+    /// [`new`](Self::new) rather than [`manual`](Self::manual). The two drivers
+    /// own the same butler-local state and cannot share it.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn step_once(&mut self) -> super::StepOutcome {
+        self.butler.step_once()
+    }
+
+    /// Step until the butler stops making progress, or `budget` cycles have run
+    /// — whichever comes first. Returns the number of cycles taken.
+    ///
+    /// "Stops making progress" is any outcome other than
+    /// [`Busy`](super::StepOutcome::Busy): the rings are full enough
+    /// ([`Healthy`](super::StepOutcome::Healthy)), nothing is streaming
+    /// ([`Idle`](super::StepOutcome::Idle)), or a ring below threshold is one no
+    /// further cycle can grow ([`Stalled`](super::StepOutcome::Stalled), the
+    /// normal state near the end of a file). Waiting for `Healthy` alone would
+    /// never return there.
+    ///
+    /// The budget is a liveness bound, not a pacing knob: reaching it means the
+    /// butler is refilling forever without ever catching up, and a caller should
+    /// treat that as the failure it is rather than proceeding to measure.
+    #[cfg(any(test, feature = "test-support"))]
+    #[must_use = "an exhausted budget means the rings never primed"]
+    pub fn step_until_settled(&mut self, budget: usize) -> usize {
+        for taken in 0..budget {
+            if self.step_once() != super::StepOutcome::Busy {
+                return taken + 1;
+            }
+        }
+        budget
+    }
+
     /// WRITE port: a cloneable [`Commands`] handle over the butler command
     /// channel. Drive streaming with `commands().send(Command::…)`.
     #[must_use]
@@ -122,18 +201,24 @@ mod tests {
 
     /// A backward `Command::Seek` must actually reposition the live stream.
     ///
-    /// This settles a question an end-to-end test could not. In
-    /// `tests/tier_parity.rs`, seeking a live stream leaves the audio coming
-    /// from the old position — which is consistent with two very different
-    /// causes: the butler ignoring the seek, or the butler repositioning
-    /// correctly while the reader drains a ring already primed with up to 30 s
-    /// of pre-seek material. From outside the crate those are indistinguishable,
-    /// because the only observable is the audio and the audio is the thing in
-    /// dispute.
+    /// This settles a question the end-to-end test could not, back when that
+    /// test was driven by wall clock. In `tests/tier_parity.rs`, seeking a live
+    /// stream appeared to leave the audio coming from the old position — which
+    /// is consistent with two very different causes: the butler ignoring the
+    /// seek, or the butler repositioning correctly while the reader drains a
+    /// ring already primed with pre-seek material. From outside the crate those
+    /// were indistinguishable, because the only observable was the audio and the
+    /// audio was the thing in dispute.
     ///
     /// In-crate the butler's own state is visible, so the question is
-    /// answerable. **It passes: the butler does reposition.** The end-to-end
-    /// symptom is therefore ring latency, not a defect.
+    /// answerable directly. **It passes: the butler does reposition.**
+    ///
+    /// The end-to-end test now passes too — driving the butler by hand lets it
+    /// apply the seek and refill before the next render, so it no longer chases
+    /// a ring it cannot drain. This test stays because it asks a *different*
+    /// question: it observes the butler's own reposition signal rather than the
+    /// audio downstream of it, so a regression that repositioned late (rather
+    /// than not at all) fails here first and unambiguously.
     ///
     /// # Why the ring-reset epoch, and not a position
     ///
@@ -147,16 +232,25 @@ mod tests {
     /// The reset epoch works because `reposition_click_free` bumps it via
     /// `plan.flush_buffer()`, on the *shared* plan, and nothing else in a quiet
     /// stream moves it. So a change means the butler ran the reposition path.
+    ///
+    /// # No thread, no timeout
+    ///
+    /// The butler is stepped by hand, so "has the butler seen the command yet"
+    /// is answered by *having stepped* rather than by polling a 5 s deadline at
+    /// 10 ms. A step returns only once the command is applied, so the assertions
+    /// below are unconditional: there is no state in which the answer is "not
+    /// yet".
     #[test]
     fn a_backward_seek_repositions_the_live_stream() {
         use crate::ports::Command;
-        use std::io::Write;
         use tutti_core::SamplePosition;
 
         const SR: f64 = 48_000.0;
 
-        // 60 s of tone, long enough that the ring cannot hold the whole file
-        // (`buffer_size_for_file` caps at 30 s), so a seek is real work.
+        // 31 s of tone. `buffer_size_for_file` caps the ring at 30 s and sizes
+        // it to hold the whole file below that, so a shorter file is prefilled
+        // entire and a "seek" moves the writer inside a ring that already holds
+        // everything — nothing to reposition, and the epoch would not move.
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("seek_probe.wav");
         {
@@ -167,16 +261,15 @@ mod tests {
                 sample_format: hound::SampleFormat::Float,
             };
             let mut w = hound::WavWriter::create(&path, spec).unwrap();
-            for i in 0..(SR * 60.0) as usize {
+            for i in 0..(SR * 31.0) as usize {
                 let s = (std::f32::consts::TAU * 440.0 * i as f32 / SR as f32).sin() * 0.4;
                 w.write_sample(s).unwrap();
                 w.write_sample(s).unwrap();
             }
             w.finalize().unwrap();
-            std::io::stdout().flush().ok();
         }
 
-        let sampler = DiskStreamer::new(SR, Default::default()).unwrap();
+        let mut sampler = DiskStreamer::manual(SR, Default::default()).unwrap();
         sampler
             .commands()
             .send(Command::Stream {
@@ -186,19 +279,14 @@ mod tests {
             })
             .expect("the butler is alive in this test");
 
-        // Wait for the butler to install the link.
+        // One step applies the queued `Stream`, which is what installs the link.
+        let _ = sampler.step_once();
+
         let plans = sampler.butler.plans();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        loop {
-            if plans.get(&0).is_some_and(|p| p.link.is_some()) {
-                break;
-            }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "the butler never registered the stream"
-            );
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
+        assert!(
+            plans.get(&0).is_some_and(|p| p.link.is_some()),
+            "one butler cycle after a Stream command and no link is installed"
+        );
 
         // The ring-reset epoch is the butler's own signal that it repositioned:
         // `reposition_click_free` calls `plan.flush_buffer()`, which bumps it.
@@ -219,18 +307,29 @@ mod tests {
             })
             .expect("the butler is alive in this test");
 
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        loop {
-            if reset_epoch() != before {
-                return; // the butler flushed and repositioned — this is the pass
-            }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "the ring-reset epoch never moved from {before} after a backward \
-                 seek — the butler did not reposition the stream"
-            );
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
+        let _ = sampler.step_once();
+
+        assert_ne!(
+            reset_epoch(),
+            before,
+            "the ring-reset epoch did not move from {before} in the cycle that applied a \
+             backward seek — the butler did not reposition the stream"
+        );
+    }
+
+    /// Stepping and threading are exclusive owners of the butler's local state.
+    ///
+    /// This is the one thing the hand driver can get wrong that the thread
+    /// cannot: two `Local`s, two region maps, and rings one of them does not
+    /// know exist. Cheaper to fail loudly at `start` than to debug a stream that
+    /// refills into a ring nobody reads.
+    #[test]
+    #[should_panic(expected = "start on a hand-stepped butler")]
+    fn a_hand_stepped_butler_refuses_to_also_start_a_thread() {
+        let mut butler =
+            ButlerThread::with_config(4, SampleRate(48_000.0), BufferConfig::default());
+        let _ = butler.step_once();
+        butler.start();
     }
 
     #[test]

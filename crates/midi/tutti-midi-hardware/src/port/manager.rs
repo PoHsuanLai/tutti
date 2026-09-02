@@ -107,8 +107,19 @@ impl CycleScratch {
     /// Drain `input_ports`' active rings into `event_buffer`, converting arrival
     /// timestamps to sample-accurate `frame_offset`s. RT-safe (lock-free, no
     /// heap allocation). Read the result with `event_buffer.drain_each`.
-    fn read_inputs(&self, input_ports: &[Arc<HardwareMidiInput>], nframes: usize) {
-        let buffer_start = Instant::now();
+    ///
+    /// `buffer_start` is when this block began — the instant every event's age
+    /// is measured back from. Taken as a parameter rather than read from the
+    /// clock here: it is the *only* input to the conversion a caller does not
+    /// otherwise control, so passing it is what makes the arithmetic below
+    /// checkable at all. See
+    /// [`cycle_start_read_all_inputs_at`](HardwareMidiInputs::cycle_start_read_all_inputs_at).
+    fn read_inputs(
+        &self,
+        input_ports: &[Arc<HardwareMidiInput>],
+        nframes: usize,
+        buffer_start: Instant,
+    ) {
         let sample_rate = *self.sample_rate.borrow();
 
         // Drain all active input ports into the timestamp scratch. Each port
@@ -289,13 +300,43 @@ impl HardwareMidiInputs {
     pub fn cycle_start_read_all_inputs(
         &self,
         nframes: usize,
+        visit: impl FnMut(usize, MidiEvent),
+    ) -> usize {
+        self.cycle_start_read_all_inputs_at(nframes, Instant::now(), visit)
+    }
+
+    /// [`cycle_start_read_all_inputs`](Self::cycle_start_read_all_inputs) with
+    /// the block's start instant supplied rather than read from the clock.
+    ///
+    /// Every inbound event's `frame_offset` is
+    /// `nframes - (buffer_start - arrival) * sample_rate`, clamped into the
+    /// block. `buffer_start` is the one term a caller cannot otherwise pin — the
+    /// arrival stamp rides in with the event and `nframes` is an argument — so
+    /// with it supplied the whole conversion becomes an equation with a single
+    /// right answer.
+    ///
+    /// That is not a testing nicety. The conversion has a clamp at the block
+    /// boundary and a saturating subtraction under it, and neither branch was
+    /// reachable from a test that let `Instant::now()` decide the age: an
+    /// assertion could only be a band wide enough to absorb however long the
+    /// scheduler took between pushing an event and draining it, which meant the
+    /// clamp's numeric result was asserted nowhere. Passing the instant makes
+    /// the boundary a value a test can *choose*.
+    ///
+    /// A real caller uses [`cycle_start_read_all_inputs`](Self::cycle_start_read_all_inputs),
+    /// which supplies `Instant::now()`. Both are RT-safe.
+    pub fn cycle_start_read_all_inputs_at(
+        &self,
+        nframes: usize,
+        buffer_start: Instant,
         mut visit: impl FnMut(usize, MidiEvent),
     ) -> usize {
         // Hold the ArcSwap guard across the drain so the port set can't be
         // swapped out mid-read. Events are copied into the scratch by value
         // (`MidiEvent: Copy`), so nothing borrows from the snapshot.
         let input_ports = self.input_ports.load();
-        self.scratch.read_inputs(&input_ports, nframes);
+        self.scratch
+            .read_inputs(&input_ports, nframes, buffer_start);
         let mut n = 0;
         self.scratch.event_buffer.drain_each(|(port_index, event)| {
             visit(port_index, event);
@@ -545,24 +586,137 @@ mod tests {
         assert!(port_ids.contains(&id2));
     }
 
-    #[test]
-    fn test_timestamp_to_frame_offset_conversion() {
+    /// Push one event that arrived `age` before the block start, and read back
+    /// the `frame_offset` the conversion gives it.
+    ///
+    /// Both instants are chosen here, so the answer is arithmetic rather than a
+    /// measurement: `nframes - age * sample_rate`, clamped into the block. That
+    /// is the whole reason `cycle_start_read_all_inputs_at` exists — with
+    /// `Instant::now()` inside the drain, the age is whatever the scheduler made
+    /// it, and the only assertion available is a band.
+    fn offset_for(sample_rate: f64, nframes: usize, age: core::time::Duration) -> u32 {
         let manager = HardwareMidiInputs::new(256);
+        manager.set_sample_rate(sample_rate);
         let input_id = manager.create_input_port("Input");
         let handle = manager.get_input_producer_handle(input_id).unwrap();
 
-        let nframes = 256;
-
-        handle.push(
+        // A fixed block start, and an arrival a known age before it. Neither is
+        // read from the clock during the conversion.
+        let block_start = Instant::now();
+        assert!(handle.push(
             MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 100),
-            Instant::now(),
+            block_start - age,
+        ));
+
+        let mut seen = Vec::new();
+        manager.cycle_start_read_all_inputs_at(nframes, block_start, |_, e| seen.push(e));
+        assert_eq!(seen.len(), 1, "exactly the event pushed");
+        seen[0].frame_offset
+    }
+
+    /// A known age converts to exactly one frame offset.
+    ///
+    /// 1 ms at 48 kHz is 48 samples, so an event that old at the start of a
+    /// 1024-frame block belongs at 1024 - 48 = 976. Not a band: with the block
+    /// start supplied there is no scheduling slack left in the answer, and the
+    /// previous version of this test could assert only `offset <= nframes` —
+    /// which every possible value of a `u32` clamped into the block satisfies.
+    ///
+    /// Three rates, because the rate is a *multiplier* on the age: a conversion
+    /// that ignored it, or that used a hardcoded 44100, agrees with the truth at
+    /// one rate and disagrees at the others.
+    #[test]
+    fn a_known_age_converts_to_an_exact_frame_offset() {
+        use core::time::Duration;
+
+        for (rate, want) in [
+            (48_000.0, 1024 - 48),
+            (44_100.0, 1024 - 44), // 44.1 samples, truncated
+            (96_000.0, 1024 - 96),
+        ] {
+            let got = offset_for(rate, 1024, Duration::from_millis(1));
+            assert_eq!(
+                got, want,
+                "1 ms before a 1024-frame block at {rate} Hz is frame {want}, got {got}"
+            );
+        }
+    }
+
+    /// An event older than the whole block clamps to frame 0, not to a wrap.
+    ///
+    /// This is the branch `Instant::now()` inside the drain made unreachable
+    /// from a test. `samples_ago` exceeding `nframes` makes the subtraction
+    /// saturate at 0; without the saturation it would wrap to ~4 billion and the
+    /// clamp below it would then pull it to `nframes - 1`, so an event from the
+    /// distant past would be scheduled at the *end* of the block instead of the
+    /// start — a stale note landing after everything that came later.
+    #[test]
+    fn an_event_older_than_the_block_clamps_to_its_start() {
+        use core::time::Duration;
+
+        // 100 ms at 48 kHz is 4800 samples, far past a 1024-frame block.
+        let got = offset_for(48_000.0, 1024, Duration::from_millis(100));
+        assert_eq!(
+            got, 0,
+            "an event 4800 samples old in a 1024-frame block belongs at its start, got {got}"
         );
-        let events = drain_cycle(&manager, nframes);
-        assert_eq!(events.len(), 1);
-        assert!(
-            (events[0].1.frame_offset as usize) <= nframes,
-            "frame_offset should be within buffer, got {}",
-            events[0].1.frame_offset,
+    }
+
+    /// A zero-age event lands at the last frame of the block, not past its end.
+    ///
+    /// The other boundary. `nframes - 0` is `nframes`, which is one past the
+    /// last valid index, so the conversion pulls it back to `nframes - 1`. An
+    /// off-by-one here writes an event at an index no renderer will read, and it
+    /// is invisible to any assertion of the form `offset <= nframes`.
+    #[test]
+    fn an_event_arriving_at_the_block_start_lands_on_its_last_frame() {
+        use core::time::Duration;
+
+        let got = offset_for(48_000.0, 1024, Duration::ZERO);
+        assert_eq!(
+            got, 1023,
+            "a zero-age event must sit at the last frame of a 1024-frame block, not at 1024"
+        );
+    }
+
+    /// The rate the manager is *told* is the rate it converts against.
+    ///
+    /// `HardwareMidiInputs` is constructed before any device exists, so it
+    /// starts at a placeholder 44100 and depends on `set_sample_rate` being
+    /// called once the device is open. This pins both halves: the placeholder's
+    /// exact wrong answer, and the corrected one.
+    ///
+    /// Naming the wrong value matters. Without it, someone changing
+    /// `CycleScratch::new`'s default would silently move what the corrected test
+    /// is being compared against rather than failing anything.
+    #[test]
+    fn the_default_rate_mistimes_an_event_the_set_rate_times_correctly() {
+        use core::time::Duration;
+
+        let manager = HardwareMidiInputs::new(256);
+        let port = manager.create_input_port("Input");
+        let handle = manager.get_input_producer_handle(port).unwrap();
+        let block_start = Instant::now();
+        let note = MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 100);
+
+        // Untouched: the 44100 placeholder. 1 ms is 44 samples.
+        assert!(handle.push(note, block_start - Duration::from_millis(1)));
+        let mut seen = Vec::new();
+        manager.cycle_start_read_all_inputs_at(1024, block_start, |_, e| seen.push(e));
+        assert_eq!(
+            seen[0].frame_offset, 980,
+            "the placeholder rate puts a 1 ms-old event at 1024 - 44"
+        );
+
+        // Told the truth: 1 ms is 48 samples, and the event moves 4 frames.
+        manager.set_sample_rate(48_000.0);
+        assert!(handle.push(note, block_start - Duration::from_millis(1)));
+        let mut seen = Vec::new();
+        manager.cycle_start_read_all_inputs_at(1024, block_start, |_, e| seen.push(e));
+        assert_eq!(
+            seen[0].frame_offset, 976,
+            "at 48 kHz the same event belongs 4 frames earlier -- the 8.8% the \
+             placeholder was off by"
         );
     }
 }

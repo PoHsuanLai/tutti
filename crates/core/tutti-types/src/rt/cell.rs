@@ -236,31 +236,57 @@ mod tests {
         assert_eq!(*cell.borrow(), 9);
     }
 
+    /// A second borrow while one is live panics in debug builds.
+    ///
+    /// # Two barriers, and why neither is a sleep
+    ///
+    /// The property needs the main thread's borrow attempt to fall strictly
+    /// *inside* the other thread's live guard. That is a window, and the earlier
+    /// version of this test opened it with `sleep(50ms)` — which makes the test
+    /// a bet: if the main thread is descheduled past the sleep the guard is
+    /// already gone, `borrow_mut` succeeds, and the test fails having proven
+    /// nothing about the check it names.
+    ///
+    /// Two barriers close the window without any duration at all. `taken` is
+    /// released after the guard exists, so the main thread cannot attempt its
+    /// borrow too early; `attempted` is released after the attempt has returned,
+    /// so the holder cannot drop the guard too early. Between them the ordering
+    /// is enforced rather than hoped for, and the test has no timing to tune.
     #[test]
     #[cfg(debug_assertions)]
     fn concurrent_borrows_panic() {
         use std::sync::{Arc, Barrier};
         let cell = Arc::new(AudioThreadCell::new(0u32));
-        let barrier = Arc::new(Barrier::new(2));
+        // "The guard is live" and "the second borrow has been attempted". Two,
+        // not one: a single barrier orders only the first of those two edges.
+        let taken = Arc::new(Barrier::new(2));
+        let attempted = Arc::new(Barrier::new(2));
 
         let cell2 = Arc::clone(&cell);
-        let barrier2 = Arc::clone(&barrier);
+        let taken2 = Arc::clone(&taken);
+        let attempted2 = Arc::clone(&attempted);
         let other = std::thread::spawn(move || {
             let _g = cell2.borrow_mut();
-            barrier2.wait();
-            // Hold the guard while the main thread tries to borrow.
-            std::thread::sleep(std::time::Duration::from_millis(50));
+            taken2.wait();
+            // Hold the guard until the main thread's attempt has completed.
+            attempted2.wait();
         });
 
-        barrier.wait();
+        taken.wait();
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let _g = cell.borrow_mut();
         }));
+        attempted.wait();
 
         other.join().unwrap();
         assert!(
             result.is_err(),
             "expected panic from concurrent borrow while another borrow was live"
         );
+
+        // The guard is gone now, so the cell must be borrowable again. Without
+        // this the test would also pass against a cell that had panicked itself
+        // into a permanently-locked state.
+        assert_eq!(*cell.borrow(), 0);
     }
 }

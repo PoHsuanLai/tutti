@@ -45,11 +45,16 @@ fn app_with_target() -> (App, Entity) {
         .register::<DistortionNode>();
 
     let dist = DistortionNode::with_param_inputs(2, ShapeKind::Tanh, 5.0, true);
+    // The port map is declared from the unit before it is boxed into the graph:
+    // this is a direct `Net::add` site, so nothing else would record it and the
+    // audio-rate route would fall back to per-frame.
+    let ports = bevy_tutti::graph::ParamPortMap::of(&dist);
     let node = app.world_mut().resource_mut::<AudioGraphRes>().0.add(dist);
     let target = app
         .world_mut()
         .spawn((
             AudioNode(node),
+            ports,
             ModParamRange::default().with(ParamAddr::Unit(UnitParam::Drive), 5.0, 0.0, 10.0),
         ))
         .id();

@@ -47,12 +47,16 @@ mod mod_audio_rate_reconcile {
         // Born with its drive port on — the trigger policy this crate settled on.
         let dist = DistortionNode::with_param_inputs(2, ShapeKind::Tanh, 5.0, true);
         let drive_port = dist.param_port(UnitParam::Drive).unwrap();
+        // Declared from the unit, at the direct `Net::add` site — see
+        // `bevy_tutti::graph::param_ports`.
+        let ports = bevy_tutti::graph::ParamPortMap::of(&dist);
         let node = app.world_mut().resource_mut::<AudioGraphRes>().0.add(dist);
 
         let target = app
             .world_mut()
             .spawn((
                 AudioNode(node),
+                ports,
                 ModParamRange::default().with(ParamAddr::Unit(UnitParam::Drive), 5.0, 0.0, 10.0),
             ))
             .id();
@@ -355,8 +359,11 @@ mod mod_audio_rate_reconcile {
         // The node arrives a frame later, as a deferred insert would.
         let dist = DistortionNode::with_param_inputs(2, ShapeKind::Tanh, 5.0, true);
         let drive_port = dist.param_port(UnitParam::Drive).unwrap();
+        let ports = bevy_tutti::graph::ParamPortMap::of(&dist);
         let node = app.world_mut().resource_mut::<AudioGraphRes>().0.add(dist);
-        app.world_mut().entity_mut(target).insert(AudioNode(node));
+        app.world_mut()
+            .entity_mut(target)
+            .insert((AudioNode(node), ports));
 
         app.update();
         app.update();

@@ -11,6 +11,9 @@
 //!   [`crossfade_audio_node`]), [`despawn`] ([`reconcile_node_despawn`]) and
 //!   [`commit`] ([`commit_graph`]) — composed by [`GraphReconcilePlugin`],
 //! - params ([`AudioParam`]) in [`param`],
+//! - the graph as a **value** ([`LiveGraph`]) in [`topology`] — built in the
+//!   same phase that wires, so every static question (latency, tail, "did
+//!   anything change") is a fold over a value a test can write down,
 //! - the I/O edge ([`AudioPump`]) in [`pump`] — an `AudioIn → AudioOut` pump
 //!   whose thread the ECS owns, so its sink is finalized exactly once,
 //! - opt-in latency (PDC) compensation in [`latency`] — the read side of
@@ -32,6 +35,7 @@ pub mod resources;
 pub mod schedule;
 pub mod spawn;
 pub mod tap;
+pub mod topology;
 pub mod transport;
 pub mod wire;
 
@@ -47,5 +51,6 @@ pub use resources::{AudioConfig, AudioGraphRes};
 pub use schedule::{engine_ready, GraphDirty, GraphReconcileSystems};
 pub use spawn::{crossfade_audio_node, InsertAudioNode, SpawnAudioNode};
 pub use tap::AudioTapRes;
+pub use topology::LiveGraph;
 pub use transport::{EngineNodes, MetronomeRes, TransportRes};
 pub use wire::{GraphWirePlugin, MasterSources, PortSource, PortSources};

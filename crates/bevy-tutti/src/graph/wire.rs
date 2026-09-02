@@ -77,6 +77,7 @@ use tutti_core::dsp::{AudioUnit as _, Source};
 use tutti_core::AudioNode;
 use tutti_core::{ChannelLayout, MAX_ROOT_CHANNELS};
 
+use super::topology::{self, LiveGraph};
 use super::{engine_ready, AudioGraphRes, GraphDirty, GraphReconcileSystems};
 
 /// Where one input port's signal comes from.
@@ -292,6 +293,19 @@ impl MasterSources {
 /// an `Added` gate leaves a re-bound entity's wires pointing at the retired node
 /// forever. `Added` is a subset of `Changed`, so this covers arrival too.
 ///
+/// It is **also** `RemovedComponents<AudioNode>`, and that arm is not a
+/// belt-and-braces addition — `Changed` does not report a removal, and a removal
+/// is a real graph edit. `remove::<AudioNode>()` without a despawn takes the
+/// node out of the engine (the `On<Remove, AudioNode>` observer calls
+/// `Net::remove`, which zeroes every edge to and from it) while leaving the
+/// entity, its `PortSources` and every declaration naming it untouched. None of
+/// the other four arms fires, so before this arm existed the pass simply did not
+/// run: the engine was repaired and the declaration side was never re-derived.
+///
+/// That was invisible while the only record of the graph was the engine itself —
+/// there was nothing to be stale. It is visible the moment a value records what
+/// the declarations mean, which is how it was found.
+///
 /// # Why a diff rather than a wholesale replace
 ///
 /// The MIDI routing table and the modulation matrix both rebuild wholesale,
@@ -308,18 +322,24 @@ impl MasterSources {
 pub fn rebuild(
     graph: Option<ResMut<AudioGraphRes>>,
     dirty: Option<ResMut<GraphDirty>>,
-    nodes: Query<&AudioNode>,
+    live: Option<ResMut<LiveGraph>>,
+    nodes: Query<(Entity, &AudioNode)>,
     sinks: Query<(Entity, &PortSources)>,
     master: Res<MasterSources>,
     changed: Query<(), Changed<PortSources>>,
     rebound: Query<(), Changed<AudioNode>>,
     mut removed: RemovedComponents<PortSources>,
+    mut unbound: RemovedComponents<AudioNode>,
 ) {
-    let is_dirty =
-        !changed.is_empty() || !removed.is_empty() || !rebound.is_empty() || master.is_changed();
-    // An event reader: draining is what marks this frame's removals as seen, so
+    let is_dirty = !changed.is_empty()
+        || !removed.is_empty()
+        || !unbound.is_empty()
+        || !rebound.is_empty()
+        || master.is_changed();
+    // Event readers: draining is what marks this frame's removals as seen, so
     // it happens whether or not a rebuild follows.
     removed.clear();
+    unbound.clear();
     if !is_dirty {
         return;
     }
@@ -330,8 +350,17 @@ pub fn rebuild(
         return;
     };
 
+    // The value, built from the same three declarations the loop below reads,
+    // *before* the loop writes anything. Built first for a reason: the engine
+    // is what the loop is about to change, so a value read afterwards would be
+    // a picture of the outcome rather than of the declaration.
+    //
+    // Nothing downstream reads it yet — this is the shadow half of the value
+    // layer, and its job is the `debug_assert` at the end of this function.
+    let want = topology::build(&graph, &nodes, &sinks, &master);
+
     for (sink_entity, declared) in sinks.iter() {
-        let Ok(sink) = nodes.get(sink_entity) else {
+        let Ok((_, sink)) = nodes.get(sink_entity) else {
             continue; // No node yet — retry next frame.
         };
         if !graph.0.contains(sink.0) {
@@ -404,6 +433,20 @@ pub fn rebuild(
             dirty.0 = true;
         }
     }
+
+    // The shadow check: everything the loop just wrote must be exactly what the
+    // value says. `debug_assert` rather than a log, so a disagreement is a test
+    // failure and never a dropout — a release build carries the value's cost and
+    // none of the check's.
+    debug_assert_eq!(
+        topology::disagreements(&want, &graph, &nodes),
+        Vec::<String>::new(),
+        "the topology value and the per-port loop disagree about the graph"
+    );
+
+    if let Some(mut live) = live {
+        live.set(want);
+    }
 }
 
 /// Turn a declaration into an engine [`Source`], or `None` if it cannot be
@@ -416,14 +459,14 @@ pub fn rebuild(
 fn resolve(
     source: PortSource,
     sink: tutti_core::NodeId,
-    nodes: &Query<&AudioNode>,
+    nodes: &Query<(Entity, &AudioNode)>,
     graph: &AudioGraphRes,
 ) -> Option<Source> {
     match source {
         PortSource::Silence => Some(Source::Zero),
         PortSource::Input { port } => (port < graph.0.inputs()).then_some(Source::Global(port)),
         PortSource::Node { entity, port } => {
-            let node = nodes.get(entity).ok()?;
+            let (_, node) = nodes.get(entity).ok()?;
             if node.0 == sink {
                 // `Net::set_source` asserts on this. A self-loop is a caller
                 // mistake, not an engine failure — say so and skip.
@@ -467,14 +510,14 @@ fn warn_if_port_out_of_range(
 /// against — the master cannot feed itself.
 fn resolve_master(
     source: PortSource,
-    nodes: &Query<&AudioNode>,
+    nodes: &Query<(Entity, &AudioNode)>,
     graph: &AudioGraphRes,
 ) -> Option<Source> {
     match source {
         PortSource::Silence => Some(Source::Zero),
         PortSource::Input { port } => (port < graph.0.inputs()).then_some(Source::Global(port)),
         PortSource::Node { entity, port } => {
-            let node = nodes.get(entity).ok()?;
+            let (_, node) = nodes.get(entity).ok()?;
             if !graph.0.contains(node.0) {
                 return None;
             }
@@ -540,6 +583,7 @@ pub struct GraphWirePlugin;
 impl Plugin for GraphWirePlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<MasterSources>();
+        app.init_resource::<LiveGraph>();
         app.add_observer(unwire_removed_sources);
         app.add_systems(
             Update,

@@ -121,6 +121,10 @@ pub(crate) mod butler;
 
 pub use butler::{DiskStreamer, DiskStreamerConfig};
 
+// The hand-driven butler cycle's verdict, alongside `DiskStreamer::manual`.
+#[cfg(any(test, feature = "test-support"))]
+pub use butler::StepOutcome;
+
 mod ports;
 pub use ports::{Command, Commands, Source, Status};
 

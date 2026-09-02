@@ -19,6 +19,7 @@ mod prefetch;
 mod preroll;
 mod region_map;
 mod rt_state;
+mod step;
 mod streamer;
 mod thread;
 
@@ -33,6 +34,11 @@ pub(crate) use thread::ButlerThread;
 // and the one failure every stream-control command can report.
 pub use control::ButlerGone;
 pub use streamer::{DiskStreamer, DiskStreamerConfig};
+
+// The hand-driven cycle's verdict. Public only alongside the driver that
+// produces it — the threaded butler consumes its own outcomes.
+#[cfg(any(test, feature = "test-support"))]
+pub use step::StepOutcome;
 
 // Test-only re-exports for unit tests outside the butler module tree (e.g.
 // `units::disk_voice`) that build readers directly. Gated so they

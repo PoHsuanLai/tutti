@@ -19,6 +19,17 @@ default = ["wav"]
 # stretch::Unit) compile Bevy-free for direct FunDSP-graph use either way.
 bevy = ["dep:bevy_ecs"]
 
+# Drive the butler's cycle by hand instead of by its thread.
+#
+# Exposes `DiskStreamer::manual` + `step_once`, which run the *same*
+# `ButlerCycle::step` the butler thread runs — the thread contributes only
+# pacing. A butler-driven stream is otherwise observable to an out-of-crate test
+# only through wall clock (send, sleep, look), and the butler parks 1 ms idle /
+# 3 ms healthy, so such a test is racing a producer it cannot see. Off by
+# default: a host has no use for it, and the assertions it adds are about a
+# constraint only a hand driver can violate.
+test-support = []
+
 # Audio format support - cascade to tutti-core
 wav = ["tutti-core/wav"]
 flac = ["tutti-core/flac"]
@@ -65,6 +76,17 @@ futures-lite = "2"
 
 
 [dev-dependencies]
+# The crate's own `test-support` surface, for the integration tests.
+#
+# A dev-dependency on self is how a feature reaches `tests/` unconditionally.
+# The alternative — `required-features` on the test target — *skips* the test
+# when the feature is off, so a plain `cargo nextest run` would report green
+# without having run `tier_parity` at all. That is the failure mode this
+# workspace's testing policy names outright: a test that cannot fail claims
+# coverage it does not have, and one that silently does not run is the same
+# claim with fewer clues.
+tutti-sampler = { path = ".", features = ["test-support"] }
+
 tracing-subscriber = "0.3"
 insta = { version = "1.41", features = ["yaml"] }
 approx = "0.5"

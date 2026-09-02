@@ -22,6 +22,8 @@ use super::handlers::Handles;
 use super::loop_body::butler_loop_async;
 use super::metrics::Metrics;
 use super::plan::ChannelPlan;
+#[cfg(any(test, feature = "test-support"))]
+use super::step::{ButlerCycle, StepOutcome};
 
 /// Owner of the butler thread and of every handle shared with it.
 ///
@@ -37,6 +39,12 @@ pub struct ButlerThread {
     shared: Handles,
     config: BufferConfig,
     sample_rate: SampleRate,
+    /// The synchronous cycle, when this controller is being driven by hand
+    /// rather than by a thread. `Some` only after [`step_once`](Self::step_once)
+    /// has been called on an unstarted controller; `start` refuses once it is
+    /// set, so the two drivers can never both own `Local`.
+    #[cfg(any(test, feature = "test-support"))]
+    manual: Option<ButlerCycle>,
 }
 
 impl ButlerThread {
@@ -72,6 +80,8 @@ impl ButlerThread {
             shared,
             config,
             sample_rate,
+            #[cfg(any(test, feature = "test-support"))]
+            manual: None,
         }
     }
 
@@ -108,6 +118,14 @@ impl ButlerThread {
         if self.thread_handle.is_some() {
             return;
         }
+        // `Local` has exactly one owner. A controller already stepped by hand
+        // holds it here; handing a second copy to a thread would leave two
+        // region maps disagreeing about which rings exist.
+        #[cfg(any(test, feature = "test-support"))]
+        assert!(
+            self.manual.is_none(),
+            "start on a hand-stepped butler: the cycle state is already owned here"
+        );
 
         // Fatal-init invariant: `rx` is `Some` for the whole pre-start lifetime
         // and is only taken here. The `thread_handle.is_some()` guard above
@@ -148,6 +166,43 @@ impl ButlerThread {
         if let Some(handle) = self.thread_handle.take() {
             let _ = handle.join();
         }
+    }
+
+    /// Run exactly one butler cycle on the **calling** thread: drain every
+    /// queued command, then apply PDC preroll, seeks, loop wraps and refills.
+    /// Returns once that work is done, reporting what the pacing layer *would*
+    /// have done next.
+    ///
+    /// This is the same [`ButlerCycle::step`] the butler thread runs — the
+    /// thread adds only pacing — so driving a controller by hand exercises the
+    /// shipped path rather than a parallel one.
+    ///
+    /// Intended for tests, which is what the feature gate says. A butler-driven
+    /// stream is otherwise observable only through wall clock: send a command,
+    /// sleep, look. Stepping makes it observable by *counting*, so a test can
+    /// state "after three cycles the ring holds audio" rather than "after 50 ms
+    /// it probably does".
+    ///
+    /// # Panics
+    ///
+    /// If the butler thread is running. Both drivers own the same butler-local
+    /// state, so a controller is one or the other for its whole life; stepping a
+    /// live controller would race the thread inside `Local`.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn step_once(&mut self) -> StepOutcome {
+        assert!(
+            self.thread_handle.is_none(),
+            "step_once on a started butler: the thread already owns the cycle state"
+        );
+        let rx = self
+            .rx
+            .as_ref()
+            .expect("rx is taken only by `start`, which the assert above excludes")
+            .clone();
+        let cycle = self
+            .manual
+            .get_or_insert_with(|| ButlerCycle::new(self.config, self.sample_rate));
+        cycle.step(&self.shared, || rx.try_recv().ok())
     }
 
     /// The shared per-channel plan map, keyed by channel index.

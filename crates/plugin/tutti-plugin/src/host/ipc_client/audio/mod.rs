@@ -258,20 +258,39 @@ impl AudioBridge {
 
     // --- Main-thread sync request+response ---
 
-    pub fn save_state(&self) -> Option<Vec<u8>> {
+    pub fn save_state(&self) -> std::result::Result<Vec<u8>, StateError> {
         if self.lifecycle.is_crashed() {
-            return None;
+            return Err(StateError::PluginCrashed);
         }
-        let (ask_resp, reply) = ask::<Option<Vec<u8>>>();
+        let (ask_resp, reply) = ask::<std::result::Result<Vec<u8>, StateError>>();
         if !self.channels.push_command(Command::SaveState { reply }) {
-            return None;
+            // The queue refused the command, which on this path means the
+            // bridge thread is gone.
+            return Err(StateError::PluginCrashed);
         }
-        ask_resp.recv_timeout(STATE_TIMEOUT).ok().flatten()
+        // As in `load_state`: a timeout is a refusal to answer, not an empty
+        // state. Collapsing it to `None`/`vec![]` is what let an unsaved preset
+        // look like a plugin that had nothing to save.
+        ask_resp
+            .recv_timeout(STATE_TIMEOUT)
+            .unwrap_or(Err(StateError::Rejected(
+                "the plugin did not answer within the state timeout".to_string(),
+            )))
     }
 
     pub fn load_state(&self, data: &[u8]) -> std::result::Result<(), StateError> {
         if self.lifecycle.is_crashed() {
             return Err(StateError::PluginCrashed);
+        }
+        // Refuse here as well as in the dispatcher. Not redundant: this saves
+        // copying a gigabyte into a command that is only going to be rejected,
+        // and it answers on the calling thread rather than after a round trip
+        // through the bridge.
+        if data.len() > crate::protocol::MAX_STATE_BYTES {
+            return Err(StateError::TooLarge {
+                bytes: data.len(),
+                limit: crate::protocol::MAX_STATE_BYTES,
+            });
         }
         let (ask_resp, reply) = ask::<std::result::Result<(), StateError>>();
         if !self.channels.push_command(Command::LoadState {

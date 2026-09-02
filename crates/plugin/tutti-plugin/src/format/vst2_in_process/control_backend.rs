@@ -108,8 +108,18 @@ impl HostParams for InProcessVst2Backend {
 }
 
 impl HostState for InProcessVst2Backend {
-    fn save_state(&self) -> Option<Vec<u8>> {
-        self.inner.lock().get_state().ok()
+    /// The plugin's own failure, forwarded rather than dropped — the same
+    /// change `load_state` below already made.
+    ///
+    /// This was `.ok()`, which threw away a reason that was already in hand and
+    /// left the caller unable to tell "the plugin has no state" from "asking it
+    /// failed". The in-process path cannot hit the transport's size limit, so
+    /// `Rejected` is the only failure it can produce.
+    fn save_state(&self) -> Result<Vec<u8>, StateError> {
+        self.inner
+            .lock()
+            .get_state()
+            .map_err(|e| StateError::Rejected(e.to_string()))
     }
 
     /// The plugin's own refusal, forwarded rather than dropped.

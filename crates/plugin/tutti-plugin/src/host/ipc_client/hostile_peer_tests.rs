@@ -23,6 +23,7 @@
 
 use super::PluginBridge;
 use crate::host::ipc_client::audio::BridgeThread;
+use crate::error::StateError;
 use crate::protocol::{
     BridgeMessage, ChannelLayout, HostMessage, ParamAddress, ParamId, SampleFormat, SlabLayout,
     PROTOCOL_VERSION,
@@ -118,6 +119,13 @@ enum Action {
     Die,
     /// Send a raw, deliberately malformed frame: `(advertised_len, body)`.
     Raw(u32, Vec<u8>),
+    /// Answer with a sequence of frames, in order.
+    ///
+    /// Needed for plugin state, which is chunked: a single-`Reply` mock cannot
+    /// produce a multi-frame answer, so without this the chunked path could
+    /// only be tested one chunk long — the length at which it is
+    /// indistinguishable from the single-frame shape it replaced.
+    ReplyMany(Vec<BridgeMessage>),
     /// Advertise `len`, then dribble one byte every `gap` — forever.
     ///
     /// The peer a per-syscall receive timeout cannot bound. `SO_RCVTIMEO`
@@ -180,6 +188,11 @@ impl MockServer {
                 match respond(msg) {
                     Action::Reply(m) => {
                         if send_bridge_msg(&stream, &m).is_err() {
+                            return;
+                        }
+                    }
+                    Action::ReplyMany(ms) => {
+                        if ms.iter().any(|m| send_bridge_msg(&stream, m).is_err()) {
                             return;
                         }
                     }
@@ -518,7 +531,7 @@ fn a_crash_during_save_state_does_not_block_the_caller_forever() {
         )
     });
     assert!(
-        saved.is_none(),
+        saved.is_err(),
         "save_state returned {saved:?} from a server that never answered \
          (after {elapsed:?})"
     );
@@ -760,8 +773,10 @@ fn a_truncated_body_is_not_mistaken_for_a_complete_message() {
 fn a_valid_but_wrong_reply_type_does_not_satisfy_the_request() {
     let mock = MockServer::start("wrong-type", |msg| match msg {
         // Asked for a parameter value; answer with state data instead.
-        HostMessage::GetParameter { .. } => Action::Reply(Box::new(BridgeMessage::StateData {
-            data: vec![1, 2, 3, 4],
+        HostMessage::GetParameter { .. } => Action::Reply(Box::new(BridgeMessage::StateChunk {
+            seq: 0,
+            last: true,
+            bytes: vec![1, 2, 3, 4],
         })),
         _ => Action::Silent,
     });
@@ -845,4 +860,125 @@ fn an_under_cap_dribble_is_stopped_by_the_total_deadline() {
     );
 }
 
+/// A large state survives the round trip, in both directions.
+///
+/// The regression this guards is the one the frame cap introduced: a state over
+/// `MAX_FRAME_BYTES` used to fail as a *crash* — `save_state` answering with a
+/// cause reading "Bridge process crashed" — which is indistinguishable from a
+/// segfault and loses the user's preset under a wrong explanation. It must now
+/// simply work, by travelling as chunks.
+///
+/// **Sized by `STATE_CHUNK_BYTES`, not by `MAX_FRAME_BYTES`.** What this test
+/// has to prove is that a state spanning *several* chunks reassembles in order
+/// and intact, and the chunk size is what decides that — a 68 MiB fixture
+/// proved the same property while moving 68 MiB through a socket, which under
+/// parallel load overran the harness's 10 s deadline and failed as a timeout
+/// rather than a defect. Three chunks and a remainder exercises every boundary
+/// the reassembler has: first, middle, last, and a partial final chunk.
+#[test]
+fn a_state_larger_than_one_frame_round_trips() {
+    use crate::protocol::STATE_CHUNK_BYTES;
 
+    // A byte pattern, not zeros: a chunking bug that drops or reorders a piece
+    // leaves the length right and the contents wrong, which zeros would hide.
+    let big: Vec<u8> = (0..STATE_CHUNK_BYTES * 3 + 4096)
+        .map(|i| (i % 251) as u8)
+        .collect();
+    let expected = big.clone();
+
+    let mock = MockServer::start("big-state", move |msg| match msg {
+        HostMessage::SaveState => Action::ReplyMany(
+            crate::util::transport::state_chunk::split(&big)
+                .map(|(seq, last, bytes)| BridgeMessage::StateChunk {
+                    seq,
+                    last,
+                    bytes: bytes.to_vec(),
+                })
+                .collect(),
+        ),
+        _ => Action::Silent,
+    });
+
+    let bridge = Arc::clone(&mock.bridge);
+    let (got, elapsed) = call_within(move || bridge.save_state())
+        .unwrap_or_else(|w| panic!("save_state on a multi-chunk state blocked for {w:?}"));
+    let got = got.unwrap_or_else(|e| {
+        panic!(
+            "a {}-byte state failed with {e} — a state larger than one frame \
+             must be carried, not refused",
+            expected.len()
+        )
+    });
+    assert_eq!(
+        got.len(),
+        expected.len(),
+        "reassembled state has the wrong length (after {elapsed:?})"
+    );
+    assert!(got == expected, "reassembled state does not match what was sent");
+
+    // Sanity: the fixture really did span several chunks. Without this the
+    // test would still pass if `STATE_CHUNK_BYTES` were raised past the
+    // fixture size, silently reverting to the single-frame shape it exists to
+    // distinguish itself from.
+    assert!(
+        crate::util::transport::state_chunk::split(&expected).count() >= 4,
+        "the fixture no longer spans multiple chunks, so this test would pass \
+         without chunking existing"
+    );
+}
+
+/// An over-limit `load_state` is a typed refusal, not a crash, and is instant.
+///
+/// Three separate regressions, which is why the assertions are three:
+///
+/// - **Typed.** It used to surface as
+///   `Rejected("the plugin did not answer within the state timeout")`, which
+///   says the plugin refused or hung. It did neither — the host declined to
+///   send. `TooLarge` names the real reason and carries both numbers.
+/// - **Instant.** The refusal is a length comparison, but the error propagated
+///   out of `handle` *before* `reply.send`, dropping the `Reply` and leaving
+///   the caller to wait out `STATE_TIMEOUT` for an answer the host already had.
+/// - **Non-fatal.** `pump` treats any `handle` error as connection-level, so
+///   one oversized preset called `crash()` on a healthy session. Nothing was
+///   written, so the socket is still synchronised and there is nothing to crash
+///   about — which is what separates this from an over-cap *receive*.
+#[test]
+fn an_oversized_load_state_is_refused_without_killing_the_bridge() {
+    use crate::protocol::MAX_STATE_BYTES;
+
+    let mock = MockServer::start("load-too-big", |_| Action::Silent);
+
+    // Not actually allocated at full size: `load_state` refuses on the length,
+    // so a `Vec` of the right length is what the check sees. Allocating a
+    // gigabyte to prove a comparison would make this test unrunnable.
+    let oversized = vec![0u8; MAX_STATE_BYTES + 1];
+    let start = Instant::now();
+    let err = mock
+        .bridge
+        .load_state(&oversized)
+        .expect_err("an over-limit state was accepted");
+    let elapsed = start.elapsed();
+
+    assert!(
+        matches!(err, StateError::TooLarge { .. }),
+        "an over-limit state reported {err:?}; the caller cannot tell a host \
+         limit from a plugin that refused or a subprocess that died"
+    );
+    assert!(
+        elapsed < Duration::from_secs(1),
+        "the refusal took {elapsed:?} — the caller is waiting out STATE_TIMEOUT \
+         for a length comparison the host made before sending anything"
+    );
+    assert!(
+        !mock.bridge.is_crashed(),
+        "an over-limit state killed the bridge; nothing was written, so the \
+         socket is still synchronised and the session was healthy"
+    );
+    // And the session must still work afterwards, which is the property
+    // `is_crashed` only implies.
+    assert!(
+        mock.bridge.load_state(b"small").is_err(),
+        "a later call should still reach the (silent) server and time out, \
+         rather than short-circuit on a latched crash"
+    );
+}

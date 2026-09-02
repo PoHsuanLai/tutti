@@ -76,7 +76,7 @@ pub(super) enum Command {
     Reset,
     Shutdown,
     SaveState {
-        reply: Reply<Option<Vec<u8>>>,
+        reply: Reply<std::result::Result<Vec<u8>, StateError>>,
     },
     LoadState {
         data: Vec<u8>,

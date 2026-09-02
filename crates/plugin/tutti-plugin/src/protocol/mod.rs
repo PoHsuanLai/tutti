@@ -128,7 +128,18 @@ pub mod shm;
 ///   chunk surfaced as a silently un-restored preset. Appended variant, mandatory
 ///   in both directions: a v18 host waits for this frame, so a v17 server hangs
 ///   the caller until the state timeout.
-pub const PROTOCOL_VERSION: u32 = 18;
+/// - v19: plugin state travels **chunked**. `HostMessage::LoadState` becomes
+///   `LoadStateChunk { seq, last, bytes }` and `BridgeMessage::StateData`
+///   becomes `StateChunk { seq, last, bytes }`, reassembled against
+///   [`MAX_STATE_BYTES`]. A one-frame state could not carry a
+///   sample-embedding instrument's preset: capping it at [`MAX_FRAME_BYTES`]
+///   made an oversized state fail as a *crash* (`save_state` answering `None`
+///   with cause "Bridge process crashed", indistinguishable from a segfault),
+///   which is exactly the silent, destructive loss `HostState::load_state`'s
+///   contract forbids. **Replaced, not appended** — the old single-frame
+///   variants are gone, so a v18 peer and a v19 peer cannot exchange state at
+///   all and the handshake must reject the pairing rather than let it half-work.
+pub const PROTOCOL_VERSION: u32 = 19;
 
 /// Largest control-socket frame body either end will allocate for, in bytes.
 ///
@@ -154,14 +165,49 @@ pub const PROTOCOL_VERSION: u32 = 18;
 /// by `ParameterList`, and `midi_out` is capped at `MIDI_STACK_CAPACITY`
 /// server-side.
 ///
-/// **Plugin state is the exception, and it does not fit.** A Kontakt- or
-/// Serum-class instrument embedding samples or wavetables routinely exceeds
-/// 64 MiB, and a plugin storing an impulse response or a recorded buffer
-/// trivially does. Raising *this* constant to cover that tail would re-widen
-/// the allocation surface for all traffic and still leave a wall somewhere; a
-/// larger number just moves the cliff. State needs a chunked transfer instead.
+/// **Plugin state is the exception, and it is not carried in one frame.**
+/// A Kontakt- or Serum-class instrument embedding samples or wavetables
+/// routinely exceeds 64 MiB, and a plugin storing an impulse response or a
+/// recorded buffer trivially does — so capping state at this number would
+/// silently lose a user's preset. State travels chunked instead
+/// ([`StateChunk`]), bounded on reassembly by [`MAX_STATE_BYTES`]. Each wire
+/// frame stays under this cap, so the allocation and deadline guarantees hold
+/// unchanged for state as well. Raising *this* constant to cover the state tail
+/// would re-widen the allocation surface for all traffic and still leave a wall
+/// somewhere; a larger number just moves the cliff.
 pub const MAX_FRAME_BYTES: usize = 64 * 1024 * 1024;
 
+/// Largest **reassembled** plugin-state blob either end will accept, in bytes.
+///
+/// Bounds the total across a [`StateChunk`] sequence, which is a different
+/// question from [`MAX_FRAME_BYTES`]: that one bounds a single allocation off a
+/// single unvalidated length, this one bounds an accumulation across many
+/// individually-valid frames. Without it, chunking would reintroduce the
+/// unbounded allocation the frame cap exists to prevent — a peer would simply
+/// send 64 MiB chunks forever.
+///
+/// 1 GiB, chosen to sit above the real tail and below anything that threatens
+/// the host. The largest plugin states in practice are sample-embedding
+/// instruments (Kontakt libraries, Serum wavetables) and convolution reverbs
+/// carrying impulse responses; these reach high hundreds of MiB but not
+/// gigabytes, because the formats themselves stream rather than inline beyond
+/// that. A blob past 1 GiB is a plugin misbehaving or a corrupt project file,
+/// and failing it with [`StateError::TooLarge`] is both honest and survivable —
+/// unlike an allocation the host cannot satisfy.
+///
+/// Deliberately *not* enforced by aborting the connection: an over-limit state
+/// is a per-command refusal, and the socket stays synchronised because the
+/// receiver stops accumulating and drains the rest of the sequence.
+pub const MAX_STATE_BYTES: usize = 1024 * 1024 * 1024;
+
+/// Payload size of one [`StateChunk`] on the wire.
+///
+/// Comfortably under [`MAX_FRAME_BYTES`] so the framed message — chunk bytes
+/// plus the `seq`/`last` header and bincode's own overhead — cannot approach
+/// the cap however the envelope grows. 4 MiB keeps a 1 GiB state to 256 round
+/// trips, which at local-socket speeds is not the bottleneck; the plugin's own
+/// `get_state`/`set_state` is.
+pub const STATE_CHUNK_BYTES: usize = 4 * 1024 * 1024;
 
 /// Validate a subprocess-reported protocol version against [`PROTOCOL_VERSION`].
 /// Called at each handshake consumer so a version skew fails loudly instead of

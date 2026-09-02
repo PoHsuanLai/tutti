@@ -129,8 +129,22 @@ pub trait HostParams: Send + Sync {
 /// Opaque preset-chunk save / load. Raw `Vec<u8>` — the bytes are the plugin's
 /// business (the same shape the loader-side `PluginState::get_state` returns).
 pub trait HostState: Send + Sync {
-    /// Serialize the plugin's current state, or `None` if it will not.
-    fn save_state(&self) -> Option<Vec<u8>>;
+    /// Serialize the plugin's current state.
+    ///
+    /// Returns [`Result`] for the same reason
+    /// [`load_state`](Self::load_state) does, and the argument is if anything
+    /// stronger here: this is the direction that **loses data**. The signature
+    /// was `Option<Vec<u8>>`, which has exactly one failure value and therefore
+    /// could not distinguish "the plugin declined" from "the plugin died" from
+    /// "the state was too large to carry". A DAW saving a project saw `None`,
+    /// wrote no state, and — because the transport reported an oversized state
+    /// as a crash — told the user their plugin had crashed when it had not.
+    ///
+    /// A plugin that legitimately has nothing to save answers `Ok(vec![])`, so
+    /// emptiness stays representable without overloading the error channel.
+    ///
+    /// [`Result`]: std::result::Result
+    fn save_state(&self) -> Result<Vec<u8>, StateError>;
 
     /// Restore a blob previously produced by [`save_state`](Self::save_state).
     ///

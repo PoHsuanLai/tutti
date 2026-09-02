@@ -411,16 +411,19 @@ fn a_tail_change_reaches_the_listener() {
 #[test]
 fn handle_save_state_roundtrip() {
     let (handle, _bridge_handle, _server_thread) = handle_with_mock_server(|msg| match msg {
-        HostMessage::SaveState => Some(BridgeMessage::StateData {
-            data: vec![0xDE, 0xAD, 0xBE, 0xEF],
+        HostMessage::SaveState => Some(BridgeMessage::StateChunk {
+            seq: 0,
+            last: true,
+            bytes: vec![0xDE, 0xAD, 0xBE, 0xEF],
         }),
-        // LoadState is fire-and-forget at the bridge level; no response.
-        HostMessage::LoadState { .. } => None,
+        // A load is answered only on its final chunk; this mock sends none,
+        // which is the "no response" this test's other arms rely on.
+        HostMessage::LoadStateChunk { .. } => None,
         _ => None,
     });
 
     let state = handle.state().save_state();
-    assert_eq!(state.unwrap(), vec![0xDE, 0xAD, 0xBE, 0xEF]);
+    assert_eq!(state.expect("mock answered"), vec![0xDE, 0xAD, 0xBE, 0xEF]);
 }
 
 #[test]

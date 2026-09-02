@@ -5,7 +5,7 @@ pub use error::{BridgeError, EditorError, LoadStage, Result};
 
 mod format;
 mod host;
-mod util;
+pub(crate) mod util;
 
 pub(crate) mod protocol;
 

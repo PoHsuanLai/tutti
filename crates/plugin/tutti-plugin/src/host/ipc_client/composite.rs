@@ -183,7 +183,14 @@ impl PluginBridge {
 
         // Sync state from audio (source of truth) to GUI after opening.
         // Some plugins crash if set_state is called before the editor is attached.
-        let state_to_sync = self.audio.save_state();
+        // Best-effort: a state we cannot read means the GUI instance opens at
+        // its defaults, which is visibly wrong but not destructive — the audio
+        // instance remains the source of truth and nothing is written back. So
+        // this logs rather than failing the editor open, which would leave the
+        // user with no window at all.
+        let state_to_sync = self.audio.save_state().inspect_err(|e| {
+            tracing::warn!("[bridge] could not mirror plugin state into the editor: {e}");
+        });
 
         tracing::info!("[bridge] open_editor: calling gui.open_editor(parent={parent_ptr:?})");
         // SAFETY: `parent_ptr` is the platform-native window pointer
@@ -199,7 +206,7 @@ impl PluginBridge {
         );
 
         // Sync state after editor is open (some plugins need the view attached first).
-        if let Some(state) = state_to_sync {
+        if let Ok(state) = state_to_sync {
             tracing::info!(
                 "[bridge] open_editor: syncing {} bytes of state post-open",
                 state.len()
@@ -234,12 +241,19 @@ impl PluginBridge {
         // Read before the open, as the embedded path does: audio is the source
         // of truth for state, and some plugins refuse `set_state` until their
         // view exists.
-        let state_to_sync = self.audio.save_state();
+        // Best-effort: a state we cannot read means the GUI instance opens at
+        // its defaults, which is visibly wrong but not destructive — the audio
+        // instance remains the source of truth and nothing is written back. So
+        // this logs rather than failing the editor open, which would leave the
+        // user with no window at all.
+        let state_to_sync = self.audio.save_state().inspect_err(|e| {
+            tracing::warn!("[bridge] could not mirror plugin state into the editor: {e}");
+        });
 
         gui.open_floating_editor()
             .map_err(|e| EditorError::PluginError(e.to_string()))?;
 
-        if let Some(state) = state_to_sync {
+        if let Ok(state) = state_to_sync {
             let _ = gui.set_state(&state);
         }
 
@@ -286,7 +300,7 @@ impl PluginBridge {
         }
     }
 
-    pub fn save_state(&self) -> Option<Vec<u8>> {
+    pub fn save_state(&self) -> std::result::Result<Vec<u8>, crate::error::StateError> {
         self.audio.save_state()
     }
 
@@ -447,7 +461,7 @@ impl crate::host::handles::capabilities::HostParams for SubprocessBackend {
 }
 
 impl crate::host::handles::capabilities::HostState for SubprocessBackend {
-    fn save_state(&self) -> Option<Vec<u8>> {
+    fn save_state(&self) -> std::result::Result<Vec<u8>, StateError> {
         self.bridge.save_state()
     }
 

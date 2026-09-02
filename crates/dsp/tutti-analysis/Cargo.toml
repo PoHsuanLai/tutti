@@ -43,7 +43,13 @@ serde = { version = "1", features = ["derive"], optional = true }
 default = []
 # `dep:serde` (not bare `serde`) so this feature replaces the implicit
 # optional-dep feature rather than colliding with it.
-serde = ["dep:serde"]
+#
+# `tutti-types/serde` is not optional bookkeeping: the only type this feature
+# derives on (`PitchResult`) is built from `Hz` and `Confidence`, so without it
+# the derive fails to find `Serialize`/`Deserialize` on its own fields and the
+# crate does not compile under `--all-features`. Any new `serde` derive here
+# will be over unit newtypes too, so the edge stays required.
+serde = ["dep:serde", "tutti-types/serde"]
 
 [dev-dependencies]
 # Reproducible noise for the correlation tests, which otherwise hand-roll a

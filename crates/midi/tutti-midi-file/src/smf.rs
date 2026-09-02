@@ -363,8 +363,9 @@ fn track_name(track: &Track) -> Option<String> {
 #[derive(Debug, Clone)]
 pub struct MidiWriteConfig {
     /// The header's division — SMF ticks per quarter note. Defaults to 480. Sets
-    /// the write resolution: an event's tick is `beat * ticks_per_beat`
-    /// truncated, so a coarse value quantises onsets.
+    /// the write resolution: an event's tick is `beat * ticks_per_beat` rounded
+    /// to nearest, so a coarse value quantises onsets — to the closest tick,
+    /// never systematically early.
     pub ticks_per_beat: u16,
     /// Tempo for the Set Tempo meta event on the first track. `None` writes no
     /// tempo, leaving a reader to assume the SMF default of 120.
@@ -472,7 +473,30 @@ fn build_track<'a>(
 
     let mut last_tick: u32 = 0;
     for event in &sorted {
-        let abs_tick = (event.time_beats.get() * tpb) as u32;
+        // Rounded to nearest, not truncated. The engine's convention for a
+        // *position* conversion is round-to-nearest (`Seconds::to_samples`,
+        // whose floor/ceil siblings are separately named precisely so the bare
+        // form can mean "nearest"), and a tick is a position.
+        //
+        // Truncation was not merely half a tick less accurate — it was biased
+        // one direction, which is what made it a bug rather than a rounding
+        // choice. A beat reached by repeated addition lands just *below* its
+        // exact value about half the time (`1/3 * 6` is 1.9999999999999998),
+        // and truncation turns every one of those into a tick one early: beat
+        // 2.0 written as 959 instead of 960. Over a triplet figure that is 18
+        // early onsets in 39. Rounding absorbs the representation error the
+        // whole way, since a musical subdivision is exact on a 480-tick grid
+        // and the float noise is many orders of magnitude below half a tick.
+        //
+        // Ties (an exact `.5`, reachable only from a beat genuinely off-grid)
+        // round away from zero, `f64::round`'s rule. Which way a tie goes is
+        // not musically meaningful — a value landing exactly between two ticks
+        // is already past the file's resolution — but it is deterministic, so
+        // the same input always writes the same bytes.
+        //
+        // `f64::round` before the cast, so the saturating cast still clamps a
+        // beat beyond `u32::MAX` ticks rather than wrapping.
+        let abs_tick = (event.time_beats.get() * tpb).round() as u32;
         let delta = abs_tick.saturating_sub(last_tick);
         last_tick = abs_tick;
 
@@ -620,6 +644,107 @@ mod tests {
         assert_eq!(parsed.events.len(), 2);
         assert!((parsed.events[0].time_beats - Beat(0.0)).abs() < BeatDuration(0.001));
         assert!((parsed.events[1].time_beats - Beat(1.0)).abs() < BeatDuration(0.001));
+    }
+
+    /// Beat->tick rounds to nearest, asserted on the tick itself rather than
+    /// through a write->read round trip.
+    ///
+    /// The round-trip tests above cannot see this. They use integer beats,
+    /// which are exact on any grid, and they compare beats back with a
+    /// `0.001`-beat tolerance — nearly half a tick at 480 tpb, so a one-tick
+    /// error passes. This asserts the integer the encoder actually computes.
+    #[test]
+    fn beat_to_tick_rounds_to_nearest() {
+        let at = |beats: f64| SmfTimedEvent {
+            time_beats: Beat(beats),
+            channel: 0,
+            msg: SmfMessage::NoteOn {
+                key: 60.into(),
+                vel: 100.into(),
+            },
+        };
+        let config = MidiWriteConfig {
+            ticks_per_beat: 480,
+            ..Default::default()
+        };
+        // `build_track` emits deltas, so a single event's delta is its
+        // absolute tick.
+        let tick_of = |beats: f64| {
+            let track = build_track(&[at(beats)], &config, false);
+            track[0].delta.as_int()
+        };
+
+        // Off-grid, below the midpoint: 0.5008 beats is 240.384 ticks.
+        assert_eq!(tick_of(0.500_8), 240, "below midpoint rounds down");
+        // Off-grid, above the midpoint: 0.5015 beats is 240.72 ticks.
+        assert_eq!(tick_of(0.501_5), 241, "above midpoint rounds up");
+
+        // The regression this replaced truncation for. A beat reached by
+        // repeated addition of a triplet lands just under its exact value;
+        // truncation wrote it a whole tick early.
+        let mut accumulated = 0.0_f64;
+        for _ in 0..6 {
+            accumulated += 1.0 / 3.0;
+        }
+        assert!(accumulated < 2.0, "the float lands just under two beats");
+        assert_eq!(
+            tick_of(accumulated),
+            960,
+            "an accumulated beat 2 writes tick 960, not 959"
+        );
+
+        // Exact multiples are unaffected in either direction.
+        assert_eq!(tick_of(0.0), 0);
+        assert_eq!(tick_of(1.0), 480);
+        assert_eq!(tick_of(0.25), 120);
+    }
+
+    /// The delta-time varint on the wire, byte for byte.
+    ///
+    /// Asserts the encoded bytes directly rather than parsing them back, so a
+    /// rounding change shows up as a differing file and not merely as a
+    /// differing in-memory value. 481 ticks is deliberately over the 127-tick
+    /// single-byte varint ceiling, making this a check of the multi-byte
+    /// encoding too: 481 = 0b11_1100001 -> `0x83 0x61`.
+    #[test]
+    fn delta_time_varint_golden_bytes() {
+        // 1.0015 beats is 480.72 ticks at 480 tpb: rounds to 481, truncates
+        // to 480 — a one-byte difference in the file.
+        let events = vec![SmfTimedEvent {
+            time_beats: Beat(1.001_5),
+            channel: 0,
+            msg: SmfMessage::NoteOn {
+                key: 60.into(),
+                vel: 100.into(),
+            },
+        }];
+        let data = encode_midi_file(
+            &[events],
+            &MidiWriteConfig {
+                ticks_per_beat: 480,
+                tempo_bpm: None,
+                time_signature: None,
+            },
+        )
+        .unwrap();
+
+        // Header: "MThd", length 6, format 0, 1 track, division 480 (0x01E0).
+        assert_eq!(
+            &data[..14],
+            &[
+                0x4D, 0x54, 0x68, 0x64, 0x00, 0x00, 0x00, 0x06, 0x00, 0x00, 0x00, 0x01, 0x01, 0xE0
+            ],
+            "header"
+        );
+        // Track chunk: "MTrk", then the length, then the events.
+        assert_eq!(&data[14..18], b"MTrk", "track magic");
+        // First event: delta 481 as the varint `0x83 0x61`, then NoteOn on
+        // channel 0 (0x90), key 60 (0x3C), velocity 100 (0x64).
+        assert_eq!(
+            &data[22..27],
+            &[0x83, 0x61, 0x90, 0x3C, 0x64],
+            "delta varint 481 then NoteOn — truncation would write 0x83 0x60"
+        );
     }
 
     #[test]

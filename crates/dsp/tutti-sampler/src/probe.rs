@@ -144,15 +144,25 @@ mod tests {
     #[cfg(feature = "wav")]
     use std::io::Write;
 
-    /// A minimal real PCM wav. `frames` frames of stereo silence.
+    /// A minimal real PCM wav, `frames` frames of stereo silence, written
+    /// inside a caller-owned [`TempDir`](tempfile::TempDir).
+    ///
+    /// The directory is the caller's, not this helper's, for a reason that cost
+    /// a flake: this used to write into a *fixed* shared path
+    /// (`temp_dir()/tutti_sampler_probe_tests`) with a fixed file name per
+    /// test. nextest runs each test in its own process, so two runs of the
+    /// suite — or one run alongside anything else using that path — had two
+    /// processes creating, reading and `remove_file`-ing the same bytes, and a
+    /// probe could see a half-written or already-deleted file. Handing each
+    /// test its own `TempDir` removes the sharing rather than trying to
+    /// sequence it, and the directory is cleaned up on drop, so no test needs
+    /// to remove its own file.
     ///
     /// Gated to match its two callers, which are both `#[cfg(feature = "wav")]`
     /// — a build with a different codec on has no use for a hand-rolled WAV.
     #[cfg(feature = "wav")]
-    fn write_wav(name: &str, frames: usize) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join("tutti_sampler_probe_tests");
-        std::fs::create_dir_all(&dir).expect("temp dir");
-        let path = dir.join(name);
+    fn write_wav(dir: &tempfile::TempDir, name: &str, frames: usize) -> std::path::PathBuf {
+        let path = dir.path().join(name);
         let mut f = std::fs::File::create(&path).expect("create");
         let data = (frames * 2 * 2) as u32;
         f.write_all(b"RIFF").unwrap();
@@ -174,7 +184,8 @@ mod tests {
     #[test]
     #[cfg(feature = "wav")]
     fn a_wav_reports_its_header_without_decoding() {
-        let path = write_wav("probe_ok.wav", 4800);
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = write_wav(&dir, "probe_ok.wav", 4800);
         let facts = probe(&path).expect("readable");
         assert_eq!(facts.frames, Some(Samples(4800)));
         assert_eq!(facts.sample_rate, SampleRate::from(48_000u32));
@@ -183,7 +194,6 @@ mod tests {
             facts.streamable,
             "a local PCM wav has a frame count and seeks"
         );
-        std::fs::remove_file(&path).ok();
     }
 
     #[test]
@@ -215,9 +225,9 @@ mod tests {
     #[test]
     #[cfg(feature = "wav")]
     fn a_zero_length_file_still_probes() {
-        let path = write_wav("probe_empty.wav", 0);
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = write_wav(&dir, "probe_empty.wav", 0);
         let facts = probe(&path).expect("an empty wav is still a valid wav");
         assert_eq!(facts.frames, Some(Samples(0)));
-        std::fs::remove_file(&path).ok();
     }
 }

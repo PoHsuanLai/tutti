@@ -35,6 +35,7 @@
 
 extern crate alloc;
 
+pub mod buffer;
 pub mod num;
 
 // Re-exported at the root, because the fork's `lib.rs` defined them there and

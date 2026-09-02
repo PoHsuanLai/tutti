@@ -60,7 +60,14 @@ pub mod audionode;
 pub mod audiounit;
 pub mod biquad;
 pub mod biquad_bank;
-pub mod buffer;
+/// The planar block buffers, re-exported from [`tutti_node`].
+///
+/// Kept as a module rather than a flat re-export because callers spell
+/// `fundsp::buffer::BufferArray` (`tutti-core`'s `engine.rs` does), and the
+/// preludes `pub use super::buffer::*`. Both keep working.
+pub mod buffer {
+    pub use tutti_node::buffer::*;
+}
 pub mod combinator;
 pub mod delay;
 pub mod denormal;

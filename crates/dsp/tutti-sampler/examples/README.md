@@ -22,20 +22,29 @@ principles — an octave is 2x, a fifth is `2**(7/12)` — never from the Rust. 
 re-measures frequency by FFT peak with parabolic interpolation, plus purity,
 level, and block-RMS ripple. It is a second opinion, not a restatement.
 
-That paid for itself immediately: it found that `VoicePool` never applies
-`stretch::Unit::input_rate` (see below), which the Rust suite could not see
-because it had no test rendering a stretched *placed* voice end to end.
+That paid for itself immediately: it found that `VoicePool` never applied
+`stretch::Unit::input_rate`, so every stretch behaved as varispeed — the Rust
+suite could not see it, having no test that rendered a stretched *placed* voice
+end to end. That defect is **fixed**: `input_rate` is now read on both tiers and
+in both drive paths (`voice/slot.rs`), and all six `stretch_*` cases pass.
 
 ## Reading the output
 
-- **`ok`** — measured within tolerance.
-- **`KNOWN-BUG`** — a real defect, reported rather than hidden. Today: the six
-  `stretch_*` cases. `VoicePool` steps the source by `window_rate()` (varispeed
-  only) and never calls `input_rate`, which has **zero call sites** in the crate
-  on any branch. So the vocoder is fed one source sample per output sample and
-  the stretch factor behaves as varispeed — pitch moves by the factor, duration
-  does not change. The `stretch::Unit` half is correct and unit-tested; the
-  assembly never wires it.
+- **`ok`** — measured within tolerance. Every case is `ok` today: 13 tonal
+  cases plus the 2 seek cases.
+- **`KNOWN-BUG`** — a real defect, reported rather than hidden. **No case is
+  in this state right now.** The verdict is kept because reporting a defect
+  beats suppressing one: when the judge and the engine disagree and the *judge*
+  is right, the case is marked here rather than having its tolerance widened
+  until it passes.
+
+  It last held the six `stretch_*` cases, when `VoicePool` stepped the source by
+  `window_rate()` alone (varispeed) and never called `input_rate` — the vocoder
+  got one source sample per output sample, so the stretch factor moved pitch
+  instead of duration. `input_rate` is now read in all four places that drive a
+  stretched voice (`voice/slot.rs`), memory and disk tiers, `tick` and `process`
+  alike, and the judge measures `stretch_half` at 439.9 Hz — unshifted, which is
+  what separates a real time-stretch from the varispeed it used to be.
 - **0%-overlap exemption** — `pitch_down_two_octaves` and
   `stretch_half_pitch_down` reach an effective factor of 0.25, where the analysis
   hop equals the 2048 window and consecutive frames share no samples. A phase

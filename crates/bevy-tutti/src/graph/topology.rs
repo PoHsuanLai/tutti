@@ -180,6 +180,9 @@ pub fn build(
         if !graph.0.contains(node.0) {
             continue;
         }
+        // `mut` only under `modulation`: without that feature no shaper exists,
+        // so nothing writes to the spec after it is built.
+        #[cfg_attr(not(feature = "modulation"), allow(unused_mut))]
         let mut spec = spec_of(graph, node.0);
         // A shaper's identity is not observable from its unit: `ParamShaperNode`
         // bakes depth, polarity and curve into a LUT and exposes no accessor, so

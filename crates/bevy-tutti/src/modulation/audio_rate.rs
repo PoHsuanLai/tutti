@@ -213,8 +213,8 @@ fn group_routes<'a>(
 /// back to the value path, which is always correct.
 #[allow(
     clippy::too_many_arguments,
-    reason = "the chain needs its sink entity, its sink node, the param, its \
-              range and the route group; bundling them would only move the list"
+    reason = "the chain needs its sink entity, the param, its range, the route \
+              group and the port declarations; bundling them would only move the list"
 )]
 fn spawn_chain(
     commands: &mut Commands<'_, '_>,

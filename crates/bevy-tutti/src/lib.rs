@@ -154,9 +154,10 @@ pub use engine::AudioEngineState;
 pub mod prelude {
     pub use crate::graph::{
         commit_graph, crossfade_audio_node, engine_ready, AudioConfig, AudioGraphRes, AudioParam,
-        AudioParamAppExt, AudioPump, AudioPumpAppExt, AudioTapRes, EngineNodes, GraphDirty,
-        GraphReconcilePlugin, GraphReconcileSystems, InsertAudioNode, MasterSources, MeteringRes,
-        MetronomeRes, PortSource, PortSources, PumpFinished, SpawnAudioNode, TransportRes,
+        AudioParamAppExt, AudioPump, AudioPumpAppExt, AudioTapRes, DeclareParamPorts, EngineNodes,
+        GraphDirty, GraphReconcilePlugin, GraphReconcileSystems, InsertAudioNode, MasterSources,
+        MeteringRes, MetronomeRes, ParamPortMap, PortSource, PortSources, PumpFinished,
+        SpawnAudioNode, TransportRes,
     };
     pub use crate::{
         AudioDeviceState, AudioEngineState, ChannelCompensation, DeviceInfo, GraphLatency,

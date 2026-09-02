@@ -118,6 +118,13 @@ pub mod holes;
 
 pub use holes::HOLE_NONE;
 
+/// OUT-OF-PROCESS probe: switches selected by **environment** rather than by an
+/// `extern "C"` call, for the host suites whose plugin lives in a
+/// `plugin-server` subprocess. A `dlopen` from those tests would load a second
+/// image with its own statics, so a symbol switch would flip a flag the running
+/// plugin never reads. See the module docs.
+pub mod subprocess;
+
 /// Plugin id the host instantiates by. The conformance test does not need
 /// to know this — the host reads it from the descriptor — but keep it
 /// stable and recognizable.
@@ -378,6 +385,12 @@ unsafe extern "C" fn plugin_process(
         return CLAP_PROCESS_CONTINUE;
     }
     let p = &*process;
+
+    // OUT-OF-PROCESS: abort or park, per the environment switches. First,
+    // before any capture: a test that asks for a crash on block N wants the
+    // process gone at the top of block N, not after it has recorded a block it
+    // never finished.
+    subprocess::on_process_entry();
 
     let mut cap = ProcessCapture {
         valid: true,
@@ -809,6 +822,11 @@ static FACTORY: clap_plugin_factory = clap_plugin_factory {
 // ---------------------------------------------------------------------------
 
 unsafe extern "C" fn entry_init(_plugin_path: *const c_char) -> bool {
+    // Read the out-of-process switches once, here, rather than per instance:
+    // this runs before the factory can create anything, so no `process()` call
+    // can observe a half-configured probe. Harmless in the in-process suites —
+    // absent variables leave every switch at its default.
+    subprocess::configure();
     true
 }
 
@@ -1065,6 +1083,10 @@ unsafe fn render_output(p: &clap_process) {
     if mode == RenderMode::Inert {
         return;
     }
+    // Whether the `Gain` parameter is applied to what this block renders. Off
+    // unless a test armed it, so every suite written before gain existed
+    // renders exactly what it did before.
+    let gain_on = subprocess::apply_gain();
     if p.audio_outputs.is_null() {
         return;
     }
@@ -1144,6 +1166,43 @@ unsafe fn render_output(p: &clap_process) {
     if let Some(d) = delay.as_mut() {
         let len = d.lines[0].len();
         d.cursor = (cursor_start + frames) % len;
+    }
+
+    // GAIN: scale what the mode just wrote, sample by sample, honouring each
+    // parameter event's `time`.
+    //
+    // A second pass rather than a factor folded into each arm above. The arms
+    // differ in what they *read* — input, a tag, a delay line — but not in what
+    // gain means, and threading a multiply through five of them would put the
+    // same decision in five places. It also keeps the gain strictly after the
+    // delay line's write, so the ring stores the plugin's input rather than its
+    // attenuated output; storing the scaled value would make a mid-block gain
+    // change re-scale audio that had already been through the line, and the
+    // second scaling would surface 137 samples later as a value no test could
+    // name.
+    //
+    // The per-sample `apply_param_events_through` is what makes a mid-block
+    // change land at its own `time`: a host that ignores the sample offset and
+    // applies every point at frame 0 attenuates the whole block, which is a
+    // different waveform and not a rounding difference.
+    if gain_on {
+        for port in 0..p.audio_outputs_count {
+            let out: &clap_audio_buffer = &*p.audio_outputs.add(port as usize);
+            if out.data32.is_null() {
+                continue;
+            }
+            for ch in 0..out.channel_count {
+                let dst = *out.data32.add(ch as usize);
+                if dst.is_null() {
+                    continue;
+                }
+                let dst = std::slice::from_raw_parts_mut(dst, frames);
+                for (i, sample) in dst.iter_mut().enumerate() {
+                    params_state::apply_param_events_through(p.in_events, i as u32);
+                    *sample *= params_state::gain_amplitude();
+                }
+            }
+        }
     }
 }
 

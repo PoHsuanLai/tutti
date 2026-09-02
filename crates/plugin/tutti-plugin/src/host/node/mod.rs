@@ -28,6 +28,14 @@ pub(crate) mod transport_source;
 
 #[cfg(test)]
 mod process_pipeline_tests;
+// The block-budget suite driven by a REAL plugin subprocess, as opposed to
+// `process_pipeline_tests`' mock servers. A unit test rather than an
+// integration one because it asserts on `PluginBridge::settled_replies`, which
+// is `#[cfg(test)]` — deliberately, since nothing in the shipping host reads it
+// and an always-compiled accessor with no caller reads as API someone may
+// depend on. `clap` because it needs a `plugin-server` built with that loader.
+#[cfg(all(test, feature = "clap"))]
+mod real_stall_tests;
 #[cfg(test)]
 mod tests;
 

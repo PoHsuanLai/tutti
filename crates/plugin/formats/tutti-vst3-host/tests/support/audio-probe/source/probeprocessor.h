@@ -127,6 +127,20 @@ private:
 	/// Ramp value per sample for the current block (see `kModeParamRamp`).
 	std::vector<double> mRampAt;
 
+	/// Gain **as a linear amplitude** at each sample of the current block.
+	///
+	/// Materialised per sample for the same reason `mRampAt` is: a parameter
+	/// change carries a `sampleOffset`, and a host that ignores it applies the
+	/// change to the whole block. Collapsing this to a single scalar would make
+	/// that host indistinguishable from a correct one — the block would simply
+	/// be uniformly loud or uniformly quiet either way, and no assertion on the
+	/// samples could tell which.
+	///
+	/// Linear, not decibels: it is multiplied per sample, so converting here
+	/// once per point is cheaper than per sample, and it keeps the conversion in
+	/// one place rather than at every multiply.
+	std::vector<double> mGainAt;
+
 	/// Blocks processed since `setActive(true)` — the `kModeBlockCounter`
 	/// clock. Reset on activation so a test gets a deterministic origin.
 	int64 mBlockIndex {0};

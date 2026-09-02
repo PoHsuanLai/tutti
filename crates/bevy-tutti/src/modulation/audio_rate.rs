@@ -68,14 +68,6 @@ pub struct ParamChain {
     pub sum: Entity,
     /// One shaper per route, in the order their offsets occupy the sum's ports.
     pub shapers: Vec<Entity>,
-    /// The shaping each live shaper was **built with**.
-    ///
-    /// `ParamShaperNode` bakes depth, polarity and curve into a LUT at
-    /// construction and exposes no setter, so the only way to know a route's
-    /// shaping has moved is to remember what the node was made from. Without
-    /// this the reconciler's sole identity test is the group's *arity*, and a
-    /// depth slider — which changes no count — is invisible to it.
-    shaping: Vec<tutti_nodes::ParamModShaping>,
     /// The sink's param-port index, resolved from `ParamPorts` at spawn.
     pub port: usize,
     /// The atomic the base unit reads — **the chain's single base owner**.
@@ -128,6 +120,31 @@ impl ParamChain {
         }
     }
 }
+
+/// The shaping a live [`ParamShaperNode`](tutti_nodes::ParamShaperNode) was
+/// **built with**, carried by the shaper's own entity.
+///
+/// `ParamShaperNode` bakes depth, polarity and curve into a LUT at construction
+/// and exposes no setter, so a reconciler can only tell that a depth slider
+/// moved by comparing the declaration against what the node was made from.
+///
+/// # Why this is a component and not a field on the chain
+///
+/// It used to be `AudioRateChains::shaping: Vec<ParamModShaping>` — a parallel
+/// vector, index-aligned with `ParamChain::shapers`, living in a resource. That
+/// is a second owner of a fact the shaper entity already embodies, and the two
+/// could disagree: the vector was written at spawn and patched in place on every
+/// reshape, so any path that replaced a shaper without updating its slot left
+/// the reconciler comparing against a node that no longer existed.
+///
+/// Keyed to the entity instead, the shaping cannot drift from the node it
+/// describes — despawning the shaper takes its shaping with it, and the index
+/// alignment that made a stale slot possible is gone. "Did this route's shaping
+/// move" becomes a comparison against the value on the entity, which is the same
+/// question the [`Topology`](tutti_types::graph::Topology) asks of everything
+/// else.
+#[derive(Component, Debug, Clone, Copy, PartialEq)]
+pub struct ShaperShaping(pub tutti_nodes::ParamModShaping);
 
 /// Every audio-rate chain currently materialised, by the param it drives.
 ///
@@ -254,7 +271,14 @@ fn spawn_chain(
     let mut shapers = Vec::with_capacity(routes.len());
     let mut sum_sources = PortSources::silent().with(0, PortSource::node(base));
     for (i, (&shaper_id, &feed)) in built.shapers.iter().zip(feeds.iter()).enumerate() {
-        let shaper = commands.spawn(tutti_core::AudioNode(shaper_id)).id();
+        let shaper = commands
+            .spawn((
+                tutti_core::AudioNode(shaper_id),
+                // The shaping rides the entity that carries the node it built,
+                // so the two cannot drift apart.
+                ShaperShaping(shaping[i]),
+            ))
+            .id();
         commands.entity(shaper).insert(PortSources::from(feed));
         // Offsets occupy ports 1..=N, in group order.
         sum_sources = sum_sources.with(i + 1, PortSource::node(shaper));
@@ -282,7 +306,6 @@ fn spawn_chain(
         base,
         sum,
         shapers,
-        shaping,
         port,
         base_cell,
         bounds,
@@ -435,6 +458,7 @@ pub fn reconcile_audio_rate(
     ranges: Query<&ModParamRange>,
     source_nodes: Query<(Entity, &ModSourceNode)>,
     ports: Query<&crate::graph::ParamPortMap>,
+    shaping: Query<&ShaperShaping>,
     changed: RouteChanged,
     mut removed: RemovedComponents<ModRoute>,
 ) {
@@ -502,6 +526,7 @@ pub fn reconcile_audio_rate(
                 key,
                 &group,
                 &source_nodes,
+                &shaping,
             );
             continue;
         }
@@ -557,6 +582,7 @@ fn reshape_chain(
     key: ParamKey,
     routes: &[&ModRoute],
     source_nodes: &HashMap<Entity, Entity>,
+    shaping: &Query<&ShaperShaping>,
 ) {
     let Some(chain) = chains.0.get_mut(&key) else {
         return;
@@ -569,13 +595,23 @@ fn reshape_chain(
             polarity: route.polarity,
             curve: route.curve,
         };
-        if chain.shaping.get(i) == Some(&want) {
+        // The comparison is against the value on the shaper's own entity, so a
+        // shaper replaced by any path carries its own answer — there is no
+        // index-aligned sidecar left to go stale.
+        if chain
+            .shapers
+            .get(i)
+            .and_then(|&e| shaping.get(e).ok())
+            .is_some_and(|live| live.0 == want)
+        {
             continue;
         }
 
         let unit = tutti_nodes::ParamShaperNode::new(want.depth, want.polarity, want.curve);
         let id = graph.0.add(unit);
-        let replacement = commands.spawn(tutti_core::AudioNode(id)).id();
+        let replacement = commands
+            .spawn((tutti_core::AudioNode(id), ShaperShaping(want)))
+            .id();
 
         // The new shaper needs the same feed the old one had. Re-declared from
         // the route rather than copied off the old entity, because the route is
@@ -592,7 +628,6 @@ fn reshape_chain(
 
         let old = std::mem::replace(&mut chain.shapers[i], replacement);
         commands.entity(old).despawn();
-        chain.shaping[i] = want;
 
         // The sum's declaration names the shaper *entity*, so it has to be
         // re-declared with the replacement. Built once and inserted after the

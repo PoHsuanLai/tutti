@@ -181,6 +181,11 @@ void AudioProbeProcessor::consumeParameterChanges (ProcessData& data)
 {
 	const int32 frames = data.numSamples > 0 ? data.numSamples : 0;
 	mRampAt.assign (static_cast<size_t> (frames), mRamp);
+	// Held at the value carried over from the previous block until the first
+	// point, exactly as the ramp is. A block with no gain automation therefore
+	// renders at whatever the last block ended on, which is what "the parameter
+	// keeps its value" means.
+	mGainAt.assign (static_cast<size_t> (frames), mGain);
 
 	if (!data.inputParameterChanges)
 		return;
@@ -232,6 +237,35 @@ void AudioProbeProcessor::consumeParameterChanges (ProcessData& data)
 				mRampAt[static_cast<size_t> (i)] = prevValue;
 			mRamp = prevValue;
 		}
+		else if (id == kParamGain)
+		{
+			// Materialise per sample, and STEP at each point rather than
+			// interpolating between them: a gain is a level, not a curve, so
+			// its value between two automation points is the earlier point's.
+			// (`kParamRamp` interpolates because that is what it exists to
+			// test; doing both here would make one mode answer two questions.)
+			//
+			// Points are consumed in queue order *without sorting*, for the
+			// same reason the ramp does not sort: if the host delivers them out
+			// of order the rendered level is wrong, and the host test sees it
+			// as wrong audio rather than as nothing at all.
+			//
+			// The whole point of the per-sample table is the `sampleOffset`. A
+			// host that ignores it and applies every point at frame 0 makes the
+			// entire block one level — a different waveform, and the failure
+			// this exists to catch.
+			for (int32 p = 0; p < numPoints; ++p)
+			{
+				int32 offset = 0;
+				ParamValue value = 0.0;
+				if (queue->getPoint (p, offset, value) != kResultOk)
+					continue;
+				offset = std::clamp (offset, 0, frames);
+				for (int32 i = offset; i < frames; ++i)
+					mGainAt[static_cast<size_t> (i)] = value;
+				mGain = value;
+			}
+		}
 		else
 		{
 			// Non-ramp parameters: last point wins, as usual.
@@ -242,8 +276,6 @@ void AudioProbeProcessor::consumeParameterChanges (ProcessData& data)
 			if (id == kParamMode)
 				mMode =
 				    static_cast<int32> (value * static_cast<double> (kModeStepCount) + 0.5);
-			else if (id == kParamGain)
-				mGain = value;
 		}
 	}
 }
@@ -496,6 +528,42 @@ void AudioProbeProcessor::renderBlock (ProcessData& data)
 						dst[i] = static_cast<T> (in + probeTag (bus, ch));
 					}
 					break;
+			}
+		}
+	}
+
+	// GAIN: scale what the mode above just wrote, per sample.
+	//
+	// A second pass rather than a factor folded into each `case`. The cases
+	// differ in what they produce — a tag, a ramp, a delayed input, an
+	// activation code — but not in what gain means to the result, and threading
+	// a multiply through eleven of them would put one decision in eleven
+	// places. It also keeps the scaling strictly *after* the delay line's
+	// write, so `mDelay` stores the plugin's input rather than its attenuated
+	// output: storing the scaled value would re-scale audio that had already
+	// been through the line, and the second scaling would surface 137 samples
+	// later as a value no test could name.
+	//
+	// `kParamGain` is a base `Parameter`, so its plain range is the identity of
+	// its normalized one — the value IS a linear amplitude, and there is no
+	// conversion to do. Default 1.0, so a host that never writes it leaves
+	// every other mode's output exactly as it was before gain existed.
+	for (int32 bus = 0; bus < data.numOutputs; ++bus)
+	{
+		AudioBusBuffers& out = data.outputs[bus];
+		for (int32 ch = 0; ch < out.numChannels; ++ch)
+		{
+			T* dst = reinterpret_cast<T**> (
+			    data.symbolicSampleSize == kSample32
+			        ? reinterpret_cast<void**> (out.channelBuffers32)
+			        : reinterpret_cast<void**> (out.channelBuffers64))[ch];
+			if (!dst)
+				continue;
+			for (int32 i = 0; i < frames; ++i)
+			{
+				const double g = mGainAt.empty () ? mGain
+				                                  : mGainAt[static_cast<size_t> (i)];
+				dst[i] = static_cast<T> (static_cast<double> (dst[i]) * g);
 			}
 		}
 	}

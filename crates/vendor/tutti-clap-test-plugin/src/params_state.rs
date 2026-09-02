@@ -101,13 +101,104 @@ static PARAMS: &[ProbeParam] = &[
         default: 1.0,
         flags: CLAP_PARAM_IS_STEPPED | CLAP_PARAM_IS_AUTOMATABLE,
     },
+    // The one parameter this probe **applies to its audio**, in decibels.
+    //
+    // Every parameter above it is a value the host writes and reads back, which
+    // makes them a test of the parameter *path* and nothing more: a host that
+    // stores a write in its own cache and never delivers it to the plugin
+    // passes against all three. Gain is the observable that separates a
+    // delivered parameter from a remembered one, because the only way to see it
+    // is in the samples.
+    //
+    // dB rather than linear so the range spans a decade and a half of amplitude
+    // while staying a small, exactly-representable set of integers at the
+    // interesting points — `-6.0` is the half-amplitude the automation tests
+    // assert on, and `0.0` (unity) is the default, so a host that never
+    // delivers anything leaves the audio untouched rather than silent.
+    ProbeParam {
+        id: GAIN_PARAM_ID,
+        name: b"Gain",
+        module: b"Output",
+        min: GAIN_DB_MIN,
+        max: GAIN_DB_MAX,
+        default: 0.0,
+        flags: CLAP_PARAM_IS_AUTOMATABLE | CLAP_PARAM_IS_MODULATABLE,
+    },
 ];
+
+/// Parameter id of the applied [`Gain`](PARAMS) control.
+///
+/// Public so a host test names the same id the plugin does rather than a
+/// literal that could drift out of step with the table.
+pub const GAIN_PARAM_ID: u32 = 77;
+
+/// Plain-value bounds for [`GAIN_PARAM_ID`], in decibels.
+///
+/// Neither bound is `0` or `1`, so a host that skips denormalization and hands
+/// the plugin a raw `0..1` cannot coincide with the right answer at either end.
+pub const GAIN_DB_MIN: f64 = -60.0;
+/// See [`GAIN_DB_MIN`].
+pub const GAIN_DB_MAX: f64 = 12.0;
+
+/// The gain currently in force, as a linear amplitude.
+///
+/// `10^(dB/20)` — the ordinary decibel-to-amplitude conversion, spelled here
+/// rather than taken from a unit type because this crate is a bare `clap-sys`
+/// fixture with no `tutti-types` dependency, and giving a test fixture the
+/// engine's vocabulary would let a bug in that vocabulary hide itself.
+pub fn gain_amplitude() -> f32 {
+    ensure_values_init();
+    let db = match index_of_id(GAIN_PARAM_ID) {
+        Some(i) => load_value(i),
+        None => return 1.0,
+    };
+    10f64.powf(db / 20.0) as f32
+}
+
+/// Apply every `PARAM_VALUE` event in the host's list to the value table, in
+/// **the order the host presents them**, up to and including sample `frame`.
+///
+/// Called once per sample-run by the render path, which is what makes the gain
+/// change land at its event's `time` rather than at a block boundary. Ordering
+/// is deliberately not imposed here: a host that delivers automation points out
+/// of order renders the wrong curve, and that is the bug this exists to make
+/// audible.
+///
+/// # Safety
+/// `list` must be null or the live `clap_input_events` the host passed to
+/// `process`.
+pub unsafe fn apply_param_events_through(list: *const clap_input_events, frame: u32) {
+    if list.is_null() {
+        return;
+    }
+    let (Some(size_fn), Some(get_fn)) = ((*list).size, (*list).get) else {
+        return;
+    };
+    ensure_values_init();
+    let n = size_fn(list);
+    for i in 0..n {
+        let hdr_ptr = get_fn(list, i);
+        if hdr_ptr.is_null() {
+            continue;
+        }
+        let hdr: &clap_event_header = &*hdr_ptr;
+        if hdr.type_ != CLAP_EVENT_PARAM_VALUE || hdr.time > frame {
+            continue;
+        }
+        let pv = &*(hdr_ptr as *const clap_event_param_value);
+        if let Some(idx) = index_of_id(pv.param_id) {
+            store_value(idx, pv.value);
+        }
+    }
+}
 
 /// Live parameter values, index-parallel to [`PARAMS`], stored as `f64` bit
 /// patterns so the table can be a `static` without a lock on the audio thread.
 /// Initialised lazily from `default` on first read — 0 is not a legal sentinel,
 /// since 0.0 is a legal value for `Drive`.
-static VALUES: [AtomicU32; 6] = [
+static VALUES: [AtomicU32; 8] = [
+    AtomicU32::new(0),
+    AtomicU32::new(0),
     AtomicU32::new(0),
     AtomicU32::new(0),
     AtomicU32::new(0),

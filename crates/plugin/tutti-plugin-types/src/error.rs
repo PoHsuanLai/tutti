@@ -159,4 +159,42 @@ pub enum StateError {
         /// The limit it exceeded.
         limit: usize,
     },
+
+    /// The transfer stopped making progress: no further chunk arrived within
+    /// the per-chunk deadline.
+    ///
+    /// **A progress deadline, not a total one, and the variant exists because
+    /// the two are different diagnoses.** State travels as chunks, so the honest
+    /// question is "is this transfer still moving?" — not "has it finished
+    /// yet?". A fixed total budget answers the second, and answering the second
+    /// makes the size limit unreachable: a large-but-legal state that streams
+    /// steadily is failed for being big, while the message blames the plugin for
+    /// hanging. A plugin that is slow but advancing is *working*, and must be
+    /// allowed to finish however long it takes.
+    ///
+    /// Distinct from its three neighbours because each calls for a different
+    /// response. [`TooLarge`](Self::TooLarge) is a size the host refused before
+    /// or during transfer and will refuse again identically;
+    /// [`Rejected`](Self::Rejected) is the plugin answering "no";
+    /// [`PluginCrashed`](Self::PluginCrashed) means the subprocess is gone and
+    /// every later call fails the same way. This is none of those — the socket
+    /// is intact and the session is still healthy, so a retry is reasonable and
+    /// the plugin may simply be wedged rather than dead. Collapsing it into
+    /// `Rejected` was the old behaviour, and it reported a stalled transfer with
+    /// the string "the plugin did not answer within the state timeout", which
+    /// reads as a plugin that refused.
+    ///
+    /// `bytes` is what had arrived when progress stopped, which is what
+    /// separates "never started" (0) from "died four fifths of the way in".
+    #[error(
+        "plugin state transfer stalled after {bytes} bytes: no chunk arrived within {}ms",
+        after.as_millis()
+    )]
+    Stalled {
+        /// Bytes transferred before progress stopped. Zero means nothing ever
+        /// arrived, which points at the plugin rather than the transport.
+        bytes: usize,
+        /// The per-chunk progress deadline that expired.
+        after: std::time::Duration,
+    },
 }

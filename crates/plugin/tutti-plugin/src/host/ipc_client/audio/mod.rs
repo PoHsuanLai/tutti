@@ -17,6 +17,7 @@ mod dispatch;
 mod lifecycle;
 mod messages;
 mod payload_pool;
+mod progress;
 mod thread;
 
 use crate::error::{Delivered, Result, StateError};
@@ -42,6 +43,7 @@ use lifecycle::Lifecycle;
 use messages::{AudioResponse, Command};
 use parking_lot::Mutex;
 use payload_pool::PayloadPool;
+use progress::{StateProgress, PROGRESS_TIMEOUT};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -49,7 +51,6 @@ use std::time::Duration;
 pub use messages::{BridgeEvent, PluginInvalidation, PluginRefresh, ResyncClass, ResyncKind};
 pub use thread::BridgeThread;
 
-const STATE_TIMEOUT: Duration = Duration::from_secs(10);
 const PARAM_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Listener for plugin-originated unsolicited events. Invoked on the
@@ -67,6 +68,14 @@ pub struct AudioBridge {
     lifecycle: Lifecycle,
     listener: ListenerSlot,
     audio_buffer: Arc<AudioSlab>,
+    /// How long a state transfer may stand still before it is declared stalled.
+    ///
+    /// A field rather than a constant so a test can assert the stall path
+    /// without spending [`PROGRESS_TIMEOUT`] of wall clock doing it. Production
+    /// never sets it — [`AudioBridge::new`] installs the constant, and the
+    /// override is `cfg(test)`-only, so there is no way to ship a bridge with a
+    /// deadline nobody chose.
+    state_progress_timeout: Duration,
 }
 
 impl AudioBridge {
@@ -95,8 +104,19 @@ impl AudioBridge {
             lifecycle,
             listener,
             audio_buffer,
+            state_progress_timeout: PROGRESS_TIMEOUT,
         };
         Ok((bridge, thread))
+    }
+
+    /// Shorten the state-transfer progress deadline, for tests only.
+    ///
+    /// Kept out of non-test builds deliberately: the deadline is a liveness
+    /// judgement the transport makes, not a knob a host should be able to turn
+    /// down until healthy plugins start failing.
+    #[cfg(test)]
+    pub(crate) fn set_state_progress_timeout(&mut self, timeout: Duration) {
+        self.state_progress_timeout = timeout;
     }
 
     /// Install a listener for plugin-originated unsolicited events. Pass
@@ -263,19 +283,24 @@ impl AudioBridge {
             return Err(StateError::PluginCrashed);
         }
         let (ask_resp, reply) = ask::<std::result::Result<Vec<u8>, StateError>>();
-        if !self.channels.push_command(Command::SaveState { reply }) {
+        let progress = StateProgress::new();
+        if !self.channels.push_command(Command::SaveState {
+            progress: progress.clone(),
+            reply,
+        }) {
             // The queue refused the command, which on this path means the
             // bridge thread is gone.
             return Err(StateError::PluginCrashed);
         }
-        // As in `load_state`: a timeout is a refusal to answer, not an empty
-        // state. Collapsing it to `None`/`vec![]` is what let an unsaved preset
-        // look like a plugin that had nothing to save.
-        ask_resp
-            .recv_timeout(STATE_TIMEOUT)
-            .unwrap_or(Err(StateError::Rejected(
-                "the plugin did not answer within the state timeout".to_string(),
-            )))
+        // As in `load_state`: a refusal to answer is not an empty state.
+        // Collapsing it to `None`/`vec![]` is what let an unsaved preset look
+        // like a plugin that had nothing to save.
+        //
+        // The wait ends on a stalled *transfer*, not on a total elapsed budget.
+        // A fixed total here was the effective ceiling on state size — it
+        // expired mid-stream on a large-but-legal state and reported it as a
+        // plugin that never answered.
+        progress.wait(ask_resp, self.state_progress_timeout)
     }
 
     pub fn load_state(&self, data: &[u8]) -> std::result::Result<(), StateError> {
@@ -293,21 +318,23 @@ impl AudioBridge {
             });
         }
         let (ask_resp, reply) = ask::<std::result::Result<(), StateError>>();
+        let progress = StateProgress::new();
         if !self.channels.push_command(Command::LoadState {
             data: data.to_vec(),
+            progress: progress.clone(),
             reply,
         }) {
             // The queue refused the command, which on this path means the
             // bridge thread is gone — the plugin is unreachable either way.
             return Err(StateError::PluginCrashed);
         }
-        // A timeout is a refusal to answer, not an acceptance. Before this the
-        // fallback was `false`, which a `()`-returning caller could not see.
-        ask_resp
-            .recv_timeout(STATE_TIMEOUT)
-            .unwrap_or(Err(StateError::Rejected(
-                "the plugin did not answer within the state timeout".to_string(),
-            )))
+        // A refusal to answer is not an acceptance. Before this the fallback was
+        // `false`, which a `()`-returning caller could not see.
+        //
+        // Same progress deadline as `save_state`, for the same reason: the write
+        // direction is chunked too, so a total budget capped how large a state
+        // could be *sent* just as it capped how large one could be received.
+        progress.wait(ask_resp, self.state_progress_timeout)
     }
 
     pub fn parameters(&self) -> Option<Vec<ParameterInfo>> {

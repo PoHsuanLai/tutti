@@ -29,6 +29,18 @@ impl<T> Ask<T> {
     pub(super) fn recv_timeout(self, timeout: Duration) -> Result<T, RecvTimeoutError> {
         self.0.recv_timeout(timeout)
     }
+
+    /// Poll for the reply without consuming the `Ask`.
+    ///
+    /// The one-shot guarantee survives: the channel holds one message, so the
+    /// first `Ok` is the only one any number of calls can produce. What this
+    /// gives up is the *compile-time* proof that a caller looked exactly once,
+    /// and it is needed by a caller that must wake periodically for a second
+    /// signal — a state transfer watches a progress counter alongside the reply,
+    /// and cannot express that as a single blocking read.
+    pub(super) fn recv_timeout_borrowed(&self, timeout: Duration) -> Result<T, RecvTimeoutError> {
+        self.0.recv_timeout(timeout)
+    }
 }
 
 /// Make a paired one-shot channel.

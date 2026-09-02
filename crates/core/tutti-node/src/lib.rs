@@ -38,6 +38,7 @@ extern crate alloc;
 pub mod buffer;
 pub mod math;
 pub mod num;
+pub mod setting;
 pub mod signal;
 
 pub use math::AttoHash;

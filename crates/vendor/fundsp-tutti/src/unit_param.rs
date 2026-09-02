@@ -3,8 +3,11 @@
 //! The [`UnitParam`] vocabulary itself is pure and lives in `tutti-types`. This
 //! module is the fundsp-coupled half: building a `Setting` that addresses a
 //! param by its stable id, and reading one back inside a leaf unit's
-//! `AudioUnit::set`. It lives here because `fundsp-tutti` owns [`Setting`] /
-//! [`Parameter`] / [`Address`]; `tutti-core` re-exports these functions so
+//! `AudioUnit::set`. It lives here because it joins two crates neither of which
+//! may name the other: [`UnitParam`] is `tutti-types`', while [`Setting`] /
+//! [`Parameter`] / [`Address`] are `tutti-node`'s (this crate re-exports them),
+//! and [`node_setting`] additionally needs [`NodeId`](crate::net::NodeId),
+//! which is this crate's alone. `tutti-core` re-exports these functions so
 //! consumers reach `UnitParam` and its `Setting` glue together
 //! (`tutti_core::unit_param::{setting, from_setting}`).
 //!
@@ -71,6 +74,7 @@ pub fn from_setting(setting: &Setting) -> Option<(UnitParam, f32)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::setting::NodeAddr;
 
     #[test]
     fn round_trips_through_setting() {
@@ -103,7 +107,7 @@ mod tests {
         let s = node_setting(node, UnitParam::Drive, 4.0);
 
         assert!(
-            matches!(s.direction(), Address::Node(id) if id == node),
+            matches!(s.direction(), Address::Node(addr) if addr == NodeAddr::from(node)),
             "Net::set matches on the first level; it must be the node"
         );
 

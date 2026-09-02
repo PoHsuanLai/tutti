@@ -64,6 +64,31 @@ impl core::fmt::Display for NodeId {
     }
 }
 
+// `Setting`'s node address is `tutti_node::setting::NodeAddr`, an opaque `u64`
+// with no generator of its own, so that the node *contract* does not have to
+// name this file's global counter. These two impls are the whole boundary: the
+// minting stays here, where the nodes are, and the address the contract carries
+// is just the bits.
+//
+// Total and lossless in both directions — `NodeId` is a `u64` newtype and so is
+// `NodeAddr`, so neither direction can fail or lose a bit. That matters because
+// `Net::set` compares a converted address against a converted key: a conversion
+// that dropped information would route a setting to the wrong node, or to none,
+// and `Net` reports the latter only as a counter.
+impl From<NodeId> for tutti_node::setting::NodeAddr {
+    #[inline]
+    fn from(id: NodeId) -> Self {
+        tutti_node::setting::NodeAddr::new(id.0)
+    }
+}
+
+impl From<tutti_node::setting::NodeAddr> for NodeId {
+    #[inline]
+    fn from(addr: tutti_node::setting::NodeAddr) -> Self {
+        NodeId(addr.get())
+    }
+}
+
 /// Node introduced with a crossfade.
 #[derive(Clone, Default)]
 pub(crate) struct NodeEdit {
@@ -1790,8 +1815,8 @@ impl AudioUnit for Net {
             }
             return;
         }
-        if let Address::Node(id) = setting.direction()
-            && let Some(index) = self.node_index.get(&id)
+        if let Address::Node(addr) = setting.direction()
+            && let Some(index) = self.node_index.get(&NodeId::from(addr))
         {
             self.vertex[*index].unit.set(setting.peel());
             return;

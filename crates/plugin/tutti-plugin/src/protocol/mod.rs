@@ -136,34 +136,32 @@ pub const PROTOCOL_VERSION: u32 = 18;
 /// **attacker-controlled**: a corrupt or hostile peer can advertise `u32::MAX`
 /// and both readers used to answer with `vec![0u8; len]` — a 4 GiB zeroed
 /// allocation made before a single byte of body had been seen, let alone
-/// validated. Two things go wrong without a bound, and neither is theoretical:
+/// validated. Under Linux overcommit that mapping is lazy and effectively free
+/// (measured at 60 ns), which is why the hazard hid; with `overcommit_memory=2`,
+/// a cgroup limit, or a 32-bit host, the allocator fails and Rust's OOM handler
+/// **aborts the process** — the whole DAW, not the bridge.
 ///
-/// - **The allocation.** Under Linux overcommit the mapping is cheap and the
-///   hazard hides; with `overcommit_memory=2`, a cgroup limit, or a 32-bit
-///   host, the allocator fails and Rust's OOM handler **aborts the process** —
-///   the whole DAW, not the bridge.
-/// - **The read that follows.** `read_exact` loops, and `SO_RCVTIMEO` restarts
-///   on *every* syscall, so it bounds one `recv` and not the call. A peer that
-///   dribbles one byte per timeout keeps the bridge thread inside `read_exact`
-///   indefinitely, holding the buffer, never reaching the error that would
-///   mark it crashed. `recv_within`'s timeout cannot end it and neither can the
-///   caller's — the caller gives up and returns `None`, but the bridge thread
-///   stays wedged and the bridge is never marked dead. Measured: a 300 ms
-///   `SO_RCVTIMEO` survived 2.3 s of one-byte-per-200 ms dribble.
+/// **This bounds size, and only size.** It does *not* bound how long a read
+/// takes, and must not be read as closing the dribble hazard: `SO_RCVTIMEO`
+/// restarts on every syscall, so any frame — including a perfectly legitimate
+/// under-cap one — can be paced out indefinitely one byte at a time. The
+/// **total-elapsed deadline** in `util::transport::control::read_exact_by` is
+/// what answers that, and the two are independent. Removing either re-opens a
+/// hazard the other does not cover.
 ///
-/// Checking the length *before* allocating closes both: an over-cap frame is
-/// rejected in the four bytes it takes to read the prefix, with no allocation
-/// and no second read to be stalled inside.
+/// 64 MiB is far above any honest *control* frame and far below a denial of
+/// service. Every message except plugin state is bounded by a fixed struct or
+/// by `ParameterList`, and `midi_out` is capped at `MIDI_STACK_CAPACITY`
+/// server-side.
 ///
-/// 64 MiB is far above any honest frame and far below a denial of service. The
-/// largest message either direction can carry is `BridgeMessage::StateData` /
-/// `HostMessage::LoadState` — a plugin's opaque state chunk, which for a
-/// sample-based instrument legitimately reaches single-digit MiB. Every other
-/// variant is bounded by a fixed struct or by `ParameterList`, and
-/// `midi_out` is already capped at `MIDI_STACK_CAPACITY` server-side. A plugin
-/// whose state genuinely exceeds this needs a chunked transfer, not a larger
-/// number here.
+/// **Plugin state is the exception, and it does not fit.** A Kontakt- or
+/// Serum-class instrument embedding samples or wavetables routinely exceeds
+/// 64 MiB, and a plugin storing an impulse response or a recorded buffer
+/// trivially does. Raising *this* constant to cover that tail would re-widen
+/// the allocation surface for all traffic and still leave a wall somewhere; a
+/// larger number just moves the cliff. State needs a chunked transfer instead.
 pub const MAX_FRAME_BYTES: usize = 64 * 1024 * 1024;
+
 
 /// Validate a subprocess-reported protocol version against [`PROTOCOL_VERSION`].
 /// Called at each handshake consumer so a version skew fails loudly instead of

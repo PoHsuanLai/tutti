@@ -646,11 +646,17 @@ fn the_frame_cap_is_the_boundary_it_claims_to_be() {
 /// every later request is queued behind a thread that is never coming back.
 /// The bridge looks healthy and answers nothing, forever.
 ///
-/// The bound is what closes it: the advertised length is rejected before the
-/// read starts, so there is no multi-syscall read for the dribble to extend.
+/// **Two mechanisms close this, and this test covers the first.** Here the
+/// advertised length is over `MAX_FRAME_BYTES`, so it is rejected before any
+/// read starts and there is no multi-syscall read for the dribble to extend.
+/// An *under*-cap dribble reaches the read and is stopped by the total-elapsed
+/// deadline instead — see
+/// [`an_under_cap_dribble_is_stopped_by_the_total_deadline`], which is the case
+/// the size bound alone leaves open.
+///
 /// The gap is deliberately shorter than every timeout in the bridge, so a host
-/// that *did* enter the read would never escape and this test would fail on its
-/// deadline rather than its assertion.
+/// that *did* enter the read unbounded would never escape and this test would
+/// fail on its deadline rather than its assertion.
 #[test]
 fn a_dribbling_peer_cannot_hold_the_bridge_thread_open() {
     let mock = MockServer::start("dribble", |msg| match msg {
@@ -791,3 +797,52 @@ fn a_silent_server_is_bounded_by_the_timeout() {
         "a silent server produced a value (after {elapsed:?})"
     );
 }
+
+/// A dribble **under** the size cap must still end, on the clock.
+///
+/// This is the hazard `MAX_FRAME_BYTES` does not touch, and the reason the
+/// deadline exists as a separate mechanism. The advertised length here is a
+/// perfectly ordinary one — the size of a real reply — so the size check passes
+/// it and the host enters `read_exact`. Every real preset frame is in this
+/// range, so "the cap makes dribbling safe" was never true; it only moved the
+/// ceiling from `u32::MAX` to 64 MiB, and both are unbounded in practice.
+///
+/// The assertion is on the **crash flag**, not on the caller's return: the
+/// caller has its own `PARAM_TIMEOUT` and answers `None` on schedule whether or
+/// not the bridge thread is wedged, so only `is_crashed` distinguishes "the
+/// read gave up" from "the read is still running and the caller left".
+///
+/// The gap is far shorter than `PARAM_TIMEOUT`, so a per-syscall bound would
+/// never fire and this test would fail on `wait_for_crash` — which is exactly
+/// how it fails when the deadline is removed.
+#[test]
+fn an_under_cap_dribble_is_stopped_by_the_total_deadline() {
+    let mock = MockServer::start("dribble-under", |msg| match msg {
+        HostMessage::GetParameter { .. } => Action::Dribble {
+            // Comfortably under MAX_FRAME_BYTES: the size check must let this
+            // through, or the test proves nothing about the deadline.
+            len: 4096,
+            gap: Duration::from_millis(50),
+        },
+        _ => Action::Silent,
+    });
+
+    let bridge = Arc::clone(&mock.bridge);
+    let (value, elapsed) =
+        call_within(move || bridge.parameter(ParamAddress::Opaque(ParamId::new(1))))
+            .unwrap_or_else(|waited| {
+                panic!(
+                    "an under-cap dribbled frame left the caller blocked after {waited:?}"
+                )
+            });
+    assert_eq!(value, None, "a dribbled frame produced a value");
+    assert!(
+        mock.wait_for_crash(),
+        "the bridge never reported a crash after {elapsed:?} — an under-cap \
+         frame dribbled one byte per 50 ms is still holding the bridge thread \
+         inside `read_exact`, because the receive timeout restarts on every \
+         syscall and nothing bounds the call as a whole"
+    );
+}
+
+

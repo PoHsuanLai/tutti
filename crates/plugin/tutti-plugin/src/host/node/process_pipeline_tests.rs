@@ -933,3 +933,417 @@ fn silence_on_a_crashed_bridge_does_not_allocate() {
 
     bridge_thread.shutdown();
 }
+
+/// **A reply that arrives late must cost one block, not the session.**
+///
+/// `dispatch::process_timeout` is documented as the budget after which the
+/// bridge thread "abandons the block" — a per-block decision, and the right one:
+/// a plugin that misses one deadline is slow, not dead, and the slab's sequence
+/// check already turns a missing reply into silence for that block alone.
+///
+/// But the timeout surfaces as `BridgeError::Timeout` out of `recv_reply`, and
+/// `handle` returns it through `?` into `pump`, which treats *every* `handle`
+/// error as connection-level: it calls `crash()`, latches the cause, drains the
+/// queue with errors and **returns**, ending the thread. From then on
+/// `Batcher::collectable` short-circuits on `is_crashed()` and every later block
+/// is silence, permanently — for a server that is still running, still reading
+/// the socket, and still publishing correct audio.
+///
+/// The budget is `PROCESS_TIMEOUT_PERIODS` block periods clamped to a 2 ms
+/// floor. At 64 frames / 48 kHz that is 2 ms of wall clock, on a thread with no
+/// scheduling priority, so on a loaded machine the reply losing that race is a
+/// property of the machine rather than of the plugin. That is the mechanism
+/// behind this file's intermittent failures: the run that fails is the one where
+/// the mock server thread was not scheduled inside 2 ms, and the host answered
+/// by declaring a working plugin dead.
+///
+/// The stall here is deliberately far above the budget so the timeout is
+/// certain, which makes this a deterministic test of a race — the outcome does
+/// not depend on the machine, only on whether one timeout is fatal.
+#[test]
+fn a_late_reply_does_not_permanently_crash_the_bridge() {
+    let _lock = exclusive();
+    // Well past `MAX_PROCESS_TIMEOUT`, so the first block's reply is guaranteed
+    // to miss its budget however fast the machine is.
+    let (bridge, _bridge_thread, _server) =
+        bridge_with_server_stall(std::time::Duration::from_millis(120));
+    let mut batcher = Batcher::new(CHANNELS, CHANNELS, SampleFormat::Float32, BATCH_SIZE);
+
+    let mut input = BufferVec::<F32>::new(CHANNELS);
+    let mut output = BufferVec::<F32>::new(CHANNELS);
+    let mut midi_out = MidiEventVec::new();
+
+    for ch in 0..CHANNELS {
+        for i in 0..BATCH_SIZE {
+            input.set_scalar(ch, i, ramp_sample(0, ch, i));
+        }
+    }
+    output.clear();
+    batcher.process::<f32>(
+        &bridge,
+        BATCH_SIZE,
+        &input.buffer_ref(),
+        &mut output.buffer_mut(),
+        BlockPayload::default(),
+        &mut midi_out,
+    );
+
+    // Give the stalled reply time to land, so the only thing under test is what
+    // the host did with the missed deadline — not whether the server ever
+    // answered.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while std::time::Instant::now() < deadline && !bridge.audio_buffer().has_output(1) {
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+
+    assert!(
+        bridge.audio_buffer().has_output(1),
+        "the mock server never published block 1 at all — this test cannot say \
+         anything about the timeout until the server has answered"
+    );
+    assert!(
+        !bridge.is_crashed(),
+        "one reply that missed its per-block budget marked the bridge crashed. \
+         The server is alive and published block 1's audio correctly; the host \
+         has nonetheless latched a crash, so `Batcher::collectable` will return \
+         `None` for every future block and this plugin is silent forever. A \
+         missed block budget must cost that block, not the connection"
+    );
+}
+
+/// **After a block whose reply timed out, the socket's replies stay paired with
+/// the blocks that asked for them.**
+///
+/// Not crashing is only half the fix. Abandoning a block does not *cancel* it:
+/// the server is mid-`process` and will write that frame onto the stream when it
+/// finishes. Leave it there and the next command's `recv_reply` consumes the
+/// abandoned block's answer, and every later block is paired with its
+/// predecessor's — permanently one behind. `Owed::settle` drains it instead.
+///
+/// # Why this asserts on MIDI rather than on audio
+///
+/// Audio cannot detect this, and a version of this test that drove the ramp and
+/// checked the one-block lag passed with `settle` deleted. That is not a weak
+/// assertion, it is the design: audio travels through the shared slab in both
+/// directions and is gated on the slot's own sequence number, so which *socket
+/// frame* the bridge thread happened to read is irrelevant to it.
+///
+/// The reply carries exactly one thing the host consumes — the plugin's
+/// MIDI-out — and `submit` drains it into the caller's buffer. So MIDI is the
+/// only observable that can tell a paired reply from a mispaired one, which
+/// makes it the only honest thing to assert. Each block's reply is stamped with
+/// a distinct `frame_offset`, so an off-by-one pairing names itself.
+#[test]
+fn a_timed_out_reply_is_drained_rather_than_paired_with_a_later_block() {
+    let _lock = exclusive();
+    // One stall, far past `MAX_PROCESS_TIMEOUT`, then full speed.
+    let (bridge, _bridge_thread, _server) =
+        bridge_with_first_block_stalled(std::time::Duration::from_millis(120));
+    let mut batcher = Batcher::new(CHANNELS, CHANNELS, SampleFormat::Float32, BATCH_SIZE);
+
+    let mut input = BufferVec::<F32>::new(CHANNELS);
+    let mut output = BufferVec::<F32>::new(CHANNELS);
+    let mut midi_out = MidiEventVec::new();
+    let blocks = 6;
+    // Which block each drained MIDI event was stamped by, per driving block.
+    let mut stamps: Vec<Vec<u32>> = Vec::with_capacity(blocks);
+
+    for block in 0..blocks {
+        for ch in 0..CHANNELS {
+            for i in 0..BATCH_SIZE {
+                input.set_scalar(ch, i, ramp_sample(block, ch, i));
+            }
+        }
+        output.clear();
+        batcher.process::<f32>(
+            &bridge,
+            BATCH_SIZE,
+            &input.buffer_ref(),
+            &mut output.buffer_mut(),
+            BlockPayload::default(),
+            &mut midi_out,
+        );
+        stamps.push(midi_out.iter().map(|e| e.frame_offset).collect());
+        wait_for_reply(&bridge, block as u64 + 1, WAIT_BUDGET);
+    }
+
+    assert!(
+        !bridge.is_crashed(),
+        "the stalled first block killed the bridge, so nothing below is a \
+         statement about pairing"
+    );
+
+    // The server stamps block `seq`'s reply with `frame_offset == seq`. Every
+    // stamp the host ever drains must therefore be a sequence it actually
+    // submitted, and no sequence may arrive twice — a reply left undrained
+    // shows up as the same stamp reappearing behind a later block.
+    let mut seen: Vec<u32> = stamps.iter().flatten().copied().collect();
+    let before = seen.len();
+    seen.sort_unstable();
+    seen.dedup();
+    assert_eq!(
+        seen.len(),
+        before,
+        "the same reply was drained twice: stamps {stamps:?}. A reply the bridge \
+         abandoned was left on the stream and re-read behind a later block."
+    );
+    for &stamp in &seen {
+        assert!(
+            stamp >= 1 && stamp as usize <= blocks,
+            "drained a reply stamped {stamp}, which is not one of the {blocks} \
+             blocks this test submitted: {stamps:?}"
+        );
+    }
+
+    // The load-bearing half: the abandoned block's reply must have been
+    // consumed. It is block 1's — the only stalled one — and if `settle` never
+    // ran it is still sitting on the stream when the run ends, so the host never
+    // sees it at all.
+    assert!(
+        seen.contains(&1),
+        "block 1's reply — the one whose budget expired — was never drained: \
+         stamps {stamps:?}. It is still queued on the socket, so the next \
+         command to read the stream pairs it with a block that did not ask \
+         for it."
+    );
+}
+
+/// **A server that is persistently late must not build an unbounded backlog of
+/// unread replies on the socket.**
+///
+/// This is what makes `Owed::settle` load-bearing rather than tidiness, and it
+/// is a different property from the two above. Abandoning a block leaves its
+/// reply on the stream; the server keeps answering every block it is sent, so
+/// with nothing draining them the unread frames accumulate for as long as the
+/// plugin stays slow. Nothing in the host bounds that — only the kernel's socket
+/// buffer does, and when it fills the server's `write` blocks, which stalls the
+/// very plugin the host was trying to keep running.
+///
+/// The measurable consequence is pairing distance: with draining, the reply the
+/// host reads for a block is at worst a couple of blocks old; without it the gap
+/// grows with every timed-out block. Asserting on the *stamp* rather than on a
+/// count is what makes this independent of the machine — a slower box times out
+/// more often, and a bounded backlog stays bounded either way.
+///
+/// The stall is a fixed 8 ms against a 2 ms budget, so it times out on every
+/// block on any machine: the outcome does not depend on scheduling luck, only on
+/// whether anything drains the stream.
+#[test]
+fn a_persistently_late_server_does_not_accumulate_unread_replies() {
+    let _lock = exclusive();
+    /// Comfortably over `MAX_PROCESS_TIMEOUT`'s neighbourhood for a 64-frame
+    /// block, so every block's budget expires however fast the machine is.
+    const STALL: std::time::Duration = std::time::Duration::from_millis(8);
+    const BLOCKS: usize = 120;
+
+    let (bridge, _bridge_thread, _server) = bridge_with_stamped_server(STALL);
+    let mut batcher = Batcher::new(CHANNELS, CHANNELS, SampleFormat::Float32, BATCH_SIZE);
+
+    let mut input = BufferVec::<F32>::new(CHANNELS);
+    let mut output = BufferVec::<F32>::new(CHANNELS);
+    let mut midi_out = MidiEventVec::new();
+    for ch in 0..CHANNELS {
+        for i in 0..BATCH_SIZE {
+            input.set_scalar(ch, i, ramp_sample(0, ch, i));
+        }
+    }
+
+    // How far behind the block being driven each drained reply was stamped,
+    // recorded per half of the run. Comparing the halves is what makes this a
+    // statement about *growth* rather than about magnitude — see the assertion.
+    let mut early_gap = 0u64;
+    let mut late_gap = 0u64;
+    for block in 0..BLOCKS {
+        let seq = block as u64 + 1;
+        output.clear();
+        batcher.process::<f32>(
+            &bridge,
+            BATCH_SIZE,
+            &input.buffer_ref(),
+            &mut output.buffer_mut(),
+            BlockPayload::default(),
+            &mut midi_out,
+        );
+        let bucket = if block < BLOCKS / 2 {
+            &mut early_gap
+        } else {
+            &mut late_gap
+        };
+        for ev in midi_out.iter() {
+            let stamped = ev.frame_offset as u64;
+            *bucket = (*bucket).max(seq.saturating_sub(stamped));
+        }
+        // Pace the blocks roughly like a real callback, so the server has a
+        // chance to answer and the backlog is a property of the draining rather
+        // than of driving flat out.
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+
+    assert!(
+        !bridge.is_crashed(),
+        "a persistently slow but live server crashed the bridge: {:?}",
+        bridge.crash_cause()
+    );
+
+    // **The assertion is that the lag does not GROW, not that it is small.**
+    //
+    // How far behind a reply runs is a function of how often the machine misses
+    // the budget, so its magnitude is a property of the load and cannot be
+    // asserted without pinning the test to one machine — the defect this whole
+    // change is about. What *is* machine-independent is the shape: with the
+    // drain, whatever backlog forms is worked off, so the second half of a run
+    // is no worse than the first. Without it, every timed-out block adds a frame
+    // that is never taken, and the lag climbs for as long as the plugin is slow.
+    //
+    // The `+ 2` is slack for the comparison itself, not for the machine: the two
+    // halves see different numbers of timeouts, so exact equality would be
+    // asserting scheduling noise. A genuinely accumulating backlog does not
+    // clear it — undrained, the late half runs at roughly the block count.
+    assert!(
+        late_gap <= early_gap + 2,
+        "replies lagged by at most {early_gap} blocks over the first half of \
+         this {BLOCKS}-block run and by {late_gap} over the second: the lag is \
+         growing with the run. Replies for abandoned blocks are not being \
+         drained, so unread frames accumulate on the socket for as long as the \
+         plugin stays slow. When the kernel's socket buffer fills, the server's \
+         write blocks and the plugin stalls on the host's own backlog."
+    );
+}
+
+/// A doubling server that stalls `stall` before **every** reply and stamps each
+/// reply's MIDI-out with the block it answers.
+///
+/// The stamp is what lets a caller measure how far a reply has fallen behind the
+/// block that asked for it; see
+/// [`a_persistently_late_server_does_not_accumulate_unread_replies`].
+fn bridge_with_stamped_server(
+    stall: std::time::Duration,
+) -> (Arc<PluginBridge>, BridgeThread, std::thread::JoinHandle<()>) {
+    stamped_server(stall, false)
+}
+
+/// A doubling server that stalls only its **first** reply, then runs at full
+/// speed — a plugin that hitches once (a page fault, a scheduler delay) rather
+/// than one that is permanently slow.
+fn bridge_with_first_block_stalled(
+    stall: std::time::Duration,
+) -> (Arc<PluginBridge>, BridgeThread, std::thread::JoinHandle<()>) {
+    stamped_server(stall, true)
+}
+
+/// The doubling server of [`bridge_with_server_stall`], with two additions the
+/// timeout tests need.
+///
+/// `first_only` stalls just the opening block rather than every one — a plugin
+/// that hitches once versus one that is permanently behind, which are different
+/// properties and need different rigs.
+///
+/// Every reply's MIDI-out carries one event stamped with the sequence it
+/// answers. The reply is the only thing that crosses the socket which the host
+/// consumes at all — audio travels through the slab and is gated on the slot's
+/// own sequence — so this stamp is the only way a test can observe *which block*
+/// an arriving frame belongs to. `frame_offset` is a label here and nothing
+/// interprets it as a position.
+fn stamped_server(
+    stall: std::time::Duration,
+    first_only: bool,
+) -> (Arc<PluginBridge>, BridgeThread, std::thread::JoinHandle<()>) {
+    use interprocess::local_socket::{traits::Listener as _, ListenerOptions, ToFsName as _};
+
+    let path = unique_socket_path("stamped");
+    let _ = std::fs::remove_file(&path);
+    let name = path
+        .clone()
+        .to_fs_name::<interprocess::local_socket::GenericFilePath>()
+        .unwrap();
+    let listener = ListenerOptions::new().name(name).create_sync().unwrap();
+
+    let layout = stereo_layout();
+    let shm_name = unique_shm_name("stamped");
+    let host_slab = Arc::new(AudioSlab::create(shm_name.clone(), layout.clone()).unwrap());
+    let server_slab = AudioSlab::open(shm_name, layout).unwrap();
+
+    let (bridge, bridge_thread) = PluginBridge::new(
+        path.clone(),
+        Arc::clone(&host_slab),
+        std::path::PathBuf::from("test.vst3"),
+        48_000.0,
+    )
+    .unwrap();
+
+    let server_stream = listener.accept().unwrap();
+    send_bridge_msg(
+        &server_stream,
+        &BridgeMessage::Ready {
+            protocol_version: PROTOCOL_VERSION,
+        },
+    );
+
+    let path_cleanup = path;
+    let server_thread = std::thread::Builder::new()
+        .name("mock-stamped-server".to_string())
+        .spawn(move || {
+            struct Cleanup(std::path::PathBuf);
+            impl Drop for Cleanup {
+                fn drop(&mut self) {
+                    let _ = std::fs::remove_file(&self.0);
+                }
+            }
+            let _cleanup = Cleanup(path_cleanup);
+            let mut scratch = vec![0.0f32; BATCH_SIZE];
+            let mut stalled_once = false;
+            loop {
+                let msg = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    recv_host_msg(&server_stream)
+                })) {
+                    Ok(Some(msg)) => msg,
+                    Ok(None) | Err(_) => break,
+                };
+                let reply = match msg {
+                    HostMessage::ProcessAudio(data) => {
+                        if !stall.is_zero() && !(first_only && stalled_once) {
+                            stalled_once = true;
+                            std::thread::sleep(stall);
+                        }
+                        let n = data.num_samples;
+                        let seq = data.seq;
+                        if server_slab.has_input(seq) {
+                            for ch in 0..CHANNELS {
+                                let got = server_slab
+                                    .read_input_into(seq, ch, &mut scratch[..n])
+                                    .unwrap_or(0);
+                                for s in scratch[..got].iter_mut() {
+                                    *s *= GAIN;
+                                }
+                                server_slab.write_output(seq, ch, &scratch[..got]).unwrap();
+                            }
+                            server_slab.publish_output(seq);
+                        }
+                        let mut midi_out = crate::protocol::IpcMidiEventVec::new();
+                        midi_out.push(crate::protocol::IpcMidiEvent {
+                            frame_offset: seq as u32,
+                            data: [0; 4],
+                        });
+                        BridgeMessage::AudioProcessed {
+                            latency_us: 0,
+                            seq,
+                            midi_out,
+                        }
+                    }
+                    _ => continue,
+                };
+                if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    send_bridge_msg(&server_stream, &reply)
+                }))
+                .is_err()
+                {
+                    break;
+                }
+            }
+        })
+        .unwrap();
+
+    std::thread::sleep(std::time::Duration::from_millis(50));
+
+    (bridge, bridge_thread, server_thread)
+}

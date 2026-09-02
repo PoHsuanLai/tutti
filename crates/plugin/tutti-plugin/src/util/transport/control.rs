@@ -92,10 +92,15 @@ const POLL_INTERVAL: Duration = Duration::from_millis(250);
 /// `WouldBlock`/`TimedOut` is not an error here — it is how a per-syscall
 /// timeout reports "nothing yet" — so it re-loops and lets the deadline decide.
 /// `Interrupted` likewise retries, since a signal is not the peer's doing.
+/// `consumed` is set whenever this read has taken bytes off the stream, so a
+/// caller can tell a timeout that left the stream on a frame boundary from one
+/// that did not. It is only ever set to `true` — the flag spans a whole frame,
+/// which is two calls, and the second must not clear what the first recorded.
 fn read_exact_by(
     stream: &mut ControlStream,
     buf: &mut [u8],
     deadline: Instant,
+    consumed: &mut bool,
 ) -> std::io::Result<()> {
     let mut filled = 0;
     while filled < buf.len() {
@@ -118,7 +123,10 @@ fn read_exact_by(
                     "peer closed mid-frame",
                 ))
             }
-            Ok(n) => filled += n,
+            Ok(n) => {
+                filled += n;
+                *consumed = true;
+            }
             Err(e)
                 if matches!(
                     e.kind(),
@@ -136,9 +144,13 @@ fn read_exact_by(
 ///
 /// `deadline` covers the whole frame — prefix and body together — so a peer
 /// cannot buy extra time by splitting one across many reads.
-fn recv_by(stream: &mut ControlStream, deadline: Instant) -> Result<BridgeMessage> {
+fn recv_by(
+    stream: &mut ControlStream,
+    deadline: Instant,
+    consumed: &mut bool,
+) -> Result<BridgeMessage> {
     let mut len_buf = [0u8; 4];
-    read_exact_by(stream, &mut len_buf, deadline).map_err(crashed_on_eof)?;
+    read_exact_by(stream, &mut len_buf, deadline, consumed).map_err(crashed_on_eof)?;
     let len = u32::from_be_bytes(len_buf) as usize;
     // Reject before allocating. The length is the peer's word for how much
     // memory to reserve, so honouring it unchecked lets a corrupt server ask
@@ -155,7 +167,7 @@ fn recv_by(stream: &mut ControlStream, deadline: Instant) -> Result<BridgeMessag
         return Err(BridgeError::ProcessCrashed);
     }
     let mut buf = vec![0u8; len];
-    read_exact_by(stream, &mut buf, deadline).map_err(crashed_on_eof)?;
+    read_exact_by(stream, &mut buf, deadline, consumed).map_err(crashed_on_eof)?;
     Ok(bincode::deserialize(&buf)?)
 }
 
@@ -166,7 +178,12 @@ fn recv_by(stream: &mut ControlStream, deadline: Instant) -> Result<BridgeMessag
 /// runs before any crash reporting exists to notice.
 pub fn recv(stream: &mut ControlStream) -> Result<BridgeMessage> {
     let deadline = Instant::now() + HANDSHAKE_TIMEOUT;
-    with_poll_timeout(stream, HANDSHAKE_TIMEOUT, |s| recv_by(s, deadline))
+    // The handshake has no resume path — a failure here crashes the bridge — so
+    // the flag is recorded and dropped.
+    let mut consumed = false;
+    with_poll_timeout(stream, HANDSHAKE_TIMEOUT, |s| {
+        recv_by(s, deadline, &mut consumed)
+    })
 }
 
 /// Recv with a total-time bound.
@@ -177,18 +194,26 @@ pub fn recv(stream: &mut ControlStream) -> Result<BridgeMessage> {
 /// peer resets it on every byte it sends.
 pub fn recv_within(stream: &mut ControlStream, timeout: Duration) -> Result<BridgeMessage> {
     let deadline = Instant::now() + timeout;
-    with_poll_timeout(stream, timeout, |s| recv_by(s, deadline)).map_err(|e| match e {
-        BridgeError::Io(io)
-            if io.kind() == std::io::ErrorKind::TimedOut
-                || io.kind() == std::io::ErrorKind::WouldBlock =>
-        {
-            BridgeError::Timeout {
-                operation: "recv".to_string(),
-                duration_ms: timeout.as_millis() as u64,
+    // `partial` is carried out of the read loop through this cell rather than
+    // through the `io::Error`, whose kind is all the mapping below can see. A
+    // caller that means to resume from a timeout must know whether the stream is
+    // still on a frame boundary; see [`BridgeError::Timeout::partial`].
+    let mut partial = false;
+    with_poll_timeout(stream, timeout, |s| recv_by(s, deadline, &mut partial)).map_err(
+        |e| match e {
+            BridgeError::Io(io)
+                if io.kind() == std::io::ErrorKind::TimedOut
+                    || io.kind() == std::io::ErrorKind::WouldBlock =>
+            {
+                BridgeError::Timeout {
+                    operation: "recv".to_string(),
+                    duration_ms: timeout.as_millis() as u64,
+                    partial,
+                }
             }
-        }
-        other => other,
-    })
+            other => other,
+        },
+    )
 }
 
 /// Run `f` with the stream's receive timeout set short enough to re-check a
@@ -205,7 +230,9 @@ fn with_poll_timeout<T>(
 ) -> Result<T> {
     use interprocess::local_socket::traits::Stream as _;
     let poll = budget.min(POLL_INTERVAL).max(Duration::from_millis(1));
-    stream.set_recv_timeout(Some(poll)).map_err(BridgeError::Io)?;
+    stream
+        .set_recv_timeout(Some(poll))
+        .map_err(BridgeError::Io)?;
     let result = f(stream);
     let _ = stream.set_recv_timeout(None);
     result
@@ -251,3 +278,97 @@ const _: () = {
          produce, so `save_state`/`load_state` would fail on real plugins"
     );
 };
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use interprocess::local_socket::ListenerOptions;
+
+    /// A connected pair of local sockets, plus the path so it can be cleaned up.
+    ///
+    /// A real socket rather than an in-memory fake: the property under test is
+    /// how the read loop behaves against a peer that stops mid-frame, and that
+    /// only exists on something with a receive timeout and a kernel buffer.
+    struct Pair {
+        host: ControlStream,
+        peer: ControlStream,
+        path: std::path::PathBuf,
+    }
+
+    impl Drop for Pair {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
+
+    fn pair(label: &str) -> Pair {
+        use interprocess::local_socket::traits::Listener as _;
+        let path = std::env::temp_dir().join(format!(
+            "tutti-control-{}-{}-{:?}.sock",
+            label,
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let name = path.clone().to_fs_name::<GenericFilePath>().unwrap();
+        let listener = ListenerOptions::new().name(name).create_sync().unwrap();
+        let connect_path = path.clone();
+        let joiner =
+            std::thread::spawn(move || crate::util::transport::control::connect(&connect_path));
+        let peer = listener.accept().unwrap();
+        let host = joiner.join().unwrap().unwrap();
+        Pair { host, peer, path }
+    }
+
+    /// A deadline that expires with **nothing read** reports `partial: false`.
+    ///
+    /// This is the case a caller may resume from: the stream is still on a frame
+    /// boundary, so the next read starts a whole message. Without the
+    /// distinction a caller has to treat every timeout as fatal, which is what
+    /// made one missed block budget kill a live plugin session.
+    #[test]
+    fn a_timeout_with_nothing_read_reports_a_framed_stream() {
+        let mut p = pair("clean");
+        // The peer sends nothing at all.
+        let err = recv_within(&mut p.host, Duration::from_millis(20)).unwrap_err();
+        match err {
+            BridgeError::Timeout { partial, .. } => assert!(
+                !partial,
+                "no byte was ever sent, so the stream is still on a frame \
+                 boundary — reporting `partial` here would make every idle \
+                 timeout look like an unrecoverable desync"
+            ),
+            other => panic!("expected a timeout, got {other:?}"),
+        }
+    }
+
+    /// A deadline that expires **part-way through a frame** reports
+    /// `partial: true`.
+    ///
+    /// This is the case a caller may *not* resume from: the unread remainder
+    /// will be parsed as the next frame's length prefix, and every frame after
+    /// it is garbage. The desync is silent where it happens and surfaces much
+    /// later as a decode error, so the flag is the only thing that can attribute
+    /// it — and the only thing that lets a caller finish the frame instead.
+    #[test]
+    fn a_timeout_part_way_through_a_frame_reports_a_broken_stream() {
+        let mut p = pair("partial");
+        // Announce a 4 KiB body, then send 8 bytes of it and stop.
+        {
+            use std::io::Write;
+            p.peer.write_all(&4096u32.to_be_bytes()).unwrap();
+            p.peer.write_all(&[0u8; 8]).unwrap();
+            p.peer.flush().unwrap();
+        }
+        let err = recv_within(&mut p.host, Duration::from_millis(50)).unwrap_err();
+        match err {
+            BridgeError::Timeout { partial, .. } => assert!(
+                partial,
+                "the prefix and 8 body bytes were consumed, so the stream is \
+                 mid-frame. Reporting it as clean would let a caller resume and \
+                 read the frame's tail as a length prefix"
+            ),
+            other => panic!("expected a timeout, got {other:?}"),
+        }
+    }
+}

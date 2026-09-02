@@ -3,7 +3,7 @@
 //! thread; all IPC calls are blocking.
 
 use super::channels::Channels;
-use super::dispatch::handle;
+use super::dispatch::{handle, Owed};
 use super::lifecycle::Lifecycle;
 use super::messages::{AudioResponse, BridgeEvent, Command};
 use super::payload_pool::PayloadPool;
@@ -135,6 +135,10 @@ fn pump(
     listener: &ListenerSlot,
     stream: &mut ControlStream,
 ) {
+    // Replies for blocks this thread stopped waiting on. Lives for the length of
+    // the connection, because that is the scope over which the stream's pairing
+    // has to stay straight; see `dispatch::Owed`.
+    let mut owed = Owed::default();
     while lifecycle.is_running() {
         let Some(cmd) = channels.pop_command() else {
             // Park rather than sleep: `push_command` unparks us the instant a
@@ -150,7 +154,7 @@ fn pump(
             continue;
         };
 
-        let result = handle(cmd, stream, channels, payloads);
+        let result = handle(cmd, stream, channels, payloads, &mut owed);
         drain_unsolicited(channels, listener);
 
         if let Err(e) = result {

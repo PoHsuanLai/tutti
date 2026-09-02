@@ -71,6 +71,8 @@ fn connect_with_retry(socket: &Path) -> Result<ControlStream> {
     Err(BridgeError::Timeout {
         operation: "connect to plugin-server".into(),
         duration_ms: (CONNECT_ATTEMPTS * CONNECT_BACKOFF.as_millis() as u32) as u64,
+        // No stream was ever established, so there is no half-read frame.
+        partial: false,
     })
 }
 

@@ -241,13 +241,16 @@ pub fn build(
 #[cfg(feature = "modulation")]
 /// Record a shaper's shaping in its [`NodeSpec`], losslessly.
 ///
-/// Three params rather than one opaque id, because the value is compared —
+/// Separate params rather than one opaque id, because the value is compared —
 /// `Topology` derives `Eq` — and a hash would make two different shapings
 /// collide into "unchanged", which is the exact bug class this slice removes.
 ///
-/// `CurveType` carries a `Bezier(f32, f32)` payload, so it cannot collapse to a
-/// discriminant either; the two control points ride as their own scalars and are
-/// absent for every other curve.
+/// **Three params for most curves, five for `Bezier`.** Depth, polarity and
+/// curve are always written. `CurveType::Bezier(f32, f32)` carries a payload, so
+/// a discriminant alone would be lossy the same way a hash is: its two control
+/// points ride as `shaper.curve.a` / `shaper.curve.b`, which are absent for
+/// every other curve. A spec's param count is therefore not fixed, and nothing
+/// should key on it.
 ///
 /// The names are namespaced so they cannot be confused with a param a node
 /// genuinely exposes: nothing in the catalog builds a node from these, and

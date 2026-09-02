@@ -123,11 +123,11 @@ pub mod dsp {
     //!
     //! This used to be `pub use fundsp::prelude::*`, which made the wall one of
     //! *dependency direction* and not of surface area: a consumer could not name
-    //! `fundsp`, but it could reach anything the prelude exports — some 1,500
-    //! symbols, of which 48 were ever used. It is now an explicit list, so
-    //! anything not named below is unreachable outside this crate and adding a
-    //! symbol is a decision someone makes rather than a side effect of the
-    //! prelude growing. The groups are the argument for why each is here.
+    //! `fundsp`, but it could reach anything the prelude exports. It is now an
+    //! explicit list of **43** symbols, every one of which had a caller when it
+    //! was written. Anything not named below is unreachable outside this crate,
+    //! and adding a symbol is a decision someone makes rather than a side effect
+    //! of the prelude growing. The groups are the argument for why each is here.
     //!
     //! **Prefer a Tutti name where one exists.** The node contract is
     //! `tutti-node`'s and is re-exported at the crate root, so a node writes
@@ -186,12 +186,12 @@ pub mod dsp {
     // What the fork is actually for. `Net` is the runtime graph the value layer
     // compiles into (`tutti_core::topology::compile`) and the adapter drives
     // (`bevy_tutti::graph`); `NodeId` and `Source` are how a wiring declaration
-    // names an endpoint; `NetBackend` is the audio-thread half of the RT commit
-    // split. Nothing here has a Tutti equivalent — this *is* the backend.
+    // names an endpoint. Nothing here has a Tutti equivalent — this *is* the
+    // backend.
     //
-    // `NetBackend` is deliberately NOT here: it is at the crate root as
-    // [`tutti_core::NetBackend`](crate::NetBackend), because a host reaches it
-    // to drive the engine rather than to build a graph with it.
+    // `NetBackend`, the audio-thread half of the RT commit split, is NOT here:
+    // it is at the crate root as [`NetBackend`](crate::NetBackend), because a
+    // host reaches it to *drive* the engine rather than to build a graph.
     pub use fundsp::net::{Net, NodeId, Source};
 
     // ── The default rate a node starts life at ──────────────────────────────
@@ -228,7 +228,7 @@ pub mod dsp {
     // it never has to be named. Re-adding it would re-open the door to writing a
     // node against the typenum-arity trait; write `impl AudioUnit` instead.
     pub use fundsp::prelude::{
-        adsr_live, bandpass_q, bell_hz, dc, highpass_q, limiter, limiter_stereo, lowpass_hz,
+        adsr_live, bandpass_q, bell_hz, dc, delay, highpass_q, limiter, limiter_stereo, lowpass_hz,
         lowpass_q, moog, multipass, notch_q, pan, pass, pink, poly_pulse, reverb_stereo, saw,
         saw_hz, sine, sine_hz, sink, split, square_hz, triangle, var,
     };

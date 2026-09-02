@@ -853,7 +853,7 @@ mod tests {
         let (_, _, node) = make_click();
         assert_eq!(
             node.get_id(),
-            0x436c_6963_6b,
+            0x0043_6c69_636b,
             "`\"Click\"` was `AudioNode::ID`; changing it reseeds the graph hash"
         );
     }

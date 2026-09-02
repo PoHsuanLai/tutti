@@ -112,7 +112,7 @@ pub const TRANSPORT_CLOCK_ID: u64 = 0x_5452_4E53_434C_4B00;
 /// would change the graph hash — a silent, audible change with no test that
 /// could name it — for the sake of a tidier spelling. It is pinned by
 /// `click_node_id_survived_the_audionode_rewrite`.
-pub const CLICK_NODE_ID: u64 = 0x_0000_0043_6c69_636b;
+pub const CLICK_NODE_ID: u64 = 0x0000_0043_6c69_636b;
 
 // Compile-time intra-crate uniqueness guard for core's own ids.
 const _: () = assert_unique(&[PDC_DELAY_ID, TRANSPORT_CLOCK_ID, CLICK_NODE_ID]);

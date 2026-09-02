@@ -92,7 +92,8 @@ impl AngleSmoother {
     /// [`AudioUnit::reset`]: tutti_core::AudioUnit::reset
     pub(crate) fn reset_to_target(&mut self, azimuth: Azimuth, elevation: Elevation) {
         self.azimuth.seed_at(azimuth.wrap().get());
-        self.elevation.seed_at(Elevation::new_clamped(elevation.get()).get());
+        self.elevation
+            .seed_at(Elevation::new_clamped(elevation.get()).get());
     }
 
     /// Advance one step toward the target and return the smoothed pair.

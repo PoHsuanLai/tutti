@@ -117,7 +117,15 @@ impl AudioUnit for HrtfBinauralNode {
     /// Position and blend are caller-set configuration and survive — see
     /// [`VbapPannerNode::reset`](crate::VbapPannerNode) for why a reset that
     /// re-aims is a silent bug rather than a tidy default.
+    ///
+    /// The leading [`sync_position`](Self::sync_position) is the same fix, and
+    /// for the same reason: the commanded direction lives in this node's
+    /// [`SpatialTarget`] and the inner panner's own copy, joined only by that
+    /// call, which used to run only inside `tick`/`process`. Without it a
+    /// `set_position` → `reset` seeded the ramp at the panner's stale direction
+    /// and the first block after the reset rendered from front-centre.
     fn reset(&mut self) {
+        self.sync_position();
         self.panner.reset_state();
     }
 

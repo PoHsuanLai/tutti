@@ -1,40 +1,79 @@
-//! Building the graph as a **value** from what the ECS declares.
+//! The graph as a **value**: what the ECS declares, and how it reaches the
+//! engine.
 //!
-//! [`build`] reads the same three things [`rebuild`](super::wire::rebuild)
-//! reads — the entities carrying [`AudioNode`], the [`PortSources`]
-//! declarations, and the [`MasterSources`] resource — and produces a
-//! [`Topology`]. Nothing here writes the engine.
+//! [`build`] reads the three things a declaration consists of — the entities
+//! carrying [`AudioNode`], the [`PortSources`] on each sink, and the
+//! [`MasterSources`] resource — and produces a [`Topology`]. [`apply`] writes
+//! that value into the runtime. [`LiveGraph`] holds the last one applied, so
+//! "did the graph change" is one comparison rather than a port-by-port read of
+//! `Net`.
 //!
-//! # Why this exists beside the per-port diff rather than instead of it
+//! # What the value owns, and what it does not
 //!
-//! The diff in [`wire`](super::wire) answers "what must I write" by reading
-//! `Net::source` back port by port. That works, and it is why this layer keeps
-//! no shadow state — but it means every *question* about the graph needs a live
-//! runtime, and the one hazard `wire`'s own module docs admit ("an imperative
-//! engine-side write this layer **cannot detect**") is a direct consequence: the
-//! dirty gate watches ECS change ticks, so a write nothing in the ECS touched is
-//! invisible.
+//! **It owns edges and outputs.** Every `Net::set_source` and
+//! `set_output_source` this adapter performs is driven by [`apply`] from a
+//! value. Nothing reads a topology back out of the runtime to decide what to
+//! write.
 //!
-//! A value makes the question answerable without the runtime. [`LiveGraph`]
-//! holds the last one built, so `want == live` is a whole-graph comparison a
-//! test can write down, and [`tutti_types::latency::plan`] over it is the same
-//! fold the engine's own PDC uses.
+//! **It does not own units.** A node is added by
+//! [`spawn_audio_node`](super::SpawnAudioNode) / `insert_audio_node` and removed
+//! by the `On<Remove, AudioNode>` observer, exactly as before. The value names
+//! nodes by [`NodeKey`] and carries a spec describing each one's *shape*
+//! (widths, latency, tail) — never a `Box<dyn AudioUnit>`, and never a catalog
+//! id it could be rebuilt from.
 //!
-//! # What the value can and cannot see
+//! That split is forced by the runtime, and the two constraints behind it are
+//! worth stating because they are what a later slice would have to answer:
 //!
-//! **It sees exactly the entity-bound nodes.** Every route into the graph binds
-//! its node to an entity through [`AudioNode`] — `spawn_audio_node`,
-//! `insert_audio_node`, and the four sites that call `Net::add`/`push`
-//! directly (soundfont promotion, plugin load, the audio-rate chain, the mod
-//! source LFO) all end in an `AudioNode` insert, because that component's
-//! presence is what despawn, MIDI unregistration and engine binding key on.
+//! 1. **The backend handoff is one-time.** `engine::build_into` calls
+//!    `Net::backend()` once — it `assert!`s `!has_backend()`, moves the vertex
+//!    vector to the audio thread and hands the result to `Engine::new`, which
+//!    parks it with no setter. A `Net` built from scratch by
+//!    [`tutti_core::topology::compile`] has no backend and nowhere to land.
+//! 2. **The frontend `Net` is live mutable state, not a derived artifact.**
+//!    `plugin_host` mutates hosted-plugin units in place through `node_as_mut`
+//!    (sound precisely because their input slots are `Arc`-shared across the
+//!    frontend's clones), and `crossfade_audio_node` queues a `NodeEdit` into
+//!    `Net::edit_queue` that `commit` drains. A from-scratch rebuild discards
+//!    both. The sampler's butler-shared buffers and a decoded `SoundFontUnit`
+//!    are in the same position: no `kind` string could reconstruct them.
 //!
-//! **It does not see a node with no entity.** There is exactly one such class
-//! today: the `PdcDelay` nodes `latency::compensate` splices into the `Net`
-//! during [`Compensate`](super::GraphReconcileSystems::Compensate). Those are
-//! derived, not declared — `clear_delays` re-derives them from scratch on every
-//! compensation run — so their absence from the value is correct rather than a
-//! gap: the value is what was *authored*, and compensation is a fold over it.
+//! So [`compile`](tutti_core::topology::compile) stays what it is — the
+//! from-scratch path, for tests and offline rendering, where there is no live
+//! backend to preserve. This module is the incremental path over a running one.
+//!
+//! # PDC delays are runtime-only, deliberately
+//!
+//! `latency::compensate` splices [`PdcDelay`](tutti_core::PdcDelay) nodes into
+//! the `Net` during [`Compensate`](super::GraphReconcileSystems::Compensate).
+//! They have no entity, so they are not in the value — and minting a `NodeKey`
+//! for them from their `NodeId` would be *actively wrong*, not merely awkward:
+//! `NodeId::new` draws from a global counter, and `clear_delays` destroys and
+//! re-mints every delay on each compensation run. Keyed that way the value would
+//! differ from itself every frame compensation ran, so `want == live` would
+//! never hold and every frame would become a full rebuild.
+//!
+//! They are also *derived*: `compensate` calls `clear_delays` before it plans,
+//! so the plan is always computed over the authored graph — the one the value
+//! describes. Compensation is a fold over the value, and its output does not
+//! belong in its input. [`disagreements`] excludes them for that reason, by the
+//! same `get_id` marker `clear_delays` uses, and skips the latency comparison
+//! entirely while any are live rather than asserting the value against an
+//! output it does not model.
+//!
+//! # Where the shape comes from
+//!
+//! Widths, latency and tail are read off the **live unit** through the `Net`,
+//! because that is the only place they exist. A node's arity is not authored
+//! anywhere in the ECS: `spawn_audio_node` takes a `U: AudioUnit`, and the four
+//! sites that push a unit directly (soundfont promotion, plugin load, the
+//! audio-rate chain, the mod-source LFO) take one already built. The unit is the
+//! sole author of its own shape.
+//!
+//! Every one of those routes ends in an `AudioNode` insert — that component's
+//! presence is what despawn, MIDI unregistration and engine binding key on — so
+//! `AudioNode` is the one binding [`build`] needs, and there is no route into
+//! the graph it cannot see.
 
 use std::collections::BTreeMap;
 
@@ -48,7 +87,7 @@ use tutti_types::ChannelLayout;
 use super::wire::{MasterSources, PortSource, PortSources};
 use super::AudioGraphRes;
 
-/// The catalog id every entity-bound node carries in the shadow value.
+/// The catalog id every entity-bound node carries.
 ///
 /// The value's `kind` is what a [`Catalog`](tutti_core::topology::Catalog)
 /// dispatches on when *building* a unit. Nothing in this adapter builds units
@@ -183,13 +222,124 @@ pub fn build(
     topology
 }
 
+/// Bring the engine into line with the value, and say whether anything moved.
+///
+/// **The value is the truth for edges and outputs; this is the only place it
+/// reaches the runtime.** Three calls — [`Net::set_source`], [`set_output_source`]
+/// — driven by what the value says rather than by re-reading the declaration
+/// port by port. Nothing here calls `connect`, `pipe_input` or `pipe_output`:
+/// those walk *every* port of a node, which is how a later wiring call silently
+/// clobbers an earlier one.
+///
+/// # Why it still compares before writing
+///
+/// [`rebuild`](super::wire::rebuild) has already decided the graph *changed* —
+/// one value comparison, not a per-port read. This second, per-port comparison
+/// answers a different question: **which** ports changed. `Net` offers only
+/// incremental edits, and writing a port re-invalidates the topological order,
+/// so writing all of them because one moved would make every edit cost a full
+/// reorder.
+///
+/// It is also what closes the hazard. An imperative engine-side write leaves the
+/// declaration — and therefore the value — untouched, so `want == live` and the
+/// old loop never ran. Now the value is compared against the *engine*, so the
+/// port is found and rewritten. See
+/// [`repair`](super::wire::rebuild)'s caller for the frame this takes.
+///
+/// # What it does not touch
+///
+/// A port the value says nothing about. `wire`'s contract is that an undeclared
+/// port belongs to whoever wired it — a `PortSources` shorter than the node's
+/// arity leaves the trailing ports alone, and a `MasterSources` shorter than the
+/// root leaves the remaining channels alone. The value carries exactly the
+/// declared ports (see [`build`]), so iterating it *is* that contract rather
+/// than a clamp reimposed here.
+pub fn apply(
+    want: &Topology,
+    graph: &mut AudioGraphRes,
+    nodes: &Query<(Entity, &AudioNode)>,
+) -> bool {
+    let ids = live_ids(graph, nodes);
+    let mut wrote = false;
+
+    for (at, edge) in &want.edges {
+        let Edge::Direct(source) = *edge else {
+            // No `Net` edge kind carries feedback — `tutti_core::topology::compile`
+            // refuses one for the same reason. Unreachable from a value this
+            // adapter builds (`build` emits only `Direct`), and a `continue`
+            // rather than an `unreachable!` so a future edge kind cannot become
+            // a panic inside a graph rebuild.
+            continue;
+        };
+        let (Some(&sink), Some(source)) = (ids.get(&at.node), lower(source, &ids)) else {
+            continue;
+        };
+        if graph.0.source(sink, at.port as usize) != source {
+            graph.0.set_source(sink, at.port as usize, source);
+            wrote = true;
+        }
+    }
+
+    for (channel, source) in want.outputs.iter().enumerate() {
+        let Some(source) = lower(*source, &ids) else {
+            continue;
+        };
+        if graph.0.output_source(channel) != source {
+            graph.0.set_output_source(channel, source);
+            wrote = true;
+        }
+    }
+
+    wrote
+}
+
+/// `NodeKey` → the live `NodeId` for every entity-bound node the engine holds.
+///
+/// Rebuilt per call rather than held, and that is the same rule
+/// [`PortSource::Node`] follows: a stored id goes stale the moment anything
+/// replaces the node, so the id is re-derived from the entity every time and
+/// this layer keeps no `Entity → NodeId` map between frames.
+fn live_ids(
+    graph: &AudioGraphRes,
+    nodes: &Query<(Entity, &AudioNode)>,
+) -> BTreeMap<NodeKey, tutti_core::NodeId> {
+    nodes
+        .iter()
+        .filter(|(_, n)| graph.0.contains(n.0))
+        .map(|(e, n)| (key_of(e), n.0))
+        .collect()
+}
+
+/// A value [`Source`] as the runtime's own, or `None` if it names a node the
+/// engine does not hold.
+///
+/// Total over the value's arms, which is what keeps the two enums from drifting
+/// silently. `None` is "not yet", never "silent": collapsing the two would drive
+/// a port to zero on the frame before its source appears and then never revisit
+/// it, since the declaration would not have changed.
+fn lower(
+    source: Source,
+    ids: &BTreeMap<NodeKey, tutti_core::NodeId>,
+) -> Option<tutti_core::dsp::Source> {
+    use tutti_core::dsp::Source as NetSource;
+    Some(match source {
+        Source::Zero => NetSource::Zero,
+        Source::Global(ch) => NetSource::Global(ch as usize),
+        Source::Node(p) => NetSource::Local(*ids.get(&p.node)?, p.port as usize),
+    })
+}
+
 /// Every way the value and the engine disagree about the graph, as sentences.
 ///
-/// The shadow half of the value layer: [`rebuild`](super::wire::rebuild) calls
-/// this after its per-port loop has written the engine, under a
-/// `debug_assert_eq!` against the empty list. A disagreement is therefore a test
-/// failure and never a dropout, and it names the port rather than saying only
+/// [`rebuild`](super::wire::rebuild) calls this immediately after [`apply`],
+/// under a `debug_assert_eq!` against the empty list, so a divergence is a test
+/// failure and never a dropout — and it names the port rather than saying only
 /// that two graphs differ.
+///
+/// It is not redundant with `apply`'s own per-port comparison. `apply` decides
+/// which ports to write; this asks whether
+/// the engine now agrees — including on the fold, which no single port write
+/// can be checked against.
 ///
 /// # What is compared, and what deliberately is not
 ///
@@ -217,33 +367,17 @@ pub fn disagreements(
     graph: &AudioGraphRes,
     nodes: &Query<(Entity, &AudioNode)>,
 ) -> Vec<String> {
-    use tutti_core::dsp::Source as NetSource;
-
     let mut faults = Vec::new();
-
-    // `Entity` → live `NodeId`, so a value `Source::Node` can be turned into
-    // the engine source it should have produced. Rebuilt per call rather than
-    // held, for the reason `wire`'s docs give: a stored id goes stale on a
-    // crossfade.
-    let ids: BTreeMap<NodeKey, tutti_core::NodeId> = nodes
-        .iter()
-        .filter(|(_, n)| graph.0.contains(n.0))
-        .map(|(e, n)| (key_of(e), n.0))
-        .collect();
-
-    let lower = |source: Source| -> Option<NetSource> {
-        Some(match source {
-            Source::Zero => NetSource::Zero,
-            Source::Global(ch) => NetSource::Global(ch as usize),
-            Source::Node(p) => NetSource::Local(*ids.get(&p.node)?, p.port as usize),
-        })
-    };
+    // The same map and the same lowering `apply` writes through — shared rather
+    // than re-derived, so a check that passed could not be checking a different
+    // translation from the one that ran.
+    let ids = live_ids(graph, nodes);
 
     for (at, edge) in &want.edges {
         let Edge::Direct(source) = *edge else {
             continue;
         };
-        let (Some(&sink), Some(expected)) = (ids.get(&at.node), lower(source)) else {
+        let (Some(&sink), Some(expected)) = (ids.get(&at.node), lower(source, &ids)) else {
             continue;
         };
         let live = graph.0.source(sink, at.port as usize);
@@ -257,7 +391,7 @@ pub fn disagreements(
     }
 
     for (channel, source) in want.outputs.iter().enumerate() {
-        let Some(expected) = lower(*source) else {
+        let Some(expected) = lower(*source, &ids) else {
             continue;
         };
         let live = graph.0.output_source(channel);
@@ -352,6 +486,19 @@ fn edge_of(
 ///
 /// `sink` is `Some` for a node port and `None` for a global output channel —
 /// the master cannot feed itself, so only the former checks for a self-loop.
+///
+/// # Why two of the refusals warn and the rest do not
+///
+/// `None` means "not resolvable", and that covers two different futures. An
+/// entity whose node has not spawned yet resolves *next frame*, and warning
+/// about it would fire once per frame for a case that is both normal and
+/// self-correcting. A self-loop and a port past the source's output count never
+/// resolve — no later frame changes either — so silence there would leave a port
+/// unwired forever with nothing said. Those two warn.
+///
+/// The self-loop refusal is not merely tidy: `Net::set_source` `assert!`s on it,
+/// so a value carrying one would turn a caller's mistake into a panic inside a
+/// graph rebuild.
 fn source_of(
     declared: PortSource,
     sink: Option<Entity>,
@@ -365,6 +512,10 @@ fn source_of(
         }
         PortSource::Node { entity, port } => {
             if sink == Some(entity) {
+                bevy_log::warn!(
+                    "PortSources on {entity:?} names itself as a source; skipping (a node \
+                     cannot feed its own input)"
+                );
                 return None;
             }
             // Present in `nodes` *and* in the value: an entity whose node the
@@ -373,7 +524,16 @@ fn source_of(
             // `Invalid::UnknownNode`, not silence.
             let key = key_of(nodes.get(entity).ok()?.0);
             let spec = topology.nodes.get(&key)?;
-            (port < spec.outputs.count() as usize).then_some(Source::Node(OutPort {
+            let outputs = spec.outputs.count() as usize;
+            if outputs <= port {
+                bevy_log::warn!(
+                    "declared source {entity:?} port {port}, but its node has only \
+                     {outputs} output(s); that port stays unwired. A mono node feeding \
+                     both master channels is `MasterSources::mono_from`."
+                );
+                return None;
+            }
+            Some(Source::Node(OutPort {
                 node: key,
                 port: port as u16,
             }))

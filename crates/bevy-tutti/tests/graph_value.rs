@@ -1,16 +1,17 @@
-//! The graph as a value: what [`LiveGraph`] holds, and the questions it makes
-//! answerable without reading the engine back.
+//! The graph as a value: what [`LiveGraph`] holds, and what follows from the
+//! value owning edges and outputs.
 //!
-//! Every assertion here is on the **value**, not on `Net::source`. That is the
-//! point of the file: `graph_wire.rs` covers "the declaration reaches the
-//! engine" by reading the engine, and this covers "the declaration is a thing
-//! that can be compared, folded and asserted on" — the two halves of the same
-//! wire pass, and the second is what the per-port diff could never offer.
+//! `graph_wire.rs` asserts "the declaration reaches the engine" by reading the
+//! engine, and that is still the right question for the declaration vocabulary.
+//! This file asserts the things that only became *sayable* once a value stood
+//! between the declaration and the runtime: that the graph can be compared as a
+//! whole, folded for latency, validated, and — the two that are behaviour rather
+//! than observation — that an imperative engine write is repaired from it, and
+//! that a re-bind moves a wire the value itself cannot see.
 //!
-//! The shadow `debug_assert` in `wire::rebuild` runs under every test in this
-//! crate, so a value that disagreed with the loop would fail the whole suite
-//! rather than only these. What is here is what the suite could *not* say: the
-//! cases the value describes and the loop has no vocabulary for.
+//! `wire::rebuild`'s `debug_assert` runs under every test in this crate, so an
+//! engine that diverged from the value it was just handed would fail the whole
+//! suite rather than only these.
 
 use bevy_app::prelude::*;
 use bevy_ecs::prelude::*;
@@ -114,97 +115,119 @@ fn the_master_declaration_becomes_the_values_outputs() {
     );
 }
 
-/// **The hazard `wire`'s module docs admit it cannot detect.**
+/// **The hazard `wire.rs`'s module docs used to call undetectable — now
+/// repaired.**
 ///
-/// A host writing a declared port imperatively through `AudioGraphRes.0` is
-/// invisible to the per-port diff: the dirty gate watches ECS change ticks, so
-/// a write nothing in the ECS touched never re-enters the loop, and the engine
-/// keeps the imperative value until something unrelated dirties the rebuild.
+/// A host writing a declared port imperatively through `AudioGraphRes.0` was
+/// invisible to the old per-port loop: the dirty gate watches ECS change ticks,
+/// so a write nothing in the ECS touched never re-entered the loop, and the
+/// engine kept the imperative value "silently, and at an unpredictable moment".
 ///
-/// The value makes it *visible*: the declaration is still what it was, so the
-/// topology the wire pass would build is unchanged — and comparing that against
-/// the engine names the port. This test is the statement of that, and it is the
-/// property the flip commit turns into a repair rather than only a diagnosis.
+/// With the value owning edges, the repair falls out of [`apply`]: it compares
+/// every port the value names against the engine before writing, so a tampered
+/// port is found and the declaration reasserted. That is a whole-graph sweep,
+/// not a per-declaration one — the write can be on *any* declared port, and this
+/// test tampers with a port belonging to a different sink from the one whose
+/// edit provokes the rebuild.
 ///
-/// **Mutation note.** Removing the imperative `set_source` line makes the two
-/// agree and the final assertion fails. Making `disagreements` return an empty
-/// list unconditionally fails it too. Note the assertion is on the *reported
-/// disagreement*, not on the engine — asserting the engine held the imperative
-/// value would pass even if the value layer saw nothing.
+/// # The residual, stated precisely
+///
+/// The repair needs a rebuild that gets past `rebuild`'s early return, and that
+/// return fires when the derived value equals the stored one. The declaration
+/// did not change, so **an imperative write alone will not provoke its own
+/// repair** — something else must move the graph first. That is a real narrowing
+/// of the old hazard rather than its removal: the old loop could not repair the
+/// port at all without an unrelated edit *and* would then only revisit the ports
+/// of declarations it happened to walk, whereas now the first rebuild of any
+/// kind sweeps every declared port. Closing the gap completely would mean
+/// deriving and comparing the value against the runtime every frame, which is
+/// the per-frame cost the dirty gate exists to avoid.
+///
+/// Note what is asserted and in which order: the engine still holds the
+/// imperative value immediately after the write (nothing has run since), and
+/// holds the declared one again after the next rebuild. Asserting only the
+/// second would pass even if the write had never landed.
+///
+/// **Mutation note.** Making `apply` skip its per-port comparison and trust the
+/// `want == live` check that already ran — the tempting simplification, since
+/// that check has just passed — fails the final assertion: the tampered port
+/// belongs to a sink whose declaration did not move, so nothing would rewrite
+/// it. Narrowing `apply` to visit only the sinks whose `PortSources` changed
+/// this frame fails it for the same reason. Removing the imperative
+/// `set_source` fails the middle assertion instead. All three verified.
 #[test]
-fn an_imperative_engine_write_disagrees_with_the_value() {
+fn an_imperative_engine_write_is_repaired_from_the_value() {
     let mut app = app();
     let osc = spawn_node(&mut app, sine_hz::<f32>(440.0));
     let other = spawn_node(&mut app, sine_hz::<f32>(880.0));
-    let sink = spawn_node(&mut app, pass() * pass());
+    let tampered = spawn_node(&mut app, pass() * pass());
+    // A second, entirely unrelated sink. Editing *this* one is what provokes the
+    // rebuild, so the repair below is not the pass merely revisiting the
+    // declaration it was asked about.
+    let bystander = spawn_node(&mut app, pass() * pass());
     app.world_mut()
-        .entity_mut(sink)
+        .entity_mut(tampered)
+        .insert(PortSources::silent().with(0, PortSource::node(osc)));
+    app.world_mut()
+        .entity_mut(bystander)
         .insert(PortSources::silent().with(0, PortSource::node(osc)));
     app.update();
 
-    let want = live(&app).clone();
-    let sink_id = node_id(&app, sink);
+    let tampered_id = node_id(&app, tampered);
+    let osc_id = node_id(&app, osc);
     let other_id = node_id(&app, other);
+    assert_eq!(
+        app.world()
+            .resource::<AudioGraphRes>()
+            .0
+            .source(tampered_id, 0),
+        NetSource::Local(osc_id, 0),
+        "the declaration reached the engine to begin with"
+    );
 
     // The hazard: a host reaches past the declaration and rewrites the port.
-    // Nothing in the ECS changed, so the next `rebuild` will not even run its
-    // loop — this is exactly the case the docs call "silently, and at an
-    // unpredictable moment".
+    // Nothing in the ECS changed.
     app.world_mut()
         .resource_mut::<AudioGraphRes>()
         .0
-        .set_source(sink_id, 0, NetSource::Local(other_id, 0));
-
-    // The diff cannot see it: another frame with no ECS edit leaves the
-    // imperative value in place.
-    app.update();
+        .set_source(tampered_id, 0, NetSource::Local(other_id, 0));
     assert_eq!(
-        app.world().resource::<AudioGraphRes>().0.source(sink_id, 0),
+        app.world()
+            .resource::<AudioGraphRes>()
+            .0
+            .source(tampered_id, 0),
         NetSource::Local(other_id, 0),
-        "the per-port diff does not re-enter its loop, so the write survives"
+        "the imperative write landed — otherwise the repair below proves nothing"
     );
 
-    // The value can: the declaration has not moved, so what the graph *should*
-    // be is unchanged, and the engine no longer matches it.
+    // Move the *bystander's* declaration. That is a real change to the value, so
+    // the rebuild gets past the early return — and `apply` then sweeps every
+    // declared port, not only the one that moved.
+    app.world_mut()
+        .entity_mut(bystander)
+        .insert(PortSources::silent().with(0, PortSource::node(other)));
+    app.update();
+
     assert_eq!(
-        want,
-        live(&app).clone(),
-        "the declaration did not change, so neither did the value"
+        app.world()
+            .resource::<AudioGraphRes>()
+            .0
+            .source(tampered_id, 0),
+        NetSource::Local(osc_id, 0),
+        "the value put the engine back on a port no declaration touched this \
+         frame: `apply` compares every port the value names against the runtime, \
+         so an imperative write cannot survive the next rebuild of any kind"
     );
-    let faults = {
-        let world = app.world_mut();
-        let mut nodes = world.query::<(Entity, &AudioNode)>();
-        let graph = world.resource::<AudioGraphRes>();
-        let nodes: Vec<_> = nodes.iter(world).map(|(e, n)| (e, *n)).collect::<Vec<_>>();
-        // Re-derived by hand rather than through `disagreements`, whose
-        // signature takes a `Query`: the property under test is that the value
-        // and the engine differ at a *named* port, and that is what the
-        // comparison below states without borrowing the world twice.
-        let sink_key = key_of(sink);
-        let declared = want
-            .edges
-            .get(&InPort {
-                node: sink_key,
-                port: 0,
-            })
-            .copied();
-        let live_source = graph.0.source(sink_id, 0);
-        let expected = declared.and_then(|e| match e {
-            Edge::Direct(Source::Node(p)) => nodes
-                .iter()
-                .find(|(e, _)| key_of(*e) == p.node)
-                .map(|(_, n)| NetSource::Local(n.0, p.port as usize)),
-            _ => None,
-        });
-        (expected, live_source)
-    };
-    assert_ne!(
-        faults.0,
-        Some(faults.1),
-        "the value says {:?} and the engine holds {:?} — the disagreement the \
-         per-port diff has no way to report",
-        faults.0,
-        faults.1
+    // And the edit that provoked it landed too, so the sweep did not simply
+    // overwrite everything with the previous frame's value.
+    let bystander_id = node_id(&app, bystander);
+    assert_eq!(
+        app.world()
+            .resource::<AudioGraphRes>()
+            .0
+            .source(bystander_id, 0),
+        NetSource::Local(other_id, 0),
+        "the declaration that changed reached the engine as well"
     );
 }
 
@@ -504,5 +527,63 @@ fn the_value_the_adapter_builds_validates() {
         topology.unconnected().count(),
         1,
         "the undeclared port is reported, and is not a fault"
+    );
+}
+
+/// Re-binding an entity to a different node moves the wire, **even though the
+/// value does not change**.
+///
+/// The one case where `want == live` is true and a rebuild is still required.
+/// A [`NodeKey`] is an `Entity` — deliberately, since that is what lets a
+/// crossfade replace a unit without moving a wire — so inserting a different
+/// `AudioNode` on the same entity changes which `NodeId` the declaration
+/// resolves to while leaving the key alone. Two nodes of the same shape produce
+/// equal values, so the early return would fire and every edge naming that
+/// entity would keep pointing at the retired node, which nothing renders.
+///
+/// The entity→`NodeId` mapping is engine state the value does not carry, so it
+/// takes an engine-side signal — `Changed<AudioNode>` — to notice. This test is
+/// why that signal bypasses the value comparison rather than the value being
+/// taught to carry a `NodeId`: carrying one would reintroduce the stale-id
+/// problem `PortSource::Node(Entity)` exists to remove, and would make a
+/// crossfade look like a topology change.
+///
+/// **Mutation note.** Removing `rebound_this_frame` from `rebuild`'s early
+/// return fails the final assertion — verified, and it is how this was found
+/// (`graph_wire::re_binding_an_entity_to_a_new_node_re_derives_the_wire` failed
+/// first). Asserting only that the value is unchanged would pass with the bug
+/// present, which is why the engine read is the assertion that matters here.
+#[test]
+fn a_rebind_moves_the_wire_though_the_value_is_unchanged() {
+    let mut app = app();
+    let osc = spawn_node(&mut app, sine_hz::<f32>(440.0));
+    let sink = spawn_node(&mut app, pass() * pass());
+    app.world_mut()
+        .entity_mut(sink)
+        .insert(PortSources::silent().with(0, PortSource::node(osc)));
+    app.update();
+
+    let before = live(&app).clone();
+    let sink_id = node_id(&app, sink);
+
+    // Same entity, a different node of the same shape.
+    let second = {
+        let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
+        graph.0.add(sine_hz::<f32>(880.0))
+    };
+    app.world_mut().entity_mut(osc).insert(AudioNode(second));
+    app.update();
+
+    assert_eq!(
+        *live(&app),
+        before,
+        "the value genuinely cannot see this: same entity, same shape, so the \
+         topology is identical and the comparison alone would skip the frame"
+    );
+    assert_eq!(
+        app.world().resource::<AudioGraphRes>().0.source(sink_id, 0),
+        NetSource::Local(second, 0),
+        "and the wire moved anyway — `Changed<AudioNode>` is the engine-side \
+         signal that the mapping the value resolves through has moved"
     );
 }

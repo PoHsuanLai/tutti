@@ -6,7 +6,7 @@ use super::payload_pool::PayloadPool;
 use super::progress::StateProgress;
 use crate::error::{BridgeError, Result, StateError};
 use crate::protocol::{BridgeMessage, HostMessage, IpcMidiEvent, MidiEvent, ProcessAudioData};
-use crate::util::transport::control::{self as ipc, ControlStream};
+use crate::util::transport::control::{self as ipc, ControlStream, PartialFrame};
 use crate::util::transport::shm::RING_SLOTS;
 use crate::util::transport::state_chunk::{self, ChunkError, Reassembler};
 use std::time::Duration;
@@ -45,6 +45,31 @@ const MIN_PROCESS_TIMEOUT: Duration = Duration::from_millis(2);
 const MAX_PROCESS_TIMEOUT: Duration = Duration::from_millis(50);
 
 const PARAM_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// How long [`Owed::settle`] waits to find out whether an owed reply has
+/// *started* arriving.
+///
+/// Short on purpose. The drain is opportunistic — it collects frames already in
+/// the socket buffer — and a frame that has not begun to land is left owed for a
+/// later block rather than waited on, because blocking here is the queue
+/// starvation the per-block timeout exists to prevent.
+const DRAIN_PROBE: Duration = Duration::from_millis(1);
+
+/// How long [`Owed::settle`] will wait to finish a reply that has *already
+/// started* arriving.
+///
+/// A separate, far larger budget from [`DRAIN_PROBE`], and the split is the
+/// point. A single small budget is not a smaller version of this — it is a
+/// different outcome: expiring part-way through a frame leaves the stream
+/// unframed (see [`BridgeError::Timeout::partial`]), and the only recovery from
+/// that is the crash the drain exists to avoid. So the decision to *start*
+/// reading is cheap and the commitment to *finish* is generous, because once
+/// bytes are moving the only safe move is to consume the whole frame.
+///
+/// A few hundred bytes over a local socket cannot plausibly take this long
+/// without the peer being dead, which the read reports as EOF rather than as a
+/// timeout.
+const DRAIN_FINISH: Duration = Duration::from_millis(500);
 
 /// How many blocks behind the newest submitted block a queued `Process` may be
 /// and still be worth sending.
@@ -105,11 +130,136 @@ fn is_stale(seq: u64, newest: u64) -> bool {
     newest.saturating_sub(seq) > MAX_BEHIND
 }
 
+/// Replies the server still owes for blocks this thread stopped waiting on,
+/// plus the cursor of any frame a timeout left half-read.
+///
+/// Owned by `pump` and passed in, rather than living in [`Channels`]: only the
+/// bridge thread ever reads or writes it, so an `Arc<AtomicU32>` would advertise
+/// a sharing that does not exist. The [`PartialFrame`] must have exactly this
+/// scope for a different reason — it describes a position in *this* connection's
+/// stream, so it lives and dies with the stream.
+#[derive(Default)]
+pub(super) struct Owed {
+    /// Replies abandoned and not yet taken back off the socket.
+    count: u32,
+    /// Where the last read stopped, so a timeout resumes rather than restarts.
+    partial: PartialFrame,
+}
+
+impl Owed {
+    /// Note that a block's reply was abandoned before it arrived.
+    fn note(&mut self) {
+        self.count = self.count.saturating_add(1);
+    }
+
+    /// Take one owed reply, in two stages: probe briefly to see whether a frame
+    /// has begun arriving, and if it has, commit to finishing it.
+    ///
+    /// The stages exist because the two questions have different right answers.
+    /// "Has anything arrived?" must be answered cheaply — waiting on it starves
+    /// the command queue. "Will this frame finish?" must be answered patiently —
+    /// giving up half-way leaves the stream unframed.
+    ///
+    /// **The second read RESUMES the first, it does not repeat it.** Both share
+    /// one [`PartialFrame`], so the finishing read continues from the byte the
+    /// probe stopped on. A stateless retry would read the body's first four
+    /// bytes as a length prefix and desynchronise the stream permanently — which
+    /// is the failure this two-stage shape exists to prevent, not one it may
+    /// cause.
+    ///
+    /// A timeout whose cursor says `in_progress` is therefore not a failure to
+    /// report but a fact to act on: bytes are moving, so it continues with
+    /// [`DRAIN_FINISH`]. Only a probe that consumed *nothing* means "not here
+    /// yet", and that is the one this returns as still-owed.
+    fn take_one(
+        stream: &mut ControlStream,
+        channels: &Channels,
+        partial: &mut PartialFrame,
+    ) -> Result<BridgeMessage> {
+        match recv_reply(stream, channels, DRAIN_PROBE, partial) {
+            Err(BridgeError::Timeout { partial: true, .. }) => {
+                recv_reply(stream, channels, DRAIN_FINISH, partial)
+            }
+            other => other,
+        }
+    }
+
+    /// Consume the replies owed from abandoned blocks, so the frame this
+    /// command reads is its *own*. Returns how many were taken, which is the
+    /// only externally visible evidence that the drain ran.
+    ///
+    /// Abandoning a block on a timeout does not cancel anything: the server is
+    /// mid-`process` and will write that frame onto this stream whenever it
+    /// finishes. Leaving it there desynchronises the pairing — the next command
+    /// would read the previous block's answer, and every later one would be a
+    /// block behind, permanently. The frames themselves are still well-formed,
+    /// so this is a matter of *pairing*, not of stream corruption.
+    ///
+    /// **Every owed frame that has already arrived is taken, not one per block.**
+    /// Draining a single frame per call cannot catch up with a server that is
+    /// missing its budget on every block: one frame is owed per block and one is
+    /// cleared per block, so a backlog that forms never shrinks and the pairing
+    /// distance grows with the run. Measured before this loop was made greedy: a
+    /// reply arriving 15 blocks late over a 40-block run. Since the frames being
+    /// taken here are already buffered, taking all of them costs no waiting.
+    ///
+    /// It waits on none that have not started. [`Owed::take_one`] probes with
+    /// [`DRAIN_PROBE`] and returns at once when nothing is there, so a backlog
+    /// never costs the bridge thread a full block budget on top of the one it
+    /// already pays — which is the queue starvation the timeout exists to
+    /// prevent. Whatever is still owed stays owed, and a later block takes it.
+    ///
+    /// A drained reply is **forwarded, not discarded**. Its audio is already
+    /// moot — the slab slot it names has been recycled, and the sequence check
+    /// rejects it — but its MIDI-out is the plugin's real output and the socket
+    /// is the only path it has. Dropping it silently loses notes from any block
+    /// whose reply ran late, which is a hard defect to attribute later: the
+    /// audio is fine and a few events are simply missing.
+    fn settle(&mut self, stream: &mut ControlStream, channels: &Channels) -> u32 {
+        let mut taken = 0;
+        while self.count > 0 {
+            self.count -= 1;
+            match Self::take_one(stream, channels, &mut self.partial) {
+                Ok(BridgeMessage::AudioProcessed { seq, midi_out, .. }) => {
+                    let midi_out = midi_out.iter().map(|e| MidiEvent::from(*e)).collect();
+                    channels.push_audio_response(AudioResponse::AudioProcessed { seq, midi_out });
+                    taken += 1;
+                }
+                // An error the server attributed to a block already abandoned.
+                // Nothing to forward: the caller fell back to silence for it
+                // when the budget expired.
+                Ok(_) => taken += 1,
+                // Still not here, and nothing of it was read. Stop draining;
+                // the stream is on a frame boundary and a later block may find
+                // it.
+                Err(BridgeError::Timeout { partial: false, .. }) => {
+                    self.count += 1;
+                    break;
+                }
+                // A frame is half-read even after `DRAIN_FINISH`. The cursor
+                // holds it, so the next call continues from the same byte —
+                // nothing is lost and nothing is misparsed. Stop for now.
+                Err(BridgeError::Timeout { partial: true, .. }) => {
+                    self.count += 1;
+                    break;
+                }
+                // The peer is gone or the stream is unreadable. Say nothing here
+                // — the send below will fail and `pump` will crash on it, with
+                // the error that actually describes the failure.
+                Err(_) => break,
+            }
+        }
+        channels.note_settled(taken);
+        taken
+    }
+}
+
 pub(super) fn handle(
     cmd: Command,
     stream: &mut ControlStream,
     channels: &Channels,
     payloads: &PayloadPool,
+    owed: &mut Owed,
 ) -> Result<()> {
     match cmd {
         Command::Process(mut payload) => {
@@ -140,10 +290,77 @@ pub(super) fn handle(
 
             payloads.recycle(payload);
 
+            let timeout = process_timeout(num_samples, channels.sample_rate());
+            // Collect any reply an earlier block gave up on, so the frame read
+            // below is this block's own rather than its predecessor's.
+            owed.settle(stream, channels);
+
             ipc::send(stream, &msg)?;
 
-            let timeout = process_timeout(num_samples, channels.sample_rate());
-            match recv_reply(stream, channels, timeout)? {
+            // The block's own budget, then the same two-stage rule the drain
+            // uses: a budget that expired mid-frame means bytes are moving, and
+            // the only safe move then is to finish that frame rather than leave
+            // the stream unframed.
+            //
+            // Both reads share `owed.partial`, so the second **resumes** the
+            // first from the byte it stopped on. Retrying without the cursor
+            // would re-read a length prefix that is no longer at the front of
+            // the stream, turning a recoverable late reply into a permanent
+            // desync — the failure this shape exists to prevent.
+            let first = recv_reply(stream, channels, timeout, &mut owed.partial);
+            let first = match first {
+                Err(BridgeError::Timeout { partial: true, .. }) => {
+                    recv_reply(stream, channels, DRAIN_FINISH, &mut owed.partial)
+                }
+                other => other,
+            };
+            let reply = match first {
+                Ok(msg) => msg,
+                // **A missed block budget costs the block, not the connection.**
+                //
+                // [`process_timeout`] is a few block periods with a 2 ms floor,
+                // and it exists to stop the bridge thread blocking while the
+                // audio thread keeps queueing — "abandoning the block", as its
+                // doc says. But the error travelled out through `?` into `pump`,
+                // which treats every `handle` error as connection-level: it
+                // `crash()`es, drains the queue with errors and returns, ending
+                // the thread. So one reply that lost a 2 ms race against the
+                // scheduler latched a permanent crash, and from then on
+                // `Batcher::collectable` short-circuits on `is_crashed()` and
+                // every later block is silence — for a server still running,
+                // still reading the socket, and still publishing correct audio.
+                //
+                // That is a wall-clock deadline gating correctness on a thread
+                // with no scheduling priority, so on a loaded machine whether a
+                // working plugin is declared dead is a property of the machine.
+                // It is what made the pipeline suites fail intermittently under
+                // parallel load and pass in isolation.
+                //
+                // Only `Timeout` is caught. Every other error — EOF, a frame
+                // over `MAX_FRAME_BYTES`, a decode failure — means the peer is
+                // gone or the stream is desynchronised, and those must still
+                // reach `pump` as a crash.
+                // A partial timeout has already been given `DRAIN_FINISH` to
+                // complete above, so anything still timing out here left the
+                // stream on a frame boundary and is safe to resume from.
+                Err(BridgeError::Timeout { .. }) => {
+                    // The reply is late, not absent: it will arrive on this
+                    // stream, and reading the *next* command's reply would
+                    // otherwise consume it and pair every later block with its
+                    // predecessor's answer. Owing it here is what keeps the
+                    // stream synchronised without waiting for it now.
+                    owed.note();
+                    // The host needs no notification to fall back to silence —
+                    // the server has not published, so the slab's sequence check
+                    // fails for this block on its own. The response keeps the
+                    // abandonment visible and stops the queue running a block
+                    // behind.
+                    channels.push_audio_response(AudioResponse::Error { seq: Some(seq) });
+                    return Ok(());
+                }
+                Err(e) => return Err(e),
+            };
+            match reply {
                 BridgeMessage::AudioProcessed { seq, midi_out, .. } => {
                     // Convert IpcMidiEvent → MidiEvent HERE, on the bridge
                     // thread (off-RT). The RT thread only drains the built
@@ -186,7 +403,7 @@ pub(super) fn handle(
         }
         Command::SaveState { progress, reply } => {
             ipc::send(stream, &HostMessage::SaveState)?;
-            reply.send(recv_state(stream, channels, &progress)?);
+            reply.send(recv_state(stream, channels, &progress, &mut owed.partial)?);
         }
         Command::LoadState {
             data,
@@ -239,7 +456,7 @@ pub(super) fn handle(
             // Propagating would `crash()` it, and the caller would receive
             // `Stalled` (which says "the session is fine, retrying is
             // reasonable") against a session that had just been torn down.
-            let value = match recv_state_reply(stream, channels, &progress)? {
+            let value = match recv_state_reply(stream, channels, &progress, &mut owed.partial)? {
                 Some(BridgeMessage::StateLoaded { error }) => {
                     error.map(StateError::Rejected).map_or(Ok(()), Err)
                 }
@@ -252,7 +469,7 @@ pub(super) fn handle(
         }
         Command::GetParameterList { reply } => {
             ipc::send(stream, &HostMessage::GetParameterList)?;
-            let value = match recv_reply(stream, channels, PARAM_TIMEOUT)? {
+            let value = match recv_reply(stream, channels, PARAM_TIMEOUT, &mut owed.partial)? {
                 BridgeMessage::ParameterList { parameters } => Some(parameters),
                 _ => None,
             };
@@ -260,7 +477,7 @@ pub(super) fn handle(
         }
         Command::GetPresetList { reply } => {
             ipc::send(stream, &HostMessage::GetPresetList)?;
-            let value = match recv_reply(stream, channels, PARAM_TIMEOUT)? {
+            let value = match recv_reply(stream, channels, PARAM_TIMEOUT, &mut owed.partial)? {
                 BridgeMessage::PresetList { presets } => Some(presets),
                 _ => None,
             };
@@ -269,14 +486,14 @@ pub(super) fn handle(
         Command::LoadPreset { id, reply } => {
             ipc::send(stream, &HostMessage::LoadPreset { id })?;
             let ok = matches!(
-                recv_reply(stream, channels, PARAM_TIMEOUT)?,
+                recv_reply(stream, channels, PARAM_TIMEOUT, &mut owed.partial)?,
                 BridgeMessage::PresetLoaded { ok: true }
             );
             reply.send(ok);
         }
         Command::GetCurrentPreset { reply } => {
             ipc::send(stream, &HostMessage::GetCurrentPreset)?;
-            let value = match recv_reply(stream, channels, PARAM_TIMEOUT)? {
+            let value = match recv_reply(stream, channels, PARAM_TIMEOUT, &mut owed.partial)? {
                 BridgeMessage::CurrentPreset { id } => id,
                 _ => None,
             };
@@ -284,7 +501,7 @@ pub(super) fn handle(
         }
         Command::GetParameter { param_id, reply } => {
             ipc::send(stream, &HostMessage::GetParameter { param_id })?;
-            let value = match recv_reply(stream, channels, PARAM_TIMEOUT)? {
+            let value = match recv_reply(stream, channels, PARAM_TIMEOUT, &mut owed.partial)? {
                 BridgeMessage::ParameterValue { value } => value,
                 _ => None,
             };
@@ -296,7 +513,7 @@ pub(super) fn handle(
             reply,
         } => {
             ipc::send(stream, &HostMessage::GetParameterText { param_id, value })?;
-            let text = match recv_reply(stream, channels, PARAM_TIMEOUT)? {
+            let text = match recv_reply(stream, channels, PARAM_TIMEOUT, &mut owed.partial)? {
                 BridgeMessage::ParameterText { text } => text,
                 _ => None,
             };
@@ -311,7 +528,7 @@ pub(super) fn handle(
                 stream,
                 &HostMessage::GetParameterValueFromText { param_id, text },
             )?;
-            let value = match recv_reply(stream, channels, PARAM_TIMEOUT)? {
+            let value = match recv_reply(stream, channels, PARAM_TIMEOUT, &mut owed.partial)? {
                 BridgeMessage::ParameterValueFromText { value } => value,
                 _ => None,
             };
@@ -347,10 +564,11 @@ fn recv_state(
     stream: &mut ControlStream,
     channels: &Channels,
     progress: &StateProgress,
+    partial: &mut PartialFrame,
 ) -> Result<std::result::Result<Vec<u8>, StateError>> {
     let mut acc = Reassembler::default();
     loop {
-        let Some(msg) = recv_state_reply(stream, channels, progress)? else {
+        let Some(msg) = recv_state_reply(stream, channels, progress, partial)? else {
             // Stalled, not disconnected. Answering the caller keeps the session
             // alive; see `recv_state_reply`.
             return Ok(Err(progress.stalled()));
@@ -407,8 +625,12 @@ fn recv_state_reply(
     stream: &mut ControlStream,
     channels: &Channels,
     progress: &StateProgress,
+    partial: &mut PartialFrame,
 ) -> Result<Option<BridgeMessage>> {
-    match recv_reply(stream, channels, progress.deadline()) {
+    // Resumable for the same reason the audio path is: this returns `Ok(None)`
+    // on a deadline and the caller goes on using the stream, so a frame the
+    // deadline caught half-read has to be continued rather than restarted.
+    match recv_reply(stream, channels, progress.deadline(), partial) {
         Ok(msg) => Ok(Some(msg)),
         // Matched on the variant, not on a string or an `io::ErrorKind`:
         // `recv_within` already normalises the socket's `TimedOut`/`WouldBlock`
@@ -424,9 +646,10 @@ fn recv_reply(
     stream: &mut ControlStream,
     channels: &Channels,
     timeout: Duration,
+    partial: &mut PartialFrame,
 ) -> Result<BridgeMessage> {
     loop {
-        match ipc::recv_within(stream, timeout)? {
+        match ipc::recv_resumable(stream, timeout, partial)? {
             BridgeMessage::LatencyChanged { samples } => {
                 channels.push_unsolicited(BridgeEvent::LatencyChanged { samples });
             }

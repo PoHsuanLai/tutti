@@ -138,6 +138,17 @@ pub enum BridgeError {
         operation: String,
         /// How long it waited, in milliseconds.
         duration_ms: u64,
+        /// Whether the deadline expired **part-way through a frame**, leaving
+        /// bytes of it consumed.
+        ///
+        /// This is the difference between a timeout a caller may resume from and
+        /// one it may not. Nothing consumed means the stream is still on a frame
+        /// boundary and the next read starts a whole message; a partial frame
+        /// means the remaining bytes will be misread as a length prefix, and
+        /// every later frame with them. The desynchronisation is silent at the
+        /// point it happens and surfaces later as a decode error, so the flag
+        /// has to be carried out from the only place that knows: the read loop.
+        partial: bool,
     },
 
     /// The subprocess died. Any plugin state it held is gone.

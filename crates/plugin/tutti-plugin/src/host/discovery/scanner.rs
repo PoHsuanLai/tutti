@@ -726,6 +726,9 @@ mod tests {
         let timed_out = ProbeFailure::from_bridge_error(BridgeError::Timeout {
             operation: "probe".into(),
             duration_ms: 5000,
+            // Irrelevant to the blacklist verdict, which is what this asserts:
+            // a probe that timed out is unusable either way.
+            partial: false,
         });
         assert!(timed_out.blacklistable, "Timeout must be blacklistable");
         assert!(timed_out.reason.contains("timed out"));

@@ -58,9 +58,39 @@ const BLOCK: usize = 64;
 const PERIOD: Duration = Duration::from_nanos((BLOCK as f64 / SAMPLE_RATE * 1e9) as u64);
 const PACE: Duration = PERIOD.saturating_mul(20);
 
-/// Which `process()` call aborts. Late enough that several good blocks precede
-/// it, so "audio before the crash is correct" has real audio to check.
-const CRASH_AT_BLOCK: u32 = 6;
+/// Which `process()` call aborts.
+///
+/// Counted in the **plugin's** `process()` calls, which is not the same as the
+/// host calls this test makes: the host submits block N and collects N-1, and
+/// `Batcher::collectable` substitutes silence for any block the server has not
+/// answered *yet*. A block starved that way does not arrive late — it never
+/// arrives — so every host call spends a plugin block whether or not it yields
+/// audio.
+///
+/// That is why this is generous rather than tight. [`GOOD_BLOCKS_REQUIRED`] good
+/// blocks have to be *observed* before the abort, and on a cold pipeline the
+/// early calls routinely yield nothing: the subprocess is still starting, and
+/// under parallel load its first blocks can miss their `PACE` window. Sizing
+/// this to the minimum needed on an idle machine turns a slow start into a
+/// failure — the budget is spent before the pipeline is warm, and the abort
+/// arrives with nothing yet checked. The pre-crash loop stops as soon as it has
+/// seen enough, so the extra headroom costs nothing on a fast run.
+const CRASH_AT_BLOCK: u32 = 40;
+
+/// How many correct blocks must be seen before the crash.
+///
+/// Two, not one: a single good block cannot distinguish "the plugin is
+/// rendering" from one lucky publish landing in the window.
+const GOOD_BLOCKS_REQUIRED: u32 = 2;
+
+/// Ceiling on [`drive_until_dead`]'s loop.
+///
+/// A bound, not a budget: the loop exits the moment death is observed, so this
+/// only decides how long a plugin that never dies is given before the assertion
+/// says so. Generous enough that a slow subprocess is never mistaken for a
+/// surviving one — each block costs a [`PACE`] sleep, so the whole ceiling is
+/// still well under [`NOTICE_TIMEOUT`]'s order of magnitude.
+const DRIVE_TO_DEATH_MAX: usize = 60;
 
 /// How long to keep polling for the crash to be noticed.
 ///
@@ -104,6 +134,33 @@ fn drive_block(unit: &mut Box<dyn AudioUnit>) -> Vec<f32> {
     unit.process(BLOCK, &input.buffer_ref(), &mut output.buffer_mut());
     std::thread::sleep(PACE);
     (0..BLOCK).map(|i| output.at_f32(0, i)).collect()
+}
+
+/// Drive blocks until the host reports the plugin dead, and say how many it took.
+///
+/// The three tests here all need a plugin that has *actually* died before they
+/// can assert anything, and all three used to spend a fixed twelve blocks and
+/// then assert on the outcome. That is the same shape as the pre-crash budget
+/// below, and it fails the same way: a host call whose input the server has not
+/// consumed yet spends no plugin block, so on a cold or starved pipeline twelve
+/// host calls need not deliver the one block that aborts — and the failure then
+/// reads "the plugin should have crashed", blaming the crash path for a block
+/// that was never submitted.
+///
+/// Driving until the observed status flips is the handshake. The bound is
+/// [`DRIVE_TO_DEATH_MAX`] blocks, so a plugin that genuinely never dies still
+/// ends the loop and fails an assertion rather than spinning.
+fn drive_until_dead(
+    unit: &mut Box<dyn AudioUnit>,
+    handle: &tutti_plugin::handles::PluginHandle,
+) -> usize {
+    for driven in 1..=DRIVE_TO_DEATH_MAX {
+        let _ = drive_block(unit);
+        if handle.status().is_dead() {
+            return driven;
+        }
+    }
+    DRIVE_TO_DEATH_MAX
 }
 
 /// Poll until the host reports the plugin dead, or the deadline passes.
@@ -153,21 +210,41 @@ fn a_plugin_that_aborts_mid_render_leaves_the_host_alive_and_silent() {
 
     // --- Before the crash: real audio, not silence and not the input echoed.
     //
-    // The pipeline holds one block, so the first block back is always silence
-    // (nothing has been collected yet) — start from block 1. Two good blocks is
-    // enough to distinguish "rendering" from "a lucky single block".
+    // Drive **until enough good blocks have been seen**, rather than driving a
+    // fixed count and checking the tally afterwards. The difference is the whole
+    // point: a fixed count is a deadline in disguise. The pipeline holds one
+    // block, so the first call collects nothing by construction, and every later
+    // call is good only if the subprocess published within one `PACE` — which a
+    // cold subprocess under load does not reliably do. Spending a fixed budget
+    // and asserting on the tally therefore fails whenever the start-up transient
+    // eats it, and cannot recover, because the abort is armed on a block count
+    // the starved calls have already spent.
+    //
+    // Waiting on the observed value instead is the same rule
+    // `hostile_peer_tests` follows for the crash notification: wait for the
+    // thing you are about to assert on, never for a proxy and never for a
+    // wider timeout. `clap_pdc_alignment` warms the pipeline for the same
+    // reason — it just knows its warm-up length up front, and this test cannot,
+    // because here the warm-up shares a budget with the crash.
+    //
+    // The loop is still bounded, by the crash block itself: if the plugin never
+    // renders, this exits when the budget is gone and the assertion below says
+    // so, rather than spinning.
     let mut good_blocks = 0;
-    for _ in 0..(CRASH_AT_BLOCK as usize - 1) {
+    let mut driven = 0;
+    while good_blocks < GOOD_BLOCKS_REQUIRED && driven < CRASH_AT_BLOCK - 1 {
         let out = drive_block(&mut unit);
+        driven += 1;
         if out.iter().all(|&s| s == EXPECTED_LIVE) {
             good_blocks += 1;
         }
     }
     assert!(
-        good_blocks >= 2,
-        "expected at least 2 correct blocks before the crash, got {good_blocks}. \
-         Zero means the plugin never rendered at all, and every assertion below \
-         would then be about a plugin that was never alive."
+        good_blocks >= GOOD_BLOCKS_REQUIRED,
+        "expected {GOOD_BLOCKS_REQUIRED} correct blocks before the crash, got \
+         {good_blocks} in {driven} blocks. Zero means the plugin never rendered \
+         at all, and every assertion below would then be about a plugin that was \
+         never alive."
     );
 
     // --- The crash. Driving on eventually submits the block that aborts.
@@ -175,20 +252,26 @@ fn a_plugin_that_aborts_mid_render_leaves_the_host_alive_and_silent() {
     // A loop rather than one call: which block trips the switch depends on how
     // many the pipeline had already submitted, and the point is that the host
     // survives regardless of exactly when it happens.
-    for _ in 0..12 {
-        let _ = drive_block(&mut unit);
-        if handle.status().is_dead() {
-            break;
-        }
-    }
+    //
+    // Driven until the death is *observed* rather than for a fixed count: the
+    // loop above may have spent anywhere from [`GOOD_BLOCKS_REQUIRED`] to the
+    // whole budget getting warm, so a constant here would be too few after a
+    // slow start — and "too few" reads as "the host never noticed the death",
+    // blaming detection for a block that was never submitted.
+    let crash_blocks = drive_until_dead(&mut unit, &handle);
 
     // --- Detection, with a reason.
     let status = wait_for_death(&handle);
     assert!(
         status.is_dead(),
-        "the host did not notice the plugin died within {NOTICE_TIMEOUT:?}. \
-         A live status here means the bridge is still waiting on a process that \
-         is gone — which is the hang this design exists to prevent."
+        "the host did not notice the plugin died within {NOTICE_TIMEOUT:?}, \
+         after {driven} warm-up and {crash_blocks} further blocks. A live status \
+         here means the bridge is still waiting on a process that is gone — \
+         which is the hang this design exists to prevent. If {crash_blocks} is \
+         the whole {DRIVE_TO_DEATH_MAX}-block ceiling, suspect instead that the \
+         aborting block was never submitted: that is starvation, not a missed \
+         detection, and it is the loop above that is too short rather than this \
+         wait."
     );
     let cause = status.cause().unwrap_or_default();
     assert!(
@@ -247,15 +330,11 @@ fn rendering_through_a_dead_plugin_does_not_block() {
     let mut unit: Box<dyn AudioUnit> = Box::new(probe.client);
 
     // Get it dead first, so the measured blocks are all post-crash.
-    for _ in 0..12 {
-        let _ = drive_block(&mut unit);
-        if handle.status().is_dead() {
-            break;
-        }
-    }
+    let driven = drive_until_dead(&mut unit, &handle);
     assert!(
         handle.status().is_dead(),
-        "the plugin should have crashed on its first block"
+        "the plugin should have crashed on its first block, but was still alive \
+         after {driven} blocks"
     );
 
     const MEASURED: usize = 8;
@@ -294,13 +373,12 @@ fn dropping_a_crashed_plugin_is_clean() {
 
     {
         let mut unit: Box<dyn AudioUnit> = Box::new(probe.client);
-        for _ in 0..12 {
-            let _ = drive_block(&mut unit);
-            if handle.status().is_dead() {
-                break;
-            }
-        }
-        assert!(handle.status().is_dead(), "the plugin should have crashed");
+        let driven = drive_until_dead(&mut unit, &handle);
+        assert!(
+            handle.status().is_dead(),
+            "the plugin should have crashed, but was still alive after \
+             {driven} blocks"
+        );
     }
     // `unit` dropped; the handle still holds the guard.
     drop(handle);

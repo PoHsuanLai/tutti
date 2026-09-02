@@ -10,6 +10,33 @@
 //! `tick_stereo` runs per sample on the audio thread and must not allocate.
 //! The two places that do allocate — building a chain in `from_config` and
 //! growing the sub-voice set in `resize_unison` — are control-thread only.
+//!
+//! # The one sanctioned combinator site in the engine
+//!
+//! [`build_sub_voice_dsp`] is the last production use of fundsp's operator DSL
+//! (`>>` serial, `|` stack, `*` product) anywhere in Tutti, and the whole
+//! combinator group in [`tutti_core::dsp`] exists for it. That module's docs
+//! name this function as the exception; this is the other half of that claim.
+//!
+//! **The reason is that the chain's *shape* is data, not code.** A sub-voice is
+//! an oscillator (five kinds) crossed with a filter (four kinds, three of them
+//! parameterized by mode), chosen at note-on from a `SynthConfig` the user
+//! edits, and rebuilt whenever that config changes. Written as a
+//! [`Topology`](tutti_core::Topology) it would be twenty node-and-edge
+//! constructions returning the same twenty shapes; written as one `impl
+//! AudioUnit` it would be a hand-rolled twenty-arm state machine over
+//! oscillator phase, filter state and envelope stage. The combinators express
+//! it as one `match` per axis, and fundsp's own generators supply the DSP.
+//!
+//! **What it costs, and why that is acceptable here.** The result is an opaque
+//! `Box<dyn AudioUnit>` — the value layer cannot see inside it, so a sub-voice
+//! chain is one node to `Topology`, `latency::plan` and `tail::graph_tail`. That
+//! is the right granularity for this object: a voice is allocated and freed as a
+//! unit, never rewired, and its internals are not addressable by anything
+//! outside this file. A combinator expression whose parts a *host* had to
+//! address would be the wrong call, which is the line for any future site.
+//!
+//! New DSP that is not this should be a `Topology` or an `impl AudioUnit`.
 
 use crate::{FilterModConfig, FilterType, OscillatorType, SvfMode, SynthConfig};
 use crate::{MpeVoiceState, UnisonEngine};

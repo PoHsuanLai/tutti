@@ -311,7 +311,7 @@ mod audio_param {
     type DriveParam = AudioParam<Drive, { UnitParam::Drive as u16 }>;
 
     fn app_with_node() -> (App, Entity) {
-        use tutti_core::dsp::AudioUnit as _;
+        use tutti_core::AudioUnit as _;
 
         let mut app = App::new();
 

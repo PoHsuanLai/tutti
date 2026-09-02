@@ -14,7 +14,7 @@ use crate::{Beat, BeatDuration, Bpm, SampleRate};
 /// The timeline an offline render advances, one block at a time.
 ///
 /// Handed to every node as `&dyn Any` by
-/// [`PendingClone::isolate_for_offline`](crate::dsp::PendingClone::isolate_for_offline),
+/// `PendingClone::isolate_for_offline` (`fundsp-tutti`),
 /// so this alias is the agreed shape on both sides of that cast — recover it
 /// with `ctx.downcast_ref::<OfflineTransport>()`. It is an alias rather than a
 /// named type because `fundsp-tutti` cannot name [`Timeline`](super::Timeline),

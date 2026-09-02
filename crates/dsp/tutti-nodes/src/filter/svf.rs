@@ -7,10 +7,7 @@
 
 use tutti_core::Arc;
 use tutti_core::AtomicF32;
-use tutti_core::{
-    dsp::{Real, DEFAULT_SAMPLE_RATE},
-    AudioUnit, BufferMut, BufferRef, SignalFrame,
-};
+use tutti_core::{dsp::DEFAULT_SAMPLE_RATE, AudioUnit, BufferMut, BufferRef, Real, SignalFrame};
 
 use tutti_core::{Db, Hz, Param, SampleRate, Q};
 
@@ -386,7 +383,7 @@ impl<F: Real + 'static> AudioUnit for SvfFilterNode<F> {
         }
     }
 
-    fn set(&mut self, setting: tutti_core::dsp::Setting) {
+    fn set(&mut self, setting: tutti_core::Setting) {
         if let Some((param, value)) = tutti_core::unit_param::from_setting(&setting) {
             match param {
                 tutti_core::UnitParam::Cutoff => self.set_frequency(value),
@@ -740,7 +737,7 @@ impl<F: Real + 'static> AudioUnit for StereoSvfFilterNode<F> {
         }
     }
 
-    fn set(&mut self, setting: tutti_core::dsp::Setting) {
+    fn set(&mut self, setting: tutti_core::Setting) {
         if let Some((param, value)) = tutti_core::unit_param::from_setting(&setting) {
             match param {
                 tutti_core::UnitParam::Cutoff => self.set_frequency(value),

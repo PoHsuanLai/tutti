@@ -26,17 +26,13 @@
 //! The cost is that this crate is not `no_std`: `tutti-types` is std-only (34
 //! `std::` uses across 11 files, including `std::io::Result` on the public
 //! `AudioOut::finalize` signature). That was measured rather than assumed, and
-//! two facts make it the right trade for now:
-//!
-//! 1. The retrofit is a real, separate change — a `std` feature, `hashbrown`
-//!    for the three `HashMap`/`HashSet` modules, and a decision about
-//!    `AudioOut::finalize`'s return type. It is listed as a prerequisite in the
-//!    `node-trait-cannot-leave-fundsp` note for exactly this reason.
-//! 2. **`fundsp-tutti`'s own `no_std` build is already broken on `main`** —
-//!    `cargo check -p fundsp-tutti --no-default-features` fails with five
-//!    errors in `latency/`, a Tutti addition that uses `Vec` and
-//!    `std::array::from_fn` unguarded. So the `no_std` this crate would be
-//!    preserving is one nothing in the tree currently builds.
+//! it costs nothing, because **nothing in Tutti is `no_std`** — a settled
+//! decision (2026-09-02), not an accident. `fundsp-tutti` used to claim to be,
+//! behind a `std` feature; the claim was false (its no-default-features build
+//! failed with five errors in `latency/`, a Tutti addition using `Vec` and
+//! `std::array::from_fn` unguarded), nothing ever selected it, and the feature
+//! was removed rather than repaired. So there is no `no_std` configuration in
+//! the engine for this crate's `tutti-types` edge to break.
 //!
 //! Everything else about the leaf property holds: `tutti-types` names no other
 //! `tutti` crate, so the graph stays acyclic and `fundsp-tutti` sits cleanly on

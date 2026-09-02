@@ -721,7 +721,7 @@ mod mod_audio_rate_reconcile {
                 .node_as::<tutti_nodes::ParamShaperNode>(node)
                 .expect("the shaper is a ParamShaperNode");
             let mut out = [0.0f32; 1];
-            tutti_core::dsp::AudioUnit::tick(&mut unit.clone(), &[1.0], &mut out);
+            tutti_core::AudioUnit::tick(&mut unit.clone(), &[1.0], &mut out);
             out[0]
         }
 
@@ -809,7 +809,7 @@ mod mod_audio_rate_reconcile {
                 .node_as::<tutti_nodes::ParamSumNode>(node)
                 .expect("the sum is a ParamSumNode");
             let mut out = [0.0f32; 1];
-            tutti_core::dsp::AudioUnit::tick(&mut unit.clone(), &[base, 0.0], &mut out);
+            tutti_core::AudioUnit::tick(&mut unit.clone(), &[base, 0.0], &mut out);
             out[0]
         }
 
@@ -881,7 +881,7 @@ mod mod_tier_parity {
     use bevy_ecs::prelude::*;
 
     use bevy_tutti::modulation::ModRoute;
-    use tutti_core::dsp::AudioUnit as _;
+    use tutti_core::AudioUnit as _;
     use tutti_mod::{shape, CurveType, Polarity};
     use tutti_nodes::{ParamShaperNode, ParamSumNode};
     use tutti_types::{Depth, ParamAddr, UnitParam};

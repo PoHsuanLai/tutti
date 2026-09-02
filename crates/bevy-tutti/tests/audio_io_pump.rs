@@ -525,8 +525,9 @@ mod io_graph_composition {
     use bevy_tutti::graph::{AudioGraphRes, GraphReconcilePlugin, MasterSources, PortSources};
     use bevy_tutti::io::{MicMonitorNode, MicRing};
     use bevy_tutti::AudioEngineState;
-    use tutti_core::dsp::{pass, AudioUnit as _, Net, Source};
+    use tutti_core::dsp::{pass, Net, Source};
     use tutti_core::AudioNode;
+    use tutti_core::AudioUnit as _;
 
     /// An app wired the way `build_into` leaves one, minus the audio device.
     /// Same shape as `graph_wire.rs`'s harness — deliberately, so a difference in

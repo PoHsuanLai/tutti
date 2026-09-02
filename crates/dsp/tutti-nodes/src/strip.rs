@@ -37,8 +37,8 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use tutti_core::dsp::{AudioUnit, BufferMut, BufferRef, Setting, SignalFrame};
 use tutti_core::{Amplitude, ChannelLayout, Pan, Param, ParamAddr, Tail, UnitParam};
+use tutti_core::{AudioUnit, BufferMut, BufferRef, Setting, SignalFrame};
 use tutti_mod::{AtomicTarget, ModParams, ModTarget};
 
 use crate::ParamPorts;
@@ -608,7 +608,7 @@ mod tests {
     /// channel report itself as passing signal.
     #[test]
     fn route_reports_mute_on_every_channel() {
-        use tutti_core::dsp::Signal;
+        use tutti_core::Signal;
 
         let mut s = BusStripNode::with_channels(ChannelLayout::from(3u16));
         s.set_muted(true);

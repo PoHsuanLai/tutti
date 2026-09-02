@@ -50,7 +50,8 @@ fail here, and it left with the panners.
 ## Quick start
 
 ```rust
-use tutti_core::dsp::{AudioUnit, Net};
+use tutti_core::dsp::Net;
+use tutti_core::AudioUnit;
 use tutti_core::{Hz, Q};
 use tutti_nodes::{SvfFilterNode, SvfType};
 

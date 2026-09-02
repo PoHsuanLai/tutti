@@ -9,7 +9,8 @@
 //! These pin what it costs, so the choice rests on measurements rather than on
 //! the claim being plausible.
 
-use tutti_core::dsp::{AudioUnit as _, Net};
+use tutti_core::dsp::Net;
+use tutti_core::AudioUnit as _;
 use tutti_core::Ordering;
 use tutti_nodes::{
     AtomicSourceNode, DistortionNode, ParamPorts, ParamSumNode, ShapeKind, StereoSvfFilterNode,

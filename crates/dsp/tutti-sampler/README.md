@@ -53,7 +53,8 @@ build the `Wave`, wrap it, push it into a `Net` and render.
 
 ```rust
 use std::sync::Arc;
-use tutti_core::dsp::{AudioUnit, Net};
+use tutti_core::dsp::Net;
+use tutti_core::AudioUnit;
 use tutti_core::Wave;
 use tutti_sampler::MemorySource;
 

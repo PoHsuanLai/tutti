@@ -177,7 +177,7 @@ pub struct EngineNodes {
     /// /// Stands in for a beat-driven node — `tutti_nodes::Lfo` in beat-synced
     /// /// mode, or an automation lane. What matters is that it takes the beat on
     /// /// two input ports, in port order.
-    /// fn beat_driven_node() -> impl tutti_core::dsp::AudioUnit {
+    /// fn beat_driven_node() -> impl tutti_core::AudioUnit {
     ///     pass() | pass()
     /// }
     ///

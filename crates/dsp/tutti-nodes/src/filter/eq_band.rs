@@ -2,7 +2,7 @@
 
 use tutti_core::Arc;
 use tutti_core::AtomicF32;
-use tutti_core::{dsp::Real, AudioUnit, BufferMut, BufferRef, SignalFrame};
+use tutti_core::{AudioUnit, BufferMut, BufferRef, Real, SignalFrame};
 use tutti_core::{Db, Hz, Q};
 
 use super::svf::{SvfFilterNode, SvfType};
@@ -182,7 +182,7 @@ impl<F: Real + 'static> AudioUnit for EqBandNode<F> {
         }
     }
 
-    fn set(&mut self, setting: tutti_core::dsp::Setting) {
+    fn set(&mut self, setting: tutti_core::Setting) {
         // Delegate to the inner SVF, which owns frequency/Q/gain.
         self.svf.set(setting);
     }

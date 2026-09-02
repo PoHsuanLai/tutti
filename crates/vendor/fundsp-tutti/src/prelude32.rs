@@ -44,7 +44,7 @@ pub use super::wave::*;
 pub use super::wavetable::*;
 pub use super::*;
 
-#[cfg(all(feature = "std", feature = "fft"))]
+#[cfg(feature = "fft")]
 pub use super::convolve::*;
 
 // Import some typenum integers for reporting arities.
@@ -2759,7 +2759,7 @@ pub fn biquad_bank() -> An<BiquadBank<f32x8>> {
 /// Convolve the input with channel `channel` of the given response.
 /// - Input 0: input signal
 /// - Output 0: convolved signal
-#[cfg(all(feature = "std", feature = "fft"))]
+#[cfg(feature = "fft")]
 pub fn convolve(response: &Wave, channel: usize) -> An<Convolver> {
     An(Convolver::new(response, channel))
 }

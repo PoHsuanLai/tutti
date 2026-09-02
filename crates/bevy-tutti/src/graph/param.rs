@@ -12,7 +12,8 @@
 //! use bevy_ecs::prelude::*;
 //! use bevy_tutti::graph::{AudioGraphRes, AudioParam, AudioParamAppExt, GraphReconcilePlugin};
 //! use bevy_tutti::AudioEngineState;
-//! use tutti_core::dsp::{AudioUnit as _, Net};
+//! use tutti_core::dsp::Net;
+//! use tutti_core::AudioUnit as _;
 //! use tutti_core::{AudioNode, SampleRate};
 //! use tutti_types::{Drive, UnitParam};
 //! use tutti_nodes::{DistortionNode, ShapeKind};
@@ -196,7 +197,7 @@ pub fn write_param(
 ) {
     // `Net::set` is an `AudioUnit` method; the trait must be in scope to call
     // it, and nothing else here needs it.
-    use tutti_core::dsp::AudioUnit as _;
+    use tutti_core::AudioUnit as _;
 
     // 1. Audio rate: the node reads its port, not its atomic.
     #[cfg(feature = "modulation")]

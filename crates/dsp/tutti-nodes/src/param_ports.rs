@@ -16,7 +16,7 @@
 //! Each impl is a thin dispatch over the node's existing typed `*_port()`
 //! accessors (`cutoff_port`, `drive_port`, `threshold_port`, …).
 
-use tutti_core::dsp::Real;
+use tutti_core::Real;
 use tutti_core::UnitParam;
 
 use crate::{

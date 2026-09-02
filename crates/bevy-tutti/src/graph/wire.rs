@@ -93,8 +93,9 @@ use bevy_ecs::prelude::*;
 
 // `inputs`/`outputs` on `Net` are `AudioUnit` methods — the graph's own arity,
 // as opposed to `inputs_in`/`outputs_in`, which are a contained node's.
-use tutti_core::dsp::{AudioUnit as _, Source};
+use tutti_core::dsp::Source;
 use tutti_core::AudioNode;
+use tutti_core::AudioUnit as _;
 use tutti_core::{ChannelLayout, MAX_ROOT_CHANNELS};
 
 use super::topology::{self, LiveGraph};

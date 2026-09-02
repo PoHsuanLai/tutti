@@ -45,8 +45,16 @@ thiserror.workspace = true
 dyn-clone = { version = "1.0", default-features = false }
 serde = { version = "1", default-features = false, features = ["derive"] }
 
-# Audio
-fundsp = { package = "fundsp-tutti", version = "0.23.0", path = "../../vendor/fundsp-tutti", default-features = false, features = ["std"] }
+# The node contract — `AudioUnit`, the planar block buffers, the numeric tower,
+# the `Signal` routing vocabulary, `Setting`. Named directly rather than reached
+# through the fork: this crate re-exports the contract to the rest of the
+# engine, and a re-export should name the crate that *defines* what it forwards.
+tutti-node = { version = "0.0.1", path = "../tutti-node" }
+
+# Audio: the graph runtime (`Net`, `NetBackend`), the DSP node library, and the
+# combinators that build sub-graphs out of it. What a consumer may reach through
+# this crate is the named list in `dsp` — see that module's docs.
+fundsp = { package = "fundsp-tutti", version = "0.23.0", path = "../../vendor/fundsp-tutti", default-features = false }
 
 # MIDI types (pure types from tutti-midi-types) — always included for SmpteFrameRate etc.
 tutti-midi-types = { version = "0.0.1", path = "../../midi/tutti-midi-types" }

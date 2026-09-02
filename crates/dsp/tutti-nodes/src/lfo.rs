@@ -466,7 +466,7 @@ impl<M: Modulator + Clone> Clone for ModulatorNode<M> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tutti_core::dsp::Signal;
+    use tutti_core::Signal;
 
     // The waveform math is `tutti-mod`'s, and so are the tests that pin it.
     // What belongs here is the adapter around it: phase generation from

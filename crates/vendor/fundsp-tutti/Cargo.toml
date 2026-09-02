@@ -1,8 +1,10 @@
 [package]
 name = "fundsp-tutti"
 description = "Audio processing and synthesis library (Tutti fork with custom modifications)."
-keywords = ["dsp", "audio", "synthesizer", "sound", "no_std"]
-categories = ["multimedia::audio", "no-std"]
+# No `no_std` keyword or `no-std` category: this fork links `std`
+# unconditionally. See the note at the top of `src/lib.rs`.
+keywords = ["dsp", "audio", "synthesizer", "sound"]
+categories = ["multimedia::audio"]
 license = "MIT OR Apache-2.0"
 version = "0.23.0"
 authors = ["SamiPerttu <Sami.Perttu@gmail.com>"]
@@ -53,8 +55,8 @@ read_input = "0.8.6"
 rayon = "1.10.0"
 
 [features]
-default = ["std", "files-all", "fft"]
-std = []
+default = ["files-all", "fft"]
+# No `std` feature: this fork links `std` unconditionally (see `src/lib.rs`).
 
 # Individual codec features
 # Note: wav needs pcm codec for actual audio decoding (wav is just the container format)
@@ -71,12 +73,8 @@ files = ["files-all"]
 fft = ["dep:fft-convolver"]
 
 # Enables `WaveAsset` (inherent `from_bytes` + `#[derive(Asset, TypePath)]`).
-# Pulls in bevy_asset and bevy_reflect as optional deps. Requires std.
-bevy_asset = [
-    "std",
-    "dep:bevy_asset",
-    "dep:bevy_reflect",
-]
+# Pulls in bevy_asset and bevy_reflect as optional deps.
+bevy_asset = ["dep:bevy_asset", "dep:bevy_reflect"]
 
 [[bench]]
 name = "benchmark"

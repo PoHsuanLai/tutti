@@ -15,7 +15,6 @@
 use bevy_app::App;
 
 use crate::engine::Result;
-use tutti_core::dsp::An;
 use tutti_core::Arc;
 use tutti_core::{
     dsp::Net, AudioTap, ClickNode, ClickSettings, MasterMeter, Transport, TransportClock,
@@ -105,7 +104,7 @@ pub fn build_into(plugin: &crate::TuttiPlugin, app: &mut App) -> Result<()> {
     // disconnects the metronome. What the click feeds is the host's
     // declaration, like every other node; see `graph::wire`.
     let click = ClickNode::with_transport(transport.clone(), click_settings.clone(), sample_rate);
-    let click_id = net.push(Box::new(An(click)));
+    let click_id = net.push(Box::new(click));
 
     let backend = net.backend();
 

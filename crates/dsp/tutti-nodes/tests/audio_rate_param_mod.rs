@@ -5,7 +5,8 @@
 
 use std::sync::Arc;
 
-use tutti_core::dsp::{AudioUnit, Net};
+use tutti_core::dsp::Net;
+use tutti_core::AudioUnit;
 use tutti_core::{AtomicF32, Ordering};
 use tutti_mod::{CurveType, Polarity};
 use tutti_nodes::{

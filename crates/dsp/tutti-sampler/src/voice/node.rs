@@ -451,7 +451,7 @@ impl AudioUnit for VoiceNode {
     ///
     /// Params this node does not own are ignored, which is the convention that
     /// lets a host push a setting without dispatching on node type.
-    fn set(&mut self, setting: tutti_core::dsp::Setting) {
+    fn set(&mut self, setting: tutti_core::Setting) {
         let Some((param, value)) = tutti_core::unit_param::from_setting(&setting) else {
             return;
         };

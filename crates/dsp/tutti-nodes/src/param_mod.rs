@@ -27,7 +27,8 @@
 
 use std::sync::Arc;
 
-use tutti_core::dsp::{Net, Signal};
+use tutti_core::dsp::Net;
+use tutti_core::Signal;
 use tutti_core::{AtomicF32, AudioUnit, BufferMut, BufferRef, NodeId, Ordering, SignalFrame, Tail};
 use tutti_mod::{shape, CurveType, Polarity};
 

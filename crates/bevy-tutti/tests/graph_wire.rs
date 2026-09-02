@@ -28,8 +28,9 @@ mod graph_wire {
     };
     use bevy_tutti::AudioEngineState;
     // `outputs()` on `Net` is an `AudioUnit` method — the graph's own arity.
-    use tutti_core::dsp::{pass, sine_hz, AudioUnit as _, Net, Source};
+    use tutti_core::dsp::{pass, sine_hz, Net, Source};
     use tutti_core::AudioNode;
+    use tutti_core::AudioUnit as _;
 
     /// An app wired the way `build_into` leaves one, minus the audio device.
     fn app() -> App {
@@ -41,7 +42,7 @@ mod graph_wire {
     }
 
     /// Add a node to the graph and bind an entity to it.
-    fn spawn_node<U: tutti_core::dsp::AudioUnit + 'static>(app: &mut App, unit: U) -> Entity {
+    fn spawn_node<U: tutti_core::AudioUnit + 'static>(app: &mut App, unit: U) -> Entity {
         let id = {
             let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
             graph.0.add(unit)
@@ -607,7 +608,7 @@ mod param_port_wire {
         app
     }
 
-    fn spawn_node<U: tutti_core::dsp::AudioUnit + 'static>(app: &mut App, unit: U) -> Entity {
+    fn spawn_node<U: tutti_core::AudioUnit + 'static>(app: &mut App, unit: U) -> Entity {
         let id = {
             let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
             graph.0.add(unit)

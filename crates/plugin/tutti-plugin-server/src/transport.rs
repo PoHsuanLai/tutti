@@ -369,7 +369,11 @@ fn pid_exists(pid: i32) -> bool {
 /// toward waiting, which is the safe direction, and is the same tradeoff the
 /// Windows path makes.
 #[cfg(unix)]
-fn parent_is_alive_given(original: Option<i32>, current: i32, exists: impl Fn(i32) -> bool) -> bool {
+fn parent_is_alive_given(
+    original: Option<i32>,
+    current: i32,
+    exists: impl Fn(i32) -> bool,
+) -> bool {
     // `> 1` still catches the plain-init case even if nothing recorded a PID
     // (a library embedder that never called `record_parent_pid`), which keeps
     // this no worse than the check it replaces in that configuration.

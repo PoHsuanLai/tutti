@@ -1,0 +1,61 @@
+# A `loom` model of the shared-memory slab header's Release/Acquire protocol,
+# and nothing else. No `src/`, no library, no dependents.
+#
+# # Why this is a separate crate rather than a test in `tutti-plugin`
+#
+# It was written there first, and could not run. `--cfg loom` is a *global*
+# RUSTFLAG: it reaches every crate in the dependency graph, and any crate with
+# its own `cfg(loom)` support then compiles against loom's atomics. `lfqueue`
+# does, and it is a mandatory transitive dependency of `tutti-plugin`
+# (`fundsp-tutti` → `tutti-core` → `tutti-plugin`), so the model target could
+# not be built at all:
+#
+#     error[E0599]: no method named `get_mut` found for struct
+#                   `loom::sync::atomic::AtomicU8`  (lfqueue-0.8.1/src/single.rs)
+#
+# There is no per-crate scope for the flag, and vendoring around a dependency to
+# run a test would be far worse than the test is worth. A crate with an empty
+# dependency list has nothing to pollute — so the model lives here, with the
+# protocol mirrored rather than imported (the test file explains why importing
+# `SlabHeader` is not possible either way: it is `repr(C)` over `std` atomics at
+# fixed offsets in an mmap, which loom's types cannot be).
+#
+# The link back to the shipped code is
+# `tutti_plugin`'s `header::tests::the_block_protocol_uses_the_documented_orderings`,
+# which asserts the real ordering constants are the ones mirrored here.
+[package]
+name = "tutti-shm-model"
+version = "0.0.1"
+edition = "2021"
+description = "loom model of the tutti-plugin shared-memory header protocol (test-only)"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/PoHsuanLai/Tutti"
+publish = false
+
+# Note: this crate does NOT take `[lints] workspace = true`, because it needs a
+# `[lints.rust]` table of its own and the two cannot be combined. The workspace
+# table it forgoes sets one rustdoc lint, and this crate has no public docs to
+# break — its only item is an empty `lib.rs`.
+#
+# `loom` is set from the command line rather than by cargo, so `unexpected_cfgs`
+# has no way to know it is intended and warns on every build. Declaring it is
+# the documented fix, and it doubles as the record that exactly one cfg steers
+# this crate.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
+
+# No library and no binary: the crate is one integration-test target.
+[lib]
+path = "src/lib.rs"
+
+# loom substitutes its own atomics for `std`'s, so a build that links it is not
+# a build that ships. `cfg(loom)` rather than a feature is loom's own
+# convention, and it means an ordinary `cargo test` compiles none of this — the
+# test file is `#![cfg(loom)]` and empty without the flag.
+#
+#     RUSTFLAGS="--cfg loom" cargo test -p tutti-shm-model
+#
+# `cargo test` rather than nextest: the model is one binary exploring many
+# interleavings in-process, so nextest's per-test isolation buys nothing here.
+[target.'cfg(loom)'.dev-dependencies]
+loom = "0.7"

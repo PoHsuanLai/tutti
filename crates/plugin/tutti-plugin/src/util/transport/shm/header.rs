@@ -141,6 +141,32 @@ const _: () = assert!(
 /// begin here.
 pub(super) const SLAB_HEADER_BYTES: usize = size_of::<SlabHeader>();
 
+// The four orderings of the two documented protocols, named once and used at
+// exactly one site each.
+//
+// **Why constants rather than the literals inline.** The module docs above
+// state a protocol — Release on publish, Acquire on read — and the correctness
+// of the audio regions rests entirely on that statement being true of the
+// code. But the property cannot be tested into existence (x86-64 passes with
+// `Relaxed`, aarch64 fails only probabilistically), so the docs conclude that
+// review is the net. A named constant makes the claim *checkable*: a test can
+// assert the value the writer will actually use, and a weakening edit either
+// changes a constant a test reads or leaves the constant and changes nothing.
+// It does not make the protocol correct — it makes a silent divergence between
+// the prose and the code into a failing test.
+
+/// The publication point of a block's samples. See [`SlabHeader::publish`].
+pub(super) const PUBLISH_ORDERING: Ordering = Ordering::Release;
+
+/// The pairing acquire. See [`SlabHeader::sequence`].
+pub(super) const SEQUENCE_ORDERING: Ordering = Ordering::Acquire;
+
+/// The publication point of the whole header. See [`SlabHeader::initialize`].
+pub(super) const INITIALIZE_ORDERING: Ordering = Ordering::Release;
+
+/// The pairing acquire. See [`SlabHeader::validate`].
+pub(super) const VALIDATE_ORDERING: Ordering = Ordering::Acquire;
+
 /// Which direction a sequence belongs to. The two arrays are structurally
 /// identical, so an untyped index would make "host writes the server's array" a
 /// silent bug rather than a compile error.
@@ -170,7 +196,7 @@ impl SlabHeader {
         for seq in self.input_seq.iter().chain(self.output_seq.iter()) {
             seq.store(0, Ordering::Relaxed);
         }
-        self.control.magic.store(SLAB_MAGIC, Ordering::Release);
+        self.control.magic.store(SLAB_MAGIC, INITIALIZE_ORDERING);
     }
 
     /// Check that this mapping is a tutti slab of a recognized shape.
@@ -181,7 +207,7 @@ impl SlabHeader {
     /// establishes happens-before with everything the creator wrote first, so
     /// re-synchronizing on each field would be redundant.
     pub(super) fn validate(&self) -> Result<(), BridgeError> {
-        let magic = self.control.magic.load(Ordering::Acquire);
+        let magic = self.control.magic.load(VALIDATE_ORDERING);
         if magic != SLAB_MAGIC {
             return Err(BridgeError::SharedMemoryError(format!(
                 "not a tutti audio slab: magic {magic:#x}, expected {SLAB_MAGIC:#x}"
@@ -222,7 +248,7 @@ impl SlabHeader {
     /// the region below; see the module docs.
     #[inline]
     pub(super) fn publish(&self, direction: Direction, slot: usize, seq: u64) {
-        self.array(direction)[slot].store(seq, Ordering::Release);
+        self.array(direction)[slot].store(seq, PUBLISH_ORDERING);
     }
 
     /// The block currently published in `slot`, or 0 if nothing ever was.
@@ -233,7 +259,7 @@ impl SlabHeader {
     /// or loading `Relaxed`, would defeat the ordering entirely.
     #[inline]
     pub(super) fn sequence(&self, direction: Direction, slot: usize) -> u64 {
-        self.array(direction)[slot].load(Ordering::Acquire)
+        self.array(direction)[slot].load(SEQUENCE_ORDERING)
     }
 }
 
@@ -356,6 +382,164 @@ mod tests {
         for seq in 0u64..8 {
             assert_ne!(slot_for(seq), slot_for(seq + 1));
         }
+    }
+
+    /// The publish/read protocol the module docs describe, asserted against the
+    /// values the code will actually use.
+    ///
+    /// # What this proves, and what it emphatically does not
+    ///
+    /// It proves the code agrees with its own documentation. It does **not**
+    /// prove the ordering is sufficient — that is a claim about the C++/Rust
+    /// memory model and about hardware, and no test on this machine can settle
+    /// it (see the module docs: x86-64 passes with `Relaxed` too).
+    ///
+    /// What it buys is that the *specific* regression the docs warn about —
+    /// someone weakening a store to `Relaxed`, in a file where "each ordering
+    /// appears in exactly one place with its reason for not being `Relaxed`" —
+    /// stops being invisible on the only hardware in CI. Reviewing prose
+    /// against code is what this replaces, and it is the whole reason the
+    /// orderings are named constants rather than inline literals.
+    ///
+    /// Mutation: change `PUBLISH_ORDERING` to `Ordering::Relaxed` and this
+    /// fails. Change it to `SeqCst` and it also fails, deliberately: a
+    /// strengthening is still a divergence from the documented protocol and
+    /// should be a decision, not a drift.
+    #[test]
+    fn the_block_protocol_uses_the_documented_orderings() {
+        assert_eq!(
+            PUBLISH_ORDERING,
+            Ordering::Release,
+            "publish is the point at which a block's samples become visible; \
+             `Relaxed` here lets a reader observe the new sequence number \
+             beside the previous block's samples"
+        );
+        assert_eq!(
+            SEQUENCE_ORDERING,
+            Ordering::Acquire,
+            "the acquire that pairs with publish's release; without it the \
+             samples read after this load are not ordered against it"
+        );
+    }
+
+    /// The setup protocol, on the same terms as the block protocol above.
+    ///
+    /// The magic is stored last precisely so it publishes the whole header, so
+    /// its ordering is load-bearing in the same way and for the same reason —
+    /// a peer that acquires the magic must see the version and slot count
+    /// written before it.
+    ///
+    /// Mutation: weaken `INITIALIZE_ORDERING` to `Relaxed` and this fails.
+    /// Note that no behavioural test can: `initialize_then_validate_round_trips`
+    /// passes either way, on any hardware, because it is single-threaded.
+    #[test]
+    fn the_setup_protocol_uses_the_documented_orderings() {
+        assert_eq!(INITIALIZE_ORDERING, Ordering::Release);
+        assert_eq!(VALIDATE_ORDERING, Ordering::Acquire);
+        // The two `Relaxed` loads in `validate` are correct *because* of the
+        // acquire above them, so the pair is what has to hold — asserting the
+        // relaxed loads individually would pin an implementation detail whose
+        // justification lives in the acquire.
+    }
+
+    /// Two threads run the real publish/read protocol against a real header for
+    /// a million blocks, and no read ever sees a sequence number without the
+    /// data that sequence number promises.
+    ///
+    /// # This is a smoke test, and it is not the proof
+    ///
+    /// It must pass here, and it would catch a gross mistake — a publish that
+    /// stamps the wrong slot, a reader that checks the wrong direction, a
+    /// sequence that goes backwards. It cannot catch a weakened ordering.
+    /// x86-64 is strongly ordered: every store is effectively a release and
+    /// every load an acquire in hardware, so this test passes identically with
+    /// `Relaxed` everywhere. On aarch64 it would fail only probabilistically,
+    /// which is worse than not testing — an intermittent failure gets retried.
+    ///
+    /// It is deliberately *not* `#[ignore]`d. An ignored test rots; this one
+    /// runs on every CI pass and stands as a live exercise of the protocol,
+    /// with its limits stated here rather than encoded as a skip. The proof
+    /// that the orderings are the documented ones is
+    /// [`the_block_protocol_uses_the_documented_orderings`]; the proof that the
+    /// protocol is *correct* under a weak model is the loom model in the
+    /// `tutti-shm-model` crate.
+    #[test]
+    fn a_million_blocks_never_show_a_sequence_without_its_data() {
+        use std::sync::atomic::AtomicU64 as StdAtomicU64;
+        use std::sync::Arc;
+
+        /// A stand-in for the audio region: one word per slot, carrying the
+        /// same sequence number the header publishes for it. A reader that
+        /// sees a header sequence must see this word already updated — that is
+        /// the property, in miniature.
+        struct Region {
+            header: Box<SlabHeader>,
+            data: [StdAtomicU64; RING_SLOTS],
+        }
+        // SAFETY: every field is atomic; the whole point is cross-thread use.
+        unsafe impl Sync for Region {}
+        unsafe impl Send for Region {}
+
+        const BLOCKS: u64 = 1_000_000;
+
+        let region = Arc::new(Region {
+            header: header(),
+            data: [const { StdAtomicU64::new(0) }; RING_SLOTS],
+        });
+        region.header.initialize();
+
+        // The writer stays at most one block ahead of the reader, which is the
+        // real protocol's constraint and not a convenience: `RING_SLOTS` is 2
+        // precisely because "the bridge pumps serially, so at most one block is
+        // ever in flight" (see `RING_SLOTS`, and `MAX_BEHIND` in `dispatch.rs`).
+        //
+        // Letting the writer run free instead makes the test *wrong*, not
+        // merely stricter, and it cost a flake to see why: with the writer
+        // arbitrarily far ahead, block N+2 lands in block N's slot, so a reader
+        // asking for N can find `seq == N` from a stale load while `data`
+        // already holds N+2. That is a torn read in this miniature and no
+        // failure at all in the real slab, where that pair never coexists.
+        let consumed = Arc::new(StdAtomicU64::new(0));
+
+        let writer = {
+            let region = Arc::clone(&region);
+            let consumed = Arc::clone(&consumed);
+            std::thread::spawn(move || {
+                for seq in 1..=BLOCKS {
+                    // Wait until the reader is done with the block whose slot
+                    // this one reuses.
+                    while seq > consumed.load(Ordering::Acquire) + 1 {
+                        std::hint::spin_loop();
+                    }
+                    let slot = slot_for(seq);
+                    // The "samples", then the publish — the order the module
+                    // docs mandate.
+                    region.data[slot].store(seq, Ordering::Relaxed);
+                    region.header.publish(Direction::Output, slot, seq);
+                }
+            })
+        };
+
+        let mut torn = 0u64;
+        for seq in 1..=BLOCKS {
+            let slot = slot_for(seq);
+            // Spin until this block is published, exactly as the bridge waits
+            // for the server's reply before reading the slot.
+            while region.header.sequence(Direction::Output, slot) != seq {
+                std::hint::spin_loop();
+            }
+            if region.data[slot].load(Ordering::Relaxed) != seq {
+                torn += 1;
+            }
+            consumed.store(seq, Ordering::Release);
+        }
+        writer.join().expect("writer thread");
+
+        assert_eq!(
+            torn, 0,
+            "{torn} of {BLOCKS} reads saw a published sequence number without \
+             the data it promises"
+        );
     }
 
     /// The header must not grow into the audio regions' space unnoticed, and the

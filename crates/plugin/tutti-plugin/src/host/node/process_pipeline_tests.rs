@@ -288,7 +288,8 @@ fn drive_blocks_with_gap(blocks: usize, gap: std::time::Duration) -> Vec<Vec<Vec
     captured
 }
 
-/// Wait until block `seq`'s output has been published, or `budget` elapses.
+/// Wait until block `seq`'s output has been published, **panicking by name if
+/// the budget is spent instead**.
 ///
 /// Replaces a bare `sleep(gap)`. The sleep encoded a *hope* — that 5 ms is
 /// always enough for the mock server to reply — and on a loaded machine it is
@@ -297,10 +298,19 @@ fn drive_blocks_with_gap(blocks: usize, gap: std::time::Duration) -> Vec<Vec<Vec
 /// in the harness's premise, not in the pipeline, and it was reproducible at
 /// roughly 1 run in 8 under heavy CPU load.
 ///
-/// Waiting on the condition rather than on the clock removes the guess. The
-/// budget stays only so a genuinely broken pipeline fails the assertion instead
-/// of hanging, and it is spent in short slices so the common case still returns
-/// promptly.
+/// Waiting on the condition rather than on the clock removed the guess for the
+/// common case. What it did *not* remove is what happens when the budget runs
+/// out anyway: the function returned quietly, the caller drove the next block
+/// against an unpublished slot, and the failure surfaced downstream as
+/// "block N: got silence (nothing was collectable for this block)" — the
+/// diagnosis for a *broken pipeline*. So a slow machine was reported as a
+/// pipeline defect, which is precisely the misattribution the condition-wait
+/// was introduced to end. The two outcomes have to be distinguishable at the
+/// point where they differ, and only this function knows which one happened.
+///
+/// It now panics, naming the budget and the block. That is not a stricter
+/// test — the caller was going to fail either way — it is the same failure with
+/// the right cause on it.
 fn wait_for_reply(bridge: &PluginBridge, seq: u64, budget: std::time::Duration) {
     const SLICE: std::time::Duration = std::time::Duration::from_micros(200);
     let deadline = std::time::Instant::now() + budget;
@@ -310,26 +320,54 @@ fn wait_for_reply(bridge: &PluginBridge, seq: u64, budget: std::time::Duration) 
         }
         std::thread::sleep(SLICE);
     }
+    panic!(
+        "the mock server did not publish block {seq}'s output within {budget:?}. \
+         This is a HARNESS timeout, not a pipeline defect: the assertions that \
+         follow would have reported it as \"block N: got silence\", which is the \
+         diagnosis for a pipeline that collected nothing. If this fires, the \
+         machine is slower than the budget assumes — raise WAIT_BUDGET — or the \
+         mock server thread died, which would also stall every later block."
+    );
 }
 
-/// Upper bound on how long to wait for a block's reply before giving up and
-/// letting the assertion speak.
+/// How long [`wait_for_reply`] will wait for a block's reply before declaring
+/// the harness stuck.
 ///
 /// Was a fixed inter-block sleep chosen to exceed a 64-sample block's ~1.33 ms
-/// at 48 kHz. It is now a *timeout* on [`wait_for_reply`] rather than a
-/// duration that is always spent: the common case returns as soon as the server
-/// publishes, and a loaded machine gets as much of the budget as it needs
-/// instead of failing because 5 ms happened not to be enough.
-const CALLBACK_GAP: std::time::Duration = std::time::Duration::from_millis(500);
-
-/// Serialises the tests whose assertions are about wall clock.
+/// at 48 kHz. It is now a *timeout* rather than a duration that is always
+/// spent: the common case returns as soon as the server publishes, in
+/// microseconds.
 ///
-/// `cargo test` runs test functions on parallel threads, and the tests below
-/// pace themselves to the audio callback rate: [`CALLBACK_GAP`] is only long
-/// enough for the mock server's reply if the machine is not simultaneously
-/// running several other mock servers. Under load a reply lands *after* the gap
-/// and the block reads as silence — a real failure of the harness's premise, not
-/// of the pipeline, and it surfaces as an unexplained "block N was silent".
+/// Generous on purpose, and it costs nothing to be. Since the wait is on a
+/// condition, this bound is only reached when the reply never comes at all — a
+/// dead server thread, or a pipeline that stopped publishing — and in that case
+/// the test is failing regardless of how long it waited first. Sizing it to
+/// "how slow could a loaded machine plausibly be?" is the wrong question: the
+/// answer has no upper bound anyone can name, and every value that is not
+/// generous enough converts a slow machine into a false failure. Ten seconds is
+/// far beyond any real scheduling delay for a mock server that does two memcpys,
+/// and still bounded enough that a genuinely wedged run fails rather than hangs
+/// a CI job.
+///
+/// It was 500 ms, and a 500 ms budget silently expiring is exactly what
+/// produced the "block N was silent" reports this file's history records.
+const WAIT_BUDGET: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Serialises the tests that each stand up their own mock server.
+///
+/// `cargo test` runs test functions on parallel threads, and every test below
+/// spawns a socket listener, a bridge thread and a server thread. Running
+/// several at once is not *incorrect* — the socket paths and shm names are
+/// per-process unique — but it multiplies the scheduling pressure each one's
+/// reply has to get through, which is what turned a fixed inter-block sleep
+/// into an intermittent "block N was silent".
+///
+/// The sleep is gone and [`WAIT_BUDGET`] is now a deadlock guard rather than a
+/// deadline anything races, so this lock is no longer what keeps the tests
+/// honest — [`wait_for_reply`] is. It stays because there is no reason to pay
+/// the contention: these tests are milliseconds each, and running them in
+/// series costs nothing while keeping any future timing assertion from
+/// inheriting a problem this file has already had twice.
 ///
 /// A lock rather than a `--test-threads=1` note: a note is something a future
 /// runner has to know, and its absence shows up as a mystifying failure. Same
@@ -387,7 +425,7 @@ fn diagnose(block: usize, got: &[Vec<f32>]) -> String {
 fn pipeline_output_lags_input_by_exactly_one_block() {
     let _lock = exclusive();
     let blocks = 5;
-    let captured = drive_blocks_with_gap(blocks, CALLBACK_GAP);
+    let captured = drive_blocks_with_gap(blocks, WAIT_BUDGET);
 
     assert!(
         captured[0].iter().all(|ch| ch.iter().all(|&s| s == 0.0)),
@@ -421,7 +459,7 @@ fn pipeline_output_lags_input_by_exactly_one_block() {
 fn pipeline_steady_state_is_not_echoed_or_doubly_stale() {
     let _lock = exclusive();
     let blocks = 6;
-    let captured = drive_blocks_with_gap(blocks, CALLBACK_GAP);
+    let captured = drive_blocks_with_gap(blocks, WAIT_BUDGET);
 
     for (block, got) in captured.iter().enumerate().skip(2) {
         let matches = |b: usize, gain: f32| {

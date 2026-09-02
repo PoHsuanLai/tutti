@@ -1,6 +1,6 @@
 //! Signal flow analysis components.
 
-use super::math::*;
+use crate::math::min;
 use num_complex::Complex64;
 extern crate alloc;
 use tinyvec::TinyVec;

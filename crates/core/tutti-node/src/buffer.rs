@@ -400,9 +400,26 @@ impl<N: ArrayLength> BufferArray<N> {
         Self::default()
     }
 
-    /// Create new buffer.
+    /// Create a new buffer without initializing it.
+    ///
+    /// # Safety
+    ///
+    /// The buffer's contents are uninitialized. Every lane a caller reads must
+    /// have been written first — the only sanctioned use is as a scratch
+    /// destination handed straight to a `process` call that fills `size`
+    /// frames of every channel, after which nothing past `size` may be read.
+    ///
+    /// This was `pub(crate)` while the buffers lived in `fundsp-tutti`, which
+    /// made it a *private* escape hatch used at four call sites in
+    /// `audionode.rs`. Relocating the buffers put a crate boundary between the
+    /// definition and those callers, so the visibility had to widen. Rather
+    /// than publish a safe function that produces UB, the widening comes with
+    /// the `unsafe` marker the body always warranted: `MaybeUninit::assume_init`
+    /// on a `Frame<[F32x; _], N>` is undefined behaviour, and the comment below
+    /// (kept verbatim from upstream) admits as much. `new()` is the safe
+    /// constructor and is what a caller outside this crate wants.
     #[inline]
-    pub(crate) fn uninitialized() -> Self {
+    pub unsafe fn uninitialized() -> Self {
         // Safety: This is undefined behavior but it seems to work fine. Zero initialization is safe but slower in benchmarks.
         #[allow(clippy::uninit_assumed_init)]
         unsafe {

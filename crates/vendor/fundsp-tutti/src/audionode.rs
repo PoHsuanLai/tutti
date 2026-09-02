@@ -1079,7 +1079,7 @@ where
     }
 
     fn process(&mut self, size: usize, input: &BufferRef, output: &mut BufferMut) {
-        let mut buffer = BufferArray::<X::Outputs>::uninitialized();
+        let mut buffer = unsafe { BufferArray::<X::Outputs>::uninitialized() };
         self.x.process(
             size,
             &input.subset(0, self.x.inputs()),
@@ -1590,7 +1590,7 @@ where
     }
 
     fn process(&mut self, size: usize, input: &BufferRef, output: &mut BufferMut) {
-        let mut buffer = BufferArray::<X::Outputs>::uninitialized();
+        let mut buffer = unsafe { BufferArray::<X::Outputs>::uninitialized() };
         self.x.process(size, input, &mut buffer.buffer_mut());
         self.y.process(size, &buffer.buffer_ref(), output);
     }
@@ -2057,7 +2057,7 @@ where
     }
 
     fn process(&mut self, size: usize, input: &BufferRef, output: &mut BufferMut) {
-        let mut buffer = BufferArray::<X::Outputs>::uninitialized();
+        let mut buffer = unsafe { BufferArray::<X::Outputs>::uninitialized() };
         self.x.process(size, input, output);
         self.y.process(size, input, &mut buffer.buffer_mut());
         for channel in 0..self.outputs() {
@@ -2175,7 +2175,7 @@ impl<X: AudioNode> AudioNode for Thru<X> {
         if X::Inputs::USIZE < X::Outputs::USIZE {
             // An intermediate buffer is only used in this "degenerate" case where
             // we are not passing through inputs - we are cutting out some of them.
-            let mut buffer = BufferArray::<X::Outputs>::uninitialized();
+            let mut buffer = unsafe { BufferArray::<X::Outputs>::uninitialized() };
             self.x.process(size, input, &mut buffer.buffer_mut());
             for channel in 0..X::Inputs::USIZE {
                 for i in 0..simd_items(size) {
@@ -2308,7 +2308,7 @@ where
     }
 
     fn process(&mut self, size: usize, input: &BufferRef, output: &mut BufferMut) {
-        let mut buffer = BufferArray::<X::Outputs>::uninitialized();
+        let mut buffer = unsafe { BufferArray::<X::Outputs>::uninitialized() };
         self.x[0].process(size, input, output);
         for i in 1..N::USIZE {
             self.x[i].process(size, input, &mut buffer.buffer_mut());
@@ -2628,7 +2628,7 @@ where
         output
     }
     fn process(&mut self, size: usize, input: &BufferRef, output: &mut BufferMut) {
-        let mut buffer = BufferArray::<X::Outputs>::uninitialized();
+        let mut buffer = unsafe { BufferArray::<X::Outputs>::uninitialized() };
         self.x[0].process(size, &input.subset(0, X::Inputs::USIZE), output);
         let mut in_channel = X::Inputs::USIZE;
         for i in 1..N::USIZE {
@@ -2926,7 +2926,7 @@ where
     }
 
     fn process(&mut self, size: usize, input: &BufferRef, output: &mut BufferMut) {
-        let mut buffer = BufferArray::<X::Outputs>::uninitialized();
+        let mut buffer = unsafe { BufferArray::<X::Outputs>::uninitialized() };
         if N::USIZE & 1 > 0 {
             self.x[0].process(size, input, output);
         } else {

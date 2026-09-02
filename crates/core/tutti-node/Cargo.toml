@@ -1,0 +1,47 @@
+[package]
+name = "tutti-node"
+version = "0.0.1"
+edition = "2021"
+description = "The node contract for the Tutti audio engine — the `AudioUnit` trait, its planar block buffers, the numeric tower they are generic over, the signal-routing vocabulary `route` speaks, and the `Setting` its `set` takes"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/PoHsuanLai/Tutti"
+# No `no-std` keyword or category: this crate's own code would qualify, but the
+# `tutti-types` edge links `std`. See `src/value.rs`.
+keywords = ["audio", "dsp"]
+categories = ["multimedia::audio"]
+
+[lints]
+workspace = true
+
+[features]
+# No features. Everything this crate defines is arithmetic over `core` plus
+# `alloc` and would be `no_std` on its own; what links `std` is the one
+# `tutti-types` edge (see `src/value.rs`). A `std` feature that could not be
+# turned off would be decoration, so there is none until that edge is gone.
+default = []
+
+[dependencies]
+# Numeric crates, plus the one `tutti-types` edge at the bottom of this list.
+# Nothing else belongs here: the fork sits on top of this crate, so anything
+# added would be something every node in the engine has to link.
+numeric-array = { version = "0.6.1", default-features = false }
+wide = { version = "1.6", default-features = false }
+libm = "0.2.15"
+num-complex = { version = "0.4.6", default-features = false, features = ["libm"] }
+# `SignalFrame` keeps up to 16 channels inline and `Setting` up to 4 address
+# levels. Both are built on the control thread and read on the audio thread, so
+# neither may allocate for the common case.
+tinyvec = { version = "1.10.0", features = ["alloc"] }
+# `AttoHash::hash01` / `hash11` draw from the same generator the fork's
+# pseudorandom phase hashing uses. Splitting them would change every node's
+# starting phase, which is audible.
+funutd = { version = "0.16.0", default-features = false }
+# `dyn_clone::clone_trait_object!` — `Net` probes a unit's latency by cloning
+# it, so cloning is part of the contract, not a convenience.
+dyn-clone = "1.0.20"
+# The two measured values the trait's own signatures name: `SampleRate` (taken
+# by `set_sample_rate`) and `Tail` (returned by `tail`). This is the crate's one
+# non-numeric dependency and the one place it is not self-contained; the reason
+# it could not be avoided, and what it costs, is written out on `src/value.rs`.
+# `tutti-types` names no other `tutti` crate, so the graph stays acyclic.
+tutti-types = { version = "0.0.1", path = "../tutti-types" }

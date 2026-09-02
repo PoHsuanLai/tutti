@@ -1,197 +1,37 @@
 //! Setting system.
+//!
+//! [`Parameter`], [`Address`] and [`Setting`] itself moved down into
+//! [`tutti_node::setting`] with the [`AudioUnit`](crate::audiounit::AudioUnit)
+//! trait whose `set` takes them, and are re-exported here so
+//! `fundsp_tutti::setting::Setting` keeps resolving.
+//!
+//! What stayed is the half that is not vocabulary: [`SettingListener`], the
+//! `AudioNode` wrapper that drains a lock-free queue of settings on every
+//! callback, and its [`SettingSender`]. Those name `AudioNode`, `An` and this
+//! crate's `Queue`, none of which are part of the node contract.
+//!
+//! # The node address stopped being a `NodeId`
+//!
+//! `Address::Node` carried [`NodeId`](crate::net::NodeId) — a type minted in
+//! `net.rs` from a global counter. A setting is something *every* unit accepts,
+//! so naming the graph runtime's id in it was a back-edge from the contract
+//! into one particular container, and it was the concrete reason the trait could
+//! not leave this crate.
+//!
+//! It now carries `tutti_node::setting::NodeAddr`, an opaque `u64`. `NodeId`
+//! converts into and out of it (see the `From` impls in [`crate::net`]), so
+//! `Setting::node(id)` still takes a `NodeId` by way of `impl Into<NodeAddr>`
+//! and [`Net::set`](crate::net::Net) still matches on it. The routing is
+//! unchanged; only the direction of the dependency is.
 
 use super::audionode::*;
 use super::buffer::*;
 use super::combinator::*;
 use super::math::*;
-use super::net::NodeId;
 use super::signal::*;
 use super::*;
-use tinyvec::ArrayVec;
 
-/// Parameters specify what to set and to what value.
-#[derive(Default, Clone)]
-pub enum Parameter {
-    /// Default value.
-    #[default]
-    Null,
-    /// Set filter center or cutoff frequency (Hz).
-    Center(f32),
-    /// Set filter center or cutoff frequency (Hz) and Q value.
-    CenterQ(f32, f32),
-    /// Set filter center or cutoff frequency (Hz), Q value and amplitude gain.
-    CenterQGain(f32, f32, f32),
-    /// Set miscellaneous value.
-    Value(f32),
-    /// Set filter coefficient.
-    Coefficient(f32),
-    /// Set biquad parameters `(a1, a2, b0, b1, b2)`.
-    Biquad(f32, f32, f32, f32, f32),
-    /// Set delay.
-    Delay(f32),
-    /// Set response time.
-    Time(f32),
-    /// Set oscillator roughness in 0...1.
-    Roughness(f32),
-    /// Set sample-and-hold variability in 0...1.
-    Variability(f32),
-    /// Set stereo pan in -1...1.
-    Pan(f32),
-    /// Set attack and release times in seconds.
-    AttackRelease(f32, f32),
-    /// Oscillator initial phase in 0...1.
-    Phase(f32),
-    /// Generator seed.
-    Seed(u64),
-    /// Average sampling interval in seconds for envelopes.
-    Interval(f32),
-}
-
-/// Address specifies location to apply setting in a graph.
-#[derive(Default, Clone)]
-pub enum Address {
-    /// Default value.
-    #[default]
-    Null,
-    /// Take the left branch of a binary operation.
-    Left,
-    /// Take the right branch of a binary operation.
-    Right,
-    /// Specify node index.
-    Index(usize),
-    /// Specify node ID in `Net`.
-    Node(NodeId),
-}
-
-/// Settings are node parameters with no dedicated inputs.
-/// Nodes inside nodes can be accessed in the setting system by including an address
-/// in the setting. Up to four levels of address are supported.
-#[derive(Clone, Default)]
-pub struct Setting {
-    parameter: Parameter,
-    address: ArrayVec<[Address; 4]>,
-}
-
-impl Setting {
-    pub fn center(center: f32) -> Self {
-        Self {
-            parameter: Parameter::Center(center),
-            address: ArrayVec::new(),
-        }
-    }
-    pub fn center_q(center: f32, q: f32) -> Self {
-        Self {
-            parameter: Parameter::CenterQ(center, q),
-            address: ArrayVec::new(),
-        }
-    }
-    pub fn center_q_gain(center: f32, q: f32, gain: f32) -> Self {
-        Self {
-            parameter: Parameter::CenterQGain(center, q, gain),
-            address: ArrayVec::new(),
-        }
-    }
-    pub fn value(value: f32) -> Self {
-        Self {
-            parameter: Parameter::Value(value),
-            address: ArrayVec::new(),
-        }
-    }
-    pub fn biquad(a1: f32, a2: f32, b0: f32, b1: f32, b2: f32) -> Self {
-        Self {
-            parameter: Parameter::Biquad(a1, a2, b0, b1, b2),
-            address: ArrayVec::new(),
-        }
-    }
-    pub fn delay(delay: f32) -> Self {
-        Self {
-            parameter: Parameter::Delay(delay),
-            address: ArrayVec::new(),
-        }
-    }
-    pub fn time(time: f32) -> Self {
-        Self {
-            parameter: Parameter::Time(time),
-            address: ArrayVec::new(),
-        }
-    }
-    pub fn roughness(roughness: f32) -> Self {
-        Self {
-            parameter: Parameter::Roughness(roughness),
-            address: ArrayVec::new(),
-        }
-    }
-    pub fn variability(variability: f32) -> Self {
-        Self {
-            parameter: Parameter::Variability(variability),
-            address: ArrayVec::new(),
-        }
-    }
-    pub fn pan(pan: f32) -> Self {
-        Self {
-            parameter: Parameter::Pan(pan),
-            address: ArrayVec::new(),
-        }
-    }
-    pub fn attack_release(attack: f32, release: f32) -> Self {
-        Self {
-            parameter: Parameter::AttackRelease(attack, release),
-            address: ArrayVec::new(),
-        }
-    }
-    pub fn phase(phase: f32) -> Self {
-        Self {
-            parameter: Parameter::Phase(phase),
-            address: ArrayVec::new(),
-        }
-    }
-    pub fn seed(seed: u64) -> Self {
-        Self {
-            parameter: Parameter::Seed(seed),
-            address: ArrayVec::new(),
-        }
-    }
-    pub fn interval(time: f32) -> Self {
-        Self {
-            parameter: Parameter::Interval(time),
-            address: ArrayVec::new(),
-        }
-    }
-    pub fn index(mut self, index: usize) -> Self {
-        self.address.push(Address::Index(index));
-        self
-    }
-    pub fn node(mut self, id: NodeId) -> Self {
-        self.address.push(Address::Node(id));
-        self
-    }
-    pub fn left(mut self) -> Self {
-        self.address.push(Address::Left);
-        self
-    }
-    pub fn right(mut self) -> Self {
-        self.address.push(Address::Right);
-        self
-    }
-    pub fn parameter(&self) -> &Parameter {
-        &self.parameter
-    }
-    /// Used by structural nodes to traverse the address path.
-    pub fn direction(&self) -> Address {
-        if self.address.is_empty() {
-            Address::Null
-        } else {
-            self.address[0].clone()
-        }
-    }
-    /// Remove first address level, used by structural nodes when descending.
-    pub fn peel(mut self) -> Self {
-        if !self.address.is_empty() {
-            self.address.remove(0);
-        }
-        self
-    }
-}
+pub use tutti_node::setting::{Address, NodeAddr, Parameter, Setting};
 
 #[derive(Clone)]
 pub struct SettingSender {

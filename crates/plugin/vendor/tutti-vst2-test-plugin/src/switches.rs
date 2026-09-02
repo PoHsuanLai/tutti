@@ -9,7 +9,7 @@
 //! process-global *and* sticky for the life of the image, so one a test
 //! forgets to unset silently poisons every later test in the binary.
 
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicIsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicIsize, AtomicU32, Ordering};
 
 /// What the probe answers to `effCanDo`.
 ///
@@ -332,4 +332,39 @@ pub(crate) fn set_resumed(resumed: bool) {
 
 pub(crate) fn is_resumed() -> bool {
     RESUMED.load(Ordering::SeqCst)
+}
+
+// ---------------------------------------------------------------------------
+// effClose accounting
+// ---------------------------------------------------------------------------
+
+/// How many `effClose` dispatches this image has received since it was mapped.
+///
+/// Lives in the probe's image rather than in the host, which is the whole
+/// point: it is readable *after* the host has dropped its instance, and it
+/// survives exactly as long as the image stays mapped. Those two properties are
+/// what let one test separate the two events that
+/// `tutti_vst2_host::handle`'s module docs insist are different — `effClose`
+/// (release this instance; mandatory) and `dlclose` (unload the module; the
+/// step hosts must not take).
+///
+/// A host that skipped `effClose` leaves this at 0. A host that unloaded the
+/// module resets it to 0 *and* loses every other switch write with it, which is
+/// the failure mode that once read as flakiness.
+static CLOSE_COUNT: AtomicU32 = AtomicU32::new(0);
+
+pub(crate) fn record_close() {
+    CLOSE_COUNT.fetch_add(1, Ordering::SeqCst);
+}
+
+/// Read the `effClose` count out of the loaded image.
+#[no_mangle]
+pub extern "C" fn tutti_vst2_probe_close_count() -> u32 {
+    CLOSE_COUNT.load(Ordering::SeqCst)
+}
+
+/// Reset the `effClose` count, so a test can start from a known zero.
+#[no_mangle]
+pub extern "C" fn tutti_vst2_probe_reset_close_count() {
+    CLOSE_COUNT.store(0, Ordering::SeqCst);
 }

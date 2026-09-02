@@ -583,6 +583,14 @@ static mut RAW_TAIL_SIZE: Option<isize> = None;
 /// `effGetTailSize`. Mirrored here rather than imported because vst-rs's
 /// `plugin::OpCode` is `#[doc(hidden)]` and its discriminants are the wire
 /// contract regardless.
+/// `effClose` — the host telling the plugin to release *this instance*.
+///
+/// Counted rather than acted on: the probe still forwards it to vst-rs, which
+/// runs the real teardown. The count is what lets a test distinguish "the host
+/// dispatched effClose" from "the host merely dropped its handle", which is a
+/// difference nothing else in the probe can report.
+const EFF_CLOSE: i32 = 1;
+
 const EFF_GET_TAIL_SIZE: i32 = 52;
 
 /// `effGetParameterProperties`. vst-rs names it `GetParamInfo` and leaves the
@@ -815,6 +823,16 @@ extern "C" fn probe_dispatch(
     // SAFETY: both statics are written exactly once, in `VSTPluginMain`,
     // before the host has any pointer it could dispatch through. Reads
     // afterwards are on host threads against immutable data.
+    // Counted on the way past, never intercepted: the inner dispatcher below
+    // still receives it and runs vst-rs's real teardown. Recording here rather
+    // than in `Plugin::close` because vst-rs's `Plugin` trait has no `close`
+    // hook at all — `effClose` is handled by the crate's own dispatcher, which
+    // is precisely why a host that skips it produces no observable signal
+    // without this counter.
+    if opcode == EFF_CLOSE {
+        switches::record_close();
+    }
+
     if opcode == EFF_GET_TAIL_SIZE {
         if let Some(tail) = unsafe { RAW_TAIL_SIZE } {
             return tail;

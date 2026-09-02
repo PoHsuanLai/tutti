@@ -296,7 +296,7 @@ fn build_audio_probe(sdk: &Path) {
     // (`tutti_vst3_probe`) plus this key, so the key is deliberately just `dir`.
     println!("cargo:dir={}", dir.display());
 
-    build_program_changes_sample(sdk, &gen, &dir, &sdk_objects);
+    build_sdk_samples(sdk, &gen, &dir, &sdk_objects);
 }
 
 /// Compile the SDK's own translation units and return the objects.
@@ -366,26 +366,84 @@ fn link_bundle<'a>(
     assert!(so.is_file(), "linker reported success but {so:?} is absent");
 }
 
-/// Build the SDK's `multiple_programchanges` sample beside the probe.
+/// Build the SDK sample plugins the conformance suite drives, beside the probe.
 ///
-/// One fixture, one purpose: it declares **16 program lists** whose ids are
-/// `kProgramStartId + i`, so a list id is provably not a position in
-/// `program_lists()`. A host that dropped `list_id` and kept `index` would
-/// collapse all 16 onto one another, and three tests in `tutti-plugin-server`
-/// exist to catch exactly that. `audio-probe` publishes no program lists at all,
-/// so it cannot stand in.
+/// # Which samples, and why not all of them
 ///
-/// Those tests used to read `VST3_SAMPLE_PLUGIN_DIR` and skip when it was
-/// unset — which was every machine, since it meant a hand-built SDK checkout.
-/// The sample ships inside the `public.sdk` submodule, so it is simply here now.
-fn build_program_changes_sample(sdk: &Path, gen: &Path, dir: &Path, sdk_objects: &[PathBuf]) {
-    const SOURCES: &[&str] = &["plug.cpp", "plugcontroller.cpp", "plugentry.cpp"];
+/// The suite names four plugins. Two are built here, `audio-probe` is built
+/// above, and two are not buildable from the pinned submodules at all:
+///
+/// - **`multiple_programchanges`** — declares **16 program lists** whose ids are
+///   `kProgramStartId + i`, so a list id is provably not a position in
+///   `program_lists()`. A host that dropped `list_id` and kept `index` would
+///   collapse all 16 onto one another, and three tests in
+///   `tutti-plugin-server` exist to catch exactly that. `audio-probe`
+///   publishes no program lists, so it cannot stand in.
+/// - **`remap_paramid`** — publishes an `IRemapParamID` mapping, the only way to
+///   exercise the host's param-id migration path. Needs no VSTGUI: its
+///   controller is a plain `EditControllerEx1`.
+///
+/// **`hostchecker` and `note_expression_synth` are NOT built, and cannot be.**
+/// Both ship a controller that *inherits from* `VSTGUI::VST3EditorDelegate`
+/// (`hostcheckercontroller.h:110`, `note_expression_synth_ui.h:36`), and each
+/// sample's `factory.cpp` registers that controller — so the UI translation
+/// unit is not optional, it is on the only path to `GetPluginFactory`. VSTGUI is
+/// a separate Steinberg repository and is **not among this repo's three pinned
+/// submodules** (`base`, `pluginterfaces`, `public.sdk`), so there is nothing to
+/// compile it against. Vendoring a fourth submodule for a UI library the host
+/// never calls into is a large amount of build for no host coverage.
+///
+/// The tests that need those two are `#[ignore]`d with that reason rather than
+/// silently skipped — see `vst3_conformance.rs`. Note that the *hostchecker
+/// validation modules* are unaffected and still compile: [`build_hostcheck`]
+/// takes the six check `.cpp`s directly, and they depend only on the
+/// header-only `pluginterfaces` and never touch the controller.
+fn build_sdk_samples(sdk: &Path, gen: &Path, dir: &Path, sdk_objects: &[PathBuf]) {
+    build_sdk_sample(
+        sdk,
+        gen,
+        dir,
+        sdk_objects,
+        "multiple_programchanges",
+        &["plug.cpp", "plugcontroller.cpp", "plugentry.cpp"],
+        "multiple-program-changes",
+    );
+    build_sdk_sample(
+        sdk,
+        gen,
+        dir,
+        sdk_objects,
+        "remap_paramid",
+        &[
+            "remapparamidprocessor.cpp",
+            "remapparamidcontroller.cpp",
+            "remapparamidentry.cpp",
+        ],
+        "remap-paramid",
+    );
+}
 
-    let src = sdk.join("public.sdk/samples/vst/multiple_programchanges/source");
+/// Compile one SDK sample under `public.sdk/samples/vst/<sample>` and link it
+/// into a `.vst3` bundle named `bundle` under `dir`.
+///
+/// `sdk_objects` are the shared SDK translation units, compiled once by
+/// [`compile_sdk_objects`]. Only *this* sample's objects are chained onto them:
+/// every VST3 plugin supplies its own `GetPluginFactory`, so handing one sample
+/// another's object list is a duplicate-symbol link error.
+fn build_sdk_sample(
+    sdk: &Path,
+    gen: &Path,
+    dir: &Path,
+    sdk_objects: &[PathBuf],
+    sample: &str,
+    sources: &[&str],
+    bundle: &str,
+) {
+    let src = sdk.join(format!("public.sdk/samples/vst/{sample}/source"));
     assert!(
         src.is_dir(),
-        "the `multiple_programchanges` sample is missing from {} — the SDK \
-         submodule is incomplete. Run: git submodule update --init --recursive",
+        "the `{sample}` sample is missing from {} — the SDK submodule is \
+         incomplete. Run: git submodule update --init --recursive",
         src.display()
     );
 
@@ -401,22 +459,15 @@ fn build_program_changes_sample(sdk: &Path, gen: &Path, dir: &Path, sdk_objects:
         .warnings(false)
         .flag_if_supported("-Wno-multichar");
 
-    for f in SOURCES {
+    for f in sources {
         let path = src.join(f);
         assert!(path.is_file(), "sample source missing: {}", path.display());
         println!("cargo:rerun-if-changed={}", path.display());
         build.file(path);
     }
 
-    // Only this plugin's objects plus the shared SDK ones — it brings its own
-    // `GetPluginFactory`, so the probe's must not be in the list.
     let objects = build.compile_intermediates();
-    link_bundle(
-        &build,
-        objects.iter().chain(sdk_objects),
-        dir,
-        "multiple-program-changes",
-    );
+    link_bundle(&build, objects.iter().chain(sdk_objects), dir, bundle);
 }
 
 /// System libraries the probe's platform sources need at link time.

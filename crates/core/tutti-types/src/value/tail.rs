@@ -60,7 +60,12 @@ use serde::{Deserialize, Serialize};
 /// exists to prevent for plugin capabilities. It is also the default for every
 /// graph node that has not been taught to answer, which is why a graph's figure
 /// carries an unknown *count* rather than collapsing to one word.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+// `Hash` and not `Ord`: hashing needs only that equal values hash equally, which
+// the derive gives, whereas an ordering would have to rank `Unknown` against
+// `Unbounded` — two answers that are not points on a line. `graph::NodeSpec`
+// carries a `Tail` and is `Eq + Hash` so two graphs can be compared; it is
+// deliberately not `Ord` for the same reason.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum Tail {
     /// The format has no tail query, or this loader did not ask.

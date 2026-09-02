@@ -25,6 +25,7 @@ mod topology;
 // Public: `tutti-core` re-exports each of these AS A MODULE
 // (`pub use tutti_types::io::{self, ...}`), so consumers spell
 // `tutti_core::io::AudioIn`. Privatizing one here breaks that path.
+pub mod graph;
 pub mod io;
 pub mod latency;
 pub mod meter;
@@ -72,6 +73,13 @@ pub use latency::{compensate, Compensation, DelayInsertion, LatencyGraph};
 
 // How long a graph rings after its input stops.
 pub use tail::{graph_tail, GraphTail, TailGraph};
+
+// The audio graph as a value. Only the four names a consumer spells outside a
+// builder come to the root: `Source`, `Edge`, `InPort`, `OutPort`, `NodeSpec`
+// and `Invalid` stay module-qualified, because each is a generic word that reads
+// wrong unprefixed — `graph::Source` is an edge's origin, and a root `Source`
+// beside `io::AudioIn` would be read as an input device.
+pub use graph::{NodeKey, Topology, Valid};
 
 // Musical meter.
 pub use meter::{

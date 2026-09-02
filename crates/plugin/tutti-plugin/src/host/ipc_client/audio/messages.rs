@@ -75,11 +75,20 @@ pub(super) enum Command {
     },
     Reset,
     Shutdown,
+    /// Chunked state read.
+    ///
+    /// `progress` is advanced per chunk so the waiting caller can tell a slow
+    /// transfer from a stalled one; see [`StateProgress`](super::progress::StateProgress).
     SaveState {
+        progress: super::progress::StateProgress,
         reply: Reply<std::result::Result<Vec<u8>, StateError>>,
     },
+    /// Chunked state write. `progress` carries the same meaning as on
+    /// [`SaveState`](Self::SaveState) — bytes handed to the socket rather than
+    /// bytes received.
     LoadState {
         data: Vec<u8>,
+        progress: super::progress::StateProgress,
         reply: Reply<std::result::Result<(), StateError>>,
     },
     GetParameterList {

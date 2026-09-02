@@ -51,6 +51,29 @@ impl PluginBridge {
         Ok((bridge, bridge_thread))
     }
 
+    /// As [`new`](Self::new), with a shortened state-transfer progress deadline.
+    ///
+    /// Exists so the stall path can be asserted in milliseconds rather than by
+    /// sleeping out the real deadline. Set before the `Arc` is formed because
+    /// that is the last moment the bridge is uniquely owned.
+    #[cfg(test)]
+    pub(crate) fn new_with_state_progress_timeout(
+        socket_path: PathBuf,
+        audio_buffer: Arc<AudioSlab>,
+        plugin_path: PathBuf,
+        sample_rate: f64,
+        state_progress_timeout: std::time::Duration,
+    ) -> Result<(Arc<Self>, BridgeThread)> {
+        let (mut audio, bridge_thread) = AudioBridge::new(socket_path, audio_buffer, sample_rate)?;
+        audio.set_state_progress_timeout(state_progress_timeout);
+        let bridge = Arc::new(Self {
+            audio,
+            plugin_path,
+            gui: Mutex::new(None),
+        });
+        Ok((bridge, bridge_thread))
+    }
+
     /// Hand block `seq` to the bridge without waiting. See
     /// [`AudioBridge::submit`] — returning `true` means the block was accepted,
     /// never that its output is ready.

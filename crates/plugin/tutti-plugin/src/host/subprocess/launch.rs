@@ -122,11 +122,28 @@ pub(super) fn launch_with(
     }
 }
 
+/// Environment variable through which this process states its own PID to the
+/// server it is spawning.
+///
+/// The server's orphan watchdog needs to know *which* process is its host, and
+/// it cannot ask the kernel: a host that dies during the child's startup is
+/// reparented before the child's first instruction, so a `getppid()` sample in
+/// the server names the reaper rather than the host. Under
+/// `PR_SET_CHILD_SUBREAPER` — systemd user services, Docker `--init`, Flatpak,
+/// Snap — that reaper is an ordinary live PID and the watchdog goes silent.
+///
+/// Stating it here fixes the value before the server exists, so no race can
+/// disturb it. The constant is duplicated in `tutti_plugin_server::transport`
+/// rather than shared: this is the wire between two crates, on the same terms
+/// as the socket-path argument beside it.
+const HOST_PID_ENV: &str = "TUTTI_PLUGIN_HOST_PID";
+
 fn spawn_process(locator: &ServerLocator, config: &BridgeConfig) -> Result<Child> {
     let server_path = locator.resolve()?;
     tracing::debug!("spawning plugin-server: {}", server_path.display());
     Command::new(server_path)
         .arg(&config.socket_path)
+        .env(HOST_PID_ENV, std::process::id().to_string())
         .stderr(std::process::Stdio::inherit())
         .spawn()
         .map_err(BridgeError::Io)

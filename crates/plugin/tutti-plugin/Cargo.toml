@@ -141,6 +141,12 @@ tutti-clap-test-plugin = { path = "../../vendor/tutti-clap-test-plugin" }
 # exactly as the planner will.
 dyn-clone = "1"
 
+# NOTE: the `loom` model of this crate's shared-memory header protocol lives in
+# the sibling `tutti-shm-model` crate, not here. `--cfg loom` is a global
+# RUSTFLAG and `lfqueue` — a mandatory transitive dependency of this crate, via
+# fundsp-tutti → tutti-core — fails to compile under it. See that crate's
+# Cargo.toml for the full reasoning.
+
 # docs.rs renders with every feature on. `default = []` keeps the engine
 # Bevy-free for consumers, but it would otherwise publish a page with the
 # feature-gated half of the public API missing.

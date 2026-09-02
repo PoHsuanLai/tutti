@@ -33,6 +33,10 @@ members = [
     "crates/plugin/tutti-plugin",
     "crates/plugin/tutti-plugin-server",
     "crates/plugin/tutti-plugin-types",
+    # Test-only: a loom model of tutti-plugin's shm header protocol. A separate
+    # crate because `--cfg loom` is global and breaks a transitive dep of
+    # tutti-plugin; see its Cargo.toml.
+    "crates/plugin/tutti-shm-model",
     "crates/plugin/formats/tutti-vst3-host",
     "crates/plugin/formats/tutti-clap-host",
     "crates/plugin/formats/tutti-au-host",

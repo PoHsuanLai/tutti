@@ -6,11 +6,12 @@ pub use error::{Error, Result};
 // Parameter vocabulary: the measurement newtypes (Bpm/Hz/Db…), the atomic
 // `Param` cell, and the `UnitParam` address enum all live in `tutti-types`
 // (pure vocabulary, no engine dependency) and are re-exported here so consumers
-// reach them via the engine root. `SampleRate` and the `unit_param` fundsp-glue
-// (`setting` / `from_setting`) come from `fundsp-tutti`, which owns fundsp's
-// `Setting`.
-pub use fundsp::params::SampleRate;
+// reach them via the engine root. `SampleRate` is one of those units and comes
+// from the same place; the `unit_param` glue (`setting` / `from_setting`) is
+// the fork's, because it converts a `UnitParam` into the `Setting` message
+// `Net` delivers.
 pub use fundsp::unit_param;
+pub use tutti_types::value::SampleRate;
 pub use tutti_types::value::{
     Amplitude, ArcDegrees, AtomicReadRate, AtomicSamplePosition, Azimuth, Beat, BeatDuration, Bpm,
     Cents, CompressionRatio, Db, Depth, Drive, Elevation, Feedback, Hz, Mix, Pan, Param, ParamAddr,
@@ -126,32 +127,27 @@ pub mod dsp {
     //! cannot name `fundsp`, but it can reach anything the prelude exports.
     //! Narrowing this to an explicit list is worth doing and has not been done.
     //!
-    //! # Why the node trait is fundsp's and not tutti's
+    //! # The node contract is no longer here
     //!
-    //! The obvious next step — define `AudioUnit` here and let the fork
-    //! implement it — does not typecheck, and the reason is worth writing down
-    //! so it is not rediscovered:
+    //! [`AudioUnit`](crate::AudioUnit), the planar block buffers, the numeric
+    //! tower, [`Signal`](crate::Signal) and [`Setting`](crate::Setting) are
+    //! **`tutti-node`'s**, a leaf crate *below* the fork, and `tutti_core`
+    //! re-exports them from there. So what this module governs is narrower than
+    //! it once was: the graph **runtime** (`Net`, `NetBackend`) and the DSP node
+    //! library, not the contract a node implements.
     //!
-    //! - `tutti-core` depends on `fundsp-tutti`, which depends on
-    //!   `tutti-types`. Defining the trait in `tutti-core` and having the fork
-    //!   consume it is a dependency **cycle**.
-    //! - `tutti-types` is the one crate below the fork, and `Tail` and
-    //!   [`SampleRate`] already live there for exactly this reason. But
-    //!   `AudioUnit<S: Sample>` sits on the fork's `Num`/`Float`/`Real` tower
-    //!   (~700 lines, plus `wide`, `libm`, `numeric_array`, `typenum`), and the
-    //!   generic is load-bearing — the plugin hosts really do implement
-    //!   `AudioUnit<F64>`. `Setting` also carries `Address::Node(NodeId)`, a
-    //!   back-edge from the vocabulary into the graph runtime. And
-    //!   `tutti-types` is std-only while the fork is `no_std`-capable.
-    //! - A separate trait with a blanket impl over the fork's does not work
-    //!   either: `Net` stores `Box<dyn AudioUnit>` and *is* an `AudioUnit`, so
-    //!   every node would need a wrapper allocation, and `Net::node_as::<T>`
-    //!   downcasts (27 sites, including the plugin-host bind path) would see
-    //!   the wrapper rather than `T`.
-    //!
-    //! So lifting the trait is not a re-home; it is gated on two separate
-    //! changes to the fork — a `no_std` retrofit of `tutti-types`, and moving
-    //! or generifying `Setting`'s `NodeId`.
+    //! Three shapes for owning the contract were tried and rejected before that
+    //! landed, and the reasons are worth keeping so they are not rediscovered:
+    //! defining the trait *here* is a dependency **cycle** (`tutti-core →
+    //! fundsp-tutti → tutti-types`); defining it in `tutti-types` drags the
+    //! fork's `Num`/`Float`/`Real` tower into the vocabulary crate, and
+    //! `AudioUnit<S: Sample>`'s generic is load-bearing (the plugin hosts really
+    //! do implement `AudioUnit<F64>`), so it cannot be specialized away; and a
+    //! separate trait with a blanket impl breaks `Net`, which stores
+    //! `Box<dyn AudioUnit>`, *is* an `AudioUnit`, and downcasts through
+    //! `node_as::<T>` at 27 sites that would see a wrapper rather than `T`.
+    //! Putting the contract *below* the fork is the one direction that is none
+    //! of those, which is what `tutti-node` does.
     //!
     //! # Per-block param delivery (`Env`) — designed, not implemented
     //!
@@ -168,22 +164,45 @@ pub mod dsp {
     //! param set for this block. Delivering those as messages means one queue
     //! entry per param per block, which is the shape that does overflow.
     //!
-    //! The design, for when the trait is tutti's own: one `Env { rate, frame,
-    //! params }` published whole through [`tutti_types::RtPublish`], with a
-    //! trait method taking `&Env` alongside the buffers — the audio thread
-    //! takes a single `RtRef` per block and every node reads from it, rather
-    //! than each node draining its own mailbox. It cannot be added to the fork's
-    //! trait from here: `NetBackend` keeps its `Net` private and exposes no
-    //! `set`, so there is no seam through which a host hands one in. That is the
-    //! same stop condition PR 3 hit, and it is why this stays a comment.
+    //! The design: one `Env { rate, frame, params }` published whole through
+    //! [`tutti_types::RtPublish`], with a trait method taking `&Env` alongside
+    //! the buffers — the audio thread takes a single `RtRef` per block and every
+    //! node reads from it, rather than each node draining its own mailbox. The
+    //! trait is now `tutti-node`'s, so *adding the method* is finally available.
+    //! What still blocks it is the other half, and it is a fork change either
+    //! way: `NetBackend` keeps its `Net` private and exposes no `set`, so there
+    //! is no seam through which a host hands an `Env` in. That is the same stop
+    //! condition graph plan PR 3 hit, and it is why this stays a comment.
     pub use fundsp::prelude::*;
 }
 
-pub use fundsp::buffer::BufferVec;
+// ── The node contract, from the crate that defines it ───────────────────────
+//
+// [`AudioUnit`] and everything its signatures name — the planar block buffers,
+// the numeric tower they are generic over, the [`Signal`] vocabulary `route`
+// speaks, the [`Setting`] `set` takes — are **`tutti-node`'s**, a leaf crate
+// below the fork. They are re-exported here at the spellings the engine has
+// always used, so the 42 `impl AudioUnit` sites still say `tutti_core::…` and
+// none of them had to change.
+//
+// This is the half of `tutti_core`'s wall that is no longer a fundsp wall: a
+// consumer reaching `tutti_core::AudioUnit` is reaching a Tutti-owned trait.
+// What is still fundsp's is the *runtime* below — `Net`, `NetBackend` and the
+// DSP node library — and that is what the named `dsp` list above governs.
+pub use tutti_node::buffer::{BufferMut, BufferRef, BufferVec};
+pub use tutti_node::setting::Setting;
+pub use tutti_node::signal::{Signal, SignalFrame};
+pub use tutti_node::{AudioUnit, MAX_BUFFER_SIZE};
+// The numeric tower the contract is generic over. `Sample`/`F32`/`F64` are the
+// trait's own type parameter and its two instantiations (the plugin hosts
+// really do implement `AudioUnit<F64>`); `Num`/`Float`/`Real` are the bounds a
+// node writes when its arithmetic is generic rather than fixed at f32.
+pub use tutti_node::{Float, Num, Real, Sample, F32, F64};
+
 pub use fundsp::fft::{inverse_fft, real_fft};
 pub use fundsp::math::Complex32;
 pub use fundsp::net::{NodeId, Source};
-pub use fundsp::prelude::{shared, AudioUnit, BufferMut, BufferRef, Shared};
+pub use fundsp::prelude::{shared, Shared};
 // `WaveAsset` needs both axes: it is a Bevy `Asset` (so `bevy_asset`), and it
 // lives in fundsp's `read` module, which only exists once a codec is on. Gating
 // on either alone breaks the other combination.
@@ -210,11 +229,7 @@ pub use fundsp::stream::FileIn;
 // reverb/distortion node rebuilds). It is the only part of fundsp's `sequencer`
 // this fork carries — see docs/fundsp-fork-audit.md.
 pub use fundsp::sequencer::Fade;
-pub use fundsp::setting::Setting;
-pub use fundsp::signal::{Signal, SignalFrame};
 pub use fundsp::wave::Wave;
-pub use fundsp::MAX_BUFFER_SIZE;
-pub use fundsp::{Sample, F32, F64};
 
 /// Which audio formats this build can decode.
 ///

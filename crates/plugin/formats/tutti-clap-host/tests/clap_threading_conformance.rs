@@ -17,9 +17,17 @@
 //! `process()`. Here the plugin asks from inside each entry point instead.
 //!
 //! Nothing waits on a clock: CLAP timers are driven with `period_ms = 0`, which
-//! `poll_timers` treats as due on every poll, so "the timer fires" is one call
-//! producing one `on_timer` and "it stops firing" is the same call producing
-//! none.
+//! `take_due_timers` treats as due on every poll, so "the timer fires" is one
+//! call producing one `on_timer` and "it stops firing" is the same call
+//! producing none.
+//!
+//! **That covers routing, not timing.** A zero period makes every possible
+//! expiry comparison return the same answer, so nothing here can distinguish a
+//! correct `>=` from an inverted one or from "always fire". What these tests
+//! pin is that the host reaches the plugin's `on_timer` with the right id on
+//! the right thread. *When* a timer is due is pinned separately and without a
+//! clock, in `polling::timer_due_tests`, against a `take_due_timers` that takes
+//! the current instant as an argument.
 //!
 //! The plugin state is a process-global, so every test holds [`PROBE_LOCK`] for
 //! its whole scenario and calls `thread_reset()` at the top.
@@ -459,6 +467,117 @@ fn restart_cycle_reactivates_and_reruns_the_plugin_lifecycle() {
     assert_roles(&cap, Site::Process, false, true, "process after restart");
 }
 
+/// A sample-rate change must deactivate and re-activate the plugin, and leave
+/// it genuinely running at the new rate.
+///
+/// This is the *routine* path through the same activate → deactivate →
+/// re-activate cycle the restart test above drives, and until now nothing
+/// covered it. The difference matters: `restart_cycle_...` has the embedder do
+/// the cycle by hand (`inst.deactivate()`, then `loaded.activate()`), whereas
+/// here the host does it internally inside
+/// [`set_sample_rate`](tutti_clap_host::ClapActive::set_sample_rate) and the
+/// caller never sees a `ClapLoaded`. A host that changed the rate *without*
+/// the cycle would pass the hand-driven test and fail here — and CLAP requires
+/// deactivation around a rate change, so it is exactly the mistake worth
+/// pinning. `activate()` visits are the evidence, because they are the only
+/// thing the plugin itself can report about having been re-activated.
+///
+/// Sample rates are two the probe accepts. Both are ordinary DAW rates, so a
+/// refusal here would be a real defect rather than an unsupported-rate
+/// artefact — and the return value is checked rather than discarded, so a
+/// refusal is reported instead of leaving the rest of the assertions to fail
+/// mysteriously.
+#[test]
+fn a_sample_rate_change_deactivates_and_reactivates_the_plugin() {
+    let probe = Probe::acquire();
+    let mut inst = probe.activate();
+    drive_block(&mut inst, 64);
+
+    let before = inst.sample_rate();
+    let target = if before == 48_000.0 {
+        44_100.0
+    } else {
+        48_000.0
+    };
+
+    // Clear the first activation so the counts below can only come from the
+    // rate change. Same discipline as the restart test.
+    thread_reset();
+
+    inst.set_sample_rate(target)
+        .expect("the reference plugin must accept an ordinary DAW sample rate");
+
+    assert_eq!(
+        inst.sample_rate(),
+        target,
+        "the host must report the rate it activated at; a stale reading here \
+         means `process` would size its scratch from one rate while the plugin \
+         runs at another"
+    );
+
+    let cap = probe.capture();
+    assert_eq!(
+        cap.sites[Site::Activate as usize].visits,
+        1,
+        "a sample-rate change must re-activate the plugin exactly once — CLAP \
+         requires deactivation around a rate change, and a host that simply \
+         wrote the new rate would leave the plugin's DSP initialised for the \
+         old one"
+    );
+    assert_roles(
+        &cap,
+        Site::Activate,
+        true,
+        false,
+        "activate after a sample-rate change",
+    );
+
+    // The plugin must be usable afterwards, not merely re-activated: the first
+    // block at the new rate has to re-run start_processing, because
+    // `reconfigure` stopped processing on the way down.
+    drive_block(&mut inst, 64);
+    let cap = probe.capture();
+    assert_eq!(
+        cap.sites[Site::StartProcessing as usize].visits,
+        1,
+        "the first block after a rate change must re-run start_processing — a \
+         host that kept its stale `processing` flag would skip it and leave the \
+         plugin's DSP uninitialised at the new rate"
+    );
+    assert_roles(
+        &cap,
+        Site::Process,
+        false,
+        true,
+        "process after a rate change",
+    );
+}
+
+/// Setting the rate the plugin is already running at must change nothing.
+///
+/// `set_sample_rate` returns early on an equal rate, and the early return is
+/// what keeps a per-frame caller from tearing the plugin down sixty times a
+/// second. Without this, deleting that guard is invisible: every other
+/// assertion in the test above still holds when the cycle runs redundantly.
+#[test]
+fn setting_the_current_sample_rate_does_not_cycle_the_plugin() {
+    let probe = Probe::acquire();
+    let mut inst = probe.activate();
+    let rate = inst.sample_rate();
+
+    thread_reset();
+    inst.set_sample_rate(rate)
+        .expect("re-setting the current rate must succeed");
+
+    let cap = probe.capture();
+    assert_eq!(
+        cap.sites[Site::Activate as usize].visits,
+        0,
+        "setting the rate the plugin already runs at must not deactivate and \
+         re-activate it"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // 3. timers.
 // ---------------------------------------------------------------------------
@@ -468,7 +587,10 @@ fn restart_cycle_reactivates_and_reruns_the_plugin_lifecycle() {
 /// unregistered.
 ///
 /// The plugin registers with `period_ms = 0`, so each `poll_timers()` produces
-/// exactly one callback with no clock involved.
+/// exactly one callback with no clock involved. That is deliberate and
+/// sufficient *for this test*, whose subject is id routing and thread identity
+/// — but it means nothing here constrains the expiry comparison, which is
+/// covered by `polling::timer_due_tests` instead.
 #[test]
 fn timer_registers_fires_on_the_main_thread_and_stops_after_unregister() {
     let probe = Probe::acquire();

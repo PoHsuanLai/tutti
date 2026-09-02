@@ -6,6 +6,7 @@ use super::ClapLoaded;
 #[cfg(feature = "clap-extras")]
 use crate::cstr_to_string;
 use crate::error::{ClapError, Result};
+use crate::host::state::TimerEntry;
 use crate::host::{HostState, LogRecord};
 use crate::types::{AudioPortsRescan, EditorCapabilities, EditorSize, ParamRescan, WindowHandle};
 #[cfg(feature = "clap-extras")]
@@ -822,6 +823,32 @@ impl ClapLoaded {
     /// which need not run on the thread `HostState::new()` did — hence the
     /// guard, which the ten sibling `[main-thread]` methods already carry.
     pub fn poll_timers(&mut self) -> usize {
+        self.poll_timers_at(std::time::Instant::now())
+    }
+
+    /// [`poll_timers`](Self::poll_timers) with the clock supplied by the
+    /// caller, so a test can decide what time it is.
+    ///
+    /// # Why the clock is a parameter
+    ///
+    /// Every timer test drove `period_ms = 0`, and
+    /// [`take_due_timers`] treats a zero period as always-due — so the
+    /// comparison that decides whether a timer has expired was never actually
+    /// evaluated against anything. Inverting it, or replacing it with `true`,
+    /// left the whole suite green: `0 >= 0` and `0 <= 0` are both true, and so
+    /// is "always fire". The tests pinned that the host *reaches* the plugin's
+    /// `on_timer` with the right id on the right thread, which is real, but
+    /// nothing pinned *when*.
+    ///
+    /// Reading `Instant::now()` inside the poll is what made a real period
+    /// untestable: covering a 10 ms timer honestly would mean sleeping, and a
+    /// sleeping test is a slow test that flakes under load — the harness defect
+    /// this batch exists to remove, reintroduced to fix a different one.
+    ///
+    /// So the clock is an argument. `poll_timers` supplies the real one and is
+    /// what production calls; a test hands in instants it chose and asserts on
+    /// exact fire counts with no wall clock involved at all.
+    pub fn poll_timers_at(&mut self, now: std::time::Instant) -> usize {
         self.assert_main_thread();
         if self.extensions.system.timer_support.is_null() {
             return 0;
@@ -832,20 +859,12 @@ impl ClapLoaded {
             None => return 0,
         };
 
-        let now = std::time::Instant::now();
+        let expired_ids = match self.host_state.timer.timers.lock() {
+            Ok(mut timers) => take_due_timers(&mut timers, now),
+            Err(_) => Vec::new(),
+        };
+
         let mut fired = 0usize;
-        let mut expired_ids = Vec::new();
-
-        if let Ok(mut timers) = self.host_state.timer.timers.lock() {
-            for timer in timers.iter_mut() {
-                let elapsed = now.duration_since(timer.last_fire);
-                if elapsed.as_millis() >= timer.period_ms as u128 {
-                    expired_ids.push(timer.id);
-                    timer.last_fire = now;
-                }
-            }
-        }
-
         for id in expired_ids {
             unsafe { on_timer(self.plugin.as_ptr(), id) };
             fired += 1;
@@ -1511,5 +1530,197 @@ mod embed_sequence_tests {
         assert!(!caps.resize.resizable);
         assert!(!caps.aspect.preserve);
         assert!(caps.aspect.ratio.is_none());
+    }
+}
+
+/// Which registered timers are due at `now`, marking each as fired.
+///
+/// Split out of [`ClapLoaded::poll_timers_at`] because it is the whole of the
+/// decision and none of the FFI: every input is a plain value, so it can be
+/// tested directly, whereas the poll needs a live plugin on the other end of a
+/// function pointer. That split is what makes the comparison below coverable at
+/// all — the suite that drove it through the FFI could only reach it with
+/// `period_ms = 0`, where every possible comparison returns the same answer.
+///
+/// A timer is due when at least its full period has elapsed since it last
+/// fired. `>=` rather than `>`: a 10 ms timer polled at exactly 10 ms has
+/// waited its period, and requiring a strictly greater instant would make a
+/// caller ticking on an exact period never fire at all.
+///
+/// `last_fire` advances to `now`, not by `period_ms`. The difference shows when
+/// a poll is late: advancing by the period would leave the timer immediately
+/// due again and fire it repeatedly to "catch up", which for a UI heartbeat
+/// means a burst of redraws after every stall. CLAP's timers are a periodic
+/// wake-up, not a budget to be reconciled.
+fn take_due_timers(timers: &mut [TimerEntry], now: std::time::Instant) -> Vec<u32> {
+    let mut due = Vec::new();
+    for timer in timers.iter_mut() {
+        // `checked_duration_since` rather than `duration_since`: the latter
+        // panics (debug) or saturates (release) when `now` precedes
+        // `last_fire`, which a caller passing its own instants can do. A timer
+        // whose last fire is in the future is simply not due yet.
+        let elapsed = now.checked_duration_since(timer.last_fire);
+        if elapsed.is_some_and(|e| e.as_millis() >= timer.period_ms as u128) {
+            due.push(timer.id);
+            timer.last_fire = now;
+        }
+    }
+    due
+}
+
+#[cfg(test)]
+mod timer_due_tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    fn timer(id: u32, period_ms: u32, last_fire: Instant) -> TimerEntry {
+        TimerEntry {
+            id,
+            period_ms,
+            last_fire,
+        }
+    }
+
+    /// The headline case, and the one no previous test could express: a 10 ms
+    /// timer ticked at 5, 10, 15 and 20 ms fires at 10 and 20 only.
+    ///
+    /// The old suite drove `period_ms = 0`, where "always due", `>=` and `<=`
+    /// are indistinguishable. Here they are not: an inverted comparison fires
+    /// at 5 and nowhere else, and an always-due implementation fires four
+    /// times.
+    ///
+    /// 15 ms is in the list on purpose, and it is the tick that separates two
+    /// plausible designs. The period restarts **from the fire instant**, so
+    /// after firing at 10 the timer is next due at 20, not at 15 — a
+    /// fixed-schedule timer, one that keeps its original 0/10/20 grid by
+    /// advancing `last_fire` by `period_ms`, would fire here. See
+    /// [`take_due_timers`] for why the restarting reading is the one CLAP
+    /// wants.
+    #[test]
+    fn a_ten_ms_timer_is_due_at_ten_and_twenty_but_not_between() {
+        let start = Instant::now();
+        let mut timers = [timer(1, 10, start)];
+        let at = |ms| start + Duration::from_millis(ms);
+
+        assert_eq!(
+            take_due_timers(&mut timers, at(5)),
+            Vec::<u32>::new(),
+            "5 ms into a 10 ms period the timer has not waited its period"
+        );
+        assert_eq!(
+            take_due_timers(&mut timers, at(10)),
+            vec![1],
+            "at exactly one full period the timer is due; a `>` comparison would \
+             make a caller ticking on the period never fire"
+        );
+        assert_eq!(
+            take_due_timers(&mut timers, at(15)),
+            Vec::<u32>::new(),
+            "only 5 ms after firing at 10 ms; the period restarts from the fire \
+             instant rather than staying on the original grid"
+        );
+        assert_eq!(
+            take_due_timers(&mut timers, at(20)),
+            vec![1],
+            "a full period after the fire at 10 ms, the timer is due again"
+        );
+    }
+
+    /// Firing resets the period rather than consuming a backlog.
+    ///
+    /// Polled at 10 and then at 12, a 10 ms timer fires once: the second poll
+    /// is only 2 ms after the first fire. An implementation that advanced
+    /// `last_fire` by `period_ms` instead of to `now` would still be at 10 and
+    /// fire again immediately.
+    #[test]
+    fn firing_restarts_the_period_from_the_fire_instant() {
+        let start = Instant::now();
+        let mut timers = [timer(1, 10, start)];
+
+        assert_eq!(
+            take_due_timers(&mut timers, start + Duration::from_millis(10)),
+            vec![1]
+        );
+        assert_eq!(
+            take_due_timers(&mut timers, start + Duration::from_millis(12)),
+            Vec::<u32>::new(),
+            "2 ms after firing, a 10 ms timer is not due again"
+        );
+    }
+
+    /// A late poll fires once, not once per period missed.
+    ///
+    /// 100 ms into a 10 ms period is ten periods' worth, and a host that
+    /// "caught up" would deliver ten `on_timer` calls in a row — for a UI
+    /// heartbeat, a burst of redraws after every stall.
+    #[test]
+    fn a_late_poll_does_not_fire_once_per_missed_period() {
+        let start = Instant::now();
+        let mut timers = [timer(1, 10, start)];
+
+        assert_eq!(
+            take_due_timers(&mut timers, start + Duration::from_millis(100)),
+            vec![1],
+            "ten periods late must still be one fire"
+        );
+        assert_eq!(
+            take_due_timers(&mut timers, start + Duration::from_millis(101)),
+            Vec::<u32>::new(),
+            "and the backlog must not be waiting on the next poll either"
+        );
+    }
+
+    /// Timers with different periods are judged independently, and each
+    /// answer names its own id.
+    ///
+    /// A single shared deadline, or a loop that fired every timer once any was
+    /// due, passes the single-timer tests above and fails here.
+    #[test]
+    fn timers_with_different_periods_expire_independently() {
+        let start = Instant::now();
+        let mut timers = [timer(1, 10, start), timer(2, 50, start)];
+
+        assert_eq!(
+            take_due_timers(&mut timers, start + Duration::from_millis(10)),
+            vec![1],
+            "only the 10 ms timer is due at 10 ms"
+        );
+        assert_eq!(
+            take_due_timers(&mut timers, start + Duration::from_millis(50)),
+            vec![1, 2],
+            "at 50 ms both are due: the 50 ms timer for the first time, the              10 ms one 40 ms after its last fire"
+        );
+    }
+
+    /// The zero period every previous test used: due on every poll.
+    ///
+    /// Kept, because a plugin may legitimately register one and "fire as often
+    /// as you poll" is the right answer — but pinned deliberately rather than
+    /// relied on as the only case, which is what made the comparison
+    /// uncoverable.
+    #[test]
+    fn a_zero_period_timer_is_due_on_every_poll() {
+        let start = Instant::now();
+        let mut timers = [timer(1, 0, start)];
+
+        assert_eq!(take_due_timers(&mut timers, start), vec![1]);
+        assert_eq!(take_due_timers(&mut timers, start), vec![1]);
+    }
+
+    /// An instant before `last_fire` is not due, and must not panic.
+    ///
+    /// `Instant::duration_since` panics in debug builds when the argument is
+    /// later than the receiver. Now that the clock is a caller's value rather
+    /// than always `Instant::now()`, that is reachable.
+    #[test]
+    fn a_clock_that_went_backwards_is_not_due_and_does_not_panic() {
+        let start = Instant::now();
+        let mut timers = [timer(1, 10, start + Duration::from_millis(100))];
+
+        assert_eq!(
+            take_due_timers(&mut timers, start),
+            Vec::<u32>::new(),
+            "a timer whose last fire is in the future is not yet due"
+        );
     }
 }

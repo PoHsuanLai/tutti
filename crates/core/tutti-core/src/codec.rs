@@ -130,8 +130,8 @@ static EXTENSIONS: std::sync::LazyLock<Vec<&'static str>> = std::sync::LazyLock:
 /// up: `Path::extension` yields `wav`, while a filter string a user typed or a
 /// config file holds is as likely to say `.wav`. Normalising here rather than at
 /// each call site is what stops one caller lowercasing and another forgetting —
-/// the exact shape that let `.RS` slip past one of three predicates in dawai's
-/// old browser.
+/// the exact shape that let `.RS` slip past one of three predicates in a host's
+/// file browser.
 ///
 /// ```
 /// # use tutti_core::can_decode;

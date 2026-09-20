@@ -5,7 +5,7 @@ The single-bus core (params, sample-accurate automation, MIDI, editor, state,
 transport, IConnectionPoint) is real and RT-safe. Four gaps stand between it and
 correct hosting of the full plugin population.
 
-Repo: `/Users/pohsuanlai/Documents/dawAI/dawai` (tutti sub-workspace at
+Repo: this repo (the engine was still a sub-workspace of the dawai app repo when this was written, at
 `crates/tutti/`; run cargo from there). Crates: `tutti-vst3-host`,
 `tutti-plugin-server` (subprocess driver `src/loaders/vst3.rs`), `tutti-plugin`
 (GUI bridge `src/bridge/gui/vst3.rs`).
@@ -16,7 +16,7 @@ tests in `tutti-vst3-host` (`com/param_changes.rs`, `com/param_queue.rs`,
 `com/event_list.rs`, and `tests/vst3_process_no_alloc.rs`); they must stay green.
 
 Reference (read-only, do NOT copy code — AGPL): JUCE's VST3 host at
-`/Users/pohsuanlai/Documents/dawAI/dawai-refs/JUCE/modules/juce_audio_processors_headless/format_types/juce_VST3PluginFormatImpl.h`
+`JUCE's `juce_VST3PluginFormatImpl.h` (reference reading, not vendored here)`
 and `juce_VST3Common.h`. Use it to understand the *VST3 contract* (which is public
 Steinberg spec), not as source to lift.
 

@@ -25,8 +25,8 @@ pub struct GraphReconcilePlugin;
 impl Plugin for GraphReconcilePlugin {
     fn build(&self, app: &mut App) {
         // The DAW param components (`Volume`/`Pan`/`Mute`/`PluginParam`/`ModParam`)
-        // are app-side, in `dawai_model::audio_graph` — this crate carries none of
-        // them. `AudioParam<U, P>` (see `graph::param`) is the generic one here.
+        // are a host's — this crate carries none of them. `AudioParam<U, P>` (see
+        // `graph::param`) is the generic one here.
 
         app.init_resource::<GraphDirty>().configure_sets(
             Update,

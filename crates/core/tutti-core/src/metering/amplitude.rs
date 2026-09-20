@@ -24,8 +24,8 @@ pub struct MeterReading {
 /// Lock-free amplitude storage (Peak L/R, RMS L/R).
 ///
 /// Written by the audio thread, read by the UI. One of these per thing you
-/// want a meter on: the master output owns one (see [`MasterMeter`]), and each
-/// channel strip owns its own (see `dawai-model`'s `channel::strip`).
+/// want a meter on: the master output owns one (see [`MasterMeter`]), and a host
+/// typically gives each channel strip its own.
 #[repr(align(64))]
 #[derive(Debug)]
 pub struct AtomicAmplitude {

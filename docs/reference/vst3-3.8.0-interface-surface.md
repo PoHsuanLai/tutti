@@ -1,7 +1,7 @@
 # VST3 3.8.0 - host-facing interface surface
 
-**Source:** Steinberg VST3 SDK (MIT), `dawai-refs/vst3sdk/pluginterfaces/`, `kVstVersionString = "VST 3.8.0"` (commit 58f8da7)
-**Extracted:** 2026-08-03. Read from the SDK headers only - no dawai/tutti code was consulted, so this describes the format, not our coverage of it.
+**Source:** Steinberg VST3 SDK (MIT), `vst3sdk/pluginterfaces/`, `kVstVersionString = "VST 3.8.0"` (commit 58f8da7)
+**Extracted:** 2026-08-03. Read from the SDK headers only - no tutti code was consulted, so this describes the format, not our coverage of it.
 **Scope:** host's perspective. Every interface is marked plugin-implements (host calls it) or host-implements (plugin calls it).
 
 Every signature below is copied **verbatim** from the header, including the SDK's own inline `/*in*/`, `/*out*/`, `/*inout*/` direction comments — those carry real information about who owns and fills each argument, and the SDK is not uniform about them (many older interfaces annotate nothing at all; that absence is reproduced here rather than guessed at). Where the SDK omits an annotation, none is shown.

@@ -86,9 +86,10 @@ pub use tutti_core::{
 };
 
 // The boundary this crate holds: pure DSP unit types plus the `set(UnitParam)`
-// surface the app drives them through. DAW-param ECS policy — the shared param
+// surface a host drives them through. DAW-param ECS policy — the shared param
 // pool, node authoring markers, spawners, reconcilers, deferred convolver load —
-// is app-side, in `dawai_model::audio_graph`. Engine Bevy is the Net pump only.
+// is the host's, and deliberately outside this workspace. Engine Bevy is the Net
+// pump only.
 
 pub mod buffer;
 
@@ -176,8 +177,7 @@ pub use convolution::{
 pub mod automation;
 
 // NOTE: the spatial-panner graph binding (`spatial_graph`) and the automation
-// graph binding (`automation::graph`) moved app-side to
-// `dawai_model::engine_bind::{spatial, automation}` — they bound the DAW
-// `Volume`/`Pan`/`PluginParam` components, which left the engine. This crate
-// keeps only the pure DSP: the spatial panner nodes (`spatial/`) + the
-// automation `AudioUnit` (`automation::{lane, recording}`).
+// graph binding (`automation::graph`) moved host-side — they bound DAW
+// `Volume`/`Pan`/`PluginParam` components, which are not this engine's
+// vocabulary. This crate keeps only the pure DSP: the spatial panner nodes
+// (`spatial/`) + the automation `AudioUnit` (`automation::{lane, recording}`).

@@ -182,9 +182,9 @@ impl ParamValue {
 /// second, disagreeing definition of a value this crate already owns.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct NodeSpec {
-    /// Catalog id — `"gain"`, `"plugin:vst3:…"`, `"ext:my.reverb"`. Open, the
-    /// way `dawai_core::registry::ProcessorId` already is: a closed enum here
-    /// would mean a plugin format cannot add a kind.
+    /// Catalog id — `"gain"`, `"plugin:vst3:…"`, `"ext:my.reverb"`. Open on
+    /// purpose: a closed enum here would mean a plugin format cannot add a kind,
+    /// and the set of kinds is a host's to extend, not this crate's to enumerate.
     pub kind: String,
     /// Declared input width. [`Topology::validate`] checks incoming edges
     /// against it.

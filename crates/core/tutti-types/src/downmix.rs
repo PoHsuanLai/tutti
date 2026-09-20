@@ -182,13 +182,15 @@ pub fn fold_buffer_to_mono(samples: &[f32], layout: ChannelLayout) -> Vec<f32> {
 ///
 /// # Why this stays
 ///
-/// Its keep was questioned once on the belief it had no callers. It has one,
-/// and it is the decoder path this was written for:
-/// `dawai-extension-runtime`'s `resolve_get_clip_stft` folds a `Wave::load`
-/// decode down to mono before the STFT. That call site replaced a hand-rolled
-/// average of channels 0 and 1 that discarded a 5.1 source's centre — the
-/// dialogue — and its surrounds. Deleting this reintroduces that bug the next
-/// time someone needs a planar fold.
+/// Its keep was questioned once on the belief it had no callers. It had one at
+/// the time — a host's STFT path, folding a `Wave::load` decode to mono before
+/// the transform — and that call site is no longer in any tree we can point at,
+/// so the caller argument no longer holds it here.
+///
+/// What holds it is what that caller replaced: a hand-rolled average of channels
+/// 0 and 1, which discarded a 5.1 source's centre — the dialogue — and its
+/// surrounds. Deleting this reintroduces that bug the next time someone needs a
+/// planar fold, and "needs a planar fold" is not a rare event.
 ///
 /// It also anchors [`fold_buffer_to_mono`]: the two must agree, which
 /// `fold_planar_matches_interleaved` asserts. That test is the proof the

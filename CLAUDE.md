@@ -434,12 +434,18 @@ deleted (`tutti-midi`, `tutti-units`) and tested a property that was dropped
 (`no_std`), so it did not fail, it just stopped testing anything. Expect drift in
 comments and docs, and treat it as a bug when you find it:
 
-- **The engine must not reference `dawai` at all.** ~36 files still do, all in
-  comments and docs. Some name crates that are archived or deleted
-  (`dawai-types`, `dawai-extension-runtime`, `dawai-frontend`), and
-  `dawai_model::engine_bind` is a module that landed under a different name.
-  Delete the reference or restate the point in engine terms; do not "update" it
-  to a new app-side path, because that re-creates the coupling.
+- **The engine must not reference `dawai` at all.** All of `crates/` is now
+  clear of it — the one remaining mention is the provenance note at the top of
+  `crates/bevy-tutti/Cargo.toml`, which is deliberate. What is left sits in
+  `docs/`: historical audit records (`fundsp-fork-audit.md`,
+  `fundsp-comparison.md`, `unit-adoption-backlog.md`) that surveyed what the app
+  workspace reached for, plus a few plugin-hosting plans. Those are *dated
+  records of an audit*, so rewriting their findings would falsify them; leave the
+  findings and fix only what claims to be current.
+
+  When you do clear one: delete the reference or restate the point in engine
+  terms ("a host", "a consumer"). Do **not** "update" it to a new app-side path —
+  that re-creates the coupling the extraction removed.
 - **Dead crate names**: `tutti-units` is `tutti-nodes` (`91bb7540`),
   `tutti-synth` was split into `tutti-polysynth` + `tutti-soundfont`
   (`6bc0e77b`), `tutti-midi` was split into the four `midi/` crates

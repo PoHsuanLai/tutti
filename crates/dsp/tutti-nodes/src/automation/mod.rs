@@ -12,9 +12,9 @@
 //! The map from a host's target vocabulary to its recorders stays host-side; the
 //! engine holds no registry and no target trait. See [`Recorder`] for why.
 //!
-//! The Bevy ECS binding (lane-node spawn, param reconcile) is app-side, in
-//! `dawai_model::audio_graph`: it writes the `Volume`/`Pan`/`PluginParam` DAW
-//! components, which are not the engine's vocabulary.
+//! The Bevy ECS binding (lane-node spawn, param reconcile) is the host's: it
+//! writes `Volume`/`Pan`/`PluginParam` DAW components, which are not the
+//! engine's vocabulary.
 
 mod lane;
 mod recording;

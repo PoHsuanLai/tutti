@@ -25,8 +25,8 @@ use tutti_core::{Beat, BeatDuration, PlaybackRate, SamplePosition, SampleRate, T
 /// (`Memory`) or incremental disk streaming (`Disk`).
 ///
 /// Plain data. The sampler never decides the tier on its own; it plays whichever
-/// variant it is handed, and the caller owns the decision (dawai-model's
-/// `TieringPolicy`, say). [`probe`](crate::probe) reports what a file *allows* —
+/// variant it is handed, and the caller owns the decision — a host's tiering
+/// policy, say. [`probe`](crate::probe) reports what a file *allows* —
 /// a `streamable: false` file has no `Disk` option at all.
 ///
 /// An enum rather than a trait over the two tiers, for the reason the runtime

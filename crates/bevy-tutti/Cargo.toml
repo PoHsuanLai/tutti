@@ -39,7 +39,7 @@ tutti-core = { path = "../core/tutti-core", default-features = false, features =
 # surround device config to Stereo on scene load.
 tutti-types = { path = "../core/tutti-types", default-features = false, features = ["bevy"] }
 tutti-midi-types = { path = "../midi/tutti-midi-types", default-features = false }
-# tutti-nodes is pure DSP now (its ECS binding moved to dawai_model::engine_bind).
+# tutti-nodes is pure DSP now — its ECS binding moved host-side.
 # The optional features below add convolution / automation DSP on top.
 tutti-nodes = { path = "../dsp/tutti-nodes", default-features = false }
 
@@ -222,7 +222,7 @@ ringbuf = { version = "0.4", default-features = false, features = ["alloc"] }
 
 # NOTE: examples 29_node_entities / 30_full_pipeline were removed — they
 # demonstrated engine-side ECS param reconcile (Volume/SamplerSpeed/…), which
-# moved app-side to dawai_model::engine_bind ("engine Bevy = Net pump only").
+# moved host-side ("engine Bevy = Net pump only").
 # `AudioParam` brought the generic half of that reconcile back engine-side, so a
 # param example belongs here again — but only the modulation-aware read path,
 # which is the part an app cannot reconstruct on its own.

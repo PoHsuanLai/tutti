@@ -118,8 +118,8 @@ mod tests {
             Some(PluginFormat::AudioUnit)
         );
         assert_eq!(format_from_path(Path::new("a.txt")), None);
-        // `dawai:audio-plugin` is the app's own format, hosted outside this
-        // crate; tutti must not claim `.wasm` as a plugin extension.
+        // A WASM audio node is a host's own format, hosted outside this crate;
+        // tutti must not claim `.wasm` as a plugin extension.
         assert_eq!(format_from_path(Path::new("a.wasm")), None);
     }
 

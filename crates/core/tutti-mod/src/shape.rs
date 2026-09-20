@@ -14,9 +14,9 @@ use tutti_types::{Depth, Phase};
 
 /// How a shaped modulation signal maps around its base.
 ///
-/// Owned here rather than re-using the app-side `dawai_types::Polarity`: this
-/// crate sits below the app and cannot see it. A boundary `From` (app side)
-/// bridges the two.
+/// Owned here rather than re-using a host's own polarity type: this crate sits
+/// below any host and cannot see one. A host with its own spelling writes the
+/// boundary `From` on its side.
 #[cfg_attr(feature = "bevy", derive(bevy_reflect::Reflect))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum Polarity {

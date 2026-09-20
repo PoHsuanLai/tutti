@@ -11,7 +11,7 @@
 //! zipper noise.
 //!
 //! The waveshape *kind* (Tanh / Atan / … ) is fixed at construction: switching
-//! kind is a different `EffectKind`, which dawai handles as remove + add (a
+//! kind is a different effect kind, which a host handles as remove + add (a
 //! respawn), exactly like switching filter type.
 //!
 //! 2 inputs / 2 outputs. The shaper is memoryless, so the two channels are

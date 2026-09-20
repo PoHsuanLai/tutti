@@ -30,9 +30,11 @@ use tutti_core::{
 /// per-sample dynamic dispatch.
 ///
 /// Two consumers depend on a voice being an `AudioUnit` on its own rather than
-/// only reachable through the pool: `dawai-spectral`'s resynth adds a bare voice
-/// node to its net, and `tutti-export`'s region render downcasts these nodes to
-/// rebind their transport offline.
+/// only reachable through the pool: a spectral resynth adds a bare voice node
+/// straight to its net, and `tutti-export`'s region render downcasts these nodes
+/// to rebind their transport offline. Only the second is in this workspace — the
+/// first is a host's, which is precisely why the contract has to be stated here
+/// rather than left to a caller to discover.
 pub struct VoiceNode {
     /// The single voice plus its resident stretch filter and the per-sample
     /// read, shared with the pool's slots.
@@ -370,8 +372,8 @@ impl AudioUnit for VoiceNode {
     /// inheriting the `AudioUnit` no-op default ships the render a filter still
     /// pointing at the live [`stretch::Unit`]'s shared vocoder bank.
     ///
-    /// The hazard is latent only because the sole producer of these nodes
-    /// (`dawai-spectral`'s resynth) builds them at unity, where
+    /// The hazard is latent only because the sole producer of these nodes we
+    /// know of (a host's spectral resynth) builds them at unity, where
     /// `stretch_wanted` leaves the slot's filter `None`. A resynth voice with
     /// any non-unity stretch or pitch arms it, with no change in this crate.
     fn isolate(&mut self) {

@@ -196,7 +196,7 @@ impl Plugin for TuttiHostingPlugin {
         // The scan reads its directories off *this* resource (the catalog moves
         // onto the scan thread and back), so overriding it is the whole
         // configuration story. There is no second config to keep in sync.
-        let default_db_path = std::path::PathBuf::from(".dawai-plugins.json");
+        let default_db_path = std::path::PathBuf::from(".tutti-plugins.json");
         let config = tutti_plugin::catalog::CatalogConfig::new(
             default_db_path,
             tutti_plugin::catalog::NO_SCAN_DIRS,

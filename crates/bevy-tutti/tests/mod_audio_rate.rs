@@ -536,10 +536,10 @@ mod mod_audio_rate_reconcile {
 
     /// **`write_param` routes an authored write to the chain's base cell.**
     ///
-    /// The branch-level guard. `dawai-model`'s end-to-end test cannot supply this:
-    /// a *document* edit re-declares `ModParamRange`, which `reconcile_audio_rate`
-    /// also folds into the cell, so the two paths are redundant there and neither
-    /// sabotage alone fails it (measured).
+    /// The branch-level guard, and it has to be here. A host's end-to-end test
+    /// cannot supply it: a *document* edit re-declares `ModParamRange`, which
+    /// `reconcile_audio_rate` also folds into the cell, so the two paths are
+    /// redundant there and neither sabotage alone fails it (measured).
     ///
     /// Here there is no `declare_param_ranges` in the loop. The write is made
     /// directly, against a range the "document" never moved, so only

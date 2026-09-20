@@ -6,7 +6,7 @@ full param/automation/state/MIDI, 26 host extensions, RT-safe. The remaining
 gaps are **host-side follow-through**, not missing bindings. None require forking
 a dependency.
 
-Repo: `/Users/pohsuanlai/Documents/dawAI/dawai` (the tutti sub-workspace is at
+Repo: this repo (the engine was still a sub-workspace of the dawai app repo when this was written, at
 `crates/tutti/`; run cargo from there). Crates: `tutti-clap-host`,
 `tutti-plugin` (GUI bridge), `tutti-plugin-server` (subprocess driver).
 

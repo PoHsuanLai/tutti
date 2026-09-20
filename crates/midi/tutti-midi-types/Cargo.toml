@@ -19,7 +19,7 @@ default = []
 #
 # **This is not a licence to derive serde on the wire types.** The criterion, so
 # it is not re-litigated: a MIDI type may carry these derives only when all three
-# of `dawai_core::NoteEvent`'s reasons for existing are absent — it must be
+# of the reasons a host's durational note record exists are absent — it must be
 # authored configuration, carry no audio-thread-stamped field, and have the same
 # shape at rest as on the wire. `MpeMode` passes all three. `MidiEvent` fails the
 # last two (its `frame_offset` is stamped by the audio thread against a block

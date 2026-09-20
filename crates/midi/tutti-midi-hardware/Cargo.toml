@@ -39,7 +39,7 @@ tutti-midi-types = { path = "../tutti-midi-types" }
 # NOTE: no `tutti-midi-file` dep. A file is not hardware — this crate is the OS
 # port edge, and re-exporting an SMF codec through it was a category error left
 # over from the old `tutti-midi-io` name. Consumers depend on `tutti-midi-file`
-# directly; `bevy-tutti` and `dawai-model` already did.
+# directly; `bevy-tutti` and the known hosts already did.
 tutti-core = { path = "../../core/tutti-core", default-features = false, features = ["midi"] }
 # MIDI fan-out runtime (MidiBus, MpeProcessor, PerNoteExpression, MidiEventSlot).
 # Acyclic: tutti-midi-runtime does NOT depend on tutti-midi-hardware.

@@ -20,7 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `tutti-midi-file` dependency behind them. Under the old name passing the file
   API through was merely odd; under `-hardware` it was a category error, since a
   file is not a device. Depend on `tutti-midi-file` directly — `bevy-tutti` and
-  `dawai-model` already did, and nothing used the re-export.
+  the known hosts already did, and nothing used the re-export.
 
   `Error::File(tutti_midi_file::Error)` went with it. It existed only to make
   the re-exported codecs share this crate's `Result`, and nothing ever

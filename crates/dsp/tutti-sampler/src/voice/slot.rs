@@ -121,8 +121,8 @@ impl PlaybackSlot {
     /// pool's drain; `VoiceNode::drain_commands` handles `UpdatePlacement` and
     /// nothing else, so the same command sent to a `VoiceNodeHandle` is discarded
     /// without a word. A node's pitch is therefore fixed at construction, and a
-    /// host that wants to change it respawns the voice — which is what
-    /// `dawai_model::audio_graph::source` does.
+    /// host that wants to change it respawns the voice, which is what the
+    /// hosts we know of do.
     ///
     /// If that gap is ever closed, `VoiceNode::set_sample_rate` has to close with
     /// it. It refreshes an existing unit (`if let Some(unit) = &mut

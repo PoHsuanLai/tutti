@@ -15,7 +15,7 @@ tutti-vst3-host and `tutti-plugin-server/src/audio_pipeline.rs`
 (`process_is_alloc_free`) MUST stay green; add multi-bus no-alloc coverage.
 
 Reference (read-only, do NOT copy — AGPL): JUCE VST3 host
-`/Users/pohsuanlai/Documents/dawAI/dawai-refs/JUCE/modules/juce_audio_processors_headless/format_types/juce_VST3PluginFormatImpl.h`
+`JUCE's `juce_VST3PluginFormatImpl.h` (reference reading, not vendored here)`
 (`associateWith`, `syncBusLayouts`, per-bus `AudioBusBuffers`).
 
 ---

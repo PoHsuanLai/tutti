@@ -1,7 +1,7 @@
 # CLAP 1.2.10 — Complete Interface Surface (Host Perspective)
 
 Extracted verbatim from the official `free-audio/clap` C headers at
-`~/Documents/dawAI/dawai-refs/clap/include/clap/`.
+a local CLAP SDK checkout, `clap/include/clap/`.
 
 **Version, from `version.h`:** `CLAP_VERSION_MAJOR 1`, `CLAP_VERSION_MINOR 2`,
 `CLAP_VERSION_REVISION 10` → **1.2.10**.

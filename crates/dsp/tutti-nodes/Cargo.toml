@@ -13,9 +13,9 @@ workspace = true
 default = []
 # NOTE: tutti-nodes is now fully Bevy-free — the entire ECS binding layer
 # (param/marker components, reconcile/spawn systems, spatial + automation graph
-# glue, deferred convolver load) moved app-side to `dawai_model::engine_bind`
-# ("engine Bevy = Net pump only"). This crate is pure DSP + the `set(UnitParam)`
-# surface the app drives it through, so there is no longer a `bevy` feature.
+# glue, deferred convolver load) moved host-side ("engine Bevy = Net pump only").
+# This crate is pure DSP + the `set(UnitParam)` surface a host drives it through,
+# so there is no longer a `bevy` feature.
 # NOTE: the `spatial` and `hrtf` features are GONE — the VBAP/binaural panners,
 # `build_vbap_mix` and the `Error`/`Result` pair they were the only users of
 # all moved to the `tutti-spatial` crate. That crate depends on this one (it

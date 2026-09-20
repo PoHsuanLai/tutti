@@ -129,8 +129,8 @@ the same target.
 
 Neither counter reaches the first three layers, and no counter can — a unit that
 ignores a param it does not own is indistinguishable, from `Net`, from one that
-owns it and does nothing. That is what the audible end-to-end tests in
-`dawai-model` are for.
+owns it and does nothing. That is what a host's audible end-to-end tests are
+for, and they necessarily live wherever the DAW param vocabulary does.
 
 ## Where it sits
 

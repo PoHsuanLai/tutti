@@ -302,9 +302,8 @@ mod tests {
     /// node that plays a stretched voice, and it had no cursor at all — so the
     /// pool-level fix covered one of the two paths and left this one smearing.
     ///
-    /// Not hypothetical: `dawai-spectral`'s resynth adds bare `VoiceNode`s as
-    /// correction nodes, and `tutti-export`'s offline rebind has a dedicated arm
-    /// for them. A scrub across a stretched correction would drag pre-seek audio
+    /// Not hypothetical: a spectral resynth adds bare `VoiceNode`s as correction
+    /// nodes, and `tutti-export`'s offline rebind has a dedicated arm for them. A scrub across a stretched correction would drag pre-seek audio
     /// over the new region with nothing in the suite to notice, because every
     /// other assertion on this path checks only that output is non-zero.
     #[test]
@@ -1072,9 +1071,9 @@ mod tests {
         );
     }
 
-    /// `VoiceNode` MUST be an `AudioUnit` in its own right: `dawai-spectral`'s
-    /// resynth adds a standalone voice node to its net, and `tutti-export`'s
-    /// region render downcasts these nodes to rebind them offline. If a `Voice`
+    /// `VoiceNode` MUST be an `AudioUnit` in its own right: a spectral resynth
+    /// adds a standalone voice node to its net, and `tutti-export`'s region
+    /// render downcasts these nodes to rebind them offline. If a `Voice`
     /// stopped being an `AudioUnit`, both paths would break — resynth couldn't
     /// add it, and the offline downcast would silently stop matching (wrong
     /// transport offline, no compile error). This guards that contract: a

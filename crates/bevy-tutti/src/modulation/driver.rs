@@ -116,9 +116,9 @@ impl ModulationMatrix {
 ///
 /// **For a control-rate param, `ModParamRange` is therefore the authority on
 /// the base, and `write_param` is only authoritative between rebuilds.** In
-/// this workspace that is invisible, because the one producer of
-/// `ModParamRange` (`dawai_model`'s `declare_param_ranges`) reads the same
-/// authored document the `write_param` call sites do, so the two always agree.
+/// a typical host that is invisible, because its one producer of `ModParamRange`
+/// reads the same authored document the `write_param` call sites do, so the two
+/// always agree.
 /// It stops being invisible the moment a base can move without the document
 /// moving — a MIDI-learn ride, a plugin writing its own param back, an
 /// automation lane evaluated outside the document. Any such writer must reach

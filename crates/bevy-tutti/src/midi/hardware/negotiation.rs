@@ -24,9 +24,8 @@
 //!
 //! **Inbound arrives from the app layer, not from here.**
 //! [`InboundCiMessage`] / [`InboundEndpointReply`] have no producer *in this
-//! crate*; the live one is the app's hardware drain (dawai's
-//! `input::midi::hardware_route`), which classifies by UMP message type and
-//! feeds these. The chain behind it is real: `core/hardware/input.rs`
+//! crate*; the live one is a host's hardware drain, which classifies by UMP
+//! message type and feeds these. The chain behind it is real: `core/hardware/input.rs`
 //! reassembles MIDI-1.0 SysEx across driver callbacks and promotes it to UMP
 //! SysEx7, which a `Sysex7PacketReassembler` + `ci::sysex7_to_ci` turn back into a
 //! typed [`CiMessage`]. That works because MIDI-CI is Universal SysEx by design

@@ -1,11 +1,13 @@
-# bevy-tutti is the Bevy adapter for the tutti audio engine. It belongs to the
-# engine workspace rooted at ../tutti/Cargo.toml (NOT the dawai app workspace),
-# so point at that root explicitly — bevy-tutti is the one member living outside
-# the crates/tutti/ tree. The app depends on this crate via a cross-workspace
-# path dep, like any published crate.
+# bevy-tutti is the Bevy adapter for the tutti audio engine: an ordinary member
+# of this repo's workspace, sitting one tier above the engine crates it wraps.
+#
+# It used to live outside the engine's directory tree and join via an explicit
+# `package.workspace = "../tutti"` pointer, because the engine was a subtree of
+# the dawai app repo and the adapter was a sibling of it. Both halves are gone —
+# the workspace root is now the repo root, so Cargo discovers this member by
+# walking up, and every dependency below is a plain relative path.
 [package]
 name = "bevy-tutti"
-workspace = "../tutti"
 version = "0.1.0"
 edition = "2021"
 description = "Bevy plugin for Tutti - Minimal Bevy integration for real-time audio"
@@ -30,49 +32,49 @@ bevy_tasks.workspace = true
 # derives on the entity-as-node primitives; `tutti-core/bevy_asset` the
 # Asset/TypePath derives on loadable types. bevy-tutti supplies the reconcile
 # systems and the CPAL audio callback (src/engine/).
-tutti-core = { path = "../tutti/crates/core/tutti-core", default-features = false, features = ["bevy_ecs", "bevy_asset"] }
+tutti-core = { path = "../core/tutti-core", default-features = false, features = ["bevy_ecs", "bevy_asset"] }
 # `bevy` here is the `Reflect` derives only (no ECS surface). Needed
 # unconditionally, not just under `modulation`: `AudioConfig` reflects its
 # `ChannelLayout` field, and a `#[reflect(ignore)]` there silently reset a
 # surround device config to Stereo on scene load.
-tutti-types = { path = "../tutti/crates/core/tutti-types", default-features = false, features = ["bevy"] }
-tutti-midi-types = { path = "../tutti/crates/midi/tutti-midi-types", default-features = false }
+tutti-types = { path = "../core/tutti-types", default-features = false, features = ["bevy"] }
+tutti-midi-types = { path = "../midi/tutti-midi-types", default-features = false }
 # tutti-nodes is pure DSP now (its ECS binding moved to dawai_model::engine_bind).
 # The optional features below add convolution / automation DSP on top.
-tutti-nodes = { path = "../tutti/crates/dsp/tutti-nodes", default-features = false }
+tutti-nodes = { path = "../dsp/tutti-nodes", default-features = false }
 
 # Spatial audio (VBAP + binaural panners), gated by our `spatial` feature.
-tutti-spatial = { path = "../tutti/crates/dsp/tutti-spatial", default-features = false, optional = true }
+tutti-spatial = { path = "../dsp/tutti-spatial", default-features = false, optional = true }
 
 # Optional subsystems (gated by bevy-tutti features below).
 # `routing` is the mod-matrix layer (targets, bus, table, driver); tutti-mod's
 # own `bevy` feature is deliberately left off — it adds derives to
 # `ModTargetId`/`LayerKey`, which this adapter keeps inside its resources rather
 # than exposing as components.
-tutti-mod = { path = "../tutti/crates/core/tutti-mod", optional = true, default-features = false, features = ["routing"] }
-tutti-sampler = { path = "../tutti/crates/dsp/tutti-sampler", optional = true, default-features = false }
+tutti-mod = { path = "../core/tutti-mod", optional = true, default-features = false, features = ["routing"] }
+tutti-sampler = { path = "../dsp/tutti-sampler", optional = true, default-features = false }
 # The live I/O edge — `WavOut`, `MicMonitorNode`, `Recorder`. Separate from the
 # sampler since the layering split; re-exported through `engine`.
-tutti-io = { path = "../tutti/crates/core/tutti-io", optional = true }
-tutti-polysynth = { path = "../tutti/crates/dsp/tutti-polysynth", optional = true }
+tutti-io = { path = "../core/tutti-io", optional = true }
+tutti-polysynth = { path = "../dsp/tutti-polysynth", optional = true }
 # SoundFont playback. A separate crate, not a feature of the polysynth: a `.sf2`
 # player shares no voice engine with a subtractive synth.
-tutti-soundfont = { path = "../tutti/crates/dsp/tutti-soundfont", optional = true }
-tutti-export = { path = "../tutti/crates/core/tutti-export", optional = true }
-tutti-midi-hardware = { path = "../tutti/crates/midi/tutti-midi-hardware", optional = true }
+tutti-soundfont = { path = "../dsp/tutti-soundfont", optional = true }
+tutti-export = { path = "../core/tutti-export", optional = true }
+tutti-midi-hardware = { path = "../midi/tutti-midi-hardware", optional = true }
 # SMF / Clip File codecs. Separate from `tutti-midi-hardware` because reading a
 # `.mid` needs no OS MIDI port.
-tutti-midi-file = { path = "../tutti/crates/midi/tutti-midi-file", optional = true }
-tutti-midi-runtime = { path = "../tutti/crates/midi/tutti-midi-runtime", optional = true, default-features = false }
+tutti-midi-file = { path = "../midi/tutti-midi-file", optional = true }
+tutti-midi-runtime = { path = "../midi/tutti-midi-runtime", optional = true, default-features = false }
 # `json` is explicit: this crate's `PluginsRes`/`PluginScanConfig` default path
 # builds a `Plugins` over the file-backed catalog (`with_json_catalog` / `empty`),
 # so it needs the ready-made impl rather than an app-supplied one. tutti-plugin
 # itself ships no default features. (Inherited from `tutti-plugin-host`, whose
 # code this crate absorbed.)
-tutti-plugin = { path = "../tutti/crates/plugin/tutti-plugin", optional = true, features = [
+tutti-plugin = { path = "../plugin/tutti-plugin", optional = true, features = [
     "json",
 ] }
-tutti-plugin-server = { path = "../tutti/crates/plugin/tutti-plugin-server", optional = true, default-features = false }
+tutti-plugin-server = { path = "../plugin/tutti-plugin-server", optional = true, default-features = false }
 
 # Plugin editor windows: native child-window parenting for hosted GUIs.
 bevy_window = { version = "0.19", optional = true }
@@ -80,7 +82,7 @@ raw-window-handle = { version = "0.6", optional = true }
 
 # The device layer: CPAL stream, RT callback, mic capture, driver lifecycle.
 # Bevy-free — this crate supplies only the lifecycle around it.
-tutti-cpal = { path = "../tutti/crates/core/tutti-cpal", default-features = false }
+tutti-cpal = { path = "../core/tutti-cpal", default-features = false }
 
 # Engine graph + RT primitives (used by src/engine/).
 arc-swap = "1.7"
@@ -202,7 +204,7 @@ export = ["dep:tutti-export"]
 # MIDI port, so without it every path through `MidiSession` is testable only
 # against "no device found". Dev-only: `midi-hardware` deliberately does not
 # cascade it.
-tutti-midi-hardware = { path = "../tutti/crates/midi/tutti-midi-hardware", features = [
+tutti-midi-hardware = { path = "../midi/tutti-midi-hardware", features = [
     "test-support",
 ] }
 # RT-safety regression tests (relocated engine audio_io/graph tests) use the

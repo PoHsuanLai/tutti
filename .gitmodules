@@ -1,0 +1,16 @@
+# The VST3 SDK, as three Steinberg repos pinned at v3.8.0_build_66.
+#
+# `tutti-vst3-host` compiles its own reference plugin (`audio-probe`) against
+# them, which is what lets the VST3 suites run on a bare checkout rather than
+# needing VST3_SDK_DIR to point at an external SDK. A `git clone` without
+# `--recursive` leaves them empty; the build script asserts with the
+# `git submodule update --init --recursive` command when that happens.
+[submodule "crates/plugin/vendor/vst3-sdk/pluginterfaces"]
+	path = crates/plugin/vendor/vst3-sdk/pluginterfaces
+	url = https://github.com/steinbergmedia/vst3_pluginterfaces
+[submodule "crates/plugin/vendor/vst3-sdk/base"]
+	path = crates/plugin/vendor/vst3-sdk/base
+	url = https://github.com/steinbergmedia/vst3_base
+[submodule "crates/plugin/vendor/vst3-sdk/public.sdk"]
+	path = crates/plugin/vendor/vst3-sdk/public.sdk
+	url = https://github.com/steinbergmedia/vst3_public_sdk

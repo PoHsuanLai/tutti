@@ -5,7 +5,7 @@ MIDI 2.0 processing, sample playback, spatial audio, offline rendering, and
 plugin hosting for VST2, VST3, CLAP and Audio Units.
 
 The engine is a set of focused crates rather than one package. Depend on the
-ones you need, or take [`bevy-tutti`](../bevy-tutti), the Bevy adapter, which
+ones you need, or take [`bevy-tutti`](crates/bevy-tutti), the Bevy adapter, which
 re-exports the whole engine behind one dependency.
 
 > **Status: pre-release.** Nothing here is published to crates.io yet, so every

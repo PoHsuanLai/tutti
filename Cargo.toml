@@ -1,15 +1,15 @@
 # Workspace root for the tutti audio engine + its Bevy adapter (bevy-tutti).
 #
-# tutti is a self-contained, third-party audio engine (Bevy-free at its core);
-# bevy-tutti is the Bevy adapter layered on top. Together they form one
-# workspace that lives OUTSIDE the dawai app workspace (the app's root
-# Cargo.toml `exclude`s this tree). The app depends on these crates via
-# cross-workspace path deps, exactly like a published dependency.
+# tutti is a self-contained audio engine, Bevy-free at its core: `bevy` is an
+# optional, off-by-default feature on every engine crate that has one, and
+# `tutti-units` has none at all. bevy-tutti is the Bevy adapter layered on top,
+# and is the only Bevy-mandatory member.
 #
-# The engine crates all live under crates/** (this dir is their common
-# ancestor, so Cargo auto-discovers this root). bevy-tutti physically lives at
-# ../bevy-tutti and joins via a member entry + its own `package.workspace`
-# pointer back here.
+# Every member lives under crates/**, including the adapter (crates/bevy-tutti).
+# This tree was extracted from the dawai app repo, where the engine sat at
+# crates/tutti/ and the adapter beside it at crates/bevy-tutti/ — which is why
+# the adapter used to carry an explicit `package.workspace` pointer. It no
+# longer needs one: the repo root and the workspace root are the same directory.
 [workspace]
 resolver = "2"
 members = [
@@ -47,9 +47,10 @@ members = [
     "crates/vendor/fundsp-tutti",
     "crates/vendor/rustysynth-tutti/rustysynth",
     "crates/vendor/tutti-clap-test-plugin",
-    # The Bevy adapter — lives outside this dir tree; it sets `package.workspace
-    # = "../tutti"` so Cargo counts it here rather than in the app workspace.
-    "../bevy-tutti",
+    # The Bevy adapter — the one member that mandates Bevy, and the umbrella the
+    # engine is consumed through: it depends on the subsystem crates directly
+    # and re-exports them.
+    "crates/bevy-tutti",
 ]
 
 # Lints every member inherits with `[lints] workspace = true`.
@@ -66,15 +67,19 @@ broken_intra_doc_links = "deny"
 # into one of these, and rustdoc renders it as plain text with no clue why.
 private_intra_doc_links = "deny"
 
-# Matches the app workspace's pins (root Cargo.toml): a system's argument list
-# IS its dependency declaration, and a query filter is the query specification.
+# A system's argument list IS its dependency declaration, and a query filter is
+# the query specification — aliasing either behind a type or a SystemParam bundle
+# moves the one thing a reader needs out of the signature.
 [workspace.lints.clippy]
 too_many_arguments = "allow"
 type_complexity = "allow"
 
-# Shared-dep pins the members inherit via `workspace = true`. Kept identical to
-# the dawai app workspace's pins (root Cargo.toml) so both workspaces resolve the
-# same bevy 0.19 / midi crate versions.
+# Shared-dep pins the members inherit via `workspace = true`.
+#
+# The bevy 0.19 line and the `audio-automation` rev must stay in step with any
+# consumer that also depends on those crates directly — dawai does. Two revs of
+# `audio-automation` are two disjoint copies of `Curve`, and the error surfaces
+# at the consumer's seam as `expected Curve, found Curve`, nowhere near here.
 [workspace.dependencies]
 bevy_app = { version = "0.19", default-features = false }
 bevy_ecs = { version = "0.19", default-features = false, features = ["debug", "bevy_reflect"] }
@@ -127,24 +132,18 @@ core-foundation = "0.9"
 # `debug = "line-tables-only"` is enough for stack attribution and costs far
 # less build time and disk than full DWARF.
 #
-# Belongs here rather than in bevy-tutti/Cargo.toml: bevy-tutti is a *member* of
-# this workspace, and Cargo ignores `[profile]` in non-root manifests (with a
-# warning that is easy to miss under `| tail`).
+# Belongs here rather than in crates/bevy-tutti/Cargo.toml: bevy-tutti is a
+# *member* of this workspace, and Cargo ignores `[profile]` in non-root manifests
+# (with a warning that is easy to miss under `| tail`).
 #
-#   cargo build --manifest-path crates/bevy-tutti/Cargo.toml \
-#       -p tutti-sampler --profile profiling --example profile_stretch_clone
-#   samply record <target-dir>/profiling/examples/profile_stretch_clone
+#   cargo build -p tutti-sampler --profile profiling --example profile_stretch_clone
+#   samply record target/profiling/examples/profile_stretch_clone
 [profile.profiling]
 inherits = "release"
 debug = "line-tables-only"
 strip = "none"
 
-# NOTE: no `[patch.crates-io]` here any more. `audio-automation` is a direct
-# git dep in this workspace's `[workspace.dependencies]`, inherited by the four
-# members that use it (tutti-mod, tutti-nodes, tutti-plugin,
-# tutti-plugin-types), so no crates.io reference survives to redirect.
-#
-# The rev must stay identical to the app workspace's pin. The two workspaces
-# resolve separately, and the app reaches these crates through cross-workspace
-# path deps — so a rev skew here yields two disjoint copies of the same types
-# and a `expected Curve, found Curve` error at the seam.
+# NOTE: no `[patch.crates-io]` here. `audio-automation` is a direct git dep in
+# this workspace's `[workspace.dependencies]`, inherited by the four members that
+# use it (tutti-mod, tutti-nodes, tutti-plugin, tutti-plugin-types), so no
+# crates.io reference survives to redirect.

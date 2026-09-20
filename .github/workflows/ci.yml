@@ -1,197 +1,156 @@
+# CI for the tutti audio engine.
+#
+# This replaces the workflow the engine carried as a subtree of the dawai app
+# repo, which had rotted unnoticed for the whole time it sat there unrun: it
+# named `tutti-midi` and `tutti-units` (split and renamed in 786a4c24 and
+# 91bb7540) and carried a `no_std` job for a property deliberately dropped in
+# 679a8433. A workflow that names crates which no longer exist does not fail —
+# it just stops testing anything, which is why nothing reported it.
+#
+# Four things here are load-bearing and are documented at their step:
+# the plugin-server prebuild, doctests, the Bevy-free floor, and the path gate.
+
 name: CI
 
 on:
   push:
-    branches: [ main, develop ]
+    branches: [main]
   pull_request:
-    branches: [ main, develop ]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
+  # Fewer codegen units keeps CI RAM in check on the large fundsp/Bevy graph.
+  CARGO_INCREMENTAL: 0
   RUST_BACKTRACE: 1
 
 jobs:
-  test:
-    name: Test
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-        rust: [stable, beta]
-        exclude:
-          # Reduce CI time - only test beta on Linux
-          - os: macos-latest
-            rust: beta
-          - os: windows-latest
-            rust: beta
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: ${{ matrix.rust }}
-
-      - name: Cache cargo registry
-        uses: actions/cache@v4
-        with:
-          path: ~/.cargo/registry
-          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
-
-      - name: Cache cargo index
-        uses: actions/cache@v4
-        with:
-          path: ~/.cargo/git
-          key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
-
-      - name: Cache cargo build
-        uses: actions/cache@v4
-        with:
-          path: target
-          key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
-
-      - name: Install Linux dependencies
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libasound2-dev pkg-config
-
-      - name: Build
-        run: cargo build --verbose
-
-      - name: Run tests
-        run: cargo test --verbose
-
-      - name: Build with all features
-        run: cargo build --all-features --verbose
-
-      - name: Test with all features
-        run: cargo test --all-features --verbose
-
-  clippy:
-    name: Clippy
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy
-
-      - name: Install Linux dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libasound2-dev pkg-config
-
-      - name: Run clippy
-        run: cargo clippy --workspace --all-targets --exclude fundsp-tutti --exclude rustysynth-tutti -- -D warnings -A dead_code
-
   fmt:
-    name: Format
+    name: rustfmt
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
+      - run: cargo fmt --all --check
 
-      - name: Check formatting
-        run: cargo fmt --all -- --check
+  paths:
+    name: canonical paths
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Engine types are imported from a crate's root or prelude, never through
+      # its modules. Neither rustc nor clippy has a lint for a redundant path,
+      # and doc comments in ```text / ```ignore blocks are never compiled — so
+      # this grep is the only enforcement there is.
+      - run: scripts/check-canonical-paths.sh
 
-  doc:
-    name: Documentation
+  clippy:
+    name: clippy
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
+          # The VST3 SDK is three submodules; without them tutti-vst3-host
+          # cannot build its `audio-probe` reference plugin.
           submodules: recursive
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Install Linux dependencies
+      - name: Install Linux audio deps
         run: |
           sudo apt-get update
-          sudo apt-get install -y libasound2-dev pkg-config
-
-      - name: Check documentation
-        run: cargo doc --workspace --no-deps --all-features --exclude fundsp-tutti --exclude rustysynth-tutti
-        env:
-          RUSTDOCFLAGS: -D warnings
-
-  features:
-    name: Feature Combinations
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
+          sudo apt-get install -y --no-install-recommends libasound2-dev pkg-config
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          submodules: recursive
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      # The two vendored forks are excluded: they are third-party code we do not
+      # restyle, and they carry pre-existing lint debt that is not ours to pay.
+      - run: cargo clippy --workspace --all-targets --exclude fundsp-tutti --exclude rustysynth-tutti -- -D warnings
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Install Linux dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libasound2-dev pkg-config
-
-      - name: Install cargo-hack
-        uses: taiki-e/install-action@cargo-hack
-
-      - name: Check feature combinations
-        run: cargo hack check --feature-powerset --depth 2 --no-dev-deps --exclude fundsp-tutti --exclude rustysynth-tutti --exclude tutti-plugin-server
-
-  no-std:
-    name: no_std (${{ matrix.target.name }}) / ${{ matrix.crate }}
-    runs-on: ubuntu-latest
-    continue-on-error: ${{ matrix.target.soft }}
+  test:
+    name: test (${{ matrix.os }})
     strategy:
       fail-fast: false
       matrix:
-        crate:
-          - tutti-core
-          - tutti-midi
-          - tutti-units
-          - fundsp-tutti
-        target:
-          # Hard checks — must pass.
-          - name: host
-            triple: ""
-            extra-args: ""
-            soft: false
-          - name: wasm32
-            triple: wasm32-unknown-unknown
-            extra-args: "--lib"
-            soft: false
-          # Soft dashboard — allowed to fail. Tracks embedded readiness
-          # (Cortex-M4F / Daisy Seed class). See plans/ for the roadmap.
-          - name: thumbv7em
-            triple: thumbv7em-none-eabihf
-            extra-args: "--lib"
-            soft: true
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target.triple }}
-
-      - name: Check ${{ matrix.crate }} --no-default-features (${{ matrix.target.name }})
+      - name: Install Linux audio deps
+        if: runner.os == 'Linux'
         run: |
-          if [ -n "${{ matrix.target.triple }}" ]; then
-            cargo check -p ${{ matrix.crate }} --no-default-features --target ${{ matrix.target.triple }} ${{ matrix.target.extra-args }}
-          else
-            cargo check -p ${{ matrix.crate }} --no-default-features ${{ matrix.target.extra-args }}
-          fi
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libasound2-dev pkg-config
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@nextest
+
+      # MUST come before the test run. `tutti-plugin`'s clap_pdc_alignment,
+      # clap_crash_recovery and real_stall_tests drive the reference CLAP plugin
+      # through a real out-of-process host, so they spawn this binary. It cannot
+      # be a dev-dependency that cargo would build for them — tutti-plugin-server
+      # depends on tutti-plugin, so the edge would be a dependency *cycle* — and
+      # nothing else in a test run builds it. Skipping it makes those three
+      # suites hard-fail rather than silently skip, which is deliberate: a suite
+      # that skips on a missing fixture is one typo away from reporting success
+      # having executed nothing.
+      - name: Build plugin-server (three plugin-host suites spawn it)
+        run: cargo build -p tutti-plugin-server
+
+      # nextest, not `cargo test`: each test gets its own process, which is what
+      # the audio suites need — they touch device and global state, and a panic
+      # or abort in one no longer takes the whole binary's results with it.
+      - name: Test
+        run: cargo nextest run --workspace --no-fail-fast
+
+      # nextest does NOT run doctests, and says nothing about skipping them.
+      # That is not a rounding error here: these are the only tests covering the
+      # `///` examples, so a green nextest run is not a green workspace.
+      - name: Doctests
+        run: cargo test --doc --workspace
+
+  bevy-free:
+    name: Bevy-free floor
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Linux audio deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libasound2-dev pkg-config
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # The engine must stay usable without Bevy. `--no-default-features` does
+      # NOT test that — `bevy` is already off by default on every engine crate,
+      # so that flag drops the codec and midi features instead and proves
+      # nothing. Naming the feature explicitly is what tests both sides.
+      - run: cargo check -p tutti-core
+      - run: cargo check -p tutti-core --features bevy
+      - run: cargo check -p tutti-types
+      - run: cargo check -p tutti-types --features bevy
+
+  doc:
+    name: rustdoc
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install Linux audio deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libasound2-dev pkg-config
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # The workspace sets broken_intra_doc_links and private_intra_doc_links to
+      # deny; this is where that is actually enforced, since a plain build never
+      # runs rustdoc.
+      - run: cargo doc --workspace --no-deps --exclude fundsp-tutti --exclude rustysynth-tutti
+        env:
+          RUSTDOCFLAGS: -D warnings

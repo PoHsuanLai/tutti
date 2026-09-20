@@ -155,8 +155,7 @@ fn process_honors_frame_offset_within_block() {
         "the offset-0 note must sound at all, else every comparison below is vacuous"
     );
 
-    let shifted: Vec<Vec<(f32, f32)>> =
-        OFFSETS.iter().map(|&o| render_at(o as u32)).collect();
+    let shifted: Vec<Vec<(f32, f32)>> = OFFSETS.iter().map(|&o| render_at(o as u32)).collect();
 
     for (i, &offset) in OFFSETS.iter().enumerate() {
         // The whole property: offset N is offset 0, N frames later, exactly.
@@ -177,7 +176,8 @@ fn process_honors_frame_offset_within_block() {
     // chunk-resolution behaviour failed: 16, 32 and 48 were byte-identical.
     for i in 1..OFFSETS.len() {
         assert_ne!(
-            shifted[i], shifted[i - 1],
+            shifted[i],
+            shifted[i - 1],
             "offsets {} and {} must not render identically",
             OFFSETS[i - 1],
             OFFSETS[i]
@@ -376,8 +376,7 @@ fn set_sample_rate_mid_stream_does_not_disturb_rendering() {
     const BLOCK: usize = 64;
     const BLOCKS: usize = 6;
 
-    let note =
-        || MidiEvent::note_on_7bit(MidiGroup::FIRST, MidiChannel::FIRST, 60, 100);
+    let note = || MidiEvent::note_on_7bit(MidiGroup::FIRST, MidiChannel::FIRST, 60, 100);
 
     let mut straight = SoundFontUnit::new(Arc::clone(&sf), &settings).expect("create unit");
     let expected = render_process_blocks(&mut straight, BLOCK, BLOCKS, &[note()]);

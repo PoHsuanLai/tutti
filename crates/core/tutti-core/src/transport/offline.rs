@@ -173,7 +173,8 @@ impl OfflineTimeline {
     /// destination rather than a default. Everything else on this timeline —
     /// tempo, sample rate, loop region — is fixed at construction.
     pub fn seek_to(&self, beat: impl Into<Beat>) {
-        self.current_beat.store(beat.into().get(), Ordering::Release);
+        self.current_beat
+            .store(beat.into().get(), Ordering::Release);
     }
 
     /// Musical time one frame covers, precomputed at construction.

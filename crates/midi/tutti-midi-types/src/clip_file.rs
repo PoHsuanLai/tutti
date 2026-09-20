@@ -545,9 +545,15 @@ impl<'a> WordReader<'a> {
         if !bytes.len().is_multiple_of(4) {
             return None;
         }
+        // `as_chunks` rather than `chunks_exact`: the length is already known to
+        // be a multiple of 4 (checked above), so the remainder is empty and each
+        // chunk arrives as a `[u8; 4]` that `from_be_bytes` takes directly —
+        // no index-by-index rebuild, and no bounds checks to elide.
         let words = bytes
-            .chunks_exact(4)
-            .map(|c| u32::from_be_bytes([c[0], c[1], c[2], c[3]]))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|c| u32::from_be_bytes(*c))
             .collect();
         Some(Self {
             words,
@@ -614,8 +620,10 @@ mod tests {
     /// Big-endian words of a clip file body, for byte-level assertions.
     fn body_words(bytes: &[u8]) -> Vec<u32> {
         bytes[8..]
-            .chunks_exact(4)
-            .map(|c| u32::from_be_bytes([c[0], c[1], c[2], c[3]]))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|c| u32::from_be_bytes(*c))
             .collect()
     }
 

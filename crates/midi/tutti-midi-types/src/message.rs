@@ -658,34 +658,19 @@ impl TryFrom<MidiMessage> for MidiEvent {
                 note,
                 pressure,
                 ..
-            } => MidiEvent::poly_pressure(
-                MidiGroup::FIRST,
-                channel,
-                note,
-                pressure,
-            ),
+            } => MidiEvent::poly_pressure(MidiGroup::FIRST, channel, note, pressure),
             MidiMessage::ControlChange {
                 channel,
                 index,
                 value,
                 ..
-            } => MidiEvent::cc(
-                MidiGroup::FIRST,
-                channel,
-                CCNumber::new(index),
-                value,
-            ),
+            } => MidiEvent::cc(MidiGroup::FIRST, channel, CCNumber::new(index), value),
             MidiMessage::ProgramChange {
                 channel,
                 program,
                 bank,
                 ..
-            } => MidiEvent::program_change(
-                MidiGroup::FIRST,
-                channel,
-                program,
-                bank,
-            ),
+            } => MidiEvent::program_change(MidiGroup::FIRST, channel, program, bank),
             MidiMessage::ChannelPressure {
                 channel, pressure, ..
             } => MidiEvent::channel_pressure(MidiGroup::FIRST, channel, pressure),
@@ -697,12 +682,7 @@ impl TryFrom<MidiMessage> for MidiEvent {
                 note,
                 value,
                 ..
-            } => MidiEvent::per_note_pitch_bend(
-                MidiGroup::FIRST,
-                channel,
-                note,
-                value,
-            ),
+            } => MidiEvent::per_note_pitch_bend(MidiGroup::FIRST, channel, note, value),
             MidiMessage::PerNoteController {
                 channel,
                 note,
@@ -737,13 +717,7 @@ impl TryFrom<MidiMessage> for MidiEvent {
                     ControllerNamespace::Registered => MidiEvent::registered_controller,
                     ControllerNamespace::Assignable => MidiEvent::assignable_controller,
                 };
-                build(
-                    MidiGroup::FIRST,
-                    channel,
-                    bank,
-                    index,
-                    data,
-                )
+                build(MidiGroup::FIRST, channel, bank, index, data)
             }
             MidiMessage::RelativeController {
                 channel,
@@ -757,13 +731,7 @@ impl TryFrom<MidiMessage> for MidiEvent {
                     ControllerNamespace::Registered => MidiEvent::relative_registered_controller,
                     ControllerNamespace::Assignable => MidiEvent::relative_assignable_controller,
                 };
-                build(
-                    MidiGroup::FIRST,
-                    channel,
-                    bank,
-                    index,
-                    delta,
-                )
+                build(MidiGroup::FIRST, channel, bank, index, delta)
             }
             MidiMessage::PerNoteManagement {
                 channel,
@@ -771,13 +739,7 @@ impl TryFrom<MidiMessage> for MidiEvent {
                 detach,
                 reset,
                 ..
-            } => MidiEvent::per_note_management(
-                MidiGroup::FIRST,
-                channel,
-                note,
-                detach,
-                reset,
-            ),
+            } => MidiEvent::per_note_management(MidiGroup::FIRST, channel, note, detach, reset),
             MidiMessage::TimingClock { .. } => MidiEvent::timing_clock(MidiGroup::FIRST),
             MidiMessage::Start { .. } => MidiEvent::start(MidiGroup::FIRST),
             MidiMessage::Continue { .. } => MidiEvent::continue_msg(MidiGroup::FIRST),

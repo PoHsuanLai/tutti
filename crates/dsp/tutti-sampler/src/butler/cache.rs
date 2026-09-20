@@ -132,7 +132,9 @@ impl LruCache {
         let size = wave.len() as u64 * wave.channels() as u64 * 4;
 
         if let Some(existing) = self.cache.get(&path) {
-            existing.last_access.store(self.next_tick(), Ordering::Relaxed);
+            existing
+                .last_access
+                .store(self.next_tick(), Ordering::Relaxed);
             return;
         }
 
@@ -297,7 +299,10 @@ mod tests {
 
         cache.insert(c.clone(), make_wave(10));
 
-        assert!(cache.get(&a).is_some(), "promoted by the get, so it survives");
+        assert!(
+            cache.get(&a).is_some(),
+            "promoted by the get, so it survives"
+        );
         assert!(cache.get(&b).is_none(), "least recently used is evicted");
         assert!(cache.get(&c).is_some());
     }

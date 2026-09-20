@@ -932,7 +932,9 @@ mod tests {
             match m {
                 BridgeMessage::StateChunk { seq, last, bytes } => {
                     assert!(!done, "chunks continued after `last`");
-                    done = acc.push(seq, last, &bytes).expect("well-formed chunk sequence");
+                    done = acc
+                        .push(seq, last, &bytes)
+                        .expect("well-formed chunk sequence");
                 }
                 other => panic!("expected StateChunk, got {other:?}"),
             }

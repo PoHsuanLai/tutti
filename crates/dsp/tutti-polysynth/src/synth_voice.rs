@@ -533,7 +533,8 @@ impl SynthVoice {
         // slide is at center (no timbre shift), leaving the base cutoff intact.
         if (self.mpe.slide - crate::voice::SLIDE_CENTER).abs() > 0.001 {
             let factor = (4.0_f32).powf(self.mpe.slide - crate::voice::SLIDE_CENTER);
-            self.filter_cutoff.set(self.base_filter_cutoff.get() * factor);
+            self.filter_cutoff
+                .set(self.base_filter_cutoff.get() * factor);
         }
     }
 

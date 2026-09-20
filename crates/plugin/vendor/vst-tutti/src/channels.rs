@@ -207,7 +207,10 @@ impl SpeakerArrangementType {
 
     /// Determine whether this channel is the left speaker in a stereo pair.
     pub fn is_left_stereo(&self) -> bool {
-        matches!(*self, SpeakerArrangementType::Stereo(_, StereoChannel::Left))
+        matches!(
+            *self,
+            SpeakerArrangementType::Stereo(_, StereoChannel::Left)
+        )
     }
 }
 

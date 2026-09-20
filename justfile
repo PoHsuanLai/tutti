@@ -14,8 +14,20 @@
 # instead of hanging silently.
 #
 #   cargo install cargo-nextest --locked
+# The two GUI-lifecycle binaries are excluded: they are `harness = false` custom
+# mains driving a plugin editor on the real main thread. nextest enumerates a
+# binary by running it with `--list --format terse`; these ignore the flag, run
+# their whole suite and exit non-zero, so nextest fails at *list* time having
+# already executed them. `just test-editor` runs them properly.
 test *ARGS: plugin-server
-    cargo nextest run --workspace {{ARGS}}
+    cargo nextest run --workspace {{ARGS}} \
+        -E 'not binary(gui_lifecycle_main) and not binary(au_gui_lifecycle_main)'
+
+# The custom-harness editor tests. `cargo test` just execs the binary, which is
+# what a `harness = false` main wants.
+test-editor:
+    cargo test -p tutti-vst3-host --test gui_lifecycle_main
+    cargo test -p tutti-au-host --test au_gui_lifecycle_main
 
 # The doctests, which nextest does NOT run — and says nothing about skipping.
 #
@@ -26,7 +38,7 @@ test-doc *ARGS:
     cargo test --doc --workspace {{ARGS}}
 
 # Everything.
-test-all: test test-doc
+test-all: test test-editor test-doc
 
 # Build the out-of-process plugin host.
 #
@@ -102,4 +114,4 @@ verify-audio OUT="/tmp/tutti-verify":
     uv run python crates/dsp/tutti-polysynth/examples/verify_synth.py   {{OUT}}/synth
 
 # Everything CI runs, in CI's order.
-ci: lint check-paths check-bevy-free test test-doc doc
+ci: lint check-paths check-bevy-free test test-editor test-doc doc

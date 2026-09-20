@@ -62,7 +62,12 @@ jobs:
       - name: Install Linux audio deps
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libasound2-dev pkg-config
+          # libasound2-dev: tutti-cpal (ALSA).
+          # libfontconfig1-dev: tutti-core's criterion dev-dep asks for
+          #   `html_reports`, which pulls plotters -> font-kit -> fontconfig.
+          #   Any target set that includes the benches needs it to link.
+          sudo apt-get install -y --no-install-recommends \
+            libasound2-dev libfontconfig1-dev pkg-config
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
@@ -86,7 +91,12 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libasound2-dev pkg-config
+          # libasound2-dev: tutti-cpal (ALSA).
+          # libfontconfig1-dev: tutti-core's criterion dev-dep asks for
+          #   `html_reports`, which pulls plotters -> font-kit -> fontconfig.
+          #   Any target set that includes the benches needs it to link.
+          sudo apt-get install -y --no-install-recommends \
+            libasound2-dev libfontconfig1-dev pkg-config
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@nextest
@@ -106,8 +116,24 @@ jobs:
       # nextest, not `cargo test`: each test gets its own process, which is what
       # the audio suites need — they touch device and global state, and a panic
       # or abort in one no longer takes the whole binary's results with it.
+      #
+      # The two GUI-lifecycle binaries are excluded because they are `harness =
+      # false` custom mains that drive a plugin editor on the real main thread.
+      # nextest enumerates a binary by running it with `--list --format terse`;
+      # these ignore the flag, run their whole suite, and exit non-zero, so
+      # nextest fails at *list* time having already executed them. They are run
+      # below under the libtest-free runner they were written for.
       - name: Test
-        run: cargo nextest run --workspace --no-fail-fast
+        run: |
+          cargo nextest run --workspace --no-fail-fast \
+            -E 'not binary(gui_lifecycle_main) and not binary(au_gui_lifecycle_main)'
+
+      # The custom-harness editor tests. `cargo test` just execs the binary,
+      # which is exactly what a `harness = false` main wants.
+      - name: Editor-lifecycle tests (custom harness)
+        run: |
+          cargo test -p tutti-vst3-host --test gui_lifecycle_main
+          cargo test -p tutti-au-host --test au_gui_lifecycle_main
 
       # nextest does NOT run doctests, and says nothing about skipping them.
       # That is not a rounding error here: these are the only tests covering the
@@ -123,7 +149,12 @@ jobs:
       - name: Install Linux audio deps
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libasound2-dev pkg-config
+          # libasound2-dev: tutti-cpal (ALSA).
+          # libfontconfig1-dev: tutti-core's criterion dev-dep asks for
+          #   `html_reports`, which pulls plotters -> font-kit -> fontconfig.
+          #   Any target set that includes the benches needs it to link.
+          sudo apt-get install -y --no-install-recommends \
+            libasound2-dev libfontconfig1-dev pkg-config
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       # The engine must stay usable without Bevy. `--no-default-features` does
@@ -145,7 +176,12 @@ jobs:
       - name: Install Linux audio deps
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libasound2-dev pkg-config
+          # libasound2-dev: tutti-cpal (ALSA).
+          # libfontconfig1-dev: tutti-core's criterion dev-dep asks for
+          #   `html_reports`, which pulls plotters -> font-kit -> fontconfig.
+          #   Any target set that includes the benches needs it to link.
+          sudo apt-get install -y --no-install-recommends \
+            libasound2-dev libfontconfig1-dev pkg-config
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       # The workspace sets broken_intra_doc_links and private_intra_doc_links to

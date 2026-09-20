@@ -331,7 +331,10 @@ fn without_compensation_the_two_paths_arrive_a_full_latency_apart() {
     let mut net = build_graph(Box::new(probe.client));
 
     let out = render_impulse(&mut net);
-    assert!(!handle.status().is_dead(), "the plugin must survive the run");
+    assert!(
+        !handle.status().is_dead(),
+        "the plugin must survive the run"
+    );
 
     let hits = arrivals(&out);
     assert_eq!(
@@ -352,7 +355,10 @@ fn without_compensation_the_two_paths_arrive_a_full_latency_apart() {
          {PROBE_LATENCY} means the pipeline block is not really there; a gap of \
          {BLOCK} means the plugin is not delaying."
     );
-    assert_eq!(wet_v, IMPULSE, "the plugin path passes the impulse unchanged");
+    assert_eq!(
+        wet_v, IMPULSE,
+        "the plugin path passes the impulse unchanged"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -385,7 +391,10 @@ fn with_compensation_both_paths_land_on_the_same_sample() {
     );
 
     let out = render_impulse(&mut net);
-    assert!(!handle.status().is_dead(), "the plugin must survive the run");
+    assert!(
+        !handle.status().is_dead(),
+        "the plugin must survive the run"
+    );
 
     let hits = arrivals(&out);
     assert_eq!(
@@ -449,7 +458,10 @@ fn re_planning_realigns_after_a_runtime_latency_change() {
     );
 
     let out = render_impulse(&mut net);
-    assert!(!handle.status().is_dead(), "the plugin must survive the run");
+    assert!(
+        !handle.status().is_dead(),
+        "the plugin must survive the run"
+    );
 
     let hits = arrivals(&out);
     // The dry path is now delayed by the *claimed* total while the plugin still

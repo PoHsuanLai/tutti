@@ -321,7 +321,7 @@ fn curve_key(curve: tutti_mod::CurveType) -> (u32, Option<(f32, f32)>) {
 /// Bring the engine into line with the value, and say whether anything moved.
 ///
 /// **The value is the truth for edges and outputs; this is the only place it
-/// reaches the runtime.** Three calls — [`Net::set_source`], [`set_output_source`]
+/// reaches the runtime.** Three calls — `Net::set_source`, `set_output_source`
 /// — driven by what the value says rather than by re-reading the declaration
 /// port by port. Nothing here calls `connect`, `pipe_input` or `pipe_output`:
 /// those walk *every* port of a node, which is how a later wiring call silently

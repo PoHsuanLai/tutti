@@ -21,7 +21,9 @@ use tutti_types::{Db, Interleaved};
 /// A 440 Hz tone at −12 dBFS, in stereo.
 fn tone() -> Net {
     let mut net = Net::new(0, 2);
-    let id = net.push(Box::new((sine_hz::<f32>(440.0) | sine_hz::<f32>(440.0)) * 0.25));
+    let id = net.push(Box::new(
+        (sine_hz::<f32>(440.0) | sine_hz::<f32>(440.0)) * 0.25,
+    ));
     net.pipe_output(id);
     net
 }

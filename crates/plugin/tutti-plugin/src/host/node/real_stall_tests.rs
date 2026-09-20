@@ -420,7 +420,10 @@ fn a_plugin_that_never_parks_settles_nothing() {
         std::thread::sleep(PACE);
     }
 
-    assert!(!handle.status().is_dead(), "an unstressed plugin stays alive");
+    assert!(
+        !handle.status().is_dead(),
+        "an unstressed plugin stays alive"
+    );
     assert_eq!(
         bridge.settled_replies(),
         0,

@@ -70,7 +70,7 @@
 //! [`NodeKey`](tutti_types::graph::NodeKey) and never builds one. That split is
 //! deliberate and is what keeps a hosted plugin's C-pointer state, the sampler's
 //! butler-shared buffers and a queued crossfade alive across a rebuild — see the
-//! [`topology`](super::topology) module docs for the two runtime constraints
+//! [`topology`] module docs for the two runtime constraints
 //! behind it.
 //!
 //! # One writer per declared port
@@ -340,7 +340,7 @@ impl MasterSources {
 /// incremental edits and already has `commit()` for atomicity, so writing every
 /// port every rebuild would invalidate the topological order for ports that did
 /// not change. So the value decides *what* the graph is, and
-/// [`topology::apply`](super::topology::apply) still writes only the ports whose
+/// [`topology::apply`] still writes only the ports whose
 /// runtime source differs from it.
 #[allow(
     clippy::too_many_arguments,

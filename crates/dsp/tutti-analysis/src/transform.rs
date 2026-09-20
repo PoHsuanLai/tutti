@@ -702,8 +702,7 @@ mod tests {
         // The hop this resolves to is far wider than the window.
         assert!(matches!(
             stft(&samples, request, &mut fft),
-            Err(Error::HopExceedsWindow { .. })
-                | Err(Error::NotColaCompliant { .. })
+            Err(Error::HopExceedsWindow { .. }) | Err(Error::NotColaCompliant { .. })
         ));
 
         // The display path accepts it and yields a type with no inverse.

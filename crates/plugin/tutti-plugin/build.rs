@@ -58,7 +58,8 @@ fn emit_plugin_server_candidates() {
     } else {
         "plugin-server"
     };
-    let candidates: Vec<PathBuf> = vec![profile_dir.join("deps").join(name), profile_dir.join(name)];
+    let candidates: Vec<PathBuf> =
+        vec![profile_dir.join("deps").join(name), profile_dir.join(name)];
 
     println!(
         "cargo:rustc-env=TUTTI_PLUGIN_SERVER_CANDIDATES={}",

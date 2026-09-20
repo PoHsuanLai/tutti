@@ -322,10 +322,17 @@ mod tests {
         for (config, master, (first, last)) in cases {
             let label = format!("{:?}", config.zone);
             assert_eq!(config.master_channel, master, "master of {label}");
-            assert!(config.is_master_channel(master), "{label} claims its master");
+            assert!(
+                config.is_master_channel(master),
+                "{label} claims its master"
+            );
 
             let range = config.member_channel_range();
-            assert_eq!((*range.start(), *range.end()), (first, last), "span of {label}");
+            assert_eq!(
+                (*range.start(), *range.end()),
+                (first, last),
+                "span of {label}"
+            );
 
             if config.member_count == 0 {
                 // A single-channel zone's master is not also a member — the
@@ -338,13 +345,22 @@ mod tests {
             assert!(config.is_member_channel(last), "{label} last member");
             // The master is never a member, and neither is a channel just
             // outside either end of the span.
-            assert!(!config.is_member_channel(master), "{label} master is not a member");
-            assert!(!config.is_master_channel(first), "{label} first member is not master");
+            assert!(
+                !config.is_member_channel(master),
+                "{label} master is not a member"
+            );
+            assert!(
+                !config.is_master_channel(first),
+                "{label} first member is not master"
+            );
             if let Some(before) = first.checked_sub(1) {
                 assert!(!config.is_member_channel(before), "{label} below the span");
             }
             if last < 15 {
-                assert!(!config.is_member_channel(last + 1), "{label} above the span");
+                assert!(
+                    !config.is_member_channel(last + 1),
+                    "{label} above the span"
+                );
             }
         }
     }
@@ -492,7 +508,6 @@ mod tests {
         let config = MpeZoneConfig::upper(20);
         assert_eq!(config.member_count, 15);
     }
-
 }
 
 #[cfg(all(test, feature = "serde"))]

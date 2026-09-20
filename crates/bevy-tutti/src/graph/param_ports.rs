@@ -11,7 +11,7 @@
 //! That list shipped broken. Both filter types were missing from it, and the
 //! failure is silent by construction: a type absent from the list answers
 //! `None`, which is indistinguishable from the legitimate "this node exposes no
-//! port for that param", so [`ModDelivery::PerSample`] fell back to per-frame
+//! port for that param", so `ModDelivery::PerSample` fell back to per-frame
 //! without a word. `Cutoff` and `Q` are the only params either filter offers,
 //! and a fast LFO on a filter cutoff is the case that tier's own docs name — so
 //! the headline use of audio-rate modulation was the one it could not serve.

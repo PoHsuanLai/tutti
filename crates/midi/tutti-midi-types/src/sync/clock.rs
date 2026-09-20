@@ -256,7 +256,9 @@ mod tests {
                 ts += interval;
             }
 
-            let tempo = clock.tempo_bpm().expect("48 ticks is enough to derive a tempo");
+            let tempo = clock
+                .tempo_bpm()
+                .expect("48 ticks is enough to derive a tempo");
             assert!(
                 !tempo.differs_from(Bpm(bpm), 1.0),
                 "expected ~{bpm} BPM, got {tempo:?}"

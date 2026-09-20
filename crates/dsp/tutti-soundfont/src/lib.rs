@@ -80,7 +80,7 @@ const RENDER_SCRATCH_FRAMES: usize = tutti_core::MAX_BUFFER_SIZE;
 /// CPU, release build, 8 sustained voices, per 64-frame block: 5.8 µs at
 /// `block_size` 64, 10.7 µs at 8. That is 0.40% → 0.74% of the real-time
 /// budget for those frames — around 5 µs bought for correct MIDI timing.
-const SYNTH_BLOCK_FRAMES: usize = 8;
+pub const SYNTH_BLOCK_FRAMES: usize = 8;
 
 /// A stereo `AudioUnit` that renders MIDI through a decoded SoundFont.
 ///
@@ -443,7 +443,7 @@ impl AudioUnit for SoundFontUnit {
     ///    the application of every event whose offset is `<=` that segment's
     ///    first frame.
     /// 2. **Events at the same offset apply in inbox order.**
-    ///    [`Self::poll_midi_events_sorted`] sorts with `sort_unstable_by_key`,
+    ///    `poll_midi_events_sorted` sorts with `sort_unstable_by_key`,
     ///    which is not stable, so equal offsets could be reordered against each
     ///    other. That is tolerable here and nowhere else: the loop applies the
     ///    whole equal-offset run before rendering a single frame, so no ordering

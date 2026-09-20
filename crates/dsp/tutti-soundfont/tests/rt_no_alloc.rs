@@ -61,8 +61,7 @@ fn note_on(key: u8, offset: u32) -> MidiEvent {
 }
 
 fn note_off(key: u8, offset: u32) -> MidiEvent {
-    MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::FIRST, key, 0)
-        .with_frame_offset(offset)
+    MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::FIRST, key, 0).with_frame_offset(offset)
 }
 
 #[test]

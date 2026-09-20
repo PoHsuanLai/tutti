@@ -197,8 +197,16 @@ mod tests {
     fn an_over_wide_note_is_masked_rather_than_aliased() {
         for note in [128u8, 129, 200, 255] {
             let id = NoteId::from_channel_note(MidiChannel::new(0), note);
-            assert_eq!(id.channel(), MidiChannel::new(0), "note {note} moved channel");
-            assert_eq!(id.note_number(), note & 0x7f, "note {note} read back changed");
+            assert_eq!(
+                id.channel(),
+                MidiChannel::new(0),
+                "note {note} moved channel"
+            );
+            assert_eq!(
+                id.note_number(),
+                note & 0x7f,
+                "note {note} read back changed"
+            );
             assert_ne!(
                 id,
                 NoteId::from_channel_note(MidiChannel::new(1), note & 0x7f),

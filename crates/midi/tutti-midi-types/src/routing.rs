@@ -592,7 +592,11 @@ mod tests {
 
     #[test]
     fn test_channel_layering() {
-        let routes = vec![MidiRoute::for_channel(MidiChannel::new(0)).with_targets(&[id(100), id(200), id(300)])];
+        let routes = vec![MidiRoute::for_channel(MidiChannel::new(0)).with_targets(&[
+            id(100),
+            id(200),
+            id(300),
+        ])];
         let snapshot = MidiRoutingSnapshot::from_routes(routes, None);
 
         let event = note_on(0, 60);
@@ -743,7 +747,10 @@ mod tests {
         table.commit();
 
         // A second set_routes fully replaces the prior rules — no merge.
-        table.set_routes([MidiRoute::for_channel(MidiChannel::new(0)).with_target(id(200))], None);
+        table.set_routes(
+            [MidiRoute::for_channel(MidiChannel::new(0)).with_target(id(200))],
+            None,
+        );
         table.commit();
 
         let snapshot = table.load();
@@ -758,7 +765,10 @@ mod tests {
         let mut table = MidiRoutingTable::new();
         assert!(!table.is_dirty());
 
-        table.set_routes([MidiRoute::for_channel(MidiChannel::new(0)).with_target(id(100))], None);
+        table.set_routes(
+            [MidiRoute::for_channel(MidiChannel::new(0)).with_target(id(100))],
+            None,
+        );
         assert!(table.is_dirty());
 
         table.commit();
@@ -783,7 +793,10 @@ mod tests {
         // The mistake: a fresh table rather than the one the pre-block shares.
         let mut orphan = MidiRoutingTable::new();
         let unit = id(9);
-        orphan.set_routes(vec![MidiRoute::for_channel(MidiChannel::new(3)).with_target(unit)], None);
+        orphan.set_routes(
+            vec![MidiRoute::for_channel(MidiChannel::new(3)).with_target(unit)],
+            None,
+        );
         orphan.commit();
 
         let snapshot = rt_view.read();

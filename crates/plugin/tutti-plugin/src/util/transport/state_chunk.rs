@@ -150,7 +150,10 @@ mod tests {
             chunks.len()
         );
         assert_eq!(chunks[0].0, 0, "first chunk must be seq 0");
-        assert!(chunks[0].1, "the only chunk of an empty state must be `last`");
+        assert!(
+            chunks[0].1,
+            "the only chunk of an empty state must be `last`"
+        );
         assert!(chunks[0].2.is_empty(), "an empty state must carry no bytes");
     }
 

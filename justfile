@@ -36,6 +36,14 @@ test-editor:
     cargo test -p tutti-vst3-host --test gui_lifecycle_main
     cargo test -p tutti-au-host --test au_gui_lifecycle_main
 
+# The editor tests minus the one that needs a plugin corpus with both an
+# editor-bearing and an editorless plugin — what CI runs. Use this if your
+# machine has no third-party VST3s installed.
+test-editor-no-corpus:
+    TUTTI_GUI_SKIP=has_editor_agrees_with_opening_one \
+        cargo test -p tutti-vst3-host --test gui_lifecycle_main
+    cargo test -p tutti-au-host --test au_gui_lifecycle_main
+
 # The doctests, which nextest does NOT run — and says nothing about skipping.
 #
 # That is not a rounding error: these are the only tests covering the `///`

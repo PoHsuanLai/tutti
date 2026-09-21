@@ -428,26 +428,35 @@ Both are declared in this repo's `[workspace.dependencies]`.
 
 ## Known failures
 
-**Windows has a real backlog, and CI is the first thing that ever looked.** The
-first Windows run of this workspace was after the extraction; before that it had
-never been compiled, let alone tested, so treat what it reports as accumulated
-reality rather than regression. As of the run that fixed the build:
-**3172 of 3241 pass.** The remainder cluster in three places:
+**Windows has never worked, and CI is the first thing that ever looked.** The
+first Windows build of this workspace happened after the extraction; before that
+it had never been compiled there, let alone run. Treat what it reports as
+accumulated reality, not regression. Currently **3172 of 3241 pass**, and the
+failures are three unrelated problems:
 
-- **`tutti-vst3-host` integration / misbehaving / conformance** (~20) and
-  **`tutti-plugin-server::loaders::vst3`** (~12). The `audio-probe` bundle now
-  *links* on Windows, so these have moved past the build script into whatever
-  loading a VST3 on Windows actually needs. Not yet diagnosed.
-- **Two stalled-peer bounds in the hostile-peer suite**, which are expected to
-  fail there and are explained at `with_poll_timeout` in
-  `util/transport/control.rs`: named pipes have no receive-timeout option, so a
-  server that goes silent can hold a receive past its deadline. Fixing it means
-  giving the transport a wakeup that named pipes support.
-- **`tutti-core`'s `render_is_bit_identical_to_the_audionode_era`.** A bit-exact
-  audio comparison failing on one platform is its own investigation.
+- **The IPC transport names its endpoint as a filesystem path.** `connect` in
+  `util/transport/control.rs` calls `to_fs_name::<GenericFilePath>()`, and so do
+  the test harnesses that stand up a fake server. Windows named pipes will not
+  take a filesystem path — the error is `Unsupported, "not a named pipe path"` —
+  so every IPC test dies before a stream exists. That is ~23 of the failures and
+  it is a **production** gap, not a test one: the same call is on the real
+  connect path. Fixing it means naming the endpoint portably
+  (`GenericNamespaced`, or a `\\.\pipe\...` name under `cfg(windows)`), which
+  is a change to a security-sensitive layer and should be made with Windows CI
+  watching.
+- **VST3 loading** — `tutti-vst3-host`'s integration / misbehaving / conformance
+  suites and `tutti-plugin-server::loaders::vst3`, ~32 between them. The
+  `audio-probe` bundle now *links* on Windows, so these have moved past the
+  build script into whatever loading a VST3 there actually requires. Undiagnosed.
+- **`tutti-core`'s `render_is_bit_identical_to_the_audionode_era`** — a bit-exact
+  audio comparison failing on one platform, which is its own investigation.
 
-None of these block a Unix consumer. All of them were invisible until this repo
-had CI.
+Two stalled-peer bounds in the hostile-peer suite are *expected* to fail on
+Windows once the naming above is fixed, for the reason documented at
+`with_poll_timeout`: named pipes have no receive-timeout option, so a server that
+goes silent can hold a receive past its deadline.
+
+None of this blocks a Unix consumer. macOS and Linux are green.
 
 ## Extraction residue
 

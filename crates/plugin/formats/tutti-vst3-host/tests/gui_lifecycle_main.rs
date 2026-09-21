@@ -99,15 +99,42 @@ fn main() {
         return;
     }
 
+    // Cases the caller has asked not to run, comma-separated.
+    //
+    // This exists for one shape of test: the ones whose *corpus* decides whether
+    // they can assert anything, and which deliberately panic rather than report
+    // a pass that proves nothing. `has_editor_agrees_with_opening_one` needs at
+    // least one plugin with an editor and one without — agreement across an
+    // all-editor corpus is satisfied by a constant `true`. That is the right
+    // call on a developer machine and unsatisfiable on a hosted runner, which
+    // has no third-party plugins at all, so CI names it here instead of the
+    // test being weakened into a silent skip for everyone.
+    //
+    // A skip is announced, not quiet, and an unknown name is an error rather
+    // than a typo that silently disables nothing — the failure mode a skip list
+    // invites.
+    let skip: Vec<String> = std::env::var("TUTTI_GUI_SKIP")
+        .unwrap_or_default()
+        .split(',')
+        .map(|s| s.trim().to_owned())
+        .filter(|s| !s.is_empty())
+        .collect();
+
     let mut failed = Vec::new();
+    let mut skipped: Vec<&str> = Vec::new();
     let mut total = 0;
 
     macro_rules! cases {
         ($($t:path),* $(,)?) => {
             $(
-                total += 1;
-                if !run(stringify!($t), || $t()) {
-                    failed.push(stringify!($t));
+                if skip.iter().any(|s| s == stringify!($t)) {
+                    eprintln!("\n── {} ──\n   skipped (TUTTI_GUI_SKIP)", stringify!($t));
+                    skipped.push(stringify!($t));
+                } else {
+                    total += 1;
+                    if !run(stringify!($t), || $t()) {
+                        failed.push(stringify!($t));
+                    }
                 }
             )*
         };
@@ -126,6 +153,20 @@ fn main() {
     );
 
     eprintln!("\n{}/{} passed", total - failed.len(), total);
+    if !skipped.is_empty() {
+        eprintln!("skipped: {}", skipped.join(", "));
+    }
+    // A name in the skip list that matches no case is a typo, and a typo here
+    // silently un-skips the case it meant to name — or, worse, hides that the
+    // case was renamed and the skip is now load-bearing for nothing.
+    if skipped.len() != skip.len() {
+        let unknown: Vec<&String> = skip
+            .iter()
+            .filter(|s| !skipped.iter().any(|k| *k == s.as_str()))
+            .collect();
+        eprintln!("TUTTI_GUI_SKIP names no such case: {unknown:?}");
+        std::process::exit(2);
+    }
     if !failed.is_empty() {
         eprintln!("failed: {}", failed.join(", "));
         std::process::exit(1);

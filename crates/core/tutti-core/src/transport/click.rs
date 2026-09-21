@@ -834,6 +834,24 @@ mod tests {
             rendered.iter().any(|s| *s != 0.0),
             "a render of pure silence would hash stably and prove nothing"
         );
+        // The digest pins *this crate's* DSP against a refactor. It cannot pin
+        // it across C runtimes, and on MSVC it does not: Windows renders
+        // 0x3366_2B99_B2A6_EBB5 where glibc and Apple libm both render the
+        // constant below.
+        //
+        // Which operation differs is settled by elimination rather than guessed.
+        // Every step in `generate_click` — the `to_seconds` divide, the envelope
+        // divides and subtract, `to_radians`, the two multiplies, the phase add
+        // — is one of the operations IEEE-754 requires to be correctly rounded,
+        // so each is bit-identical on any conforming platform. `sin` is the only
+        // one the standard does not specify; it is quality-of-implementation per
+        // libm, and MSVC's CRT disagrees with glibc in the last ulp.
+        //
+        // So asserting the digest on Windows would test the C runtime, not the
+        // metronome. The guard runs where it means something, and the portable
+        // properties above — length, and that the render is not silence — are
+        // asserted everywhere.
+        #[cfg(not(target_env = "msvc"))]
         assert_eq!(
             digest(&rendered),
             0xE011_43CA_E6D4_ECD5,

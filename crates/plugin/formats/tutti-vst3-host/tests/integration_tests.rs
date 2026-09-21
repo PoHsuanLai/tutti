@@ -81,8 +81,9 @@ fn corpus() -> Vec<PathBuf> {
         out.push(PathBuf::from(p));
     }
     out.extend(built_binaries());
-    let user = dirs_home().join("Library/Audio/Plug-Ins/VST3");
-    out.extend(SDK_SAMPLES.iter().map(|n| user.join(n)));
+    if let Some(user) = dirs_home().map(|h| h.join("Library/Audio/Plug-Ins/VST3")) {
+        out.extend(SDK_SAMPLES.iter().map(|n| user.join(n)));
+    }
     out.extend([TAL_NOISEMAKER, SURGE_XT, VITAL, DEXED].map(PathBuf::from));
     out.retain(|p| p.exists());
     out
@@ -136,19 +137,46 @@ fn binary_in_bundle(bundle: &Path) -> Option<PathBuf> {
         "Contents/x86_64-win",
     ] {
         if let Ok(entries) = std::fs::read_dir(bundle.join(sub)) {
+            // Take the loadable module, not merely the first file. On Windows
+            // the linker drops an import library and an export file beside it
+            // (`audio-probe.lib`, `audio-probe.exp`), and `read_dir` order is
+            // arbitrary — so "first file" could hand a `.lib` to the loader and
+            // report it as a broken plugin.
+            let mut found: Option<PathBuf> = None;
             for e in entries.flatten() {
                 let path = e.path();
-                if path.is_file() {
-                    return Some(path);
+                if !path.is_file() {
+                    continue;
                 }
+                let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+                if matches!(ext, "lib" | "exp" | "pdb" | "ilk") {
+                    continue;
+                }
+                found = Some(path);
+                break;
+            }
+            if found.is_some() {
+                return found;
             }
         }
     }
     None
 }
 
-fn dirs_home() -> PathBuf {
-    PathBuf::from(std::env::var("HOME").expect("HOME is set"))
+/// The user's home directory, or `None` where the platform does not say.
+///
+/// Was `env::var("HOME").expect("HOME is set")`, which panics on Windows —
+/// `HOME` is a Unix convention and Windows sets `USERPROFILE` instead. Every
+/// test that builds a corpus goes through here, so one missing variable took
+/// out the whole file the first time this ran on Windows.
+///
+/// `Option` rather than a fallback guess: the only thing this is used for is
+/// the *macOS* user-domain plugin directory, so on a platform without a home
+/// there is nothing to look for and skipping is the honest answer.
+fn dirs_home() -> Option<PathBuf> {
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from)
 }
 
 fn find_available_plugin() -> Option<&'static str> {

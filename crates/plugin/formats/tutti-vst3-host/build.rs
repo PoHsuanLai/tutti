@@ -378,6 +378,13 @@ fn link_bundle<'a>(
         cmd.args(&objects);
         cmd.arg(format!("/Fe:{}", so.display()));
         cmd.arg("/link");
+        // Keep the import library and its export file out of the bundle. MSVC
+        // writes both beside the DLL by default, and a `.vst3` bundle is a
+        // directory a host *scans* — anything in the arch dir is a candidate
+        // module. They are build artifacts, so they belong in OUT_DIR.
+        let implib =
+            PathBuf::from(std::env::var("OUT_DIR").expect("OUT_DIR")).join(format!("{plugin}.lib"));
+        cmd.arg(format!("/IMPLIB:{}", implib.display()));
         cmd.args(probe_link_args());
     } else {
         cmd.arg("-shared").arg("-fPIC").arg("-o").arg(&so);

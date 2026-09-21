@@ -440,11 +440,21 @@ failures are three unrelated problems:
   Windows. See that function for why `GenericNamespaced` on both platforms is a
   trap rather than the portable answer.
 - **VST3 loading** — `tutti-vst3-host`'s integration / misbehaving / conformance
-  suites and `tutti-plugin-server::loaders::vst3`, ~32 between them. The
-  `audio-probe` bundle now *links* on Windows, so these have moved past the
-  build script into whatever loading a VST3 there actually requires. Undiagnosed.
-- **`tutti-core`'s `render_is_bit_identical_to_the_audionode_era`** — a bit-exact
-  audio comparison failing on one platform, which is its own investigation.
+  suites and `tutti-plugin-server::loaders::vst3`. Two causes found and fixed so
+  far: the test corpus read `$HOME`, which Windows does not set (it is
+  `USERPROFILE`), so every test that built a corpus panicked before it began;
+  and `binary_in_bundle` took the *first file* in the bundle's arch directory,
+  which on Windows can be the import library the linker drops beside the module.
+  The import library now goes to `OUT_DIR` where it belongs — a `.vst3` bundle
+  is a directory a host scans, so anything in it is a candidate module. Whether
+  more remains is for CI to say.
+- ~~**`tutti-core`'s `render_is_bit_identical_to_the_audionode_era`**~~ —
+  **understood.** The digest pins this crate's DSP against a refactor; it cannot
+  pin it across C runtimes. Every operation in `generate_click` is one IEEE-754
+  requires to be correctly rounded *except* `sin`, which is libm
+  quality-of-implementation and differs in the last ulp between MSVC's CRT and
+  glibc. The assertion now runs where it means something; the portable
+  properties are asserted everywhere.
 
 Two stalled-peer bounds in the hostile-peer suite are *expected* to fail on
 Windows once the naming above is fixed, for the reason documented at

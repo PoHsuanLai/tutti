@@ -130,7 +130,21 @@ fn read_exact_by(
                         | std::io::ErrorKind::TimedOut
                         | std::io::ErrorKind::Interrupted
                 ) => {}
-            Err(e) => return Err(e),
+            // Anything else is a real failure, and *where* it happened is most
+            // of the diagnosis: a bare `EINVAL` from a socket read says nothing
+            // about whether the stream was mid-frame, how much had landed, or
+            // which of the two reads in `recv_by` raised it. The kind is
+            // preserved so `crashed_on_eof` and the `WouldBlock` arm above still
+            // classify correctly; only the message grows.
+            Err(e) => {
+                return Err(std::io::Error::new(
+                    e.kind(),
+                    format!(
+                        "read failed with {filled} of {} bytes in hand: {e}",
+                        buf.len()
+                    ),
+                ))
+            }
         }
     }
     Ok(())
@@ -207,7 +221,8 @@ fn recv_by(
         // Record what landed before propagating: the bytes are off the socket
         // either way, and losing them is exactly the desync this exists to stop.
         partial.prefix = prefix;
-        r.map_err(crashed_on_eof)?;
+        r.map_err(|e| annotate(e, "length prefix"))
+            .map_err(crashed_on_eof)?;
 
         let len = u32::from_be_bytes(partial.prefix) as usize;
         // Reject before allocating. The length is the peer's word for how much
@@ -234,7 +249,8 @@ fn recv_by(
     let mut body = core::mem::take(&mut partial.body);
     let r = read_exact_by(stream, &mut body, deadline, &mut partial.body_filled);
     partial.body = body;
-    r.map_err(crashed_on_eof)?;
+    r.map_err(|e| annotate(e, "frame body"))
+        .map_err(crashed_on_eof)?;
 
     let msg = bincode::deserialize(&partial.body);
     // The frame is off the wire and accounted for, so the stream is back on a
@@ -327,6 +343,15 @@ fn with_poll_timeout<T>(
     let result = f(stream);
     let _ = stream.set_recv_timeout(None);
     result
+}
+
+/// Name which of `recv_by`'s two reads an error came from.
+///
+/// Kept separate from the error itself because the two are indistinguishable
+/// otherwise — both are `read_exact_by` on the same stream — and the difference
+/// decides whether the stream is on a frame boundary or stranded mid-frame.
+fn annotate(e: std::io::Error, stage: &str) -> std::io::Error {
+    std::io::Error::new(e.kind(), format!("reading the {stage}: {e}"))
 }
 
 fn crashed_on_eof(e: std::io::Error) -> BridgeError {

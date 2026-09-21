@@ -330,6 +330,47 @@ pub fn recv_resumable(
 /// `read` must wake often enough for the deadline check to be meaningful, and
 /// with a 5 s budget a 5 s syscall timeout would let the whole budget elapse
 /// inside one uninterruptible wait.
+///
+/// # Arming the poll is best-effort, and must be
+///
+/// Treating a failed `set_recv_timeout` as fatal was a bug on two platforms at
+/// once, and it made the transport unusable on one of them:
+///
+/// - **Windows.** `interprocess` implements `set_recv_timeout` for named pipes
+///   as an unconditional error — there is no such option to set. So *every*
+///   receive failed before reading a byte, which is most of what the Windows
+///   suite had to say the first time it was ever run.
+/// - **macOS.** `setsockopt(SO_RCVTIMEO)` starts refusing with `EINVAL` once the
+///   peer closes its end of the Unix socket. A receive that should have drained
+///   the last buffered frame and then reported EOF failed with "Invalid
+///   argument" instead.
+///
+/// **Losing the timeout does not lose the deadline.** [`read_exact_by`] checks
+/// `Instant::now() >= deadline` at the top of every iteration, so the total
+/// bound still holds *between* syscalls; what is lost is the guarantee that a
+/// single blocked `read` wakes up to be counted. Nothing here silently becomes
+/// unbounded, but one syscall may overshoot.
+///
+/// **What is actually lost, measured rather than assumed.** Forcing `armed` to
+/// `false` and running the hostile-peer suite fails exactly two tests —
+/// `a_stalled_save_state_fails_typed_and_leaves_the_bridge_healthy` and its
+/// `load_state` twin — while the other seventeen, the dribble and frame-cap and
+/// crash cases among them, still pass. So the bound that depends on the poll is
+/// the one against a peer that is *live but silent*: nothing arrives, the read
+/// blocks, and only the timeout would have returned control to the deadline
+/// check.
+///
+/// On macOS that costs nothing, because arming fails only once the peer has
+/// closed and a read on a closed socket returns rather than blocking. **On
+/// Windows it is a real gap**: a stalled server can hold a receive past its
+/// deadline, and those two tests are expected to fail there until the transport
+/// grows a wakeup that named pipes support. That is worth stating plainly —
+/// the previous code did not keep this promise on Windows either, it just
+/// refused to run at all.
+///
+/// The dribble attack in the module header is unaffected on every platform: it
+/// needs a peer that keeps *sending*, so the read returns on its own and the
+/// deadline is checked between syscalls with or without the poll.
 fn with_poll_timeout<T>(
     stream: &mut ControlStream,
     budget: Duration,
@@ -337,18 +378,24 @@ fn with_poll_timeout<T>(
 ) -> Result<T> {
     use interprocess::local_socket::traits::Stream as _;
     let poll = budget.min(POLL_INTERVAL).max(Duration::from_millis(1));
-    // Annotated because this is otherwise indistinguishable from a read
-    // failure: both surface as `BridgeError::Io` from the same call, and on
-    // macOS this one raises a bare `EINVAL` that says nothing about which
-    // syscall refused or why.
-    stream.set_recv_timeout(Some(poll)).map_err(|e| {
-        BridgeError::Io(std::io::Error::new(
-            e.kind(),
-            format!("setting a {poll:?} receive timeout on the control stream failed: {e}"),
-        ))
-    })?;
+    let armed = match stream.set_recv_timeout(Some(poll)) {
+        Ok(()) => true,
+        Err(e) => {
+            // Debug rather than warn: on Windows this fires on every single
+            // receive, by design of the underlying transport, and a warning per
+            // frame would bury everything else.
+            tracing::debug!(
+                "could not arm a {poll:?} receive poll on the control stream                  ({e}); the total deadline still applies between reads, but a                  single blocked read may overshoot it"
+            );
+            false
+        }
+    };
     let result = f(stream);
-    let _ = stream.set_recv_timeout(None);
+    // Only restore what was set. Clearing a timeout that was never armed is at
+    // best a no-op and at worst a second spurious error on the same platforms.
+    if armed {
+        let _ = stream.set_recv_timeout(None);
+    }
     result
 }
 

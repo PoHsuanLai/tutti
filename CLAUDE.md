@@ -428,21 +428,26 @@ Both are declared in this repo's `[workspace.dependencies]`.
 
 ## Known failures
 
-**`tutti-plugin`'s `the_frame_after_a_resumed_one_still_parses` fails on macOS
-and passes on Linux.** The third `recv_resumable` in the test returns an OS
-`EINVAL` (`Io(Os { code: 22 })`) from a socket operation, where the first two
-succeed. It is *not* a regression from the extraction: CI has never run this
-workspace on macOS before, so the first run is also the first observation.
+**Windows has a real backlog, and CI is the first thing that ever looked.** The
+first Windows run of this workspace was after the extraction; before that it had
+never been compiled, let alone tested, so treat what it reports as accumulated
+reality rather than regression. As of the run that fixed the build:
+**3172 of 3241 pass.** The remainder cluster in three places:
 
-What is known: it reproduces on every macOS CI run, never on Linux, and the
-Linux path through `with_poll_timeout` is byte-identical. The suspect surface is
-that function — it sets a short recv timeout, calls through, then restores with
-`set_recv_timeout(None)` and *discards the result*. Whether macOS rejects one of
-those calls is unverified; nobody has had a macOS machine on it yet.
+- **`tutti-vst3-host` integration / misbehaving / conformance** (~20) and
+  **`tutti-plugin-server::loaders::vst3`** (~12). The `audio-probe` bundle now
+  *links* on Windows, so these have moved past the build script into whatever
+  loading a VST3 on Windows actually needs. Not yet diagnosed.
+- **Two stalled-peer bounds in the hostile-peer suite**, which are expected to
+  fail there and are explained at `with_poll_timeout` in
+  `util/transport/control.rs`: named pipes have no receive-timeout option, so a
+  server that goes silent can hold a receive past its deadline. Fixing it means
+  giving the transport a wakeup that named pipes support.
+- **`tutti-core`'s `render_is_bit_identical_to_the_audionode_era`.** A bit-exact
+  audio comparison failing on one platform is its own investigation.
 
-Do not "fix" it by widening the timeout or retrying. The test exists to catch a
-stream left off by a few bytes after a resumed read, and a fix that makes it pass
-without explaining the `EINVAL` removes the detection rather than the defect.
+None of these block a Unix consumer. All of them were invisible until this repo
+had CI.
 
 ## Extraction residue
 

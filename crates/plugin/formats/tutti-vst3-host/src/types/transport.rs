@@ -338,15 +338,15 @@ mod tests {
 
         // All the validity flags + transport-state bits set.
         let s = ctx.state;
-        assert_ne!(s & StatesAndFlags_::kPlaying, 0);
-        assert_ne!(s & StatesAndFlags_::kRecording, 0);
-        assert_ne!(s & StatesAndFlags_::kCycleActive, 0);
-        assert_ne!(s & StatesAndFlags_::kProjectTimeMusicValid, 0);
-        assert_ne!(s & StatesAndFlags_::kBarPositionValid, 0);
-        assert_ne!(s & StatesAndFlags_::kTempoValid, 0);
-        assert_ne!(s & StatesAndFlags_::kTimeSigValid, 0);
+        assert_ne!(s & StatesAndFlags_::kPlaying as u32, 0);
+        assert_ne!(s & StatesAndFlags_::kRecording as u32, 0);
+        assert_ne!(s & StatesAndFlags_::kCycleActive as u32, 0);
+        assert_ne!(s & StatesAndFlags_::kProjectTimeMusicValid as u32, 0);
+        assert_ne!(s & StatesAndFlags_::kBarPositionValid as u32, 0);
+        assert_ne!(s & StatesAndFlags_::kTempoValid as u32, 0);
+        assert_ne!(s & StatesAndFlags_::kTimeSigValid as u32, 0);
         assert_ne!(
-            s & StatesAndFlags_::kContTimeValid,
+            s & StatesAndFlags_::kContTimeValid as u32,
             0,
             "continousTimeSamples is filled, so kContTimeValid must be set"
         );
@@ -355,11 +355,11 @@ mod tests {
         // literal 0 while leaving the bit clear was dead code; claiming
         // validity for it would be a lie.
         assert_eq!(ctx.systemTime, 0);
-        assert_eq!(s & StatesAndFlags_::kSystemTimeValid, 0);
+        assert_eq!(s & StatesAndFlags_::kSystemTimeValid as u32, 0);
         assert_eq!(ctx.samplesToNextClock, 0);
-        assert_eq!(s & StatesAndFlags_::kClockValid, 0);
-        assert_eq!(s & StatesAndFlags_::kSmpteValid, 0);
-        assert_eq!(s & StatesAndFlags_::kChordValid, 0);
+        assert_eq!(s & StatesAndFlags_::kClockValid as u32, 0);
+        assert_eq!(s & StatesAndFlags_::kSmpteValid as u32, 0);
+        assert_eq!(s & StatesAndFlags_::kChordValid as u32, 0);
     }
 
     /// Per `ivstprocesscontext.h`, each `*Valid` bit must be set iff its field
@@ -380,31 +380,31 @@ mod tests {
             (
                 "projectTimeMusic",
                 need::NEED_PROJECT_TIME_MUSIC,
-                StatesAndFlags_::kProjectTimeMusicValid,
+                StatesAndFlags_::kProjectTimeMusicValid as u32,
                 |c| c.projectTimeMusic != 0.0,
             ),
             (
                 "barPositionMusic",
                 need::NEED_BAR_POSITION_MUSIC,
-                StatesAndFlags_::kBarPositionValid,
+                StatesAndFlags_::kBarPositionValid as u32,
                 |c| c.barPositionMusic != 0.0,
             ),
             (
                 "tempo",
                 need::NEED_TEMPO,
-                StatesAndFlags_::kTempoValid,
+                StatesAndFlags_::kTempoValid as u32,
                 |c| c.tempo != 0.0,
             ),
             (
                 "timeSig",
                 need::NEED_TIME_SIGNATURE,
-                StatesAndFlags_::kTimeSigValid,
+                StatesAndFlags_::kTimeSigValid as u32,
                 |c| c.timeSigNumerator != 0,
             ),
             (
                 "continousTimeSamples",
                 need::NEED_CONTINOUS_TIME_SAMPLES,
-                StatesAndFlags_::kContTimeValid,
+                StatesAndFlags_::kContTimeValid as u32,
                 |c| c.continousTimeSamples != 0,
             ),
             // `cycleStartMusic` was the one filled field missing from this
@@ -414,7 +414,7 @@ mod tests {
             (
                 "cycleStartMusic",
                 need::NEED_CYCLE_MUSIC,
-                StatesAndFlags_::kCycleValid,
+                StatesAndFlags_::kCycleValid as u32,
                 |c| c.cycleStartMusic != 0.0,
             ),
         ];
@@ -465,12 +465,12 @@ mod tests {
         // are still `mem::zeroed` here.
         let transport_only = to_process_context(&t, need::NEED_TRANSPORT_STATE);
         assert_ne!(
-            transport_only.state & StatesAndFlags_::kCycleActive,
+            transport_only.state & StatesAndFlags_::kCycleActive as u32,
             0,
             "a cycling transport must still report kCycleActive"
         );
         assert_eq!(
-            transport_only.state & StatesAndFlags_::kCycleValid,
+            transport_only.state & StatesAndFlags_::kCycleValid as u32,
             0,
             "kCycleValid claims cycleStartMusic/cycleEndMusic are meaningful, \
              but nothing asked for them and they are still zero"
@@ -484,7 +484,7 @@ mod tests {
         // computed and thrown away.
         let cycle_only = to_process_context(&t, need::NEED_CYCLE_MUSIC);
         assert_ne!(
-            cycle_only.state & StatesAndFlags_::kCycleValid,
+            cycle_only.state & StatesAndFlags_::kCycleValid as u32,
             0,
             "cycle bounds were filled but not flagged — the plugin ignores them"
         );
@@ -502,7 +502,7 @@ mod tests {
 
         let ctx = to_process_context(&t, need::NEED_CYCLE_MUSIC);
         assert_eq!(
-            ctx.state & StatesAndFlags_::kCycleValid,
+            ctx.state & StatesAndFlags_::kCycleValid as u32,
             0,
             "a NaN bound must not be advertised as valid"
         );
@@ -522,19 +522,19 @@ mod tests {
 
         // Requested.
         assert_eq!(ctx.tempo, 128.0);
-        assert_ne!(ctx.state & StatesAndFlags_::kTempoValid, 0);
+        assert_ne!(ctx.state & StatesAndFlags_::kTempoValid as u32, 0);
 
         // Not requested → left zeroed, valid bit clear.
         assert_eq!(ctx.timeSigNumerator, 0);
         assert_eq!(ctx.timeSigDenominator, 0);
-        assert_eq!(ctx.state & StatesAndFlags_::kTimeSigValid, 0);
+        assert_eq!(ctx.state & StatesAndFlags_::kTimeSigValid as u32, 0);
         assert_eq!(ctx.barPositionMusic, 0.0);
-        assert_eq!(ctx.state & StatesAndFlags_::kBarPositionValid, 0);
+        assert_eq!(ctx.state & StatesAndFlags_::kBarPositionValid as u32, 0);
         assert_eq!(ctx.continousTimeSamples, 0);
 
         // Transport-state not requested → no play/record/cycle bits.
-        assert_eq!(ctx.state & StatesAndFlags_::kPlaying, 0);
-        assert_eq!(ctx.state & StatesAndFlags_::kCycleActive, 0);
+        assert_eq!(ctx.state & StatesAndFlags_::kPlaying as u32, 0);
+        assert_eq!(ctx.state & StatesAndFlags_::kCycleActive as u32, 0);
     }
 
     /// A loop scenario: the continuous clock has advanced past where the
@@ -551,7 +551,7 @@ mod tests {
         assert_eq!(ctx.continousTimeSamples, 100_000);
         assert_ne!(ctx.projectTimeSamples, ctx.continousTimeSamples);
         assert_ne!(
-            ctx.state & StatesAndFlags_::kContTimeValid,
+            ctx.state & StatesAndFlags_::kContTimeValid as u32,
             0,
             "without kContTimeValid the plugin ignores continousTimeSamples"
         );
@@ -569,7 +569,7 @@ mod tests {
         assert_eq!(ctx.projectTimeSamples, 1_234);
         assert_eq!(ctx.continousTimeSamples, 1_234);
         assert_eq!(ctx.projectTimeSamples, ctx.continousTimeSamples);
-        assert_ne!(ctx.state & StatesAndFlags_::kContTimeValid, 0);
+        assert_ne!(ctx.state & StatesAndFlags_::kContTimeValid as u32, 0);
     }
 
     /// Always-on fields (sampleRate, projectTimeSamples) are populated even

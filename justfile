@@ -23,6 +23,13 @@ test *ARGS: plugin-server
     cargo nextest run --workspace {{ARGS}} \
         -E 'not binary(gui_lifecycle_main) and not binary(au_gui_lifecycle_main)'
 
+# The AU mapping-family claim, which needs third-party Audio Units installed.
+# It hard-fails rather than skipping when none is present — deliberately — so it
+# is excluded from CI and run on purpose here, on a machine that has them.
+test-au-installed:
+    cargo test -p tutti-au-host --test au_midi_map \
+        no_installed_third_party_unit_implements_the_mapping_family
+
 # The custom-harness editor tests. `cargo test` just execs the binary, which is
 # what a `harness = false` main wants.
 test-editor:

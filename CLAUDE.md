@@ -426,6 +426,24 @@ names them directly:
 
 Both are declared in this repo's `[workspace.dependencies]`.
 
+## Known failures
+
+**`tutti-plugin`'s `the_frame_after_a_resumed_one_still_parses` fails on macOS
+and passes on Linux.** The third `recv_resumable` in the test returns an OS
+`EINVAL` (`Io(Os { code: 22 })`) from a socket operation, where the first two
+succeed. It is *not* a regression from the extraction: CI has never run this
+workspace on macOS before, so the first run is also the first observation.
+
+What is known: it reproduces on every macOS CI run, never on Linux, and the
+Linux path through `with_poll_timeout` is byte-identical. The suspect surface is
+that function — it sets a short recv timeout, calls through, then restores with
+`set_recv_timeout(None)` and *discards the result*. Whether macOS rejects one of
+those calls is unverified; nobody has had a macOS machine on it yet.
+
+Do not "fix" it by widening the timeout or retrying. The test exists to catch a
+stream left off by a few bytes after a resumed read, and a fix that makes it pass
+without explaining the `EINVAL` removes the detection rather than the defect.
+
 ## Extraction residue
 
 This tree spent three and a half months inside the dawai app repo with **no

@@ -27,6 +27,7 @@ use interprocess::local_socket::{GenericNamespaced, ToNsName as _};
 use interprocess::local_socket::{Name, Stream};
 use std::io::{Read, Write};
 use std::path::Path;
+use std::thread;
 use std::time::{Duration, Instant};
 
 /// Duplex byte stream to the plugin-server.
@@ -147,6 +148,7 @@ fn read_exact_by(
     buf: &mut [u8],
     deadline: Instant,
     filled: &mut usize,
+    idle: Option<Duration>,
 ) -> std::io::Result<()> {
     while *filled < buf.len() {
         if Instant::now() >= deadline {
@@ -175,7 +177,17 @@ fn read_exact_by(
                     std::io::ErrorKind::WouldBlock
                         | std::io::ErrorKind::TimedOut
                         | std::io::ErrorKind::Interrupted
-                ) => {}
+                ) =>
+            {
+                // Who waits depends on how the wakeup was armed. With a receive
+                // timeout the kernel already blocked for the poll interval, so
+                // looping straight back is right. In non-blocking mode the read
+                // returned instantly and looping straight back is a hot spin on
+                // a core — so this end does the waiting.
+                if let Some(nap) = idle {
+                    thread::sleep(nap);
+                }
+            }
             // Anything else is a real failure, and *where* it happened is most
             // of the diagnosis: a bare `EINVAL` from a socket read says nothing
             // about whether the stream was mid-frame, how much had landed, or
@@ -260,10 +272,17 @@ fn recv_by(
     stream: &mut ControlStream,
     deadline: Instant,
     partial: &mut PartialFrame,
+    idle: Option<Duration>,
 ) -> Result<BridgeMessage> {
     if !partial.have_len {
         let mut prefix = partial.prefix;
-        let r = read_exact_by(stream, &mut prefix, deadline, &mut partial.prefix_filled);
+        let r = read_exact_by(
+            stream,
+            &mut prefix,
+            deadline,
+            &mut partial.prefix_filled,
+            idle,
+        );
         // Record what landed before propagating: the bytes are off the socket
         // either way, and losing them is exactly the desync this exists to stop.
         partial.prefix = prefix;
@@ -293,7 +312,7 @@ fn recv_by(
     // `body` is moved out and back so the borrow checker sees one mutable
     // borrow of `partial` at a time; the swap is two pointer writes.
     let mut body = core::mem::take(&mut partial.body);
-    let r = read_exact_by(stream, &mut body, deadline, &mut partial.body_filled);
+    let r = read_exact_by(stream, &mut body, deadline, &mut partial.body_filled, idle);
     partial.body = body;
     r.map_err(|e| annotate(e, "frame body"))
         .map_err(crashed_on_eof)?;
@@ -316,8 +335,8 @@ pub fn recv(stream: &mut ControlStream) -> Result<BridgeMessage> {
     // The handshake has no resume path — a failure here ends the connection —
     // so the cursor is local and dropped with the frame it describes.
     let mut partial = PartialFrame::default();
-    with_poll_timeout(stream, HANDSHAKE_TIMEOUT, |s| {
-        recv_by(s, deadline, &mut partial)
+    with_poll_timeout(stream, HANDSHAKE_TIMEOUT, |s, idle| {
+        recv_by(s, deadline, &mut partial, idle)
     })
 }
 
@@ -354,7 +373,10 @@ pub fn recv_resumable(
     partial: &mut PartialFrame,
 ) -> Result<BridgeMessage> {
     let deadline = Instant::now() + timeout;
-    with_poll_timeout(stream, timeout, |s| recv_by(s, deadline, partial)).map_err(|e| match e {
+    with_poll_timeout(stream, timeout, |s, idle| {
+        recv_by(s, deadline, partial, idle)
+    })
+    .map_err(|e| match e {
         BridgeError::Io(io)
             if io.kind() == std::io::ErrorKind::TimedOut
                 || io.kind() == std::io::ErrorKind::WouldBlock =>
@@ -377,72 +399,122 @@ pub fn recv_resumable(
 /// with a 5 s budget a 5 s syscall timeout would let the whole budget elapse
 /// inside one uninterruptible wait.
 ///
-/// # Arming the poll is best-effort, and must be
+/// # The wakeup is per-platform, and arming it is best-effort
 ///
 /// Treating a failed `set_recv_timeout` as fatal was a bug on two platforms at
-/// once, and it made the transport unusable on one of them:
+/// once, and on one of them it made the transport unusable:
 ///
-/// - **Windows.** `interprocess` implements `set_recv_timeout` for named pipes
-///   as an unconditional error — there is no such option to set. So *every*
-///   receive failed before reading a byte, which is most of what the Windows
-///   suite had to say the first time it was ever run.
+/// - **Windows.** `interprocess` refuses a receive timeout on a named pipe
+///   unconditionally — there is no such option. Every receive failed before
+///   reading a byte, which was most of what the Windows suite had to say the
+///   first time it was ever run.
 /// - **macOS.** `setsockopt(SO_RCVTIMEO)` starts refusing with `EINVAL` once the
-///   peer closes its end of the Unix socket. A receive that should have drained
-///   the last buffered frame and then reported EOF failed with "Invalid
+///   peer closes its end of the Unix socket, so a receive that should have
+///   drained the last buffered frame and reported EOF failed with "Invalid
 ///   argument" instead.
 ///
-/// **Losing the timeout does not lose the deadline.** [`read_exact_by`] checks
-/// `Instant::now() >= deadline` at the top of every iteration, so the total
-/// bound still holds *between* syscalls; what is lost is the guarantee that a
-/// single blocked `read` wakes up to be counted. Nothing here silently becomes
-/// unbounded, but one syscall may overshoot.
+/// But *tolerating* the failure is not enough either, because the timeout is
+/// what lets a blocked read return so the deadline can be re-checked. Without
+/// some wakeup, a peer that goes silent mid-frame holds the thread until it
+/// speaks again — measured, not assumed: with the fallback removed, two of the
+/// nineteen hostile-peer tests fail, both the stalled-peer bounds.
 ///
-/// **What is actually lost, measured rather than assumed.** Forcing `armed` to
-/// `false` and running the hostile-peer suite fails exactly two tests —
-/// `a_stalled_save_state_fails_typed_and_leaves_the_bridge_healthy` and its
-/// `load_state` twin — while the other seventeen, the dribble and frame-cap and
-/// crash cases among them, still pass. So the bound that depends on the poll is
-/// the one against a peer that is *live but silent*: nothing arrives, the read
-/// blocks, and only the timeout would have returned control to the deadline
-/// check.
+/// So [`Wakeup`] picks whichever mechanism the platform has. Named pipes have
+/// no receive timeout but do have non-blocking mode, which bounds a read just as
+/// well once this end sleeps between tries — and that path is exercised on Unix
+/// too, by forcing it, where all twenty-three tests pass through it.
 ///
-/// On macOS that costs nothing, because arming fails only once the peer has
-/// closed and a read on a closed socket returns rather than blocking. **On
-/// Windows it is a real gap**: a stalled server can hold a receive past its
-/// deadline, and those two tests are expected to fail there until the transport
-/// grows a wakeup that named pipes support. That is worth stating plainly —
-/// the previous code did not keep this promise on Windows either, it just
-/// refused to run at all.
+/// The dribble attack in the module header is unaffected by any of this: a peer
+/// that keeps *sending* makes the read return on its own, so the deadline is
+/// checked between syscalls whatever is armed.
 ///
-/// The dribble attack in the module header is unaffected on every platform: it
-/// needs a peer that keeps *sending*, so the read returns on its own and the
-/// deadline is checked between syscalls with or without the poll.
 fn with_poll_timeout<T>(
     stream: &mut ControlStream,
     budget: Duration,
-    f: impl FnOnce(&mut ControlStream) -> Result<T>,
+    f: impl FnOnce(&mut ControlStream, Option<Duration>) -> Result<T>,
 ) -> Result<T> {
-    use interprocess::local_socket::traits::Stream as _;
     let poll = budget.min(POLL_INTERVAL).max(Duration::from_millis(1));
-    let armed = match stream.set_recv_timeout(Some(poll)) {
-        Ok(()) => true,
-        Err(e) => {
-            // Debug rather than warn: on Windows this fires on every single
-            // receive, by design of the underlying transport, and a warning per
-            // frame would bury everything else.
-            tracing::debug!(
-                "could not arm a {poll:?} receive poll on the control stream                  ({e}); the total deadline still applies between reads, but a                  single blocked read may overshoot it"
-            );
-            false
-        }
-    };
-    let result = f(stream);
-    // Only restore what was set. Clearing a timeout that was never armed is at
-    // best a no-op and at worst a second spurious error on the same platforms.
-    if armed {
-        let _ = stream.set_recv_timeout(None);
-    }
+    let wakeup = Wakeup::arm(stream, poll);
+    let result = f(stream, wakeup.idle());
+    wakeup.disarm(stream);
     result
+}
+
+/// How a blocked read is made to return so the deadline can be re-checked.
+///
+/// Two mechanisms, because no single one exists on both platforms, and which one
+/// is armed decides *who sleeps*.
+enum Wakeup {
+    /// `SO_RCVTIMEO`. The kernel blocks for the poll interval before returning
+    /// `WouldBlock`, so the read loop must not sleep on top of that.
+    Timeout,
+    /// Non-blocking mode. The read returns instantly whether or not data is
+    /// there, so the read loop has to do the waiting or it spins a core.
+    Nonblocking,
+    /// Neither could be armed. The deadline still holds between syscalls, but a
+    /// single blocked read can overshoot it.
+    None,
+}
+
+/// How long to sleep between polls under [`Wakeup::Nonblocking`].
+///
+/// Deliberately not [`POLL_INTERVAL`]: that is how long the *kernel* is asked to
+/// block, and reusing it here would add up to 250 ms of latency to every frame
+/// on the platform already taking the slower path. 1 ms bounds the added latency
+/// at 1 ms and costs at most a thousand cheap syscalls a second on a control
+/// channel that is idle almost all the time — and never on the audio thread,
+/// which does not touch this transport.
+const NONBLOCKING_IDLE: Duration = Duration::from_millis(1);
+
+impl Wakeup {
+    fn arm(stream: &mut ControlStream, poll: Duration) -> Self {
+        use interprocess::local_socket::traits::Stream as _;
+        if stream.set_recv_timeout(Some(poll)).is_ok() {
+            return Self::Timeout;
+        }
+        // Windows named pipes have no receive timeout — interprocess refuses
+        // unconditionally with `Unsupported` — but they do have non-blocking
+        // mode, which bounds a read just as well once this end sleeps between
+        // tries. Without it the deadline is simply unenforceable there, and the
+        // five tests that exist to prove it *is* enforceable cannot pass.
+        //
+        // macOS needs this too, for a different reason: `setsockopt` starts
+        // refusing with EINVAL once the peer closes its end, and a receive that
+        // should drain the last buffered frame and report EOF would otherwise
+        // lose its bound at exactly that moment.
+        if stream.set_nonblocking(true).is_ok() {
+            return Self::Nonblocking;
+        }
+        tracing::debug!(
+            "no wakeup available on the control stream: neither a {poll:?} receive \
+             timeout nor non-blocking mode could be set. The total deadline still \
+             applies between reads, but a single blocked read may overshoot it"
+        );
+        Self::None
+    }
+
+    fn idle(&self) -> Option<Duration> {
+        match self {
+            Self::Nonblocking => Some(NONBLOCKING_IDLE),
+            Self::Timeout | Self::None => None,
+        }
+    }
+
+    /// Put the stream back as it was, undoing only what was actually done:
+    /// clearing a timeout that was never set is at best a no-op and at worst a
+    /// second spurious error on the platform that just refused the first.
+    fn disarm(self, stream: &mut ControlStream) {
+        use interprocess::local_socket::traits::Stream as _;
+        match self {
+            Self::Timeout => {
+                let _ = stream.set_recv_timeout(None);
+            }
+            Self::Nonblocking => {
+                let _ = stream.set_nonblocking(false);
+            }
+            Self::None => {}
+        }
+    }
 }
 
 /// Name which of `recv_by`'s two reads an error came from.

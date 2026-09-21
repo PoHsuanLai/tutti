@@ -456,10 +456,11 @@ failures are three unrelated problems:
   glibc. The assertion now runs where it means something; the portable
   properties are asserted everywhere.
 
-Two stalled-peer bounds in the hostile-peer suite are *expected* to fail on
-Windows once the naming above is fixed, for the reason documented at
-`with_poll_timeout`: named pipes have no receive-timeout option, so a server that
-goes silent can hold a receive past its deadline.
+The deadline *is* enforceable on Windows after all. Named pipes have no receive
+timeout, but they do have non-blocking mode, and `Wakeup` in
+`util/transport/control.rs` takes whichever the platform offers. Verified by
+forcing the fallback on Unix, where all twenty-three transport and hostile-peer
+tests pass through it.
 
 None of this blocks a Unix consumer. macOS and Linux are green.
 

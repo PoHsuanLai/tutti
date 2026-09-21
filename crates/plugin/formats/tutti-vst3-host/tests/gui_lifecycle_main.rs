@@ -162,7 +162,7 @@ fn main() {
     if skipped.len() != skip.len() {
         let unknown: Vec<&String> = skip
             .iter()
-            .filter(|s| !skipped.iter().any(|k| *k == s.as_str()))
+            .filter(|s| !skipped.contains(&s.as_str()))
             .collect();
         eprintln!("TUTTI_GUI_SKIP names no such case: {unknown:?}");
         std::process::exit(2);

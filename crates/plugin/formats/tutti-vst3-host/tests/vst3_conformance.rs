@@ -2692,6 +2692,93 @@ fn a_resolved_program_list_is_one_the_plugin_publishes() {
     }
 }
 
+/// A `TUID` from the four 32-bit words a VST3 UID is *written* as, in the byte
+/// order this platform's SDK lays them out in.
+///
+/// **The same UID has two different byte layouts, and a literal array picks one
+/// of them.** Windows compiles the SDK with `COM_COMPATIBLE 1`
+/// (`fplatform.h`, in the same block as `__stdcall`), which lays the first two
+/// words out like a COM `GUID` — word 1 little-endian, word 2 as two swapped
+/// little-endian halves — while every other platform stores all four big-endian.
+/// `funknown.h`'s `INLINE_UID` is the definition and this mirrors it arm for arm.
+///
+/// So a hardcoded `[u8; 16]` is a *platform-specific* spelling of a
+/// platform-independent id. Taking the words instead is what makes the caller
+/// say which UID it means rather than how one platform happens to serialise it.
+/// The cost of getting this wrong is quiet: the plugin simply reports no
+/// mapping, exactly as it would for a UID it genuinely does not know.
+const fn inline_uid(l1: u32, l2: u32, l3: u32, l4: u32) -> [u8; 16] {
+    // Words 3 and 4 are big-endian on every platform, so only the first two
+    // differ and only they are written twice.
+    let tail = [
+        (l3 >> 24) as u8,
+        (l3 >> 16) as u8,
+        (l3 >> 8) as u8,
+        l3 as u8,
+        (l4 >> 24) as u8,
+        (l4 >> 16) as u8,
+        (l4 >> 8) as u8,
+        l4 as u8,
+    ];
+    #[cfg(windows)]
+    let head = [
+        l1 as u8,
+        (l1 >> 8) as u8,
+        (l1 >> 16) as u8,
+        (l1 >> 24) as u8,
+        (l2 >> 16) as u8,
+        (l2 >> 24) as u8,
+        l2 as u8,
+        (l2 >> 8) as u8,
+    ];
+    #[cfg(not(windows))]
+    let head = [
+        (l1 >> 24) as u8,
+        (l1 >> 16) as u8,
+        (l1 >> 8) as u8,
+        l1 as u8,
+        (l2 >> 24) as u8,
+        (l2 >> 16) as u8,
+        (l2 >> 8) as u8,
+        l2 as u8,
+    ];
+    [
+        head[0], head[1], head[2], head[3], head[4], head[5], head[6], head[7], tail[0], tail[1],
+        tail[2], tail[3], tail[4], tail[5], tail[6], tail[7],
+    ]
+}
+
+/// AGain's processor UID, as `againcids.h` writes it.
+const AGAIN_PROCESSOR_UID: [u8; 16] = inline_uid(0x84E8DE5F, 0x92554F53, 0x96FAE413, 0x3C935A18);
+
+/// [`inline_uid`] lays bytes out the way this platform's SDK does.
+///
+/// Pins both arms against a fixture rather than against the implementation. The
+/// non-Windows bytes are the literal that stood here before — known good,
+/// because the migration test has always passed on Linux and macOS — and the
+/// Windows bytes are `INLINE_UID`'s `COM_COMPATIBLE` arm applied to the same
+/// four words by hand. Without this, a transposed shift would simply return
+/// `None` from the plugin and read as "the sample does not map this id".
+#[test]
+fn inline_uid_uses_this_platforms_byte_order() {
+    #[cfg(not(windows))]
+    let want: [u8; 16] = [
+        0x84, 0xE8, 0xDE, 0x5F, 0x92, 0x55, 0x4F, 0x53, 0x96, 0xFA, 0xE4, 0x13, 0x3C, 0x93, 0x5A,
+        0x18,
+    ];
+    #[cfg(windows)]
+    let want: [u8; 16] = [
+        0x5F, 0xDE, 0xE8, 0x84, 0x55, 0x92, 0x53, 0x4F, 0x96, 0xFA, 0xE4, 0x13, 0x3C, 0x93, 0x5A,
+        0x18,
+    ];
+    assert_eq!(
+        AGAIN_PROCESSOR_UID, want,
+        "the UID bytes do not match what this platform's SDK would emit for \
+         AGain, so any id built here reaches a plugin as a UID it has never \
+         heard of"
+    );
+}
+
 /// `IRemapParamID` — parameter migration when one plugin replaces another.
 ///
 /// The strongest assertion available here: the `remap_paramid` sample maps
@@ -2701,10 +2788,6 @@ fn a_resolved_program_list_is_one_the_plugin_publishes() {
 /// wrong UID through would get `None`.
 #[test]
 fn remap_param_id_migrates_a_known_parameter() {
-    const AGAIN_PROCESSOR_UID: [u8; 16] = [
-        0x84, 0xE8, 0xDE, 0x5F, 0x92, 0x55, 0x4F, 0x53, 0x96, 0xFA, 0xE4, 0x13, 0x3C, 0x93, 0x5A,
-        0x18,
-    ];
     /// `kMyGainParamTag` in `remapparamidcids.h`.
     const EXPECTED_NEW_ID: u32 = 123;
 

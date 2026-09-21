@@ -16,6 +16,18 @@
 
 #include <cstdlib>
 
+#ifdef _WIN32
+// For `GetEnvironmentVariableA`. See `probeMisbehaviour` for why `std::getenv`
+// cannot be used on this platform.
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
+
 namespace Steinberg {
 namespace Vst {
 
@@ -393,7 +405,33 @@ enum ProbeMisbehaviour : int32
 /// disagree about the variable's name or its encoding.
 inline int32 probeMisbehaviour ()
 {
+#ifdef _WIN32
+    // **`std::getenv` does not work here, and it fails silently.** The test sets
+    // this with Rust's `std::env::set_var`, which calls `SetEnvironmentVariableW`
+    // — it updates the *process* environment. The MSVC CRT keeps its own
+    // separate copy, built once at CRT startup and thereafter changed only by
+    // `_putenv`, and `getenv` reads that copy. So the variable is genuinely set
+    // and this function never saw it.
+    //
+    // The symptom is the worst kind: every misbehaviour test loads a probe that
+    // behaves perfectly, and each one fails on its own subject ("the host
+    // reported activation as successful") rather than on the cause. Twelve tests
+    // said twelve different things about one unread variable.
+    //
+    // `GetEnvironmentVariableA` reads the process environment directly, which is
+    // the same thing Rust wrote to.
+    char buf[32] = {};
+    const DWORD n =
+        GetEnvironmentVariableA (kProbeMisbehaviourEnv, buf, static_cast<DWORD> (sizeof buf));
+    // 0 means unset or unreadable. `n >= sizeof buf` means the value was
+    // truncated — no valid setting is anywhere near this long, so a value that
+    // long is malformed and `kMisbehaveNone` is the right reading of it.
+    if (n == 0 || n >= static_cast<DWORD> (sizeof buf))
+        return kMisbehaveNone;
+    const char* raw = buf;
+#else
     const char* raw = std::getenv (kProbeMisbehaviourEnv);
+#endif
     if (!raw || !*raw)
         return kMisbehaveNone;
     const int32 v = static_cast<int32> (std::strtol (raw, nullptr, 10));

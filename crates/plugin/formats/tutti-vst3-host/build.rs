@@ -338,9 +338,23 @@ fn compile_sdk_objects(sdk: &Path, gen: &Path) -> Vec<PathBuf> {
 ///
 /// `cc` can only emit a static lib, and that is the wrong shape: the linker
 /// drops archive members nothing references, and a plugin's entry points are
-/// referenced only by the host at `dlopen` time. So this invokes the compiler
-/// directly with `-shared`. Failures are hard errors — a plugin that silently
-/// fails to build turns every test that loads it into a skip.
+/// referenced only by the host at load time. So this invokes the compiler
+/// directly. Failures are hard errors — a plugin that silently fails to build
+/// turns every test that loads it into a skip.
+///
+/// # Two flag dialects
+///
+/// The GCC/Clang spelling (`-shared -fPIC -o`) is not portable to MSVC, whose
+/// `cl` rejects `-shared` and `-fPIC` outright and treats `-o` as deprecated —
+/// which is how this build script failed on Windows for as long as nobody ran
+/// it there. Everything else in this file already branched on the target;
+/// only the link step did not.
+///
+/// The MSVC spelling is `/LD` (emit a DLL), `/Fe:` (name the output), and
+/// `/link` to pass the rest through to `link.exe`. There is no `-fPIC`
+/// counterpart and none is needed: Windows code is position-independent by
+/// construction, and the export side is handled in the sources by the SDK's
+/// `SMTG_EXPORT_SYMBOL` (`__declspec(dllexport)`) rather than by a flag.
 fn link_bundle<'a>(
     build: &cc::Build,
     objects: impl Iterator<Item = &'a PathBuf>,
@@ -356,10 +370,20 @@ fn link_bundle<'a>(
 
     // `get_compiler()` carries the same toolchain and target flags `cc` used,
     // so cross-compiles and CC overrides are honoured.
-    let mut cmd = build.get_compiler().to_command();
-    cmd.arg("-shared").arg("-fPIC").arg("-o").arg(&so);
-    cmd.args(objects);
-    cmd.args(probe_link_args());
+    let compiler = build.get_compiler();
+    let objects: Vec<&PathBuf> = objects.collect();
+    let mut cmd = compiler.to_command();
+    if compiler.is_like_msvc() {
+        cmd.arg("/nologo").arg("/LD");
+        cmd.args(&objects);
+        cmd.arg(format!("/Fe:{}", so.display()));
+        cmd.arg("/link");
+        cmd.args(probe_link_args());
+    } else {
+        cmd.arg("-shared").arg("-fPIC").arg("-o").arg(&so);
+        cmd.args(&objects);
+        cmd.args(probe_link_args());
+    }
 
     let status = cmd.status().expect("failed to invoke the linker");
     assert!(status.success(), "linking {plugin} failed: {status}");
@@ -495,7 +519,14 @@ fn probe_link_args() -> Vec<String> {
         .map(|s| s.to_string())
         .collect()
     } else if cfg!(target_os = "windows") {
-        Vec::new()
+        // `dllmain.cpp` calls `CoInitialize`, and `systemclipboard_win32.cpp`
+        // the clipboard API, so the SDK's platform sources pull these in. They
+        // are not optional on the `/link` line: with `/LD` the compiler driver
+        // passes only the default libs, and these are not among them.
+        ["ole32.lib", "user32.lib", "shell32.lib"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect()
     } else {
         ["-lstdc++fs", "-lpthread", "-ldl"]
             .iter()

@@ -337,9 +337,16 @@ fn with_poll_timeout<T>(
 ) -> Result<T> {
     use interprocess::local_socket::traits::Stream as _;
     let poll = budget.min(POLL_INTERVAL).max(Duration::from_millis(1));
-    stream
-        .set_recv_timeout(Some(poll))
-        .map_err(BridgeError::Io)?;
+    // Annotated because this is otherwise indistinguishable from a read
+    // failure: both surface as `BridgeError::Io` from the same call, and on
+    // macOS this one raises a bare `EINVAL` that says nothing about which
+    // syscall refused or why.
+    stream.set_recv_timeout(Some(poll)).map_err(|e| {
+        BridgeError::Io(std::io::Error::new(
+            e.kind(),
+            format!("setting a {poll:?} receive timeout on the control stream failed: {e}"),
+        ))
+    })?;
     let result = f(stream);
     let _ = stream.set_recv_timeout(None);
     result

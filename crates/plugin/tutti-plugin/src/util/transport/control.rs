@@ -419,10 +419,10 @@ pub fn recv_resumable(
 /// speaks again — measured, not assumed: with the fallback removed, two of the
 /// nineteen hostile-peer tests fail, both the stalled-peer bounds.
 ///
-/// So [`Wakeup`] picks whichever mechanism the platform has. Named pipes have
-/// no receive timeout but do have non-blocking mode, which bounds a read just as
-/// well once this end sleeps between tries — and that path is exercised on Unix
-/// too, by forcing it, where all twenty-three tests pass through it.
+/// So the bound is real where a timeout can be armed and absent where it cannot,
+/// and on Windows it cannot. `set_nonblocking` looks like the way out and is
+/// not — see [`Wakeup::arm`] for what happened when it was tried. The genuine
+/// fix there is overlapped I/O or `PeekNamedPipe`, below this abstraction.
 ///
 /// The dribble attack in the module header is unaffected by any of this: a peer
 /// that keeps *sending* makes the read return on its own, so the deadline is
@@ -448,23 +448,10 @@ enum Wakeup {
     /// `SO_RCVTIMEO`. The kernel blocks for the poll interval before returning
     /// `WouldBlock`, so the read loop must not sleep on top of that.
     Timeout,
-    /// Non-blocking mode. The read returns instantly whether or not data is
-    /// there, so the read loop has to do the waiting or it spins a core.
-    Nonblocking,
     /// Neither could be armed. The deadline still holds between syscalls, but a
     /// single blocked read can overshoot it.
     None,
 }
-
-/// How long to sleep between polls under [`Wakeup::Nonblocking`].
-///
-/// Deliberately not [`POLL_INTERVAL`]: that is how long the *kernel* is asked to
-/// block, and reusing it here would add up to 250 ms of latency to every frame
-/// on the platform already taking the slower path. 1 ms bounds the added latency
-/// at 1 ms and costs at most a thousand cheap syscalls a second on a control
-/// channel that is idle almost all the time — and never on the audio thread,
-/// which does not touch this transport.
-const NONBLOCKING_IDLE: Duration = Duration::from_millis(1);
 
 impl Wakeup {
     fn arm(stream: &mut ControlStream, poll: Duration) -> Self {
@@ -472,19 +459,25 @@ impl Wakeup {
         if stream.set_recv_timeout(Some(poll)).is_ok() {
             return Self::Timeout;
         }
-        // Windows named pipes have no receive timeout — interprocess refuses
-        // unconditionally with `Unsupported` — but they do have non-blocking
-        // mode, which bounds a read just as well once this end sleeps between
-        // tries. Without it the deadline is simply unenforceable there, and the
-        // five tests that exist to prove it *is* enforceable cannot pass.
+        // **Do not reach for `set_nonblocking` here.** It is the obvious next
+        // idea on Windows, where there is no receive timeout, and it was tried:
+        // it made things worse, 37 failures to 47.
         //
-        // macOS needs this too, for a different reason: `setsockopt` starts
-        // refusing with EINVAL once the peer closes its end, and a receive that
-        // should drain the last buffered frame and report EOF would otherwise
-        // lose its bound at exactly that moment.
-        if stream.set_nonblocking(true).is_ok() {
-            return Self::Nonblocking;
-        }
+        // interprocess implements it as `PIPE_NOWAIT`, and in that mode
+        // `ReadFile` reports *success with zero bytes* when nothing is
+        // available. `read_exact_by` reads `Ok(0)` as `UnexpectedEof`, which
+        // `crashed_on_eof` turns into `ProcessCrashed` — so a peer that is
+        // merely quiet is reported as a peer that died. The suite said so
+        // plainly: "expected a timeout, got ProcessCrashed", plus a scattering
+        // of BrokenPipe and UnexpectedEof where there had been neither.
+        //
+        // A mechanism that manufactures false crash reports is worse than no
+        // mechanism, and this is a production path, not only a test one.
+        // Microsoft says the same thing about the flag itself: PIPE_NOWAIT
+        // exists for LAN Manager 2.0 compatibility and "should not be used to
+        // achieve asynchronous input and output". The real answer on Windows is
+        // overlapped I/O or `PeekNamedPipe`, neither of which this transport's
+        // abstraction exposes.
         tracing::debug!(
             "no wakeup available on the control stream: neither a {poll:?} receive \
              timeout nor non-blocking mode could be set. The total deadline still \
@@ -493,9 +486,15 @@ impl Wakeup {
         Self::None
     }
 
+    /// How long the read loop should sleep on a would-block, if at all.
+    ///
+    /// `None` under [`Wakeup::Timeout`] because the kernel already blocked for
+    /// the poll interval, and `None` under [`Wakeup::None`] because there is
+    /// nothing to pace — the read blocks until the peer speaks. Kept as a
+    /// returned value rather than folded away so that a future wakeup which
+    /// *does* need this end to wait has somewhere to say so.
     fn idle(&self) -> Option<Duration> {
         match self {
-            Self::Nonblocking => Some(NONBLOCKING_IDLE),
             Self::Timeout | Self::None => None,
         }
     }
@@ -508,9 +507,6 @@ impl Wakeup {
         match self {
             Self::Timeout => {
                 let _ = stream.set_recv_timeout(None);
-            }
-            Self::Nonblocking => {
-                let _ = stream.set_nonblocking(false);
             }
             Self::None => {}
         }

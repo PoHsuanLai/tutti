@@ -456,11 +456,15 @@ failures are three unrelated problems:
   glibc. The assertion now runs where it means something; the portable
   properties are asserted everywhere.
 
-The deadline *is* enforceable on Windows after all. Named pipes have no receive
-timeout, but they do have non-blocking mode, and `Wakeup` in
-`util/transport/control.rs` takes whichever the platform offers. Verified by
-forcing the fallback on Unix, where all twenty-three transport and hostile-peer
-tests pass through it.
+**Five transport tests fail on Windows and the reason is structural.** Named
+pipes have no receive timeout, so a read cannot be made to return for the
+deadline to be re-checked, and every one of those five exists to prove that it
+can. `set_nonblocking` is the obvious next idea and is a trap — it was tried and
+took Windows from 37 failures to 47, because `PIPE_NOWAIT` reports success with
+zero bytes when nothing is available and this transport reads `Ok(0)` as EOF, so
+a quiet peer was reported as a crashed one. The reasoning is kept at
+`Wakeup::arm` so nobody spends the round trip again. The real fix is overlapped
+I/O or `PeekNamedPipe`, below the abstraction interprocess gives us.
 
 None of this blocks a Unix consumer. macOS and Linux are green.
 
